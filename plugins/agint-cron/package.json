@@ -1,0 +1,13 @@
+{
+  "name": "agint-cron",
+  "version": "0.1.0",
+  "description": "智进 (agint) cron scheduler: host service using cordis-plugin-timer with a tiny 5-field cron parser, default jobs for memory decay/wiki lint/session review, and preset-scoped cron tools.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/cron.js": "./lib/cron.js"
+  },
+  "license": "MIT"
+}

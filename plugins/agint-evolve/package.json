@@ -1,0 +1,13 @@
+{
+  "name": "agint-evolve",
+  "version": "0.1.0",
+  "description": "智进 (agint) review/self-evolution loop: host service writing weekly review reports from live data snapshots plus proposal tracking, and preset-scoped evolve tools.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/report.js": "./lib/report.js"
+  },
+  "license": "MIT"
+}

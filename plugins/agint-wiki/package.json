@@ -1,0 +1,12 @@
+{
+  "name": "agint-wiki",
+  "version": "0.1.0",
+  "description": "智进 (agint) wiki knowledge base: host service over markdown files plus preset-scoped wiki tools (read/write/search/list/lint).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,24 @@
+# AGINT ↔ dsh 兼容矩阵
+
+AGINT 把它当作部署契约：版本不对应就跑不起来。
+
+## 当前
+
+| AGINT | dsh minimum | dsh tested | notes |
+|-------|-------------|------------|-------|
+| v0.1  | 0.1.0-rc.6  | 0.1.0-rc.6 | 初版迁移；8 个插件对应 dsh host-plane 8 个 Service |
+
+## 校验方法
+
+- `dsh --version` 查 dsh 版本
+- 对照本表确认 ≥ minimum
+- 若 dsh 新版本断接口：`cordis.patch.yml` 改不动 → 报 issue 在 AGINT 仓
+
+## 升级 dsh 后
+
+```sh
+# 1. 跑现有 eval（计划中）
+# 2. 看 dsh CHANGELOG / breaking changes
+# 3. 重跑 install/uninstall.sh 验证 AGINT 仍然能挂上
+# 4. 不行就开 issue
+```

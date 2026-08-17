@@ -1,0 +1,13 @@
+{
+  "name": "agint-metrics",
+  "version": "0.1.0",
+  "description": "智进 (agint) evolution metrics: host service collecting objective indicators (cron blind spots, rule adherence, wiki health, memory health) into a kv time series, plus preset-scoped metrics tools.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/metrics.js": "./lib/metrics.js"
+  },
+  "license": "MIT"
+}
