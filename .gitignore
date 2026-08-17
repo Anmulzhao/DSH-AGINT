@@ -1,0 +1,26 @@
+# AGINT 仓库 gitignore
+# 仓库装到 $AGINT_HOME 后，下面这些目录会被自动创建。它们是 runtime 数据，**不**进版本控制。
+
+# 运行时数据（AGINT_HOME）
+dreams/
+wiki/
+reviews/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node（万一谁加 test harness）
+node_modules/
+*.log
+
+# secrets（万一误拷）
+.env
+.env.*
+secrets/
+
+# 安装临时产物
+install/.tmp/

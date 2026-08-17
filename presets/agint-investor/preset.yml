@@ -1,0 +1,2 @@
+name: 智进·投研
+description: 智进子 preset · 投研分析师角色。共享母 preset 的 agint-memory / agint-wiki / agint-cron 服务，但禁用自修改工具（tool-cordis）和规则门禁写入工具（agint-rules-tools），只读、查、思、写笔记；不直接改生产代码。任务路由：由智进会话按"涉及研究/分析/查询→投研子会话"模式分派。

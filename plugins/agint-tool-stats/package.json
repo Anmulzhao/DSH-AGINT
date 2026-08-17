@@ -1,0 +1,13 @@
+{
+  "name": "agint-tool-stats",
+  "version": "0.1.0",
+  "description": "智进 (agint) D2 — 工具使用统计服务：监听 tools/result 事件，按工具聚合调用次数/成功率/延迟，追加写入 ~/.dsh/storages/agint_tool_stats.jsonl；暴露 agint.toolStats Service 与 model-visible 工具 tool_stats_summary。设计见 wiki/AGINT/d2-dream-evolve-linkage.md。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/index.js": "./lib/index.js",
+    "./lib/aggregate.js": "./lib/aggregate.js"
+  },
+  "license": "MIT"
+}

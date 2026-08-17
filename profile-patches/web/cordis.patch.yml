@@ -1,0 +1,71 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# ── 智进 (agint) host services ───────────────────────────────────────────────
+# agint-memory: host-plane long-term memory service (single instance over the
+# `agint` storage domain; the domain name is exclusive per process, so the
+# service must live here and the model-facing tools live in the agint preset).
+# The package is a real copy at plugins/agint-memory so its internal
+# @deepseek-ai/* imports resolve through the healed profiles/node_modules.
+# Requires a server restart to take effect (web profile HMR is disabled).
+- insert:
+    - id: agint-memory
+      name: ./plugins/agint-memory/lib/index.js
+      config: {}
+
+    # agint-dream: 夜间梦境服务（后台记忆整合，light→REM→deep）。sweep 读
+    # DSH 会话日志→启发式提取候选→六维评分→门槛→提升进 agint.memory，
+    # 梦境日记写 <root>/YYYY-MM-DD.md（与 wiki/reviews 同介质）。调度由
+    # agint-cron 的 night-dream job（每日 03:00，OpenClaw 默认）触发。Preset 工具行见
+    # agent.cordis.yml。
+    - id: agint-dream
+      name: ./plugins/agint-dream/lib/index.js
+      config:
+        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
+        sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
+        lookbackDays: 2
+
+    - id: agint-wiki
+      name: ./plugins/agint-wiki/lib/index.js
+      config:
+        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki'
+
+    - id: agint-cron
+      name: ./plugins/agint-cron/lib/index.js
+      config: {}
+
+    # agint-rules: 规则门禁服务（advisory 半强制 + deny/ask 硬挂）。独占打开
+    # `agint_rules` storage domain（与 `agint` 互斥）。监听 tools/pre-execute
+    # 与 tools/post-execute waterfall — pre 阶段返回 deny/ask，post 阶段把
+    # advisory 注入 additionalContexts 让模型必然看到。Preset 工具行见
+    # agent.agint.yml。
+    - id: agint-rules
+      name: ./plugins/agint-rules/lib/index.js
+      config: {}
+
+    # agint-metrics: 进化指标服务。独占打开 `agint_metrics` storage domain
+    # （与 agint / agint_rules 互斥）。指标从 agint.cron/rules/wiki/memory
+    # 懒解析采集（缺失源跳过），写入 kv 时间序列；每日由 cron 的
+    # metrics-collect job 触发。Preset 工具行见 agent.cordis.yml。
+    - id: agint-metrics
+      name: ./plugins/agint-metrics/lib/index.js
+      config: {}
+
+    # agint-evolve: 复盘/自进化闭环。复盘报告写文件（root 指向 workspace
+    # 的 reviews 目录，与 wiki 同介质），改进提案存 `agint_evolve` domain。
+    # 每周日由 cron 的 evolve-review job 触发 writeReview()。Preset 工具行
+    # 见 agent.cordis.yml。
+    - id: agint-evolve
+      name: ./plugins/agint-evolve/lib/index.js
+      config:
+        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+
+    # agint-tool-stats: D2 工具使用统计。监听 tools/result 事件，追加写
+    # ~/.dsh/storages/agint_tool_stats.jsonl；提供 agint.toolStats Service
+    # 与 model-visible 工具 tool_stats_summary。设计见
+    # wiki/AGINT/d2-dream-evolve-linkage.md Step 1。Preset 工具见
+    # agent.cordis.yml（不新增——tool_stats_summary 由本插件自己注册）。
+    - id: agint-tool-stats
+      name: ./plugins/agint-tool-stats/lib/index.js
+      config: {}

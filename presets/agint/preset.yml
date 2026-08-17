@@ -1,0 +1,2 @@
+name: 智进
+description: 基于 DeepSeek Harness 的自进化智能体框架（原 OpenClaw 版 AGINT 迁移）。具备标准模式的全部能力，并携带动态插件与组合自修改能力，作为进化闭环的基础。
