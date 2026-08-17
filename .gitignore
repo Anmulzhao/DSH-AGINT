@@ -24,3 +24,5 @@ secrets/
 
 # 安装临时产物
 install/.tmp/
+# bundle 传输文件
+*.bundle
