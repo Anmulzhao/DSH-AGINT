@@ -50,7 +50,9 @@ AGINT/
 │   └── web/cordis.patch.yml     把 8 个插件挂入 dsh web profile
 │
 ├── docs/                        设计文档 / 架构图 / 插件契约
-│   └── plugins/                 每个插件一个 README
+│   ├── plugins/                 每个插件一个 README
+│   └── lessons/                 经验教训归档(踩坑实录 + 修复方案 + 教训)
+│       └── *.md
 │
 ├── eval/                        评估集（占位）
 └── install/                     安装/卸载脚本
