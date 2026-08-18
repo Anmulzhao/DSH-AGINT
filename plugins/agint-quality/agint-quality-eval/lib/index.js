@@ -36,7 +36,7 @@ import {
 import { WeeklyScheduler } from './scheduler.js';
 
 const name = 'agint-quality-eval';
-const inject = [];
+const inject = ['timer'];
 
 const Config = z.object({
   /** 调度表达式（cron 5-field）——默认每周日 04:30 */
@@ -228,7 +228,8 @@ function apply(ctx, config) {
     try {
       scheduler = new WeeklyScheduler(ctx, weeklyTask);
     } catch (err) {
-      console.error('agint-quality-eval: scheduler init failed', err.message);
+      // timer 服务不可用时不阻塞：跳过自动调度，Service 仍可手动 runNow()
+      console.warn('agint-quality-eval: scheduler init failed (timer unavailable); manual runNow() still works:', err.message);
     }
   });
 }

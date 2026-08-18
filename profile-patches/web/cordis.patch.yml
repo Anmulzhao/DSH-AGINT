@@ -83,3 +83,16 @@
     - id: agint-quality-contract
       name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
       config: {}
+
+    # agint-quality-eval: D-QAF 评估引擎 v0.2 初版。实现
+    # QualityEvaluatorIface.evaluate(target)：读 agint.toolStats / memory /
+    # rules / metrics 4 个 host Service 算 7 维评分（trust / reliability /
+    # effectiveness / safety / integrability + convention/adaptability 留 v0.3
+    # sandbox 补）。综合分 safety 权重 0.30 一票否决（< 0.5 → REJECT）。
+    # 自持 WeeklyScheduler 每周日 04:30 批量评估所有 AGINT Skills + Plugins，
+    # 评估结果写 agint.memory（type: decision）作为历史溯源。
+    # Service: evaluate / evaluateAll / score / runNow / nextFire / lastRun。
+    # 拒绝自评（避免递归）；上游不可用降级为部分评估 + finding，不抛错。
+    - id: agint-quality-eval
+      name: ./plugins/agint-quality/agint-quality-eval/lib/index.js
+      config: {}

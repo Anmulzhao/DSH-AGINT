@@ -1,0 +1,21 @@
+{
+  "name": "agint-quality",
+  "version": "0.1.0",
+  "description": "AGINT D-QAF 评估框架聚合包（meta）。当前切片仅含 agint-quality-contract（FROZEN 层）；eval / policy / sandbox / report 由 v0.2+ 增量补足。提供 agint.quality Host Service，供 sibling 插件按 Seam 组装。",
+  "type": "module",
+  "main": "./agint-quality-contract/lib/index.js",
+  "exports": {
+    ".": "./agint-quality-contract/lib/index.js",
+    "./contract": "./agint-quality-contract/lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "quality"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}
