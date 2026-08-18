@@ -58,6 +58,15 @@ const ruleSchema = z.object({
   enabled: z.boolean().default(true),
   createdAt: z.string().default(() => new Date().toISOString()),
   updatedAt: z.string().default(() => new Date().toISOString()),
+  // ─── D-QAF frozenness 字段 (提案 a6ba79a3) ────────────────────────
+  // 决定谁能修改这条规则：L0=人类多签，L1=policy 可撤销(带冷却),
+  // L2=Agent 全权(只记日志)。默认 L2-delegable 保证向后兼容。
+  // 判定标准：违反后没有任何运行时缓解手段的 → L0。
+  frozenness: z.enum(['L0-frozen', 'L1-revocable', 'L2-delegable']).default('L2-delegable'),
+  /** 最近一次 frozenness/规则内容变更时间 */
+  lastChangedAt: z.string().optional(),
+  /** L1 软删除倒计时(ISO 时间戳)，L0/L2 不用 */
+  softDeleteDeadline: z.string().optional(),
 });
 
 const spec = defineDomain({

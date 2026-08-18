@@ -69,3 +69,17 @@
     - id: agint-tool-stats
       name: ./plugins/agint-tool-stats/lib/index.js
       config: {}
+
+    # agint-quality-contract: D-QAF 评估框架核心契约（FROZEN 层）。仅定义
+    # Seam（EvalTarget / EvalResult / Decision / HARM / QualityConfig 等
+    # Schema + QualityEvaluator/Policy/Reporter/Lifecycle 接口签名），不
+    # 写实现。提供 `agint.quality` Host Service（getConfig / setConfig /
+    # schemas / interfaces / getLayer / validatePatch），供 sibling 实现
+    # 插件（agint-quality-{eval,sandbox,policy,report}）按 Seam 组装。
+    # L0-frozen 字段由 validatePatch 守门——任何 patch 含 L0 字段即抛
+    # L0_FROZEN_VIOLATION；L1-adjustable 字段由 policy 调用 setConfig 并
+    # 写审计日志到 agint.memory。本切片仅落 contract：eval/policy/report/
+    # sandbox 由 v0.2+ 补足。设计见 docs/plugins/agint-quality.md。
+    - id: agint-quality-contract
+      name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
+      config: {}
