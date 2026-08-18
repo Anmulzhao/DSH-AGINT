@@ -1,0 +1,21 @@
+{
+  "name": "agint-quality-eval",
+  "version": "0.2.0",
+  "description": "D-QAF 评估引擎：实现 QualityEvaluatorIface.evaluate(target)。读 agint.toolStats/memory/rules/metrics 数据算 7 维评分（trust/reliability/effectiveness/safety/integrability），周日凌晨自动批量评估 AGINT Skills + Plugins。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "quality",
+    "evaluation"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}
