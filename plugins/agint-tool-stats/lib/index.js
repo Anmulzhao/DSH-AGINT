@@ -183,6 +183,15 @@ async function persist(exec, result, sessionId, jsonlPath) {
   const argFingerprint = createHash('sha256')
     .update(`${tool}::${stableStringify(args)}`)
     .digest('hex');
+  // ─── D-QAF 字段 (提案 42b038aa 组合级 C-HARM) ────────────────
+  // argsHash: 纯 args 的 hash(不含 tool 名),用于 C-Reuse 检测同类调用
+  // parentIdx: 调用依赖树父节点,用于 C-Alignment 并行/串行检测
+  // 两者默认 null,LLM 不传也能正常 append(向后兼容)
+  const argsHash = createHash('sha256')
+    .update(stableStringify(args))
+    .digest('hex')
+    .slice(0, 16);
+  const parentIdx = e?.parentIdx ?? exec?.parentIdx ?? null;
   const record = {
     ts: resultTime ?? Date.now(),
     sessionId,
@@ -194,6 +203,8 @@ async function persist(exec, result, sessionId, jsonlPath) {
     ok,
     errorKind,
     argFingerprint,
+    argsHash,
+    parentIdx,
     args,
   };
   await appendFile(jsonlPath, JSON.stringify(record) + '\n', 'utf8');

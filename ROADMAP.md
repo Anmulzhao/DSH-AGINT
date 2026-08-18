@@ -2,16 +2,18 @@
 
 > 从「散落的 dsh patch」到「可独立版本化的自进化框架」。
 
-## 当前状态：v0（迁移完成）
+## 当前状态：v0.1.1（D-QAF 契约层落地）
 
 **已有**：
-- 8 个 Cordis 插件（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats）
+- **9 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract`）
 - 3 个 preset（agint / agint-coder / agint-investor）
-- 1 个 profile-patch（web/cordis.patch.yml）
+- 1 个 profile-patch（web/cordis.patch.yml，含 9 个插件 insert 段）
 - 4 个 skill（causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development）
 - 顶层文档（README / AGENTS / PHILOSOPHY / VERSION）
+- D-QAF 融合方案 + 评估框架完整汇总两份设计文档
 
 **没有**：
+- `agint-quality-eval` / `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`（仅 Seam 层；实现按 v0.2+ 推进）
 - CI / 自动化测试（dsh 上游变更时手动适配）
 - 安装脚本以外的部署工具
 - 评估集（eval/ 是占位）
@@ -24,12 +26,16 @@
 - [ ] 首版 git tag `v0.1.0`
 - [ ] 推到 `github.com/anmul/AGINT`
 
-## P2：可移植性（v0.2）
+## P2：可移植性 + D-QAF 实现（v0.2）
 
 - [ ] `cordis.patch.yml` 的 `$HOME` 默认值在不同平台（macOS / Linux / WSL）下测过
 - [ ] `VERSION` 写明 dsh 兼容矩阵；CI 在 dsh 最新 release 上跑插件 test
 - [ ] 把 `AGINT_HOME` / `DSH_HOME` 概念写进安装脚本
 - [ ] 提供 `install/docker-compose.yml` 演示（可选）
+- [ ] `agint-quality-eval`：实现 TRACE / TRACE-P 评估引擎，从 agint-metrics / agint-tool-stats 读数据
+- [ ] `agint-quality-policy`：实现决策引擎（AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN）
+- [ ] `agint-quality-sandbox`：复用 dsh 沙箱机制（bwrap / Landlock / Seatbelt）
+- [ ] `agint-quality-report`：写 Markdown → agint-wiki + JSON → agint-memory
 
 ## P3：评估（v0.3）
 

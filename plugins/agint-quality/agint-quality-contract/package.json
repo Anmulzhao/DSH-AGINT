@@ -1,0 +1,20 @@
+{
+  "name": "agint-quality-contract",
+  "version": "0.1.0",
+  "description": "D-QAF 评估框架核心契约：定义评估/策略/报告/生命周期接口（FROZEN 层）。不包含实现；实现由 agint-quality-{eval,sandbox,policy,report} 承担。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "quality"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}
