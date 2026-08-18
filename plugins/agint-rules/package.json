@@ -1,0 +1,21 @@
+{
+  "name": "agint-rules",
+  "version": "0.1.0",
+  "description": "AGINT 规则门禁：在工具调用流水线上强制执行一组规则，按严重度区分动作（advisory / ask / deny）。监听 tools/pre-execute 与 tools/post-execute waterfall。独占 agint_rules storage domain。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./tools": "./lib/tools.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "rules",
+    "guard"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}
