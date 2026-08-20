@@ -15,6 +15,7 @@ reviews/
 
 # Node（万一谁加 test harness）
 node_modules/
+**/node_modules/
 *.log
 
 # secrets（万一误拷）

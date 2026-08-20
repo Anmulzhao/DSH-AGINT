@@ -1,0 +1,35 @@
+[
+  {
+    "scenario": "cron-parse-and-nextFire",
+    "plugin": "agint-cron",
+    "input": [
+      {
+        "service": "cron",
+        "action": "parseAndNextFire",
+        "args": {
+          "expr": "30 4 * * 0",
+          "from": "2026-08-20T00:00:00Z"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "parse-then-nextFire-dynamic",
+        "_note": "Cron runs in host local TZ; expected is computed at runtime by the dispatcher instead of hardcoded. We assert: next-fire minute is Sunday (dow=0) and time is 04:30 local."
+      }
+    ]
+  },
+  {
+    "scenario": "cron-default-jobs-registered",
+    "plugin": "agint-cron",
+    "input": [
+      { "service": "cron", "action": "listDefaultJobs" }
+    ],
+    "expected": [
+      {
+        "kind": "default-jobs-registered",
+        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill"]
+      }
+    ]
+  }
+]

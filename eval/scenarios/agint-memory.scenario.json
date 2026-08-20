@@ -1,0 +1,23 @@
+{
+  "scenario": "memory-write-read",
+  "plugin": "agint-memory",
+  "input": [
+    {
+      "service": "memory",
+      "action": "write",
+      "args": {
+        "type": "lesson",
+        "content": "Sprint 1.3 eval scenario smoke test entry",
+        "evidence": "test:eval:agint-memory:1"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "kind": "write-read-roundtrip",
+      "idIsNonEmpty": true,
+      "contentMatchesInput": true,
+      "typeMatchesInput": true
+    }
+  ]
+}

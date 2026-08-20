@@ -1,0 +1,21 @@
+{
+  "scenario": "rules-deny-rm-rf-root",
+  "plugin": "agint-rules",
+  "input": [
+    {
+      "service": "rules",
+      "action": "check",
+      "args": {
+        "tool": "bash",
+        "args": { "command": "rm -rf /" }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "action": "deny",
+      "ruleId": "bash-rm-rf-root",
+      "minMatchedDenyCount": 1
+    }
+  ]
+}

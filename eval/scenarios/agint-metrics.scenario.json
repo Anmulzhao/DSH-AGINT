@@ -1,0 +1,43 @@
+[
+  {
+    "scenario": "metrics-compute-empty-sources",
+    "plugin": "agint-metrics",
+    "input": [
+      {
+        "service": "metrics",
+        "action": "compute",
+        "args": { "sources": {} }
+      }
+    ],
+    "expected": [
+      { "kind": "no-sources-returns-empty", "recordsLengthEquals": 0 }
+    ]
+  },
+  {
+    "scenario": "metrics-compute-cron-source",
+    "plugin": "agint-metrics",
+    "input": [
+      {
+        "service": "metrics",
+        "action": "compute",
+        "args": {
+          "sources": {
+            "cron": {
+              "_fn": "health",
+              "_returns": {
+                "issues": [{ "id": "stale-1" }],
+                "jobs": [{ "id": "j1", "overdueMs": 86400000 }]
+              }
+            }
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "cron-source-yields-cron-metrics",
+        "expectedKeys": ["cron.staleJobs", "cron.maxOverdueDays"]
+      }
+    ]
+  }
+]
