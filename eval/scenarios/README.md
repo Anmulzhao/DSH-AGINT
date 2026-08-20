@@ -239,3 +239,61 @@ jobs:
 - `docs/architecture.md` 数据流
 - `docs/dsh-integration.md` 升级 dsh 时怎么测
 - `ROADMAP.md` P2/P3 阶段任务
+
+---
+
+## 怎么跑（Sprint 1.3 实装）
+
+### 一次性 setup（dev only）
+
+AGINT plugin 是 dsh 的扩展，不应该自包含 runtime 包。`eval/setup.sh`
+把全局 dsh 安装里的 transitive deps 软链到 `plugins/*/node_modules` 和
+`eval/node_modules`，让 plugin 在测试中能解析 `@deepseek-ai/dsh-*` 和 `zod`。
+
+```sh
+# 检查环境（不写文件）
+./eval/setup.sh --check
+
+# 实际建软链
+./eval/setup.sh
+```
+
+软链全部进 `.gitignore`（`node_modules/`、`**/node_modules/`），不会污染仓库。
+
+### 跑测试
+
+```sh
+# 跑全部 5 个核心 plugin 冒烟（共 7 个场景）
+node eval/scenarios/driver.js
+
+# 单跑一个 plugin
+node eval/scenarios/driver.js --file=agint-memory
+```
+
+或 `cd eval && npm test`（`eval/package.json` 里定义了 scripts）。
+
+### 场景集当前状态（Sprint 1.3 落地）
+
+| 插件 | 场景 | 覆盖路径 |
+|---|---|---|
+| agint-memory | `memory-write-read` | 真实 service `apply(ctx)` + `memory.write/read` |
+| agint-rules | `rules-deny-rm-rf-root` | 真实 service `apply(ctx)` + `rules.seedIfEmpty/check` |
+| agint-metrics | `metrics-compute-empty-sources` + `metrics-compute-cron-source` | 纯函数 `computeMetrics` |
+| agint-cron | `cron-parse-and-nextFire` + `cron-default-jobs-registered` | 纯函数 `parseCron/nextFire` + `defaultJobs` 注册表 |
+| agint-dream | `dream-gate-thresholds` | 纯函数 `gateCandidates`（commit 0adf37b 阈值 0.75/3/2） |
+
+**当前结果：7/7 通过**（commit Sprint 1.3 时锁定）。
+
+### 不在 Sprint 1.3 范围内
+
+按老板拍板的"agint-quality-eval 留 Sprint 1.4 用合成候选"决策：
+- ❌ `agint-quality-eval` 自身场景（Sprint 1.4）
+- ❌ `agint-quality-contract` 场景（Sprint 1.4）
+- ❌ `agint-evolve` / `agint-wiki` / `agint-tool-stats` 场景（v0.3+ 扩展）
+
+### 已知设计取舍
+
+1. **Service apply() 路径只测 memory / rules**：这两个 plugin 的核心契约就是 service 方法；metrics / cron / dream 测纯函数（核心算法），因为它们的 service 装配依赖 storage domain / timer / 文件系统，mock 成本不成比例。Sprint 2.A `agint-quality-sandbox` 会用真沙箱覆盖 service 集成路径。
+2. **JSON 而非 YAML**：避免引入 `yaml` npm 依赖（AGINT 仓不引入第三方运行时依赖）。如果未来人类可读性更重要，可换成 ts/js 字面量或自写迷你 parser。
+3. **软链 dsh 包**：`eval/setup.sh` 必须先跑，否则 driver 报 `Cannot find package '@deepseek-ai/dsh-storage-domain'`。
+4. **TZ 假设**：cron 测例用 dynamic assertion（dow=0, hh=4, mm=30），避免硬编码 ISO 受 host 时区影响。

@@ -1,0 +1,26 @@
+{
+  "scenario": "dream-gate-thresholds",
+  "plugin": "agint-dream",
+  "input": [
+    {
+      "service": "dream",
+      "action": "gate",
+      "args": {
+        "candidates": [
+          { "text": "高频教训", "type": "lesson", "signalCount": 5, "uniqueSessions": 3, "score": 0.9, "sessions": ["s1", "s2"], "days": ["2026-08-15"], "signals": ["a"] },
+          { "text": "边缘候选", "type": "pattern", "signalCount": 1, "uniqueSessions": 1, "score": 0.4, "sessions": ["s1"], "days": ["2026-08-15"], "signals": ["b"] },
+          { "text": "次高频", "type": "decision", "signalCount": 3, "uniqueSessions": 2, "score": 0.8, "sessions": ["s1", "s2"], "days": ["2026-08-15"], "signals": ["c"] }
+        ],
+        "minScore": 0.75,
+        "minRecall": 3,
+        "minUniqueSessions": 2
+      }
+    }
+  ],
+  "expected": [
+    {
+      "kind": "gate-thresholds",
+      "expectedTexts": ["高频教训", "次高频"]
+    }
+  ]
+}

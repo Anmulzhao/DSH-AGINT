@@ -1,0 +1,21 @@
+{
+  "name": "agint-eval",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AGINT 评估场景集运行器（Sprint 1.3）。",
+  "type": "module",
+  "main": "scenarios/driver.js",
+  "scripts": {
+    "test": "node scenarios/driver.js",
+    "test:memory": "node scenarios/driver.js --file=agint-memory",
+    "test:rules": "node scenarios/driver.js --file=agint-rules",
+    "test:metrics": "node scenarios/driver.js --file=agint-metrics",
+    "test:cron": "node scenarios/driver.js --file=agint-cron",
+    "test:dream": "node scenarios/driver.js --file=agint-dream"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "*"
+  },
+  "license": "MIT"
+}
