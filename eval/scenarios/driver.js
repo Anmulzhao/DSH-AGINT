@@ -83,6 +83,52 @@ export function makeMockCtx(extraProvides = {}) {
   return ctx;
 }
 
+/**
+ * Build a richer mock ctx for agint-quality-eval Service tests (Sprint 3.1+).
+ * Provides mock agint.qualitySandbox (controlled by input.sandboxMock), plus
+ * mock agint.toolStats / agint.memory / agint.rules / agint.metrics so the
+ * evaluator's dimension evaluators don't all warn-unavailable.
+ */
+export function makeRichEvalMockCtx(input) {
+  const baseCtx = makeMockCtx();
+
+  // Mock upstream services with enough surface for dimension evaluators
+  const mockToolStats = {
+    failureRate: async () => ({ rate: 0.05, calls: 100 }),
+    summary: async () => ({ calls: 100, errors: 5 }),
+  };
+  const mockMemory = {
+    search: async () => [],
+    write: async (rec) => ({ id: `mock-${Date.now()}`, ...rec }),
+    read: async () => null,
+  };
+  const mockRules = {
+    audit: () => ({ totals: { hits: 0, denies: 0, asks: 0, advisories: 0 } }),
+    lint: async () => [],
+  };
+  const mockMetrics = {
+    collect: async () => ({ count: 0, collected: [] }),
+    summary: async () => ({ metrics: [] }),
+  };
+
+  baseCtx.provide('agint.toolStats', mockToolStats);
+  baseCtx.provide('agint.memory', mockMemory);
+  baseCtx.provide('agint.rules', mockRules);
+  baseCtx.provide('agint.metrics', mockMetrics);
+
+  // Sandbox mock (if input provides sandboxMock)
+  const sandboxMock = input?.sandboxMock;
+  if (sandboxMock) {
+    baseCtx.provide('agint.qualitySandbox', {
+      runSmoke: async () => sandboxMock,
+      backendHealth: async () => ({ ctxSandboxAvailable: true, inProcessFallbackEnabled: true, timeoutMs: 30000, memoryMb: 512 }),
+      config: { timeoutMs: 30000, memoryMb: 512, allowInProcessFallback: true },
+    });
+  }
+
+  return baseCtx;
+}
+
 // In-memory storage domain — 满足 plugin 启动路径，不写磁盘。
 export function makeMockStorageDomain() {
   const tables = new Map(); // tableName → Map<id, value>
@@ -448,6 +494,44 @@ const dispatchers = {
       const allIncluded = exp.mustIncludeIds.every((id) => ids.includes(id));
       const ok = BASELINE_TARGETS.length === exp.expectedCount && allPlugins && allIncluded;
       return { ok, detail: `count=${BASELINE_TARGETS.length} ids=[${ids.slice(0, 5).join(',')}...]` };
+    }
+
+    // ── Sprint 3.1: sandbox gate Service 测试 ──────────────────────────
+    if (exp.kind === 'sandbox-gate-passes'
+      || exp.kind === 'sandbox-gate-rejects'
+      || exp.kind === 'sandbox-gate-skipped') {
+      // 用真实 eval plugin + 丰富 mock ctx
+      const { compositeScore } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
+      const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const input = scenario.input[0];
+      const richCtx = makeRichEvalMockCtx(input);
+      evalMod.apply(richCtx, {});
+      // 等 queueMicrotask 把 scheduler 起来
+      await new Promise((r) => setTimeout(r, 50));
+      const evaluator = richCtx.get('agint.qualityEvaluator');
+      if (!evaluator) return { ok: false, detail: 'evaluator service not registered' };
+      const result = await evaluator.evaluate(input.target);
+      const composite = compositeScore(result);
+
+      if (exp.kind === 'sandbox-gate-passes') {
+        const ok = exp.compositeNotNull ? composite !== null : composite === null;
+        return { ok, detail: `composite=${composite} safety=${result.dimensions.find((d) => d.key === 'safety')?.score?.score}` };
+      }
+      if (exp.kind === 'sandbox-gate-rejects') {
+        const safetyScore = result.dimensions.find((d) => d.key === 'safety')?.score?.score;
+        const blocker = result.findings.find((f) => f.severity === 'blocker');
+        const compositeOk = exp.compositeIsNull ? composite === null : composite !== null;
+        const safetyOk = exp.safetyIsZero ? safetyScore === 0 : safetyScore !== 0;
+        const blockerOk = exp.hasBlockerFinding ? !!blocker : !blocker;
+        const mentionsOk = exp.findingMentions
+          ? (blocker?.message ?? '').includes(exp.findingMentions)
+          : true;
+        const ok = compositeOk && safetyOk && blockerOk && mentionsOk;
+        return { ok, detail: `composite=${composite} safety=${safetyScore} blocker=${!!blocker}` };
+      }
+      // sandbox-gate-skipped
+      const ok = exp.compositeNotNull ? composite !== null : composite === null;
+      return { ok, detail: `composite=${composite}` };
     }
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
