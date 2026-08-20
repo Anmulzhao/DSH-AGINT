@@ -1,30 +1,38 @@
-# agint-quality-contract
+# agint-quality-contract + agint-quality-eval
 
-> D-QAF 评估框架的核心契约：**只定义 Seam（接口与 Schema），不写实现**。
-> 实现由 sibling 插件（`agint-quality-{eval,sandbox,policy,report}`）承担，本切片仅落契约层。
+> D-QAF 评估框架的两个切片：
+>
+> - **`agint-quality-contract`**（v0.1.1）：**只定义 Seam（接口与 Schema），不写实现**。
+> - **`agint-quality-eval`**（v0.2 初版）：**第一个实现**——7 维评分 + HARM 简版 + 周日 04:30 调度。
+>
+> **本文是 seam 契约 + 评估引擎的工程视图**。D-QAF 流水线、HARM、进化记忆层、预算对齐等横向机制见 `docs/evolution-framework.md`；安全边界见 `docs/security-boundary.md`。
 
-## 职责
+---
+
+## 第一部分 · `agint-quality-contract`（Seam 层）
+
+### 职责
 
 - 提供 `agint.quality` host Service
 - 暴露 FROZEN 接口签名（`EvalTarget` / `EvalResult` / `Decision` / `HARM` / `DimensionScore` / `DreamPhase`）和 ADJUSTABLE 配置 schema（`QualityConfig`）
 - 提供 L0/L1 字段层级查询（`getLayer` / `isFrozen`）和 patch 校验（`validatePatch`），作为 sibling 实现插件改契约的守门人
 - 写入 `setConfig` 审计日志到 `agint.memory`（如果可用；不可用则降级为 `console.warn`）
 
-## 设计原则
+### 设计原则
 
 1. **自身不评估**（递归陷阱由外部 CI 兜底）
 2. **仅定义接口，不写实现**
 3. **FROZEN 字段永不修改**，需人类多签；ADJUSTABLE 字段由 policy 自调并记审计日志
 
-## 二元边界（提案 3d6cc063）
+### 二元边界（提案 3d6cc063）
 
 | 层 | 内容 | 修改门槛 |
 |---|---|---|
-| **L0-frozen** | 接口签名、Safety 红线、决策枚举、维度定义 | 人类多签 + CI 禁改 |
+| **L0-frozen** | 接口签名、Safety 红线、决策枚举、维度定义 | 人类多签 + CI 禁改（详见 `docs/evolution-framework.md` §8.2） |
 | **L1-adjustable** | HARM 权重、评分阈值、梦境预算、沙箱限制 | policy 自调 + 审计日志 |
 | **L2-implementation** | 实现细节 | sibling 自治；未登记默认 L2 |
 
-## 提供的 Service 方法
+### 提供的 Service 方法
 
 ```js
 ctx.agint.quality.getConfig()                              // → QualityConfig
@@ -36,7 +44,7 @@ ctx.agint.quality.isFrozen(fieldPath)                      // → boolean (back-
 ctx.agint.quality.validatePatch(patch)                     // → { ok, violations[] }
 ```
 
-## Schema 核心字段（EvalTarget）
+### Schema 核心字段（EvalTarget）
 
 ```yaml
 id:       string  # 唯一；pluginId / skill name
@@ -46,7 +54,7 @@ path:     string? # 源码位置，供 sandbox 执行
 tags:     string[]# 例 ['light-dream', 'manual-review']
 ```
 
-## 决策枚举（`DecisionKind`，FROZEN）
+### 决策枚举（`DecisionKind`，FROZEN）
 
 | 值 | 含义 |
 |---|---|
@@ -55,7 +63,7 @@ tags:     string[]# 例 ['light-dream', 'manual-review']
 | `REJECT` | 未达阈值或安全门失败 |
 | `ABSTAIN` | 评估不充分，信号不足 |
 
-## 默认配置（ADJUSTABLE，启动时载入）
+### 默认配置（ADJUSTABLE，启动时载入）
 
 ```js
 {
@@ -66,7 +74,9 @@ tags:     string[]# 例 ['light-dream', 'manual-review']
 }
 ```
 
-## 与其他插件的关系
+> **v0.3 计划**：`harmWeights` 引入动态权重调节（探索期 M↑ / 稳定期 R↑ / 退化期 A↑），写入 `agint_evolution` 进化日志。
+
+### 与其他插件的关系
 
 - **`agint.rules`**：规则门禁中的 `frozenness` 字段（`L0-frozen` / `L1-revocable` / `L2-delegable`）概念来自本契约的 L0/L1/L2 划分（提案 a6ba79a3）
 - **`agint.memory`**：`setConfig` 审计日志落点；读取历史评估记录
@@ -74,8 +84,9 @@ tags:     string[]# 例 ['light-dream', 'manual-review']
 - **`agint.dream`**：梦境阶段（`light` / `rem` / `deep`）触发对应评估预算
 - **`agint.evolve`**：周复盘时拉取评估汇总生成进化提案
 - **`agint-tool-stats`**：评估引擎读工具调用画像计算 Effectiveness / Reliability
+- **`agint_evolution`**（v0.3）：D-QAF Phase 4 完成后自动写入 evolution-log
 
-## 验证（与 K18/K19 一致）
+### 验证（与 K18/K19 一致）
 
 仅做 mount-validate **不足以** 证明可用性。最低验证（待 `scripts/verify-quality-contract.mjs` 补足）：
 
@@ -85,13 +96,13 @@ tags:     string[]# 例 ['light-dream', 'manual-review']
 4. `setConfig({ EvalTarget: {...} })`（含 L0 字段）→ 抛 `L0_FROZEN_VIOLATION`
 5. `getLayer('harmWeights.H')` → `'L1-adjustable'`；`getLayer('EvalTarget')` → `'L0-frozen'`
 
-## 本切片边界
+### 本切片边界
 
-v0.1.1 **仅落 contract**：剩余 4 个 sibling（`agint-quality-eval` / `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`）按 ROADMAP 留给 v0.2/v0.3。
+v0.1.1 **仅落 contract**：剩余 4 个 sibling（`agint-quality-eval` / `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`）按 ROADMAP 留给 v0.2/v0.3/v0.4。
 
 这与 AGINT 哲学「先把 Seam 钉死，再补实现」一致——契约是 FROZEN 层，越早稳定越好；实现可在策略与数据充分后迭代。
 
-## 文件
+### 文件
 
 ```
 agint-quality-contract/
@@ -99,3 +110,112 @@ agint-quality-contract/
 ├── package.json    dsh-plugin metadata；peerDependency zod
 └── README.md       插件自述（mount 行 + 二元边界）
 ```
+
+---
+
+## 第二部分 · `agint-quality-eval`（v0.2 评估引擎）
+
+### 职责
+
+- 提供 `agint.qualityEvaluator` host Service
+- 实现 `QualityEvaluatorIface`（contract 定义）的 `evaluate(target)` 方法
+- 7 维评分：`trust` / `reliability` / `effectiveness` / `safety` / `convention` / `adaptability` / `integrability`
+- 综合分计算（v0.2 简版）：safety 权重 0.30（最高），< 0.5 一票否决
+- HARM 简版：H/M 中性 0.5；A ≈ trust；R ≈ reliability
+- 周日凌晨自动批量评估所有 AGINT Skills + Plugins，写 `agint.memory`
+
+### 与 contract 的关系
+
+`agint-quality-contract`（FROZEN 层）定义了接口，本插件是它的**第一个实现**。后续如果需要不同算法实现（如 sandbox 静态扫描版），可以并存：
+
+- `agint-quality-eval`（本插件）：read-only 数据评估
+- `agint-quality-eval-sandbox`（v0.3 计划）：sandbox 静态扫描 + 动态执行
+- `agint-quality-eval-llm`（v0.4 计划）：用 LLM 作为 judge
+
+三个都实现 `QualityEvaluatorIface`，用 `qualifierId` 字段区分。
+
+### 7 维评分算法
+
+| 维度 | 数据源 | 算法 | 无数据时 |
+|---|---|---|---|
+| **trust** | `agint.memory.search(targetId)` | 历史决策分布：`(AUTO_DEPLOY*1 + PENDING_REVIEW*0.5) / total` | 无历史 → 0.5 |
+| **reliability** | `agint.toolStats.failureRate({tool})` | `1 - failureRate` | 无记录 → null + info |
+| **effectiveness** | `agint.toolStats.summary()` | `usage * speed`（usage = calls/100, speed = 1 - avgLatency/5000 * 0.3） | 无记录 → null + info |
+| **safety** | `agint.rules.list({tool})` | `1 - 0.2*L1_deny - 0.05*L2_deny`，L3+ 不扣 | 无 deny → 1.0 |
+| **convention** | 无（v0.3 sandbox 补） | null | null + info |
+| **adaptability** | 无（v0.3 sandbox 补） | null | null + info |
+| **integrability** | `agint.metrics.summary()` | 找到相关 key → 1.0；否则 0.5 | 无 metrics → 0.5 |
+
+**任一维度 score === null → 整个 EvalResult 倾向 ABSTAIN**。
+
+### 综合分（v0.2 简版）
+
+```
+score = 100 * sum(weight_i * score_i) / sum(weight_i for non-null scores)
+weight: trust=0.20, reliability=0.20, effectiveness=0.10, safety=0.30, integrability=0.20
+safety < 0.5 → score = null（caller 走 REJECT 路径）
+```
+
+### HARM（简版）
+
+```
+H = 0.5     // 没有模式聚类数据
+A = trust   // 策略-执行-结果连贯性 ≈ 历史决策分布
+R = reliability // 最小结构复杂度 ≈ 失败率反向
+M = 0.5     // 没有适应性数据
+HARM = 0.2*H + 0.3*A + 0.3*R + 0.2*M
+```
+
+> **v0.3 计划**：HARM 全量接入，引入动态权重调节 + 反和谐检测器 + 预算对齐（详见 `docs/evolution-framework.md` 第三章）。
+
+### 调度
+
+- 自持 `WeeklyScheduler`（lib/scheduler.js）
+- 每 5 分钟 tick 一次检查
+- 下次触发 = cron `30 4 * * 0`（每周日 04:30，metrics-collect 04:00 之后）
+- 触发后：枚举 AGINT Skills → 逐个 evaluate → 写 memory
+- 也提供 `runNow()` Service 方法供手动触发
+
+### Service 接口
+
+```js
+ctx.agint.qualityEvaluator.evaluate(target)        // → EvalResult
+ctx.agint.qualityEvaluator.evaluateAll(targets)    // → EvalResult[]
+ctx.agint.qualityEvaluator.score(evalResult)        // → number | null (REJECT 时 null)
+ctx.agint.qualityEvaluator.runNow()                // → { evaluated, persisted }
+ctx.agint.qualityEvaluator.nextFire()               // → Date
+ctx.agint.qualityEvaluator.lastRun()                // → { at, result, error } | null
+ctx.agint.qualityEvaluator.weights                  // → { trust: 0.20, ... }
+ctx.agint.qualityEvaluator.dimensionKeys            // → ['trust', 'reliability', ...]
+```
+
+### 文件
+
+```
+agint-quality-eval/
+├── lib/
+│   ├── index.js         Cordis apply()：提供 agint.qualityEvaluator Service + 调度
+│   ├── evaluators.js    7 维评分算法 + compositeScore
+│   └── scheduler.js     WeeklyScheduler（用 agint-cron 的 parseCron/nextFire）
+├── package.json
+└── README.md
+```
+
+### 本切片边界
+
+- **不评估 self**（避免递归）：`evaluate({ id: 'agint-quality-eval' })` 抛错
+- **不修改 dsh host**：纯只读 Service 调用
+- **sandbox / LLM-judge 评估**留给 v0.3 / v0.4（按 contract 的 QualityLifecycle 接口预留）
+- **plugin 枚举**：当前只枚举 AGINT skills（用 dsh skills service）；plugin 列表留待 dsh 暴露 plugin registry Service 后再补
+
+---
+
+## 第三部分 · 约束与红线
+
+`agint-quality-contract` 与 `agint-quality-eval` 都必须遵守：
+
+1. **不评估自身**（递归陷阱）
+2. **不修改 dsh 源码**（只在 user-patch 层）
+3. **不绕过 D-QAF 自身**（无任何 self-deputize 路径）
+4. **L0 字段变更需要人类多签**（详见 `docs/evolution-framework.md` §8.2）
+5. **安全边界对齐**（详见 `docs/security-boundary.md` 第三章）

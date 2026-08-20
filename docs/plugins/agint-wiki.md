@@ -16,6 +16,8 @@ markdown 文件 + frontmatter。每个文件路径即 ID。
 
 - **principles（教训/决策/偏好）不进 wiki**——它们进 `agint.memory`
 - **knowledge（研究/参考/分析）才进 wiki**
+- **D-QAF 评估报告进入 wiki**（v0.2 起）—— `domain: quality` 域
+- **evolution-framework 文档同步到 wiki**（v0.2 起）—— `domain: AGINT` 域
 - 文件 frontmatter 含域（`domain:`）便于过滤
 - 引用外部源：cite with file+line
 
@@ -31,6 +33,8 @@ markdown 文件 + frontmatter。每个文件路径即 ID。
 
 - **`agint.metrics`**：`wiki.brokenLinks` / `wiki.orphans` 指标从 lint 结果采集
 - **`agint.dream`**：梦境日记与复盘报告都写 wiki 同介质
+- **`agint.evolve`**：复盘报告存 `reviews/`，但生成后调用 `agint_wiki` 同步索引
+- **`agint.quality.contract`**（v0.2）：评估报告归 `domain: quality`
 
 ## 文件
 

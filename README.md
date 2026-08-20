@@ -2,21 +2,22 @@
 
 > 基于 DeepSeek Harness (dsh) 的自进化智能体框架。原 OpenClaw 版 AGINT 迁移到 dsh 后的规范化版本。
 
-AGINT = **AGI INTelligence**，把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合。
+AGINT = **AGI INTelligence**，把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**。
 
 ## 不是什么
 
 - 不是 dsh 的 fork。dsh 是上游 runtime，AGINT 是 dsh 之上的规范 + 组件。
-- 不是 AGI 实现。它是**通往 AGI 的工程化骨架**：记忆、反思、约束、度量、迭代。
+- 不是 AGI 实现。它是**通往 AGI 的工程化骨架**：记忆、反思、约束、度量、迭代、评估。
+- 不追求大而全。AGINT 哲学「简洁 > 冗余」，新功能必须经过 D-QAF 评估、能在现有插件化架构内完成才会上。
 
 ## 是什么
 
 | 层 | 内容 | 来源 |
 |---|---|---|
 | **preset** | 智进人格 + 工具集（含 4 个 AGINT 专属 skills） | `presets/agint/` |
-| **plugin** | 9 个 Cordis 插件，提供 AGINT 专属 host Services（含 D-QAF `agint-quality-contract`） | `plugins/agint-*/` |
-| **patch** | 把 8 个插件挂入 dsh profile 的 user-patch 层 | `profile-patches/web/cordis.patch.yml` |
-| **data** | 长期记忆 / 规则 / 指标 / 提案 / 工具统计 / 梦境 / 复盘 | runtime 数据，**不**进仓库 |
+| **plugin** | 10 个 Cordis 插件，提供 AGINT 专属 host Services（含 D-QAF `agint-quality-contract` + `agint-quality-eval`） | `plugins/agint-*/` |
+| **patch** | 把 9 个插件挂入 dsh profile 的 user-patch 层 | `profile-patches/web/cordis.patch.yml` |
+| **data** | 长期记忆 / 规则 / 指标 / 提案 / 工具统计 / 梦境 / 复盘 / 评估历史 | runtime 数据，**不**进仓库 |
 
 ## 仓库结构
 
@@ -39,22 +40,29 @@ AGINT/
 │   ├── agint-wiki/              知识库
 │   ├── agint-cron/              定时任务
 │   ├── agint-dream/             夜间梦境 light→REM→deep
-│   ├── agint-rules/             规则门禁
+│   ├── agint-rules/             规则门禁（frozenness 三层）
 │   ├── agint-metrics/           进化指标
 │   ├── agint-evolve/            周复盘 + 改进提案
 │   ├── agint-tool-stats/        工具使用画像
-│   └── agint-quality/           D-QAF 评估框架（v0.1.1 仅 contract；eval/policy/sandbox/report 留待 v0.2+）
-│       └── agint-quality-contract/
+│   └── agint-quality/           D-QAF 评估框架
+│       ├── agint-quality-contract/   Seam 层（v0.1.1 落地）
+│       └── agint-quality-eval/       评估引擎（v0.2 初版）
 │
 ├── profile-patches/             ── dsh user-patch 层
-│   └── web/cordis.patch.yml     把 8 个插件挂入 dsh web profile
+│   └── web/cordis.patch.yml     把 9 个插件挂入 dsh web profile
 │
 ├── docs/                        设计文档 / 架构图 / 插件契约
+│   ├── architecture.md          运行时架构 / 数据流
+│   ├── dsh-integration.md       dsh 集成边界
+│   ├── evolution-framework.md   D-QAF / HARM 哲学与工程收口
+│   ├── security-boundary.md     硬约束清单（dsh-security-boundary）
+│   ├── evolution-philosophy-checkpoints.md  哲学锚点工程化检查
 │   ├── plugins/                 每个插件一个 README
 │   └── lessons/                 经验教训归档(踩坑实录 + 修复方案 + 教训)
 │       └── *.md
 │
-├── eval/                        评估集（占位）
+├── eval/                        评估集（占位 + 最小场景集）
+│   └── scenarios/               eval/scenarios 最小可行集
 └── install/                     安装/卸载脚本
 ```
 
@@ -92,9 +100,67 @@ cd ~/projects/AGINT
 | 变量 | 用途 | 默认 |
 |---|---|---|
 | `DSH_HOME` | dsh 数据/配置根 | `$HOME/.dsh` |
-| `AGINT_HOME` | AGINT workspace（dream/wiki/reviews 落点） | `$HOME/projects/AGINT` |
+| `AGINT_HOME` | AGINT workspace（dream/wiki/reviews/scenarios 落点） | `$HOME/projects/AGINT` |
 
 `AGINT_HOME/dreams/`、`AGINT_HOME/wiki/`、`AGINT_HOME/reviews/` 由 agint-dream / agint-wiki / agint-evolve 自动创建。
+
+## 自进化宪法（速览）
+
+> 完整版见 `docs/evolution-framework.md`。这里只放「老板一眼扫完」版。
+
+### 哲学锚点 → 工程决策
+
+| 哲学原则 | 工程实现 |
+|---|---|
+| 简洁 > 冗余 | 最小架构优先，新增功能必须能在现有插件化架构内完成。复杂插件化回归到单插件 |
+| 真实 > 讨好 | 评估报告必须展示原始失败数据，HARM 分数不能独立决策 |
+| 靠谱 > 聪明 | 语义版本锁定 + 一键回滚；任何变更必须经过 D-QAF 评估 |
+| 主动 > 被动 | 退化/停滞自动告警；HARM 增量不足自动切换探索模式 |
+| 安全 > 效率 | 沙盒前置 + 静态扫描 + 硬约束清单（`docs/security-boundary.md`） |
+
+### D-QAF 四阶段流水线
+
+```
+Phase 1: 静态准入（代码规范、安全扫描、契约校验）
+    ↓ 通过
+Phase 2: 动态沙箱（单元测试、模糊测试、资源监控）  [v0.3 落地]
+    ↓ 通过
+Phase 3: 集成演练（冲突检测、全链路追踪）+ HARM 打分 + 预算对齐
+    ↓ 通过
+Phase 4: 灰度发布（A/B 测试、实时熔断）  [v0.4 落地]
+    ↓ 达标
+正式部署 / 不达标则回滚
+```
+
+### HARM 四维指标
+
+`Harmony = 0.2·H + 0.3·A + 0.3·R + 0.2·M`
+
+| 维度 | 含义 | 度量内容 |
+|---|---|---|
+| **H** - Homogeneity | 杂多中的统一 | 跨任务的模式复用率 |
+| **A** - Alignment | 内部和谐 | 策略-执行-结果的逻辑连贯性 |
+| **R** - Reduction | 纯一简约 | 达成目标的最小结构复杂度 |
+| **M** - Mutability | 优雅适应 | 新经验融入现有结构的摩擦成本 |
+
+### 进化记忆层（v0.3 引入）
+
+区别于 `agint-memory`（任务级记忆），AGINT 引入**进化专用记忆**：
+- 每次 D-QAF 评估完成后自动写入 `evolution-log`
+- 周复盘时归纳 `failure-patterns` / 蒸馏 `success-templates`
+- 提交新组件前自动检索历史失败模式，提前预警
+
+物理隔离：进化记忆不与任务记忆共享存储。自动化写入：脱离 Agent 主动记录，由 D-QAF 流水线自动落点。
+
+### 五条黄金准则
+
+| 准则 | AGINT 现状 |
+|---|---|
+| 持久修改才算进化 | ✓ 已内化（cordis.patch 持久化 + git 仓库） |
+| 可逆性是底线 | ✓ 语义版本锁定 + 一键回滚 |
+| 最小架构优先 | ✓ 哲学锚点 + 3000 行精神 |
+| 进化 ≠ 堆数据 | ⚠ v0.3 引入预算对齐（`docs/evolution-framework.md` §预算对齐） |
+| 安全约束前置 | ✓ 沙盒 + 硬约束清单（`docs/security-boundary.md`） |
 
 ## 与 dsh 的关系
 
@@ -103,12 +169,15 @@ cd ~/projects/AGINT
 - dsh 主线升级后跑 `install/uninstall.sh` 重装即可
 - dsh API 变更会在 CI 中暴露（计划中）
 
+详细边界见 `docs/dsh-integration.md`。
+
 ## 状态
 
 - **v0.1.0**（2026-08）：迁移完成。8 个插件 + 3 个 preset + 1 个 patch 已就位，可安装可运行。
-- **v0.1.1**（2026-08）：新增 D-QAF 评估框架 `agint-quality-contract`（仅 Seam 层；eval/policy/sandbox/report 留待 v0.2+）。`agint-rules` 已通过 `frozenness` 字段（提案 a6ba79a3）接入 D-QAF 的 L0/L1/L2 边界概念。
+- **v0.1.1**（2026-08）：新增 D-QAF 评估框架 `agint-quality-contract`（仅 Seam 层；policy/report/sandbox 留待 v0.2+）。`agint-rules` 已通过 `frozenness` 字段（提案 a6ba79a3）接入 D-QAF 的 L0/L1/L2 边界概念。
+- **v0.2**（进行中）：`agint-quality-eval` 落地（7 维评分 + 周日 04:30 调度）。新增 `docs/evolution-framework.md` + `docs/security-boundary.md` 收口自进化宪法。**ROADMAP 调整**：评估基础设施前置到 P2。
 
-后续路线见 `ROADMAP.md`。
+详细路线见 `ROADMAP.md`。
 
 ## 许可
 

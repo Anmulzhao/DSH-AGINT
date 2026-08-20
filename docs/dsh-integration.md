@@ -1,6 +1,8 @@
 # dsh 集成说明
 
 > AGINT 怎么用 dsh、依赖了哪些 dsh 内部约定、dsh 升级时哪里会断。
+>
+> 安全边界、D-QAF 评估硬约束：详见 `docs/security-boundary.md` 和 `docs/evolution-framework.md`。
 
 ## 我们用了 dsh 什么
 
@@ -20,7 +22,7 @@ dsh 改名或弃用这些包名时，**AGINT 必须跟着改**。
 
 ### 3. Cordis 协议
 
-8 个插件都是 Cordis Plugins，遵循：
+9 个插件都是 Cordis Plugins，遵循：
 - `apply(ctx)` 注入 Service
 - `inject: ['service-name']` 声明硬依赖
 - `ctx.effect()` / `ctx.on()` / `ctx.setTimeout()`（用 disposer 包副作用）
@@ -35,10 +37,13 @@ dsh loader 解析 plugin 文件（`./plugins/agint-memory/lib/index.js`），调
 
 ### 5. Storage 域
 
-- `agint` → memory
-- `agint_rules` → rules
-- `agint_metrics` → metrics
-- `agint_evolve` → evolve proposals
+| 域 | 用途 | 互斥关系 |
+|---|---|---|
+| `agint` | memory | 与 `agint_rules` 互斥 |
+| `agint_rules` | rules | 与 `agint` 互斥 |
+| `agint_metrics` | metrics | 与 `agint` / `agint_rules` 互斥 |
+| `agint_evolve` | evolve proposals | 与 `agint` / `agint_metrics` 互斥 |
+| `agint_evolution`（v0.3 引入） | 进化记忆层 | 与全部其他域互斥 |
 
 每个域独占一个 JSON 文件，由 dsh `storage` 服务管理读写锁。
 
@@ -54,6 +59,23 @@ agint-cron 监听 dsh 内部的 tick 事件（通过 `@deepseek-ai/cordis-plugin
 - ✗ 没改官方 preset（`@deepseek-ai/dsh/config/agent-presets/{code,cordis,minimal,standard}`）
 - ✗ 没绕过 dsh 的 sandbox / approval / 任何安全门
 
+## D-QAF 安全边界（与 dsh 集成侧）
+
+`docs/security-boundary.md` 给出完整硬约束清单。下表只列**与 dsh 集成相关的部分**——AGINT 自身的安全红线由 dsh 的 `sandbox_permissions` 机制兜底：
+
+| 约束 | dsh 侧能力 | AGINT 落地 |
+|---|---|---|
+| 沙盒执行 bwrap / Landlock / Seatbelt | dsh 选其一 | `agint-quality-sandbox` 复用 |
+| `tools/pre-execute` waterfall 拦截 | dsh 暴露 | `agint-rules` 监听 + `agint-quality-contract` 同名规则 |
+| 持久化域互斥 | dsh storage 域机制 | 5 个 storage 域严格互斥 |
+| Approval prompt（人类否决权） | dsh 询问机制 | `agint-quality-contract` L0 变更触发 |
+| `dsh_restart` 用户主动重启 | dsh 工具 | `agint-quality-policy` 变更后触发 |
+
+**关键不变量**：
+- `agint-quality-eval` 不评估自己（递归陷阱由 dsh 进程边界兜底）
+- `agint-quality-contract` L0 字段变更 → 人类否决权 + 不能单独部署（必须发 major 版本）
+- 任何 plugin 修改 `agint_quality` 相关代码 → 触发 `agint-rules` 中 `bash-edit-quality-core` 规则（deny）
+
 ## 升级 dsh 时怎么测
 
 ```sh
@@ -65,14 +87,20 @@ npm install -g @deepseek-ai/dsh@latest
 
 # 3. 跑 AGINT eval（v0.3 之后才有，目前手动）
 dsh --profile headless "..."
-# 看 8 个 plugin 是否都能 apply；preset 工具行是否都加载
+# 看 9 个 plugin 是否都能 apply；preset 工具行是否都加载
 
-# 4. 看 dsh CHANGELOG 里有没有 breaking change：
+# 4. 跑 D-QAF 最小场景集
+cd ~/projects/AGINT
+node eval/scenarios/run-minimal.mjs
+# 期望：通过率 ≥ 90%
+
+# 5. 看 dsh CHANGELOG 里有没有 breaking change：
 #    - loader patch 语法变了？
 #    - tool name 改了？
 #    - storage 域 API 改了？
 #    - cron 事件名改了？
 #    - waterfall 钩子名改了？
+#    - sandbox 沙箱机制改了？
 ```
 
 ## 已知耦合点（dsh 0.1.0-rc.6）
@@ -82,5 +110,6 @@ dsh --profile headless "..."
 - `@deepseek-ai/dsh-tool-*` 包名
 - preset 里 `name: '@deepseek-ai/dsh-tool-X'` 的解析规则
 - `!!js` YAML 表达式的可用上下文
+- 沙箱机制（bwrap / Landlock / Seatbelt）的可用性
 
 这些可能在 dsh rc7 / 1.0.0 时调整。

@@ -18,8 +18,19 @@
 | `night-dream` | `0 19 * * *`（每日 03:00，时区偏移） | agint.dream sweep |
 | `wiki-lint` | `0 3 * * 0`（周日 03:00） | agint.wiki.lint + 写指标 |
 | `memory-decay` | `0 4 * * 0`（周日 04:00） | agint.memory.forget_scan dry-run |
+| `quality-eval-weekly` | `30 4 * * 0`（周日 04:30） | agint.qualityEvaluator 批量评估所有 AGINT Skills + Plugins（v0.2 起） |
 
 **AGENTS.md 红线**：改这些时间前必须 audit + 让老板确认。
+
+## 进化健康度联动（v0.2 起）
+
+`agint-cron` 在每次 `quality-eval-weekly` 触发后调用 `agint.metrics` 写：
+- `quality.evaluatedCount`：本周评估任务数
+- `quality.harm`：综合 HARM 趋势（HARM 公式见 `docs/evolution-framework.md` 第三章）
+
+`agint-evolve` 周复盘时读这些指标，写入护栏报告（详见 `ROADMAP.md` 节奏章节）。
+
+**自动部署上限**：每周自动部署 ≤ 3 次（进化健康度护栏之一），超限必须人工审核。
 
 ## 模型接口
 
@@ -29,7 +40,7 @@
 
 ## 与其他插件的关系
 
-- **`agint.metrics / dream / evolve / wiki / memory`**：都是被 cron 调度的下游
+- **`agint.metrics / dream / evolve / wiki / memory / qualityEvaluator`**：都是被 cron 调度的下游
 - **`agint.toolStats`**：cron 自身调用也进工具统计
 
 ## 测试

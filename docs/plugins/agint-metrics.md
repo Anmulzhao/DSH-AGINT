@@ -1,6 +1,8 @@
 # agint-metrics
 
 > 进化指标：客观可度量的进化信号，按 kv 时间序列写。
+>
+> v0.2 起新增 HARM 维度作为质量子维度。
 
 ## 职责
 
@@ -9,7 +11,7 @@
 - 独占 `agint_metrics` storage domain
 - 每日由 `cron.metrics-collect` 触发
 
-## 指标清单（v0）
+## 指标清单
 
 | key | 来源 | delta 含义 |
 |---|---|---|
@@ -24,6 +26,12 @@
 | `dream.sweepCount` | agint.dream | 健康度信号 |
 | `dream.promotedCount` | agint.dream | 学习量信号 |
 | `tools.usageTotal` | agint.toolStats | 活跃度 |
+| `quality.harm` | agint.qualityEvaluator | + = 改善（综合 HARM 趋势） |
+| `quality.evaluatedCount` | agint.qualityEvaluator | 周评估任务数 |
+| `quality.rollbackRate` | agint.evolve | 进化回滚率 |
+| `quality.manualInterventionRate` | agint.evolve | 人工干预率 |
+
+> **v0.3 计划**：新增 `quality.baselinePassRate`、`quality.deployCountLastWeek` 等更多健康度指标。
 
 ## 采集策略
 
@@ -41,6 +49,7 @@
 
 - **`agint.cron`**：metrics-collect job 每日触发
 - **`agint.evolve`**：复盘报告引用 metrics 数据
+- **`agint.qualityEvaluator`**（v0.2）：HARM 子维度从这里采集
 - **所有插件**：metrics 从它们的 Service 懒读取
 
 ## 测试
