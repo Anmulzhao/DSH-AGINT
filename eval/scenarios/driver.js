@@ -221,6 +221,45 @@ const dispatchers = {
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 
+  'agint-install': async (scenario, ctx) => {
+    // Sprint 1.5: install.sh 安全左移的源码级断言。
+    // 不直接执行 install（会改 dsh 状态），只 grep 源码 + 文件属性。
+    const { readFile, stat } = await import('node:fs/promises');
+    const exp = scenario.expected[0];
+
+    if (exp.kind === 'grep') {
+      const filePath = `${AGINT_ROOT}/${exp.file}`;
+      let text;
+      try { text = await readFile(filePath, 'utf8'); }
+      catch (e) { return { ok: false, detail: `cannot read ${filePath}: ${e.message}` }; }
+
+      const must = exp.mustContain ?? [];
+      const mustNot = exp.mustNotContain ?? [];
+      const missing = must.filter((s) => !text.includes(s));
+      const banned = mustNot.filter((s) => text.includes(s));
+      if (missing.length || banned.length) {
+        return {
+          ok: false,
+          detail: `missing=[${missing.join(',')}] banned_present=[${banned.join(',')}]`,
+        };
+      }
+      return { ok: true, detail: `all ${must.length} required + 0 banned in ${exp.file}` };
+    }
+
+    if (exp.kind === 'file-executable') {
+      const filePath = `${AGINT_ROOT}/${exp.path}`;
+      try {
+        const st = await stat(filePath);
+        const isExec = (st.mode & 0o111) !== 0;
+        return { ok: isExec, detail: `mode=${(st.mode & 0o777).toString(8)}` };
+      } catch (e) {
+        return { ok: false, detail: `stat failed: ${e.message}` };
+      }
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
+
   'agint-dream': async (scenario, ctx) => {
     const { gateCandidates } = await import(`${AGINT_ROOT}/plugins/agint-dream/lib/sweep.js`);
     const input = scenario.input[0].args;

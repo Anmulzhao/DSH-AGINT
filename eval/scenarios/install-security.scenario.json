@@ -1,0 +1,110 @@
+[
+  {
+    "scenario": "rsync-no-links-excludes-node-modules",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyRsyncFlags",
+        "_note": "扫描 install.sh 源码，确认 safe_rsync 用了 --no-links + exclude node_modules"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "grep",
+        "file": "install/install.sh",
+        "mustContain": ["--no-links", "exclude='.git/", "exclude='node_modules/"],
+        "mustNotContain": ["cp -a $src $dst"]
+      }
+    ]
+  },
+  {
+    "scenario": "install-trap-registers-partial-steps",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyTrapRollback",
+        "_note": "确认 install.sh 在成功末尾清空 PARTIAL_STEPS + trap - EXIT"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "grep",
+        "file": "install/install.sh",
+        "mustContain": ["register_step", "rollback()", "PARTIAL_STEPS=()", "trap - EXIT"]
+      }
+    ]
+  },
+  {
+    "scenario": "install-rejects-path-traversal",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyPathTraversalGuard",
+        "_note": "确认 install.sh 在路径解析后立即拒绝含 '..'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "grep",
+        "file": "install/install.sh",
+        "mustContain": ["case \"${!v}\" in", "*..*"]
+      }
+    ]
+  },
+  {
+    "scenario": "install-uses-central-backup-dir",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyCentralBackups",
+        "_note": "确认 BACKUP_DIR 在 .agint-backups/ 而非原目录"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "grep",
+        "file": "install/install.sh",
+        "mustContain": ["BACKUP_DIR=", ".agint-backups", "BACKUP_KEEP=", "prune_old_backups"]
+      }
+    ]
+  },
+  {
+    "scenario": "uninstall-supports-restore-and-list",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyUninstallRestore",
+        "_note": "确认 uninstall.sh 含 --list-backups / --restore / --purge-backups"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "grep",
+        "file": "install/uninstall.sh",
+        "mustContain": ["--list-backups", "--restore", "--purge-backups", "LIST_BACKUPS"]
+      }
+    ]
+  },
+  {
+    "scenario": "security-checks-script-is-self-contained",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifySecurityChecksStandalone",
+        "_note": "确认 agint-security-checks.sh 可独立运行（不需要 install.sh）"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "file-executable",
+        "path": "install/agint-security-checks.sh"
+      }
+    ]
+  }
+]
