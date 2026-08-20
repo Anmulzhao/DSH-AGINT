@@ -47,10 +47,32 @@ const Config = z.object({
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+async function readLatestDiaryMtime(diaryRoot) {
+  try {
+    const files = await readdir(diaryRoot).catch(() => []);
+    const dated = files.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f));
+    if (dated.length === 0) return null;
+    let latest = 0;
+    for (const f of dated) {
+      const st = await stat(join(diaryRoot, f)).catch(() => null);
+      if (st && st.mtimeMs > latest) latest = st.mtimeMs;
+    }
+    return latest > 0 ? latest : null;
+  } catch {
+    return null;
+  }
+}
+
 function apply(ctx, config) {
   const root = resolve(config.root);
   const sessionsRoot = resolve(config.sessionsRoot);
   const state = { lastSweep: null, lastResult: null, lastError: null };
+  // Recover the last-known sweep time from on-disk diary mtime so a freshly
+  // booted host does not look like it has never run. Result counts remain
+  // unknown (state.lastResult stays null) until the next real sweep.
+  readLatestDiaryMtime(root).then((mtimeMs) => {
+    if (mtimeMs && !state.lastSweep) state.lastSweep = mtimeMs;
+  }).catch(() => { /* ignore — keep state.lastSweep null */ });
 
   ctx.provide('agint.dream', {
     /** Run a full sweep. opts.apply=false → preview + diary only. */

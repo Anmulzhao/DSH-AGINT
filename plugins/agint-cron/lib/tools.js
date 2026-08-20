@@ -9,6 +9,29 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+// Format an ISO timestamp in the host's local timezone with offset,
+// e.g. "2026-08-21T03:00:00+08:00". Falls back to the raw string when
+// the input is not parseable (so 'never' / 'n/a' pass through cleanly).
+const HOST_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+function toLocalIso(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  // sv-SE locale yields ISO-ish yyyy-mm-dd HH:MM:ss; rejoin with 'T' and append offset.
+  const local = d.toLocaleString('sv-SE', {
+    timeZone: HOST_TZ,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const isoLike = local.replace(' ', 'T');
+  const offsetMin = -d.getTimezoneOffset(); // local minus UTC, minutes
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  const offset = sign + String(Math.floor(abs / 60)).padStart(2, '0') + ':' + String(abs % 60).padStart(2, '0');
+  return isoLike + offset;
+}
+
 const name = 'agint-cron-tools';
 const inject = ['tools', 'agint.cron'];
 
@@ -46,7 +69,11 @@ function apply(ctx) {
         ? [{ type: 'text', text: 'cron_list: no jobs' }]
         : [{
             type: 'text',
-            text: v.jobs.map((j) => `${j.id.padEnd(18)} ${j.schedule.padEnd(12)} last=${j.lastRunAt ? j.lastRunAt.slice(11, 19) : 'never'}  next=${j.nextRunAt ? j.nextRunAt.slice(5, 19) : 'n/a'}  ${j.running ? '[running]' : (j.lastError ? '[ERROR: ' + j.lastError + ']' : '')}`).join('\n'),
+            text: v.jobs.map((j) => {
+              const last = j.lastRunAt ? toLocalIso(j.lastRunAt).slice(0, 25) : 'never';
+              const next = j.nextRunAt ? toLocalIso(j.nextRunAt).slice(0, 25) : 'n/a';
+              return `${j.id.padEnd(18)} ${j.schedule.padEnd(12)} last=${last}  next=${next}  ${j.running ? '[running]' : (j.lastError ? '[ERROR: ' + j.lastError + ']' : '')}`;
+            }).join('\n'),
           }],
     },
     execute() {
