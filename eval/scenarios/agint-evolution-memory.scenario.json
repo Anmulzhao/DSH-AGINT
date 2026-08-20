@@ -1,0 +1,152 @@
+[
+  {
+    "scenario": "evolution-log-write-read",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "logAndQuery",
+        "args": {
+          "entries": [
+            { "targetId": "agint-tool-stats", "targetKind": "plugin", "decision": "AUTO_DEPLOY", "scores": { "trust": 0.85 } },
+            { "targetId": "agint-sandbox", "targetKind": "plugin", "decision": "REJECT", "scores": { "safety": 0.3 }, "findings": [{ "ruleId": "r1", "severity": "high" }] }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "log-write-read-roundtrip",
+        "expectedLogCount": 2,
+        "decisions": ["AUTO_DEPLOY", "REJECT"]
+      }
+    ]
+  },
+  {
+    "scenario": "failure-patterns-add-and-dedupe",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "addFailuresAndQuery",
+        "args": {
+          "patterns": [
+            { "pattern": "打破 L0-frozen 字段", "category": "security", "severity": "high" },
+            { "pattern": "未通过 Phase 1 静态检查", "category": "correctness", "severity": "medium" },
+            { "pattern": "打破 L0-frozen 字段", "category": "security", "severity": "high" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "failure-dedupe",
+        "uniquePatterns": 2,
+        "topOccurrences": 2,
+        "_note": "第三次 addFailure 同 pattern → occurrences++ 而非新建"
+      }
+    ]
+  },
+  {
+    "scenario": "failure-patterns-substring-search",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "addAndSearchFailures",
+        "args": {
+          "patterns": [
+            { "pattern": "打破 L0-frozen 字段", "category": "security", "severity": "high" },
+            { "pattern": "plugin 加载顺序错", "category": "integration", "severity": "low" }
+          ],
+          "query": "L0"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "failure-search-matches",
+        "minResults": 1,
+        "allMustContain": "L0"
+      }
+    ]
+  },
+  {
+    "scenario": "success-templates-add-and-query",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "addSuccessAndQuery",
+        "args": {
+          "templates": [
+            { "template": "先写 eval 场景再写 plugin", "sampleSize": 7, "appliesTo": ["plugin"] },
+            { "template": "agint-rules 先 deny 再逐步放", "sampleSize": 4, "appliesTo": ["plugin", "skill"] }
+          ],
+          "query": "eval"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "template-search",
+        "minResults": 1,
+        "topSampleSize": 7
+      }
+    ]
+  },
+  {
+    "scenario": "decay-scan-no-mutation-without-apply",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "decayScanDryRun",
+        "_note": "90 天前的 L1 entry 应该产生 downgrade action，但不 apply"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decay-scan-no-mutation",
+        "shouldReportDowngrade": true,
+        "shouldMutate": false
+      }
+    ]
+  },
+  {
+    "scenario": "physical-isolation-from-task-memory",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "checkDomainName",
+        "_note": "跟 task memory (agint) 不同 storage domain — 物理隔离"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "domain-name-equals",
+        "expected": "agint_evolution",
+        "mustNotBe": "agint"
+      }
+    ]
+  },
+  {
+    "scenario": "stats-reports-counts-and-limits",
+    "plugin": "agint-evolution-memory",
+    "input": [
+      {
+        "service": "evolution",
+        "action": "stats",
+        "_note": "stats() 返回 { evolution_log, failure_pattern, success_template, limits }"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "stats-shape",
+        "requiredKeys": ["evolution_log", "failure_pattern", "success_template", "limits"],
+        "limitsShape": { "FAILURE_PATTERNS": 100, "SUCCESS_TEMPLATES": 50, "EVOLUTION_LOG_LINES_PER_DAY": 1000 }
+      }
+    ]
+  }
+]

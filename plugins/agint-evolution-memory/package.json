@@ -1,0 +1,23 @@
+{
+  "name": "agint-evolution-memory",
+  "version": "0.3.0",
+  "description": "AGINT 进化记忆层：物理隔离的 agint_evolution 存储域，记录 D-QAF Phase 4 evolution-log + failure-patterns + success-templates。L1-L4 衰减同 agint-memory 行为（纯复制定制化），上限 failure 100 / template 50。Sprint 2.B 初版；流水线接入留 Sprint 3。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/decay.js": "./lib/decay.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "evolution-memory",
+    "d-qaf",
+    "self-evolution"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}

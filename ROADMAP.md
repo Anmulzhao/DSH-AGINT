@@ -115,13 +115,13 @@
 
 ### 进化记忆层
 
-- [ ] 新增 `agint-evolution-memory`（或纳入 `agint-quality` 子模块）：
-  - `evolution-log/`：每次 D-QAF Phase 4 完成后自动写入
-  - `failure-patterns/`：周复盘时归纳
-  - `success-templates/`：周复盘时蒸馏
-- [ ] 物理隔离：进化记忆 ≠ 任务记忆（独立存储域 `agint_evolution`）
-- [ ] 自动化写入：脱离 Agent 主动记录，由 D-QAF 流水线自动落点
-- [ ] 定向读取：仅在进化评估阶段被 D-QAF 读取，不参与日常任务推理
+- [x] 新增 `agint-evolution-memory`（Sprint 2.B 落地，独立 plugin；未纳入 `agint-quality` 子模块）：
+  - `evolution_log/`：每次 D-QAF Phase 4 完成后自动写入（Service 接口已就位，钩子留 Sprint 3 接入）
+  - `failure_pattern/`：周复盘时归纳（Service 接口 + 去重 + substring 检索就位）
+  - `success_template/`：周复盘时蒸馏（Service 接口 + substring 检索就位）
+- [x] 物理隔离：进化记忆 ≠ 任务记忆（独立存储域 `agint_evolution`，三表 `evolution_log` / `failure_pattern` / `success_template`）
+- [x] 自动化写入 Service 接口已就位（logPhase4 / addFailure / addSuccess），由 D-QAF 流水线自动落点（Sprint 3 接入 eval/policy）
+- [x] 定向读取：Service 接口已就位（queryFailures / queryTemplates / getLogRange），日常任务推理不读（Sprint 3 接入 eval/dream）
 
 ### 评估集
 

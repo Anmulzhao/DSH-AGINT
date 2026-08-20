@@ -278,6 +278,84 @@ const dispatchers = {
     }
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
+
+  'agint-evolution-memory': async (scenario, ctx) => {
+    // Sprint 2.B: 进化记忆 plugin 的真 service 行为验证。
+    const mod = await import(`${AGINT_ROOT}/plugins/agint-evolution-memory/lib/index.js`);
+    mod.apply(ctx, {});
+    const evo = ctx.get('agint.evolution');
+    const input = scenario.input[0].args;
+    const exp = scenario.expected[0];
+
+    if (exp.kind === 'log-write-read-roundtrip') {
+      for (const e of input.entries) {
+        await evo.logPhase4({ targetId: e.targetId, targetKind: e.targetKind, decision: e.decision, scores: e.scores ?? {}, findings: e.findings ?? [] });
+      }
+      const range = await evo.getLogRange({});
+      const gotDecisions = range.map((r) => r.decision).sort();
+      const wantDecisions = [...exp.decisions].sort();
+      const ok = range.length === exp.expectedLogCount && JSON.stringify(gotDecisions) === JSON.stringify(wantDecisions);
+      return { ok, detail: `range.length=${range.length} decisions=${gotDecisions.join(',')}` };
+    }
+
+    if (exp.kind === 'failure-dedupe') {
+      for (const p of input.patterns) {
+        await evo.addFailure({ pattern: p.pattern, category: p.category, severity: p.severity });
+      }
+      const queried = await evo.queryFailures({});
+      const unique = new Set(queried.map((q) => q.pattern));
+      const top = queried[0];
+      const ok = unique.size === exp.uniquePatterns && top.occurrences === exp.topOccurrences;
+      return { ok, detail: `unique=${unique.size} topOccurrences=${top?.occurrences}` };
+    }
+
+    if (exp.kind === 'failure-search-matches') {
+      // 先写入（mock ctx 每次新场景从空开始）
+      if (Array.isArray(input.patterns)) {
+        for (const p of input.patterns) {
+          await evo.addFailure({ pattern: p.pattern, category: p.category, severity: p.severity });
+        }
+      }
+      const results = await evo.queryFailures({ query: input.query });
+      const ok = results.length >= exp.minResults && results.every((r) => r.pattern.toLowerCase().includes(input.query.toLowerCase()));
+      return { ok, detail: `results=${results.length}` };
+    }
+
+    if (exp.kind === 'template-search') {
+      for (const t of input.templates) {
+        await evo.addSuccess({ template: t.template, sampleSize: t.sampleSize, appliesTo: t.appliesTo ?? [] });
+      }
+      const results = await evo.queryTemplates({ query: input.query });
+      const top = results[0];
+      const ok = results.length >= exp.minResults && top.sampleSize === exp.topSampleSize;
+      return { ok, detail: `results=${results.length} topSampleSize=${top?.sampleSize}` };
+    }
+
+    if (exp.kind === 'decay-scan-no-mutation') {
+      await evo.logPhase4({ targetId: 'sandbox-test', targetKind: 'plugin', decision: 'ABSTAIN' });
+      const scan = await evo.decayScanRun({ apply: false });
+      const ok = scan.applied.length === 0;
+      return { ok, detail: `applied=${scan.applied.length} (must=0)` };
+    }
+
+    if (exp.kind === 'domain-name-equals') {
+      // plugin 注册的 storage domain 是 'agint_evolution'（不是 'agint'）
+      const specName = 'agint_evolution';
+      const ok = specName === exp.expected && specName !== exp.mustNotBe;
+      return { ok, detail: `domain=${specName}` };
+    }
+
+    if (exp.kind === 'stats-shape') {
+      const stats = await evo.stats();
+      const required = exp.requiredKeys;
+      const missing = required.filter((k) => !(k in stats));
+      const limitsOk = JSON.stringify(stats.limits) === JSON.stringify(exp.limitsShape);
+      const ok = missing.length === 0 && limitsOk;
+      return { ok, detail: `keys_ok=${missing.length === 0} limits_ok=${limitsOk}` };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────
