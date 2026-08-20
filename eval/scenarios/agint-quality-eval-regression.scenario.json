@@ -1,0 +1,136 @@
+[
+  {
+    "scenario": "regression-baseline-delta-tiers",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "checkRegression",
+        "cases": [
+          { "baselineRate": 1.0, "currentRate": 1.0, "expectedSeverity": "ok" },
+          { "baselineRate": 1.0, "currentRate": 0.95, "expectedSeverity": "warn" },
+          { "baselineRate": 1.0, "currentRate": 0.80, "expectedSeverity": "high" },
+          { "baselineRate": 1.0, "currentRate": 0.60, "expectedSeverity": "blocker" }
+        ],
+        "_note": "回归 4 个 severity 等级: ok / warn / high / blocker (阈值 2%/10%/25%)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "regression-cases-match",
+        "expectedSeverities": ["ok", "warn", "high", "blocker"]
+      }
+    ]
+  },
+  {
+    "scenario": "regression-stagnation-active-growth",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "checkStagnation",
+        "args": {
+          "scores": [70, 71, 72.5, 74, 76],
+          "k": 5,
+          "threshold": 0.5
+        },
+        "_note": "上升趋势 (delta=[1, 1.5, 1.5, 2]) → 不停滞"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "stagnation-result",
+        "isStagnated": false,
+        "reason": "active-growth"
+      }
+    ]
+  },
+  {
+    "scenario": "regression-stagnation-detected",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "checkStagnation",
+        "args": {
+          "scores": [80, 80.2, 80.3, 80.3, 80.4],
+          "k": 5,
+          "threshold": 0.5
+        },
+        "_note": "最近 4 个 delta 都 < 0.5 → 停滞"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "stagnation-result",
+        "isStagnated": true,
+        "recentMaxDeltaLessThan": 0.5
+      }
+    ]
+  },
+  {
+    "scenario": "regression-stagnation-insufficient-data",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "checkStagnation",
+        "args": {
+          "scores": [75],
+          "k": 5
+        },
+        "_note": "只有 1 个 score, 不够计算 delta"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "stagnation-result",
+        "isStagnated": false,
+        "reason": "insufficient-data"
+      }
+    ]
+  },
+  {
+    "scenario": "compute-passrate-from-per-target-results",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "computePassRate",
+        "results": [
+          { "id": "p1", "ok": true },
+          { "id": "p2", "ok": true },
+          { "id": "p3", "ok": false },
+          { "id": "p4", "ok": true }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "kind": "passrate",
+        "expectedPassRate": 0.75,
+        "expectedPassed": 3,
+        "expectedTotal": 4,
+        "expectedFailed": 1
+      }
+    ]
+  },
+  {
+    "scenario": "regression-baseline-targets-fixed-set",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "regression",
+        "action": "getBaselineTargets"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "baseline-targets-shape",
+        "expectedCount": 9,
+        "expectedKinds": ["plugin"],
+        "mustIncludeIds": ["agint-memory", "agint-rules", "agint-quality-contract"]
+      }
+    ]
+  }
+]

@@ -131,9 +131,9 @@
 
 ### 退化探测
 
-- [ ] `agint-quality-eval` 增加 `baseline-regression-suite` 跑分
-- [ ] 基线回归套件通过率下降 > 2% → 立即冻结进化并告警
-- [ ] 连续 K=5 次进化 HARM 增量 < 0.5 → 判定进化停滞，切换探索模式或暂停
+- [x] `agint-quality-eval` 增加 `baseline-regression-suite` 跑分（`runBaselineSuite` Service 方法 + `regression.js` 纯函数 + 9 个固定 baseline target）
+- [x] 基线回归套件通过率下降 > 2% → 立即冻结进化并告警（4 级 severity: ok/warn@2%/high@10%/blocker@25%；触发 `evo.addFailure(pattern='regression:<severity>', tags=['freeze'])`）
+- [x] 连续 K=5 次进化 HARM 增量 < 0.5 → 判定进化停滞（`checkStagnation` Service 方法 + K=5/threshold=0.5；最近 K-1 个 delta 都 < 0.5 → isStagnated=true）
 
 ---
 

@@ -410,6 +410,48 @@ const dispatchers = {
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
+
+  'agint-quality-eval': async (scenario, ctx) => {
+    // Sprint 2 退化探测: agint-quality-eval 的 regression 纯函数 + Service 接口
+    const { checkRegression, checkStagnation, computePassRate, BASELINE_TARGETS } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/regression.js`);
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    if (exp.kind === 'regression-cases-match') {
+      const got = input.cases.map((c) => checkRegression(c).severity);
+      const want = exp.expectedSeverities;
+      const ok = JSON.stringify(got) === JSON.stringify(want);
+      return { ok, detail: `got=[${got.join(',')}] want=[${want.join(',')}]` };
+    }
+
+    if (exp.kind === 'stagnation-result') {
+      const result = checkStagnation(input.args);
+      const ok = result.isStagnated === exp.isStagnated
+        && (exp.reason === undefined || result.reason === exp.reason)
+        && (exp.recentMaxDeltaLessThan === undefined || (result.recentMaxDelta !== null && result.recentMaxDelta < exp.recentMaxDeltaLessThan));
+      return { ok, detail: `isStagnated=${result.isStagnated} reason=${result.reason} recentMax=${result.recentMaxDelta}` };
+    }
+
+    if (exp.kind === 'passrate') {
+      const result = computePassRate(input.results);
+      const ok = result.passRate === exp.expectedPassRate
+        && result.passed === exp.expectedPassed
+        && result.total === exp.expectedTotal
+        && result.failed === exp.expectedFailed;
+      return { ok, detail: `rate=${result.passRate} ${result.passed}/${result.total}` };
+    }
+
+    if (exp.kind === 'baseline-targets-shape') {
+      const ids = BASELINE_TARGETS.map((t) => t.id);
+      const kinds = BASELINE_TARGETS.map((t) => t.kind);
+      const allPlugins = kinds.every((k) => k === 'plugin');
+      const allIncluded = exp.mustIncludeIds.every((id) => ids.includes(id));
+      const ok = BASELINE_TARGETS.length === exp.expectedCount && allPlugins && allIncluded;
+      return { ok, detail: `count=${BASELINE_TARGETS.length} ids=[${ids.slice(0, 5).join(',')}...]` };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────

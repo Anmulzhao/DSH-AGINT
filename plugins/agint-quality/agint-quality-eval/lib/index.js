@@ -34,9 +34,19 @@ import {
   DIMENSION_KEYS,
 } from './evaluators.js';
 import { WeeklyScheduler } from './scheduler.js';
+import {
+  BASELINE_TARGETS,
+  checkRegression,
+  checkStagnation,
+  computePassRate,
+  makeBaselineSnapshot,
+  pickLatestBaseline,
+  STAGNATION_DELTA_THRESHOLD,
+  STAGNATION_K,
+} from './regression.js';
 
 const name = 'agint-quality-eval';
-const inject = ['timer'];
+const inject = ['timer', 'agint.evolution'];
 
 const Config = z.object({
   /** 调度表达式（cron 5-field）——默认每周日 04:30 */
@@ -85,6 +95,30 @@ function apply(ctx, config) {
       })})`,
       evidence: `agint-quality-eval:${result.evaluatorId}`,
     };
+  }
+
+  /** 加载 baseline 历史：从 evo.queryTemplates 筛 appliesTo 包含 'baseline-suite' 的 */
+  async function loadBaselineHistory(evo) {
+    if (!evo || typeof evo.queryTemplates !== 'function') return [];
+    const templates = await evo.queryTemplates({ appliesTo: ['baseline-suite'] });
+    return templates.map((t) => {
+      try {
+        return JSON.parse(t.evidence);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  }
+
+  /** 用当前 BASELINE_TARGETS 跑一遍生成 snapshot（用于 setBaseline({ results: undefined })） */
+  async function currentSnapshot() {
+    const results = await evaluator.evaluateAll(BASELINE_TARGETS);
+    const perTarget = results.map((r) => ({
+      id: r.targetId,
+      ok: compositeScore(r) !== null,
+      score: compositeScore(r),
+    }));
+    return makeBaselineSnapshot({ results: perTarget });
   }
 
   /** 枚举 AGINT 已注册的 Skills + Plugins 作为评估目标 */
@@ -192,6 +226,101 @@ function apply(ctx, config) {
 
     /** 暴露维度键顺序 */
     dimensionKeys: DIMENSION_KEYS,
+
+    // ── 退化探测（Sprint 2 落地） ────────────────────────────────────
+
+    /**
+     * Run baseline-regression-suite: evaluate all BASELINE_TARGETS, compare
+     * pass rate against the latest baseline snapshot stored in evolution.
+     * Returns { snapshot, baseline, regression, alerts[] }.
+     *
+     * triggers evo.addFailure(pattern='regression:<severity>', tags=['freeze'])
+     * on regression detection (老板拍板：只加 freeze failure-pattern).
+     */
+    async runBaselineSuite({ targets = BASELINE_TARGETS } = {}) {
+      const evo = ctx.get('agint.evolution');
+      const results = await evaluator.evaluateAll(targets);
+      const perTarget = results.map((r) => ({
+        id: r.targetId,
+        ok: compositeScore(r) !== null,  // safety veto / null score = REJECT
+        score: compositeScore(r),
+      }));
+      const snapshot = makeBaselineSnapshot({ results: perTarget });
+      const baselineHistory = await loadBaselineHistory(evo);
+      const baseline = pickLatestBaseline(baselineHistory);
+      const regression = baseline
+        ? checkRegression({ baselineRate: baseline.passRate, currentRate: snapshot.passRate })
+        : { delta: 0, isRegression: false, threshold: -0.02, severity: 'no-baseline', reason: 'no-baseline' };
+
+      const alerts = [];
+      if (regression.isRegression && evo && typeof evo.addFailure === 'function') {
+        const pattern = `regression:${regression.severity}`;
+        const alert = {
+          kind: 'regression',
+          severity: regression.severity,
+          delta: regression.delta,
+          baselineRate: baseline?.passRate ?? null,
+          currentRate: snapshot.passRate,
+          capturedAt: snapshot.capturedAt,
+          targetCount: snapshot.total,
+        };
+        await evo.addFailure({
+          pattern,
+          category: 'integration',
+          severity: regression.severity === 'blocker' ? 'high' : (regression.severity === 'high' ? 'high' : 'medium'),
+          evidence: JSON.stringify(alert),
+        });
+        alerts.push(alert);
+      }
+
+      return { snapshot, baseline, regression, alerts };
+    },
+
+    /**
+     * Set the current baseline. Stores a success-template entry so it can be
+     * found via evo.queryTemplates({ appliesTo: ['baseline-suite'] }).
+     */
+    async setBaseline({ results, note } = {}) {
+      const evo = ctx.get('agint.evolution');
+      if (!evo) throw new Error('setBaseline: agint.evolution not available');
+      const snapshot = results ? makeBaselineSnapshot({ results }) : await currentSnapshot();
+      const appliesTo = ['baseline-suite', ...snapshot.targetIds.slice(0, 3)];
+      const evidence = note ?? JSON.stringify(snapshot);
+      return await evo.addSuccess({
+        template: `baseline-suite-passrate:${snapshot.passRate.toFixed(3)}`,
+        sampleSize: snapshot.total,
+        appliesTo,
+        evidence,
+      });
+    },
+
+    /** Get the latest baseline snapshot (or null if none). */
+    async getBaseline() {
+      const evo = ctx.get('agint.evolution');
+      if (!evo) return null;
+      const history = await loadBaselineHistory(evo);
+      return pickLatestBaseline(history);
+    },
+
+    /**
+     * Check stagnation: read recent evolution-log entries, extract composite
+     * scores in ascending time order, run checkStagnation.
+     * Returns the full stagnation report; does NOT auto-freeze (Sprint 3
+     * policy integration decides).
+     */
+    async checkStagnation({ k = STAGNATION_K, threshold = STAGNATION_DELTA_THRESHOLD } = {}) {
+      const evo = ctx.get('agint.evolution');
+      if (!evo) return { isStagnated: false, k, threshold, reason: 'evolution-unavailable' };
+      // Read recent evolution-log entries; extract composite scores
+      const logs = await evo.getLogRange({ limit: 50 });
+      const scored = logs
+        .filter((l) => l.scores && typeof l.scores.composite === 'number')
+        .map((l) => ({ ts: l.ts ?? l.createdAt, score: l.scores.composite }))
+        .sort((a, b) => (a.ts ?? '').localeCompare(b.ts ?? ''));
+      const scores = scored.map((s) => s.score);
+      const result = checkStagnation({ scores, k, threshold });
+      return { ...result, sampleSize: scores.length, scores };
+    },
   };
 
   ctx.provide('agint.qualityEvaluator', evaluator);
