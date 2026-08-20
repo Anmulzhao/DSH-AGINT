@@ -99,10 +99,10 @@
 
 ### D-QAF Phase 2：沙箱
 
-- [ ] `agint-quality-sandbox`：复用 dsh 沙箱机制（bwrap / Landlock / Seatbelt）
-- [ ] 沙箱配置：只读 + 网络隔离 + 资源限制（超时 30s / 内存 512MB）—— 详见 `docs/security-boundary.md`
-- [ ] 动态沙箱执行结果写入 `agint.memory` 评估历史区
-- [ ] **与 `agint-quality-static-*` 并行开发**（非串行）—— **§5.2 安全左移**
+- [x] `agint-quality-sandbox`：桥接 dsh `ctx.sandbox` 服务（生产用 bwrap/Landlock/Seatbelt；eval 走 in-process 降级）
+- [x] 沙箱配置：mode=`workspace-write`（plugin 目录可写）+ 网络隔离（bwrap `--unshare-net`）+ 资源限制 timeout 30s / memory 512MB
+- [x] 动态沙箱执行结果写入 `agint.evolution`（Sprint 2.A 在 sandbox service 内部 addFailure；Sprint 3 改由 policy 触发）
+- [ ] **与 `agint-quality-static-*` 并行开发**（非串行）—— **§5.2 安全左移**（静态检查本 Sprint 未做，老板拍板留后续）
 
 ### D-QAF Phase 3：集成演练 + HARM + 预算对齐
 
