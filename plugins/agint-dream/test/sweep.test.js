@@ -69,12 +69,12 @@ test('scoreCandidates: six-signal formula groups and sorts', () => {
 
 test('gateCandidates: thresholds and existing-memory dedupe', () => {
   const scored = [
-    { text: '以后用 vger 称呼我', type: 'preference', signalCount: 2, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['a'] },
-    { text: '已有记忆的重复内容测试', type: 'decision', signalCount: 1, uniqueSessions: 1, score: 0.9, sessions: ['s1'], days: ['2026-08-15'], signals: ['b'] },
+    { text: '以后用 vger 称呼我', type: 'preference', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['a'] },
+    { text: '已有记忆的重复内容测试', type: 'decision', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['b'] },
     { text: '低分候选内容', type: 'lesson', signalCount: 1, uniqueSessions: 1, score: 0.2, sessions: ['s1'], days: ['2026-08-15'], signals: ['c'] },
   ];
   const existing = [{ id: 'm1', type: 'decision', content: '已有记忆的重复内容测试' }];
-  const gated = gateCandidates(scored, existing, { minScore: 0.5, minRecall: 1, minUniqueSessions: 1 });
+  const gated = gateCandidates(scored, existing, { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
   assert.deepEqual(gated.map((c) => c.text), ['以后用 vger 称呼我']);
 });
 
@@ -194,9 +194,9 @@ test('tokenOverlap: Chinese partial match score is below 1.0 (no longer whole-st
     // Two distinct Chinese statements that share some bigrams but are not
     // identical: the new memory is about a specific tool, the old one is
     // about a different topic. Whitespace-split would have collapsed to 1.0.
-    [{ text: '更新工具的流程先备份后替换', type: 'pattern', signalCount: 2, uniqueSessions: 1, score: 0.7, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
+    [{ text: '更新工具的流程先备份后替换', type: 'pattern', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
     [{ id: 'm1', type: 'pattern', content: '遵守用户隐私保护政策' }],
-    { minScore: 0.5, minRecall: 1, minUniqueSessions: 1, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
   );
   // Distinct topics → bigram overlap < 0.5 → NOT covered.
   assert.equal(gated.length, 1, 'distinct Chinese sentences must not be falsely covered');
@@ -207,7 +207,7 @@ test('tokenOverlap: substring containment still wins (higher priority than bigra
   const gated = gateCandidates(
     [{ text: '智进使用 vger 称呼', type: 'decision', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
     [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }], // substring of candidate
-    { minScore: 0.5, minRecall: 1, minUniqueSessions: 1, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 0, 'substring containment must dedupe');
 });
@@ -217,7 +217,7 @@ test('tokenOverlap: bag-of-words full-match triggers dedupe', async () => {
   const gated = gateCandidates(
     [{ text: 'keep workspace clean', type: 'lesson', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
     [{ id: 'm1', type: 'lesson', content: 'keep workspace clean' }],
-    { minScore: 0.5, minRecall: 1, minUniqueSessions: 1, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 0, 'exact match must be deduped');
 });

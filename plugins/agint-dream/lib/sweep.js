@@ -53,11 +53,11 @@ export const DEFAULTS = {
     conceptual: 0.06,
   },
   recencyHalfLifeDays: 14,  // e^(-ln2 * ageDays / halfLife)
-  // Threshold gates — deliberately looser than OpenClaw (0.75/3/2) because
-  // session-derived signals are sparse at start; tighten via config later.
-  minScore: 0.5,
-  minRecall: 1,             // signal occurrences across messages
-  minUniqueSessions: 1,     // distinct sessions that surfaced it
+  // Threshold gates — aligned with OpenClaw per 2026-08-18 老板决策
+  // (0.75 / 3 / 2). 启发式候选仍提，过门控的更精。
+  minScore: 0.75,
+  minRecall: 3,             // signal occurrences across messages
+  minUniqueSessions: 2,     // distinct sessions that surfaced it
   // Dedupe
   dedupeTokenOverlap: 0.6,  // normalized token overlap → considered covered
 };
@@ -597,7 +597,7 @@ export async function runSweep({
       const recGated = gateCandidates(
         recScored.filter((c) => c.signalCount >= 3 && c.uniqueDays >= 2),
         existing,
-        { minScore: Math.max(minScore ?? DEFAULTS.minScore, 0.6), minRecall: 3, minUniqueSessions: 2 },
+        { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2 },
       );
       if (apply) {
         for (const candidate of recGated) {
