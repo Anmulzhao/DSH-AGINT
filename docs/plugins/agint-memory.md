@@ -1,6 +1,13 @@
 # agint-memory
 
 > 长期记忆：四层遗忘模型 + 证据约束 + 类型分类。
+>
+> AGINT 存在两个独立的"记忆层"：
+>
+> - **任务记忆**（本插件，`agint.memory`）：Agent 任务级 / 知识库级长期记忆
+> - **进化记忆**（v0.3 引入，`agint_evolution`）：系统自身的进化经验积累
+>
+> 两者物理隔离。详见 `docs/evolution-framework.md` 第四章。
 
 ## 职责
 
@@ -34,11 +41,26 @@ confidence: 0..1
 
 没有 evidence 的 lesson 会被 lib/index.js 在写入前 reject。
 
+## 任务记忆 vs 进化记忆
+
+| 维度 | 任务记忆（本插件） | 进化记忆（`agint_evolution`） |
+|---|---|---|
+| 存储域 | `agint` | `agint_evolution`（v0.3 引入） |
+| 服务对象 | Agent 推理时检索上下文 | 下次进化评估时检索历史经验 |
+| 写入触发 | Agent 主动/被动记录 | D-QAF Phase 4 完成后自动写入 |
+| 读取场景 | 日常任务推理 | 进化评估阶段 |
+| 衰减规则 | L1→L4（90/180/730 天） | 同 L1→L4 规则 |
+| 物理隔离 | 与 `agint_rules` 互斥 | 与全部其他域互斥 |
+
+**关键不变量**：两者绝不共享存储。`agint.memory` 不写入进化日志；`agint_evolution` 不写入任务上下文。
+
 ## 与其他插件的关系
 
-- **`agint.dream`**：夜间 sweep 把会话日志里提炼的候选提升为 memory entry
+- **`agint.dream`**：夜间 sweep 把会话日志里提炼的候选提升为任务记忆
 - **`agint.metrics`**：`memory.health` / `memory.bloat` 指标从这里采集
 - **`agint.evolve`**：复盘时写入新 lesson
+- **`agint.quality.contract`**：`setConfig` 审计日志落点（如果可用）
+- **`agint.qualityEvaluator`**：评估历史（`type: decision`）写入本服务；该记录**不可被覆盖**（`WRITE_PROTECT_TYPE_DECISION` 规则）
 
 ## 测试
 
