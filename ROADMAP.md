@@ -6,24 +6,29 @@
 
 ---
 
-## 当前状态：v0.2（评估引擎初版 + 自进化宪法）
+## 当前状态：**v0.2.0 已发**（D-QAF 评估引擎 + 自进化宪法 + install 安全左移）
+
+> 详见 `CHANGELOG.md#v0.2.0` 与 `git tag v0.2.0`。
 
 **已有**：
 - **10 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract` + `agint-quality-eval`）
 - 3 个 preset（agint / agint-coder / agint-investor）
 - 1 个 profile-patch（web/cordis.patch.yml，含 9 个插件 insert 段；`agint-quality-eval` 已在 v0.2 收编）
 - 4 个 skill（causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development）
-- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION）
+- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / **CHANGELOG**）
 - D-QAF 融合方案 + 评估框架完整汇总 + **整体优化改进方案** 三份设计文档
 - **自进化宪法文档**：`docs/evolution-framework.md` / `docs/security-boundary.md` / `docs/evolution-philosophy-checkpoints.md`
+- **评估场景集**（Sprint 1.3）：5 核心 plugin 冒烟 + 6 install 安全属性断言 = **13 场景全过**
+- **install 安全左移**（Sprint 1.5）：`agint-security-checks.sh` 13 项 + `rsync --no-links` + 中央备份 + trap 回滚 + 装后静态校验
+- **教训归档**（3 份 lessons）：v0.1 install bug / v0.2 sweep 阈值决策凭据 / v0.2 install 安全设计取舍
 
-**没有**：
-- `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`（v0.3+ 推进）
-- 进化记忆层（Plan-Plan-Failure-Patterns / Success-Templates，v0.3 引入）
-- Prompt 层进化（v0.4 补齐）
-- 退化/停滞探测（v0.3 落地，按当前路线图 P3 §退化探测项）
+**没有**（v0.3+ 推进）：
+- `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`
+- 进化记忆层（Plan-Plan-Failure-Patterns / Success-Templates）
+- 退化/停滞探测机制（v0.3 §退化探测项落地）
+- 跨平台 install 验证（Sprint 1.6 跳过）
 - CI / 自动化测试（dsh 上游变更时手动适配）
-- 评估集（`eval/scenarios/README.md` 是骨架占位，0 个真实用例）
+- Prompt 层进化（v0.4 补齐）
 
 ---
 
@@ -76,8 +81,8 @@
 - [x] 综合分计算：safety 权重 0.30 一票否决
 - [x] HARM 简版：H/M 中性 0.5；A ≈ trust；R ≈ reliability
 - [x] WeeklyScheduler：每周日 04:30 批量评估，写 `agint.memory`
-- [ ] **最小场景集**覆盖冒烟测试（`eval/scenarios/README.md` 定义）—— **§5.1 评估基础设施前置**
-- [ ] 评估引擎在最小场景集上的准确率 ≥ 90%
+- [x] **最小场景集**覆盖冒烟测试（`eval/scenarios/` 定义）—— **§5.1 评估基础设施前置**（13 场景，5 插件冒烟 + 6 install 安全属性断言 + 2 metrics cron 双场景）
+- [ ] 评估引擎在最小场景集上的准确率 ≥ 90%（Sprint 1.4，老板拍板用合成候选 + 期望分位）
 
 ### 自进化宪法文档（**仅文档落地**；HARM 全量 / 退化探测 / 预算对齐机制仍待 P3 验证）
 
