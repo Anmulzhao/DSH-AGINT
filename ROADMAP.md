@@ -21,9 +21,9 @@
 - `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`（v0.3+ 推进）
 - 进化记忆层（Plan-Plan-Failure-Patterns / Success-Templates，v0.3 引入）
 - Prompt 层进化（v0.4 补齐）
-- 退化/停滞探测（v0.4 补齐）
+- 退化/停滞探测（v0.3 落地，按当前路线图 P3 §退化探测项）
 - CI / 自动化测试（dsh 上游变更时手动适配）
-- 评估集（`eval/scenarios/` 是占位）
+- 评估集（`eval/scenarios/README.md` 是骨架占位，0 个真实用例）
 
 ---
 
@@ -54,7 +54,7 @@
 - [x] `.gitignore` 排除 runtime 数据（storages / dreams / wiki / reviews）
 - [x] 每个插件一份 `docs/plugins/agint-*.md`：设计意图 / Service 契约 / 存储 schema / 与其他插件关系
 - [x] 首版 git tag `v0.1.0`
-- [ ] 推到 `github.com/anmul/AGINT`
+- [x] 推到 `github.com/Anmulzhao/DSH-AGINT`（v0.1.2 之前；v0.2 累积 10 commit 领先 origin，待 push）
 
 ---
 
