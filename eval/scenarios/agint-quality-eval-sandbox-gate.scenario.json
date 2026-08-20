@@ -1,0 +1,107 @@
+[
+  {
+    "scenario": "sandbox-gate-passes-when-sandbox-ok",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "evaluateWithSandbox",
+        "target": {
+          "id": "agint-memory",
+          "kind": "plugin",
+          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+        },
+        "sandboxMock": {
+          "ok": true,
+          "mode": "in-process",
+          "checks": [{ "name": "plugin-exists", "ok": true }]
+        },
+        "_note": "mock sandbox 全过 → eval 走正常路径（composite 应有分数，不是 null）"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-gate-passes",
+        "compositeNotNull": true
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-gate-rejects-when-sandbox-fails",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "evaluateWithSandbox",
+        "target": {
+          "id": "broken-plugin",
+          "kind": "plugin",
+          "path": "/nonexistent/path"
+        },
+        "sandboxMock": {
+          "ok": false,
+          "mode": "in-process",
+          "reason": "plugin-not-found",
+          "checks": [{ "name": "plugin-exists", "ok": false }]
+        },
+        "_note": "mock sandbox 失败 → eval 返回 REJECT EvalResult, compositeScore 返回 null"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-gate-rejects",
+        "compositeIsNull": true,
+        "safetyIsZero": true,
+        "hasBlockerFinding": true,
+        "findingMentions": "sandbox-failed"
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-gate-skipped-when-no-sandbox-service",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "evaluateWithoutSandbox",
+        "target": {
+          "id": "agint-memory",
+          "kind": "plugin",
+          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+        },
+        "_note": "mock ctx 不提供 agint.qualitySandbox → eval 跳过 sandbox gate, 走正常路径"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-gate-skipped",
+        "compositeNotNull": true
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-gate-skipped-when-target-has-no-path",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "evaluateWithSandbox",
+        "target": {
+          "id": "agint-some-skill",
+          "kind": "skill"
+        },
+        "sandboxMock": {
+          "ok": false,
+          "_note": "sandbox mock 但 target.path 缺失 → sandbox 不应被调"
+        },
+        "_note": "skill 类 target 没有 path，sandbox gate 跳过 (Sprint 3.1 设计约束: 只有 path 存在的 target 才走 sandbox)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-gate-skipped",
+        "compositeNotNull": true
+      }
+    ]
+  }
+]

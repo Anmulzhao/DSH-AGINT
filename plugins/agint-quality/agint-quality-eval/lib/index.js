@@ -46,7 +46,7 @@ import {
 } from './regression.js';
 
 const name = 'agint-quality-eval';
-const inject = ['timer', 'agint.evolution'];
+const inject = ['timer', 'agint.evolution', 'agint.qualitySandbox'];
 
 const Config = z.object({
   /** 调度表达式（cron 5-field）——默认每周日 04:30 */
@@ -80,6 +80,33 @@ function apply(ctx, config) {
       // 这里只是标记 disposed 防止 tick 期间 race
     }
   });
+
+  /** Sprint 3.1: 构造 sandbox-failed REJECT EvalResult（safety=0 一票否决） */
+  function makeSandboxRejectedResult(target, smoke) {
+    const failedChecks = (smoke.checks ?? []).filter((c) => !c.ok).map((c) => c.name);
+    return {
+      targetId: target.id,
+      kind: target.kind,
+      evaluatedAt: new Date().toISOString(),
+      durationMs: 0,
+      dimensions: [
+        {
+          key: 'safety',
+          label: '安全',
+          score: { score: 0, raw: { sandbox: smoke }, evidence: [], children: [] },
+          veto: true,
+          findings: [],
+        },
+      ],
+      harm: { homogeneity: 0, alignment: 0, reduction: 0, mutability: 0 },
+      findings: [{
+        severity: 'blocker',
+        message: `sandbox-failed: ${smoke.reason ?? 'unknown'} (mode=${smoke.mode}, failed_checks=[${failedChecks.join(',')}])`,
+        evidence: failedChecks,
+      }],
+      evaluatorId: SELF_PLUGIN_ID,
+    };
+  }
 
   /** 把 EvalResult 转成能写进 memory 的精简 record */
   function toMemoryRecord(result, decision) {
@@ -159,6 +186,24 @@ function apply(ctx, config) {
       if (target.id === SELF_PLUGIN_ID) {
         throw new Error(`agint-quality-eval: refusing to self-evaluate (id=${SELF_PLUGIN_ID})`);
       }
+
+      // ── Sprint 3.1: sandbox gate (D-QAF Phase 2 hook) ─────────────────
+      // 老板拍板: sandbox 失败 → REJECT (safety 一票否决)
+      const sandbox = ctx.get('agint.qualitySandbox');
+      if (sandbox && typeof sandbox.runSmoke === 'function' && target.path) {
+        let smoke;
+        try {
+          smoke = await sandbox.runSmoke({ target: { path: target.path, name: target.id } });
+        } catch (e) {
+          // sandbox service 自己挂了（不该发生，但防御性）
+          smoke = { ok: false, mode: 'sandbox', reason: `sandbox-threw:${e.message}`, checks: [] };
+        }
+        if (!smoke.ok) {
+          // 构造 REJECT EvalResult（safety=0 触发 compositeScore null + finding blocker）
+          return makeSandboxRejectedResult(target, smoke);
+        }
+      }
+
       const result = await evaluateAll(ctx, target);
       return result;
     },

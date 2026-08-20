@@ -126,8 +126,12 @@
   - `failure_pattern/`：周复盘时归纳（Service 接口 + 去重 + substring 检索就位）
   - `success_template/`：周复盘时蒸馏（Service 接口 + substring 检索就位）
 - [x] 物理隔离：进化记忆 ≠ 任务记忆（独立存储域 `agint_evolution`，三表 `evolution_log` / `failure_pattern` / `success_template`）
-- [x] 自动化写入 Service 接口已就位（logPhase4 / addFailure / addSuccess），由 D-QAF 流水线自动落点（Sprint 3 接入 eval/policy）
+- [x] 自动化写入 Service 接口已就位（logPhase4 / addFailure / addSuccess），由 D-QAF 流水线自动落点（Sprint 3.1 部分接入 eval sandbox gate；Sprint 3.2 接 weekly hook；Sprint 3.3 接 policy）
 - [x] 定向读取：Service 接口已就位（queryFailures / queryTemplates / getLogRange），日常任务推理不读（Sprint 3 接入 eval/dream）
+
+### v0.3.x — D-QAF 端到端流水线接入
+
+- [x] **Sprint 3.1** — `agint-quality-eval` Phase 2 调 `agint.qualitySandbox.runSmoke()` 作为 gate：sandbox 失败 → 该 target safety=0 → compositeScore=null → REJECT 路径。target.path 缺失时跳过 gate（向后兼容 skill 类）。
 
 ### 评估集
 
