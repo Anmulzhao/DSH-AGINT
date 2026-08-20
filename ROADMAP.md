@@ -68,7 +68,7 @@
 - [ ] `VERSION` 写明 dsh 兼容矩阵；CI 在 dsh 最新 release 上跑插件 test
 - [ ] 把 `AGINT_HOME` / `DSH_HOME` 概念写进安装脚本
 - [ ] 提供 `install/docker-compose.yml` 演示（可选）
-- [ ] `install.sh` 内置基础安全检查（路径遍历防护 / 权限校验 / 备份机制）—— **§5.2 安全左移**
+- [x] `install.sh` 内置基础安全检查（路径遍历防护 / 权限校验 / 备份机制）—— **§5.2 安全左移**
 
 ### D-QAF `agint-quality-eval`（v0.2 初版）
 
