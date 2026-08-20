@@ -9,6 +9,55 @@
 >
 > **本文件与 git tag 一一对应**：tag message 是简版，CHANGELOG 是详细版。
 
+## [v0.3.0] — 2026-08-20 — 沙箱 + 进化记忆 + 退化探测（P3 主体收口）
+
+> **里程碑**：P3 阶段 v0.3 主体收口。D-QAF Phase 2/3 关键机制落地。
+> **破坏性变更**：无（向后兼容 v0.2.x）。
+
+### 新增
+- **`agint-evolution-memory` plugin**（commit `bbe5ed5`，物理隔离的进化记忆层）
+  - 独立 storage domain `agint_evolution`（三表 `evolution_log` / `failure_pattern` / `success_template`）
+  - Service 接口：`logPhase4 / addFailure / addSuccess / queryFailures / queryTemplates / getLogRange / decayScanRun / stats`
+  - L1-L4 衰减（纯复制 `agint-memory/lib/decay.js`，老板拍板"纯复制定制化"）
+  - 上限：failure 100 / template 50，超限 warn 不自动 prune
+  - 检索：线性扫 + lowercase substring（老板拍板，<100 条足够）
+- **`agint-quality-sandbox` plugin**（commit `bf67263`，D-QAF Phase 2 动态沙箱）
+  - 桥接 dsh `ctx.sandbox` 服务（生产用 bwrap/Landlock/Seatbelt）
+  - 两条路径：真沙箱（生产 dsh 启动）+ In-process fallback（dev/CI/eval）
+  - 资源限制：timeout 30s / memory 512MB（ROADMAP P3 §沙箱 限定）
+  - 6 项冒烟脚本（lib/smoke.js）：plugin-exists / package-json-parses / package-json-esm / main-file-exists / plugin-exports / no-external-network
+  - 失败自动上报 `agint.evolution.addFailure(pattern='sandbox-smoke-failed:<reason>')`
+- **退化探测**（commit `3d22a1d`，`agint-quality-eval` 扩展）
+  - 4 级 severity：`ok / warn@2% / high@10% / blocker@25%`
+  - 4 个 Service 方法：`runBaselineSuite / setBaseline / getBaseline / checkStagnation`
+  - 9 个固定 baseline target（memory/rules/metrics/cron/dream/evolve/wiki/tool-stats/quality-contract）
+  - 停滞检测：最近 K-1 个 delta（K=5）全 < 0.5 → isStagnated
+  - 告警写 `evo.addFailure(pattern='regression:<severity>', tags=['freeze'])`
+
+### 验证
+- **31/31 eval 场景全过**（含原 v0.2.0 25 个 + 新 6 个 regression）
+- `agint-evolution-memory` 7 场景：log/dedupe/search/template/decay/isolation/stats
+- `agint-quality-sandbox` 5 场景：service-shape / fallback / 不存在 / 缺 path / health
+- 退化探测 6 场景：4 级 severity / active-growth / detected / insufficient-data / passrate / baseline shape
+
+### 已知限制（v0.3.0 未做，留 v0.3.x 或 v0.4）
+- **Sprint 3 接入流水线**（D-QAF 端到端）：
+  - `agint-quality-eval` Phase 4 完成 → `evo.logPhase4()` 自动写入
+  - `agint-quality-policy` REJECT 决策 → `evo.addFailure()` 自动写入
+  - `agint-rules` 的 `delete-evolution-log` deny 规则
+  - `agint-evolve` 周复盘的归纳 + 蒸馏自动化
+  - `agint-dream` Deep 阶段读 success-templates
+- **真沙箱后端**：eval 走 in-process fallback；生产 dsh 启动需 `dsh-sandbox-local`
+- **静态检查**（ROADMAP §5.2 提到的 `agint-quality-static-*`）：老板拍板本 Sprint 不做
+- **Sprint 1.6 跨平台验证**：跳过（dev 主机仅 Linux）
+
+### 配套 git tag
+```
+git tag -a v0.3.0 -m "AGINT v0.3.0 — 沙箱 + 进化记忆 + 退化探测（P3 主体收口）"
+```
+
+---
+
 ## [v0.2.0] — 2026-08-20 — D-QAF 评估引擎 + 自进化宪法 + install 安全左移
 
 > **里程碑**：P2 阶段 v0.2 收口。评估引擎初版落地、自进化宪法三件套就位、install.sh 安全加固。

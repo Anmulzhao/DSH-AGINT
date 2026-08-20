@@ -6,29 +6,35 @@
 
 ---
 
-## 当前状态：**v0.2.0 已发**（D-QAF 评估引擎 + 自进化宪法 + install 安全左移）
+## 当前状态：**v0.3.0 已发**（沙箱 + 进化记忆 + 退化探测，P3 主体收口）
 
-> 详见 `CHANGELOG.md#v0.2.0` 与 `git tag v0.2.0`。
+> 详见 `CHANGELOG.md#v0.3.0` 与 `git tag v0.3.0`。
 
 **已有**：
-- **10 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract` + `agint-quality-eval`）
+- **12 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract` + `agint-quality-eval` + `agint-quality-sandbox` + **`agint-evolution-memory`**）
 - 3 个 preset（agint / agint-coder / agint-investor）
-- 1 个 profile-patch（web/cordis.patch.yml，含 9 个插件 insert 段；`agint-quality-eval` 已在 v0.2 收编）
-- 4 个 skill（causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development）
-- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / **CHANGELOG**）
-- D-QAF 融合方案 + 评估框架完整汇总 + **整体优化改进方案** 三份设计文档
+- 1 个 profile-patch（web/cordis.patch.yml）
+- 4 个 skill
+- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / CHANGELOG）
+- D-QAF 融合方案 + 评估框架完整汇总 + 整体优化改进方案 三份设计文档
 - **自进化宪法文档**：`docs/evolution-framework.md` / `docs/security-boundary.md` / `docs/evolution-philosophy-checkpoints.md`
-- **评估场景集**（Sprint 1.3）：5 核心 plugin 冒烟 + 6 install 安全属性断言 = **13 场景全过**
-- **install 安全左移**（Sprint 1.5）：`agint-security-checks.sh` 13 项 + `rsync --no-links` + 中央备份 + trap 回滚 + 装后静态校验
-- **教训归档**（3 份 lessons）：v0.1 install bug / v0.2 sweep 阈值决策凭据 / v0.2 install 安全设计取舍
+- **评估场景集**（Sprint 1.3 + Sprint 2 累计）：**31 场景全过**（5 核心 plugin 冒烟 + 6 install 安全 + 5 sandbox + 7 evolution-memory + 6 regression + 2 metrics-cron 双场景）
+- **install 安全左移**（Sprint 1.5）
+- **Sprint 2 三大块**：
+  - `agint-quality-sandbox`：桥接 ctx.sandbox + 6 项冒烟 + 30s/512MB 资源限制
+  - `agint-evolution-memory`：独立 storage domain + 三表 + L1-L4 衰减 + 100/50 上限
+  - 退化探测：baseline-regression-suite（4 级 severity）+ stagnation-check（K=5/threshold=0.5）
+- **教训归档**（3 份 lessons）：v0.1 install bug / v0.2 sweep 阈值 / v0.2 install 安全
 
-**没有**（v0.3+ 推进）：
-- `agint-quality-policy` / `agint-quality-sandbox` / `agint-quality-report`
-- 进化记忆层（Plan-Plan-Failure-Patterns / Success-Templates）
-- 退化/停滞探测机制（v0.3 §退化探测项落地）
+**没有**（v0.3.x 或 v0.4 推进）：
+- **D-QAF 流水线接入**：eval Phase 4 → evo.logPhase4；policy REJECT → evo.addFailure；rules 的 `delete-evolution-log` 规则
+- `agint-quality-policy` / `agint-quality-report`
+- **真沙箱后端**：eval 走 in-process fallback；生产需 `dsh-sandbox-local`
+- **静态检查**（`agint-quality-static-*`）：老板拍板本 Sprint 不做
 - 跨平台 install 验证（Sprint 1.6 跳过）
-- CI / 自动化测试（dsh 上游变更时手动适配）
-- Prompt 层进化（v0.4 补齐）
+- 端到端测试脚本（cron → dream → memory → metrics → evolve → quality-eval 闭环）
+- CI / 自动化测试
+- Prompt 层进化（v0.4）
 
 ---
 
