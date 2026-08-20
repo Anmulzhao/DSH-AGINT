@@ -79,11 +79,12 @@
 - [ ] **最小场景集**覆盖冒烟测试（`eval/scenarios/README.md` 定义）—— **§5.1 评估基础设施前置**
 - [ ] 评估引擎在最小场景集上的准确率 ≥ 90%
 
-### 自进化宪法文档
+### 自进化宪法文档（**仅文档落地**；HARM 全量 / 退化探测 / 预算对齐机制仍待 P3 验证）
 
 - [x] `docs/evolution-framework.md` —— D-QAF + HARM + 进化记忆层完整收口
 - [x] `docs/security-boundary.md` —— 硬约束清单（har_constraints + sandbox_permissions）
 - [x] `docs/evolution-philosophy-checkpoints.md` —— 哲学锚点工程化检查项
+- [ ] **P3 验收**：机制在 D-QAF Phase 2/3 实际跑通（沙箱 + 评估 + 退化探测闭环）
 
 ---
 
