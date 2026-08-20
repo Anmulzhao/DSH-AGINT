@@ -356,6 +356,60 @@ const dispatchers = {
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
+
+  'agint-quality-sandbox': async (scenario, ctx) => {
+    // Sprint 2.A: 沙箱 plugin 的契约 + 降级路径验证。
+    // mock ctx 没有 sandbox service → 走 in-process fallback。
+    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
+    mod.apply(ctx, {});
+    const sb = ctx.get('agint.qualitySandbox');
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    if (exp.kind === 'service-shape') {
+      const missing = exp.requiredMethods.filter((m) => !(m in sb));
+      const ok = missing.length === 0;
+      return { ok, detail: `missing=[${missing.join(',')}]` };
+    }
+
+    if (exp.kind === 'in-process-fallback-succeeds') {
+      const result = await sb.runSmoke({ target: input.target });
+      const passed = result.checks.filter((c) => c.ok).length;
+      const ok = result.ok && result.mode === 'in-process' && passed >= exp.minChecksPass;
+      return { ok, detail: `mode=${result.mode} checks_pass=${passed}/${result.checks.length}` };
+    }
+
+    if (exp.kind === 'smoke-fails') {
+      const result = await sb.runSmoke({ target: input.target });
+      const reasonOk = !result.reason || result.reason.includes(exp.reasonContains);
+      const ok = result.ok === false && reasonOk;
+      return { ok, detail: `ok=${result.ok} reason=${result.reason}` };
+    }
+
+    if (exp.kind === 'throws') {
+      try {
+        await sb.runSmoke({ target: input.target });
+        return { ok: false, detail: 'expected throw but returned' };
+      } catch (e) {
+        const ok = e.message.includes(exp.errorContains);
+        return { ok, detail: `err="${e.message.slice(0, 80)}"` };
+      }
+    }
+
+    if (exp.kind === 'health-shape') {
+      const h = await sb.backendHealth();
+      const checks = [
+        h.ctxSandboxAvailable === exp.ctxSandboxAvailable,
+        h.inProcessFallbackEnabled === exp.inProcessFallbackEnabled,
+        h.timeoutMs === exp.timeoutMsEqualsDefault,
+        h.memoryMb === exp.memoryMbEqualsDefault,
+      ];
+      const ok = checks.every(Boolean);
+      return { ok, detail: JSON.stringify(h) };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────

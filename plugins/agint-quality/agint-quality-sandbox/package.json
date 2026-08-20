@@ -1,0 +1,23 @@
+{
+  "name": "agint-quality-sandbox",
+  "version": "0.3.0",
+  "description": "D-QAF Phase 2 动态沙箱：桥接 dsh ctx.sandbox 服务执行 plugin 冒烟。Sprint 2.A 初版；真沙箱执行依赖生产 dsh 启动（dsh-sandbox-local 后端），eval/scenarios 跑 mock ctx.sandbox 验证契约。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/smoke.js": "./lib/smoke.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "sandbox",
+    "phase-2"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}

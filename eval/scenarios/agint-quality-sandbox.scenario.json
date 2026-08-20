@@ -1,0 +1,97 @@
+[
+  {
+    "scenario": "sandbox-service-starts-with-config",
+    "plugin": "agint-quality-sandbox",
+    "input": [
+      {
+        "service": "qualitySandbox",
+        "action": "startService",
+        "_note": "apply(ctx, {}) 应输出 agint.qualitySandbox Service，含 runSmoke / backendHealth / config"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "service-shape",
+        "requiredMethods": ["runSmoke", "backendHealth", "config"]
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-falls-back-when-ctx-sandbox-missing",
+    "plugin": "agint-quality-sandbox",
+    "input": [
+      {
+        "service": "qualitySandbox",
+        "action": "runSmokeInProcess",
+        "target": {
+          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+        },
+        "_note": "mock ctx 没有 sandbox service，应降级到 in-process 跑 agint-memory 冒烟"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "in-process-fallback-succeeds",
+        "minChecksPass": 4,
+        "mode": "in-process"
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-fails-on-nonexistent-plugin",
+    "plugin": "agint-quality-sandbox",
+    "input": [
+      {
+        "service": "qualitySandbox",
+        "action": "runSmoke",
+        "target": {
+          "path": "/tmp/nonexistent-agint-plugin-xyz"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "smoke-fails",
+        "ok": false,
+        "reasonContains": "plugin"
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-rejects-missing-target-path",
+    "plugin": "agint-quality-sandbox",
+    "input": [
+      {
+        "service": "qualitySandbox",
+        "action": "runSmoke",
+        "target": {}
+      }
+    ],
+    "expected": [
+      {
+        "kind": "throws",
+        "errorContains": "target.path"
+      }
+    ]
+  },
+  {
+    "scenario": "sandbox-backend-health-reports-availability",
+    "plugin": "agint-quality-sandbox",
+    "input": [
+      {
+        "service": "qualitySandbox",
+        "action": "backendHealth",
+        "_note": "mock ctx 没有 sandbox → ctxSandboxAvailable=false; in-process fallback true"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "health-shape",
+        "ctxSandboxAvailable": false,
+        "inProcessFallbackEnabled": true,
+        "timeoutMsEqualsDefault": 30000,
+        "memoryMbEqualsDefault": 512
+      }
+    ]
+  }
+]
