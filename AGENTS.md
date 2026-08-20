@@ -28,7 +28,7 @@
 5. **查 D-QAF 评估**（v0.2 起）—— 当前 Skill/Plugin 的 HARM 分数、是否经过评估
 6. **动手** —— 结论先行、数据说话、动手前对高风险操作说清楚
 7. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
-8. **复盘** —— 周日 cron 自动跑 `evolve_review`；每个复盘报告必须包含 `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`）
+8. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是 ROADMAP §哲学锚点护栏的硬要求）
 
 ## 怎么用梦境
 
@@ -83,7 +83,7 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 - **不要评估自己**（agint-quality-eval 有 self-evaluation forbidden 兜底）
 - **不要绕过 D-QAF 任意阶段**直接部署
 - **不要跨周累计自动部署超过 3 次**（进化健康度护栏之一）
-- **不要在没有 `## 哲学对齐检查` 章节时提交复盘报告**
+- **不要在没有 `## 哲学对齐检查` 章节时提交 P 阶段验收 / 重大 PR**（复盘报告推荐含但不强制）
 
 ## 快速参考
 
