@@ -1,0 +1,29 @@
+{
+  "name": "agint-quality-sdk",
+  "version": "0.5.0",
+  "description": "Prompt SDK 插件 (Sprint 5): PromptManifest FROZEN 契约 + template-engine + 静态检查 (注入 / 占位符滥用 / manifest 不一致) + regression tests runner + CLI 模板生成器 (bin/agint-prompt-init.js)。示例见 examples/。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/template-engine.js": "./lib/template-engine.js",
+    "./lib/static-check.js": "./lib/static-check.js",
+    "./bin/agint-prompt-init.js": "./bin/agint-prompt-init.js"
+  },
+  "bin": {
+    "agint-prompt-init": "./bin/agint-prompt-init.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "prompt",
+    "sdk",
+    "sprint-5"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}

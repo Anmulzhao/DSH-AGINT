@@ -955,6 +955,66 @@ const dispatchers = {
 
     return { ok: false, detail: `unsupported action ${input.action}` };
   },
+
+  'agint-quality-sdk': async (scenario, ctx) => {
+    // Sprint 5: Prompt SDK manifest / template / static-check / regression
+    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/index.js`);
+    const { validateManifest, renderPrompt, staticCheckPrompt, runRegressionTests } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/static-check.js`).catch(() => ({}));
+    // The static-check / template-engine are pure functions imported directly.
+    const { staticCheckPrompt: sc, runRegressionTests: rt } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/static-check.js`);
+    const { renderPrompt: rp } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/template-engine.js`);
+    const { validateManifest: vm } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/schema.js`);
+
+    mod.apply(ctx, {});
+    const sdk = ctx.get('agint.promptSDK');
+    if (!sdk) return { ok: false, detail: 'agint.promptSDK not registered' };
+
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    if (exp.kind === 'manifest-validation') {
+      // Two paths can surface validation failures: zod schema (first line) or static-check (third line).
+      // Accept either path's violations.
+      const zodResult = vm(input.manifest);
+      const scResult = sc({ templateText: input.templateText ?? '', manifest: input.manifest });
+      const allViolations = [
+        ...(zodResult.violations ?? []),
+        ...scResult.violations.map((v) => `${v.code}: ${v.message}`),
+      ];
+      const combinedOk = zodResult.ok && scResult.ok;
+      if (exp.ok) {
+        return { ok: combinedOk === true, detail: `zod_ok=${zodResult.ok} sc_ok=${scResult.ok}` };
+      }
+      const hasViolation = allViolations.some((v) => v.includes(exp.violationsContains));
+      return { ok: combinedOk === false && hasViolation, detail: `violations[0]=${allViolations[0]?.slice(0, 80)}` };
+    }
+
+    if (exp.kind === 'render-output') {
+      const out = sdk.render({ templateText: input.templateText, manifest: input.manifest, values: input.values });
+      return { ok: out.includes(exp.expectedContains), detail: `out="${out.slice(0, 60)}"` };
+    }
+
+    if (exp.kind === 'static-check') {
+      const result = sdk.staticCheck({ templateText: input.templateText, manifest: input.manifest });
+      if (exp.blockersAtLeast !== undefined) {
+        return { ok: result.ok === false && result.blockers >= exp.blockersAtLeast, detail: `blockers=${result.blockers} warnings=${result.warnings}` };
+      }
+      if (exp.warningsContains) {
+        const hasWarn = result.violations.some((v) => v.code === exp.warningsContains);
+        // warnings 不破坏 ok=true, 只确保 warning code 出现即可
+        return { ok: hasWarn, detail: `blockers=${result.blockers} warnings=${result.warnings} codes=[${result.violations.map(v=>v.code).join(',')}]` };
+      }
+      return { ok: result.ok === exp.ok, detail: `ok=${result.ok} blockers=${result.blockers}` };
+    }
+
+    if (exp.kind === 'regression-tests') {
+      const results = sdk.runTests({ templateText: input.templateText, manifest: input.manifest });
+      const allPass = results.every((r) => r.status === 'pass');
+      return { ok: allPass === exp.allPassed, detail: `n=${results.length} statuses=${results.map(r=>r.status).join(',')}` };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────
