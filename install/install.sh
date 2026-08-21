@@ -426,6 +426,18 @@ PY
   fi
 fi
 
+# ── 4.5 zod bootstrap（修复 agint-quality-sdk + 子插件的裸 zod 导入）─────────
+# 见 install/agint-zod-bootstrap.sh。失败仅 warn，不阻断（用户可手动跑）。
+if [ "$DRY_RUN" != "1" ]; then
+  if bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+    log "   ✓ zod bootstrap OK"
+  else
+    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
+  fi
+else
+  log "   ⊘ 跳过 zod bootstrap（dry-run）"
+fi
+
 # 装成功 → 清空 partial-steps（trap 不再回滚）
 PARTIAL_STEPS=()
 trap - EXIT
