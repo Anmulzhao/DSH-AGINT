@@ -27,6 +27,18 @@ import {
   DEFAULT_POLICY_ID,
 } from './decide.js';
 import { runHarmonyDetectors, DEFAULT_HARMONY_CONFIG } from './falseHarmonyDetector.js';
+import {
+  makeCommitteeStorage,
+  runShadowPolicy,
+  checkShadowAutoPromotion,
+  shouldRollback,
+  recordRollback,
+  appendHistory,
+  queryHistory,
+  saveProdSnapshot,
+  pickRollbackTarget,
+  DEFAULT_COMMITTEE_CONFIG,
+} from './committee.js';
 
 const name = 'agint-quality-policy';
 const inject = ['agint.evolution'];
@@ -45,6 +57,9 @@ const Config = z.object({
 function apply(ctx, config) {
   const cfg = Config.parse(config || {});
   let disposed = false;
+
+  // Sprint 4.3: 元评估委员会的内存 storage (sibling 可注入以持久化)
+  const committeeStorage = makeCommitteeStorage();
 
   ctx.effect(() => () => {
     disposed = true;
@@ -125,6 +140,19 @@ function apply(ctx, config) {
       }
     }
 
+    // Sprint 4.3: history source-of-truth (in-memory storage for prod is sibling-managed;
+    // 我们在自己 ctx 也 append 一份作 backup)
+    try {
+      await appendHistory({
+        decision,
+        policyId: decision.policyId,
+        storage: committeeStorage,
+        source: 'prod',
+      });
+    } catch {
+      // Append 是 best-effort;失败不抛
+    }
+
     return decision;
   }
 
@@ -164,6 +192,19 @@ function apply(ctx, config) {
     health,
     config: cfg,
     harmonyConfig: DEFAULT_HARMONY_CONFIG,
+    // ── Sprint 4.3: 元评估委员会（shadow / rollback / history） ──
+    committee: {
+      runShadowPolicy: (args) => runShadowPolicy({ ...args, storage: committeeStorage }),
+      checkShadowAutoPromotion: (args) => checkShadowAutoPromotion({ ...args, storage: committeeStorage }),
+      shouldRollback: (args) => shouldRollback(args),
+      recordRollback: (args) => recordRollback({ ...args, storage: committeeStorage }),
+      appendHistory: (args) => appendHistory({ ...args, storage: committeeStorage }),
+      queryHistory: (args) => queryHistory({ storage: committeeStorage, ...args }),
+      saveProdSnapshot: (args) => saveProdSnapshot({ ...args, storage: committeeStorage }),
+      pickRollbackTarget: () => pickRollbackTarget({ currentPolicyId: cfg.policyId, storage: committeeStorage }),
+      committeeConfig: DEFAULT_COMMITTEE_CONFIG,
+      storage: committeeStorage,
+    },
   });
 }
 

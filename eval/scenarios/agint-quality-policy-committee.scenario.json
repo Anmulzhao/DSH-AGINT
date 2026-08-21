@@ -1,0 +1,171 @@
+[
+  {
+    "scenario": "committee-shadow-agrees-with-prod",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.runShadowPolicy",
+        "candidateId": "agint-quality-policy@0.5.0-rc",
+        "results": [
+          {
+            "targetId": "good-plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.9 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.85 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "candidate 与 prod 用同样算法 → 应当 agreed=true (但 candidate 是新版本,需 shadow 验证)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "committee-shadow-result",
+        "expectedAgreed": true,
+        "minDisagreements": 0
+      }
+    ]
+  },
+  {
+    "scenario": "committee-shadow-disagrees-with-prod",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.runShadowPolicy",
+        "candidateId": "strict-policy-candidate",
+        "results": [
+          {
+            "targetId": "borderline-plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.7 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.6 } },
+              { "key": "integrability", "score": { "score": 0.6 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "composite=75.5, prod: PENDING_REVIEW (>=75), candidate (>=90): REJECT → disagree"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "committee-shadow-result",
+        "expectedAgreed": false,
+        "minDisagreements": 1
+      }
+    ]
+  },
+  {
+    "scenario": "committee-shadow-10-agrees-promotes",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.checkShadowAutoPromotion",
+        "candidateId": "agint-quality-policy@0.5.0-rc",
+        "results": [
+          {
+            "targetId": "p",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.9 }, "veto": false }
+            ]
+          }
+        ],
+        "consecutiveAgreedRuns": 10,
+        "_note": "手工塞 10 个 agreed=true 的 shadow runs → 第 10 次后 shouldPromote=true"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "committee-auto-promote",
+        "shouldPromote": true,
+        "consecutiveAgreed": 10
+      }
+    ]
+  },
+  {
+    "scenario": "committee-rollback-triggers-on-high-reject-rate",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.shouldRollback",
+        "recentDecisions": [
+          { "kind": "REJECT", "ts": "2026-08-01" },
+          { "kind": "REJECT", "ts": "2026-08-02" },
+          { "kind": "REJECT", "ts": "2026-08-03" },
+          { "kind": "REJECT", "ts": "2026-08-04" },
+          { "kind": "PENDING_REVIEW", "ts": "2026-08-05" }
+        ],
+        "minSample": 5,
+        "triggerPct": 0.5,
+        "_note": "5 次中 4 次 REJECT = 80% >= 50% → 触发 rollback"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "rollback-decision",
+        "shouldRollback": true,
+        "reasonContains": "reject-rate-exceeded"
+      }
+    ]
+  },
+  {
+    "scenario": "committee-rollback-skipped-on-low-reject-rate",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.shouldRollback",
+        "recentDecisions": [
+          { "kind": "PENDING_REVIEW", "ts": "2026-08-01" },
+          { "kind": "REJECT", "ts": "2026-08-02" },
+          { "kind": "PENDING_REVIEW", "ts": "2026-08-03" },
+          { "kind": "PENDING_REVIEW", "ts": "2026-08-04" },
+          { "kind": "PENDING_REVIEW", "ts": "2026-08-05" }
+        ],
+        "minSample": 5,
+        "triggerPct": 0.5,
+        "_note": "20% reject rate < 50% → 不触发"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "rollback-decision",
+        "shouldRollback": false
+      }
+    ]
+  },
+  {
+    "scenario": "committee-history-append-query-roundtrip",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "committee.appendHistory",
+        "decision": {
+          "kind": "PENDING_REVIEW",
+          "score": 80,
+          "reason": "test-committee-history",
+          "decidedAt": "2026-08-20T10:00:00Z",
+          "policyId": "agint-quality-policy@0.4.0",
+          "triggeredBy": ["session-1"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "history-roundtrip",
+        "mustFindPolicyId": "agint-quality-policy@0.4.0",
+        "mustFindKind": "PENDING_REVIEW"
+      }
+    ]
+  }
+]
