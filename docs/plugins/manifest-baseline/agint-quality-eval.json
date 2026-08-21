@@ -1,0 +1,57 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-eval",
+  "version": "0.2.0",
+  "description": "D-QAF 评估引擎：读 toolStats/memory/rules/metrics 4 host Service 算 7 维评分。safety 权重 0.30 一票否决。拒绝自评。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["agint.quality", "agint.evolution", "agint.qualitySandbox"],
+      "provides": ["agint.qualityEvaluator"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "agint-quality-contract": ">=0.2.0",
+      "agint-evolution-memory": ">=0.1.0"
+    },
+    "mountOrder": 50,
+    "permissions": {
+      "env": [],
+      "fs": ["read:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.qualityEvaluator": "QualityEvaluatorIface.evaluate(target) — 7 维评分 + 一票否决 + 反自评"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.2.0",
+    "notes": "DISABLED-TEMP 2026-08-21：等待 agint.evolution / agint.qualitySandbox 才会激活"
+  }
+}

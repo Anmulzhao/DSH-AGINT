@@ -1,0 +1,55 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-rules",
+  "version": "0.1.0",
+  "description": "规则门禁（advisory/ask/deny 三档）。监听 tools/pre-execute + tools/post-execute waterfall。独占 agint_rules domain（与 agint 互斥）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain", "tools"],
+      "provides": ["agint.rules"],
+      "events": ["tools/pre-execute", "tools/post-execute"],
+      "tools": ["rule_add", "rule_remove", "rule_list", "rule_check", "rule_audit", "rule_set_enabled", "rule_lint"]
+    },
+    "storage": {
+      "domains": ["agint_rules"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-memory": ">=0.1.0"
+    },
+    "mountOrder": 15,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:plugins", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "must-dispose",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.rules": "advisory 半强制 + ask/deny 硬挂；lint/audit 治理"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

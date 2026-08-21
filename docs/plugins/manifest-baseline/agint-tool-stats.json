@@ -1,0 +1,53 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-tool-stats",
+  "version": "0.1.0",
+  "description": "工具使用画像：监听 tools/result 事件追加写 agint_tool_stats.jsonl。提供 toolStats Service + tool_stats_summary tool。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["tools"],
+      "provides": ["agint.toolStats"],
+      "events": ["session/created", "tools/result"],
+      "tools": ["tool_stats_summary"]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "jsonl"
+    },
+    "dependencies": {},
+    "mountOrder": 5,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "must-dispose",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.toolStats": "工具调用次数/失败率/p95 延迟画像（jsonl appender）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

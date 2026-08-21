@@ -1,0 +1,55 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-contract",
+  "version": "0.2.0",
+  "description": "D-QAF 评估框架核心契约（EvalTarget/EvalResult/Decision/HARM/QualityConfig Schema + 接口签名）。L0-frozen 字段由 validatePatch 守门。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "beta"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": ["agint.quality"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 0,
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.quality": "D-QAF Seam 定义 + L0-frozen 守门"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.2.0"
+  }
+}

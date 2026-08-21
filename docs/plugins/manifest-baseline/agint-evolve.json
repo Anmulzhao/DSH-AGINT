@@ -1,0 +1,58 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-evolve",
+  "version": "0.1.0",
+  "description": "复盘/自进化闭环。复盘报告写 reviews/，改进提案存 agint_evolve domain。每周 cron evolve-review job 触发。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "beta"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain", "agint.memory", "agint.metrics", "agint.wiki", "agint.rules"],
+      "provides": ["agint.evolve"],
+      "events": [],
+      "tools": ["evolve_read", "evolve_review", "evolve_propose", "evolve_proposals", "evolve_set_status"]
+    },
+    "storage": {
+      "domains": ["agint_evolve"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-memory": ">=0.1.0",
+      "agint-metrics": ">=0.1.0",
+      "agint-wiki": ">=0.1.0",
+      "agint-rules": ">=0.1.0"
+    },
+    "mountOrder": 45,
+    "permissions": {
+      "env": ["AGINT_HOME", "DSH_HOME"],
+      "fs": ["read:wiki", "write:reviews", "read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.evolve": "周复盘报告 + 改进提案治理（proposed/applied/rejected/wontfix）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
