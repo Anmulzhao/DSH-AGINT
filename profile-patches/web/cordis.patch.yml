@@ -96,3 +96,20 @@
     - id: agint-quality-eval
       name: ./plugins/agint-quality/agint-quality-eval/lib/index.js
       config: {}
+
+    # Sprint 4.1+ policy plugin 的 row: D-QAF Phase 4 策略引擎
+    #   - 完整 4 决策 (AUTO_DEPLOY/PENDING_REVIEW/REJECT/ABSTAIN)
+    #   - 加权综合分 (DIMENSION_WEIGHTS, contract.setConfig 可调)
+    #   - audit hook: evo.logPhase4 + evo.addFailure + memory.write
+    #   - 反和谐检测器 (4.2) + 元评估委员会 (4.3)
+    # Service: agint.qualityPolicy.{decide, setThresholds, detectFalseHarmony, committee}
+    - id: agint-quality-policy
+      name: ./plugins/agint-quality/agint-quality-policy/lib/index.js
+      config: {}
+
+    # Sprint 4.4 HARM 报告生成插件 row:
+    #   - 实现 QualityReporterIface (FROZEN)
+    #   - generate + writeToWiki + writeToMemory + generateAndPersist
+    - id: agint-quality-report
+      name: ./plugins/agint-quality/agint-quality-report/lib/index.js
+      config: {}
