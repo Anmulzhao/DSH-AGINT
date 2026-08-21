@@ -26,6 +26,7 @@ import {
   validateThresholds,
   DEFAULT_POLICY_ID,
 } from './decide.js';
+import { runHarmonyDetectors, DEFAULT_HARMONY_CONFIG } from './falseHarmonyDetector.js';
 
 const name = 'agint-quality-policy';
 const inject = ['agint.evolution'];
@@ -48,6 +49,15 @@ function apply(ctx, config) {
   ctx.effect(() => () => {
     disposed = true;
   });
+
+  /**
+   * Sprint 4.2: 暴露反和谐检测器 Service（供 sibling / dream / weekly hook 调用）
+   */
+  async function detectFalseHarmony({ results = [], config: overrideConfig = {}, history = { byTarget: {}, regressionHistory: [] } } = {}) {
+    if (disposed) throw new Error('agint-quality-policy: disposed');
+    const mergedConfig = { ...cfg, ...overrideConfig };
+    return await runHarmonyDetectors({ results, config: mergedConfig, history });
+  }
 
   /**
    * Make a decision based on eval results.
@@ -149,9 +159,11 @@ function apply(ctx, config) {
 
   ctx.provide('agint.qualityPolicy', {
     decide,
+    detectFalseHarmony,
     setThresholds,
     health,
     config: cfg,
+    harmonyConfig: DEFAULT_HARMONY_CONFIG,
   });
 }
 
