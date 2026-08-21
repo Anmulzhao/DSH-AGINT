@@ -632,7 +632,7 @@ const dispatchers = {
   },
 
   'agint-quality-policy': async (scenario, ctx) => {
-    // Sprint 3.3 占位策略: safety veto → REJECT, 其余 PENDING_REVIEW.
+    // Sprint 4: policy 完整 4 决策 + 加权 + audit + 反和谐 detector 挂钩
     const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
     const input = scenario.input[0];
     const exp = scenario.expected[0];
@@ -650,6 +650,34 @@ const dispatchers = {
     };
     ctx.provide('agint.evolution', mockEvo);
 
+    // 需要 mock memory (audit 写到 memory)
+    const memoryStore = [];
+    ctx.provide('agint.memory', {
+      write: async (rec) => { memoryStore.push(rec); return { id: `mock-${memoryStore.length}`, ...rec }; },
+      search: async () => ({ items: memoryStore }),
+    });
+
+    // 需要 mock agint.quality (for setThresholds 走 contract.setConfig 链路)
+    const qualityConfigMock = {
+      thresholds: { autoDeploy: 90, pendingReview: 75 },
+      harmWeights: { H: 0.2, A: 0.3, R: 0.3, M: 0.2 },
+    };
+    const qualityAuditLog = [];
+    ctx.provide('agint.quality', {
+      getConfig: () => qualityConfigMock,
+      setConfig: async (patch) => {
+        // 模拟深 merge
+        const merged = { ...qualityConfigMock, ...patch };
+        if (patch.thresholds) merged.thresholds = { ...qualityConfigMock.thresholds, ...patch.thresholds };
+        if (patch.harmWeights) merged.harmWeights = { ...qualityConfigMock.harmWeights, ...patch.harmWeights };
+        qualityAuditLog.push({ patch, at: new Date().toISOString() });
+        Object.assign(qualityConfigMock, merged);
+        return qualityConfigMock;
+      },
+      validatePatch: (patch) => ({ ok: true, violations: [] }),
+      getLayer: () => 'L2-implementation',
+    });
+
     mod.apply(ctx, {});
     await new Promise((r) => setTimeout(r, 20));
     const policy = ctx.get('agint.qualityPolicy');
@@ -657,14 +685,62 @@ const dispatchers = {
 
     if (exp.kind === 'decision-shape') {
       const decision = await policy.decide({ results: input.results });
-      const gotDecisions = decision.perTarget.map((t) => t.decision);
+      const gotDecisions = decision.perTarget.map((t) => t.kind);
       const gotReasons = decision.perTarget.map((t) => t.reason);
-      const decisionOk = decision.decision === exp.decision;
+      const decisionOk = decision.kind === exp.decision;
       const perTargetOk = !exp.perTargetDecisions || JSON.stringify(gotDecisions) === JSON.stringify(exp.perTargetDecisions);
       const reasonsOk = !exp.perTargetReasons || JSON.stringify(gotReasons) === JSON.stringify(exp.perTargetReasons);
       const reasonContainsOk = !exp.reasonContains || decision.reason.includes(exp.reasonContains);
-      const ok = decisionOk && perTargetOk && reasonsOk && reasonContainsOk;
-      return { ok, detail: `decision=${decision.decision} reason=${decision.reason} perTarget=${JSON.stringify(gotDecisions)}` };
+      const scoreOk = exp.scoreAtLeast === undefined || (decision.score !== null && decision.score >= exp.scoreAtLeast);
+      const ok = decisionOk && perTargetOk && reasonsOk && reasonContainsOk && scoreOk;
+      return { ok, detail: `kind=${decision.kind} score=${decision.score} reason=${decision.reason} perTarget=${JSON.stringify(gotDecisions)}` };
+    }
+
+    if (exp.kind === 'weights-shape') {
+      // 测 computeComposite 的权重逻辑（独立纯函数）
+      const { computeComposite, DEFAULT_DIMENSION_WEIGHTS } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/decide.js`);
+      const evalRes = input.result;
+      const composite = computeComposite(evalRes, DEFAULT_DIMENSION_WEIGHTS);
+      const ok = composite === exp.expectedComposite;
+      return { ok, detail: `composite=${composite} expected=${exp.expectedComposite}` };
+    }
+
+    if (exp.kind === 'thresholds-set-via-quality') {
+      const newConfig = await policy.setThresholds(input.patch);
+      const expectedPatch = { thresholds: input.patch };
+      const ok = newConfig.thresholds[exp.field] === exp.expectedValue
+        && qualityAuditLog.some((l) => JSON.stringify(l.patch) === JSON.stringify(expectedPatch));
+      return { ok, detail: `thresholds.${exp.field}=${newConfig.thresholds[exp.field]} auditLog=${qualityAuditLog.length}` };
+    }
+
+    if (exp.kind === 'thresholds-rejected') {
+      let threw = false;
+      let code = null;
+      try {
+        await policy.setThresholds(input.patch);
+      } catch (e) {
+        threw = true;
+        code = e.code;
+      }
+      const ok = threw && code === exp.expectedErrorCode;
+      return { ok, detail: `threw=${threw} code=${code} expected_code=${exp.expectedErrorCode}` };
+    }
+
+    if (exp.kind === 'false-harmony-detected') {
+      // 注入反和谐 detector
+      const detectorMock = { run: async () => ({ report: 'false-harmony', patterns: input.patterns ?? ['rejection-uniformity'] }) };
+      const decision = await policy.decide({ results: input.results, options: { detectors: detectorMock } });
+      const ok = decision.kind === 'REJECT'
+        && decision.reason.includes('false-harmony')
+        && decision.triggeredBy.some((t) => t === 'false-harmony');
+      return { ok, detail: `kind=${decision.kind} reason=${decision.reason} triggeredBy=${decision.triggeredBy.join(',')}` };
+    }
+
+    if (exp.kind === 'audit-writes-memory') {
+      await policy.decide({ results: input.results });
+      const auditEntry = memoryStore.find((m) => m.type === 'decision' && m.content.includes('agint.qualityPolicy'));
+      const ok = !!auditEntry;
+      return { ok, detail: `memoryStore.size=${memoryStore.length} hasAudit=${!!auditEntry}` };
     }
 
     if (exp.kind === 'evo-received-addFailure') {

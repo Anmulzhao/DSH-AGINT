@@ -1,0 +1,275 @@
+[
+  {
+    "scenario": "policy-decide-empty-results-abstain",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [],
+        "_note": "空 results → ABSTAIN 'empty-results' (Sprint 4 完整版)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "ABSTAIN",
+        "reasonContains": "empty-results"
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-safety-veto-rejects",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "broken-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              {
+                "key": "safety",
+                "score": { "score": 0 },
+                "veto": true
+              },
+              {
+                "key": "trust",
+                "score": { "score": 0.9 },
+                "veto": false
+              }
+            ],
+            "findings": [
+              { "severity": "blocker", "message": "sandbox-failed:plugin-not-found" }
+            ]
+          }
+        ],
+        "_note": "safety veto → REJECT (Sprint 4 完整版)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "REJECT",
+        "perTargetDecisions": ["REJECT"],
+        "scoreAtLeast": 0
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-clean-results-pending-or-deploy",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "good-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.5 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.6 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "无 veto + composite=100*(0.3+0.2*0.5+0.2*0.6+0.2*1.0)/0.9 = 100*(0.62/0.9) = 68.9 → PENDING_REVIEW"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "PENDING_REVIEW",
+        "perTargetDecisions": ["PENDING_REVIEW"],
+        "scoreAtLeast": 60
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-weights-composite-correct",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "weightsTest",
+        "result": {
+          "targetId": "weighted-plugin",
+          "dimensions": [
+            { "key": "safety", "score": { "score": 1.0 } },
+            { "key": "trust", "score": { "score": 0.8 } },
+            { "key": "reliability", "score": { "score": 0.9 } },
+            { "key": "effectiveness", "score": { "score": 0.6 } },
+            { "key": "integrability", "score": { "score": 1.0 } }
+          ]
+        },
+        "_note": "权重测试: 0.3*1+0.2*0.8+0.2*0.9+0.1*0.6+0.2*1.0 = 0.84; x100 = 84"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "weights-shape",
+        "expectedComposite": 90
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-true-auto-deploy",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "excellent-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1.0 }, "veto": false },
+              { "key": "trust", "score": { "score": 1.0 }, "veto": false },
+              { "key": "reliability", "score": { "score": 1.0 } },
+              { "key": "effectiveness", "score": { "score": 1.0 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "全 1.0 综合分=100 → 单 target → master AUTO_DEPLOY"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "AUTO_DEPLOY",
+        "perTargetDecisions": ["AUTO_DEPLOY"],
+        "scoreAtLeast": 99
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-trust-veto-rejects",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "untrusted-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1.0 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.1 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.9 } },
+              { "key": "effectiveness", "score": { "score": 0.9 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "trust 0.1 < 0.3 threshold → REJECT 'trust-veto'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "REJECT",
+        "perTargetDecisions": ["REJECT"]
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-abstain-insufficient-signal",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "signal-poor-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              { "key": "convention", "score": { "score": null } },
+              { "key": "adaptability", "score": { "score": null } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "无有效 dimension score → ABSTAIN 'insufficient-signal'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "ABSTAIN",
+        "reasonContains": "insufficient-signal"
+      }
+    ]
+  },
+  {
+    "scenario": "policy-setThresholds-audits-via-quality",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "setThresholds",
+        "patch": { "autoDeploy": 85, "pendingReview": 70 },
+        "_note": "setThresholds → contract.setConfig({thresholds:...}) → audit log"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "thresholds-set-via-quality",
+        "field": "autoDeploy",
+        "expectedValue": 85
+      }
+    ]
+  },
+  {
+    "scenario": "policy-setThresholds-rejects-invalid-range",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "setThresholds",
+        "patch": { "thresholds": { "autoDeploy": 150 } }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "thresholds-rejected",
+        "expectedErrorCode": "INVALID_THRESHOLDS"
+      }
+    ]
+  },
+  {
+    "scenario": "policy-decide-audits-memory",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "auditable-plugin",
+            "kind": "plugin",
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1.0 } },
+              { "key": "trust", "score": { "score": 0.8 } }
+            ],
+            "findings": []
+          }
+        ],
+        "_note": "Sprint 4 audit hook: 决策写入 memory (type=decision)"
+      }
+    ],
+    "expected": [
+      { "kind": "audit-writes-memory" }
+    ]
+  }
+]

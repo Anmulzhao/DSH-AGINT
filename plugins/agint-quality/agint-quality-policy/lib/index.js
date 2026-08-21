@@ -1,22 +1,17 @@
 /**
- * agint-quality-policy: D-QAF Phase 4 策略引擎（v0.3.x 占位骨架）
+ * agint-quality-policy: D-QAF Phase 4 策略引擎（v0.4 完整版）
  *
- * 实现 QualityPolicyIface.decide()（contract 定义的 seam）：
- *   decide({ results, config }) → Promise<Decision>
+ * 实现 QualityPolicyIface（contract 定义的 seam）：
+ *   decide({ results, config, options }): Promise<Decision>
  *
- * ## Sprint 3.3 范围（当前）
- *   - Service 接口完整：decide + config + health + history
- *   - 最小策略：safety veto → REJECT，其余 PENDING_REVIEW
- *   - REJECT 决策触发 evo.addFailure(pattern='policy-reject:...', category=integration)
- *   - 决策历史写入 agint_evolution.evolution_log (Phase 4 自动写入)
+ * ## Sprint 4 范围
+ *   - 完整 4 决策 (AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN) — 与 contract.DecisionKind 对齐
+ *   - 加权综合分：trust / reliability / effectiveness / safety / integrability
+ *   - thresholds 读取（autoDeploy / pendingReview）+ setThresholds 走 contract.setConfig 审计
+ *   - 反和谐检测器挂钩（options.detectors）
+ *   - audit: 决策历史写到 memory (type=decision) + evo.logPhase4
  *
- * ## Sprint 4 接入
- *   - 完整 4 决策 (AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN)
- *   - 加权综合分：trust / reliability / effectiveness / integrability
- *   - 阈值配置 (QualityConfig.pendingReview / reject)
- *   - 反和谐检测器
- *
- * Row (profile cordis.patch.yml):
+ * ## Row
  *   - insert:
  *       - id: agint-quality-policy
  *         name: ./plugins/agint-quality/agint-quality-policy/lib/index.js
@@ -24,31 +19,27 @@
  */
 
 import { z } from 'zod';
-import { decidePolicy, shouldReportToEvolution, buildRejectFailurePattern } from './decide.js';
+import {
+  decidePolicy,
+  shouldReportToEvolution,
+  buildRejectFailurePattern,
+  validateThresholds,
+  DEFAULT_POLICY_ID,
+} from './decide.js';
 
 const name = 'agint-quality-policy';
 const inject = ['agint.evolution'];
 
 const Config = z.object({
-  /** policy 标识（用于 decision.evaluatorId 拼接） */
-  evaluatorId: z.string().default('agint-quality-policy@0.3.0'),
+  /** policy 标识（用于 Decision.policyId） */
+  policyId: z.string().default(DEFAULT_POLICY_ID),
   /** 是否把决策历史写入 evolution-log（默认 true） */
   writeEvolutionLog: z.boolean().default(true),
-  /** 是否在 REJECT 时自动 addFailure（默认 true） */
+  /** 是否在 REJECT/ABSTAIN 时自动 addFailure（默认 true） */
   autoReportRejection: z.boolean().default(true),
+  /** 是否写 memory 审计（默认 true） */
+  writeMemoryAudit: z.boolean().default(true),
 }).optional();
-
-const DecisionSchema = z.object({
-  decision: z.enum(['AUTO_DEPLOY', 'PENDING_REVIEW', 'REJECT', 'ABSTAIN']),
-  reason: z.string(),
-  perTarget: z.array(z.object({
-    targetId: z.string(),
-    decision: z.enum(['AUTO_DEPLOY', 'PENDING_REVIEW', 'REJECT', 'ABSTAIN']),
-    reason: z.string(),
-  })).default([]),
-  ts: z.string(),
-  evaluatorId: z.string(),
-});
 
 function apply(ctx, config) {
   const cfg = Config.parse(config || {});
@@ -60,29 +51,28 @@ function apply(ctx, config) {
 
   /**
    * Make a decision based on eval results.
-   * Returns Decision. Side effects:
-   *   - REJECT → evo.addFailure (if autoReportRejection)
-   *   - any decision → evo.logPhase4 (if writeEvolutionLog)
+   * @returns {Promise<Decision>} — shape 严格对齐 contract.DecisionSchema
    */
-  async function decide({ results, config: overrideConfig } = {}) {
+  async function decide({ results, config: overrideConfig, options } = {}) {
     if (disposed) throw new Error('agint-quality-policy: disposed');
     const mergedConfig = { ...cfg, ...overrideConfig };
-    const decision = await decidePolicy({ results, config: mergedConfig });
-    DecisionSchema.parse(decision);
+    const decision = await decidePolicy({ results, config: mergedConfig, options });
 
     const evo = ctx.get('agint.evolution');
+    const memory = ctx.get('agint.memory');
 
-    // Phase 4 自动化：每个决策写 evolution-log
+    // Phase 4 自动化: 每个决策写 evolution-log (PENDING_REVIEW 也写, 决策审计)
     if (cfg.writeEvolutionLog && evo && typeof evo.logPhase4 === 'function') {
-      const rejected = decision.perTarget?.filter((t) => t.decision === 'REJECT') ?? [];
+      const rejected = decision.perTarget?.filter((t) => t.kind === 'REJECT') ?? [];
       try {
         await evo.logPhase4({
-          targetId: `policy-batch-${decision.ts}`,
+          targetId: `policy-batch-${decision.decidedAt}`,
           targetKind: 'composite',
-          decision: decision.decision,
+          decision: decision.kind,
           scores: {
-            policyDecision: decision.decision,
-            perTargetCount: decision.perTarget.length,
+            policyKind: decision.kind,
+            policyScore: decision.score,
+            perTargetCount: decision.perTarget?.length ?? 0,
             rejectedCount: rejected.length,
           },
           findings: rejected.map((t) => ({
@@ -90,14 +80,14 @@ function apply(ctx, config) {
             severity: 'high',
             detail: `${t.targetId}: ${t.reason}`,
           })),
-          tags: ['policy-decision', `decision:${decision.decision}`],
+          tags: ['policy-decision', `decision:${decision.kind}`],
         });
       } catch (err) {
         if (!disposed) console.error('[agint-quality-policy] evo.logPhase4 failed:', err.message);
       }
     }
 
-    // REJECT 自动 addFailure
+    // REJECT/ABSTAIN 自动 addFailure
     if (cfg.autoReportRejection && shouldReportToEvolution(decision) && evo && typeof evo.addFailure === 'function') {
       try {
         const pattern = buildRejectFailurePattern(decision);
@@ -112,19 +102,54 @@ function apply(ctx, config) {
       }
     }
 
+    // audit: 决策历史写到 memory (Sprint 4 audit hook)
+    if (cfg.writeMemoryAudit && memory && typeof memory.write === 'function') {
+      try {
+        await memory.write({
+          type: 'decision',
+          content: `[agint.qualityPolicy] ${decision.kind} score=${decision.score} policyId=${decision.policyId} reason=${decision.reason}`,
+          evidence: `agint-quality-policy:decide:${decision.decidedAt}`,
+        });
+      } catch (err) {
+        if (!disposed) console.error('[agint-quality-policy] audit memory.write failed:', err.message);
+      }
+    }
+
     return decision;
+  }
+
+  /**
+   * Set thresholds via contract.setConfig (走审计链路)
+   * @param {object} patch — { autoDeploy?, pendingReview? }
+   * @returns {Promise<object>} updated config from contract
+   */
+  async function setThresholds(patch) {
+    const quality = ctx.get('agint.quality');
+    const validation = validateThresholds(patch);
+    if (!validation.valid) {
+      const err = new Error(
+        `agint-quality-policy: setThresholds rejected — invalid: ${validation.issues.join(', ')}`
+      );
+      err.code = 'INVALID_THRESHOLDS';
+      throw err;
+    }
+    if (!quality || typeof quality.setConfig !== 'function') {
+      throw new Error('agint.quality contract service not available');
+    }
+    return quality.setConfig({ thresholds: patch });
   }
 
   function health() {
     return {
       config: cfg,
       serviceAvailable: true,
-      pendingSprint4: true,
+      sprintComplete: 'v0.4',
     };
   }
 
   ctx.provide('agint.qualityPolicy', {
     decide,
+    setThresholds,
     health,
     config: cfg,
   });
