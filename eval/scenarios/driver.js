@@ -94,7 +94,7 @@ export function makeRichEvalMockCtx(input) {
 
   // Mock upstream services with enough surface for dimension evaluators
   const mockToolStats = {
-    failureRate: async () => ({ rate: 0.05, calls: 100 }),
+    failureRate: async () => ({ tool: 'mocked', failureRate: 0.05, calls: 100 }),
     summary: async () => ({ calls: 100, errors: 5 }),
   };
   const mockMemory = {
