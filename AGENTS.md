@@ -85,6 +85,16 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 - **不要跨周累计自动部署超过 3 次**（进化健康度护栏之一）
 - **不要在没有 `## 哲学对齐检查` 章节时提交 P 阶段验收 / 重大 PR**（复盘报告推荐含但不强制）
 
+## 挂载/重启红线（2026-08-21 复盘新增）
+
+> **挂载/更新/重启 AGINT 任何东西之前**：① 拍 4 份快照（patch / preset / plugins tar.gz / storages）
+③ `kill -SIGTERM` 而非 SIGKILL（让 cordis fiber dispose 跑完）
+④ 重启后 `cat sentinel.lease` 看 `at` < 30s
+⑤ 崩了就 `plugin → patch → preset` 倒序回滚，storage 默认不回滚。
+
+直接跑 `bin/safe-update.sh <mount-patch|edit-source|restart|rollback|smoke|help>`。
+完整 SOP：`docs/operations/safe-update-sop.md`。事故复盘：`docs/operations/dsh-restart-incident-20260821.md`。
+
 ## 快速参考
 
 | 想知道 | 去看 |
