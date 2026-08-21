@@ -1,0 +1,178 @@
+[
+  {
+    "scenario": "sprint6-batchStaticCheck-cleans-and-bad",
+    "plugin": "agint-quality-sdk",
+    "input": [
+      {
+        "_note": "scan a freshly generated examples dir, expect all clean"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "batch-static-check-clean",
+        "manifestsRoot": "${AGINT_PLUGIN}/plugins/agint-quality-sdk/examples"
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-cron-job-prompt-static-check-registered",
+    "plugin": "agint-cron",
+    "input": [
+      { "service": "cron", "action": "listDefaultJobs" }
+    ],
+    "expected": [
+      {
+        "kind": "default-jobs-registered",
+        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check"]
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-evalPromptStatic-no-prompt-target",
+    "plugin": "agint-sprint6-prompt-eval",
+    "input": [
+      {
+        "_note": "target 不带 prompt-target tag → evalPromptStatic 应返 null + info"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "eval-prompt-static-skipped",
+        "targetKind": "plugin",
+        "tags": []
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-evalPromptStatic-clean-prompt",
+    "plugin": "agint-sprint6-prompt-eval",
+    "input": [
+      {
+        "_note": "target 带 prompt-target + manifest + templateText 干净 → score=1.0"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "eval-prompt-static-clean",
+        "expectedScore": 1.0
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-evalPromptStatic-bad-prompt-score-dropped",
+    "plugin": "agint-sprint6-prompt-eval",
+    "input": [
+      {
+        "_note": "bad prompt (system: override 注入) → score 下降"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "eval-prompt-static-blocker-score-below",
+        "maxScore": 0.5
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-policy-prompt-blocker-finding-forces-REJECT",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "bad-prompt",
+            "kind": "plugin",
+            "tags": ["prompt-target"],
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.9 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.85 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": [{ "severity": "blocker", "message": "INJECTION_IGNORE_PREV" }]
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "REJECT",
+        "perTargetDecisions": ["REJECT"]
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-policy-clean-prompt-PENDING_REVIEW",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "decide",
+        "results": [
+          {
+            "targetId": "clean-prompt",
+            "kind": "plugin",
+            "tags": ["prompt-target"],
+            "dimensions": [
+              { "key": "safety", "score": { "score": 1 }, "veto": false },
+              { "key": "trust", "score": { "score": 0.6 }, "veto": false },
+              { "key": "reliability", "score": { "score": 0.9 } },
+              { "key": "integrability", "score": { "score": 1.0 } }
+            ],
+            "findings": []
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "kind": "decision-shape",
+        "decision": "PENDING_REVIEW",
+        "perTargetDecisions": ["PENDING_REVIEW"]
+      }
+    ]
+  },
+  {
+    "scenario": "sprint6-report-prompt-section-rendered",
+    "plugin": "agint-quality-report",
+    "input": [
+      {
+        "service": "qualityReporter",
+        "action": "generate",
+        "results": [
+          {
+            "targetId": "my-prompt",
+            "kind": "plugin",
+            "evaluatorId": "agint-quality-eval@2026-08-22",
+            "durationMs": 50,
+            "tags": ["prompt-target"],
+            "dimensions": [
+              { "key": "safety", "label": "安全", "score": { "score": 1 }, "veto": false },
+              { "key": "promptStatic", "label": "Prompt Static", "score": { "score": 1 }, "veto": false }
+            ],
+            "harm": { "homogeneity": 0.5, "alignment": 0.9, "reduction": 0.9, "mutability": 0.5 },
+            "findings": []
+          }
+        ],
+        "decision": {
+          "kind": "PENDING_REVIEW",
+          "score": 90,
+          "reason": "policy-pending",
+          "triggeredBy": [],
+          "decidedAt": "2026-08-22T00:00:00Z",
+          "policyId": "agint-quality-policy@0.5.0",
+          "perTarget": []
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "report-shape-prompt",
+        "mustIncludeMarkdownHeadings": ["Prompt summary (Sprint 6)", "promptStatic score"]
+      }
+    ]
+  }
+]
