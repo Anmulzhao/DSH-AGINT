@@ -1,6 +1,6 @@
 {
   "name": "agint-quality-policy",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "D-QAF Phase 4 策略引擎（v0.3.x 占位骨架）：实现 QualityPolicy.decide({results, config})。当前版本返回 PENDING_REVIEW + reason='policy-pending-sprint-4'；REJECT 决策时调 evo.addFailure。Sprint 4 接入完整 4 决策 (AUTO_DEPLOY/PENDING/REJECT/ABSTAIN) + 加权逻辑。",
   "type": "module",
   "main": "lib/index.js",
