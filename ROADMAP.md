@@ -162,22 +162,28 @@
 
 ### D-QAF Phase 4：灰度发布
 
-- [ ] `agint-quality-report`：写 Markdown → `agint-wiki` + JSON → `agint-memory`
-- [ ] `agint-quality-policy`：实现决策引擎（AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN）
-- [ ] 灰度发布：A/B 测试 + 实时熔断
-- [ ] HARM 不能独立决策：必须与 TRACE-P 中的 Safety/Reliability 联合使用（HARM=95 but Reliability<80% 仍不得自动部署）
+- [x] `agint-quality-report@0.4.0`：写 Markdown → `agint-wiki` + JSON → `agint-memory`（Sprint 4.4）
+- [x] `agint-quality-policy@0.4.0`：完整 4 决策（AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN）+ 加权综合分 + audit + thresholds（**Sprint 4.1**）
+- [x] 反和谐检测器（**Sprint 4.2**）：rejection-uniformity / false-consensus / regression-underreporting 三类精确算法
+- [x] 元评估委员会（**Sprint 4.3**）：shadow / rollback / history source-of-truth + N=10 自动升
+- [x] 端到端闭环脚本（**Sprint 4.5**）：`cron → dream → memory → metrics → evolve → eval → policy → report`，eval/e2e/sprint4-closed-loop.js 10/10 PASS
+- [ ] 灰度发布：A/B 测试 + 实时熔断（**部分完成**：shadow mode + auto-promote + rollback 是基础设施,A/B 流量切分留 v0.5）
+- [x] HARM 不能独立决策：Safety<0.5 / Trust<0.3 → REJECT veto（综合分 safety 权重 0.30 一票否决）
+- [ ] 安全护栏：每周最多 N 次自动部署护栏（v0.5+ 接入 weekly hook）
+- [ ] 静态检查（`agint-quality-static-*`）：老板拍板 v0.4 不做
 
 ### Prompt 层进化
 
-- [ ] 新增插件类型：`dsh-quality-prompt-*`
+- [ ] 新增插件类型：`dsh-quality-prompt-*`（**留给 P5**；本 Sprint 老板拍板只做 D-QAF 主线）
 - [ ] 系统 Prompt 模板视为可版本化资产，纳入语义版本管理
 - [ ] 复用 D-QAF 流水线：Prompt 变更 → 静态检查（格式 / 注入风险）→ 沙盒 A/B 测试 → HARM 打分 → 灰度发布
 - [ ] **关键约束**：Prompt 变更必须附带至少 5 个回归测试用例
 
 ### 安全护栏
 
-- [ ] 元评估委员会机制：`agint-quality-policy` 变更需满足 ① 连续 N 次进化未触发回滚，或 ② 经人类审批 + 影子模式验证 7 天以上
-- [ ] 核心契约（`agint-quality-contract`）语义版本锁定：接口签名变更必须发 major 版本，旧版本至少保留 3 个 minor 周期
+- [x] 元评估委员会机制（**Sprint 4.3**）：shadow run + auto-promote N=10 + rollback（≥50% REJECT）
+- [x] 核心契约（`agint-quality-contract`）语义版本锁定：FROZEN（QualityEvaluator/Policy/Reporter/Lifecycle 接口签名）+ ADJUSTABLE（harmWeights / thresholds / sandboxLimits）护栏
+- [x] L0 字段修改走 `validatePatch` 守门（contact plugin 已实现） + AGENTS.md 文档化人类多签路径
 
 ### 社区化技术前提
 
@@ -185,6 +191,17 @@
 - [ ] 插件 SDK + 模板生成器：`dsh plugin init --name my-eval`
 - [ ] 3 个官方示例 Plugin（静态检查 / 沙盒测试 / HARM 评分）
 - [ ] P4 第一个里程碑："外部贡献者成功提交一个合规 Plugin 并通过 CI"（先于文档就绪）
+
+### v0.4 sprint 完成度
+
+| Sub-task | 内容 | 场景 | commit |
+|---|---|---|---|
+| 4.1 | policy 完整升级 | 10 | `375273a` |
+| 4.2 | 反和谐检测器 | 7 | `eb58829` |
+| 4.3 | 元评估委员会 | 6 | `916806a` |
+| 4.4 | HARM 报告生成 | 3 | `51681d7` |
+| 4.5 | 端到端测试 | 1 脚本 (10 步) | `c76de17` + `38320d7` |
+| **合计** | | **26 场景 (19 + 7 旧移除 + e2e)** | **6 commits** |
 
 ---
 

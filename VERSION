@@ -6,6 +6,9 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 
 | AGINT | dsh minimum | dsh tested | notes |
 |-------|-------------|------------|-------|
+| v0.4  | 0.1.0-rc.6  | 0.1.0-rc.6 | P4 收口：策略引擎 + 反和谐 + 元评估 + HARM 报告；agint-quality-{policy,report}@0.4.0 启用 |
+| v0.3  | 0.1.0-rc.6  | 0.1.0-rc.6 | P3 收口：eval + sandbox + evolution + 退化探测 |
+| v0.2  | 0.1.0-rc.6  | 0.1.0-rc.6 | D-QAF contract + eval 引擎 |
 | v0.1  | 0.1.0-rc.6  | 0.1.0-rc.6 | 初版迁移；8 个插件对应 dsh host-plane 8 个 Service |
 
 ## 校验方法
