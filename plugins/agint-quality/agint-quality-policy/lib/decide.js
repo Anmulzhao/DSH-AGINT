@@ -132,6 +132,8 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
 
   // 阈值（contract 自带 default）
   const thresholds = config.thresholds ?? { autoDeploy: 90, pendingReview: 75 };
+  // Sprint 6.3: prompt target 独立 thresholds (默认更严, prompt blocker → 立即 fail)
+  const promptThresholds = config.promptThresholds ?? { autoDeploy: 95, pendingReview: 85 };
   const weights = config.dimensionWeights ?? DEFAULT_DIMENSION_WEIGHTS;
 
   // 0. 空 / 信号不足 → ABSTAIN
@@ -199,23 +201,36 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
     }
 
     const kind = classifyByScore(composite, thresholds);
+    // Sprint 6.3: prompt target 用更严的 promptThresholds (blocker 视为立即 fail)
+    const isPromptTarget = Array.isArray(r.tags) ? r.tags.includes('prompt-target') : false;
+    // 任一 target 上的 blocker finding (severity='blocker' in findFindings) → REJECT, 跳过阈值
+    const hasBlockerFinding = (r.findings ?? []).some((f) => f.severity === 'blocker');
+    const effectiveKind = hasBlockerFinding
+      ? 'REJECT'
+      : (isPromptTarget ? classifyByScore(composite, promptThresholds) : kind);
     perTarget.push({
       targetId: r.targetId,
-      kind,
+      kind: effectiveKind,
       score: composite,
-      reason: `composite=${composite} thresholds=${thresholds.autoDeploy}/${thresholds.pendingReview}`,
+      reason: hasBlockerFinding
+        ? `blocker-finding:${(r.findings.find((f) => f.severity === 'blocker')?.message ?? '').slice(0, 60)}`
+        : (isPromptTarget
+          ? `composite=${composite} promptThresholds=${promptThresholds.autoDeploy}/${promptThresholds.pendingReview}`
+          : `composite=${composite} thresholds=${thresholds.autoDeploy}/${thresholds.pendingReview}`),
     });
     totalScore += composite;
-    if (kind === 'AUTO_DEPLOY') anyAutoDeploy = true;
+    if (effectiveKind === 'AUTO_DEPLOY') anyAutoDeploy = true;
   }
 
   // 3. master 决策
   //    任一 veto → REJECT
+  //    否则 Sprint 6.3: 任一 perTarget.decision === 'REJECT' (含 blocker finding) → master REJECT
   //    否则若任一 AUTO_DEPLOY → PENDING_REVIEW（合并视角；不强制 deploy）
   //    否则任一 low-composite → PENDING_REVIEW
   //    否则（全部高且一致）→ AUTO_DEPLOY 是过激的：默认 PENDING_REVIEW
   //    注：real-world master AUTO_DEPLOY 需要额外的人工 gate，这里保守 PENDING_REVIEW
-  if (anyVeto) {
+  const anyPerTargetReject = perTarget.some((t) => t.kind === 'REJECT');
+  if (anyVeto || anyPerTargetReject) {
     masterKind = 'REJECT';
   } else if (results.length === 1 && anyAutoDeploy && perTarget[0]?.kind === 'AUTO_DEPLOY') {
     // 单 target AUTO_DEPLOY → master 也 AUTO_DEPLOY（DRY-RUN 默认行为；Phase 4 默认灰度）

@@ -82,7 +82,21 @@ export function formatMarkdown({ results, decision, meta = {} }) {
       lines.push(dimensionRow(d));
     }
     lines.push(``);
-    if (r.harm) {
+    // Sprint 6.4: prompt-target 特殊 section (manifest 摘要 + HARM + 注入风险摘要)
+    const isPromptTarget = Array.isArray(r.tags) ? r.tags.includes('prompt-target') : false;
+    if (isPromptTarget) {
+      lines.push(`**Prompt summary (Sprint 6)**:`);
+      lines.push(`- Tags: ${r.tags?.join(', ') ?? 'prompt-target'}`);
+      const ps = r.dimensions.find((d) => d.key === 'promptStatic');
+      if (ps) {
+        lines.push(`- promptStatic score: ${ps.score?.score ?? 'null'}`);
+        lines.push(`- promptStatic raw: ${JSON.stringify(ps.score?.raw ?? {})}`);
+      }
+      if (r.harm) {
+        lines.push(`**HARM**: H=${r.harm.homogeneity} A=${r.harm.alignment} R=${r.harm.reduction} M=${r.harm.mutability}`);
+      }
+      lines.push(``);
+    } else if (r.harm) {
       lines.push(`**HARM**: H=${r.harm.homogeneity} A=${r.harm.alignment} R=${r.harm.reduction} M=${r.harm.mutability}`);
       lines.push(``);
     }
