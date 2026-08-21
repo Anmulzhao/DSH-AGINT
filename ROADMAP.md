@@ -174,10 +174,18 @@
 
 ### Prompt 层进化
 
-- [ ] 新增插件类型：`dsh-quality-prompt-*`（**留给 P5**；本 Sprint 老板拍板只做 D-QAF 主线）
+- [x] **Sprint 5 (Part 1/2)** — `agint-quality-sdk@0.5.0`:
+  - PromptManifestSchema FROZEN 契约 (lib/schema.js): `name / version / description / kind / variables / regressionTests / contractRef`
+  - 模板引擎 (lib/template-engine.js): `extractPlaceholders` / `renderPrompt` (required + enum 校验)
+  - 静态检查三类 (lib/static-check.js): 注入 / 占位符滥用 / manifest 不一致
+  - **老板拍板**: regressionTests ≥ 5 (P3 哲学护栏的 prompt 层延伸)
+  - CLI `bin/agint-prompt-init.js`: 3 presets (hello/coder/investor), 生成 manifest+template+tests+README
+  - 3 个示例 (`examples/{hello,coder,investor}-prompt`) 由 CLI 生成
+  - profile-patches/web/cordis.patch.yml: SDK row 启用
+- [ ] **Sprint 6+** — 接入 D-QAF 流水线: weekly cron / eval prompt kind / policy prompt path / wiki 集成
+- [ ] Prompt-A/B 测试基础设施 (Phase 5.2)
 - [ ] 系统 Prompt 模板视为可版本化资产，纳入语义版本管理
-- [ ] 复用 D-QAF 流水线：Prompt 变更 → 静态检查（格式 / 注入风险）→ 沙盒 A/B 测试 → HARM 打分 → 灰度发布
-- [ ] **关键约束**：Prompt 变更必须附带至少 5 个回归测试用例
+- [ ] **关键约束**：Prompt 变更必须附带至少 5 个回归测试用例 → 已落地 manifest.regressionTests ≥ 5
 
 ### 安全护栏
 

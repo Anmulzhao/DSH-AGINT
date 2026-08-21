@@ -1,5 +1,47 @@
 # AGINT CHANGELOG
 
+## [v0.5.0] — 2026-08-22 — Prompt SDK 落地（Sprint 5，Part 1/2）
+
+> **里程碑**:  P4 末 / P5 头。Prompt SDK 基础设施落地: PromptManifest FROZEN 契约 + 模板引擎 + 三类风险静态检查 + CLI 模板生成器 + 3 个示例 preset。
+> **破坏性变更**: 无（全部新增）。
+> **L0-frozen 字段**: `PromptManifestSchema` 顶层字段集新增 + 标记 `@frozen`。
+> **Sprint 5 commits**: 1 × `feat(sdk)` (SDK bundle) + 1 × `feat(e2e+patch+docs)` (e2e + profile row + docs)。
+
+### 新增
+
+- **Prompt SDK 插件 `agint-quality-sdk@0.5.0`**:
+  - FROZEN 契约 `PromptManifestSchema` (lib/schema.js): `name / version / description / kind / variables / regressionTests / contractRef`
+  - **老板拍板**: regressionTests 必须 **≥ 5** (P3 哲学护栏的 prompt 层延伸)
+  - 模板引擎 (lib/template-engine.js): `extractPlaceholders` / `checkPlaceholdersAgainstManifest` / `renderPrompt({templateText, manifest, values})` —— required + enum 校验
+  - 静态检查三类 (lib/static-check.js):
+    - **注入**: `system:` / `<|im_start|>` / `ignore previous instructions` / shell escape 等 → blocker
+    - **占位符滥用**: 未声明使用 + edit-distance-1 拼写提示 → warn
+    - **manifest 不一致**: tests<5 / 缺 `expectedOutputNotContains` / 占位符未声明 → blocker / warn
+  - Service `agint.promptSDK.{validate, render, staticCheck, runTests}`
+- **CLI 模板生成器 `bin/agint-prompt-init.js`**:
+  - `--name=<kebab>` + `--preset=<hello|coder|investor>` + `--out=<dir>`
+  - 生成 `manifest.json + template.md + tests.json + README.md` 四件套
+  - dry-run static-check + regression tests, blocker 即拒绝写盘
+- **3 个示例 preset**: `examples/{hello,coder,investor}-prompt` (CLI 生成, 跟消费者用)
+- **profile-patches/web/cordis.patch.yml**: 加 SDK row 让 prod 装载 SDK plugin
+
+### 验证
+- **7/7 SDK eval 场景全过** (manifest / render / static-check / regression tests)
+- **76/76 全量 eval 回归** (Sprint 4 baseline 70 + Sprint 5 净增 7 - 调整)
+- **14/14 CLI e2e 场景全过** (`eval/e2e/sprint5-sdk-cli.js`: --help + 3 preset gen + 4 异常 reject + 6 check + injection blocker)
+
+### 已知限制 (Sprint 6+ 推进项)
+- PromptSdk 跟 D-QAF 流水线尚未接线 (weekly cron / eval prompt kind / policy prompt path)
+- FROZEN 字段变更的人类多签治理路径与 Quality contract 解耦
+- Prompt-A/B 测试基础设施 (Phase 5.2+)
+
+### 配套 git tag
+```
+git tag -a v0.5.0 -m "AGINT v0.5.0 — Prompt SDK 落地 (Sprint 5)"
+```
+
+---
+
 ## [v0.4.0] — 2026-08-22 — D-QAF Phase 4 策略引擎 + 反和谐 + 灰度发布（P4 收口）
 
 > **里程碑**：P4 阶段 v0.4 主体收口。D-QAF 端到端闭环: cron → dream → memory → metrics → evolve → eval → policy → report,且元评估层（反和谐检测 + 影子模式 + 自动晋升 + 自动回滚）落地。

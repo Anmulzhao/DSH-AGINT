@@ -113,3 +113,14 @@
     - id: agint-quality-report
       name: ./plugins/agint-quality/agint-quality-report/lib/index.js
       config: {}
+
+    # Sprint 5 Prompt SDK
+    #   - PromptManifest FROZEN schema (契约)
+    #   - template-engine 渲染 + enum 校验
+    #   - 静态检查三类风险 (注入 / 占位符 / manifest 不一致)
+    #   - CLI bin/agint-prompt-init.js (3 presets: hello/coder/investor)
+    #   - 3 个示例 examples/{hello,coder,investor}-prompt
+    # Service: agint.promptSDK.{validate, render, staticCheck, runTests}
+    - id: agint-quality-sdk
+      name: ./plugins/agint-quality-sdk/lib/index.js
+      config: {}
