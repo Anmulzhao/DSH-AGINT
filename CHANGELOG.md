@@ -1,5 +1,79 @@
 # AGINT CHANGELOG
 
+## [v0.4.0] — 2026-08-22 — D-QAF Phase 4 策略引擎 + 反和谐 + 灰度发布（P4 收口）
+
+> **里程碑**：P4 阶段 v0.4 主体收口。D-QAF 端到端闭环: cron → dream → memory → metrics → evolve → eval → policy → report,且元评估层（反和谐检测 + 影子模式 + 自动晋升 + 自动回滚）落地。
+> **破坏性变更**: `agint-quality-policy` 的 `Decision` 返回 shape 从 `{decision, perTarget[].decision, ts, evaluatorId}` 变为 `{kind, score, reason, triggeredBy, decidedAt, policyId, perTarget[].kind}` —— 与 contract `DecisionSchema` FROZEN 对齐。Sprint 3.3 placeholder eval 同步删除。
+> **L0-frozen 字段**: 无变更。
+> **Sprint 4 commits**: `375273a` (4.1) · `eb58829` (4.2) · `916806a` (4.3) · `51681d7` (4.4) · `c76de17` (4.5) · `38320d7` (profile row)。
+
+### 新增
+
+- **Sprint 4.1** — `agint-quality-policy@0.4.0` 完整 4 决策 + 加权综合分 + audit + thresholds (commit `375273a`)
+  - 决策枚举: `AUTO_DEPLOY` / `PENDING_REVIEW` / `REJECT` / `ABSTAIN` (与 contract `DecisionKindSchema` FROZEN 对齐)
+  - 综合分算法: `100 * Σ(weight_i * score_i) / Σ(weight_i for valid)`;权重 `{safety:0.30, trust:0.20, reliability:0.20, integrability:0.20, effectiveness:0.10}`,safety/trust 默认 veto
+  - veto 阈值: `safety < 0.5` 或 `trust < 0.3` → REJECT
+  - `setThresholds(patch)` → 走 `contract.setConfig({thresholds:patch})` 审计链路,validateThresholds 校验范围+顺序
+  - 反和谐检测器接入点: `options.detectors.run({results,config})` 返回 `false-harmony` → 立即 REJECT
+  - audit hook: `evo.logPhase4` (任意决策) + `evo.addFailure` (`policy-<lowercase-kind>` on REJECT/ABSTAIN) + `agint.memory.write` (任意决策)
+  - 决策 shape 对齐 contract.DecisionSchema: `kind/score/reason/triggeredBy/decidedAt/policyId/(perTarget)`
+  - eval/scenarios: 10 场景全过 (5 个 placeholder 移除,by 4.1 scenarios 替代)
+
+- **Sprint 4.2** — 反和谐检测器 3 类模式 (commit `eb58829`)
+  - `detectRejectionUniformity`: 同一 target 最近 K=5 次 evaluate 决策无 variance → 暗示"评估器过拟合/过保守"
+  - `detectFalseConsensus`: 同批 N≥3 target 全 `AUTO_DEPLOY` 且 `min(score)≥99` → "批放水"
+  - `detectRegressionUnderreporting`: regression history max severity≥high 但最新 <high → "隐瞒退化"
+  - Service `agint.qualityPolicy.detectFalseHarmony({results,history})` 与 `runHarmonyDetectors` 纯函数入口
+  - 阈值 ADJUSTABLE,DEFAULT_HARMONY_CONFIG = {K:5, N:3, minScore:99}
+  - eval/scenarios: 7 场景全过 (含 variance / mixed-decision / clean-window 负样本)
+
+- **Sprint 4.3** — 元评估委员会 (commit `916806a`)
+  - `runShadowPolicy({candidateId, results, candidateDecide, prodDecide, storage})` —— 影子模式,候选 vs prod 决策分歧分析,只记录不写 failure
+  - `checkShadowAutoPromotion({candidateId, threshold=10})` —— 影子连续 N=10 次一致 → `shouldPromote=true`
+  - `shouldRollback({recentDecisions, minSample=5, triggerPct=0.5})` —— 高频 REJECT(≥50%) → 自动回滚
+  - `recordRollback({from, to, reason})` + `pickRollbackTarget` (上一 audit-passed 策略)
+  - `appendHistory` (source-of-truth, append-only) + `queryHistory({policyId, kind, limit})`
+  - Service `agint.qualityPolicy.committee.{...}`; integrate 进 `decide()` 自动 `appendHistory`
+  - eval/scenarios: 6 场景全过 (shadow agree/disagree + N=10 promote + rollback trigger/skip + history roundtrip)
+
+- **Sprint 4.4** — HARM 报告生成插件 `agint-quality-report@0.4.0` (commit `51681d7`)
+  - 实现 `QualityReporterIface` (FROZEN 签名) `generate({results, decision, meta?})` → `{markdown, json}`
+  - markdown 含: 决策头部 / Targets 表 / 每 target 维度表 / HARM 摘要 / Findings / Audit
+  - json 含: `decision / meta / summary (targetCount/avgComposite/avgHarm/kind-distribution) / targets[]`
+  - Service `agint.qualityReporter.{generate, writeToWiki, writeToMemory, generateAndPersist}`
+  - 可选写 `agint.wiki` (slug=`quality/d-qaf-<ts>.md`) + `agint.memory` (type=decision)
+  - profile-patches/web/cordis.patch.yml: 加 policy + report rows
+  - eval/scenarios: 3 场景全过 (generate shape + persist + missing decision throws)
+
+- **Sprint 4.5** — 端到端闭环脚本 (commit `c76de17`)
+  - `eval/e2e/sprint4-closed-loop.js`: 10 步骤串联 8 个 service (cron→dream→memory→metrics→evolve→eval→policy→report)
+  - 真 plugin 装载 + 真 plugin 链路,不依赖 dsh 启动
+  - Sprint 1.x 期间 mock field 名 bug 暴露 (`fr.rate` vs evaluators 期望 `fr.failureRate`) —— driver 双点修
+  - 副作用全验证: evo.evolution_log=1 / failure_pattern=1 / wiki=1 / memory=4
+
+### 修复
+- `eval/scenarios/driver.js` 的 `mockToolStats.failureRate()` 字段名从 `rate` 改为 `failureRate`,对齐 `evaluators.js#evalReliability` 契约。Sprint 1~3 因 mock 字段名错配,`reliability` 维度长期返回 NaN,Sprint 4.5 端到端集成后才显形。
+
+### 验证
+- **70/70 eval 场景全过** (Sprint 3 51 个 + Sprint 4 新增 19 个: 4.1 10 + 4.2 7 + 4.3 6 + 4.4 3 - placeholder 6 - 冲突 1)
+  实际:  driver 单跑 16 scenario 文件 → 70 PASS / 0 FAIL
+- **1/1 e2e 闭环脚本全过**: `node eval/e2e/sprint4-closed-loop.js` → 10/10 PASS
+- D-QAF 端到端完整 8 链路闭环 (cron→dream→memory→metrics→evolve→eval→policy→report)
+
+### 已知限制（v0.4 未做，留 v0.5+）
+- 反和谐检测器 weekly hook 自动调用（当前手动 / 4.5 e2e 演示）
+- 元评估委员会 weekly trigger + 副作用（prod snapshot 自动 save / rollback 自动执行）
+- HARM 报告 wiki 模板与 A/B 灰度钩子
+- L4 真理引擎发问、Vision/AGI 涌现层
+- 跨平台 install 验证 / 真沙箱后端（`dsh-sandbox-local`）
+
+### 配套 git tag
+```
+git tag -a v0.4.0 -m "AGINT v0.4.0 — D-QAF Phase 4 策略引擎 + 反和谐 + 灰度发布 (P4 收口)"
+```
+
+---
+
 > 本文件记录 AGINT 仓库每个版本的可观察变更。遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。
 >
 > **版本节奏**（详见 `ROADMAP.md`）：
