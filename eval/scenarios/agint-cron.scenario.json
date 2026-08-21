@@ -28,7 +28,7 @@
     "expected": [
       {
         "kind": "default-jobs-registered",
-        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill"]
+        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check"]
       }
     ]
   }

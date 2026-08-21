@@ -1,0 +1,124 @@
+{
+  "regressionTests": [
+    {
+      "name": "case-1",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-2",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-3",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-4",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-5",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    }
+  ]
+}

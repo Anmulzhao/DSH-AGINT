@@ -1,0 +1,99 @@
+{
+  "regressionTests": [
+    {
+      "name": "case-1",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-2",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-3",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-4",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-5",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    }
+  ]
+}
