@@ -1,0 +1,94 @@
+{
+  "regressionTests": [
+    {
+      "name": "case-1",
+      "inputs": {
+        "user": {
+          "name": "老板"
+        },
+        "product": {
+          "name": "AGINT"
+        }
+      },
+      "expectedOutputContains": [
+        "Hello",
+        "welcome"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-2",
+      "inputs": {
+        "user": {
+          "name": "老板"
+        },
+        "product": {
+          "name": "AGINT"
+        }
+      },
+      "expectedOutputContains": [
+        "Hello",
+        "welcome"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-3",
+      "inputs": {
+        "user": {
+          "name": "老板"
+        },
+        "product": {
+          "name": "AGINT"
+        }
+      },
+      "expectedOutputContains": [
+        "Hello",
+        "welcome"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-4",
+      "inputs": {
+        "user": {
+          "name": "老板"
+        },
+        "product": {
+          "name": "AGINT"
+        }
+      },
+      "expectedOutputContains": [
+        "Hello",
+        "welcome"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-5",
+      "inputs": {
+        "user": {
+          "name": "老板"
+        },
+        "product": {
+          "name": "AGINT"
+        }
+      },
+      "expectedOutputContains": [
+        "Hello",
+        "welcome"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "name": "coder-prompt",
+  "version": "0.1.0",
+  "description": "Coder-oriented system prompt for AGINT P5 plugin development.",
+  "kind": "system",
+  "variables": [
+    {
+      "name": "user",
+      "description": "User-side vars (identity, plan)",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "name": "contract",
+      "description": "Contract reference",
+      "required": true,
+      "type": "string"
+    }
+  ],
+  "regressionTests": [
+    {
+      "name": "case-1",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-2",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-3",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-4",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-5",
+      "inputs": {
+        "user": {
+          "identity": "Plugin author",
+          "plan": "Build Sprint 5 SDK"
+        },
+        "contract": {
+          "name": "QualityEvaluator"
+        }
+      },
+      "expectedOutputContains": [
+        "约束",
+        "测试"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    }
+  ],
+  "contractRef": "QualityReporter",
+  "author": "agint",
+  "tags": [
+    "agint",
+    "sdk",
+    "coder"
+  ],
+  "maxTokens": 1024,
+  "modelHint": "default",
+  "templatePath": "template.md"
+}

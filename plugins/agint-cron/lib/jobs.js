@@ -101,6 +101,42 @@ export const defaultJobs = [
       };
     },
   },
+  {
+    // Sprint 6.1: Prompt SDK 批量静态检查
+    // - 扫描所有 prompt manifest.json + template.md
+    // - 跑 staticCheckPrompt (注入 / 占位符 / manifest 不一致 三类)
+    // - blocker → evo.addFailure(pattern='prompt-static:<code>', category='prompt')
+    // daily 04:45, idempotent (manifest 没变就不进 evo).
+    id: 'prompt-static-check',
+    name: 'Prompt 静态检查',
+    schedule: '45 4 * * *',
+    description: '扫所有 prompt manifest+template 跑静态检查; blocker → evo failure pattern',
+    action: async (services) => {
+      const sdk = services['agint.promptSDK'];
+      const evo = services['agint.evolution'];
+      if (!sdk) throw new Error('prompt-static-check: agint.promptSDK not available');
+
+      // 默认扫描根目录: SDK examples + 任意 plugin 的 prompt 子树
+      const manifestsRoots = services['agint.manifestsRoots'] ?? [
+        // 由 host 装配时注入, fallback 走 SDK examples
+      ];
+
+      // dynamic import to avoid pulling zod into the cron module's startup chain
+      const { batchStaticCheck, reportFailuresToEvo } = await import(
+        '../../agint-quality-sdk/lib/check-all.js'
+      );
+
+      const batch = await batchStaticCheck({ manifestsRoots });
+      const recorded = await reportFailuresToEvo({ batchReport: batch, evo });
+      return {
+        scanned: batch.totalScanned,
+        clean: batch.cleanCount,
+        blockers: batch.blockerCount,
+        warnings: batch.warnCount,
+        failurePatternsRecorded: recorded.length,
+      };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */

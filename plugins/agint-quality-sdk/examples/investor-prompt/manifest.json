@@ -1,0 +1,169 @@
+{
+  "name": "investor-prompt",
+  "version": "0.1.0",
+  "description": "Investor-oriented research summarization prompt with risk annotation.",
+  "kind": "system",
+  "variables": [
+    {
+      "name": "user",
+      "description": "User-side vars (identity)",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "name": "subject",
+      "description": "Subject being researched",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "name": "risk",
+      "description": "Risk tag",
+      "required": true,
+      "type": "enum",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    {
+      "name": "max",
+      "description": "Output limit",
+      "required": true,
+      "type": "string"
+    }
+  ],
+  "regressionTests": [
+    {
+      "name": "case-1",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-2",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-3",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-4",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    },
+    {
+      "name": "case-5",
+      "inputs": {
+        "user": {
+          "identity": "老板"
+        },
+        "subject": {
+          "name": "AGINT v0.4.0 release"
+        },
+        "risk": {
+          "level": "low"
+        },
+        "max": {
+          "words": "600"
+        }
+      },
+      "expectedOutputContains": [
+        "提炼",
+        "风险"
+      ],
+      "expectedOutputNotContains": [
+        "<system>:"
+      ]
+    }
+  ],
+  "contractRef": "QualityReporter",
+  "author": "agint",
+  "tags": [
+    "agint",
+    "sdk",
+    "investor"
+  ],
+  "maxTokens": 1024,
+  "modelHint": "default",
+  "templatePath": "template.md"
+}

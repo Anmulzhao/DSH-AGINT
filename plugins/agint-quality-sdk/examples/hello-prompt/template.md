@@ -1,0 +1,1 @@
+Hello {{ user.name }}, welcome to {{ product.name }}.
