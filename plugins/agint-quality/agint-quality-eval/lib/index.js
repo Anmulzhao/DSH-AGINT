@@ -377,12 +377,43 @@ function apply(ctx, config) {
 
     async function weeklyTask() {
       const memory = ctx.get('agint.memory');
+      const evo = ctx.get('agint.evolution');
       const targets = await enumerateTargets();
       if (targets.length === 0) {
         console.log('[agint-quality-eval] weekly: no targets to evaluate');
-        return { evaluated: 0, persisted: 0 };
+        return { evaluated: 0, persisted: 0, loggedToEvo: 0, baseline: null, stagnation: null };
       }
       const results = await evaluator.evaluateAll(targets);
+
+      // ── Phase 4 自动化：每个 EvalResult 写 evolution-log ─────────
+      let loggedToEvo = 0;
+      if (evo && typeof evo.logPhase4 === 'function') {
+        for (const r of results) {
+          const score = compositeScore(r);
+          const decision = score === null ? 'REJECT' : 'PENDING_REVIEW';
+          const scores = { composite: score };
+          for (const d of r.dimensions) {
+            if (d.score?.score !== null && d.score?.score !== undefined) {
+              scores[d.key] = d.score.score;
+            }
+          }
+          try {
+            await evo.logPhase4({
+              targetId: r.targetId,
+              targetKind: r.kind,
+              decision,
+              scores,
+              findings: r.findings ?? [],
+              tags: ['weekly'],
+            });
+            loggedToEvo++;
+          } catch (err) {
+            console.error(`agint-quality-eval: evo.logPhase4 failed for ${r.targetId}`, err.message);
+          }
+        }
+      }
+
+      // ── 任务记忆（保持 v0.2 行为，向后兼容） ─────────────────────
       let persisted = 0;
       if (memory && typeof memory.write === 'function') {
         for (const r of results) {
@@ -395,8 +426,37 @@ function apply(ctx, config) {
           }
         }
       }
-      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}`);
-      return { evaluated: results.length, persisted };
+
+      // ── D-QAF Phase 3：baseline-regression-suite（退化探测） ────
+      let baselineReport = null;
+      try {
+        baselineReport = await evaluator.runBaselineSuite();
+        if (baselineReport?.regression?.isRegression) {
+          console.warn(`[agint-quality-eval] baseline regression detected: severity=${baselineReport.regression.severity} delta=${baselineReport.regression.delta}`);
+        }
+      } catch (err) {
+        console.error(`[agint-quality-eval] runBaselineSuite failed: ${err.message}`);
+      }
+
+      // ── D-QAF Phase 3：stagnation-check（进化停滞） ─────────────
+      let stagnationReport = null;
+      try {
+        stagnationReport = await evaluator.checkStagnation();
+        if (stagnationReport?.isStagnated) {
+          console.warn(`[agint-quality-eval] stagnation detected: reason=${stagnationReport.reason} recentMaxDelta=${stagnationReport.recentMaxDelta}`);
+        }
+      } catch (err) {
+        console.error(`[agint-quality-eval] checkStagnation failed: ${err.message}`);
+      }
+
+      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}`);
+      return {
+        evaluated: results.length,
+        persisted,
+        loggedToEvo,
+        baseline: baselineReport?.regression ?? null,
+        stagnation: { isStagnated: stagnationReport?.isStagnated, reason: stagnationReport?.reason },
+      };
     }
 
     try {

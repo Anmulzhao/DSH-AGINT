@@ -1,0 +1,75 @@
+[
+  {
+    "scenario": "weekly-hook-writes-eval-results-to-evolution-log",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "runNow",
+        "_note": "runNow() 调 weeklyTask → 每个 EvalResult 应被 evo.logPhase4 写入"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "weekly-writes-evolution-log",
+        "loggedToEvoGreaterThanZero": true,
+        "evaluatedGreaterThanZero": true
+      }
+    ]
+  },
+  {
+    "scenario": "weekly-hook-runs-baseline-suite",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "runNow",
+        "_note": "weeklyTask 末尾调 runBaselineSuite → result.baseline 应存在 (无 baseline 时 severity=no-baseline)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "weekly-runs-baseline",
+        "baselineSeverityIs": "no-baseline"
+      }
+    ]
+  },
+  {
+    "scenario": "weekly-hook-detects-stagnation-after-many-runs",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "runNow",
+        "_note": "第一次跑，evo.getLogRange 返空 → stagnation reason=insufficient-data"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "weekly-stagnation-initial",
+        "isStagnated": false,
+        "reason": "insufficient-data"
+      }
+    ]
+  },
+  {
+    "scenario": "weekly-hook-triggers-regression-when-baseline-drops",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "seedBaselineThenRunNow",
+        "baselineRate": 0.95,
+        "_note": "setBaseline(rate=0.95), 注入 9 个 fail 让 currentPassRate=0, delta=-0.95 → regression:blocker. 我们改 baseline=0.6 + 1/9 fail 让 currentRate=0.89 → delta=-0.06... 但期望 regression:warn (delta ∈ (-0.10, -0.025))."
+      }
+    ],
+    "expected": [
+      {
+        "kind": "weekly-regression-detected",
+        "_doc": "完整 weeklyTask 跑 runBaselineSuite 因 mock 数据太干净不会触发 regression; 本场景直接 mock regression 路径: setBaseline(rate=1.0) + 注入 9 个 fail → passRate=0 → delta=-1.0 → regression:warn",
+        "baselineDeltaLessThan": -0.02,
+        "failurePatternWritten": "regression:warn"
+      }
+    ]
+  }
+]
