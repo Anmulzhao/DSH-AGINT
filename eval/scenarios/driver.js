@@ -209,7 +209,11 @@ const dispatchers = {
       const ok = check.deny.length >= 1 && top.ruleId === exp.ruleId;
       return { ok, detail: `deny[0]=${top?.ruleId} expected=${exp.ruleId}` };
     }
-    return { ok: false, detail: `unsupported expected action ${exp.action}` };
+    if (exp.kind === 'no-deny') {
+      const ok = check.deny.length === 0;
+      return { ok, detail: `deny.length=${check.deny.length} (must=0)` };
+    }
+    return { ok: false, detail: `unsupported expected shape` };
   },
 
   'agint-metrics': async (scenario, ctx) => {
@@ -622,6 +626,67 @@ const dispatchers = {
         const ok = baseline && baseline.isRegression === true && baseline.delta < exp.baselineDeltaLessThan && hasRegressionPattern;
         return { ok, detail: `baseline=${JSON.stringify(baseline)} failPatterns=${failPatterns.map((p) => p.pattern).join(',')}` };
       }
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
+
+  'agint-quality-policy': async (scenario, ctx) => {
+    // Sprint 3.3 占位策略: safety veto → REJECT, 其余 PENDING_REVIEW.
+    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    // 需要 mock evo (for logPhase4 + addFailure 副作用)
+    const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
+    const mockEvo = {
+      logPhase4: async (entry) => { evoStore.evolution_log.set(entry.id, entry); return { ...entry }; },
+      addFailure: async (entry) => { evoStore.failure_pattern.set(entry.id ?? entry.pattern, entry); return { ...entry }; },
+      addSuccess: async () => ({}),
+      queryFailures: async () => [...evoStore.failure_pattern.values()].map((e, id) => ({ id, ...e })),
+      queryTemplates: async () => [],
+      getLogRange: async () => [...evoStore.evolution_log.values()].map((e, id) => ({ id, ...e })),
+      stats: async () => ({ evolution_log: evoStore.evolution_log.size, failure_pattern: evoStore.failure_pattern.size, success_template: 0 }),
+    };
+    ctx.provide('agint.evolution', mockEvo);
+
+    mod.apply(ctx, {});
+    await new Promise((r) => setTimeout(r, 20));
+    const policy = ctx.get('agint.qualityPolicy');
+    if (!policy) return { ok: false, detail: 'agint.qualityPolicy not registered' };
+
+    if (exp.kind === 'decision-shape') {
+      const decision = await policy.decide({ results: input.results });
+      const gotDecisions = decision.perTarget.map((t) => t.decision);
+      const gotReasons = decision.perTarget.map((t) => t.reason);
+      const decisionOk = decision.decision === exp.decision;
+      const perTargetOk = !exp.perTargetDecisions || JSON.stringify(gotDecisions) === JSON.stringify(exp.perTargetDecisions);
+      const reasonsOk = !exp.perTargetReasons || JSON.stringify(gotReasons) === JSON.stringify(exp.perTargetReasons);
+      const reasonContainsOk = !exp.reasonContains || decision.reason.includes(exp.reasonContains);
+      const ok = decisionOk && perTargetOk && reasonsOk && reasonContainsOk;
+      return { ok, detail: `decision=${decision.decision} reason=${decision.reason} perTarget=${JSON.stringify(gotDecisions)}` };
+    }
+
+    if (exp.kind === 'evo-received-addFailure') {
+      await policy.decide({ results: input.results });
+      const patterns = [...evoStore.failure_pattern.values()];
+      const found = patterns.find((p) => p.pattern === exp.pattern);
+      const ok = !!found && found.category === exp.category && found.severity === exp.severity;
+      return { ok, detail: `patterns=[${patterns.map((p) => p.pattern).join(',')}]` };
+    }
+
+    if (exp.kind === 'evo-received-no-addFailure') {
+      await policy.decide({ results: input.results });
+      const ok = evoStore.failure_pattern.size === 0;
+      return { ok, detail: `failure_pattern.size=${evoStore.failure_pattern.size}` };
+    }
+
+    if (exp.kind === 'evo-received-logPhase4') {
+      await policy.decide({ results: input.results });
+      const logs = [...evoStore.evolution_log.values()];
+      const found = logs.find((l) => l.targetKind === exp.targetKind && l.decision === exp.decision);
+      const ok = !!found;
+      return { ok, detail: `logs=${logs.length} found=${!!found} first_decision=${logs[0]?.decision}` };
     }
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };

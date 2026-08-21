@@ -133,6 +133,7 @@
 
 - [x] **Sprint 3.1** — `agint-quality-eval` Phase 2 调 `agint.qualitySandbox.runSmoke()` 作为 gate：sandbox 失败 → 该 target safety=0 → compositeScore=null → REJECT 路径。target.path 缺失时跳过 gate（向后兼容 skill 类）。
 - [x] **Sprint 3.2** — weeklyTask 末尾：每个 EvalResult → `evo.logPhase4({targetId, targetKind, decision, scores, findings, tags:['weekly']})`；runBaselineSuite() → regression 自动触发 `evo.addFailure('regression:<severity>')`；checkStagnation() → 读 evolution-log 计算增量。3 个新 Service hook 全跑。
+- [x] **Sprint 3.3** — `agint-rules` 加 `bash-delete-evolution-log` deny 规则（L1 严重度 + L0-frozen：禁止 rm/unlink/rmdir 命中 evolution_log/，允许 mv 做 rotate）；新建 `agint-quality-policy` 骨架 plugin：Service `decide()` 占位（safety veto → REJECT，其余 PENDING_REVIEW）；REJECT → 自动 `evo.addFailure(pattern='policy-reject:<decision>')`；任意 decision → `evo.logPhase4(targetKind='composite')`。Sprint 4 升级 4 决策 + 加权逻辑。
 
 ### 评估集
 
