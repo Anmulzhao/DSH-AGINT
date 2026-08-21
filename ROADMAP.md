@@ -132,6 +132,7 @@
 ### v0.3.x — D-QAF 端到端流水线接入
 
 - [x] **Sprint 3.1** — `agint-quality-eval` Phase 2 调 `agint.qualitySandbox.runSmoke()` 作为 gate：sandbox 失败 → 该 target safety=0 → compositeScore=null → REJECT 路径。target.path 缺失时跳过 gate（向后兼容 skill 类）。
+- [x] **Sprint 3.2** — weeklyTask 末尾：每个 EvalResult → `evo.logPhase4({targetId, targetKind, decision, scores, findings, tags:['weekly']})`；runBaselineSuite() → regression 自动触发 `evo.addFailure('regression:<severity>')`；checkStagnation() → 读 evolution-log 计算增量。3 个新 Service hook 全跑。
 
 ### 评估集
 

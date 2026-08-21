@@ -534,6 +534,96 @@ const dispatchers = {
       return { ok, detail: `composite=${composite}` };
     }
 
+    // ── Sprint 3.2: weekly hook Service 测试 ──────────────────────────
+    if (exp.kind === 'weekly-writes-evolution-log'
+      || exp.kind === 'weekly-runs-baseline'
+      || exp.kind === 'weekly-stagnation-initial'
+      || exp.kind === 'weekly-regression-detected') {
+      const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const ctx = makeRichEvalMockCtx(input);
+      ctx.provide('skills', {
+        list: async () => ({ items: [{ name: 'agint-smoke-skill', version: '0.0.0' }] }),
+      });
+      const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
+      const mockEvo = {
+        logPhase4: async (entry) => { evoStore.evolution_log.set(entry.id, entry); return { ...entry }; },
+        addFailure: async (entry) => { evoStore.failure_pattern.set(entry.id, entry); return { ...entry }; },
+        addSuccess: async (entry) => { evoStore.success_template.set(entry.id, entry); return { ...entry }; },
+        queryFailures: async () => [...evoStore.failure_pattern.values()].map((e, id) => ({ id, ...e })),
+        queryTemplates: async ({ appliesTo } = {}) => [...evoStore.success_template.values()].filter((e) => (appliesTo ?? []).some((a) => (e.appliesTo ?? []).includes(a))).map((e, id) => ({ id, ...e })),
+        getLogRange: async ({ limit = 200 } = {}) => [...evoStore.evolution_log.values()].slice(0, limit).map((e, id) => ({ id, ...e })),
+        stats: async () => ({ evolution_log: evoStore.evolution_log.size, failure_pattern: evoStore.failure_pattern.size, success_template: evoStore.success_template.size }),
+      };
+      ctx.provide('agint.evolution', mockEvo);
+      ctx._evoStore = evoStore;
+
+      evalMod.apply(ctx, {});
+      await new Promise((r) => setTimeout(r, 50));
+      const evaluator = ctx.get('agint.qualityEvaluator');
+      if (!evaluator) return { ok: false, detail: 'evaluator service not registered' };
+
+      if (exp.kind === 'weekly-regression-detected') {
+        // 直接测 runBaselineSuite 而非完整 weeklyTask:
+        // baseline=0.95, current=8/9=0.89 → delta=-0.06 → severity=warn
+        await evaluator.setBaseline({
+          results: [
+            ...Array.from({ length: 19 }, (_, i) => ({ id: `t${i}`, ok: true })),
+            { id: 'tfail', ok: false },  // 19/20 → rate=0.95
+          ],
+        });
+        const originalEval = evaluator.evaluateAll;
+        evaluator.evaluateAll = async (targets) => {
+          // runBaselineSuite 只调一次 evaluateAll: 9 个 baseline target,
+          // 8 ok + 1 fail → passRate = 8/9 = 0.889
+          return targets.map((t, i) => ({
+            targetId: t.id, kind: t.kind, evaluatedAt: new Date().toISOString(), durationMs: 0,
+            dimensions: [{
+              key: 'safety', label: '安全',
+              score: { score: i === 0 ? 0 : 1 },
+              veto: i === 0, findings: [], raw: null, evidence: [], children: [],
+            }],
+            harm: { homogeneity: 0.5, alignment: 0.5, reduction: 0.5, mutability: 0.5 },
+            findings: i === 0 ? [{ severity: 'blocker', message: 'mocked fail', evidence: [] }] : [],
+            evaluatorId: 'mock',
+          }));
+        };
+        const baselineReport = await evaluator.runBaselineSuite();
+        evaluator.evaluateAll = originalEval;
+        return {
+          ok: baselineReport?.regression?.isRegression === true
+            && baselineReport.regression.delta < exp.baselineDeltaLessThan
+            && baselineReport.regression.severity === 'warn'
+            && evoStore.failure_pattern.size > 0
+            && [...evoStore.failure_pattern.values()].some((p) => p.pattern === exp.failurePatternWritten),
+          detail: `baseline=${JSON.stringify(baselineReport?.regression)} failPatterns=[${[...evoStore.failure_pattern.values()].map((p) => p.pattern).join(',')}]`,
+        };
+      }
+
+      const runResult = await evaluator.runNow();
+
+      if (exp.kind === 'weekly-writes-evolution-log') {
+        const loggedOk = runResult.loggedToEvo > 0 && runResult.evaluated > 0;
+        return { ok: loggedOk, detail: `evaluated=${runResult.evaluated} loggedToEvo=${runResult.loggedToEvo}` };
+      }
+      if (exp.kind === 'weekly-runs-baseline') {
+        const sev = runResult.baseline?.severity ?? 'no-baseline';
+        const ok = sev === exp.baselineSeverityIs;
+        return { ok, detail: `baseline.severity=${sev}` };
+      }
+      if (exp.kind === 'weekly-stagnation-initial') {
+        const stag = runResult.stagnation;
+        const ok = stag?.isStagnated === exp.isStagnated && stag?.reason === exp.reason;
+        return { ok, detail: `stagnation=${JSON.stringify(stag)}` };
+      }
+      if (exp.kind === 'weekly-regression-detected') {
+        const baseline = runResult.baseline;
+        const failPatterns = [...evoStore.failure_pattern.values()];
+        const hasRegressionPattern = failPatterns.some((p) => p.pattern === exp.failurePatternWritten);
+        const ok = baseline && baseline.isRegression === true && baseline.delta < exp.baselineDeltaLessThan && hasRegressionPattern;
+        return { ok, detail: `baseline=${JSON.stringify(baseline)} failPatterns=${failPatterns.map((p) => p.pattern).join(',')}` };
+      }
+    }
+
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 };
