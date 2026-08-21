@@ -790,6 +790,83 @@ const dispatchers = {
       return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
     }
 
+    // ── Sprint 4.3: 元评估委员会 evals ─────────────────────────────
+    if (input.service === 'qualityPolicy' && input.action === 'committee.runShadowPolicy') {
+      const candidateId = input.candidateId;
+      const prodDecide = (args) => policy.decide({ results: args.results });
+      // 候选策略（用于 shadow 对比）: 跟 prod 一致算法（默认）或不同时改 config
+      const candidateConfig = exp.expectedAgreed
+        ? {}
+        : { thresholds: { autoDeploy: 99, pendingReview: 90 } };
+      const candidateDecide = async ({ results }) => {
+        return await policy.decide({ results, config: candidateConfig });
+      };
+      const r = await policy.committee.runShadowPolicy({
+        candidateId,
+        results: input.results,
+        candidateDecide,
+        prodDecide,
+      });
+      if (exp.kind === 'committee-shadow-result') {
+        const agrees = r.agreed;
+        const disagreements = r.disagreements?.length ?? 0;
+        const ok = agrees === exp.expectedAgreed && disagreements >= exp.minDisagreements;
+        return { ok, detail: `agreed=${agrees} disagreements=${disagreements} expectedAgreed=${exp.expectedAgreed}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'qualityPolicy' && input.action === 'committee.checkShadowAutoPromotion') {
+      const candidateId = input.candidateId;
+      // 手工塞 N 个 agreed shadowRuns 进 committee.storage
+      const storage = policy.committee.storage;
+      for (let i = 0; i < (input.consecutiveAgreedRuns ?? 0); i++) {
+        const ts = new Date(Date.now() - (input.consecutiveAgreedRuns - i) * 1000).toISOString();
+        storage.shadowRuns.set(`${candidateId}-${ts}`, {
+          candidateId,
+          prodKind: 'PENDING_REVIEW',
+          candidateKind: 'PENDING_REVIEW',
+          agreed: true,
+          disagreements: [],
+          runAt: ts,
+        });
+      }
+      const r = await policy.committee.checkShadowAutoPromotion({ candidateId });
+      if (exp.kind === 'committee-auto-promote') {
+        const ok = r.shouldPromote === exp.shouldPromote
+          && r.consecutiveAgreed === exp.consecutiveAgreed;
+        return { ok, detail: `shouldPromote=${r.shouldPromote} consecutiveAgreed=${r.consecutiveAgreed}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'qualityPolicy' && input.action === 'committee.shouldRollback') {
+      const r = policy.committee.shouldRollback({
+        recentDecisions: input.recentDecisions,
+        minSample: input.minSample,
+        triggerPct: input.triggerPct,
+      });
+      if (exp.kind === 'rollback-decision') {
+        const reasonOk = !exp.reasonContains || r.reason.includes(exp.reasonContains);
+        const ok = r.shouldRollback === exp.shouldRollback && reasonOk;
+        return { ok, detail: `shouldRollback=${r.shouldRollback} reason=${r.reason}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'qualityPolicy' && input.action === 'committee.appendHistory') {
+      const entry = await policy.committee.appendHistory({ decision: input.decision, policyId: input.decision.policyId });
+      const storage = policy.committee.storage;
+      const allEntries = [...storage.history.values()];
+      const queried = policy.committee.queryHistory({ policyId: input.decision.policyId });
+      if (exp.kind === 'history-roundtrip') {
+        const found = queried.find((e) => e.policyId === exp.mustFindPolicyId && e.kind === exp.mustFindKind);
+        const ok = !!found && entry.policyId === input.decision.policyId;
+        return { ok, detail: `queried=${queried.length} found=${!!found} storage.size=${storage.history.size} allEntryPolicyIds=[${allEntries.map(e=>e.policyId).join(',')}] entryKey=${entry.ts}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
     if (exp.kind === 'evo-received-addFailure') {
       await policy.decide({ results: input.results });
       const patterns = [...evoStore.failure_pattern.values()];
