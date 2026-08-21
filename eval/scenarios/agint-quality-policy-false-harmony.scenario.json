@@ -1,0 +1,176 @@
+[
+  {
+    "scenario": "harmony-detect-rejection-uniformity",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectRejectionUniformity",
+        "history": [
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-01T00:00:00Z" },
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-05T00:00:00Z" },
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-10T00:00:00Z" },
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-12T00:00:00Z" },
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-15T00:00:00Z" }
+        ],
+        "k": 5,
+        "_note": "5 个连续 REJECT,无 variance → 触发反和谐 'rejection-uniformity'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "rejection-uniformity-detected"
+      }
+    ]
+  },
+  {
+    "scenario": "harmony-detect-rejection-uniformity-clean-with-variance",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectRejectionUniformity",
+        "history": [
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-01T00:00:00Z" },
+          { "decision": "PENDING_REVIEW", "score": 70, "ts": "2026-08-05T00:00:00Z" },
+          { "decision": "REJECT", "score": 0, "ts": "2026-08-10T00:00:00Z" },
+          { "decision": "AUTO_DEPLOY", "score": 95, "ts": "2026-08-12T00:00:00Z" },
+          { "decision": "PENDING_REVIEW", "score": 80, "ts": "2026-08-15T00:00:00Z" }
+        ],
+        "k": 5,
+        "_note": "5 个有 variance → clean (3 unique decisions)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "rejection-uniformity-clean"
+      }
+    ]
+  },
+  {
+    "scenario": "harmony-detect-false-consensus-all-AUTO_DEPLOY",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectFalseConsensus",
+        "batch": [
+          { "targetId": "plugin-a", "decision": "AUTO_DEPLOY", "score": 100 },
+          { "targetId": "plugin-b", "decision": "AUTO_DEPLOY", "score": 100 },
+          { "targetId": "plugin-c", "decision": "AUTO_DEPLOY", "score": 100 }
+        ],
+        "n": 3,
+        "minScore": 99,
+        "_note": "3 个全 AUTO_DEPLOY + 全 100 ≥ 99 → 触发 'false-consensus'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "false-consensus-detected"
+      }
+    ]
+  },
+  {
+    "scenario": "harmony-detect-false-consensus-with-mixed-decisions",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectFalseConsensus",
+        "batch": [
+          { "targetId": "plugin-a", "decision": "AUTO_DEPLOY", "score": 100 },
+          { "targetId": "plugin-b", "decision": "PENDING_REVIEW", "score": 80 },
+          { "targetId": "plugin-c", "decision": "AUTO_DEPLOY", "score": 100 }
+        ],
+        "n": 3,
+        "minScore": 99,
+        "_note": "mixed decision → clean"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "false-consensus-clean"
+      }
+    ]
+  },
+  {
+    "scenario": "harmony-detect-regression-underreporting",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectRegressionUnderreporting",
+        "history": [
+          { "severity": "high", "ts": "2026-08-01T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-05T00:00:00Z" },
+          { "severity": "high", "ts": "2026-08-10T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-12T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-15T00:00:00Z" }
+        ],
+        "k": 5,
+        "_note": "history 出现 high + 最新是 warn → 触发 'regression-underreporting'"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "regression-underreporting-detected"
+      }
+    ]
+  },
+  {
+    "scenario": "harmony-detect-regression-underreporting-clean",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "falseHarmonyDetector",
+        "action": "detectRegressionUnderreporting",
+        "history": [
+          { "severity": "warn", "ts": "2026-08-01T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-05T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-10T00:00:00Z" },
+          { "severity": "warn", "ts": "2026-08-12T00:00:00Z" },
+          { "severity": "high", "ts": "2026-08-15T00:00:00Z" }
+        ],
+        "k": 5,
+        "_note": "全部 warn + 最新 high → clean (latest>=max)"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "regression-underreporting-clean"
+      }
+    ]
+  },
+  {
+    "scenario": "policy-detectFalseHarmony-Service-full-run",
+    "plugin": "agint-quality-policy",
+    "input": [
+      {
+        "service": "qualityPolicy",
+        "action": "detectFalseHarmony",
+        "history": {
+          "byTarget": {
+            "agint-cron": [
+              { "decision": "REJECT", "score": 0, "ts": "2026-08-01T00:00:00Z" },
+              { "decision": "REJECT", "score": 0, "ts": "2026-08-05T00:00:00Z" },
+              { "decision": "REJECT", "score": 0, "ts": "2026-08-10T00:00:00Z" },
+              { "decision": "REJECT", "score": 0, "ts": "2026-08-12T00:00:00Z" },
+              { "decision": "REJECT", "score": 0, "ts": "2026-08-15T00:00:00Z" }
+            ]
+          },
+          "regressionHistory": [
+            { "severity": "warn", "ts": "2026-08-01T00:00:00Z" },
+            { "severity": "warn", "ts": "2026-08-15T00:00:00Z" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "harmony-service-report",
+        "report": "false-harmony",
+        "mustInclude": "rejection-uniformity"
+      }
+    ]
+  }
+]

@@ -743,6 +743,53 @@ const dispatchers = {
       return { ok, detail: `memoryStore.size=${memoryStore.length} hasAudit=${!!auditEntry}` };
     }
 
+    // ── Sprint 4.2: 反和谐检测器 evals ─────────────────────────────────
+    if (input.service === 'falseHarmonyDetector' && input.action === 'detectRejectionUniformity') {
+      const { detectRejectionUniformity } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const r = detectRejectionUniformity({ history: input.history, k: input.k });
+      if (exp.kind === 'rejection-uniformity-detected') {
+        return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern} evidence=${JSON.stringify(r.evidence).slice(0, 80)}` };
+      }
+      if (exp.kind === 'rejection-uniformity-clean') {
+        return { ok: r.detected === false, detail: `detected=${r.detected} unique=${r.evidence.uniqueDecisions?.length}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'falseHarmonyDetector' && input.action === 'detectFalseConsensus') {
+      const { detectFalseConsensus } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const r = detectFalseConsensus({ batch: input.batch, n: input.n, minScore: input.minScore });
+      if (exp.kind === 'false-consensus-detected') {
+        return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern}` };
+      }
+      if (exp.kind === 'false-consensus-clean') {
+        return { ok: r.detected === false, detail: `detected=${r.detected}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'falseHarmonyDetector' && input.action === 'detectRegressionUnderreporting') {
+      const { detectRegressionUnderreporting } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const r = detectRegressionUnderreporting({ history: input.history, k: input.k });
+      if (exp.kind === 'regression-underreporting-detected') {
+        return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern}` };
+      }
+      if (exp.kind === 'regression-underreporting-clean') {
+        return { ok: r.detected === false, detail: `detected=${r.detected}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    if (input.service === 'qualityPolicy' && input.action === 'detectFalseHarmony') {
+      const r = await policy.detectFalseHarmony({ history: input.history });
+      if (exp.kind === 'harmony-service-report') {
+        const patterns = [...(r.patterns ?? [])];
+        const ok = r.report === exp.report && (exp.mustInclude ? patterns.includes(exp.mustInclude) : true);
+        return { ok, detail: `report=${r.report} patterns=[${patterns.join(',')}]` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
     if (exp.kind === 'evo-received-addFailure') {
       await policy.decide({ results: input.results });
       const patterns = [...evoStore.failure_pattern.values()];
