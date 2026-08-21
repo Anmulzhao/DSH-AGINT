@@ -9,6 +9,50 @@
 >
 > **本文件与 git tag 一一对应**：tag message 是简版，CHANGELOG 是详细版。
 
+## [v0.3.1] — 2026-08-21 — D-QAF 端到端流水线接入（P3 收口）
+
+> **里程碑**：v0.3.x 系列收口。D-QAF Phase 2/3/4 流水线接通，`agint-quality-eval` / `agint-quality-sandbox` / `agint-evolution-memory` / `agint-quality-policy` 4 个 plugin 形成端到端反馈环。
+> **破坏性变更**：无（向后兼容 v0.3.0）。
+
+### 新增
+- **Sprint 3.1** — `agint-quality-eval` Phase 2 调 `agint.qualitySandbox.runSmoke()` 作为 gate（commit `6ddd74d`）
+  - sandbox 失败 → 该 target safety=0 → compositeScore=null → REJECT 路径
+  - target.path 缺失时跳过 gate（向后兼容 skill 类）
+  - 4 个 eval 场景全过
+- **Sprint 3.2** — `weeklyTask` 接 3 个新 hook（commit `53a0dbd`）
+  - 每个 EvalResult → `evo.logPhase4({targetId, targetKind, decision, scores, findings, tags:['weekly']})`
+  - `runBaselineSuite()` → regression 自动触发 `evo.addFailure('regression:<severity>')`
+  - `checkStagnation()` → 读 evolution-log 计算增量
+  - 4 个 eval 场景全过
+- **Sprint 3.3** — rules deny + policy 骨架（commit `64a1405`）
+  - `agint-rules` 加 `bash-delete-evolution-log` seed rule（deny / L1 / L0-frozen）
+  - 新建 `agint-quality-policy` 骨架 plugin：Service `decide()` 占位
+  - safety veto → REJECT，其余 PENDING_REVIEW
+  - REJECT → `evo.addFailure(pattern='policy-reject:<decision>')`
+  - 任意 decision → `evo.logPhase4(targetKind='composite')`
+  - 10 个 eval 场景全过
+
+### 修复
+- 修复 `agint-quality-policy` 的 `shouldReportToEvolution` bug：原代码比较 `decision === 'REJECT'`（decision 是 object），改为 `decision?.decision === 'REJECT'`。原 bug 导致 Sprint 3.1 + 3.2 阶段 policy.REJECT 路径从未真正触发 addFailure，Sprint 3.3 修。
+
+### 验证
+- **49/49 eval 场景全过**（含 v0.3.0 39 个 + Sprint 3 新 10 个）
+- D-QAF 端到端链路打通：eval.sandbox-gate → evaluator.evaluateAll → weeklyTask.logPhase4 → runBaselineSuite → checkStagnation → policy.decide → evo.addFailure
+
+### 已知限制（v0.3.1 未做，留 v0.4）
+- **完整 4 决策 + 加权综合分**：policy 当前占位（Sprint 4 升级）
+- **反和谐检测器**：定义"伪和谐模式"清单（v0.3 → v0.4 推进项）
+- **预算对齐**：Phase 3 加入 `有效进化增量 = Δ(任务完成率) / Δ(Token消耗 + 步数 + 时间)` 校验
+- **真沙箱后端**：eval 走 in-process fallback；生产需 `dsh-sandbox-local`
+- **端到端测试脚本**：`cron → dream → memory → metrics → evolve → quality-eval` 闭环
+
+### 配套 git tag
+```
+git tag -a v0.3.1 -m "AGINT v0.3.1 — D-QAF 端到端流水线接入（P3 收口）"
+```
+
+---
+
 ## [v0.3.0] — 2026-08-20 — 沙箱 + 进化记忆 + 退化探测（P3 主体收口）
 
 > **里程碑**：P3 阶段 v0.3 主体收口。D-QAF Phase 2/3 关键机制落地。
