@@ -12,7 +12,7 @@
 
 **已有**：
 - **13 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract` + `agint-quality-eval` + `agint-quality-sandbox` + **`agint-evolution-memory`** + **`agint-quality-policy`** 占位）
-- 3 个 preset（agint / agint-coder / agint-investor）
+- 3 个 preset（agint / agint-blockchain / agint-investor，原 agint-coder 已重命名为 agint-blockchain 并新增 5 个 web3 skill）
 - 1 个 profile-patch（web/cordis.patch.yml）
 - 4 个 skill
 - 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / CHANGELOG）
