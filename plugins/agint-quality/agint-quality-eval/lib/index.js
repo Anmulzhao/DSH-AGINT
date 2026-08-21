@@ -214,11 +214,16 @@ function apply(ctx, config) {
       const out = [];
       for (const t of targets) {
         try {
-          out.push(await evaluator.evaluate(t));
+          const r = await evaluator.evaluate(t);
+          // Sprint 6.3/6.4: 把 target.tags 注入到 EvalResult（policy/report 用）
+          // EvalResult 不是 FROZEN 字段，但 contract EvalResultSchema 也不含 tags。
+          // 选用最小侵入: 给 result 增加非 contract 字段 tags (政策/render 用)
+          out.push({ ...r, tags: t.tags ?? [] });
         } catch (err) {
           out.push({
             targetId: t.id || '<unknown>',
             kind: t.kind || 'unknown',
+            tags: t.tags ?? [],
             evaluatedAt: new Date().toISOString(),
             durationMs: 0,
             dimensions: [],

@@ -205,6 +205,81 @@ export async function evalAdaptability(ctx, target) {
 }
 
 /**
+ * Sprint 6.2: evalPromptStatic — prompt plugin 静态检查维度
+ *
+ * 触发条件 (FROZEN-compatible):
+ *   target.kind === 'plugin' AND target.tags.includes('prompt-target')
+ *
+ * 不动 contract EvalTarget.kind enum (FROZEN); 用 tags 标记触发.
+ * 输出 score 0..1 (1.0 = 无 violation; 0.0 = blocker / SDK 不可用)
+ * 非 prompt target: 返 null + info finding (sentinel, 不计入综合分)
+ */
+export async function evalPromptStatic(ctx, target) {
+  const out = { score: null, findings: [] };
+  const isPrompt = target?.tags?.includes('prompt-target');
+  if (!isPrompt) {
+    out.findings.push({
+      severity: 'info',
+      message: `prompt-static-check skipped: not a prompt target (kind=${target?.kind ?? 'unknown'}; require tags include 'prompt-target')`,
+      evidence: [],
+    });
+    return out;
+  }
+  const sdk = ctx.get('agint.promptSDK');
+  if (!sdk || typeof sdk.staticCheck !== 'function') {
+    out.score = 0.0;
+    out.findings.push({
+      severity: 'blocker',
+      message: 'agint.promptSDK unavailable; cannot static-check prompt',
+      evidence: [],
+    });
+    return out;
+  }
+  // prompt target 必须自带 manifest + templateText (字段约定)
+  const manifest = target.manifest;
+  const templateText = target.templateText;
+  if (!manifest || !templateText) {
+    out.score = 0.0;
+    out.findings.push({
+      severity: 'blocker',
+      message: 'target.manifest or templateText missing; prompt-eval requires both',
+      evidence: [],
+    });
+    return out;
+  }
+  try {
+    const r = sdk.staticCheck({ templateText, manifest });
+    // 分数: 1.0 无 violation, 每个 blocker -0.5, 每个 warn -0.1, 限幅到 [0, 1]
+    let score = 1.0;
+    for (const v of r.violations) {
+      if (v.severity === 'blocker') score -= 0.5;
+      else if (v.severity === 'warn') score -= 0.1;
+    }
+    out.score = Math.max(0, Math.min(1, score));
+    out.raw = {
+      blockers: r.blockers,
+      warnings: r.warnings,
+      violationCodes: [...new Set(r.violations.map((v) => v.code))],
+    };
+    if (r.blockers > 0) {
+      out.findings.push({
+        severity: 'warn',
+        message: `prompt has ${r.blockers} blocker(s); static check failed`,
+        evidence: r.violations.filter((v) => v.severity === 'blocker').map((v) => v.code),
+      });
+    }
+  } catch (err) {
+    out.score = 0.0;
+    out.findings.push({
+      severity: 'blocker',
+      message: `staticCheck threw: ${err.message}`,
+      evidence: [],
+    });
+  }
+  return out;
+}
+
+/**
  * Integrability: 与 dsh host 的集成度（通过 metrics 探测）
  * 数据源：agint.metrics.summary()
  *   有指标条目 → 1.0；无 → 0.5
@@ -228,24 +303,28 @@ export async function evalIntegrability(ctx, target) {
   return out;
 }
 
-/** 7 维权重（综合分计算用）—— 与综合分 §v0.2 简版 对齐 */
+/** 7 维权重（综合分计算用）—— 与综合分 §v0.2 简版 对齐
+ *  Sprint 6.2 prompt-static 仅对 target.kind='prompt' 计入;其它 target 自动权重 0 */
 export const DIMENSION_WEIGHTS = {
-  trust:        0.20,
-  reliability:  0.20,
-  effectiveness: 0.10,
-  safety:       0.30,
-  convention:   0.00, // v0.2 null，不计入
-  adaptability: 0.00, // v0.2 null，不计入
-  integrability: 0.20,
+  trust:           0.20,
+  reliability:     0.20,
+  effectiveness:   0.10,
+  safety:          0.30,
+  convention:      0.00, // v0.2 null，不计入
+  adaptability:    0.00, // v0.2 null，不计入
+  integrability:   0.20,
+  promptStatic:    0.20, // Sprint 6.2: 仅 prompt target
 };
 
 /** safety 一票否决阈值（< 此值 → REJECT） */
 export const SAFETY_VETO_THRESHOLD = 0.5;
 
-/** 调度器用：维度键顺序（保证 EvalResult.dimensions 顺序稳定） */
+/** 调度器用：维度键顺序（保证 EvalResult.dimensions 顺序稳定）
+ *  Sprint 6.2 加 'promptStatic' (仅 prompt target 计入) */
 export const DIMENSION_KEYS = [
   'trust', 'reliability', 'effectiveness', 'safety',
   'convention', 'adaptability', 'integrability',
+  'promptStatic',
 ];
 
 /**
@@ -264,6 +343,7 @@ export async function evaluateAll(ctx, target) {
     convention: evalConvention,
     adaptability: evalAdaptability,
     integrability: evalIntegrability,
+    promptStatic: evalPromptStatic,
   };
 
   // 并发跑所有 evaluator
