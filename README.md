@@ -32,7 +32,7 @@ AGINT/
 │
 ├── presets/                     ── dsh agent-presets/
 │   ├── agint/                   智进主 preset（含 4 个 skills）
-│   ├── agint-coder/             派生：编程专用
+│   ├── agint-blockchain/        派生：区块链/Web3 工程师 + 领域专家（+ 5 个 web3 skill）
 │   └── agint-investor/          派生：投研专用
 │
 ├── plugins/                     ── dsh profile plugins/

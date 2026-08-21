@@ -150,7 +150,7 @@ fi
 
 # ── 默认：全量卸载 ─────────────────────────────────────────────────────────
 log "1/3 移除 presets"
-for name in agint agint-coder agint-investor; do
+for name in agint agint-blockchain agint-investor; do
   dst="$PRESETS_DST/$name"
   if [ -d "$dst" ]; then
     if [ "$DRY_RUN" = "1" ]; then

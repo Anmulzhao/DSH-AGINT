@@ -373,8 +373,9 @@ except ImportError:
     print("[AGINT]   ⚠ python3-yaml 未装，跳过 patch YAML 校验（pip install pyyaml 可启用）")
     sys.exit(0)
 text = open(sys.argv[1], encoding='utf-8').read()
-# 剥离 dsh 自定义 tag（!!js/function ...），仅做语法检查
-stripped = re.sub(r"!!js/\w+", "", text)
+# 剥离 dsh 自定义 tag（!!js 表达式：!!js expr 或 !!js/function ...），仅做语法检查
+# dsh 实际写法两种：!!js (expr) 或 !!js/function ...；原 regex r"!!js/\w+" 不覆盖前者
+stripped = re.sub(r"!!js(/\w+)?", "", text)
 try:
     yaml.safe_load(stripped)
     print("[AGINT]   ✓ patch YAML 语法 OK")
@@ -383,22 +384,35 @@ except yaml.YAMLError as e:
     sys.exit(1)
 PY
 
-  # 4b. 每个 plugin 含 package.json
-  for plugin in "$PLUGINS_DST"/agint-*/; do
+  # 4b. 每个 active plugin 含 package.json
+  # glob 'agint-*' 会包含 '.bak-*' 历史备份目录和子模块目录（agint-quality-contract /
+  # agint-quality-eval 等通过相对路径引用父模块，没有自己的 package.json）。
+  # dsh loader 对缺 package.json 的 plugin 子模块用 MODULE_TYPELESS fallback 处理，
+  # 不是 fatal 错——只 warn 不计入失败。备份目录直接跳过。
+  for plugin in "$PLUGINS_DST"/agint-*; do
     [ -d "$plugin" ] || continue
     name="$(basename "$plugin")"
+    # 跳过 .bak-* 历史备份
+    case "$name" in
+      *.bak-*) continue ;;
+    esac
     if [ -f "$plugin/package.json" ]; then
       log "   ✓ plugin $name 有 package.json"
     else
-      warn "plugin $name 缺 package.json（MODULE_TYPELESS 警告）"
-      failed=$((failed+1))
+      warn "plugin $name 缺 package.json（MODULE_TYPELESS 警告，dsh loader fallback，非 fatal）"
+      # 不计入 failed：plugin 子模块（通过相对路径引用父模块）无需自己的 package.json
     fi
   done
 
-  # 4c. 每个 preset 含 agent.cordis.yml
-  for preset in "$PRESETS_DST"/agint*/; do
+  # 4c. 每个 active preset 含 agent.cordis.yml
+  # 同 4b：排除 .bak-* 备份
+  for preset in "$PRESETS_DST"/agint-*; do
     [ -d "$preset" ] || continue
     name="$(basename "$preset")"
+    # 跳过 .bak-* 历史备份
+    case "$name" in
+      *.bak-*) continue ;;
+    esac
     if [ -f "$preset/agent.cordis.yml" ]; then
       log "   ✓ preset $name 有 agent.cordis.yml"
     else

@@ -8,7 +8,11 @@
 #
 # Sibling presets:
 # - agint (母 / general): all tools, full 智进 persona
-# - agint-coder (编码): all tools, persona focused on edit/test/commit
+# - agint-blockchain (区块链): all tools, persona focused on blockchain/Web3
+#   engineering + domain expertise (Solidity/Rust contracts, EVM/Solana/Cosmos,
+#   contract debugging, DeFi mechanisms, wallet/signature security). Also
+#   absorbs the legacy "agint-coder" 通用编码 role — non-blockchain code/config/
+#   deploy/bug-fix tasks route back to the agint 母 preset.
 #
 # Copy from `agint` and edit the consumer/tool rows below.
 
@@ -40,7 +44,7 @@
 
       # 路由
       - 投研 → 本 preset（你）。
-      - 涉及代码改动、配置变更、部署、修 bug、单元测试 → 建议切到 智进·编码 子会话或请父 preset 分派。
+      - 涉及代码改动、配置变更、部署、修 bug、单元测试 → 切回智进母会话（`agint-coder` 已合并为 `agint-blockchain`，原通用编码角色由母 preset 承担）；区块链/Web3 编程与调试 → 切到 智进·区块链 子会话。
       - 涉及 preset 组合改动、plugin 升级、规则门禁调整 → 切回 智进 母会话。
 
       # 你没有的工具
