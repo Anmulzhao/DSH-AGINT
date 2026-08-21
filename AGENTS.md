@@ -95,6 +95,23 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 直接跑 `bin/safe-update.sh <mount-patch|edit-source|restart|rollback|smoke|help>`。
 完整 SOP：`docs/operations/safe-update-sop.md`。事故复盘：`docs/operations/dsh-restart-incident-20260821.md`。
 
+## 插件准入红线（2026-08-21 复盘新增）
+
+挂载到 `cordis.patch.yml` 的任何 `agint-*` 插件必须满足 **PLUGIN-SPEC 8 维度**：
+
+1. **Contract** — `cordis.inject` / `provides` / `events` / `tools` 显式声明
+2. **Storage domains** — 独占，与兄弟插件不重叠
+3. **Dependencies** — peerDeps 显式 + `mountOrder` 数字
+4. **Permissions** — env / fs / network / shell 四档显式
+5. **Lifecycle** — `setInterval` / listeners 必须 `ctx.effect` 注册 disposer
+6. **Tests** — `test/smoke.mjs` 一行能跑
+7. **Docs** — `README.md` + 每个 provides 一句话
+8. **Changelog** — 破环性变更写 `CHANGELOG.md`
+
+验收：`bin/plugin-check.sh <plugin-dir>`（**lint 模式不阻断**，缺啥列啥）。
+12 份现有插件 manifest 草案：`docs/plugins/manifest-baseline/`。
+规范：`docs/plugins/PLUGIN-SPEC.md`。
+
 ## 快速参考
 
 | 想知道 | 去看 |

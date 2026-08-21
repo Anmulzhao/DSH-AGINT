@@ -1,0 +1,56 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality",
+  "version": "0.2.0",
+  "description": "v0.5 综合入口（聚合 quality-{contract,eval,sdk,policy,report} 子切片）。子切片路径：./plugins/agint-quality/<slice>/lib/index.js",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "beta"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["agint.quality"],
+      "provides": ["agint.qualityReport"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "agint-quality-contract": ">=0.2.0",
+      "agint-quality-eval": ">=0.2.0"
+    },
+    "mountOrder": 55,
+    "permissions": {
+      "env": ["AGINT_HOME", "DSH_HOME"],
+      "fs": ["read:wiki", "write:wiki", "read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.qualityReport": "HARM 报告生成 + 写Wiki + 写memory + 综合分"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.2.0"
+  }
+}

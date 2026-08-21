@@ -1,0 +1,56 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-cron",
+  "version": "0.1.0",
+  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay/wiki-lint/metrics-collect/evolve-review 4 个 job。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["timer"],
+      "provides": ["agint.cron"],
+      "events": [],
+      "tools": ["cron_list", "cron_run_now", "cron_health"]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "cordis-plugin-timer": ">=0.1.0",
+      "agint-memory": ">=0.1.0"
+    },
+    "mountOrder": 20,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:plugins"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.cron": "5 字段 cron 调度（无秒级精度，本地时区，per-job mutex 防重叠）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

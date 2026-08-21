@@ -1,0 +1,58 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-metrics",
+  "version": "0.1.0",
+  "description": "进化指标（盲区/门禁遵守/wiki 健康/记忆规模）。从 agint.cron/rules/wiki/memory 懒解析采集。独占 agint_metrics domain。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain", "agint.cron", "agint.rules", "agint.wiki", "agint.memory"],
+      "provides": ["agint.metrics"],
+      "events": [],
+      "tools": ["metrics_collect", "metrics_summary", "metrics_series"]
+    },
+    "storage": {
+      "domains": ["agint_metrics"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-cron": ">=0.1.0",
+      "agint-rules": ">=0.1.0",
+      "agint-wiki": ">=0.1.0",
+      "agint-memory": ">=0.1.0"
+    },
+    "mountOrder": 40,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.metrics": "kv 时间序列指标采集/汇总/趋势"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

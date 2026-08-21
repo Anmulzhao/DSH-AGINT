@@ -1,0 +1,56 @@
+{
+  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-sdk",
+  "version": "0.2.0",
+  "description": "Sprint 5 Prompt SDK：PromptManifest FROZEN schema + 模板渲染 + 静态检查（注入/占位符/manifest 不一致）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "beta"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": ["agint.promptSDK"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "agint-quality-contract": ">=0.2.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 35,
+    "permissions": {
+      "env": [],
+      "fs": ["read:prompts"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.promptSDK": "PromptManifest 渲染 + validate + staticCheck + runTests"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.2.0"
+  }
+}
