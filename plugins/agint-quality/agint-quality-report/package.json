@@ -1,0 +1,23 @@
+{
+  "name": "agint-quality-report",
+  "version": "0.4.0",
+  "description": "D-QAF Phase 4 报告生成插件（v0.4 初版）：实现 QualityReporterIface.generate({results, decision, meta?}) → {markdown, json}。可选写入 agint.wiki + agint.memory。Sprint 4.4 落地纯函数 render; Sprint 4.5 weekly hook 调 generateAndPersist。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/render.js": "./lib/render.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "reporter",
+    "phase-4",
+    "sprint-4"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}

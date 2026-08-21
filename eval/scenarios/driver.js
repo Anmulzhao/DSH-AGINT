@@ -867,6 +867,7 @@ const dispatchers = {
       return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
     }
 
+    // ── Sprint 4.4: HARM 报告生成 evals ────────────────────────────
     if (exp.kind === 'evo-received-addFailure') {
       await policy.decide({ results: input.results });
       const patterns = [...evoStore.failure_pattern.values()];
@@ -889,7 +890,70 @@ const dispatchers = {
       return { ok, detail: `logs=${logs.length} found=${!!found} first_decision=${logs[0]?.decision}` };
     }
 
-    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    return { ok: false, detail: `unsupported action ${input.action} for qualityPolicy` };
+  },
+
+  'agint-quality-report': async (scenario, ctx) => {
+    // Sprint 4.4: HARM 报告生成
+    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-report/lib/index.js`);
+    mod.apply(ctx, {});
+
+    // 提供 mock wiki + memory
+    const wikiReceipts = [];
+    ctx.provide('agint.wiki', {
+      write: async (entry) => { wikiReceipts.push(entry); return { slug: entry.path, ...entry }; },
+    });
+    const memoryReceipts = [];
+    ctx.provide('agint.memory', {
+      write: async (rec) => { memoryReceipts.push(rec); return { id: `mock-${memoryReceipts.length}`, ...rec }; },
+    });
+
+    const reporter = ctx.get('agint.qualityReporter');
+    if (!reporter) return { ok: false, detail: 'agint.qualityReporter not registered' };
+
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    if (input.action === 'generate') {
+      try {
+        const report = await reporter.generate({
+          results: input.results,
+          decision: input.decision,
+          meta: input.meta,
+        });
+        if (exp.kind === 'report-shape') {
+          const md = report.markdown ?? '';
+          const json = report.json ?? {};
+          const headingsOk = (exp.mustIncludeMarkdownHeadings ?? []).every((h) => md.includes(h));
+          const keysOk = (exp.mustIncludeJsonKeys ?? []).every((k) => k in json);
+          const ok = headingsOk && keysOk;
+          return { ok, detail: `md_len=${md.length} json_keys=[${Object.keys(json).join(',')}]` };
+        }
+        return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+      } catch (err) {
+        if (exp.kind === 'report-throws') {
+          const ok = err.message.includes(exp.errorContains);
+          return { ok, detail: `threw message="${err.message.slice(0, 80)}"` };
+        }
+        throw err;
+      }
+    }
+
+    if (input.action === 'generateAndPersist') {
+      const r = await reporter.generateAndPersist({
+        results: input.results,
+        decision: input.decision,
+        meta: input.meta,
+      });
+      if (exp.kind === 'report-persisted') {
+        const ok = (exp.wikiWritten ? wikiReceipts.length > 0 : true)
+          && (exp.memoryWritten ? memoryReceipts.length > 0 : true);
+        return { ok, detail: `wiki=${wikiReceipts.length} memory=${memoryReceipts.length}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+    }
+
+    return { ok: false, detail: `unsupported action ${input.action}` };
   },
 };
 

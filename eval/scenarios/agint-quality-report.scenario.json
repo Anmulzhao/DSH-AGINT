@@ -1,0 +1,100 @@
+[
+  {
+    "scenario": "report-generate-markdown-and-json",
+    "plugin": "agint-quality-report",
+    "input": [
+      {
+        "service": "qualityReporter",
+        "action": "generate",
+        "results": [
+          {
+            "targetId": "target-good",
+            "kind": "plugin",
+            "evaluatorId": "agint-quality-eval@2026-08-20",
+            "durationMs": 100,
+            "dimensions": [
+              { "key": "safety", "label": "安全", "score": { "score": 1 }, "veto": false, "findings": [] },
+              { "key": "trust", "label": "信任", "score": { "score": 0.9 }, "veto": false, "findings": [] },
+              { "key": "reliability", "label": "可靠性", "score": { "score": 0.85 }, "veto": false, "findings": [] }
+            ],
+            "harm": { "homogeneity": 0.5, "alignment": 0.9, "reduction": 0.85, "mutability": 0.5 },
+            "findings": []
+          }
+        ],
+        "decision": {
+          "kind": "PENDING_REVIEW",
+          "score": 92,
+          "reason": "composite-above-pendingReview",
+          "triggeredBy": ["target-good"],
+          "decidedAt": "2026-08-20T12:00:00Z",
+          "policyId": "agint-quality-policy@0.4.0",
+          "perTarget": [
+            { "targetId": "target-good", "kind": "PENDING_REVIEW", "score": 92, "reason": "composite=92 thresholds=90/75" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "report-shape",
+        "mustIncludeMarkdownHeadings": ["# D-QAF Quality Report", "### target-good", "**HARM**"],
+        "mustIncludeJsonKeys": ["generatedAt", "decision", "targets", "summary"]
+      }
+    ]
+  },
+  {
+    "scenario": "report-writeToWiki-and-memory",
+    "plugin": "agint-quality-report",
+    "input": [
+      {
+        "service": "qualityReporter",
+        "action": "generateAndPersist",
+        "results": [
+          {
+            "targetId": "target-x",
+            "kind": "skill",
+            "evaluatorId": "agint-quality-eval@2026-08-20",
+            "durationMs": 50,
+            "dimensions": [{ "key": "safety", "label": "安全", "score": { "score": 1 }, "veto": false }],
+            "harm": { "homogeneity": 0.5, "alignment": 1, "reduction": 1, "mutability": 0.5 },
+            "findings": []
+          }
+        ],
+        "decision": {
+          "kind": "AUTO_DEPLOY",
+          "score": 100,
+          "reason": "composite-full",
+          "triggeredBy": [],
+          "decidedAt": "2026-08-20T13:00:00Z",
+          "policyId": "agint-quality-policy@0.4.0",
+          "perTarget": [{ "targetId": "target-x", "kind": "AUTO_DEPLOY", "score": 100 }]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "report-persisted",
+        "wikiWritten": true,
+        "memoryWritten": true
+      }
+    ]
+  },
+  {
+    "scenario": "report-missing-decision-throws",
+    "plugin": "agint-quality-report",
+    "input": [
+      {
+        "service": "qualityReporter",
+        "action": "generate",
+        "results": [{ "targetId": "t1", "kind": "plugin", "dimensions": [] }],
+        "decision": null
+      }
+    ],
+    "expected": [
+      {
+        "kind": "report-throws",
+        "errorContains": "decision with .kind"
+      }
+    ]
+  }
+]
