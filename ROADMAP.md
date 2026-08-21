@@ -182,7 +182,12 @@
   - CLI `bin/agint-prompt-init.js`: 3 presets (hello/coder/investor), 生成 manifest+template+tests+README
   - 3 个示例 (`examples/{hello,coder,investor}-prompt`) 由 CLI 生成
   - profile-patches/web/cordis.patch.yml: SDK row 启用
-- [ ] **Sprint 6+** — 接入 D-QAF 流水线: weekly cron / eval prompt kind / policy prompt path / wiki 集成
+- [x] **Sprint 6 (Part 2/2)** — SDK ↔ D-QAF 流水线接通:
+  - 6.1 cron `prompt-static-check` (daily 04:45) — batchStaticCheck + reportFailuresToEvo → evo
+  - 6.2 `evalPromptStatic` dimension (权重 0.20，仅 prompt target 通过 tags 触发)
+  - 6.3 policy prompt 决策 path (promptThresholds 更严 + blocker finding 强制 REJECT)
+  - 6.4 report markdown prompt section (`Prompt summary (Sprint 6)`)
+  - 6.5 e2e (`cron → check-all → evalPromptStatic → policy REJECT → report`)
 - [ ] Prompt-A/B 测试基础设施 (Phase 5.2)
 - [ ] 系统 Prompt 模板视为可版本化资产，纳入语义版本管理
 - [ ] **关键约束**：Prompt 变更必须附带至少 5 个回归测试用例 → 已落地 manifest.regressionTests ≥ 5
