@@ -1,5 +1,47 @@
 # AGINT CHANGELOG
 
+## [v0.5.1] — 2026-08-22 — SDK ↔ D-QAF 流水线接通（Sprint 6 / v0.5 Part 2/2）
+
+> **里程碑**: v0.5 Part 2/2。Prompt SDK 跟 D-QAF 流水线 (eval / policy / report / cron) 全联通；新增 8 维度 promptStatic；policy prompt 决策 path 独立 thresholds；report markdown prompt section。
+> **破坏性变更**: 无（向后兼容 v0.5.0）。
+> **L0-frozen 字段**: 无变更（contract EvalTarget.kind 不动，靠 tags 标记）。
+> **Sprint 6 commits**: `d4fea88` (6.1) · `1ae6453` (6.2-6.4) · `6ad2958` (6.5)。
+
+### 新增
+
+- **Sprint 6.1 — cron `prompt-static-check`** (commit `d4fea88`)
+  - daily 04:45 跑所有 prompt manifest + template → `staticCheckPrompt`
+  - blocker → `evo.addFailure(pattern='prompt-static:<code>', category='prompt', severity='high')`
+  - `lib/check-all.js`：`discoverPromptTargets` (walk fs) + `batchStaticCheck` (聚合 report) + `reportFailuresToEvo`
+- **Sprint 6.2 — `evalPromptStatic` dimension** (commit `1ae6453`)
+  - `target.tags.includes('prompt-target')` 触发（**不破 contract FROZEN** EvalTarget.kind enum）
+  - DIMENSION_KEYS 加 `promptStatic`，权重 0.20
+  - score: `1.0 - 0.5*blockers - 0.1*warns`
+  - `evaluateAll`: 把 `target.tags` 注入 EvalResult（caller-side 扩展字段）
+- **Sprint 6.3 — policy prompt 决策 path** (commit `1ae6453`)
+  - `promptThresholds` 默认 `{autoDeploy:95, pendingReview:85}`（比 plugin 严）
+  - 任一 `findings: [{severity:'blocker'}]` → perTarget.kind=REJECT
+  - master 决策：任一 perTarget.kind=REJECT → master REJECT（不只是 composite null veto）
+- **Sprint 6.4 — report prompt-target section** (commit `1ae6453`)
+  - `target.tags.includes('prompt-target')` → markdown `**Prompt summary (Sprint 6)**` section
+  - 含 Tags / promptStatic score / raw violation codes / HARM
+- **Sprint 6.5 — e2e + 8 scenario** (commit `6ad2958`)
+  - `eval/e2e/sprint6-pipeline.js`: cron registration → batchStaticCheck (clean + injected) → reportFailuresToEvo → evalPromptStatic (no SDK + with SDK) → policy REJECT → report markdown
+  - `eval/scenarios/agint-sprint6-pipeline.scenario.json` (8 单元)
+  - driver 加 4 个新 kind: `batch-static-check-clean`, `eval-prompt-static-*` (3), `report-shape-prompt`
+
+### 验证
+- **8/8 单元 scenario PASS** (batch-static + cron + evalPromptStatic×3 + policy ×2 + report-shape-prompt)
+- **8/8 e2e step PASS** (cron registration → 全链路 8 step)
+- **84/84 全量 eval 回归** (Sprint 5 baseline 76 + Sprint 6 净增 8)
+
+### 配套 git tag
+```
+git tag -a v0.5.1 -m "AGINT v0.5.1 — SDK ↔ D-QAF 流水线接通 (Sprint 6)"
+```
+
+---
+
 ## [v0.5.0] — 2026-08-22 — Prompt SDK 落地（Sprint 5，Part 1/2）
 
 > **里程碑**:  P4 末 / P5 头。Prompt SDK 基础设施落地: PromptManifest FROZEN 契约 + 模板引擎 + 三类风险静态检查 + CLI 模板生成器 + 3 个示例 preset。

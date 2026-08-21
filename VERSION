@@ -6,6 +6,7 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 
 | AGINT | dsh minimum | dsh tested | notes |
 |-------|-------------|------------|-------|
+| v0.5.1 | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 6 (Part 2/2): SDK ↔ D-QAF 流水线接通 (cron prompt-static-check + evalPromptStatic dim + policy prompt path + report prompt section) |
 | v0.5  | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 5 (Part 1/2): Prompt SDK 基础设施 (PromptManifest FROZEN + 模板引擎 + 静态检查 + CLI 生成器 + 3 presets) |
 | v0.4  | 0.1.0-rc.6  | 0.1.0-rc.6 | P4 收口：策略引擎 + 反和谐 + 元评估 + HARM 报告；agint-quality-{policy,report}@0.4.0 启用 |
 | v0.3  | 0.1.0-rc.6  | 0.1.0-rc.6 | P3 收口：eval + sandbox + evolution + 退化探测 |
