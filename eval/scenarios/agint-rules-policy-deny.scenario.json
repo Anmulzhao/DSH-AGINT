@@ -1,0 +1,73 @@
+[
+  {
+    "scenario": "rules-deny-delete-evolution-log-rm",
+    "plugin": "agint-rules",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": { "tool": "bash", "args": { "command": "rm $DSH_HOME/storages/agint_evolution/evolution_log/2026-08-20.jsonl" } }
+      }
+    ],
+    "expected": [
+      {
+        "action": "deny",
+        "ruleId": "bash-delete-evolution-log",
+        "minMatchedDenyCount": 1
+      }
+    ]
+  },
+  {
+    "scenario": "rules-deny-delete-evolution-log-rmrf",
+    "plugin": "agint-rules",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": { "tool": "bash", "args": { "command": "rm -rf ~/.dsh/storages/agint_evolution/evolution_log/old/" } }
+      }
+    ],
+    "expected": [
+      {
+        "action": "deny",
+        "ruleId": "bash-delete-evolution-log",
+        "minMatchedDenyCount": 1
+      }
+    ]
+  },
+  {
+    "scenario": "rules-deny-delete-evolution-log-unlink",
+    "plugin": "agint-rules",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": { "tool": "bash", "args": { "command": "unlink $DSH_HOME/storages/agint_evolution/evolution_log/2026-08-20.jsonl" } }
+      }
+    ],
+    "expected": [
+      {
+        "action": "deny",
+        "ruleId": "bash-delete-evolution-log",
+        "minMatchedDenyCount": 1
+      }
+    ]
+  },
+  {
+    "scenario": "rules-allow-mv-evolution-log-rotation",
+    "plugin": "agint-rules",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": { "tool": "bash", "args": { "command": "mv $DSH_HOME/storages/agint_evolution/evolution_log/2026-08-20.jsonl /tmp/backup.jsonl" } }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "no-deny",
+        "_note": "mv 不命中 delete-evolution-log 规则（allow rotation）"
+      }
+    ]
+  }
+]

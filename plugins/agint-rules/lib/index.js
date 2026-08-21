@@ -111,6 +111,23 @@ const seedRules = [
     level: 'L3',
     reason: '发布到 npm 会公开当前包 — 确认版本号、registry、和 dry-run 已经核对。',
   },
+  // Sprint 3.3: 禁止删除 evolution-log（ROADMAP §P3 §进化记忆层）
+  // DSH 默认把 evolution-log 存在 $DSH_HOME/storages/agint_evolution/evolution_log/
+  // (对应 plugins/agint-evolution-memory 的 storage domain 名)。
+  // 任何 rm / unlink / rmdir 命中此路径都拒绝。
+  // mv / cp / rotate（保留 backup 后删原文件）不被命中（allow）。
+  {
+    id: 'bash-delete-evolution-log',
+    tool: 'bash',
+    // Match: rm/unlink/rmdir 命中 $DSH_HOME/storages/agint_evolution/evolution_log/
+    // 或 ~/.dsh/storages/agint_evolution/evolution_log/。路径不能含 ..（防 symlink 逃逸）。
+    pattern: '\\b(?:rm|unlink|rmdir)\\s+(?:-[a-zA-Z]*\\s+)*[\'"]?\\$DSH_HOME/storages/agint_evolution/evolution_log/[^\'"\\s]+[\'"]?|[\'"]?(?:~\\/\\.dsh|/root/\\.dsh)/storages/agint_evolution/evolution_log/[^\'"\\s]+[\'"]?',
+    flags: '',
+    action: 'deny',
+    level: 'L1',
+    frozenness: 'L0-frozen',  // 必须 human multi-sign 才能修改这条规则
+    reason: '禁止删除 evolution-log 历史记录 — 这是系统自进化的不可篡改审计日志。如果需要 rotate，请 mv 到 backup 目录（agint-rules 不拦截）。',
+  },
 ];
 
 function compilePattern(rule) {
