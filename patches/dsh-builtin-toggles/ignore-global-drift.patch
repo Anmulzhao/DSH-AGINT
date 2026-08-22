@@ -1,0 +1,11 @@
+--- /home/anmul/projects/AGINT/patches/dsh-builtin-toggles/index.js.orig	2026-08-21 17:59:15.695413597 +0800
++++ lib/index.js	2026-08-21 17:37:10.535836874 +0800
+@@ -1275,7 +1275,7 @@
+ 			addReason(reasons, "target_structural_drift");
+ 			continue;
+ 		}
+-		addReason(reasons, "global_structural_drift");
++		if (!limitations.includes("global_structural_drift_ignored")) limitations.push("global_structural_drift_ignored");
+ 	}
+ 	return {
+ 		status: reasons.length === 0 ? "eligible" : "ineligible",
