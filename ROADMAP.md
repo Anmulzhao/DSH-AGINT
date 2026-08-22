@@ -6,42 +6,42 @@
 
 ---
 
-## 当前状态：**v0.3.1 已发**（D-QAF 端到端流水线接入，P3 收口）
+## 当前状态：**v0.5.1 已发**（SDK ↔ D-QAF 流水线接通，Sprint 6 / v0.5 Part 2/2 收口）
 
-> 详见 `CHANGELOG.md#v0.3.1` 与 `git tag v0.3.1`。
+> 详见 `CHANGELOG.md#v0.5.1` 与 `git tag v0.5.1`。
+> 历程：v0.3.1（P3 收口）→ v0.4.0（P4 策略引擎 + 反和谐 + 元评估 + 报告）→ v0.5.0（Prompt SDK Part 1/2）→ v0.5.1（Prompt SDK ↔ D-QAF 流水线 Part 2/2）。
 
 **已有**：
-- **13 个 Cordis 插件**（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats + `agint-quality-contract` + `agint-quality-eval` + `agint-quality-sandbox` + **`agint-evolution-memory`** + **`agint-quality-policy`** 占位）
+- **13 个 Cordis 插件**：memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / evolution-memory + quality 子家族 6 个（`agint-quality-contract` / `agint-quality-eval` / `agint-quality-sandbox` / `agint-quality-policy` / `agint-quality-report` / **`agint-quality-sdk`**）；policy 与 report 已从占位升级到 v0.4 完整版
 - 3 个 preset（agint / agint-blockchain / agint-investor，原 agint-coder 已重命名为 agint-blockchain 并新增 5 个 web3 skill）
-- 1 个 profile-patch（web/cordis.patch.yml）
-- 4 个 skill
-- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / CHANGELOG）
-- D-QAF 融合方案 + 评估框架完整汇总 + 整体优化改进方案 三份设计文档
+- 1 个 profile-patch（web/cordis.patch.yml）+ 1 个 SDK row（v0.5.0 启用）
+- 4 个 skill + 3 个 prompt preset（hello / coder / investor，由 `agint-prompt-init` CLI 生成）
+- 顶层文档（README / AGENTS / PHILOSOPHY / VERSION / CHANGELOG）+ D-QAF 融合方案 / 评估框架完整汇总 / 整体优化改进方案 三份设计文档
 - **自进化宪法文档**：`docs/evolution-framework.md` / `docs/security-boundary.md` / `docs/evolution-philosophy-checkpoints.md`
-- **评估场景集**：**49 场景全过**（v0.3.0 31 + Sprint 3 新 18）
+- **评估场景集**：**84/84 全量 PASS**（v0.3.1 时 49 → v0.4 加 19 评估 + e2e 10 步 → v0.5.0 SDK 加 14 step e2e → v0.5.1 Sprint 6 加 8 单元）
 - **install 安全左移**（Sprint 1.5）
-- **Sprint 2 三大块**：
+- **Sprint 2 三大块**（P3 收口）：
   - `agint-quality-sandbox`：桥接 ctx.sandbox + 6 项冒烟 + 30s/512MB 资源限制
   - `agint-evolution-memory`：独立 storage domain + 三表 + L1-L4 衰减 + 100/50 上限
   - 退化探测：baseline-regression-suite（4 级 severity）+ stagnation-check（K=5/threshold=0.5）
-- **Sprint 3 三大块**（v0.3.1 新增）：
-  - eval Phase 2 sandbox gate（sandbox 失败 → safety=0 → REJECT）
-  - weeklyTask 接 3 hook（logPhase4 + runBaselineSuite + checkStagnation）
-  - rules deny evolution-log（L1/L0-frozen）+ policy 占位骨架
-- **教训归档**（3 份 lessons）
+- **Sprint 3 三大块**（v0.3.1）：eval Phase 2 sandbox gate（sandbox 失败 → safety=0 → REJECT）+ weeklyTask 3 hook（logPhase4 + runBaselineSuite + checkStagnation）+ rules deny evolution-log + policy 占位骨架
+- **Sprint 4 五大块**（v0.4.0）：policy 完整 4 决策 + 加权综合分 / 反和谐检测器（rejection-uniformity + false-consensus + regression-underreporting）/ 元评估委员会（shadow + auto-promote N=10 + rollback）/ `agint-quality-report` HARM 报告（markdown → wiki + JSON → memory）/ 端到端闭环 e2e（cron → dream → memory → metrics → evolve → eval → policy → report，10/10 PASS）
+- **Sprint 5 Part 1/2**（v0.5.0）：Prompt SDK 基础设施——`PromptManifestSchema` FROZEN 契约 + 模板引擎（`extractPlaceholders` / `renderPrompt`）+ 静态检查三类（注入 / 占位符滥用 / manifest 不一致）+ CLI `agint-prompt-init` + 3 presets + SDK row 启用 + `manifest.regressionTests ≥ 5` 哲学护栏
+- **Sprint 6 Part 2/2**（v0.5.1）：SDK ↔ D-QAF 流水线接通——cron `prompt-static-check` (daily 04:45) + `evalPromptStatic` 维度（权重 0.20，tags 触发）+ policy prompt 决策 path（更严 thresholds + blocker 强制 REJECT）+ report markdown prompt section + e2e 8/8 PASS
+- **运维保命工具**（v0.4 之后）：`bin/safe-update.sh` 一键挂载保命脚本 + `bin/agint-mount.sh` 升级/回滚/重启 + PLUGIN-SPEC 8 维度准入规范 + lint 脚本 + 12 份 manifest 草案
+- **教训归档**（3 份 lessons）+ safe-update SOP 文档（2026-08-21 重启事故复盘）
 
-**没有**（v0.4 推进）：
-- `agint-quality-report`（D-QAF Phase 4 灰度发布的报告生成）
-- **policy 完整 4 决策 + 加权综合分**：当前 Sprint 4 占位升级
-- **反和谐检测器**：定义"伪和谐模式"清单
-- **预算对齐**：Phase 3 有效进化增量校验
+**没有**（v0.6 / Phase 5.2+ 推进项）：
+- **Prompt-A/B 测试基础设施**（Phase 5.2）
 - **真沙箱后端**：eval 走 in-process fallback；生产需 `dsh-sandbox-local`
-- **静态检查**（`agint-quality-static-*`）：老板拍板本 Sprint 不做
-- 跨平台 install 验证（Sprint 1.6 跳过）
-- 端到端测试脚本（cron → dream → memory → metrics → evolve → quality-eval 闭环）
-- CI / 自动化测试
-- Prompt 层进化
-- 社区化技术前提（plugin SDK + 模板生成器）
+- **跨平台 install 验证**（Sprint 1.6 跳过）
+- **静态检查增强**（`agint-quality-static-*` 全面升级）：老板拍板 v0.4 不做，v0.6 是否重启待议
+- **CI / 自动化测试**
+- **预算对齐**：Phase 3 有效进化增量校验
+- **A/B 流量切分**：shadow mode + auto-promote + rollback 是基础设施，流量切分留 v0.6+
+- **每周 ≤ 3 次自动部署护栏**接入 weekly hook
+- **社区化技术前提**：插件接口契约形式化描述（JSON Schema / OpenAPI）+ 插件 SDK 模板生成器 + 3 个官方示例 Plugin + 外部贡献者跑通流程
+- **P5**：Plugin Registry / `CONTRIBUTING.md` / CHANGELOG 自动生成 / 多 Agent 协同进化场景
 
 ---
 
