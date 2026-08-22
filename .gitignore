@@ -27,3 +27,10 @@ secrets/
 install/.tmp/
 # bundle 传输文件
 *.bundle
+
+# v0.5.1 之前的早期设计过程文档（已被 docs/ 下正式文档收口）
+# 物理留在本地工作树供溯源，不进 GitHub
+# 历史 commit a67bad6 / a49e19a 中已添加；2026-08-22 commit 877c4d9 从 origin 移除
+DSH-AGINT-D-QAF融合方案.md
+DSH自进化系统评估框架完整汇总.md
+DSH自进化系统整体优化改进方案.md
