@@ -1,6 +1,6 @@
 # AGINT
 
-> 基于 DeepSeek Harness (dsh) 的自进化智能体框架。原 OpenClaw 版 AGINT 迁移到 dsh 后的规范化版本。
+> 基于 DeepSeek Harness (dsh) 的自进化智能体框架。
 
 AGINT = **AGI INTelligence**，把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**。
 
