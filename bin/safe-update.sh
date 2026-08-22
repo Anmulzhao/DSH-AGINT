@@ -48,9 +48,13 @@ snapshot_preset() {
 
 snapshot_plugins() {
   mkdir -p "$BACKUP_ROOT"
+  # 2026-08-21 fix (evolve_propose id 0938c4b6): 旧写法用 -C "$PLUGINS_DIR" 但 glob agint-*
+  # 仍由外层 shell 在 AGINT_HOME 提前展开,会把根目录的 agint-*.bundle 等非 plugin
+  # 文件错配进来,导致 tar 报"无法 stat"或打包为空。改为 subshell + cd 进 PLUGINS_DIR
+  # 后再展开 glob,确保只匹配真实的 plugin 子目录。
   if compgen -G "$PLUGINS_DIR/agint-*" >/dev/null; then
-    tar czf "$BACKUP_ROOT/agint-plugins-$TS.tar.gz" \
-      -C "$PLUGINS_DIR" --exclude='*.bak-*' agint-*
+    ( cd "$PLUGINS_DIR" && tar czf "$BACKUP_ROOT/agint-plugins-$TS.tar.gz" \
+        --exclude='*.bak-*' agint-* )
     ok "plugins → $BACKUP_ROOT/agint-plugins-$TS.tar.gz"
   else
     log "无 agint-* 插件，跳过"
