@@ -15,7 +15,7 @@ AGINT = **AGI INTelligence**，把 dsh 当 runtime，在它之上构建一套「
 | 层 | 内容 | 来源 |
 |---|---|---|
 | **preset** | 智进人格 + 工具集（含 4 个 AGINT 专属 skills） | `presets/agint/` |
-| **plugin** | 10 个 Cordis 插件，提供 AGINT 专属 host Services（含 D-QAF `agint-quality-contract` + `agint-quality-eval`） | `plugins/agint-*/` |
+| **plugin** | 13 个 Cordis 插件，提供 AGINT 专属 host Services（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / evolution-memory + quality 子家族 6 个：contract / eval / sandbox / policy / report / sdk） | `plugins/agint-*/` |
 | **patch** | 把 9 个插件挂入 dsh profile 的 user-patch 层 | `profile-patches/web/cordis.patch.yml` |
 | **data** | 长期记忆 / 规则 / 指标 / 提案 / 工具统计 / 梦境 / 复盘 / 评估历史 | runtime 数据，**不**进仓库 |
 
@@ -26,8 +26,9 @@ AGINT/
 ├── README.md                    你正在看
 ├── AGENTS.md                    给 AGINT agent 自己读的工作守则
 ├── PHILOSOPHY.md                设计哲学：美是起源与终极追求
-├── ROADMAP.md                   进化路线 P0→P1→P2→P3→P4
+├── ROADMAP.md                   进化路线 P0→P1→P2→P3→P4→P5
 ├── VERSION                      兼容 dsh 版本表
+├── CHANGELOG.md                 每个版本的 release notes
 ├── LICENSE                      MIT
 │
 ├── presets/                     ── dsh agent-presets/
@@ -44,14 +45,18 @@ AGINT/
 │   ├── agint-metrics/           进化指标
 │   ├── agint-evolve/            周复盘 + 改进提案
 │   ├── agint-tool-stats/        工具使用画像
-│   └── agint-quality/           D-QAF 评估框架
-│       ├── agint-quality-contract/   Seam 层（v0.1.1 落地）
-│       └── agint-quality-eval/       评估引擎（v0.2 初版）
+│   ├── agint-evolution-memory/  进化专用记忆 (Sprint 2.B, P3)
+│   ├── agint-quality-contract/  D-QAF Seam 层（v0.1.1）
+│   ├── agint-quality-eval/      D-QAF 评估引擎（v0.2）
+│   ├── agint-quality-sandbox/   D-QAF Phase 2 沙箱（v0.3）
+│   ├── agint-quality-policy/    D-QAF Phase 4 策略引擎（v0.4）
+│   ├── agint-quality-report/    D-QAF Phase 4 报告生成（v0.4）
+│   └── agint-quality-sdk/       Prompt SDK + 静态检查（v0.5）
 │
 ├── profile-patches/             ── dsh user-patch 层
-│   └── web/cordis.patch.yml     把 9 个插件挂入 dsh web profile
+│   └── web/cordis.patch.yml     把 13 个插件挂入 dsh web profile
 │
-├── docs/                        设计文档 / 架构图 / 插件契约
+├── docs/                        正式设计文档 / 架构图 / 插件契约
 │   ├── architecture.md          运行时架构 / 数据流
 │   ├── dsh-integration.md       dsh 集成边界
 │   ├── evolution-framework.md   D-QAF / HARM 哲学与工程收口
@@ -61,10 +66,24 @@ AGINT/
 │   └── lessons/                 经验教训归档(踩坑实录 + 修复方案 + 教训)
 │       └── *.md
 │
-├── eval/                        评估集（占位 + 最小场景集）
-│   └── scenarios/               eval/scenarios 最小可行集
+├── eval/                        评估集（84 场景全量 PASS）
+│   ├── scenarios/               单元场景（19 个 .json）
+│   └── e2e/                     端到端测试（sprint4/5/6 闭环）
 └── install/                     安装/卸载脚本
 ```
+
+### 本地设计过程文档（**不进 GitHub**）
+
+仓库根目录下还有 3 份设计过程文档：
+
+- `DSH-AGINT-D-QAF融合方案.md`（v0.3.1 设计稿）
+- `DSH自进化系统评估框架完整汇总.md`（评估框架原始汇总）
+- `DSH自进化系统整体优化改进方案.md`（§5 ROADMAP 调整建议的源头）
+
+它们是 v0.5.1 之前的早期设计稿，**已被 `docs/evolution-framework.md` / `ROADMAP.md` / 各 plugin README 正式收口**。
+按 [SKILL: github-push §仓库纪律](https://github.com/Anmulzhao/DSH-AGINT) 公开仓库只放框架本体，所以这 3 份**不 commit、不 push**，留在本地工作树供溯源。
+
+正式设计文档在 `docs/` 下，与 GitHub 仓库一致。
 
 ## 安装
 
@@ -173,11 +192,14 @@ Phase 4: 灰度发布（A/B 测试、实时熔断）  [v0.4 落地]
 
 ## 状态
 
-- **v0.1.0**（2026-08）：迁移完成。8 个插件 + 3 个 preset + 1 个 patch 已就位，可安装可运行。
-- **v0.1.1**（2026-08）：新增 D-QAF 评估框架 `agint-quality-contract`（仅 Seam 层；policy/report/sandbox 留待 v0.2+）。`agint-rules` 已通过 `frozenness` 字段（提案 a6ba79a3）接入 D-QAF 的 L0/L1/L2 边界概念。
-- **v0.2**（进行中）：`agint-quality-eval` 落地（7 维评分 + 周日 04:30 调度）。新增 `docs/evolution-framework.md` + `docs/security-boundary.md` 收口自进化宪法。**ROADMAP 调整**：评估基础设施前置到 P2。
+- **v0.5.1**（2026-08）：SDK ↔ D-QAF 流水线接通（Sprint 6 / v0.5 Part 2/2 收口）。Prompt SDK 跟 D-QAF 流水线（eval / policy / report / cron）全联通。13 个插件 + 3 个 preset + 1 个 patch + 4 个 skill + 3 个 prompt preset，84/84 全量 eval 通过。
+- **v0.5.0**：Prompt SDK 落地（Part 1/2）—— PromptManifest FROZEN 契约 + 模板引擎 + 静态检查 + CLI + 3 presets。
+- **v0.4.0**：P4 收口——策略引擎（完整 4 决策 + 加权综合分）+ 反和谐检测器 + 元评估委员会 + HARM 报告生成 + 端到端闭环 e2e。
+- **v0.3.1**：P3 收口——沙箱 + 进化记忆 + 退化探测 + D-QAF 端到端流水线接入。
+- **v0.2**：D-QAF contract + eval 引擎初版；新增自进化宪法三件套（`docs/evolution-framework.md` / `docs/security-boundary.md` / `docs/evolution-philosophy-checkpoints.md`）。
+- **v0.1.0 / v0.1.1 / v0.1.2**：迁移完成 + D-QAF Seam 层。
 
-详细路线见 `ROADMAP.md`。
+详细路线见 `ROADMAP.md`；详细变更见 `CHANGELOG.md`。
 
 ## 许可
 
