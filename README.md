@@ -4,11 +4,29 @@
 
 AGINT = **AGI INTelligence**，把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**。
 
+## 设计哲学
+
+> **美是 AGINT 的起源与终极追求**。
+
+美 = 简洁 + 真实 + 靠谱 + 主动 + 安全。
+
+五条对照（每条意味着「冲突时取前者」）：
+
+| 取 | 舍 |
+|---|---|
+| 简洁 | 冗余 |
+| 真实 | 讨好 |
+| 靠谱 | 聪明 |
+| 主动 | 被动 |
+| 安全 | 效率 |
+
+完整论述见 [`PHILOSOPHY.md`](./PHILOSOPHY.md)；工程化检查项见 [`docs/evolution-philosophy-checkpoints.md`](./docs/evolution-philosophy-checkpoints.md)。
+
 ## 不是什么
 
 - 不是 dsh 的 fork。dsh 是上游 runtime，AGINT 是 dsh 之上的规范 + 组件。
 - 不是 AGI 实现。它是**通往 AGI 的工程化骨架**：记忆、反思、约束、度量、迭代、评估。
-- 不追求大而全。AGINT 哲学「简洁 > 冗余」，新功能必须经过 D-QAF 评估、能在现有插件化架构内完成才会上。
+- 不追求大而全。遵循「简洁 > 冗余」原则：新增功能必须经 D-QAF 评估，且必须在现有插件化架构内实现。
 
 ## 是什么
 
@@ -72,18 +90,15 @@ AGINT/
 └── install/                     安装/卸载脚本
 ```
 
-### 本地设计过程文档（**不进 GitHub**）
+### 不进版本控制的设计过程文档
 
-仓库根目录下还有 3 份设计过程文档：
+仓库根目录存在 3 份 v0.5.1 之前的早期设计稿：
 
-- `DSH-AGINT-D-QAF融合方案.md`（v0.3.1 设计稿）
+- `DSH-AGINT-D-QAF融合方案.md`（D-QAF 设计草案）
 - `DSH自进化系统评估框架完整汇总.md`（评估框架原始汇总）
-- `DSH自进化系统整体优化改进方案.md`（§5 ROADMAP 调整建议的源头）
+- `DSH自进化系统整体优化改进方案.md`（ROADMAP §5 调整条目原型）
 
-它们是 v0.5.1 之前的早期设计稿，**已被 `docs/evolution-framework.md` / `ROADMAP.md` / 各 plugin README 正式收口**。
-按 [SKILL: github-push §仓库纪律](https://github.com/Anmulzhao/DSH-AGINT) 公开仓库只放框架本体，所以这 3 份**不 commit、不 push**，留在本地工作树供溯源。
-
-正式设计文档在 `docs/` 下，与 GitHub 仓库一致。
+其内容已分别收口于 `docs/evolution-framework.md`、`ROADMAP.md` 与各 `plugins/agint-*/README.md`。依据 [`github-push` §仓库纪律](https://github.com/Anmulzhao/DSH-AGINT)，公开仓库仅收录框架本体；该 3 份文件因此不进入版本控制。本地副本仅作历史溯源之用。
 
 ## 安装
 
@@ -101,12 +116,12 @@ cd ~/projects/AGINT
 ./install/install.sh
 ```
 
-`install.sh` 做三件事：
-1. 把 `presets/agint/` 复制到 `$DSH_HOME/.agent-presets/agint/`（已存在则备份为 `agint.bak-<timestamp>`）
-2. 把 `plugins/agint-*/` 复制到 `$DSH_HOME/profiles/web/plugins/`
-3. 把 `profile-patches/web/cordis.patch.yml` 合并到 `$DSH_HOME/profiles/web/cordis.patch.yml`（已存在则备份 + 合并 agint-* insert 段）
+`install.sh` 执行三项操作：
+1. 将 `presets/agint/` 复制至 `$DSH_HOME/.agent-presets/agint/`（若已存在则备份为 `agint.bak-<timestamp>`）
+2. 将 `plugins/agint-*/` 复制至 `$DSH_HOME/profiles/web/plugins/`
+3. 将 `profile-patches/web/cordis.patch.yml` 合并至 `$DSH_HOME/profiles/web/cordis.patch.yml`（若已存在则备份并合并 `agint-*` insert 段）
 
-**安装后必须重启 dsh web**（user-patch 层不热更新）。
+安装完成后须重启 `dsh web`（user-patch 层不支持热更新）。
 
 ### 卸载
 
@@ -125,7 +140,7 @@ cd ~/projects/AGINT
 
 ## 自进化宪法（速览）
 
-> 完整版见 `docs/evolution-framework.md`。这里只放「老板一眼扫完」版。
+> 完整论述见 [`docs/evolution-framework.md`](./docs/evolution-framework.md)。本节列其核心要点。
 
 ### 哲学锚点 → 工程决策
 
@@ -173,20 +188,20 @@ Phase 4: 灰度发布（A/B 测试、实时熔断）  [v0.4 落地]
 
 ### 五条黄金准则
 
-| 准则 | AGINT 现状 |
+| 准则 | 现状 |
 |---|---|
-| 持久修改才算进化 | ✓ 已内化（cordis.patch 持久化 + git 仓库） |
-| 可逆性是底线 | ✓ 语义版本锁定 + 一键回滚 |
-| 最小架构优先 | ✓ 哲学锚点 + 3000 行精神 |
-| 进化 ≠ 堆数据 | ⚠ v0.3 引入预算对齐（`docs/evolution-framework.md` §预算对齐） |
-| 安全约束前置 | ✓ 沙盒 + 硬约束清单（`docs/security-boundary.md`） |
+| 持久修改才算进化 | 已内化（cordis.patch 持久化 + git 仓库） |
+| 可逆性是底线 | 语义版本锁定 + 一键回滚 |
+| 最小架构优先 | 哲学锚点 + 3000 行精神 |
+| 进化 ≠ 堆数据 | v0.3 引入预算对齐（`docs/evolution-framework.md` §预算对齐） |
+| 安全约束前置 | 沙盒 + 硬约束清单（`docs/security-boundary.md`） |
 
 ## 与 dsh 的关系
 
 - **AGINT 依赖 dsh**，不 fork dsh、不修改 dsh 源码
-- 所有 AGINT 能力走 dsh 的「user-patch 层」+「agent-preset 层」注入
-- dsh 主线升级后跑 `install/uninstall.sh` 重装即可
-- dsh API 变更会在 CI 中暴露（计划中）
+- 所有 AGINT 能力通过 dsh 的「user-patch 层」与「agent-preset 层」注入
+- dsh 主线升级后，重跑 `install/uninstall.sh` 即可重装
+- dsh API 变更通过 CI 暴露（当前未启用）
 
 详细边界见 `docs/dsh-integration.md`。
 
