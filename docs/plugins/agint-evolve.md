@@ -64,7 +64,7 @@ proposed ──evaluate──▶ applied   （已落地）
 - **`agint.qualityEvaluator`**（v0.2）：复盘读评估历史 + HARM 趋势
 - **`agint_evolution`**（v0.3）：复盘写 failure-patterns / 蒸馏 success-templates
 
-## 进化健康度护栏（来自 `ROADMAP.md`）
+## 进化健康度护栏（来自 `路线图`）
 
 复盘时强制检查以下指标：
 

@@ -2,7 +2,7 @@
   "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-cron",
   "version": "0.1.0",
-  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay/wiki-lint/metrics-collect/evolve-review 4 个 job。",
+  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -12,19 +12,21 @@
   },
   "spec": {
     "cordis": {
-      "inject": ["timer"],
+      "inject": ["timer", "storageDomain"],
       "provides": ["agint.cron"],
       "events": [],
       "tools": ["cron_list", "cron_run_now", "cron_health"]
     },
     "storage": {
-      "domains": [],
-      "schemaVersion": 0,
-      "atomic": "none"
+      "domains": ["agint_cron"],
+      "schemaVersion": 1,
+      "atomic": "json"
     },
     "dependencies": {
       "cordis-plugin-timer": ">=0.1.0",
-      "agint-memory": ">=0.1.0"
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "agint-memory": ">=0.1.0",
+      "zod": "^3.0.0"
     },
     "mountOrder": 20,
     "permissions": {
@@ -47,7 +49,7 @@
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.cron": "5 字段 cron 调度（无秒级精度，本地时区，per-job mutex 防重叠）"
+        "agint.cron": "5 字段 cron 调度（无秒级精度，本地时区，per-job mutex 防重叠），提供 list / runNow / health"
       }
     },
     "changelog": "CHANGELOG.md",

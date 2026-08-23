@@ -324,9 +324,9 @@ HARM 不绑定计算资源约束。Agent 完全可能通过"增加重试次数""
 
 | 读者 | 推荐阅读顺序 |
 |---|---|
-| **第一次接触 AGINT** | README.md → PHILOSOPHY.md → ROADMAP.md |
+| **第一次接触 AGINT** | README.md → PHILOSOPHY.md → 路线图 |
 | **要写新插件** | `docs/architecture.md` → `docs/plugins/agint-*.md` 对应参考 → `docs/dsh-integration.md` |
 | **要调 D-QAF** | 本文档第二章 / 第三章 → `docs/plugins/agint-quality.md` → `plugins/agint-quality/agint-quality-eval/README.md` |
 | **要改 L0 字段** | 本文档第八章 + `docs/security-boundary.md` 后再找老板 |
-| **要写复盘提案** | 本文档第六章 / `ROADMAP.md` 节奏章节 → `docs/lessons/` |
-| **老板审 ROADMAP** | `ROADMAP.md` → 本文档第七章契合度表 → `docs/evolution-philosophy-checkpoints.md` |
+| **要写复盘提案** | 本文档第六章 / `路线图` 节奏章节 → `docs/lessons/` |
+| **老板审 ROADMAP** | `路线图` → 本文档第七章契合度表 → `docs/evolution-philosophy-checkpoints.md` |

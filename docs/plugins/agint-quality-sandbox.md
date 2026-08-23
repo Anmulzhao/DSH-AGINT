@@ -204,7 +204,7 @@ node eval/scenarios/driver.js
 
 - `docs/evolution-framework.md` D-QAF Phase 2 定义
 - `docs/security-boundary.md` 沙箱硬约束（超时 / 内存）
-- `ROADMAP.md` P3 §沙箱（路线图原文）
+- `路线图` P3 §沙箱（路线图原文）
 - `CHANGELOG.md#v0.3.0`（待发版）
 
 ## 相关 commit

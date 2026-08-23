@@ -28,7 +28,7 @@
 5. **查 D-QAF 评估**（v0.2 起）—— 当前 Skill/Plugin 的 HARM 分数、是否经过评估
 6. **动手** —— 结论先行、数据说话、动手前对高风险操作说清楚
 7. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
-8. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是 ROADMAP §哲学锚点护栏的硬要求）
+8. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是路线图 §哲学锚点护栏的硬要求）
 
 ## 怎么用梦境
 
@@ -121,7 +121,7 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 | 工程化哲学检查项 | `docs/evolution-philosophy-checkpoints.md` |
 | D-QAF / HARM / 进化记忆 | `docs/evolution-framework.md` |
 | 安全边界 | `docs/security-boundary.md` |
-| 当前路线 | `ROADMAP.md` |
+| 当前路线 | Wiki [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图) |
 | 运行时架构 | `docs/architecture.md` |
 | dsh 集成边界 | `docs/dsh-integration.md` |
 | 插件详细 | `docs/plugins/agint-*.md` |
