@@ -17,13 +17,66 @@
 import { z } from 'zod';
 import { nextFire, lastFire } from './cron.js';
 import { compileJobs } from './jobs.js';
+import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 
 const name = 'agint-cron';
-const inject = ['timer'];
+const inject = ['timer', 'storageDomain'];
 
 const Config = z.object({}).optional();
 
+// Persisted per-job run state. The scheduler keeps lastRunAt/lastResult/
+// lastError in memory only, so a dsh process restart makes cron_list report
+// `last=never` even for jobs that have run many times — the same class of bug
+// agint-dream fixed by recovering lastSweep from diary mtime. We persist job
+// state to an exclusive `agint_cron` storage domain so a rebooted host restores
+// real last-run timestamps instead of looking never-run.
+const cronStateSchema = z.object({
+  lastRunAt: z.string().nullable(),
+  lastResult: z.string().nullable(),
+  lastError: z.string().nullable(),
+  updatedAt: z.string(),
+});
+
+const spec = defineDomain({
+  name: 'agint_cron',
+  version: 1,
+  tables: { cron_state: { valueSchema: cronStateSchema } },
+});
+
 function apply(ctx) {
+  // Persisted state domain. Opened lazily; if it fails to open (or is empty on
+  // first boot) we degrade to in-memory-only (the previous behaviour) rather
+  // than blocking the scheduler.
+  let domain = null;
+  let domainError = null;
+  let disposed = false;
+  ctx.effect(() => {
+    return () => {
+      disposed = true;
+      if (domain) return domain.close();
+    };
+  });
+  const ready = ctx.storageDomain.open(spec).then(
+    (d) => {
+      if (disposed) {
+        void d.close().catch(() => {});
+        return null;
+      }
+      domain = d;
+      return d;
+    },
+    (error) => {
+      domainError = error;
+      return null;
+    },
+  );
+  const stateTable = async () => {
+    if (disposed) throw new Error('agint-cron: disposed');
+    if (domainError) throw domainError;
+    const d = await ready;
+    if (!d) throw new Error('agint-cron: domain unavailable');
+    return d.table('cron_state');
+  };
   const jobs = compileJobs().map((j) => ({
     ...j,
     lastRunAt: null,
@@ -33,6 +86,22 @@ function apply(ctx) {
   }));
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   const bootTime = Date.now();
+
+  // Hydrate persisted lastRunAt/lastResult/lastError per job so a rebooted
+  // host does not report every job as never-run. The domain opens async, so we
+  // update the job objects in place once ready; jobs start null (previous
+  // behaviour) and are patched when the domain settles.
+  ready.then((d) => {
+    if (!d) return;
+    const table = d.table('cron_state');
+    for (const [jobId, rec] of table.entries()) {
+      const job = jobById.get(jobId);
+      if (!job) continue;
+      if (rec.lastRunAt) job.lastRunAt = new Date(rec.lastRunAt).getTime();
+      if (rec.lastResult === 'ok') job.lastResult = { ok: true, restored: true };
+      if (rec.lastError) job.lastError = { message: rec.lastError };
+    }
+  }).catch(() => { /* domain unavailable or empty — jobs stay in-memory-only */ });
 
   // 60-second tick. Disposer registered so the interval is cleaned up on
   // fiber disposal (graceful shutdown or reload).
@@ -80,7 +149,22 @@ function apply(ctx) {
     } finally {
       job.lastRunAt = Date.now();
       job.running = false;
+      await persistJobState(job).catch(() => { /* state write must never break the run */ });
     }
+  }
+
+  // Best-effort persist of a job's run state to the cron_state domain so a
+  // later process restart can hydrate lastRunAt/lastResult/lastError. Failures
+  // are swallowed: the in-memory state is authoritative for the current run.
+  async function persistJobState(job) {
+    const record = {
+      lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
+      lastResult: job.lastResult ? 'ok' : null,
+      lastError: job.lastError ? job.lastError.message : null,
+      updatedAt: new Date().toISOString(),
+    };
+    const table = await stateTable();
+    await table.put(job.id, record);
   }
 
   ctx.provide('agint.cron', {
