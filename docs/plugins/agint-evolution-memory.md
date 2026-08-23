@@ -142,7 +142,7 @@ node eval/scenarios/driver.js
 - `docs/evolution-framework.md` 第四章（进化记忆层定义来源）
 - `docs/security-boundary.md` 第 56 行（禁止删除 evolution-log 的硬约束）
 - `docs/plugins/agint-memory.md`（task memory 参考）
-- `ROADMAP.md` P3 §进化记忆层（路线图原文）
+- `路线图` P3 §进化记忆层（路线图原文）
 - `CHANGELOG.md#v0.3.0`（待发版）
 
 ## 相关 commit

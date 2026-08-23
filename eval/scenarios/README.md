@@ -238,7 +238,7 @@ jobs:
 - `docs/evolution-framework.md` 第五章：预算对齐
 - `docs/architecture.md` 数据流
 - `docs/dsh-integration.md` 升级 dsh 时怎么测
-- `ROADMAP.md` P2/P3 阶段任务
+- `路线图` P2/P3 阶段任务
 
 ---
 

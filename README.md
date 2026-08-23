@@ -4,7 +4,7 @@
 
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**。
 
-📚 **文档**：本 README 是入口 · 深文档见 [**GitHub Wiki**](https://github.com/Anmulzhao/DSH-AGINT/wiki) · 契约/规范见 `docs/` · 路线见 [`ROADMAP.md`](./ROADMAP.md) · 变更见 [`CHANGELOG.md`](./CHANGELOG.md)
+📚 **文档**：本 README 是入口 · 深文档见 [**GitHub Wiki**](https://github.com/Anmulzhao/DSH-AGINT/wiki) · 契约/规范见 `docs/` · 路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图) · 变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)
 
 ## 设计哲学
 
@@ -87,7 +87,7 @@ cd ~/projects/AGINT
 - **v0.4.0**：P4 收口——策略引擎 + 反和谐检测器 + 元评估委员会 + HARM 报告 + 端到端闭环 e2e。
 - **v0.3.1 / v0.2 / v0.1.x**：沙箱 + 进化记忆 + 退化探测 → D-QAF contract + eval → 迁移 + Seam 层。
 
-完整路线见 [`ROADMAP.md`](./ROADMAP.md)；详细变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
+完整路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图)；详细变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
 
 ## 许可
 

@@ -167,4 +167,4 @@ agint.evolve.writeReview()
 4. **路径可移植**：`$AGINT_HOME` / `$DSH_HOME` 都在 .patch.yml 里走环境变量，默认值不带硬编码家目录
 5. **L0-frozen 不可改**：任何对 `agint-quality-contract` 的 L0 字段变更需要人类多签 + CI 禁改
 6. **插件不递归自评**：`agint-quality-eval` 评估 `agint-quality-eval` 本身抛错
-7. **D-QAF Phase 4 走灰度**：自动部署 ≤ 3 次/周，超限必须人工审核（详见 `ROADMAP.md` 节奏章节）
+7. **D-QAF Phase 4 走灰度**：自动部署 ≤ 3 次/周，超限必须人工审核（详见 `路线图` 节奏章节）

@@ -28,7 +28,7 @@
 - `quality.evaluatedCount`：本周评估任务数
 - `quality.harm`：综合 HARM 趋势（HARM 公式见 `docs/evolution-framework.md` 第三章）
 
-`agint-evolve` 周复盘时读这些指标，写入护栏报告（详见 `ROADMAP.md` 节奏章节）。
+`agint-evolve` 周复盘时读这些指标，写入护栏报告（详见 `路线图` 节奏章节）。
 
 **自动部署上限**：每周自动部署 ≤ 3 次（进化健康度护栏之一），超限必须人工审核。
 
