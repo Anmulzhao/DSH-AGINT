@@ -1,0 +1,64 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-diagnosis",
+  "version": "0.6.0",
+  "description": "AGINT 归因引擎 v0.6.0：6 类根因判定 + 反事实模拟 + 聚类 + 时间窗报告，归因结果写 agint_diagnosis 域（独立于 agint_evolution / agint_memory / agint_rules / agint_metrics），上限 annotations 200 / clusters 50 / reports 50。Sprint 7 初版仅骨架 + FROZEN schema，算法本体由子任务 #3-#6 接力。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": ["agint.evolution"],
+      "provides": [
+        "agint.diagnosis.annotate",
+        "agint.diagnosis.counterfactual",
+        "agint.diagnosis.cluster",
+        "agint.diagnosis.report"
+      ],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": ["agint_diagnosis"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-evolution-memory": ">=0.3.0"
+    },
+    "mountOrder": 20,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.diagnosis.annotate": "把一条 failure 归到 7 类根因之一（FROZEN enum）",
+        "agint.diagnosis.counterfactual": "启发式反事实模拟：估算「用 modifiedStrategy 替换」的失败率",
+        "agint.diagnosis.cluster": "按 failure_pattern.pattern substring 聚类（复用 evolution-memory 检索）",
+        "agint.diagnosis.report": "基于 windowDays 汇总 annotation + cluster + 根因分布，可写 wiki/memory"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.6.0"
+  }
+}
