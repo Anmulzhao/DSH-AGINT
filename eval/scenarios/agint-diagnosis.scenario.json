@@ -1,0 +1,224 @@
+[
+  {
+    "scenario": "classify-prompt-deficiency",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-prompt",
+          "trajectory": [
+            { "pattern": "调用旧 prompt 段落 A" },
+            { "pattern": "再次使用 prompt 段落 A" },
+            { "pattern": "prompt 版本 v3 变更后立即出现失败" },
+            { "pattern": "同一 prompt 跨任务反复失败 occurrences=3" },
+            { "pattern": "同一 prompt 跨任务又失败 occurrences=2" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "PROMPT_DEFICIENCY", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-tool-gap",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-toolgap",
+          "trajectory": [
+            { "pattern": "tool not found: fetch_weather_api" },
+            { "pattern": "错误信号 ENOENT / tool_missing detected" },
+            { "pattern": "重试时绕过该工具，success 通过" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "TOOL_GAP", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-knowledge-gap",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-knowledge",
+          "trajectory": [
+            { "pattern": "读 wiki miss: 没有该条目" },
+            { "pattern": "memory miss: domain term 专有名词" },
+            { "pattern": "人工补充 wiki 后同任务可过 success" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "KNOWLEDGE_GAP", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-reasoning-error",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-reason",
+          "trajectory": [
+            { "pattern": "推理链含逻辑矛盾 self.reference 自指" },
+            { "pattern": "同前提推出矛盾结论 opposite conclusion" },
+            { "pattern": "chain.consistency=false 自评失败" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "REASONING_ERROR", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-planning-failure",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-plan",
+          "trajectory": [
+            { "pattern": "子任务顺序颠倒 out of order reorder" },
+            { "pattern": "同目标重做 redo again 又失败" },
+            { "pattern": "再次重做 redo again 无进展 no progress stuck" },
+            { "pattern": "重新拆分 replan 后一步通过 passed success" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "PLANNING_FAILURE", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-environment-shift",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-env",
+          "trajectory": [
+            { "pattern": "GET /api/x 5xx status 500 external api timeout" },
+            { "pattern": "POST /api/y 4xx status 429 rate limit http error" },
+            { "pattern": "outage 外部事件 status page 公告" },
+            { "pattern": "重试 retry + 幂等 idempotent → success 通过" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "ENVIRONMENT_SHIFT", "minFeatures": 2 }
+    ]
+  },
+  {
+    "scenario": "classify-uncertain-no-class-matches",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-none",
+          "trajectory": [
+            { "pattern": "正常执行无异常" },
+            { "pattern": "完成 success" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "rootCause", "rootCause": "UNCERTAIN", "minFeatures": 0, "confidence": 0 }
+    ]
+  },
+  {
+    "scenario": "classify-tied-knowledge-and-tool",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "classify",
+        "args": {
+          "failureId": "f-tied",
+          "trajectory": [
+            { "pattern": "tool not found: fetch_foo" },
+            { "pattern": "ENOENT / tool_missing detected" },
+            { "pattern": "wiki miss + memory miss: 专有名词" },
+            { "pattern": "人工补充 wiki 后通过 success" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "rootCauseTied",
+        "rootCause": "KNOWLEDGE_GAP",
+        "tied": ["TOOL_GAP"],
+        "noteContains": "并列"
+      }
+    ]
+  },
+  {
+    "scenario": "service-cold-start-throws",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "serviceCall",
+        "args": {
+          "failureId": "f-cold",
+          "failurePatternCount": 3,
+          "annotationsCount": 0,
+          "trajectory": [
+            { "pattern": "tool not found: x" },
+            { "pattern": "ENOENT tool_missing" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "throws", "errorContains": "cold-start" }
+    ]
+  },
+  {
+    "scenario": "service-annotations-table-full-throws",
+    "plugin": "agint-diagnosis",
+    "input": [
+      {
+        "service": "agint.diagnosis.annotate",
+        "action": "serviceCall",
+        "args": {
+          "failureId": "f-full",
+          "failurePatternCount": 20,
+          "annotationsCount": 200,
+          "trajectory": [
+            { "pattern": "tool not found: x" },
+            { "pattern": "ENOENT tool_missing" },
+            { "pattern": "绕过该工具 success" }
+          ]
+        }
+      }
+    ],
+    "expected": [
+      { "kind": "throws", "errorContains": "annotations table full" }
+    ]
+  }
+]

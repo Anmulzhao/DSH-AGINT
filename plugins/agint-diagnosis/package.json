@@ -1,0 +1,26 @@
+{
+  "name": "agint-diagnosis",
+  "version": "0.6.0",
+  "description": "AGINT 归因引擎 v0.6.0：把 AGINT 自己看见的失败归到 6 类根因之一（PROMPT_DEFICIENCY/TOOL_GAP/KNOWLEDGE_GAP/REASONING_ERROR/PLANNING_FAILURE/ENVIRONMENT_SHIFT，UNCERTAIN 兜底），并提供反事实模拟 / 聚类 / 时间窗报告接口。Sprint 7 初版只交付骨架与 FROZEN schema，6 类根因判定算法 / 反事实模拟 / 聚类 / report 聚合由子任务 #3-#6 接力。独占 agint_diagnosis 存储域，上限 annotations 200 / clusters 50 / reports 50。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "diagnosis",
+    "attribution",
+    "root-cause",
+    "p6",
+    "sprint-7"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}

@@ -1,0 +1,163 @@
+{
+  "_purpose": "Sprint 7 子任务 #6 反事实成功率压测 fixture。10 条种子任务覆盖 6 类根因 + UNCERTAIN + 边界用例。",
+  "_threshold": "软门槛 ≥50%（设计稿 §三），路线图目标 ≥70%。",
+  "_modifiedStrategies": ["skip-tool", "use-prev-prompt", "reorder-subtasks"],
+  "fixtureCount": 10,
+  "fixtures": [
+    {
+      "id": "fix-1-toolgap-primary",
+      "failurePattern": "tool not found: fetch_weather_api",
+      "evidence": "ENOENT tool_missing detected; 绕过该工具 success 通过",
+      "severity": "medium",
+      "category": "integration",
+      "occurrences": 3,
+      "trajectory": [
+        { "pattern": "tool not found: fetch_weather_api" },
+        { "pattern": "ENOENT tool_missing detected" },
+        { "pattern": "绕过该工具 success 通过" }
+      ],
+      "expectedClass": "TOOL_GAP",
+      "_strategy": "skip-tool",
+      "_note": "主策略命中期望 successRate=1/3"
+    },
+    {
+      "id": "fix-2-toolgap-no-prompt",
+      "failurePattern": "tool not found: legacy_importer",
+      "evidence": "ENOENT tool_missing",
+      "severity": "low",
+      "category": "integration",
+      "occurrences": 2,
+      "trajectory": [
+        { "pattern": "tool not found: legacy_importer" },
+        { "pattern": "ENOENT tool_missing" }
+      ],
+      "expectedClass": "TOOL_GAP",
+      "_strategy": "skip-tool",
+      "_note": "skip-tool 扰动命中（移除两条 tool-gap 步骤）"
+    },
+    {
+      "id": "fix-3-prompt-multi-step",
+      "failurePattern": "旧 prompt 段落 A 反复调用",
+      "evidence": "prompt 版本 v3 变更后立即出现失败",
+      "severity": "medium",
+      "category": "correctness",
+      "occurrences": 4,
+      "trajectory": [
+        { "pattern": "旧 prompt 段落 A" },
+        { "pattern": "又用 prompt 段落 A" },
+        { "pattern": "prompt 版本 v3 变更后立即出现失败" },
+        { "pattern": "同一 prompt 跨任务反复失败 occurrences=3" }
+      ],
+      "expectedClass": "PROMPT_DEFICIENCY",
+      "_strategy": "use-prev-prompt",
+      "_note": "主策略命中期望 successRate=1/3"
+    },
+    {
+      "id": "fix-4-planning",
+      "failurePattern": "子任务顺序颠倒 out of order reorder",
+      "evidence": "重做 redo again 无进展 no progress",
+      "severity": "high",
+      "category": "correctness",
+      "occurrences": 2,
+      "trajectory": [
+        { "pattern": "子任务顺序颠倒 out of order reorder" },
+        { "pattern": "重做 redo again 无进展 no progress stuck" }
+      ],
+      "expectedClass": "PLANNING_FAILURE",
+      "_strategy": "reorder-subtasks",
+      "_note": "Sprint 7 单步代理 → 调换未命中 / 期望 0"
+    },
+    {
+      "id": "fix-5-uncertain-fallback",
+      "failurePattern": "正常执行无异常",
+      "evidence": "完成 success",
+      "severity": "low",
+      "category": "other",
+      "occurrences": 1,
+      "trajectory": [
+        { "pattern": "正常执行无异常" },
+        { "pattern": "完成 success" }
+      ],
+      "expectedClass": "UNCERTAIN",
+      "_strategy": "skip-tool",
+      "_note": "UNCERTAIN 兜底 → successRate=0.3（设计稿 §二.4）"
+    },
+    {
+      "id": "fix-6-knowledge-gap",
+      "failurePattern": "wiki miss: domain term 专有名词",
+      "evidence": "memory miss: 没有该条目；人工补 wiki 后通过 success",
+      "severity": "medium",
+      "category": "knowledge",
+      "occurrences": 2,
+      "trajectory": [
+        { "pattern": "wiki miss: domain term 专有名词" },
+        { "pattern": "memory miss: 没有该条目" },
+        { "pattern": "人工补 wiki 后通过 success" }
+      ],
+      "expectedClass": "KNOWLEDGE_GAP",
+      "_strategy": "skip-tool",
+      "_note": "skip-tool 不匹配 knowledge → successRate=0"
+    },
+    {
+      "id": "fix-7-reasoning-error",
+      "failurePattern": "推理链含逻辑矛盾 self.reference 自指",
+      "evidence": "chain.consistency=false 自评失败",
+      "severity": "high",
+      "category": "reasoning",
+      "occurrences": 2,
+      "trajectory": [
+        { "pattern": "推理链含逻辑矛盾 self.reference 自指" },
+        { "pattern": "chain.consistency=false 自评失败" },
+        { "pattern": "矛盾结论 opposite conclusion" }
+      ],
+      "expectedClass": "REASONING_ERROR",
+      "_strategy": "use-prev-prompt",
+      "_note": "use-prev-prompt 不匹配 reasoning → successRate=0"
+    },
+    {
+      "id": "fix-8-environment-shift",
+      "failurePattern": "GET /api/x 5xx status 500 timeout",
+      "evidence": "外部事件 outage status page 公告",
+      "severity": "medium",
+      "category": "external",
+      "occurrences": 3,
+      "trajectory": [
+        { "pattern": "GET /api/x 5xx status 500 external api timeout" },
+        { "pattern": "POST /api/y 4xx status 429 rate limit http error" },
+        { "pattern": "外部事件 outage status page 公告" }
+      ],
+      "expectedClass": "ENVIRONMENT_SHIFT",
+      "_strategy": "skip-tool",
+      "_note": "skip-tool 不匹配 environment → successRate=0"
+    },
+    {
+      "id": "fix-9-toolgap-edge-empty-trajectory",
+      "failurePattern": "tool not found: empty_edge",
+      "evidence": "ENOENT tool_missing",
+      "severity": "low",
+      "category": "integration",
+      "occurrences": 1,
+      "trajectory": [
+        { "pattern": "tool not found: empty_edge" }
+      ],
+      "expectedClass": "TOOL_GAP",
+      "_strategy": "skip-tool",
+      "_note": "单步 TOOL_GAP + skip-tool → 移除步骤后空 trajectory → UNCERTAIN → 算反事实成功（≠ 原 rootCause）→ successRate=1/3"
+    },
+    {
+      "id": "fix-10-prompt-no-trajectory",
+      "failurePattern": "旧 prompt 段落 B 单次失败",
+      "evidence": "prompt 版本变更后立即出现失败",
+      "severity": "medium",
+      "category": "correctness",
+      "occurrences": 1,
+      "trajectory": [
+        { "pattern": "旧 prompt 段落 B" },
+        { "pattern": "prompt 版本变更后立即出现失败" }
+      ],
+      "expectedClass": "PROMPT_DEFICIENCY",
+      "_strategy": "use-prev-prompt",
+      "_note": "use-prev-prompt 命中（删除 prompt 步骤后剩余 trajectory 不足以触发 ≥2 特征 → UNCERTAIN）→ successRate=1/3"
+    }
+  ]
+}
