@@ -116,6 +116,8 @@ function apply(ctx) {
     'agint.metrics': ctx.get('agint.metrics'),
     'agint.evolve': ctx.get('agint.evolve'),
     'agint.toolStats': ctx.get('agint.toolStats'),
+    'agint.dream': ctx.get('agint.dream'),
+    'agint.promptSDK': ctx.get('agint.promptSDK'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 
