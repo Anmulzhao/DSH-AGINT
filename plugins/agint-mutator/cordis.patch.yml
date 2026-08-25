@@ -1,0 +1,24 @@
+# agint-mutator loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工）：
+#   1. 把下面这段 - insert 子片段整段 copy 到顶层 cordis.patch.yml 中
+#      （与 agint-diagnosis 同一 tier 块的末尾，mountOrder 21 接在 20 后面）
+#   2. 跑 bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. bin/safe-update.sh restart 重启
+#
+# 本文件**不**由 loader 自动包含；子任务 #2 完成后由老板走 safe-update 重启时合并。
+# 子任务官方流程不允许本 sprint 顺手改顶层 cordis.patch.yml（设计稿 §五 / AGENTS.md 红线）。
+
+# agint-mutator: v0.6.1 变异构造器（host service）。
+#   - 4 个 Service：propose / validate / commit / rollback（本次仅骨架 + FROZEN schema）
+#   - 独占 agint_mutator 存储域（3 表 proposals / commits / findings）
+#   - 依赖 agint-diagnosis（读 annotations，attribution-driven 来源）+ agint-quality-sandbox（commit verify 模式，决策 D3）
+#   - 可选依赖 agint-evolution（evolution-reversed）+ agint-dream（dream-random）+ agint-quality-sandbox（verify）
+#   - 不引用 D-QAF FROZEN 接口（设计稿 §七 L0 治理）
+#   - 不调真 LLM（设计稿 §八 / 决策 D8）
+- insert:
+    - id: agint-mutator
+      name: ./plugins/agint-mutator/lib/index.js
+      config: {}

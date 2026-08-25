@@ -1,0 +1,26 @@
+{
+  "name": "agint-mutator",
+  "version": "0.6.1",
+  "description": "AGINT 变异构造器 v0.6.1：根据归因结果构造 3 类变异（PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE，决策 D2 精简自原 5 类），并提供 validate 4 约束 / commit verify 沙箱闭环 / rollback 哈希链校验。独占 agint_mutator 存储域，上限 proposals 100 / commits 50 / findings 100。Sprint 8 子任务 #2 仅交付骨架与 FROZEN schema + 4 个 Service 占位；3 类 mutation 构造器 / validate 算法 / commit 沙箱 / 3 条来源接口由子任务 #3-#5 接力。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "mutator",
+    "mutation",
+    "d-qaf",
+    "p6",
+    "sprint-8"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
