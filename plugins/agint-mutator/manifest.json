@@ -1,0 +1,70 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-mutator",
+  "version": "0.6.1",
+  "description": "AGINT 变异构造器 v0.6.1：3 类变异（PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE，决策 D2 精简自原 5 类）+ 4 个 FROZEN Service（propose / validate / commit / rollback）+ 独立存储域 agint_mutator（三表 proposals 100 / commits 50 / findings 100）。Sprint 8 子任务 #2 仅交付骨架与 FROZEN schema，3 类 mutation 构造器 / validate 4 约束 / commit 沙箱闭环 / 3 条来源接口由子任务 #3-#5 接力。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": [
+        "agint.evolution",
+        "agint.diagnosis",
+        "agint.dream",
+        "agint.qualitySandbox"
+      ],
+      "provides": [
+        "agint.mutator.propose",
+        "agint.mutator.validate",
+        "agint.mutator.commit",
+        "agint.mutator.rollback"
+      ],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": ["agint_mutator"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-diagnosis": ">=0.6.0",
+      "agint-quality-sandbox": ">=0.3.0"
+    },
+    "mountOrder": 21,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.mutator.propose": "构造 1 个 MutationProposal（3 类 MutationKind：PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE）",
+        "agint.mutator.validate": "校验 4 条硬约束（原子性 / 可证伪 / 必填 / payload 形态），写 findings 表",
+        "agint.mutator.commit": "进 agint-quality-sandbox verify 模式（决策 D3），D-QAF Phase 1-3 pass → 写 commits 表",
+        "agint.mutator.rollback": "按 rollbackCondition 退回到 preimageHash（哈希链校验）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.6.1"
+  }
+}
