@@ -1,0 +1,79 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-population",
+  "version": "0.6.2",
+  "description": "AGINT 种群管理器 v0.6.2：变异体生命周期（commit → 阶梯灰度 → 评估 → 晋升/淘汰/固化），6 维适应度 + HARM 映射 + safety<0.5 硬门控，4 表 variants/fitness_history/traffic_log/generation_log，5 端点 ingest/promote/cull/fixate/rollback + stats。Sprint 9 收口（起步 N=3，验证闭环后放宽至 N=20）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": [
+        "agint.mutator",
+        "agint.diagnosis",
+        "agint.qualityPolicy",
+        "agint.qualitySandbox",
+        "agint.memory",
+        "agint.evolution"
+      ],
+      "provides": [
+        "agint.population.ingest",
+        "agint.population.promote",
+        "agint.population.cull",
+        "agint.population.fixate",
+        "agint.population.rollback",
+        "agint.population.stats"
+      ],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": ["agint_population"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-storage-domain": ">=0.1.0",
+      "agint-mutator": ">=0.6.1",
+      "agint-diagnosis": ">=0.6.0",
+      "agint-evolution-memory": ">=0.3.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 30,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.population.ingest": "摄入变异体（前置校验 expectedEffect/rollbackCondition + Policy Gate + 1% 起步流量 + 谱系记录）",
+        "agint.population.promote": "阶梯式晋升（NEW 1% → OBSERVING 5% → PROMOTING 20% → EXPANDING 50% → FULL 100%）",
+        "agint.population.cull": "淘汰变异体（强制 mutator.rollback + 写 failure_pattern tag=population-cull）",
+        "agint.population.fixate": "固化变异体（hash 校验 + baseline 更新 + 同 scope 其余 → FROZEN_OBSERVE）",
+        "agint.population.rollback": "紧急回滚（safety_violation>0 / 全局回滚 avg<0.5，强制 rollback + failure_pattern tag=population-rollback）",
+        "agint.population.stats": "种群总览（变体列表 + 适应度 + 流量 + 世代 + capacity）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.6.2"
+  }
+}

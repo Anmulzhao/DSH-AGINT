@@ -1,0 +1,29 @@
+{
+  "name": "agint-population",
+  "version": "0.6.2",
+  "description": "AGINT 种群管理器 v0.6.2：变异体生命周期 + 阶梯式灰度 + 6 维适应度（safety 硬门控）+ HARM 映射。Sprint 9 收口。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/fitness.js": "./lib/fitness.js",
+    "./lib/states.js": "./lib/states.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "population",
+    "fitness",
+    "HARM",
+    "gradual-rollout",
+    "p6",
+    "sprint-9"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
