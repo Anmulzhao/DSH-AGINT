@@ -6,6 +6,7 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 
 | AGINT | dsh minimum | dsh tested | notes |
 |-------|-------------|------------|-------|
+| v0.6.2 | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 9 (Part 3/3): 种群管理器 `agint-population` 收口（4 表 variants/fitness_history/traffic_log/generation_log + 5 Service ingest/promote/cull/fixate/rollback + 6 维适应度函数 + safety 0.30 硬门控 + 11 阶梯状态机 + FROZEN_OBSERVE + 谱系树；88 tests 100% PASS + 6 E2E 全过 + plugin-check 8 维度全过 + L0-frozen 0 命中；仅仓库发版未挂载） |
 | v0.6.1 | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 8 (Part 2/3): 变异构造器 `agint-mutator` 收口（3 类 mutation + 4 Service + FROZEN schema + eval 19/19 PASS；仅仓库发版未挂载） |
 | v0.6.0 | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 7 (Part 1/3): 归因引擎 `agint-diagnosis` 收口（6 类根因 + 反事实 70% + 聚类 + 时间窗报告；仅仓库发版未挂载） |
 | v0.5.1 | 0.1.0-rc.6  | 0.1.0-rc.6 | Sprint 6 (Part 2/2): SDK ↔ D-QAF 流水线接通 (cron prompt-static-check + evalPromptStatic dim + policy prompt path + report prompt section) |
