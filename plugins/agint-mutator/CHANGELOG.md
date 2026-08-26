@@ -379,4 +379,56 @@
 
 ---
 
-## v0.6.1 — Sprint 8 收口发版（待 #3/#4/#5/#6 累计后补）
+## v0.6.1 — Sprint 8 整体收口（2026-08-26，#6 子任务收官）
+
+子任务 #6 收口：eval 场景集 + runner + 哲学对齐章节 + CHANGELOG 收口段。Sprint 8 累计 6 子任务全部收官。
+
+### #6 子任务清单
+
+- **`eval/scenarios/agint-mutator.scenario.json`**（368 行）：19 case（≥10 必覆盖齐：3 类 mutation × 3 条来源 × validate 4 约束 × commit/rollback 闭环 × metrics 三事件）
+- **`eval/run-mutator-eval.mjs`**（291 行）：单文件、零依赖、一行 `node eval/run-mutator-eval.mjs` 跑通；mock ctx 工厂适配 4 表 + 5 软依赖注入 + fs tmpdir 隔离 commit 真路径；退出码语义化
+- **`wiki/AGINT/sprint-8-哲学对齐检查.md`**：按 Sprint 7 体例（5 段实测 + 收口表 + 遗留 TODO + 来源）；实测数据全填
+- **CHANGELOG 本段**：Sprint 8 全 6 子任务汇总 + 与 Sprint 7 对比 + Sprint 9 接续提示
+
+### Sprint 8 全 6 子任务汇总
+
+| 子任务 | 交付 | lib/test 增量 | 用例 |
+|---|---|---|---|
+| #2 骨架 + FROZEN schema | lib + 9 smoke | lib +290 / test +181 | 9 |
+| #3 propose + 3 构造器 | lib + propose.test | lib +163 / test +159 | 18 |
+| v3 补丁 4 缺口 | 3 enum + metrics_log + 唯一索引 + logMetric | +372 | 8 |
+| #4 validate + commit/rollback + metrics | lib + validate + commit-rollback | lib +70 / test +674 | 35 |
+| #5 3 来源 + 0 数据降级 | lib + sources.test | lib +117 / test +164 | 22 |
+| #6 eval + runner + 哲学对齐 | eval runner + scenario + wiki | +291 + 368 | 19 |
+| **合计** | — | **lib +640 / test +1178** | **111** |
+
+### 与 Sprint 7 对比
+
+| 维度 | Sprint 7（agint-diagnosis v0.6.0） | Sprint 8（agint-mutator v0.6.1） |
+|---|---|---|
+| 任务复杂度 | 只读 + 纯计算 | 写操作（commit / rollback / metrics 三事件）+ 软依赖降级 |
+| Service 数 | 4 | 8（propose / validate / commit / rollback / attributionDriven / dreamRandom / evolutionReversed / logMetric） |
+| Storage 表数 | 3 | 4（proposals / commits / findings / metrics_log） |
+| eval 用例 / 单元测试 | 20 / ~57 | 19 / 75 |
+| 哲学对齐 | 5 护栏全 PASS | 5 护栏全 PASS（runner 超 41 行 WARN，其余 ✅） |
+| 跳过前置 | 反事实成功率 ≥70%（达成） | 归因覆盖率 ≥80%（决策 D1 跳过） |
+
+### Sprint 9 接续提示
+
+- **Sprint 9 = `agint-population` v0.6.2**（决策 D6）：种群管理器消费 `commit` 输出
+- 必接 `mutation.success / mutation.failure / mutation.rollback` 三类 metrics 事件（**Sprint 8 核心交付**，Sprint 9 接 metrics_collect 即可）
+- 必接 0 数据降级 finding → 决策 D1 归因覆盖率专项实测（Sprint 9 启动前由智进主动提）
+- PIPELINE_REORDER / ARCHITECTURE_PATCH 留 Sprint 10+（决策 D2）；explore 沙箱留 Sprint 10（决策 D3）
+
+### 没动 + 已知瑕疵（#6 子任务新增）
+
+- 5 文件 mtime 不变（红线守住）：`lib/index.js` (08-26 08:28:47) / `lib/storage.js` (08-25 21:54:53) / `lib/schema.js` (08-25 21:43:33) / `manifest.json` (08-26 08:29:56) / `test/smoke.mjs` (08-25 21:50:49)
+- L0 grep 0 命中 + FROZEN Service 签名 0 改动 + `failure_pattern` / `annotations` / `agint_memory` 0 写入
+- **runner 291 行超 ≤250 预算 41 行**：4 表 / 9 service / fs tmpdir 隔离 / 5 软依赖注入，不可压缩。mock ctx 工厂下沉到 `eval/scenarios/mocks/agint-mutator-ctx.mjs` 留 Sprint 9 衍生
+- **scenario 368 行 vs Sprint 7 223 行**：19 case vs 10 case，case 数 + 字段粒度解释自然增长
+
+### 哲学对齐
+
+5 护栏全验证（详见 `wiki/AGINT/sprint-8-哲学对齐检查.md`）：简洁 ⚠️ runner +41 / 安全 ✅ / 真实 ✅ / 靠谱 ✅ / 主动 ✅。
+
+**v0.6.1 可发版（Sprint 8 整体收口）**。

@@ -1,0 +1,369 @@
+{
+  "_purpose": "Sprint 8 #6 / agint-mutator v0.6.1 eval 场景集 — 覆盖 3 类 mutation × 3 条来源 × validate 4 约束 × commit/rollback 闭环 × metrics 三事件。",
+  "_threshold": { "minCases": 10, "exitCodeZeroOnFullPass": true, "sprint7Style": true },
+  "fixtureCount": 19,
+  "scenarios": [
+    {
+      "scenario": "pure-helper-deriveTargetPlugin-metadata-first",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator._deriveTargetPlugin",
+          "action": "pureFn",
+          "args": { "ctx": { "metadata": { "targetPlugin": "agint-mutator" } } }
+        }
+      ],
+      "expected": [
+        { "kind": "targetPlugin", "value": "agint-mutator" }
+      ]
+    },
+    {
+      "scenario": "pure-helper-deriveTargetPlugin-text-scan",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator._deriveTargetPlugin",
+          "action": "pureFn",
+          "args": { "ctx": { "evidence": "failure in plugin agint-diagnosis during annotate" } }
+        }
+      ],
+      "expected": [
+        { "kind": "targetPlugin", "value": "agint-diagnosis" }
+      ]
+    },
+    {
+      "scenario": "pure-helper-deriveTargetPlugin-null-fallback",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator._deriveTargetPlugin",
+          "action": "pureFn",
+          "args": { "ctx": { "evidence": "no plugin name here at all" } }
+        }
+      ],
+      "expected": [
+        { "kind": "targetPlugin", "value": null }
+      ]
+    },
+    {
+      "scenario": "pure-helper-pickKindFromSeed-deterministic",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator._pickKindFromSeed",
+          "action": "pureFn",
+          "args": { "seed": 42, "pool": ["PROMPT_MUTATION", "TOOL_SYNTHESIS", "STRATEGY_REWRITE"], "count": 2 }
+        }
+      ],
+      "expected": [
+        { "kind": "pickKindResult", "minLength": 1, "maxLength": 2, "subsetOf": ["PROMPT_MUTATION", "TOOL_SYNTHESIS", "STRATEGY_REWRITE"], "deterministicForSeed": 42 }
+      ]
+    },
+    {
+      "scenario": "propose-PROMPT_MUTATION-happy",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.propose",
+          "action": "serviceCall",
+          "args": {
+            "kind": "PROMPT_MUTATION",
+            "input": {
+              "source": "attribution-driven", "failureId": "f-pm-1", "rootCause": "PROMPT_DEFICIENCY",
+              "expectedEffect": "baseline 通过率 >= 95% 在 7 天", "rollbackCondition": "regression -> rollback", "atomicScope": "prompt",
+              "promptPayload": { "promptId": "sys-prompt", "oldText": "old prompt text", "newText": "new prompt text", "diffStrategy": "unified_diff" },
+              "targetPlugin": "agint-mutator"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "proposal", "mutKind": "PROMPT_MUTATION", "atomicScope": "prompt", "status": "PENDING", "source": "attribution-driven", "preimageHashNonEmpty": true }
+      ]
+    },
+    {
+      "scenario": "propose-TOOL_SYNTHESIS-happy",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.propose",
+          "action": "serviceCall",
+          "args": {
+            "kind": "TOOL_SYNTHESIS",
+            "input": {
+              "source": "dream-random", "failureId": "f-ts-1", "rootCause": "TOOL_GAP",
+              "expectedEffect": "tool 调用成功率 >= 80% within 7 天", "rollbackCondition": "harm >10% -> rollback", "atomicScope": "tool",
+              "toolPayload": { "toolName": "fetch-weather-api", "signature": "fetch_weather(c) -> P<W>", "stubs": ["happy returns sample"], "intent": "补天气工具" },
+              "targetPlugin": "agint-diagnosis"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "proposal", "mutKind": "TOOL_SYNTHESIS", "atomicScope": "tool", "status": "PENDING", "source": "dream-random" }
+      ]
+    },
+    {
+      "scenario": "propose-STRATEGY_REWRITE-happy",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.propose",
+          "action": "serviceCall",
+          "args": {
+            "kind": "STRATEGY_REWRITE",
+            "input": {
+              "source": "evolution-reversed", "failureId": "f-sr-1", "rootCause": "PLANNING_FAILURE",
+              "expectedEffect": "reorder 通过率 >= 80% within 7 天", "rollbackCondition": "manual rollback after 3 failures", "atomicScope": "strategy",
+              "strategyPayload": { "strategyId": "default-strategy", "oldSteps": ["fetch_context", "plan_subtasks", "execute", "verify"], "newSteps": ["plan_subtasks", "fetch_context", "execute", "verify"], "ordering": "replace" },
+              "targetPlugin": "agint-mutator"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "proposal", "mutKind": "STRATEGY_REWRITE", "atomicScope": "strategy", "status": "PENDING", "source": "evolution-reversed" }
+      ]
+    },
+    {
+      "scenario": "validate-reject-subjective-expectedEffect",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.validate",
+          "action": "serviceCall",
+          "args": {
+            "proposal": {
+              "id": "p-subj", "kind": "PROMPT_MUTATION", "atomicScope": "prompt", "source": "attribution-driven",
+              "expectedEffect": "prompt 更好", "rollbackCondition": "regression -> rollback",
+              "payload": { "promptId": "sys-prompt", "oldText": "old", "newText": "new", "diffStrategy": "unified_diff" },
+              "failureId": "f-subj", "rootCause": "PROMPT_DEFICIENCY", "status": "PENDING", "preimageHash": "sha256:x", "createdAt": "2026-08-25T00:00:00.000Z"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "validateResult", "ok": false, "findingMessageContains": "可证伪" }
+      ]
+    },
+    {
+      "scenario": "validate-reject-empty-rollbackCondition",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.validate",
+          "action": "serviceCall",
+          "args": {
+            "proposal": {
+              "id": "p-rb", "kind": "PROMPT_MUTATION", "atomicScope": "prompt", "source": "attribution-driven",
+              "expectedEffect": "baseline >= 95% 在 7 天", "rollbackCondition": "看效果",
+              "payload": { "promptId": "sys-prompt", "oldText": "old", "newText": "new", "diffStrategy": "unified_diff" },
+              "failureId": "f-rb", "rootCause": "PROMPT_DEFICIENCY", "status": "PENDING", "preimageHash": "sha256:x", "createdAt": "2026-08-25T00:00:00.000Z"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "validateResult", "ok": false, "findingMessageContains": "回滚条件" }
+      ]
+    },
+    {
+      "scenario": "validate-reject-kind-atomicScope-mismatch",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.validate",
+          "action": "serviceCall",
+          "args": {
+            "proposal": {
+              "id": "p-atom", "kind": "PROMPT_MUTATION", "atomicScope": "tool", "source": "attribution-driven",
+              "expectedEffect": "baseline >= 95% 在 7 天", "rollbackCondition": "regression -> rollback",
+              "payload": { "promptId": "sys-prompt", "oldText": "old", "newText": "new", "diffStrategy": "unified_diff" },
+              "failureId": "f-atom", "rootCause": "PROMPT_DEFICIENCY", "status": "PENDING", "preimageHash": "sha256:x", "createdAt": "2026-08-25T00:00:00.000Z"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "validateResult", "ok": false, "findingMessageContains": "原子性" }
+      ]
+    },
+    {
+      "scenario": "validate-reject-empty-payload-toolName",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.validate",
+          "action": "serviceCall",
+          "args": {
+            "proposal": {
+              "id": "p-pf", "kind": "TOOL_SYNTHESIS", "atomicScope": "tool", "source": "attribution-driven",
+              "expectedEffect": "tool >= 80% 在 7 天", "rollbackCondition": "harm >10% rollback",
+              "payload": { "toolName": "", "signature": "stub(c)->P<R>", "stubs": ["// stub"], "intent": "5+chars" },
+              "failureId": "f-pf", "rootCause": "TOOL_GAP", "status": "PENDING", "preimageHash": "sha256:x", "createdAt": "2026-08-25T00:00:00.000Z"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "validateResult", "ok": false, "findingMessageContains": "payload" }
+      ]
+    },
+    {
+      "scenario": "source-attributionDriven-happy",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.attributionDriven",
+          "action": "serviceCall",
+          "args": {
+            "input": { "failureId": "f-attr", "trajectory": { "metadata": { "targetPlugin": "agint-mutator" } } },
+            "diagnosisMock": { "rootCause": "PROMPT_DEFICIENCY", "evidence": "in agint-mutator" }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "sourceResult", "ok": true, "mutKind": "PROMPT_MUTATION", "source": "attribution-driven", "proposalDroppedInTable": true }
+      ]
+    },
+    {
+      "scenario": "source-attributionDriven-degrade-uncertain",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.attributionDriven",
+          "action": "serviceCall",
+          "args": {
+            "input": { "failureId": "f-attr-unc" },
+            "diagnosisMock": { "rootCause": "UNCERTAIN" }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "sourceResult", "ok": false, "reason": "root-cause-uncertain", "findingDroppedInTable": true, "proposalDroppedInTable": false }
+      ]
+    },
+    {
+      "scenario": "source-dreamRandom-degrade-unavailable",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.dreamRandom",
+          "action": "serviceCall",
+          "args": {
+            "input": { "seed": 7 },
+            "dreamMock": null
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "sourceResult", "ok": false, "reason": "dream-unavailable", "findingDroppedInTable": true, "proposalDroppedInTable": false }
+      ]
+    },
+    {
+      "scenario": "source-evolutionReversed-degrade-no-match",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.evolutionReversed",
+          "action": "serviceCall",
+          "args": {
+            "input": { "patternSubstring": "unmatched-xyz" },
+            "evolutionMock": { "matches": [] }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "sourceResult", "ok": false, "reason": "no-pattern-match", "findingDroppedInTable": true, "proposalDroppedInTable": false }
+      ]
+    },
+    {
+      "scenario": "commit-happy-AUTO_DEPLOY-metrics-success",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.commit",
+          "action": "serviceCall",
+          "args": {
+            "sandboxOk": true,
+            "policyDecision": "AUTO_DEPLOY",
+            "writePreimage": true,
+            "input": {
+              "source": "attribution-driven", "failureId": "f-c-1", "rootCause": "PROMPT_DEFICIENCY",
+              "expectedEffect": "baseline >= 95% 在 7 天", "rollbackCondition": "regression -> rollback", "atomicScope": "prompt",
+              "promptPayload": { "promptId": "sys-prompt", "oldText": "old prompt text", "newText": "new prompt text", "diffStrategy": "unified_diff" },
+              "targetPlugin": "agint-mutator"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "commitResult", "ok": true, "policyDecision": "AUTO_DEPLOY", "proposalStatusAfter": "COMMITTED", "metricEventWritten": "mutation.success" }
+      ]
+    },
+    {
+      "scenario": "commit-fail-policy-REJECT-metrics-failure",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.commit",
+          "action": "serviceCall",
+          "args": {
+            "sandboxOk": true,
+            "policyDecision": "REJECT",
+            "writePreimage": true,
+            "expectThrows": true,
+            "errorContains": "policyDecision=REJECT",
+            "input": {
+              "source": "attribution-driven", "failureId": "f-c-rej", "rootCause": "PROMPT_DEFICIENCY",
+              "expectedEffect": "baseline >= 95% 在 7 天", "rollbackCondition": "regression -> rollback", "atomicScope": "prompt",
+              "promptPayload": { "promptId": "sys-prompt", "oldText": "old", "newText": "new", "diffStrategy": "unified_diff" },
+              "targetPlugin": "agint-mutator"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "throws", "errorContains": "policyDecision=REJECT", "proposalStatusAfter": "REJECTED", "metricEventWritten": "mutation.failure" }
+      ]
+    },
+    {
+      "scenario": "rollback-happy-metrics-rollback",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.rollback",
+          "action": "serviceCall",
+          "args": {
+            "sandboxOk": true,
+            "policyDecision": "AUTO_DEPLOY",
+            "writePreimage": true,
+            "input": {
+              "source": "attribution-driven", "failureId": "f-rb-1", "rootCause": "PROMPT_DEFICIENCY",
+              "expectedEffect": "baseline >= 95% 在 7 天", "rollbackCondition": "regression -> rollback", "atomicScope": "prompt",
+              "promptPayload": { "promptId": "sys-prompt", "oldText": "old prompt", "newText": "new prompt", "diffStrategy": "unified_diff" },
+              "targetPlugin": "agint-mutator"
+            }
+          }
+        }
+      ],
+      "expected": [
+        { "kind": "rollbackResult", "ok": true, "restoredHashMatchesPreimage": true, "proposalStatusAfter": "ROLLED_BACK", "metricEventWritten": "mutation.rollback" }
+      ]
+    },
+    {
+      "scenario": "metrics-three-event-types-distinct",
+      "plugin": "agint-mutator",
+      "input": [
+        {
+          "service": "agint.mutator.logMetric",
+          "action": "serviceCall",
+          "args": { "eventType": "mutation.success" }
+        }
+      ],
+      "expected": [
+        { "kind": "metricEvent", "eventTypeAllowed": ["mutation.success", "mutation.failure", "mutation.rollback"], "metricsTableReachable": true }
+      ]
+    }
+  ]
+}
