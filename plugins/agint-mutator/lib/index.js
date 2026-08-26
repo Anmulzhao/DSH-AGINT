@@ -51,6 +51,53 @@ const name = 'agint-mutator';
 //   agint.dream（REM）/ agint.qualitySandbox（verify）。
 const inject = ['storageDomain'];
 
+// Sprint 8 #5 模块级 pure helpers（设计稿 §二.4，独立可测）
+function _deriveTargetPlugin(c) {
+  if (!c) return null; const m = c.metadata && typeof c.metadata === 'object' ? c.metadata : null;
+  if (m && m.targetPlugin) return m.targetPlugin; if (c.targetPlugin) return c.targetPlugin;
+  for (const x of [c.trajectory, c.pattern, c.summary, c.text, c.description, c.evidence, c.content, m && m.trajectory, m && m.pattern]) {
+    if (typeof x !== 'string') continue; const r = x.match(/agint-[a-z][a-z0-9-]+/g); if (r) return r[0];
+  } return null;
+}
+function _reversePayload(pat, tpl, kind) {
+  if (!tpl) return null; const text = (pat && (pat.pattern || pat.evidence)) || (typeof pat === 'string' ? pat : ''); if (!text) return null;
+  if (kind === 'TOOL_SYNTHESIS') {
+    const s = Array.isArray(tpl.stubs) ? tpl.stubs.slice() : [];
+    if (/太短|缺|missing/i.test(text)) s.push('// reverse: stub补全');
+    else if (/太长|too.+long/i.test(text)) { tpl.stubs = s.slice(0, Math.max(1, Math.ceil(s.length / 2))); return tpl; }
+    else s.push('// reverse: 拆函数 stub');
+    tpl.stubs = s; return tpl;
+  }
+  if (kind === 'STRATEGY_REWRITE') { if (!Array.isArray(tpl.oldSteps) || tpl.oldSteps.length < 1) return null; tpl.newSteps = tpl.oldSteps.slice().reverse(); return tpl; }
+  if (kind === 'PROMPT_MUTATION') {
+    const nt = String(tpl.newText || ''); const ot = String(tpl.oldText || '');
+    if (/太短|缺指令|missing/i.test(text)) tpl.newText = nt + '\n// reverse: 补全指令';
+    else if (/太长|too.+long/i.test(text)) tpl.newText = nt.slice(0, Math.max(1, Math.ceil(nt.length / 2)));
+    else tpl.newText = ot.slice(0, Math.max(1, Math.ceil(ot.length / 2))) || 'reversed';
+    return tpl;
+  } return null;
+}
+function _pickKindFromSeed(seed, pool, count) {
+  const n = Math.max(1, Math.min(count || 1, pool.length)); let h = 0; const s = String(typeof seed === 'number' ? seed : Date.now());
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  const out = [], used = new Set();
+  for (let i = 0; i < n && used.size < pool.length; i++) { h = ((h * 1103515245) + 12345) | 0; const idx = Math.abs(h) % pool.length; if (!used.has(idx)) { used.add(idx); out.push(pool[idx]); } }
+  return out;
+}
+const _scopeToRoot = (s) => s === 'prompt' ? 'PROMPT_DEFICIENCY' : s === 'tool' ? 'TOOL_GAP' : 'PLANNING_FAILURE';
+const _scopeOfKind = (k) => k === 'PROMPT_MUTATION' ? 'prompt' : k === 'TOOL_SYNTHESIS' ? 'tool' : 'strategy';
+function _patternToKind(p) {
+  const t = (((p && p.pattern) || '') + ' ' + ((p && p.evidence) || '')).toLowerCase();
+  if (/tool|api|stub/.test(t)) return 'TOOL_SYNTHESIS';
+  if (/plan|step|order/.test(t)) return 'STRATEGY_REWRITE';
+  return 'PROMPT_MUTATION';
+}
+const SOURCE_STUBS = {
+  PROMPT_MUTATION: { expectedEffect: 'baseline 通过率 >= 95% 在 7 天', rollbackCondition: 'regression → auto-rollback', payloadField: { promptPayload: { promptId: 'sys-prompt', oldText: 'old', newText: 'new', diffStrategy: 'unified_diff' } }, template: { promptId: 'sys-prompt', oldText: 'old', newText: 'new', diffStrategy: 'unified_diff' } },
+  TOOL_SYNTHESIS: { expectedEffect: 'tool 调用成功率 >= 80% within 7 天', rollbackCondition: 'harm >10% → rollback', payloadField: { toolPayload: { toolName: 'stub-tool-name', signature: 'stub(c) -> P<R>', stubs: ['// stub'], intent: 'stub tool intent (5 + chars)' } }, template: { toolName: 'stub-tool-name', signature: 'stub(c) -> P<R>', stubs: ['// stub'], intent: 'stub tool intent (5 + chars)' } },
+  STRATEGY_REWRITE: { expectedEffect: 'reorder 通过率 >= 80% within 7 天', rollbackCondition: 'manual rollback after 3 failures', payloadField: { strategyPayload: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } }, template: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } },
+};
+
 const Config = {};
 
 // ── 入参 schema（设计稿 §二.1：propose input 形态） ─────────────────────
@@ -728,10 +775,77 @@ function apply(ctx) {
     return { ok: true, restoredHash, commitId, audit };
   }
 
+  // ── Sprint 8 #5：3 条变异来源 Service + helpers（设计稿 §二.4） ──
+  function softDepOrReturn(name) { const s = ctx && typeof ctx.get === 'function' ? ctx.get(name) : null; return { available: Boolean(s), service: s }; }
+  async function degrade(source, reason, details) {
+    const tF = await t_findings();
+    if (tF.entries().length >= LIMITS.FINDINGS) throw new Error(`findings table full (cap ${LIMITS.FINDINGS})`);
+    const fb = packFinding({ proposalId: 'unknown', severity: 'warn', message: `${source}: ${reason}${details ? ' — ' + details : ''}` });
+    await tF.put(fb.id, fb); return { ok: false, reason, finding: unpackFinding(fb) };
+  }
+
+  async function attributionDriven(input) {
+    const source = 'attribution-driven'; const reason = 'root-cause-uncertain';
+    const dep = softDepOrReturn('agint.diagnosis');
+    if (!dep.available) return degrade(source, reason, 'agint.diagnosis 不可用');
+    const { failureId, trajectory } = input || {};
+    if (!failureId) return degrade(source, reason, '缺 failureId');
+    let ann; try { ann = await dep.service.annotate({ failureId, trajectory }); }
+    catch (e) { return degrade(source, reason, `annotate 抛错: ${e.message || e}`); }
+    const rc = ann && ann.rootCause;
+    if (!rc || rc === 'UNCERTAIN' || !/^(PROMPT_DEFICIENCY|TOOL_GAP|PLANNING_FAILURE)$/.test(rc))
+      return degrade(source, reason, `rootCause='${rc}' 不在 3 类可路由枚举`);
+    const kind = rc === 'PROMPT_DEFICIENCY' ? 'PROMPT_MUTATION' : rc === 'TOOL_GAP' ? 'TOOL_SYNTHESIS' : 'STRATEGY_REWRITE';
+    const tp = _deriveTargetPlugin({ trajectory, metadata: trajectory && trajectory.metadata }) || _deriveTargetPlugin({ evidence: ann && ann.evidence });
+    if (!tp) return degrade(source, reason, 'deriveTargetPlugin 4 优先序全失败');
+    const sp = SOURCE_STUBS[kind];
+    try { return { ok: true, proposal: await propose({ source, failureId, rootCause: rc, expectedEffect: sp.expectedEffect, rollbackCondition: sp.rollbackCondition, atomicScope: _scopeOfKind(kind), targetPlugin: tp, ...sp.payloadField }) }; }
+    catch (e) { return degrade(source, reason, `propose 抛错: ${e.message || e}`); }
+  }
+
+  async function dreamRandom(input) {
+    const source = 'dream-random'; const reason = 'dream-unavailable';
+    const dep = softDepOrReturn('agint.dream');
+    if (!dep.available) return degrade(source, reason, 'agint.dream 不可用');
+    const seed = (input && input.seed != null) ? input.seed : Date.now();
+    const kinds = _pickKindFromSeed(seed, MUTATION_KINDS, 1 + (Math.abs(Number(seed) || Date.now()) % 3));
+    const tp = _deriveTargetPlugin({ metadata: input && input.metadata, evidence: input && input.context }) || _deriveTargetPlugin({ content: input && input.context }) || 'agint-mutator';
+    const out = [];
+    for (const kind of kinds) {
+      const sp = SOURCE_STUBS[kind];
+      try { out.push(await propose({ source, failureId: `dream-${seed}-${out.length}`, rootCause: _scopeToRoot(_scopeOfKind(kind)), expectedEffect: sp.expectedEffect, rollbackCondition: sp.rollbackCondition, atomicScope: _scopeOfKind(kind), targetPlugin: tp, ...sp.payloadField })); }
+      catch (e) { await degrade(source, reason, `${kind} 派生失败: ${e.message || e}`); }
+    }
+    if (out.length === 0) return degrade(source, reason, `${kinds.length} 个 kind 全部派生失败`);
+    return { ok: true, proposals: out };
+  }
+
+  async function evolutionReversed(input) {
+    const source = 'evolution-reversed'; const reason = 'no-pattern-match';
+    const dep = softDepOrReturn('agint.evolution');
+    if (!dep.available) return degrade(source, reason, 'agint.evolution 不可用');
+    const sub = input && input.patternSubstring;
+    if (!sub || typeof sub !== 'string') return degrade(source, reason, '缺 patternSubstring');
+    let matches = []; try { matches = await dep.service.queryFailures({ query: sub, limit: 50 }); }
+    catch (e) { return degrade(source, reason, `queryFailures 抛错: ${e.message || e}`); }
+    const filtered = (matches || []).filter((m) => m && (m.category === 'correctness' || m.category === 'integration'));
+    if (filtered.length === 0) return degrade(source, reason, `failure_pattern 0 匹配（仅 category ∈ {correctness, integration} 纳入）`);
+    const m = filtered[0]; const kind = _patternToKind(m); const sp = SOURCE_STUBS[kind];
+    const reversed = _reversePayload(m, { ...sp.template }, kind);
+    if (!reversed) return degrade(source, reason, `reversePayload 失败 kind=${kind}`);
+    const tp = _deriveTargetPlugin({ pattern: m.pattern, evidence: m.evidence, metadata: m }) || _deriveTargetPlugin({ text: sub }) || 'agint-mutator';
+    const field = kind === 'PROMPT_MUTATION' ? { promptPayload: reversed } : kind === 'TOOL_SYNTHESIS' ? { toolPayload: reversed } : { strategyPayload: reversed };
+    try { return { ok: true, proposal: await propose({ source, failureId: `evorev-${m.id || sub}`, rootCause: _scopeToRoot(_scopeOfKind(kind)), expectedEffect: sp.expectedEffect, rollbackCondition: sp.rollbackCondition, atomicScope: _scopeOfKind(kind), targetPlugin: tp, ...field }) }; }
+    catch (e) { return degrade(source, reason, `propose 抛错: ${e.message || e}`); }
+  }
+
   ctx.provide('agint.mutator.propose', propose);
   ctx.provide('agint.mutator.validate', validate);
   ctx.provide('agint.mutator.commit', commit);
   ctx.provide('agint.mutator.rollback', rollback);
+  ctx.provide('agint.mutator.attributionDriven', attributionDriven);
+  ctx.provide('agint.mutator.dreamRandom', dreamRandom);
+  ctx.provide('agint.mutator.evolutionReversed', evolutionReversed);
   ctx.provide('agint.mutator.stats', stats);
   ctx.provide('agint.mutator.logMetric', logMetric); // #4 commit/rollback 调用入口
   ctx.provide('agint.mutator.checkLimit', checkLimit);
@@ -757,4 +871,7 @@ export {
   _proposePromptMutation, _proposeToolSynthesis, _proposeStrategyRewrite,
   // helper（独立可测）
   pickKind, pickPayload,
+  // Sprint 8 #5 模块级 pure helpers（独立可测）
+  _deriveTargetPlugin, _reversePayload, _pickKindFromSeed,
+  _scopeToRoot, _scopeOfKind, _patternToKind,
 };
