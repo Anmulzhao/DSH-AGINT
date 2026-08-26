@@ -6,6 +6,10 @@ dreams/
 wiki/
 reviews/
 
+# Sprint 哲学对齐章节（P 阶段验收硬门槛，AGENTS.md v0.2+ 强制）
+# wiki/ 全局 ignore + 反向 ! 规则在 directory pattern 下 Git 优先级不稳，
+# 故改用 `git add -f wiki/AGINT/sprint-N-哲学对齐检查.md` 强制 add（每次 sprint 收口时手动）
+
 # 编辑器 / 系统
 .DS_Store
 .idea/
