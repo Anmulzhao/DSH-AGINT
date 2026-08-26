@@ -23,7 +23,10 @@
         "agint.mutator.propose",
         "agint.mutator.validate",
         "agint.mutator.commit",
-        "agint.mutator.rollback"
+        "agint.mutator.rollback",
+        "agint.mutator.attributionDriven",
+        "agint.mutator.dreamRandom",
+        "agint.mutator.evolutionReversed"
       ],
       "events": [],
       "tools": []
@@ -61,7 +64,10 @@
         "agint.mutator.propose": "构造 1 个 MutationProposal（3 类 MutationKind：PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE）",
         "agint.mutator.validate": "校验 4 条硬约束（原子性 / 可证伪 / 必填 / payload 形态），写 findings 表",
         "agint.mutator.commit": "进 agint-quality-sandbox verify 模式（决策 D3），D-QAF Phase 1-3 pass → 写 commits 表",
-        "agint.mutator.rollback": "按 rollbackCondition 退回到 preimageHash（哈希链校验）"
+        "agint.mutator.rollback": "按 rollbackCondition 退回到 preimageHash（哈希链校验）",
+        "agint.mutator.attributionDriven": "归因定向变异来源：调 agint.diagnosis.annotate 拿 rootCause，路由到对应 kind 构造 proposal（缺/UNCERTAIN/抛错 → 降级 root-cause-uncertain）",
+        "agint.mutator.dreamRandom": "梦境随机变异来源：种子化从 MUTATION_KINDS 抽 1-3 个 kind 各造 1 个 proposal（agint.dream 不可用 → 降级 dream-unavailable）",
+        "agint.mutator.evolutionReversed": "进化记忆反向变异来源：failure_pattern 表命中 category ∈ {correctness, integration} → 逆向构造 payload（缺服务 / 0 匹配 → 降级 no-pattern-match）"
       }
     },
     "changelog": "CHANGELOG.md",

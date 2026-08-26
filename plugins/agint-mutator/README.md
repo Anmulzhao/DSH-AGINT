@@ -16,7 +16,7 @@
 
 ---
 
-## 4 个 FROZEN Service 签名（设计稿 §2.1）
+## 7 个 FROZEN Service 签名（设计稿 §2.1 + §2.4）
 
 ```js
 agint.mutator.propose({ source, failureId, rootCause, expectedEffect, rollbackCondition, atomicScope })
@@ -24,6 +24,18 @@ agint.mutator.propose({ source, failureId, rootCause, expectedEffect, rollbackCo
 // source ∈ { 'attribution-driven' | 'dream-random' | 'evolution-reversed' }
 // atomicScope ∈ { 'prompt' | 'tool' | 'strategy' }
 // 占位实现，sub-task #3 接力：3 类 mutation 构造器（PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE）
+
+agint.mutator.attributionDriven({ failureId, trajectory })
+  → { ok: true, proposal } | { ok: false, reason: 'root-cause-uncertain', finding }
+// 子任务 #5：诊断软依赖缺失 / UNCERTAIN / 抛错 → 降级 finding
+
+agint.mutator.dreamRandom({ seed, context })
+  → { ok: true, proposals: MutationProposal[] } | { ok: false, reason: 'dream-unavailable', finding }
+// 子任务 #5：dream 服务缺失 → 降级 finding；种子化抽 1-3 个 kind
+
+agint.mutator.evolutionReversed({ patternSubstring })
+  → { ok: true, proposal } | { ok: false, reason: 'no-pattern-match', finding }
+// 子任务 #5：evolution 服务缺失 / 0 匹配 / 逆向失败 → 降级 finding
 
 agint.mutator.validate({ proposal })
   → { ok, findings[] }

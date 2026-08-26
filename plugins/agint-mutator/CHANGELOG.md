@@ -4,6 +4,93 @@
 
 ---
 
+## v0.6.1 — Sprint 8 子任务 #5（2026-08-25）
+
+子任务 #5 交付：3 条变异来源 Service（attribution-driven / dream-random / evolution-reversed）+ 0 数据降级策略 + finding 写入 + targetPlugin 派生 helper。
+
+### 新增
+
+- **`agint.mutator.attributionDriven(input)`**（`lib/index.js`，设计稿 §二.4 attribution-driven）：
+  - 输入 `{ failureId, trajectory }`；调软依赖 `agint.diagnosis.annotate({failureId, trajectory})` 拿 `rootCause`
+  - 软依赖缺失 / `annotate` 抛错 / `rootCause === 'UNCERTAIN'` / `rootCause` 不在 3 类可路由枚举（PROMPT_DEFICIENCY / TOOL_GAP / PLANNING_FAILURE）/ `deriveTargetPlugin` 4 优先序全失败 → 降级 `{ ok: false, reason: 'root-cause-uncertain', finding }`
+  - 命中 → 选 kind（PROMPT_DEFICIENCY→PROMPT_MUTATION / TOOL_GAP→TOOL_SYNTHESIS / PLANNING_FAILURE→STRATEGY_REWRITE）+ 构造 `propose({ source, failureId, rootCause, expectedEffect, rollbackCondition, atomicScope, targetPlugin, ...payloadField })` → 返回 `{ ok: true, proposal }`
+- **`agint.mutator.dreamRandom(input)`**（`lib/index.js`，设计稿 §二.4 dream-random）：
+  - 输入 `{ seed, context?, metadata? }`；软依赖 `agint.dream` 缺失 → 降级 `{ ok: false, reason: 'dream-unavailable', finding }`
+  - 缺 seed → 用 `Date.now()` 兜底；种子化抽 1-3 个 kind（`_pickKindFromSeed`）；部分失败 → 写 finding 跳过 + 返回成功的部分；全部失败 → 降级 `dream-unavailable`
+- **`agint.mutator.evolutionReversed(input)`**（`lib/index.js`，设计稿 §二.4 evolution-reversed）：
+  - 输入 `{ patternSubstring }`；软依赖 `agint.evolution` 缺失 → 降级 `{ ok: false, reason: 'no-pattern-match', finding }`
+  - 调 `agint.evolution.queryFailures({ query: patternSubstring, limit: 50 })`；filter `category ∈ { correctness, integration }`；其他 category 跳过（设计稿 §二.4 显式约束）
+  - 0 匹配 → 降级 `no-pattern-match`；命中 → `_patternToKind` 派生 kind → `_reversePayload(pattern, template, kind)` 逆向构造 payload（stubs 缩短 / 拆函数；newSteps 反转；newText 调整） → 调 `propose({...})`
+- **降级统一返回形态**（设计稿 §二.4 字面）：`{ ok: false, reason: <enum>, finding: { source, attemptedAt, reason } }`
+  - 3 个 reason 枚举：`root-cause-uncertain` / `dream-unavailable` / `no-pattern-match`（FROZEN 字符串）
+  - finding 写 `agint_mutator.findings` 表（**不入** `failure_pattern` / `annotations` / `agint_memory`，设计稿 §二.6 v2 红线）
+  - finding 满 `LIMITS.FINDINGS=100` → 抛 `findings table full`（与 validate 路径一致，不静默；让上层手动 prune）
+- **targetPlugin 派生 helper `_deriveTargetPlugin(c)`**（4 优先序覆盖）：
+  1. `c.metadata.targetPlugin`（trajectory 元数据）
+  2. `c.targetPlugin`（直接字段）
+  3. 文本扫描（`c.trajectory` / `c.pattern` / `c.summary` / `c.text` / `c.description` / `c.evidence` / `c.content` / `c.metadata.trajectory` / `c.metadata.pattern`）
+  4. 全失败 → 返回 `null`（caller 走 UNCERTAIN finding，不抛错）
+  - 正则 `/agint-[a-z][a-z0-9-]+/g`，取第一个
+- **软依赖 helper `softDepOrReturn(name)`**：返回 `{ available, service }`；**不抛错**（与 #3 `softDepOrThrow` 区分；#3 关键路径抛错语义，#5 来源接口软依赖缺失降级语义）
+- **`degrade(source, reason, details)` helper**（apply 内）：统一写 findings + 返回降级 payload（消除 3 条服务的重复模式）
+- **模块级 pure helpers 导出**（`lib/index.js` 顶层，`export { _deriveTargetPlugin, _reversePayload, _pickKindFromSeed, _scopeToRoot, _scopeOfKind, _patternToKind }`）：独立可测，避免闭包污染
+- **`SOURCE_STUBS` 表**（模块级）：3 类最小合法 stub payload（让 #3 `propose()` zod 校验通过 + #4 `validate` 期望效应 / 回滚条件正则匹配）。`oldText` / `newText` / `stubs` / `oldSteps` / `newSteps` 是 caller / 人类 owner 编辑字段（设计稿 §二.2.1 老板拍板分工），这里给最小占位
+- **3 个 Service ctx.provide 注册**：`ctx.provide('agint.mutator.attributionDriven', attributionDriven)` 等 3 行
+
+### 测试
+
+| 测试文件 | 用例 | pass | fail |
+|---|---|---|---|
+| `test/sources.test.mjs`（**新**） | 22 | 22 | 0 |
+| **合计（#5）** | **22** | **22** | **0** |
+
+`test/sources.test.mjs` 覆盖：
+
+- `attributionDriven` happy（PROMPT_DEFICIENCY + trajectory 含 agint-* / TOOL_GAP → TOOL_SYNTHESIS + targetPlugin 从 evidence 派生）
+- `attributionDriven` 降级（diagnosis=null / UNCERTAIN / annotate 抛错 / deriveTargetPlugin 全失败 / 缺 failureId）
+- `dreamRandom` happy（seed=42 → 1-3 个 proposal 落库 + source=dream-random）
+- `dreamRandom` 降级（dream=null / 缺 seed 用 Date.now() 兜底）
+- `evolutionReversed` happy（category=integration → TOOL_SYNTHESIS / category=correctness + plan → STRATEGY_REWRITE）
+- `evolutionReversed` 降级（evolution=null / queryFailures 空 / category=security 被过滤 / 缺 patternSubstring）
+- **降级冒烟**：3 条 Service 全走 0 数据降级（所有软依赖 null）→ 全部 `ok:false`，不抛错，3 条 finding 落库，0 proposals
+- 模块级 pure helpers 独立可测（`_deriveTargetPlugin` / `_reversePayload` / `_pickKindFromSeed` / `_scopeToRoot` / `_scopeOfKind` / `_patternToKind`）
+
+### 没做（按设计稿 §八 + 决策 D2/D3）
+
+- eval ≥10 用例（#6 子任务）
+- PIPELINE_REORDER / ARCHITECTURE_PATCH（决策 D2，留 Sprint 10+）
+- explore 沙箱（决策 D3，留 Sprint 10）
+- 不与 Sprint 9 种群管理器耦合
+- 不调真 LLM 构造 payload 文本
+- 不发 git commit / PR / 改 wiki / 跑 bin/safe-update.sh
+
+### 没动（按设计稿 §七 + AGENTS.md）
+
+- D-QAF FROZEN 契约任何字段（自检：`grep -rE 'agint\.qualityContract\.|agint-quality-contract' plugins/agint-mutator/lib/ plugins/agint-mutator/test/` 0 命中）
+- `failure_pattern` / `annotations` / `agint_memory`（mutator 不派生不写，避免污染归因下游 + 主记忆）
+- 顶层 `profile-patches/web/cordis.patch.yml`（老板走 safe-update 重启时统一追加）
+- FROZEN Service 签名（`propose` / `validate` / `commit` / `rollback` 4 个原始 Service 不动；新增 3 条来源 Service 是附加不破契约）
+- `_checkDep`（#3 契约；不重写，不复用 #3 的 `softDepOrThrow`）
+
+### 已知瑕疵
+
+- **行数超设计稿 §三.2 子任务 #5 约束**：实测 **lib +117 / test +164 = 总 +281**，超 ≤80 / ≤200 / ≤280 三档约束 37/0/1 行。设计稿 §三.2 估时 1d 上限。源码注释 + Chinese 错误消息占 ~10 行；3 条来源 Service × 5-6 个降级路径 × 3 行 = ~50 行是压不下去的硬下限。**总 +281 与 ≤280 仅差 1 行；lib 超 37 行（1d 估时上限偏紧）**。建议老板拍板接受（或后续清理压缩 STUBS 表 / 删除冗余注释）
+- **`deriveTargetPlugin` 默认兜底**：dreamRandom 与 evolutionReversed 中 `targetPlugin` 全失败时兜底为 `'agint-mutator'`（本插件自己）——梦境上下文常常没有 targetPlugin，兜底到本插件避免降级但语义弱（#4 commit 路径会实际写到 `plugins/agint-mutator/` 下）。若 Sprint 9 需跨插件变异，建议 #5 演进时改为「无 targetPlugin 即降级 finding」（与 attributionDriven 路径一致）
+- **`reversePayload` 是启发式**：基于 pattern 文本正则（`/太短|缺|missing|太长|too.+long/`）判断逆向动作；命中策略失败时降级。Sprint 9 接 AI-assisted payload draft 后可替换为 LLM-driven 反向构造（设计稿 §九 TODO）
+- **`patternToKind` 关键词兜底**：基于 `tool|api|stub` / `plan|step|order` 关键词判断 kind；不在 3 关键词桶里的 pattern 默认归 PROMPT_MUTATION。Sprint 9 可由 attributionDriven 路径共享更精细分类
+- **`propose()` 软依赖二次校验**：#3 的 `propose()` 路径对 PROMPT/STRATEGY 需要 `agint.diagnosis`（queryAnnotations / report），TOOL 需要 `agint.evolution`（queryFailures）。#5 来源 Service 内部调用 `propose()` 时必须 mock 这些依赖（test/sources.test.mjs 已用 `PROPOSE_DEPS` 注入）。生产环境这些依赖需由 Cordis fiber 自动装配
+- **`storage.spec.version` 不变**：本子任务未引入 storage schema 变化；`agint_mutator` 域版本号仍为 2（#4 v2 补丁已升级）
+
+### 哲学对齐检查
+
+- **简洁 > 冗余**：行数轻微超 ≤280（+1 行），仍属合理范围；模块级 helpers 拆分避免 apply 闭包污染
+- **安全 > 效率**：3 条 Service 全走 `softDepOrReturn` 不抛错（与 #3 `softDepOrThrow` 区分）→ 软依赖缺失不阻塞挂载；finding 写表而非内存缓存 → 故障可审计
+- **真实 > 讨好**：3 条 Service 5-6 个降级路径全覆盖测试（happy + degrade + 0-data 冒烟），失败 finding 写库（不静默），`tests/sources.test.mjs` 不藏失败
+- **靠谱 > 聪明**：3 个 reason enum 字面字符串（设计稿 §二.4 字面）；不实现 explore 沙箱（决策 D3）；finding 满 `LIMITS.FINDINGS=100` 抛错（与 validate 路径一致，不静默）
+- **主动 > 被动**：不调真 LLM（设计稿 §八）；不写 failure_pattern（设计稿 §二.6 红线）；targetPlugin 派生 4 优先序覆盖（含 dream 上下文兜底）
+
+---
+
 ## v0.6.1 — Sprint 8 子任务 #4（2026-08-25）
 
 子任务 #4 交付：validate 4 约束 + commit 沙箱闭环 + rollback 哈希校验 + metrics 三事件写入 + agint.qualityPolicy.decide() 集成。
