@@ -10,6 +10,10 @@ reviews/
 # wiki/ 全局 ignore + 反向 ! 规则在 directory pattern 下 Git 优先级不稳，
 # 故改用 `git add -f wiki/AGINT/sprint-N-哲学对齐检查.md` 强制 add（每次 sprint 收口时手动）
 
+# Sprint 任务完成标记（subagent 留下的进程信号，不该进版本库）
+# 物理留在工作树给本地溯源，git 默认不 add
+.sprint*-codex.done
+
 # 编辑器 / 系统
 .DS_Store
 .idea/
