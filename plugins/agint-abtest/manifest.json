@@ -1,0 +1,64 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-abtest",
+  "version": "0.6.4",
+  "description": "Prompt-A/B 测试基础设施独立 Cordis 插件。Sprint 10 v0.6.4 #9 收口：3 个 Service (start/report/listTests) + 4 个统计纯函数 + 独立存储域 agint_abtest + 任务集 ≥10 + Bonferroni 校正 + Cohen's d ≥0.3 统计护栏。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+
+  "cordis": {
+    "inject": ["storageDomain"],
+    "provides": ["agint.abtest"],
+    "events": [],
+    "tools": [],
+    "optionalInject": []
+  },
+
+  "storage": {
+    "domains": ["agint_abtest"],
+    "schemaVersion": 1,
+    "atomic": "json"
+  },
+
+  "dependencies": {
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+    "zod": "^3.0.0"
+  },
+  "mountOrder": 37,
+
+  "permissions": {
+    "env": ["DSH_HOME", "AGINT_HOME"],
+    "fs": ["read:plugins/agint-abtest"],
+    "network": [],
+    "shell": false
+  },
+
+  "lifecycle": {
+    "intervals": "none",
+    "listeners": "none",
+    "tools": "none",
+    "shutdown": "graceful"
+  },
+
+  "tests": {
+    "entry": "test/abtest-smoke.test.mjs",
+    "command": "node --test test/abtest-smoke.test.mjs",
+    "expectedExit": 0
+  },
+
+  "docs": {
+    "readme": "README.md",
+    "serviceDocs": {
+      "agint.abtest": "Prompt-A/B 测试基础设施。提供 start({variantA, variantB, taskSuite≥10, significanceThreshold}) / report({testId}) / listTests()。统计：Bonferroni 校正 pValue + Cohen's d ≥0.3 + 任务集 ≥10 才判 winner。"
+    }
+  },
+
+  "changelog": "CHANGELOG.md",
+  "compatSince": "0.6.4"
+}
