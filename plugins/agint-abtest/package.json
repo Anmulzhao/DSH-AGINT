@@ -1,0 +1,25 @@
+{
+  "name": "agint-abtest",
+  "version": "0.6.4",
+  "description": "Prompt-A/B 测试基础设施独立 Cordis 插件。Sprint 10 v0.6.4 #9 收口：3 个 Service (start/report/listTests) + 4 个统计纯函数 (welchTTest/bonferroniAdjust/cohensD/decideWinner) + 独立存储域 agint_abtest + 任务集 ≥10 + Bonferroni 校正 + Cohen's d ≥0.3 统计护栏。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/statistics.js": "./lib/statistics.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "abtest",
+    "statistical-significance",
+    "bonferroni",
+    "cohens-d"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
