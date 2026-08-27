@@ -4,6 +4,40 @@
 
 ---
 
+## v0.6.3 — Sprint 10 子任务 #5（2026-08-?）
+
+Sprint 10 #5 交付：rollback 三段式原子事务（设计稿 §二.4）+ 进程级互斥锁。
+
+### 新增
+
+- **`lib/rollback.js`**（199 行）：三段式事务模块
+  - `capturePreimageHash(pluginDir, deps?)` 纯函数：pluginDir 下排除 `node_modules / .git / dist / build / .cache / *.log` 的 SHA-256 链
+  - `runRollbackTransaction({ ctx, commitEntry, proposal, repoRoot, pluginName, targetPath, nodeFs })`：原子快照 → 恢复 → smoke test
+    - smoke 通过 → tags `['rollback-ok']`
+    - smoke 失败 → 自动恢复到 step 1 拍的安全位 + tags `['rollback-failed', 'auto-recovered']` + 触发 policy ABSTAIN
+- **`lib/rollback-mutex.js`**（59 行）：进程级 rollback 互斥锁
+  - `withMutex(key, fn)` 同 key 串行；不同 key 并行
+  - `_mutexState()` / `_mutexReset()` 测试 / 运维用
+- **`agint.mutator.rollback` 改造**：入口套 `withMutex(pluginName, ...)`，主体套 `runRollbackTransaction`
+  - FROZEN 签名 `{ commitId } → { ok, restoredHash }` 不破
+  - 新增 4 个可选返回字段：`rollbackTransactionId?` / `preimageHashAtStart?` / `smokeResult?` / `error?`
+  - smoke 失败 → proposal.status **保持 COMMITTED**（不写 ROLLED_BACK），写 `mutation.policy_reject`（policyDecision=ABSTAIN）
+  - SHA-256 校验 / restoredHash 校验保留在 index.js（事务前 / 事务后双层守门）
+  - pluginName 派生：targetPath 首段（`plugins/<pluginName>/...`）或 proposal 内部 `_targetPlugin`
+
+### 测试
+
+- `test/rollback-transaction.test.mjs`（285 行，10 用例）：happy 3 / 失败自动恢复 3 / 并发 2 / capturePreimageHash 纯函数 2
+- `test/commit-rollback.test.mjs` 加 3 个向后兼容断言：FROZEN 字段 + 2 个新可选字段
+
+### 守住的红线
+
+- L0-frozen 自检：`grep -rn 'agint-quality-contract' plugins/agint-mutator/lib/` **0 命中**
+- FROZEN 签名 0 改动：`rollback({ commitId })` 入参 / `{ ok, restoredHash }` 返回必填字段不变
+- commit / validate / propose / 3 类来源接口 / storage / schema 任何签名 0 改动
+
+---
+
 ## v0.6.1 — Sprint 8 子任务 #5（2026-08-25）
 
 子任务 #5 交付：3 条变异来源 Service（attribution-driven / dream-random / evolution-reversed）+ 0 数据降级策略 + finding 写入 + targetPlugin 派生 helper。

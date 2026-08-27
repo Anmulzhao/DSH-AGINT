@@ -360,3 +360,44 @@ test('LIMITS.COMMITS=50 守门生效', () => {
   assert.equal(LIMITS.COMMITS, 50);
   assert.equal(LIMITS.PREIMAGE_BYTES, 5 * 1024 * 1024);
 });
+
+// ── Sprint 10 #5：rollback 向后兼容断言（4 个新可选字段） ────────
+
+test('兼容：rollback FROZEN 字段 { ok, restoredHash } 仍然成立', async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    const { commit: c } = await proposeAndCommit(FIX.prompt, env);
+    const rb = await env.services['agint.mutator.rollback']({
+      commitId: c.commitId, repoRoot: env.workdir,
+    });
+    // Sprint 8 FROZEN 契约：ok=true, restoredHash 等于 commit 时记的 preimageHash
+    assert.equal(rb.ok, true);
+    assert.equal(rb.restoredHash, c.preimageHash);
+  } finally { env.cleanup(); }
+});
+
+test('兼容：rollback 新增可选字段 rollbackTransactionId 存在', async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    const { commit: c } = await proposeAndCommit(FIX.prompt, env);
+    const rb = await env.services['agint.mutator.rollback']({
+      commitId: c.commitId, repoRoot: env.workdir,
+    });
+    assert.ok(rb.rollbackTransactionId, 'rollbackTransactionId 应存在');
+    assert.equal(typeof rb.rollbackTransactionId, 'string');
+    assert.ok(rb.rollbackTransactionId.length > 0);
+  } finally { env.cleanup(); }
+});
+
+test('兼容：rollback 新增可选字段 preimageHashAtStart 存在', async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    const { commit: c } = await proposeAndCommit(FIX.prompt, env);
+    const rb = await env.services['agint.mutator.rollback']({
+      commitId: c.commitId, repoRoot: env.workdir,
+    });
+    assert.ok(rb.preimageHashAtStart, 'preimageHashAtStart 应存在');
+    assert.equal(typeof rb.preimageHashAtStart, 'string');
+    assert.equal(rb.preimageHashAtStart.length, 64, 'SHA-256 hex 应 64 字符');
+  } finally { env.cleanup(); }
+});
