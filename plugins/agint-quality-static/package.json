@@ -1,0 +1,28 @@
+{
+  "name": "agint-quality-static",
+  "version": "0.6.3",
+  "description": "插件代码级静态检查（独立 Cordis 插件）。Sprint 10 #4 收口：4 族检查（dependency-audit / storage-boundary / env-access / contract-reference）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/static-profile.js": "./lib/static-profile.js",
+    "./lib/checkers/dependency-audit.js": "./lib/checkers/dependency-audit.js",
+    "./lib/checkers/storage-boundary.js": "./lib/checkers/storage-boundary.js",
+    "./lib/checkers/env-access.js": "./lib/checkers/env-access.js",
+    "./lib/checkers/contract-reference.js": "./lib/checkers/contract-reference.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "static-check",
+    "plugin-audit",
+    "l0-frozen-protection"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}

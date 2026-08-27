@@ -1,0 +1,23 @@
+# agint-quality-static loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工）：
+#   1. 把下面这段 - insert 子片段整段 copy 到顶层 cordis.patch.yml 中
+#      （与 agint-quality-sandbox 同一 tier 块的末尾，mountOrder 36 接在 35 后面）
+#   2. 跑 bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. bin/safe-update.sh restart 重启
+#
+# 本文件**不**由 loader 自动包含；Sprint 10 子任务 #4 + #6 收口后由老板走 safe-update 重启时合并。
+# 子任务官方流程不允许本 sprint 顺手改顶层 cordis.patch.yml（设计稿 §五 / AGENTS.md 红线）。
+
+# agint-quality-static: v0.6.3 插件代码级静态检查独立插件（host service）。
+#   - 4 个 Service：checkPlugin / checkAll / listFamilies / addAllowlistEntry
+#   - 4 族 checker：dependency-audit / storage-boundary / env-access / contract-reference
+#   - 独立存储域：agint_static_rules
+#   - 与 SDK 模板级 static-check 形成双轨
+#   - 不引用 quality-contract FROZEN 接口（设计稿 §七 L0 治理）
+- insert:
+    - id: agint-quality-static
+      name: ./plugins/agint-quality-static/lib/index.js
+      config: {}
