@@ -33,6 +33,7 @@ import {
   matchesQuery,
 } from './schema.js';
 import { decayScan } from './decay.js';
+import { createLogBuffer, DEFAULT_FLUSH_COUNT, DEFAULT_FLUSH_MS } from './log-buffer.js';
 
 const name = 'agint-evolution-memory';
 const inject = ['storageDomain'];
@@ -77,6 +78,20 @@ function apply(ctx) {
     (error) => { domainError = error; return null; },
   );
 
+  // Sprint 10 v0.6.4 #7：EvolutionLogBuffer 实例（domain ready 后创建）
+  // memFallback = ctx.get('agint.memory')；domain ready 后才可访问 table
+  let logBuffer = null;
+  ready.then((d) => {
+    if (!d || disposed) return;
+    const memFallback = ctx.get('agint.memory') ?? { write: async () => ({ ok: false, reason: 'no-memFallback' }) };
+    logBuffer = createLogBuffer({
+      storage: d,
+      memFallback,
+      flushCount: DEFAULT_FLUSH_COUNT,
+      flushMs: DEFAULT_FLUSH_MS,
+    });
+  }).catch(() => { /* domain unavailable: logBuffer 保持 null, caller 用 logPhase4 同步路径 */ });
+
   const table = async (name) => {
     if (disposed) throw new Error('agint-evolution-memory: disposed');
     if (domainError) throw domainError;
@@ -107,6 +122,58 @@ function apply(ctx) {
     await (await t_log()).put(entry.id, entry);
     return { ...entry };
   }
+
+  /**
+   * logPhase4Buffered — Sprint 10 v0.6.4 #7 异步批量写入路径
+   *
+   * 与 logPhase4 同契约，但走 EvolutionLogBuffer 异步批量落盘。
+   * 设计稿 §二.5：高频评估期（≥50 次 logPhase4 调用）从 50 次 → 5 次 I/O。
+   *
+   * 何时用：caller 自己决定（默认 caller 是 evaluateAll/decode/generate 流水线的
+   * hot path；常规 caller 仍走 logPhase4 同步路径，保留向后兼容）。
+   *
+   * 不返回存储的 entry（异步）；返回 { queued: true, id } 即可。
+   * 读时走 readLogRangeMerged（buffer + storage 合并视图），不破坏 storage。
+   */
+  async function logPhase4Buffered({ targetId, targetKind, decision, scores = {}, findings = [], tags = [] }) {
+    if (!targetId) throw new Error('logPhase4Buffered: targetId is required');
+    const entry = evolutionLogEntrySchema.parse({
+      id: randomId(),
+      kind: 'evolution-log',
+      targetId,
+      targetKind,
+      decision,
+      scores,
+      findings,
+      tags,
+    });
+    logBuffer.enqueue(entry);
+    return { queued: true, id: entry.id };
+  }
+
+  /**
+   * readLogRangeMerged — Sprint 10 v0.6.4 #8 读时合并视图
+   *
+   * 返回 buffer + storage 合并的 evolution_log 视图（buffer 在前）。
+   * 不污染 storage（buffer 仅在内存 + flush 后才落盘）。
+   */
+  async function readLogRangeMerged(opts = {}) {
+    return logBuffer.readMerged(opts.query);
+  }
+
+  /**
+   * flushLogBufferNow — Sprint 10 v0.6.4 #7 立即强制 flush
+   */
+  async function flushLogBufferNow() {
+    return logBuffer.flush('manual');
+  }
+
+  // 退出钩子：ctx.effect() disposer 在 plugin dispose 时强制 flush（设计稿 §二.5 退出触发）。
+  // 不注册 process.on(beforeExit/SIGTERM) — 那些会让 Node 测试 process 永久卡住等待 listener 释放。
+  // 生产 dsh 的 SIGTERM 处理在 dsh 主进程统一接管；plugin 自身的优雅停机由 ctx.effect() disposer 链驱动。
+  ctx.effect(() => () => {
+    if (logBuffer) void logBuffer.shutdown();
+  });
 
   /**
    * Add a failure pattern. If a pattern with the same text already exists,
@@ -264,6 +331,9 @@ function apply(ctx) {
 
   ctx.provide('agint.evolution', {
     logPhase4,
+    logPhase4Buffered,    // Sprint 10 v0.6.4 #7 异步批量写入
+    readLogRangeMerged,   // Sprint 10 v0.6.4 #8 读时合并视图
+    flushLogBufferNow,    // Sprint 10 v0.6.4 #7 强制 flush
     addFailure,
     addSuccess,
     queryFailures,
