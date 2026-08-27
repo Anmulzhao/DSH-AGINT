@@ -32,6 +32,15 @@
   },
   "mountOrder": 35,
 
+  "bpfProfile": {
+    "verify": "profiles/sandbox-seccomp-verify.json",
+    "explore": "profiles/sandbox-seccomp-explore.json"
+  },
+  "sbplProfile": {
+    "verify": "profiles/sandbox-sbpl-verify.sb",
+    "explore": "profiles/sandbox-sbpl-explore.sb"
+  },
+
   "permissions": {
     "env": ["DSH_HOME", "AGINT_HOME"],
     "fs": ["read:plugins/agint-quality-sandbox"],

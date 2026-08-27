@@ -7,6 +7,37 @@
     "version": "0.6.3"
   },
   "defaultAction": "SCMP_ACT_KILL_PROCESS",
+  "syscallNumbers": {
+    "x86_64": {
+      "read": 0, "write": 1, "open": 2, "close": 3, "stat": 4, "fstat": 5,
+      "lstat": 6, "mmap": 9, "mprotect": 10, "munmap": 11, "brk": 12,
+      "rt_sigaction": 13, "rt_sigreturn": 15,
+      "ioctl": 16, "getpid": 39, "sendfile": 40, "socket": 41, "connect": 42,
+      "accept": 43, "sendto": 44, "recvfrom": 45, "bind": 49, "listen": 50,
+      "clone": 56, "fork": 57, "vfork": 58, "execve": 59, "exit": 60,
+      "exit_group": 231, "wait4": 61, "kill": 62, "ptrace": 101,
+      "getuid": 102, "getgid": 104, "geteuid": 107, "getegid": 108,
+      "set_tid_address": 218, "futex": 202, "set_robust_head": 273,
+      "clock_gettime": 228, "getrandom": 318, "openat": 257,
+      "mount": 165, "umount2": 166, "reboot": 169, "swapon": 167, "swapoff": 168,
+      "init_module": 175, "delete_module": 176, "personality": 135,
+      "execveat": 322
+    },
+    "aarch64": {
+      "read": 63, "close": 57, "openat": 56, "mmap": 222, "mprotect": 226,
+      "munmap": 215, "brk": 214, "rt_sigaction": 134, "rt_sigreturn": 139,
+      "ioctl": 29, "getpid": 172, "getuid": 174, "getgid": 176,
+      "geteuid": 175, "getegid": 177, "futex": 98, "set_tid_address": 154,
+      "clock_gettime": 113, "getrandom": 278, "clone": 220, "fork": 220,
+      "vfork": 220, "execve": 221, "exit": 93, "exit_group": 94,
+      "kill": 129, "ptrace": 117, "mount": 21, "umount2": 39,
+      "reboot": 142, "init_module": 174, "delete_module": 175,
+      "personality": 92, "execveat": 280, "socket": 198, "connect": 203,
+      "accept": 202, "sendto": 206, "recvfrom": 207, "bind": 200, "listen": 201,
+      "set_robust_head": 99, "stat": 80, "fstat": 80, "lstat": 80, "wait4": 260,
+      "swapon": 224, "swapoff": 225
+    }
+  },
   "syscallAllow": [
     "read", "write", "open", "openat", "close", "exit", "exit_group",
     "brk", "mmap", "mprotect", "munmap", "rt_sigaction", "rt_sigreturn",
