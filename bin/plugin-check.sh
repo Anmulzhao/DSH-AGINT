@@ -61,34 +61,43 @@ check_one() {
     warns=$((warns + 1))
   fi
 
-  local test="$dir/test/smoke.mjs"
+  local test_entry
+  test_entry="$(jq -r '.tests.entry // empty' "$mf" 2>/dev/null || true)"
+  if [ -z "$test_entry" ]; then
+    test_entry="test/smoke.mjs"  # 兜底：旧 manifest 缺 tests.entry
+  fi
+  local test="$dir/$test_entry"
   if [ -f "$test" ]; then
-    log_ok "test/smoke.mjs 存在"
+    log_ok "tests.entry=$test_entry 存在"
   else
-    log_warn "test/smoke.mjs 缺失（维度 6 tests）"
+    log_warn "tests.entry=$test_entry 缺失（维度 6 tests）"
     warns=$((warns + 1))
   fi
 
   # ── 深度校验（manifest 存在时跑）──
+  # Sprint 10 #6 收口：双兼容 .spec.* 和顶层（仓内不一致，老插件用 spec 包裹，Sprint 10 新插件用顶层）
+  # 见 reviews/2026-08-30-周复盘.md 与 Sprint 10 #4 收口报告
   if [ -f "$mf" ] && command -v jq >/dev/null 2>&1; then
-    # 1. contract
-    if ! jq -e '.spec.cordis.inject != null and .spec.cordis.provides != null' "$mf" >/dev/null 2>&1; then
-      log_warn "manifest 缺 spec.cordis.inject 或 provides（维度 1 contract）"
+    # 1. contract — 兼容 .spec.cordis.* 与顶层 cordis.*
+    # 注：jq `or` 在第一个为 false 时不返第二个，需用 if-then-else。
+    if ! jq -e 'if (.spec.cordis.inject != null and .spec.cordis.provides != null) then true elif (.cordis.inject != null and .cordis.provides != null) then true else false end' "$mf" >/dev/null 2>&1; then
+      log_warn "manifest 缺 cordis.inject + cordis.provides（维度 1 contract）"
       warns=$((warns + 1))
     fi
-    # 2. storage
-    if ! jq -e '.spec.storage.domains | type == "array" and length > 0' "$mf" >/dev/null 2>&1; then
-      log_warn "manifest 缺 spec.storage.domains（维度 2 storage）"
+    # 2. storage — 兼容 .spec.storage.domains 与顶层 storage.domains
+    # 空数组 = 0 域合法（无状态 plugin 如 sandbox / cron helper），不报 WARN。
+    if ! jq -e 'if (.spec.storage.domains | type == "array") then true elif (.storage.domains | type == "array") then true else false end' "$mf" >/dev/null 2>&1; then
+      log_warn "manifest 缺 storage.domains 数组（维度 2 storage）"
       warns=$((warns + 1))
     fi
-    # 3. deps
-    if ! jq -e '.spec.dependencies' "$mf" >/dev/null 2>&1; then
-      log_warn "manifest 缺 spec.dependencies（维度 3 deps）"
+    # 3. deps — 兼容 .spec.dependencies 与顶层 dependencies
+    if ! jq -e 'if (.spec.dependencies != null) then true elif (.dependencies != null) then true else false end' "$mf" >/dev/null 2>&1; then
+      log_warn "manifest 缺 dependencies（维度 3 deps）"
       warns=$((warns + 1))
     fi
-    # 4. permissions
-    if ! jq -e '.spec.permissions' "$mf" >/dev/null 2>&1; then
-      log_warn "manifest 缺 spec.permissions（维度 4 permissions）"
+    # 4. permissions — 兼容 .spec.permissions 与顶层 permissions
+    if ! jq -e 'if (.spec.permissions != null) then true elif (.permissions != null) then true else false end' "$mf" >/dev/null 2>&1; then
+      log_warn "manifest 缺 permissions（维度 4 permissions）"
       warns=$((warns + 1))
     fi
     # 5. lifecycle — 静态扫 setInterval / setTimeout 看有没有注册 disposer
