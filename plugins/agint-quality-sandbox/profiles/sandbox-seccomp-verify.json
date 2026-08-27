@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "platform": "linux",
+    "mode": "verify",
+    "description": "Sprint 10 #3 subagent 必填。本 Sprint 仅占位骨架。",
+    "sprint": "10",
+    "version": "0.6.3"
+  },
+  "defaultAction": "SCMP_ACT_KILL_PROCESS",
+  "syscallAllow": [
+    "read", "write", "open", "openat", "close", "exit", "exit_group",
+    "brk", "mmap", "mprotect", "munmap", "rt_sigaction", "rt_sigreturn",
+    "fstat", "stat", "lstat", "getpid", "getuid", "getgid", "geteuid", "getegid",
+    "futex", "set_tid_address", "set_robust_head", "clock_gettime", "getrandom",
+    "ioctl"
+  ],
+  "syscallDeny": [
+    "execve", "execveat",
+    "fork", "vfork", "clone",
+    "ptrace",
+    "socket", "connect", "bind", "listen", "accept", "sendto", "recvfrom",
+    "kill",
+    "mount", "umount", "reboot", "swapon", "swapoff",
+    "init_module", "delete_module",
+    "personality"
+  ],
+  "arch": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+  "note": "deny-by-default + 显式 allow. 子任务 #3 填具体 BPF 规则 + 压测 execve 被拒."
+}

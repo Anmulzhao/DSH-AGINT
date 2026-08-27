@@ -1,0 +1,64 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-sandbox",
+  "version": "0.6.3",
+  "description": "D-QAF Phase 2 动态沙箱独立 Cordis 插件：verify/explore 双模式 + seccomp/SBPL syscall 白名单 profile 注入。Sprint 10 #2 + #3 收口：从 agint-quality 基座剥离。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+
+  "cordis": {
+    "inject": ["sandbox"],
+    "provides": ["agint.qualitySandbox"],
+    "events": [],
+    "tools": [],
+    "optionalInject": ["agint.evolution"]
+  },
+
+  "storage": {
+    "domains": [],
+    "schemaVersion": 1,
+    "atomic": "json"
+  },
+
+  "dependencies": {
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+    "zod": "^3.0.0"
+  },
+  "mountOrder": 35,
+
+  "permissions": {
+    "env": ["DSH_HOME", "AGINT_HOME"],
+    "fs": ["read:plugins/agint-quality-sandbox"],
+    "network": ["loopback"],
+    "shell": false
+  },
+
+  "lifecycle": {
+    "intervals": "none",
+    "listeners": "none",
+    "tools": "none",
+    "shutdown": "graceful"
+  },
+
+  "tests": {
+    "entry": "test/dual-mode.test.mjs",
+    "command": "node --test test/dual-mode.test.mjs",
+    "expectedExit": 0
+  },
+
+  "docs": {
+    "readme": "README.md",
+    "serviceDocs": {
+      "agint.qualitySandbox": "verify/explore 双模式沙箱执行 + syscall 白名单 profile 注入 + 降级路径可证。提供 runVerify / runExplore / resolveProfile / routeForMutation / runSmoke（向后兼容 v0.3）/ backendHealth。"
+    }
+  },
+
+  "changelog": "CHANGELOG.md",
+  "compatSince": "0.6.3"
+}

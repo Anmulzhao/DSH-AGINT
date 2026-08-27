@@ -1,0 +1,51 @@
+; agint.sprint10 -- sandbox-sbpl-verify.sb (v0.6.3 占位骨架)
+; 子任务 #3 必填：填具体 SBPL 规则 + 压测 execve 被拒.
+(version 1)
+(deny default)
+
+; 允许的 syscall（最小集）
+(allow syscall-read)
+(allow syscall-write)
+(allow syscall-open)
+(allow syscall-close)
+(allow syscall-exit)
+(allow syscall-mmap)
+(allow syscall-mprotect)
+(allow syscall-munmap)
+(allow syscall-rt_sigaction)
+(allow syscall-ioctl)
+(allow syscall-getpid)
+(allow syscall-getuid)
+(allow syscall-geteuid)
+(allow syscall-futex)
+
+; 显式 deny（设计稿 §二.2：禁 socket / ptrace / fork 全族）
+(deny syscall-execve)
+(deny syscall-execveat)
+(deny syscall-fork)
+(deny syscall-vfork)
+(deny syscall-ptrace)
+(deny syscall-socket)
+(deny syscall-connect)
+(deny syscall-bind)
+(deny syscall-listen)
+(deny syscall-accept)
+
+; 网络全隔离（设计稿 §二.2：verify 与 explore 都不变）
+(deny network*)
+(deny network-inbound)
+(deny network-outbound)
+
+; 文件系统：仅 workspace 可写
+(allow file-write* (subpath "/workspace"))
+(deny file-write* (subpath "/etc"))
+(deny file-write* (subpath "/usr/bin"))
+(deny file-write* (subpath "/bin"))
+
+; meta
+(_meta
+  (platform "darwin")
+  (mode "verify")
+  (description "Sprint 10 #3 subagent 必填.")
+  (sprint "10")
+  (version "0.6.3"))

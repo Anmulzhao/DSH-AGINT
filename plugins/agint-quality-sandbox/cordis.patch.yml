@@ -1,0 +1,24 @@
+# agint-quality-sandbox loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工）：
+#   1. 把下面这段 - insert 子片段整段 copy 到顶层 cordis.patch.yml 中
+#      （与 agint-mutator 同一 tier 块的末尾，mountOrder 35 接在 21 后面）
+#   2. 跑 bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. bin/safe-update.sh restart 重启
+#
+# 本文件**不**由 loader 自动包含；Sprint 10 子任务 #2 + #6 收口后由老板走 safe-update 重启时合并。
+# 子任务官方流程不允许本 sprint 顺手改顶层 cordis.patch.yml（设计稿 §五 / AGENTS.md 红线）。
+
+# agint-quality-sandbox: v0.6.3 动态沙箱独立插件（host service）。
+#   - 4 个新 Service：runVerify / runExplore / resolveProfile / routeForMutation
+#   - 1 个旧 Service：runSmoke（向后兼容 v0.3 eval）
+#   - 双模式：verify（严格 30s/512MB）/ explore（宽松 60s/1GB + execve 白名单）
+#   - syscall 白名单：seccomp BPF JSON (linux) / sandbox-exec SBPL (darwin)
+#   - 降级：seccomp/sbpl 不可用 → in-process fallback + 强制 PENDING_REVIEW
+#   - 不引用 D-QAF FROZEN 接口（设计稿 §七 L0 治理）
+- insert:
+    - id: agint-quality-sandbox
+      name: ./plugins/agint-quality-sandbox/lib/index.js
+      config: {}

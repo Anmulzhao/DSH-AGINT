@@ -1,0 +1,31 @@
+{
+  "name": "agint-quality-sandbox",
+  "version": "0.6.3",
+  "description": "D-QAF Phase 2 动态沙箱独立 Cordis 插件：verify/explore 双模式 + seccomp/SBPL syscall 白名单 profile 注入。Sprint 10 #2 + #3 收口：从 agint-quality 基座剥离。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/smoke.js": "./lib/smoke.js",
+    "./profiles/sandbox-seccomp-verify.json": "./profiles/sandbox-seccomp-verify.json",
+    "./profiles/sandbox-seccomp-explore.json": "./profiles/sandbox-seccomp-explore.json",
+    "./profiles/sandbox-sbpl-verify.sb": "./profiles/sandbox-sbpl-verify.sb",
+    "./profiles/sandbox-sbpl-explore.sb": "./profiles/sandbox-sbpl-explore.sb"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "d-qaf",
+    "sandbox",
+    "phase-2",
+    "seccomp",
+    "sbpl",
+    "syscall-whitelist",
+    "dual-mode"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
