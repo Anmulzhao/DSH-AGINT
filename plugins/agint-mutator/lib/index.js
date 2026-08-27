@@ -30,6 +30,8 @@ import {
 } from './storage.js';
 import * as nodeFs from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
+import { withMutex } from './rollback-mutex.js';
+import { runRollbackTransaction } from './rollback.js';
 import {
   MutationProposalSchema, MutationPayloadSchema, MutationKindSchema, MUTATION_KINDS,
   AtomicScopeSchema, ATOMIC_SCOPES, MutationSourceSchema, MUTATION_SOURCES,
@@ -671,12 +673,21 @@ function apply(ctx) {
 
   /**
    * `agint.mutator.rollback(input) → { ok, restoredHash, commitId, audit }`
-   * 设计稿 §2.1：5 步
+   * 设计稿 §2.1 + Sprint 10 #5 §二.4：5 步 + 三段式事务
    *   1) 从 commits 表查 commit 记录
    *   2) SHA-256 校验 preimageContent 与 commits.preimageHash 一致（防外部篡改）
    *   3) 写 targetPath 恢复 preimage（TOOL_SYNTHESIS: preimageContent 为空 → unlink）
    *   4) 计算 restoredHash = SHA-256(恢复后内容)，与 preimageHash 比对
    *   5) proposal.status = 'ROLLED_BACK' + 写 mutation.rollback
+   *
+   * Sprint 10 #5 改造：
+   *   - 同 pluginName 进程级串行（withMutex）；不同 pluginName 并行
+   *   - step 3-4 包进三段式事务：原子快照 → 恢复 → smoke test
+   *     - smoke 通过 → proposal.status='ROLLED_BACK' + mutation.rollback + 返回 ok
+   *     - smoke 失败 → 自动恢复到 step 1 拍的安全位 + proposal.status 保持 COMMITTED + mutation.policy_reject
+   *
+   * FROZEN 签名 { commitId } → { ok, restoredHash } 不破；扩 4 个可选返回字段：
+   *   rollbackTransactionId?, preimageHashAtStart?, smokeResult?, error?
    *
    * 失败语义：preimageHash 不匹配 / restoredHash ≠ preimageHash → 抛错 + 写 findings（不静默）。
    */
@@ -720,31 +731,30 @@ function apply(ctx) {
     if (!proposalEntry) throw new Error(`rollback: proposalId='${commitEntry.proposalId}' 查不到（commit 残留？）`);
     const proposal = unpackProposal(proposalEntry);
 
-    // ── 3) 恢复 preimage
-    const absTarget = resolve(repoRoot, commitEntry.targetPath);
-    await nodeFs.mkdir(dirname(absTarget), { recursive: true });
-    if (proposal.kind === 'TOOL_SYNTHESIS' && commitEntry.preimageContent.length === 0) {
-      try { await nodeFs.unlink(absTarget); }
-      catch (err) {
-        if (err.code !== 'ENOENT') {
-          throw new Error(`rollback: TOOL_SYNTHESIS unlink 失败 — ${err.message}`);
-        }
-      }
-    } else {
-      await nodeFs.writeFile(absTarget, commitEntry.preimageContent, 'utf8');
+    // 派生 pluginName：targetPath = plugins/<pluginName>/<subdir>/<file>（决策 D8）
+    // 路径首段作 pluginName，找不到则抛错（mutation 关键路径，不静默）
+    const targetPath = commitEntry.targetPath;
+    const segs = String(targetPath).split('/').filter(Boolean);
+    let pluginName = segs[0] === 'plugins' && segs.length >= 3 ? segs[1] : null;
+    if (!pluginName) {
+      // 兜底：proposalEntry 内部 _targetPlugin（propose 透传）
+      const tp = getInternalField(proposalEntry, '_targetPlugin');
+      if (tp) pluginName = tp;
+    }
+    if (!pluginName) {
+      throw new Error(`rollback: 无法从 targetPath='${targetPath}' 派生 pluginName；proposal 缺 _targetPlugin 字段`);
     }
 
-    // ── 4) 计算 restoredHash + 与 preimageHash 比对
-    let restoredContent = '';
-    try {
-      restoredContent = await nodeFs.readFile(absTarget, 'utf8');
-    } catch (err) {
-      if (proposal.kind !== 'TOOL_SYNTHESIS' || commitEntry.preimageContent.length !== 0) {
-        throw new Error(`rollback: 读 restoredContent 失败（${commitEntry.targetPath}）— ${err.message}`);
-      }
-    }
-    const restoredHash = await contentHash(restoredContent);
-    if (restoredHash !== commitEntry.preimageHash) {
+    // ── 三段式事务（同 pluginName 串行；不同 pluginName 并行）
+    const txResult = await withMutex(pluginName, async () => {
+      return runRollbackTransaction({
+        ctx, commitEntry, proposal, repoRoot, pluginName,
+        targetPath, nodeFs,
+      });
+    });
+
+    // ── 4) restoredHash 比对（事务后，校验事务返回的 restoredHash 与 preimageHash 一致）
+    if (txResult.restoredHash !== commitEntry.preimageHash) {
       const tF2 = await t_findings();
       if (tF2.entries().length >= LIMITS.FINDINGS) {
         throw new Error(`findings table full (cap ${LIMITS.FINDINGS}) — 请手动 prune`);
@@ -752,13 +762,45 @@ function apply(ctx) {
       const fb2 = packFinding({
         proposalId: commitEntry.proposalId,
         severity: 'error',
-        message: `rollback: restoredHash ≠ preimageHash — commitId='${commitId}' restoredHash=${restoredHash.slice(0,16)}... 期望=${commitEntry.preimageHash.slice(0,16)}...`,
+        message: `rollback: restoredHash ≠ preimageHash — commitId='${commitId}' restoredHash=${txResult.restoredHash.slice(0,16)}... 期望=${commitEntry.preimageHash.slice(0,16)}...`,
       });
       await tF2.put(fb2.id, fb2);
       throw new Error(`rollback: restoredHash ≠ preimageHash（不静默，已写 findings） — commitId='${commitId}'`);
     }
 
-    // ── 5) proposal.status = 'ROLLED_BACK' + mutation.rollback
+    // ── smoke 失败：自动恢复到安全位 + proposal 保持 COMMITTED + 写 mutation.policy_reject
+    if (!txResult.smokeResult.ok) {
+      // 写 mutation.policy_reject（设计稿 §二.6 v2 + Sprint 10 #5）
+      try {
+        await logMetric({
+          eventType: 'mutation.policy_reject',
+          proposalId: commitEntry.proposalId,
+          commitId,
+          source: proposal.source,
+          kind: proposal.kind,
+          atomicScope: proposal.atomicScope,
+          reason: txResult.error || 'rollback-smoke-failed',
+          policyDecision: 'ABSTAIN',
+        });
+      } catch (_metricErr) {
+        // 指标写失败不阻断主流程（设计原则 §六：mutation 关键路径不静默，但 metrics 容许降级）
+      }
+      // 返回失败（新字段全部 optional，旧契约 ok=false 不破）
+      return {
+        ok: false,
+        restoredHash: txResult.restoredHash,
+        commitId,
+        audit: { ...commitEntry.audit, timestamp: nowIso() },
+        rollbackTransactionId: txResult.rollbackTransactionId,
+        preimageHashAtStart: txResult.preimageHashAtStart,
+        smokeResult: txResult.smokeResult,
+        recovered: txResult.recovered,
+        tags: txResult.tags,
+        error: txResult.error || 'rollback-failed-smoke',
+      };
+    }
+
+    // ── 5) smoke 通过：proposal.status = 'ROLLED_BACK' + mutation.rollback
     const updatedRb = { ...proposalEntry, status: 'ROLLED_BACK' };
     await tP.put(updatedRb.id, updatedRb);
     await logMetric({
@@ -772,7 +814,16 @@ function apply(ctx) {
 
     // audit 复用 commit 的 audit，换 timestamp
     const audit = { ...commitEntry.audit, timestamp: nowIso() };
-    return { ok: true, restoredHash, commitId, audit };
+    return {
+      ok: true,
+      restoredHash: txResult.restoredHash,
+      commitId,
+      audit,
+      // Sprint 10 #5 新增 4 个可选字段（向后兼容）
+      rollbackTransactionId: txResult.rollbackTransactionId,
+      preimageHashAtStart: txResult.preimageHashAtStart,
+      smokeResult: txResult.smokeResult,
+    };
   }
 
   // ── Sprint 8 #5：3 条变异来源 Service + helpers（设计稿 §二.4） ──
