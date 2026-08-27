@@ -26,9 +26,9 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { runSmoke as runSmokeInProcess } from './smoke.js';
+import { resolveProfile as resolveProfileImpl, probeSyscallCapability } from './profile-resolver.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,34 +53,9 @@ function apply(ctx, config) {
   ctx.effect(() => () => { disposed = true; });
 
   // ── v0.6.3 新增：平台 profile 路由（设计稿 §二.2）
+  // ── v0.6.3 新增：profile 解析透传到 lib/profile-resolver.js（设计稿 §二.2 模块化）
   function resolveProfile({ mode }) {
-    if (!['verify', 'explore'].includes(mode)) {
-      throw new Error(`resolveProfile: unknown mode '${mode}' (expect verify|explore)`);
-    }
-    const platform = process.platform;
-    if (platform === 'linux') {
-      const file = resolve(__dirname, `../profiles/sandbox-seccomp-${mode}.json`);
-      if (!existsSync(file)) {
-        return { unsupported: true, platform, mode, reason: `profile file missing: ${file}`, recommended: 'in-process-fallback' };
-      }
-      return {
-        platform, mode, format: 'bpf-json',
-        content: readFileSync(file, 'utf8'),
-        defaultAction: 'SCMP_ACT_KILL_PROCESS',
-      };
-    }
-    if (platform === 'darwin') {
-      const file = resolve(__dirname, `../profiles/sandbox-sbpl-${mode}.sb`);
-      if (!existsSync(file)) {
-        return { unsupported: true, platform, mode, reason: `profile file missing: ${file}`, recommended: 'in-process-fallback' };
-      }
-      return {
-        platform, mode, format: 'sbpl',
-        content: readFileSync(file, 'utf8'),
-      };
-    }
-    // win32 / 其他：本 Sprint 仅 warn（设计稿 §九遗留 TODO #1）
-    return { unsupported: true, platform, mode, reason: 'no-seccomp-on-this-platform', recommended: 'in-process-fallback' };
+    return resolveProfileImpl(mode);
   }
 
   // ── v0.6.3 新增：变异路由（设计稿 §二.2 末尾）
@@ -177,16 +152,14 @@ function apply(ctx, config) {
 
   async function backendHealth() {
     const sandboxService = ctx.get('sandbox');
-    const probeProfile = (mode) => {
-      try { return !resolveProfile({ mode }).unsupported; } catch { return false; }
-    };
+    const cap = probeSyscallCapability();
     return {
       ctxSandboxAvailable: Boolean(sandboxService && typeof sandboxService.confine === 'function'),
       inProcessFallbackEnabled: cfg.allowInProcessFallback,
       timeoutMs: cfg.timeoutMs,
       memoryMb: cfg.memoryMb,
-      seccompAvailable: probeProfile('verify'),
-      sbplAvailable: probeProfile('verify'),
+      seccompAvailable: cap.seccompAvailable,
+      sbplAvailable: cap.sbplAvailable,
     };
   }
 
