@@ -1,0 +1,45 @@
+[
+  {
+    "scenario": "s11-01-happy-path-healthy-mount",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-01 快乐路径：合规 TOOL_SYNTHESIS 变异走完 static→sandbox→mount→population，phase=HEALTHY，种群个体数 +1。",
+        "_note_fixture_echo_tool": "最小合规 Cordis 插件 manifest，提供 1 个 echo Service（设计稿 §4.4 fixture-echo-tool）。",
+        "proposal": {
+          "id": "prop-echo-001",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-echo-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "echo 调用成功率 >= 95% within 7 days",
+          "rollbackCondition": "regression -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-echo-tool",
+          "manifest": {
+            "name": "echo-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.echoTool", "method": "echo" }],
+            "storageDomain": "agint_synth_echo",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// minimal echo implementation\nexport const echo = (msg) => msg;"
+        },
+        "upstream": {
+          "_note": "全部默认走 dispatcher 内置 happy path mock；留空触发默认值。"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "happy-path-healthy",
+        "phase": "HEALTHY",
+        "contractCheck": { "signatureDiff": true, "domainIsolation": true, "dependencyWhitelist": true }
+      }
+    ]
+  }
+]

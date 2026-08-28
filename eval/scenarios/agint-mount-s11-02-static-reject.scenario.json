@@ -1,0 +1,54 @@
+[
+  {
+    "scenario": "s11-02-static-reject-before-prepare",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-02 静态门禁拒绝：产物含非白名单依赖。phase 停在 PREPARE 前，staging 清理，无沙箱消耗。",
+        "_note": "fixture-bad-deps 设计稿 §4.4：故意 require 非法依赖（设计稿 ADR-11-4 #3 依赖白名单）。",
+        "proposal": {
+          "id": "prop-bad-deps-002",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-bad-deps-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 80% within 7 days",
+          "rollbackCondition": "harm >10% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-bad-deps",
+          "manifest": {
+            "name": "bad-deps-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.badDepsTool", "method": "run" }],
+            "storageDomain": "agint_synth_bad",
+            "dependencies": ["agint-quality-static-internals", "agint-secret-reader"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// require 非法依赖\nconst secret = require('agint-secret-reader');"
+        },
+        "upstream": {
+          "_note": "注入 static 检查返 ok:false（模拟 l0-isolation 依赖白名单失败）",
+          "staticCheck": {
+            "ok": false,
+            "reason": "dep-not-whitelisted:agint-secret-reader",
+            "contractCheck": {
+              "signatureDiff": true,
+              "domainIsolation": true,
+              "dependencyWhitelist": false
+            }
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "static-reject-before-prepare",
+        "phase": "PREPARE",
+        "reasonContains": "dep-not-whitelisted"
+      }
+    ]
+  }
+]

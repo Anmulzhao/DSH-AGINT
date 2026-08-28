@@ -1,0 +1,46 @@
+[
+  {
+    "scenario": "s11-08-idempotent-same-ticket-returned",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-08 同名插件重复挂载：幂等拒绝，返回既有 ticket，不重复触发上游服务。",
+        "_note": "同一 proposalId 第二次发起 mount.request，必须复用既有 ticketId；不允许再跑一次完整三段式。",
+        "proposal": {
+          "id": "prop-echo-001",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-echo-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "echo 调用成功率 >= 95% within 7 days",
+          "rollbackCondition": "regression -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-echo-tool",
+          "manifest": {
+            "name": "echo-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.echoTool", "method": "echo" }],
+            "storageDomain": "agint_synth_echo",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// minimal echo\nexport const echo = (msg) => msg;"
+        },
+        "upstream": {
+          "_note": "走默认 happy path；dispatcher 内部会发两次同名请求，第二次必须命中幂等表"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "idempotent-same-ticket-returned",
+        "firstPhase": "HEALTHY",
+        "secondTicketIdEqualsFirst": true,
+        "upstreamNotReInvoked": true
+      }
+    ]
+  }
+]

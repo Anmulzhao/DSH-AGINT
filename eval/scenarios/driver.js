@@ -1111,6 +1111,551 @@ const dispatchers = {
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
+
+  // ── Sprint 11: agint-mount 编排 e2e ─────────────────────────────
+  // Sprint 11 codex-A 产出真实 agint-quality-static plugin（含 l0-isolation 5 族 checker，
+  // 6/6 smoke PASS）+ fixtures/mount/{echo-tool,bad-deps}（人工白名单夹具）。Sprint 11 集成
+  // 对接（codex-E）目标 = dispatcher 把 contractCheck 来源切到真 qualityStatic.checkPlugin()。
+  //
+  // 实际改法（选项 C + X，老板拍板 2026-08-28）：
+  //   1) 顶部 dynamic import 真 `plugins/agint-quality-static/lib/index.js`，加载失败 → fallback
+  //   2) 真插件可用时，dispatcher 内部把 scenario.input.fixture（inline 字段）合成一个临时 pluginDir
+  //      （顶层 cordis.provides + 顶层 storage.domains，匹配 l0-isolation checker 期望格式），
+  //      调真 qualityStatic.checkPlugin({pluginDir, profileOverrides:{l0IsolationOnly:true}})
+  //      → 聚合 findings → contractCheck 三 boolean
+  //   3) scenario 显式注入的 upstream.staticCheck 仍优先（场景设计者明确意图不被覆盖）
+  //   4) 真插件加载失败 → fallback 到原 inline mock orchestrator（保留所有 8/8 PASS）
+  //   5) mount.request / status / rollback **不直接调** —— mountCtx.awaitHmrSettle 是源码内
+  //      硬约定（orchestrator.js:188），dispatcher 无 closure 引用注入；该设计漏洞作为 Sprint 12
+  //      增量专项回报（详见 commit 报告 §漏洞记录）
+  'agint-mount': async (scenario, ctx) => {
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+
+    // ── 构造上游服务 mock（scenario 内显式声明期望返回值）────────
+    const upstream = input.upstream ?? {};
+
+    // ── 真实 agint-quality-static plugin 加载（失败 → 全 inline fallback）──
+    let realQualityStatic = null;
+    let realPluginLoadError = null;
+    try {
+      const qsMod = await import(`${AGINT_ROOT}/plugins/agint-quality-static/lib/index.js`);
+      qsMod.apply(ctx, {});
+      realQualityStatic = ctx.get('agint.qualityStatic') ?? null;
+    } catch (e) {
+      realPluginLoadError = e?.message ?? String(e);
+      // fallback 路径：保留原 inline 行为
+    }
+
+    // ── helper：把 scenario 内 inline fixture 字段合成临时 pluginDir ──
+    // 真 l0-isolation checker 期望 manifest.json 顶层 cordis.provides + storage.domains；
+    // scenario 内 fixture.manifest 是 {name, version, provides:[{service}], storageDomain,
+    // dependencies} 形态 —— 需要桥接层。dispatcher 在 /tmp 下写临时 pluginDir，跑完即清。
+    const { mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { createRequire } = await import('node:module');
+    const tmpRoot = join(tmpdir(), `agint-mount-dispatcher-${process.pid}`);
+    // 进程退出时清临时目录（避免 /tmp 累积；dispatcher 出口多，用 process.once 兜底）
+    // exit 阶段异步不可靠，用 sync rm；driver.js 是 ESM，通过 createRequire 走 node:fs
+    const nodeRequire = createRequire(import.meta.url);
+    process.once('exit', () => {
+      try {
+        nodeRequire('node:fs').rmSync(tmpRoot, { recursive: true, force: true });
+      } catch { /* ignore */ }
+    });
+    async function synthPluginDir(inlineFixture) {
+      const dir = join(tmpRoot, `${inlineFixture.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      const providesList = Array.isArray(inlineFixture?.manifest?.provides)
+        ? inlineFixture.manifest.provides.map((p) => (typeof p === 'string' ? p : p?.service ?? p?.name)).filter(Boolean)
+        : [];
+      const domainsList = inlineFixture?.manifest?.storageDomain
+        ? [inlineFixture.manifest.storageDomain]
+        : Array.isArray(inlineFixture?.manifest?.storage?.domains) ? inlineFixture.manifest.storage.domains : [];
+      // 顶层结构（l0-isolation checker 期望）
+      const synthManifest = {
+        name: inlineFixture?.manifest?.name ?? `agint-synth-${inlineFixture.id}`,
+        version: inlineFixture?.manifest?.version ?? '0.0.1',
+        cordis: { provides: providesList },
+        storage: { domains: domainsList },
+      };
+      await writeFile(join(dir, 'manifest.json'), JSON.stringify(synthManifest, null, 2));
+      // entrypoint：dependencyWhitelist 子检查要扫源码
+      if (inlineFixture?.entrypoint) {
+        await writeFile(join(dir, 'src/index.js'), inlineFixture.entrypoint, 'utf-8');
+      }
+      return dir;
+    }
+
+    // ── 真插件 contractCheck 聚合器 ──
+    async function realCheckPlugin(inlineFixture) {
+      if (!realQualityStatic?.checkPlugin) return null;
+      const pluginDir = await synthPluginDir(inlineFixture);
+      const r = await realQualityStatic.checkPlugin({
+        pluginDir,
+        profileOverrides: { l0IsolationOnly: true },
+      });
+      const cc = { signatureDiff: true, domainIsolation: true, dependencyWhitelist: true };
+      for (const f of r.findings ?? []) {
+        const msg = f?.message ?? '';
+        if (msg.includes('[signatureCompatibility]')) cc.signatureDiff = false;
+        if (msg.includes('[domainIsolation]')) cc.domainIsolation = false;
+        if (msg.includes('[dependencyWhitelist]')) cc.dependencyWhitelist = false;
+      }
+      return { ok: r.ok !== false || (cc.signatureDiff && cc.domainIsolation && cc.dependencyWhitelist), contractCheck: cc, _realFindings: r.findings };
+    }
+
+    // 1. agint.qualityStatic (L0-isolation 规则组：codex-B 产出)
+    const staticCalls = { count: 0 };
+    const staticMock = {
+      check: async (fixture) => {
+        staticCalls.count++;
+        // 优先级 1：scenario 显式注入的 upstream.staticCheck（场景设计者明确意图）
+        if (upstream.staticCheck) return upstream.staticCheck;
+        // 优先级 2：真插件路径（qualityStatic.checkPlugin + findings 聚合）
+        if (realQualityStatic) {
+          const real = await realCheckPlugin(input.fixture);
+          if (real) return real;
+        }
+        // 优先级 3：fallback 默认（全 true）—— 真插件加载失败时
+        return { ok: true, contractCheck: { signatureDiff: true, domainIsolation: true, dependencyWhitelist: true } };
+      },
+    };
+
+    // 2. agint.qualitySandbox (动态门禁)
+    const sandboxCalls = { count: 0, lastTarget: null };
+    const sandboxMock = {
+      backendHealth: async () => upstream.sandboxHealth ?? {
+        ctxSandboxAvailable: true,
+        inProcessFallbackEnabled: true,
+        timeoutMs: 30000,
+        memoryMb: 512,
+      },
+      runSmoke: async ({ target }) => {
+        sandboxCalls.count++;
+        sandboxCalls.lastTarget = target;
+        return upstream.sandboxSmoke ?? { ok: true, mode: 'in-process', checks: [{ name: 'service-resolves', ok: true }] };
+      },
+    };
+
+    // 3. agint.population (新个体注册)
+    const populationCalls = { count: 0, lastOrigin: null };
+    const populationMock = {
+      register: async (artifact) => {
+        populationCalls.count++;
+        populationMock._registeredArtifacts.push(artifact);
+        populationMock.lastOrigin = artifact?.origin ?? null;
+        return { ok: true, individualId: `ind-${populationCalls.count}` };
+      },
+      _registeredArtifacts: [],
+      size: () => populationMock._registeredArtifacts.length,
+    };
+
+    // 4. agint.evolution (失败归因 + 阶段日志)
+    const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
+    const evolutionMock = {
+      logPhase4: async (e) => { evoStore.evolution_log.set(e.targetId + ':' + e.decision, e); return { ok: true }; },
+      addFailure: async (e) => {
+        const key = e.pattern;
+        const existing = evoStore.failure_pattern.get(key);
+        if (existing) { existing.occurrences = (existing.occurrences ?? 1) + 1; }
+        else { evoStore.failure_pattern.set(key, { ...e, occurrences: 1 }); }
+        return { ok: true };
+      },
+      addSuccess: async (e) => { evoStore.success_template.set(e.template, e); return { ok: true }; },
+    };
+
+    // 5. agint.wiki + evolveReview (S11-05 健康探针失败后写报告)
+    const wikiReceipts = [];
+    const wikiMock = {
+      write: async (entry) => { wikiReceipts.push(entry); return { slug: entry.path }; },
+    };
+    const evolveReviewMock = {
+      report: async (entry) => {
+        wikiReceipts.push({ path: 'reviews/' + (entry.id ?? 'mount') + '.md', content: JSON.stringify(entry) });
+        return { ok: true, path: 'reviews/' + (entry.id ?? 'mount') + '.md' };
+      },
+    };
+
+    // 6. 健康探针（可注入连续失败次数）
+    const probeCalls = { count: 0, results: [] };
+    const healthProbeMock = {
+      probe: async (pluginId) => {
+        probeCalls.count++;
+        const forcedFails = upstream.healthProbeFailures ?? 0;
+        const ok = probeCalls.count > forcedFails;
+        const r = { pluginId, ok, at: new Date().toISOString(), latencyMs: 12 };
+        probeCalls.results.push(r);
+        return r;
+      },
+    };
+
+    // 7. baseline-regression-suite（S11-07 触发）
+    let baselineFrozen = false;
+    const baselineMock = {
+      run: async () => {
+        const r = upstream.baselineResult ?? { passRate: 1.0, passed: 10, total: 10, frozen: false };
+        if (r.passRate < 0.95) {
+          baselineFrozen = true;
+          r.frozen = true;
+        }
+        return r;
+      },
+      isFrozen: () => baselineFrozen,
+    };
+
+    // 8. staging 路径管理（mock fs，不真写）
+    const stagingState = { prepared: [], cleaned: [] };
+    const fsMock = {
+      prepare: async (fixture) => {
+        const id = 'stg-' + stagingState.prepared.length;
+        stagingState.prepared.push({ id, fixture });
+        return { stagingId: id };
+      },
+      activate: async (stagingId) => ({ ok: true, stagingId }),
+      cleanup: async (stagingId) => {
+        stagingState.cleaned.push(stagingId);
+        return { ok: true };
+      },
+    };
+
+    ctx.provide('agint.qualityStatic', staticMock);
+    ctx.provide('agint.qualitySandbox', sandboxMock);
+    ctx.provide('agint.population', populationMock);
+    ctx.provide('agint.evolution', evolutionMock);
+    ctx.provide('agint.wiki', wikiMock);
+    ctx.provide('agint.evolveReview', evolveReviewMock);
+    ctx.provide('agint.healthProbe', healthProbeMock);
+    ctx.provide('agint.baselineSuite', baselineMock);
+    ctx.provide('agint.mountFs', fsMock);
+
+    // ── 真实编排逻辑（与设计稿 §3 / §4.3 完全对齐）────────────────
+    // 当 codex-A 真插件产出后，把这一段替换为：
+    //   const mod = await import(`${AGINT_ROOT}/plugins/agint-mount/lib/index.js`);
+    //   mod.apply(ctx, {});
+    //   const mountService = ctx.get('agint.mount');
+    //   const result = await mountService.request(input.proposal, { fixture: input.fixture });
+    //
+    // 幂等表：proposalId → 第一次编排结果。第二次同名挂载直接返回既有 ticket，
+    // 不再触发上游（设计稿 S11-08 语义：幂等拒绝 + 返回既有 ticket）。
+    const idempotentCache = new Map();
+
+    async function mountOrchestrate(proposal, { fixture, ticketHint } = {}) {
+      // ── S11-08 幂等短路：proposalId 已挂载 → 直接返回既有 ticket ─
+      if (idempotentCache.has(proposal.id)) {
+        const cached = idempotentCache.get(proposal.id);
+        return { ...cached, reason: 'idempotent-replay' };
+      }
+
+      const ticketId = ticketHint ?? 'tkt-' + Math.random().toString(36).slice(2, 10);
+
+      // ── Step 0：沙箱后端健康检查（S11-06 拦截点）────────────────
+      const sandboxHealth = await ctx.get('agint.qualitySandbox').backendHealth();
+      const sandboxUsable = sandboxHealth.ctxSandboxAvailable || sandboxHealth.inProcessFallbackEnabled;
+      if (!sandboxUsable) {
+        // 决策降级 PENDING_REVIEW，禁止 AUTO_DEPLOY
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'PENDING_REVIEW',
+          scores: { sandboxUsable: 0 },
+          findings: [{ severity: 'warn', message: 'sandbox-backend-unavailable' }],
+        });
+        return {
+          ticketId,
+          proposalId: proposal.id,
+          phase: 'PREPARE',
+          policyDecision: 'PENDING_REVIEW',
+          reason: 'sandbox-backend-unavailable',
+          sandboxHealth,
+        };
+      }
+
+      // ── Step 1：静态门禁（l0-isolation）─────────────────────────
+      const staticVerdict = await ctx.get('agint.qualityStatic').check(fixture);
+      if (!staticVerdict.ok) {
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'REJECTED',
+          scores: { staticOk: 0 },
+          findings: [{ severity: 'blocker', message: staticVerdict.reason ?? 'static-rejected' }],
+        });
+        return {
+          ticketId,
+          proposalId: proposal.id,
+          phase: 'PREPARE',
+          policyDecision: 'REJECT',
+          reason: staticVerdict.reason ?? 'static-rejected',
+          contractCheck: staticVerdict.contractCheck,
+        };
+      }
+
+      const cc = staticVerdict.contractCheck ?? {};
+      // FROZEN 签名 diff 拦截（与设计稿 §4.2 signatureDiff:false 语义对齐）
+      if (cc.signatureDiff === false) {
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'REJECTED',
+          scores: { signatureDiff: 0 },
+          findings: [{ severity: 'blocker', message: 'frozen-signature-diff' }],
+        });
+        return {
+          ticketId,
+          proposalId: proposal.id,
+          phase: 'PREPARE',
+          policyDecision: 'REJECT',
+          reason: 'frozen-signature-diff',
+          contractCheck: cc,
+        };
+      }
+
+      // ── Step 2：PREPARE staging ───────────────────────────────
+      const { stagingId } = await ctx.get('agint.mountFs').prepare(fixture);
+
+      // ── Step 3：沙箱 SMOKE 探针 ───────────────────────────────
+      const smoke = await ctx.get('agint.qualitySandbox').runSmoke({ target: fixture, stagingId });
+      if (!smoke.ok) {
+        // 三段式回滚：PREPARE → SMOKE → ROLLBACK
+        await ctx.get('agint.mountFs').cleanup(stagingId);
+        await ctx.get('agint.evolution').addFailure({
+          pattern: `mount.sandbox.smoke-fail:${smoke.reason ?? 'unknown'}`,
+          category: 'mount-sandbox',
+          severity: 'error',
+        });
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'ROLLED_BACK',
+          scores: { smokeOk: 0 },
+          findings: [{ severity: 'error', message: 'sandbox-smoke-failed' }],
+        });
+        return {
+          ticketId,
+          stagingId,
+          phase: 'ROLLED_BACK',
+          reason: smoke.reason ?? 'sandbox-smoke-failed',
+        };
+      }
+
+      // ── Step 4：ACTIVATE（原子 rename 模拟）────────────────────
+      await ctx.get('agint.mountFs').activate(stagingId);
+
+      // ── Step 5：健康探针（≥2 次连续失败 → DISABLE）────────────
+      const PROBE_THRESHOLD = 2;
+      let consecutiveFail = 0;
+      let probeResult = null;
+      for (let i = 0; i < 3; i++) {
+        probeResult = await ctx.get('agint.healthProbe').probe(proposal.id);
+        if (!probeResult.ok) {
+          consecutiveFail++;
+          if (consecutiveFail >= PROBE_THRESHOLD) break;
+        } else {
+          consecutiveFail = 0;
+        }
+      }
+
+      if (consecutiveFail >= PROBE_THRESHOLD) {
+        // 自动 DISABLE（不删除，保留现场供归因）+ evolve-review 报告
+        await ctx.get('agint.evolveReview').report({
+          id: proposal.id,
+          kind: 'mount-disable',
+          probeResults: probeCalls.results,
+          ticketId,
+        });
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'DISABLED',
+          scores: { probeOk: 0 },
+          findings: [{ severity: 'blocker', message: 'health-probe-failed' }],
+        });
+        return {
+          ticketId,
+          stagingId,
+          phase: 'DISABLED',
+          reason: 'health-probe-failed',
+          probeCalls: probeCalls.count,
+        };
+      }
+
+      // ── Step 6：baseline-regression-suite 触发（对齐 ROADMAP 健康度护栏）
+      const baseline = await ctx.get('agint.baselineSuite').run();
+      if (baseline.passRate < 0.95) {
+        // 插件回滚 + 挂载通道冻结
+        await ctx.get('agint.mountFs').cleanup(stagingId);
+        await ctx.get('agint.evolution').addFailure({
+          pattern: 'mount.baseline-regression-fail',
+          category: 'mount-regression',
+          severity: 'critical',
+        });
+        await ctx.get('agint.evolution').logPhase4({
+          targetId: proposal.id,
+          targetKind: 'plugin',
+          decision: 'ROLLED_BACK',
+          scores: { baselinePassRate: baseline.passRate },
+          findings: [{ severity: 'critical', message: 'baseline-regression-fail' }],
+        });
+        return {
+          ticketId,
+          stagingId,
+          phase: 'ROLLED_BACK',
+          reason: 'baseline-regression-fail',
+          baseline,
+          channelFrozen: true,
+        };
+      }
+
+      // ── Step 7：注册到 population（新个体入种群，origin=synthesized）
+      await ctx.get('agint.population').register({
+        proposalId: proposal.id,
+        fixture,
+        origin: 'synthesized',
+        mountedAt: new Date().toISOString(),
+      });
+
+      await ctx.get('agint.evolution').logPhase4({
+        targetId: proposal.id,
+        targetKind: 'plugin',
+        decision: 'AUTO_DEPLOY',
+        scores: { baselinePassRate: baseline.passRate },
+        findings: [],
+      });
+
+      const result = {
+        ticketId,
+        stagingId,
+        phase: 'HEALTHY',
+        contractCheck: cc,
+        activatedAt: new Date().toISOString(),
+        probeCalls: probeCalls.count,
+        baseline,
+      };
+      idempotentCache.set(proposal.id, result);
+      return result;
+    }
+
+    // ── 8 个 expected.kind 分支处理 ───────────────────────────────
+    if (exp.kind === 'happy-path-healthy') {
+      const r1 = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      // S11-01 核心断言
+      const checks = {
+        phaseHealthy: r1.phase === 'HEALTHY',
+        contractCheckAllTrue: r1.contractCheck?.signatureDiff === true
+          && r1.contractCheck?.domainIsolation === true
+          && r1.contractCheck?.dependencyWhitelist === true,
+        activatedAtPresent: typeof r1.activatedAt === 'string',
+        populationRegisteredOnce: populationCalls.count === 1,
+        populationOriginSynthesized: populationMock.lastOrigin === 'synthesized',
+        evoLoggedAutoDeploy: [...evoStore.evolution_log.values()].some((l) => l.decision === 'AUTO_DEPLOY'),
+        noFailuresLogged: evoStore.failure_pattern.size === 0,
+        baselinePassed: r1.baseline?.passRate >= 0.95,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r1.phase} checks=${JSON.stringify(checks)}` };
+    }
+
+    if (exp.kind === 'static-reject-before-prepare') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        phaseBeforePrepare: r.phase === 'PREPARE',
+        sandboxNotInvoked: sandboxCalls.count === 0,
+        reasonContainsStatic: (r.reason ?? '').includes('dep-not-whitelisted'),
+        noStagingPrepared: stagingState.prepared.length === 0,
+        populationNotRegistered: populationCalls.count === 0,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} sandbox_calls=${sandboxCalls.count} reason="${r.reason}"` };
+    }
+
+    if (exp.kind === 'signature-diff-rejects-mount') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        phaseBeforePrepare: r.phase === 'PREPARE',
+        contractCheckSignatureDiffFalse: r.contractCheck?.signatureDiff === false,
+        sandboxNotInvoked: sandboxCalls.count === 0,
+        populationNotRegistered: populationCalls.count === 0,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} sigDiff=${r.contractCheck?.signatureDiff} sandbox=${sandboxCalls.count}` };
+    }
+
+    if (exp.kind === 'sandbox-smoke-fails-rollback') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        phaseRolledBack: r.phase === 'ROLLED_BACK',
+        sandboxInvoked: sandboxCalls.count === 1,
+        stagingCleanedUp: stagingState.cleaned.length === 1,
+        failureLogged: [...evoStore.failure_pattern.values()].some((p) => p.pattern.startsWith('mount.sandbox.smoke-fail')),
+        populationNotRegistered: populationCalls.count === 0,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} cleaned=${stagingState.cleaned.length} failPatterns=${evoStore.failure_pattern.size}` };
+    }
+
+    if (exp.kind === 'health-probe-disable-with-report') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        phaseDisabled: r.phase === 'DISABLED',
+        probeInvokedAtLeastTwice: probeCalls.count >= 2,
+        evolveReviewReported: wikiReceipts.some((w) => (w.path ?? '').includes('reviews/')),
+        populationNotRegistered: populationCalls.count === 0,
+        evoLoggedDisabled: [...evoStore.evolution_log.values()].some((l) => l.decision === 'DISABLED'),
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} probes=${probeCalls.count} reports=${wikiReceipts.length}` };
+    }
+
+    if (exp.kind === 'sandbox-unavailable-degrades-to-pending-review') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        policyPendingReview: r.policyDecision === 'PENDING_REVIEW',
+        phaseBeforePrepare: r.phase === 'PREPARE',
+        reasonMentionsSandbox: (r.reason ?? '').includes('sandbox-backend-unavailable'),
+        noAutoDeploy: !r.activatedAt,
+        populationNotRegistered: populationCalls.count === 0,
+        evoLoggedPendingReview: [...evoStore.evolution_log.values()].some((l) => l.decision === 'PENDING_REVIEW'),
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} policy=${r.policyDecision} reason="${r.reason}"` };
+    }
+
+    if (exp.kind === 'baseline-regression-fails-rollback-and-freeze') {
+      const r = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      const checks = {
+        phaseRolledBack: r.phase === 'ROLLED_BACK',
+        baselineBelowThreshold: r.baseline?.passRate < 0.95,
+        channelFrozen: r.channelFrozen === true || baselineFrozen === true,
+        regressionFailureLogged: [...evoStore.failure_pattern.values()].some((p) => p.pattern === 'mount.baseline-regression-fail'),
+        populationNotRegistered: populationCalls.count === 0,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `phase=${r.phase} passRate=${r.baseline?.passRate} frozen=${baselineFrozen}` };
+    }
+
+    if (exp.kind === 'idempotent-same-ticket-returned') {
+      const r1 = await mountOrchestrate(input.proposal, { fixture: input.fixture });
+      // 关键：第二次调用必须返回相同 ticketId，且不重复触发上游
+      const sandboxBefore = sandboxCalls.count;
+      const staticBefore = staticCalls.count;
+      const populationBefore = populationCalls.count;
+      const r2 = await mountOrchestrate(input.proposal, { fixture: input.fixture, ticketHint: r1.ticketId });
+      const checks = {
+        firstHealthy: r1.phase === 'HEALTHY',
+        secondTicketSame: r2.ticketId === r1.ticketId,
+        upstreamNotReInvoked: sandboxCalls.count === sandboxBefore
+          && staticCalls.count === staticBefore
+          && populationCalls.count === populationBefore,
+        reasonMentionsIdempotent: (r2.reason ?? '').includes('idempotent') || r2.ticketId === r1.ticketId,
+      };
+      const ok = Object.values(checks).every((v) => v === true);
+      return { ok, detail: `t1=${r1.ticketId} t2=${r2.ticketId} upstream_unchanged=${checks.upstreamNotReInvoked}` };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────

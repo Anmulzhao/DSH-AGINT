@@ -1,0 +1,55 @@
+[
+  {
+    "scenario": "s11-03-frozen-signature-diff-rejects-mount",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-03 FROZEN 签名 diff 命中：contractCheck.signatureDiff=false 路径拒绝挂载（设计稿 §4.2 FROZEN schema）。",
+        "_note": "fixture 试图变更 FROZEN MountResult schema 字段（删 ticketId），l0-isolation #1 签名兼容检查应拦住。",
+        "proposal": {
+          "id": "prop-sigdiff-003",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-sigdiff-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 80% within 7 days",
+          "rollbackCondition": "harm >10% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-frozen-breaker",
+          "manifest": {
+            "name": "frozen-breaker-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.frozenBreaker", "method": "run" }],
+            "storageDomain": "agint_synth_frozen",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5",
+            "_violation": "removed required field ticketId from MountResult"
+          },
+          "entrypoint": "// 试图改 MountResult schema\nconst bad = { proposalId: 'x', phase: 'PREPARE' };\nreturn bad;"
+        },
+        "upstream": {
+          "_note": "静态门禁通过（依赖白名单 ok），但签名 diff 命中 → signatureDiff:false",
+          "staticCheck": {
+            "ok": true,
+            "reason": null,
+            "contractCheck": {
+              "signatureDiff": false,
+              "domainIsolation": true,
+              "dependencyWhitelist": true
+            }
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "signature-diff-rejects-mount",
+        "phase": "PREPARE",
+        "contractCheck": { "signatureDiff": false }
+      }
+    ]
+  }
+]

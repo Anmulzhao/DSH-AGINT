@@ -1,0 +1,59 @@
+[
+  {
+    "scenario": "s11-05-health-probe-fail-auto-disable",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-05 挂载后健康探针连续失败：自动 DISABLE + evolve-review 报告（设计稿 ADR-11-3 红线：探针失败 ≥ 2 次 → DISABLE）。",
+        "_note": "fixture 顺利通过静态+沙箱，ACTIVATE 也成功，但运行时探针连续 3 次失败。",
+        "proposal": {
+          "id": "prop-probe-fail-005",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-probe-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 80% within 7 days",
+          "rollbackCondition": "harm >10% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-probe-fail",
+          "manifest": {
+            "name": "probe-fail-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.probeFailTool", "method": "run" }],
+            "storageDomain": "agint_synth_probe",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// 启动后立即崩溃\nexport const run = () => { throw new Error('runtime boom'); };"
+        },
+        "upstream": {
+          "_note": "静态+沙箱通过；注入 healthProbeFailures=3 让前 3 次探针全失败（覆盖 ≥ 2 阈值）",
+          "staticCheck": {
+            "ok": true,
+            "contractCheck": {
+              "signatureDiff": true,
+              "domainIsolation": true,
+              "dependencyWhitelist": true
+            }
+          },
+          "sandboxSmoke": {
+            "ok": true,
+            "mode": "in-process",
+            "checks": [{ "name": "service-resolves", "ok": true }]
+          },
+          "healthProbeFailures": 3
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "health-probe-disable-with-report",
+        "phase": "DISABLED",
+        "minProbeCalls": 2
+      }
+    ]
+  }
+]

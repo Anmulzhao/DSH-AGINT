@@ -1,0 +1,59 @@
+[
+  {
+    "scenario": "s11-04-sandbox-smoke-fail-rollback",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-04 沙箱 smoke 失败：三段式回滚，evolution-memory 留痕。",
+        "_note": "fixture 静态门禁通过，但沙箱 explore 模式跑最小接口探针时 Service 解析失败。",
+        "proposal": {
+          "id": "prop-smoke-fail-004",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-smoke-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 80% within 7 days",
+          "rollbackCondition": "harm >10% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-smoke-fail",
+          "manifest": {
+            "name": "smoke-fail-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.smokeFailTool", "method": "run" }],
+            "storageDomain": "agint_synth_smoke",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// throws on import\nthrow new Error('module load failed');"
+        },
+        "upstream": {
+          "_note": "静态门禁通过，沙箱 smoke 返 ok:false 模拟 Service 解析失败",
+          "staticCheck": {
+            "ok": true,
+            "reason": null,
+            "contractCheck": {
+              "signatureDiff": true,
+              "domainIsolation": true,
+              "dependencyWhitelist": true
+            }
+          },
+          "sandboxSmoke": {
+            "ok": false,
+            "mode": "in-process",
+            "reason": "service-resolve-failed:agint.smokeFailTool",
+            "checks": [{ "name": "service-resolves", "ok": false }]
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-smoke-fails-rollback",
+        "phase": "ROLLED_BACK"
+      }
+    ]
+  }
+]
