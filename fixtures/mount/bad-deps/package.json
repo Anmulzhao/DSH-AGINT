@@ -1,0 +1,19 @@
+{
+  "name": "agint-synth-bad-deps",
+  "version": "0.0.1",
+  "description": "Sprint 11 故意违规测试 fixture — 至少违反 L0 隔离两项（依赖白名单 + 域隔离）。仅用于 agint-mount 的 S11-02 / S11-03 静态门禁拒绝 e2e。永不挂载 / 永不进种群 / 永不入契约。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "keywords": [
+    "agint",
+    "fixture",
+    "sprint-11",
+    "synth",
+    "bad-deps",
+    "intentionally-violating"
+  ],
+  "license": "MIT"
+}

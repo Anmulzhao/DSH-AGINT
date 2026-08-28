@@ -1,0 +1,76 @@
+{
+  "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-synth-bad-deps",
+  "version": "0.0.1",
+  "description": "Sprint 11 故意违规测试 fixture — 仅违反 L0 隔离的【依赖白名单】单项（inject 含 agint.qualitySandbox）。故意保持其他两项 PASS，让 l0-isolation 的拒绝路径精准定位到这一项。仅用于 S11-02 静态门禁拒绝 e2e。永不挂载。",
+  "main": "src/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.qualitySandbox"
+      ],
+      "optionalInject": [],
+      "provides": ["agint.synth.badDeps"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "zod": "^3.0.0",
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0"
+    },
+    "mountOrder": 99,
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": null,
+      "command": null,
+      "expectedExit": null,
+      "note": "fixtures/mount/README.md §红线：fixture 是离线测试夹具，非可挂载插件，不适用 PLUGIN-SPEC Tests 维度"
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.synth.badDeps": "故意占位的 noop Service；其真实目的是让 manifest 在 L0 隔离三项检查中被拒绝（依赖白名单 + 域隔离）"
+      }
+    },
+    "changelog": null,
+    "compatSince": "0.0.1",
+    "sprint11Fixture": {
+      "kind": "intentionally-violating",
+      "violations": ["dependency-whitelist"],
+      "scenarios": ["S11-02"],
+      "violation": {
+        "rule": "l0-isolation/dependency-whitelist",
+        "field": "spec.cordis.inject",
+        "violatingValue": "agint.qualitySandbox",
+        "expected": "must be in {storageDomain, memory, metrics, cron} or be absent",
+        "designRef": "Sprint11-设计稿 §4.4 / ADR-11-4 第 3 条"
+      },
+      "note": "故意只保留【依赖白名单】单项违规；签名兼容 + 域隔离都 PASS，让 l0-isolation 拒绝路径精准定位到这一项，便于 e2e 诊断。",
+      "neverMount": true,
+      "neverTournament": true
+    }
+  }
+}

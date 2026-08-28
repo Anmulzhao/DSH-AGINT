@@ -1,0 +1,18 @@
+{
+  "name": "agint-synth-echo",
+  "version": "0.0.1",
+  "description": "Sprint 11 合规测试 fixture — 最小 Cordis 插件包，提供 agint.synth.echo Service（全新 agint_synth_* 域，依赖白名单内，零跨域侵入）。仅用于 agint-mount 的 S11-01 / S11-08 快乐路径 e2e，永不挂载到 dsh runtime。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "keywords": [
+    "agint",
+    "fixture",
+    "sprint-11",
+    "synth",
+    "echo"
+  ],
+  "license": "MIT"
+}
