@@ -161,6 +161,22 @@ export const QualityConfigSchema = z.object({
     networkDisabled: z.boolean().default(true),
     readOnly: z.boolean().default(true),
   }).default({ timeoutMs: 30000, memoryMB: 512, networkDisabled: true, readOnly: true }),
+
+  /** A/B 测试配置（Sprint 10 v0.6.4 #10，ADJUSTABLE）
+   *
+   * 设计稿 §二.6：A/B 结果作为 policy 加权综合分的额外输入维度（权重 0.10）。
+   * abtest 插件独立实现（agint-abtest 提供 winner/pValue/effectSize/samples），
+   * policy 在 options.abtestResults 注入结果，映射为 'abtest' dimension 参与综合分。
+   *
+   * enabled=false 默认 → 向后兼容（既有测试无需修改）；v0.7+ 启用时按需打开。
+   * minSamples 与 agint-abtest §二.6 任务集 ≥10 门槛对齐。
+   */
+  abtest: z.object({
+    enabled: z.boolean().default(false),
+    weight: z.number().min(0).max(1).default(0.10),
+    minSamples: z.number().int().positive().default(10),
+    pValueThreshold: z.number().min(0).max(1).default(0.05),
+  }).default({ enabled: false, weight: 0.10, minSamples: 10, pValueThreshold: 0.05 }),
 }).strict();
 /** @adjustable */
 
@@ -335,6 +351,12 @@ function apply(ctx) {
         'sandboxLimits.memoryMB': 'L1-adjustable',
         'sandboxLimits.networkDisabled': 'L1-adjustable',
         'sandboxLimits.readOnly': 'L1-adjustable',
+        // Sprint 10 v0.6.4 #10: A/B 测试配置（policy 可调，记审计日志）
+        'abtest': 'L1-adjustable',
+        'abtest.enabled': 'L1-adjustable',
+        'abtest.weight': 'L1-adjustable',
+        'abtest.minSamples': 'L1-adjustable',
+        'abtest.pValueThreshold': 'L1-adjustable',
         // L2-implementation: 实现细节层（实现插件自治,默认未登记即 L2）
       };
       return layers[fieldPath] || 'L2-implementation';

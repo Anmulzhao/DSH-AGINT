@@ -118,6 +118,54 @@ export function classifyByScore(composite, thresholds) {
 }
 
 /**
+ * Sprint 10 v0.6.4 #10: A/B 测试结果 → EvalResult dimension 映射（设计稿 §二.6）
+ *
+ * 映射规则：
+ *   - winner='A'|'B' → score = 1.0（winner 信号最强）
+ *   - winner='inconclusive' / null → score = 0.5（中性）
+ *   - pValue > pValueThreshold → score 在 [0.0, 0.5] 衰减
+ *   - samples < minSamples → score = 0.5（等同 inconclusive）
+ *
+ * @returns {object|null}  { key: 'abtest', score: { score, veto: false } } 或 null（abtest.enabled=false 或无结果）
+ */
+export function abtestResultsToDimension({ abtestResults = [], abtestConfig }) {
+  if (!abtestConfig || abtestConfig.enabled !== true) return null;
+  if (!Array.isArray(abtestResults) || abtestResults.length === 0) return null;
+
+  const sorted = [...abtestResults].sort((a, b) => (a.pValue ?? 1) - (b.pValue ?? 1));
+  const top = sorted[0];
+  const { pValueThreshold = 0.05 } = abtestConfig;
+
+  let score;
+  const hasWinner = top.winner === 'A' || top.winner === 'B';
+  const pValueSignificant = top.pValue != null && top.pValue <= pValueThreshold;
+  if (hasWinner && pValueSignificant) {
+    score = 1.0;
+  } else if (hasWinner && !pValueSignificant) {
+    // 有方向但不显著 → 按 pValue 在 [0.0, 0.5] 线性衰减
+    const pv = Math.min(top.pValue ?? 1, 1);
+    score = 0.5 * (1 - pv);
+  } else {
+    // winner='inconclusive' → 中性
+    score = 0.5;
+  }
+
+  return { key: 'abtest', score: { score: Math.round(score * 1000) / 1000, veto: false } };
+}
+
+/**
+ * Sprint 10 v0.6.4 #10: 把 abtest dimension prepend 到所有 results 的 dimensions 里。
+ * 不修改传入的 results（mutate-safe 用 map 拷贝）。
+ */
+export function injectAbtestDimension(results, abtestDimension) {
+  if (!abtestDimension) return results;
+  return (results ?? []).map((r) => ({
+    ...r,
+    dimensions: [...(Array.isArray(r.dimensions) ? r.dimensions : []), abtestDimension],
+  }));
+}
+
+/**
  * Main policy entry (Sprint 4 完整 4 决策).
  *
  * @param {object} args
@@ -134,7 +182,15 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
   const thresholds = config.thresholds ?? { autoDeploy: 90, pendingReview: 75 };
   // Sprint 6.3: prompt target 独立 thresholds (默认更严, prompt blocker → 立即 fail)
   const promptThresholds = config.promptThresholds ?? { autoDeploy: 95, pendingReview: 85 };
-  const weights = config.dimensionWeights ?? DEFAULT_DIMENSION_WEIGHTS;
+  const weights = { ...(config.dimensionWeights ?? DEFAULT_DIMENSION_WEIGHTS) };
+
+  // Sprint 10 v0.6.4 #10: A/B 测试结果 → dimension 注入
+  const abtestConfig = config.abtest;
+  const abtestDimension = abtestResultsToDimension({ abtestResults: options.abtestResults, abtestConfig });
+  if (abtestDimension) {
+    weights.abtest = abtestConfig.weight; // 默认 0.10
+  }
+  // 注：abtest 维度是非 veto 维度（design 明确），不参与 safety/trust 一票否决
 
   // 0. 空 / 信号不足 → ABSTAIN
   const abs = shouldAbstain(results ?? []);
@@ -178,7 +234,10 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
   let masterKind = 'PENDING_REVIEW';
   let totalScore = 0;
 
-  for (const r of results ?? []) {
+  // Sprint 10 v0.6.4 #10: 把 abtest dimension 注入所有 results（mutate-safe 拷贝）
+  const resultsWithAbtest = injectAbtestDimension(results, abtestDimension);
+
+  for (const r of resultsWithAbtest ?? []) {
     const composite = computeComposite(r, weights);
     if (composite === null) {
       // veto 触发 → REJECT
