@@ -1,0 +1,50 @@
+# agint-mount — MountResult FROZEN schema（L0-frozen）
+# 设计稿：AGINT.wiki/Sprint11-设计稿.md §4.2
+# 红线：Sprint 11 内不得变更本 schema 任何字段；变更走 L0 治理（人类多签 + 7 天影子 + major 版本）。
+#
+# 发布即冻结。codex-A 落地子任务 #1 的对外契约，所有 8 个 e2e 场景（S11-01 ~ S11-08）
+# 必须按本 schema 返回 MountResult。
+#
+# 字段语义：
+#   ticketId           事务票据 ID（UUID），mount.request 的返回
+#   proposalId         关联 MutationProposal.id（来自 mutator.propose）
+#   phase              三段式事务当前阶段 + 终态：
+#                       PREPARED             PREPARE 阶段产物已落 staging
+#                       INSTALLED            （仅 4 态路径）pnpm install 完成 + plugin 文件就位
+#                       RESTART_REQUESTED    （仅 4 态路径）已发 sentinel restart 信号
+#                       ACTIVATED            ACTIVATE 阶段完成；HMR settle；正式挂载
+#                       HEALTHY              探针连续成功 ≥ 3 次（健康）
+#                       DISABLED             探针连续失败 ≥ 2 次（自动 DISABLE，保留现场）
+#                       ROLLED_BACK          任一阶段失败或显式回滚完成
+#   contractCheck      L0 隔离三项检查结果（codex-B 注入 hook 填充；Sprint 11 默认空对象）
+#                       signatureDiff         false = 与 FROZEN 契约零差异
+#                       domainIsolation       false = 产物域与既有插件无重叠
+#                       dependencyWhitelist   false = 依赖全部在白名单内
+#   activatedAt        ISO 8601 时间戳；ACTIVATED/HEALTHY/DISABLED 时非空，其余可为 null
+
+type: object
+frozenness: L0
+required: [ticketId, proposalId, phase, contractCheck, activatedAt]
+properties:
+  ticketId:    { type: string }
+  proposalId:  { type: string }
+  phase:
+    type: string
+    enum:
+      - PREPARED
+      - INSTALLED
+      - RESTART_REQUESTED
+      - ACTIVATED
+      - HEALTHY
+      - DISABLED
+      - ROLLED_BACK
+  contractCheck:
+    type: object
+    required: [signatureDiff, domainIsolation, dependencyWhitelist]
+    properties:
+      signatureDiff:       { type: boolean }
+      domainIsolation:     { type: boolean }
+      dependencyWhitelist: { type: boolean }
+  activatedAt:
+    type: [string, "null"]
+    format: date-time
