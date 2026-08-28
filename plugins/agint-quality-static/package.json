@@ -1,7 +1,7 @@
 {
   "name": "agint-quality-static",
-  "version": "0.6.3",
-  "description": "插件代码级静态检查（独立 Cordis 插件）。Sprint 10 #4 收口：4 族检查（dependency-audit / storage-boundary / env-access / contract-reference）。",
+  "version": "0.6.5",
+  "description": "插件代码级静态检查（独立 Cordis 插件）。Sprint 10 #4 + Sprint 11 #B l0-isolation 收口：5 族检查（dependency-audit / storage-boundary / env-access / contract-reference / l0-isolation）。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -10,7 +10,8 @@
     "./lib/checkers/dependency-audit.js": "./lib/checkers/dependency-audit.js",
     "./lib/checkers/storage-boundary.js": "./lib/checkers/storage-boundary.js",
     "./lib/checkers/env-access.js": "./lib/checkers/env-access.js",
-    "./lib/checkers/contract-reference.js": "./lib/checkers/contract-reference.js"
+    "./lib/checkers/contract-reference.js": "./lib/checkers/contract-reference.js",
+    "./lib/checkers/l0-isolation.js": "./lib/checkers/l0-isolation.js"
   },
   "keywords": [
     "dsh-plugin",
@@ -18,7 +19,9 @@
     "d-qaf",
     "static-check",
     "plugin-audit",
-    "l0-frozen-protection"
+    "l0-frozen-protection",
+    "l0-isolation",
+    "sprint-11"
   ],
   "license": "MIT",
   "peerDependencies": {
