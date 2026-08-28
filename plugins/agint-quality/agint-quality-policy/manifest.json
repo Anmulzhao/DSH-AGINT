@@ -1,0 +1,60 @@
+{
+  "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-policy",
+  "version": "0.6.4",
+  "description": "D-QAF Phase 4 策略引擎（v0.4 完整版）。Sprint 10 v0.6.4 #10 收口：abtest 加权综合分接入（设计稿 §二.6 + §七 ADJUSTABLE）。基座 plugin 仍位于 agint-quality/ 下（v0.6.4 不独立物理剥离，v0.7+ 规划）。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "provides": ["agint.qualityPolicy"],
+      "events": [],
+      "tools": [],
+      "optionalInject": ["agint.evolution"]
+    },
+    "storage": {
+      "domains": ["agint_quality_policy"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "agint-quality-contract": ">=0.4.0",
+      "agint-evolution-memory": ">=0.4.0"
+    },
+    "mountOrder": 25,
+    "permissions": {
+      "env": ["DSH_HOME", "AGINT_HOME"],
+      "fs": ["read:plugins/agint-quality/agint-quality-policy", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/abtest-weighted.test.mjs",
+      "command": "node --test test/abtest-weighted.test.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.qualityPolicy": "D-QAF Phase 4 策略引擎。提供 decide({results, config, options}) → Decision。Sprint 10 v0.6.4 #10 加权综合分支持 abtest 维度（config.abtest.enabled=true 时生效）。"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.4.0"
+  }
+}
