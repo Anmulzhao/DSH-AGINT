@@ -1,0 +1,66 @@
+[
+  {
+    "scenario": "s11-07-baseline-regression-fail-rollback-and-freeze",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-07 挂载成功后跑 baseline-regression-suite，通过率 < 95%：插件回滚 + 挂载通道冻结（对齐 ROADMAP 健康度护栏 + 设计稿 ADR-11-4）。",
+        "_note": "fixture 顺利走完静态+沙箱+探针，但 baseline 套件通过率 88% < 95% 阈值，必须立刻回滚并冻结通道。",
+        "proposal": {
+          "id": "prop-baseline-fail-007",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-baseline-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 95% within 7 days",
+          "rollbackCondition": "baseline<95% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-baseline-fail",
+          "manifest": {
+            "name": "baseline-fail-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.baselineFailTool", "method": "run" }],
+            "storageDomain": "agint_synth_baseline",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// 自身跑通，但破坏了 baseline 的某 case\nexport const run = (x) => x * 2;"
+        },
+        "upstream": {
+          "_note": "静态+沙箱+探针全通过；baseline 套件 8/9 = 88.9% 触发护栏",
+          "staticCheck": {
+            "ok": true,
+            "contractCheck": {
+              "signatureDiff": true,
+              "domainIsolation": true,
+              "dependencyWhitelist": true
+            }
+          },
+          "sandboxSmoke": {
+            "ok": true,
+            "mode": "in-process",
+            "checks": [{ "name": "service-resolves", "ok": true }]
+          },
+          "healthProbeFailures": 0,
+          "baselineResult": {
+            "passRate": 0.888,
+            "passed": 8,
+            "total": 9,
+            "frozen": false
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "baseline-regression-fails-rollback-and-freeze",
+        "phase": "ROLLED_BACK",
+        "baselinePassRateBelow": 0.95,
+        "channelFrozen": true
+      }
+    ]
+  }
+]

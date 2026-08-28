@@ -1,0 +1,51 @@
+[
+  {
+    "scenario": "s11-06-sandbox-unavailable-degrade-pending-review",
+    "plugin": "agint-mount",
+    "input": [
+      {
+        "_purpose": "Sprint 11 §4.3 S11-06 沙箱后端不可用时发起挂载：决策降级 PENDING_REVIEW，禁止 AUTO_DEPLOY（设计稿 §2.2 + ADR-11-3）。",
+        "_note": "沙箱后端 + in-process fallback 双双不可用 → 编排必须主动降级，不允许降级到直接挂载。",
+        "proposal": {
+          "id": "prop-no-sandbox-006",
+          "kind": "TOOL_SYNTHESIS",
+          "atomicScope": "tool",
+          "source": "attribution-driven",
+          "failureId": "f-no-sb-1",
+          "rootCause": "TOOL_GAP",
+          "expectedEffect": "tool 通过率 >= 80% within 7 days",
+          "rollbackCondition": "harm >10% -> rollback",
+          "targetPlugin": "agint-diagnosis"
+        },
+        "fixture": {
+          "id": "fixture-pending-review",
+          "manifest": {
+            "name": "pending-review-tool",
+            "version": "0.1.0",
+            "provides": [{ "service": "agint.pendingReviewTool", "method": "run" }],
+            "storageDomain": "agint_synth_pending",
+            "dependencies": ["agint.memory"],
+            "frozenContractRef": "MountResult@v0.6.5"
+          },
+          "entrypoint": "// 干净实现\nexport const run = (x) => x;"
+        },
+        "upstream": {
+          "_note": "ctxSandboxAvailable=false 且 inProcessFallbackEnabled=false → 沙箱不可用",
+          "sandboxHealth": {
+            "ctxSandboxAvailable": false,
+            "inProcessFallbackEnabled": false,
+            "timeoutMs": 30000,
+            "memoryMb": 512
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-unavailable-degrades-to-pending-review",
+        "policyDecision": "PENDING_REVIEW",
+        "phase": "PREPARE"
+      }
+    ]
+  }
+]
