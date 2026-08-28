@@ -1,0 +1,64 @@
+{
+  "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-synth-echo",
+  "version": "0.0.1",
+  "description": "Sprint 11 合规测试 fixture — 最小 Cordis 插件包（提供 agint.synth.echo），用于 agint-mount 的 S11-01 / S11-08 快乐路径 e2e。FROZEN 契约兼容点：Service 形态（schemas + version + 提供单一 agint.* 入口）；全新 agint_synth_echo 域；零 agint.* host service 依赖。",
+  "main": "src/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": [],
+      "provides": ["agint.synth.echo"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": ["agint_synth_echo"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "zod": "^3.0.0",
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0"
+    },
+    "mountOrder": 99,
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": null,
+      "command": null,
+      "expectedExit": null,
+      "note": "fixtures/mount/README.md §红线：fixture 是离线测试夹具，非可挂载插件，不适用 PLUGIN-SPEC Tests 维度"
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.synth.echo": "回显输入文本 + 返回时间戳 + instanceId；暴露 schemas 与 version 元信息（与 FROZEN agint.quality 的形态约定对齐：单 provide + schemas 字段 + version 元信息）"
+      }
+    },
+    "changelog": null,
+    "compatSince": "0.0.1",
+    "sprint11Fixture": {
+      "kind": "compliant",
+      "scenarios": ["S11-01", "S11-08"],
+      "neverMount": true,
+      "neverTournament": true
+    }
+  }
+}

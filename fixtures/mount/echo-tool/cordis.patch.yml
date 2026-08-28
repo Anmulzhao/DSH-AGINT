@@ -1,0 +1,25 @@
+# agint-synth-echo loader entry 模板（fixture）
+#
+# 用途：Sprint 11 e2e 离线读取 fixture 的 cordis.patch.yml 行，
+#       做"l0-isolation 能识别这个 loader 行"的静态扫描示例。
+#
+# ⚠️ 红线 ⚠️
+#   - 本文件**绝不**被合并到顶层 profile-patches/web/cordis.patch.yml
+#   - 本文件**绝不**被 `bin/safe-update.sh mount-patch` 引用
+#   - 本文件**绝不**被 cordis_run / cordis_define 加载
+#   - e2e 只对它做静态解析（fs.readFileSync + yaml.safeLoad）
+#     → 验证 l0-isolation 的"manifest 解析路径"覆盖到了 fixture
+#
+# 来源：fixtures/mount/README.md（顶层红线声明）
+# 与 Sprint11-设计稿 §4.4 / §7 风险表"测试变异污染真实种群"对齐。
+
+# agint-synth-echo: 合规 fixture（v0.0.1，tier=2 experimental）
+#   - 1 个 Service: agint.synth.echo（合规 cordis.* 命名空间）
+#   - 独占 agint_synth_echo 存储域（全新 agint_synth_* 前缀）
+#   - inject: 仅 storageDomain（dsh runtime 必注入；不 require 任何 agint.* host service）
+#   - permissions: env/fs/network/shell 全最小集（echo 不需要外部资源）
+#   - lifecycle: 零 setInterval / 零 listeners / 零 tools（无副作用需要 dispose）
+- insert:
+    - id: agint-synth-echo
+      name: ./fixtures/mount/echo-tool/src/index.js
+      config: {}

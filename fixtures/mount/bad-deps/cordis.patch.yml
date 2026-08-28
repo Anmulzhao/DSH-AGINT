@@ -1,0 +1,31 @@
+# agint-synth-bad-deps loader entry 模板（故意违规 fixture）
+#
+# ⚠️⚠️⚠️ 故意违规 fixture ⚠️⚠️⚠️
+#
+# 本 fixture 用于 Sprint 11 §4.4 指定的 S11-02 静态门禁拒绝场景，
+# 故意只违反 L0 隔离规则中的【依赖白名单】单项。
+#
+# 违规点（被 agint-quality-static 的 l0-isolation 规则组必须 100% 检出）：
+#   - inject: 写入了 "agint.qualitySandbox"——不在白名单（memory/metrics/cron）
+#     违反 Sprint11-设计稿 §4.4 / ADR-11-4 第 3 条：
+#     "禁止 require 其他 agint-quality-* 内部模块"
+#
+# 故意【不】触发的 L0 隔离项（保持 PASS，让拒绝路径精准定位）：
+#   - 签名兼容：Service 形态完整（provide + schemas + version）
+#   - 域隔离：使用全新 agint_synth_bad_deps 域
+#
+# 红线（与 echo-tool 同）：
+#   - 不被合并到顶层 profile-patches/web/cordis.patch.yml
+#   - 不被 bin/safe-update.sh 引用
+#   - 不被 cordis_run / cordis_define 加载
+#   - e2e 只对它做【静态扫描】+ 断言 L0 隔离依赖白名单项返回 false / 拒绝
+
+# agint-synth-bad-deps: 故意违规 fixture（v0.0.1）
+#   ⚠️ 故意把 inject 字段填入非白名单 service agint.qualitySandbox
+#   存储域使用全新 agint_synth_bad_deps（合规）
+#   Service 形态完整（provide + schemas + version）——故意让"签名兼容"项通过，
+#   这样 l0-isolation 能精准定位到【依赖白名单】单项的拒绝路径
+- insert:
+    - id: agint-synth-bad-deps
+      name: ./fixtures/mount/bad-deps/src/index.js
+      config: {}
