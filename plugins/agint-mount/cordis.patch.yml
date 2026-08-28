@@ -1,0 +1,29 @@
+# agint-mount loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工）：
+#   1. 把下面这段 - insert 子片段整段 copy 到顶层 cordis.patch.yml 中
+#      （与 agint-quality-sandbox 同一 tier 块的末尾，mountOrder 40 接在 35 后面）
+#   2. 跑 bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. bin/safe-update.sh restart 重启
+#
+# 本文件**不**由 loader 自动包含；Sprint 11 子任务 #1（codex-A）完成时**不**挂顶层
+# cordis.patch.yml，由老板走 safe-update 重启时合并（AGENTS.md 红线）。
+#
+# 子任务官方流程不允许本 sprint 顺手改顶层 cordis.patch.yml（设计稿 §五 / AGENTS.md 红线）。
+
+# agint-mount: v0.6.5 动态插件挂载编排器（host service）。
+#   - 3 个 Service：agint.mount.request / agint.mount.status / agint.mount.rollback
+#   - 三段式事务：PREPARE → SMOKE → ACTIVATE（4 态状态机：PREPARED → INSTALLED → RESTART_REQUESTED → ACTIVATED）
+#   - 两段式 commit（HMR 成功前 atomic backup 永不清）—— 避免 EntryGroup.update() 只回滚内存树的坑
+#   - 独占 agint_mount 存储域（3 表：tickets / probe_history / rollback_log），不触碰 agint_meta
+#   - 不使用 dsh 新增的 dsh.profilesDir Service（红线）—— 从 process.env.DSH_HOME 拼路径
+#   - 沙箱后端不可用 → decision 降级 PENDING_REVIEW，禁止 AUTO_DEPLOY（设计稿 §2.2 红线）
+#   - 健康探针连续失败 ≥ 2 → DISABLE（不删除，保留现场）
+#   - 对外事件语义命名 mount.requested / mount.succeeded / mount.failed（Sprint 12 Event Bus 迁移面）
+#   - 不写 L0 隔离规则（codex-B 活，orchestrator 留 hook）
+- insert:
+    - id: agint-mount
+      name: ./plugins/agint-mount/lib/index.js
+      config: {}
