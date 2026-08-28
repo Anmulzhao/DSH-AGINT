@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-static",
-  "version": "0.6.3",
-  "description": "插件代码级静态检查独立 Cordis 插件（4 族：dependency-audit / storage-boundary / env-access / contract-reference）。Sprint 10 #4 收口：与 Prompt SDK 的模板级 static-check 形成双轨。",
+  "version": "0.6.5",
+  "description": "插件代码级静态检查独立 Cordis 插件（5 族：dependency-audit / storage-boundary / env-access / contract-reference / l0-isolation）。Sprint 10 #4 + Sprint 11 #B l0-isolation 收口。",
   "main": "lib/index.js",
 
   "agint": {
@@ -48,17 +48,17 @@
 
   "tests": {
     "entry": "test/static-smoke.test.mjs",
-    "command": "node --test test/static-smoke.test.mjs",
+    "command": "node --test test/static-smoke.test.mjs test/l0-isolation.unit.test.mjs test/l0-isolation.smoke.test.mjs",
     "expectedExit": 0
   },
 
   "docs": {
     "readme": "README.md",
     "serviceDocs": {
-      "agint.qualityStatic": "插件代码级静态检查（4 族：依赖白名单 / 存储越权 / env 访问 / 契约引用）。提供 checkPlugin / checkAll / listFamilies / addAllowlistEntry。"
+      "agint.qualityStatic": "插件代码级静态检查（5 族：依赖白名单 / 存储越权 / env 访问 / 契约引用 / l0-isolation）。提供 checkPlugin / checkAll / listFamilies / addAllowlistEntry。"
     }
   },
 
   "changelog": "CHANGELOG.md",
-  "compatSince": "0.6.3"
+  "compatSince": "0.6.5"
 }

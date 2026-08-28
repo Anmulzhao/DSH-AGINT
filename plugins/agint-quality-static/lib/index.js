@@ -1,23 +1,24 @@
 /**
- * agint-quality-static v0.6.3 — Sprint 10 #4 收口
+ * agint-quality-static v0.6.5 — Sprint 10 #4 + Sprint 11 #B (l0-isolation) 收口
  *
  * 插件代码级静态检查独立 Cordis 插件（设计稿 §架构修正声明：停止基座膨胀）。
  *
  * Service 契约（FROZEN 签名）：
  *   agint.qualityStatic = {
- *     checkPlugin({ pluginDir, profile? }) → { ok, findings, durationMs },
+ *     checkPlugin({ pluginDir, profile?, profileOverrides? }) → { ok, findings, durationMs },
  *     checkAll({ pluginsDir }) → { results, totalFindings },
  *     listFamilies() → string[],
  *     addAllowlistEntry({ family, pattern }) → { ok, version },
  *   }
  *
- * 4 族检查（设计稿 §二.3）：
+ * 5 族检查（设计稿 §二.3 + Sprint 11 §4.4 l0-isolation）：
  *   - dependency-audit（blocker）：解析 package.json 比对白名单
  *   - storage-boundary（blocker）：AST 扫 fs.writeFile 直写 storage domain
  *   - env-access（warn）：AST 扫 process.env 访问比例外清单
  *   - contract-reference（blocker）：grep L0 契约插件包名 0 命中原则
+ *   - l0-isolation（blocker）：合成产物三项 L0 隔离检查（签名兼容 / 域隔离 / 依赖白名单）
  *
- * L0-frozen 保护（设计稿 §七）：
+ * L0-frozen 保护（设计稿 §七 + AGENTS.md）：
  *   - 不引用 quality-contract FROZEN 接口（注释里也不许直接写）
  *   - 不修改 contract 任何签名
  *   - 不引入新的中心化服务（仅平台路由）
@@ -33,6 +34,7 @@ import { checkDependencyAudit } from './checkers/dependency-audit.js';
 import { checkStorageBoundary } from './checkers/storage-boundary.js';
 import { checkEnvAccess } from './checkers/env-access.js';
 import { checkContractReference } from './checkers/contract-reference.js';
+import { checkL0Isolation } from './checkers/l0-isolation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -40,12 +42,13 @@ const name = 'agint-quality-static';
 const inject = ['storageDomain'];
 const Config = undefined; // 不需要配置
 
-// 4 族检查注册表
+// 5 族检查注册表（Sprint 11 v0.6.5 新增 l0-isolation）
 const CHECKERS = {
   'dependency-audit': checkDependencyAudit,
   'storage-boundary': checkStorageBoundary,
   'env-access': checkEnvAccess,
   'contract-reference': checkContractReference,
+  'l0-isolation': checkL0Isolation,
 };
 
 function apply(ctx, config) {
@@ -56,7 +59,11 @@ function apply(ctx, config) {
   let profileVersion = 1;
 
   // Service: checkPlugin
-  async function checkPlugin({ pluginDir, profile: profileArg }) {
+  //   Sprint 11 v0.6.5 新增第三参 `profileOverrides`：
+  //     - l0IsolationOnly: true → 仅对 synth 产物生效（mount 默认传 true）
+  //     - frozenSignatures / allowedSynthDomains / allowedHostServices：覆盖白名单
+  //   checkPlugin 自身签名（FROZEN）不变；新参是可选覆盖，不破坏向后兼容。
+  async function checkPlugin({ pluginDir, profile: profileArg, profileOverrides }) {
     if (disposed) throw new Error('checkPlugin: plugin disposed');
     if (!pluginDir) throw new Error('checkPlugin: pluginDir is required');
     const dir = resolve(pluginDir);
@@ -64,7 +71,7 @@ function apply(ctx, config) {
       throw new Error(`checkPlugin: not a directory: ${dir}`);
     }
     const startedAt = Date.now();
-    const profile = loadProfile(profileArg);
+    const profile = loadProfile(profileArg, profileOverrides);
     const findings = [];
     for (const [family, checkerFn] of Object.entries(CHECKERS)) {
       if (!profile.familyEnabled[family]) continue;
@@ -84,7 +91,7 @@ function apply(ctx, config) {
   }
 
   // Service: checkAll
-  async function checkAll({ pluginsDir }) {
+  async function checkAll({ pluginsDir, profileOverrides }) {
     if (disposed) throw new Error('checkAll: plugin disposed');
     if (!pluginsDir) throw new Error('checkAll: pluginsDir is required');
     const root = resolve(pluginsDir);
@@ -95,7 +102,7 @@ function apply(ctx, config) {
     const results = {};
     let totalFindings = 0;
     for (const n of names) {
-      const r = await checkPlugin({ pluginDir: resolve(root, n) });
+      const r = await checkPlugin({ pluginDir: resolve(root, n), profileOverrides });
       results[n] = r;
       totalFindings += r.findings.length;
     }
