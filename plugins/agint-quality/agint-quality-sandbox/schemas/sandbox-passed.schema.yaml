@@ -1,0 +1,60 @@
+# sandbox-passed.schema.yaml — Sprint 12 / A3
+#
+# payload 子 schema（与 event-bus envelope 解耦，独立演进；不冻结）
+# 发布方：agint-quality-sandbox（runSmoke() ok=true 出口）
+# 订阅方：agint-quality-policy（审计行）；agint-mount dispatcher（健康度计数器）
+#
+# v1 范围：
+#   - target: 沙箱目标 plugin 路径 + 可选 name
+#   - mode: sandbox / in-process（in-process 是 dev fallback）
+#   - checks: smoke 检查项明细（name / ok / detail）
+#   - durationMs: 沙箱执行耗时（含子进程启动）
+#
+# 不冻结；破坏性变更通过 major 版本 + 影子期；非破坏性（增字段）直接发 minor。
+
+schemaVersion: 1
+topic: sandbox.passed
+version: 1
+source: agint-quality-sandbox
+
+Payload:
+  type: object
+  required: [target, mode, checks, durationMs]
+  properties:
+    target:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: 沙箱目标 plugin 绝对路径
+        name:
+          type: string
+          description: 目标 plugin 名（来自 manifest.name 或 target.name）
+    mode:
+      enum: [sandbox, in-process]
+      description: 执行模式；sandbox = 真隔离子进程；in-process = dev fallback
+    checks:
+      type: array
+      description: smoke 检查项明细
+      items:
+        type: object
+        required: [name, ok]
+        properties:
+          name:
+            type: string
+            description: 检查项名（plugin-exists / package-json-esm / plugin-exports / ...）
+          ok:
+            type: boolean
+          detail:
+            type: string
+            description: 检查项补充信息（≤ 200 字符）
+    durationMs:
+      type: integer
+      minimum: 0
+      description: 沙箱执行总耗时（含子进程启动）
+
+auditHints:
+  policyChannel: memory(type=decision)
+  mountChannel: healthProbe.markHealthy('sandbox-passed')
+  retentionDays: 7

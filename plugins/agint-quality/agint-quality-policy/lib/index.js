@@ -113,6 +113,52 @@ function apply(ctx, config) {
       if (!disposed) console.error('[agint-quality-policy] eventBus.subscribe failed:', err?.message ?? err);
       _evaluationBusUnsubscribe = null;
     }
+
+    // ── Sprint 12 / A3 — T1 影子期：async 订阅 sandbox.passed / sandbox.failed ──
+    // 走 audit 通道（写 memory[type=decision]）；不进 decide 决策路径。
+    // 软降级：subscribe 抛错 → log 不抛，原直连路径不受影响。
+    try {
+      _subscribeBus(
+        {
+          subscriber: 'agint-quality-policy',
+          topics: ['sandbox.passed', 'sandbox.failed'],
+          mode: 'async',
+          timeoutMs: 5000,
+        },
+        async (env) => {
+          try {
+            await recordSandboxObservation(env);
+          } catch (err) {
+            if (!disposed) console.error('[agint-quality-policy] sandbox audit failed:', err?.message ?? err);
+          }
+        },
+      );
+    } catch (err) {
+      if (!disposed) console.error('[agint-quality-policy] eventBus.subscribe(sandbox.*) failed:', err?.message ?? err);
+    }
+  }
+
+  /**
+   * Sprint 12 / A3 — T1 影子期：sandbox 事件观测行（不进入 decide 决策路径）
+   * 走 audit 通道：memory.write({type: 'decision', content: ..., evidence: ...})
+   * 直连路径（decide / detectFalseHarmony）行为不变 — 事件路径是观察层。
+   */
+  async function recordSandboxObservation(envelope) {
+    const topic = envelope?.topic;
+    const payload = envelope?.payload ?? {};
+    const mem = ctx.get('agint.memory');
+    if (!mem || typeof mem.write !== 'function') return; // memory 不可用 → 静默跳过
+    const kind = topic === 'sandbox.passed' ? 'PASS' : 'FAIL';
+    const targetPath = String(payload?.target?.path ?? '');
+    const reason = payload?.reason ?? '';
+    const checksCount = Array.isArray(payload?.checks) ? payload.checks.length : 0;
+    const failedCount = Array.isArray(payload?.failedChecks) ? payload.failedChecks.length : 0;
+    const content = `[agint.qualityPolicy.observe] sandbox.${kind.toLowerCase()} target=${targetPath} mode=${payload?.mode ?? '?'} durationMs=${payload?.durationMs ?? 0} checks=${checksCount} failed=${failedCount}${reason ? ` reason=${reason}` : ''}`;
+    await mem.write({
+      type: 'decision',
+      content,
+      evidence: `agint-quality-policy:sandbox-observe:${envelope?.id ?? '?'}`,
+    });
   }
 
   /**

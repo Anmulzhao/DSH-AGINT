@@ -529,6 +529,125 @@ async function mountFailedViaBusBranch(input, ctx) {
   return { ok, detail: JSON.stringify({ checks, mountFailedEnvelopesCount: mountFailedEnvelopes.length, diagnosisTriggerCalls: diagnosisMock.triggerCalls, evoLogMountEntriesCount: evoLogMountEntries.length, firstSource: mountFailedEnvelopes[0]?.source }) };
 }
 
+// ── Sprint 12 A3：sandbox.passed / sandbox.failed 双 topic 事件化 e2e ──────
+// 嵌套 sandbox publish + 嵌套 policy audit-only 订阅 + 直连 runSmoke return 完整保留。
+async function sandboxPassedFailedViaBusBranch(input, ctx) {
+  try {
+    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    busMod.disposeBus();
+  } catch { /* ignore */ }
+
+  // ── mock 上游 services ──
+  const evoStore = { evolution_log: new Map(), failure_pattern: new Map() };
+  ctx.provide('agint.evolution', {
+    logPhase4: async (entry) => { evoStore.evolution_log.set(entry.targetId ?? 'x', entry); return { ...entry }; },
+    logPhase4Buffered: async (entry) => { evoStore.evolution_log.set(entry.targetId ?? 'x', entry); return { ...entry }; },
+    addFailure: async (entry) => { evoStore.failure_pattern.set(entry.pattern, entry); return { ...entry }; },
+    addSuccess: async () => ({}),
+    queryFailures: async () => [],
+    queryTemplates: async () => [],
+    getLogRange: async () => [],
+    stats: async () => ({ evolution_log: evoStore.evolution_log.size, failure_pattern: evoStore.failure_pattern.size, success_template: 0 }),
+    logBuffered: async () => ({}),
+  });
+  const policyAuditLog = [];
+  ctx.provide('agint.memory', {
+    write: async (rec) => { policyAuditLog.push(rec); return { id: `audit-${policyAuditLog.length}`, ...rec }; },
+    read: async () => null,
+    search: async () => ({ items: policyAuditLog }),
+  });
+  ctx.provide('agint.quality', {
+    getConfig: () => ({ thresholds: { autoDeploy: 90, pendingReview: 75 } }),
+    setConfig: async (p) => p,
+    validatePatch: () => ({ ok: true, violations: [] }),
+    getLayer: () => 'L2-implementation',
+  });
+  ctx.provide('agint.metrics', { inc: () => {}, collect: async () => ({ count: 0, collected: [] }), summary: async () => ({ metrics: [] }) });
+  ctx.provide('agint.toolStats', { failureRate: async () => ({ tool: 'm', failureRate: 0, calls: 0 }), summary: async () => ({ calls: 0, errors: 0 }) });
+  ctx.provide('agint.rules', { audit: () => ({ totals: { hits: 0, denies: 0, asks: 0, advisories: 0 } }), lint: async () => [] });
+  ctx.provide('agint.storageDomain', {
+    open: () => ({ table: () => ({ get: async () => null, put: async () => true, delete: async () => true, entries: () => [] }), close: () => {} }),
+  });
+
+  // ── 关键：先挂 event-bus，再挂 policy（订阅 sandbox.*），再挂嵌套 sandbox ──
+  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  eventBusMod.apply(ctx, {});
+
+  const policyMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+  policyMod.apply(ctx, {});
+  await new Promise((r) => setTimeout(r, 10));
+
+  const sandboxMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
+  sandboxMod.apply(ctx, {});
+
+  const sb = ctx.get('agint.qualitySandbox');
+  const subscribe = ctx.get('agint.eventBus.subscribe');
+  const inspect = ctx.get('agint.eventBus.inspect');
+  if (!sb || !subscribe || !inspect) {
+    return { ok: false, detail: `missing services: sb=${!!sb} subscribe=${!!subscribe} inspect=${!!inspect}` };
+  }
+
+  // ── 计数 bus.subscribe 的 async 订阅（policy 已订阅 sandbox.passed/failed）──
+  // 用 publish 进 envelopes + inspect 查 envelopes 来反查 async 订阅情况：
+  // 不能直接拿 policy 内部订阅计数（私有），改用"直连 publish → 是否 handler 触发"判定。
+  const asyncSubscriptions = { passed: 0, failed: 0 };
+  const directEnvelopeCapture = [];
+  subscribe(
+    { subscriber: 'test-direct-publisher', topics: ['sandbox.passed', 'sandbox.failed'], mode: 'async' },
+    async (envelope) => { directEnvelopeCapture.push(envelope); },
+  );
+
+  // ── Happy path：直连 sandbox.runSmoke 真实存在的 plugin ──
+  const happyResult = await sb.runSmoke({ target: input.happyTarget });
+
+  // ── Failing path：直连 sandbox.runSmoke 不存在的 plugin ──
+  const failingResult = await sb.runSmoke({ target: input.failingTarget });
+
+  // ── 等 microtask 让 async handler fire-and-forget 入栈 ──
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sandboxPassedEnvelopes = inspect({ topic: 'sandbox.passed' });
+  const sandboxFailedEnvelopes = inspect({ topic: 'sandbox.failed' });
+
+  // ── 验证 audit log：policy recordSandboxObservation 写 memory[type=decision] ──
+  const policyAuditLogEntries = policyAuditLog.filter((rec) =>
+    rec.type === 'decision' && String(rec.content ?? '').includes('[agint.qualityPolicy.observe] sandbox.')
+  );
+
+  const checks = {
+    sandboxPublishedPasded: sandboxPassedEnvelopes.length >= 1 && happyResult.ok === true,
+    sandboxPublishedFailed: sandboxFailedEnvelopes.length >= 1 && failingResult.ok === false,
+    policyAuditLogEntries: policyAuditLogEntries.length >= 2,
+    asyncSubscriptionCount: directEnvelopeCapture.length >= 2,
+    directSmokeReturnPathPreserved: happyResult.ok === true && failingResult.ok === false,
+    // inspect 视图对长 payload 截断；直接读 directEnvelopeCapture 的完整 envelope 拿 reason
+    failReasonCorrect: typeof directEnvelopeCapture.find((e) => e?.topic === 'sandbox.failed')?.payload?.reason === 'string' && directEnvelopeCapture.find((e) => e?.topic === 'sandbox.failed').payload.reason.length > 0,
+    passedTopicCorrect: sandboxPassedEnvelopes[0]?.topic === 'sandbox.passed',
+    failedTopicCorrect: sandboxFailedEnvelopes[0]?.topic === 'sandbox.failed',
+    passedSourceCorrect: sandboxPassedEnvelopes[0]?.source === 'agint-quality-sandbox',
+    policyObservesBothTopics: policyAuditLogEntries.some((e) => e.content.includes('sandbox.pass')) && policyAuditLogEntries.some((e) => e.content.includes('sandbox.fail')),
+  };
+  const ok = Object.values(checks).every(Boolean);
+  return {
+    ok,
+    detail: JSON.stringify({
+      checks,
+      happyResult_ok: happyResult.ok,
+      happyResult_mode: happyResult.mode,
+      happyResult_durationMs: happyResult.durationMs,
+      failingResult_ok: failingResult.ok,
+      failingResult_reason: failingResult.reason,
+      sandboxPassedEnvelopesCount: sandboxPassedEnvelopes.length,
+      sandboxFailedEnvelopesCount: sandboxFailedEnvelopes.length,
+      policyAuditLogEntriesCount: policyAuditLogEntries.length,
+      auditLogSample: policyAuditLogEntries.slice(0, 3).map((e) => e.content),
+      failedReasonFull: directEnvelopeCapture.find((e) => e?.topic === 'sandbox.failed')?.payload?.reason,
+      failedEnvelopeFullPayload: directEnvelopeCapture.find((e) => e?.topic === 'sandbox.failed')?.payload,
+      directCaptureCount: directEnvelopeCapture.length,
+    }),
+  };
+}
+
 const dispatchers = {
   'agint-memory': async (scenario, ctx) => {
     const mod = await import(`${AGINT_ROOT}/plugins/agint-memory/lib/index.js`);
@@ -1328,6 +1447,11 @@ const dispatchers = {
     // ── Sprint 12 A4：mount.failed via bus ───────────────────────
     if (input._scenario_kind === 'event-bus-mount-failed-shadow') {
       return mountFailedViaBusBranch(input, ctx);
+    }
+
+    // ── Sprint 12 A3：sandbox.passed / sandbox.failed via bus ─────────
+    if (input._scenario_kind === 'event-bus-sandbox-passed-failed-shadow') {
+      return sandboxPassedFailedViaBusBranch(input, ctx);
     }
 
     const composite = await evaluator.score(input.evalResultFixture);

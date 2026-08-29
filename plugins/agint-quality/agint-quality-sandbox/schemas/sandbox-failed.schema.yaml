@@ -1,0 +1,69 @@
+# sandbox-failed.schema.yaml — Sprint 12 / A3
+#
+# payload 子 schema（与 event-bus envelope 解耦，独立演进；不冻结）
+# 发布方：agint-quality-sandbox（runSmoke() ok=false 出口；含 sandbox-confine-failed /
+#         timeout / unparseable-stdout / smoke-failed / plugin-import-failed 等 reason）
+# 订阅方：
+#   - agint-quality-policy（审计行 → memory，不进入决策路径）
+#   - agint-mount dispatcher（Step 5 后置 DISABLE review gate 副作用）
+#   - agint-diagnosis（analyzeFailedSmoke → 输出 rootCauseCandidates）
+#
+# v1 范围：
+#   - target / mode / reason / failedChecks / durationMs
+#   - reason 是机器可读字符串（schema 不强制枚举——发布方按 runSmoke 当前值动态生成）
+#   - failedChecks 是 checks 中 ok=false 的子集（最少 1 项；publish 端过滤）
+#
+# 不冻结；破坏性变更通过 major 版本 + 影子期。
+
+schemaVersion: 1
+topic: sandbox.failed
+version: 1
+source: agint-quality-sandbox
+
+Payload:
+  type: object
+  required: [target, mode, reason, failedChecks, durationMs]
+  properties:
+    target:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        name:
+          type: string
+    mode:
+      enum: [sandbox, in-process]
+    reason:
+      type: string
+      description: |
+        失败原因机器可读字符串。当前枚举（不强制）：
+          - sandbox-confine-failed
+          - timeout
+          - unparseable-stdout
+          - plugin-not-found
+          - package-json-missing
+          - package-json-invalid
+          - plugin-import-failed
+          - smoke-failed
+          - unknown
+    failedChecks:
+      type: array
+      description: checks 中 ok=false 的子集（publish 端过滤；至少 1 项）
+      items:
+        type: object
+        required: [name, detail]
+        properties:
+          name:
+            type: string
+          detail:
+            type: string
+    durationMs:
+      type: integer
+      minimum: 0
+
+auditHints:
+  policyChannel: memory(type=lesson)   # 注意：policy 走 audit 通道而非决策路径
+  mountChannel: healthProbe.markDegraded('sandbox-failed')
+  diagnosisChannel: analyzeFailedSmoke({...})
+  retentionDays: 7

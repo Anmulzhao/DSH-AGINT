@@ -1,5 +1,29 @@
 # Changelog — agint-quality-sandbox
 
+## 0.7.0 (2026-08-29) — Sprint 12 / A3 sandbox.passed / sandbox.failed 双 topic 事件化（T1 影子期）
+
+### Added
+
+- **sandbox.passed / sandbox.failed 双 topic 事件化（T1 影子期，不切流量）**：
+  - 发布方：嵌套 `plugins/agint-quality/agint-quality-sandbox/lib/index.js` 的 `runSmoke()` / `runInRealSandbox()` / `runInProcess()` 三处出口
+  - 订阅方：嵌套 `plugins/agint-quality/agint-quality-policy/lib/index.js` 加 async 订阅（audit-only：写 `memory[type=decision]`）
+  - 软依赖 `ctx.eventBus.publish`（直连路径不切流量；publish 失败 `console.error` 不抛）
+- **payload schema v1**：嵌套路径新增 `schemas/sandbox-passed.schema.yaml` + `schemas/sandbox-failed.schema.yaml`
+  - passed payload: `{target, mode, checks, durationMs}`
+  - failed payload: `{target, mode, reason, failedChecks, durationMs}`
+- `manifest.json`：
+  - `cordis.optionalInject` 新增 `agint.eventBus`（软依赖）
+  - `dependencies` 新增 `agint-event-bus: ">=0.7.0"`
+  - `servicesOptional` 显式声明 `agint.eventBus.sandboxAudit`（audit-only consumer，由 `agint-quality-policy` 注册）
+
+### Compatibility
+
+- 直连路径（`runSmoke` / `runInRealSandbox` / `runInProcess` return 结果）完整保留
+- 事件路径 publish 失败只 `console.error` 不抛；不阻断原 return
+- policy A2 已 commit 的 sync 订阅（`evolution.evaluated`）未被触动；A3 的 async 订阅是新增独立边
+- 嵌套路径 deprecated proxy（`plugins/agint-quality/agint-quality-sandbox/deprecation-proxy.js`）保留 — v0.7 清理计划不变（设计稿 §九遗留 TODO #5）
+- L0-frozen 字段未触动（`grep -r 'agint-quality-contract' plugins/agint-quality-sandbox/` 实测 0 命中）
+
 ## 0.6.3 (2026-08-27) — Sprint 10 #2 + #3 收口
 
 ### Breaking
