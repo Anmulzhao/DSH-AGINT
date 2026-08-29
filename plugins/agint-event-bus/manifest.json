@@ -1,0 +1,83 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-event-bus",
+  "version": "0.7.0",
+  "description": "AGINT 事件总线 v0.7.0：纯基础设施插件（第 20 个），不承载进化语义。3 Service（agint.eventBus.publish / agint.eventBus.subscribe / agint.eventBus.inspect）。FROZEN EventEnvelope + Subscription schema（v0.7.0 发版日冻结）。at-least-once + 单订阅者隔离 + 指数退避 + 死信落 agint_event_bus 存储域 + traceId 透传。Sprint 12 通信架构解耦 / 设计稿 Sprint12 §A1-A3。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.evolution"
+      ],
+      "optionalInject": [
+        "agint.memory"
+      ],
+      "provides": [
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.eventBus.inspect"
+      ],
+      "events": [
+        "tools/post-execute"
+      ],
+      "tools": []
+    },
+
+    "storage": {
+      "domains": ["agint_event_bus"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+
+    "dependencies": {
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "agint-evolution-memory": ">=0.6.4",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 50,
+
+    "permissions": {
+      "env": ["DSH_HOME", "AGINT_HOME"],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.eventBus.publish": "发布一个 EventEnvelope 到总线，按订阅表路由；返回 {accepted, deliveredTo, deadLettered}；不等待 async 订阅者完成",
+        "agint.eventBus.subscribe": "声明式订阅：subscriber + topics + 模式（async 默认；sync 需 schema reason 非空）；返回 Unsubscribe 函数",
+        "agint.eventBus.inspect": "只读查询：按 topic / traceId / since / limit 过滤，返回 EventLogEntry[]；供 report / 排障 / 仪表盘"
+      }
+    },
+
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.7.0"
+  }
+}

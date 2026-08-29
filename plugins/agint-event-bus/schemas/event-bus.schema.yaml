@@ -1,0 +1,91 @@
+# event-bus.schema.yaml — FROZEN at v0.7.0 (Sprint 12 发版日)
+#
+# 冻结范围（设计稿 Sprint12 §A2）：
+#   - EventEnvelope 顶层 8 字段（id / topic / version / occurredAt / source / traceId / correlationId / payload）
+#   - Subscription 顶层 5 字段 + mode enum (sync | async)
+#   - reason 仅在 mode=sync 时必填（哲学对齐审查前置）
+#
+# 不冻结：topic payload 子 schema（由发布方插件自带独立演进，正交）。
+# 变更流程：FROZEN 字段修改走 L0 治理（人类多签 + 7 天影子 + major 版本）。
+
+schemaVersion: 1
+
+EventEnvelope:
+  type: object
+  required: [id, topic, version, occurredAt, source, traceId, payload]
+  properties:
+    id:
+      type: string
+      format: uuid
+      description: 事件唯一 id（总线或发布方生成；UUIDv4 形式）
+    topic:
+      type: string
+      pattern: '^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,3}$'
+      description: 主题名；统一小写，段分隔符为 . ；示例：evolution.evaluated / mount.succeeded / self.*
+    version:
+      type: integer
+      minimum: 1
+      description: 事件 schema 版本（非插件版本；发布方管理）
+    occurredAt:
+      type: string
+      format: date-time
+      description: 事件发生时刻（发布方记）
+    source:
+      type: string
+      description: 发布方插件名（与 cordis plugin name 对齐）
+    traceId:
+      type: string
+      description: 追踪 id；缺失时由总线生成；同 traceId 内对同订阅者保序
+    correlationId:
+      type: string
+      description: 可选；关联上游事件（因果链）
+    payload:
+      type: object
+      description: topic 自有 schema（不冻结）；正交演进由发布方维护
+
+Subscription:
+  type: object
+  required: [subscriber, topics, mode]
+  properties:
+    subscriber:
+      type: string
+      description: 订阅方插件名
+    topics:
+      type: array
+      items: { type: string }
+      description: 订阅 topic 列表（精确匹配；wildcard 留 v0.8+ 评估）
+    mode:
+      enum: [sync, async]
+      description: 异步仅排队（默认 10s 投递 sla 不保证）；同步等待 handler 返回（默认 10s 超时降级 PENDING_REVIEW）
+    reason:
+      type: string
+      minLength: 1
+      description: 'mode=sync 时必填：为何必须同步（哲学对齐审查用）；空字符串硬抛错'
+      # 校验规则（zod）：仅在 mode==="sync" 时校验 minLength >= 1
+    timeoutMs:
+      type: integer
+      default: 10000
+      description: sync 模式超时（默认 10000ms）；超时降级 PENDING_REVIEW
+    retry:
+      type: object
+      description: 重试退避（异步投递）
+      properties:
+        maxAttempts:
+          type: integer
+          default: 3
+        backoffMs:
+          type: integer
+          default: 500
+          description: 指数退避基数（次次 ×2）；封顶 8000ms
+
+# 全系统约束（设计稿 §五.边界）
+constraints:
+  syncSubscriptionGlobalLimit:
+    value: 3
+    description: 全系统 sync 订阅数 ≤ 3（门禁边专属）
+  deadLetterRetentionMs:
+    value: 604800000
+    description: 死信保留 7 天（604800000 ms）；超时由 EvolutionLogBuffer 衰减
+  ringBufferCapacity:
+    value: 2000
+    description: inspect 内存视图最多保留 2000 条（超出触发环形淘汰）
