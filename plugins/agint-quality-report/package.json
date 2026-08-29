@@ -1,0 +1,8 @@
+{
+  "name": "agint-quality-report",
+  "version": "0.4.0",
+  "description": "AGINT D-QAF Phase 4 报告生成插件。代码实现在 plugins/agint-quality/agint-quality-report/（monorepo 形式），本目录为 plugin-check 入口。",
+  "main": "../agint-quality/agint-quality-report/lib/index.js",
+  "type": "module",
+  "peerDependencies": { "zod": "^3.0.0" }
+}

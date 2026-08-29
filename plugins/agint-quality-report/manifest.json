@@ -1,0 +1,66 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-report",
+  "version": "0.4.0",
+  "description": "AGINT D-QAF Phase 4 报告生成插件。代码实现在 plugins/agint-quality/agint-quality-report/（monorepo 形式），顶层 manifest 为 plugin-check 入口。Sprint 12 A5：与 agint-quality-eval 同源同步接入 policy.* 影子写入（结构对齐，顶层为准入补齐入口）。",
+  "main": "../agint-quality/agint-quality-report/lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.qualityReporter"
+      ],
+      "events": [],
+      "tools": [],
+      "optionalInject": [
+        "agint.eventBus"
+      ]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-event-bus": ">=0.7.0"
+    },
+    "mountOrder": 81,
+    "permissions": {
+      "env": [
+        "DSH_HOME",
+        "AGINT_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "./test/smoke.mjs",
+      "command": "node ./test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "./README.md",
+      "serviceDocs": {
+        "agint.qualityReporter": "D-QAF Phase 4 报告生成器（render markdown + json，可选写 wiki/memory）"
+      }
+    },
+    "changelog": "./CHANGELOG.md",
+    "compatSince": "0.4.0"
+  }
+}
