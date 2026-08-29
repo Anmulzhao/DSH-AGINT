@@ -1,0 +1,62 @@
+[
+  {
+    "scenario": "s12-02-evolution-evaluated-sync-edge",
+    "plugin": "agint-event-bus",
+    "input": [
+      {
+        "_purpose": "Sprint 12 / A2 — T1 影子期 sync 门禁边 e2e：eval 评分 → publish evolution.evaluated → policy 收到 sync 边事件 + 直连路径保留 + sync 计数器 == 1。",
+        "_note_subscribers": [
+          "agint-quality-policy 订阅 evolution.evaluated（mode=sync + reason 非空），唯一 sync 边"
+        ],
+        "_note_assertions": [
+          "policy 收到边事件 payload",
+          "policy 直连 decide() 仍可调（保留原路径）",
+          "sync 全局订阅计数 == 1（不超 3 抛错）"
+        ],
+        "evalTarget": {
+          "id": "agint-event-bus-fixture",
+          "kind": "plugin",
+          "version": "0.7.0",
+          "tags": ["s12-sync-edge"]
+        },
+        "evalResultFixture": {
+          "targetId": "agint-event-bus-fixture",
+          "evaluatedAt": "2026-08-29T00:00:00.000Z",
+          "durationMs": 50,
+          "dimensions": [
+            { "key": "trust", "label": "trust", "score": { "score": 0.9, "raw": null, "evidence": [], "children": [] }, "findings": [] },
+            { "key": "reliability", "label": "reliability", "score": { "score": 0.9, "raw": null, "evidence": [], "children": [] }, "findings": [] },
+            { "key": "effectiveness", "label": "effectiveness", "score": { "score": 0.85, "raw": null, "evidence": [], "children": [] }, "findings": [] },
+            { "key": "safety", "label": "safety", "score": { "score": 1.0, "raw": null, "evidence": [], "children": [] }, "findings": [] },
+            { "key": "integrability", "label": "integrability", "score": { "score": 0.9, "raw": null, "evidence": [], "children": [] }, "findings": [] }
+          ],
+          "findings": [],
+          "evaluatorId": "agint-quality-eval"
+        },
+        "policyDecideResults": [
+          {
+            "targetId": "agint-event-bus-fixture",
+            "dimensions": [
+              { "key": "trust", "score": { "score": 0.9 } },
+              { "key": "reliability", "score": { "score": 0.9 } },
+              { "key": "effectiveness", "score": { "score": 0.85 } },
+              { "key": "safety", "score": { "score": 1.0 } },
+              { "key": "integrability", "score": { "score": 0.9 } }
+            ],
+            "harm": { "homogeneity": 0.5, "alignment": 0.9, "reduction": 0.85, "mutability": 0.5 },
+            "findings": [],
+            "evaluatedAt": "2026-08-29T00:00:00.000Z"
+          }
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "kind": "s12-02-sync-edge",
+        "edgeEventReceivedByPolicy": true,
+        "directCallPathPreserved": true,
+        "syncSubscriptionCount": 1
+      }
+    ]
+  }
+]

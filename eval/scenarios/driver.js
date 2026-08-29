@@ -185,6 +185,92 @@ export function deepEqualSubset(actual, expected) {
 // Plugin-specific scenario dispatchers.
 // Each takes (scenario, mockCtx) → { ok, detail }
 
+// ── Sprint 12 A1：shadow publish evolution.proposed 分支 helper ─────
+async function shadowPublishEvolutionProposedBranch(input, ctx) {
+  // ── 1. 用 mountCtxFor 工厂注入 eventBus mock + 9 service ──
+  // 关键：upstream.eventBus='available' 触发 eventBusMock 完整版（publish/subscribe/inspect）
+  // 默认 'absent' 走纯直调；scenario 显式开 'available' 才能测影子通路
+  const { ctx: mountCtx, mocks } = mountCtxFor({
+    input,
+    override: { realCheckPlugin: null },
+  });
+  // 把 mount mocks 的 service 注入 driver 主 ctx
+  ctx.provide('agint.eventBus', mountCtx.get('agint.eventBus'));
+  for (const k of ['agint.population','agint.evolution','agint.memory','agint.metrics','agint.qualitySandbox','agint.toolStats','agint.rules','agint.quality','agint.storageDomain']) {
+    const v = mountCtx.get(k);
+    if (v) ctx.provide(k, v);
+  }
+
+  // ── 2. 加载 agint-population（含 publishProposed 方法） ──
+  const popMod = await import(`${AGINT_ROOT}/plugins/agint-population/lib/index.js`);
+  popMod.apply(ctx, {});
+
+  // ── 3. 加载 agint-quality-eval（含影子订阅：收到 evolution.proposed 写 shadowProposals ring） ──
+  // 注意：不加载 agint-evolution-memory 真 plugin —— 它的 EvolutionLogBuffer 走自己
+  //   storageDomain（local makeMockStorageDomain），与 mount mocks 的 evoStore 隔离。
+  //   本 dispatcher 用 **手挂订阅 + mount mock evolution** 等价验证"事件能传到订阅方
+  //   且订阅方能落 evolution_log" 的契约；真 plugin integration 在 e2e 测试覆盖。
+  const qeMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+  try {
+    qeMod.apply(ctx, {});
+  } catch (err) {
+    // scheduler 不可用时 apply 内部已 try/catch；影子订阅不影响
+  }
+
+  // ── 4. 手挂"evolution-memory 等价"订阅：bus → mock evolution.logPhase4Buffered ──
+  //   与真 evolution-memory plugin 的影子 handler 逻辑等价（设计稿 §A1.4）：
+  //     targetId=proposalId, targetKind='evolution.proposed:<kind>', decision='PROPOSED',
+  //     tags=['event-bus','shadow-ingest','origin:<origin>']
+  const eventBus = ctx.get('agint.eventBus');
+  const evoMock = ctx.get('agint.evolution');
+  if (eventBus && typeof eventBus.subscribe === 'function' && evoMock && typeof evoMock.logPhase4Buffered === 'function') {
+    eventBus.subscribe(
+      { subscriber: 'agint-evolution-memory', topics: ['evolution.proposed'], mode: 'async' },
+      async (envelope) => {
+        try {
+          const p = envelope?.payload ?? {};
+          if (!p.proposalId) return;
+          await evoMock.logPhase4Buffered({
+            targetId: p.proposalId,
+            targetKind: `evolution.proposed:${p.kind || 'unknown'}`,
+            decision: 'PROPOSED',
+            scores: {},
+            findings: [],
+            tags: ['event-bus', 'shadow-ingest', `origin:${p.origin || 'unknown'}`],
+          });
+        } catch { /* handler 永不抛 */ }
+      },
+    );
+  }
+
+  // ── 5. 直连路径保留：populationMock.register 模拟上游 mutator.propose 直调 ──
+  await mocks.populationMock.register({ origin: 'shadow-test', proposalId: input.proposal.id });
+
+  // ── 6. shadow publish：population.publishProposed(proposal) ──
+  const publishProposed = ctx.get('agint.population.publishProposed');
+  if (!publishProposed) {
+    return { ok: false, detail: 'missing agint.population.publishProposed service' };
+  }
+  const publishResult = await publishProposed(input.proposal);
+
+  // ── 7. 等 microtask 让 handler fire-and-forget 入栈 ──
+  await new Promise((r) => setTimeout(r, 30));
+
+  // ── 8. 校验 ──
+  const checks = {
+    eventBusReceived: mocks.eventBusCalls.published >= 1,
+    deliveredTo: mocks.eventBusCalls.envelopes[0]?.topic === 'evolution.proposed',
+    directCallCount: mocks.populationCalls.count >= 1,
+    subscribersAttached: mocks.eventBusCalls.subscribers.has('evolution.proposed'),
+    publishShadowing_doesNotBlockDirectPath: publishResult.directPathUnaffected !== false && mocks.populationMock._registeredArtifacts.length >= 1,
+    shadowProposalsLength: ((ctx.get('agint.qualityEval.shadowProposals')?.() ?? []).length) >= 1,
+    evolutionLogEntries: [...mocks.evoStore.evolution_log.values()].filter((e) => (e.tags ?? []).includes('event-bus')).length >= 1,
+    tagsInclude: [...mocks.evoStore.evolution_log.values()].some((e) => (e.tags ?? []).includes('event-bus') && (e.tags ?? []).includes('shadow-ingest')),
+  };
+  const allOk = Object.values(checks).every(Boolean);
+  return { ok: allOk, detail: JSON.stringify({ checks, publishResult, published_count: mocks.eventBusCalls.published, subscribers_count: (mocks.eventBusCalls.subscribers.get('evolution.proposed') ?? []).length }) };
+}
+
 const dispatchers = {
   'agint-memory': async (scenario, ctx) => {
     const mod = await import(`${AGINT_ROOT}/plugins/agint-memory/lib/index.js`);
@@ -892,6 +978,128 @@ const dispatchers = {
     }
 
     return { ok: false, detail: `unsupported action ${input.action} for qualityPolicy` };
+  },
+
+  // ── Sprint 12 / A2: agint-event-bus 边事件 e2e ─────────────────
+  // T1 影子期 sync 门禁边：eval 评分 → publish evolution.evaluated
+  // → policy 收到 sync 边事件 + 直连路径保留 + sync 计数器 == 1。
+  'agint-event-bus': async (scenario, ctx) => {
+    const input = scenario.input[0];
+
+    // ── 重置 bus 模块级状态（s12-01 留下的订阅不影响 s12-02 sync counter）──
+    try {
+      const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+      busMod.disposeBus();
+    } catch { /* ignore */ }
+
+    // ── mock 上游 services（policy + eval 都需要）──
+    const evoStore = { evolution_log: new Map(), failure_pattern: new Map() };
+    ctx.provide('agint.evolution', {
+      logPhase4: async (entry) => { evoStore.evolution_log.set(entry.targetId ?? 'x', entry); return { ...entry }; },
+      addFailure: async (entry) => { evoStore.failure_pattern.set(entry.pattern, entry); return { ...entry }; },
+      addSuccess: async () => ({}),
+      queryFailures: async () => [],
+      queryTemplates: async () => [],
+      getLogRange: async () => [],
+      stats: async () => ({ evolution_log: evoStore.evolution_log.size, failure_pattern: evoStore.failure_pattern.size, success_template: 0 }),
+      logBuffered: async () => ({}),
+    });
+    ctx.provide('agint.memory', {
+      write: async (rec) => ({ id: `mock-${Date.now()}`, ...rec }),
+      read: async () => null,
+      search: async () => ({ items: [] }),
+    });
+    ctx.provide('agint.quality', {
+      getConfig: () => ({ thresholds: { autoDeploy: 90, pendingReview: 75 } }),
+      setConfig: async (p) => p,
+      validatePatch: () => ({ ok: true, violations: [] }),
+      getLayer: () => 'L2-implementation',
+    });
+    ctx.provide('agint.metrics', {
+      inc: () => {},
+      collect: async () => ({ count: 0, collected: [] }),
+      summary: async () => ({ metrics: [] }),
+    });
+    ctx.provide('agint.toolStats', { failureRate: async () => ({ tool: 'm', failureRate: 0, calls: 0 }), summary: async () => ({ calls: 0, errors: 0 }) });
+    ctx.provide('agint.rules', { audit: () => ({ totals: { hits: 0, denies: 0, asks: 0, advisories: 0 } }), lint: async () => [] });
+    ctx.provide('agint.qualitySandbox', {
+      runSmoke: async () => ({ ok: true, mode: 'in-process', checks: [], reason: undefined }),
+      backendHealth: async () => ({ ctxSandboxAvailable: false, inProcessFallbackEnabled: true, timeoutMs: 30000, memoryMb: 512 }),
+      config: { timeoutMs: 30000, memoryMb: 512, allowInProcessFallback: true },
+    });
+    ctx.provide('agint.storageDomain', {
+      open: () => ({ table: () => ({ get: async () => null, put: async () => true, delete: async () => true, entries: () => [] }), close: () => {} }),
+    });
+
+    // ── 关键：先挂 event-bus，再挂 policy，再挂 eval（mock 时序绕开 mountOrder）──
+    const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+    eventBusMod.apply(ctx, {});
+
+    const policyMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+    policyMod.apply(ctx, {});
+
+    const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+    evalMod.apply(ctx, {});
+    await new Promise((r) => setTimeout(r, 20));
+
+    const evaluator = ctx.get('agint.qualityEvaluator');
+    const policy = ctx.get('agint.qualityPolicy');
+    const subscribe = ctx.get('agint.eventBus.subscribe');
+    const inspect = ctx.get('agint.eventBus.inspect');
+    if (!evaluator || !policy || !subscribe || !inspect) {
+      return { ok: false, detail: `missing services: evaluator=${!!evaluator} policy=${!!policy} subscribe=${!!subscribe} inspect=${!!inspect}` };
+    }
+
+    // ── Step 1: 跑一次 eval score → 触发 publish evolution.evaluated ──
+    // ── Sprint 12 A1：shadow-publish-evolution-proposed 分支 ─────
+    // scenario.input[0]._scenario_kind === 'event-bus-shadow-publish' 时走此分支
+    if (input._scenario_kind === 'event-bus-shadow-publish') {
+      return shadowPublishEvolutionProposedBranch(input, ctx);
+    }
+
+    const composite = await evaluator.score(input.evalResultFixture);
+
+    // ── Step 2: 校验 publish 已落 inspect 日志 + delivery status ──
+    const events = inspect({ topic: 'evolution.evaluated' });
+    const event0 = events[0] ?? null;
+    const payload = event0?.payloadPreview ?? null;
+    const eventOk = events.length === 1
+      && event0.topic === 'evolution.evaluated'
+      && event0.source === 'agint-quality-eval'
+      && event0.deliveries?.['agint-quality-policy'] === 'DELIVERED'
+      && payload?.targetId === input.evalResultFixture.targetId
+      && payload?.decision === 'SCORED'
+      && typeof payload?.scores?.composite === 'number';
+
+    // ── Step 3: 校验 sync 订阅计数 == 1（policy 已注册 1 个 sync）──
+    // 用 probe 法：再注册一次 sync，如果当前计数 == 1，新计数 == 2 < 3 成功；
+    // 如果当前计数 == 2，新计数 == 3 仍成功；如果当前计数 == 3，新计数 == 4 > 3 抛错
+    // 失败模式不可区分"==1" 和 "==2"，所以用 inspectSnapshot 更精确。
+    let syncCountIsOne = false;
+    try {
+      const snapMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+      const snap = snapMod._subscriptionsSnapshot();
+      const syncSubs = snap.filter((s) => s.mode === 'sync');
+      syncCountIsOne = syncSubs.length === 1 && syncSubs[0].subscriber === 'agint-quality-policy';
+    } catch {
+      syncCountIsOne = false;
+    }
+
+    // ── Step 4: 校验 policy 直连路径保留（decide() 仍可调）──
+    let directCallOk = false;
+    try {
+      const decision = await policy.decide({ results: input.policyDecideResults });
+      directCallOk = decision && typeof decision.kind === 'string'
+        && ['AUTO_DEPLOY', 'PENDING_REVIEW', 'REJECT', 'ABSTAIN'].includes(decision.kind);
+    } catch {
+      directCallOk = false;
+    }
+
+    const ok = eventOk && directCallOk && syncCountIsOne;
+    return {
+      ok,
+      detail: `composite=${composite} event_received=${eventOk} direct_call=${directCallOk} sync_count_is_1=${syncCountIsOne}`,
+    };
   },
 
   'agint-quality-report': async (scenario, ctx) => {
