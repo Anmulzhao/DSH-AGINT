@@ -1,0 +1,61 @@
+[
+  {
+    "scenario": "s12-03-sandbox-passed-failed-via-event-bus",
+    "plugin": "agint-event-bus",
+    "_purpose": "Sprint 12 / A3 — T1 影子期：sandbox.passed / sandbox.failed 双 topic 事件化 e2e。\n  跑嵌套 sandbox plugin 的 runSmoke() happy path → publish sandbox.passed → 订阅方（agint-quality-policy）记录 audit log；\n  跑嵌套 sandbox plugin 的 runSmoke() fail path → publish sandbox.failed + reason 字段 → 订阅方 audit log。\n  双轨不切流量：直连 sandbox.runSmoke() return 结果不受 publish 失败影响。",
+    "_note_subscribers": [
+      "agint-quality-policy async 订阅 sandbox.passed + sandbox.failed（mode=async, 不需要 reason 非空）"
+    ],
+    "_note_assertions": [
+      "sandbox publish sandbox.passed envelope 落到 bus inspect log",
+      "sandbox publish sandbox.failed envelope + reason 字段落到 bus inspect log",
+      "policy recordSandboxObservation 写 memory[type=decision]",
+      "audit log 条数 >= 2",
+      "async 订阅计数 >= 1",
+      "直连 sandbox.runSmoke() return ok 不变"
+    ],
+    "input": [
+      {
+        "_scenario_kind": "event-bus-sandbox-passed-failed-shadow",
+        "_steps": [
+          "1. 加载真 agint-event-bus apply(ctx) — 提供 3 service",
+          "2. mock 上游 services (evo + memory + quality + metrics + toolStats + rules + qualitySandbox + storageDomain)",
+          "3. 加载真 agint-quality-policy apply(ctx) — 自动订阅 sandbox.passed/failed (mode=async)",
+          "4. 加载真嵌套 sandbox plugin apply(ctx) — 提供 agint.qualitySandbox.runSmoke + publishSandboxEvent",
+          "5. 直连 sandbox.runSmoke happy target (allowInProcessFallback=true → in-process ok=true) → publish sandbox.passed → policy 收到 audit log",
+          "6. 直连 sandbox.runSmoke failing target (smoke.js 内置 fail) → publish sandbox.failed + reason → policy 收到 audit log + reason 字段正确",
+          "7. 等 microtask 让 async handler fire-and-forget 入栈",
+          "8. 校验 inspect 日志 + policy audit log + 直连 runSmoke return 结果"
+        ],
+        "happyTarget": {
+          "path": "/home/anmul/projects/AGINT/plugins/agint-quality-sandbox",
+          "name": "agint-quality-sandbox"
+        },
+        "failingTarget": {
+          "path": "/home/anmul/projects/AGINT/plugins/agint-diagnosis/lib/__nonexistent_for_fail__.js",
+          "name": "agint-diagnosis-fail-stub"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "sandbox-passed-failed-via-bus",
+        "expectedKeys": [
+          "sandboxPublishedPasded=true",
+          "sandboxPublishedFailed=true",
+          "policyAuditLogEntries>=2",
+          "asyncSubscriptionCount>=1",
+          "directSmokeReturnPathPreserved=true"
+        ],
+        "_assertions": {
+          "sandboxPublishedPasded": "sandboxPassedEnvelopes.length >= 1",
+          "sandboxPublishedFailed": "sandboxFailedEnvelopes.length >= 1",
+          "policyAuditLogEntries": "policyAuditLogEntries.length >= 2",
+          "asyncSubscriptionCount": "asyncSubscriptions.length >= 1",
+          "directSmokeReturnPathPreserved": "happyResult.ok === true && failingResult.ok === false",
+          "_note_failReasonCorrect": "sandboxFailedEnvelopes[0].payloadPreview.reason is non-empty string"
+        }
+      }
+    ]
+  }
+]

@@ -17,7 +17,11 @@
     "provides": ["agint.qualitySandbox"],
     "events": [],
     "tools": [],
-    "optionalInject": ["agint.evolution"]
+    "optionalInject": ["agint.evolution", "agint.eventBus"]
+  },
+
+  "servicesOptional": {
+    "agint.eventBus.sandboxAudit": "audit-only consumer for sandbox.passed/sandbox.failed (T1 shadow); declared by manifest but not registered by lib (registrar: agint-quality-policy)"
   },
 
   "storage": {
@@ -28,6 +32,7 @@
 
   "dependencies": {
     "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+    "agint-event-bus": ">=0.7.0",
     "zod": "^3.0.0"
   },
   "mountOrder": 35,

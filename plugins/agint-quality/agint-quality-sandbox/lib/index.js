@@ -41,6 +41,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const name = 'agint-quality-sandbox';
 const inject = ['sandbox', 'agint.evolution']; // dsh-sandbox service + evolution service for failure write
+// Sprint 12 / A3: eventBus 是软依赖（publish 仅在 ctx 提供时触发；publish 失败 log 不抛）
+const optionalInject = ['agint.eventBus'];
 
 const Config = z.object({
   /** sandbox timeout in milliseconds (default 30s, ROADMAP §沙箱 限) */
@@ -182,6 +184,9 @@ function apply(ctx, config) {
       }
     }
 
+    // Sprint 12 / A3: publish sandbox.passed / sandbox.failed（T1 影子期；失败 log 不抛）
+    await publishSandboxEvent({ result });
+
     return result;
   }
 
@@ -199,6 +204,8 @@ function apply(ctx, config) {
       reason: result.reason,
       durationMs: Date.now() - startedAt,
     });
+    // Sprint 12 / A3: publish sandbox.passed / sandbox.failed（T1 影子期；失败 log 不抛）
+    await publishSandboxEvent({ result: out });
     return out;
   }
 
@@ -237,11 +244,70 @@ function apply(ctx, config) {
     };
   }
 
+  /**
+   * Sprint 12 / A3 — T1 影子期：publish sandbox.passed / sandbox.failed
+   *
+   * 软依赖 ctx.eventBus（ctx 提供则 publish；缺失 / 抛错 → log 不抛；直连路径不受影响）
+   * payload schema 见 schemas/sandbox-passed.schema.yaml + schemas/sandbox-failed.schema.yaml
+   * 不变量：
+   *   - publish 失败 log 不抛（红线：原 return 必须保留，事件路径失败不阻断 runSmoke 结果）
+   *   - 失败事件 publish 时失败检查列表取 result.checks 里 ok=false 的子集
+   *   - 真 event-bus plugin 注册的是 3 个分 service：agint.eventBus.publish / .subscribe / .inspect
+   *     （设计稿 Sprint12 §A1）。umbrella 'agint.eventBus' 仅在测试/特定 dispatcher 里 bridge。
+   *     同时兼容 umbrella 与分 service；任一 publish 可用即 publish。
+   */
+  async function publishSandboxEvent({ result }) {
+    try {
+      let publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      if (typeof publish !== 'function') {
+        const bus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null;
+        if (bus && typeof bus.publish === 'function') publish = bus.publish.bind(bus);
+      }
+      if (typeof publish !== 'function') return; // 软降级：bus 不可用
+      const isPass = Boolean(result.ok);
+      const topic = isPass ? 'sandbox.passed' : 'sandbox.failed';
+      const allChecks = Array.isArray(result.checks) ? result.checks : [];
+      const failedChecks = allChecks.filter((c) => c && c.ok === false).map((c) => ({
+        name: String(c.name ?? 'unknown'),
+        detail: String(c.detail ?? ''),
+      }));
+      const payload = {
+        target: { path: String(result.target?.path ?? ''), name: result.target?.name },
+        mode: String(result.mode ?? 'in-process'),
+        durationMs: Number.isFinite(result.durationMs) ? result.durationMs : 0,
+      };
+      if (isPass) {
+        payload.checks = allChecks.map((c) => ({
+          name: String(c.name ?? 'unknown'),
+          ok: Boolean(c.ok),
+          detail: String(c.detail ?? ''),
+        }));
+      } else {
+        payload.reason = String(result.reason ?? 'unknown');
+        payload.failedChecks = failedChecks;
+      }
+      await publish({
+        topic,
+        version: 1,
+        source: 'agint-quality-sandbox',
+        payload,
+      });
+    } catch (err) {
+      // publish 失败 log 不抛（保留原 return）
+      if (!disposed) {
+        try { console.error('[agint-quality-sandbox] publish failed:', err?.message ?? err); }
+        catch { /* ignore */ }
+      }
+    }
+  }
+
   ctx.provide('agint.qualitySandbox', {
     runSmoke,
     backendHealth,
     config: cfg,
+    // Sprint 12 / A3: 暴露 publish helper（dispatcher / 测试可单测副作用）
+    publishSandboxEvent,
   });
 }
 
-export { Config, apply, inject, name };
+export { Config, apply, inject, name, optionalInject };
