@@ -1,5 +1,29 @@
 # Changelog — agint-quality-policy
 
+## 0.8.0 (2026-09-01) — Sprint 12 / A5 policy.deployed / policy.rolledback 事件化（T1 影子期）
+
+### Added
+
+- **policy.deployed 事件化**：decide() 末尾当 kind === 'AUTO_DEPLOY' → publish envelope `{topic:'policy.deployed', version:1, source:'agint-quality-policy', payload:{targetId, decision, score, reason}}`。perTarget[*].kind === 'AUTO_DEPLOY' 每条各发一条。
+- **policy.rolledback 事件化**：decide() 末尾当 kind === 'REJECT' 且 `committee.shouldRollback` 触发 → publish envelope `{topic:'policy.rolledback', version:1, source:'agint-quality-policy', payload:{targetId, decision, score, reason, rollbackTarget}}`。同步调 `committee.recordRollback` 落 storage（与原直连路径一致）。
+- **publish 走单 service 接口** `ctx.get('agint.eventBus.publish')`（A3 已确认伞键 `ctx.get('agint.eventBus').publish` bug——上层 envelope 字段会被中间层覆盖；不再用伞键）
+- **schema v1 不冻结**：`schemas/policy-deployed.schema.yaml` + `schemas/policy-rolledback.schema.yaml`；影子期允许新增 optional 字段，破坏性变更走 L0 治理
+- **manifest optionalInject** 加 `agint.eventBus.publish`（软依赖；event-bus 不可用 → 静默跳过 publish，原直连路径完全保留）
+- **dependencies 维持** `agint-event-bus: ">=0.7.0"`
+
+### Compatibility
+
+- L0-frozen 接口签名（QualityPolicy / QualityPolicyIface.decide）未触动
+- decide() 决策主路径行为完全等价于 v0.7.4（事件路径 T1 影子期不参与）
+- event-bus 缺失 / publish 失败 / schema 不匹配 → log 不抛，决策照常返回
+- 调 `committee.recordRollback` 与原 `committee.shouldRollback` 行为不变（仅多了一次 publish 副作用）
+
+### Subscriber（本期不本插件内挂；记入 sprint 看板由对应插件 owner 接管）
+
+- `agint-quality-report` → 观测行（console + audit），不进 HARM 报告输出
+- `agint-metrics` → policy.deployed / policy.rolledback 计数器（写入 agint_metrics 域）
+- `agint-diagnosis` → rollback pattern 标注（订阅方 B 可选；本期跳过，写此条 CHANGELOG 说明）
+
 ## 0.6.4 (2026-08-27) — Sprint 10 #10 收口
 
 ### Added

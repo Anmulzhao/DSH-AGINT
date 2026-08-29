@@ -1,0 +1,54 @@
+# policy-deployed.schema.yaml — Sprint 12 / A5 (T1 影子期)
+#
+# 发布方：agint-quality-policy.decide() 末尾（kind === 'AUTO_DEPLOY' 时）
+# 订阅方：agint-quality-report（观测行）+ agint-metrics（deploy 计数）
+#
+# Versioning policy（NOT FROZEN，per design §A5.4）：
+#   - v1 不冻结（影子期；字段允许扩展）
+#   - v2 起的破坏性变更走 L0 治理（major version + 7 天影子）
+#   - 新增 optional 字段算 minor
+#
+# 与 envelope 解耦：envelope 8 字段对齐 event-bus FROZEN schema；本 yaml 仅约束 payload。
+
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "agint://plugin/agint-quality-policy/schemas/policy-deployed.schema.yaml#v1"
+title: "policy.deployed payload"
+description: |
+  发布方：agint-quality-policy（在 decide() 末尾 publish 当 kind === 'AUTO_DEPLOY'）。
+  语义：策略引擎单次 AUTO_DEPLOY 决策完成（不一定真正挂载——影子期仅审计）。
+  v1：schema 不冻结；订阅方应容错缺字段。
+type: object
+required: [targetId, decision, score]
+additionalProperties: true   # 允许新字段（minor 演进）
+
+properties:
+  targetId:
+    type: string
+    minLength: 1
+    description: "本次 AUTO_DEPLOY 对应的 composite target ID（来自 decide().perTarget[*].targetId）"
+  decision:
+    type: string
+    enum: ["AUTO_DEPLOY"]
+    description: "镜像 envelope semantic——影子期永远 AUTO_DEPLOY"
+  score:
+    type: number
+    minimum: 0
+    maximum: 100
+    description: "decide 综合分（0-100）"
+  reason:
+    type: string
+    description: "决策原因（来自 decide().reason，可选）"
+
+# ════════════════════════════════════════════════════════════════════════════
+# 演进规则（写在 yaml 注释中，方便 review 时一眼看到）
+# ════════════════════════════════════════════════════════════════════════════
+#
+# v1.0 → v1.x（minor）：
+#   - 仅加 optional 字段 → 订阅方必须 .?? 读取
+#   - 新 enum 值（除 AUTO_DEPLOY 外）需 publish 新 topic，不复用本 topic
+#   - 不改 required 字段名 / 不改语义
+#
+# v1.x → v2.0（major，L0 治理）：
+#   - 改 required 字段 / 改 enum 字面 / 改 score 数值范围 → 走 7 天影子 + 双签
+#
+# 当前状态：v1.0 影子期上线；任何变跟先起 evolve_proposal

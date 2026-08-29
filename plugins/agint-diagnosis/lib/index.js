@@ -76,6 +76,7 @@ function apply(ctx) {
   // lifecycle：所有副作用走 ctx.effect，保证 graceful shutdown（设计稿 §八 + AGENTS.md 挂载红线）
   ctx.effect(() => () => {
     disposed = true;
+    try { if (typeof _sandboxFailedUnsubscribe === 'function') _sandboxFailedUnsubscribe(); } catch { /* ignore */ }
     if (domain) return domain.close();
     return undefined;
   });
@@ -373,6 +374,134 @@ function apply(ctx) {
     return unpackReport(entry);
   }
 
+  // ── Sprint 12 / A3 — T1 影子期：async 订阅 sandbox.failed → analyzeFailedSmoke ──
+  // 不进入 FROZEN Service 列表；软依赖 eventBus，subscribe 失败 log 不抛。
+  // 输出写到 agint_diagnosis.annotations 表（与 annotate 一致路径）。
+  let _sandboxFailedUnsubscribe = null;
+  try {
+    const subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+    if (subscribe && typeof subscribe === 'function') {
+      _sandboxFailedUnsubscribe = subscribe(
+        {
+          subscriber: 'agint-diagnosis',
+          topics: ['sandbox.failed'],
+          mode: 'async',
+          timeoutMs: 5000,
+        },
+        async (env) => {
+          try {
+            await analyzeFailedSmoke(env?.payload ?? {});
+          } catch (err) {
+            if (!disposed) console.error('[agint-diagnosis] analyzeFailedSmoke failed:', err?.message ?? err);
+          }
+        },
+      );
+    }
+  } catch (err) {
+    if (!disposed) console.error('[agint-diagnosis] eventBus.subscribe(sandbox.failed) failed:', err?.message ?? err);
+  }
+
+  /**
+   * Sprint 12 / A3 — analyzeFailedSmoke(payload) → { rootCause, confidence, evidence }
+   *
+   * 输入来自 sandbox.failed 事件的 payload：
+   *   { target, mode, reason, failedChecks, durationMs }
+   *
+   * 输出：根因候选（启发式 v1；规则版，可直接进 FROZEN schema）
+   *   - reason 关键词 → RootCauseKind 映射（planner / env-shift / tool-gap / reasoning-error）
+   *   - failedChecks 名称 → 补充证据（加入 evidence 数组）
+   *   - confidence：reason 命中 + 1，failedChecks 长度 > 0 + 0.1，封顶 0.95
+   *
+   * 写表：annotations（与 annotate 共用路径）；rootCause 必为 RootCauseKindSchema enum 之一。
+   */
+  async function analyzeFailedSmoke(payload) {
+    const reason = String(payload?.reason ?? 'unknown');
+    const failed = Array.isArray(payload?.failedChecks) ? payload.failedChecks : [];
+    const targetPath = String(payload?.target?.path ?? '');
+
+    // ── reason → rootCause 启发式映射（v1）───────────────────────────
+    // 枚举对齐 RootCauseKindSchema：reasoning-error / tool-gap / knowledge-gap /
+    //                            planning-failure / environment-shift / prompt-deficiency /
+    //                            uncertain
+    let rootCause = 'uncertain';
+    let matchedRule = null;
+    const reasonLower = reason.toLowerCase();
+    if (reasonLower.includes('timeout') || reasonLower.includes('memory')) {
+      rootCause = 'environment-shift';
+      matchedRule = 'reason:env-shift(memory-or-timeout)';
+    } else if (reasonLower.includes('import') || reasonLower.includes('exports') || reasonLower.includes('package-json')) {
+      rootCause = 'tool-gap';
+      matchedRule = 'reason:tool-gap(import-or-export-shape)';
+    } else if (reasonLower.includes('network') || reasonLower.includes('dns')) {
+      rootCause = 'environment-shift';
+      matchedRule = 'reason:env-shift(network)';
+    } else if (reasonLower.includes('plugin-not-found') || reasonLower.includes('package-json-missing')) {
+      rootCause = 'planning-failure';
+      matchedRule = 'reason:planning-failure(missing-artifact)';
+    } else if (reasonLower.includes('unparseable-stdout') || reasonLower.includes('confine')) {
+      rootCause = 'prompt-deficiency';
+      matchedRule = 'reason:prompt-deficiency(runtime-misconfig)';
+    } else if (reasonLower.includes('smoke-failed')) {
+      // smoke-failed 是兜底 reason——按 failedChecks 进一步细分
+      const names = failed.map((f) => String(f?.name ?? '').toLowerCase());
+      if (names.some((n) => n.includes('plugin-exports') || n.includes('plugin-import'))) {
+        rootCause = 'tool-gap';
+        matchedRule = 'reason:smoke-failed+checks:plugin-shape';
+      } else if (names.some((n) => n.includes('no-external-network'))) {
+        rootCause = 'environment-shift';
+        matchedRule = 'reason:smoke-failed+checks:network';
+      } else {
+        rootCause = 'reasoning-error';
+        matchedRule = 'reason:smoke-failed+checks:unknown-shape';
+      }
+    }
+
+    // ── failedChecks 名称 → 证据补强 ───────────────────────────────
+    const evidence = [];
+    if (matchedRule) evidence.push(matchedRule);
+    for (const fc of failed.slice(0, 5)) {
+      evidence.push(`check:${fc?.name ?? 'unknown'}:${String(fc?.detail ?? '').slice(0, 80)}`);
+    }
+
+    // ── confidence 计算（启发式）───────────────────────────────────
+    let confidence = 0.5;
+    if (matchedRule) confidence += 0.2;
+    if (failed.length > 0) confidence += 0.1;
+    if (failed.length >= 3) confidence += 0.1;
+    confidence = Math.min(confidence, 0.95);
+
+    // ── 写 annotations 表（不阻塞；cold-start 不强制；reasoning-error 写一条说明）──
+    let written = false;
+    let writeError = null;
+    try {
+      const tbl = await t_annotations();
+      const id = `sandbox-failed-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const entry = packAnnotation({
+        id,
+        failureId: targetPath || reason,
+        rootCause,
+        confidence,
+        evidence,
+        generatedAt: nowIso(),
+        source: 'sandbox.failed',
+      });
+      await tbl.put(id, entry);
+      written = true;
+    } catch (err) {
+      writeError = err?.message ?? String(err);
+    }
+
+    return {
+      rootCause,
+      confidence,
+      evidence,
+      targetPath,
+      reason,
+      written,
+      writeError,
+    };
+  }
+
   // 提供 4 个 Service + 1 个 stats（stats 不在 FROZEN 列表内，仅 host-side
   // dashboard / smoke 用；model 平面不可见）。
   ctx.provide('agint.diagnosis.annotate', annotate);
@@ -380,6 +509,8 @@ function apply(ctx) {
   ctx.provide('agint.diagnosis.cluster', cluster);
   ctx.provide('agint.diagnosis.report', report);
   ctx.provide('agint.diagnosis.stats', stats);
+  // Sprint 12 / A3: 暴露 analyzeFailedSmoke 供 host-side / 测试调用
+  ctx.provide('agint.diagnosis.analyzeFailedSmoke', analyzeFailedSmoke);
 
   // 暴露调参 / 守门接口（host-side，不进 model 工具）
   ctx.provide('agint.diagnosis.checkLimit', checkLimit);

@@ -258,6 +258,8 @@ function apply(ctx, config) {
    */
   async function publishSandboxEvent({ result }) {
     try {
+      // event-bus 用 spec.provides 注册 3 个分 service，无 umbrella key。
+      // 主路径：agint.eventBus.publish；fallback：保留 bus 旧形仅为兼容外部测试 mock。
       let publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
       if (typeof publish !== 'function') {
         const bus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null;

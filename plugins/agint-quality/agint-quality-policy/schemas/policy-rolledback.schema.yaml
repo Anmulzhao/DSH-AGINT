@@ -1,0 +1,59 @@
+# policy-rolledback.schema.yaml — Sprint 12 / A5 (T1 影子期)
+#
+# 发布方：agint-quality-policy.decide() 末尾（kind === 'REJECT' 路径 + rollback 触发）
+# 订阅方：agint-quality-report（观测行）+ agint-metrics（rollback 计数）+ agint-diagnosis（标注 rollback pattern）
+#
+# Versioning policy（NOT FROZEN，per design §A5.4）：
+#   - v1 不冻结（影子期；字段允许扩展）
+#   - v2 起的破坏性变更走 L0 治理（major version + 7 天影子）
+#
+# 与 envelope 解耦：envelope 8 字段对齐 event-bus FROZEN schema；本 yaml 仅约束 payload。
+
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "agint://plugin/agint-quality-policy/schemas/policy-rolledback.schema.yaml#v1"
+title: "policy.rolledback payload"
+description: |
+  发布方：agint-quality-policy（在 decide() 末尾 publish 当 kind === 'REJECT' 且 shouldRollback 触发）。
+  语义：策略引擎判定连续 REJECT 率超阈值，自动回滚到上一个 audit-passed 策略。
+  v1：schema 不冻结；订阅方应容错缺字段（rollbackTarget 可能为 null——尚无可回滚目标）。
+type: object
+required: [targetId, decision, score, reason]
+additionalProperties: true   # 允许新字段（minor 演进）
+
+properties:
+  targetId:
+    type: string
+    minLength: 1
+    description: "触发 rollback 的当前 target ID（来自 decide().perTarget[*].targetId）"
+  decision:
+    type: string
+    enum: ["REJECT"]
+    description: "镜像 envelope semantic——触发 rollback 的源头决策（永远 REJECT）"
+  score:
+    type: number
+    minimum: 0
+    maximum: 100
+    description: "decide 综合分（0-100）"
+  reason:
+    type: string
+    description: "rollback 触发原因（来自 shouldRollback.reason + decide().reason 拼接）"
+  rollbackTarget:
+    type: [string, "null"]
+    description: |
+      回滚目标 policyId（来自 pickRollbackTarget()）；影子期可能为 null（无历史 prodSnapshot）。
+      订阅方应容错 null；上游落 null 表示「无可回滚目标，仅记录事件」。
+    nullable: true
+
+# ════════════════════════════════════════════════════════════════════════════
+# 演进规则（写在 yaml 注释中，方便 review 时一眼看到）
+# ════════════════════════════════════════════════════════════════════════════
+#
+# v1.0 → v1.x（minor）：
+#   - 仅加 optional 字段（如 rollbackReason 拆分详情）
+#   - 不改 rollbackTarget 语义（保留 [string|null] 类型）
+#
+# v1.x → v2.0（major，L0 治理）：
+#   - rollbackTarget 改 required → 走 7 天影子 + 双签
+#   - decision enum 扩 → 走 L0 治理
+#
+# 当前状态：v1.0 影子期上线；任何变跟先起 evolve_proposal

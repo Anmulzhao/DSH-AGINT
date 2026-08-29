@@ -1,8 +1,8 @@
 {
   "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-policy",
-  "version": "0.7.4",
-  "description": "D-QAF Phase 4 策略引擎（v0.7.0）。Sprint 12 / A2 加 evolution.evaluated 边事件订阅（sync 门禁边，per Sprint12 设计稿 §A3）。",
+  "version": "0.8.0",
+  "description": "D-QAF Phase 4 策略引擎（v0.8.0）。Sprint 12 / A5 加 policy.deployed / policy.rolledback 双 topic 事件化（T1 影子期，走单 service 接口，不伞键）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -22,7 +22,8 @@
       "tools": [],
       "optionalInject": [
         "agint.evolution",
-        "agint.eventBus.subscribe"
+        "agint.eventBus.subscribe",
+        "agint.eventBus.publish"
       ]
     },
     "storage": {

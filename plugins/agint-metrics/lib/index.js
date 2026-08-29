@@ -12,6 +12,10 @@
  * metrics instead of failing the run. The daily collect is wired as the
  * `metrics-collect` cron job (see packages/agint-cron/lib/jobs.js).
  *
+ * Sprint 12 / A5: also subscribes to policy.deployed / policy.rolledback (T1
+ * shadow period) and writes 1 counter record per envelope into the same
+ * `agint_metrics` table (key: policy.deployedCount / policy.rolledbackCount).
+ *
  * Row (profile cordis.patch.yml):
  *   - insert:
  *       - id: agint-metrics
@@ -21,21 +25,12 @@
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { computeMetrics, describeMetric } from './metrics.js';
+import { attachPolicyCounterSubscription } from './policyCounters.js';
+import { metricSchema, defaultRandomId, buildMetricsService } from './service.js';
 
 const name = 'agint-metrics';
 const inject = ['storageDomain'];
-
 const Config = z.object({});
-
-const metricSchema = z.object({
-  id: z.string().min(1),
-  key: z.string().min(1),
-  label: z.string().default(''),
-  value: z.number(),
-  unit: z.string().default(''),
-  meta: z.string().default(''),
-  ts: z.string().default(() => new Date().toISOString()),
-});
 
 const spec = defineDomain({
   name: 'agint_metrics',
@@ -47,31 +42,18 @@ function apply(ctx) {
   let domain = null;
   let domainError = null;
   let disposed = false;
+  let _policyBusUnsubscribe = null;
 
   // ctx.effect semantics: callback runs IMMEDIATELY; its RETURN value is the
-  // disposer that runs when this fiber is disposed. The disposer closes the
-  // domain only if it is already open (K4/K8 double-sentinel pattern).
-  ctx.effect(() => {
-    return () => {
-      disposed = true;
-      if (domain) return domain.close();
-    };
+  // disposer that runs when this fiber is disposed (K4/K8 double-sentinel).
+  ctx.effect(() => () => {
+    disposed = true;
+    if (domain) return domain.close();
+    try { if (typeof _policyBusUnsubscribe === 'function') _policyBusUnsubscribe(); }
+    catch { /* ignore */ }
   });
 
-  const ready = ctx.storageDomain.open(spec).then(
-    (d) => {
-      if (disposed) {
-        void d.close().catch(() => {});
-        return null;
-      }
-      domain = d;
-      return d;
-    },
-    (error) => {
-      domainError = error;
-      return null;
-    },
-  );
+  const randomId = defaultRandomId;
 
   const table = async () => {
     if (disposed) throw new Error('agint-metrics: disposed');
@@ -81,110 +63,26 @@ function apply(ctx) {
     return d.table('metric');
   };
 
-  const randomId = () => {
-    const c = globalThis.crypto;
-    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
-    return `m-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  };
-
-  // Sources resolved lazily so boot order does not matter.
-  const sources = () => ({
-    cron: ctx.get('agint.cron'),
-    rules: ctx.get('agint.rules'),
-    wiki: ctx.get('agint.wiki'),
-    memory: ctx.get('agint.memory'),
-  });
-
-  ctx.provide('agint.metrics', {
-    /** Collect one record per computable metric key right now. */
-    async collect() {
-      const t = await table();
-      const records = await computeMetrics(sources());
-      const now = new Date().toISOString();
-      const written = [];
-      for (const rec of records) {
-        const record = metricSchema.parse({ id: randomId(), ...rec, ts: now });
-        await t.put(record.id, record);
-        written.push({ key: record.key, value: record.value, unit: record.unit, ts: record.ts });
-      }
-      const uncollected = [];
-      for (const rec of written) if (rec.value === undefined) uncollected.push(rec.key);
-      return { collectedAt: now, count: written.length, collected: written };
+  // Sprint 12 / A5 修订：storageDomain.open 真生产返 Promise，但 mock ctx / 测试 fixture
+  // 常返 sync plain object。用 Promise.resolve() 兼容两种形态 —— metrics apply 不抛，
+  // policy.* 订阅才能在 domain open 后挂上。
+  const ready = Promise.resolve(ctx.storageDomain.open(spec)).then(
+    (d) => {
+      if (disposed) { void d.close().catch(() => {}); return null; }
+      domain = d;
+      // Sprint 12 / A5: domain open 后挂 policy.* 订阅（shadow T1）
+      const _subscribeBus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+      _policyBusUnsubscribe = attachPolicyCounterSubscription({
+        subscribeFn: _subscribeBus,
+        tableFn: table,
+        randomIdFn: randomId,
+      });
+      return d;
     },
+    (error) => { domainError = error; return null; },
+  );
 
-    /** Latest record per key, with delta vs the previous record (trend). */
-    async summary() {
-      const t = await table();
-      const latest = new Map(); // key → record
-      const prev = new Map(); // key → previous record (for delta)
-      for (const [, rec] of t.entries()) {
-        const cur = latest.get(rec.key);
-        if (!cur || rec.ts > cur.ts) {
-          if (cur) prev.set(rec.key, cur);
-          latest.set(rec.key, rec);
-        } else if (!prev.has(rec.key) && rec.ts < cur.ts) {
-          prev.set(rec.key, rec);
-        }
-      }
-      const metrics = [];
-      for (const [key, rec] of latest.entries()) {
-        const p = prev.get(key);
-        metrics.push({
-          key,
-          label: rec.label,
-          value: rec.value,
-          unit: rec.unit,
-          ts: rec.ts,
-          delta: p && typeof p.value === 'number' && typeof rec.value === 'number' ? rec.value - p.value : null,
-        });
-      }
-      metrics.sort((a, b) => a.key.localeCompare(b.key));
-      const asOf = metrics.reduce((m, x) => (x.ts > m ? x.ts : m), '');
-      return { asOf, count: metrics.length, metrics };
-    },
-
-    /** Time series for one key (oldest → newest). */
-    async series(key, opts = {}) {
-      const t = await table();
-      const days = Number.isInteger(opts?.days) && opts.days > 0 ? opts.days : 0;
-      const cutoff = days > 0 ? Date.now() - days * 86_400_000 : 0;
-      const points = [];
-      for (const [, rec] of t.entries()) {
-        if (rec.key !== key) continue;
-        const tMs = new Date(rec.ts).getTime();
-        if (cutoff && tMs < cutoff) continue;
-        points.push({ ts: rec.ts, value: rec.value, meta: rec.meta });
-      }
-      points.sort((a, b) => a.ts.localeCompare(b.ts));
-      const def = describeMetric(key);
-      return { key, label: def?.label ?? key, unit: def?.unit ?? '', points };
-    },
-
-    /** Distinct metric keys with their latest timestamp. */
-    async keys() {
-      const t = await table();
-      const byKey = new Map();
-      for (const [, rec] of t.entries()) {
-        const cur = byKey.get(rec.key);
-        if (!cur || rec.ts > cur.ts) byKey.set(rec.key, rec.ts);
-      }
-      const out = [];
-      for (const [key, ts] of byKey.entries()) out.push({ key, lastCollectedAt: ts });
-      return out.sort((a, b) => a.key.localeCompare(b.key));
-    },
-
-    /** Raw counts — for diagnostics and stats tools. */
-    async stats() {
-      const t = await table();
-      let total = 0;
-      const byKey = {};
-      for (const [, rec] of t.entries()) {
-        total += 1;
-        byKey[rec.key] = (byKey[rec.key] ?? 0) + 1;
-      }
-      return { total, byKey };
-    },
-  });
+  ctx.provide('agint.metrics', buildMetricsService({ ctx, table, computeMetrics, describeMetric, randomId }));
 }
 
 export { Config, apply, inject, name };

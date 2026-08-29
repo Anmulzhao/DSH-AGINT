@@ -219,8 +219,9 @@ export async function appendHistory({
   source = 'prod',
 } = {}) {
   if (!storage?.history) throw new Error('appendHistory: storage required');
+  const ts = decision.decidedAt ?? new Date().toISOString();
   const entry = {
-    ts: decision.decidedAt ?? new Date().toISOString(),
+    ts,
     kind: decision.kind,
     score: decision.score,
     reason: decision.reason,
@@ -228,7 +229,14 @@ export async function appendHistory({
     source,
     triggeredBy: decision.triggeredBy ?? [],
   };
-  storage.history.set(entry.ts, entry);
+  // Sprint 12 / A5 修订：append-only 要求每次 append 都是新 entry；同毫秒多次 decide()
+  // 会导致 key 冲突（Map.set 覆盖）。改用 monotonic counter 后缀保证唯一性。
+  // 影响范围：append-only 不变；最近 N 决策采样数量决定 rollback 触发，ts 仅排序用。
+  let key = ts;
+  while (storage.history.has(key)) {
+    key = `${ts}#${Math.random().toString(36).slice(2, 8)}`;
+  }
+  storage.history.set(key, entry);
   return entry;
 }
 
