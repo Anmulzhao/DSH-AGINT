@@ -63,7 +63,57 @@ function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true;
+    // Sprint 12 / A2: dispose 时退订 evolution.evaluated（如已挂）
+    try {
+      if (typeof _evaluationBusUnsubscribe === 'function') _evaluationBusUnsubscribe();
+    } catch { /* ignore */ }
   });
+
+  /**
+   * Sprint 12 / A2 — T1 影子期：订阅 evolution.evaluated 边事件
+   *
+   * mode=sync + reason 非空（per Sprint12 设计稿 §A3）— 唯一 sync 门禁边。
+   * 语义：门禁决策必须等评分确定后才推进 mount/sandbox 流水线。
+   *
+   * reason 必须非空（schema + bus.ts 双 belt-and-suspenders）：
+   *   - schema.ts SubscriptionSchema.superRefine：mode=sync 时 reason.trim() 长度 > 0
+   *   - bus.ts subscribe()：validateSubscription 已通过则 reason 一定非空
+   *
+   * 5s 超时降级走直连，不抛错（保留原直连路径；事件路径失败不阻断 policy 决策）。
+   */
+  let _evaluationBusUnsubscribe = null;
+  let _lastEvaluationPayload = null;
+
+  async function applyEvaluation(payload) {
+    // T1 影子期：仅缓存 payload 以便 inspect / 测试断言，不改变 decide 行为
+    _lastEvaluationPayload = payload ?? null;
+  }
+
+  const _subscribeBus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+  if (_subscribeBus && typeof _subscribeBus === 'function') {
+    try {
+      _evaluationBusUnsubscribe = _subscribeBus(
+        {
+          subscriber: 'agint-quality-policy',
+          topics: ['evolution.evaluated'],
+          mode: 'sync',
+          reason: 'policy gate edge: 门禁决策必须等评分确定后才推进 mount/sandbox 流水线（A2，唯一 sync 边，per Sprint12 设计稿 §A3）',
+          timeoutMs: 5000,
+        },
+        async (env) => {
+          try {
+            await applyEvaluation(env?.payload ?? null);
+          } catch (err) {
+            if (!disposed) console.error('[agint-quality-policy] applyEvaluation failed:', err?.message ?? err);
+          }
+        },
+      );
+    } catch (err) {
+      // sync 上限超 / schema 校验失败 → 走直连
+      if (!disposed) console.error('[agint-quality-policy] eventBus.subscribe failed:', err?.message ?? err);
+      _evaluationBusUnsubscribe = null;
+    }
+  }
 
   /**
    * Sprint 4.2: 暴露反和谐检测器 Service（供 sibling / dream / weekly hook 调用）

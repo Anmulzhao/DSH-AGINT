@@ -41,6 +41,7 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
   const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
   const evolutionMock = {
     logPhase4: async (e) => { evoStore.evolution_log.set(e.targetId + ':' + e.decision, e); return { ok: true }; },
+    logPhase4Buffered: async (e) => { evoStore.evolution_log.set(e.targetId + ':' + e.decision, e); return { ok: true, queued: true }; },  // Sprint 12 A1：与真 plugin 对齐
     addFailure: async (e) => {
       const existing = evoStore.failure_pattern.get(e.pattern);
       if (existing) existing.occurrences = (existing.occurrences ?? 1) + 1;
@@ -128,6 +129,58 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     cleanup: async (stagingId) => { stagingState.cleaned.push(stagingId); return { ok: true }; },
   };
 
+  // 8b. eventBus（Sprint 12 A1 T1 影子期）────────────────
+  // 默认 absent：publish/subscribe 都是 null → upstream 不注入时 = 软降级
+  //   真实 agint-population.publishProposed 走 ctx.get('agint.eventBus') → null
+  //   → { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true }
+  // 显式注入：upstream.eventBus = 'available' / 'mock-with-publish-tracking'
+  //   → 拿到完整 mock，dispatcher 与 scenario 可断言 published/deadLettered/subscribers
+  const eventBusCalls = { published: 0, deadLettered: 0, subscribers: new Map(), envelopes: [] };
+  const eventBusMock = {
+    publish: async (input) => {
+      const env = (input && typeof input === 'object' && input.topic)
+        ? input
+        : (input?.envelope ?? {});
+      eventBusCalls.published++;
+      eventBusCalls.envelopes.push(env);
+      const subs = eventBusCalls.subscribers.get(env.topic) ?? [];
+      let delivered = 0;
+      for (const [, handler] of subs) {
+        try { Promise.resolve(handler(env)).catch(() => {}); delivered++; } catch { /* ignore */ }
+      }
+      return {
+        accepted: true,
+        envelopeId: env.id ?? ('env-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)),
+        traceId: env.traceId ?? ('tr-' + Date.now()),
+        deliveredTo: delivered,
+        deadLettered: 0,
+      };
+    },
+    subscribe: (sub, handler) => {
+      const sub0 = sub ?? {};
+      const subscriber = sub0.subscriber ?? 'anonymous';
+      const topics = Array.isArray(sub0.topics) ? sub0.topics : (sub0.topic ? [sub0.topic] : []);
+      for (const t of topics) {
+        const arr = eventBusCalls.subscribers.get(t) ?? [];
+        arr.push([subscriber, handler]);
+        eventBusCalls.subscribers.set(t, arr);
+      }
+      return () => {
+        for (const t of topics) {
+          const arr = eventBusCalls.subscribers.get(t) ?? [];
+          eventBusCalls.subscribers.set(t, arr.filter(([s]) => s !== subscriber));
+        }
+      };
+    },
+    inspect: async () => eventBusCalls.envelopes.slice(),
+    _mock: true,
+    _calls: eventBusCalls,
+  };
+
+  const eventBusProvider = (upstream.eventBus === 'available' || upstream.eventBus === 'mock-with-publish-tracking')
+    ? eventBusMock
+    : { publish: null, subscribe: null, inspect: null, _absent: true };
+
   // 提供 ctx（独立轻量实现，避免与 driver.js 主 makeMockCtx 耦合）
   const provides = new Map([
     ['agint.qualityStatic', staticMock], ['agint.qualitySandbox', sandboxMock],
@@ -135,7 +188,7 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     ['agint.wiki', wikiMock], ['agint.evolveReview', evolveReviewMock],
     ['agint.healthProbe', healthProbeMock], ['agint.baselineSuite', baselineMock],
     ['agint.evolve', evolveMock], // Sprint 12 B3: baselineGate 通道
-    ['agint.mountFs', fsMock],
+    ['agint.mountFs', fsMock], ['agint.eventBus', eventBusProvider],
   ]);
   const ctx = {
     effect() {},
@@ -151,6 +204,7 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     probeCalls, healthProbeMock,
     baselineFrozen, // Sprint 12 B3: 兼容旧 fixture（值类型，非闭包）
     stagingState, fsMock,
+    eventBusCalls, eventBusMock,
   };
   return { ctx, mocks };
 }
