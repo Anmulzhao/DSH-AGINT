@@ -31,7 +31,7 @@ AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「
 | 层 | 内容 | 来源 |
 |---|---|---|
 | **preset** | 智进人格 + 工具集（含 AGINT 专属 skills） | `presets/agint*/` |
-| **plugin** | 13 个 Cordis 插件，提供 host Services（memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / evolution-memory + quality 子家族） | `plugins/agint-*/` |
+| **plugin** | **20 个** Cordis 插件（13 基础 + quality 子家族 5 + mount + abtest **+ Sprint 12 新增 agint-event-bus**），提供 host Services | `plugins/agint-*/` |
 | **patch** | 把插件挂入 dsh profile 的 user-patch 层 | `profile-patches/web/cordis.patch.yml` |
 | **data** | 记忆 / 规则 / 指标 / 提案 / 梦境 / 复盘 / 评估历史 | runtime 数据，**不**进仓库 |
 
@@ -82,12 +82,17 @@ cd ~/projects/AGINT
 
 ## 状态
 
-- **v0.5.1**（2026-08）：SDK ↔ D-QAF 流水线接通（Sprint 6 / v0.5 Part 2/2 收口）。13 个插件 + 3 个 preset + 1 个 patch + 4 个 skill + 3 个 prompt preset，84/84 全量 eval 通过。
-- **v0.5.0**：Prompt SDK 落地（PromptManifest FROZEN 契约 + 模板引擎 + 静态检查 + CLI + 3 presets）。
+- **v0.6.5**（2026-08-28）：Sprint 11 L2→L3 跃迁验证 = P6 整体收口。`agint-mount` 动态挂载编排插件（4 态状态机 + 三段式事务 + 健康探针 + L0 隔离）+ `agint-quality-static` 加 `l0-isolation` 规则组（6/6 smoke PASS）+ 8 e2e 全 PASS + 92/104 全量基线 3 次连跑稳定。19 个插件 + 3 个 preset + 1 个 patch + 4 个 skill + 3 个 prompt preset。
+- **v0.6.4 / v0.6.3**（Sprint 10）：架构解耦与安全性能收口——`agint-quality-sandbox` 独立化 + `agint-quality-static` / `agint-abtest` 独立插件 + `agint-mutator` 三段式事务 + `EvolutionLogBuffer`。
+- **v0.6.2**（Sprint 9）：种群管理器 `agint-population` 落地，三变体锦标赛。
+- **v0.6.1 / v0.6.0**：变异构造器 `agint-mutator`（19/19 eval）+ 归因引擎 `agint-diagnosis`（6 类根因 + 反事实 70%）。
+- **v0.5.1 / v0.5.0**：SDK ↔ D-QAF 流水线接通 + Prompt SDK 落地（PromptManifest FROZEN 契约）。
 - **v0.4.0**：P4 收口——策略引擎 + 反和谐检测器 + 元评估委员会 + HARM 报告 + 端到端闭环 e2e。
 - **v0.3.1 / v0.2 / v0.1.x**：沙箱 + 进化记忆 + 退化探测 → D-QAF contract + eval → 迁移 + Seam 层。
 
-完整路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图)；详细变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
+> **下一步**：v0.7.0 / Sprint 12 —— Event Bus（`agint-event-bus`）基础设施。插件数已达 19，突破 18 阈值；Sprint 11 遗留 8 项 TODO 也将在 Sprint 12 收口。
+
+完整路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图)；详细变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)；Sprint 11 哲学对齐 5 条 + 张力 5 条见 [`Sprint11-哲学对齐检查.md`](./AGINT.wiki/Sprint11-哲学对齐检查.md)。
 
 ## 许可
 
