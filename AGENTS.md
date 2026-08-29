@@ -86,6 +86,10 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 - **不要跨周累计自动部署超过 3 次**（进化健康度护栏之一）
 - **不要在没有 `## 哲学对齐检查` 章节时提交 P 阶段验收 / 重大 PR**（复盘报告推荐含但不强制）
 
+### DSH subagent 粒度原则（Sprint 10 复盘收录）
+
+> 派活粒度 ≤ 200 行 / 1 模块 / 必跑测试 / 智进硬验证后才 accept；超过此粒度的模块必拆。**不打包带过**：每个 subagent 必 commit + 必跑测试 + 智进亲验后才收。原派 4 个 subagent（#2/#3/#4/#5 一次性派）失败模式即「长链编程弱 + 幻觉交付」——manifest/README/CHANGELOG 写满但 lib/ 实际代码缺失；Sprint 11 已用此粒度验证有效。
+
 ## 挂载/重启红线（2026-08-21 复盘新增）
 
 > **挂载/更新/重启 AGINT 任何东西之前**：① 拍 4 份快照（patch / preset / plugins tar.gz / storages）
