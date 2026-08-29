@@ -195,7 +195,14 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
     override: { realCheckPlugin: null },
   });
   // 把 mount mocks 的 service 注入 driver 主 ctx
-  ctx.provide('agint.eventBus', mountCtx.get('agint.eventBus'));
+  const eventBusInstance = mountCtx.get('agint.eventBus');
+  if (eventBusInstance && typeof eventBusInstance === 'object') {
+    // event-bus plugin 真生产提供 3 个 single service (publish/subscribe/inspect)，无 umbrella key
+    // mock factory 必须反映真生产 service 形态（伞键修复 A 路径）
+    if (typeof eventBusInstance.publish === 'function') ctx.provide('agint.eventBus.publish', eventBusInstance.publish);
+    if (typeof eventBusInstance.subscribe === 'function') ctx.provide('agint.eventBus.subscribe', eventBusInstance.subscribe);
+    if (typeof eventBusInstance.inspect === 'function') ctx.provide('agint.eventBus.inspect', eventBusInstance.inspect);
+  }
   for (const k of ['agint.population','agint.evolution','agint.memory','agint.metrics','agint.qualitySandbox','agint.toolStats','agint.rules','agint.quality','agint.storageDomain']) {
     const v = mountCtx.get(k);
     if (v) ctx.provide(k, v);
@@ -221,10 +228,11 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
   //   与真 evolution-memory plugin 的影子 handler 逻辑等价（设计稿 §A1.4）：
   //     targetId=proposalId, targetKind='evolution.proposed:<kind>', decision='PROPOSED',
   //     tags=['event-bus','shadow-ingest','origin:<origin>']
-  const eventBus = ctx.get('agint.eventBus');
+  // single service 接口 (per 伞键修复 — 真生产无 umbrella key, mock factory 已桥接 publish/subscribe/inspect)
+  const eventBusSubscribe = ctx.get('agint.eventBus.subscribe');
   const evoMock = ctx.get('agint.evolution');
-  if (eventBus && typeof eventBus.subscribe === 'function' && evoMock && typeof evoMock.logPhase4Buffered === 'function') {
-    eventBus.subscribe(
+  if (typeof eventBusSubscribe === 'function' && evoMock && typeof evoMock.logPhase4Buffered === 'function') {
+    eventBusSubscribe(
       { subscriber: 'agint-evolution-memory', topics: ['evolution.proposed'], mode: 'async' },
       async (envelope) => {
         try {
@@ -1452,6 +1460,13 @@ const dispatchers = {
     // ── Sprint 12 A3：sandbox.passed / sandbox.failed via bus ─────────
     if (input._scenario_kind === 'event-bus-sandbox-passed-failed-shadow') {
       return sandboxPassedFailedViaBusBranch(input, ctx);
+    }
+
+    // ── Sprint 12 A5：policy.deployed / policy.rolledback via bus ─────
+    // 独立分支文件：agint-event-bus-s12-05-policy.branch.mjs（保持 driver.js ≤ 合理行数）
+    if (input._scenario_kind === 'event-bus-policy-deployed-rolledback-shadow') {
+      const branchMod = await import('./agint-event-bus-s12-05-policy.branch.mjs');
+      return branchMod.policyDeployedRolledbackShadowBranch(input, ctx);
     }
 
     const composite = await evaluator.score(input.evalResultFixture);

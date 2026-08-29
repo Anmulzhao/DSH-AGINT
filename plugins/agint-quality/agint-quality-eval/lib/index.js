@@ -416,9 +416,10 @@ function apply(ctx, config) {
   //   （不打分、不触发真实 evaluateAll，避免双跑流量）。
   // 降级：bus 不可用 → 静默跳过（不报错）
   try {
-    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
-    if (bus && typeof bus.subscribe === 'function') {
-      const unsubscribe = bus.subscribe(
+    // event-bus plugin 的 subscribe 也是分 service（agint.eventBus.subscribe），无 umbrella key
+    const subscribe = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.subscribe') : null;
+    if (typeof subscribe === 'function') {
+      const unsubscribe = subscribe(
         { subscriber: 'agint-quality-eval', topics: ['evolution.proposed'], mode: 'async' },
         async (envelope) => {
           try {
