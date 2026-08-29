@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { mountCtxFor } from './mocks/agint-mount-ctx.mjs';
 
 // Resolve dsh packages from the global install. AGINT plugins are dsh
 // extensions and must not bundle their runtime; node's module resolver
@@ -1206,129 +1207,21 @@ const dispatchers = {
       return { ok: r.ok !== false || (cc.signatureDiff && cc.domainIsolation && cc.dependencyWhitelist), contractCheck: cc, _realFindings: r.findings };
     }
 
-    // 1. agint.qualityStatic (L0-isolation 规则组：codex-B 产出)
-    const staticCalls = { count: 0 };
-    const staticMock = {
-      check: async (fixture) => {
-        staticCalls.count++;
-        // 优先级 1：scenario 显式注入的 upstream.staticCheck（场景设计者明确意图）
-        if (upstream.staticCheck) return upstream.staticCheck;
-        // 优先级 2：真插件路径（qualityStatic.checkPlugin + findings 聚合）
-        if (realQualityStatic) {
-          const real = await realCheckPlugin(input.fixture);
-          if (real) return real;
-        }
-        // 优先级 3：fallback 默认（全 true）—— 真插件加载失败时
-        return { ok: true, contractCheck: { signatureDiff: true, domainIsolation: true, dependencyWhitelist: true } };
-      },
-    };
-
-    // 2. agint.qualitySandbox (动态门禁)
-    const sandboxCalls = { count: 0, lastTarget: null };
-    const sandboxMock = {
-      backendHealth: async () => upstream.sandboxHealth ?? {
-        ctxSandboxAvailable: true,
-        inProcessFallbackEnabled: true,
-        timeoutMs: 30000,
-        memoryMb: 512,
-      },
-      runSmoke: async ({ target }) => {
-        sandboxCalls.count++;
-        sandboxCalls.lastTarget = target;
-        return upstream.sandboxSmoke ?? { ok: true, mode: 'in-process', checks: [{ name: 'service-resolves', ok: true }] };
-      },
-    };
-
-    // 3. agint.population (新个体注册)
-    const populationCalls = { count: 0, lastOrigin: null };
-    const populationMock = {
-      register: async (artifact) => {
-        populationCalls.count++;
-        populationMock._registeredArtifacts.push(artifact);
-        populationMock.lastOrigin = artifact?.origin ?? null;
-        return { ok: true, individualId: `ind-${populationCalls.count}` };
-      },
-      _registeredArtifacts: [],
-      size: () => populationMock._registeredArtifacts.length,
-    };
-
-    // 4. agint.evolution (失败归因 + 阶段日志)
-    const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
-    const evolutionMock = {
-      logPhase4: async (e) => { evoStore.evolution_log.set(e.targetId + ':' + e.decision, e); return { ok: true }; },
-      addFailure: async (e) => {
-        const key = e.pattern;
-        const existing = evoStore.failure_pattern.get(key);
-        if (existing) { existing.occurrences = (existing.occurrences ?? 1) + 1; }
-        else { evoStore.failure_pattern.set(key, { ...e, occurrences: 1 }); }
-        return { ok: true };
-      },
-      addSuccess: async (e) => { evoStore.success_template.set(e.template, e); return { ok: true }; },
-    };
-
-    // 5. agint.wiki + evolveReview (S11-05 健康探针失败后写报告)
-    const wikiReceipts = [];
-    const wikiMock = {
-      write: async (entry) => { wikiReceipts.push(entry); return { slug: entry.path }; },
-    };
-    const evolveReviewMock = {
-      report: async (entry) => {
-        wikiReceipts.push({ path: 'reviews/' + (entry.id ?? 'mount') + '.md', content: JSON.stringify(entry) });
-        return { ok: true, path: 'reviews/' + (entry.id ?? 'mount') + '.md' };
-      },
-    };
-
-    // 6. 健康探针（可注入连续失败次数）
-    const probeCalls = { count: 0, results: [] };
-    const healthProbeMock = {
-      probe: async (pluginId) => {
-        probeCalls.count++;
-        const forcedFails = upstream.healthProbeFailures ?? 0;
-        const ok = probeCalls.count > forcedFails;
-        const r = { pluginId, ok, at: new Date().toISOString(), latencyMs: 12 };
-        probeCalls.results.push(r);
-        return r;
-      },
-    };
-
-    // 7. baseline-regression-suite（S11-07 触发）
-    let baselineFrozen = false;
-    const baselineMock = {
-      run: async () => {
-        const r = upstream.baselineResult ?? { passRate: 1.0, passed: 10, total: 10, frozen: false };
-        if (r.passRate < 0.95) {
-          baselineFrozen = true;
-          r.frozen = true;
-        }
-        return r;
-      },
-      isFrozen: () => baselineFrozen,
-    };
-
-    // 8. staging 路径管理（mock fs，不真写）
-    const stagingState = { prepared: [], cleaned: [] };
-    const fsMock = {
-      prepare: async (fixture) => {
-        const id = 'stg-' + stagingState.prepared.length;
-        stagingState.prepared.push({ id, fixture });
-        return { stagingId: id };
-      },
-      activate: async (stagingId) => ({ ok: true, stagingId }),
-      cleanup: async (stagingId) => {
-        stagingState.cleaned.push(stagingId);
-        return { ok: true };
-      },
-    };
-
-    ctx.provide('agint.qualityStatic', staticMock);
-    ctx.provide('agint.qualitySandbox', sandboxMock);
-    ctx.provide('agint.population', populationMock);
-    ctx.provide('agint.evolution', evolutionMock);
-    ctx.provide('agint.wiki', wikiMock);
-    ctx.provide('agint.evolveReview', evolveReviewMock);
-    ctx.provide('agint.healthProbe', healthProbeMock);
-    ctx.provide('agint.baselineSuite', baselineMock);
-    ctx.provide('agint.mountFs', fsMock);
+    // ── 9 槽位 mock 下沉到工厂（mountCtxFor），dispatcher 只保留真插件路径 ──
+    const { ctx: mountCtx, mocks: mountMocks } = mountCtxFor({
+      input,
+      override: { realCheckPlugin },
+    });
+    // 把工厂提供的 9 个 service 注入 driver.js 主 ctx（dispatcher 用 ctx.get 取）
+    for (const k of ['agint.qualityStatic','agint.qualitySandbox','agint.population',
+      'agint.evolution','agint.wiki','agint.evolveReview',
+      'agint.healthProbe','agint.baselineSuite','agint.mountFs']) {
+      ctx.provide(k, mountCtx.get(k));
+    }
+    // 解构追踪 + 状态变量（mountOrchestrate 内部 + 8 个 expected.kind 断言共用）
+    // 注意：baselineFrozen 是值类型闭包变量，工厂用 getter 暴露；不解构，断言处直接读 mountMocks.baselineFrozen
+    const { staticCalls, sandboxCalls, populationCalls, populationMock,
+      evoStore, wikiReceipts, probeCalls, stagingState } = mountMocks;
 
     // ── 真实编排逻辑（与设计稿 §3 / §4.3 完全对齐）────────────────
     // 当 codex-A 真插件产出后，把这一段替换为：
@@ -1627,12 +1520,12 @@ const dispatchers = {
       const checks = {
         phaseRolledBack: r.phase === 'ROLLED_BACK',
         baselineBelowThreshold: r.baseline?.passRate < 0.95,
-        channelFrozen: r.channelFrozen === true || baselineFrozen === true,
+        channelFrozen: r.channelFrozen === true || mountMocks.baselineFrozen === true,
         regressionFailureLogged: [...evoStore.failure_pattern.values()].some((p) => p.pattern === 'mount.baseline-regression-fail'),
         populationNotRegistered: populationCalls.count === 0,
       };
       const ok = Object.values(checks).every((v) => v === true);
-      return { ok, detail: `phase=${r.phase} passRate=${r.baseline?.passRate} frozen=${baselineFrozen}` };
+      return { ok, detail: `phase=${r.phase} passRate=${r.baseline?.passRate} frozen=${mountMocks.baselineFrozen}` };
     }
 
     if (exp.kind === 'idempotent-same-ticket-returned') {
