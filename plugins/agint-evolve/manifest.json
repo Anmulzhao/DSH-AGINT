@@ -1,0 +1,84 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-evolve",
+  "version": "0.7.0",
+  "description": "agint-evolve v0.7.0: 智进 review/self-evolution loop. 9 services (dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory). storage domain `agint_evolve` schemaVersion=2 (新增 baseline_history 表，由 cron baseline-regression-suite 写入，driver mount 通道读 baselineGate)。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "provides": [
+        "agint.evolve"
+      ],
+      "events": [],
+      "tools": [
+        "evolve_read", "evolve_propose", "evolve_set_status", "evolve_proposals"
+      ]
+    },
+
+    "storage": {
+      "domains": ["agint_evolve"],
+      "schemaVersion": 2,
+      "atomic": "json"
+    },
+
+    "dependencies": {
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 15,
+
+    "permissions": {
+      "env": ["DSH_HOME", "AGINT_HOME"],
+      "fs": [
+        "read:plugins",
+        "write:reviews"
+      ],
+      "network": [],
+      "shell": false
+    },
+
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.evolve.dataSnapshot": "采集 agint.memory / wiki / cron / rules / metrics / sessionQuery 的事实快照（无副作用）",
+        "agint.evolve.writeReview": "数据快照 → 自动发现 → 写 reviews/<date>-周复盘.md；返回 path + findings 数",
+        "agint.evolve.listReviews": "列出 reviews/ 目录下所有 .md 文件（path/size/mtime）",
+        "agint.evolve.readReview": "读指定 .md 复盘报告（path 必须在 root 内，防穿越）",
+        "agint.evolve.propose": "写入 proposal 表一行（status 默认 proposed，category 默认 other）",
+        "agint.evolve.listProposals": "按 status/category 过滤列 proposal（按 createdAt 倒序）",
+        "agint.evolve.getProposal": "读单条 proposal（id miss → null）",
+        "agint.evolve.setStatus": "更新 proposal 状态 + updatedAt；非法状态抛错",
+        "agint.evolve.removeProposal": "删除 proposal（返回 boolean）",
+        "agint.evolve.stats": "返回 {total, byStatus, byCategory} 计数",
+        "agint.evolve.baselineGate": "Sprint 12 B3: 读 baseline_history 最近一行返回 {frozen, lastRunAt, since, source}；无数据 → frozen=false",
+        "agint.evolve.recordBaselineRun": "Sprint 12 B3: 由 cron baseline-regression-suite 调用，写 baseline_history 一行（id=ranAt）",
+        "agint.evolve.listBaselineHistory": "Sprint 12 B3: 列出 baseline_history 全部行（按 ranAt 倒序，调试/报告用）"
+      }
+    },
+
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

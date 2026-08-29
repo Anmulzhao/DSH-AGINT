@@ -1215,11 +1215,13 @@ const dispatchers = {
     // 把工厂提供的 9 个 service 注入 driver.js 主 ctx（dispatcher 用 ctx.get 取）
     for (const k of ['agint.qualityStatic','agint.qualitySandbox','agint.population',
       'agint.evolution','agint.wiki','agint.evolveReview',
-      'agint.healthProbe','agint.baselineSuite','agint.mountFs']) {
+      'agint.healthProbe','agint.baselineSuite','agint.evolve','agint.mountFs']) {
       ctx.provide(k, mountCtx.get(k));
     }
     // 解构追踪 + 状态变量（mountOrchestrate 内部 + 8 个 expected.kind 断言共用）
-    // 注意：baselineFrozen 是值类型闭包变量，工厂用 getter 暴露；不解构，断言处直接读 mountMocks.baselineFrozen
+    // 注意：baselineGate 由 mountMocks 工厂注入为 agint.evolve 的 mock；baselineFrozen 不再
+    // 是闭包变量，driver dispatcher 通过 ctx.get('agint.evolve').baselineGate('mount') 读
+    // 取 frozen 状态。
     const { staticCalls, sandboxCalls, populationCalls, populationMock,
       evoStore, wikiReceipts, probeCalls, stagingState } = mountMocks;
 
@@ -1375,8 +1377,14 @@ const dispatchers = {
       }
 
       // ── Step 6：baseline-regression-suite 触发（对齐 ROADMAP 健康度护栏）
+      // Sprint 12 B3：frozen 状态由 `agint.evolve.baselineGate('mount')` 真 service
+      // 决定（背后读 baseline_history 表，由 cron baseline-regression-suite 写入）。
+      // 回归 runner 仍是 `agint.baselineSuite.run()`（提供 passRate/passed/total 给 scores）。
       const baseline = await ctx.get('agint.baselineSuite').run();
-      if (baseline.passRate < 0.95) {
+      const gate = await ctx.get('agint.evolve').baselineGate('mount');
+      // frozen 决策：regression runner 失败（passRate<0.95）或 gate 真服务报 frozen
+      const isFrozen = (baseline.passRate < 0.95) || gate.frozen === true;
+      if (isFrozen) {
         // 插件回滚 + 挂载通道冻结
         await ctx.get('agint.mountFs').cleanup(stagingId);
         await ctx.get('agint.evolution').addFailure({
@@ -1397,6 +1405,7 @@ const dispatchers = {
           phase: 'ROLLED_BACK',
           reason: 'baseline-regression-fail',
           baseline,
+          baselineGate: gate,
           channelFrozen: true,
         };
       }
@@ -1520,12 +1529,13 @@ const dispatchers = {
       const checks = {
         phaseRolledBack: r.phase === 'ROLLED_BACK',
         baselineBelowThreshold: r.baseline?.passRate < 0.95,
-        channelFrozen: r.channelFrozen === true || mountMocks.baselineFrozen === true,
+        // Sprint 12 B3: channelFrozen 来自 baselineGate 真 service（或回归 runner 失败）
+        channelFrozen: r.channelFrozen === true || r.baselineGate?.frozen === true,
         regressionFailureLogged: [...evoStore.failure_pattern.values()].some((p) => p.pattern === 'mount.baseline-regression-fail'),
         populationNotRegistered: populationCalls.count === 0,
       };
       const ok = Object.values(checks).every((v) => v === true);
-      return { ok, detail: `phase=${r.phase} passRate=${r.baseline?.passRate} frozen=${mountMocks.baselineFrozen}` };
+      return { ok, detail: `phase=${r.phase} passRate=${r.baseline?.passRate} gateFrozen=${r.baselineGate?.frozen}` };
     }
 
     if (exp.kind === 'idempotent-same-ticket-returned') {

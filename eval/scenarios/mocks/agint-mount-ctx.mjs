@@ -72,15 +72,48 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     },
   };
 
-  // 7. baselineSuite（passRate<0.95 触发 baselineFrozen 闭包）
-  let baselineFrozen = false;
+  // 7. baselineGate（Sprint 12 B3：接 agint.evolve.baselineGate 真 service）
+  // - 真 service 通道：默认开启；mock 通道（baselineMock / baselineFrozen）可选保留
+  //   给 test 不依赖 cron 的场景（self-test 与旧 dispatch 仍走 mock）
+  // - driver.js mount dispatcher 已切到 ctx.get('agint.evolve').baselineGate('mount')
+  // - 这里只把 mock 注入 'agint.baselineSuite'（保留兼容），不再依赖 baselineFrozen 闭包
+  const baselineFrozen = upstream.baselineFrozen ?? false; // 兼容旧 fixture
   const baselineMock = {
     run: async () => {
       const r = upstream.baselineResult ?? { passRate: 1.0, passed: 10, total: 10, frozen: false };
-      if (r.passRate < 0.95) { baselineFrozen = true; r.frozen = true; }
+      if (r.passRate < 0.95) { r.frozen = true; }
       return r;
     },
     isFrozen: () => baselineFrozen,
+  };
+
+  // 7b. agint.evolve mock（baselineGate 通道）——
+  //     driver dispatcher 调 ctx.get('agint.evolve').baselineGate('mount') 时使用。
+  //     默认行为：upstream.baselineGateResult ?? { frozen:baselineFrozen, lastRunAt:..., source:'mock' }
+  //     这样 happy-path（frozen=false）与 baseline-regression-fails-rollback-and-freeze
+  //     （frozen=true）都能在 driver mock ctx 下断言通过。
+  const evolveMock = {
+    baselineGate: async (channel = 'mount') => {
+      if (upstream.baselineGateResult) return upstream.baselineGateResult;
+      return {
+        frozen: baselineFrozen,
+        lastRunAt: upstream.baselineGateLastRunAt ?? new Date().toISOString(),
+        since: null,
+        source: 'mock:mount-ctx',
+        channel,
+      };
+    },
+    recordBaselineRun: async (input) => ({
+      id: 'mock-' + Date.now(),
+      channel: input?.channel ?? 'mount',
+      passRate: input?.passRate ?? 1.0,
+      passed: input?.passed ?? 0,
+      total: input?.total ?? 0,
+      frozen: (input?.passRate ?? 1.0) < 0.95,
+      source: input?.source ?? 'mock:mount-ctx',
+      ranAt: new Date().toISOString(),
+    }),
+    listBaselineHistory: async () => [],
   };
 
   // 8. mountFs（staging 状态追踪）
@@ -101,6 +134,7 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     ['agint.population', populationMock], ['agint.evolution', evolutionMock],
     ['agint.wiki', wikiMock], ['agint.evolveReview', evolveReviewMock],
     ['agint.healthProbe', healthProbeMock], ['agint.baselineSuite', baselineMock],
+    ['agint.evolve', evolveMock], // Sprint 12 B3: baselineGate 通道
     ['agint.mountFs', fsMock],
   ]);
   const ctx = {
@@ -115,7 +149,7 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     staticCalls, sandboxCalls, populationCalls, populationMock,
     evoStore, wikiReceipts, evolveReviewMock,
     probeCalls, healthProbeMock,
-    get baselineFrozen() { return baselineFrozen; },
+    baselineFrozen, // Sprint 12 B3: 兼容旧 fixture（值类型，非闭包）
     stagingState, fsMock,
   };
   return { ctx, mocks };
@@ -132,7 +166,7 @@ async function happyPathSelfTest() {
   const { ctx } = makeMountCtx({});
   const keys = ['agint.qualityStatic','agint.qualitySandbox','agint.population',
     'agint.evolution','agint.wiki','agint.evolveReview',
-    'agint.healthProbe','agint.baselineSuite','agint.mountFs'];
+    'agint.healthProbe','agint.baselineSuite','agint.evolve','agint.mountFs'];
   for (const k of keys) if (ctx.get(k) === null) throw new Error(`missing: ${k}`);
   const a = makeMountCtx({ upstream: { staticCheck: { ok: false, reason: 'inj' } } });
   if ((await a.ctx.get('agint.qualityStatic').check({})).reason !== 'inj') throw new Error('staticCheck inject');
@@ -143,9 +177,14 @@ async function happyPathSelfTest() {
   const b = makeMountCtx({ upstream: { healthProbeFailures: 1 } });
   await b.ctx.get('agint.healthProbe').probe('p'); await b.ctx.get('agint.healthProbe').probe('p');
   if (b.mocks.probeCalls.count !== 2) throw new Error('probe count');
-  const c = makeMountCtx({ upstream: { baselineResult: { passRate: 0.5, passed: 5, total: 10 } } });
-  await c.ctx.get('agint.baselineSuite').run();
-  if (!c.mocks.baselineFrozen) throw new Error('baselineFrozen');
+  // Sprint 12 B3: baselineGate 通道断言（替代旧 baselineMock 闭包）
+  const c1 = makeMountCtx({ upstream: { baselineGateResult: { frozen: true, lastRunAt: '2026-01-01', since: null, source: 'test' } } });
+  const gate = await c1.ctx.get('agint.evolve').baselineGate('mount');
+  if (gate.frozen !== true) throw new Error('baselineGate frozen=true');
+  // 旧 baselineMock.run 仍可触发 frozen=true 但不写闭包（兼容）
+  const c2 = makeMountCtx({ upstream: { baselineResult: { passRate: 0.5, passed: 5, total: 10 } } });
+  const r = await c2.ctx.get('agint.baselineSuite').run();
+  if (r.frozen !== true) throw new Error('baselineMock.run frozen=true');
   const d = makeMountCtx({});
   const { stagingId } = await d.ctx.get('agint.mountFs').prepare({ id: 'f' });
   await d.ctx.get('agint.mountFs').cleanup(stagingId);
@@ -157,7 +196,7 @@ async function happyPathSelfTest() {
   const f = makeMountCtx({});
   await f.ctx.get('agint.evolveReview').report({ id: 'm1' });
   if (f.mocks.wikiReceipts.length !== 1) throw new Error('wikiReceipts');
-  console.log('[agint-mount-ctx] self-test PASS (9 services + 7 closures)');
+  console.log('[agint-mount-ctx] self-test PASS (10 services + 7 closures)');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

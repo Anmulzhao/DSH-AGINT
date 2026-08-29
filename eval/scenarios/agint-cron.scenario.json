@@ -28,7 +28,8 @@
     "expected": [
       {
         "kind": "default-jobs-registered",
-        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check"]
+        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check", "baseline-regression-suite"],
+        "_note": "Sprint 12 B3: 新增 baseline-regression-suite（Sun 03:15 周节奏）"
       }
     ]
   }
