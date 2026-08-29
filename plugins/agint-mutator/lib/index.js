@@ -890,6 +890,44 @@ function apply(ctx) {
     catch (e) { return degrade(source, reason, `propose 抛错: ${e.message || e}`); }
   }
 
+  // ── Service: publishMountRequest（Sprint 12 A4：消费方 publish mount.requested） ──
+  // 目的：mutator 作为 mount 消费方上游，把"请求挂载"动作通过 bus 影子发布。
+  // 红线（AGENTS.md / 设计稿 §A4）：**直连路径完整保留** —— bus 不可用时静默降级。
+  // payload schema：plugins/agint-mount/schemas/mount-requested.schema.yaml v1
+  async function publishMountRequest(artifact) {
+    if (!artifact || typeof artifact !== 'object') {
+      return { published: false, reason: 'invalid-artifact' };
+    }
+    const ticketId = artifact.ticketId || ('t-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36));
+    const proposalId = artifact.proposalId || artifact.id || 'unknown';
+    const decision = artifact.decision || 'AUTO_DEPLOY';
+    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
+    if (!bus || typeof bus.publish !== 'function') {
+      return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
+    }
+    const payload = { ticketId, proposalId, decision };
+    try {
+      const env = {
+        topic: 'mount.requested',
+        version: 1,
+        source: 'agint-mutator',
+        correlationId: ticketId,
+        payload,
+      };
+      const result = await bus.publish(env);
+      return {
+        published: true,
+        envelopeId: result?.envelopeId,
+        deliveredTo: result?.deliveredTo ?? 0,
+        deadLettered: result?.deadLettered ?? 0,
+        ticketId,
+        proposalId,
+      };
+    } catch (err) {
+      return { published: false, reason: `publish-threw:${err?.message || err}`, directPathUnaffected: true };
+    }
+  }
+
   ctx.provide('agint.mutator.propose', propose);
   ctx.provide('agint.mutator.validate', validate);
   ctx.provide('agint.mutator.commit', commit);
@@ -901,6 +939,7 @@ function apply(ctx) {
   ctx.provide('agint.mutator.logMetric', logMetric); // #4 commit/rollback 调用入口
   ctx.provide('agint.mutator.checkLimit', checkLimit);
   ctx.provide('agint.mutator.limits', LIMITS);
+  ctx.provide('agint.mutator.publishMountRequest', publishMountRequest); // Sprint 12 A4: 消费方 publish mount.requested
   ctx.provide('agint.mutator.io', {
     packProposal, packCommit, packFinding, packMetricsLog,
     unpackProposal, unpackCommit, unpackFinding, unpackMetricsLog,

@@ -1,0 +1,34 @@
+# agint-mount — mount.requested v1 payload schema（设计稿 Sprint12 §A4）
+#
+# 发布方：agint-mutator / agint-population / 任何上游消费方（影子 publish）。
+# 订阅方：agint-mount（自身消费，替代点对点 transport 入口）。
+#
+# 版本（envelope.version）：
+#   1 — 首发版本：3 字段（ticketId / proposalId / decision）
+#
+# 不变量：
+#   - ticketId    事务票据 ID（与 MountResult.ticketId 同源；mount 自生成 UUID）
+#   - proposalId  关联 MutationProposal.id（来自 mutator.propose）
+#   - decision    AUTO_DEPLOY | PENDING_REVIEW（与 qualityPolicy 一致）
+#
+# 注：本 schema 仅约束 payload 字段；envelope 顶层（id / topic / version /
+#   occurredAt / source / traceId / correlationId）走 agint-event-bus FROZEN
+#   顶层 8 字段约束，不在本 yaml 内重复。
+# 红线：变更走 v2 + major 版本；本版本作为 v1 锁定。
+
+type: object
+schemaVersion: 1
+frozenness: L2-stable
+required: [ticketId, proposalId, decision]
+properties:
+  ticketId:
+    type: string
+    description: 事务票据 ID（mount 收到 publish 后会生成对应 ticket）
+  proposalId:
+    type: string
+    description: 关联 MutationProposal.id
+  decision:
+    type: string
+    enum:
+      - AUTO_DEPLOY
+      - PENDING_REVIEW

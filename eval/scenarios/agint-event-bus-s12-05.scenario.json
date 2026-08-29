@@ -1,0 +1,40 @@
+[
+  {
+    "scenario": "s12-05-mount-succeeded-population-and-evolution-memory-observe",
+    "plugin": "agint-event-bus",
+    "_purpose": "Sprint 12 / A4 — T1 影子期：mount.succeeded 由 agint-mount 自己 publish，订阅方（agint-population 锦标赛纳入观察 + agint-evolution-memory logPhase4）通过总线收到 mount.succeeded。**双轨不切流量**：eventBusReceived=true AND 直连路径保留。",
+    "input": [
+      {
+        "_scenario_kind": "event-bus-mount-succeeded-shadow",
+        "_steps": [
+          "1. 加载 agint-event-bus 真 plugin apply(ctx)",
+          "2. 加载 agint-population 真 plugin apply(ctx)",
+          "3. 注册 agint-population 订阅 mount.succeeded（async）→ 写 popShadowMount 计数器 + 写入 evo logPhase4 等价动作",
+          "4. 模拟 agint-mount.publish('mount.succeeded', {ticketId, artifactName, decision:'AUTO_DEPLOY'}) —— 通过 eventBusMock.publish 直接调用 bus",
+          "5. 校验 inspect 日志含 envelope topic=mount.succeeded + payload 三字段完整 + 订阅者收到"
+        ],
+        "ticketId": "t-s12-05-001",
+        "artifactName": "agint-fixture-001"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "mount-succeeded-via-bus",
+        "expectedKeys": [
+          "eventBusMountSucceededEnvelopes=1",
+          "deliveredToPopulationSubscriber>=1",
+          "payloadSchemaFieldsPresent=true",
+          "evoLogEntryWritten=true",
+          "sourcePluginIsMount=true"
+        ],
+        "_assertions": {
+          "eventBusMountSucceededEnvelopes": "mountSucceededEnvelopes.length === 1",
+          "deliveredToPopulationSubscriber": "popShadowMountCalls >= 1",
+          "payloadSchemaFieldsPresent": "mountSucceededEnvelopes[0].payload.ticketId === input.ticketId && mountSucceededEnvelopes[0].payload.artifactName === input.artifactName && mountSucceededEnvelopes[0].payload.decision === 'AUTO_DEPLOY'",
+          "evoLogEntryWritten": "evoLogMountEntries.length >= 1",
+          "sourcePluginIsMount": "mountSucceededEnvelopes[0].source === 'agint-mount'"
+        }
+      }
+    ]
+  }
+]
