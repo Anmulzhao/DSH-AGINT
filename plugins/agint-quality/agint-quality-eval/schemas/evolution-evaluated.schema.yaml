@@ -1,0 +1,41 @@
+# evolution-evaluated.schema.yaml — agint-quality-eval payload schema v1
+#
+# 用途：定义 `evolution.evaluated` topic 的 payload 子 schema（发布方维护，正交于 event-bus FROZEN 8 字段）。
+# 不冻结（per event-bus.schema.yaml §不冻结：topic payload 子 schema 由发布方自带独立演进）。
+# 变更流程：payload schema 修改走 L1-ADJUSTABLE 治理（不需要人类多签，但要写 CHANGELOG + 版本号 +1）。
+#
+# Sprint 12 / A2：T1 影子期 — 唯一 sync 门禁边的 payload（policy 订阅 mode=sync）。
+# design: Sprint12 设计稿 §A3，§sync 门禁边。
+
+schemaVersion: 1
+
+EvolutionEvaluatedPayload:
+  type: object
+  required: [targetId, decision, scores, findings]
+  additionalProperties: false
+  properties:
+    targetId:
+      type: string
+      nullable: true
+      description: 被评分的目标 ID（plugin / skill / preset / composite）；自评时可为 null
+    decision:
+      type: string
+      enum: [SCORED, VETOED]
+      description: SCORED = composite 有数值；VETOED = composite=null（一票否决）
+    scores:
+      type: object
+      required: [composite]
+      additionalProperties: true
+      properties:
+        composite:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 100
+          description: 综合分 0-100；null 表示一票否决
+    findings:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+      description: EvalResult.findings 全集（blocker / warn / info）；policy 据此调整决策

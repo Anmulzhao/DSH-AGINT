@@ -344,6 +344,37 @@ function apply(ctx) {
     // 暴露 LIMIT 给上游读取
     limits: LIMITS,
   });
+
+  // ── Sprint 12 A1（T1 影子期）：订阅 evolution.proposed → 写 evolution_log ─
+  // 设计稿 §A1：population → (bus) → evolution-memory 的异步通路。
+  // **直连路径完整保留**：上层仍可走 evo.logPhase4() / addFailure()；
+  //   本 handler 把 event-bus 收到的 proposal 影子写一份入 evolution_log，
+  //   tag = 'event-bus' 便于 T2 灰度期对账（bus vs 直连 写入差集）。
+  // 降级：bus 不可用 → 静默跳过（不报错）
+  try {
+    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
+    if (bus && typeof bus.subscribe === 'function') {
+      const unsubscribe = bus.subscribe(
+        { subscriber: 'agint-evolution-memory', topics: ['evolution.proposed'], mode: 'async' },
+        async (envelope) => {
+          try {
+            const p = envelope?.payload ?? {};
+            if (!p.proposalId) return;  // 缺关键字段：跳过（不抛）
+            // 走 buffered 路径：高频期不阻塞 handler
+            await logPhase4Buffered({
+              targetId: p.proposalId,
+              targetKind: `evolution.proposed:${p.kind || 'unknown'}`,
+              decision: 'PROPOSED',
+              scores: {},
+              findings: [],
+              tags: ['event-bus', 'shadow-ingest', `origin:${p.origin || 'unknown'}`],
+            });
+          } catch { /* handler 永不抛 —— 避免污染 bus */ }
+        },
+      );
+      ctx.effect(() => () => { try { if (typeof unsubscribe === 'function') unsubscribe(); } catch { /* ignore */ } });
+    }
+  } catch { /* bus 不可用：影子订阅静默跳过 */ }
 }
 
 export { Config, apply, inject, name };

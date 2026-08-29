@@ -81,6 +81,9 @@ function apply(ctx, config) {
     }
   });
 
+  // Sprint 12 A1（T1 影子期）：影子订阅接收记录 ring buffer
+  const shadowProposals = [];
+
   /** Sprint 3.1: 构造 sandbox-failed REJECT EvalResult（safety=0 一票否决） */
   function makeSandboxRejectedResult(target, smoke) {
     const failedChecks = (smoke.checks ?? []).filter((c) => !c.ok).map((c) => c.name);
@@ -240,9 +243,40 @@ function apply(ctx, config) {
       return out;
     },
 
-    /** 综合分（0-100，或 null 表示一票否决） */
+    /** 综合分（0-100，或 null 表示一票否决）
+     *
+     * Sprint 12 / A2 — T1 影子期：发布 evolution.evaluated 边事件
+     * 唯一 sync 门禁边（per Sprint12 设计稿 §A3，policy 订阅 mode=sync）
+     *
+     * 行为契约：
+     *   - 保留原 return（composite 数值）；不阻塞调用方
+     *   - publish 失败 → log error 但不抛（事件层降级不影响评分主路径）
+     *   - 缺 agint.eventBus.publish Service → 纯静默跳过（软降级）
+     */
     async score(evalResult) {
-      return compositeScore(evalResult);
+      const composite = compositeScore(evalResult);
+
+      // 拉取 eventBus publish（optionalInject 软依赖）
+      const publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      if (publish && typeof publish === 'function' && !disposed) {
+        try {
+          await publish({
+            topic: 'evolution.evaluated',
+            version: 1,
+            source: 'agint-quality-eval',
+            payload: {
+              targetId: evalResult?.targetId ?? null,
+              decision: composite !== null ? 'SCORED' : 'VETOED',
+              scores: { composite },
+              findings: Array.isArray(evalResult?.findings) ? evalResult.findings : [],
+            },
+          });
+        } catch (err) {
+          if (!disposed) console.error('[agint-quality-eval] eventBus.publish failed:', err?.message ?? err);
+        }
+      }
+
+      return composite;
     },
 
     /** 强制跑一次周评估（供调试 / 手动触发） */
@@ -374,6 +408,39 @@ function apply(ctx, config) {
   };
 
   ctx.provide('agint.qualityEvaluator', evaluator);
+
+  // ── Sprint 12 A1（T1 影子期）：订阅 evolution.proposed ─────────────────
+  // 设计稿 §A1：population → (bus) → quality-eval 的异步通路。
+  // **直连路径完整保留**：上层仍可走 evaluator.runNow() / 内部调用；
+  //   本 handler 是 **shadow ingestion** —— 接收 proposal 写入内部 ring
+  //   （不打分、不触发真实 evaluateAll，避免双跑流量）。
+  // 降级：bus 不可用 → 静默跳过（不报错）
+  try {
+    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
+    if (bus && typeof bus.subscribe === 'function') {
+      const unsubscribe = bus.subscribe(
+        { subscriber: 'agint-quality-eval', topics: ['evolution.proposed'], mode: 'async' },
+        async (envelope) => {
+          try {
+            const p = envelope?.payload ?? {};
+            shadowProposals.push({
+              proposalId: p.proposalId,
+              kind: p.kind,
+              origin: p.origin,
+              at: new Date().toISOString(),
+              envelopeId: envelope?.id,
+            });
+            // ring buffer 上限（与 event-bus ringBufferCapacity 2000 对齐；本地 ring 更小）
+            if (shadowProposals.length > 500) shadowProposals.splice(0, shadowProposals.length - 500);
+          } catch { /* handler 永不抛 */ }
+        },
+      );
+      ctx.effect(() => () => { try { if (typeof unsubscribe === 'function') unsubscribe(); } catch { /* ignore */ } });
+    }
+  } catch { /* bus 不可用：影子订阅静默跳过 */ }
+
+  // 暴露影子 ring（仅 host / driver / inspect 使用；不进 model 工具）
+  ctx.provide('agint.qualityEval.shadowProposals', () => shadowProposals.slice());
 
   // ── 注册周调度器（延迟到 apply 末尾，让所有 Service 已就绪） ──
   // 用 setImmediate / queueMicrotask 推迟到下一个 microtask，确保所有 sibling plugin 已 provide

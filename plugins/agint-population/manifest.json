@@ -12,14 +12,17 @@
   },
   "spec": {
     "cordis": {
-      "inject": ["storageDomain"],
+      "inject": [
+        "storageDomain"
+      ],
       "optionalInject": [
         "agint.mutator",
         "agint.diagnosis",
         "agint.qualityPolicy",
         "agint.qualitySandbox",
         "agint.memory",
-        "agint.evolution"
+        "agint.evolution",
+        "agint.eventBus"
       ],
       "provides": [
         "agint.population.ingest",
@@ -33,7 +36,9 @@
       "tools": []
     },
     "storage": {
-      "domains": ["agint_population"],
+      "domains": [
+        "agint_population"
+      ],
       "schemaVersion": 1,
       "atomic": "json"
     },
@@ -42,12 +47,18 @@
       "agint-mutator": ">=0.6.1",
       "agint-diagnosis": ">=0.6.0",
       "agint-evolution-memory": ">=0.3.0",
-      "zod": "^3.0.0"
+      "zod": "^3.0.0",
+      "agint-event-bus": ">=0.7.0"
     },
     "mountOrder": 30,
     "permissions": {
-      "env": ["DSH_HOME"],
-      "fs": ["read:storages", "write:storages"],
+      "env": [
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
       "network": [],
       "shell": false
     },
