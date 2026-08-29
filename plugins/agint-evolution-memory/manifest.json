@@ -4,35 +4,48 @@
   "version": "0.6.4",
   "description": "物理隔离的进化记忆存储域。Sprint 10 v0.6.4 #7 加 EvolutionLogBuffer（异步批量写入 + flush 3 策略 + 退出钩子 + 读时合并视图 + buffer-lost 兜底）。",
   "main": "lib/index.js",
-
   "agint": {
     "kind": "host",
     "owner": "anmul",
     "tier": 0,
     "stability": "stable"
   },
-
   "spec": {
     "cordis": {
-      "inject": ["storageDomain"],
-      "provides": ["agint.evolution"],
+      "inject": [
+        "storageDomain"
+      ],
+      "provides": [
+        "agint.evolution"
+      ],
       "events": [],
       "tools": [],
-      "optionalInject": []
+      "optionalInject": [
+        "agint.eventBus"
+      ]
     },
     "storage": {
-      "domains": ["agint_evolution"],
+      "domains": [
+        "agint_evolution"
+      ],
       "schemaVersion": 1,
       "atomic": "json"
     },
     "dependencies": {
       "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
-      "zod": "^3.0.0"
+      "zod": "^3.0.0",
+      "agint-event-bus": ">=0.7.0"
     },
     "mountOrder": 20,
     "permissions": {
-      "env": ["DSH_HOME", "AGINT_HOME"],
-      "fs": ["read:plugins/agint-evolution-memory", "write:storages"],
+      "env": [
+        "DSH_HOME",
+        "AGINT_HOME"
+      ],
+      "fs": [
+        "read:plugins/agint-evolution-memory",
+        "write:storages"
+      ],
       "network": [],
       "shell": false
     },

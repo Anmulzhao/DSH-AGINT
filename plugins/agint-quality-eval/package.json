@@ -1,0 +1,8 @@
+{
+  "name": "agint-quality-eval",
+  "version": "0.2.0",
+  "description": "AGINT D-QAF 评估引擎。代码实现在 plugins/agint-quality/agint-quality-eval/（monorepo 形式），本目录为 plugin-check 入口。",
+  "main": "../agint-quality/agint-quality-eval/lib/index.js",
+  "type": "module",
+  "peerDependencies": { "@deepseek-ai/dsh-storage-domain": "*", "zod": "^3.0.0" }
+}

@@ -431,6 +431,52 @@ function apply(ctx) {
     return { variant: unpackVariant(updated), evaluation: { score: fit.score, eligible: fit.eligible, reason: fit.reason } };
   }
 
+  // ── Service: publishProposed（Sprint 12 A1 T1 影子期） ─────────────────
+  // 目的：把 "mutation / fix / cull / rollback / fitness-update" 这类 proposal
+  //   通过 agint.eventBus 发布为 evolution.proposed 事件，让订阅方
+  //   (agint-quality-eval / agint-evolution-memory) 走异步通路。
+  // 红线（AGENTS.md / 设计稿 §A1）：**直连路径完整保留** —— 这里是 shadow publish，
+  //   调用方上层（mutator / 内部 controller）继续走直连；bus 不可用时静默降级
+  //   （不抛错、不打 error 级别日志），保持现状 92/104 维持。
+  // payload schema：plugins/agint-population/schemas/evolution-proposed.schema.yaml
+  async function publishProposed(proposal) {
+    if (!proposal || typeof proposal !== 'object') {
+      return { published: false, reason: 'invalid-proposal' };
+    }
+    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
+    if (!bus || typeof bus.publish !== 'function') {
+      // 软降级：bus 不可用 → 不报错，调用方继续走直连路径
+      return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
+    }
+    const payload = {
+      proposalId: proposal.id || proposal.proposalId || `prop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: proposal.kind || 'mutation',
+      payload: proposal,                  // 不冻结字段（设计稿 §A1.4）；订阅方按需解
+      origin: proposal.source || name,    // 默认来源 = 本插件 name
+      scoreHint: typeof proposal.scoreHint === 'number' ? proposal.scoreHint : undefined,
+    };
+    try {
+      const env = {
+        topic: 'evolution.proposed',
+        version: 1,
+        source: 'agint-population',
+        payload,
+      };
+      // eventBus.publish 返回 PublishResult；同 traceId 内对同订阅者保序
+      const result = await bus.publish(env);
+      return {
+        published: true,
+        envelopeId: result?.envelopeId,
+        deliveredTo: result?.deliveredTo ?? 0,
+        deadLettered: result?.deadLettered ?? 0,
+        proposalId: payload.proposalId,
+      };
+    } catch (err) {
+      // 任何 publish 异常都吞掉 —— 直连路径不受影响
+      return { published: false, reason: `publish-threw:${err?.message || err}`, directPathUnaffected: true };
+    }
+  }
+
   // ── Provide Services ────────────────────────────────────────────────
   ctx.provide('agint.population.ingest', ingest);
   ctx.provide('agint.population.promote', promote);
@@ -438,6 +484,7 @@ function apply(ctx) {
   ctx.provide('agint.population.fixate', fixate);
   ctx.provide('agint.population.rollback', rollback);
   ctx.provide('agint.population.stats', stats);
+  ctx.provide('agint.population.publishProposed', publishProposed);  // Sprint 12 A1: bus-side shadow publish
   ctx.provide('agint.population.evaluate', fitnessEvaluate);    // 暴露 evaluate 让上层可单测
   ctx.provide('agint.population.recordEvaluation', recordEvaluation);
   ctx.provide('agint.population.limits', { variants: 100, fitness_history: 500, traffic_log: 500, generation_log: 50 });

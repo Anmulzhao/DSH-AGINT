@@ -1,5 +1,5 @@
 {
-  "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
+  "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-eval",
   "version": "0.3.0",
   "description": "D-QAF 评估引擎 v0.3：Sprint 12 / A2 加 evolution.evaluated 边事件发布（per Sprint12 设计稿 §A3，唯一 sync 门禁边的发布方）。",
@@ -12,19 +12,11 @@
   },
   "spec": {
     "cordis": {
-      "inject": [
-        "agint.quality",
-        "agint.evolution",
-        "agint.qualitySandbox"
-      ],
-      "provides": [
-        "agint.qualityEvaluator"
-      ],
+      "inject": ["agint.quality", "agint.evolution", "agint.qualitySandbox"],
+      "optionalInject": ["agint.eventBus.publish"],
+      "provides": ["agint.qualityEvaluator"],
       "events": [],
-      "tools": [],
-      "optionalInject": [
-        "agint.eventBus.publish"
-      ]
+      "tools": []
     },
     "storage": {
       "domains": [],
@@ -39,9 +31,7 @@
     "mountOrder": 50,
     "permissions": {
       "env": [],
-      "fs": [
-        "read:storages"
-      ],
+      "fs": ["read:storages"],
       "network": [],
       "shell": false
     },
@@ -59,11 +49,10 @@
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.qualityEvaluator": "QualityEvaluatorIface.evaluate(target) — 7 维评分 + 一票否决 + 反自评"
+        "agint.qualityEvaluator": "QualityEvaluatorIface.evaluate(target) — 7 维评分 + 一票否决 + 反自评；Sprint 12 起 score() 出口 publish evolution.evaluated"
       }
     },
     "changelog": "CHANGELOG.md",
-    "compatSince": "0.2.0",
-    "notes": "DISABLED-TEMP 2026-08-21：等待 agint.evolution / agint.qualitySandbox 才会激活"
+    "compatSince": "0.2.0"
   }
 }

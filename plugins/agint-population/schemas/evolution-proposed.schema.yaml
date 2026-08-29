@@ -1,0 +1,45 @@
+# evolution-proposed.schema.yaml — Sprint 12 A1（T1 影子期，**未冻结**）
+#
+# 用途：agint-population 通过 agint.eventBus 发布 evolution.proposed 时，
+#       payload 必须满足此 schema（soft check by event-bus publish 入口的 zod parse）。
+#
+# 不冻结字段（设计稿 Sprint 12 §A1.4）：proposalId / kind / payload / origin / scoreHint
+#   → T1 影子期允许 minor 字段调整；进入 T2 灰度前冻结 schemaVersion: 1。
+#
+# 与 event-bus 总线契约正交：总线只冻结 EventEnvelope 顶层 8 字段（见
+# plugins/agint-event-bus/schemas/event-bus.schema.yaml），payload 子 schema 由发布方维护。
+#
+# 演进路径：
+#   - T1（当前影子期）：publisher 提供 schemaVersion:1，subscriber 接受缺省字段
+#   - T2（流量切换）：冻结 schemaVersion，缺字段直接 reject，bus inspect 面板加 schema drift 告警
+#   - T3（直连废弃）：payload 仅来自 bus；直连路径下发 deprecation warn
+schemaVersion: 1
+EvolutionProposedPayload:
+  type: object
+  required: [proposalId, kind, origin]
+  properties:
+    proposalId:
+      type: string
+      minLength: 1
+      description: 提议唯一 id（来自 mutator.propose() 或 population.ingest() 内部生成）
+    kind:
+      type: string
+      enum: [mutation, fix, cull, rollback, fitness-update]
+      description: 提议类型（v1 五种；新增需走 schemaVersion bump）
+    payload:
+      type: object
+      description: 提议正文（variant / commit / fitness 数据；结构由 population 决定，**不冻结**）
+      additionalProperties: true
+    origin:
+      type: string
+      description: 提议来源标识（plugin name 或外部 system）
+    scoreHint:
+      type: number
+      minimum: 0
+      maximum: 100
+      description: 可选；发布方对提议的预估分（0-100）；订阅方仅作软参考，不强制采纳
+constraints:
+  softCheckOnly:
+    description: T1 期间 bus publish 仅做 soft check（warn 而非 reject）；缺字段时 inspect 面板可见
+  fieldEvolution:
+    description: 新增字段必须 minor 版本号 +1；删字段必须 major 版本号 +1

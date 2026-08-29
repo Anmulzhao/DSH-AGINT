@@ -1,0 +1,65 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-eval",
+  "version": "0.2.0",
+  "description": "AGINT D-QAF 评估引擎。Sprint 12 A1（T1 影子期）：订阅 agint.eventBus 'evolution.proposed' 主题，写影子 ring（不进 model 工具）；**直连路径完整保留**。代码实现在 plugins/agint-quality/agint-quality-eval/（monorepo 形式），顶层 manifest 为 plugin-check 入口。",
+  "main": "../agint-quality/agint-quality-eval/lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.qualityEvaluator"
+      ],
+      "events": [],
+      "tools": [],
+      "optionalInject": [
+        "agint.eventBus"
+      ]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-event-bus": ">=0.7.0"
+    },
+    "mountOrder": 80,
+    "permissions": {
+      "env": [
+        "DSH_HOME",
+        "AGINT_HOME"
+      ],
+      "fs": [
+        "read:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "../agint-quality/agint-quality-eval/test/smoke.mjs",
+      "command": "node ../agint-quality/agint-quality-eval/test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "../agint-quality/agint-quality-eval/README.md",
+      "serviceDocs": {
+        "agint.qualityEvaluator": "D-QAF 评估器（5 维 + safety 硬门控 + Sprint 12 A1 影子订阅）"
+      }
+    },
+    "changelog": "../agint-quality/agint-quality-eval/CHANGELOG.md",
+    "compatSince": "0.2.0"
+  }
+}
