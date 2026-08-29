@@ -4,6 +4,41 @@
 
 ---
 
+## v0.7.0 — 未发布 — Sprint 12
+
+### 调研（Investigated）
+
+- **mount 健康探针信号源**（B5）：调研 dsh 是否暴露可注入的真实心跳接口，用于替换
+  `src/health-probe.ts` 的 mock 心跳（`probeStaging` stub）。
+
+  **结论：dsh v0.1.1-rc.2 暂未暴露显式心跳 service。保留 mock fallback，`health-probe.ts` 行为不变。**
+
+  **语义原话不变**：连续成功 ≥ 3 次 → `HEALTHY`；**失败 ≥ 2 → DISABLE**（不删除 plugin；保留现场供归因）。
+  探针函数仍由 `probeFn` 注入，默认 `probeStaging` stub；本次不改 `manifest.json` 的 `optionalInject`
+  （不硬猜不存在的服务名）。
+
+  **调研证据**（4 路交叉验证，均为空）：
+
+  1. `grep -rlniE "heartbeat|readiness|liveness|keepalive|\bpulse\b" --exclude-dir=node_modules .`
+     于 `@deepseek-ai/dsh@0.1.1-rc.2` 包根 → **0 命中**（`lib/` 仅 5 个 bundle 文件，无心跳符号）。
+  2. 展开到真实运行时 `node_modules/@deepseek-ai/dsh-*`（187 个包）同 grep → 53 个文件命中，
+     **逐一核验后全部是 JSDoc 散文，无任何 API/service**。代表性证据：
+     - `dsh-agent/lib/types/index.d.ts:204` — `presence is neither liveness proof nor authorization`
+     - `dsh-client-connection/lib/types/client/connection.d.ts:55` — `Re-read both mutable liveness guards…`
+     - `dsh-client-runtime/lib/types/client/sessions/service.d.ts:370` — `The one aliveness predicate…`
+     - `dsh-session/lib/types/types.d.ts:354` — `NOT a liveness signal about other…`
+     - `dsh-session-telemetry-otel/lib/types/index.d.ts:38` — `keepAlive` 仅为 OTel SDK 传输选项
+  3. 活运行时 Inspect `Service.listService`（host）→ **55 个 service 全表**，
+     无 `host.heartbeat` / `health.heartbeat` / `core.pulse`，无任何 health/liveness/readiness 类 service。
+  4. 活运行时 Inspect `Event.listEvents`（host）→ **53 个 event 全表**，同样无心跳/健康类事件
+     （最接近的仅 `agent/status` 的 idle⇄running，语义是 agent 忙闲，非进程存活探针）。
+
+  **回归条件**：待 dsh 暴露稳定心跳 service 后回归本项——届时在 `manifest.json` 的
+  `optionalInject` 加该服务名，`health-probe.ts` 改用该接口，且**必须保留 mock fallback**
+  （service 不可用时只 log 一行 warning 降级为 mock，**不得立即 DISABLE**）。
+
+---
+
 ## v0.6.5 — 2026-08-26 — Sprint 11 收口
 
 **首次发版**（codex-A 子任务 #1 交付物）。
