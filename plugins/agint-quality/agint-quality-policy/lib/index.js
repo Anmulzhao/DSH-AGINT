@@ -39,6 +39,7 @@ import {
   pickRollbackTarget,
   DEFAULT_COMMITTEE_CONFIG,
 } from './committee.js';
+import { publishPolicyEvents } from './policyEvents.js';
 
 const name = 'agint-quality-policy';
 const inject = ['agint.evolution'];
@@ -247,6 +248,14 @@ function apply(ctx, config) {
       });
     } catch {
       // Append 是 best-effort;失败不抛
+    }
+
+    // ── Sprint 12 / A5 — T1 影子期：policy.deployed / policy.rolledback 双 topic 事件化
+    // 抽出到 lib/policyEvents.js（独立模块便于测试 + 控制本文件 ≤ 200 行）
+    try {
+      await publishPolicyEvents({ ctx, decision, committeeStorage, disposed });
+    } catch (err) {
+      if (!disposed) console.error('[agint-quality-policy] publishPolicyEvents failed:', err?.message ?? err);
     }
 
     return decision;

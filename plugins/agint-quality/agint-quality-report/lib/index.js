@@ -44,7 +44,51 @@ function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true;
+    // Sprint 12 / A5: dispose 时退订 policy.deployed / policy.rolledback
+    try {
+      if (typeof _policyBusUnsubscribe === 'function') _policyBusUnsubscribe();
+    } catch { /* ignore */ }
   });
+
+  // ── Sprint 12 / A5 — T1 影子期：policy.deployed / policy.rolledback 观测行
+  // 走 console + audit memory（不进入 HARM 报告输出——决策观测与报告输出解耦）
+  // 软降级：event-bus 不可用 → log 不抛，原 generate / writeToWiki / writeToMemory 路径不受影响
+  let _policyBusUnsubscribe = null;
+  const _subscribeBus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+  if (_subscribeBus && typeof _subscribeBus === 'function') {
+    try {
+      _policyBusUnsubscribe = _subscribeBus(
+        {
+          subscriber: 'agint-quality-report',
+          topics: ['policy.deployed', 'policy.rolledback'],
+          mode: 'async',
+          timeoutMs: 5000,
+        },
+        async (envelope) => {
+          try {
+            const topic = envelope?.topic ?? '';
+            const payload = envelope?.payload ?? {};
+            // console 观测行（必出，便于 shadow 期观察）
+            if (!disposed) console.log(`[agint.qualityReport.observe] ${topic} target=${payload?.targetId ?? '?'} decision=${payload?.decision ?? '?'} score=${payload?.score ?? '?'}${payload?.rollbackTarget ? ` rollbackTarget=${payload.rollbackTarget}` : ''}`);
+            // audit 通道：写入 memory[type=decision]
+            const mem = ctx.get('agint.memory');
+            if (mem && typeof mem.write === 'function') {
+              await mem.write({
+                type: 'decision',
+                content: `[agint.qualityReport.observe] ${topic} target=${payload?.targetId ?? ''} decision=${payload?.decision ?? ''} score=${payload?.score ?? ''} reason=${payload?.reason ?? ''}${payload?.rollbackTarget ? ` rollbackTarget=${payload.rollbackTarget}` : ''}`,
+                evidence: `agint-quality-report:policy-observe:${envelope?.id ?? '?'}`,
+              });
+            }
+          } catch (err) {
+            if (!disposed) console.error('[agint-quality-report] policy observe failed:', err?.message ?? err);
+          }
+        },
+      );
+    } catch (err) {
+      if (!disposed) console.error('[agint-quality-report] eventBus.subscribe failed:', err?.message ?? err);
+      _policyBusUnsubscribe = null;
+    }
+  }
 
   /**
    * Generate report. Mirrors QualityReporterIface (FROZEN).

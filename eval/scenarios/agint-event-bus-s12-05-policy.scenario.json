@@ -1,0 +1,82 @@
+[
+  {
+    "scenario": "s12-05-policy-policy-deployed-rolledback-shadow",
+    "plugin": "agint-event-bus",
+    "_purpose": "Sprint 12 / A5 — T1 影子期：policy.deployed / policy.rolledback 双 topic 事件化。\n  - 发布方：agint-quality-policy.decide() 末尾（kind === 'AUTO_DEPLOY' → policy.deployed；kind === 'REJECT' + rollback 触发 → policy.rolledback）\n  - 订阅方 A：agint-quality-report 观测行（console + memory audit，不进 HARM 输出）\n  - 订阅方 B：agint-metrics 计数器（policy.deployedCount / policy.rolledbackCount，写入 agint_metrics 域）\n  - **双轨不切流量**：eventBusReceived=true AND 直连 decide() 返回原 decision 不变。\n  - 走单 service 接口 ctx.get('agint.eventBus.publish')（伞键 bug 在 A3 已确认；A5 不复用伞键）。",
+    "input": [
+      {
+        "_scenario_kind": "event-bus-policy-deployed-rolledback-shadow",
+        "_steps": [
+          "1. reset bus 模块级 state",
+          "2. 加载 agint-event-bus 真 plugin apply(ctx)",
+          "3. mock 上游 services（evo / memory / quality / metrics / toolStats / rules / storageDomain）",
+          "4. 加载 agint-quality-policy 真 plugin（apply 内 register policy.deployed / policy.rolledback publish）",
+          "5. 加载 agint-quality-report 真 plugin（apply 内 subscribe policy.deployed / policy.rolledback → console + memory audit）",
+          "6. 加载 agint-metrics 真 plugin（apply 内 subscribe → 写 agint_metrics 域 counter）",
+          "7. 调 policy.decide(AUTO_DEPLOY 路径) → 期望 publish policy.deployed 1 条 → 订阅方收到",
+          "8. 调 policy.decide(REJECT 路径) 多次触发 rollback → 期望 publish policy.rolledback 1 条 + rollbackTarget 字段非空 / 非 null",
+          "9. 校验 bus inspect 日志 + report memory audit + metrics table counter"
+        ],
+        "autoDeployTarget": {
+          "targetId": "auto-deploy-plugin-s12-05",
+          "kind": "plugin",
+          "dimensions": [
+            { "key": "safety", "score": { "score": 1.0 }, "veto": false },
+            { "key": "trust", "score": { "score": 1.0 }, "veto": false },
+            { "key": "reliability", "score": { "score": 1.0 } },
+            { "key": "effectiveness", "score": { "score": 1.0 } },
+            { "key": "integrability", "score": { "score": 1.0 } }
+          ],
+          "findings": []
+        },
+        "rejectTarget": {
+          "targetId": "reject-plugin-s12-05-A",
+          "kind": "plugin",
+          "dimensions": [
+            { "key": "safety", "score": { "score": 0 }, "veto": true },
+            { "key": "trust", "score": { "score": 0.1 } }
+          ],
+          "findings": []
+        },
+        "_notes": [
+          "autoDeployTarget：全 1.0 综合分=100 → AUTO_DEPLOY",
+          "rejectTarget：safety veto → REJECT；调 5 次触发 committee.shouldRollback（minSample=5，triggerPct=0.5）",
+          "rollbackTarget：prodSnapshots 是 sibling-managed in-memory；shadow 启动前 pre-seed 一个 prev policy 让 pickRollbackTarget 有目标"
+        ]
+      }
+    ],
+    "expected": [
+      {
+        "kind": "policy-deployed-rolledback-shadow",
+        "expectedKeys": [
+          "policyDeployedEnvelopes=1",
+          "policyRolledbackEnvelopes>=1",
+          "reportMemoryAuditHasPolicyDeployed=true",
+          "reportMemoryAuditHasPolicyRolledback=true",
+          "metricsDeployedCounterRecords>=1",
+          "metricsRolledbackCounterRecords>=1",
+          "deployedSourceIsPolicy=true",
+          "rolledbackSourceIsPolicy=true",
+          "deployedPayloadTargetIdMatches=true",
+          "rolledbackPayloadHasRollbackTargetField=true",
+          "directDecideReturnPathPreserved=true",
+          "publishDoesNotUseUmbrellaKey=true"
+        ],
+        "_assertions": {
+          "policyDeployedEnvelopes": "policyDeployedEnvelopes.length === 1",
+          "policyRolledbackEnvelopes": "policyRolledbackEnvelopes.length >= 1",
+          "reportMemoryAuditHasPolicyDeployed": "reportMemoryAuditLog.some(e => e.content.includes('policy.deployed'))",
+          "reportMemoryAuditHasPolicyRolledback": "reportMemoryAuditLog.some(e => e.content.includes('policy.rolledback'))",
+          "metricsDeployedCounterRecords": "metricsCounterRecords.filter(r => r.key === 'policy.deployedCount').length >= 1",
+          "metricsRolledbackCounterRecords": "metricsCounterRecords.filter(r => r.key === 'policy.rolledbackCount').length >= 1",
+          "deployedSourceIsPolicy": "policyDeployedEnvelopes.every(e => e.source === 'agint-quality-policy')",
+          "rolledbackSourceIsPolicy": "policyRolledbackEnvelopes.every(e => e.source === 'agint-quality-policy')",
+          "deployedPayloadTargetIdMatches": "policyDeployedEnvelopes[0]?.payload?.targetId === input.autoDeployTarget.targetId",
+          "rolledbackPayloadHasRollbackTargetField": "policyRolledbackEnvelopes[0]?.payload?.hasOwnProperty('rollbackTarget') === true",
+          "directDecideReturnPathPreserved": "autoDeployDecision.kind === 'AUTO_DEPLOY' && rejectDecisions.every(d => d.kind === 'REJECT')",
+          "publishDoesNotUseUmbrellaKey": "umbrellaKeyCalled === false"
+        }
+      }
+    ]
+  }
+]

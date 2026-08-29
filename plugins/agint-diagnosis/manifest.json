@@ -13,12 +13,13 @@
   "spec": {
     "cordis": {
       "inject": ["storageDomain"],
-      "optionalInject": ["agint.evolution"],
+      "optionalInject": ["agint.evolution", "agint.eventBus"],
       "provides": [
         "agint.diagnosis.annotate",
         "agint.diagnosis.counterfactual",
         "agint.diagnosis.cluster",
-        "agint.diagnosis.report"
+        "agint.diagnosis.report",
+        "agint.diagnosis.analyzeFailedSmoke"
       ],
       "events": [],
       "tools": []
