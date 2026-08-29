@@ -1,0 +1,30 @@
+# agint-mount — mount.succeeded v1 payload schema（设计稿 Sprint12 §A4）
+#
+# 发布方：agint-mount 自己（orchestrator.ts mountRequest 末尾 ACTIVATE/HEALTHY 成功分支）。
+# 订阅方：agint-mount（内部观测）、agint-population（锦标赛纳入）、agint-evolution-memory（写 logPhase4）。
+#
+# 版本（envelope.version）：
+#   1 — 首发版本：3 字段（ticketId / artifactName / decision）
+#
+# 不变量：
+#   - ticketId     事务票据 ID（mountRequest 返回值）
+#   - artifactName 挂载产物名（plugins/agint-xxxxxxxx/lib/index.js 的 agint-xxxxxxxx 段）
+#   - decision     AUTO_DEPLOY（成功分支目前仅此一种；预留扩展）
+#
+# 红线：变更走 v2 + major 版本；本版本作为 v1 锁定。
+
+type: object
+schemaVersion: 1
+frozenness: L2-stable
+required: [ticketId, artifactName, decision]
+properties:
+  ticketId:
+    type: string
+    description: mountRequest 返回的事务票据 ID
+  artifactName:
+    type: string
+    description: 挂载产物名（plugins/<artifactName>/lib/index.js 的 <artifactName>）
+  decision:
+    type: string
+    enum:
+      - AUTO_DEPLOY

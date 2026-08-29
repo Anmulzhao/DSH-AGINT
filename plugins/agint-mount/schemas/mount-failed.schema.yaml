@@ -1,0 +1,44 @@
+# agint-mount — mount.failed v1 payload schema（设计稿 Sprint12 §A4）
+#
+# 发布方：agint-mount 自己（orchestrator.ts mountRequest 失败分支：L0 拒 / 沙箱不可用 /
+#   smoke-failed / hmr-settle-failed / activate-error / mount-request-error）。
+# 订阅方：agint-mount（内部观测）、agint-population（锦标赛剔除）、agint-evolution-memory
+#   （写 logPhase4）、agint-diagnosis（触发诊断，影子期不接时降级 noop）。
+#
+# 版本（envelope.version）：
+#   1 — 首发版本：3 字段（ticketId / reason / phase）
+#
+# 不变量：
+#   - ticketId  事务票据 ID
+#   - reason    失败原因枚举（与 orchestrator.ts emitEvent 调用点 1:1 对齐）
+#   - phase     失败时挂载状态机阶段（与 MountResult.phase 枚举一致）
+#
+# 红线：变更走 v2 + major 版本；本版本作为 v1 锁定。
+
+type: object
+schemaVersion: 1
+frozenness: L2-stable
+required: [ticketId, reason, phase]
+properties:
+  ticketId:
+    type: string
+    description: mountRequest 返回的事务票据 ID
+  reason:
+    type: string
+    enum:
+      - l0-isolation-failed
+      - sandbox-unavailable
+      - smoke-failed
+      - hmr-settle-failed
+      - activate-error
+      - mount-request-error
+  phase:
+    type: string
+    enum:
+      - PREPARED
+      - INSTALLED
+      - RESTART_REQUESTED
+      - ACTIVATED
+      - HEALTHY
+      - DISABLED
+      - ROLLED_BACK

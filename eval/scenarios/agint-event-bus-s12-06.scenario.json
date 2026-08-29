@@ -1,0 +1,44 @@
+[
+  {
+    "scenario": "s12-06-mount-failed-diagnosis-trigger",
+    "plugin": "agint-event-bus",
+    "_purpose": "Sprint 12 / A4 — T1 影子期：mount.failed 由 agint-mount 自己 publish，订阅方（agint-diagnosis 触发诊断 + agint-evolution-memory logPhase4）通过总线收到 mount.failed。**双轨不切流量**：eventBusReceived=true AND 直连路径保留；diagnosis 不存在时 soft-degrade（noop），不抛错。",
+    "input": [
+      {
+        "_scenario_kind": "event-bus-mount-failed-shadow",
+        "_steps": [
+          "1. 加载 agint-event-bus 真 plugin apply(ctx)",
+          "2. mock agint-diagnosis 服务（提供 trigger 计数器）",
+          "3. 注册 diagnosis 订阅 mount.failed（async）→ 调 mock trigger",
+          "4. 注册 evo 等价订阅 mount.failed → 写 evo logPhase4 等价动作",
+          "5. 模拟 agint-mount.publish('mount.failed', {ticketId, reason:'hmr-settle-failed', phase:'DISABLED'})",
+          "6. 校验 inspect 日志 + diagnosis trigger + evo logPhase4"
+        ],
+        "ticketId": "t-s12-06-001",
+        "reason": "hmr-settle-failed",
+        "phase": "DISABLED"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "mount-failed-via-bus",
+        "expectedKeys": [
+          "eventBusMountFailedEnvelopes=1",
+          "diagnosisTriggerCount>=1",
+          "evoLogEntryWritten=true",
+          "payloadSchemaFieldsPresent=true",
+          "sourcePluginIsMount=true",
+          "reasonAndPhaseCorrect=true"
+        ],
+        "_assertions": {
+          "eventBusMountFailedEnvelopes": "mountFailedEnvelopes.length === 1",
+          "diagnosisTriggerCount": "diagnosisMock.triggerCalls >= 1",
+          "evoLogEntryWritten": "evoLogMountEntries.length >= 1",
+          "payloadSchemaFieldsPresent": "mountFailedEnvelopes[0].payload.ticketId === input.ticketId && mountFailedEnvelopes[0].payload.reason === input.reason && mountFailedEnvelopes[0].payload.phase === input.phase",
+          "sourcePluginIsMount": "mountFailedEnvelopes[0].source === 'agint-mount'",
+          "reasonAndPhaseCorrect": "mountFailedEnvelopes[0].payload.reason === 'hmr-settle-failed' && mountFailedEnvelopes[0].payload.phase === 'DISABLED'"
+        }
+      }
+    ]
+  }
+]

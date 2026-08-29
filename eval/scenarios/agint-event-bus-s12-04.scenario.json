@@ -1,0 +1,50 @@
+[
+  {
+    "scenario": "s12-04-mount-requested-via-event-bus",
+    "plugin": "agint-event-bus",
+    "_purpose": "Sprint 12 / A4 — T1 影子期：mount.requested 由消费方（agint-mutator / agint-population）publish 到 bus，订阅方（agint-mount）通过总线接收到 mount.requested。**双轨不切流量**：eventBusReceived=true AND 消费方直连路径（publishMountRequest 返回 published=true）不受影响。",
+    "input": [
+      {
+        "_scenario_kind": "event-bus-mount-requested-shadow",
+        "_steps": [
+          "1. 加载 agint-event-bus 真 plugin apply(ctx) — 提供 3 service（publish/subscribe/inspect）",
+          "2. 加载 agint-mutator 真 plugin apply(ctx) — 拿到 publishMountRequest service",
+          "3. 加载 agint-population 真 plugin apply(ctx) — 拿到 publishMountRequest service",
+          "4. 注册 agint-mount 订阅者：subscribe({subscriber:'agint-mount', topics:['mount.requested'], mode:'async'}, handler)",
+          "5. 调 agint.mutator.publishMountRequest({proposalId, decision:'AUTO_DEPLOY'}) → 应 publish 到 bus + handler 触发",
+          "6. 调 agint.population.publishMountRequest({proposalId, decision:'AUTO_DEPLOY'}) → 同上",
+          "7. 校验 inspect 日志含 envelope topic=mount.requested + payload.ticketId/proposalId/decision 完整"
+        ],
+        "artifactA": {
+          "proposalId": "prop-s12-04-mutator-001",
+          "decision": "AUTO_DEPLOY"
+        },
+        "artifactB": {
+          "proposalId": "prop-s12-04-population-002",
+          "decision": "AUTO_DEPLOY"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "mount-requested-via-bus",
+        "expectedKeys": [
+          "mutatorPublishReturnsPublished=true",
+          "populationPublishReturnsPublished=true",
+          "eventBusMountRequestedEnvelopes>=2",
+          "deliveredToMountSubscriber>=2",
+          "payloadSchemaFieldsPresent=true",
+          "sourcePluginsCorrect=true"
+        ],
+        "_assertions": {
+          "mutatorPublishReturnsPublished": "mutatorResult.published === true",
+          "populationPublishReturnsPublished": "populationResult.published === true",
+          "eventBusMountRequestedEnvelopes": "mountRequestedEnvelopes.length >= 2",
+          "deliveredToMountSubscriber": "mountSubscriberHandlerCalls >= 2",
+          "payloadSchemaFieldsPresent": "mountRequestedEnvelopes.every(e => e.payload.ticketId && e.payload.proposalId && e.payload.decision)",
+          "sourcePluginsCorrect": "mountRequestedEnvelopes.some(e => e.source === 'agint-mutator') && mountRequestedEnvelopes.some(e => e.source === 'agint-population')"
+        }
+      }
+    ]
+  }
+]

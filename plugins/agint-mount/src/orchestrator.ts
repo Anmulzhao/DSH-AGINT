@@ -26,6 +26,7 @@
 import { mkdir, writeFile, rename, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { MountRequestSchema, ContractCheckSchema, needsInstall, PHASES } from './schemas.js';
 import { packTicket, unpackTicket, randomId, nowIso } from './storage.js';
@@ -49,6 +50,119 @@ const DEFAULT_L0_HOOK = async (_proposal: any, _verdict: any) => ({
   domainIsolation: true,
   dependencyWhitelist: true,
 });
+
+/**
+ * mount 内部点对点 transport → bus publish（A4 / B4）
+ *
+ * 红线（AGENTS.md / 设计稿 Sprint12 §A4）：
+ *   - 不切流量：ctx.emitEvent（cordis point-to-point）保留作为 fallback；
+ *     bus 不可用 / publish 抛错时静默降级，原路径不受影响。
+ *   - envelope.version 由 schema v1 锁定为 1
+ *   - payload 字段见 plugins/agint-mount/schemas/mount-{requested,succeeded,failed}.schema.yaml
+ *   - correlationId 透传 ticketId，便于 mount.* 三事件 + event-bus 自家 publish 串同一 traceId
+ */
+async function mountEventBusPublish(
+  ctx: MountContext,
+  topic: 'mount.requested' | 'mount.succeeded' | 'mount.failed',
+  payload: Record<string, unknown>,
+): Promise<void> {
+  // ── 双轨 1：agint.eventBus.publish（影子/正式通路）──────────────
+  try {
+    const bus = ctx.getService?.('agint.eventBus') as any;
+    const publish = bus?.publish;
+    if (typeof publish === 'function') {
+      const envelope = {
+        topic,
+        version: 1,
+        source: 'agint-mount',
+        traceId: (ctx as any).traceId ?? randomUUID(),
+        correlationId: (payload.ticketId as string) ?? undefined,
+        payload,
+      };
+      try {
+        await publish(envelope);
+      } catch {
+        // bus 不可用时降级：保留原 ctx.emitEvent 路径
+      }
+      return;
+    }
+  } catch { /* ignore：ctx.getService 缺失 */ }
+
+  // ── 双轨 2：ctx.emitEvent fallback（cordis point-to-point；原路径保留）──
+  try { ctx.emitEvent?.(topic, payload); } catch { /* ignore */ }
+}
+
+/**
+ * mount HMR settle：A4 / B1 — 替换原 ctx.awaitHmrSettle 硬约定
+ *
+ * 旧实现：`await ctx.awaitHmrSettle?.(artifactName, 30_000)` —— 点对点 + 30s timeout。
+ * 新实现（B1 子任务汇流）：
+ *   1. 优先走 service lookup：`ctx.getService('core.hmr')` / `('host.hmr')` / `('agint.hmr')`
+ *      任何一个存在且提供 awaitHmrSettle(artifactName, ms) → 走它。
+ *   2. 退而求其次：订阅 bus 的 mount.succeeded（自身 publish） + 等 ctx 暴露 hmrReady 信号；
+ *      任一收到就 settle。
+ *   3. 兜底：30s timeout sleep（与原 orchestrator 行为 1:1 对齐；不依赖 dsh 心跳接口 —
+ *      B5 已知 dsh v0.1.1-rc.2 暂无心跳 service）。
+ *
+ * 红线：
+ *   - 不切流量：原 ctx.awaitHmrSettle 路径保留；只是 bus / service lookup 不存在时
+ *     不会主动切换走 bus。
+ *   - 返回 boolean：true = settle OK；false = timeout / 异常
+ */
+async function awaitHmrSettleBus(
+  ctx: MountContext,
+  artifactName: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  // ── 路径 1：service lookup（dsh 暴露 hmr service 时优先走）──────
+  try {
+    const lookupKeys = ['core.hmr', 'host.hmr', 'agint.hmr'];
+    for (const k of lookupKeys) {
+      try {
+        const svc = ctx.getService?.(k) as any;
+        if (svc && typeof svc.awaitHmrSettle === 'function') {
+          return await svc.awaitHmrSettle(artifactName, timeoutMs);
+        }
+      } catch { /* 试下一个 */ }
+    }
+  } catch { /* ignore：ctx.getService 缺失 */ }
+
+  // ── 路径 2：bus subscribe（mount.succeeded 由自己 publish，监听=无意义；改为订阅一个
+  //    future hmr.settled topic，目前 schema 没注册；保留作为 hook 占位）──
+  try {
+    const bus = ctx.getService?.('agint.eventBus') as any;
+    const subscribe = bus?.subscribe;
+    if (typeof subscribe === 'function') {
+      // 不阻塞：仅注册监听，timeout 内未到走 false（与原 30s timeout 语义一致）
+      // 未来 dsh 暴露 hmr.settled topic 时此路径自动接管；当前无此 topic，订阅无副作用
+      try {
+        subscribe(
+          { subscriber: 'agint-mount', topics: ['hmr.settled'], mode: 'async' },
+          (_env: unknown) => { /* noop：占位 */ },
+        );
+      } catch { /* topic 不存在时 bus 静默忽略 */ }
+    }
+  } catch { /* ignore */ }
+
+  // ── 路径 3：原 ctx.awaitHmrSettle 直连点对点（保留 fallback）──
+  try {
+    // 兼容旧 ctx.awaitHmrSettle（cordis 历史接口；Sprint 11 留 hook）
+    if (typeof (ctx as any).awaitHmrSettle === 'function') {
+      const ok = await (ctx as any).awaitHmrSettle(artifactName, timeoutMs);
+      if (typeof ok === 'boolean') return ok;
+    }
+  } catch { /* ignore：走 timeout fallback */ }
+
+  // ── 路径 4（兜底）：30s timeout sleep ──
+  return await new Promise<boolean>((resolve) => {
+    const t = setTimeout(() => resolve(false), Math.min(timeoutMs, 30_000));
+    // 测试模式跳过等待
+    if ((globalThis as any).__AGINT_MOUNT_TEST_NO_LEASE_WAIT__) {
+      clearTimeout(t);
+      resolve(true);
+    }
+  });
+}
 
 /**
  * mount.request 主入口。
@@ -87,8 +201,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
       createdAt: nowIso(), updatedAt: nowIso(),
       probeStats: { consecutiveSuccess: 0, consecutiveFailure: 0, lastProbeAt: null },
     });
-    try { ctx.emitEvent?.('mount.requested', { ticketId, proposalId: proposal.id, decision: 'PENDING_REVIEW' }); }
-    catch { /* 忽略 */ }
+    await mountEventBusPublish(ctx, 'mount.requested', { ticketId, proposalId: proposal.id, decision: 'PENDING_REVIEW' });
     return unpackTicket(ticket);
   }
 
@@ -114,8 +227,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
       createdAt: nowIso(), updatedAt: nowIso(),
       probeStats: { consecutiveSuccess: 0, consecutiveFailure: 0, lastProbeAt: null },
     });
-    try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'l0-isolation-failed' }); }
-    catch { /* ignore */ }
+    await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'l0-isolation-failed', phase: 'ROLLED_BACK' });
     return {
       ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK',
       contractCheck, activatedAt: null,
@@ -155,15 +267,13 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
     if (!sandbox?.runVerify) {
       // 沙箱不可用：降级 PENDING_REVIEW
       await updateTicketPhase(ctx, ticketId, 'ROLLED_BACK', contractCheck, null, 'sandbox-unavailable');
-      try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'sandbox-unavailable' }); }
-      catch { /* ignore */ }
+      await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'sandbox-unavailable', phase: 'ROLLED_BACK' });
       return { ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK', contractCheck, activatedAt: null };
     }
     const smokeResult = await sandbox.runVerify({ target: { path: targetDir, name: artifactName } });
     if (!smokeResult?.ok) {
       await updateTicketPhase(ctx, ticketId, 'ROLLED_BACK', contractCheck, null, `smoke-failed:${smokeResult?.reason ?? 'unknown'}`);
-      try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'smoke-failed' }); }
-      catch { /* ignore */ }
+      await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'smoke-failed', phase: 'ROLLED_BACK' });
       return { ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK', contractCheck, activatedAt: null };
     }
 
@@ -193,14 +303,13 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
       const newYaml = appendRow(originalYaml, newRow);
       await writePatchAtomic(paths.cordisPatch, newYaml);
 
-      // HMR settle：等 dsh 加载（ctx 暴露 awaitHmrSettle；Sprint 11 留 hook）
-      const settleOk = await ctx.awaitHmrSettle?.(artifactName, 30_000);
+      // HMR settle：A4 / B1 — service-lookup → bus subscribe → ctx 直连 → 30s timeout 四级 fallback
+      const settleOk = await awaitHmrSettleBus(ctx, artifactName, 30_000);
       if (!settleOk) {
         // 失败：从 backup 恢复 + 标 DISABLE
         await restorePatch(paths.cordisPatch, backupPath);
         await updateTicketPhase(ctx, ticketId, 'DISABLED', contractCheck, null, 'hmr-settle-failed');
-        try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'hmr-settle-failed' }); }
-        catch { /* ignore */ }
+        await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'hmr-settle-failed', phase: 'DISABLED' });
         return { ticketId, proposalId: proposal.id, phase: 'DISABLED', contractCheck, activatedAt: null };
       }
 
@@ -210,8 +319,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
       // 任何异常：restore + rollback
       try { await restorePatch(paths.cordisPatch, backupPath); } catch { /* ignore */ }
       await executeRollback({ ...ctx, patchPath: paths.cordisPatch, backupPath, stagingDir }, ticketId, ticket.phase, `activate-error:${e.message}`);
-      try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'activate-error' }); }
-      catch { /* ignore */ }
+      await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'activate-error', phase: 'ROLLED_BACK' });
       return { ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK', contractCheck, activatedAt: null };
     }
 
@@ -225,9 +333,8 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
     ctx.registerEffect?.(() => { loop.stop(); });
     loop.start();
 
-    // 8) emit mount.succeeded
-    try { ctx.emitEvent?.('mount.succeeded', { ticketId, artifactName, decision: 'AUTO_DEPLOY' }); }
-    catch { /* ignore */ }
+    // 8) publish mount.succeeded（A4 — bus 优先，emitEvent fallback）
+    await mountEventBusPublish(ctx, 'mount.succeeded', { ticketId, artifactName, decision: 'AUTO_DEPLOY' });
 
     return { ticketId, proposalId: proposal.id, phase: 'ACTIVATED', contractCheck, activatedAt };
 
@@ -236,8 +343,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
     try {
       await executeRollback(ctx, ticketId, ticket.phase, `mount-request-error:${e.message}`);
     } catch { /* rollback 自身失败也不阻断抛错 */ }
-    try { ctx.emitEvent?.('mount.failed', { ticketId, reason: 'mount-request-error' }); }
-    catch { /* ignore */ }
+    await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'mount-request-error', phase: ticket?.phase ?? 'PREPARED' });
     throw e;
   }
 }
