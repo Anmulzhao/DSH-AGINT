@@ -1,0 +1,72 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-metrics",
+  "version": "1.0.0",
+  "description": "AGINT evolution metrics host 服务。代码实现在 plugins/agint-metrics/lib/（真实代码），顶层 manifest 为 plugin-check 入口。Sprint 12 A5：与 agint-quality-report 同源同步接入 policy.* 影子计数（结构对齐）。",
+  "main": "./lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.metrics"
+      ],
+      "events": [],
+      "tools": [],
+      "optionalInject": [
+        "agint.eventBus",
+        "agint.cron",
+        "agint.rules",
+        "agint.wiki",
+        "agint.memory"
+      ]
+    },
+    "storage": {
+      "domains": [
+        "agint_metrics"
+      ],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-event-bus": ">=0.7.0"
+    },
+    "mountOrder": 82,
+    "permissions": {
+      "env": [
+        "DSH_HOME",
+        "AGINT_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "./test/smoke.mjs",
+      "command": "node ./test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "./README.md",
+      "serviceDocs": {
+        "agint.metrics": "evolution metrics host service (kv time series + collect/summary + policy 影子计数)"
+      }
+    },
+    "changelog": "./CHANGELOG.md",
+    "compatSince": "1.0.0"
+  }
+}
