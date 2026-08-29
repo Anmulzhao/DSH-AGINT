@@ -137,6 +137,39 @@ export const defaultJobs = [
       };
     },
   },
+  {
+    // Sprint 12 B3: baseline-regression-suite 真 cron hook.
+    // - weekly Sun 03:15（夹在 wiki-lint 03:00 与 evolve-review 03:45 之间）
+    // - 调 `agint.evolve.recordBaselineRun({channel:'mount', passRate, passed, total})`
+    //   把 passRate < 0.95 写为 frozen=true
+    // - 不直接跑回归测试 —— 测试入口是 `eval/run-baseline-regression.mjs`；
+    //   此 cron 仅作为"调度器接入点"，把"通道 frozen 状态"持久化到 storage。
+    // - 默认 passRate=1.0 / passed=0 / total=0（占位行）；
+    //   真实 passRate 由后续 Sprint 13 B4 接入回归 runner 注入（见 design Sprint12 §B3）。
+    id: 'baseline-regression-suite',
+    name: 'Baseline Regression 周检',
+    schedule: '15 3 * * 0', // Sun 03:15
+    description: '把 mount 通道 baseline-regression 状态写一行 baseline_history（weekly）',
+    action: async (services) => {
+      const evolve = services['agint.evolve'];
+      if (!evolve) throw new Error('baseline-regression-suite: agint.evolve not available');
+      // 注入 passRate 由 Sprint 13 B4 接入回归 runner（design Sprint12 §B3）；
+      // 当前以"占位行"语义写一行，让 baseline_history 表与 baselineGate 链路先跑通。
+      const recorded = await evolve.recordBaselineRun({
+        channel: 'mount',
+        passRate: 1.0,
+        passed: 0,
+        total: 0,
+        source: 'cron:baseline-regression-suite',
+      });
+      return {
+        id: recorded.id,
+        channel: recorded.channel,
+        passRate: recorded.passRate,
+        frozen: recorded.frozen,
+      };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */

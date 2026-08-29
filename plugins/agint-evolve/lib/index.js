@@ -48,10 +48,27 @@ const proposalSchema = z.object({
   updatedAt: z.string().default(() => new Date().toISOString()),
 });
 
+// Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
+// 由 `agint.evolve.baselineGate(channel)` 读取上一周期 frozen 状态。
+// 一行 = 一次 cron 跑的结果。id = ISO 时间戳（毫秒精度）。
+const baselineHistorySchema = z.object({
+  id: z.string().min(1),
+  channel: z.string().min(1), // 当前固定 'mount'，预留扩展
+  passRate: z.number().min(0).max(1),
+  passed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  frozen: z.boolean(),
+  source: z.string().default('cron:baseline-regression-suite'),
+  ranAt: z.string(),
+});
+
 const spec = defineDomain({
   name: 'agint_evolve',
-  version: 1,
-  tables: { proposal: { valueSchema: proposalSchema } },
+  version: 2,
+  tables: {
+    proposal: { valueSchema: proposalSchema },
+    baseline_history: { valueSchema: baselineHistorySchema },
+  },
 });
 
 const PROPOSAL_STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
@@ -93,6 +110,14 @@ function apply(ctx, config) {
     const d = await ready;
     if (!d) throw new Error('agint-evolve: domain unavailable');
     return d.table('proposal');
+  };
+
+  const historyTable = async () => {
+    if (disposed) throw new Error('agint-evolve: disposed');
+    if (domainError) throw domainError;
+    const d = await ready;
+    if (!d) throw new Error('agint-evolve: domain unavailable');
+    return d.table('baseline_history');
   };
 
   const nowIso = () => new Date().toISOString();
@@ -292,6 +317,97 @@ function apply(ctx, config) {
         byCategory[rec.category] = (byCategory[rec.category] ?? 0) + 1;
       }
       return { total, byStatus, byCategory };
+    },
+
+    /**
+     * Sprint 12 B3: baselineGate(channel, opts)
+     *
+     * Input:
+     *   channel: string  —— 当前固定 'mount'，预留多通道扩展
+     *   opts:
+     *     since?: string (ISO) —— 只看此时间之后的最近一次；缺省 = 全部
+     *     now?:   Date   —— 测试注入；缺省 = new Date()
+     *
+     * Output:
+     *   { frozen: boolean, lastRunAt: string|null, since: string|null, source: string }
+     *
+     * 副作用：
+     *   - 读 baseline_history 表（filter by channel + since）
+     *   - 不写任何字段 —— "只读 + 写 status" 中的只读部分
+     *
+     * 缺数据时返回 { frozen:false, lastRunAt:null, since, source:'empty' }，
+     * 让 driver dispatcher 与 cron 调用方都有稳定空值语义。
+     */
+    async baselineGate(channel = 'mount', opts = {}) {
+      const t = await historyTable();
+      const since = typeof opts.since === 'string' ? opts.since : null;
+      let latest = null;
+      for (const [id, rec] of t.entries()) {
+        if (rec.channel !== channel) continue;
+        if (since && rec.ranAt < since) continue;
+        if (!latest || rec.ranAt > latest.ranAt) latest = { id, ...rec };
+      }
+      if (!latest) {
+        return { frozen: false, lastRunAt: null, since, source: 'empty' };
+      }
+      return {
+        frozen: latest.frozen === true,
+        lastRunAt: latest.ranAt,
+        since,
+        source: latest.source ?? 'cron:baseline-regression-suite',
+      };
+    },
+
+    /**
+     * Sprint 12 B3: 由 `agint-cron` 的 `baseline-regression-suite` job 调用，
+     * 写一行 baseline_history。返回写入的记录 id。
+     *
+     * Input:
+     *   channel:    string        —— 'mount'（预留扩展）
+     *   passRate:   number 0..1
+     *   passed:     int
+     *   total:      int
+     *   source?:    string        —— 默认 'cron:baseline-regression-suite'
+     *
+     * 副作用：
+     *   - 写 baseline_history 一行（id = ranAt ISO 字符串）
+     *   - 不动 mutation / 不动 policy
+     */
+    async recordBaselineRun(input) {
+      const channel = String(input?.channel ?? 'mount');
+      const passRate = Number(input?.passRate ?? 0);
+      const passed = Number(input?.passed ?? 0);
+      const total = Number(input?.total ?? 0);
+      const source = String(input?.source ?? 'cron:baseline-regression-suite');
+      const ranAt = nowIso();
+      const rec = baselineHistorySchema.parse({
+        id: ranAt,
+        channel,
+        passRate,
+        passed,
+        total,
+        frozen: passRate < 0.95,
+        source,
+        ranAt,
+      });
+      const t = await historyTable();
+      await t.put(rec.id, rec);
+      return { id: rec.id, ...rec };
+    },
+
+    /**
+     * Sprint 12 B3: 列出 baseline_history 全部行，按 ranAt 倒序。
+     * 调试 / 报告 / 测试用。
+     */
+    async listBaselineHistory(filter = {}) {
+      const t = await historyTable();
+      const out = [];
+      for (const [id, rec] of t.entries()) {
+        if (filter.channel && rec.channel !== filter.channel) continue;
+        out.push({ id, ...rec });
+      }
+      out.sort((a, b) => b.ranAt.localeCompare(a.ranAt));
+      return out;
     },
 
     _statuses: PROPOSAL_STATUSES,
