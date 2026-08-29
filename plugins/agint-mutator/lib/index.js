@@ -901,8 +901,8 @@ function apply(ctx) {
     const ticketId = artifact.ticketId || ('t-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36));
     const proposalId = artifact.proposalId || artifact.id || 'unknown';
     const decision = artifact.decision || 'AUTO_DEPLOY';
-    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
-    if (!bus || typeof bus.publish !== 'function') {
+    const publish = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
       return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
     }
     const payload = { ticketId, proposalId, decision };
@@ -914,7 +914,7 @@ function apply(ctx) {
         correlationId: ticketId,
         payload,
       };
-      const result = await bus.publish(env);
+      const result = await publish(env);
       return {
         published: true,
         envelopeId: result?.envelopeId,

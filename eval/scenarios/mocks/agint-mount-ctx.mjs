@@ -188,7 +188,12 @@ export function makeMountCtx({ upstream = {}, realCheckPlugin = null } = {}) {
     ['agint.wiki', wikiMock], ['agint.evolveReview', evolveReviewMock],
     ['agint.healthProbe', healthProbeMock], ['agint.baselineSuite', baselineMock],
     ['agint.evolve', evolveMock], // Sprint 12 B3: baselineGate 通道
-    ['agint.mountFs', fsMock], ['agint.eventBus', eventBusProvider],
+    ['agint.mountFs', fsMock],
+    ['agint.eventBus', eventBusProvider], // 伞键 (legacy 兼容 — A5 等仍走伞键形)
+    // 真生产 service 形 (per 伞键修复 Sprint 12 / A3 subagent 发现 plugin provides 是分 service)
+    ['agint.eventBus.publish', eventBusProvider?.publish ?? null],
+    ['agint.eventBus.subscribe', eventBusProvider?.subscribe ?? null],
+    ['agint.eventBus.inspect', eventBusProvider?.inspect ?? null],
   ]);
   const ctx = {
     effect() {},

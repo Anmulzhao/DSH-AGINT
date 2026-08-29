@@ -443,8 +443,10 @@ function apply(ctx) {
     if (!proposal || typeof proposal !== 'object') {
       return { published: false, reason: 'invalid-proposal' };
     }
-    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
-    if (!bus || typeof bus.publish !== 'function') {
+    // event-bus plugin 用 spec.provides 注册的是具体 service（agint.eventBus.publish / .subscribe / .inspect），
+    // 没有 umbrella key。伞键 ctx.get('agint.eventBus') 必然是 undefined。
+    const publish = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
       // 软降级：bus 不可用 → 不报错，调用方继续走直连路径
       return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
     }
@@ -463,7 +465,7 @@ function apply(ctx) {
         payload,
       };
       // eventBus.publish 返回 PublishResult；同 traceId 内对同订阅者保序
-      const result = await bus.publish(env);
+      const result = await publish(env);
       return {
         published: true,
         envelopeId: result?.envelopeId,
@@ -489,8 +491,8 @@ function apply(ctx) {
     const ticketId = artifact.ticketId || ('t-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36));
     const proposalId = artifact.proposalId || artifact.id || 'unknown';
     const decision = artifact.decision || 'AUTO_DEPLOY';
-    const bus = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus') : null;
-    if (!bus || typeof bus.publish !== 'function') {
+    const publish = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
       return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
     }
     const payload = { ticketId, proposalId, decision };
@@ -502,7 +504,7 @@ function apply(ctx) {
         correlationId: ticketId,
         payload,
       };
-      const result = await bus.publish(env);
+      const result = await publish(env);
       return {
         published: true,
         envelopeId: result?.envelopeId,
