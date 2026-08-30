@@ -28,6 +28,8 @@ export const METRIC_DEFS = [
   { key: 'wiki.orphans', label: 'Wiki 孤岛条目数', unit: 'count', source: 'wiki' },
   { key: 'memory.total', label: '记忆条目总数', unit: 'count', source: 'memory' },
   { key: 'memory.avgConfidence', label: '记忆平均置信度', unit: '', source: 'memory' },
+  { key: 'eventBus.syncSubscriptions', label: 'Event Bus sync 订阅数', unit: 'count', source: 'eventBus' },
+  { key: 'eventBus.deadletterRate', label: 'Event Bus 死信率', unit: '', source: 'eventBus' },
 ];
 
 /** Metrics the PLAN lists but that need session-log mining (future work). */
@@ -118,6 +120,21 @@ export async function computeMetrics(sources) {
       push('memory.total', stats?.total ?? 0, stats?.byType ?? {});
       push('memory.avgConfidence', round(stats?.avgConfidence ?? 0, 2));
     } catch { /* skip */ }
+  }
+
+  // ---- eventBus: sync 订阅数 + 死信率（A10 尾巴；软降级→缺省不 push） ----
+  const eventBus = sources?.eventBus;
+  if (eventBus && typeof eventBus.metricsSnapshot === 'function') {
+    try {
+      const snap = await awaitMaybe(eventBus.metricsSnapshot());
+      const syncSubsrc = snap?.syncSubscriptions ?? 0;
+      if (Number.isInteger(syncSubsrc)) push('eventBus.syncSubscriptions', syncSubsrc, {});
+      const deadletterCount = snap?.deadletterCount ?? 0;
+      // 死信率为比例时用 metricsSnapshot 增补的 published 字段；缺省用事件数做归一（无 published 则记 0）
+      const published = snap?.publishedCount ?? 0;
+      const rate = published > 0 ? round((deadletterCount / published) * 100, 3) : (deadletterCount > 0 ? null : 0);
+      if (rate !== null) push('eventBus.deadletterRate', rate, { deadletterCount, publishedCount: published });
+    } catch { /* skip：bus 不可用时不 push eventBus 指标 */ }
   }
 
   return out;

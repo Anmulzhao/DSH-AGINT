@@ -100,6 +100,22 @@ function apply(ctx, _config = {}) {
     ctx.provide('agint.eventBus.subscribe', (rawSub, handler) => subscribe(rawSub, handler));
     ctx.provide('agint.eventBus.inspect', (filter) => inspect((filter ?? {})));
     ctx.provide('agint.eventBus.inspectSummary', (filter) => inspectSummary((filter ?? {})));
+    ctx.provide('agint.eventBus.metricsSnapshot', async () => {
+        // A10 尾巴：死信率 + sync 订阅数（供 agint-metrics 采集；软降级→0）
+        let deadletterCount = 0;
+        try {
+            const dl = busCtx.tables?.deadletter;
+            if (dl && typeof dl.size === 'function')
+                deadletterCount = (await dl.size()) ?? 0;
+        }
+        catch { /* 软降级→0 */ }
+        let syncSubscriptions = 0;
+        try {
+            syncSubscriptions = inspectSummary({}).syncSubscriptionCount ?? 0;
+        }
+        catch { /* 软降级 */ }
+        return { deadletterCount, syncSubscriptions };
+    });
     // ── 监听 tools/post-execute（占位；记录 publish 上下文事件） ──
     try {
         const off = ctx.on('tools/post-execute', () => { });
