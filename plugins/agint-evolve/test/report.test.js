@@ -126,6 +126,26 @@ test('buildReport renders all sections with routing rules', () => {
   assert.match(md, /\| 规则门禁 \|/);
 });
 
+test('buildReport renders A10 eventBus rows (sync subscriptions + deadletter rate)', () => {
+  const snapshot = {
+    ...healthySnapshot,
+    metrics: {
+      asOf: '2026-08-30T00:00:00.000Z',
+      count: 2,
+      metrics: [
+        { key: 'eventBus.syncSubscriptions', label: 'sync 订阅数', value: 1, unit: 'count', ts: 'x', delta: 0 },
+        { key: 'eventBus.deadletterRate', label: '死信率', value: 1.5, unit: '', ts: 'x', delta: 0, meta: JSON.stringify({ deadletterCount: 3, publishedCount: 200 }) },
+      ],
+    },
+  };
+  const md = buildReport({ date: '2026-08-30', snapshot, findings: [], notes: '' });
+  assert.match(md, /Event Bus sync 订阅数/);
+  assert.match(md, /1 个（上限 3）/);
+  assert.match(md, /Event Bus 死信率/);
+  assert.match(md, /1\.5%/);
+  assert.match(md, /死信 3 \/ 发布 200/);
+});
+
 test('buildReport handles a fully unavailable snapshot', () => {
   const findings = findingsFromSnapshot({});
   assert.equal(findings[0].key, 'all.healthy');
