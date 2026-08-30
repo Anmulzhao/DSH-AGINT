@@ -1,0 +1,64 @@
+# diagnosis-completed.schema.yaml — Sprint 12 / A6 (T1 影子期)
+#
+# 发布方：agint-diagnosis.report() 末尾
+# 订阅方：agint-mutator（T1 影子期写观测行，不进 mutator 主决策）
+#
+# Versioning policy（NOT FROZEN，per design §A6.4）：
+#   - v1 不冻结（影子期；字段允许扩展）
+#   - v2 起的破坏性变更走 L0 治理（major version + 7 天影子）
+#   - 新增 optional 字段算 minor
+#
+# 与 envelope 解耦：envelope 8 字段对齐 event-bus FROZEN schema；本 yaml 仅约束 payload。
+
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "agint://plugin/agint-diagnosis/schemas/diagnosis-completed.schema.yaml#v1"
+title: "diagnosis.completed payload"
+description: |
+  发布方：agint-diagnosis（在 report() 末尾 publish，写表与 wiki/memory 钩子完成后）。
+  语义：归因引擎完成一次基于 windowDays 的 report 聚合 + 根因分布。
+  v1：schema 不冻结；订阅方应容错缺字段 + 走 ctx.get('agint.eventBus.publish') 单 service 接口。
+type: object
+required: [reportId, rootCauseDistribution, clusterCount, evaluatedAt]
+additionalProperties: true   # 允许新字段（minor 演进）
+
+properties:
+  reportId:
+    type: string
+    minLength: 1
+    description: "本次 report 的 storage entry.id（在 agint_diagnosis.reports 表里唯一）"
+  targetIds:
+    type: array
+    description: "本次 report 涉及的 target ID 列表（来自聚合阶段，可选）"
+    items:
+      type: string
+      minLength: 1
+  rootCauseDistribution:
+    type: object
+    description: |
+      6 类根因 + UNCERTAIN 兜底的分布计数（key 对齐 RootCauseKindSchema FROZEN enum）。
+      订阅方按需读取，缺字段视为空分布。
+    additionalProperties:
+      type: integer
+      minimum: 0
+  clusterCount:
+    type: integer
+    minimum: 0
+    description: "本次 report 关联的 cluster 数量（≤ LIMITS.CLUSTERS）"
+  evaluatedAt:
+    type: string
+    format: date-time
+    description: "report 完成时间（ISO8601；reportData.generatedAt）"
+
+# ════════════════════════════════════════════════════════════════════════════
+# 演进规则（写在 yaml 注释中，方便 review 时一眼看到）
+# ════════════════════════════════════════════════════════════════════════════
+#
+# v1.0 → v1.x（minor）：
+#   - 仅加 optional 字段 → 订阅方必须 .?? 读取
+#   - 新增 rootCauseDistribution key 视为已有 enum 值（RootCauseKindSchema）
+#   - 不改 required 字段名 / 不改语义
+#
+# v1.x → v2.0（major，L0 治理）：
+#   - 改 required 字段 / 改枚举字面 / 改数值范围 → 走 7 天影子 + 双签
+#
+# 当前状态：v1.0 影子期上线；任何变跟先起 evolve_proposal

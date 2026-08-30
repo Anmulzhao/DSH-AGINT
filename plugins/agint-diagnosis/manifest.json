@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-diagnosis",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "AGINT 归因引擎 v0.6.0：6 类根因判定 + 反事实模拟 + 聚类 + 时间窗报告，归因结果写 agint_diagnosis 域（独立于 agint_evolution / agint_memory / agint_rules / agint_metrics），上限 annotations 200 / clusters 50 / reports 50。Sprint 7 初版仅骨架 + FROZEN schema，算法本体由子任务 #3-#6 接力。",
   "main": "lib/index.js",
   "agint": {
@@ -30,7 +30,8 @@
       "atomic": "json"
     },
     "dependencies": {
-      "agint-evolution-memory": ">=0.3.0"
+      "agint-evolution-memory": ">=0.3.0",
+      "agint-event-bus": ">=0.7.0"
     },
     "mountOrder": 20,
     "permissions": {
