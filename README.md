@@ -82,6 +82,7 @@ cd ~/projects/AGINT
 
 ## 状态
 
+- **v0.7.0 / Sprint 12**（2026-08-30）＝ **P7 第一段（总线化）**。通信架构解耦：新增 `agint-event-bus` 插件（FROZEN event-bus schema + 3 Service + 死信/隔离/退避/traceId + sync 配额）+ 流水线事件化 8 条边 A1–A8（T1 影子期 publish-only 不切流量）。Sprint 11 遗留 8 项 TODO 收口；A6/A7/A8/A9/A10 全部补齐（含指标导出 + 周复盘模板）。全量 99/111（12 存量 fail 未扩）+ 256+ 测试 PASS + L0-frozen 0 命中 + FROZEN 契约零改动。**仅仓库发版**（T2 切换期不早于约 2026-09-25）。20 个插件（加 `agint-event-bus`）+ 3 个 preset + 1 个 patch + 4 个 skill + 3 个 prompt preset。
 - **v0.6.5**（2026-08-28）：Sprint 11 L2→L3 跃迁验证 = P6 整体收口。`agint-mount` 动态挂载编排插件（4 态状态机 + 三段式事务 + 健康探针 + L0 隔离）+ `agint-quality-static` 加 `l0-isolation` 规则组（6/6 smoke PASS）+ 8 e2e 全 PASS + 92/104 全量基线 3 次连跑稳定。19 个插件 + 3 个 preset + 1 个 patch + 4 个 skill + 3 个 prompt preset。
 - **v0.6.4 / v0.6.3**（Sprint 10）：架构解耦与安全性能收口——`agint-quality-sandbox` 独立化 + `agint-quality-static` / `agint-abtest` 独立插件 + `agint-mutator` 三段式事务 + `EvolutionLogBuffer`。
 - **v0.6.2**（Sprint 9）：种群管理器 `agint-population` 落地，三变体锦标赛。
@@ -90,9 +91,9 @@ cd ~/projects/AGINT
 - **v0.4.0**：P4 收口——策略引擎 + 反和谐检测器 + 元评估委员会 + HARM 报告 + 端到端闭环 e2e。
 - **v0.3.1 / v0.2 / v0.1.x**：沙箱 + 进化记忆 + 退化探测 → D-QAF contract + eval → 迁移 + Seam 层。
 
-> **下一步**：v0.7.0 / Sprint 12 —— Event Bus（`agint-event-bus`）基础设施。插件数已达 19，突破 18 阈值；Sprint 11 遗留 8 项 TODO 也将在 Sprint 12 收口。
+> **下一步**：v0.8.0 / Sprint 13 —— 通信架构解耦 T2 切换 + self-model（`self.*` 事件）+ D-QAF 元评估委员会落地（含 B8 评估）。Sprint 12 总线已埋好，Sprint 13 在约 2026-09-25 稳定窗后切换流量。
 
-完整路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图)；详细变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)；Sprint 11 哲学对齐 5 条 + 张力 5 条见 [`Sprint11-哲学对齐检查.md`](./AGINT.wiki/Sprint11-哲学对齐检查.md)。
+完整路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图)；详细变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)；Sprint 12 哲学对齐 5 条 + 张力仲裁表见 [`Sprint12-哲学对齐检查.md`](./AGINT.wiki/Sprint12-哲学对齐检查.md)。
 
 ## 许可
 
