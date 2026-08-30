@@ -96,6 +96,34 @@ function apply(ctx, config) {
         state.lastSweep = nowMs;
         state.lastResult = result;
         state.lastError = null;
+        // Sprint 12 / A8 — T1 影子期：sweep 成功后 publish dream.completed。
+        // 软降级：bus 不可用静默；不阻断 sweep 返回（主路径保留）。
+        // 单 service 接口 ctx.get('agint.eventBus.publish')（不用伞键）。
+        try {
+          const publishFn = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+          if (typeof publishFn === 'function') {
+            await publishFn({
+              topic: 'dream.completed',
+              version: 1,
+              source: 'agint-dream',
+              payload: {
+                sweepId: `${nowMs}`,
+                completedAt: new Date(nowMs).toISOString(),
+                apply: Boolean(opts.apply),
+                durationMs: result.durationMs ?? null,
+                countCandidates: result.counts?.candidates ?? 0,
+                countGated: result.counts?.gated ?? 0,
+                countPromoted: result.counts?.promoted ?? result.promoted?.length ?? 0,
+                diaryPath: result.diaryPath ?? null,
+              },
+            });
+          }
+        } catch (err) {
+          if (state.lastError === null) {
+            // 影子侧副作用失败不改变 lastError（主路径错误语义保持）
+          }
+          // 不抛：dream.completed 影子发布失败不影响 sweep 结果
+        }
         return result;
       } catch (error) {
         state.lastError = error && error.message ? error.message : String(error);
