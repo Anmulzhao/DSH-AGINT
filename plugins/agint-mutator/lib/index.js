@@ -207,6 +207,10 @@ function apply(ctx) {
   // lifecycle：副作用走 ctx.effect → graceful shutdown（设计稿 §八 + AGENTS.md 挂载红线）
   ctx.effect(() => () => {
     disposed = true;
+    if (typeof _diagnosisCompletedUnsubscribe === 'function') {
+      try { _diagnosisCompletedUnsubscribe(); } catch { /* ignore */ }
+      _diagnosisCompletedUnsubscribe = null;
+    }
     if (domain) return domain.close();
     return undefined;
   });
@@ -940,6 +944,53 @@ function apply(ctx) {
   ctx.provide('agint.mutator.checkLimit', checkLimit);
   ctx.provide('agint.mutator.limits', LIMITS);
   ctx.provide('agint.mutator.publishMountRequest', publishMountRequest); // Sprint 12 A4: 消费方 publish mount.requested
+
+  // ── Sprint 12 / A6 — T1 影子期：subscribe diagnosis.completed ────────────────
+  // 目的：观测 agint-diagnosis.report() 完成（影子期；写观测行 + 计数器，不进 mutator 主决策）。
+  // 红线（AGENTS.md / 设计稿 §A6）：
+  //   - 软降级：bus 不可用静默（subscribe 返回 undefined 时记录一次 warn，后续不再尝试）
+  //   - 不修改 mutator 主决策路径（propose / validate / commit / rollback / 3 类来源接口）
+  //   - 不新增 ctx.effect（合并进外层 lifecycle effect；smoke 测试断言 disposers.length === 1）
+  // handler payload：plugins/agint-diagnosis/schemas/diagnosis-completed.schema.yaml v1
+  let _diagnosisCompletedUnsubscribe = null;
+  let _diagnosisCompletedObservationCount = 0;
+  // 把 observationCount 通过 ctx.provide 暴露给 host 侧（scenario / smoke 用）
+  ctx.provide('agint.mutator._diagnosisCompletedObservationCount', () => _diagnosisCompletedObservationCount);
+
+  try {
+    const subscribe = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.subscribe') : null;
+    if (typeof subscribe !== 'function') {
+      if (!disposed) console.warn('[agint-mutator] agint.eventBus.subscribe 不可用；diagnosis.completed 影子观察静默降级');
+    } else {
+      const handler = async (envelope) => {
+        _diagnosisCompletedObservationCount++;
+        try {
+          const payload = envelope?.payload ?? {};
+          const reportId = String(payload.reportId ?? 'unknown');
+          const evaluatedAt = String(payload.evaluatedAt ?? '');
+          const distribution = payload.rootCauseDistribution || {};
+          const clusterCount = Number(payload.clusterCount ?? 0);
+          if (!disposed) {
+            // 控制台观测行（CI 友好；被 grep / scenario 观察得到）
+            console.log(`[agint-mutator.observe] diagnosis.completed reportId=${reportId} evaluatedAt=${evaluatedAt} clusterCount=${clusterCount} distributionKeys=${Object.keys(distribution).join(',')} observationCount=${_diagnosisCompletedObservationCount}`);
+          }
+        } catch (_err) {
+          // handler 永不抛（设计原则：影子订阅不影响发布方与其他订阅方）
+        }
+      };
+      _diagnosisCompletedUnsubscribe = subscribe(
+        {
+          subscriber: 'agint-mutator',
+          topics: ['diagnosis.completed'],
+          mode: 'async',
+          timeoutMs: 5000,
+        },
+        handler,
+      );
+    }
+  } catch (err) {
+    if (!disposed) console.error('[agint-mutator] eventBus.subscribe(diagnosis.completed) failed:', err?.message ?? err);
+  }
   ctx.provide('agint.mutator.io', {
     packProposal, packCommit, packFinding, packMetricsLog,
     unpackProposal, unpackCommit, unpackFinding, unpackMetricsLog,

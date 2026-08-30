@@ -371,6 +371,32 @@ function apply(ctx) {
       } catch (err) { console.warn(`[agint-diagnosis] memory.write 失败：${err && err.message ? err.message : String(err)}`); }
     }
 
+    // ── Sprint 12 / A6 — T1 影子期：publish diagnosis.completed ────────────
+    // 红线（AGENTS.md / A6）：
+    //   - 单 service 接口 ctx.get('agint.eventBus.publish')（不用伞键）
+    //   - 软降级：bus 不可用静默；不阻断 unpackReport 返回
+    //   - report 主路径完整保留（unpackReport 在 publish 之后调用，确保业务流不切）
+    // payload schema：plugins/agint-diagnosis/schemas/diagnosis-completed.schema.yaml v1
+    const p = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof p === 'function') {
+      try {
+        await p({
+          topic: 'diagnosis.completed',
+          version: 1,
+          source: 'agint-diagnosis',
+          payload: {
+            reportId: entry.id,
+            targetIds: Array.isArray(reportData.targetIds) ? reportData.targetIds : [],
+            rootCauseDistribution: reportData.rootCauseDistribution || {},
+            clusterCount: reportData.clusterCount ?? 0,
+            evaluatedAt: reportData.generatedAt || nowIso(),
+          },
+        });
+      } catch (e) {
+        if (!disposed) console.error('[agint-diagnosis] publish failed:', e?.message ?? e);
+      }
+    }
+
     return unpackReport(entry);
   }
 

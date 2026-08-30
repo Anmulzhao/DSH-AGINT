@@ -4,6 +4,41 @@
 
 ---
 
+## v0.7.0 — Sprint 12 / A6 — diagnosis.completed 事件化（T1 影子期）
+
+### 新增
+
+- **`diagnosis.completed` 事件**：report() 末尾 publish，单 service 接口 `ctx.get('agint.eventBus.publish')`
+  - payload：`{ reportId, targetIds, rootCauseDistribution, clusterCount, evaluatedAt }`
+  - envelope：`{ topic: 'diagnosis.completed', version: 1, source: 'agint-diagnosis' }`
+  - **软降级**：bus 不可用静默；不阻断 `unpackReport` 返回
+  - **不切流量**：report 主路径完整保留（写表 → 写 wiki/memory → publish → return）
+- **`schemas/diagnosis-completed.schema.yaml` v1**：payload schema + evolution 路径（v1 不冻结）
+- **`manifest.json`**：
+  - `version` 0.6.0 → 0.7.0
+  - `dependencies` 加 `agint-event-bus >=0.7.0`
+  - `optionalInject: ["agint.evolution","agint.eventBus"]`（A3 已含 eventBus，A6 落地 publish）
+
+### 没动（红线）
+
+- 4 个 FROZEN Service 签名（annotate / counterfactual / cluster / report）
+- 6 类根因 FROZEN enum + AGENT 数据 schema
+- `failure_pattern` 表只读
+- `agint-quality-contract` L0-frozen 字段
+- report 主决策路径（publish 在 return 之前，副通道）
+
+### 测试
+
+- `test/diagnosis-completed-publish.test.mjs`（新增，T1 影子期断言）
+- e2e：新增 `eval/scenarios/agint-event-bus-s12-06-diagnosis.scenario.json` + branch
+  - `eventBusDiagnosisCompletedEnvelopes=1`
+  - `mutatorObservationRecorded=true`
+  - `directReportReturnPathPreserved=true`
+  - `publishDoesNotUseUmbrellaKey=true`
+
+---
+
+
 ## v0.6.0 — Sprint 7 骨架初版（2026-08-24）
 
 子任务 #2 交付物：

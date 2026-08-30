@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { flushSnapshotOnce, METRICS_SNAPSHOT_TOPIC } from './snapshotPublisher.js';
 
 export const metricSchema = z.object({
   id: z.string().min(1),
@@ -20,6 +21,8 @@ export const metricSchema = z.object({
   meta: z.string().default(''),
   ts: z.string().default(() => new Date().toISOString()),
 });
+
+export { METRICS_SNAPSHOT_TOPIC };
 
 export function defaultRandomId() {
   const c = globalThis.crypto;
@@ -45,20 +48,48 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
     memory: ctx.get('agint.memory'),
   });
 
-  return {
+  // Sprint 12 / A7 — T1 影子期：collect 尾部 fire-and-forget publish metrics.snapshot。
+  // 软降级：bus 不可用静默（flushSnapshotOnce 内部处理）；主写路径 collect 返回值不变。
+  // 用 let self 引用，避免 collect/summary 在对象方法 this 绑定上的歧义。
+  const self = {};
+  // 主写 collect（不含 A7 影子副作用）——被 collect() 与 _collectRaw() 复用。
+  const doCollect = async () => {
+    const t = await table();
+    const records = await computeMetrics(sources());
+    const now = new Date().toISOString();
+    const written = [];
+    for (const rec of records) {
+      const record = metricSchema.parse({ id: randomId(), ...rec, ts: now });
+      await t.put(record.id, record);
+      written.push({ key: record.key, value: record.value, unit: record.unit, ts: record.ts });
+    }
+    const uncollected = [];
+    for (const rec of written) if (rec.value === undefined) uncollected.push(rec.key);
+    return { collectedAt: now, count: written.length, collected: written };
+  };
+  const doSnapshotFlush = async () => {
+    const publishFn = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+    return flushSnapshotOnce({
+      publishFn,
+      collectFn: () => self._collectRaw(),
+      summaryFn: () => self.summary(),
+      randomIdFn: randomId,
+    });
+  };
+
+  const service = {
+    // 主 collect：写表 + 尾部触发 A7 影子 publish（fire-and-forget，软降级不破坏主路径）
     async collect() {
-      const t = await table();
-      const records = await computeMetrics(sources());
-      const now = new Date().toISOString();
-      const written = [];
-      for (const rec of records) {
-        const record = metricSchema.parse({ id: randomId(), ...rec, ts: now });
-        await t.put(record.id, record);
-        written.push({ key: record.key, value: record.value, unit: record.unit, ts: record.ts });
+      const result = await doCollect();
+      if (typeof ctx.get === 'function' && ctx.get('agint.eventBus.publish')) {
+        try { doSnapshotFlush(); } catch { /* shadow side-effect must not break collect */ }
       }
-      const uncollected = [];
-      for (const rec of written) if (rec.value === undefined) uncollected.push(rec.key);
-      return { collectedAt: now, count: written.length, collected: written };
+      return result;
+    },
+
+    // 内部 collect（不含 flush 副作用）：供 flushSnapshotOnce 复用，避免 self.collect 递归
+    async _collectRaw() {
+      return doCollect();
     },
 
     async summary() {
@@ -129,5 +160,17 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
       }
       return { total, byKey };
     },
+
+    // Sprint 12 / A7 — 暴露给 driver/e2e 的 fake-timer 兼容入口：绕开真 timer 主动 flush。
+    // 返回 { published, total, degraded }；bus 不可用即 degraded=true。
+    async _flushSnapshotOnce() {
+      const publishFn = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      return doSnapshotFlush();
+    },
   };
+
+  self.collect = service.collect;
+  self.summary = service.summary;
+  self._collectRaw = service._collectRaw;
+  return service;
 }
