@@ -184,13 +184,15 @@ export function _subscriptionsSnapshot(): SubscriptionRecord[] {
   return Array.from(subscriptions.values());
 }
 
-/** inspect 聚合（语义糖：summary + filter） */
+/** inspect 聚合（语义糖：summary + filter + sync 计数；A9 尾巴，仪表盘可读） */
 export function inspectSummary(filter: InspectFilter = {}): {
   entries: EventLogEntry[];
   summary: ReturnType<typeof summarize>;
+  syncSubscriptionCount: number;
+  syncGlobalLimit: number;
 } {
   const entries = inspect(filter);
-  return { entries, summary: summarize(entries) };
+  return { entries, summary: summarize(entries), syncSubscriptionCount: countSyncSubs(), syncGlobalLimit: SYNC_GLOBAL_LIMIT };
 }
 
 /** bus 清退（cordis ctx dispose 时调用） */
