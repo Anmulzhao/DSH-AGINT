@@ -108,6 +108,18 @@ function renderSnapshotTable(s) {
   }
   if (s.metrics) {
     rows.push(snapshotRow('指标', `${s.metrics.count ?? 0} 项已采集（用 metrics_summary 看明细）`));
+    // Sprint 12 / A10 — 周复盘模板新增两行：eventBus 死信率 + sync 订阅数
+    const mList = Array.isArray(s.metrics.metrics) ? s.metrics.metrics : [];
+    const sync = mList.find((m) => m.key === 'eventBus.syncSubscriptions');
+    const dlRate = mList.find((m) => m.key === 'eventBus.deadletterRate');
+    if (sync && sync.value !== undefined) {
+      rows.push(snapshotRow('Event Bus sync 订阅数', `${sync.value} 个（上限 3）`));
+    }
+    if (dlRate && dlRate.value !== undefined) {
+      let meta = '';
+      try { const p = JSON.parse(dlRate.meta || '{}'); meta = `（死信 ${p.deadletterCount ?? 0} / 发布 ${p.publishedCount ?? 0}）`; } catch { /* ignore */ }
+      rows.push(snapshotRow('Event Bus 死信率', `${dlRate.value}%${meta}`));
+    }
   }
   if (s.sessions) {
     rows.push(snapshotRow('会话', s.sessions.count !== undefined ? `${s.sessions.count} 个历史会话` : '（sessionQuery 未接入）'));
