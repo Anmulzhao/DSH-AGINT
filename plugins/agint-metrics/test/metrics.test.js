@@ -113,6 +113,7 @@ test('computeMetrics handles sync and async source methods uniformly', async () 
     rules: { audit: () => ({ rules: [], totals: { hits: 3, denies: 0, asks: 0, advisories: 3 } }), lint: () => [] },
     wiki: { lint: async () => ({ checked: 0, brokenLinks: [], contradictions: [], orphans: [], healthy: true }) },
     memory: { stats: () => ({ total: 0, byType: {}, byLevel: {}, avgConfidence: 0 }) },
+    eventBus: { metricsSnapshot: async () => ({ deadletterCount: 0, syncSubscriptions: 0 }) },
   };
   const recs = await computeMetrics(mixed);
   assert.equal(recs.length, METRIC_DEFS.length); // every computable key present

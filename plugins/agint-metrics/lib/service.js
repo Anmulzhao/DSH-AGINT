@@ -46,6 +46,8 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
     rules: ctx.get('agint.rules'),
     wiki: ctx.get('agint.wiki'),
     memory: ctx.get('agint.memory'),
+    // event-bus 提供单 service 接口（无伞键）；metricsSnapshot 为 A10 尾巴暴露的指标入口
+    eventBus: { metricsSnapshot: ctx.get('agint.eventBus.metricsSnapshot') },
   });
 
   // Sprint 12 / A7 — T1 影子期：collect 尾部 fire-and-forget publish metrics.snapshot。
