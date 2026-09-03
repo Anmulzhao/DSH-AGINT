@@ -35,6 +35,7 @@ import { checkStorageBoundary } from './checkers/storage-boundary.js';
 import { checkEnvAccess } from './checkers/env-access.js';
 import { checkContractReference } from './checkers/contract-reference.js';
 import { checkL0Isolation } from './checkers/l0-isolation.js';
+import { checkSelfModelIsolation } from './checkers/self-model-isolation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +50,7 @@ const CHECKERS = {
   'env-access': checkEnvAccess,
   'contract-reference': checkContractReference,
   'l0-isolation': checkL0Isolation,
+  'self-model-isolation': checkSelfModelIsolation,
 };
 
 function apply(ctx, config) {

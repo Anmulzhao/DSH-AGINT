@@ -13,15 +13,17 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
+// Windows 上裸绝对路径（D:\...）会被 ESM 解析器当成 URL scheme，
+// 报 ERR_UNSUPPORTED_ESM_URL_SCHEME；动态 import 必须走 pathToFileURL。
 const { checkL0Isolation, checkSignatureCompatibility, checkDomainIsolation, checkDependencyWhitelist, SUBCHECKS } =
-  await import(join(ROOT, 'lib/checkers/l0-isolation.js'));
+  await import(pathToFileURL(join(ROOT, 'lib/checkers/l0-isolation.js')).href);
 const { loadProfile, FROZEN_SIGNATURES } =
-  await import(join(ROOT, 'lib/static-profile.js'));
+  await import(pathToFileURL(join(ROOT, 'lib/static-profile.js')).href);
 
 const profile = loadProfile();
 

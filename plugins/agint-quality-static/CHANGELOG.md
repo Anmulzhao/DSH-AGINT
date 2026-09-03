@@ -1,5 +1,30 @@
 # Changelog — agint-quality-static
 
+## 0.7.1 (2026-09-03) — Sprint 13 self-model-isolation + 存量测试收口
+
+### Added
+
+- **新增 `self-model-isolation` 规则组**（设计稿 §4.7）：仅对 `agint-self-model` 生效，防止「只读自我认知」插件退化成自我修改（D2 哲学：自我认知 ≠ 自我修改）
+  - `writeServiceReferences`（blocker）：扫源码，禁止引用 `agint.qualityPolicy` / `agint.mutator` / `agint.population` 等写侧 Service
+  - `storageDomainBoundary`（blocker）：`storage.domains[]` 只允许 `agint_self_model`，越域写一律拒绝
+  - 对非 `agint-self-model` 插件直接跳过（0 findings），不误伤既有产物
+- **注入测试** `test/self-model-isolation.test.mjs`：6 case（happy path + 4 个故意破坏夹具 + 非目标插件跳过）
+- `FAMILY_SEVERITY['self-model-isolation'] = 'blocker'`、`FAMILY_ENABLED['self-model-isolation'] = true`
+
+### Fixed
+
+- **Windows 上 4 个存量测试文件完全无法运行**（`ERR_UNSUPPORTED_ESM_URL_SCHEME`）：`checkers` / `static-smoke` / `l0-isolation.unit` / `l0-isolation.smoke` 在动态 `import()` 里直接传裸绝对路径，`D:\...` 被 ESM 解析器当成 URL scheme。统一改走 `pathToFileURL(...).href`
+- **`checkers.test.mjs` 3 处路径断言硬编码 `/` 分隔符**：改为分隔符字符类 `[\/\\]`，跨平台可用
+- **`static-smoke.test.mjs` 3 个 Sprint 10 遗留断言失效**（被上述 import 崩溃掩盖）：
+  - `listFamilies()` 仍断言 4 族（Sprint 11 加 l0-isolation 后已是 5 族）→ 改为断言全部 6 族存在 + 总数校验
+  - clean plugin / `checkAll()` / 自检 3 个用例未传 `l0IsolationOnly: true`，导致 l0-isolation 的 synth-only 域策略误伤非 synth 夹具 → 统一走文档化的 mount 编排默认档
+- **`lib/static-profile.js` 自身触发 `contract-reference` blocker**：第 115 行注释含 FROZEN 契约包名字面串，违反本文件自己声明的「不得出现被 contract-reference 检查的字面串」约定 → 改写注释措辞，零行为变更
+
+### Notes
+
+- 本次收口后 `plugins/agint-quality-static/test/` 5 个文件共 **62 pass / 0 fail**（此前 4/5 个文件无法启动）
+- `node --test <dir>` 在本仓库 Node 22.22.2 + Windows 下会把目录当 CJS 入口模块解析而报 `MODULE_NOT_FOUND`；请逐文件传参或用 glob
+
 ## 0.6.5 (2026-08-27) — Sprint 11 #B l0-isolation 收口
 
 ### Added

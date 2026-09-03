@@ -10,10 +10,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_PATH = resolve(__dirname, '../lib/index.js');
+// Windows 上裸绝对路径（D:\...）会被 ESM 解析器当成 URL scheme，
+// 报 ERR_UNSUPPORTED_ESM_URL_SCHEME；动态 import 必须走 pathToFileURL。
+const PLUGIN_PATH = pathToFileURL(resolve(__dirname, '../lib/index.js')).href;
 
 function makeMockCtx() {
   const effects = [];
@@ -53,6 +55,9 @@ const CLEAN_FILES = {
   'lib/index.js': 'export const home = process.env.DSH_HOME;\n',
 };
 
+/** mount 编排的默认覆盖档：l0-isolation 仅对 synth 产物生效（防误伤既有插件）。 */
+const MOUNT_OVERRIDES = { l0IsolationOnly: true };
+
 const BLOCKER_FILES = {
   'package.json': JSON.stringify({ name: 'agint-dirty', dependencies: { lodash: '*' } }),
   'lib/index.js': "import fs from 'node:fs';\nfs.writeFileSync('agint_metrics/x.json', '{}');\n",
@@ -67,20 +72,26 @@ test('apply(): provides agint.qualityStatic with 4 methods', async () => {
   assert.ok(ctx._effects.length >= 1, 'should register at least one dispose effect');
 });
 
-test('listFamilies(): returns the 4 families', async () => {
+test('listFamilies(): returns all registered families', async () => {
   const { svc } = await makeService();
   const families = svc.listFamilies();
-  assert.equal(families.length, 4);
-  for (const f of ['dependency-audit', 'storage-boundary', 'env-access', 'contract-reference']) {
+  // Sprint 10 起 4 族 → Sprint 11 +l0-isolation → Sprint 13 +self-model-isolation
+  for (const f of [
+    'dependency-audit', 'storage-boundary', 'env-access', 'contract-reference',
+    'l0-isolation', 'self-model-isolation',
+  ]) {
     assert.ok(families.includes(f), `missing family ${f}`);
   }
+  assert.equal(families.length, 6, `unexpected family set: ${families.join(', ')}`);
 });
 
 test('checkPlugin(): clean plugin → { ok: true, findings: [] }', async () => {
   const { svc } = await makeService();
   const dir = makePluginDir(CLEAN_FILES);
   try {
-    const r = await svc.checkPlugin({ pluginDir: dir });
+    // 走 mount 编排的默认档（l0IsolationOnly: true），否则 l0-isolation 的
+    // synth-only 域策略会误伤这个非 synth 合成夹具（README §mount 编排）。
+    const r = await svc.checkPlugin({ pluginDir: dir, profileOverrides: MOUNT_OVERRIDES });
     assert.equal(r.ok, true, JSON.stringify(r.findings));
     assert.deepEqual(r.findings, []);
     assert.equal(typeof r.durationMs, 'number');
@@ -117,7 +128,7 @@ test('checkAll(): aggregates per-plugin results and totalFindings', async () => 
     makePluginDir(CLEAN_FILES, makePluginDir({}, join(root, 'agint-plugin-a')));
     makePluginDir(BLOCKER_FILES, makePluginDir({}, join(root, 'agint-plugin-b')));
     mkdirSync(join(root, 'not-agint-plugin'), { recursive: true });
-    const r = await svc.checkAll({ pluginsDir: root });
+    const r = await svc.checkAll({ pluginsDir: root, profileOverrides: MOUNT_OVERRIDES });
     assert.deepEqual(Object.keys(r.results).sort(), ['agint-plugin-a', 'agint-plugin-b']);
     assert.equal(r.results['agint-plugin-a'].ok, true);
     assert.equal(r.results['agint-plugin-b'].ok, false);
@@ -138,7 +149,7 @@ test('addAllowlistEntry(): bumps version and validates input', async () => {
 
 test('checkPlugin(): the real agint-quality-static plugin dir is self-clean', async () => {
   const { svc } = await makeService();
-  const r = await svc.checkPlugin({ pluginDir: resolve(__dirname, '..') });
+  const r = await svc.checkPlugin({ pluginDir: resolve(__dirname, '..'), profileOverrides: MOUNT_OVERRIDES });
   const blockers = r.findings.filter(f => f.severity === 'blocker');
   assert.deepEqual(blockers, [], `self blockers: ${JSON.stringify(blockers)}`);
 });

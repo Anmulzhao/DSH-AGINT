@@ -1,6 +1,6 @@
 {
   "name": "agint-quality-static",
-  "version": "0.6.5",
+  "version": "0.7.1",
   "description": "插件代码级静态检查（独立 Cordis 插件）。Sprint 10 #4 + Sprint 11 #B l0-isolation 收口：5 族检查（dependency-audit / storage-boundary / env-access / contract-reference / l0-isolation）。",
   "type": "module",
   "main": "lib/index.js",

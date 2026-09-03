@@ -86,6 +86,8 @@ export const FAMILY_SEVERITY = {
   'contract-reference': 'blocker',
   // Sprint 11 v0.6.5 l0-isolation：动态挂载产物的三项 L0 隔离检查（设计稿 §4.4）
   'l0-isolation': 'blocker',
+  // Sprint 13 v0.7.1 self-model-isolation：只读观察者写路径/存储域隔离（设计稿 §4.7）
+  'self-model-isolation': 'blocker',
 };
 
 /**
@@ -99,6 +101,8 @@ export const FAMILY_ENABLED = {
   // Sprint 11 v0.6.5：l0-isolation 默认开启；mount 编排通过 profile.l0IsolationOnly=true
   // 标记「仅对合成产物」生效，避免误伤既有插件（详见 README）。
   'l0-isolation': true,
+  // Sprint 13 v0.7.1：self-model-isolation 默认开启（仅对 agint-self-model 生效，不误伤其他插件）。
+  'self-model-isolation': true,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +112,7 @@ export const FAMILY_ENABLED = {
 /**
  * FROZEN 签名集合（方案 A：static-profile 内联精简版，老板 2026-08-27 拍板）。
  *
- * 来源：agint-quality-contract v0.1.0 的 7 个 L0 schema 名 + 4 个 L0 interface 名 +
+ * 来源：L0 FROZEN 契约插件 v0.1.0 的 7 个 L0 schema 名 + 4 个 L0 interface 名 +
  * 1 个 Service 名字空间 + 17 个高频 schema 字段。本表**只列名字**，不含任何
  * 完整路径/字符串模板 —— 既避免 grep 自检命中 contract-reference，又
  * 把「签名空间独占」检查做成纯字面量比较。
