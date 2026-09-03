@@ -212,6 +212,26 @@ export function unpackCalibration(entry) {
 // ── openStore：优先真实 storageDomain，降级内存 ──────────────────────────
 
 /**
+ * 把真实 dsh-storage-domain TableHandle 适配成 MemTable 兼容接口。
+ * 差异：真实 size 是 getter（非函数）、无 clear()；此处统一为
+ * async size() / async clear()，使上层（capability / calibration 等）无感知。
+ */
+function adaptTable(handle) {
+  return {
+    put(id, v) { return handle.put(id, v); },
+    get(id) { return handle.get(id) ?? null; },
+    delete(id) { return handle.delete(id); },
+    entries() { return handle.entries(); },
+    async size() { return handle.size; },
+    async values() { return [...handle.entries()].map(([, v]) => v); },
+    async clear() {
+      for (const [k] of handle.entries()) { await handle.delete(k); }
+      return true;
+    },
+  };
+}
+
+/**
  * 打开 agint_self_model 存储域，返回 4 张表句柄。
  * 句柄接口（与 diagnosis / event-bus 对齐）：put(id, v) / get(id) /
  * delete(id) / entries() / size() / values() / clear()。
@@ -220,37 +240,37 @@ export function unpackCalibration(entry) {
  * @returns {{ tables: {capabilityMap, reasoningProfile, resourceBaseline, calibrationLog}, close: Function, _memory?: boolean }}
  */
 export function openStore(ctx) {
-  let handle = null;
-  try {
-    handle = (ctx && typeof ctx.storageDomain?.open === 'function')
-      ? ctx.storageDomain.open({ name: DOMAIN_NAME, schemaVersion: 1, atomic: 'json' })
-      : null;
-  }
-  catch {
-    handle = null;
-  }
-  if (handle && typeof handle.table === 'function') {
-    return {
-      tables: {
-        capabilityMap: handle.table('capability_map'),
-        reasoningProfile: handle.table('reasoning_profile'),
-        resourceBaseline: handle.table('resource_baseline'),
-        calibrationLog: handle.table('calibration_log'),
-      },
-      close: () => { try { handle.close?.(); } catch { /* ignore */ } },
-    };
-  }
-  // 降级：内存 Map（不影响契约）
-  return {
-    tables: {
-      capabilityMap: new MemTable(),
-      reasoningProfile: new MemTable(),
-      resourceBaseline: new MemTable(),
-      calibrationLog: new MemTable(),
-    },
+  const memTables = {
+    capabilityMap: new MemTable(),
+    reasoningProfile: new MemTable(),
+    resourceBaseline: new MemTable(),
+    calibrationLog: new MemTable(),
+  };
+  const store = {
+    tables: memTables,
     close: () => {},
     _memory: true,
   };
+  // 真实 storageDomain.open 是异步的：就绪后热切换为真实表（经 adaptTable 适配）。
+  // 就绪前 / 失败时保持内存降级，不影响契约；绝不让 async rejection 逃逸成 fatal。
+  if (ctx && typeof ctx.storageDomain?.open === 'function') {
+    ctx.storageDomain.open(spec).then(
+      (handle) => {
+        if (handle && typeof handle.table === 'function') {
+          store.tables = {
+            capabilityMap: adaptTable(handle.table('capability_map')),
+            reasoningProfile: adaptTable(handle.table('reasoning_profile')),
+            resourceBaseline: adaptTable(handle.table('resource_baseline')),
+            calibrationLog: adaptTable(handle.table('calibration_log')),
+          };
+          store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
+          store._memory = false;
+        }
+      },
+      () => { /* 降级内存（不 fatal） */ },
+    );
+  }
+  return store;
 }
 
 export {

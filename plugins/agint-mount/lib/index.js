@@ -17,6 +17,7 @@
 import { mountRequest, mountStatus, mountRollback } from './orchestrator.js';
 import { spec, LIMITS } from './storage.js';
 import { resolvePaths } from './paths.js';
+import { z } from 'zod';
 const name = 'agint-mount';
 const inject = ['storageDomain', 'agint.qualitySandbox'];
 /**
@@ -113,5 +114,5 @@ function apply(ctx, config = {}) {
     }
     catch { /* ignore：旧版 dsh 可能没有此事件 */ }
 }
-const Config = {};
+const Config = z.object({});
 export { Config, apply, inject, name, LIMITS };

@@ -1,24 +1,30 @@
 # Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
 # overrides, disables, and insert lists; `!!js` expressions allowed).
+#
+# This file mounts the AGINT (智进) host services into the dsh web profile.
+# The plugins themselves live at D:\DSH\project\DSH-AGINT\plugins\agint-*
+# and are installed via the install script. If the plugin source is not yet
+# available, comment out the corresponding rows below.
 
-# ── 智进 (agint) host services ───────────────────────────────────────────────
-# agint-memory: host-plane long-term memory service (single instance over the
-# `agint` storage domain; the domain name is exclusive per process, so the
-# service must live here and the model-facing tools live in the agint preset).
-# The package is a real copy at plugins/agint-memory so its internal
-# @deepseek-ai/* imports resolve through the healed profiles/node_modules.
-# Requires a server restart to take effect (web profile HMR is disabled).
+# ── AGINT 智进 host services ──────────────────────────────────────────────────
+#
+# Host-plane row that injects a service is the criterion for host-plane
+# ownership: injection resolves before any session exists, so there is no
+# agent to key by. Every agint-* plugin below is a host service consumer,
+# not a per-session capability — they all sit in this patch layer.
+
 - insert:
+    # agint-memory: long-term memory (L1-L4 four-tier forgetting). Owns the
+    # `agint` storage domain exclusively.
     - id: agint-memory
       name: ./plugins/agint-memory/lib/index.js
       config: {}
 
-    # agint-dream: 夜间梦境服务（后台记忆整合，light→REM→deep）。sweep 读
-    # DSH 会话日志→启发式提取候选→六维评分→门槛→提升进 agint.memory，
-    # 梦境日记写 <root>/YYYY-MM-DD.md（与 wiki/reviews 同介质）。调度由
-    # agint-cron 的 night-dream job（每日 03:00，OpenClaw 默认）触发。Preset 工具行见
-    # agent.cordis.yml。
+    # agint-dream: nightly dream service (light → REM → deep). Reads session
+    # logs → heuristics → six-dim score → gate → promote into agint.memory.
+    # Diary at <root>/YYYY-MM-DD.md. Triggered by agint-cron's night-dream
+    # job (daily 03:00).
     - id: agint-dream
       name: ./plugins/agint-dream/lib/index.js
       config:
@@ -26,101 +32,130 @@
         sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
         lookbackDays: 2
 
+    # agint-wiki: knowledge base (independent of task memory).
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
         root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki'
 
+    # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     - id: agint-cron
       name: ./plugins/agint-cron/lib/index.js
       config: {}
 
-    # agint-rules: 规则门禁服务（advisory 半强制 + deny/ask 硬挂）。独占打开
-    # `agint_rules` storage domain（与 `agint` 互斥）。监听 tools/pre-execute
-    # 与 tools/post-execute waterfall — pre 阶段返回 deny/ask，post 阶段把
-    # advisory 注入 additionalContexts 让模型必然看到。Preset 工具行见
-    # agent.agint.yml。
+    # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
+    # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
     - id: agint-rules
       name: ./plugins/agint-rules/lib/index.js
       config: {}
 
-    # agint-metrics: 进化指标服务。独占打开 `agint_metrics` storage domain
-    # （与 agint / agint_rules 互斥）。指标从 agint.cron/rules/wiki/memory
-    # 懒解析采集（缺失源跳过），写入 kv 时间序列；每日由 cron 的
-    # metrics-collect job 触发。Preset 工具行见 agent.cordis.yml。
+    # agint-metrics: evolution metrics. Owns `agint_metrics` domain. Reads
+    # agint.cron/rules/wiki/memory lazy, writes kv time series. Daily via cron.
     - id: agint-metrics
       name: ./plugins/agint-metrics/lib/index.js
       config: {}
 
-    # agint-evolve: 复盘/自进化闭环。复盘报告写文件（root 指向 workspace
-    # 的 reviews 目录，与 wiki 同介质），改进提案存 `agint_evolve` domain。
-    # 每周日由 cron 的 evolve-review job 触发 writeReview()。Preset 工具行
-    # 见 agent.cordis.yml。
+    # agint-evolve: review / self-evolution loop. Reports to <root>/reviews.
+    # Sundays via cron's evolve-review job.
     - id: agint-evolve
       name: ./plugins/agint-evolve/lib/index.js
       config:
         root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
 
-    # agint-tool-stats: D2 工具使用统计。监听 tools/result 事件，追加写
-    # ~/.dsh/storages/agint_tool_stats.jsonl；提供 agint.toolStats Service
-    # 与 model-visible 工具 tool_stats_summary。设计见
-    # wiki/AGINT/d2-dream-evolve-linkage.md Step 1。Preset 工具见
-    # agent.cordis.yml（不新增——tool_stats_summary 由本插件自己注册）。
+    # agint-tool-stats: tool usage profile. Listens on tools/result events,
+    # appends to ~/.dsh/storages/agint_tool_stats.jsonl.
     - id: agint-tool-stats
       name: ./plugins/agint-tool-stats/lib/index.js
       config: {}
 
-    # agint-quality-contract: D-QAF 评估框架核心契约（FROZEN 层）。仅定义
-    # Seam（EvalTarget / EvalResult / Decision / HARM / QualityConfig 等
-    # Schema + QualityEvaluator/Policy/Reporter/Lifecycle 接口签名），不
-    # 写实现。提供 `agint.quality` Host Service（getConfig / setConfig /
-    # schemas / interfaces / getLayer / validatePatch），供 sibling 实现
-    # 插件（agint-quality-{eval,sandbox,policy,report}）按 Seam 组装。
-    # L0-frozen 字段由 validatePatch 守门——任何 patch 含 L0 字段即抛
-    # L0_FROZEN_VIOLATION；L1-adjustable 字段由 policy 调用 setConfig 并
-    # 写审计日志到 agint.memory。本切片仅落 contract：eval/policy/report/
-    # sandbox 由 v0.2+ 补足。设计见 docs/plugins/agint-quality.md。
+    # agint-quality-contract: D-QAF evaluation framework Seam layer (FROZEN).
+    # Defines schemas + interfaces; siblings (eval/sandbox/policy/report) plug
+    # in. L0-frozen field guard via validatePatch.
     - id: agint-quality-contract
       name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
       config: {}
 
-    # agint-quality-eval: D-QAF 评估引擎 v0.2 初版。实现
-    # QualityEvaluatorIface.evaluate(target)：读 agint.toolStats / memory /
-    # rules / metrics 4 个 host Service 算 7 维评分（trust / reliability /
-    # effectiveness / safety / integrability + convention/adaptability 留 v0.3
-    # sandbox 补）。综合分 safety 权重 0.30 一票否决（< 0.5 → REJECT）。
-    # 自持 WeeklyScheduler 每周日 04:30 批量评估所有 AGINT Skills + Plugins，
-    # 评估结果写 agint.memory（type: decision）作为历史溯源。
-    # Service: evaluate / evaluateAll / score / runNow / nextFire / lastRun。
-    # 拒绝自评（避免递归）；上游不可用降级为部分评估 + finding，不抛错。
+    # agint-quality-sandbox: D-QAF sandbox runtime v0.6.3. In-process/隔离双模式
+    # 资源矩阵 + runSmoke/runVerify/runExplore；provide agint.qualitySandbox。
+    # agint-quality-eval / agint-mount 依赖此服务。
+    - id: agint-quality-sandbox
+      name: ./plugins/agint-quality-sandbox/lib/index.js
+      config: {}
+
+    # agint-quality-eval: D-QAF evaluation engine v0.2. 7-dim scoring; safety
+    # gate (×0.30) vetoes below 0.5 → REJECT. Sunday 04:30 weekly evaluation.
+    # Reject self-evaluation.
     - id: agint-quality-eval
       name: ./plugins/agint-quality/agint-quality-eval/lib/index.js
       config: {}
 
-    # Sprint 4.1+ policy plugin 的 row: D-QAF Phase 4 策略引擎
-    #   - 完整 4 决策 (AUTO_DEPLOY/PENDING_REVIEW/REJECT/ABSTAIN)
-    #   - 加权综合分 (DIMENSION_WEIGHTS, contract.setConfig 可调)
-    #   - audit hook: evo.logPhase4 + evo.addFailure + memory.write
-    #   - 反和谐检测器 (4.2) + 元评估委员会 (4.3)
-    # Service: agint.qualityPolicy.{decide, setThresholds, detectFalseHarmony, committee}
+    # agint-quality-policy: D-QAF Phase 4 policy engine. 4 decisions
+    # (AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN); false-harmony
+    # detector + meta-evaluation committee.
     - id: agint-quality-policy
       name: ./plugins/agint-quality/agint-quality-policy/lib/index.js
       config: {}
 
-    # Sprint 4.4 HARM 报告生成插件 row:
-    #   - 实现 QualityReporterIface (FROZEN)
-    #   - generate + writeToWiki + writeToMemory + generateAndPersist
+    # agint-quality-report: HARM report generator. QualityReporterIface impl.
     - id: agint-quality-report
       name: ./plugins/agint-quality/agint-quality-report/lib/index.js
       config: {}
 
-    # Sprint 5 Prompt SDK
-    #   - PromptManifest FROZEN schema (契约)
-    #   - template-engine 渲染 + enum 校验
-    #   - 静态检查三类风险 (注入 / 占位符 / manifest 不一致)
-    #   - CLI bin/agint-prompt-init.js (3 presets: hello/coder/investor)
-    #   - 3 个示例 examples/{hello,coder,investor}-prompt
-    # Service: agint.promptSDK.{validate, render, staticCheck, runTests}
+    # agint-quality-sdk: Prompt SDK v0.5. PromptManifest FROZEN schema +
+    # template engine + static check + CLI.
     - id: agint-quality-sdk
       name: ./plugins/agint-quality-sdk/lib/index.js
+      config: {}
+
+    # agint-quality-static: static-analysis rule check (l0-isolation +
+    # safety-boundary + prompt-injection).
+    - id: agint-quality-static
+      name: ./plugins/agint-quality-static/lib/index.js
+      config: {}
+
+    # agint-diagnosis: attribution engine v0.6.0. 6-class root-cause tagging
+    # + counterfactual simulation + pattern clustering + time-window reports.
+    - id: agint-diagnosis
+      name: ./plugins/agint-diagnosis/lib/index.js
+      config: {}
+
+    # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
+    # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
+    # propose/validate/commit/rollback three-segment transaction.
+    - id: agint-mutator
+      name: ./plugins/agint-mutator/lib/index.js
+      config: {}
+
+    # agint-population: population manager v0.6.2. Three-variant tournament.
+    - id: agint-population
+      name: ./plugins/agint-population/lib/index.js
+      config: {}
+
+    # agint-mount: dynamic mount orchestrator v0.6.5. 4-state state machine +
+    # three-segment transaction + health probe + L0 isolation.
+    - id: agint-mount
+      name: ./plugins/agint-mount/lib/index.js
+      config: {}
+
+    # agint-abtest: A/B test framework v0.6.4.
+    - id: agint-abtest
+      name: ./plugins/agint-abtest/lib/index.js
+      config: {}
+
+    # agint-event-bus: event bus v0.7.0. FROZEN event-bus schema + 3 services +
+    # deadletter / isolation / backoff / traceId + sync quota.
+    - id: agint-event-bus
+      name: ./plugins/agint-event-bus/lib/index.js
+      config: {}
+
+    # agint-self-model: read-only observer v0.7.1. Capability map
+    # (CAN/CANNOT/UNCERTAIN) + reasoning profile + resource baseline + calibration.
+    - id: agint-self-model
+      name: ./plugins/agint-self-model/lib/index.js
+      config: {}
+
+    # agint-evolution-memory: evolution-only memory. Distinct from task memory;
+    # D-QAF auto-write landing.
+    - id: agint-evolution-memory
+      name: ./plugins/agint-evolution-memory/lib/index.js
       config: {}

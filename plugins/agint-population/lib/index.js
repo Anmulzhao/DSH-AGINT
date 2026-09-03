@@ -539,5 +539,5 @@ function apply(ctx) {
   ctx.provide('agint.population.checkLimit', checkLimit);
 }
 
-const Config = {};
+const Config = z.object({});
 export { Config, apply, inject, name };

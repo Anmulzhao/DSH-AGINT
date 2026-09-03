@@ -100,7 +100,7 @@ const SOURCE_STUBS = {
   STRATEGY_REWRITE: { expectedEffect: 'reorder 通过率 >= 80% within 7 天', rollbackCondition: 'manual rollback after 3 failures', payloadField: { strategyPayload: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } }, template: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } },
 };
 
-const Config = {};
+const Config = z.object({});
 
 // ── 入参 schema（设计稿 §二.1：propose input 形态） ─────────────────────
 // 业务 payload 字段由 caller 传（fixture / 人类 owner）；软依赖仅做「服务可用」守门。
