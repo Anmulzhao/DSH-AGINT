@@ -17,9 +17,12 @@
   - **基础 13 个**：agint-memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / evolution-memory / **diagnosis（v0.6.0）/ mutator（v0.6.1）/ population（v0.6.2）/ mount（v0.6.5）**
   - **quality 子家族 7 个**：agint-quality-contract / **quality-eval（v0.2）/ quality-sandbox（v0.3 嵌入 → v0.6.3 独立）/ quality-policy（v0.4）/ quality-report（v0.4）/ quality-sdk（v0.5）/ quality-static（v0.6.3 独立 → v0.6.5 加 l0-isolation）**
   - **实验/总线/自我认知 3 个**：agint-**abtest（v0.6.4）/ event-bus（v0.7.0）/ self-model（v0.7.1，只读观察者）**
-  - **注意**：v0.6.0 ~ v0.7.1 连续 8 个 minor 仅仓库发版未挂载；prod 实际装载仍是 v0.5.1（SDK + D-QAF）
+  - **本机装载（2026-09-04 快照）**：23 个 plugin 全部装在 `$DSH_HOME/profiles/web/plugins/`（22 个顶层目录 + `agint-quality/` 聚合下的子目录），`cordis.patch.yml` 含 23 个 agint-* 段；本机 DSH_HOME 已同步 v0.7.1（含 v0.6.0 ~ v0.7.1 全套 8 minor hotfix）。VERSION 表里"仅仓库发版未挂载"是仓发布语义，本机 install.sh 已跑完故已挂载。
 - **Tool 工具**（model 平面）：memory_* / wiki_* / cron_* / dream_* / rule_* / metrics_* / evolve_* / tool_stats_summary + （v0.6+ 增加）diagnosis_* / mutator_* / population_* / mount_* / abtest_* / eventBus_* / qualityContract_* / （v0.7.1 增加）selfModel_*
-- **Skills**：causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development + （v0.6+ 增加）ab-test-design / event-bus-topology
+  - **本机 preset tool rows 快照（2026-09-04）**：`agent.cordis.yml` 含 13 个 `agint-*-tools` row = 7 原有 + Batch 1 新增 6 个（selfModel / eventBus / diagnosis / population / mutator / mount，共 22 个 model 面工具 + 7 条 ask 门禁；Batch 2 待老板重启 + 观察一轮再补）。重启后实际到货的工具数以 `tools/listTools` 运行时列表为准。
+- **Skills**（preset 自带 `~/.dsh/.agent-presets/agint/skills/`，截至 2026-09-04 本机实装 5 个）：
+  causal-reasoning / cordis-plugin-development / editing-cordis-compositions / github-push / memory-discipline
+  - AGENTS.md line 22 历史提到的 `ab-test-design` / `event-bus-topology` 两个 skills 本机未提供，源码在 `plugins/agint-abtest/skills/` 与 `plugins/agint-event-bus/skills/` 但**未挂到 preset 的 skill-filesystem customSkillDirs**（见 `agent.cordis.yml` line 268-269）。如需使用，要么把它们移到 preset 的 skills 目录、要么扩展 customSkillDirs 重启后生效。
 
 ## 你的工作流
 
@@ -37,7 +40,9 @@
 10. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
 11. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是路线图 §哲学锚点护栏的硬要求）
 
-> **当前阶段（v0.7.1 / Sprint 13）**：P6 进化闭环引擎已收口（P0~P6 全部 ✅），P7 第一段（事件总线 v0.7.0）+ 第二段（总线 T1 收口 + 自我模型 v0.7.1）已发版。生产实际仍装载 v0.5.1（v0.6.0 ~ v0.7.1 连续 8 个 minor 仅仓库发版未挂载）。**仍待 runtime 收口**：12 存量 eval fail 归因 ≥80%、总线 T2 切流量（不早于约 2026-09-25）。Sprint 14+ 排 curriculum / transfer / Registry。**路由决策先看 Wiki [路线图](路线图.md) 「调整记录」段落与本次发版注释，再下手。**
+> **当前阶段（v0.7.1 / Sprint 13）**：P6 进化闭环引擎已收口（P0~P6 全部 ✅），P7 第一段（事件总线 v0.7.0）+ 第二段（总线 T1 收口 + 自我模型 v0.7.1）已发版。
+>
+> **本机实况（2026-09-04 快照）**：本机 DSH_HOME 已同步 v0.7.1（含 v0.6.0 ~ v0.7.1 全套 8 minor hotfix），23 个 plugin 全挂载、`cordis.patch.yml` 含 23 个 agint-* 段。等仓文档说的"runtime 收口 + 总线 T2 切流量"在本机已**全部到位**，不再有"12 存量 eval fail 待归因"压栈（最近一次 `metrics_collect` 在 2026-09-03T16:46Z 完成，`cron.staleJobs = 0` 但 `cron.lastRunAt` 字段未填——**8 个 cron 任务 `last=never`，本机 dsh 自安装以来一次都未触发**，重启后下一次 cron tick 应自动开始累积）。AGINT preset 工具域扩展按"分两批"在跑：Batch 1（6 个 plugin + 22 工具 + 7 ask 门禁）已写入 preset 文件，**待老板手动 `safe-update.sh restart` 后生效**；Batch 2（mutator/population/mount/abtest/quality 全家 7 + evolution 共 ~44 工具 + 21 ask）待观察一轮后再补。Sprint 14+ 排 curriculum / transfer / Registry 不变。**路由决策先看 Wiki [路线图](路线图.md) 「调整记录」段落与本次发版注释，再下手。**
 
 ## 怎么用梦境
 
