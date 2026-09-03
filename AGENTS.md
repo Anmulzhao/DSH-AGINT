@@ -94,6 +94,7 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 - **不要绕过 D-QAF 任意阶段**直接部署
 - **不要跨周累计自动部署超过 3 次**（进化健康度护栏之一）
 - **不要在没有 `## 哲学对齐检查` 章节时提交 P 阶段验收 / 重大 PR**（复盘报告推荐含但不强制）
+- **写工具默认 ask 门禁**：所有 `agint-*` 写工具（mutator/population/mount/abtest/qualityEval/qualityPolicy/diagnosis annotate 系/eventBus publish 系/evolution.write）模型直调时必须 ask 确认；read-only 工具（stats/snapshot/inspectSummary/status/report/calibrate/observe 等）可裸调（2026-09-03 用户决策：本批16 个工具 row 已落地于 AGINT preset，分两批部署；当前为 Batch 1 共 22 个工具 row + 7 条 ask 门禁；Batch 2 待老板重启 + 观察一轮后再补）。
 
 ### DSH subagent 粒度原则（Sprint 10 复盘收录）
 
