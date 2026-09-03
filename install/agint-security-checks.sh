@@ -116,13 +116,20 @@ check_git_repo() {
 
 check_runtime_tools() {
   heading "runtime checks"
-  for tool in rsync python3 date mkdir; do
+  # 必需工具：缺任一个都装不动（python3 同时承担 patch 合并与无 rsync 时的文件同步）
+  for tool in python3 date mkdir; do
     if command -v "$tool" >/dev/null 2>&1; then
       report_pass "工具可用: $tool ($(command -v "$tool"))"
     else
       report_fail "工具缺失: $tool"
     fi
   done
+  # 可选工具：rsync 只影响同步速度，install.sh 有 python3 回退分支
+  if command -v rsync >/dev/null 2>&1; then
+    report_pass "工具可用: rsync（可选，$(command -v rsync)）"
+  else
+    report_warn "rsync 缺失（可选）：将回退到 python3 同步，功能不变"
+  fi
 }
 
 check_disk_space() {
@@ -144,17 +151,31 @@ check_disk_space() {
 }
 
 check_backup_dir_writable() {
-  # 如果 DSH_HOME 存在，确认备份目录能写（不存在时不强求）。
+  # 如果 DSH_HOME 存在，确认备份目录【能建且能写】。
+  #
+  # 注意：这里必须真的 mkdir 一次再判可写。原来的写法只在目录「已存在且不可写」
+  # 时才 fail，目录压根不存在时直接 report_pass —— 给了假绿。结果是 install.sh
+  # 第一次跑（备份目录尚未创建）时 tar 直接 "Cannot open: No such file or
+  # directory" 挂掉，而前置检查明明是绿的（2026-09-03 实测踩到）。
   if [ ! -d "$DSH_HOME" ]; then return; fi
   local bdir="$DSH_HOME/.agint-backups"
   if [ -e "$bdir" ] && [ ! -d "$bdir" ]; then
     report_fail "$bdir 存在但不是目录"
     return
   fi
-  if [ -d "$bdir" ] && [ ! -w "$bdir" ]; then
-    report_fail "$bdir 不可写（perms=$(stat -c %a "$bdir" 2>/dev/null || stat -f %p "$bdir" 2>/dev/null)）"
-  else
+  if [ ! -d "$bdir" ]; then
+    # 目录不存在：试着建（install.sh 的 ensure_backup_dir 也会建，这里先探一次）
+    if mkdir -p "$bdir" 2>/dev/null; then
+      report_pass "备份目录已创建: $bdir"
+    else
+      report_fail "备份目录无法创建: $bdir"
+      return
+    fi
+  fi
+  if [ -w "$bdir" ]; then
     report_pass "备份目录可写: $bdir"
+  else
+    report_fail "$bdir 不可写（perms=$(stat -c %a "$bdir" 2>/dev/null || stat -f %p "$bdir" 2>/dev/null)）"
   fi
 }
 
