@@ -1,0 +1,62 @@
+[
+  {
+    "scenario": "self-model-capability-can",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "weekly", "mock": { "evolutionFailures": [["codegen", "pf1"], ["codegen", "pf2"]], "evolutionTemplates": [["codegen", "pt1"], ["codegen", "pt2"], ["codegen", "pt3"], ["codegen", "pt4"], ["codegen", "pt5"]], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "capability-can", "statusIs": "CAN", "domain": "codegen" }]
+  },
+  {
+    "scenario": "self-model-capability-cannot",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "weekly", "mock": { "evolutionFailures": [["reasoning", "pf1"], ["reasoning", "pf2"], ["reasoning", "pf3"]], "evolutionTemplates": [], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "capability-cannot", "statusIs": "CANNOT", "domain": "reasoning" }]
+  },
+  {
+    "scenario": "self-model-capability-uncertain-low-samples",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "weekly", "mock": { "evolutionFailures": [], "evolutionTemplates": [], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "capability-uncertain", "statusIs": "UNCERTAIN" }]
+  },
+  {
+    "scenario": "self-model-calibration-cold-start-guard",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "calibrate", "mock": { "evolutionFailures": [["x", "f1"]], "evolutionTemplates": [] } }],
+    "expected": [{ "kind": "calibration-cold-start", "_doc": "样本<10 → 不计误差、不触发 miscalibration", "coldStartDomainsExcludedFromMiscalibration": true }]
+  },
+  {
+    "scenario": "self-model-calibration-miscalibration-guard",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "calibrate", "mock": { "calibrationSeed": [{ "domain": "x", "predicted": 0.9, "actual": 0.5, "samples": 20 }] } }],
+    "expected": [{ "kind": "calibration-miscalibration", "_doc": "误差0.4>0.1 且样本≥10 → miscalibration 告警 + failure_pattern 标注", "errorOverThreshold": true, "miscalibratedIncludes": "x" }]
+  },
+  {
+    "scenario": "self-model-frozen-lastVerifiedAt-required",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "schema", "action": "validateCapabilityEntry", "payload": { "domain": "d", "capability": "c", "status": "CAN", "confidence": 0.5, "evidenceRefs": [], "lastVerifiedAt": "", "updatedAt": "2026-09-03T00:00:00.000Z" } }],
+    "expected": [{ "kind": "frozen-validation", "throws": true, "_doc": "lastVerifiedAt 空串硬抛错（对齐 event-bus sync reason 惯例）" }]
+  },
+  {
+    "scenario": "self-model-a11-publish-payload",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "weekly", "withEventBus": true, "mock": { "evolutionFailures": [["codegen", "pf1"], ["codegen", "pf2"]], "evolutionTemplates": [["codegen", "pt1"], ["codegen", "pt2"], ["codegen", "pt3"], ["codegen", "pt4"], ["codegen", "pt5"]], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "a11-published", "_doc": "T1 影子期 publish-only；payload FROZEN 最小集", "topicIs": "self.model.updated", "payloadHas": ["changedDomains", "capabilitySummary", "calibrationSummary"] }]
+  },
+  {
+    "scenario": "self-model-update-changedDomains",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "diagnosis-completed", "mock": { "evolutionFailures": [["codegen", "pf1"], ["codegen", "pf2"], ["codegen", "pf3"]], "evolutionTemplates": [["codegen", "pt1"], ["codegen", "pt2"]], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "update-result", "updatedDomainsIsArray": true, "updatedDomainsNonEmpty": true }]
+  },
+  {
+    "scenario": "self-model-snapshot-four-blocks",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "snapshot", "afterUpdate": true, "mock": { "evolutionFailures": [["codegen", "pf1"]], "evolutionTemplates": [["codegen", "pt1"], ["codegen", "pt2"]], "diagnosisEnvShift": 0 } }],
+    "expected": [{ "kind": "snapshot-blocks", "hasBlocks": ["capabilities", "reasoningProfile", "resourceBaseline", "calibrationSummary"] }]
+  },
+  {
+    "scenario": "self-model-reasoning-profile-from-diagnosis",
+    "plugin": "agint-self-model",
+    "input": [{ "service": "selfModel", "action": "update", "trigger": "weekly", "withDiagnosisReport": { "REASONING_ERROR": 4, "PLANNING_FAILURE": 2, "PROMPT_DEFICIENCY": 1, "TOOL_GAP": 1, "KNOWLEDGE_GAP": 3, "ENVIRONMENT_SHIFT": 0, "UNCERTAIN": 0 } }],
+    "expected": [{ "kind": "reasoning-profile", "_doc": "由 diagnosis 根因分布推导推理画像 entries", "reasoningProfileNonEmpty": true, "aspectsInclude": ["error-condition", "chain-break", "bias"] }]
+  }
+]

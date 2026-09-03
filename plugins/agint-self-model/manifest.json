@@ -1,0 +1,91 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-self-model",
+  "version": "0.7.1",
+  "description": "AGINT 自我模型 v0.7.1（Sprint 13 / Part 2）：只读观察者插件。聚合 evolution-memory / diagnosis / metrics / tool-stats 形成能力图谱 + 推理画像 + 资源感知 + 校准误差。禁止写 qualityPolicy / mutator / population（D2 哲学定位：自我认知 ≠ 自我修改）。新增事件边 A11 self.model.updated（T1 影子期 publish-only）。设计稿 Sprint13 §四。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "observer",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.evolution",
+        "agint.diagnosis",
+        "agint.metrics",
+        "agint.toolStats",
+        "agint.eventBus"
+      ],
+      "optionalInject": [],
+      "provides": [
+        "agint.selfModel.snapshot",
+        "agint.selfModel.update",
+        "agint.selfModel.calibrate",
+        "agint.selfModel.stats",
+        "agint.selfModel.inspectSummary"
+      ],
+      "events": [],
+      "tools": []
+    },
+
+    "storage": {
+      "domains": ["agint_self_model"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+
+    "dependencies": {
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "agint-evolution-memory": ">=0.6.4",
+      "agint-diagnosis": ">=0.7.0",
+      "agint-metrics": ">=0.6.0",
+      "agint-tool-stats": ">=0.6.0",
+      "agint-event-bus": ">=0.7.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 60,
+
+    "permissions": {
+      "env": ["DSH_HOME", "AGINT_HOME"],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.selfModel.snapshot": "返回 SelfModelSnapshot（能力图谱 + 推理画像 + 资源基线 + 校准摘要）；可选 domain 过滤",
+        "agint.selfModel.update": "触发一次轻量更新（trigger ∈ task-completed|task-failed|diagnosis-completed|dream-completed|weekly）；返回 {ok, updatedDomains[]}；T1 影子期顺带 publish A11",
+        "agint.selfModel.calibrate": "按域滚动校准，返回 CalibrationResult[]；误差 >10% 触发 miscalibration 告警（cold-start <10 样本不计误差）",
+        "agint.selfModel.stats": "返回四表计数摘要（辅助）",
+        "agint.selfModel.inspectSummary": "返回巡检摘要（辅助，对齐 event-bus 惯例）"
+      }
+    },
+
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.7.1"
+  }
+}
