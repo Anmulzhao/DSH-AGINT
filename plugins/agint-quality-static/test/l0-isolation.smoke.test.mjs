@@ -19,13 +19,15 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
-const { checkL0Isolation } = await import(join(ROOT, 'lib/checkers/l0-isolation.js'));
-const { loadProfile } = await import(join(ROOT, 'lib/static-profile.js'));
+// Windows 上裸绝对路径（D:\...）会被 ESM 解析器当成 URL scheme，
+// 报 ERR_UNSUPPORTED_ESM_URL_SCHEME；动态 import 必须走 pathToFileURL。
+const { checkL0Isolation } = await import(pathToFileURL(join(ROOT, 'lib/checkers/l0-isolation.js')).href);
+const { loadProfile } = await import(pathToFileURL(join(ROOT, 'lib/static-profile.js')).href);
 
 // 拼接而非直写，避免本测试文件被 contract-reference 自检 grep 命中
 const CONTRACT_TOKEN = ['agint', 'quality', 'contract'].join('-');
@@ -203,7 +205,7 @@ test('INTEGRATION: agint.qualityStatic.checkPlugin dispatches l0-isolation check
       on: () => {}, register: () => {},
     };
   }
-  const PLUGIN_PATH = join(ROOT, 'lib/index.js');
+  const PLUGIN_PATH = pathToFileURL(join(ROOT, 'lib/index.js')).href;
   const mod = await import(PLUGIN_PATH);
   const ctx = makeMockCtx();
   mod.apply(ctx, {});

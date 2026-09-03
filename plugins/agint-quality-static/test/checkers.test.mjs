@@ -13,16 +13,18 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CHECKERS = resolve(__dirname, '../lib/checkers');
 
-const { checkDependencyAudit } = await import(join(CHECKERS, 'dependency-audit.js'));
-const { checkStorageBoundary } = await import(join(CHECKERS, 'storage-boundary.js'));
-const { checkEnvAccess } = await import(join(CHECKERS, 'env-access.js'));
-const { checkContractReference } = await import(join(CHECKERS, 'contract-reference.js'));
-const { loadProfile } = await import(resolve(__dirname, '../lib/static-profile.js'));
+// Windows 上裸绝对路径（D:\...）会被 ESM 解析器当成 URL scheme，
+// 报 ERR_UNSUPPORTED_ESM_URL_SCHEME；动态 import 必须走 pathToFileURL。
+const { checkDependencyAudit } = await import(pathToFileURL(join(CHECKERS, 'dependency-audit.js')).href);
+const { checkStorageBoundary } = await import(pathToFileURL(join(CHECKERS, 'storage-boundary.js')).href);
+const { checkEnvAccess } = await import(pathToFileURL(join(CHECKERS, 'env-access.js')).href);
+const { checkContractReference } = await import(pathToFileURL(join(CHECKERS, 'contract-reference.js')).href);
+const { loadProfile } = await import(pathToFileURL(resolve(__dirname, '../lib/static-profile.js')).href);
 
 // 拼接而非直写，避免本测试文件被 contract-reference 自检 grep 命中
 const CONTRACT_TOKEN = ['agint', 'quality', 'contract'].join('-');
@@ -133,7 +135,8 @@ test('storage-boundary: direct fs write to agint_evolution → blocker', async (
     assert.equal(findings[0].family, 'storage-boundary');
     assert.equal(findings[0].severity, 'blocker');
     assert.match(findings[0].message, /agint_evolution/);
-    assert.match(findings[0].location, /lib\/bad\.js:2$/);
+    // 分隔符字符类：POSIX 是 '/'，Windows 是 '\'（跨平台断言）
+    assert.match(findings[0].location, /lib[\/\\]bad\.js:2$/);
   } finally { cleanup(dir); }
 });
 
@@ -192,7 +195,7 @@ test('env-access: non-allowlisted var → warn finding', async () => {
     assert.equal(findings[0].family, 'env-access');
     assert.equal(findings[0].severity, 'warn');
     assert.match(findings[0].message, /SECRET_API_KEY/);
-    assert.match(findings[0].location, /lib\/env\.js:1$/);
+    assert.match(findings[0].location, /lib[\/\\]env\.js:1$/);
   } finally { cleanup(dir); }
 });
 
@@ -232,7 +235,7 @@ test('contract-reference: import of forbidden contract → blocker', async () =>
     assert.equal(findings.length, 1);
     assert.equal(findings[0].family, 'contract-reference');
     assert.equal(findings[0].severity, 'blocker');
-    assert.match(findings[0].location, /lib\/leak\.js:1$/);
+    assert.match(findings[0].location, /lib[\/\\]leak\.js:1$/);
     assert.match(findings[0].message, /reference found at/);
   } finally { cleanup(dir); }
 });
