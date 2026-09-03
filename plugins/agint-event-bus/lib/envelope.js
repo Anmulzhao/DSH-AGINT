@@ -13,10 +13,59 @@
 import { randomUUID } from 'node:crypto';
 import { validateEnvelope, TopicSchema } from './schemas.js';
 /**
+ * Sprint 13 / s12-07 断言②：payload 不可变（深冻结）。
+ *
+ * 实现要点：
+ *   - **先深拷贝再冻结**：绝不冻结调用方传入的对象（否则会污染发布方插件的本地状态，
+ *     例如 metrics 复用同一个 payload 模板对象）。
+ *   - 循环引用安全：用 WeakMap 记忆已访问对象，遇到环直接返回已冻结副本。
+ *   - 不可深拷贝的值（函数 / Symbol / 无法结构化的对象）原样透传，不冻结也不报错。
+ */
+function deepClone(value, seen) {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (Array.isArray(value)) {
+    const copy = [];
+    seen.set(value, copy);
+    for (const item of value) copy.push(deepClone(item, seen));
+    return copy;
+  }
+  const proto = Object.getPrototypeOf(value);
+  // 仅对 plain object / 数组做深拷贝；类实例、Map/Set 等保持引用语义（避免破坏行为）
+  if (proto !== Object.prototype && proto !== null) return value;
+  const out = {};
+  seen.set(value, out);
+  for (const [k, v] of Object.entries(value)) out[k] = deepClone(v, seen);
+  return out;
+}
+
+function deepFreeze(value, seen) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  if (seen.has(value)) return value;
+  seen.set(value, true);
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item, seen);
+    return Object.freeze(value);
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  for (const v of Object.values(value)) deepFreeze(v, seen);
+  return Object.freeze(value);
+}
+
+/** 深拷贝 + 深冻结 payload（返回新对象，调用方入参不被冻结） */
+export function freezePayload(payload) {
+  if (payload === null || payload === undefined) return payload;
+  const cloned = deepClone(payload, new WeakMap());
+  return deepFreeze(cloned, new WeakMap());
+}
+/**
  * 构造并校验 EventEnvelope。
  *  - 缺失字段按"总线代填"语义补齐（id / traceId / occurredAt / version）
  *  - topic / source 必填，缺失直接抛错（不可代填）
  *  - 走 zod 校验（FROZEN 字段顺序与 yaml 一致）
+ *  - payload 深拷贝 + 深冻结（Sprint 13 / s12-07 断言②）
  */
 export function makeEnvelope(input) {
     if (!input || typeof input !== 'object') {
@@ -41,7 +90,7 @@ export function makeEnvelope(input) {
         source: input.source,
         traceId: input.traceId ?? randomUUID(),
         correlationId: input.correlationId,
-        payload: input.payload ?? {},
+        payload: freezePayload(input.payload ?? {}),
     };
     // zod 全字段校验（含 id uuid / occurredAt datetime / source min 1）
     return validateEnvelope(candidate);
@@ -51,7 +100,12 @@ export function makeEnvelope(input) {
  * 不替代 makeEnvelope；用于 publish 内部校验。
  */
 export function assertEnvelope(envelope) {
-    return validateEnvelope(envelope);
+    // 与 makeEnvelope 一致的不可变保证：外部来源的 envelope 也要冻结 payload
+    // （深拷贝后冻结，不修改调用方持有的对象）。
+    const withFrozen = (envelope && typeof envelope === 'object' && 'payload' in envelope)
+        ? { ...envelope, payload: freezePayload(envelope.payload) }
+        : envelope;
+    return validateEnvelope(withFrozen);
 }
 /**
  * 精简 inspect 视图（不暴露 payload 全文，仅保留预览）。
