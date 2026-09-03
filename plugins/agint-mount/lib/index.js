@@ -106,13 +106,9 @@ function apply(ctx, config = {}) {
     ctx.provide('agint.mount.request', async (input) => mountRequest(mountCtx, input));
     ctx.provide('agint.mount.status', async (ticketId) => mountStatus(mountCtx, ticketId));
     ctx.provide('agint.mount.rollback', async (input) => mountRollback(mountCtx, input));
-    // ── 监听 tools/post-execute（占位，便于 Sprint 12 迁移事件总线） ──
-    try {
-        const off = ctx.on('tools/post-execute', () => { });
-        if (typeof off === 'function')
-            disposers.push(off);
-    }
-    catch { /* ignore：旧版 dsh 可能没有此事件 */ }
+    // 注意：不要注册 tools/post-execute 空监听 —— 该事件是 waterfall，
+    // 不调 next() 会令瀑布结果为 undefined，dsh-tools 读 decision.kind 抛错，
+    // 所有工具调用失败。mount 不消费工具结果，不监听。
 }
 const Config = z.object({});
 export { Config, apply, inject, name, LIMITS };

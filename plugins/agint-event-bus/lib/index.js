@@ -149,13 +149,9 @@ function apply(ctx, _config = {}) {
         // 实现下沉到 bus.metricsSnapshot（可单测）；软降级→0。
         return metricsSnapshot(busCtx);
     });
-    // ── 监听 tools/post-execute（占位；记录 publish 上下文事件） ──
-    try {
-        const off = ctx.on('tools/post-execute', () => { });
-        if (typeof off === 'function')
-            disposers.push(off);
-    }
-    catch { /* ignore：旧版 dsh 可能无此事件 */ }
+    // 注意：不要注册 tools/post-execute 空监听 —— 该事件是 waterfall，
+    // 不调 next() 会令瀑布结果为 undefined，dsh-tools 读 decision.kind 抛错，
+    // 所有工具调用失败。event-bus 不消费工具结果，不监听。
 }
 /** 最小 TableHandle stub（host storageDomain 不可用时兜底；smoke / 单元测试可用） */
 function stubTable() {

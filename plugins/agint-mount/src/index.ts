@@ -102,11 +102,11 @@ function apply(ctx: any, config: any = {}) {
   ctx.provide('agint.mount.status', async (ticketId: string) => mountStatus(mountCtx, ticketId));
   ctx.provide('agint.mount.rollback', async (input: unknown) => mountRollback(mountCtx, input));
 
-  // ── 监听 tools/post-execute（占位，便于 Sprint 12 迁移事件总线） ──
-  try {
-    const off = ctx.on('tools/post-execute', () => { /* noop：mount 不消费工具结果 */ });
-    if (typeof off === 'function') disposers.push(off);
-  } catch { /* ignore：旧版 dsh 可能没有此事件 */ }
+  // 注意：不要在此注册 tools/post-execute 空监听。该事件是 waterfall：
+  // 监听器必须调用 next() 并返回其结果，否则瀑布结果为 undefined，
+  // dsh-tools 读取 decision.kind 时抛 "Cannot read properties of undefined
+  // (reading 'kind')"，导致所有 preset 的全部工具调用失败。
+  // mount 不消费工具结果，因此不监听该事件。
 }
 
 const Config = {};
