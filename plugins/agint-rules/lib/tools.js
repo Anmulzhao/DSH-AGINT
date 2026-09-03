@@ -156,6 +156,11 @@ function apply(ctx) {
                 enabled: { type: 'boolean', required: true },
                 createdAt: { type: 'string', required: true },
                 updatedAt: { type: 'string', required: true },
+                // D-QAF frozenness 字段 (提案 a6ba79a3) — 存储层新增, 输出 schema 必须同步声明,
+                // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list 返回 invalid output)。
+                frozenness: { type: 'string' },
+                lastChangedAt: { type: 'string' },
+                softDeleteDeadline: { type: 'string' },
               },
             },
           },
