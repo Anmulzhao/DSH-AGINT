@@ -20,6 +20,7 @@
 | 6 | **Tests** （至少 1 个 smoke test，列在 `test/smoke.mjs`） | `test/` | `plugin-check.sh tests` |
 | 7 | **Docs** （`README.md` + 关键 Service 一句话 + 1 个使用示例） | `README.md` | `plugin-check.sh docs` |
 | 8 | **Changelog** （每次破环性变更写 `CHANGELOG.md`） | `CHANGELOG.md` | `plugin-check.sh changelog` |
+| 9 | **Runtime-contract**（waterfall 监听器必须调 `next()`） | 源码 lint | `plugin-check.sh runtime-contract` |
 
 ---
 
@@ -140,6 +141,21 @@
 - **为什么**：破环性变更（storage schema 改、provides 重命名）不写就没法回滚
 - **不满足**：旧版本消费者静默坏掉
 
+### 9. Runtime-contract
+- **为什么**：Cordis 有几个事件是 **waterfall（瀑布式）** —— `tools/pre-execute` / `tools/post-execute` / `tools/ptc-dispatch-log` / `agent/pre-step`。监听器必须调用 `next()` 把链传下去，否则瀑布结果为 `undefined`，dsh-tools 读 `decision.kind` 抛 `Cannot read properties of undefined (reading 'kind')`，所有 preset 的所有工具调用全挂。
+- **2026-09 教训**：`agint-event-bus` / `agint-mount` 各自注册了一个 `ctx.on('tools/post-execute', () => {})` 占位监听，挂载阶段不报错（loader 不知道该事件是不是 waterfall），运行时把 DSH web 全栈炸成 `reading 'kind'`。
+- **正确写法**：
+
+  ```js
+  ctx.on('tools/post-execute', async (exec, result, next) => {
+      return next();   // 或：先 await next() 再 return 基于它构造的决策
+  });
+  ```
+
+- **不满足**：挂上去看着没事，实际第一次工具调用就崩，且崩在工具执行管线（看起来像工具坏了），排障要从 dsh-tools 反推回 plugin —— 成本巨大
+- **验证**：`bin/plugin-check.sh` 维度 9 静态扫源码；perl 不可用时 `node bin/_verify-dim9.mjs <lib/index.js>` 兜底
+- **新增 waterfall 事件**：同步更新 `bin/plugin-check.sh` 的 `$waterfall_pat` 列表
+
 ---
 
 ## 准入流程（plugin 作者照做）
@@ -148,7 +164,7 @@
 # 1. 复制一个最近期的 manifest.json 模板
 cp bin/plugin-check.sh.template ~/.dsh/profiles/web/plugins/agint-myname/manifest.json
 
-# 2. 填 8 个维度
+# 2. 填 9 个维度（8 + runtime-contract）
 
 # 3. 跑 lint（不阻断，只列缺失项）
 bin/plugin-check.sh ~/.dsh/profiles/web/plugins/agint-myname/
@@ -171,7 +187,8 @@ bin/safe-update.sh restart       # 优雅重启
 
 - `docs/operations/safe-update-sop.md` —— 挂载前必拍快照
 - `docs/operations/dsh-restart-incident-20260821.md` —— SOP 起源
-- `bin/plugin-check.sh` —— 自动验收脚本
+- `bin/plugin-check.sh` —— 自动验收脚本（9 维度）
 - AGINT rule `agint-plugin-missing-manifest` —— 写 plugins/ 缺 manifest 时 advisory
-- Memory `plugin-spec-8-dimensions` (L1) —— 8 维度是规范核心
+- Memory `plugin-spec-9-dimensions` (L1) —— 9 维度是规范核心（2026-09 增）
 - Memory `safe-update-sop-mandatory` (L1) —— 挂载前必拍快照
+- Skill `plugin-preflight` —— 5 步准入工作流

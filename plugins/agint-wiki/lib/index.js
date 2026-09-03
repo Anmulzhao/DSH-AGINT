@@ -31,13 +31,24 @@ const Config = z.object({
 
 function apply(ctx, config) {
   const root = resolve(config.root);
+  // Normalize root to forward slashes for consistent startsWith checks across
+  // platforms (Windows `resolve()` returns backslash paths, but user-supplied
+  // paths from model/tools are typically forward-slash). v0.4 fix: previous
+  // version did `abs.startsWith(root + '/')`, which fails on Windows because
+  // root ends without `/` and `root + '/'` becomes `D:\foo\` while abs is
+  // `D:\foo\hello.md` — both real, but `'D:\\foo\\hello.md'.startsWith('D:\\foo\\/')`
+  // is false. Symptom: every wiki_write/read rejected with "path escapes root".
+  // Compare on forward-slash-normalized forms; resolves win-backslash vs forward-
+  // slash mismatch without weakening security (still rejects ../).
+  const normRoot = root.replace(/\\/g, '/');
 
   // Path discipline: relative to root, must end in .md, must not escape root.
   const clean = (p) => {
     const trimmed = String(p ?? '').replace(/^\/+/, '');
     if (!trimmed.endsWith('.md')) throw new Error(`agint-wiki: path must end with .md (got "${p}")`);
     const abs = resolve(root, trimmed);
-    if (abs !== root && !abs.startsWith(root + '/')) throw new Error(`agint-wiki: path escapes root (got "${p}")`);
+    const normAbs = abs.replace(/\\/g, '/');
+    if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-wiki: path escapes root (got "${p}")`);
     return { rel: trimmed, abs };
   };
 
