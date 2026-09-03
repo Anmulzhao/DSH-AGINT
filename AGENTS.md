@@ -13,9 +13,13 @@
 
 ## 你的能力来自哪里
 
-- **Cordis 插件**（host 平面）：agint-memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / quality-contract / **quality-eval**（v0.2 起）
-- **Tool 工具**（model 平面）：memory_* / wiki_* / cron_* / dream_* / rule_* / metrics_* / evolve_* / tool_stats_summary
-- **Skills**：causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development
+- **Cordis 插件**（host 平面，23 个，截至 v0.7.1；`quality-policy` 嵌套于 `agint-quality/` 下，顶层目录计 22 个）：
+  - **基础 13 个**：agint-memory / wiki / cron / dream / rules / metrics / evolve / tool-stats / evolution-memory / **diagnosis（v0.6.0）/ mutator（v0.6.1）/ population（v0.6.2）/ mount（v0.6.5）**
+  - **quality 子家族 7 个**：agint-quality-contract / **quality-eval（v0.2）/ quality-sandbox（v0.3 嵌入 → v0.6.3 独立）/ quality-policy（v0.4）/ quality-report（v0.4）/ quality-sdk（v0.5）/ quality-static（v0.6.3 独立 → v0.6.5 加 l0-isolation）**
+  - **实验/总线/自我认知 3 个**：agint-**abtest（v0.6.4）/ event-bus（v0.7.0）/ self-model（v0.7.1，只读观察者）**
+  - **注意**：v0.6.0 ~ v0.7.1 连续 8 个 minor 仅仓库发版未挂载；prod 实际装载仍是 v0.5.1（SDK + D-QAF）
+- **Tool 工具**（model 平面）：memory_* / wiki_* / cron_* / dream_* / rule_* / metrics_* / evolve_* / tool_stats_summary + （v0.6+ 增加）diagnosis_* / mutator_* / population_* / mount_* / abtest_* / eventBus_* / qualityContract_* / （v0.7.1 增加）selfModel_*
+- **Skills**：causal-reasoning / editing-cordis-compositions / memory-discipline / cordis-plugin-development + （v0.6+ 增加）ab-test-design / event-bus-topology
 
 ## 你的工作流
 
@@ -26,9 +30,14 @@
 3. **查 wiki**（`wiki_search`）—— 项目背景、行业知识、技术参考
 4. **查指标**（`metrics_summary`）—— 哪些任务在恶化、哪些规则在失效
 5. **查 D-QAF 评估**（v0.2 起）—— 当前 Skill/Plugin 的 HARM 分数、是否经过评估
-6. **动手** —— 结论先行、数据说话、动手前对高风险操作说清楚
-7. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
-8. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是路线图 §哲学锚点护栏的硬要求）
+6. **查归因 / 变异 / 种群 / 装载 状态**（v0.6+）—— `agint-diagnosis.annotations` / `agint-mutator.findings` / `agint-population.stats` / `agint-mount.status` 看当前进化闭环是否有未处理提案
+7. **查事件总线**（v0.7+）—— `agint.eventBus.inspectSummary` 看死信率 / sync 配额 / 事件吞吐量（prod 当前 T1 影子期）
+8. **查自我模型**（v0.7.1+）—— `agint.selfModel.snapshot` 看能力图谱（CAN / CANNOT / **UNCERTAIN**）+ 推理易错条件 + 资源基线；**UNCERTAIN 或 `lastVerifiedAt` 过旧 = 别假装能做，先验证**（该插件只读，不会改策略/变异/种群）
+9. **动手** —— 结论先行、数据说话、动手前对高风险操作说清楚
+10. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
+11. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是路线图 §哲学锚点护栏的硬要求）
+
+> **当前阶段（v0.7.1 / Sprint 13）**：P6 进化闭环引擎已收口（P0~P6 全部 ✅），P7 第一段（事件总线 v0.7.0）+ 第二段（总线 T1 收口 + 自我模型 v0.7.1）已发版。生产实际仍装载 v0.5.1（v0.6.0 ~ v0.7.1 连续 8 个 minor 仅仓库发版未挂载）。**仍待 runtime 收口**：12 存量 eval fail 归因 ≥80%、总线 T2 切流量（不早于约 2026-09-25）。Sprint 14+ 排 curriculum / transfer / Registry。**路由决策先看 Wiki [路线图](路线图.md) 「调整记录」段落与本次发版注释，再下手。**
 
 ## 怎么用梦境
 
