@@ -119,11 +119,11 @@ function apply(ctx: any, _config: any = {}) {
     return metricsSnapshot(busCtx);
   });
 
-  // ── 监听 tools/post-execute（占位；记录 publish 上下文事件） ──
-  try {
-    const off = ctx.on('tools/post-execute', () => { /* noop：event-bus 不消费工具结果 */ });
-    if (typeof off === 'function') disposers.push(off);
-  } catch { /* ignore：旧版 dsh 可能无此事件 */ }
+  // 注意：不要在此注册 tools/post-execute 空监听。该事件是 waterfall：
+  // 监听器必须调用 next() 并返回其结果，否则瀑布结果为 undefined，
+  // dsh-tools 读取 decision.kind 时抛 "Cannot read properties of undefined
+  // (reading 'kind')"，导致所有 preset 的全部工具调用失败。
+  // event-bus 不消费工具结果，因此不监听该事件。
 }
 
 /** 最小 TableHandle stub（host storageDomain 不可用时兜底；smoke / 单元测试可用） */
