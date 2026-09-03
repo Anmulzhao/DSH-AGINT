@@ -49,6 +49,7 @@ import { classify as rootCauseClassify } from './root-cause-classifier.js';
 import { simulate as counterfactualSimulate } from './counterfactual-simulator.js';
 import { aggregateClusters, collectFailureIdsFromAnnotations } from './cluster-aggregator.js';
 import { aggregateReport } from './report-aggregator.js';
+import { z } from 'zod';
 
 // 冷启动阈值：failure_pattern 表总样本数 < 此值 → 拒绝 annotate
 // 设计稿 §二.2 + §五「冷启动提示」+ 子任务 #3 / #4 交付要求
@@ -62,7 +63,7 @@ const name = 'agint-diagnosis';
 // 用 ctx.get 读取，不阻塞挂载。
 const inject = ['storageDomain'];
 
-const Config = {}; // 当前无配置；保留供后续 sprint 加 limits 调参等
+const Config = z.object({}); // 当前无配置；保留供后续 sprint 加 limits 调参等
 
 function nowIso() {
   return new Date().toISOString();

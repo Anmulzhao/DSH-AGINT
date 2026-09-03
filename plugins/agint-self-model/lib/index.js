@@ -34,17 +34,19 @@ import {
 import {
   UpdateTriggerSchema, DEFAULT_CALIBRATION_WINDOW_DAYS,
 } from './schema.js';
+import { z } from 'zod';
 
 const name = 'agint-self-model';
+// 依赖收敛：diagnosis / eventBus 只有子服务（agint.diagnosis.* / agint.eventBus.*），
+// 没有整体聚合服务；两者在 buildDeps 里均已软降级，故不声明为硬依赖，
+// 否则 cordis 会永久等待不存在的服务名导致 entry 不激活。
 const inject = [
   'storageDomain',
   'agint.evolution',
-  'agint.diagnosis',
   'agint.metrics',
   'agint.toolStats',
-  'agint.eventBus',
 ];
-const Config = undefined;
+const Config = z.object({});
 
 // ── 数据来源访问器（软降级；D6 复用既有 Service）────────────────────────────
 

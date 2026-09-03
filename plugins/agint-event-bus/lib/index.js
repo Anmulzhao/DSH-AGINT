@@ -19,10 +19,42 @@
  */
 import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, disposeBus } from './bus.js';
 import { listDeadletters } from './deadletter.js';
+import { EventEnvelopeSchema } from './schemas.js';
+import { z } from 'zod';
+import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 const name = 'agint-event-bus';
 const inject = ['storageDomain', 'agint.evolution'];
 /** sync 订阅硬上限（设计稿 §A2.6 + schema yaml constraints） */
 export const SYNC_GLOBAL_LIMIT = 3;
+// ── 存储域声明（对齐 dsh-storage-domain defineDomain API） ─────────────
+// events 表 value：{ envelope, payloadPreview, occurredAt, traceId }
+// deadletter 表 value：死信条目（id = `${envelope.id}:${sub.id}`）
+const EventRecordSchema = z.object({
+  envelope: EventEnvelopeSchema,
+  payloadPreview: z.unknown(),
+  occurredAt: z.string(),
+  traceId: z.string(),
+}).passthrough();
+const DeadletterEntrySchema = z.object({
+  id: z.string().min(1),
+  envelope: EventEnvelopeSchema,
+  payloadPreview: z.unknown(),
+  subscriber: z.string(),
+  subscriptionId: z.string(),
+  reason: z.string().default(''),
+  attempts: z.number().int().default(0),
+  sync: z.boolean().default(false),
+  recordedAt: z.string(),
+  ttl: z.number().int().default(604800000),
+}).passthrough();
+const spec = defineDomain({
+  name: 'agint_event_bus',
+  version: 1,
+  tables: {
+    events: { valueSchema: EventRecordSchema },
+    deadletter: { valueSchema: DeadletterEntrySchema },
+  },
+});
 /**
  * Cordis apply(ctx)。
  *
@@ -71,31 +103,31 @@ function apply(ctx, _config = {}) {
         },
     };
     // ── 打开 storageDomain（事件表 + 死信表；失败软降级为 stub） ──
+    // open 返回 Promise：用 .then(onOk, onErr) 双回调处理，避免 async rejection
+    // 逃逸成 unhandled rejection / fatal load failure。
     let storageHandle = null;
-    try {
-        storageHandle = ctx.storageDomain.open({
-            name: 'agint_event_bus',
-            schemaVersion: 1,
-            atomic: 'json',
-        }) ?? null;
-        if (storageHandle && typeof storageHandle === 'object') {
-            // dsh-storage-domain 的真实句柄：通过 table(name) 拿 handle
-            const tblEvents = storageHandle.table?.('events');
-            const tblDead = storageHandle.table?.('deadletter');
-            if (tblEvents && tblDead) {
-                busCtx.tables = { events: tblEvents, deadletter: tblDead };
-            }
-            disposers.push(() => {
-                try {
-                    storageHandle?.close?.();
+    ctx.storageDomain.open(spec).then(
+        (handle) => {
+            if (handle && typeof handle.table === 'function') {
+                // dsh-storage-domain 的真实句柄：通过 table(name) 拿 handle
+                const tblEvents = handle.table('events');
+                const tblDead = handle.table('deadletter');
+                if (tblEvents && tblDead) {
+                    busCtx.tables = { events: tblEvents, deadletter: tblDead };
                 }
-                catch { /* ignore */ }
-            });
-        }
-    }
-    catch {
-        // 软降级：保留 stub（事件仅落在内存 ring + deadletter stub；不影响契约）
-    }
+                storageHandle = handle;
+                disposers.push(() => {
+                    try {
+                        handle.close?.();
+                    }
+                    catch { /* ignore */ }
+                });
+            }
+        },
+        () => {
+            // 软降级：保留 stub（事件仅落在内存 ring + deadletter stub；不影响契约）
+        },
+    );
     // ── 注册 3 Service ──
     ctx.provide('agint.eventBus.publish', (input) => publish(busCtx, input));
     ctx.provide('agint.eventBus.subscribe', (rawSub, handler) => subscribe(rawSub, handler));
@@ -136,5 +168,5 @@ function stubTable() {
         size: async () => m.size,
     };
 }
-export const Config = {};
+export const Config = z.object({});
 export { apply, inject, name };
