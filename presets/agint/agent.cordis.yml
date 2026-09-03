@@ -1,17 +1,19 @@
 # The `agint` agent preset (智进): the standard coding agent, plus the
-# self-referential Cordis toolset for the self-evolution loop.
-#
-# Copied from the shipped `cordis` preset, so it carries the full standard
-# toolset plus: the dynamic-plugin toolset (tool-cordis), the composition
-# authoring skills, and a persona carrying the 智进 identity
+# AGINT host-service toolset and a persona carrying the 智进 identity
 # (理念：美是起源与终极追求).
+#
+# Originally copied from the shipped `cordis` preset, but `tool-cordis` is
+# removed because the shipped `cordis` preset is the default and both presets
+# would stand-mount `tool-cordis`; its inspect providers are process-global
+# singletons and a second mount throws "Host Cordis inspect provider ... is
+# already registered". Use the shipped `cordis` preset directly when you need
+# the self-referential Cordis toolset.
 #
 # Phase 0: skeleton only. Memory / cron / rules / metrics / evolve plugins
 # arrive in later phases, mostly as HOST composition rows.
 #
-# TRUST: the dynamic-plugin toolset evaluates model-written JavaScript against
-# the live runtime, and a composition this agent writes becomes a preset other
-# sessions mount. Treat a session on this preset as shell access.
+# TRUST: AGINT tools read and write long-term memory/cron/rules/metrics/evolve
+# state. Treat a session on this preset as shell access.
 
 
 # The preset's own persona, shadowing the deployment default for this agent.
@@ -251,12 +253,7 @@
     fetch: false
     searchTimeoutMs: 60000
 
-# ── self-modification ───────────────────────────────────────────────────────
-
-# Read the live runtime, mount a temporary plugin, unmount it. The toolset is a
-# trust boundary, not a sandbox — see this file's header.
-- id: tool-cordis
-  name: '@deepseek-ai/dsh-tool-cordis'
+# ── self-modification / skills ───────────────────────────────────────────────
 
 # The composition-authoring skill travels with this preset rather than living
 # in the user's skill root: it documents THIS deployment's two planes, and a
