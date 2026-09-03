@@ -1,0 +1,44 @@
+[
+  {
+    "scenario": "deploy-budget-is-auto-deploy-entry",
+    "plugin": "agint-quality-eval",
+    "input": [{ "service": "deployBudget", "action": "isAutoDeployEntry", "entry": { "decision": "AUTO_DEPLOY", "ts": "2026-09-10T10:00:00.000Z" } }],
+    "expected": [{ "kind": "auto-deploy-detect", "isAutoDeploy": true }]
+  },
+  {
+    "scenario": "deploy-budget-count-rolling-7d",
+    "plugin": "agint-quality-eval",
+    "input": [{ "service": "deployBudget", "action": "countAutoDeploys", "entries": [
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-10T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-12T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-01T10:00:00.000Z" }
+    ], "now": "2026-09-12T12:00:00.000Z" }],
+    "expected": [{ "kind": "count-rolling", "_doc": "滚动 7 天窗口：9/01 超出窗口不计 → 2", "countIs": 2 }]
+  },
+  {
+    "scenario": "deploy-budget-within-limit",
+    "plugin": "agint-quality-eval",
+    "input": [{ "service": "deployBudget", "action": "checkDeployBudget", "entries": [
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-10T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-12T10:00:00.000Z" }
+    ], "now": "2026-09-12T12:00:00.000Z", "budget": 3 }],
+    "expected": [{ "kind": "within-budget", "overBudget": false, "forcedReview": false }]
+  },
+  {
+    "scenario": "deploy-budget-over-limit-forces-review",
+    "plugin": "agint-quality-eval",
+    "input": [{ "service": "deployBudget", "action": "checkDeployBudget", "entries": [
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-08T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-09T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-10T10:00:00.000Z" },
+      { "decision": "AUTO_DEPLOY", "ts": "2026-09-11T10:00:00.000Z" }
+    ], "now": "2026-09-11T12:00:00.000Z", "budget": 3 }],
+    "expected": [{ "kind": "over-budget", "_doc": "超过每周 ≤3 次自动部署护栏 → 后续 proposal 强制 PENDING_REVIEW + audit", "overBudget": true, "forcedReview": true, "auditWritten": true }]
+  },
+  {
+    "scenario": "deploy-budget-weekly-hook-wired",
+    "plugin": "agint-quality-eval",
+    "input": [{ "service": "evaluator", "action": "runNow", "withDeployEntries": 4, "budget": 3 }],
+    "expected": [{ "kind": "weekly-hook-guard", "_doc": "weeklyTask 末尾调用 checkDeployBudget；超预算写 audit + 周复盘告警行", "guardInvoked": true }]
+  }
+]

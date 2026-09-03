@@ -44,6 +44,12 @@ import {
   STAGNATION_DELTA_THRESHOLD,
   STAGNATION_K,
 } from './regression.js';
+import {
+  checkDeployBudget,
+  countAutoDeploys,
+  DEFAULT_DEPLOY_BUDGET,
+  DEFAULT_WINDOW_DAYS,
+} from './deployBudget.js';
 
 const name = 'agint-quality-eval';
 const inject = ['timer', 'agint.evolution', 'agint.qualitySandbox'];
@@ -66,6 +72,16 @@ const EvalTargetSchema = z.object({
 
 /** 本插件 id（用于 evaluateAll 排除自评） */
 const SELF_PLUGIN_ID = 'agint-quality-eval';
+
+/**
+ * Sprint 13 §3.3 部署护栏默认配置（ADJUSTABLE；口径见遗留 TODO T2）
+ *   - windowDays：滚动 7 天（默认口径，老板过审时确认）
+ *   - budget：每周自动部署上限 3 次（AGENTS.md 健康度护栏）
+ */
+const DEFAULT_DEPLOY_GUARD = Object.freeze({
+  windowDays: DEFAULT_WINDOW_DAYS,
+  budget: DEFAULT_DEPLOY_BUDGET,
+});
 
 function apply(ctx, config) {
   const cfg = Config.parse(config || {});
@@ -409,6 +425,40 @@ function apply(ctx, config) {
 
   ctx.provide('agint.qualityEvaluator', evaluator);
 
+  // ── Sprint 13 §3.3 部署预算护栏（weekly hook 每周 ≤3 次自动部署）────────
+  // 数据源 = quality-policy 既有 audit 日志（agint.evolution evolution_log），不自建存储。
+  // 最近一次护栏结果缓存在内存，供周复盘 / 巡检读取；不持久化（读侧可随时重算）。
+  let lastDeployBudget = null;
+
+  async function runDeployBudgetCheck(overrides = {}) {
+    const result = await checkDeployBudget({
+      ctx,
+      windowDays: overrides.windowDays ?? DEFAULT_DEPLOY_GUARD.windowDays,
+      budget: overrides.budget ?? DEFAULT_DEPLOY_GUARD.budget,
+      nowMs: overrides.nowMs,
+      writeAudit: overrides.writeAudit !== false,
+    });
+    lastDeployBudget = result;
+    return result;
+  }
+
+  ctx.provide('agint.qualityEval.checkDeployBudget', runDeployBudgetCheck);
+  ctx.provide('agint.qualityEval.countAutoDeploys', (overrides = {}) =>
+    countAutoDeploys({
+      evolution: ctx.get('agint.evolution'),
+      windowDays: overrides.windowDays ?? DEFAULT_DEPLOY_GUARD.windowDays,
+      nowMs: overrides.nowMs,
+    }));
+  /** 只读快照：最近一次护栏结果（未跑过返回 null） */
+  ctx.provide('agint.qualityEval.deployBudget', () => lastDeployBudget);
+  /**
+   * 门禁查询：超预算时返回 'PENDING_REVIEW'（proposal 路径强制降级），否则 null。
+   * 幂等（R1）：纯读，不累加任何计数 —— at-least-once 重复调用不改变结果。
+   */
+  ctx.provide('agint.qualityEval.deployBudgetGate', () =>
+    (lastDeployBudget?.exceeded ? lastDeployBudget.forcedDecision : null));
+  ctx.provide('agint.qualityEval.deployGuardConfig', DEFAULT_DEPLOY_GUARD);
+
   // ── Sprint 12 A1（T1 影子期）：订阅 evolution.proposed ─────────────────
   // 设计稿 §A1：population → (bus) → quality-eval 的异步通路。
   // **直连路径完整保留**：上层仍可走 evaluator.runNow() / 内部调用；
@@ -522,13 +572,39 @@ function apply(ctx, config) {
         console.error(`[agint-quality-eval] checkStagnation failed: ${err.message}`);
       }
 
-      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}`);
+      // ── Sprint 13 §3.3 weekly hook 部署预算护栏（weeklyTask 末尾）────────
+      // 统计滚动 7 天 AUTO_DEPLOY 次数；超预算 → 后续 proposal 强制 PENDING_REVIEW
+      // + 写 audit + 周复盘告警一行（reviewLine 由周复盘模板直接消费）。
+      // 幂等（R1）：纯读 + 单次 audit 写；事件重复投递不产生重复决策、不污染计数。
+      let deployBudget = null;
+      try {
+        deployBudget = await runDeployBudgetCheck();
+      } catch (err) {
+        // 护栏自身失败不阻断 weeklyTask 其余产出（真实 > 讨好：暴露错误而非静默吞掉）
+        console.error(`[agint-quality-eval] checkDeployBudget failed: ${err?.message ?? err}`);
+        deployBudget = { error: err?.message ?? String(err), exceeded: false, forcedDecision: null, reviewLine: '- 部署预算：护栏执行失败（见日志）' };
+      }
+
+      // ── Sprint 13 §4.5 模型更新主路径：weeklyTask 直连调 agint.selfModel.update ──
+      // 不经由总线（对齐「主路径直连 / 影子消费 A6/A8」双轨原则）；self-model 未挂载
+      // 时软降级跳过（不阻断 weeklyTask 其余产出）。T1 影子期 update 顺带 publish A11（publish-only）。
+      try {
+        const selfModelUpdate = (typeof ctx.get === 'function') ? ctx.get('agint.selfModel.update') : null;
+        if (typeof selfModelUpdate === 'function') {
+          await selfModelUpdate({ trigger: 'weekly' });
+        }
+      } catch (err) {
+        console.warn(`[agint-quality-eval] self-model weekly update skipped: ${err?.message ?? err}`);
+      }
+
+      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}, deployBudget ${deployBudget?.used ?? '?'}/${DEFAULT_DEPLOY_GUARD.budget}${deployBudget?.exceeded ? ' EXCEEDED' : ''}`);
       return {
         evaluated: results.length,
         persisted,
         loggedToEvo,
         baseline: baselineReport?.regression ?? null,
         stagnation: { isStagnated: stagnationReport?.isStagnated, reason: stagnationReport?.reason },
+        deployBudget,
       };
     }
 
