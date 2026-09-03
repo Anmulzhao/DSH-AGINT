@@ -293,21 +293,21 @@
 # instance, which is exactly what is wanted here. The path walks from the
 # preset directory to the profile's package copy (relative to baseUrl).
 - id: agint-memory-tools
-  name: ../../plugins/agint-memory/lib/tools.js
+  name: ../../profiles/web/plugins/agint-memory/lib/tools.js
 
 # ── 智进 wiki tools ─────────────────────────────────────────────────────────
 # Consumes the host `agint.wiki` service (row added in the profile patch) and
 # registers the wiki tools for THIS preset only. Same consumer pattern as
 # agint-memory-tools: publishes nothing, resolves the host instance.
 - id: agint-wiki-tools
-  name: ../../plugins/agint-wiki/lib/tools.js
+  name: ../../profiles/web/plugins/agint-wiki/lib/tools.js
 
 # ── 智进 cron tools ─────────────────────────────────────────────────────────
 # Consumes the host `agint.cron` service (row added in the profile patch) and
 # registers the cron tools for THIS preset only. Same consumer pattern as
 # agint-memory-tools / agint-wiki-tools.
 - id: agint-cron-tools
-  name: ../../plugins/agint-cron/lib/tools.js
+  name: ../../profiles/web/plugins/agint-cron/lib/tools.js
 
 # ── 智进 rules tools ────────────────────────────────────────────────────────
 #
@@ -323,11 +323,11 @@
 # and registers the metrics_* tools for THIS preset only (P4 进化指标：只读
 # 采集/查看，不写规则门禁）。Same consumer pattern as agint-memory-tools.
 - id: agint-metrics-tools
-  name: ../../plugins/agint-metrics/lib/tools.js
+  name: ../../profiles/web/plugins/agint-metrics/lib/tools.js
 
 # ── 智进 evolve tools ───────────────────────────────────────────────────────
 # Consumes the host `agint.evolve` service (row added in the profile patch)
 # and registers the evolve_* tools for THIS preset only (P4 复盘闭环：生成/
 # 读取复盘报告、提改进提案）。投研的洞察可经 evolve_propose 沉淀为提案。
 - id: agint-evolve-tools
-  name: ../../plugins/agint-evolve/lib/tools.js
+  name: ../../profiles/web/plugins/agint-evolve/lib/tools.js
