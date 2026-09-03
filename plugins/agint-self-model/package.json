@@ -1,0 +1,43 @@
+{
+  "name": "agint-self-model",
+  "version": "0.7.1",
+  "description": "AGINT 自我模型 v0.7.1（Sprint 13 / Part 2）：只读观察者插件。聚合既有插件数据形成自我画像，输出能力边界供 curriculum 消费；校准误差护栏 ≤10%。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/capability.js": "./lib/capability.js",
+    "./lib/observation.js": "./lib/observation.js",
+    "./lib/calibration.js": "./lib/calibration.js",
+    "./schemas/self-model.schema.yaml": "./schemas/self-model.schema.yaml",
+    "./schemas/self-model-updated.schema.yaml": "./schemas/self-model-updated.schema.yaml"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "smoke": "node test/smoke.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "self-model",
+    "observer",
+    "calibration",
+    "sprint-13",
+    "p7"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "agint-diagnosis": ">=0.7.0",
+    "agint-event-bus": ">=0.7.0",
+    "agint-evolution-memory": ">=0.6.4",
+    "agint-metrics": ">=0.6.0",
+    "agint-tool-stats": ">=0.6.0",
+    "zod": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0"
+  }
+}

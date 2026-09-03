@@ -1,0 +1,102 @@
+# self-model.schema.yaml — FROZEN at v0.7.1 (Sprint 13 发版日)
+#
+# 冻结范围（设计稿 Sprint13 §4.3）：
+#   - CapabilityEntry 7 字段（domain / capability / status / confidence / evidenceRefs / lastVerifiedAt / updatedAt）
+#   - status enum FROZEN：['CAN', 'CANNOT', 'UNCERTAIN']；lastVerifiedAt 必填（空字符串硬抛错）
+#   - SelfModelSnapshot 4 块：capabilities / reasoningProfile / resourceBaseline / calibrationSummary
+#   - CalibrationResult 5 字段：domain / predicted / actual / error / samples
+#
+# 变更流程：FROZEN 字段修改走 L0 治理（人类多签 + 7 天影子 + major 版本）。
+# A11 payload 不在此文件，见 self-model-updated.schema.yaml（正交演进）。
+
+schemaVersion: 1
+
+CapabilityEntry:
+  type: object
+  required: [domain, capability, status, confidence, evidenceRefs, lastVerifiedAt, updatedAt]
+  properties:
+    domain:
+      type: string
+      minLength: 1
+      description: 能力域（如 codegen / reasoning / planning / tool-use）
+    capability:
+      type: string
+      minLength: 1
+      description: 具体能力名（域内唯一）
+    status:
+      enum: [CAN, CANNOT, UNCERTAIN]
+      description: FROZEN 三态；真实 > 讨好：不允许无验证时间戳的自我声明
+    confidence:
+      type: number
+      minimum: 0
+      maximum: 1
+      description: 该状态的可信度（0..1）
+    evidenceRefs:
+      type: array
+      items: { type: string }
+      description: 支撑判定的证据引用（evolution failure/template id、diagnosis annotation id）
+    lastVerifiedAt:
+      type: string
+      format: date-time
+      minLength: 1
+      description: 最后验证时间（必填；空字符串硬抛错，对齐 event-bus sync reason 惯例）
+    updatedAt:
+      type: string
+      format: date-time
+      description: 记录写入时间
+
+SelfModelSnapshot:
+  type: object
+  required: [capabilities, reasoningProfile, resourceBaseline, calibrationSummary]
+  properties:
+    capabilities:
+      type: array
+      items: { $ref: CapabilityEntry }
+      description: 能力图谱全量
+    reasoningProfile:
+      type: array
+      items:
+        type: object
+        required: [aspect, key, count, recentEvidence]
+        properties:
+          aspect:
+            enum: [strategy-preference, error-condition, chain-break, bias]
+          key: { type: string }
+          count: { type: integer, minimum: 0 }
+          recentEvidence: { type: string }
+    resourceBaseline:
+      type: array
+      items:
+        type: object
+        required: [metric, p50, p90, sampleCount, window]
+        properties:
+          metric:
+            enum: [context-window, tool-cost-ms, tool-cost-token, latency-ms, knowledge-cutoff]
+          p50: { type: number }
+          p90: { type: number }
+          sampleCount: { type: integer, minimum: 0 }
+          window: { type: string }
+    calibrationSummary:
+      type: object
+      required: [domains, maxError, miscalibrated]
+      properties:
+        domains: { type: integer, minimum: 0 }
+        maxError: { type: number, minimum: 0 }
+        miscalibrated:
+          type: array
+          items: { type: string }
+
+CalibrationResult:
+  type: object
+  required: [domain, predicted, actual, error, samples]
+  properties:
+    domain: { type: string, minLength: 1 }
+    predicted: { type: number, description: 启发式预测（历史滑动平均） }
+    actual: { type: number, description: 实测值（evolution 成功率） }
+    error: { type: number, minimum: 0, description: |predicted - actual| }
+    samples: { type: integer, minimum: 0, description: 该域样本数（<10 为 cold-start，不计误差） }
+
+UpdateTrigger:
+  type: string
+  enum: [task-completed, task-failed, diagnosis-completed, dream-completed, weekly]
+  description: FROZEN update 触发器枚举

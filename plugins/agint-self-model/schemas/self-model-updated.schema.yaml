@@ -1,0 +1,35 @@
+# self-model-updated.schema.yaml — A11 self.model.updated payload (FROZEN at v0.7.1)
+#
+# 设计稿 Sprint13 §4.5（D3）：新增事件边 A11 self.model.updated。
+#   - 只加 topic，不动 FROZEN EventEnvelope / Subscription 字段（L0 治理）
+#   - payload FROZEN 最小集：changedDomains + 能力图谱摘要 + 校准误差摘要
+#   - T1 影子期 publish-only；预留 ADJUSTABLE 扩展字段给 Sprint 14 curriculum 消费
+#
+# 变更流程：本 payload 冻结；Sprint 14 若需加字段走 ADJUSTABLE 路径（R3）。
+
+schemaVersion: 1
+
+SelfModelUpdated:
+  type: object
+  required: [changedDomains, capabilitySummary, calibrationSummary]
+  properties:
+    changedDomains:
+      type: array
+      items: { type: string }
+      description: 本次更新中状态发生变化的域列表
+    capabilitySummary:
+      type: object
+      required: [canCount, cannotCount, uncertainCount]
+      properties:
+        canCount: { type: integer, minimum: 0 }
+        cannotCount: { type: integer, minimum: 0 }
+        uncertainCount: { type: integer, minimum: 0 }
+    calibrationSummary:
+      type: object
+      required: [domains, maxError, miscalibrated]
+      properties:
+        domains: { type: integer, minimum: 0 }
+        maxError: { type: number, minimum: 0 }
+        miscalibrated:
+          type: array
+          items: { type: string }
