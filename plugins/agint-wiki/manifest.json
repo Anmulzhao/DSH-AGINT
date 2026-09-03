@@ -1,0 +1,53 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-wiki",
+  "version": "0.2.0",
+  "description": "Wiki 知识库（按 domain 分目录的 markdown）。提供读写、lint、健康检查。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": ["agint.wiki"],
+      "events": [],
+      "tools": ["wiki_read", "wiki_write", "wiki_search", "wiki_list", "wiki_lint"]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "files"
+    },
+    "dependencies": {},
+    "mountOrder": 25,
+    "permissions": {
+      "env": ["AGINT_HOME"],
+      "fs": ["read:wiki", "write:wiki"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.wiki": "markdown wiki 读写 + lint（断链/孤儿/矛盾标记 ⚠️）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
