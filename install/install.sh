@@ -6,8 +6,9 @@
 #
 # ## 安全设计（§5.2 安全左移 + docs/security-boundary.md）
 #   1. 前置：跑 install/agint-security-checks.sh，任意 fail → 退出
-#   2. 复制：用 rsync --no-links + exclude 列表，禁止跟随 symlink
-#      （AGINT 仓内 node_modules 全是 symlink，会污染 $DSH_HOME 树）
+#   2. 复制：优先 rsync（--no-links + exclude 列表），无 rsync 时回退 python3
+#      copytree，两者都禁止跟随 symlink（AGINT 仓内 node_modules 全是
+#      symlink，会污染 $DSH_HOME 树）。实现见 safe_rsync()
 #   3. 备份：中央目录 $DSH_HOME/.agint-backups/，保留最近 10 个，超限删最老
 #   4. 回滚：trap EXIT 跟踪 partial install 状态；失败时还原
 #   5. 装后：静态校验（YAML 解析 / package.json 存在 / preset cordis.yml 存在）
@@ -24,7 +25,8 @@
 #
 # ## 已知限制
 #   - patch 合并仍然依赖 python3（dsh patch 含 !!js 自定义 tag，yaml.load 解析不了）
-#   - rsync 在不同平台行为略有差异，跨平台验证留 Sprint 1.6
+#   - 无 rsync 环境（Windows）走 python3 回退：--delete 语义靠 stage+换入实现，
+#     换入前 dst 的旧内容仍在盘上，异常中断时可从 $DSH_HOME/.agint-backups 恢复
 
 set -uo pipefail  # 注意：不加 -e，因为我们要收集失败后 trap 回滚
 
@@ -68,6 +70,36 @@ for v in AGINT_HOME DSH_HOME; do
       ;;
   esac
 done
+
+# ── MSYS → Windows 路径转换 ──────────────────────────────────────────────────
+# Git Bash 下 $AGINT_HOME 形如 /d/DSH/project/DSH-AGINT（MSYS 路径）。
+# 这个路径 bash 内部能用，但传给 **Windows 原生** 解释器（本机的 python3.exe）
+# 会被当成不存在的相对路径——典型症状是 python 报 FileNotFoundError，
+# 而同一个文件 ls 明明存在。node 也是同理（见 2026-09-03 笔记）。
+#
+# 不做平台硬编码猜测，直接拿 SCRIPT_DIR 探一次：python 认得就用原样，
+# 认不得就判定为「需要 Windows 路径」，后续统一过 cygpath -w。
+PYTHON_NEEDS_WINPATH=0
+if command -v cygpath >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  if ! python3 -c 'import os,sys; sys.exit(0 if os.path.isdir(sys.argv[1]) else 1)' \
+      "$SCRIPT_DIR" 2>/dev/null; then
+    PYTHON_NEEDS_WINPATH=1
+  fi
+fi
+
+# winpath <path> → 按探测结果决定是否转成 Windows 形式
+#
+# 用 `cygpath -m`（输出 C:/Users/... 正斜杠）而不是 `-w`（输出 C:\Users\...）。
+# 区别很要命：-w 的反斜杠一旦被嵌进 Python 字符串字面量，`\U` / `\x` 就会被
+# 当成 Unicode / 十六进制转义，路径当场变形（Windows 上 \Users 是必踩的）。
+# -m 的正斜杠在 argv 和字符串字面量里都安全，Windows 版 python/node 都认。
+winpath() {
+  if [ "$PYTHON_NEEDS_WINPATH" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
 
 PRESETS_SRC="$AGINT_HOME/presets"
 PLUGINS_SRC="$AGINT_HOME/plugins"
@@ -113,8 +145,9 @@ if [ "$FORCE" != "1" ] && [ ! -d "$AGINT_HOME/.git" ]; then
   die "AGINT_HOME 不是 git 仓库（$AGINT_HOME），加 --force 跳过"
 fi
 
-command -v rsync   >/dev/null 2>&1 || die "需要 rsync（macOS 自带，Linux 通常预装）"
-command -v python3 >/dev/null 2>&1 || die "需要 python3（patch 合并用）"
+# rsync 不再是硬依赖：macOS/Linux 有则优先用（增量快），
+# Windows / 精简容器没有 rsync 时回退到 python3 同步（见 safe_rsync 的 fallback 分支）。
+command -v python3 >/dev/null 2>&1 || die "需要 python3（patch 合并 + 无 rsync 时的文件同步用）"
 
 # ── partial-install 跟踪 + EXIT trap ────────────────────────────────────────
 # 任何 step 标 "done=1" 后失败，trap 会按顺序 reverse 回滚。
@@ -209,23 +242,77 @@ prune_old_backups() {
 # ── 复制函数：rsync + --no-links + exclude ──────────────────────────────────
 safe_rsync() {
   # safe_rsync <src_dir> <dst_dir>
-  # - --no-links 关键：拒绝跟随 symlink，防 node_modules 软链污染
-  # - exclude 列表：开发期临时文件
+  #
+  # 语义等价于 `rsync -a --no-links --delete`：
+  #   - -a        ：保留权限/时间戳（两个后端都保留 mtime+mode）
+  #   - --no-links：软链整个跳过，不复制也不跟随
+  #                 （AGINT 仓内 node_modules 全是软链，跟过去会污染 $DSH_HOME 树）
+  #   - --delete  ：dst 完全镜像 src（src 里没有的，dst 里删掉）
+  #
+  # 后端选择：
+  #   1) rsync 存在 → 用 rsync（macOS 自带 / Linux 常见，增量快）
+  #   2) 否则       → python3 shutil.copytree（Windows 兜底）
+  #      --delete 语义用「先 stage 到 dst.tmp，整体成功后换入」实现，
+  #      比逐项 diff 更可靠，也顺带保证了换入的原子性。
   if [ "$DRY_RUN" = "1" ]; then
-    log "   rsync (dry): $1/ → $2/"
+    log "   sync (dry): $1/ → $2/"
     return
   fi
-  rsync -a --no-links --delete \
-    --exclude='.git/' \
-    --exclude='.git' \
-    --exclude='node_modules/' \
-    --exclude='node_modules' \
-    --exclude='eval/node_modules/' \
-    --exclude='*.bak-*' \
-    --exclude='*.bundle' \
-    "$1/" "$2/" \
-    || die "rsync 失败: $1 → $2"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --no-links --delete \
+      --exclude='.git/' \
+      --exclude='.git' \
+      --exclude='node_modules/' \
+      --exclude='node_modules' \
+      --exclude='eval/node_modules/' \
+      --exclude='*.bak-*' \
+      --exclude='*.bundle' \
+      "$1/" "$2/" \
+      || die "rsync 失败: $1 → $2"
+  else
+    python3 - "$(winpath "$1")" "$(winpath "$2")" <<'PY' || die "python 同步失败: $1 → $2"
+import os, sys, shutil, fnmatch
+
+src, dst = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+
+# 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改一处要改两处）
+EXCLUDE_NAMES  = {'.git', 'node_modules'}
+EXCLUDE_GLOBS  = ('*.bundle', '*.bak-*')
+
+def ignore(path, names):
+    drop = set()
+    for n in names:
+        if n in EXCLUDE_NAMES:                                  drop.add(n)
+        elif any(fnmatch.fnmatch(n, g) for g in EXCLUDE_GLOBS):  drop.add(n)
+        # --no-links：软链整个跳过（目录软链尤其危险，会整棵跟过去）
+        elif os.path.islink(os.path.join(path, n)):              drop.add(n)
+    return drop
+
+tmp = dst + '.tmp'
+if os.path.exists(tmp):
+    shutil.rmtree(tmp)
+os.makedirs(tmp)
+shutil.copytree(src, tmp, ignore=ignore, dirs_exist_ok=True)
+
+# 兜底清扫：copytree 的 ignore 已挡掉绝大多数软链，这里再扫一遍确保零残留
+for root, dirnames, filenames in os.walk(tmp):
+    for n in list(dirnames) + filenames:
+        p = os.path.join(root, n)
+        if os.path.islink(p):
+            os.unlink(p)
+
+# --delete 语义：stage 成功后整体换入
+if os.path.exists(dst):
+    shutil.rmtree(dst)
+os.rename(tmp, dst)
+PY
+  fi
 }
+
+# ── 0.5 确保中央备份目录存在 ─────────────────────────────────────────────────
+# backup() 里 tar -czf 打开的是 $BACKUP_DIR 下的文件，目录不存在会直接
+# "Cannot open: No such file or directory"。首次安装时它还没建，必须先建出来。
+ensure_backup_dir
 
 # ── 1. 安装 presets ─────────────────────────────────────────────────────────
 log "1/4 同步 presets → $PRESETS_DST"
@@ -260,7 +347,7 @@ backup "patch" "$PATCH_DST"
 
 # 整段重建法（v0.1.3 沿用）：dst 与 src 都被视为「顶层 YAML 数组」，
 # src 里的每个顶层项作为整段 list 元素。
-python3 - "$PATCH_SRC" "$PATCH_DST" "$BACKUP_DIR" "$DRY_RUN" <<'PY'
+python3 - "$(winpath "$PATCH_SRC")" "$(winpath "$PATCH_DST")" "$(winpath "$BACKUP_DIR")" "$DRY_RUN" <<'PY' || die "patch 合并失败（python3 异常退出）"
 import sys, re, os, shutil, datetime, tarfile
 
 patch_src, patch_dst, backup_dir, dry_run = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
@@ -365,7 +452,7 @@ if [ "$DRY_RUN" = "1" ]; then
 else
   failed=0
   # 4a. patch YAML 能被 python yaml.safe_load 解析（剥离 !!js 等自定义 tag 后）
-  python3 - "$PATCH_DST" <<'PY' || failed=$((failed+1))
+  python3 - "$(winpath "$PATCH_DST")" <<'PY' || failed=$((failed+1))
 import sys, re
 try:
     import yaml

@@ -31,6 +31,30 @@ AGINT_HOME_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGINT_HOME="${AGINT_HOME:-$AGINT_HOME_DEFAULT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
+# ── MSYS → Windows 路径转换 ──────────────────────────────────────────────────
+# 与 install.sh 里同一个坑：Git Bash 的 $DSH_HOME 形如 /c/Users/...（MSYS 路径），
+# bash 自己能读，但传给 Windows 原生 python3 会被当成不存在的相对路径，
+# open() 直接 FileNotFoundError。本脚本所有 python3 读文件路径的调用都必须过
+# 一次 winpath()，否则版本号会静默读成 "0"，zod 被误判为版本不符而跳过。
+# 探测方式同 install.sh：拿 SCRIPT_DIR 试一次，python 认得就不转。
+PYTHON_NEEDS_WINPATH=0
+if command -v cygpath >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  if ! python3 -c 'import os,sys; sys.exit(0 if os.path.isdir(sys.argv[1]) else 1)' \
+      "$SCRIPT_DIR" 2>/dev/null; then
+    PYTHON_NEEDS_WINPATH=1
+  fi
+fi
+# 用 `cygpath -m`（输出 C:/Users/...）而不是 `-w`（输出 C:\Users\...）：
+# 本脚本把路径嵌进 Python 字符串字面量（open('...')），-w 的反斜杠会被 Python
+# 当成转义符（\U / \x 尤其致命），路径当场变形。-m 的正斜杠两处都安全。
+winpath() {
+  if [ "$PYTHON_NEEDS_WINPATH" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 DST="$DSH_HOME/profiles/web/plugins/agint-quality/node_modules/zod"
 DST_PARENT="$(dirname "$DST")"
 
@@ -71,26 +95,35 @@ fi
 
 # ── 已就绪检查 ──────────────────────────────────────────────────────────────
 if [ -f "$DST/index.js" ] && [ -f "$DST/package.json" ]; then
-  ver=$(python3 -c "import json,sys; print(json.load(open('$DST/package.json'))['version'])" 2>/dev/null || echo "?")
+  ver=$(python3 -c "import json,sys; print(json.load(open('$(winpath "$DST/package.json")'))['version'])" 2>/dev/null || echo "?")
   log "已就绪: $DST (zod $ver)"
   exit 0
 fi
 
 # ── 找本机已有 zod 4+ ──────────────────────────────────────────────────────
 # 偏好顺序：
-#   1) claude-projects/openclaw（本机已知稳定 zod 4.x）
-#   2) ~/projects 下任何含 zod 4+ 的 node_modules
-#   3) ~/文档 / ~/下载 下的 zod 4+
-#   4) warn 并退出 1
+#   1) $DSH_HOME/profiles/web/node_modules/zod  ← 首选，见下方说明
+#   2) claude-projects/openclaw（本机已知稳定 zod 4.x）
+#   3) ~/projects 下任何含 zod 4+ 的 node_modules
+#   4) ~/文档 / ~/下载 下的 zod 4+
+#   5) warn 并退出 1
+#
+# 为什么 1) 是首选：裸 `from 'zod'`（contract/eval/sandbox/report/policy 用）
+# 本来就由 Node 向上查找到 profile 的 node_modules/zod。这里再放一份同源拷贝，
+# 相对路径导入和裸导入命中的就是同一份 zod —— 不会出现两个 zod 实例，
+# 从而避免跨实例的 instanceof / schema 校验诡异失败。
+# 附带好处：这条路径跨平台恒成立，不像 2)~4) 依赖 macOS 的 ~/{文档,projects} 布局
+# （Windows 上这些目录全不存在，导致 bootstrap 必然失败，见 2026-09-03）。
 find_local_zod() {
   local roots=(
+    "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/zod"
     "$HOME/文档/claude-projects/openclaw/node_modules/zod"
     "$HOME/projects/Metaversefans/metaverse-fans-web/node_modules/zod"
   )
   for src in "${roots[@]}"; do
     if [ -f "$src/package.json" ] && [ -f "$src/index.js" ]; then
       local v
-      v=$(python3 -c "import json; print(json.load(open('$src/package.json'))['version'])" 2>/dev/null || echo "0")
+      v=$(python3 -c "import json; print(json.load(open('$(winpath "$src/package.json")'))['version'])" 2>/dev/null || echo "0")
       local major="${v%%.*}"
       if [ "$major" = "4" ] || [ "$major" = "3" ]; then
         echo "$src"; return 0
@@ -101,7 +134,7 @@ find_local_zod() {
   found=$(find "$HOME/文档" "$HOME/projects" "$HOME/下载" \
     -path "*/node_modules/zod/package.json" 2>/dev/null \
     | while read pj; do
-        v=$(python3 -c "import json; print(json.load(open('$pj'))['version'])" 2>/dev/null)
+        v=$(python3 -c "import json; print(json.load(open('$(winpath "$pj")'))['version'])" 2>/dev/null)
         case "$v" in 4.*|3.*) echo "$(dirname "$pj")" && break ;; esac
       done | head -1)
   if [ -n "$found" ] && [ -d "$found" ]; then
@@ -133,7 +166,7 @@ MSG
 fi
 
 # ── 放置 ────────────────────────────────────────────────────────────────────
-src_ver=$(python3 -c "import json; print(json.load(open('$SRC/package.json'))['version'])")
+src_ver=$(python3 -c "import json; print(json.load(open('$(winpath "$SRC/package.json")'))['version'])")
 log "复用本地 zod $src_ver from $SRC"
 
 run mkdir -p "$DST_PARENT"
