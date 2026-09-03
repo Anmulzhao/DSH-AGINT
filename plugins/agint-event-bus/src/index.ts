@@ -17,7 +17,8 @@
  *   - 不主动 evaluate self；评估走 agint.qualityEval 跨插件（self-evaluation forbidden）
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
-import { publish, subscribe, inspect, inspectSummary, disposeBus } from './bus.js';
+import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, disposeBus } from './bus.js';
+import { listDeadletters } from './deadletter.js';
 import type { EventEnvelope } from './envelope.js';
 import type { EventBusContext, EventLogEntry, InspectFilter, Handler, PublishResult, Subscription, Unsubscribe } from './types.js';
 
@@ -104,16 +105,18 @@ function apply(ctx: any, _config: any = {}) {
   ctx.provide('agint.eventBus.inspectSummary', (filter: unknown) =>
     inspectSummary((filter ?? {}) as InspectFilter),
   );
+  // Sprint 13 / s12-09 断言②：死信可查询（辅助 Service，不进 FROZEN 3 Service 列表）。
+  // 运维 / 排障 / 仪表盘需要列出 DLQ 内容；底层 listDeadletters 在 v0.7.0 已实现
+  // 但未挂到 ctx，本 Sprint 补齐出口。软降级：读失败返回空数组。
+  ctx.provide('agint.eventBus.deadletters', async () => {
+    try { return await listDeadletters(busCtx); } catch { return []; }
+  });
   ctx.provide('agint.eventBus.metricsSnapshot', async () => {
-    // A10 尾巴：死信率 + sync 订阅数（供 agint-metrics 采集；软降级→0）
-    let deadletterCount = 0;
-    try {
-      const dl = busCtx.tables?.deadletter;
-      if (dl && typeof dl.size === 'function') deadletterCount = (await dl.size()) ?? 0;
-    } catch { /* 软降级→0 */ }
-    let syncSubscriptions = 0;
-    try { syncSubscriptions = inspectSummary({}).syncSubscriptionCount ?? 0; } catch { /* 软降级 */ }
-    return { deadletterCount, syncSubscriptions };
+    // A10 尾巴（Sprint 13 / s12-09 收口）：死信率分子 + 分母 + sync 订阅数。
+    // 分母 publishedCount 由 bus.ts 维护 —— v0.7.0 缺失导致
+    // metrics.js 的 eventBus.deadletterRate 恒为 0 或直接不 push。
+    // 实现下沉到 bus.metricsSnapshot（可单测）；软降级→0。
+    return metricsSnapshot(busCtx);
   });
 
   // ── 监听 tools/post-execute（占位；记录 publish 上下文事件） ──

@@ -50,6 +50,23 @@ const SYNC_GLOBAL_LIMIT = 3;
 const subscriptions = new Map<string, SubscriptionRecord>();
 const ring = new RingBuffer();
 
+/**
+ * Sprint 13 / s12-09 断言③：已接受发布计数（accepted publishes）。
+ *
+ * 用途：`eventBus.metricsSnapshot().publishedCount` 作为死信率的分母 ——
+ * metrics.js 的 `eventBus.deadletterRate = deadletterCount / publishedCount * 100`。
+ * v0.7.0 的 metricsSnapshot 只返 deadletterCount，导致 publishedCount 恒为 0、
+ * 死信率要么记 0 要么不 push（A10 尾巴未收口）。这里补齐分母。
+ *
+ * 语义：只统计 schema 校验通过（accepted=true）的 publish；非法 envelope 不计。
+ */
+let publishedCount = 0;
+
+/** 读取当前已接受发布计数（供 metricsSnapshot / 测试断言使用） */
+export function publishedCounter(): number {
+  return publishedCount;
+}
+
 function countSyncSubs(): number {
   let n = 0;
   for (const sub of subscriptions.values()) if (sub.mode === 'sync') n += 1;
@@ -115,6 +132,7 @@ export async function publish(
   }
 
   ring.push(entry);
+  publishedCount += 1;
   try {
     await ctx.tables.events.put(envelope.id, {
       envelope,
@@ -199,4 +217,30 @@ export function inspectSummary(filter: InspectFilter = {}): {
 export function disposeBus(): void {
   subscriptions.clear();
   ring.clear();
+  publishedCount = 0;
+}
+
+/**
+ * 指标快照（A10 + Sprint 13 / s12-09 收口）：给 agint-metrics 采集用的三个数。
+ *   - deadletterCount   死信条目数（分子）
+ *   - publishedCount    已接受发布数（分母；v0.7.0 缺失，Sprint 13 补齐）
+ *   - syncSubscriptions 当前 sync 订阅数（配额护栏）
+ */
+export async function metricsSnapshot(ctx: EventBusContext): Promise<{
+  deadletterCount: number;
+  publishedCount: number;
+  syncSubscriptions: number;
+  syncGlobalLimit: number;
+}> {
+  let deadletterCount = 0;
+  try {
+    const dl = ctx?.tables?.deadletter;
+    if (dl && typeof dl.size === 'function') deadletterCount = (await dl.size()) ?? 0;
+    else if (dl && typeof dl.entries === 'function') deadletterCount = [...dl.entries()].length;
+  } catch { /* 软降级→0 */ }
+
+  let syncSubscriptions = 0;
+  try { syncSubscriptions = countSyncSubs(); } catch { /* 软降级 */ }
+
+  return { deadletterCount, publishedCount, syncSubscriptions, syncGlobalLimit: SYNC_GLOBAL_LIMIT };
 }
