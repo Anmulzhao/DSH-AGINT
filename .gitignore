@@ -21,6 +21,10 @@ reviews/
 *.swp
 *~
 
+# 备份残留（DSH-Agent / 手动备份 host 端 plugin 时留的 .bak-<timestamp> 文件）
+*.bak-*
+profile-patches/**/*.bak-*
+
 # Node（万一谁加 test harness）
 node_modules/
 **/node_modules/
