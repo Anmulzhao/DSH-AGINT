@@ -23,7 +23,12 @@ import type { EventEnvelope } from './envelope.js';
 import type { EventBusContext, EventLogEntry, InspectFilter, Handler, PublishResult, Subscription, Unsubscribe } from './types.js';
 
 const name = 'agint-event-bus';
-const inject = ['storageDomain', 'agint.evolution'];
+// fix-20260904: 打破 cordis 循环依赖（与 deployed lib/index.js 同步）。
+//   原 ['storageDomain', 'agint.evolution'] 与 agint-evolution-memory 互为
+//   provider/consumer，导致 8 个插件永久 PENDING、dsh web 启动即抛
+//   "plugin tree failed to load"。运行期 agint.evolution 仅为可选 ctx.get
+//   软降级（logBuffered 影子写入），不声明为硬依赖也不影响功能。
+const inject = ['storageDomain'];
 
 /** sync 订阅硬上限（设计稿 §A2.6 + schema yaml constraints） */
 export const SYNC_GLOBAL_LIMIT = 3;
