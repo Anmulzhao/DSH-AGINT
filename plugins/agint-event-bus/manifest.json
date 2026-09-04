@@ -15,10 +15,10 @@
   "spec": {
     "cordis": {
       "inject": [
-        "storageDomain",
-        "agint.evolution"
+        "storageDomain"
       ],
       "optionalInject": [
+        "agint.evolution",
         "agint.memory"
       ],
       "provides": [
