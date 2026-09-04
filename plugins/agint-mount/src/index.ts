@@ -99,7 +99,7 @@ function apply(ctx: any, config: any = {}) {
 
   // ── 注册 3 Service ──
   ctx.provide('agint.mount.request', async (input: unknown) => mountRequest(mountCtx, input));
-  ctx.provide('agint.mount.status', async (ticketId: string) => mountStatus(mountCtx, ticketId));
+  ctx.provide('agint.mount.status', async (ticketId?: string) => mountStatus(mountCtx, ticketId));
   ctx.provide('agint.mount.rollback', async (input: unknown) => mountRollback(mountCtx, input));
 
   // 注意：不要在此注册 tools/post-execute 空监听。该事件是 waterfall：

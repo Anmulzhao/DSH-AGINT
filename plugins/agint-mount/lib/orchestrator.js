@@ -323,27 +323,71 @@ export async function mountRequest(ctx, input) {
         throw e;
     }
 }
-/** mount.status：查询 ticket + 探针统计 */
+/**
+ * mount.status：查询 ticket + 探针统计。
+ * ticketId 可选：不传时列出所有非终态 tickets（dry-run listing）。
+ * 终态：HEALTHY（探针已稳态）/ ROLLED_BACK（已回滚）—— 不列入 pending 列表。
+ * 非终态：PREPARED / INSTALLED / RESTART_REQUESTED / ACTIVATED / DISABLED。
+ */
 export async function mountStatus(ctx, ticketId) {
-    z.string().min(1).parse(ticketId);
+    // zod v3：z.string().min(1).optional() → undefined 或非空字符串
+    z.string().min(1).optional().parse(ticketId);
     const tt = ctx.tables?.tickets;
     if (!tt)
         throw new Error('mount.status: tickets table unavailable');
+    // ── 列表模式（ticketId 缺省） ─────────────────────────────
+    if (ticketId === undefined) {
+        const TERMINAL = new Set(['HEALTHY', 'ROLLED_BACK']);
+        const pending = [];
+        for (const [, entry] of tt.entries()) {
+            if (!TERMINAL.has(entry.phase)) {
+                const ticket = unpackTicket(entry);
+                pending.push({ ...ticket, probeStats: entry.probeStats, createdAt: entry.createdAt });
+            }
+        }
+        return { mode: 'list', count: pending.length, pending };
+    }
+    // ── 单查模式 ────────────────────────────────────────────
     const entry = await tt.get(`t-${ticketId}`);
     if (!entry)
         throw new Error(`mount.status: ticket ${ticketId} not found`);
     const ticket = unpackTicket(entry);
-    return { ...ticket, probeStats: entry.probeStats, createdAt: entry.createdAt };
+    return { mode: 'single', ...ticket, probeStats: entry.probeStats, createdAt: entry.createdAt };
 }
-/** mount.rollback：人类否决权入口 */
+/**
+ * mount.rollback：人类否决权入口。
+ * input.ticketId 可选：不传时进入 dry-run listing，返回所有可被回滚的 tickets
+ * （不写 storage、不发事件、不动状态机——与单查模式完全隔离）。
+ * 终态 HEALTHY / ROLLED_BACK 不可回滚，列在不可回滚集合内。
+ */
 export async function mountRollback(ctx, input) {
-    const parsed = z.object({ ticketId: z.string().min(1), reason: z.string().min(1).default('manual') }).safeParse(input);
+    const parsed = z.object({
+        ticketId: z.string().min(1).optional(),
+        reason: z.string().min(1).default('manual'),
+    }).safeParse(input ?? {});
     if (!parsed.success)
         throw new Error(`mount.rollback: invalid input: ${parsed.error.issues[0]?.message}`);
     const { ticketId, reason } = parsed.data;
     const tt = ctx.tables?.tickets;
     if (!tt)
         throw new Error('mount.rollback: tickets table unavailable');
+    // ── 列表模式（ticketId 缺省）：dry-run listing，不写不触发 ──
+    if (ticketId === undefined) {
+        const ROLLBACKABLE = new Set(['PREPARED', 'INSTALLED', 'RESTART_REQUESTED', 'ACTIVATED', 'DISABLED']);
+        const TERMINAL_NOOP = new Set(['HEALTHY', 'ROLLED_BACK']);
+        const rollbackable = [];
+        const noop = [];
+        for (const [, entry] of tt.entries()) {
+            const ticket = unpackTicket(entry);
+            const summary = { ticketId: ticket.ticketId, proposalId: ticket.proposalId, phase: ticket.phase, artifactName: ticket.artifactName };
+            if (ROLLBACKABLE.has(entry.phase))
+                rollbackable.push(summary);
+            else if (TERMINAL_NOOP.has(entry.phase))
+                noop.push(summary);
+        }
+        return { mode: 'list', dryRun: true, reason, count: rollbackable.length, rollbackable, noop };
+    }
+    // ── 单查模式：实际回滚 ───────────────────────────────────
     const entry = await tt.get(`t-${ticketId}`);
     if (!entry)
         throw new Error(`mount.rollback: ticket ${ticketId} not found`);
@@ -353,7 +397,7 @@ export async function mountRollback(ctx, input) {
     if (phase !== 'DISABLED' && phase !== 'HEALTHY' && phase !== 'ROLLED_BACK') {
         await updateTicketPhase(ctx, ticketId, 'ROLLED_BACK', entry.contractCheck, null, reason);
     }
-    return result;
+    return { mode: 'single', ...result };
 }
 // ── 内部 helpers ─────────────────────────────────────────
 async function writeTicket(ctx, t) {

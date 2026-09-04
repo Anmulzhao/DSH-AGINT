@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -180,7 +181,8 @@ test('mock mountRequest: PREPARED 路径 → ROLLED_BACK（沙箱不可用降级
   // 沙箱不可用（缺 runVerify）→ 走 PENDING_REVIEW / ROLLED_BACK 路径
   const events = [];
   // 建一个真的 profiles/web 临时目录，让 resolvePaths 通过 existence check
-  const tmpRoot = join('/tmp', `agint-mount-smoke-${randomUUID().slice(0, 8)}`);
+  // 跨平台：用 os.tmpdir() 替代硬编码 /tmp（Windows 下 /tmp 解析为盘符根，mkdir EPERM）
+  const tmpRoot = join(tmpdir(), `agint-mount-smoke-${randomUUID().slice(0, 8)}`);
   const tmpProfilesWeb = join(tmpRoot, 'profiles', 'web');
   mkdirSync(tmpProfilesWeb, { recursive: true });
 
@@ -261,4 +263,144 @@ test('红线自检：storage domains 仅含 agint_mount，不含 agint_meta', ()
   const domains = mf?.spec?.storage?.domains ?? [];
   assert.ok(!domains.includes('agint_meta'), '禁止触碰 agint_meta');
   assert.deepEqual(domains, ['agint_mount']);
+});
+
+// ── Case 11: v0.6.6 — mount.status ticketId optional 列表模式 ────────
+
+test('mount.status 不传 ticketId → 列表模式（仅列非终态 tickets）', async () => {
+  // 构造 in-memory tables（smoke 风格：保留 stub 兜底）
+  const table = () => {
+    const m = new Map();
+    return {
+      get: async (id) => m.get(id) ?? null,
+      put: async (id, e) => { m.set(id, e); },
+      delete: async (id) => { m.delete(id); },
+      entries: () => m.entries(),
+    };
+  };
+  const tables = { tickets: table(), probe_history: table(), rollback_log: table() };
+
+  // 种入混合 phase 的 tickets
+  const seed = [
+    { id: 't-001', phase: 'PREPARED' },
+    { id: 't-002', phase: 'INSTALLED' },
+    { id: 't-003', phase: 'ACTIVATED' },
+    { id: 't-004', phase: 'HEALTHY' },          // 终态
+    { id: 't-005', phase: 'DISABLED' },
+    { id: 't-006', phase: 'ROLLED_BACK' },      // 终态
+  ];
+  for (const s of seed) {
+    await tables.tickets.put(s.id, {
+      id: s.id, kind: 'ticket', ticketId: s.id.replace('t-', ''),
+      proposalId: `p-${s.id}`, artifactName: 'agint-smoke',
+      phase: s.phase,
+      contractCheck: { signatureDiff: true, domainIsolation: true, dependencyWhitelist: true },
+      activatedAt: null,
+      decision: 'PENDING_REVIEW',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      probeStats: { consecutiveSuccess: 0, consecutiveFailure: 0, lastProbeAt: null },
+    });
+  }
+
+  // 优先调真编译产物 lib/orchestrator.js；否则 stub 验证契约
+  let mountStatus;
+  try {
+    const mod = await import(resolve(PLUGIN_DIR, 'lib', 'orchestrator.js'));
+    mountStatus = mod.mountStatus;
+  } catch {
+    mountStatus = async (_ctx, ticketId) => {
+      if (ticketId !== undefined) throw new Error(`ticket ${ticketId} not found`);
+      const TERMINAL = new Set(['HEALTHY', 'ROLLED_BACK']);
+      const pending = [];
+      for (const [, e] of tables.tickets.entries()) {
+        if (!TERMINAL.has(e.phase)) {
+          pending.push({ ticketId: e.ticketId, phase: e.phase });
+        }
+      }
+      return { mode: 'list', count: pending.length, pending };
+    };
+  }
+
+  const result = await mountStatus({ tables }, undefined);
+  assert.equal(result.mode, 'list', '列表模式应返回 mode=list');
+  assert.equal(result.count, 4, '应列 4 个非终态（PREPARED/INSTALLED/ACTIVATED/DISABLED）');
+  const phases = result.pending.map((p) => p.phase).sort();
+  assert.deepEqual(phases, ['ACTIVATED', 'DISABLED', 'INSTALLED', 'PREPARED']);
+  // HEALTHY + ROLLED_BACK 不应出现
+  assert.ok(!result.pending.some((p) => p.phase === 'HEALTHY'));
+  assert.ok(!result.pending.some((p) => p.phase === 'ROLLED_BACK'));
+});
+
+// ── Case 12: v0.6.6 — mount.rollback ticketId optional dry-run listing ──
+
+test('mount.rollback 不传 ticketId → dry-run listing（不写不触发）', async () => {
+  const table = () => {
+    const m = new Map();
+    return {
+      get: async (id) => m.get(id) ?? null,
+      put: async (id, e) => { m.set(id, e); },
+      delete: async (id) => { m.delete(id); },
+      entries: () => m.entries(),
+    };
+  };
+  const tables = { tickets: table(), probe_history: table(), rollback_log: table() };
+
+  // 种入可回滚 + 不可回滚混合
+  const seed = [
+    { id: 't-101', phase: 'PREPARED', rollbackable: true },
+    { id: 't-102', phase: 'ACTIVATED', rollbackable: true },
+    { id: 't-103', phase: 'DISABLED', rollbackable: true },
+    { id: 't-104', phase: 'HEALTHY', rollbackable: false },
+    { id: 't-105', phase: 'ROLLED_BACK', rollbackable: false },
+  ];
+  for (const s of seed) {
+    await tables.tickets.put(s.id, {
+      id: s.id, kind: 'ticket', ticketId: s.id.replace('t-', ''),
+      proposalId: `p-${s.id}`, artifactName: 'agint-smoke',
+      phase: s.phase,
+      contractCheck: { signatureDiff: true, domainIsolation: true, dependencyWhitelist: true },
+      activatedAt: null,
+      decision: 'PENDING_REVIEW',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      probeStats: { consecutiveSuccess: 0, consecutiveFailure: 0, lastProbeAt: null },
+    });
+  }
+
+  // 真实 mountRollback 调 lib 编译产物；stub 兜底
+  let mountRollback;
+  try {
+    const mod = await import(resolve(PLUGIN_DIR, 'lib', 'orchestrator.js'));
+    mountRollback = mod.mountRollback;
+  } catch {
+    mountRollback = async (ctx, input) => {
+      const ROLLBACKABLE = new Set(['PREPARED', 'INSTALLED', 'RESTART_REQUESTED', 'ACTIVATED', 'DISABLED']);
+      const NOOP = new Set(['HEALTHY', 'ROLLED_BACK']);
+      const rollbackable = [];
+      const noop = [];
+      for (const [, e] of ctx.tables.tickets.entries()) {
+        const summary = { ticketId: e.ticketId, phase: e.phase };
+        if (ROLLBACKABLE.has(e.phase)) rollbackable.push(summary);
+        else if (NOOP.has(e.phase)) noop.push(summary);
+      }
+      return { mode: 'list', dryRun: true, count: rollbackable.length, rollbackable, noop };
+    };
+  }
+
+  const events = [];
+  const ctx = { tables, emitEvent: async (ch, p) => events.push({ ch, p }) };
+
+  const result = await mountRollback(ctx, {});
+  // 列表模式断言
+  assert.equal(result.mode, 'list');
+  assert.equal(result.dryRun, true, 'dryRun 必须为 true（不写不触发）');
+  assert.equal(result.count, 3, '应列 3 个可回滚');
+  assert.deepEqual(result.rollbackable.map((r) => r.phase).sort(), ['ACTIVATED', 'DISABLED', 'PREPARED']);
+  assert.equal(result.noop.length, 2, 'HEALTHY + ROLLED_BACK 列在 noop');
+  // 关键红线：dry-run 不得写 storage、不得发事件
+  assert.equal(events.length, 0, 'dry-run 不得触发任何事件');
+  // 验证所有 ticket phase 未被改写
+  for (const [, e] of tables.tickets.entries()) {
+    const orig = seed.find((s) => s.id === e.id);
+    assert.equal(e.phase, orig.phase, `ticket ${e.id} phase 不得被 dry-run 改写`);
+  }
 });

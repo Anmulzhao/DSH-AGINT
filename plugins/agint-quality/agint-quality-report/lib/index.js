@@ -104,6 +104,15 @@ function apply(ctx, config) {
 
   /**
    * Write the report to agint-wiki (best-effort; log warn if unavailable).
+   *
+   * v0.4.1 fix: agint.wiki.write signature is `write(path, content)` — two
+   * positional args. The previous call passed a single object with
+   * {path, content, tags, frontmatter}, which `String(p)` turned into
+   * "[object Object]" and tripped wiki's `path must end with .md` / `path
+   * escapes root` guards. Tags and frontmatter (which wiki itself does not
+   * model) are now embedded into the markdown body as a YAML frontmatter
+   * block so they remain greppable by wiki_search and visible in `tags:`
+   * rendering.
    */
   async function writeToWiki({ markdown, json, slug, tags } = {}) {
     const wiki = ctx.get('agint.wiki');
@@ -111,20 +120,21 @@ function apply(ctx, config) {
       console.warn('[agint-quality-report] agint.wiki unavailable; report not persisted');
       return null;
     }
-    const finalSlug = slug ?? `${cfg.writeWiki ? cfg.wikiSlugPrefix : 'report'}-${json.generatedAt ?? new Date().toISOString()}`;
+    const finalSlug = slug ?? `${cfg.wikiSlugPrefix}-${json.generatedAt ?? new Date().toISOString()}`;
     const finalTags = tags ?? cfg.wikiTags;
-    return await wiki.write({
-      path: `quality/${finalSlug}.md`,
-      content: markdown,
-      tags: finalTags,
-      frontmatter: {
-        generatedAt: json.generatedAt,
-        decision: json.decision?.kind,
-        score: json.decision?.score,
-        policyId: json.decision?.policyId,
-        targetCount: json.summary?.targetCount,
-      },
-    });
+    const fm = [
+      '---',
+      `tags: [${finalTags.map((t) => JSON.stringify(String(t))).join(', ')}]`,
+      `generatedAt: ${json.generatedAt ?? ''}`,
+      `decision: ${json.decision?.kind ?? ''}`,
+      `score: ${json.decision?.score ?? ''}`,
+      `policyId: ${json.decision?.policyId ?? ''}`,
+      `targetCount: ${json.summary?.targetCount ?? 0}`,
+      '---',
+      '',
+    ].join('\n');
+    const finalContent = `${fm}${markdown}`;
+    return await wiki.write(`quality/${finalSlug}.md`, finalContent);
   }
 
   /**

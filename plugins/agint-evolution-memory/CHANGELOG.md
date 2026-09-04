@@ -1,5 +1,25 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.5 (2026-09-04) — Batch 2.1 preset tools
+
+### Added
+
+- **`lib/tools.js`**（preset-scoped model tools，168 行）：
+  - 11 个 model-visible 工具：`evolution_logPhase4` / `evolution_logPhase4Buffered` / `evolution_readLogRangeMerged` / `evolution_flushLogBufferNow` / `evolution_addFailure` / `evolution_addSuccess` / `evolution_queryFailures` / `evolution_queryTemplates` / `evolution_getLogRange` / `evolution_decayScanRun` / `evolution_stats`
+  - K19 兜底：所有 `execute` 走 `JSON.parse(JSON.stringify(s))` 防止 dsh-tools lossless-JSON 校验拒
+  - 全部 output schema `additionalProperties: true`（per K19 教训）
+- **5 个 write 工具 ask gate**（按老板 2026-09-04 决策）：
+  - `evolution_logPhase4` / `evolution_logPhase4Buffered` / `evolution_addFailure` / `evolution_addSuccess` / `evolution_flushLogBufferNow` 走 rule_check ask gate
+  - `evolution_decayScanRun` 走 L1-L4 衰减（不入 ask gate，独立兜底）
+- **`test/smoke.mjs`** 改写：内联原 `log-buffer.test.mjs` 的 9 个单测契约 + tools.js 注册 11 工具 + dim5.5 跨平台 fixture（forward-slash ✓ + `../escape` ✓ 双覆盖）
+- **`manifest.json`**：`tests.entry` 从 `test/log-buffer.test.mjs` → `test/smoke.mjs`；`version` 0.6.4 → 0.6.5
+- **`package.json`**：`version` 0.3.0 → 0.6.5（与 manifest 同步）
+
+### Compatible
+
+- 仓 `lib/index.js` 不动（FROZEN Service 签名 11 个方法保留向后兼容）
+- 原 `test/log-buffer.test.mjs` 保留作为独立单测入口（`node --test`）
+
 ## 0.6.4 (2026-08-27) — Sprint 10 #7 收口
 
 ### Added

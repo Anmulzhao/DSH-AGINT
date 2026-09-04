@@ -18,8 +18,8 @@
 | Service | 签名 | 职责 |
 |---|---|---|
 | `agint.mount.request` | `(proposal: MutationProposal, verdict: SandboxVerdict) → MountResult` | 受理挂载请求 → 三段式事务编排 → MountTicket；沙箱不可用时降级 PENDING_REVIEW |
-| `agint.mount.status` | `(ticketId: string) → MountResult & probeStats & createdAt` | 查询 ticket 当前阶段（PREPARED/INSTALLED/RESTART_REQUESTED/ACTIVATED/HEALTHY/DISABLED/ROLLED_BACK）+ 探针历史 |
-| `agint.mount.rollback` | `(ticketId: string, reason: string) → RollbackResult` | 显式回滚（人类否决权入口）；从 fromPhase 倒序执行 PREPARE/SMOKE/ACTIVATE 清理 |
+| `agint.mount.status` | `(ticketId?: string) → MountResult & probeStats & createdAt \| {mode:'list', count, pending:[...]}` | **v0.6.6 ticketId 改 optional**：不传时返回所有非终态 tickets（HEALTHY/ROLLED_BACK 之外）；传时返回单查（向后兼容 envelope 增加 `mode`） |
+| `agint.mount.rollback` | `(input: {ticketId?: string, reason?: string}) → RollbackResult \| {mode:'list', dryRun:true, count, rollbackable, noop}` | **v0.6.6 ticketId 改 optional**：不传时返回 dry-run listing（**不写不触发**），列可回滚 + 不可回滚（终态）；传时走实际回滚（向后兼容 envelope 增加 `mode`） |
 
 完整签名与 zod schema 见 `src/schemas.ts`、`src/orchestrator.ts`。
 
