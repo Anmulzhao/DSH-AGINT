@@ -23,31 +23,29 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 const name = 'agint-evolution-memory-tools';
-const inject = ['tools',
-  'agint.evolution.logPhase4',
-  'agint.evolution.logPhase4Buffered',
-  'agint.evolution.readLogRangeMerged',
-  'agint.evolution.flushLogBufferNow',
-  'agint.evolution.addFailure',
-  'agint.evolution.addSuccess',
-  'agint.evolution.queryFailures',
-  'agint.evolution.queryTemplates',
-  'agint.evolution.getLogRange',
-  'agint.evolution.decayScanRun',
-  'agint.evolution.stats'];
+// IMPORTANT: inject the umbrella `agint.evolution` service object, NOT per-
+// function dotted keys. index.js provides ONE umbrella (ctx.provide(
+// 'agint.evolution', {...})), and every other consumer (event-bus,
+// quality-policy, quality-eval, quality-sandbox, cron, diagnosis, mutator,
+// population, self-model, mount) resolves the umbrella. Per-key inject here
+// made the DI wait forever on keys nobody provides → preset "agint" failed
+// to mount (2026-09-04 智进挂载失败根因).
+const inject = ['tools', 'agint.evolution'];
 
 function apply(ctx) {
-  const logPhase4 = ctx['agint.evolution.logPhase4'];
-  const logPhase4Buffered = ctx['agint.evolution.logPhase4Buffered'];
-  const readLogRangeMerged = ctx['agint.evolution.readLogRangeMerged'];
-  const flushLogBufferNow = ctx['agint.evolution.flushLogBufferNow'];
-  const addFailure = ctx['agint.evolution.addFailure'];
-  const addSuccess = ctx['agint.evolution.addSuccess'];
-  const queryFailures = ctx['agint.evolution.queryFailures'];
-  const queryTemplates = ctx['agint.evolution.queryTemplates'];
-  const getLogRange = ctx['agint.evolution.getLogRange'];
-  const decayScanRun = ctx['agint.evolution.decayScanRun'];
-  const stats = ctx['agint.evolution.stats'];
+  const {
+    logPhase4,
+    logPhase4Buffered,
+    readLogRangeMerged,
+    flushLogBufferNow,
+    addFailure,
+    addSuccess,
+    queryFailures,
+    queryTemplates,
+    getLogRange,
+    decayScanRun,
+    stats,
+  } = ctx['agint.evolution'];
 
   // ── write tools (5) ─────────────────────────────────────────────────
 
