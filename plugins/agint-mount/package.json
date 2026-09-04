@@ -1,7 +1,7 @@
 {
   "name": "agint-mount",
-  "version": "0.6.5",
-  "description": "AGINT 动态插件挂载编排器 v0.6.5：PREPARE→SMOKE→ACTIVATE 三段式事务（4 态状态机 PREPARED→INSTALLED→RESTART_REQUESTED→ACTIVATED），两段式 commit（HMR 成功前 atomic backup 永不清），3 Service（mount.request / mount.status / mount.rollback），FROZEN MountResult schema，独占 agint_mount 存储域。Sprint 11 收口 / 设计稿 Sprint11 §4.1。",
+  "version": "0.6.6",
+  "description": "AGINT 动态插件挂载编排器 v0.6.6：PREPARE→SMOKE→ACTIVATE 三段式事务（4 态状态机 PREPARED→INSTALLED→RESTART_REQUESTED→ACTIVATED），两段式 commit（HMR 成功前 atomic backup 永不清），3 Service（mount.request / mount.status / mount.rollback，v0.6.6 起 mount.status / mount.rollback 的 ticketId 改 optional —— status 列表模式 + rollback dry-run listing），FROZEN MountResult schema，独占 agint_mount 存储域。Sprint 11 收口 / 设计稿 Sprint11 §4.1。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

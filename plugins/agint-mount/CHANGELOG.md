@@ -4,6 +4,59 @@
 
 ---
 
+## v0.6.6 — 2026-09-04 — ticketId optional + 跨平台 smoke fix
+
+**修复 + 增强**（patch bump；不破环 FROZEN schema / 不动 mount.* 状态机）。
+
+### 修复（Fixed）
+
+- **`agint.mount.status` ticketId 改 optional**（`lib/orchestrator.js:328` → `lib/orchestrator.js:z.string().min(1).optional()`）：
+  - 不传 ticketId → 返回 `{mode:'list', count, pending:[...]}` 列出所有非终态 tickets
+    （终态 `HEALTHY` / `ROLLED_BACK` 不列；非终态 `PREPARED/INSTALLED/RESTART_REQUESTED/ACTIVATED/DISABLED` 全列）
+  - 传 ticketId → 返回 `{mode:'single', ...ticket, probeStats, createdAt}`（向后兼容 envelope 增加 `mode` 字段）
+  - **来源**：`tools.js` 注释早在 2026-09-04 就提出 host-side zod 改 optional 是 host-side 修复路径，本次落地
+
+- **`agint.mount.rollback` ticketId 改 optional**（dry-run listing）：
+  - 不传 ticketId → 返回 `{mode:'list', dryRun:true, reason, count, rollbackable:[...], noop:[...]}`
+    **不写 storage、不发 `mount.failed` 事件、不动状态机**——纯只读 preview
+  - 传 ticketId → 走原回滚流程（向后兼容 envelope 增加 `mode` 字段）
+  - **设计意图**：rollback 是人类否决权入口；"先看哪些可以回滚"是合理的只读探查需求；
+    但必须 dry-run 隔离，绝不能因为缺 ticketId 而批量回滚
+
+### 修复（Fixed — smoke）
+
+- **`test/smoke.mjs` case 8**：跨平台临时目录。`/tmp` 在 Windows 下被 mkdir 解析为盘符根 EPERM；
+  改为 `os.tmpdir()`（`node:os`）。这让 case 8 真正跑真 `lib/orchestrator.js` 而非 stub——之前的 stub
+  兜底掩盖了 Windows smoke 永远走 stub 的事实。
+
+### 新增（Added）
+
+- **smoke case 11**：`mount.status` 不传 ticketId → 列表模式断言（4 个非终态列出，HEALTHY/ROLLED_BACK 不列）
+- **smoke case 12**：`mount.rollback` 不传 ticketId → dry-run listing 断言（不写不触发；events 数组为空）
+
+### 红线遵守
+
+- ✅ 不修改 `mount-result.schema.yaml` FROZEN 字段（mount.status / mount.rollback 不是 MountResult 子集，是独立 service 签名）
+- ✅ 不触碰 `agint_meta` 存储域
+- ✅ 不破坏既有 18 个插件
+- ✅ 不动 mount.* 状态机语义（终态判定集合 `TERMINAL` / `ROLLBACKABLE` / `NOOP` 与 smoke 的 `TERMINAL_PHASES` 严格一致）
+- ✅ dry-run 模式明确隔离（events.length === 0，phase 未被改写）
+
+### 验证
+
+- ✅ `node test/smoke.mjs` — **12/12 用例契约层验证全过**（10 原有 + 2 新增）
+- ⏳ `bin/plugin-check.sh plugins/agint-mount` — 待老板跑（lint 模式不阻断）
+
+### 不在本 patch
+
+| 范围 | 责任方 | 备注 |
+|---|---|---|
+| 工具层批量补 Batch 1（mount_status / mount_rollback preset row） | 待老板走 `bin/safe-update.sh restart` 后生效 | 本次不动 preset 文件 |
+| `mount.request` ticketId 改 optional | **不做** | mount.request 是写操作入口，必须给完整输入 |
+| 真实 dsh HMR 探针（替代 probeStaging stub） | Sprint 11 第 2 周 codex-D | 与本 patch 无关 |
+
+---
+
 ## v0.7.0 — 未发布 — Sprint 12
 
 ### 调研（Investigated）

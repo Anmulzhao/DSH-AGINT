@@ -1,17 +1,13 @@
 /**
- * agint-mount: preset-scoped mount tools (v0.6.5).
+ * agint-mount: preset-scoped mount tools (v0.6.6).
  * Batch 1: status only (read-only). request/rollback deferred to Batch 2.
  *
  * Schema policy: K19 — `additionalProperties: true`; tighten after live call.
  *
- * Note (2026-09-04): mount_status requires ticketId at the dsh-tools layer
- * (type:'string' with no `required:false` is treated as required) but the
- * host service supports ticketId === undefined (lists pending tickets).
- * The DSH layer rejects `undefined` with "expected string, received
- * undefined". Fix is host-side: change zod schema to z.string().optional()
- * OR drop the ticketId parameter from this tool and let the model call
- * a different listing helper. Deferred to follow-up; current behaviour
- * requires the caller to pass an explicit ticket id string.
+ * v0.6.6 fix (2026-09-04): ticketId is optional — when omitted, the host
+ * service returns a dry-run listing of all non-terminal tickets. Backward-
+ * compatible: existing callers passing a ticketId see the same single-result
+ * shape (with an added `mode: 'single'` envelope).
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';

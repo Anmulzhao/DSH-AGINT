@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolution-memory",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "物理隔离的进化记忆存储域。Sprint 10 v0.6.4 #7 加 EvolutionLogBuffer（异步批量写入 + flush 3 策略 + 退出钩子 + 读时合并视图 + buffer-lost 兜底）。",
   "main": "lib/index.js",
   "agint": {
@@ -56,8 +56,8 @@
       "shutdown": "graceful"
     },
     "tests": {
-      "entry": "test/log-buffer.test.mjs",
-      "command": "node --test test/log-buffer.test.mjs",
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
       "expectedExit": 0
     },
     "docs": {
