@@ -24,6 +24,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, readdir, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join, resolve, basename } from 'node:path';
+import {
+  recordRecalls as recallStoreRecord,
+  readStoreRobust as recallStoreRead,
+  markPromoted as recallStoreMarkPromoted,
+  pruneStore as recallStorePrune,
+  defaultRecallPath,
+  recallKey,
+} from './recall-store.js';
+import { validateAndApply, planToWriteCalls } from './validation-gate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -302,12 +311,12 @@ export function scoreCandidates(candidates, opts = {}) {
   const w = { ...DEFAULTS.weights, ...(opts.weights ?? {}) };
   const halfLife = opts.recencyHalfLifeDays ?? DEFAULTS.recencyHalfLifeDays;
   const reinforcement = opts.reinforcement ?? [];
-  // group by normalized text
+  // group by recallKey(normalized text) — 与 recall store 写入 key 对齐
   const groups = new Map();
   for (const c of candidates) {
-    const key = normalizeForCompare(c.text);
+    const key = recallKey(normalizeForCompare(c.text));
     if (!key) continue;
-    if (!groups.has(key)) groups.set(key, { ...c, signals: [], sessions: new Set(), days: new Set(), reinforced: false });
+    if (!groups.has(key)) groups.set(key, { key, ...c, signals: [], sessions: new Set(), days: new Set(), reinforced: false });
     const g = groups.get(key);
     g.signals.push(...c.signals);
     g.sessions.add(c.sessionKey);
@@ -317,7 +326,7 @@ export function scoreCandidates(candidates, opts = {}) {
   // REM reinforcement: same-claim signals from the wider window strengthen
   // frequency/consolidation but never create a candidate on their own.
   for (const c of reinforcement) {
-    const key = normalizeForCompare(c.text);
+    const key = recallKey(normalizeForCompare(c.text));
     if (!key || !groups.has(key)) continue;
     const g = groups.get(key);
     g.reinforced = true;
@@ -418,9 +427,10 @@ function fmtDay(ms) {
 /**
  * Render the dream diary markdown for one sweep.
  * stages: { day, signals, memWrites, candidates, gated, promoted, recovered,
- *           errors, durationMs, windows? }.
+ *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
+ *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -448,7 +458,17 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push('## Deep — 评分与提升');
   lines.push('');
   lines.push(`- 门槛通过候选：${gated.length} 条`);
+  if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
+  if (!validationOk) {
+    lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
+  }
   lines.push(`- 提升写入记忆：${promoted.length} 条`);
+  if (recallWrite) {
+    lines.push(`- P2 recall store：append ${recallWrite.appended ?? 0} 条`);
+  }
+  if (pruneResult) {
+    lines.push(`- P2 30 天剪枝：保留 ${pruneResult.kept} / 剪掉 ${pruneResult.dropped}`);
+  }
   lines.push('');
   if (gated.length > 0) {
     lines.push('| # | 类型 | 得分 | 信号 | 天数 | 强化 | 候选内容 |');
@@ -526,6 +546,13 @@ export async function runSweep({
   minScore,
   minRecall,
   minUniqueSessions,
+  // P2 (Sprint 13 / 2026-09-05)：short-term recall store 路径
+  recallPath,
+  // P0：validation gate 调优（loss fraction budget 等）
+  operations = null,            // 来自 P1 LLM consolidation；暂为 null
+  maxPriorEntryLossFraction,    // 默认 0.25（与 openclaw 对齐）
+  // 可选：sweep 完成时 publish dream.rejected 事件（默认不 publish，保持向后兼容）
+  publishReject = null,         // function: (reason, count) => Promise<void>
 }) {
   const startedAt = Date.now();
   const errors = [];
@@ -533,6 +560,7 @@ export async function runSweep({
   const lightDays = lookbackDays ?? DEFAULTS.lookbackDays;
   const remDays = remLookbackDays ?? DEFAULTS.remLookbackDays;
   const cap = maxSessions ?? DEFAULTS.maxSessions;
+  const rPath = recallPath ?? defaultRecallPath();
 
   // ── Light: candidate extraction window (2d) ─────────────────────────────
   const lightLogs = await listSessionLogs(sessionsRoot, lightDays, cap);
@@ -546,6 +574,37 @@ export async function runSweep({
   }
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
   const candidates = signals.flatMap((s) => extractCandidates(s, nowMs));
+
+  // ── P2 Light: 把候选写入 recall store（带 recallKey 归一化）──────────
+  let recallWriteResult = null;
+  try {
+    const writeCandidates = candidates.map((c) => ({
+      key: recallKey(normalizeForCompare(c.text)),
+      text: c.text,
+      type: c.type,
+      path: c.path,
+      startLine: c.startLine,
+      endLine: c.endLine,
+      signalCount: 1,
+      dailyCount: 0,
+      groundedCount: 0,
+      queryHashes: [],
+      days: [day],
+    }));
+    recallWriteResult = await recallStoreRecord(rPath, writeCandidates, { nowMs, dayBucket: day });
+  } catch (err) {
+    errors.push(`recall-store write failed: ${err.message}`);
+  }
+
+  // ── P2 Deep 阶段前：读 store 获取 promotedAt 集合，用于过滤已提 ──
+  let storeEntries = new Map();
+  try {
+    const r = await recallStoreRead(rPath, nowMs);
+    storeEntries = r.entries;
+    if (r.skippedPartial > 0) errors.push(`recall-store: skipped ${r.skippedPartial} partial lines`);
+  } catch (err) {
+    errors.push(`recall-store read failed: ${err.message}`);
+  }
 
   // ── REM: reinforcement window (7d) — cross-day strength, no new claims ──
   let reinforcement = [];
@@ -563,16 +622,67 @@ export async function runSweep({
   }
   const scored = scoreCandidates(candidates, { nowMs, reinforcement });
 
-  // ── Deep: gate + promote ────────────────────────────────────────────────
+  // ── Deep: gate + P0 validation gate + promote ────────────────────────
   const existing = memory ? await memory.list({}) : [];
   const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions });
+  // P0: 把 gated 送进 validation gate；operations=null 时走 added 退化路径
+  const validation = validateAndApply({
+    gated,
+    existing,
+    operations,
+    maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+  });
+
+  // P2: 过滤掉已 promoted 的候选（在 validation 之前过滤，避免重复写）
+  const unpromotedGated = gated.filter((c) => {
+    const k = recallKey(normalizeForCompare(c.text));
+    return !storeEntries.get(k)?.promotedAt;
+  });
+  const skippedPromoted = gated.length - unpromotedGated.length;
+
+  // 用 unpromoted 重新跑 validation（确保 ops 数量对齐）
+  const validationFinal = unpromotedGated.length === gated.length
+    ? validation
+    : validateAndApply({
+        gated: unpromotedGated,
+        existing,
+        operations: null,  // 退化路径不重做 ops
+        maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+      });
+
+  // P0 reject 事件（如有 publishReject 钩子）
+  if (!validationFinal.ok && typeof publishReject === 'function') {
+    try {
+      await publishReject({
+        reason: validationFinal.reason,
+        gatedCount: unpromotedGated.length,
+        stats: validationFinal.stats,
+        day,
+        nowMs,
+      });
+    } catch (err) {
+      errors.push(`dream.rejected publish failed: ${err.message}`);
+    }
+  }
+
   const promoted = [];
-  if (apply && memory) {
-    for (const candidate of gated) {
+  if (apply && memory && validationFinal.ok) {
+    const writeCalls = planToWriteCalls(validationFinal.plan);
+    for (let i = 0; i < writeCalls.length; i += 1) {
+      const wc = writeCalls[i];
+      const candidate = unpromotedGated[i];
       try {
-        const entry = entryFor(candidate, `agint-dream ${day} from ${candidate.sessionKey}`);
-        const saved = await memory.write(entry);
+        const saved = await wc.write(
+          memory,
+          `agint-dream ${day} from ${candidate.sessionKey} [${wc.action}]`,
+        );
         promoted.push({ candidate, entry: { id: saved.id, type: saved.type, content: saved.content, confidence: saved.confidence, evidence: saved.evidence } });
+        // P2: 回写 promotedAt
+        try {
+          await recallStoreMarkPromoted(rPath, candidate.key ?? recallKey(normalizeForCompare(candidate.text)), { nowMs, snippet: candidate.text?.slice(0, 140) });
+        } catch (err) {
+          errors.push(`recall-store markPromoted failed: ${err.message}`);
+        }
       } catch (err) {
         errors.push(`promote failed: ${err.message}`);
       }
@@ -599,18 +709,45 @@ export async function runSweep({
         existing,
         { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2 },
       );
-      if (apply) {
-        for (const candidate of recGated) {
+      // P0: recovery 也走 validation gate
+      const recValidation = validateAndApply({
+        gated: recGated,
+        existing,
+        operations: null,
+        maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+      });
+      if (apply && recValidation.ok) {
+        const recWriteCalls = planToWriteCalls(recValidation.plan);
+        for (let i = 0; i < recWriteCalls.length; i += 1) {
+          const wc = recWriteCalls[i];
+          const candidate = recGated[i];
           try {
-            const entry = entryFor(candidate, `agint-dream ${day} deep-recovery from ${candidate.sessionKey}`);
-            const saved = await memory.write(entry);
+            const saved = await wc.write(
+              memory,
+              `agint-dream ${day} deep-recovery from ${candidate.sessionKey} [${wc.action}]`,
+            );
             promoted.push({ candidate, entry: { id: saved.id, type: saved.type, content: saved.content, confidence: saved.confidence, evidence: saved.evidence } });
+            try {
+              await recallStoreMarkPromoted(rPath, candidate.key ?? recallKey(normalizeForCompare(candidate.text)), { nowMs, snippet: candidate.text?.slice(0, 140) });
+            } catch (err) {
+              errors.push(`recall-store markPromoted (recovery) failed: ${err.message}`);
+            }
           } catch (err) {
             errors.push(`recover promote failed: ${err.message}`);
           }
         }
       }
       recovered.push(...recGated);
+    }
+  }
+
+  // ── P2 30 天剪枝（每个 sweep 完跑一次）──────────────────────────────
+  let pruneResult = null;
+  if (apply) {
+    try {
+      pruneResult = await recallStorePrune(rPath, { nowMs, retentionDays: 30 });
+    } catch (err) {
+      errors.push(`recall-store prune failed: ${err.message}`);
     }
   }
 
@@ -626,12 +763,18 @@ export async function runSweep({
     errors,
     durationMs: Date.now() - startedAt,
     windows: { light: lightDays, rem: remDays, deep: deepRecoveryDays ?? DEFAULTS.deepRecoveryDays },
+    // P0/P2 扩展字段（renderDiary 内部可选展示）
+    skippedPromoted,
+    validationOk: validationFinal.ok,
+    validationReason: validationFinal.reason,
+    recallWrite: recallWriteResult,
+    pruneResult,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   const diaryPath = join(resolve(diaryRoot), `${day}.md`);
   await writeFile(diaryPath, diary, 'utf8');
 
-  return {
+  const result = {
     day,
     diaryPath,
     apply,
@@ -642,11 +785,36 @@ export async function runSweep({
       toolErrors: signals.reduce((n, s) => n + s.errors.length, 0),
       candidates: scored.length,
       gated: gated.length,
+      skippedPromoted,
+      validationOk: validationFinal.ok,
+      validationReason: validationFinal.reason ?? null,
       recovered: recovered.length,
       promoted: promoted.length,
+      recallAppended: recallWriteResult?.appended ?? 0,
+      recallPruned: pruneResult?.dropped ?? 0,
     },
-    promoted: promoted.map((p) => ({ type: p.entry.type, content: p.entry.content, score: p.candidate.score, id: p.entry.id })),
+    promoted: promoted.map((p) => ({ type: p.entry.type, content: p.entry.content, score: p.candidate.score ?? 0, id: p.entry.id })),
     errors,
     durationMs: Date.now() - startedAt,
   };
+
+  // 返回前做 JSON 安全化：递归把 undefined → null，避免 DSH "not lossless JSON"
+  // 严格模式因 undefined 拒绝整个返回值。Set/Map 已在上游转 array。
+  return sanitizeJson(result);
+}
+
+function sanitizeJson(value) {
+  if (value === undefined) return null;
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map(sanitizeJson);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = sanitizeJson(v);
+    return out;
+  }
+  // Set/Map/函数/符号 等：转成可序列化表示或 null
+  if (typeof value === 'bigint') return value.toString();
+  if (value instanceof Set) return [...value].map(sanitizeJson);
+  if (value instanceof Map) return Object.fromEntries([...value].map(([k, v]) => [k, sanitizeJson(v)]));
+  return String(value);
 }

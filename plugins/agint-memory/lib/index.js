@@ -32,6 +32,14 @@ const memorySchema = z.object({
   evidence: z.string().default(''),
   resolved: z.boolean().default(false),
   replacedBy: z.string().nullable().default(null),
+  // P0 (Sprint 13 / 2026-09-05)：validation gate + loss fraction budget 引入的 lineage 字段。
+  // 向前兼容：旧 entry 没字段，zod 用 null default，新 entry 可选填。
+  // lineageKey   - 合并关系链 ID；merged 操作时所有 priorEntries 必须同 lineageKey
+  // supersedesKey - provenance 维度；supersede 操作时必带，匹配要被取代的 entry
+  // 设计动机：openclaw `<!-- openclaw-memory-lineage:X -->` 注释的 P2 对齐版本。
+  // 见 AGINT/计划-agint-dream升级三方向.md P0 段。
+  lineageKey: z.string().nullable().default(null),
+  supersedesKey: z.string().nullable().default(null),
   createdAt: z.string().default(() => new Date().toISOString()),
   updatedAt: z.string().default(() => new Date().toISOString()),
 });
@@ -132,6 +140,9 @@ function apply(ctx) {
         evidence: input.evidence ?? existing?.evidence ?? '',
         resolved: input.resolved ?? existing?.resolved ?? false,
         replacedBy: input.replacedBy ?? existing?.replacedBy ?? null,
+        // P0：lineage 字段；新写入可显式带，未带从 existing 继承。
+        lineageKey: input.lineageKey ?? existing?.lineageKey ?? null,
+        supersedesKey: input.supersedesKey ?? existing?.supersedesKey ?? null,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       });

@@ -34,9 +34,9 @@ function apply(ctx) {
       confidence: { type: 'number', description: '0..1 confidence (default 0.5).' },
     },
     output: {
-      // memory.write returns the full memorySchema record (12 fields). The
-      // previous schema only declared 7; the rest (lastRecall/recalls/evidence/
-      // resolved/replacedBy) caused DSH strict-mode to drop the response.
+      // memory.write returns the full memorySchema record (14 fields since P0
+      // added lineageKey/supersedesKey). The previous schema only declared 7;
+      // the rest caused DSH strict-mode to drop the response.
       schema: {
         type: 'object', additionalProperties: false,
         properties: {
@@ -50,11 +50,13 @@ function apply(ctx) {
           evidence: { type: 'string', required: true },
           resolved: { type: 'boolean', required: true },
           replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
           createdAt: { type: 'string', required: true },
           updatedAt: { type: 'string', required: true },
         },
       },
-      render: (_a, v) => [{ type: 'text', text: `memory_write: saved ${v.id} (${v.type}/${v.level}, confidence ${v.confidence})` }],
+      render: (_a, v) => [{ type: 'text', text: `memory_write: saved ${v.id} (${v.type}/${v.level}, confidence ${v.confidence})${v.lineageKey ? ' · lineage=' + v.lineageKey : ''}` }],
     },
     execute(args) {
       return memory.write(args);
@@ -92,6 +94,8 @@ function apply(ctx) {
                 evidence: { type: 'string', required: true },
                 resolved: { type: 'boolean', required: true },
                 replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+                lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+                supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
                 createdAt: { type: 'string', required: true },
                 updatedAt: { type: 'string', required: true },
               },
