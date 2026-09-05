@@ -31,6 +31,7 @@ function apply(ctx) {
           frequency: { type: 'string', required: true },
           sessionsRoot: { type: 'string', required: true },
           diaryRoot: { type: 'string', required: true },
+          recallPath: { type: 'string', required: true },
           lookbackDays: { type: 'number', required: true },
           windows: {
             type: 'object', additionalProperties: false, required: true,
@@ -60,8 +61,13 @@ function apply(ctx) {
               toolErrors: { type: 'number', required: true },
               candidates: { type: 'number', required: true },
               gated: { type: 'number', required: true },
+              skippedPromoted: { type: 'number', required: true },
+              validationOk: { type: 'boolean', required: true },
+              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
               recovered: { type: 'number', required: true },
               promoted: { type: 'number', required: true },
+              recallAppended: { type: 'number', required: true },
+              recallPruned: { type: 'number', required: true },
             },
           },
         },
@@ -71,10 +77,11 @@ function apply(ctx) {
           `dream_status: ${v.enabled ? 'enabled' : 'disabled'} · 频率 ${v.frequency}`,
           `  sessions=${v.sessionsRoot}`,
           `  diary=${v.diaryRoot} · 窗口 Light ${v.windows.light}d / REM ${v.windows.rem}d / Deep ${v.windows.deep}d${v.recover ? ' · 恢复通道开' : ''}`,
+          `  recall=${v.recallPath ?? 'n/a'}`,
           `  阈值 minScore=${v.thresholds.minScore} minRecall=${v.thresholds.minRecall} minUniqueSessions=${v.thresholds.minUniqueSessions}`,
           `  lastSweep=${v.lastSweepAt ?? 'never'}${v.lastError ? ' · ERROR: ' + v.lastError : ''}`,
         ];
-        if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} recovered=${v.counts.recovered} promoted=${v.counts.promoted}`);
+        if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} recovered=${v.counts.recovered} promoted=${v.counts.promoted} recallAppended=${v.counts.recallAppended} recallPruned=${v.counts.recallPruned}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
@@ -109,8 +116,13 @@ function apply(ctx) {
               toolErrors: { type: 'number', required: true },
               candidates: { type: 'number', required: true },
               gated: { type: 'number', required: true },
+              skippedPromoted: { type: 'number', required: true },
+              validationOk: { type: 'boolean', required: true },
+              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
               recovered: { type: 'number', required: true },
               promoted: { type: 'number', required: true },
+              recallAppended: { type: 'number', required: true },
+              recallPruned: { type: 'number', required: true },
             },
           },
           promoted: {
@@ -133,7 +145,9 @@ function apply(ctx) {
         const lines = [
           `dream_run_now: ${v.apply ? 'APPLIED' : 'dry-run preview'} · day=${v.day} · ${(v.durationMs / 1000).toFixed(1)}s`,
           `  sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} errors=${v.counts.toolErrors}`,
-          `  candidates=${v.counts.candidates} gated=${v.counts.gated} promoted=${v.counts.promoted}`,
+          `  candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} promoted=${v.counts.promoted}`,
+          `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
+          `  recall: appended=${v.counts.recallAppended} pruned=${v.counts.recallPruned}`,
           `  diary=${v.diaryPath}`,
         ];
         for (const p of v.promoted) lines.push(`  ↑ [${p.type}] (${p.score.toFixed(2)}) ${p.content.slice(0, 80)}`);
@@ -172,6 +186,87 @@ function apply(ctx) {
     },
     execute(args) {
       return dream.diary(args.date);
+    },
+  }));
+
+  // P2 (Sprint 13 / 2026-09-05)：recall store inspection tool
+  // 让老板 / 智进能直接看 store 内容（debug / 验证时方便）
+  ctx.tools.register(defineTool({
+    name: 'recall_store_inspect',
+    description: '查 short-term recall store 内容。Sprint 13 引入的 P2 inspection 工具。用于 debug / 验证：看哪些候选被累积、是否 promoted、跨日 recallCount 等。',
+    parameters: {
+      key: { type: 'string', description: '模糊查（按 snippet 文本或 key 包含）' },
+      type: { type: 'string', description: '按 type 过滤：preference / decision / lesson / pattern' },
+      since: { type: 'string', description: '起始时间（ISO 字符串）' },
+      until: { type: 'string', description: '结束时间（ISO 字符串）' },
+      limit: { type: 'number', description: '限制返回条数（默认 20）' },
+      json: { type: 'boolean', description: 'true=JSON 输出，false=表格（默认）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          total: { type: 'number', required: true },
+          skippedPartial: { type: 'number', required: true },
+          totalLines: { type: 'number', required: true },
+          rows: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: true,
+              properties: {
+                key: { type: 'string' },
+                snippet: { type: 'string' },
+                sourceType: { type: 'string' },
+                recallCount: { type: 'number' },
+                recallDays: { type: 'array', items: { type: 'string' } },
+                lastRecalledAt: { type: 'string' },
+                promotedAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                score: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+              },
+            },
+          },
+        },
+      },
+      render: (_a, v) => {
+        if (v.rows.length === 0) {
+          return [{ type: 'text', text: `recall_store_inspect: empty (total=${v.total}, skippedPartial=${v.skippedPartial}, totalLines=${v.totalLines})` }];
+        }
+        const lines = [
+          `recall_store_inspect: total=${v.total} showing ${v.rows.length} (skippedPartial=${v.skippedPartial}, totalLines=${v.totalLines})`,
+          '',
+          '| key(8) | type | score | recallCount | days | lastRecalledAt | promoted | lineage |',
+          '|---|---|---|---|---|---|---|---|',
+        ];
+        for (const r of v.rows) {
+          const keyShort = (r.key || '').slice(0, 8);
+          const promoted = r.promotedAt ? '✓' : '';
+          const lineage = r.lineageKey || '';
+          const days = (r.recallDays || []).length;
+          const lastR = r.lastRecalledAt ? r.lastRecalledAt.slice(0, 10) : '';
+          const snippet = (r.snippet || '').replace(/\|/g, '\\|').slice(0, 60);
+          lines.push(`| ${keyShort} | ${r.sourceType || ''} | ${(r.score || 0).toFixed(2)} | ${r.recallCount || 0} | ${days} | ${lastR} | ${promoted} | ${lineage} | ${snippet} |`);
+        }
+        return [{ type: 'text', text: lines.join('\n') }];
+      },
+    },
+    execute(args) {
+      if (args.json) {
+        return dream.inspectRecall({
+          key: args.key,
+          type: args.type,
+          since: args.since,
+          until: args.until,
+          limit: args.limit,
+        });
+      }
+      return dream.inspectRecall({
+        key: args.key,
+        type: args.type,
+        since: args.since,
+        until: args.until,
+        limit: args.limit,
+      });
     },
   }));
 }

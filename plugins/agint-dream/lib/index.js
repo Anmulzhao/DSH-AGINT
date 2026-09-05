@@ -25,6 +25,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { runSweep, DEFAULTS } from './sweep.js';
+import { defaultRecallPath } from './recall-store.js';
 
 const name = 'agint-dream';
 // `agint.memory` is a soft dependency: read via ctx.get so a sweep still
@@ -78,6 +79,30 @@ function apply(ctx, config) {
     /** Run a full sweep. opts.apply=false → preview + diary only. */
     async sweep(opts = {}) {
       const nowMs = Date.now();
+      // P0 (Sprint 13 / 2026-09-05)：publishReject 钩子
+      // validation gate 拒整批时 publish dream.rejected 事件（软降级：bus 不可用静默）
+      const publishFn = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
+      const publishReject = typeof publishFn === 'function'
+        ? async (info) => {
+            try {
+              await publishFn({
+                topic: 'dream.rejected',
+                version: 1,
+                source: 'agint-dream',
+                payload: {
+                  rejectedAt: new Date(info.nowMs).toISOString(),
+                  day: info.day,
+                  reason: info.reason,
+                  gatedCount: info.gatedCount,
+                  stats: info.stats,
+                },
+              });
+            } catch (err) {
+              // 软降级：不阻断 sweep
+              console.warn(`agint-dream: dream.rejected publish failed: ${err.message}`);
+            }
+          }
+        : null;
       try {
         const result = await runSweep({
           sessionsRoot,
@@ -92,6 +117,7 @@ function apply(ctx, config) {
           minScore: opts.minScore ?? config.minScore,
           minRecall: opts.minRecall ?? config.minRecall,
           minUniqueSessions: opts.minUniqueSessions ?? config.minUniqueSessions,
+          publishReject,
         });
         state.lastSweep = nowMs;
         state.lastResult = result;
@@ -152,10 +178,26 @@ function apply(ctx, config) {
           minRecall: config.minRecall,
           minUniqueSessions: config.minUniqueSessions,
         },
+        // P2 (Sprint 13 / 2026-09-05)：recall store 路径
+        recallPath: defaultRecallPath(),
         lastSweepAt: state.lastSweep ? new Date(state.lastSweep).toISOString() : null,
         lastError: state.lastError,
-        counts: last?.counts ?? { sessions: 0, userMessages: 0, memWrites: 0, toolErrors: 0, candidates: 0, gated: 0, recovered: 0, promoted: 0 },
+        counts: last?.counts ?? {
+          sessions: 0, userMessages: 0, memWrites: 0, toolErrors: 0,
+          candidates: 0, gated: 0, skippedPromoted: 0, validationOk: true,
+          validationReason: null, recovered: 0, promoted: 0,
+          recallAppended: 0, recallPruned: 0,
+        },
       };
+    },
+
+    /**
+     * P2：查 recall store 内容。debug / 验证时方便。
+     * opts: { key, type, since, until, limit, json }.
+     */
+    async inspectRecall(opts = {}) {
+      const { inspectStore } = await import('./recall-store.js');
+      return inspectStore(defaultRecallPath(), opts);
     },
 
     /** Read one dream diary file (default: most recent). */
