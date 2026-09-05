@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { runSweep, DEFAULTS } from './sweep.js';
 import { defaultRecallPath } from './recall-store.js';
+import { runVerification } from './verify.js';
 
 const name = 'agint-dream';
 // `agint.memory` is a soft dependency: read via ctx.get so a sweep still
@@ -108,6 +109,9 @@ function apply(ctx, config) {
           sessionsRoot,
           diaryRoot: root,
           memory: ctx.get('agint.memory') ?? null,
+          // P1 LLM consolidation: host-plane ctx 让 sweep 内部能 ctx.get('agents')
+          // 建临时 subagent（路径 Y，见 计划-agint-dream升级三方向.md）
+          ctx,
           nowMs,
           apply: Boolean(opts.apply),
           lookbackDays: opts.lookbackDays ?? config.lookbackDays,
@@ -198,6 +202,24 @@ function apply(ctx, config) {
     async inspectRecall(opts = {}) {
       const { inspectStore } = await import('./recall-store.js');
       return inspectStore(defaultRecallPath(), opts);
+    },
+
+    /**
+     * P1: 跑一次 minimal LLM consolidation 验证。
+     * 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+     * 不依赖 sweep 主体，不写 agint.memory（仅返回 schema-validated structured result）。
+     * 验证 host 端 DSH subagent runtime 通路是否真可用 —— 设计文档第一步。
+     *
+     * opts: { provider, model, timeoutMs }
+     * 返回 JSON-safe：{ mode, operations, operationsLength, gatedLength, reason, ... }
+     */
+    async verifyConsolidation(opts = {}) {
+      return runVerification({
+        ctx,
+        provider: opts.provider,
+        model: opts.model,
+        timeoutMs: opts.timeoutMs,
+      });
     },
 
     /** Read one dream diary file (default: most recent). */

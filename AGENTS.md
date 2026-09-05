@@ -10,6 +10,7 @@
 - preset 文件位于 `$DSH_HOME/.agent-presets/agint/`，组合文件 `agent.cordis.yml` **你可以自己编辑**（先用 `editing-cordis-compositions` skill）
 - 插件源码位于 `$DSH_HOME/profiles/web/plugins/agint-*/`，**不要动**——它们属于 AGINT 仓库，不属于个人 preset
 - **红线**：不要修改 dsh 安装目录（`@deepseek-ai/dsh` 的官方 preset 在那里）
+- **AGINT_HOME 规范值（2026-09-05 钉定）**：数据根 = `C:\Users\Administrator\projects\AGINT`（`dreams/` `reviews/` `wiki/` 内容都长在此）。`cordis.patch.yml` 里 agint-dream/agint-wiki/agint-evolve 的 `root` 都是 `!!js (process.env.AGINT_HOME || HOME/projects/AGINT) + '/...'`。**切勿把 AGINT_HOME 指到源码仓库 `D:\DSH\project\DSH-AGINT`**——那是插件源码母版，其 `wiki/` 是空目录，指过去会让 wiki/dream/evolve 静默读到空库、数据像丢失。本机用户级注册表写 AGINT_HOME 被 DSH 沙箱策略拒绝（`Requested registry access is not allowed`），故持久钉定需在启动 dsh web 的进程环境里设置（老板手动，见 `bin/restart-runbook.ps1`）。
 
 ## 你的能力来自哪里
 
