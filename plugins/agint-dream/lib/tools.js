@@ -123,6 +123,9 @@ function apply(ctx) {
               promoted: { type: 'number', required: true },
               recallAppended: { type: 'number', required: true },
               recallPruned: { type: 'number', required: true },
+              // P1 LLM consolidation mode（llm / heuristic-degraded）
+              consolidationMode: { type: 'string', required: true },
+              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
             },
           },
           promoted: {
@@ -147,6 +150,7 @@ function apply(ctx) {
           `  sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} errors=${v.counts.toolErrors}`,
           `  candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} promoted=${v.counts.promoted}`,
           `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
+          `  consolidation=${v.counts.consolidationMode}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''}`,
           `  recall: appended=${v.counts.recallAppended} pruned=${v.counts.recallPruned}`,
           `  diary=${v.diaryPath}`,
         ];
@@ -266,6 +270,99 @@ function apply(ctx) {
         since: args.since,
         until: args.until,
         limit: args.limit,
+      });
+    },
+  }));
+
+  // P1 (Sprint 14 / 2026-09-05)：LLM consolidation 独立验证工具。
+  // 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+  // 不依赖 sweep 主体，不写 agint.memory。消耗 1 次 LLM call —— 验证 host 端 DSH
+  // subagent runtime 通路是否真可用（设计文档第一步）。
+  ctx.tools.register(defineTool({
+    name: 'dream_verify_consolidation',
+    description: 'P1 验证工具：跑一次 minimal LLM consolidation。消耗 1 次 LLM call，验证 DSH host 端 ctx.agents / ctx.subagents 通路是否真可用。不写 agint.memory，仅返回 schema-validated structured result。设计文档第一步要求的"独立验证脚本"。',
+    parameters: {
+      provider: { type: 'string', description: 'LLM provider（默认 settings.yaml agent-default-model：minimax-cn）' },
+      model: { type: 'string', description: 'model id（默认 MiniMax-M3）' },
+      timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          mode: { type: 'string', required: true },
+          operations: {
+            oneOf: [
+              { type: 'array',
+                items: {
+                  type: 'object', additionalProperties: true,
+                  properties: {
+                    candidateKey: { type: 'string' },
+                    action: { type: 'string' },
+                    priorEntries: { type: 'array', items: { type: 'string' } },
+                    lineageKey: { type: 'string' },
+                  },
+                },
+              },
+              { type: 'null' },
+            ],
+            required: true,
+          },
+          operationsLength: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+          gatedLength: { type: 'number', required: true },
+          reason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          diagnostic: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          childErrors: {
+            oneOf: [
+              { type: 'array',
+                items: {
+                  type: 'object', additionalProperties: true,
+                  properties: {
+                    turn: { type: 'number' },
+                    step: { type: 'number' },
+                    error: { type: 'string' },
+                  },
+                },
+              },
+              { type: 'null' },
+            ],
+            required: true,
+          },
+          provider: { type: 'string', required: true },
+          model: { type: 'string', required: true },
+          day: { type: 'string', required: true },
+          schemaOk: { type: 'boolean', required: true },
+        },
+      },
+      render(_a, v) {
+        const ops = Array.isArray(v.operations) ? v.operations : [];
+        const lines = [
+          `dream_verify_consolidation: mode=${v.mode} · schemaOk=${v.schemaOk}`,
+          `  provider=${v.provider} model=${v.model} day=${v.day}`,
+          `  gatedLength=${v.gatedLength} operationsLength=${v.operationsLength ?? 'null'}`,
+          `  reason=${v.reason ?? '(none)'}`,
+        ];
+        if (v.diagnostic) lines.push(`  diagnostic: ${v.diagnostic.slice(0, 200)}`);
+        if (Array.isArray(v.childErrors) && v.childErrors.length > 0) {
+          for (let i = 0; i < v.childErrors.length; i += 1) {
+            const ce = v.childErrors[i];
+            lines.push(`  childErr[${i}] turn=${ce.turn ?? '?'} step=${ce.step ?? '?'}`);
+            const errMsg = (ce.error || '').split('\n').slice(0, 6).join('\n    ');
+            lines.push(`    ${errMsg}`);
+          }
+        }
+        for (let i = 0; i < ops.length; i += 1) {
+          const op = ops[i];
+          lines.push(`  op[${i}] action=${op.action} candidateKey=${op.candidateKey?.slice(0, 12)}... lineage=${op.lineageKey ?? '-'} priorEntries=${(op.priorEntries || []).length}`);
+        }
+        return [{ type: 'text', text: lines.join('\n') }];
+      },
+    },
+    execute(args) {
+      return dream.verifyConsolidation({
+        provider: args.provider,
+        model: args.model,
+        timeoutMs: args.timeoutMs,
       });
     },
   }));

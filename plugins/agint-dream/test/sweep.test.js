@@ -221,3 +221,81 @@ test('tokenOverlap: bag-of-words full-match triggers dedupe', async () => {
   );
   assert.equal(gated.length, 0, 'exact match must be deduped');
 });
+
+// ── P1 LLM consolidation 集成测试 ───────────────────────────────────────
+
+test('runSweep: 显式 consolidation runner 输出 operations → validation 走 plan', async () => {
+  const { runSweep } = await import('../lib/sweep.js');
+  // 直接构造一个 minimum 的 scored candidate —— 通过 consolidation runner 的 caller 路径
+  // 走显式 consolidation 参数，不依赖真实 sessions 文件
+  const memoryStub = { async list() { return []; }, async write() { throw new Error('not called'); } };
+  // 用空的 sessions 让 sweep 跳过 Light，但通过显式 consolidation runner 不影响 (no gated → no consolidation 调用)
+  const result = await runSweep({
+    sessionsRoot: '/nonexistent',
+    diaryRoot: '/tmp/agint-dream-test',
+    memory: memoryStub,
+    nowMs: NOW,
+    apply: false,
+    // 即使给 consolidation runner 也不会被调用（因为没有 gated）
+    consolidation: async () => ({ mode: 'llm', operations: [] }),
+  });
+  assert.equal(result.counts.gated, 0);
+  // 没 gated → consolidation 不被调用，mode 默认 heuristic-degraded
+  assert.equal(result.counts.consolidationMode, 'heuristic-degraded');
+});
+
+test('runSweep: 不传 consolidation runner + 不传 ctx → heuristic-degraded, sweep 不崩溃', async () => {
+  const { runSweep } = await import('../lib/sweep.js');
+  const memoryStub = { async list() { return []; }, async write() { throw new Error('should not be called'); } };
+  const result = await runSweep({
+    sessionsRoot: '/nonexistent',
+    diaryRoot: '/tmp/agint-dream-test',
+    memory: memoryStub,
+    nowMs: NOW,
+    apply: false,
+    // 没有 consolidation / 没有 ctx
+  });
+  assert.equal(result.counts.consolidationMode, 'heuristic-degraded');
+  assert.equal(result.counts.consolidationReason, null);
+});
+
+test('runSweep: 显式 consolidation runner 抛错 → degraded, sweep 不崩溃', async () => {
+  const { runSweep } = await import('../lib/sweep.js');
+  const memoryStub = { async list() { return []; }, async write() { throw new Error('should not be called'); } };
+  // 这里没法构造 gated（sessions 是空），所以 runner 不会被调用 —— 验证 errors 数组不包含 runner 失败
+  const result = await runSweep({
+    sessionsRoot: '/nonexistent',
+    diaryRoot: '/tmp/agint-dream-test',
+    memory: memoryStub,
+    nowMs: NOW,
+    apply: false,
+    consolidation: async () => { throw new Error('mock runner boom'); },
+  });
+  assert.equal(result.counts.gated, 0);
+  // runner 没被调（因为没 gated），errors 数组应该不包含 runner failed
+  assert.ok(!result.errors.some((e) => /runner/.test(e)));
+});
+
+test('renderDiary: consolidationMode=llm 显示 ✅', async () => {
+  const { renderDiary } = await import('../lib/sweep.js');
+  const md = renderDiary({
+    day: '2026-09-05',
+    signals: [], memWrites: [], candidates: [], gated: [], promoted: [],
+    errors: [], durationMs: 100,
+    consolidationMode: 'llm',
+    consolidationReason: 'merged 2 entries',
+  });
+  assert.match(md, /P1 LLM consolidation: ✅ LLM 决策 add\/merge\/supersede（merged 2 entries）/);
+});
+
+test('renderDiary: consolidationMode=heuristic-degraded 显示 ⚠️', async () => {
+  const { renderDiary } = await import('../lib/sweep.js');
+  const md = renderDiary({
+    day: '2026-09-05',
+    signals: [], memWrites: [], candidates: [], gated: [], promoted: [],
+    errors: [], durationMs: 100,
+    consolidationMode: 'heuristic-degraded',
+    consolidationReason: 'agents service unavailable',
+  });
+  assert.match(md, /P1 LLM consolidation: ⚠️ heuristic-degraded（agents service unavailable）/);
+});

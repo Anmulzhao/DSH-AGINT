@@ -33,6 +33,7 @@ import {
   recallKey,
 } from './recall-store.js';
 import { validateAndApply, planToWriteCalls } from './validation-gate.js';
+import { consolidate } from './consolidation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -430,7 +431,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
  *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -461,6 +462,12 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
   if (!validationOk) {
     lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
+  }
+  // P1: consolidation mode (llm vs heuristic-degraded)
+  if (consolidationMode === 'llm') {
+    lines.push(`- **P1 LLM consolidation**: ✅ LLM 决策 add/merge/supersede${consolidationReason ? `（${consolidationReason}）` : ''}`);
+  } else {
+    lines.push(`- P1 LLM consolidation: ⚠️ heuristic-degraded${consolidationReason ? `（${consolidationReason}）` : ''}`);
   }
   lines.push(`- 提升写入记忆：${promoted.length} 条`);
   if (recallWrite) {
@@ -549,10 +556,18 @@ export async function runSweep({
   // P2 (Sprint 13 / 2026-09-05)：short-term recall store 路径
   recallPath,
   // P0：validation gate 调优（loss fraction budget 等）
-  operations = null,            // 来自 P1 LLM consolidation；暂为 null
+  operations = null,            // 来自 P1 LLM consolidation；显式传时跳过 consolidation 调用
   maxPriorEntryLossFraction,    // 默认 0.25（与 openclaw 对齐）
+  // P1：LLM consolidation 配置（host-plane 通过 ctx 自动建临时 subagent）
+  consolidation = null,         // 显式 consolidation runner { run(gated, existing) → { mode, operations, reason } }
+                                //  null 时 sweep 内部按需调默认 consolidate()
+  consolidationProvider,        // 默认 'deepseek'
+  consolidationModel,           // 默认 'deepseek-chat'
+  consolidationTimeoutMs,       // 默认 60000
   // 可选：sweep 完成时 publish dream.rejected 事件（默认不 publish，保持向后兼容）
   publishReject = null,         // function: (reason, count) => Promise<void>
+  // 可选：cordis host ctx — 供内部 consolidation 调用 ctx.agents / ctx.subagents
+  ctx = null,
 }) {
   const startedAt = Date.now();
   const errors = [];
@@ -625,30 +640,59 @@ export async function runSweep({
   // ── Deep: gate + P0 validation gate + promote ────────────────────────
   const existing = memory ? await memory.list({}) : [];
   const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions });
-  // P0: 把 gated 送进 validation gate；operations=null 时走 added 退化路径
-  const validation = validateAndApply({
-    gated,
-    existing,
-    operations,
-    maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
-  });
-
-  // P2: 过滤掉已 promoted 的候选（在 validation 之前过滤，避免重复写）
+  // P2: 过滤掉已 promoted 的候选（在 validation/consolidation 之前过滤，避免重复写）
   const unpromotedGated = gated.filter((c) => {
     const k = recallKey(normalizeForCompare(c.text));
     return !storeEntries.get(k)?.promotedAt;
   });
   const skippedPromoted = gated.length - unpromotedGated.length;
 
-  // 用 unpromoted 重新跑 validation（确保 ops 数量对齐）
-  const validationFinal = unpromotedGated.length === gated.length
-    ? validation
-    : validateAndApply({
-        gated: unpromotedGated,
-        existing,
-        operations: null,  // 退化路径不重做 ops
-        maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
-      });
+  // P1: LLM consolidation —— 决定 add/merge/supersede。
+  // 优先级：显式传入 operations > 显式传入 consolidation runner > sweep 内部默认调 consolidate(ctx)
+  // 失败/超时/degraded → operations 退化为 null，validation 走 added 路径，diary 标 consolidationMode
+  let consolidationMode = 'heuristic-degraded';
+  let consolidationReason = null;
+  let resolvedOps = operations;
+  if (resolvedOps == null && unpromotedGated.length > 0) {
+    const runner = consolidation ?? (ctx
+      ? (g, e) => consolidate({
+          ctx,
+          gated: g,
+          existing: e,
+          day,
+          provider: consolidationProvider,
+          model: consolidationModel,
+          timeoutMs: consolidationTimeoutMs,
+        })
+      : null);
+    if (runner) {
+      try {
+        const result = await runner(unpromotedGated, existing);
+        consolidationMode = result?.mode ?? 'heuristic-degraded';
+        consolidationReason = result?.reason ?? null;
+        resolvedOps = result?.operations ?? null;
+        if (consolidationMode === 'llm' && !Array.isArray(resolvedOps)) {
+          // LLM declared success but ops missing — fallback to degraded
+          consolidationMode = 'heuristic-degraded';
+          consolidationReason = 'LLM result missing operations array';
+          resolvedOps = null;
+        }
+      } catch (err) {
+        consolidationMode = 'heuristic-degraded';
+        consolidationReason = `runner threw: ${err?.message ?? String(err)}`;
+        resolvedOps = null;
+        errors.push(`consolidation runner failed: ${consolidationReason}`);
+      }
+    }
+  }
+
+  // P0: 把 unpromotedGated 送进 validation gate；resolvedOps=null 时走 added 退化路径
+  const validationFinal = validateAndApply({
+    gated: unpromotedGated,
+    existing,
+    operations: resolvedOps,
+    maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+  });
 
   // P0 reject 事件（如有 publishReject 钩子）
   if (!validationFinal.ok && typeof publishReject === 'function') {
@@ -769,6 +813,9 @@ export async function runSweep({
     validationReason: validationFinal.reason,
     recallWrite: recallWriteResult,
     pruneResult,
+    // P1 LLM consolidation 模式（llm / heuristic-degraded）
+    consolidationMode,
+    consolidationReason,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   const diaryPath = join(resolve(diaryRoot), `${day}.md`);
@@ -792,6 +839,9 @@ export async function runSweep({
       promoted: promoted.length,
       recallAppended: recallWriteResult?.appended ?? 0,
       recallPruned: pruneResult?.dropped ?? 0,
+      // P1 LLM consolidation mode
+      consolidationMode,
+      consolidationReason,
     },
     promoted: promoted.map((p) => ({ type: p.entry.type, content: p.entry.content, score: p.candidate.score ?? 0, id: p.entry.id })),
     errors,
