@@ -27,6 +27,8 @@ import { z } from 'zod';
 import { runSweep, DEFAULTS } from './sweep.js';
 import { defaultRecallPath } from './recall-store.js';
 import { runVerification } from './verify.js';
+// v0.2 (task 2 / C1): qualityEval bridge meta — status() 用来显示 qualityEvaluator 状态
+import { getBridgeDefaults, DREAM_BASELINE_TARGETS } from './quality-bridge.js';
 
 const name = 'agint-dream';
 // `agint.memory` is a soft dependency: read via ctx.get so a sweep still
@@ -186,11 +188,29 @@ function apply(ctx, config) {
         recallPath: defaultRecallPath(),
         lastSweepAt: state.lastSweep ? new Date(state.lastSweep).toISOString() : null,
         lastError: state.lastError,
+        // v0.2 (task 2 / C1 → C2 → C3 / 2026-09-06)：qualityEvaluator 桥接
+        // C1: status() 透出配置 + target 列表（meta only）
+        // C2: sweep.js REM 阶段 evaluate 真接入，compositeScore 用 safety?.score?.score 代理
+        // C3: compositeScore 真值接入（0 行上游改动，直接调 evaluator.score() service）
+        qualityEval: {
+          bridgeVersion: 'C3 (REM integrated; real compositeScore via evaluator.score(); 0-100 scale)',
+          targetsPlanned: DREAM_BASELINE_TARGETS.length,
+          targets: DREAM_BASELINE_TARGETS.map((t) => t.id),
+          bridgeDefaults: getBridgeDefaults(),
+          serviceKey: 'agint.qualityEvaluator',
+          note: 'C3 改调 quality-eval evaluator.score() 拿真 composite (0-100) · boost 阈值 ±0.02 在 70/30 · safety veto 时 composite=null → degraded',
+        },
         counts: last?.counts ?? {
           sessions: 0, userMessages: 0, memWrites: 0, toolErrors: 0,
           candidates: 0, gated: 0, skippedPromoted: 0, validationOk: true,
           validationReason: null, recovered: 0, promoted: 0,
           recallAppended: 0, recallPruned: 0,
+          // P1 LLM consolidation mode 兜底（与 lib/sweep.js result.counts 对齐）
+          consolidationMode: 'n/a', consolidationReason: null,
+          // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEval 摘要兜底
+          qualityEval: { status: 'unavailable', compositeMean: null, harmMean: null, targetCount: 0, okCount: 0 },
+          // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要兜底
+          evolutionTemplates: { status: 'unavailable', count: 0, topConfidence: null, boost: 0 },
         },
       };
     },

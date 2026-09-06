@@ -52,6 +52,25 @@ function apply(ctx) {
           },
           lastSweepAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
           lastError: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          // v0.2 (task 2 / C1 / 2026-09-06)：qualityEval bridge meta
+          // status() 新增字段，必须同步 schema（避免重蹈 task 1 schema 不同步覆辙）
+          qualityEval: {
+            type: 'object', additionalProperties: false, required: true,
+            properties: {
+              bridgeVersion: { type: 'string', required: true },
+              targetsPlanned: { type: 'number', required: true },
+              targets: { type: 'array', required: true, items: { type: 'string' } },
+              serviceKey: { type: 'string', required: true },
+              note: { type: 'string', required: true },
+              bridgeDefaults: {
+                type: 'object', additionalProperties: false, required: true,
+                properties: {
+                  evaluateTimeoutMs: { type: 'number', required: true },
+                  evaluateConcurrency: { type: 'number', required: true },
+                },
+              },
+            },
+          },
           counts: {
             type: 'object', additionalProperties: false, required: true,
             properties: {
@@ -68,6 +87,22 @@ function apply(ctx) {
               promoted: { type: 'number', required: true },
               recallAppended: { type: 'number', required: true },
               recallPruned: { type: 'number', required: true },
+              // P1 LLM consolidation mode（llm / heuristic-degraded）—— 与 lib/sweep.js result.counts 对齐
+              // Sprint 13 / 2026-09-05 漏同步，导致 dream_status host 实测 schema 校验失败
+              consolidationMode: { type: 'string', required: true },
+              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+              // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
+              // shape: { status, compositeMean, harmMean, targetCount, okCount }
+              qualityEval: {
+                type: 'object', additionalProperties: false, required: true,
+                properties: {
+                  status: { type: 'string', required: true },
+                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  targetCount: { type: 'number', required: true },
+                  okCount: { type: 'number', required: true },
+                },
+              },
             },
           },
         },
@@ -81,7 +116,12 @@ function apply(ctx) {
           `  阈值 minScore=${v.thresholds.minScore} minRecall=${v.thresholds.minRecall} minUniqueSessions=${v.thresholds.minUniqueSessions}`,
           `  lastSweep=${v.lastSweepAt ?? 'never'}${v.lastError ? ' · ERROR: ' + v.lastError : ''}`,
         ];
+        if (v.qualityEval) {
+          lines.push(`  qualityEval[${v.qualityEval.bridgeVersion}] serviceKey=${v.qualityEval.serviceKey} · 计划评估 ${v.qualityEval.targetsPlanned} 个 plugin (${v.qualityEval.targets.join(', ')})`);
+          lines.push(`    ${v.qualityEval.note}`);
+        }
         if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} recovered=${v.counts.recovered} promoted=${v.counts.promoted} recallAppended=${v.counts.recallAppended} recallPruned=${v.counts.recallPruned}`);
+        if (v.counts) lines.push(`  consolidation=${v.counts.consolidationMode ?? 'n/a'}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''} · validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
@@ -126,6 +166,27 @@ function apply(ctx) {
               // P1 LLM consolidation mode（llm / heuristic-degraded）
               consolidationMode: { type: 'string', required: true },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+              // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
+              qualityEval: {
+                type: 'object', additionalProperties: false, required: true,
+                properties: {
+                  status: { type: 'string', required: true },
+                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  targetCount: { type: 'number', required: true },
+                  okCount: { type: 'number', required: true },
+                },
+              },
+              // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
+              evolutionTemplates: {
+                type: 'object', additionalProperties: false, required: true,
+                properties: {
+                  status: { type: 'string', required: true },
+                  count: { type: 'number', required: true },
+                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  boost: { type: 'number', required: true },
+                },
+              },
             },
           },
           promoted: {
@@ -152,6 +213,8 @@ function apply(ctx) {
           `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
           `  consolidation=${v.counts.consolidationMode}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''}`,
           `  recall: appended=${v.counts.recallAppended} pruned=${v.counts.recallPruned}`,
+          `  qualityEval=${v.counts.qualityEval?.status ?? 'n/a'} · compositeMean=${v.counts.qualityEval?.compositeMean ?? 'n/a'} · ok=${v.counts.qualityEval?.okCount ?? 0}/${v.counts.qualityEval?.targetCount ?? 0}`,
+          `  evolution=${v.counts.evolutionTemplates?.status ?? 'n/a'} · templates=${v.counts.evolutionTemplates?.count ?? 0} · topConfidence=${v.counts.evolutionTemplates?.topConfidence ?? 'n/a'} · boost=${v.counts.evolutionTemplates?.boost ?? 0}`,
           `  diary=${v.diaryPath}`,
         ];
         for (const p of v.promoted) lines.push(`  ↑ [${p.type}] (${p.score.toFixed(2)}) ${p.content.slice(0, 80)}`);
