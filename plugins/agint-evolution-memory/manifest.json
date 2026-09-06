@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolution-memory",
-  "version": "0.6.5",
-  "description": "物理隔离的进化记忆存储域。Sprint 10 v0.6.4 #7 加 EvolutionLogBuffer（异步批量写入 + flush 3 策略 + 退出钩子 + 读时合并视图 + buffer-lost 兜底）。",
+  "version": "0.6.6",
+  "description": "物理隔离的进化记忆存储域。Sprint 10 v0.6.4 #7 加 EvolutionLogBuffer（异步批量写入 + flush 3 策略 + 退出钩子 + 读时合并视图 + buffer-lost 兜底）。v0.6.6 修影子订阅写入契约（decision/targetKind 越枚举导致 evolution_log 恒 0）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
