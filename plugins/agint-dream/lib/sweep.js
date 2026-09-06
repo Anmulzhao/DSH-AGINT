@@ -24,6 +24,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, readdir, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join, resolve, basename } from 'node:path';
+// v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段调 qualityEvaluator 评估核心 plugin
+import { resolveEvalTargets, evaluatePlugins } from './quality-bridge.js';
+// v0.3 (task 3 / 2026-09-06)：Deep 阶段读 success-templates 作为评分参考
+import { collectEvolutionSummary, computeEvolutionBoost } from './evolution-bridge.js';
 import {
   recordRecalls as recallStoreRecord,
   readStoreRobust as recallStoreRead,
@@ -306,12 +310,24 @@ function conceptualComponent(text) {
  * opts.reinforcement: extra candidates from a wider window (REM, 7d). Their
  * signals join the group for frequency/consolidation but a `reinforced` flag
  * is kept so callers can tell a Light-window candidate from REM-only noise.
+ *
+ * opts.qualityEvalSummary: v0.2 (task 2 / C2 / 2026-09-06) — REM 阶段 qualityEvaluator
+ * 评估核心 plugin 后的摘要。shape: { status, compositeMean, harmMean, targets, reason }.
+ * 当 status='ok' 时，用 compositeMean 作为全局信号调整候选 score：
+ *   - compositeMean >= 0.7 → 加权 +0.02（plugin 健康 → 候选更可信）
+ *   - compositeMean <= 0.3 → 加权 -0.02（plugin 衰退 → 候选更可疑）
+ *   - 其他 → 不调整（中性）
+ * 状态非 'ok'（degraded/error/unavailable）→ 不影响打分（不阻断 sweep）。
+ * 设计依据：AGINT/dream C1 memory（id=e7f0290e-...）—— qualityEval 是 plugin 级评估，
+ * 不是 candidate 级；只能作为全局 signalBoost，不能 per-candidate 加权。
  */
 export function scoreCandidates(candidates, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now();
   const w = { ...DEFAULTS.weights, ...(opts.weights ?? {}) };
   const halfLife = opts.recencyHalfLifeDays ?? DEFAULTS.recencyHalfLifeDays;
   const reinforcement = opts.reinforcement ?? [];
+  // v0.2 / C2: qualityEval global boost（仅 status='ok' 且 compositeMean 是有限数时生效）
+  const qualityBoost = computeQualityBoost(opts.qualityEvalSummary);
   // group by recallKey(normalized text) — 与 recall store 写入 key 对齐
   const groups = new Map();
   for (const c of candidates) {
@@ -353,7 +369,9 @@ export function scoreCandidates(candidates, opts = {}) {
       w.diversity * diversity +
       w.recency * recency +
       w.consolidation * consolidation +
-      w.conceptual * conceptual,
+      w.conceptual * conceptual +
+      // v0.2 / C2：qualityEval 全局调整（±0.02 上限，避免单信号颠覆 6 维评分）
+      qualityBoost,
     );
     scored.push({
       ...g,
@@ -370,11 +388,127 @@ export function scoreCandidates(candidates, opts = {}) {
       relevance,
       score,
       reinforced: Boolean(g.reinforced),
-      components: { relevance, frequency, diversity, recency, consolidation, conceptual },
+      components: { relevance, frequency, diversity, recency, consolidation, conceptual, qualityBoost },
     });
   }
   scored.sort((a, b) => b.score - a.score || b.signalCount - a.signalCount);
   return scored;
+}
+
+/**
+ * v0.2 (task 2 / C3 / 2026-09-06)：从 qualityEval 摘要算全局 score boost。
+ *
+ * 设计：
+ * - 仅 status='ok' 且 compositeMean 是有限数时返回非 0 值
+ * - compositeMean >= 70 → +0.02（plugin 健康 → 候选更可信）
+ * - compositeMean <= 30 → -0.02（plugin 衰退 → 候选更可疑）
+ * - 其它（30 < mean < 70）→ 0（中性）
+ * - 上限 ±0.02，避免单信号颠覆 6 维评分
+ * - **注意**：compositeMean 现在是 0-100 标量（C3 真值接入，用 quality-eval score() 真值），
+ *   之前 0.7/0.3 是 safety proxy 的 0-1 标量，已废弃。
+ *
+ * 输入 shape：{ status, compositeMean, harmMean, targets?, reason? }
+ * 返回 number ∈ [-0.02, 0.02]
+ */
+export function computeQualityBoost(summary) {
+  if (!summary || typeof summary !== 'object') return 0;
+  if (summary.status !== 'ok') return 0;
+  const m = summary.compositeMean;
+  if (typeof m !== 'number' || !Number.isFinite(m)) return 0;
+  if (m >= 70) return 0.02;
+  if (m <= 30) return -0.02;
+  return 0;
+}
+
+/**
+ * v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段调 qualityEvaluator 评估核心 plugin，
+ * 聚合成全局 summary。**永不抛错**。
+ *
+ * 输入：{ ctx, enabled, errors } —— errors 数组会被 push 错误但不阻断 sweep
+ * 输出：{ status, compositeMean, harmMean, targets, reason }
+ *   - status: 'ok' | 'degraded' | 'unavailable'
+ *   - compositeMean: 9 个 target 的 compositeScore 均值（status='ok' 时才是有效数字）
+ *   - harmMean: harm 4 维均值
+ *   - targets: [{ id, status, compositeScore, harmScore, reason }] 评估明细
+ *
+ * 降级路径：
+ * - enabled=false → { status: 'unavailable', compositeMean: null, targets: [], reason: 'disabled' }
+ * - ctx 不可用 / qualityEvaluator service 不可用 → 同上 + reason 不同
+ * - 部分 target 评估失败 → status='degraded'，compositeMean 用成功的子集均值
+ * - 全部失败 → status='degraded'，compositeMean=null
+ */
+export async function collectQualityEvalSummary({ ctx, enabled = true, errors = [] } = {}) {
+  if (enabled === false) {
+    return { status: 'unavailable', compositeMean: null, harmMean: null, targets: [], reason: 'disabled by sweep opts' };
+  }
+  if (!ctx || typeof ctx.get !== 'function') {
+    return { status: 'unavailable', compositeMean: null, harmMean: null, targets: [], reason: 'ctx unavailable' };
+  }
+
+  let targets;
+  try {
+    targets = resolveEvalTargets();
+  } catch (err) {
+    errors.push(`quality-eval resolveEvalTargets threw: ${err?.message ?? String(err)}`);
+    return { status: 'unavailable', compositeMean: null, harmMean: null, targets: [], reason: 'resolveEvalTargets failed' };
+  }
+
+  if (!Array.isArray(targets) || targets.length === 0) {
+    return { status: 'unavailable', compositeMean: null, harmMean: null, targets: [], reason: 'no eval targets' };
+  }
+
+  let results;
+  try {
+    results = await evaluatePlugins(ctx, targets);
+  } catch (err) {
+    errors.push(`quality-eval evaluatePlugins threw: ${err?.message ?? String(err)}`);
+    return { status: 'unavailable', compositeMean: null, harmMean: null, targets: [], reason: 'evaluatePlugins threw' };
+  }
+
+  // 聚合：compositeScore / harmScore 是数字的算均值
+  const composites = [];
+  const harms = [];
+  const targetSummary = [];
+  let anyOk = false;
+  let anyDegraded = false;
+  for (const r of results || []) {
+    if (!r) continue;
+    targetSummary.push({
+      id: r.targetId,
+      status: r.status,
+      compositeScore: r.compositeScore,
+      harmScore: r.harmScore,
+      reason: r.reason,
+    });
+    if (r.status === 'ok') {
+      anyOk = true;
+      if (typeof r.compositeScore === 'number' && Number.isFinite(r.compositeScore)) composites.push(r.compositeScore);
+      if (typeof r.harmScore === 'number' && Number.isFinite(r.harmScore)) harms.push(r.harmScore);
+    } else {
+      anyDegraded = true;
+    }
+  }
+
+  const compositeMean = composites.length > 0 ? composites.reduce((a, b) => a + b, 0) / composites.length : null;
+  const harmMean = harms.length > 0 ? harms.reduce((a, b) => a + b, 0) / harms.length : null;
+
+  // status 语义：
+  // - 全部 unavailable / evaluate 全失败 → 'unavailable'
+  // - 有 ok 但也有 degraded/error → 'degraded'
+  // - 全部 ok → 'ok'
+  let summaryStatus;
+  if (!anyOk && !anyDegraded) summaryStatus = 'unavailable';
+  else if (anyOk && anyDegraded) summaryStatus = 'degraded';
+  else if (anyOk && !anyDegraded) summaryStatus = 'ok';
+  else summaryStatus = 'degraded'; // 全 degraded 也没 ok
+
+return {
+    status: summaryStatus,
+    compositeMean,
+    harmMean,
+    targets: targetSummary,
+    reason: null,
+  };
 }
 
 /**
@@ -431,7 +565,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
  *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0 }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -475,6 +609,27 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   }
   if (pruneResult) {
     lines.push(`- P2 30 天剪枝：保留 ${pruneResult.kept} / 剪掉 ${pruneResult.dropped}`);
+  }
+  // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段 qualityEvaluator 评估摘要
+  if (qualityEvalSummary && qualityEvalSummary.targets && qualityEvalSummary.targets.length > 0) {
+    const qe = qualityEvalSummary;
+    const compositeStr = typeof qe.compositeMean === 'number' ? qe.compositeMean.toFixed(1) : 'n/a';
+    const harmStr = typeof qe.harmMean === 'number' ? qe.harmMean.toFixed(1) : 'n/a';
+    let qeLine = `- v0.2 qualityEval: status=${qe.status} · compositeMean=${compositeStr} · harmMean=${harmStr} · 评估 ${qe.targets.length} 个 plugin (${qe.targets.filter((t) => t.status === 'ok').length} ok)`;
+    if (qe.status !== 'ok') {
+      qeLine += ` · ${qe.reason ?? 'no reason'}`;
+    }
+    lines.push(qeLine);
+  } else if (qualityEvalSummary) {
+    lines.push(`- v0.2 qualityEval: status=${qualityEvalSummary.status ?? 'unavailable'} · ${qualityEvalSummary.reason ?? 'no targets'}`);
+  }
+  // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
+  if (evolutionSummary) {
+    const evoStr = typeof evolutionSummary.topConfidence === 'number'
+      ? evolutionSummary.topConfidence.toFixed(2)
+      : 'n/a';
+    const boostStr = evolutionBoost ? ` · boost=${evolutionBoost.toFixed(2)}` : '';
+    lines.push(`- v0.3 evolution: status=${evolutionSummary.status ?? 'unavailable'} · templates=${evolutionSummary.count ?? 0}· topConfidence=${evoStr}${boostStr}`);
   }
   lines.push('');
   if (gated.length > 0) {
@@ -568,6 +723,12 @@ export async function runSweep({
   publishReject = null,         // function: (reason, count) => Promise<void>
   // 可选：cordis host ctx — 供内部 consolidation 调用 ctx.agents / ctx.subagents
   ctx = null,
+  // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段调 qualityEvaluator 评估核心 plugin
+  // 默认开；显式 false 可关闭（用于测试 / 应急回滚）
+  qualityEval = true,
+  // v0.3 (task 3 / 2026-09-06)：Deep 阶段读 success-templates 作为评分参考
+  // 默认开；显式 false 可关闭
+  evolution = true,
 }) {
   const startedAt = Date.now();
   const errors = [];
@@ -635,7 +796,34 @@ export async function runSweep({
     }
     reinforcement = remSignals.flatMap((s) => extractCandidates(s, nowMs));
   }
-  const scored = scoreCandidates(candidates, { nowMs, reinforcement });
+
+  // ── v0.2 / C2: REM 阶段 qualityEvaluator 评估核心 plugin ──────────────
+  // 设计（提案 ba3e1800-... task 2 / C2）：
+  // - 调 ctx.get('agint.qualityEvaluator').evaluate(BASELINE_TARGETS[i])
+  // - 结果用 computeQualityCompositeSummary 聚合（compositeMean / harmMean / status）
+  // - 失败强降级：qualityEval 不可用 → summary.status='unavailable'，不阻断 sweep
+  // - 默认开；qualityEval=false 可关闭（应急回滚 / 测试）
+  const qualityEvalSummary = await collectQualityEvalSummary({ ctx, enabled: qualityEval, errors });
+
+  const scored = scoreCandidates(candidates, { nowMs, reinforcement, qualityEvalSummary });
+
+  // ── v0.3 / task 3: Deep 阶段读 success-templates 作为评分参考 ──────────
+  // 设计（提案 ba3e1800-... task 3 + 老板拍板 A「按 plugin id 精确匹配」）：
+  // - 调 ctx.get('agint.evolution').queryTemplates({ appliesTo: plugin ids })
+  // - 结果用 computeEvolutionBoost 算全局 boost（对称 qualityEval）
+  // - 失败强降级：summary.status='unavailable'，不阻断 sweep
+  // - 默认开；evolution=false 可关闭（应急回滚 / 测试）
+  const evolutionSummary = await collectEvolutionSummary({ ctx, enabled: evolution, errors });
+  const evolutionBoost = computeEvolutionBoost(evolutionSummary);
+
+  // v0.3 / task 3：把 evolutionBoost 应用到已评分 candidate（在 gate 判定之前，
+  // 让提升后的 score 影响 minScore 门槛——否则 boost 只改展示不改判定）
+  // candidate.components.evolutionBoost 记录供 dream_diary 展示
+  for (const c of scored) {
+    c.score = clamp(c.score + evolutionBoost);
+    if (!c.components) c.components = {};
+    c.components.evolutionBoost = evolutionBoost;
+  }
 
   // ── Deep: gate + P0 validation gate + promote ────────────────────────
   const existing = memory ? await memory.list({}) : [];
@@ -816,6 +1004,11 @@ export async function runSweep({
     // P1 LLM consolidation 模式（llm / heuristic-degraded）
     consolidationMode,
     consolidationReason,
+    // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段 qualityEvaluator 评估摘要
+    qualityEvalSummary,
+    // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要
+    evolutionSummary,
+    evolutionBoost,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   const diaryPath = join(resolve(diaryRoot), `${day}.md`);
@@ -842,6 +1035,23 @@ export async function runSweep({
       // P1 LLM consolidation mode
       consolidationMode,
       consolidationReason,
+      // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
+      // shape: { status, compositeMean, harmMean, targetCount, okCount }
+      qualityEval: {
+        status: qualityEvalSummary?.status ?? 'unavailable',
+        compositeMean: qualityEvalSummary?.compositeMean ?? null,
+        harmMean: qualityEvalSummary?.harmMean ?? null,
+        targetCount: qualityEvalSummary?.targets?.length ?? 0,
+        okCount: (qualityEvalSummary?.targets ?? []).filter((t) => t.status === 'ok').length,
+      },
+      // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
+      // shape: { status, count, topConfidence, boost }
+      evolutionTemplates: {
+        status: evolutionSummary?.status ?? 'unavailable',
+        count: evolutionSummary?.count ?? 0,
+        topConfidence: evolutionSummary?.topConfidence ?? null,
+        boost: evolutionBoost ?? 0,
+      },
     },
     promoted: promoted.map((p) => ({ type: p.entry.type, content: p.entry.content, score: p.candidate.score ?? 0, id: p.entry.id })),
     errors,

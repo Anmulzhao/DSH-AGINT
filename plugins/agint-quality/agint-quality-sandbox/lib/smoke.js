@@ -29,9 +29,13 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Windows 路径必须用 pathToFileURL 转成合法 file:// URL，否则 `file://C:\...`
+// 会被当作 host `C:` 协议 → ERR_UNSUPPORTED_ESM_URL_SCHEME → import 失败 → REJECT。
+// 这是 agint-quality-sandbox 的 Windows 兼容 bug（2026-09-06 排查 compositeMean=n/a 发现）。
 
 /**
  * Run smoke checks against a plugin at `pluginPath`.
@@ -86,7 +90,8 @@ export async function runSmoke(pluginPath) {
 
   // Check 5: dynamic import plugin lib（验证 ESM 解析 + 导出形状）
   try {
-    const mod = await import(`file://${mainPath}`);
+    // Windows 兼容（2026-09-06）：用 pathToFileURL 转 inline URL，避免 file://C: 无效
+    const mod = await import(pathToFileURL(mainPath).href);
     const required = ['Config', 'apply', 'inject', 'name'];
     const missing = required.filter((k) => !(k in mod));
     if (missing.length > 0) {
@@ -137,7 +142,8 @@ export async function runSmoke(pluginPath) {
 }
 
 // CLI 入口：node lib/smoke.js <plugin-path>
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Windows 兼容（2026-09-06）：用 pathToFileURL 比较，避免 file://C: 无效
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const target = process.argv[2];
   if (!target) {
     console.error('usage: node lib/smoke.js <plugin-path>');
