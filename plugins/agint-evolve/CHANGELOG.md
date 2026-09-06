@@ -1,5 +1,20 @@
 # agint-evolve CHANGELOG
 
+## v0.7.1 — proposal category 增加 `plugin`
+
+**日期**：2026-09-07
+**范围**：纯枚举扩充 + 数据重归类，不改任何运行时行为。
+
+### 变更
+
+- `proposalSchema.category` 枚举：`rule/skill/doc/preset/service/other` → 新增 `plugin`（整 cordis 模块级改动；`service` 语义收窄为"模块内单 host 服务改动"）
+- `PROPOSAL_CATEGORIES` 常量、`lib/tools.js` `CATEGORIES` 同步加 `plugin`
+- `evolve_propose` 工具描述、`lib/report.js` 复盘提示语、`docs/plugins/agint-evolve.md` 同步更新
+
+### 数据迁移
+
+- 3 条 agint-dream 升级提案（P0/P1/P2）category 重归类为 `plugin`（P0 原为 `rule`，P1/P2 原为 `service`）
+
 ## v0.7.0 — Sprint 12 B3 baseline-regression 真 cron hook
 
 **日期**：2026-XX-XX

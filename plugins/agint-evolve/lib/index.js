@@ -40,7 +40,7 @@ const proposalSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   body: z.string().min(1),
-  category: z.enum(['rule', 'skill', 'doc', 'preset', 'service', 'other']).default('other'),
+  category: z.enum(['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other']).default('other'),
   status: z.enum(['proposed', 'applied', 'rejected', 'wontfix']).default('proposed'),
   source: z.string().default(''),
   note: z.string().default(''),
@@ -72,7 +72,7 @@ const spec = defineDomain({
 });
 
 const PROPOSAL_STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
-const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'other'];
+const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
 
 function apply(ctx, config) {
   const root = resolve(config.root);
