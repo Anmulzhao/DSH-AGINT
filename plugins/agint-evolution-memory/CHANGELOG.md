@@ -1,5 +1,26 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.6 (2026-09-07) — 影子订阅写入契约修复（fix f9d8550b）
+
+### Fixed
+
+- **`lib/index.js`** 影子订阅 handler：`logPhase4Buffered` 调用里 `decision: 'PROPOSED'` 与 `targetKind: 'evolution.proposed:*'` 都不在 `evolutionLogEntrySchema` 的枚举里（decision 只允许 `AUTO_DEPLOY/PENDING_REVIEW/REJECT/ABSTAIN`；targetKind 只允许 `plugin/skill/preset/composite`）。每次事件到达都被 zod 拒绝，又被空 catch 吞掉 → `evolution_log` 从写下那天起一直为 0 条。
+  - 改为枚举内取值：`decision='PENDING_REVIEW'`、`targetKind='plugin'`。
+  - "提案阶段"语义改用 tags 保留：`stage:proposed`、`kind:<kind>`、`origin:<origin>`。
+- **失败必须暴露**（对齐 AGENTS.md 哲学：失败要暴露，不要静默）：handler 缺字段与写入抛错两种情形都走 `ctx.logger.warn`，不再空 catch 静默吞。
+- **订阅取值兼容**：同时支持 `ctx.get('agint.eventBus.subscribe')`（子键）与 `ctx.get('agint.eventBus')?.subscribe`（namespace）两种 host 形态，并就绪失败 warn。
+
+### Added
+
+- **`test/shadow-ingest.test.mjs`**（纯静态契约回归，6 个 case）：锁定 `decision / targetKind` 必落在 schema 枚举、tags 必须保留 origin/kind/stage、handler 内不得出现空 catch、订阅取值必须兼容两种形态。本测试不依赖 zod/storage-domain，可在无 node_modules 的仓库侧直接 `node --test` 跑。
+
+### Compatible
+
+- `lib/index.js` Service 签名 11 个方法保持向后兼容。
+- `manifest.json` `optionalInject` 仍为 `["agint.eventBus"]`（与 sibling 一致）。
+
+## 0.6.5 (2026-09-04) — Batch 2.1 preset tools
+
 ## 0.6.5 (2026-09-04) — Batch 2.1 preset tools
 
 ### Added

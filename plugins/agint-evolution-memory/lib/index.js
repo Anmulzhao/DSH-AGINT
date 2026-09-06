@@ -350,32 +350,76 @@ function apply(ctx) {
   // **直连路径完整保留**：上层仍可走 evo.logPhase4() / addFailure()；
   //   本 handler 把 event-bus 收到的 proposal 影子写一份入 evolution_log，
   //   tag = 'event-bus' 便于 T2 灰度期对账（bus vs 直连 写入差集）。
-  // 降级：bus 不可用 → 静默跳过（不报错）
+  // fix-20260907（提案 f9d8550b 真因）：原实现往 logPhase4Buffered 传了
+  //   decision='PROPOSED' 和 targetKind='evolution.proposed:*'，两者都**不在**
+  //   evolutionLogEntrySchema 的枚举里（decision 只允许 Phase 4 四决策；
+  //   targetKind 只允许 plugin/skill/preset/composite）⇒ zod parse 必抛
+  //   ⇒ 被空 catch 吞掉。
+  // 结果：订阅注册成功、bus 返回 deliveredTo 包含本插件，看起来链路完全正常，
+  //   但 evolution_log 永远 0 条 —— 教科书式 silent failure。
+  // 修法：字段取枚举内合法值，"这是提案阶段"的语义改用 tags 保留（可查询）。
+  //
+  // 失败必须暴露：订阅不可用 / payload 缺字段 / 写入抛错，三种情况都 warn。
+  const warn = (msg, extra) => {
+    try { if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(msg, extra ?? {}); } catch { /* noop */ }
+  };
   try {
-    // event-bus plugin 的 subscribe 也是分 service（agint.eventBus.subscribe），无 umbrella key
-    const subscribe = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.subscribe') : null;
-    if (typeof subscribe === 'function') {
+    // 兼容两种形态：1) 子键直查 ctx.get('agint.eventBus.subscribe')（sibling 范本）
+    //              2) namespace 解析 ctx.get('agint.eventBus')?.subscribe（少数 host 变体）
+    let subscribe = null;
+    if (typeof ctx.get === 'function') {
+      subscribe = ctx.get('agint.eventBus.subscribe');
+      if (typeof subscribe !== 'function') {
+        const ns = ctx.get('agint.eventBus');
+        if (ns && typeof ns.subscribe === 'function') subscribe = ns.subscribe;
+      }
+    }
+    if (typeof subscribe !== 'function') {
+      warn('evolution-memory: shadow subscribe unavailable', {
+        subscriber: 'agint-evolution-memory',
+        topic: 'evolution.proposed',
+        reason: 'agint.eventBus.subscribe not found in ctx',
+      });
+    } else {
       const unsubscribe = subscribe(
         { subscriber: 'agint-evolution-memory', topics: ['evolution.proposed'], mode: 'async' },
         async (envelope) => {
+          const p = envelope?.payload ?? {};
+          if (!p.proposalId) {
+            warn('evolution-memory: shadow ingest skipped (missing proposalId)', { topic: envelope?.topic });
+            return;
+          }
           try {
-            const p = envelope?.payload ?? {};
-            if (!p.proposalId) return;  // 缺关键字段：跳过（不抛）
             // 走 buffered 路径：高频期不阻塞 handler
             await logPhase4Buffered({
               targetId: p.proposalId,
-              targetKind: `evolution.proposed:${p.kind || 'unknown'}`,
-              decision: 'PROPOSED',
+              targetKind: 'plugin',
+              decision: 'PENDING_REVIEW',
               scores: {},
               findings: [],
-              tags: ['event-bus', 'shadow-ingest', `origin:${p.origin || 'unknown'}`],
+              tags: [
+                'event-bus',
+                'shadow-ingest',
+                'stage:proposed',
+                `origin:${p.origin || 'unknown'}`,
+                `kind:${p.kind || 'unknown'}`,
+              ],
             });
-          } catch { /* handler 永不抛 —— 避免污染 bus */ }
+          } catch (err) {
+            warn('evolution-memory: shadow ingest failed', {
+              proposalId: p.proposalId,
+              error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+            });
+          }
         },
       );
       ctx.effect(() => () => { try { if (typeof unsubscribe === 'function') unsubscribe(); } catch { /* ignore */ } });
     }
-  } catch { /* bus 不可用：影子订阅静默跳过 */ }
+  } catch (err) {
+    warn('evolution-memory: shadow subscribe init failed', {
+      error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+    });
+  }
 }
 
 export { Config, apply, inject, name };
