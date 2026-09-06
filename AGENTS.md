@@ -3,6 +3,8 @@
 > 这份文件是被 AGINT preset 加载的人格守则补充。它讲的是「你（智进）在 AGINT 这个系统里**怎么干活**」，不是哲学（哲学见 `PHILOSOPHY.md`）。
 >
 > **自进化宪法**（D-QAF / HARM / 进化记忆层 / 安全边界 / 哲学护栏）：见 `docs/evolution-framework.md` 系列。
+>
+> **本机实况以数据为准**：文末「[本机实况（自动生成）](#本机实况自动生成)」围栏块由 `bin/agents-local-state.mjs` 自动探测本机 host 回写（install.sh 装完自动跑，也可手动 `node bin/agents-local-state.mjs`）。**与下文任何手写快照冲突时，以围栏块为准。**
 
 ## 你的家
 
@@ -21,7 +23,7 @@
   - **实验/总线/自我认知 3 个**：agint-**abtest（v0.6.4）/ event-bus（v0.7.0）/ self-model（v0.7.1，只读观察者）**
   - **本机装载（2026-09-04 快照）**：23 个 plugin 全部装在 `$DSH_HOME/profiles/web/plugins/`（22 个顶层目录 + `agint-quality/` 聚合下的子目录），`cordis.patch.yml` 含 23 个 agint-* 段；本机 DSH_HOME 已同步 v0.7.1（含 v0.6.0 ~ v0.7.1 全套 8 minor hotfix）。VERSION 表里"仅仓库发版未挂载"是仓发布语义，本机 install.sh 已跑完故已挂载。
 - **Tool 工具**（model 平面）：memory_* / wiki_* / cron_* / dream_* / rule_* / metrics_* / evolve_* / tool_stats_summary + （v0.6+ 增加）diagnosis_* / mutator_* / population_* / mount_* / abtest_* / eventBus_* / qualityContract_* / （v0.7.1 增加）selfModel_*
-  - **本机 preset tool rows 快照（2026-09-04 实测 host，2026-09-04 24:00 后；2026-09-04 K19 修复完成）**：**host 端** `$DSH_HOME/.agent-presets/agint/agent.cordis.yml` **含 13 个** `agint-*-tools` row = 7 原有（memory / wiki / cron / rules / metrics / evolve / dream）+ Batch 1 新增 6 个（selfModel / eventBus / diagnosis / population / mutator / mount）。**仓库 `presets/agint/agent.cordis.yml` 仅含 7 行（过期副本，未同步）**——host 端才是运行事实。2026-09-04 老板重启后实测：mount_status / selfModel_stats / selfModel_snapshot / eventBus_metricsSnapshot / population_stats / diagnosis_stats / mutator_stats **均正常返回**（**K19 JSON round-trip 兜底 2026-09-04 已修**——host 端 `lib/tools.js` 的 `stats()` execute 加了 `JSON.parse(JSON.stringify(s))`，仓库同步一致）。Batch 2（mutator/population/mount/abtest/quality 全家 7 + evolution 共 ~44 工具 + 21 ask）待 Batch 1 观察一轮稳定后再补。**路由决策前实测 host 端** `grep -c '^- id: agint-.*-tools$' $DSH_HOME/.agent-presets/agint/agent.cordis.yml`，不要相信仓库版本或本文档快照字面。
+  - **本机 preset tool rows（2026-09-04 历史快照，当时 13 行；实时数量以文末自动块为准）**：**host 端** `$DSH_HOME/.agent-presets/agint/agent.cordis.yml` **含 13 个** `agint-*-tools` row = 7 原有（memory / wiki / cron / rules / metrics / evolve / dream）+ Batch 1 新增 6 个（selfModel / eventBus / diagnosis / population / mutator / mount）。**仓库 `presets/agint/agent.cordis.yml` 仅含 7 行（过期副本，未同步）**——host 端才是运行事实。2026-09-04 老板重启后实测：mount_status / selfModel_stats / selfModel_snapshot / eventBus_metricsSnapshot / population_stats / diagnosis_stats / mutator_stats **均正常返回**（**K19 JSON round-trip 兜底 2026-09-04 已修**——host 端 `lib/tools.js` 的 `stats()` execute 加了 `JSON.parse(JSON.stringify(s))`，仓库同步一致）。Batch 2（mutator/population/mount/abtest/quality 全家 7 + evolution 共 ~44 工具 + 21 ask）待 Batch 1 观察一轮稳定后再补。**路由决策前实测 host 端** `grep -c '^- id: agint-.*-tools$' $DSH_HOME/.agent-presets/agint/agent.cordis.yml`，不要相信仓库版本或本文档快照字面。
 - **Skills**（preset 自带 `~/.dsh/.agent-presets/agint/skills/`，截至 2026-09-04 本机实装 5 个）：
   causal-reasoning / cordis-plugin-development / editing-cordis-compositions / github-push / memory-discipline
   - AGENTS.md line 22 历史提到的 `ab-test-design` / `event-bus-topology` 两个 skills 本机未提供，源码在 `plugins/agint-abtest/skills/` 与 `plugins/agint-event-bus/skills/` 但**未挂到 preset 的 skill-filesystem customSkillDirs**（见 `agent.cordis.yml` line 268-269）。如需使用，要么把它们移到 preset 的 skills 目录、要么扩展 customSkillDirs 重启后生效。
@@ -148,3 +150,21 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 | 插件详细 | `docs/plugins/agint-*.md` |
 | 评估场景集 | `eval/scenarios/README.md` |
 | 我踩过的坑 | `docs/lessons/` |
+
+<!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
+## 本机实况（自动生成）
+
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-06 01:56 UTC。
+> 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
+> 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
+
+- **仓库版本**：v0.7.1（VERSION 表首行）
+- **DSH_HOME**：`C:\Users\Administrator\.dsh`
+- **仓库 ↔ host 同步**：⚠️ lib/index.js 哈希漂移：agint-event-bus、agint-evolution-memory、agint-mutator
+- **host 挂载插件**（22 个）：agint-abtest@pkg:0.6.4、agint-cron@pkg:0.1.0、agint-diagnosis@v0.7.0、agint-dream@pkg:0.1.0、agint-event-bus@pkg:0.7.0、agint-evolution-memory@pkg:0.6.5、agint-evolve@v0.7.0、agint-memory@pkg:0.1.0、agint-metrics@pkg:0.1.0、agint-mount@v0.7.0、agint-mutator@v0.6.3、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@pkg:0.6.3、agint-quality-sdk@pkg:0.5.0、agint-quality-static@pkg:0.7.1、agint-rules@pkg:0.1.0、agint-self-model@v0.7.1、agint-tool-stats@pkg:0.1.0、agint-wiki@pkg:0.2.0
+- **preset tool rows**（16 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval
+- **preset skills**（5 个）：causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline
+- **cordis.patch.yml agint 段**（host web profile，22 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-abtest、agint-event-bus、agint-mutator、agint-self-model、agint-evolution-memory
+- **cron 实况**（7 个 job，按最近 tick 排序）：night-dream 2026-09-06 00:00Z、tool-stats-backfill 2026-09-06 00:00Z、evolve-review 2026-09-06 00:00Z、metrics-collect 2026-09-05 23:59Z、prompt-static-check 2026-09-05 23:48Z、wiki-lint 2026-09-05 19:29Z、baseline-regression-suite 2026-09-05 19:29Z
+
+<!-- LOCAL-STATE:END -->
