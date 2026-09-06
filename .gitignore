@@ -51,3 +51,6 @@ DSH自进化系统整体优化改进方案.md
 研究文档/
 /\.agint-backups/
 /.agint-backups/.workbuddy/
+
+# 本地工具缓存（workbuddy 的运行时数据，不进版本库）
+.workbuddy/
