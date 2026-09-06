@@ -14,7 +14,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 const name = 'agint-evolve-tools';
 const inject = ['tools', 'agint.evolve'];
 
-const CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'other'];
+const CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
 const STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
 
 const FINDING = {
@@ -91,7 +91,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'evolve_propose',
     description:
-      '提出一条改进提案（复盘闭环 Phase 3）。category: rule=新增/修改规则门禁, skill=技能, doc=文档/wiki, preset=预设组合, service=host 服务, other。' +
+      '提出一条改进提案（复盘闭环 Phase 3）。category: rule=新增/修改规则门禁, skill=技能, doc=文档/wiki, preset=预设组合, service=host 服务, plugin=整 cordis 模块级改动, other。' +
       '提案生成后请评估影响（Phase 4），确认可执行再落地，落地后 evolve_set_status 标记 applied。',
     parameters: {
       title: { type: 'string', required: true, description: '一句话提案标题（动词开头）' },

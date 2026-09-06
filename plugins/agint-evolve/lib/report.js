@@ -160,7 +160,7 @@ export function buildReport({ date, snapshot, findings, notes }) {
   lines.push('');
   lines.push('## 三、改进提案');
   lines.push('');
-  lines.push('> 用 evolve_propose 在此追加提案（category: rule / skill / doc / preset / service / other），' +
+  lines.push('> 用 evolve_propose 在此追加提案（category: rule / skill / doc / preset / service / plugin / other），' +
     '状态用 evolve_set_status 跟踪（proposed → applied / rejected）。');
   lines.push('');
   if (notes && String(notes).trim() !== '') {

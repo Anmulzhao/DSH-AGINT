@@ -43,7 +43,7 @@ proposed ──evaluate──▶ applied   （已落地）
 
 - `evolve_review [--date YYYY-MM-DD] [--notes "..."]` 立即跑一次（dry-run 默认写文件）
 - `evolve_read [path]` 读报告全文
-- `evolve_propose [title] [body]` 提一条（category: rule/skill/doc/preset/service/other）
+- `evolve_propose [title] [body]` 提一条（category: rule/skill/doc/preset/service/plugin/other；`plugin` = 整 cordis 模块级改动，`service` = 模块内单 host 服务改动）
 - `evolve_proposals [status] [category]` 看清单
 - `evolve_set_status id status [note]` 更新状态
 
