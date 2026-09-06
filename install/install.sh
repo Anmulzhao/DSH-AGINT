@@ -491,6 +491,25 @@ PY
     fi
   done
 
+  # 4b2. manifest.json 同步校验（evolve 提案 cbda60d3，2026-09-07 处理）
+  # 背景：2026-09-04 sync 核对发现 host 端插件缺 manifest.json，plugin-check /
+  # mountOrder 校验全失明。v0.2 的 safe_rsync 是整目录同步、本应带上 manifest，
+  # 但 agint-event-bus 仍出现过 host manifest 停在旧版（08-29）的情况——
+  # 说明只靠"同步应该会带上"不够，装后必须显式校验。
+  # 规则：仓库有 manifest.json 的插件，host 必须存在且与仓库逐字节一致。
+  for plugin in "$PLUGINS_SRC"/agint-*/; do
+    [ -f "$plugin/manifest.json" ] || continue
+    name="$(basename "$plugin")"
+    host_m="$PLUGINS_DST/$name/manifest.json"
+    if [ ! -f "$host_m" ]; then
+      warn "plugin $name 仓库有 manifest.json 但 host 缺失（plugin-check 将失明）"
+      failed=$((failed+1))
+    elif ! cmp -s "$plugin/manifest.json" "$host_m"; then
+      warn "plugin $name host manifest 与仓库不一致（疑似旧版残留）"
+      failed=$((failed+1))
+    fi
+  done
+
   # 4c. 每个 active preset 含 agent.cordis.yml
   # 同 4b：排除 .bak-* 备份
   for preset in "$PRESETS_DST"/agint-*; do
