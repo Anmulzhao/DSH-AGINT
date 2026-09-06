@@ -544,6 +544,23 @@ else
   log "   ⊘ 跳过 zod bootstrap（dry-run）"
 fi
 
+# ── 4.6 AGENTS.md 本机实况自动同步（evolve 提案 95d78c05 · 阶段 1）───────────
+# 探测本机 host 实况（插件装载 / preset tool rows / skills / patch 段 / cron），
+# 回写仓库 AGENTS.md 文末 sentinel 围栏块。失败仅 warn，不阻断安装。
+if [ "$DRY_RUN" != "1" ]; then
+  if command -v node >/dev/null 2>&1; then
+    if node "$SCRIPT_DIR/../bin/agents-local-state.mjs"; then
+      log "   ✓ AGENTS.md 本机实况已同步"
+    else
+      warn "AGENTS.md 本机实况同步失败（可手动跑：node bin/agents-local-state.mjs）"
+    fi
+  else
+    warn "未找到 node，跳过 AGENTS.md 本机实况同步（手动：node bin/agents-local-state.mjs）"
+  fi
+else
+  log "   ⊘ 跳过 AGENTS.md 本机实况同步（dry-run）"
+fi
+
 # 装成功 → 清空 partial-steps（trap 不再回滚）
 PARTIAL_STEPS=()
 trap - EXIT
