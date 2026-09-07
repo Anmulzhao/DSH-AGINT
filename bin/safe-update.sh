@@ -20,6 +20,8 @@ AGINT_HOME="${AGINT_HOME:-$HOME/projects/AGINT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 BACKUP_ROOT="$DSH_HOME/.agint-backups"
 TS="$(date +%Y%m%d-%H%M%S)"
+# 脚本自定位：不依赖 cwd / AGINT_HOME（本机仓库实际在 D:/DSH/project/DSH-AGINT）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CORDIS_PATCH="$DSH_HOME/profiles/web/cordis.patch.yml"
 PRESET="$DSH_HOME/.agent-presets/agint/agent.cordis.yml"
@@ -142,6 +144,20 @@ smoke() {
     fi
   done
   ok "smoke 完成（9-service 深度验证请在 agint 会话里跑 cordis_inspect_self）"
+
+  # 5. LOCAL-STATE 回写：挂载/重启后 AGENTS.md「本机实况」块按 host 实测自动刷新
+  #    （2026-09-07 P0-1 挂载教训：插件挂上了但围栏块没登记，文档失真）
+  if command -v node >/dev/null 2>&1; then
+    # 注意：不能用 POSIX 绝对路径（/d/...）直传 node.exe——MSYS 不转换，Windows node 不认。
+    # 用 subshell cd 到 SCRIPT_DIR 后走相对路径（mjs 内部用 import.meta.url 自定位，cwd 无关）。
+    if ( cd "$SCRIPT_DIR" && node agents-local-state.mjs ) >/dev/null 2>&1; then
+      ok "AGENTS.md LOCAL-STATE 已按 host 实测回写"
+    else
+      log "warning: agents-local-state 回写失败（不阻塞 smoke，可手动跑 node bin/agents-local-state.mjs）"
+    fi
+  else
+    log "warning: node 不在 PATH，跳过 LOCAL-STATE 回写"
+  fi
 }
 
 # ── 前置检查 ────────────────────────────────────────────────
