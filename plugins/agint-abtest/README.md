@@ -1,8 +1,25 @@
 # agint-abtest
 
-> Prompt-A/B 测试基础设施独立 Cordis 插件。Sprint 10 v0.6.4 #9 收口。
+> Prompt-A/B 测试基础设施独立 Cordis 插件。Sprint 10 v0.6.4 #9 收口 + Sprint 13 / 2026-09-07 v0.6.5 K19 修复。
 >
 > 与 SDK 模板级 static-check / Prompt 动态变异解耦。**唯一职责**：跑 A/B 测试 + 统计显著性判断。
+
+## Preset 工具（v0.6.5）
+
+| 工具 | 类型 | 门禁 | 说明 |
+|---|---|---|---|
+| `abtest_list_tests` | read | 无 | 列出所有测试条目（只读） |
+| `abtest_report` | read+write | `ask-abtest-report` | 读取结果 + 标 status 为终态 |
+| `abtest_start` | write | `ask-abtest-start` | 开新测试（≥10 taskSuite） |
+
+## K19 round-trip（2026-09-07 修）
+
+所有 `execute()` 用 `JSON.parse(JSON.stringify(v))` round-trip，保证 host 返回值（即便带 Date/Map/BigInt/undefined）也能通过 dsh-tools 的 lossless-JSON 检查。
+
+## Host 同步状态
+
+仓库 `plugins/agint-abtest/lib/tools.js` 已落地；host `~/.dsh/profiles/web/plugins/agint-abtest/lib/tools.js`
+下次 install.sh 或 restart-runbook.ps1 重启时同步覆盖。期间 host 端 `abtest_list_tests` 仍可能报 K19。
 
 ---
 
