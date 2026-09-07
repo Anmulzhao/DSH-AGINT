@@ -1,0 +1,69 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-curriculum",
+  "version": "0.1.0",
+  "description": "P7 自主课程生成器 v0.1.0（Sprint 14 Part B，仓库实现不挂载 prod）：消费 agint-self-model v0.7.1 能力画像（A11 只当触发器，数据走 snapshot()），在 UNCERTAIN / 校准失准 / 久未复验的域上生成带可自动判定通过条件的挑战（4 域模板 codegen/reasoning/planning/tool-use，D1-D5 难度档 + 40%-70% 完成率护栏 + 连续序列防刷分），判定外部化（C1/C2/C3：无证据记 fail、自评只进 notes、判定权与写入权分离），出队由 agent 手动执行（不自动执行），结果回写 self-model（只提供证据）。独占 agint_curriculum 存储域（4 表，challenges 200 / attempts 500 / difficulty_state 100 / audit 1000；超限 warn 不 prune，仅 audit_log 滚动）。D1：挑战执行 sessionId 带 curriculum- 前缀（D4 黑名单副本之一）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": ["agint.eventBus", "agint.selfModel"],
+      "provides": ["agint.curriculum"],
+      "events": [
+        "curriculum.boundary-probed",
+        "curriculum.challenge-created",
+        "curriculum.challenge-verdicted",
+        "curriculum.difficulty-adjusted"
+      ],
+      "tools": [
+        "curriculum_next",
+        "curriculum_submit",
+        "curriculum_stats",
+        "curriculum_list"
+      ]
+    },
+    "storage": {
+      "domains": ["agint_curriculum"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-self-model": ">=0.7.1",
+      "agint-event-bus": ">=0.7.0",
+      "agint-cron": ">=0.7.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 27,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --test \"test/*.test.mjs\" test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.curriculum": "自主课程：probe（边界探测）/ generate（生成挑战）/ nextChallenge（出队不自动执行）/ submit（外部化判定 + self-model 回写）/ list / stats / difficulty / pause / resume / config。硬约束：C1 可自动判定、C2 自评只进 notes、C3 无证据记 fail、D1 sessionId 前缀隔离。"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
