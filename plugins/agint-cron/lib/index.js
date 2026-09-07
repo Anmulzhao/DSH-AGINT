@@ -119,6 +119,7 @@ function apply(ctx) {
     'agint.dream': ctx.get('agint.dream'),
     'agint.promptSDK': ctx.get('agint.promptSDK'),
     'agint.skillAutocreate': ctx.get('agint.skillAutocreate'),
+    'agint.curator': ctx.get('agint.curator'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 

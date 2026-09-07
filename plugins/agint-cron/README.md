@@ -25,6 +25,7 @@
 | job id | 调度 | 说明 |
 |---|---|---|
 | `memory-decay` | `30 2 * * 1` | L1–L4 衰减扫描 + 应用降级/清除（weekly） |
+| `curator-weekly` | `0 2 * * 0` | 技能策展：陈旧检测 + 归档（weekly，早于周复盘；P0-2 Sprint 14） |
 | `wiki-lint` | `0 3 * * 0` | 断链/矛盾/孤岛三项检查（weekly） |
 | `metrics-collect` | `0 4 * * *` | 采集 memory/wiki/cron/rules 健康指标（daily） |
 | `evolve-review` | `45 3 * * 0` | 采集数据快照 → 自动发现 → 写周复盘（weekly） |

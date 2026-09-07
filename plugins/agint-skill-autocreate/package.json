@@ -1,6 +1,6 @@
 {
   "name": "agint-skill-autocreate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "P0-1 技能自动创建机制（Sprint 14 检测层）：聚合工具调用 → 检测重复任务模式 → 生成技能候选提案。候选走 D-QAF 评估与灰度发布由 Sprint 15/16 接力。",
   "type": "module",
   "main": "lib/index.js",

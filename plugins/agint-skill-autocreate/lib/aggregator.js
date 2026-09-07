@@ -13,7 +13,14 @@
  *     保留，待 tool-stats 增补 token 计量后自然填充）。
  *   - sessionId/turn 缺失的记录无法归属任务边界 → 计入 unmatched，不参与
  *     模式检测（宁可漏检，不可错检）。
+ *
+ * D2（Sprint14 §2.1）：sessionId 以 `curriculum-` 开头（或 source==='curriculum'）
+ * 的记录**整条丢弃**，不计入任务聚合。理由：curriculum 的挑战是「同一类任务
+ * 反复练」，天然命中「工具序列全等 + 累计 ≥3 次」的重复模式判定，不过滤会
+ * 批量产出「做挑战」的垃圾技能候选。向后兼容：无该字段的旧记录照常处理。
  */
+
+import { isExcludedRecord } from './schema.js';
 
 /** 单任务实例工具数上限：超过视为探索性任务（非标准化候选），降噪 */
 const MAX_TOOLS_PER_TASK = 30;
@@ -32,10 +39,12 @@ const MAX_TOOLS_PER_TASK = 30;
  * }
  */
 export function aggregateTasks(records) {
-  if (!Array.isArray(records)) return { tasks: [], unmatched: 0 };
+  if (!Array.isArray(records)) return { tasks: [], unmatched: 0, excluded: 0 };
   const groups = new Map();
   let unmatched = 0;
+  let excluded = 0;
   for (const r of records) {
+    if (isExcludedRecord(r)) { excluded++; continue; }   // D2：挑战调用不进模式检测
     if (!r || typeof r.tool !== 'string' || !r.tool) { unmatched++; continue; }
     const sid = typeof r.sessionId === 'string' && r.sessionId ? r.sessionId : null;
     const turn = Number.isInteger(r.turn) ? r.turn : null;
@@ -77,7 +86,7 @@ export function aggregateTasks(records) {
     });
   }
   tasks.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
-  return { tasks, unmatched };
+  return { tasks, unmatched, excluded };
 }
 
 /**

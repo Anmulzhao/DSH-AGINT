@@ -1,5 +1,26 @@
 # Changelog — agint-skill-autocreate
 
+## 0.1.1 (2026-09-07)
+
+Sprint 14 §2.1 D2：数据源隔离（与 `agint-curator` 配套，防 curriculum 挑战调用污染检测）。
+
+### 修改
+
+- `schema.js` 新增 `EXCLUDED_DATA_SOURCES` / `DATA_SOURCE_BLACKLIST_VERSION` /
+  `isExcludedRecord()`（D4 三处副本之一；curator 侧 `const-consistency.test.mjs`
+  自动扫描比对）。
+- `aggregator.js`：`aggregateTasks()` 丢弃黑名单记录（sessionId 前缀
+  `curriculum-`，或未来 `source === 'curriculum'`），返回值新增 `excluded` 计数；
+  `detect()` 结果透出该计数。
+- 向后兼容：无 `sessionId`/`source` 字段的旧记录照常处理，行为零变化。
+
+### 测试
+
+- 新增 `test/datasource-filter.test.mjs`（5 项）：前缀过滤 / 只靠挑战重复 3 次
+  不成模式 / source 标签 / 旧记录兼容 / 常量形状。套件 34 → **39 PASS**。
+
+---
+
 ## 0.1.0 (2026-09-07)
 
 Sprint 14 检测层初版（设计稿：wiki/设计-P0-1-技能自动创建机制.md v0.1-draft）。

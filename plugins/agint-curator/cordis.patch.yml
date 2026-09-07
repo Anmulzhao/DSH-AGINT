@@ -1,0 +1,32 @@
+# agint-curator loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工，走 safe-update SOP）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml（建议放
+#      agint-skill-autocreate 之后）
+#   2. bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. 老板手动重启 dsh（Git Bash 缺 pgrep/pkill，safe-update restart 不可用）
+#
+# 本文件**不**由 loader 自动包含；按子任务官方流程，本 sprint 不顺手改顶层
+# cordis.patch.yml（与 agint-skill-autocreate 同策略），由老板走 safe-update 合并。
+#
+# preset 侧工具（10 个）——在 presets/agint/agent.cordis.yml 加一行
+# （参照 agint-skill-autocreate-tools 写法）：
+#   - id: agint-curator-tools
+#     name: ../../profiles/web/plugins/agint-curator/lib/tools.js
+#
+# ⚠️ 首次挂载的保守选项（归档会移动目录 + 从 Prompt 移除，虽然可恢复）：
+#   改 config 加 auto_curation_enabled: false → 只检测不执行，先看几周报告再放行。
+
+# agint-curator: P0-2 技能策展人（Sprint 14 阶段 1）。
+#   - Service：agint.curator（run/dryRun/listSkills/getSkill/pin/unpin/
+#     archive/unarchive/stats/getReport/pause/resume/config）
+#   - listOverlaps / listDeclining / consolidate / prune 显式抛未实现（Sprint 15/16）
+#   - 独占 agint_curator 存储域（4 表）
+#   - 软依赖 event-bus（skill-staled/archived/reactivated/pinned/run-completed）
+#   - 每周策展由 agint-cron 的 curator-weekly job 驱动（周日 02:00，早于 evolve-review）
+- insert:
+    - id: agint-curator
+      name: ./plugins/agint-curator/lib/index.js
+      config: {}
