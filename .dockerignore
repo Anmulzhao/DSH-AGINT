@@ -1,0 +1,15 @@
+# 不进镜像的东西：省构建时间，也防止把本机状态/密钥烤进去
+.git/
+**/node_modules/
+**/.workbuddy/
+**/*.bak-*
+**/*.log
+**/_tmp_*/
+reviews/
+wiki/
+docs/
+eval/
+fixtures/
+patches/
+assets/
+bin/

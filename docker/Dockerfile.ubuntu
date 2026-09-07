@@ -1,0 +1,61 @@
+# dsh web 镜像 —— Ubuntu 26.04.1 LTS (Resolute Raccoon) 基础版
+#
+# 默认用的是 docker/Dockerfile（node:lts，Debian 12）。
+# 需要 Ubuntu 基线（公司规定 / 合规 / 统一镜像要求）时用这个：
+#
+#   DOCKERFILE=docker/Dockerfile.ubuntu docker compose -f docker/docker-compose.yml build
+#
+# 与 Debian 版唯一架构上的差别：Node 必须自己装 —— node 官方镜像只发
+# Debian 和 Alpine 变体，从来没有任何 Ubuntu 版本，所以没有 node:lts 这种
+# 东西可以直接 FROM。
+#
+# 其余（dsh 安装、AGINT 注入、启动参数）全部交给 entrypoint 共享的逻辑，
+# 因为这套设计的核心就是「镜像里不装任何应用层东西」。
+
+FROM ubuntu:26.04
+
+ARG NODE_VERSION=24.20.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1
+
+# ── 系统包 ──────────────────────────────────────────────────────────────────
+# python3      ：install.sh 的硬依赖（合并 cordis.patch.yml 用，
+#                dsh 的 patch 带 !!js 自定义 tag，纯 YAML 库解析不了）
+# python3-yaml ：校验/合并 patch 的 Yaml
+# rsync        ：install.sh 优先用它同步插件（没有会回退 python3，也能跑）
+# xz-utils     ：解压 Node 官方 tar.xz 用
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl xz-utils \
+      python3 python3-yaml rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── Node 24 LTS (Krypton) ───────────────────────────────────────────────────
+# 用官方二进制包，而不是 apt install nodejs。Ubuntu 26.04 仓库只给到
+# Node 22.22.1 + npm 9.2.0，跟我们用的 24 差一整个大线；而且 Ubuntu 把
+# nodejs 和 npm 拆成两个包，连 npm 要额外拉 350~400 个依赖。
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) node_arch='x64' ;; \
+      arm64) node_arch='arm64' ;; \
+      *) echo "不支持的架构: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    tar -xJf "node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -C /usr/local --strip-components=1; \
+    rm "node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    node --version; npm --version
+
+# ── AGINT 源码（只拷安装用得到的部分）──────────────────────────────────────
+WORKDIR /opt/agint
+COPY presets ./presets
+COPY plugins ./plugins
+COPY profile-patches ./profile-patches
+COPY install ./install
+
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 3080
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

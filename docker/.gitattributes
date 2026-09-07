@@ -1,0 +1,8 @@
+# 强制 docker/ 下的脚步用 LF 行尾。
+#
+# 为什么需要：Windows 版 git 默认 core.autocrlf=true，签出时会把 LF 换成
+# CRLF。entrypoint.sh 一旦带 \r，Linux 容器里第一行 #!/bin/bash 会被读成
+# /bin/bash^M，直接报 "bad interpreter: No such file or directory"，
+# 容器起不来且报错信息完全指不到真正原因。
+entrypoint.sh text eol=lf
+*.sh text eol=lf
