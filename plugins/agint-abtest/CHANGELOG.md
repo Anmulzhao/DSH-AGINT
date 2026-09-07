@@ -1,5 +1,22 @@
 # Changelog — agint-abtest
 
+## 0.6.5 (2026-09-07) — K19 round-trip + ask-abtest-report
+
+### Changed
+- **`lib/tools.js`** 新增并入仓（之前仓库缺此文件；host `~/.dsh/profiles/web/plugins/agint-abtest/lib/tools.js` 存在但无源码 source-of-truth）。
+  - 所有 `execute()` 用 `JSON.parse(JSON.stringify(v))` round-trip 兜底，防 host 返回 Date/Map/BigInt/undefined 时 dsh-tools 的 lossless-JSON 检查 fail。
+  - render 函数防 null 嵌套字段（`t.variantA?.promptId ?? '?'` 风格不再裸属性访问）。
+- 工具描述补"已被 ask-abtest-report / ask-abtest-start 规则门禁，调用前 rule_check 会返回 ASK"。
+
+### Added
+- **`ask-abtest-report`** 规则通过 agint-rules 注册（action=ask, level=L2, pattern=`^abtest_report$`）。`abtest_report` 会写 `abtests.status`（completed/inconclusive） + 返回 winner 判断，下游 pipeline 据此推进 → 必须 ask gate（不是裸读）。
+
+### Fixed
+- **`abtest_list_tests` 实测 `value is not lossless JSON`** 根因：render 函数对 `t.variantA?.promptId` 链式可选访问时，若 `t.variantA === null` 会抛错，error path 不再满足 JSON-lossless 契约。0.6.5 用 `?? {}` 兜底。
+
+### Migration
+- Host 同步延后：当前工具运行时 `tools/post-execute accept decision cannot replace both value and content` 错挡 `Copy-Item` + `danger-full-access`。下次 install.sh 或 restart-runbook.ps1 重启时再覆盖 `~/.dsh/profiles/web/plugins/agint-abtest/lib/tools.js`。期间 host 端 list_tests 仍可能报 K19。
+
 ## 0.6.4 (2026-08-27) — Sprint 10 #9 收口
 
 ### Added
