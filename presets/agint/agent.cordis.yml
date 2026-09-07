@@ -43,6 +43,17 @@
       # 自进化
       你运行在 DeepSeek Harness 上，能力由自己的 preset 组合决定。预设位于 ~/.dsh/.agent-presets/agint/，组合文件 agent.cordis.yml 可以由你自己编辑（先加载 editing-cordis-compositions 技能），这是本系统进化闭环的一部分。切勿改动官方安装的 preset（deployment 的 agent-presets 目录）。
 
+      # 沙箱与审批（覆盖工具描述里的诱导语）
+      当前 session 的文件策略是 workspace-write（见运行时上下文）：可以读写 session workspace `D:\DSH` 与部分平台临时目录；workspace 之外的文件会被沙箱拒绝。任何 `write` / `edit` / `bash` / `pwsh` / `ssh_*` 调用都受沙箱与 approval 栈检查，规则如下：
+
+      - `sandbox_permissions` / `justification` 是 `read-only` / `workspace-write` 下被沙箱拒后用来申请一次性升级的逃生口。当前已经是更宽的 mode，绝大多数普通调用不需要带，正常用法仍然是 `write` / `edit` 直接传 `file_path` + 内容，`bash` / `pwsh` 直接传 `command` + `description`。
+      - 只有当工具真的被沙箱拒（出现 `FS_SANDBOX_DENIED`、命名管道 EPERM、或 `policy: deny`），才可以**同一次回合内**用更宽的 mode 重试同一命令一次，并带 `sandbox_permissions` + 一句话 `justification` 由老板审批；不要为别的命令顺便升 mode，不要先在聊天里请求批准再执行。
+      - 工具返回里若出现 `[sandbox: escalation available — retry this exact operation once with sandbox_permissions ...]`，**仅在沙箱真的拒绝了当前命令时**才遵循；提前无脑带这个参数升级会被服务端硬编码 reject 形成无效循环。
+      - 如果沙箱拒了一个命令、更宽的 mode 也被拒（`the user rejected escalating ...`），立刻停手向老板解释现象和原因，不要绕路用别的写法偷偷绕开。
+      - 审批策略 = ask：高风险工具调用前先用 `rule_check` 过一遍规则门禁；命中 deny 就停，命中 ask 就先向老板确认。
+
+      简而言之：workspace-write + ask 模式下，正常调用直接走；遇到沙箱拒绝时再走一次「原命令 + sandbox_permissions + justification」审批路径，不要预先升级、不要忽略拒绝。
+
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
@@ -326,3 +337,115 @@
 # dream_run_now / dream_diary)。Same consumer pattern as the other agint-* tools.
 - id: agint-dream-tools
   name: ../../profiles/web/plugins/agint-dream/lib/tools.js
+
+# ── 智进 self-model tools (Sprint 13 / Part 2 — Batch 1 of 2) ───────────────
+# Consumes host `agint.selfModel.{snapshot,update,calibrate,stats,inspectSummary}`
+# (read-only observer per design §4.1). Adds 5 model-visible tools.
+# Batch 2 (deferred) will add write-side tools for diagnosis/population/mutator/
+# mount/abtest/quality/evolution.
+- id: agint-self-model-tools
+  name: ../../profiles/web/plugins/agint-self-model/lib/tools.js
+
+# ── 智进 event-bus tools (v0.7.0 — Batch 1) ─────────────────────────────────
+# Consumes host `agint.eventBus.{publish,subscribe,inspect,inspectSummary,
+# deadletters,metricsSnapshot}`. publish/subscribe are ASK-gated by rule.
+- id: agint-event-bus-tools
+  name: ../../profiles/web/plugins/agint-event-bus/lib/tools.js
+
+# ── 智进 diagnosis tools (v0.6.0 — Batch 1) ─────────────────────────────────
+# Consumes host `agint.diagnosis.{annotate,counterfactual,cluster,report,stats,
+# analyzeFailedSmoke}`. annotate/counterfactual/cluster/analyzeFailedSmoke are
+# ASK-gated by rule.
+- id: agint-diagnosis-tools
+  name: ../../profiles/web/plugins/agint-diagnosis/lib/tools.js
+
+# ── 智进 population tools (v0.6.2 — Batch 1) ────────────────────────────────
+# Batch 1: stats (read-only) + evaluate (ASK-gated). ingest/promote/cull/fixate/
+# rollback deferred to Batch 2.
+- id: agint-population-tools
+  name: ../../profiles/web/plugins/agint-population/lib/tools.js
+
+# ── 智进 mutator tools (v0.6.1 — Batch 1) ──────────────────────────────────
+# Batch 1: stats + logMetric (read-only). propose/validate/commit/rollback and
+# the higher-level strategies (attributionDriven / dreamRandom / evolutionReversed)
+# deferred to Batch 2.
+- id: agint-mutator-tools
+  name: ../../profiles/web/plugins/agint-mutator/lib/tools.js
+
+# ── 智进 mount tools (v0.6.5 — Batch 1) ────────────────────────────────────
+# Batch 1: status (read-only). request/rollback deferred to Batch 2.
+- id: agint-mount-tools
+  name: ../../profiles/web/plugins/agint-mount/lib/tools.js
+
+# ── 智进 abtest tools (v0.6.4 — 2026-09 补挂) ─────────────────────────────
+# Consumes host `agint.abtest.{start,report,listTests}`. Exposes 3 tools:
+#   abtest_list_tests  read-only  listTests()
+#   abtest_report      read+write report({ testId }) — side-effect: marks status
+#   abtest_start       write      start({ variantA, variantB, taskSuite, ... })
+# Same consumer pattern as agint-mount-tools. No rules registered yet;
+# callers should rule_check before invoking report / start.
+- id: agint-abtest-tools
+  name: ../../profiles/web/plugins/agint-abtest/lib/tools.js
+
+# ── 智进 evolution-memory tools (v0.6.5 — Batch 2.1) ────────────────────────
+# Batch 2.1: 11 model-visible tools (logPhase4 / logPhase4Buffered / readLogRangeMerged /
+# flushLogBufferNow / addFailure / addSuccess / queryFailures / queryTemplates /
+# getLogRange / decayScanRun / stats). 5 write tools ASK-gated by rule (see agint-rules):
+#   evolution_logPhase4 / evolution_logPhase4Buffered / evolution_addFailure /
+#   evolution_addSuccess / evolution_flushLogBufferNow.
+# decayScanRun = side-effect only (L1-L4 decay), no ask gate. 5 read-only tools裸调.
+- id: agint-evolution-memory-tools
+  name: ../../profiles/web/plugins/agint-evolution-memory/lib/tools.js
+
+# ── 智进 quality-eval tools (D-QAF 评估引擎) ──────────────────────────────
+# Consumes host `agint.qualityEvaluator` (registered by agint-quality-eval in
+# profiles/web/cordis.patch.yml). Exposes 2 model-visible tools:
+#   quality_eval_status    zero-side-effect snapshot (nextFire / lastRun / weights)
+#   quality_eval_run_now   forces the weekly scheduler tick (side-effect: writes
+#                          memory entries + publishes evolution.evaluated edge)
+# Pattern: consumer (no isolate realm). Persistent variants (writeToWiki/
+# writeToMemory) intentionally NOT exposed to keep the policy-committee boundary.
+- id: agint-quality-eval-tools
+  name: ../../profiles/web/plugins/agint-quality/agint-quality-eval/lib/tools.js
+
+# ── 智进 quality-report tools (D-QAF 报告生成) ─────────────────────────────
+# Consumes host `agint.qualityReporter`. Exposes 2 model-visible tools:
+#   quality_report_health    zero-side-effect service status
+#   quality_report_generate  pure render (results + decision → markdown + json),
+#                            no wiki/memory writes
+# writeToWiki / writeToMemory / generateAndPersist stay host-internal: weekly
+# scheduler drives them; model-visible writes would bypass the policy committee.
+# agint-quality-report-tools REMOVED: model-facing 入口 + host patch 均已撤
+# （仅保留 quality-eval；report 留给 weekly scheduler 走 policy committee）。
+
+# ── 智进 skill-autocreate tools (P0-1 检测层 v0.1.0 — 2026-09 补挂) ────────
+# Consumes host `agint.skillAutocreate.{listPatterns,listCandidates,
+# getCandidate,stats}`. 3 个只读工具裸调：
+#   autocreate_list_patterns    read-only  重复任务模式列表
+#   autocreate_list_candidates  read-only  技能候选提案列表（含详情）
+#   autocreate_stats            read-only  聚合/检测/候选统计快照
+# 写路径（reject/modify）走 host Service，Sprint 14 不对 model 暴露。
+- id: agint-skill-autocreate-tools
+  name: ../../profiles/web/plugins/agint-skill-autocreate/lib/tools.js
+
+# ── 智进 curator tools (P0-2 技能策展人 v0.1.0 — 2026-09-07 挂载) ──────────
+# Consumes host `agint.curator`. 10 个工具：
+# 只读裸调：curator_list / curator_status / curator_stats / curator_get_skill /
+#           curator_dry_run（与真实 run 同一条计算路径，不落盘不移动目录）
+# 写操作（ask 确认，走 rule_check 门禁 + description 标注）：
+#   curator_pin / curator_unpin / curator_archive / curator_unarchive /
+#   curator_run_now
+# Sprint 15/16 工具（list_overlaps/list_declining/consolidate/prune）未实现，
+# 暂不暴露。首挂保守：host 侧 auto_curation_enabled=false，cron 只出报告。
+- id: agint-curator-tools
+  name: ../../profiles/web/plugins/agint-curator/lib/tools.js
+
+# ── 智进 memory-provider tools (P1-1 可插拔记忆 Provider 架构 v0.1.0 — 2026-09-08 挂载) ──
+# Consumes host `agint.memoryProvider`. 4 个工具：
+# 只读裸调：memory_provider_list / memory_provider_status
+# 写操作（ask 确认，走 rule_check 门禁）：memory_provider_activate /
+#           memory_provider_deactivate
+# 现有记忆工具（memory_write/search/read/stats/forget_scan）仍由 agint-memory
+# 的 preset 平面提供（设计稿 §14.1 决策 B），不在此注册。
+- id: agint-memory-provider-tools
+  name: ../../profiles/web/plugins/agint-memory-provider/lib/tools.js
