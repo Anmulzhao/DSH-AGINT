@@ -118,6 +118,7 @@ function apply(ctx) {
     'agint.toolStats': ctx.get('agint.toolStats'),
     'agint.dream': ctx.get('agint.dream'),
     'agint.promptSDK': ctx.get('agint.promptSDK'),
+    'agint.skillAutocreate': ctx.get('agint.skillAutocreate'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 

@@ -1,0 +1,29 @@
+{
+  "name": "agint-skill-autocreate",
+  "version": "0.1.0",
+  "description": "P0-1 技能自动创建机制（Sprint 14 检测层）：聚合工具调用 → 检测重复任务模式 → 生成技能候选提案。候选走 D-QAF 评估与灰度发布由 Sprint 15/16 接力。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/aggregator.js": "./lib/aggregator.js",
+    "./lib/detector.js": "./lib/detector.js",
+    "./lib/templates.js": "./lib/templates.js",
+    "./lib/proposer.js": "./lib/proposer.js",
+    "./lib/tools.js": "./lib/tools.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "skill-autocreate",
+    "p0-1",
+    "sprint-14"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
