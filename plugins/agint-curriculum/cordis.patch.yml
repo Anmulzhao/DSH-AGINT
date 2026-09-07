@@ -1,0 +1,46 @@
+# agint-curriculum loader entry 模板
+
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工，走 safe-update SOP）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml（建议放
+#      agint-curator 之后）
+#   2. bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. 老板手动重启 dsh（Git Bash 缺 pgrep/pkill，safe-update restart 不可用）
+#
+# 本文件**不**由 loader 自动包含；按子任务官方流程，本 sprint 不顺手改顶层
+# cordis.patch.yml（与 agint-curator / agint-skill-autocreate 同策略），由老板走
+# safe-update 合并。
+#
+# preset 侧工具（4 个）——在 presets/agint/agent.cordis.yml 加一行
+# （参照 agint-curator-tools 写法）：
+#   - id: agint-curriculum-tools
+#     name: ../../profiles/web/plugins/agint-curriculum/lib/tools.js
+#
+# ⚠️ 首次挂载的保守选项（对应 Sprint14 拍板 Q1 与 §0.3 观察窗）：
+#   - auto_execute_enabled 恒 false（§4.5 不自动执行；curriculum 只产出挑战，
+#     出队后由 agent 手动执行，不碰 tools/pre-execute 等 waterfall 事件）
+#   - require_evidence=true（C3 无证据记 fail，杜绝自评刷分）
+#   - self_model_writeback=true（§4.9 只调 self-model.update() 提供证据，
+#     不直接改 capability 表）
+
+# agint-curriculum: P7 自主课程生成器（Sprint 14 Part B，仓库实现不挂载 prod）。
+#   - Service：agint.curriculum（probe/generate/nextChallenge/submit/list/stats/
+#     difficulty/pause/resume/config）
+#   - 4 域模板（codegen/reasoning/planning/tool-use）× D1-D5；无模板域诚实留白
+#     （C1/Q5：不进挑战）
+#   - 判定外部化：C1 挑战必带可自动判定 verifySpec；C2 selfAssessment 只进 notes；
+#     C3 无 evidence 记 fail
+#   - 难度调节：28 天窗口 + 样本<5 不调档 + 连续 pass/fail≥3 强制升降档 +
+#     完成率 40%-70% 护栏；fail≥3 标 cannotCandidate 供 self-model 复验
+#   - 独占 agint_curriculum 存储域（4 表：challenges/attempts/difficulty_state/
+#     audit_log；超限 warn 不 prune，仅 audit_log 滚动）
+#   - D1：挑战执行 sessionId 带 curriculum- 前缀（D4 黑名单副本之一，三处一致）
+#   - 软依赖 event-bus（boundary-probed/challenge-created/challenge-verdicted/
+#     difficulty-adjusted）与 self-model（snapshot/update；不可用降级 skipped）
+#   - 触发器：A11 self.model.updated 事件只当"画像变了"的信号，数据一律走
+#     snapshot()（§4.2 不改 FROZEN payload）
+- insert:
+    - id: agint-curriculum
+      name: ./plugins/agint-curriculum/lib/index.js
+      config: {}
