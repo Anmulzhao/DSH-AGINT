@@ -36,7 +36,7 @@
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
-        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki'
+        root: !!js (process.env.DSH_WIKI_ROOT || 'D:/DSH/wiki')
 
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     - id: agint-cron
@@ -97,9 +97,13 @@
       config: {}
 
     # agint-quality-report: HARM report generator. QualityReporterIface impl.
-    - id: agint-quality-report
-      name: ./plugins/agint-quality/agint-quality-report/lib/index.js
-      config: {}
+    # REMOVED: model-facing 入口 + host patch 均已撤；weekly scheduler 仍按
+    # 原设计尝试调用 agint.qualityReporter，宿主缺失时软降级（不再有 report）。
+    # 如需恢复：在 host composition 重新挂回本 row，并在 preset 加
+    # agint-quality-report-tools 行（参考 git log）。
+    # - id: agint-quality-report
+    #   name: ./plugins/agint-quality/agint-quality-report/lib/index.js
+    #   config: {}
 
     # agint-quality-sdk: Prompt SDK v0.5. PromptManifest FROZEN schema +
     # template engine + static check + CLI.
@@ -117,13 +121,6 @@
     # + counterfactual simulation + pattern clustering + time-window reports.
     - id: agint-diagnosis
       name: ./plugins/agint-diagnosis/lib/index.js
-      config: {}
-
-    # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
-    # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
-    # propose/validate/commit/rollback three-segment transaction.
-    - id: agint-mutator
-      name: ./plugins/agint-mutator/lib/index.js
       config: {}
 
     # agint-population: population manager v0.6.2. Three-variant tournament.
@@ -148,6 +145,42 @@
       name: ./plugins/agint-event-bus/lib/index.js
       config: {}
 
+    # agint-skill-autocreate: P0-1 技能自动创建（Sprint 14 检测层）v0.1.0.
+    # 聚合 tool-stats JSONL → 重复任务模式检测 → SKILL.md 候选提案（纯模板）。
+    # Service：agint.skillAutocreate（detect/listPatterns/listCandidates/
+    # getCandidate/rejectCandidate/modifyCandidate/stats/pause/resume/config）。
+    # triggerEval / release / rollback 显式抛未实现（Sprint 15/16 接力）。
+    # 独占 agint_skill_autocreate 存储域（5 表）。软依赖 event-bus
+    # （pattern-detected / candidate-created 两事件）。每日聚合由 agint-cron
+    # 的 skill-autocreate-aggregate job 驱动（04:45）。
+    - id: agint-skill-autocreate
+      name: ./plugins/agint-skill-autocreate/lib/index.js
+      config: {}
+
+    # agint-curator: P0-2 技能策展人（Sprint 14 阶段 1）v0.1.0 — 2026-09-07 挂载.
+    # 扫描 preset skills 目录 + tool-stats JSONL → 状态机（active/stale/archived/
+    # pinned）→ 每周自动策展 + 报告。Service：agint.curator（run/dryRun/listSkills/
+    # getSkill/pin/unpin/archive/unarchive/stats/getReport/pause/resume/config）。
+    # listOverlaps / listDeclining / consolidate / prune 显式抛未实现（Sprint 15/16）。
+    # 独占 agint_curator 存储域（4 表）。软依赖 event-bus
+    # （skill-staled/archived/reactivated/pinned/run-completed）。
+    # 每周策展由 agint-cron 的 curator-weekly job 驱动（周日 02:00）。
+    # ⚠️ 首挂保守：auto_curation_enabled: false → cron 只检测出报告，不自动归档。
+    #    观察两周报告后改 true 放行（或随时 curator_pause/curator_resume）。
+    - id: agint-curator
+      name: ./plugins/agint-curator/lib/index.js
+      config:
+        auto_curation_enabled: false
+
+    # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
+    # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
+    # propose/validate/commit/rollback three-segment transaction.
+    # NOTE: 必须排在 agint-event-bus 之后——mutator 启动时一次性读取
+    # agint.eventBus.subscribe，取不到会永久降级（diagnosis.completed 影子观察失效）。
+    - id: agint-mutator
+      name: ./plugins/agint-mutator/lib/index.js
+      config: {}
+
     # agint-self-model: read-only observer v0.7.1. Capability map
     # (CAN/CANNOT/UNCERTAIN) + reasoning profile + resource baseline + calibration.
     - id: agint-self-model
@@ -158,4 +191,19 @@
     # D-QAF auto-write landing.
     - id: agint-evolution-memory
       name: ./plugins/agint-evolution-memory/lib/index.js
+      config: {}
+
+    # agint-memory-provider: P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）
+    # v0.1.0 — 2026-09-08 挂载. ExternalProvider 抽象基类 + BuiltinProvider（封装
+    # agint.memory，行为完全一致，prefetch 默认只读）+ MemoryManager（激活/降级/
+    # 琐碎过滤/召回指示器）+ ProviderRegistry。Service：agint.memoryProvider
+    # （listProviders/getActiveProvider/activate/deactivate/getConfig/setConfig/
+    # getRecallStatus/getFallbackStats/pause/resume/stats/config 等）。
+    # testConnection / runPreCompressCheckpoint / registerProviderTools /
+    # routeToolCall 显式抛未实现（Sprint 16 接力）。独占 agint_memory_provider
+    # 存储域（5 表）。硬注入 agint.memory（builtin provider 封装源）；软依赖
+    # event-bus（provider-activated / provider-activation-failed / recall-injected
+    # 三事件）。首挂保守：默认 active_provider=builtin，行为与未挂载时完全一致。
+    - id: agint-memory-provider
+      name: ./plugins/agint-memory-provider/lib/index.js
       config: {}
