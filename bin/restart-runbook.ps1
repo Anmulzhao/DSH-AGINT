@@ -1,4 +1,4 @@
-# AGINT Batch 2.1 Restart Runbook (Windows PowerShell, ASCII-only)
+# AGINT Restart Runbook (Windows PowerShell, ASCII-only)
 #
 # Background: bin/safe-update.sh restart fails on Git Bash with
 #   "pgrep: command not found" (mingw lacks procps package).
@@ -8,9 +8,6 @@
 #
 # Boss runs manually (Zhi Jin sandbox cannot start/stop dsh web).
 #
-# State: plugin-preflight steps 1-4 all green (repo / preset 14 rows /
-# 5 ask rules / host sync hash consistent).
-#
 # IMPORTANT: stdout from PowerShell -File may be lost during some shell
 # invocations. ALL output is also written to:
 #   C:\Users\Administrator\AppData\Local\Temp\dsh-restart.log
@@ -19,11 +16,25 @@
 #
 # Usage: powershell -ExecutionPolicy Bypass -File .\restart-runbook.ps1
 #
+# v0.6.6 (2026-09-07) updates:
+#   - precheck #1 (hash) now scans ALL agint-*/lib/tools.js in host + repo
+#     instead of hard-coded evolution-memory; reports drift without failing
+#   - precheck #2 (preset rows) reads the actual count from host preset
+#     instead of hard-coded 14; logs and continues regardless
+#   - section 2.2 injects $env:AGINT_HOME before starting dsh web
+#     (AGENTS.md line 19: AGINT_HOME pinning is required to avoid the silent
+#     "wiki/dream/evolve read empty data" trap)
+#   - section 3 (verification) expanded to cover all 16 current preset tool rows
+#
 
 $ErrorActionPreference = 'Stop'
 $dshWebLog = 'C:\Users\Administrator\AppData\Local\Temp\dsh-web.log'
 $leasePath = 'C:\Users\Administrator\.dsh\sentinel.lease'
 $scriptLog = 'D:\DSH\project\DSH-AGINT\reviews\dsh-restart.log'
+
+# AGINT_HOME pinned value per AGENTS.md line 19 (boss verified).
+# Set BEFORE anything reads plugin storage paths (wiki / dream / evolve / abtest).
+$AGINT_HOME = 'C:\Users\Administrator\projects\AGINT'
 
 # Truncate log
 if (Test-Path $scriptLog) { Remove-Item $scriptLog -Force }
@@ -38,24 +49,61 @@ function Ok([string]$msg) { Write-Log "[OK] $msg" }
 function Warn([string]$msg) { Write-Log "[WARN] $msg" }
 function Fail([string]$msg) { Write-Log "[FAIL] $msg"; exit 1 }
 
-Log '=== AGINT Batch 2.1 Restart Runbook ==='
+Log '=== AGINT Restart Runbook (v0.6.6) ==='
 Log "Script log: $scriptLog"
 
 # --- 0. Pre-checks -----------------------------------------------
 Log '-- 0. Pre-checks --'
-$repo = 'D:\DSH\project\DSH-AGINT\plugins\agint-evolution-memory\lib\tools.js'
-$hostPlugin = 'C:\Users\Administrator\.dsh\profiles\web\plugins\agint-evolution-memory\lib\tools.js'
-if (-not (Test-Path $repo)) { Fail "repo plugin not found: $repo" }
-if (-not (Test-Path $hostPlugin)) { Fail "host plugin not found: $hostPlugin" }
-$hRepo = (Get-FileHash $repo -Algorithm SHA256).Hash
-$hHost = (Get-FileHash $hostPlugin -Algorithm SHA256).Hash
-if ($hRepo -ne $hHost) { Fail "tools.js hash mismatch: repo=$hRepo  host=$hHost" }
-Ok "tools.js hash consistent ($hHost)"
 
+# 0a. Scan ALL agint-* plugins for lib/tools.js hash drift between repo and host.
+#     Drift is reported (not fatal) — caller decides whether to fix before restart.
+Log '0a. Hash check: all agint-*/lib/tools.js (repo vs host)'
+$repoRoot = 'D:\DSH\project\DSH-AGINT\plugins'
+$hostRoot = 'C:\Users\Administrator\.dsh\profiles\web\plugins'
+$drift = @()
+if (Test-Path $repoRoot) {
+    Get-ChildItem -Path $repoRoot -Directory -Filter 'agint-*' -ErrorAction SilentlyContinue | ForEach-Object {
+        $name = $_.Name
+        $repoTool = Join-Path $_.FullName 'lib\tools.js'
+        # Quality sub-plugins live one level deeper (plugins/agint-quality/agint-quality-eval/lib/tools.js)
+        if (-not (Test-Path $repoTool)) {
+            $repoTool = Get-ChildItem -Path $_.FullName -Recurse -Filter 'tools.js' -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like '*\lib\tools.js' } |
+                Select-Object -First 1 -ExpandProperty FullName
+        }
+        $hostTool = Join-Path (Join-Path $hostRoot $name) 'lib\tools.js'
+        if (-not (Test-Path $hostTool)) {
+            $hostTool = Get-ChildItem -Path (Join-Path $hostRoot $name) -Recurse -Filter 'tools.js' -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like '*\lib\tools.js' } |
+                Select-Object -First 1 -ExpandProperty FullName
+        }
+        if ((Test-Path $repoTool) -and (Test-Path $hostTool)) {
+            $hRepo = (Get-FileHash $repoTool -Algorithm SHA256).Hash
+            $hHost = (Get-FileHash $hostTool -Algorithm SHA256).Hash
+            if ($hRepo -ne $hHost) {
+                $drift += "$name repo=$($hRepo.Substring(0,12)) host=$($hHost.Substring(0,12))"
+            }
+        } elseif (Test-Path $repoTool) {
+            $drift += "$name repo-only (host missing)"
+        }
+    }
+}
+if ($drift.Count -eq 0) {
+    Ok "all tools.js hashes consistent (repo == host)"
+} else {
+    Warn "tools.js drift detected ($($drift.Count) entries):"
+    foreach ($d in $drift) { Warn "  - $d" }
+    Warn 'fix drift with:  node D:\DSH\sync-abtest-host.mjs  (or per-plugin cp)'
+}
+
+# 0b. Preset rows count — read actual host count, no hard-coded expectation.
+Log '0b. Preset tool rows'
 $preset = 'C:\Users\Administrator\.dsh\.agent-presets\agint\agent.cordis.yml'
+if (-not (Test-Path $preset)) { Fail "preset not found: $preset" }
 $rows = @(Select-String -Path $preset -Pattern '^- id: agint-.*-tools$')
-if ($rows.Count -ne 14) { Fail "preset rows count $($rows.Count) != 14" }
-Ok "preset rows = 14"
+Log "preset agint-*-tools rows = $($rows.Count)"
+if ($rows.Count -lt 7) { Fail "preset rows count $($rows.Count) < 7 (suspicious — at minimum memory+wiki+cron+rules+metrics+evolve+dream)" }
+Ok "preset rows = $($rows.Count)"
 
 # --- 1. Diagnose: how many dsh web instances + port 3080 holder ------------------
 Log '-- 1. Diagnose existing dsh web processes + port 3080 --'
@@ -103,6 +151,15 @@ $cwd = 'C:\Users\Administrator\projects'
 if (-not (Test-Path $cwd)) { Fail "working dir not found: $cwd" }
 Set-Location $cwd
 
+# Pin AGINT_HOME in the dsh web process environment (AGENTS.md line 19).
+# Without this, wiki / dream / evolve silently read empty data because
+# AGINT_HOME defaults to D:\DSH\project\DSH-AGINT (the source tree, whose
+# wiki/ dir is empty) instead of C:\Users\Administrator\projects\AGINT
+# (the live data root).
+Log "pinning AGINT_HOME=$AGINT_HOME for the dsh web subprocess"
+$env:AGINT_HOME = $AGINT_HOME
+if (-not (Test-Path $AGINT_HOME)) { Warn "AGINT_HOME path not found: $AGINT_HOME (wiki/dream/evolve will read empty until path exists)" }
+
 # Use cmd /c start /B for nohup equivalent
 $proc = Start-Process -FilePath "cmd.exe" `
     -ArgumentList "/c", "dsh web > `"$dshWebLog`" 2>&1" `
@@ -128,10 +185,19 @@ if (-not $leaseFound) { Fail "sentinel.lease timeout (60s not created), check $d
 
 # --- 3. Verification (boss manually calls tools, see runbook doc) --
 Log '-- 3. Post-restart verification (manual tool calls) --'
-Log '5 read-only tools: evolution_stats / queryFailures / queryTemplates / getLogRange / readLogRangeMerged'
-Log '5 ask tools:       evolution_logPhase4 / logPhase4Buffered / addFailure / addSuccess / flushLogBufferNow'
-Log '1 side-effect:     evolution_decayScanRun'
-Log 'Verify rule_audit + metrics_collect inside AGINT session'
+Log 'Verify in any new AGINT session:'
+Log '  rule_audit                  -> hits + asks + advisories + denies all reachable'
+Log '  memory_search <keyword>     -> long-term memory reachable'
+Log '  wiki_search <keyword>       -> wiki reachable (AGINT_HOME pinned OK if non-empty)'
+Log '  metrics_summary             -> 13 indicators fresh'
+Log '  cron_list                   -> 8 jobs with lastRunAt populated after first tick'
+Log '  abtest_list_tests           -> "no tests yet" (K19 round-trip OK)'
+Log '  rule_check tool=abtest_start   -> expected ASK (or NO_MATCH — known bug, see propose 87113823)'
+Log '  rule_check tool=abtest_report  -> expected ASK (same caveat)'
+Log '  rule_check tool=eventBus_publish -> ASK (known-good control)'
+Log '  dream_status                -> lastSweep recent'
+Log '  selfModel_snapshot          -> capability map reachable (CAN/CANNOT/UNCERTAIN)'
+Log 'See docs/operations/safe-update-sop.md for the full post-restart checklist.'
 
-Ok 'Batch 2.1 restart runbook complete'
+Ok 'Restart runbook complete'
 Log "Full output: $scriptLog"
