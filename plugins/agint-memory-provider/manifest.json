@@ -1,0 +1,81 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-memory-provider",
+  "version": "0.1.0",
+  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）。独占 agint_memory_provider storage domain；封装 agint-memory 为 builtin provider，支持外部 provider 激活与降级。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.memory"
+      ],
+      "provides": [
+        "agint.memoryProvider"
+      ],
+      "events": [
+        "memory.provider-activated",
+        "memory.provider-activation-failed",
+        "memory.recall-injected"
+      ],
+      "tools": [
+        "memory_provider_list",
+        "memory_provider_status",
+        "memory_provider_activate",
+        "memory_provider_deactivate"
+      ]
+    },
+    "storage": {
+      "domains": [
+        "agint_memory_provider"
+      ],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "cordis": ">=0.1.0",
+      "zod": "^3.0.0",
+      "agint-memory": ">=0.1.0"
+    },
+    "softDependencies": {
+      "agint-event-bus": ">=0.7.0"
+    },
+    "mountOrder": 55,
+    "permissions": {
+      "env": [
+        "DSH_HOME",
+        "AGINT_HOME"
+      ],
+      "fs": [
+        "write:storages"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "always",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.memoryProvider": "记忆 Provider 管理：provider 发现/激活/降级、生命周期调度（beginTurn/endTurn）、琐碎输入过滤、召回指示器、配置管理"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

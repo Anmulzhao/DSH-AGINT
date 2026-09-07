@@ -1,0 +1,31 @@
+{
+  "name": "agint-memory-provider",
+  "version": "0.1.0",
+  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）：ExternalProvider 抽象基类 + BuiltinProvider（封装 agint-memory）+ MemoryManager（激活/降级/生命周期调度/琐碎输入过滤/召回指示器）+ ProviderRegistry。运行时降级、pre_compress 检查点、工具动态注册由 Sprint 16 接力。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/provider.js": "./lib/provider.js",
+    "./lib/builtin-provider.js": "./lib/builtin-provider.js",
+    "./lib/mock-provider.js": "./lib/mock-provider.js",
+    "./lib/registry.js": "./lib/registry.js",
+    "./lib/manager.js": "./lib/manager.js",
+    "./lib/trivial.js": "./lib/trivial.js",
+    "./lib/tools.js": "./lib/tools.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "memory-provider",
+    "p1-1",
+    "sprint-15"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
