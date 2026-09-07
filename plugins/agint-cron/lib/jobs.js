@@ -170,6 +170,29 @@ export const defaultJobs = [
       };
     },
   },
+  {
+    // P0-1 技能自动创建：每日聚合（设计稿 §3.1 [2]，Sprint 14 检测层）。
+    // - daily 04:45（设计稿指定；与 prompt-static-check 同刻但两 job 独立互斥）
+    // - 读 agint_tool_stats.jsonl 过去 24h → 任务实例聚合 → 模式检测 → 候选生成
+    // - 插件未挂载时 soft-skip（不报错），便于先挂 cron 再挂 autocreate。
+    id: 'skill-autocreate-aggregate',
+    name: '技能自动创建聚合',
+    schedule: '45 4 * * *',
+    description: '聚合工具调用 → 检测重复任务模式 → 生成技能候选提案（daily）',
+    action: async (services) => {
+      const ac = services['agint.skillAutocreate'];
+      if (!ac) return { skipped: true, reason: 'agint.skillAutocreate not mounted' };
+      const result = await ac.detect({ triggerEvent: 'cron:skill-autocreate-aggregate' });
+      return {
+        skipped: result.skipped ?? false,
+        records: result.records,
+        tasks: result.tasks,
+        patternsUpserted: result.patternsUpserted,
+        newRepeatPatterns: result.newRepeatPatterns,
+        candidatesCreated: result.candidatesCreated,
+      };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */

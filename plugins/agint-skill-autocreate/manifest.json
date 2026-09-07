@@ -1,0 +1,58 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-skill-autocreate",
+  "version": "0.1.0",
+  "description": "P0-1 技能自动创建机制 v0.1.0（Sprint 14 检测层）：每日聚合 agint_tool_stats.jsonl → 检测重复任务模式（工具序列全等 + 参数相似度 ≥0.8 + 累计 ≥3 次）→ 纯模板生成技能候选提案（SKILL.md 草稿）。候选停在 PENDING_EVAL，Sprint 15 接 D-QAF、Sprint 16 接发布。独占 agint_skill_autocreate 存储域（5 表，上限 patterns 500 / candidates 200 / releases 100 / audit 1000），自我评估禁止（§9.4）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": ["agint.eventBus"],
+      "provides": ["agint.skillAutocreate"],
+      "events": [],
+      "tools": ["autocreate_list_patterns", "autocreate_list_candidates", "autocreate_stats"]
+    },
+    "storage": {
+      "domains": ["agint_skill_autocreate"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-tool-stats": ">=0.1.0",
+      "agint-event-bus": ">=0.7.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 25,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --test \"test/*.test.mjs\" test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.skillAutocreate": "技能自动创建：detect（聚合+检测+候选）/ listPatterns / listCandidates / getCandidate / rejectCandidate / modifyCandidate / stats / pause / resume / config；triggerEval / release / rollback 由 Sprint 15/16 接力（当前显式抛未实现）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
