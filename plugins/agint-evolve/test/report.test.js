@@ -152,3 +152,24 @@ test('buildReport handles a fully unavailable snapshot', () => {
   const md = buildReport({ date: '2026-08-17', snapshot: {}, findings, notes: '' });
   assert.match(md, /数据源.*全部不可用/s);
 });
+
+test('buildReport always emits a 哲学对齐检查 section (v0.2 强制)', () => {
+  // 设计文档承诺：每个复盘报告必须有 ## 五、哲学对齐检查 段。
+  // 测试覆盖三个场景：有 notes / 无 notes / 纯空 snapshot。
+  for (const opts of [
+    { date: '2026-09-07', snapshot: healthySnapshot, findings: findingsFromSnapshot(healthySnapshot), notes: '本周重点' },
+    { date: '2026-09-07', snapshot: healthySnapshot, findings: findingsFromSnapshot(healthySnapshot), notes: '' },
+    { date: '2026-09-07', snapshot: {}, findings: findingsFromSnapshot({}), notes: '' },
+  ]) {
+    const md = buildReport(opts);
+    assert.match(md, /## 五、哲学对齐检查/, `expected 哲学对齐检查 section in ${opts.date} (notes=${JSON.stringify(opts.notes)})`);
+    // 五大锚点必须出现
+    for (const anchor of ['简洁', '安全', '真实', '靠谱', '主动']) {
+      assert.match(md, new RegExp(`\\*\\*${anchor}\\*\\*`), `missing anchor ${anchor}`);
+    }
+    // 收口结论
+    assert.match(md, /收口结论/);
+    // 引导文档指针
+    assert.match(md, /evolution-philosophy-checkpoints\.md/);
+  }
+});

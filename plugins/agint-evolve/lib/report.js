@@ -169,6 +169,19 @@ export function buildReport({ date, snapshot, findings, notes }) {
     lines.push(String(notes).trim());
     lines.push('');
   }
+  lines.push('## 五、哲学对齐检查');
+  lines.push('');
+  lines.push('> v0.2 起强制：每个复盘报告必须有本节（AGENTS.md 边界 + 路线图 §哲学锚点护栏硬要求）。详见 `docs/evolution-philosophy-checkpoints.md` 第四章。');
+  lines.push('');
+  lines.push('逐条对照哲学锚点（简洁 / 安全 / 真实 / 靠谱 / 主动）：');
+  lines.push('- **简洁**：本期是否新增了同义工具 / 重复规则 / 冗余文档？');
+  lines.push('- **安全**：本期落地的写工具是否走 D-QAF + ask 门禁？有无越权数据读取？');
+  lines.push('- **真实**：本期复盘结论是否带文件:行号引用？数值与快照表一致？');
+  lines.push('- **靠谱**：本期 owner 关闭的 ticket / 提案是否真有 commit + test 通过？');
+  lines.push('- **主动**：本期是否发现 ≥1 个潜在隐患并自动起 proposal？');
+  lines.push('');
+  lines.push('收口结论（填一行）：本期哲学对齐度 = ⭕全过 / ⚠️N 项偏离（详述）。');
+  lines.push('');
   lines.push('## 路由规范（复盘产出去向）');
   lines.push('');
   lines.push('- 教训（不可再做）→ agint-memory，type=lesson，必须带 evidence');
