@@ -298,9 +298,32 @@ export function createExecutor({ getTable, audit, publishEvent, effectiveConfig 
    */
   async function applyDecisions(decisions, { dryRun = false, trigger = 'weekly_curation', actor = 'system' } = {}) {
     const cfg = effectiveConfig();
-    const out = { staled: [], archived: [], reactivated: [], skipped: [] };
+    const out = { staled: [], archived: [], reactivated: [], declining: [], skipped: [] };
     for (const d of decisions) {
       if (d.action === 'keep') { out.skipped.push({ skillName: d.skillName, reason: d.reason }); continue; }
+      if (d.action === 'declining') {
+        // Sprint 15：质量下降标记（P0-2 §3.2 active/stale → quality_declining）
+        const found = await findSkill(d.skillName);
+        if (!found) { out.skipped.push({ skillName: d.skillName, reason: '技能不存在' }); continue; }
+        const ts = nowIso();
+        if (!dryRun) {
+          const updated = await putSkill(found.value, {
+            ...found.value,
+            state: 'quality_declining',
+            stateChangedAt: ts,
+            curationNotes: d.reviewSuggested
+              ? (found.value.curationNotes ? `${found.value.curationNotes}\n` : '') + `review-suggested: 质量保护规则3（${ts.slice(0, 10)}）`
+              : found.value.curationNotes,
+            quality: { ...(found.value.quality ?? {}), reviewSuggested: found.value.quality?.reviewSuggested === true || d.reviewSuggested === true },
+            stateHistory: [...(found.value.stateHistory ?? []), { from: d.from, to: 'quality_declining', at: ts, reason: d.reason, actor }],
+            updatedAt: ts,
+          });
+          await recordAction({ action: 'state_change', skillName: d.skillName, actor, details: { fromState: d.from, toState: 'quality_declining', reason: d.reason, trigger, dryRun } });
+          await audit({ actor, action: 'declining', targetType: 'skill_state', targetId: updated.id, reason: d.reason });
+        }
+        out.declining.push({ skillName: d.skillName, reason: d.reason });
+        continue;
+      }
       if (d.action === 'stale') {
         const found = await findSkill(d.skillName);
         if (!found) { out.skipped.push({ skillName: d.skillName, reason: '技能不存在' }); continue; }

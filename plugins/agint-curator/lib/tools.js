@@ -216,6 +216,76 @@ function apply(ctx) {
       return JSON.parse(JSON.stringify(r));
     },
   }));
+
+  // ── Sprint 15 新增（P0-2 §6：overlaps/declining/get_report）────────────
+
+  ctx.tools.register(defineTool({
+    name: 'curator_list_overlaps',
+    description:
+      '列出重叠候选对（三维度检测：描述≥0.85 / 工具≥0.7 / 触发词≥0.6，≥2 维达标），' +
+      '含推荐动作（保留高频/高质量，归档另一个）。**Read-only**。',
+    parameters: {
+      status: { type: 'string', description: '按状态过滤：proposed/acknowledged/resolved；省略=全部' },
+      limit: { type: 'number', description: '最多返回多少条（默认 50）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const list = v.overlaps ?? [];
+        if (!list.length) return [{ type: 'text', text: 'curator_list_overlaps: 无重叠候选' }];
+        const lines = list.map((o) => `  ${o.skillA} ↔ ${o.skillB}  [${o.dims?.dimsMet ?? '?'}/3 维]  ${o.recommendation?.rationale ?? ''}`);
+        return [{ type: 'text', text: `curator_list_overlaps: ${list.length} 对\n${lines.join('\n')}` }];
+      },
+    },
+    async execute(args) {
+      const overlaps = await svc.listOverlaps({ ...args, limit: args.limit ?? 50 });
+      return JSON.parse(JSON.stringify({ overlaps }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'curator_list_declining',
+    description:
+      '列出质量下降技能（成功率连续 2 周降>10% 或 HARM 连续 2 次<0）。**Read-only**。' +
+      '含趋势详情与 review 建议标记。',
+    parameters: {
+      onlyReviewSuggested: { type: 'boolean', description: '只看质量保护（规则 3）标记为需人工审查的' },
+      limit: { type: 'number', description: '最多返回多少条（默认 50）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const list = v.declining ?? [];
+        if (!list.length) return [{ type: 'text', text: 'curator_list_declining: 无质量下降技能' }];
+        const lines = list.map((s) => `  ${s.skillName}  [${s.state}]  success=${s.quality?.successTrend?.state ?? '?'}  harm=${s.quality?.harmTrend?.state ?? '?'}${s.quality?.reviewSuggested ? '  [review]' : ''}`);
+        return [{ type: 'text', text: `curator_list_declining: ${list.length} 个\n${lines.join('\n')}` }];
+      },
+    },
+    async execute(args) {
+      const declining = await svc.listDeclining({ ...args, limit: args.limit ?? 50 });
+      return JSON.parse(JSON.stringify({ declining }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'curator_get_report',
+    description:
+      '获取指定周的策展报告（统计/stale/归档/质量下降/重叠/建议）。**Read-only**。' +
+      '省略 week 参数返回最新一份。',
+    parameters: {
+      week: { type: 'string', description: 'ISO 周，如 2026-W37；省略=最新' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => v.report
+        ? [{ type: 'text', text: `curator_get_report ${v.report.week}\n${JSON.stringify(v.report, null, 2)}` }]
+        : [{ type: 'text', text: 'curator_get_report: 无该周报告' }],
+    },
+    async execute(args) {
+      const report = await svc.getReport(args.week);
+      return JSON.parse(JSON.stringify({ report }));
+    },
+  }));
 }
 
 export { apply, inject, name };

@@ -198,10 +198,14 @@ test('pause/resume + 运行时 config 子集 + stats', async () => {
   }
 });
 
-test('Sprint 15/16 方法显式抛 not implemented，绝不静默', async () => {
+test('Sprint 15：listOverlaps/listDeclining 已实现；Sprint 16 consolidate/prune 显式抛错，绝不静默', async () => {
   const env = makeEnv();
   try {
-    for (const fn of ['listOverlaps', 'listDeclining', 'consolidate', 'prune']) {
+    // Sprint 15 已落地：空数据返回空数组，不抛错
+    assert.deepEqual(await env.svc.listOverlaps({}), []);
+    assert.deepEqual(await env.svc.listDeclining({}), []);
+    // Sprint 16 仍显式抛错
+    for (const fn of ['consolidate', 'prune']) {
       await assert.rejects(() => env.svc[fn]({}), /未实现/);
     }
   } finally {

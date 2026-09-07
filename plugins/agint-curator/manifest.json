@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-curator",
-  "version": "0.1.0",
-  "description": "P0-2 技能策展人 v0.1.0（Sprint 14 阶段 1 基础策展）：每周扫描 preset skills 目录 + 聚合 agint_tool_stats.jsonl 的技能级使用 → 纯函数状态机（30 天 stale / 90 天 archive / 7 天内复用 reactivate）→ 归档到 skills/.archive/（可恢复）。四类保护：pinned（状态而非标志位）/ protected 白名单 + 策展自保护 / cron-referenced（可 stale 不可 archive）/ 新技能 14 天保护期。独占 agint_curator 存储域（4 表，skill_states 200 / curation_actions 500 / reports 52 / audit 1000；超限 warn 不 prune，仅 audit_log 滚动）。D3：sessionId 前缀 curriculum- 的调用不刷新 lastUsedAt。不做重叠检测/质量评估/consolidate/prune（Sprint 15/16，方法显式抛未实现）。",
+  "version": "0.2.0",
+  "description": "P0-2 技能策展人 v0.2.0（Sprint 15 阶段 2 智能策展）：在阶段 1 基础策展上叠加三维度重叠检测（描述≥0.85/工具≥0.7/触发≥0.6，≥2 维达标→候选对+推荐动作）、质量评估（成功率周快照趋势 + 跨域 evolution-log 的 phase3-provisional 评估历史，任一缺失降级不编造）、质量加速规则（规则1 加速 stale / 规则2 加速 archive 60 天 / 规则3 质量保护 review / 规则4 新技能保护期）、质量下降标记状态 quality_declining。存储域 agint_curator schemaVersion 2（增 overlap_candidates 表 + skill_states.quality 字段）。报告新增重叠/质量下降/影响章节。不做 consolidate/prune（Sprint 16，显式抛未实现）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -12,15 +12,25 @@
   },
   "spec": {
     "cordis": {
-      "inject": ["storageDomain"],
-      "optionalInject": ["agint.eventBus", "agint.cron"],
-      "provides": ["agint.curator"],
+      "inject": [
+        "storageDomain"
+      ],
+      "optionalInject": [
+        "agint.eventBus",
+        "agint.cron"
+      ],
+      "provides": [
+        "agint.curator"
+      ],
       "events": [
         "curator.skill-staled",
         "curator.skill-archived",
         "curator.skill-reactivated",
         "curator.skill-pinned",
-        "curator.run-completed"
+        "curator.run-completed",
+        "curator.overlap-detected",
+        "curator.quality-declining",
+        "curator.consolidate-proposed"
       ],
       "tools": [
         "curator_list",
@@ -32,12 +42,17 @@
         "curator_archive",
         "curator_unarchive",
         "curator_run_now",
-        "curator_dry_run"
+        "curator_dry_run",
+        "curator_list_overlaps",
+        "curator_list_declining",
+        "curator_get_report"
       ]
     },
     "storage": {
-      "domains": ["agint_curator"],
-      "schemaVersion": 1,
+      "domains": [
+        "agint_curator"
+      ],
+      "schemaVersion": 2,
       "atomic": "json"
     },
     "dependencies": {
@@ -48,8 +63,15 @@
     },
     "mountOrder": 26,
     "permissions": {
-      "env": ["DSH_HOME"],
-      "fs": ["read:storages", "write:storages", "read:presets", "write:presets"],
+      "env": [
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages",
+        "read:presets",
+        "write:presets"
+      ],
       "network": [],
       "shell": false
     },
@@ -67,7 +89,7 @@
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.curator": "技能策展：run/dryRun（同一条计算路径）/ listSkills / getSkill / pin / unpin / archive / unarchive / stats / getReport / pause / resume / config；listOverlaps / listDeclining / consolidate / prune 由 Sprint 15/16 接力（当前显式抛未实现）"
+        "agint.curator": "技能策展：run/dryRun（同一条计算路径）/ listSkills / getSkill / pin / unpin / archive / unarchive / stats / getReport / pause / resume / config / listOverlaps / listDeclining；consolidate / prune 由 Sprint 16 接力（显式抛未实现）"
       }
     },
     "changelog": "CHANGELOG.md",

@@ -29,9 +29,10 @@ export const LIMITS = Object.freeze({
   CURATION_ACTIONS: 500,  // 超限 warn
   REPORTS: 52,            // 每周一份，约一年
   AUDIT_LOG: 1000,        // 唯一自动滚动清理
+  OVERLAP_CANDIDATES: 200,// Sprint 15 增表（超限 warn 不 prune）
 });
 
-// ── 状态机（Sprint14 §3.3）───────────────────────────────────────────────
+// ── 状态机（Sprint14 §3.3 + Sprint15 §3.2 质量扩展）──────────────────────
 
 /**
  * active  ──30天未用──▶ stale ──90天未用──▶ archived
@@ -40,10 +41,21 @@ export const LIMITS = Object.freeze({
  *   │
  *   └──人工 pin──▶ pinned（不参与任何自动转换）
  *
+ * Sprint 15 质量扩展（P0-2 §3.2 / §7.2）：
+ *   active ──质量下降(成功率连续2周降>10% 或 HARM 连续2次<0)──▶ quality_declining
+ *   active ──质量加速 stale(规则1: HARM连续2次<0 且 成功率<0.5)──▶ stale
+ *   stale  ──质量加速 archive(规则2: HARM持续下降, 60天)──▶ archived
+ *   stale  ──质量保护(规则3: HARM>1.0 且 成功率>0.8)──▶ 不归档, 标 review
+ *   quality_declining ──7天内有使用且质量恢复──▶ active
+ *   quality_declining ──陈旧达阈值──▶ archived
+ *
+ * 偏离登记（P0-2 §3.2 REVIEW 态）：REVIEW 不引入独立状态（避免「进了
+ * review 出不来」的悬空态），由 quality_declining + curationNotes
+ * 'review-suggested' + 报告建议承载，人工经既有 pin/archive/unarchive 处置。
  * pinned 作为状态而非标志位，见文件头偏离说明 2。
  */
 export const SKILL_STATES = Object.freeze([
-  'active', 'stale', 'archived', 'pinned',
+  'active', 'stale', 'archived', 'pinned', 'quality_declining',
 ]);
 
 /** 受策展管理的来源；bundled/hub/external 只读不碰（P0-2 §1.3） */
@@ -59,7 +71,7 @@ export const CURATION_ACTIONS = Object.freeze([
 
 /** State-engine 决策动作：与 CURATION_ACTIONS 对齐的最小集（纯函数输出） */
 export const TRANSITION_ACTIONS = Object.freeze([
-  'keep', 'stale', 'archive', 'reactivate',
+  'keep', 'stale', 'archive', 'reactivate', 'declining',
 ]);
 
 // ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────
@@ -114,7 +126,7 @@ export function isSelfProtecting(skillName) {
   return SELF_PROTECT_RE.test(skillName ?? '');
 }
 
-// ── FROZEN data schema（P0-2 §4.2/§4.3/§4.5，阶段 1 裁剪版）──────────────
+// ── FROZEN data schema（P0-2 §4.2/§4.3/§4.5，阶段 1 裁剪版 + Sprint15 quality）─
 
 export const UsageSchema = z.object({
   useCount: z.number().int().min(0).default(0),
@@ -123,6 +135,19 @@ export const UsageSchema = z.object({
   successRate: z.number().min(0).max(1).nullable().default(null),
   avgDurationMs: z.number().nullable().default(null),
   avgTokenCost: z.number().nullable().default(null), // tool-stats 暂无 token 计量，恒 null
+});
+
+export const QualitySnapshotSchema = z.object({
+  week: z.string(),                          // ISO week，如 2026-W37
+  successRate: z.number().nullable().default(null),
+  useCount: z.number().int().min(0).default(0),
+  harmDelta: z.number().nullable().default(null), // 当周 HARM 增量（有评估历史时）
+});
+
+export const QualitySchema = z.object({
+  qualityState: z.enum(['declining', 'stable', 'unknown']).nullable().default(null),
+  history: z.array(QualitySnapshotSchema).default([]), // 周快照，保留最近 8 周
+  reviewSuggested: z.boolean().default(false),         // 规则 3 质量保护 → 人工审查建议
 });
 
 export const StateHistoryEntrySchema = z.object({
@@ -148,6 +173,7 @@ export const SkillStateSchema = z.object({
   stateHistory: z.array(StateHistoryEntrySchema).default([]),
 
   usage: UsageSchema.default({}),
+  quality: QualitySchema.default({}),          // Sprint 15：质量快照/趋势/review 标记
 
   archivedAt: z.string().nullable().default(null),
   archiveReason: z.string().nullable().default(null),
@@ -170,6 +196,31 @@ export const CurationActionSchema = z.object({
   errorMessage: z.string().nullable().default(null),
 });
 
+export const OverlapCandidateSchema = z.object({
+  skillA: z.string().min(1),
+  skillB: z.string().min(1),
+  dims: z.object({
+    desc: z.number(), tools: z.number(), triggers: z.number(),
+    descHit: z.boolean(), toolsHit: z.boolean(), triggersHit: z.boolean(),
+    dimsMet: z.number().int().min(0).max(3),
+  }),
+  recommendation: z.object({
+    keep: z.string().nullable().default(null),
+    archive: z.string().nullable().default(null),
+    rationale: z.string().default(''),
+  }),
+  status: z.enum(['proposed', 'acknowledged', 'resolved']).default('proposed'),
+  detectedAt: z.string(),
+});
+
+export const DecliningSkillSchema = z.object({
+  skillName: z.string().min(1),
+  state: z.enum(SKILL_STATES),
+  reason: z.string().default(''),
+  successTrendState: z.string().nullable().default(null),
+  harmTrendState: z.string().nullable().default(null),
+});
+
 export const CurationReportSchema = z.object({
   week: z.string().min(1), // ISO week，形如 2026-W37
   generatedAt: z.string(),
@@ -180,6 +231,8 @@ export const CurationReportSchema = z.object({
     newlyStale: z.number().int().min(0),
     newlyArchived: z.number().int().min(0),
     reactivated: z.number().int().min(0),
+    newlyDeclining: z.number().int().min(0).default(0),   // Sprint 15
+    overlapsDetected: z.number().int().min(0).default(0), // Sprint 15
     pinned: z.number().int().min(0),
     protected: z.number().int().min(0),
     skipped: z.number().int().min(0),
@@ -196,6 +249,13 @@ export const CurationReportSchema = z.object({
     lastUsedAt: z.string().nullable().default(null),
   })).default([]),
   reactivated: z.array(z.object({ skillName: z.string(), reason: z.string() })).default([]),
+  declining: z.array(DecliningSkillSchema).default([]),   // Sprint 15 质量下降章节
+  overlaps: z.array(z.object({                            // Sprint 15 重叠章节
+    skillA: z.string(), skillB: z.string(), dimsMet: z.number().int(),
+    keep: z.string().nullable().default(null),
+    archive: z.string().nullable().default(null),
+    rationale: z.string().default(''),
+  })).default([]),
   recommendations: z.array(z.string()).default([]),
 });
 
@@ -209,7 +269,7 @@ export const AuditLogSchema = z.object({
   reason: z.string().nullable().default(null),
 });
 
-// ── 配置（P0-2 §8.1，阶段 1 只取用到的 + Sprint14 §3.4 新默认值）──────────
+// ── 配置（P0-2 §8.1，阶段 1 取用到的 + Sprint14 §3.4 新默认值 + Sprint15 质量/重叠）─
 
 const defaultDshHome = () => (process.env.DSH_HOME || `${process.env.HOME ?? ''}/.dsh`);
 
@@ -230,6 +290,24 @@ export const ConfigSchema = z.object({
 
   // 预算（P0-2 §9.1 L2）
   weekly_archive_budget: z.number().int().min(1).default(10),
+
+  // 质量评估（Sprint 15 P0-2 §7.2/§7.4）
+  quality_snapshot_max_weeks: z.number().int().min(4).max(52).default(8),
+  quality_trend_window_weeks: z.number().int().min(2).max(26).default(4),
+  quality_success_decline_pct: z.number().min(0).max(1).default(0.10),
+  quality_success_decline_streak: z.number().int().min(1).default(2),
+  quality_harm_declining_count: z.number().int().min(1).default(2),
+  quality_harm_review_delta: z.number().default(1.0),
+  quality_protect_success_rate: z.number().min(0).max(1).default(0.8),
+  quality_archive_after_days: z.number().int().min(1).default(60), // 规则 2 加速归档阈值
+
+  // 重叠检测（Sprint 15 P0-2 §7.3）
+  overlap_detection_enabled: z.boolean().default(true),
+  overlap_desc_threshold: z.number().min(0).max(1).default(0.85),
+  overlap_tools_threshold: z.number().min(0).max(1).default(0.7),
+  overlap_triggers_threshold: z.number().min(0).max(1).default(0.6),
+  overlap_min_dimensions: z.number().int().min(1).max(3).default(2),
+  overlap_max_pairs: z.number().int().min(1).default(50), // 单周报告/事件上限
 
   // 执行
   auto_curation_enabled: z.boolean().default(true),
@@ -259,4 +337,6 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'stale_after_days',
   'archive_after_days',
   'dry_run_default',
+  'overlap_detection_enabled',
+  'quality_archive_after_days',
 ]);

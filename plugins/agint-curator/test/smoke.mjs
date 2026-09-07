@@ -34,25 +34,26 @@ test('导出契约：name / inject / apply / ConfigSchema', () => {
   assert.deepEqual(c.protected_skills, ['plan', 'memory-discipline', 'causal-reasoning']);
 });
 
-test('状态枚举 = Sprint14 §3.3 四态（pinned 是状态不是标志位）', () => {
-  assert.deepEqual([...schema.SKILL_STATES], ['active', 'stale', 'archived', 'pinned']);
+test('状态枚举 = Sprint14 §3.3 四态 + Sprint15 §3.2 quality_declining', () => {
+  assert.deepEqual([...schema.SKILL_STATES], ['active', 'stale', 'archived', 'pinned', 'quality_declining']);
   assert.deepEqual([...schema.MANAGED_SOURCES], ['auto', 'manual']);
   assert.deepEqual([...schema.UNMANAGED_SOURCES], ['bundled', 'hub', 'external']);
 });
 
-test('LIMITS：skill_states 200 / curation_actions 500 / reports 52 / audit 1000', () => {
+test('LIMITS：skill_states 200 / curation_actions 500 / reports 52 / audit 1000 / overlap 200', () => {
   assert.equal(schema.LIMITS.SKILL_STATES, 200);
   assert.equal(schema.LIMITS.CURATION_ACTIONS, 500);
   assert.equal(schema.LIMITS.REPORTS, 52);
   assert.equal(schema.LIMITS.AUDIT_LOG, 1000);
+  assert.equal(schema.LIMITS.OVERLAP_CANDIDATES, 200);
 });
 
-test('storage spec：agint_curator 域 + 4 表 + version 1', () => {
+test('storage spec：agint_curator 域 + 5 表 + version 2（Sprint 15 增 overlap_candidates）', () => {
   assert.equal(storage.spec.name, 'agint_curator');
-  assert.equal(storage.spec.version, 1);
+  assert.equal(storage.spec.version, 2);
   const tables = Object.keys(storage.spec.tables ?? storage.spec.config?.tables ?? {});
   if (tables.length) {
-    for (const t of ['skill_states', 'curation_actions', 'reports', 'audit_log']) {
+    for (const t of ['skill_states', 'curation_actions', 'reports', 'audit_log', 'overlap_candidates']) {
       assert.ok(tables.includes(t), `缺表 ${t}`);
     }
   }

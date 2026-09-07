@@ -15,6 +15,7 @@ import {
   CurationActionSchema,
   CurationReportSchema,
   AuditLogSchema,
+  OverlapCandidateSchema,
   LIMITS,
 } from './schema.js';
 
@@ -42,18 +43,26 @@ const auditLogEntrySchema = AuditLogSchema.extend({
   kind: z.literal('audit_log'),
 });
 
+// Sprint 15：overlap_candidates 表（P0-2 §4.4）
+const overlapCandidateEntrySchema = OverlapCandidateSchema.extend({
+  id: z.string().min(1),
+  kind: z.literal('overlap_candidate'),
+  detectedAt: z.string(),
+});
+
 // ── domain spec ──────────────────────────────────────────────────────────
 
 const name = 'agint-curator';
 
 const spec = defineDomain({
   name: 'agint_curator',
-  version: 1,
+  version: 2, // Sprint 15：增 overlap_candidates 表 + skill_states.quality
   tables: {
     skill_states: { valueSchema: skillStateEntrySchema },
     curation_actions: { valueSchema: curationActionEntrySchema },
     reports: { valueSchema: reportEntrySchema },
     audit_log: { valueSchema: auditLogEntrySchema },
+    overlap_candidates: { valueSchema: overlapCandidateEntrySchema },
   },
 });
 
@@ -64,6 +73,7 @@ const TABLE_TO_LIMIT_KEY = {
   curation_actions: 'CURATION_ACTIONS',
   reports: 'REPORTS',
   audit_log: 'AUDIT_LOG',
+  overlap_candidates: 'OVERLAP_CANDIDATES',
 };
 
 function checkLimit(table, count) {
@@ -141,6 +151,16 @@ function packAudit(business) {
   });
 }
 
+/** Sprint 15：重叠候选对 → 记录（每周覆盖同对旧记录，避免堆积） */
+function packOverlapCandidate(business) {
+  return overlapCandidateEntrySchema.parse({
+    id: datedId('oc'),
+    kind: 'overlap_candidate',
+    detectedAt: nowIso(),
+    ...business,
+  });
+}
+
 export {
   name,
   spec,
@@ -153,8 +173,10 @@ export {
   packCurationAction,
   packReport,
   packAudit,
+  packOverlapCandidate,
   skillStateEntrySchema,
   curationActionEntrySchema,
   reportEntrySchema,
   auditLogEntrySchema,
+  overlapCandidateEntrySchema,
 };
