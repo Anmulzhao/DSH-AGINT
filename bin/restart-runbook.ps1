@@ -16,6 +16,15 @@
 #
 # Usage: powershell -ExecutionPolicy Bypass -File .\restart-runbook.ps1
 #
+# v0.6.7 (2026-09-08) fix:
+#   - precheck #1 (hash scan) no longer aborts the runbook under
+#     $ErrorActionPreference='Stop'. Scopes EAP to Continue for the prechecks
+#     and iterates with a foreach statement over a pre-collected array.
+#     PS 5.1 quirk (observed while mounting agint-memory-provider): with EAP=Stop,
+#     `Get-ChildItem -Path .. -Directory -Filter 'agint-*' -ErrorAction
+#     SilentlyContinue | ForEach-Object {<multi-line body>}` inside an if-block
+#     re-throws a spurious "Cannot bind argument to parameter 'Path' because it
+#     is null" at ForEach-Object, killing the runbook before any kill/start.
 # v0.6.6 (2026-09-07) updates:
 #   - precheck #1 (hash) now scans ALL agint-*/lib/tools.js in host + repo
 #     instead of hard-coded evolution-memory; reports drift without failing
@@ -49,7 +58,7 @@ function Ok([string]$msg) { Write-Log "[OK] $msg" }
 function Warn([string]$msg) { Write-Log "[WARN] $msg" }
 function Fail([string]$msg) { Write-Log "[FAIL] $msg"; exit 1 }
 
-Log '=== AGINT Restart Runbook (v0.6.6) ==='
+Log '=== AGINT Restart Runbook (v0.6.7) ==='
 Log "Script log: $scriptLog"
 
 # --- 0. Pre-checks -----------------------------------------------
@@ -61,13 +70,23 @@ Log '0a. Hash check: all agint-*/lib/tools.js (repo vs host)'
 $repoRoot = 'D:\DSH\project\DSH-AGINT\plugins'
 $hostRoot = 'C:\Users\Administrator\.dsh\profiles\web\plugins'
 $drift = @()
-if (Test-Path $repoRoot) {
-    Get-ChildItem -Path $repoRoot -Directory -Filter 'agint-*' -ErrorAction SilentlyContinue | ForEach-Object {
-        $name = $_.Name
-        $repoTool = Join-Path $_.FullName 'lib\tools.js'
+# v0.6.7: prechecks are non-fatal by design, so scope EAP back to Continue for
+# this scan. Under EAP=Stop, PowerShell 5.1 re-throws a spurious
+# "Cannot bind argument to parameter 'Path' because it is null" at
+# ForEach-Object for `Get-ChildItem -Path .. -Directory [-Filter ..] |
+# ForEach-Object {<multi-line body>}` inside an if-block, aborting the runbook
+# before any kill/start. foreach statement + pre-collected array avoids it.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $repoPlugins = @(Get-ChildItem -Path $repoRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'agint-*' })
+    foreach ($pluginDir in $repoPlugins) {
+        $name = $pluginDir.Name
+        $repoTool = Join-Path $pluginDir.FullName 'lib\tools.js'
         # Quality sub-plugins live one level deeper (plugins/agint-quality/agint-quality-eval/lib/tools.js)
         if (-not (Test-Path $repoTool)) {
-            $repoTool = Get-ChildItem -Path $_.FullName -Recurse -Filter 'tools.js' -ErrorAction SilentlyContinue |
+            $repoTool = Get-ChildItem -Path $pluginDir.FullName -Recurse -Filter 'tools.js' -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -like '*\lib\tools.js' } |
                 Select-Object -First 1 -ExpandProperty FullName
         }
@@ -77,16 +96,24 @@ if (Test-Path $repoRoot) {
                 Where-Object { $_.FullName -like '*\lib\tools.js' } |
                 Select-Object -First 1 -ExpandProperty FullName
         }
-        if ((Test-Path $repoTool) -and (Test-Path $hostTool)) {
+        # v0.6.7: an empty inner search leaves the variable $null, and both $null
+        # and '' are rejected by Test-Path with a TERMINATING binding error
+        # (surfaced once the EAP=Stop ForEach-Object quirk was fixed). Guard with
+        # IsNullOrEmpty so a plugin without lib/tools.js can't abort the scan.
+        if (-not [string]::IsNullOrEmpty($repoTool) -and (Test-Path $repoTool) -and
+            -not [string]::IsNullOrEmpty($hostTool) -and (Test-Path $hostTool)) {
             $hRepo = (Get-FileHash $repoTool -Algorithm SHA256).Hash
             $hHost = (Get-FileHash $hostTool -Algorithm SHA256).Hash
             if ($hRepo -ne $hHost) {
                 $drift += "$name repo=$($hRepo.Substring(0,12)) host=$($hHost.Substring(0,12))"
             }
-        } elseif (Test-Path $repoTool) {
+        } elseif (-not [string]::IsNullOrEmpty($repoTool) -and (Test-Path $repoTool)) {
             $drift += "$name repo-only (host missing)"
         }
     }
+}
+finally {
+    $ErrorActionPreference = $prevEap
 }
 if ($drift.Count -eq 0) {
     Ok "all tools.js hashes consistent (repo == host)"
