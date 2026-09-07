@@ -76,13 +76,15 @@ test('listFamilies(): returns all registered families', async () => {
   const { svc } = await makeService();
   const families = svc.listFamilies();
   // Sprint 10 起 4 族 → Sprint 11 +l0-isolation → Sprint 13 +self-model-isolation
+  // → Sprint 15 +skill-format/dangerous-command/secret-scan/prompt-hijack（技能向 4 族）
   for (const f of [
     'dependency-audit', 'storage-boundary', 'env-access', 'contract-reference',
     'l0-isolation', 'self-model-isolation',
+    'skill-format', 'dangerous-command', 'secret-scan', 'prompt-hijack',
   ]) {
     assert.ok(families.includes(f), `missing family ${f}`);
   }
-  assert.equal(families.length, 6, `unexpected family set: ${families.join(', ')}`);
+  assert.equal(families.length, 10, `unexpected family set: ${families.join(', ')}`);
 });
 
 test('checkPlugin(): clean plugin → { ok: true, findings: [] }', async () => {

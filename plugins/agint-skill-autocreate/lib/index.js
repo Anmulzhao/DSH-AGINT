@@ -1,22 +1,25 @@
 /**
- * agint-skill-autocreate — P0-1 技能自动创建机制（Sprint 14 检测层）。
+ * agint-skill-autocreate — P0-1 技能自动创建机制（Sprint 14 检测层 + Sprint 15 评估层）。
  *
  * Service：`agint.skillAutocreate`（设计稿 §5.1）。
  * 存储域：`agint_skill_autocreate`（5 表，设计稿 §4.1，与既有域互斥）。
  *
- * Sprint 14 范围（设计稿 §12.1）：
+ * Sprint 14（设计稿 §12.1）：
  *   - detect()：读 tool-stats JSONL → 聚合任务实例 → 模式检测 → 重复模式
  *     跨阈值后生成技能候选提案（纯模板，零 LLM）
- *   - 只检测 + 生成候选：不调 D-QAF、不发布（triggerEval/release/rollback
- *     显式抛 not implemented，绝不静默——Sprint 15/16 接力）
- *   - 事件：skill-autocreate.pattern-detected / candidate-created（软依赖
- *     event-bus，不可用时降级为仅写 audit_log）
+ *   - 只检测 + 生成候选：不调 D-QAF、不发布（Sprint 15 接力 triggerEval）
  *
- * Loader row（cordis.patch.yml 模板，本文件不挂载，由老板走 safe-update）：
- *   - insert:
- *       - id: agint-skill-autocreate
- *         name: ./plugins/agint-skill-autocreate/lib/index.js
- *         config: {}
+ * Sprint 15（P0-1 评估层，设计稿 §5/§6/§7，用户 2026-09-08 拍板 §12）：
+ *   - triggerEval()：A 路径分流评估（Phase 1 静态准入 → Phase 2 沙箱门 →
+ *     Phase 3 硬门+排序），复用 D-QAF 执行层但不复用综合分决策（§3 语义错配）
+ *   - T1 staging 物化 / T2 quality-static 四族 checker / T5 去重 / T6 事件+工具 /
+ *     T7 evolution 写 phase3-provisional / T8 回归验收（71.4 不死锁）
+ *   - release/rollback 仍显式抛 not implemented（Sprint 16 发布层接力）
+ *
+ * 事件：skill-autocreate.pattern-detected / candidate-created /
+ *   phase1-passed / phase1-rejected / phase2-passed / phase2-rejected /
+ *   phase3-passed / phase3-rejected（软依赖 event-bus，不可用时降级为仅写
+ *   audit_log）
  */
 
 import { readFile, stat } from 'node:fs/promises';
@@ -34,10 +37,15 @@ import {
   packCandidate,
   packAudit,
   nowIso,
+  datedId,
+  proposalEntrySchema,
 } from './storage.js';
 import { aggregateTasks, filterWindow } from './aggregator.js';
 import { detectPatterns } from './detector.js';
 import { buildProposal } from './proposer.js';
+import { evaluateCandidate } from './evaluator.js';
+import { isDuplicate } from './similarity.js';
+import { cleanupCandidate, cleanupStale, stagingRootFor } from './staging.js';
 
 const name = 'agint-skill-autocreate';
 // storageDomain 硬依赖；tools 在宿主不注册 model 工具（preset 平面经 lib/tools.js）
@@ -299,6 +307,9 @@ function apply(ctx, config) {
     const t = await table('candidates');
     let list = [...t.entries()].map(([, v]) => v);
     if (args.status) list = list.filter((p) => p.status === args.status);
+    // T6：按评估证据级别 / provisional 标记过滤（评估层增强）
+    if (args.evidenceLevel) list = list.filter((p) => p.evalResults?.phase3?.evidenceLevel === args.evidenceLevel);
+    if (args.provisional === true) list = list.filter((p) => p.evalResults?.phase3?.provisional === true);
     list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (args.limit) list = list.slice(0, args.limit);
     return list;
@@ -365,9 +376,213 @@ function apply(ctx, config) {
     return updated;
   }
 
-  // Sprint 15/16 接力——显式抛错，绝不静默（真实 > 讨好）
+  // ── T4/T5/T6/T7：评估层入口（设计稿 §5.2/§6）───────────────────────────
+  // 状态机：PENDING_EVAL → (Phase1) → PHASE1_PASS / REJECTED_STATIC
+  //                    → (Phase2) → PHASE2_PASS / REJECTED_SANDBOX（skipped 不标 pass）
+  //                    → (Phase3) → PHASE3_PASS / REJECTED_EVAL（可重试，超限转人工）
+  // A 路径决策：硬门（Phase1 无 blocker ∧ Phase2 未失败）+ rankingScore 排序，
+  // **不消费 D-QAF 综合分**（§3 语义错配，T8 防 71.4 死锁回归）。
+  async function triggerEval(input = {}) {
+    const id = input.id;
+    if (!id) throw new Error('triggerEval: id is required');
+    const actor = input.actor ?? 'system';
+    const c = effectiveConfig();
+    const dshHome = process.env.DSH_HOME || (process.env.HOME + '/.dsh');
+
+    const cd = await table('candidates');
+    const found = cd.entries().find(([key]) => key === id);
+    if (!found) throw new Error(`triggerEval: no candidate '${id}'`);
+    const candidate = found[1];
+
+    if (candidate.status !== 'PENDING_EVAL') {
+      throw new Error(`triggerEval: candidate '${id}' is ${candidate.status}（仅 PENDING_EVAL 可评估）`);
+    }
+
+    // T5：去重（与现有技能 list() 比对 ≥ dedup_similarity_threshold → 拒）
+    const skillsSvc = typeof ctx.get === 'function' ? ctx.get('skills') : null;
+    let existingNames = [];
+    if (skillsSvc && typeof skillsSvc.list === 'function') {
+      try {
+        const list = await skillsSvc.list();
+        existingNames = (Array.isArray(list) ? list : []).map((s) => s?.name ?? '').filter(Boolean);
+      } catch { /* skills service 不可用 → 跳过去重（不阻断） */ }
+    }
+    const dup = isDuplicate(candidate.skillDraft.name, existingNames, c.dedup_similarity_threshold);
+    if (dup.duplicate) {
+      const reason = `去重：与现有技能 "${dup.matchedName}" 相似度 ${dup.similarity.toFixed(2)} ≥ ${c.dedup_similarity_threshold}`;
+      const updated = { ...candidate, status: 'REJECTED_STATIC', rejectionReason: reason };
+      await cd.put(id, updated);
+      await publishEvent('skill-autocreate.phase1-rejected', {
+        candidateId: id, phase: 1, reason: 'dedup',
+        detail: reason, matchedName: dup.matchedName, similarity: dup.similarity,
+      });
+      await audit({
+        actor, action: 'eval_rejected_dedup', targetType: 'candidate', targetId: id,
+        details: { matchedName: dup.matchedName, similarity: dup.similarity, threshold: c.dedup_similarity_threshold },
+        reason,
+      });
+      return { candidateId: id, finalStatus: 'REJECTED_STATIC', rejected: 'dedup', similarity: dup.similarity, matchedName: dup.matchedName };
+    }
+
+    // T4：尝试上限（超限转人工，保持 PENDING_EVAL）/ 冷却期
+    const attempts = candidate.evalAttempts ?? 0;
+    if (attempts >= c.max_eval_attempts) {
+      await audit({
+        actor, action: 'eval_attempts_exhausted', targetType: 'candidate', targetId: id,
+        details: { attempts, max: c.max_eval_attempts },
+        reason: `转人工（保持 PENDING_EVAL，${attempts}/${c.max_eval_attempts}）`,
+      });
+      return { candidateId: id, skipped: true, reason: `eval_attempts_exhausted ${attempts}/${c.max_eval_attempts}，转人工` };
+    }
+    if (candidate.cooldownUntil && candidate.cooldownUntil > nowIso()) {
+      return { candidateId: id, skipped: true, reason: `cooldown until ${candidate.cooldownUntil}` };
+    }
+
+    // 关联 pattern（rankingScore 的模式频次来源）
+    const tp = await table('task_patterns');
+    const patEntry = tp.entries().find(([, v]) => v.id === candidate.sourcePatternId);
+    const pattern = patEntry ? patEntry[1] : {};
+
+    // 依赖服务（evolution 可缺失降级，其余必需）
+    const services = {
+      qualityStatic: typeof ctx.get === 'function' ? ctx.get('agint.qualityStatic') : null,
+      qualitySandbox: typeof ctx.get === 'function' ? ctx.get('agint.qualitySandbox') : null,
+      qualityEvaluator: typeof ctx.get === 'function' ? ctx.get('agint.qualityEvaluator') : null,
+      evolution: typeof ctx.get === 'function' ? ctx.get('agint.evolution') : null,
+    };
+    for (const key of ['qualityStatic', 'qualitySandbox', 'qualityEvaluator']) {
+      if (!services[key]) throw new Error(`triggerEval: 依赖服务 ${key} 未挂载`);
+    }
+
+    // T1+T3：物化 + 三阶段评估
+    const result = await evaluateCandidate({ candidate, pattern, services, cfg: c, dshHome });
+    const base = { ...candidate, evalResults: result.evalResults, evalAttempts: attempts + 1 };
+    const reasonFor = (f) => f?.message ?? '';
+
+    // ── 状态机持久化 + 事件（§6.1/§6.2）────────────────────────────────
+    if (result.finalStatus === 'REJECTED_STATIC') {
+      const updated = { ...base, status: 'REJECTED_STATIC', rejectionReason: reasonFor(result.blockers?.[0]) };
+      await cd.put(id, updated);
+      await publishEvent('skill-autocreate.phase1-rejected', {
+        candidateId: id, phase: 1, reason: 'static-blocker',
+        detail: updated.rejectionReason, families: result.evalResults.phase1?.families ?? [],
+      });
+      await audit({
+        actor, action: 'eval_rejected_static', targetType: 'candidate', targetId: id,
+        details: { families: result.evalResults.phase1?.families, findings: result.evalResults.phase1?.findings?.length },
+        reason: updated.rejectionReason,
+      });
+      return { candidateId: id, finalStatus: updated.status, rejectionReason: updated.rejectionReason, evalResults: result.evalResults };
+    }
+
+    if (result.evalResults.phase1?.status === 'pass') {
+      const mid1 = { ...base, status: 'PHASE1_PASS' };
+      await cd.put(id, mid1);
+      await publishEvent('skill-autocreate.phase1-passed', {
+        candidateId: id, families: result.evalResults.phase1?.families ?? [],
+      });
+    }
+
+    if (result.finalStatus === 'REJECTED_SANDBOX') {
+      const updated = { ...base, status: 'REJECTED_SANDBOX', rejectionReason: (result.evalResults.phase2?.detail ?? '').slice(0, 300) };
+      await cd.put(id, updated);
+      await publishEvent('skill-autocreate.phase2-rejected', {
+        candidateId: id, phase: 2, reason: 'sandbox-failed',
+        detail: updated.rejectionReason, exitCode: result.evalResults.phase2?.exitCode,
+      });
+      await audit({
+        actor, action: 'eval_rejected_sandbox', targetType: 'candidate', targetId: id,
+        details: { exitCode: result.evalResults.phase2?.exitCode }, reason: updated.rejectionReason,
+      });
+      return { candidateId: id, finalStatus: updated.status, rejectionReason: updated.rejectionReason, evalResults: result.evalResults };
+    }
+
+    if (result.evalResults.phase2?.status === 'pass') {
+      const mid2 = { ...base, status: 'PHASE2_PASS' };
+      await cd.put(id, mid2);
+      await publishEvent('skill-autocreate.phase2-passed', { candidateId: id });
+    }
+
+    if (result.finalStatus === 'REJECTED_EVAL') {
+      // 非终态：保持 PENDING_EVAL，attempts+1，进入冷却期（可重试，超限转人工）
+      const cooldownUntil = new Date(Date.now() + c.eval_cooldown_days * 24 * 60 * 60 * 1000).toISOString();
+      const updated = { ...base, status: 'PENDING_EVAL', cooldownUntil };
+      await cd.put(id, updated);
+      await publishEvent('skill-autocreate.phase3-rejected', {
+        candidateId: id, phase: 3, reason: 'evaluator-error',
+        detail: result.evalResults.phase3?.reason, attempts: updated.evalAttempts,
+      });
+      await audit({
+        actor, action: 'eval_failed_retry', targetType: 'candidate', targetId: id,
+        details: { attempts: updated.evalAttempts, max: c.max_eval_attempts, cooldownUntil },
+        reason: result.evalResults.phase3?.reason,
+      });
+      return {
+        candidateId: id, finalStatus: 'PENDING_EVAL', retryable: true,
+        attempts: updated.evalAttempts, cooldownUntil, reason: result.evalResults.phase3?.reason,
+      };
+    }
+
+    // ── PHASE3_PASS：终态 + proposals 表写入（§7.2）+ TTL 清理兜底 ──────
+    const finalStatus = 'PHASE3_PASS';
+    const updated = { ...base, status: finalStatus, rejectionReason: null };
+    await cd.put(id, updated);
+    await publishEvent('skill-autocreate.phase3-passed', {
+      candidateId: id,
+      rankingScore: result.rankingScore,
+      evidenceLevel: result.evidenceLevel,
+      provisional: result.provisional,
+      composite: result.evalResults.phase3?.composite,
+    });
+
+    const proposal = proposalEntrySchema.parse({
+      id: datedId('prop'),
+      kind: 'skill_proposal',
+      createdAt: nowIso(),
+      candidateId: id,
+      skillDraft: candidate.skillDraft,
+      evalResults: result.evalResults,
+      rankingScore: result.rankingScore,
+      evidenceLevel: result.evidenceLevel,
+      provisional: result.provisional,
+      status: 'QUEUED_FOR_RELEASE',
+      estimatedBenefit: candidate.estimatedBenefit,
+    });
+    const pt = await table('proposals');
+    const propWarn = checkLimit('proposals', pt.entries().length);
+    if (propWarn) console.warn(`[${name}] ${propWarn._warn}`);
+    await pt.put(proposal.id, proposal);
+
+    await audit({
+      actor, action: 'eval_passed_provisional', targetType: 'candidate', targetId: id,
+      details: {
+        rankingScore: result.rankingScore, evidenceLevel: result.evidenceLevel,
+        composite: result.evalResults.phase3?.composite, compositeTrusted: false,
+        proposalId: proposal.id,
+      },
+      reason: 'Phase3 硬门通过，provisional 待 Sprint 16 观察期',
+    });
+
+    // TTL 兜底清理（终态后 7 天；顺路执行，无独立 cron）
+    const cleaned = await cleanupStale({ dshHome, ttlDays: c.staging_ttl_days });
+    if (cleaned.removed.length) console.warn(`[${name}] staging TTL cleaned: ${cleaned.removed.join(', ')}`);
+
+    return {
+      candidateId: id,
+      finalStatus,
+      rankingScore: result.rankingScore,
+      evidenceLevel: result.evidenceLevel,
+      provisional: result.provisional,
+      composite: result.evalResults.phase3?.composite,
+      compositeTrusted: false,
+      proposalId: proposal.id,
+      evalResults: result.evalResults,
+    };
+  }
+
+  // Sprint 16 接力——显式抛错，绝不静默（真实 > 讨好）
   async function notImplemented(stage) {
-    throw new Error(`agint.skillAutocreate: ${stage} 未实现（Sprint 15/16 交付），当前为检测层骨架`);
+    throw new Error(`agint.skillAutocreate: ${stage} 未实现（Sprint 16 交付），当前为评估层骨架`);
   }
 
   async function stats() {
@@ -395,7 +610,7 @@ function apply(ctx, config) {
         require_human_approval: effectiveConfig().require_human_approval,
         aggregate_cron: effectiveConfig().aggregate_cron,
       },
-      sprint: '14-detection-layer',
+      sprint: '15-eval-layer',
     };
   }
 
@@ -432,7 +647,7 @@ function apply(ctx, config) {
     getCandidate,
     rejectCandidate,
     modifyCandidate,
-    triggerEval: (input = {}) => notImplemented('triggerEval'),
+    triggerEval,
     release: (input = {}) => notImplemented('release'),
     rollback: (input = {}) => notImplemented('rollback'),
     stats,

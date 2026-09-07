@@ -49,7 +49,9 @@ const releaseEntrySchema = z.object({
   rollbackReason: z.string().nullable().default(null),
 });
 
-// proposals 表 Sprint 15 写入（Phase 3 通过后转正），先收设计稿 §4.1 的最小形态
+// proposals 表 Sprint 15 写入（Phase 3 通过后转正）；§7.2 字段（rankingScore /
+// evidenceLevel / provisional / status='QUEUED_FOR_RELEASE'）Sprint 15 扩展落地，
+// 保持宽松（skillDraft / evalResults 为 record，防 schemaVersion 破环性变更）
 const proposalEntrySchema = z.object({
   id: z.string().min(1),
   kind: z.literal('skill_proposal'),
@@ -57,6 +59,12 @@ const proposalEntrySchema = z.object({
   candidateId: z.string(),
   skillDraft: z.record(z.any()),
   evalResults: z.record(z.any()).default({}),
+  // ── Sprint 15 §7.2（P0-1 输出 → P0-2 策展人排序消费）──
+  rankingScore: z.number().nullable().default(null),
+  evidenceLevel: z.enum(['E0', 'E1']).nullable().default(null),
+  provisional: z.boolean().default(true),
+  status: z.enum(['QUEUED_FOR_RELEASE']).default('QUEUED_FOR_RELEASE'),
+  estimatedBenefit: z.record(z.any()).nullable().default(null),
 });
 
 const auditLogEntrySchema = AuditLogSchema.extend({

@@ -128,6 +128,19 @@ export const ConfigSchema = z.object({
   phase2_min_success_improvement: z.number().default(0.1),
   phase3_min_harm_increment: z.number().default(0.5),
 
+  // ── Sprint 15 T1/T3/T4：评估层运行参数（设计稿 §7.3）────────────────────
+  // Q2 拍板：E0（无可执行物 / 沙箱证据不足）也放行，provisional 标记留给
+  // Sprint 16 观察期；phase3_evidence_gate 恒 'E0'（未来收紧改配置即可）
+  phase3_evidence_gate: z.enum(['E0', 'E1']).default('E0'),
+  // ABSTAIN / 未决后冷却天数（T4：冷却期内禁止重评）
+  eval_cooldown_days: z.number().int().min(0).default(7),
+  // 单候选最大评估尝试次数（超限转人工：保持 PENDING_EVAL + audit）
+  max_eval_attempts: z.number().int().min(1).default(3),
+  // staging 终态后 TTL 清理天数（设计稿 §5.1：7 天）
+  staging_ttl_days: z.number().int().min(1).default(7),
+  // Phase 2 沙箱超时（毫秒）
+  sandbox_timeout_ms: z.number().int().min(1000).default(30000),
+
   // 发布预算（Sprint 16 使用）
   weekly_deploy_budget: z.number().int().min(1).default(3),
   observation_period_days: z.number().int().min(1).default(7),

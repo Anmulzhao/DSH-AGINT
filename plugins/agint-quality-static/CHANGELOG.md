@@ -1,5 +1,18 @@
 # Changelog — agint-quality-static
 
+## 0.8.0 (2026-09-08) — Sprint 15 T2 技能向四族 checker
+
+### Added
+
+- **新增技能候选向 4 族 checker**（设计稿 §5.3，全部 blocker 级）：
+  - `skill-format`：SKILL.md frontmatter 必填（name/description/triggers/tools）+ name 命名规范 + body 非空（最小 YAML 子集解析，零外部依赖）
+  - `dangerous-command`：扫描 SKILL.md body 与 scripts/，命中块列表（默认 `terminal:rm -rf` / `terminal:dd`，可经 `profileOverrides.dangerousBlocklist` 覆盖）→ blocker
+  - `secret-scan`：sk-/AKIA/ghp_/xox*/AIza + 明文 api_key/token/password 赋值 → blocker；审计输出对密钥打码（只留前 4 + 后 4 + 长度，防二次泄露）
+  - `prompt-hijack`：system:/assistant: 角色劫持、`<|im_start|>` 控制 token、ignore previous instructions → blocker；反引号 `$(` shell 逃逸 → warn（Q3 探查结论：SDK staticCheck 需 PromptManifest 形态不适配，注入扫描内联落地）
+- **`SKILL_FAMILY_ENABLED` profile 组合**（static-profile.js）：插件向 6 族全关 + 技能向 4 族全开；新 4 族默认禁用（防既有插件无 SKILL.md 全员误报）
+- `loadProfile` 新增 `dangerousBlocklist` 覆盖通道
+- 注入测试 `test/skill-checkers.test.mjs`（6 case）与 `listFamilies` 断言 6→10 族
+
 ## 0.7.1 (2026-09-03) — Sprint 13 self-model-isolation + 存量测试收口
 
 ### Added

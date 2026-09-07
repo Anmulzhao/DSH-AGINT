@@ -88,6 +88,13 @@ export const FAMILY_SEVERITY = {
   'l0-isolation': 'blocker',
   // Sprint 13 v0.7.1 self-model-isolation：只读观察者写路径/存储域隔离（设计稿 §4.7）
   'self-model-isolation': 'blocker',
+  // ── Sprint 15 T2：技能候选向（skill-format / dangerous-command / secret-scan /
+  //    prompt-hijack；Q3 探查：sdk.staticCheck 需 PromptManifest 不适用 → 注入
+  //    扫描内联为 prompt-hijack）──
+  'skill-format': 'blocker',
+  'dangerous-command': 'blocker',
+  'secret-scan': 'blocker',
+  'prompt-hijack': 'blocker',
 };
 
 /**
@@ -103,7 +110,32 @@ export const FAMILY_ENABLED = {
   'l0-isolation': true,
   // Sprint 13 v0.7.1：self-model-isolation 默认开启（仅对 agint-self-model 生效，不误伤其他插件）。
   'self-model-isolation': true,
+  // ── Sprint 15 T2：技能候选向**默认禁用**（既有插件无 SKILL.md，开启即全员误报）。
+  //    仅 skill-candidate profile 组合（SKILL_FAMILY_ENABLED）启用。──
+  'skill-format': false,
+  'dangerous-command': false,
+  'secret-scan': false,
+  'prompt-hijack': false,
 };
+
+/**
+ * Sprint 15 T2：skill-candidate profile 的族组合（设计稿 §5.3）。
+ * 插件向 6 族全关（对技能草稿无意义），技能向 4 族全开。
+ * 调用方（agint-skill-autocreate evaluator）以 profileOverrides.familyEnabled
+ * 传入本表；新族默认禁用，既有插件 plugin-check 不受影响。
+ */
+export const SKILL_FAMILY_ENABLED = Object.freeze({
+  'dependency-audit': false,
+  'storage-boundary': false,
+  'env-access': false,
+  'contract-reference': false,
+  'l0-isolation': false,
+  'self-model-isolation': false,
+  'skill-format': true,
+  'dangerous-command': true,
+  'secret-scan': true,
+  'prompt-hijack': true,
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sprint 11 v0.6.5 l0-isolation 配置（设计稿 §4.4 ADR-11-4）
@@ -204,7 +236,10 @@ export function loadProfile(_profileName = DEFAULT_PROFILE, overrides = {}) {
     storageDomains: STORAGE_DOMAINS,
     envAllowlist: ENV_ALLOWLIST,
     familySeverity: FAMILY_SEVERITY,
-    familyEnabled: FAMILY_ENABLED,
+    familyEnabled: overrides.familyEnabled ?? FAMILY_ENABLED,
+    // ── Sprint 15 T2：技能候选向 checker 的块列表（skill-autocreate 传入，默认与
+    //    ConfigSchema.dangerous_tools_blocklist 同源）──
+    dangerousBlocklist: overrides.dangerousBlocklist ?? undefined,
     // ── Sprint 11 v0.6.5 l0-isolation 配置点 ──
     frozenSignatures: overrides.frozenSignatures ?? FROZEN_SIGNATURES,
     allowedSynthDomains: overrides.allowedSynthDomains ?? ALLOWED_SYNTH_DOMAINS,
