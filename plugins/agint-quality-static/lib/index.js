@@ -36,6 +36,10 @@ import { checkEnvAccess } from './checkers/env-access.js';
 import { checkContractReference } from './checkers/contract-reference.js';
 import { checkL0Isolation } from './checkers/l0-isolation.js';
 import { checkSelfModelIsolation } from './checkers/self-model-isolation.js';
+import { checkSkillFormat } from './checkers/skill-format.js';
+import { checkDangerousCommand } from './checkers/dangerous-command.js';
+import { checkSecretScan } from './checkers/secret-scan.js';
+import { checkPromptHijack } from './checkers/prompt-hijack.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +47,7 @@ const name = 'agint-quality-static';
 const inject = ['storageDomain'];
 const Config = undefined; // 不需要配置
 
-// 5 族检查注册表（Sprint 11 v0.6.5 新增 l0-isolation）
+// 检查族注册表（Sprint 11 v0.6.5 新增 l0-isolation；Sprint 15 新增 4 族技能向）
 const CHECKERS = {
   'dependency-audit': checkDependencyAudit,
   'storage-boundary': checkStorageBoundary,
@@ -51,6 +55,11 @@ const CHECKERS = {
   'contract-reference': checkContractReference,
   'l0-isolation': checkL0Isolation,
   'self-model-isolation': checkSelfModelIsolation,
+  // ── Sprint 15 T2：技能候选向（默认禁用，skill-candidate profile 组合才启用）──
+  'skill-format': checkSkillFormat,
+  'dangerous-command': checkDangerousCommand,
+  'secret-scan': checkSecretScan,
+  'prompt-hijack': checkPromptHijack,
 };
 
 function apply(ctx, config) {

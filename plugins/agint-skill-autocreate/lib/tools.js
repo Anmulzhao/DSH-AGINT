@@ -1,10 +1,11 @@
 /**
  * agint-skill-autocreate: preset-scoped tools（设计稿 §6）。
  *
- * Sprint 14 只交付 3 个 read-only 裸调工具（§12.1）：
- *   autocreate_list_patterns / autocreate_list_candidates / autocreate_stats
- * 写类工具（reject/modify/trigger_eval/release/rollback/pause/resume）随
- * Sprint 15/16 状态机与发布层一起上，届时按门禁要求配 ask 确认。
+ * Sprint 14 交付 3 个 read-only 裸调工具（§12.1）；Sprint 15 评估层新增：
+ *   autocreate_trigger_eval（write，需人工确认门禁——由 agint-rules 的
+ *     advisory/ask/deny 三档统一接管，本插件只负责注册）
+ *   autocreate_get_candidate（read，候选详情含评估结果）
+ *   autocreate_list_candidates 增强（evidenceLevel / provisional 过滤）
  *
  * Schema policy: K19 — additionalProperties: true；线上跑过再收紧。
  */
@@ -46,10 +47,12 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'autocreate_list_candidates',
     description:
-      '列出自动生成的技能候选提案（含 SKILL.md 草稿状态）。' +
-      '**Read-only**。当前为 Sprint 14 检测层：候选生成后停在 PENDING_EVAL，等 Sprint 15 接 D-QAF。',
+      '列出自动生成的技能候选提案（含评估结果）。' +
+      '**Read-only**。Sprint 15 起支持按 status / evidenceLevel / provisional 过滤。',
     parameters: {
-      status: { type: 'string', description: '按状态过滤（PENDING_EVAL / REJECTED_STATIC / ...）；省略=全部' },
+      status: { type: 'string', description: '按状态过滤（PENDING_EVAL / PHASE3_PASS / REJECTED_STATIC / ...）；省略=全部' },
+      evidenceLevel: { type: 'string', description: '按 Phase 3 证据级别过滤：E0（无可执行物）/ E1（沙箱实测）' },
+      provisional: { type: 'boolean', description: '只看 provisional 候选（Sprint 16 观察期前均为 true）' },
       limit: { type: 'number', description: '最多返回多少条（默认 20）' },
     },
     output: {
@@ -57,14 +60,74 @@ function apply(ctx) {
       render: (_a, v) => {
         const list = v.candidates ?? [];
         if (!list.length) return [{ type: 'text', text: 'autocreate_list_candidates: no candidates yet' }];
-        const lines = list.map((c) =>
-          `  ${c.id}  [${c.status}]  ${c.skillDraft?.name ?? '?'}（模板 ${c.skillDraft?.template ?? '?'}）`);
+        const lines = list.map((c) => {
+          const p3 = c.evalResults?.phase3;
+          const suffix = p3 ? `  r=${p3.rankingScore ?? '-'}  [${p3.evidenceLevel ?? '-'}]${p3.provisional ? ' provisional' : ''}` : '';
+          return `  ${c.id}  [${c.status}]  ${c.skillDraft?.name ?? '?'}（模板 ${c.skillDraft?.template ?? '?'}）${suffix}`;
+        });
         return [{ type: 'text', text: `autocreate_list_candidates: ${list.length} candidates\n${lines.join('\n')}` }];
       },
     },
     async execute(args) {
       const candidates = await svc.listCandidates({ ...args, limit: args.limit ?? 20 });
       return JSON.parse(JSON.stringify({ candidates }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_get_candidate',
+    description:
+      '读取单个技能候选详情（含 SKILL.md 草稿、预估收益、三阶段评估结果）。' +
+      '**Read-only**。',
+    parameters: {
+      id: { type: 'string', description: '候选 id（autocreate_list_candidates 返回的 id）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const c = v.candidate;
+        if (!c) return [{ type: 'text', text: `autocreate_get_candidate: no candidate '${v.id}'` }];
+        const p3 = c.evalResults?.phase3;
+        return [{
+          type: 'text',
+          text: [
+            `autocreate_get_candidate: ${c.id}`,
+            `  status=${c.status}  name=${c.skillDraft?.name ?? '?'}  template=${c.skillDraft?.template ?? '?'}`,
+            `  estimatedBenefit=${JSON.stringify(c.estimatedBenefit ?? {})}`,
+            p3 ? `  phase3: composite=${p3.composite} trusted=${p3.compositeTrusted} ranking=${p3.rankingScore} evidence=${p3.evidenceLevel} provisional=${p3.provisional}` : '  phase3: (未评估)',
+            `  rejectionReason=${c.rejectionReason ?? '-'}`,
+          ].join('\n'),
+        }];
+      },
+    },
+    async execute(args) {
+      const candidate = await svc.getCandidate(args.id);
+      return JSON.parse(JSON.stringify({ id: args.id, candidate }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_trigger_eval',
+    description:
+      '触发单个候选的评估（Phase 1 静态准入 → Phase 2 沙箱门 → Phase 3 硬门+排序）。' +
+      '**WRITE**：会改变候选状态并可能向 evolution-log 写入记录，执行需人工确认（agint-rules 门禁）。' +
+      '仅 PENDING_EVAL 候选可评估；重试受 max_eval_attempts / 冷却期约束。',
+    parameters: {
+      id: { type: 'string', description: '候选 id（PENDING_EVAL 状态）' },
+      actor: { type: 'string', description: '触发人标识（默认 system）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        if (v.skipped) return [{ type: 'text', text: `autocreate_trigger_eval: skipped — ${v.reason}` }];
+        const line = `autocreate_trigger_eval: ${v.candidateId} → ${v.finalStatus}`;
+        const extra = v.rankingScore != null ? `  ranking=${v.rankingScore}  evidence=${v.evidenceLevel}${v.provisional ? ' provisional' : ''}  composite=${v.composite} (trusted=false)` : '';
+        return [{ type: 'text', text: `${line}${extra}${v.rejectionReason ? `  reason=${v.rejectionReason}` : ''}` }];
+      },
+    },
+    async execute(args) {
+      const out = await svc.triggerEval(args);
+      return JSON.parse(JSON.stringify(out));
     },
   }));
 
