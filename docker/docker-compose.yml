@@ -1,0 +1,58 @@
+# 这是日常交互唯一要碰的文件。其他文件（Dockerfile / entrypoint.sh）是它的依赖。
+#
+# 起来：    docker compose -f docker/docker-compose.yml up -d
+# 看日志：  docker compose -f docker/docker-compose.yml logs -f
+# 停掉：    docker compose -f docker/docker-compose.yml down
+#
+# 环境参数在仓库根 .env（全部可选，缺省走默认）：
+#   DATA_DISK=/volume1/agint-system         ← NAS 数据盘，所有 dsh 状态住这里
+#   WORKSPACE_DISK=...                      ← 工作盘（agent 项目区，可不挂）
+#   DSH_VERSION=...                         ← dsh 版本（缺省 0.1.2-alpha.5）
+
+services:
+  dsh-web:
+    # 当前目录有 Dockerfile，compose 默认就会拉它来 build
+    build: .
+    image: agint-dsh-web:v0.7.1
+    container_name: agint-dsh-web
+    restart: unless-stopped
+
+    # ── 网络：host 模式（老板 2026-09-06 拍板）────────────────────────────
+    # 容器共享宿主机网络栈，dsh web 监听 0.0.0.0:3080 即等同于 NAS 的
+    # 0.0.0.0:3080。优势：
+    #   - 不需要 ports: 映射（节省一层 NAT）
+    #   - 不需要处理浏览器 host header 跨域
+    # 代价：
+    #   - 端口直接和宿主机其他进程竞争 —— NAS 上 3080 别被别的服务占用
+    #   - 容器 hostname 同 NAS，从 NAS 自身浏览器走 localhost 即可
+    network_mode: host
+
+    # ── 特权：系统级 AI 应用 ──────────────────────────────────────────
+    # 能力不等于可见性：agent 能看到 NAS 的哪些目录，仍由 volumes 决定。
+    privileged: true
+
+    # dsh 会话工作目录 = dsh web 进程的启动目录（dsh 源码里叫 invocation cwd）
+    working_dir: /workspace
+
+    environment:
+      # dsh 与 AGINT 持久层全部指向 /persist
+      DSH_VERSION:     ${DSH_VERSION:-0.1.2-alpha.5}
+      DSH_HOME:        /persist/dsh-home
+      AGINT_HOME:      /persist/agint-data
+      NPM_CONFIG_PREFIX: /persist/dsh-install
+      DSH_HOST:        0.0.0.0
+      DSH_PORT:        "3080"
+      TZ:              Asia/Shanghai
+
+    volumes:
+      # 数据盘：dsh 装这里、profile 住这里、AGINT 记忆长这里
+      - "${DATA_DISK:-/volume1/agint-system}:/persist"
+      # 工作盘：agent 默认干活的地方，可不挂
+      - "${WORKSPACE_DISK:-/volume1/agint-workspace}:/workspace"
+
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /persist/dsh-home/sentinel.lease"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
