@@ -161,6 +161,47 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'require_human_approval',
 ]);
 
+// ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────
+//
+// Sprint14 §2.1 D2：curriculum 的挑战执行是「同一类任务反复练」，天然命中
+// 本插件的「工具序列全等 + 累计 ≥3 次」判定。不过滤的话 Sprint 14 结束后
+// 会开始批量产出「做挑战」的垃圾技能候选。
+//
+// 判定优先 sessionId 前缀（tool-stats 记录**不支持**自定义 source 字段，
+// 已确认）；若未来 tool-stats 增补 source 字段，sourceTags 分支自动生效。
+//
+// 冗余是有意的：AGINT 存储域互斥，不建共享模块；一致性由
+// plugins/agint-curator/test/const-consistency.test.mjs 自动扫描断言。
+// 改动任一副本 → 必须同步三处 + bump DATA_SOURCE_BLACKLIST_VERSION。
+
+export const EXCLUDED_DATA_SOURCES = Object.freeze({
+  sessionIdPrefixes: Object.freeze(['curriculum-']),
+  sourceTags: Object.freeze(['curriculum']),
+});
+
+export const DATA_SOURCE_BLACKLIST_VERSION = '2026-09-14.v1';
+
+/**
+ * 判定一条 tool-stats 记录是否来自被排除的数据源。
+ * 向后兼容：无 sessionId / 无 source 字段的旧记录 → false（照常处理）。
+ */
+export function isExcludedRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  const sid = record.sessionId;
+  if (typeof sid === 'string' && sid) {
+    for (const p of EXCLUDED_DATA_SOURCES.sessionIdPrefixes) {
+      if (sid.startsWith(p)) return true;
+    }
+  }
+  const src = record.source;
+  if (typeof src === 'string' && src) {
+    for (const t of EXCLUDED_DATA_SOURCES.sourceTags) {
+      if (src === t) return true;
+    }
+  }
+  return false;
+}
+
 // ── 自我评估禁止（设计稿 §9.4）───────────────────────────────────────────
 
 const SELF_REF_RE = /autocreate|auto-create|自动创建|skill-autocreate/i;

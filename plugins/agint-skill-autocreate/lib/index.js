@@ -148,7 +148,7 @@ function apply(ctx, config) {
 
     const windowHours = args.windowHours ?? c.aggregate_window_hours;
     const records = filterWindow(await readToolStatsRecords(), windowHours);
-    const { tasks, unmatched } = aggregateTasks(records);
+    const { tasks, unmatched, excluded } = aggregateTasks(records);
 
     const tp = await table('task_patterns');
     const existing = [...tp.entries()].map(([, v]) => v);
@@ -274,6 +274,7 @@ function apply(ctx, config) {
       records: records.length,
       tasks: tasks.length,
       unmatched,
+      excluded,   // D2：被排除的 curriculum 挑战调用数
       patternsUpserted: upserted.length,
       newRepeatPatterns: newRepeat.length,
       candidatesCreated,

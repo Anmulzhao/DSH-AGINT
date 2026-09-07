@@ -3,8 +3,9 @@
  * it may call. Action failures are caught and logged; they never crash the
  * scheduler.
  *
- * Jobs (as of P4):
+ * Jobs (as of P4 / Sprint 14):
  *   memory-decay    Mon 02:30  L1-L4 遗忘扫描
+ *   curator-weekly  Sun 02:00  技能策展（陈旧检测 + 归档，早于周复盘）
  *   wiki-lint       Sun 03:00  Wiki 健康检查（断链/矛盾/孤岛）
  *   metrics-collect daily 04:00 进化指标采集（时间序列）
  *   evolve-review   Sun 03:45  周复盘报告（数据快照 + 自动发现）
@@ -190,6 +191,34 @@ export const defaultJobs = [
         patternsUpserted: result.patternsUpserted,
         newRepeatPatterns: result.newRepeatPatterns,
         candidatesCreated: result.candidatesCreated,
+      };
+    },
+  },
+  {
+    // P0-2 技能策展（Sprint 14 阶段 1）：每周策展。
+    // - weekly Sun 02:00 —— 刻意排在 evolve-review(03:45) **之前**，让周复盘
+    //   能吃到本周的策展报告（P0-2 §2.2 / §8.1 run_before_evolve_review）。
+    //   注：Sprint14 设计稿 §3.5 写「周日 05:00」与其自述的「在 evolve-review
+    //   之前」互相矛盾（05:00 晚于 03:45），此处按后者取 02:00。
+    // - 插件未挂载时 soft-skip（不报错），便于先挂 cron 再挂 curator。
+    // - 归档是破坏性操作：首次挂载建议先跑 curator_dry_run 看一遍。
+    id: 'curator-weekly',
+    name: '技能策展',
+    schedule: '0 2 * * 0',
+    description: '扫描技能 → 聚合使用 → 状态转换 → 归档陈旧技能 → 写策展报告（weekly）',
+    action: async (services) => {
+      const curator = services['agint.curator'];
+      if (!curator) return { skipped: true, reason: 'agint.curator not mounted' };
+      const result = await curator.run({ trigger: 'cron:curator-weekly' });
+      if (result.skipped) return { skipped: true, reason: result.reason };
+      return {
+        week: result.week,
+        dryRun: result.dryRun,
+        skillsScanned: result.skillsScanned,
+        inference: result.inference,
+        staled: result.applied?.staled?.length ?? 0,
+        archived: result.applied?.archived?.length ?? 0,
+        reactivated: result.applied?.reactivated?.length ?? 0,
       };
     },
   },

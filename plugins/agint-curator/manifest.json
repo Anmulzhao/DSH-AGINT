@@ -1,0 +1,76 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-curator",
+  "version": "0.1.0",
+  "description": "P0-2 技能策展人 v0.1.0（Sprint 14 阶段 1 基础策展）：每周扫描 preset skills 目录 + 聚合 agint_tool_stats.jsonl 的技能级使用 → 纯函数状态机（30 天 stale / 90 天 archive / 7 天内复用 reactivate）→ 归档到 skills/.archive/（可恢复）。四类保护：pinned（状态而非标志位）/ protected 白名单 + 策展自保护 / cron-referenced（可 stale 不可 archive）/ 新技能 14 天保护期。独占 agint_curator 存储域（4 表，skill_states 200 / curation_actions 500 / reports 52 / audit 1000；超限 warn 不 prune，仅 audit_log 滚动）。D3：sessionId 前缀 curriculum- 的调用不刷新 lastUsedAt。不做重叠检测/质量评估/consolidate/prune（Sprint 15/16，方法显式抛未实现）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": ["storageDomain"],
+      "optionalInject": ["agint.eventBus", "agint.cron"],
+      "provides": ["agint.curator"],
+      "events": [
+        "curator.skill-staled",
+        "curator.skill-archived",
+        "curator.skill-reactivated",
+        "curator.skill-pinned",
+        "curator.run-completed"
+      ],
+      "tools": [
+        "curator_list",
+        "curator_status",
+        "curator_stats",
+        "curator_get_skill",
+        "curator_pin",
+        "curator_unpin",
+        "curator_archive",
+        "curator_unarchive",
+        "curator_run_now",
+        "curator_dry_run"
+      ]
+    },
+    "storage": {
+      "domains": ["agint_curator"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-tool-stats": ">=0.1.0",
+      "agint-event-bus": ">=0.7.0",
+      "agint-cron": ">=0.7.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 26,
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": ["read:storages", "write:storages", "read:presets", "write:presets"],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --test \"test/*.test.mjs\" test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.curator": "技能策展：run/dryRun（同一条计算路径）/ listSkills / getSkill / pin / unpin / archive / unarchive / stats / getReport / pause / resume / config；listOverlaps / listDeclining / consolidate / prune 由 Sprint 15/16 接力（当前显式抛未实现）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
