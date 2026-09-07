@@ -2,14 +2,20 @@
  * agint-curator: state-engine — 纯函数状态转换引擎（无 LLM，无 I/O）。
  *
  * Sprint14 §3.3：state-engine 必须是纯函数（输入 → 输出），理由是可测性——
- * Sprint 15 要往这里叠质量加速规则，纯函数才好加分支。
+ * Sprint 15 往这里叠质量加速规则，纯函数才好加分支。
  *
- * 状态机：
+ * 状态机（Sprint14 §3.3 + Sprint15 §3.2 质量扩展）：
  *   active ──30天未用──▶ stale ──90天未用──▶ archived
  *     ▲                   │                    │
  *     └──7天内有使用────────┘                    └──人工 unarchive──▶ active
  *     │
  *     └──人工 pin──▶ pinned（不参与任何自动转换）
+ *   Sprint 15 质量路径（P0-2 §7.2 规则 1–3 + §3.2）：
+ *     active ──质量下降──▶ quality_declining ──7天内有使用且质量恢复──▶ active
+ *     active ──规则1 质量加速──▶ stale
+ *     stale  ──规则2 质量加速(60天)──▶ archived
+ *     stale  ──规则3 质量保护──▶ 不归档 + review 标记
+ *     quality_declining ──陈旧达阈值──▶ archived
  *
  * 保护机制（P0-2 §9.1 / Sprint14 §3.4）—— 归档是破坏性操作，宁可漏不可错：
  *   1. pinned          ：人工固定，跳过所有自动转换
@@ -19,6 +25,7 @@
  */
 
 import { MANAGED_SOURCES } from './schema.js';
+import { qualityRules } from './quality.js';
 
 const DAY_MS = 86_400_000;
 
@@ -26,18 +33,19 @@ const DAY_MS = 86_400_000;
  * 单个技能的下一状态决策。
  *
  * @param {Object} input
- * @param {Object} input.skill   skill_states 记录（含 usage、createdAt）
+ * @param {Object} input.skill   skill_states 记录（含 usage、quality、createdAt）
  * @param {Object} input.config  生效配置
  * @param {number} input.nowMs   当前时间（毫秒）
- * @returns {{ from:string, to:string, action:'keep'|'stale'|'archive'|'reactivate',
- *             reason:string, daysSinceUse:number, usedForDecision:string }}
+ * @returns {{ from:string, to:string, action:'keep'|'stale'|'archive'|'reactivate'|'declining',
+ *             reason:string, daysSinceUse:number, usedForDecision:string, reviewSuggested?:boolean }}
  */
 export function evaluateSkill({ skill, config, nowMs }) {
   const from = skill.state ?? 'active';
-  const keep = (reason) => ({
+  const keep = (reason, extra = {}) => ({
     from, to: from, action: 'keep', reason,
     daysSinceUse: daysSinceUseOf(skill, nowMs).days,
     usedForDecision: daysSinceUseOf(skill, nowMs).basis,
+    ...extra,
   });
 
   // ── 保护 1：pinned ──────────────────────────────────────────────────
@@ -66,6 +74,87 @@ export function evaluateSkill({ skill, config, nowMs }) {
       reason: `新技能保护期：创建 ${Math.floor(ageDays)} 天 < ${protectionDays} 天且从未使用`,
       daysSinceUse: days, usedForDecision: basis,
     };
+  }
+
+  // ── Sprint 15：质量加速规则（P0-2 §7.2，纯判定，见 quality.js）────────
+  const qr = qualityRules(skill, config);
+  if (qr.reviewSuggested) {
+    return {
+      ...keep(`质量保护（规则3）：${qr.reason}`, { reviewSuggested: true }),
+    };
+  }
+
+  // 规则 1：active + HARM 连续2次<0 + 成功率<0.5 → 质量加速 stale
+  if (qr.accelerateStale) {
+    return {
+      from, to: 'stale', action: 'stale',
+      reason: qr.reason,
+      daysSinceUse: days, usedForDecision: basis,
+    };
+  }
+
+  // 规则 2：stale + HARM 持续下降 → 60 天未用即 archive（quality_archive_after_days）
+  if (qr.accelerateArchive) {
+    if (skill.cronReferenced === true && config.cron_referenced_protection !== false) {
+      return {
+        from, to: from, action: 'keep',
+        reason: `cron-referenced：只标记不归档（${qr.reason}）`,
+        daysSinceUse: days, usedForDecision: basis,
+      };
+    }
+    if (days >= (config.quality_archive_after_days ?? 60)) {
+      return {
+        from, to: 'archived', action: 'archive',
+        reason: `${qr.reason}（${Math.floor(days)} 天未用 ≥ quality_archive_after_days(${config.quality_archive_after_days ?? 60})）`,
+        daysSinceUse: days, usedForDecision: basis,
+      };
+    }
+    return keep(`质量加速 archive 未达阈值：${Math.floor(days)} 天 < quality_archive_after_days(${config.quality_archive_after_days ?? 60})（${qr.reason}）`);
+  }
+
+  // ── Sprint 15：质量下降标记（P0-2 §3.2）──────────────────────────────
+  // active/stale + 质量下降（成功率连续 2 周降>10% 或 HARM 连续 2 次<0）
+  // → quality_declining（规则 1/2/3 已优先处理，这里只处理纯质量下降标记）
+  const qualityDeclining = skill.quality?.qualityState === 'declining';
+  if ((from === 'active' || from === 'stale') && qualityDeclining) {
+    return {
+      from, to: 'quality_declining', action: 'declining',
+      reason: `质量下降：${(skill.quality?.successTrend?.reason ?? '')}${skill.quality?.harmTrend?.reason ? '；' + skill.quality.harmTrend.reason : ''}`.replace(/^质量下降：/,'质量下降：') || '质量下降（成功率/HARM 趋势）',
+      daysSinceUse: days, usedForDecision: basis,
+    };
+  }
+
+  // ── quality_declining 状态处理 ───────────────────────────────────────
+  if (from === 'quality_declining') {
+    // 最近 7 天有使用 + 质量恢复 → 回到 active
+    if (days < (config.reactivate_within_days ?? 7) && qualityDeclining === false) {
+      return {
+        from, to: 'active', action: 'reactivate',
+        reason: `质量恢复且最近 ${Math.floor(days)} 天内有使用（< ${config.reactivate_within_days ?? 7} 天）`,
+        daysSinceUse: days, usedForDecision: basis,
+      };
+    }
+    // 最近 7 天有使用但质量仍下降 → 保持标记（继续观察）
+    if (days < (config.reactivate_within_days ?? 7)) {
+      return keep(`质量仍下降，观察中（最近 ${Math.floor(days)} 天有使用）`);
+    }
+    // 陈旧达阈值 → 归档（90 天，或质量加速 60 天）
+    const threshold = qualityDeclining ? (config.quality_archive_after_days ?? 60) : (config.archive_after_days ?? 90);
+    if (days >= threshold) {
+      if (skill.cronReferenced === true && config.cron_referenced_protection !== false) {
+        return {
+          from, to: from, action: 'keep',
+          reason: `cron-referenced：只标记不归档（质量下降且 ${Math.floor(days)} 天未用）`,
+          daysSinceUse: days, usedForDecision: basis,
+        };
+      }
+      return {
+        from, to: 'archived', action: 'archive',
+        reason: `质量下降且 ${Math.floor(days)} 天未使用 ≥ ${threshold} 天`,
+        daysSinceUse: days, usedForDecision: basis,
+      };
+    }
+    return keep(`质量下降：${Math.floor(days)} 天未用 < ${threshold} 天，继续观察`);
   }
 
   // ── 转换 1：stale + 最近 7 天有使用 → reactivate ──────────────────────
@@ -114,7 +203,7 @@ export function evaluateSkill({ skill, config, nowMs }) {
 
 /**
  * 批量评估。归档候选按「最久未用优先」排序（预算受限时先处理最陈旧的）。
- * @returns {{ decisions: Array, toStale: Array, toArchive: Array, toReactivate: Array, kept: Array }}
+ * @returns {{ decisions: Array, toStale: Array, toArchive: Array, toReactivate: Array, toDeclining: Array, kept: Array }}
  */
 export function evaluateAll(skills, { config, nowMs }) {
   const decisions = (skills ?? []).map((s) => ({ skillName: s.skillName, ...evaluateSkill({ skill: s, config, nowMs }) }));
@@ -126,6 +215,7 @@ export function evaluateAll(skills, { config, nowMs }) {
     toStale,
     toArchive,
     toReactivate: pick('reactivate'),
+    toDeclining: pick('declining'),
     kept: pick('keep'),
   };
 }

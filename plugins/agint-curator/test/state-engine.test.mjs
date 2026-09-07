@@ -174,3 +174,140 @@ test('evaluateAll：归档候选按最久未用优先（预算受限时先处理
   assert.deepEqual(r.toStale.map((x) => x.skillName), ['c']);
   assert.equal(r.decisions.length, 3);
 });
+
+// ── Sprint 15 质量加速规则（P0-2 §7.2）───────────────────────────────────
+
+function qSkill(over = {}) {
+  return skill({
+    usage: { useCount: 10, lastUsedAt: daysAgo(2) },
+    quality: {
+      qualityState: 'declining',
+      history: [
+        { week: 'W1', successRate: 0.9, useCount: 10 },
+        { week: 'W2', successRate: 0.8, useCount: 10 },
+        { week: 'W3', successRate: 0.7, useCount: 10 },
+      ],
+      harmTrend: { state: 'stable', lastDelta: 0.1, hasData: false },
+      successTrend: { state: 'declining', reason: '成功率连续下降' },
+      reviewSuggested: false,
+    },
+    ...over,
+  });
+}
+
+test('规则1 质量加速 stale：active + HARM 连续 2 次<0 + 成功率<0.5 → 直接 stale（不等 30 天）', () => {
+  const d = evaluateSkill({
+    skill: qSkill({
+      state: 'active',
+      quality: { ...qSkill().quality, harmTrend: { state: 'declining', lastDelta: -0.3, hasData: true }, successTrend: { state: 'stable', reason: '' } },
+      usage: { useCount: 10, lastUsedAt: daysAgo(2), successRate: 0.4 },
+    }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'stale');
+  assert.equal(d.to, 'stale');
+  assert.match(d.reason, /规则1/);
+});
+
+test('质量下降标记：active + 成功率连续 2 周降>10% → quality_declining', () => {
+  const d = evaluateSkill({ skill: qSkill({ state: 'active' }), config: CFG, nowMs: NOW });
+  assert.equal(d.action, 'declining');
+  assert.equal(d.to, 'quality_declining');
+  assert.match(d.reason, /成功率/);
+});
+
+test('质量下降标记：stale + 质量下降 → quality_declining（合并观察）', () => {
+  const d = evaluateSkill({ skill: qSkill({ state: 'stale' }), config: CFG, nowMs: NOW });
+  assert.equal(d.action, 'declining');
+  assert.equal(d.to, 'quality_declining');
+});
+
+test('规则2 质量加速 archive：stale + HARM 持续下降 + 60 天未用 → 归档（非 90 天）', () => {
+  const d = evaluateSkill({
+    skill: qSkill({
+      state: 'stale',
+      usage: { useCount: 10, lastUsedAt: daysAgo(70), successRate: 0.6 },
+      quality: { ...qSkill().quality, qualityState: 'stable', harmTrend: { state: 'declining', lastDelta: -0.2, hasData: true }, successTrend: { state: 'stable', reason: '' } },
+    }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'archive');
+  assert.equal(d.to, 'archived');
+  assert.match(d.reason, /quality_archive_after_days/);
+});
+
+test('规则2 未达阈值：stale + HARM 下降但 30 天未用 → keep（60 天门槛内）', () => {
+  const d = evaluateSkill({
+    skill: qSkill({
+      state: 'stale',
+      usage: { useCount: 10, lastUsedAt: daysAgo(30), successRate: 0.6 },
+      quality: { ...qSkill().quality, qualityState: 'stable', harmTrend: { state: 'declining', lastDelta: -0.2, hasData: true }, successTrend: { state: 'stable', reason: '' } },
+    }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'keep');
+  assert.match(d.reason, /质量加速 archive 未达阈值/);
+});
+
+test('规则3 质量保护：stale + HARM>1.0 + 成功率>0.8 → 不归档 + reviewSuggested', () => {
+  const d = evaluateSkill({
+    skill: qSkill({
+      state: 'stale',
+      usage: { useCount: 10, lastUsedAt: daysAgo(150), successRate: 0.9 },
+      quality: { ...qSkill().quality, qualityState: 'stable', harmTrend: { state: 'stable', lastDelta: 1.5, hasData: true }, successTrend: { state: 'stable', reason: '' } },
+    }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'keep');
+  assert.equal(d.to, 'stale');
+  assert.equal(d.reviewSuggested, true);
+  assert.match(d.reason, /规则3/);
+});
+
+test('quality_declining + 最近 7 天有使用 + 质量恢复 → active', () => {
+  const d = evaluateSkill({
+    skill: qSkill({
+      state: 'quality_declining',
+      usage: { useCount: 10, lastUsedAt: daysAgo(3), successRate: 0.9 },
+      quality: { ...qSkill().quality, qualityState: 'stable' },
+    }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'reactivate');
+  assert.equal(d.to, 'active');
+  assert.match(d.reason, /质量恢复/);
+});
+
+test('quality_declining + 最近 7 天有使用但质量仍下降 → keep 观察', () => {
+  const d = evaluateSkill({ skill: qSkill({ state: 'quality_declining', usage: { useCount: 10, lastUsedAt: daysAgo(3) } }), config: CFG, nowMs: NOW });
+  assert.equal(d.action, 'keep');
+  assert.match(d.reason, /质量仍下降/);
+});
+
+test('quality_declining + 陈旧达质量加速阈值 → archive', () => {
+  const d = evaluateSkill({
+    skill: qSkill({ state: 'quality_declining', usage: { useCount: 10, lastUsedAt: daysAgo(70) } }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'archive');
+  assert.equal(d.to, 'archived');
+  assert.match(d.reason, /质量下降且 70 天/);
+});
+
+test('quality_declining + cron-referenced → 只标记不归档', () => {
+  const d = evaluateSkill({
+    skill: qSkill({ state: 'quality_declining', cronReferenced: true, usage: { useCount: 10, lastUsedAt: daysAgo(200) } }),
+    config: CFG, nowMs: NOW,
+  });
+  assert.equal(d.action, 'keep');
+  assert.match(d.reason, /cron-referenced/);
+});
+
+test('evaluateAll：toDeclining 收集质量下降技能', () => {
+  const skills = [
+    qSkill({ skillName: 'declining-a', state: 'active' }),
+    skill({ skillName: 'normal', usage: { useCount: 1, lastUsedAt: daysAgo(1) } }),
+  ];
+  const r = evaluateAll(skills, { config: CFG, nowMs: NOW });
+  assert.deepEqual(r.toDeclining.map((x) => x.skillName), ['declining-a']);
+});

@@ -1,8 +1,8 @@
 # agint-curator
 
-P0-2 技能策展人，**Sprint 14 阶段 1：基础策展**。
+P0-2 技能策展人，**v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2 智能策展）**。
 
-技能一旦创建就静态躺在 preset 里，没人问「还在用吗」。本插件把「技能维护」从无人管变成「系统自动策展 + 人可干预」：每周扫描技能、聚合使用数据、把陈旧技能标 stale、把长期不用的归档到 `.archive/`（可恢复）。
+技能一旦创建就静态躺在 preset 里，没人问「还在用吗」。本插件把「技能维护」从无人管变成「系统自动策展 + 人可干预」：每周扫描技能、聚合使用数据、把陈旧技能标 stale、把长期不用的归档到 `.archive/`（可恢复）；Sprint 15 起叠加**重叠检测**（三维度 ≥2 维达标 → 候选对 + 推荐动作）、**质量评估**（成功率周快照趋势 + 跨域 D-QAF 评估历史，缺失降级不编造）与**质量加速规则**（质量差的更快归档，高质量储备技能被保护）。
 
 ## 状态机（纯函数，无 LLM）
 
@@ -12,9 +12,15 @@ active ──30天未用──▶ stale ──90天未用──▶ archived
   └──7天内有使用────────┘                    └──人工 unarchive──▶ active
   │
   └──人工 pin──▶ pinned（不参与任何自动转换）
+  Sprint 15 质量路径：
+  active ──质量下降──▶ quality_declining ──7天内有使用且质量恢复──▶ active
+  active ──规则1 质量加速──▶ stale
+  stale  ──规则2 质量加速(60天)──▶ archived
+  stale  ──规则3 质量保护──▶ 不归档 + review 标记
+  quality_declining ──陈旧达阈值──▶ archived
 ```
 
-`lib/state-engine.js` 是**纯函数**（输入技能状态 + 使用统计 + 配置 + 当前时间 → 输出目标状态 + 理由）。Sprint 15 要往这里叠质量加速规则，纯函数才好加分支。
+`lib/state-engine.js` 是**纯函数**（输入技能状态 + 使用统计 + 质量趋势 + 配置 + 当前时间 → 输出目标状态 + 理由）。质量加速规则（P0-2 §7.2 规则 1–4）叠加在纯函数分支上，可测性优先。
 
 一个刻意的保守设计：`active` 即使已经 90+ 天未用，也**一次只走一步**（active→stale）。让陈旧技能先被「看见」一周（进 stale 列表 + 发事件），下周才归档。
 
@@ -113,9 +119,22 @@ move_directory_on_archive: true   # false = 只落状态不移动目录
 skills_dir: <DSH_HOME>/.agent-presets/agint/skills
 archive_dir_name: .archive
 weekly_cron: '0 2 * * 0'
+# Sprint 15 质量评估 / 重叠检测
+quality_snapshot_max_weeks: 8     # 周快照保留数
+quality_success_decline_pct: 0.10 # 单周成功率降幅超此值记为下降
+quality_success_decline_streak: 2 # 连续 2 周下降 → declining
+quality_harm_declining_count: 2   # HARM 增量连续 2 次 <0 → declining
+quality_harm_review_delta: 1.0    # 规则3：HARM>1.0 且成功率>0.8 → 保护
+quality_archive_after_days: 60    # 规则2：质量下降加速归档阈值
+overlap_detection_enabled: true   # 重叠检测总开关
+overlap_desc_threshold: 0.85      # 描述维 Jaccard 阈值
+overlap_tools_threshold: 0.7      # 工具维 Jaccard 阈值
+overlap_triggers_threshold: 0.6   # 触发词维 Jaccard 阈值
+overlap_min_dimensions: 2         # ≥2 维达标 → 重叠候选
+overlap_max_pairs: 50             # 单周报告/事件上限
 ```
 
-运行时可改（内存态，重启还原）：`auto_curation_enabled` / `weekly_archive_budget` / `stale_after_days` / `archive_after_days` / `dry_run_default`。
+运行时可改（内存态，重启还原）：`auto_curation_enabled` / `weekly_archive_budget` / `stale_after_days` / `archive_after_days` / `dry_run_default` / `overlap_detection_enabled` / `quality_archive_after_days`。
 
 ## 测试
 
@@ -126,15 +145,17 @@ node --test "test/*.test.mjs" test/smoke.mjs
 | 文件 | 覆盖 |
 |---|---|
 | `smoke.mjs` | 导出契约 / 枚举 / LIMITS / storage spec / pack / D4 常量 |
-| `state-engine.test.mjs` | 转换规则 + **四类保护逐条** + 纯函数性 |
+| `state-engine.test.mjs` | 转换规则 + **四类保护逐条** + **质量加速规则 1–3** + quality_declining 转换 + 纯函数性 |
 | `aggregator.test.mjs` | frontmatter / 扫描 / **D3 过滤回归** / 使用聚合 |
 | `executor.test.mjs` | 归档（真实目录移动）/ 幂等 / 保护 / 预算 / unarchive / pin / dry-run |
+| `dedup.test.mjs` | tokenize / Jaccard / 三维度达标 / 推荐动作 / **500 技能性能 ≤30s** |
+| `quality.test.mjs` | 成功率趋势 / HARM 趋势 / 质量规则 1–3 / 周快照 |
 | `pipeline.test.mjs` | 端到端（stale→archive）/ D3 端到端 / 保护 / **dry-run 一致性** / 报告 / pause |
+| `smart-curation.test.mjs` | 重叠检测端到端 / 质量下降标记 / 质量加速归档 / **T7 跨域 evolution 读取 + 降级** / 报告增强 |
 | `const-consistency.test.mjs` | D4 三处副本一致性（自动发现） |
 
 ## 不做的事
 
-- ❌ 重叠检测 / 质量评估 / 质量加速规则（Sprint 15）
 - ❌ consolidate / prune（Sprint 16，prune 默认永久禁用）
 - ❌ 改 preset 的 `agent.cordis.yml`（归档靠 `.archive/` 目录不在扫描范围内实现，不动配置）
 - ❌ 策展自己（§9.4 自保护）

@@ -1,6 +1,6 @@
 {
   "name": "agint-curator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "P0-2 技能策展人（Sprint 14 阶段 1 基础策展）：每周聚合技能使用数据 → 纯函数状态机检测陈旧技能（30天 stale / 90天 archive）→ 四类保护（pinned/protected/cron-referenced/新技能14天保护期）→ 归档到 skills/.archive/ 可恢复。独占 agint_curator 存储域（4 表，上限 skill_states 200 / curation_actions 500 / reports 52 / audit 1000）。自我评估禁止（§9.4：curator/策展 关键词技能自动 protected）。",
   "type": "module",
   "main": "lib/index.js",

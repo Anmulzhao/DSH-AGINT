@@ -39,15 +39,16 @@ export function mockCtx(services = {}) {
   };
 }
 
-/** 建一个临时 skills 目录：{ dirName, name, tools }[] */
+/** 建一个临时 skills 目录：{ dirName, name, description?, triggers?, tools }[] */
 export function makeSkillsDir(skills) {
   const dir = mkdtempSync(join(tmpdir(), 'curator-skills-'));
   for (const s of skills) {
     mkdirSync(join(dir, s.dirName ?? s.name), { recursive: true });
     const tools = (s.tools ?? []).length ? `[${s.tools.join(', ')}]` : '[]';
+    const triggers = (s.triggers ?? ['demo']).length ? `[${(s.triggers ?? ['demo']).join(', ')}]` : '[]';
     writeFileSync(
       join(dir, s.dirName ?? s.name, 'SKILL.md'),
-      `---\nname: ${s.name}\ndescription: "demo ${s.name}"\ntriggers: [demo]\ntools: ${tools}\n---\n\n# ${s.name}\n`,
+      `---\nname: ${s.name}\ndescription: "${s.description ?? `demo ${s.name}`}"\ntriggers: ${triggers}\ntools: ${tools}\n---\n\n# ${s.name}\n`,
       'utf8',
     );
   }

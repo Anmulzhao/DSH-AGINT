@@ -30,6 +30,7 @@ import {
   packSkillState,
   packReport,
   packAudit,
+  packOverlapCandidate,
   isoWeek,
   nowIso,
 } from './storage.js';
@@ -37,6 +38,8 @@ import { scanSkills, filterRecords, groupTaskCalls, aggregateUsage } from './agg
 import { evaluateAll } from './state-engine.js';
 import { createExecutor } from './executor.js';
 import { buildReport } from './reporter.js';
+import { detectOverlaps, OVERLAP_THRESHOLDS } from './dedup.js';
+import { evaluateQuality, appendQualitySnapshot, QUALITY_THRESHOLDS } from './quality.js';
 
 const name = 'agint-curator';
 const inject = ['storageDomain'];
@@ -153,6 +156,57 @@ function apply(ctx, config) {
     return set;
   }
 
+  /**
+   * Sprint 15 T7：跨域读 evolution-log 的 phase3-provisional 记录。
+   * 软依赖 agint.evolution（readLogRangeMerged），缺失/失败 → [] 降级不阻断。
+   * readLogRangeMerged 的 query 只匹配 evidence/pattern/reason，不覆盖 tags，
+   * 因此全量读 + 本侧按 tags 过滤。
+   */
+  async function readEvolutionProvisional() {
+    const evo = typeof ctx.get === 'function' ? ctx.get('agint.evolution') : null;
+    if (!evo || typeof evo.readLogRangeMerged !== 'function') return [];
+    try {
+      const merged = await evo.readLogRangeMerged({});
+      const list = Array.isArray(merged) ? merged : [];
+      return list
+        .filter((e) => Array.isArray(e?.tags) && e.tags.includes('phase3-provisional'))
+        .sort((a, b) => String(a.timestamp ?? a.createdAt ?? '').localeCompare(String(b.timestamp ?? b.createdAt ?? '')));
+    } catch (e) {
+      if (!disposed) console.warn(`[${name}] readEvolutionProvisional failed:`, e?.message ?? e);
+      return [];
+    }
+  }
+
+  /**
+   * Sprint 15 T1/T6：重叠候选对落盘 overlap_candidates + 发布事件。
+   * 每周覆盖同对（同 skillA/skillB）旧记录，避免堆积（上限 OVERLAP_CANDIDATES）。
+   */
+  async function persistOverlaps(overlaps, { dryRun, trigger }) {
+    if (!overlaps?.length) return 0;
+    const t = await table('overlap_candidates');
+    let written = 0;
+    for (const o of overlaps) {
+      const { recommendation, dims, skillA, skillB } = o;
+      if (!dryRun) {
+        const record = packOverlapCandidate({ skillA, skillB, dims, recommendation });
+        // 覆盖同对旧记录（保持幂等）
+        for (const [key, v] of t.entries()) {
+          if (v.skillA === skillA && v.skillB === skillB && v.kind === 'overlap_candidate') {
+            await t.del(key).catch(() => {});
+          }
+        }
+        await t.put(record.id, record);
+        written++;
+      }
+      await publishEvent('curator.overlap-detected', { skillA, skillB, similarity: dims });
+      await publishEvent('curator.consolidate-proposed', { skillA, skillB, recommendation: recommendation.rationale });
+    }
+    const lw = checkLimit('overlap_candidates', t.entries().length);
+    if (lw) console.warn(`[${name}] ${lw._warn}`);
+    void trigger;
+    return written;
+  }
+
   /** 扫描到的技能 → skill_states 表同步（保留人工设置，只刷新 usage/描述） */
   async function syncSkillStates(skills, usageMap, { nowMs }) {
     const c = effectiveConfig();
@@ -182,6 +236,7 @@ function apply(ctx, config) {
         stateChangedAt: ex?.stateChangedAt ?? s.createdAt,
         stateHistory: ex?.stateHistory ?? [],
         usage,
+        quality: ex?.quality ?? { qualityState: null, history: [], reviewSuggested: false },
         archivedAt: ex?.archivedAt ?? null,
         archiveReason: ex?.archiveReason ?? null,
         curationNotes: ex?.curationNotes ?? '',
@@ -221,9 +276,67 @@ function apply(ctx, config) {
       minToolCoverage: c.usage_inference_min_tool_coverage,
     });
 
+    // Sprint 15 T7：跨域读 evolution-log 的 phase3-provisional 评估历史
+    // （P0-1 评估层写入，Sprint15 设计稿 §4.3 B 路径）。记录只到候选级
+    // （targetId=candidateId），技能级 HARM 待 Sprint 16 release 链路补写；
+    // 本阶段用于候选质量池计数，规则 1/2/3 的 HARM 分支以单测覆盖。
+    const evolutionEntries = await readEvolutionProvisional();
+
     const states = await syncSkillStates(skills, usage, { nowMs });
+
+    // Sprint 15 T2：质量周快照 + 趋势评估（挂 skill.quality，state-engine 消费）
+    for (const s of states) {
+      const snap = { week: isoWeek(new Date(nowMs)), successRate: s.usage?.successRate ?? null, useCount: s.usage?.useCount ?? 0 };
+      s.quality.history = appendQualitySnapshot(s, snap, c.quality_snapshot_max_weeks);
+      const q = evaluateQuality(s, { evolutionEntries });
+      s.quality.qualityState = q.qualityState;
+      s.quality.harmTrend = q.harmTrend;
+      s.quality.successTrend = q.successTrend;
+      if (q.qualityState === 'declining' && !s.quality.reviewSuggested) {
+        s.quality.reviewSuggested = q.harmTrend?.state === 'declining' ? true : false;
+      }
+      await table('skill_states').then((t) => t.put(s.id, s));
+    }
+
+    // Sprint 15 T1：重叠检测（active + stale 状态对）
+    // 输入=扫描元数据（description/tools/triggers）+ 状态/使用（来自 skill_states），
+    // 两个来源缺一不可：skill_states 无 tools/triggers，扫描清单无 state/usage。
+    const stateByName = new Map(states.map((s) => [s.skillName, s]));
+    const dedupInput = skills.map((s) => ({
+      ...s,
+      state: stateByName.get(s.name)?.state ?? 'active',
+      usage: stateByName.get(s.name)?.usage ?? { useCount: 0, successRate: null },
+    }));
+    const overlaps = c.overlap_detection_enabled !== false
+      ? detectOverlaps(dedupInput, {
+          includeStates: ['active', 'stale', 'quality_declining'],
+          thresholds: {
+            description: c.overlap_desc_threshold,
+            tools: c.overlap_tools_threshold,
+            triggers: c.overlap_triggers_threshold,
+            minDimensions: c.overlap_min_dimensions,
+          },
+        }).slice(0, c.overlap_max_pairs ?? 50)
+      : [];
+    await persistOverlaps(overlaps, { dryRun, trigger });
+
     const { decisions } = evaluateAll(states, { config: c, nowMs });
     const applied = await executor.applyDecisions(decisions, { dryRun, trigger, actor: args.actor ?? 'system' });
+
+    // Sprint 15 T8：质量下降技能列表（进报告 + 事件）
+    const declining = states
+      .filter((s) => s.quality?.qualityState === 'declining')
+      .map((s) => ({
+        skillName: s.skillName,
+        state: s.state,
+        reason: (s.quality?.successTrend?.state === 'declining' ? s.quality.successTrend.reason : '')
+          + (s.quality?.harmTrend?.state === 'declining' ? (s.quality.successTrend?.state === 'declining' ? '；' : '') + s.quality.harmTrend.reason : ''),
+        successTrendState: s.quality?.successTrend?.state ?? null,
+        harmTrendState: s.quality?.harmTrend?.state ?? null,
+      }));
+    for (const d of declining) {
+      await publishEvent('curator.quality-declining', { skillName: d.skillName, trend: { success: d.successTrendState, harm: d.harmTrendState }, reason: d.reason });
+    }
 
     const report = buildReport({
       week: isoWeek(new Date(nowMs)),
@@ -233,6 +346,8 @@ function apply(ctx, config) {
       skills: states,
       decisions,
       applied,
+      overlaps,
+      declining,
     });
 
     if (!dryRun || args.persistDryRunReport === true) {
@@ -256,6 +371,8 @@ function apply(ctx, config) {
       skillsScanned: skills.length,
       tasksAggregated: tasks.length,
       inference,                 // 'explicit' | 'inferred' | 'disabled'
+      overlaps,                  // Sprint 15
+      declining,                 // Sprint 15
       applied,
       report,
       lastRunAt,
@@ -289,8 +406,8 @@ function apply(ctx, config) {
   }
 
   async function stats() {
-    const [st, ca, rp, al] = await Promise.all([
-      table('skill_states'), table('curation_actions'), table('reports'), table('audit_log'),
+    const [st, ca, rp, al, oc] = await Promise.all([
+      table('skill_states'), table('curation_actions'), table('reports'), table('audit_log'), table('overlap_candidates'),
     ]);
     const states = [...st.entries()].map(([, v]) => v);
     const actions = [...ca.entries()].map(([, v]) => v);
@@ -302,7 +419,10 @@ function apply(ctx, config) {
         protected: states.filter((s) => s.protected === true).length,
         cronReferenced: states.filter((s) => s.cronReferenced === true).length,
         withUsageData: states.filter((s) => (s.usage?.useCount ?? 0) > 0).length,
+        declining: states.filter((s) => s.quality?.qualityState === 'declining').length, // Sprint 15
+        reviewSuggested: states.filter((s) => s.quality?.reviewSuggested === true).length, // Sprint 15
       },
+      overlaps: { total: oc.entries().length, proposed: [...oc.entries()].filter(([, v]) => v.status === 'proposed').length }, // Sprint 15
       actionsThisWeek: actions.filter((a) => isoWeek(new Date(a.timestamp)) === week).length,
       archivedThisWeek: await executor.archivedThisWeek(),
       reports: rp.entries().length,
@@ -313,13 +433,15 @@ function apply(ctx, config) {
       config: {
         stale_after_days: effectiveConfig().stale_after_days,
         archive_after_days: effectiveConfig().archive_after_days,
+        quality_archive_after_days: effectiveConfig().quality_archive_after_days, // Sprint 15
         new_skill_protection_days: effectiveConfig().new_skill_protection_days,
         weekly_archive_budget: effectiveConfig().weekly_archive_budget,
         auto_curation_enabled: effectiveConfig().auto_curation_enabled,
         dry_run_default: effectiveConfig().dry_run_default,
+        overlap_detection_enabled: effectiveConfig().overlap_detection_enabled, // Sprint 15
         weekly_cron: effectiveConfig().weekly_cron,
       },
-      sprint: '14-basic-curation',
+      sprint: '15-smart-curation',
     };
   }
 
@@ -368,9 +490,24 @@ function apply(ctx, config) {
     unarchive: (args = {}) => executor.unarchive(args),
     stats,
     getReport,
-    // Sprint 15/16 接力——显式抛错，绝不静默（真实 > 讨好）
-    listOverlaps: () => Promise.reject(new Error('agint.curator: listOverlaps 未实现（Sprint 15 重叠检测）')),
-    listDeclining: () => Promise.reject(new Error('agint.curator: listDeclining 未实现（Sprint 15 质量评估）')),
+    // Sprint 15：重叠 / 质量下降（P0-2 §5.1）
+    listOverlaps: async (filter = {}) => {
+      const t = await table('overlap_candidates');
+      let list = [...t.entries()].map(([, v]) => v);
+      if (filter.status) list = list.filter((o) => o.status === filter.status);
+      list.sort((a, b) => b.dims?.dimsMet - a.dims?.dimsMet || String(a.skillA).localeCompare(String(b.skillA)));
+      if (filter.limit) list = list.slice(0, filter.limit);
+      return list;
+    },
+    listDeclining: async (filter = {}) => {
+      const t = await table('skill_states');
+      let list = [...t.entries()].map(([, v]) => v)
+        .filter((s) => s.quality?.qualityState === 'declining');
+      if (filter.onlyReviewSuggested) list = list.filter((s) => s.quality?.reviewSuggested === true);
+      list.sort((a, b) => String(a.skillName).localeCompare(String(b.skillName)));
+      return list;
+    },
+    // Sprint 16 接力——显式抛错，绝不静默（真实 > 讨好）
     consolidate: () => Promise.reject(new Error('agint.curator: consolidate 未实现（Sprint 16 整合）')),
     prune: () => Promise.reject(new Error('agint.curator: prune 未实现（Sprint 16，且默认永久禁用）')),
     pause,
