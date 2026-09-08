@@ -942,6 +942,213 @@ const dispatchers = {
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 
+  // ── Sprint 7: diagnosis 归因引擎（classify 纯函数 + annotate service）────
+  // 断言逻辑与 run-diagnosis-eval.mjs 保持同构（该 runner 仍可独立跑同一场景文件）
+  'agint-diagnosis': async (scenario, ctx) => {
+    const { classify } = await import(`${AGINT_URL}/plugins/agint-diagnosis/lib/root-cause-classifier.js`);
+    const pluginMod = await import(`${AGINT_URL}/plugins/agint-diagnosis/lib/index.js`);
+    const input = scenario.input[0];
+    const args = input.args ?? {};
+    const exp = scenario.expected[0];
+
+    const makeFakeCtx = ({ failurePatternCount = 0, annotationsCount = 0 } = {}) => {
+      const services = {};
+      const annotationEntries = Array.from({ length: annotationsCount }, (_, i) => ({
+        id: `pre-${i}`, kind: 'annotation', failureId: `f-pre-${i}`,
+        rootCause: 'TOOL_GAP', confidence: 0.5, evidence: '{}',
+        createdAt: '2026-08-24T00:00:00.000Z',
+      }));
+      return {
+        services,
+        ctx: {
+          storageDomain: {
+            open: async () => ({
+              table: (name) => ({
+                entries: () => (name === 'annotations' ? annotationEntries : []),
+                put: async () => undefined,
+              }),
+              close: async () => undefined,
+            }),
+          },
+          get: (name) => {
+            if (name === 'agint.evolution') {
+              return {
+                queryFailures: async () => Array.from({ length: failurePatternCount }, (_, i) => ({
+                  id: `seed-${i}`, pattern: `seed pattern ${i}`, evidence: '',
+                  severity: 'medium', category: 'other', occurrences: 1,
+                })),
+              };
+            }
+            return null;
+          },
+          provide(name, fn) { services[name] = fn; },
+          effect() { return () => undefined; },
+        },
+      };
+    };
+
+    // ── 路径 A：纯函数 classify ──
+    if (input.action === 'classify') {
+      const result = classify(args.trajectory ?? []);
+      if (exp.kind === 'rootCause') {
+        const feats = result.evidence?.matchedFeatures ?? [];
+        const ok = result.rootCause === exp.rootCause
+          && (typeof exp.minFeatures !== 'number' || (exp.minFeatures === 0 ? feats.length === 0 : feats.length >= exp.minFeatures))
+          && (typeof exp.confidence !== 'number' || result.confidence === exp.confidence);
+        return { ok, detail: `rootCause=${result.rootCause} features=${feats.length} confidence=${result.confidence}` };
+      }
+      if (exp.kind === 'rootCauseTied') {
+        const tied = [...(result.evidence?.tied ?? [])].sort();
+        const want = [...(exp.tied ?? [])].sort();
+        const ok = result.rootCause === exp.rootCause
+          && JSON.stringify(tied) === JSON.stringify(want)
+          && (!exp.noteContains || (result.evidence?.note ?? '').includes(exp.noteContains));
+        return { ok, detail: `rootCause=${result.rootCause} tied=${JSON.stringify(result.evidence?.tied)}` };
+      }
+      return { ok: false, detail: `unsupported expected.kind ${exp.kind} for classify path` };
+    }
+
+    // ── 路径 B：真 service annotate（mock ctx） ──
+    if (input.action === 'serviceCall') {
+      const { ctx: fakeCtx, services } = makeFakeCtx({
+        failurePatternCount: args.failurePatternCount ?? 0,
+        annotationsCount: args.annotationsCount ?? 0,
+      });
+      pluginMod.apply(fakeCtx);
+      const annotate = services['agint.diagnosis.annotate'];
+      if (typeof annotate !== 'function') return { ok: false, detail: 'annotate service 未注册' };
+      try {
+        const result = await annotate({ failureId: args.failureId, trajectory: args.trajectory ?? [] });
+        return { ok: false, detail: `未抛错，反而返回 rootCause=${result.rootCause}` };
+      } catch (err) {
+        const msg = err?.message ?? String(err);
+        const ok = exp.kind === 'throws' && exp.errorContains && msg.includes(exp.errorContains);
+        return { ok, detail: `threw msg="${msg.slice(0, 80)}"` };
+      }
+    }
+
+    return { ok: false, detail: `unsupported action=${input.action}` };
+  },
+
+  // ── Sprint 13 §4.6: self-model 只读观察者（能力图谱 + 校准 + A11 发布）────
+  'agint-self-model': async (scenario, ctx) => {
+    const schema = await import(`${AGINT_URL}/plugins/agint-self-model/lib/schema.js`);
+    const selfModel = await import(`${AGINT_URL}/plugins/agint-self-model/lib/index.js`);
+    const input = scenario.input[0];
+    const exp = scenario.expected[0];
+    const mock = input.mock ?? {};
+
+    const published = [];
+    const failuresWritten = [];
+    const provided = new Map();
+    provided.set('agint.eventBus.publish', async (e) => { published.push(e); return { accepted: true }; });
+    provided.set('agint.eventBus.subscribe', () => () => {});
+    const buildEvo = (failures, templates) => ({
+      queryFailures: async () => failures.map(([category, pattern]) => ({ category, pattern })),
+      queryTemplates: async () => templates.map(([category, pattern]) => ({ category, pattern })),
+      addFailure: async (rec) => { failuresWritten.push(rec); return { id: `f${failuresWritten.length}`, ...rec }; },
+      getLogRange: async () => [],
+      stats: async () => ({}),
+    });
+    let evo = buildEvo(mock.evolutionFailures ?? [], mock.evolutionTemplates ?? []);
+    provided.set('agint.evolution', evo);
+    const diagDistribution = input.withDiagnosisReport ?? {
+      REASONING_ERROR: 1, PLANNING_FAILURE: 0, PROMPT_DEFICIENCY: 0,
+      TOOL_GAP: 0, KNOWLEDGE_GAP: 0, ENVIRONMENT_SHIFT: Number(mock.diagnosisEnvShift ?? 0), UNCERTAIN: 0,
+    };
+    provided.set('agint.diagnosis', { report: async () => ({ rootCauseDistribution: diagDistribution }) });
+    provided.set('agint.metrics', { snapshot: async () => ({ metrics: [] }), collect: async () => ({}), summary: async () => ({ metrics: [] }) });
+    provided.set('agint.toolStats', { summary: async () => ({ summary: [] }) });
+
+    const mctx = {
+      get: (k) => provided.get(k) ?? null,
+      provide: (k, v) => provided.set(k, v),
+      effect: (fn) => { try { const d = fn(); return typeof d === 'function' ? d : () => {}; } catch { return () => {}; } },
+      // 同步 throw → openStore 内存降级（v0.7.1 契约；storage.js try/catch 兜底）
+      storageDomain: { open: () => { throw new Error('test: no real storage'); } },
+      on: () => () => {},
+    };
+    selfModel.apply(mctx, {});
+    const updSvc = mctx.get('agint.selfModel.update');
+    const snapSvc = mctx.get('agint.selfModel.snapshot');
+    const calSvc = mctx.get('agint.selfModel.calibrate');
+    if (!updSvc || !snapSvc || !calSvc) return { ok: false, detail: 'selfModel services not registered' };
+
+    if (exp.kind === 'frozen-validation') {
+      let threw = false;
+      try { schema.CapabilityEntrySchema.parse(input.payload); } catch { threw = true; }
+      return { ok: threw === exp.throws, detail: threw ? 'threw as expected (lastVerifiedAt required)' : 'did not throw' };
+    }
+
+    if (exp.kind === 'calibration-cold-start') {
+      // runCalibration 返回值剥掉 _coldStart/_miscalibrated 内部标记；
+      // cold-start 契约用副作用断言：样本 <10 → 不写 failure_pattern 标注
+      const results = await calSvc({});
+      const ok = Array.isArray(results) && results.length > 0
+        && results.every((r) => r.samples < 10)
+        && failuresWritten.length === 0;
+      return { ok, detail: `results=${JSON.stringify(results.map((r) => ({ d: r.domain, s: r.samples })))} annotated=${failuresWritten.length}` };
+    }
+
+    if (exp.kind === 'calibration-miscalibration') {
+      // 两趟真 service 校准：pass1 域内全失败 → prior predicted=0、actual=0 → 无告警；
+      // pass2 半成功 → actual=0.5 ≠ prior 0 → 误差 0.5 > 0.1 → miscalibration + failure_pattern 标注
+      evo = buildEvo(Array.from({ length: 20 }, (_, i) => ['x', `f${i}`]), []);
+      provided.set('agint.evolution', evo);
+      await calSvc({});
+      evo = buildEvo(
+        Array.from({ length: 10 }, (_, i) => ['x', `f${i}`]),
+        Array.from({ length: 10 }, (_, i) => ['x', `t${i}`]),
+      );
+      provided.set('agint.evolution', evo);
+      const results = await calSvc({});
+      const x = (results ?? []).find((r) => r.domain === 'x');
+      const ok = !!x && x.error > 0.1 && x.samples >= 10
+        && failuresWritten.some((f) => (f.pattern ?? '').includes(`self-model-miscalibration:${exp.miscalibratedIncludes}`));
+      return { ok, detail: `error=${x?.error} samples=${x?.samples} annotated=${failuresWritten.length}` };
+    }
+
+    if (exp.kind === 'capability-can' || exp.kind === 'capability-cannot' || exp.kind === 'capability-uncertain'
+      || exp.kind === 'update-result' || exp.kind === 'a11-published') {
+      const upd = await updSvc({ trigger: input.trigger ?? 'weekly' });
+      if (exp.kind === 'update-result') {
+        const ok = Array.isArray(upd.updatedDomains) && (upd.updatedDomains.length > 0) === exp.updatedDomainsNonEmpty;
+        return { ok, detail: `updatedDomains=[${(upd.updatedDomains ?? []).join(',')}]` };
+      }
+      if (exp.kind === 'a11-published') {
+        const a11 = published.find((e) => e.topic === exp.topicIs);
+        const ok = !!a11 && exp.payloadHas.every((k) => a11.payload?.[k] !== undefined);
+        return { ok, detail: a11 ? `payload keys=[${Object.keys(a11.payload).join(',')}]` : 'no A11 envelope published' };
+      }
+      const snap = await snapSvc({});
+      if (exp.kind === 'capability-uncertain') {
+        const ok = snap.capabilities.length === 0 || snap.capabilities.every((c) => c.status === exp.statusIs);
+        return { ok, detail: `capabilities=${snap.capabilities.length} statuses=[${snap.capabilities.map((c) => c.status).join(',')}]` };
+      }
+      const entry = snap.capabilities.find((c) => c.domain === exp.domain);
+      const ok = !!entry && entry.status === exp.statusIs;
+      return { ok, detail: entry ? `domain=${entry.domain} status=${entry.status}` : `no entry for ${exp.domain}; have=[${snap.capabilities.map((c) => c.domain).join(',')}]` };
+    }
+
+    if (exp.kind === 'snapshot-blocks') {
+      if (input.afterUpdate) await updSvc({ trigger: 'weekly' });
+      const snap = await snapSvc({});
+      const ok = exp.hasBlocks.every((b) => snap[b] !== undefined);
+      return { ok, detail: `missing=[${exp.hasBlocks.filter((b) => snap[b] === undefined).join(',') || 'none'}]` };
+    }
+
+    if (exp.kind === 'reasoning-profile') {
+      await updSvc({ trigger: input.trigger ?? 'weekly' });
+      const snap = await snapSvc({});
+      const aspects = (snap.reasoningProfile ?? []).map((r) => r.aspect ?? '');
+      const ok = Array.isArray(snap.reasoningProfile) && snap.reasoningProfile.length > 0
+        && exp.aspectsInclude.every((a) => aspects.includes(a));
+      return { ok, detail: `profile=${snap.reasoningProfile?.length} aspects=[${aspects.join(',')}]` };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
+  },
+
   'agint-quality-eval': async (scenario, ctx) => {
     // Sprint 2 退化探测: agint-quality-eval 的 regression 纯函数 + Service 接口
     const { checkRegression, checkStagnation, computePassRate, BASELINE_TARGETS } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/regression.js`);
@@ -1107,6 +1314,98 @@ const dispatchers = {
         const ok = baseline && baseline.isRegression === true && baseline.delta < exp.baselineDeltaLessThan && hasRegressionPattern;
         return { ok, detail: `baseline=${JSON.stringify(baseline)} failPatterns=${failPatterns.map((p) => p.pattern).join(',')}` };
       }
+    }
+
+    // ── Sprint 13 §3.3: deploy budget guard（weekly ≤3 次自动部署护栏）────
+    if (exp.kind === 'auto-deploy-detect' || exp.kind === 'count-rolling'
+      || exp.kind === 'within-budget' || exp.kind === 'over-budget') {
+      const db = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/deployBudget.js`);
+      const input = scenario.input[0];
+      const nowMs = Date.parse(input.now ?? '2026-09-12T12:00:00.000Z');
+      if (exp.kind === 'auto-deploy-detect') {
+        const r = db.isAutoDeployEntry(input.entry);
+        return { ok: r === exp.isAutoDeploy, detail: `isAutoDeploy=${r}` };
+      }
+      // date-aware evolution mock（countAutoDeploys 内部还会再按窗口过滤一次）
+      const makeEvo = (entries) => ({
+        async getLogRange({ fromDate, toDate } = {}) {
+          if (!fromDate || !toDate) return entries;
+          const from = Date.parse(fromDate);
+          const to = Date.parse(toDate);
+          return entries.filter((e) => { const ts = Date.parse(e.ts); return ts >= from && ts <= to; });
+        },
+        async addFailure(rec) { return { id: 'f1', ...rec }; },
+      });
+      if (exp.kind === 'count-rolling') {
+        const r = await db.countAutoDeploys({ evolution: makeEvo(input.entries), nowMs });
+        return { ok: r.count === exp.countIs, detail: `count=${r.count} window=${r.windowDays}d degraded=${r.degraded}` };
+      }
+      const memoryWrites = [];
+      const budgetCtx = {
+        get: (k) => (k === 'agint.evolution')
+          ? makeEvo(input.entries)
+          : (k === 'agint.memory')
+            ? { write: async (rec) => { memoryWrites.push(rec); return { id: 'm1', ...rec }; } }
+            : null,
+      };
+      const r = await db.checkDeployBudget({ ctx: budgetCtx, nowMs, budget: input.budget });
+      if (exp.kind === 'within-budget') {
+        const ok = r.exceeded === exp.overBudget
+          && r.forcedDecision === (exp.forcedReview ? 'PENDING_REVIEW' : null);
+        return { ok, detail: `used=${r.used}/${r.budget} forced=${r.forcedDecision}` };
+      }
+      const ok = r.exceeded === exp.overBudget
+        && r.forcedDecision === 'PENDING_REVIEW'
+        && r.auditWritten === exp.auditWritten
+        && memoryWrites.length > 0;
+      return { ok, detail: `used=${r.used}/${r.budget} forced=${r.forcedDecision} audit=${r.auditWritten} reviewLine=${(r.reviewLine ?? '').slice(0, 30)}` };
+    }
+
+    if (exp.kind === 'weekly-hook-guard') {
+      // weeklyTask 末尾真跑 deployBudget guard：窗口内预置 N 条 AUTO_DEPLOY audit
+      const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const richCtx = makeRichEvalMockCtx(input);
+      richCtx.provide('skills', {
+        list: async () => ({ items: [{ name: 'agint-smoke-skill', version: '0.0.0' }] }),
+      });
+      const evoStore = { evolution_log: new Map(), failure_pattern: new Map(), success_template: new Map() };
+      const now = Date.now();
+      for (let i = 0; i < (input.withDeployEntries ?? 0); i++) {
+        const id = `dep-${i}`;
+        evoStore.evolution_log.set(id, {
+          id, decision: 'AUTO_DEPLOY', ts: new Date(now - (i + 1) * 86400000).toISOString(),
+        });
+      }
+      const mockEvo = {
+        logPhase4: async (entry) => { evoStore.evolution_log.set(entry.id, entry); return { ...entry }; },
+        addFailure: async (entry) => { evoStore.failure_pattern.set(entry.id, entry); return { ...entry }; },
+        addSuccess: async (entry) => { evoStore.success_template.set(entry.id, entry); return { ...entry }; },
+        queryFailures: async () => [...evoStore.failure_pattern.values()],
+        queryTemplates: async () => [...evoStore.success_template.values()],
+        getLogRange: async ({ fromDate, toDate, limit = 1000 } = {}) => {
+          let items = [...evoStore.evolution_log.values()];
+          if (fromDate && toDate) {
+            const from = Date.parse(fromDate);
+            const to = Date.parse(toDate);
+            items = items.filter((e) => { const ts = Date.parse(e.ts); return ts >= from && ts <= to; });
+          }
+          return items.slice(0, limit);
+        },
+        stats: async () => ({ evolution_log: evoStore.evolution_log.size, failure_pattern: evoStore.failure_pattern.size, success_template: evoStore.success_template.size }),
+      };
+      richCtx.provide('agint.evolution', mockEvo);
+
+      evalMod.apply(richCtx, {});
+      await new Promise((r) => setTimeout(r, 50));
+      const evaluator = richCtx.get('agint.qualityEvaluator');
+      if (!evaluator) return { ok: false, detail: 'evaluator service not registered' };
+      const runResult = await evaluator.runNow();
+      const db = runResult.deployBudget;
+      const ok = !!db
+        && db.used >= (input.withDeployEntries ?? 0)
+        && db.exceeded === true
+        && db.forcedDecision === 'PENDING_REVIEW';
+      return { ok, detail: `deployBudget=${JSON.stringify({ used: db?.used, exceeded: db?.exceeded, forced: db?.forcedDecision })}` };
     }
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
