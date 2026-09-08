@@ -24,7 +24,7 @@
  */
 
 import { readFile, readdir } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -54,6 +54,10 @@ ensureNodePath();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '../..');
+// Windows ESM loader requires file:// URLs for dynamic import(); bare absolute
+// paths like `D:/...` throw ERR_UNSUPPORTED_ESM_URL_SCHEME. Same bug class as
+// the quality-static suite fix (v0.7.1), applied to the eval driver itself.
+const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
 
 // ─────────────────────────────────────────────────────────────
 // Mock ctx — 最小 Cordis ctx，足够 5 个核心 plugin 启动
@@ -162,9 +166,9 @@ export function makeMockStorageDomain() {
 
 const results = [];
 
-export function recordResult(name, ok, detail) {
-  results.push({ name, ok, detail });
-  const status = ok ? '✓ PASS' : '✗ FAIL';
+export function recordResult(name, ok, detail, skipped = false) {
+  results.push({ name, ok, detail, skipped });
+  const status = skipped ? '⊘ SKIP' : ok ? '✓ PASS' : '✗ FAIL';
   console.log(`${status}  ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
@@ -209,7 +213,7 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
   }
 
   // ── 2. 加载 agint-population（含 publishProposed 方法） ──
-  const popMod = await import(`${AGINT_ROOT}/plugins/agint-population/lib/index.js`);
+  const popMod = await import(`${AGINT_URL}/plugins/agint-population/lib/index.js`);
   popMod.apply(ctx, {});
 
   // ── 3. 加载 agint-quality-eval（含影子订阅：收到 evolution.proposed 写 shadowProposals ring） ──
@@ -217,7 +221,7 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
   //   storageDomain（local makeMockStorageDomain），与 mount mocks 的 evoStore 隔离。
   //   本 dispatcher 用 **手挂订阅 + mount mock evolution** 等价验证"事件能传到订阅方
   //   且订阅方能落 evolution_log" 的契约；真 plugin integration 在 e2e 测试覆盖。
-  const qeMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+  const qeMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
   try {
     qeMod.apply(ctx, {});
   } catch (err) {
@@ -283,12 +287,12 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
 async function mountRequestedViaBusBranch(input, ctx) {
   // ── 1. 重置 bus 模块级状态，避免 s12-01/02 残留订阅影响 s12-04 ──
   try {
-    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
     busMod.disposeBus();
   } catch { /* ignore */ }
 
   // ── 2. 加载真 agint-event-bus（提供 3 service）──
-  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
   eventBusMod.apply(ctx, {});
 
   // ── 2b. 暴露 umbrella key 'agint.eventBus' 给 mutator/population 的 publishMountRequest 用 ──
@@ -302,9 +306,9 @@ async function mountRequestedViaBusBranch(input, ctx) {
   });
 
   // ── 3. 加载真 agint-mutator + agint-population（提供 publishMountRequest）──
-  const mutatorMod = await import(`${AGINT_ROOT}/plugins/agint-mutator/lib/index.js`);
+  const mutatorMod = await import(`${AGINT_URL}/plugins/agint-mutator/lib/index.js`);
   mutatorMod.apply(ctx, {});
-  const populationMod = await import(`${AGINT_ROOT}/plugins/agint-population/lib/index.js`);
+  const populationMod = await import(`${AGINT_URL}/plugins/agint-population/lib/index.js`);
   populationMod.apply(ctx, {});
 
   // ── 4. 注册 agint-mount 订阅者（async + topic=mount.requested）──
@@ -356,7 +360,7 @@ async function mountRequestedViaBusBranch(input, ctx) {
 // ── Sprint 12 A4：mount.succeeded 由 agint-mount publish，population + evo-memory 订阅 ──
 async function mountSucceededViaBusBranch(input, ctx) {
   try {
-    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
     busMod.disposeBus();
   } catch { /* ignore */ }
 
@@ -376,10 +380,10 @@ async function mountSucceededViaBusBranch(input, ctx) {
     open: () => ({ table: () => ({ get: async () => null, put: async () => true, delete: async () => true, entries: () => [] }), close: () => {} }),
   });
 
-  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
   eventBusMod.apply(ctx, {});
 
-  const populationMod = await import(`${AGINT_ROOT}/plugins/agint-population/lib/index.js`);
+  const populationMod = await import(`${AGINT_URL}/plugins/agint-population/lib/index.js`);
   populationMod.apply(ctx, {});
 
   const subscribe = ctx.get('agint.eventBus.subscribe');
@@ -452,7 +456,7 @@ async function mountSucceededViaBusBranch(input, ctx) {
 // ── Sprint 12 A4：mount.failed 由 agint-mount publish，diagnosis + evo-memory 订阅 ──
 async function mountFailedViaBusBranch(input, ctx) {
   try {
-    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
     busMod.disposeBus();
   } catch { /* ignore */ }
 
@@ -475,7 +479,7 @@ async function mountFailedViaBusBranch(input, ctx) {
   const diagnosisMock = { triggerCalls: 0, trigger: async (input) => { diagnosisMock.triggerCalls++; return { triggered: true, ticketId: input?.ticketId, reason: input?.reason }; } };
   ctx.provide('agint.diagnosis', diagnosisMock);
 
-  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
   eventBusMod.apply(ctx, {});
 
   const subscribe = ctx.get('agint.eventBus.subscribe');
@@ -541,7 +545,7 @@ async function mountFailedViaBusBranch(input, ctx) {
 // 嵌套 sandbox publish + 嵌套 policy audit-only 订阅 + 直连 runSmoke return 完整保留。
 async function sandboxPassedFailedViaBusBranch(input, ctx) {
   try {
-    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
     busMod.disposeBus();
   } catch { /* ignore */ }
 
@@ -578,14 +582,14 @@ async function sandboxPassedFailedViaBusBranch(input, ctx) {
   });
 
   // ── 关键：先挂 event-bus，再挂 policy（订阅 sandbox.*），再挂嵌套 sandbox ──
-  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
   eventBusMod.apply(ctx, {});
 
-  const policyMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+  const policyMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
   policyMod.apply(ctx, {});
   await new Promise((r) => setTimeout(r, 10));
 
-  const sandboxMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
+  const sandboxMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
   sandboxMod.apply(ctx, {});
 
   const sb = ctx.get('agint.qualitySandbox');
@@ -658,7 +662,7 @@ async function sandboxPassedFailedViaBusBranch(input, ctx) {
 
 const dispatchers = {
   'agint-memory': async (scenario, ctx) => {
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-memory/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-memory/lib/index.js`);
     mod.apply(ctx, {});
     const memory = ctx.get('agint.memory');
     const input = scenario.input[0].args;
@@ -669,7 +673,7 @@ const dispatchers = {
   },
 
   'agint-rules': async (scenario, ctx) => {
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-rules/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-rules/lib/index.js`);
     mod.apply(ctx, {});
     const rules = ctx.get('agint.rules');
     await rules.seedIfEmpty();
@@ -690,7 +694,7 @@ const dispatchers = {
 
   'agint-metrics': async (scenario, ctx) => {
     // metrics service apply() 需要 storageDomain；测 computeMetrics 纯函数即可。
-    const { computeMetrics } = await import(`${AGINT_ROOT}/plugins/agint-metrics/lib/metrics.js`);
+    const { computeMetrics } = await import(`${AGINT_URL}/plugins/agint-metrics/lib/metrics.js`);
     const input = scenario.input[0].args;
     // JSON 不能直接传函数；支持 _fn + _returns 这种"伪函数"约定。
     const sources = {};
@@ -716,8 +720,8 @@ const dispatchers = {
   },
 
   'agint-cron': async (scenario, ctx) => {
-    const { parseCron, nextFire } = await import(`${AGINT_ROOT}/plugins/agint-cron/lib/cron.js`);
-    const { defaultJobs } = await import(`${AGINT_ROOT}/plugins/agint-cron/lib/jobs.js`);
+    const { parseCron, nextFire } = await import(`${AGINT_URL}/plugins/agint-cron/lib/cron.js`);
+    const { defaultJobs } = await import(`${AGINT_URL}/plugins/agint-cron/lib/jobs.js`);
     const input = scenario.input[0].args;
     const exp = scenario.expected[0];
 
@@ -770,6 +774,11 @@ const dispatchers = {
 
     if (exp.kind === 'file-executable') {
       const filePath = `${AGINT_ROOT}/${exp.path}`;
+      if (process.platform === 'win32') {
+        // Windows NTFS has no POSIX exec bits; every file reports 666.
+        // The check remains meaningful on Linux/macOS only.
+        return { ok: true, detail: 'SKIP on win32 (no POSIX mode bits)' };
+      }
       try {
         const st = await stat(filePath);
         const isExec = (st.mode & 0o111) !== 0;
@@ -783,7 +792,7 @@ const dispatchers = {
   },
 
   'agint-dream': async (scenario, ctx) => {
-    const { gateCandidates } = await import(`${AGINT_ROOT}/plugins/agint-dream/lib/sweep.js`);
+    const { gateCandidates } = await import(`${AGINT_URL}/plugins/agint-dream/lib/sweep.js`);
     const input = scenario.input[0].args;
     const exp = scenario.expected[0];
 
@@ -803,7 +812,7 @@ const dispatchers = {
 
   'agint-evolution-memory': async (scenario, ctx) => {
     // Sprint 2.B: 进化记忆 plugin 的真 service 行为验证。
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-evolution-memory/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-evolution-memory/lib/index.js`);
     mod.apply(ctx, {});
     const evo = ctx.get('agint.evolution');
     const input = scenario.input[0].args;
@@ -882,7 +891,7 @@ const dispatchers = {
   'agint-quality-sandbox': async (scenario, ctx) => {
     // Sprint 2.A: 沙箱 plugin 的契约 + 降级路径验证。
     // mock ctx 没有 sandbox service → 走 in-process fallback。
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-sandbox/lib/index.js`);
     mod.apply(ctx, {});
     const sb = ctx.get('agint.qualitySandbox');
     const input = scenario.input[0];
@@ -935,7 +944,7 @@ const dispatchers = {
 
   'agint-quality-eval': async (scenario, ctx) => {
     // Sprint 2 退化探测: agint-quality-eval 的 regression 纯函数 + Service 接口
-    const { checkRegression, checkStagnation, computePassRate, BASELINE_TARGETS } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/regression.js`);
+    const { checkRegression, checkStagnation, computePassRate, BASELINE_TARGETS } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/regression.js`);
     const input = scenario.input[0];
     const exp = scenario.expected[0];
 
@@ -977,8 +986,8 @@ const dispatchers = {
       || exp.kind === 'sandbox-gate-rejects'
       || exp.kind === 'sandbox-gate-skipped') {
       // 用真实 eval plugin + 丰富 mock ctx
-      const { compositeScore } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
-      const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const { compositeScore } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
+      const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
       const input = scenario.input[0];
       const richCtx = makeRichEvalMockCtx(input);
       evalMod.apply(richCtx, {});
@@ -1015,7 +1024,7 @@ const dispatchers = {
       || exp.kind === 'weekly-runs-baseline'
       || exp.kind === 'weekly-stagnation-initial'
       || exp.kind === 'weekly-regression-detected') {
-      const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
       const ctx = makeRichEvalMockCtx(input);
       ctx.provide('skills', {
         list: async () => ({ items: [{ name: 'agint-smoke-skill', version: '0.0.0' }] }),
@@ -1105,7 +1114,7 @@ const dispatchers = {
 
   'agint-quality-policy': async (scenario, ctx) => {
     // Sprint 4: policy 完整 4 决策 + 加权 + audit + 反和谐 detector 挂钩
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
     const input = scenario.input[0];
     const exp = scenario.expected[0];
 
@@ -1170,7 +1179,7 @@ const dispatchers = {
 
     if (exp.kind === 'weights-shape') {
       // 测 computeComposite 的权重逻辑（独立纯函数）
-      const { computeComposite, DEFAULT_DIMENSION_WEIGHTS } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/decide.js`);
+      const { computeComposite, DEFAULT_DIMENSION_WEIGHTS } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/decide.js`);
       const evalRes = input.result;
       const composite = computeComposite(evalRes, DEFAULT_DIMENSION_WEIGHTS);
       const ok = composite === exp.expectedComposite;
@@ -1217,7 +1226,7 @@ const dispatchers = {
 
     // ── Sprint 4.2: 反和谐检测器 evals ─────────────────────────────────
     if (input.service === 'falseHarmonyDetector' && input.action === 'detectRejectionUniformity') {
-      const { detectRejectionUniformity } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const { detectRejectionUniformity } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
       const r = detectRejectionUniformity({ history: input.history, k: input.k });
       if (exp.kind === 'rejection-uniformity-detected') {
         return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern} evidence=${JSON.stringify(r.evidence).slice(0, 80)}` };
@@ -1229,7 +1238,7 @@ const dispatchers = {
     }
 
     if (input.service === 'falseHarmonyDetector' && input.action === 'detectFalseConsensus') {
-      const { detectFalseConsensus } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const { detectFalseConsensus } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
       const r = detectFalseConsensus({ batch: input.batch, n: input.n, minScore: input.minScore });
       if (exp.kind === 'false-consensus-detected') {
         return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern}` };
@@ -1241,7 +1250,7 @@ const dispatchers = {
     }
 
     if (input.service === 'falseHarmonyDetector' && input.action === 'detectRegressionUnderreporting') {
-      const { detectRegressionUnderreporting } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
+      const { detectRegressionUnderreporting } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/falseHarmonyDetector.js`);
       const r = detectRegressionUnderreporting({ history: input.history, k: input.k });
       if (exp.kind === 'regression-underreporting-detected') {
         return { ok: r.detected === true, detail: `detected=${r.detected} pattern=${r.pattern}` };
@@ -1373,7 +1382,7 @@ const dispatchers = {
 
     // ── 重置 bus 模块级状态（s12-01 留下的订阅不影响 s12-02 sync counter）──
     try {
-      const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+      const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
       busMod.disposeBus();
     } catch { /* ignore */ }
 
@@ -1417,13 +1426,13 @@ const dispatchers = {
     });
 
     // ── 关键：先挂 event-bus，再挂 policy，再挂 eval（mock 时序绕开 mountOrder）──
-    const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+    const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
     eventBusMod.apply(ctx, {});
 
-    const policyMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+    const policyMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
     policyMod.apply(ctx, {});
 
-    const evalMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+    const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
     evalMod.apply(ctx, {});
     await new Promise((r) => setTimeout(r, 20));
 
@@ -1489,7 +1498,7 @@ const dispatchers = {
     // 失败模式不可区分"==1" 和 "==2"，所以用 inspectSnapshot 更精确。
     let syncCountIsOne = false;
     try {
-      const snapMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+      const snapMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
       const snap = snapMod._subscriptionsSnapshot();
       const syncSubs = snap.filter((s) => s.mode === 'sync');
       syncCountIsOne = syncSubs.length === 1 && syncSubs[0].subscriber === 'agint-quality-policy';
@@ -1516,7 +1525,7 @@ const dispatchers = {
 
   'agint-quality-report': async (scenario, ctx) => {
     // Sprint 4.4: HARM 报告生成
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-report/lib/index.js`);
+    const mod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-report/lib/index.js`);
     mod.apply(ctx, {});
 
     // 提供 mock wiki + memory
@@ -1584,12 +1593,12 @@ const dispatchers = {
 
   'agint-quality-sdk': async (scenario, ctx) => {
     // Sprint 5: Prompt SDK manifest / template / static-check / regression
-    const mod = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/index.js`);
-    const { validateManifest, renderPrompt, staticCheckPrompt, runRegressionTests } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/static-check.js`).catch(() => ({}));
+    const mod = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/index.js`);
+    const { validateManifest, renderPrompt, staticCheckPrompt, runRegressionTests } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/static-check.js`).catch(() => ({}));
     // The static-check / template-engine are pure functions imported directly.
-    const { staticCheckPrompt: sc, runRegressionTests: rt } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/static-check.js`);
-    const { renderPrompt: rp } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/template-engine.js`);
-    const { validateManifest: vm } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/schema.js`);
+    const { staticCheckPrompt: sc, runRegressionTests: rt } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/static-check.js`);
+    const { renderPrompt: rp } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/template-engine.js`);
+    const { validateManifest: vm } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/schema.js`);
 
     mod.apply(ctx, {});
     const sdk = ctx.get('agint.promptSDK');
@@ -1641,8 +1650,9 @@ const dispatchers = {
 
     // ── Sprint 6.1: batch static check across manifestsRoot ─────────
     if (exp.kind === 'batch-static-check-clean') {
+      // manifestsRoot goes to fs.readdir — needs a real path, not a file:// URL
       const root = `${AGINT_ROOT}/plugins/agint-quality-sdk/examples`;
-      const { batchStaticCheck } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/check-all.js`);
+      const { batchStaticCheck } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/check-all.js`);
       const r = await batchStaticCheck({ manifestsRoots: [root] });
       const ok = r.totalScanned >= 3 && r.blockerCount === 0;
       return { ok, detail: `scanned=${r.totalScanned} clean=${r.cleanCount} blockers=${r.blockerCount} firstTarget=${r.summaries[0]?.targetId}` };
@@ -1654,9 +1664,9 @@ const dispatchers = {
   'agint-sprint6-prompt-eval': async (scenario, ctx) => {
     // Sprint 6.2/6.3: eval-prompt-static + policy.prompt tests
     // 用真 plugin + 注入 prompt SDK 到 ctx
-    const { evalPromptStatic } = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
-    const { PromptManifestSchema } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/schema.js`);
-    const { staticCheckPrompt } = await import(`${AGINT_ROOT}/plugins/agint-quality-sdk/lib/static-check.js`);
+    const { evalPromptStatic } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
+    const { PromptManifestSchema } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/schema.js`);
+    const { staticCheckPrompt } = await import(`${AGINT_URL}/plugins/agint-quality-sdk/lib/static-check.js`);
 
     const exp = scenario.expected[0];
 
@@ -1760,7 +1770,7 @@ const dispatchers = {
     let realQualityStatic = null;
     let realPluginLoadError = null;
     try {
-      const qsMod = await import(`${AGINT_ROOT}/plugins/agint-quality-static/lib/index.js`);
+      const qsMod = await import(`${AGINT_URL}/plugins/agint-quality-static/lib/index.js`);
       qsMod.apply(ctx, {});
       realQualityStatic = ctx.get('agint.qualityStatic') ?? null;
     } catch (e) {
@@ -1847,7 +1857,7 @@ const dispatchers = {
 
     // ── 真实编排逻辑（与设计稿 §3 / §4.3 完全对齐）────────────────
     // 当 codex-A 真插件产出后，把这一段替换为：
-    //   const mod = await import(`${AGINT_ROOT}/plugins/agint-mount/lib/index.js`);
+    //   const mod = await import(`${AGINT_URL}/plugins/agint-mount/lib/index.js`);
     //   mod.apply(ctx, {});
     //   const mountService = ctx.get('agint.mount');
     //   const result = await mountService.request(input.proposal, { fixture: input.fixture });
@@ -2194,15 +2204,40 @@ async function loadScenarios(filterFile) {
     const text = await readFile(join(dir, f), 'utf8');
     const parsed = JSON.parse(text);
     const items = Array.isArray(parsed) ? parsed : [parsed];
-    for (const item of items) out.push({ file: f, scenario: item });
+    for (const item of items) out.push({ file: f, scenario: substituteRoot(item) });
   }
   return out;
+}
+
+// Scenario paths may reference the repo root via the `$AGINT_ROOT` token so
+// that fixtures stay machine-independent (they used to hardcode the original
+// dev machine's absolute path, breaking every other environment).
+function substituteRoot(value) {
+  if (typeof value === 'string') return value.replaceAll('$AGINT_ROOT', AGINT_ROOT);
+  if (Array.isArray(value)) return value.map(substituteRoot);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = substituteRoot(v);
+    return out;
+  }
+  return value;
 }
 
 export async function runScenario(entry) {
   const dispatch = dispatchers[entry.scenario.plugin];
   if (!dispatch) {
-    recordResult(entry.scenario.scenario, false, `no dispatcher for ${entry.scenario.plugin}`);
+    // Scenario files without a `plugin` field belong to dedicated runners
+    // (run-mutator-eval.mjs / run-counterfactual-stress.mjs) and were never
+    // driver-managed; skipping them beats failing them as "undefined".
+    const dedicated = !entry.scenario.plugin;
+    recordResult(
+      entry.scenario.scenario ?? entry.file,
+      false,
+      dedicated
+        ? 'not driver-managed (dedicated runner exists)'
+        : `no dispatcher for ${entry.scenario.plugin}`,
+      dedicated,
+    );
     return;
   }
   const ctx = makeMockCtx();
@@ -2225,8 +2260,9 @@ async function main() {
   for (const s of scenarios) await runScenario(s);
 
   const pass = results.filter((r) => r.ok).length;
-  const fail = results.length - pass;
-  console.log(`\n=== ${pass} passed, ${fail} failed (of ${results.length}) ===`);
+  const skipped = results.filter((r) => r.skipped).length;
+  const fail = results.length - pass - skipped;
+  console.log(`\n=== ${pass} passed, ${fail} failed, ${skipped} skipped (of ${results.length}) ===`);
   process.exit(fail === 0 ? 0 : 1);
 }
 

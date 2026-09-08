@@ -10,7 +10,12 @@
  * 期望退出码: 全部 PASS → 0, 任一 FAIL → 1。
  */
 
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { makeMockCtx } from '../scenarios/driver.js';
+
+// 仓库根目录从本文件位置推导（原先写死首台开发机的绝对路径，换机即失效）
+const AGINT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 // ── 所有 plugin imports ─────────────────────────────────────────────
 import * as qualityContract from '../../plugins/agint-quality/agint-quality-contract/lib/index.js';
@@ -132,7 +137,7 @@ async function runPipeline() {
     id: 'agint-quality-report',
     kind: 'plugin',
     version: '0.4.0',
-    path: '/home/anmul/projects/AGINT/plugins/agint-quality/agint-quality-report',
+    path: `${AGINT_ROOT}/plugins/agint-quality/agint-quality-report`,
     tags: ['d-qaf', 'phase-4'],
   };
   const result = await evaluator.evaluate(target);

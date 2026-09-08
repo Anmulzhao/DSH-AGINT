@@ -11,18 +11,18 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EVAL_PATH = resolve(__dirname, '../lib/index.js');
 const EVALUATORS_PATH = resolve(__dirname, '../lib/evaluators.js');
 
-const { compositeScore } = await import(EVALUATORS_PATH);
+const { compositeScore } = await import(pathToFileURL(EVALUATORS_PATH).href);
 
 // ─── plugin load 验证 ─────────────────────────────────────────────
 test('plugin module loads without throwing', async () => {
-  const mod = await import(EVAL_PATH);
+  const mod = await import(pathToFileURL(EVAL_PATH).href);
   assert.equal(typeof mod.apply, 'function', 'must export apply(ctx, config)');
   assert.equal(typeof mod.name, 'string', 'must export name');
 });

@@ -21,11 +21,13 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '..');
+// Windows ESM loader needs file:// URLs for dynamic import()
+const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
 const SCENARIO_FILE = join(__dirname, 'scenarios', 'agint-diagnosis-counterfactual.scenario.json');
 
 const SOFT_THRESHOLD = 0.5; // 设计稿 §三：首次发布软门槛
@@ -43,7 +45,7 @@ if (fixtures.length < 10) {
 
 // ── 加载 plugin + 真 counterfactual service ──────────────────────────────
 
-const pluginMod = await import(`${AGINT_ROOT}/plugins/agint-diagnosis/lib/index.js`);
+const pluginMod = await import(`${AGINT_URL}/plugins/agint-diagnosis/lib/index.js`);
 
 // 把 fixture 写进 mock evolution（queryFailures 返回整表）+ mock memory（空）
 function makeMockCtx(failures) {

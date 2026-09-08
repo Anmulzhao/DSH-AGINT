@@ -16,11 +16,13 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '..');
+// Windows ESM loader needs file:// URLs for dynamic import()
+const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
 const SCENARIO_FILE = join(__dirname, 'scenarios', 'agint-diagnosis.scenario.json');
 
 // ── 加载 scenario JSON ───────────────────────────────────────────────────
@@ -34,8 +36,8 @@ if (!Array.isArray(scenarios) || scenarios.length < 10) {
 
 // ── 加载真实 lib（动态 import — ESM） ────────────────────────────────────
 
-const { classify } = await import(`${AGINT_ROOT}/plugins/agint-diagnosis/lib/root-cause-classifier.js`);
-const pluginMod = await import(`${AGINT_ROOT}/plugins/agint-diagnosis/lib/index.js`);
+const { classify } = await import(`${AGINT_URL}/plugins/agint-diagnosis/lib/root-cause-classifier.js`);
+const pluginMod = await import(`${AGINT_URL}/plugins/agint-diagnosis/lib/index.js`);
 
 // ── mock ctx 工厂（annotate service 测试用） ──────────────────────────────
 

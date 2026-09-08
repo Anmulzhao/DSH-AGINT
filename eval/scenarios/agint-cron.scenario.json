@@ -23,12 +23,26 @@
     "scenario": "cron-default-jobs-registered",
     "plugin": "agint-cron",
     "input": [
-      { "service": "cron", "action": "listDefaultJobs" }
+      {
+        "service": "cron",
+        "action": "listDefaultJobs"
+      }
     ],
     "expected": [
       {
         "kind": "default-jobs-registered",
-        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check", "baseline-regression-suite"],
+        "expectedIds": [
+          "memory-decay",
+          "wiki-lint",
+          "metrics-collect",
+          "evolve-review",
+          "night-dream",
+          "tool-stats-backfill",
+          "prompt-static-check",
+          "baseline-regression-suite",
+          "skill-autocreate-aggregate",
+          "curator-weekly"
+        ],
         "_note": "Sprint 12 B3: 新增 baseline-regression-suite（Sun 03:15 周节奏）"
       }
     ]

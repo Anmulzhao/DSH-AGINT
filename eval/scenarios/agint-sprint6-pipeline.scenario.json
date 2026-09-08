@@ -18,12 +18,26 @@
     "scenario": "sprint6-cron-job-prompt-static-check-registered",
     "plugin": "agint-cron",
     "input": [
-      { "service": "cron", "action": "listDefaultJobs" }
+      {
+        "service": "cron",
+        "action": "listDefaultJobs"
+      }
     ],
     "expected": [
       {
         "kind": "default-jobs-registered",
-        "expectedIds": ["memory-decay", "wiki-lint", "metrics-collect", "evolve-review", "night-dream", "tool-stats-backfill", "prompt-static-check", "baseline-regression-suite"],
+        "expectedIds": [
+          "memory-decay",
+          "wiki-lint",
+          "metrics-collect",
+          "evolve-review",
+          "night-dream",
+          "tool-stats-backfill",
+          "prompt-static-check",
+          "baseline-regression-suite",
+          "skill-autocreate-aggregate",
+          "curator-weekly"
+        ],
         "_note": "Sprint 12 B3: 新增 baseline-regression-suite（Sun 03:15 周节奏）"
       }
     ]
@@ -55,7 +69,7 @@
     "expected": [
       {
         "kind": "eval-prompt-static-clean",
-        "expectedScore": 1.0
+        "expectedScore": 1
       }
     ]
   },
@@ -85,14 +99,43 @@
           {
             "targetId": "bad-prompt",
             "kind": "plugin",
-            "tags": ["prompt-target"],
-            "dimensions": [
-              { "key": "safety", "score": { "score": 1 }, "veto": false },
-              { "key": "trust", "score": { "score": 0.9 }, "veto": false },
-              { "key": "reliability", "score": { "score": 0.85 } },
-              { "key": "integrability", "score": { "score": 1.0 } }
+            "tags": [
+              "prompt-target"
             ],
-            "findings": [{ "severity": "blocker", "message": "INJECTION_IGNORE_PREV" }]
+            "dimensions": [
+              {
+                "key": "safety",
+                "score": {
+                  "score": 1
+                },
+                "veto": false
+              },
+              {
+                "key": "trust",
+                "score": {
+                  "score": 0.9
+                },
+                "veto": false
+              },
+              {
+                "key": "reliability",
+                "score": {
+                  "score": 0.85
+                }
+              },
+              {
+                "key": "integrability",
+                "score": {
+                  "score": 1
+                }
+              }
+            ],
+            "findings": [
+              {
+                "severity": "blocker",
+                "message": "INJECTION_IGNORE_PREV"
+              }
+            ]
           }
         ]
       }
@@ -101,7 +144,9 @@
       {
         "kind": "decision-shape",
         "decision": "REJECT",
-        "perTargetDecisions": ["REJECT"]
+        "perTargetDecisions": [
+          "REJECT"
+        ]
       }
     ]
   },
@@ -116,12 +161,36 @@
           {
             "targetId": "clean-prompt",
             "kind": "plugin",
-            "tags": ["prompt-target"],
+            "tags": [
+              "prompt-target"
+            ],
             "dimensions": [
-              { "key": "safety", "score": { "score": 1 }, "veto": false },
-              { "key": "trust", "score": { "score": 0.6 }, "veto": false },
-              { "key": "reliability", "score": { "score": 0.9 } },
-              { "key": "integrability", "score": { "score": 1.0 } }
+              {
+                "key": "safety",
+                "score": {
+                  "score": 1
+                },
+                "veto": false
+              },
+              {
+                "key": "trust",
+                "score": {
+                  "score": 0.6
+                },
+                "veto": false
+              },
+              {
+                "key": "reliability",
+                "score": {
+                  "score": 0.9
+                }
+              },
+              {
+                "key": "integrability",
+                "score": {
+                  "score": 1
+                }
+              }
             ],
             "findings": []
           }
@@ -132,7 +201,9 @@
       {
         "kind": "decision-shape",
         "decision": "PENDING_REVIEW",
-        "perTargetDecisions": ["PENDING_REVIEW"]
+        "perTargetDecisions": [
+          "PENDING_REVIEW"
+        ]
       }
     ]
   },
@@ -149,12 +220,33 @@
             "kind": "plugin",
             "evaluatorId": "agint-quality-eval@2026-08-22",
             "durationMs": 50,
-            "tags": ["prompt-target"],
-            "dimensions": [
-              { "key": "safety", "label": "安全", "score": { "score": 1 }, "veto": false },
-              { "key": "promptStatic", "label": "Prompt Static", "score": { "score": 1 }, "veto": false }
+            "tags": [
+              "prompt-target"
             ],
-            "harm": { "homogeneity": 0.5, "alignment": 0.9, "reduction": 0.9, "mutability": 0.5 },
+            "dimensions": [
+              {
+                "key": "safety",
+                "label": "安全",
+                "score": {
+                  "score": 1
+                },
+                "veto": false
+              },
+              {
+                "key": "promptStatic",
+                "label": "Prompt Static",
+                "score": {
+                  "score": 1
+                },
+                "veto": false
+              }
+            ],
+            "harm": {
+              "homogeneity": 0.5,
+              "alignment": 0.9,
+              "reduction": 0.9,
+              "mutability": 0.5
+            },
             "findings": []
           }
         ],
@@ -172,7 +264,10 @@
     "expected": [
       {
         "kind": "report-shape-prompt",
-        "mustIncludeMarkdownHeadings": ["Prompt summary (Sprint 6)", "promptStatic score"]
+        "mustIncludeMarkdownHeadings": [
+          "Prompt summary (Sprint 6)",
+          "promptStatic score"
+        ]
       }
     ]
   }

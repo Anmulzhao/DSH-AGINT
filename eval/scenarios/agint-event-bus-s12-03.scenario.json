@@ -28,11 +28,11 @@
           "8. 校验 inspect 日志 + policy audit log + 直连 runSmoke return 结果"
         ],
         "happyTarget": {
-          "path": "/home/anmul/projects/AGINT/plugins/agint-quality-sandbox",
+          "path": "$AGINT_ROOT/plugins/agint-quality-sandbox",
           "name": "agint-quality-sandbox"
         },
         "failingTarget": {
-          "path": "/home/anmul/projects/AGINT/plugins/agint-diagnosis/lib/__nonexistent_for_fail__.js",
+          "path": "$AGINT_ROOT/plugins/agint-diagnosis/lib/__nonexistent_for_fail__.js",
           "name": "agint-diagnosis-fail-stub"
         }
       }

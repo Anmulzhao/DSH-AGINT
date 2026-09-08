@@ -9,7 +9,7 @@
         "target": {
           "id": "agint-memory",
           "kind": "plugin",
-          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+          "path": "$AGINT_ROOT/plugins/agint-memory"
         },
         "sandboxMock": {
           "ok": true,
@@ -67,7 +67,7 @@
         "target": {
           "id": "agint-memory",
           "kind": "plugin",
-          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+          "path": "$AGINT_ROOT/plugins/agint-memory"
         },
         "_note": "mock ctx 不提供 agint.qualitySandbox → eval 跳过 sandbox gate, 走正常路径"
       }
