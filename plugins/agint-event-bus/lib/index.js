@@ -23,7 +23,13 @@ import { EventEnvelopeSchema } from './schemas.js';
 import { z } from 'zod';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 const name = 'agint-event-bus';
-const inject = ['storageDomain', 'agint.evolution'];
+// fix-20260904-2338：打破 cordis 循环依赖。
+//   原 `['storageDomain', 'agint.evolution']` 与 agint-evolution-memory
+//   互为 provider/consumer（event-bus 提供 agint.eventBus.* 给 evolution-memory，
+//   evolution-memory 提供 agint.evolution 给 event-bus），导致 8 个插件永久 PENDING。
+//   运行期 `agint.evolution` 仅用于可选的 `ctx.get(...)?.logBuffered(entry)` 软降级，
+//   不声明为硬依赖也不影响功能（bus 自身有 agint_event_bus 域 + deadletter 自洽）。
+const inject = ['storageDomain'];
 /** sync 订阅硬上限（设计稿 §A2.6 + schema yaml constraints） */
 export const SYNC_GLOBAL_LIMIT = 3;
 // ── 存储域声明（对齐 dsh-storage-domain defineDomain API） ─────────────

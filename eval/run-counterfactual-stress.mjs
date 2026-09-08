@@ -2,7 +2,7 @@
 /**
  * eval/run-counterfactual-stress.mjs — Sprint 7 子任务 #6 反事实成功率压测
  *
- * 读取 eval/scenarios/agint-diagnosis-counterfactual.scenario.json，对
+ * 读取 eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json，对
  * 每条 fixture 跑 plugins/agint-diagnosis/lib/index.js 的真
  * `agint.diagnosis.counterfactual` service（mock ctx）。
  *
@@ -28,7 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '..');
 // Windows ESM loader needs file:// URLs for dynamic import()
 const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
-const SCENARIO_FILE = join(__dirname, 'scenarios', 'agint-diagnosis-counterfactual.scenario.json');
+const SCENARIO_FILE = join(__dirname, 'scenarios', 'dedicated', 'agint-diagnosis-counterfactual.scenario.json');
 
 const SOFT_THRESHOLD = 0.5; // 设计稿 §三：首次发布软门槛
 const ROADMAP_TARGET = 0.7; // 设计稿 §三：路线图目标

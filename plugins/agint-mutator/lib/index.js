@@ -48,10 +48,14 @@ import { z } from 'zod';
 
 const name = 'agint-mutator';
 
-// 硬依赖：storageDomain。软依赖 4 个走 ctx.get（不阻塞挂载）：
+// 硬依赖：storageDomain + agint.eventBus.subscribe。
+//   eventBus.subscribe 原为软依赖（ctx.get 一次性读取），但 loader 各行并行
+//   初始化，行顺序不保证 provide 先于消费，导致启动时经常取不到而永久降级
+//   （diagnosis.completed 影子观察失效）。改为 inject 让 DI 等待服务就绪。
+// 软依赖 3 个走 ctx.get（不阻塞挂载）：
 //   agint.evolution（failure_pattern）/ agint.diagnosis（annotations）/
 //   agint.dream（REM）/ agint.qualitySandbox（verify）。
-const inject = ['storageDomain'];
+const inject = ['storageDomain', 'agint.eventBus.subscribe'];
 
 // Sprint 8 #5 模块级 pure helpers（设计稿 §二.4，独立可测）
 function _deriveTargetPlugin(c) {
