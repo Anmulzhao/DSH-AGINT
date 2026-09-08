@@ -254,21 +254,25 @@ export function openStore(ctx) {
   // 真实 storageDomain.open 是异步的：就绪后热切换为真实表（经 adaptTable 适配）。
   // 就绪前 / 失败时保持内存降级，不影响契约；绝不让 async rejection 逃逸成 fatal。
   if (ctx && typeof ctx.storageDomain?.open === 'function') {
-    ctx.storageDomain.open(spec).then(
-      (handle) => {
-        if (handle && typeof handle.table === 'function') {
-          store.tables = {
-            capabilityMap: adaptTable(handle.table('capability_map')),
-            reasoningProfile: adaptTable(handle.table('reasoning_profile')),
-            resourceBaseline: adaptTable(handle.table('resource_baseline')),
-            calibrationLog: adaptTable(handle.table('calibration_log')),
-          };
-          store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
-          store._memory = false;
-        }
-      },
-      () => { /* 降级内存（不 fatal） */ },
-    );
+    try {
+      ctx.storageDomain.open(spec).then(
+        (handle) => {
+          if (handle && typeof handle.table === 'function') {
+            store.tables = {
+              capabilityMap: adaptTable(handle.table('capability_map')),
+              reasoningProfile: adaptTable(handle.table('reasoning_profile')),
+              resourceBaseline: adaptTable(handle.table('resource_baseline')),
+              calibrationLog: adaptTable(handle.table('calibration_log')),
+            };
+            store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
+            store._memory = false;
+          }
+        },
+        () => { /* 降级内存（不 fatal） */ },
+      );
+    } catch {
+      // open() 同步 throw（如测试 mock / 异常 provider）同样降级内存（不 fatal）
+    }
   }
   return store;
 }

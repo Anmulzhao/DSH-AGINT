@@ -24,7 +24,7 @@
         "service": "qualitySandbox",
         "action": "runSmokeInProcess",
         "target": {
-          "path": "/home/anmul/projects/AGINT/plugins/agint-memory"
+          "path": "$AGINT_ROOT/plugins/agint-memory"
         },
         "_note": "mock ctx 没有 sandbox service，应降级到 in-process 跑 agint-memory 冒烟"
       }

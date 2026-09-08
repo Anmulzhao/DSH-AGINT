@@ -18,11 +18,16 @@
  * Returns { ok, detail } with full diagnostics.
  */
 
-const AGINT_ROOT = '/home/anmul/projects/AGINT';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+// Derive repo root from this file's own location instead of hardcoding the
+// original dev machine's path (that broke every other environment).
+const AGINT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export async function policyDeployedRolledbackShadowBranch(input, ctx) {
   try {
-    const busMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/bus.js`);
+    const busMod = await import(`${pathToFileURL(AGINT_ROOT).href}/plugins/agint-event-bus/lib/bus.js`);
     busMod.disposeBus();
   } catch { /* ignore */ }
 
@@ -77,20 +82,20 @@ export async function policyDeployedRolledbackShadowBranch(input, ctx) {
   ctx.provide('agint.storageDomain', storageDomainMock);
 
   // ── 3. real event-bus ──
-  const eventBusMod = await import(`${AGINT_ROOT}/plugins/agint-event-bus/lib/index.js`);
+  const eventBusMod = await import(`${pathToFileURL(AGINT_ROOT).href}/plugins/agint-event-bus/lib/index.js`);
   eventBusMod.apply(ctx, {});
 
   // ── 4. real quality-policy (registers decide with publish on AUTO_DEPLOY / REJECT+rollback) ──
-  const policyMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
+  const policyMod = await import(`${pathToFileURL(AGINT_ROOT).href}/plugins/agint-quality/agint-quality-policy/lib/index.js`);
   policyMod.apply(ctx, {});
 
   // ── 5. real quality-report (subscribes policy.deployed / policy.rolledback) ──
-  const reportMod = await import(`${AGINT_ROOT}/plugins/agint-quality/agint-quality-report/lib/index.js`);
+  const reportMod = await import(`${pathToFileURL(AGINT_ROOT).href}/plugins/agint-quality/agint-quality-report/lib/index.js`);
   reportMod.apply(ctx, {});
   await new Promise((r) => setTimeout(r, 10));
 
   // ── 6. real metrics (subscribes → writes agint_metrics counter) ──
-  const metricsMod = await import(`${AGINT_ROOT}/plugins/agint-metrics/lib/index.js`);
+  const metricsMod = await import(`${pathToFileURL(AGINT_ROOT).href}/plugins/agint-metrics/lib/index.js`);
   metricsMod.apply(ctx, {});
   await new Promise((r) => setTimeout(r, 30)); // wait for storageDomain.open to resolve + subscription attach
 

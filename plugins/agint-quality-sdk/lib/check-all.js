@@ -24,7 +24,9 @@ export async function discoverPromptTargets({ manifestsRoots = [] } = {}) {
       if (!filePath.endsWith('manifest.json')) return;
       try {
         const content = JSON.parse(await readFile(filePath, 'utf8'));
-        const dirName = filePath.replace(/\/manifest\.json$/, '');
+        // separator-agnostic: on win32 join() emits backslashes, so a
+        // forward-slash-only regex silently never matches (scanned=0)
+        const dirName = filePath.replace(/[\\/]manifest\.json$/, '');
         const templatePath = join(dirName, 'template.md');
         if (!existsSync(templatePath)) return;
         const templateText = await readFile(templatePath, 'utf8');

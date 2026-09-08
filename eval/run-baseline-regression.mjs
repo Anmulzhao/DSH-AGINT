@@ -28,11 +28,13 @@ import { readFile, mkdir, rm } from 'node:fs/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '..');
+// Windows ESM loader needs file:// URLs for dynamic import()
+const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
 
 // ── 解析 CLI 参数 ──────────────────────────────────────────────
 const args = Object.fromEntries(
@@ -84,7 +86,7 @@ const ctx = {
 };
 
 // ── 真 plugin apply ────────────────────────────────────────────
-const { apply } = await import(`${AGINT_ROOT}/plugins/agint-evolve/lib/index.js`);
+const { apply } = await import(`${AGINT_URL}/plugins/agint-evolve/lib/index.js`);
 apply(ctx, { root });
 const evo = ctx.get('agint.evolve');
 if (!evo) {
