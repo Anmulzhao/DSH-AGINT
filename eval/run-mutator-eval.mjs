@@ -2,7 +2,7 @@
 /**
  * eval/run-mutator-eval.mjs — Sprint 8 子任务 #6 eval runner
  *
- * 读取 eval/scenarios/agint-mutator.scenario.json，按 scenario 顺序跑：
+ * 读取 eval/scenarios/dedicated/agint-mutator.scenario.json，按 scenario 顺序跑：
  *   - action=pureFn        → plugins/agint-mutator/lib/index.js 的模块级 pure helpers
  *   - action=serviceCall   → mock ctx 启动 lib/index.js，调真 Service
  *
@@ -27,7 +27,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGINT_ROOT = resolve(__dirname, '..');
 // Windows ESM loader needs file:// URLs for dynamic import()
 const AGINT_URL = pathToFileURL(AGINT_ROOT).href;
-const SCENARIO_FILE = join(__dirname, 'scenarios', 'agint-mutator.scenario.json');
+const SCENARIO_FILE = join(__dirname, 'scenarios', 'dedicated', 'agint-mutator.scenario.json');
 
 // ── 加载 scenario JSON ───────────────────────────────────────────────────
 

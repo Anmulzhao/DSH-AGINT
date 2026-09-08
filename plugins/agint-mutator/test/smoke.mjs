@@ -199,7 +199,9 @@ test('apply(ctx) lifecycle：open domain + 4 Service 全注册 + disposer 已注
   disposers[0](); // graceful dispose 不抛错
 
   assert.equal(plugin.name, 'agint-mutator');
-  assert.deepEqual(plugin.inject, ['storageDomain']);
+  // fix-20260904（host 热修）：eventBus.subscribe 改硬 inject，避免 loader 并行
+  //   初始化时 ctx.get 取不到而影子观察永久降级。
+  assert.deepEqual(plugin.inject, ['storageDomain', 'agint.eventBus.subscribe']);
   for (const k of ['MutationProposalSchema', 'CommitSchema', 'RollbackResultSchema', 'LIMITS']) {
     assert.ok(plugin[k], `${k} 已重新导出`);
   }

@@ -36,7 +36,10 @@ import { decayScan } from './decay.js';
 import { createLogBuffer, DEFAULT_FLUSH_COUNT, DEFAULT_FLUSH_MS } from './log-buffer.js';
 
 const name = 'agint-evolution-memory';
-const inject = ['storageDomain'];
+// fix-20260907（host 热修回灌）：eventBus.subscribe 原为软依赖（ctx.get 一次性
+//   读取），但 loader 各行并行初始化，行顺序不保证 provide 先于消费，导致启动时
+//   经常取不到而影子订阅永久降级。改为硬 inject 让 DI 等待服务就绪。
+const inject = ['storageDomain', 'agint.eventBus.subscribe'];
 
 const Config = z.object({}).optional();
 
@@ -380,6 +383,10 @@ function apply(ctx) {
         topic: 'evolution.proposed',
         reason: 'agint.eventBus.subscribe not found in ctx',
       });
+      // fix-20260907（host 热修回灌）：额外 emit 一条 metrics，让 silent-failure 不再 silent
+      if (typeof ctx.metrics === 'function') {
+        try { ctx.metrics('evolutionMemory.shadowSubscribe.missing', 1); } catch { /* ignore */ }
+      }
     } else {
       const unsubscribe = subscribe(
         { subscriber: 'agint-evolution-memory', topics: ['evolution.proposed'], mode: 'async' },

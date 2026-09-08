@@ -19,7 +19,7 @@ const { checkSelfModelIsolation } = await import(
 );
 
 const SELF_MODEL_DIR = resolve(AGINT_ROOT, 'plugins/agint-self-model');
-const FIX = (n) => resolve(AGINT_ROOT, `plugins/agint-self-model/test/fixtures/${n}`);
+const FIX = (n) => resolve(AGINT_ROOT, `plugins/agint-self-model/fixtures/${n}`);
 
 const blockersOf = (findings) => findings.filter((f) => f.severity === 'blocker');
 

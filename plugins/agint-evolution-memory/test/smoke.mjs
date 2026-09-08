@@ -170,20 +170,24 @@ nodeTest('tools.js: apply(ctx) 不抛 + 11 工具注册成功', async () => {
   const toolRegistry = [];
   const fakeTools = { register: (t) => { toolRegistry.push(t); return t; } };
   const fakeCtx = {
-    'agint.evolution.logPhase4': async (entry) => ({ id: `lp4-${Date.now()}`, ...entry }),
-    'agint.evolution.logPhase4Buffered': async (entry) => ({ queued: true, id: `lpb-${Date.now()}`, ...entry }),
-    'agint.evolution.readLogRangeMerged': async () => ({ merged: [], count: 0 }),
-    'agint.evolution.flushLogBufferNow': async () => ({ flushed: 0, ts: new Date().toISOString() }),
-    'agint.evolution.addFailure': async (f) => ({ id: `f-${Date.now()}`, ...f }),
-    'agint.evolution.addSuccess': async (s) => ({ id: `s-${Date.now()}`, ...s }),
-    'agint.evolution.queryFailures': async () => ({ results: [], count: 0 }),
-    'agint.evolution.queryTemplates': async () => ({ results: [], count: 0 }),
-    'agint.evolution.getLogRange': async () => ({ entries: [], count: 0 }),
-    'agint.evolution.decayScanRun': async () => ({ scanned: 0, downgraded: 0, cleared: 0 }),
-    'agint.evolution.stats': async () => ({
-      evolution_log: 0, failure_pattern: 0, success_template: 0,
-      limits: { LOG: 5000, FAILURE: 100, TEMPLATE: 50 },
-    }),
+    // 2026-09-04 伞解析重构：tools.js inject ['tools','agint.evolution']，
+    // 从 ctx['agint.evolution'] 伞对象上解构 11 个服务（不再逐键 inject）。
+    'agint.evolution': {
+      logPhase4: async (entry) => ({ id: `lp4-${Date.now()}`, ...entry }),
+      logPhase4Buffered: async (entry) => ({ queued: true, id: `lpb-${Date.now()}`, ...entry }),
+      readLogRangeMerged: async () => ({ merged: [], count: 0 }),
+      flushLogBufferNow: async () => ({ flushed: 0, ts: new Date().toISOString() }),
+      addFailure: async (f) => ({ id: `f-${Date.now()}`, ...f }),
+      addSuccess: async (s) => ({ id: `s-${Date.now()}`, ...s }),
+      queryFailures: async () => ({ results: [], count: 0 }),
+      queryTemplates: async () => ({ results: [], count: 0 }),
+      getLogRange: async () => ({ entries: [], count: 0 }),
+      decayScanRun: async () => ({ scanned: 0, downgraded: 0, cleared: 0 }),
+      stats: async () => ({
+        evolution_log: 0, failure_pattern: 0, success_template: 0,
+        limits: { LOG: 5000, FAILURE: 100, TEMPLATE: 50 },
+      }),
+    },
     tools: fakeTools,
     storageDomain: { open: async () => ({ table: async () => ({ put: async () => true, get: () => null, delete: async () => true, entries: () => [] }), close: async () => {} }) },
     effect: () => () => {},
@@ -223,7 +227,7 @@ nodeTest('tools.js: apply(ctx) 不抛 + 11 工具注册成功', async () => {
 // 3a. 正向：forward-slash 路径字面量 + storage domain 名
 nodeTest('dim5.5 正向：storage domains forward-slash 兼容', () => {
   const src = readFileSync(join(here, '..', 'lib', 'tools.js'), 'utf8');
-  assert.match(src, /agint\.evolution\.\w+/, 'tools.js 应含 agint.evolution.* namespace');
+  assert.match(src, /agint\.evolution(\.\w+)?/, 'tools.js 应含 agint.evolution namespace（伞键或子键均可）');
 
   const manifest = JSON.parse(readFileSync(join(here, '..', 'manifest.json'), 'utf8'));
   const domains = manifest.spec?.storage?.domains ?? manifest.storage?.domains ?? [];
