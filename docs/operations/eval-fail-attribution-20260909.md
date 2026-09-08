@@ -34,12 +34,11 @@
 - cron 场景期望任务列表少了 Sprint 14/15 新增的 `skill-autocreate-aggregate`、`curator-weekly`（2 个场景文件已更新）。
 - driver 新增 **SKIP 语义**（无 `plugin` 字段 → 不归 driver 管的文件记 ⊘，不再污染 FAIL 数）；`file-executable` 检查在 win32 下跳过（NTFS 无 POSIX 执行位，恒为 666）。
 
-## 5. 最终数字（本机实测 2026-09-09）
+## 5. 最终数字（本机实测 2026-09-09，dispatcher 补齐后终态）
 
 | 套件 | 结果 |
 |------|------|
-| 主 driver（125 场景） | **98 PASS / 25 FAIL / 2 SKIP** |
-| └ 25 个 FAIL 构成 | diagnosis 10 + self-model 10 + deploy-budget 5，**全部是 driver 缺 dispatcher**（功能各由专用套件兜住，见下） |
+| 主 driver（125 场景） | **123 PASS / 0 FAIL / 2 SKIP**（SKIP = 两个专用 runner 管辖的文件，by design） |
 | run-diagnosis-eval | 10/10 PASS |
 | run-counterfactual-stress | wouldSucceed 70%，软门槛+路线图门槛双 PASS |
 | run-mutator-eval | 19/19 PASS |
@@ -49,11 +48,22 @@
 | quality-eval smoke + deploy-budget | 4/4 + 11/11 PASS |
 | agint-quality-sdk 自身套件 | 0 fail |
 
+### 补齐的 3 个 dispatcher（同日完成）
+
+- `agint-diagnosis`（10 场景）：classify 纯函数路径 + annotate service 路径（cold-start / 表满硬抛错），与 run-diagnosis-eval.mjs 断言同构。
+- `agint-self-model`（10 场景）：能力三态 / 校准 cold-start 与 miscalibration（两趟真 service 校准）/ FROZEN 校验 / A11 发布 payload / 快照四块 / 推理画像。
+- `agint-quality-eval` 扩展（5 场景）：deploy budget 护栏全套 + weekly hook 接线（runNow 真跑 → deployBudget.exceeded + PENDING_REVIEW）。
+
+**补齐过程中发现并修正 1 处场景错误**：`self-model-capability-can` 配了 2 次失败样本，但
+`classifyStatus` 的 FROZEN 阈值 `FAILURE_THRESHOLD=2`（≥2 即 CANNOT 且先于 CAN 判定）——场景期望
+与 shipped 契约矛盾，场景错，mock 改为 1 次失败（保持"健康域读 CAN"的本意）。
+
 ## 6. 剩余挂账（移交后续 Sprint 决策）
 
-1. **driver 缺 3 个 dispatcher**（diagnosis / self-model / deploy-budget，共 25 场景）。这些场景 JSON 自 Sprint 13 起就存在但从未接入 driver——**VERSION 里「99/111」的数字自 Sprint 13 后没有再全量跑过，评估基线已过期**。选择：要么补 dispatcher 让 driver 成为唯一门禁，要么正式把这几族场景划归专用 runner 并从 `scenarios/` 挪走。
+1. ~~driver 缺 3 个 dispatcher~~ → **已补齐（同日）**，主 driver 123 PASS / 0 FAIL / 2 SKIP，成为唯一门禁。
 2. `eval/e2e/` 其余文件、host 挂载端（NAS 容器）未在本轮范围；本报告全部数字为本机（Windows）实测。
 3. self-model 插件目录下裸跑 `node --test` 会把**故意做坏的测试夹具**（`test/fixtures/broken-*`）当测试执行而报 2 个"失败"——应从插件目录根运行指定文件，或给 fixtures 加命名约定规避。
+4. mutator / counterfactual 两个场景文件仍在 `scenarios/` 目录（driver SKIP 兜底）；后续可挪到各自 runner 的目录下做物理隔离。
 
 ## 改动文件清单
 
