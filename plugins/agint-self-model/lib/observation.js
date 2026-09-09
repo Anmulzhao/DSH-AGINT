@@ -50,7 +50,7 @@ export function buildReasoningProfile(distribution = {}) {
 /**
  * 纯函数：由 tool-stats 摘要 + metrics snapshot 推导资源基线 entries。
  * @param {Array} toolSummary tool_stats_summary 的 summary 数组（{tool, calls, avgMs, p95Ms, ...}）
- * @param {object} [metricsSnapshot] agint.metrics.snapshot() 返回值 { asOf, count, metrics[] }
+ * @param {object} [metricsSnapshot] agint.metrics.summary() 返回值 { asOf, count, metrics[] }
  * @returns {Array<{metric,p50,p90,sampleCount,window}>}
  */
 export function buildResourceBaseline(toolSummary = [], metricsSnapshot = null) {
@@ -91,7 +91,7 @@ export function buildResourceBaseline(toolSummary = [], metricsSnapshot = null) 
  * @param {{now?:string, metricsIngest?:object}} [opts]
  *   metricsIngest（T2 A7 apply）：影子对账器实例。传入后 resource_baseline 的
  *   latency-ms 以事件重建快照（getLastSnapshot）为**权威路径**；事件未流入时
- *   回退直连 metrics.snapshot() 兜底（首启不空白），不视为链路错误。
+ *   回退直连 metrics.summary() 兜底（首启不空白），不视为链路错误。
  * @returns {Promise<{reasoningCount:number, resourceCount:number, metricsSource?:string}>}
  */
 export async function recomputeObservation(store, deps, opts = {}) {
@@ -129,7 +129,7 @@ export async function recomputeObservation(store, deps, opts = {}) {
     }
     else {
       const metrics = deps.get('agint.metrics');
-      if (metrics && typeof metrics.snapshot === 'function') metricsSnapshot = await metrics.snapshot();
+      if (metrics && typeof metrics.summary === 'function') metricsSnapshot = await metrics.summary();
       metricsSource = metricsSnapshot ? 'direct-fallback' : 'none';
     }
   }
