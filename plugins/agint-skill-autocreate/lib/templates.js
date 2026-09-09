@@ -4,7 +4,39 @@
  * 6 个模板：shell-automation / file-processing / api-calling /
  * report-generation / code-lint / git-workflow。
  * 提案生成时按工具序列选匹配模板；无匹配 → 不生成候选（宁缺毋滥）。
+ *
+ * ── 2026-09-09 修复：模板工具名与生产真实工具名错配 ──────────────────────
+ * 模板 requiredTools 写的是设计稿里的抽象名（terminal / file_read /
+ * file_write），而生产 tool-stats 记录的是宿主真实工具名
+ * （pwsh / read / write / edit / glob / grep / ssh_exec …）。两者零交集，
+ * 导致 `selectTemplate()` 在**全部真实模式上恒返回 null** —— 即 [5] 提案
+ * 生成环节 100% 落空，链路即使过了 [4] 也产不出候选。
+ *
+ * 修法：加一层「工具名归一化」（TOOL_CANONICAL_MAP），匹配前先把真实工具名
+ * 映射到模板语义名。渲染（renderBody）仍用原始工具名，保留信息。
  */
+
+/** 真实工具名 → 模板语义工具名（未列出的原样返回） */
+export const TOOL_CANONICAL_MAP = Object.freeze({
+  // terminal 语义：执行 shell / 脚本 / 远程命令
+  terminal: 'terminal', pwsh: 'terminal', bash: 'terminal', sh: 'terminal',
+  ssh_exec: 'terminal', ssh_upload: 'terminal',
+  // file_read 语义：读文件 / 找文件 / 搜内容
+  file_read: 'file_read', read: 'file_read', glob: 'file_read', grep: 'file_read',
+  read_image: 'file_read', ssh_list: 'file_read',
+  // file_write 语义：写文件 / 改文件
+  file_write: 'file_write', write: 'file_write', edit: 'file_write',
+});
+
+/** 工具名归一化（单工具） */
+export function canonicalTool(tool) {
+  return TOOL_CANONICAL_MAP[String(tool ?? '')] ?? String(tool ?? '');
+}
+
+/** 工具序列归一化（去重后的语义工具集） */
+export function canonicalToolSet(toolSequence) {
+  return new Set((toolSequence ?? []).map(canonicalTool).filter(Boolean));
+}
 
 export const TEMPLATES = Object.freeze([
   {
@@ -72,9 +104,11 @@ export const TEMPLATES = Object.freeze([
  * 评分：序列去重后覆盖 requiredTools 的比例（全集含 optionalTools）。
  * 返回 { template, score } 或 null（覆盖率 <1 的 required 不收——
  * 模板缺必需工具说明任务形态不符，Sprint 14 宁缺毋滥）。
+ *
+ * 匹配前先做工具名归一化（见文件头注释），否则真实工具名永远匹配不上。
  */
 export function selectTemplate(toolSequence) {
-  const tools = new Set(toolSequence ?? []);
+  const tools = canonicalToolSet(toolSequence);
   if (!tools.size) return null;
   let best = null;
   for (const t of TEMPLATES) {

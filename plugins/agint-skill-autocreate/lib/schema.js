@@ -124,6 +124,14 @@ export const ConfigSchema = z.object({
   param_similarity_threshold: z.number().min(0).max(1).default(0.8),
   min_standardizable_confidence: z.number().min(0).max(1).default(0.6),
 
+  // ── [4] 可标准化判断（2026-09-09 补齐；详见 lib/standardizable.js）──────
+  // 硬否决阈值：低于任一即判定「明确不可标准化」
+  standardizable_min_steps: z.number().int().min(1).default(2),
+  standardizable_min_distinct_tools: z.number().int().min(1).default(2),
+  // 轨道 A（diagnosis 归因）开关：'auto' = 有失败证据才启用；
+  // 'off' = 恒走启发式；'on' = 强制走 diagnosis（无证据时退化为 false）
+  standardizable_route: z.enum(['auto', 'on', 'off']).default('auto'),
+
   // 评估阈值（Sprint 15 使用，先冻结默认值）
   phase2_min_success_improvement: z.number().default(0.1),
   phase3_min_harm_increment: z.number().default(0.5),

@@ -1,5 +1,67 @@
 # Changelog — agint-skill-autocreate
 
+## 0.2.1 (2026-09-09) — 补齐 [4] 可标准化判断 + 修 [5] 模板工具名错配
+
+2026-09-09 门槛离线回放时发现的**两处链路断裂**（详见
+`docs/operations/p0-1-detector-replay-20260909.md` §7 及
+`docs/operations/p0-1-standardizable-20260909.md`）。
+
+### 新增：`lib/standardizable.js`（设计稿 §3.1 [4]，此前整段缺失）
+
+- `judgeStandardizable(pattern, opts)` → `{ standardizable, confidence, route,
+  rootCause, reason, signals }`
+- **双轨判定**：
+  - 轨道 A（diagnosis 归因）：需 `failureEvidence` + `diagnosis.classify`。
+    **当前不激活**——aggregator 只落 `successRate`、不聚合 `errorKind`，
+    且 `agint-diagnosis` v0.6.0 只暴露需要 `failureId` 的
+    `annotate`/`counterfactual`。接口已预留。
+  - 轨道 B（启发式，默认）：硬否决 + 正向信号打分。
+- **硬否决**（`standardizable: false`，明确低价值，不需人工）：
+  `EMPTY_SEQUENCE` / `TOO_FEW_STEPS` / `TRIVIAL_SINGLE_TOOL` /
+  `META_TOOL` / `NO_PARAM_STRUCTURE`
+- **软判定**（`standardizable: null`，证据不足 → 需人工，写周复盘）：
+  `LOW_CONFIDENCE`
+- 元工具黑名单：Agent 自我运维动作（自指红线 §9.4）。
+  `rule_check` **不在**其中——它是业务输入环节，做成 `rule_` 前缀会误杀
+  「先查规范再执行」这类真实流程（回放实测确认）。
+
+### 修复：`lib/templates.js` 工具名归一化（[5] 此前 100% 落空）
+
+- 模板 `requiredTools` 用设计稿抽象名（terminal / file_read / file_write），
+  而生产 tool-stats 记录宿主真实工具名（pwsh / read / write / edit / glob /
+  grep / ssh_exec…）。两者零交集 → `selectTemplate()` 在**全部真实模式上
+  恒返回 null** → 即使过了 [4] 也产不出候选。
+- 加 `TOOL_CANONICAL_MAP` / `canonicalTool()` / `canonicalToolSet()`：匹配前
+  归一化，渲染（`renderBody`）仍用原始工具名，信息不丢。
+
+### 变更：pipeline 接入
+
+- `index.js` `detect()`：跨门槛 pattern **先过 [4] 再进 [5]**，判定结果
+  （含被拒）**一律回写** `task_patterns.standardizable /
+  standardizableConfidence`，供周复盘直接扫表。
+- 被拒时写 `audit_log`（`standardizable_rejected` / `standardizable_uncertain`）。
+- `detect()` 返回新增 `standardizable: { judged, pass, rejected, uncertain }`。
+
+### 新增配置（均带默认值，`config: {}` 无需改动即可生效）
+
+- `standardizable_min_steps`（默认 2）
+- `standardizable_min_distinct_tools`（默认 2）
+- `standardizable_route`（`auto` / `on` / `off`，默认 `auto`）
+
+### 测试
+
+- 新增 `test/standardizable.test.mjs`（18 项）、`test/template-alias.test.mjs`（6 项）
+- 含设计稿 §14.2 的 **50 个已知模式准确率验证**（25 通过 + 25 拒绝，50/50）
+- 含**生产回放 7 个真实模式 → 7/7 被拒**（唯一有独立 ground truth 的子集）
+- 全量测试 **78/78 PASS**
+
+### 已知局限（诚实标注）
+
+- 50 模式集是**按规则设计的回归集**，不是独立 ground truth；用它的 100%
+  不代表真实准确率（目前无任何已发布自动创建技能可当标注样本）。
+- 补完 [4]+[5] 后，**生产当前数据下产出仍为 0**——瓶颈已从代码转移到
+  数据量（tool-stats 自 09-08 14:50Z 后无新记录，日记录量持续衰减）。
+
 ## 0.2.0 (2026-09-08) — Sprint 15 P0-1 评估层（T1–T8）
 
 用户 2026-09-08 拍板（设计稿 §12 五问全定，Q1=A 保 P0-1+P0-2），提前启动
