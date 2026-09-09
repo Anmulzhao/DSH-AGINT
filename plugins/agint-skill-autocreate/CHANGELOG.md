@@ -1,5 +1,16 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.2 (2026-09-09 晚) — v0.3.1 紧急修复：autocreate_modify JSON Schema
+
+- 修 v0.3.1 引入的 preset mount 失败：dsh loader 严格 JSON Schema 校验
+  要求每个 `type:"object"` 显式声明 `additionalProperties`，`autocreate_modify`
+  的 `skillDraft` 参数漏写导致整条 agint preset 挂载失败，UI 冒泡成
+  "agentPresets/list failed: Failed to fetch"（实际是 mount 异常）。
+- 永久护栏：新增 `test/schema-guard.test.mjs`（K19），扫描 `lib/tools.js`
+  所有 `type:"object"` schema，缺 `additionalProperties` 直接 fail；附
+  brace-balancing 状态机处理字符串/注释/嵌套。
+- 测试 103 → 104 全 PASS。
+
 ## 0.3.1 (2026-09-09 晚) — 拍板 2 改口：不接入中间环节，全自动发布
 
 - `require_human_approval_until` 默认 `null`（原 2026-10-07）：门 2 人工确认窗默认关闭，
