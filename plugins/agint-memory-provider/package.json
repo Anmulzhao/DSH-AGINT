@@ -1,7 +1,7 @@
 {
   "name": "agint-memory-provider",
-  "version": "0.1.0",
-  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）：ExternalProvider 抽象基类 + BuiltinProvider（封装 agint-memory）+ MemoryManager（激活/降级/生命周期调度/琐碎输入过滤/召回指示器）+ ProviderRegistry。运行时降级、pre_compress 检查点、工具动态注册由 Sprint 16 接力。",
+  "version": "0.2.0",
+  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层 + Sprint 16 降级与检查点）：ExternalProvider 抽象基类 + BuiltinProvider（封装 agint-memory）+ MemoryManager（激活/降级/生命周期调度/琐碎输入过滤/召回指示器 + 运行时降级/pre_compress fail-closed 检查点/provider 工具动态注册）+ ProviderRegistry。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -21,7 +21,8 @@
     "agint",
     "memory-provider",
     "p1-1",
-    "sprint-15"
+    "sprint-15",
+    "sprint-16"
   ],
   "license": "MIT",
   "peerDependencies": {

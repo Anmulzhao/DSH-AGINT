@@ -25,6 +25,7 @@ class MockProvider extends ExternalProvider {
    * @param {boolean} [config.failPrefetch=false]
    * @param {boolean} [config.failSyncTurn=false]
    * @param {boolean} [config.failPreCompress=false]
+   * @param {boolean} [config.failToolCall=false]
    * @param {number} [config.prefetchDelayMs=0]
    * @param {number} [config.apiVersion=2] 2 = fail-closed（§3.2 [3]）
    * @param {string[]} [config.memories]
@@ -37,6 +38,7 @@ class MockProvider extends ExternalProvider {
     this._failPrefetch = config.failPrefetch ?? false;
     this._failSyncTurn = config.failSyncTurn ?? false;
     this._failPreCompress = config.failPreCompress ?? false;
+    this._failToolCall = config.failToolCall ?? false;
     this._prefetchDelayMs = config.prefetchDelayMs ?? 0;
     this._apiVersion = config.apiVersion ?? 2;
     this._memories = config.memories ?? [
@@ -66,6 +68,7 @@ class MockProvider extends ExternalProvider {
   setFailPrefetch(v) { this._failPrefetch = Boolean(v); return this; }
   setFailSyncTurn(v) { this._failSyncTurn = Boolean(v); return this; }
   setFailPreCompress(v) { this._failPreCompress = Boolean(v); return this; }
+  setFailToolCall(v) { this._failToolCall = Boolean(v); return this; }
   setPrefetchDelay(ms) { this._prefetchDelayMs = Number(ms) || 0; return this; }
 
   /** 清空调用记录（用例之间隔离） */
@@ -137,6 +140,9 @@ class MockProvider extends ExternalProvider {
 
   async handleToolCall(toolName, args, kwargs) {
     this.calls.push(['handleToolCall', toolName, args]);
+    if (this._failToolCall) {
+      throw new Error('mock: handleToolCall failed (simulated)');
+    }
     if (toolName !== 'mock_add_user_memory') {
       // 未声明的工具必须显式失败（provider.js 同策略）
       throw new Error(`Provider ${this._name} does not handle tool ${toolName}`);

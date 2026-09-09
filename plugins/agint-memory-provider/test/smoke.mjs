@@ -21,15 +21,16 @@ import { ExternalProvider, validateProvider } from '../lib/provider.js';
 import { BuiltinProvider, formatMemories } from '../lib/builtin-provider.js';
 import { MockProvider } from '../lib/mock-provider.js';
 import { ProviderRegistry } from '../lib/registry.js';
-import { MemoryManager } from '../lib/manager.js';
+import { MemoryManager, classifyErrorType, withTimeout, PrefetchTimeoutError, MAX_CHECKPOINT_FAILURES } from '../lib/manager.js';
 import { isTrivialPrompt } from '../lib/trivial.js';
 
 // ── 导出契约 ─────────────────────────────────────────────────────────────
 
 test('导出契约：name / inject / apply / ConfigSchema', () => {
   assert.equal(plugin.name, 'agint-memory-provider');
-  // 硬依赖：自己的存储域 + agint.memory（封装为 builtin）；event-bus 是软依赖不进 inject
-  assert.deepEqual(plugin.inject, ['storageDomain', 'agint.memory']);
+  // 硬依赖：自己的存储域 + agint.memory（封装为 builtin）+ tools（阶段 2 工具注册）；
+  // event-bus 是软依赖不进 inject
+  assert.deepEqual(plugin.inject, ['storageDomain', 'agint.memory', 'tools']);
   assert.equal(typeof plugin.apply, 'function');
   assert.ok(plugin.ConfigSchema);
 
@@ -529,6 +530,17 @@ function harness(opts = {}) {
   const mock = new MockProvider(opts.mockConfig ?? {});
   reg.register(mock);
 
+  // 阶段 2：fake dsh 工具系统 + defineTool mock（opts.tools=false 表示不注入）
+  const toolDefs = {};
+  const fakeTools = opts.tools === false ? null : {
+    register: (def) => {
+      toolDefs[def.name] = def;
+      return () => { delete toolDefs[def.name]; };
+    },
+    get: (n) => toolDefs[n] ?? null,
+  };
+  const fakeDefineTool = opts.tools === false ? null : ((d) => d);
+
   const manager = new MemoryManager({
     registry: reg,
     builtin,
@@ -536,8 +548,10 @@ function harness(opts = {}) {
     record: async (table, business) => { records.push({ table, business }); return { id: 'x' }; },
     publish: async (topic, payload) => { events.push({ topic, payload }); return true; },
     debug: () => {},
+    tools: fakeTools,
+    defineTool: fakeDefineTool,
   });
-  return { manager, reg, mem, builtin, mock, records, events, cfg };
+  return { manager, reg, mem, builtin, mock, records, events, cfg, toolDefs, fakeTools };
 }
 
 test('MemoryManager：构造校验（registry / builtin / config 缺一不可）', () => {
@@ -745,16 +759,26 @@ test('beginTurn：paused 时跳过召回与同步（§5.3 pause/resume）', asyn
 test('beginTurn：外部 provider prefetch 失败 → 本轮空上下文，不抛错（§9.2 约束 3）', async () => {
   const h = harness({ mockConfig: { failPrefetch: true } });
   await h.manager.activate('mock', { sessionId: 's1' });
+  h.records.length = 0;
   const r = await h.manager.beginTurn('实义问题关于架构', {});
   // 不抛错、不中断对话
   assert.equal(r.skipped, false);
   assert.equal(r.context, '');
   assert.equal(r.status, null);
   assert.equal(r.skipReason, 'prefetch_error');
-  // 记 audit（不落原始错误内容，§9.1 L2）
-  const a = h.records.find((x) => x.table === 'audit_log' && x.business.action === 'prefetch_failed');
-  assert.ok(a);
-  assert.equal(a.business.reason, 'prefetch failed', '默认不落敏感错误详情');
+  // 阶段 2：写 fallback_events（operation=prefetch；错误文本含 timeout → 归类 timeout）
+  const fe = h.records.find((x) => x.table === 'fallback_events');
+  assert.ok(fe, '应写 fallback_events');
+  assert.equal(fe.business.operation, 'prefetch');
+  assert.equal(fe.business.errorType, 'timeout');
+  assert.equal(fe.business.providerName, 'mock');
+  assert.equal(fe.business.recovered, false, '单次失败不切换');
+  // 发 memory.provider-fallback 事件（§5.4）
+  assert.ok(h.events.some((e) => e.topic === 'memory.provider-fallback'
+    && e.payload.operation === 'prefetch' && e.payload.providerName === 'mock'));
+  // 降级但不切换：active 仍是 mock（连续失败才切，§3.1 [6]）
+  assert.equal(h.manager.getActiveProviderName(), 'mock');
+  assert.equal(h.manager.getDegradationState().consecutiveFailures, 1);
 });
 
 test('beginTurn：recall_indicator_enabled=false 时不发 recall-injected 事件', async () => {
@@ -880,16 +904,339 @@ test('shutdown：provider.shutdown 抛错不阻断关闭流程', async () => {
   assert.equal(h.manager.getActiveProviderName(), 'builtin');
 });
 
-// ── Sprint 16 边界（显式抛未实现，绝不静默）──────────────────────────────
+// ── 阶段 2：运行时降级（§3.1 [6] / §12.2）────────────────────────────────
 
-test('Sprint 16 交付物显式抛 not implemented（不静默返回假成功）', async () => {
+test('阶段 2 编排：activate 外部 provider 成功后自动注册其工具（§3.3 [2]）', async () => {
   const h = harness();
-  const re = /未实现（Sprint 16/;
-  assert.throws(() => h.manager.handleRuntimeFailure('prefetch', new Error('x')), re);
-  await assert.rejects(() => h.manager.runPreCompressCheckpoint([]), re);
-  assert.throws(() => h.manager.registerProviderTools(), re);
-  await assert.rejects(() => h.manager.routeToolCall('t', {}, {}), re);
-  await assert.rejects(() => h.manager.testConnection('mock'), re);
+  await h.manager.activate('mock', { sessionId: 's1' });
+  assert.deepEqual(Object.keys(h.toolDefs), ['mock_add_user_memory'],
+    'mock 前缀已自带（mock_），不得重复加前缀');
+  const audit = h.records.find((x) => x.table === 'audit_log'
+    && x.business.action === 'provider_tools_registered');
+  assert.ok(audit, '注册成功应写 audit_log');
+});
+
+test('阶段 2 编排：切回 builtin 时卸载外部 provider 的工具（§9.2 约束 5）', async () => {
+  const h = harness();
+  await h.manager.activate('mock', { sessionId: 's1' });
+  assert.equal(Object.keys(h.toolDefs).length, 1);
+  await h.manager.deactivate({ reason: '测试回滚' });
+  assert.deepEqual(Object.keys(h.toolDefs), [], 'builtin 接管后工具应全部卸载');
+});
+
+test('阶段 2 降级：连续失败达阈值 → 自动切 builtin + shutdown + 卸工具 + 安排恢复', async () => {
+  const h = harness({
+    mockConfig: { failPrefetch: true },
+    config: { max_consecutive_failures: 3, auto_recover_after_minutes: 30 },
+  });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.mock.resetCalls();
+  h.records.length = 0;
+  h.events.length = 0;
+
+  for (let i = 0; i < 3; i++) await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'builtin', '达阈值应自动切换');
+  assert.equal(h.mock.shutdownCount, 1, '失败 provider 应被 shutdown');
+  assert.deepEqual(Object.keys(h.toolDefs), [], '切换时应卸载其工具');
+
+  const st = h.manager.getDegradationState();
+  assert.equal(st.recoveryTarget, 'mock', '恢复目标 = 用户配置的 provider');
+  assert.ok(st.recoverAt, '应安排自动恢复时刻');
+  assert.equal(st.consecutiveFailures, 0, '切换后计数清零');
+
+  const al = h.records.find((x) => x.table === 'activation_log');
+  assert.equal(al.business.action, 'fallback');
+  assert.equal(al.business.targetProvider, 'builtin');
+  assert.ok(h.events.some((e) => e.topic === 'memory.provider-fallback'));
+  // §9.3：自动切换只改运行时激活态，从不写配置
+  assert.equal(h.cfg.active_provider, 'builtin', '配置不得被自动修改');
+});
+
+test('阶段 2 降级：fallback_enabled=false 时只记录不切换', async () => {
+  const h = harness({
+    mockConfig: { failPrefetch: true },
+    config: { max_consecutive_failures: 2, fallback_enabled: false },
+  });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  for (let i = 0; i < 5; i++) await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'mock', '降级关闭时不得切换');
+  assert.ok(h.records.some((x) => x.table === 'fallback_events'), '但仍应记录失败');
+});
+
+test('阶段 2 降级：builtin 自身失败不切换（L0 已是最后一层）', async () => {
+  const h = harness();
+  await h.manager.start('s1', {});
+  // builtin 激活时失败：handleRuntimeFailure 的 shouldSwitch 有 !isBuiltinActive() 门
+  const fb = await h.manager.handleRuntimeFailure('prefetch', new Error('boom'), {});
+  assert.equal(fb.switched, false);
+  assert.equal(h.manager.isBuiltinActive(), true);
+});
+
+test('阶段 2 自动恢复：到点后 beginTurn 触发恢复 + 重注册工具 + 发 recovered 事件', async () => {
+  const h = harness({ config: { max_consecutive_failures: 2, auto_recover_after_minutes: 30 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.mock.setFailPrefetch(true);
+  for (let i = 0; i < 2; i++) await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'builtin');
+
+  // 到点：把 recoverAt 拨到过去
+  h.manager.recoverAt = Date.now() - 1;
+  h.mock.setFailPrefetch(false);
+  h.mock.resetCalls();
+  h.events.length = 0;
+
+  const r = await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(r.providerName, 'mock', '恢复后本轮直接用恢复的 provider');
+  assert.ok(h.mock.callsTo('initialize').length >= 1, '恢复应重新 initialize');
+  assert.deepEqual(Object.keys(h.toolDefs), ['mock_add_user_memory'], '恢复后重注册工具');
+  assert.ok(h.events.some((e) => e.topic === 'memory.provider-recovered'));
+  const st = h.manager.getDegradationState();
+  assert.equal(st.recoveryTarget, null);
+  assert.equal(st.recoverAt, null);
+});
+
+test('阶段 2 自动恢复：未到点不尝试；恢复目标 isAvailable=false 则继续等', async () => {
+  const h = harness({ config: { max_consecutive_failures: 2 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.mock.setFailPrefetch(true);
+  for (let i = 0; i < 2; i++) await h.manager.beginTurn('实义问题关于架构', {});
+  // 未到点
+  const nr = await h.manager.maybeRecover();
+  assert.equal(nr.attempted, false);
+  assert.equal(h.manager.getActiveProviderName(), 'builtin');
+  // 到点但不可用
+  h.manager.recoverAt = Date.now() - 1;
+  h.mock.setAvailability(false);
+  const r = await h.manager.maybeRecover();
+  assert.equal(r.attempted, true);
+  assert.equal(r.recovered, false);
+  assert.equal(h.manager.getActiveProviderName(), 'builtin', '不可用不恢复');
+});
+
+test('阶段 2 noteSuccess：成功清零连续失败计数并清除单次降级标记', async () => {
+  const h = harness({ config: { max_consecutive_failures: 5 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.mock.setFailPrefetch(true);
+  await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getDegradationState().consecutiveFailures, 1);
+  assert.equal(h.manager.getDegradationState().degradedProvider, 'mock');
+
+  h.mock.setFailPrefetch(false);
+  await h.manager.beginTurn('实义问题关于架构', {});
+  const st = h.manager.getDegradationState();
+  assert.equal(st.consecutiveFailures, 0);
+  assert.equal(st.degradedProvider, null, '成功清除降级标记');
+});
+
+test('阶段 2 召回超时：prefetch 超时不阻塞对话，归类 timeout（§9.1 L1）', async () => {
+  const h = harness({ config: { prefetch_timeout_ms: 100 } });
+  const slow = new MockProvider({ prefetchDelayMs: 300, name: 'slow' });
+  h.reg.register(slow);
+  await h.manager.activate('slow', { sessionId: 's1' });
+  h.records.length = 0;
+  const t0 = Date.now();
+  const r = await h.manager.beginTurn('实义问题关于架构', {});
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 250, `超时应快速返回（实际 ${elapsed}ms）`);
+  assert.equal(r.context, '');
+  assert.equal(r.errorType, 'timeout');
+  const fe = h.records.find((x) => x.table === 'fallback_events');
+  assert.equal(fe.business.errorType, 'timeout');
+});
+
+test('阶段 2 classifyErrorType：错误归类与 §4.4 枚举一致', () => {
+  assert.equal(classifyErrorType(new PrefetchTimeoutError(1000)), 'timeout');
+  assert.equal(classifyErrorType(new Error('ETIMEDOUT')), 'timeout');
+  assert.equal(classifyErrorType(new Error('HTTP 429 too many requests')), 'rate_limit');
+  assert.equal(classifyErrorType(new Error('401 Unauthorized')), 'auth');
+  assert.equal(classifyErrorType(new Error('getaddrinfo ENOTFOUND api.example.com')), 'network');
+  assert.equal(classifyErrorType(new Error('ECONNREFUSED 127.0.0.1')), 'network');
+  assert.equal(classifyErrorType(new Error('mystery')), 'unknown');
+  assert.ok(['network', 'timeout', 'rate_limit', 'auth', 'unknown']
+    .includes(classifyErrorType(null)));
+});
+
+test('阶段 2 withTimeout：正常完成不受影响；超时拒绝并带 PrefetchTimeoutError', async () => {
+  const fast = withTimeout(Promise.resolve('ok'), 100, (ms) => new PrefetchTimeoutError(ms));
+  assert.equal(await fast, 'ok');
+
+  const slow = withTimeout(
+    new Promise((r) => setTimeout(r, 200, 'late')),
+    30,
+    (ms) => new PrefetchTimeoutError(ms),
+  );
+  await assert.rejects(() => slow, (e) => e instanceof PrefetchTimeoutError && e.timeoutMs === 30);
+  // ms 非法 → 不套超时
+  const noTimeout = withTimeout(Promise.resolve('raw'), 0, () => new Error('x'));
+  assert.equal(await noTimeout, 'raw');
+});
+
+// ── 阶段 2：pre_compress 检查点（§3.2 / §9.1 L5 fail-closed）─────────────
+
+test('阶段 2 检查点：apiVersion=2 失败 → fail-closed 中止压缩 + 记 failed 检查点', async () => {
+  const h = harness({ mockConfig: { failPreCompress: true, apiVersion: 2 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.records.length = 0;
+  const r = await h.manager.runPreCompressCheckpoint([{ role: 'user', content: 'a' }]);
+  assert.equal(r.ok, false);
+  assert.equal(r.abortCompress, true, 'fail-closed：调用方必须中止压缩');
+  assert.equal(r.status, 'failed');
+  assert.equal(r.apiVersion, 2);
+  const pcc = h.records.find((x) => x.table === 'pre_compress_checkpoints');
+  assert.ok(pcc);
+  assert.equal(pcc.business.checkpointStatus, 'failed');
+  // 非 builtin 失败也写 fallback_events（operation=on_pre_compress）
+  assert.ok(h.records.some((x) => x.table === 'fallback_events'
+    && x.business.operation === 'on_pre_compress'));
+  assert.ok(h.events.some((e) => e.topic === 'memory.pre-compress-checkpoint'
+    && e.payload.abortCompress === true));
+});
+
+test('阶段 2 检查点：apiVersion=1 失败 → best-effort 放行不中止', async () => {
+  const h = harness({ mockConfig: { failPreCompress: true, apiVersion: 1 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  const r = await h.manager.runPreCompressCheckpoint([]);
+  assert.equal(r.ok, false);
+  assert.equal(r.abortCompress, false, 'v1 是 best-effort，失败也放行');
+  assert.equal(r.status, 'best_effort');
+});
+
+test('阶段 2 检查点：成功 → 返回洞察 + status=success + 计数清零', async () => {
+  const h = harness();
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.manager.checkpointFailures = 2; // 先造点失败计数
+  const r = await h.manager.runPreCompressCheckpoint([{ role: 'user', content: 'x' }]);
+  assert.equal(r.ok, true);
+  assert.equal(r.abortCompress, false);
+  assert.equal(r.status, 'success');
+  assert.ok(r.insight.includes('MOCK 洞察'));
+  assert.equal(h.manager.checkpointFailures, 0, '成功清零连续失败计数');
+});
+
+test('阶段 2 检查点：开关关闭 → skipped 且不调用 provider', async () => {
+  const h = harness({ config: { pre_compress_checkpoint_enabled: false } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.mock.resetCalls();
+  const r = await h.manager.runPreCompressCheckpoint([]);
+  assert.equal(r.status, 'skipped');
+  assert.equal(r.abortCompress, false);
+  assert.equal(h.mock.callsTo('onPreCompress').length, 0);
+});
+
+test('阶段 2 检查点：防死锁（§13.2）——连续失败达上限后回退 best-effort 放行', async () => {
+  const h = harness({ mockConfig: { failPreCompress: true, apiVersion: 2 } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.manager.checkpointFailures = MAX_CHECKPOINT_FAILURES; // 已达防死锁上限
+  const r = await h.manager.runPreCompressCheckpoint([]);
+  assert.equal(r.abortCompress, false, '防死锁：不再中止压缩，避免 token 溢出');
+  assert.equal(r.status, 'best_effort');
+  assert.equal(r.deadlockGuard, true);
+});
+
+// ── 阶段 2：provider 工具暴露（§3.3）────────────────────────────────────
+
+test('阶段 2 工具暴露：注册 + 前缀 + 路由 + JSON 解析（§3.3 全链路）', async () => {
+  const h = harness();
+  await h.manager.activate('mock', { sessionId: 's1' });
+  // 注册（activate 自动触发过，这里显式再调验证幂等跳过）
+  const r = await h.manager.registerProviderTools();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.registered, [], '已注册的同名工具走冲突跳过');
+  assert.equal(r.skipped.length, 1);
+
+  // 路由：JSON 字符串结果解析成对象
+  const out = await h.manager.routeToolCall('mock_add_user_memory', { content: 'hello' }, {});
+  assert.equal(out.ok, true);
+  assert.equal(out.source, 'mock');
+  assert.equal(out.tool, 'mock_add_user_memory');
+  assert.deepEqual(out.args, { content: 'hello' });
+  assert.ok(h.events.some((e) => e.topic === 'memory.tool-called' && e.payload.success === true));
+});
+
+test('阶段 2 工具暴露：自定义前缀 + OpenAI JSON Schema → dsh 参数映射', async () => {
+  const h = harness({ config: { external_tool_prefix: 'mem_' } });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  // mock 工具名 mock_add_user_memory 不以 mem_ 开头 → 加前缀
+  assert.ok(h.toolDefs['mem_mock_add_user_memory'], '自定义前缀应生效');
+  const def = h.toolDefs['mem_mock_add_user_memory'];
+  assert.match(def.description, /^\[mock\]/, '描述标注来源 provider');
+  // OpenAI parameters { properties.content: string, required } → dsh 属性映射
+  assert.deepEqual(def.parameters.content, {
+    type: 'string', description: '记忆内容', required: true,
+  });
+
+  // 未注册工具显式抛错（不静默）
+  await assert.rejects(
+    () => h.manager.routeToolCall('nonexistent_tool', {}, {}),
+    /未注册/,
+  );
+});
+
+test('阶段 2 工具暴露：与保留名冲突 → 跳过并记录原因（§14.1 决策 B）', async () => {
+  // 保留名分支只在自定义前缀下可达：prefix='memory_' + 工具名 'write'
+  // → finalName='memory_write' 撞保留名 → 跳过
+  const h = harness({ config: { external_tool_prefix: 'memory_' } });
+  class Writer extends MockProvider {
+    getToolSchemas() {
+      return [
+        { name: 'write', description: '撞内置保留名', parameters: { type: 'object', properties: {} } },
+        { name: 'custom', description: '普通工具', parameters: { type: 'object', properties: {} } },
+      ];
+    }
+  }
+  const w = new Writer({ name: 'writer' });
+  h.reg.register(w);
+  await h.manager.activate('writer', { sessionId: 's1' });
+  const names = Object.keys(h.toolDefs);
+  assert.ok(!names.includes('memory_write'), '撞保留名的工具必须跳过');
+  assert.ok(names.includes('memory_custom'), '普通工具正常注册');
+});
+
+test('阶段 2 工具暴露：宿主工具系统未注入 → 显式 unavailable（不假成功）', async () => {
+  const h = harness({ tools: false });
+  await h.manager.activate('mock', { sessionId: 's1' });
+  const r = await h.manager.registerProviderTools();
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /tools_unavailable/);
+});
+
+test('阶段 2 工具暴露：provider.handleToolCall 失败 → 记 fallback + 抛回调用方', async () => {
+  const h = harness();
+  await h.manager.activate('mock', { sessionId: 's1' });
+  h.records.length = 0;
+  h.mock.setFailToolCall(true);
+  await assert.rejects(
+    () => h.manager.routeToolCall('mock_add_user_memory', {}, {}),
+    /调用失败/,
+  );
+  assert.ok(h.events.some((e) => e.topic === 'memory.tool-called' && e.payload.success === false));
+  assert.ok(h.records.some((x) => x.table === 'fallback_events'
+    && x.business.operation === 'handle_tool_call'));
+});
+
+// ── 阶段 2：testConnection（§5.3，配置/凭证级，无网络探活）───────────────
+
+test('阶段 2 testConnection：未注册 / 不可用 / 可用三分支', async () => {
+  const h = harness();
+  // 未注册
+  let r = await h.manager.testConnection('honcho');
+  assert.equal(r.ok, false);
+  assert.equal(r.registered, false);
+  assert.equal(r.networkProbed, false);
+
+  // 不可用
+  h.mock.setAvailability(false);
+  r = await h.manager.testConnection('mock');
+  assert.equal(r.ok, false);
+  assert.equal(r.available, false);
+  assert.match(r.reason, /MOCK_API_KEY/);
+
+  // 可用
+  h.mock.setAvailability(true);
+  r = await h.manager.testConnection('mock');
+  assert.equal(r.ok, true);
+  assert.equal(r.initializeOk, true);
+  assert.match(r.reason, /未做网络探活/);
 });
 
 // ── MockProvider 自身（设计稿 §11.3）─────────────────────────────────────
@@ -961,22 +1308,27 @@ test('MockProvider：延迟注入 + apiVersion=1（best-effort）可配', async 
 
 // ── §9.3 自我评估禁止 ────────────────────────────────────────────────────
 
-test('§9.3 自我评估禁止：manager 不自动切换 provider、不自动改配置', async () => {
-  const h = harness();
+test('§9.3 自我评估禁止：自动降级/恢复只改运行时激活态，从不改配置', async () => {
+  const h = harness({ config: { max_consecutive_failures: 3 } });
   await h.manager.start('s1', {});
-  const before = h.manager.getActiveProviderName();
-  const cfgBefore = { ...h.cfg };
+  const cfgBefore = JSON.stringify(h.cfg);
 
-  // 跑一轮完整对话循环（含 prefetch 失败），provider 不应被自动换掉
-  await h.manager.beginTurn('实义问题关于架构', {});
-  await h.manager.endTurn('u', 'a', {});
-  assert.equal(h.manager.getActiveProviderName(), before);
-  assert.deepEqual(h.cfg, cfgBefore, '配置不得被自动修改');
-
-  // 外部 provider 连续失败也不自动切（那是 Sprint 16 的显式降级，非自我优化）
+  // 单轮失败：provider 不换
   await h.manager.activate('mock', { sessionId: 's1' });
   h.mock.setFailPrefetch(true);
-  for (let i = 0; i < 5; i++) await h.manager.beginTurn('实义问题关于架构', {});
-  assert.equal(h.manager.getActiveProviderName(), 'mock',
-    'Sprint 15 不做连续失败自动切换（§12.2 交付）');
+  await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'mock', '单次失败不切换');
+
+  // 连续失败达阈值 → 自动切 builtin（§9.1 L1 护栏），但配置一个字都不动
+  for (let i = 0; i < 2; i++) await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'builtin', '达阈值切 builtin');
+  assert.equal(JSON.stringify(h.cfg), cfgBefore, '配置不得被自动修改');
+  assert.equal(h.manager.recoveryTarget, 'mock', '恢复目标是用户原先配置的 provider');
+
+  // 自动恢复同样只恢复原 provider，不改配置
+  h.manager.recoverAt = Date.now() - 1;
+  h.mock.setFailPrefetch(false);
+  await h.manager.beginTurn('实义问题关于架构', {});
+  assert.equal(h.manager.getActiveProviderName(), 'mock');
+  assert.equal(JSON.stringify(h.cfg), cfgBefore, '恢复后配置仍不得被修改');
 });
