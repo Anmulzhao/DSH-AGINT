@@ -42,6 +42,7 @@ import {
 } from './storage.js';
 import { aggregateTasks, filterWindow } from './aggregator.js';
 import { detectPatterns } from './detector.js';
+import { judgeStandardizable } from './standardizable.js';
 import { buildProposal } from './proposer.js';
 import { evaluateCandidate } from './evaluator.js';
 import { isDuplicate } from './similarity.js';
@@ -100,6 +101,20 @@ function apply(ctx, config) {
       if (!disposed) console.error(`[${name}] publish ${topic} failed:`, e?.message ?? e);
       return false;
     }
+  }
+
+  // ── agint-diagnosis 软依赖（[4] 轨道 A）────────────────────────────────
+  //
+  // 仅当 diagnosis 服务暴露 `classify(trajectory)` 时轨道 A 才可用。
+  // 现状（agint-diagnosis v0.6.0）：只暴露 annotate/counterfactual，且都要求
+  // failureId（必须存在于 failure_pattern 表）。重复成功模式既无 failureId
+  // 也无失败证据 → 轨道 A 实际不激活，全部走启发式轨道 B。
+  // 激活条件：aggregator 开始聚合 errorKind 后，在 detect() 里把失败步传给
+  // judgeStandardizable 的 failureEvidence，并在 diagnosis 侧暴露 classify。
+  function diagnosisSvc() {
+    const d = typeof ctx.get === 'function' ? ctx.get('agint.diagnosis') : null;
+    if (!d || typeof d.classify !== 'function') return null;
+    return { classify: (trajectory) => d.classify(trajectory) };
   }
 
   // ── audit（唯一自动滚动清理的表：>1000 条删最旧）───────────────────────
@@ -190,12 +205,16 @@ function apply(ctx, config) {
       }
     }
 
-    // 跨过重复门槛的 pattern → 发事件 + 尝试生成候选
+    // 跨过重复门槛的 pattern → 发事件 + [4] 判定 + 尝试生成候选
     let candidatesCreated = 0;
+    let standardizableJudged = 0;
+    let standardizablePass = 0;
+    let standardizableReject = 0;
+    let standardizableUncertain = 0;
     const candidateIds = [];
     for (const pattern of newRepeat) {
       // newRepeat 里的对象是 detector 工作副本，需要回查已入库形态拿 id
-      const stored = upserted.find(
+      let stored = upserted.find(
         (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
       );
       if (!stored) continue;
@@ -212,6 +231,50 @@ function apply(ctx, config) {
         targetId: stored.id,
         details: { occurrenceCount: stored.occurrenceCount, toolSequence: stored.toolSequence },
       });
+
+      // ── [4] 可标准化判断（设计稿 §3.1；2026-09-09 补齐）────────────────
+      // 判定结果**无论通过与否都回写 pattern**——周复盘/人工复核直接扫
+      // task_patterns.standardizable 即可，不依赖审计日志。
+      const verdict = judgeStandardizable(stored, {
+        minSteps: c.standardizable_min_steps,
+        minDistinctTools: c.standardizable_min_distinct_tools,
+        minConfidence: c.min_standardizable_confidence,
+        diagnosis: c.standardizable_route === 'off' ? null : diagnosisSvc(),
+        // 轨道 A 的输入：聚合层目前只落 successRate，不聚合 errorKind，
+        // 因此恒为 null → 轨道 A 不激活（见 lib/standardizable.js 文件头）。
+        failureEvidence: null,
+      });
+      standardizableJudged++;
+      if (verdict.standardizable === true) standardizablePass++;
+      else if (verdict.standardizable === false) standardizableReject++;
+      else standardizableUncertain++;
+
+      stored = packTaskPattern({
+        ...stored,
+        standardizable: verdict.standardizable,
+        standardizableConfidence: verdict.confidence,
+      }, stored);
+      await tp.put(stored.id, stored);
+
+      if (verdict.standardizable !== true) {
+        await audit({
+          actor: 'system',
+          action: verdict.standardizable === null
+            ? 'standardizable_uncertain'     // → 需人工判断，写周复盘
+            : 'standardizable_rejected',     // → 明确不可标准化
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: {
+            reason: verdict.reason,
+            route: verdict.route,
+            rootCause: verdict.rootCause,
+            signals: verdict.signals,
+            toolSequence: stored.toolSequence,
+          },
+          reason: verdict.reason,
+        });
+        continue;
+      }
 
       // ── 候选生成守门（Sprint 14 只做：总开关 + 暂停 + 去重 + 自我指涉）──
       if (!c.auto_create_enabled) continue;
@@ -285,6 +348,12 @@ function apply(ctx, config) {
       excluded,   // D2：被排除的 curriculum 挑战调用数
       patternsUpserted: upserted.length,
       newRepeatPatterns: newRepeat.length,
+      standardizable: {
+        judged: standardizableJudged,
+        pass: standardizablePass,
+        rejected: standardizableReject,
+        uncertain: standardizableUncertain,
+      },
       candidatesCreated,
       candidateIds,
       limitWarn: limitWarn?._warn ?? null,
