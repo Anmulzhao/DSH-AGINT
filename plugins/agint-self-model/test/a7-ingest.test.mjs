@@ -138,7 +138,7 @@ const inspect = await ctx.get('agint.selfModel.inspectSummary')();
 ok('inspectSummary 暴露 metricsIngest', !!inspect.metricsIngest);
 ok('metricsIngest 记录了事件', inspect.metricsIngest.events === 2);
 ok('metricsIngest 完成了一次对账', inspect.metricsIngest.compared === 1);
-ok('metricsIngest 模式为 shadow', inspect.metricsIngest.mode === 'shadow');
+ok('metricsIngest 模式为 apply（T2 切换后）', inspect.metricsIngest.mode === 'apply');
 ok('影子期一致率为 1', inspect.metricsIngest.consistencyRate === 1);
 
 // ── 7. onPersist 节流落盘钩子（v0.7.3）────────────────────────────────────

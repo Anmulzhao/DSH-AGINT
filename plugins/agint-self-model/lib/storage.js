@@ -277,6 +277,7 @@ export function openStore(ctx) {
               reasoningProfile: adaptTable(handle.table('reasoning_profile')),
               resourceBaseline: adaptTable(handle.table('resource_baseline')),
               calibrationLog: adaptTable(handle.table('calibration_log')),
+              metricsIngest: adaptTable(handle.table('metrics_ingest')),
             };
             store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
             store._memory = false;

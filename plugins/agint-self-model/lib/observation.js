@@ -88,8 +88,11 @@ export function buildResourceBaseline(toolSummary = [], metricsSnapshot = null) 
  * 重算推理画像 + 资源基线，写入 store（观测表 upsert；先清后写，observer 语义）。
  * @param {object} store openStore 返回值
  * @param {object} deps 数据来源访问器（见 lib/index.js buildDeps）
- * @param {{now?:string}} [opts]
- * @returns {Promise<{reasoningCount:number, resourceCount:number}>}
+ * @param {{now?:string, metricsIngest?:object}} [opts]
+ *   metricsIngest（T2 A7 apply）：影子对账器实例。传入后 resource_baseline 的
+ *   latency-ms 以事件重建快照（getLastSnapshot）为**权威路径**；事件未流入时
+ *   回退直连 metrics.snapshot() 兜底（首启不空白），不视为链路错误。
+ * @returns {Promise<{reasoningCount:number, resourceCount:number, metricsSource?:string}>}
  */
 export async function recomputeObservation(store, deps, opts = {}) {
   const now = opts.now ?? nowIso();
@@ -109,16 +112,28 @@ export async function recomputeObservation(store, deps, opts = {}) {
   // 2) 资源基线（tool-stats + metrics，软降级）
   let toolSummary = [];
   let metricsSnapshot = null;
+  let metricsSource = 'direct';
   try {
     const ts = deps.get('agint.toolStats');
     if (ts && typeof ts.summary === 'function') toolSummary = (await ts.summary({ since: '7d' }))?.summary ?? [];
   }
   catch { toolSummary = []; }
   try {
-    const metrics = deps.get('agint.metrics');
-    if (metrics && typeof metrics.snapshot === 'function') metricsSnapshot = await metrics.snapshot();
+    // T2 A7 apply：latency-ms 权威路径 = 事件重建快照（上一次 collect 批次）。
+    // 事件未流入（getLastSnapshot=null）→ 回退直连兜底，保证首启数据不空白。
+    const ingest = opts.metricsIngest;
+    const fromEvent = (typeof ingest?.getLastSnapshot === 'function') ? ingest.getLastSnapshot() : null;
+    if (fromEvent) {
+      metricsSnapshot = fromEvent;
+      metricsSource = 'event';
+    }
+    else {
+      const metrics = deps.get('agint.metrics');
+      if (metrics && typeof metrics.snapshot === 'function') metricsSnapshot = await metrics.snapshot();
+      metricsSource = metricsSnapshot ? 'direct-fallback' : 'none';
+    }
   }
-  catch { metricsSnapshot = null; }
+  catch { metricsSnapshot = null; metricsSource = 'direct-fallback'; }
   const resource = buildResourceBaseline(toolSummary, metricsSnapshot);
 
   // 3) 写入（观测表先清后写）
@@ -137,7 +152,7 @@ export async function recomputeObservation(store, deps, opts = {}) {
   }
   catch { /* ignore */ }
 
-  return { reasoningCount: reasoning.length, resourceCount: resource.length };
+  return { reasoningCount: reasoning.length, resourceCount: resource.length, metricsSource };
 }
 
 /** 读取 reasoning_profile（剥回业务字段） */

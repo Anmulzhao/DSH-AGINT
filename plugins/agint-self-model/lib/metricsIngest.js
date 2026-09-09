@@ -9,11 +9,13 @@
  *      （A3–A6 零流量），订阅了也跑不出一致率，T2 拿不到决策数据。
  *   2. self-model 已是 A8 订阅方，架构一致，改造面最小。
  *
- * 定位：**影子期对账器**，不是写路径。
+ * 定位：**影子期对账器，T2 切换后兼作权威路径数据源**，不是独立写路径。
  *   - 订阅 A7 → 按 generatedAt 攒批 → 批结束时用事件重建一份 snapshot
  *   - 与直连 `metrics.snapshot()` 做对账，产出一致率供 T2 决策
  *   - `mode='shadow'`（默认）**不写任何表**，资源基线仍由直连路径权威写入
- *   - `mode='apply'` 留给 T2 拍板后切换（一致才写），本版不启用
+ *   - `mode='apply'`（T2 拍板后启用）：结算批次重建快照经 `getLastSnapshot()`
+ *     暴露，作为 resource_baseline 的权威数据源（observation.js 消费）；
+ *     直连保留在对账器内（getDirectSnapshot）仅作一致率判定与兜底。
  *
  * 判定口径（重要，别改成"值必须相等"）：
  *   事件批次是上一次 collect 的快照，直连是当前时刻的快照，**两者天然有时差**，
@@ -132,6 +134,9 @@ export function createSnapshotIngest(opts = {}) {
   let lastMismatch = null;
   let lastBatchSize = 0;
   let lastPersistAt = 0;
+  // apply 模式：最近一次结算批次重建的 snapshot（权威路径数据源，供消费方读取）。
+  // 事件批次 = 上一次 collect 的快照，与直连存在时差是必然的（值漂移不判定）。
+  let lastRebuilt = null;
 
   /** 统计落盘（节流）。force=true 跳过节流（dispose / 测试用）。永不抛。 */
   function maybePersist(force = false) {
@@ -170,6 +175,8 @@ export function createSnapshotIngest(opts = {}) {
       generatedAt: batch.generatedAt,
       metrics: [...batch.metrics.entries()].map(([key, value]) => ({ key, value })),
     });
+    // apply 模式：每次结算后刷新权威数据源（事件重建快照）
+    lastRebuilt = rebuilt;
     const cmp = compareSnapshot(rebuilt, direct);
     counters.compared += 1;
     if (cmp.matched) counters.matched += 1;
@@ -244,5 +251,14 @@ export function createSnapshotIngest(opts = {}) {
     };
   }
 
-  return { ingest, flush, stats };
+  /**
+   * apply 模式消费接口：返回最近一次结算批次重建的 snapshot（权威路径数据源）。
+   * 事件尚未流入时返回 null，调用方（observation.js）自行回退直连兜底。
+   * @returns {{asOf:string|null,count:number,metrics:Array}|null}
+   */
+  function getLastSnapshot() {
+    return lastRebuilt ? { ...lastRebuilt, metrics: lastRebuilt.metrics.map((m) => ({ ...m })) } : null;
+  }
+
+  return { ingest, flush, stats, getLastSnapshot };
 }
