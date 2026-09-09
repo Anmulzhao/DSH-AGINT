@@ -192,13 +192,13 @@ async function buildSnapshot(store) {
 
 // ── 主 update（轻量重算 + 可选全量校准 + A11 发布）─────────────────────────
 
-async function selfUpdate(ctx, store, deps, { trigger, evidence }) {
+async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest }) {
   // 校验 trigger（FROZEN enum；非法即抛）
   UpdateTriggerSchema.parse(trigger);
   const now = nowIso();
   const aggregated = await aggregateCapabilityEvidence(deps, { windowDays: 7 });
   const updatedDomains = await recomputeCapabilities(store, aggregated, { now });
-  await recomputeObservation(store, deps, { now });
+  await recomputeObservation(store, deps, { now, metricsIngest });
 
   // weekly 触发器走全量校准主路径（设计稿 §4.5）
   let miscalibrated = [];
@@ -240,16 +240,17 @@ function apply(ctx, _config = {}) {
   const deps = buildDeps(ctx);
   const disposers = [];
 
-  // A7 影子对账器（Sprint 16）：消费 metrics.snapshot 事件，与直连 metrics.snapshot() 对账。
-  // 影子期只记数，不写任何业务表；一致率供 T2 切流量决策用。详见 lib/metricsIngest.js 文件头。
+  // A7 对账器（Sprint 16）：消费 metrics.snapshot 事件，与直连 metrics.snapshot() 对账。
   // v0.7.3：统计经 onPersist 节流落 metrics_ingest 单行表（纯观测表，非业务表），
   // 让 bin/t2-reconcile.mjs 能在 dsh 进程外读一致率（内存统计重启即丢）。
+  // v0.7.4（T2 切换）：mode='apply' —— 结算批次重建快照经 getLastSnapshot() 暴露，
+  // resource_baseline 的 latency-ms 权威路径切到事件（observation.js 消费）。
   const metricsIngest = createSnapshotIngest({
     getDirectSnapshot: async () => {
       const m = deps.get('agint.metrics');
       return m && typeof m.snapshot === 'function' ? await m.snapshot() : null;
     },
-    mode: 'shadow',
+    mode: 'apply',
     onPersist: (s) => {
       const t = store.tables.metricsIngest;
       if (!t || typeof t.put !== 'function') return;
@@ -283,6 +284,7 @@ function apply(ctx, _config = {}) {
     return selfUpdate(ctx, store, deps, {
       trigger: input?.trigger ?? 'weekly',
       evidence: input?.evidence,
+      metricsIngest,
     });
   }
 
@@ -350,11 +352,11 @@ function apply(ctx, _config = {}) {
     if (typeof subscribe === 'function') {
       const offA6 = subscribe(
         { subscriber: 'agint-self-model', topics: ['diagnosis.completed'], mode: 'async' },
-        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'diagnosis-completed' }); } catch { /* ignore */ } },
+        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'diagnosis-completed', metricsIngest }); } catch { /* ignore */ } },
       );
       const offA8 = subscribe(
         { subscriber: 'agint-self-model', topics: ['dream.completed'], mode: 'async' },
-        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'dream-completed' }); } catch { /* ignore */ } },
+        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'dream-completed', metricsIngest }); } catch { /* ignore */ } },
       );
       if (typeof offA6 === 'function') disposers.push(offA6);
       if (typeof offA8 === 'function') disposers.push(offA8);
