@@ -54,6 +54,8 @@ M = 0.5     // 没有适应性数据
 HARM = 0.2*H + 0.3*A + 0.3*R + 0.2*M
 ```
 
+> **⚠️ Schema only**（2026-09-09 核实）：HARM 简版仅作报告指标，不参与 policy 决策。policy 用的是 quality-eval 的 5 维加权（`trust / reliability / effectiveness / safety / integrability`，权重 0.20/0.20/0.10/0.30/0.20），见 `agint-quality-policy/lib/decide.js:81-109` 的 `computeComposite`。详见 `docs/evolution-framework.md` §3.1 注。
+
 ## 调度
 
 - 自持 `WeeklyScheduler`（lib/scheduler.js）

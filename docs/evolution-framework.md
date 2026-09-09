@@ -86,6 +86,8 @@ Phase 4: 灰度发布（A/B 测试、实时熔断）
 
 `Harmony = 0.2·H + 0.3·A + 0.3·R + 0.2·M`
 
+> **⚠️ Schema only（2026-09-09 核实）**：上述公式在 `agint-quality-contract` schema 里以 `harmWeights: { H: 0.2, A: 0.3, R: 0.3, M: 0.2 }` 形式**定义**（L1-adjustable），但 `plugins/` 全仓**零实现**该加法（HARM 4 维分立计算见 `plugins/agint-population/lib/fitness.js:205-234` 的 `computeHARM`，仅产出 `{H,A,R,M}` 不合成）。HARM 在当前架构是**报告指标**（写入 `fitness_history.dimensions.harm`），**不参与 policy 决策**——policy 用的是 quality-eval 的 5 维加权（`trust / reliability / effectiveness / safety / integrability`），见 `plugins/agint-quality/agint-quality-policy/lib/decide.js:81-109` 的 `computeComposite`。读者照公式找代码会落空。落地该公式为 `computeHarmony()` 单独提一条 code 类提案。
+
 ### 3.2 维度定义
 
 | 维度 | 含义 | 度量内容 | 数据源 |
