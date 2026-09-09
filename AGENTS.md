@@ -155,17 +155,17 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-07 22:23 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-09 09:33 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
 - **仓库版本**：v0.7.1（VERSION 表首行）
 - **DSH_HOME**：`C:\Users\Administrator\.dsh`
-- **仓库 ↔ host 同步**：⚠️ lib/index.js 哈希漂移：agint-event-bus、agint-evolution-memory、agint-mutator
-- **host 挂载插件**（23 个）：agint-abtest@pkg:0.6.4、agint-cron@pkg:0.1.0、agint-diagnosis@v0.7.0、agint-dream@pkg:0.1.0、agint-event-bus@pkg:0.7.0、agint-evolution-memory@pkg:0.6.5、agint-evolve@v0.7.0、agint-memory@pkg:0.1.0、agint-metrics@pkg:0.1.0、agint-mount@v0.7.0、agint-mutator@v0.6.3、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@pkg:0.6.3、agint-quality-sdk@pkg:0.5.0、agint-quality-static@pkg:0.7.1、agint-rules@pkg:0.1.0、agint-self-model@v0.7.1、agint-skill-autocreate@pkg:0.1.0、agint-tool-stats@pkg:0.1.0、agint-wiki@pkg:0.2.0
-- **preset tool rows**（17 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate
+- **仓库 ↔ host 同步**：⚠️ lib/index.js 哈希漂移：无；仅仓库有：agint-curriculum
+- **host 挂载插件**（25 个）：agint-abtest@pkg:0.6.4、agint-cron@pkg:0.1.0、agint-curator@v0.1.0、agint-diagnosis@v0.7.0、agint-dream@pkg:0.1.0、agint-event-bus@pkg:0.7.0、agint-evolution-memory@pkg:0.6.6、agint-evolve@v0.7.0、agint-memory@pkg:0.1.0、agint-memory-provider@pkg:0.1.0、agint-metrics@pkg:0.1.0、agint-mount@v0.7.0、agint-mutator@v0.6.3、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@pkg:0.6.3、agint-quality-sdk@pkg:0.5.0、agint-quality-static@pkg:0.8.0、agint-rules@pkg:0.1.0、agint-self-model@v0.7.1、agint-skill-autocreate@pkg:0.2.0、agint-tool-stats@pkg:0.1.0、agint-wiki@pkg:0.2.0
+- **preset tool rows**（19 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider
 - **preset skills**（5 个）：causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline
-- **cordis.patch.yml agint 段**（host web profile，23 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-abtest、agint-event-bus、agint-skill-autocreate、agint-mutator、agint-self-model、agint-evolution-memory
-- **cron 实况**（9 个 job，按最近 tick 排序）：skill-autocreate-aggregate 2026-09-07 14:21Z、night-dream 2026-09-07 00:21Z、tool-stats-backfill 2026-09-07 00:21Z、metrics-collect 2026-09-07 00:21Z、prompt-static-check 2026-09-07 00:11Z、memory-decay 2026-09-07 00:11Z、evolve-review 2026-09-06 00:00Z、wiki-lint 2026-09-05 19:29Z、baseline-regression-suite 2026-09-05 19:29Z
+- **cordis.patch.yml agint 段**（host web profile，25 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-abtest、agint-event-bus、agint-skill-autocreate、agint-curator、agint-mutator、agint-self-model、agint-evolution-memory、agint-memory-provider
+- **cron 实况**（9 个 job，按最近 tick 排序）：tool-stats-backfill 2026-09-08 00:43Z、metrics-collect 2026-09-08 00:42Z、skill-autocreate-aggregate 2026-09-08 00:39Z、prompt-static-check 2026-09-08 00:39Z、night-dream 2026-09-07 19:00Z、memory-decay 2026-09-07 00:11Z、evolve-review 2026-09-06 00:00Z、wiki-lint 2026-09-05 19:29Z、baseline-regression-suite 2026-09-05 19:29Z
 
 <!-- LOCAL-STATE:END -->
