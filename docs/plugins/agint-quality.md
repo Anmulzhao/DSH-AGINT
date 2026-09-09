@@ -68,6 +68,7 @@ tags:     string[]# 例 ['light-dream', 'manual-review']
 ```js
 {
   harmWeights:  { H: 0.2, A: 0.3, R: 0.3, M: 0.2 },          // 公式: 0.2·H + 0.3·A + 0.3·R + 0.2·M
+                                                            // ⚠️ Schema only：见 docs/evolution-framework.md §3.1 注；plugins/ 全仓 0 实现该加法
   thresholds:   { autoDeploy: 90, pendingReview: 75 },
   dreamBudgetSec: { light: 60, rem: 1200, deep: 300 },
   sandboxLimits: { timeoutMs: 30000, memoryMB: 512, networkDisabled: true, readOnly: true },
@@ -165,6 +166,8 @@ R = reliability // 最小结构复杂度 ≈ 失败率反向
 M = 0.5     // 没有适应性数据
 HARM = 0.2*H + 0.3*A + 0.3*R + 0.2*M
 ```
+
+> **⚠️ Schema only**（2026-09-09 核实）：HARM 在 quality-eval 这条路径里只是报告指标，不参与 policy 决策。详见 `docs/evolution-framework.md` §3.1 注。
 
 > **v0.3 计划**：HARM 全量接入，引入动态权重调节 + 反和谐检测器 + 预算对齐（详见 `docs/evolution-framework.md` 第三章）。
 
