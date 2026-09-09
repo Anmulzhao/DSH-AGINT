@@ -69,6 +69,18 @@ const calibrationEntrySchema = z.object({
   createdAt: z.string(),
 });
 
+// A7 影子对账统计（v0.7.3）：单行表，id 固定 'latest'。
+// 影子期「不写业务表」的红线针对 capability/reasoning/resource/calibration
+// 四张业务表；本表是纯观测统计，落盘是为了让 bin/t2-reconcile.mjs 能在
+// dsh 进程外读到一致率（内存统计重启即丢，外部不可见）。stats 用 z.any()
+// 宽松校验：统计字段会随版本演进，别让 schema 校验把观测数据拒掉。
+const metricsIngestEntrySchema = z.object({
+  id: z.literal('latest'),
+  kind: z.literal('metrics-ingest-stats'),
+  stats: z.any(),
+  persistedAt: z.string(),
+});
+
 // ── storage domain spec ──────────────────────────────────────────────────
 
 export const spec = defineDomain({
@@ -79,6 +91,7 @@ export const spec = defineDomain({
     reasoning_profile: { valueSchema: reasoningEntrySchema },
     resource_baseline: { valueSchema: resourceEntrySchema },
     calibration_log: { valueSchema: calibrationEntrySchema },
+    metrics_ingest: { valueSchema: metricsIngestEntrySchema },
   },
 });
 
@@ -245,6 +258,7 @@ export function openStore(ctx) {
     reasoningProfile: new MemTable(),
     resourceBaseline: new MemTable(),
     calibrationLog: new MemTable(),
+    metricsIngest: new MemTable(),
   };
   const store = {
     tables: memTables,
