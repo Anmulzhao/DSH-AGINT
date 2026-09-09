@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-self-model",
-  "version": "0.7.1",
-  "description": "AGINT 自我模型 v0.7.1（Sprint 13 / Part 2）：只读观察者插件。聚合 evolution-memory / diagnosis / metrics / tool-stats 形成能力图谱 + 推理画像 + 资源感知 + 校准误差。禁止写 qualityPolicy / mutator / population（D2 哲学定位：自我认知 ≠ 自我修改）。新增事件边 A11 self.model.updated（T1 影子期 publish-only）。设计稿 Sprint13 §四。",
+  "version": "0.7.2",
+  "description": "AGINT 自我模型 v0.7.2（Sprint 16：A7 metrics.snapshot 影子对账器）：只读观察者插件。聚合 evolution-memory / diagnosis / metrics / tool-stats 形成能力图谱 + 推理画像 + 资源感知 + 校准误差。禁止写 qualityPolicy / mutator / population（D2 哲学定位：自我认知 ≠ 自我修改）。新增事件边 A11 self.model.updated（T1 影子期 publish-only）。设计稿 Sprint13 §四。",
   "main": "lib/index.js",
 
   "agint": {
