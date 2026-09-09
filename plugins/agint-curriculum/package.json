@@ -1,6 +1,6 @@
 {
   "name": "agint-curriculum",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "P7 自主课程生成器 v0.1.0（Sprint 14 Part B，仓库实现不挂载 prod）：消费 self-model 能力画像（A11 只当触发器，数据走 snapshot()），在 UNCERTAIN / 校准失准 / 久未复验的域上生成带可自动判定通过条件的挑战（4 域模板 × D1-D5，40%-70% 完成率护栏 + 连续序列防刷分），判定外部化（C1/C2/C3），出队不自动执行，结果回写 self-model（只提供证据）。独占 agint_curriculum 存储域（4 表）。",
   "type": "module",
   "main": "lib/index.js",
