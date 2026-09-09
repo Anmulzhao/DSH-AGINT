@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-memory-provider",
-  "version": "0.1.0",
-  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）。独占 agint_memory_provider storage domain；封装 agint-memory 为 builtin provider，支持外部 provider 激活与降级。",
+  "version": "0.2.0",
+  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层 + Sprint 16 降级与检查点）。独占 agint_memory_provider storage domain；封装 agint-memory 为 builtin provider，支持外部 provider 激活、运行时降级（连续失败自动切换 + 自动恢复）、pre_compress fail-closed 检查点与 provider 工具动态注册。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -14,7 +14,8 @@
     "cordis": {
       "inject": [
         "storageDomain",
-        "agint.memory"
+        "agint.memory",
+        "tools"
       ],
       "provides": [
         "agint.memoryProvider"
@@ -22,13 +23,21 @@
       "events": [
         "memory.provider-activated",
         "memory.provider-activation-failed",
+        "memory.provider-fallback",
+        "memory.provider-recovered",
+        "memory.pre-compress-checkpoint",
+        "memory.tool-called",
         "memory.recall-injected"
       ],
       "tools": [
         "memory_provider_list",
         "memory_provider_status",
         "memory_provider_activate",
-        "memory_provider_deactivate"
+        "memory_provider_deactivate",
+        "memory_provider_test",
+        "memory_provider_config_get",
+        "memory_provider_config_set",
+        "memory_provider_fallback_stats"
       ]
     },
     "storage": {

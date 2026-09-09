@@ -7,8 +7,8 @@
  *   - memory_provider_activate  **write**，需 ask 门禁（§9.1 L3）
  *   - memory_provider_deactivate **write**，需 ask 门禁（§9.1 L3）
  *
- * Sprint 16 补：memory_provider_test / config_get / config_set /
- * fallback_stats；Sprint 17 补：pause / resume（§12.2 / §12.3）。
+ * Sprint 16 补（§12.2）：memory_provider_test / config_get / config_set /
+ * fallback_stats；Sprint 17 补：pause / resume（§12.3）。
  *
  * ⚠️ 现有记忆工具（memory_write / memory_search / memory_read / memory_stats /
  * memory_forget_scan）**不在这里注册**——按 §14.1 决策 B，它们继续由
@@ -154,6 +154,123 @@ function apply(ctx) {
         actor: 'human',
         reason: args.reason ?? '工具调用 deactivate',
       }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_test',
+    description:
+      '测试记忆 Provider 的可用性：配置/凭证校验 + initialize 试探。' +
+      '**Read-only**。注意：不做真实网络探活（isAvailable 约束 §9.2 约束 6），' +
+      '「ok=true」代表配置与初始化没问题，不代表外部 API 端到端可达。',
+    parameters: {
+      providerName: {
+        type: 'string',
+        description: '要测试的 provider 名；缺省测当前激活的',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: `memory_provider_test: ${v.ok ? '✅' : '❌'} ${v.providerName}` +
+          `  registered=${v.registered} available=${v.available}` +
+          `${v.initializeOk !== null ? ` initializeOk=${v.initializeOk}` : ''}` +
+          `（${v.durationMs}ms）\n  ${v.reason ?? ''}`,
+      }],
+    },
+    async execute(args) {
+      return roundTrip(await svc.testConnection(args.providerName));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_config_get',
+    description:
+      '读取记忆 Provider 的配置（config + secrets 的 env var 名）。' +
+      '**Read-only**；敏感值永不返回（只回 env var 名，§9.1 L2）。' +
+      'providerName 缺省读当前激活的 provider。',
+    parameters: {
+      providerName: { type: 'string', description: 'provider 名；缺省 = 当前激活的' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: `memory_provider_config_get: ${v.providerName} configured=${v.configured}` +
+          `  configKeys=[${Object.keys(v.config ?? {}).join(', ') || '无'}]` +
+          `  secretEnvVars=[${Object.keys(v.secrets ?? {}).join(', ') || '无'}]` +
+          `${v.lastValidatedAt ? `\n  lastValidatedAt=${v.lastValidatedAt} result=${v.validationResult}` : ''}`,
+      }],
+    },
+    async execute(args) {
+      return roundTrip(await svc.getConfig(args?.providerName));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_config_set',
+    description:
+      '设置记忆 Provider 的配置。**Write 操作，需人工确认**（§9.1 L3）。' +
+      'secrets 只接受 **env var 名**（如 MY_API_KEY），不接受实际凭证值——' +
+      '疑似凭证会被直接拒绝（§9.1 L2）。',
+    parameters: {
+      providerName: {
+        type: 'string', required: true,
+        description: 'provider 名',
+      },
+      config: {
+        type: 'object', additionalProperties: true,
+        description: '非敏感配置键值对（如 { apiBaseUrl: "https://..." }）',
+      },
+      secrets: {
+        type: 'object', additionalProperties: true,
+        description: '敏感配置，值必须是 env var 名（如 { apiKeyEnv: "MY_API_KEY" }），实际凭证会被拒绝',
+      },
+      reason: { type: 'string', description: '修改原因，写入 audit_log' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: v.ok
+          ? `memory_provider_config_set: ✅ ${v.providerName} 已更新（${v.updatedAt}）`
+          : `memory_provider_config_set: ❌ ${v.providerName} 更新失败`,
+      }],
+    },
+    async execute(args) {
+      return roundTrip(await svc.setConfig(
+        args.providerName,
+        { config: args.config ?? {}, secrets: args.secrets ?? {} },
+        { actor: 'human', reason: args.reason ?? '工具调用 config_set' },
+      ));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_fallback_stats',
+    description:
+      '记忆 Provider 运行时降级统计（最近 7 天 fallback_events 聚合）' +
+      '：按操作/错误类型分布、自动恢复次数、当前降级态。' +
+      '**Read-only**。排查「记忆最近怎么老不召回」先看这个。',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const d = v.degradation ?? {};
+        const lines = [
+          `memory_provider_fallback_stats: total=${v.total}（近 ${v.windowDays} 天 ${v.inWindow}）`,
+          `  byOperation=${JSON.stringify(v.byOperation)}  byErrorType=${JSON.stringify(v.byErrorType)}`,
+          `  自动恢复次数=${v.recoveredCount}`,
+          `  当前降级态: degraded=${d.degraded} provider=${d.degradedProvider ?? '无'}` +
+            ` 连续失败=${d.consecutiveFailures}` +
+            `${d.recoverAt ? ` 计划恢复=${d.recoverAt}` : ''}`,
+        ];
+        return [{ type: 'text', text: lines.join('\n') }];
+      },
+    },
+    async execute() {
+      return roundTrip(await svc.getFallbackStats());
     },
   }));
 }

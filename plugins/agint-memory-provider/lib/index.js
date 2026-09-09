@@ -13,8 +13,14 @@
  *   - 事件：memory.provider-activated / provider-activation-failed /
  *     recall-injected（软依赖 event-bus，不可用时降级为仅写 audit_log）
  *
- * Sprint 16 接力（§12.2）：运行时降级、pre_compress 检查点、工具动态注册、
- * testConnection —— 在 manager.js 显式抛 not implemented，绝不静默。
+ * Sprint 16 范围（§12.2，2026-09-09 落地）：
+ *   - 运行时降级（单次失败降级 + 连续失败切换 + 自动恢复）+ 召回超时保护
+ *   - fallback_events / pre_compress_checkpoints 表写入
+ *   - pre_compress 检查点编排（fail-closed，api_version>=2，防死锁回退）
+ *   - provider 工具动态注册（getToolSchemas → 加前缀 → 冲突检查）+ 路由
+ *   - testConnection / getFallbackStats 真实聚合
+ *   - 新增事件：memory.provider-fallback / provider-recovered /
+ *     pre-compress-checkpoint / tool-called
  *
  * **不修改 agint-memory**（§1.3 非目标第 1 条）：本插件只注入其
  * `agint.memory` 服务做封装，不重开 `agint` 域（该域进程内独占）。
@@ -40,6 +46,8 @@ import {
   providerConfigId,
   packProviderConfig,
   packActivationLog,
+  packFallbackEvent,
+  packCheckpoint,
   packAudit,
 } from './storage.js';
 import { ProviderRegistry } from './registry.js';
@@ -47,9 +55,10 @@ import { BuiltinProvider } from './builtin-provider.js';
 import { MemoryManager } from './manager.js';
 
 const name = 'agint-memory-provider';
-// storageDomain 硬依赖（自己的域）+ agint.memory 硬依赖（封装为 builtin）；
+// storageDomain 硬依赖（自己的域）+ agint.memory 硬依赖（封装为 builtin）+
+// tools（阶段 2 工具动态注册需要 ctx.tools；tools.js 同款 inject，preset 恒有）；
 // event-bus 是软依赖，运行时 ctx.get 探测，不进 inject（不可用时降级）。
-const inject = ['storageDomain', 'agint.memory'];
+const inject = ['storageDomain', 'agint.memory', 'tools'];
 
 function apply(ctx, config) {
   const cfg = ConfigSchema.parse(config ?? {});
@@ -110,6 +119,8 @@ function apply(ctx, config) {
   const PACKERS = {
     provider_config: packProviderConfig,
     activation_log: packActivationLog,
+    fallback_events: packFallbackEvent,
+    pre_compress_checkpoints: packCheckpoint,
     audit_log: packAudit,
   };
 
@@ -159,6 +170,9 @@ function apply(ctx, config) {
     record,
     publish: publishEvent,
     debug,
+    // 阶段 2 工具动态注册（§3.3）：注入 ctx.tools；defineTool 不在此静态导入
+    // （repo 冒烟测试不引 dsh 依赖），由 manager 内 lazy dynamic import 兜底。
+    tools: ctx.tools ?? null,
   });
 
   // ── Service 出口（设计稿 §5.3）─────────────────────────────────────────
@@ -406,26 +420,53 @@ function apply(ctx, config) {
         builtin_recall_touch: effectiveConfig().builtin_recall_touch,
         fallback_enabled: effectiveConfig().fallback_enabled,
         max_consecutive_failures: effectiveConfig().max_consecutive_failures,
+        failure_window_minutes: effectiveConfig().failure_window_minutes,
+        auto_recover_after_minutes: effectiveConfig().auto_recover_after_minutes,
+        pre_compress_checkpoint_enabled: effectiveConfig().pre_compress_checkpoint_enabled,
+        pre_compress_fail_closed: effectiveConfig().pre_compress_fail_closed,
+        external_provider_tools_enabled: effectiveConfig().external_provider_tools_enabled,
         require_human_approval_switch: effectiveConfig().require_human_approval_switch,
         debug_mode: effectiveConfig().debug_mode,
       },
-      sprint: '15-base-abstraction',
+      degradation: manager.getDegradationState(),
+      providerTools: manager.listProviderTools(),
+      sprint: '16-fallback-checkpoints',
     };
   }
 
-  /** 降级统计（§5.3）—— Sprint 16 才有 fallback_events 写入，现在返回空态 */
+  /**
+   * 降级统计（§5.3 memory_provider_fallback_stats）。
+   * 阶段 2 起 fallback_events 由运行时降级逻辑真实写入（§3.1 [6]）。
+   */
   async function getFallbackStats() {
     const t = await table('fallback_events').catch(() => null);
     const total = t && typeof t.size === 'number' ? t.size : 0;
+
+    const byOperation = {};
+    const byErrorType = {};
+    let recovered = 0;
+    const windowDays = 7;
+    const cutoff = Date.now() - windowDays * 24 * 3600 * 1000;
+    let inWindow = 0;
+
+    if (t) {
+      for (const [, e] of t.entries()) {
+        byOperation[e.operation] = (byOperation[e.operation] ?? 0) + 1;
+        byErrorType[e.errorType] = (byErrorType[e.errorType] ?? 0) + 1;
+        if (e.recovered) recovered += 1;
+        const ts = Date.parse(e.timestamp);
+        if (Number.isFinite(ts) && ts >= cutoff) inWindow += 1;
+      }
+    }
+
     return {
       total,
-      byOperation: {},
-      byErrorType: {},
-      windowDays: 7,
-      note: total === 0
-        ? 'fallback_events 由 Sprint 16 运行时降级逻辑写入（设计稿 §12.2）；' +
-          'Sprint 15 仅在激活失败时写 activation_log(action=fallback)'
-        : null,
+      inWindow,
+      windowDays,
+      byOperation,
+      byErrorType,
+      recoveredCount: recovered,
+      degradation: manager.getDegradationState(),
     };
   }
 
@@ -496,11 +537,12 @@ function apply(ctx, config) {
     registerProvider,
     stats,
     config: configApi,
-    // Sprint 16 接力（显式抛未实现）
+    // Sprint 16（§12.2）：降级 / 检查点 / 工具暴露 / 连接测试
     testConnection: (n) => manager.testConnection(n),
     runPreCompressCheckpoint: (m) => manager.runPreCompressCheckpoint(m),
     registerProviderTools: () => manager.registerProviderTools(),
     routeToolCall: (t, a, k) => manager.routeToolCall(t, a, k),
+    listProviderTools: () => manager.listProviderTools(),
   });
 }
 
