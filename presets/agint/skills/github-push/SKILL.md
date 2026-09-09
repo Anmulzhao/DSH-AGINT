@@ -32,43 +32,123 @@ exit: 128
 
 **git 的纯对象操作正常**（不崩）：`git rev-parse` / `git status` / `git log` / `git add` / `git commit` —— 这些不经 msys fork。
 
-**绕过方法：用本机原生 Win32 `ssh.exe` 直接跟 GitHub 的 `git-receive-pack` 说话**：
+> **✅ 但 `git fetch` 不走 msys fork**（git fetch 用的是纯 libgit2-like 协议，走 curl/schannel 网络栈），不崩；
+> `git push` 才走 msys。**所以沙箱里 fetch 可以用、push 必须绕路**。这是 2026-09-08 实测结论，
+> 之前记录说 fetch 也崩是错的，已验证推翻（参见末尾"记录勘误"）。
 
-```sh
-# 1. 拿本地 commit SHA（纯对象操作，不崩）
-git rev-parse HEAD        # main -> NEW_SHA
-git rev-parse HEAD        # 在另一个仓库里 -> NEW_SHA
+---
 
-# 2. 用原生 ssh.exe 连 GitHub git-receive-pack，看 remote 当前 ref（拿到 OLD_SHA）
-#    注意 remote 命令作为 ssh 的独立 argv 参数，不要经 cmd.exe 拆引号
-C:\Windows\System32\OpenSSH\ssh.exe -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-  git@github.com 'git-receive-pack Anmulzhao/DSH-AGINT.git'
-# 第一行: 0126<OLD_SHA> refs/heads/<branch> report-status ...   <- remote 当前状态
+### 🚨 沙箱强制推送流程（5 步，2026-09-08 实测可执行版）
 
-# 3. 构造 git protocol 的 pkt-line ref 更新（把 NEW_SHA 刷上去）
-#    格式: command=update refs/heads/<branch> <NEW_SHA> <OLD_SHA>\0 + flush(0000)
-#    pkt 长度 = 4 + payload 长度，十六进制 4 位
-```
+**严禁**直接 `git push` / `Start-Process` / PowerShell `<` 重定向 / `cmd /c type | ssh` 喂字节流——
+所有这些都因为 msys signal pipe 或沙箱边界问题失败。**只走 `.NET Process + ssh.exe stdin`**：
 
-实际 pkt-line 构造（PowerShell）：
+#### Step 1：本地 commit（纯对象操作，不崩）
 ```powershell
-$new = '<NEW_SHA>'
-$old = '<OLD_SHA>'   # 从步骤2 拿到的 remote 当前 ref
-$payload = "command=update refs/heads/main $new $old" + [char]0
-$len = $payload.Length + 4
-$pkt = ('{0:x}' -f $len).PadLeft(4, '0') + $payload + '0000'
-# 把 $pkt 通过 ssh stdin 喂给 git-receive-pack，或用文件重定向
+git add <files>
+git commit -m "..."
+$new = git rev-parse HEAD
 ```
 
-**验证**：receive-pack 返回的第一行 `0126<NEW_SHA> refs/heads/<branch> report-status...` 就是服务器确认后的 ref 状态。**这行 SHA 等于你的本地 HEAD 即推送成功**。
+#### Step 2：先 fetch 校准 origin 缓存（read-only，不崩）
+```powershell
+git -c "http.proxy=http://127.0.0.1:7890" fetch origin <branch>
+$remoteSha = git rev-parse origin/<branch>
+```
 
-**已实测成功**（2026-09-05）：
-- `Anmulzhao/DSH-AGINT` main → `26ef07f399071184483144f50084359d681130c4`
-- `Anmulzhao/DSH-AGINT.wiki` master → `5353974fd38d0e7ff28d95b1381a555dc5e1d9af`
+> **为什么必须 fetch 而不是 `ssh -T git@github.com git-receive-pack` 探 OLD_SHA**：
+> - ssh + git-receive-pack **会一直等 stdin**，不喂东西就 hang
+> - GitHub 在 push 成功后**主动关连接**，ref 通告里 SHA 是握手期远端状态，不是 push 后结果
+> - `git fetch` 一次把"远端 SHA" + "本地缓存" + "ahead/behind 计数"全拿到，**3 件事 1 次走完**
+
+#### Step 3：列领先对象 + 打 pack（纯对象操作）
+```powershell
+git rev-list --objects 'origin/<branch>..HEAD' |
+    ForEach-Object { ($_ -split ' ')[0] } |
+    Set-Content objects.txt -Encoding ASCII
+Get-Content objects.txt | git pack-objects --stdout > pack.pack
+# ⚠️ 落地路径必须在 workspace-write 范围内（D:\DSH\...），不能用 $env:TEMP——
+#    沙箱里 Set-Content 到 $env:TEMP 后下次命令读不到，被清掉
+```
+
+#### Step 4：组 v1 协议字节流 + `.NET Process` 直喂 ssh.exe stdin
+```powershell
+$stream = New-TemporaryFile
+$enc = [System.Text.Encoding]::ASCII
+$cap = 'report-status'
+$line = "$remoteSha $new refs/heads/<branch>`0$cap"
+$hex = ('{0:x}' -f ($line.Length + 4)).PadLeft(4, '0')
+
+$prefix = $enc.GetBytes('0000' + $hex + $line + '0000')
+$flushBytes = [byte[]]@(0x30,0x30,0x30,0x30)   # "0000"
+$packBytes = [System.IO.File]::ReadAllBytes('pack.pack')
+
+$fs = [System.IO.File]::OpenWrite($stream)
+$fs.Write($prefix, 0, $prefix.Length)
+$fs.Write($flushBytes, 0, 4)
+$fs.Write($packBytes, 0, $packBytes.Length)
+$fs.Write($flushBytes, 0, 4)   # pack 末尾必须有 flush
+$fs.Close()
+
+$ssh = "$env:WINDIR\System32\OpenSSH\ssh.exe"
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $ssh
+$psi.Arguments = '-T -p 22 -o BatchMode=yes -o StrictHostKeyChecking=accept-new git@github.com git-receive-pack <owner>/<repo>.git'
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+
+$proc = [System.Diagnostics.Process]::Start($psi)
+$inputBytes = [System.IO.File]::ReadAllBytes($stream)
+$proc.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
+$proc.StandardInput.BaseStream.Flush()
+$proc.StandardInput.Close()
+$proc.WaitForExit(30000) | Out-Null
+if (-not $proc.HasExited) { $proc.Kill() }
+# ⚠️ stdout 只看到握手第一行 + ref 通告是**正常**的——
+#    GitHub push 成功会立即关连接，report-status 经常吐不全
+```
+
+#### Step 5：再次 fetch 验证（强制，不可省）
+```powershell
+git fetch origin <branch>
+$counts = git rev-list --left-right --count 'origin/<branch>...HEAD'
+# $counts = "0	0" → 推送成功
+# $counts = "0	N" → 还有 N 个 commit 没推
+```
+
+> **绝不要用"ssh + git-receive-pack 握手第一行 SHA"判断推送成功**——
+> 那行是握手期远端状态，不是 push 后结果。**只用 `git fetch` 校验**。
+
+---
+
+### 🚨 沙箱里禁止的手动操作（2026-09-08 自残教训）
+
+- ❌ **`git update-ref refs/remotes/origin/* <sha>`** 手动改远端缓存
+  - 会让本地 `origin/<branch>` 与远端真实状态错位
+  - 后果：`rev-list origin/<branch>..HEAD` 返回空，pack 打空，push 看似成功实则啥也没推
+  - **整改**：永远用 `git fetch` 同步缓存，不要手 update-ref
+
+- ❌ **`git push` / `Start-Process cmd /c git push`** / PowerShell `<` 重定向到 ssh / pipe 字节到 ssh
+  - 全部失败或 hang，原因见上
+- ❌ **相信"GitHub REST API 看不到 = 仓库不存在"**
+  - Wiki 仓库（`<repo>.wiki.git`）不在 `api.github.com` REST 索引里，无 token 返回 404
+  - 但 git 协议（`https://github.com/<owner>/<repo>.wiki.git/info/refs?service=git-upload-pack`）+ SSH 都通
+  - **整改**：判断 wiki 仓库存在性**用 git 协议 + `ssh -T git@github.com`**，不用 REST API
+
+---
 
 **区分两种处境**：
 - 你在 **Git Bash / 正常终端**里 → 直接 `git push` 即可（有 MSYS 环境，sh 正常起）
-- 你在 **智进的沙箱 PowerShell 会话**里 → **别用 git push**，用上面的 ssh.exe + git-receive-pack 手动推
+- 你在 **智进的沙箱 PowerShell 会话**里 → **走上面 5 步强制流程**，不绕路
+
+**已实测成功**（2026-09-08）：
+- `Anmulzhao/DSH-AGINT.wiki` master ← `a334c26`（1 commit / 558 字节 pack）
+- `Anmulzhao/DSH-AGINT.wiki` master ← `47ef13b`（追加 wiki-sync 段后）
+
+---
 
 ## 关键踩坑
 
@@ -78,6 +158,16 @@ $pkt = ('{0:x}' -f $len).PadLeft(4, '0') + $payload + '0000'
   实际可用的只有 **curl 走 clash 7890** 拉 tarball / API，git push 用本地代理的解决方式见下。
 - Python 的 `urllib` 直连 7890 也能通（不需要 SSL 包装），适合脚本场景。
 - **沙箱里任何 msys 二进制（git/bash/sh）的 spawn 都会因 signal pipe 崩**，和代理无关。
+  **`git fetch` 是例外**：用纯 git 协议走 schannel，不 spawn msys，所以**沙箱里 `git fetch` 可以用**。
+
+---
+
+## 📌 记录勘误
+
+- 2026-09-05 旧记录说"沙箱里 `git push / git fetch / git pull` 必崩"——`fetch/pull` 部分**实测不崩**
+  （2026-09-08 验证），**只有 `push` 崩**。原描述已修正。
+- 2026-09-05 旧记录说"ghelper kuaishou CDN 代理是默认通道"——**该节点 2026-09-05 同日已死**，
+  改走 clash 7890；旧描述保留供历史参考，**新脚本不要用**。
 
 ## 目标仓库
 
@@ -87,7 +177,9 @@ $pkt = ('{0:x}' -f $len).PadLeft(4, '0') + $payload + '0000'
   rewrite —— **push 时必须用 `GIT_CONFIG_GLOBAL=/dev/null` 绕过**，
   否则请求被导到被封的镜像，报 `Recv failure: 连接被对方重置`。
 
-## 标准推送流程
+## 标准推送流程（⚠️ 仅沙箱外 / Git Bash 用）
+
+> **沙箱 PowerShell 不要用下面这套**——`git push` 必 msys signal pipe 崩。**沙箱走上面的"5 步强制流程"**。
 
 ```sh
 cd ~/projects/AGINT
