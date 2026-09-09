@@ -210,27 +210,76 @@ check_one() {
   fi
 }
 
+# ── K19 schema 护栏（2026-09-09 加入）──
+# 背景：工具参数里每个 `type: "object"` 都必须显式声明 additionalProperties，
+# 否则 dsh 的 ajv 严格模式会拒绝挂载**整条 preset**，UI 只冒泡成一句
+# "Failed to fetch"，排查成本极高（2026-09-09 实测，dsh 直接起不来）。
+#
+# 为什么挂在这里：护栏「写了但没人跑」等于没写——这正是 K19 当初翻车的根因
+# （约定早已写在文件头注释里，但没有自动校验，照样漏）。接入 plugin-check
+# 让它每次准入检查都自动跑一遍。默认扫 $PLUGINS_ROOT（宿主运行副本，真正被
+# dsh 加载的那份）；可用 K19_SCAN_ROOT 覆盖。
+k19_guard() {
+  local repo_root out
+  repo_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+
+  # MSYS 的 /c/... /d/... 这类路径 Windows 原生 node 解析不了（会当相对路径，
+  # 报 "Cannot find module"），传给 node 前一律 cygpath 转成 C:\... D:\...
+  local to_win='printf %s'
+  command -v cygpath >/dev/null 2>&1 && to_win='cygpath -w'
+
+  local guard_msys="$repo_root/test/schema-guard.test.mjs"
+  if [ ! -f "$guard_msys" ]; then
+    log_warn "未找到 test/schema-guard.test.mjs，跳过 K19 护栏"
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    log_warn "未装 node，跳过 K19 护栏"
+    return 0
+  fi
+  local guard
+  guard="$($to_win "$guard_msys" 2>/dev/null)" || guard="$guard_msys"
+
+  local scan_root="$PLUGINS_ROOT"
+  if command -v cygpath >/dev/null 2>&1; then
+    scan_root="$(cygpath -w "$PLUGINS_ROOT" 2>/dev/null || printf '%s' "$PLUGINS_ROOT")"
+  fi
+
+  echo
+  echo "─── K19 schema 护栏（扫描 $scan_root）───"
+  if out="$(K19_SCAN_ROOT="$scan_root" node --test "$guard" 2>&1)"; then
+    log_ok "所有 object schema 均已显式声明 additionalProperties"
+  else
+    log_err "K19 违例：存在未声明 additionalProperties 的 object schema（会导致 preset 挂载失败）"
+    printf '%s\n' "$out" | grep -E ':[0-9]+[[:space:]]*$' | sed 's/^/    /' | head -20
+    printf '%s\n' "$out" | sed -n '/未声明 additionalProperties 的 object schema/,/^$/p' | sed 's/^/    /' | head -30
+  fi
+  return 0
+}
+
 # 主逻辑
 case "${1:-}" in
-  --all|"")
-    shift || true
-    if [ -d "$PLUGINS_ROOT" ]; then
-      for d in "$PLUGINS_ROOT"/agint-*/; do
-        [ -d "$d" ] || continue
-        check_one "$d" || true
-      done
-    fi
-    ;;
   --help|-h)
     cat <<EOF
 Usage: plugin-check.sh [--all | <plugin-dir>...]
 
 ENV:
   DSH_PLUGINS_ROOT   default \$HOME/.dsh/profiles/web/plugins
+  K19_SCAN_ROOT      K19 schema 护栏的扫描根（默认随 DSH_PLUGINS_ROOT）
 
 Lint 模式：失败/警告都不阻断，只列缺失项。
 详见 $SPEC_URL
 EOF
+    ;;
+  --all|"")
+    shift || true
+    k19_guard
+    if [ -d "$PLUGINS_ROOT" ]; then
+      for d in "$PLUGINS_ROOT"/agint-*/; do
+        [ -d "$d" ] || continue
+        check_one "$d" || true
+      done
+    fi
     ;;
   *)
     for d in "$@"; do
