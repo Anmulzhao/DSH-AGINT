@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 0.1.1（2026-09-09 · 挂载 prod 前修复）
+
+挂载冒烟（mock ctx + host 真代码）抓出两个 blocker，均在 defineTool / 服务注册
+路径上，不修则挂载即失败或核心功能残废。
+
+### 修复
+
+- **tools.js：`curriculum_submit` 的 `evidence` 参数缺 `additionalProperties: true`**。
+  dsh-tools 的 schema 编译器要求 object 参数显式声明，否则 `defineTool` 在
+  **挂载期**抛 `JsonSchemaError`（UNSUPPORTED_SCHEMA）——preset 加载即崩，
+  不是运行期错误。全仓其它插件只在 `output.schema` 用 object，本插件是第一个
+  在 `parameters` 用 object 的，踩了这个坑。
+- **index.js：`getSelfModel()` 取 `agint.selfModel` 父键恒为 undefined**。
+  agint-self-model 实际只 provide 全名子键（`agint.selfModel.snapshot` /
+  `.update` 等），cordis service store 是扁平的（reflect._getImpl 按确切键名查），
+  原实现导致 `probe()` 永远走软降级、一个待练域都找不出来。现对齐全仓惯例：
+  优先父键（未来兼容），否则按子键组装 `{ snapshot, update }`。
+
+### 验证
+
+- 仓库测试 50/50 PASS；挂载冒烟（`_smoke_curriculum.mjs`）全通过：
+  probe 识别 UNCERTAIN 域 → generate → next（sessionId `curriculum-` 前缀）→
+  submit 自动判定 pass → stats，3 个事件发布，4 工具注册。
+
 ## 0.1.0（2026-09-08 · Sprint 14 Part B · 仓库实现，不挂载 prod）
 
 P7 自主课程生成器首个可用版本，按 Sprint14-设计稿 §4/§5 落地。

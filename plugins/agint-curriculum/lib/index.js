@@ -117,8 +117,22 @@ function apply(ctx, config) {
   }
 
   // ── self-model 访问（软降级：不可用 → null，probe 返回 skipped）─────────
+  //
+  // ⚠️ 2026-09-09 挂载前修复：agint-self-model 实际只 provide **全名子键**
+  // （agint.selfModel.snapshot / .update / .calibrate / .stats / .inspectSummary），
+  // 而 cordis 的 service store 是扁平的（reflect._getImpl 按确切键名查），
+  // 所以 ctx.get('agint.selfModel') 恒为 undefined → probe() 永远走软降级，
+  // 一个待练域都找不出来。全仓其它消费方（如 agint-quality-eval）都是按全名
+  // 子键取的，这里对齐同一惯例：优先父键（未来若 self-model 改为注册对象），
+  // 否则按子键组装成 { snapshot, update }。
   function getSelfModel() {
-    return (typeof ctx.get === 'function') ? ctx.get('agint.selfModel') : null;
+    if (typeof ctx.get !== 'function') return null;
+    const direct = ctx.get('agint.selfModel');
+    if (direct && typeof direct === 'object') return direct;
+    const snapshot = ctx.get('agint.selfModel.snapshot');
+    const update = ctx.get('agint.selfModel.update');
+    if (typeof snapshot !== 'function' && typeof update !== 'function') return null;
+    return { snapshot, update };
   }
 
   async function readSnapshot() {

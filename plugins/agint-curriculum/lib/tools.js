@@ -51,6 +51,11 @@ function apply(ctx) {
       challengeId: { type: 'string', description: '挑战 ID（curriculum_next 返回）' },
       evidence: {
         type: 'object',
+        // dsh-tools 的 schema 编译器要求 object 参数**显式**声明 additionalProperties，
+        // 否则 defineTool 抛 JsonSchemaError（挂载时即崩，不是运行期）。
+        // 证据字段随挑战类型变化（codegen/reasoning/planning/tool-use 各不相同），
+        // 只能开放。参照 output.schema 的 K19 政策。
+        additionalProperties: true,
         description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning→{steps:[]}；tool-use→{toolUsed,exitCode,output}。可附带 selfAssessment（自评，仅记录）。',
       },
     },
