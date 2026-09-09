@@ -134,7 +134,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'autocreate_stats',
     description:
-      '技能自动创建统计：模式数/候选数（各状态分布）/暂停状态/当前配置。' +
+      '技能自动创建统计：模式数/候选数（各状态分布）/发布数/暂停状态/当前配置。' +
       '**Read-only**。周复盘可直接引用。',
     parameters: {},
     output: {
@@ -143,6 +143,109 @@ function apply(ctx) {
     },
     execute() {
       return svc.stats().then((s) => JSON.parse(JSON.stringify(s)));
+    },
+  }));
+
+  // ── Sprint 16 发布层（设计稿 §6）────────────────────────────────────────
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_release',
+    description:
+      '发布指定候选为真实技能（写入 preset skills 目录，宿主自动发现，无需重启）。' +
+      '**WRITE**：改变候选状态并落盘文件，执行需人工确认（agint-rules 门禁）。' +
+      '人工发布绕过周预算但绕不过 policy 质量门；仅 QUEUED_FOR_RELEASE / BUDGET_WAIT 可发。',
+    parameters: {
+      id: { type: 'string', description: '候选 id（QUEUED_FOR_RELEASE / BUDGET_WAIT 状态）' },
+      reason: { type: 'string', description: '发布理由，写入审计日志' },
+      actor: { type: 'string', description: '发布人标识（默认 human）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        if (v.released) {
+          return [{ type: 'text', text: `autocreate_release: ✅ ${v.skillName} 已发布 → ${v.dir}\n  观察期至 ${v.observationEndAt}（release=${v.releaseId}）` }];
+        }
+        return [{ type: 'text', text: `autocreate_release: ⛔ 未发布 — [${v.gate}] ${v.reason}` }];
+      },
+    },
+    async execute(args) {
+      const out = await svc.release({ ...args, manual: true });
+      return JSON.parse(JSON.stringify(out));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_rollback',
+    description:
+      '回滚已发布的自动创建技能：目录移入归档区（只归档不删除），候选标记 ROLLED_BACK，' +
+      '同名技能进入 30 天冷却期。**WRITE**，执行需人工确认（agint-rules 门禁）。',
+    parameters: {
+      skillName: { type: 'string', description: '技能名（与 id 二选一）' },
+      id: { type: 'string', description: '候选 id（与 skillName 二选一）' },
+      reason: { type: 'string', description: '回滚原因（必填，写入审计与 release 记录）' },
+      actor: { type: 'string', description: '操作人标识（默认 human）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: v.archived
+          ? `autocreate_rollback: ✅ ${v.skillName} 已回滚 → 归档 ${v.dest}`
+          : `autocreate_rollback: ⚠️ ${v.skillName} 标记回滚（目录本就不存在）`,
+      }],
+    },
+    async execute(args) {
+      const out = await svc.rollback(args);
+      return JSON.parse(JSON.stringify(out));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_list_releases',
+    description:
+      '列出发布记录（含观察期状态/调用计数/回滚信息）。**Read-only**。',
+    parameters: {
+      status: { type: 'string', description: '按状态过滤：OBSERVING / STABLE / ROLLED_BACK；省略=全部' },
+      limit: { type: 'number', description: '最多返回多少条（默认 20）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const list = v.releases ?? [];
+        if (!list.length) return [{ type: 'text', text: 'autocreate_list_releases: no releases yet' }];
+        const lines = list.map((r) => {
+          const m = r.observationMetrics ?? {};
+          return `  ${r.id}  [${r.status}]  ${r.skillName}  by=${r.releasedBy}  calls=${m.callsTotal ?? 0}  end=${r.observationEndAt ?? '-'}${r.rollbackReason ? `  回滚=${r.rollbackReason}` : ''}`;
+        });
+        return [{ type: 'text', text: `autocreate_list_releases: ${list.length} releases\n${lines.join('\n')}` }];
+      },
+    },
+    async execute(args) {
+      const releases = await svc.listReleases({ ...args, limit: args.limit ?? 20 });
+      return JSON.parse(JSON.stringify({ releases }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_modify',
+    description:
+      '修改发布前候选的技能草稿（发布前人工把关）。**WRITE**：修改后候选回到 PENDING_EVAL ' +
+      '需重新过 Phase 1-3 评估（防人工改动引入未评估内容）；自我指涉草稿被拒绝。',
+    parameters: {
+      id: { type: 'string', description: '候选 id（QUEUED_FOR_RELEASE / BUDGET_WAIT 状态）' },
+      skillDraft: { type: 'object', description: '完整替换的新草稿（name/description/frontmatter/body/...）' },
+      actor: { type: 'string', description: '修改人标识（默认 human）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: `autocreate_modify: ✅ ${v.id} 草稿已更新 → 状态回 ${v.status}（需重跑评估）`,
+      }],
+    },
+    async execute(args) {
+      const out = await svc.modifyCandidate(args);
+      return JSON.parse(JSON.stringify({ id: out.id, status: out.status, name: out.skillDraft?.name }));
     },
   }));
 }

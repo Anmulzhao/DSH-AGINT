@@ -149,10 +149,35 @@ export const ConfigSchema = z.object({
   // Phase 2 沙箱超时（毫秒）
   sandbox_timeout_ms: z.number().int().min(1000).default(30000),
 
-  // 发布预算（Sprint 16 使用）
+  // 发布预算（Sprint 16 使用；回滚也算消耗——防「发了又滚」刷总量）
   weekly_deploy_budget: z.number().int().min(1).default(3),
-  observation_period_days: z.number().int().min(1).default(7),
+  observation_period_days: z.number().int().min(1).default(14),
   rollback_threshold: z.number().min(0).max(1).default(0.2),
+
+  // ── Sprint 16 发布层（设计稿 §5；2026-09-09 老板拍板 3 项）──────────────
+  // 门 1 总开关（独立于 auto_create_enabled）
+  release_enabled: z.boolean().default(true),
+  // 门 3 policy 门同步超时（超时 = fail-closed 不发布）
+  release_policy_timeout_ms: z.number().int().min(100).default(5000),
+  // 门 2 人工确认窗：require_human_approval=true 或 now < until 即不自动发布；
+  // 拍板 2：默认开到 2026-10-07（拍板日+28 天），到期自动转全自动
+  require_human_approval_until: z.string().default('2026-10-07T15:59:59.999Z'),
+  // 观察期（拍板 3）：窗 14 天 + ≥5 次调用判 STABLE
+  observation_min_calls: z.number().int().min(1).default(5),
+  // 自动回滚：连续 N 个 M 天子窗 0 调用（三重确认）
+  rollback_window_days: z.number().int().min(1).default(3),
+  rollback_zero_call_windows: z.number().int().min(1).default(3),
+  // 回滚冷却：同名技能被回滚后 N 天内不得重发（防振荡）
+  rollback_cooldown_days: z.number().int().min(0).default(30),
+  // 发布目标目录（agint preset skill root —— 目录即注册，watcher 自动发现）；
+  // 测试用 skills_root 覆盖指向临时目录
+  skills_root: z.string().default(
+    () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/.agent-presets/agint/skills',
+  ),
+  // 回滚归档区（只归档不删除，任何时刻可人工放回）
+  rollback_archive_dir: z.string().default(
+    () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/storages/agint_skill_autocreate_rolled_back',
+  ),
 
   // 去重（Sprint 15 使用）
   dedup_similarity_threshold: z.number().default(0.9),
@@ -180,6 +205,10 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'weekly_deploy_budget',
   'min_occurrence_count',
   'require_human_approval',
+  // Sprint 16：发布层运行时旋钮
+  'release_enabled',
+  'require_human_approval_until',
+  'observation_min_calls',
 ]);
 
 // ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────

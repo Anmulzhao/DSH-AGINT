@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.1] — Sprint 16 发布层 cron（2026-09-09）
+
+### Added
+- 新增 cron job `skill-autocreate-release`（daily 05:15）：调 agint.skillAutocreate.releaseQueue()，三道门自动发布队列检查（人工确认窗内全部被拦，拍板 2 语义）。
+- 新增 cron job `skill-autocreate-observe`（daily 05:30）：调 agint.skillAutocreate.observe()，观察期 STABLE / 0 调用自动回滚 / 展期判定。
+- 两 job 均在 skill-autocreate-aggregate(04:45) 之后；插件未挂载时 soft-skip。
+
 ## [0.2.0] — Sprint 12 B3 baseline-regression 真 cron hook
 
 ### Added
