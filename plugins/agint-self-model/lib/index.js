@@ -241,16 +241,30 @@ function apply(ctx, _config = {}) {
   const disposers = [];
 
   // A7 影子对账器（Sprint 16）：消费 metrics.snapshot 事件，与直连 metrics.snapshot() 对账。
-  // 影子期只记数不写表；一致率供 T2 切流量决策用。详见 lib/metricsIngest.js 文件头。
+  // 影子期只记数，不写任何业务表；一致率供 T2 切流量决策用。详见 lib/metricsIngest.js 文件头。
+  // v0.7.3：统计经 onPersist 节流落 metrics_ingest 单行表（纯观测表，非业务表），
+  // 让 bin/t2-reconcile.mjs 能在 dsh 进程外读一致率（内存统计重启即丢）。
   const metricsIngest = createSnapshotIngest({
     getDirectSnapshot: async () => {
       const m = deps.get('agint.metrics');
       return m && typeof m.snapshot === 'function' ? await m.snapshot() : null;
     },
     mode: 'shadow',
+    onPersist: (s) => {
+      const t = store.tables.metricsIngest;
+      if (!t || typeof t.put !== 'function') return;
+      const r = t.put('latest', {
+        id: 'latest',
+        kind: 'metrics-ingest-stats',
+        stats: s,
+        persistedAt: nowIso(),
+      });
+      if (r && typeof r.catch === 'function') r.catch(() => { /* 落盘失败不 fatal */ });
+    },
   });
 
   ctx.effect(() => () => {
+    try { void metricsIngest.flush(); } catch { /* ignore：dispose 期兜底落盘尾部批次 */ }
     try { store.close?.(); } catch { /* ignore */ }
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
   });

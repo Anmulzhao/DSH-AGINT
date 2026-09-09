@@ -1,5 +1,15 @@
 # Changelog — agint-self-model
 
+## v0.7.3 (Sprint 16 / T2 准备件补强)
+- **A7 统计落盘**：新增 `metrics_ingest` 单行观测表（id='latest'，spec 仍为 version 1，
+  参照 skill-autocreate 加表先例）。影子对账统计经 `onPersist` 钩子节流落盘
+  （默认 5 分钟一次 + dispose 强制兜底），`bin/t2-reconcile.mjs` 可在 dsh 进程外
+  读到运行时一致率 —— 此前统计只在内存，重启清零且外部不可见，09-25 决策无取数路径。
+  影子期「不写业务表」红线不变：capability/reasoning/resource/calibration 四张业务表零写入。
+- **flush 挂进 dispose**：此前 dispose 只退订不结算，尾部批次（最多一整批事件）丢弃。
+- `maybePersist` 永不抛：落盘失败只吞掉，影子主流程不受影响（测试覆盖）。
+- 测试 34/34 PASS（新增 5 个落盘用例）；smoke 19/19 无回归。
+
 ## v0.7.2 (Sprint 16 / T2 准备件)
 - A7 `metrics.snapshot` 消费方落地（此前订阅方为 0，见 wiki `T2-切边清单.md` §3）。
 - 新模块 `lib/metricsIngest.js`：影子对账器 —— 订阅 A7（async，不占 sync 配额），

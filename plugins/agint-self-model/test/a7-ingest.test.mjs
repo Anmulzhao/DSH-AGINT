@@ -8,6 +8,7 @@
  *   4. 判定口径：结构不对称才 mismatch；值漂移只记录不判定（时差必然）
  *   5. 影子纪律：不写任何表；handler 喂垃圾 payload 永不抛
  *   6. 去重 + inspectSummary 暴露
+ *   7. onPersist 节流落盘钩子（v0.7.3）：结算触发 / 节流 / 异常吞掉 / flush 强制落
  *
  * 跑法（cwd = 仓库根）：
  *   node test/a7-ingest.test.mjs     或     node --test test/
@@ -139,6 +140,46 @@ ok('metricsIngest 记录了事件', inspect.metricsIngest.events === 2);
 ok('metricsIngest 完成了一次对账', inspect.metricsIngest.compared === 1);
 ok('metricsIngest 模式为 shadow', inspect.metricsIngest.mode === 'shadow');
 ok('影子期一致率为 1', inspect.metricsIngest.consistencyRate === 1);
+
+// ── 7. onPersist 节流落盘钩子（v0.7.3）────────────────────────────────────
+{
+  const writes = [];
+  const inst = ingest.createSnapshotIngest({
+    getDirectSnapshot: async () => ({ asOf: 'now', count: 1, metrics: [{ key: 'e2e.latency-ms', value: 42 }] }),
+    onPersist: (s) => writes.push(s),
+    persistIntervalMs: 0, // 关闭节流，方便断言
+  });
+  await inst.ingest(ev('P1', 'e2e.latency-ms', 42, 's1'));
+  await inst.ingest(ev('P2', 'e2e.latency-ms', 42, 's2')); // 批切换 → 结算 → onPersist
+  ok('结算触发 onPersist', writes.length === 1 && writes[0].compared === 1, `writes=${writes.length}`);
+  ok('onPersist 收到一致率快照', writes[0].consistencyRate === 1);
+  await inst.ingest(ev('P3', 'e2e.latency-ms', 42, 's3'));
+  ok('interval=0 时每次结算都落盘', writes.length === 2, `writes=${writes.length}`);
+
+  const bad = ingest.createSnapshotIngest({
+    getDirectSnapshot: async () => ({ asOf: 'now', count: 1, metrics: [{ key: 'x', value: 1 }] }),
+    onPersist: () => { throw new Error('boom'); },
+    persistIntervalMs: 0,
+  });
+  let threw = false;
+  try {
+    await bad.ingest(ev('Q1', 'x', 1, 'q1'));
+    await bad.ingest(ev('Q2', 'x', 1, 'q2'));
+  } catch { threw = true; }
+  ok('onPersist 抛异常被吞、影子主流程存活', threw === false);
+
+  const fw = [];
+  const finst = ingest.createSnapshotIngest({
+    getDirectSnapshot: null, // skipped 路径也要能落盘（记 skipped 计数）
+    onPersist: (s) => fw.push(s),
+    persistIntervalMs: 60_000, // 节流开着
+  });
+  await finst.ingest(ev('F1', 'x', 1, 'f1'));
+  await finst.flush();
+  // 2 次属预期：settle 的 skipped 路径节流落盘 1 次（首次必落）+ flush 强制兜底 1 次（幂等覆盖）
+  ok('flush 后统计已落盘（节流 + 强制兜底，幂等）', fw.length === 2, `fw=${fw.length}`);
+  ok('落盘内容记录了 skipped', fw[1].skipped === 1);
+}
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

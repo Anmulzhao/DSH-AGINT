@@ -99,6 +99,10 @@ export function compareSnapshot(rebuilt, direct) {
  * @param {Function|null} [opts.getDirectSnapshot] 直连快照来源（默认 null → 只攒批不对账）
  * @param {'shadow'|'apply'} [opts.mode] apply 本版不启用（见文件头）
  * @param {Function|null} [opts.onMismatch] mismatch 回调（测试/告警用）
+ * @param {Function|null} [opts.onPersist] 统计落盘钩子（v0.7.3）。每次对账后按
+ *   persistIntervalMs 节流调用，参数 = stats() 快照。宿主（index.js）负责写
+ *   metrics_ingest 表；钩子内部异常由本模块吞掉，绝不影响影子主流程。
+ * @param {number} [opts.persistIntervalMs] 落盘节流间隔（默认 5 分钟）
  * @param {number} [opts.maxBatchKeys] 单批 key 上限，防异常 payload 撑爆内存
  * @returns {{ingest:Function, flush:Function, stats:Function}}
  */
@@ -107,6 +111,8 @@ export function createSnapshotIngest(opts = {}) {
     getDirectSnapshot = null,
     mode = 'shadow',
     onMismatch = null,
+    onPersist = null,
+    persistIntervalMs = 5 * 60 * 1000,
     maxBatchKeys = 512,
   } = opts;
 
@@ -125,6 +131,16 @@ export function createSnapshotIngest(opts = {}) {
   let lastComparedAt = null;
   let lastMismatch = null;
   let lastBatchSize = 0;
+  let lastPersistAt = 0;
+
+  /** 统计落盘（节流）。force=true 跳过节流（dispose / 测试用）。永不抛。 */
+  function maybePersist(force = false) {
+    if (typeof onPersist !== 'function') return;
+    const now = Date.now();
+    if (!force && now - lastPersistAt < persistIntervalMs) return;
+    lastPersistAt = now;
+    try { onPersist(stats()); } catch { /* 影子期红线：落盘失败不影响主流程 */ }
+  }
 
   function openBatch(generatedAt) {
     return { generatedAt, metrics: new Map(), seen: new Set() };
@@ -136,6 +152,7 @@ export function createSnapshotIngest(opts = {}) {
     lastBatchSize = batch.metrics.size;
     if (typeof getDirectSnapshot !== 'function') {
       counters.skipped += 1;
+      maybePersist();
       return { compared: false, reason: 'no-direct-source' };
     }
     let direct = null;
@@ -146,6 +163,7 @@ export function createSnapshotIngest(opts = {}) {
     }
     if (!direct) {
       counters.skipped += 1;
+      maybePersist();
       return { compared: false, reason: 'direct-unavailable' };
     }
     const rebuilt = rebuildSnapshot({
@@ -165,6 +183,7 @@ export function createSnapshotIngest(opts = {}) {
     if (cmp.valueDrift) counters.valueDrift += 1;
     if (cmp.sizeDrift) counters.sizeDrift += 1;
     lastComparedAt = nowIso();
+    maybePersist();
     return { compared: true, ...cmp };
   }
 
@@ -197,13 +216,15 @@ export function createSnapshotIngest(opts = {}) {
     }
   }
 
-  /** 强制结算当前批（dispose / 测试用） */
+  /** 强制结算当前批（dispose / 测试用）。结算后强制落盘一次，别丢尾部数据。 */
   async function flush() {
     try {
       if (!current) return null;
       const batch = current;
       current = null;
-      return await settle(batch);
+      const r = await settle(batch);
+      maybePersist(true);
+      return r;
     } catch {
       return null;
     }

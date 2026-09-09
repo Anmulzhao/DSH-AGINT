@@ -125,7 +125,30 @@ function reconcileA1(bus, evo) {
 }
 
 // ── A7：事件 key ↔ metrics 存储 key ─────────────────────────────────────────
-function reconcileA7(bus, metrics) {
+// v0.7.3 起 self-model 的影子对账统计会落 metrics_ingest 单行表（节流 5 分钟），
+// 这里一并读出「运行时一致率」——它才是 T2 门禁的正主（影子 vs 直连），
+// 下面的 key 覆盖率是离线交叉验证。两者互证：内存版有节流落盘 + 重启清零，
+// 本脚本看历史；离线版只验 key 结构，不验对账判定。
+function shadowStatsOf(selfModel) {
+  const rows = tableOf(selfModel, 'metrics_ingest');
+  const latest = rows.find((r) => r?.id === 'latest') ?? rows[0] ?? null;
+  if (!latest?.stats) return null;
+  const s = latest.stats;
+  return {
+    persistedAt: latest.persistedAt ?? null,
+    events: s.events ?? null,
+    batches: s.batches ?? null,
+    compared: s.compared ?? null,
+    matched: s.matched ?? null,
+    mismatched: s.mismatched ?? null,
+    skipped: s.skipped ?? null,
+    valueDrift: s.valueDrift ?? null,
+    consistencyRate: typeof s.consistencyRate === 'number' ? s.consistencyRate : null,
+    lastComparedAt: s.lastComparedAt ?? null,
+  };
+}
+
+function reconcileA7(bus, metrics, selfModel) {
   const events = tableOf(bus, 'events')
     .filter((r) => r?.envelope?.topic === 'metrics.snapshot');
   const inWindow = events.filter((r) => String(r?.envelope?.occurredAt ?? '') >= SINCE);
@@ -147,6 +170,7 @@ function reconcileA7(bus, metrics) {
 
   const hit = [...latest].filter((k) => storedKeys.has(k)).length;
   const coverage = rate(hit, latest.size);
+  const shadow = shadowStatsOf(selfModel);
 
   return {
     eventsTotal: events.length,
@@ -156,8 +180,16 @@ function reconcileA7(bus, metrics) {
     storedKeys: storedKeys.size,
     latestBatchKeys: latest.size,
     keyCoverage: coverage,
+    ...(shadow
+      ? Object.fromEntries(Object.entries(shadow).map(([k, v]) => [`shadow${k[0].toUpperCase()}${k.slice(1)}`, v]))
+      : { shadow: null }),
     verdict: verdict(latest.size, coverage, 3), // A7 单批 key 少，门槛放低
-    note: '值漂移不参与判定（事件批次与直连快照天然有时差，见 lib/metricsIngest.js 文件头）',
+    note: [
+      '值漂移不参与判定（事件批次与直连快照天然有时差，见 lib/metricsIngest.js 文件头）',
+      shadow
+        ? `运行时影子对账：${shadow.compared ?? 0} 次比对，一致率 ${pct(shadow.consistencyRate)}（落盘于 ${shadow.persistedAt ?? '?'}）`
+        : '运行时影子统计尚未落盘（需 self-model ≥ v0.7.3 且有 A7 事件流入）',
+    ].join('；'),
   };
 }
 
@@ -165,6 +197,7 @@ function reconcileA7(bus, metrics) {
 const bus = readJson('agint_event_bus.json');
 const evo = readJson('agint_evolution.json');
 const metrics = readJson('agint_metrics.json');
+const selfModel = readJson('agint_self_model.json');
 
 if (!bus) {
   console.error(`读不到事件总线存储：${join(STORAGE, 'agint_event_bus.json')}`);
@@ -181,7 +214,7 @@ const result = {
   edges: {},
 };
 if (EDGE === 'ALL' || EDGE === 'A1') result.edges.A1 = reconcileA1(bus, evo);
-if (EDGE === 'ALL' || EDGE === 'A7') result.edges.A7 = reconcileA7(bus, metrics);
+if (EDGE === 'ALL' || EDGE === 'A7') result.edges.A7 = reconcileA7(bus, metrics, selfModel);
 
 if (AS_JSON) {
   console.log(JSON.stringify(result, null, 2));
