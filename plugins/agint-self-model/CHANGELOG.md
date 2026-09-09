@@ -1,5 +1,19 @@
 # Changelog — agint-self-model
 
+## v0.7.2 (Sprint 16 / T2 准备件)
+- A7 `metrics.snapshot` 消费方落地（此前订阅方为 0，见 wiki `T2-切边清单.md` §3）。
+- 新模块 `lib/metricsIngest.js`：影子对账器 —— 订阅 A7（async，不占 sync 配额），
+  按 `generatedAt` 攒批，批切换时用事件重建 snapshot 与直连 `metrics.snapshot()` 对账。
+- **影子期纪律**：只记数不写任何表；资源基线权威路径仍是直连（observation.js 不动）。
+  `mode='apply'` 留给 T2 拍板后启用，本版不实现写库。
+- 判定口径：只判结构不对称（latency 条目单侧缺失）；值漂移仅记录不判定
+  （事件批次与直连快照有时差，按值相等判定会让一致率永远不达标）。
+- 对账统计经 `inspectSummary()` 的 `metricsIngest` 字段暴露（events / batches /
+  compared / matched / mismatched / valueDrift / consistencyRate / lastMismatch）。
+- 消费方落点修正：设计稿建议 evolve/dream，实际落 self-model —— 唯一有直连可切
+  且在 prod 有流量的位置（observation.js:119 的 `metrics.snapshot()` 直连）。
+- 测试：`test/a7-ingest.test.mjs` 28/28 PASS；原 smoke 19/19 无回归。
+
 ## v0.7.1 (Sprint 13 / Part 2)
 - 全新插件：只读观察者自我模型。
 - FROZEN schema：`self-model.schema.yaml`（CapabilityEntry / SelfModelSnapshot / CalibrationResult）+ `self-model-updated.schema.yaml`（A11 payload）。

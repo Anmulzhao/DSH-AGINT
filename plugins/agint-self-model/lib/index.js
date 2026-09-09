@@ -28,6 +28,7 @@ import {
 import {
   readReasoningProfile, readResourceBaseline, recomputeObservation,
 } from './observation.js';
+import { createSnapshotIngest, METRICS_SNAPSHOT_TOPIC } from './metricsIngest.js';
 import {
   runCalibration, summarizeCalibration, readCalibrationLog,
 } from './calibration.js';
@@ -239,6 +240,16 @@ function apply(ctx, _config = {}) {
   const deps = buildDeps(ctx);
   const disposers = [];
 
+  // A7 影子对账器（Sprint 16）：消费 metrics.snapshot 事件，与直连 metrics.snapshot() 对账。
+  // 影子期只记数不写表；一致率供 T2 切流量决策用。详见 lib/metricsIngest.js 文件头。
+  const metricsIngest = createSnapshotIngest({
+    getDirectSnapshot: async () => {
+      const m = deps.get('agint.metrics');
+      return m && typeof m.snapshot === 'function' ? await m.snapshot() : null;
+    },
+    mode: 'shadow',
+  });
+
   ctx.effect(() => () => {
     try { store.close?.(); } catch { /* ignore */ }
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
@@ -309,6 +320,7 @@ function apply(ctx, _config = {}) {
       resourceCount: await store.tables.resourceBaseline.size(),
       calibrationCount: await store.tables.calibrationLog.size(),
       calibrationSummary: calSummary,
+      metricsIngest: metricsIngest.stats(),
     };
   }
 
@@ -332,6 +344,13 @@ function apply(ctx, _config = {}) {
       );
       if (typeof offA6 === 'function') disposers.push(offA6);
       if (typeof offA8 === 'function') disposers.push(offA8);
+
+      // A7 metrics.snapshot（Sprint 16 新增消费方；影子对账，handler 内部永不抛）
+      const offA7 = subscribe(
+        { subscriber: 'agint-self-model', topics: [METRICS_SNAPSHOT_TOPIC], mode: 'async' },
+        async (envelope) => { await metricsIngest.ingest(envelope); },
+      );
+      if (typeof offA7 === 'function') disposers.push(offA7);
     }
   }
   catch { /* bus 不可用：影子订阅静默跳过 */ }
