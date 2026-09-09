@@ -1,5 +1,47 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.0 (2026-09-09) — Sprint 16 发布层（设计稿 §3，老板拍板 3 项）
+
+**P0-1 全链路收口**：检测 → 评估 → 发布 → 观察 → 回滚全自动闭环（M3）。
+
+### 新增：`lib/release-manager.js`
+
+- **三道门**（全过才落盘，任何一道不过 → 候选停 `BUDGET_WAIT` + `release-held` 事件）：
+  1. `release_enabled` 总开关（auto/manual 都拦）；
+  2. 人工确认窗：`require_human_approval=true` 或 `now < require_human_approval_until`
+     （拍板 2：默认开到 **2026-10-07**，`manual=true` 绕过）；
+  3. policy 门：同步问询 `agint.qualityPolicy.decide`，仅 `AUTO_DEPLOY` 放行，
+     ABSTAIN / PENDING_REVIEW / REJECT / 超时（5s）/ 异常一律 **fail-closed**（manual 也不绕）；
+  4. 周预算：`weekly_deploy_budget`（默认 3），**回滚也算消耗**（`manual` 绕过）。
+- **原子落盘**：staging 物料 → `skills_root` 先写 `.tmp-<ts>` 再整目录 rename
+  （同盘原子；watcher 自动发现——Sprint16 设计稿 §1.2 源码级核实：无需重启 dsh、
+  无需改 agent.cordis.yml）。重名硬防线 + 发布后自检。
+- **观察期**（数据源 = tool-stats 的 `skill` 工具调用，零新采集）：
+  窗满 14 天 + ≥5 次调用 → `STABLE`；最近 3 个 3 天子窗 0 调用 → 自动回滚；
+  窗满不达标 → 展期一次（`extensions≥1` 后仍不达标 → 回滚）；
+  **tool-stats 数据源失效 → 顺延判定不回滚**（09-09 停摆排查教训落地）。
+- **回滚**：目录归档 `rollback_archive_dir`（只归档不删除）+ candidate/release
+  标记 `ROLLED_BACK` + **30 天冷却**（同名禁重发，防振荡）。
+- **记忆固化**：发布成功 → evolution-memory `addSuccess`（软依赖，失败不阻断）。
+- 5 个新事件：`released` / `rolled-back` / `budget-exceeded` / `release-held` / `release-stable`。
+
+### 变更
+
+- `modifyCandidate`：`QUEUED_FOR_RELEASE`/`BUDGET_WAIT` 状态修改草稿 →
+  回 `PENDING_EVAL` 重跑评估（防人工改动引入未评估内容直接挂载）。
+- releases 表收紧：新增 `releasedBy`（auto/human）+ `budgetWeek`。
+- 配置新增：`release_enabled` / `release_policy_timeout_ms` /
+  `require_human_approval_until`（默认 2026-10-07）/ `observation_min_calls`（5）/
+  `rollback_window_days`（3）/ `rollback_zero_call_windows`（3）/
+  `rollback_cooldown_days`（30）/ `skills_root` / `rollback_archive_dir`；
+  `observation_period_days` 默认 7 → **14**（拍板 3）。
+- 新 preset 工具 4 个：`autocreate_release` / `autocreate_rollback` /
+  `autocreate_list_releases` / `autocreate_modify`（write 类均走 agint-rules 门禁）。
+- cron 新 job 2 个（agint-cron）：`skill-autocreate-release`（daily 05:15）+
+  `skill-autocreate-observe`（daily 05:30）。
+- 测试 102/102 PASS（新增 `test/release.test.mjs` 17 用例：三道门各分支 /
+  重名防御 / 回滚归档 / 冷却 / 观察期四分支 / modify 重评）。
+
 ## 0.2.1 (2026-09-09) — 补齐 [4] 可标准化判断 + 修 [5] 模板工具名错配
 
 2026-09-09 门槛离线回放时发现的**两处链路断裂**（详见

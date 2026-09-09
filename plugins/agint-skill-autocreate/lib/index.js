@@ -14,7 +14,11 @@
  *     Phase 3 硬门+排序），复用 D-QAF 执行层但不复用综合分决策（§3 语义错配）
  *   - T1 staging 物化 / T2 quality-static 四族 checker / T5 去重 / T6 事件+工具 /
  *     T7 evolution 写 phase3-provisional / T8 回归验收（71.4 不死锁）
- *   - release/rollback 仍显式抛 not implemented（Sprint 16 发布层接力）
+ *
+ * Sprint 16（P0-1 发布层，设计稿 §3，用户 2026-09-09 拍板 3 项）：
+ *   - release/releaseQueue/rollback/observe/listReleases（lib/release-manager.js）
+ *   - 三道门（总开关/人工确认窗/policy 门/周预算）→ 原子落盘 skills_root →
+ *     14 天观察期（0 调用三重确认自动回滚）→ STABLE；回滚只归档不删除+30 天冷却
  *
  * 事件：skill-autocreate.pattern-detected / candidate-created /
  *   phase1-passed / phase1-rejected / phase2-passed / phase2-rejected /
@@ -47,6 +51,7 @@ import { buildProposal } from './proposer.js';
 import { evaluateCandidate } from './evaluator.js';
 import { isDuplicate } from './similarity.js';
 import { cleanupCandidate, cleanupStale, stagingRootFor } from './staging.js';
+import { createReleaseManager } from './release-manager.js';
 
 const name = 'agint-skill-autocreate';
 // storageDomain 硬依赖；tools 在宿主不注册 model 工具（preset 平面经 lib/tools.js）
@@ -360,6 +365,17 @@ function apply(ctx, config) {
     };
   }
 
+  // Sprint 16 发布层（设计稿 §3；createReleaseManager 依赖注入，见 lib/release-manager.js）
+  const releaseManager = createReleaseManager({
+    table,
+    audit,
+    publishEvent,
+    cfg: effectiveConfig,
+    getService: (key) => (typeof ctx.get === 'function' ? ctx.get(key) : null),
+    readToolStatsRecords,
+    dshHome: process.env.DSH_HOME || (process.env.HOME + '/.dsh'),
+  });
+
   // ── Service 出口（设计稿 §5.1）─────────────────────────────────────────
 
   async function listPatterns(args = {}) {
@@ -433,7 +449,13 @@ function apply(ctx, config) {
     const t = await table('candidates');
     const found = t.entries().find(([key]) => key === id);
     if (!found) throw new Error(`modifyCandidate: no candidate '${id}'`);
-    const updated = { ...found[1], skillDraft: input.skillDraft };
+    // Sprint 16（设计稿 §6）：发布前修改 → 回 PENDING_EVAL 重跑评估
+    //（防人工改动引入未经 Phase 1-3 评估的内容直接挂载）
+    let status = found[1].status;
+    if (status === 'QUEUED_FOR_RELEASE' || status === 'BUDGET_WAIT') {
+      status = 'PENDING_EVAL';
+    }
+    const updated = { ...found[1], skillDraft: input.skillDraft, status };
     await t.put(id, updated);
     await audit({
       actor: input.actor ?? 'human',
@@ -649,17 +671,20 @@ function apply(ctx, config) {
     };
   }
 
-  // Sprint 16 接力——显式抛错，绝不静默（真实 > 讨好）
-  async function notImplemented(stage) {
-    throw new Error(`agint.skillAutocreate: ${stage} 未实现（Sprint 16 交付），当前为评估层骨架`);
-  }
+  // Sprint 16 发布层 Service 出口（原 notImplemented 桩替换为真实现）
+  const release = (input = {}) => releaseManager.releaseCandidate(input);
+  const releaseQueue = (input = {}) => releaseManager.releaseQueue(input);
+  const rollback = (input = {}) => releaseManager.rollback(input);
+  const observe = () => releaseManager.observe();
+  const listReleases = (input = {}) => releaseManager.listReleases(input);
 
   async function stats() {
-    const [tp, cd, al] = await Promise.all([
-      table('task_patterns'), table('candidates'), table('audit_log'),
+    const [tp, cd, al, rt] = await Promise.all([
+      table('task_patterns'), table('candidates'), table('audit_log'), table('releases'),
     ]);
     const patterns = [...tp.entries()].map(([, v]) => v);
     const candidates = [...cd.entries()].map(([, v]) => v);
+    const releases = [...rt.entries()].map(([, v]) => v);
     const byStatus = {};
     for (const c of candidates) byStatus[c.status] = (byStatus[c.status] ?? 0) + 1;
     return {
@@ -669,17 +694,26 @@ function apply(ctx, config) {
         byStatus: patterns.reduce((m, p) => ({ ...m, [p.status]: (m[p.status] ?? 0) + 1 }), {}),
       },
       candidates: { total: candidates.length, byStatus },
+      releases: {
+        total: releases.length,
+        byStatus: releases.reduce((m, r) => ({ ...m, [r.status]: (m[r.status] ?? 0) + 1 }), {}),
+        budgetWeek: releases.filter((r) => r.budgetWeek === releaseManager._internals.weekKey()).length,
+      },
       auditLogEntries: al.entries().length,
       limits: LIMITS,
       paused,
       config: {
         auto_create_enabled: effectiveConfig().auto_create_enabled,
+        release_enabled: effectiveConfig().release_enabled,
         weekly_deploy_budget: effectiveConfig().weekly_deploy_budget,
         min_occurrence_count: effectiveConfig().min_occurrence_count,
         require_human_approval: effectiveConfig().require_human_approval,
+        require_human_approval_until: effectiveConfig().require_human_approval_until,
+        observation_period_days: effectiveConfig().observation_period_days,
+        observation_min_calls: effectiveConfig().observation_min_calls,
         aggregate_cron: effectiveConfig().aggregate_cron,
       },
-      sprint: '15-eval-layer',
+      sprint: '16-release-layer',
     };
   }
 
@@ -717,8 +751,11 @@ function apply(ctx, config) {
     rejectCandidate,
     modifyCandidate,
     triggerEval,
-    release: (input = {}) => notImplemented('release'),
-    rollback: (input = {}) => notImplemented('rollback'),
+    release,
+    releaseQueue,
+    rollback,
+    observe,
+    listReleases,
     stats,
     pause,
     resume,

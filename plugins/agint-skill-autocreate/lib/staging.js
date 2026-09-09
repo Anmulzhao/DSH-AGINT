@@ -57,7 +57,7 @@ export function renderSkillMd(draft) {
   return `${lines.join('\n')}\n`;
 }
 
-function renderManifest(draft, candidateId, nowIso) {
+export function renderManifest(draft, candidateId, nowIso) {
   const fm = draft?.frontmatter ?? {};
   return {
     name: fm.name ?? draft.name,

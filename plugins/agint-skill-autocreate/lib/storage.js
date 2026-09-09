@@ -33,7 +33,8 @@ const candidateEntrySchema = CandidateSchema.extend({
   createdAt: z.string(),
 });
 
-// releases 表 Sprint 16 写入；schema 按设计稿 §4.4 预置（宽松，防过早 FROZEN）
+// releases 表 Sprint 16 写入；schema 按设计稿 §4.4 + Sprint16-设计稿 §5 收紧
+// （无存量行，新增字段安全；status 仍是 OBSERVING/STABLE/ROLLED_BACK 三态）
 const releaseEntrySchema = z.object({
   id: z.string().min(1),
   kind: z.literal('skill_release'),
@@ -47,6 +48,9 @@ const releaseEntrySchema = z.object({
   status: z.enum(['OBSERVING', 'STABLE', 'ROLLED_BACK']).default('OBSERVING'),
   rollbackAt: z.string().nullable().default(null),
   rollbackReason: z.string().nullable().default(null),
+  // Sprint 16：发布主体 + 预算计数归属周（含已回滚的发布——回滚也算消耗预算）
+  releasedBy: z.enum(['auto', 'human']).default('auto'),
+  budgetWeek: z.string().nullable().default(null),
 });
 
 // proposals 表 Sprint 15 写入（Phase 3 通过后转正）；§7.2 字段（rankingScore /

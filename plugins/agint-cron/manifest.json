@@ -1,7 +1,7 @@
 {
   "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-cron",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。",
   "main": "lib/index.js",
   "agint": {
@@ -12,13 +12,24 @@
   },
   "spec": {
     "cordis": {
-      "inject": ["timer", "storageDomain"],
-      "provides": ["agint.cron"],
+      "inject": [
+        "timer",
+        "storageDomain"
+      ],
+      "provides": [
+        "agint.cron"
+      ],
       "events": [],
-      "tools": ["cron_list", "cron_run_now", "cron_health"]
+      "tools": [
+        "cron_list",
+        "cron_run_now",
+        "cron_health"
+      ]
     },
     "storage": {
-      "domains": ["agint_cron"],
+      "domains": [
+        "agint_cron"
+      ],
       "schemaVersion": 1,
       "atomic": "json"
     },
@@ -30,8 +41,12 @@
     },
     "mountOrder": 20,
     "permissions": {
-      "env": ["DSH_HOME"],
-      "fs": ["read:plugins"],
+      "env": [
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:plugins"
+      ],
       "network": [],
       "shell": false
     },

@@ -179,13 +179,17 @@ test('pause/resume + 运行时 config + 人工拒绝', async () => {
   }
 });
 
-test('Sprint 16 方法（release/rollback）显式抛 not implemented，绝不静默', async () => {
+test('Sprint 16 方法（release/rollback）已实装：参数缺失显式抛错（详细测试见 release.test.mjs）', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'autocreate-'));
   try {
     const { svc } = setupCtx(tmp);
-    for (const fn of ['release', 'rollback']) {
-      await assert.rejects(() => svc[fn]({}), /未实现/);
-    }
+    await assert.rejects(() => svc.release({}), /id is required/);
+    await assert.rejects(() => svc.rollback({ skillName: 'x' }), /reason is required/);
+    assert.equal(typeof svc.releaseQueue, 'function');
+    assert.equal(typeof svc.observe, 'function');
+    assert.equal(typeof svc.listReleases, 'function');
+    const releases = await svc.listReleases({});
+    assert.deepEqual(releases, []);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

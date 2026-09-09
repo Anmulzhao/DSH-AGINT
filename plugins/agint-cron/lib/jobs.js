@@ -196,6 +196,49 @@ export const defaultJobs = [
     },
   },
   {
+    // P0-1 发布层（Sprint 16）：每日发布窗口检查。
+    // - daily 05:15（聚合 04:45 之后，给新候选留出评估时间）
+    // - 遍历 QUEUED_FOR_RELEASE / BUDGET_WAIT 候选走三道门自动发布；
+    //   人工确认窗内（默认至 2026-10-07）全部被门 2 拦下——正好实现拍板 2
+    // - 插件未挂载时 soft-skip
+    id: 'skill-autocreate-release',
+    name: '技能自动创建发布窗口',
+    schedule: '15 5 * * *',
+    description: '发布队列检查：三道门（开关/确认窗/policy/预算）→ 原子挂载（daily）',
+    action: async (services) => {
+      const ac = services['agint.skillAutocreate'];
+      if (!ac?.releaseQueue) return { skipped: true, reason: 'agint.skillAutocreate.releaseQueue not mounted' };
+      const result = await ac.releaseQueue();
+      return {
+        skipped: result.skipped ?? false,
+        attempted: result.attempted,
+        released: result.released,
+        held: (result.results ?? []).filter((r) => !r.released).length,
+      };
+    },
+  },
+  {
+    // P0-1 发布层（Sprint 16）：每日观察期滚动。
+    // - daily 05:30（发布窗口之后）
+    // - OBSERVING release 判定：STABLE（窗满+调用达标）/ 自动回滚（0 调用三重确认）
+    //   / 展期一次 / 数据源失效顺延
+    id: 'skill-autocreate-observe',
+    name: '技能自动创建观察期滚动',
+    schedule: '30 5 * * *',
+    description: '观察期判定：STABLE / 0调用自动回滚 / 展期（daily）',
+    action: async (services) => {
+      const ac = services['agint.skillAutocreate'];
+      if (!ac?.observe) return { skipped: true, reason: 'agint.skillAutocreate.observe not mounted' };
+      const result = await ac.observe();
+      return {
+        observing: result.observing,
+        stable: result.stable,
+        rolledBack: result.rolledBack,
+        postponed: result.postponed,
+      };
+    },
+  },
+  {
     // P0-2 技能策展（Sprint 14 阶段 1）：每周策展。
     // - weekly Sun 02:00 —— 刻意排在 evolve-review(03:45) **之前**，让周复盘
     //   能吃到本周的策展报告（P0-2 §2.2 / §8.1 run_before_evolve_review）。
