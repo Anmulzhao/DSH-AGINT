@@ -1,7 +1,7 @@
 {
   "name": "agint-self-model",
-  "version": "0.7.3",
-  "description": "AGINT 自我模型 v0.7.3（Sprint 16：A7 统计落盘 + flush 兜底）：只读观察者插件。聚合既有插件数据形成自我画像，输出能力边界供 curriculum 消费；校准误差护栏 ≤10%。",
+  "version": "0.7.4",
+  "description": "AGINT 自我模型 v0.7.4（T2 A7 切换：事件权威路径 apply + 直连对账兜底）：只读观察者插件。聚合既有插件数据形成自我画像，输出能力边界供 curriculum 消费；校准误差护栏 ≤10%。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
