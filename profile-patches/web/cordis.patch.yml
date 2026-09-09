@@ -207,3 +207,19 @@
     - id: agint-memory-provider
       name: ./plugins/agint-memory-provider/lib/index.js
       config: {}
+
+    # agint-curriculum: P7 自主课程生成器 v0.1.1（Sprint 14 Part B，2026-09-09 挂载）。
+    # 消费 self-model 能力画像，在 UNCERTAIN / 久未复验 / 校准失准的域上生成带
+    # 可自动判定通过条件的挑战（4 域模板 codegen/reasoning/planning/tool-use ×
+    # D1-D5 难度档，40%-70% 完成率护栏 + 连续序列防刷分）。判定外部化 C1/C2/C3：
+    # 挑战必带 verifySpec、自评只进 notes、无 evidence 记 fail。出队不自动执行
+    # （auto_execute_enabled 恒 false，§4.5）。Service：agint.curriculum
+    # （probe/generate/nextChallenge/submit/list/stats/difficulty/pause/resume/
+    # config）。独占 agint_curriculum 存储域（4 表：challenges/attempts/
+    # difficulty_state/audit_log）。软依赖 event-bus（4 个 curriculum.* 事件）与
+    # self-model（snapshot/update，不可用降级 skipped）。硬注入 storageDomain。
+    # 首挂保守：challenge 生成由 agint-cron 的 curriculum-weekly job 驱动
+    # （周日 05:00），preset 侧只挂 4 个工具（next/submit/stats/list）。
+    - id: agint-curriculum
+      name: ./plugins/agint-curriculum/lib/index.js
+      config: {}

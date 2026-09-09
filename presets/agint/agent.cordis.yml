@@ -449,3 +449,14 @@
 # 的 preset 平面提供（设计稿 §14.1 决策 B），不在此注册。
 - id: agint-memory-provider-tools
   name: ../../profiles/web/plugins/agint-memory-provider/lib/tools.js
+
+# ── 智进 curriculum tools (P7 自主课程生成器 v0.1.0 — 2026-09-09 挂载) ────
+# Consumes host `agint.curriculum`. 4 个工具：
+# 只读裸调：curriculum_stats（各域完成率/难度档）/ curriculum_list（挑战列表）
+# 写操作（description 首行标注「⚠️ 写操作 · 需人工确认」，与 curator 同策略）：
+#   curriculum_next（领挑战，不自动执行，返回 curriculum- 前缀 sessionId）
+#   curriculum_submit（提交 evidence，按 verifySpec 自动判定 + self-model 回写）
+# 首挂保守：无 generate / probe 工具 —— 挑战由 agint-cron 的 curriculum-weekly
+# job 生成（周日 05:00，2026-09-09 加），agent 用 curriculum_next 领取。
+- id: agint-curriculum-tools
+  name: ../../profiles/web/plugins/agint-curriculum/lib/tools.js
