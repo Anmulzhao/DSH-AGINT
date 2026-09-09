@@ -9,6 +9,7 @@
  *   wiki-lint       Sun 03:00  Wiki 健康检查（断链/矛盾/孤岛）
  *   metrics-collect daily 04:00 进化指标采集（时间序列）
  *   evolve-review   Sun 03:45  周复盘报告（数据快照 + 自动发现）
+ *   curriculum-weekly Sun 05:00 自主课程：边界探测 → 待练域生成挑战
  */
 
 import { parseCron, nextFire, lastFire } from './cron.js';
@@ -219,6 +220,45 @@ export const defaultJobs = [
         staled: result.applied?.staled?.length ?? 0,
         archived: result.applied?.archived?.length ?? 0,
         reactivated: result.applied?.reactivated?.length ?? 0,
+      };
+    },
+  },
+  {
+    // P7 自主课程生成器（Sprint 14 Part B）：每周生成挑战。
+    // - weekly Sun 05:00 —— 排在周日全家桶（curator 02:00 / wiki-lint 03:00 /
+    //   baseline-regression 03:15 / evolve-review 03:45）之后，不挤同时段。
+    // - probe() 找待练域（UNCERTAIN / 校准失准 / CAN 超期未复验）→ 逐域
+    //   generate({ count: 1 })。generate 自带同域 24h 冷却 + 批量上限 +
+    //   无模板域诚实留白（unverifiable → skipped，不硬造）。
+    // - 出队不自动执行（P7 §4.5）：挑战生成后躺着，由 agent 用
+    //   curriculum_next 工具领取、真实执行后 curriculum_submit 提交。
+    // - 插件未挂载 / paused 时 soft-skip（不报错），与 curator-weekly 同策略。
+    id: 'curriculum-weekly',
+    name: '自主课程生成',
+    schedule: '0 5 * * 0', // Sun 05:00
+    description: '边界探测 → 对待练域逐一生成挑战（出队不自动执行）（weekly）',
+    action: async (services) => {
+      const curriculum = services['agint.curriculum'];
+      if (!curriculum) return { skipped: true, reason: 'agint.curriculum not mounted' };
+      const probed = await curriculum.probe();
+      if (probed.skipped) return { skipped: true, reason: probed.reason };
+      const domains = (probed.domains ?? []).map((d) => d.domain);
+      const results = [];
+      for (const domain of domains) {
+        const gen = await curriculum.generate({ domain, count: 1 });
+        results.push({
+          domain,
+          skipped: gen.skipped ?? false,
+          reason: gen.reason ?? null,
+          level: gen.level ?? null,
+          count: (gen.generated ?? []).length,
+        });
+      }
+      return {
+        probedDomains: domains,
+        unverifiable: (probed.unverifiable ?? []).map((d) => d.domain),
+        generated: results.filter((r) => !r.skipped && r.count > 0).length,
+        results,
       };
     },
   },

@@ -120,6 +120,7 @@ function apply(ctx) {
     'agint.promptSDK': ctx.get('agint.promptSDK'),
     'agint.skillAutocreate': ctx.get('agint.skillAutocreate'),
     'agint.curator': ctx.get('agint.curator'),
+    'agint.curriculum': ctx.get('agint.curriculum'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 
