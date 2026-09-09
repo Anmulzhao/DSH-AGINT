@@ -133,6 +133,8 @@ class MockProvider extends ExternalProvider {
           type: 'object',
           properties: { content: { type: 'string', description: '记忆内容' } },
           required: ['content'],
+          // K19：object schema 必须显式声明，否则 dsh 严格校验会拒收（见 test/schema-guard.test.mjs）
+          additionalProperties: false,
         },
       },
     ];
