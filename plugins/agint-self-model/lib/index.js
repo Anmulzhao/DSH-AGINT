@@ -247,8 +247,19 @@ function apply(ctx, _config = {}) {
   // resource_baseline 的 latency-ms 权威路径切到事件（observation.js 消费）。
   const metricsIngest = createSnapshotIngest({
     getDirectSnapshot: async () => {
+      // 直连对账源 = agint.metrics.summary()（FROZEN 契约方法；snapshot() 从未存在，
+      // 生产里一直返回 null 导致对账空转——T2 apply 后暴露，已修正）
       const m = deps.get('agint.metrics');
-      return m && typeof m.snapshot === 'function' ? await m.snapshot() : null;
+      if (!m || typeof m.summary !== 'function') return null;
+      try {
+        const s = await m.summary();
+        const arr = Array.isArray(s?.metrics) ? s.metrics : [];
+        return {
+          asOf: s?.asOf ?? new Date().toISOString(),
+          count: arr.length,
+          metrics: arr.map((r) => ({ key: r?.key, value: r?.value })),
+        };
+      } catch { return null; }
     },
     mode: 'apply',
     onPersist: (s) => {

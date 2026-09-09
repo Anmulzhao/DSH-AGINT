@@ -116,7 +116,7 @@ const services = {
   'agint.eventBus.subscribe': (sub, handler) => { subscriptions.push({ sub, handler }); return () => {}; },
   'agint.evolution': { queryFailures: async () => [], queryTemplates: async () => [], addFailure: async () => ({}), getLogRange: async () => [], stats: async () => ({}) },
   'agint.diagnosis': { report: async () => ({ rootCauseDistribution: { REASONING_ERROR: 1 } }) },
-  'agint.metrics': { snapshot: async () => ({ metrics: [{ key: 'e2e.latency-ms', value: 42 }] }), collect: async () => ({}), summary: async () => ({ metrics: [] }) },
+  'agint.metrics': { snapshot: async () => ({ metrics: [{ key: 'e2e.latency-ms', value: 42 }] }), collect: async () => ({}), summary: async () => ({ asOf: 'now', count: 1, metrics: [{ key: 'e2e.latency-ms', value: 42 }] }) },
   'agint.toolStats': { summary: async () => ({ summary: [] }) },
 };
 const ctx = mockCtx(services);
