@@ -120,22 +120,26 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 **平台分流**：Windows Git Bash 上 `safe-update.sh restart` 因 mingw 缺 `pgrep`/`pkill` 会失败，改用 PowerShell runbook `bin/restart-runbook.ps1`（用 `taskkill` + `Get-CimInstance` 替代，本地 60s sentinel.lease 兜底）。Linux/macOS / WSL 直接用 safe-update.sh。
 完整 SOP：`docs/operations/safe-update-sop.md`。事故复盘：`docs/operations/dsh-restart-incident-20260821.md`。
 
-## 插件准入红线（2026-08-21 复盘新增）
+## 插件准入红线（2026-08-21 复盘新增；2026-09-10 升级 10 维度）
 
-挂载到 `cordis.patch.yml` 的任何 `agint-*` 插件必须满足 **PLUGIN-SPEC 8 维度**：
+挂载到 `cordis.patch.yml` 的任何 `agint-*` 插件必须满足 **PLUGIN-SPEC 10 维度**（8 基础 + 2 soft warning）：
 
 1. **Contract** — `cordis.inject` / `provides` / `events` / `tools` 显式声明
 2. **Storage domains** — 独占，与兄弟插件不重叠
 3. **Dependencies** — peerDeps 显式 + `mountOrder` 数字
 4. **Permissions** — env / fs / network / shell 四档显式
 5. **Lifecycle** — `setInterval` / listeners 必须 `ctx.effect` 注册 disposer
+5.5. **跨平台 fixture (soft)** — `permissions.fs` 非空时 smoke 必须含 forward-slash 路径 + `../escape` 负向（v0.4 wiki-windows-path-escape 教训）
 6. **Tests** — `test/smoke.mjs` 一行能跑
 7. **Docs** — `README.md` + 每个 provides 一句话
 8. **Changelog** — 破环性变更写 `CHANGELOG.md`
+9. **runtime-contract** — waterfall 事件监听器必须调 `next()` 并返回决策；扫 `lib/index.js` 检测空体监听器或体非空但无 `next()` 调用（v0.3 tools-waterfall 教训）
+10. **文档-代码公式一致性 (soft)** — README.md / CHANGELOG.md 里的加权合成公式（如 `harmWeights: { H: 0.2 }`）必须在 plugins/ 找到实现代码；不阻断只警告（2026-09-09 HARM schema-only 教训，提案 `57541772-362f-4aed-bd4b-a598350482a4`）
 
 验收：`bin/plugin-check.sh <plugin-dir>`（**lint 模式不阻断**，缺啥列啥）。
 12 份现有插件 manifest 草案：`docs/plugins/manifest-baseline/`。
 规范：`docs/plugins/PLUGIN-SPEC.md`。
+完整 10 维度详情 + 检测入口 + 豁免机制见 wiki `插件准入-10维度.md`。
 
 ## 快速参考
 

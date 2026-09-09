@@ -1,0 +1,10 @@
+{
+  "name": "fixture-A-detached",
+  "version": "0.1.0",
+  "description": "故意脱节 fixture：README/CHANGELOG 写加权合成公式，但代码无实现（plugin-check dim10 验证用）",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "fixture-B-implemented",
+  "version": "0.1.0",
+  "description": "故意有实现 fixture：README 写公式，lib/index.js 真实现 computeComposite（plugin-check dim10 验证用）",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  }
+}

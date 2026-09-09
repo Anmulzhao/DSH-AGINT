@@ -197,6 +197,46 @@ check_one() {
     log_warn "未装 jq，跳过 manifest 深度校验"
   fi
 
+  # ── 维度 10 (soft warning, 2026-09-09 提案 57541772): 文档-代码公式一致性 ──
+  # plugin 的 README.md / CHANGELOG.md 写了加权合成公式，但 plugins/ 全仓
+  # 无对应实现代码——属"schema only"型脱节。读者照公式找代码会落空。
+  # 触发背景：HARM 加权公式 0.2·H + 0.3·A + 0.3·R + 0.2·M 在 4 处文档命中，
+  # plugins/ 0 实现（policy 决策走 quality-eval 5 维加权）。
+  # 检测委托给 node bin/_verify-dim10.mjs（自实现 JS 正则遍历，advisory）。
+  # 独立于 jq 块（dim10 不需要 jq，node 即可）。
+  # 路径：用 BASH_SOURCE 拿 plugin-check.sh 自身位置，避免 $0 被外部传入相对路径
+  if command -v node >/dev/null 2>&1; then
+    local dim10_script_self="${BASH_SOURCE[0]:-$0}"
+    local dim10_script_dir
+    dim10_script_dir="$(cd "$(dirname "$dim10_script_self")" 2>/dev/null && pwd)"
+    local dim10_script="${dim10_script_dir}/_verify-dim10.mjs"
+    if [ -f "$dim10_script" ]; then
+      # MSYS 路径 → Windows 路径（避免 node 报 ERR_UNSUPPORTED_ESM_URL_SCHEME）
+      # 注意：node 不能用带反斜杠的路径配 forward-slash cwd，bash 反斜杠吃转义
+      # → 一律用 cygpath -w 转 Windows 反斜杠路径，但 node 在 Windows 原生下可直接吃
+      # → 实测：传 forward-slash 路径 + 用 //D:/... 形式最稳
+      local dim10_msys=""
+      if command -v cygpath >/dev/null 2>&1; then
+        dim10_msys="$(cygpath -w "$dim10_script" 2>/dev/null || printf '%s' "$dim10_script")"
+      else
+        dim10_msys="$dim10_script"
+      fi
+      # 不 cd 到 pluginDir（避免 cwd 改变后 node 路径被 bash 反斜杠转义吃错）
+      # node 脚本内部自己用 resolve(pluginDir) 即可
+      local dim10_out
+      dim10_out="$(node "$dim10_msys" "$dir" 2>&1)" || true
+      if [ -n "$dim10_out" ]; then
+        local dim10_warn_count
+        dim10_warn_count="$(printf '%s\n' "$dim10_out" | grep -c '^\s*\[WARN\]' || true)"
+        if [ "${dim10_warn_count:-0}" -gt 0 ]; then
+          log_warn "维度 10 文档-代码脱节：${dim10_warn_count} 处公式在 README/CHANGELOG 但 plugins/ 无对应实现（详见下方 + bin/_verify-dim10.mjs）"
+          printf '%s\n' "$dim10_out" | sed 's/^/    /'
+          warns=$((warns + dim10_warn_count))
+        fi
+      fi
+    fi
+  fi
+
   # 汇总
   if [ "$fails" -gt 0 ]; then
     printf '  → %s%d fail%s, %d warn\n' "$RED" "$fails" "$RST" "$warns"
