@@ -233,7 +233,11 @@ function apply(ctx) {
       '需重新过 Phase 1-3 评估（防人工改动引入未评估内容）；自我指涉草稿被拒绝。',
     parameters: {
       id: { type: 'string', description: '候选 id（QUEUED_FOR_RELEASE / BUDGET_WAIT 状态）' },
-      skillDraft: { type: 'object', description: '完整替换的新草稿（name/description/frontmatter/body/...）' },
+      skillDraft: {
+        type: 'object',
+        description: '完整替换的新草稿（name/description/frontmatter/body/...）',
+        additionalProperties: true,   // dsh 严格 JSON Schema 校验要求每个对象显式声明
+      },
       actor: { type: 'string', description: '修改人标识（默认 human）' },
     },
     output: {
