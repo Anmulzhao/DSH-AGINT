@@ -160,8 +160,9 @@ export const ConfigSchema = z.object({
   // 门 3 policy 门同步超时（超时 = fail-closed 不发布）
   release_policy_timeout_ms: z.number().int().min(100).default(5000),
   // 门 2 人工确认窗：require_human_approval=true 或 now < until 即不自动发布；
-  // 拍板 2：默认开到 2026-10-07（拍板日+28 天），到期自动转全自动
-  require_human_approval_until: z.string().default('2026-10-07T15:59:59.999Z'),
+  // 2026-09-09 19:11 老板改口：不接入中间环节 → 默认 null（全自动发布，事后日报）。
+  // 想重新开窗：运行时把 require_human_approval_until 设为未来时间即可，代码无需改。
+  require_human_approval_until: z.string().nullable().default(null),
   // 观察期（拍板 3）：窗 14 天 + ≥5 次调用判 STABLE
   observation_min_calls: z.number().int().min(1).default(5),
   // 自动回滚：连续 N 个 M 天子窗 0 调用（三重确认）

@@ -1,5 +1,13 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.1 (2026-09-09 晚) — 拍板 2 改口：不接入中间环节，全自动发布
+
+- `require_human_approval_until` 默认 `null`（原 2026-10-07）：门 2 人工确认窗默认关闭，
+  候选过 policy 门 + 周预算即自动挂载，事后由外部日报汇报（不再等 autocreate_release 点头）。
+- 逃生通道保留：运行时把 `require_human_approval_until` 设为未来时间（或
+  `require_human_approval=true`）即可重新开窗，代码无需改。
+- 新增默认语义测试（DEFAULT_CONFIG 无确认窗 + 显式开窗仍有效）；测试 102 → 103。
+
 ## 0.3.0 (2026-09-09) — Sprint 16 发布层（设计稿 §3，老板拍板 3 项）
 
 **P0-1 全链路收口**：检测 → 评估 → 发布 → 观察 → 回滚全自动闭环（M3）。

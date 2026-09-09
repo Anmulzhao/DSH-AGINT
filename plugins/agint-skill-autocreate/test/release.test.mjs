@@ -10,8 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import * as plugin from '../lib/index.js';
-import { weekKey, matchSkillCall } from '../lib/release-manager.js';
+import { weekKey, matchSkillCall, humanApprovalActive } from '../lib/release-manager.js';
 import { packCandidate } from '../lib/storage.js';
+import { DEFAULT_CONFIG } from '../lib/schema.js';
 
 // ── 内存版 storage domain ─────────────────────────────────────────────────
 function fakeTable() {
@@ -133,6 +134,16 @@ test('matchSkillCall：tool=skill 且技能名命中（宽匹配）', () => {
   assert.equal(matchSkillCall({ tool: 'skill', args: { other: 'batch-frontmatter' } }, 'batch-frontmatter'), true);  // JSON 兜底
   assert.equal(matchSkillCall({ tool: 'skill', args: { name: 'other-skill' } }, 'batch-frontmatter'), false);
   assert.equal(matchSkillCall({ tool: 'file_read', args: { name: 'batch-frontmatter' } }, 'batch-frontmatter'), false);
+});
+
+test('门 2 默认语义（2026-09-09 19:11 改口）：默认无确认窗 → 全自动发布', async () => {
+  // 默认配置：require_human_approval_until = null → 门 2 不生效
+  assert.equal(DEFAULT_CONFIG.require_human_approval_until, null);
+  assert.equal(humanApprovalActive(DEFAULT_CONFIG), false, '默认全自动，不接入中间环节');
+  // 显式开启仍有效（逃生通道保留）
+  assert.equal(humanApprovalActive({ require_human_approval_until: '2099-01-01T00:00:00.000Z' }), true);
+  assert.equal(humanApprovalActive({ require_human_approval: true }), true);
+  assert.equal(humanApprovalActive({ require_human_approval_until: null }), false);
 });
 
 test('门 2 人工确认窗：auto 被拦 → BUDGET_WAIT；manual 放行并落盘', async () => {
