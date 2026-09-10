@@ -31,6 +31,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { buildNotice, detectRestart, shouldNotify } from './detect.js';
+import {
+  cancelResult, requestAccepted, requestDeny, requestDryRun, requestInternalError, requestManual,
+} from './contract.js';
 
 const name = 'agint-restart';
 
@@ -318,22 +321,23 @@ function apply(ctx, cfg = {}) {
   };
 
   /**
-   * 请求重启。护栏顺序：enabled → mode → confirm → pending → 熔断 → cooldown。
-   * @returns {object} {accepted, requestId?, reason?, ...}
+   * 请求重启（内部实现）。护栏顺序：enabled → mode → confirm → pending → 熔断 → cooldown。
+   * ⚠️ 不要直接调用本函数——走下面的 request() 包装：它保证不抛异常，并把
+   * "副作用是否已经发生"翻译成返回值（v0.4.4，见 lib/contract.js 文件头）。
+   * @param {object} input
+   * @param {{requestId: string|null, fileWritten: boolean, guardianStarted: boolean}} trace
+   * @returns {object} 契约字段见 lib/contract.js REQUEST_FIELDS
    */
-  const request = (input = {}) => {
+  const requestInner = (input = {}, trace = { requestId: null, fileWritten: false, guardianStarted: false }) => {
     const reason = typeof input?.reason === 'string' ? input.reason : '';
     const force = input?.force === true;
     const dryRun = input?.dryRun === true;
     const confirm = input?.confirm === true;
     const delayMs = Number.isFinite(input?.delayMs) ? input.delayMs : config.shutdownDelayMs;
 
-    const deny = (code, message, extra = {}) => ({
-      accepted: false, code, message,
-      // v0.4.1：补齐 schema required 字段（additionalProperties:false 下缺字段会炸）
-      requestId: null, shutdownInMs: null, plan: null, targetPid: null,
-      ...extra,
-    });
+    // v0.4.4：所有返回走 contract.js 的构造函数——返回字面量手写漏字段正是
+    // 2026-09-10 事故的根因（accepted 分支漏 code，schema required 校验在副作用后失败）
+    const deny = (code, message, extra = {}) => requestDeny(code, message, extra);
 
     if (config.mode === 'manual') {
       // 人工模式：只把"怎么重启"写清楚，不做任何危险动作
@@ -342,7 +346,7 @@ function apply(ctx, cfg = {}) {
         requestId: null, reason, requestedAt: new Date().toISOString(),
         mode: 'manual', launch, command: cmd,
       });
-      return { accepted: false, code: 'manual-mode', message: '当前为 manual 模式，未自动重启', command: cmd, launch };
+      return requestManual({ command: cmd, launch });
     }
 
     if (!confirm && !force) {
@@ -387,12 +391,8 @@ function apply(ctx, cfg = {}) {
 
     // dryRun：只返回将要做什么，不落盘不拉进程
     if (dryRun) {
-      return {
-        accepted: false,
-        code: 'dry-run',
-        message: 'dryRun：未执行，以下是将要发生的动作',
+      return requestDryRun({
         requestId,
-        // v0.4.1：补齐 schema 必填字段（additionalProperties:false 下 required:true 字段缺失会炸）
         targetPid: payload.targetPid,
         shutdownInMs: delayMs,
         plan: {
@@ -405,12 +405,15 @@ function apply(ctx, cfg = {}) {
           readiness: payload.readiness,
           shutdownDelayMs: delayMs,
         },
-      };
+      });
     }
 
     if (!writeJson(requestPath, payload)) {
-      return deny('write-failed', `无法写入请求文件：${requestPath}`);
+      return deny('write-failed', `无法写入请求文件：${requestPath}。未产生任何副作用，可安全重试`);
     }
+    // 请求文件已落盘：sideEffect 的追溯起点（下面守护脚本起不来时据此如实说明）
+    trace.requestId = requestId;
+    trace.fileWritten = true;
 
     // detached 拉起守护脚本：它会在我们死后把新 dsh 拉起来
     try {
@@ -422,8 +425,10 @@ function apply(ctx, cfg = {}) {
         env: process.env,
       });
       child.unref();
+      trace.guardianStarted = true;
     } catch (err) {
-      return deny('spawn-failed', `守护进程启动失败：${String(err?.message ?? err)}`);
+      return deny('spawn-failed',
+        `守护进程启动失败：${String(err?.message ?? err)}。请求文件已写入 ${requestPath}，但没有守护进程消费它，本次不会重启；协议未置位在途标记，可安全重试`);
     }
 
     pending = { requestId, at: Date.now() };
@@ -433,18 +438,35 @@ function apply(ctx, cfg = {}) {
     // 延迟退出自己，让调用方先拿到返回值
     shutdownSelf(delayMs);
 
-    return {
-      accepted: true,
+    return requestAccepted({
       requestId,
       targetPid: process.pid,
       shutdownInMs: delayMs,
-      message: `已安排重启：${delayMs}ms 后当前进程退出，由守护脚本拉起新实例`,
-      // v0.4.2：accepted=true 没有 plan（仅 dryRun 有），但 schema plan:required:true
-      // 缺字段工具链拒绝整个对象。手动补 null（最廉价的修复，让 schema validator 通过）
-      plan: null,
       launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
       resultFile: resultPath,
-    };
+    });
+  };
+
+  /**
+   * 对外入口：**绝不抛异常**（v0.4.4）。
+   * 抛异常时调用方只看到 Error，而 Error 不携带"副作用是否已发生"——实测后果是
+   * 看到报错就重试 → 重复重启。这里把异常翻译成一份 schema 合法、且写明副作用
+   * 状态的返回（contract.js: requestInternalError）。
+   */
+  const request = (input = {}) => {
+    const trace = { requestId: null, fileWritten: false, guardianStarted: false };
+    try {
+      return requestInner(input, trace);
+    } catch (err) {
+      console.error(`[agint-restart] request() 内部异常: ${err?.stack ?? err}`);
+      return requestInternalError({
+        error: err,
+        requestId: trace.requestId,
+        fileWritten: trace.fileWritten,
+        guardianStarted: trace.guardianStarted,
+        requestFile: requestPath,
+      });
+    }
   };
 
   /** 手动模式下给老板的可复制命令。 */
@@ -476,13 +498,23 @@ function apply(ctx, cfg = {}) {
 
   /** 取消在途请求（仅在还没退出时有效）。 */
   const cancel = () => {
-    if (!pending) return { cancelled: false, code: 'no-pending', message: '没有在途的重启请求' };
+    if (!pending) {
+      // v0.4.4：requestId 是 schema required——no-pending 分支此前漏了它（同类漂移）
+      return cancelResult({ cancelled: false, code: 'no-pending', message: '没有在途的重启请求' });
+    }
     const id = pending.requestId;
     pending = null;
     // 守护脚本可能已经跑起来了；写一条 cancel 标记，respawn 侧以 request 文件为准，
     // 这里主要通过删除请求文件 + 清空 pending 阻止后续重复请求
     try { writeJson(requestPath, { ...readJson(requestPath, {}), cancelledAt: new Date().toISOString() }); } catch { /* ignore */ }
-    return { cancelled: true, requestId: id, message: '已清除在途标记；若守护脚本已启动，需人工确认是否有新实例被拉起' };
+    // sideEffect=true：标记清了，但守护脚本可能已经在等旧进程退出——取消不保证能叫停重启
+    return cancelResult({
+      cancelled: true,
+      code: 'cancelled',
+      message: '已清除在途标记；若守护脚本已启动，需人工确认是否有新实例被拉起',
+      requestId: id,
+      sideEffect: true,
+    });
   };
 
   const detect = () => ({
