@@ -1,7 +1,7 @@
 {
   "name": "agint-restart",
-  "version": "0.8.0",
-  "description": "AGINT 插件：检测 DSH 重启后自动唤醒主 agent 并投递**纯状态**消息「DSH 已重启。」（v0.7.1；不含任何行动指令——2026-09-10 重启环复盘：指令性措辞会把状态消息变成工作指令，唤醒后的会话会把上下文里未完成的旧指令再执行一遍）。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。v0.8.0 新增代码指纹：status().codeFingerprint / codeStale 一眼确认跑的是哪版代码、要不要重启。",
+  "version": "0.8.1",
+  "description": "AGINT 插件：检测 DSH 重启后自动唤醒主 agent 并投递**纯状态**消息「DSH 已重启。」（v0.7.1；不含任何行动指令——2026-09-10 重启环复盘：指令性措辞会把状态消息变成工作指令，唤醒后的会话会把上下文里未完成的旧指令再执行一遍）。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。v0.8.0 新增代码指纹：status().codeFingerprint / codeStale 一眼确认跑的是哪版代码、要不要重启；v0.8.1 把指纹带进 restart_status 的输出面。",
   "keywords": [
     "agint",
     "dsh-plugin",
