@@ -1197,10 +1197,15 @@ test('win32：新 dsh 必须走「隐藏窗口」启动，不得用 detached / w
   const src = readFileSync(resolve(PLUGIN_DIR, 'lib', 'respawn.js'), 'utf8');
 
   assert.match(src, /function launchHiddenWin32/, '缺少 win32 隐藏启动函数');
-  assert.match(
-    src,
-    /process\.platform === 'win32'\s*\?\s*launchHiddenWin32/,
-    'win32 分支没有走隐藏启动（回退成 detached 就会重新开始弹窗）',
+  assert.ok(
+    /process\.platform !== 'win32'[\s\S]{0,200}?launchHiddenWin32\(/.test(src),
+    'win32 分支必须走隐藏启动（回退成 detached 就会重新开始弹窗）',
+  );
+  // 保底：启动前要探测 wscript 链路，不可用时必须能回退，否则 dsh 可能起不来
+  assert.match(src, /function canHideLaunch/, '缺少 wscript 链路探测（保底回退用）');
+  assert.ok(
+    /forceDetached/.test(src) && /launchDetachedPosix\(/.test(src),
+    '必须有回退到 detached 的路径',
   );
 
   const hiddenStart = src.indexOf('function launchHiddenWin32');

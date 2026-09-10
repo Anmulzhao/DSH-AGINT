@@ -24,7 +24,7 @@
  * 新 dsh 自身的 stdout/stderr 重定向到 request.logFile（默认 %TEMP%/dsh-web.log）。
  */
 import { spawn, execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, statSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import net from 'node:net';
 
@@ -124,10 +124,35 @@ async function waitPortFree(port, timeoutMs, logFile) {
 }
 
 /** 拉起新 dsh：按平台分发。win32 见 launchHiddenWin32 的说明。 */
-function launchProcess(launch, logFile, stateDir) {
-  return process.platform === 'win32'
-    ? launchHiddenWin32(launch, logFile, stateDir)
-    : launchDetachedPosix(launch, logFile);
+function launchProcess(launch, logFile, stateDir, { forceDetached = false } = {}) {
+  if (process.platform !== 'win32' || forceDetached) {
+    return { mode: 'detached', pid: launchDetachedPosix(launch, logFile) };
+  }
+  return { mode: 'hidden', pid: launchHiddenWin32(launch, logFile, stateDir) };
+}
+
+/**
+ * 探测「WScript 隐藏启动」链路是否可用（wscript.exe 被组策略禁用 / 缺失时不可用）。
+ * 这是保命用的：探测失败就回退到旧的 detached 方式——虽然会弹窗，但 dsh 至少能起来。
+ * 用 `Run(cmd, 0, True)`（True = 等待）跑一个只写一个标记文件的 .cmd，然后看文件在不在。
+ */
+function canHideLaunch(stateDir) {
+  return new Promise((resolve) => {
+    const cmdPath = join(stateDir, 'respawn-probe.cmd');
+    const vbsPath = join(stateDir, 'respawn-probe.vbs');
+    const outPath = join(stateDir, 'respawn-probe.out');
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      rmSync(outPath, { force: true });
+      writeFileSync(cmdPath, `@echo off\r\necho ok > ${quoteCmdArg(outPath)}\r\n`);
+      writeFileSync(vbsPath, `CreateObject("WScript.Shell").Run ${quoteVbsString(cmdPath)}, 0, True\r\n`);
+    } catch {
+      return resolve(false);
+    }
+    execFile('wscript.exe', [vbsPath], { timeout: 10000, windowsHide: true }, (err) => {
+      resolve(!err && existsSync(outPath));
+    });
+  });
 }
 
 /** POSIX：detached spawn + stdio 重定向到日志，父进程退出不影响它。 */
@@ -280,12 +305,18 @@ async function main() {
   const portFree = await waitPortFree(req.readiness?.port, req.portFreeTimeoutMs ?? 15000, logFile);
   result.portFree = portFree;
 
-  // 3. 拉起新实例
+  // 3. 拉起新实例（win32 先探测隐藏启动链路是否可用，不可用则回退 detached 保底）
   try {
-    result.launchShellPid = launchProcess(req.launch, req.logFile || join(stateDir, 'dsh-web.log'), stateDir);
-    result.newPid = result.launchShellPid;
+    const needHidden = process.platform === 'win32' && !(await canHideLaunch(stateDir));
+    if (needHidden) log(logFile, 'respawn: 隐藏启动链路不可用（wscript 探测失败），回退到 detached 方式');
+    const launched = launchProcess(req.launch, req.logFile || join(stateDir, 'dsh-web.log'), stateDir, {
+      forceDetached: needHidden,
+    });
+    result.launchMode = launched.mode;
+    result.launchShellPid = launched.pid;
+    result.newPid = launched.pid;
     result.launched = true;
-    log(logFile, `respawn: 新实例已拉起 shellPid=${result.launchShellPid} cmd=${req.launch.command} ${req.launch.args.join(' ')}`);
+    log(logFile, `respawn: 新实例已拉起 mode=${launched.mode} shellPid=${launched.pid} cmd=${req.launch.command} ${req.launch.args.join(' ')}`);
   } catch (err) {
     result.launched = false;
     result.error = String(err?.message ?? err);
