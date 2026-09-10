@@ -1,8 +1,17 @@
 // K19 全仓 schema 护栏（仓库级）
 //
-// 规则：dsh loader 用 ajv 严格模式校验工具参数 schema，任何 `type: "object"`
+// 规则一（K19）：dsh loader 用 ajv 严格模式校验工具参数 schema，任何 `type: "object"`
 // 必须显式声明 `additionalProperties: true | false`，否则**整条 preset 拒绝挂载**，
 // UI 冒泡成 "agentPresets/list failed: Failed to fetch"（用户被挡在门外）。
+//
+// 规则二（K20，2026-09-10 翻车后补）：值 schema DSL 里 `required` **只要出现就
+// 必须是 true**。`@deepseek-ai/dsh-tools/lib/index.js` 的编译期检查：
+//   if (Object.hasOwn(task.property, "required") && task.property.required !== true)
+//     authorError(`${task.path}.required must be true when present`);
+// 而 `defineTool()` 内部就会调用编译（parameterSchemaSpecToJsonSchema / 
+// valueSchemaSpecToJsonSchema），所以写 `required: false` 会在 **preset 加载时**
+// 直接抛错 → 整条 preset 挂掉，表现与 K19 一模一样（新建会话发不了消息）。
+// 可选参数的正确写法是**干脆不写 required**。
 //
 // 2026-09-09 首次翻车：agint-skill-autocreate v0.3.0 的 `autocreate_modify`
 // 参数 `skillDraft` 漏写 → agint preset 起不来。当时护栏只装在那一个插件的
@@ -189,6 +198,57 @@ test('K19 护栏覆盖面自检：确实扫到了全仓 lib（防止发现逻辑
     targets.includes('plugins/agint-skill-autocreate/lib/tools.js'),
     'agint-skill-autocreate/lib/tools.js 未进入扫描范围',
   );
+});
+
+// ---------- K20：`required` 出现时必须为 true ----------
+
+function findRequiredFalse(src) {
+  // 跑在掩码后源码上：注释/字符串里的 "required: false" 字样不算违规
+  const masked = maskLiterals(src);
+  const re = /required\s*:\s*false/g;
+  const hits = [];
+  let m;
+  while ((m = re.exec(masked)) !== null) {
+    hits.push(masked.slice(0, m.index).split('\n').length);
+  }
+  return hits;
+}
+
+test('K20 护栏：工具 schema 里不得出现 required:false（出现即必须是 true）', () => {
+  // 只扫工具定义文件：其它 lib 里的 required:false 是普通配置对象，与 dsh schema DSL 无关
+  const targets = collectTargets().filter((p) => p.endsWith(`${sep}tools.js`));
+  assert.ok(targets.length > 0, '没扫到任何 lib/tools.js，发现逻辑可能坏了');
+
+  const report = [];
+  for (const file of targets) {
+    const src = readFileSync(file, 'utf8');
+    for (const line of findRequiredFalse(src)) {
+      report.push(`${relative(REPO_ROOT, file)}:${line}`);
+    }
+  }
+
+  assert.deepEqual(
+    report,
+    [],
+    `\n发现 ${report.length} 处 required:false：\n\n  ` + report.join('\n  ') +
+      '\n\n修复：把 `required: false` 整个删掉——值 schema DSL 中，不写 required 就是可选。\n' +
+      '原因：dsh-tools 编译期断言 `required must be true when present`，而 defineTool()\n' +
+      '在 preset 加载时就会编译，抛错会让**整条 preset 挂载失败**（新建会话发不了消息）。\n',
+  );
+});
+
+test('K20 护栏自检：扫描器能识别正确/错误两种写法', () => {
+  const bad = "parameters: { a: { type: 'string', required: false } }";
+  const badNoSpace = "parameters: { a: { type: 'string', required:false } }";
+  const good = "parameters: { a: { type: 'string' }, b: { type: 'boolean', required: true } }";
+  const inComment = "// 不要写 required: false\nconst x = 1;";
+  const inString = "const s = 'required: false 是禁止的';";
+
+  assert.equal(findRequiredFalse(bad).length, 1, 'required: false 应被抓到');
+  assert.equal(findRequiredFalse(badNoSpace).length, 1, '无空格写法也应被抓到');
+  assert.equal(findRequiredFalse(good).length, 0, '不写或写 true 不应报错');
+  assert.equal(findRequiredFalse(inComment).length, 0, '注释里不应误报');
+  assert.equal(findRequiredFalse(inString).length, 0, '字符串里不应误报');
 });
 
 test('K19 护栏自检：扫描器能识别正确/错误两种写法', () => {

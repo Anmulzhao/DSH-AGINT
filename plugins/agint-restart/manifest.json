@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-restart",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AGINT 插件：DSH 重启闭环。v0.1.0 检测重启后自动唤醒主 agent 并投递信息性消息（含中断时长 / 上次活跃会话）；v0.2.0 新增主动重启能力——提供 agint.restart 服务与 restart_status / restart_request / restart_cancel 工具，通过独立守护脚本等旧进程退出并释放端口后拉起新 dsh，受 confirm / cooldown / 熔断三重护栏保护。借鉴 nickkkkkk123123/dsh-resume-on-restart 思路（检测部分 scope 1:1）；关键差异：优雅关闭走 cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）；持久化目录 .agint-restart；只依赖 cordis ctx 的 agents 服务。",
   "main": "lib/index.js",
 

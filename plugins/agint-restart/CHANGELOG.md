@@ -4,6 +4,38 @@
 
 ---
 
+## v0.2.1 — 2026-09-10 — 修复 preset 挂载失败（required:false 致命）
+
+**现象**：挂上 `agint-restart-tools`  preset 行后，agint preset 起不来——新建会话发不了消息，
+插件本体却正常（marker/wake.log 都写了，wake.log 报 `no target agent after wait`，
+说明插件活着但没有 agent，是 preset 挂了）。
+
+**真因**：`lib/tools.js` 的 `restart_request.parameters` 给可选参数写了 `required: false`。
+dsh-tools 的编译期断言（`@deepseek-ai/dsh-tools/lib/index.js`）：
+
+```js
+if (Object.hasOwn(task.property, "required") && task.property.required !== true)
+  authorError(`${task.path}.required must be true when present`);
+```
+
+而 `defineTool()` **内部就会编译**（`parameterSchemaSpecToJsonSchema(options.parameters)`），
+所以错误发生在 preset 加载时 → 整条 preset 拒绝挂载。表现跟 K19（漏写 additionalProperties）
+一模一样，极易误判。
+
+**修复**：删掉所有 `required: false`——值 schema DSL 里，不写 `required` 就是可选。
+编译结果验证：`required: ["confirm"]`，符合预期。
+
+**防再犯**：仓库级护栏 `test/schema-guard.test.mjs` 新增 **K20** 规则——扫描所有
+`lib/tools.js`，禁止 `required:false`（注释/字符串内不误报，用掩码实现）。护栏 5/5 通过。
+
+**排查教训（通用）**：
+- 插件 marker 写了 ≠ 插件健康，只能说明 `apply()` 跑过；preset 挂没挂要看有没有 agent。
+- `wake.log` 的 `no target agent after wait` 是 preset 故障的**强信号**。
+- 验证工具 schema 的正确姿势：直接调 `apply(mockCtx)`——`defineTool` 会在内部编译，
+  有问题当场抛；不要把编译后的 JSON Schema 再拿去编译（会假报错）。
+
+---
+
 ## v0.2.0 — 2026-09-10 — 主动重启能力
 
 **动机**：v0.1.0 只会"重启后通知"，不会"发起重启"。重启 DSH 一直要靠老板手跑

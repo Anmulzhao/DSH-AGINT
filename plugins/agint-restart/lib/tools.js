@@ -83,12 +83,14 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'restart_request',
     description: '请求重启 DSH 服务。会中断所有进行中的会话，必须显式 confirm:true。流程：写请求文件 → detached 拉起守护脚本 → 当前进程延迟退出 → 守护脚本等旧进程退出并释放 3080 端口后拉起新 dsh → 等就绪。受冷却期与熔断保护。',
+    // 注意：值 schema DSL 里 `required` 只要出现就必须是 true（dsh-tools
+    // lib/index.js:602 会 authorError），所以可选参数**不要写** required:false。
     parameters: {
       confirm: { type: 'boolean', required: true, description: '必须为 true，确认你确实要重启（会中断会话）。' },
-      reason: { type: 'string', required: false, description: '重启原因，写入历史与日志，便于事后追溯。' },
-      delayMs: { type: 'number', required: false, description: '发出请求后延迟多少毫秒再退出当前进程（默认 3000，用于让调用方拿到返回值）。' },
-      dryRun: { type: 'boolean', required: false, description: 'true = 只返回将要执行的计划，不实际重启。' },
-      force: { type: 'boolean', required: false, description: 'true = 跳过 confirm 与冷却期（不跳过熔断）。' },
+      reason: { type: 'string', description: '重启原因，写入历史与日志，便于事后追溯。' },
+      delayMs: { type: 'number', description: '发出请求后延迟多少毫秒再退出当前进程（默认 3000，用于让调用方拿到返回值）。' },
+      dryRun: { type: 'boolean', description: 'true = 只返回将要执行的计划，不实际重启。' },
+      force: { type: 'boolean', description: 'true = 跳过 confirm 与冷却期（不跳过熔断）。' },
     },
     output: {
       schema: {
