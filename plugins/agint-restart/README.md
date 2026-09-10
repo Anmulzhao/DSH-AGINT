@@ -28,6 +28,8 @@
 - 🪝 **优雅关闭**：cordis dispose 钩子持久化最近活跃会话（**不**用 SIGTERM 处理器——避免上游 `process.kill(process.pid, ...)` 二次 kill bug）
 - ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*` 内部包
 - 🔁 **主动重启（v0.2.0）**：`restart_request` 工具 / `agint.restart.request()` 真正重启 DSH
+- 🧾 **输出契约（v0.4.4）**：字段表 → schema + 分支构造函数单一事实源（`lib/contract.js`）；
+  `request()` 绝不抛异常，返回值带 `sideEffect` 说明副作用是否已发生——消除「报错但其实重启了」
 - 🛡️ **三重护栏**：`confirm` 必填 + 冷却期 + 窗口内次数熔断（防误触与重启循环）
 - 🧪 **dryRun / manual**：先看计划再执行，或只生成命令交给人工执行
 
@@ -121,6 +123,31 @@ restart_cancel                        // 清除在途标记
 | `mode:'manual'` | auto | 只返回可复制的启动命令，零动作 |
 
 > 熔断是最后一道保险：如果新实例一起就挂、又被自动拉起，最多滚 3 次就停，不会无限重启把机器拖死。
+
+### 输出契约与排障（v0.4.4）
+
+工具的 output schema 是**严格校验**（`additionalProperties: false` + 逐字段 `required`）。
+schema 与返回值一旦漂移，工具链会在**副作用已经发生之后**才报错：
+
+```
+Error: tool "restart_request" returned invalid output:
+  missing required property "value.code"; missing required property "value.plan"
+```
+
+⚠️ **看到这类报错，先跑 `restart_status`，不要直接重试**。报错不代表没重启——2026-09-10
+实测那次：报错的同时请求文件已写、守护脚本已起、旧进程 3 秒后退出。盲目重试 = 重复重启
+（冷却期 60s + 熔断 3 次/600s 是兜底，不是许可）。
+
+v0.4.4 起结构上消除这类漂移：
+
+- 字段表 + schema + 各分支构造函数集中在 **`lib/contract.js`**（单一事实源）；
+  `lib/tools.js` 与 `lib/index.js` 不再手写任何输出字段/返回字面量，smoke 有静态守卫兜住。
+- `request()` **绝不抛异常**：意外都被翻译成 schema 合法的 `code: 'internal-error'` 返回。
+- 返回值新增 **`sideEffect`**（boolean）：本次调用**是否真的推进了重启链路**
+  （写请求文件 + 拉起守护脚本 = 进程确定会退出）。护栏拒绝 / dryRun / manual 为 `false`；
+  `internal-error` 按实际已完成的步骤判定，并在 `message` 里写清"能不能安全重试"。
+- 万一将来还有分支漏字段，`normalize*Output` 会补默认值、丢弃未声明字段，并把
+  "补了什么、丢了什么"写进 `message`（不静默修补，避免掩盖 bug）。
 
 ### 产物文件（都在 `~/.dsh/.agint-restart/`）
 

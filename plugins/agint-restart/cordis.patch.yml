@@ -34,6 +34,10 @@
 #   - 投递目标优先匹配 lastSessionId 回旧会话（旧版取 roots[0]，消息落不到被中断的会话）
 #   - 新增 deliveryMode: queue | inject，取代语义反直觉的 wakeup 布尔
 #     （旧 wakeup 仍兼容：true→queue，false→inject）
+#   v0.4.4 修正（输出契约）：
+#   - schema 与返回值收敛到 lib/contract.js（字段表 → schema + 分支构造函数 + 兜底 normalize）
+#   - request() 绝不抛异常；返回值新增 sideEffect（本次调用是否真的推进了重启链路）
+#   - 修掉「工具报 invalid output 但重启已经发生」的误导性报错（accepted 分支漏 code）
 - insert:
     - id: agint-restart
       name: ./plugins/agint-restart/lib/index.js

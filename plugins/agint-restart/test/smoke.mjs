@@ -20,6 +20,14 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { detectRestart, buildNotice, humanizeDowntime } from '../lib/detect.js';
+import {
+  REQUEST_FIELDS, CANCEL_FIELDS, STATUS_FIELDS,
+  requestOutputSchema, cancelOutputSchema, statusOutputSchema,
+  requestAccepted, requestDeny, requestDryRun, requestManual, requestInternalError,
+  cancelResult, cancelInternalError, statusUnavailable,
+  normalizeRequestOutput, normalizeCancelOutput, normalizeStatusOutput,
+} from '../lib/contract.js';
+// REQUEST_FIELDS / CANCEL_FIELDS / STATUS_FIELDS 备用：字段表结构断言（见 Case 23）
 
 /**
  * 造一个 mock ctx，收集 ctx.provide 注册的服务（v0.2.0 用）。
@@ -617,77 +625,135 @@ test('旧会话未复活时回退 roots[0]；deliveryMode=inject 走 inject', as
   }
 });
 
-// ── Case 23: restart_request output schema 必须涵盖真实返回字段（v0.4.1 教训）──
+// ══════════════════════════════════════════════════════════════════════════
+// v0.4.4 输出契约测试（替换旧的 Case 23 / 24 / 25）
+//
+// 为什么重写：旧三条用例靠"正则抠源码字面量"断言。实测漏检了 accepted=true 分支
+// 缺 code —— 那个正则 `return \{[\s\S]*?accepted: true,[\s\S]*?\};` 从**更早的**
+// `return {` 开始匹配，把 manual/deny 分支里的 code 也算进了 bodies，于是断言假绿。
+// 2026-09-10 后果：每次真实重启都报 `returned invalid output: missing "code"`，
+// 而请求文件已写、守护脚本已起、进程已经退出。
+//
+// 现在：字段表 → schema + 各分支构造函数（lib/contract.js），下面用**真 schema
+// 校验器**逐个校验每个分支产物。任何漂移立即变红。
+// ══════════════════════════════════════════════════════════════════════════
 
-test('restart_request output schema 涵盖真实返回字段（防 K19 漂移）', async () => {
-  // v0.2.0 漏声明 launch/resultFile → 工具调用方拿不到返回值
-  // 这次修：用真值调一遍 request(...) 的所有分支，对照 schema 声明字段集合
-  // ——字段集合必须 ≥ 返回字段集合
-  const env = withTmpDshHome();
-  const provided = {};
-  try {
-    const { ctx } = makeCtx({ provided });
-    const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
-    apply(ctx, { stateDir: '.agint-restart-smoke' });
-    const svc = provided['agint.restart'];
+/** DSL 值类型判定（null / array / typeof）。 */
+function dslTypeOf(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  return typeof v;
+}
 
-    // 触发各种返回分支，收集实际返回 key
-    const returnedKeys = new Set();
-    const collect = (obj) => Object.keys(obj).forEach((k) => returnedKeys.add(k));
-
-    // 1) needs-confirm
-    collect(svc.request({}));
-    // 2) cooldown：预置 history 让 cooldown 路径命中
-    const stateDir = join(env.root, '.agint-restart-smoke');
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
-      events: [{ at: new Date().toISOString(), requestId: 'r0', reason: 'x' }],
-    }, null, 2));
-    collect(svc.request({ confirm: true }));
-    // 3) dryRun
-    collect(svc.request({ confirm: true, dryRun: true }));
-    // 4) tripped：3 条历史凑齐
-    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
-      events: [0, 1, 2].map((i) => ({ at: new Date(Date.now() - i * 1000).toISOString(), requestId: `r${i}`, reason: 'x' })),
-    }, null, 2));
-    collect(svc.request({ confirm: true, force: true }));
-    // accepted=true 不能在 smoke 跑（会真重启），launch/resultFile 由下面的
-    // "静态必声明"块兜底（手动列出来自 accepted=true 的额外字段）。
-
-    // 从 lib/tools.js 解析 schema 声明字段集合
-    const toolsSrc = readFileSync(resolve(PLUGIN_DIR, 'lib', 'tools.js'), 'utf8');
-    const m = toolsSrc.match(/name: 'restart_request'[\s\S]*?output: \{[\s\S]*?properties: \{([\s\S]*?)\},\s*\},\s*render:/);
-    assert.ok(m, 'restart_request schema 未找到');
-    const declared = new Set([...m[1].matchAll(/^\s*(\w+):\s*\{/gm)].map((mm) => mm[1]));
-    // oneOf 内层字段（如 launch 嵌套的 command/cwd/args）也补上
-    const nested = [...m[1].matchAll(/additionalProperties: false,\s*properties:\s*\{([\s\S]*?)\}/g)];
-    for (const n of nested) {
-      for (const mm of n[1].matchAll(/^\s*(\w+):\s*\{/gm)) declared.add(mm[1]);
+/** 按 dsh-tools 值 schema DSL 校验：required / type / oneOf / items / additionalProperties。 */
+function validateDsl(dsl, value, path, errs) {
+  if (Array.isArray(dsl.oneOf)) {
+    const ok = dsl.oneOf.some((branch) => {
+      const sub = [];
+      validateDsl(branch, value, path, sub);
+      return sub.length === 0;
+    });
+    if (!ok) errs.push(`${path}: 不匹配任何 oneOf 分支（实际 ${dslTypeOf(value)}）`);
+    return;
+  }
+  if (dsl.type === 'array') {
+    if (dslTypeOf(value) !== 'array') { errs.push(`${path}: 期望 array，实际 ${dslTypeOf(value)}`); return; }
+    if (dsl.items) value.forEach((it, i) => validateDsl(dsl.items, it, `${path}[${i}]`, errs));
+    return;
+  }
+  if (dsl.type === 'object') {
+    if (dslTypeOf(value) !== 'object') { errs.push(`${path}: 期望 object，实际 ${dslTypeOf(value)}`); return; }
+    const props = dsl.properties ?? {};
+    for (const [k, sub] of Object.entries(props)) {
+      const has = Object.prototype.hasOwnProperty.call(value, k);
+      if (sub.required === true && !has) errs.push(`${path}.${k}: 缺 required 字段`);
+      if (has) validateDsl(sub, value[k], `${path}.${k}`, errs);
     }
+    if (dsl.additionalProperties === false) {
+      for (const k of Object.keys(value)) {
+        if (!(k in props)) errs.push(`${path}.${k}: 未声明字段（additionalProperties:false 会拒绝整个输出）`);
+      }
+    }
+    return;
+  }
+  if (dsl.type && dslTypeOf(value) !== dsl.type) errs.push(`${path}: 期望 ${dsl.type}，实际 ${dslTypeOf(value)}`);
+}
 
-    // K19 必备：schema 必含这些
-    for (const k of ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid']) {
-      assert.ok(declared.has(k), `schema 缺 ${k}`);
-    }
-    // accepted=true 路径专属字段（不能 smoke 触发，但 schema 必须声明，否则调用方拿不到）
-    for (const k of ['launch', 'resultFile']) {
-      assert.ok(declared.has(k), `accepted=true 时会返回 '${k}'，schema 必须声明`);
-    }
-    // v0.4.1：所有真实返回字段也必须声明（additionalProperties:false 下漏一个就炸）
-    for (const k of returnedKeys) {
-      assert.ok(declared.has(k), `restart_request 返回了 '${k}' 但 schema 未声明（additionalProperties:false 会校验失败）`);
-    }
-  } finally {
-    env.restore();
-    env.cleanup();
+/** 校验并返回错误列表（空 = 该输出不会被工具链拒绝）。 */
+function validateOutput(schema, value) {
+  const errs = [];
+  validateDsl(schema, value, '$', errs);
+  return errs;
+}
+
+const LAUNCH_SAMPLE = { command: 'node', args: ['bin.js', 'web'], cwd: 'C:\\dsh' };
+
+/** restart_request 全部分支产物（含 smoke 跑不了的 accepted=true，用构造函数造）。 */
+const REQUEST_SAMPLES = () => ([
+  ['requestDeny/needs-confirm', requestDeny('needs-confirm', '需显式传 confirm:true')],
+  ['requestDeny/cooldown', requestDeny('cooldown', '距上次重启仅 3s', { cooldownRemainingMs: 57000 })],
+  ['requestDeny/tripped', requestDeny('tripped', '窗口内已重启 3 次', { count: 3 })],
+  ['requestDeny/spawn-failed', requestDeny('spawn-failed', '守护进程启动失败')],
+  ['requestDryRun', requestDryRun({
+    requestId: 'abcd1234', targetPid: 1234, shutdownInMs: 1500,
+    plan: { targetPid: 1234, waitExitMs: 30000, forceKillAfterMs: 20000, launch: LAUNCH_SAMPLE },
+  })],
+  ['requestAccepted', requestAccepted({
+    requestId: 'abcd1234', targetPid: 1234, shutdownInMs: 1500,
+    launch: LAUNCH_SAMPLE, resultFile: 'C:\\dsh\\.agint-restart\\restart-result.json',
+  })],
+  ['requestManual', requestManual({ command: 'node bin.js web', launch: LAUNCH_SAMPLE })],
+  ['requestInternalError/无副作用', requestInternalError({ error: new Error('boom') })],
+  ['requestInternalError/文件已写', requestInternalError({
+    error: new Error('boom'), requestId: 'abcd1234', fileWritten: true, requestFile: 'C:\\req.json',
+  })],
+  ['requestInternalError/守护已起', requestInternalError({
+    error: new Error('boom'), requestId: 'abcd1234', fileWritten: true, guardianStarted: true, requestFile: 'C:\\req.json',
+  })],
+]);
+
+/** restart_cancel 全部分支产物。 */
+const CANCEL_SAMPLES = () => ([
+  ['cancelResult/no-pending', cancelResult({ cancelled: false, code: 'no-pending', message: '没有在途的重启请求' })],
+  ['cancelResult/cancelled', cancelResult({ cancelled: true, code: 'cancelled', message: '已清除在途标记', requestId: 'abcd1234', sideEffect: true })],
+  ['cancelInternalError', cancelInternalError(new Error('boom'))],
+]);
+
+// ── Case 23（v0.4.4 重写）：每个分支产物都通过真 schema 校验 ──
+
+test('输出契约: 每个分支产物都通过 schema 全量校验（缺字段/多字段/类型错）', () => {
+  const reqSchema = requestOutputSchema();
+  for (const [label, obj] of REQUEST_SAMPLES()) {
+    assert.deepEqual(validateOutput(reqSchema, obj), [], `restart_request ${label} 产物不合法`);
+    assert.equal(typeof obj.sideEffect, 'boolean', `${label} 必须显式给出 sideEffect（不能靠兜底默认值）`);
+  }
+  const cancelSchema = cancelOutputSchema();
+  for (const [label, obj] of CANCEL_SAMPLES()) {
+    assert.deepEqual(validateOutput(cancelSchema, obj), [], `restart_cancel ${label} 产物不合法`);
+    assert.equal(typeof obj.sideEffect, 'boolean', `${label} 必须显式给出 sideEffect`);
+  }
+  // status：自身异常时走降级产物，也必须合法
+  const degraded = normalizeStatusOutput(statusUnavailable(new Error('boom'))).value;
+  assert.deepEqual(validateOutput(statusOutputSchema(), degraded), [], 'restart_status 降级产物不合法');
+  assert.equal(degraded.error.includes('boom'), true, '降级产物必须带上原始错误说明');
+});
+
+// ── Case 24（v0.4.4 重写）：构造函数产物必须"零修复"，运行时返回值同样零修复 ──
+
+test('输出契约: 构造函数产物零修复（normalize 不该改动任何一个字段）', () => {
+  for (const [label, obj] of REQUEST_SAMPLES()) {
+    const { repaired, dropped } = normalizeRequestOutput(obj);
+    assert.deepEqual(repaired, [], `${label} 缺 schema 必填字段（normalize 被迫补默认值 → 语义会错）`);
+    assert.deepEqual(dropped, [], `${label} 含 schema 未声明字段（会被工具链拒绝）`);
+  }
+  for (const [label, obj] of CANCEL_SAMPLES()) {
+    const { repaired, dropped } = normalizeCancelOutput(obj);
+    assert.deepEqual(repaired, [], `${label} 缺 schema 必填字段`);
+    assert.deepEqual(dropped, [], `${label} 含 schema 未声明字段`);
   }
 });
 
-// ── Case 24: index.js request() 返回值必须包含 schema required 字段（防 v0.4.1 dryRun 漂移）──
-
-test('index.js request() 返回值包含所有 schema required 字段（防漂移）', async () => {
-  // Case 23 只看 schema 自己；这里断言"运行时返回值 ⊇ schema required 字段"
-  // —— 任何一条分支返回的对象都应满足 schema 的 required:true 约束
+test('输出契约: 服务真实返回值（status/cancel/各 guard 分支）零修复且通过校验', async () => {
   const env = withTmpDshHome();
   const provided = {};
   try {
@@ -696,12 +762,7 @@ test('index.js request() 返回值包含所有 schema required 字段（防漂�
     apply(ctx, { stateDir: '.agint-restart-smoke' });
     const svc = provided['agint.restart'];
 
-    // schema 中 required:true 的字段集合
-    const REQUIRED = ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid'];
-
-    // 触发各分支收集返回值
-    const samples = [];
-    samples.push(['needs-confirm', svc.request({})]);
+    const samples = [['needs-confirm', svc.request({})]];
     const stateDir = join(env.root, '.agint-restart-smoke');
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
@@ -714,37 +775,45 @@ test('index.js request() 返回值包含所有 schema required 字段（防漂�
     }, null, 2));
     samples.push(['tripped', svc.request({ confirm: true, force: true })]);
 
-    // 每条返回对象都必须含所有 required 字段（null 也算"含"，只要 key 存在）
-    for (const [label, obj] of samples) {
-      for (const k of REQUIRED) {
-        assert.ok(Object.prototype.hasOwnProperty.call(obj, k),
-          `${label} 分支返回缺字段 '${k}'（schema 标了 required:true，工具链会拒绝整个对象）`);
-      }
+    for (const [label, raw] of samples) {
+      const { value, repaired, dropped } = normalizeRequestOutput(raw);
+      assert.deepEqual(repaired, [], `${label} 分支缺 schema 必填字段（工具链会拒绝整个输出，而副作用可能已发生）`);
+      assert.deepEqual(dropped, [], `${label} 分支含未声明字段`);
+      assert.deepEqual(validateOutput(requestOutputSchema(), value), [], `${label} 分支产物不合法`);
+      assert.equal(typeof value.sideEffect, 'boolean', `${label} 分支必须显式带 sideEffect`);
     }
+
+    const st = normalizeStatusOutput(svc.status());
+    assert.deepEqual(st.repaired, [], 'status() 缺 schema 必填字段');
+    assert.deepEqual(st.dropped, [], 'status() 含未声明字段');
+    assert.deepEqual(validateOutput(statusOutputSchema(), st.value), [], 'status() 产物不合法');
+
+    const cn = normalizeCancelOutput(svc.cancel());
+    assert.deepEqual(cn.repaired, [], 'cancel() 缺 schema 必填字段（v0.4.4 前的 no-pending 分支就漏了 requestId）');
+    assert.deepEqual(validateOutput(cancelOutputSchema(), cn.value), [], 'cancel() 产物不合法');
   } finally {
     env.restore();
     env.cleanup();
   }
 });
 
-// ── Case 25: accepted=true 路径返回值也含所有 schema required 字段 ──
-// 真重启不能在 smoke 跑（会中断测试进程）。但 accepted=true 路径的返回结构是手写的
-// ——必须静态断言它包含所有 schema required 字段。
-test('accepted=true 返回字面量含所有 schema required 字段（防 v0.4.2 plan 漂移）', () => {
-  const REQUIRED = ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid'];
+// ── Case 25（v0.4.4 重写）：schema / 返回字面量不得再手写（静态守卫） ──
 
-  // 静态读 index.js 找出 accepted:true 的返回字面量
+test('输出契约: schema 与返回值只能来自 lib/contract.js（禁止手写漂移）', () => {
+  const toolsSrc = readFileSync(resolve(PLUGIN_DIR, 'lib', 'tools.js'), 'utf8');
+  assert.match(toolsSrc, /schema: requestOutputSchema\(\)/, 'tools.js 必须用 contract 生成的 request schema');
+  assert.match(toolsSrc, /schema: cancelOutputSchema\(\)/, 'tools.js 必须用 contract 生成的 cancel schema');
+  assert.match(toolsSrc, /schema: statusOutputSchema\(\)/, 'tools.js 必须用 contract 生成的 status schema');
+  assert.ok(!/output:\s*\{[\s\S]{0,300}?properties:\s*\{/.test(toolsSrc),
+    'tools.js 又手写 output schema 字段了（必然与 contract 漂移）');
+
   const idxSrc = readFileSync(resolve(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
-  // 找到 return { ... accepted: true, ... } 整段
-  const m = idxSrc.match(/return \{[\s\S]*?accepted: true,[\s\S]*?\};/);
-  assert.ok(m, 'accepted=true 返回字面量未找到');
-  const body = m[0];
-  // 每条 REQUIRED 字段必须在字面量里出现（直接以 key: 形式，不含注释）
-  for (const k of REQUIRED) {
-    // 匹配 `, key:` / `{ key:` / ` key:`（行首空白允许），但要求 key 后跟空白+冒号（不是注释里的引用）
-    const re = new RegExp(`(?:^|[,\\{\\s])${k}\\s*:\\s*(?!//)`);
-    assert.ok(re.test(body), `accepted=true 返回字面量缺字段 '${k}'（schema required:true）`);
-  }
+  assert.ok(!/accepted:\s*true/.test(idxSrc),
+    'index.js 又手写 accepted=true 返回字面量了（应走 contract.requestAccepted()）');
+  assert.ok(!/accepted:\s*false/.test(idxSrc),
+    'index.js 又手写 accepted=false 返回字面量了（应走 contract.requestDeny()/requestDryRun()）');
+  assert.match(idxSrc, /requestAccepted\(/, 'index.js 必须用 contract.requestAccepted()');
+  assert.match(idxSrc, /requestDryRun\(/, 'index.js 必须用 contract.requestDryRun()');
 });
 
 // ── Case 20: v0.4.0 抖动窗口 — 两次启动间隔 < notifyDebounceMs 不投递 ──

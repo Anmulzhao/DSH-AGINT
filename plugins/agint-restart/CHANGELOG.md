@@ -4,6 +4,60 @@
 
 ---
 
+## v0.4.4 — 2026-09-10 — 修「报错但重启已经发生」：输出契约单一事实源
+
+**事故（实测复现）**：重启一次，工具返回的是
+
+```
+Error: tool "restart_request" returned invalid output:
+  missing required property "value.code"; missing required property "value.plan"
+```
+
+但 `restart.log` 显示那次调用**全部成功**：请求文件已写 → 守护脚本已拉起 → 旧进程
+2640 优雅退出（2.9s）→ 端口释放 → 新进程 7196 就绪。调用方（模型）只看到 Error。
+
+**根因**：工具 output schema 是 `additionalProperties: false` + 逐字段 `required: true`
+的严格校验，而 `accepted: true` 分支的**手写返回字面量漏了 `code`**（`plan` 是 v0.4.2
+手工补的 null——同一类补丁式修法）。schema 校验发生在返回阶段，此时副作用已不可回滚。
+
+**为什么旧测试没拦住**：Case 25 用正则抠 `accepted: true` 返回字面量：
+
+```js
+idxSrc.match(/return \{[\s\S]*?accepted: true,[\s\S]*?\};/)
+```
+
+`[\s\S]*?` 从**更早的** `return {`（manual / deny 分支）开始匹配，把别处的 `code`
+也算进了检查区间 → 断言假绿。Case 23/24 只覆盖 smoke 能触发的分支，碰不到 accepted。
+
+**改法（结构上消除这一类 bug，而不是再补一个字面量）**：
+
+- 新增 **`lib/contract.js`**：字段表（key + DSL + fallback）→ 生成 schema
+  + `*Result()` 各分支构造函数 + `normalize*Output()` 兜底。schema 与返回值绑在同一张表上。
+- `lib/tools.js`：三个工具的 schema 全部改为 `*OutputSchema()` 生成；`execute` 加
+  try/catch，**绝不抛异常**；结果一律过 `normalize*Output`。
+- `lib/index.js`：`request()` 拆成 `requestInner` + 包装层，包装层把任何异常翻译成
+  schema 合法的返回；返回值全部走 `requestAccepted/requestDryRun/requestManual/requestDeny`。
+- **新增 `sideEffect` 字段**：本次调用是否真的推进了重启链路（保证"看到异常时"能判断
+  要不要重试）。`internal-error` 按已完成的步骤如实标注 + 在 message 里写清可否安全重试。
+- 顺带修同类漂移：`restart_cancel` 的 `no-pending` 分支漏了 `requestId`（schema required）；
+  `spawn-failed` 分支此前没说"请求文件已写入但不会重启"。
+
+**测试重写（Case 23/24/25 → 4 条契约用例）**：实现一个**真 schema 校验器**
+（required / type / oneOf / items / additionalProperties），逐个校验每个分支产物
+——包括 smoke 跑不了的 `accepted=true`（改用构造函数造样本）。断言：
+① 每个产物通过 schema 全量校验；② 构造函数产物"零修复"（normalize 不改一个字段）；
+③ `status()` / `cancel()` / 各 guard 分支真实返回值零修复；④ 静态守卫：tools.js 不得
+再手写 output schema、index.js 不得再手写 `accepted: true/false` 字面量。
+
+**变异验证**：把 `contract.requestAccepted()` 的 `code: 'scheduled'` 改名后立刻变红
+（`$.code: 缺 required 字段` + `requestAccepted 缺 schema 必填字段`），恢复即绿。
+`node test/smoke.mjs` → **31/31 pass，exitCode 0**。
+
+**⚠️ 生效条件**：改的是 `lib/`，必须重启 DSH 才加载新代码（见 AGENTS.md「仓库 ≠ host
+加载点」+ 重启红线）；host 副本需与仓库哈希一致。
+
+---
+
 ## v0.4.3 — 2026-09-10 — 缩短重启等待 + 抖动窗口扩到 5 分钟
 
 **老板反馈两条**：① 重启等待时间要缩短；② 通知还是"隔几秒弹一次"。
