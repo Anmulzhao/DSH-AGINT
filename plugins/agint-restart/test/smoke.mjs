@@ -503,3 +503,114 @@ test('respawn.js: 坏 request 直接拒绝（退出码 2）', () => {
     env.cleanup();
   }
 });
+
+// ── Case 16: resolveDeliveryMode — 显式优先 + 旧 wakeup 布尔兼容 ──
+
+test('resolveDeliveryMode: deliveryMode 显式优先，旧 wakeup 布尔向后兼容', async () => {
+  const { resolveDeliveryMode } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'inject' }), 'inject');
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'queue' }), 'queue');
+  // 显式 deliveryMode 必须压过旧的 wakeup（避免升级后语义打架）
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'inject', wakeup: true }), 'inject', 'deliveryMode 应优先于 wakeup');
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'queue', wakeup: false }), 'queue', 'deliveryMode 应优先于 wakeup');
+  // 旧配置（只有 wakeup）保持原语义：true=queue / false=inject
+  assert.equal(resolveDeliveryMode({ wakeup: true }), 'queue', 'wakeup:true 应等价 queue');
+  assert.equal(resolveDeliveryMode({ wakeup: false }), 'inject', 'wakeup:false 应等价 inject');
+  // 都没给 → 默认 queue（温和，不主动触发回复）
+  assert.equal(resolveDeliveryMode({}), 'queue');
+  assert.equal(resolveDeliveryMode(undefined), 'queue');
+});
+
+// ── Case 17: 投递目标优先匹配 lastSessionId（本次修复的核心）──
+
+test('投递目标优先回到 lastSessionId 对应的旧会话，而非 roots[0]', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  mkdirSync(markerDir, { recursive: true });
+  // pid 与当前进程不同 → wasRestart=true；lastSessionId 指向"旧会话"
+  writeFileSync(join(markerDir, 'marker.json'), JSON.stringify({
+    lastBootAt: new Date(Date.now() - 60000).toISOString(),
+    pid: 99999,
+    lastSessionId: 'session-old',
+    lastActiveAt: new Date(Date.now() - 30000).toISOString(),
+  }, null, 2), 'utf8');
+
+  const gotNew = { followup: 0, inject: 0 };
+  const gotOld = { followup: 0, inject: 0 };
+  // 注意顺序：roots[0] 是"新会话"，旧会话排第二 —— 旧逻辑会错误地投给 roots[0]
+  const agentNew = { id: 'session-new', followup: () => { gotNew.followup++; }, inject: () => { gotNew.inject++; } };
+  const agentOld = { id: 'session-old', followup: () => { gotOld.followup++; }, inject: () => { gotOld.inject++; } };
+  const agents = { roots: () => [agentNew, agentOld], list: () => [agentNew, agentOld], get: (id) => (id === 'session-old' ? agentOld : agentNew) };
+  const disposers = [];
+  const ctx = {
+    get: (n) => (n === 'agents' ? agents : null),
+    inject: (names, cb) => cb({ agents }),
+    on: () => {},
+    effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+    provide: () => {},
+  };
+  try {
+    apply(ctx, { stateDir, resumeWaitMs: 300 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(gotOld.followup, 1, '通知应投回旧会话 session-old');
+    assert.equal(gotNew.followup, 0, '不应投给 roots[0] 的新会话');
+    // wake.log 应记录 matched=lastSession，便于线上排查
+    const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
+    assert.equal(wake.ok, true);
+    assert.equal(wake.deliveredTo, 'session-old');
+    assert.equal(wake.matched, 'lastSession', 'wake.log 应记录命中旧会话');
+    assert.equal(wake.mode, 'queue');
+  } finally {
+    for (const d of disposers) { try { d(); } catch { /* ignore */ } }
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 18: 旧会话缺失时回退 roots[0]；deliveryMode=inject 走 inject 通道 ──
+
+test('旧会话未复活时回退 roots[0]；deliveryMode=inject 走 inject', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  mkdirSync(markerDir, { recursive: true });
+  writeFileSync(join(markerDir, 'marker.json'), JSON.stringify({
+    lastBootAt: new Date(Date.now() - 60000).toISOString(),
+    pid: 99999,
+    lastSessionId: 'session-gone', // 重启后不复存在
+    lastActiveAt: new Date(Date.now() - 30000).toISOString(),
+  }, null, 2), 'utf8');
+
+  const gotFirst = { followup: 0, inject: 0 };
+  const gotSecond = { followup: 0, inject: 0 };
+  const agentFirst = { id: 'session-first', followup: () => { gotFirst.followup++; }, inject: () => { gotFirst.inject++; } };
+  const agentSecond = { id: 'session-second', followup: () => { gotSecond.followup++; }, inject: () => { gotSecond.inject++; } };
+  // get() 一律返回 null：模拟旧会话确实拿不到
+  const agents = { roots: () => [agentFirst, agentSecond], list: () => [agentFirst, agentSecond], get: () => null };
+  const disposers = [];
+  const ctx = {
+    get: (n) => (n === 'agents' ? agents : null),
+    inject: (names, cb) => cb({ agents }),
+    on: () => {},
+    effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+    provide: () => {},
+  };
+  try {
+    apply(ctx, { stateDir, deliveryMode: 'inject', resumeWaitMs: 300 });
+    // 需要等过 resumeWaitMs 窗口才会接受回退目标
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(gotFirst.inject, 1, '回退后应投给 roots[0]');
+    assert.equal(gotFirst.followup, 0, 'deliveryMode=inject 时不应走 followup');
+    assert.equal(gotSecond.inject, 0, '不应投给第二个 agent');
+    const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
+    assert.equal(wake.matched, 'primary', 'wake.log 应记录回退到 primary');
+    assert.equal(wake.mode, 'inject');
+  } finally {
+    for (const d of disposers) { try { d(); } catch { /* ignore */ } }
+    env.restore();
+    env.cleanup();
+  }
+});

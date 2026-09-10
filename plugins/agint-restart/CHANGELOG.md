@@ -4,6 +4,42 @@
 
 ---
 
+## v0.3.0 — 2026-09-10 — 修正投递语义：消息回到被中断的会话
+
+**背景**：v0.2.1 起链路是通的（`wake.log` 记 `ok:true`），但老板反馈"没看到消息"。查日志发现
+投递目标与重启前会话对不上：marker 记的是 `session-e5459975`，实际投递到 `session-7a352812`。
+插件等于只做了一半——通知发了，却没发到需要它的那个会话。
+
+**改动一：投递目标优先匹配 `lastSessionId`**
+
+- 旧逻辑 `findTarget()` 直接取 `roots[0] ?? list()[0]`，**从不匹配 `lastSessionId`**，
+  旧会话只要不在列表首位就永远收不到。
+- 新逻辑：先按 `lastSessionId` 精确匹配（`pool.find` → `agents.get` 回退），命中即投；
+  匹配不到才回退 `target` 规则。新增 `resumeLastSession`（默认 `true`）可关。
+- **等待窗口**：重启后 agent 是异步加载的，若第一次只找到回退目标就立即投递，
+  `resumeLastSession` 会永远失效。因此新增 `resumeWaitMs`（默认 5000）：窗口期内继续等旧会话，
+  超时才接受回退目标。总上限仍是 `MAX_WAIT_MS` 20 秒。
+
+**改动二：`deliveryMode` 取代反直觉的 `wakeup` 布尔**
+
+- 旧语义：`wakeup: true` → `followup`（排队）；`wakeup: false` → `inject`（立即）。**命名与直觉相反**。
+- 新增 `deliveryMode: 'queue' | 'inject'`，语义自解释。旧的 `wakeup` 仍解析（兼容），
+  但显式 `deliveryMode` 优先级更高，避免升级后行为打架。
+- `resolveDeliveryMode()` 已导出，可直接单测。
+
+**可观测性**：`wake.log` 新增 `matched`（`lastSession` / `primary` / `configured`）与 `mode` 字段。
+排查时一眼能看出"消息到底投给了谁、走的哪条通道"。
+
+**测试**：19 → 22。新增 Case 16（`resolveDeliveryMode` 8 断言）/ 17（优先回旧会话，
+roots 顺序故意让新会话排首位，旧逻辑会投错）/ 18（旧会话缺失回退 + inject 通道）。
+**Case 17 已做变异验证**：把优先匹配逻辑短路成 `false` 后用例立刻变红，恢复即绿——
+证明测试真在测，不是假通过。
+
+**配置变更**：`cordis.patch.yml` 的 `wakeup: true` 建议改为 `deliveryMode: queue`（行为等价）。
+不改也能跑（向后兼容）。
+
+---
+
 ## v0.2.1 — 2026-09-10 — 修复 preset 挂载失败（required:false 致命）
 
 **现象**：挂上 `agint-restart-tools`  preset 行后，agint preset 起不来——新建会话发不了消息，
