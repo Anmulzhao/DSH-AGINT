@@ -44,9 +44,9 @@
 10. **落地重要信息** —— 教训写 `memory_write`，知识写 `wiki_write`，不要依赖聊天记录
 11. **复盘** —— 周日 cron 自动跑 `evolve_review`；**复盘报告推荐包含** `## 哲学对齐检查` 章节（详见 `docs/evolution-philosophy-checkpoints.md`），**P 阶段验收 / 重大 PR 必含**（这是路线图 §哲学锚点护栏的硬要求）
 
-> **当前阶段（v0.7.1 / Sprint 13）**：P6 进化闭环引擎已收口（P0~P6 全部 ✅），P7 第一段（事件总线 v0.7.0）+ 第二段（总线 T1 收口 + 自我模型 v0.7.1）已发版。
+> **当前阶段（v0.8.1 / Sprint 16 进行中）**：P6 进化闭环引擎已收口（P0~P6 全部 ✅），P7 第一段（事件总线 v0.7.0）+ 第二段（总线 T1 收口 + 自我模型 v0.7.1）+ P7.5 Sprint 16 主线（skill-autocreate v0.3.2 + memory-provider v0.2.0 + curriculum v0.1.1 已挂载 prod + T2 A7 已切 + A8 已确认）已发版；v0.8.x（agint-restart 5 连续 patch 升格为框架发版，2026-09-11）含代码指纹 + 输出面修复 + 重启通知投递收口 + `_sync_plugin.mjs` 三段式守门脚本。
 >
-> **本机实况（2026-09-04 24:00 后实测；K19 修复完成）**：本机 DSH_HOME 已同步 v0.7.1（含 v0.6.0 ~ v0.7.1 全套 8 minor hotfix），23 个 plugin 全挂载、`cordis.patch.yml` 含 23 个 agint-* 段。等仓文档说的"runtime 收口 + 总线 T2 切流量"在本机已**全部到位**，不再有"12 存量 eval fail 待归因"压栈（最近一次 `metrics_collect` 在 2026-09-03T16:46Z 完成，`cron.staleJobs = 0` 但 `cron.lastRunAt` 字段未填——**8 个 cron 任务 `last=never`，本机 dsh 自安装以来一次都未触发**，重启后下一次 cron tick 应自动开始累积）。AGINT preset 工具域扩展按"分两批"在跑：Batch 1（6 个 plugin + ~22 工具 + 7 ask 门禁）**已在 host 端 preset 写入**（line 345-377，2026-09-04 老板重启验证），重启后实测 6 段 row 全部工具到货（mount_status / selfModel_stats / eventBus_metricsSnapshot / population_stats / diagnosis_stats / mutator_stats ✅）。Batch 2（mutator/population/mount/abtest/quality 全家 7 + evolution 共 ~44 工具 + 21 ask）待 Batch 1 观察一轮稳定后再补。Sprint 14+ 排 curriculum / transfer / Registry 不变。**路由决策先实测 host 端** `grep -c '^- id: agint-.*-tools$' $DSH_HOME/.agent-presets/agint/agent.cordis.yml`，不要相信仓库版本或本文档字面；再看 Wiki [路线图](路线图.md)「调整记录」段落与本次发版注释，再下手。
+> **本机实况（2026-09-10 24:00 后实测）**：本机 DSH_HOME 已同步 v0.7.1 → v0.7.4 → v0.8.0/v0.8.1（含 v0.6.0 ~ v0.8.1 全套 10 minor hotfix），**27 个 plugin 全挂载**、`cordis.patch.yml` 含 27 个 agint-* 段（23 个 v0.7.1 基础 + skill-autocreate / curator / memory-provider / curriculum 4 个 P7.5 + agint-restart v0.8.1）。`metrics_collect` + 8 cron 任务已正常 tick（11 个 job 全部活跃，最近 tick 距今 < 12 小时）。AGINT preset 工具域扩展 Batch 1（6 plugin + ~22 工具 + 7 ask）+ Batch 2（含 evolution / quality 全家）共 **21 个 tool rows 在 host 端 preset**（自动块实测），全部 read-only 工具到货；写工具（mutator/population/mount/abtest/qualityEval/qualityPolicy/eventBus publish/diagnosis annotate 系）默认走 rule_check ask gate（详见下方「写工具默认 ask 门禁」）。Sprint 16 收口期：09-13 两个首次自动任务（02:00 策展 / 05:00 课程）等不干预 + A7 一致率观察。**路由决策先实测 host 端** `grep -c '^- id: agint-.*-tools$' $DSH_HOME/.agent-presets/agint/agent.cordis.yml`，不要相信仓库版本或本文档字面；再看 Wiki [路线图](路线图.md)「调整记录」段落与本次发版注释，再下手。
 
 ## 怎么用梦境
 
@@ -159,7 +159,7 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-10 07:15 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-10 07:18 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
