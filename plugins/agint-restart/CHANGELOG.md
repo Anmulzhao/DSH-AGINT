@@ -4,6 +4,58 @@
 
 ---
 
+## v0.5.0 — 2026-09-11 — 防弹窗 + 断环
+
+**背景（老板反馈）**：「重启插件不停的造成弹窗，是循环注入吗」
+
+**排查结论**：不是循环注入（机械层面已排除），但有两个真实问题。
+
+### 一、每次重启自动弹一次浏览器（真 bug）
+
+`dsh web` 的 `openBrowser` 默认 `true`（`dsh-web-app: handoffBrowser`），
+插件原样快照老板的启动参数（`[...bin.js, web]`）→ respawn 每次拉起都走一次 `openBrowser(url)`。
+
+证据：`dsh-web.log` 里 `opening the default browser; pass --no-open to disable`
+**出现 16 次 = 16 次重启 = 16 次弹浏览器**。
+
+**修**：新增 `openBrowserOnRestart: false`（默认）→ `normalizeLaunch()` 给 `dsh web` 补 `--no-open`。
+只在确实是 `web` 子命令时动手；已显式带 `--no-open` / `--open[=x]` 的一律不碰。
+入口 URL/token 仍打印在新实例日志里，需要时手动开。
+
+### 二、自维持的重启环（设计缺陷，不是注入环）
+
+`mode: wake` + 通知文案「请自主决定下一步」+ agent 手上就有 `restart_request` 工具，
+三者组合成闭环：**通知唤醒 agent → agent 接着干活 → 干完为加载改动调 restart_request → 重启 → 又投通知 → …**
+
+证据（会话 `session-179dc25d`）：16:05:40 收到通知 → 16:05:44 开始调工具 → 16:08:27 查状态
+→ 16:08:34 调 `restart_request`。94 分钟内这样滚了 16 次重启。
+当时唯一刹住它的是 300s 抖动窗口（那一轮 boot 被判 215s < 300s 抑制了）。
+
+**修**：新增 `resumeOnSelfRestart: false`（默认）→ 由插件自己发起的重启**不再投递恢复通知**。
+判据（`detectSelfRestart()`，两条都满足才算自触发）：
+1. 请求文件的 `targetPid` === marker 里上次启动进程的 pid
+2. 请求时间晚于上次启动时间（排除陈旧残留文件）
+
+外部重启（老板手动 / 崩溃）**不受影响，照常投递**——否则真正的中断会被吞掉。
+想恢复旧行为配 `resumeOnSelfRestart: true`。
+
+### 其它
+
+- `status()` / `detect()` 新增 `selfRestart` / `selfRestartRequestId`，排查时一眼看出这次重启是谁发起的
+- 修掉 `cordis.patch.yml` 模板里 **重复的 `shutdownDelayMs` 键**（v0.4.3 引入，YAML 直接报
+  `duplicated mapping key (83:9)`，该文件不参与 dsh 加载所以一直没暴露）
+- 测试 31 → 34：新增 `normalizeLaunch` / `detectSelfRestart` / 「自触发不投递、外部照常投递」端到端
+- 变异验证：把补 `--no-open` 短路掉 → Case 32 变红；把自触发抑制短路掉 → Case 34 变红
+
+### 排查中排除的假设（记录以免重复劳动）
+
+- **不是循环注入**：`dsh-web.log` 12 条 `notice delivered` 对应 12 次真实重启；
+  逐帧解压全部 142 个会话文件，每个会话 1-3 条通知，与会话被重启命中的次数一致
+- **不是控制台黑框**：`dsh-subprocess-local` 对 win32 显式 `windowsHide: true`，dsh 的子进程不创建控制台窗口
+- **不是前端桌面通知**：前端 bundle 里没有 `new Notification` / `requestPermission`
+
+---
+
 ## v0.4.4 — 2026-09-10 — 修「报错但重启已经发生」：输出契约单一事实源
 
 **事故（实测复现）**：重启一次，工具返回的是

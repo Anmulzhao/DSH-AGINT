@@ -58,6 +58,20 @@ const DEFAULTS = {
   // 60s 太窄：验证重启时人工操作间隔常有 1-3 分钟，每次都会弹。5 分钟能覆盖连续验证场景。
   // 仅作用于"是否投递"分支；marker / status / 主动重启链路不受影响。<=0 表示关闭
   notifyDebounceMs: 300000,
+
+  // ── v0.5.0：防弹窗 + 断环 ─────────────────────────────────────
+  // 拉起新实例时，是否允许它自动打开浏览器。
+  // 默认 false → 给 launch 参数补 `--no-open`。
+  // 原因：`dsh web` 的 openBrowser 默认 true，插件每次拉起都会弹一次浏览器
+  //      （2026-09-10 实测：16 次重启 = 16 次 "opening the default browser"）。
+  // 入口页 URL/token 仍会打印在新实例日志里，需要时可手动打开。
+  openBrowserOnRestart: false,
+  // 自触发重启（agent 自己调 restart_request）是否也投递"恢复"通知。
+  // 默认 false：切断「通知唤醒 agent → agent 干活 → agent 自己重启 → 又通知」的自维持环。
+  // 理由：发起者就是 agent 自己，它知道这次重启；恢复通知是给"意外/外部中断"用的。
+  // 外部重启（老板手动、进程崩溃）不受影响，照常投递。
+  resumeOnSelfRestart: false,
+
   notice: '',
   // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
   shutdownGraceMs: 600000,
@@ -198,6 +212,48 @@ function snapshotLaunch(override) {
   };
 }
 
+/**
+ * 拉起参数归一化：给 `dsh web` 补 `--no-open`。
+ *
+ * 为什么需要：`dsh web` 的 openBrowser 默认 true（dsh-web-app: handoffBrowser），
+ * 每次由 respawn 拉起都会走一次 `openBrowser(url)`，把浏览器再弹出来一遍。
+ * 重启本就是后台行为，不该每次抢焦点开一个新标签/窗口。
+ *
+ * 只在"确实是 web 子命令"时动手；已显式给出 --no-open / --open[=x] 的一律不碰。
+ * 要保留原来的"重启也开浏览器"行为，配 openBrowserOnRestart: true。
+ */
+export function normalizeLaunch(launch, config = {}) {
+  if (!launch || config.openBrowserOnRestart === true) return launch;
+  const args = Array.isArray(launch.args) ? launch.args : [];
+  if (!args.includes('web')) return launch;
+  if (args.some((a) => a === '--no-open' || a === '--open' || String(a).startsWith('--open='))) return launch;
+  return { ...launch, args: [...args, '--no-open'] };
+}
+
+/**
+ * 判断本次启动是否由插件自己发起的重启导致（agent 调 restart_request）。
+ *
+ * 判据（两个都要满足）：
+ *   1. 请求文件的 targetPid === 上一次启动进程的 pid（marker.pid）——那次重启是它发起的
+ *   2. 请求时间晚于上一次启动时间——请求确实来自那个进程，而不是更早的残留文件
+ * 缺失/损坏/不匹配 → 一律视为外部重启（保守：宁可多投一条通知，也不吞掉真正的中断）。
+ */
+export function detectSelfRestart(marker, requestPath) {
+  if (!marker) return { self: false, requestId: null, reason: null };
+  try {
+    const req = JSON.parse(readFileSync(requestPath, 'utf8'));
+    if (!req || typeof req !== 'object') return { self: false, requestId: null, reason: null };
+    const samePid = Number(req.targetPid) === Number(marker.pid);
+    const afterBoot = typeof req.requestedAt === 'string'
+      && typeof marker.lastBootAt === 'string'
+      && Date.parse(req.requestedAt) > Date.parse(marker.lastBootAt);
+    if (samePid && afterBoot) {
+      return { self: true, requestId: req.requestId ?? null, reason: req.reason ?? null };
+    }
+  } catch { /* 无请求文件 / JSON 损坏 → 外部重启 */ }
+  return { self: false, requestId: null, reason: null };
+}
+
 function apply(ctx, cfg = {}) {
   const config = { ...DEFAULTS, ...cfg };
   const readiness = { ...DEFAULTS.readiness, ...(cfg.readiness ?? {}) };
@@ -230,7 +286,10 @@ function apply(ctx, cfg = {}) {
   const lastActiveAt = marker?.lastActiveAt ?? null;
 
   // 拉起快照：必须在插件 apply 时抓，此时 cwd/argv/env 还是启动时刻的样子
-  const launch = snapshotLaunch(config.launch);
+  // v0.5.0：归一化，去掉"每次重启自动弹一次浏览器"
+  const launch = normalizeLaunch(snapshotLaunch(config.launch), config);
+  // v0.5.0：判断本次启动是否由插件自己的重启请求导致（用于切断重启环）
+  const selfRestart = detectSelfRestart(marker, requestPath);
 
   // 2. 活动追踪（运行期间持续记录最近活跃会话）
   let trackedActiveId = null;
@@ -486,6 +545,9 @@ function apply(ctx, cfg = {}) {
       pid: process.pid,
       bootAt,
       wasRestart,
+      // v0.5.0：本次启动是否由 agent 自己发起的重启导致；true 时默认不发恢复通知
+      selfRestart: selfRestart.self,
+      selfRestartRequestId: selfRestart.requestId,
       pending: pending ? { requestId: pending.requestId, at: new Date(pending.at).toISOString() } : null,
       cooldownRemainingMs: sinceLast < config.cooldownMs ? config.cooldownMs - sinceLast : 0,
       burst: { windowMs: config.burstWindowMs, max: config.burstMax, count: burst.count, tripped: burst.tripped },
@@ -525,6 +587,9 @@ function apply(ctx, cfg = {}) {
     prevBootAt,
     currentBootAt: bootAt,
     pid: process.pid,
+    // v0.5.0：本次启动是否由插件自己的重启请求导致（true 时默认不投恢复通知）
+    selfRestart: selfRestart.self,
+    selfRestartRequestId: selfRestart.requestId,
   });
 
   // 注册服务：整包 + 与 manifest 声明一致的 detect 别名
@@ -532,7 +597,18 @@ function apply(ctx, cfg = {}) {
   ctx.provide('agint.restart.detect', detect);
 
   // 5. 若发生重启，向主 agent 投递信息性消息
-  if (wasRestart && !debounce.debounced) {
+  //
+  // v0.5.0：投递前过两道闸。
+  //   debounce      —— 相邻启动间隔太近（连续重启验证期），不投
+  //   self-restart  —— 这次重启是 agent 自己发起的，不投（否则形成
+  //                    通知→唤醒 agent→干活→自己重启→又通知 的自维持环）
+  const suppressed = !wasRestart
+    ? null
+    : (debounce.debounced
+      ? 'debounce'
+      : (selfRestart.self && config.resumeOnSelfRestart !== true ? 'self-restart' : null));
+
+  if (wasRestart && suppressed === null) {
     ctx.inject(['agents'], (scope) => {
       ctx.effect(() => {
         /**
@@ -648,10 +724,13 @@ function apply(ctx, cfg = {}) {
       });
     });
   } else {
-    console.log('[agint-restart] no restart detected, boot normal');
-    if (wasRestart && debounce.debounced) {
+    if (suppressed === null) {
+      console.log('[agint-restart] no restart detected, boot normal');
+    } else if (suppressed === 'debounce') {
       // v0.4.0：抖动窗口内命中，不投递（marker 仍然照常写新值，下次重启照常判定）
       console.log(`[agint-restart] restart detected but within debounce window (${config.notifyDebounceMs}ms), skip notice (downtime=${downtimeMs}ms)`);
+    } else {
+      console.log(`[agint-restart] self-initiated restart (request=${selfRestart.requestId ?? '-'}) skip resume notice — 中断是 agent 自己安排的，不再唤醒它（resumeOnSelfRestart=false）`);
     }
   }
 }

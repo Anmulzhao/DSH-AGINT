@@ -1,6 +1,6 @@
 # agint-restart
 
-> AGINT 插件：DSH 重启**闭环** —— 检测重启 + 信息性消息投递（v0.1.0）+ **主动发起重启**（v0.2.0）+ **通知回到被中断的会话**（v0.3.0）。
+> AGINT 插件：DSH 重启**闭环** —— 检测重启 + 信息性消息投递（v0.1.0）+ **主动发起重启**（v0.2.0）+ **通知回到被中断的会话**（v0.3.0）+ **不弹窗 / 不断环**（v0.5.0）。
 >
 > 思路来源（检测部分）：[nickkkkkk123123/dsh-resume-on-restart](https://github.com/nickkkkkk123123/dsh-resume-on-restart)（MIT），scope 1:1。
 > 关键差异：优雅关闭走 cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）；持久化目录 `.agint-restart`；brand 前缀 `[agint-restart]`；v0.2.0 新增两段式自重启 + 三重护栏。
@@ -15,6 +15,8 @@
 2. **重启**（v0.2.0）：提供 `agint.restart` 服务与 `restart_*` 工具，让 agent / 其它插件能**真正把 DSH 拉起来**——不再依赖老板手跑 `restart-runbook.ps1`。
 3. **回到原会话**（v0.3.0）：通知优先投回"重启前最近活跃"的那个会话（只有它带着被中断的上下文），
    而不是随便取第一个 agent；投递方式可显式指定 `queue`（排队）或 `inject`（立即触发 agent 干活）。
+4. **不弹窗 / 不断环**（v0.5.0）：拉起新实例时补 `--no-open`（不再每次重启弹一次浏览器）；
+   自触发重启不再投递恢复通知，切断「通知唤醒 agent → 干活 → 自己重启 → 又通知」的自维持环。
 
 解决"DSH 重启后会话中断、工作丢失"、"重启只能人工执行"以及"通知投错会话"三个问题。
 
@@ -32,6 +34,11 @@
   `request()` 绝不抛异常，返回值带 `sideEffect` 说明副作用是否已发生——消除「报错但其实重启了」
 - 🛡️ **三重护栏**：`confirm` 必填 + 冷却期 + 窗口内次数熔断（防误触与重启循环）
 - 🧪 **dryRun / manual**：先看计划再执行，或只生成命令交给人工执行
+- 🚫 **不弹窗（v0.5.0）**：拉起新实例时给 `dsh web` 补 `--no-open`。
+  `dsh web` 默认 `openBrowser=true`，插件每次拉起都会**弹一个新浏览器标签/窗口**；重启是后台行为，不该抢焦点
+- ⛔ **不断环（v0.5.0）**：自触发重启不再投递恢复通知。
+  否则会形成「通知唤醒 agent → agent 干活 → agent 自己 `restart_request` → 又通知」的自维持重启环
+  （2026-09-10 实测：94 分钟内这样滚了 16 次重启）
 
 ## 与上游 dsh-resume-on-restart 的差异
 
@@ -187,6 +194,8 @@ v0.4.4 起结构上消除这类漂移：
 | `exitStrategy` | win32 `exit` / 其它 `signal` | 自己怎么退出（`exit`=`process.exit`，`signal`=发 SIGTERM；win32 无真信号故默认 exit） |
 | `shutdownDelayMs` | `1500` | 发请求后延迟多久退出（留出返回值时间）。**这段完全计入用户感知的"重启等待"**，故从 3000 收紧 |
 | `notifyDebounceMs` | `300000` | 抖动窗口：相邻两次启动间隔 < 此值则**不投递**通知。判据含"上次进程存活时长"，5 分钟可覆盖连续 restart 验证；`<=0` 关闭 |
+| `openBrowserOnRestart` | `false` | v0.5.0：拉起新实例时是否允许它自动打开浏览器。`false` = 给 launch 参数补 `--no-open`。`dsh web` 默认 `openBrowser=true`，不改的话**每次重启都会弹一次浏览器**（实测 16 次重启 = 16 次） |
+| `resumeOnSelfRestart` | `false` | v0.5.0：agent 自己调 `restart_request` 引起的重启，是否也投递"恢复"通知。`false` = 不投（断环）；外部/意外重启照常投递。置 `true` 恢复旧行为 |
 | `launch` | `null` | 手工覆盖拉起命令 `{command,args,cwd,env}`；默认从当前进程自动快照 |
 
 > **重启耗时构成（实测 25s → 优化后约 21-22s）**：等旧进程退出 4.6s（其中 3s 曾是插件自身延迟）
@@ -199,8 +208,8 @@ v0.4.4 起结构上消除这类漂移：
 
 | Service | 签名 | 职责 |
 |---|---|---|
-| `agint.restart.detect` | `() → {wasRestart, downtimeMs, lastSessionId, lastActiveAt, prevBootAt, currentBootAt, pid}` | 只读：返回当前 marker 状态 + 是否发生过重启（不重新触发投递）。v0.1.0 只在 README 里承诺，v0.2.0 真正注册。 |
-| `agint.restart.status` | `() → {enabled, mode, pid, bootAt, wasRestart, pending, cooldownRemainingMs, burst, lastRestart, historyCount, lastResult, launch}` | 只读：当前状态 + 冷却/熔断 + 上次结果 + 拉起命令快照。 |
+| `agint.restart.detect` | `() → {wasRestart, downtimeMs, lastSessionId, lastActiveAt, prevBootAt, currentBootAt, pid, selfRestart, selfRestartRequestId}` | 只读：返回当前 marker 状态 + 是否发生过重启（不重新触发投递）。v0.1.0 只在 README 里承诺，v0.2.0 真正注册。`selfRestart=true` 表示这次中断是插件自己发起的（v0.5.0）。 |
+| `agint.restart.status` | `() → {enabled, mode, pid, bootAt, wasRestart, selfRestart, selfRestartRequestId, pending, cooldownRemainingMs, burst, lastRestart, historyCount, lastResult, launch}` | 只读：当前状态 + 冷却/熔断 + 上次结果 + 拉起命令快照。 |
 | `agint.restart.request` | `({confirm, reason?, delayMs?, dryRun?, force?}) → {accepted, code, message, requestId?, plan?, shutdownInMs?}` | 发起重启。护栏全在这里：`needs-confirm` / `cooldown` / `tripped` / `already-pending` / `manual-mode` / `dry-run`。 |
 | `agint.restart.cancel` | `() → {cancelled, code, message, requestId?}` | 清除在途标记（守护脚本已启动则只能靠人工确认）。 |
 

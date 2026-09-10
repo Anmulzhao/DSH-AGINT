@@ -986,3 +986,207 @@ test('重启耗时契约：轮询间隔收紧且无裸 sleep，默认延迟不�
   const db = Number(idx.match(/notifyDebounceMs:\s*(\d+)/)[1]);
   assert.ok(db >= 180000, `notifyDebounceMs=${db}ms 应 ≥180000（60s 太窄，连续验证仍每次弹）`);
 });
+
+// ── Case 26: normalizeLaunch —— 拉起参数补 --no-open（防每次重启弹浏览器）──
+
+test('normalizeLaunch: 给 dsh web 补 --no-open，不误伤其它命令、已显式给出的一律不碰', async () => {
+  const { normalizeLaunch } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const base = { command: 'node.exe', cwd: 'C:\\Users\\Administrator', args: ['D:\\DSH\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js', 'web'] };
+
+  // 默认（openBrowserOnRestart 未开）→ 补 --no-open
+  const out = normalizeLaunch(base, {});
+  assert.deepEqual(out.args, [...base.args, '--no-open'], '应补上 --no-open');
+  assert.deepEqual(base.args, ['D:\\DSH\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js', 'web'], '不应修改原对象');
+
+  // 已显式给出 open 相关开关 → 不重复追加、不覆盖
+  const withNoOpen = ['x', 'web', '--no-open'];
+  assert.deepEqual(normalizeLaunch({ ...base, args: withNoOpen }, {}).args, withNoOpen);
+  assert.deepEqual(normalizeLaunch({ ...base, args: ['x', 'web', '--open'] }, {}).args, ['x', 'web', '--open']);
+  assert.deepEqual(normalizeLaunch({ ...base, args: ['x', 'web', '--open=false'] }, {}).args, ['x', 'web', '--open=false']);
+
+  // 不是 web 子命令 → 一个字都不动（避免误改 headless / 自定义命令）
+  assert.deepEqual(normalizeLaunch({ ...base, args: ['x', 'headless'] }, {}).args, ['x', 'headless']);
+
+  // 显式要求保留"重启也开浏览器"的旧行为
+  assert.deepEqual(normalizeLaunch(base, { openBrowserOnRestart: true }).args, base.args);
+
+  // 异常输入不炸
+  assert.equal(normalizeLaunch(null, {}), null);
+  assert.deepEqual(normalizeLaunch({ command: 'node', args: undefined }, {}).args, undefined);
+});
+
+// ── Case 27: detectSelfRestart —— 区分"自触发重启"与"外部重启"──
+
+test('detectSelfRestart: 只有上次进程自己发起的重启才判为自触发', async () => {
+  const { detectSelfRestart } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const env = withTmpDshHome();
+  const dir = join(env.root, '.agint-restart');
+  mkdirSync(dir, { recursive: true });
+  const reqPath = join(dir, 'restart-request.json');
+  // marker 由"上一次启动的那个进程"写下：pid=29220，启动于 16:05:13
+  const marker = { lastBootAt: '2026-09-10T16:05:13.632Z', pid: 29220, lastSessionId: 'session-x' };
+  try {
+    // 1) pid 吻合 + 请求晚于上次启动 → 自触发
+    writeFileSync(reqPath, JSON.stringify({ requestId: 'abc12345', reason: '加载修复', targetPid: 29220, requestedAt: '2026-09-10T16:08:34.406Z' }));
+    assert.deepEqual(detectSelfRestart(marker, reqPath), { self: true, requestId: 'abc12345', reason: '加载修复' });
+
+    // 2) pid 不匹配（老板手动重启，请求文件是上一轮的残留）→ 外部重启
+    writeFileSync(reqPath, JSON.stringify({ requestId: 'old', targetPid: 99999, requestedAt: '2026-09-10T16:08:34.406Z' }));
+    assert.equal(detectSelfRestart(marker, reqPath).self, false, 'pid 不匹配必须视为外部重启');
+
+    // 3) 请求时间早于上次启动（陈旧文件，pid 巧合复用）→ 外部重启
+    writeFileSync(reqPath, JSON.stringify({ requestId: 'stale', targetPid: 29220, requestedAt: '2026-09-10T15:00:00.000Z' }));
+    assert.equal(detectSelfRestart(marker, reqPath).self, false, '陈旧请求文件必须视为外部重启');
+
+    // 4) 缺文件 / 缺 marker / JSON 损坏 → 保守判为外部重启（宁可多投，不吞真中断）
+    assert.equal(detectSelfRestart(marker, join(dir, 'nope.json')).self, false);
+    assert.equal(detectSelfRestart(null, reqPath).self, false);
+    writeFileSync(reqPath, '{ 坏 json');
+    assert.equal(detectSelfRestart(marker, reqPath).self, false);
+  } finally {
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 28: 端到端 —— 自触发重启不投递；外部重启照常投递（断环核心）──
+
+test('端到端：自触发重启不投递恢复通知，外部重启照常投递', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  const markerPath = join(markerDir, 'marker.json');
+  const reqPath = join(markerDir, 'restart-request.json');
+  mkdirSync(markerDir, { recursive: true });
+
+  const makeCtx = (hits) => {
+    const agent = {
+      id: 'session-old',
+      followup: () => { hits.followup++; },
+      inject: () => { hits.inject++; },
+    };
+    const agents = { roots: () => [agent], list: () => [agent], get: () => agent };
+    const disposers = [];
+    const ctx = {
+      get: (n) => (n === 'agents' ? agents : null),
+      inject: (names, cb) => cb({ agents }),
+      on: () => {},
+      effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+      provide: () => {},
+    };
+    return { ctx, dispose: () => { for (const d of disposers) { try { d(); } catch { /* ignore */ } } } };
+  };
+
+  // 复现"上一次启动的那个进程"留下的 marker
+  const prevBootAt = new Date(Date.now() - 60000).toISOString();
+  const seedMarker = () => writeFileSync(markerPath, JSON.stringify({
+    lastBootAt: prevBootAt,
+    pid: 29220,               // 上一次启动的 pid（≠ 当前进程）
+    lastSessionId: 'session-old',
+    lastActiveAt: prevBootAt,
+  }, null, 2), 'utf8');
+
+  try {
+    // (1) 自触发：请求文件 targetPid === marker.pid，且晚于上次启动
+    seedMarker();
+    writeFileSync(reqPath, JSON.stringify({
+      requestId: 'self0001', reason: '加载修复', targetPid: 29220,
+      requestedAt: new Date(Date.now() - 30000).toISOString(),
+    }), 'utf8');
+    const a = { followup: 0, inject: 0 };
+    const runA = makeCtx(a);
+    apply(runA.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(a.followup + a.inject, 0, '自触发重启不应被唤醒（否则形成重启环）');
+    assert.equal(existsSync(join(markerDir, 'wake.log')), false, '自触发重启不应写 wake.log');
+    runA.dispose();
+
+    // (2) 外部重启：请求文件 targetPid 对不上（老板手动重启的残留文件）
+    seedMarker();
+    writeFileSync(reqPath, JSON.stringify({
+      requestId: 'stale001', targetPid: 11111,
+      requestedAt: new Date(Date.now() - 30000).toISOString(),
+    }), 'utf8');
+    const b = { followup: 0, inject: 0 };
+    const runB = makeCtx(b);
+    apply(runB.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(b.followup, 1, '外部重启必须照常投递（否则真正的中断会被吞掉）');
+    const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
+    assert.equal(wake.ok, true);
+    assert.equal(wake.deliveredTo, 'session-old');
+    runB.dispose();
+
+    // (3) 显式开启 resumeOnSelfRestart → 自触发也投递（可回退的逃生阀）
+    seedMarker();
+    writeFileSync(reqPath, JSON.stringify({
+      requestId: 'self0002', targetPid: 29220,
+      requestedAt: new Date(Date.now() - 30000).toISOString(),
+    }), 'utf8');
+    const c = { followup: 0, inject: 0 };
+    const runC = makeCtx(c);
+    apply(runC.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0, resumeOnSelfRestart: true });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(c.followup, 1, 'resumeOnSelfRestart=true 时应恢复投递');
+    runC.dispose();
+  } finally {
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 29: 真机 schema 编译（用 dsh 实际加载的那份 dsh-tools）──
+//
+// K19（漏 additionalProperties）与 K20（required:false）两类事故的共同点：
+// 错误只在 **preset 加载时** 抛出 → 整条 preset 拒绝挂载 → 新建会话发不了消息，
+// 而 smoke test 以前完全不加载 tools.js，所以两次都是线上才发现。
+// 这里直接在真 dsh-tools 上 apply()（defineTool 内部编译 schema，违规当场抛），
+// 把这类事故挡在本地。本机无嵌套包（非目标环境）时跳过。
+
+test('真机 schema：tools.js 能被真实 dsh-tools 编译并注册（K19/K20 防漂移）', async (t) => {
+  const NESTED = 'D:/DSH/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js';
+  if (!existsSync(NESTED)) {
+    t.skip('本机无嵌套 dsh-tools，跳过（非本项目运行环境）');
+    return;
+  }
+  const stage = join(tmpdir(), 'agint-restart-schema-' + randomUUID());
+  mkdirSync(stage, { recursive: true });
+  try {
+    const src = readFileSync(resolve(PLUGIN_DIR, 'lib', 'tools.js'), 'utf8')
+      .replace("'@deepseek-ai/dsh-tools'", `'${pathToFileURL(NESTED).href}'`);
+    writeFileSync(join(stage, 'tools.mjs'), src, 'utf8');
+    writeFileSync(join(stage, 'contract.js'), readFileSync(resolve(PLUGIN_DIR, 'lib', 'contract.js'), 'utf8'), 'utf8');
+
+    const registered = [];
+    const ctx = {
+      'agint.restart': null, get: () => null, provide: () => {}, on: () => {},
+      effect: () => {}, inject: () => {}, tools: { register: (x) => registered.push(x) },
+    };
+    const mod = await import(pathToFileURL(join(stage, 'tools.mjs')).href);
+    mod.apply(ctx); // 违规 schema 会在这里抛，而不是等到线上 preset 挂载
+    assert.deepEqual(registered.map((r) => r.name).sort(), ['restart_cancel', 'restart_request', 'restart_status']);
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+});
+
+// ── Case 30: 字段表 ⊇ 分支返回值（v0.5.0 新增字段不得被 normalize 丢掉）──
+
+test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId 不被丢弃', () => {
+  const sample = {
+    enabled: true, mode: 'auto', pid: 1, bootAt: 'x', wasRestart: true,
+    selfRestart: true, selfRestartRequestId: 'abc12345',
+    cooldownRemainingMs: 0, burst: { windowMs: 1, max: 1, count: 0, tripped: false },
+    pending: null, lastRestart: null, historyCount: 0, lastResult: null,
+    launch: { command: 'n', cwd: 'c', args: ['a'] },
+  };
+  const r = normalizeStatusOutput(sample);
+  assert.deepEqual(r.dropped, [], '不应丢弃任何字段（丢了说明字段表漏声明）');
+  assert.deepEqual(r.repaired, [], '不应修补任何字段');
+  assert.equal(r.value.selfRestart, true);
+  assert.equal(r.value.selfRestartRequestId, 'abc12345');
+  // 未声明在字段表里的键必须被丢掉（防"加了字段但 schema 没跟上"）
+  const r2 = normalizeStatusOutput({ ...sample, bogusField: 1 });
+  assert.deepEqual(r2.dropped, ['bogusField']);
+});
