@@ -55,9 +55,12 @@ const DEFAULTS = {
   resumeWaitMs: 5000,
   // 相邻两次启动的间隔 < 这个窗口视为抖动，不投递（防连续 restart 反复弹通知）
   // 判据是"本次启动时间 - 上次启动时间"，**含上次进程的存活时长**。
-  // 60s 太窄：验证重启时人工操作间隔常有 1-3 分钟，每次都会弹。5 分钟能覆盖连续验证场景。
+  // v0.6.1：300000 → 60000。5 分钟的窗口会把"老板重启后 1-3 分钟内又重启"这类
+  //   正常场景一并吞掉（实测 downtime=100131ms 被误挡），恢复通知发不出去 = 会话不接续。
+  //   60s 只够挡住"刚起来又被拉起"的抖动；真正的重启环由 restart_request 的
+  //   burst 熔断（burstWindowMs 内 burstMax 次）兜底，不靠这个窗口断环。
   // 仅作用于"是否投递"分支；marker / status / 主动重启链路不受影响。<=0 表示关闭
-  notifyDebounceMs: 300000,
+  notifyDebounceMs: 60000,
 
   // ── v0.5.0：防弹窗 + 断环 ─────────────────────────────────────
   // 拉起新实例时，是否允许它自动打开浏览器。
@@ -66,11 +69,14 @@ const DEFAULTS = {
   //      （2026-09-10 实测：16 次重启 = 16 次 "opening the default browser"）。
   // 入口页 URL/token 仍会打印在新实例日志里，需要时可手动打开。
   openBrowserOnRestart: false,
-  // 自触发重启（agent 自己调 restart_request）是否也投递"恢复"通知。
-  // 默认 false：切断「通知唤醒 agent → agent 干活 → agent 自己重启 → 又通知」的自维持环。
-  // 理由：发起者就是 agent 自己，它知道这次重启；恢复通知是给"意外/外部中断"用的。
-  // 外部重启（老板手动、进程崩溃）不受影响，照常投递。
-  resumeOnSelfRestart: false,
+  // 自触发重启（经插件协议发起，含 agent 自己调 restart_request）是否也投递"恢复"通知。
+  // v0.6.1：false → true。原设计把"自触发"当成"不需要恢复"，但 detectSelfRestart 判的是
+  //   "这次启动是不是留下了请求文件"——**凡走插件协议的重启都算自触发**（agent 调工具、
+  //   外部按协议发起都算），于是恢复通知几乎永远发不出去：老板让 agent 重启并要求
+  //   "重启完向我问好"，这条消息会被自己的触发器吞掉，会话彻底不接续。
+  //   正确做法是"照常投递 + 在通知里明示无需再次重启"，断环交给 burst 熔断。
+  // 置 false 可退回旧行为（自触发重启不投恢复通知）。
+  resumeOnSelfRestart: true,
 
   notice: '',
   // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
@@ -648,6 +654,8 @@ function apply(ctx, cfg = {}) {
             downtimeMs,
             lastSessionId,
             lastActiveAt,
+            // v0.6.1：自触发重启也投递，改在文案里明示"无需再次重启"来断环
+            selfRestart: selfRestart.self,
             customNotice: config.notice,
           });
           const msg = createUserMessage({
@@ -730,7 +738,7 @@ function apply(ctx, cfg = {}) {
       // v0.4.0：抖动窗口内命中，不投递（marker 仍然照常写新值，下次重启照常判定）
       console.log(`[agint-restart] restart detected but within debounce window (${config.notifyDebounceMs}ms), skip notice (downtime=${downtimeMs}ms)`);
     } else {
-      console.log(`[agint-restart] self-initiated restart (request=${selfRestart.requestId ?? '-'}) skip resume notice — 中断是 agent 自己安排的，不再唤醒它（resumeOnSelfRestart=false）`);
+      console.log(`[agint-restart] self-initiated restart (request=${selfRestart.requestId ?? '-'}) skip resume notice — resumeOnSelfRestart 被显式设为 false`);
     }
   }
 }

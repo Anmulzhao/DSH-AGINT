@@ -59,6 +59,9 @@ export function shouldNotify({ wasRestart, downtimeMs }, debounceMs) {
 /**
  * 构建信息性提示文本（由 agent 自主决定下一步）。
  * @param {object} opts
+ * @param {boolean} [opts.selfRestart] 本次启动是否由插件协议的重启请求导致。
+ *   true 时附一句"无需再次重启"——这是 v0.6.1 的断环手段：既保证会话接续
+ *   （旧版直接不投递，导致重启后没人被唤醒），又明确告诉 agent 别再重启一次。
  * @returns {string}
  */
 export function buildNotice({
@@ -67,6 +70,7 @@ export function buildNotice({
   downtimeMs,
   lastSessionId,
   lastActiveAt,
+  selfRestart,
   customNotice,
 }) {
   const lines = [];
@@ -82,6 +86,9 @@ export function buildNotice({
   if (lastSessionId) {
     lines.push(`重启前最近活跃的会话：${lastSessionId}`);
     if (lastActiveAt) lines.push(`该会话最后活跃于 ${lastActiveAt}。`);
+  }
+  if (selfRestart) {
+    lines.push(`本次重启由本会话先前发起，现已完成——不需要再次重启。`);
   }
   if (customNotice) {
     lines.push(String(customNotice));

@@ -4,6 +4,53 @@
 
 ---
 
+## v0.6.1 — 2026-09-11 — 修正：重启后恢复通知发不出去，会话不接续
+
+**背景（老板反馈）**：「现在重启没问题了，但是重启后不注入信息，会话没接续」
+
+**性质**：v0.5.0「断环」设计过头，把正常投递一并掐死。属于**设计事故**，不是新 bug。
+
+### 根因：两道闸门同时咬人
+
+1. **`resumeOnSelfRestart: false`（默认）**
+   `detectSelfRestart()` 的判据是"这次启动是不是留下了 `restart-request.json`，
+   且 `targetPid` 对得上"——也就是"**这次重启是不是经插件协议发起的**"。
+   而 agent 自己调 `restart_request`、外部按协议发起，**都会留请求文件**，
+   于是"自触发"实际覆盖了**几乎所有重启**。默认不投 = 恢复通知几乎永远发不出去。
+   实测：老板让 agent 重启并要求"重启完成后向我问好"，
+   日志只有 `self-initiated restart (request=dfc694c3) skip resume notice`，消息被吞。
+
+2. **`notifyDebounceMs: 300000`（5 分钟）**
+   随后另一次重启（`fb49611e`）被这道闸挡下：
+   `restart detected but within debounce window (300000ms), skip notice (downtime=100131ms)`。
+   100 秒 < 300 秒 → 不投。
+
+### 修法：把断环从"不投递"改成"投递 + 文案明示"
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| `resumeOnSelfRestart` | `false` | **`true`** |
+| `notifyDebounceMs` | `300000` | **`60000`** |
+| 自触发时的通知文案 | —（不投） | 附「本次重启由本会话先前发起，现已完成——不需要再次重启。」 |
+
+- 断环不再依赖"不投递"，改由 **通知文案明示** + `restart_request` 已有的
+  **burst 熔断**（`burstWindowMs` 内 `burstMax` 次即拒）承担——环最多跑满就被熔断。
+- `notifyDebounceMs` 只保留"挡住刚起来又被拉起"的抖动功能。
+- `resumeOnSelfRestart: false` 仍可显式配置，用于退回旧行为。
+
+### 测试
+
+- Case 28 重写：自触发**默认必须投递**（并校验 wake.log）；外部重启照常投递；
+  显式 `false` 时不投。
+- 新增 Case 28b：`buildNotice({selfRestart:true})` 必须含"不需要再次重启"，
+  `false` 时不得含（避免对外部中断产生歧义）。
+- Case 31 契约断言反转：`notifyDebounceMs` 必须 ∈(0,120000]，
+  并新增 `resumeOnSelfRestart` 默认必须为 `true` 的断言。
+- 变异验证：默认值改回 `false` → 契约用例 + 端到端用例双双变红，确认非摆设。
+- 冒烟 38/38。
+
+---
+
 ## v0.6.0 — 2026-09-11 — 修 win32「每调一次工具弹一次黑框」
 
 **背景（老板反馈）**：「我发现 dsh 每次调工具都会弹一次」

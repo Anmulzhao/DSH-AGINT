@@ -982,9 +982,13 @@ test('重启耗时契约：轮询间隔收紧且无裸 sleep，默认延迟不�
   const idx = readFileSync(resolve(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
   const sd = Number(idx.match(/shutdownDelayMs:\s*(\d+)/)[1]);
   assert.ok(sd <= 2000, `shutdownDelayMs=${sd}ms 应 ≤2000ms（旧值 3000 偏保守）`);
-  // 抖动窗口：60s 覆盖不住人工连续验证重启（间隔常有 1-3 分钟）
+  // 抖动窗口（v0.6.1 反转）：窗口过大会吞掉"重启后 1-3 分钟又重启"的正常投递
+  // （实测 downtime=100131ms 被 300000 的窗口误挡 → 恢复通知发不出去 → 会话不接续）。
+  // 它只该挡"刚起来又被拉起"的抖动；重启环由 restart_request 的 burst 熔断兜底。
   const db = Number(idx.match(/notifyDebounceMs:\s*(\d+)/)[1]);
-  assert.ok(db >= 180000, `notifyDebounceMs=${db}ms 应 ≥180000（60s 太窄，连续验证仍每次弹）`);
+  assert.ok(db > 0 && db <= 120000, `notifyDebounceMs=${db}ms 应 ∈(0,120000]（过大 = 正常重启的恢复通知发不出去）`);
+  // 自触发投递（v0.6.1）：默认必须为 true，否则"重启完向我问好"这类要求永远收不到
+  assert.match(idx, /resumeOnSelfRestart:\s*true/, '自触发重启默认必须投递（false 会让会话不接续）');
 });
 
 // ── Case 26: normalizeLaunch —— 拉起参数补 --no-open（防每次重启弹浏览器）──
@@ -1049,15 +1053,20 @@ test('detectSelfRestart: 只有上次进程自己发起的重启才判为自触�
   }
 });
 
-// ── Case 28: 端到端 —— 自触发重启不投递；外部重启照常投递（断环核心）──
+// ── Case 28: 端到端 —— 自触发重启默认也投递（会话接续）；显式 false 才跳过 ──
+//
+// v0.6.1 修正：旧版把"自触发"当成"不需要恢复"，但 detectSelfRestart 判的是
+// "这次启动留没留请求文件"——凡走插件协议的重启都算自触发，于是恢复通知
+// 几乎永远发不出去（老板让 agent 重启并要求"重启完向我问好"，消息被吞）。
 
-test('端到端：自触发重启不投递恢复通知，外部重启照常投递', async () => {
+test('端到端：自触发重启默认也投递（会话接续），显式 false 才跳过', async () => {
   const env = withTmpDshHome();
   const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
   const stateDir = '.agint-restart-smoke';
   const markerDir = join(env.root, stateDir);
   const markerPath = join(markerDir, 'marker.json');
   const reqPath = join(markerDir, 'restart-request.json');
+  const wakePath = join(markerDir, 'wake.log');
   mkdirSync(markerDir, { recursive: true });
 
   const makeCtx = (hits) => {
@@ -1089,7 +1098,9 @@ test('端到端：自触发重启不投递恢复通知，外部重启照常投�
 
   try {
     // (1) 自触发：请求文件 targetPid === marker.pid，且晚于上次启动
+    //     v0.6.1：默认必须投递——旧版不投，导致"重启完向我问好"永远收不到
     seedMarker();
+    rmSync(wakePath, { force: true });
     writeFileSync(reqPath, JSON.stringify({
       requestId: 'self0001', reason: '加载修复', targetPid: 29220,
       requestedAt: new Date(Date.now() - 30000).toISOString(),
@@ -1098,12 +1109,15 @@ test('端到端：自触发重启不投递恢复通知，外部重启照常投�
     const runA = makeCtx(a);
     apply(runA.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0 });
     await new Promise((r) => setTimeout(r, 700));
-    assert.equal(a.followup + a.inject, 0, '自触发重启不应被唤醒（否则形成重启环）');
-    assert.equal(existsSync(join(markerDir, 'wake.log')), false, '自触发重启不应写 wake.log');
+    assert.equal(a.followup, 1, '自触发重启默认必须投递（否则重启后没人被唤醒，会话不接续）');
+    const wakeA = JSON.parse(readFileSync(wakePath, 'utf8'));
+    assert.equal(wakeA.ok, true);
+    assert.equal(wakeA.deliveredTo, 'session-old');
     runA.dispose();
 
     // (2) 外部重启：请求文件 targetPid 对不上（老板手动重启的残留文件）
     seedMarker();
+    rmSync(wakePath, { force: true });
     writeFileSync(reqPath, JSON.stringify({
       requestId: 'stale001', targetPid: 11111,
       requestedAt: new Date(Date.now() - 30000).toISOString(),
@@ -1113,27 +1127,46 @@ test('端到端：自触发重启不投递恢复通知，外部重启照常投�
     apply(runB.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0 });
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(b.followup, 1, '外部重启必须照常投递（否则真正的中断会被吞掉）');
-    const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
+    const wake = JSON.parse(readFileSync(wakePath, 'utf8'));
     assert.equal(wake.ok, true);
     assert.equal(wake.deliveredTo, 'session-old');
     runB.dispose();
 
-    // (3) 显式开启 resumeOnSelfRestart → 自触发也投递（可回退的逃生阀）
+    // (3) 显式 resumeOnSelfRestart: false → 退回旧行为（逃生阀仍在，可随时关掉自触发投递）
     seedMarker();
+    rmSync(wakePath, { force: true });
     writeFileSync(reqPath, JSON.stringify({
       requestId: 'self0002', targetPid: 29220,
       requestedAt: new Date(Date.now() - 30000).toISOString(),
     }), 'utf8');
     const c = { followup: 0, inject: 0 };
     const runC = makeCtx(c);
-    apply(runC.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0, resumeOnSelfRestart: true });
+    apply(runC.ctx, { stateDir, resumeWaitMs: 200, notifyDebounceMs: 0, resumeOnSelfRestart: false });
     await new Promise((r) => setTimeout(r, 700));
-    assert.equal(c.followup, 1, 'resumeOnSelfRestart=true 时应恢复投递');
+    assert.equal(c.followup + c.inject, 0, '显式 false 时应跳过投递');
+    assert.equal(existsSync(wakePath), false, '显式 false 时不应写 wake.log');
     runC.dispose();
   } finally {
     env.restore();
     env.cleanup();
   }
+});
+
+// ── Case 28b: buildNotice 断环文案（v0.6.1：自触发也投递，靠文案明示别重启）──
+
+test('buildNotice：selfRestart=true 时附"不需要再次重启"，false 时不含', () => {
+  const base = {
+    bootAt: '2026-09-11T00:00:00.000Z',
+    prevBootAt: '2026-09-11T00:00:00.000Z',
+    downtimeMs: 178000,
+    lastSessionId: 'session-x',
+    lastActiveAt: '2026-09-11T00:00:00.000Z',
+  };
+  const withSelf = buildNotice({ ...base, selfRestart: true });
+  assert.match(withSelf, /不需要再次重启/, '自触发通知必须含断环说明');
+  assert.match(withSelf, /检测到 DSH 服务已重启/);
+  const withoutSelf = buildNotice({ ...base, selfRestart: false });
+  assert.doesNotMatch(withoutSelf, /不需要再次重启/, '外部重启不该带断环说明（会产生歧义）');
 });
 
 // ── Case 29: 真机 schema 编译（用 dsh 实际加载的那份 dsh-tools）──
