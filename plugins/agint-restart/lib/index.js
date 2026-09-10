@@ -41,10 +41,11 @@ const DEFAULTS = {
   enabled: true,
   stateDir: '.agint-restart',
   target: 'primary',
-  // v0.3.0：显式投递方式，取代语义反直觉的 wakeup 布尔
-  //   queue  = followup，消息进队列，等 agent 空闲才处理（不主动触发回复）
-  //   inject = 作为用户输入立即插入，会触发 agent 真正开始干活
-  deliveryMode: 'queue',
+  // v0.3.1：显式投递方式，取代语义反直觉的 wakeup 布尔
+  //   wake   = followup = send(next-turn, wakeup=true)  → 唤醒 agent，真正开始干活
+  //   silent = inject   = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
+  // 曾用名 queue/inject 仍作别名保留：queue→wake，inject→silent
+  deliveryMode: 'wake',
   // 优先把通知投回"重启前最近活跃的会话"；匹配不到再回退 target 规则
   resumeLastSession: true,
   // 为"等旧会话复活"额外留出的时间（ms）；超时就接受回退目标。0 = 不等
@@ -90,17 +91,31 @@ function resolveDshHome() {
 }
 
 /**
+ * 投递方式别名表。真实语义来自 dsh-agent-loop/lib/index.js：
+ *   followup(input) { this.send(input, "next-turn", true); }   ← wakeup=true，会唤醒 driver
+ *   inject(input)   { this.send(input, "next-step", false); }  ← wakeup=false，只入收件箱
+ * 即：**inject 不会唤醒 agent**，消息进去了也没人处理、不会落盘、UI 上看不到。
+ * 想要"重启后 agent 自动续跑"必须用 wake（= followup）。
+ */
+const DELIVERY_ALIASES = {
+  wake: 'wake',      // 推荐名：唤醒 agent 真正干活
+  queue: 'wake',     // v0.3.0 用过的名字，语义其实是"唤醒"，保留别名
+  silent: 'silent',  // 只入收件箱，等下次被别的输入唤醒时才处理
+  inject: 'silent',  // 直译底层方法名，保留别名
+};
+
+/**
  * 解析投递方式。
- * 优先用显式 `deliveryMode`；未给出时回退到旧的 `wakeup` 布尔并保持其原有语义
- * （wakeup:true → queue，wakeup:false → inject），避免升级后行为突变。
+ * 优先用显式 `deliveryMode`；未给出时回退到旧的 `wakeup` 布尔
+ * （wakeup:true → wake，wakeup:false → silent），避免升级后行为突变。
  */
 export function resolveDeliveryMode(config) {
   const explicit = config?.deliveryMode;
-  if (explicit === 'queue' || explicit === 'inject') return explicit;
+  if (explicit && DELIVERY_ALIASES[explicit]) return DELIVERY_ALIASES[explicit];
   if (Object.prototype.hasOwnProperty.call(config ?? {}, 'wakeup')) {
-    return config.wakeup === false ? 'inject' : 'queue';
+    return config.wakeup === false ? 'silent' : 'wake';
   }
-  return 'queue';
+  return 'wake';
 }
 
 /** 会话 id 是否以给定前缀开头（用于排除不需要追踪的会话）。 */
@@ -520,10 +535,12 @@ function apply(ctx, cfg = {}) {
             },
           });
           try {
-            if (mode === 'inject') {
-              target.inject(msg);
-            } else {
+            if (mode === 'wake') {
+              // followup = send(next-turn, wakeup=true) → 唤醒 driver，agent 真正开始干活
               target.followup(msg);
+            } else {
+              // inject = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
+              target.inject(msg);
             }
             console.log('[agint-restart] notice delivered to', String(target.id),
               'matched=' + found.matched, 'mode=' + mode);

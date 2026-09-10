@@ -508,17 +508,19 @@ test('respawn.js: 坏 request 直接拒绝（退出码 2）', () => {
 
 test('resolveDeliveryMode: deliveryMode 显式优先，旧 wakeup 布尔向后兼容', async () => {
   const { resolveDeliveryMode } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
-  assert.equal(resolveDeliveryMode({ deliveryMode: 'inject' }), 'inject');
-  assert.equal(resolveDeliveryMode({ deliveryMode: 'queue' }), 'queue');
-  // 显式 deliveryMode 必须压过旧的 wakeup（避免升级后语义打架）
-  assert.equal(resolveDeliveryMode({ deliveryMode: 'inject', wakeup: true }), 'inject', 'deliveryMode 应优先于 wakeup');
-  assert.equal(resolveDeliveryMode({ deliveryMode: 'queue', wakeup: false }), 'queue', 'deliveryMode 应优先于 wakeup');
-  // 旧配置（只有 wakeup）保持原语义：true=queue / false=inject
-  assert.equal(resolveDeliveryMode({ wakeup: true }), 'queue', 'wakeup:true 应等价 queue');
-  assert.equal(resolveDeliveryMode({ wakeup: false }), 'inject', 'wakeup:false 应等价 inject');
-  // 都没给 → 默认 queue（温和，不主动触发回复）
-  assert.equal(resolveDeliveryMode({}), 'queue');
-  assert.equal(resolveDeliveryMode(undefined), 'queue');
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'wake' }), 'wake');
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'silent' }), 'silent');
+  // 别名兼容（v0.3.0 用过 queue/inject，语义被纠正后保留旧名不炸）
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'queue' }), 'wake', 'queue 是 wake 的别名');
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'inject' }), 'silent', 'inject 是 silent 的别名');
+  // 显式 deliveryMode 必须压过旧的 wakeup
+  assert.equal(resolveDeliveryMode({ deliveryMode: 'wake', wakeup: false }), 'wake', 'deliveryMode 应优先于 wakeup');
+  // 旧配置（只有 wakeup）：true→wake，false→silent
+  assert.equal(resolveDeliveryMode({ wakeup: true }), 'wake');
+  assert.equal(resolveDeliveryMode({ wakeup: false }), 'silent');
+  // 默认必须能唤醒——否则消息石沉大海（v0.3.1 的教训）
+  assert.equal(resolveDeliveryMode({}), 'wake');
+  assert.equal(resolveDeliveryMode(undefined), 'wake');
 });
 
 // ── Case 17: 投递目标优先匹配 lastSessionId（本次修复的核心）──
@@ -561,7 +563,7 @@ test('投递目标优先回到 lastSessionId 对应的旧会话，而非 roots[0
     assert.equal(wake.ok, true);
     assert.equal(wake.deliveredTo, 'session-old');
     assert.equal(wake.matched, 'lastSession', 'wake.log 应记录命中旧会话');
-    assert.equal(wake.mode, 'queue');
+    assert.equal(wake.mode, 'wake');
   } finally {
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
     env.restore();
@@ -607,10 +609,34 @@ test('旧会话未复活时回退 roots[0]；deliveryMode=inject 走 inject', as
     assert.equal(gotSecond.inject, 0, '不应投给第二个 agent');
     const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
     assert.equal(wake.matched, 'primary', 'wake.log 应记录回退到 primary');
-    assert.equal(wake.mode, 'inject');
+    assert.equal(wake.mode, 'silent');
   } finally {
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
     env.restore();
     env.cleanup();
+  }
+});
+
+// ── Case 19: 投递语义契约（v0.3.1 教训：曾把 inject / followup 完全搞反）──
+
+test('投递语义契约：wake 走 followup(wakeup=true)，silent 才走 inject', () => {
+  // 真值来源 dsh-agent-loop/lib/index.js：
+  //   followup(input) { this.send(input, "next-turn", true); }  ← 唤醒 driver
+  //   inject(input)   { this.send(input, "next-step", false); } ← 只入收件箱，不唤醒
+  // v0.3.0 曾凭方法名臆断"inject = 立即触发"，实测恰恰相反：inject 是 wakeup=false，
+  // 消息进了收件箱但 agent 不跑 → 不落盘、UI 看不到（134 个会话 0 命中）。
+  // 此用例锁死语义，防止以后再凭名字猜。
+  const src = readFileSync(resolve(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
+  assert.match(src, /mode === 'wake'[\s\S]{0,300}target\.followup\(msg\)/, 'wake 分支必须调 followup');
+  assert.match(src, /target\.inject\(msg\)/, 'silent 分支必须调 inject');
+
+  // 本机装有 dsh 时，直接对 dsh 源码断言（最强证据，升级后会自动发现语义漂移）
+  const loop = '/d/DSH/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js';
+  if (existsSync(loop)) {
+    const s = readFileSync(loop, 'utf8');
+    assert.match(s, /followup\(input\)\s*\{\s*this\.send\(input,\s*"next-turn",\s*true\)/,
+      'dsh 源码断言：followup 必须是 wakeup=true');
+    assert.match(s, /inject\(input\)\s*\{\s*this\.send\(input,\s*"next-step",\s*false\)/,
+      'dsh 源码断言：inject 必须是 wakeup=false（不唤醒）');
   }
 });
