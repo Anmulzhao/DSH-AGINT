@@ -199,6 +199,9 @@ function apply(ctx) {
 
   // In-memory audit counters. Keyed by rule id → { hits, denies, asks, advisories }.
   const audit = new Map();
+  // Reminder dedup: `${ruleId}::${tool}` already injected in this plugin
+  // lifetime (i.e. current session). Audit counters still count every hit.
+  const reminded = new Set();
   function bump(ruleId, kind) {
     const cur = audit.get(ruleId) ?? { hits: 0, denies: 0, asks: 0, advisories: 0 };
     cur.hits += 1;
@@ -396,19 +399,32 @@ function apply(ctx) {
       return next();
     }
     if (check.advisory.length === 0) return next();
-    // Build one user message listing every matched advisory.
-    const lines = check.advisory.map(
-      (a) => `• [${a.ruleId}] (${a.level}) ${a.reason}`,
-    );
+
+    // Count every match (audit 要的是命中次数), but only *remind* once:
+    // reminders are context injection, and re-injecting the same text on
+    // every matching call bloats the session (observed 2026-09-10).
+    const fresh = [];
+    for (const a of check.advisory) {
+      bump(a.ruleId, 'advisory');
+      const key = `${a.ruleId}::${exec.name}`;
+      if (reminded.has(key)) continue;
+      reminded.add(key);
+      fresh.push(a);
+    }
+    if (fresh.length === 0) return next();
+
+    const lines = fresh.map((a) => `• [${a.ruleId}] (${a.level}) ${a.reason}`);
     const message = {
       source: { kind: 'plugin', plugin: 'agint-rules', form: 'advisory' },
       content: [{
         type: 'text',
-        text: `agint-rules advisory: tool=${exec.name} matched ${check.advisory.length} rule(s).\n${lines.join('\n')}\n(请在执行下一步前确认是否要继续；这是系统规则提醒，不是阻断。)`,
+        text: `agint-rules advisory: tool=${exec.name} matched ${fresh.length} rule(s).\n${lines.join('\n')}\n(本会话首次命中，仅提示一次；这是系统规则提醒，不是阻断。后续同规则命中不再重复注入。)`,
       }],
     };
-    for (const a of check.advisory) bump(a.ruleId, 'advisory');
-    return { kind: 'accept', value: result.value, content: result.content, additionalContexts: [message] };
+    // 只追加 additionalContexts，不替换 value / content：
+    // dsh-tools 的 postExecute 禁止 accept 决策同时带 value 和 content
+    // （否则整次工具调用被 TypeError 判失败），且替换会丢掉工具真实结果。
+    return { kind: 'accept', additionalContexts: [message] };
   });
 }
 

@@ -103,6 +103,21 @@ function apply(ctx) {
                   okCount: { type: 'number', required: true },
                 },
               },
+              // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
+              // shape: { status, count, topConfidence, boost } —— 与 lib/sweep.js result.counts 对齐
+              // 2026-09-11 补同步：09-06 task 1 只把该字段加进了 dream_run_now 的 schema，
+              // 漏了 dream_status，导致 host 实测
+              // "value.counts.evolutionTemplates is not a declared property (additionalProperties: false)"
+              // 整体校验失败 → 该工具完全不可用。
+              evolutionTemplates: {
+                type: 'object', additionalProperties: false, required: true,
+                properties: {
+                  status: { type: 'string', required: true },
+                  count: { type: 'number', required: true },
+                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                  boost: { type: 'number', required: true },
+                },
+              },
             },
           },
         },

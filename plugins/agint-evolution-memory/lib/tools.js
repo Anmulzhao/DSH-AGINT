@@ -22,6 +22,25 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+/**
+ * K20-fix (2026-09-11)：4 个 read-only Service 返回的是**数组**
+ * （queryFailures/queryTemplates/getLogRange 都是 `return out.slice(0, limit)`，
+ * readLogRangeMerged 走 logBuffer.readMerged → 数组），而 output schema 沿用
+ * K19 的 { type: 'object' } ⇒ 数组过不了 object 校验，4 个工具 100% 报
+ * `returned invalid output: "value" must be an object`。
+ *
+ * 修法：工具边界包一层稳定信封（不碰 Service 契约，直接消费 Service 的
+ * 插件如 event-bus / quality-policy 不受影响）。信封之后保留 K19 的
+ * JSON round-trip —— 信封恒为 object，因此不会出现 JSON.stringify(undefined)
+ * 崩溃。
+ */
+function asObjectResult(value, key = 'entries') {
+  const env = Array.isArray(value)
+    ? { [key]: value, count: value.length }
+    : (value === null || value === undefined ? { [key]: [], count: 0 } : value);
+  return JSON.parse(JSON.stringify(env));
+}
+
 const name = 'agint-evolution-memory-tools';
 // IMPORTANT: inject the umbrella `agint.evolution` service object, NOT per-
 // function dotted keys. index.js provides ONE umbrella (ctx.provide(
@@ -171,8 +190,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return readLogRangeMerged(args.opts || {}).then((s) => JSON.parse(JSON.stringify(s)));
+    async execute(args) {
+      return asObjectResult(await readLogRangeMerged(args.opts || {}));
     },
   }));
 
@@ -188,8 +207,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return queryFailures(args.opts || {}).then((s) => JSON.parse(JSON.stringify(s)));
+    async execute(args) {
+      return asObjectResult(await queryFailures(args.opts || {}));
     },
   }));
 
@@ -205,8 +224,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return queryTemplates(args.opts || {}).then((s) => JSON.parse(JSON.stringify(s)));
+    async execute(args) {
+      return asObjectResult(await queryTemplates(args.opts || {}));
     },
   }));
 
@@ -222,8 +241,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return getLogRange(args.range || {}).then((s) => JSON.parse(JSON.stringify(s)));
+    async execute(args) {
+      return asObjectResult(await getLogRange(args.range || {}));
     },
   }));
 

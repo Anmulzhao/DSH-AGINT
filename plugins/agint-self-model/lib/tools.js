@@ -1,4 +1,4 @@
-﻿/**
+/**
  * agint-self-model: preset-scoped self-model tools (Sprint 13 / Part 2).
  * Consumes host `agint.selfModel.snapshot`/`update`/`calibrate`/`stats`/
  * `inspectSummary`; read-only observer per design §4.1 — does NOT mutate
@@ -14,6 +14,18 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
+
+/**
+ * K20-fix (2026-09-11)：部分 Service 返回数组（CalibrationResult[]），而工具
+ * output schema 恒为 K19 的 { type: 'object' } ⇒ 数组过不了 object 校验，
+ * 工具 100% 报 `returned invalid output: "value" must be an object`。
+ * 在工具边界规整为稳定的对象信封；Service 契约不变（smoke 仍断言返回数组）。
+ */
+function asObjectResult(value, key = 'entries') {
+  if (Array.isArray(value)) return { [key]: value, count: value.length };
+  if (value === null || value === undefined) return { [key]: [], count: 0 };
+  return value;
+}
 
 const name = 'agint-self-model-tools';
 const inject = ['tools', 'agint.selfModel.snapshot', 'agint.selfModel.update',
@@ -73,8 +85,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return calibrate({ windowDays: args.windowDays ?? 7 });
+    async execute(args) {
+      return asObjectResult(await calibrate({ windowDays: args.windowDays ?? 7 }), 'results');
     },
   }));
 

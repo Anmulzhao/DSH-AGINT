@@ -4,6 +4,21 @@
 
 ---
 
+## v0.7.1-draft — 撤回：restart_detect 改独立插件 agint-restart
+
+**本节变更（2026-09-10）**：v0.7.1-draft 原本尝试在 `agint-mount` 内加 `agint.mount.restart_detect` 服务。
+
+**老板 review 后判定**：重启检测是 DSH host 通用能力，**不属于 mount 编排业务**。`agint.mount.*` 命名限制了其它插件消费；持久化借 agint_mount 域触发 L0 治理边界争议；活动追踪反向耦合到 mount 事件源。
+
+**行动**：
+- 本节代码（orchestrator.ts / lib/orchestrator.js / lib/index.js / manifest.json / smoke case 13-16 / README 第 4 service 入口）**已回退**到 v0.6.6
+- 重启检测能力改独立插件 `plugins/agint-restart/`（scope 与 `dsh-resume-on-restart` 1:1：进程级重启检测 + 信息性消息投递 + 优雅关闭钩子）
+- mount 仓库文件从 host 副本全量回退到 v0.6.6/0.7.0 原状
+
+**回退原因详见老板批语 + `D:\DSH\project\research\dsh-resume-on-restart\ANALYSIS-2.md` §6 "新插件" 段。**
+
+---
+
 ## v0.6.6 — 2026-09-04 — ticketId optional + 跨平台 smoke fix
 
 **修复 + 增强**（patch bump；不破环 FROZEN schema / 不动 mount.* 状态机）。

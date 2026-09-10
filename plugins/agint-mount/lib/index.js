@@ -102,7 +102,7 @@ function apply(ctx, config = {}) {
         return null;
     });
     disposers.push(() => { void ready.then((d) => d?.close?.()).catch(() => { }); });
-    // ── 注册 3 Service ──
+    // ── 注册 3 Service（mount 业务：request / status / rollback） ──
     ctx.provide('agint.mount.request', async (input) => mountRequest(mountCtx, input));
     ctx.provide('agint.mount.status', async (ticketId) => mountStatus(mountCtx, ticketId));
     ctx.provide('agint.mount.rollback', async (input) => mountRollback(mountCtx, input));

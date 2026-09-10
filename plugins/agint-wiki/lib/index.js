@@ -67,7 +67,10 @@ function apply(ctx, config) {
       if (entry.isDirectory()) {
         out.push(...await walk(abs));
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        out.push(relative(root, abs));
+        // 归一化成正斜杠：链接索引（referenced）用的是正斜杠，若这里留反斜杠，
+        // `contents.has(norm)` 在 Windows 上永远 false → 全部误报 orphan。
+        // （2026-09-10 与逃逸检查同批修复；join() 接受正斜杠，读写路径不受影响）
+        out.push(relative(root, abs).replace(/\\/g, '/'));
       }
     }
     return out;
@@ -165,8 +168,14 @@ function apply(ctx, config) {
           if (!target || /^https?:|^#/.test(target)) continue;
           // normalize: relative to the referencing file's directory
           const abs = resolve(root, dir, target);
-          if (abs !== root && !abs.startsWith(root + '/')) continue;
-          const norm = relative(root, abs);
+          // Windows: resolve/relative 返回反斜杠，root 可能是正斜杠。
+          // 必须归一化后再比较，否则 `abs.startsWith(root + '/')` 永远 false
+          // → 每个链接都被当成"逃出根目录"跳过 → referenced 恒空 →
+          // 所有条目误报 orphan、brokenLinks 恒 0。
+          // （v0.4 只修了 clean()，漏修了这里 —— 2026-09-10 修复）
+          const normAbs = abs.replace(/\\/g, '/');
+          if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) continue;
+          const norm = relative(root, abs).replace(/\\/g, '/');
           if (!contents.has(norm)) brokenLinks.push({ from: rel, target: norm });
           else referenced.add(norm);
         }

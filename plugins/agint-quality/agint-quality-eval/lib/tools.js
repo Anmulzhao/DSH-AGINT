@@ -37,7 +37,10 @@ function apply(ctx) {
         type: 'object', additionalProperties: false,
         properties: {
           nextFire: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          lastRun: { type: 'object', required: true, additionalProperties: true },
+          // K20-fix (2026-09-11)：从未跑过评估时 lastRun 为 null（下方 render 已有
+          // '<never>' 分支，说明 null 是预期值），但 schema 只声明 object ⇒ 校验失败、
+          // 工具必报 `"value.lastRun" must be an object`。此处与 nextFire 一致地放行 null。
+          lastRun: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true },
           weights: { type: 'object', required: true, additionalProperties: true },
           dimensionKeys: { type: 'array', required: true, items: { type: 'string' } },
         },
