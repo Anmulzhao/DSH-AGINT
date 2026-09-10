@@ -41,7 +41,14 @@ const DEFAULTS = {
   enabled: true,
   stateDir: '.agint-restart',
   target: 'primary',
-  wakeup: true,
+  // v0.3.0：显式投递方式，取代语义反直觉的 wakeup 布尔
+  //   queue  = followup，消息进队列，等 agent 空闲才处理（不主动触发回复）
+  //   inject = 作为用户输入立即插入，会触发 agent 真正开始干活
+  deliveryMode: 'queue',
+  // 优先把通知投回"重启前最近活跃的会话"；匹配不到再回退 target 规则
+  resumeLastSession: true,
+  // 为"等旧会话复活"额外留出的时间（ms）；超时就接受回退目标。0 = 不等
+  resumeWaitMs: 5000,
   notice: '',
   // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
   shutdownGraceMs: 600000,
@@ -82,16 +89,30 @@ function resolveDshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
 }
 
+/**
+ * 解析投递方式。
+ * 优先用显式 `deliveryMode`；未给出时回退到旧的 `wakeup` 布尔并保持其原有语义
+ * （wakeup:true → queue，wakeup:false → inject），避免升级后行为突变。
+ */
+export function resolveDeliveryMode(config) {
+  const explicit = config?.deliveryMode;
+  if (explicit === 'queue' || explicit === 'inject') return explicit;
+  if (Object.prototype.hasOwnProperty.call(config ?? {}, 'wakeup')) {
+    return config.wakeup === false ? 'inject' : 'queue';
+  }
+  return 'queue';
+}
+
 /** 会话 id 是否以给定前缀开头（用于排除不需要追踪的会话）。 */
 function ignoredByPrefix(sessionId, prefixes) {
   return (prefixes || []).some((p) => String(sessionId).startsWith(p));
 }
 
 /** 记录唤醒/投递结果到 markerDir/wake.log。 */
-function writeWakeLog(markerDir, deliveredTo, ok, error) {
+function writeWakeLog(markerDir, deliveredTo, ok, error, extra) {
   try {
     writeFileSync(join(markerDir, 'wake.log'), JSON.stringify({
-      deliveredTo, ok, error: error ?? null, at: new Date().toISOString(),
+      deliveredTo, ok, error: error ?? null, at: new Date().toISOString(), ...(extra ?? {}),
     }), 'utf8');
   } catch (e) { /* ignore */ }
 }
@@ -450,19 +471,37 @@ function apply(ctx, cfg = {}) {
   if (wasRestart) {
     ctx.inject(['agents'], (scope) => {
       ctx.effect(() => {
+        /**
+         * 找投递目标，返回 { agent, matched }。
+         * matched: 'lastSession' = 重启前那个会话（带上下文，最优）
+         *          'primary' | 'configured' = 回退到 target 规则
+         */
         const findTarget = () => {
           try {
+            const list = scope.agents.list?.() ?? [];
             const roots = scope.agents.roots?.() ?? [];
-            if (config.target === 'primary') {
-              return roots[0] ?? scope.agents.list?.()[0] ?? null;
+            const pool = roots.length ? roots : list;
+            // 1) 优先回到重启前最近活跃的会话——只有它带着被中断的上下文
+            if (config.resumeLastSession !== false && lastSessionId) {
+              const hit = pool.find((a) => a && String(a.id) === String(lastSessionId))
+                ?? scope.agents.get?.(lastSessionId) ?? null;
+              if (hit) return { agent: hit, matched: 'lastSession' };
             }
-            return scope.agents.get?.(config.target) ?? null;
+            // 2) 回退到配置的 target 规则
+            if (config.target === 'primary') {
+              const t = pool[0] ?? list[0] ?? null;
+              return t ? { agent: t, matched: 'primary' } : null;
+            }
+            const t = scope.agents.get?.(config.target) ?? null;
+            return t ? { agent: t, matched: 'configured' } : null;
           } catch (err) {
             console.warn('[agint-restart] agent lookup failed:', err);
             return null;
           }
         };
-        const deliver = (target) => {
+        const mode = resolveDeliveryMode(config);
+        const deliver = (found) => {
+          const target = found.agent;
           const text = buildNotice({
             bootAt,
             prevBootAt,
@@ -481,35 +520,61 @@ function apply(ctx, cfg = {}) {
             },
           });
           try {
-            if (config.wakeup !== false) {
-              target.followup(msg);
-            } else {
+            if (mode === 'inject') {
               target.inject(msg);
+            } else {
+              target.followup(msg);
             }
-            console.log('[agint-restart] notice delivered to', String(target.id));
-            writeWakeLog(markerDir, String(target.id), true, null);
+            console.log('[agint-restart] notice delivered to', String(target.id),
+              'matched=' + found.matched, 'mode=' + mode);
+            writeWakeLog(markerDir, String(target.id), true, null, {
+              matched: found.matched, mode, lastSessionId: lastSessionId ?? null,
+            });
           } catch (err) {
             console.warn('[agint-restart] deliver failed:', err);
-            writeWakeLog(markerDir, String(target.id), false, String(err));
+            writeWakeLog(markerDir, String(target.id), false, String(err), {
+              matched: found.matched, mode, lastSessionId: lastSessionId ?? null,
+            });
           }
         };
-        // 首次立即尝试
-        let target = findTarget();
-        if (target) { deliver(target); return; }
-        // 轮询等待 agent 出现（最长 ~20 秒）
-        let waited = 0;
         const MAX_WAIT_MS = 20000;
+        // 是否值得为"旧会话复活"多等一会儿：只有它才带着被中断的上下文
+        const wantResume = config.resumeLastSession !== false && !!lastSessionId;
+        const RESUME_WAIT_MS = wantResume
+          ? Math.min(config.resumeWaitMs ?? 5000, MAX_WAIT_MS)
+          : 0;
+
+        // 首次立即尝试：命中旧会话、或不指望旧会话时直接投
+        let found = findTarget();
+        if (found && (!wantResume || found.matched === 'lastSession')) {
+          deliver(found);
+          return;
+        }
+
+        // 轮询等待（最长 ~20 秒）。窗口期内若只找到回退目标，继续等旧会话出现
+        let waited = 0;
+        let fallback = found;
         const POLL_MS = 500;
         const timer = setInterval(() => {
           waited += POLL_MS;
-          target = findTarget();
-          if (target) {
+          found = findTarget();
+          if (found?.matched === 'lastSession') {
             clearInterval(timer);
-            deliver(target);
-          } else if (waited >= MAX_WAIT_MS) {
+            deliver(found);
+            return;
+          }
+          if (found && !fallback) fallback = found;
+          if (waited >= RESUME_WAIT_MS && fallback) {
             clearInterval(timer);
+            deliver(fallback);
+            return;
+          }
+          if (waited >= MAX_WAIT_MS) {
+            clearInterval(timer);
+            if (fallback) { deliver(fallback); return; }
             console.log('[agint-restart] no target agent found after wait, skip wake');
-            writeWakeLog(markerDir, null, false, 'no target agent after wait');
+            writeWakeLog(markerDir, null, false, 'no target agent after wait',
+              { mode, lastSessionId: lastSessionId ?? null });
           }
         }, POLL_MS);
         // 把 setInterval 也注册为 disposer（dispose 时自动 clear）

@@ -1,6 +1,6 @@
 # agint-restart
 
-> AGINT 插件：DSH 重启**闭环** —— 检测重启 + 信息性消息投递（v0.1.0）+ **主动发起重启**（v0.2.0）。
+> AGINT 插件：DSH 重启**闭环** —— 检测重启 + 信息性消息投递（v0.1.0）+ **主动发起重启**（v0.2.0）+ **通知回到被中断的会话**（v0.3.0）。
 >
 > 思路来源（检测部分）：[nickkkkkk123123/dsh-resume-on-restart](https://github.com/nickkkkkk123123/dsh-resume-on-restart)（MIT），scope 1:1。
 > 关键差异：优雅关闭走 cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）；持久化目录 `.agint-restart`；brand 前缀 `[agint-restart]`；v0.2.0 新增两段式自重启 + 三重护栏。
@@ -13,14 +13,18 @@
 
 1. **检测**（v0.1.0）：DSH 服务进程级重启后，自动向主 agent 投递一条**信息性消息**（含中断时长、上次活跃会话），由 agent **自主决定**是否继续之前的工作。
 2. **重启**（v0.2.0）：提供 `agint.restart` 服务与 `restart_*` 工具，让 agent / 其它插件能**真正把 DSH 拉起来**——不再依赖老板手跑 `restart-runbook.ps1`。
+3. **回到原会话**（v0.3.0）：通知优先投回"重启前最近活跃"的那个会话（只有它带着被中断的上下文），
+   而不是随便取第一个 agent；投递方式可显式指定 `queue`（排队）或 `inject`（立即触发 agent 干活）。
 
-解决"DSH 重启后会话中断、工作丢失"和"重启只能人工执行"两个问题。
+解决"DSH 重启后会话中断、工作丢失"、"重启只能人工执行"以及"通知投错会话"三个问题。
 
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（`~/.dsh/.agint-restart/marker.json`，记录上次 pid / 启动时间）判断是否发生重启
 - 💬 **信息性消息**：重启后投递"检测到重启 + 中断时长 + 上次活跃会话"摘要，由 agent 自主决定下一步（而非命令式强制"继续"）
 - 🎯 **活动追踪**：运行期间通过 cordis 事件（`agent/session-start`、`agent/pre-step`）追踪最近活跃会话，供重启后参考
+- 🎯 **回到原会话（v0.3.0）**：投递时先按 `lastSessionId` 精确匹配旧会话，命中即投；匹配不到才回退 `target`。
+  重启后 agent 异步加载，因此留出 `resumeWaitMs`（默认 5 秒）等旧会话出现，避免"第一次只找到新会话就投了"
 - 🪝 **优雅关闭**：cordis dispose 钩子持久化最近活跃会话（**不**用 SIGTERM 处理器——避免上游 `process.kill(process.pid, ...)` 二次 kill bug）
 - ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*` 内部包
 - 🔁 **主动重启（v0.2.0）**：`restart_request` 工具 / `agint.restart.request()` 真正重启 DSH
@@ -134,8 +138,11 @@ restart_cancel                        // 清除在途标记
 |---|---|---|
 | `enabled` | `true` | 插件开关 |
 | `stateDir` | `.agint-restart` | marker/状态文件存放目录（相对 DSH_HOME） |
-| `target` | `primary` | 唤醒目标（`primary`=主 agent，或指定会话 id） |
-| `wakeup` | `true` | 是否真正唤醒（`false` 则只注入不唤醒） |
+| `target` | `primary` | **回退**目标（`primary`=主 agent，或指定会话 id）；仅在旧会话匹配不到时使用 |
+| `deliveryMode` | `queue` | `queue`=进队列等 agent 空闲（不主动触发回复）；`inject`=作为用户输入立即插入，会触发 agent 真干活 |
+| `resumeLastSession` | `true` | 优先把通知投回"重启前最近活跃的会话"（只有它带着被中断的上下文） |
+| `resumeWaitMs` | `5000` | 为"等旧会话复活"额外留的时间；超时就接受回退目标（`0`=不等） |
+| `wakeup` | — | **已废弃**，仅为向后兼容保留：`true`→`queue`，`false`→`inject`。显式 `deliveryMode` 优先 |
 | `notice` | `''` | 附加到消息末尾的自定义提示 |
 | `shutdownGraceMs` | `600000` | 配置项已声明（**v0.1.0 未消费**，跟上游一致） |
 | `ignoredSessionPrefixes` | `['head-']` | 不追踪的会话 id 前缀（如多代理团队的根会话） |
