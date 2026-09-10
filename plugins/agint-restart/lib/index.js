@@ -30,7 +30,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { buildNotice, detectRestart } from './detect.js';
+import { buildNotice, detectRestart, shouldNotify } from './detect.js';
 
 const name = 'agint-restart';
 
@@ -50,6 +50,11 @@ const DEFAULTS = {
   resumeLastSession: true,
   // 为"等旧会话复活"额外留出的时间（ms）；超时就接受回退目标。0 = 不等
   resumeWaitMs: 5000,
+  // 相邻两次启动的间隔 < 这个窗口视为抖动，不投递（防连续 restart 反复弹通知）
+  // 判据是"本次启动时间 - 上次启动时间"，**含上次进程的存活时长**。
+  // 60s 太窄：验证重启时人工操作间隔常有 1-3 分钟，每次都会弹。5 分钟能覆盖连续验证场景。
+  // 仅作用于"是否投递"分支；marker / status / 主动重启链路不受影响。<=0 表示关闭
+  notifyDebounceMs: 300000,
   notice: '',
   // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
   shutdownGraceMs: 600000,
@@ -79,8 +84,9 @@ const DEFAULTS = {
   logFile: join(tmpdir(), 'dsh-web.log'),
   // 退出自身的方式：exit = process.exit；signal = 发 SIGTERM（win32 无真信号，默认 exit）
   exitStrategy: process.platform === 'win32' ? 'exit' : 'signal',
-  // 发出请求后延迟多久退出自己（留出时间让调用方拿到返回值）
-  shutdownDelayMs: 3000,
+  // 发出请求后延迟多久退出自己（留出时间让调用方拿到返回值）。
+  // 这段延迟完全计入用户感知的"重启等待"：3s 实测偏保守，1.5s 足够工具返回值落盘。
+  shutdownDelayMs: 1500,
   // 手动覆盖拉起命令（默认从当前进程快照自动推断）
   launch: null,
 };
@@ -214,6 +220,8 @@ function apply(ctx, cfg = {}) {
 
   const bootAt = new Date().toISOString();
   const { wasRestart, downtimeMs } = detectRestart(marker, Date.now(), process.pid);
+  // v0.4.0：抖动窗口判定。wasRestart=true 且 downtimeMs < notifyDebounceMs → 跳过投递
+  const debounce = shouldNotify({ wasRestart, downtimeMs }, config.notifyDebounceMs);
   const prevBootAt = marker?.lastBootAt ?? null;
   const lastSessionId = marker?.lastSessionId ?? null;
   const lastActiveAt = marker?.lastActiveAt ?? null;
@@ -321,7 +329,10 @@ function apply(ctx, cfg = {}) {
     const delayMs = Number.isFinite(input?.delayMs) ? input.delayMs : config.shutdownDelayMs;
 
     const deny = (code, message, extra = {}) => ({
-      accepted: false, code, message, ...extra,
+      accepted: false, code, message,
+      // v0.4.1：补齐 schema required 字段（additionalProperties:false 下缺字段会炸）
+      requestId: null, shutdownInMs: null, plan: null, targetPid: null,
+      ...extra,
     });
 
     if (config.mode === 'manual') {
@@ -381,6 +392,9 @@ function apply(ctx, cfg = {}) {
         code: 'dry-run',
         message: 'dryRun：未执行，以下是将要发生的动作',
         requestId,
+        // v0.4.1：补齐 schema 必填字段（additionalProperties:false 下 required:true 字段缺失会炸）
+        targetPid: payload.targetPid,
+        shutdownInMs: delayMs,
         plan: {
           requestFile: requestPath,
           respawnScript,
@@ -425,6 +439,9 @@ function apply(ctx, cfg = {}) {
       targetPid: process.pid,
       shutdownInMs: delayMs,
       message: `已安排重启：${delayMs}ms 后当前进程退出，由守护脚本拉起新实例`,
+      // v0.4.2：accepted=true 没有 plan（仅 dryRun 有），但 schema plan:required:true
+      // 缺字段工具链拒绝整个对象。手动补 null（最廉价的修复，让 schema validator 通过）
+      plan: null,
       launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
       resultFile: resultPath,
     };
@@ -483,7 +500,7 @@ function apply(ctx, cfg = {}) {
   ctx.provide('agint.restart.detect', detect);
 
   // 5. 若发生重启，向主 agent 投递信息性消息
-  if (wasRestart) {
+  if (wasRestart && !debounce.debounced) {
     ctx.inject(['agents'], (scope) => {
       ctx.effect(() => {
         /**
@@ -600,6 +617,10 @@ function apply(ctx, cfg = {}) {
     });
   } else {
     console.log('[agint-restart] no restart detected, boot normal');
+    if (wasRestart && debounce.debounced) {
+      // v0.4.0：抖动窗口内命中，不投递（marker 仍然照常写新值，下次重启照常判定）
+      console.log(`[agint-restart] restart detected but within debounce window (${config.notifyDebounceMs}ms), skip notice (downtime=${downtimeMs}ms)`);
+    }
   }
 }
 

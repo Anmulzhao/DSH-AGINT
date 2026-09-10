@@ -103,6 +103,20 @@ function apply(ctx) {
           shutdownInMs: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
           plan: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true },
           targetPid: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+          // v0.4.1：补齐真实返回结构（additionalProperties:false 下漏一个就炸；K19 教训）
+          // accepted=true 时会带 launch + resultFile
+          launch: { oneOf: [{ type: 'object', additionalProperties: false, properties: {
+            command: { type: 'string', required: true },
+            cwd: { type: 'string', required: true },
+            args: { type: 'array', required: true, items: { type: 'string' } },
+          } }, { type: 'null' }] },
+          resultFile: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          // manual-mode 时会带 command（可复制的人工命令）
+          command: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          // cooldown 被拒时会带冷却剩余毫秒
+          cooldownRemainingMs: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+          // tripped 被拒时会带窗口内次数
+          count: { oneOf: [{ type: 'number' }, { type: 'null' }] },
         },
       },
       render: (_a, v) => {
