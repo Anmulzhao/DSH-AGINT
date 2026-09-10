@@ -35,8 +35,11 @@ roots 顺序故意让新会话排首位，旧逻辑会投错）/ 18（旧会话�
 **Case 17 已做变异验证**：把优先匹配逻辑短路成 `false` 后用例立刻变红，恢复即绿——
 证明测试真在测，不是假通过。
 
-**配置变更**：`cordis.patch.yml` 的 `wakeup: true` 建议改为 `deliveryMode: queue`（行为等价）。
-不改也能跑（向后兼容）。
+**配置变更**：`cordis.patch.yml` 的 `wakeup: true` 改为 `deliveryMode`（旧的 `wakeup` 仍兼容，可不改）。
+
+**部署决定（老板拍板）**：线上选 **`inject`** —— 重启后 agent 自动续跑被中断的工作，
+这才是 `dsh-resume-on-restart` 的原始意图。已知代价：旧会话若中断的是长任务/危险操作，
+agent 会自行继续。想改成"先汇报、等我确认"，配 `notice` 加约束语即可，无需改代码。
 
 ---
 
