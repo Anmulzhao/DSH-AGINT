@@ -8,6 +8,21 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+/**
+ * K20-fix (2026-09-11)：工具 output schema 沿用 K19 的 { type: 'object' }，
+ * 但 provider 侧两个 Service 返回的是**数组**：
+ *   - agint.eventBus.inspect      → EventLogEntry[]（bus.js 头部自述即 `→ EventLogEntry[]`）
+ *   - agint.eventBus.deadletters  → listDeadletters() 数组（软降级返回 []）
+ * 数组过不了 object 校验 ⇒ 两个工具 100% 报
+ * `returned invalid output: "value" must be an object`，排障时极易被误读成
+ * "总线没有数据"。这里在工具边界规整为稳定的对象信封，不改 Service 契约。
+ */
+function asObjectResult(value, key = 'entries') {
+  if (Array.isArray(value)) return { [key]: value, count: value.length };
+  if (value === null || value === undefined) return { [key]: [], count: 0 };
+  return value;
+}
+
 const name = 'agint-event-bus-tools';
 const inject = ['tools', 'agint.eventBus.publish', 'agint.eventBus.subscribe',
   'agint.eventBus.inspect', 'agint.eventBus.inspectSummary',
@@ -70,8 +85,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute(args) {
-      return inspect(args.filter ?? {});
+    async execute(args) {
+      return asObjectResult(await inspect(args.filter ?? {}));
     },
   }));
 
@@ -99,8 +114,8 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
-    execute() {
-      return deadletters();
+    async execute() {
+      return asObjectResult(await deadletters());
     },
   }));
 

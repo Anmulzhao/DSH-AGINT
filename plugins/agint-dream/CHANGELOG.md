@@ -5,6 +5,20 @@
 
 ---
 
+## v0.3.0-C4 — dream_status schema 补同步（2026-09-11，工具从「不可用」恢复）
+
+**根因**：`lib/index.js` 的 `status()` 返回 `counts.evolutionTemplates`（v0.3 / task 3，2026-09-06 加），但 `lib/tools.js` 里 **`dream_status`** 的 output schema 漏声明该字段，而 counts 是 `additionalProperties: false` → host 端 output 校验直接报 `value.counts.evolutionTemplates is not a declared property` → **整个工具调用失败**（不是降级，是完全不可用；排查梦境状态只能绕道读 diary 文件 + cron 表）。
+
+**为什么 09-06 没修干净**：同日 task 1 声称「dream_status schema 同步（consolidationMode/Reason + qualityEval + evolutionTemplates）✅」，实际只把 `evolutionTemplates` 加进了 **`dream_run_now`** 的 schema（tools.js:181）—— 同一插件里有**两个工具的 counts schema 需要同步**，只改了一个却按整项验收为 ✅。`复盘-2026-09-06.md:19` 的 ✅ 是假✅。
+
+**修复**：`dream_status` 的 counts.properties 补 `evolutionTemplates: { status, count, topConfidence, boost }`，shape 与 `dream_run_now`（tools.js:181-189）及 `lib/sweep.js:1049` 完全一致。仓库 + host 副本同步，纯 schema 补声明，无行为变更。
+
+**验证**：repo↔host 哈希一致 `2C9743DD134035E3394A55DC76136045E03B6B0F311607D0C1E7FBF5B914DC6E`；`node --check` exit 0。运行期验证需重启 dsh（host 插件非热重载）。
+
+**教训**：schema 同步的验收单位是「**每个 tool × 每个返回字段**」，不是「每个新增字段」。同一 service 被多个工具暴露时（dream_status / dream_run_now）必须逐工具核对，漏一个就是整工具不可用；复盘报告里的 ✅ 必须附 host 实测输出，否则是假✅。
+
+---
+
 ## v0.3.0-C3 — compositeMean 真正修复（2026-09-06，path=undefined）
 
 **根因**（3 轮 debug 定位）：dream bridge `resolveEvalTargets` 的 `target.path` 传 `null`，但 quality-eval 的 `EvalTargetSchema` 里 `path: z.string().optional()` —— **zod .optional() 接受 undefined 但拒绝 null** → `path: null` 触发 `invalid_type` → `EvalTargetSchema.parse` 抛错 → `evaluate()` 抛错 → status='error' → compositeScore=null → compositeMean=n/a。
