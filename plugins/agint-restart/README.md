@@ -27,6 +27,9 @@
   中断时长 / 上次活跃会话等细节改看 `restart_status` 的 `lastRestart` 与 `~/.dsh/.agint-restart/wake.log`。
   原因（2026-09-10 重启环复盘）：指令性措辞会把一条状态消息变成工作指令，唤醒后的会话会把上下文里
   未完成的老板旧指令当新指令再执行一遍 → 「唤醒 → 重执行 → 又重启」的自维持环
+- 🧭 **代码指纹（v0.8.0）**：`apply()` 时对自身 `lib/*.js` 算聚合 sha256（前 12 位），写进 `marker.json`
+  与 `status().codeFingerprint`；`status().codeStale` 每次现算磁盘指纹并对比——**`true` 就是"插件改过、
+  但进程里还是旧代码"的事实依据**，不必再靠 marker 时间戳或日志指纹反推"是否已生效 / HMR 有没有重载"
 - 🎯 **活动追踪**：运行期间通过 cordis 事件（`agent/session-start`、`agent/pre-step`）追踪最近活跃会话，供重启后参考
 - 🎯 **回到原会话（v0.3.0）**：投递时先按 `lastSessionId` 精确匹配旧会话，命中即投；匹配不到才回退 `target`。
   重启后 agent 异步加载，因此留出 `resumeWaitMs`（默认 5 秒）等旧会话出现，避免"第一次只找到新会话就投了"

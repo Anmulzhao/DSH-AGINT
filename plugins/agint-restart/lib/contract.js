@@ -219,6 +219,10 @@ const STATUS_FIELDS = [
   { key: 'lastResult', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
   // v0.7.0：还压着没送出去的恢复通知（落盘待投）；null = 没有待投
   { key: 'parkedNotice', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
+  // v0.8.0：运行中代码指纹（apply 时对 lib/*.js 取聚合 sha256 前 12 位）
+  { key: 'codeFingerprint', dsl: optionalNullable('string') },
+  // v0.8.0：磁盘上的代码是否已改过（true = 进程里仍是旧代码，需重启/等 HMR 才生效）
+  { key: 'codeStale', dsl: { type: 'boolean', required: true }, fallback: false },
   { key: 'launch', dsl: { ...LAUNCH_DSL, required: true }, fallback: () => ({ command: '', cwd: '', args: [] }) },
   // v0.4.4：status() 自身异常时用来带说明（正常路径为 null）
   { key: 'error', dsl: optionalNullable('string') },

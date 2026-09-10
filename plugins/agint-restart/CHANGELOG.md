@@ -4,6 +4,35 @@
 
 ---
 
+## v0.8.0 — 2026-09-11 — 代码指纹：一眼确认跑的是哪版代码（"要不要重启"从推断变事实）
+
+**来源**：老板决定实施提案 `0370b47f`。动因是同一晚重复踩了 3 次同一个坑——改完插件无法一眼确认
+"跑着的进程到底是哪版代码"，只能靠间接指纹推断（marker 有没有被重新 apply 重写、日志里有没有该版本
+独有的行、或手动 import host 文件比对），而"HMR 到底有没有重载"一直没有确定答案。
+
+**改动**：
+
+- 新增 `lib/fingerprint.js`：`codeFingerprint(dir)` 对目录下 `*.js` 按**文件名字典序**逐个 sha256，
+  再对 `文件名\0哈希\0` 序列做一次 sha256 取前 12 位；纯函数、只读、**绝不抛**（出错返回 `null`）。
+  另有 `fingerprintChanged(a, b)`：`null` 与 `null` 视为相同（算不出来时不下"变了"的结论）。
+- `apply()` 时算一次并：① 写进 `marker.json.codeFingerprint`；② 打日志
+  `code fingerprint <fp>（上一版 <old>）— 本次加载了新代码` / `（与上一版相同）`。
+- `status()` 新增两个字段：`codeFingerprint`（apply 时那份，不随磁盘变化）、`codeStale`
+  （**每次调用都重新算磁盘指纹并对比**；`true` = 磁盘改过、进程里仍是旧代码 → 需重启或等 HMR）。
+  首次观察到 stale 时打一条 `host code changed since apply (旧 → 新) — 进程里仍是旧代码，需重启（或等 HMR）才生效`，之后不再刷屏。
+- 测试钩子 `AGINT_RESTART_CODE_DIR`：可把"代码目录"指到别处的同名 lib 目录（smoke 用它模拟"磁盘被改过"，
+  不必污染真实源码）。
+- `lib/contract.js` 登记 `codeFingerprint` / `codeStale`（字段表漏登记会被 Case 25/30 判漂移）。
+
+**验证**：`node test/smoke.mjs` **40/40**（新增 Case 32 纯函数 / Case 33 接线+stale）、`lib/detect.test.js` 12/12、
+`test/pending-notice.test.mjs` 8/8；`JSON.parse` + `cordis.patch.yml` YAML 双校验。
+**变异验证**：把 `codeStale` 写死成 `false` → **只有 Case 33 转红**（39/40），还原即绿。
+
+**收益**：改完插件后"生效了吗"从 3 步推断变成一次 `restart_status` 调用；顺带回答"HMR 是否重载"；
+减少为"确认是否生效"而发的无效重启。
+
+---
+
 ## v0.7.2 — 2026-09-11 — 去重：同一次 boot 只投一次恢复通知
 
 **背景（真机观察 n=2）**：v0.7.1 上线后第一次重启（`8f7ffbda` → pid 31304）实测**收到两条**相同通知

@@ -32,6 +32,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { buildNotice, detectRestart, shouldNotify } from './detect.js';
+import { codeFingerprint, fingerprintChanged } from './fingerprint.js';
 import {
   cancelResult, requestAccepted, requestDeny, requestDryRun, requestInternalError, requestManual,
 } from './contract.js';
@@ -308,6 +309,14 @@ function apply(ctx, cfg = {}) {
   // v0.5.0：判断本次启动是否由插件自己的重启请求导致（用于切断重启环）
   const selfRestart = detectSelfRestart(marker, requestPath);
 
+  // v0.8.0：运行中代码指纹 —— apply 时算一次，写进 marker 与 status()。
+  // 目的：把"跑的是哪版代码 / 要不要重启"从推断变成事实（改完插件后 `status().codeStale` 一句回答）。
+  // 测试钩子：AGINT_RESTART_CODE_DIR 可指向别处的同名 lib 目录（smoke 用它模拟"磁盘被改过"）。
+  const codeDir = process.env.AGINT_RESTART_CODE_DIR
+    || fileURLToPath(new URL('.', import.meta.url));
+  const appliedFingerprint = codeFingerprint(codeDir);
+  let staleLogged = false; // codeStale 只在首次观察到时打日志，避免刷屏
+
   // 2. 活动追踪（运行期间持续记录最近活跃会话）
   let trackedActiveId = null;
   let trackedActiveAt = 0;
@@ -330,6 +339,8 @@ function apply(ctx, cfg = {}) {
         lastActiveAt: trackedActiveAt
           ? new Date(trackedActiveAt).toISOString()
           : marker?.lastActiveAt ?? null,
+        // v0.8.0：本次 apply 加载的代码指纹（下次启动对比它就知道"是否加载了新代码"）
+        codeFingerprint: appliedFingerprint,
         ...extra,
       };
       writeFileSync(markerPath, JSON.stringify(doc, null, 2));
@@ -338,6 +349,16 @@ function apply(ctx, cfg = {}) {
     }
   };
   writeState();
+
+  // v0.8.0：把"这次加载的代码是不是新的"直接打出来（替代原来靠 marker 时间戳反推 HMR 的做法）
+  const prevFingerprint = typeof marker?.codeFingerprint === 'string' ? marker.codeFingerprint : null;
+  if (appliedFingerprint) {
+    console.log(fingerprintChanged(prevFingerprint, appliedFingerprint)
+      ? `[agint-restart] code fingerprint ${appliedFingerprint}（上一版 ${prevFingerprint ?? '未知'}）— 本次加载了新代码`
+      : `[agint-restart] code fingerprint ${appliedFingerprint}（与上一版相同）`);
+  } else {
+    console.warn(`[agint-restart] could not compute code fingerprint (codeDir=${codeDir})`);
+  }
 
   // ── 重启历史 / 熔断 ────────────────────────────────────────────
   const readHistory = () => readJson(historyPath, { events: [] });
@@ -683,12 +704,19 @@ function apply(ctx, cfg = {}) {
     return `cd "${l.cwd}" && "${l.command}" ${l.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
   }
 
-  /** 只读状态：当前进程、冷却、熔断、上次重启结果。 */
+  /** 只读状态：当前进程、冷却、熔断、上次重启结果、运行中代码指纹。 */
   const status = () => {
     const burst = burstState();
     const h = readHistory();
     const last = Array.isArray(h.events) && h.events.length ? h.events[h.events.length - 1] : null;
     const sinceLast = last ? Date.now() - Date.parse(last.at) : Infinity;
+    // v0.8.0：磁盘上的代码是否已与"运行中这份"不同（= 改过插件但还没生效）
+    const currentFingerprint = codeFingerprint(codeDir);
+    const codeStale = fingerprintChanged(appliedFingerprint, currentFingerprint);
+    if (codeStale && !staleLogged) {
+      staleLogged = true;
+      console.log(`[agint-restart] host code changed since apply (${appliedFingerprint ?? '未知'} → ${currentFingerprint ?? '未知'}) — 进程里仍是旧代码，需重启（或等 HMR）才生效`);
+    }
     return {
       enabled: config.enabled,
       mode: config.mode,
@@ -706,6 +734,9 @@ function apply(ctx, cfg = {}) {
       lastResult: existsSync(resultPath) ? readJson(resultPath, null) : null,
       // v0.7.0：还压着没送出去的恢复通知（null = 没有待投）
       parkedNotice: existsSync(pendingPath) ? readJson(pendingPath, null) : null,
+      // v0.8.0：运行中代码指纹 + 是否已陈旧（true = 磁盘改过、进程里还是旧的，需重启/等 HMR）
+      codeFingerprint: appliedFingerprint,
+      codeStale,
       launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
     };
   };
