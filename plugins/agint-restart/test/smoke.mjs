@@ -1212,6 +1212,7 @@ test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId �
     selfRestart: true, selfRestartRequestId: 'abc12345',
     cooldownRemainingMs: 0, burst: { windowMs: 1, max: 1, count: 0, tripped: false },
     pending: null, lastRestart: null, historyCount: 0, lastResult: null,
+    parkedNotice: null,
     launch: { command: 'n', cwd: 'c', args: ['a'] },
   };
   const r = normalizeStatusOutput(sample);

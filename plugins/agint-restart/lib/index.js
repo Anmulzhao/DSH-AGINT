@@ -24,7 +24,7 @@
  * 兼容性：本插件只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*`
  * 内部包，因此可在 DSH Desktop 打包环境（app.asar）下运行。
  */
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -79,6 +79,16 @@ const DEFAULTS = {
   resumeOnSelfRestart: true,
 
   notice: '',
+
+  // ── v0.7.0：待投通知（parked notice）────────────────────────────
+  // 重启后若内存里没有活 agent（会话还没被任何客户端打开），把恢复通知
+  // 落盘到 pending-notice.json，等之后任一会话起来再补投。
+  //   关闭它 = 退回 v0.6.x 行为：等 5~20 秒找不到目标就彻底丢弃通知。
+  parkNoticeOnNoTarget: true,
+  // true  = 只把待投通知投给"重启前那个会话"（它可能永远不被打开）
+  // false = 任一会话起来就补投（默认，保证老板一打开 UI 就能看到）
+  pendingOnlyLastSession: false,
+
   // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
   shutdownGraceMs: 600000,
   // 活动追踪时忽略的会话 id 前缀（如多代理团队的根会话）
@@ -361,9 +371,129 @@ function apply(ctx, cfg = {}) {
     } catch (e) { /* ignore */ }
   });
 
-  // 4. 监听 agent 活动事件（追踪最近活跃会话）
+  // ── 3.5 恢复通知的落盘与投递（v0.7.0）─────────────────────────
+  //
+  // 为什么必须"落盘待投"：dsh 的 agents 注册表只装**内存里活着的 agent**
+  // （dsh-agent/lib: get/list/roots 读的都是运行时 store），而会话只有被客户端
+  // （UI/API）打开时才 announce 进注册表（dsh-agent-loop 的 publish），
+  // dsh 并没有"启动时自动恢复上次会话"的机制。
+  //   → 重启那一刻若老板还没用新 token 的 URL 连上来，内存池就是空的，
+  //     findTarget() 必然落空，通知被直接丢弃（实测 2026-09-10 19:47 那次）。
+  // 做法：重启后先把通知**落盘**，投递成功才删；之后任一会话被打开时补投。
+  //   这样无论老板隔多久才打开 UI，恢复通知都不会丢。
+  const pendingPath = join(markerDir, 'pending-notice.json');
+  const mode = resolveDeliveryMode(config);
+
+  const buildPendingDoc = (reason) => ({
+    createdAt: new Date().toISOString(),
+    bootAt,
+    prevBootAt: prevBootAt ?? null,
+    downtimeMs: downtimeMs ?? 0,
+    lastSessionId: lastSessionId ?? null,
+    lastActiveAt: lastActiveAt ?? null,
+    selfRestart: selfRestart.self,
+    customNotice: config.notice ?? '',
+    reason: reason ?? null,
+  });
+
+  /** 把恢复通知落盘，等之后有会话起来再投。 */
+  const writePending = (reason) => {
+    if (config.parkNoticeOnNoTarget === false) return false;
+    try {
+      mkdirSync(markerDir, { recursive: true });
+      writeFileSync(pendingPath, JSON.stringify(buildPendingDoc(reason), null, 2));
+      console.log('[agint-restart] no live agent yet — notice parked at', pendingPath);
+      return true;
+    } catch (err) {
+      console.warn('[agint-restart] could not park notice:', err?.message ?? err);
+      return false;
+    }
+  };
+
+  const readPending = () => {
+    const doc = readJson(pendingPath, null);
+    return doc && typeof doc === 'object' && typeof doc.bootAt === 'string' ? doc : null;
+  };
+
+  const clearPending = () => {
+    try { rmSync(pendingPath, { force: true }); return true; } catch { return false; }
+  };
+
+  const noticeMessageFrom = (doc) => createUserMessage({
+    content: [{
+      type: 'text',
+      text: buildNotice({
+        bootAt: doc.bootAt,
+        prevBootAt: doc.prevBootAt,
+        downtimeMs: doc.downtimeMs,
+        lastSessionId: doc.lastSessionId,
+        lastActiveAt: doc.lastActiveAt,
+        selfRestart: doc.selfRestart,
+        customNotice: doc.customNotice,
+      }),
+    }],
+    source: {
+      kind: 'plugin',
+      plugin: 'agint-restart',
+      form: 'notice',
+      summary: `agint-restart: DSH restarted at ${doc.bootAt}`,
+    },
+  });
+
+  /**
+   * 向指定 agent 投递恢复通知。
+   * @param {object} target 目标 agent（需有 followup/inject）
+   * @param {string} matched 'lastSession' | 'primary' | 'configured' | 'pending'
+   * @param {object} [doc] 通知内容快照；省略则用当前启动信息现算
+   * @returns {boolean} 是否投递成功（失败已写 wake.log，不向外抛）
+   */
+  const deliverTo = (target, matched, doc) => {
+    const payload = doc ?? buildPendingDoc('live');
+    const id = String(target?.id ?? '');
+    try {
+      const msg = noticeMessageFrom(payload);
+      if (mode === 'wake') {
+        // followup = send(next-turn, wakeup=true) → 唤醒 driver，agent 真正开始干活
+        target.followup(msg);
+      } else {
+        // inject = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
+        target.inject(msg);
+      }
+      console.log('[agint-restart] notice delivered to', id, 'matched=' + matched, 'mode=' + mode);
+      writeWakeLog(markerDir, id, true, null, { matched, mode, lastSessionId: lastSessionId ?? null });
+      return true;
+    } catch (err) {
+      console.warn('[agint-restart] deliver failed:', err);
+      writeWakeLog(markerDir, id, false, String(err), { matched, mode, lastSessionId: lastSessionId ?? null });
+      return false;
+    }
+  };
+
+  /**
+   * 有会话起来了：若还压着没送出去的恢复通知，现在补投并删除。
+   * 默认投给第一个起来的会话；pendingOnlyLastSession=true 时只认重启前那个。
+   */
+  const tryFlushPending = (agent) => {
+    const doc = readPending();
+    if (!doc) return false;
+    const sid = String(agent?.id ?? '');
+    if (!sid) return false;
+    if (config.pendingOnlyLastSession === true
+      && doc.lastSessionId && sid !== String(doc.lastSessionId)) {
+      return false;
+    }
+    if (deliverTo(agent, 'pending', doc)) {
+      clearPending();
+      console.log('[agint-restart] parked notice flushed to', sid);
+      return true;
+    }
+    return false;
+  };
+
+  // 4. 监听 agent 活动事件（追踪最近活跃会话 + 补投落盘通知）
   ctx.on('agent/session-start', ({ agent }) => {
     recordActivity(agent);
+    tryFlushPending(agent);
   });
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     recordActivity(agent);
@@ -560,6 +690,8 @@ function apply(ctx, cfg = {}) {
       lastRestart: last ?? null,
       historyCount: Array.isArray(h.events) ? h.events.length : 0,
       lastResult: existsSync(resultPath) ? readJson(resultPath, null) : null,
+      // v0.7.0：还压着没送出去的恢复通知（null = 没有待投）
+      parkedNotice: existsSync(pendingPath) ? readJson(pendingPath, null) : null,
       launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
     };
   };
@@ -645,47 +777,14 @@ function apply(ctx, cfg = {}) {
             return null;
           }
         };
-        const mode = resolveDeliveryMode(config);
+        // v0.7.0：先把通知落盘，投递成功才删。
+        // 即便本次找不到活 agent（甚至 agents 服务压根没就绪、本回调不执行），
+        // 通知也已经安全躺在磁盘上，等之后任一会话被打开时补投（tryFlushPending）。
+        writePending('boot');
+
+        /** 投出去，并在成功后清除落盘副本。 */
         const deliver = (found) => {
-          const target = found.agent;
-          const text = buildNotice({
-            bootAt,
-            prevBootAt,
-            downtimeMs,
-            lastSessionId,
-            lastActiveAt,
-            // v0.6.1：自触发重启也投递，改在文案里明示"无需再次重启"来断环
-            selfRestart: selfRestart.self,
-            customNotice: config.notice,
-          });
-          const msg = createUserMessage({
-            content: [{ type: 'text', text }],
-            source: {
-              kind: 'plugin',
-              plugin: 'agint-restart',
-              form: 'notice',
-              summary: `agint-restart: DSH restarted at ${bootAt}`,
-            },
-          });
-          try {
-            if (mode === 'wake') {
-              // followup = send(next-turn, wakeup=true) → 唤醒 driver，agent 真正开始干活
-              target.followup(msg);
-            } else {
-              // inject = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
-              target.inject(msg);
-            }
-            console.log('[agint-restart] notice delivered to', String(target.id),
-              'matched=' + found.matched, 'mode=' + mode);
-            writeWakeLog(markerDir, String(target.id), true, null, {
-              matched: found.matched, mode, lastSessionId: lastSessionId ?? null,
-            });
-          } catch (err) {
-            console.warn('[agint-restart] deliver failed:', err);
-            writeWakeLog(markerDir, String(target.id), false, String(err), {
-              matched: found.matched, mode, lastSessionId: lastSessionId ?? null,
-            });
-          }
+          if (deliverTo(found.agent, found.matched)) clearPending();
         };
         const MAX_WAIT_MS = 20000;
         // 是否值得为"旧会话复活"多等一会儿：只有它才带着被中断的上下文
@@ -722,9 +821,10 @@ function apply(ctx, cfg = {}) {
           if (waited >= MAX_WAIT_MS) {
             clearInterval(timer);
             if (fallback) { deliver(fallback); return; }
-            console.log('[agint-restart] no target agent found after wait, skip wake');
-            writeWakeLog(markerDir, null, false, 'no target agent after wait',
-              { mode, lastSessionId: lastSessionId ?? null });
+            // v0.7.0：不再"丢弃"——通知已在 writePending 落盘，等会话起来补投
+            console.log('[agint-restart] no target agent found after wait — notice parked, will flush on next session start');
+            writeWakeLog(markerDir, null, false, 'no target agent after wait (parked)',
+              { mode, lastSessionId: lastSessionId ?? null, parked: true });
           }
         }, POLL_MS);
         // 把 setInterval 也注册为 disposer（dispose 时自动 clear）

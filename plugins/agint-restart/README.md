@@ -191,6 +191,20 @@ v0.4.4 起结构上消除这类漂移：
 | `restart-result.json` | 守护脚本回写的结果（newPid / ready / 各阶段耗时） |
 | `restart-history.json` | 最近 50 条重启记录（熔断与冷却的依据） |
 | `restart.log` | 人类可读的追加日志 |
+| `pending-notice.json` | **v0.7.0 起**：还压着没送出去的恢复通知（落盘待投），送达后删除 |
+
+### 落盘待投（v0.7.0）：为什么重启后消息可能"晚到"而不是"不到"
+
+dsh 的 `agents` 注册表只装**内存里活着的 agent**（`dsh-agent/lib` 的 `get/list/roots`
+读的都是运行时 `store`），而会话只有被客户端（UI/API）打开时才 announce 进注册表
+（`dsh-agent-loop` 的 `publish`），**dsh 没有"启动时自动恢复上次会话"的机制**。
+
+所以重启那一刻如果还没人用新 token 的 URL 连上来，内存池就是空的，插件找不到投递目标。
+v0.6.x 的行为是等 5~20 秒后**丢弃**通知 —— 这就是"重启后不注入消息"的根因。
+
+v0.7.0 起改为：重启后先把通知**落盘**到 `pending-notice.json`，投递成功才删；
+之后**任一会话被打开**时补投。因此恢复通知可能"晚到"（你打开 UI 的那一刻），
+但不会再丢。
 
 ## 配置（cordis.patch.yml）
 
@@ -202,6 +216,8 @@ v0.4.4 起结构上消除这类漂移：
 | `deliveryMode` | `wake` | `wake`=followup（`send(next-turn, wakeup=true)`）→ **唤醒 agent 真正干活**；`silent`=inject（`send(next-step, wakeup=false)`）→ 只入收件箱，**不唤醒、看不到回音**。⚠️ 别凭方法名猜：`inject` 是静默塞入，不是立即触发。别名 `queue`→`wake`、`inject`→`silent`。选 `wake` 时旧会话若中断的是长任务/危险操作，agent 会**自行继续**——想先"汇报等我确认"，用 `notice` 加约束语 |
 | `resumeLastSession` | `true` | 优先把通知投回"重启前最近活跃的会话"（只有它带着被中断的上下文） |
 | `resumeWaitMs` | `5000` | 为"等旧会话复活"额外留的时间；超时就接受回退目标（`0`=不等） |
+| `parkNoticeOnNoTarget` | `true` | **v0.7.0**：找不到活 agent 时把通知落盘待投，之后有会话起来再补投。置 `false` 退回 v0.6.x 的"等不到就丢弃" |
+| `pendingOnlyLastSession` | `false` | **v0.7.0**：`false`=任一会话起来就补投（保证一打开 UI 就能看到）；`true`=只投给重启前那个会话 |
 | `wakeup` | — | **已废弃**，仅为向后兼容保留：`true`→`queue`，`false`→`inject`。显式 `deliveryMode` 优先 |
 | `notice` | `''` | 附加到消息末尾的自定义提示 |
 | `shutdownGraceMs` | `600000` | 配置项已声明（**v0.1.0 未消费**，跟上游一致） |

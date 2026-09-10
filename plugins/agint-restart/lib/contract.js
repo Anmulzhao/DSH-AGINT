@@ -217,6 +217,8 @@ const STATUS_FIELDS = [
   { key: 'lastRestart', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
   { key: 'historyCount', dsl: { type: 'number', required: true }, fallback: 0 },
   { key: 'lastResult', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
+  // v0.7.0：还压着没送出去的恢复通知（落盘待投）；null = 没有待投
+  { key: 'parkedNotice', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
   { key: 'launch', dsl: { ...LAUNCH_DSL, required: true }, fallback: () => ({ command: '', cwd: '', args: [] }) },
   // v0.4.4：status() 自身异常时用来带说明（正常路径为 null）
   { key: 'error', dsl: optionalNullable('string') },
