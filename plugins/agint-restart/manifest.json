@@ -1,0 +1,80 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-restart",
+  "version": "0.2.0",
+  "description": "AGINT 插件：DSH 重启闭环。v0.1.0 检测重启后自动唤醒主 agent 并投递信息性消息（含中断时长 / 上次活跃会话）；v0.2.0 新增主动重启能力——提供 agint.restart 服务与 restart_status / restart_request / restart_cancel 工具，通过独立守护脚本等旧进程退出并释放端口后拉起新 dsh，受 confirm / cooldown / 熔断三重护栏保护。借鉴 nickkkkkk123123/dsh-resume-on-restart 思路（检测部分 scope 1:1）；关键差异：优雅关闭走 cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）；持久化目录 .agint-restart；只依赖 cordis ctx 的 agents 服务。",
+  "main": "lib/index.js",
+
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+
+  "spec": {
+    "cordis": {
+      "inject": ["agents"],
+      "optionalInject": [],
+      "provides": [
+        "agint.restart",
+        "agint.restart.detect"
+      ],
+      "events": [
+        "agent/session-start",
+        "agent/pre-step"
+      ],
+      "tools": [
+        "restart_status",
+        "restart_request",
+        "restart_cancel"
+      ]
+    },
+
+    "storage": {
+      "domains": ["agint_restart"],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+
+    "dependencies": {
+      "@deepseek-ai/cordis": "^4.0.1"
+    },
+    "mountOrder": 50,
+
+    "permissions": {
+      "env": ["DSH_HOME"],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": ["loopback"],
+      "shell": false,
+      "_shellNote": "v0.2.0 不使用 shell：respawn 用 child_process.spawn 直接拉起 node/dsh 可执行文件，不经过任何 shell 解释器，故 shell 权限仍为 false。"
+    },
+
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.restart": "DSH 重启服务。detect() 返回是否发生过重启及中断时长；status() 返回当前 pid / 冷却 / 熔断 / 上次结果 / 拉起命令快照；request({confirm,reason,delayMs,dryRun,force}) 发起重启（需 confirm，受 cooldown 与熔断保护，manual 模式只返回命令）；cancel() 清除在途标记。重启执行链：写 restart-request.json → detached spawn lib/respawn.js → 当前进程延迟退出 → respawn 等旧 pid 消失 + 3080 释放 → 拉起新 dsh → 等 lease/端口就绪 → 写 restart-result.json。",
+        "agint.restart.detect": "v0.1.0 兼容别名：检测 DSH 服务是否发生重启——对比上次 marker.pid 与当前 process.pid，pid 不同则判定为重启（downtime = now - prevBootAt）。只读，不重新触发投递。"
+      }
+    },
+
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
