@@ -4,6 +4,45 @@
 
 ---
 
+## v0.7.0 — 2026-09-11 — 修正：重启后恢复通知被丢弃（落盘待投 + 会话起来补投）
+
+**背景（老板反馈）**：「现在的 dsh 重启后不注入消息，且容易出现历史加载错误」
+
+**性质**：v0.6.1 只解决了"自触发重启被吞掉"这一半；另一半根因在 dsh 侧，之前没看穿。
+
+**真因（读 dsh 源码确认，三级证据链）**：
+
+1. `dsh-agent/lib/index.js`：`agents.get / list / roots` 读的都是**运行时注册表** `store`，
+   只装**内存里活着的 agent**；硬盘上的历史会话不算。
+2. `dsh-agent-loop/lib/index.js:1716`：`sessions.enter` → `agents.announce(agent)` →
+   `agent/session-start`，只在 `publish()` 被调用时发生，而 publish 由
+   `dsh-api-gateway` 的**客户端连接**驱动。
+3. dsh **没有**"启动时自动恢复上次会话"的机制。
+
+→ 重启那一刻若老板还没用**新 token 的 URL** 连上来，内存池就是空的，`findTarget()`
+必然落空。v0.6.x 的行为是"等 5 秒 → 等 20 秒 → 放弃丢弃"，表现就是**重启后不注入消息**。
+实测对照：19:47 那次池空失败（`no target agent found after wait`），19:55 那次池里有会话成功。
+
+**"历史加载错误"同源**：token 每次重启都换，旧页面连不上新实例 → 既加载不了历史，
+也不会把会话载入内存 → 插件无处可投。已排除会话文件损坏（4 个会话多帧解压 0 失败）。
+
+**改动**：
+
+- 重启后**先把通知落盘**到 `.agint-restart/pending-notice.json`，投递成功才删除。
+  即便 `agents` 服务压根没就绪（连回调都不执行），通知也已安全躺在磁盘上。
+- 复用已有的 `agent/session-start` 监听：**任一会话被打开时补投**并删除落盘副本。
+- 新增配置：`parkNoticeOnNoTarget`（默认 true，置 false 退回旧行为）、
+  `pendingOnlyLastSession`（默认 false = 任一会话都投；true = 只认重启前那个）。
+- `status()` 新增 `parkedNotice` 字段（契约表已登记），便于排查"还压着没送出去吗"。
+- 日志指纹：`notice parked at …` / `parked notice flushed to …`。
+
+**验证**：`test/smoke.mjs` 38/38 PASS；新增 `test/pending-notice.test.mjs` 7/7 PASS
+（落盘 / 补投 / 防重复 / 关闭开关 / 只认旧会话 / 非重启不落盘 / 源码护栏）。repo + host 双端一致。
+
+**回滚**：配置 `parkNoticeOnNoTarget: false` 即回到 v0.6.x 行为，不用换代码。
+
+---
+
 ## v0.6.1 — 2026-09-11 — 修正：重启后恢复通知发不出去，会话不接续
 
 **背景（老板反馈）**：「现在重启没问题了，但是重启后不注入信息，会话没接续」
