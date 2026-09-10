@@ -1204,6 +1204,56 @@ test('真机 schema：tools.js 能被真实 dsh-tools 编译并注册（K19/K20 
   }
 });
 
+// ── Case 34: v0.8.1 restart_status 的**输出面**必须带出代码指纹 ──
+//
+// 背景：v0.8.0 把字段造进了 status()，但 tools.js 的 render 是手写字段子集 →
+// 数据在、面上没有 = 白造（同类"静默失效"）。这条用例守住输出面。
+
+test('v0.8.1 restart_status 渲染必须带出代码指纹与 stale 警告', async () => {
+  const stage = join(tmpdir(), 'agint-restart-render-' + randomUUID());
+  mkdirSync(stage, { recursive: true });
+  try {
+    // 把 defineTool 换成直通桩：这样 registered 里就是插件自己的定义，可以直接调 render
+    const src = readFileSync(resolve(PLUGIN_DIR, 'lib', 'tools.js'), 'utf8')
+      .replace("'@deepseek-ai/dsh-tools'", `'./stub-tools.mjs'`);
+    writeFileSync(join(stage, 'tools.mjs'), src, 'utf8');
+    writeFileSync(join(stage, 'stub-tools.mjs'), 'export const defineTool = (def) => def;\n', 'utf8');
+    writeFileSync(join(stage, 'contract.js'), readFileSync(resolve(PLUGIN_DIR, 'lib', 'contract.js'), 'utf8'), 'utf8');
+
+    const registered = [];
+    const ctx = {
+      'agint.restart': null, get: () => null, provide: () => {}, on: () => {},
+      effect: () => {}, inject: () => {}, tools: { register: (x) => registered.push(x) },
+    };
+    const mod = await import(pathToFileURL(join(stage, 'tools.mjs')).href);
+    mod.apply(ctx);
+
+    const status = registered.find((r) => r.name === 'restart_status');
+    assert.ok(status, 'restart_status 未注册');
+    const base = {
+      enabled: true, mode: 'auto', pid: 1, bootAt: 'x', wasRestart: true, selfRestart: false,
+      selfRestartRequestId: null, cooldownRemainingMs: 0,
+      burst: { windowMs: 600000, max: 3, count: 0, tripped: false },
+      pending: null, lastRestart: null, historyCount: 0, lastResult: null, parkedNotice: null,
+      codeFingerprint: 'e77a6fc416ea', codeStale: false,
+      launch: { command: 'n', cwd: 'c', args: [] },
+    };
+    const textOf = (v) => status.output.render(null, v).map((b) => b.text).join('\n');
+
+    const fresh = textOf(base);
+    assert.match(fresh, /e77a6fc416ea/, 'restart_status 输出必须带出代码指纹（否则字段白造了）');
+    assert.match(fresh, /与磁盘一致/, '未 stale 时应明示"与磁盘一致"');
+
+    const stale = textOf({ ...base, codeStale: true });
+    assert.match(stale, /需重启/, 'stale 时必须直接给出"需重启"的结论');
+
+    const unknown = textOf({ ...base, codeFingerprint: null });
+    assert.match(unknown, /未知/, '算不出指纹时要显示"未知"，不能静默留空');
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+});
+
 // ── Case 30: 字段表 ⊇ 分支返回值（v0.5.0 新增字段不得被 normalize 丢掉）──
 
 test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId 不被丢弃', () => {

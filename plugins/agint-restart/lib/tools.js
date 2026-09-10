@@ -66,6 +66,8 @@ function apply(ctx) {
           `  boot=${v.bootAt}`,
           `  cooldown=${Math.round(v.cooldownRemainingMs / 1000)}s  burst=${v.burst.count}/${v.burst.max} (${v.burst.windowMs / 1000}s) tripped=${v.burst.tripped}`,
           `  pending=${v.pending ? v.pending.requestId : 'none'}  history=${v.historyCount}`,
+          // v0.8.1：代码指纹必须出现在**输出面**上——字段造好了却没人看得见，等于没造（同类"静默失效"教训）
+          `  code=${v.codeFingerprint ?? '未知'}${v.codeStale ? '  ⚠️ 磁盘代码已改、进程里仍是旧版 → 需重启生效' : '（与磁盘一致）'}`,
           `  launch= ${v.launch.command} ${v.launch.args.join(' ')}`,
           `  cwd= ${v.launch.cwd}`,
         ];
