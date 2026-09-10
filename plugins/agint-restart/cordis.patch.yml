@@ -41,13 +41,14 @@
         enabled: true
         stateDir: .agint-restart
         target: primary
-        # queue  = followup，消息进队列，等 agent 空闲才处理（不主动触发回复）
-        # inject = 作为用户输入立即插入，会触发 agent 真正开始干活
-        # 线上选 inject：重启后 agent 自动续跑被中断的工作（插件本意）。
+        # wake   = followup = send(next-turn, wakeup=true)  → 唤醒 agent，真正开始干活
+        # silent = inject   = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
+        # ⚠️ 别凭方法名猜：inject 是"静默塞入"，不是"立即触发"（v0.3.1 实测纠正）
+        # 线上选 wake：重启后 agent 自动续跑被中断的工作（插件本意）。
         # 注意后果：旧会话里若中断的是长任务/危险操作，agent 会自行继续。
         # 想先"汇报等我确认"的话，用 notice 加约束语，例如：
         #   notice: '先汇报中断前在做什么，等我确认后再继续，不要自行执行。'
-        deliveryMode: inject
+        deliveryMode: wake
         # 优先把通知投回"重启前最近活跃的会话"（只有它带上下文）；匹配不到再回退 target
         resumeLastSession: true
         resumeWaitMs: 5000

@@ -4,6 +4,44 @@
 
 ---
 
+## v0.3.1 — 2026-09-10 — 修正 inject / followup 语义反转（实测打脸）
+
+**现象**：老板选了 `deliveryMode: inject` 并重启，`wake.log` 记 `ok:true`、
+`matched:lastSession`、`mode:inject`——一切正常，但 UI 上什么都没有。
+扫遍 134 个会话文件，**`agint-restart` 零命中**，消息根本没落盘。
+
+**真因**：v0.3.0 我凭方法名臆断语义，结论**完全反了**。dsh 源码
+（`dsh-agent-loop/lib/index.js`）：
+
+```js
+send(message, target, wakeup) {
+    this.inbox.splice(resolvedTarget, Infinity, 0, [message]);
+    if (wakeup) this.wakeDriver(wakingAfterAbort);
+}
+followup(input) { this.send(input, "next-turn", true); }   // wakeup = TRUE  → 唤醒
+inject(input)   { this.send(input, "next-step", false); }  // wakeup = FALSE → 只入收件箱
+```
+
+`inject` 是**静默塞入、不唤醒 driver**；`followup` 才是真唤醒。
+所以 v0.3.0 里"`inject` = 立即触发 agent 干活"的描述是错的——恰恰相反，
+`inject` 会让消息石沉大海。老板按我的错误描述选了 `inject`，等于选了"没人理"。
+
+**修正**：
+
+- 配置项改名并纠正语义：`wake`（= followup，唤醒）/ `silent`（= inject，静默）。
+  默认 `wake`。旧名 `queue`→`wake`、`inject`→`silent` 作别名保留，不会炸。
+- 源码注释写清 `wakeup=true/false` 的真实含义，附源码位置。
+- 线上配置改为 `deliveryMode: wake`。
+
+**教训（值得写进流程）**：**涉及第三方 SDK 的方法语义，必须读源码，不能凭方法名推断。**
+这次是"看起来最像的那个词"错了。以后凡是 `followup` / `inject` / `steer` / `send`
+这类词，一律先 `sed` 出实现再下结论。
+
+**测试 22 → 23**：新增 Case 19 语义契约用例，直接对 **dsh 源码**断言
+`followup` 必须 wakeup=true、`inject` 必须 wakeup=false——dsh 升级导致语义漂移时会自己报警。
+
+---
+
 ## v0.3.0 — 2026-09-10 — 修正投递语义：消息回到被中断的会话
 
 **背景**：v0.2.1 起链路是通的（`wake.log` 记 `ok:true`），但老板反馈"没看到消息"。查日志发现
