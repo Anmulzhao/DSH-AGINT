@@ -229,4 +229,21 @@ test('源码护栏：找不到目标时必须落盘，不得再出现"直接丢�
   assert.ok(/writePending\('boot'\)/.test(src), '重启分支必须先落盘通知');
   assert.ok(/tryFlushPending\(agent\)/.test(src), 'session-start 时必须尝试补投');
   assert.ok(/clearPending\(\)/.test(src), '送达后必须清除落盘副本');
+  assert.ok(/deliveredForBoot/.test(src), 'v0.7.2：必须有"同一次 boot 只投一次"的去重位');
+});
+
+test('同一次 boot 只投一次：补投成功后 boot 轮询不得再投（v0.7.2 去重）', async () => {
+  const { ctx, pendingPath } = boot();
+  try {
+    assert.ok(existsSync(pendingPath), '无活 agent 时应先落盘');
+    const agent = makeAgent('session-A'); // 与 marker.lastSessionId 相同
+    ctx.openSession(agent); // 走补投路径（matched=pending）
+    assert.equal(agent.received.length, 1, 'session-start 时应补投 1 条');
+    assert.ok(!existsSync(pendingPath), '补投成功应清掉落盘副本');
+    // 让 boot 轮询跑满 ≥2 个周期（POLL_MS=500）：v0.7.1 会在这里投出第二条
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.equal(agent.received.length, 1, '同一次 boot 不得重复投递（双唤醒 = 重启环暴露面翻倍）');
+  } finally {
+    ctx.cleanup();
+  }
 });
