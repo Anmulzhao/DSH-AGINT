@@ -13,7 +13,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -1213,6 +1213,7 @@ test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId �
     cooldownRemainingMs: 0, burst: { windowMs: 1, max: 1, count: 0, tripped: false },
     pending: null, lastRestart: null, historyCount: 0, lastResult: null,
     parkedNotice: null,
+    codeFingerprint: '0123456789ab', codeStale: false,
     launch: { command: 'n', cwd: 'c', args: ['a'] },
   };
   const r = normalizeStatusOutput(sample);
@@ -1220,6 +1221,8 @@ test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId �
   assert.deepEqual(r.repaired, [], '不应修补任何字段');
   assert.equal(r.value.selfRestart, true);
   assert.equal(r.value.selfRestartRequestId, 'abc12345');
+  assert.equal(r.value.codeFingerprint, '0123456789ab', 'v0.8.0 代码指纹字段不得被丢弃');
+  assert.equal(r.value.codeStale, false, 'v0.8.0 codeStale 字段不得被丢弃');
   // 未声明在字段表里的键必须被丢掉（防"加了字段但 schema 没跟上"）
   const r2 = normalizeStatusOutput({ ...sample, bogusField: 1 });
   assert.deepEqual(r2.dropped, ['bogusField']);
@@ -1258,4 +1261,83 @@ test('win32：新 dsh 必须走「隐藏窗口」启动，不得用 detached / w
   // POSIX 分支保持 detached（没有控制台概念，行为不变）
   const posix = src.slice(src.indexOf('function launchDetachedPosix'), hiddenStart);
   assert.match(posix, /detached\s*:\s*true/, 'posix 分支应保留 detached');
+});
+
+// ── Case 32: v0.8.0 代码指纹纯函数 ──
+
+test('v0.8.0 codeFingerprint：确定性 / 内容变即变 / 增删即变 / 非 .js 不参与 / 出错返回 null', async () => {
+  const { codeFingerprint, fingerprintChanged } = await import(
+    pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'fingerprint.js')).href
+  );
+  const d = mkdtempSync(join(tmpdir(), 'agint-restart-fp-'));
+  try {
+    writeFileSync(join(d, 'a.js'), '1');
+    writeFileSync(join(d, 'b.js'), '2');
+    const f1 = codeFingerprint(d);
+    assert.match(String(f1), /^[0-9a-f]{12}$/, '指纹应为 12 位十六进制');
+    assert.equal(codeFingerprint(d), f1, '同内容必须同指纹（确定性）');
+
+    writeFileSync(join(d, 'a.js'), '1'); // 重写同样内容
+    assert.equal(codeFingerprint(d), f1, '内容不变则指纹不变');
+
+    writeFileSync(join(d, 'a.js'), '1x');
+    const f2 = codeFingerprint(d);
+    assert.notEqual(f2, f1, '改内容必须变指纹');
+
+    writeFileSync(join(d, 'c.js'), '3');
+    const f3 = codeFingerprint(d);
+    assert.notEqual(f3, f2, '加文件必须变指纹');
+    rmSync(join(d, 'c.js'));
+    assert.equal(codeFingerprint(d), f2, '删掉新增文件应回到 f2');
+
+    writeFileSync(join(d, 'note.txt'), 'x');
+    assert.equal(codeFingerprint(d), f2, '非 .js 文件不得参与指纹');
+
+    assert.equal(codeFingerprint(join(d, 'nope')), null, '目录不存在应返回 null（绝不抛）');
+    assert.equal(fingerprintChanged(null, null), false, '都算不出来时不下"变了"的结论');
+    assert.equal(fingerprintChanged(f1, null), true, '从有到无也算变了');
+    assert.equal(fingerprintChanged(f1, f1), false);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// ── Case 33: v0.8.0 指纹接线（marker + status + codeStale）──
+//
+// 用测试钩子 AGINT_RESTART_CODE_DIR 把"代码目录"指到临时目录，
+// 这样可以在不碰真实源码的前提下模拟"磁盘改过了、进程里还是旧的"。
+
+test('v0.8.0 代码指纹接线：apply 写进 marker+status，磁盘改过后 codeStale=true', async () => {
+  const codeDir = mkdtempSync(join(tmpdir(), 'agint-restart-code-'));
+  writeFileSync(join(codeDir, 'a.js'), 'export const a = 1;\n');
+  writeFileSync(join(codeDir, 'b.js'), 'export const b = 2;\n');
+
+  const env = withTmpDshHome();
+  const prevCodeDir = process.env.AGINT_RESTART_CODE_DIR;
+  process.env.AGINT_RESTART_CODE_DIR = codeDir;
+  const provided = {};
+  try {
+    const { ctx } = makeCtx({ provided });
+    const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+    apply(ctx, { stateDir: '.agint-restart-smoke' });
+    const svc = provided['agint.restart'];
+
+    const st = svc.status();
+    assert.match(String(st.codeFingerprint), /^[0-9a-f]{12}$/, 'apply 后 status 应带 12 位指纹');
+    assert.equal(st.codeStale, false, '刚 apply 时磁盘 == 运行中，不该判 stale');
+
+    const marker = JSON.parse(readFileSync(join(env.root, '.agint-restart-smoke', 'marker.json'), 'utf-8'));
+    assert.equal(marker.codeFingerprint, st.codeFingerprint, 'marker 必须记录本次加载的指纹');
+
+    writeFileSync(join(codeDir, 'a.js'), 'export const a = 111;\n'); // 模拟"改完还没生效"
+    const st2 = svc.status();
+    assert.equal(st2.codeFingerprint, st.codeFingerprint, 'codeFingerprint 记录的是 apply 时那份，不随磁盘变化');
+    assert.equal(st2.codeStale, true, '磁盘改过后必须报 codeStale=true（这就是"需要重启"的事实依据）');
+  } finally {
+    if (prevCodeDir === undefined) delete process.env.AGINT_RESTART_CODE_DIR;
+    else process.env.AGINT_RESTART_CODE_DIR = prevCodeDir;
+    env.restore();
+    env.cleanup();
+    rmSync(codeDir, { recursive: true, force: true });
+  }
 });
