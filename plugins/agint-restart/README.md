@@ -139,7 +139,7 @@ restart_cancel                        // 清除在途标记
 | `enabled` | `true` | 插件开关 |
 | `stateDir` | `.agint-restart` | marker/状态文件存放目录（相对 DSH_HOME） |
 | `target` | `primary` | **回退**目标（`primary`=主 agent，或指定会话 id）；仅在旧会话匹配不到时使用 |
-| `deliveryMode` | `queue` | `queue`=进队列等 agent 空闲（不主动触发回复）；`inject`=作为用户输入立即插入，会触发 agent 真干活 |
+| `deliveryMode` | `queue` | `queue`=进队列等 agent 空闲（不主动触发回复）；`inject`=作为用户输入立即插入，会触发 agent 真干活。⚠️ 选 `inject` 时，旧会话若中断的是长任务/危险操作，agent 会**自行继续**——想先"汇报等我确认"，用 `notice` 加约束语 |
 | `resumeLastSession` | `true` | 优先把通知投回"重启前最近活跃的会话"（只有它带着被中断的上下文） |
 | `resumeWaitMs` | `5000` | 为"等旧会话复活"额外留的时间；超时就接受回退目标（`0`=不等） |
 | `wakeup` | — | **已废弃**，仅为向后兼容保留：`true`→`queue`，`false`→`inject`。显式 `deliveryMode` 优先 |
