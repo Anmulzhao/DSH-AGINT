@@ -57,42 +57,25 @@ export function shouldNotify({ wasRestart, downtimeMs }, debounceMs) {
 }
 
 /**
- * 构建信息性提示文本（由 agent 自主决定下一步）。
- * @param {object} opts
- * @param {boolean} [opts.selfRestart] 本次启动是否由插件协议的重启请求导致。
- *   true 时附一句"无需再次重启"——这是 v0.6.1 的断环手段：既保证会话接续
- *   （旧版直接不投递，导致重启后没人被唤醒），又明确告诉 agent 别再重启一次。
+ * 构建信息性提示文本 —— **纯状态陈述，不含任何行动指令**（v0.7.1）。
+ *
+ * 断环教训（2026-09-10 重启环，见 restart-loop-incident-20260910.md）：
+ * 任何「请自主决定下一步 / 如需继续之前的工作」式措辞，都会把一条**状态消息**变成**工作指令**——
+ * 被唤醒的会话会把上下文里未完成的老板旧指令当成新指令再执行一遍
+ * （实测两次重启的 reason 逐字相同：「老板要求重启 DSH，重启后主动问好」）。
+ * 老板 2026-09-11 拍板：「重启后注入『已重启』就行了」。
+ *
+ * 因此消息体只保留 brand 前缀 + 「已重启」。中断时长 / 会话 id / 是否自触发等细节不再进消息，
+ * 它们本来就有各自落点：`restart_status`、`wake.log`、`restart-history.json`。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.customNotice] 配置里的 `notice`，唯一仍会进消息体的附加文本。
+ *   其余参数（bootAt / prevBootAt / downtimeMs / lastSessionId / lastActiveAt / selfRestart）
+ *   保留仅为兼容既有调用方，**不再影响文本**。
  * @returns {string}
  */
-export function buildNotice({
-  bootAt,
-  prevBootAt,
-  downtimeMs,
-  lastSessionId,
-  lastActiveAt,
-  selfRestart,
-  customNotice,
-}) {
-  const lines = [];
-  lines.push(`[agint-restart] 检测到 DSH 服务已重启。`);
-  if (prevBootAt) {
-    lines.push(`上次运行于 ${prevBootAt}，本次于 ${bootAt} 重启完成。`);
-  } else {
-    lines.push(`本次于 ${bootAt} 启动。`);
-  }
-  if (downtimeMs > 0) {
-    lines.push(`中断约 ${humanizeDowntime(downtimeMs)}。`);
-  }
-  if (lastSessionId) {
-    lines.push(`重启前最近活跃的会话：${lastSessionId}`);
-    if (lastActiveAt) lines.push(`该会话最后活跃于 ${lastActiveAt}。`);
-  }
-  if (selfRestart) {
-    lines.push(`本次重启由本会话先前发起，现已完成——不需要再次重启。`);
-  }
-  if (customNotice) {
-    lines.push(String(customNotice));
-  }
-  lines.push(`如需继续之前的工作，或启动新任务，请自主决定下一步。`);
+export function buildNotice({ customNotice } = {}) {
+  const lines = [`[agint-restart] DSH 已重启。`];
+  if (customNotice) lines.push(String(customNotice));
   return lines.join('\n');
 }

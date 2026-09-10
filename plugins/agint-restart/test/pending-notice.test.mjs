@@ -144,8 +144,8 @@ test('待投通知：任一会话被打开后补投（wake = followup），并�
     assert.equal(agent.received.length, 1, '会话起来后应补投一条');
     assert.equal(agent.received[0].via, 'followup', 'deliveryMode=wake 必须走 followup（真唤醒）');
     const text = agent.received[0].msg.content[0].text;
-    assert.match(text, /检测到 DSH 服务已重启/, '补投的应是恢复通知原文');
-    assert.match(text, /session-A/, '通知里要带上重启前的会话 id');
+    assert.match(text, /已重启/, '补投的应是恢复通知原文');
+    assert.ok(!text.includes('session-A'), 'v0.7.1 起会话 id 不再进消息体（纯状态陈述）');
     assert.ok(!existsSync(pendingPath), '补投成功后必须删除落盘副本');
   } finally {
     ctx.cleanup();

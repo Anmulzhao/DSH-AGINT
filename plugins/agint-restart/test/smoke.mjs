@@ -93,7 +93,7 @@ test('detectRestart: corrupt marker (missing pid) -> not a restart', () => {
 
 // ── Case 2: buildNotice ──
 
-test('buildNotice: 完整字段（含 brand 前缀 agint-restart）', () => {
+test('buildNotice: 纯状态（v0.7.1：只报"已重启"，无行动指令）', () => {
   const text = buildNotice({
     bootAt: '2026-08-28T00:00:05.000Z',
     prevBootAt: '2026-08-28T00:00:00.000Z',
@@ -102,10 +102,9 @@ test('buildNotice: 完整字段（含 brand 前缀 agint-restart）', () => {
     lastActiveAt: '2026-08-28T00:00:00.000Z',
   });
   assert.ok(text.includes('[agint-restart]'), '必须含 [agint-restart] brand 前缀（区别上游 [resume-on-restart]）');
-  assert.ok(text.includes('检测到 DSH 服务已重启'));
-  assert.ok(text.includes('中断约 5 秒'));
-  assert.ok(text.includes('session-abc'));
-  assert.ok(text.includes('自主决定下一步'));
+  assert.ok(text.includes('已重启'));
+  assert.ok(!text.includes('自主决定下一步'), 'v0.7.1 断环：不得含行动指令');
+  assert.ok(!text.includes('中断约') && !text.includes('session-abc'), '细节不进消息体（看 restart_status / wake.log）');
 });
 
 test('buildNotice: 无 downtime / 无 session 时省略', () => {
@@ -238,7 +237,7 @@ test('端到端: apply 二次启动触发投递', async () => {
     const delivered = followupCalled2[0];
     assert.equal(delivered.role, 'user');
     assert.ok(delivered.content[0].text.includes('[agint-restart]'));
-    assert.ok(delivered.content[0].text.includes('检测到 DSH 服务已重启'));
+    assert.ok(delivered.content[0].text.includes('已重启'));
     assert.equal(delivered.source.plugin, 'agint-restart');
     // 上一轮 dispose 时没追踪活跃会话 → lastSessionId 应为 null（首次无 agent 活动）
     // 这个断言是 "无副作用" 的佐证：dormant 路径/意外持久化都不会让 lastSessionId 变 null
@@ -1152,9 +1151,9 @@ test('端到端：自触发重启默认也投递（会话接续），显式 fals
   }
 });
 
-// ── Case 28b: buildNotice 断环文案（v0.6.1：自触发也投递，靠文案明示别重启）──
+// ── Case 28b: buildNotice 断环文案（v0.7.1：纯状态，自触发/外部一律同文）──
 
-test('buildNotice：selfRestart=true 时附"不需要再次重启"，false 时不含', () => {
+test('buildNotice：selfRestart 不再影响文案（v0.7.1 断环，只报已重启）', () => {
   const base = {
     bootAt: '2026-09-11T00:00:00.000Z',
     prevBootAt: '2026-09-11T00:00:00.000Z',
@@ -1163,10 +1162,11 @@ test('buildNotice：selfRestart=true 时附"不需要再次重启"，false 时�
     lastActiveAt: '2026-09-11T00:00:00.000Z',
   };
   const withSelf = buildNotice({ ...base, selfRestart: true });
-  assert.match(withSelf, /不需要再次重启/, '自触发通知必须含断环说明');
-  assert.match(withSelf, /检测到 DSH 服务已重启/);
   const withoutSelf = buildNotice({ ...base, selfRestart: false });
-  assert.doesNotMatch(withoutSelf, /不需要再次重启/, '外部重启不该带断环说明（会产生歧义）');
+  assert.equal(withSelf, withoutSelf, '自触发与外部重启文案必须一致');
+  assert.equal(withSelf, '[agint-restart] DSH 已重启。');
+  assert.doesNotMatch(withSelf, /不需要再次重启/, 'v0.7.1：指令性断环说明已移除');
+  assert.doesNotMatch(withSelf, /自主决定下一步/, 'v0.7.1：不得含行动指令');
 });
 
 // ── Case 29: 真机 schema 编译（用 dsh 实际加载的那份 dsh-tools）──

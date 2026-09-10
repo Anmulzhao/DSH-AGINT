@@ -3,7 +3,8 @@
  *
  * 两件事：
  *   A. 重启检测 + 信息性消息投递（v0.1.0 能力，保留）
- *      —— DSH 重启后向主 agent 投递"中断时长 + 上次活跃会话"，由 agent 自主决定下一步。
+ *      —— DSH 重启后向主 agent 投递**纯状态**消息「DSH 已重启。」（v0.7.1 断环：
+ *         不投任何行动指令；中断时长/会话 id 等细节留 restart_status、wake.log、restart-history.json）。
  *   B. 主动重启能力（v0.2.0 新增）
  *      —— 提供 agint.restart 服务，可被工具/其他插件调用，真正把 dsh 拉起来。
  *
