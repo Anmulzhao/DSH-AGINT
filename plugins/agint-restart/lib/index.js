@@ -1,0 +1,524 @@
+/**
+ * agint-restart v0.2.0 — Cordis 入口
+ *
+ * 两件事：
+ *   A. 重启检测 + 信息性消息投递（v0.1.0 能力，保留）
+ *      —— DSH 重启后向主 agent 投递"中断时长 + 上次活跃会话"，由 agent 自主决定下一步。
+ *   B. 主动重启能力（v0.2.0 新增）
+ *      —— 提供 agint.restart 服务，可被工具/其他插件调用，真正把 dsh 拉起来。
+ *
+ * 重启为什么必须靠外部守护脚本（lib/respawn.js）：
+ *   正在退出的进程不能自己拉起继任者——新实例会在旧进程还占着 3080 端口时
+ *   EADDRINUSE 直接失败。所以拆成：
+ *     1) 本插件写 request.json + detached 拉起 respawn.js，然后自己退出
+ *     2) respawn.js 等旧 pid 消失 + 端口释放 → 拉起新 dsh → 等就绪 → 写结果
+ *
+ * 设计来源：nickkkkkk123123/dsh-resume-on-restart（MIT）——v0.1.0 部分 scope 1:1 移植。
+ * 与上游的关键差异：
+ *   1. 优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）
+ *   2. 持久化目录 ~/.dsh/.agint-restart/（区别于上游的 .resume-on-restart）
+ *   3. brand 前缀从 `[resume-on-restart]` 改为 `[agint-restart]`
+ *   4. cordis.patch.yml 不自动挂顶层（AGINT 红线：首次挂载走 safe-update）
+ *   5. v0.2.0 新增：主动重启 + 三重护栏（confirm / cooldown / 熔断）
+ *
+ * 兼容性：本插件只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*`
+ * 内部包，因此可在 DSH Desktop 打包环境（app.asar）下运行。
+ */
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { buildNotice, detectRestart } from './detect.js';
+
+const name = 'agint-restart';
+
+/** 需要的注入服务：agents（列出/访问 agent）。 */
+const inject = ['agents'];
+
+const DEFAULTS = {
+  enabled: true,
+  stateDir: '.agint-restart',
+  target: 'primary',
+  wakeup: true,
+  notice: '',
+  // 关闭前"活跃即视为与任务相关"的宽限窗口（ms）
+  shutdownGraceMs: 600000,
+  // 活动追踪时忽略的会话 id 前缀（如多代理团队的根会话）
+  ignoredSessionPrefixes: ['head-'],
+
+  // ── v0.2.0：主动重启 ──────────────────────────────────────────
+  // auto = 真拉起；manual = 只生成请求 + 命令，等人工执行（最安全）
+  mode: 'auto',
+  // 两次重启之间的最小间隔（ms），防止抖动
+  cooldownMs: 60000,
+  // 熔断：burstWindowMs 内达到 burstMax 次 → 拒绝后续请求（防重启循环）
+  burstWindowMs: 600000,
+  burstMax: 3,
+  // 拉起新实例前，等旧进程退出的时间；超时则强杀（0 = 不强杀）
+  waitExitMs: 30000,
+  forceKillAfterMs: 20000,
+  // 等端口释放时间
+  portFreeTimeoutMs: 15000,
+  // 就绪判定：lease 文件被刷新 或 端口可连
+  readiness: {
+    leasePath: 'sentinel.lease',  // 相对 DSH_HOME；null 表示只看端口
+    port: 3080,
+    timeoutMs: 60000,
+  },
+  // 新 dsh 的 stdout/stderr 落盘位置
+  logFile: join(tmpdir(), 'dsh-web.log'),
+  // 退出自身的方式：exit = process.exit；signal = 发 SIGTERM（win32 无真信号，默认 exit）
+  exitStrategy: process.platform === 'win32' ? 'exit' : 'signal',
+  // 发出请求后延迟多久退出自己（留出时间让调用方拿到返回值）
+  shutdownDelayMs: 3000,
+  // 手动覆盖拉起命令（默认从当前进程快照自动推断）
+  launch: null,
+};
+
+/** 解析 DSH_HOME：优先环境变量，回退到用户主目录下的 .dsh。 */
+function resolveDshHome() {
+  return process.env.DSH_HOME || join(homedir(), '.dsh');
+}
+
+/** 会话 id 是否以给定前缀开头（用于排除不需要追踪的会话）。 */
+function ignoredByPrefix(sessionId, prefixes) {
+  return (prefixes || []).some((p) => String(sessionId).startsWith(p));
+}
+
+/** 记录唤醒/投递结果到 markerDir/wake.log。 */
+function writeWakeLog(markerDir, deliveredTo, ok, error) {
+  try {
+    writeFileSync(join(markerDir, 'wake.log'), JSON.stringify({
+      deliveredTo, ok, error: error ?? null, at: new Date().toISOString(),
+    }), 'utf8');
+  } catch (e) { /* ignore */ }
+}
+
+/** 手写一条用户消息对象（等价于 @deepseek-ai/dsh-llm 的 createUserMessage）。 */
+function createUserMessage({ content, source }) {
+  return {
+    role: 'user',
+    content,
+    source,
+    id: randomUUID(),
+  };
+}
+
+/** 读 JSON 文件，缺失/损坏返回 fallback（不抛）。 */
+function readJson(path, fallback) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/** 写 JSON 文件（原子性要求不高，直接覆盖；失败只 warn）。 */
+function writeJson(path, doc) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(doc, null, 2));
+    return true;
+  } catch (err) {
+    console.warn('[agint-restart] write failed:', path, err?.message ?? err);
+    return false;
+  }
+}
+
+/** 快照环境变量：剔除易变的 shell 噪声，其余原样传给新进程。 */
+function snapshotEnv() {
+  const drop = new Set(['_', 'OLDPWD', 'PWD', 'SHLVL', '__CF_USER_TEXT_ENCODING']);
+  const out = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (drop.has(k)) continue;
+    if (k.startsWith('npm_config_') || k.startsWith('npm_lifecycle_')) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** 推断"我当初是怎么被启动的"，供 respawn 复现。 */
+function snapshotLaunch(override) {
+  if (override && typeof override.command === 'string' && Array.isArray(override.args)) {
+    return { ...override, cwd: override.cwd || process.cwd(), env: override.env ?? snapshotEnv() };
+  }
+  return {
+    command: process.execPath,
+    // argv[0]=node 自身，argv[1]=入口 js（dsh/lib/bin.js），其后是 'web' 等参数
+    args: process.argv.slice(1),
+    cwd: process.cwd(),
+    env: snapshotEnv(),
+  };
+}
+
+function apply(ctx, cfg = {}) {
+  const config = { ...DEFAULTS, ...cfg };
+  const readiness = { ...DEFAULTS.readiness, ...(cfg.readiness ?? {}) };
+  if (!config.enabled) return;
+
+  const markerDir = join(resolveDshHome(), config.stateDir);
+  const markerPath = join(markerDir, 'marker.json');
+  const requestPath = join(markerDir, 'restart-request.json');
+  const resultPath = join(markerDir, 'restart-result.json');
+  const historyPath = join(markerDir, 'restart-history.json');
+  const respawnScript = fileURLToPath(new URL('./respawn.js', import.meta.url));
+
+  // 1. 读取上次 marker（容忍缺失/损坏）
+  let marker = null;
+  try {
+    const raw = JSON.parse(readFileSync(markerPath, 'utf8'));
+    if (raw && typeof raw.lastBootAt === 'string' && typeof raw.pid === 'number') {
+      marker = raw;
+    }
+  } catch {
+    marker = null; // 首次启动或损坏
+  }
+
+  const bootAt = new Date().toISOString();
+  const { wasRestart, downtimeMs } = detectRestart(marker, Date.now(), process.pid);
+  const prevBootAt = marker?.lastBootAt ?? null;
+  const lastSessionId = marker?.lastSessionId ?? null;
+  const lastActiveAt = marker?.lastActiveAt ?? null;
+
+  // 拉起快照：必须在插件 apply 时抓，此时 cwd/argv/env 还是启动时刻的样子
+  const launch = snapshotLaunch(config.launch);
+
+  // 2. 活动追踪（运行期间持续记录最近活跃会话）
+  let trackedActiveId = null;
+  let trackedActiveAt = 0;
+  const recordActivity = (agent) => {
+    const sid = String(agent?.id ?? '');
+    if (ignoredByPrefix(sid, config.ignoredSessionPrefixes)) return;
+    trackedActiveId = sid;
+    trackedActiveAt = Date.now();
+  };
+
+  // 3. 持久化状态（启动时写 marker + 优雅 dispose 时写最近活跃）
+  const writeState = (extra = {}) => {
+    try {
+      mkdirSync(markerDir, { recursive: true });
+      const doc = {
+        lastBootAt: bootAt,
+        pid: process.pid,
+        // 优先最近追踪的活跃会话，否则保留上次的
+        lastSessionId: trackedActiveId ?? marker?.lastSessionId ?? null,
+        lastActiveAt: trackedActiveAt
+          ? new Date(trackedActiveAt).toISOString()
+          : marker?.lastActiveAt ?? null,
+        ...extra,
+      };
+      writeFileSync(markerPath, JSON.stringify(doc, null, 2));
+    } catch (err) {
+      console.warn('[agint-restart] could not write marker:', err);
+    }
+  };
+  writeState();
+
+  // ── 重启历史 / 熔断 ────────────────────────────────────────────
+  const readHistory = () => readJson(historyPath, { events: [] });
+  const writeHistory = (h) => writeJson(historyPath, h);
+
+  /** 记录一次重启，并判断是否触发熔断。 */
+  const recordRestart = (requestId, reason) => {
+    const h = readHistory();
+    const events = Array.isArray(h.events) ? h.events : [];
+    events.push({ at: new Date().toISOString(), requestId, reason: reason ?? null, pid: process.pid });
+    // 只保留最近 50 条，防止文件无限增长
+    const trimmed = events.slice(-50);
+    writeHistory({ events: trimmed });
+    return trimmed;
+  };
+
+  /** 当前是否处于熔断窗口内。 */
+  const burstState = () => {
+    const h = readHistory();
+    const events = Array.isArray(h.events) ? h.events : [];
+    const cutoff = Date.now() - config.burstWindowMs;
+    const recent = events.filter((e) => Date.parse(e.at) >= cutoff);
+    return { count: recent.length, tripped: recent.length >= config.burstMax, recent };
+  };
+
+  // 优雅关闭：cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）
+  // 上游在 onSigterm/onSigint 里调 process.kill(process.pid, ...) 二次 kill 自己——
+  // 这里只让 cordis 自己负责停机，dispose 钩子里只持久化状态。
+  ctx.effect(() => () => {
+    try {
+      if (trackedActiveId) writeState({ when: new Date().toISOString() });
+    } catch (e) { /* ignore */ }
+  });
+
+  // 4. 监听 agent 活动事件（追踪最近活跃会话）
+  ctx.on('agent/session-start', ({ agent }) => {
+    recordActivity(agent);
+  });
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
+    recordActivity(agent);
+    return next();
+  });
+
+  // ── 主动重启：核心 ─────────────────────────────────────────────
+  let pending = null; // 同一时刻只允许一个在途请求
+
+  /** 关掉自己，让 respawn.js 拉起的新实例能接管端口。 */
+  const shutdownSelf = (delayMs) => {
+    setTimeout(() => {
+      try { writeState({ shuttingDownAt: new Date().toISOString() }); } catch { /* ignore */ }
+      if (config.exitStrategy === 'signal') {
+        try { process.kill(process.pid, 'SIGTERM'); } catch { /* ignore */ }
+      }
+      // signal 在 win32 上不可靠，兜底 exit；exit 策略直接 exit
+      setTimeout(() => process.exit(0), 1500).unref?.();
+    }, Math.max(0, delayMs)).unref?.();
+  };
+
+  /**
+   * 请求重启。护栏顺序：enabled → mode → confirm → pending → 熔断 → cooldown。
+   * @returns {object} {accepted, requestId?, reason?, ...}
+   */
+  const request = (input = {}) => {
+    const reason = typeof input?.reason === 'string' ? input.reason : '';
+    const force = input?.force === true;
+    const dryRun = input?.dryRun === true;
+    const confirm = input?.confirm === true;
+    const delayMs = Number.isFinite(input?.delayMs) ? input.delayMs : config.shutdownDelayMs;
+
+    const deny = (code, message, extra = {}) => ({
+      accepted: false, code, message, ...extra,
+    });
+
+    if (config.mode === 'manual') {
+      // 人工模式：只把"怎么重启"写清楚，不做任何危险动作
+      const cmd = buildManualCommand(launch);
+      writeJson(requestPath, {
+        requestId: null, reason, requestedAt: new Date().toISOString(),
+        mode: 'manual', launch, command: cmd,
+      });
+      return { accepted: false, code: 'manual-mode', message: '当前为 manual 模式，未自动重启', command: cmd, launch };
+    }
+
+    if (!confirm && !force) {
+      return deny('needs-confirm', '重启会中断所有进行中的会话，需显式传 confirm:true（或 force:true 绕过）');
+    }
+    if (pending && Date.now() - pending.at < 120000) {
+      return deny('already-pending', `已有在途重启请求 ${pending.requestId}（${new Date(pending.at).toISOString()}）`);
+    }
+
+    const burst = burstState();
+    if (burst.tripped) {
+      return deny('tripped', `${config.burstWindowMs / 1000}s 内已重启 ${burst.count} 次（上限 ${burst.max ?? config.burstMax}），触发熔断，拒绝继续重启`, { count: burst.count });
+    }
+
+    const h = readHistory();
+    const last = Array.isArray(h.events) && h.events.length ? h.events[h.events.length - 1] : null;
+    const sinceLast = last ? Date.now() - Date.parse(last.at) : Infinity;
+    if (sinceLast < config.cooldownMs && !force) {
+      return deny('cooldown', `距上次重启仅 ${Math.round(sinceLast / 1000)}s，冷却期 ${config.cooldownMs / 1000}s`, {
+        cooldownRemainingMs: config.cooldownMs - sinceLast,
+      });
+    }
+
+    const requestId = randomUUID().slice(0, 8);
+    const payload = {
+      requestId,
+      reason,
+      requestedAt: new Date().toISOString(),
+      targetPid: process.pid,
+      stateDir: markerDir,
+      launch,
+      waitExitMs: config.waitExitMs,
+      forceKillAfterMs: config.forceKillAfterMs,
+      portFreeTimeoutMs: config.portFreeTimeoutMs,
+      readiness: {
+        leasePath: readiness.leasePath ? join(resolveDshHome(), readiness.leasePath) : null,
+        port: readiness.port,
+        timeoutMs: readiness.timeoutMs,
+      },
+      logFile: config.logFile,
+    };
+
+    // dryRun：只返回将要做什么，不落盘不拉进程
+    if (dryRun) {
+      return {
+        accepted: false,
+        code: 'dry-run',
+        message: 'dryRun：未执行，以下是将要发生的动作',
+        requestId,
+        plan: {
+          requestFile: requestPath,
+          respawnScript,
+          targetPid: payload.targetPid,
+          launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
+          waitExitMs: payload.waitExitMs,
+          forceKillAfterMs: payload.forceKillAfterMs,
+          readiness: payload.readiness,
+          shutdownDelayMs: delayMs,
+        },
+      };
+    }
+
+    if (!writeJson(requestPath, payload)) {
+      return deny('write-failed', `无法写入请求文件：${requestPath}`);
+    }
+
+    // detached 拉起守护脚本：它会在我们死后把新 dsh 拉起来
+    try {
+      const child = spawn(process.execPath, [respawnScript, requestPath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        cwd: launch.cwd,
+        env: process.env,
+      });
+      child.unref();
+    } catch (err) {
+      return deny('spawn-failed', `守护进程启动失败：${String(err?.message ?? err)}`);
+    }
+
+    pending = { requestId, at: Date.now() };
+    recordRestart(requestId, reason);
+    console.log(`[agint-restart] restart requested (${requestId}) reason=${reason || '-'} pid=${process.pid}`);
+
+    // 延迟退出自己，让调用方先拿到返回值
+    shutdownSelf(delayMs);
+
+    return {
+      accepted: true,
+      requestId,
+      targetPid: process.pid,
+      shutdownInMs: delayMs,
+      message: `已安排重启：${delayMs}ms 后当前进程退出，由守护脚本拉起新实例`,
+      launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
+      resultFile: resultPath,
+    };
+  };
+
+  /** 手动模式下给老板的可复制命令。 */
+  function buildManualCommand(l) {
+    return `cd "${l.cwd}" && "${l.command}" ${l.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
+  }
+
+  /** 只读状态：当前进程、冷却、熔断、上次重启结果。 */
+  const status = () => {
+    const burst = burstState();
+    const h = readHistory();
+    const last = Array.isArray(h.events) && h.events.length ? h.events[h.events.length - 1] : null;
+    const sinceLast = last ? Date.now() - Date.parse(last.at) : Infinity;
+    return {
+      enabled: config.enabled,
+      mode: config.mode,
+      pid: process.pid,
+      bootAt,
+      wasRestart,
+      pending: pending ? { requestId: pending.requestId, at: new Date(pending.at).toISOString() } : null,
+      cooldownRemainingMs: sinceLast < config.cooldownMs ? config.cooldownMs - sinceLast : 0,
+      burst: { windowMs: config.burstWindowMs, max: config.burstMax, count: burst.count, tripped: burst.tripped },
+      lastRestart: last ?? null,
+      historyCount: Array.isArray(h.events) ? h.events.length : 0,
+      lastResult: existsSync(resultPath) ? readJson(resultPath, null) : null,
+      launch: { command: launch.command, args: launch.args, cwd: launch.cwd },
+    };
+  };
+
+  /** 取消在途请求（仅在还没退出时有效）。 */
+  const cancel = () => {
+    if (!pending) return { cancelled: false, code: 'no-pending', message: '没有在途的重启请求' };
+    const id = pending.requestId;
+    pending = null;
+    // 守护脚本可能已经跑起来了；写一条 cancel 标记，respawn 侧以 request 文件为准，
+    // 这里主要通过删除请求文件 + 清空 pending 阻止后续重复请求
+    try { writeJson(requestPath, { ...readJson(requestPath, {}), cancelledAt: new Date().toISOString() }); } catch { /* ignore */ }
+    return { cancelled: true, requestId: id, message: '已清除在途标记；若守护脚本已启动，需人工确认是否有新实例被拉起' };
+  };
+
+  const detect = () => ({
+    wasRestart,
+    downtimeMs,
+    lastSessionId,
+    lastActiveAt,
+    prevBootAt,
+    currentBootAt: bootAt,
+    pid: process.pid,
+  });
+
+  // 注册服务：整包 + 与 manifest 声明一致的 detect 别名
+  ctx.provide('agint.restart', { detect, status, request, cancel });
+  ctx.provide('agint.restart.detect', detect);
+
+  // 5. 若发生重启，向主 agent 投递信息性消息
+  if (wasRestart) {
+    ctx.inject(['agents'], (scope) => {
+      ctx.effect(() => {
+        const findTarget = () => {
+          try {
+            const roots = scope.agents.roots?.() ?? [];
+            if (config.target === 'primary') {
+              return roots[0] ?? scope.agents.list?.()[0] ?? null;
+            }
+            return scope.agents.get?.(config.target) ?? null;
+          } catch (err) {
+            console.warn('[agint-restart] agent lookup failed:', err);
+            return null;
+          }
+        };
+        const deliver = (target) => {
+          const text = buildNotice({
+            bootAt,
+            prevBootAt,
+            downtimeMs,
+            lastSessionId,
+            lastActiveAt,
+            customNotice: config.notice,
+          });
+          const msg = createUserMessage({
+            content: [{ type: 'text', text }],
+            source: {
+              kind: 'plugin',
+              plugin: 'agint-restart',
+              form: 'notice',
+              summary: `agint-restart: DSH restarted at ${bootAt}`,
+            },
+          });
+          try {
+            if (config.wakeup !== false) {
+              target.followup(msg);
+            } else {
+              target.inject(msg);
+            }
+            console.log('[agint-restart] notice delivered to', String(target.id));
+            writeWakeLog(markerDir, String(target.id), true, null);
+          } catch (err) {
+            console.warn('[agint-restart] deliver failed:', err);
+            writeWakeLog(markerDir, String(target.id), false, String(err));
+          }
+        };
+        // 首次立即尝试
+        let target = findTarget();
+        if (target) { deliver(target); return; }
+        // 轮询等待 agent 出现（最长 ~20 秒）
+        let waited = 0;
+        const MAX_WAIT_MS = 20000;
+        const POLL_MS = 500;
+        const timer = setInterval(() => {
+          waited += POLL_MS;
+          target = findTarget();
+          if (target) {
+            clearInterval(timer);
+            deliver(target);
+          } else if (waited >= MAX_WAIT_MS) {
+            clearInterval(timer);
+            console.log('[agint-restart] no target agent found after wait, skip wake');
+            writeWakeLog(markerDir, null, false, 'no target agent after wait');
+          }
+        }, POLL_MS);
+        // 把 setInterval 也注册为 disposer（dispose 时自动 clear）
+        ctx.effect(() => () => clearInterval(timer));
+      });
+    });
+  } else {
+    console.log('[agint-restart] no restart detected, boot normal');
+  }
+}
+
+export { apply, inject, name };

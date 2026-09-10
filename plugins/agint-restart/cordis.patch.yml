@@ -1,0 +1,59 @@
+# agint-restart loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml 中
+#      （与 agint-quality-sandbox 同一 tier 块；mountOrder 50 排在 mount 后面）
+#   2. 跑 bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. bin/restart-runbook.ps1 重启
+#
+# 本文件**不**由 loader 自动包含；首次挂载由老板走 safe-update 合并（AGENTS.md 红线）。
+#
+# v0.2.0 新增配置项（主动重启）：mode / cooldownMs / burstWindowMs / burstMax /
+#   waitExitMs / forceKillAfterMs / portFreeTimeoutMs / readiness / logFile /
+#   exitStrategy / shutdownDelayMs / launch
+#
+# 工具需要额外在 preset 里加一行（首挂走 safe-update，红线）：
+#   - id: agint-restart-tools
+#     name: ../../profiles/web/plugins/agint-restart/lib/tools.js
+
+# agint-restart: v0.2.0 DSH 重启闭环插件（检测 + 主动重启）。
+#   v0.1.0（借鉴 nickkkkkk123123/dsh-resume-on-restart，scope 1:1）：
+#   - marker 文件记录 pid / lastBootAt / lastSessionId
+#   - 启动时对比当前 pid，判定为重启则向主 agent 投递"中断时长 + 上次活跃会话"摘要
+#   - agent 自主决定继续 / 换任务 / 忽略（不强制）
+#   - 优雅关闭走 cordis dispose 钩子（修正上游 SIGTERM 二次 kill bug）
+#   - 活动追踪监听 agent/session-start + agent/pre-step
+#   v0.2.0 新增（主动重启）：
+#   - 写 request.json → detached 拉起 lib/respawn.js → 自己延迟退出
+#   - respawn 等旧进程退出 + 3080 端口释放 → 拉起新 dsh → 等 lease/端口就绪
+#   - 护栏：confirm 必填 / cooldown / 窗口内次数熔断 / 单在途请求 / dryRun
+#   - 只依赖 cordis ctx 的 agents 服务（不 import 任何 dsh-* 内部包）
+- insert:
+    - id: agint-restart
+      name: ./plugins/agint-restart/lib/index.js
+      config:
+        enabled: true
+        stateDir: .agint-restart
+        target: primary
+        wakeup: true
+        notice: ''
+        shutdownGraceMs: 600000
+        ignoredSessionPrefixes:
+          - head-
+        # ── 主动重启 ──
+        mode: auto
+        cooldownMs: 60000
+        burstWindowMs: 600000
+        burstMax: 3
+        waitExitMs: 30000
+        forceKillAfterMs: 20000
+        portFreeTimeoutMs: 15000
+        readiness:
+          leasePath: sentinel.lease
+          port: 3080
+          timeoutMs: 60000
+        logFile: C:\Users\Administrator\AppData\Local\Temp\dsh-web.log
+        exitStrategy: exit
+        shutdownDelayMs: 3000
