@@ -1,6 +1,6 @@
 {
   "name": "agint-restart",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "AGINT 插件：检测 DSH 重启后自动唤醒主 agent 并投递信息性消息，让 agent 自主决定是否继续之前的工作或启动新任务。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。",
   "keywords": [
     "agint",

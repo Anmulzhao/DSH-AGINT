@@ -196,6 +196,9 @@ const STATUS_FIELDS = [
   { key: 'pid', dsl: { type: 'number', required: true }, fallback: 0 },
   { key: 'bootAt', dsl: { type: 'string', required: true }, fallback: '' },
   { key: 'wasRestart', dsl: { type: 'boolean', required: true }, fallback: false },
+  // v0.5.0：本次启动是否由插件自己的重启请求导致（true 时默认不发恢复通知，用于切断重启环）
+  { key: 'selfRestart', dsl: { type: 'boolean', required: true }, fallback: false },
+  { key: 'selfRestartRequestId', dsl: optionalNullable('string') },
   { key: 'cooldownRemainingMs', dsl: { type: 'number', required: true }, fallback: 0 },
   {
     key: 'burst',
