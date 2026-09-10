@@ -1190,3 +1190,33 @@ test('status 字段表覆盖新增字段：selfRestart / selfRestartRequestId �
   const r2 = normalizeStatusOutput({ ...sample, bogusField: 1 });
   assert.deepEqual(r2.dropped, ['bogusField']);
 });
+
+// ── Case 31: win32 启动方式契约（防回退成「无控制台」，那会让 dsh 每调一次工具弹一次黑框）──
+
+test('win32：新 dsh 必须走「隐藏窗口」启动，不得用 detached / windowsHide 丢控制台', () => {
+  const src = readFileSync(resolve(PLUGIN_DIR, 'lib', 'respawn.js'), 'utf8');
+
+  assert.match(src, /function launchHiddenWin32/, '缺少 win32 隐藏启动函数');
+  assert.match(
+    src,
+    /process\.platform === 'win32'\s*\?\s*launchHiddenWin32/,
+    'win32 分支没有走隐藏启动（回退成 detached 就会重新开始弹窗）',
+  );
+
+  const hiddenStart = src.indexOf('function launchHiddenWin32');
+  const hiddenEnd = src.indexOf('function quoteVbsString');
+  assert.ok(hiddenStart > 0 && hiddenEnd > hiddenStart, 'launchHiddenWin32 片段定位失败');
+  const hidden = src.slice(hiddenStart, hiddenEnd);
+
+  // 硬约束 1：win32 路径不能出现 detached（= DETACHED_PROCESS = 没有控制台）
+  assert.ok(!/detached\s*:\s*true/.test(hidden), 'win32 隐藏启动里不得出现 detached:true');
+  // 硬约束 2：必须借 WScript 的 SW_HIDE，且不等待
+  assert.ok(hidden.includes('WScript.Shell'), '必须借 WScript 隐藏启动');
+  assert.ok(hidden.includes(', 0, False'), 'Run 必须以 SW_HIDE(0) 且不等待(False) 启动');
+  // 硬约束 3：stdout/stderr 仍要落盘（.cmd 里做重定向）
+  assert.ok(/\d>&1|2>&1/.test(hidden) || hidden.includes('2>&1'), '必须保留输出重定向');
+
+  // POSIX 分支保持 detached（没有控制台概念，行为不变）
+  const posix = src.slice(src.indexOf('function launchDetachedPosix'), hiddenStart);
+  assert.match(posix, /detached\s*:\s*true/, 'posix 分支应保留 detached');
+});

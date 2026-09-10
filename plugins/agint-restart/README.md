@@ -97,14 +97,40 @@ detached spawn lib/respawn.js
                                           ↓
                                         等 3080 端口释放（portFreeTimeoutMs）
                                           ↓
-                                        spawn 新 dsh web（复现启动时的 command/args/cwd/env）
+                                        拉起新 dsh web（复现启动时的 command/args/cwd/env）
+                                        · win32：借 WScript 隐藏窗口启动，目的是让新 dsh
+                                          拿到一个「不可见的控制台」——详见下方「坑」
                                           ↓
                                         等就绪（sentinel.lease 被刷新 或 端口可连）
                                           ↓
                                         写 restart-result.json + restart.log
 ```
 
-`respawn.js` 是 detached + unref 的独立进程，父进程（dsh）死后变孤儿继续跑，不受影响。它只用 node 内置模块，**不经 shell**。
+`respawn.js` 是 detached + unref 的独立进程，父进程（dsh）死后变孤儿继续跑，不受影响。它只用 node 内置模块；**POSIX 上不经 shell**（纯 detached spawn）。
+
+### 坑（v0.6.0 修）：新 dsh 必须有一个控制台，否则每调一次工具弹一次黑框
+
+dsh 的 Windows 沙箱（`dsh-sandbox-windows-acl`）在源码里**刻意不做控制台隔离**，注释原话是
+"`the child shares the host console`"——它默认宿主（dsh）自己有一个控制台。
+
+而 `detached: true`（DETACHED_PROCESS）和 `windowsHide: true`（CREATE_NO_WINDOW）**都不会给进程控制台**。
+所以旧实现拉起的新 dsh 是无控制台的孤儿，于是它每 spawn 一个子进程（沙箱子进程、node-pty 辅助进程、
+pwsh 工具…），Windows 就给那个子进程**新建一个控制台窗口**——表现为"每调一次工具弹一次黑框"。
+
+Node 的 `spawn` 表达不了"窗口不可见但控制台存在"这个语义，所以 win32 路径改走：
+
+```
+respawn.js --(wscript.exe)--> respawn-launch.vbs   Run "…\respawn-launch.cmd", 0, False
+                               └ 0 = SW_HIDE（窗口不可见，进程仍分配控制台）
+                               └ False = 不等待
+                                  ↓
+                             respawn-launch.cmd      cd /d <cwd> && <dsh 命令> >> <log> 2>&1
+                               └ .cmd 只负责输出重定向（VBS 的 Run 不支持重定向）
+```
+
+wscript 启动后立即退出；`.cmd` 会一直等到 dsh 结束（它就是控制台的持有者）。
+`restart-result.json` 里 `launchShellPid` 是壳进程（wscript）的 pid，`newPid` 是就绪后
+用 `netstat -ano` 反查出来的**真实 dsh pid**。
 
 ### 怎么触发
 

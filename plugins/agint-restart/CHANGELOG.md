@@ -4,6 +4,64 @@
 
 ---
 
+## v0.6.0 — 2026-09-11 — 修 win32「每调一次工具弹一次黑框」
+
+**背景（老板反馈）**：「我发现 dsh 每次调工具都会弹一次」
+
+**性质**：这是 **v0.2.0 主动重启引入的回归**，不是新问题。
+
+### 根因
+
+dsh 的 Windows 沙箱 `dsh-sandbox-windows-acl` 在源码里**刻意不设控制台隔离**：
+
+> Console isolation (CREATE_NO_WINDOW / CREATE_NEW_CONSOLE) is **intentionally absent** …
+> **the child shares the host console.** (`lib/types/spawn.d.ts`)
+
+也就是说，dsh 的一切子进程（沙箱进程、node-pty 辅助进程、pwsh 工具）都假设
+"**宿主 dsh 自己有一个控制台**"，它们共享它、不新建窗口。
+
+而 v0.2.0 的 `respawn.js` 用 `detached: true` + `windowsHide: true` 拉起新 dsh——
+这两个选项在 Windows 上分别对应 DETACHED_PROCESS 和 CREATE_NO_WINDOW，
+**都不给进程控制台**。于是新 dsh 成了无控制台的孤儿，它每 spawn 一个子进程，
+Windows 就给那个子进程新建一个控制台窗口 → **每调一次工具弹一次黑框**。
+
+从终端手动跑 `dsh web` 时不会出现（继承终端控制台），只有被 respawn 拉起后才出现。
+
+### 证据
+
+1. 运行中的 dsh 进程父进程已退出、名下无任何 `conhost.exe`（= 无控制台）；
+   而它 spawn 的 powershell 子进程名下**有** `conhost.exe`（= 子进程新建了窗口）。
+2. 对照实验（探针进程 + 检查 conhost 归属）：
+
+   | 启动方式 | 探针自己的控制台 | 探针的子进程 |
+   |---|---|---|
+   | `detached:true` + `windowsHide:true`（旧做法） | 无 | **新建控制台 → 弹窗** |
+   | WScript 隐藏窗口（新做法） | 有（不可见） | 共享，**不弹** |
+
+3. 日志里 `node-pty/lib/conpty_console_list_agent.js` 的 `AttachConsole failed` 崩溃栈
+   是同一根因的旁证（其辅助进程被 fork 时也在新建控制台）。
+
+### 修复
+
+win32 分支改走 `WScript.Shell.Run(cmd, 0, False)`：窗口风格 `0` = SW_HIDE
+（窗口不可见，但进程**真的分配到了控制台**），`False` = 不等待。中间包一层
+`respawn-launch.cmd` 接管输出重定向（`Run` 本身不支持重定向）。
+Node 的 `spawn` 表达不出"窗口不可见但控制台存在"这个语义，所以必须借一层 WScript。
+
+- 新增 `launchHiddenWin32()` / `launchDetachedPosix()`（按平台分发）
+- 新增 `findListenerPid()`：壳进程（wscript）不是 dsh，就绪后用 `netstat -ano`
+  反查真实 dsh pid 写入 `result.newPid`，壳 pid 另存 `result.launchShellPid`
+- POSIX 行为不变（无控制台概念，仍是纯 detached spawn）
+- 新增 Case 31 护栏：静态断言 win32 路径必须走隐藏启动、不得出现 `detached:true`，
+  且 POSIX 分支仍保留 detached（已做变异验证：改坏即变红）
+
+### 验证
+
+端到端跑真实 `respawn.js` 拉起一个模拟进程（带端口监听 + console 子进程）：
+`ok=true`、`newPid` 反查正确、**子进程未新建控制台**。
+
+---
+
 ## v0.5.0 — 2026-09-11 — 防弹窗 + 断环
 
 **背景（老板反馈）**：「重启插件不停的造成弹窗，是循环注入吗」
