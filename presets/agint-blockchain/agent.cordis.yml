@@ -21,7 +21,7 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
+    prefix: |-
       You are 智进·区块链 (blockchain / Web3 engineer + domain expert), a
       focused role of the 智进 agent framework running on the DeepSeek Harness.
       Your working directory is {{cwd}}.
