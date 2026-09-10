@@ -39,6 +39,24 @@ export function detectRestart(marker, nowMs, pid) {
 }
 
 /**
+ * 抖动判定：相邻两次启动间隔 < debounceMs 则视为同一次重启的"再投"，
+ * 跳过通知投递（防止老板连续 restart 反复唤醒 agent）。语义：
+ *   - downtimeMs < debounceMs → 抖动，不投
+ *   - downtimeMs >= debounceMs → 真重启，照常投
+ *   - downtimeMs === 0（如 marker 缺失）→ 不算抖动，照常判定上游 wasRestart
+ *
+ * @param {object} detect  detectRestart(...) 的返回值
+ * @param {number} debounceMs 防抖窗口（毫秒）；<=0 视为关闭
+ * @returns {{debounced: boolean, reason: 'within-debounce'|'normal'|null}}
+ */
+export function shouldNotify({ wasRestart, downtimeMs }, debounceMs) {
+  if (!wasRestart) return { debounced: false, reason: null };
+  if (!Number.isFinite(debounceMs) || debounceMs <= 0) return { debounced: false, reason: null };
+  if (downtimeMs < debounceMs) return { debounced: true, reason: 'within-debounce' };
+  return { debounced: false, reason: null };
+}
+
+/**
  * 构建信息性提示文本（由 agent 自主决定下一步）。
  * @param {object} opts
  * @returns {string}

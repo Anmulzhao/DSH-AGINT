@@ -158,8 +158,13 @@ restart_cancel                        // 清除在途标记
 | `readiness.timeoutMs` | `60000` | 就绪等待上限 |
 | `logFile` | `%TEMP%/dsh-web.log` | 新实例 stdout/stderr 落盘位置 |
 | `exitStrategy` | win32 `exit` / 其它 `signal` | 自己怎么退出（`exit`=`process.exit`，`signal`=发 SIGTERM；win32 无真信号故默认 exit） |
-| `shutdownDelayMs` | `3000` | 发请求后延迟多久退出（留出返回值时间） |
+| `shutdownDelayMs` | `1500` | 发请求后延迟多久退出（留出返回值时间）。**这段完全计入用户感知的"重启等待"**，故从 3000 收紧 |
+| `notifyDebounceMs` | `300000` | 抖动窗口：相邻两次启动间隔 < 此值则**不投递**通知。判据含"上次进程存活时长"，5 分钟可覆盖连续 restart 验证；`<=0` 关闭 |
 | `launch` | `null` | 手工覆盖拉起命令 `{command,args,cwd,env}`；默认从当前进程自动快照 |
+
+> **重启耗时构成（实测 25s → 优化后约 21-22s）**：等旧进程退出 4.6s（其中 3s 曾是插件自身延迟）
+> + 端口释放 ~0s + **等新实例就绪 20.2s**。最后这段是 dsh 加载全部插件的固有耗时，
+> **不在本插件能力范围内**——要再快需优化 dsh 启动链本身。
 
 > **`shutdownGraceMs` 未消费**：上游也没用这字段（位于 manifest 默认值，但代码不读）。如果需要"距上次活跃 ≤ grace 视为任务相关"的语义，v0.2 加。
 

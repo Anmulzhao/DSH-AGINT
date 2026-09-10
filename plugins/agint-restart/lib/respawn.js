@@ -25,6 +25,12 @@ import net from 'node:net';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 轮询间隔：重启链路的固定开销全靠这几个值，容忍度是"多几次无副作用的探测"。
+// 旧值统一 500/1000ms 时，退出确认 + 就绪确认合计要多等约 2 秒。
+const POLL_EXIT_MS = 200;   // 等旧进程退出
+const POLL_PORT_MS = 200;   // 等端口释放
+const POLL_READY_MS = 250;  // 等新实例就绪（探测本身很轻：stat 文件 + TCP connect）
+
 /** 追加一行人类可读日志（失败不影响主流程）。 */
 function log(logFile, msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
@@ -85,7 +91,7 @@ async function waitForExit(pid, waitMs, forceAfterMs, logFile) {
   const started = Date.now();
   while (Date.now() - started < waitMs) {
     if (!isAlive(pid)) return { exited: true, forced: false, waitedMs: Date.now() - started };
-    await sleep(500);
+    await sleep(POLL_EXIT_MS);
   }
   if (forceAfterMs > 0 && isAlive(pid)) {
     log(logFile, `respawn: PID ${pid} ${waitMs}ms 未退出，执行强杀`);
@@ -93,7 +99,7 @@ async function waitForExit(pid, waitMs, forceAfterMs, logFile) {
     const killStart = Date.now();
     while (Date.now() - killStart < 15000) {
       if (!isAlive(pid)) return { exited: true, forced: true, waitedMs: Date.now() - started };
-      await sleep(500);
+      await sleep(POLL_EXIT_MS);
     }
     return { exited: false, forced: true, waitedMs: Date.now() - started };
   }
@@ -106,7 +112,7 @@ async function waitPortFree(port, timeoutMs, logFile) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (!(await portInUse(port))) return { free: true, waitedMs: Date.now() - started };
-    await sleep(500);
+    await sleep(POLL_PORT_MS);
   }
   log(logFile, `respawn: 端口 ${port} ${timeoutMs}ms 仍未释放（新实例可能 EADDRINUSE）`);
   return { free: false, waitedMs: Date.now() - started };
@@ -145,7 +151,7 @@ async function waitReady(readiness, logFile) {
     if (port && (await portInUse(port))) {
       return { ready: true, signal: 'port', waitedMs: Date.now() - started };
     }
-    await sleep(1000);
+    await sleep(POLL_READY_MS);
   }
   log(logFile, `respawn: ${timeoutMs}ms 内未观测到就绪信号（lease=${leasePath} port=${port}）`);
   return { ready: false, signal: null, waitedMs: Date.now() - started };

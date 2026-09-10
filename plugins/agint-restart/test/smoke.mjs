@@ -222,10 +222,10 @@ test('端到端: apply 二次启动触发投递', async () => {
     m2.pid = 99999;
     writeFileSync(join(tmpRoot, '.agint-restart-smoke', 'marker.json'), JSON.stringify(m2, null, 2));
 
-    apply(ctx2, { stateDir: '.agint-restart-smoke' });
+    apply(ctx2, { stateDir: '.agint-restart-smoke', notifyDebounceMs: 0 });
     // 等 setInterval 第一次轮询（500ms POLL_MS）+ 一点缓冲
     await new Promise((r) => setTimeout(r, 700));
-    // 二次启动：投递触发
+    // 二次启动：投递触发（notifyDebounceMs:0 关掉防抖，否则 downtime<60s 窗口也会被吃）
     assert.equal(followupCalled2.length, 1, '二次启动应投递 1 条 followup');
     const delivered = followupCalled2[0];
     assert.equal(delivered.role, 'user');
@@ -554,7 +554,7 @@ test('投递目标优先回到 lastSessionId 对应的旧会话，而非 roots[0
     provide: () => {},
   };
   try {
-    apply(ctx, { stateDir, resumeWaitMs: 300 });
+    apply(ctx, { stateDir, resumeWaitMs: 300, notifyDebounceMs: 0 });
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(gotOld.followup, 1, '通知应投回旧会话 session-old');
     assert.equal(gotNew.followup, 0, '不应投给 roots[0] 的新会话');
@@ -601,7 +601,7 @@ test('旧会话未复活时回退 roots[0]；deliveryMode=inject 走 inject', as
     provide: () => {},
   };
   try {
-    apply(ctx, { stateDir, deliveryMode: 'inject', resumeWaitMs: 300 });
+    apply(ctx, { stateDir, deliveryMode: 'inject', resumeWaitMs: 300, notifyDebounceMs: 0 });
     // 需要等过 resumeWaitMs 窗口才会接受回退目标
     await new Promise((r) => setTimeout(r, 900));
     assert.equal(gotFirst.inject, 1, '回退后应投给 roots[0]');
@@ -610,6 +610,256 @@ test('旧会话未复活时回退 roots[0]；deliveryMode=inject 走 inject', as
     const wake = JSON.parse(readFileSync(join(markerDir, 'wake.log'), 'utf8'));
     assert.equal(wake.matched, 'primary', 'wake.log 应记录回退到 primary');
     assert.equal(wake.mode, 'silent');
+  } finally {
+    for (const d of disposers) { try { d(); } catch { /* ignore */ } }
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 23: restart_request output schema 必须涵盖真实返回字段（v0.4.1 教训）──
+
+test('restart_request output schema 涵盖真实返回字段（防 K19 漂移）', async () => {
+  // v0.2.0 漏声明 launch/resultFile → 工具调用方拿不到返回值
+  // 这次修：用真值调一遍 request(...) 的所有分支，对照 schema 声明字段集合
+  // ——字段集合必须 ≥ 返回字段集合
+  const env = withTmpDshHome();
+  const provided = {};
+  try {
+    const { ctx } = makeCtx({ provided });
+    const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+    apply(ctx, { stateDir: '.agint-restart-smoke' });
+    const svc = provided['agint.restart'];
+
+    // 触发各种返回分支，收集实际返回 key
+    const returnedKeys = new Set();
+    const collect = (obj) => Object.keys(obj).forEach((k) => returnedKeys.add(k));
+
+    // 1) needs-confirm
+    collect(svc.request({}));
+    // 2) cooldown：预置 history 让 cooldown 路径命中
+    const stateDir = join(env.root, '.agint-restart-smoke');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
+      events: [{ at: new Date().toISOString(), requestId: 'r0', reason: 'x' }],
+    }, null, 2));
+    collect(svc.request({ confirm: true }));
+    // 3) dryRun
+    collect(svc.request({ confirm: true, dryRun: true }));
+    // 4) tripped：3 条历史凑齐
+    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
+      events: [0, 1, 2].map((i) => ({ at: new Date(Date.now() - i * 1000).toISOString(), requestId: `r${i}`, reason: 'x' })),
+    }, null, 2));
+    collect(svc.request({ confirm: true, force: true }));
+    // accepted=true 不能在 smoke 跑（会真重启），launch/resultFile 由下面的
+    // "静态必声明"块兜底（手动列出来自 accepted=true 的额外字段）。
+
+    // 从 lib/tools.js 解析 schema 声明字段集合
+    const toolsSrc = readFileSync(resolve(PLUGIN_DIR, 'lib', 'tools.js'), 'utf8');
+    const m = toolsSrc.match(/name: 'restart_request'[\s\S]*?output: \{[\s\S]*?properties: \{([\s\S]*?)\},\s*\},\s*render:/);
+    assert.ok(m, 'restart_request schema 未找到');
+    const declared = new Set([...m[1].matchAll(/^\s*(\w+):\s*\{/gm)].map((mm) => mm[1]));
+    // oneOf 内层字段（如 launch 嵌套的 command/cwd/args）也补上
+    const nested = [...m[1].matchAll(/additionalProperties: false,\s*properties:\s*\{([\s\S]*?)\}/g)];
+    for (const n of nested) {
+      for (const mm of n[1].matchAll(/^\s*(\w+):\s*\{/gm)) declared.add(mm[1]);
+    }
+
+    // K19 必备：schema 必含这些
+    for (const k of ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid']) {
+      assert.ok(declared.has(k), `schema 缺 ${k}`);
+    }
+    // accepted=true 路径专属字段（不能 smoke 触发，但 schema 必须声明，否则调用方拿不到）
+    for (const k of ['launch', 'resultFile']) {
+      assert.ok(declared.has(k), `accepted=true 时会返回 '${k}'，schema 必须声明`);
+    }
+    // v0.4.1：所有真实返回字段也必须声明（additionalProperties:false 下漏一个就炸）
+    for (const k of returnedKeys) {
+      assert.ok(declared.has(k), `restart_request 返回了 '${k}' 但 schema 未声明（additionalProperties:false 会校验失败）`);
+    }
+  } finally {
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 24: index.js request() 返回值必须包含 schema required 字段（防 v0.4.1 dryRun 漂移）──
+
+test('index.js request() 返回值包含所有 schema required 字段（防漂移）', async () => {
+  // Case 23 只看 schema 自己；这里断言"运行时返回值 ⊇ schema required 字段"
+  // —— 任何一条分支返回的对象都应满足 schema 的 required:true 约束
+  const env = withTmpDshHome();
+  const provided = {};
+  try {
+    const { ctx } = makeCtx({ provided });
+    const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+    apply(ctx, { stateDir: '.agint-restart-smoke' });
+    const svc = provided['agint.restart'];
+
+    // schema 中 required:true 的字段集合
+    const REQUIRED = ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid'];
+
+    // 触发各分支收集返回值
+    const samples = [];
+    samples.push(['needs-confirm', svc.request({})]);
+    const stateDir = join(env.root, '.agint-restart-smoke');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
+      events: [{ at: new Date().toISOString(), requestId: 'r0', reason: 'x' }],
+    }, null, 2));
+    samples.push(['cooldown', svc.request({ confirm: true })]);
+    samples.push(['dry-run', svc.request({ confirm: true, dryRun: true })]);
+    writeFileSync(join(stateDir, 'restart-history.json'), JSON.stringify({
+      events: [0, 1, 2].map((i) => ({ at: new Date(Date.now() - i * 1000).toISOString(), requestId: `r${i}`, reason: 'x' })),
+    }, null, 2));
+    samples.push(['tripped', svc.request({ confirm: true, force: true })]);
+
+    // 每条返回对象都必须含所有 required 字段（null 也算"含"，只要 key 存在）
+    for (const [label, obj] of samples) {
+      for (const k of REQUIRED) {
+        assert.ok(Object.prototype.hasOwnProperty.call(obj, k),
+          `${label} 分支返回缺字段 '${k}'（schema 标了 required:true，工具链会拒绝整个对象）`);
+      }
+    }
+  } finally {
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 25: accepted=true 路径返回值也含所有 schema required 字段 ──
+// 真重启不能在 smoke 跑（会中断测试进程）。但 accepted=true 路径的返回结构是手写的
+// ——必须静态断言它包含所有 schema required 字段。
+test('accepted=true 返回字面量含所有 schema required 字段（防 v0.4.2 plan 漂移）', () => {
+  const REQUIRED = ['accepted', 'code', 'message', 'requestId', 'shutdownInMs', 'plan', 'targetPid'];
+
+  // 静态读 index.js 找出 accepted:true 的返回字面量
+  const idxSrc = readFileSync(resolve(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
+  // 找到 return { ... accepted: true, ... } 整段
+  const m = idxSrc.match(/return \{[\s\S]*?accepted: true,[\s\S]*?\};/);
+  assert.ok(m, 'accepted=true 返回字面量未找到');
+  const body = m[0];
+  // 每条 REQUIRED 字段必须在字面量里出现（直接以 key: 形式，不含注释）
+  for (const k of REQUIRED) {
+    // 匹配 `, key:` / `{ key:` / ` key:`（行首空白允许），但要求 key 后跟空白+冒号（不是注释里的引用）
+    const re = new RegExp(`(?:^|[,\\{\\s])${k}\\s*:\\s*(?!//)`);
+    assert.ok(re.test(body), `accepted=true 返回字面量缺字段 '${k}'（schema required:true）`);
+  }
+});
+
+// ── Case 20: v0.4.0 抖动窗口 — 两次启动间隔 < notifyDebounceMs 不投递 ──
+
+test('抖动窗口: downtime < notifyDebounceMs → 不投递（marker 仍写）', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  mkdirSync(markerDir, { recursive: true });
+  // 模拟"刚刚重启过"：marker.lastBootAt 距 now 只有 10s，远小于 60s 默认窗口
+  writeFileSync(join(markerDir, 'marker.json'), JSON.stringify({
+    lastBootAt: new Date(Date.now() - 10_000).toISOString(),
+    pid: 99999,
+    lastSessionId: 'session-recent',
+    lastActiveAt: new Date(Date.now() - 5_000).toISOString(),
+  }, null, 2), 'utf8');
+
+  const got = { followup: 0, inject: 0 };
+  const agent = { id: 'session-recent', followup: () => { got.followup++; }, inject: () => { got.inject++; } };
+  const agents = { roots: () => [agent], list: () => [agent], get: (id) => (id === 'session-recent' ? agent : null) };
+  const disposers = [];
+  const ctx = {
+    get: (n) => (n === 'agents' ? agents : null),
+    inject: (names, cb) => cb({ agents }),
+    on: () => {},
+    effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+    provide: () => {},
+  };
+  try {
+    apply(ctx, { stateDir, resumeWaitMs: 200 });
+    // 等过 resumeWaitMs 窗口
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(got.followup, 0, '抖动窗口内不应 followup');
+    assert.equal(got.inject, 0, '抖动窗口内不应 inject');
+    // marker 仍照常更新为新 pid（不阻断持久化）
+    const m = JSON.parse(readFileSync(join(markerDir, 'marker.json'), 'utf8'));
+    assert.equal(m.pid, process.pid, 'marker 仍写入新 pid');
+    assert.ok(m.lastBootAt, 'marker 仍写入新 lastBootAt');
+  } finally {
+    for (const d of disposers) { try { d(); } catch { /* ignore */ } }
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 21: v0.4.0 抖动窗口 — 间隔 >= 窗口照常投递（基线） ──
+
+test('抖动窗口: downtime >= notifyDebounceMs → 照常投递', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  mkdirSync(markerDir, { recursive: true });
+  // 模拟"上次重启距 now 已 5 分钟"——远超默认 60s 窗口
+  writeFileSync(join(markerDir, 'marker.json'), JSON.stringify({
+    lastBootAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    pid: 99999,
+    lastSessionId: 'session-old',
+    lastActiveAt: new Date(Date.now() - 60_000).toISOString(),
+  }, null, 2), 'utf8');
+
+  const got = { followup: 0, inject: 0 };
+  const agent = { id: 'session-old', followup: () => { got.followup++; }, inject: () => { got.inject++; } };
+  const agents = { roots: () => [agent], list: () => [agent], get: (id) => (id === 'session-old' ? agent : null) };
+  const disposers = [];
+  const ctx = {
+    get: (n) => (n === 'agents' ? agents : null),
+    inject: (names, cb) => cb({ agents }),
+    on: () => {},
+    effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+    provide: () => {},
+  };
+  try {
+    apply(ctx, { stateDir, resumeWaitMs: 200 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(got.followup, 1, '真重启（5 分钟间隔）应 followup');
+    assert.equal(got.inject, 0, '默认 wake 模式不应走 inject');
+  } finally {
+    for (const d of disposers) { try { d(); } catch { /* ignore */ } }
+    env.restore();
+    env.cleanup();
+  }
+});
+
+// ── Case 22: notifyDebounceMs=0 关闭防抖（baseline：关闭时所有 wasRestart 都投） ──
+
+test('notifyDebounceMs=0: 关闭防抖，间隔 5s 也投递', async () => {
+  const env = withTmpDshHome();
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  const stateDir = '.agint-restart-smoke';
+  const markerDir = join(env.root, stateDir);
+  mkdirSync(markerDir, { recursive: true });
+  writeFileSync(join(markerDir, 'marker.json'), JSON.stringify({
+    lastBootAt: new Date(Date.now() - 5_000).toISOString(),
+    pid: 99999,
+    lastSessionId: 'session-x',
+    lastActiveAt: new Date(Date.now() - 2_000).toISOString(),
+  }, null, 2), 'utf8');
+
+  const got = { followup: 0 };
+  const agent = { id: 'session-x', followup: () => { got.followup++; }, inject: () => {} };
+  const agents = { roots: () => [agent], list: () => [agent], get: (id) => (id === 'session-x' ? agent : null) };
+  const disposers = [];
+  const ctx = {
+    get: (n) => (n === 'agents' ? agents : null),
+    inject: (names, cb) => cb({ agents }),
+    on: () => {},
+    effect: (fn) => { const inner = fn(); if (typeof inner === 'function') disposers.push(inner); },
+    provide: () => {},
+  };
+  try {
+    apply(ctx, { stateDir, notifyDebounceMs: 0, resumeWaitMs: 200 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(got.followup, 1, '防抖关闭 → 任何 wasRestart 都投');
   } finally {
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
     env.restore();
@@ -639,4 +889,31 @@ test('投递语义契约：wake 走 followup(wakeup=true)，silent 才走 inject
     assert.match(s, /inject\(input\)\s*\{\s*this\.send\(input,\s*"next-step",\s*false\)/,
       'dsh 源码断言：inject 必须是 wakeup=false（不唤醒）');
   }
+});
+
+// ── Case 25: 重启耗时参数契约（防"等待时间又被调回去"）──
+
+test('重启耗时契约：轮询间隔收紧且无裸 sleep，默认延迟不过保守', async () => {
+  const rp = readFileSync(resolve(PLUGIN_DIR, 'lib', 'respawn.js'), 'utf8');
+  // 轮询间隔必须走常量（可审计），且不得出现旧的 500/1000ms 裸值
+  assert.match(rp, /const POLL_EXIT_MS\s*=\s*(\d+)/, 'waitForExit 轮询应走常量');
+  assert.match(rp, /const POLL_PORT_MS\s*=\s*(\d+)/, 'waitPortFree 轮询应走常量');
+  assert.match(rp, /const POLL_READY_MS\s*=\s*(\d+)/, 'waitReady 轮询应走常量');
+  for (const [name, re] of [
+    ['POLL_EXIT_MS', /const POLL_EXIT_MS\s*=\s*(\d+)/],
+    ['POLL_PORT_MS', /const POLL_PORT_MS\s*=\s*(\d+)/],
+    ['POLL_READY_MS', /const POLL_READY_MS\s*=\s*(\d+)/],
+  ]) {
+    const ms = Number(rp.match(re)[1]);
+    assert.ok(ms > 0 && ms <= 300, `${name}=${ms}ms 应 ≤300ms（重启等待会直接体现给用户）`);
+  }
+  assert.ok(!/await sleep\((?!POLL_)/.test(rp), '不应再有裸 sleep(N) 轮询');
+
+  // index.js 的默认延迟：shutdownDelayMs 计入用户感知的等待，不得回退到 3s
+  const idx = readFileSync(resolve(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
+  const sd = Number(idx.match(/shutdownDelayMs:\s*(\d+)/)[1]);
+  assert.ok(sd <= 2000, `shutdownDelayMs=${sd}ms 应 ≤2000ms（旧值 3000 偏保守）`);
+  // 抖动窗口：60s 覆盖不住人工连续验证重启（间隔常有 1-3 分钟）
+  const db = Number(idx.match(/notifyDebounceMs:\s*(\d+)/)[1]);
+  assert.ok(db >= 180000, `notifyDebounceMs=${db}ms 应 ≥180000（60s 太窄，连续验证仍每次弹）`);
 });

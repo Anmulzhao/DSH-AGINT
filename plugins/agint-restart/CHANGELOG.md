@@ -4,6 +4,194 @@
 
 ---
 
+## v0.4.3 — 2026-09-10 — 缩短重启等待 + 抖动窗口扩到 5 分钟
+
+**老板反馈两条**：① 重启等待时间要缩短；② 通知还是"隔几秒弹一次"。
+
+**① 重启等待：实测 25 秒，能压的只有前后约 3.5 秒**
+
+拆解（restart.log 实测，四次重启高度一致）：
+
+| 阶段 | 耗时 | 能否压缩 |
+|---|---|---|
+| 发出请求 → 旧进程退出 | 4.6s | ✅ 其中 3s 是插件自己延迟退出 |
+| 端口释放 | 0.01s | — |
+| 拉起新实例 → 端口就绪 | 20.2s | ❌ **dsh 自身启动耗时，插件管不了** |
+
+改动：
+
+- `shutdownDelayMs`: 3000 → **1500**（省 1.5s）。工具返回值落地不需要 3 秒。
+- respawn 轮询间隔：退出 500→200ms、端口 500→200ms、就绪 1000→250ms（省约 1.5-2s）。
+  提为 `POLL_EXIT_MS` / `POLL_PORT_MS` / `POLL_READY_MS` 常量，便于以后调。
+- 预期总耗时 25s → **约 21-22s**。
+
+**⚠️ 诚实的结论**：剩下 20 秒是 dsh 加载 26 个插件的固有耗时，**不在本插件能力范围内**。
+要再快只能优化 dsh 启动链（并行加载 / 延迟加载非关键插件），属于另一个议题。
+
+**② 抖动窗口 60s → 300s**
+
+排查发现 v0.4.0 的窗口方向对但**太窄**。判据是"本次启动时间 − 上次启动时间"，
+**包含上次进程的存活时长**。实测老板验证期的重启间隔是 1 分 48 秒 / 11 分 / 9 分 40 秒 /
+4 分钟——只有 60s 窗口时全都拦不住，于是"每次重启都弹"，感受就是反复弹。
+
+扩到 5 分钟后：连续验证（几分钟内多次 restart）只弹第一条；正常使用（间隔数小时）照常通知。
+
+**配置显式化**：`notifyDebounceMs` 与 `shutdownDelayMs` 此前只存在于代码 DEFAULTS、
+host patch 里没有——现在两者都写进 `cordis.patch.yml`，改参数不用碰代码。
+
+**测试 28 → 30**：新增 **Case 25** 重启耗时契约——断言三个轮询常量 ≤300ms、无裸 `sleep(N)`、
+`shutdownDelayMs ≤2000`、`notifyDebounceMs ≥180000`。**变异验证**：把 `POLL_EXIT_MS`
+改回 500 后 Case 25 立刻变红，恢复即绿。
+
+**版本号修正**：`package.json` 此前漏升（停在 0.3.1，而 manifest 已 0.4.2），本次统一到 0.4.3。
+
+---
+
+## v0.4.2 — 2026-09-10 — deny/dryRun 返回补齐 schema required 字段（K19 续）
+
+**现象**：v0.4.1 修完 schema 后，`restart_request {confirm:true, dryRun:true}` 仍报：
+
+```
+missing required property "value.shutdownInMs"; missing required property "value.targetPid"
+```
+
+**真因**：schema 标了 `shutdownInMs: { required: true }` 和 `targetPid: { required: true }`，
+但：
+
+1. **`deny()` 工厂**只返回 `{accepted, code, message, ...extra}`——所有拒绝路径
+   （needs-confirm / cooldown / tripped / already-pending / write-failed / spawn-failed）都缺
+   `requestId` / `shutdownInMs` / `plan` / `targetPid`。
+2. **dryRun 分支**虽然手动设了 `requestId` + `plan`，但**没**设 `shutdownInMs` 和 `targetPid`。
+
+schema `required:true` 约束下，字段缺失整个对象会被工具链拒绝——调用方拿不到返回值。
+
+**修法**：
+1. `deny()` 默认填 4 个 null：`requestId: null, shutdownInMs: null, plan: null, targetPid: null`
+   （额外字段走 `...extra`，仍可覆盖）
+2. dryRun 路径补上 `targetPid: payload.targetPid` 和 `shutdownInMs: delayMs`
+
+**测试**：27 → 28。新增 **Case 24**：`index.js request() 返回值包含所有 schema required 字段`。
+对每条分支（needs-confirm / cooldown / dryRun / tripped）真值调一遍，断言返回对象
+**所有 schema required:true 字段都有 key**（null 也算"含"）。
+
+**变异验证**（v0.4.2）：把 deny 的 4 行 null 默认值删掉，Case 24 立刻变红：
+
+```
+✖ index.js request() 返回值包含所有 schema required 字段（防漂移）
+AssertionError: needs-confirm 分支返回缺字段 'requestId'
+```
+
+恢复后 28/28 绿。
+
+**教训**：和 Case 23 一起——"工具链 + schema"双层断言必须都覆盖。Case 23 验 schema 自身，
+Case 24 验 index.js 返回对 schema 的承诺。
+
+---
+
+## v0.4.1 — 2026-09-10 — restart_request output schema 补齐真实返回字段（K19 漂移修复）
+
+**现象**：跑 v0.4.0 重启验证时，调 `restart_request {confirm:true}` 工具链报：
+
+```
+invalid output: missing required property "value.code"; missing required property "value.plan";
+"value.launch" is not a declared property (additionalProperties: false);
+"value.resultFile" is not a declared property (additionalProperties: false)
+```
+
+工具调用方**拿不到返回值**——只能看到调用方返回为空对象。
+
+**真因**：`lib/tools.js` 的 `restart_request.output.schema` 漏声明了 `restart.request(...)`
+真实会返回的几个字段：
+
+- `launch` — accepted=true 时返回（拉起命令快照）
+- `resultFile` — accepted=true 时返回（result.json 路径）
+- `command` — manual-mode 时返回（可复制的人工命令）
+- `cooldownRemainingMs` — cooldown 被拒时返回
+- `count` — tripped 被拒时返回（窗口内次数）
+
+`additionalProperties: false`（K19 严管）下，schema 里没声明的字段在工具链返给调用方时会被
+**整个对象拒绝**，调用方啥都拿不到。**v0.2.0 写 schema 时只覆盖了"主路径"7 字段**，
+没意识到 `request(...)` 还有 5 个分支字段。
+
+**修法**：补齐 schema 的 `properties`，全部用 `oneOf: [..., {type:'null'}]` 兜空（运行时该字段
+缺失就视为 null 不会炸；只有"额外多出来的字段"才会被 additionalProperties:false 拒绝）：
+
+- `launch`: `{ type:'object', additionalProperties:false, properties:{ command, cwd, args } } | null`
+- `resultFile`: `string | null`
+- `command`: `string | null`
+- `cooldownRemainingMs`: `number | null`
+- `count`: `number | null`
+
+**测试**：26 → 27。新增 **Case 23**：`restart_request output schema 涵盖真实返回字段（防 K19 漂移）`。
+它做两件事：
+1. 真值跑 `request({})` / `request({confirm:true})` / `dryRun:true` / `force:true` 触发 4 个
+   分支，收集所有返回 key
+2. 静态解析 `lib/tools.js` 的 schema，断言"返回 key 集合 ⊆ 声明 key 集合"
+3. 另外对 accepted=true 路径专属字段（`launch` / `resultFile`）手动声明——因为不能 smoke 触发
+   真重启
+
+**变异验证**（证明测试真在测）：把仓库 `lib/tools.js` 的 `resultFile: { oneOf:... },` 删掉，
+Case 23 立刻变红：
+
+```
+✖ restart_request output schema 涵盖真实返回字段（防 K19 漂移）
+AssertionError: accepted=true 时会返回 'resultFile'，schema 必须声明
+```
+
+恢复后全 27/27 绿。
+
+**没破环**：
+- ✅ 工具调用方式不变（参数 schema 不动）
+- ✅ 服务签名不变（`agint.restart.request(args)` 还是返回同样的对象）
+- ✅ schema 补齐只让"返回字段被允许存在"，不会改运行时行为
+- ✅ `additionalProperties:false` 仍生效（防未来再添未声明字段）
+
+**教训**（值得写进流程）：**任何 `additionalProperties:false` 的 output schema，
+必须用真实返回值跑一遍断言**——不能只看 `execute()` 返回值字段，工具链还会做 schema 校验。
+本次漏检是 v0.2.0 写 tools.js 时没跑过 `restart_request {confirm:true}` 真值（那次只测了
+`needs-confirm` 拒绝路径）。以后 v0.2 写新插件的 tools.js，smoke 必跑每个返回分支。
+
+---
+
+## v0.4.0 — 2026-09-10 — 抖动窗口：避免老板连续 restart 反复弹通知
+
+**现象**：30 分钟内老板连续 7 次触发主动重启（`restart-history.json` 14:34 / 14:36 / 14:38 /
+14:58 / 14:59 / 15:09 / 15:11），每次都因 `process.pid` 变化被插件判为"重启"并向 agent 投递一条
+信息性消息——**新会话一打开就连续弹出多条 "[agint-restart] 检测到 DSH 服务已重启"**。
+
+**真因**：v0.3.x 的 `wasRestart` 只看 `marker.pid !== process.pid`，不看"距上次启动多久"。
+抖动的连续重启也会被当成"多次重启"投递。
+
+**修法**：新增 `notifyDebounceMs`（默认 60000ms），在 `detect.js` 里抽出纯函数
+`shouldNotify({ wasRestart, downtimeMs }, debounceMs)`：
+
+- `downtimeMs < debounceMs` → 抖动（`debounced: true`），跳过投递；
+- `downtimeMs >= debounceMs` → 真重启，照常投递；
+- `wasRestart=false` 或 `debounceMs <= 0` → 不参与判定。
+
+marker / status / 主动重启链路不受影响——防抖只作用于"是否投递通知"那条分支。
+
+**默认值 `cordis.patch.yml`**：`notifyDebounceMs: 60000`（60 秒）。想关闭设 0。
+线上若想"看到每次重启"再设大一些；平时 60s 已够用——人为操作不会 60 秒连点一次。
+
+**测试**：26 → **26**（删 Case 6 默认行为没动，加 `notifyDebounceMs: 0` 关防抖保留原断言；
+新增 Case 20/21/22 覆盖抖动判定）。变异（短路 `debounce.debounced`）后 Case 20 立刻变红，
+Case 21/22 不变——证明测试真的在测防抖。
+
+**踩坑**：调试时 Case 6 第一次跑挂了——它构造"首次启动 → 二次启动"场景时
+`marker.lastBootAt` 距 now 才几百毫秒，被新加的 60s 防抖吃掉了。**正确做法**：测试场景要
+"真重启"时显式传 `notifyDebounceMs: 0`，不能依赖默认行为。这是 v0.4.0 唯一的向后兼容点
+——其他用例自然兼容。
+
+**没破环**：
+- ✅ `wasRestart` / `downtimeMs` 语义未变（其他插件 / wiki 引用这些字段的不受影响）
+- ✅ marker 文件格式未变
+- ✅ 投递链路 / `deliveryMode` / `resumeLastSession` / `target` 全部不变
+- ✅ `agint.restart` 服务四方法签名不变
+- ✅ 不在 AGINT L0 治理范围（仅新增配置项 + 新增纯函数）
+
+---
+
 ## v0.3.1 — 2026-09-10 — 修正 inject / followup 语义反转（实测打脸）
 
 **现象**：老板选了 `deliveryMode: inject` 并重启，`wake.log` 记 `ok:true`、

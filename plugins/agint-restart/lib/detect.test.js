@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildNotice, detectRestart, humanizeDowntime } from './detect.js';
+import { buildNotice, detectRestart, humanizeDowntime, shouldNotify } from './detect.js';
 
 test('detectRestart: no marker -> not a restart', () => {
   assert.deepEqual(detectRestart(null, 1000, 42), { wasRestart: false, downtimeMs: 0 });
@@ -53,4 +53,30 @@ test('humanizeDowntime: formats seconds, minutes and hours', () => {
   assert.equal(humanizeDowntime(5000), '5 秒');
   assert.equal(humanizeDowntime(65000), '1 分 5 秒');
   assert.equal(humanizeDowntime(3900000), '1 小时 5 分');
+});
+
+// v0.4.0: shouldNotify — 抖动窗口判定
+test('shouldNotify: wasRestart=false 时不投（不论窗口多大）', () => {
+  assert.deepEqual(shouldNotify({ wasRestart: false, downtimeMs: 5_000_000 }, 60_000), { debounced: false, reason: null });
+});
+
+test('shouldNotify: downtime < 窗口 → 抖动，debounced=true', () => {
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 5_000 }, 60_000), { debounced: true, reason: 'within-debounce' });
+  // 边界：恰好等于窗口不算抖动（< 不是 <=）
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 60_000 }, 60_000), { debounced: false, reason: null });
+});
+
+test('shouldNotify: downtime >= 窗口 → 真重启，照常投', () => {
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 120_000 }, 60_000), { debounced: false, reason: null });
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 30 * 60_000 }, 60_000), { debounced: false, reason: null });
+});
+
+test('shouldNotify: 窗口 <=0 视为关闭（不抖）', () => {
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 100 }, 0), { debounced: false, reason: null });
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 100 }, -1), { debounced: false, reason: null });
+});
+
+test('shouldNotify: 窗口非有限值（NaN/Infinity）视为关闭', () => {
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 100 }, NaN), { debounced: false, reason: null });
+  assert.deepEqual(shouldNotify({ wasRestart: true, downtimeMs: 100 }, Infinity), { debounced: false, reason: null });
 });
