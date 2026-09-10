@@ -441,6 +441,16 @@ function apply(ctx, cfg = {}) {
     },
   });
 
+  // ── v0.7.2：同一次 boot 只允许投递一次 ───────────────────────────
+  // 事故（2026-09-11 实测，一次重启两条通知）：同一个 boot 上存在两条投递路径——
+  //   ① `agent/session-start` → tryFlushPending() 补投落盘通知并 clearPending()；
+  //   ② `ctx.inject(['agents'])` 回调里的 boot 轮询随后又 deliver() 一次，
+  //      此时 clearPending() 已成空操作，于是同一会话收到第二条。
+  // 危害：老板界面出现重复通知；更糟的是"双唤醒"——被唤醒两次的会话执行的还是同一批
+  // 上下文指令，等于把重启环的暴露面翻倍（见 restart-loop-incident-20260910.md）。
+  // 只做"投递成功才置位"，所以窗口内投递失败仍然可以重试，不会把通知卡死。
+  let deliveredForBoot = false;
+
   /**
    * 向指定 agent 投递恢复通知。
    * @param {object} target 目标 agent（需有 followup/inject）
@@ -449,6 +459,7 @@ function apply(ctx, cfg = {}) {
    * @returns {boolean} 是否投递成功（失败已写 wake.log，不向外抛）
    */
   const deliverTo = (target, matched, doc) => {
+    if (deliveredForBoot) return false;
     const payload = doc ?? buildPendingDoc('live');
     const id = String(target?.id ?? '');
     try {
@@ -460,6 +471,8 @@ function apply(ctx, cfg = {}) {
         // inject = send(next-step, wakeup=false) → 只入收件箱，不唤醒（看不到回音）
         target.inject(msg);
       }
+      // 消息已经发出去了：无论后面记日志是否出错，这个 boot 都算投过了（防重复）
+      deliveredForBoot = true;
       console.log('[agint-restart] notice delivered to', id, 'matched=' + matched, 'mode=' + mode);
       writeWakeLog(markerDir, id, true, null, { matched, mode, lastSessionId: lastSessionId ?? null });
       return true;

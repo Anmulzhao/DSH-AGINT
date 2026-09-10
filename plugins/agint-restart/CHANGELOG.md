@@ -4,6 +4,32 @@
 
 ---
 
+## v0.7.2 — 2026-09-11 — 去重：同一次 boot 只投一次恢复通知
+
+**背景（真机观察 n=2）**：v0.7.1 上线后第一次重启（`8f7ffbda` → pid 31304）实测**收到两条**相同通知
+（第二条排队到下一轮 turn 才投出来）；同一次 boot 的日志里也是两条 `notice delivered`。
+
+**真因**：同一个 boot 上有两条投递路径，各自独立成功——
+
+1. `agent/session-start` → `tryFlushPending(agent)`：投出落盘通知（`matched=pending`）并 `clearPending()`；
+2. `ctx.inject(['agents'])` 回调里的 boot 轮询 → `deliver(found)`：随后再投一次（`matched=lastSession`），
+   此时 `clearPending()` 已成空操作。
+
+危害不只是"看着烦"：`wake` 模式下等于**双唤醒**——被唤醒两次的会话面对的是同一批上下文指令，
+把重启环（`restart-loop-incident-20260910.md`）的暴露面翻倍。
+
+**改动（`lib/index.js`）**：新增 `deliveredForBoot` 去重位——`deliverTo()` 入口先判，
+**投递成功才置位**（失败仍可在窗口内重试，不会把通知卡死）。
+
+**测试**：`test/pending-notice.test.mjs` 新增回归用例「同一次 boot 只投一次：补投成功后 boot 轮询不得再投」
+（等 ≥2 个 POLL 周期断言仍只有 1 条）；源码护栏加 `deliveredForBoot` 断言。
+
+**顺带修复（同类教训）**：v0.7.1 提交里 `manifest.json` 的 description 混入了未转义的**直引号** →
+JSON 非法，smoke 的两个 manifest 维度用例当场 parse 失败。已换成「」，并固化规矩：
+**改 manifest.json 后必须跑一次 `JSON.parse` 校验**（与「改 cordis.patch.yml 后必须跑 YAML 解析」并列）。
+
+---
+
 ## v0.7.1 — 2026-09-11 — 断环：注入文案退化为纯状态「已重启」
 
 **背景（老板拍板）**：「其实重启后注入 已重启 就行了」——针对 2026-09-10 的重启环事故
