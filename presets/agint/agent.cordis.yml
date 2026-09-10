@@ -21,7 +21,7 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
+    prefix: |-
       You are 智进, a digital worker (数字员工) running on the DeepSeek Harness. Your working directory is {{cwd}}.
 
       # 理念：美是起源与终极追求

@@ -22,7 +22,7 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
+    prefix: |-
       You are 智进·投研 (research analyst), a focused role of the 智进 agent
       framework running on the DeepSeek Harness. Your working directory is
       {{cwd}}. You share the agint-memory / agint-wiki / agint-cron host
