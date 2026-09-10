@@ -29,18 +29,20 @@ test('detectRestart: corrupt marker (missing pid) -> not a restart', () => {
   assert.deepEqual(detectRestart({ lastBootAt: 'x' }, 1000, 1), { wasRestart: false, downtimeMs: 0 });
 });
 
-test('buildNotice: includes restart, downtime and session info', () => {
-  const text = buildNotice({
+test('buildNotice: 纯状态陈述，无行动指令（v0.7.1 断环）', () => {
+  const base = {
     bootAt: '2026-08-28T00:00:05.000Z',
     prevBootAt: '2026-08-28T00:00:00.000Z',
     downtimeMs: 5000,
     lastSessionId: 'session-abc',
     lastActiveAt: '2026-08-28T00:00:00.000Z',
-  });
-  assert.ok(text.includes('检测到 DSH 服务已重启'));
-  assert.ok(text.includes('中断约 5 秒'));
-  assert.ok(text.includes('session-abc'));
-  assert.ok(text.includes('自主决定下一步'));
+  };
+  const text = buildNotice(base);
+  assert.equal(text, '[agint-restart] DSH 已重启。');
+  assert.ok(!text.includes('自主决定下一步'), 'v0.7.1：不得含行动指令');
+  assert.ok(!text.includes('不需要再次重启'), 'v0.7.1：不得含指令性断环说明');
+  assert.ok(!text.includes('中断约') && !text.includes('session-abc'), '细节不进消息体');
+  assert.equal(buildNotice({ ...base, selfRestart: true }), text, '自触发与外部重启文案必须一致');
 });
 
 test('buildNotice: no downtime or session -> omits those lines', () => {
