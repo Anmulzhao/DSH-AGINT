@@ -2,6 +2,8 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
+**Latest**：v0.8.1 · 27 个 Cordis 插件 · D-QAF v0.2 · HARM 四维
+
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**。
 
 📚 **文档**：本 README 是入口 · 深文档见 [**GitHub Wiki**](https://github.com/Anmulzhao/DSH-AGINT/wiki) · 契约/规范见 `docs/` · 路线见 [路线图](https://github.com/Anmulzhao/DSH-AGINT/wiki/路线图) · 变更见 [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)
