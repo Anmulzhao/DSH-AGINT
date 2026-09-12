@@ -1,0 +1,103 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-skill-graph",
+  "version": "0.1.0",
+  "description": "P2-2 技能使用统计与学习图谱 v0.1.0（Sprint 19 实施）：在 P0-1（技能入口）与 P0-2（技能出口）之间补上技能的「关系层」。四类边 —— related（SKILL.md frontmatter related_skills 声明，零计算·首选·confidence high）/ overlap（订阅 curator.overlap-detected，回溯时复用 curator 纯函数，阈值引用不复制）/ co_use（同会话 30min 窗口共现 ≥3 次）/ similar（元数据相似，实测描述维最高 0.201、阈值 0.70 为空集 → 默认关，Sprint 20 观察项）。主口径取数 = tool-stats 中 tool===skill 的记录取 args.name（唯一在产信号）；successRate/viewCount/patchCount 无数据源恒 null，不编造。FROZEN 6 Service：updateFull / getStats / neighbors / clusters / recommend / getCoverage。独占 agint_skill_graph 存储域（3 表，schemaVersion 1）。默认 count-only 标定期（只扫不落正式图，产出若转 live 会得到多少节点/边的对比报告）；未跑过标定期调 setMode(live) 直接抛错。零数据诚实：edges===0 时 health=EMPTY 且 recommend 返回 INSUFFICIENT_DATA，禁止兜底或合成数据。图谱输出不参与 policy / HARM / evolution 任何决策路径。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain"
+      ],
+      "optionalInject": [
+        "agint.eventBus",
+        "agint.curator",
+        "agint.evolve",
+        "agint.skillAutocreate"
+      ],
+      "provides": [
+        "agint.skillGraph"
+      ],
+      "events": [
+        "curator.overlap-detected",
+        "curator.consolidate-proposed",
+        "curator.skill-archived",
+        "curator.skill-staled",
+        "curator.skill-reactivated",
+        "curator.skill-pinned",
+        "curator.quality-declining",
+        "curator.run-completed",
+        "skill-autocreate.released",
+        "skill-autocreate.rolled-back",
+        "skill-autocreate.candidate-created",
+        "trajectory.recorded",
+        "skill-graph.updated"
+      ],
+      "tools": [
+        "skillGraph_stats",
+        "skillGraph_coverage",
+        "skillGraph_get_skill",
+        "skillGraph_neighbors",
+        "skillGraph_clusters",
+        "skillGraph_recommend",
+        "skillGraph_list_for_prompt",
+        "skillGraph_export",
+        "skillGraph_set_mode",
+        "skillGraph_propose_consolidate"
+      ]
+    },
+    "storage": {
+      "domains": [
+        "agint_skill_graph"
+      ],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-curator": ">=0.2.0",
+      "agint-tool-stats": ">=0.1.0",
+      "agint-event-bus": ">=0.7.0",
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 28,
+    "permissions": {
+      "env": [
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages",
+        "read:agent-presets",
+        "write:runtime-export"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --test \"test/*.test.mjs\" test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.skillGraph": "技能关系图谱：updateFull（周更全量刷新，永不 throw）/ getStats / neighbors / clusters / recommend（默认 list 不打分）/ listForPrompt / getCoverage（含 health=EMPTY 空图指标）/ exportGraph / proposeConsolidate（走 agint.evolve.propose，只建议不执行）/ setLlmAnnotation（默认关）/ setMode（未跑标定期切 live 抛错）/ config / stats"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

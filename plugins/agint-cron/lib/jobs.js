@@ -305,6 +305,45 @@ export const defaultJobs = [
       };
     },
   },
+  {
+    // P2-2 技能图谱周更（Sprint 20）：全量重算节点 + 四类边，并上报覆盖率。
+    // - weekly Sun 07:00 —— 排进既有周日流水线
+    //   （curator 02:00 / wiki-lint 03:00 / baseline 03:15 / evolve 03:45 /
+    //    curriculum 05:00）之后的空档，不挤同时段。
+    // - 聚合一律走周更，事件只做脏标记 + 状态同步（P2-2 §5.1「简洁 > 冗余」）。
+    // - **count-only 标定期是默认档**：updateFull 只写 meta，正式表 0 行，
+    //   返回 lastCalibration 告诉老板「若转 live 会得到多少节点/边」。
+    //   未跑过标定期直接调 setMode('live') 会被拒绝（对齐 P2-1 不变量）。
+    // - updateFull 永不 throw（fail-open）；未挂载时 soft-skip（不报错）。
+    id: 'skill-graph-weekly',
+    name: '技能图谱周更',
+    schedule: '0 7 * * 0', // Sun 07:00
+    description: '技能节点全量刷新 + 四类边重算 + 覆盖率上报（weekly，默认 count-only 标定期）',
+    action: async (services) => {
+      const graph = services['agint.skillGraph'];
+      if (!graph) return { skipped: true, reason: 'agint.skillGraph not mounted' };
+      const updated = await graph.updateFull({ trigger: 'cron:skill-graph-weekly' });
+      if (updated.skipped) return { skipped: true, reason: updated.reason };
+      const coverage = await graph.getCoverage();
+      return {
+        mode: updated.mode,
+        nodes: updated.nodes,
+        edgesAdded: updated.edgesAdded,
+        edgesRemoved: updated.edgesRemoved,
+        durationMs: updated.durationMs,
+        // ⚠️ 两个口径必须分开报，不可混：
+        //   persisted = 正式表里真实存在的（count-only 档恒为 0）
+        //   projected = 若转 live 会得到什么（只出现在 lastCalibration）
+        persisted: coverage.edgesByType,
+        persistedHealth: coverage.health,
+        coverage: coverage.coverage,
+        projected: updated.edgesByType,
+        // count-only 档的解锁凭证：promotable=true 才允许 setMode('live')
+        calibration: updated.calibration ?? null,
+        error: updated.error ?? null,
+      };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */
