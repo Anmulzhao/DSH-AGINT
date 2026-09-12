@@ -1,0 +1,18 @@
+{
+  "name": "agint-compress-guard",
+  "version": "0.1.0",
+  "description": "AGINT P3-1 memory compression checkpoint guard: fail-closed orchestration before/during/after context compaction, rule-based insight extraction (single entry via provider.onPreCompress), dual recovery channels, and honest zero-traffic calibration.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/engine.js": "./lib/engine.js",
+    "./lib/extractors.js": "./lib/extractors.js",
+    "./lib/session-reader.js": "./lib/session-reader.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/provider-bridge.js": "./lib/provider-bridge.js"
+  },
+  "license": "MIT"
+}

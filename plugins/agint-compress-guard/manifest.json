@@ -1,0 +1,84 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-compress-guard",
+  "version": "0.1.0",
+  "description": "P3-1 记忆压缩检查点机制 v0.1.0（设计稿 v0.3，Sprint 20 实施）：压缩可以发生，上下文不许消失（M4 fail-closed）。两段式粒度（Q2）：检查点写入失败=硬门 BLOCKED（shadow 观察档默认记录告警不真中止，一周后拍板转正）；洞察提取失败=软降级 DEGRADED_INSIGHT（raw 兜底）。接线梯子两档（v0.3）：B 档主战场=ctx.on('session/event') 过滤 compaction/start|summary|end|prune（事件名已 grep 宿主源码核实，compaction/summary 携带 compactionId/shadowedSeqs/shadowedTokenCount），C 档=显式 checkpoint() 委托 P1-1 runPreCompressCheckpoint；A 档已移出设计。提取器=apiVersion=2 的 provider.onPreCompress（Q6 单一入口，注册进 P1-1 registry 不自动激活）+ 三类规则启发式（decision/fact/preference，preference 默认 highRetention），LLM 默认关（Q1）。恢复双通道（Q4）：compress_recall 工具 + 记忆查询 miss 兜底一次（装饰 agint.memory.search，单次单向不回写，切断「压缩产物→记忆→再压缩」自我污染）。降级态必须可恢复（不变量 8）：跳闸→300s 冷却→探针→复位（Hermes 同构）。独立域 agint_compress_guard（4 表 schemaVersion 1，raw 唯一事实源仍归 P1-1，Q3 分层不重建，双 id 空间 pcc_*/compactionId）。零数据诚实（不变量 6）：双源合计 0 条时 stats() 返回 NO_SOURCE_REACHED（2026-09-13 R10 探针实测本机 155 会话/140,109 事件 0 次 compaction，标定期如实报警）。FROZEN 6 Service：checkpoint/extract/search/recall/stats/setEnabled。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.memory"
+      ],
+      "optionalInject": [
+        "agint.eventBus",
+        "agint.memoryProvider"
+      ],
+      "provides": [
+        "agint.compressGuard"
+      ],
+      "events": [
+        "memory.pre-compress-checkpoint",
+        "memory.provider-activated",
+        "compress-guard.blocked",
+        "compress-guard.checkpointed"
+      ],
+      "tools": [
+        "compress_recall",
+        "compress_guard_stats"
+      ]
+    },
+    "storage": {
+      "domains": [
+        "agint_compress_guard"
+      ],
+      "schemaVersion": 1,
+      "atomic": "json"
+    },
+    "dependencies": {
+      "agint-memory": ">=0.1.0",
+      "agint-memory-provider": ">=0.2.0",
+      "agint-event-bus": ">=0.7.0",
+      "@deepseek-ai/dsh-storage-domain": ">=0.1.0",
+      "zod": "^3.0.0"
+    },
+    "mountOrder": 30,
+    "permissions": {
+      "env": [
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages",
+        "read:sessions"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --test \"test/*.test.mjs\" test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.compressGuard": "压缩护栏编排：checkpoint（永不 throw，两段式 fail-closed）/ extract（离线补录，必须带 checkpointRef）/ search / recall（洞察 miss → raw 下钻）/ stats（NO_SOURCE_REACHED 零数据显式报警）/ setEnabled（全局熔断，压缩直通）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

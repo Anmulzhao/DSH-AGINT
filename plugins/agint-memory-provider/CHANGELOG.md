@@ -1,5 +1,19 @@
 # Changelog — agint-memory-provider
 
+## 0.2.1（2026-09-13，未发版仅源码）
+
+P3-1 最小 PR（设计稿《设计-P3-1-记忆压缩检查点机制.md》§5.1 载荷缺口正解②，
+授权口径「预期 < 5 行」）。
+
+### 变更
+
+- `memory.pre-compress-checkpoint` 事件载荷补 `checkpointId`（本次检查点在
+  `pre_compress_checkpoints` 表的 `pcc_*` id）与 `sessionId`（成功/失败两个发布点
+  各 +2 行）。此前载荷只有 `{providerName, status, messagesCompressed,
+  abortCompress, apiVersion, insightLength?}`——无 checkpointId，导致 compress-guard
+  的「订阅事件 → 关联 raw 表」链路走不通（§5.1 缺口）。旧消费者按字段读取不受影响
+  （纯增量字段）。88/88 测试 PASS。
+
 ## 0.2.0 (2026-09-09)
 
 P1-1 Sprint 16「降级与检查点」落地（设计稿 §12.2 范围，88/88 测试 PASS）。

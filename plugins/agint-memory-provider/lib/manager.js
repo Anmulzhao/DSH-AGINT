@@ -1031,6 +1031,10 @@ class MemoryManager {
       await this.publish('memory.pre-compress-checkpoint', {
         providerName, status, messagesCompressed: list.length,
         abortCompress: failClosed, apiVersion,
+        // P3-1 最小 PR（设计稿 §5.1 载荷缺口正解②，< 5 行授权范围内）：
+        // 补 checkpointId + sessionId，compress-guard 依赖它做 raw 关联
+        checkpointId: rec?.id ?? null,
+        sessionId,
       });
 
       this.debug(
@@ -1062,6 +1066,9 @@ class MemoryManager {
     await this.publish('memory.pre-compress-checkpoint', {
       providerName, status, messagesCompressed: list.length,
       abortCompress: false, apiVersion, insightLength: insight.length,
+      // P3-1 最小 PR：同上（§5.1 载荷缺口正解②）
+      checkpointId: rec?.id ?? null,
+      sessionId,
     });
 
     this.debug(
