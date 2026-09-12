@@ -1,0 +1,30 @@
+{
+  "name": "agint-trajectory",
+  "version": "0.1.0",
+  "description": "P2-1 进化轨迹记录（训练数据层）：把任务/梦境/评估/进化轮/子代理执行记为结构化轨迹，成功失败分离存储，ShareGPT 导出供离线分析与未来微调。治理六件套（采样/脱敏/截断/预算/prune/熔断）+ count-only 标定期硬门禁。独占存储域 agint_trajectory（schemaVersion 1）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/redact.js": "./lib/redact.js",
+    "./lib/payload.js": "./lib/payload.js",
+    "./lib/calibrate.js": "./lib/calibrate.js",
+    "./lib/export.js": "./lib/export.js",
+    "./lib/subscribers.js": "./lib/subscribers.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "trajectory",
+    "p2-1",
+    "sharegpt",
+    "p7-5"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "zod": "^3.0.0"
+  }
+}
