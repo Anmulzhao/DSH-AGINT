@@ -460,3 +460,14 @@
 # job 生成（周日 05:00，2026-09-09 加），agent 用 curriculum_next 领取。
 - id: agint-curriculum-tools
   name: ../../profiles/web/plugins/agint-curriculum/lib/tools.js
+
+# ── 智进 restart tools (v0.8.1 — 2026-09-12 首挂 preset) ────────────────
+# Consumes host `agint.restart.{request,cancel}` + `agint.restart.status`.
+# Exposes 3 model-visible tools:
+#   restart_status   read-only   当前 marker / 冷却 / 熔断 / 上次结果 + 代码指纹
+#   restart_request  ASK-gated   发起主动重启（confirm 必填 + cooldown/burst 三重护栏）
+#   restart_cancel   ASK-gated   清除在途标记（守护脚本已起则只能靠人工）
+# 平台分流：Windows Git Bash 上 `bin/safe-update.sh restart` 因 mingw 缺 pgrep 会失败，
+# 重启走 `bin/restart-runbook.ps1`（用 taskkill + Get-CimInstance 替代）。
+- id: agint-restart-tools
+  name: ../../profiles/web/plugins/agint-restart/lib/tools.js
