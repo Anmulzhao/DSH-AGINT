@@ -471,3 +471,19 @@
 # 重启走 `bin/restart-runbook.ps1`（用 taskkill + Get-CimInstance 替代）。
 - id: agint-restart-tools
   name: ../../profiles/web/plugins/agint-restart/lib/tools.js
+
+# ── 智进 skill-graph tools (P2-2 技能使用统计与学习图谱 v0.1.0) ──────────
+# Consumes host `agint.skillGraph`. 10 个工具：
+# 只读（裸调）：skillGraph_stats（总览：mode/health/counters）/
+#   skillGraph_coverage（覆盖率 + EMPTY/SPARSE/OK 显式标注）/
+#   skillGraph_get_skill（单技能画像）/ skillGraph_neighbors（邻居边 + evidence）/
+#   skillGraph_clusters（关系簇）/ skillGraph_recommend（技能推荐）/
+#   skillGraph_list_for_prompt（Prompt 注入用的紧凑列表）
+# 写操作（description 首行标注「⚠️ 写操作 · 需人工确认」，与 curator 同策略）：
+#   skillGraph_export（落本地 runtime 目录，DOT/JSONL）/
+#   skillGraph_set_mode（count-only → live；**未跑过标定期会被拒绝**）/
+#   skillGraph_propose_consolidate（只把整合候选提交给 agint.evolve.propose，不执行）
+# 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
+# 先看几周 lastCalibration 的「若转 live 会得到多少节点/边」，promotable=true 再切档。
+- id: agint-skill-graph-tools
+  name: ../../profiles/web/plugins/agint-skill-graph/lib/tools.js

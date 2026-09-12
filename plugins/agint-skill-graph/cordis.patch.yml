@@ -1,0 +1,36 @@
+# agint-skill-graph loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工，走 safe-update SOP）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml
+#      （建议放 agint-curriculum 之后；mountOrder 28 紧接 curator 26 / curriculum 27）
+#   2. bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. 老板手动重启 dsh（Git Bash 缺 pgrep/pkill，safe-update restart 不可用）
+#
+# 本文件**不**由 loader 自动包含；按子任务官方流程，本 sprint 不顺手改顶层
+# cordis.patch.yml（与 agint-curator / agint-skill-autocreate 同策略），
+# 由老板走 safe-update 合并。
+#
+# preset 侧工具（10 个）——在 presets/agint/agent.cordis.yml 加一行
+# （参照 agint-curator-tools 写法，本 sprint 已加）：
+#   - id: agint-skill-graph-tools
+#     name: ../../profiles/web/plugins/agint-skill-graph/lib/tools.js
+#
+# ⚠️ 默认档是 count-only（标定期）：**什么都不落正式表**，只写 meta + 标定报告。
+#   首次挂载无需保守选项——它本来就是最保守的档位。看几周 lastCalibration
+#   （「若转 live 会得到多少节点/边」）后，promotable=true 才用
+#   skillGraph_set_mode('live') 切档（未跑过标定期调它会直接抛错）。
+
+# agint-skill-graph: P2-2 技能使用统计与学习图谱（Sprint 19 实施）。
+#   - Service：agint.skillGraph（FROZEN 6：updateFull / getStats / neighbors /
+#     clusters / recommend / getCoverage；另有 listForPrompt / exportGraph /
+#     proposeConsolidate / setLlmAnnotation / setMode / config / stats）
+#   - 独占 agint_skill_graph 存储域（3 表：usage_stats / skill_edges / graph_meta）
+#   - 软依赖 event-bus / curator / evolve / skill-autocreate（任一缺失均降级不报错）
+#   - 只读消费上游：不调用 curator 任何写方法，不进 policy / HARM / evolution 决策
+#   - 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周日 07:00）
+- insert:
+    - id: agint-skill-graph
+      name: ./plugins/agint-skill-graph/lib/index.js
+      config: {}

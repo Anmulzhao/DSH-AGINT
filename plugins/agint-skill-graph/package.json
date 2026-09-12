@@ -1,0 +1,30 @@
+{
+  "name": "agint-skill-graph",
+  "version": "0.1.0",
+  "description": "P2-2 技能使用统计与学习图谱（Sprint 19 v0.1.0）：四类边（related 声明式首选 / overlap 订阅 curator 事件 / co_use 会话共现 / similar 默认关）+ FROZEN 6 Service + count-only 标定期。独占 agint_skill_graph 存储域（usage_stats / skill_edges / graph_meta）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/collect.js": "./lib/collect.js",
+    "./lib/edges.js": "./lib/edges.js",
+    "./lib/query.js": "./lib/query.js",
+    "./lib/tools.js": "./lib/tools.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "skill-graph",
+    "learning-graph",
+    "p2-2",
+    "sprint-19"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "zod": "^3.0.0"
+  }
+}
