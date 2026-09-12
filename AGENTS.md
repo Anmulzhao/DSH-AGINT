@@ -159,7 +159,7 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-11 00:04 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-12 12:37 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
@@ -170,6 +170,6 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 - **preset tool rows**（20 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum
 - **preset skills**（6 个）：causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
 - **cordis.patch.yml agint 段**（host web profile，26 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-abtest、agint-event-bus、agint-skill-autocreate、agint-curator、agint-mutator、agint-self-model、agint-evolution-memory、agint-memory-provider、agint-curriculum
-- **cron 实况**（0 个 job，按最近 tick 排序）：（agint_cron.json 无 cron_state 或不可读）
+- **cron 实况**（7 个 job，按最近 tick 排序）：skill-autocreate-observe 2026-09-11 21:30Z、skill-autocreate-release 2026-09-11 21:15Z、skill-autocreate-aggregate 2026-09-11 20:45Z、prompt-static-check 2026-09-11 20:45Z、tool-stats-backfill 2026-09-11 20:30Z、metrics-collect 2026-09-11 20:00Z、night-dream 2026-09-11 19:00Z
 
 <!-- LOCAL-STATE:END -->
