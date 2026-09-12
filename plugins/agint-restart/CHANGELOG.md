@@ -4,6 +4,41 @@
 
 ---
 
+## v0.8.2 — 2026-09-12 — 首挂 preset：让模型面能用 restart_request / restart_status / restart_cancel
+
+**背景**：v0.8.1 插件本体已挂载（cordis.patch.yml 含 26 个 agint-* 段），`agint.restart.{request, status, cancel}` host service 在跑，但 `presets/agint/agent.cordis.yml` 没挂 `agint-restart-tools` row —— 模型面没有 `restart_request` / `restart_status` / `restart_cancel` 这三个工具，只能调 host service。
+
+**改动**：
+
+- `presets/agint/agent.cordis.yml` 末尾追加 9 行：
+  - `- id: agint-restart-tools`
+  - `  name: ../../profiles/web/plugins/agint-restart/lib/tools.js`
+  - 含工具说明（restart_status read-only / restart_request+restart_cancel ASK-gated）
+  - 平台分流注释（Windows 走 PowerShell runbook）
+- 本次 **未改** `lib/`（plugin 本体代码）—— 故 `package.json` / `manifest.json` 不动。
+- `cordis.patch.yml` 已含 `agint-restart` 段，不需重挂。
+
+**为什么不算 v0.9.0（major）**：本插件 L0 治理字段（marker 文件格式 / brand 前缀 `[agint-restart]` / 通知文案）本次未动；preset 是配置层（model 平面），非 plugin 契约层。
+
+**生效路径**（AGENTS.md 红线）：
+
+1. `bin/plugin-check.sh --all` —— 验 9 维度（preset 不属于 plugin lint 范围，仅 syntax 校验）
+2. `bin/safe-update.sh smoke` —— 当前 prod 基线
+3. `bin/safe-update.sh mount-patch` —— 拍 4 份快照（patch / preset / plugins tar / storages）
+4. 编辑 `/dsh/.agent-presets/agint/agent.cordis.yml` 加同样 9 行
+5. `bin/restart-runbook.ps1`（PowerShell，**不是** `safe-update.sh restart`，那个会因 mingw 缺 pgrep 失败）
+6. `restart_status` 工具可见 + 插件无回归
+
+**回滚**：`bin/safe-update.sh rollback <TS>` 倒序回滚 patch+preset。
+
+**测试**：
+
+- `restart_status` 工具可见（preset row 加载成功）
+- `restart_request` 仍受 confirm 必填 + cooldown(60s) + burst(3次/600s) 三重护栏（不变）
+- 代码指纹（v0.8.1）在 `restart_status` 输出面仍可见
+
+---
+
 ## v0.8.1 — 2026-09-11 — 补救：代码指纹必须出现在 restart_status 的输出面上
 
 **背景（真机验收时发现）**：v0.8.0 激活后 `marker.json.codeFingerprint`、日志、契约字段都对了，
