@@ -124,6 +124,15 @@ export const ConfigSchema = z.object({
   param_similarity_threshold: z.number().min(0).max(1).default(0.8),
   min_standardizable_confidence: z.number().min(0).max(1).default(0.6),
 
+  // ── 成功率准入门（2026-09-13 新增；Hermes 对照 §六ter 建议 B）───────────
+  // 目的：堵住「把反复失败的固化成技能」。次数门槛只证明「经常发生」，
+  // 不证明「做对了」——一个稳定失败的序列重复 3 次同样会跨过
+  // min_occurrence_count，而这恰恰是最不该被沉淀的东西。
+  // 语义：occurrenceCount 达标 **且** successRate >= 本阈值 → 才进 newRepeat
+  // （→ 发 pattern-detected / 判定可标准化 / 生成候选）。
+  // 被拦下的模式**照常入库**（可观测），只是不成候选；拦截写审计留痕。
+  min_pattern_success_rate: z.number().min(0).max(1).default(0.6),
+
   // ── [4] 可标准化判断（2026-09-09 补齐；详见 lib/standardizable.js）──────
   // 硬否决阈值：低于任一即判定「明确不可标准化」
   standardizable_min_steps: z.number().int().min(1).default(2),

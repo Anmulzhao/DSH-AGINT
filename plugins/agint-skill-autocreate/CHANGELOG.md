@@ -1,5 +1,27 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.3 (2026-09-13) — 检测层成功率准入门（Hermes 对照 §六ter 建议 B）
+
+- **堵住「把反复失败的固化成技能」**：`occurrenceCount` 达标只证明「经常发生」，
+  不证明「做对了」——一个稳定失败的序列重复 3 次同样会跨过 `min_occurrence_count`，
+  而它恰是最不该被沉淀的东西（Hermes 侧对应 `_DO_NOT_CAPTURE_BLOCK`：
+  不许把没解决的过程包装成成功经验）。
+- 新增成功率门：次数达标 **且** `successRate >= min_pattern_success_rate`
+  才进 `newRepeat`（→ 发 `pattern-detected` / 判定可标准化 / 生成候选）。
+- 新配置 `min_pattern_success_rate`（默认 **0.6**；传 `0` 可关闭退回旧行为）。
+  数据缺失（`successRate` 非有限数）时**不放行、也不折算**——缺数据不编造，
+  与「真实 > 讨好」同向。
+- 被拦下的模式**照常入库**（可观测），并写审计 `pattern_blocked_low_success`
+  （含 `successRate` / `occurrenceCount` / 阈值 / `toolSequence`）；
+  `detect()` 返回值新增 `successRateBlocked` 计数。
+  **拦截不是丢弃**：稳定失败的模式最该被看见（说明有工具或流程坏了），
+  只是不该被固化成技能 → 走审计而非静默丢弃（防 K31 式静默空转）。
+- 测试：detector 单测 6 → 13（新增 7 例：拦下 / 放行 / 边界 `>=` / 默认 0.6 /
+  缺失不放行 / 关门 / `passesSuccessGate`）；全量 **110 PASS**。
+- 改动文件：`lib/detector.js`（判定 + `passesSuccessGate` 导出）、
+  `lib/schema.js`（配置项）、`lib/index.js`（传参 + 审计 + 返回值）、
+  `test/detector.test.mjs`。**不改数据表结构**（FROZEN schema 未动）。
+
 ## 0.3.2 (2026-09-09 晚) — v0.3.1 紧急修复：autocreate_modify JSON Schema
 
 - 修 v0.3.1 引入的 preset mount 失败：dsh loader 严格 JSON Schema 校验
