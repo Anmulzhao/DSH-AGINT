@@ -99,7 +99,7 @@ function apply(ctx, config) {
       domain = d;
       return d;
     },
-    (err) => { domainError = err; return null; },
+    (err) => { domainError = err; console.error('[agint-skill-graph] storageDomain.open failed:', err?.message || err); return null; },
   );
 
   const table = async (tableName) => {

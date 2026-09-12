@@ -74,7 +74,7 @@ function apply(ctx, config) {
       domain = d;
       return d;
     },
-    (error) => { domainError = error; return null; },
+    (error) => { domainError = error; console.error('[agint-trajectory] storageDomain.open failed:', error?.message || error); return null; },
   );
 
   const table = async (tableName) => {
