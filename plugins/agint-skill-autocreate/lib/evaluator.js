@@ -8,6 +8,9 @@
  *
  *   Phase 1  qualityStatic.checkPlugin(pluginDir=staging, profile=skill-candidate,
  *            familyEnabled=SKILL_FAMILY_ENABLED)  → 任一 blocker ⇒ REJECTED_STATIC
+ *            ＋（2026-09-13）checkSkillSemantics(draft, pattern, cfg) 语义准入：
+ *              负面断言 / 环境故障无解法 / 瞬时错误 / 失败包装成最佳实践 /
+ *              会话产物式命名。findings 同格式合并，统一判 blocker。
  *   Phase 2  staging 有 scripts/ 可执行物 ⇒ qualitySandbox.runSmoke({target:{path}})
  *            通过 ⇒ E1；无可执行物 ⇒ skipped（**不标 pass**，E0，Q2 拍板放行）
  *            实跑失败 ⇒ REJECTED_SANDBOX
@@ -21,6 +24,7 @@
 
 import { createStaging, stagingRootFor, assertSafeCandidateId } from './staging.js';
 import { SKILL_FAMILY_ENABLED } from '../../agint-quality-static/lib/static-profile.js';
+import { checkSkillSemantics } from './semantics.js';
 
 // ── rankingScore（设计稿 §7.2 例 0.62）：预估收益 0.5 + 模式频次 0.3 + 安全 0.2 ──
 export function computeRankingScore(candidate, pattern = {}) {
@@ -65,11 +69,26 @@ export async function evaluateCandidate(args) {
     },
   });
   const staticFindings = Array.isArray(staticResult) ? staticResult : (staticResult?.findings ?? []);
-  const blockers = staticFindings.filter((f) => f.severity === 'blocker');
+
+  // ── Phase 1 第二段：语义准入（2026-09-13 新增；P2-2 §六ter 建议 A + C）──
+  // quality-static 的四族只问"危不危险"，本段问"这东西是不是垃圾"：
+  // 负面断言 / 环境故障无解法 / 瞬时错误 / 把失败包装成最佳实践 / 会话产物式命名。
+  // findings 与 quality-static 同格式，合并后统一按 blocker 判定——
+  // 调用方（index.js 的 REJECTED_STATIC 分支）无需感知有两段。
+  const semanticFindings = checkSkillSemantics({
+    draft: candidate.skillDraft,
+    pattern,
+    cfg,
+  });
+  const allFindings = [...staticFindings, ...semanticFindings];
+  const blockers = allFindings.filter((f) => f.severity === 'blocker');
   evalResults.phase1 = {
     status: blockers.length ? 'reject' : 'pass',
-    families: [...new Set(staticFindings.map((f) => f.family))],
-    findings: staticFindings,
+    families: [...new Set(allFindings.map((f) => f.family))],
+    findings: allFindings,
+    // 便于周复盘区分「安全向被拒」与「语义向被拒」
+    semanticFindings: semanticFindings.length,
+    semanticCodes: semanticFindings.map((f) => f.code),
   };
   if (blockers.length) {
     return {
@@ -163,7 +182,7 @@ export async function evaluateCandidate(args) {
       targetKind: 'skill',
       decision: 'PENDING_REVIEW',
       scores: { composite, rankingScore },
-      findings: staticFindings.map((f) => ({
+      findings: allFindings.map((f) => ({
         ruleId: f.code ?? `${f.family}:${f.message?.slice(0, 40) ?? ''}`,
         severity: f.severity === 'blocker' ? 'high' : f.severity === 'warn' ? 'low' : 'medium',
         detail: f.message,

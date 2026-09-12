@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-skill-autocreate",
-  "version": "0.3.3",
-  "description": "P0-1 技能自动创建机制 v0.3.3（Sprint 14 检测层 + 成功率准入门 + Sprint 15 评估层 + Sprint 16 发布层）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估 → 三道门发布（总开关/policy 门/周预算；人工确认窗默认关）→ 14 天观察期（0 调用三重确认自动回滚，只归档不删除+30 天冷却）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。",
+  "version": "0.3.4",
+  "description": "P0-1 技能自动创建机制 v0.3.4（Sprint 14 检测层 + 成功率准入门 + Sprint 15 评估层 + 语义准入 + Sprint 16 发布层）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估（Phase 1 = quality-static 安全/格式四族 + semantics 语义准入：负面断言/环境故障无解法/瞬时错误/失败包装成最佳实践/会话产物式命名）→ 三道门发布 → D-QAF 三阶段评估 → 三道门发布（总开关/policy 门/周预算；人工确认窗默认关）→ 14 天观察期（0 调用三重确认自动回滚，只归档不删除+30 天冷却）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
