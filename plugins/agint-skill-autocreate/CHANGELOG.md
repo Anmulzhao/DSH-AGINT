@@ -1,5 +1,35 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.4 (2026-09-13) — 评估层语义准入 + 候选命名类级约束（P2-2 §六ter 建议 A + C）
+
+- **补上「防垃圾」这半边**：quality-static 技能向四族（`skill-format` /
+  `dangerous-command` / `secret-scan` / `prompt-hijack`）**只问「危不危险」，
+  不问「这东西值不值得固化」**。Phase 1 现在有两段：quality-static（安全/格式）
+  ＋ 新增 `lib/semantics.js`（语义），findings 同格式合并后统一判 blocker。
+- **建议 A —— 语义四条**（规则直接来自 Hermes `_DO_NOT_CAPTURE_BLOCK`）：
+
+  | # | 规则 | 级别 |
+  | - | --- | --- |
+  | 1 | 环境依赖失败、同段落无修复步骤 → **只许沉淀"怎么修"，不许沉淀"它坏了"** | warn |
+  | 2 | 对工具能力的负面断言（X 不能用/不支持）**且无版本或条件限定** → 会硬化成模型引用数月的自我拒绝 | **blocker** |
+  | 3 | 瞬时错误（错误码/堆栈）同段落无应对动作 → 自愈后就忘掉 | warn |
+  | 4 | 声称"推荐/最佳实践"但关联模式成功率低于门槛 → **不许把没解决的失败包装成成功经验** | **blocker** |
+
+- **建议 C —— 候选命名类级约束**（Hermes 判据：*"If the proposed name only makes sense for today's task, it's wrong."*）：命中 `fix-` / `debug-` / `hotfix-` / `tmp-` / `todo-` / `wip-` 前缀、含日期、含 issue 号 → **blocker**。沿用既有 `skill-format` 族名，不自造第三套族。
+- 新配置 `semantics_check_enabled`（默认 **true**）。**这里与 Hermes"更聪明的机制默认关"相反**：那是放大错误的（LLM 判断驱动），这个是拦错误的——防垃圾的门不该默认关。
+- **为什么落在 autocreate 内部，而不是给 quality-static 加新族**：① 规则 4 需要
+  `pattern.successRate`（autocreate 私有数据，quality-static 的 checker 只吃目录、
+  拿不到）；② quality-static 被多方消费，加族会外溢；③ 输入本就是内存里的
+  `skillDraft`，不必先物化成 SKILL.md 再读回来。
+- **防误杀优先**：每条规则都配了反向用例——版本/条件限定豁免（"v0.8 之前不能用"
+  不是永久断言）、同段有解法豁免（"command not found，需安装 jq" 值得留）、
+  成功率达标或缺数据豁免（缺数据不猜）。错误码走白名单而非"大写字母串"，
+  工具名支持中英文。
+- 测试：新增 `test/semantics.test.mjs` **19 例**；全量 **129 PASS**。
+- 改动/新增：`lib/semantics.js`（新）、`lib/evaluator.js`（Phase 1 合并 findings，
+  新增 `semanticFindings` / `semanticCodes` 便于周复盘区分来源）、`lib/schema.js`（开关）、
+  `test/semantics.test.mjs`（新）。**未动数据表结构。**
+
 ## 0.3.3 (2026-09-13) — 检测层成功率准入门（Hermes 对照 §六ter 建议 B）
 
 - **堵住「把反复失败的固化成技能」**：`occurrenceCount` 达标只证明「经常发生」，

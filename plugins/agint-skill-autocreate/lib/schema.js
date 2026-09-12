@@ -133,6 +133,13 @@ export const ConfigSchema = z.object({
   // 被拦下的模式**照常入库**（可观测），只是不成候选；拦截写审计留痕。
   min_pattern_success_rate: z.number().min(0).max(1).default(0.6),
 
+  // ── 语义准入总开关（2026-09-13 新增；P2-2 §六ter 建议 A + C）───────────
+  // 默认 **开**——这是「防垃圾」的门，不是可选增强（与 Hermes 那边"更聪明的
+  // 机制默认关"相反：那是放大错误的，这个是拦错误的）。
+  // 置 false 可整体退回旧行为（仅走 quality-static 的安全/格式四族）。
+  // 规则词表与判据见 lib/semantics.js，改动均有单测覆盖。
+  semantics_check_enabled: z.boolean().default(true),
+
   // ── [4] 可标准化判断（2026-09-09 补齐；详见 lib/standardizable.js）──────
   // 硬否决阈值：低于任一即判定「明确不可标准化」
   standardizable_min_steps: z.number().int().min(1).default(2),
