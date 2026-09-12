@@ -6,10 +6,19 @@
  *   - 同一模式累计次数 ≥3 → 标记为「重复模式」
  *   - 重复模式写入 task_patterns 表
  *
+ * 2026-09-13 新增成功率准入门（Hermes 对照 §六ter 建议 B）：
+ *   次数门槛只证明「经常发生」，不证明「做对了」。稳定失败的序列重复
+ *   3 次同样会跨过 minOccurrence，而它恰是最不该被沉淀成技能的东西。
+ *   故新增：occurrenceCount 达标 **且** successRate ≥ minSuccessRate 才进
+ *   newRepeat。被拦下的模式照常入库（可观测），只是不成候选。
+ *
  * 纯函数模块，无 I/O。existingPatterns 为已入库 pattern 的业务字段数组。
  */
 
 import { signatureOf } from './aggregator.js';
+
+/** 成功率准入门默认值（配置键 min_pattern_success_rate，见 schema.js） */
+export const DEFAULT_MIN_SUCCESS_RATE = 0.6;
 
 /**
  * 参数结构相似度：两个 paramSignature map（tool → sig）的加权 Jaccard。
@@ -50,21 +59,35 @@ export function sequenceEqual(a, b) {
 }
 
 /**
+ * 成功率门判定。
+ *
+ * 数据缺失（successRate 非有限数）时**不放行**，也不折算——宁可这次不沉淀，
+ * 也不编造一个成功率去放行。与「真实 > 讨好」同向：缺数据就不猜。
+ */
+export function passesSuccessGate(successRate, minRate = DEFAULT_MIN_SUCCESS_RATE) {
+  if (!Number.isFinite(successRate)) return false;
+  return successRate >= minRate;
+}
+
+/**
  * 模式检测主入口。
  *
  * opts:
  *   existingPatterns : 已入库 pattern 业务字段数组（含 id/统计）
  *   minOccurrence    : 重复判定阈值（默认 3）
  *   similarityThreshold : 参数相似度阈值（默认 0.8）
+ *   minSuccessRate   : 成功率准入门（默认 0.6）— 传 0 可关闭
  *   nowMs            : 时间基准
  *
- * 返回 { upserts, newRepeat }：
+ * 返回 { upserts, newRepeat, blockedBySuccessRate }：
  *   upserts    : 本次要写入/更新的 pattern 业务字段数组（不含 storage metadata）
- *   newRepeat  : 其中「本次跨过 minOccurrence 门槛」的 pattern（发事件用）
+ *   newRepeat  : 其中「本次跨过 minOccurrence 门槛 **且** 过成功率门」的 pattern（发事件用）
+ *   blockedBySuccessRate : 跨过次数门槛但被成功率门拦下的（仍入库，不生成候选；供审计留痕）
  */
 export function detectPatterns(taskInstances, opts = {}) {
   const minOccurrence = opts.minOccurrence ?? 3;
   const simThreshold = opts.similarityThreshold ?? 0.8;
+  const minSuccessRate = opts.minSuccessRate ?? DEFAULT_MIN_SUCCESS_RATE;
   const nowIso = opts.nowIso ?? new Date().toISOString();
   const existing = Array.isArray(opts.existingPatterns) ? opts.existingPatterns : [];
 
@@ -90,6 +113,8 @@ export function detectPatterns(taskInstances, opts = {}) {
   }
 
   const crossed = new Set();
+  // 跨过次数门槛但被成功率门拦下的——仍需入库与留痕（见文件头说明）
+  const blocked = new Set();
 
   for (const task of taskInstances) {
     if (!task?.toolSequence?.length) continue;
@@ -118,11 +143,17 @@ export function detectPatterns(taskInstances, opts = {}) {
       p.avgDurationMs = p.avgDurationMs == null && task.durationMs == null
         ? null
         : Math.round(((p.avgDurationMs ?? 0) * p.occurrenceCount + (task.durationMs ?? 0)) / (p.occurrenceCount + 1));
-      p.successRate = +(((p.successRate * p.occurrenceCount + task.successRate) / (p.occurrenceCount + 1))).toFixed(4);
+      p.successRate = Number.isFinite(task.successRate)
+        ? +(((p.successRate * p.occurrenceCount + task.successRate) / (p.occurrenceCount + 1))).toFixed(4)
+        : p.successRate;
       p.lastSeenAt = nowIso;
     }
     p.occurrenceCount += 1;
-    if ((wasBelow || p._isNew) && p.occurrenceCount >= minOccurrence) crossed.add(p);
+    // 只在「本次刚跨过次数门槛」那一次判定，避免每批重复记账
+    if ((wasBelow || p._isNew) && p.occurrenceCount >= minOccurrence) {
+      if (passesSuccessGate(p.successRate, minSuccessRate)) crossed.add(p);
+      else blocked.add(p);
+    }
   }
 
   // 标记 dirty：被命中的 existing（occurrence 变了）才需要回写。
@@ -139,6 +170,7 @@ export function detectPatterns(taskInstances, opts = {}) {
   return {
     upserts: [...dirtyExisting, ...newBusiness],
     newRepeat: [...crossed],
+    blockedBySuccessRate: [...blocked].map((p) => { const { _isNew, ...rest } = p; return rest; }),
   };
 }
 

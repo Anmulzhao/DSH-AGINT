@@ -180,10 +180,11 @@ function apply(ctx, config) {
 
     const tp = await table('task_patterns');
     const existing = [...tp.entries()].map(([, v]) => v);
-    const { upserts, newRepeat } = detectPatterns(tasks, {
+    const { upserts, newRepeat, blockedBySuccessRate } = detectPatterns(tasks, {
       existingPatterns: existing,
       minOccurrence: c.min_occurrence_count,
       similarityThreshold: c.param_similarity_threshold,
+      minSuccessRate: c.min_pattern_success_rate,
       nowIso: nowIso(),
     });
 
@@ -208,6 +209,31 @@ function apply(ctx, config) {
         await tp.put(id, packed);
         upserted.push(packed);
       }
+    }
+
+    // ── 成功率门拦下的模式（2026-09-13）──────────────────────────────────
+    // 照常入库、照常留痕，但**不**发 pattern-detected、**不**生成候选。
+    // 稳定失败的模式恰恰是最该被看见的（说明有工具或流程坏了），只是不该
+    // 被固化成技能——所以走审计而不是静默丢弃，供周复盘/人工复核扫。
+    let successRateBlocked = 0;
+    for (const pattern of blockedBySuccessRate) {
+      const blockedStored = upserted.find(
+        (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
+      );
+      if (!blockedStored) continue;
+      successRateBlocked++;
+      await audit({
+        actor: 'system',
+        action: 'pattern_blocked_low_success',
+        targetType: 'task_pattern',
+        targetId: blockedStored.id,
+        details: {
+          occurrenceCount: blockedStored.occurrenceCount,
+          successRate: blockedStored.successRate,
+          minSuccessRate: c.min_pattern_success_rate,
+          toolSequence: blockedStored.toolSequence,
+        },
+      });
     }
 
     // 跨过重复门槛的 pattern → 发事件 + [4] 判定 + 尝试生成候选
@@ -353,6 +379,7 @@ function apply(ctx, config) {
       excluded,   // D2：被排除的 curriculum 挑战调用数
       patternsUpserted: upserted.length,
       newRepeatPatterns: newRepeat.length,
+      successRateBlocked,   // 2026-09-13：跨过次数门槛但成功率不达标的
       standardizable: {
         judged: standardizableJudged,
         pass: standardizablePass,
