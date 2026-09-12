@@ -89,6 +89,19 @@ for dst in "$ZOD_DST_WEB" "$ZOD_DST_Q"; do
   fi
 done
 
+# ── 4.5 zstd CLI 检查（agint-dream sweep 依赖）──────────────────────────
+# 镜像层不预装 zstd CLI（保持精简 ~50MB），容器启动时检查并自动补。
+# install.sh 4.55 段已经处理过；这里兜底 install 没跑 / 跳过的场景。
+if ! command -v zstd >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    log "zstd CLI 缺失，apt-get install -y zstd（兜底）"
+    apt-get update >/dev/null 2>&1 || true
+    apt-get install -y --no-install-recommends zstd >/dev/null 2>&1 || \
+      log "⚠ zstd 装不上，agint-dream nightly sweep 会 ENOENT。可手动：apt-get install zstd"
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+  fi
+fi
+
 # ── 5. 拉起 web 服务 ───────────────────────────────────────────────
 args=(web --host "$HOST" --port "$PORT" --no-open)
 if [ -n "$TRUSTED_HOSTS" ]; then
