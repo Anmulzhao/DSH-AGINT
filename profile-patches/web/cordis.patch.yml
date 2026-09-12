@@ -1,4 +1,4 @@
-# Your patch layer for this dsh profile, applied after every bundle layer:
+﻿# Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
 # overrides, disables, and insert lists; `!!js` expressions allowed).
 #
@@ -111,8 +111,11 @@
       name: ./plugins/agint-quality-sdk/lib/index.js
       config: {}
 
-    # agint-quality-static: static-analysis rule check (l0-isolation +
-    # safety-boundary + prompt-injection).
+    # agint-quality-static: static-analysis rule check v0.8.0（2026-09-08 升级）.
+    # 插件向 6 族（l0-isolation + safety-boundary + prompt-injection 等）+
+    # 技能候选向 4 族 blocker（skill-format / dangerous-command / secret-scan /
+    # prompt-hijack，Sprint 15 T2，默认禁用防既有插件误报，经 SKILL_FAMILY_ENABLED
+    # 组合才启用；secret-scan 审计输出对密钥打码防二次泄露）。
     - id: agint-quality-static
       name: ./plugins/agint-quality-static/lib/index.js
       config: {}
@@ -134,6 +137,41 @@
       name: ./plugins/agint-mount/lib/index.js
       config: {}
 
+
+    # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
+    #   Inspired by nickkkkkk123123/dsh-resume-on-restart (scope 1:1);
+    #   marker file + pid diff + cordis dispose hook (fixes upstream SIGTERM double-kill bug);
+    #   agent decides next step autonomously (no forced continue);
+    #   rollback: delete this block + bin/safe-update.sh rollback <TS>.
+- insert:
+    - id: agint-restart
+      name: ./plugins/agint-restart/lib/index.js
+      config:
+        enabled: true
+        stateDir: .agint-restart
+        target: primary
+        deliveryMode: wake
+        resumeLastSession: true
+        resumeWaitMs: 5000
+        # 抖动窗口：相邻两次启动间隔小于此值则不投递通知（只挡"刚起来又被拉起"的抖动）。
+        # v0.6.1：300000 → 60000。5 分钟窗口会吞掉"重启后 1-3 分钟又重启"的正常投递，
+        # 导致恢复通知发不出去、会话不接续；重启环由 restart_request 的 burst 熔断兜底。
+        notifyDebounceMs: 60000
+        # v0.5.0：允许拉起的新实例自动打开浏览器吗？false = 给 dsh web 补 --no-open。
+        # dsh web 默认 openBrowser=true，不改的话每次重启都弹一个新浏览器标签/窗口。
+        openBrowserOnRestart: false
+        # v0.6.1：自触发重启是否也投"恢复"通知？true = 投（保证会话接续）。
+        # 旧默认 false 的判据实际是"这次启动留没留请求文件"= 凡走插件协议的重启，
+        # 等于恢复通知几乎永远发不出去（老板让 agent 重启并要求"重启完向我问好"收不到）。
+        # 断环改由通知文案（"不需要再次重启"）+ restart_request 的 burst 熔断承担。
+        resumeOnSelfRestart: true
+        # 发出重启请求后延迟多久退出（计入用户感知的等待时间）
+        shutdownDelayMs: 1500
+        notice: ''
+        shutdownGraceMs: 600000
+        ignoredSessionPrefixes:
+          - head-
+
     # agint-abtest: A/B test framework v0.6.4.
     - id: agint-abtest
       name: ./plugins/agint-abtest/lib/index.js
@@ -145,27 +183,39 @@
       name: ./plugins/agint-event-bus/lib/index.js
       config: {}
 
-    # agint-skill-autocreate: P0-1 技能自动创建（Sprint 14 检测层）v0.1.0.
-    # 聚合 tool-stats JSONL → 重复任务模式检测 → SKILL.md 候选提案（纯模板）。
-    # Service：agint.skillAutocreate（detect/listPatterns/listCandidates/
-    # getCandidate/rejectCandidate/modifyCandidate/stats/pause/resume/config）。
-    # triggerEval / release / rollback 显式抛未实现（Sprint 15/16 接力）。
+    # agint-skill-autocreate: P0-1 技能自动创建 v0.2.0（Sprint 14 检测层 +
+    # Sprint 15 P0-1 评估层，2026-09-08 升级，storage schemaVersion 1 不变）。
+    # 聚合 tool-stats JSONL → 重复任务模式检测 → SKILL.md 候选提案 → A 路径分流评估：
+    # 复用 D-QAF 执行层与阶段结构，但**不复用综合分做放行**（新候选 composite 恒
+    # 71.4 < 75 的语义错配）→ 硬门判定 + 得分仅排队，输出 provisional: true +
+    # evidence E0，evolution 写 phase3-provisional tag（P0-2 curator 跨域读取）。
+    # Service：agint.skillAutocreate（detect/listPatterns/listCandidates/getCandidate/
+    # rejectCandidate/modifyCandidate/staging/evaluator/triggerEval/stats/pause/resume/config）。
+    # release / rollback 显式抛未实现（Sprint 16 发布层接力，prune 默认禁用）。
     # 独占 agint_skill_autocreate 存储域（5 表）。软依赖 event-bus
-    # （pattern-detected / candidate-created 两事件）。每日聚合由 agint-cron
-    # 的 skill-autocreate-aggregate job 驱动（04:45）。
+    # （pattern-detected / candidate-created 两事件）+ quality-static（软）。
+    # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（04:45）。
     - id: agint-skill-autocreate
       name: ./plugins/agint-skill-autocreate/lib/index.js
       config: {}
 
-    # agint-curator: P0-2 技能策展人（Sprint 14 阶段 1）v0.1.0 — 2026-09-07 挂载.
+    # agint-curator: P0-2 技能策展人 v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2
+    # 智能策展）— 2026-09-07 挂载 v0.1.0，2026-09-08 升级 v0.2.0（schemaVersion 1→2 已迁移，
+    # 增 overlap_candidates 表；skill_states/reports 旧数据向后兼容）。
     # 扫描 preset skills 目录 + tool-stats JSONL → 状态机（active/stale/archived/
-    # pinned）→ 每周自动策展 + 报告。Service：agint.curator（run/dryRun/listSkills/
-    # getSkill/pin/unpin/archive/unarchive/stats/getReport/pause/resume/config）。
-    # listOverlaps / listDeclining / consolidate / prune 显式抛未实现（Sprint 15/16）。
-    # 独占 agint_curator 存储域（4 表）。软依赖 event-bus
-    # （skill-staled/archived/reactivated/pinned/run-completed）。
+    # pinned/quality_declining）→ 每周自动策展 + 报告。Service：agint.curator（run/dryRun/
+    # listSkills/getSkill/pin/unpin/archive/unarchive/stats/getReport/pause/resume/config/
+    # listOverlaps/listDeclining）。
+    # Sprint 15 新增：三维度重叠检测（curator.overlap-detected 事件 + overlap_candidates 表 +
+    # curator_list_overlaps 工具）、质量评估（成功率周快照 + 跨域 evolution 读取
+    # phase3-provisional HARM 趋势 → quality_declining 状态 + curator.quality-declining 事件 +
+    # curator_list_declining 工具）、质量加速规则 1-3（§7.2）。
+    # consolidate / prune 显式抛未实现（Sprint 16，prune 默认永久禁用）。
+    # 独占 agint_curator 存储域（5 表）。软依赖 event-bus
+    # （skill-staled/archived/reactivated/pinned/run-completed/overlap-detected/
+    # quality-declining/consolidate-proposed）+ agint.evolution（软，缺失降级）。
     # 每周策展由 agint-cron 的 curator-weekly job 驱动（周日 02:00）。
-    # ⚠️ 首挂保守：auto_curation_enabled: false → cron 只检测出报告，不自动归档。
+    # ⚠️ 保守：auto_curation_enabled: false → cron 全流程 dry-run（重叠/归档只检测不落盘），
     #    观察两周报告后改 true 放行（或随时 curator_pause/curator_resume）。
     - id: agint-curator
       name: ./plugins/agint-curator/lib/index.js
@@ -218,8 +268,61 @@
     # config）。独占 agint_curriculum 存储域（4 表：challenges/attempts/
     # difficulty_state/audit_log）。软依赖 event-bus（4 个 curriculum.* 事件）与
     # self-model（snapshot/update，不可用降级 skipped）。硬注入 storageDomain。
-    # 首挂保守：challenge 生成由 agint-cron 的 curriculum-weekly job 驱动
-    # （周日 05:00），preset 侧只挂 4 个工具（next/submit/stats/list）。
+    # 首挂保守：无 cron job、无 generate 工具 —— 挂载后不会自动生成任何挑战，
+    # 需 host 服务显式调用或后续补 curriculum-weekly job 才出活。
     - id: agint-curriculum
       name: ./plugins/agint-curriculum/lib/index.js
+      config: {}
+
+    # agint-skill-graph: P2-2 技能使用统计与学习图谱 v0.1.0（Sprint 19 实施，2026-09-13 挂载）。
+    # 从 tool-stats / preset 目录 / curator 状态聚合技能使用画像与技能关系边
+    # （co_use / similar / extends / conflicts 四类），成功失败分离。
+    # Service：agint.skillGraph（FROZEN 6：updateFull / getStats / neighbors /
+    # clusters / recommend / getCoverage；另有 listForPrompt / exportGraph /
+    # proposeConsolidate / setLlmAnnotation / setMode / config / stats）。
+    # 独占 agint_skill_graph 存储域（3 表：usage_stats / skill_edges / graph_meta）。
+    # 软依赖 event-bus / curator / evolve / skill-autocreate（任一缺失均降级不报错）。
+    # **只读消费上游**：不调用 curator 任何写方法，不进 policy / HARM / evolution 决策。
+    # 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周日 07:00）。
+    # ⚠️ 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
+    #    看几周 lastCalibration（「若转 live 会得到多少节点/边」）、promotable=true
+    #    后才用 skillGraph_set_mode('live') 切档（未跑过标定期调用会直接抛错）。
+    - id: agint-skill-graph
+      name: ./plugins/agint-skill-graph/lib/index.js
+      config: {}
+
+    # agint-trajectory: P2-1 进化轨迹记录（训练数据层）v0.1.0（Sprint 18 实施，2026-09-13 挂载）。
+    # 把 task / dream / eval / evolution / subagent 五类执行记为结构化轨迹，成功失败分离
+    # 存储，ShareGPT + JSONL 双格式导出（离线分析与未来微调原料）。
+    # Service：agint.trajectory（record / getStats / export / prune / setRecordMode /
+    # config 等）。独占 agint_trajectory 存储域（schemaVersion 1）。
+    # 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）。
+    # 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
+    # diagnosis.completed / evo-orch.task-started / evo-orch.task-completed。
+    # 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断。
+    # **轨迹数据不进任何在线决策**；**不注册 model-visible 工具**（观察层）。
+    # ⚠️ 默认档 count-only（标定期）：不落正式轨迹表，只写 meta + 标定报告。
+    #    无 ready 标定报告直接 setRecordMode('live') 会被不变量 #5 硬门禁拒绝并抛错。
+    - id: agint-trajectory
+      name: ./plugins/agint-trajectory/lib/index.js
+      config: {}
+
+    # agint-compress-guard: P3-1 记忆压缩检查点机制 v0.1.0（Sprint 20 实施，2026-09-13 挂载）。
+    # 立场：压缩可以发生，上下文不许消失（M4 fail-closed）。
+    # Service：agint.compressGuard（FROZEN 6：checkpoint / extract / search /
+    # recall / stats / setEnabled）。
+    # 两段式粒度：raw 检查点写失败 = 硬门 BLOCKED_CHECKPOINT（shadow 档只告警不真中止）；
+    # 洞察提取失败 / 3s 软超时 = 软降级 DEGRADED_INSIGHT，300s 冷却 → 探针 → 复位。
+    # 硬注入 storageDomain + agint.memory；软依赖 event-bus / agint.memoryProvider。
+    # 独占 agint_compress_guard 存储域（4 表 schemaVersion 1）；raw 唯一事实源仍归
+    # P1-1（Q3 分层不重建，双 id 空间 pcc_* / compactionId）。
+    # 接线：B 档主战场 = ctx.on('session/event') 过滤 compaction/start|summary|end|prune；
+    # C 档 = 显式 checkpoint() 委托 P1-1 runPreCompressCheckpoint；A 档已移出设计。
+    # 恢复双通道：compress_recall 工具 + 记忆查询 miss 兜底一次（装饰 agint.memory.search，
+    # 单次单向不回写，切断「压缩产物→记忆→再压缩」自我污染）。
+    # ⚠️ 三处保守：① shadow 档硬门只告警；② provider 注册进 P1-1 registry 但**不自动激活**；
+    #    ③ 本机 R10 探针实测 0 次压缩（155 会话 / 140,109 事件）→ 标定期 stats() 恒
+    #    NO_SOURCE_REACHED，是如实报警不是故障。转正由老板一周后拍板。
+    - id: agint-compress-guard
+      name: ./plugins/agint-compress-guard/lib/index.js
       config: {}

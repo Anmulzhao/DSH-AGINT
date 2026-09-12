@@ -1,0 +1,33 @@
+# agint-trajectory loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工，走 safe-update SOP）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml
+#      （建议放 agint-skill-graph 之后；mountOrder 29，紧接 skill-graph 28）
+#   2. bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. 老板手动重启 dsh（Git Bash 缺 pgrep/pkill，safe-update restart 不可用）
+#
+# 本文件**不**由 loader 自动包含。
+#
+# preset 侧：**不加**任何 tools 行 —— 本插件 manifest spec.cordis.tools 为 []，
+# 刻意不注册 model-visible 工具（观察层，Service 面给 P2-2 与周报消费）。
+#
+# ⚠️ 默认档是 count-only（标定期）：**不落正式轨迹表**，只写 meta + 标定报告。
+#   这是最保守的档位，首次挂载无需额外保守开关。看几周标定报告
+#   （「若转 live 会占多少条/多少字节」）后，才用 setRecordMode('live') 切档；
+#   **无 ready 标定报告直接切会被不变量 #5 硬门禁拒绝并抛错**。
+
+# agint-trajectory: P2-1 进化轨迹记录（训练数据层，Sprint 18 实施）。
+#   - Service：agint.trajectory（record / getStats / export / prune / setRecordMode /
+#     config 等；FROZEN 面由 P2-2 与周报消费）
+#   - 独占 agint_trajectory 存储域（schemaVersion 1，成功/失败分离存储）
+#   - 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）
+#   - 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
+#     diagnosis.completed / evo-orch.task-started / evo-orch.task-completed
+#   - 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断
+#   - **轨迹数据不进任何在线决策**；prune cron 不自注册（agint-cron 只有 list()）
+- insert:
+    - id: agint-trajectory
+      name: ./plugins/agint-trajectory/lib/index.js
+      config: {}
