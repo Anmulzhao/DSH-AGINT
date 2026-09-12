@@ -46,7 +46,9 @@
         "write:dreams"
       ],
       "network": [],
-      "shell": false
+      "shell": [
+        "zstd"
+      ]
     },
     "lifecycle": {
       "intervals": "none",
