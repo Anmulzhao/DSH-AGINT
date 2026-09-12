@@ -544,6 +544,22 @@ else
   log "   ⊘ 跳过 zod bootstrap（dry-run）"
 fi
 
+# ── 4.55 zstd bootstrap（修复 agint-dream sweep ENOENT）─────────────────────
+# 背景：sweep.js 第 111 行用 `execFile('zstd', ...)` 读 session.jsonl.zstd。
+# DSH 沙箱镜像（Debian / Ubuntu）按最小化原则装了 libzstd1 但跳过 zstd CLI
+# （Priority: optional），sweep 每晚 ENOENT 静默失败（2026-09-12 教训）。
+# 镜像层不主动装（保持精简），由本脚本在 install 阶段兜底。
+# 失败仅 warn，不阻断（与 zod bootstrap 同策略）。
+if [ "$DRY_RUN" != "1" ]; then
+  if bash "$SCRIPT_DIR/agint-zstd-bootstrap.sh" >/dev/null 2>&1; then
+    log "   ✓ zstd bootstrap OK"
+  else
+    warn "zstd bootstrap 失败（agint-dream nightly sweep 会 ENOENT）。手动跑：bash $SCRIPT_DIR/agint-zstd-bootstrap.sh"
+  fi
+else
+  log "   ⊘ 跳过 zstd bootstrap（dry-run）"
+fi
+
 # ── 4.6 AGENTS.md 本机实况自动同步（evolve 提案 95d78c05 · 阶段 1）───────────
 # 探测本机 host 实况（插件装载 / preset tool rows / skills / patch 段 / cron），
 # 回写仓库 AGENTS.md 文末 sentinel 围栏块。失败仅 warn，不阻断安装。
