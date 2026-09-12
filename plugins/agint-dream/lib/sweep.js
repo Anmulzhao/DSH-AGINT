@@ -13,14 +13,20 @@
  *            threshold gates, optional promotion into agint.memory, and a
  *            human-readable dream diary under <diaryRoot>/YYYY-MM-DD.md.
  *
- * Everything here is deterministic and dependency-light: session parsing uses
- * the `zstd` CLI (present on this host), scoring is pure arithmetic, and the
+ * ## External dependencies
+ *   - `zstd` CLI  — used to decompress session.jsonl.zstd files (readSessionLog).
+ *                   NOT bundled. Provided by host OS or installed by
+ *                   install/agint-zstd-bootstrap.sh. If missing, sweep logs
+ *                   ENOENT per session and produces empty signals (2026-09-12
+ *                   incident: this was silently broken for ~2 weeks).
+ *
+ * Everything else is deterministic and dependency-light: scoring is pure arithmetic, and the
  * only external service touched is `agint.memory` (injected at sweep time).
  * The intelligence stays in the model — this pass catches what explicit
  * memory_write missed, and the diary is written for a human/agent to read.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, readdir, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join, resolve, basename } from 'node:path';
@@ -107,7 +113,30 @@ export async function listSessionLogs(sessionsRoot, lookbackDays, maxSessions) {
   return logs.slice(0, maxSessions);
 }
 
+// Detect whether `zstd` CLI is available; cache result for the sweep.
+// Used by readSessionLog to surface a friendly error instead of letting
+// execFileAsync fail with ENOENT for every single session file.
+// Exported for smoke testing (test/smoke.mjs exercises the missing-zstd path).
+export function isZstdAvailable() {
+  try {
+    execFileSync('zstd', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+let zstdMissingWarned = false;
+
 export async function readSessionLog(logPath) {
+  if (!isZstdAvailable()) {
+    if (!zstdMissingWarned) {
+      // Warn once per sweep; the diary will record this as the root cause
+      // for sessions=0 if no candidate surfaces.
+      console.warn('[agint-dream] zstd CLI not found in PATH. Run install/agint-zstd-bootstrap.sh to install. Sweep will produce empty signals until resolved.');
+      zstdMissingWarned = true;
+    }
+    throw new Error(`zstd CLI not found in PATH (run install/agint-zstd-bootstrap.sh to install)`);
+  }
   const { stdout } = await execFileAsync('zstd', ['-dc', logPath], {
     maxBuffer: 64 * 1024 * 1024,
     encoding: 'utf8',
