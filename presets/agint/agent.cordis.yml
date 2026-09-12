@@ -487,3 +487,13 @@
 # 先看几周 lastCalibration 的「若转 live 会得到多少节点/边」，promotable=true 再切档。
 - id: agint-skill-graph-tools
   name: ../../profiles/web/plugins/agint-skill-graph/lib/tools.js
+
+# ── 智进 compress-guard tools (P3-1 记忆压缩检查点机制 v0.1.0) ──────────
+# Consumes host `agint.compressGuard`. 2 个工具：
+#   compress_recall（压缩后恢复通道之一：按 compactionId 取回 checkpoint + 洞察）/
+#   compress_guard_stats（健康态：shadow/live 档、BLOCKED / DEGRADED 计数、
+#     冷却态、NO_SOURCE_REACHED 显式标注）
+# 零数据诚实（不变量 6）：本机实测 0 次压缩 → stats() 恒 NO_SOURCE_REACHED，
+# 这是如实报警，不是故障。硬门在 shadow 档只告警不真中止压缩。
+- id: agint-compress-guard-tools
+  name: ../../profiles/web/plugins/agint-compress-guard/lib/tools.js

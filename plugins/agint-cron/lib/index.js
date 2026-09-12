@@ -121,6 +121,9 @@ function apply(ctx) {
     'agint.skillAutocreate': ctx.get('agint.skillAutocreate'),
     'agint.curator': ctx.get('agint.curator'),
     'agint.curriculum': ctx.get('agint.curriculum'),
+    // P2-2 技能图谱（mountOrder 28）。ctx.get 在 tick 时懒解析，晚挂载也能取到；
+    // 未挂载时为 undefined → skill-graph-weekly job 走 soft-skip 不报错。
+    'agint.skillGraph': ctx.get('agint.skillGraph'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 

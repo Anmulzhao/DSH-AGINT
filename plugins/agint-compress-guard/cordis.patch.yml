@@ -1,0 +1,41 @@
+# agint-compress-guard loader entry 模板
+#
+# 用途：把本插件挂到顶层 profile-patches/web/cordis.patch.yml 的 loader list 中。
+# 使用方式（手工，走 safe-update SOP）：
+#   1. 把下面 - insert 子片段整段 copy 到顶层 cordis.patch.yml
+#      （建议放 agint-trajectory 之后；mountOrder 30，紧接 trajectory 29）
+#   2. bin/safe-update.sh smoke 验一遍
+#   3. bin/safe-update.sh mount-patch 拍快照
+#   4. 老板手动重启 dsh（Git Bash 缺 pgrep/pkill，safe-update restart 不可用）
+#
+# 本文件**不**由 loader 自动包含。
+#
+# preset 侧工具（2 个）——在 presets/agint/agent.cordis.yml 加一行
+# （参照 agint-skill-graph-tools 写法）：
+#   - id: agint-compress-guard-tools
+#     name: ../../profiles/web/plugins/agint-compress-guard/lib/tools.js
+#
+# ⚠️ 两个刻意的保守设定：
+#   1. 硬门 BLOCKED_CHECKPOINT 在 shadow 档**只记录告警、不真中止压缩**，
+#      观察一周后由老板拍板是否转正。
+#   2. provider 注册进 P1-1 registry 但**不自动激活** —— 挂载不等于改变压缩行为。
+#   3. 本机 R10 探针实测 0 次压缩（155 会话 / 140,109 事件）→ 标定期 stats()
+#      恒 NO_SOURCE_REACHED，这是如实报警，不是故障。
+
+# agint-compress-guard: P3-1 记忆压缩检查点机制（Sprint 20 实施）。
+#   - 立场：压缩可以发生，上下文不许消失（M4 fail-closed）
+#   - Service：agint.compressGuard（FROZEN 6：checkpoint / extract / search /
+#     recall / stats / setEnabled）
+#   - 两段式：raw 检查点写失败 = 硬门 BLOCKED_CHECKPOINT；洞察提取失败/3s 软超时
+#     = 软降级 DEGRADED_INSIGHT，300s 冷却 → 探针 → 复位
+#   - 硬注入 storageDomain + agint.memory；软依赖 event-bus / agint.memoryProvider
+#   - 独占 agint_compress_guard 存储域（4 表 schemaVersion 1）；raw 唯一事实源仍归
+#     P1-1（Q3 分层不重建，双 id 空间 pcc_* / compactionId）
+#   - 接线：B 档主战场 = ctx.on('session/event') 过滤 compaction/start|summary|end|prune；
+#     C 档 = 显式 checkpoint() 委托 P1-1 runPreCompressCheckpoint；A 档已移出设计
+#   - 恢复双通道（Q4）：compress_recall 工具 + 记忆查询 miss 兜底一次（装饰
+#     agint.memory.search，单次单向不回写，切断「压缩产物→记忆→再压缩」自我污染）
+- insert:
+    - id: agint-compress-guard
+      name: ./plugins/agint-compress-guard/lib/index.js
+      config: {}
