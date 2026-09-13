@@ -1,6 +1,22 @@
 ---
 name: cordis-plugin-development
 description: Create, modify, debug, or extend dynamic Cordis Plugins, including Host Services and Events, Client Slot and theme UI, Package-private Client-to-Host calls, dynamic Tools, version updates, approval failures, and runtime diagnostics. Use this Skill to route a user request to the correct platform and Inspect Provider, then define, run, repair, or roll back the Plugin.
+tools:
+  - cordis_inspect_list
+  - cordis_inspect_query
+  - cordis_inspect_self
+  - cordis_define
+  - cordis_run
+  - cordis_stop
+  - cordis_undefine
+triggers:
+  - "创建/修改/调试/扩展 Cordis 插件"
+  - "定义 Host Service / Event / Client Slot / 动态 Tool"
+  - "插件审批失败、运行时诊断、版本更新或回滚"
+related_skills:
+  - editing-cordis-compositions
+  - plugin-preflight
+
 ---
 
 # Develop Dynamic Cordis Plugins

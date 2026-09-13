@@ -1,6 +1,24 @@
 ---
 name: chain-rpc-toolkit
 description: 区块链 RPC 客户端与 SDK 用法模式库：ethers.js v6 / viem（以太坊与 EVM 链）、@solana/web3.js（Solana）、@cosmjs/stargate（Cosmos）、near-api-js（Near）、starknet.js / starknet-react（StarkNet）、@polkadot/api（Polkadot）。Chain ID 与 RPC 端点速查、provider / signer / wallet 模式、事件订阅、合约读写、交易签名与发送、Multicall / Batch、indexer（The Graph / Covalent / Alchemy / Moralis）。任务涉及链交互代码、dApp 前端集成、链下数据查询、合约读写时自动加载。
+tools:
+  - ethers
+  - viem
+  - "@solana/web3.js"
+  - "@cosmjs/stargate"
+  - near-api-js
+  - starknet.js
+  - "@polkadot/api"
+triggers:
+  - "任务涉及链交互代码（ethers/viem 等）"
+  - "dApp 前端集成、链下数据查询"
+  - "合约读写的 provider/signer/事件订阅"
+related_skills:
+  - defi-mechanics
+  - evm-patterns
+  - wallet-security
+  - web3-debug
+
 ---
 
 # Chain RPC Toolkit — 链交互工具速查

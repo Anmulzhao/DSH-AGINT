@@ -1,7 +1,19 @@
 ---
+
 name: github-push
 description: "把 AGINT 仓库（或本机任何 git 仓库）推送到 GitHub 的专用流程。本机 GitHub 被墙（直连 RST），通过本机 Clash for Windows 的明文 HTTP 代理（127.0.0.1:7890）走 HTTPS 出口。触发场景：任何 git push / git clone / 访问 GitHub API / 建仓 / 发 Release 时网络不通或失败，或用户提到 push、上传到 GitHub、同步远程仓库。**注意：在沙箱 PowerShell 会话里 git push 会因 msys signal pipe 崩溃，需改用文末『沙箱 PowerShell 场景』的原生 ssh.exe 方案。**"
+tools:
+  - git
+  - ssh.exe
+triggers:
+  - "git push/fetch/clone 在沙箱里崩溃（msys signal pipe）"
+  - "访问 GitHub API / 建仓 / 发 Release 网络不通"
+  - "用户提到 push、上传 GitHub、同步远程仓库"
+related_skills:
+  []
+
 ---
+
 
 # GitHub 推送（clash 7890 通道）
 
@@ -18,9 +30,32 @@ description: "把 AGINT 仓库（或本机任何 git 仓库）推送到 GitHub �
 
 **默认走 clash 7890**。ghelper 老节点视为过期，**别再抄进新脚本**。
 
-## ⚠️ 沙箱 PowerShell 场景（2026-09-05 实测，最重要的坑）
+## ⚠️ 沙箱 PowerShell 场景（2026-09-05 首次踩到；2026-09-11 找到正解）
 
-**在智进运行的沙箱 PowerShell 会话里，`git push / git fetch / git pull` 必崩**：
+### ✅ 首选：把 `core.sshCommand` 指向原生 OpenSSH（2026-09-11 实测 push 成功）
+
+崩溃的**唯一**触发条件是 git spawn 了 **MSYS 的 `ssh.exe`**（`C:\Program Files\Git\usr\bin\ssh.exe`）。
+换成 Windows 自带 OpenSSH，msys 完全不参与，`fetch` / `push` / `ls-remote` 全部可用：
+
+```powershell
+$sc = 'C:/Windows/System32/OpenSSH/ssh.exe'   # ⚠️ 必须正斜杠：git 经 msys sh 执行它，反斜杠会被吃掉
+git -C <repo> -c core.sshCommand=$sc fetch     origin <branch>
+git -C <repo> -c core.sshCommand=$sc push      origin <branch>
+git -C <repo> -c core.sshCommand=$sc ls-remote origin <branch>
+```
+
+实测（`Anmulzhao/DSH-AGINT`，`846569b` → `0d29e2e`）：`push` exit 0，输出 `846569b..0d29e2e  main -> main`；
+随后 `fetch` + `rev-list --left-right --count origin/main...HEAD` = `0  0`，`ls-remote` = 本地 HEAD。
+**origin 是 SSH URL 时不需要 clash 代理**（2026-09-11 实测本机 7890 当时并未运行，push 照样成功）。
+
+> 认出"路径被 sh 吃掉"这类报错（一眼可辨）：
+> `C:\Windows\...\ssh.exe: line 1: C:WindowsSystem32OpenSSHssh.exe: command not found`
+
+> 顺带记住：**没有网络操作时 git 永远不崩**（`add` / `commit` / `log` / `rev-parse` / `pack-objects` 都是纯对象操作）。
+
+### ❌ 旧现象（保留供对照）：默认配置下必崩
+
+**默认配置下（git 用自带的 MSYS `ssh.exe`），沙箱 PowerShell 里 `git push` 必崩**：
 
 ```
 0 [main] sh.exe/ssh.exe: *** fatal error - couldn't create signal pipe, Win32 error 5
@@ -28,13 +63,12 @@ fatal: Could not read from remote repository.
 exit: 128
 ```
 
-**根因**：git 的网络 transport 要 spawn MSYS 的 `sh.exe`/`ssh.exe`，而 MSYS 程序创建 signal pipe 时**要求父进程也是 MSYS 程序**；PowerShell（原生 Win32）不是，Windows 拒绝给权限（Win32 error 5 = Access denied）。跟网络、SSH key、认证、代理**全部无关**。
+**根因**：git 的网络 transport 要 spawn MSYS 的 `sh.exe`/`ssh.exe`，而 MSYS 程序创建 signal pipe 时**要求父进程也是 MSYS 程序**；PowerShell（原生 Win32）不是，Windows 拒绝给权限（Win32 error 5 = Access denied）。跟网络、SSH key、认证、代理**全部无关**——**只跟"spawn 的是哪个 ssh"有关**。
 
-**git 的纯对象操作正常**（不崩）：`git rev-parse` / `git status` / `git log` / `git add` / `git commit` —— 这些不经 msys fork。
-
-> **✅ 但 `git fetch` 不走 msys fork**（git fetch 用的是纯 libgit2-like 协议，走 curl/schannel 网络栈），不崩；
-> `git push` 才走 msys。**所以沙箱里 fetch 可以用、push 必须绕路**。这是 2026-09-08 实测结论，
-> 之前记录说 fetch 也崩是错的，已验证推翻（参见末尾"记录勘误"）。
+> **2026-09-11 重新解释旧结论**：早先记的"`fetch` 不崩、`push` 才崩"其实是**transport 差异**，
+> 不是 fetch/push 差异——当时那条 `fetch` 走的是 **HTTPS transport**（`git -c http.proxy=…` + schannel，
+> 压根不 spawn ssh）；一旦 `fetch` 走 SSH transport，它同样会 spawn ssh、同样受支配。
+> **判据请记成：transport 是否 spawn 了 MSYS ssh**（参见末尾"记录勘误"）。
 
 ---
 
@@ -142,7 +176,7 @@ $counts = git rev-list --left-right --count 'origin/<branch>...HEAD'
 
 **区分两种处境**：
 - 你在 **Git Bash / 正常终端**里 → 直接 `git push` 即可（有 MSYS 环境，sh 正常起）
-- 你在 **智进的沙箱 PowerShell 会话**里 → **走上面 5 步强制流程**，不绕路
+- 你在 **智进的沙箱 PowerShell 会话**里 → **先试 `-c core.sshCommand=C:/Windows/System32/OpenSSH/ssh.exe`（首选，2026-09-11 实测 push 成功）**；只有它失败时才走上面 5 步强制流程
 
 **已实测成功**（2026-09-08）：
 - `Anmulzhao/DSH-AGINT.wiki` master ← `a334c26`（1 commit / 558 字节 pack）
@@ -164,10 +198,17 @@ $counts = git rev-list --left-right --count 'origin/<branch>...HEAD'
 
 ## 📌 记录勘误
 
+- **2026-09-11：沙箱里 push 不需要绕路** —— "默认 ssh 会崩"是真的，但根因只是 **spawn 了 MSYS ssh**；
+  把 `core.sshCommand` 指向原生 `C:/Windows/System32/OpenSSH/ssh.exe` 后，`push`/`fetch`/`ls-remote`
+  直连成功（实测 `846569b..0d29e2e`，fetch 计数 `0  0`）。**5 步强制流程降级为兜底**，
+  不再作为"必走流程"。
+- 2026-09-08 旧记录说"`fetch` 不崩、`push` 才崩"——真正变量是 **transport**（HTTPS 不 spawn ssh，
+  SSH 会）。见上文"重新解释"。
 - 2026-09-05 旧记录说"沙箱里 `git push / git fetch / git pull` 必崩"——`fetch/pull` 部分**实测不崩**
   （2026-09-08 验证），**只有 `push` 崩**。原描述已修正。
 - 2026-09-05 旧记录说"ghelper kuaishou CDN 代理是默认通道"——**该节点 2026-09-05 同日已死**，
-  改走 clash 7890；旧描述保留供历史参考，**新脚本不要用**。
+  改走 clash 7890；旧描述保留供历史参考，**新脚本不要用**。另：**origin 是 SSH URL 时根本不用代理**
+  （2026-09-11 实测 7890 未运行也能 push）。
 
 ## 目标仓库
 

@@ -1,6 +1,17 @@
 ---
 name: causal-reasoning
 description: 因果推理精简规范：在判断"X 导致 Y"之前必须过的 4 道关（相关 vs 因果、反事实、剂量、第三方变量）；与 rule_check 联动 — 高风险决策前必先查规则。适用于排障、归因、提出根因方案、评估动作风险。
+tools:
+  - memory_search
+  - rule_check
+  - wiki_search
+triggers:
+  - "排障定位根因、性能下降归因"
+  - "写复盘时区分相关与因果"
+  - "评估动作/决策风险（该不该做）"
+related_skills:
+  - memory-discipline
+
 ---
 
 # 因果推理（Causal Reasoning）
