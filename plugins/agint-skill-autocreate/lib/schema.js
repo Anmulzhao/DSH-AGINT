@@ -173,6 +173,13 @@ export const ConfigSchema = z.object({
   // ── Sprint 16 发布层（设计稿 §5；2026-09-09 老板拍板 3 项）──────────────
   // 门 1 总开关（独立于 auto_create_enabled）
   release_enabled: z.boolean().default(true),
+  // 门 3 policy 门放行语义（2026-09-13 B 修复）：
+  //   'veto'  （默认）只拦 REJECT/ABSTAIN，放行 AUTO_DEPLOY / PENDING_REVIEW ——
+  //            即「保留 policy 门拦错、放行其余进观察期」（K42 原则）。新候选 D-QAF
+  //            综合分恒 ~71.4 < pendingReview 75，原「仅 AUTO_DEPLOY 放行」会一律
+  //            fail-closed，故默认改 veto，让自演化闭环真正闭合。
+  //   'strict' 仅 AUTO_DEPLOY 放行（旧行为；若未来想强制 policy 全绿再发布可切回）。
+  release_policy_mode: z.enum(['veto', 'strict']).default('veto'),
   // 门 3 policy 门同步超时（超时 = fail-closed 不发布）
   release_policy_timeout_ms: z.number().int().min(100).default(5000),
   // 门 2 人工确认窗：require_human_approval=true 或 now < until 即不自动发布；
@@ -225,6 +232,7 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   // Sprint 16：发布层运行时旋钮
   'release_enabled',
   'require_human_approval_until',
+  'release_policy_mode',
   'observation_min_calls',
 ]);
 

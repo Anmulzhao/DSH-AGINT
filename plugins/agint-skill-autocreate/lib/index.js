@@ -641,8 +641,13 @@ function apply(ctx, config) {
       };
     }
 
-    // ── PHASE3_PASS：终态 + proposals 表写入（§7.2）+ TTL 清理兜底 ──────
-    const finalStatus = 'PHASE3_PASS';
+    // ── 评估通过：候选进入发布队列（§7.2）+ proposals 表写入 + TTL 清理兜底 ──
+    // B 闭环第三断点修复（2026-09-13）：候选此前停在 PHASE3_PASS，但 releaseQueue /
+    // releaseCandidate 只认 candidates 表的 QUEUED_FOR_RELEASE / BUDGET_WAIT（见
+    // release-manager.js L348 守卫 / L464 过滤），PHASE3_PASS 是没人消费的死状态 →
+    // 闭环在「评估→发布」间断掉。此处把候选终态直接置为 QUEUED_FOR_RELEASE（与
+    // proposal 同态），triggerEval 之后 evaluateQueue→releaseQueue 才能真正接走候选。
+    const finalStatus = 'QUEUED_FOR_RELEASE';
     const updated = { ...base, status: finalStatus, rejectionReason: null };
     await cd.put(id, updated);
     await publishEvent('skill-autocreate.phase3-passed', {
@@ -704,6 +709,39 @@ function apply(ctx, config) {
   const rollback = (input = {}) => releaseManager.rollback(input);
   const observe = () => releaseManager.observe();
   const listReleases = (input = {}) => releaseManager.listReleases(input);
+
+  /**
+   * Sprint 16 B 修复（2026-09-13）：评估桥自动接通。
+   * detect() 产出 PENDING_EVAL 候选后，此前生产里没有任何 cron / 事件自动调用
+   * triggerEval（只被人工 tools.js 与测试调用），候选永远卡在 PENDING_EVAL →
+   * 达不到 QUEUED_FOR_RELEASE → releaseQueue 无物可发，自演化闭环在「评估」这一步断掉。
+   * 本函数由 skill-autocreate-release cron 在发布前调用，把待评估候选逐个推进评估
+   * （逐条容错），使 detect → eval → release → observe 在单日 cron 内闭环。
+   */
+  async function evaluateQueue(args = {}) {
+    const c = effectiveConfig();
+    if (!c.auto_create_enabled) return { skipped: true, reason: 'auto_create_enabled=false' };
+    const cd = await table('candidates');
+    const pending = [...cd.entries()].map(([, v]) => v).filter((v) => v.status === 'PENDING_EVAL');
+    let evaluated = 0, queued = 0, rejected = 0, retried = 0, failed = 0;
+    for (const cand of pending) {
+      try {
+        const r = await triggerEval({ id: cand.id, actor: 'system' });
+        evaluated++;
+        const fs2 = r.finalStatus ?? '';
+        if (fs2 === 'QUEUED_FOR_RELEASE' || fs2 === 'PHASE3_PASS') queued++;
+        else if (/REJECTED/.test(fs2)) rejected++;
+        else if (r.retryable) retried++;
+      } catch (e) {
+        failed++;
+        await audit({
+          actor: 'system', action: 'eval_queue_failed', targetType: 'candidate', targetId: cand.id,
+          details: {}, reason: String(e?.message ?? e),
+        });
+      }
+    }
+    return { attempted: pending.length, evaluated, queued, rejected, retried, failed };
+  }
 
   async function stats() {
     const [tp, cd, al, rt] = await Promise.all([
@@ -778,6 +816,7 @@ function apply(ctx, config) {
     rejectCandidate,
     modifyCandidate,
     triggerEval,
+    evaluateQueue,
     release,
     releaseQueue,
     rollback,

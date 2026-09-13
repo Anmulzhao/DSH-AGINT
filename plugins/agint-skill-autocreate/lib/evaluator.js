@@ -160,6 +160,12 @@ export async function evaluateCandidate(args) {
   }
 
   const composite = Number(evalOut?.scores?.composite ?? evalOut?.composite ?? 0);
+  // ── 2026-09-13 B 修复：把真实 D-QAF EvalResult 原样挂到 evalResults.policyInput ──
+  // 这是 policy 门（release-manager 门3）要的合法输入形态（带 dimensions[]），
+  // 而非本地的 {phase1,phase2,phase3} 摘要对象。此前传摘要对象导致 policy.decide
+  // 把对象当 EvalResult[] 迭代 → 抛异常 → 全 fail-closed。挂真结果后 policy 能
+  // 算出真实综合分并做防御性否决（REJECT/ABSTAIN），而非永远卡 BUDGET_WAIT。
+  evalResults.policyInput = evalOut;
   const hardGatePassed = true; // 走到此处 = Phase1 无 blocker ∧ Phase2 未失败
   const rankingScore = computeRankingScore(candidate, pattern);
   const evidenceLevel = evalResults.phase2.status === 'pass' ? 'E1' : 'E0';
