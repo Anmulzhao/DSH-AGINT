@@ -96,3 +96,25 @@ export function lastFire(parsed, at = new Date()) {
   }
   return null;
 }
+
+/**
+ * Whether a job is due to fire at `now`.
+ *
+ * `lastRunAt` is the epoch-ms of the previous run, or `null` if the job has
+ * never run. Backfill-aware: a job is due when the most recent scheduled
+ * occurrence at or before `now` is strictly after the last recorded run.
+ *
+ *   - A never-run job (lastRunAt null) is always due → backfills once on the
+ *     next tick after boot.
+ *   - A daily that hasn't run today, and a weekly whose narrow fire window
+ *     already slipped by while the host was offline, are both due.
+ *   - Once fired, lastRunAt moves past `due`, so the same occurrence is never
+ *     fired twice — a month of missed weekly windows yields exactly one
+ *     catch-up run, not a flood.
+ */
+export function isDue(parsed, lastRunAt, now = Date.now()) {
+  const due = lastFire(parsed, new Date(now));
+  if (due === null) return false;
+  if (lastRunAt !== null && due.getTime() <= lastRunAt) return false;
+  return true;
+}
