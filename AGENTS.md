@@ -169,17 +169,17 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-12 12:37 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-13 09:39 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
 - **仓库版本**：v0.7.1（VERSION 表首行）
-- **DSH_HOME**：`/dsh`
-- **仓库 ↔ host 同步**：27/27 个插件 lib/index.js 哈希一致，无漂移 ✅
-- **host 挂载插件**（27 个）：agint-abtest@pkg:0.6.4、agint-cron@pkg:0.1.0、agint-curator@v0.1.0、agint-curriculum@pkg:0.1.1、agint-diagnosis@v0.7.0、agint-dream@v0.3.0-C4、agint-event-bus@pkg:0.7.0、agint-evolution-memory@pkg:0.6.6、agint-evolve@v0.7.1、agint-memory@pkg:0.1.0、agint-memory-provider@pkg:0.2.0、agint-metrics@pkg:0.1.0、agint-mount@v0.7.1-draft、agint-mutator@v0.6.3、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@pkg:0.6.3、agint-quality-sdk@pkg:0.5.0、agint-quality-static@pkg:0.8.0、agint-restart@v0.8.1、agint-rules@pkg:0.1.0、agint-self-model@v0.7.3、agint-skill-autocreate@pkg:0.3.2、agint-tool-stats@pkg:0.1.0、agint-wiki@pkg:0.2.0
-- **preset tool rows**（20 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum
+- **DSH_HOME**：`C:\Users\Administrator\.dsh`
+- **仓库 ↔ host 同步**：⚠️ lib/index.js 哈希漂移：agint-skill-autocreate
+- **host 挂载插件**（30 个）：agint-abtest@pkg:0.6.4、agint-compress-guard@v0.1.0、agint-cron@pkg:0.1.0、agint-curator@v0.1.0、agint-curriculum@pkg:0.1.1、agint-diagnosis@v0.7.0、agint-dream@pkg:0.1.0、agint-event-bus@pkg:0.7.0、agint-evolution-memory@pkg:0.6.6、agint-evolve@v0.7.0、agint-memory@pkg:0.1.0、agint-memory-provider@pkg:0.2.0、agint-metrics@pkg:0.1.0、agint-mount@v0.7.1-draft、agint-mutator@v0.6.3、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@pkg:0.6.3、agint-quality-sdk@pkg:0.5.0、agint-quality-static@pkg:0.8.0、agint-restart@v0.8.1、agint-rules@pkg:0.1.0、agint-self-model@v0.7.3、agint-skill-autocreate@pkg:0.3.2、agint-skill-graph@v0.1.0、agint-tool-stats@pkg:0.1.0、agint-trajectory@pkg:0.1.0、agint-wiki@pkg:0.2.0
+- **preset tool rows**（23 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard
 - **preset skills**（6 个）：causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
-- **cordis.patch.yml agint 段**（host web profile，26 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-abtest、agint-event-bus、agint-skill-autocreate、agint-curator、agint-mutator、agint-self-model、agint-evolution-memory、agint-memory-provider、agint-curriculum
-- **cron 实况**（7 个 job，按最近 tick 排序）：skill-autocreate-observe 2026-09-11 21:30Z、skill-autocreate-release 2026-09-11 21:15Z、skill-autocreate-aggregate 2026-09-11 20:45Z、prompt-static-check 2026-09-11 20:45Z、tool-stats-backfill 2026-09-11 20:30Z、metrics-collect 2026-09-11 20:00Z、night-dream 2026-09-11 19:00Z
+- **cordis.patch.yml agint 段**（host web profile，30 个）：agint-memory、agint-dream、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-tool-stats、agint-quality-contract、agint-quality-sandbox、agint-quality-eval、agint-quality-policy、agint-quality-sdk、agint-quality-static、agint-diagnosis、agint-population、agint-mount、agint-restart、agint-abtest、agint-event-bus、agint-skill-autocreate、agint-curator、agint-mutator、agint-self-model、agint-evolution-memory、agint-memory-provider、agint-curriculum、agint-skill-graph、agint-trajectory、agint-compress-guard
+- **cron 实况**（14 个 job，按最近 tick 排序）：curator-weekly 2026-09-13 01:29Z、curriculum-weekly 2026-09-13 01:29Z、tool-stats-backfill 2026-09-13 00:37Z、night-dream 2026-09-13 00:37Z、evolve-review 2026-09-13 00:36Z、metrics-collect 2026-09-13 00:36Z、skill-graph-weekly 2026-09-13 00:36Z、wiki-lint 2026-09-13 00:36Z、skill-autocreate-aggregate 2026-09-13 00:36Z、baseline-regression-suite 2026-09-13 00:36Z、prompt-static-check 2026-09-13 00:36Z、skill-autocreate-observe 2026-09-13 00:36Z、skill-autocreate-release 2026-09-13 00:36Z、memory-decay 2026-09-07 00:11Z
 
 <!-- LOCAL-STATE:END -->
