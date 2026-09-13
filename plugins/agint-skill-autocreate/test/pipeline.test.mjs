@@ -244,7 +244,7 @@ function setupEvalCtx(tmpDir, options = {}) {
   return { ctx, events, svc: ctx._provided['agint.skillAutocreate'], evolutionLogs, qualityStatic };
 }
 
-test('T8 核心验收：内容完全正常的候选走完 Phase1-3 → PHASE3_PASS（71.4 不死锁）', async () => {
+test('T8 核心验收：内容完全正常的候选走完 Phase1-3 → QUEUED_FOR_RELEASE（71.4 不死锁，闭环闭合）', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'autocreate-eval-'));
   try {
     const { svc, events, evolutionLogs, ctx } = setupEvalCtx(tmp);
@@ -253,7 +253,7 @@ test('T8 核心验收：内容完全正常的候选走完 Phase1-3 → PHASE3_PA
     const candId = detected.candidateIds[0];
 
     const out = await svc.triggerEval({ id: candId });
-    assert.equal(out.finalStatus, 'PHASE3_PASS', '终态必须 PHASE3_PASS 而非 REJECTED_EVAL（T8 红线）');
+    assert.equal(out.finalStatus, 'QUEUED_FOR_RELEASE', '终态必须 QUEUED_FOR_RELEASE（进入发布队列、闭环不中断），而非 REJECTED_EVAL（T8 红线：71.4 不死锁）');
     assert.equal(out.composite, 71.4);
     assert.equal(out.compositeTrusted, false);
     assert.equal(out.evidenceLevel, 'E0', '无 scripts → E0');
@@ -262,7 +262,7 @@ test('T8 核心验收：内容完全正常的候选走完 Phase1-3 → PHASE3_PA
 
     // 候选终态 + 中间态逐阶段落盘可观测（evalResults 三阶段全齐）
     const cand = await svc.getCandidate(candId);
-    assert.equal(cand.status, 'PHASE3_PASS');
+    assert.equal(cand.status, 'QUEUED_FOR_RELEASE', '候选必须进入 QUEUED_FOR_RELEASE 才能被 releaseQueue 接走（B 闭环第三断点修复）');
     assert.equal(cand.evalResults.phase1.status, 'pass');
     assert.equal(cand.evalResults.phase2.status, 'skipped');
     assert.equal(cand.evalResults.phase3.hardGatePassed, true);
@@ -385,6 +385,32 @@ test('T6：listCandidates 支持 evidenceLevel / provisional 过滤', async () =
     assert.equal(e1.length, 0);
     const prov = await svc.listCandidates({ provisional: true });
     assert.equal(prov.length, 1);
+  } finally {
+    process.env.DSH_HOME = DSH_HOME_BACKUP;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ── B4（2026-09-13）：评估桥 evaluateQueue 自动推进 PENDING_EVAL → QUEUED_FOR_RELEASE ──
+// 此前生产里没有任何 cron / 事件自动调用 triggerEval（只被人工 tools.js 与测试调用），
+// 候选永远卡在 PENDING_EVAL；evaluateQueue 桥接后，detect → eval → queue 在单日 cron 内闭合。
+test('B4 评估桥 evaluateQueue：PENDING_EVAL 自动推进到 QUEUED_FOR_RELEASE（闭环闭合）', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'autocreate-evalq-'));
+  try {
+    const { svc } = setupEvalCtx(tmp);
+    const detected = await svc.detect({});
+    assert.equal(detected.candidatesCreated, 1);
+    const candId = detected.candidateIds[0];
+    const before = await svc.getCandidate(candId);
+    assert.equal(before.status, 'PENDING_EVAL', 'detect 后候选停在 PENDING_EVAL，等评估桥推进');
+
+    const res = await svc.evaluateQueue();
+    assert.equal(res.attempted, 1);
+    assert.equal(res.evaluated, 1);
+    assert.equal(res.queued, 1, '候选应被推进到 QUEUED_FOR_RELEASE（第三断点修复后）');
+
+    const after = await svc.getCandidate(candId);
+    assert.equal(after.status, 'QUEUED_FOR_RELEASE', '评估桥必须把候选送到发布队列，否则发布层无从接走');
   } finally {
     process.env.DSH_HOME = DSH_HOME_BACKUP;
     rmSync(tmp, { recursive: true, force: true });

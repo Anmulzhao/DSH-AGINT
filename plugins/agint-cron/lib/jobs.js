@@ -196,21 +196,28 @@ export const defaultJobs = [
     },
   },
   {
-    // P0-1 发布层（Sprint 16）：每日发布窗口检查。
+    // P0-1 发布层（Sprint 16 + B 修复 2026-09-13）：每日发布窗口检查。
     // - daily 05:15（聚合 04:45 之后，给新候选留出评估时间）
-    // - 遍历 QUEUED_FOR_RELEASE / BUDGET_WAIT 候选走三道门自动发布；
-    //   人工确认窗内（默认至 2026-10-07）全部被门 2 拦下——正好实现拍板 2
+    // - 先 evaluateQueue 把 PENDING_EVAL 候选推进评估（接通评估桥，此前无自动驱动），
+    //   再 releaseQueue 遍历 QUEUED_FOR_RELEASE / BUDGET_WAIT 候选走三道门自动发布；
+    //   两步在同一 cron 内顺序执行 → detect → eval → release → observe 单日闭环。
+    // - 人工确认窗内（默认关）全部被门 2 拦下——正好实现拍板 2
     // - 插件未挂载时 soft-skip
     id: 'skill-autocreate-release',
     name: '技能自动创建发布窗口',
     schedule: '15 5 * * *',
-    description: '发布队列检查：三道门（开关/确认窗/policy/预算）→ 原子挂载（daily）',
+    description: '评估桥(evaluateQueue)+发布队列(releaseQueue)：开关/确认窗/policy/预算 → 原子挂载（daily）',
     action: async (services) => {
       const ac = services['agint.skillAutocreate'];
       if (!ac?.releaseQueue) return { skipped: true, reason: 'agint.skillAutocreate.releaseQueue not mounted' };
+      // 评估桥：把待评估候选推进到 QUEUED_FOR_RELEASE（失败单条容错，不影响发布）
+      const evalRes = ac.evaluateQueue ? await ac.evaluateQueue().catch((e) => ({ error: String(e?.message ?? e) })) : null;
       const result = await ac.releaseQueue();
       return {
         skipped: result.skipped ?? false,
+        evaluated: evalRes?.attempted ?? null,
+        evalQueued: evalRes?.queued ?? null,
+        evalFailed: evalRes?.failed ?? null,
         attempted: result.attempted,
         released: result.released,
         held: (result.results ?? []).filter((r) => !r.released).length,

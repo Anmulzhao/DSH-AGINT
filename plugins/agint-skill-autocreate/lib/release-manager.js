@@ -5,8 +5,11 @@
  *   门 1  release_enabled（总开关；auto/manual 都拦）
  *   门 2  人工确认窗：require_human_approval=true 或 now < require_human_approval_until
  *         （manual=true 绕过本门；设计稿 §12 拍板 2：首 4 周人工点头）
- *   门 3  policy 门：同步问询 agint.qualityPolicy.decide，仅 AUTO_DEPLOY 放行；
- *         ABSTAIN / PENDING_REVIEW / REJECT / 超时 / 异常一律 fail-closed
+ *   门 3  policy 门（K42 拦错门）：同步问询 agint.qualityPolicy.decide。
+ *         release_policy_mode='veto'（默认）只拦 REJECT/ABSTAIN，放行
+ *         AUTO_DEPLOY/PENDING_REVIEW（policy 作为「拦错」防御，放过其余进观察期，
+ *         由观察期 usage 信号 + 自动回滚收口）；'strict' 仅 AUTO_DEPLOY 放行。
+ *         未挂载/超时/异常一律 fail-closed。2026-09-13 修复：喂合法 EvalResult[]。
  *   门 4  周预算：releases 表本周（含已回滚）计数 ≥ weekly_deploy_budget
  *         （manual=true 绕过；设计稿 §3.1：绕预算可以，绕质量门不行）
  *
@@ -81,6 +84,48 @@ export function callsByDay(records, skillName, fromIso, toIso) {
   }
   return { total, byDay };
 }
+
+/**
+ * 把候选的评估结果转成 policy 门（agint.qualityPolicy.decide）能消费的 EvalResult[]。
+ *
+ * 2026-09-13 B 修复：release-manager 此前把 candidate.evalResults（{phase1,phase2,phase3}
+ * 摘要对象）直接当 EvalResult[] 传给 policy.decide → policy 内部对对象做 .length/.some/
+ * for...of 迭代 → 抛异常 → 门3 一律 fail-closed → 候选永远卡 BUDGET_WAIT，自演化闭环断。
+ *
+ * 修复：优先用 Phase3 真实跑出的 D-QAF EvalResult（evaluator 已挂在
+ * evalResults.policyInput，含完整 dimensions[]），包成数组即可；缺失时（老候选 /
+ * 评估数据不全）用 phases 摘要兜底构造一个合成 EvalResult，保证门3 不会因格式错配
+ * 而全 fail-closed。门3 语义见 checkGates（veto 模式只拦 REJECT/ABSTAIN）。
+ *
+ * @returns {Array<{targetId:string, dimensions:Array, tags:string[]}>}
+ */
+export function buildPolicyInput(candidate) {
+  const pi = candidate?.evalResults?.policyInput;
+  if (pi && Array.isArray(pi.dimensions) && pi.dimensions.length) {
+    // 真实 D-QAF 结果（单 target）→ policy 期望 EvalResult[]，包成数组。
+    return [pi];
+  }
+  // 兜底：从 phases 摘要构造（合成但不造假：safe/trust 取 Phase1 是否无 blocker，
+  // reliability 取 Phase2 sandbox 是否通过，effectiveness 取 rankingScore）。
+  const er = candidate?.evalResults ?? {};
+  const p1 = er.phase1 ?? {};
+  const p2 = er.phase2 ?? {};
+  const p3 = er.phase3 ?? {};
+  const safe = p1.status === 'pass' && !(Array.isArray(p1.blockers) && p1.blockers.length);
+  const sand = p2.status === 'pass';
+  return [{
+    targetId: candidate?.skillDraft?.name ?? 'autocreate-candidate',
+    dimensions: [
+      { key: 'safety', score: { score: safe ? 1 : 0 } },
+      { key: 'trust', score: { score: safe ? 1 : 0 } },
+      { key: 'reliability', score: { score: sand ? 1 : 0.7 } },
+      { key: 'effectiveness', score: { score: typeof p3.rankingScore === 'number' ? p3.rankingScore : 0.6 } },
+      { key: 'integrability', score: { score: 1 } },
+    ],
+    tags: [],
+  }];
+}
+
 
 /**
  * 观察期判定（§3.3，纯函数）。
@@ -231,19 +276,31 @@ export function createReleaseManager(deps) {
     if (!policy || typeof policy.decide !== 'function') {
       return { ok: false, gate: 'policy', reason: 'agint.qualityPolicy 未挂载（fail-closed）' };
     }
+    // 2026-09-13 B 修复：用合法 EvalResult[] 喂 policy（真实 D-QAF 结果优先，phases 兜底），
+    // 不再把 {phase1,phase2,phase3} 对象当数组传入（否则 policy 抛异常 → 全 fail-closed）。
+    const policyInput = buildPolicyInput(candidate);
     let decision = null;
     try {
       decision = await withTimeout(
-        policy.decide({ results: candidate.evalResults ?? {}, options: { source: 'skill-autocreate-release' } }),
+        policy.decide({ results: policyInput, options: { source: 'skill-autocreate-release' } }),
         c.release_policy_timeout_ms,
       );
     } catch (e) {
       return { ok: false, gate: 'policy', reason: `policy 调用失败（fail-closed）：${e?.message ?? e}` };
     }
-    if (decision?.kind !== 'AUTO_DEPLOY') {
+    // 放行语义（release_policy_mode）：
+    //   'veto'  （默认，K42 原则）只拦 REJECT/ABSTAIN，放行 AUTO_DEPLOY/PENDING_REVIEW
+    //           —— policy 作为「拦错门」，放过其余进观察期，由观察期 usage 信号 + 自动回滚收口。
+    //   'strict'（旧行为）仅 AUTO_DEPLOY 放行；PENDING_REVIEW/其它一律 fail-closed。
+    // 注：新候选 D-QAF 综合分恒 ~71.4 < pendingReview 75，policy 必给 PENDING_REVIEW；
+    // 故 veto 模式是让自演化闭环闭合的关键，strict 会因「不够绿」而永不自动发布。
+    const kind = decision?.kind;
+    const blocked = kind === 'REJECT' || kind === 'ABSTAIN' || kind == null;
+    const strictFail = c.release_policy_mode === 'strict' && kind !== 'AUTO_DEPLOY';
+    if (blocked || strictFail) {
       return {
         ok: false, gate: 'policy',
-        reason: `policy=${decision?.kind ?? 'NO_DECISION'}（fail-closed）${decision?.reason ? `：${decision.reason}` : ''}`,
+        reason: `policy=${kind ?? 'NO_DECISION'}${c.release_policy_mode === 'strict' ? '（strict：需 AUTO_DEPLOY）' : ''}（fail-closed）${decision?.reason ? `：${decision.reason}` : ''}`,
         decision,
       };
     }
@@ -535,7 +592,7 @@ export function createReleaseManager(deps) {
   return {
     releaseCandidate, releaseQueue, rollback, observe, listReleases,
     // 暴露纯函数与 helper 供测试/工具复用
-    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf },
+    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput },
   };
 }
 

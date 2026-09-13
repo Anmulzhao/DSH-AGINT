@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import * as plugin from '../lib/index.js';
-import { weekKey, matchSkillCall, humanApprovalActive } from '../lib/release-manager.js';
+import { weekKey, matchSkillCall, humanApprovalActive, buildPolicyInput } from '../lib/release-manager.js';
 import { packCandidate } from '../lib/storage.js';
 import { DEFAULT_CONFIG } from '../lib/schema.js';
 
@@ -408,6 +408,72 @@ test('stats：含 releases 汇总 + sprint 16-release-layer', async () => {
   assert.equal(s.sprint, '16-release-layer');
   assert.ok(s.releases && typeof s.releases.total === 'number');
   assert.ok(s.config.release_enabled !== undefined);
+});
+
+// ── B4（2026-09-13）：policy 门 veto 模式 + buildPolicyInput 适配器覆盖 ──────
+const policyPendingReview = { decide: async () => ({ kind: 'PENDING_REVIEW', score: 0.5, policyId: 'p1', reason: '需人工确认' }) };
+
+test('B4 门 3 veto 模式：PENDING_REVIEW 放行（闭环不再卡死）', async () => {
+  // 默认 release_policy_mode='veto'：只拦 REJECT/ABSTAIN，其余（含 PENDING_REVIEW）放行进观察期
+  const h = setup({ policy: policyPendingReview });
+  const cand = makeCandidate('batch-frontmatter');
+  await putCandidate(h.svc, h.ctx, cand);
+  const r = await h.svc.release({ id: cand.id, manual: true });
+  assert.equal(r.released, true, 'veto 模式应放行 PENDING_REVIEW 候选（71.4 候选不再被死锁）');
+  const after = await h.svc.getCandidate(cand.id);
+  assert.equal(after.status, 'RELEASED');
+  assert.ok(existsSync(join(h.skillsRoot, 'batch-frontmatter', 'SKILL.md')), 'PENDING_REVIEW 候选也应落盘进观察期');
+});
+
+test('B4 门 3 strict 模式：PENDING_REVIEW 被拒（仅 AUTO_DEPLOY 放行）', async () => {
+  const h = setup({ policy: policyPendingReview, config: { release_policy_mode: 'strict' } });
+  const cand = makeCandidate('batch-frontmatter');
+  await putCandidate(h.svc, h.ctx, cand);
+  const r = await h.svc.release({ id: cand.id, manual: true });
+  assert.equal(r.released, false);
+  assert.equal(r.gate, 'policy');
+  assert.match(r.reason, /strict/);
+  const after = await h.svc.getCandidate(cand.id);
+  assert.equal(after.status, 'BUDGET_WAIT');
+  assert.equal(existsSync(join(h.skillsRoot, 'batch-frontmatter')), false, 'strict 模式下不得落盘');
+});
+
+test('B4 releaseQueue + veto policy：PENDING_REVIEW 候选被 auto 发布（闭环末端）', async () => {
+  const h = setup({ policy: policyPendingReview });
+  const c1 = makeCandidate('skill-one');
+  const c2 = makeCandidate('skill-two');
+  await putCandidate(h.svc, h.ctx, c1);
+  await putCandidate(h.svc, h.ctx, c2);
+  const q = await h.svc.releaseQueue(); // auto（manual:false）
+  assert.equal(q.attempted, 2);
+  assert.equal(q.released, 2, 'veto 模式放行 PENDING_REVIEW，auto 全量发布进观察期');
+  assert.ok(existsSync(join(h.skillsRoot, 'skill-one', 'SKILL.md')));
+  assert.ok(existsSync(join(h.skillsRoot, 'skill-two', 'SKILL.md')));
+});
+
+test('B4 buildPolicyInput：真实 EvalResult（含 dimensions）直接包成数组', () => {
+  const pi = { targetId: 't1', dimensions: [{ key: 'safety', score: { score: 1 } }], tags: ['x'] };
+  const out = buildPolicyInput({ evalResults: { policyInput: pi } });
+  assert.equal(out.length, 1);
+  assert.equal(out[0], pi, '真实 EvalResult 原样透传，不重新合成');
+});
+
+test('B4 buildPolicyInput：无 policyInput → 从 phase1/2/3 合成兜底', () => {
+  const cand = makeCandidate('batch-frontmatter'); // evalResults 无 policyInput 字段
+  const out = buildPolicyInput(cand);
+  assert.equal(out.length, 1);
+  const dims = out[0].dimensions;
+  assert.ok(Array.isArray(dims) && dims.length >= 4, '兜底应合成 ≥4 个维度');
+  const keys = new Set(dims.map((d) => d.key));
+  for (const k of ['safety', 'trust', 'reliability', 'effectiveness', 'integrability']) {
+    assert.ok(keys.has(k), `兜底维度应含 ${k}`);
+  }
+});
+
+test('B4 buildPolicyInput：policyInput.dimensions 为空 → 仍走兜底', () => {
+  const out = buildPolicyInput({ evalResults: { policyInput: { targetId: 't', dimensions: [], tags: [] } } });
+  assert.equal(out.length, 1);
+  assert.ok(out[0].dimensions.length >= 4, '空 dimensions 应触发兜底合成');
 });
 
 test('收尾清理临时目录', () => {
