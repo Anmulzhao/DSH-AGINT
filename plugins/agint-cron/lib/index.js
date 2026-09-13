@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import { nextFire, lastFire } from './cron.js';
+import { nextFire, isDue } from './cron.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 
@@ -132,9 +132,14 @@ function apply(ctx) {
     for (const job of jobs) {
       if (!job.id) continue; // (already filtered, but keep types)
       try {
-        const expected = nextFire(job.parsed, new Date(job.lastRunAt ?? bootTime));
-        if (expected === null) continue;
-        if (now < expected.getTime()) continue;
+        // Backfill-aware due check (replaces the old nextFire-from-lastRun
+        // logic that silently skipped weekly jobs whose narrow fire window
+        // fell inside the host's offline hours). isDue() fires a job whose
+        // most-recent scheduled occurrence is strictly after its last run —
+        // which backfills a never-run job once on boot and catches up a
+        // weekly that slipped past while the host was offline, without ever
+        // double-firing the same occurrence.
+        if (!isDue(job.parsed, job.lastRunAt, now)) continue;
         if (job.running) continue; // skip if previous run still in flight
         // Fire the job (async, fire-and-forget at the tick level).
         void runOne(job);

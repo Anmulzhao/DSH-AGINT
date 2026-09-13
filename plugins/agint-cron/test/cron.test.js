@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCron, parseField, nextFire, lastFire } from '../lib/cron.js';
+import { parseCron, parseField, nextFire, lastFire, isDue } from '../lib/cron.js';
 
 // Use local-time Date constructor so the parser (which uses local time per
 // its contract) and the test inputs are in the same frame.
@@ -101,4 +101,46 @@ test('lastFire: returns most recent matching minute at or before at', () => {
   assert.equal(lastFire(p, new Date(local(2026, 1, 16, 12))).getTime(), local(2026, 1, 16, 6));
   // at exactly 06:00 → that minute itself
   assert.equal(lastFire(p, new Date(local(2026, 1, 16, 6))).getTime(), local(2026, 1, 16, 6));
+});
+
+// ---- isDue: backfill-aware scheduling ----
+// Jan 11 = Sunday; Jan 18 = Sunday. Weekly Sunday 02:00 used for the
+// "host offline during the fire window" scenario.
+const weeklySun2 = parseCron('0 2 * * 0'); // Sun 02:00
+const daily3 = parseCron('0 3 * * *');     // daily 03:00
+
+test('isDue: never-run job is always due (backfills on boot)', () => {
+  // Host boots Sunday daytime, the Sun 02:00 window already passed — should fire.
+  assert.equal(isDue(weeklySun2, null, local(2026, 1, 11, 9)), true);
+  // Daily never run, boot at 09:00 after the 03:00 window — should fire.
+  assert.equal(isDue(daily3, null, local(2026, 1, 15, 9)), true);
+});
+
+test('isDue: weekly NOT due on boot if it already ran this window', () => {
+  // Ran this Sunday 02:00; now Sunday 09:00 → same occurrence already done.
+  assert.equal(isDue(weeklySun2, local(2026, 1, 11, 2), local(2026, 1, 11, 9)), false);
+});
+
+test('isDue: weekly IS due after the window slipped by while host was offline', () => {
+  // Last run was the PREVIOUS Sunday (Jan 4); now it's Jan 11 (Sun) 09:00 and
+  // this Sunday's 02:00 already passed while host was down → must catch up once.
+  assert.equal(isDue(weeklySun2, local(2026, 1, 4, 2), local(2026, 1, 11, 9)), true);
+});
+
+test('isDue: daily not double-fired within the same day', () => {
+  // Ran today 03:00; now today 09:00 → already done for today.
+  assert.equal(isDue(daily3, local(2026, 1, 15, 3), local(2026, 1, 15, 9)), false);
+});
+
+test('isDue: daily due next day after the window passed since last run', () => {
+  // Ran yesterday 03:00; now today 09:00 → today's occurrence is new.
+  assert.equal(isDue(daily3, local(2026, 1, 14, 3), local(2026, 1, 15, 9)), true);
+});
+
+test('isDue: a month of missed weekly windows yields exactly one catch-up', () => {
+  // Never run, host off for weeks, then booted Jan 18 09:00 → only the most
+  // recent occurrence (Jan 18 02:00) is "due"; not every missed week.
+  assert.equal(isDue(weeklySun2, null, local(2026, 1, 18, 9)), true);
+  // After that one catch-up run sets lastRunAt past the occurrence:
+  assert.equal(isDue(weeklySun2, local(2026, 1, 18, 9, 1), local(2026, 1, 18, 9, 2)), false);
 });
