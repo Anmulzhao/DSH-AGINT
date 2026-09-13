@@ -1,6 +1,18 @@
 ---
 name: evm-patterns
 description: EVM 合约模式速查库：ERC-20 / ERC-721 / ERC-1155 / ERC-4626 token 标准、Proxy（transparent / UUPS / beacon）、Access Control（Ownable / AccessControl / Roles）、Oracle 集成（Chainlink / Uniswap TWAP）、闪电贷（AAVE / dYdX / Uniswap V3）、Multicall 与批处理、签名（EIP-712 / EIP-2612 permit）、Gas 高效存储模式。Solidity 0.8+ 语法糖与最佳实践。任务涉及 ERC 标准、合约可升级性、权限设计、价格预言机集成、链下签名验证等时自动加载。
+tools:
+  []
+triggers:
+  - "任务涉及 ERC 标准（20/721/1155/4626）"
+  - "合约可升级性（Proxy/UUPS/beacon）"
+  - "权限设计、预言机集成、链下签名验证"
+related_skills:
+  - chain-rpc-toolkit
+  - defi-mechanics
+  - wallet-security
+  - web3-debug
+
 ---
 
 # EVM Patterns — 合约模式速查库

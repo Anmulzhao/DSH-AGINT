@@ -1,6 +1,18 @@
 ---
 name: defi-mechanics
 description: DeFi 协议机制速查：AMM（Uniswap V2/V3 Curve 恒积 / 恒和 / 集中流动性）、借贷（Aave V3 Compound Morpho 抵押 / 清算 / 利率模型）、Staking / LST（Lido / Rocket Pool / 流动性质押）、流动性挖矿、桥 / Rollup（Optimism / Arbitrum / zkSync / StarkNet 工作原理）、Order Book / Perp（dYdX GMX Hyperliquid）、稳定币（USDC DAI USDT FRAX 算法稳定币）。任务涉及 DeFi 协议集成、机制设计、流动性分析、跨链、收益策略时自动加载。
+tools:
+  []
+triggers:
+  - "DeFi 协议集成、机制设计、画架构"
+  - "流动性分析、收益策略、跨链"
+  - "解释 AMM/借贷/LST/稳定币 如何工作"
+related_skills:
+  - chain-rpc-toolkit
+  - evm-patterns
+  - wallet-security
+  - web3-debug
+
 ---
 
 # DeFi Mechanics — 协议机制速查

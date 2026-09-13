@@ -1,6 +1,19 @@
 ---
 name: plugin-preflight
 description: "新增 / 修改 agint-* 插件挂到 cordis.patch.yml 前的强制准入工作流。10 分钟搞定，比挂上去再崩 30 分钟排障便宜十倍。涉及任何 plugin 源码变更、新插件创建、cordis.patch.yml 新增 - id 行时调用。子 preset 版本，与母 preset plugin-preflight 内容同步。"
+tools:
+  - bin/plugin-check.sh
+  - safe-update.sh
+  - node
+triggers:
+  - "新增/修改 agint-* 插件挂到 cordis.patch.yml 前"
+  - "任何 plugin 源码变更、新插件创建"
+  - "cordis.patch.yml 新增 - id 行"
+related_skills:
+  - editing-cordis-compositions
+  - cordis-plugin-development
+  - memory-discipline
+
 ---
 
 # 插件准入预检（Plugin Preflight，子 preset 版本）

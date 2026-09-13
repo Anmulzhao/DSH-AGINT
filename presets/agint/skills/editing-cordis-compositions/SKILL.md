@@ -1,6 +1,21 @@
 ---
 name: editing-cordis-compositions
 description: Use when creating, changing, or validating a Cordis composition for this harness — writing or editing an agent preset, adding or removing a plugin row, deciding whether something belongs to the host composition or to one session, checking whether a preset you authored actually mounts, or diagnosing a row that mounted but contributed nothing.
+tools:
+  - cordis_mount
+  - cordis_unmount
+  - agentPresets.list
+  - agentPresets.read
+  - agentPresets.copy
+  - agentPresets.standingKeyFor
+triggers:
+  - "创建/修改/校验一个 agent preset"
+  - "增删 plugin row、判断能力属于 host 还是 agent 平面"
+  - "验证某 preset 是否真的挂载"
+related_skills:
+  - cordis-plugin-development
+  - plugin-preflight
+
 ---
 
 # Editing Cordis compositions

@@ -1,6 +1,20 @@
 ---
 name: memory-discipline
 description: "智进长期记忆的使用规范：什么时候读、什么时候写、怎么写证据、怎么用遗忘扫描。任何可能被既往教训/决策/偏好影响的回答，先 memory_search 再作答。"
+tools:
+  - memory_write
+  - memory_search
+  - memory_read
+  - memory_stats
+  - memory_forget_scan
+triggers:
+  - "任何可能被既往教训/决策/偏好影响的回答（先搜再答）"
+  - "踩坑/禁止项沉淀为 lesson"
+  - "记录不可逆决策、用户偏好、可复用规律"
+related_skills:
+  - causal-reasoning
+  - plugin-preflight
+
 ---
 
 # 记忆纪律（Memory Discipline）

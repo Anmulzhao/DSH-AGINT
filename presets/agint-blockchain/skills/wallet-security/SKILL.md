@@ -1,6 +1,21 @@
 ---
 name: wallet-security
 description: 钱包与签名安全模式库：EOA / 合约钱包（智能合约钱包 / 账户抽象 / EIP-4337）、EIP-712 类型化结构签名（Permit / MetaTx / Order）、EIP-2612 permit（gasless approve）、multisig（Gnosis Safe）、签名重放防护（domain separator + chainId + nonce + deadline）、钱包集成（wagmi / RainbowKit / WalletConnect / Solana Wallet Adapter）、私钥管理与硬件钱包（Ledger / Trezor）、签名钓鱼与 scam 识别。任务涉及钱包实现、签名流程、链下签名验证、账户抽象集成、私钥管理时自动加载。
+tools:
+  - wagmi
+  - RainbowKit
+  - WalletConnect
+  - Ledger
+  - Trezor
+triggers:
+  - "钱包选型与实现、EIP-712 类型化签名"
+  - "账户抽象（EIP-4337）集成、私钥管理"
+  - "签名钓鱼/scam 识别、签名安全审计"
+related_skills:
+  - chain-rpc-toolkit
+  - evm-patterns
+  - web3-debug
+
 ---
 
 # Wallet Security — 钱包与签名安全

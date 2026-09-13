@@ -1,6 +1,22 @@
 ---
 name: web3-debug
 description: 区块链/Web3 调试速查手册：Solidity / Rust 合约 revert 与自定义错误解码、RPC 节点排查与交易追踪、Gas 优化、合约漏洞模式（重入 / 抢跑 / MEV / oracle 操纵 / 签名重放 / 整数溢出 / 访问控制缺失）的快速识别与定位。Foundry / Hardhat / Anchor 调试栈使用规范。当任务涉及合约报错、链上交易失败、Gas 异常、漏洞排查、链上异常行为分析时自动加载。
+tools:
+  - forge
+  - cast
+  - hardhat
+  - tenderly
+  - anvil
+triggers:
+  - "合约 revert/自定义错误解码、链上交易失败"
+  - "Gas 异常、RPC 节点排查、交易追踪"
+  - "漏洞模式识别（重入/抢跑/MEV/oracle 操纵）"
+related_skills:
+  - evm-patterns
+  - defi-mechanics
+  - chain-rpc-toolkit
+  - wallet-security
+
 ---
 
 # Web3 Debug — 区块链/Web3 调试速查
