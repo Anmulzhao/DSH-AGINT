@@ -119,5 +119,45 @@ for (const [tool, args, expected] of cases) {
   }
 }
 
-console.log(`\n${passed} passed, ${failed} failed (${cases.length} cases)`);
+// ---- Regression: buildAdvisoryMessage must emit a *valid* UserMessage ----
+// 2026-09-16: this plugin used to inject a bare { source, content } object
+// (no `id`, no `role`). dsh's write path tolerated it, but the resume/replay
+// validator (assertMessageEventShape) rejects `user/message` events without a
+// non-empty `id` + `role === 'user'` — so every session that received an
+// advisory became un-openable ("session event at seq N lacks an identified
+// message"). 14 bad events across 12 sessions were bricked.
+//
+// This test imports the REAL function from lib/index.js. It requires the dsh
+// host packages to be resolvable (set NODE_PATH to the dsh nested node_modules,
+// i.e. the AppData install). If dsh can't be resolved, we SKIP rather than
+// fail, so the pure tests above still run in a host-less CI.
+try {
+  const mod = await import('./lib/index.js');
+  const msg = mod.buildAdvisoryMessage('bash', [
+    { ruleId: 'bash-npm-publish', level: 'L3', reason: '发布前请核对版本号' },
+  ]);
+  assert.equal(msg.role, 'user', 'advisory message must carry role:user');
+  assert.equal(typeof msg.id, 'string', 'advisory message must carry an id');
+  assert.ok(msg.id.length > 0, 'advisory id must be non-empty');
+  assert.equal(msg.source.kind, 'plugin', 'advisory source.kind must be plugin');
+  assert.equal(msg.source.plugin, 'agint-rules', 'advisory source.plugin must be set');
+  assert.ok(
+    Array.isArray(msg.content) && msg.content.length > 0 && msg.content[0].type === 'text',
+    'advisory content must be a non-empty text block',
+  );
+  passed += 1;
+  console.log('✓ buildAdvisoryMessage emits a valid UserMessage (role/id/source/content)');
+} catch (e) {
+  const isResolution =
+    e && (e.code === 'ERR_MODULE_NOT_FOUND' ||
+      (typeof e.message === 'string' && /Cannot find (package|module)/.test(e.message)));
+  if (isResolution) {
+    console.log('⊘ buildAdvisoryMessage shape test SKIPPED (dsh host packages not resolvable; set NODE_PATH to the AppData dsh/node_modules)');
+  } else {
+    failed += 1;
+    console.log('✗ buildAdvisoryMessage shape regression: ' + (e && e.message));
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed (${cases.length + 1} cases incl. advisory shape)`);
 process.exit(failed === 0 ? 0 : 1);

@@ -28,6 +28,7 @@
  *         name: ./plugins/agint-rules/lib/index.js
  */
 
+import { randomUUID } from 'node:crypto';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 
@@ -157,6 +158,40 @@ function argText(name, args) {
     return JSON.stringify(args);
   }
   return String(args);
+}
+
+/**
+ * 构造 advisory 注入用的完整 UserMessage。
+ *
+ * ⚠️ 必须是完整 UserMessage（role + id），**不能**是裸的 {source, content}：
+ *   - dsh 契约：`additionalContexts?: UserMessage[]`
+ *     （@deepseek-ai/dsh-tools 类型声明，0.1.6-alpha.1 实测 8 处同款）
+ *   - dsh 会话回放校验器 assertMessageEventShape
+ *     （@deepseek-ai/dsh-session/lib/index.js）对 `user/message` 强制要求
+ *     顶层 `id` 为非空字符串、`role` 为 'user'、`source.kind` 为字符串。
+ *
+ * 事故（2026-09-16）：本插件曾直接注入 `{ source, content }`。写盘路径容忍了它，
+ * 但**读回/续接路径**把它判为 `session event at seq N lacks an identified message`
+ * ——整个会话被判定 corrupt，会话历史再也打不开。全库扫描确认 14 处同源坏事件、
+ * 12 个会话被砖（最早 2026-09-10）。
+ *
+ * 对齐写法：agint-restart 的 createUserMessage（手写 id，避免引入 dsh-llm 依赖）。
+ *
+ * @param {string} toolName 触发 advisory 的工具名
+ * @param {Array<{ruleId:string, level:string|number, reason:string}>} advisories 首次命中的规则
+ * @returns {{role:'user', content:{type:'text',text:string}[], source:{kind:'plugin',plugin:string,form:string}, id:string}}
+ */
+export function buildAdvisoryMessage(toolName, advisories) {
+  const lines = advisories.map((a) => `• [${a.ruleId}] (${a.level}) ${a.reason}`);
+  return {
+    role: 'user',
+    id: randomUUID(),
+    source: { kind: 'plugin', plugin: name, form: 'advisory' },
+    content: [{
+      type: 'text',
+      text: `agint-rules advisory: tool=${toolName} matched ${advisories.length} rule(s).\n${lines.join('\n')}\n(本会话首次命中，仅提示一次；这是系统规则提醒，不是阻断。后续同规则命中不再重复注入。)`,
+    }],
+  };
 }
 
 function apply(ctx) {
@@ -413,17 +448,11 @@ function apply(ctx) {
     }
     if (fresh.length === 0) return next();
 
-    const lines = fresh.map((a) => `• [${a.ruleId}] (${a.level}) ${a.reason}`);
-    const message = {
-      source: { kind: 'plugin', plugin: 'agint-rules', form: 'advisory' },
-      content: [{
-        type: 'text',
-        text: `agint-rules advisory: tool=${exec.name} matched ${fresh.length} rule(s).\n${lines.join('\n')}\n(本会话首次命中，仅提示一次；这是系统规则提醒，不是阻断。后续同规则命中不再重复注入。)`,
-      }],
-    };
+    const message = buildAdvisoryMessage(exec.name, fresh);
     // 只追加 additionalContexts，不替换 value / content：
     // dsh-tools 的 postExecute 禁止 accept 决策同时带 value 和 content
     // （否则整次工具调用被 TypeError 判失败），且替换会丢掉工具真实结果。
+    // message 必须含 id + role:'user'（见 buildAdvisoryMessage 的事故注释）。
     return { kind: 'accept', additionalContexts: [message] };
   });
 }
