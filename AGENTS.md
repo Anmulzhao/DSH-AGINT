@@ -166,6 +166,19 @@ CI 禁改：检测到 L0 字段修改自动失败。详见 `docs/evolution-frame
 | 评估场景集 | `eval/scenarios/README.md` |
 | 我踩过的坑 | `docs/lessons/` |
 
+## 记录勘误
+
+> 段落记录一些已被推翻或重新表述的判断。仅作历史锚点保留。新读者以上方通用描述 / 自动生成 LOCAL-STATE 块为准。
+
+- **2026-09-16 · preset skill `github-push` 同步更新** —— preset skill 此前描述的「沙箱里 git push 会因 msys signal pipe 崩溃」措辞已替换为「git **默认 spawn MSYS ssh** 时崩，必须加 `-c core.sshCommand=C:/Windows/System32/OpenSSH/ssh.exe`」。同时扩展到 **clone 场景**：之前一度判断「clone 会因 msys signal pipe 崩」是错的，根因是没设 `core.sshCommand` 或用了 git 不一定尊重的 `GIT_SSH_COMMAND` env 变量。**对 clone + push + fetch + ls-remote 都生效**。
+  - 老板 2026-09-16 拍板：preset skill 跨 workspace 边界编辑走 `danger-full-access`；approval policy → `never`，沙箱模式 → `danger-full-access`（之前 `ask`）。
+  - preset skill 文件路径：`C:\Users\Administrator\.dsh\.agent-presets\agint\skills\github-push\SKILL.md`
+  - 落地实测 `Anmulzhao/DSH-AGINT` main push `41ff312..5a2e023`（commit `5a2e023` self-model peerDep 放宽）+ `Anmulzhao/DSH-AGINT.wiki` master `1493ef7..ee18f20`（挂载清单 + 版本依赖分析 + 插件挂载情况引用段）
+  - 教训：不要预先降级到 5 步强制流程，先试首选方案
+- **2026-09-16 · self-model peerDep 放宽决策** —— `plugins/agint-self-model/package.json` 把 `agint-diagnosis`/`agint-metrics`/`agint-tool-stats` 三个 peerDep 从 `>=0.7.0`/`>=0.6.0` 放宽到 `>=0.1.0`（API 实际兼容点）。`agint-event-bus >=0.7.0` / `agint-evolution-memory >=0.6.4` 保留（FROZEN schema / shadow ingest schema 边界）。**老板决策：不锁定版本**。
+  - 新增 `plugins/agint-self-model/test/real-compat.mjs`（10/10 pass）作为上游发版前的复测脚本
+  - 提案 `48c5385d-a517-4dcf-9c10-fdb657aa703c` → `applied`
+
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
