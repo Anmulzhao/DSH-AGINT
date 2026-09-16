@@ -35,6 +35,12 @@ const TicketSchema = z.object({
     lastProbeAt: z.string().nullable(),
     lastReason: z.string().optional(),
   }),
+  // v0.7.0 起：4 态路径真重启关联的请求 id / 结果文件 / 模式（可空兼容旧记录）
+  // 注意：schemaVersion 维持 1——新增为 optional 字段，旧记录无此字段仍可被 parse，属非破坏性扩展；
+  // 升级到 2 留待出现破坏性变更时再做（避免未实现的迁移处理器）。
+  restartRequestId: z.string().nullable().optional(),
+  restartResultFile: z.string().nullable().optional(),
+  restartMode: z.enum(['auto', 'manual', 'dry-run', 'fallback']).optional(),
 });
 type Ticket = z.infer<typeof TicketSchema>;
 

@@ -14,7 +14,7 @@
  *   - storageDomain handle 在 plugin dispose 时 close
  *   - 监听器 dispose 由 ctx.on 自动管理
  */
-import { mountRequest, mountStatus, mountRollback } from './orchestrator.js';
+import { mountRequest, mountStatus, mountRollback, mountResumeOnBoot } from './orchestrator.js';
 import { spec, LIMITS } from './storage.js';
 import { resolvePaths } from './paths.js';
 import type { MountContext } from './types.js';
@@ -96,6 +96,15 @@ function apply(ctx: any, config: any = {}) {
     },
   );
   disposers.push(() => { void ready.then((d: any) => d?.close?.()).catch(() => {}); });
+
+  // ── 启动续接钩子（v0.7.0）：跨进程续接 4 态路径 ──
+  // 旧 dsh 在 RESTART_REQUESTED 阶段触发重启后退出；新 dsh 在这里捡起未完成的 ticket 继续。
+  // 普通启动（无 RESTART_REQUESTED ticket）时为 no-op；失败不阻断主流程。
+  ready.then(async (d: any) => {
+    if (!d) return;
+    try { await mountResumeOnBoot(mountCtx); }
+    catch (e: any) { console.warn(`[agint-mount] resume-on-boot 失败：${e?.message ?? e}`); }
+  });
 
   // ── 注册 3 Service ──
   ctx.provide('agint.mount.request', async (input: unknown) => mountRequest(mountCtx, input));

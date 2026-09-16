@@ -4,6 +4,24 @@
 
 ---
 
+## v0.7.0 — 4 态路径真重启（2026-09-16）
+
+**变更（2026-09-16）**：4 态路径（plugin 声明新 npm 依赖）从「假重启」改为「真重启 dsh」。
+
+- `requestRestart()` 由写 sentinel.lease 占位改为调 `agint.restart.request({ confirm: true, force: false })` 真重启；`agint.restart` 不可用时软降级写 sentinel lease（v0.6.5 兼容）。
+- 删去 `waitSentinelLease()`（原 `setTimeout(1000)` 假等待）。
+- 顺序调整：重启被接受后**先写 patch.yml（趁旧进程还活着）再让当前进程退出**；HMR settle + ACTIVATED 由**新 dsh 启动钩子 `mountResumeOnBoot`** 跨进程续接（旧进程没加载新 plugin，原地等必然失败）。
+- tickets 表加 `restartRequestId` / `restartResultFile` / `restartMode` 三字段（zod schema 加 optional，schemaVersion 维持 1，向后兼容旧记录）。
+- 重启被拒（cooldown/tripped）→ 标 `ROLLED_BACK`（非 `DISABLED`）；新 dsh 启动钩子里重启失败 → 撤 patch 行 + `ROLLED_BACK`；plugin 代码本身有问题 → `DISABLED`。
+- `mount.request` 对 4 态 plugin 现返回 `phase: 'RESTART_REQUESTED'`（旧行为假返回 `ACTIVATED`）；真正 `ACTIVATED` 由新 dsh 启动钩子推进后落地。
+- 新增事件 `mount.restart-requested` / `mount.restart-completed` / `mount.restart-failed`（复用 `mountEventBusPublish` 双轨通道）。
+
+**风险**：P0（触及重启链路 + 跨进程状态续接）。未做环形依赖（mountOrder 40 < restart 50，重启调用走 `getService('agint.restart')` 懒取，不硬 inject）。
+
+**关联**：`proposals/agint-mount-integrate-restart.md`；姊妹提案 `proposals/agint-restart-rollback.md`。
+
+---
+
 ## v0.7.1-draft — 撤回：restart_detect 改独立插件 agint-restart
 
 **本节变更（2026-09-10）**：v0.7.1-draft 原本尝试在 `agint-mount` 内加 `agint.mount.restart_detect` 服务。

@@ -278,19 +278,36 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
     }
 
     // ── 4 态判定：plugin 声明新依赖才走 INSTALLED/RESTART_REQUESTED ─────────
-    let activatedPhase: 'ACTIVATED' | 'INSTALLED' | 'RESTART_REQUESTED' = 'ACTIVATED';
     if (needsInstall(deps)) {
       // 调 pnpm install（仅 deps.length > 0 时触发）
       await runPnpmInstall(ctx, paths.webPackageJson, deps);
       ticket = await updateTicketPhase(ctx, ticketId, 'INSTALLED', contractCheck, null, null);
 
-      // 发 sentinel restart（写一个 restart 信号文件 / 调 dsh Sentinel API；Sprint 11 留 hook）
-      await requestRestart(ctx, paths.sentinelLease);
-      ticket = await updateTicketPhase(ctx, ticketId, 'RESTART_REQUESTED', contractCheck, null, null);
-
-      // 等 sentinel.lease（at+30s 后再继续；Sprint 11 骨架 stub）
-      await waitSentinelLease(paths.sentinelLease);
-      activatedPhase = 'ACTIVATED';
+      // 真重启（软降级 fallback 到 sentinel lease；agint.restart 不可用时）
+      const restartInfo = await requestRestart(ctx, ticketId, artifactName, paths.sentinelLease);
+      if (restartInfo.mode === 'real') {
+        if (!restartInfo.accepted) {
+          // 重启被拒（cooldown / tripped / 内部错误）→ 整个事务失败，标 ROLLED_BACK（不是 DISABLED）
+          await updateTicketPhase(ctx, ticketId, 'ROLLED_BACK', contractCheck, null,
+            `restart-denied:${restartInfo.code ?? 'unknown'}`, restartInfo.requestId ?? null, restartInfo.resultFile ?? null, 'auto');
+          await mountEventBusPublish(ctx, 'mount.failed', { ticketId, reason: 'restart-denied', phase: 'ROLLED_BACK' });
+          return { ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK', contractCheck, activatedAt: null };
+        }
+        // 重启已接受：趁旧进程还活着，先写 patch.yml（新 plugin 行），再让当前进程退出
+        const originalYaml = await ctx.readFile?.(paths.cordisPatch) ?? '';
+        const backupPath = await backupPatch(paths.cordisPatch);
+        const newRow = formatRow(artifactName, `./plugins/${artifactName}/lib/index.js`);
+        const newYaml = appendRow(originalYaml, newRow);
+        await writePatchAtomic(paths.cordisPatch, newYaml);
+        await cleanupBackup(backupPath);
+        ticket = await updateTicketPhase(ctx, ticketId, 'RESTART_REQUESTED', contractCheck, null, null,
+          restartInfo.requestId, restartInfo.resultFile, 'auto');
+        await mountEventBusPublish(ctx, 'mount.restart-requested', { ticketId, restartRequestId: restartInfo.requestId, artifactName });
+        // 不在当前进程做 HMR settle——旧进程没加载新 plugin；续接交给新 dsh 启动钩子 mountResumeOnBoot
+        return { ticketId, proposalId: proposal.id, phase: 'RESTART_REQUESTED', contractCheck, activatedAt: null };
+      }
+      // fallback（agint.restart 不可用）：不写 patch，落到下方 shared ACTIVATE 走 v0.6.5 兼容
+      // （当前进程 HMR settle，可能 DISABLED——plugin 实际不会被新 dsh 加载）
     }
 
     // ── ACTIVATE：两段式 commit patch.yml ─────────────────────────
@@ -424,6 +441,76 @@ export async function mountRollback(ctx: MountContext, input: unknown): Promise<
   return { mode: 'single', ...result };
 }
 
+/**
+ * 轮询读取 restart-result.json（带超时）。
+ * 新 dsh 启动钩子可能在 respawn.js 写结果文件之前就跑，单次读会误判缺失 → 用轮询避免竞态。
+ */
+async function readRestartResult(resultFile: string | null, timeoutMs = 90_000): Promise<{ ok: boolean; reason: string }> {
+  if (!resultFile) return { ok: false, reason: 'restart-result-missing' };
+  const { readFile: readFsFile } = await import('node:fs/promises');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const raw = await readFsFile(resultFile, 'utf-8');
+      const r = JSON.parse(raw);
+      if (r && typeof r.ok === 'boolean') return { ok: r.ok, reason: r.error ?? 'restart-failed' };
+    } catch { /* 文件尚未写好，继续等 */ }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  return { ok: false, reason: 'restart-result-timeout' };
+}
+
+/**
+ * 新 dsh 启动钩子（v0.7.0）：跨进程续接 4 态路径。
+ *
+ * 旧 dsh 在 RESTART_REQUESTED 阶段写了 patch.yml 并触发重启后退出；新 dsh 启动到这里捡起未完成的 ticket，
+ * 读 restart-result.json 确认重启成功，再 HMR settle → ACTIVATED（或失败 → ROLLED_BACK / DISABLED）。
+ * 普通启动（无 RESTART_REQUESTED ticket）时本函数为 no-op。
+ *
+ * 由 agint-mount/lib/index.js 的 apply() 在 storageDomain.open 完成后调用。
+ */
+export async function mountResumeOnBoot(ctx: MountContext): Promise<void> {
+  const tt = ctx.tables?.tickets;
+  if (!tt) return;
+  for (const [, entry] of tt.entries()) {
+    const t = unpackTicket(entry as any);
+    if (t.phase !== 'RESTART_REQUESTED') continue;
+
+    // 1. 读 restart-result.json，确认重启真的成功（轮询避免与 respawn.js 写结果的竞态）
+    const { ok, reason } = await readRestartResult(t.restartResultFile ?? null, 90_000);
+    if (!ok) {
+      // 重启失败 → 撤 patch 行 + 标 ROLLED_BACK（不是 DISABLED，是整个事务失败）
+      try {
+        const paths = resolvePaths({ dshHome: ctx.dshHome });
+        await removeRow(paths.cordisPatch, t.artifactName);
+      } catch { /* ignore：patch 行可能已被外部清理 */ }
+      await updateTicketPhase(ctx, t.ticketId, 'ROLLED_BACK', t.contractCheck, null,
+        `restart-failed:${reason}`, t.restartRequestId ?? null, t.restartResultFile ?? null, t.restartMode ?? 'auto');
+      await mountEventBusPublish(ctx, 'mount.restart-failed', { ticketId: t.ticketId, reason });
+      continue;
+    }
+
+    // 2. 重启成功，等 HMR settle（新 dsh 已加载新 plugin）
+    const settleOk = await awaitHmrSettleBus(ctx, t.artifactName, 30_000);
+    if (!settleOk) {
+      // plugin 代码本身有问题 → DISABLED（不是 ROLLED_BACK）
+      await updateTicketPhase(ctx, t.ticketId, 'DISABLED', t.contractCheck, null,
+        'hmr-settle-failed-after-restart', t.restartRequestId ?? null, t.restartResultFile ?? null, t.restartMode ?? 'auto');
+      continue;
+    }
+
+    // 3. 成功 → ACTIVATED + 启动探针
+    const activatedAt = nowIso();
+    await updateTicketPhase(ctx, t.ticketId, 'ACTIVATED', t.contractCheck, activatedAt, null,
+      t.restartRequestId ?? null, t.restartResultFile ?? null, t.restartMode ?? 'auto');
+    const probeFn = ctx.getService?.('agint.probeFn') ?? probeStaging;
+    const loop = makeProbeLoop(ctx, t.ticketId, probeFn);
+    ctx.registerEffect?.(() => { loop.stop(); });
+    loop.start();
+    await mountEventBusPublish(ctx, 'mount.restart-completed', { ticketId: t.ticketId });
+  }
+}
+
 // ── 内部 helpers ─────────────────────────────────────────
 
 async function writeTicket(ctx: MountContext, t: any): Promise<any> {
@@ -441,12 +528,15 @@ async function updateTicketPhase(
   contractCheck: any,
   activatedAt: string | null,
   lastReason: string | null,
+  restartRequestId?: string | null,
+  restartResultFile?: string | null,
+  restartMode?: string,
 ): Promise<any> {
   const tt = ctx.tables?.tickets;
   if (!tt) throw new Error('orchestrator: tickets table unavailable');
   const existing = await tt.get(`t-${ticketId}`);
   if (!existing) throw new Error(`orchestrator: ticket ${ticketId} not found`);
-  const updated = {
+  const updated: any = {
     ...existing,
     phase,
     contractCheck,
@@ -454,6 +544,9 @@ async function updateTicketPhase(
     updatedAt: nowIso(),
     probeStats: lastReason ? { ...(existing as any).probeStats, lastReason } : (existing as any).probeStats,
   };
+  if (restartRequestId !== undefined) updated.restartRequestId = restartRequestId;
+  if (restartResultFile !== undefined) updated.restartResultFile = restartResultFile;
+  if (restartMode !== undefined) updated.restartMode = restartMode;
   await tt.put(updated.id, updated);
   return updated;
 }
@@ -474,21 +567,36 @@ async function runPnpmInstall(ctx: MountContext, webPackageJson: string, deps: s
   await ctx.runShell('pnpm', ['add', ...deps], { cwd: dirname(webPackageJson) });
 }
 
-async function requestRestart(ctx: MountContext, sentinelLeasePath: string): Promise<void> {
-  // Sprint 11 骨架：ctx 暴露 requestRestart；若缺则写 sentinel lease 文件占位
-  if (ctx.requestRestart) {
-    await ctx.requestRestart(sentinelLeasePath);
-    return;
+/**
+ * 4 态路径真重启入口（v0.7.0）。
+ * 调 agint.restart.request 真重启 dsh；agint.restart 不可用时软降级写 sentinel lease 占位（v0.6.5 兼容）。
+ * @returns {{ mode: 'real'|'fallback', accepted: boolean, requestId?: string, resultFile?: string, code?: string, message?: string }}
+ */
+async function requestRestart(
+  ctx: MountContext,
+  ticketId: string,
+  artifactName: string,
+  sentinelLeasePath: string,
+): Promise<{ mode: 'real' | 'fallback'; accepted: boolean; requestId?: string; resultFile?: string; code?: string; message?: string }> {
+  const reason = `agint-mount: 4-state restart for ${artifactName}`;
+  // G3 软依赖：restart 服务不可用时降级 sentinel lease 兜底
+  const restartSvc = ctx.getService?.('agint.restart');
+  if (!restartSvc?.request) {
+    console.warn('[agint-mount] agint.restart 不可用，降级 sentinel lease 兜底（v0.6.5 兼容路径）');
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(sentinelLeasePath, JSON.stringify({
+      at: new Date().toISOString(),
+      reason: 'agint-mount: fallback (no restart plugin)',
+      ticketId,
+    }), 'utf-8');
+    return { mode: 'fallback', accepted: false, code: 'no-restart-service' };
   }
-  // 兜底：写一个 at 时间戳到 lease 文件
-  const { writeFile } = await import('node:fs/promises');
-  await writeFile(sentinelLeasePath, JSON.stringify({ at: new Date().toISOString(), reason: 'agint-mount: 4-state restart' }), 'utf-8');
-}
-
-async function waitSentinelLease(leasePath: string, timeoutMs: number = 30_000): Promise<void> {
-  // Sprint 11 骨架：ctx 暴露 waitSentinelLease；缺则 sleep 30s 兜底（避免 dsh 启动中冲突）
-  if ((globalThis as any).__AGINT_MOUNT_TEST_NO_LEASE_WAIT__) return;
-  await new Promise((r) => setTimeout(r, Math.min(timeoutMs, 1000)));   // 骨架阶段只 sleep 1s
+  // G1 真重启：force:false（G9：burst/cooldown 仍生效）；confirm:true 显式确认
+  const result: any = restartSvc.request({ confirm: true, reason, force: false });
+  if (!result || result.accepted !== true) {
+    return { mode: 'real', accepted: false, code: result?.code ?? 'unknown', message: result?.message };
+  }
+  return { mode: 'real', accepted: true, requestId: result.requestId, resultFile: result.resultFile, code: 'accepted' };
 }
 
 import { dirname } from 'node:path';
