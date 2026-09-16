@@ -5,12 +5,13 @@
  * 生产环境由 dsh host Cordis ctx 适配；测试环境由 smoke.mjs 构造 in-memory 实现。
  *
  * 设计原则：
- *   - getService(name)         软依赖（如 agint.qualitySandbox / agint.evolution）
+ *   - getService(name)         软依赖（如 agint.qualitySandbox / agint.evolution / agint.restart）
  *   - tables.{tickets,probe_history,rollback_log}  由 storageDomain.open(spec) 提供
  *   - readFile(path)           仅在 ACTIVATE 阶段读 patch.yml（patch.ts 备用）
  *   - runShell(cmd, args)      仅 4 态路径调 pnpm install
- *   - requestRestart / waitSentinelLease  4 态路径 sentinel hook
- *   - awaitHmrSettle(id, timeout)  ACTIVATE 后等 dsh 加载
+ *   - requestRestart / waitSentinelLease  【已弃用 v0.7.0】原 Sprint 11 sentinel hook；
+ *       现 4 态路径改调 agint.restart.request 真重启（见 orchestrator.ts requestRestart）
+ *   - awaitHmrSettle(id, timeout)  ACTIVATE 后等 dsh 加载（fallback 路径仍用）
  *   - registerEffect(disposer) 探针循环 + setInterval 的 disposer
  *   - emitEvent(channel, payload)  mount.requested / mount.succeeded / mount.failed
  *
@@ -42,6 +43,10 @@ export type MountTicket = {
     lastProbeAt: string | null;
     lastReason?: string;
   };
+  // v0.7.0 起：4 态路径真重启关联的请求 id / 结果文件 / 模式（跨进程续接用；可空兼容旧数据）
+  restartRequestId?: string | null;
+  restartResultFile?: string | null;
+  restartMode?: 'auto' | 'manual' | 'dry-run' | 'fallback';
 };
 
 export type MountResult = {
@@ -87,7 +92,6 @@ export interface MountContext {
 
   // 4 态路径 hooks
   runShell?: (cmd: string, args: string[], opts: { cwd: string }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
-  requestRestart?: (leasePath: string) => Promise<void>;
   awaitHmrSettle?: (id: string, timeoutMs: number) => Promise<boolean>;
 
   // 探针注册（disposer）
