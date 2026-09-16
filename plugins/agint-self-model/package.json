@@ -31,11 +31,11 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/dsh-storage-domain": "*",
-    "agint-diagnosis": ">=0.7.0",
+    "agint-diagnosis": ">=0.1.0",
     "agint-event-bus": ">=0.7.0",
     "agint-evolution-memory": ">=0.6.4",
-    "agint-metrics": ">=0.6.0",
-    "agint-tool-stats": ">=0.6.0",
+    "agint-metrics": ">=0.1.0",
+    "agint-tool-stats": ">=0.1.0",
     "zod": "^3.0.0"
   },
   "devDependencies": {

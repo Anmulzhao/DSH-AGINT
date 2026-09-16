@@ -51,3 +51,23 @@ AGINT 自我模型插件（Sprint 13 / Part 2，v0.7.1）。
 - **真实 > 讨好**：能力条目强制 `lastVerifiedAt`；校准暴露原始 p50/p90 与样本数
 - **简洁 > 冗余**：不自建采集器（D6），全部复用既有 Service
 - **靠谱 > 聪明**：cold-start 守门防小样本伪精度
+
+## Peer 依赖豁免（2026-09-16 验证 + 放宽）
+
+`package.json` peerDependencies 已放宽到「实际最低可用版本」（老板 2026-09-16 决策：保持向后兼容性，不锁定版本）：
+
+| peer | 当前声明 | 实际最低可用版本 | 验证 |
+|---|---|---|---|
+| `@deepseek-ai/dsh-storage-domain` | `*` | 任意 | cordis host 注入 |
+| `agint-diagnosis` | `>=0.1.0` | 0.1.0（`report()` 已存在） | `test/real-compat.mjs` ✓ |
+| `agint-event-bus` | `>=0.7.0` | 0.7.0（FROZEN envelope schema 引入点；0.6.x 形态不一致） | 边界 |
+| `agint-evolution-memory` | `>=0.6.4` | 0.6.4（shadow ingest schema 冻结点） | 边界 |
+| `agint-metrics` | `>=0.1.0` | 0.1.0（`summary()` 已存在） | `test/real-compat.mjs` ✓ |
+| `agint-tool-stats` | `>=0.1.0` | 0.1.0（`summary()` 已存在） | `test/real-compat.mjs` ✓ |
+| `zod` | `^3.0.0` | zod v3 | 平台统一 |
+
+**放宽理由**：原 `>=0.7.0` / `>=0.6.0` 是 Sprint 13 设计稿的"乐观约束"（当时假设上游会先升），但实际诊断/指标/工具统计这些 API 在更早的 0.1.0 就已稳定。锁定高位版本对历史副本是 npm warn 噪音，没有实际安全价值。
+
+**复测节奏**：每次 metrics / tool-stats / diagnosis 发版前重跑 `test/real-compat.mjs`，失配立刻改 peerDep 或回退 self-model。
+
+证据：`wiki/AGINT/版本依赖分析-2026-09-16.md` §三、`evolve_propose` id `48c5385d-a517-4dcf-9c10-fdb657aa703c`。
