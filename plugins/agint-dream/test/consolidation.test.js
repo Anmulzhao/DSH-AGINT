@@ -20,6 +20,8 @@ import {
   consolidate,
   buildConsolidationPrompt,
   CONSOLIDATION_OUTPUT_SCHEMA,
+  DEFAULT_PROVIDER,
+  DEFAULT_MODEL,
 } from '../lib/consolidation.js';
 
 // ── 纯函数：buildConsolidationPrompt ──────────────────────────────────────
@@ -182,8 +184,30 @@ test('consolidate: subagent 返回 llm structured → mode=llm, operations 对�
   assert.equal(result.mode, 'llm');
   assert.deepEqual(result.operations, operations);
   // verify subagent called with right shape
-  assert.equal(calls.createArgs.agentOptions.provider, 'deepseek');
-  assert.equal(calls.createArgs.agentOptions.model, 'deepseek-chat');
+  // 断言模块默认值本身，而不是硬编码 provider 名：默认值来自 settings.yaml 实测值，
+  // 会随部署变化（fbfd060 起这里硬编码 'deepseek'，源码却是 'minimax-cn'，红了很久）。
+  assert.equal(calls.createArgs.agentOptions.provider, DEFAULT_PROVIDER);
+  assert.equal(calls.createArgs.agentOptions.model, DEFAULT_MODEL);
+  // 显式传参必须能覆盖默认值（不传 provider/model 时才会落到上面两个常量）
+  {
+    const { ctx: c2, calls: k2 } = makeMockCtx({
+      runResult: {
+        output: [],
+        structured: { operations: [{ candidateKey: 'c1', action: 'added', priorEntries: [] }] },
+        stopReason: 'completed',
+      },
+    });
+    await consolidate({
+      ctx: c2,
+      gated: [{ key: 'c1', text: '禁止 rm -rf', type: 'lesson', score: 0.85 }],
+      existing: [],
+      day: '2026-09-05',
+      provider: 'explicit-provider',
+      model: 'explicit-model',
+    });
+    assert.equal(k2.createArgs.agentOptions.provider, 'explicit-provider');
+    assert.equal(k2.createArgs.agentOptions.model, 'explicit-model');
+  }
   assert.equal(calls.startArgs.name, 'spawn');
   assert.equal(calls.startArgs.parent.id, 'mock-parent');
   assert.ok(calls.startArgs.outputSchema, 'outputSchema must be passed');
@@ -300,7 +324,11 @@ test('consolidate: timeout 时 dispose 仍跑（finally）', async () => {
         return {
           getProvider: () => ({ name: 'spawn' }),
           start: async () => ({
-            result: new Promise(() => {}), // never resolves → 靠 timeout abort
+            // never resolves、也永不因 abort 而 settle —— 模拟「provider 不认
+            // signal」（挂死的 HTTP / 卡住的适配器）。consolidate 必须靠自身的
+            // timeoutGuard 收敛，否则夜间 sweep 会永久 pending（fbfd060 起此例
+            // 一直是红的，即该缺陷真实存在）。
+            result: new Promise(() => {}),
             dispose: async () => {},
           }),
         };
@@ -318,5 +346,7 @@ test('consolidate: timeout 时 dispose 仍跑（finally）', async () => {
   // 50ms timeout → result never resolved → 走 timeout 路径
   // 这里我们只验证：consolidate 不挂死、不抛错、最终返回 degraded
   assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.operations, null);
+  assert.match(result.reason, /consolidation timeout \(50ms\)/, '超时原因必须可读（进梦境日记）');
   assert.equal(aborted, true, 'handle.dispose must run in finally');
 });

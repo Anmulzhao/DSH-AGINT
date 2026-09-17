@@ -285,7 +285,9 @@ test('renderDiary: consolidationMode=llm 显示 ✅', async () => {
     consolidationMode: 'llm',
     consolidationReason: 'merged 2 entries',
   });
-  assert.match(md, /P1 LLM consolidation: ✅ LLM 决策 add\/merge\/supersede（merged 2 entries）/);
+  // 注意：llm 分支的标签是加粗的（`**P1 LLM consolidation**:`，与上方 P0 validation gate 行同款式），
+  // 而 heuristic-degraded 分支不加粗。此断言自 fbfd060 起与实现漂移（一直红），2026-09-17 按实现校正。
+  assert.match(md, /\*\*P1 LLM consolidation\*\*: ✅ LLM 决策 add\/merge\/supersede（merged 2 entries）/);
 });
 
 test('renderDiary: consolidationMode=heuristic-degraded 显示 ⚠️', async () => {

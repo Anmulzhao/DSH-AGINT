@@ -57,13 +57,16 @@ export const CONSOLIDATION_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+// 导出给测试引用：测试若硬编码 provider 名会随 settings.yaml 变化漂移
+// （fbfd060 引入本常量时 test/consolidation.test.js 仍断言 'deepseek'，
+// 该断言红到 2026-09-17 才被发现）。断言默认值一律 import 这里的常量。
+export const DEFAULT_TIMEOUT_MS = 60_000;
 // 默认 provider/model 从 ~/.dsh/settings.yaml agent-default-model 读（2026-09-05
 // 实测：minimax-cn / MiniMax-M3）。DSH 部署真实默认是 minimax-cn，不是 deepseek。
 // **绝对不能硬编码 'deepseek'/'deepseek-chat'**——DSH 把 deepseek 仅作 fallback
 // adapter，host 真实可用 provider 由 settings.yaml 决定。
-const DEFAULT_PROVIDER = 'minimax-cn';
-const DEFAULT_MODEL = 'MiniMax-M3';
+export const DEFAULT_PROVIDER = 'minimax-cn';
+export const DEFAULT_MODEL = 'MiniMax-M3';
 
 const SYSTEM_PROMPT = `You are a memory consolidation agent for the 智进 (Zhijin) AI worker.
 Your job: decide for each candidate whether to ADD it as new memory, MERGE it into
@@ -178,7 +181,18 @@ export async function consolidate({
   // 2. 建临时 parent agent（路径 Y — host plane 无现成 agent）
   //    在 try/finally 里严格 dispose，避免泄漏 child session。
   const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort('consolidation-timeout'), timeoutMs);
+  // 超时双保险：① abort 信号让子 agent 自行收敛；② timeoutGuard 让本函数
+  // 无论如何都能返回。缺 ② 时，若 provider 不认 signal（挂死的 HTTP、卡住的
+  // 适配器），`await run.result` 会永久 pending —— 夜间 sweep 随之卡死、
+  // cron job 再也不结束（test/consolidation.test.js「timeout 时 dispose 仍跑」
+  // 就是这个契约，fbfd060 起一直红）。Promise.race 会在 run.result 先落地时
+  // 忽略 timeoutGuard 的后续 reject，不会产生 unhandled rejection。
+  let rejectOnTimeout = null;
+  const timeoutGuard = new Promise((_, reject) => { rejectOnTimeout = reject; });
+  const timer = setTimeout(() => {
+    abortController.abort('consolidation-timeout');
+    rejectOnTimeout?.(new Error(`consolidation timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
   let consolidationHandle = null;
   let run = null;
   try {
@@ -220,7 +234,7 @@ export async function consolidate({
         });
       } catch (e) { /* 订阅失败不阻断主流程 */ }
     }
-    const result = await run.result;
+    const result = await Promise.race([run.result, timeoutGuard]);
     if (result.stopReason !== 'completed') {
       // 把 stopReason + output + agent/error 收集的 error 全带回
       const out = Array.isArray(result.output) ? result.output : [];
@@ -261,12 +275,17 @@ export async function consolidate({
     log(`LLM consolidation succeeded: ${structured.operations.length} operations`);
     return { ok: true, mode: 'llm', operations: structured.operations, reasoning: structured.reasoning ?? null };
   } catch (err) {
-    log(`consolidation failed: ${err?.message ?? String(err)}`);
+    // 超时路径统一措辞：比裸的 AbortError/timeout 更好定位（reason 会进梦境日记）。
+    const timedOut = abortController.signal.aborted;
+    const reason = timedOut
+      ? `consolidation timeout (${timeoutMs}ms)`
+      : `consolidation error: ${err?.message ?? String(err)}`;
+    log(`consolidation failed: ${reason}`);
     return {
       ok: true,
       mode: 'heuristic-degraded',
       operations: null,
-      reason: `consolidation error: ${err?.message ?? String(err)}`,
+      reason,
     };
   } finally {
     if (run && typeof run.dispose === 'function') {

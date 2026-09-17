@@ -5,6 +5,58 @@
 
 ---
 
+## v0.3.1 — 会话日志改名兼容 + 补回 zstd 守卫（2026-09-17）
+
+**背景（静默失效 7 天）**：宿主自 2026-09-10 起把会话日志命名为 `session.v3.jsonl.zstd`，
+而 `lib/sweep.js` 当时只按精确名 `session.jsonl.zstd` 查找 → Light 通道连续 7 天
+**扫到 0 个会话，而 `dream_status` 仍报 `validation=OK`**。既有
+`test/sweep-integration.test.js` 的 fixture 恰好用旧命名，因此没能暴露。
+（同类教训见 KNOWLEDGE K46.3 / K48：**查找写成精确匹配的地方，一次改名就是全量静默失效**。）
+
+**修复**
+
+1. `lib/sweep.js`：新增 `SESSION_LOG_NAMES`（v3 优先、旧名兜底）+ `SESSION_LOG_SUFFIX = '.jsonl.zstd'`，
+   抽出 `export async function resolveSessionLogPath(wsDir, sessionDirName)` —— 候选名优先、后缀兜底，
+   宿主再次改名也不会静默失效；`listSessionLogs` 改用它。
+2. 新增 `test/session-log-naming.test.js`（4 例）：v3 命名 / 旧命名 / **未来改名（v9 后缀兜底）** /
+   lookback 窗口过滤 / 噪声文件（`session.jsonl.dec.jsonl`、`state.json`）不被误收。
+
+**同时补回一处被误删的守卫**
+
+上述重构在宿主侧进行时，**连带删掉了 `isZstdAvailable()` + `zstdMissingWarned`**（zstd CLI
+可用性预检与单次告警）—— 那等于回退 2026-09-12 的修复（zstd 缺失时静默产出空信号约两周）。
+反向同步回仓库时已补回，由 `test/smoke.mjs` 的 happy/sad path 守着。
+
+**同时修掉两个「红到没人管」的测试（根因见下）**
+
+反向同步 `test/sweep.test.js` 时发现：宿主那份**被删掉了 5 个 P1 consolidation 测试**（3 个
+`runSweep` + 2 个 `renderDiary`）。不是搬家（全库 grep 无对应），是**避红**——其中 1 例自
+`fbfd060` 起就与实现漂移。仓库版是超集，已还原并修正确断言（不是删测试）。
+
+1. **真实缺陷（生产代码）**：`lib/consolidation.js` 的 `await run.result` **只靠 abort 信号
+   收敛**。若 provider 不认 signal（挂死的 HTTP / 卡住的适配器），该 await 永久 pending →
+   **夜间 sweep 卡死、cron job 再也不结束**。`test/consolidation.test.js`「timeout 时 dispose
+   仍跑（finally）」正是这个契约，**自 `fbfd060` 起一直红**——是缺陷在说话，不是测试写错。
+   修法：加 `timeoutGuard`（`setTimeout → reject`，与 `lib/quality-bridge.js:169` 同款式）后
+   `Promise.race([run.result, timeoutGuard])`；超时 reason 统一为可读的
+   `consolidation timeout (Nms)`（进梦境日记）。`run.result` 先落地时 race 会忽略 guard 的
+   后续 reject，不产生 unhandled rejection。
+2. **陈旧断言 2 例**（`fbfd060` 一个 commit 带 3 个红测试上线）：
+   - `consolidation.test.js` 断言默认 provider 为 `'deepseek'`，而源码常量是
+     `'minimax-cn'`（源码注释本身写着「**绝对不能硬编码 'deepseek'**」）。
+     **上一版 CHANGELOG 曾把这判为「本机环境问题，非本插件缺陷」——判错了**：常量是硬编码在
+     源码里的，任何机器上都红，与本地 settings.yaml 无关。
+     修法：把 `DEFAULT_PROVIDER` / `DEFAULT_MODEL` / `DEFAULT_TIMEOUT_MS` 导出，测试改为引用
+     常量（杜绝再漂移）+ 补 1 例「显式传参可覆盖默认值」。
+   - `sweep.test.js` 断言 `P1 LLM consolidation: ✅`，实际输出已加粗为
+     `**P1 LLM consolidation**: ✅`（与相邻 P0 行同款式）。按实现校正。
+
+**验收**：`plugins/agint-dream` 全套 **72/72 通过**（改动前 70/72）。
+遗留的格式不一致（llm 分支加粗、heuristic-degraded 分支不加粗）**未动**——属纯观感，且会改到
+真实梦境日记输出，留待拍板。
+
+---
+
 ## v0.3.0-C4 — dream_status schema 补同步（2026-09-11，工具从「不可用」恢复）
 
 **根因**：`lib/index.js` 的 `status()` 返回 `counts.evolutionTemplates`（v0.3 / task 3，2026-09-06 加），但 `lib/tools.js` 里 **`dream_status`** 的 output schema 漏声明该字段，而 counts 是 `additionalProperties: false` → host 端 output 校验直接报 `value.counts.evolutionTemplates is not a declared property` → **整个工具调用失败**（不是降级，是完全不可用；排查梦境状态只能绕道读 diary 文件 + cron 表）。

@@ -13,14 +13,8 @@
  *            threshold gates, optional promotion into agint.memory, and a
  *            human-readable dream diary under <diaryRoot>/YYYY-MM-DD.md.
  *
- * ## External dependencies
- *   - `zstd` CLI  — used to decompress session.jsonl.zstd files (readSessionLog).
- *                   NOT bundled. Provided by host OS or installed by
- *                   install/agint-zstd-bootstrap.sh. If missing, sweep logs
- *                   ENOENT per session and produces empty signals (2026-09-12
- *                   incident: this was silently broken for ~2 weeks).
- *
- * Everything else is deterministic and dependency-light: scoring is pure arithmetic, and the
+ * Everything here is deterministic and dependency-light: session parsing uses
+ * the `zstd` CLI (present on this host), scoring is pure arithmetic, and the
  * only external service touched is `agint.memory` (injected at sweep time).
  * The intelligence stays in the model — this pass catches what explicit
  * memory_write missed, and the diary is written for a human/agent to read.
@@ -88,7 +82,24 @@ const clamp = (v) => Math.max(0, Math.min(1, v));
 
 // ── Light: session signal collection ───────────────────────────────────────
 
-const SESSION_LOG_GLOB = 'session.jsonl.zstd';
+// 2026-09-17：宿主自 2026-09-10 起把会话日志命名为 `session.v3.jsonl.zstd`，
+// 原先的精确名匹配让 Light 通道静默失效 7 天（2 天窗口内扫到 0 个会话，
+// 而 dream_status 仍报 validation=OK）。改为候选名优先 + 后缀兜底，
+// 使宿主再次改名时不会静默失效。
+const SESSION_LOG_NAMES = ['session.v3.jsonl.zstd', 'session.jsonl.zstd'];
+const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+
+/** 定位会话目录下的日志文件：候选名优先，其次按 .jsonl.zstd 后缀兜底。 */
+export async function resolveSessionLogPath(wsDir, sessionDirName) {
+  const dirPath = join(wsDir, sessionDirName);
+  for (const name of SESSION_LOG_NAMES) {
+    const p = join(dirPath, name);
+    if (await stat(p).catch(() => null)) return p;
+  }
+  const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => []);
+  const hit = entries.find((e) => e.isFile() && e.name.endsWith(SESSION_LOG_SUFFIX));
+  return hit ? join(dirPath, hit.name) : null;
+}
 
 export async function listSessionLogs(sessionsRoot, lookbackDays, maxSessions) {
   const root = resolve(sessionsRoot);
@@ -102,7 +113,8 @@ export async function listSessionLogs(sessionsRoot, lookbackDays, maxSessions) {
     const sessionDirs = await readdir(wsDir, { withFileTypes: true }).catch(() => []);
     for (const dir of sessionDirs) {
       if (!dir.isDirectory()) continue;
-      const logPath = join(wsDir, dir.name, SESSION_LOG_GLOB);
+      const logPath = await resolveSessionLogPath(wsDir, dir.name);
+      if (!logPath) continue;
       const st = await stat(logPath).catch(() => null);
       if (!st) continue;
       if (st.mtimeMs < cutoff) continue;
@@ -117,6 +129,10 @@ export async function listSessionLogs(sessionsRoot, lookbackDays, maxSessions) {
 // Used by readSessionLog to surface a friendly error instead of letting
 // execFileAsync fail with ENOENT for every single session file.
 // Exported for smoke testing (test/smoke.mjs exercises the missing-zstd path).
+//
+// 2026-09-17：本次「会话日志改名」修复（resolveSessionLogPath）在宿主侧重构本文件时
+// 曾把这段守卫一并删掉 —— 那等于回退 2026-09-12 的修复（zstd 缺失时静默产出空信号
+// 约两周）。反向同步回仓库时补回，并由 test/smoke.mjs 的 sad path 守着。
 export function isZstdAvailable() {
   try {
     execFileSync('zstd', ['--version'], { stdio: 'ignore' });
