@@ -197,7 +197,12 @@
     # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（04:45）。
     - id: agint-skill-autocreate
       name: ./plugins/agint-skill-autocreate/lib/index.js
-      config: {}
+      config:
+        # 2026-09-17：自动发布会产出空壳技能 → 先停住自动发布（保留 autocreate_release
+        # 手动通道）；待质量门 A2/A3（Phase 2）在真实数据上验证一批后再放开。
+        # 该改动原先只落在宿主 profiles/web/cordis.patch.yml，install.sh 合并时可能丢失，
+        # 故回写进本文件（配置源）。
+        require_human_approval: true
 
     # agint-curator: P0-2 技能策展人 v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2
     # 智能策展）— 2026-09-07 挂载 v0.1.0，2026-09-08 升级 v0.2.0（schemaVersion 1→2 已迁移，
@@ -298,7 +303,7 @@
     # config 等）。独占 agint_trajectory 存储域（schemaVersion 1）。
     # 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）。
     # 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
-    # diagnosis.completed / evo-orch.task-started / evo-orch.task-completed。
+    # diagnosis.completed / evoorch.task-started / evoorch.task-completed（P2-3 未实施）。
     # 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断。
     # **轨迹数据不进任何在线决策**；**不注册 model-visible 工具**（观察层）。
     # ⚠️ 默认档 count-only（标定期）：不落正式轨迹表，只写 meta + 标定报告。
