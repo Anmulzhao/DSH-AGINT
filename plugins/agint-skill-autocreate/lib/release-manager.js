@@ -190,6 +190,44 @@ async function pathExists(p) {
   try { await access(p); return true; } catch { return false; }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 整目录 rename 的退避重试。
+ *
+ * 为什么需要：skills_root 是宿主正在使用的目录，Windows 上「新建目录 + 立刻写文件
+ * + 整个目录 rename」会被宿主扫描/杀软实时扫描间歇性占用，rename 偶发 EPERM。
+ * 2026-09-17 实测：同一操作在普通临时目录 200 轮 0 失败，在真实 skills_root
+ * 20 轮挂 1 次（≈5%）；且失败后立刻把同一目录改名到别的名字是成功的 —— 说明是
+ * 瞬时占用，重试即可跨过。不重试 = 约 5% 的技能白挂一次（候选退回 QUEUED_FOR_RELEASE
+ * 等下一轮，用户看到的是「随机有技能挂不上」）。
+ *
+ * 只对瞬时错误退避重试；目标已存在之类的确定性错误立即抛出（不浪费预算）。
+ *
+ * @param {string} src 源路径
+ * @param {string} dest 目标路径
+ * @param {{delays?: number[], _rename?: Function}} [opts] 测试可注入 delays / _rename
+ * @returns {Promise<number>} 实际尝试次数（1 = 一次成功）
+ */
+export async function renameWithRetry(src, dest, opts = {}) {
+  const rn = opts._rename ?? rename;
+  const delays = opts.delays ?? [0, 40, 120, 300, 700];
+  const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await sleep(delays[i]);
+    try {
+      await rn(src, dest);
+      return i + 1;
+    } catch (e) {
+      lastErr = e;
+      if (!TRANSIENT.has(e?.code)) throw e;   // 确定性错误：立即失败
+    }
+  }
+  lastErr.message = `${lastErr.message}（已重试 ${delays.length} 次，源=${src}）`;
+  throw lastErr;
+}
+
 /**
  * 原子发布：staging 物料 → skillsRoot/<skillName>（先写 tmp 再整目录 rename）。
  * @returns {{ dir: string, version: string }}
@@ -230,7 +268,7 @@ export async function publishToSkillsRoot({ candidate, skillsRoot, version = '1'
         await writeFile(join(scriptsDir, safeName), content, 'utf8');
       }
     }
-    await rename(tmp, target);   // 同盘 rename 原子；watcher 只会看到完整目录
+    await renameWithRetry(tmp, target);   // 同盘 rename 原子；watcher 只会看到完整目录
   } catch (e) {
     await rename(tmp, `${tmp}.failed-${Date.now()}`).catch(() => {});
     throw e;
@@ -244,7 +282,7 @@ export async function archiveSkillDir({ skillName, skillsRoot, archiveRoot }) {
   if (!(await pathExists(src))) return { archived: false, reason: 'dir-already-gone' };
   await mkdir(archiveRoot, { recursive: true });
   const dest = join(archiveRoot, `${skillName}-${Date.now()}`);
-  await rename(src, dest);
+  await renameWithRetry(src, dest);   // 同为整目录 rename，同风险（skills_root 侧）
   return { archived: true, dest };
 }
 
@@ -592,7 +630,7 @@ export function createReleaseManager(deps) {
   return {
     releaseCandidate, releaseQueue, rollback, observe, listReleases,
     // 暴露纯函数与 helper 供测试/工具复用
-    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput },
+    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput, renameWithRetry },
   };
 }
 
