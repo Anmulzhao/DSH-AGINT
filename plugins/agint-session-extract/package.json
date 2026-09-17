@@ -1,0 +1,12 @@
+{
+  "name": "agint-session-extract",
+  "version": "0.1.0",
+  "description": "中立会话提取器（纯函数模块）：解压/解析 dsh 会话日志，提取工具调用序列与文本窗口。agint-dream 与 agint-skill-autocreate 共享，不依赖任一插件的调度。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "keywords": ["dsh-plugin", "agint", "session-extract", "neutral"],
+  "license": "MIT"
+}

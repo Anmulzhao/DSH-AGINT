@@ -26,8 +26,6 @@
  *   audit_log）
  */
 
-import { readFile, stat } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
 import {
   ConfigSchema,
   RUNTIME_CONFIG_KEYS,
@@ -52,6 +50,12 @@ import { evaluateCandidate } from './evaluator.js';
 import { isDuplicate } from './similarity.js';
 import { cleanupCandidate, cleanupStale, stagingRootFor } from './staging.js';
 import { createReleaseManager } from './release-manager.js';
+import { readSourceRecords, readToolStatsRecords as readToolStatsShared } from './session-source.js';
+import {
+  createWindowLoader,
+  extractSemanticEvidence,
+  renderSemanticSections,
+} from './semantic-window.js';
 
 const name = 'agint-skill-autocreate';
 // storageDomain 硬依赖；tools 在宿主不注册 model 工具（preset 平面经 lib/tools.js）
@@ -151,20 +155,10 @@ function apply(ctx, config) {
   }
 
   // ── 读 tool-stats JSONL（设计稿 §10.1：读文件，不重复采集）─────────────
+  // Phase 1：实现下移到 lib/session-source.js（共享，防本文件与适配层漂移）。
+  // 仍保留本闭包签名——release-manager 依赖注入用的就是这个零参函数。
   async function readToolStatsRecords() {
-    const jsonlPath = resolvePath(effectiveConfig().jsonlPath);
-    try { await stat(jsonlPath); } catch { return []; }
-    try {
-      const text = await readFile(jsonlPath, 'utf8');
-      const out = [];
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try { out.push(JSON.parse(line)); } catch { /* skip malformed */ }
-      }
-      return out;
-    } catch {
-      return [];
-    }
+    return readToolStatsShared(effectiveConfig().jsonlPath);
   }
 
   // ── 核心流程：检测 → 候选生成（§3.1 [2]-[5]）──────────────────────────
@@ -175,7 +169,32 @@ function apply(ctx, config) {
     }
 
     const windowHours = args.windowHours ?? c.aggregate_window_hours;
-    const records = filterWindow(await readToolStatsRecords(), windowHours);
+    // ── Phase 1：数据源切换（2026-09-17 分治架构设计 §4 Pipe A）──────────
+    // 默认 'session' = 直读会话日志（含 turn/step/args），不再依赖 04:30 回填。
+    // 可用 args.source 或运行时配置 session_source 回滚到 tool_stats。
+    const sourceMode = args.source ?? c.session_source ?? 'session';
+    const sinceMs = Date.now() - windowHours * 3600_000;
+    const { records: rawRecords, bySource } = await readSourceRecords({
+      source: sourceMode,
+      sessionsRoot: c.sessions_root,
+      jsonlPath: c.jsonlPath,
+      sinceMs,
+    });
+    const records = filterWindow(rawRecords, windowHours);
+    // 源条数留痕：数据源静默退化（如 sessions_root 配错 → 恒 0）时可直接从
+    // audit_log 看见，而不是等「候选怎么不涨了」。
+    await audit({
+      actor: 'system',
+      action: 'detect_source',
+      targetType: 'pattern',
+      targetId: '*',
+      details: {
+        source: sourceMode,
+        raw: rawRecords.length,
+        windowed: records.length,
+        bySource,
+      },
+    });
     // Sprint 17：按配置切换聚合模式（off = v0.3.4 行为；shadow = 新旧并行算 diff；primary = 跨会话作唯一任务边界）
     const aggregateMode = c.cross_session_aggregation ?? 'off';
     const { tasks, unmatched, excluded, shadowDiff, legacyTasks } = aggregateTasks(records, {
@@ -267,6 +286,82 @@ function apply(ctx, config) {
     let standardizableReject = 0;
     let standardizableUncertain = 0;
     const candidateIds = [];
+    // ── Phase 2：本地语义窗口加载器（2026-09-17 分治架构设计 §5.2）─────────
+    // 用 pattern 的 sampleAnchor 回查会话日志，抽「为什么 / 坑」喂给提案器。
+    // 零 LLM：dream 的 Deep/LLM 通路至今 promoted=0，不押注未验证路径。
+    // 带会话级缓存（同一会话的多个 pattern 只解压一次）。
+    const windowLoader = c.semantic_window_enabled
+      ? createWindowLoader({
+        sessionsRoot: c.sessions_root,
+        radius: c.semantic_window_radius,
+        maxChars: c.semantic_window_max_chars,
+      })
+      : null;
+    let semanticFilled = 0;   // 本次有多少候选拿到了非空语义段
+
+    /**
+     * 提案生成 + 语义窗口注入 + 跳过审计（Phase 2）。
+     * 返回 proposal | null；返回 null 时已写 audit（reason 精确到拦截点：
+     * no-matching-template / self-referential / no-concrete-value）。
+     *
+     * 降级策略：窗口取不到（无锚点 / 会话日志缺失 / 解压失败）一律**不阻断**，
+     * 提案退回纯模板——语义是增益，不是依赖（约束 3：门禁与产物所有权在 autocreate）。
+     */
+    async function buildProposalResult(stored) {
+      let semanticMarkdown = '';
+      let windowText = '';
+      let windowInfo = {
+        enabled: !!windowLoader,
+        ok: false,
+        reason: windowLoader ? 'no-anchor' : 'disabled',
+      };
+      const anchor = stored.sampleAnchor;
+      if (windowLoader && anchor?.sessionId) {
+        try {
+          const win = await windowLoader.load(anchor);
+          windowInfo = {
+            enabled: true,
+            ok: win.ok,
+            reason: win.reason ?? null,
+            chars: win.chars ?? 0,
+            sessionId: anchor.sessionId,
+            turn: anchor.turn ?? null,
+          };
+          if (win.ok) {
+            const ev = extractSemanticEvidence(win);
+            semanticMarkdown = renderSemanticSections(ev);
+            windowText = [...(win.before ?? []), ...(win.after ?? [])]
+              .map((e) => (typeof e === 'string' ? e : (e?.text ?? '')))
+              .join('\n');
+            windowInfo.whyCount = ev.why.length;
+            windowInfo.pitfallCount = ev.pitfalls.length;
+          }
+        } catch (e) {
+          // 语义窗口是增益，任何异常都不该让检测整批失败
+          windowInfo = { enabled: true, ok: false, reason: `unexpected:${e?.message ?? e}` };
+        }
+      }
+
+      const reasonOut = {};
+      const proposal = buildProposal(stored, { semanticMarkdown, windowText, reasonOut });
+      if (!proposal) {
+        await audit({
+          actor: 'system',
+          action: 'candidate_skipped',
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: {
+            reason: reasonOut.reason ?? 'unknown',
+            sampleArgKeys: Object.keys(stored.sampleArgs ?? {}).length,
+            window: windowInfo,
+            toolSequence: stored.toolSequence,
+          },
+        });
+        return null;
+      }
+      proposal._semantic = { markdown: semanticMarkdown, window: windowInfo };
+      return proposal;
+    }
     // Sprint 17：把 forceRecheck 目标并入同一个判定+生成循环。
     //   newRepeat 项 = detector 工作副本（含 occurrenceCount 增量）；forceRecheckBatch 项 = upserted 形态。
     //   这里归一为「按 fingerprint 找到已入库 stored」入口。
@@ -356,17 +451,8 @@ function apply(ctx, config) {
       if (stored.linkedCandidateId) continue;      // 已有候选，不重复生成
       if (stored.status !== 'active') continue;    // dismissed 等状态不复活
 
-      const proposal = buildProposal(stored);
-      if (!proposal) {
-        await audit({
-          actor: 'system',
-          action: 'candidate_skipped',
-          targetType: 'task_pattern',
-          targetId: stored.id,
-          details: { reason: 'no matching template or self-referential' },
-        });
-        continue;
-      }
+      const proposal = await buildProposalResult(stored);
+      if (!proposal) continue;
 
       const cd = await table('candidates');
       const candWarn = checkLimit('candidates', cd.entries().length);
@@ -388,6 +474,7 @@ function apply(ctx, config) {
       await cd.put(candidate.id, candidate);
       candidatesCreated++;
       candidateIds.push(candidate.id);
+      if (proposal._semantic?.markdown) semanticFilled++;
 
       // pattern 标记为 candidate 并回链
       const updatedPattern = packTaskPattern(
@@ -411,12 +498,19 @@ function apply(ctx, config) {
           skillName: proposal.skillDraft.name,
           template: proposal.skillDraft.template,
           estimatedBenefit: proposal.estimatedBenefit,
+          // Phase 2：语义窗口是否真的填进了正文（可观测「挂了但没跑」的静默失败）
+          semanticWindow: {
+            filled: !!proposal._semantic?.markdown,
+            ...(proposal._semantic?.window ?? {}),
+          },
         },
       });
     }
 
     return {
       windowHours,
+      source: sourceMode,      // Phase 1：本次用了哪份数据源
+      bySource,                // { session, tool_stats, dedupedDropped } 各源条数
       records: records.length,
       tasks: tasks.length,
       unmatched,
@@ -433,6 +527,12 @@ function apply(ctx, config) {
       },
       candidatesCreated,
       candidateIds,
+      // Phase 2：语义窗口填充情况（filled=正文里真有 `## 为什么`/`## 避坑`）
+      semanticWindow: {
+        enabled: !!windowLoader,
+        filled: semanticFilled,
+        ...(windowLoader ? windowLoader.stats() : {}),
+      },
       limitWarn: limitWarn?._warn ?? null,
     };
   }
@@ -826,6 +926,10 @@ function apply(ctx, config) {
         cross_session_aggregation: effectiveConfig().cross_session_aggregation,
         cross_session_idle_ms: effectiveConfig().cross_session_idle_ms,
         cross_session_max_sessions_per_task: effectiveConfig().cross_session_max_sessions_per_task,
+        // Phase 1/2：数据源 + 本地语义窗口
+        session_source: effectiveConfig().session_source,
+        semantic_window_enabled: effectiveConfig().semantic_window_enabled,
+        semantic_window_radius: effectiveConfig().semantic_window_radius,
       },
       sprint: '16-release-layer',
     };

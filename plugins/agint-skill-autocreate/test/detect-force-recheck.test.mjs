@@ -87,7 +87,7 @@ test('forceRecheck 缺省 → 不重判历史', async () => {
     const ctx = mockCtx();
     const jsonlPath = join(tmp, 'stats.jsonl');
     writeFileSync(jsonlPath, '', 'utf8'); // 空数据
-    plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+    plugin.apply(ctx, { jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24 });
     const svc = ctx._provided['agint.skillAutocreate'];
     const result = await svc.detect({});
     assert.equal(result.forceRecheckEvaluated, 0, '缺省 forceRecheckEvaluated 应为 0');
@@ -102,7 +102,7 @@ test('forceRecheck=false → 不重判历史', async () => {
     const ctx = mockCtx();
     const jsonlPath = join(tmp, 'stats.jsonl');
     writeFileSync(jsonlPath, '', 'utf8');
-    plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+    plugin.apply(ctx, { jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24 });
     const svc = ctx._provided['agint.skillAutocreate'];
     const result = await svc.detect({ forceRecheck: false });
     assert.equal(result.forceRecheckEvaluated, 0);
@@ -117,7 +117,7 @@ test('forceRecheck=true → 重判历史（即使没新数据也能命中）', a
     const ctx = mockCtx();
     const jsonlPath = join(tmp, 'stats.jsonl');
     writeFileSync(jsonlPath, '', 'utf8');
-    plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+    plugin.apply(ctx, { jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24 });
     const svc = ctx._provided['agint.skillAutocreate'];
     // 注入一个历史 false pattern
     await seedPattern(ctx, {
@@ -142,7 +142,7 @@ test('forceRecheck 不发 pattern-detected 事件（避免与 newRepeat 混淆�
     ctx.get = (k) => k === 'agint.eventBus.publish' ? async (env) => { events.push(env); } : null;
     const jsonlPath = join(tmp, 'stats.jsonl');
     writeFileSync(jsonlPath, '', 'utf8');
-    plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+    plugin.apply(ctx, { jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24 });
     const svc = ctx._provided['agint.skillAutocreate'];
     await seedPattern(ctx, {
       id: 'tp_hist_test_event',

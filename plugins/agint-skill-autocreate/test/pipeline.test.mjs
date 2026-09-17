@@ -73,7 +73,13 @@ function setupCtx(tmpDir) {
     { ts: NOW - 3600_000, sessionId: 's9', turn: 1, tool: 'terminal', ok: true, latencyMs: 10, args: { command: 'echo hi' } },
   ];
   writeFileSync(jsonlPath, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
-  plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+  // 关掉 A3 信息量门：本文件测的是「检测→候选→评估→发布」的**流程闭环**，
+// 而 fixture 是薄壳模式（工具名 + 一个路径），在 A3 下必被判 non-informative-body。
+// A3 本身由 semantics.test.mjs / evaluator.test.mjs 专门覆盖。
+plugin.apply(ctx, {
+  jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24,
+  semantics_quality_gate_enabled: false,
+});
   return { ctx, events, svc: ctx._provided['agint.skillAutocreate'] };
 }
 
@@ -141,7 +147,7 @@ test('auto_create_enabled=false：只检测不建候选', async () => {
       ...taskRecords({ sessionId: 's3', turn: 1, path: 'c.md' }),
     ];
     writeFileSync(jsonlPath, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
-    plugin.apply(ctx, { jsonlPath, auto_create_enabled: false });
+    plugin.apply(ctx, { jsonlPath, session_source: 'tool_stats', auto_create_enabled: false });
     const svc = ctx._provided['agint.skillAutocreate'];
     const result = await svc.detect({});
     assert.equal(result.newRepeatPatterns, 1);
@@ -244,7 +250,13 @@ function setupEvalCtx(tmpDir, options = {}) {
   ];
   writeFileSync(jsonlPath, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
   process.env.DSH_HOME = tmpDir;
-  plugin.apply(ctx, { jsonlPath, aggregate_window_hours: 24 });
+  // 关掉 A3 信息量门：本文件测的是「检测→候选→评估→发布」的**流程闭环**，
+// 而 fixture 是薄壳模式（工具名 + 一个路径），在 A3 下必被判 non-informative-body。
+// A3 本身由 semantics.test.mjs / evaluator.test.mjs 专门覆盖。
+plugin.apply(ctx, {
+  jsonlPath, session_source: 'tool_stats', aggregate_window_hours: 24,
+  semantics_quality_gate_enabled: false,
+});
   return { ctx, events, svc: ctx._provided['agint.skillAutocreate'], evolutionLogs, qualityStatic };
 }
 

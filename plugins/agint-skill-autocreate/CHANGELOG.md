@@ -2,21 +2,26 @@
 
 ## 0.3.5 (2026-09-17) — 跨会话聚合（Sprint 17，老板拍板走 plugin-preflight 完整流程）
 
-> 提案：`evolve_propose d5124051-817c-4aa3-bea6-fe259cf9914d`
+> 提案：`evolve_propose d5124051-817c-4aa3-bea6-fe259cf9914d` → **applied**
 > 触发：老板原话「我的意图其实是跨会话的，这个模式的聚合也应该是跨会话的，这样才是科学合理的」
+> **落地决策**：老板拍板**切 primary 一步到位**（不走 shadow 灰度期）。
+>   - `cross_session_aggregation` 默认 = **primary**
+>   - detect() 立即按 primary 跑；下一次 `45 4 * * *` cron 也会按 primary
+>   - 13.5 天 / 9088 条数据回放预期：跨过 `min_occurrence_count≥3` 模式数 11 → 21（+91%）
 
-- **行为扩展**（不破环，向后兼容）：
+- **行为扩展**（mode 三档）：
   - `aggregateTasks(records, options)` 新增 `mode: 'off' | 'shadow' | 'primary'`
-    - `off`（默认）= v0.3.4 行为，**一字不动**。所有旧测试 13/13 通过。
-    - `shadow` = 新旧并行算，返回 `shadowDiff { extra, lost, shared, *Count }` + `legacyTasks`，**不发候选**。用于灰度期。
-    - `primary` = 用跨会话结果作唯一任务边界。
+    - `off` = v0.3.4 行为（保留可回退）。
+    - `shadow` = 新旧并行算，返回 `shadowDiff { extra, lost, shared, *Count }` + `legacyTasks`，**不发候选**。
+    - `primary`（**默认**）= 用跨会话结果作唯一任务边界。
   - 新函数 `aggregateTasksCrossSession(records, options)` 直接导出。
   - 跨会话任务边界 = 按 `ts` idle gap（默认 30s）切分，与 `sessionId` 解耦。
+  - `detect()` 读 `effectiveConfig().cross_session_aggregation` 传给 aggregator；shadow 模式额外写 `cross_session_shadow_diff` 审计。
 - **安全护栏**（写进代码 + 测试）：
   - **R1 防误合并**：`maxSessionsPerTask`（默认 20）—— 单任务跨过的 sessionId 数超阈值即整段丢弃。
   - **R2 性能**：模式指纹集合从 364 → 579，cron 每日聚合仍 <1s（实测）。
   - **R3 噪声**：参数签名仍生效（detector 层用），单纯工具序列相同但参数结构不同的不视为同一模式。
-  - **兼容**：`cross_session_aggregation` 等三个旋钮**不在** `RUNTIME_CONFIG_KEYS`（灰度期不进 runtime）。
+  - **运行时可改**：`cross_session_*` 三键已加进 `RUNTIME_CONFIG_KEYS`（2026-09-17 解封），但当前 model-visible 工具没暴露 `autocreate_config`，改档需改 `DEFAULT_CONFIG.default`（回 off 改一行即可）。
 - **元数据扩展**（仅跨会话任务有，旧实现无）：
   - `sessionIds: string[]`：参与本任务的所有会话 id（按出现顺序去重）
   - `firstSeenAt / lastSeenAt: ISO string`：替代 `startedAt/endedAt` 的可读格式

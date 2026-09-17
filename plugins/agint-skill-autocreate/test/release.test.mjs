@@ -93,6 +93,8 @@ function setup(opts = {}) {
     skills_root: skillsRoot,
     rollback_archive_dir: archive,
     jsonlPath: jsonl,
+    // 数据源钉死为 tool_stats：保证测试不读真实 ~/.dsh/sessions（隔离性）
+    session_source: 'tool_stats',
     // 默认关掉人工确认窗（专测其它门）；确认窗行为在专项测试里单独开
     require_human_approval_until: opts.approvalUntil ?? '2020-01-01T00:00:00.000Z',
     ...(opts.config ?? {}),

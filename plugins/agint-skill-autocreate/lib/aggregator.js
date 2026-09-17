@@ -108,6 +108,12 @@ function aggregateBySessionTurn(records) {
       id: `task_${key.replace(/[^a-zA-Z0-9]/g, '_')}_${first.ts ?? 0}`,
       sessionId: first.sessionId ?? null,
       turn: first.turn ?? null,
+      // Phase 2：语义窗口锚点（提案层回查会话文本用；缺失则提案降级为纯模板）
+      anchor: {
+        sessionId: first.sessionId ?? null,
+        turn: first.turn ?? null,
+        step: Number.isInteger(first.step) ? first.step : null,
+      },
       startedAt: first.ts ?? null,
       endedAt: last.ts ?? null,
       durationMs: withLatency.length ? withLatency.reduce((s, r) => s + r.latencyMs, 0) : null,
@@ -188,6 +194,14 @@ export function aggregateTasksCrossSession(records, options = {}) {
       sessionId: first.sessionId ?? null,        // 兼容字段：留首个会话
       turn: first.turn ?? null,
       sessionIds: sids,                          // Sprint 17 新字段
+      // Phase 2：语义窗口锚点 —— 跨会话聚合下取「首条记录」所属会话与 turn。
+      // 语义窗口只是「提案的语义原料」，不是模式的统计口径，故取首条即为
+      // 一个真实可回查的代表样本（与 sampleArgs 取首次调用的取舍一致）。
+      anchor: {
+        sessionId: first.sessionId ?? null,
+        turn: first.turn ?? null,
+        step: Number.isInteger(first.step) ? first.step : null,
+      },
       startedAt: first.ts ?? null,
       endedAt: last.ts ?? null,
       firstSeenAt: first.ts != null ? new Date(first.ts).toISOString() : null,

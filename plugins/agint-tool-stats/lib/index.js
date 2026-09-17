@@ -19,9 +19,14 @@
 import { resolve as resolvePath } from 'node:path';
 import { appendFile, readFile, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { z } from 'zod';
+// 会话解析统一走中立提取器（双格式 v3/jsonl + 去重）——修 backfill 只认
+// session.jsonl.zstd、漏读全部 v3 会话的历史 bug（Phase 1，2026-09-17）。
+import {
+  listSessionLogs,
+  loadSession,
+  extractToolCalls,
+} from '../../agint-session-extract/index.js';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import {
   stableStringify,
@@ -235,94 +240,25 @@ async function readAllRecords(jsonlPath) {
 }
 
 // ── 回填：用 session log 给 JSONL 补 callTs / latencyMs / turn / step / sessionId ──
-const execFileAsync = promisify(execFile);
-
-async function readSessionEvents(zstdPath) {
-  try {
-    const { stdout } = await execFileAsync('zstd', ['-dc', zstdPath], {
-      maxBuffer: 64 * 1024 * 1024,
-      encoding: 'utf8',
-    });
-    const out = [];
-    for (const line of stdout.split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      try {
-        out.push(JSON.parse(t));
-      } catch {
-        /* skip */
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-function buildCallIndex(events) {
-  const idx = new Map();
-  for (const e of events) {
-    if (e?.type !== 'tool/call') continue;
-    const d = e.data || {};
-    const cid = d.callId;
-    if (!cid) continue;
-    if (!idx.has(cid)) {
-      idx.set(cid, {
-        callTs: e.time ?? null,
-        turn: d.turn ?? null,
-        step: d.step ?? null,
-        sessionId: idx.sessionId ?? null,
-      });
-    }
-  }
-  return idx;
-}
-
-async function listSessionLogs(sessionsRoot) {
-  const { readdir } = await import('node:fs/promises');
-  const logs = [];
-  try {
-    const workspaces = await readdir(sessionsRoot, { withFileTypes: true });
-    for (const ws of workspaces) {
-      if (!ws.isDirectory()) continue;
-      const wsDir = `${sessionsRoot}/${ws.name}`;
-      let sessionDirs;
-      try {
-        sessionDirs = await readdir(wsDir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const dir of sessionDirs) {
-        if (!dir.isDirectory()) continue;
-        const zstdPath = `${wsDir}/${dir.name}/session.jsonl.zstd`;
-        try {
-          await stat(zstdPath);
-          logs.push({ path: zstdPath, sessionId: dir.name });
-        } catch {
-          continue;
-        }
-      }
-    }
-  } catch {
-    return [];
-  }
-  return logs;
-}
-
 async function backfill(sessionsRoot, jsonlPath) {
   const records = await readAllRecords(jsonlPath);
   if (records.length === 0) return { records: 0, updated: 0, unmatched: 0, sessions: 0 };
 
-  // 1. 索引所有 session log
+  // 1. 索引所有 session log（中立提取器：v3 + jsonl 双格式、同会话去重）
   const callIdx = new Map();
   const logs = await listSessionLogs(sessionsRoot);
   for (const log of logs) {
-    const events = await readSessionEvents(log.path);
-    const local = buildCallIndex(events);
-    for (const [cid, meta] of local) {
-      if (!callIdx.has(cid)) {
-        callIdx.set(cid, { ...meta, sessionId: log.sessionId });
-      }
+    let events;
+    try { events = await loadSession(log.path); } catch { continue; }
+    for (const rec of extractToolCalls(events, { sessionId: log.sessionId })) {
+      const cid = rec.callId;
+      if (!cid || callIdx.has(cid)) continue;
+      callIdx.set(cid, {
+        callTs: rec.ts ?? null,
+        turn: rec.turn ?? null,
+        step: rec.step ?? null,
+        sessionId: log.sessionId,
+      });
     }
   }
 

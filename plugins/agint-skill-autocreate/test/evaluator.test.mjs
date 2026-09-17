@@ -38,7 +38,12 @@ const CANDIDATE = {
 };
 
 const PATTERN = { occurrenceCount: 12 };
-const CFG = { dangerous_tools_blocklist: ['terminal:rm -rf', 'terminal:dd'] };
+// 默认关掉 A3 信息量门：本文件的用例测的是「三阶段编排」，不是语义质量；
+// A3 由 semantics.test.mjs + 下方专门的「A3 接通」用例覆盖。
+const CFG = {
+  dangerous_tools_blocklist: ['terminal:rm -rf', 'terminal:dd'],
+  semantics_quality_gate_enabled: false,
+};
 
 function makeServices(overrides = {}) {
   return {
@@ -194,4 +199,100 @@ test('rankingScore：预估收益 + 模式频次 + 安全，纯函数', () => {
   assert.equal(score, 0.63);
   // 全零：benefitAvg=0, freq=0, harm 未知 → safety=1 贡献 0.2（无风险证据不扣分）
   assert.equal(computeRankingScore({ estimatedBenefit: {} }, {}), 0.2);
+});
+
+// ── Phase 2：A3 信息量门在评估层接通（2026-09-17）─────────────────────────
+// 背景：2026-09-17 14:04 自动发布了 2 个空壳技能（正文 = 工具序列复述）。
+// A2（生成层具体值门）先拦一道；本用例验证**评估层的兜底**真的接通——
+// 即人工 modifyCandidate 绕过 A2 时，A3 仍能把空壳挡在发布之外。
+
+/** glob-glob-glob-glob 的正文原文（今天被发布的空壳技能） */
+const SHELL_BODY = [
+  '## 适用场景',
+  'glob → glob → glob → glob',
+  '',
+  '## 前置条件',
+  '- 工具可用：glob、read、pwsh',
+  '- 运行环境与历史任务实例一致（同工作目录/同权限）',
+  '',
+  '## 步骤',
+  '1. 调用 glob，确认输出符合预期后再进入下一步。',
+  '2. 调用 read，确认输出符合预期后再进入下一步。',
+  '3. 调用 pwsh，确认输出符合预期后再进入下一步。',
+  '',
+  '## 注意事项',
+  '- 本技能由系统从重复任务模式自动生成（经 D-QAF 评估 + 灰度发布）。',
+  '- 首次使用如结果异常，停止并反馈，不要盲目重试。',
+  '- 涉及写操作时先确认目标路径，避免覆盖非预期文件。',
+].join('\n');
+
+test('Phase1 A3：空壳正文候选 → REJECTED_STATIC（信息量门接通，防绕过 A2）', async () => {
+  const home = makeHome();
+  try {
+    const services = makeServices();
+    const cand = {
+      ...CANDIDATE,
+      skillDraft: {
+        ...CANDIDATE.skillDraft,
+        name: 'glob-glob-glob-glob',
+        // tools 必须与正文一致——A3-1 剥工具名时按 frontmatter.tools 剥，
+        // 对不上就会把工具名当「实质内容」留下来（这本身就是判据的边界）
+        frontmatter: { ...CANDIDATE.skillDraft.frontmatter, name: 'glob-glob-glob-glob', tools: ['glob', 'read', 'pwsh'] },
+        body: SHELL_BODY,
+      },
+    };
+    const result = await evaluateCandidate({
+      candidate: cand,
+      pattern: PATTERN,
+      services,
+      cfg: { ...CFG, semantics_quality_gate_enabled: true },
+      dshHome: home,
+    });
+    assert.equal(result.finalStatus, 'REJECTED_STATIC');
+    assert.equal(result.evalResults.phase1.status, 'reject');
+    const codes = result.evalResults.phase1.semanticCodes ?? [];
+    assert.ok(codes.includes('non-informative-body'), `期望含 non-informative-body，实际: ${codes.join(',')}`);
+    assert.equal(result.evalResults.phase2, null, 'Phase1 拒则不进 Phase2');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Phase1 A3：有实质知识的草稿 → 照常放行（不误杀）', async () => {
+  const home = makeHome();
+  try {
+    const services = makeServices();
+    const cand = {
+      ...CANDIDATE,
+      skillDraft: {
+        ...CANDIDATE.skillDraft,
+        name: 'skill-mount-diagnosis',
+        body: [
+          '## 适用场景',
+          '排查 dsh 技能未挂载：确认 SKILL.md 是否落在 skills_root 一层深目录内。',
+          '',
+          '## 为什么',
+          '- 宿主用 dsh-skill-filesystem 扫技能根，只认 <root>/<name>/SKILL.md，嵌套 **/SKILL.md 不会被发现。',
+          '',
+          '## 步骤',
+          '1. 调用 glob：**/*/SKILL.md（在 .agent-presets/agint/skills 下扫）',
+          '2. 调用 read：.agent-presets/agint/skills/<name>/SKILL.md，检查 frontmatter 是否含 name 与 description',
+          '3. 调用 pwsh：node bin/plugin-check.sh --strict',
+          '',
+          '## 避坑',
+          '- 曾遇到：Error: EPERM: operation not permitted, rename ...skills_root\\.tmp-xxx',
+        ].join('\n'),
+      },
+    };
+    const result = await evaluateCandidate({
+      candidate: cand,
+      pattern: PATTERN,
+      services,
+      cfg: { ...CFG, semantics_quality_gate_enabled: true },
+      dshHome: home,
+    });
+    assert.equal(result.finalStatus, 'PHASE3_PASS', `不该被误杀，findings: ${JSON.stringify(result.evalResults?.phase1?.findings ?? [])}`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

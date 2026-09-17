@@ -124,6 +124,11 @@ export function detectPatterns(taskInstances, opts = {}) {
       p = {
         toolSequence: task.toolSequence,
         paramSignature: task.paramSignature,
+        sampleArgs: task.sampleArgs ?? {},
+        // Phase 2：语义窗口锚点（sessionId/turn/step）。提案层据此回查会话文本，
+        // 用本地窗口填 `## 为什么` / `## 避坑`（不依赖 dream 的 LLM 通路）。
+        // 缺此字段 → 提案降级为纯模板；不阻断链路。
+        sampleAnchor: task.anchor ?? null,
         description: describe(task),
         occurrenceCount: 0,
         firstSeenAt: nowIso,
@@ -140,6 +145,10 @@ export function detectPatterns(taskInstances, opts = {}) {
       batchNew.push(p);
     } else {
       // 增量更新统计（ occurrence 累计；均值滚动；firstSeen 保留旧值）
+      // 刷新 sampleArgs 为最新一次真实调用的样本（修复 K45.4：让提案层拿到具体值）
+      p.sampleArgs = task.sampleArgs ?? p.sampleArgs ?? {};
+      // 锚点同 sampleArgs 策略：刷新为最新一次真实调用的位置（语义窗口取最新现场）
+      if (task.anchor) p.sampleAnchor = task.anchor;
       p.avgDurationMs = p.avgDurationMs == null && task.durationMs == null
         ? null
         : Math.round(((p.avgDurationMs ?? 0) * p.occurrenceCount + (task.durationMs ?? 0)) / (p.occurrenceCount + 1));

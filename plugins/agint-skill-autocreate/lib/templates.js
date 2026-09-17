@@ -127,15 +127,27 @@ export function selectTemplate(toolSequence) {
  * 用模式特征填充模板 → SKILL.md 草稿 body。
  * 设计稿 §7.2 bodyTemplate 结构：适用场景 / 前置条件 / 步骤 / 注意事项。
  * 步骤由工具序列推导（每个工具一步，同工具合并）。
+ *
+ * ── 2026-09-17 Phase 2 改造（质量门方案 §2 A2/A3）────────────────────────
+ * ① 步骤行**不再追加**「确认输出符合预期后再进入下一步」。原文案是纯复述：
+ *    它对每一步都成立、对任何任务都成立 → 零信息量，且正好命中 A3 判据
+ *    `tool-recap-only`（「调用 <工具名>…确认输出符合预期」占比 > 50%）。
+ *    改为直接给「调用 <工具>：<真实参数值>」——短、带具体值、可执行。
+ * ② 新增 `opts.semanticMarkdown`（由 semantic-window.renderSemanticSections
+ *    产出）：把会话文本窗口里**真实出现过**的 WHY / 坑 原样搬进正文。
+ *    为空则不渲染该段——**绝不拿固定话术凑字数**。
  */
-export function renderBody(pattern, template) {
+export function renderBody(pattern, template, opts = {}) {
   const seq = [...new Set(pattern.toolSequence)];
   const steps = seq.map((tool, i) => {
     const args = pattern.sampleArgs?.[tool] ?? {};
     const hint = firstMeaningfulValue(args);
-    return `${i + 1}. 调用 ${tool}${hint ? `（参数参考：${hint}）` : ''}，确认输出符合预期后再进入下一步。`;
+    return hint
+      ? `${i + 1}. 调用 ${tool}：${hint}`
+      : `${i + 1}. 调用 ${tool}`;
   });
-  return [
+  const semantic = String(opts.semanticMarkdown ?? '').trim();
+  const parts = [
     '## 适用场景',
     pattern.description,
     '',
@@ -143,6 +155,9 @@ export function renderBody(pattern, template) {
     `- 工具可用：${seq.join('、')}`,
     '- 运行环境与历史任务实例一致（同工作目录/同权限）',
     '',
+  ];
+  if (semantic) parts.push(semantic, '');
+  parts.push(
     '## 步骤',
     ...steps,
     '',
@@ -150,7 +165,32 @@ export function renderBody(pattern, template) {
     '- 本技能由系统从重复任务模式自动生成（经 D-QAF 评估 + 灰度发布）。',
     '- 首次使用如结果异常，停止并反馈，不要盲目重试。',
     '- 涉及写操作时先确认目标路径，避免覆盖非预期文件。',
-  ].join('\n');
+  );
+  return parts.join('\n');
+}
+
+// ── A2/A3 共用判据：正文里是否存在「具体值」 ───────────────────────────────
+//
+// 判据外部化：字符串可判定、纯函数可单测，不让生成者自评。
+//
+// ⚠️ 2026-09-17 实测修正：质量门方案 §2 原版正则含 `--?[a-z][\w-]{2,}`，
+// 本意匹配 CLI 选项（`--force` / `-v`），但它同样匹配**任意 kebab-case
+// 标识符**——实测 104 个真实 pattern 里有 8 个被它误判放行，例如
+//   `{"skill":{"name":"plugin-preflight"}}`  （技能名，不是具体值）
+//   `{"id":"skill-autocreate-aggregate"}`   （id 值，不是具体值）
+// 收紧为「CLI 选项必须处于行首/空白/引号/括号之后」后误判归零。
+export const CONCRETE_RE = /(?:\b[A-Za-z]:\\[^\s"']+|\/(?:[\w.-]+\/){2,}|\b[\w.-]+\.(?:md|json|js|mjs|ts|py|yml|yaml|sh|ps1|toml)\b|https?:\/\/[^\s"']+|(?:^|[\s"'(=])--?[a-z][\w-]{1,}(?=[\s"'`,)]|$)|\bexit code\s+\d+|\b(?:ENOENT|EACCES|EPERM|EADDRINUSE|ECONNREFUSED)\b|`[^`]{4,}`)/m;
+
+/**
+ * 模式里是否存在至少一个「具体值」（真实命令/路径/端点/错误串）。
+ *
+ * @param {object} pattern   task_pattern 业务字段
+ * @param {string} [extraBlob] 附加证据文本（Phase 2：本地语义窗口里抽到的
+ *   具体值）。不传时只看 `sampleArgs` —— 与质量门方案 §2 A2 原判据一致。
+ */
+export function hasConcreteValue(pattern, extraBlob = '') {
+  const blob = `${JSON.stringify(pattern?.sampleArgs ?? {})} ${extraBlob ?? ''}`;
+  return CONCRETE_RE.test(blob);
 }
 
 function firstMeaningfulValue(args) {

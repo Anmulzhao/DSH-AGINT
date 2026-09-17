@@ -52,6 +52,19 @@ export const NON_STANDARDIZABLE_ROOT_CAUSES = Object.freeze([
 export const TaskPatternSchema = z.object({
   toolSequence: z.array(z.string().min(1)).min(1),
   paramSignature: z.record(z.string()),
+  // 工具 → 该工具在某次真实调用中的 args（提案层 renderBody/extractTriggers 用，
+  // 渲染「参数参考」与触发器；修复 K45.4 静默丢字段——此前未声明被 zod strip）。
+  // 存量行无此字段 → default({}) 保证向后 parse 安全。
+  sampleArgs: z.record(z.any()).default({}),
+  // ── Phase 2：语义窗口锚点（2026-09-17 分治架构设计 §5.2）─────────────────
+  // 提案层据此回查会话日志、用本地文本窗口填 `## 为什么` / `## 避坑`。
+  // **必须在此声明**——未声明字段会被 zod .parse() 静默 strip（K45.4 的教训）。
+  // 存量行/无锚点场景 → null，提案降级为纯模板（不阻断）。
+  sampleAnchor: z.object({
+    sessionId: z.string().nullable(),
+    turn: z.number().int().nullable(),
+    step: z.number().int().nullable(),
+  }).nullable().default(null),
   description: z.string().min(1),
 
   occurrenceCount: z.number().int().min(1),
@@ -140,6 +153,15 @@ export const ConfigSchema = z.object({
   // 规则词表与判据见 lib/semantics.js，改动均有单测覆盖。
   semantics_check_enabled: z.boolean().default(true),
 
+  // ── A3 信息量门（2026-09-17 Phase 2；质量门方案 §2 A3）────────────────────
+  // 四判据：non-informative-body / no-concrete-value / tool-recap-only /
+  //         one-off-narrative（详见 lib/semantics.js）。
+  // 与 semantics_check_enabled 的分工：后者管整段语义检查的**总开关**，
+  // 本项只管 A3 那四条「有没有信息量」的判据——两者正交（一组问危不危险，
+  // 一组问是不是垃圾）。独立开关是为了 A3 万一误杀时能单独回滚，
+  // 而不丢掉安全向的既有四条。
+  semantics_quality_gate_enabled: z.boolean().default(true),
+
   // ── [4] 可标准化判断（2026-09-09 补齐；详见 lib/standardizable.js）──────
   // 硬否决阈值：低于任一即判定「明确不可标准化」
   standardizable_min_steps: z.number().int().min(1).default(2),
@@ -220,6 +242,29 @@ export const ConfigSchema = z.object({
   ),
   aggregate_window_hours: z.number().int().min(1).default(24),
 
+  // ── Phase 1 数据源切换（2026-09-17 分治架构设计 §4 Pipe A）──────────────
+  // 背景：tool_stats.jsonl 是会话日志的二级派生物，靠 04:30 backfill 回填；
+  // 回填一挂 → unmatched 丢弃 → 静默漏检。会话日志本身已含 turn/step/args，
+  // 直读可彻底消除这条隐式时序依赖（静默漏检头号来源）。
+  //   'session'    （默认）—— 直读 ~/.dsh/sessions 会话日志，不再依赖回填
+  //   'tool_stats'         —— 旧行为，仅读 tool-stats JSONL（回滚用）
+  //   'both'               —— 两会话源合并去重（过渡期灰度）
+  sessions_root: z.string().default(
+    () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions',
+  ),
+  session_source: z.enum(['session', 'tool_stats', 'both']).default('session'),
+
+  // ── Phase 2：本地语义窗口（2026-09-17 分治架构设计 §5.2）────────────────
+  // 提案层拿 pattern 的 sampleAnchor 回查会话日志，用「本地文本窗口」填
+  // `## 为什么` / `## 避坑` 两段——零 LLM 调用，不依赖 dream 的通路
+  // （dream 的 Deep/LLM 通路至今 promoted=0，未证实，不能押注）。
+  // 置 false → 提案退回纯模板（旧行为，可运行时回滚）。
+  semantic_window_enabled: z.boolean().default(true),
+  // 窗口半径：锚点前后各取多少条「人话」事件
+  semantic_window_radius: z.number().int().min(1).max(20).default(4),
+  // 喂给提案器的窗口文本总字符上限（防单个大会话把草稿撑爆）
+  semantic_window_max_chars: z.number().int().min(200).default(4000),
+
   // ── 跨会话聚合（2026-09-17 提案 d5124051；老板拍板走完整 preflight）────
   // 背景：原实现 key = (sessionId, turn)，跨会话重复的工作流被切成 N 份
   // x1，min_occurrence_count 几乎跨不过去。13.5 天 / 9088 条数据回放：
@@ -253,6 +298,13 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'cross_session_aggregation',
   'cross_session_idle_ms',
   'cross_session_max_sessions_per_task',
+  // Phase 1：数据源切换（可运行时回滚到 tool_stats）
+  'session_source',
+  'sessions_root',
+  // Phase 2：本地语义窗口（可运行时关掉，退回纯模板）
+  'semantic_window_enabled',
+  'semantic_window_radius',
+  'semantics_quality_gate_enabled',
 ]);
 
 // ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────

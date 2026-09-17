@@ -3,17 +3,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { selectTemplate, renderBody, extractTriggers } from '../lib/templates.js';
+import { selectTemplate, renderBody, extractTriggers, hasConcreteValue, CONCRETE_RE } from '../lib/templates.js';
 import { buildProposal, skillName, estimateBenefit } from '../lib/proposer.js';
 import { isSelfReferential } from '../lib/schema.js';
 
+// 注意：sampleArgs 必须是**真实路径**（含扩展名），否则过不了 A2 具体值门
+// ——`docs/*.md` 这类 glob 是「参数形状」，不算具体值（见 templates.CONCRETE_RE 注释）。
 const filePattern = {
   toolSequence: ['file_read', 'file_write', 'file_read', 'file_write'],
   paramSignature: { file_read: 'path:str:.md', file_write: 'path:str:.md' },
   description: '批量处理 markdown frontmatter',
   occurrenceCount: 5,
   successRate: 0.8,
-  sampleArgs: { file_read: { path: 'docs/*.md' }, file_write: { path: 'docs/*.md' } },
+  sampleArgs: {
+    file_read: { path: 'docs/guides/index.md' },
+    file_write: { path: 'docs/guides/index.md' },
+  },
 };
 
 test('selectTemplate：file_read+file_write → file-processing', () => {
@@ -88,4 +93,73 @@ test('renderBody 步骤数 = 去重后工具数', () => {
 test('extractTriggers：最多 3 个', () => {
   const t = extractTriggers(filePattern);
   assert.ok(t.length >= 1 && t.length <= 3);
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Phase 2：A2 具体值门 + 语义窗口注入（2026-09-17）
+// ══════════════════════════════════════════════════════════════════════════
+
+test('A2：无具体值的模式 → 不生成候选，并给出精确 reason', () => {
+  const noValue = {
+    toolSequence: ['read', 'edit', 'pwsh'],
+    paramSignature: { read: 'path:str', edit: 'path:str', pwsh: 'command:str' },
+    description: 'read → edit → pwsh',
+    occurrenceCount: 9,
+    successRate: 1,
+    sampleArgs: { read: { file_path: 'a/b' }, edit: { file_path: 'a/b' }, pwsh: {} },
+  };
+  const reasonOut = {};
+  assert.equal(buildProposal(noValue, { reasonOut }), null);
+  assert.equal(reasonOut.reason, 'no-concrete-value');
+});
+
+test('A2：kebab 标识符不算具体值（设计稿原版正则的误判，已收紧）', () => {
+  // 原设计稿 `--?[a-z][\w-]{2,}` 会把 `plugin-preflight` 当 CLI 选项放行
+  assert.equal(hasConcreteValue({ sampleArgs: { skill: { name: 'plugin-preflight' } } }), false);
+  assert.equal(hasConcreteValue({ sampleArgs: { id: 'skill-autocreate-aggregate' } }), false);
+  // 真 CLI 选项仍要放行
+  assert.equal(hasConcreteValue({ sampleArgs: { pwsh: { command: 'node --test x.mjs' } } }), true);
+  assert.equal(CONCRETE_RE.test('  --force'), true);
+});
+
+test('A2：具体值可来自语义窗口（sampleArgs 空但窗口有真实路径）', () => {
+  const p = { toolSequence: ['read'], sampleArgs: {}, occurrenceCount: 3, successRate: 1, description: 'x' };
+  assert.equal(hasConcreteValue(p), false);
+  assert.equal(hasConcreteValue(p, '读取 D:\\DSH\\project\\package.json'), true);
+});
+
+test('A2：模板不匹配 → reason=no-matching-template', () => {
+  const reasonOut = {};
+  buildProposal({ toolSequence: ['weird_tool'], sampleArgs: {}, occurrenceCount: 3, successRate: 1 }, { reasonOut });
+  assert.equal(reasonOut.reason, 'no-matching-template');
+});
+
+test('语义窗口：semanticMarkdown 注入正文，出现 `## 为什么` / `## 避坑`', () => {
+  const md = ['## 为什么', '- 老板要求先 dry-run 再真正拉起（避免中断进行中的会话）', '', '## 避坑', '- 曾遇到：Error: EPERM: operation not permitted, rename', ''].join('\n');
+  const p = buildProposal(filePattern, { semanticMarkdown: md });
+  assert.ok(p);
+  assert.ok(p.skillDraft.body.includes('## 为什么'));
+  assert.ok(p.skillDraft.body.includes('## 避坑'));
+  assert.ok(p.skillDraft.body.includes('dry-run'));
+});
+
+test('语义窗口：无语义时**不渲染**空段（宁缺毋滥，不拿话术凑字数）', () => {
+  const p = buildProposal(filePattern, { semanticMarkdown: '' });
+  assert.ok(p);
+  assert.ok(!p.skillDraft.body.includes('## 为什么'));
+  assert.ok(!p.skillDraft.body.includes('## 避坑'));
+});
+
+test('语义窗口：失败证据同样能解开 A2（窗口带真实值即可）', () => {
+  const p = {
+    toolSequence: ['read', 'edit'],
+    paramSignature: { read: 'path:str', edit: 'path:str' },
+    description: 'read → edit',
+    occurrenceCount: 3,
+    successRate: 1,
+    sampleArgs: { read: {}, edit: {} },
+  };
+  assert.equal(buildProposal(p), null);
+  const ok = buildProposal(p, { windowText: '编辑 D:\\DSH\\project源码\\DSH-AGINT\\package.json' });
+  assert.ok(ok, '窗口里有真实路径 → 应放行');
 });
