@@ -1,5 +1,34 @@
 # CHANGELOG — agint-trajectory
 
+## 0.1.1 — 2026-09-17（修复：非法 topic 连坐整批订阅）
+
+**修复**
+
+- **事件订阅曾整体失效**：`SUBSCRIPTIONS` 里两条预留 topic 原名 `evo-orch.task-started` /
+  `evo-orch.task-completed`，**首段含连字符**，违反 event-bus 契约
+  `^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,3}$`（连字符只允许出现在第二段及之后）。
+  而 `attachSubscriptions` 一次性把 6 条 topics 交给 `subscribeFn`，bus 侧
+  `z.array(TopicSchema)` 是**整批**校验 —— 一条非法即整体抛错，导致 4 条合法订阅
+  （`dream.completed` / `evolution.proposed` / `evolution.evaluated` / `diagnosis.completed`）
+  **一并失效**：自动记录通道归零、只剩显式 `record()`。启动日志只提示
+  「降级：仅显式 record()」，掩盖了其中 4 条本可恢复。
+
+**改动**
+
+- `lib/subscribers.js`：`evo-orch.*` → `evoorch.*`；新增 `TOPIC_RE` / `isValidTopic` /
+  `partitionValidTopics`，**订阅前逐条过滤**，非法项只丢自己（`dropped` 字段回报），
+  不再整批降级；`degraded` 语义细化为「部分降级」时仍带 `subscribed` 列表。
+- `lib/index.js`：降级日志区分「全降级 / 部分降级」，后者列出仍生效的订阅。
+- `test/event-contract.test.mjs`：补两道护栏 —— ① 每个订阅 topic 必须合法；
+  ② 本地 `TOPIC_RE` 与 `agint-event-bus/lib/schemas.js` 的 `TopicSchema` 字面一致（防漂移）。
+- `test/subscribers.test.mjs`：新增 `isValidTopic` 边界 / `partitionValidTopics` /
+  「全合法时不整批降级」三组回归。
+- 同步改 `manifest.json`（`cordis.subscribes`）、`README.md`、`cordis.patch.yml` 注释、
+  `docs/plugins/agint-trajectory.md`。
+
+**⚠️ P2-3 实施提醒**：子代理编排发布事件时**必须用 `evoorch.task-started` /
+`evoorch.task-completed`**（原 `evo-orch.*` 在 publish 侧同样会被契约拒绝）。
+
 ## 0.1.0 — 2026-09-13（P2-1 实施，Sprint 18 T1–T7 + T8/T10 主体）
 
 **新增**

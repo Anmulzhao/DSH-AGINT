@@ -11,6 +11,38 @@
  */
 
 /**
+ * event-bus 的 topic 契约（与 `agint-event-bus/lib/schemas.js` 的 `TopicSchema` 同源）。
+ *
+ * 为什么本地冗余一份正则：event-bus 对本插件是**软依赖**（`optionalInject`），
+ * 硬 import 会破坏"缺失也能启动"的降级承诺。漂移由 `test/event-contract.test.mjs`
+ * 的「本地正则与 bus 契约一致」用例兜住（读 bus 源码比对字面）。
+ *
+ * 形状：首段 `[a-z][a-z0-9]*` —— **不含连字符**；其后 1–3 段 `[a-z][a-z0-9-]*`。
+ *
+ * 2026-09-17 事故：本文件曾订阅 `evo-orch.task-started`（首段含 `-`），而 bus 侧
+ * `SubscriptionSchema.topics` 是 `z.array(TopicSchema)` —— **整批**校验，一条非法
+ * 即整体抛错；`attachSubscriptions` 又一次性把 6 条 topics 交出去 → 连 4 条合法
+ * 订阅（dream/evolution×2/diagnosis）**一起失效**，只剩显式 record()。
+ */
+export const TOPIC_RE = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,3}$/;
+
+/** 该 topic 名是否合法。**订阅前逐条过滤**，别把整批交给 bus 校验。 */
+export function isValidTopic(topic) {
+  return typeof topic === 'string' && TOPIC_RE.test(topic);
+}
+
+/**
+ * 把 topic 清单切成 `{ valid, dropped }`（顺序保持）。
+ * 订阅侧的唯一防线：bus 的 topics 数组整批校验，一条非法即全灭。
+ */
+export function partitionValidTopics(topics) {
+  const valid = [];
+  const dropped = [];
+  for (const t of topics) (isValidTopic(t) ? valid : dropped).push(t);
+  return { valid, dropped };
+}
+
+/**
  * 订阅清单（唯一真源）。
  * topic → 轨迹源的映射；`attribution: true` 表示这条不新记轨迹，只回填归因。
  */
@@ -19,9 +51,11 @@ export const SUBSCRIPTIONS = Object.freeze([
   { topic: 'evolution.proposed', source: 'evolution', role: 'record' },
   { topic: 'evolution.evaluated', source: 'evolution', role: 'record' },
   { topic: 'diagnosis.completed', source: 'task', role: 'attribution' },
-  // P2-3 设计稿已定义的契约（尚未实施）；实施前订阅挂上也不触发，不阻塞 M3。
-  { topic: 'evo-orch.task-started', source: 'subagent', role: 'record' },
-  { topic: 'evo-orch.task-completed', source: 'subagent', role: 'record' },
+  // P2-3 设计稿已定义的契约（尚未实施）。原名 `evo-orch.*` 首段含连字符属**非法
+  // topic**，会让整批订阅被拒（见 TOPIC_RE 注释）→ 2026-09-17 改为 `evoorch.*`。
+  // ⚠️ P2-3 实现时 **publish 侧必须用这里的名字**，否则订阅永远收不到。
+  { topic: 'evoorch.task-started', source: 'subagent', role: 'record' },
+  { topic: 'evoorch.task-completed', source: 'subagent', role: 'record' },
 ]);
 
 export const SUBSCRIBED_TOPICS = Object.freeze(SUBSCRIPTIONS.map((s) => s.topic));
@@ -98,7 +132,7 @@ export function mapEvent(envelope) {
     };
   }
 
-  if (topic === 'evo-orch.task-started') {
+  if (topic === 'evoorch.task-started') {
     return {
       ...base,
       kind: 'success',
@@ -110,7 +144,7 @@ export function mapEvent(envelope) {
     };
   }
 
-  if (topic === 'evo-orch.task-completed') {
+  if (topic === 'evoorch.task-completed') {
     const failed = p.status && p.status !== 'success' && p.status !== 'completed';
     const dur = Number(p.durationMs) || 0;
     const ended = now;
@@ -183,12 +217,18 @@ export function createEnvelopeHandler(deps = {}) {
  */
 export function attachSubscriptions(args = {}) {
   const { subscribeFn, onEnvelope, subscriber = 'agint-trajectory' } = args;
+  // 订阅前**逐条过滤**：bus 侧 topics 是整批校验的，一条非法会连坐整批（2026-09-17
+  // 事故），所以过滤责任放在订阅侧 —— 非法项只丢它自己，合法项照常订阅。
+  const { valid: topics, dropped } = partitionValidTopics(SUBSCRIBED_TOPICS);
   if (typeof subscribeFn !== 'function') {
-    return { subscribed: [], degraded: true, reason: 'agint.eventBus.subscribe unavailable', unsubscribe: null };
+    return { subscribed: [], dropped, degraded: true, reason: 'agint.eventBus.subscribe unavailable', unsubscribe: null };
+  }
+  if (topics.length === 0) {
+    return { subscribed: [], dropped, degraded: true, reason: 'no valid topic to subscribe', unsubscribe: null };
   }
   try {
     const off = subscribeFn(
-      { subscriber, topics: [...SUBSCRIBED_TOPICS], mode: 'async', timeoutMs: 5000 },
+      { subscriber, topics: [...topics], mode: 'async', timeoutMs: 5000 },
       async (envelope) => {
         try {
           await onEnvelope(envelope);
@@ -198,12 +238,14 @@ export function attachSubscriptions(args = {}) {
       },
     );
     return {
-      subscribed: [...SUBSCRIBED_TOPICS],
-      degraded: false,
-      reason: null,
+      subscribed: [...topics],
+      dropped,
+      // 丢了非法 topic 但合法订阅成功 = **部分**降级（degraded 为真，但 subscribed 非空）
+      degraded: dropped.length > 0,
+      reason: dropped.length ? `invalid topic dropped: ${dropped.join(', ')}` : null,
       unsubscribe: typeof off === 'function' ? off : null,
     };
   } catch (err) {
-    return { subscribed: [], degraded: true, reason: String(err?.message ?? err), unsubscribe: null };
+    return { subscribed: [], dropped, degraded: true, reason: String(err?.message ?? err), unsubscribe: null };
   }
 }

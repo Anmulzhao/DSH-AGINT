@@ -24,7 +24,7 @@
 #   - 独占 agint_trajectory 存储域（schemaVersion 1，成功/失败分离存储）
 #   - 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）
 #   - 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
-#     diagnosis.completed / evo-orch.task-started / evo-orch.task-completed
+#     diagnosis.completed / evoorch.task-started / evoorch.task-completed
 #   - 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断
 #   - **轨迹数据不进任何在线决策**；prune cron 不自注册（agint-cron 只有 list()）
 - insert:

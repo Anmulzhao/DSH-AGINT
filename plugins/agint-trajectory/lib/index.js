@@ -317,7 +317,12 @@ function apply(ctx, config) {
     bus = attachSubscriptions({ subscribeFn, onEnvelope: handleEnvelope });
     unsubscribe = bus.unsubscribe;
     if (bus.degraded && !disposed) {
-      console.warn(`[${name}] event-bus subscription degraded: ${bus.reason}（降级：仅显式 record()）`);
+      // 区分「全降级」与「部分降级」：后者仍有订阅在跑，别把提示写成"仅显式 record()"
+      // （2026-09-17 曾因一条非法 topic 连坐全部订阅，提示却只说"仅显式 record()"，掩盖了可修的部分失效）
+      const scope = bus.subscribed.length > 0
+        ? `部分降级：仍订阅 ${bus.subscribed.length} 条（${bus.subscribed.join(', ')}）`
+        : '降级：仅显式 record()';
+      console.warn(`[${name}] event-bus subscription degraded: ${bus.reason}（${scope}）`);
     }
   }).catch(() => { /* 状态装载失败不阻塞 Service（fail-open） */ });
 

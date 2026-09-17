@@ -10,7 +10,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SUBSCRIPTIONS, SUBSCRIBED_TOPICS, mapEvent, mapAttribution, attachSubscriptions,
+  SUBSCRIPTIONS, SUBSCRIBED_TOPICS, TOPIC_RE, isValidTopic, partitionValidTopics,
+  mapEvent, mapAttribution, attachSubscriptions,
 } from '../lib/subscribers.js';
 import * as plugin from '../lib/index.js';
 import { createFakeDomain, mount } from './_helpers.mjs';
@@ -22,14 +23,47 @@ test('订阅清单：只列设计稿核实的事件，且 mode 为 async（不�
     'evolution.proposed',
     'evolution.evaluated',
     'diagnosis.completed',
-    'evo-orch.task-started',
-    'evo-orch.task-completed',
+    'evoorch.task-started',
+    'evoorch.task-completed',
   ]);
   for (const s of SUBSCRIPTIONS) assert.ok(['record', 'attribution'].includes(s.role));
   // 不订阅已核实不存在的事件（v0.1 事故：虚构 5 个事件）
   for (const ghost of ['evolution.mutator.proposed', 'evolution.sandbox.verified', 'mount.activated', 'eval.completed', 'subagent.ended']) {
     assert.ok(!topics.includes(ghost), `不应订阅不存在的事件 ${ghost}`);
   }
+  // 每个 topic 名必须合法（2026-09-17 事故：曾用 evo-orch.* ，首段含连字符被 bus 整批拒绝）
+  for (const t of topics) assert.ok(TOPIC_RE.test(t), `非法 topic: ${t}`);
+});
+
+test('topic 命名：isValidTopic 拒绝首段含连字符 —— 2026-09-17 整批订阅失效的根因', () => {
+  // 合法：首段 [a-z][a-z0-9]*（无连字符），连字符只允许出现在第二段及之后
+  for (const ok of ['dream.completed', 'evolution.evaluated', 'evoorch.task-started', 'a1.b-c.d-e']) {
+    assert.equal(isValidTopic(ok), true, `${ok} 应合法`);
+  }
+  // 非法：首段含连字符 / 大写 / 下划线 / 段数越界 / 空
+  for (const bad of ['evo-orch.task-started', 'Evo.task', 'evo_orch.task', 'task', 'a.', '.a.b', 'a.b.c.d.e', '']) {
+    assert.equal(isValidTopic(bad), false, `${bad} 应非法`);
+  }
+  assert.equal(isValidTopic(null), false);
+  assert.equal(isValidTopic(undefined), false);
+});
+
+test('partitionValidTopics：非法项只丢自己，不连坐合法项', () => {
+  const { valid, dropped } = partitionValidTopics(['dream.completed', 'evo-orch.x', 'diagnosis.completed']);
+  assert.deepEqual(valid, ['dream.completed', 'diagnosis.completed']);
+  assert.deepEqual(dropped, ['evo-orch.x']);
+});
+
+test('attachSubscriptions 回归：清单全合法 → 不整批降级，全部交给 bus', () => {
+  let seen = null;
+  const r = attachSubscriptions({
+    subscribeFn: (sub) => { seen = sub; return () => {}; },
+    onEnvelope: async () => {},
+  });
+  assert.equal(r.degraded, false, '不应再出现"因一条非法 topic 整批降级"');
+  assert.deepEqual(r.dropped, []);
+  assert.deepEqual(r.subscribed, [...SUBSCRIBED_TOPICS]);
+  assert.ok(seen.topics.every((t) => TOPIC_RE.test(t)), '交给 bus 的每个 topic 都必须合法');
 });
 
 test('mapEvent(dream.completed)：真实 payload → dream 成功轨迹', () => {
@@ -62,9 +96,9 @@ test('mapEvent(evolution.evaluated)：VETOED → failure，但不猜 errorClass'
   assert.match(r.outcome.errorMsg, /VETOED/);
 });
 
-test('mapEvent(evo-orch.task-completed)：status 非成功 → failure + 关联键', () => {
+test('mapEvent(evoorch.task-completed)：status 非成功 → failure + 关联键', () => {
   const env = {
-    topic: 'evo-orch.task-completed',
+    topic: 'evoorch.task-completed',
     payload: { batchId: 'b1', taskId: 't9', status: 'failed', durationMs: 5000 },
   };
   const r = mapEvent(env);

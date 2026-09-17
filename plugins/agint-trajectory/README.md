@@ -94,8 +94,12 @@ const res = await agint.trajectory.export({ format: 'sharegpt' });
 ## 事件（§5.1）
 
 **订阅（async，不占 sync 配额）**：`dream.completed` / `evolution.proposed` /
-`evolution.evaluated` / `diagnosis.completed`（归因回填）/ `evo-orch.task-started` /
-`evo-orch.task-completed`（P2-3 未实施，不阻塞）。
+`evolution.evaluated` / `diagnosis.completed`（归因回填）/ `evoorch.task-started` /
+`evoorch.task-completed`（P2-3 未实施，不阻塞）。
+
+> ⚠️ topic 名必须符合 event-bus 契约 `^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,3}$`
+> —— **首段不含连字符**。2026-09-17 曾写作 `evo-orch.*`，因首段含 `-` 被 bus
+> 整批拒绝，连累 4 条合法订阅一起失效。P2-3 实施时 publish 侧须用 `evoorch.*`。
 
 **发布**：`trajectory.recorded` / `trajectory.pruned` / `trajectory.budget-exhausted`。
 

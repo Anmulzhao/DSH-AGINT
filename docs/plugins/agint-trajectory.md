@@ -54,7 +54,7 @@
 
 ## 与其他插件的关系
 
-- **`agint-event-bus`**：订阅 `dream.completed` / `evolution.*` / `diagnosis.completed` / `evo-orch.*`；发布 `trajectory.*`
+- **`agint-event-bus`**：订阅 `dream.completed` / `evolution.*` / `diagnosis.completed` / `evoorch.*`（P2-3 未实施）；发布 `trajectory.*`
 - **`agint-tool-stats`**：工具参数正文的权威源（本插件不复存，只留 `toolCallId`）
 - **`agint-diagnosis`**：`diagnosis.completed` → `linkAttribution` 回填 `errorClass` / `attributionId`
 - **P2-3 `agint-evolve-orchestrator`**：子代理元数据权威源（本插件只存 `subagentTaskId` / `batchId`）
