@@ -497,3 +497,14 @@
 # 这是如实报警，不是故障。硬门在 shadow 档只告警不真中止压缩。
 - id: agint-compress-guard-tools
   name: ../../profiles/web/plugins/agint-compress-guard/lib/tools.js
+
+# ── 智进 cross-domain search tool ──────────────────────────────────────────
+# Consumes host `agint.memory` + `agint.wiki`. Merges both into a single
+# `agint_search` tool (memory hits ranked by effectiveConfidence, wiki hits
+# ranked by path; naive union, then truncate). Publishes nothing — same
+# consumer pattern as agint-memory-tools / agint-wiki-tools.
+# v0.1.0 (2026-09-17): consumer-only tool, no isolate realm needed. injects
+# `agint.memory` + `agint.wiki` + `tools`. Relative path resolves through
+# baseUrl to the host's profile/plugins copy installed by install.sh.
+- id: agint-search-tools
+  name: ../../profiles/web/plugins/agint-search-tools/lib/tools.js
