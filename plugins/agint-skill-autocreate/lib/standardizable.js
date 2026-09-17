@@ -44,6 +44,10 @@ import {
 // 自检统计、技能调用），不是「完成外部任务的步骤」。给「查自己的统计」或
 // 「给自己建技能」生成技能会直接踩设计稿 §9.4 的自我评估/自指红线。
 // 序列中**任一**工具命中即否决（从严：掺了自我运维的流程不是任务流程）。
+// 注意：`memory_` **不**在 META_TOOL_PREFIXES 里——同前缀下 `memory_read` /
+// `memory_search` / `memory_stats` 是业务输入环节（与 `read` / `glob` /
+// `skillGraph_list_for_prompt` 同性质），不能误伤。`memory_write` /
+// `memory_forget_scan` 这类写/删自管理走 META_TOOLS_MEMORY 精确白名单。
 export const META_TOOL_PREFIXES = Object.freeze([
   'autocreate_',   // 本插件自身 → 自指
   'evolve_',       // 进化提案
@@ -51,7 +55,6 @@ export const META_TOOL_PREFIXES = Object.freeze([
   'curator_',      // 策展
   'mutator_',      // 自改进 → 自指
   'selfModel_',    // 自模型 → 自指
-  'memory_',       // 记忆读写 = agent 自身状态
   'eventBus_',     // 总线运维
   'metrics_',      // 指标
   'diagnosis_',    // 归因
@@ -65,6 +68,18 @@ export const META_TOOL_PREFIXES = Object.freeze([
   'cron_', 'job_', // 调度运维
   'mount_',        // 挂载运维
   'skill',         // 技能调用本身 → 自指（覆盖 skill / skill_list_check）
+]);
+
+/**
+ * memory_* 工具的精确划分——Sprint 17 重审结果（2026-09-17）：
+ *   - 输入类（不拒）：memory_read / memory_search / memory_stats —— 业务输入环节
+ *   - 写/删类（拒）：memory_write / memory_forget_scan —— agent 自身状态管理
+ * 教训：之前用 `memory_` 前缀一锅端，把"老板跨会话反复做的 pwsh → memory_read"
+ * 真实工作流误杀 3 次门槛以上，跨会话聚合（v0.3.5）暴露后才看出来。
+ */
+export const META_TOOLS_MEMORY = Object.freeze([
+  'memory_write',
+  'memory_forget_scan',
 ]);
 
 /**
@@ -122,6 +137,7 @@ export function isMetaTool(tool) {
   const t = String(tool ?? '');
   if (!t) return false;
   if (META_TOOLS_EXACT.includes(t)) return true;
+  if (META_TOOLS_MEMORY.includes(t)) return true;
   return META_TOOL_PREFIXES.some((p) => t.startsWith(p));
 }
 

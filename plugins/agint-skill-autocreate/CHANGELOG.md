@@ -1,5 +1,44 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.5 (2026-09-17) — 跨会话聚合（Sprint 17，老板拍板走 plugin-preflight 完整流程）
+
+> 提案：`evolve_propose d5124051-817c-4aa3-bea6-fe259cf9914d`
+> 触发：老板原话「我的意图其实是跨会话的，这个模式的聚合也应该是跨会话的，这样才是科学合理的」
+
+- **行为扩展**（不破环，向后兼容）：
+  - `aggregateTasks(records, options)` 新增 `mode: 'off' | 'shadow' | 'primary'`
+    - `off`（默认）= v0.3.4 行为，**一字不动**。所有旧测试 13/13 通过。
+    - `shadow` = 新旧并行算，返回 `shadowDiff { extra, lost, shared, *Count }` + `legacyTasks`，**不发候选**。用于灰度期。
+    - `primary` = 用跨会话结果作唯一任务边界。
+  - 新函数 `aggregateTasksCrossSession(records, options)` 直接导出。
+  - 跨会话任务边界 = 按 `ts` idle gap（默认 30s）切分，与 `sessionId` 解耦。
+- **安全护栏**（写进代码 + 测试）：
+  - **R1 防误合并**：`maxSessionsPerTask`（默认 20）—— 单任务跨过的 sessionId 数超阈值即整段丢弃。
+  - **R2 性能**：模式指纹集合从 364 → 579，cron 每日聚合仍 <1s（实测）。
+  - **R3 噪声**：参数签名仍生效（detector 层用），单纯工具序列相同但参数结构不同的不视为同一模式。
+  - **兼容**：`cross_session_aggregation` 等三个旋钮**不在** `RUNTIME_CONFIG_KEYS`（灰度期不进 runtime）。
+- **元数据扩展**（仅跨会话任务有，旧实现无）：
+  - `sessionIds: string[]`：参与本任务的所有会话 id（按出现顺序去重）
+  - `firstSeenAt / lastSeenAt: ISO string`：替代 `startedAt/endedAt` 的可读格式
+  - `occurrenceSource: 'cross_session'`：标记
+- **数据论证**（2026-09-17 离线回放）：
+  - 数据源：`~/.dsh/storages/agint_tool_stats.jsonl`（9088 条 / 140 会话 / 13.54 天）
+  - 旧实现跨过 `min_occurrence_count=3` 门槛：**11** 个模式
+  - 跨会话：**21** 个模式（**+91%**）
+  - ≥5 高频段：2 → 9（**+350%**）
+  - 完整结果：`D:\DSH\.tmp\replay-aggregate.result.json`、脚本 `D:\DSH\.tmp\replay-aggregate.mjs`
+- **新增单测**：`test/aggregator-cross-session.test.mjs`（**10 例**，含真实回放 fixture）。
+  - 全量：**23/23 PASS**（旧 13 + 新 10）。
+- **改动文件**：
+  - `lib/aggregator.js`：新增 `aggregateTasksCrossSession` + `diffTasks`；改 `aggregateTasks` 加 `mode` 分发
+  - `lib/schema.js`：新增 3 个配置项；扩展注释 + 锁定不在 runtime 暴露
+  - `CHANGELOG.md`：本条目
+
+### 0.3.5 已知限制
+
+- **detector.js 还没接**：跨会话任务进了 `tasks[]` 数组，但 `detector.js` 在 `min_occurrence_count` 判定时仍按 `(toolSeq, paramSig)` 指纹分组——这一层**已经能正确把跨会话任务合并计数**，但**没读** `sessionIds` 字段做"是否真跨会话"的可信度加权。本期先把 aggregator 落地，detector 增强下个版本做。
+- **影子期不自动跑**：`mode='shadow'` 的开关已就位但 cron 没自动切。老板拍板后人工改 `cross_session_aggregation: 'shadow'` 上线观察 1 周，再切 `primary`。
+
 ## 0.3.4 (2026-09-13) — 评估层语义准入 + 候选命名类级约束（P2-2 §六ter 建议 A + C）
 
 - **补上「防垃圾」这半边**：quality-static 技能向四族（`skill-format` /

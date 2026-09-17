@@ -219,6 +219,21 @@ export const ConfigSchema = z.object({
     () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/storages/agint_tool_stats.jsonl',
   ),
   aggregate_window_hours: z.number().int().min(1).default(24),
+
+  // ── 跨会话聚合（2026-09-17 提案 d5124051；老板拍板走完整 preflight）────
+  // 背景：原实现 key = (sessionId, turn)，跨会话重复的工作流被切成 N 份
+  // x1，min_occurrence_count 几乎跨不过去。13.5 天 / 9088 条数据回放：
+  //   session+turn: 11 个跨门槛模式；跨会话: 21 个（+91%）。
+  // 模式：
+  //   'off'         — 旧行为，按 (sessionId, turn) 切分（v0.3.4 默认等价）
+  //   'shadow'      — 新旧并行算，结果 diff 写审计，**不发候选**（灰度期）
+  //   'primary'     — 用跨会话结果作为唯一任务边界
+  // 任务边界启发式：30s idle 切分（与历史 max 30 tools 降噪正交）；
+  //   任一工具序列内的会话数 > cross_session_max_sessions_per_task 即弃
+  //   （防"恰好用同一工具序列"的无关会话被误合并）。
+  cross_session_aggregation: z.enum(['off', 'shadow', 'primary']).default('primary'), // 2026-09-17 老板拍板：切 primary 一步到位
+  cross_session_idle_ms: z.number().int().min(1000).default(30_000),
+  cross_session_max_sessions_per_task: z.number().int().min(1).default(20),
 });
 
 export const DEFAULT_CONFIG = Object.freeze(ConfigSchema.parse({}));
@@ -234,6 +249,10 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'require_human_approval_until',
   'release_policy_mode',
   'observation_min_calls',
+  // Sprint 17：跨会话聚合（2026-09-17 解封，老板拍板切 primary）
+  'cross_session_aggregation',
+  'cross_session_idle_ms',
+  'cross_session_max_sessions_per_task',
 ]);
 
 // ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────

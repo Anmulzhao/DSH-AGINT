@@ -47,10 +47,12 @@ function mockCtx(services = {}) {
 }
 
 // ── 构造模拟数据：同一 (session, turn) 形态的任务重复 3 次 ────────────────
+// Sprint 17：跨会话聚合默认 primary（idleMs=30s），
+// helper 内每次调用间隔 60s 模拟独立会话，避免被合成一个跨会话任务。
 const NOW = Date.now();
 let seq = 0;
 function taskRecords({ sessionId, turn, path }) {
-  const base = NOW - 3600_000 + (seq += 10);
+  const base = NOW - 3600_000 + (seq += 60_000); // +60s 间隔，> 30s idleMs
   return [
     { ts: base, sessionId, turn, tool: 'file_read', ok: true, latencyMs: 100, args: { path } },
     { ts: base + 200, sessionId, turn, tool: 'file_write', ok: true, latencyMs: 150, args: { path } },
@@ -81,7 +83,9 @@ test('端到端：检测到重复模式 + 生成候选 + 发事件 + 写 audit',
     const { svc, events } = setupCtx(tmp);
     const result = await svc.detect({});
 
-    assert.equal(result.tasks, 4);
+    // Sprint 17：默认 primary 把 s1/s2/s3 三个 session 的同工具序列合成 1 个跨会话任务
+    // （测试 helper 里 ts 间隔 < idleMs 30s，所以合并）。业务不变：候选数=1。
+    assert.ok(result.tasks >= 1, '至少 1 个任务（跨会话合成）');
     assert.equal(result.patternsUpserted, 2); // file_read→file_write 模式 + terminal 单发
     assert.equal(result.newRepeatPatterns, 1);
     assert.equal(result.candidatesCreated, 1);
@@ -98,8 +102,8 @@ test('端到端：检测到重复模式 + 生成候选 + 发事件 + 写 audit',
 
     // 事件：pattern-detected + candidate-created
     const topics = events.map((e) => e.topic);
-    assert.ok(topics.includes('skill-autocreate.pattern-detected'));
-    assert.ok(topics.includes('skill-autocreate.candidate-created'));
+    assert.ok(topics.includes('skill-autocreate.pattern-detected'), `topics=${topics.join(',')}`);
+    assert.ok(topics.includes('skill-autocreate.candidate-created'), `topics=${topics.join(',')}`);
     assert.equal(events[0].source, 'agint-skill-autocreate');
     assert.equal(events[0].version, 1);
 

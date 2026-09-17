@@ -19,6 +19,7 @@ import {
   paramTokenCount,
   scoreSignals,
   VERDICT_REASONS,
+  META_TOOLS_MEMORY,
 } from '../lib/standardizable.js';
 
 /** 造一个 pattern：给定工具序列，每个工具给 n 个参数 token */
@@ -229,6 +230,48 @@ test('生产回放 7 个真实模式 → 7/7 被拒', () => {
     const v = judgeStandardizable(pattern(seq, { occurrenceCount: 4 }));
     assert.equal(v.standardizable, false, `应拒：${seq.join(' > ')}`);
   }
+});
+
+// ── Sprint 17 重审（2026-09-17）：memory_* 工具精确划分 ────────────────
+//
+// 之前 `memory_` 前缀一锅端，把 `pwsh → memory_read`（老板跨会话反复做的真实
+// 工作流）误杀。改后 `memory_read` / `memory_search` / `memory_stats` 是业务
+// 输入环节（与 `read` / `glob` / `skillGraph_list_for_prompt` 同性质）；
+// `memory_write` / `memory_forget_scan` 仍是自管理（写/删 agent 自身状态）。
+// 顶部已 import isMetaTool / metaToolsIn / META_TOOLS_MEMORY，不重复 import。
+
+test('Sprint 17 重审：memory_read / memory_search / memory_stats 不再被判定为元工具', () => {
+  assert.equal(isMetaTool('memory_read'), false, 'memory_read 是输入，不应被拒');
+  assert.equal(isMetaTool('memory_search'), false, 'memory_search 是输入，不应被拒');
+  assert.equal(isMetaTool('memory_stats'), false, 'memory_stats 是查询，不应被拒');
+});
+
+test('Sprint 17 重审：memory_write / memory_forget_scan 仍被判定为元工具', () => {
+  assert.equal(isMetaTool('memory_write'), true, 'memory_write 是写自管理，仍拒');
+  assert.equal(isMetaTool('memory_forget_scan'), true, 'memory_forget_scan 是删自管理，仍拒');
+  assert.ok(META_TOOLS_MEMORY.includes('memory_write'));
+  assert.ok(META_TOOLS_MEMORY.includes('memory_forget_scan'));
+});
+
+test('Sprint 17 重审：pwsh → memory_read 跨会话聚合后不被 META_TOOL 拒', () => {
+  const seq = ['pwsh', 'memory_read'];
+  const metas = metaToolsIn(seq);
+  assert.equal(metas.length, 0, `应无元工具，实际：${metas.join(',')}`);
+  // 全套：judgeStandardizable 应不返回 META_TOOL reason
+  const v = judgeStandardizable(pattern(seq, { occurrenceCount: 4 }));
+  assert.notEqual(v.reason, 'meta_tool', `不应因 meta_tool 拒：${v.reason}`);
+});
+
+test('Sprint 17 重审：memory_write 单独出现仍被 META_TOOL 拒', () => {
+  const v = judgeStandardizable(pattern(['memory_write'], { occurrenceCount: 4 }));
+  assert.equal(v.standardizable, false);
+  assert.equal(v.reason, 'meta_tool');
+});
+
+test('Sprint 17 重审：混合序列（含 memory_write 即拒）', () => {
+  const v = judgeStandardizable(pattern(['pwsh', 'memory_write', 'memory_read'], { occurrenceCount: 4 }));
+  assert.equal(v.standardizable, false);
+  assert.equal(v.reason, 'meta_tool', '任一 memory_write 命中即拒（混了写自管理的流程不是任务流程）');
 });
 
 // ── 设计稿 §14.2：50 个已知模式准确率 ────────────────────────────────────

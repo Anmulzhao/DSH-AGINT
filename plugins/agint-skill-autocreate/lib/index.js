@@ -176,7 +176,16 @@ function apply(ctx, config) {
 
     const windowHours = args.windowHours ?? c.aggregate_window_hours;
     const records = filterWindow(await readToolStatsRecords(), windowHours);
-    const { tasks, unmatched, excluded } = aggregateTasks(records);
+    // Sprint 17：按配置切换聚合模式（off = v0.3.4 行为；shadow = 新旧并行算 diff；primary = 跨会话作唯一任务边界）
+    const aggregateMode = c.cross_session_aggregation ?? 'off';
+    const { tasks, unmatched, excluded, shadowDiff, legacyTasks } = aggregateTasks(records, {
+      mode: aggregateMode,
+      idleMs: c.cross_session_idle_ms ?? 30_000,
+      maxSessionsPerTask: c.cross_session_max_sessions_per_task ?? 20,
+    });
+    if (aggregateMode === 'shadow' && shadowDiff) {
+      audit({ actor: 'system', action: 'cross_session_shadow_diff', targetType: 'pattern', targetId: '*', details: shadowDiff });
+    }
 
     const tp = await table('task_patterns');
     const existing = [...tp.entries()].map(([, v]) => v);
@@ -238,30 +247,65 @@ function apply(ctx, config) {
 
     // 跨过重复门槛的 pattern → 发事件 + [4] 判定 + 尝试生成候选
     let candidatesCreated = 0;
+    // Sprint 17：forceRecheck 模式——从整个 task_patterns 表拉历史曾被判
+    // standardizable=false 且 occurrenceCount ≥ 门槛的 pattern，重新跑判定。
+    // 用例：standardizable 规则变更后（如 memory_ 前缀豁免），历史已 false
+    // 的 pattern 需要重判。
+    // 与 newRepeat 去重（upserted 包含本批 hit 的）。
+    let forceRecheckBatch = [];
+    if (args.forceRecheck === true) {
+      const allStored = [...(await table('task_patterns')).entries()].map(([, v]) => v);
+      const upsertedIds = new Set(upserted.map((u) => u.id));
+      forceRecheckBatch = allStored.filter(
+        (p) => p.standardizable === false
+          && (p.occurrenceCount ?? 0) >= c.min_occurrence_count
+          && !upsertedIds.has(p.id),
+      );
+    }
     let standardizableJudged = 0;
     let standardizablePass = 0;
     let standardizableReject = 0;
     let standardizableUncertain = 0;
     const candidateIds = [];
-    for (const pattern of newRepeat) {
-      // newRepeat 里的对象是 detector 工作副本，需要回查已入库形态拿 id
-      let stored = upserted.find(
-        (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
-      );
+    // Sprint 17：把 forceRecheck 目标并入同一个判定+生成循环。
+    //   newRepeat 项 = detector 工作副本（含 occurrenceCount 增量）；forceRecheckBatch 项 = upserted 形态。
+    //   这里归一为「按 fingerprint 找到已入库 stored」入口。
+    const judgementTargets = [
+      ...newRepeat.map((p) => ({ source: 'newRepeat', pattern: p })),
+      ...forceRecheckBatch.map((p) => ({ source: 'forceRecheck', pattern: p })),
+    ];
+    for (const { source, pattern } of judgementTargets) {
+      // 找到已入库的形态（forceRecheckBatch 本身就是 upserted 形态）
+      let stored = source === 'forceRecheck'
+        ? pattern
+        : upserted.find(
+          (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
+        );
       if (!stored) continue;
 
-      await publishEvent('skill-autocreate.pattern-detected', {
-        patternId: stored.id,
-        toolSequence: stored.toolSequence,
-        occurrenceCount: stored.occurrenceCount,
-      });
-      await audit({
-        actor: 'system',
-        action: 'pattern_detected',
-        targetType: 'task_pattern',
-        targetId: stored.id,
-        details: { occurrenceCount: stored.occurrenceCount, toolSequence: stored.toolSequence },
-      });
+      if (source === 'newRepeat') {
+        await publishEvent('skill-autocreate.pattern-detected', {
+          patternId: stored.id,
+          toolSequence: stored.toolSequence,
+          occurrenceCount: stored.occurrenceCount,
+        });
+        await audit({
+          actor: 'system',
+          action: 'pattern_detected',
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: { occurrenceCount: stored.occurrenceCount, toolSequence: stored.toolSequence },
+        });
+      } else {
+        // forceRecheck 走独立审计，不发 pattern-detected（因为不是新跨过门槛）
+        await audit({
+          actor: 'system',
+          action: 'pattern_force_recheck',
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: { reason: 'standardizable rule change / manual recheck', toolSequence: stored.toolSequence },
+        });
+      }
 
       // ── [4] 可标准化判断（设计稿 §3.1；2026-09-09 补齐）────────────────
       // 判定结果**无论通过与否都回写 pattern**——周复盘/人工复核直接扫
@@ -379,6 +423,7 @@ function apply(ctx, config) {
       excluded,   // D2：被排除的 curriculum 挑战调用数
       patternsUpserted: upserted.length,
       newRepeatPatterns: newRepeat.length,
+      forceRecheckEvaluated: forceRecheckBatch.length, // Sprint 17：forceRecheck=true 命中的历史 pattern 数
       successRateBlocked,   // 2026-09-13：跨过次数门槛但成功率不达标的
       standardizable: {
         judged: standardizableJudged,
@@ -777,6 +822,10 @@ function apply(ctx, config) {
         observation_period_days: effectiveConfig().observation_period_days,
         observation_min_calls: effectiveConfig().observation_min_calls,
         aggregate_cron: effectiveConfig().aggregate_cron,
+        // Sprint 17：跨会话聚合三档（off/shadow/primary）
+        cross_session_aggregation: effectiveConfig().cross_session_aggregation,
+        cross_session_idle_ms: effectiveConfig().cross_session_idle_ms,
+        cross_session_max_sessions_per_task: effectiveConfig().cross_session_max_sessions_per_task,
       },
       sprint: '16-release-layer',
     };
