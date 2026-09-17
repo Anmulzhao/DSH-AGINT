@@ -1,5 +1,33 @@
 # Changelog — agint-quality-sandbox
 
+## 0.7.1 (2026-09-17) — Sprint 18：sandbox.confine argv shape 防护
+
+> 触发：老板发现 41 个 skill candidate 全部 BUDGET_WAIT（`autocreate_stats` 实证），
+> rejectionReason `[policy] policy=REJECT（fail-closed）：policy-reject:veto-or-low-composite`。
+> 根因：quality-eval 跑 Phase 2 时 sandbox.confine() 返回**非数组**结构（裸对象 `{ok, stdout, stderr}`），
+> 原代码 `wrappedArgv = result.argv ?? result` 后 `argv.slice(1)` 抛 `TypeError: argv.slice is not a function`，
+> finding 标 blocker，policy REJECT → release-manager veto fail-closed → 全候选卡 BUDGET_WAIT。
+
+### Fixed
+
+- **`runInMode()` sandbox.confine 返回 shape 校验**：
+  - 之前：`wrappedArgv = result.argv ?? result` 直接 .slice
+  - 现在：先 `Array.isArray(candidateArgv) && length>0 && typeof [0]==='string'` 校验，不是数组就 fail-safe 返回 `reason: 'sandbox-bad-shape'` + `fallback: 'in-process'`
+  - 行为：**不抛**、**不 spawn**、policy 收到 `safety=0.0 / policyDecision=REJECT` 但带 sandbox-unavailable 信号，
+    由 quality-eval 走 E0/provisional 路径，policy 给 PENDING_REVIEW，veto 模式放行
+- **新增测试** `test/argv-shape-guard.test.mjs`（5 例）：覆盖 4 种异常返回（裸对象/字符串/null/正常 argv）+ 1 例抛错路径
+- **不回退已有契约**：原有 `sandbox-confine-failed`（confine 抛错）路径行为不变
+
+### 数据论证
+
+- 修复前：policy 给 REJECT → 41 候选 BUDGET_WAIT → 0 release
+- 修复后（理论预期）：policy 给 PENDING_REVIEW → veto 放行 → 走 budget 门 → 周 3 个发布落盘
+
+### 已知限制
+
+- baseline 已有 12+1 个 dual-mode.test.mjs / profile-resolver.test.mjs 失败（Windows + dsh-storage-domain ESM URL scheme 解析问题，与本改动无关——这次改动没新增退步）。
+- argv shape 校验没"自动修"（不是把非数组转数组），而是 fail-safe —— 这是设计意图：sandbox 契约漂移应该被看见（写到 stderr / policy finding），不能默默伪装成 ok。
+
 ## 0.7.0 (2026-08-29) — Sprint 12 / A3 sandbox.passed / sandbox.failed 双 topic 事件化（T1 影子期）
 
 ### Added

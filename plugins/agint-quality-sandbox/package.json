@@ -1,6 +1,6 @@
 {
   "name": "agint-quality-sandbox",
-  "version": "0.6.3",
+  "version": "0.7.1",
   "description": "D-QAF Phase 2 动态沙箱独立 Cordis 插件：verify/explore 双模式 + seccomp/SBPL syscall 白名单 profile 注入。Sprint 10 #2 + #3 收口：从 agint-quality 基座剥离。",
   "type": "module",
   "main": "lib/index.js",

@@ -179,7 +179,9 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
   const policyId = config.evaluatorId ?? DEFAULT_POLICY_ID;
 
   // 阈值（contract 自带 default）
-  const thresholds = config.thresholds ?? { autoDeploy: 90, pendingReview: 75 };
+  // 2026-09-17 老板拍板：autoDeploy 90→70、pendingReview 75→60，让全新无历史目标（D-QAF 基线 ~71.4）能 AUTO_DEPLOY 而非被 REJECT 死锁。
+  // 注意：仅放宽"分数门禁"；safety/trust 维度硬性否决（computeComposite 返 null → REJECT）仍保留，真危险的技能照否。
+  const thresholds = config.thresholds ?? { autoDeploy: 70, pendingReview: 60 };
   // Sprint 6.3: prompt target 独立 thresholds (默认更严, prompt blocker → 立即 fail)
   const promptThresholds = config.promptThresholds ?? { autoDeploy: 95, pendingReview: 85 };
   const weights = { ...(config.dimensionWeights ?? DEFAULT_DIMENSION_WEIGHTS) };

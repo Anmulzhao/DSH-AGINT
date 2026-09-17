@@ -14,14 +14,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DECIDE_PATH = resolve(__dirname, '../lib/decide.js');
+// Windows 兼容（2026-09-17）：ESM 动态 import 必须用 file:// URL；直接传绝对 Windows 路径
+// （D:\...）会抛 ERR_UNSUPPORTED_ESM_URL_SCHEME —— 该测试此前只能在 Linux 下跑。
+const DECIDE_PATH = pathToFileURL(resolve(__dirname, '../lib/decide.js')).href;
 // contract 路径：避免字符串里直接出现 plugin 全名，拼接生成。
 // 注：拼接是为了绕过 L0-frozen grep 误报（设计稿 §七只禁止引用 FROZEN 接口签名，不禁止文件路径访问）
-const CONTRACT_PATH = resolve(__dirname, '../../agint-quality-' + 'contract/lib/index.js');
+const CONTRACT_PATH = pathToFileURL(resolve(__dirname, '../../agint-quality-' + 'contract/lib/index.js')).href;
 
 const { abtestResultsToDimension, injectAbtestDimension, decidePolicy } = await import(DECIDE_PATH);
 const { QualityConfigSchema } = await import(CONTRACT_PATH);
@@ -108,7 +110,7 @@ function makeBaseResults() {
 
 test('decidePolicy: abtest.enabled=false → 综合分不含 abtest 维度（向后兼容）', async () => {
   const d = await decidePolicy({ results: makeBaseResults() });
-  // 默认 thresholds 90/75 → 综合分无 abtest 加成，应在 90-100（safety/trust 都高）
+  // 默认 thresholds 70/60（2026-09-17 由 90/75 调整）→ 综合分无 abtest 加成，应在 90-100（safety/trust 都高）
   assert.equal(d.kind, 'AUTO_DEPLOY');
   assert.ok(d.score >= 90, `score=${d.score} 应 ≥90`);
 });
@@ -139,9 +141,10 @@ test('decidePolicy: abtest winner=inconclusive → score 中性，不强制 REJE
     },
   });
   // winner=inconclusive → score=0.5 → 综合分 100*(0.30*0.95 + 0.20*0.85 + 0.10*0.5) / 0.60 ≈ 84.2
-  // 84.2 ∈ [75, 90) → PENDING_REVIEW（既不 REJECT 也不 AUTO_DEPLOY）
-  assert.equal(d.kind, 'PENDING_REVIEW', 'abtest inconclusive 中性，base 84 → PENDING_REVIEW（不强制 REJECT）');
-  assert.ok(d.score >= 75 && d.score < 90, `score=${d.score} 应在 [75, 90)`);
+  // 2026-09-17 阈值调整（autoDeploy 90→70 / pendingReview 75→60）：84.2 ≥ 70 → AUTO_DEPLOY。
+  // 语义不变：inconclusive 中性，绝不强制 REJECT。
+  assert.equal(d.kind, 'AUTO_DEPLOY', 'abtest inconclusive 中性，base 84 ≥ autoDeploy(70) → AUTO_DEPLOY（不强制 REJECT）');
+  assert.ok(d.score >= 70, `score=${d.score} 应 ≥70（新 autoDeploy 阈值）`);
 });
 
 test('decidePolicy: abtest 不显著 + pValue=0.5 → 加权 < 满分但仍 ≥ PENDING', async () => {
@@ -155,8 +158,8 @@ test('decidePolicy: abtest 不显著 + pValue=0.5 → 加权 < 满分但仍 ≥ 
     },
   });
   // score = 0.5*(1-0.5) = 0.25 → 增量同 inconclusive（衰减后≈0.25）
-  // 综合分与 inconclusive 类似 → PENDING_REVIEW
-  assert.ok(d.score >= 75, `score=${d.score} 应 ≥75（base 84 略降但仍高）`);
+  // 综合分与 inconclusive 类似（≈80）→ 新阈值下 ≥autoDeploy(70)
+  assert.ok(d.score >= 70, `score=${d.score} 应 ≥70（base 84 略降但仍高于新 autoDeploy 阈值）`);
 });
 
 // ─── contract QualityConfigSchema 测 ──────────────────────────────

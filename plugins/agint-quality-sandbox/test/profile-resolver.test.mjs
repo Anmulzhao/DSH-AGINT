@@ -14,13 +14,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync, writeFileSync, renameSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const RESOLVER_PATH = resolve(__dirname, '../lib/profile-resolver.js');
+// Windows 兼容（2026-09-17）：ESM 动态 import 必须用 file:// URL
+const RESOLVER_PATH = pathToFileURL(resolve(__dirname, '../lib/profile-resolver.js')).href;
 const PROFILES_DIR = resolve(__dirname, '../profiles');
 
 // 用文件级导入避免重复 module 实例化（resolver 内部只读 PROFILE_DIR 一次，

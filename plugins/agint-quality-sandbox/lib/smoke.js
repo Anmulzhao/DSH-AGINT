@@ -54,6 +54,18 @@ export async function runSmoke(pluginPath) {
   }
   pass('plugin-exists', pluginPath);
 
+  // —— 技能(skill) 分支：纯 SKILL.md 目录，没有插件结构 ——
+  // AGINT 的自动生成技能是 纯 SKILL.md（无 package.json / lib/index.js），
+  // 旧 smoke 只认 plugin 契约（要求 lib/index.js + 导出 Config/apply/inject/name），
+  // 会对技能天然失败 → 质量门 safety=0 → policy 否决 → 自动技能永远挂不上。
+  // 这里识别"有 SKILL.md 且非插件形态"就走技能专用校验，不再误杀。
+  const skillMdPath = resolve(pluginPath, 'SKILL.md');
+  const hasSkillMd = existsSync(skillMdPath);
+  const hasPluginShape = existsSync(resolve(pluginPath, 'package.json')) || existsSync(resolve(pluginPath, 'lib', 'index.js'));
+  if (hasSkillMd && !hasPluginShape) {
+    return runSkillSmoke(pluginPath, skillMdPath, { pass, fail, checks });
+  }
+
   // Check 2: package.json 存在且合法
   const pkgPath = resolve(pluginPath, 'package.json');
   if (!existsSync(pkgPath)) {
@@ -134,6 +146,81 @@ export async function runSmoke(pluginPath) {
 
   const allOk = checks.every((c) => c.ok);
   return { ok: allOk, checks, reason: allOk ? undefined : 'smoke-failed' };
+}
+
+/**
+ * 技能(skill) 专用冒烟校验：纯 SKILL.md 目录。
+ * 校验项（比 plugin 轻，因为技能是文档不是可执行模块）：
+ *   S1  SKILL.md 可读
+ *   S2  frontmatter（--- YAML ---）合法，且含 name + description 关键字段
+ *   S3  无危险操作（rm -rf / curl|sh / sudo / eval( / child_process / fork-bomb 等）
+ * 返回 { ok, checks, reason? }，形状与 plugin runSmoke 一致。
+ */
+async function runSkillSmoke(skillPath, skillMdPath, { pass, fail, checks }) {
+  // S1: SKILL.md 可读
+  let content;
+  try {
+    content = readFileSync(skillMdPath, 'utf8');
+    pass('skill-md-read', skillMdPath);
+  } catch (e) {
+    fail('skill-md-read', e.message);
+    return { ok: false, checks, reason: 'skill-md-unreadable' };
+  }
+
+  // S2: frontmatter 合法 + 关键字段
+  const fm = parseFrontmatter(content);
+  if (!fm || typeof fm !== 'object') {
+    fail('skill-frontmatter', 'missing or malformed "--- YAML ---" block at top of SKILL.md');
+    return { ok: false, checks, reason: 'skill-frontmatter-missing' };
+  }
+  const required = ['name', 'description'];
+  const missing = required.filter((k) => !fm[k] || typeof fm[k] !== 'string' || !fm[k].trim());
+  if (missing.length > 0) {
+    fail('skill-frontmatter-fields', `missing required field(s): ${missing.join(', ')}`);
+    return { ok: false, checks, reason: 'skill-frontmatter-fields' };
+  }
+  pass('skill-frontmatter', `name=${fm.name}`);
+
+  // S3: 无危险操作（粗略 grep 正文里的危险字面）
+  const dangerPatterns = [
+    /\brm\s+-[rf]+\b/i,            // rm -rf / rm -fr / rm -r
+    /\bcurl\b[\s\S]*\|\s*(sh|bash)/i,
+    /\bwget\b[\s\S]*\|\s*(sh|bash)/i,
+    /\bsudo\b/i,
+    /\beval\s*\(/,
+    /\bchild_process\b/,
+    /\brequire\s*\(\s*['"]child_process['"]\s*\)/,
+    /\bprocess\s*\.\s*exit\s*\(/,
+    /:\(\)\s*\{[\s\S]*\|\s*:/,     // fork bomb
+  ];
+  const hits = [];
+  for (const pat of dangerPatterns) {
+    if (pat.test(content)) hits.push(pat.source);
+  }
+  if (hits.length > 0) {
+    fail('skill-no-dangerous-ops', `dangerous patterns: ${hits.slice(0, 3).join(', ')}`);
+    return { ok: false, checks, reason: 'skill-dangerous-ops' };
+  }
+  pass('skill-no-dangerous-ops', 'no dangerous shell/exec patterns');
+
+  const allOk = checks.every((c) => c.ok);
+  return { ok: allOk, checks, reason: allOk ? undefined : 'smoke-failed' };
+}
+
+/**
+ * 极简 YAML frontmatter 解析：取 SKILL.md 顶部 --- 块里的 key: value。
+ * 只支持标量赋值（name/description/tools/triggers 等首行值），足够质量门校验。
+ */
+function parseFrontmatter(text) {
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return null;
+  const body = m[1];
+  const fm = {};
+  for (const line of body.split(/\r?\n/)) {
+    const mm = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (mm) fm[mm[1]] = mm[2].trim();
+  }
+  return fm;
 }
 
 // CLI 入口：node lib/smoke.js <plugin-path>

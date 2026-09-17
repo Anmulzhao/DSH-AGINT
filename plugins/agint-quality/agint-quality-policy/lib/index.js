@@ -191,9 +191,15 @@ function apply(ctx, config) {
           targetId: `policy-batch-${decision.decidedAt}`,
           targetKind: 'composite',
           decision: decision.kind,
+          // 2026-09-17 修：policyKind 是字符串（如 'AUTO_DEPLOY'），违反 evolution 的
+          // scores: z.record(z.string(), z.number()) → 整条 logPhase4 被 schema 拒绝，
+          // 于是 policy 每次决策的 evolution 审计全部丢失（deployBudget 靠这条日志统计
+          // AUTO_DEPLOY 次数 → 计数恒 0，滚动 7 天部署护栏形同虚设）。
+          // kind 已由 decision 字段 + tags 的 `decision:<KIND>` 两个位置承载，
+          // deployBudget.isAutoDeployEntry 的三条识别路径中另两条仍成立，故直接移除。
+          // 其余值统一 Number() 包一层，防止 undefined 再次触发 schema 拒绝。
           scores: {
-            policyKind: decision.kind,
-            policyScore: decision.score,
+            policyScore: Number(decision.score ?? 0),
             perTargetCount: decision.perTarget?.length ?? 0,
             rejectedCount: rejected.length,
           },

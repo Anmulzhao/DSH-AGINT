@@ -16,11 +16,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_PATH = resolve(__dirname, '../lib/index.js');
+// Windows 兼容（2026-09-17）：ESM 动态 import 必须用 file:// URL（绝对 D:\ 路径会抛 ERR_UNSUPPORTED_ESM_URL_SCHEME）
+const PLUGIN_PATH = pathToFileURL(resolve(__dirname, '../lib/index.js')).href;
 
 // 构造最小 mock ctx（参考 dual-mode.test.mjs）
 function makeMockCtx() {
