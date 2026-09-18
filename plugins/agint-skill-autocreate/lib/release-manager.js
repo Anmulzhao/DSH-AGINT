@@ -12,6 +12,13 @@
  *         未挂载/超时/异常一律 fail-closed。2026-09-13 修复：喂合法 EvalResult[]。
  *   门 4  周预算：releases 表本周（含已回滚）计数 ≥ weekly_deploy_budget
  *         （manual=true 绕过；设计稿 §3.1：绕预算可以，绕质量门不行）
+ *   门 5  特异性复检（2026-09-18 新增）：用 A1 的**当前**黑名单重判候选工具序列，
+ *         纯脚手架拒发。存在的理由：A1 是生成侧入口门，只能在候选**产生时**把关，
+ *         管不到它上线前累积的存量队列（实测 37 个待发候选里 36 个是纯脚手架，
+ *         且当日已自动发布出 pwsh-pwsh-pwsh-pwsh）。发布是最后一道闸，放这里
+ *         才能同时覆盖存量与未来。manual=true 也不绕 —— 与门 3 同理，质量门
+ *         不该被人工点头打开（要发可以去改黑名单或关开关，那是显式动作）。
+ *         关掉：release_specificity_gate_enabled=false。
  *
  * 发布动作 = staging 物料原子搬进 skills_root（tmp 目录 rename，watcher 自动
  * 发现，无需重启 dsh / 无需改 agent.cordis.yml —— Sprint16 设计稿 §1.2 源码
@@ -28,6 +35,7 @@ import {
 import { join, resolve as resolvePath } from 'node:path';
 import { renderSkillMd, renderManifest, assertSafeCandidateId, cleanupCandidate } from './staging.js';
 import { nowIso, datedId, releaseEntrySchema, checkLimit } from './storage.js';
+import { classifySpecificity } from './detector.js';
 
 // ── 纯函数（可单测）───────────────────────────────────────────────────────
 
@@ -346,11 +354,28 @@ export function createReleaseManager(deps) {
     const week = weekKey();
     const rt = await table('releases');
     const weekCount = [...rt.entries()].filter(([, v]) => v.budgetWeek === week).length;
-    if (!manual && weekCount >= (c.weekly_deploy_budget ?? 3)) {
+    if (!manual && weekCount >= (c.weekly_deploy_budget ?? 20)) {
       await publishEvent('skill-autocreate.budget-exceeded', {
         candidateId: candidate.id, skillName: candidate.skillDraft?.name, weekCount, budget: c.weekly_deploy_budget,
       });
       return { ok: false, gate: 'budget', reason: `周预算 ${weekCount}/${c.weekly_deploy_budget} 已满（含已回滚）` };
+    }
+    // 门 5：特异性复检（2026-09-18）。与门 2/4 不同，这一条是**永久性**不合格，
+    // 故判定为 terminal —— 调用方置终态 REJECTED，而非 holdCandidate 的 BUDGET_WAIT
+    // （后者会让 releaseQueue 每天把同一批重试一遍并刷日志）。黑名单若日后调整，
+    // 新候选自然会被重新生成，不需复活旧候选。本函数只做判定、不写存储。
+    if (c.release_specificity_gate_enabled !== false) {
+      const tools = candidate.skillDraft?.frontmatter?.tools ?? candidate.skillDraft?.tools ?? [];
+      const spec = classifySpecificity(tools);
+      if (spec.scaffoldOnly) {
+        return {
+          ok: false,
+          gate: 'specificity',
+          terminal: true,
+          reason: `纯脚手架序列（无领域工具）：[${tools.join(' → ')}]`,
+          toolSequence: tools,
+        };
+      }
     }
     return { ok: true, week };
   }
@@ -395,10 +420,14 @@ export function createReleaseManager(deps) {
       return { candidateId: id, released: false, gate: cooldown.gate, reason: cooldown.reason };
     }
 
-    // 三道门
+    // 三道门（门 5 见 checkGates 内注释：它标 terminal，走终态拒绝而非 hold）
     const gates = await checkGates(candidate, { manual });
     if (!gates.ok) {
-      await holdCandidate(cd, id, candidate, gates.gate, gates.reason);
+      if (gates.terminal) {
+        await rejectCandidate(cd, id, candidate, gates.gate, gates.reason, { toolSequence: gates.toolSequence });
+      } else {
+        await holdCandidate(cd, id, candidate, gates.gate, gates.reason);
+      }
       return { candidateId: id, released: false, gate: gates.gate, reason: gates.reason, decision: gates.decision ?? null };
     }
 
@@ -489,6 +518,25 @@ export function createReleaseManager(deps) {
     await audit({
       actor: 'system', action: 'release_held', targetType: 'candidate', targetId: id,
       details: { gate, reason }, reason,
+    });
+  }
+
+  /**
+   * 终态拒绝（2026-09-18）。用于**永久性**不合格的候选 —— 目前只有门 5 特异性复检。
+   * 与 holdCandidate 的区别：不置 BUDGET_WAIT，因为那不是「暂等预算」，而是
+   * 「这条候选本身不该存在」；留在 BUDGET_WAIT 会让 releaseQueue 每次跑都重试它。
+   */
+  async function rejectCandidate(cd, id, candidate, gate, reason, extra = {}) {
+    await cd.put(id, {
+      ...candidate, status: 'REJECTED', rejectionReason: `[${gate}] ${reason}`.slice(0, 300),
+    });
+    await publishEvent('skill-autocreate.release-rejected-low-specificity', {
+      candidateId: id, skillName: candidate.skillDraft?.name, toolSequence: extra.toolSequence ?? [],
+    });
+    await audit({
+      actor: 'system', action: 'release_rejected_low_specificity',
+      targetType: 'candidate', targetId: id,
+      details: { gate, toolSequence: extra.toolSequence ?? [], reason: 'scaffold-only' }, reason,
     });
   }
 

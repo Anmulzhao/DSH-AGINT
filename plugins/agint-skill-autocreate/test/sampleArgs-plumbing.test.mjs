@@ -25,11 +25,16 @@ const mkTask = (sampleArgs) => ({
   successRate: 1,
 });
 
+// A1 特异性门（2026-09-18）默认开，`glob/grep` 是纯脚手架序列会被拦下。
+// 本文件被测对象是「sampleArgs 是否透传」，与特异性判定正交 → 显式关门。
+// 与 Phase 1 里 fixture 显式钉 `session_source` 同一手法：不为了过测试而改默认值。
+const NO_SPEC_GATE = { specificityGate: false };
+
 test('detector: sampleArgs 透传到新建 pattern', () => {
   const sampleArgs = { glob: { pattern: 'src/**/*.js' }, grep: { pattern: 'TODO' } };
   const { newRepeat } = detectPatterns(
     [mkTask(sampleArgs), mkTask(sampleArgs), mkTask(sampleArgs)],
-    { minOccurrence: 3 },
+    { minOccurrence: 3, ...NO_SPEC_GATE },
   );
   assert.equal(newRepeat.length, 1);
   assert.deepEqual(newRepeat[0].sampleArgs, sampleArgs);
@@ -40,7 +45,7 @@ test('detector: 命中已有 pattern 时刷新为最新一次真实样本', () =
   const fresh = { glob: { pattern: 'b/*.ts' } };
   const { upserts } = detectPatterns(
     [mkTask(first), mkTask(first), mkTask(first), mkTask(fresh), mkTask(fresh), mkTask(fresh)],
-    { minOccurrence: 3 },
+    { minOccurrence: 3, ...NO_SPEC_GATE },
   );
   // 同一序列合并为 1 个 pattern，sampleArgs 应是最后出现的 fresh
   const merged = upserts.filter((p) => p.toolSequence.join() === 'glob,grep');

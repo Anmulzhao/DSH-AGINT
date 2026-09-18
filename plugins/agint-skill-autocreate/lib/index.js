@@ -43,7 +43,7 @@ import {
   proposalEntrySchema,
 } from './storage.js';
 import { aggregateTasks, filterWindow } from './aggregator.js';
-import { detectPatterns } from './detector.js';
+import { detectPatterns, classifySpecificity } from './detector.js';
 import { judgeStandardizable } from './standardizable.js';
 import { buildProposal } from './proposer.js';
 import { evaluateCandidate } from './evaluator.js';
@@ -208,11 +208,14 @@ function apply(ctx, config) {
 
     const tp = await table('task_patterns');
     const existing = [...tp.entries()].map(([, v]) => v);
-    const { upserts, newRepeat, blockedBySuccessRate } = detectPatterns(tasks, {
+    const { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity } = detectPatterns(tasks, {
       existingPatterns: existing,
       minOccurrence: c.min_occurrence_count,
       similarityThreshold: c.param_similarity_threshold,
       minSuccessRate: c.min_pattern_success_rate,
+      // A1 特异性门（默认开）：纯脚手架序列不成候选。可运行时关（kill-switch）。
+      specificityGate: c.pattern_specificity_gate_enabled !== false,
+      scaffoldTools: c.scaffold_tools_extra,
       nowIso: nowIso(),
     });
 
@@ -260,6 +263,55 @@ function apply(ctx, config) {
           successRate: blockedStored.successRate,
           minSuccessRate: c.min_pattern_success_rate,
           toolSequence: blockedStored.toolSequence,
+        },
+      });
+    }
+
+    // ── A1 特异性门拦下的模式（2026-09-18）──────────────────────────────
+    // 与成功率门同构：照常入库、照常留痕，但不发 pattern-detected、不成候选。
+    // 留痕的意义：能回答「今天有多少重复行为是纯脚手架」。这个数若长期很高，
+    // 说明任务切分粒度太粗（该按语义边界切），而不是门太严。
+    let specificityBlocked = 0;
+    for (const pattern of blockedByLowSpecificity) {
+      const blockedStored = upserted.find(
+        (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
+      );
+      if (!blockedStored) continue;
+      specificityBlocked++;
+      await audit({
+        actor: 'system',
+        action: 'pattern_blocked_low_specificity',
+        targetType: 'task_pattern',
+        targetId: blockedStored.id,
+        details: {
+          occurrenceCount: blockedStored.occurrenceCount,
+          toolSequence: blockedStored.toolSequence,
+          reason: 'scaffold-only',
+        },
+      });
+    }
+
+    // 白名单缺口可观测：本次出现的、两个名单都没收录的工具。
+    // 这些目前**放行**（未知很可能是真领域工具，误杀代价更高），
+    // 但放行人必须看得见——否则「未知即放行」会慢慢退化成这扇门形同虚设。
+    const unknownToolCounts = new Map();
+    for (const p of [...newRepeat, ...upserted]) {
+      for (const t of classifySpecificity(p.toolSequence, c.scaffold_tools_extra).unknown) {
+        unknownToolCounts.set(t, (unknownToolCounts.get(t) ?? 0) + 1);
+      }
+    }
+    if (unknownToolCounts.size) {
+      await audit({
+        actor: 'system',
+        action: 'pattern_specificity_unknown_tools',
+        targetType: 'task_pattern',
+        targetId: '*',
+        details: {
+          tools: [...unknownToolCounts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 20)
+            .map(([tool, count]) => ({ tool, count })),
+          hint: '判据为黑名单，未知工具一律放行；若其中混有「通用动作」，补进 SCAFFOLD_TOOLS 或 scaffold_tools_extra',
         },
       });
     }
@@ -519,6 +571,8 @@ function apply(ctx, config) {
       newRepeatPatterns: newRepeat.length,
       forceRecheckEvaluated: forceRecheckBatch.length, // Sprint 17：forceRecheck=true 命中的历史 pattern 数
       successRateBlocked,   // 2026-09-13：跨过次数门槛但成功率不达标的
+      specificityBlocked,   // A1：纯脚手架序列（仍入库留痕，不成候选）
+      unknownTools: unknownToolCounts.size, // 白名单缺口：未收录但已放行的工具种类数
       standardizable: {
         judged: standardizableJudged,
         pass: standardizablePass,

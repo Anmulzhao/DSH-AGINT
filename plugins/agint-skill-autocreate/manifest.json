@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-skill-autocreate",
-  "version": "0.3.5",
-  "description": "P0-1 技能自动创建机制 v0.3.5（Sprint 14 检测层 + Sprint 15 评估层 + Sprint 16 发布层 + Sprint 17 跨会话聚合）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估（Phase 1 = quality-static 安全/格式四族 + semantics 语义准入：负面断言/环境故障无解法/瞬时错误/失败包装成最佳实践/会话产物式命名）→ 三道门发布 → 14 天观察期。**Sprint 17 新增**：跨会话聚合三档模式 off/shadow/primary（默认 off 完全兼容 v0.3.4），13.5 天 / 9088 条回放验证跨过 min_occurrence_count≥3 的模式数 11 → 21（+91%）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。",
+  "version": "0.3.7",
+  "description": "P0-1 技能自动创建机制 v0.3.5（Sprint 14 检测层 + Sprint 15 评估层 + Sprint 16 发布层 + Sprint 17 跨会话聚合）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估（Phase 1 = quality-static 安全/格式四族 + semantics 语义准入：负面断言/环境故障无解法/瞬时错误/失败包装成最佳实践/会话产物式命名）→ 三道门发布 → 14 天观察期。**Sprint 17 新增**：跨会话聚合三档模式 off/shadow/primary（默认 off 完全兼容 v0.3.4），13.5 天 / 9088 条回放验证跨过 min_occurrence_count≥3 的模式数 11 → 21（+91%）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。**0.3.6 A1 特异性门**：检测层新增准入判据——工具序列**全是**通用脚手架（黑名单 `SCAFFOLD_TOOLS`）即拦下，仍入库留痕但不成候选；生产 162 模式实测拦下 62 个（38.3%），2026-09-17 上线的两个噪声技能均在拦下之列。可回滚开关 `pattern_specificity_gate_enabled` + `scaffold_tools_extra`（均在 RUNTIME_CONFIG_KEYS）。**0.3.7 发布前特异性复检（门 5）**：A1 只管候选产生那一刻，管不到此前累积的存量队列——2026-09-18 核账发现 37 个待发候选里 36 个是纯脚手架且当日已自动发布出 `pwsh-pwsh-pwsh-pwsh`；故在 `checkGates` 末位补同一套黑名单判据，命中的候选**终态 REJECTED**（不走 BUDGET_WAIT，避免 releaseQueue 每日重试）；同时把生产审计 `pattern_specificity_unknown_tools` 暴露的 30 种「操作 AGINT 自身」的控制面工具补入黑名单（`restart_*` / `autocreate_*` / `cron_*` / `dream_*` / `evolve_*` / `curator_*` / `memory_read` 等），黑名单 17 → 47 项。开关 `release_specificity_gate_enabled`。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -34,6 +34,7 @@
         "skill-autocreate.rolled-back",
         "skill-autocreate.budget-exceeded",
         "skill-autocreate.release-held",
+        "skill-autocreate.release-rejected-low-specificity",
         "skill-autocreate.release-stable"
       ],
       "tools": [

@@ -21,6 +21,115 @@ import { signatureOf } from './aggregator.js';
 export const DEFAULT_MIN_SUCCESS_RATE = 0.6;
 
 /**
+ * 领域工具：携带「这件事到底在干什么」语义的工具（质量门方案 §2 A1）。
+ *
+ * ⚠️ **本集合不参与判定，只用于观测分类。** 判据是黑名单（见 classifySpecificity）。
+ * 保留它的唯一用途：让审计能区分「已知业务语义」与「没见过的工具」，
+ * 从而回答「真实产出里有多少带业务语义」。
+ *
+ * 别费劲维护它：它是开放集合，永远补不全，补不全也不影响判定正确性。
+ */
+export const DOMAIN_TOOLS = new Set([
+  'ssh_exec', 'ssh_upload', 'ssh_download', 'ssh_tunnel',
+  'web_search', 'web_fetch',
+  'wiki_write', 'memory_write', 'agint_search',
+  'abtest_start', 'abtest_report',
+  'curriculum_next', 'curriculum_submit',
+  'skill',
+]);
+// 2026-09-18 移出（改归 SCAFFOLD_TOOLS，见下）：cron_run_now / eventBus_publish /
+// restart_request / dream_run_now / selfModel_update / evolution_logPhase4 /
+// autocreate_release / curator_run_now / wiki_lint / diagnosis_annotate。
+// 原因：它们是「操作 AGINT 自身」的控制面动作，不是业务能力。
+
+/**
+ * 通用脚手架黑名单 —— **A1 的真正判据，这是唯一需要维护的集合**。
+ *
+ * 为什么判据用黑名单而不是白名单（2026-09-18 定）：
+ *   1. **封闭性**：通用动作是封闭小集合（读/写/编/搜/执行/待办），穷举得完；
+ *      领域工具是开放集合，每加一个插件就多一批 —— 用开放集合当准入门槛，
+ *      等于要求「每长出一个新工具就来登记一次」，那是人工参与，不是自动化。
+ *   2. **失败方向**：黑名单误放（噪声溜进候选）下游还有 A2 具体值门、A3 信息量门、
+ *      质量门、观察期兜底；白名单误杀（好模式永远不成技能）**没有任何下游能救**，
+ *      且这种死法不可见 —— 与「可观测 > 可审批」直接冲突。
+ *   3. **维护频率**：宿主新增通用动作（如一种新的 shell 工具）才需要动，极少发生。
+ *
+ * 它是否仍然封闭，靠审计 `pattern_specificity_unknown_tools` 兜底：
+ * 那份列表里若混进大量"其实是通用动作"的工具，说明黑名单该补了。
+ */
+export const SCAFFOLD_TOOLS = new Set([
+  'read', 'write', 'edit', 'glob', 'grep',
+  'read_image',           // read 的图片变体（2026-09-18 依生产审计补入）
+  'pwsh', 'bash',
+  'todo_write', 'ask_user_question',
+  'structured_output',    // 纯输出格式化，不携带任务语义（2026-09-18 依生产审计补入）
+  'sidebar_open', 'job_output', 'job_list', 'list_agents',
+  'memory_search', 'wiki_search',
+
+  // ── 第二批（2026-09-18 首次真实运行后，依审计 pattern_specificity_unknown_tools 补入）──
+  // 判据：**操作 AGINT 自身**的控制面动作 —— 看状态、重启、触发内部任务、查自己
+  // 的数据。任何 AGINT 任务都可能顺手做一步，它们不携带「这件事在干什么」的业务
+  // 语义。实测证据：这批名字在审计里占满前 20 位，且已让两个噪声模式（含
+  // restart_request 的序列）逃过门并生成候选。
+  // 它们本来被误列在 DOMAIN_TOOLS（当作领域工具），现改归此处。
+  'restart_status', 'restart_request',
+  'autocreate_stats', 'autocreate_list_candidates', 'autocreate_list_patterns',
+  'autocreate_list_releases', 'autocreate_get_candidate', 'autocreate_trigger_eval',
+  'autocreate_release',
+  'cron_list', 'cron_run_now',
+  'dream_status', 'dream_diary', 'dream_run_now',
+  'memory_read', 'memory_stats', 'memory_forget_scan',
+  'evolve_propose', 'evolve_proposals', 'evolve_set_status', 'evolution_logPhase4',
+  'curator_list', 'curator_run_now',
+  'wiki_list', 'wiki_lint',
+  'rule_check', 'recall_store_inspect',
+  'selfModel_update', 'diagnosis_annotate',
+  'eventBus_publish',
+]);
+
+/**
+ * 特异性分类（纯函数）。**判据是黑名单**：序列里只要有一个工具不属于脚手架，
+ * 就认为这段行为带有专属语义。
+ *
+ * @param {string[]} toolSequence 工具序列
+ * @param {string[]} extraScaffoldTools 追加的脚手架名（与内置 SCAFFOLD_TOOLS 取并集，不替换）
+ * @returns {{domain: string[], unknown: string[], scaffold: string[], scaffoldOnly: boolean}}
+ *   domain   : 命中 DOMAIN_TOOLS 的业务工具（**仅观测**，不参与判定）
+ *   unknown  : 两个名单都没有的工具 —— 判据上**等同于领域工具**（放行）
+ *   scaffold : 命中的通用脚手架
+ *   scaffoldOnly : 序列非空且每个工具都是脚手架 —— 唯一被拦的情形
+ */
+export function classifySpecificity(toolSequence, extraScaffoldTools = []) {
+  const extra = new Set(extraScaffoldTools ?? []);
+  const domain = [];
+  const unknown = [];
+  const scaffold = [];
+  const tools = [...new Set(toolSequence ?? [])];
+  for (const tool of tools) {
+    if (SCAFFOLD_TOOLS.has(tool) || extra.has(tool)) scaffold.push(tool);
+    else if (DOMAIN_TOOLS.has(tool)) domain.push(tool);
+    else unknown.push(tool);
+  }
+  return {
+    domain,
+    unknown,
+    scaffold,
+    // 边界：空序列按「无特异性」处理 —— 一个工具都没用，没有任何证据表明
+    // 它有专属语义。与 passesSuccessGate「缺数据就不猜」同向（宁可这次不沉淀）。
+    scaffoldOnly: tools.length === 0 || scaffold.length === tools.length,
+  };
+}
+
+/**
+ * 特异性门判定。默认**开**（K42：这是拦错误的门，不是放大错误的门）。
+ * opts.enabled === false 时恒放行（kill-switch）。
+ */
+export function passesSpecificityGate(toolSequence, opts = {}) {
+  if (opts.enabled === false) return true;
+  return !classifySpecificity(toolSequence, opts.scaffoldTools).scaffoldOnly;
+}
+
+/**
  * 参数结构相似度：两个 paramSignature map（tool → sig）的加权 Jaccard。
  * - 只在两边共有的工具上比较签名 token 集合的 Jaccard
  * - 工具集合本身不一致时按共有工具比例折减
@@ -77,18 +186,27 @@ export function passesSuccessGate(successRate, minRate = DEFAULT_MIN_SUCCESS_RAT
  *   minOccurrence    : 重复判定阈值（默认 3）
  *   similarityThreshold : 参数相似度阈值（默认 0.8）
  *   minSuccessRate   : 成功率准入门（默认 0.6）— 传 0 可关闭
+ *   specificityGate  : 特异性门总开关（默认 true；传 false 整体退回旧行为）
+ *   scaffoldTools    : 追加的脚手架黑名单（与内置 SCAFFOLD_TOOLS 取并集，不替换）
  *   nowMs            : 时间基准
  *
- * 返回 { upserts, newRepeat, blockedBySuccessRate }：
+ * 返回 { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity }：
  *   upserts    : 本次要写入/更新的 pattern 业务字段数组（不含 storage metadata）
- *   newRepeat  : 其中「本次跨过 minOccurrence 门槛 **且** 过成功率门」的 pattern（发事件用）
+ *   newRepeat  : 其中「本次跨过 minOccurrence 门槛、过成功率门、且过特异性门」的 pattern（发事件用）
  *   blockedBySuccessRate : 跨过次数门槛但被成功率门拦下的（仍入库，不生成候选；供审计留痕）
+ *   blockedByLowSpecificity : 过了成功率门但被特异性门拦下的（仍入库；纯脚手架序列）
+ *
+ * 三个桶互斥，判定顺序固定为 成功率 → 特异性：成功率是更硬的否决，
+ * 一个模式不会同时出现在两个 blocked 桶里（避免审计重复计数）。
  */
 export function detectPatterns(taskInstances, opts = {}) {
   const minOccurrence = opts.minOccurrence ?? 3;
   const simThreshold = opts.similarityThreshold ?? 0.8;
   const minSuccessRate = opts.minSuccessRate ?? DEFAULT_MIN_SUCCESS_RATE;
   const nowIso = opts.nowIso ?? new Date().toISOString();
+  // 特异性门默认开（A1）；opts.scaffoldTools 为追加黑名单，不替换内置集合。
+  const specificityGate = opts.specificityGate !== false;
+  const scaffoldTools = opts.scaffoldTools;
   const existing = Array.isArray(opts.existingPatterns) ? opts.existingPatterns : [];
 
   // 已有 pattern 的工作副本（按 id 索引；保持入库统计可累计）
@@ -115,6 +233,8 @@ export function detectPatterns(taskInstances, opts = {}) {
   const crossed = new Set();
   // 跨过次数门槛但被成功率门拦下的——仍需入库与留痕（见文件头说明）
   const blocked = new Set();
+  // 过了成功率门但被特异性门拦下的（纯脚手架序列）——同样入库留痕
+  const lowSpec = new Set();
 
   for (const task of taskInstances) {
     if (!task?.toolSequence?.length) continue;
@@ -160,8 +280,9 @@ export function detectPatterns(taskInstances, opts = {}) {
     p.occurrenceCount += 1;
     // 只在「本次刚跨过次数门槛」那一次判定，避免每批重复记账
     if ((wasBelow || p._isNew) && p.occurrenceCount >= minOccurrence) {
-      if (passesSuccessGate(p.successRate, minSuccessRate)) crossed.add(p);
-      else blocked.add(p);
+      if (!passesSuccessGate(p.successRate, minSuccessRate)) blocked.add(p);
+      else if (!passesSpecificityGate(p.toolSequence, { enabled: specificityGate, scaffoldTools })) lowSpec.add(p);
+      else crossed.add(p);
     }
   }
 
@@ -180,6 +301,7 @@ export function detectPatterns(taskInstances, opts = {}) {
     upserts: [...dirtyExisting, ...newBusiness],
     newRepeat: [...crossed],
     blockedBySuccessRate: [...blocked].map((p) => { const { _isNew, ...rest } = p; return rest; }),
+    blockedByLowSpecificity: [...lowSpec].map((p) => { const { _isNew, ...rest } = p; return rest; }),
   };
 }
 

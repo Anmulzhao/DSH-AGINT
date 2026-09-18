@@ -24,7 +24,7 @@ test('导出契约：name / inject / apply / ConfigSchema', () => {
   const c = plugin.ConfigSchema.parse({});
   assert.equal(c.min_occurrence_count, 3);
   assert.equal(c.param_similarity_threshold, 0.8);
-  assert.equal(c.weekly_deploy_budget, 3);
+  assert.equal(c.weekly_deploy_budget, 20);
   assert.equal(c.auto_create_enabled, true);
   assert.equal(c.require_human_approval, false);
   assert.equal(c.aggregate_cron, '45 4 * * *');

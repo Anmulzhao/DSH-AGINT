@@ -146,6 +146,31 @@ export const ConfigSchema = z.object({
   // 被拦下的模式**照常入库**（可观测），只是不成候选；拦截写审计留痕。
   min_pattern_success_rate: z.number().min(0).max(1).default(0.6),
 
+  // ── A1 特异性门（2026-09-18；质量门方案 §2 A1 + K51「可回滚 > 可审批」）──
+  // 判据（lib/detector.js `classifySpecificity`）：工具序列里既无领域工具
+  // 也无未知工具（= 纯脚手架，如 `glob → read → pwsh`）→ 拦下：仍入库留痕，
+  // 但不发 pattern-detected、不生成候选。
+  // 为什么需要：次数门槛只证明「经常发生」。脚手架序列恰恰频次最高，
+  // 因为任何任务都要读写执行 —— 2026-09-17 上线的 `glob-glob-glob-glob`
+  // 就是这道门缺失的直接产物。
+  // 默认 **开**（K42：这是拦错误的门，不是放大错误的门）。
+  // 置 false 整门关闭，退回 2026-09-17 及之前的行为。
+  pattern_specificity_gate_enabled: z.boolean().default(true),
+
+  // 追加的**脚手架黑名单**（与 detector.js 的 SCAFFOLD_TOOLS 取**并集**，不替换）。
+  // 为什么扩展的是黑名单而不是白名单：判据是黑名单（序列全是脚手架才拦），
+  // 需要能补的是「宿主新出现的一种通用动作」（如新 shell 工具、新的通用检索工具），
+  // 而不是「新业务工具」——后者本来就不在黑名单里，天然放行，无需登记。
+  // 该补什么，看审计 `pattern_specificity_unknown_tools` 里那些实为通用动作的高频项。
+  scaffold_tools_extra: z.array(z.string()).default([]),
+
+  // 发布前特异性复检（2026-09-18）。与 A1 同一套黑名单判据，但作用点在**发布**
+  // 而非生成：A1 只管候选产生那一刻，管不到它上线前累积的存量队列 —— 实测 37 个
+  // 待发候选里 36 个是纯脚手架，且当日已自动发布出 `pwsh-pwsh-pwsh-pwsh`。发布是
+  // 最后一道闸，放这里才能同时覆盖存量与未来。
+  // 关掉：置 false（退回「只靠 A1 入口门」的行为）。
+  release_specificity_gate_enabled: z.boolean().default(true),
+
   // ── 语义准入总开关（2026-09-13 新增；P2-2 §六ter 建议 A + C）───────────
   // 默认 **开**——这是「防垃圾」的门，不是可选增强（与 Hermes 那边"更聪明的
   // 机制默认关"相反：那是放大错误的，这个是拦错误的）。
@@ -188,7 +213,7 @@ export const ConfigSchema = z.object({
   sandbox_timeout_ms: z.number().int().min(1000).default(30000),
 
   // 发布预算（Sprint 16 使用；回滚也算消耗——防「发了又滚」刷总量）
-  weekly_deploy_budget: z.number().int().min(1).default(3),
+  weekly_deploy_budget: z.number().int().min(1).default(20),
   observation_period_days: z.number().int().min(1).default(14),
   rollback_threshold: z.number().min(0).max(1).default(0.2),
 
@@ -301,6 +326,11 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   // Phase 1：数据源切换（可运行时回滚到 tool_stats）
   'session_source',
   'sessions_root',
+  // A1 特异性门（2026-09-18）
+  'pattern_specificity_gate_enabled',
+  'scaffold_tools_extra',
+  // 发布前特异性复检（2026-09-18）
+  'release_specificity_gate_enabled',
   // Phase 2：本地语义窗口（可运行时关掉，退回纯模板）
   'semantic_window_enabled',
   'semantic_window_radius',

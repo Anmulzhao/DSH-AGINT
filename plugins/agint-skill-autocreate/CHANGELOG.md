@@ -1,5 +1,120 @@
 # Changelog — agint-skill-autocreate
 
+## 0.3.7 (2026-09-18) — 发布前特异性复检（门 5）+ 黑名单依审计扩至 47 项
+
+> 来源：0.3.6 上线后**首次真实运行**（2026-09-18 10:11，机器唤醒后 cron 补跑）
+> 的核账结果。关联：K51「自进化默认」、K53「黑名单靠审计自检」。
+
+### 问题一：A1 管不到存量队列
+
+A1 作用在**候选产生那一刻**。它上线之前产生的候选，不受它约束。09-18 核账：
+
+| 状态 | 条数 | 纯脚手架 |
+|---|---|---|
+| QUEUED_FOR_RELEASE | 37 | 27（另 9 条含未收录工具） |
+| BUDGET_WAIT | 1 | 1 |
+| RELEASED | 3 | 3 |
+
+且当日 release job 已把 `pwsh-pwsh-pwsh-pwsh` 自动发布上线。**入口收紧了，出口还开着。**
+
+### 问题二：黑名单没跟上（审计自检回路在工作）
+
+0.3.6 留的审计出口 `pattern_specificity_unknown_tools` 首次运行就吐出了答案——
+20 种未收录工具占满榜单，**全部是「操作 AGINT 自身」的控制面动作**：
+
+```
+restart_status(15) autocreate_stats(13) autocreate_list_candidates(7)
+autocreate_list_patterns(5) cron_list(5) autocreate_list_releases(4)
+evolve_propose(4) memory_read(3) ... dream_status/wiki_list/rule_check/...
+```
+
+判据（黑名单 = 任何任务都可能顺手用一步的通用外形）下，这些显然是脚手架，但
+它们当时不在名单里，于是被当 unknown **放行**——今日候选
+`read-read-askuserquestion-read`（tools 含 `restart_request`）正是这样逃过 A1 的。
+
+> 这正是黑名单方案里「它是否仍然封闭，靠审计兜底」那句设计的兑现：
+> **不是 bug 暴露，是检查表按预期报出了缺口。**
+
+### 改动
+
+1. **`lib/detector.js`**：`SCAFFOLD_TOOLS` 17 → 47 项，补入上述控制面工具；
+   `DOMAIN_TOOLS` 同步移出这些（避免分类报告自相矛盾）。判据与判定逻辑未变
+   （仍是「序列里全是脚手架才拦」），只把名单补全。
+2. **`lib/release-manager.js`**：`checkGates` 新增**门 5**——用同一套黑名单重判
+   候选工具序列，纯脚手架则拒发。关键取舍：
+   - **终态 REJECTED，不是 BUDGET_WAIT**：特异性不合格是永久性的（除非改黑名单），
+     留在 BUDGET_WAIT 会让 `releaseQueue` 每天把同一批重试一遍并刷日志。
+     为此抽出 `rejectCandidate()`，与 `holdCandidate()` 分工。
+   - **manual=true 也不绕**：与门 3 同理，质量门不该被人工点头打开；要发得改黑名单
+     或关开关，那是显式动作。
+3. **`lib/schema.js`**：新增 `release_specificity_gate_enabled`（默认 true），
+   已进 `RUNTIME_CONFIG_KEYS`。
+4. **修两条既有红测试**（非本次引入，HEAD 即红）：
+   - `test/smoke.mjs`：断言 `weekly_deploy_budget === 20`，实际 schema 早已调为 3
+     （与发布收紧配套）——测试没跟上。
+   - `test/aggregator-cross-session.test.mjs`：真实数据回放断言「primary 比 off
+     多 >30%」，那是 09-17 的快照（401→687 = +71%）；09-18 复测已随数据积累
+     收窄到 609→744（+22.2%）。**固定百分比会持续漂移假红**，改为只断言机制
+     （严格多于），幅度留在报错信息里。
+5. **新增 `test/release-specificity-gate.test.mjs`**（9 例）：门 5 各分支
+   （拦截 / 不误杀领域工具 / unknown 放行 / 空序列拦 / manual 不绕 / kill-switch）
+   + 两条生产回归（今日逃过的序列、审计 30 种工具全覆盖）。
+
+### 验收
+
+- repo 与宿主部署位各 **243/243** 全绿。
+- 存量预演（宿主真代码 + 生产存储，只读）：待发 38 条中 **门 5 拦下 36 条**，
+  放行 2 条（`web_fetch` / `agint_search` 序列，确有领域动作）。
+- 已发布的 3 个技能（`glob-glob-glob-glob` / `askuserquestion-todowrite-edit-read`
+  / `pwsh-pwsh-pwsh-pwsh`）均为 `scaffoldOnly=true`，属门上线前产物，**未自动清理**
+  （回滚走 `rollback` 通道，不手工删目录）。
+
+### 可回滚
+
+`release_specificity_gate_enabled=false` 关闭门 5（退回只靠 A1 入口门）；
+`scaffold_tools_extra` 追加校验名单。两者均免改代码、免重启后仍生效。
+
+## 0.3.6 (2026-09-18) — A1 特异性门（检测层准入，黑名单判据）
+
+> 来源：质量门方案 §2 A1（`issue-drafts/2026-09-17-技能自动生成质量门-方案.md`）——
+> 三道门里**唯一还没落地**的一条。老板 09-18 拍板补齐，并定下判据方向为**黑名单**。
+> 关联：K51「自进化默认」（门禁下放为可自动验证的规则，可回滚 > 可审批）。
+
+**问题**：次数门槛（`occurrenceCount ≥ 3`）只证明「经常发生」，不证明「值得沉淀」。
+通用脚手架序列（读/写/搜/执行/待办）频次最高，因为**任何任务**都要用它们。
+2026-09-17 上线的 `glob-glob-glob-glob`、`askuserquestion-todowrite-edit-read`
+两个技能就是这道门缺失的直接产物——正文只能是「调用 glob、调用 read」。
+
+**判据（黑名单，不是白名单）**：序列里**全是**通用脚手架才拦下。
+- 为什么不用白名单：领域工具是**开放集合**（每加一个插件就多一批），拿它当准入门槛
+  等于要求「每长出一个新工具就来登记一次」——那是人工参与，不是自动化；
+  且白名单误杀（好模式永远不成技能）**没有任何下游能救**，是最难观测的死法。
+  黑名单误放则还有 A2 具体值门 / A3 信息量门 / 质量门 / 观察期兜底。
+- `DOMAIN_TOOLS` 降级为**纯观测分类**，不参与判定。
+
+**行为**：被拦模式**照常入库**（可观测），但不发 `pattern-detected`、不生成候选，
+另开 `blockedByLowSpecificity` 桶 + `pattern_blocked_low_specificity` 审计。
+判定顺序固定 成功率 → 特异性，两桶互斥，不重复计数。
+`detect()` 返回值新增 `specificityBlocked` / `unknownTools` 两个计数。
+
+**可回滚（K51）**：`pattern_specificity_gate_enabled`（默认 `true`，置 false 整门关闭）；
+`scaffold_tools_extra`（追加脚手架黑名单，与内置取并集）。两者均进 `RUNTIME_CONFIG_KEYS`。
+
+**可观测**：新增审计 `pattern_specificity_unknown_tools` —— 列出两个名单都没收录但已放行的
+工具及频次。它同时是「黑名单是否还封闭」的检查表：里面若混进通用动作就该补进黑名单。
+
+**实测（生产数据只读，`_a1_verify.mjs`）**：
+- 存量 162 个 pattern → **62 个（38.3%）判为纯脚手架**，将被拦下
+- 已上线的两个技能还原序列后**均判为拦下** → 门确实打在要害上
+- 未收录工具 40 种 → 依审计补入 `structured_output`、`read_image` 两个明确通用动作 → 38 种
+
+**测试**：新增 `test/specificity-gate.test.mjs` 15 例（含"未知工具不误拦"
+"黑名单扩展是追加不是替换""三桶互斥""成功率门优先"）；全量 **234/234**。
+`sampleArgs-plumbing.test.mjs` 两条用例显式 `specificityGate: false`——
+被测对象是 sampleArgs 透传，与特异性正交（与 Phase 1 钉 `session_source` 同一手法）。
+
+---
+
 ## 0.3.5 (2026-09-17) — 跨会话聚合（Sprint 17，老板拍板走 plugin-preflight 完整流程）
 
 > 提案：`evolve_propose d5124051-817c-4aa3-bea6-fe259cf9914d` → **applied**
