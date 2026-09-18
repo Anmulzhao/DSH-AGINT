@@ -28,6 +28,14 @@ import { join, resolve, basename } from 'node:path';
 import { resolveEvalTargets, evaluatePlugins } from './quality-bridge.js';
 // v0.3 (task 3 / 2026-09-06)：Deep 阶段读 success-templates 作为评分参考
 import { collectEvolutionSummary, computeEvolutionBoost } from './evolution-bridge.js';
+// 2026-09-18：零命中健康度（连续 N 次扫不到会话 → degraded 告警）
+import {
+  DEFAULT_ZERO_HIT_THRESHOLD,
+  evaluateZeroHitHealth,
+  readHealthState,
+  updateZeroHitState,
+  writeHealthState,
+} from './health.js';
 import {
   recordRecalls as recallStoreRecord,
   readStoreRobust as recallStoreRead,
@@ -610,7 +618,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
  *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0 }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -675,6 +683,12 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
       : 'n/a';
     const boostStr = evolutionBoost ? ` · boost=${evolutionBoost.toFixed(2)}` : '';
     lines.push(`- v0.3 evolution: status=${evolutionSummary.status ?? 'unavailable'} · templates=${evolutionSummary.count ?? 0}· topConfidence=${evoStr}${boostStr}`);
+  }
+  // 2026-09-18：零命中告警 —— 没扫到会话必须写在 diary 里，否则人读日记也看不出来
+  if (health && health.status === 'degraded') {
+    lines.push('');
+    lines.push(`> ⚠️ **dream 健康度 degraded**：${health.reason}`);
+    lines.push(`> 连续零命中 ${health.consecutiveZeroHit} 次 · 阈值 ${health.threshold} · 最后有数据：${health.lastNonZeroAt ?? '从未'}`);
   }
   lines.push('');
   if (gated.length > 0) {
@@ -774,6 +788,10 @@ export async function runSweep({
   // v0.3 (task 3 / 2026-09-06)：Deep 阶段读 success-templates 作为评分参考
   // 默认开；显式 false 可关闭
   evolution = true,
+  // 2026-09-18：零命中告警。`zeroHitAlert=false` → 只记数不告警（kill-switch）；
+  // 阈值可调，默认 3 次（1 次可能只是这两天没活动，3 次基本是通道坏了）。
+  zeroHitAlert = true,
+  zeroHitAlertThreshold = DEFAULT_ZERO_HIT_THRESHOLD,
 }) {
   const startedAt = Date.now();
   const errors = [];
@@ -793,6 +811,25 @@ export async function runSweep({
       errors.push(`${log.dir}: ${err.message}`);
     }
   }
+  // ── 零命中健康度（2026-09-18）────────────────────────────────────────
+  // 判据是「本次有没有扫到**可解析**的会话」（signals.length），不是日志条数：
+  // 文件都在但全解析失败同样是「没数据」，按日志条数判定会漏掉这类失效。
+  const zeroHit = signals.length === 0;
+  const prevHealth = await readHealthState(diaryRoot);
+  const healthState = updateZeroHitState(prevHealth, {
+    hit: !zeroHit,
+    nowIso: new Date(nowMs).toISOString(),
+  });
+  await writeHealthState(diaryRoot, healthState);
+  const health = evaluateZeroHitHealth(healthState, {
+    threshold: zeroHitAlertThreshold,
+    enabled: zeroHitAlert !== false,
+  });
+  if (health.status === 'degraded') {
+    // 打日志：dream_status 之外还得能在宿主日志里 grep 到（可观测 > 静默）
+    console.warn(`[agint-dream] ${health.reason}`);
+  }
+
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
   const candidates = signals.flatMap((s) => extractCandidates(s, nowMs));
 
@@ -1054,6 +1091,8 @@ export async function runSweep({
     // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要
     evolutionSummary,
     evolutionBoost,
+    // 2026-09-18：零命中健康度（degraded 时 diary 里会出现醒目告警块）
+    health,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   const diaryPath = join(resolve(diaryRoot), `${day}.md`);
@@ -1098,6 +1137,9 @@ export async function runSweep({
         boost: evolutionBoost ?? 0,
       },
     },
+    // 2026-09-18：零命中健康度。形状见 lib/health.js 的 evaluateZeroHitHealth：
+    // { status, consecutiveZeroHit, threshold, enabled, lastNonZeroAt, reason }
+    health,
     promoted: promoted.map((p) => ({ type: p.entry.type, content: p.entry.content, score: p.candidate.score ?? 0, id: p.entry.id })),
     errors,
     durationMs: Date.now() - startedAt,

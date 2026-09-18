@@ -29,6 +29,12 @@ import { defaultRecallPath } from './recall-store.js';
 import { runVerification } from './verify.js';
 // v0.2 (task 2 / C1): qualityEval bridge meta — status() 用来显示 qualityEvaluator 状态
 import { getBridgeDefaults, DREAM_BASELINE_TARGETS } from './quality-bridge.js';
+// 2026-09-18：零命中健康度（status() 透出 + sweep 传参）
+import {
+  DEFAULT_ZERO_HIT_THRESHOLD,
+  evaluateZeroHitHealth,
+  readHealthState,
+} from './health.js';
 
 const name = 'agint-dream';
 // `agint.memory` is a soft dependency: read via ctx.get so a sweep still
@@ -47,6 +53,12 @@ const Config = z.object({
   minScore: z.number().min(0).max(1).default(DEFAULTS.minScore),
   minRecall: z.number().int().positive().default(DEFAULTS.minRecall),
   minUniqueSessions: z.number().int().positive().default(DEFAULTS.minUniqueSessions),
+  // 2026-09-18：零命中告警。连续 N 次 sweep 扫不到会话 → health.status=degraded。
+  // 动机：09-10 起宿主改会话日志命名，Light 7 天零命中而 dream_status 仍报
+  // validation=OK —— "没扫到"和"扫到了没过关"在返回里长一样。
+  // 默认开、不阻断 sweep；要临时静音设 zeroHitAlert=false。
+  zeroHitAlert: z.boolean().default(true),
+  zeroHitAlertThreshold: z.number().int().positive().default(DEFAULT_ZERO_HIT_THRESHOLD),
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -124,6 +136,9 @@ function apply(ctx, config) {
           minRecall: opts.minRecall ?? config.minRecall,
           minUniqueSessions: opts.minUniqueSessions ?? config.minUniqueSessions,
           publishReject,
+          // 2026-09-18：零命中告警（默认开；配置可关 / 可调阈值）
+          zeroHitAlert: opts.zeroHitAlert ?? config.zeroHitAlert,
+          zeroHitAlertThreshold: opts.zeroHitAlertThreshold ?? config.zeroHitAlertThreshold,
         });
         state.lastSweep = nowMs;
         state.lastResult = result;
@@ -167,6 +182,13 @@ function apply(ctx, config) {
     /** Dreaming service status (no side effects). */
     async status() {
       const last = state.lastResult;
+      // 2026-09-18：健康度**直接读盘**，不用 state.lastResult —— 否则进程一重启
+      // 计数就丢了，而"连续零命中"恰恰是要跨重启才能攒够次数的信号。
+      const healthState = await readHealthState(root).catch(() => null);
+      const health = evaluateZeroHitHealth(healthState ?? {}, {
+        threshold: config.zeroHitAlertThreshold,
+        enabled: config.zeroHitAlert,
+      });
       return {
         enabled: true,
         frequency: '0 3 * * *', // nightly 03:00 (OpenClaw default), wired in agint-cron jobs
@@ -186,6 +208,9 @@ function apply(ctx, config) {
         },
         // P2 (Sprint 13 / 2026-09-05)：recall store 路径
         recallPath: defaultRecallPath(),
+        // 2026-09-18：零命中健康度。status=degraded 时必须排查 Light 通道，
+        // 别再被 "validation=OK" 骗过去 —— 那个只说明"没丢已有记忆"。
+        health,
         lastSweepAt: state.lastSweep ? new Date(state.lastSweep).toISOString() : null,
         lastError: state.lastError,
         // v0.2 (task 2 / C1 → C2 → C3 / 2026-09-06)：qualityEvaluator 桥接

@@ -5,6 +5,38 @@
 
 ---
 
+## v0.3.2 — 零命中告警：连续 N 次扫不到会话 → degraded（2026-09-18）
+
+**背景（为什么光修命名还不够）**：v0.3.1 修好了会话日志命名，Light 通道恢复。
+但"**扫到 0 个会话**"这件事本身**仍然不告警** —— 而它和"扫到了但没过关"在
+返回里长得一模一样，`dream_status` 照样报 `validation=OK`。这正是那 7 天里
+没人发现问题的同一个洞：换一种失效方式（路径改了 / 权限没了 / zstd 没了），
+照样静默。
+
+**做了什么**（新增 `lib/health.js`，改 `sweep.js` / `index.js`）：
+
+- 判据 = 本次有没有扫到**可解析**的会话（`signals.length`），不是日志条数 ——
+  文件都在但全解析失败同样是"没数据"，按条数判定会漏掉这类失效。
+- 连续计数**落盘**到 `<diaryRoot>/.dream-health.json`：内存计数在进程重启时归零，
+  那就永远攒不够次数，告警等于做成摆设。
+- 连续 ≥ 阈值（默认 3）→ `health.status='degraded'`：
+  - `result.health` 返回（机器可读）
+  - `dream_status().health` 透出 —— **从当初掩盖问题的那个出口报出来**
+  - dream diary 里写醒目告警块（人可读）
+  - `console.warn` 打进宿主日志（可 grep）
+- **不阻断** sweep（观察层，可观测优先于可审批）。
+- kill-switch：`zeroHitAlert:false` 只记数不告警；`zeroHitAlertThreshold` 可调阈值。
+- 读写失败一律 fail-open —— 告警链路不许把被告警的对象搞挂。
+
+**测试**：新增 `test/zero-hit-health.test.js` 12 例（纯函数阈值边界 / kill-switch 反例 /
+跨 sweep 持久化 / 落盘 / 损坏 fail-open）。全量 **85/85**（原 72 + 新 12 + 修好 smoke 1）。
+
+**顺带修**：`test/smoke.mjs` 在 Windows 上必崩两处 —— ① `chmod` 不存在（ENOENT）；
+② 假 zstd 是无扩展名 `#!/bin/sh`，Windows 不认，PATH 覆盖前提不成立。
+已加平台守卫并写明原因，不是静默跳过。
+
+---
+
 ## v0.3.1 — 会话日志改名兼容 + 补回 zstd 守卫（2026-09-17）
 
 **背景（静默失效 7 天）**：宿主自 2026-09-10 起把会话日志命名为 `session.v3.jsonl.zstd`，
