@@ -195,10 +195,29 @@ test('回归：审计列出的 20 种控制面工具全部进黑名单（避免�
 });
 
 test('回归：黑名单里不含被误判成脚手架的领域工具', () => {
-  // 域外工具（真正携带业务语义）必须留在黑名单之外，否则会误杀好模式。
+  // 领域工具（真正携带业务语义）必须留在黑名单之外，否则会误杀好模式。
+  // ⚠️ 2026-09-18 修订：web_search / web_fetch / agint_search 已**不再是**领域工具
+  // （判据：通用"查询"动作，与 memory_search / wiki_search 同性质）——
+  // 正是它们曾被当领域工具，才让两个空壳在 04:45 被自动发布。见下一条测试。
   const domainTools = ['ssh_exec', 'ssh_upload', 'ssh_download', 'ssh_tunnel',
-    'web_search', 'web_fetch', 'wiki_write', 'memory_write', 'agint_search',
+    'wiki_write', 'memory_write',
     'abtest_start', 'abtest_report', 'curriculum_next', 'curriculum_submit', 'skill'];
   const wrong = domainTools.filter((t) => SCAFFOLD_TOOLS.has(t));
   assert.deepEqual(wrong, [], `这些是领域工具，不应进脚手架黑名单：${wrong.join(', ')}`);
+});
+
+test('回归：通用查询动作（web_search/web_fetch/agint_search）已判为脚手架', () => {
+  // 生产证据链：DOMAIN_TOOLS 误放这 3 个 → A1 门判 scaffoldOnly=false
+  //   → 04:45 cron 自动发布了 agintsearch-pwsh-askuserquestion-pwsh 与
+  //      pwsh-glob-webfetch-webfetch（两条正文均被 A3 判 non-informative-body + tool-recap-only）。
+  // 即：**只靠"序列里有个联网查询工具"就放行**，等于给纯脚手架开后门。
+  for (const t of ['web_search', 'web_fetch', 'agint_search']) {
+    assert.equal(SCAFFOLD_TOOLS.has(t), true, `${t} 应归脚手架`);
+  }
+  // 门 5 端到端：这两条真实候选的序列，现在应被门 5 拦下
+  assert.equal(classifySpecificity(['pwsh', 'glob', 'web_fetch', 'web_fetch']).scaffoldOnly, true);
+  assert.equal(
+    classifySpecificity(['agint_search', 'pwsh', 'ask_user_question']).scaffoldOnly,
+    true,
+  );
 });

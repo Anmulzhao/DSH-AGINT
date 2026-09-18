@@ -28,10 +28,18 @@ export const PATTERN_STATUSES = Object.freeze([
   'active', 'candidate', 'proposed', 'released', 'dismissed',
 ]);
 
-/** candidates.status（设计稿 §3.2 / §4.3） */
+/** candidates.status（设计稿 §3.2 / §4.3）
+ *
+ * Sprint 16 兼容：磁盘上 5 条 Sprint 14 老记录 status="REJECTED"（裸值），
+ * Sprint 15 升级时枚举改成了 REJECTED_STATIC/SANDBOX/EVAL 三种带后缀但
+ * 没迁移老数据 → autocreate domain open 抛 "does not match its schema"。
+ * 临时把 'REJECTED' 加回枚举作为兼容值（语义上等价于 REJECTED_STATIC，
+ * 都表示评估失败且不会复活）。等这些记录被清理或自然过期后再移除。
+ */
 export const CANDIDATE_STATUSES = Object.freeze([
   'PENDING_EVAL',
   'PHASE1_PASS', 'PHASE2_PASS', 'PHASE3_PASS',
+  'REJECTED',            // Sprint 14 兼容值（等价 REJECTED_STATIC）
   'REJECTED_STATIC', 'REJECTED_SANDBOX', 'REJECTED_EVAL',
   'QUEUED_FOR_RELEASE', 'BUDGET_WAIT',
   'RELEASED', 'STABLE', 'ROLLED_BACK',

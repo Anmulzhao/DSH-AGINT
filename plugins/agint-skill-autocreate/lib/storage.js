@@ -90,6 +90,12 @@ const spec = defineDomain({
     releases: { valueSchema: releaseEntrySchema },
     audit_log: { valueSchema: auditLogEntrySchema },
   },
+  // Sprint 14 → Sprint 15 schema 迁移漏做：staging 表里 42 条候选 (sc_20260917_xxx + sc_20260918_bc0a06)
+  // 仍是 Sprint 14 扁平 manifest.json 形态。autocreate 所有 list/stats 接口因此抛
+  // "stored record does not match its schema" 500。官方机制 backup-and-skip 让错配记录
+  // 自动备份到 <domain>.bak/<table>/<key>.json 后跳过，不阻断 domain 打开。
+  // 证据：2026-09-18 P0 复现 → README/.tmp/pending-patches 留痕。备份位置安全可恢复。
+  invalidRecords: 'backup-and-skip',
 });
 
 // ── 上限检查（§4：超限 warn，不自动 prune；audit_log 例外滚动清理）────────

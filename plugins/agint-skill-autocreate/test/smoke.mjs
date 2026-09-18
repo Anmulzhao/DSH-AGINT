@@ -34,6 +34,10 @@ test('FROZEN 枚举与设计稿状态机一致', () => {
   assert.deepEqual([...schema.CANDIDATE_STATUSES], [
     'PENDING_EVAL',
     'PHASE1_PASS', 'PHASE2_PASS', 'PHASE3_PASS',
+    // 'REJECTED' 是 Sprint 14 的裸值：磁盘上还有 5 条老记录用它（未迁移）。
+    // Sprint 15 拆成三种带后缀的拒因后，domain open 会报 "does not match its schema"，
+    // 故把裸值作为兼容项加回枚举（语义等价 REJECTED_STATIC）。详见 lib/schema.js 注释。
+    'REJECTED',
     'REJECTED_STATIC', 'REJECTED_SANDBOX', 'REJECTED_EVAL',
     'QUEUED_FOR_RELEASE', 'BUDGET_WAIT',
     'RELEASED', 'STABLE', 'ROLLED_BACK',

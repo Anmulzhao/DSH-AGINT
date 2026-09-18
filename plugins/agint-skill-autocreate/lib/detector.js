@@ -31,16 +31,22 @@ export const DEFAULT_MIN_SUCCESS_RATE = 0.6;
  */
 export const DOMAIN_TOOLS = new Set([
   'ssh_exec', 'ssh_upload', 'ssh_download', 'ssh_tunnel',
-  'web_search', 'web_fetch',
-  'wiki_write', 'memory_write', 'agint_search',
+  'wiki_write', 'memory_write',
   'abtest_start', 'abtest_report',
   'curriculum_next', 'curriculum_submit',
   'skill',
 ]);
-// 2026-09-18 移出（改归 SCAFFOLD_TOOLS，见下）：cron_run_now / eventBus_publish /
-// restart_request / dream_run_now / selfModel_update / evolution_logPhase4 /
-// autocreate_release / curator_run_now / wiki_lint / diagnosis_annotate。
-// 原因：它们是「操作 AGINT 自身」的控制面动作，不是业务能力。
+// 2026-09-18 移出（改归 SCAFFOLD_TOOLS，见下）：
+//   - 第一批控制面：cron_run_now / eventBus_publish / restart_request / dream_run_now /
+//     selfModel_update / evolution_logPhase4 / autocreate_release / curator_run_now /
+//     wiki_lint / diagnosis_annotate
+//   - 第二批（2026-09-18 修 schema 错配后，04:45 cron 触发发现）：
+//     web_search / web_fetch / agint_search —— 「跨上下文查东西」是通用动作，
+//     跟 memory_search / wiki_search 同性质（已归 SCAFFOLD_TOOLS），它们才是
+//     业务写动作（写知识/写记忆）。注释与代码 09-17 脱节，今天才修正：
+//     DOMAIN_TOOLS 误放这 3 个 → A1 门判 scaffoldOnly=false → 04:45 cron
+//     自动发布了 2 个空壳（agintsearch-pwsh-askuserquestion-pwsh + pwsh-glob-webfetch-webfetch）。
+// 原因：它们是「通用查询」/「操作 AGINT 自身」的动作，不携带业务领域语义。
 
 /**
  * 通用脚手架黑名单 —— **A1 的真正判据，这是唯一需要维护的集合**。
@@ -65,6 +71,12 @@ export const SCAFFOLD_TOOLS = new Set([
   'structured_output',    // 纯输出格式化，不携带任务语义（2026-09-18 依生产审计补入）
   'sidebar_open', 'job_output', 'job_list', 'list_agents',
   'memory_search', 'wiki_search',
+  // ── 第三批（2026-09-18 修 schema 错配后，04:45 cron 触发发现）──
+  // web_search / web_fetch / agint_search：跨上下文查东西的通用查询动作，
+  // 跟 memory_search / wiki_search 同性质。DOMAIN_TOOLS 把它们误归「领域工具」
+  // → A1 门判 scaffoldOnly=false → 让纯脚手架序列带个 web_fetch 就逃过门。
+  // 跟 memory_search / wiki_search 并排放，方便对照理解「查询 = 通用」。
+  'web_search', 'web_fetch', 'agint_search',
 
   // ── 第二批（2026-09-18 首次真实运行后，依审计 pattern_specificity_unknown_tools 补入）──
   // 判据：**操作 AGINT 自身**的控制面动作 —— 看状态、重启、触发内部任务、查自己

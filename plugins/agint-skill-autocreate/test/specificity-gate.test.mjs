@@ -54,8 +54,10 @@ test('classify: 今日两个真实垃圾技能序列均为纯脚手架', () => {
 });
 
 test('classify: 含领域工具 → 不算 scaffoldOnly', () => {
-  const r = classifySpecificity(['read', 'web_search', 'write']);
-  assert.deepEqual(r.domain, ['web_search']);
+  // ⚠️ 2026-09-18 换例：原先用 web_search 当"领域工具"，但它已归脚手架（见文末回归测试）。
+  // 换 wiki_write —— 现行判据里"业务**写**动作"才是领域语义（查询类算通用）。
+  const r = classifySpecificity(['read', 'wiki_write', 'write']);
+  assert.deepEqual(r.domain, ['wiki_write']);
   assert.equal(r.scaffoldOnly, false);
 });
 
@@ -108,11 +110,34 @@ test('detect: 被拦模式仍进 upserts（可观测，不静默丢弃）', () =
 
 test('detect: 含领域工具的序列正常放行', () => {
   const { newRepeat, blockedByLowSpecificity } = detectPatterns(
-    repeat(['read', 'web_search', 'write']),
+    repeat(['read', 'wiki_write', 'write']),
     { minOccurrence: 3 },
   );
   assert.equal(newRepeat.length, 1);
   assert.equal(blockedByLowSpecificity.length, 0);
+});
+
+test('回归：通用"查询"动作归脚手架（2026-09-18 生产证据驱动的判据收紧）', () => {
+  // 来源：生产审计 + 04:45 cron 真实发布。web_search / web_fetch / agint_search
+  // 曾被 DOMAIN_TOOLS 当「领域工具」→ A1 门判 scaffoldOnly=false →
+  // 纯脚手架序列只要带一个 web_fetch 就能逃过门，实际发布了两个空壳
+  // （agintsearch-pwsh-askuserquestion-pwsh / pwsh-glob-webfetch-webfetch）。
+  //
+  // 判据是「查询 ≠ 领域」：跟已在黑名单的 memory_search / wiki_search 同性质。
+  // 领域语义留给**业务写动作**（wiki_write / memory_write）与真正的外部系统动作（ssh_*）。
+  //
+  // ⚠️ 这条是新语义（与当日 10:34 记录的"放行 2 条确有领域动作"相反），
+  // 由老板复核后可一行改回：把它们挪回 DOMAIN_TOOLS 并同步本测试。
+  for (const t of ['web_search', 'web_fetch', 'agint_search']) {
+    assert.equal(SCAFFOLD_TOOLS.has(t), true, `${t} 应归脚手架（通用查询动作）`);
+    assert.equal(DOMAIN_TOOLS.has(t), false, `${t} 不应同时留在领域工具名单里`);
+  }
+  // 反例：业务写动作必须仍在领域侧，否则会拦掉真正有价值的模式
+  for (const t of ['wiki_write', 'memory_write', 'ssh_exec']) {
+    assert.equal(SCAFFOLD_TOOLS.has(t), false, `${t} 是业务动作，误进黑名单会误杀好模式`);
+  }
+  // 全查询序列 → 判为纯脚手架（旧判据会放行）
+  assert.equal(classifySpecificity(['pwsh', 'glob', 'web_fetch', 'web_fetch']).scaffoldOnly, true);
 });
 
 test('detect: specificityGate=false 可整门关闭（回滚通道有效）', () => {
