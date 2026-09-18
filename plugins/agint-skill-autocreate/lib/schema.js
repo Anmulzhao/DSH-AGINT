@@ -298,6 +298,40 @@ export const ConfigSchema = z.object({
   // 喂给提案器的窗口文本总字符上限（防单个大会话把草稿撑爆）
   semantic_window_max_chars: z.number().int().min(200).default(4000),
 
+  // ── LLM 接入（2026-09-18 LLM 接入 autocreate 方案 §6）─────────────────
+  // 两个接入点：判定闸门（要不要固化）+ 提案生成（怎么写）。**默认全 off
+  // ⟹ 合入即零行为变化**——off 时 judgeViaLLM 根本不被调用（不是调了再忽略）。
+  //
+  // 判定闸门三档（照抄同文件 cross_session_aggregation 的现成范式，见下）：
+  //   'off'     不调用任何 LLM，完全走既有硬否决 + 轨道 B 打分（默认）
+  //   'shadow'  照常调用，但**不改变任何结论**，只把规则判定与 LLM 判定的
+  //             分歧写进 audit（llm_judge_shadow）——Phase A 的取证档
+  //   'primary' 采用 LLM 判定（LLM 不可用时回落轨道 B）
+  // 为什么必须独立于 standardizable_route：后者语义是「轨道 A（diagnosis
+  // 归因）开关」，**没有 shadow 档**；而本方案第一版必须 shadow（K58：dream
+  // 的 LLM 通路至今 promoted=0，不能把未验证路径当依赖）。
+  llm_judge_mode: z.enum(['off', 'shadow', 'primary']).default('off'),
+  // 提案生成（接入点 2，独立启停）。Phase A/B 期间即使一次调用已产出
+  // authoring，也**直接丢弃不用**、只写 audit 留存 —— 这样「一次调用两个产出」
+  // 不会强迫两件事一起上线（方案 §2 D1「保留退路」）。
+  llm_authoring_mode: z.enum(['off', 'on']).default('off'),
+  // provider / model：**空字符串 = 跟随宿主默认**，不硬编码任何值。
+  // 刻意不照抄 dream 的 DEFAULT_PROVIDER='minimax-cn' / DEFAULT_MODEL='MiniMax-M3'
+  // 常量——那是从 ~/.dsh/settings.yaml 实测抄来的值，换模型那天会变成静默故障
+  // （K59 那条被固化 12 天的错误归因就是这么来的）。形态照抄 dream，短板不照抄。
+  // ⚠️ 绝不硬编码 'deepseek'：DSH 把 deepseek 仅作 fallback adapter。
+  llm_provider: z.string().default(''),
+  llm_model: z.string().default(''),
+  // 单次调用超时（双保险之一；另一道是 AbortController）
+  llm_timeout_ms: z.number().int().min(1000).default(60_000),
+  // 硬预算：每日调用上限（**含 shadow**——shadow 期同样花钱）。
+  // 只在过了 5 条硬否决的 pattern 上调用，量级是「过门槛的模式数/天」，
+  // 不是全量会话。预算耗尽不报错，静默跳回轨道 B，但记
+  // llm_budget_exhausted（否则又变成「分不清是没有还是被拦了」，K59）。
+  llm_daily_budget: z.number().int().min(0).default(20),
+  // 提案生成是否要求判定先通过（默认 true：判定说不要，就不浪费一次撰写）
+  llm_authoring_requires_judge: z.boolean().default(true),
+
   // ── 跨会话聚合（2026-09-17 提案 d5124051；老板拍板走完整 preflight）────
   // 背景：原实现 key = (sessionId, turn)，跨会话重复的工作流被切成 N 份
   // x1，min_occurrence_count 几乎跨不过去。13.5 天 / 9088 条数据回放：
@@ -343,6 +377,16 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'semantic_window_enabled',
   'semantic_window_radius',
   'semantics_quality_gate_enabled',
+  // ── LLM 接入（2026-09-18）：两个接入点全部可运行时启停（K51 kill-switch）
+  // 出问题先关再查，不用改代码不用重启。注意运行时改的是**内存态**，
+  // 重启还原为 patch.yml 的值。
+  'llm_judge_mode',
+  'llm_authoring_mode',
+  'llm_provider',
+  'llm_model',
+  'llm_timeout_ms',
+  'llm_daily_budget',
+  'llm_authoring_requires_judge',
 ]);
 
 // ── D4：数据来源黑名单（三处副本之一）─────────────────────────────────────

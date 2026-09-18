@@ -29,6 +29,11 @@
  *     接口预留（opts.diagnosis）。
  *   - 轨道 B（启发式，默认）：回答「这是不是一个有复用价值的固定流程」。
  *     硬否决先行（低价值形态），再按正向信号打分 → confidence。
+ *   - 轨道 C（LLM，2026-09-18 新增，方案见 `issue-drafts/2026-09-18-LLM接入
+ *     autocreate-方案.md` §4）：LLM 的判定结果由调用方（index.js）算好后经
+ *     `opts.llmVerdict` 传进来 —— **本模块保持纯函数、无 I/O**，才能单测。
+ *     分工是互补不是替换：**LLM 判不了的活留给轨道 B，轨道 B 判不了的活交给
+ *     LLM**。LLM 缺失/降级时行为与引入前完全一致（默认 off ⟹ 零行为变化）。
  *
  * 纯函数模块，无 I/O，可单测。
  */
@@ -116,6 +121,13 @@ export const VERDICT_REASONS = Object.freeze({
   // 通过
   OK_HEURISTIC: 'ok_heuristic',
   OK_DIAGNOSIS: 'ok_diagnosis',
+  // ── 轨道 C：LLM 判定（2026-09-18 LLM 接入方案 §4.2）──────────────────
+  // 位置恒定在**硬否决之后**：那五条是「结构性事实」，零成本且判得准，
+  // 让 LLM 重判等于每条 pattern 白付一次调用。
+  OK_LLM: 'ok_llm',                       // LLM 判可标准化
+  LLM_REJECT: 'llm_reject',               // LLM 判不可标准化
+  LLM_LOW_CONFIDENCE: 'llm_low_confidence', // LLM 给不了把握 → 归「需人工」
+  LLM_DEGRADED: 'llm_degraded',           // 调用失败/超时/产出不可用 → 回落轨道 B
 });
 
 /** 默认阈值（与 ConfigSchema 保持一致，纯函数默认值便于单测） */
@@ -158,6 +170,55 @@ function hasReadWritePair(toolSequence) {
     && seq.some((t) => WRITE_LIKE.test(String(t)));
 }
 
+/** 构造判定信号（纯函数；判定与硬否决预筛共用，保证两边看到同一组事实）。 */
+function buildSignals(pattern) {
+  const seq = Array.isArray(pattern?.toolSequence) ? pattern.toolSequence : [];
+  const distinctTools = [...new Set(seq)];
+  return {
+    steps: seq.length,
+    distinctTools: distinctTools.length,
+    tools: distinctTools,
+    paramTokens: paramTokenCount(pattern?.paramSignature),
+    hasReadWritePair: hasReadWritePair(seq),
+    successRate: Number.isFinite(pattern?.successRate) ? pattern.successRate : null,
+    occurrenceCount: pattern?.occurrenceCount ?? null,
+    metaTools: metaToolsIn(seq),
+  };
+}
+
+/**
+ * 五条硬否决（顺序即优先级，先命中先返回）。
+ *
+ * 为什么单独抽出来：LLM 接入（2026-09-18）要求「只在**过了硬否决**的 pattern
+ * 上调用 LLM」——那是花钱的预筛。预筛与判定**必须共用这一份判据**，否则
+ * 「预筛说可以调」与「判定说该硬否决」迟早漂移，表现就是「白花一次调用」。
+ */
+function hardVeto(signals, minSteps, minDistinctTools) {
+  if (signals.steps === 0) return VERDICT_REASONS.EMPTY_SEQUENCE;
+  if (signals.metaTools.length > 0) return VERDICT_REASONS.META_TOOL;
+  if (signals.steps < minSteps) return VERDICT_REASONS.TOO_FEW_STEPS;
+  if (signals.distinctTools < minDistinctTools) return VERDICT_REASONS.TRIVIAL_SINGLE_TOOL;
+  if (signals.paramTokens === 0) return VERDICT_REASONS.NO_PARAM_STRUCTURE;
+  return null;
+}
+
+/**
+ * 硬否决预筛：命中即返回结论码，未命中返回 null。
+ * 调用方（detect 的 LLM 预算门）用它决定「值不值得为这条 pattern 花一次 LLM 调用」。
+ * 判据与 `judgeStandardizable` 严格同源（同一份 `hardVeto`），不另写一遍。
+ *
+ * @param {object} pattern
+ * @param {{minSteps?: number, minDistinctTools?: number}} [opts]
+ * @returns {string|null} VERDICT_REASONS 里的一条，或 null
+ */
+export function hardVetoOf(pattern, opts = {}) {
+  return hardVeto(
+    buildSignals(pattern),
+    opts.minSteps ?? DEFAULTS.minSteps,
+    opts.minDistinctTools ?? DEFAULTS.minDistinctTools,
+  );
+}
+
 // ── 主入口 ───────────────────────────────────────────────────────────────
 
 /**
@@ -169,11 +230,17 @@ function hasReadWritePair(toolSequence) {
  *   minSteps / minDistinctTools / minConfidence : 阈值
  *   diagnosis : { classify(trajectory) → {rootCause, confidence} } | null
  *   failureEvidence : array | null —— 轨道 A 的输入；无则走轨道 B
+ *   llmVerdict  : { standardizable: boolean, confidence: number, rationale?: string } | null
+ *                 —— 轨道 C 的输入（调用方调 LLM 后传入；null = 不用 LLM）
+ *   llmShadow   : boolean —— true = 只观测不改变结论（把分歧写进
+ *                 `signals.llmShadow`），用于 Phase A 灰度取证
+ *   llmDegraded : string | null —— LLM 调用失败的 reason；非空时结论跟随轨道 B，
+ *                 但 reason 标 `llm_degraded`（K59：降级必须留痕，且要能说清原因）
  *
  * @returns {{
  *   standardizable: boolean|null,  // true=可标准化 / false=明确否 / null=需人工
  *   confidence: number,
- *   route: 'diagnosis'|'heuristic',
+ *   route: 'diagnosis'|'heuristic'|'llm',
  *   rootCause: string|null,
  *   reason: string,
  *   signals: object,
@@ -184,18 +251,7 @@ export function judgeStandardizable(pattern, opts = {}) {
   const minDistinctTools = opts.minDistinctTools ?? DEFAULTS.minDistinctTools;
   const minConfidence = opts.minConfidence ?? DEFAULTS.minConfidence;
 
-  const seq = Array.isArray(pattern?.toolSequence) ? pattern.toolSequence : [];
-  const distinctTools = [...new Set(seq)];
-  const signals = {
-    steps: seq.length,
-    distinctTools: distinctTools.length,
-    tools: distinctTools,
-    paramTokens: paramTokenCount(pattern?.paramSignature),
-    hasReadWritePair: hasReadWritePair(seq),
-    successRate: Number.isFinite(pattern?.successRate) ? pattern.successRate : null,
-    occurrenceCount: pattern?.occurrenceCount ?? null,
-    metaTools: metaToolsIn(seq),
-  };
+  const signals = buildSignals(pattern);
 
   // ── 轨道 A：有失败证据 + diagnosis 可用 → 根因归因 ──
   const failureEvidence = Array.isArray(opts.failureEvidence) ? opts.failureEvidence : null;
@@ -206,18 +262,91 @@ export function judgeStandardizable(pattern, opts = {}) {
   }
 
   // ── 硬否决：低价值形态（顺序即优先级，先命中先返回）──
-  if (signals.steps === 0) return verdict(false, 0, 'heuristic', null, VERDICT_REASONS.EMPTY_SEQUENCE, signals, minConfidence);
-  if (signals.metaTools.length > 0) return verdict(false, 0, 'heuristic', null, VERDICT_REASONS.META_TOOL, signals, minConfidence);
-  if (signals.steps < minSteps) return verdict(false, 0, 'heuristic', null, VERDICT_REASONS.TOO_FEW_STEPS, signals, minConfidence);
-  if (signals.distinctTools < minDistinctTools) return verdict(false, 0, 'heuristic', null, VERDICT_REASONS.TRIVIAL_SINGLE_TOOL, signals, minConfidence);
-  if (signals.paramTokens === 0) return verdict(false, 0, 'heuristic', null, VERDICT_REASONS.NO_PARAM_STRUCTURE, signals, minConfidence);
+  // 判据在 `hardVeto` 里，与 LLM 预算预筛 `hardVetoOf` 同源。
+  const veto = hardVeto(signals, minSteps, minDistinctTools);
+  if (veto) return verdict(false, 0, 'heuristic', null, veto, signals, minConfidence);
 
-  // ── 正向信号打分 → confidence ──
-  const score = scoreSignals(signals);
-  if (score < minConfidence) {
-    return verdict(null, +score.toFixed(4), 'heuristic', null, VERDICT_REASONS.LOW_CONFIDENCE, signals, minConfidence);
+  // ── 轨道 C：LLM 判定（2026-09-18；只在硬否决之后介入）───────────────────
+  // 固定顺序：硬否决(5) → [轨道 A] → [轨道 C] → 轨道 B 打分。
+  // 上游（index.js）算出 LLM 结果后经 opts 传入；本函数不自己调模型。
+  // 注：轨道 A 的判断在硬否决**之前**（既有行为，本轮不动）；轨道 C 恒在其后。
+  const llm = usableLlmVerdict(opts.llmVerdict);
+  if (llm) {
+    const ruleScore = scoreSignals(signals);
+    // 规则侧同尺对照：≥ 阈值 = true，< 阈值 = null（需人工）——与轨道 B 同语义
+    const ruleVerdict = ruleScore >= minConfidence ? true : null;
+    const agree = ruleVerdict === llm.standardizable;
+
+    if (opts.llmShadow === true) {
+      // shadow：**不改任何结论**，只把分歧样本塞进返回值供调用方落 audit。
+      // 这是 Phase A 校准 prompt / minConfidence 的唯一依据（方案 §8）。
+      signals.llmShadow = {
+        ruleVerdict,
+        ruleConfidence: +ruleScore.toFixed(4),
+        llmVerdict: llm.standardizable,
+        llmConfidence: llm.confidence,
+        agree,
+        rationale: llm.rationale || null,
+      };
+      // 落到轨道 B 打分（下面照常执行）
+    } else {
+      signals.ruleConfidence = +ruleScore.toFixed(4);
+      signals.llmConfidence = llm.confidence;
+      signals.llmRationale = llm.rationale || null;
+      // ★ LLM **不享有特权阈值**：即便它说 true，置信度低于 minConfidence 仍归
+      //   「需人工」。两侧用同一把尺，分歧才可比（方案 §4.2 关键）。
+      if (llm.confidence < minConfidence) {
+        return verdict(null, llm.confidence, 'llm', null, VERDICT_REASONS.LLM_LOW_CONFIDENCE, signals, minConfidence);
+      }
+      return verdict(
+        llm.standardizable,
+        llm.confidence,
+        'llm',
+        null,
+        llm.standardizable ? VERDICT_REASONS.OK_LLM : VERDICT_REASONS.LLM_REJECT,
+        signals,
+        minConfidence,
+      );
+    }
+  } else if (typeof opts.llmDegraded === 'string' && opts.llmDegraded) {
+    // 调用失败/超时/产出不合规 → 结论**完全跟随轨道 B**（下面照常打分），
+    // 但路径必须留痕：K59 的教训是「没有候选」与「429 超限」在日记上长得
+    // 一模一样，错误归因因此被固化 12 天。reason 直接标 llm_degraded，
+    // 轨道 B 原本的结论挪到 signals.ruleReason（信息不丢）。
+    signals.llmDegraded = true;
+    signals.llmDegradedReason = opts.llmDegraded;
   }
-  return verdict(true, +score.toFixed(4), 'heuristic', null, VERDICT_REASONS.OK_HEURISTIC, signals, minConfidence);
+
+  // ── 轨道 B：正向信号打分 → confidence（LLM 不可用时的兜底，行为不变）──
+  const degraded = signals.llmDegraded === true;
+  const score = scoreSignals(signals);
+  if (degraded) {
+    signals.ruleReason = score < minConfidence
+      ? VERDICT_REASONS.LOW_CONFIDENCE
+      : VERDICT_REASONS.OK_HEURISTIC;
+  }
+  if (score < minConfidence) {
+    return verdict(null, +score.toFixed(4), 'heuristic', null,
+      degraded ? VERDICT_REASONS.LLM_DEGRADED : VERDICT_REASONS.LOW_CONFIDENCE, signals, minConfidence);
+  }
+  return verdict(true, +score.toFixed(4), 'heuristic', null,
+    degraded ? VERDICT_REASONS.LLM_DEGRADED : VERDICT_REASONS.OK_HEURISTIC, signals, minConfidence);
+}
+
+/**
+ * 校验调用方传来的 LLM 判定（不信任边界输入）。
+ * @returns {{standardizable: boolean, confidence: number, rationale: string}|null}
+ */
+function usableLlmVerdict(v) {
+  if (!v || typeof v !== 'object') return null;
+  if (typeof v.standardizable !== 'boolean') return null;
+  const conf = Number(v.confidence);
+  if (!Number.isFinite(conf)) return null;
+  return {
+    standardizable: v.standardizable,
+    confidence: Math.min(1, Math.max(0, conf)),
+    rationale: typeof v.rationale === 'string' ? v.rationale : '',
+  };
 }
 
 /**

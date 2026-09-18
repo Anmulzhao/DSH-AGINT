@@ -44,7 +44,7 @@ import {
 } from './storage.js';
 import { aggregateTasks, filterWindow } from './aggregator.js';
 import { detectPatterns, classifySpecificity } from './detector.js';
-import { judgeStandardizable } from './standardizable.js';
+import { judgeStandardizable, hardVetoOf } from './standardizable.js';
 import { buildProposal } from './proposer.js';
 import { evaluateCandidate } from './evaluator.js';
 import { isDuplicate } from './similarity.js';
@@ -56,6 +56,9 @@ import {
   extractSemanticEvidence,
   renderSemanticSections,
 } from './semantic-window.js';
+import { judgeViaLLM } from './llm-verdict.js';
+import { createDailyBudget, localDayKey } from './llm-budget.js';
+import { runVerification } from './verify.js';
 
 const name = 'agint-skill-autocreate';
 // storageDomain 硬依赖；tools 在宿主不注册 model 工具（preset 平面经 lib/tools.js）
@@ -125,6 +128,19 @@ function apply(ctx, config) {
     if (!d || typeof d.classify !== 'function') return null;
     return { classify: (trajectory) => d.classify(trajectory) };
   }
+
+  // ── LLM 每日预算（2026-09-18 LLM 接入方案 §9）──────────────────────────
+  // 计数落盘复用 audit_log 的 `llm_judge_called` 条数：进程重启后能从审计恢复
+  // 当天已用量，不会因为重启把预算刷满。**不新增 storage 表**——该域有
+  // schemaVersion，加表要面对存量记录兼容（09-18 刚在 invalidRecords 上踩过一次）。
+  const llmBudget = createDailyBudget({
+    limit: () => effectiveConfig().llm_daily_budget,
+    loadUsed: async (day) => {
+      const t = await table('audit_log');
+      return [...t.entries()].filter(([, v]) => v.action === 'llm_judge_called'
+        && localDayKey(new Date(v.timestamp)) === day).length;
+    },
+  });
 
   // ── audit（唯一自动滚动清理的表：>1000 条删最旧）───────────────────────
   async function audit(entry) {
@@ -351,17 +367,45 @@ function apply(ctx, config) {
       : null;
     let semanticFilled = 0;   // 本次有多少候选拿到了非空语义段
 
+    // ── LLM 接入（2026-09-18《LLM 接入 autocreate 方案》§1.3/§4/§5）───────
+    // 两个接入点：判定闸门（轨道 C）+ 提案生成。默认全 off ⟹ 合入即零行为变化。
+    const judgeMode = c.llm_judge_mode ?? 'off';
+    const authoringMode = c.llm_authoring_mode ?? 'off';
+    const llmStats = {
+      mode: judgeMode,
+      authoringMode,
+      called: 0,            // 真正发起过的调用（= llm_judge_called 条数）
+      degraded: 0,          // 调用失败/产出不可用
+      shadowSamples: 0,     // shadow 分歧样本
+      budgetExhausted: 0,
+      hardVetoSkipped: 0,   // 被 5 条硬否决预筛挡下、**没花预算**的 pattern 数
+      authoringRejected: 0, // LLM 撰写被本地校验打回
+    };
+
+    /** 空窗口上下文（不加载窗口时的占位，形状与 loadWindowCtx 一致）。 */
+    const EMPTY_WINDOW_CTX = {
+      semanticMarkdown: '',
+      windowText: '',
+      evidence: { why: [], pitfalls: [] },
+      windowInfo: { enabled: false, ok: false, reason: 'not-loaded' },
+    };
+
     /**
-     * 提案生成 + 语义窗口注入 + 跳过审计（Phase 2）。
-     * 返回 proposal | null；返回 null 时已写 audit（reason 精确到拦截点：
-     * no-matching-template / self-referential / no-concrete-value）。
+     * 加载语义窗口（判定与提案**共享同一次读取**，方案 §1.3）。
      *
-     * 降级策略：窗口取不到（无锚点 / 会话日志缺失 / 解压失败）一律**不阻断**，
-     * 提案退回纯模板——语义是增益，不是依赖（约束 3：门禁与产物所有权在 autocreate）。
+     * 为什么不各自加载：窗口加载原本在提案侧（判定之后），判定侧完全拿不到
+     * 语义证据 —— 于是可能出现「判定说没价值、撰写却写得有模有样」的证据
+     * 不一致。上提后两个接入点吃的是同一份证据。
+     * 成本可忽略：`createWindowLoader` 内部有 `sessionId → events` 缓存，
+     * 同一会话的多个 pattern 只解压一次，仅 `extractTextWindows` 会重算。
+     *
+     * 降级策略不变：窗口取不到（无锚点 / 日志缺失 / 解压失败）一律**不阻断**，
+     * 判定与提案各自退回无窗口形态（语义是增益，不是依赖）。
      */
-    async function buildProposalResult(stored) {
+    async function loadWindowCtx(stored) {
       let semanticMarkdown = '';
       let windowText = '';
+      let evidence = { why: [], pitfalls: [] };
       let windowInfo = {
         enabled: !!windowLoader,
         ok: false,
@@ -381,6 +425,7 @@ function apply(ctx, config) {
           };
           if (win.ok) {
             const ev = extractSemanticEvidence(win);
+            evidence = ev;
             semanticMarkdown = renderSemanticSections(ev);
             windowText = [...(win.before ?? []), ...(win.after ?? [])]
               .map((e) => (typeof e === 'string' ? e : (e?.text ?? '')))
@@ -393,9 +438,52 @@ function apply(ctx, config) {
           windowInfo = { enabled: true, ok: false, reason: `unexpected:${e?.message ?? e}` };
         }
       }
+      return { semanticMarkdown, windowText, evidence, windowInfo };
+    }
+
+    /**
+     * 提案生成 + 语义窗口注入 + LLM 撰写落地 + 跳过审计（Phase 2 / 2026-09-18）。
+     *
+     * 窗口不再自己加载 —— 由调用方传入 `winCtx`（判定与提案共享同一次读取，
+     * 见 loadWindowCtx）。本函数只负责「合成 + 审计」。
+     *
+     * @param {object} stored        已入库的 pattern（含 sampleAnchor）
+     * @param {object} winCtx        loadWindowCtx 的返回值（或 EMPTY_WINDOW_CTX）
+     * @param {object|null} llmAuthoring LLM 撰写的产出；仅当开启且过本地校验才生效
+     *
+     * 返回 proposal | null；返回 null 时已写 audit（reason 精确到拦截点：
+     * no-matching-template / self-referential / no-concrete-value）。
+     */
+    async function buildProposalResult(stored, winCtx, llmAuthoring) {
+      const { semanticMarkdown, windowText, evidence, windowInfo } = winCtx;
 
       const reasonOut = {};
-      const proposal = buildProposal(stored, { semanticMarkdown, windowText, reasonOut });
+      const proposal = buildProposal(stored, {
+        semanticMarkdown,
+        windowText,
+        semanticEvidence: evidence,
+        reasonOut,
+        llmAuthoring,
+      });
+
+      // ── LLM 撰写被本地校验打回（方案 §5.2）──────────────────────────────
+      // **整条丢弃** LlmAuthoring（不是只丢名字、保留描述——半信半疑的混合产出
+      // 更难解释），回落现行为，并留痕到人可读产物。
+      if (reasonOut.llmAuthoringRejected) {
+        llmStats.authoringRejected++;
+        await audit({
+          actor: 'system',
+          action: 'llm_authoring_rejected',
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: {
+            ...reasonOut.llmAuthoringRejected,
+            toolSequence: stored.toolSequence,
+          },
+          reason: reasonOut.llmAuthoringRejected.reason,
+        });
+      }
+
       if (!proposal) {
         await audit({
           actor: 'system',
@@ -454,6 +542,104 @@ function apply(ctx, config) {
         });
       }
 
+      // ── 语义窗口加载上提（2026-09-18 方案 §1.3）────────────────────────
+      // 原实现在提案侧（判定之后）才加载，判定侧拿不到语义证据。上提后两个
+      // 接入点共享同一次读取，不会出现「判定说没价值、撰写却写得有模有样」。
+      // 预判「这次要不要窗口」：LLM 判定需要它，或后续会走候选生成 —— 两者都
+      // 不需要时不加载，保住「llm off + 不成候选」路径的既有零额外 I/O 行为。
+      const needWindowForProposal = c.auto_create_enabled
+        && !stored.linkedCandidateId && stored.status === 'active';
+      const needWindow = judgeMode !== 'off' || needWindowForProposal;
+      const winCtx = needWindow ? await loadWindowCtx(stored) : EMPTY_WINDOW_CTX;
+
+      // ── 轨道 C 的输入：LLM 判定（接入点 1，方案 §4）────────────────────
+      // 只在**过了 5 条硬否决之后**才调 —— 那五条是结构性事实，零成本判得准，
+      // 让 LLM 重判等于每条 pattern 白付一次调用（方案 §9「预算只花在过门槛的
+      // 模式上」）。预筛判据与判定的硬否决**同源**（`hardVetoOf` 与 `hardVeto`
+      // 共用一份表），不是另写一遍——否则两边迟早漂移成「白花一次调用」。
+      let llmOutcome = null;
+      const hardVeto = judgeMode === 'off' ? null : hardVetoOf(stored, {
+        minSteps: c.standardizable_min_steps,
+        minDistinctTools: c.standardizable_min_distinct_tools,
+      });
+      if (judgeMode !== 'off' && hardVeto) {
+        // 结构性事实（空序列/元工具/步数/工具数/无参数）——零成本判得准，
+        // 不值得为它花一次 LLM 调用。计数而非静默跳过：否则「LLM 没跑」
+        // 与「本来就不该跑」会分不清（K59）。
+        llmStats.hardVetoSkipped++;
+      } else if (judgeMode !== 'off') {
+        const grant = await llmBudget.take();
+        if (!grant.ok) {
+          llmStats.budgetExhausted++;
+          if (grant.firstRejection) {
+            const snap = await llmBudget.snapshot();
+            await audit({
+              actor: 'system',
+              action: 'llm_budget_exhausted',
+              targetType: 'task_pattern',
+              targetId: '*',
+              details: { used: snap.used, budget: snap.limit, day: snap.day },
+              reason: `LLM 每日预算耗尽（${snap.used}/${snap.limit}），本轮后续 pattern 全部回落轨道 B`,
+            });
+          }
+        } else {
+          llmOutcome = await judgeViaLLM({
+            ctx,
+            pattern: stored,
+            windowText: winCtx.windowText,
+            provider: c.llm_provider ?? '',
+            model: c.llm_model ?? '',
+            timeoutMs: c.llm_timeout_ms,
+          });
+          if (!llmOutcome.attempted) await llmBudget.refund();   // 零成本早退，不占预算
+          if (llmOutcome.attempted) {
+            llmStats.called++;
+            await audit({
+              actor: 'system',
+              action: 'llm_judge_called',
+              targetType: 'task_pattern',
+              targetId: stored.id,
+              details: {
+                mode: judgeMode,
+                provider: llmOutcome.meta.provider || null,
+                model: llmOutcome.meta.model || null,
+                durationMs: llmOutcome.meta.durationMs,
+                outcome: llmOutcome.mode,
+                toolSequence: stored.toolSequence,
+                verdict: llmOutcome.verdict ?? null,
+                // Phase A/B：即使同一次调用产出了 authoring 也**只留档不启用**
+                //（方案 §2 D1「保留退路」——一个调用两个产出，不等于两件事一起上线）
+                authoringState: authoringMode === 'on'
+                  ? 'enabled'
+                  : (llmOutcome.authoring ? 'archived-only' : 'none'),
+                authoringDraft: llmOutcome.authoring ?? null,
+              },
+            });
+          }
+          if (llmOutcome.mode === 'degraded') {
+            llmStats.degraded++;
+            await audit({
+              actor: 'system',
+              action: 'llm_judge_degraded',
+              targetType: 'task_pattern',
+              targetId: stored.id,
+              // ★ reason 必填（K59 教训）：dream 的降级路径只印「degraded」不印原因，
+              //   「没有候选」与「429 超限」在日记上长得一样 → 错误归因被固化 12 天。
+              //   这里 reason 进 audit + detect 返回值的聚合计数，人可直接读。
+              details: {
+                reason: llmOutcome.reason,
+                diagnostic: llmOutcome.diagnostic ?? null,
+                provider: llmOutcome.meta.provider || null,
+                model: llmOutcome.meta.model || null,
+                durationMs: llmOutcome.meta.durationMs,
+                toolSequence: stored.toolSequence,
+              },
+              reason: llmOutcome.reason,
+            });
+          }
+        }
+      }
+
       // ── [4] 可标准化判断（设计稿 §3.1；2026-09-09 补齐）────────────────
       // 判定结果**无论通过与否都回写 pattern**——周复盘/人工复核直接扫
       // task_patterns.standardizable 即可，不依赖审计日志。
@@ -465,7 +651,30 @@ function apply(ctx, config) {
         // 轨道 A 的输入：聚合层目前只落 successRate，不聚合 errorKind，
         // 因此恒为 null → 轨道 A 不激活（见 lib/standardizable.js 文件头）。
         failureEvidence: null,
+        // ── 轨道 C（2026-09-18）：LLM 判定结果 + 灰度档 ──
+        llmVerdict: llmOutcome?.verdict ?? null,
+        llmShadow: judgeMode === 'shadow',
+        llmDegraded: llmOutcome?.mode === 'degraded' ? llmOutcome.reason : null,
       });
+
+      // shadow 档：**不改结论**，只把分歧样本落盘 —— Phase A 校准 prompt 与
+      // minConfidence 的唯一依据（方案 §8「shadow 期必须回答的三个问题」）。
+      if (judgeMode === 'shadow' && verdict.signals?.llmShadow) {
+        llmStats.shadowSamples++;
+        await audit({
+          actor: 'system',
+          action: 'llm_judge_shadow',
+          targetType: 'task_pattern',
+          targetId: stored.id,
+          details: {
+            ...verdict.signals.llmShadow,
+            toolSequence: stored.toolSequence,
+            ruleReason: verdict.reason,   // 规则轨最终给出的结论码（shadow 下即真实结论）
+            window: { ok: winCtx.windowInfo.ok, chars: winCtx.windowInfo.chars ?? 0 },
+          },
+        });
+      }
+
       standardizableJudged++;
       if (verdict.standardizable === true) standardizablePass++;
       else if (verdict.standardizable === false) standardizableReject++;
@@ -503,7 +712,17 @@ function apply(ctx, config) {
       if (stored.linkedCandidateId) continue;      // 已有候选，不重复生成
       if (stored.status !== 'active') continue;    // dismissed 等状态不复活
 
-      const proposal = await buildProposalResult(stored);
+      // ── LLM 撰写（接入点 2，方案 §5）：独立开关，Phase C 才启用 ──────────
+      // requires_judge=true（默认）时「判定说不要就不浪费一次撰写」；走到这里
+      // verdict.standardizable 必为 true，故该条件恒成立——保留开关是为了将
+      // 来允许「判定不确定但值得先写一版」的档位。
+      const authoringEnabled = authoringMode === 'on'
+        && (!c.llm_authoring_requires_judge || verdict.standardizable === true);
+      const proposal = await buildProposalResult(
+        stored,
+        winCtx,
+        authoringEnabled ? (llmOutcome?.authoring ?? null) : null,
+      );
       if (!proposal) continue;
 
       const cd = await table('candidates');
@@ -581,6 +800,13 @@ function apply(ctx, config) {
       },
       candidatesCreated,
       candidateIds,
+      // ── LLM 接入（2026-09-18）：可观测性必须够到「今天花了多少 / 挂在哪」──
+      // 静默失败是本行的头号杀手（K59 刚踩过），所以调用数、降级数、分歧样本数、
+      // 被硬否决挡下的数、当日预算用量全部进返回值（人可读产物，不只在日志里）。
+      llm: {
+        ...llmStats,
+        budget: await llmBudget.snapshot(),
+      },
       // Phase 2：语义窗口填充情况（filled=正文里真有 `## 为什么`/`## 避坑`）
       semanticWindow: {
         enabled: !!windowLoader,
@@ -984,8 +1210,18 @@ function apply(ctx, config) {
         session_source: effectiveConfig().session_source,
         semantic_window_enabled: effectiveConfig().semantic_window_enabled,
         semantic_window_radius: effectiveConfig().semantic_window_radius,
+        // ── LLM 接入（2026-09-18）──────────────────────────────────────
+        llm_judge_mode: effectiveConfig().llm_judge_mode,
+        llm_authoring_mode: effectiveConfig().llm_authoring_mode,
+        llm_provider: effectiveConfig().llm_provider,
+        llm_model: effectiveConfig().llm_model,
+        llm_timeout_ms: effectiveConfig().llm_timeout_ms,
+        llm_daily_budget: effectiveConfig().llm_daily_budget,
+        llm_authoring_requires_judge: effectiveConfig().llm_authoring_requires_judge,
       },
-      sprint: '16-release-layer',
+      // 当日 LLM 用量（重启后从 audit_log 的 llm_judge_called 恢复）
+      llmBudget: await llmBudget.snapshot(),
+      sprint: '17-llm-verdict',
     };
   }
 
@@ -999,6 +1235,24 @@ function apply(ctx, config) {
     paused = false;
     return audit({ actor, action: 'resumed', targetType: 'candidate', targetId: '*', details: {} })
       .then(() => ({ ok: true, paused: false }));
+  }
+
+  /**
+   * 真模型验证（手动触发，**不进 CI**）：跑两个反向样本，检查 prompt 在这台
+   * 机器上真能落地 —— 输出过 schema、且模型有分辨力（不是一律说 true/false）。
+   *
+   * 严格只读：不写 task_patterns / candidates / audit，不动每日预算。
+   * 唯一代价是真模型 token。形态照抄 dream 的 verifyConsolidation。
+   *
+   * opts: { provider, model, timeoutMs }（省略 = 跟随宿主默认模型）
+   */
+  async function verifyLlmJudge(opts = {}) {
+    return runVerification({
+      ctx,
+      provider: opts.provider ?? effectiveConfig().llm_provider,
+      model: opts.model ?? effectiveConfig().llm_model,
+      timeoutMs: opts.timeoutMs ?? effectiveConfig().llm_timeout_ms,
+    });
   }
 
   /** §8.2：无参 = 读当前生效配置；带 patch = 修改运行时子集（内存态）。
@@ -1030,6 +1284,7 @@ function apply(ctx, config) {
     observe,
     listReleases,
     stats,
+    verifyLlmJudge,
     pause,
     resume,
     config: configApi,

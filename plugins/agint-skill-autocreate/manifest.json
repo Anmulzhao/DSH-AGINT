@@ -2,7 +2,7 @@
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-skill-autocreate",
   "version": "0.3.7",
-  "description": "P0-1 技能自动创建机制 v0.3.5（Sprint 14 检测层 + Sprint 15 评估层 + Sprint 16 发布层 + Sprint 17 跨会话聚合）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估（Phase 1 = quality-static 安全/格式四族 + semantics 语义准入：负面断言/环境故障无解法/瞬时错误/失败包装成最佳实践/会话产物式命名）→ 三道门发布 → 14 天观察期。**Sprint 17 新增**：跨会话聚合三档模式 off/shadow/primary（默认 off 完全兼容 v0.3.4），13.5 天 / 9088 条回放验证跨过 min_occurrence_count≥3 的模式数 11 → 21（+91%）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。**0.3.6 A1 特异性门**：检测层新增准入判据——工具序列**全是**通用脚手架（黑名单 `SCAFFOLD_TOOLS`）即拦下，仍入库留痕但不成候选；生产 162 模式实测拦下 62 个（38.3%），2026-09-17 上线的两个噪声技能均在拦下之列。可回滚开关 `pattern_specificity_gate_enabled` + `scaffold_tools_extra`（均在 RUNTIME_CONFIG_KEYS）。**0.3.7 发布前特异性复检（门 5）**：A1 只管候选产生那一刻，管不到此前累积的存量队列——2026-09-18 核账发现 37 个待发候选里 36 个是纯脚手架且当日已自动发布出 `pwsh-pwsh-pwsh-pwsh`；故在 `checkGates` 末位补同一套黑名单判据，命中的候选**终态 REJECTED**（不走 BUDGET_WAIT，避免 releaseQueue 每日重试）；同时把生产审计 `pattern_specificity_unknown_tools` 暴露的 30 种「操作 AGINT 自身」的控制面工具补入黑名单（`restart_*` / `autocreate_*` / `cron_*` / `dream_*` / `evolve_*` / `curator_*` / `memory_read` 等），黑名单 17 → 47 项。开关 `release_specificity_gate_enabled`。",
+  "description": "P0-1 技能自动创建机制 v0.3.5（Sprint 14 检测层 + Sprint 15 评估层 + Sprint 16 发布层 + Sprint 17 跨会话聚合）：聚合 tool-stats → 模式检测（次数≥N 且 successRate≥min_pattern_success_rate 才成候选）→ 候选生成 → D-QAF 三阶段评估（Phase 1 = quality-static 安全/格式四族 + semantics 语义准入：负面断言/环境故障无解法/瞬时错误/失败包装成最佳实践/会话产物式命名）→ 三道门发布 → 14 天观察期。**Sprint 17 新增**：跨会话聚合三档模式 off/shadow/primary（默认 off 完全兼容 v0.3.4），13.5 天 / 9088 条回放验证跨过 min_occurrence_count≥3 的模式数 11 → 21（+91%）。独占 agint_skill_autocreate 存储域（5 表），自我评估禁止（§9.4）。**0.3.6 A1 特异性门**：检测层新增准入判据——工具序列**全是**通用脚手架（黑名单 `SCAFFOLD_TOOLS`）即拦下，仍入库留痕但不成候选；生产 162 模式实测拦下 62 个（38.3%），2026-09-17 上线的两个噪声技能均在拦下之列。可回滚开关 `pattern_specificity_gate_enabled` + `scaffold_tools_extra`（均在 RUNTIME_CONFIG_KEYS）。**0.3.7 发布前特异性复检（门 5）**：A1 只管候选产生那一刻，管不到此前累积的存量队列——2026-09-18 核账发现 37 个待发候选里 36 个是纯脚手架且当日已自动发布出 `pwsh-pwsh-pwsh-pwsh`；故在 `checkGates` 末位补同一套黑名单判据，命中的候选**终态 REJECTED**（不走 BUDGET_WAIT，避免 releaseQueue 每日重试）；同时把生产审计 `pattern_specificity_unknown_tools` 暴露的 30 种「操作 AGINT 自身」的控制面工具补入黑名单（`restart_*` / `autocreate_*` / `cron_*` / `dream_*` / `evolve_*` / `curator_*` / `memory_read` 等），黑名单 17 → 47 项。开关 `release_specificity_gate_enabled`。**0.4.0 LLM 接入**：判定闸门新增「轨道 C」——LLM 判定接入点是**硬否决之后**（那五条是结构性事实，零成本判得准，不该白付一次调用），LLM **不享有特权阈值**（与规则共用同一把 `min_standardizable_confidence`，分歧才可比）；提案撰写不再只靠 `toolSequence.join(' → ')`，可由 LLM 给 name/description/why/pitfalls，但产出必须过两道本地校验（宿主 `SKILL_NAME` 正则 + 工具链名判据），**过不了整条回落**模板行为。三档 `llm_judge_mode` off/shadow/primary + `llm_authoring_mode` off/on + `llm_daily_budget`（含 shadow 计费，按本地日切，从审计恢复）+ `llm_provider`/`llm_model` 默认空=跟随宿主（不硬编码模型名）。**每个 degraded 必带 reason**（K59 直接回应）。默认全 off ⟹ 零行为变化。真模型验证走 `autocreate_verify_llm`（手动，不进 CI）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -43,6 +43,7 @@
         "autocreate_get_candidate",
         "autocreate_trigger_eval",
         "autocreate_stats",
+        "autocreate_verify_llm",
         "autocreate_release",
         "autocreate_rollback",
         "autocreate_list_releases",
@@ -89,7 +90,7 @@
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.skillAutocreate": "技能自动创建全链路：detect / triggerEval / release（三道门+原子挂载）/ releaseQueue（cron）/ rollback（归档+冷却）/ observe（观察期）/ listReleases / listPatterns / listCandidates / getCandidate / rejectCandidate / modifyCandidate / stats / pause / resume / config"
+        "agint.skillAutocreate": "技能自动创建全链路：detect / triggerEval / release（三道门+原子挂载）/ releaseQueue（cron）/ rollback（归档+冷却）/ observe（观察期）/ listReleases / listPatterns / listCandidates / getCandidate / rejectCandidate / modifyCandidate / stats / verifyLlmJudge（真模型验证，手动触发）/ pause / resume / config"
       }
     },
     "changelog": "CHANGELOG.md",

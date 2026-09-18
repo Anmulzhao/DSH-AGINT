@@ -1,7 +1,7 @@
 {
   "name": "agint-skill-autocreate",
-  "version": "0.3.5",
-  "description": "P0-1 技能自动创建机制（检测+评估+发布全链路）：三道门发布、14 天观察期、自动回滚只归档不删除。Sprint 17 新增跨会话聚合（off/shadow/primary 三档，默认 off 兼容 v0.3.4）。",
+  "version": "0.4.0",
+  "description": "P0-1 技能自动创建机制（检测+评估+发布全链路）：三道门发布、14 天观察期、自动回滚只归档不删除。Sprint 17 新增跨会话聚合（off/shadow/primary 三档）。0.4.0 接入 LLM：判定闸门加「轨道 C」（off/shadow/primary，默认 off）+ 提案撰写走 LLM（默认 off）+ 每日硬预算。默认全关，零行为变化。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -13,6 +13,9 @@
     "./lib/templates.js": "./lib/templates.js",
     "./lib/standardizable.js": "./lib/standardizable.js",
     "./lib/proposer.js": "./lib/proposer.js",
+    "./lib/llm-verdict.js": "./lib/llm-verdict.js",
+    "./lib/llm-budget.js": "./lib/llm-budget.js",
+    "./lib/verify.js": "./lib/verify.js",
     "./lib/tools.js": "./lib/tools.js"
   },
   "keywords": [

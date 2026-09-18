@@ -146,6 +146,41 @@ function apply(ctx) {
     },
   }));
 
+  // ── LLM 判定通路：真模型验证（2026-09-18，手动触发）──────────────────────
+
+  ctx.tools.register(defineTool({
+    name: 'autocreate_verify_llm',
+    description:
+      '验证 LLM 判定通路在这台机器上真能落地：跑两个反向样本（一个值得固化的领域流程 /' +
+      '一个通用脚手架），检查输出能否过 schema、模型是否真能分辨（而不是一律说 true）。' +
+      '**只读**：不写候选/审计、不动每日预算。⚠️ 会真实消耗模型 token，别当烟雾测试天天跑。',
+    parameters: {
+      provider: { type: 'string', description: '留空 = 跟随宿主默认模型' },
+      model: { type: 'string', description: '留空 = 跟随宿主默认模型' },
+      timeoutMs: { type: 'number', description: '单次调用超时（默认 60000）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const lines = [`autocreate_verify_llm: ${v.ok ? '✅ 通路可用' : '⛔ 全部降级'}（${v.provider} / ${v.model}）`];
+        for (const c of v.cases ?? []) {
+          const verdict = c.verdict
+            ? `standardizable=${c.verdict.standardizable} conf=${c.verdict.confidence}`
+            : `degraded: ${c.reason}`;
+          lines.push(`  · ${c.id}（期望 ${c.expect}）→ ${verdict}  [${c.durationMs}ms]`);
+          if (c.verdict?.rationale) lines.push(`      理由：${c.verdict.rationale}`);
+          if (c.authoring) lines.push(`      撰写：name=${c.authoring.name ?? '(缺)'}${c.authoringRejected ? ` ⛔本地校验拒绝: ${c.authoringRejected.reason}` : ' ✅'}`);
+        }
+        lines.push(`  分辨力：${v.discriminated ? '✅ 两个样本给出相反结论' : '⚠️ 未分辨（检查 prompt 判据或模型）'}`);
+        return [{ type: 'text', text: lines.join('\n') }];
+      },
+    },
+    async execute(args) {
+      const out = await svc.verifyLlmJudge(args ?? {});
+      return JSON.parse(JSON.stringify(out));
+    },
+  }));
+
   // ── Sprint 16 发布层（设计稿 §6）────────────────────────────────────────
 
   ctx.tools.register(defineTool({

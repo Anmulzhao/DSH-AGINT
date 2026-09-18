@@ -404,12 +404,19 @@ test('modifyCandidate：QUEUED_FOR_RELEASE 改草稿 → 回 PENDING_EVAL 重评
   assert.match(updated.skillDraft.body, /改过/);
 });
 
-test('stats：含 releases 汇总 + sprint 16-release-layer', async () => {
+test('stats：含 releases 汇总 + sprint 17-llm-verdict', async () => {
   const h = setup();
   const s = await h.svc.stats();
-  assert.equal(s.sprint, '16-release-layer');
+  assert.equal(s.sprint, '17-llm-verdict');
   assert.ok(s.releases && typeof s.releases.total === 'number');
   assert.ok(s.config.release_enabled !== undefined);
+  // 2026-09-18 LLM 接入：默认必须全 off（合入即零行为变化），且配置已透出
+  assert.equal(s.config.llm_judge_mode, 'off');
+  assert.equal(s.config.llm_authoring_mode, 'off');
+  assert.equal(s.config.llm_provider, '');
+  assert.equal(s.config.llm_model, '');
+  assert.equal(s.llmBudget.limit, 20);
+  assert.equal(s.llmBudget.used, 0);
 });
 
 // ── B4（2026-09-13）：policy 门 veto 模式 + buildPolicyInput 适配器覆盖 ──────

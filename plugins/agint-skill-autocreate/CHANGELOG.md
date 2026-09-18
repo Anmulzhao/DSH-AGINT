@@ -1,5 +1,68 @@
 # Changelog — agint-skill-autocreate
 
+## 0.4.0 (2026-09-18) — LLM 接入：判定轨道 C + 提案撰写 + 每日硬预算（默认全 off）
+
+> 来源：`issue-drafts/2026-09-18-LLM接入autocreate-方案.md`。关联：K45（分治）、
+> K51（自进化默认：可回滚 > 可审批，新机制一律带 kill-switch）。
+
+### 结论先行
+
+**默认全 off ⟹ 零行为变化**。LLM 是增益不是依赖：调用失败/超时/产出不合/
+预算耗尽一律静默回落轨道 B（启发式），不报错、不阻断，只写审计。
+
+### 改动
+
+1. **`lib/llm-verdict.js`（新增）**：把一次 LLM 调用包成永不抛的结构化结果。
+   - `judgeViaLLM` 通过宿主 subagent 通道调用（`structured output` 过 schema）；
+   - AbortController + `Promise.race` 超时双保险（同 dream K49 的教训）；
+   - `finally` dispose，防句柄泄漏；prompt 注入防护（`<<<WINDOW` 分隔标记）；
+   - **schema 只用宿主 enforced JSON Schema 子集**（`type/properties/required/
+     additionalProperties/enum` 等）——`pattern`/`maxLength`/`minimum` 宿主不支持，
+     会在子 agent 创建前直接抛错，相关约束全部下移本地校验（取证：
+     `dsh-tools/lib/types/json-schema.js` 的 `assertObjectJsonSchema`）。
+2. **`lib/llm-budget.js`（新增）**：每日硬预算（默认 20，**含 shadow**）。
+   按本地日切，从当日 `llm_judge_called` 审计恢复——进程重启不丢预算；
+   恢复失败按 0 算（宁可多花几次，不因读不到审计把 LLM 全关）。
+3. **`lib/standardizable.js`**：合成顺序 = 硬否决 5 条 → 轨道 C（LLM）→
+   轨道 A（diagnosis）→ 轨道 B（兜底）。`shadow` 模式不改结论只写
+   `signals.llmShadow`；`primary` 模式 LLM 结论生效。LLM 与规则共用同一
+   `min_standardizable_confidence`（LLM 无特权阈值）。硬否决提取为
+   `preHardVeto` 供 index.js 预筛共用（同一份实现，防漂移）。
+4. **`lib/proposer.js`**：`buildProposal` 支持 `opts.llmAuthoring`（name/
+   description 按优先级合并）；LLM 产出过两道本地校验（宿主 SKILL_NAME 正则 +
+   `isToolChainName` 工具链名判据）+ 自我指涉检查，任一不过整条丢弃并返回
+   reason 供 `llm_authoring_rejected` 审计。导出 `validateLlmAuthoring`。
+5. **`lib/index.js`**：接线。窗口上提共享；判定前按 `llm_judge_mode` 调
+   LLM（**只在过了硬否决预筛的 pattern 上调**——那五条是结构性事实，让 LLM
+   重判等于白付一次调用）；审计五动作：`llm_judge_called` /
+   `llm_judge_degraded`（必带 reason）/ `llm_judge_shadow`（含 agree 分歧）/
+   `llm_budget_exhausted` / `llm_authoring_rejected`；`stats()` 暴露 LLM 配置
+   与当日用量；新增 `verifyLlmJudge()` service method（真模型验证，手动）。
+6. **`lib/verify.js`（新增）**：照抄 dream verify 模式。两个刻意反向样本
+   （一个带领域知识 / 一个纯脚手架）验证**分辨力**——全 true/全 false 都是
+   prompt 失败的信号。不写存储、不动预算、不进 CI。工具 `autocreate_verify_llm`。
+7. **`lib/schema.js`**：7 个 LLM 配置键全进 `RUNTIME_CONFIG_KEYS`
+   （`llm_judge_mode`/`llm_authoring_mode`/`llm_provider`/`llm_model`/
+   `llm_timeout_ms`/`llm_daily_budget`/`llm_authoring_requires_judge`）。
+   provider/model 空 = 跟随宿主，**刻意不硬编码** dream 的
+   `DEFAULT_PROVIDER='minimax-cn'`——那是从 settings.yaml 抄的快照，换模型
+   那天会变成静默故障。
+8. 版本 0.3.7 → 0.4.0（minor：新增可选能力，无破坏）。
+
+### 测试
+
+新增 4 个测试文件（llm-verdict / standardizable-llm / skill-authoring-llm /
+llm-budget），全量 `node --test "test/*.test.mjs" test/smoke.mjs` **321/321 绿**。
+关键护栏做过**变异测试**（5 处护栏逐个改坏、确认对应用例各自变红）：
+dispose 漏调、硬否决让位 LLM、shadow 改结论、工具链名放行、预算超卖。
+
+### 未做（明示）
+
+- `llm_authoring_mode: on` 只开产出通路，默认仍 `off`；真模型上的 prompt
+  分辨力需跑 `verifyLlmJudge` 人工确认后才建议开。
+- Phase B（撰写质量门 A3 级别复核）未接——先让 Phase A 的判定数据说话。
+
+
 ## 0.3.7 (2026-09-18) — 发布前特异性复检（门 5）+ 黑名单依审计扩至 47 项
 
 > 来源：0.3.6 上线后**首次真实运行**（2026-09-18 10:11，机器唤醒后 cron 补跑）
