@@ -240,11 +240,12 @@ test('runSweep: 显式 consolidation runner 输出 operations → validation 走
     consolidation: async () => ({ mode: 'llm', operations: [] }),
   });
   assert.equal(result.counts.gated, 0);
-  // 没 gated → consolidation 不被调用，mode 默认 heuristic-degraded
-  assert.equal(result.counts.consolidationMode, 'heuristic-degraded');
+  // 2026-09-18 C 项：没 gated → LLM 没被调用，诚实标 not-attempted（不再伪装成 LLM 失败）
+  assert.equal(result.counts.consolidationMode, 'not-attempted');
+  assert.match(result.counts.consolidationReason, /0 gated/);
 });
 
-test('runSweep: 不传 consolidation runner + 不传 ctx → heuristic-degraded, sweep 不崩溃', async () => {
+test('runSweep: 不传 consolidation runner + 不传 ctx + 0 gated → not-attempted, sweep 不崩溃', async () => {
   const { runSweep } = await import('../lib/sweep.js');
   const memoryStub = { async list() { return []; }, async write() { throw new Error('should not be called'); } };
   const result = await runSweep({
@@ -255,8 +256,9 @@ test('runSweep: 不传 consolidation runner + 不传 ctx → heuristic-degraded,
     apply: false,
     // 没有 consolidation / 没有 ctx
   });
-  assert.equal(result.counts.consolidationMode, 'heuristic-degraded');
-  assert.equal(result.counts.consolidationReason, null);
+  // 2026-09-18 C 项：0 gated → LLM 未被调用（空 sessions 下永远不会走到 runner 判定）
+  assert.equal(result.counts.consolidationMode, 'not-attempted');
+  assert.match(result.counts.consolidationReason, /0 gated/);
 });
 
 test('runSweep: 显式 consolidation runner 抛错 → degraded, sweep 不崩溃', async () => {
@@ -300,4 +302,17 @@ test('renderDiary: consolidationMode=heuristic-degraded 显示 ⚠️', async ()
     consolidationReason: 'agents service unavailable',
   });
   assert.match(md, /P1 LLM consolidation: ⚠️ heuristic-degraded（agents service unavailable）/);
+});
+
+test('renderDiary: consolidationMode=not-attempted 显示 ➖ 未触发（区别于 LLM 失败）', async () => {
+  const { renderDiary } = await import('../lib/sweep.js');
+  const md = renderDiary({
+    day: '2026-09-18',
+    signals: [], memWrites: [], candidates: [], gated: [], promoted: [],
+    errors: [], durationMs: 100,
+    consolidationMode: 'not-attempted',
+    consolidationReason: '0 gated candidates — LLM 未触发',
+  });
+  assert.match(md, /P1 LLM consolidation: ➖ 未触发（0 gated candidates/);
+  assert.doesNotMatch(md, /heuristic-degraded/);
 });

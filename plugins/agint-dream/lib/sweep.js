@@ -655,9 +655,12 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (!validationOk) {
     lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
   }
-  // P1: consolidation mode (llm vs heuristic-degraded)
+  // P1: consolidation mode (llm / not-attempted / heuristic-degraded)
   if (consolidationMode === 'llm') {
     lines.push(`- **P1 LLM consolidation**: ✅ LLM 决策 add/merge/supersede${consolidationReason ? `（${consolidationReason}）` : ''}`);
+  } else if (consolidationMode === 'not-attempted') {
+    // 2026-09-18 C 项：区别「没触发」（门槛没放行 / ctx 缺失）和「触发了但 LLM 失败」
+    lines.push(`- P1 LLM consolidation: ➖ 未触发${consolidationReason ? `（${consolidationReason}）` : ''}`);
   } else {
     lines.push(`- P1 LLM consolidation: ⚠️ heuristic-degraded${consolidationReason ? `（${consolidationReason}）` : ''}`);
   }
@@ -958,7 +961,18 @@ export async function runSweep({
         resolvedOps = null;
         errors.push(`consolidation runner failed: ${consolidationReason}`);
       }
+    } else {
+      // 2026-09-18 C 项：诚实标注「没触发」——ctx 缺失时 runner 为 null，
+      // 这不是 LLM 失败，不该标 heuristic-degraded 误导人。
+      consolidationMode = 'not-attempted';
+      consolidationReason = 'no consolidation runner (ctx unavailable)';
     }
+  } else if (resolvedOps == null) {
+    // 2026-09-18 C 项：0 过门候选 → LLM 根本没被调用。此前这里显示
+    // 'heuristic-degraded'，看起来像 LLM 失败，实际是没触发 —— 09-08 至
+    // 09-18 每晚日记都因此误读。'not-attempted' = 「门槛没放行任何候选」。
+    consolidationMode = 'not-attempted';
+    consolidationReason = '0 gated candidates — LLM 未触发';
   }
 
   // P0: 把 unpromotedGated 送进 validation gate；resolvedOps=null 时走 added 退化路径
