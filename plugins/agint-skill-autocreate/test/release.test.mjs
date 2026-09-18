@@ -410,9 +410,10 @@ test('stats：含 releases 汇总 + sprint 17-llm-verdict', async () => {
   assert.equal(s.sprint, '17-llm-verdict');
   assert.ok(s.releases && typeof s.releases.total === 'number');
   assert.ok(s.config.release_enabled !== undefined);
-  // 2026-09-18 LLM 接入：默认必须全 off（合入即零行为变化），且配置已透出
-  assert.equal(s.config.llm_judge_mode, 'off');
-  assert.equal(s.config.llm_authoring_mode, 'off');
+  // 2026-09-18 老板拍板：自进化默认 = 出厂即开（判定 primary / 撰写 on）；
+  // kill-switch（改回 off）仍在 RUNTIME_CONFIG_KEYS 里，逃生门常在
+  assert.equal(s.config.llm_judge_mode, 'primary');
+  assert.equal(s.config.llm_authoring_mode, 'on');
   assert.equal(s.config.llm_provider, '');
   assert.equal(s.config.llm_model, '');
   assert.equal(s.llmBudget.limit, 20);

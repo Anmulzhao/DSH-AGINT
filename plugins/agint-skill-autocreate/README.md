@@ -1,6 +1,6 @@
 # agint-skill-autocreate
 
-P0-1 技能自动创建机制（检测+评估+发布全链路）。把「技能创建」从「人驱动」变成「系统驱动 + 人审核」：**自动检测重复任务模式，生成技能候选提案，三道门发布**。v0.4.0 起可选接入 LLM（判定轨道 C + 提案撰写），默认全 off。
+P0-1 技能自动创建机制（检测+评估+发布全链路）。把「技能创建」从「人驱动」变成「系统驱动」：**自动检测重复任务模式，生成技能候选提案，三道门发布**。v0.4.0 接入 LLM（判定轨道 C + 提案撰写）；v0.5.0 起按「自进化默认」**出厂即开**（判定 primary / 撰写 on），kill-switch 常在（改回 off 只需一条配置）。
 
 设计稿：`wiki/设计-P0-1-技能自动创建机制.md`（v0.1-draft，作者：智进）。
 
@@ -10,7 +10,7 @@ P0-1 技能自动创建机制（检测+评估+发布全链路）。把「技能�
 agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ──▶ 技能候选提案
    (tool-stats 落盘)        (同一 turn 内        (序列全等 +      (模板为主体，
                              连续调用)            相似度≥0.8      可选 LLM 判定
-                                                  + 累计≥3)        与撰写，默认 off)
+                                                  + 累计≥3)        与撰写，默认开)
 ```
 
 - **detect()**：读 tool-stats JSONL 过去 24h → 按 `(sessionId, turn)` 聚合任务实例 → 与历史 `task_patterns` 比对（工具序列严格全等 + 参数结构相似度 ≥0.8）→ 累计 ≥3 次跨过「重复门槛」→ 选匹配模板生成 SKILL.md 草稿候选，状态 `PENDING_EVAL`。
@@ -61,12 +61,12 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 
 默认值即设计稿 §8.1：`min_occurrence_count: 3`、`param_similarity_threshold: 0.8`、`auto_create_enabled: true`、`aggregate_cron: "45 4 * * *"` 等。运行时可改子集见 `config()`。
 
-### LLM 配置（v0.4.0，默认全 off ⟹ 零行为变化）
+### LLM 配置（v0.5.0 起**出厂即开**；所有键都在 RUNTIME_CONFIG_KEYS，随时可关）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `llm_judge_mode` | `off` | 可标准化判定的轨道 C：`off` / `shadow`（LLM 只陪跑写审计，不改结论）/ `primary`（LLM 结论生效，轨道 B 兜底） |
-| `llm_authoring_mode` | `off` | 提案撰写走 LLM：`off` / `on`。判定先通过才撰写（`llm_authoring_requires_judge`，默认 true） |
+| `llm_judge_mode` | `primary` | 可标准化判定的轨道 C：`off` / `shadow`（LLM 只陪跑写审计，不改结论）/ `primary`（LLM 结论生效，轨道 B 兜底） |
+| `llm_authoring_mode` | `on` | 提案撰写走 LLM：`off` / `on`。判定先通过才撰写（`llm_authoring_requires_judge`，默认 true） |
 | `llm_provider` / `llm_model` | `""` | 空 = 跟随宿主默认，不硬编码任何模型名 |
 | `llm_timeout_ms` | 60000 | 单次调用超时（与 AbortController 双保险） |
 | `llm_daily_budget` | 20 | 每日调用硬上限（**含 shadow**，shadow 期同样花钱）；按本地日切，从当日 `llm_judge_called` 审计恢复；0 = 全禁 |
@@ -82,7 +82,7 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 
 - **token 成本恒 null**：tool-stats 不记录 token，`avgTokenCost` 字段保留待其增补。
 - **sessionId/turn 缺失的记录**不参与检测（宁可漏检，不可错检）。
-- **可标准化判断**：默认走轨道 B 启发式（true/false/null 三态，null=需人工）；LLM 轨道 C 默认 `off`，开启后见上文 LLM 配置一节。
+- **可标准化判断**：LLM 轨道 C（primary）为主、轨道 B 启发式兜底（true/false/null 三态，null=需人工）；LLM 降级时自动回落轨道 B，详见上文 LLM 配置一节。
 - **参数签名 v1**：顶层 key + 粗类型 + 扩展名；扩展名不同视为不同模式（有意为之——批量 .md 和 .js 是不同任务）。
 - **预估收益是启发式**：公式集中在 `lib/proposer.js`，Sprint 15/16 实测后校准。
 - **paused / 运行时 config 是内存态**：重启还原为 cordis 配置默认值（设计稿未要求持久化，刻意保持简单）。

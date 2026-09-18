@@ -310,11 +310,15 @@ export const ConfigSchema = z.object({
   // 为什么必须独立于 standardizable_route：后者语义是「轨道 A（diagnosis
   // 归因）开关」，**没有 shadow 档**；而本方案第一版必须 shadow（K58：dream
   // 的 LLM 通路至今 promoted=0，不能把未验证路径当依赖）。
-  llm_judge_mode: z.enum(['off', 'shadow', 'primary']).default('off'),
+  // 默认 primary（2026-09-18 老板拍板：「能自动的就不要人工参与」，自进化系统
+  // 的能力出厂即开；kill-switch 是出问题时的逃生门，不是默认熄火）。判定失败/
+  // 超时/预算耗尽一律自动回落轨道 B，不阻断；想观察期先跑 shadow 改这一个字段即可。
+  llm_judge_mode: z.enum(['off', 'shadow', 'primary']).default('primary'),
   // 提案生成（接入点 2，独立启停）。Phase A/B 期间即使一次调用已产出
   // authoring，也**直接丢弃不用**、只写 audit 留存 —— 这样「一次调用两个产出」
   // 不会强迫两件事一起上线（方案 §2 D1「保留退路」）。
-  llm_authoring_mode: z.enum(['off', 'on']).default('off'),
+  // 默认 on（同上：理念默认）。LLM 撰写产出过三道本地校验，不过关整条丢弃。
+  llm_authoring_mode: z.enum(['off', 'on']).default('on'),
   // provider / model：**空字符串 = 跟随宿主默认**，不硬编码任何值。
   // 刻意不照抄 dream 的 DEFAULT_PROVIDER='minimax-cn' / DEFAULT_MODEL='MiniMax-M3'
   // 常量——那是从 ~/.dsh/settings.yaml 实测抄来的值，换模型那天会变成静默故障
