@@ -40,8 +40,11 @@ assert.equal(typeof renderDiary, 'function', 'renderDiary must be a function');
 assert.equal(typeof runSweep, 'function', 'runSweep must be a function');
 assert.equal(typeof listSessionLogs, 'function', 'listSessionLogs must be a function');
 assert.ok(DEFAULTS && typeof DEFAULTS === 'object', 'DEFAULTS must be exported');
-assert.equal(DEFAULTS.minScore, 0.75, 'minScore should default to 0.75');
+// 2026-09-18 recalibration: 0.75 was OpenClaw-aligned but unreachable on this
+// host (no retrieval relevance / phaseBoost; observed range 0.483~0.608).
+assert.equal(DEFAULTS.minScore, 0.6, 'minScore should default to 0.6 (2026-09-18 recalibration)');
 assert.equal(DEFAULTS.minRecall, 3, 'minRecall should default to 3');
+assert.equal(DEFAULTS.minUniqueSessions, 2, 'minUniqueSessions should default to 2');
 console.log('[smoke] import ✓ (8 functions + DEFAULTS exported)');
 
 // ── 2. contract: real zstd session read ──────────────────────────────────

@@ -75,9 +75,14 @@ export const DEFAULTS = {
     conceptual: 0.06,
   },
   recencyHalfLifeDays: 14,  // e^(-ln2 * ageDays / halfLife)
-  // Threshold gates — aligned with OpenClaw per 2026-08-18 老板决策
-  // (0.75 / 3 / 2). 启发式候选仍提，过门控的更精。
-  minScore: 0.75,
+  // Threshold gates — 2026-09-18 recalibrated from OpenClaw alignment (0.75/3/2).
+  // 依据：09-17/09-18 只读复算，候选 score 实际区间 0.483~0.608，0.75 在本机
+  // 数据形态下不可达（无检索 relevance、无 phaseBoost，relevance 封顶 0.195），
+  // 自 09-08 起 0 过门 → LLM consolidation 一次都没被触发（排在门槛之后）。
+  // 0.60 只放行「≥3 信号 + 跨 ≥2 会话 + 新鲜」的真重复候选（今日实测 1/20），
+  // 单会话低频候选仍被 minRecall/minUniqueSessions 拦住。可回滚：cordis.patch.yml
+  // agint-dream config.minScore 可覆盖；观察期 1 周，量级异常（>5/日 或持续 0）再调。
+  minScore: 0.6,
   minRecall: 3,             // signal occurrences across messages
   minUniqueSessions: 2,     // distinct sessions that surfaced it
   // Dedupe
