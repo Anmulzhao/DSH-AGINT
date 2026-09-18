@@ -2,7 +2,9 @@
  * agint-cron: host service (provides agint.cron) — a tiny cron scheduler
  * built on cordis-plugin-timer. Maintains a 60-second tick, checks each
  * compiled job's schedule, fires when the next-fire minute passes since
- * the last run. Per-job mutex prevents overlapping runs.
+ * the last run. Jobs due in the same tick run serially in declaration order
+ * (see tick()); a per-job mutex plus a tick re-entrancy guard prevent
+ * overlapping runs.
  *
  * Default jobs (memory-decay, wiki-lint, metrics-collect, evolve-review) are
  * registered at boot. The service exposes list / runNow / health for the
@@ -127,25 +129,62 @@ function apply(ctx) {
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 
+  // Jobs in one tick run to completion, in declaration order. Previously each
+  // was fired with `void runOne(job)` (fire-and-forget), so completion order
+  // was just whichever action happened to finish first. Measured on the
+  // 2026-09-18 10:10 wake-up backfill: observe 10:10:54 → release 10:10:55 →
+  // aggregate 10:11:30. The pass that *generates* candidates landed 36s AFTER
+  // the pass that releases them, so everything it created missed that bus and
+  // waited for the next one (next day 05:15, or the next wake-up) — collapsing
+  // the deliberate 30-minute gap (aggregate 04:45 → release 05:15, see jobs.js)
+  // into roughly a day.
+  //
+  // A serialised tick can outlive the 60s interval, so re-entrant ticks are
+  // suppressed. STALL_MS is the watchdog for a wedged job (e.g. a provider
+  // that ignores the abort signal): without it `tickRunning` would never clear
+  // and the scheduler would stop for good — worse than the old shape, where a
+  // wedged job only ever blocked itself. On takeover the stale tick bails out
+  // between jobs, and `job.running` still guards the wedged job from a
+  // duplicate start.
+  const STALL_MS = 15 * 60_000;
+  let tickRunning = false;
+  let tickStartedAt = 0;
+  let tickGen = 0;
+
   async function tick() {
     const now = Date.now();
-    for (const job of jobs) {
-      if (!job.id) continue; // (already filtered, but keep types)
-      try {
-        // Backfill-aware due check (replaces the old nextFire-from-lastRun
-        // logic that silently skipped weekly jobs whose narrow fire window
-        // fell inside the host's offline hours). isDue() fires a job whose
-        // most-recent scheduled occurrence is strictly after its last run —
-        // which backfills a never-run job once on boot and catches up a
-        // weekly that slipped past while the host was offline, without ever
-        // double-firing the same occurrence.
-        if (!isDue(job.parsed, job.lastRunAt, now)) continue;
-        if (job.running) continue; // skip if previous run still in flight
-        // Fire the job (async, fire-and-forget at the tick level).
-        void runOne(job);
-      } catch (error) {
-        console.error('[agint-cron] tick error for ' + job.id + ': ' + (error && error.message ? error.message : String(error)));
+    if (tickRunning) {
+      if (now - tickStartedAt < STALL_MS) return; // a tick is already in flight
+      console.error(
+        '[agint-cron] tick in flight for ' + Math.round((now - tickStartedAt) / 60_000) +
+        ' min — taking over (a job is presumably wedged; job.running still guards it)',
+      );
+    }
+    const gen = ++tickGen;
+    tickRunning = true;
+    tickStartedAt = now;
+    try {
+      for (const job of jobs) {
+        if (gen !== tickGen) return; // superseded by a newer tick — abandon this pass
+        if (!job.id) continue; // (already filtered, but keep types)
+        try {
+          // Backfill-aware due check (replaces the old nextFire-from-lastRun
+          // logic that silently skipped weekly jobs whose narrow fire window
+          // fell inside the host's offline hours). isDue() fires a job whose
+          // most-recent scheduled occurrence is strictly after its last run —
+          // which backfills a never-run job once on boot and catches up a
+          // weekly that slipped past while the host was offline, without ever
+          // double-firing the same occurrence.
+          if (!isDue(job.parsed, job.lastRunAt, now)) continue;
+          if (job.running) continue; // skip if previous run still in flight
+          // Run to completion before the next job is considered.
+          await runOne(job);
+        } catch (error) {
+          console.error('[agint-cron] tick error for ' + job.id + ': ' + (error && error.message ? error.message : String(error)));
+        }
       }
+    } finally {
+      if (gen === tickGen) tickRunning = false;
     }
   }
 
