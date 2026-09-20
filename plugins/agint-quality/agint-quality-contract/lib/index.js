@@ -27,7 +27,7 @@
  *     - 沙箱资源限制 (timeout / memory_limit)
  */
 
-import { z } from 'zod';
+import { z } from '../../node_modules/zod/index.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // FROZEN 层：接口契约（修改需人类多签）

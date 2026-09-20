@@ -102,11 +102,14 @@ fi
 
 # ── 找本机已有 zod 4+ ──────────────────────────────────────────────────────
 # 偏好顺序：
-#   1) $DSH_HOME/profiles/web/node_modules/zod  ← 首选，见下方说明
-#   2) claude-projects/openclaw（本机已知稳定 zod 4.x）
-#   3) ~/projects 下任何含 zod 4+ 的 node_modules
-#   4) ~/文档 / ~/下载 下的 zod 4+
-#   5) warn 并退出 1
+#   1) $DSH_HOME/profiles/node_modules/zod      ← 首选：dsh 全局软链的目标
+#      （profiles/node_modules 是 web/headless 共用的依赖池，多数 AGINT
+#        部署里 dsh 安装时已经把它链到 /usr/lib/.../@deepseek-ai/dsh/node_modules/zod）
+#   2) $DSH_HOME/profiles/web/node_modules/zod  ← 次选
+#   3) claude-projects/openclaw（本机已知稳定 zod 4.x）
+#   4) ~/projects 下任何含 zod 4+ 的 node_modules
+#   5) ~/文档 / ~/下载 下的 zod 4+
+#   6) warn 并退出 1
 #
 # 为什么 1) 是首选：裸 `from 'zod'`（contract/eval/sandbox/report/policy 用）
 # 本来就由 Node 向上查找到 profile 的 node_modules/zod。这里再放一份同源拷贝，
@@ -116,6 +119,7 @@ fi
 # （Windows 上这些目录全不存在，导致 bootstrap 必然失败，见 2026-09-03）。
 find_local_zod() {
   local roots=(
+    "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/zod"
     "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/zod"
     "$HOME/文档/claude-projects/openclaw/node_modules/zod"
     "$HOME/projects/Metaversefans/metaverse-fans-web/node_modules/zod"

@@ -21,7 +21,7 @@
  *         config: {}
  */
 
-import { z } from 'zod';
+import { z } from '../../node_modules/zod/index.js';
 import { renderReport } from './render.js';
 
 const name = 'agint-quality-report';

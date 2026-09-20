@@ -18,7 +18,7 @@
  *         config: {}
  */
 
-import { z } from 'zod';
+import { z } from '../../node_modules/zod/index.js';
 import {
   decidePolicy,
   shouldReportToEvolution,

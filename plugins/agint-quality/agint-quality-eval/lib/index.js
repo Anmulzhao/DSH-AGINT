@@ -27,7 +27,7 @@
  *         config: {}
  */
 
-import { z } from 'zod';
+import { z } from '../../node_modules/zod/index.js';
 import {
   evaluateAll,
   compositeScore,

@@ -17,7 +17,7 @@
  *   convention, adaptability: v0.2 无数据源，不计入综合分
  */
 
-import { z } from 'zod';
+import { z } from '../../node_modules/zod/index.js';
 
 /** 单维度评估结果 */
 const DimensionEvalSchema = z.object({

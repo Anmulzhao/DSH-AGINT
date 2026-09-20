@@ -327,6 +327,23 @@ for src in "$PRESETS_SRC"/*/; do
   log "   ✓ $name"
 done
 
+# ── 1.5 zod bootstrap（必须在 plugin 同步之前）───────────────────────────────
+# 见 install/agint-zod-bootstrap.sh。
+# 顺序约束：步骤 2 用 safe_rsync --delete 把 plugins/agint-quality/node_modules/zod
+# 清掉（仓源没有），所以 zod 必须先放进 host，再让 plugin 同步覆盖。
+# 失败仅 warn，不阻断（用户可手动跑）。
+# 同时在 4.5 段保留一份兜底（理论上不会再跑，但万一 bootstrap 失败，
+# 后面 2/4 plugin 同步不会自愈——4.5 段的存在确保下一个 stage 还能补救）。
+if [ "$DRY_RUN" != "1" ]; then
+  if bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+    log "   ✓ zod bootstrap OK（pre-plugin）"
+  else
+    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
+  fi
+else
+  log "   ⊘ 跳过 zod bootstrap（dry-run）"
+fi
+
 # ── 2. 安装 plugins ─────────────────────────────────────────────────────────
 log "2/4 同步 plugins → $PLUGINS_DST"
 mkdir -p "$PLUGINS_DST"
@@ -532,11 +549,13 @@ PY
   fi
 fi
 
-# ── 4.5 zod bootstrap（修复 agint-quality-sdk + 子插件的裸 zod 导入）─────────
-# 见 install/agint-zod-bootstrap.sh。失败仅 warn，不阻断（用户可手动跑）。
+# ── 4.5 zod bootstrap 兜底（正常情况下已被 1.5 覆盖；保留以应对手动 rsync）────
+# 主入口在 1.5 段（pre-plugin）。本段是冗余兜底，覆盖「步骤 2 同步 plugin 之后
+# 有人手动跑了 rsync 清掉 node_modules」之类的边角场景。
+# 见 install/agint-zod-bootstrap.sh。失败仅 warn，不阻断。
 if [ "$DRY_RUN" != "1" ]; then
   if bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
-    log "   ✓ zod bootstrap OK"
+    log "   ✓ zod bootstrap OK（post-plugin 兜底）"
   else
     warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
   fi

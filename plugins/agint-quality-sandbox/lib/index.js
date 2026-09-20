@@ -26,7 +26,7 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
+import { z } from '../../agint-quality/node_modules/zod/index.js';
 import { runSmoke as runSmokeInProcess } from './smoke.js';
 import { resolveProfile as resolveProfileImpl, probeSyscallCapability } from './profile-resolver.js';
 
