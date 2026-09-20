@@ -150,7 +150,7 @@ function apply(ctx, config) {
       schema: {
         type: 'object', additionalProperties: false,
         properties: {
-          summary: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
+          summary: { type: 'array', items: { type: 'object', additionalProperties: true } },
         },
       },
       render: (_a, v) => {
