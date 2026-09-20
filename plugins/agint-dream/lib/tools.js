@@ -24,83 +24,102 @@ function apply(ctx) {
     description: '梦境服务状态：开关、频率、阈值、上次 sweep 时间与计数。查看梦境是否在工作。',
     parameters: {},
     output: {
+      // K21: raw JSON Schema form (DSH subset). `required` is array on parent
+      // object, never on each property; never beside `oneOf`.
       schema: {
         type: 'object', additionalProperties: false,
+        required: [
+          'enabled', 'frequency', 'sessionsRoot', 'diaryRoot', 'recallPath',
+          'lookbackDays', 'windows', 'recover', 'thresholds',
+          'lastSweepAt', 'lastError', 'qualityEval', 'counts',
+        ],
         properties: {
-          enabled: { type: 'boolean', required: true },
-          frequency: { type: 'string', required: true },
-          sessionsRoot: { type: 'string', required: true },
-          diaryRoot: { type: 'string', required: true },
-          recallPath: { type: 'string', required: true },
-          lookbackDays: { type: 'number', required: true },
+          enabled: { type: 'boolean' },
+          frequency: { type: 'string' },
+          sessionsRoot: { type: 'string' },
+          diaryRoot: { type: 'string' },
+          recallPath: { type: 'string' },
+          lookbackDays: { type: 'number' },
           windows: {
-            type: 'object', additionalProperties: false, required: true,
+            type: 'object', additionalProperties: false,
+            required: ['light', 'rem', 'deep'],
             properties: {
-              light: { type: 'number', required: true },
-              rem: { type: 'number', required: true },
-              deep: { type: 'number', required: true },
+              light: { type: 'number' },
+              rem: { type: 'number' },
+              deep: { type: 'number' },
             },
           },
-          recover: { type: 'boolean', required: true },
+          recover: { type: 'boolean' },
           thresholds: {
-            type: 'object', additionalProperties: false, required: true,
+            type: 'object', additionalProperties: false,
+            required: ['minScore', 'minRecall', 'minUniqueSessions'],
             properties: {
-              minScore: { type: 'number', required: true },
-              minRecall: { type: 'number', required: true },
-              minUniqueSessions: { type: 'number', required: true },
+              minScore: { type: 'number' },
+              minRecall: { type: 'number' },
+              minUniqueSessions: { type: 'number' },
             },
           },
-          lastSweepAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          lastError: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          lastSweepAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           // v0.2 (task 2 / C1 / 2026-09-06)：qualityEval bridge meta
           // status() 新增字段，必须同步 schema（避免重蹈 task 1 schema 不同步覆辙）
           qualityEval: {
-            type: 'object', additionalProperties: false, required: true,
+            type: 'object', additionalProperties: false,
+            required: ['bridgeVersion', 'targetsPlanned', 'targets', 'serviceKey', 'note', 'bridgeDefaults'],
             properties: {
-              bridgeVersion: { type: 'string', required: true },
-              targetsPlanned: { type: 'number', required: true },
-              targets: { type: 'array', required: true, items: { type: 'string' } },
-              serviceKey: { type: 'string', required: true },
-              note: { type: 'string', required: true },
+              bridgeVersion: { type: 'string' },
+              targetsPlanned: { type: 'number' },
+              targets: { type: 'array', items: { type: 'string' } },
+              serviceKey: { type: 'string' },
+              note: { type: 'string' },
               bridgeDefaults: {
-                type: 'object', additionalProperties: false, required: true,
+                type: 'object', additionalProperties: false,
+                required: ['evaluateTimeoutMs', 'evaluateConcurrency'],
                 properties: {
-                  evaluateTimeoutMs: { type: 'number', required: true },
-                  evaluateConcurrency: { type: 'number', required: true },
+                  evaluateTimeoutMs: { type: 'number' },
+                  evaluateConcurrency: { type: 'number' },
                 },
               },
             },
           },
           counts: {
-            type: 'object', additionalProperties: false, required: true,
+            type: 'object', additionalProperties: false,
+            required: [
+              'sessions', 'userMessages', 'memWrites', 'toolErrors',
+              'candidates', 'gated', 'skippedPromoted', 'validationOk',
+              'validationReason', 'recovered', 'promoted', 'recallAppended',
+              'recallPruned', 'consolidationMode', 'consolidationReason',
+              'qualityEval', 'evolutionTemplates',
+            ],
             properties: {
-              sessions: { type: 'number', required: true },
-              userMessages: { type: 'number', required: true },
-              memWrites: { type: 'number', required: true },
-              toolErrors: { type: 'number', required: true },
-              candidates: { type: 'number', required: true },
-              gated: { type: 'number', required: true },
-              skippedPromoted: { type: 'number', required: true },
-              validationOk: { type: 'boolean', required: true },
-              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-              recovered: { type: 'number', required: true },
-              promoted: { type: 'number', required: true },
-              recallAppended: { type: 'number', required: true },
-              recallPruned: { type: 'number', required: true },
+              sessions: { type: 'number' },
+              userMessages: { type: 'number' },
+              memWrites: { type: 'number' },
+              toolErrors: { type: 'number' },
+              candidates: { type: 'number' },
+              gated: { type: 'number' },
+              skippedPromoted: { type: 'number' },
+              validationOk: { type: 'boolean' },
+              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+              recovered: { type: 'number' },
+              promoted: { type: 'number' },
+              recallAppended: { type: 'number' },
+              recallPruned: { type: 'number' },
               // P1 LLM consolidation mode（llm / heuristic-degraded）—— 与 lib/sweep.js result.counts 对齐
               // Sprint 13 / 2026-09-05 漏同步，导致 dream_status host 实测 schema 校验失败
-              consolidationMode: { type: 'string', required: true },
-              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+              consolidationMode: { type: 'string' },
+              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
               // shape: { status, compositeMean, harmMean, targetCount, okCount }
               qualityEval: {
-                type: 'object', additionalProperties: false, required: true,
+                type: 'object', additionalProperties: false,
+                required: ['status', 'compositeMean', 'harmMean', 'targetCount', 'okCount'],
                 properties: {
-                  status: { type: 'string', required: true },
-                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  targetCount: { type: 'number', required: true },
-                  okCount: { type: 'number', required: true },
+                  status: { type: 'string' },
+                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  targetCount: { type: 'number' },
+                  okCount: { type: 'number' },
                 },
               },
               // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
@@ -110,12 +129,13 @@ function apply(ctx) {
               // "value.counts.evolutionTemplates is not a declared property (additionalProperties: false)"
               // 整体校验失败 → 该工具完全不可用。
               evolutionTemplates: {
-                type: 'object', additionalProperties: false, required: true,
+                type: 'object', additionalProperties: false,
+                required: ['status', 'count', 'topConfidence', 'boost'],
                 properties: {
-                  status: { type: 'string', required: true },
-                  count: { type: 'number', required: true },
-                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  boost: { type: 'number', required: true },
+                  status: { type: 'string' },
+                  count: { type: 'number' },
+                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  boost: { type: 'number' },
                 },
               },
             },
@@ -156,68 +176,80 @@ function apply(ctx) {
       recover: { type: 'boolean', description: '是否启用 Deep 30 天恢复通道（默认按服务配置）。' },
     },
     output: {
+      // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['day', 'diaryPath', 'apply', 'counts', 'promoted', 'errors', 'durationMs'],
         properties: {
-          day: { type: 'string', required: true },
-          diaryPath: { type: 'string', required: true },
-          apply: { type: 'boolean', required: true },
+          day: { type: 'string' },
+          diaryPath: { type: 'string' },
+          apply: { type: 'boolean' },
           counts: {
-            type: 'object', additionalProperties: false, required: true,
+            type: 'object', additionalProperties: false,
+            required: [
+              'sessions', 'userMessages', 'memWrites', 'toolErrors',
+              'candidates', 'gated', 'skippedPromoted', 'validationOk',
+              'validationReason', 'recovered', 'promoted', 'recallAppended',
+              'recallPruned', 'consolidationMode', 'consolidationReason',
+              'qualityEval', 'evolutionTemplates',
+            ],
             properties: {
-              sessions: { type: 'number', required: true },
-              userMessages: { type: 'number', required: true },
-              memWrites: { type: 'number', required: true },
-              toolErrors: { type: 'number', required: true },
-              candidates: { type: 'number', required: true },
-              gated: { type: 'number', required: true },
-              skippedPromoted: { type: 'number', required: true },
-              validationOk: { type: 'boolean', required: true },
-              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-              recovered: { type: 'number', required: true },
-              promoted: { type: 'number', required: true },
-              recallAppended: { type: 'number', required: true },
-              recallPruned: { type: 'number', required: true },
+              sessions: { type: 'number' },
+              userMessages: { type: 'number' },
+              memWrites: { type: 'number' },
+              toolErrors: { type: 'number' },
+              candidates: { type: 'number' },
+              gated: { type: 'number' },
+              skippedPromoted: { type: 'number' },
+              validationOk: { type: 'boolean' },
+              validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+              recovered: { type: 'number' },
+              promoted: { type: 'number' },
+              recallAppended: { type: 'number' },
+              recallPruned: { type: 'number' },
               // P1 LLM consolidation mode（llm / heuristic-degraded）
-              consolidationMode: { type: 'string', required: true },
-              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+              consolidationMode: { type: 'string' },
+              consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
               qualityEval: {
-                type: 'object', additionalProperties: false, required: true,
+                type: 'object', additionalProperties: false,
+                required: ['status', 'compositeMean', 'harmMean', 'targetCount', 'okCount'],
                 properties: {
-                  status: { type: 'string', required: true },
-                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  targetCount: { type: 'number', required: true },
-                  okCount: { type: 'number', required: true },
+                  status: { type: 'string' },
+                  compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  targetCount: { type: 'number' },
+                  okCount: { type: 'number' },
                 },
               },
               // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
               evolutionTemplates: {
-                type: 'object', additionalProperties: false, required: true,
+                type: 'object', additionalProperties: false,
+                required: ['status', 'count', 'topConfidence', 'boost'],
                 properties: {
-                  status: { type: 'string', required: true },
-                  count: { type: 'number', required: true },
-                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-                  boost: { type: 'number', required: true },
+                  status: { type: 'string' },
+                  count: { type: 'number' },
+                  topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  boost: { type: 'number' },
                 },
               },
             },
           },
           promoted: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['type', 'content', 'score', 'id'],
               properties: {
-                type: { type: 'string', required: true },
-                content: { type: 'string', required: true },
-                score: { type: 'number', required: true },
-                id: { type: 'string', required: true },
+                type: { type: 'string' },
+                content: { type: 'string' },
+                score: { type: 'number' },
+                id: { type: 'string' },
               },
             },
           },
-          errors: { type: 'array', required: true, items: { type: 'string' } },
-          durationMs: { type: 'number', required: true },
+          errors: { type: 'array', items: { type: 'string' } },
+          durationMs: { type: 'number' },
         },
       },
       render: (_a, v) => {
@@ -255,11 +287,14 @@ function apply(ctx) {
       date: { type: 'string', description: '日期 YYYY-MM-DD，缺省=最近一天。' },
     },
     output: {
+      // K21: raw JSON Schema form (DSH subset). `required` cannot coexist
+      // with `oneOf` — lift to parent.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['path', 'content'],
         properties: {
-          path: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          content: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          path: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          content: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         },
       },
       render: (_a, v) => v.path
@@ -285,14 +320,16 @@ function apply(ctx) {
       json: { type: 'boolean', description: 'true=JSON 输出，false=表格（默认）' },
     },
     output: {
+      // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['total', 'skippedPartial', 'totalLines', 'rows'],
         properties: {
-          total: { type: 'number', required: true },
-          skippedPartial: { type: 'number', required: true },
-          totalLines: { type: 'number', required: true },
+          total: { type: 'number' },
+          skippedPartial: { type: 'number' },
+          totalLines: { type: 'number' },
           rows: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: true,
               properties: {
@@ -365,10 +402,17 @@ function apply(ctx) {
       timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
     },
     output: {
+      // K21: raw JSON Schema form. `required` not allowed beside `oneOf` —
+      // lift all required-ness to parent object level.
       schema: {
         type: 'object', additionalProperties: false,
+        required: [
+          'mode', 'operations', 'operationsLength', 'gatedLength',
+          'reason', 'diagnostic', 'childErrors',
+          'provider', 'model', 'day', 'schemaOk',
+        ],
         properties: {
-          mode: { type: 'string', required: true },
+          mode: { type: 'string' },
           operations: {
             oneOf: [
               { type: 'array',
@@ -384,12 +428,11 @@ function apply(ctx) {
               },
               { type: 'null' },
             ],
-            required: true,
           },
-          operationsLength: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
-          gatedLength: { type: 'number', required: true },
-          reason: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          diagnostic: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          operationsLength: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+          gatedLength: { type: 'number' },
+          reason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          diagnostic: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           childErrors: {
             oneOf: [
               { type: 'array',
@@ -404,12 +447,11 @@ function apply(ctx) {
               },
               { type: 'null' },
             ],
-            required: true,
           },
-          provider: { type: 'string', required: true },
-          model: { type: 'string', required: true },
-          day: { type: 'string', required: true },
-          schemaOk: { type: 'boolean', required: true },
+          provider: { type: 'string' },
+          model: { type: 'string' },
+          day: { type: 'string' },
+          schemaOk: { type: 'boolean' },
         },
       },
       render(_a, v) {

@@ -43,23 +43,32 @@ function apply(ctx) {
     description: 'List all scheduled cron jobs with their schedule, last run, next scheduled run, and current health.',
     parameters: {},
     output: {
+      // Raw JSON Schema form required by DSH: `required` is array on parent
+      // object, not on each property; `required` not allowed beside `oneOf`.
+      // See dsh-tools/lib/types/json-schema.js and the sibling fix in
+      // plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['jobs'],
         properties: {
           jobs: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: [
+                'id', 'name', 'schedule', 'description',
+                'lastRunAt', 'nextRunAt', 'lastOk', 'lastError', 'running',
+              ],
               properties: {
-                id: { type: 'string', required: true },
-                name: { type: 'string', required: true },
-                schedule: { type: 'string', required: true },
-                description: { type: 'string', required: true },
-                lastRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                nextRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                lastOk: { oneOf: [{ type: 'boolean' }, { type: 'null' }], required: true },
-                lastError: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                running: { type: 'boolean', required: true },
+                id: { type: 'string' },
+                name: { type: 'string' },
+                schedule: { type: 'string' },
+                description: { type: 'string' },
+                lastRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                nextRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                lastOk: { oneOf: [{ type: 'boolean' }, { type: 'null' }] },
+                lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                running: { type: 'boolean' },
               },
             },
           },
@@ -93,10 +102,11 @@ function apply(ctx) {
       // job's own return value (object) when ok=true, or null when failed.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['ok', 'lastResult', 'lastError'],
         properties: {
-          ok: { type: 'boolean', required: true },
-          lastResult: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true },
-          lastError: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          ok: { type: 'boolean' },
+          lastResult: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] },
+          lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         },
       },
       render: (_a, v) => [{
@@ -116,8 +126,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['health'],
         properties: {
-          health: { type: 'object', required: true, additionalProperties: true },
+          health: { type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => {

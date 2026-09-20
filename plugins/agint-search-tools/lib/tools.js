@@ -48,9 +48,11 @@ function apply(ctx) {
       limit: { type: 'integer', description: 'Max total hits (default 20).' },
     },
     output: {
+      // K21: raw JSON Schema form. `required` is array on parent object.
       schema: {
         type: 'object',
         additionalProperties: false,
+        required: ['hits', 'counts'],
         properties: {
           hits: {
             type: 'array',
@@ -60,8 +62,9 @@ function apply(ctx) {
               // don't enumerate here.
               type: 'object',
               additionalProperties: true,
+              required: ['source'],
               properties: {
-                source: { type: 'string', required: true },
+                source: { type: 'string' },
                 id: { type: 'string' },
                 path: { type: 'string' },
                 title: { type: 'string' },
@@ -75,9 +78,10 @@ function apply(ctx) {
           counts: {
             type: 'object',
             additionalProperties: true,
+            required: ['memory', 'wiki'],
             properties: {
-              memory: { type: 'integer', required: true },
-              wiki: { type: 'integer', required: true },
+              memory: { type: 'integer' },
+              wiki: { type: 'integer' },
             },
           },
         },

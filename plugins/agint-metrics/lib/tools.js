@@ -23,12 +23,15 @@ function apply(ctx) {
       '每日由 cron 自动执行；手动调用用于即时快照。返回本次采集到的全部指标。',
     parameters: {},
     output: {
+      // K21: raw JSON Schema form (DSH subset) — `required` is array on
+      // parent object, not on each property.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['collectedAt', 'count', 'collected'],
         properties: {
-          collectedAt: { type: 'string', required: true },
-          count: { type: 'integer', required: true },
-          collected: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' }, value: { type: 'number' }, unit: { type: 'string' }, ts: { type: 'string' } } } },
+          collectedAt: { type: 'string' },
+          count: { type: 'integer' },
+          collected: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' }, value: { type: 'number' }, unit: { type: 'string' }, ts: { type: 'string' } } } },
         },
       },
       render: (_a, v) => [
@@ -49,19 +52,21 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['asOf', 'count', 'metrics'],
         properties: {
-          asOf: { type: 'string', required: true },
-          count: { type: 'integer', required: true },
+          asOf: { type: 'string' },
+          count: { type: 'integer' },
           metrics: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['key', 'label', 'value', 'unit', 'ts'],
               properties: {
-                key: { type: 'string', required: true },
-                label: { type: 'string', required: true },
-                value: { type: 'number', required: true },
-                unit: { type: 'string', required: true },
-                ts: { type: 'string', required: true },
+                key: { type: 'string' },
+                label: { type: 'string' },
+                value: { type: 'number' },
+                unit: { type: 'string' },
+                ts: { type: 'string' },
                 delta: { oneOf: [{ type: 'number' }, { type: 'null' }] },
               },
             },
@@ -95,19 +100,21 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['key', 'label', 'unit', 'points'],
         properties: {
-          key: { type: 'string', required: true },
-          label: { type: 'string', required: true },
-          unit: { type: 'string', required: true },
+          key: { type: 'string' },
+          label: { type: 'string' },
+          unit: { type: 'string' },
           points: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               // series() stores JSON-stringified meta on each point (see
               // agint-metrics/lib/index.js series() — `meta: rec.meta`).
               type: 'object', additionalProperties: false,
+              required: ['ts', 'value'],
               properties: {
-                ts: { type: 'string', required: true },
-                value: { type: 'number', required: true },
+                ts: { type: 'string' },
+                value: { type: 'number' },
                 meta: { type: 'string' },
               },
             },

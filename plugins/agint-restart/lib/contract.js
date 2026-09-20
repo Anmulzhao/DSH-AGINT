@@ -36,7 +36,7 @@
 
 /** 可空类型 DSL（必填）。 */
 function nullable(type) {
-  return { oneOf: [{ type }, { type: 'null' }], required: true };
+  return { oneOf: [{ type }, { type: 'null' }] };
 }
 
 /** 可空类型 DSL（可选：不声明 required）。 */
@@ -49,23 +49,23 @@ const LAUNCH_DSL = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    command: { type: 'string', required: true },
-    cwd: { type: 'string', required: true },
-    args: { type: 'array', required: true, items: { type: 'string' } },
+    command: { type: 'string' },
+    cwd: { type: 'string' },
+    args: { type: 'array', items: { type: 'string' } },
   },
 };
 
 // ── restart_request ────────────────────────────────────────────────────────
 
 const REQUEST_FIELDS = [
-  { key: 'accepted', dsl: { type: 'boolean', required: true }, fallback: false },
-  { key: 'code', dsl: { type: 'string', required: true }, fallback: 'unknown' },
-  { key: 'message', dsl: { type: 'string', required: true }, fallback: '' },
-  { key: 'requestId', dsl: nullable('string'), fallback: null },
-  { key: 'shutdownInMs', dsl: nullable('number'), fallback: null },
+  { key: 'accepted', dsl: { type: 'boolean' }, required: true, fallback: false },
+  { key: 'code', dsl: { type: 'string' }, required: true, fallback: 'unknown' },
+  { key: 'message', dsl: { type: 'string' }, required: true, fallback: '' },
+  { key: 'requestId', dsl: nullable('string'), required: true, fallback: null },
+  { key: 'shutdownInMs', dsl: nullable('number'), required: true, fallback: null },
   // plan 只有 dryRun 有内容，但 schema 标了 required：所有其它分支必须显式给 null
-  { key: 'plan', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
-  { key: 'targetPid', dsl: nullable('number'), fallback: null },
+  { key: 'plan', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, required: true, fallback: null },
+  { key: 'targetPid', dsl: nullable('number'), required: true, fallback: null },
   // 可选：不设默认值（见文件头说明）
   { key: 'sideEffect', dsl: { type: 'boolean' } },
   { key: 'launch', dsl: { oneOf: [LAUNCH_DSL, { type: 'null' }] } },
@@ -162,10 +162,10 @@ export function requestInternalError({ error, requestId = null, fileWritten = fa
 // ── restart_cancel ─────────────────────────────────────────────────────────
 
 const CANCEL_FIELDS = [
-  { key: 'cancelled', dsl: { type: 'boolean', required: true }, fallback: false },
-  { key: 'code', dsl: { type: 'string', required: true }, fallback: 'unknown' },
-  { key: 'message', dsl: { type: 'string', required: true }, fallback: '' },
-  { key: 'requestId', dsl: nullable('string'), fallback: null },
+  { key: 'cancelled', dsl: { type: 'boolean' }, required: true, fallback: false },
+  { key: 'code', dsl: { type: 'string' }, required: true, fallback: 'unknown' },
+  { key: 'message', dsl: { type: 'string' }, required: true, fallback: '' },
+  { key: 'requestId', dsl: nullable('string'), required: true, fallback: null },
   { key: 'sideEffect', dsl: { type: 'boolean' } },
 ];
 
@@ -191,39 +191,40 @@ export function cancelInternalError(error) {
 // ── restart_status ─────────────────────────────────────────────────────────
 
 const STATUS_FIELDS = [
-  { key: 'enabled', dsl: { type: 'boolean', required: true }, fallback: false },
-  { key: 'mode', dsl: { type: 'string', required: true }, fallback: 'unknown' },
-  { key: 'pid', dsl: { type: 'number', required: true }, fallback: 0 },
-  { key: 'bootAt', dsl: { type: 'string', required: true }, fallback: '' },
-  { key: 'wasRestart', dsl: { type: 'boolean', required: true }, fallback: false },
+  { key: 'enabled', dsl: { type: 'boolean' }, required: true, fallback: false },
+  { key: 'mode', dsl: { type: 'string' }, required: true, fallback: 'unknown' },
+  { key: 'pid', dsl: { type: 'number' }, required: true, fallback: 0 },
+  { key: 'bootAt', dsl: { type: 'string' }, required: true, fallback: '' },
+  { key: 'wasRestart', dsl: { type: 'boolean' }, required: true, fallback: false },
   // v0.5.0：本次启动是否由插件自己的重启请求导致（true 时默认不发恢复通知，用于切断重启环）
-  { key: 'selfRestart', dsl: { type: 'boolean', required: true }, fallback: false },
+  { key: 'selfRestart', dsl: { type: 'boolean' }, required: true, fallback: false },
   { key: 'selfRestartRequestId', dsl: optionalNullable('string') },
-  { key: 'cooldownRemainingMs', dsl: { type: 'number', required: true }, fallback: 0 },
+  { key: 'cooldownRemainingMs', dsl: { type: 'number' }, required: true, fallback: 0 },
   {
     key: 'burst',
     dsl: {
-      type: 'object', additionalProperties: false, required: true,
+      type: 'object', additionalProperties: false,
       properties: {
-        windowMs: { type: 'number', required: true },
-        max: { type: 'number', required: true },
-        count: { type: 'number', required: true },
-        tripped: { type: 'boolean', required: true },
+        windowMs: { type: 'number' },
+        max: { type: 'number' },
+        count: { type: 'number' },
+        tripped: { type: 'boolean' },
       },
     },
+    required: true,
     fallback: () => ({ windowMs: 0, max: 0, count: 0, tripped: false }),
   },
-  { key: 'pending', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
-  { key: 'lastRestart', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
-  { key: 'historyCount', dsl: { type: 'number', required: true }, fallback: 0 },
-  { key: 'lastResult', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
+  { key: 'pending', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, required: true, fallback: null },
+  { key: 'lastRestart', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, required: true, fallback: null },
+  { key: 'historyCount', dsl: { type: 'number' }, required: true, fallback: 0 },
+  { key: 'lastResult', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, required: true, fallback: null },
   // v0.7.0：还压着没送出去的恢复通知（落盘待投）；null = 没有待投
-  { key: 'parkedNotice', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true }, fallback: null },
+  { key: 'parkedNotice', dsl: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] }, required: true, fallback: null },
   // v0.8.0：运行中代码指纹（apply 时对 lib/*.js 取聚合 sha256 前 12 位）
   { key: 'codeFingerprint', dsl: optionalNullable('string') },
   // v0.8.0：磁盘上的代码是否已改过（true = 进程里仍是旧代码，需重启/等 HMR 才生效）
-  { key: 'codeStale', dsl: { type: 'boolean', required: true }, fallback: false },
-  { key: 'launch', dsl: { ...LAUNCH_DSL, required: true }, fallback: () => ({ command: '', cwd: '', args: [] }) },
+  { key: 'codeStale', dsl: { type: 'boolean' }, required: true, fallback: false },
+  { key: 'launch', dsl: { ...LAUNCH_DSL }, required: true, fallback: () => ({ command: '', cwd: '', args: [] }) },
   // v0.4.4：status() 自身异常时用来带说明（正常路径为 null）
   { key: 'error', dsl: optionalNullable('string') },
 ];
@@ -236,11 +237,23 @@ export function statusUnavailable(error) {
 
 // ── 通用机械 ───────────────────────────────────────────────────────────────
 
-/** 字段表 → dsh-tools 值 schema DSL（properties 对象）。 */
+/**
+ * 字段表 → DSH 严格 schema（raw JSON Schema 形态）。
+ * K21：DSH 的 `output.schema` 走 `assertSupportedJsonSchema()` 不经过编译器，
+ * `required` 必须是**数组形态**挂在父对象上，不能写在 properties.{x} 里。
+ * 所以这里把字段表里 f.required === true 的 key 收集到父级 `required: [...]`，
+ * 而不是放在 dsl 节点里。
+ */
 function compileOutputSchema(fields) {
   const properties = {};
-  for (const f of fields) properties[f.key] = f.dsl;
-  return { type: 'object', additionalProperties: false, properties };
+  const required = [];
+  for (const f of fields) {
+    properties[f.key] = f.dsl;
+    if (f.required === true) required.push(f.key);
+  }
+  const schema = { type: 'object', additionalProperties: false, properties };
+  if (required.length > 0) schema.required = required;
+  return schema;
 }
 
 export const requestOutputSchema = () => compileOutputSchema(REQUEST_FIELDS);
@@ -265,7 +278,7 @@ function normalize(fields, raw) {
     const has = Object.prototype.hasOwnProperty.call(src, f.key) && src[f.key] !== undefined;
     if (has) {
       value[f.key] = src[f.key];
-    } else if (f.dsl.required === true) {
+    } else if (f.required === true) {
       value[f.key] = typeof f.fallback === 'function' ? f.fallback() : f.fallback;
       repaired.push(f.key);
     }

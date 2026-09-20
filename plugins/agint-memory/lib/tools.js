@@ -37,23 +37,36 @@ function apply(ctx) {
       // memory.write returns the full memorySchema record (14 fields since P0
       // added lineageKey/supersedesKey). The previous schema only declared 7;
       // the rest caused DSH strict-mode to drop the response.
+      //
+      // DSH JSON-schema subset (see dsh-tools/lib/types/json-schema.js):
+      //   - `required` is an array of property names, attached to the OBJECT
+      //     schema (not to each property). It also may not coexist with
+      //     `oneOf` (siblings are mutually exclusive).
+      //   - For nullable fields we declare the union via `oneOf` and rely on
+      //     `render()` to format null cleanly.
       schema: {
         type: 'object', additionalProperties: false,
+        required: [
+          'id', 'type', 'content', 'level', 'confidence',
+          'lastRecall', 'recalls', 'evidence', 'resolved',
+          'replacedBy', 'lineageKey', 'supersedesKey',
+          'createdAt', 'updatedAt',
+        ],
         properties: {
-          id: { type: 'string', required: true },
-          type: { type: 'string', required: true },
-          content: { type: 'string', required: true },
-          level: { type: 'string', required: true },
-          confidence: { type: 'number', required: true },
-          lastRecall: { type: 'string', required: true },
-          recalls: { type: 'integer', required: true },
-          evidence: { type: 'string', required: true },
-          resolved: { type: 'boolean', required: true },
-          replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-          createdAt: { type: 'string', required: true },
-          updatedAt: { type: 'string', required: true },
+          id: { type: 'string' },
+          type: { type: 'string' },
+          content: { type: 'string' },
+          level: { type: 'string' },
+          confidence: { type: 'number' },
+          lastRecall: { type: 'string' },
+          recalls: { type: 'integer' },
+          evidence: { type: 'string' },
+          resolved: { type: 'boolean' },
+          replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `memory_write: saved ${v.id} (${v.type}/${v.level}, confidence ${v.confidence})${v.lineageKey ? ' · lineage=' + v.lineageKey : ''}` }],
@@ -76,28 +89,37 @@ function apply(ctx) {
     output: {
       // Search returns the full entry shape (memorySchema 12 fields), not a
       // projection — strict-mode declared only 5 and dropped 7 fields per item.
+      // Raw JSON Schema form required by DSH (`required` lives on the parent
+      // object as an array, not on each property; not allowed beside `oneOf`).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['results'],
         properties: {
           results: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: [
+                'id', 'type', 'content', 'level', 'confidence',
+                'lastRecall', 'recalls', 'evidence', 'resolved',
+                'replacedBy', 'lineageKey', 'supersedesKey',
+                'createdAt', 'updatedAt',
+              ],
               properties: {
-                id: { type: 'string', required: true },
-                type: { type: 'string', required: true },
-                content: { type: 'string', required: true },
-                level: { type: 'string', required: true },
-                confidence: { type: 'number', required: true },
-                lastRecall: { type: 'string', required: true },
-                recalls: { type: 'integer', required: true },
-                evidence: { type: 'string', required: true },
-                resolved: { type: 'boolean', required: true },
-                replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
-                createdAt: { type: 'string', required: true },
-                updatedAt: { type: 'string', required: true },
+                id: { type: 'string' },
+                type: { type: 'string' },
+                content: { type: 'string' },
+                level: { type: 'string' },
+                confidence: { type: 'number' },
+                lastRecall: { type: 'string' },
+                recalls: { type: 'integer' },
+                evidence: { type: 'string' },
+                resolved: { type: 'boolean' },
+                replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                createdAt: { type: 'string' },
+                updatedAt: { type: 'string' },
               },
             },
           },
@@ -135,7 +157,8 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        properties: { stats: { type: 'object', required: true, additionalProperties: true } },
+        required: ['stats'],
+        properties: { stats: { type: 'object', additionalProperties: true } },
       },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v.stats, null, 2) }],
     },
@@ -157,12 +180,15 @@ function apply(ctx) {
       // decayScanRun returns { actions, report, applied }; the previous schema
       // dropped `report`. Keep report as additionalProperties:true so its inner
       // shape ({scanned, counts:{downgrade,clear}, generatedAt}) passes.
+      // Raw JSON Schema form: `required` is array on parent object, not on
+      // each property (array/string fields reject `required`).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['actions', 'applied', 'report'],
         properties: {
-          actions: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
-          applied: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
-          report: { type: 'object', required: true, additionalProperties: true },
+          actions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          applied: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          report: { type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => [

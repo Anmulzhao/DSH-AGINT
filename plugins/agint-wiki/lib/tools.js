@@ -26,11 +26,15 @@ function apply(ctx) {
       content: { type: 'string', required: true, description: 'Full markdown content. Follow WIKI_SCHEMA.md (cite sources with file+line).' },
     },
     output: {
+      // Raw JSON Schema form required by DSH: `required` is array on parent
+      // object, not on each property. See dsh-tools/lib/types/json-schema.js
+      // and the sibling fix in plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['path', 'bytes'],
         properties: {
-          path: { type: 'string', required: true },
-          bytes: { type: 'integer', required: true },
+          path: { type: 'string' },
+          bytes: { type: 'integer' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `wiki_write: saved ${v.path} (${v.bytes} bytes)` }],
@@ -71,15 +75,17 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['results'],
         properties: {
           results: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['path', 'snippet', 'line'],
               properties: {
-                path: { type: 'string', required: true },
-                snippet: { type: 'string', required: true },
-                line: { type: 'integer', required: true },
+                path: { type: 'string' },
+                snippet: { type: 'string' },
+                line: { type: 'integer' },
               },
             },
           },
@@ -103,15 +109,17 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['entries'],
         properties: {
           entries: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['path', 'size', 'mtime'],
               properties: {
-                path: { type: 'string', required: true },
-                size: { type: 'integer', required: true },
-                mtime: { type: 'string', required: true },
+                path: { type: 'string' },
+                size: { type: 'integer' },
+                mtime: { type: 'string' },
               },
             },
           },
@@ -133,8 +141,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['report'],
         properties: {
-          report: { type: 'object', required: true, additionalProperties: true },
+          report: { type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => {

@@ -28,52 +28,59 @@ function apply(ctx) {
     output: {
       // K20: BOTH execute paths now return the same shape — coarse path fills
       // `tool: '*'`. Schema can therefore require `tool` (no optional anymore).
+      //
+      // Raw JSON Schema form required by DSH: `required` is array on parent
+      // object, not on each property. See dsh-tools/lib/types/json-schema.js
+      // and the sibling fix in plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['tool', 'matched', 'deny', 'ask', 'advisory', 'invalidPatterns'],
         properties: {
-          tool: { type: 'string', required: true },
-          matched: { type: 'number', required: true },
+          tool: { type: 'string' },
+          matched: { type: 'number' },
           deny: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['ruleId', 'action', 'level', 'reason'],
               properties: {
-                ruleId: { type: 'string', required: true },
-                action: { type: 'string', required: true },
-                level: { type: 'string', required: true },
-                reason: { type: 'string', required: true },
+                ruleId: { type: 'string' },
+                action: { type: 'string' },
+                level: { type: 'string' },
+                reason: { type: 'string' },
               },
             },
           },
           ask: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['ruleId', 'action', 'level', 'reason'],
               properties: {
-                ruleId: { type: 'string', required: true },
-                action: { type: 'string', required: true },
-                level: { type: 'string', required: true },
-                reason: { type: 'string', required: true },
+                ruleId: { type: 'string' },
+                action: { type: 'string' },
+                level: { type: 'string' },
+                reason: { type: 'string' },
               },
             },
           },
           advisory: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['ruleId', 'action', 'level', 'reason'],
               properties: {
-                ruleId: { type: 'string', required: true },
-                action: { type: 'string', required: true },
-                level: { type: 'string', required: true },
-                reason: { type: 'string', required: true },
+                ruleId: { type: 'string' },
+                action: { type: 'string' },
+                level: { type: 'string' },
+                reason: { type: 'string' },
               },
             },
           },
           invalidPatterns: {
-            type: 'array', required: true,
+            type: 'array',
             // items must be a bare type — `required` is only valid at the
-            // properties level of the value schema DSL (K2-family; caught by
-            // standingKeyFor strict validation).
+            // parent object level of the raw JSON Schema (DSH subset).
             items: { type: 'string' },
           },
         },
@@ -140,24 +147,29 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['rules'],
         properties: {
           rules: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              // D-QAF frozenness 字段 (提案 a6ba79a3) — 存储层新增, 输出 schema 必须同步声明,
+              // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list 返回 invalid output)。
+              required: [
+                'id', 'tool', 'pattern', 'flags', 'action', 'level',
+                'reason', 'enabled', 'createdAt', 'updatedAt',
+              ],
               properties: {
-                id: { type: 'string', required: true },
-                tool: { type: 'string', required: true },
-                pattern: { type: 'string', required: true },
-                flags: { type: 'string', required: true },
-                action: { type: 'string', required: true },
-                level: { type: 'string', required: true },
-                reason: { type: 'string', required: true },
-                enabled: { type: 'boolean', required: true },
-                createdAt: { type: 'string', required: true },
-                updatedAt: { type: 'string', required: true },
-                // D-QAF frozenness 字段 (提案 a6ba79a3) — 存储层新增, 输出 schema 必须同步声明,
-                // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list 返回 invalid output)。
+                id: { type: 'string' },
+                tool: { type: 'string' },
+                pattern: { type: 'string' },
+                flags: { type: 'string' },
+                action: { type: 'string' },
+                level: { type: 'string' },
+                reason: { type: 'string' },
+                enabled: { type: 'boolean' },
+                createdAt: { type: 'string' },
+                updatedAt: { type: 'string' },
                 frozenness: { type: 'string' },
                 lastChangedAt: { type: 'string' },
                 softDeleteDeadline: { type: 'string' },
@@ -191,27 +203,30 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['rules', 'totals'],
         properties: {
           rules: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['ruleId', 'hits', 'denies', 'asks', 'advisories'],
               properties: {
-                ruleId: { type: 'string', required: true },
-                hits: { type: 'number', required: true },
-                denies: { type: 'number', required: true },
-                asks: { type: 'number', required: true },
-                advisories: { type: 'number', required: true },
+                ruleId: { type: 'string' },
+                hits: { type: 'number' },
+                denies: { type: 'number' },
+                asks: { type: 'number' },
+                advisories: { type: 'number' },
               },
             },
           },
           totals: {
             type: 'object', additionalProperties: false,
+            required: ['hits', 'denies', 'asks', 'advisories'],
             properties: {
-              hits: { type: 'number', required: true },
-              denies: { type: 'number', required: true },
-              asks: { type: 'number', required: true },
-              advisories: { type: 'number', required: true },
+              hits: { type: 'number' },
+              denies: { type: 'number' },
+              asks: { type: 'number' },
+              advisories: { type: 'number' },
             },
           },
         },
@@ -239,14 +254,16 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['issues'],
         properties: {
           issues: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['ruleId', 'kind'],
               properties: {
-                ruleId: { type: 'string', required: true },
-                kind: { type: 'string', required: true },
+                ruleId: { type: 'string' },
+                kind: { type: 'string' },
                 detail: { type: 'string' },
                 with: { type: 'string' },
               },
@@ -284,20 +301,25 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['rule'],
         properties: {
           rule: {
             type: 'object', additionalProperties: true,
+            required: [
+              'id', 'tool', 'pattern', 'flags', 'action', 'level',
+              'reason', 'enabled', 'createdAt', 'updatedAt',
+            ],
             properties: {
-              id: { type: 'string', required: true },
-              tool: { type: 'string', required: true },
-              pattern: { type: 'string', required: true },
-              flags: { type: 'string', required: true },
-              action: { type: 'string', required: true },
-              level: { type: 'string', required: true },
-              reason: { type: 'string', required: true },
-              enabled: { type: 'boolean', required: true },
-              createdAt: { type: 'string', required: true },
-              updatedAt: { type: 'string', required: true },
+              id: { type: 'string' },
+              tool: { type: 'string' },
+              pattern: { type: 'string' },
+              flags: { type: 'string' },
+              action: { type: 'string' },
+              level: { type: 'string' },
+              reason: { type: 'string' },
+              enabled: { type: 'boolean' },
+              createdAt: { type: 'string' },
+              updatedAt: { type: 'string' },
             },
           },
         },
@@ -328,8 +350,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['removed'],
         properties: {
-          removed: { type: 'boolean', required: true },
+          removed: { type: 'boolean' },
         },
       },
       render(_a, v) {
@@ -351,13 +374,13 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['rule'],
         properties: {
           rule: {
             oneOf: [
               { type: 'object', additionalProperties: true },
               { type: 'null' },
             ],
-            required: true,
           },
         },
       },

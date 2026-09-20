@@ -17,12 +17,15 @@ const inject = ['tools', 'agint.evolve'];
 const CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
 const STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
 
+// K21: raw JSON Schema form. `required` is array on parent object, not on
+// each property.
 const FINDING = {
   type: 'object', additionalProperties: false,
+  required: ['level', 'key', 'message'],
   properties: {
-    level: { type: 'string', required: true },
-    key: { type: 'string', required: true },
-    message: { type: 'string', required: true },
+    level: { type: 'string' },
+    key: { type: 'string' },
+    message: { type: 'string' },
   },
 };
 
@@ -41,11 +44,12 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['path', 'bytes', 'findings', 'snapshotCollectedAt'],
         properties: {
-          path: { type: 'string', required: true },
-          bytes: { type: 'integer', required: true },
-          findings: { type: 'array', required: true, items: FINDING },
-          snapshotCollectedAt: { type: 'string', required: true },
+          path: { type: 'string' },
+          bytes: { type: 'integer' },
+          findings: { type: 'array', items: FINDING },
+          snapshotCollectedAt: { type: 'string' },
         },
       },
       render: (_a, v) => [
@@ -103,18 +107,20 @@ function apply(ctx) {
       // propose returns the full proposalSchema record (9 fields). The old
       // schema declared only 5 (dropping body/source/note/updatedAt) which
       // truncated the output in DSH strict mode.
+      // K21: raw JSON Schema form (DSH subset).
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
         properties: {
-          id: { type: 'string', required: true },
-          title: { type: 'string', required: true },
-          body: { type: 'string', required: true },
-          category: { type: 'string', required: true },
-          status: { type: 'string', required: true },
-          source: { type: 'string', required: true },
-          note: { type: 'string', required: true },
-          createdAt: { type: 'string', required: true },
-          updatedAt: { type: 'string', required: true },
+          id: { type: 'string' },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          category: { type: 'string' },
+          status: { type: 'string' },
+          source: { type: 'string' },
+          note: { type: 'string' },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `evolve_propose: [${v.category}] ${v.title}（id=${v.id}, status=${v.status}）` }],
@@ -134,24 +140,27 @@ function apply(ctx) {
     output: {
       // listProposals returns full proposalSchema records; previous items
       // dropped body/note/updatedAt (3 fields per item).
+      // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['total', 'proposals'],
         properties: {
-          total: { type: 'integer', required: true },
+          total: { type: 'integer' },
           proposals: {
-            type: 'array', required: true,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
+              required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
               properties: {
-                id: { type: 'string', required: true },
-                title: { type: 'string', required: true },
-                body: { type: 'string', required: true },
-                category: { type: 'string', required: true },
-                status: { type: 'string', required: true },
-                source: { type: 'string', required: true },
-                note: { type: 'string', required: true },
-                createdAt: { type: 'string', required: true },
-                updatedAt: { type: 'string', required: true },
+                id: { type: 'string' },
+                title: { type: 'string' },
+                body: { type: 'string' },
+                category: { type: 'string' },
+                status: { type: 'string' },
+                source: { type: 'string' },
+                note: { type: 'string' },
+                createdAt: { type: 'string' },
+                updatedAt: { type: 'string' },
               },
             },
           },
@@ -180,18 +189,20 @@ function apply(ctx) {
       // schema only declared 4 and the execute() pre-trim dropped 5 fields
       // (body, category, source, note, createdAt). Return the full record so
       // downstream evolve_read callers have everything they need.
+      // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
         properties: {
-          id: { type: 'string', required: true },
-          title: { type: 'string', required: true },
-          body: { type: 'string', required: true },
-          category: { type: 'string', required: true },
-          status: { type: 'string', required: true },
-          source: { type: 'string', required: true },
-          note: { type: 'string', required: true },
-          createdAt: { type: 'string', required: true },
-          updatedAt: { type: 'string', required: true },
+          id: { type: 'string' },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          category: { type: 'string' },
+          status: { type: 'string' },
+          source: { type: 'string' },
+          note: { type: 'string' },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）` }],
