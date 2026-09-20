@@ -33,16 +33,19 @@ function apply(ctx) {
       '零副作用——不触发评估。典型用法：跑周评估前先看一眼 lastRun 是否还新鲜。',
     parameters: {},
     output: {
+      // K21: raw JSON Schema form. `required` not allowed beside `oneOf` —
+      // lift to parent.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['nextFire', 'lastRun', 'weights', 'dimensionKeys'],
         properties: {
-          nextFire: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          nextFire: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           // K20-fix (2026-09-11)：从未跑过评估时 lastRun 为 null（下方 render 已有
           // '<never>' 分支，说明 null 是预期值），但 schema 只声明 object ⇒ 校验失败、
           // 工具必报 `"value.lastRun" must be an object`。此处与 nextFire 一致地放行 null。
-          lastRun: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }], required: true },
-          weights: { type: 'object', required: true, additionalProperties: true },
-          dimensionKeys: { type: 'array', required: true, items: { type: 'string' } },
+          lastRun: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] },
+          weights: { type: 'object', additionalProperties: true },
+          dimensionKeys: { type: 'array', items: { type: 'string' } },
         },
       },
       render: (_a, v) => [{
@@ -79,11 +82,13 @@ function apply(ctx) {
       '被 rule 门禁为 ask 级别——调用前先 rule_check 确认。',
     parameters: {},
     output: {
+      // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
+        required: ['triggered', 'detail'],
         properties: {
-          triggered: { type: 'boolean', required: true },
-          detail: { type: 'object', required: true, additionalProperties: true },
+          triggered: { type: 'boolean' },
+          detail: { type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => [{
