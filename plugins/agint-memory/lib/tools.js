@@ -46,27 +46,22 @@ function apply(ctx) {
       //     `render()` to format null cleanly.
       schema: {
         type: 'object', additionalProperties: false,
-        required: [
-          'id', 'type', 'content', 'level', 'confidence',
-          'lastRecall', 'recalls', 'evidence', 'resolved',
-          'replacedBy', 'lineageKey', 'supersedesKey',
-          'createdAt', 'updatedAt',
-        ],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          id: { type: 'string' },
-          type: { type: 'string' },
-          content: { type: 'string' },
-          level: { type: 'string' },
-          confidence: { type: 'number' },
-          lastRecall: { type: 'string' },
-          recalls: { type: 'integer' },
-          evidence: { type: 'string' },
-          resolved: { type: 'boolean' },
+          id: { required: true, type: 'string' },
+          type: { required: true, type: 'string' },
+          content: { required: true, type: 'string' },
+          level: { required: true, type: 'string' },
+          confidence: { required: true, type: 'number' },
+          lastRecall: { required: true, type: 'string' },
+          recalls: { required: true, type: 'integer' },
+          evidence: { required: true, type: 'string' },
+          resolved: { required: true, type: 'boolean' },
           replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-          createdAt: { type: 'string' },
-          updatedAt: { type: 'string' },
+          createdAt: { required: true, type: 'string' },
+          updatedAt: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `memory_write: saved ${v.id} (${v.type}/${v.level}, confidence ${v.confidence})${v.lineageKey ? ' · lineage=' + v.lineageKey : ''}` }],
@@ -93,33 +88,28 @@ function apply(ctx) {
       // object as an array, not on each property; not allowed beside `oneOf`).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['results'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          results: {
+          results: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: [
-                'id', 'type', 'content', 'level', 'confidence',
-                'lastRecall', 'recalls', 'evidence', 'resolved',
-                'replacedBy', 'lineageKey', 'supersedesKey',
-                'createdAt', 'updatedAt',
-              ],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                id: { type: 'string' },
-                type: { type: 'string' },
-                content: { type: 'string' },
-                level: { type: 'string' },
-                confidence: { type: 'number' },
-                lastRecall: { type: 'string' },
-                recalls: { type: 'integer' },
-                evidence: { type: 'string' },
-                resolved: { type: 'boolean' },
+                id: { required: true, type: 'string' },
+                type: { required: true, type: 'string' },
+                content: { required: true, type: 'string' },
+                level: { required: true, type: 'string' },
+                confidence: { required: true, type: 'number' },
+                lastRecall: { required: true, type: 'string' },
+                recalls: { required: true, type: 'integer' },
+                evidence: { required: true, type: 'string' },
+                resolved: { required: true, type: 'boolean' },
                 replacedBy: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 lineageKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 supersedesKey: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-                createdAt: { type: 'string' },
-                updatedAt: { type: 'string' },
+                createdAt: { required: true, type: 'string' },
+                updatedAt: { required: true, type: 'string' },
               },
             },
           },
@@ -157,8 +147,8 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['stats'],
-        properties: { stats: { type: 'object', additionalProperties: true } },
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+        properties: { stats: { required: true, type: 'object', additionalProperties: true } },
       },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v.stats, null, 2) }],
     },
@@ -184,11 +174,11 @@ function apply(ctx) {
       // each property (array/string fields reject `required`).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['actions', 'applied', 'report'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          actions: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          applied: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          report: { type: 'object', additionalProperties: true },
+          actions: { required: true, type: 'array', items: { type: 'object', additionalProperties: true } },
+          applied: { required: true, type: 'array', items: { type: 'object', additionalProperties: true } },
+          report: { required: true, type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => [

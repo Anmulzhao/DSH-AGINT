@@ -49,26 +49,23 @@ function apply(ctx) {
       // plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['jobs'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          jobs: {
+          jobs: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: [
-                'id', 'name', 'schedule', 'description',
-                'lastRunAt', 'nextRunAt', 'lastOk', 'lastError', 'running',
-              ],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                id: { type: 'string' },
-                name: { type: 'string' },
-                schedule: { type: 'string' },
-                description: { type: 'string' },
+                id: { required: true, type: 'string' },
+                name: { required: true, type: 'string' },
+                schedule: { required: true, type: 'string' },
+                description: { required: true, type: 'string' },
                 lastRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 nextRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 lastOk: { oneOf: [{ type: 'boolean' }, { type: 'null' }] },
                 lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-                running: { type: 'boolean' },
+                running: { required: true, type: 'boolean' },
               },
             },
           },
@@ -102,9 +99,9 @@ function apply(ctx) {
       // job's own return value (object) when ok=true, or null when failed.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['ok', 'lastResult', 'lastError'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          ok: { type: 'boolean' },
+          ok: { required: true, type: 'boolean' },
           lastResult: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] },
           lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         },
@@ -126,9 +123,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['health'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          health: { type: 'object', additionalProperties: true },
+          health: { required: true, type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => {

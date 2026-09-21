@@ -28,98 +28,88 @@ function apply(ctx) {
       // object, never on each property; never beside `oneOf`.
       schema: {
         type: 'object', additionalProperties: false,
-        required: [
-          'enabled', 'frequency', 'sessionsRoot', 'diaryRoot', 'recallPath',
-          'lookbackDays', 'windows', 'recover', 'thresholds',
-          'lastSweepAt', 'lastError', 'qualityEval', 'counts',
-        ],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          enabled: { type: 'boolean' },
-          frequency: { type: 'string' },
-          sessionsRoot: { type: 'string' },
-          diaryRoot: { type: 'string' },
-          recallPath: { type: 'string' },
-          lookbackDays: { type: 'number' },
-          windows: {
+          enabled: { required: true, type: 'boolean' },
+          frequency: { required: true, type: 'string' },
+          sessionsRoot: { required: true, type: 'string' },
+          diaryRoot: { required: true, type: 'string' },
+          recallPath: { required: true, type: 'string' },
+          lookbackDays: { required: true, type: 'number' },
+          windows: { required: true,
             type: 'object', additionalProperties: false,
-            required: ['light', 'rem', 'deep'],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              light: { type: 'number' },
-              rem: { type: 'number' },
-              deep: { type: 'number' },
+              light: { required: true, type: 'number' },
+              rem: { required: true, type: 'number' },
+              deep: { required: true, type: 'number' },
             },
           },
-          recover: { type: 'boolean' },
-          thresholds: {
+          recover: { required: true, type: 'boolean' },
+          thresholds: { required: true,
             type: 'object', additionalProperties: false,
-            required: ['minScore', 'minRecall', 'minUniqueSessions'],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              minScore: { type: 'number' },
-              minRecall: { type: 'number' },
-              minUniqueSessions: { type: 'number' },
+              minScore: { required: true, type: 'number' },
+              minRecall: { required: true, type: 'number' },
+              minUniqueSessions: { required: true, type: 'number' },
             },
           },
           lastSweepAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           // v0.2 (task 2 / C1 / 2026-09-06)：qualityEval bridge meta
           // status() 新增字段，必须同步 schema（避免重蹈 task 1 schema 不同步覆辙）
-          qualityEval: {
+          qualityEval: { required: true,
             type: 'object', additionalProperties: false,
-            required: ['bridgeVersion', 'targetsPlanned', 'targets', 'serviceKey', 'note', 'bridgeDefaults'],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              bridgeVersion: { type: 'string' },
-              targetsPlanned: { type: 'number' },
-              targets: { type: 'array', items: { type: 'string' } },
-              serviceKey: { type: 'string' },
-              note: { type: 'string' },
-              bridgeDefaults: {
+              bridgeVersion: { required: true, type: 'string' },
+              targetsPlanned: { required: true, type: 'number' },
+              targets: { required: true, type: 'array', items: { type: 'string' } },
+              serviceKey: { required: true, type: 'string' },
+              note: { required: true, type: 'string' },
+              bridgeDefaults: { required: true,
                 type: 'object', additionalProperties: false,
-                required: ['evaluateTimeoutMs', 'evaluateConcurrency'],
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
                 properties: {
-                  evaluateTimeoutMs: { type: 'number' },
-                  evaluateConcurrency: { type: 'number' },
+                  evaluateTimeoutMs: { required: true, type: 'number' },
+                  evaluateConcurrency: { required: true, type: 'number' },
                 },
               },
             },
           },
-          counts: {
+          counts: { required: true,
             type: 'object', additionalProperties: false,
-            required: [
-              'sessions', 'userMessages', 'memWrites', 'toolErrors',
-              'candidates', 'gated', 'skippedPromoted', 'validationOk',
-              'validationReason', 'recovered', 'promoted', 'recallAppended',
-              'recallPruned', 'consolidationMode', 'consolidationReason',
-              'qualityEval', 'evolutionTemplates',
-            ],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              sessions: { type: 'number' },
-              userMessages: { type: 'number' },
-              memWrites: { type: 'number' },
-              toolErrors: { type: 'number' },
-              candidates: { type: 'number' },
-              gated: { type: 'number' },
-              skippedPromoted: { type: 'number' },
-              validationOk: { type: 'boolean' },
+              sessions: { required: true, type: 'number' },
+              userMessages: { required: true, type: 'number' },
+              memWrites: { required: true, type: 'number' },
+              toolErrors: { required: true, type: 'number' },
+              candidates: { required: true, type: 'number' },
+              gated: { required: true, type: 'number' },
+              skippedPromoted: { required: true, type: 'number' },
+              validationOk: { required: true, type: 'boolean' },
               validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-              recovered: { type: 'number' },
-              promoted: { type: 'number' },
-              recallAppended: { type: 'number' },
-              recallPruned: { type: 'number' },
+              recovered: { required: true, type: 'number' },
+              promoted: { required: true, type: 'number' },
+              recallAppended: { required: true, type: 'number' },
+              recallPruned: { required: true, type: 'number' },
               // P1 LLM consolidation mode（llm / heuristic-degraded）—— 与 lib/sweep.js result.counts 对齐
               // Sprint 13 / 2026-09-05 漏同步，导致 dream_status host 实测 schema 校验失败
-              consolidationMode: { type: 'string' },
+              consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
               // shape: { status, compositeMean, harmMean, targetCount, okCount }
-              qualityEval: {
+              qualityEval: { required: true,
                 type: 'object', additionalProperties: false,
-                required: ['status', 'compositeMean', 'harmMean', 'targetCount', 'okCount'],
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
                 properties: {
-                  status: { type: 'string' },
+                  status: { required: true, type: 'string' },
                   compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
                   harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-                  targetCount: { type: 'number' },
-                  okCount: { type: 'number' },
+                  targetCount: { required: true, type: 'number' },
+                  okCount: { required: true, type: 'number' },
                 },
               },
               // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
@@ -128,14 +118,14 @@ function apply(ctx) {
               // 漏了 dream_status，导致 host 实测
               // "value.counts.evolutionTemplates is not a declared property (additionalProperties: false)"
               // 整体校验失败 → 该工具完全不可用。
-              evolutionTemplates: {
+              evolutionTemplates: { required: true,
                 type: 'object', additionalProperties: false,
-                required: ['status', 'count', 'topConfidence', 'boost'],
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
                 properties: {
-                  status: { type: 'string' },
-                  count: { type: 'number' },
+                  status: { required: true, type: 'string' },
+                  count: { required: true, type: 'number' },
                   topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-                  boost: { type: 'number' },
+                  boost: { required: true, type: 'number' },
                 },
               },
             },
@@ -179,58 +169,52 @@ function apply(ctx) {
       // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['day', 'diaryPath', 'apply', 'counts', 'promoted', 'errors', 'durationMs'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          day: { type: 'string' },
-          diaryPath: { type: 'string' },
-          apply: { type: 'boolean' },
-          counts: {
+          day: { required: true, type: 'string' },
+          diaryPath: { required: true, type: 'string' },
+          apply: { required: true, type: 'boolean' },
+          counts: { required: true,
             type: 'object', additionalProperties: false,
-            required: [
-              'sessions', 'userMessages', 'memWrites', 'toolErrors',
-              'candidates', 'gated', 'skippedPromoted', 'validationOk',
-              'validationReason', 'recovered', 'promoted', 'recallAppended',
-              'recallPruned', 'consolidationMode', 'consolidationReason',
-              'qualityEval', 'evolutionTemplates',
-            ],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              sessions: { type: 'number' },
-              userMessages: { type: 'number' },
-              memWrites: { type: 'number' },
-              toolErrors: { type: 'number' },
-              candidates: { type: 'number' },
-              gated: { type: 'number' },
-              skippedPromoted: { type: 'number' },
-              validationOk: { type: 'boolean' },
+              sessions: { required: true, type: 'number' },
+              userMessages: { required: true, type: 'number' },
+              memWrites: { required: true, type: 'number' },
+              toolErrors: { required: true, type: 'number' },
+              candidates: { required: true, type: 'number' },
+              gated: { required: true, type: 'number' },
+              skippedPromoted: { required: true, type: 'number' },
+              validationOk: { required: true, type: 'boolean' },
               validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-              recovered: { type: 'number' },
-              promoted: { type: 'number' },
-              recallAppended: { type: 'number' },
-              recallPruned: { type: 'number' },
+              recovered: { required: true, type: 'number' },
+              promoted: { required: true, type: 'number' },
+              recallAppended: { required: true, type: 'number' },
+              recallPruned: { required: true, type: 'number' },
               // P1 LLM consolidation mode（llm / heuristic-degraded）
-              consolidationMode: { type: 'string' },
+              consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
-              qualityEval: {
+              qualityEval: { required: true,
                 type: 'object', additionalProperties: false,
-                required: ['status', 'compositeMean', 'harmMean', 'targetCount', 'okCount'],
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
                 properties: {
-                  status: { type: 'string' },
+                  status: { required: true, type: 'string' },
                   compositeMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
                   harmMean: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-                  targetCount: { type: 'number' },
-                  okCount: { type: 'number' },
+                  targetCount: { required: true, type: 'number' },
+                  okCount: { required: true, type: 'number' },
                 },
               },
               // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution success-templates 摘要
-              evolutionTemplates: {
+              evolutionTemplates: { required: true,
                 type: 'object', additionalProperties: false,
-                required: ['status', 'count', 'topConfidence', 'boost'],
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
                 properties: {
-                  status: { type: 'string' },
-                  count: { type: 'number' },
+                  status: { required: true, type: 'string' },
+                  count: { required: true, type: 'number' },
                   topConfidence: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-                  boost: { type: 'number' },
+                  boost: { required: true, type: 'number' },
                 },
               },
             },
@@ -239,17 +223,17 @@ function apply(ctx) {
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['type', 'content', 'score', 'id'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                type: { type: 'string' },
-                content: { type: 'string' },
-                score: { type: 'number' },
-                id: { type: 'string' },
+                type: { required: true, type: 'string' },
+                content: { required: true, type: 'string' },
+                score: { required: true, type: 'number' },
+                id: { required: true, type: 'string' },
               },
             },
           },
-          errors: { type: 'array', items: { type: 'string' } },
-          durationMs: { type: 'number' },
+          errors: { required: true, type: 'array', items: { type: 'string' } },
+          durationMs: { required: true, type: 'number' },
         },
       },
       render: (_a, v) => {
@@ -291,7 +275,6 @@ function apply(ctx) {
       // with `oneOf` — lift to parent.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['path', 'content'],
         properties: {
           path: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           content: { oneOf: [{ type: 'string' }, { type: 'null' }] },
@@ -323,12 +306,12 @@ function apply(ctx) {
       // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['total', 'skippedPartial', 'totalLines', 'rows'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          total: { type: 'number' },
-          skippedPartial: { type: 'number' },
-          totalLines: { type: 'number' },
-          rows: {
+          total: { required: true, type: 'number' },
+          skippedPartial: { required: true, type: 'number' },
+          totalLines: { required: true, type: 'number' },
+          rows: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: true,
@@ -406,14 +389,10 @@ function apply(ctx) {
       // lift all required-ness to parent object level.
       schema: {
         type: 'object', additionalProperties: false,
-        required: [
-          'mode', 'operations', 'operationsLength', 'gatedLength',
-          'reason', 'diagnostic', 'childErrors',
-          'provider', 'model', 'day', 'schemaOk',
-        ],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          mode: { type: 'string' },
-          operations: {
+          mode: { required: true, type: 'string' },
+          operations: { required: true,
             oneOf: [
               { type: 'array',
                 items: {
@@ -430,10 +409,10 @@ function apply(ctx) {
             ],
           },
           operationsLength: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-          gatedLength: { type: 'number' },
+          gatedLength: { required: true, type: 'number' },
           reason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           diagnostic: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-          childErrors: {
+          childErrors: { required: true,
             oneOf: [
               { type: 'array',
                 items: {
@@ -448,10 +427,10 @@ function apply(ctx) {
               { type: 'null' },
             ],
           },
-          provider: { type: 'string' },
-          model: { type: 'string' },
-          day: { type: 'string' },
-          schemaOk: { type: 'boolean' },
+          provider: { required: true, type: 'string' },
+          model: { required: true, type: 'string' },
+          day: { required: true, type: 'string' },
+          schemaOk: { required: true, type: 'boolean' },
         },
       },
       render(_a, v) {

@@ -37,15 +37,15 @@ function apply(ctx) {
       // lift to parent.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['nextFire', 'lastRun', 'weights', 'dimensionKeys'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
           nextFire: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           // K20-fix (2026-09-11)：从未跑过评估时 lastRun 为 null（下方 render 已有
           // '<never>' 分支，说明 null 是预期值），但 schema 只声明 object ⇒ 校验失败、
           // 工具必报 `"value.lastRun" must be an object`。此处与 nextFire 一致地放行 null。
           lastRun: { oneOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] },
-          weights: { type: 'object', additionalProperties: true },
-          dimensionKeys: { type: 'array', items: { type: 'string' } },
+          weights: { required: true, type: 'object', additionalProperties: true },
+          dimensionKeys: { required: true, type: 'array', items: { type: 'string' } },
         },
       },
       render: (_a, v) => [{
@@ -85,10 +85,10 @@ function apply(ctx) {
       // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['triggered', 'detail'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          triggered: { type: 'boolean' },
-          detail: { type: 'object', additionalProperties: true },
+          triggered: { required: true, type: 'boolean' },
+          detail: { required: true, type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => [{

@@ -21,11 +21,11 @@ const STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
 // each property.
 const FINDING = {
   type: 'object', additionalProperties: false,
-  required: ['level', 'key', 'message'],
+  // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
   properties: {
-    level: { type: 'string' },
-    key: { type: 'string' },
-    message: { type: 'string' },
+    level: { required: true, type: 'string' },
+    key: { required: true, type: 'string' },
+    message: { required: true, type: 'string' },
   },
 };
 
@@ -44,12 +44,12 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['path', 'bytes', 'findings', 'snapshotCollectedAt'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          path: { type: 'string' },
-          bytes: { type: 'integer' },
-          findings: { type: 'array', items: FINDING },
-          snapshotCollectedAt: { type: 'string' },
+          path: { required: true, type: 'string' },
+          bytes: { required: true, type: 'integer' },
+          findings: { required: true, type: 'array', items: FINDING },
+          snapshotCollectedAt: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [
@@ -110,17 +110,17 @@ function apply(ctx) {
       // K21: raw JSON Schema form (DSH subset).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          id: { type: 'string' },
-          title: { type: 'string' },
-          body: { type: 'string' },
-          category: { type: 'string' },
-          status: { type: 'string' },
-          source: { type: 'string' },
-          note: { type: 'string' },
-          createdAt: { type: 'string' },
-          updatedAt: { type: 'string' },
+          id: { required: true, type: 'string' },
+          title: { required: true, type: 'string' },
+          body: { required: true, type: 'string' },
+          category: { required: true, type: 'string' },
+          status: { required: true, type: 'string' },
+          source: { required: true, type: 'string' },
+          note: { required: true, type: 'string' },
+          createdAt: { required: true, type: 'string' },
+          updatedAt: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `evolve_propose: [${v.category}] ${v.title}（id=${v.id}, status=${v.status}）` }],
@@ -143,24 +143,24 @@ function apply(ctx) {
       // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['total', 'proposals'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          total: { type: 'integer' },
-          proposals: {
+          total: { required: true, type: 'integer' },
+          proposals: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                id: { type: 'string' },
-                title: { type: 'string' },
-                body: { type: 'string' },
-                category: { type: 'string' },
-                status: { type: 'string' },
-                source: { type: 'string' },
-                note: { type: 'string' },
-                createdAt: { type: 'string' },
-                updatedAt: { type: 'string' },
+                id: { required: true, type: 'string' },
+                title: { required: true, type: 'string' },
+                body: { required: true, type: 'string' },
+                category: { required: true, type: 'string' },
+                status: { required: true, type: 'string' },
+                source: { required: true, type: 'string' },
+                note: { required: true, type: 'string' },
+                createdAt: { required: true, type: 'string' },
+                updatedAt: { required: true, type: 'string' },
               },
             },
           },
@@ -192,17 +192,17 @@ function apply(ctx) {
       // K21: raw JSON Schema form.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['id', 'title', 'body', 'category', 'status', 'source', 'note', 'createdAt', 'updatedAt'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          id: { type: 'string' },
-          title: { type: 'string' },
-          body: { type: 'string' },
-          category: { type: 'string' },
-          status: { type: 'string' },
-          source: { type: 'string' },
-          note: { type: 'string' },
-          createdAt: { type: 'string' },
-          updatedAt: { type: 'string' },
+          id: { required: true, type: 'string' },
+          title: { required: true, type: 'string' },
+          body: { required: true, type: 'string' },
+          category: { required: true, type: 'string' },
+          status: { required: true, type: 'string' },
+          source: { required: true, type: 'string' },
+          note: { required: true, type: 'string' },
+          createdAt: { required: true, type: 'string' },
+          updatedAt: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）` }],

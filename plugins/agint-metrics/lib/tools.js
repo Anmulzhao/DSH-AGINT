@@ -27,11 +27,23 @@ function apply(ctx) {
       // parent object, not on each property.
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['collectedAt', 'count', 'collected'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          collectedAt: { type: 'string' },
-          count: { type: 'integer' },
-          collected: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' }, value: { type: 'number' }, unit: { type: 'string' }, ts: { type: 'string' } } } },
+          collectedAt: { required: true, type: 'string' },
+          count: { required: true, type: 'integer' },
+          collected: {
+            required: true,
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                key: { required: true, type: 'string' },
+                value: { required: true, type: 'number' },
+                unit: { required: true, type: 'string' },
+                ts: { required: true, type: 'string' },
+              },
+            },
+          },
         },
       },
       render: (_a, v) => [
@@ -52,21 +64,21 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['asOf', 'count', 'metrics'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          asOf: { type: 'string' },
-          count: { type: 'integer' },
-          metrics: {
+          asOf: { required: true, type: 'string' },
+          count: { required: true, type: 'integer' },
+          metrics: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['key', 'label', 'value', 'unit', 'ts'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                key: { type: 'string' },
-                label: { type: 'string' },
-                value: { type: 'number' },
-                unit: { type: 'string' },
-                ts: { type: 'string' },
+                key: { required: true, type: 'string' },
+                label: { required: true, type: 'string' },
+                value: { required: true, type: 'number' },
+                unit: { required: true, type: 'string' },
+                ts: { required: true, type: 'string' },
                 delta: { oneOf: [{ type: 'number' }, { type: 'null' }] },
               },
             },
@@ -100,21 +112,21 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['key', 'label', 'unit', 'points'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          key: { type: 'string' },
-          label: { type: 'string' },
-          unit: { type: 'string' },
-          points: {
+          key: { required: true, type: 'string' },
+          label: { required: true, type: 'string' },
+          unit: { required: true, type: 'string' },
+          points: { required: true,
             type: 'array',
             items: {
               // series() stores JSON-stringified meta on each point (see
               // agint-metrics/lib/index.js series() — `meta: rec.meta`).
               type: 'object', additionalProperties: false,
-              required: ['ts', 'value'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ts: { type: 'string' },
-                value: { type: 'number' },
+                ts: { required: true, type: 'string' },
+                value: { required: true, type: 'number' },
                 meta: { type: 'string' },
               },
             },

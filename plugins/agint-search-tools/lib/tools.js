@@ -52,9 +52,9 @@ function apply(ctx) {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['hits', 'counts'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          hits: {
+          hits: { required: true,
             type: 'array',
             items: {
               // additionalProperties: true because hit shape is a projection;
@@ -62,9 +62,9 @@ function apply(ctx) {
               // don't enumerate here.
               type: 'object',
               additionalProperties: true,
-              required: ['source'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                source: { type: 'string' },
+                source: { required: true, type: 'string' },
                 id: { type: 'string' },
                 path: { type: 'string' },
                 title: { type: 'string' },
@@ -75,13 +75,13 @@ function apply(ctx) {
               },
             },
           },
-          counts: {
+          counts: { required: true,
             type: 'object',
             additionalProperties: true,
-            required: ['memory', 'wiki'],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              memory: { type: 'integer' },
-              wiki: { type: 'integer' },
+              memory: { required: true, type: 'integer' },
+              wiki: { required: true, type: 'integer' },
             },
           },
         },

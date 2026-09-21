@@ -31,10 +31,10 @@ function apply(ctx) {
       // and the sibling fix in plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['path', 'bytes'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          path: { type: 'string' },
-          bytes: { type: 'integer' },
+          path: { required: true, type: 'string' },
+          bytes: { required: true, type: 'integer' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `wiki_write: saved ${v.path} (${v.bytes} bytes)` }],
@@ -75,17 +75,17 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['results'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          results: {
+          results: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['path', 'snippet', 'line'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                path: { type: 'string' },
-                snippet: { type: 'string' },
-                line: { type: 'integer' },
+                path: { required: true, type: 'string' },
+                snippet: { required: true, type: 'string' },
+                line: { required: true, type: 'integer' },
               },
             },
           },
@@ -109,17 +109,17 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['entries'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          entries: {
+          entries: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['path', 'size', 'mtime'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                path: { type: 'string' },
-                size: { type: 'integer' },
-                mtime: { type: 'string' },
+                path: { required: true, type: 'string' },
+                size: { required: true, type: 'integer' },
+                mtime: { required: true, type: 'string' },
               },
             },
           },
@@ -141,9 +141,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['report'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          report: { type: 'object', additionalProperties: true },
+          report: { required: true, type: 'object', additionalProperties: true },
         },
       },
       render: (_a, v) => {

@@ -34,50 +34,50 @@ function apply(ctx) {
       // and the sibling fix in plugins/agint-tool-stats (commit 791ab7b).
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['tool', 'matched', 'deny', 'ask', 'advisory', 'invalidPatterns'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          tool: { type: 'string' },
-          matched: { type: 'number' },
-          deny: {
+          tool: { required: true, type: 'string' },
+          matched: { required: true, type: 'number' },
+          deny: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['ruleId', 'action', 'level', 'reason'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ruleId: { type: 'string' },
-                action: { type: 'string' },
-                level: { type: 'string' },
-                reason: { type: 'string' },
+                ruleId: { required: true, type: 'string' },
+                action: { required: true, type: 'string' },
+                level: { required: true, type: 'string' },
+                reason: { required: true, type: 'string' },
               },
             },
           },
-          ask: {
+          ask: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['ruleId', 'action', 'level', 'reason'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ruleId: { type: 'string' },
-                action: { type: 'string' },
-                level: { type: 'string' },
-                reason: { type: 'string' },
+                ruleId: { required: true, type: 'string' },
+                action: { required: true, type: 'string' },
+                level: { required: true, type: 'string' },
+                reason: { required: true, type: 'string' },
               },
             },
           },
-          advisory: {
+          advisory: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['ruleId', 'action', 'level', 'reason'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ruleId: { type: 'string' },
-                action: { type: 'string' },
-                level: { type: 'string' },
-                reason: { type: 'string' },
+                ruleId: { required: true, type: 'string' },
+                action: { required: true, type: 'string' },
+                level: { required: true, type: 'string' },
+                reason: { required: true, type: 'string' },
               },
             },
           },
-          invalidPatterns: {
+          invalidPatterns: { required: true,
             type: 'array',
             // items must be a bare type — `required` is only valid at the
             // parent object level of the raw JSON Schema (DSH subset).
@@ -147,29 +147,26 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['rules'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          rules: {
+          rules: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
               // D-QAF frozenness 字段 (提案 a6ba79a3) — 存储层新增, 输出 schema 必须同步声明,
               // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list 返回 invalid output)。
-              required: [
-                'id', 'tool', 'pattern', 'flags', 'action', 'level',
-                'reason', 'enabled', 'createdAt', 'updatedAt',
-              ],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                id: { type: 'string' },
-                tool: { type: 'string' },
-                pattern: { type: 'string' },
-                flags: { type: 'string' },
-                action: { type: 'string' },
-                level: { type: 'string' },
-                reason: { type: 'string' },
-                enabled: { type: 'boolean' },
-                createdAt: { type: 'string' },
-                updatedAt: { type: 'string' },
+                id: { required: true, type: 'string' },
+                tool: { required: true, type: 'string' },
+                pattern: { required: true, type: 'string' },
+                flags: { required: true, type: 'string' },
+                action: { required: true, type: 'string' },
+                level: { required: true, type: 'string' },
+                reason: { required: true, type: 'string' },
+                enabled: { required: true, type: 'boolean' },
+                createdAt: { required: true, type: 'string' },
+                updatedAt: { required: true, type: 'string' },
                 frozenness: { type: 'string' },
                 lastChangedAt: { type: 'string' },
                 softDeleteDeadline: { type: 'string' },
@@ -203,30 +200,30 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['rules', 'totals'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          rules: {
+          rules: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['ruleId', 'hits', 'denies', 'asks', 'advisories'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ruleId: { type: 'string' },
-                hits: { type: 'number' },
-                denies: { type: 'number' },
-                asks: { type: 'number' },
-                advisories: { type: 'number' },
+                ruleId: { required: true, type: 'string' },
+                hits: { required: true, type: 'number' },
+                denies: { required: true, type: 'number' },
+                asks: { required: true, type: 'number' },
+                advisories: { required: true, type: 'number' },
               },
             },
           },
-          totals: {
+          totals: { required: true,
             type: 'object', additionalProperties: false,
-            required: ['hits', 'denies', 'asks', 'advisories'],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              hits: { type: 'number' },
-              denies: { type: 'number' },
-              asks: { type: 'number' },
-              advisories: { type: 'number' },
+              hits: { required: true, type: 'number' },
+              denies: { required: true, type: 'number' },
+              asks: { required: true, type: 'number' },
+              advisories: { required: true, type: 'number' },
             },
           },
         },
@@ -254,16 +251,16 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['issues'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          issues: {
+          issues: { required: true,
             type: 'array',
             items: {
               type: 'object', additionalProperties: false,
-              required: ['ruleId', 'kind'],
+              // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
-                ruleId: { type: 'string' },
-                kind: { type: 'string' },
+                ruleId: { required: true, type: 'string' },
+                kind: { required: true, type: 'string' },
                 detail: { type: 'string' },
                 with: { type: 'string' },
               },
@@ -301,25 +298,22 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['rule'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          rule: {
+          rule: { required: true,
             type: 'object', additionalProperties: true,
-            required: [
-              'id', 'tool', 'pattern', 'flags', 'action', 'level',
-              'reason', 'enabled', 'createdAt', 'updatedAt',
-            ],
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
             properties: {
-              id: { type: 'string' },
-              tool: { type: 'string' },
-              pattern: { type: 'string' },
-              flags: { type: 'string' },
-              action: { type: 'string' },
-              level: { type: 'string' },
-              reason: { type: 'string' },
-              enabled: { type: 'boolean' },
-              createdAt: { type: 'string' },
-              updatedAt: { type: 'string' },
+              id: { required: true, type: 'string' },
+              tool: { required: true, type: 'string' },
+              pattern: { required: true, type: 'string' },
+              flags: { required: true, type: 'string' },
+              action: { required: true, type: 'string' },
+              level: { required: true, type: 'string' },
+              reason: { required: true, type: 'string' },
+              enabled: { required: true, type: 'boolean' },
+              createdAt: { required: true, type: 'string' },
+              updatedAt: { required: true, type: 'string' },
             },
           },
         },
@@ -350,9 +344,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['removed'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          removed: { type: 'boolean' },
+          removed: { required: true, type: 'boolean' },
         },
       },
       render(_a, v) {
@@ -374,9 +368,9 @@ function apply(ctx) {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        required: ['rule'],
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
         properties: {
-          rule: {
+          rule: { required: true,
             oneOf: [
               { type: 'object', additionalProperties: true },
               { type: 'null' },
