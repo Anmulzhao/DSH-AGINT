@@ -68,6 +68,25 @@ function portInUse(port, host = '127.0.0.1') {
   });
 }
 
+/**
+ * 构造传给新 dsh 的环境变量。
+ *
+ * 默认继承当前 process.env（respawn.js 自己继承自 dsh），再叠加 launch.env。
+ *
+ * **关键**：剥离 DSH 启动器会从 `.env` 重新加载的变量 —— 否则改了 .env 也不生效。
+ * DSH 启动器 `loadLayeredEnv()` 的语义是「`process.env[name]` 已存在则跳过」
+ * （dsh-app-boot lib/index.js line 2103），所以 inherited env 优先级高于 .env。
+ * 如果带着 inherited 值拉起新 dsh，.env 改了等于没改。AGINT_HOME / DSH_HOME /
+ * DSH_WIKI_ROOT 都是 .env-controlled 变量，统一剥离让 dsh 走 .env 重新加载。
+ */
+const DENV_OVERRIDABLE = new Set(['AGINT_HOME', 'DSH_HOME', 'DSH_WIKI_ROOT']);
+
+function pickEnv(launchEnv) {
+  const base = { ...process.env };
+  for (const key of DENV_OVERRIDABLE) delete base[key];
+  return { ...base, ...(launchEnv ?? {}) };
+}
+
 /** 强制杀进程：win32 用 taskkill /F，posix 用 SIGKILL。 */
 function forceKill(pid) {
   return new Promise((resolve) => {
@@ -166,7 +185,7 @@ function launchDetachedPosix(launch, logFile) {
   }
   const child = spawn(launch.command, launch.args, {
     cwd: launch.cwd || process.cwd(),
-    env: { ...process.env, ...(launch.env ?? {}) },
+    env: pickEnv(launch.env),
     detached: true,
     stdio: ['ignore', fd === 'ignore' ? 'ignore' : fd, fd === 'ignore' ? 'ignore' : fd],
   });
@@ -214,7 +233,7 @@ function launchHiddenWin32(launch, logFile, stateDir) {
 
   const child = spawn('wscript.exe', [vbsPath], {
     cwd,
-    env: { ...process.env, ...(launch.env ?? {}) },
+    env: pickEnv(launch.env),
     stdio: 'ignore',
     windowsHide: true,
   });
