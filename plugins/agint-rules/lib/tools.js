@@ -400,6 +400,16 @@ function apply(ctx) {
     },
     () => { /* domain not ready yet; will retry on first tool call */ },
   );
+
+  // 断言型护栏种子（2026-09-21）：**无条件播种**，因为老装机的规则表非空，
+  // seedIfEmpty 会在第一行就 return（已实测本机 23 条）。此调用自身幂等
+  // （按 id 跳过已存在项），故每次 boot 调用是安全的。
+  void Promise.resolve().then(() => rules.seedEpistemic()).then(
+    (r) => {
+      if (r.added > 0) console.log(`[agint-rules] seeded ${r.added}/${r.total} epistemic rules`);
+    },
+    () => { /* domain not ready yet; retry on first tool call */ },
+  );
 }
 
 export { apply, inject, name };

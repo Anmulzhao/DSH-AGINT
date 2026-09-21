@@ -68,6 +68,19 @@ const ruleSchema = z.object({
   lastChangedAt: z.string().optional(),
   /** L1 软删除倒计时(ISO 时间戳)，L0/L2 不用 */
   softDeleteDeadline: z.string().optional(),
+  // ─── 断言型护栏（epistemic guard, 2026-09-21）───────────────────────
+  // 与 pattern 是**互斥的两条匹配通道**：
+  //   · pattern  → 正则打在工具参数文本上（动作层：别删这个文件）
+  //   · claim    → 匹配面是**文本里的断言形状**（认知层：别说这句话除非你有证据）
+  // 二者只有一个允许非空。claim 规则必须声明 claimKind + claimVerbs。
+  /** 断言类型：existence=存在性断言 / quantifier=全称量化 / negated-self=否定式自述 */
+  claimKind: z.enum(['existence', 'quantifier', 'negated-self']).optional(),
+  /** existence 通道的被否定的谓词，如 ['不存在','没有','未挂载','不支持'] */
+  claimVerbs: z.array(z.string()).optional(),
+  /** 断言必须同时命中的限定词（可选，用于收窄） */
+  claimQualifiers: z.array(z.string()).optional(),
+  /** 是否为断言通道规则 */
+  claim: z.boolean().default(false),
 });
 
 const spec = defineDomain({
@@ -141,6 +154,192 @@ function compilePattern(rule) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 断言型护栏引擎（epistemic guard）
+//
+// 起因（2026-09-21 复盘）：本工作区 30+ 条 K 记录里，同一族错误反复出现——
+//   ① K30 假设了不存在的接口（5 个事件名全库 grep 命中 0 却写进设计稿）
+//   ② K34 把存在的接口判成"自造字段"（反向幻觉，更隐蔽）
+//   ③ K33 断言"宿主无 pre-compact 钩子"，实测三样都有
+//   ④ K68 拿写入占位值当评分输出，断言"信号数恒 1"
+// 共同动作 = **用"看起来对"的推理替代"跑一遍"的验证**。
+//
+// 这类错误不会当场炸（不像删错文件），所以现有动作层正则护栏一条都拦不到它。
+// 引擎的立场：不检查内容真伪（做不到），只检查**断言有没有带证据**。
+// 命中 → 记 audit（可观测）；高危 → 注入 advisory 提醒附上取证建议。
+//
+// ⚠️ 设计铁律：**豁免优先于命中**。误杀正常交流的代价 >> 漏放一条断言。
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 证据指纹：命中任一即可豁免（已经取证过的断言不该被拦） */
+const EVIDENCE_RE = new RegExp([
+  'grep', 'rg\\s', '命中\\s*\\d+', '命中\\s*0', '\\d+\\s*行',
+  '行号', '\\.js:\\d+', '\\.mjs:\\d+', ':L\\d+',
+  '证据\\s*[:：]', '源码\\s*[:：]', '取证', '实测', '已核对', '已复查',
+  'K\\d{2}\\b', '第\\s*\\d+\\s*行',
+].join('|'), 'i');
+
+/** 疑问 / 待查语气 → 不是断言，放行 */
+const QUESTION_RE = /[?？]|是否|有没有|是否已|是不是|大概|可能|也许|我猜|推测|怀疑|不确定|待确认|需要确认|要确认|先查|待查|还要查/;
+
+/** 任务 / 祈使语气 → 不是断言，放行 */
+const TASK_RE = /^(请|帮我|帮忙|麻烦|我们要|我们来|接下来|下一步|任务是|目标是)|请(帮我|你|确认|核|查|看|补|改|写|跑|验证)/;
+
+/** 未取证自述 → 已是诚实表述，放行 */
+const HEDGE_RE = /还没查|未查|尚未核|没核实|没有核实|暂未|待取证|没有证据|仅凭印象|凭印象/;
+
+/** 中文否定谓词（existence 通道的默认动词集） */
+const NEG_EXISTENCE_VERBS = [
+  '不存在', '没有', '未定义', '没定义', '不支持', '不可用', '无法',
+  '未挂载', '没挂载', '未接', '没接', '没有接', '不通', '不可见',
+  '空转', '从未', '检索不到', '查不到', '找不到', '缺席',
+  // 「无」单字是中文技术写作里最高频的否定谓词（"无生产调用者" / "无消费方" /
+  // "无数据行"）。实测漏放（2026-09-21 E2E A 组）：只有「没有/不存在」时，
+  // 「宿主无 pre-compact 钩子」「runPreCompressCheckpoint 无生产调用者」
+  // 两句真实的历史错判**都逃掉了**。补进来。
+  '无', '未', '没', '非', '缺',
+];
+
+/**
+ * ⚠️ 危险宾语豁免（**优先级最高**，任何通道生效前先过这一关）
+ *
+ * 这些宾语指向的"不存在"是**事实陈述而非可取证断言**：
+ *   · 权限   —— "我没有权限"不是我没查，是系统告诉我了（工具会直接报 403）
+ *   · 报错/异常 —— 是观测结果
+ *   · 时间/计划 —— "还没有到时间"
+ *   · 需求/必要/意义 —— 价值判断
+ * 实测（2026-09-21 E2E B 组）：不加这条会误杀"我没有权限访问那个目录"。
+ *
+ * ⚠️ 词表要**窄**：首版把「理由」也放进来，结果"dedupe 吃掉了 83 条，**理由**是
+ * 相似度高"这句真断言被豁免了（该句正确结论应是"判据归因错误"）。价值判断类
+ * 只保留真正无争议的，宁可漏放"没有必要"，也别放过一条判据错误。
+ */
+const BENIGN_OBJECT_RE = /权限|授权|许可|报错|错误|异常|时间|计划|安排|必要|需求|办法|意义|资格|机会/;
+
+/** 否定式自述的合法宾语：权限/能力/工具，不是操作行为 → 放行 */
+const NEG_SELF_BENIGN_RE = /权限|授权|许可|资格|能力|工具|权限|访问权|账号/;
+
+/** 存在性断言的宾语必须指向技术实体，否则会误杀日常用语 */
+const TECH_OBJECT_RE = /源码|代码|接口|函数|方法|类|模块|插件|文件|目录|仓库|字段|事件|服务|钩子|hook|API|命令|工具|行|表|域|依赖|配置|参数|schema|总线|链路|通路|管道|topic|主题|能力|信号|机制|通道|门禁|流程|数据|记录|调用者|调用方|消费方|生产|挂载|订阅|发布/;
+
+/**
+ * 全称量化断言：需要「量化词 + 复数宾语 + 封闭信号」三者同时成立。
+ *
+ * ⚠️ 封闭信号不能用 `已[经]?` —— "对所有正整数都**已经**成立"是数学陈述，
+ * 会被误杀（2026-09-21 A/B 测试实测）。
+ *
+ * 那 `恒/永远/始终` 为什么可以进？因为它们是**断言性副词**（断言时间上无例外），
+ * 而 `已经` 是**完成态助词**（不蕴含"无例外"）。实测本仓 KNOWLEDGE.md 的 105 处
+ * `已*` 全部是完成态（已修/已完成/已同步/已验证/已排除/已就绪），故保留在
+ * CLOSURE 里是安全的——但**必须配合量化词**使用（`信号数恒 1` 会命中，
+ * `已经完成` 不会，后者没有量化词）。
+ */
+const QUANTIFIER_RE = /(全部|所有|全|每[一]?个|任何一个|无一|没有任何|全都|均|皆|一律|统统|完全|恒|永远|始终|从来|一直)/;
+
+/** 全称量化的宾语也应是技术复数实体 */
+const QUANT_OBJECT_RE = /条|个|项|类|种|次|候选|记录|规则|插件|技能|事件|文件|函数|测试|用例|信号|条目|会话|job|任务|回声|重复|命中|结果|候选/;
+
+/** 封闭信号：真正表明"无例外"的形态（见上文对「已经」的说明） */
+const QUANT_CLOSURE_RE = /[了啦]$|被|一律|均|统统|完全|全部|无一|\d+\s*[条个项类种次]|恒|永远|始终|从来|一直/;
+
+/**
+ * 评估单条断言型规则。
+ *
+ * @param {object} rule  含 claim/claimKind/claimVerbs 的规则对象
+ * @param {string} text  待检文本（模型的自然语言输出）
+ * @returns {{ruleId:string, claimKind:string, signal:string, reason:string}|null}
+ */
+export function evaluateEpistemic(rule, text) {
+  if (!rule || rule.claim !== true || rule.enabled === false) return null;
+  if (typeof text !== 'string' || text.length === 0) return null;
+
+  // ── 豁免层（优先）：命中任一 → 不拦 ──────────────────────────────
+  if (EVIDENCE_RE.test(text)) return null;   // 已带证据
+  if (BENIGN_OBJECT_RE.test(text)) return null; // 权限/报错/时间等天然不可争议宾语
+  if (QUESTION_RE.test(text)) return null;   // 疑问/推测
+  if (TASK_RE.test(text)) return null;       // 任务/祈使
+  if (HEDGE_RE.test(text)) return null;      // 已声明未取证
+
+  const kind = rule.claimKind || 'existence';
+  let signal = null;
+
+  if (kind === 'existence') {
+    // 条件/假设句不是断言：「如果接口不存在，我们就换一条路径」
+    if (/(如果|若|假如|假设|若是|倘若|一旦)/.test(text)) return null;
+    const verbs = (rule.claimVerbs && rule.claimVerbs.length ? rule.claimVerbs : NEG_EXISTENCE_VERBS);
+    const hitVerb = verbs.find((v) => text.includes(v));
+    if (hitVerb && TECH_OBJECT_RE.test(text)) {
+      signal = hitVerb;
+    }
+  } else if (kind === 'quantifier') {
+    if (QUANTIFIER_RE.test(text) && QUANT_OBJECT_RE.test(text)) {
+      // 三者齐备才算全称断言：量化词 + 复数宾语 + 封闭信号。
+      // 缺封闭信号 = 一般性陈述（"所有 X 都应满足 Y"），不该拦。
+      if (QUANT_CLOSURE_RE.test(text)) {
+        const m = text.match(QUANTIFIER_RE);
+        signal = m ? m[0] : '全称';
+      }
+    }
+  } else if (kind === 'negated-self') {
+    // 「我没有删除过任何文件」—— 否定式第一人称自述，无法验证且常是替自己开脱。
+    // 但「我没有权限访问 X」的宾语是权限/能力，不是操作 → 不是自证清白，放行。
+    const negSelf = /(我|本人|这边)(们)?\s*(没有|从未|从没|并未|未曾|绝没)/;
+    const actObj = /删除|移动|修改|改过|写过|执行|运行|创建|提交|推送|覆盖|碰过|接触/;
+    if (negSelf.test(text) && actObj.test(text) && !NEG_SELF_BENIGN_RE.test(text)) {
+      signal = '否定式自述';
+    }
+  }
+
+  if (!signal) return null;
+
+  return {
+    ruleId: rule.id,
+    claimKind: kind,
+    signal,
+    reason: rule.reason,
+  };
+}
+
+/** 断言型护栏的内置种子（claim 通道的初始规则集） */
+export function epistemicSeedRules() {
+  return [
+    {
+      id: 'epistemic-negated-existence',
+      claim: true,
+      claimKind: 'existence',
+      tool: '*',
+      action: 'advisory',
+      level: 'L2',
+      reason: '这是一句「不存在/没有/不支持」型的存在性断言，但没带取证痕迹。'
+        + '请先 grep 源码/查生产存储/实际跑一遍，把命中结果（文件:行号 或 命中 N 行）写进结论；'
+        + '或改写成「我还没查」而不是「它不存在」——两者证据强度天差地别。',
+      enabled: true,
+    },
+    {
+      id: 'epistemic-quantifier',
+      claim: true,
+      claimKind: 'quantifier',
+      tool: '*',
+      action: 'advisory',
+      level: 'L2',
+      reason: '这是一句全称量化断言（全部/所有/均/无一…），但没带取证痕迹。'
+        + '全称命题需要全量清单或计数支撑：给出 N/N 的分母，或改写成「我抽查的 N 条里 M 条…」。',
+      enabled: true,
+    },
+    {
+      id: 'epistemic-negated-self',
+      claim: true,
+      claimKind: 'negated-self',
+      tool: '*',
+      action: 'advisory',
+      level: 'L2',
+      reason: '这是一句「我没有做过 X」的否定式自述。这类陈述无法自我验证，'
+        + '请改用可核对的形式：给出实际命令与输出（如 git log / 文件清单），让结论可被别人复核。',
+      enabled: true,
+    },
+  ];
+}
+
 function argText(name, args) {
   // Convert common arg shapes into a single text blob for regex matching.
   if (args === null || args === undefined) return '';
@@ -194,6 +393,73 @@ export function buildAdvisoryMessage(toolName, advisories) {
   };
 }
 
+/**
+ * 构造断言型护栏的 advisory 注入。
+ *
+ * 与 buildAdvisoryMessage 分开：断言护栏的措辞不是"你违反了规则"，而是
+ * "这句话需要证据"——避免模型把它读成指责后开始辩解（那是另一种浪费）。
+ *
+ * ⚠️ 与 buildAdvisoryMessage 同款硬契约：必须是完整 UserMessage
+ * （role + id + content + source），否则会话回放校验器判 corrupt（K44.1）。
+ */
+export function buildEpistemicMessage(toolName, hits) {
+  const lines = hits.map((h) => `• [${h.ruleId}] 触发词「${h.signal}」\n  ${h.reason}`);
+  return {
+    role: 'user',
+    id: randomUUID(),
+    source: { kind: 'plugin', plugin: name, form: 'epistemic-advisory' },
+    content: [{
+      type: 'text',
+      text: `agint-rules 断言型护栏：刚才的 ${toolName} 输出里有 ${hits.length} 处**未取证的断言**。\n`
+        + `${lines.join('\n')}\n`
+        + `（这是提醒，不影响本次调用。请在下一次需要引用这些结论时补上取证：grep 命中结果 / 生产存储查询 / 实际执行输出。`
+        + `若此刻确实还查不了，请把措辞改成「我还没验证」——不要让它以肯定句留在会话里。）`,
+    }],
+  };
+}
+
+/**
+ * 从一次工具调用的「参数 + 结果」里抽出可扫描的自然语言文本。
+ *
+ * 为什么扫这里而不是直接扫模型消息流：post-execute 拿得到的只有 exec 与
+ * result，没有"模型接下来会说那句话"的通道。但被护栏拦的断言**必然是在
+ * 一次工具调用之后写下的结论**——把它们从工具产物里读出来，能在下一次
+ * 模型请求前就完成提醒，属于半影子档（提醒不阻断）。
+ *
+ * 读不到就返回空串（静默跳过）。**不猜、不编**——这与 K47.1 「eventToText
+ * 漏读 data.content 导致人类消息全不可见」是同一类坑的预防性写法。
+ *
+ * @returns {string} 拼接后的可扫描文本
+ */
+function extractScannableText(exec, result) {
+  const parts = [];
+  const push = (v) => { if (typeof v === 'string' && v) parts.push(v); };
+
+  // 1) 调用参数里的自由文本（task / content / message / prompt / query ...）
+  const args = exec && exec.arguments;
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    for (const [k, v] of Object.entries(args)) {
+      if (typeof v !== 'string') continue;
+      if (/^(task|content|text|message|prompt|query|reason|note|summary|body|description)$/i.test(k)) {
+        push(v);
+      }
+    }
+  } else if (typeof args === 'string') {
+    push(args);
+  }
+
+  // 2) 工具结果里的文本块（result.content: ContentBlock[]）
+  const content = result && (result.content || (result.result && result.result.content));
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'text') push(block.text);
+    }
+  }
+
+  return parts.join('\n');
+}
+
 function apply(ctx) {
   let domain = null;
   let domainError = null;
@@ -238,11 +504,12 @@ function apply(ctx) {
   // lifetime (i.e. current session). Audit counters still count every hit.
   const reminded = new Set();
   function bump(ruleId, kind) {
-    const cur = audit.get(ruleId) ?? { hits: 0, denies: 0, asks: 0, advisories: 0 };
+    const cur = audit.get(ruleId) ?? { hits: 0, denies: 0, asks: 0, advisories: 0, epistemics: 0 };
     cur.hits += 1;
     if (kind === 'deny') cur.denies += 1;
     else if (kind === 'ask') cur.asks += 1;
     else if (kind === 'advisory') cur.advisories += 1;
+    else if (kind === 'epistemic') cur.epistemics += 1;
     audit.set(ruleId, cur);
   }
 
@@ -347,11 +614,50 @@ function apply(ctx) {
         (acc, r) => {
           acc.hits += r.hits; acc.denies += r.denies;
           acc.asks += r.asks; acc.advisories += r.advisories;
+          acc.epistemics += r.epistemics || 0;
           return acc;
         },
-        { hits: 0, denies: 0, asks: 0, advisories: 0 },
+        { hits: 0, denies: 0, asks: 0, advisories: 0, epistemics: 0 },
       );
       return { rules: out, totals };
+    },
+
+    // ── 断言型护栏公开接口（2026-09-21）───────────────────────────────
+    // 与 check() 平行：check 吃 (tool, args) 走动作层；checkClaims 吃自由文本
+    // 走认知层。两者共用同一张规则表的 audit 计数。
+    /**
+     * @param {string} text 模型输出文本
+     * @returns {{hits:Array, checked:number}}
+     */
+    async checkClaims(text) {
+      const t = await table();
+      const hits = [];
+      for (const [, rec] of t.entries()) {
+        if (!rec.claim || !rec.enabled) continue;
+        const m = evaluateEpistemic(rec, text);
+        if (m) hits.push(m);
+      }
+      return { hits, checked: t.entries ? [...t.entries()].filter(([, r]) => r.claim).length : 0 };
+    },
+
+    /** 把断言型种子写入规则表（幂等：id 已存在则跳过） */
+    async seedEpistemic() {
+      const t = await table();
+      const now = nowIso();
+      let added = 0;
+      for (const r of epistemicSeedRules()) {
+        if (t.get(r.id)) continue;
+        // claim 规则没有 pattern 字段；补一个永不命中的占位以保证 schema 通过
+        await t.put(r.id, ruleSchema.parse({
+          ...r,
+          pattern: '(?!)',
+          flags: '',
+          createdAt: now,
+          updatedAt: now,
+        }));
+        added += 1;
+      }
+      return { added, total: epistemicSeedRules().length };
     },
 
     // Lint the rule table for invalid patterns and duplicate-ish rules.
@@ -388,7 +694,10 @@ function apply(ctx) {
       for (const r of seedRules) {
         await t.put(r.id, ruleSchema.parse({ ...r, createdAt: now, updatedAt: now }));
       }
-      return { seeded: true, count: seedRules.length };
+      // 断言型种子单独播种：它们与动作型规则共存，且必须幂等
+      // （老装机上表非空，seedIfEmpty 会提前返回 —— 所以另走 seedEpistemic）。
+      const ep = await agintRules.seedEpistemic();
+      return { seeded: true, count: seedRules.length, epistemic: ep.added };
     },
 
     // Internal — for boot-level diagnostics only.
@@ -427,13 +736,14 @@ function apply(ctx) {
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const rules = ctx.get('agint.rules');
     if (!rules) return next();
+
+    // ── 通道 1：动作层 advisory（原有行为，字节级不变）───────────────
     let check;
     try {
       check = await rules.check(exec.name, exec.arguments);
     } catch {
-      return next();
+      check = { advisory: [] };
     }
-    if (check.advisory.length === 0) return next();
 
     // Count every match (audit 要的是命中次数), but only *remind* once:
     // reminders are context injection, and re-injecting the same text on
@@ -446,14 +756,41 @@ function apply(ctx) {
       reminded.add(key);
       fresh.push(a);
     }
-    if (fresh.length === 0) return next();
 
-    const message = buildAdvisoryMessage(exec.name, fresh);
+    // ── 通道 2：认知层断言护栏（2026-09-21 新增）─────────────────────
+    // 扫描对象 = 本插件所在 agent 平面上即将进入历史的消息文本。
+    // ⚠️ 只在我们能明确读到文本时才扫；读不到就静默跳过（不猜、不编）。
+    let claimHits = [];
+    try {
+      const text = extractScannableText(exec, result);
+      if (text) {
+        const r = await rules.checkClaims(text);
+        claimHits = r.hits;
+      }
+    } catch {
+      claimHits = [];
+    }
+    // 计数照记（可观测 > 可审批）；注入同样做会话级去重，避免刷屏
+    const freshClaims = [];
+    for (const h of claimHits) {
+      bump(h.ruleId, 'epistemic');
+      const key = `${h.ruleId}::${exec.name}`;
+      if (reminded.has(key)) continue;
+      reminded.add(key);
+      freshClaims.push(h);
+    }
+
+    if (fresh.length === 0 && freshClaims.length === 0) return next();
+
+    const messages = [];
+    if (fresh.length > 0) messages.push(buildAdvisoryMessage(exec.name, fresh));
+    if (freshClaims.length > 0) messages.push(buildEpistemicMessage(exec.name, freshClaims));
+
     // 只追加 additionalContexts，不替换 value / content：
     // dsh-tools 的 postExecute 禁止 accept 决策同时带 value 和 content
     // （否则整次工具调用被 TypeError 判失败），且替换会丢掉工具真实结果。
     // message 必须含 id + role:'user'（见 buildAdvisoryMessage 的事故注释）。
-    return { kind: 'accept', additionalContexts: [message] };
+    return { kind: 'accept', additionalContexts: messages };
   });
 }
 
