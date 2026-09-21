@@ -81,6 +81,35 @@ function evidenceLines(pattern) {
 }
 
 /**
+ * 命名硬规则（2026-09-21 双罐对照试验后回填生产 prompt）。
+ *
+ * 来源：当天端到端试验——同一条 fixture、同一个模型（MiniMax-M3），
+ * A 罐（原版 prompt）模型起名 `cron-plugin-services-mapping-verify`（5 段）
+ * 被 `isToolChainName` 拦截、整条作废；B 罐（本段拼进 system prompt）起名
+ * `cron-services-mapping`（3 段）全门通过并产出完整 SKILL.md 草稿。
+ *
+ * 根因：原版 prompt 只说 "must NOT be a join of tool names"，没告诉模型
+ * **几段算 join**（判据 `TOOL_CHAIN_NAME_RE = /^([a-z_]+-){3,}/` 实际是
+ * 「4 段起必拦、3 段以内放行」）。规则没说清，模型就只能猜。
+ */
+export const NAMING_RULES = `NAMING RULES (hard gates are enforced downstream — a violating name
+discards the ENTIRE authoring):
+1. name must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ (ASCII lowercase kebab-case).
+2. name must have AT MOST 3 segments (at most 2 hyphens). A 4-segment name is
+   auto-rejected as a tool-chain join.
+3. name must describe the TASK'S PURPOSE (what a future run saves by reading
+   this skill), NEVER the chain of tools or system components it touches.
+   BAD: cron-plugin-services-mapping   (system components joined; 4 segments)
+   BAD: glob-glob-glob-glob            (tool sequence)
+   GOOD: cron-services-audit           (3 segments, states the job)
+   GOOD: pdf-report-review             (3 segments)
+4. If the task description is Chinese, translate its core intent into English
+   words for the slug. Never fall back to tool or component names.
+5. description: one line saying WHEN to use this skill (trigger situation +
+   what it prevents/achieves). End with a period. Never contain:
+   autocreate, auto-create, skill-autocreate, 自动创建.`;
+
+/**
  * system prompt：角色 + 分隔标记的语义声明（prompt 注入防护，方案 §3.4）。
  *
  * 三条硬规矩里，第 2、3 条由代码保证（窗口不参与决定要不要调用；模型输出只
@@ -125,7 +154,9 @@ Output contract (validated by the host, unknown fields are rejected):
 - why: array of <= ${LIST_MAX_ITEMS} strings                       (optional)
 - pitfalls: array of <= ${LIST_MAX_ITEMS} strings                  (optional)
 
-Omit the authoring fields entirely when standardizable is false.`;
+Omit the authoring fields entirely when standardizable is false.
+
+${NAMING_RULES}`;
 
 /**
  * 用户侧 prompt（纯函数，可单测）。

@@ -79,13 +79,21 @@ const TERMINATOR_RE = /[。．.!！?？]$/;
  * 判据（2026-09-18 用真实数据校准，第一版正则误判已修）：
  *   ① 先剥掉尾部参数括号 `（参数：command/description/…）`——那是机械拼接的固定尾巴；
  *   ② 剩余部分按箭头/标点切词；
- *   ③ **每个词都是纯 ASCII 标识符**（工具名）才判为复述。
+ *   ③ **每个词都是纯 ASCII 标识符**（工具名）；
+ *   ④ **且至少含 1 个箭头**（2026-09-21 补）。
  *
  * 第一版写成「出现 ≥2 个箭头就算复述」，会把 `glob-glob-glob-glob` 的描述
  *   `跨多目录广撒网扫文件 → 抽样读全文 → pwsh 快速验证（适用于…）`
  * 也判红——但那句是**有信息量的自然语言**（只是用了箭头做连接）。
  * 改成第 ③ 条后：自动生成的 5 条全命中（描述就是工具序列），
  * 人工撰写的 6 条 0 命中，实测无误杀。
+ *
+ * 第 ④ 条的由来（2026-09-21 端到端试验 B 罐真产物）：LLM 写的**英文自然语言**
+ * 描述（"Use after editing a cron plugin to verify and patch the services()
+ * mapping before restart…"）全是 ASCII 单词，被 ③ 误报成复述。而生产侧
+ * 复述描述只有一个来源——`toolSequence.join(' → ')`，**必然带箭头**；
+ * 无箭头的 ASCII 散文不可能是这个生产者写的。加箭头必要条件后：
+ * 工具序列复述（含 `a → b → c`）仍全命中，英文散文不再误报。
  */
 export function isToolChainDescription(description) {
   const d = String(description ?? '').trim();
@@ -93,6 +101,7 @@ export function isToolChainDescription(description) {
   const main = d.replace(/[（(]\s*参数\s*[：:][^）)]*[）)]/g, ' ').trim();
   const words = main.split(/[→\-–>，,、;；:：/|·()（）[\]{}\s]+/).filter(Boolean);
   if (words.length < 2) return false;
+  if (!/→|->/.test(main)) return false; // ④ 箭头是复述的必要条件（join(' → ') 的签名）
   return words.every((w) => /^[a-z0-9_.]+$/i.test(w));
 }
 

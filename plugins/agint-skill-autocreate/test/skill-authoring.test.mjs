@@ -253,6 +253,18 @@ test('契约：带箭头的自然语言 description 不算工具链复述（第�
   assert.equal(codesOf(checkDescription('跨多目录广撒网扫文件 → 抽样读全文 → pwsh 快速验证')).includes('description-tool-chain'), false);
 });
 
+test('契约：全英文自然语言 description 不算工具链复述（2026-09-21 校准：箭头是必要条件）', () => {
+  // 2026-09-21 端到端试验 B 罐真产物：LLM 的英文描述全是 ASCII 单词，
+  // 被旧判据（③ 全 ASCII 词）误报成复述。而生产侧复述描述只有一个来源——
+  // `toolSequence.join(' → ')`，必然带箭头；无箭头的 ASCII 散文不判红。
+  const prose = 'Use after editing a cron plugin to verify and patch the services() mapping before restart, preventing silent soft-skip failures.';
+  assert.equal(isToolChainDescription(prose), false);
+  assert.equal(codesOf(checkDescription(prose)).includes('description-tool-chain'), false);
+  // 反向锁定：箭头序列复述不因校准而漏判
+  assert.equal(isToolChainDescription('read → write'), true);
+  assert.equal(isToolChainDescription('a → b → c'), true);
+});
+
 test('契约：超长 → description-too-long（warn，不得升级为 blocker）', () => {
   const long = '把'.repeat(DESCRIPTION_MAX + 1);
   const f = checkDescription(long);

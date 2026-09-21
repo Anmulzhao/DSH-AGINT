@@ -22,6 +22,7 @@ import {
   findUnsupportedSchemaKeywords,
   JUDGE_OUTPUT_SCHEMA,
   JUDGE_SYSTEM_PROMPT,
+  NAMING_RULES,
   RATIONALE_MAX,
   NAME_MAX,
   DESCRIPTION_MAX,
@@ -284,4 +285,19 @@ test('buildJudgePrompt：无窗口文本时给显式占位，不产生空分隔�
 
 test('buildJudgePrompt 是纯函数（同输入同输出，不读写任何外部状态）', () => {
   assert.equal(buildJudgePrompt(PATTERN, 'x'), buildJudgePrompt(PATTERN, 'x'));
+});
+
+// ── ⑦ 命名规则在 prompt 里（2026-09-21 双罐对照试验后回填）─────────────────
+// 背景：原版 prompt 只说 "must NOT be a join of tool names"，没给段数上限，
+// 模型起名 `cron-plugin-services-mapping-verify`（5 段）被 name-tool-chain 整条拦掉。
+// 对照试验：同一 fixture 同一模型，拼上 NAMING_RULES 后起名 `cron-services-mapping`
+//（3 段）全门通过。本测试锁死：规则必须整体拼进 system prompt，且关键判据逐字在。
+
+test('system prompt 含命名硬规则：3 段上限 + 正反例 + 自指黑名单（规则被删即此测试变红）', () => {
+  assert.ok(JUDGE_SYSTEM_PROMPT.includes(NAMING_RULES), 'NAMING_RULES 必须整体拼进 system prompt');
+  assert.match(JUDGE_SYSTEM_PROMPT, /AT MOST 3 segments/i, '段数上限是判据的真形态，必须写明');
+  assert.match(JUDGE_SYSTEM_PROMPT, /cron-plugin-services-mapping/, 'BAD 反例（真实翻车名）逐字在');
+  assert.match(JUDGE_SYSTEM_PROMPT, /cron-services-audit/, 'GOOD 正例逐字在');
+  assert.match(JUDGE_SYSTEM_PROMPT, /glob-glob-glob-glob/, '工具序列反例逐字在');
+  assert.match(JUDGE_SYSTEM_PROMPT, /auto-create/i, '自我指涉黑名单进 prompt（防 LLM 写出自指描述）');
 });
