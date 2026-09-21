@@ -363,3 +363,37 @@ grep 生产目录（剔除 `test/` 与 `eval/scenarios/`）确认调用点非空
 1. 在真实 dsh 内 `grep` 日志 `shadow ingest failed`，确认生产是否走了同一分支（需先找到当日日志）。
 2. 修法建议（待老板定）：`logPhase4Buffered` 改为 `await ready` 后再 enqueue，
    并把 `catch` 从 `warn` 升级为「warn + 计数指标」，让静默失败可观测。
+
+#### 6.9.5 修复已落地（2026-09-21 17:3x，老板批准两条修法）
+
+**提交 `b2d9edb`，已推送。**
+
+**修法 1 — 显式 await（根治竞态）**
+- 新增 `ensureLogBuffer()`：惰性 + 单例 promise，并发调用只开一次域。
+- `logPhase4Buffered` 改 `await ensureLogBuffer()`；拿不到实例 → **降级同步 `logPhase4`**（不丢事件）。
+- `enqueue` 抛错同样降级同步 + warn，不静默。
+- `readLogRangeMerged` / `flushLogBufferNow` 同步跟进（原实现同样会撞 null）。
+- ⭐ dispose 钩子 `if (logBuffer)` → `await ensureLogBuffer()`：原写法在实例未就绪时
+  **静默跳过 shutdown**，缓冲残留随进程消失。
+
+**修法 2 — 让失败可观测（计数指标）**
+- `shadowIngest.ok` / `.failed` / `.skippedNoId`：**成功也计数**，与 failed 配对，
+  使「收到事件数 = ok + failed」恒等式可校验。
+- `logPhase4Buffered.degraded` / `.enqueueFailed`、`readLogRangeMerged.degraded`、
+  `flushLogBufferNow.noBuffer`、`shadowSubscribe.initFailed`。
+
+**验收（三层 + 变异）**
+
+| 层 | 结果 |
+| --- | --- |
+| 仓库单测 | 10/10 绿（`domain-race` 4 + `shadow-ingest` 6） |
+| 权威冒烟 `smoke.mjs` | **13/13 绿**（11 工具注册 + 跨平台 fixture + 9 buffer 契约） |
+| 部署位端到端 | **4/4 绿**（用宿主字节跑，非仓库） |
+| 变异测试 | 退回旧写法 → **3 红 / 1 绿**，证明测试有判定力 |
+| schema 护栏 | 25 文件 / 109 schema / **0 invalid** |
+
+新增 `test/domain-race.test.mjs` 作为该竞态回归防线（真插件 + mock ctx + 慢 domain）。
+
+> ⚠️ **生效前提：`lib/index.js` 属 boot 期加载，必须重启 dsh。**
+> 重启后验收口径：`evolution_log` 出现**首条 `shadow-ingest` 标记**（历史恒 0）。
+> 探针：`D:\DSH\_verify_evomem_fix_0921.mjs --go`。
