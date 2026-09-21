@@ -26,6 +26,35 @@ import {
 
 // ── 纯函数：buildConsolidationPrompt ──────────────────────────────────────
 
+// 2026-09-21（方案 B 分级去重，proposals/agint-dream-dedupe-lineage.md §4.2）：
+// 带 dedupeSuspicion 的候选必须把「疑似重复对象」显式写给模型 —— 这是 gate 与
+// LLM 之间的契约：gate 只标不判，判定权在 LLM。提示不得退化成"直接 merge"的指令。
+test('buildConsolidationPrompt: dedupeSuspicion 候选带出疑似对象 + 三分支指引', () => {
+  const gated = [
+    { key: 'k1', text: '索引化方案用于长期投资', type: 'decision', score: 0.8, signalCount: 7, uniqueDays: 2,
+      dedupeSuspicion: { kind: 'similarity', similarity: 0.6667, againstId: 'mem-42' } },
+    { key: 'k2', text: '一条干净的候选', type: 'lesson', score: 0.79, signalCount: 7, uniqueDays: 2 },
+  ];
+  const prompt = buildConsolidationPrompt(gated, [], '2026-09-21');
+  // 疑似对象必须点名（id + 相似度 + 判据种类）
+  assert.match(prompt, /dedupe-suspicion: similarity similarity=67% against existing entry id=mem-42/);
+  // 三分支指引：merge / supersede / add
+  assert.match(prompt, /same claim → action "merged"/);
+  assert.match(prompt, /\(or "superseded" if the existing entry is now wrong\)/);
+  assert.match(prompt, /merely similar wording → action "added"/);
+  // 干净的候选不得被打标（防误伤）
+  assert.equal((prompt.match(/dedupe-suspicion/g) ?? []).length, 1, '只有带标记的候选出现该字段');
+  // 契约语气：是「证据」不是「指令」
+  assert.match(prompt, /did NOT\s+auto-drop it/);
+});
+
+test('buildConsolidationPrompt: 无 dedupeSuspicion 时输出与旧版逐字一致（不引入噪音）', () => {
+  const gated = [{ key: 'k1', text: '一条候选', type: 'lesson', score: 0.8 }];
+  const prompt = buildConsolidationPrompt(gated, [], '2026-09-21');
+  assert.doesNotMatch(prompt, /dedupe-suspicion/);
+  assert.match(prompt, /### Candidate 1 \[key: k1\] type=lesson score=0.80/);
+});
+
 test('buildConsolidationPrompt: 列出所有 gated 候选 + existing 内容 + 输出指令', () => {
   const gated = [
     { key: 'c1', text: '禁止在生产环境 rm -rf', type: 'lesson', score: 0.85, sessionKey: 's1', signalCount: 4, uniqueDays: 2 },

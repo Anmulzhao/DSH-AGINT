@@ -92,6 +92,11 @@ Hard rules (the host validation gate enforces these too — violating them rejec
 8. Be conservative: when in doubt, prefer 'added' over 'merged' or 'superseded'.
    False merges pollute memory. Host's loss fraction budget (25% default) will
    reject the batch if you over-merge.
+9. Some candidates carry a \`dedupe-suspicion\` note naming an existing entry they
+   are textually close to. The host gate deliberately did NOT auto-drop them —
+   wording overlap is not proof of the same claim. Judge each one on meaning:
+   merge/supersede when it really is the same claim, otherwise add it. A
+   suspicion note is EVIDENCE TO WEIGH, not an instruction to merge.
 
 Output: call the structured_output tool with { operations, reasoning }.
 The reasoning field (≤ 200 chars) summarizes your overall decision strategy.`;
@@ -115,6 +120,19 @@ export function buildConsolidationPrompt(gated, existing, day) {
     lines.push(`> ${c.text}`);
     if (c.sessionKey) lines.push(`session: ${c.sessionKey}`);
     if (c.signalCount) lines.push(`signals: ${c.signalCount} across ${c.uniqueDays ?? '?'} day(s)`);
+    // 2026-09-21（方案 B 分级去重，proposals/agint-dream-dedupe-lineage.md §4.2）：
+    // 中相似档候选由 gate 放行并自带 `dedupeSuspicion` —— 把「文本高度相似但不确定
+    // 是否同一主张」这件事**显式告诉模型**，而不是让它自己从原文里重新发现。
+    // 提示归提示，判定权仍在模型（gate 已于 2026-09-21 明确不做 LLM 前置调用）。
+    if (c.dedupeSuspicion) {
+      const s = c.dedupeSuspicion;
+      const pct = typeof s.similarity === 'number' ? `${(s.similarity * 100).toFixed(0)}%` : 'n/a';
+      lines.push(`⚠️ dedupe-suspicion: ${s.kind} similarity=${pct} against existing entry id=${s.againstId ?? '?'}`);
+      lines.push('   The host gate found this candidate textually close to that existing entry, but did NOT');
+      lines.push('   auto-drop it — textual similarity is not proof of the same claim. Examine both and pick:');
+      lines.push('   - same claim → action "merged" (or "superseded" if the existing entry is now wrong)');
+      lines.push('   - different claim, merely similar wording → action "added"');
+    }
     lines.push('');
   }
   lines.push('## Existing memory');

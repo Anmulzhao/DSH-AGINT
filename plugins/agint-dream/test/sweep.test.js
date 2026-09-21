@@ -226,14 +226,26 @@ test('tokenOverlap: Chinese partial match score is below 1.0 (no longer whole-st
   assert.equal(gated.length, 1, 'distinct Chinese sentences must not be falsely covered');
 });
 
-test('tokenOverlap: substring containment still wins (higher priority than bigram)', async () => {
+// 2026-09-21 行为变更（方案 B，老板已拍板）：互含**不再一律丢弃**。
+// 旧断言 `substring containment must dedupe`（gated.length===0）源自单一阈值时代 ——
+// 它正是「同源闭包」的帮凶：候选只要与任一条 existing 有互含关系就出局，而候选与
+// 生产记忆共享同一份会话来源，互含是常态而非异常。现在按长度比例分档：
+//   ratio ≥ 0.85 → 真重复（丢弃）；ratio < 0.85 → 疑似（放行 + 标记）。
+// 本用例的两句 ratio ≈ 0.64 → 降级为中档。旧行为由 kill-switch 用例守着。
+test('分级去重（行为变更）：互含但长度悬殊 → 降级为中档放行，不再一律丢弃', async () => {
   const { gateCandidates } = await import('../lib/sweep.js');
-  const gated = gateCandidates(
-    [{ text: '智进使用 vger 称呼', type: 'decision', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
-    [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }], // substring of candidate
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
-  );
-  assert.equal(gated.length, 0, 'substring containment must dedupe');
+  const scored = [{
+    text: '智进使用 vger 称呼', type: 'decision', signalCount: 3, uniqueSessions: 2,
+    score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'],
+  }];
+  const existing = [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }]; // substring of candidate
+  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 };
+  const gated = gateCandidates(scored.map((c) => ({ ...c })), existing, opts);
+  assert.equal(gated.length, 1, 'ratio 0.64 (<0.85) → 疑似档，放行给 LLM 裁');
+  assert.equal(gated[0].dedupeSuspicion.kind, 'substring');
+  // kill-switch 下旧行为必须完整保留
+  const legacy = gateCandidates(scored.map((c) => ({ ...c })), existing, { ...opts, dedupeTieredEnabled: false });
+  assert.equal(legacy.length, 0, 'dedupeTieredEnabled=false → 回退为一律丢弃（旧行为）');
 });
 
 test('tokenOverlap: bag-of-words full-match triggers dedupe', async () => {
@@ -244,6 +256,140 @@ test('tokenOverlap: bag-of-words full-match triggers dedupe', async () => {
     { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 0, 'exact match must be deduped');
+});
+
+// ── 2026-09-21：分级去重（方案 B，proposals/agint-dream-dedupe-lineage.md）──────
+//
+// 病灶：候选从会话日志抽，生产记忆本身也是这些会话沉淀的产物 —— 两者共享同一份
+// 文本来源。单一 0.6 阈值下 existing 越全命中率越高，实测 406 条记忆把 83 条过门
+// 候选 100% 吃掉（gated 0）。修法：把「命中后果」从布尔拆成三档。
+
+const CAND = (text, score = 0.8) => ({
+  text, type: 'decision', signalCount: 3, uniqueSessions: 2, score,
+  sessions: ['s1'], days: ['2026-08-15'], signals: ['x'],
+});
+
+test('分级去重：高相似（≥0.85 精确同句）仍被丢弃 → gated 不变', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates(
+    [CAND('keep workspace clean')],
+    [{ id: 'm1', type: 'lesson', content: 'keep workspace clean' }],
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+  );
+  assert.equal(gated.length, 0, 'exact match is real duplication → dropped');
+  assert.equal(gated.dedupeStats.dropped, 1);
+  assert.equal(gated.dedupeStats.suspicious, 0);
+});
+
+test('分级去重：互含但长度悬殊（ratio < 0.85）→ 放行 + dedupeSuspicion', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  // '使用 vger 称呼' 完全被候选包含，但 ratio = 7/11 ≈ 0.64 落在中档
+  const gated = gateCandidates(
+    [CAND('智进使用 vger 称呼')],
+    [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }],
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+  );
+  assert.equal(gated.length, 1, '中相似档必须放行给 LLM 裁');
+  assert.equal(gated[0].dedupeSuspicion.kind, 'substring');
+  assert.equal(gated[0].dedupeSuspicion.againstId, 'm1');
+  assert.ok(gated[0].dedupeSuspicion.similarity >= 0.6, 'similarity 记录在案');
+  assert.equal(gated.dedupeStats.suspicious, 1);
+  assert.equal(gated.dedupeStats.dropped, 0);
+});
+
+test('分级去重：中相似（0.6~0.85 二元组重叠）→ 放行 + kind=similarity', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  // 实测 maxSimilarity = 0.667：共享大部分二元组（「化方案用于长期投资」「方案用于长期投」
+  // 等），但都不是对方的子串 → 必走 tokenOverlap 分支，落中档。
+  const gated = gateCandidates(
+    [CAND('索引化方案用于长期投资')],
+    [{ id: 'm2', type: 'decision', content: '指数化方案用于长期投资' }],
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeMid: 0.6, dedupeHigh: 0.85 },
+  );
+  assert.equal(gated.length, 1, '中相似档放行');
+  assert.equal(gated[0].dedupeSuspicion.kind, 'similarity');
+  assert.equal(gated[0].dedupeSuspicion.againstId, 'm2');
+  assert.ok(gated[0].dedupeSuspicion.similarity >= 0.6 && gated[0].dedupeSuspicion.similarity < 0.85,
+    `similarity 必须落在中档，实测 ${gated[0].dedupeSuspicion.similarity}`);
+  assert.equal(gated.dedupeStats.suspicious, 1);
+  assert.equal(gated.dedupeStats.dropped, 0);
+});
+
+test('分级去重：低相似（<0.6）→ 无标记放行', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates(
+    [CAND('更新工具的流程先备份后替换')],
+    [{ id: 'm1', type: 'pattern', content: '遵守用户隐私保护政策' }],
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+  );
+  assert.equal(gated.length, 1);
+  assert.equal(gated[0].dedupeSuspicion, undefined, '低相似不得被打标（防误伤）');
+  assert.equal(gated.dedupeStats.suspicious, 0);
+});
+
+test('回归护栏：dedupeTieredEnabled=false → 与现状（单一阈值布尔判定）逐项一致', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  // 三条候选覆盖三种形态：精确同句（高）/ 互含（中档，旧逻辑必丢）/ 无关
+  const scored = [
+    CAND('keep workspace clean'),
+    CAND('智进使用 vger 称呼'),
+    CAND('更新工具的流程先备份后替换'),
+  ];
+  const existing = [
+    { id: 'm1', type: 'lesson', content: 'keep workspace clean' },
+    { id: 'm2', type: 'decision', content: '使用 vger 称呼' },
+    { id: 'm3', type: 'pattern', content: '遵守用户隐私保护政策' },
+  ];
+  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 };
+  const tiered = gateCandidates(scored.map((c) => ({ ...c })), existing, opts);
+  const legacy = gateCandidates(scored.map((c) => ({ ...c })), existing, { ...opts, dedupeTieredEnabled: false });
+  // 旧逻辑：互含即丢 → 只剩「无关」那条
+  assert.equal(legacy.length, 1, 'kill-switch 下必须回到单一阈值行为');
+  assert.equal(legacy[0].text, '更新工具的流程先备份后替换');
+  assert.ok(legacy.every((c) => c.dedupeSuspicion === undefined), '回退态不得产生新字段');
+  assert.equal(legacy.dedupeStats.enabled, false);
+  // 分级态：中档那条被放行 → 比回退态多
+  assert.ok(tiered.length > legacy.length, `分级去重必须比回退态多放行（${tiered.length} > ${legacy.length}）`);
+});
+
+test('分级去重：空 existing → 全部放行且零计数', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
+  assert.equal(gated.length, 1);
+  assert.deepEqual(
+    { dropped: gated.dedupeStats.dropped, suspicious: gated.dedupeStats.suspicious, max: gated.dedupeStats.maxSimilarity },
+    { dropped: 0, suspicious: 0, max: 0 },
+  );
+});
+
+test('分级去重：1 条 existing 且内容为空/纯标点 → 不产生 NaN', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates(
+    [CAND('以后用 vger 称呼我')],
+    [{ id: 'm1', type: 'lesson', content: '   ' }],  // normalize 后为空 → 被 filter 掉
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+  );
+  assert.equal(gated.length, 1);
+  assert.equal(gated[0].dedupeSuspicion, undefined);
+  assert.ok(Number.isFinite(gated.dedupeStats.maxSimilarity), 'maxSimilarity 必须是有限数');
+});
+
+test('分级去重：dedupeStats 是非枚举属性 —— 数组语义（length/deepEqual）不受影响', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
+  assert.deepEqual(gated, [gated[0]], 'deepEqual 只比数组元素，不带统计字段');
+  assert.deepEqual(Object.keys(gated), ['0'], '统计不得成为可枚举键');
+});
+
+test('分级去重：门槛未过的候选不计入 checked（埋点只统计真进过去重的）', async () => {
+  const { gateCandidates } = await import('../lib/sweep.js');
+  const gated = gateCandidates(
+    [CAND('低分候选', 0.2), CAND('过门候选')],
+    [],
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+  );
+  assert.equal(gated.length, 1);
+  assert.equal(gated.dedupeStats.checked, 1, '被 score 门槛挡掉的不算「进过去重」');
 });
 
 // ── P1 LLM consolidation 集成测试 ───────────────────────────────────────

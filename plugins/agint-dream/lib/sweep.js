@@ -87,6 +87,21 @@ export const DEFAULTS = {
   minUniqueSessions: 2,     // distinct sessions that surfaced it
   // Dedupe
   dedupeTokenOverlap: 0.6,  // normalized token overlap → considered covered
+  // ── 分级去重（2026-09-21，proposals/agint-dream-dedupe-lineage.md 方案 B）──
+  // 背景：候选从会话日志抽，而生产记忆本身就是这些会话沉淀的产物 —— 两者共享
+  // 同一份文本来源。单一 0.6 阈值下，existing 越全命中率越高，实测生产 406 条
+  // 记忆把 83 条过门候选 **100% 吃掉**（gated 0）。这不是参数调错，是设计闭包。
+  //
+  // 解法：不替换判据，把「命中后果」从布尔拆成三档 ——
+  //   高相似（≥ dedupeHigh）  → 真重复，丢弃（现状行为）
+  //   中相似（[mid, high)）   → 疑似重复，**放行**但标 dedupeSuspicion，
+  //                             交给本来就在做 add/merge/supersede 判定的
+  //                             LLM consolidation 去裁（它已有 loss budget 兜底）
+  //   低相似（< dedupeMid）   → 新候选，直接放行
+  // kill-switch：dedupeTieredEnabled=false → 完全回退到现状（单一 0.6 布尔判定）。
+  dedupeTieredEnabled: true,
+  dedupeHigh: 0.85,         // ≥ 此值 = 真重复 → 丢弃
+  dedupeMid: 0.6,           // ≥ 此值 = 疑似 → 放行 + 标记（= 原 dedupeTokenOverlap）
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -584,31 +599,83 @@ return {
 /**
  * Filter candidates through threshold gates and existing-memory dedupe.
  * existing: array of { content, type, id } from agint.memory.list().
+ *
+ * 2026-09-21（方案 B 分级去重，proposals/agint-dream-dedupe-lineage.md）：
+ * `covered` 从布尔拆成三档。高相似仍丢弃（现状），中相似**放行但标记**
+ * `dedupeSuspicion`，把「是不是同一件事」的判断交还给 LLM consolidation。
+ *
+ * 返回：`kept` 数组（附 `dedupeStats` 非枚举属性 —— 数组语义不变，
+ * 消费方按数组用，埋点侧读 `kept.dedupeStats`）。
  */
 export function gateCandidates(scored, existing = [], opts = {}) {
   const minScore = opts.minScore ?? DEFAULTS.minScore;
   const minRecall = opts.minRecall ?? DEFAULTS.minRecall;
   const minUnique = opts.minUniqueSessions ?? DEFAULTS.minUniqueSessions;
   const overlap = opts.dedupeTokenOverlap ?? DEFAULTS.dedupeTokenOverlap;
+  // 分级去重旋钮。dedupeMid 的**默认值**跟 dedupeTokenOverlap 走（不是写死 0.6），
+  // 否则 cordis.patch.yml 里只改了 dedupeTokenOverlap 时会静默失配。
+  const tiered = opts.dedupeTieredEnabled ?? DEFAULTS.dedupeTieredEnabled;
+  const dedupeHigh = opts.dedupeHigh ?? DEFAULTS.dedupeHigh;
+  const dedupeMid = opts.dedupeMid ?? overlap;
   const existingNorm = existing
     .map((e) => ({ id: e.id, type: e.type, content: e.content, norm: normalizeForCompare(e.content) }))
     .filter((e) => e.norm);
   const kept = [];
+  // 可观测性（K51）：被丢弃的候选必须计数，否则分不清「没有候选」和「全被挡了」。
+  const dedupeStats = { enabled: Boolean(tiered), dropped: 0, suspicious: 0, checked: 0, maxSimilarity: 0 };
   for (const c of scored) {
     if (c.score < minScore) continue;
     if (c.signalCount < minRecall) continue;
     if (c.uniqueSessions < minUnique) continue;
+    dedupeStats.checked += 1;
     const norm = normalizeForCompare(c.text);
     let covered = false;
+    let suspicion = null;      // 'substring' | 'similarity'
+    let maxSim = 0;
+    let matchedId = null;
     for (const e of existingNorm) {
       if (!norm || !e.norm) continue;
-      if (norm.includes(e.norm) || e.norm.includes(norm)) { covered = true; break; }
-      if (tokenOverlap(c.text, e.content) >= overlap) { covered = true; break; }
+      if (norm.includes(e.norm) || e.norm.includes(norm)) {
+        if (!tiered) { covered = true; break; }
+        // 互含：长度比例决定档位。短条目被长条目完全包含（比例高）→ 更像真重复；
+        // 长条目吞下短条目（比例低）→ 只是共享一段子串，够不上「同一件事」。
+        const ratio = Math.min(norm.length, e.norm.length) / Math.max(norm.length, e.norm.length);
+        if (ratio > maxSim) { maxSim = ratio; matchedId = e.id; }
+        if (ratio >= dedupeHigh) { covered = true; suspicion = null; break; }
+        suspicion = 'substring';
+        continue;
+      }
+      const ov = tokenOverlap(c.text, e.content);
+      if (ov > maxSim) { maxSim = ov; matchedId = e.id; }
+      if (!tiered) {
+        if (ov >= overlap) { covered = true; break; }
+        continue;
+      }
+      if (ov >= dedupeHigh) { covered = true; suspicion = null; break; }
+      if (ov >= dedupeMid) suspicion = 'similarity';
     }
-    if (covered) continue;
+    if (maxSim > dedupeStats.maxSimilarity) dedupeStats.maxSimilarity = maxSim;
+    if (covered) { dedupeStats.dropped += 1; continue; }
+    if (suspicion) {
+      dedupeStats.suspicious += 1;
+      c.dedupeSuspicion = { kind: suspicion, similarity: Number(maxSim.toFixed(4)), againstId: matchedId };
+    }
     kept.push(c);
   }
+  // 非枚举：保持数组语义（`deepEqual(kept, [...])` 与 `kept.length` 不变），
+  // 但调用方可读 `dedupeStats` 做观测。
+  Object.defineProperty(kept, 'dedupeStats', { value: dedupeStats, enumerable: false });
   return kept;
+}
+
+/**
+ * 读 `gateCandidates` 附在数组上的去重统计；没有（旧调用方 / 桩数据）时给兜底。
+ * 单独导出，方便 runSweep 与测试共用同一套兜底语义。
+ */
+export function dedupeStatsOf(gated) {
+  const s = gated?.dedupeStats;
+  if (s && typeof s === 'object') return { ...s };
+  return { enabled: false, dropped: 0, suspicious: 0, checked: 0, maxSimilarity: 0 };
 }
 
 /** Build the memory entry payload for a gated candidate. */
@@ -635,7 +702,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
  *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -664,6 +731,16 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push('');
   lines.push(`- 门槛通过候选：${gated.length} 条`);
   if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
+  // 2026-09-21（方案 B）：去重分档统计。此前页面只显示「门槛通过候选：0 条」，
+  // 无法区分「本来就没候选」和「候选全被 existing 去重吃掉」—— 这正是闭包
+  // 藏了这么久的原因。
+  if (dedupeStats && dedupeStats.checked > 0) {
+    const rate = dedupeStats.checked > 0
+      ? ((dedupeStats.dropped / dedupeStats.checked) * 100).toFixed(0)
+      : '0';
+    const mode = dedupeStats.enabled ? '分级' : '单一阈值（已回退）';
+    lines.push(`- 去重（${mode}）：丢弃 ${dedupeStats.dropped} 条（高相似） · 疑似放行 ${dedupeStats.suspicious} 条 · 命中率 ${rate}% · 最高相似度 ${Number(dedupeStats.maxSimilarity ?? 0).toFixed(3)}`);
+  }
   if (!validationOk) {
     lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
   }
@@ -787,6 +864,10 @@ export async function runSweep({
   minScore,
   minRecall,
   minUniqueSessions,
+  // 2026-09-21（方案 B 分级去重）运行时旋钮 —— 见 DEFAULTS 处的长注释
+  dedupeTieredEnabled,
+  dedupeHigh,
+  dedupeMid,
   // P2 (Sprint 13 / 2026-09-05)：short-term recall store 路径
   recallPath,
   // P0：validation gate 调优（loss fraction budget 等）
@@ -929,7 +1010,11 @@ export async function runSweep({
 
   // ── Deep: gate + P0 validation gate + promote ────────────────────────
   const existing = memory ? await memory.list({}) : [];
-  const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions });
+  const dedupeOpts = { dedupeTieredEnabled, dedupeHigh, dedupeMid };
+  const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions, ...dedupeOpts });
+  // 2026-09-21：去重埋点（K51 可观测 > 可审批）—— 被丢弃的候选也要计数，
+  // 否则分不清「没有候选」和「全被去重挡了」。
+  const dedupeStats = dedupeStatsOf(gated);
   // P2: 过滤掉已 promoted 的候选（在 validation/consolidation 之前过滤，避免重复写）
   const unpromotedGated = gated.filter((c) => {
     const k = recallKey(normalizeForCompare(c.text));
@@ -1052,7 +1137,7 @@ export async function runSweep({
       const recGated = gateCandidates(
         recScored.filter((c) => c.signalCount >= 3 && c.uniqueDays >= 2),
         existing,
-        { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2 },
+        { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2, ...dedupeOpts },
       );
       // P0: recovery 也走 validation gate
       const recValidation = validateAndApply({
@@ -1124,6 +1209,8 @@ export async function runSweep({
     evolutionBoost,
     // 2026-09-18：零命中健康度（degraded 时 diary 里会出现醒目告警块）
     health,
+    // 2026-09-21（方案 B）：去重分档统计
+    dedupeStats,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   const diaryPath = join(resolve(diaryRoot), `${day}.md`);
@@ -1141,6 +1228,8 @@ export async function runSweep({
       candidates: scored.length,
       gated: gated.length,
       skippedPromoted,
+      // 2026-09-21（方案 B）：去重分档统计 —— { enabled, dropped, suspicious, checked, maxSimilarity }
+      dedupeStats,
       validationOk: validationFinal.ok,
       validationReason: validationFinal.reason ?? null,
       recovered: recovered.length,
