@@ -26,6 +26,7 @@
  *   audit_log）
  */
 
+import { resolve as resolvePath } from 'node:path';
 import {
   ConfigSchema,
   RUNTIME_CONFIG_KEYS,
@@ -49,7 +50,7 @@ import { buildProposal } from './proposer.js';
 import { evaluateCandidate } from './evaluator.js';
 import { isDuplicate } from './similarity.js';
 import { cleanupCandidate, cleanupStale, stagingRootFor } from './staging.js';
-import { createReleaseManager } from './release-manager.js';
+import { createReleaseManager, sweepSkillOrphans } from './release-manager.js';
 import { readSourceRecords, readToolStatsRecords as readToolStatsShared } from './session-source.js';
 import {
   createWindowLoader,
@@ -778,6 +779,42 @@ function apply(ctx, config) {
       });
     }
 
+    // 孤儿 tmp/failed 清理（日聚合顺路，无独立 cron）。失败不阻断 detect。
+    //
+    // ⚠️ 结构上的要点（2026-09-21 冒烟测试抓出来的真缺陷）：
+    //   `removed` 必须**独立于 audit 写入**保存 —— 第一版把 audit 放在同一个 try 里，
+    //   结果 audit 因缺 `targetId` 抛错 → 整个 orphanSweep 被 catch 覆盖成
+    //   `{removed: [], error: ...}`。**文件已经删了，但对外看不见** ——
+    //   这正是 K51「可观测 > 可审批」要防的形态：动作发生了、证据没了。
+    //   现在：先存结果，audit 单独 try，audit 挂了也不影响 removed 的真实性。
+    let orphanSweep = { removed: [], scanned: 0, skipped: [] };
+    if (c.orphan_sweep_enabled !== false) {
+      try {
+        orphanSweep = await sweepSkillOrphans({
+          skillsRoot: resolvePath(c.skills_root),
+          ttlMs: c.orphan_sweep_ttl_minutes * 60_000,
+        });
+      } catch (e) {
+        orphanSweep = { removed: [], scanned: 0, skipped: [], error: String(e?.message ?? e) };
+        console.warn(`[${name}] orphan sweep 执行失败（已忽略）: ${e?.message ?? e}`);
+      }
+      // 审计单独 try —— 它失败不该抹掉上面已发生的清理事实
+      if (orphanSweep.removed.length) {
+        console.warn(`[${name}] skills_root 孤儿清理: ${orphanSweep.removed.join(', ')}`);
+        try {
+          await audit({
+            actor: 'system', action: 'orphan_sweep_completed',
+            targetType: 'skills_root', targetId: '*',   // '*' = 系统级事件（同 cross_session_shadow_diff 约定）
+            details: { removed: orphanSweep.removed, scanned: orphanSweep.scanned },
+            reason: 'skills_root 内本插件产生的 .tmp-*/.failed-* 目录超 TTL 清理（改名不删的残留）',
+          });
+        } catch (e) {
+          orphanSweep.auditError = String(e?.message ?? e);
+          console.warn(`[${name}] orphan sweep 审计写入失败（清理已生效）: ${e?.message ?? e}`);
+        }
+      }
+    }
+
     return {
       windowHours,
       source: sourceMode,      // Phase 1：本次用了哪份数据源
@@ -814,6 +851,12 @@ function apply(ctx, config) {
         ...(windowLoader ? windowLoader.stats() : {}),
       },
       limitWarn: limitWarn?._warn ?? null,
+      // ── 孤儿 tmp/failed 清理（2026-09-21）────────────────────────────
+      // 为什么挂在日聚合而不是发布流程里：发布失败是低频事件（实测 0.27~0.81%），
+      // 挂在那儿可能几天不执行一次；日聚合每天必跑，是天然的兜底节拍。
+      // 只清本插件自己造的（`.<name>.tmp-<ts>[.failed-<ts>]`），且带 1h TTL
+      // 避免误删正在发布的活目录。见 docs/known-limitations/skills-root-rename-eperm.md §4。
+      orphanSweep,
     };
   }
 

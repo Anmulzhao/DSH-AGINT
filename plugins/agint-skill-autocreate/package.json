@@ -1,6 +1,6 @@
 {
   "name": "agint-skill-autocreate",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "P0-1 技能自动创建机制（检测+评估+发布全链路）：三道门发布、14 天观察期、自动回滚只归档不删除。0.4.0 接入 LLM（判定轨道 C + 提案撰写 + 每日硬预算）；0.5.0 按自进化默认出厂即开（primary + on），LLM 失败自动回落规则轨道，kill-switch 常在。",
   "type": "module",
   "main": "lib/index.js",

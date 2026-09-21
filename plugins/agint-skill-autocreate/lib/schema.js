@@ -217,6 +217,14 @@ export const ConfigSchema = z.object({
   max_eval_attempts: z.number().int().min(1).default(3),
   // staging 终态后 TTL 清理天数（设计稿 §5.1：7 天）
   staging_ttl_days: z.number().int().min(1).default(7),
+  // ── skills_root 孤儿清理（2026-09-21 新增，见 release-manager.sweepSkillOrphans）──
+  // 背景：发布失败时 catch 只把 `.<name>.tmp-<ts>` **改名**成 `...failed-<ts2>`，
+  // **从不删除**；而宿主技能发现只跳过 `.system`，这些目录会被当成技能 → 污染技能目录。
+  // 出厂即开（K51：自进化新能力默认开 + 可一键关）。
+  orphan_sweep_enabled: z.boolean().default(true),
+  // 只清 mtime 早于「现在 - 本分钟数」的孤儿。默认 60 分钟，远大于实测发布占用窗口
+  // （31~48ms），确保不会误删正在发布中的活 tmp 目录。
+  orphan_sweep_ttl_minutes: z.number().int().min(1).default(60),
   // Phase 2 沙箱超时（毫秒）
   sandbox_timeout_ms: z.number().int().min(1000).default(30000),
 
@@ -379,6 +387,9 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'release_specificity_gate_enabled',
   // Phase 2：本地语义窗口（可运行时关掉，退回纯模板）
   'semantic_window_enabled',
+  // skills_root 孤儿清理（2026-09-21）：出问题先关再查，不用改代码（K51）
+  'orphan_sweep_enabled',
+  'orphan_sweep_ttl_minutes',
   'semantic_window_radius',
   'semantics_quality_gate_enabled',
   // ── LLM 接入（2026-09-18）：两个接入点全部可运行时启停（K51 kill-switch）

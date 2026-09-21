@@ -30,7 +30,7 @@
  */
 
 import {
-  mkdir, writeFile, rename, access,
+  mkdir, writeFile, rename, access, readdir, rm, stat,
 } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import { renderSkillMd, renderManifest, assertSafeCandidateId, cleanupCandidate } from './staging.js';
@@ -304,6 +304,68 @@ export async function archiveSkillDir({ skillName, skillsRoot, archiveRoot }) {
   const dest = join(archiveRoot, `${skillName}-${Date.now()}`);
   await renameWithRetry(src, dest);   // 同为整目录 rename，同风险（skills_root 侧）
   return { archived: true, dest };
+}
+
+// ── 孤儿清理（2026-09-21 新增）────────────────────────────────────────────
+
+/**
+ * 识别「本次发布自己造的临时/失败目录」。
+ *
+ * 为什么必须有这个判据：publishToSkillsRoot 在 skills_root 内先建
+ * `.<name>.tmp-<ts>`、失败时改名成 `.<name>.tmp-<ts>.failed-<ts2>`。
+ * 而宿主 dsh-skill-filesystem 的 `isPotentialSkillPath`（lib/index.js:552-557）
+ * **只跳过 `.system`**，`<root>/<seg0>/SKILL.md` 一律视为技能 →
+ * 这些孤儿目录**会被当成技能发现**（名字形如 `.foo-skill.tmp-1789625089555`），
+ * 进入技能目录、污染 context。
+ *
+ * ⚠️ 判据必须**同时**满足「以点开头」「含 .tmp-」「含数字时间戳」三条，
+ * 否则会误删用户以点开头的**真实**技能目录。宁可漏删，不可误删。
+ *
+ * @returns {boolean} true = 本插件产生的孤儿，可安全清理
+ */
+export function isOrphanTmpDir(name) {
+  if (typeof name !== 'string' || !name.startsWith('.')) return false;
+  // .<name>.tmp-<13位时间戳>[.failed-<13位时间戳>]
+  return /^\.\S+\.tmp-\d{10,}(\.failed-\d{10,})?$/.test(name);
+}
+
+/**
+ * 清理 skills_root 里的孤儿 tmp/failed 目录（TTL 兜底）。
+ *
+ * 存在的理由（2026-09-21 取证）：`publishToSkillsRoot` 的 catch 分支只把 tmp
+ * **改名**成 `.failed-*`，**从不删除**。全仓库没有任何清理路径 →
+ * 每次发布失败都会在 skills_root 永久留下一个"会被当技能发现的"目录。
+ *
+ * 为什么带 TTL 而不是立刻就删：正在发布的那个 tmp 是**活的**，
+ * 立刻删会打断进行中的发布。默认 1 小时远大于实测占用窗口（31~48ms，见
+ * docs/known-limitations/skills-root-rename-eperm.md），足够安全。
+ *
+ * @param {{skillsRoot: string, ttlMs?: number, nowMs?: number, dryRun?: boolean}} opts
+ * @returns {Promise<{removed: string[], scanned: number, skipped: string[]}>}
+ */
+export async function sweepSkillOrphans({ skillsRoot, ttlMs = 3600_000, nowMs = Date.now(), dryRun = false }) {
+  let names = [];
+  try {
+    names = await readdir(skillsRoot);
+  } catch {
+    return { removed: [], scanned: 0, skipped: [] };   // 目录不存在 = 没东西可清
+  }
+  const removed = [];
+  const skipped = [];
+  for (const name of names) {
+    if (!isOrphanTmpDir(name)) continue;
+    skipped.push(name);   // 先记为候选，再按 TTL 判
+    try {
+      const s = await stat(join(skillsRoot, name));
+      if (!s.isDirectory()) continue;
+      if (nowMs - s.mtimeMs <= ttlMs) continue;   // 还新鲜 → 可能正在用，留着
+      if (!dryRun) await rm(join(skillsRoot, name), { recursive: true, force: true });
+      removed.push(name);
+    } catch {
+      // 单目录异常不阻断整体清理（同 cleanupStale 的约定）
+    }
+  }
+  return { removed, scanned: names.length, skipped: skipped.filter((n) => !removed.includes(n)) };
 }
 
 // ── 编排器（依赖注入：table / audit / publishEvent / cfg / getService / readToolStatsRecords）──
@@ -690,7 +752,7 @@ export function createReleaseManager(deps) {
   return {
     releaseCandidate, releaseQueue, rollback, observe, listReleases,
     // 暴露纯函数与 helper 供测试/工具复用
-    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput, renameWithRetry },
+    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput, renameWithRetry, sweepSkillOrphans, isOrphanTmpDir },
   };
 }
 

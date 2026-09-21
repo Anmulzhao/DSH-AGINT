@@ -1,5 +1,61 @@
 # Changelog — agint-skill-autocreate
 
+## 0.5.1 (2026-09-21) — skills_root 孤儿目录清理（修一条真实泄漏）
+
+> 起因：老板选「先修孤儿泄漏」。
+> 这是 09-21 EPERM 取证（`docs/known-limitations/skills-root-rename-eperm.md` §4）
+> 顺带撞出的**真实缺陷**，与 EPERM 本身无关。
+
+### 缺陷是什么
+
+`publishToSkillsRoot` 的 catch 分支只把 `.<name>.tmp-<ts>` **改名**成
+`.<name>.tmp-<ts>.failed-<ts2>`，**从不删除**。全仓库翻遍**没有任何清理路径**
+→ 每次发布失败都在 skills_root 永久留下一个目录。
+
+**为什么这比"留下垃圾"严重**：宿主 `dsh-skill-filesystem` 的 `isPotentialSkillPath`
+（`lib/index.js:552-563`）**只跳过 `.system`**，`<root>/<seg0>/SKILL.md`
+一律视为技能 → 这些孤儿**会被当成技能发现**（名字形如 `.foo.tmp-1789625089555`），
+进技能目录、污染每次对话的 context。
+
+### 改动
+
+1. `lib/release-manager.js`：新增两个导出。
+   - `isOrphanTmpDir(name)`：判据 `/^\.\S+\.tmp-\d{10,}(\.failed-\d{10,})?$/`。
+     **必须同时满足「点开头 + `.tmp-` + ≥10 位时间戳」** —— 否则会误删用户以点开头的
+     **真实**技能目录（`.system`/`.config`/`.hidden-skill`）。**宁可漏删，不可误删。**
+   - `sweepSkillOrphans({skillsRoot, ttlMs, nowMs, dryRun})`：**带 TTL**（默认 1h）。
+     为什么不是立刻删：正在发布中的 tmp 是**活的**，立刻删会打断发布；
+     1h 远大于实测占用窗口 31~48ms。结构照抄已验证的 `staging.cleanupStale`。
+2. `lib/index.js`：接线在 **`detect()`（日聚合入口）** 末尾 —— 不挂在发布流程里，
+   因为发布失败是低频事件（0.27~0.81%），挂那儿可能几天不跑一次；
+   日聚合每天必跑，是天然兜底节拍。结果进 `detect()` 返回值的 `orphanSweep` 字段 + 落 audit。
+3. `lib/schema.js`：新增 `orphan_sweep_enabled`（默认 **true**，K51 出厂即开）
+   + `orphan_sweep_ttl_minutes`（默认 60），均注册进 `RUNTIME_CONFIG_KEYS`（可运行时关）。
+4. 新增 `test/orphan-sweep.test.mjs`（7 例，含「真实技能绝不误删」红线用例）。
+
+### ⚠️ 冒烟测试抓出的一个真缺陷（一并修掉）
+
+第一版把 audit 写入和清理放在**同一个 try** 里，audit 因缺 `targetId` 抛错
+→ 整个 `orphanSweep` 被 catch 覆盖成 `{removed: [], error}`。
+**文件已经删了，但对外显示"什么也没做"** —— 正是 K51「可观测 > 可审批」要防的形态。
+
+修法：**结果先存，audit 单独 try**；audit 挂了只记 `auditError`，
+不抹掉已发生的清理事实。若没跑端到端冒烟，这个缺陷会**静默上线**。
+
+### 验收（硬证据）
+
+- 单测 7 例 → **全套 324/324 PASS**（原 317 + 新 7）。
+- 真实 skills_root 端到端：造 3 孤儿 → 超 TTL 的 2 个被清、新鲜 1 个保留、
+  **真实技能 11 个全部未动**、跑完恢复原状。
+- **完整 `detect()` 路径**（宿主真字节 + mock ctx）：`orphanSweep.removed` 有值、
+  返回无 error → 证明**接线真的通了**，不是「函数写好了没人调」（K63 的正面应用）。
+- 宿主部署位 md5 对账一致｜`bin/check-tool-schemas.mjs` 25 文件 / 109 schema / 0 invalid。
+
+### 仍待修
+
+- **重试成功不留痕**：`renameWithRetry` 成功时 `return i + 1` 直接返回，
+  只有彻底失败才落 audit → 「重试在不在承压」无人知道。**同属可观测性缺口。**
+
 ## 0.5.0+docs (2026-09-21) — skills_root rename EPERM 取证归档（无代码行为变化）
 
 > 起因：老板选「先处理 EPERM」（P0 待办第 1 项）。
