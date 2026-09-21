@@ -1,7 +1,14 @@
 // test/rename-retry.test.mjs — 整目录 rename 退避重试（2026-09-17 EPERM 事故回归）
 //
-// 背景：真实 skills_root 上「新建目录+写文件 → 整目录 rename」实测约 5% 概率
-// 抛 EPERM（宿主/杀软瞬时占用），导致约 5% 的技能白挂一次。
+// 背景：真实 skills_root 上「新建目录+写文件 → 整目录 rename」会偶发抛 EPERM
+// （宿主 watcher/杀软瞬时占用），导致该次技能发布白挂。
+//
+// ⚠️ 概率口径已更新（2026-09-21 实测，见 docs/known-limitations/skills-root-rename-eperm.md）：
+//   原注释写「约 5%」是 2026-09-17 小样本（20 轮挂 1 次）的粗估，**已不准确**。
+//   740 轮实测：撞 6 次（0.81%）；1100 轮根因对照：A 组 3 次（0.27%）。
+//   且是**突发型**（bursty）——不是稳态概率，按比例外推无意义。
+//   占用窗口实测 31~48ms，现有退避（5 次 / 累计 1160ms）对该窗口是大幅过剩。
+//
 // 本测试用注入的假 rename 模拟该抖动，验证 renameWithRetry 能跨过瞬时占用、
 // 且对确定性错误不浪费重试预算。
 import { test } from 'node:test';
