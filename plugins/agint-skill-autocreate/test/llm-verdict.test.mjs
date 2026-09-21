@@ -296,8 +296,20 @@ test('buildJudgePrompt 是纯函数（同输入同输出，不读写任何外部
 test('system prompt 含命名硬规则：3 段上限 + 正反例 + 自指黑名单（规则被删即此测试变红）', () => {
   assert.ok(JUDGE_SYSTEM_PROMPT.includes(NAMING_RULES), 'NAMING_RULES 必须整体拼进 system prompt');
   assert.match(JUDGE_SYSTEM_PROMPT, /AT MOST 3 segments/i, '段数上限是判据的真形态，必须写明');
-  assert.match(JUDGE_SYSTEM_PROMPT, /cron-plugin-services-mapping/, 'BAD 反例（真实翻车名）逐字在');
   assert.match(JUDGE_SYSTEM_PROMPT, /cron-services-audit/, 'GOOD 正例逐字在');
   assert.match(JUDGE_SYSTEM_PROMPT, /glob-glob-glob-glob/, '工具序列反例逐字在');
   assert.match(JUDGE_SYSTEM_PROMPT, /auto-create/i, '自我指涉黑名单进 prompt（防 LLM 写出自指描述）');
+});
+
+// 2026-09-21 生产通道实证（二次迭代）：M3 在 tool-call 通道 4/4 命名失败，
+// 其中 2 次逐字照抄旧 BAD 反例 `cron-plugin-services-mapping`（反例名由任务
+// 领域词组成 → 抄写模板）。故反例换任务域零重叠名 + 加禁抄声明 + 连字符自检。
+test('BAD 反例与任务域零重叠，且带禁抄声明与连字符自检（抄写模板防护）', () => {
+  assert.ok(
+    !JUDGE_SYSTEM_PROMPT.includes('cron-plugin-services-mapping'),
+    '旧反例名（任务领域词组成）绝不能残留在 prompt 里——它会被模型逐字抄走'
+  );
+  assert.match(JUDGE_SYSTEM_PROMPT, /email-parser-queue-handler/, '新反例：组件串联 4 段、与常见任务域零重叠');
+  assert.match(JUDGE_SYSTEM_PROMPT, /NEVER copy the BAD example names/i, '禁抄声明必须显式在');
+  assert.match(JUDGE_SYSTEM_PROMPT, /count the\s+hyphens/i, '连字符自检指令必须显式在（写完数一遍）');
 });

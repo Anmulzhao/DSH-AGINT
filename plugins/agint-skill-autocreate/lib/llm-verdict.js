@@ -81,7 +81,7 @@ function evidenceLines(pattern) {
 }
 
 /**
- * 命名硬规则（2026-09-21 双罐对照试验后回填生产 prompt）。
+ * 命名硬规则（2026-09-21 双罐对照试验后回填生产 prompt；同日生产通道实证后二次迭代）。
  *
  * 来源：当天端到端试验——同一条 fixture、同一个模型（MiniMax-M3），
  * A 罐（原版 prompt）模型起名 `cron-plugin-services-mapping-verify`（5 段）
@@ -91,18 +91,29 @@ function evidenceLines(pattern) {
  * 根因：原版 prompt 只说 "must NOT be a join of tool names"，没告诉模型
  * **几段算 join**（判据 `TOOL_CHAIN_NAME_RE = /^([a-z_]+-){3,}/` 实际是
  * 「4 段起必拦、3 段以内放行」）。规则没说清，模型就只能猜。
+ *
+ * 2026-09-21 生产通道实证（二次迭代）：规则上线后 M3 在 structured_output
+ * tool-call 通道 **4/4 命名失败**——2 次逐字照抄 BAD 反例
+ * `cron-plugin-services-mapping`（反例名恰好由本任务领域词组成，成了抄写模板），
+ * 2 次自己组 4 段名。体外纯 JSON 通道却 1/1 通过 → 通道差异（tool-call 模式
+ * 指令服从性差）。故本轮：① BAD 反例换成与任务域零重叠的
+ * `email-parser-queue-handler`（抄了也一眼假，且不提供可用词根）；
+ * ② 规则 2 加连字符自检指令；③ 反例前加 NEVER copy 声明。
  */
 export const NAMING_RULES = `NAMING RULES (hard gates are enforced downstream — a violating name
 discards the ENTIRE authoring):
 1. name must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ (ASCII lowercase kebab-case).
 2. name must have AT MOST 3 segments (at most 2 hyphens). A 4-segment name is
-   auto-rejected as a tool-chain join.
+   auto-rejected as a tool-chain join. Self-check before answering: count the
+   hyphens in your name — 2 or fewer is valid, 3 or more means you must
+   rewrite it with fewer words.
 3. name must describe the TASK'S PURPOSE (what a future run saves by reading
    this skill), NEVER the chain of tools or system components it touches.
-   BAD: cron-plugin-services-mapping   (system components joined; 4 segments)
-   BAD: glob-glob-glob-glob            (tool sequence)
-   GOOD: cron-services-audit           (3 segments, states the job)
-   GOOD: pdf-report-review             (3 segments)
+   NEVER copy the BAD example names below into your output.
+   BAD: email-parser-queue-handler   (system components joined; 4 segments)
+   BAD: glob-glob-glob-glob          (meaningless tool sequence)
+   GOOD: cron-services-audit         (3 segments, states the job)
+   GOOD: pdf-report-review           (3 segments)
 4. If the task description is Chinese, translate its core intent into English
    words for the slug. Never fall back to tool or component names.
 5. description: one line saying WHEN to use this skill (trigger situation +
