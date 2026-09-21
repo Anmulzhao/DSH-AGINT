@@ -287,3 +287,79 @@ grep 生产目录（剔除 `test/` 与 `eval/scenarios/`）确认调用点非空
 > **切 T2 的前置条件（我的建议，待老板定）**：先制造一次真实触发
 > （提一条提案 / 跑一次沙箱），读到四项中至少一项 > 0，证明 T1 通路真的通，
 > 再讨论用 transport 替代直连主路径。**不要拿一条从未通电的通路去替换天天在跑的主路径。**
+
+---
+
+### 6.9 T1 真实触发实验：发布侧通了、订阅侧没通（2026-09-21 17:15）
+
+老板指示「先制造一次真实触发」。已执行，结果**只通了一半**，并暴露第二层缺口。
+
+#### 6.9.1 发布侧 ✅ 已实证
+
+用宿主部署位字节 + 真实生产 `storages/` 触发一次 `evolve_propose` 等价调用：
+
+| 观测项 | 触发前 | 触发后 |
+| --- | --- | --- |
+| `evolution.proposed` 事件数 | 3 | **4** ✅ |
+| `agint_evolve` 提案表行数 | 55 | **56** ✅ |
+
+新增那条：`source=agint-evolve`、`traceId=966ed87a-…`、
+`envelopeId=e502d113-01ed-4a51-bbb7-c31a5bc6739f`，按 `proposalId` 精确匹配到 1 条。
+**突破 09-04 三条历史探针的僵局，发布接线确认有效。**
+
+#### 6.9.2 订阅侧 ❌ 仍为 0 —— 第二层缺口
+
+`agint_evolution` 域 `evolution_log` 表**无任何增量**，仍为 168 条。
+**且 168 条里 `shadow-ingest` / `event-bus` 标记 = 0 条** —— 即影子订阅路径
+**自上线至今一次都没成功写入过**（168 条全部来自直连 `phase3-provisional` / `policy-decision`）。
+
+> ⚠️ 这直接回答了 6.7 节留下的疑问：`eventBus.syncSubscriptions` 恒为 1
+> **不是**「sync 只有 1 个」这么简单 —— 影子订阅是 **async** 模式（不计入 sync 计数），
+> 所以那个恒 1 **与影子订阅无关**，不能用作本节任何结论的依据。
+
+#### 6.9.3 隔离复现：定位到一条真实的静默丢事件路径
+
+用宿主部署位字节 + mock ctx 做隔离复现（`_evo_mem_live_probe.mjs` 等），结论：
+
+| 验证项 | 结果 |
+| --- | --- |
+| `subscribe` 注册 | ✅ 成功，`publish` 返回 `deliveredTo: ['agint-evolution-memory']` |
+| handler 被调用 | ✅ 调用 |
+| `logBuffer` 就绪后调用 | ✅ 入 buffer → 5 秒后 flush → **落盘成功** |
+| **`logBuffer` 未就绪时调用** | ❌ **`TypeError: Cannot read properties of null (reading 'enqueue')`** |
+
+**根因（代码层，已复现）**：`plugins/agint-evolution-memory/lib/index.js:86-96`
+的 `logBuffer` 由 `ready.then(...)` **异步赋值**，而 `logPhase4Buffered`（L141-155）
+**既不检查 null、也不 `await ready`**，直接 `logBuffer.enqueue(entry)`。
+
+一旦调用早于 storage domain 就绪 → 抛 TypeError → 被 L409 的
+`catch (err) { warn('shadow ingest failed', …) }` **吞掉**。
+**订阅注册成功、投递成功、handler 执行成功，但事件永久丢失。**
+
+> 这是 09-07 那次修复（L352-359 注释记录的 zod 枚举吞异常）的**同型复发**：
+> 病灶都在「handler 内的异常被 warn 吞掉」，只是这次的错误源从 schema.parse
+> 换成了 `logBuffer === null`。
+
+#### 6.9.4 未证实项（不得含糊）
+
+生产那次（17:15:53）触发时进程已启动 **77 秒**（`lastBootAt` = 17:14:36），
+远长于隔离环境里 2 秒的 domain 初始化延迟。
+**故「竞态」能解释隔离复现，但尚不能解释生产那次的直接原因。**
+
+**已排除的伪故障**：`evolution_log` 的直连路径确实停在 `2026-09-18T04:46:03Z`，
+初看像第二条故障，但经上游核对 **是正常静默、非故障**：
+
+| 表（`agint_skill_autocreate`） | 最后一条 |
+| --- | --- |
+| `candidates` | 2026-09-18T02:11:29Z |
+| `proposals` | 2026-09-18T04:45:58Z |
+| `evolution_log`（下游） | 2026-09-18T04:46:03Z（+5 秒，**时间链吻合**） |
+
+即：autocreate 自 09-18 起未再产出新候选（技能候选依赖真实任务会话）→
+下游 `evolution_log` 无输入可写。**「没有数据」不等于「链路坏了」。**
+→ 6.9.3 的竞态仍是订阅侧 0 写入的**唯一**已复现解释。
+
+**下一步取证方向**：
+1. 在真实 dsh 内 `grep` 日志 `shadow ingest failed`，确认生产是否走了同一分支（需先找到当日日志）。
+2. 修法建议（待老板定）：`logPhase4Buffered` 改为 `await ready` 后再 enqueue，
+   并把 `catch` 从 `warn` 升级为「warn + 计数指标」，让静默失败可观测。
