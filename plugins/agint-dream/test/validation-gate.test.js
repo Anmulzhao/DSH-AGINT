@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateAndApply, planToWriteCalls } from '../lib/validation-gate.js';
+import { validateAndApply, planToWriteCalls, stripPriorEntryDecoration } from '../lib/validation-gate.js';
 
 const GATED = [
   { key: 'c1', text: '老板是创造者，反馈优先级最高', path: 'memory/a.md', startLine: 1, endLine: 2, score: 0.85 },
@@ -273,4 +273,95 @@ test('planToWriteCalls: superseded 带 supersedesKey', async () => {
   const result = await calls[0].write(fakeMemory, 'evidence-y');
   assert.equal(result.id, 'new2');
   assert.equal(result.lineageKey, 'identity/boss');
+});
+
+// ── 2026-09-21：priorEntry 前缀污染回归（真实事故：16 候选整批被拒） ──────────
+
+test('stripPriorEntryDecoration: 剥离 prompt 头部 / 引用块 / 项目符号', () => {
+  assert.equal(
+    stripPriorEntryDecoration('(id=e1, type=lesson) 禁止在生产环境 rm -rf 系统文件'),
+    '禁止在生产环境 rm -rf 系统文件',
+  );
+  assert.equal(
+    stripPriorEntryDecoration('> - (id=e1, type=lesson) 禁止在生产环境 rm -rf 系统文件'),
+    '禁止在生产环境 rm -rf 系统文件',
+  );
+  assert.equal(
+    stripPriorEntryDecoration('> > - (id=e1, type=lesson) 禁止在生产环境 rm -rf 系统文件'),
+    '禁止在生产环境 rm -rf 系统文件',
+  );
+  assert.equal(stripPriorEntryDecoration('- 禁止在生产环境 rm -rf 系统文件'), '禁止在生产环境 rm -rf 系统文件');
+  // 干净输入不被改动
+  assert.equal(stripPriorEntryDecoration('禁止在生产环境 rm -rf 系统文件'), '禁止在生产环境 rm -rf 系统文件');
+});
+
+test('checkOperations: 模型带 (id=...) 前缀不再整批拒绝（2026-09-18 事故回归）', () => {
+  const r = validateAndApply({
+    gated: [GATED[0]],
+    existing: EXISTING,
+    operations: [
+      {
+        candidateKey: 'c1',
+        action: 'merged',
+        // 模型照抄 prompt 头部形态 —— 修复前必然 ok:false
+        priorEntries: ['(id=e2, type=preference) 老板 = 创造者'],
+        lineageKey: 'identity/boss',
+      },
+    ],
+    maxPriorEntryLossFraction: 1.0,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.stats.merged, 1);
+});
+
+test('checkOperations: 模型带引用块前缀同样容错', () => {
+  const r = validateAndApply({
+    gated: [GATED[0]],
+    existing: EXISTING,
+    operations: [
+      {
+        candidateKey: 'c1',
+        action: 'merged',
+        priorEntries: ['> - (id=e2, type=preference) 老板 = 创造者'],
+        lineageKey: 'identity/boss',
+      },
+    ],
+    maxPriorEntryLossFraction: 1.0,
+  });
+  assert.equal(r.ok, true);
+});
+
+test('checkOperations: plan 里存的 priorEntries 是剥离后的干净文本（防污染二次落库）', () => {
+  const r = validateAndApply({
+    gated: [GATED[0]],
+    existing: EXISTING,
+    operations: [
+      {
+        candidateKey: 'c1',
+        action: 'superseded',
+        priorEntries: ['(id=e2, type=preference) 老板 = 创造者'],
+        lineageKey: 'identity/boss',
+      },
+    ],
+    maxPriorEntryLossFraction: 1.0,
+  });
+  assert.equal(r.ok, true);
+  // supersedesKey 直接落库 → 必须是干净原文
+  assert.equal(r.plan[0].priorEntries[0], '老板 = 创造者');
+});
+
+test('checkOperations: 本体已被污染的 existing，模型给干净 content 也能匹配', () => {
+  // 历史污染形态：content 自带前缀
+  const polluted = [
+    { id: 'p1', type: 'lesson', content: '> - (id=e2, type=preference) 老板 = 创造者' },
+  ];
+  const r = validateAndApply({
+    gated: [GATED[0]],
+    existing: polluted,
+    operations: [
+      { candidateKey: 'c1', action: 'merged', priorEntries: ['老板 = 创造者'], lineageKey: 'identity/boss' },
+    ],
+    maxPriorEntryLossFraction: 1.0,
+  });
+  assert.equal(r.ok, true);
 });

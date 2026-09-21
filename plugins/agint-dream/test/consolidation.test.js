@@ -42,6 +42,15 @@ test('buildConsolidationPrompt: 列出所有 gated 候选 + existing 内容 + �
   assert.match(out, /Candidate 2 \[key: c2\]/);
   // existing 列出
   assert.match(out, /禁止 rm -rf 系统文件/);
+  // 2026-09-21：existing 以 fenced block 给出，content 独立成块，
+  // `(id=...)` 头部不得与 content 混在同一行（否则模型会照抄前缀 → 整批被拒）
+  assert.match(out, /```text/);
+  assert.ok(
+    !/^\(id=e1, type=lesson[^\n]*\)\s*禁止 rm -rf 系统文件/m.test(out),
+    'id/type 头部不得与 content 混排在同一行',
+  );
+  // 头部信息改为注释行保留可追溯性
+  assert.match(out, /<!-- id=e1 type=lesson \[lineage=safety\/rm-rf\] -->/);
   // 输出约束
   assert.match(out, /Operations array length MUST equal 2/);
 });

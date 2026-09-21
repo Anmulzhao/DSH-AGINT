@@ -50,6 +50,30 @@ test('extractCandidates: keyword buckets → typed candidates, noise dropped', (
   assert.ok(cands.every((c) => !/\?$/.test(c.text)), 'questions must be dropped');
 });
 
+// ── 2026-09-21：引用块 / 记忆条目前缀不得成为候选（本体污染入口） ──────────────
+
+test('extractCandidates: 引用块与 (id=...) 前缀文本被拦下，不进候选', () => {
+  const session = {
+    sessionKey: 's1',
+    userTexts: [
+      // 贴给老板看的日记/引用块形态 —— 修复前会被当候选，把前缀写进 memory 本体
+      // （都带 SIGNAL_RULES 触发词「不要/禁止」，确保修复前确实会产出候选）
+      { text: '> - (id=7a4a2945, type=lesson) 核对仓差异不要依赖行数，改用字节长度判定', time: NOW },
+      { text: '> > - (id=7a4a2945, type=lesson) 核对仓差异不要依赖行数，改用字节长度判定', time: NOW },
+      { text: '(id=7a4a2945, type=lesson) 核对仓差异不要依赖行数，改用字节长度判定', time: NOW },
+      // 正常主张 —— 必须保留（带 SIGNAL_RULES 触发词「不要」）
+      { text: '以后核对仓差异不要依赖行数，改用 SHA256 哈希判定', time: NOW },
+    ],
+    errors: [],
+  };
+  const cands = extractCandidates(session, NOW);
+  assert.ok(
+    cands.every((c) => !/id=7a4a2945/.test(c.text)),
+    `引用块/前缀形态不得成为候选: ${JSON.stringify(cands.map((c) => c.text))}`,
+  );
+  assert.ok(cands.some((c) => /SHA256 哈希判定/.test(c.text)), '正常主张必须保留');
+});
+
 test('scoreCandidates: six-signal formula groups and sorts', () => {
   const session = { sessionKey: 's1', userTexts: [], errors: [] };
   const cands = [

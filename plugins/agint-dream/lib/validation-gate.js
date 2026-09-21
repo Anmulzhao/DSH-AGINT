@@ -22,6 +22,30 @@ function normalizeForCompare(text) {
   return String(text || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '').slice(0, 4096);
 }
 
+/**
+ * Strip the human/LLM-facing decorations that can leak into a `priorEntries`
+ * string when the model copies a line out of the consolidation prompt or out of
+ * a dream diary instead of the raw memory content.
+ *
+ * 2026-09-18 incident: the LLM copied `(id=..., type=lesson) <content>` from the
+ * prompt's entry header and the whole 16-candidate batch was rejected with
+ * "priorEntry not found in existing memory". Same class of leak happens with
+ * `> - ` blockquote prefixes (memory entries that were themselves polluted).
+ *
+ * Returns the best-effort raw content. Never throws.
+ */
+export function stripPriorEntryDecoration(text) {
+  let s = String(text ?? '');
+  // 1. 去掉引用块前缀（可多层 `> > - `）
+  s = s.replace(/^\s*(?:>\s*)+-?\s*/u, '');
+  // 2. 去掉 prompt 头部形态 `(id=xxx, type=yyy)` / `(id=xxx)` 及可能的 lineage 注解
+  s = s.replace(/^\(\s*id=[^)]*\)\s*/u, '');
+  // 3. 去掉行首 markdown 项目符号
+  s = s.replace(/^[-*+]\s+/u, '');
+  // 4. 去掉首尾空白
+  return s.trim();
+}
+
 const DEFAULT_MAX_PRIOR_ENTRY_LOSS_FRACTION = 0.25;
 const DEFAULT_MAX_PROMOTED_SNIPPET_CHARS = 640; // 160 tokens * 4 chars/token
 
@@ -57,6 +81,10 @@ export function validateAndApply({
   for (const e of existing) {
     const norm = normalizeForCompare(e.content);
     if (norm) existingByContent.set(norm, e);
+    // 双向兼容：本体若已被前缀污染（2026-09-21 发现历史 15 条），
+    // 额外注册剥离后的形态，让 LLM 给干净 content 时也能匹配上。
+    const stripped = normalizeForCompare(stripPriorEntryDecoration(e.content));
+    if (stripped && stripped !== norm) existingByContent.set(stripped, e);
   }
 
   // 1. operations 校验（如有）
@@ -166,12 +194,13 @@ function checkOperations({ operations, gated, existingByKey, existingByContent, 
       return { ok: false, reason: `${action} action without priorEntries for ${candidateKey}` };
     }
     // 关键：priorEntries 必须是"现有 memory entry"，不是 candidate key
-    for (const prior of priorEntries) {
-      if (typeof prior !== 'string') {
+    for (const rawPrior of priorEntries) {
+      if (typeof rawPrior !== 'string') {
         return { ok: false, reason: `priorEntries entry not string for ${candidateKey}` };
       }
-      if (candidateByKey.has(prior)) {
-        return { ok: false, reason: `priorEntry "${prior}" is a candidate key, not existing memory (for ${candidateKey})` };
+      const prior = stripPriorEntryDecoration(rawPrior);
+      if (candidateByKey.has(rawPrior) || candidateByKey.has(prior)) {
+        return { ok: false, reason: `priorEntry "${rawPrior}" is a candidate key, not existing memory (for ${candidateKey})` };
       }
       if (!existingByContent.has(normalizeForCompare(prior))) {
         return { ok: false, reason: `priorEntry "${prior}" not found in existing memory (for ${candidateKey})` };
@@ -182,15 +211,23 @@ function checkOperations({ operations, gated, existingByKey, existingByContent, 
     }
     if (lineageKey) {
       // 同一 lineage 内的 priorEntries lineage 必须一致
-      for (const prior of priorEntries) {
-        const norm = normalizeForCompare(prior);
+      for (const rawPrior of priorEntries) {
+        const norm = normalizeForCompare(stripPriorEntryDecoration(rawPrior));
         const e = existingByContent.get(norm);
         if (e && e.lineageKey && e.lineageKey !== lineageKey) {
           return { ok: false, reason: `priorEntry lineageKey mismatch for ${candidateKey}` };
         }
       }
     }
-    plan.push({ candidateKey, action, priorEntries, lineageKey: lineageKey || null, candidateType: candidateByKey.get(candidateKey)?.type || 'lesson' });
+    // 存进 plan 的 priorEntries 用剥离后的干净文本 —— 下游 supersedesKey 直接落库，
+    // 留着前缀会把污染写进 memory 本体（2026-09-21 发现 15 条已污染）。
+    plan.push({
+      candidateKey,
+      action,
+      priorEntries: priorEntries.map((p) => (typeof p === 'string' ? stripPriorEntryDecoration(p) : p)),
+      lineageKey: lineageKey || null,
+      candidateType: candidateByKey.get(candidateKey)?.type || 'lesson',
+    });
   }
   // 1:1 覆盖
   if (seen.size !== gated.length) {

@@ -265,6 +265,14 @@ const QUESTION_RE = /(什么|怎么|为什么|如何|哪[些个]|是不是|能�
 // Vague filler that carries no durable claim.
 const VAGUE_RE = /(某种|一些|类似|好像是|大概是|某种程度|什么的)/;
 
+// Quoted/reference material, not a durable claim of its own.
+// 2026-09-21：贴给老板看的日记正文、记忆条目、工具输出常以
+// `> - (id=..., type=lesson) ...` 这类引用块形态出现在会话里，被
+// extractCandidates 当候选抽出后会把前缀连同内容写进 memory 本体
+// （实测已有 15 条污染，且 `>` 会逐轮叠加）。这里在候选入口直接拦掉。
+const QUOTED_RE = /^\s*(?:>\s*)+/;                    // 任意层引用块前缀
+const PREFIXED_ENTRY_RE = /^\s*>?\s*-?\s*\(id=[^)]*\)/u;  // `(id=..., type=...)` 头部
+
 function splitSentences(text) {
   return text
     .split(/[。！？!?；;\n]+/)
@@ -306,12 +314,16 @@ export function extractCandidates(session, nowMs = Date.now()) {
   const seen = new Set();
   for (const { text, time } of session.userTexts) {
     if (NOISE_RE.test(text.trim())) continue;
+    // 引用块 / 带 (id=...) 前缀的记忆条目形态 → 不是本人主张，且会把污染写进本体
+    if (QUOTED_RE.test(text) || PREFIXED_ENTRY_RE.test(text)) continue;
     const base = text.replace(/^老板[，,\s]*/, '').trim();
     if (base.length < 6) continue;
     for (const sentence of splitSentences(base)) {
       if (/[?？]$/.test(sentence)) continue;         // questions are not statements
       if (QUESTION_RE.test(sentence)) continue;      // interrogatives without '?'
       if (VAGUE_RE.test(sentence)) continue;         // vague filler, no durable claim
+      if (QUOTED_RE.test(sentence)) continue;        // 行内引用块残留
+      if (PREFIXED_ENTRY_RE.test(sentence)) continue; // `(id=..., type=...) …` 头部
       if (/\b(为什么|怎么|如何|能否|能不能|可以吗)\b/.test(sentence)) continue;
       const key = normalizeForCompare(sentence);
       if (seen.has(key)) continue;

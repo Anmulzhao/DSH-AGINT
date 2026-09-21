@@ -78,8 +78,10 @@ Hard rules (the host validation gate enforces these too — violating them rejec
 2. order matters: the operations array must have the same length and ordering as the
    candidates array (1:1 by index). The host validates this against gated.length.
 3. \`action\` must be one of: 'added' | 'merged' | 'superseded'.
-4. \`priorEntries\` must be the EXACT content of an existing memory entry (copy from
-   the "Existing memory" list). Empty array for 'added'.
+4. \`priorEntries\` must be the EXACT content of an existing memory entry — copy the
+   BODY of a \`\`\`text fenced block from the "Existing memory" list, verbatim.
+   Strip the \`<!-- id=... -->\` comment line and the fence markers; never include them.
+   Empty array for 'added'.
 5. NEVER reference a candidate key in \`priorEntries\` — priorEntries points at
    existing memory entries, NOT other candidates.
 6. For 'merged': 1-2 priorEntries that cover the same claim, plus a lineageKey
@@ -117,12 +119,21 @@ export function buildConsolidationPrompt(gated, existing, day) {
   }
   lines.push('## Existing memory');
   lines.push('');
+  lines.push('Each entry is given as a fenced block. When you fill `priorEntries`, copy the');
+  lines.push('block body VERBATIM (the text between the fences, nothing else).');
+  lines.push('Do NOT include the id/type header line, the fence markers, or any "> - " prefix.');
+  lines.push('The validator compares priorEntries against the raw entry content — an extra');
+  lines.push('prefix rejects the ENTIRE batch (2026-09-18 incident: 16 candidates lost).');
+  lines.push('');
   for (const e of existing) {
     const lk = e.lineageKey ? ` [lineage=${e.lineageKey}]` : '';
     const sk = e.supersedesKey ? ` [supersedes=${e.supersedesKey}]` : '';
-    lines.push(`- (id=${e.id}, type=${e.type}${lk}${sk}) ${e.content}`);
+    lines.push(`<!-- id=${e.id} type=${e.type}${lk}${sk} -->`);
+    lines.push('```text');
+    lines.push(String(e.content ?? ''));
+    lines.push('```');
+    lines.push('');
   }
-  lines.push('');
   lines.push('## Output');
   lines.push('');
   lines.push('Return { operations, reasoning } via structured_output tool.');
