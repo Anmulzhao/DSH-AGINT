@@ -171,16 +171,39 @@ function apply(ctx, config) {
   //   订阅方 agint-diagnosis 早已就位（订阅 sandbox.failed → analyzeFailedSmoke），
   //   payload 契约见 schemas/sandbox-{passed,failed}.schema.yaml。
   // 红线：**直连路径完整保留** —— publish 失败/缺失一律不抛、不改返回值。
+  //
+  // fix-20260921（生产实证：`sandbox.*` 恒 0 的真因）：
+  //   初版接线只包了 runVerify / runExplore 两个**新**入口，**漏了被上游沿用的旧入口 runSmoke**。
+  //   实际调用分布（grep 全仓）：
+  //     - agint-mount/lib/orchestrator.js:308  → runVerify   ✅ 走发布
+  //     - agint-mutator/lib/index.js:596       → runSmoke    ❌ 不发布
+  //     - agint-skill-autocreate/lib/evaluator.js:108 → runSmoke ❌ 不发布
+  //   ⇒ 一条**依赖实现细节的接线**：改插件(mutator)/生成技能(autocreate) 这条高频路径
+  //     沙箱真跑了也永不计事件，`sandbox.*` 因此长期为 0。
+  //   修法：把发布逻辑抽成通用包装 `withPublish`，**三个入口共用**，消除入口差异。
+  //   兼容性：runSmoke 是 FROZEN Service 接口（mutator 注释点名），故**不改签名、不改返回形态**，
+  //     仅在返回前追加一次「best-effort 发布」；抛错路径保持原样向上抛（异常出口也记一次 failed）。
   const runVerify = (args) => runAndPublish({ ...args, mode: 'verify' });
   const runExplore = (args) => runAndPublish({ ...args, mode: 'explore' });
+  // 旧入口：包装后行为对调用方**完全不变**（含抛错语义），只是多了一次影子发布。
+  const runSmokePublished = (args) => withPublish(() => runSmoke(args), { modeHint: 'verify', target: args?.target });
 
   async function runAndPublish(args) {
+    return withPublish(() => runInMode(args), { modeHint: args.mode, target: args.target });
+  }
+
+  /**
+   * 通用「执行 + 影子发布」包装（best-effort）：
+   *   成功 → publishSandboxEvent({ result })
+   *   抛错 → publishSandboxEvent({ result: null, error })，然后把原错误**原样抛回**
+   * 保证：发布永远不改变被包装函数对调用方的可见行为。
+   */
+  async function withPublish(fn, meta) {
     let result;
     try {
-      result = await runInMode(args);
+      result = await fn();
     } catch (err) {
-      // 异常出口也算一次失败（如 ctx.sandbox 不可用且禁用 fallback）
-      await publishSandboxEvent({ result: null, error: err, modeHint: args.mode, target: args.target });
+      await publishSandboxEvent({ result: null, error: err, modeHint: meta.modeHint, target: meta.target });
       throw err;
     }
     await publishSandboxEvent({ result });
@@ -341,8 +364,9 @@ function apply(ctx, config) {
   ctx.provide('agint.qualitySandbox', {
     // v0.6.3 新增（设计稿 §二.2）
     runVerify, runExplore, resolveProfile, routeForMutation,
-    // v0.3 保留（向后兼容）
-    runSmoke, backendHealth,
+    // v0.3 保留（向后兼容）—— fix-20260921：改用 runSmokePublished，
+    //   签名与返回形态对调用方不变，仅补上此前缺失的影子发布。
+    runSmoke: runSmokePublished, backendHealth,
     config: cfg,
   });
 }
