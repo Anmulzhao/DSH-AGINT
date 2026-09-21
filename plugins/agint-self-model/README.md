@@ -37,8 +37,15 @@ AGINT 自我模型插件（Sprint 13 / Part 2，v0.7.1）。
 
 ## 事件集成
 
-- 消费（影子）：A6 `diagnosis.completed` / A8 `dream.completed` → 轻量 `update`
-- 发布（A11）：`self.model.updated`（T1 影子期 publish-only；payload FROZEN）
+- 消费：A6 `diagnosis.completed` / A8 `dream.completed` → 轻量 `update`；
+  A7 `metrics.snapshot` → 影子对账。**形态为「写库生效」而非只审计** ——
+  实测 `capability_map.lastVerifiedAt` 随总线事件更新（2026-09-20 核）。
+  ⚠️ 源码 `index.js` 的残留注释写作「audit-only」，与实现不符（注释债，待清）。
+- 发布（A11）：`self.model.updated`（**影子发布，已接生产**：37 条实测，最新 09-20；payload FROZEN）
+
+> ⚠️ 本仓「T1 影子期 / publish-only」旧措辞**不等同于**「已就绪」——
+> 发布侧接线状态是分叉的，判定请看
+> `docs/known-limitations/event-bus-shadow-publish-gap.md`。
 
 ## 校准误差护栏（§4.6）
 

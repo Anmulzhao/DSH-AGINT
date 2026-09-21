@@ -27,7 +27,7 @@
   - **P1**：Deep 阶段调 LLM consolidation（`consolidation.js`，`ctx.subagents.start('spawn',{outputSchema})`）决定 add/merge/supersede
   - **P0**：写 `agint.memory` 前过 validation gate（`validation-gate.js`，loss fraction ≤0.25 + lineageKey 强校验）
 - 梦境日记写 `$AGINT_HOME/dreams/YYYY-MM-DD.md`
-- 事件：`dream.completed`（T1 影子期）+ `dream.rejected`（P0 拒整批时）
+- 事件：`dream.completed`（**影子发布，已接生产**：39 条实测，有真实消费方 `agint-self-model`）+ `dream.rejected`（P0 拒整批时）
 
 ## 三阶段
 
@@ -67,7 +67,7 @@
 - **`agint.qualityEvaluator`**（v0.2）：REM 阶段调用 evaluate() 评估候选（C3 用 evaluator.score() 拿真 composite）
 - **`agint_evolution`**（v0.3）：Deep 阶段读 success-templates（`lib/evolution-bridge.js`）
 - **DSH subagent runtime**（P1）：`ctx.subagents.start('spawn',{outputSchema})` 做 LLM consolidation
-- **`agint.eventBus`**（v0.7.0）：publish `dream.completed` / `dream.rejected`（T1 影子期）
+- **`agint.eventBus`**（v0.7.0）：publish `dream.completed` / `dream.rejected`（影子发布，已接生产，有消费方）
 
 ## 测试
 

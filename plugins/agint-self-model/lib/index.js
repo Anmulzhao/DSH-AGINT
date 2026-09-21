@@ -357,7 +357,11 @@ function apply(ctx, _config = {}) {
   ctx.provide('agint.selfModel.stats', stats);
   ctx.provide('agint.selfModel.inspectSummary', inspectSummary);
 
-  // 影子消费：A6 diagnosis.completed / A8 dream.completed（audit-only；handler 永不抛）
+  // 影子消费：A6 diagnosis.completed / A8 dream.completed → 真实调用 selfUpdate 写库
+  // （2026-09-20 更正：原注释写「audit-only」与实现不符 —— handler 走的是
+  //  selfUpdate(ctx, store, ...) 会落库，实测 capability_map.lastVerifiedAt 随事件更新。
+  //  唯一的「影子」语义在于：它是 bus 触发的旁路，主路径仍是显式 update()。
+  //  handler 契约：永不抛，异常静默吞掉。）
   try {
     const subscribe = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.subscribe') : null;
     if (typeof subscribe === 'function') {

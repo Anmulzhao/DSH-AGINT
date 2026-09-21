@@ -29,7 +29,7 @@
 4. `metrics_summary` — 恶化/失效指标
 5. `dream_status` / `curriculum_stats` — 当前阶段进度
 6. `agint.diagnosis.annotations` / `agint.mutator.findings` / `agint.population.stats` / `agint.mount.status` — 进化闭环未处理提案
-7. `agint.eventBus.inspectSummary` — 死信率/sync 配额（v0.7+，prod 当前 T1 影子期）
+7. `agint.eventBus.inspectSummary` — 死信率/sync 配额（v0.7+；**感知事件缺口见 `docs/known-limitations/event-bus-shadow-publish-gap.md`**：发布侧 3 个影子服务未接线 + 4 个孤儿订阅 + 7 个 mount.* 无人收）
 8. `agint.selfModel.snapshot` — 能力图谱；UNCERTAIN 或 lastVerifiedAt 过旧 = 别假装能做（v0.7.1+，只读）
 9. 动手 — 结论先行、数据说话、高风险动作先列清单
 10. 落地 — 教训写 `memory_write`，知识写 `wiki_write`

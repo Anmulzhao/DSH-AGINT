@@ -156,7 +156,7 @@ async function waitSentinelLease(leasePath, timeoutMs = 30_000) {
 |---|---|
 | **G8** | mount 的 `status()` 返回值新增 `restartRequestId`（通过 tickets 表 join），老板看 status 时能直接看到"这次挂载触发的 restart 链" |
 | **G9** | restart 插件的 `force: true` 在 mount 4 态路径下**不允许透传**（挂载是"系统级"动作，不能被 burst 熔断挡；但 burst 仍生效，仅绕过 cooldown）——这是 G1 的安全护栏 |
-| **G10** | mount 的 event 发布 `mount.restart-requested` / `mount.restart-completed` / `mount.restart-failed`（接入 agint-event-bus T2 切换期） |
+| **G10** | mount 的 event 发布 `mount.restart-requested` / `mount.restart-completed` / `mount.restart-failed`（接入 agint-event-bus T2 切换期；**现状：已发但订阅方为 0**） |
 
 ### 2.3 可达（Could）
 
@@ -450,7 +450,24 @@ config:
 | `mount.restart-completed` | 新 dsh 启动钩子 HMR settle 成功 | `{ ticketId, restartResult, activatedAt }` |
 | `mount.restart-failed` | restart 失败 / HMR 失败 | `{ ticketId, restartResult, reason }` |
 
-**T1 影子期**：publish-only，不切流量；T2 切换后由 event bus transport 替代 `mountEventBusPublish`（现有 T1 影子期函数）直连。
+**当前实际状态（2026-09-20 实测，勿沿用旧措辞）**：
+`mountEventBusPublish` **已接上生产**（`agint-mount/lib/orchestrator.js` 10 处真实调用，
+7 个 topic 全在发），属于「**已发布**」而非「仅声明」。但——
+
+- 这 7 个 `mount.*` topic 的**订阅方为 0**，生产事件数据 **0 条** → 现状是「**发了没人收**」；
+- 真正「**未接线**」的是另外 3 个影子发布服务（`population.publishProposed` /
+  `population.publishMountRequest` / `mutator.publishMountRequest`）：
+  已 `ctx.provide` 注册，但**生产调用点为 0**，全库唯一调用者是
+  `eval/scenarios/driver.js` 测试。
+
+> ⚠️ **旧措辞已废弃**：本稿曾记作「T1 影子期：publish-only，不切流量」。
+> 该措辞有**误导性** —— 它读出「已在发布、只是尚未切消费」，会让读者以为
+> 发布侧已就绪。实测表明发布侧的接线状态是**分叉**的（mount 系已发无人收；
+> population/mutator 三个服务从未被调用）。**判定状态以调用点数量与生产数据为准，
+> 不以本文档措辞为准。** 详见 `docs/known-limitations/event-bus-shadow-publish-gap.md`。
+
+**T2 切换期的目标**：由 event bus transport 替代 `mountEventBusPublish` 直连，
+并**同时补齐订阅侧**（否则只是把「发了没人收」从直连搬到 bus）。
 
 ---
 
@@ -479,7 +496,7 @@ config:
 ### P2（建议在 P1 落地后单开 proposal）
 
 - `bin/agint-mount.sh` CLI 完整对接
-- `agint-event-bus` T2 切换期 G10 真正接入（目前 publish-only）
+- `agint-event-bus` T2 切换期 G10 真正接入（**现状：mount 侧已发、订阅方为 0；population/mutator 三个影子发布服务未接线**）
 - `agint-mount-rollback` 自动调 `restart.resetHistory`（G11）—— **注意：这条会触发 restart 的写工具 ask 门禁**，需单独治理
 - mount 批量挂载合并重启（G13）—— 性能优化
 
@@ -533,7 +550,7 @@ config:
 | mount 与 restart 互相 inject 形成循环依赖 | 中 | mount mountOrder=40、restart mountOrder=50；mount 用 lazy inject（`ctx.inject(['agint.restart'], cb)`），不在 apply 时硬依赖；restart 不 inject mount，**单向** |
 | 4 态路径触发 restart 时，其他 plugin 的 in-flight 请求被打断 | 中 | restart 插件已处理（confirm/cooldown/burst + respawn.js 等旧进程退出）；mount 的 rollback 在新 dsh 启动钩子里检测 |
 | restart-result.json 写盘失败 → mount 永远等不到 | 中 | mount 启动钩子加 timeout（mountRestartTimeoutMs 默认 90s）；超时标 ROLLED_BACK + 事件告警 |
-| agint-event-bus 不可用时 mount 事件发布失败 | 低 | 软降级（T1 影子期 publish-only，失败仅 warn） |
+| agint-event-bus 不可用时 mount 事件发布失败 | 低 | 软降级（影子发布，失败仅 warn；注意软降级会**静默吞掉"从未接入"**，需靠调用点核查发现） |
 | mount 启动钩子在新 dsh 启动时被 dispose 时机抢跑 | 低 | mount 启动钩子用 `ctx.effect(() => ...)` 注册，dispose 时自动取消 |
 | restart 插件不可用时 mount 4 态路径降级为 sentinel lease | 中 | **明确行为**：fallback 模式 mount 仍能继续（不挂起），但 plugin 实际**不会**被新 dsh 加载（因为没真重启）；mount.rollback 不需要专门处理（plugin 文件已就位但 HMR 没上，下次 dsh 真重启时被加载） |
 | burst 熔断误触发（mount 链式挂载把 burst 打满） | 中 | G11：mount.rollback 自动调 `restart.resetHistory({confirm:true})`；G11 留 P2，本期不实装 |
@@ -581,7 +598,7 @@ HARM 四维：
 | 15 | 启动钩子 restart 失败处理 | restart-result.json.ok=false → mount 启动钩子标 ROLLED_BACK + emit mount.restart-failed |
 | 16 | restartDryRun 路径 | mount.request({restartDryRun:true}) → 4 态路径不调 restart，只返回 plan |
 | 17 | force 不透传 | mount.request({force:true}) → mount 内部调 restart 时仍 force:false |
-| 18 | 事件发布（mount.restart-requested/completed/failed） | T1 影子期 publish-only，断言 publish 调用被调到 |
+| 18 | 事件发布（mount.restart-requested/completed/failed） | 影子发布（已接生产），断言 publish 调用被调到 |
 
 ### 6.2 端到端演练（人工，**真实 dsh 必跑**）
 
@@ -635,7 +652,7 @@ HARM 四维：
 | D3 | mount 是否透传 force 给 restart？—— **建议否**（G9：mount 是系统级动作，burst 应生效） |
 | D4 | restart 失败时 mount 标 ROLLED_BACK 还是 DISABLED？—— **建议 ROLLED_BACK**（restart 失败 = 整个事务失败，不是 plugin 本身的问题；DISABLED 留给 plugin 代码本身有问题） |
 | D5 | 是否升为 sprint 级（独立 Sprint 17）？—— **建议是**，跨 4 个模块（types.ts / orchestrator.ts / rollback.ts / index.ts）+ 1 个 fixture 改造 |
-| D6 | 是否同时实装 G10（事件接入）？—— **建议 T1 影子期 publish-only**（已存在 mountEventBusPublish 函数，只需新增 3 个调用点） |
+| D6 | 是否同时实装 G10（事件接入）？—— **建议实装影子发布**（已存在 mountEventBusPublish 函数，只需新增 3 个调用点）。⚠️ 但须同时明确**订阅侧归属**，否则得到的是「发了没人收」 |
 | D7 | 是否把本提案与「agint-restart rollback 提案」合并？—— **建议否**，两份提案独立评审更稳（前者改 mount，后者改 restart，互相正交） |
 
 ---
