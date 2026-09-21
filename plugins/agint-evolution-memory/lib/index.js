@@ -83,17 +83,37 @@ function apply(ctx) {
 
   // Sprint 10 v0.6.4 #7：EvolutionLogBuffer 实例（domain ready 后创建）
   // memFallback = ctx.get('agint.memory')；domain ready 后才可访问 table
-  let logBuffer = null;
-  ready.then((d) => {
-    if (!d || disposed) return;
-    const memFallback = ctx.get('agint.memory') ?? { write: async () => ({ ok: false, reason: 'no-memFallback' }) };
-    logBuffer = createLogBuffer({
-      storage: d,
-      memFallback,
-      flushCount: DEFAULT_FLUSH_COUNT,
-      flushMs: DEFAULT_FLUSH_MS,
-    });
-  }).catch(() => { /* domain unavailable: logBuffer 保持 null, caller 用 logPhase4 同步路径 */ });
+  //
+  // fix-20260921（T1 真实触发实验实证）：原实现的 `logBuffer` 由 ready.then()
+  //   异步赋值，而 logPhase4Buffered 直接 `logBuffer.enqueue(entry)` ——
+  //   不查 null、也不 await ready。domain 就绪前的任何调用必抛
+  //   `TypeError: Cannot read properties of null (reading 'enqueue')`，
+  //   又被 shadow handler 的 catch{warn} 吞掉 ⇒ **事件永久丢失**。
+  //   生产实证：evolution_log 168 条里 shadow-ingest 标记 = 0，
+  //   即该影子链路自上线至今从未成功写入过一次。
+  // 修法：改为显式 await 的 ensureLogBuffer()，拿不到实例时**降级到同步
+  //   logPhase4 路径**（不丢事件），且每次降级都计数，让失败可观测。
+  let logBufferPromise = null;
+  function ensureLogBuffer() {
+    if (!logBufferPromise) {
+      logBufferPromise = ready.then((d) => {
+        if (!d || disposed) return null;
+        const memFallback = ctx.get('agint.memory') ?? { write: async () => ({ ok: false, reason: 'no-memFallback' }) };
+        return createLogBuffer({
+          storage: d,
+          memFallback,
+          flushCount: DEFAULT_FLUSH_COUNT,
+          flushMs: DEFAULT_FLUSH_MS,
+        });
+      }).catch(() => null); // domain unavailable → null，caller 走同步降级
+    }
+    return logBufferPromise;
+  }
+
+  /** 计数指标（best-effort，失败不影响主路径） */
+  const bump = (key, n = 1) => {
+    try { if (typeof ctx.metrics === 'function') ctx.metrics(key, n); } catch { /* ignore */ }
+  };
 
   const table = async (name) => {
     if (disposed) throw new Error('agint-evolution-memory: disposed');
@@ -150,8 +170,25 @@ function apply(ctx) {
       findings,
       tags,
     });
-    logBuffer.enqueue(entry);
-    return { queued: true, id: entry.id };
+    // fix-20260921：显式等待 buffer 就绪（含 domain 初始化），避免早调即丢。
+    const buffer = await ensureLogBuffer();
+    if (!buffer) {
+      // 降级：存储域不可用 → 走同步路径，**不丢事件**，并计数暴露。
+      bump('evolutionMemory.logPhase4Buffered.degraded');
+      return logPhase4({ targetId, targetKind, decision, scores, findings, tags });
+    }
+    try {
+      buffer.enqueue(entry);
+      return { queued: true, id: entry.id };
+    } catch (err) {
+      // enqueue 抛错（如 disposed）同样降级同步，不静默丢。
+      bump('evolutionMemory.logPhase4Buffered.enqueueFailed');
+      warn('evolution-memory: logPhase4Buffered enqueue failed, fallback to sync', {
+        id: entry.id,
+        error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+      });
+      return logPhase4({ targetId, targetKind, decision, scores, findings, tags });
+    }
   }
 
   /**
@@ -161,21 +198,35 @@ function apply(ctx) {
    * 不污染 storage（buffer 仅在内存 + flush 后才落盘）。
    */
   async function readLogRangeMerged(opts = {}) {
-    return logBuffer.readMerged(opts.query);
+    const buffer = await ensureLogBuffer();
+    if (!buffer) {
+      bump('evolutionMemory.readLogRangeMerged.degraded');
+      return getLogRange(opts.query ?? {});
+    }
+    return buffer.readMerged(opts.query);
   }
 
   /**
    * flushLogBufferNow — Sprint 10 v0.6.4 #7 立即强制 flush
    */
   async function flushLogBufferNow() {
-    return logBuffer.flush('manual');
+    const buffer = await ensureLogBuffer();
+    if (!buffer) {
+      bump('evolutionMemory.flushLogBufferNow.noBuffer');
+      return { flushed: 0, lost: 0 };
+    }
+    return buffer.flush('manual');
   }
 
   // 退出钩子：ctx.effect() disposer 在 plugin dispose 时强制 flush（设计稿 §二.5 退出触发）。
   // 不注册 process.on(beforeExit/SIGTERM) — 那些会让 Node 测试 process 永久卡住等待 listener 释放。
   // 生产 dsh 的 SIGTERM 处理在 dsh 主进程统一接管；plugin 自身的优雅停机由 ctx.effect() disposer 链驱动。
+  // fix-20260921：改为 await ensureLogBuffer()（原 `if (logBuffer)` 在实例未就绪时
+  //   会**静默跳过 shutdown**，缓冲区里的残留条目随进程消失）。
   ctx.effect(() => () => {
-    if (logBuffer) void logBuffer.shutdown();
+    void ensureLogBuffer().then((buffer) => {
+      if (buffer) void buffer.shutdown();
+    }).catch(() => { /* noop */ });
   });
 
   /**
@@ -394,6 +445,7 @@ function apply(ctx) {
           const p = envelope?.payload ?? {};
           if (!p.proposalId) {
             warn('evolution-memory: shadow ingest skipped (missing proposalId)', { topic: envelope?.topic });
+            bump('evolutionMemory.shadowIngest.skippedNoId');
             return;
           }
           try {
@@ -412,7 +464,12 @@ function apply(ctx) {
                 `kind:${p.kind || 'unknown'}`,
               ],
             });
+            // fix-20260921：成功也计数 —— 与下面的 failed 配对，使
+            //   「收到事件数 = delivered 计数 = ok + failed」恒等式可校验。
+            //   旧实现只有失败计数且失败只 warn，导致「投递了但没写入」不可观测。
+            bump('evolutionMemory.shadowIngest.ok');
           } catch (err) {
+            bump('evolutionMemory.shadowIngest.failed');
             warn('evolution-memory: shadow ingest failed', {
               proposalId: p.proposalId,
               error: err instanceof Error ? err.message : String(err ?? 'unknown'),
@@ -423,6 +480,7 @@ function apply(ctx) {
       ctx.effect(() => () => { try { if (typeof unsubscribe === 'function') unsubscribe(); } catch { /* ignore */ } });
     }
   } catch (err) {
+    bump('evolutionMemory.shadowSubscribe.initFailed');
     warn('evolution-memory: shadow subscribe init failed', {
       error: err instanceof Error ? err.message : String(err ?? 'unknown'),
     });
