@@ -136,6 +136,76 @@ T2 的前置条件**不是「接线完成」，是「T1 拿到真实数据」**�
 
 把这样的通路顶替天天在跑的主路径 = **用刚修好、且只有人工样本的管子换掉主动脉**。
 
+### 6.12 ⭐⭐⭐ `sandbox.*` 恒 0 的真因：`runSmoke` 漏接线（2026-09-21 18:2x，已修 `1e0d9d0`）
+
+**6.11.5 记的「`sandbox.passed/failed` 仍为 0，需真实沙箱才会通电」——只对了一半。**
+真因不是「没触发」，而是**高频路径压根不记账**。
+
+#### 6.12.1 根因：接线只包了新入口，漏了被沿用的旧入口
+
+A3 接线（2026-09-20）把 `publishSandboxEvent()` 包进了 **`runVerify` / `runExplore`** 两个**新**入口。
+但全仓 grep 调用分布显示，**三个上游里有两个走的是旧入口 `runSmoke`**：
+
+| 上游调用点 | 调的方法 | 走发布？ |
+|---|---|---|
+| `agint-mount/lib/orchestrator.js:308` | `runVerify` | ✅ |
+| `agint-mutator/lib/index.js:596` | **`runSmoke`** | ❌ **不发布** |
+| `agint-skill-autocreate/lib/evaluator.js:108` | **`runSmoke`** | ❌ **不发布** |
+
+⇒ **改插件（mutator）/ 生成技能（autocreate）这两条日常高频路径，
+沙箱真跑了也永不计事件** → `sandbox.*` 生产长期为 0。
+
+**缺陷形态（值得单列）**：*接线依赖实现细节* —— 包了"我认为该包的"新方法，
+而**真正在生产跑的是沿用下来的旧方法**。
+> ⭐ **教条：给某个 Service 加发布/埋点接线时，必须先 grep「谁在调这个 Service」，
+> 把所有**实际被调用的**入口列全，而不是只包当前正在开发的那几个。
+> 「有哪些方法」≠「哪些方法真的被调」。**
+
+#### 6.12.2 修法（`1e0d9d0`）
+
+抽出通用包装 `withPublish(fn, meta)`，**三个入口共用**，从结构上消除入口差异：
+
+```js
+const runVerify  = (args) => withPublish(() => runInMode({...args, mode:'verify'}),  {...});
+const runExplore = (args) => withPublish(() => runInMode({...args, mode:'explore'}), {...});
+const runSmokePublished = (args) => withPublish(() => runSmoke(args), {...});  // ← 补上
+// 成功 → publishSandboxEvent({ result })
+// 抛错 → 先记一次 failed，再把原错误**原样抛回**
+```
+
+**兼容性（FROZEN Service 契约）**：`runSmoke` 是 mutator 注释点名的冻结接口，
+故**签名、返回形态、抛错语义一律不变**，对调用方完全透明，仅追加一次 best-effort 影子发布。
+
+#### 6.12.3 验收（三层 + 变异）
+
+| 层 | 结果 |
+|---|---|
+| 单元测试 | 新增 `test/runSmoke-publish.test.mjs` 5 条；全插件 **38/38 绿**（6 文件逐个跑），零回归 |
+| **变异测试** | 把实现退回未包装 → **4 红 / 1 绿** ⇒ 测试有判定力（非装饰） |
+| **宿主字节端到端** | 直接 import 宿主那份跑 `apply()`：`runSmoke` → 发 `sandbox.passed` ✅（修前 0 条）；`runVerify` 对照同样发 ✅ |
+
+**新增测试覆盖的出口**：`runSmoke` 成功 / 失败 / 抛错 / bus 缺失 四个出口，
+外加一条**入口一致性不变量**（`runVerify` 与 `runSmoke` 同等输入必须发同 topic）。
+> 老的 `shadow-publish.test.mjs` 只覆盖 `runVerify` —— **这正是缺陷溜过去的原因**：
+> 测试与实现犯的是同一个盲区（都只认新入口）。
+
+#### 6.12.4 ⛔ 尚未生效，且仍未达标
+
+- **必须重启 dsh 才生效**（`apply()` boot 期加载，宿主字节已更新但进程内存是旧版）。
+- 重启后 `sandbox.*` 的预计点亮点 = **autocreate 每日聚合（04:45）** 或 **mutator commit 流程**。
+- **连带收益**：`sandbox.*` 通了之后，`agint-diagnosis` 的 `sandbox.failed` 订阅方
+  （早已就位、但自上线起从未收到过消息）**也才有机会首次收到真实事件**。
+- **`hmr.settled` / `mount.*` 仍未通电** —— 它们只能由**真挂载**点亮，
+  而真挂载会写产物目录 + 改 `cordis.patch.yml` + 可能触发重启，属**生产写操作**，
+  需老板单独授权。**不建议为凑指标去做。**
+
+#### 6.12.5 T2 判据（不变）
+
+本次修复**没有改变 T2 可切性**：7 个 T1 主题中，此前 6 个恒 0；
+本次修的是其中 2 个（`sandbox.passed/failed`）的**接线缺陷**，
+但**它们要重启后跑出真实数据才算通电** —— 在那之前仍是 0。
+**T2 依然不可切。**
+
 ## 三、对照：真实在跑的链路（12 种主题 / 842 条）
 
 ```
