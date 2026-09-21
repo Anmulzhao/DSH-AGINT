@@ -1,6 +1,105 @@
 
 ---
 
+### 6.13 ⭐⭐ `mount.*` 首次点亮：走 PENDING_REVIEW 早退分支（2026-09-21 20:06）
+
+**背景**：6.10–6.12 之后，`mount.*` 六个主题仍是全 0。深挖发现**根因不是接线问题**：
+
+> `storages/` 下**不存在 `agint_mount.json`** —— mount 存储域**自上线从未打开过**。
+> tickets 表恒空 ⇒ **这台机器上从未真实挂载过任何一个插件**。
+> 所以 6.10 里「10 处调用点都接好了」是真的，但**一次都没执行过**。
+
+#### 6.13.1 为什么能零副作用点亮
+
+`orchestrator.js:230` 的早退分支：
+
+```js
+if (isPendingReview(verdict)) {           // verdict.policyDecision === 'PENDING_REVIEW'
+    const ticket = await writeTicket(...);  // 唯一写入
+    await mountEventBusPublish(ctx, 'mount.requested', {...});
+    return unpackTicket(ticket);            // ← 到此返回
+}
+```
+
+判据函数（`orchestrator.js:37`）：`verdict.policyDecision === 'PENDING_REVIEW' || verdict.decision === 'PENDING_REVIEW'`。
+
+**该分支只写 1 条 ticket + 发 1 个事件，不碰 `plugins/`、不碰 `cordis.patch.yml`、不触发重启。**
+
+#### 6.13.2 执行与取证
+
+手法沿用 `_e2e_shadow_verify_0921.mjs` 的模式（宿主部署位字节 + 真实生产存储）：
+脚本 `D:\DSH\_mount_early_exit_probe.mjs`，先 `--dry` 过 zod 校验，再真跑。
+
+| 观测项 | 触发前 | 触发后 |
+| --- | --- | --- |
+| 总线总数 | 883 | **884**（+1） |
+| `mount.requested` | **0** | **1** ★ |
+| 其余五个 mount 主题 | 0 | 0（**未覆盖，见 6.13.4**） |
+| tickets 表 | 0 条 | **1 条**（`phase=PREPARED`、`decision=PENDING_REVIEW`） |
+| `agint_mount.json` | **不存在** | 已创建（932 B） |
+| emitEvent fallback 调用数 | — | **0**（bus 路径接管，未降级） |
+
+落库事件（总线文件实读，非脚本自述）：
+
+```json
+{
+  "id": "11c38a57-2cbd-41bf-b383-e95bca9f6e37",
+  "topic": "mount.requested",
+  "version": 1,
+  "occurredAt": "2026-09-21T12:06:07.398Z",
+  "source": "agint-mount",
+  "traceId": "df64498f-0eb3-4217-8152-d4eff72fefdf",
+  "correlationId": "6dd60c83-8b43-4af9-8bcb-76fd342ccf3d",
+  "payload": { "ticketId": "6dd60c83-…", "proposalId": "probe-mount-…", "decision": "PENDING_REVIEW" }
+}
+```
+
+**副作用核验（三项全 null）**：
+
+| 项 | 结果 |
+| --- | --- |
+| `cordis.patch.yml` mtime | `2026-09-17 23:38:56` —— **未被改动** ✅ |
+| `plugins/agint-7ccf2a88/` | **不存在**（未写产物）✅ |
+| 重启 | 未触发 ✅ |
+
+备份：`D:\DSH\_backup_mount_probe_0921\agint_event_bus.json.before`。
+
+#### 6.13.3 这一趟证明了什么
+
+- ✅ `mount.requested` 的**发布接线在工作**（`resolveBusPublish` 拿得到、envelope 结构合法、真落总线库）
+- ✅ mount **存储域能正常打开**（`agint_mount.json` 首次生成，schema 校验通过）
+- ✅ `PENDING_REVIEW` **决策门生效**（`decision` 正确落为 `PENDING_REVIEW`，未走 `AUTO_DEPLOY`）
+- ✅ **没有静默降级**（`emitEvent` 调用数 = 0，说明走的是 bus 而非 fallback）
+
+#### 6.13.4 ⚠️ 这一趟**没有**证明什么（不得含糊）
+
+**走的是早退分支，六个主题里只点亮 1 个。** 以下五个仍需**真挂载**才会发出：
+
+`mount.succeeded` / `mount.failed` / `mount.restart-requested` / `mount.rolled-back` / `mount.activated`
+
+它们分别在 `:383`（succeeded）、`:270/305/311/325/358/371/392`（failed）、`:336`（restart-requested）
+等**早退分支之后**的路径上。**未真挂载 ⇒ 这些发布点仍从未执行过。**
+
+⇒ **T2 前置判据的更新**：`mount.*` 从「全 0」变为「**1/6**」。
+**不足以判定该主题通路可用** —— 一个只跑过一条早退分支的通路，不能拿来替换主路径。
+
+#### 6.13.5 与 6.10.4 判据的关系
+
+6.10.4 写「T2 的前置条件不是接线完成，是 T1 拿到真实数据」——本节**不改变该判据**，只是把分子从 0 抬到 1。
+当前七项指标（`evolution.proposed` / `sandbox.*` / `hmr.settled` / `mount.*` / `memory.pre-compress-checkpoint`）中：
+
+| 主题 | 真实数据 | 说明 |
+| --- | --- | --- |
+| `evolution.proposed` | **3**（人工触发） | 无自然流量 |
+| `sandbox.passed/failed` | 0 | 接线已修（`1e0d9d0`），**待真实沙箱调用** |
+| `hmr.settled` | 0 | 需真挂载 |
+| `mount.*` | **1**（本节，早退分支） | 六个里点亮 1 个 |
+| `memory.pre-compress-checkpoint` | 0 | 需真实压缩事件 |
+
+**结论不变：T2 仍不可切。**
+
+---
+
 ### 6.10 三次复核「T2 切流量完成了吗」—— 未完成，且代码从未存在（2026-09-21 17:38）
 
 **结论：T2 未实现、未排期。T1 仍是双轨并行，主路径从未被替换。**
