@@ -6,16 +6,52 @@
 
 ## 一、两套方言，别混
 
-dsh 的 tool 定义里有**两套不共用的 schema 方言**。它们都"叫 JSON Schema"，但接受的写法相反：
+dsh 的 schema **不是"一种方言两处用"**，而是**两条独立通道，要求正好相反**。
+用错通道 = 挂载失败或校验失效。**先判断你的 schema 喂给谁。**
+
+### ⭐⭐ 先判通道（2026-09-21 实测，这是最容易错的一步）
+
+| 通道 | 代码入口 | 校验器 | `required` 形态 | 典型位置 |
+|---|---|---|---|---|
+| **A. 工具 schema** | `defineTool({ parameters, output })` | `valueSchemaSpecToJsonSchema` | **属性布尔** `required: true` | `plugins/*/lib/tools.js` |
+| **B. 结构化输出** | `ctx.subagents.start({ outputSchema })`<br>`ctx.agents.create({ outputSchema })` | `assertObjectJsonSchema` | **父对象数组** `required: ['a','b']` | `agint-dream/lib/consolidation.js` |
+
+实测对照（同一份 schema 喂两条通道）：
+
+```
+--- 通道 A：工具 schema (valueSchemaSpecToJsonSchema) ---
+  数组形态: FAIL — schema.required is not supported by the value schema DSL
+  布尔形态: PASS
+--- 通道 B：结构化输出 (assertObjectJsonSchema) ---
+  数组形态: PASS
+  布尔形态: FAIL — schema.properties.a.required is not supported on type "string"
+```
+
+**⚠️ 所以「统一写法」是错误动作。** 改 schema 前**必须先确认它走哪条通道**，
+否则会把本来正确的 B 通道 schema "修坏"。
+
+判通道的可靠办法：grep 这个 schema 常量**被谁消费**：
+```bash
+grep -rn "MY_SCHEMA_NAME" plugins/<name>/lib/
+# → 传给了 defineTool 的 output.schema → 通道 A
+# → 传给了 subagents.start / agents.create 的 outputSchema → 通道 B
+```
+
+### 通道 A 的两套子方言（不要和上面混淆）
+
+通道 A 内部**自己也有两道**：作者侧（值 schema DSL）与产物侧（raw JSON Schema）。
+见下节。
+
+### 对照表
 
 | | **值 schema DSL**（作者侧） | **raw JSON Schema**（产物侧） |
 |---|---|---|
 | `required` 形态 | **属性上的布尔** `required: true` | **父对象上的字符串数组** `required: ['a','b']` |
 | 用在 `parameters` | ✅ 这是唯一入口 | ❌ |
-| 用在 `output.schema` | ✅ **作者写这个** | ⚠️ 只是编译器**输出**，不手写 |
+| 用在 `output.schema`（通道 A） | ✅ **作者写这个** | ⚠️ 只是编译器**输出**，不手写 |
 | 谁实现 | `dsh-tools/lib/index.js` `compile*Schema` | `dsh-tools/lib/types/json-schema.js` |
 
-**关键：`output.schema` 的作者侧也必须写"值 schema DSL"形态。**
+**通道 A（工具 schema）的关键：`output.schema` 的作者侧也必须写"值 schema DSL"形态。**
 
 ## 二、output.schema 的真实链路（两道串联）
 

@@ -238,22 +238,37 @@ export function statusUnavailable(error) {
 // ── 通用机械 ───────────────────────────────────────────────────────────────
 
 /**
- * 字段表 → DSH 严格 schema（raw JSON Schema 形态）。
- * K21：DSH 的 `output.schema` 走 `assertSupportedJsonSchema()` 不经过编译器，
- * `required` 必须是**数组形态**挂在父对象上，不能写在 properties.{x} 里。
- * 所以这里把字段表里 f.required === true 的 key 收集到父级 `required: [...]`，
- * 而不是放在 dsl 节点里。
+ * 字段表 → DSH 严格 schema（**值 schema DSL** 形态）。
+ *
+ * ⚠️ K70 修正（2026-09-21）：原先这里写的是"output.schema 走
+ * assertSupportedJsonSchema() 不经过编译器，required 必须是父对象数组" —— **这是错的**。
+ * 真实链路是两道串联：
+ *   ① compileValueSchema(spec, "schema")   ← 值 schema DSL 编译器，先校验**作者原文**
+ *   ② assertSupportedJsonSchema(compiled)  ← 只校验 ① 的**产物**
+ * 按父对象数组写（`schema.required = [...]`）会被 ① 在 dsh-tools/lib/index.js:556
+ * 的 assertAuthorKeys 直接拒掉，报：
+ *   unsupported JSON schema: schema.required is not supported by the value schema DSL
+ * → 整个 loader entry 挂载失败 → preset 起不来（2026-09-21 事故）。
+ *
+ * 正确写法：必填挂在**各属性**上 `required: true`（index.js:603 规定它只能为 true）。
+ *   例外：属性 dsl 含 `oneOf`（可空字段 nullable()/LAUNCH_DSL）时**不能**带 required
+ *   （值 DSL 规定 `required` 与 `oneOf` 不能并存）—— 这类只能放弃 schema 层必填。
+ *   代价可控：normalize() 兜底读的是**字段表** f.required，不读 schema，所以
+ *   "缺字段补默认值 + 写进 message"的护栏**照常工作**；损失的仅"模型输出不合规时
+ *   宿主直接报错"这层，且这类字段本就允许 null，实际影响很小。
+ * 参见 docs/dsh-tool-schema-dialects.md。
  */
 function compileOutputSchema(fields) {
   const properties = {};
-  const required = [];
   for (const f of fields) {
-    properties[f.key] = f.dsl;
-    if (f.required === true) required.push(f.key);
+    // oneOf 与 required 互斥：可空字段放弃 schema 层必填
+    if (f.required === true && f.dsl && !Object.prototype.hasOwnProperty.call(f.dsl, 'oneOf')) {
+      properties[f.key] = { required: true, ...f.dsl };
+    } else {
+      properties[f.key] = f.dsl;
+    }
   }
-  const schema = { type: 'object', additionalProperties: false, properties };
-  if (required.length > 0) schema.required = required;
-  return schema;
+  return { type: 'object', additionalProperties: false, properties };
 }
 
 export const requestOutputSchema = () => compileOutputSchema(REQUEST_FIELDS);

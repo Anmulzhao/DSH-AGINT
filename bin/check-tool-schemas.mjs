@@ -117,20 +117,52 @@ const PLUGINS_DIR = dirArgIdx >= 0
 
 const { valueSchemaSpecToJsonSchema, parameterSchemaSpecToJsonSchema } = await loadDshTools();
 
-/** 递归收集 plugins 下的 tools.js。 */
-function collectToolsFiles(dir) {
+/** 递归收集 plugins 下的检查目标文件。
+ *  - `tools.js`            → 通道 A（工具 schema，走 valueSchemaSpecToJsonSchema）
+ *  - `lib/contract.js` 等  → 可能含动态生成的 schema（函数返回），一并做静态嗅探
+ */
+function collectFiles(dir, names) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...collectToolsFiles(full));
-    else if (entry.name === 'tools.js') out.push(full);
+    if (entry.isDirectory()) out.push(...collectFiles(full, names));
+    else if (names.includes(entry.name)) out.push(full);
   }
   return out;
 }
 
-const files = collectToolsFiles(PLUGINS_DIR);
-let checked = 0, failed = 0;
+/**
+ * 静态嗅探：找出"把 required 拼成父对象数组"的代码。
+ *
+ * 为什么需要它：`schema: statusOutputSchema()` 这类**动态生成**的 schema，
+ * 字面量扫描完全看不到；2026-09-21 事故就是它二次复发的原因（agint-restart）。
+ * 而工具通道（通道 A）**绝不能**出现父对象数组，所以这条静态规则在 tools.js /
+ * contract.js 里是**充分判据**，不依赖运行时求值。
+ *
+ * 只报「赋值给 schema.required」或「required 数组被 push 后在 object 上落地」两种形态，
+ * 避免误伤通道 B（subagents 的 outputSchema 合法用数组）。
+ */
+function sniffArrayRequired(src) {
+  const hits = [];
+  const lines = src.split('\n');
+  const patterns = [
+    { re: /\bschema\.required\s*=/, why: 'schema.required = [...] 直接赋值（工具通道非法）' },
+    { re: /\brequired\.push\(/, why: 'required.push(...) 生成父对象数组（工具通道非法）' },
+  ];
+  lines.forEach((line, i) => {
+    // 跳过注释行
+    const trimmed = line.trim();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+    for (const { re, why } of patterns) {
+      if (re.test(line)) hits.push({ line: i + 1, why, text: trimmed });
+    }
+  });
+  return hits;
+}
+
+const files = collectFiles(PLUGINS_DIR, ['tools.js', 'contract.js']);
+let checked = 0, failed = 0, sniffed = 0;
 const failures = [];
 
 for (const file of files) {
@@ -139,6 +171,19 @@ for (const file of files) {
   const constNames = Object.keys(consts);
   const literals = extractSchemaLiterals(src);
   const rel = path.relative(process.cwd(), file);
+
+  // ── 静态嗅探（覆盖动态生成的 schema）──
+  const hits = sniffArrayRequired(src);
+  if (hits.length > 0) {
+    sniffed += hits.length;
+    for (const h of hits) {
+      failures.push({
+        file: rel, line: h.line, entry: 'channel-A/dynamic',
+        msg: `${h.why} — 工具 schema 的必填必须写成属性上的 required: true，详见 docs/dsh-tool-schema-dialects.md`,
+      });
+    }
+    failed += hits.length;
+  }
 
   for (const lit of literals) {
     let obj;
@@ -162,6 +207,6 @@ for (const f of failures) {
 }
 console.log(
   `\ncheck-tool-schemas: scanned ${files.length} file(s), compiled ${checked} schema literal(s), ` +
-  `${failed} invalid.`
+  `sniffed ${sniffed} dynamic-required site(s), ${failed} invalid.`
 );
 process.exit(failed > 0 ? 1 : 0);
