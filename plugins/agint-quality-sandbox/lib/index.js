@@ -26,7 +26,7 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from '../../agint-quality/node_modules/zod/index.js';
+import { z } from 'zod';
 import { runSmoke as runSmokeInProcess } from './smoke.js';
 import { resolveProfile as resolveProfileImpl, probeSyscallCapability } from './profile-resolver.js';
 
@@ -165,8 +165,75 @@ function apply(ctx, config) {
     throw new Error(`agint-quality-sandbox.run${mode}: ctx.sandbox unavailable and allowInProcessFallback=false`);
   }
 
-  const runVerify = (args) => runInMode({ ...args, mode: 'verify' });
-  const runExplore = (args) => runInMode({ ...args, mode: 'explore' });
+  // ── A3 接线（2026-09-20）：runVerify / runExplore 结果发布为 sandbox.passed / sandbox.failed ──
+  // 背景：v0.6.3 把本插件从 plugins/agint-quality/agint-quality-sandbox/ 剥离为顶层插件时，
+  //   publishSandboxEvent() **没有跟着迁过来**（旧目录仍有，新目录丢失）→ 生产 0 条。
+  //   订阅方 agint-diagnosis 早已就位（订阅 sandbox.failed → analyzeFailedSmoke），
+  //   payload 契约见 schemas/sandbox-{passed,failed}.schema.yaml。
+  // 红线：**直连路径完整保留** —— publish 失败/缺失一律不抛、不改返回值。
+  const runVerify = (args) => runAndPublish({ ...args, mode: 'verify' });
+  const runExplore = (args) => runAndPublish({ ...args, mode: 'explore' });
+
+  async function runAndPublish(args) {
+    let result;
+    try {
+      result = await runInMode(args);
+    } catch (err) {
+      // 异常出口也算一次失败（如 ctx.sandbox 不可用且禁用 fallback）
+      await publishSandboxEvent({ result: null, error: err, modeHint: args.mode, target: args.target });
+      throw err;
+    }
+    await publishSandboxEvent({ result });
+    return result;
+  }
+
+  // 新版 mode 是 verify / verify-in-process / verify-in-process-fallback 等，
+  // schema 只认 [sandbox, in-process] 两值 → 归一化，否则订阅方按 enum 校验会拒。
+  function normalizeMode(mode) {
+    return String(mode ?? '').includes('in-process') ? 'in-process' : 'sandbox';
+  }
+
+  async function publishSandboxEvent({ result, error = null, modeHint, target }) {
+    try {
+      // event-bus 用 spec.provides 注册 3 个分 service，无 umbrella key；
+      // 主路径 agint.eventBus.publish，兼容 umbrella 形态（部分 dispatcher 会 bridge）。
+      let publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      if (typeof publish !== 'function') {
+        const bus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null;
+        if (bus && typeof bus.publish === 'function') publish = bus.publish.bind(bus);
+      }
+      if (typeof publish !== 'function') return; // 软降级：bus 不可用
+      const isPass = Boolean(result?.ok) && !error;
+      const topic = isPass ? 'sandbox.passed' : 'sandbox.failed';
+      const allChecks = Array.isArray(result?.checks) ? result.checks : [];
+      const payload = {
+        target: {
+          path: String(result?.target?.path ?? target?.path ?? ''),
+          name: result?.target?.name ?? target?.name,
+        },
+        mode: normalizeMode(result?.mode ?? modeHint),
+        durationMs: Number.isFinite(result?.durationMs) ? result.durationMs : 0,
+      };
+      if (isPass) {
+        payload.checks = allChecks.map((c) => ({
+          name: String(c?.name ?? 'unknown'),
+          ok: Boolean(c?.ok),
+          detail: String(c?.detail ?? ''),
+        }));
+      } else {
+        payload.reason = String(result?.reason ?? (error ? `sandbox-run-threw:${error.message}` : 'unknown'));
+        payload.failedChecks = allChecks
+          .filter((c) => c && c.ok === false)
+          .map((c) => ({ name: String(c.name ?? 'unknown'), detail: String(c.detail ?? '') }));
+      }
+      await publish({ topic, version: 1, source: 'agint-quality-sandbox', payload });
+    } catch (err) {
+      // publish 失败 log 不抛（红线：保留原 return）
+      if (!disposed) {
+        try { console.error('[agint-quality-sandbox] publish failed:', err?.message ?? err); } catch { /* noop */ }
+      }
+    }
+  }
 
   function spawnWithTimeout(argv, timeoutMs) {
     return new Promise((resolveP) => {

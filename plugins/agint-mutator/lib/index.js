@@ -902,6 +902,13 @@ function apply(ctx) {
   // 目的：mutator 作为 mount 消费方上游，把"请求挂载"动作通过 bus 影子发布。
   // 红线（AGENTS.md / 设计稿 §A4）：**直连路径完整保留** —— bus 不可用时静默降级。
   // payload schema：plugins/agint-mount/schemas/mount-requested.schema.yaml v1
+  // ⚠️ 2026-09-20 接线判定：**保持无生产调用点 —— 这不是漏接线，是刻意不接。**
+  //   1. mount.requested 的发布方是 agint-mount 自己（orchestrator.js:190，挂载流程起点即发）。
+  //      本服务若也发，同一件事在总线上出现两条，订阅方无法区分来源。
+  //   2. 本服务的语义前提是「mutator 会主动发起挂载请求」，但 mutator 当前不发起
+  //      （本文件除注册处外无 mount 相关调用），强行接调用点 = 造流量。
+  //   3. 正解：将来真需要请求挂载时，调 agint.mount.request，由 mount 统一发事件。
+  //   详见 docs/known-limitations/event-bus-shadow-publish-gap.md §6.2
   async function publishMountRequest(artifact) {
     if (!artifact || typeof artifact !== 'object') {
       return { published: false, reason: 'invalid-artifact' };

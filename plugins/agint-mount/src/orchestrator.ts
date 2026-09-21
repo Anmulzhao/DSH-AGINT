@@ -61,16 +61,60 @@ const DEFAULT_L0_HOOK = async (_proposal: any, _verdict: any) => ({
  *   - payload 字段见 plugins/agint-mount/schemas/mount-{requested,succeeded,failed}.schema.yaml
  *   - correlationId 透传 ticketId，便于 mount.* 三事件 + event-bus 自家 publish 串同一 traceId
  */
+/**
+ * 解析 event-bus 的 publish 函数（2026-09-20 接线修复）。
+ *
+ * 原实现只查 `ctx.getService('agint.eventBus')`（伞键）。但 agint-event-bus 用
+ * spec.provides 注册的是**三个分服务名** —— agint.eventBus.publish / .subscribe /
+ * .inspect（见其 manifest.json + lib/index.js:138-151），**根本没有 umbrella 键**。
+ * 结果：伞键恒为 undefined → 10 处 mount.* 发布全部静默降级到 ctx.emitEvent，
+ * 生产存储里 mount.requested / succeeded / failed / restart-* 合计 0 条。
+ * 取证见 docs/known-limitations/event-bus-shadow-publish-gap.md。
+ *
+ * 这里按确定性从高到低探测三种形态，任一可用即发布。
+ */
+export function resolveBusPublish(ctx: MountContext): ((env: any) => Promise<unknown>) | null {
+  const bindPublish = (bus: any) => (bus && typeof bus.publish === 'function' ? bus.publish.bind(bus) : null);
+  const candidates: Array<() => any> = [
+    () => (ctx as any).get?.('agint.eventBus.publish'),        // 分服务（已绑定，现役主路径）
+    () => bindPublish((ctx as any).getService?.('agint.eventBus')),
+    () => bindPublish((ctx as any).get?.('agint.eventBus')),
+  ];
+  for (const probe of candidates) {
+    try {
+      const fn = probe();
+      if (typeof fn === 'function') return fn;
+    } catch { /* 试下一个形态 */ }
+  }
+  return null;
+}
+
+/** 与 resolveBusPublish 同理：订阅侧也不能只认伞键（2026-09-20）。 */
+export function resolveBusSubscribe(ctx: MountContext): ((sub: any, handler: any) => unknown) | null {
+  const bindSubscribe = (bus: any) => (bus && typeof bus.subscribe === 'function' ? bus.subscribe.bind(bus) : null);
+  const candidates: Array<() => any> = [
+    () => (ctx as any).get?.('agint.eventBus.subscribe'),
+    () => bindSubscribe((ctx as any).getService?.('agint.eventBus')),
+    () => bindSubscribe((ctx as any).get?.('agint.eventBus')),
+  ];
+  for (const probe of candidates) {
+    try {
+      const fn = probe();
+      if (typeof fn === 'function') return fn;
+    } catch { /* 试下一个形态 */ }
+  }
+  return null;
+}
+
 async function mountEventBusPublish(
   ctx: MountContext,
-  topic: 'mount.requested' | 'mount.succeeded' | 'mount.failed',
+  topic: 'mount.requested' | 'mount.succeeded' | 'mount.failed' | 'mount.restart-requested' | 'mount.restart-completed' | 'mount.restart-failed' | 'hmr.settled',
   payload: Record<string, unknown>,
 ): Promise<void> {
   // ── 双轨 1：agint.eventBus.publish（影子/正式通路）──────────────
   try {
-    const bus = ctx.getService?.('agint.eventBus') as any;
-    const publish = bus?.publish;
-    if (typeof publish === 'function') {
+    const publish = resolveBusPublish(ctx);
+    if (publish) {
       const envelope = {
         topic,
         version: 1,
@@ -114,6 +158,17 @@ async function awaitHmrSettleBus(
   artifactName: string,
   timeoutMs: number,
 ): Promise<boolean> {
+  // A4 接线（2026-09-20）：settle 成功后补发 hmr.settled。
+  // 该 topic 此前只有订阅方（本插件路径 2 的占位订阅）、没有发布方 → 生产 0 条。
+  // 红线：发布失败不影响 settle 判定结果。
+  const publishSettled = async (ok: boolean): Promise<boolean> => {
+    if (ok) {
+      try { await mountEventBusPublish(ctx, 'hmr.settled', { artifactName, timeoutMs }); }
+      catch { /* 不阻断 settle 判定 */ }
+    }
+    return ok;
+  };
+
   // ── 路径 1：service lookup（dsh 暴露 hmr service 时优先走）──────
   try {
     const lookupKeys = ['core.hmr', 'host.hmr', 'agint.hmr'];
@@ -121,20 +176,17 @@ async function awaitHmrSettleBus(
       try {
         const svc = ctx.getService?.(k) as any;
         if (svc && typeof svc.awaitHmrSettle === 'function') {
-          return await svc.awaitHmrSettle(artifactName, timeoutMs);
+          return await publishSettled(Boolean(await svc.awaitHmrSettle(artifactName, timeoutMs)));
         }
       } catch { /* 试下一个 */ }
     }
   } catch { /* ignore：ctx.getService 缺失 */ }
 
-  // ── 路径 2：bus subscribe（mount.succeeded 由自己 publish，监听=无意义；改为订阅一个
-  //    future hmr.settled topic，目前 schema 没注册；保留作为 hook 占位）──
+  // ── 路径 2：bus subscribe hmr.settled（与本函数自己的 publish 配对）──
   try {
-    const bus = ctx.getService?.('agint.eventBus') as any;
-    const subscribe = bus?.subscribe;
-    if (typeof subscribe === 'function') {
+    const subscribe = resolveBusSubscribe(ctx);
+    if (subscribe) {
       // 不阻塞：仅注册监听，timeout 内未到走 false（与原 30s timeout 语义一致）
-      // 未来 dsh 暴露 hmr.settled topic 时此路径自动接管；当前无此 topic，订阅无副作用
       try {
         subscribe(
           { subscriber: 'agint-mount', topics: ['hmr.settled'], mode: 'async' },
@@ -149,12 +201,12 @@ async function awaitHmrSettleBus(
     // 兼容旧 ctx.awaitHmrSettle（cordis 历史接口；Sprint 11 留 hook）
     if (typeof (ctx as any).awaitHmrSettle === 'function') {
       const ok = await (ctx as any).awaitHmrSettle(artifactName, timeoutMs);
-      if (typeof ok === 'boolean') return ok;
+      if (typeof ok === 'boolean') return await publishSettled(ok);
     }
   } catch { /* ignore：走 timeout fallback */ }
 
   // ── 路径 4（兜底）：30s timeout sleep ──
-  return await new Promise<boolean>((resolve) => {
+  const settled = await new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(false), Math.min(timeoutMs, 30_000));
     // 测试模式跳过等待
     if ((globalThis as any).__AGINT_MOUNT_TEST_NO_LEASE_WAIT__) {
@@ -162,6 +214,7 @@ async function awaitHmrSettleBus(
       resolve(true);
     }
   });
+  return await publishSettled(settled);
 }
 
 /**

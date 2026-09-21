@@ -1,5 +1,15 @@
 # agint-evolve CHANGELOG
 
+## 2026-09-20 — 事件总线接线（方案 A / A1）：propose() 发布 evolution.proposed
+
+**背景**：`evolution.proposed` 只有订阅方（evolution-memory / quality-eval / trajectory）、
+没有生产发布方 —— 生产仅 3 条 09-04 历史探针。本插件的 propose() 才是真实提案源（生产 55 条）。
+
+- `propose()` 落库后向 bus 发一条 `evolution.proposed`，payload 含 proposalId / kind / origin
+- `source` 写 `agint-evolve`（真实发布方），原始 `source` 保留在 payload 内
+- 软降级：bus 缺失或 publish 抛错只 warn，返回值与落库不受影响（直连路径完整保留）
+- 新增 `test/shadow-publish.test.mjs`（4 项）
+
 ## v0.7.1 — proposal category 增加 `plugin`
 
 **日期**：2026-09-07

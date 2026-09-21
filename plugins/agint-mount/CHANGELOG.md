@@ -1,5 +1,21 @@
 # Changelog — agint-mount
 
+## 2026-09-20 — 事件总线接线（方案 A / A4）：修 bus 服务解析 + 补 hmr.settled 发布方
+
+**⚠️ 修复一个长期静默故障**：`mountEventBusPublish` 取 bus 用的是
+`ctx.getService('agint.eventBus')`（**伞键**），而 `agint-event-bus` 用 spec.provides 注册的
+是**三个分服务名**（`agint.eventBus.publish` / `.subscribe` / `.inspect`），**伞键不存在**
+→ publish 恒 `undefined` → 10 处 `mount.*` 发布全部静默降级到 `ctx.emitEvent`。
+与生产「mount.requested / succeeded / failed / restart-* 合计 0 条」完全吻合。
+
+- 新增 `resolveBusPublish()` / `resolveBusSubscribe()`：三形态探测
+  （分服务名 → `getService` 伞键 → `ctx.get` 伞键），取到伞键时 bind 防丢 this
+- `awaitHmrSettleBus()` settle 成功后补发 `hmr.settled`（该 topic 此前只有占位订阅、无发布方）
+- src（TS 源码）与 lib（dsh 实际加载）**两边同步**修改
+- 新增 `test/bus-resolve.test.mjs`（6 项）；既有 smoke 12/12 通过
+
+> 教训：「有 10 处调用点」≠「调用成功」。数调用点只证明有人喊，不证明有人应。
+
 > 所有破环性变更必须写入本文件。变更流程：FROZEN schema（`mount-result.schema.yaml` + `MountResultSchema` + `ContractCheckSchema`）修改走 L0 治理（人类多签 + 7 天影子 + major 版本），其它按 semver。
 
 ---

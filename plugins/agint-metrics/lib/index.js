@@ -26,6 +26,7 @@ import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { computeMetrics, describeMetric } from './metrics.js';
 import { attachPolicyCounterSubscription } from './policyCounters.js';
+import { attachMountCounterSubscription } from './mountCounters.js';
 import { metricSchema, defaultRandomId, buildMetricsService } from './service.js';
 
 const name = 'agint-metrics';
@@ -43,14 +44,19 @@ function apply(ctx) {
   let domainError = null;
   let disposed = false;
   let _policyBusUnsubscribe = null;
+  let _mountBusUnsubscribe = null;
 
   // ctx.effect semantics: callback runs IMMEDIATELY; its RETURN value is the
   // disposer that runs when this fiber is disposed (K4/K8 double-sentinel).
+  // fix-20260920：原实现 `if (domain) return domain.close();` 会**跳过**订阅注销
+  // （domain 一旦打开就早退），改成先注销所有订阅再关 domain。
   ctx.effect(() => () => {
     disposed = true;
-    if (domain) return domain.close();
     try { if (typeof _policyBusUnsubscribe === 'function') _policyBusUnsubscribe(); }
     catch { /* ignore */ }
+    try { if (typeof _mountBusUnsubscribe === 'function') _mountBusUnsubscribe(); }
+    catch { /* ignore */ }
+    if (domain) return domain.close();
   });
 
   const randomId = defaultRandomId;
@@ -73,6 +79,13 @@ function apply(ctx) {
       // Sprint 12 / A5: domain open 后挂 policy.* 订阅（shadow T1）
       const _subscribeBus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
       _policyBusUnsubscribe = attachPolicyCounterSubscription({
+        subscribeFn: _subscribeBus,
+        tableFn: table,
+        randomIdFn: randomId,
+      });
+      // A2 接线（2026-09-20）：mount.* 六个 topic 此前**有发布方、零订阅方**，
+      // 挂载成功/失败完全不可观测。这里补上计数订阅。
+      _mountBusUnsubscribe = attachMountCounterSubscription({
         subscribeFn: _subscribeBus,
         tableFn: table,
         randomIdFn: randomId,

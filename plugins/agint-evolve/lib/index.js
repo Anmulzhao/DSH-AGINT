@@ -215,6 +215,48 @@ function apply(ctx, config) {
     return snapshot;
   }
 
+  // ── evolution.proposed 发布（Sprint 12 A1 接线，2026-09-20） ──────────────
+  // 背景：本主题此前**只有订阅方、没有生产发布方** —— agint.population.publishProposed
+  //   注册了但生产调用点为 0，生产数据只剩 3 条 09-04 的历史探针。真正的提案源
+  //   （生产 55 条）是这里的 propose()，所以发布方接在此处。
+  //   取证与判据见 docs/known-limitations/event-bus-shadow-publish-gap.md。
+  // 订阅方：agint-evolution-memory（影子写 evolution_log）/ agint-quality-eval /
+  //   agint-trajectory（count-only 标定期）。
+  // 红线：**直连路径完整保留** —— 落库与返回值不因发布失败而改变；
+  //   bus 缺失或 publish 抛错只告警，不阻断 propose。
+  async function publishProposed(rec) {
+    const publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.proposed publish skipped', {
+          proposalId: rec.id, reason: 'agint.eventBus.publish unavailable',
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: 'eventBus-unavailable' };
+    }
+    try {
+      const result = await publish({
+        topic: 'evolution.proposed',
+        version: 1,
+        source: 'agint-evolve',
+        payload: {
+          proposalId: rec.id,
+          kind: rec.category || 'other',
+          payload: rec,
+          origin: 'agint-evolve',
+        },
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.proposed publish failed', {
+          proposalId: rec.id, error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: `publish-threw:${err?.message || err}` };
+    }
+  }
+
   // ---- service ----
   ctx.provide('agint.evolve', {
     dataSnapshot,
@@ -269,6 +311,8 @@ function apply(ctx, config) {
         updatedAt: nowIso(),
       });
       await t.put(rec.id, rec);
+      // A1 接线：落库后发布 evolution.proposed（失败不影响返回值）
+      await publishProposed(rec);
       return { ...rec };
     },
 

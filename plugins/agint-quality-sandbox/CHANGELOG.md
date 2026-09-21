@@ -1,5 +1,19 @@
 # Changelog — agint-quality-sandbox
 
+## 2026-09-20 — 事件总线接线（方案 A / A3）+ 修复迁移遗留的 zod 硬编码路径
+
+**背景**：`sandbox.passed` / `sandbox.failed` 既无发布方也无数据。根因是 v0.6.3 把本插件从
+`plugins/agint-quality/agint-quality-sandbox/` 剥离为顶层插件时，**`publishSandboxEvent()`
+没有跟着迁过来**（旧目录仍有，新目录丢失）。订阅方 `agint-diagnosis` 从上线起一条都没收到。
+
+- 迁移回 `publishSandboxEvent()`，runVerify / runExplore 的**每个出口**（含抛错路径）都留事件
+- `mode` 归一化到 schema enum `[sandbox, in-process]`（新版 mode 是 verify / verify-in-process 等）
+- schemas 两个 yaml 一并迁到顶层 `schemas/`
+- 新增 `test/shadow-publish.test.mjs`（4 项）
+
+**顺带修复**：`lib/index.js:29` 硬编码 `import { z } from '../../agint-quality/node_modules/zod/index.js'`
+指向已删除目录（同为迁移遗留）→ 该插件 20 个既有测试中 **9 个一直在失败**。改为 `from 'zod'` 后 20/20 通过。
+
 ## 0.7.1 (2026-09-17) — Sprint 18：sandbox.confine argv shape 防护
 
 > 触发：老板发现 41 个 skill candidate 全部 BUDGET_WAIT（`autocreate_stats` 实证），
