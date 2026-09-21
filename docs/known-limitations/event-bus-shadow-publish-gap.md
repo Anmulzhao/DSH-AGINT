@@ -1,50 +1,56 @@
-# Known Limitation: 影子发布接线缺口（event-bus shadow-publish gap）
 
-> **状态（2026-09-20 更新）：老板拍板走方案 A —— 接线。本节缺口已按第六节清单接线完成。**
-> 保留原文作取证记录；**当前状态一律以第六节为准**。
->
-> 建档：2026-09-20。宿主版本基线：v0.7.1。
-> 取证方式：源码全库 grep + 生产存储 `agint_event_bus.json` 实测（842 条事件）。
-> 关联设计稿：`proposals/agint-mount-integrate-restart.md` §3.9（G10）、
-> `AGENTS.md` §工作流 第 7 条。
+---
 
-## 缺口是什么（一句话）
+### 6.10 三次复核「T2 切流量完成了吗」—— 未完成，且代码从未存在（2026-09-21 17:38）
 
-**事件总线的「影子发布」有 3 个服务只注册、从不被生产调用；另有 4 个主题
-只有订阅方、没有发布方。** 这两类缺口都不报错、不告警、测试全绿。
+**结论：T2 未实现、未排期。T1 仍是双轨并行，主路径从未被替换。**
 
-## 一、空壳服务（注册了，但只有测试调它）
+#### 6.10.1 `transport` 取证（修正 6.8 的「零命中」口径）
 
-| 服务 | 注册位置 | 生产调用点 | 唯一调用方 |
-| --- | --- | --- | --- |
-| `agint.population.publishProposed` | `agint-population/lib/index.js:528` | ❌ 无 | `eval/scenarios/driver.js:262` |
-| `agint.population.publishMountRequest` | `agint-population/lib/index.js:529` | ❌ 无 | `eval/scenarios/driver.js:329` |
-| `agint.mutator.publishMountRequest` | `agint-mutator/lib/index.js:950` | ❌ 无 | `eval/scenarios/driver.js:328` |
+全库 `plugins/**/lib/*.js` grep `transport` → **3 处命中，全部是注释**：
 
-三者在生产侧的调用点数量均为 **0**。全库唯一调用它们的是 D-QAF 场景驱动器
-`eval/scenarios/driver.js` —— **测试自己调它，所以测试通过；生产没人调它，
-所以影子从未落下。**
+| 位置 | 内容 |
+| --- | --- |
+| `agint-mount/lib/orchestrator.js:47` | `mount 内部点对点 transport → bus publish（A4 / B4）`（小节说明标题） |
+| `agint-mount/lib/orchestrator.js:50` | ⭐ **「不切流量：`ctx.emitEvent`（cordis point-to-point）保留作为 fallback；bus 不可用 / publish 抛错时静默降级，原路径不受影响」** |
+| `agint-mount/lib/rollback.js:8, 121` | 「点对点先到 evolution；Sprint 12 Event Bus **替换** transport」（将来时，是计划） |
 
-### 直接后果
+→ **无任何 T2 实现代码。** 6.8 节所写「零命中」不准确，已改为「3 处命中且全为注释」。
 
-`agint-evolution-memory` 订阅 `evolution.proposed` → 写 `evolution_log`。
-该订阅链路的唯一上游 `publishProposed` 无人调用，因此：
+#### 6.10.2 ⭐ T1 的真实形态 = 双轨，不是切换
 
-- `evolution_log` 的 168 行**不是事件驱动的**（走的是直连 `logPhase4Buffered`）；
-- `evolution.proposed` 生产数据仅 3 条，**全部在 2026-09-04，且都是探针消息**
-  （source 分别为 `agint-evolution-memory-probe` / `verify-after-fix` / `verify-final`）。
+`agint-mount/lib/orchestrator.js:100-128` 的 `mountEventBusPublish()`：
 
-## 二、孤儿主题（有订阅方，无发布方）
+```js
+// ── 双轨 1：agint.eventBus.publish（影子/正式通路）──
+try { ... await publish(envelope); } catch { /* 降级：保留原 ctx.emitEvent 路径 */ }
+return;
+// ── 双轨 2：ctx.emitEvent fallback（cordis point-to-point；原路径保留）──
+try { ctx.emitEvent?.(topic, payload); } catch { /* ignore */ }
+```
 
-| 主题 | 订阅方 | 生产数据 |
+**bus 抛错即静默降级回原路径，且返回前不区分成败。两条路一直并行。**
+
+> 这就是 T2 无从谈起的原因：**T1 连「独占」都不是。**
+> 讨论「用 transport 替换直连」的前提是「总线已是唯一通路」，而现状是两条路同时活着。
+
+#### 6.10.3 生产数据（总线 882 条事件 / 死信 0）
+
+| 主题 | 条数 | 说明 |
 | --- | --- | --- |
-| `memory.pre-compress-checkpoint` | `agint-compress-guard` | 0 条 |
-| `sandbox.failed` | `agint-diagnosis`、`agint-quality-policy` | 0 条 |
-| `sandbox.passed` | `agint-quality-policy` | 0 条 |
-| `hmr.settled` | `agint-mount` | 0 条 |
+| `evolution.proposed` | **5** | 其中 3 条为 09-04 探针、1 条 09-21 17:15 真实 `agint-evolve`、1 条为 17:33 **验证探针所写（假触发，不计）** ⇒ **真实触发仅 1 条** |
+| `sandbox.passed` | **0** | — |
+| `sandbox.failed` | **0** | — |
+| `hmr.settled` | **0** | — |
+| `mount.*`（六主题） | **0** | — |
 
-这 4 个主题的订阅回调**永远不会被触发**。注意 `agint-mount` 订阅 `hmr.settled`
-的 handler 是空函数 `(_env) => { }`，属于占位订阅——影响较小，但同样计入清单。
+#### 6.10.4 判据（决策口径）
+
+T2 的前置条件**不是「接线完成」，是「T1 拿到真实数据」**。
+现状 = 四项里三项恒 0，唯一非零的那项真实触发只有 1 条。
+
+**拿一条只跑过 1 次的通路，去替换天天在跑的主路径 —— 不能做。**
+��，但同样计入清单。
 
 ## 三、对照：真实在跑的链路（12 种主题 / 842 条）
 
@@ -261,8 +267,19 @@ grep 生产目录（剔除 `test/` 与 `eval/scenarios/`）确认调用点非空
 
 **结论：T2 未实现、未排期；T1 四项仍为 0。** 本次复核新增三条硬事实：
 
-1. **T2 的代码从未存在。** 全库 `plugins/**/lib/*.js` grep `transport` → **零命中**。
+1. **T2 的代码从未存在。** 全库 `plugins/**/lib/*.js` grep `transport` → **3 处命中，
+   且全部是注释/说明，无任何实现代码**（`agint-mount/lib/orchestrator.js:47,50` 与
+   `rollback.js:8,121`；均为「点对点 transport → bus publish」的说明与
+   「不切流量 / 原路径保留」的红线声明）。
    T2 的定义就是「由 event bus transport 替代直连」，故 T2 不是「切了没切」，是「尚未开始」。
+   > 📌 **2026-09-21 17:38 修正**：本条此前写作「零命中」，**不准确** —— 应为
+   > 「3 处命中但全是注释」。结论（T2 未实现）不变，但取证口径必须精确。
+
+1b. ⭐ **T1 的真实形态是「双轨」，不是「切换」** —— 见 `orchestrator.js:100-128`
+   `mountEventBusPublish()`：双轨 1 = `agint.eventBus.publish`（bus 抛错即静默降级），
+   双轨 2 = `ctx.emitEvent`（注释明写「fallback；原路径保留」）。
+   **两条路一直并行在跑，且返回前不区分成败。**
+   → 这解释了为什么 T2 无从谈起：**T1 连「独占」都不是。**
    → 请勿把 09-20 方案 A 的**接线**（publish-only，仍属 T1）读成 T2。
 2. **T1 四项仍为 0 条**（生产存储 878 条事件、死信 0）：
 
