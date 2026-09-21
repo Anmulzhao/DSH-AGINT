@@ -256,3 +256,34 @@ grep 生产目录（剔除 `test/` 与 `eval/scenarios/`）确认调用点非空
 —— 我新增了 `agint-metrics` 对 mount 六主题的订阅（1 个 subscriber）。
 
 **最快的硬证据**：在 dsh 里提一条提案（`evolve_propose`），`evolution.proposed` 应立刻 +1。
+
+### 6.8 二次复核：2026-09-21 17:0x（老板问「T2 切流量完成了吗」）
+
+**结论：T2 未实现、未排期；T1 四项仍为 0。** 本次复核新增三条硬事实：
+
+1. **T2 的代码从未存在。** 全库 `plugins/**/lib/*.js` grep `transport` → **零命中**。
+   T2 的定义就是「由 event bus transport 替代直连」，故 T2 不是「切了没切」，是「尚未开始」。
+   → 请勿把 09-20 方案 A 的**接线**（publish-only，仍属 T1）读成 T2。
+2. **T1 四项仍为 0 条**（生产存储 878 条事件、死信 0）：
+
+   | 主题 | 条数 |
+   | --- | --- |
+   | `evolution.proposed` | **3**（全部为 09-04 探针：`agint-evolution-memory-probe` / `verify-after-fix` / `verify-final`） |
+   | `sandbox.passed` / `sandbox.failed` | **0** / **0** |
+   | `hmr.settled` | **0** |
+   | `mount.*`（六个） | **全 0** |
+   | `memory.pre-compress-checkpoint` | **0** |
+
+   → 判定「触发条件未发生」成立，**但 4 处新接线至今未获得任何一次真实执行机会**。
+3. **6.7 节留的「下一个可观测点」未兑现。** 文中预期下次 `metrics-collect` 时
+   `eventBus.syncSubscriptions` 从 N 变 N+1；实测该指标**近 8 次采样恒为 1**
+   （2026-09-16 23:21 → 2026-09-20 20:00），未出现增量。
+   `mount.succeededCount` 等新指标**在 `agint_metrics` 表中根本不存在**。
+
+> ⚠️ **推论（证据不足以定论）**：恒为 1 可能是「注册的 sync 订阅确实只有 1 个」（计数器语义），
+> 也可能是一次**未被察觉的静默失败**（与本文档主题同类）。**未实测前不得当作已通。**
+> 下一步验收口径不变：拿到该指标出现 ≥2，或四项主题出现真实数据行。
+
+> **切 T2 的前置条件（我的建议，待老板定）**：先制造一次真实触发
+> （提一条提案 / 跑一次沙箱），读到四项中至少一项 > 0，证明 T1 通路真的通，
+> 再讨论用 transport 替代直连主路径。**不要拿一条从未通电的通路去替换天天在跑的主路径。**

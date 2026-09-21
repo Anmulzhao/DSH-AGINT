@@ -450,15 +450,23 @@ config:
 | `mount.restart-completed` | 新 dsh 启动钩子 HMR settle 成功 | `{ ticketId, restartResult, activatedAt }` |
 | `mount.restart-failed` | restart 失败 / HMR 失败 | `{ ticketId, restartResult, reason }` |
 
-**当前实际状态（2026-09-20 实测，勿沿用旧措辞）**：
-`mountEventBusPublish` **已接上生产**（`agint-mount/lib/orchestrator.js` 10 处真实调用，
-7 个 topic 全在发），属于「**已发布**」而非「仅声明」。但——
+**当前实际状态（2026-09-21 复核，勿沿用旧措辞）**：
 
-- 这 7 个 `mount.*` topic 的**订阅方为 0**，生产事件数据 **0 条** → 现状是「**发了没人收**」；
-- 真正「**未接线**」的是另外 3 个影子发布服务（`population.publishProposed` /
-  `population.publishMountRequest` / `mutator.publishMountRequest`）：
-  已 `ctx.provide` 注册，但**生产调用点为 0**，全库唯一调用者是
-  `eval/scenarios/driver.js` 测试。
+`mountEventBusPublish`（`agint-mount/lib/orchestrator.js`）**已接上生产**，7 个 topic 全在发，
+但 2026-09-20 的复核推翻了它的"健康"表象（见下方 §6.4 教训）：
+
+- **曾长期空转**：它取 bus 用伞键 `ctx.getService('agint.eventBus')`，而总线注册的是三个
+  **分服务名**，根本没有伞键 → 恒 `undefined` → 静默降级到 `ctx.emitEvent`。
+  已改为 `resolveBusPublish()` 三形态探测。
+- **订阅侧已补齐**：`agint-metrics` 已对 mount 六主题装计数订阅（`lib/mountCounters.js`）。
+- **但生产数据仍全为 0 条**（2026-09-21 17:0x 实测），与 `storages/` 下**无 `agint_mount.json`**
+  互相印证 —— 不是"发了没人收"，是**从未发生过真实挂载**。
+
+关于另外 3 个影子发布服务（`population.publishProposed` / `population.publishMountRequest` /
+`mutator.publishMountRequest`）：**2026-09-20 老板拍板方案 A 后，判定为「不接」并已说明理由**
+（接上会制造错误数据：`mount.requested` 已有发布方，且 population/mutator 在生产中根本不发起挂载）。
+服务保留作备用通道，**不再属于"待接线缺口"**。理由详见
+`docs/known-limitations/event-bus-shadow-publish-gap.md` §6.2。
 
 > ⚠️ **旧措辞已废弃**：本稿曾记作「T1 影子期：publish-only，不切流量」。
 > 该措辞有**误导性** —— 它读出「已在发布、只是尚未切消费」，会让读者以为
@@ -468,6 +476,17 @@ config:
 
 **T2 切换期的目标**：由 event bus transport 替代 `mountEventBusPublish` 直连，
 并**同时补齐订阅侧**（否则只是把「发了没人收」从直连搬到 bus）。
+
+**T2 现状（2026-09-21 复核：未实现、未排期）**：
+
+- 全库 `plugins/**/lib/*.js` grep `transport` **零命中** —— T2 所需的 transport 层
+  **一行代码都没有**。所以 T2 不是"切了没切"，是"尚未开始"。
+- 2026-09-20 方案 A 完成的是**接线**（补发布点 + 补订阅），**仍属 T1 影子期 publish-only**，
+  主路径继续直连，不可与 T2 混为一谈。
+- 前置条件未满足：该 4 处接线至今**无真实生产数据**
+  （`evolution.proposed` 3 条全为 09-04 探针；`sandbox.passed|failed` / `hmr.settled` /
+  `mount.*` 全为 0）→ **从未被证明可用，不应据此替代直连主路径**。
+- 时间表：`VERSION` 表 v0.7.1 条目记「总线 T2 切流量，不早于约 2026-09-25 + 老板签字」。
 
 ---
 
