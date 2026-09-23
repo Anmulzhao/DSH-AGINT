@@ -66,8 +66,10 @@ AGINT 的核心是 **D-QAF 四阶段流水线**（静态准入 → 动态沙箱 
 ### 前置
 
 - Node.js ≥ 20
-- `@deepseek-ai/dsh` ≥ 0.1.1-rc.2（兼容矩阵见 [`VERSION`](./VERSION)；本机实测 0.1.6-alpha.1）
+- `@deepseek-ai/dsh` ≥ 0.1.1-rc.2（兼容矩阵见 [`VERSION`](./VERSION)；本机实测 **0.1.7-rc.1**）
   - dsh 0.1.5-rc.1 起 preset persona 字段由 `text` 改为 `prefix`，`presets/agint/` 已适配
+  - ⚠ **dsh ≥ 0.1.7**：preset 不再靠「扫目录」发现，必须声明式注册（AGINT 已适配，见下「preset 怎么被找到」）；
+    低于 0.1.7 时三条 preset 不可见，**插件层不受影响**
 - dsh 已初始化（`dsh web` 至少跑过一次）
 
 ### 装到本机
@@ -78,7 +80,7 @@ cd ~/projects/AGINT
 ./install/install.sh
 ```
 
-`install.sh`（v0.2 安全左移版）按序执行：① 跑 `agint-security-checks.sh` 前置检查，任一 fail 即中止；② 复制 `presets/agint*/` 到 `$DSH_HOME/.agent-presets/`；③ 复制 `plugins/agint-*/` 到 `$DSH_HOME/profiles/web/plugins/`；④ 合并 `profile-patches/web/cordis.patch.yml` 到 user-patch 层；⑤ 装后静态校验（YAML 解析 / package.json / preset cordis.yml）。
+`install.sh`（v0.2 安全左移版）按序执行：① 跑 `agint-security-checks.sh` 前置检查，任一 fail 即中止；② 复制 `presets/agint*/` 到 `$DSH_HOME/.agent-presets/`；③ **建 preset 依赖解析入口**（步骤 1.1，dsh ≥ 0.1.7 必需，见下）；④ 复制 `plugins/agint-*/` 到 `$DSH_HOME/profiles/web/plugins/`；⑤ 合并 `profile-patches/web/cordis.patch.yml` 到 user-patch 层；⑥ 装后静态校验（YAML 解析 / package.json / preset cordis.yml）。
 
 幂等且可回滚：写前备份到 `$DSH_HOME/.agint-backups/`（保留最近 10 份），`trap EXIT` 跟踪部分安装状态，失败自动还原。`--dry-run` 只打印改动、不落盘。
 
@@ -91,6 +93,59 @@ cd ~/projects/AGINT
 ```
 
 `uninstall.sh` 支持从备份列表选一份回滚。
+
+### preset 怎么被找到（dsh ≥ 0.1.7）
+
+0.1.7 是个**破坏性变更**：dsh **不再扫** `$DSH_HOME/.agent-presets/` 目录来发现 preset（包名也从复数
+`dsh-agent-presets` 变成单数 `dsh-agent-preset`）。只把目录铺好 = preset 永远不出现在列表里，**且不报错**。
+
+AGINT 的做法：在 `profile-patches/web/cordis.patch.yml` 里显式声明三条 preset，用 `cordis:include` 指回
+`.agent-presets/<id>/agent.cordis.yml` —— 定义保持单份，里面的相对路径（插件 / skills）继续正确。
+
+```yaml
+- id: agint-preset
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: agint
+    name: 智进
+    plugins:
+      - id: agint-composition
+        name: 'cordis:include'
+        config:
+          path: ../../.agent-presets/agint/agent.cordis.yml
+```
+
+⛔ 别给 include 那行加 `group: true`：它的语义是「子插件行放在 `config` 数组里」，不是「我是 carrier」。
+carrier 身份来自插件类自己的 `static [EntryGroup.key]`。加错会让整条 preset 抛
+`must hold a list of plugin rows`，而 UI 只显示「加载失败」。
+
+### 依赖解析入口（步骤 1.1 在解决什么）
+
+`include` 会把子条目的 `baseUrl` 挪到 `.agent-presets/<id>/`，于是 preset 里的裸包名
+（`@deepseek-ai/dsh-persona` / `dsh-tool-fs` …）都从那个目录向上解析 —— 那儿没有 `node_modules` ⇒
+官方插件行全部 `never started` ⇒ 注册表判 broken ⇒ **UI 只说「加载失败」**。
+
+`install.sh` 步骤 1.1 在 presets **父目录**建 `$DSH_HOME/.agent-presets/node_modules`，指向 dsh 自带的
+`node_modules`（276 个包）。⛔ 不能放进 `.agent-presets/<id>/` 里面：preset 同步是
+`rsync -a --no-links --delete` 语义，下次重装会把它删掉，症状静默复活。
+
+### 技能落点（升级时什么会丢、什么不会）
+
+| 技能来源 | 落点 | 升级/重装后 |
+|---|---|---|
+| preset 自带（`presets/agint*/skills/`） | 随 preset 同步 | 以仓库为准（镜像覆盖） |
+| **AGINT 自动生成的技能** | `$DSH_HOME/skills/`（用户级） | ✅ **保留**，不会被清空 |
+
+三个消费者都读这个根：`agint-skill-autocreate.skills_root` · `agint-curator.skills_dir` ·
+`agint-skill-graph.extraSkillDirs`。改投放目标时必须三处一起改，否则图谱/策展会看不到新技能。
+
+### 排障：preset 显示「加载失败」
+
+1. `dsh --profile web --dump-config` —— 官方工具，**不挂载、零风险**。正确结果：exit 0、无 stderr、三条声明都在。
+2. 若上一步全绿但 UI 仍失败：真凶通常是 `never started`（依赖解析不到）⇒ 检查
+   `$DSH_HOME/.agent-presets/node_modules` 是否存在。
+3. ⚠ preset 激活错误**只打 stdout，不落日志**（`$DSH_HOME` 下没有日志文件）⇒ 必须把 dsh 启动输出
+   重定向到文件才看得到：`dsh --profile web > boot.log 2>&1`。
 
 ## 环境变量
 
@@ -105,7 +160,7 @@ cd ~/projects/AGINT
 |---|---|
 | host 挂载插件 | 33（32 个 AGINT 插件 + 1 个本机临时挂载件） |
 | preset tool rows | 24 |
-| preset skills | 11 |
+| preset skills | 7 |
 | cron job | 14（日任务：梦境整合 / 指标采集 / 工具统计回填 / 记忆衰减 / 技能自动创建三班；周任务：复盘 / 策展 / 课程 / 图谱 / wiki 巡检 / 基线回归） |
 | 存储域 | 每个插件独占 `agint_*` 域，跨域写入由静态规则组 `self-model-isolation` / `l0-isolation` 拦截 |
 
@@ -130,6 +185,16 @@ cd ~/projects/AGINT
 - **简洁 > 冗余**：codeFingerprint 是 12 位 sha256 前缀（`sha256(文件名\0哈希\0序列)`），恰好够 4096 个目录无碰撞且对人可读，不堆更多位。
 - **安全 > 效率**：`codeStale`（HMR 静默失败 → 提示需重启）= 让"磁盘改过、进程仍是旧代码"这种静默失败被显式上报，符合 D-QAF 的 fail-closed > fail-open。
 - **主动 > 被动**：codeFingerprint + codeStale 把"要不要重启"从**靠日志时间戳推断**变**事实**。
+
+**v0.8.1 — dsh 0.1.7 适配与「技能资产归谁」**
+
+- **真实 > 讨好**：UI 只说「加载失败」，没有因为 `--dump-config` 全绿就宣布修好 —— 用隔离环境把 23 条
+  `never started` 挖出来、A/B 确证因果后才动手。
+- **靠谱 > 聪明**：依赖解析入口写进 `install.sh`（幂等、失败只 warn），不是手工建一次了事；且刻意**不放**
+  preset 子目录 —— 那里会被 `--delete` 镜像掉，症状会静默复活。
+- **简洁 > 冗余**：preset 定义依然只有一份（`cordis:include` 复用），没有为绕开 baseUrl 而把百余行内联进 patch。
+- **安全 > 效率**：自动生成技能移出 preset 目录 = 升级不再清空用户资产；改投放目标时先确认三处消费者，
+  避免「改了一处、另两处看不到」的半边失效。
 
 **Sprint 17–19 — 自进化执行层与「默认自动化」**
 
