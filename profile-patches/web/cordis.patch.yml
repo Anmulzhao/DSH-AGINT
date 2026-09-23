@@ -137,6 +137,69 @@
       name: ./plugins/agint-mount/lib/index.js
       config: {}
 
+    # ── 智进 preset 声明（dsh 0.1.7+ 声明式注册，2026-09-23）──────────────────
+    #
+    # 背景 / 为什么必须有这一段：
+    #   dsh 0.1.7-alpha.2 起 preset 不再从 ~/.dsh/.agent-presets/ 目录自动发现。
+    #   旧机制由 @deepseek-ai/dsh-agent-presets（复数）扫描该目录，该包止于
+    #   0.1.6-alpha.2；0.1.7 起改名 @deepseek-ai/dsh-agent-preset（单数）且
+    #   官方 README 明确「注册表不扫描目录，也不接受 preset 路径」——preset 必须
+    #   在 composition 里显式声明。官方 standard/ptc/minimal/cordis 四个内置 preset
+    #   也是这么注册的（见 dsh-web-app/package.json 的 dsh.bundle.patch 数组）。
+    #   ⇒ 只把文件铺到 .agent-presets/ 而不声明 = 预设永远不出现在列表里。
+    #
+    # 为什么用 cordis:include 而不是把 plugins 内联进来：
+    #   1) 声明行的 baseUrl = 本 patch 所在目录（~/.dsh/profiles/web/），而
+    #      agent.cordis.yml 里的相对路径是按 preset 目录写的
+    #      （../../profiles/web/plugins/agint-*/lib/tools.js、new URL('skills/', baseUrl)）。
+    #      直接内联会让这些路径全部指错位置。
+    #   2) cordis:include 读文件后会把子条目的 baseUrl 设为该文件所在目录
+    #      （cordis-plugin-include: ctx.baseUrl = new URL('.', pathToFileURL(filename))），
+    #      所以 agent.cordis.yml 一个字都不用改，仍按 .agent-presets/<id>/ 解析。
+    #   ⇒ preset 定义保持单份（仍在 .agent-presets/），本 patch 只放声明。
+    #
+    # 约束：includeConfig.path 是字面量、不支持 !!js，相对「本 patch 目录」解析。
+    #       （2 级 .. = ~/.dsh/，再进 .agent-presets/<id>/。）
+    # 回滚：删掉下面三段并重启 dsh；.agent-presets/ 与插件都无需动。
+    #
+    # 旧版 preset.yml 里已有 name/description，但 0.1.7 不再读该文件 → 名称说明
+    # 以本声明为准（preset.yml 保留作参考）。
+    - id: agint-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: agint
+        name: 智进
+        description: 基于 DeepSeek Harness 的自进化智能体框架。具备标准模式的全部能力，并携带动态插件与组合自修改能力，作为进化闭环的基础。
+        plugins:
+          - id: agint-composition
+            name: 'cordis:include'
+            config:
+              path: ../../.agent-presets/agint/agent.cordis.yml
+
+    - id: agint-blockchain-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: agint-blockchain
+        name: 智进·区块链
+        description: 智进子 preset · 区块链/Web3 领域工程师 + 领域知识专家。共享母 preset 的全部 agint-* 服务（含 rules 门禁与 cron 自调）与 tool-cordis 自修改能力，能力范围聚焦：区块链与 Web3 领域编程（Solidity / Rust 合约、EVM/Solana/Cosmos 应用链、合约与链下代码）、调试（合约 revert 分析、RPC 节点排查、Gas 优化、合约漏洞模式识别）、领域知识（EVM 合约模式库、DeFi 机制、链交互工具链、钱包/签名安全）。任务路由：由智进会话按「涉及区块链/Web3 编程、调试、合约安全、链上数据分析→区块链子会话」模式分派；其他通用代码任务走母 preset。
+        plugins:
+          - id: agint-composition
+            name: 'cordis:include'
+            config:
+              path: ../../.agent-presets/agint-blockchain/agent.cordis.yml
+
+    - id: agint-investor-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: agint-investor
+        name: 智进·投研
+        description: 智进子 preset · 投研分析师角色。共享母 preset 的 agint-memory / agint-wiki / agint-cron 服务，但禁用自修改工具（tool-cordis）和规则门禁写入工具（agint-rules-tools），只读、查、思、写笔记；不直接改生产代码。任务路由：由智进会话按「涉及研究/分析/查询→投研子会话」模式分派。
+        plugins:
+          - id: agint-composition
+            name: 'cordis:include'
+            config:
+              path: ../../.agent-presets/agint-investor/agent.cordis.yml
+
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
     #   Inspired by nickkkkkk123123/dsh-resume-on-restart (scope 1:1);
