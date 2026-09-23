@@ -6,6 +6,7 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 
 | AGINT | dsh minimum | dsh tested | notes |
 |-------|-------------|------------|-------|
+| v0.8.2 | 0.1.7-rc.1   | 0.1.7-rc.1  | **交付形态改 dsh bundle**（2026-09-24）: ① AGINT 整体 = bundle `@agint/host@0.8.2`：仓库根 `package.json`（`dsh.bundle.patch: ./cordis.patch.yml`）+ 仓库根 `cordis.patch.yml`（31 个 host service 行 + 3 条 preset 声明行）；部署位 `$DSH_HOME/profiles/web/node_modules/@agint/host/`，profile 的 `dsh.profile.bundles` 列它（**不写 dependencies 也能挂**，已实测）。② profile 级 `cordis.patch.yml` **不再写 AGINT 段**（只留本机 dsh-tui 覆盖块）——0.1.7 起 profile 级优先级高于 bundle 层，两边都写 = 同一批 id 重复挂载。③ ⛔ **路径基准不对称（K83，源码头号级取证）**：insert 行的 `name:` 锚**本 patch 文件所在目录**（故 bundle 内 `./plugins/…` 一行不改），而 **`config` 值恒字面量、按 profile 根解析** ⇒ `cordis:include` 的 `path` 仍须写 `../../.agent-presets/<id>/agent.cordis.yml`；写 `./presets/…` 的症状是**新建会话整体失败**（`agent-preset/invalid: … (cordis:include): config file not found`）。依据 `dsh-app-boot` `anchorInsertedPluginNames()` + README:65。④ zod 主位随插件进 bundle（`plugins/agint-quality/node_modules/zod`）——`agint-quality-eval/lib/index.js` 用**相对路径** `../../node_modules/zod/index.js` 借 zod；bundle 内缺它 → 该服务插件 EPERM 加载失败 → `agint.qualityEvaluator` 永不注册 → preset 的 tools 行无限等待（症状：`agent-preset/invalid: agint-quality-eval-tools … waiting for agint.qualityEvaluator`）。`install/agint-zod-bootstrap.sh` 改为同时维护 bundle 主位 + `profiles/web/plugins` 兼容位（AGINT 自身代码 `agint-dream/lib/quality-bridge.js` 与三条 preset 的 tools 行按老路径定位）。⑤ `install.sh`：插件镜像到 bundle（2.5）、挂载层**整份复制**（不再与 profile 级段合并）、新增包内解析入口 `node_modules/@deepseek-ai`（1.2）、profile 残留段检测 fail-closed；`uninstall.sh` 加 bundle 本体摘除 + `dsh.profile.bundles` 摘除（⛔ 保留包内 `node_modules` junction——`rm -rf` 会跟进目标删掉 dsh 自身的 266 个包）。⑥ 顺手修一个真 bug：`uninstall.sh` 在 Windows 上 `ids=$(python3 …)` 因 `print` 的 `\n`→`\r\n` 文本翻译残留 `\r`，`[ -d "…\r" ]` 恒假 ⇒ **卸载脚本静默跳过全部插件删除**；修法 `\| tr -d '\r'`。⑦ 静态验收（未真机重启）：36 行挂载段引用文件全存在 + 34 个宿主行逐个 `import()` 全通过 + 全树相对 import 零悬空（含 preset 的 35 条相对行）+ 剔注释 diff 与迁移前**行为行完全一致**（182 行） |
 | v0.8.1 | 0.1.7-rc.1   | 0.1.7-rc.1  | **dsh 0.1.7 适配 + 技能资产跨升级保留**（2026-09-23，已挂载并 runtime 验收）：① **自动生成技能改投用户级技能根** `$DSH_HOME/skills`（不再投进 preset 目录，重装/升级不再被 `safe_rsync --delete` 清空）——「投放目标」是条链不是一处，三处消费者同时对齐：`agint-skill-autocreate.skills_root` / `agint-curator.skills_dir` / `agint-skill-graph.extraSkillDirs`（新增字段，与既有 `customSkillDirs` 同为**追加**语义）；真扫描验证 18 = 12 preset + 6 user。② **preset 声明式注册**：0.1.7 起 dsh **不再扫 `.agent-presets/` 目录**（包名由复数 `dsh-agent-presets` 改为单数 `dsh-agent-preset`），必须在 composition 里显式声明；AGINT 三条 preset（智进 / 区块链 / 投研）改用 `cordis:include` 复用原 `agent.cordis.yml`（保住定义里的相对路径与单一事实源）；⛔ 踩坑：entry 上的 `group: true` 意为「子插件行放在 config 数组里」，不是 carrier 标记（carrier 身份来自插件类 `static [EntryGroup.key]`），误写会让整条 preset 抛 `must hold a list of plugin rows`。③ **preset 依赖解析入口**（`install.sh` 步骤 1.1）：`include` 会把子条目 baseUrl 挪到 `.agent-presets/<id>/`，裸包名从该目录向上解析 → 找不到依赖 → 23 条官方插件行 `never started` → UI 只显示「加载失败」（**不落日志**）；在 presets **父目录**放 `$DSH_HOME/.agent-presets/node_modules` → dsh 的 node_modules（⛔ 不能放 preset 子目录，重装必被删）。验证：`--dump-config` 零警告 + 114 条 entry 真加载 0 失败 + patch 30 挂载项 import 30/30 + presets 对账 DIFF=0 + 生产 storages 零污染；A/B 对照（只给一条 preset 加入口，另两条仍全挂）确证因果。**注**：dsh < 0.1.7 上三条 preset 的声明行会解析失败（智进不可见），**插件层（30 项）不受影响** |
 | v0.7.1 | 0.1.1-rc.2  | 0.1.1-rc.2 | Sprint 13 (P7 第二段「总线 T1 收口 + 自我模型启动」, 仅仓库发版): ① 事件边 07/08/09 场景补录 —— `s12-07`（traceId 全链一致 + payload 深冻结 `freezePayload` 写入抛 TypeError + `eventBus.syncSubscriptions` 指标导出）/ `s12-08`（at-least-once 双订阅者均 DELIVERED + handler 异常隔离故障者 DEAD_LETTERED 不影响他者 + 周复盘 wiki 两行）/ `s12-09`（sync 配额第 4 个硬拒抛错 + 死信可查 + `deadletterRate = deadletterCount / publishedCount * 100`）；配套修 `agint-event-bus` v0.7.0 缺陷：`metricsSnapshot` 补 `publishedCount` 分母（原恒为 0 致死信率算不出）+ `envelope` 加递归 `deepClone`/`deepFreeze`；sprint12 e2e **7 pass 0 fail**。② 每周 ≤3 次自动部署护栏 `checkDeployBudget`（`agint-quality-eval/lib/deployBudget.js`：滚动 7 天窗口计 `policy.AUTO_DEPLOY`，>3 → PENDING_REVIEW + 审计 + 周复盘告警行），接入 weekly hook + self-model weekly 更新；**11/11 PASS**。③ `agint-self-model` v0.7.1 全新只读观察者插件（FROZEN `self-model.schema.yaml` CapabilityEntry 7 字段 + `self-model-updated.schema.yaml`；5 Service `snapshot`/`update`/`calibrate`/`stats`/`inspectSummary`；独占域 `agint_self_model` 4 表 capability_map 200 / reasoning_profile 100 / resource_baseline 50 / calibration_log 100；能力三态 **CAN/CANNOT/UNCERTAIN** + `lastVerifiedAt` 强制非空；推理模式画像（源自 diagnosis 根因分布）+ 资源基线（p50/p90 加权）；校准误差护栏 ≤10% + cold-start 守门（样本 <10 → UNCERTAIN 且不计误差）；影子订阅 A6 `diagnosis.completed` / A8 `dream.completed` + 发布 A11 `self.model.updated`；**D2 哲学：自我认知 ≠ 自我修改**，禁写 qualityPolicy / mutator / population；smoke **19/19 PASS**）。④ `agint-quality-static` 加第 6 族 `self-model-isolation`（blocker 档：禁写服务引用 + 存储域边界，仅对 `agint-self-model` 生效；6/6 PASS）；顺带收口该插件测试套件在 Windows 上的 4 个裸路径 `import()` 崩溃（`ERR_UNSUPPORTED_ESM_URL_SCHEME` → `pathToFileURL`）+ 被崩溃掩盖的 8 个 Sprint 10 遗留断言（`listFamilies` 4→6 族 / 路径分隔符硬编码 / 缺 `l0IsolationOnly` / `static-profile.js` 注释自命中 contract-reference），静态套件由「4/5 文件跑不起来」→ **62/62 PASS**。⑤ eval 场景补 `agint-self-model.scenario.json`（10 case）+ `agint-quality-eval-deploy-budget.scenario.json`（5 case）；FROZEN 契约零改动 + L0-frozen 0 命中；仅仓库发版未挂载（仓发布语义；本机 install.sh 已跑完故已挂载，详见 AGENTS.md「本机实况」自动块）。**仍待 runtime 收口**：12 存量 eval fail 归因 ≥80%（需跑全量 eval + `agint-diagnosis` 批量归因）、总线 T2 切流量（不早于约 2026-09-25 + 老板签字）。**已知 bootstrap 坑**（影响首次部署，install 必查）：① RC 包清单——preset 历史上引用 `@deepseek-ai/dsh-workflow-worker-thread@0.0.1-rc.3`（dsh 已 GA ptc 不带），v0.7.1 preset 已切 `@deepseek-ai/dsh-workflow-ptc`；未来升 dsh 任何 alpha/RC 前先 `grep -rn "@deepseek-ai/dsh-" presets/ install/` 对比 dsh `package.json` deps，悬挂引用会让整张 preset 拒绝挂载。② install 自愈链路——`install.sh` 步骤 1.5 zod bootstrap（pre-plugin）必须在步骤 2 `safe_rsync --delete` 之前；`agint-zod-bootstrap.sh` `find_local_zod` 首选应为 `$DSH_HOME/profiles/node_modules/zod`（profiles 层级，跨平台恒成立），不是 `profiles/web/node_modules/zod`；bootstrap 失败只 warn 不阻断，silent 风险高。完整复盘 `docs/lessons/v0.7.1-install-bootstrap-rescue.md`，操作手册 `presets/agint/skills/agint-install-bootstrap-rescue/SKILL.md` |
 | v0.8.0 | 0.1.1-rc.2  | 0.1.1-rc.2 | Sprint 16 (2026-09-11, agint-restart 5 连续 patch 升格为框架发版, 仅仓库发版未挂载): ① `agint-restart` v0.7.0 恢复通知落盘待投（重启后不再丢消息）+ v0.7.1 断环（注入文案退化为纯状态「已重启」）+ v0.7.2 去重（同一次 boot 只投一次恢复通知 `deliveredForBoot` 去重位，投递成功才置位，失败仍可在窗口内重试）；② v0.8.0 代码指纹（`lib/fingerprint.js`：`codeFingerprint(dir)` 对目录下 `*.js` 按文件名字典序逐个 sha256，对「文件名\0哈希\0」序列做一次 sha256 取前 12 位；纯函数、只读、绝不抛；`fingerprintChanged(a,b)` `null` 与 `null` 视为相同）+ `codeStale`（每次现算磁盘 vs marker；true = 磁盘改过、进程里仍是旧代码 → 需重启或等 HMR；首次观察到 stale 打一条日志，之后不刷屏）+ `AGINT_RESTART_CODE_DIR` 测试钩子；③ v0.8.1 输出面修复（render 增加 code=<指纹>/stale/未知 三形态，新增 Case 34）+ 立 `D:\DSH\_sync_plugin.mjs` 三段式守门脚本（先 JSON.parse + YAML，再递归复制 + sha256，任一失败 exit 2/3 不复制）；④ 验证：smoke 41/41 + detect.test 12/12 + pending-notice 8/8 + repo↔host 17/17 sha256 MATCH + L0-frozen 0 命中；⑤ FROZEN 契约零改动 + manifest description 未转义直引号 v0.7.1/v0.8.0/v0.8.1 各踩 1 次的机制升级（守门脚本 fail-closed，不再依赖自觉）。**注**：v0.8.0 tag 打在 commit `8f2cd2d`，tager `DSH Agent <agent@dsh.local>`，annotated。**待 runtime**：codeStale 输出面需一次重启（或 HMR re-apply）才在 `restart_status` 里可见 |
@@ -25,15 +26,34 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 
 ## 校验方法
 
-- `dsh --version` 查 dsh 版本
-- 对照本表确认 ≥ minimum
+```sh
+# 一行跑完静态兼容性门禁（推荐，秒级，不需要启动 dsh）
+node bin/check-dsh-compat.mjs
+```
+
+它做四查：悬挂包名 / peer 兼容性预演 / 版本漂移 / 改名残留。
+退出码 0=通过 1=有问题 2=环境不满足；`--json` 给 CI 用，`--strict` 让 info 级也算失败。
+
+- `dsh --version` 查 dsh 版本，对照本表确认 ≥ minimum
+- 升级 dsh **前后各跑一次** `--json`，diff 两条基线，只关注新增项
 - 若 dsh 新版本断接口：`cordis.patch.yml` 改不动 → 报 issue 在 AGINT 仓
 
 ## 升级 dsh 后
 
 ```sh
-# 1. 跑现有 eval（计划中）
-# 2. 看 dsh CHANGELOG / breaking changes
-# 3. 重跑 install/uninstall.sh 验证 AGINT 仍然能挂上
-# 4. 不行就开 issue
+# 1. 静态门禁（机械可判定的部分，脚本兜住）
+node bin/check-dsh-compat.mjs
+
+# 2. 真机冒烟：entry 真加载数 / patch import 数 / preset 对账 / storages 零污染
+dsh --profile headless "..." && dsh --dump-config
+
+# 3. 看上游 breaking changes（dsh 在 apps/cli）
+gh api "repos/deepseek-ai/deepseek-harness/commits?path=apps/cli&per_page=15" \
+  --jq '.[] | "\(.commit.author.date[0:10]) \(.sha[0:7]) \(.commit.message|split("\n")[0])"'
+
+# 4. 重跑 install/uninstall.sh 验证 AGINT 仍然能挂上
+# 5. 不行就开 issue
 ```
+
+⛔ `npm install -g @deepseek-ai/dsh@latest` 会**静默降级** —— `latest` 可能低于在跑的版本
+（2026-09-24 实测 latest=0.1.5-rc.3，本机在跑 0.1.7-rc.1）。**必须带精确版本号**。

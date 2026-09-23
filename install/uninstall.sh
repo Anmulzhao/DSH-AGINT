@@ -52,6 +52,13 @@ PRESETS_DST="$DSH_HOME/.agent-presets"
 PLUGINS_DST="$DSH_HOME/profiles/web/plugins"
 PATCH_DST="$DSH_HOME/profiles/web/cordis.patch.yml"
 PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
+
+# 2026-09-24：bundle 形态（AGINT 的主载体）
+BUNDLE_NAME="@agint/host"
+BUNDLE_DST="$DSH_HOME/profiles/web/node_modules/@agint/host"
+BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
+PROFILE_MANIFEST="$DSH_HOME/profiles/web/package.json"
+
 BACKUP_DIR="$DSH_HOME/.agint-backups"
 
 log() { echo "[AGINT] $*"; }
@@ -167,7 +174,11 @@ done
 log ""
 log "2/3 移除 plugins"
 if [ -f "$PATCH_SRC" ]; then
-  ids=$(python3 - "$PATCH_SRC" <<'PY'
+  # ⚠ Windows 坑：python 在 Windows 上把 print 的 '\n' 翻成 '\r\n'，命令替换
+  #   只吃掉结尾 \n ⇒ 每个 id 尾部残留 '\r' ⇒ `[ -d "...agint-x\r" ]` 恒假
+  #   ⇒ 卸载脚本"静默跳过所有插件"（症状：全部打印「不存在，跳过」）。
+  #   故必须 `| tr -d '\r'`。
+  ids=$(python3 - "$PATCH_SRC" <<'PY' | tr -d '\r'
 import sys, re
 with open(sys.argv[1], encoding='utf-8') as f:
     text = f.read()
@@ -181,20 +192,69 @@ for m in re.finditer(r'^    - id: (agint-[a-z0-9-]+)', text, re.M):
 PY
   )
   for top in $ids; do
-    dst="$PLUGINS_DST/$top"
-    if [ -d "$dst" ]; then
-      if [ "$DRY_RUN" = "1" ]; then
-        log "   ✓ 删除 (dry): $dst"
+    for base in "$PLUGINS_DST" "$BUNDLE_PLUGINS_DST"; do
+      dst="$base/$top"
+      if [ -d "$dst" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+          log "   ✓ 删除 (dry): $dst"
+        else
+          rm -rf "$dst"
+          log "   ✓ 删除 $dst"
+        fi
       else
-        rm -rf "$dst"
-        log "   ✓ 删除 $dst"
+        log "   ↻ $dst 不存在，跳过"
       fi
-    else
-      log "   ↻ $dst 不存在，跳过"
-    fi
+    done
   done
 else
   log "   ↻ 仓库 patch 不存在，跳过 plugin 移除（请手动清理）"
+fi
+
+log ""
+log "2.5/3 移除 bundle 本体（$BUNDLE_DST）"
+if [ -d "$BUNDLE_DST" ]; then
+  for item in plugins cordis.patch.yml package.json; do
+    if [ -e "$BUNDLE_DST/$item" ]; then
+      if [ "$DRY_RUN" = "1" ]; then
+        log "   ✓ 删除 (dry): $BUNDLE_DST/$item"
+      else
+        rm -rf "$BUNDLE_DST/$item"
+        log "   ✓ 删除 $BUNDLE_DST/$item"
+      fi
+    fi
+  done
+  # ⛔ 绝不 rm -rf 这个 node_modules：里面是 → dsh 安装目录的 junction，
+  #    rm -rf 会跟进目标，把 dsh 自己的 266 个包一起删掉。
+  #    留着无害：bundles 列表摘掉 @agint/host 后就不会再加载它。
+  if [ -d "$BUNDLE_DST/node_modules" ]; then
+    log "   ⊘ 保留 $BUNDLE_DST/node_modules（junction，删它会连坐 dsh 自身的包）"
+  fi
+else
+  log "   ↻ $BUNDLE_DST 不存在，跳过"
+fi
+
+log ""
+log "2.6/3 从 dsh.profile.bundles 摘掉 $BUNDLE_NAME"
+if [ -f "$PROFILE_MANIFEST" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   ✓ 摘除 (dry): $BUNDLE_NAME @ $PROFILE_MANIFEST"
+  else
+    cp -f "$PROFILE_MANIFEST" "$PROFILE_MANIFEST.bak-agint-uninstall-$(date +%Y%m%d-%H%M%S)"
+    python3 - "$(winpath "$PROFILE_MANIFEST")" "$BUNDLE_NAME" <<'PY' || warn "profile 清单改写失败，请手动移除（备份已留）"
+import sys, json, io
+path, name = sys.argv[1], sys.argv[2]
+data = json.loads(io.open(path, encoding='utf-8').read())
+bundles = (data.get('dsh') or {}).get('profile', {}).get('bundles')
+if not isinstance(bundles, list) or name not in bundles:
+    print(f"[AGINT]   ↻ bundles 中无 {name}，跳过")
+    sys.exit(0)
+data['dsh']['profile']['bundles'] = [b for b in bundles if b != name]
+io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+print(f"[AGINT]   ✓ 已从 bundles 摘除 {name}")
+PY
+  fi
+else
+  log "   ↻ $PROFILE_MANIFEST 不存在，跳过"
 fi
 
 log ""

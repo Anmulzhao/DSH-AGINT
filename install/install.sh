@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 # AGINT 安装脚本（v0.2 — 安全左移版）
 #
-# 把 AGINT 仓库内容铺到 $DSH_HOME，对应 preset / plugin / patch 三个注入点。
+# 把 AGINT 仓库内容铺到 $DSH_HOME，对应 preset / bundle-plugin / bundle-patch
+# 三个注入点（外加一处兼容镜像位）。
+#
+# ## 交付形态（2026-09-24 起）
+#   $DSH_HOME/.agent-presets/<id>/                      ← 三条 preset 的定义文件
+#   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
+#   $DSH_HOME/profiles/web/node_modules/@agint/host/    ← the bundle（主载体）
+#        ├── cordis.patch.yml   挂载行（insert 行 name 相对本目录解析）
+#        ├── package.json       dsh.bundle.patch 声明
+#        ├── plugins/           agint-* 插件
+#        └── node_modules/@deepseek-ai  官方包解析入口
+#   $DSH_HOME/profiles/web/plugins/                     ← 兼容镜像位（AGINT 自身代码按此路径找插件）
+#   $DSH_HOME/profiles/web/cordis.patch.yml             ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
 # 幂等：已存在则备份 + 同步，不破坏用户已有内容（非 agint-* 段原样保留）。
 #
 # ## 安全设计（§5.2 安全左移 + docs/security-boundary.md）
@@ -24,7 +36,8 @@
 #   uninstall.sh 支持从备份列表选一个回滚
 #
 # ## 已知限制
-#   - patch 合并仍然依赖 python3（dsh patch 含 !!js 自定义 tag，yaml.load 解析不了）
+#   - bundle patch 是**整份复制**（不再与 profile 级 patch 做段合并）；
+#     python3 仍用于：残留段检测 + 装后 YAML 语法校验
 #   - 无 rsync 环境（Windows）走 python3 回退：--delete 语义靠 stage+换入实现，
 #     换入前 dst 的旧内容仍在盘上，异常中断时可从 $DSH_HOME/.agint-backups 恢复
 
@@ -103,11 +116,30 @@ winpath() {
 
 PRESETS_SRC="$AGINT_HOME/presets"
 PLUGINS_SRC="$AGINT_HOME/plugins"
+
+# ── 2026-09-24：AGINT 改以 dsh **bundle** 形态交付 ──────────────────────────
+# 挂载层 = 仓库根 cordis.patch.yml（package.json 里 dsh.bundle.patch 指向它）
+# 插件   = 仓库根 plugins/
+# 部署位 = $DSH_HOME/profiles/web/node_modules/@agint/host/
+# profile-patches/web/cordis.patch.yml 已**不再写入** profile 级 patch，
+# 仅保留为「卸载时的 id 清单源」（uninstall.sh 依赖它）。
+BUNDLE_PATCH_SRC="$AGINT_HOME/cordis.patch.yml"
+BUNDLE_MANIFEST_SRC="$AGINT_HOME/package.json"
 PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
 
+BUNDLE_NAME="@agint/host"
+BUNDLE_DST="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
+BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
+BUNDLE_PATCH_DST="$BUNDLE_DST/cordis.patch.yml"
+BUNDLE_MANIFEST_DST="$BUNDLE_DST/package.json"
+
 PRESETS_DST="$DSH_HOME/.agent-presets"
+# 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
+# quality-bridge.js）与三条 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
 PLUGINS_DST="$DSH_HOME/profiles/web/plugins"
-PATCH_DST="$DSH_HOME/profiles/web/cordis.patch.yml"
+# 只读：用于「AGINT 挂载段残留」检测，不再由本脚本写入
+PROFILE_PATCH_DST="$DSH_HOME/profiles/web/cordis.patch.yml"
+
 BACKUP_DIR="$DSH_HOME/.agint-backups"
 BACKUP_KEEP=10
 
@@ -138,7 +170,9 @@ fi
 # ── 前置业务检查 ────────────────────────────────────────────────────────────
 [ -d "$PRESETS_SRC" ] || die "presets 源缺失: $PRESETS_SRC"
 [ -d "$PLUGINS_SRC" ] || die "plugins 源缺失: $PLUGINS_SRC"
-[ -f "$PATCH_SRC" ]   || die "patch 源缺失: $PATCH_SRC"
+[ -f "$BUNDLE_PATCH_SRC" ]    || die "bundle patch 源缺失: $BUNDLE_PATCH_SRC"
+[ -f "$BUNDLE_MANIFEST_SRC" ] || die "bundle 清单源缺失: $BUNDLE_MANIFEST_SRC"
+[ -f "$PATCH_SRC" ]   || die "patch 源缺失（卸载 id 清单仍依赖它）: $PATCH_SRC"
 [ -d "$DSH_HOME" ]    || die "$DSH_HOME 不存在，请先跑 'dsh web' 初始化 dsh"
 
 if [ "$FORCE" != "1" ] && [ ! -d "$AGINT_HOME/.git" ]; then
@@ -380,6 +414,53 @@ ensure_preset_module_entry() {
 }
 ensure_preset_module_entry
 
+# ── 1.2 bundle 内解析入口（bundle 形态必需）──────────────────────────────────
+#
+# bundle 里的插件用**裸包名** import 官方包（@deepseek-ai/dsh-storage-domain /
+# dsh-tools / dsh-cordis …）。bundle 包自己不带依赖（刻意不写 dependencies，
+# 避免 pnpm 去 registry 找 @agint/host），所以必须在包内给一条解析入口。
+#
+# 修法：<bundle>/node_modules/@deepseek-ai → dsh 安装目录的 node_modules/@deepseek-ai
+#   （266+ 个官方包）。⛔ 必须链在**包内**：profile 层的 node_modules 不参与包内解析。
+#   与 preset 入口同一个坑：safe_rsync 排除 node_modules，否则下次 sync 被删。
+#
+# 失败只 warn 不阻断：真正的后果是 bundle 层被 dsh 跳过
+# （stderr 打 `skipping profile bundle "@agint/host"`），届时按上面提示手工补链。
+ensure_bundle_module_entry() {
+  local link="$BUNDLE_DST/node_modules/@deepseek-ai" target
+  if [ -d "$link" ]; then
+    log "   ✓ bundle 解析入口已存在（$link）"
+    return 0
+  fi
+  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules/@deepseek-ai"
+  if [ -z "$target" ] || [ ! -d "$target" ]; then
+    warn "未能定位 dsh 的 node_modules（npm root -g 不可用？），跳过 bundle 解析入口。"
+    warn "  bundle 插件的官方包 import 会失败。手工补："
+    warn "    mklink /J \"$BUNDLE_DST\\node_modules\\@deepseek-ai\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\\@deepseek-ai\""
+    return 0
+  fi
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 建 bundle 解析入口 $link → $target"
+    return 0
+  fi
+  mkdir -p "$BUNDLE_DST/node_modules"
+  if command -v cmd >/dev/null 2>&1; then
+    local wl wt
+    wl="$(cygpath -w "$link" 2>/dev/null || printf '%s' "$link")"
+    wt="$(cygpath -w "$target" 2>/dev/null || printf '%s' "$target")"
+    if cmd //c "mklink /J \"$wl\" \"$wt\"" >/dev/null 2>&1; then
+      log "   ✓ bundle 解析入口已建立（junction）"
+      return 0
+    fi
+  fi
+  if ln -s "$target" "$link" 2>/dev/null; then
+    log "   ✓ bundle 解析入口已建立（symlink）"
+    return 0
+  fi
+  warn "bundle 解析入口创建失败（$link → $target）。"
+}
+ensure_bundle_module_entry
+
 # ── 1.5 zod bootstrap（必须在 plugin 同步之前）───────────────────────────────
 # 见 install/agint-zod-bootstrap.sh。
 # 顺序约束：步骤 2 用 safe_rsync --delete 把 plugins/agint-quality/node_modules/zod
@@ -410,109 +491,53 @@ for src in "$PLUGINS_SRC"/agint-*/; do
   log "   ✓ $name"
 done
 
-# ── 3. 同步 patch ───────────────────────────────────────────────────────────
-log "3/4 同步 patch → $PATCH_DST"
-mkdir -p "$(dirname "$PATCH_DST")"
-backup "patch" "$PATCH_DST"
+# ── 2.5 镜像到 bundle 部署位（dsh bundle 形态的主挂载源）─────────────────────
+# 为什么同一份源铺两处：
+#   · bundle patch 的 insert 行按「本 patch 文件所在目录」解析（app-boot
+#     anchorInsertedPluginNames）⇒ 插件必须在 <bundle>/plugins/ 下；
+#   · 而 AGINT 自身代码按老路径定位插件（agint-dream/lib/quality-bridge.js 用
+#     $DSH_HOME/profiles/web/plugins/<id>），三条 preset 的 tools 行同理 ⇒ 保留兼容位。
+#   两处同源、同一次 sync，天然一致，不引入漂移。
+log "2.5/4 镜像到 bundle → $BUNDLE_PLUGINS_DST"
+mkdir -p "$BUNDLE_DST"
+for src in "$PLUGINS_SRC"/agint-*/; do
+  [ -d "$src" ] || continue
+  name="$(basename "$src")"
+  safe_rsync "$src" "$BUNDLE_PLUGINS_DST/$name"
+  log "   ✓ $name"
+done
 
-# 整段重建法（v0.1.3 沿用）：dst 与 src 都被视为「顶层 YAML 数组」，
-# src 里的每个顶层项作为整段 list 元素。
-python3 - "$(winpath "$PATCH_SRC")" "$(winpath "$PATCH_DST")" "$(winpath "$BACKUP_DIR")" "$DRY_RUN" <<'PY' || die "patch 合并失败（python3 异常退出）"
-import sys, re, os, shutil, datetime, tarfile
+# ── 3. 同步 bundle 挂载层（patch + 清单 + 解析入口）─────────────────────────
+# 2026-09-24 起 AGINT 的挂载行住在 **bundle 层**，不再写 profile 级 patch：
+# 官方口径 profile 级 patch 优先级高于 bundle 层，两边都写 = 同一批 id 重复挂载。
+log "3/4 同步 bundle 挂载层 → $BUNDLE_PATCH_DST"
+mkdir -p "$BUNDLE_DST"
+backup "patch" "$BUNDLE_PATCH_DST"
+cp -f "$BUNDLE_PATCH_SRC"    "$BUNDLE_PATCH_DST"    || die "bundle patch 复制失败: $BUNDLE_PATCH_SRC"
+cp -f "$BUNDLE_MANIFEST_SRC" "$BUNDLE_MANIFEST_DST" || die "bundle package.json 复制失败: $BUNDLE_MANIFEST_SRC"
 
-patch_src, patch_dst, backup_dir, dry_run = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+# bundle 内解析入口：插件用裸包名 import 的官方包（@deepseek-ai/dsh-*）必须能在
+# 包内解析到（zod 之外的全部）。链到 dsh 安装目录的 node_modules。
+# ⛔ 必须链在包内，且 safe_rsync 排除 node_modules，否则下次 sync 被 --delete 删掉。
+ensure_bundle_module_entry
 
-AGINT_ID = re.compile(r"""^\s*- id:\s+(agint-[a-z0-9-]+)\s*$""")
-
-def split_top_level_items(text):
-    """把 YAML 文本拆成 (header, items, footer)。
-    顶层 list 元素识别：行首「- 」(零缩进)。嵌套 - id: agint-*（缩进 4）不算顶层项。
-    """
-    lines = text.splitlines(keepends=True)
-    items = []
-    cur = []
-    header_lines = []
-    started = False
-    for line in lines:
-        if not started:
-            if line.startswith('-') and (len(line) == 1 or line[1] in (' ', '\n')):
-                started = True
-                cur = [line]
-            else:
-                header_lines.append(line)
-        else:
-            if line.startswith('-') and (len(line) == 1 or line[1] in (' ', '\n')):
-                items.append(''.join(cur))
-                cur = [line]
-            else:
-                cur.append(line)
-    if cur:
-        items.append(''.join(cur))
-    while header_lines and header_lines[-1].strip() in ('[]', ''):
-        header_lines.pop()
-    return ''.join(header_lines), items, ''
-
-def is_agint_item(item_text):
-    for line in item_text.splitlines():
-        if AGINT_ID.match(line.rstrip('\n')):
-            return True
-    return False
-
-def item_agint_ids(item_text):
-    ids = []
-    for line in item_text.splitlines():
-        m = AGINT_ID.match(line.rstrip('\n'))
-        if m:
-            ids.append(m.group(1))
-    return ids
-
-with open(patch_src, encoding='utf-8') as f:
-    src_text = f.read()
-src_header, src_items, src_footer = split_top_level_items(src_text)
-src_agint_items = [it for it in src_items if is_agint_item(it)]
-src_agint_ids = [iid for it in src_agint_items for iid in item_agint_ids(it)]
-
-print(f"[AGINT]   仓库 patch: {len(src_agint_ids)} 个 agint-* id ({len(src_agint_items)} 段)")
-
-if not os.path.exists(patch_dst):
-    if dry_run:
-        print("[DRY]   dsh patch 不存在 → 首次安装：复制仓库 patch 整体")
-    else:
-        shutil.copy(patch_src, patch_dst)
-        print("[AGINT]   ✓ 首次安装：复制仓库 patch")
-    sys.exit(0)
-
-with open(patch_dst, encoding='utf-8') as f:
-    dst_text = f.read()
-dst_header, dst_items, dst_footer = split_top_level_items(dst_text)
-
-keep_items = [it for it in dst_items if not is_agint_item(it)]
-existing_agint_ids = [iid for it in dst_items if is_agint_item(it) for iid in item_agint_ids(it)]
-removed_count = sum(1 for it in dst_items if is_agint_item(it))
-
-print(f"[AGINT]   dsh patch: {len(existing_agint_ids)} 个 agint-* 段将被清理 + {len(keep_items)} 个非 agint 段保留")
-
-new_items = keep_items + src_agint_items
-new_text = dst_header + ''.join(new_items)
-
-if dry_run:
-    print("[DRY] --dry-run：未修改任何文件")
-    sys.exit(0)
-
-# 幂等检查
-if sorted(existing_agint_ids) == sorted(src_agint_ids) and not dst_text.count('# [AGINT-removed]'):
-    print("[AGINT]   ✓ patch 已包含仓库最新版 agint-* 段（无卸载痕迹），跳过")
-    sys.exit(0)
-
-# 写盘（备份已在 bash 侧完成）
-with open(patch_dst, 'w', encoding='utf-8') as f:
-    f.write(new_text)
-print(f"[AGINT]   ✓ patch 已同步到仓库最新版（清理 {removed_count} 个 agint 段）")
+# 残留检测：profile 级 patch 若还留着 agint-* 挂载段 → 会与 bundle 层重复挂载。
+# 直接失败，不"打包带过"。
+if [ -f "$PROFILE_PATCH_DST" ]; then
+  python3 - "$(winpath "$PROFILE_PATCH_DST")" <<'PY' || die "profile 级 patch 仍含 AGINT 挂载段（会上双重挂载）。删掉该段后重跑；备份在 .agint-backups/"
+import re, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+hits = re.findall(r'^\s*- id:\s+(agint-[a-z0-9-]+)\s*$', text, re.M)
+if hits:
+    print(f"[AGINT]   ✗ profile 级 patch 残留 {len(hits)} 个 agint-* 挂载段（如 {', '.join(hits[:5])} ...）")
+    sys.exit(1)
+print("[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（只剩本机本地覆盖）")
 PY
+fi
 
 if [ "$DRY_RUN" != "1" ]; then
   # 注册 patch 回滚：删当前 + 从 backup_dir 最新 patch 备份恢复
-  register_step "restore_backup|$PATCH_DST"
+  register_step "restore_backup|$BUNDLE_PATCH_DST"
 fi
 
 # ── 4. 装后静态校验 ─────────────────────────────────────────────────────────
@@ -521,8 +546,8 @@ if [ "$DRY_RUN" = "1" ]; then
   log "   跳过（dry-run）"
 else
   failed=0
-  # 4a. patch YAML 能被 python yaml.safe_load 解析（剥离 !!js 等自定义 tag 后）
-  python3 - "$(winpath "$PATCH_DST")" <<'PY' || failed=$((failed+1))
+  # 4a. bundle patch YAML 能被 python yaml.safe_load 解析（剥离 !!js 等自定义 tag 后）
+  python3 - "$(winpath "$BUNDLE_PATCH_DST")" <<'PY' || failed=$((failed+1))
 import sys, re
 try:
     import yaml
@@ -684,10 +709,11 @@ log ""
 log "✅ 安装完成"
 log ""
 log "下一步："
-log "  1. 重启 dsh web（user-patch 层不热更新）："
+log "  1. 重启 dsh web（bundle 层与 profile 层都不热更新）："
 log "       dsh web"
-log "  2. 验证：看 dsh 日志中是否出现 10 个 agint-* Service 加载"
-log "  3. 在浏览器里选 agint preset 开新会话，确认工具齐全"
+log "  2. 验证：dsh 启动 stderr 不应出现 'skipping profile bundle \"@agint/host\"'"
+log "     （出现即 bundle 层被跳过，按上文提示补 node_modules 解析入口）"
+log "  3. 在浏览器里新建会话，确认 agint preset 可选、工具齐全"
 log ""
 log "回滚方式："
 log "  install/uninstall.sh                # 全量卸载"

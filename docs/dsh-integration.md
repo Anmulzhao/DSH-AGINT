@@ -6,11 +6,31 @@
 
 ## 我们用了 dsh 什么
 
-### 1. user-patch 层
+### 1. bundle 层（2026-09-24 起的主载体）
 
-`profile-patches/web/cordis.patch.yml` 是一个标准的 dsh cordis patch —— 一组 `id-targeted` 配置覆盖 + `insert` 列表，被 dsh loader 在每个 bundle 之后应用。
+AGINT 整体就是一个 dsh **bundle**：仓库根 `package.json` 声明 `dsh.bundle.patch: ./cordis.patch.yml`，
+那 400 行的 `insert` 列表（31 个 host service 行 + 3 条 preset 声明行）就是它的挂载层。
 
-这是 AGINT **唯一**与 dsh 深度耦合的接入点。
+部署位 `$DSH_HOME/profiles/web/node_modules/@agint/host/`，profile 的 `dsh.profile.bundles` 里列 `@agint/host`。
+
+**⛔ 两条路径基准不一样，这是最容易翻车的地方（K83）**：
+
+| 写在哪儿 | 相对谁解析 | 结论 |
+|---|---|---|
+| `insert:` 行里的 `name:` | **本 patch 文件所在目录** = bundle 包根 | `./plugins/agint-x/lib/index.js` 一行不用改 ✓ |
+| **任何 `config` 值**（含 `cordis:include` 的 `path`） | **profile 根**（`profiles/web/`） | 只能写 profile 根相对路径 |
+
+依据：app-boot `anchorInsertedPluginNames()` 只把 insert 行的 `name:` 锚定到本 patch 所在目录，
+而 `config` 值一律字面量（`new URL(config.path, ctx.baseUrl)`）。把 include 的 path 写成
+`./presets/…` 会让 preset 解析失败，症状是**新建会话整体失败**：
+`agent-preset/invalid: <id> (cordis:include): config file not found`。
+
+### 1b. user-patch 层（已不写 AGINT 段）
+
+`$DSH_HOME/profiles/web/cordis.patch.yml` 现在只保留**本机本地覆盖**（dsh-tui 接管块等）。
+
+0.1.7 起 profile 级 patch 优先级**高于** bundle 层 —— 两边都写同一批 id = 重复挂载，
+所以 AGINT 的挂载行全部搬进 bundle 层；`install.sh` 会在装前检测该文件是否残留 `agint-*` 段并 fail-closed。
 
 ### 2. agent-preset 层
 
@@ -78,23 +98,39 @@ agint-cron 监听 dsh 内部的 tick 事件（通过 `@deepseek-ai/cordis-plugin
 
 ## 升级 dsh 时怎么测
 
+**首选静态门禁**（秒级，不需要启动 dsh）：
+
+```sh
+node bin/check-dsh-compat.mjs          # 退出码 0=通过 1=有问题 2=环境不满足
+node bin/check-dsh-compat.mjs --json   # 升级前后各存一份，diff 出新增问题
+```
+
+它把下面流程里「机械可判定」的部分自动化了：悬挂包名 / peer 兼容性预演 / 版本漂移 / 改名残留。
+**语义判断**（某个 breaking 对 AGINT 意味着什么）脚本做不了，仍需人读上游 diff。
+
+完整流程：
+
 ```sh
 # 1. 备份
 cp -a ~/.dsh ~/.dsh.bak-$(date +%s)
 
-# 2. 升级 dsh
-npm install -g @deepseek-ai/dsh@latest
+# 2. 升级 dsh —— ⛔ 必须带精确版本号；@latest 可能低于在跑的版本导致静默降级
+npm install -g @deepseek-ai/dsh@<精确版本>
 
-# 3. 跑 AGINT eval（v0.3 之后才有，目前手动）
+# 3. 静态门禁
+node bin/check-dsh-compat.mjs
+
+# 4. 真机冒烟
 dsh --profile headless "..."
-# 看 9 个 plugin 是否都能 apply；preset 工具行是否都加载
+dsh --dump-config        # 期望零警告
+# 口径：全部 plugin 都能 apply；preset 工具行都 started；
+#       entry 真加载数 / patch 挂载 import 成功数 / preset 对账 DIFF=0 / 生产 storages 零污染
 
-# 4. 跑 D-QAF 最小场景集
-cd ~/projects/AGINT
+# 5. 跑 D-QAF 最小场景集
 node eval/scenarios/run-minimal.mjs
 # 期望：通过率 ≥ 90%
 
-# 5. 看 dsh CHANGELOG 里有没有 breaking change：
+# 6. 看 dsh CHANGELOG / 上游提交里有没有 breaking change：
 #    - loader patch 语法变了？
 #    - tool name 改了？
 #    - storage 域 API 改了？

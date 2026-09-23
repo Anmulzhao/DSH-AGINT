@@ -2,10 +2,11 @@
 # a top-level YAML array of loader patch entries (id-targeted config
 # overrides, disables, and insert lists; `!!js` expressions allowed).
 #
-# This file mounts the AGINT (智进) host services into the dsh web profile.
-# The plugins themselves live at D:\DSH\project\DSH-AGINT\plugins\agint-*
-# and are installed via the install script. If the plugin source is not yet
-# available, comment out the corresponding rows below.
+# This is the @agint/host BUNDLE's patch layer (dsh.bundle.patch in this package's
+# package.json), applied to whichever profile lists @agint/host in dsh.profile.bundles.
+# The plugins live INSIDE this bundle: ./plugins/agint-* — insert-row `name:` values are
+# anchored beside this file (app-boot anchorInsertedPluginNames), so ./ = this package root.
+# Preset entry-list files stay OUTSIDE at ~/.dsh/.agent-presets/<id>/ (see the note below).
 
 # ── AGINT 智进 host services ──────────────────────────────────────────────────
 #
@@ -160,8 +161,11 @@
     #
     # ⛔ 约束（2026-09-24 实测纠正）：includeConfig.path 是**字面量**，按 **profile 根**解析
     #    （= 根层 Include 的 baseUrl，即 profiles/web/），**不是**「本 patch 文件所在目录」。
-    #    本文件位于仓库 profile-patches/web/，只是**源**；合并进 profile 后基准才是 profile 根。
-    #    ⇒ 路径只能按 profile 根写：2 级 .. = ~/.dsh/，再进 .agent-presets/<id>/。
+    #    依据：app-boot `anchorInsertedPluginNames()` 只把 **insert 行的 name:** 锚定到本 patch
+    #    所在目录；**config 里的值一律保持字面量**（`new URL(config.path, ctx.baseUrl)`）。
+    #    ⇒ 本文件虽住在 bundle 内，path 仍须按 profile 根写：2 级 .. = ~/.dsh/，再进
+    #      .agent-presets/<id>/。写成 ./presets/... 会解析到 profiles/web/presets/ 并报
+    #      `agent-preset/invalid: <id> (cordis:include): config file not found`。
     # 回滚：删掉下面三段并重启 dsh；.agent-presets/ 与插件都无需动。
     #
     # 旧版 preset.yml 里已有 name/description，但 0.1.7 不再读该文件 → 名称说明

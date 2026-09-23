@@ -1,0 +1,12 @@
+{
+  "name": "@agint/host",
+  "version": "0.8.2",
+  "private": true,
+  "description": "AGINT 智进 —— dsh bundle：自进化智能体框架（host 服务 + 3 个 preset）",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

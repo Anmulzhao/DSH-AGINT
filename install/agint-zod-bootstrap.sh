@@ -55,8 +55,14 @@ winpath() {
   fi
 }
 
-DST="$DSH_HOME/profiles/web/plugins/agint-quality/node_modules/zod"
+# 2026-09-24 起 AGINT 以 bundle 形态交付 ⇒ zod 主位在 **bundle 包内**
+# （bundle patch 的 insert 行相对 bundle 包根解析，插件已搬去那里）。
+# 兼容位与主位同源再放一份：AGINT 自身代码与三条 preset 的 tools 行仍按
+# $DSH_HOME/profiles/web/plugins/... 定位插件。
+REL="agint-quality/node_modules/zod"
+DST="$DSH_HOME/profiles/web/node_modules/@agint/host/plugins/$REL"
 DST_PARENT="$(dirname "$DST")"
+MIRROR="$DSH_HOME/profiles/web/plugins/$REL"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -80,23 +86,25 @@ run() {
 
 # ── uninstall 路径 ───────────────────────────────────────────────────────────
 if [ "$UNINSTALL" = "1" ]; then
-  if [ ! -e "$DST" ]; then
-    log "no-op: $DST 不存在"
-    exit 0
-  fi
-  if [ -L "$DST" ]; then
-    run rm "$DST"
-  else
-    run rm -rf "$DST"
-  fi
-  log "已清理 $DST"
+  for d in "$DST" "$MIRROR"; do
+    if [ ! -e "$d" ]; then
+      log "no-op: $d 不存在"
+      continue
+    fi
+    if [ -L "$d" ]; then
+      run rm "$d"
+    else
+      run rm -rf "$d"
+    fi
+    log "已清理 $d"
+  done
   exit 0
 fi
 
-# ── 已就绪检查 ──────────────────────────────────────────────────────────────
-if [ -f "$DST/index.js" ] && [ -f "$DST/package.json" ]; then
+# ── 已就绪检查（主位 + 兼容位都齐才算就绪）───────────────────────────────────
+if [ -f "$DST/index.js" ] && [ -f "$DST/package.json" ] && [ -f "$MIRROR/index.js" ]; then
   ver=$(python3 -c "import json,sys; print(json.load(open('$(winpath "$DST/package.json")'))['version'])" 2>/dev/null || echo "?")
-  log "已就绪: $DST (zod $ver)"
+  log "已就绪: $DST + 兼容位 (zod $ver)"
   exit 0
 fi
 
@@ -154,12 +162,12 @@ if [ -z "$SRC" ]; then
 
 修复方式（任选一）：
   1. AGINT_HOME 之外的任意项目跑一次 npm install zod@^4，bootstrap 下次会自动复用
-  2. 手动放置：
-       mkdir -p ~/.dsh/profiles/web/plugins/agint-quality/node_modules
+  2. 手动放置（主位 = bundle 包内；兼容位同步放一份）：
+       mkdir -p ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules
        cd /tmp && npm pack zod@^4
-       tar -xzf zod-*.tgz -C ~/.dsh/profiles/web/plugins/agint-quality/node_modules/
-       mv ~/.dsh/profiles/web/plugins/agint-quality/node_modules/package \
-          ~/.dsh/profiles/web/plugins/agint-quality/node_modules/zod
+       tar -xzf zod-*.tgz -C ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/
+       mv ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/package \
+          ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/zod
 
 为何不自动 npm install：dsh plugin 目录的 package.json 是 sparse
 （只有 peerDependencies，无 dependencies），npm 10 在这种场景下
@@ -179,9 +187,18 @@ if [ -e "$DST" ]; then
 fi
 run cp -r "$SRC" "$DST"
 
+# 兼容位：同一份源再放一份（AGINT 自身代码 / preset tools 行按老路径定位）
+run mkdir -p "$(dirname "$MIRROR")"
+if [ -e "$MIRROR" ]; then
+  warn "兼容位已存在，跳过：$MIRROR（若为历史软链请人工确认指向）"
+else
+  run cp -r "$SRC" "$MIRROR"
+fi
+
 if [ "$DRY_RUN" != "1" ]; then
   if [ -f "$DST/index.js" ]; then
     log "✓ $DST/index.js 就绪（zod $src_ver）"
+    [ -f "$MIRROR/index.js" ] && log "✓ $MIRROR/index.js 就绪（兼容位）"
     exit 0
   else
     die "cp 失败：$DST/index.js 不存在"
