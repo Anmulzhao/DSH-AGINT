@@ -195,7 +195,10 @@ function setup({ mode = 'count-only' } = {}) {
   ]);
   const bus = fakeEventBus();
   const ctx = mockCtx({ 'agint.eventBus.subscribe': bus.subscribe, 'agint.eventBus.publish': bus.publish });
-  plugin.apply(ctx, { presetsDir, toolStatsPath, mode });
+  // `extraSkillDirs: []` —— 显式隔离外部技能根。该字段默认值 `$DSH_HOME/skills`
+  // （见 schema.extraSkillDirs）在生产里是对的，但测试必须只依赖临时 presetsDir，
+  // 否则真实用户技能会混进节点全集、让节点数断言随环境漂移。
+  plugin.apply(ctx, { extraSkillDirs: [], presetsDir, toolStatsPath, mode });
   return { svc: ctx._provided['agint.skillGraph'], ctx, bus, presetsDir, toolStatsPath };
 }
 
@@ -297,7 +300,7 @@ test('e2e-3 事件链路：curator.overlap-detected → overlap 边；状态事�
 test('fail-open（不变量 1）：domain 打不开时 updateFull 不 throw，各 Service 返回空而降级', async () => {
   const presetsDir = makePresetsDir({ p1: [{ name: 'alpha' }] });
   const ctx = mockCtx({}, { openFails: true });
-  plugin.apply(ctx, { presetsDir, mode: 'count-only' });
+  plugin.apply(ctx, { extraSkillDirs: [], presetsDir, mode: 'count-only' });
   const svc = ctx._provided['agint.skillGraph'];
   try {
     const r = await svc.updateFull({ nowMs: NOW });     // 不 throw
@@ -318,7 +321,7 @@ test('标定期切档护栏：count-only 下 overlap 事件进缓冲，不落正
   const bus = fakeEventBus();
   const presetsDir = makePresetsDir({ p1: [{ name: 'alpha' }, { name: 'beta' }] });
   const ctx = mockCtx({ 'agint.eventBus.subscribe': bus.subscribe, 'agint.eventBus.publish': bus.publish });
-  plugin.apply(ctx, { presetsDir, mode: 'count-only' });
+  plugin.apply(ctx, { extraSkillDirs: [], presetsDir, mode: 'count-only' });
   const svc = ctx._provided['agint.skillGraph'];
   try {
     await svc.updateFull({ nowMs: NOW });
@@ -364,7 +367,7 @@ test('e2e-4（§七 T8）整合链路：簇 → proposeConsolidate → 走 agint
     'agint.eventBus.publish': bus.publish,
     'agint.evolve': evolve,
   });
-  plugin.apply(ctx, { presetsDir, mode: 'live' });
+  plugin.apply(ctx, { extraSkillDirs: [], presetsDir, mode: 'live' });
   const svc = ctx._provided['agint.skillGraph'];
   try {
     await svc.updateFull({ nowMs: NOW });
@@ -394,7 +397,7 @@ test('e2e-4（§七 T8）整合链路：簇 → proposeConsolidate → 走 agint
 test('e2e-4 负向：agint.evolve 未挂载 → proposeConsolidate 显式抛错（不变量：绝不静默）', async () => {
   const presetsDir = makePresetsDir({ p1: [{ name: 'alpha', related_skills: ['beta'] }, { name: 'beta' }] });
   const ctx = mockCtx({});
-  plugin.apply(ctx, { presetsDir, mode: 'live' });
+  plugin.apply(ctx, { extraSkillDirs: [], presetsDir, mode: 'live' });
   const svc = ctx._provided['agint.skillGraph'];
   try {
     await svc.updateFull({ nowMs: NOW });

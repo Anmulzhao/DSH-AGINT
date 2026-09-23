@@ -220,10 +220,21 @@ function apply(ctx, config) {
     }
   }
 
+  /**
+   * 节点全集扫描 —— 三处调用点共用同一入口，避免漏改导致口径不一致。
+   * 根 = `presetsDir/<preset>/skills`（预设技能）+ `extraSkillDirs`（额外技能根，
+   * 默认含 `$DSH_HOME/skills`，即 agint-skill-autocreate 2026-09-23 改投后的投放目标）。
+   */
+  async function scanAllNodes(cfg = effectiveConfig()) {
+    return scanNodes(resolvePath(cfg.presetsDir), {
+      extraSkillDirs: (cfg.extraSkillDirs ?? []).map((d) => resolvePath(d)),
+    });
+  }
+
   async function ensureNodes() {
     if (nodeCache.length) return nodeCache;
     try {
-      const { nodes } = await scanNodes(resolvePath(effectiveConfig().presetsDir));
+      const { nodes } = await scanAllNodes();
       nodeCache = nodes;
     } catch { /* fail-open：保持空 */ }
     return nodeCache;
@@ -342,8 +353,8 @@ function apply(ctx, config) {
     if (c.enabled === false) return { ...empty, skipped: true, reason: 'disabled' };
 
     try {
-      // ① 节点全集：presets/*/skills/*/SKILL.md（§2.1 R8）
-      const { nodes: presetNodes, scanFailures } = await scanNodes(resolvePath(c.presetsDir));
+      // ① 节点全集：presets/*/skills/*/SKILL.md + extraSkillDirs（§2.1 R8）
+      const { nodes: presetNodes, scanFailures } = await scanAllNodes(c);
       const provisional = await readProvisional();
       const provisionalNodes = provisional
         .filter((p) => !presetNodes.some((n) => n.skillName === p.skillName))
@@ -541,7 +552,7 @@ function apply(ctx, config) {
 
   async function ensureNodesForQuery() {
     if (nodeCache.length) return nodeCache;
-    const { nodes } = await scanNodes(resolvePath(effectiveConfig().presetsDir));
+    const { nodes } = await scanAllNodes();
     nodeCache = nodes;
     return nodes;
   }

@@ -22,7 +22,10 @@ import { join, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DSH_HOME = process.env.DSH_HOME || join(process.env.USERPROFILE || 'C:/Users/Administrator', '.dsh');
-const SKILLS_ROOT = process.env.AGINT_SKILLS_ROOT || join(DSH_HOME, '.agent-presets/agint/skills');
+// 2026-09-23 起自动生成技能的投放目标改到**用户级根**（`$DSH_HOME/skills`，与插件
+// schema 默认值一致）：旧的 `.agent-presets/agint/skills` 属 install.sh 镜像管理范围，
+// 重装会把自动生成的技能整片清掉。`AGINT_SKILLS_ROOT` 可覆盖（隔离测试用临时目录）。
+const SKILLS_ROOT = process.env.AGINT_SKILLS_ROOT || join(DSH_HOME, 'skills');
 const PLUGIN_DIR = join(DSH_HOME, 'profiles/web/plugins/agint-skill-autocreate');
 const HOST_INDEX = join(PLUGIN_DIR, 'lib/index.js');
 const HOST_RM = join(PLUGIN_DIR, 'lib/release-manager.js');

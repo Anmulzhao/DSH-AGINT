@@ -19,7 +19,7 @@
 
 - **Cordis 插件**（host 平面）：实时数量以文末 LOCAL-STATE 块为准；22+ 个 agint-* 段
 - **Tool 工具**（model 平面）：preset 暴露给模型的工具集，按 batch 分批挂载；写工具默认走 `rule_check` ask gate
-- **Skills**：preset 自带 `~/.dsh/.agent-presets/agint/skills/`；当前实装 6 个，调用前 `skill` 加载
+- **Skills**：preset 自带 `~/.dsh/.agent-presets/agint/skills/`（随仓库同步）；**自动生成**的技能落在 `~/.dsh/skills/`（用户级技能根，不在 install.sh 管理范围内 ⇒ 重装不会清空）；数量以文末 LOCAL-STATE 块为准，调用前 `skill` 加载
 
 ## 工作流（接到任何复杂任务前）
 

@@ -1,5 +1,41 @@
 # Changelog — agint-skill-autocreate
 
+## 0.5.1+retarget (2026-09-23) — 投放目标改投用户级技能根（修「重装清空自动生成技能」）
+
+> 起因：09-23 从源码全量重装 AGINT 后，5 个自动生成的技能整片消失
+> （`glob-glob-glob-glob` / `askuserquestion-todowrite-edit-read` /
+> `agintsearch-pwsh-askuserquestion-pwsh` / `pwsh-glob-webfetch-webfetch` /
+> `pwsh-pwsh-pwsh-pwsh`）。产物本身可从 `.agint-backups/agint-presets-*.tar.gz` 恢复，
+> 但**结构性冲突**必须修：否则每次重装都会再清一次。
+
+**根因**
+
+`skills_root` 默认指向 `$DSH_HOME/.agent-presets/agint/skills`，而 preset 目录落在
+**install.sh 的逐目录镜像同步范围**内 —— 「从源码重装」必然把 preset 目录替换成仓库内容，
+于是「系统自己攒的技能」被「重装」清空。
+
+**改动**
+
+`skills_root` 默认值 → `$DSH_HOME/skills`（用户级技能根）：
+
+- 不在 install.sh 管理范围内 ⇒ 重装不清；
+- 是宿主 `dsh-skill-filesystem` 的**内置默认根**（rank 400 / `includeDefaultRoots` 默认
+  true）⇒ 投放即被发现，零额外配置。
+
+**权衡（已知代价）**
+
+该根为**用户级**，自动生成的技能对所有 preset 可见（原 preset 根仅 agint 可见）。
+
+**配套 —— 必须同改，否则「写在新家、读在旧家」静默失真**
+
+| 插件 | 字段 | 角色 |
+|---|---|---|
+| `agint-curator` | `skills_dir` | 读+写（列表 / 归档 / 恢复） |
+| `agint-skill-graph` | `extraSkillDirs`（新增） | 读（图谱节点全集） |
+
+**验证**：`D:/DSH/_probe/verify_skillroot_retarget_0923.mjs` —— 三处默认值 + 真扫描
+（节点总数 = preset 根 + 用户根，标签 `@user`），8/8 PASS。
+
 ## 0.5.1 (2026-09-21) — skills_root 孤儿目录清理（修一条真实泄漏）
 
 > 起因：老板选「先修孤儿泄漏」。

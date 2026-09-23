@@ -22,14 +22,20 @@ import { isExcludedRecord } from './schema.js';
 
 const DAY_MS = 86_400_000;
 
-/** 一个 preset 目录下的技能清单（返回节点草稿数组 + 失败计数） */
-async function scanPreset(presetsDir, preset) {
-  const skillsDir = join(presetsDir, preset, 'skills');
+/**
+ * 一个技能根目录下的技能清单（返回节点草稿数组 + 失败计数）。
+ * 根的直接子目录即技能目录（一层深）：`<root>/<技能名>/SKILL.md`。
+ *
+ * @param skillsDir - 技能根
+ * @param source - 来源标签，写入节点的 `preset` 字段。真实 preset 名，
+ *                 或 `@user`（额外技能根，见 schema.extraSkillDirs）
+ */
+async function scanSkillRoot(skillsDir, source) {
   let entries = [];
   try {
     entries = await readdir(skillsDir, { withFileTypes: true });
   } catch {
-    return { nodes: [], failures: 0 }; // 该 preset 没有 skills 目录 → 空，不抛
+    return { nodes: [], failures: 0 }; // 该根无 skills 目录 → 空，不抛
   }
   const nodes = [];
   let failures = 0;
@@ -43,7 +49,7 @@ async function scanPreset(presetsDir, preset) {
       nodes.push({
         skillName,
         dirName: ent.name,
-        preset,
+        preset: source,
         path,
         description: typeof fm.description === 'string' ? fm.description : '',
         tools: Array.isArray(fm.tools) ? fm.tools : [],
@@ -60,14 +66,24 @@ async function scanPreset(presetsDir, preset) {
   return { nodes, failures };
 }
 
+/** 一个 preset 的技能清单 = 该 preset 目录下的 `skills/` 根 */
+const scanPreset = (presetsDir, preset) =>
+  scanSkillRoot(join(presetsDir, preset, 'skills'), preset);
+
+/** 额外技能根的来源标签（非真实 preset 名；preset 名不含 `@`，不会撞） */
+export const USER_SKILL_SOURCE = '@user';
+
 /**
- * 扫全部预设 → 去重后的节点全集。
- * 去重键 = `skillName`（§4.3 不变量 5）；同名跨预设的声明**取并集**
+ * 扫全部预设 + 额外技能根 → 去重后的节点全集。
+ * 去重键 = `skillName`（§4.3 不变量 5）；同名跨根的声明**取并集**
  * （relatedSkills / tools / triggers），`presets` 记录全部收录方。
  *
+ * @param presetsDir - preset 容器目录（`<presetsDir>/<preset>/skills/<技能名>/SKILL.md`）
+ * @param extraSkillDirs - 额外技能根（一层深，直接含 `<技能名>/SKILL.md`）。默认空；
+ *   插件侧传 `config.extraSkillDirs`（含 `$DSH_HOME/skills`，见 schema 注释）。
  * @returns {{ nodes: Array, scanFailures: number }}
  */
-export async function scanNodes(presetsDir) {
+export async function scanNodes(presetsDir, { extraSkillDirs = [] } = {}) {
   let presets = [];
   try {
     presets = (await readdir(presetsDir, { withFileTypes: true }))
@@ -75,28 +91,38 @@ export async function scanNodes(presetsDir) {
       .map((e) => e.name)
       .sort();
   } catch {
-    return { nodes: [], scanFailures: 0 }; // 目录不存在 → 空图，不抛（fail-open）
+    presets = []; // presetsDir 不存在 → 只扫额外根，仍不抛（fail-open）
   }
 
   const byName = new Map();
   let scanFailures = 0;
-  for (const preset of presets) {
-    const { nodes, failures } = await scanPreset(presetsDir, preset);
-    scanFailures += failures;
+  /** 同名节点合并。declarations：每条 related 声明的溯源（哪份 SKILL.md 声明了谁） */
+  const merge = (nodes) => {
     for (const n of nodes) {
       const ex = byName.get(n.skillName);
       if (!ex) {
-        // declarations：每条 related 声明的溯源（哪份 SKILL.md 声明了谁）
-        byName.set(n.skillName, { ...n, presets: [preset], declarations: { [n.path]: n.relatedSkills } });
+        byName.set(n.skillName, { ...n, presets: [n.preset], declarations: { [n.path]: n.relatedSkills } });
         continue;
       }
-      ex.presets.push(preset);
+      if (!ex.presets.includes(n.preset)) ex.presets.push(n.preset);
       ex.tools = [...new Set([...ex.tools, ...n.tools])];
       ex.triggers = [...new Set([...ex.triggers, ...n.triggers])];
       ex.relatedSkills = [...new Set([...ex.relatedSkills, ...n.relatedSkills])];
       ex.declarations = { ...(ex.declarations ?? {}), [n.path]: n.relatedSkills };
       if (!ex.description && n.description) ex.description = n.description;
     }
+  };
+
+  for (const preset of presets) {
+    const { nodes, failures } = await scanPreset(presetsDir, preset);
+    scanFailures += failures;
+    merge(nodes);
+  }
+  // 额外技能根（用户级，如 `$DSH_HOME/skills`）—— 2026-09-23 新增
+  for (const dir of extraSkillDirs) {
+    const { nodes, failures } = await scanSkillRoot(dir, USER_SKILL_SOURCE);
+    scanFailures += failures;
+    merge(nodes);
   }
 
   const nodes = [...byName.values()].sort((a, b) => a.skillName.localeCompare(b.skillName));

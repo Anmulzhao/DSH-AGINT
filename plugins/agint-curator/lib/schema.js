@@ -315,7 +315,12 @@ export const ConfigSchema = z.object({
   move_directory_on_archive: z.boolean().default(true),
 
   // 数据源
-  skills_dir: z.string().default(() => `${defaultDshHome()}/.agent-presets/agint/skills`),
+  // 技能根。⚠️ 2026-09-23 与 `agint-skill-autocreate.skills_root` **同步改投**到用户级根：
+  // 原值 `$DSH_HOME/.agent-presets/agint/skills` 属 install.sh 镜像管理范围，重装会清掉
+  // 自动生成的技能。两者必须同指一处，否则「写在新家、读在旧家」会静默失真
+  // （curator_list 看不到新技能、curator_archive 报 skill directory not found）。
+  // 详见 agint-skill-autocreate/lib/schema.js 的 skills_root 注释。
+  skills_dir: z.string().default(() => `${defaultDshHome()}/skills`),
   archive_dir_name: z.string().default('.archive'),
   jsonlPath: z.string().default(() => `${defaultDshHome()}/storages/agint_tool_stats.jsonl`),
   usage_lookback_days: z.number().int().min(1).default(180),

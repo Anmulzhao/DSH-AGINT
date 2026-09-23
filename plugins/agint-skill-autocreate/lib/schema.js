@@ -256,10 +256,21 @@ export const ConfigSchema = z.object({
   rollback_zero_call_windows: z.number().int().min(1).default(3),
   // 回滚冷却：同名技能被回滚后 N 天内不得重发（防振荡）
   rollback_cooldown_days: z.number().int().min(0).default(30),
-  // 发布目标目录（agint preset skill root —— 目录即注册，watcher 自动发现）；
+  // 发布目标目录（**用户级技能根** —— 目录即注册，watcher 自动发现）；
+  //
+  // ⚠️ 2026-09-23 改投：原目标 `$DSH_HOME/.agent-presets/agint/skills` 落在 **install.sh 的
+  //    镜像管理范围**内 —— preset 目录是「逐目录镜像同步」，`install.sh` 会把它替换成仓库
+  //    内容 ⇒ **本插件自己生成的技能被整片清掉**（09-23 实测删掉 5 个：glob-glob-glob-glob
+  //    等）。「从源码重装」等于清空「系统自己攒的东西」，是结构性冲突。
+  //    改投 `$DSH_HOME/skills`：① 不在安装脚本管理范围内；② 是宿主 `dsh-skill-filesystem`
+  //    的内置默认根（rank 400，`includeDefaultRoots` 默认 true），投放即被发现，零额外配置。
+  // 权衡：该根为**用户级**，自动生成的技能对所有 preset 可见（原 preset 根仅 agint 可见）。
+  // 消费方必须同改，否则「写在新家、读在旧家」静默失真：
+  //    - agint-curator  的 `skills_dir`（列表 / 归档 / 恢复）
+  //    - agint-skill-graph 的 `extraSkillDirs`（图谱节点全集）
   // 测试用 skills_root 覆盖指向临时目录
   skills_root: z.string().default(
-    () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/.agent-presets/agint/skills',
+    () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/skills',
   ),
   // 回滚归档区（只归档不删除，任何时刻可人工放回）
   rollback_archive_dir: z.string().default(

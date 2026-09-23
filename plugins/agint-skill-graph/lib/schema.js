@@ -253,6 +253,19 @@ const LimitsSchema = z.object({
 export const ConfigSchema = z.object({
   /** 节点全集 = presetsDir 下每个 preset 的 skills/{技能名}/SKILL.md（§2.1 R8） */
   presetsDir: z.string().default(() => `${dshHome()}/.agent-presets`),
+  /**
+   * 额外技能根（绝对路径，每个根直接含 `<技能名>/SKILL.md`，比 preset 少一层）。
+   *
+   * ⚠️ 2026-09-23 新增，与 `agint-skill-autocreate.skills_root` 的改投配套：
+   * 自动生成技能的投放目标已从 preset 的 `skills/` 改到 `$DSH_HOME/skills`
+   * （preset 目录被 install.sh 镜像同步，重装会清掉自动生成的技能，见该插件 schema 注释）。
+   * 本字段让图谱继续覆盖那批技能 —— 否则它们只剩「有调用记录、无 SKILL.md 节点」的
+   * 临时节点形态（`presets: []` / `path: null`），`unknownSkillName` 计数虚高、覆盖率失真。
+   *
+   * 这些根扫出的节点 `presets` 标签记为 `@user`（不是真实 preset 名，不会与之冲突；
+   * preset 名不含 `@`，且 `scanNodes` 跳过 `.` 开头目录）。
+   */
+  extraSkillDirs: z.array(z.string()).default(() => [`${dshHome()}/skills`]),
   /** 唯一在产的使用信号来源（§3.3 主口径） */
   toolStatsPath: z.string().default(() => `${dshHome()}/storages/agint_tool_stats.jsonl`),
   lookbackDays: z.number().int().min(1).default(180),

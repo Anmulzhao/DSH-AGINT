@@ -1,5 +1,26 @@
 # agint-skill-graph 变更日志
 
+## v0.1.0+retarget (2026-09-23) — 新增 extraSkillDirs：图谱覆盖用户级技能根
+
+**新增配置** `extraSkillDirs: string[]`，默认 `['$DSH_HOME/skills']`。
+
+节点全集从「`presetsDir/<preset>/skills`」扩展为「＋ 每个额外技能根（一层深，
+`<root>/<技能名>/SKILL.md`）」。额外根扫出的节点 `presets` 标签记为 `@user`
+（非真实 preset 名；preset 名不含 `@`，不会撞）。
+
+**为什么必须同改**：`agint-skill-autocreate` 的投放目标已从 preset 的 `skills/` 改到
+`$DSH_HOME/skills`（见其 CHANGELOG `0.5.1+retarget`）。不同步则那批技能只剩「有调用记录、
+无 SKILL.md 节点」的临时节点形态 —— `unknownSkillName` 计数虚高、覆盖率随之失真，且不报错。
+
+**行为变化（两处，其余保持）**
+
+1. `presetsDir` 不存在时**不再直接返回空图**，而是继续扫 `extraSkillDirs`
+   （`fail-open` 语义不变：仍不抛）；
+2. 同名跨根节点的 `presets` 取并集**并去重**（原实现直接 push）。
+
+**测试隔离**：`test/contract.test.mjs` 的所有 `plugin.apply` 调用点显式传
+`extraSkillDirs: []` —— 默认值指向真实 `$DSH_HOME/skills`，不隔离会让节点数断言随环境漂移。
+
 ## v0.1.0 — 2026-09-13（Sprint 19 实施：P2-2 技能使用统计与学习图谱）
 
 上游：`设计-P2-2-技能使用统计与学习图谱.md` v0.4（§3.2 四类边 / §4.3 七条不变量 / §5.3 count-only 标定期 / §六bis 实测条数）。

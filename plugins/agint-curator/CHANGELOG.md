@@ -1,5 +1,17 @@
 # agint-curator 变更日志
 
+## v0.2.0+retarget (2026-09-23) — skills_dir 与 autocreate 投放目标对齐
+
+`skills_dir` 默认值：`$DSH_HOME/.agent-presets/agint/skills` → `$DSH_HOME/skills`。
+
+**为什么必须同改**：起因见 `agint-skill-autocreate/CHANGELOG.md` 的 `0.5.1+retarget`
+（投放方改投用户级技能根）。本插件对 `skills_dir` 是**读+写**——
+`scanSkills` 列技能、`moveToArchive` / `moveBackFromArchive` 对 `skills_dir/<技能名>`
+做整目录 rename。不同步的后果是**静默失真**：`curator_list` 看不到新技能、
+`curator_archive` 报 `skill directory not found`，不抛错、只是结果不对。
+
+`archive_dir_name`（默认 `.archive`）是相对 `skills_dir` 的，跟着搬家，无需改。
+
 ## v0.1.0 — 2026-09-07（Sprint 14 阶段 1：基础策展）
 
 上游：`设计-P0-2-技能策展人机制.md` §12.1 + `Sprint14-设计稿.md` §3 + A-14/A-15/A-16。
