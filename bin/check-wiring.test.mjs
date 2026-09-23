@@ -102,6 +102,12 @@ describe('豁免机制', () => {
     assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'ORPHAN_TOPIC');
   });
 
+  test('双副本没有走偏（bundle 位 vs 兼容镜像位逐字节一致）', () => {
+    assert.ok(report.dualCopy.checked > 0, '未检出双副本布局 —— install.sh 的镜像位可能已不再同步');
+    assert.equal(report.dualCopy.divergent.length, 0, `副本已分叉：${report.dualCopy.divergent.join(', ')}`);
+    assert.equal(report.dualCopy.mirrorMissing.length, 0, `镜像位缺失：${report.dualCopy.mirrorMissing.join(', ')}`);
+  });
+
   test('域豁免生效：agint_search 不计入 DEAD', () => {
     const dead = report.domains.neverEnergized.map((d) => d.domain);
     assert.ok(!dead.includes('agint_search') || report.domains.neverEnergized.find((d) => d.domain === 'agint_search')?.exemption);

@@ -24,6 +24,7 @@
  * 退出码：0 = 无缺口 / 1 = 有缺口 / 2 = 脚本自身出错
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -311,6 +312,60 @@ for (const [dom, info] of [...domains].sort()) {
 const deadReal = neverEnergized.filter((d) => !d.exemption);
 const deadExempt = neverEnergized.filter((d) => d.exemption);
 
+// ───────────── 查 E：双副本一致性（bundle 位 vs 兼容镜像位） ─────────────
+// 背景：bundle 化后插件有两份落盘 ——
+//   bundle 位  $DSH_HOME/profiles/web/node_modules/@agint/host/plugins/
+//   镜像位     $DSH_HOME/profiles/web/plugins/
+// preset 的 tools 行仍指向镜像位（相对路径 ../../profiles/web/plugins/...），
+// 服务插件则走 bundle 位。install.sh 双目标同步，所以正常情况两份逐字节相同。
+// ⚠️ 一旦走偏（只同步了一处 / 手工改了一处），preset 加载的 tools.js 与
+//    bundle 里的服务插件就是两个模块实例，模块级状态不共享 —— 且不会报错。
+const PROFILE_DIR = join(STORAGE_DIR, '..', 'profiles', 'web');
+const BUNDLE_PLUGINS = join(PROFILE_DIR, 'node_modules', '@agint', 'host', 'plugins');
+const MIRROR_PLUGINS = join(PROFILE_DIR, 'plugins');
+
+function sha(s) {
+  return createHash('sha1').update(s).digest('hex').slice(0, 12);
+}
+
+const dup = { checked: 0, identical: 0, divergent: [], mirrorMissing: [], presetRefs: 0 };
+if (existsSync(BUNDLE_PLUGINS) && existsSync(MIRROR_PLUGINS)) {
+  for (const dir of readdirSync(BUNDLE_PLUGINS, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    for (const sub of ['lib/tools.js', 'lib/index.js']) {
+      const bPath = join(BUNDLE_PLUGINS, dir.name, sub);
+      const mPath = join(MIRROR_PLUGINS, dir.name, sub);
+      if (!existsSync(bPath)) continue;
+      dup.checked++;
+      if (!existsSync(mPath)) {
+        dup.mirrorMissing.push(`${dir.name}/${sub}`);
+        continue;
+      }
+      let a;
+      let b;
+      try {
+        a = readFileSync(bPath);
+        b = readFileSync(mPath);
+      } catch {
+        continue;
+      }
+      if (sha(a) === sha(b)) dup.identical++;
+      else dup.divergent.push(`${dir.name}/${sub}`);
+    }
+  }
+  // preset 实际引用了多少条镜像位路径（= 双实例风险面的大小）
+  const presetsDir = join(STORAGE_DIR, '..', '.agent-presets');
+  if (existsSync(presetsDir)) {
+    for (const p of readdirSync(presetsDir, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue;
+      const yml = join(presetsDir, p.name, 'agent.cordis.yml');
+      if (!existsSync(yml)) continue;
+      dup.presetRefs += (readFileSync(yml, 'utf8').match(/plugins\/[a-z0-9-]+\/lib\/tools\.js/g) || []).length;
+    }
+  }
+}
+const dupOk = dup.divergent.length === 0 && dup.mirrorMissing.length === 0;
+
 // ─────────────────────────── 输出 ────────────────────────────────────────
 const fails = [
   ...shellServices.filter((s) => !exempService.has(s.name)).map((s) => ({ kind: 'SHELL_SERVICE', name: s.name })),
@@ -319,7 +374,7 @@ const fails = [
     .map((r) => ({ kind: r.verdict, name: r.topic })),
 ];
 const soft = topicRows.filter((r) => r.verdict === 'NOT_YET_FIRED');
-const exitCode = fails.length > 0 || (STRICT && soft.length > 0) ? 1 : 0;
+const exitCode = fails.length > 0 || (STRICT && soft.length > 0) || !dupOk ? 1 : 0;
 
 if (AS_JSON) {
   console.log(
@@ -350,6 +405,7 @@ if (AS_JSON) {
           publishers: r.publishers,
           subscribers: r.subscribers,
         })),
+        dualCopy: dup,
         domains: {
           energized: energized.map((d) => ({ domain: d.domain, plugin: d.plugin, bytes: d.size })),
           neverEnergized: neverEnergized.map((d) => ({
@@ -424,7 +480,18 @@ for (const d of deadExempt) {
   console.log(`  ${C.dim}EXEMPT ${d.domain} (${d.plugin}) — ${d.exemption.reason}${C.r}`);
 }
 
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电`);
+console.log(`\n${C.b}── 查 E：双副本一致性（bundle 位 vs 兼容镜像位）──${C.r}`);
+if (!dup.checked) {
+  console.log(`  ${C.dim}跳过：未检出双副本布局（非 bundle 部署）${C.r}`);
+} else {
+  console.log(
+    `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${C.dim}preset 引用镜像位 ${dup.presetRefs} 条${C.r}`,
+  );
+  for (const d of dup.divergent) console.log(`  ${C.red}DIVERGED${C.r} ${d}`);
+  for (const d of dup.mirrorMissing) console.log(`  ${C.yel}MIRROR-MISSING${C.r} ${d}`);
+}
+
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}`);
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
 else console.log(`${C.dim}PASS${C.r}`);
