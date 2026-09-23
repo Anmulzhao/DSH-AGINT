@@ -327,6 +327,59 @@ for src in "$PRESETS_SRC"/*/; do
   log "   ✓ $name"
 done
 
+# ── 1.1 preset 依赖解析入口（dsh ≥ 0.1.7 必需）────────────────────────────────
+#
+# 0.1.7 起 preset 不再靠「扫 .agent-presets/ 目录」发现，必须在 composition 里声明。
+# 我们用 `cordis:include` 复用 .agent-presets/<id>/agent.cordis.yml（保持单一事实源）。
+#
+# ⚠ 代价（2026-09-23 影子环境实测）：include 会把子条目的 baseUrl 设成「被读文件
+#   所在目录」= .agent-presets/<id>/，于是 preset 里所有**裸包名**
+#   （@deepseek-ai/dsh-persona / dsh-tool-fs / dsh-tool-web …）都从该目录向上解析，
+#   而它天然没有 node_modules ⇒ 官方插件行全部 `never started` ⇒ registry 判定
+#   broken ⇒ **UI 只显示「加载失败」，真实原因不落日志**（agint 实测 23 条）。
+#
+# 修法：在 presets **父目录**放一个解析入口 → dsh 安装目录的 node_modules（那里有
+#   276 个包，含全部官方 preset 依赖）。子目录向上第一级就命中。
+#   ⛔ 不能放进 .agent-presets/<id>/ 里 —— 步骤 1 的 safe_rsync 带 --delete，
+#      下次重装会把 preset 目录整个镜像一遍，入口当场消失（症状复活）。
+#
+# 失败只 warn 不阻断：dsh < 0.1.7 压根不注册 preset，缺它无影响；
+# 手工补一条 `mklink /J` 即可恢复。
+ensure_preset_module_entry() {
+  local link="$PRESETS_DST/node_modules" target
+  if [ -d "$link" ]; then
+    log "   ✓ preset 解析入口已存在（$link）"
+    return 0
+  fi
+  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules"
+  if [ -z "$target" ] || [ ! -d "$target" ]; then
+    warn "未能定位 dsh 的 node_modules（npm root -g 不可用？），跳过 preset 解析入口。"
+    warn "  dsh ≥ 0.1.7 上智进 preset 会显示「加载失败」。手工补："
+    warn "    mklink /J \"$link\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\""
+    return 0
+  fi
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 建 preset 解析入口 $link → $target"
+    return 0
+  fi
+  if command -v cmd >/dev/null 2>&1; then
+    # Windows：junction（普通权限可建，symlink 需要管理员/开发者模式）
+    local wl wt
+    wl="$(cygpath -w "$link" 2>/dev/null || printf '%s' "$link")"
+    wt="$(cygpath -w "$target" 2>/dev/null || printf '%s' "$target")"
+    if cmd //c "mklink /J \"$wl\" \"$wt\"" >/dev/null 2>&1; then
+      log "   ✓ preset 解析入口已建立（junction）"
+      return 0
+    fi
+  fi
+  if ln -s "$target" "$link" 2>/dev/null; then
+    log "   ✓ preset 解析入口已建立（symlink）"
+    return 0
+  fi
+  warn "preset 解析入口创建失败（$link → $target）。dsh ≥ 0.1.7 上智进会显示「加载失败」。"
+}
+ensure_preset_module_entry
+
 # ── 1.5 zod bootstrap（必须在 plugin 同步之前）───────────────────────────────
 # 见 install/agint-zod-bootstrap.sh。
 # 顺序约束：步骤 2 用 safe_rsync --delete 把 plugins/agint-quality/node_modules/zod
