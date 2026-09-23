@@ -557,6 +557,31 @@ function apply(ctx) {
       Report: reportEntrySchema,
     },
   });
+
+  // ── umbrella 键（2026-09-24 补）──────────────────────────────────────
+  // cordis service store 扁平：只有全名子键时 ctx.get('agint.diagnosis') 恒 undefined。
+  // 影响面最大 —— agint-mutator 的 PROPOSERS 软依赖写的就是命名空间
+  // （'agint.diagnosis'），拿不到 ⇒ attribution-driven 与 strategy-rewrite
+  // 永远走 degrade，且不报错。agint-skill-autocreate 同样按命名空间取。
+  // 纯加法，全名子键一个不动。
+  ctx.provide('agint.diagnosis', {
+    annotate,
+    counterfactual,
+    cluster,
+    report,
+    stats,
+    analyzeFailedSmoke,
+    checkLimit,
+    limits: LIMITS,
+    io: {
+      packAnnotation,
+      packCluster,
+      packReport,
+      unpackAnnotation,
+      unpackCluster,
+      unpackReport,
+    },
+  });
 }
 
 export {

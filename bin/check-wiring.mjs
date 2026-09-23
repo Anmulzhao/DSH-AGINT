@@ -50,6 +50,8 @@ try {
 const exempTopic = new Map((exemp.topics || []).map((t) => [t.topic, t]));
 const exempDomain = new Map((exemp.domains || []).map((d) => [d.domain, d]));
 const exempService = new Map((exemp.shellServices || []).map((s) => [s.name, s]));
+/** 冒牌服务名：看着像 agint.* 服务，其实是配置键之类。查 F 里要排除。 */
+const exempNonService = new Set((exemp.nonServiceNames || []).map((x) => x.name));
 
 const TOPIC_RE = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$/;
 
@@ -112,6 +114,8 @@ for (const { abs, rel } of allFiles) {
   const lines = code.split('\n');
 
   lines.forEach((line, i) => {
+    // 本行是不是「取不到就走默认值」的可选注入（含 ?? 兜底）—— 是则不算断链
+    const HAS_FALLBACK = /\?\?/.test(line);
     // 注册：ctx.provide('agint.xxx', ...)
     for (const m of line.matchAll(/ctx\.provide\(\s*['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]/g)) {
       if (!provided.has(m[1])) provided.set(m[1], []);
@@ -119,19 +123,19 @@ for (const { abs, rel } of allFiles) {
     }
     // 消费形态 1：ctx.get('agint.xxx') / ctx.get?.('agint.xxx')
     for (const m of line.matchAll(/ctx\.get\??\(\s*['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]/g)) {
-      addConsumed(m[1], rel, i + 1, 'get');
+      addConsumed(m[1], rel, i + 1, 'get', HAS_FALLBACK);
     }
     // 消费形态 2：方括号访问 ctx['agint.mutator.stats']（tools.js 里的主流写法）
     for (const m of line.matchAll(/ctx(?:\[|\?\.\s*)\[?\s*['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]\s*\]/g)) {
-      addConsumed(m[1], rel, i + 1, 'bracket');
+      addConsumed(m[1], rel, i + 1, 'bracket', HAS_FALLBACK);
     }
     // 消费形态 3：cordis inject 声明 —— `inject = ['tools', 'agint.curator']`
     for (const m of line.matchAll(/['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]/g)) {
-      if (/inject/.test(line)) addConsumed(m[1], rel, i + 1, 'inject');
+      if (/inject/.test(line)) addConsumed(m[1], rel, i + 1, 'inject', HAS_FALLBACK);
     }
     // 消费形态 4：任意字符串字面量出现在生产代码里（弱证据，仅用于排除"完全没人提"）
     for (const m of line.matchAll(/['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]/g)) {
-      if (isProdPath(rel)) addConsumed(m[1], rel, i + 1, 'literal');
+      if (isProdPath(rel)) addConsumed(m[1], rel, i + 1, 'literal', HAS_FALLBACK);
     }
   });
 
@@ -139,14 +143,21 @@ for (const { abs, rel } of allFiles) {
   const injectBlock = code.match(/inject\s*(?::\s*)?=?\s*\[([\s\S]{0,400}?)\]/);
   if (injectBlock) {
     for (const m of injectBlock[1].matchAll(/['"`](agint\.[a-zA-Z0-9_.:-]+)['"`]/g)) {
-      addConsumed(m[1], rel, 0, 'inject');
+      addConsumed(m[1], rel, 0, 'inject', false);
     }
   }
 }
 
-function addConsumed(name, file, line, via) {
+function addConsumed(name, file, line, via, hasFallback = false) {
   if (!consumed.has(name)) consumed.set(name, []);
-  consumed.get(name).push({ file, line, via });
+  const list = consumed.get(name);
+  // 同一处若已有记录，保留「无兜底」的那条（无兜底 = 更硬的证据）
+  const prev = list.find((c) => c.file === file && c.line === line && c.via === via);
+  if (prev) {
+    if (!hasFallback) prev.hasFallback = false;
+    return;
+  }
+  list.push({ file, line, via, hasFallback, name });
 }
 
 /**
@@ -312,6 +323,76 @@ for (const [dom, info] of [...domains].sort()) {
 const deadReal = neverEnergized.filter((d) => !d.exemption);
 const deadExempt = neverEnergized.filter((d) => d.exemption);
 
+// ───────── 查 F：命名空间错配（取了「没注册过的名字」= 恒 undefined） ─────────
+// ⭐⭐⭐ 本仓最隐蔽的一类断链，机制见 plugins/agint-curriculum/lib/index.js:121-124：
+//   cordis 的 service store 是**扁平的**（按确切键名查），
+//   所以 ctx.provide('agint.mutator.propose') 之后，
+//   ctx.get('agint.mutator') 恒为 undefined —— 不会报错，只会软降级。
+// 于是出现一种「代码对、运行错」的状态：调用点写得很正常，
+//   拿到的永远是 null，走 degrade/skipped 分支，日志里连一条 error 都没有。
+const missingServices = [];
+for (const [name, calls] of [...consumed].sort()) {
+  if (!name.startsWith('agint.')) continue; // 宿主内建（storageDomain/tools 等）不在本仓注册
+  if (provided.has(name)) continue; // 精确注册了，没问题
+  // 这里**不排除 literal**：softDep(ctx, 'agint.mutator')、NAMES 数组里
+  // 'agint.mutator.stats' 这类都是真实取用，漏掉它们就漏掉真错配。
+  //
+  // 但要排除**有兜底的可选注入**：`ctx.getService?.('agint.probeFn') ?? probeStaging`
+  // 这种取不到就走默认，是设计上的可选项，不是断链 —— 报出来只会淹没真信号。
+  const prodCalls = calls.filter(
+    (c) => isProdPath(c.file) && !c.hasFallback && !exempNonService.has(name),
+  );
+  if (!prodCalls.length) continue;
+  // 父键也没注册 ⇒ 真错配。父键注册了 ⇒ 是子键访问（如 agint.cron.xxx），合法。
+  const parts = name.split('.');
+  let parentProvided = false;
+  for (let i = parts.length - 1; i > 1; i--) {
+    if (provided.has(parts.slice(0, i).join('.'))) {
+      parentProvided = true;
+      break;
+    }
+  }
+  if (parentProvided) continue;
+  missingServices.push({ name, calls: prodCalls });
+}
+
+// ─────── 查 G：TS 源与产物一致性（只改 lib/*.js 会被下次 build 静默回退） ──────
+// K78：有 src/*.ts 的插件，lib/*.js 是 tsc 产物。只改产物 = 改动活到下次 build 为止。
+// 这里对账两边 provide 出来的服务键集合 —— 源里少了哪把钥匙，build 后就会消失。
+const tsDrift = [];
+{
+  const pluginsRoot = join(REPO_ROOT, 'plugins');
+  for (const entry of readdirSync(pluginsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const srcDir = join(pluginsRoot, entry.name, 'src');
+    const libDir = join(pluginsRoot, entry.name, 'lib');
+    if (!existsSync(srcDir) || !existsSync(libDir)) continue;
+
+    const keysIn = (dir) => {
+      const set = new Set();
+      for (const f of walk(dir)) {
+        let s;
+        try {
+          s = readFileSync(f, 'utf8');
+        } catch {
+          continue;
+        }
+        for (const m of stripComments(s).matchAll(/ctx\.provide\(\s*['"`]([a-zA-Z0-9_.:-]+)['"`]/g)) {
+          set.add(m[1]);
+        }
+      }
+      return set;
+    };
+    const srcKeys = keysIn(srcDir);
+    const libKeys = keysIn(libDir);
+    const onlyLib = [...libKeys].filter((k) => !srcKeys.has(k)).sort();
+    const onlySrc = [...srcKeys].filter((k) => !libKeys.has(k)).sort();
+    if (onlyLib.length || onlySrc.length) {
+      tsDrift.push({ plugin: entry.name, onlyInLib: onlyLib, onlyInSrc: onlySrc });
+    }
+  }
+}
+
 // ───────────── 查 E：双副本一致性（bundle 位 vs 兼容镜像位） ─────────────
 // 背景：bundle 化后插件有两份落盘 ——
 //   bundle 位  $DSH_HOME/profiles/web/node_modules/@agint/host/plugins/
@@ -374,7 +455,8 @@ const fails = [
     .map((r) => ({ kind: r.verdict, name: r.topic })),
 ];
 const soft = topicRows.filter((r) => r.verdict === 'NOT_YET_FIRED');
-const exitCode = fails.length > 0 || (STRICT && soft.length > 0) || !dupOk ? 1 : 0;
+const exitCode =
+  fails.length > 0 || (STRICT && soft.length > 0) || !dupOk || tsDrift.length > 0 ? 1 : 0;
 
 if (AS_JSON) {
   console.log(
@@ -405,6 +487,11 @@ if (AS_JSON) {
           publishers: r.publishers,
           subscribers: r.subscribers,
         })),
+        missingServices: missingServices.map((m) => ({
+          name: m.name,
+          callers: m.calls.map((c) => `${c.file}:${c.line}(${c.via})`),
+        })),
+        tsDrift,
         dualCopy: dup,
         domains: {
           energized: energized.map((d) => ({ domain: d.domain, plugin: d.plugin, bytes: d.size })),
@@ -478,6 +565,27 @@ for (const d of deadReal) {
 }
 for (const d of deadExempt) {
   console.log(`  ${C.dim}EXEMPT ${d.domain} (${d.plugin}) — ${d.exemption.reason}${C.r}`);
+}
+
+console.log(`\n${C.b}── 查 F：命名空间错配（取了没注册的名字 ⇒ 恒 undefined，不报错只软降级）──${C.r}`);
+if (missingServices.length === 0) {
+  console.log(`  ${C.dim}无${C.r}`);
+} else {
+  for (const m of missingServices) {
+    console.log(`  ${C.red}MISSING${C.r} ${m.name}`);
+    for (const c of m.calls.slice(0, 3)) console.log(`    ${C.dim}← ${c.file}:${c.line} (${c.via})${C.r}`);
+  }
+}
+
+console.log(`\n${C.b}── 查 G：TS 源/产物漂移（只改 lib 会被下次 build 静默回退，K78）──${C.r}`);
+if (tsDrift.length === 0) {
+  console.log(`  ${C.dim}无漂移${C.r}`);
+} else {
+  for (const d of tsDrift) {
+    console.log(`  ${C.red}DRIFT${C.r} ${d.plugin}`);
+    if (d.onlyInLib.length) console.log(`    ${C.red}仅在 lib（build 后丢失）: ${d.onlyInLib.join(', ')}${C.r}`);
+    if (d.onlyInSrc.length) console.log(`    ${C.yel}仅在 src（产物未重建）: ${d.onlyInSrc.join(', ')}${C.r}`);
+  }
 }
 
 console.log(`\n${C.b}── 查 E：双副本一致性（bundle 位 vs 兼容镜像位）──${C.r}`);

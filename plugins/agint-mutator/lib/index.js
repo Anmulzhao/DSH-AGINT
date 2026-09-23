@@ -1007,6 +1007,31 @@ function apply(ctx) {
     unpackProposal, unpackCommit, unpackFinding, unpackMetricsLog,
     randomId, nowIso, contentHash, checkPendingUnique,
   });
+
+  // ── umbrella 键（2026-09-24 补）──────────────────────────────────────
+  // cordis service store 扁平：只有全名子键时 ctx.get('agint.mutator') 恒 undefined。
+  // agint-population 的 doMutatorRollback() 正是按命名空间取，且是 **D11 强制依赖** ——
+  // 取不到就直接 throw，种群 cull / rollback 根本不可能执行。
+  // 纯加法，全名子键一个不动。
+  ctx.provide('agint.mutator', {
+    propose,
+    validate,
+    commit,
+    rollback,
+    attributionDriven,
+    dreamRandom,
+    evolutionReversed,
+    stats,
+    logMetric,
+    checkLimit,
+    limits: LIMITS,
+    publishMountRequest,
+    io: {
+      packProposal, packCommit, packFinding, packMetricsLog,
+      unpackProposal, unpackCommit, unpackFinding, unpackMetricsLog,
+      randomId, nowIso, contentHash, checkPendingUnique,
+    },
+  });
 }
 
 export {

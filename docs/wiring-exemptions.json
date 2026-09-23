@@ -15,6 +15,15 @@
 
   "shellServices": [],
 
+  "nonServiceNames": [
+    {
+      "name": "agint.hmr",
+      "reason": "不是服务名，是 mount orchestrator 在配置里按优先级查找的键（lookupKeys = ['core.hmr','host.hmr','agint.hmr']）。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:162",
+      "since": "2026-09-24"
+    }
+  ],
+
   "topics": [
     {
       "topic": "evoorch.task-started",

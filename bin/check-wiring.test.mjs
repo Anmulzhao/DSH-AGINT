@@ -102,6 +102,18 @@ describe('豁免机制', () => {
     assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'ORPHAN_TOPIC');
   });
 
+  test('查 F：没有任何「取了但没注册」的命名空间（恒 undefined 不报错，最阴的一类）', () => {
+    assert.deepEqual(
+      report.missingServices.map((m) => m.name),
+      [],
+      '存在命名空间错配：取不到服务却不报错，只会静默软降级',
+    );
+  });
+
+  test('查 G：TS 源与产物无漂移（只改 lib 会被下次 build 静默回退）', () => {
+    assert.deepEqual(report.tsDrift ?? [], [], 'lib 与 src 的 provide 键集合不一致 —— 下次 build 会丢服务');
+  });
+
   test('双副本没有走偏（bundle 位 vs 兼容镜像位逐字节一致）', () => {
     assert.ok(report.dualCopy.checked > 0, '未检出双副本布局 —— install.sh 的镜像位可能已不再同步');
     assert.equal(report.dualCopy.divergent.length, 0, `副本已分叉：${report.dualCopy.divergent.join(', ')}`);

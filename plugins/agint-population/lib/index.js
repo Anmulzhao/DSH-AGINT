@@ -545,6 +545,24 @@ function apply(ctx) {
     return cfg;
   });
   ctx.provide('agint.population.checkLimit', checkLimit);
+
+  // ── umbrella 键（2026-09-24 补）──────────────────────────────────────
+  // cordis service store 扁平：只有全名子键时 ctx.get('agint.population') 恒 undefined。
+  // agint-quality-static 的 L0 隔离检查正是按命名空间取的（恒空 = 检查形同虚设）。
+  // 纯加法，全名子键一个不动。
+  ctx.provide('agint.population', {
+    ingest,
+    promote,
+    cull,
+    fixate,
+    rollback,
+    stats,
+    publishProposed,
+    publishMountRequest,
+    evaluate: fitnessEvaluate,
+    recordEvaluation,
+    checkLimit,
+  });
 }
 
 const Config = z.object({});

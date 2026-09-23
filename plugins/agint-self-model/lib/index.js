@@ -357,6 +357,19 @@ function apply(ctx, _config = {}) {
   ctx.provide('agint.selfModel.stats', stats);
   ctx.provide('agint.selfModel.inspectSummary', inspectSummary);
 
+  // ── umbrella 键（2026-09-24 补）──────────────────────────────────────
+  // cordis service store 扁平，只有全名子键时 ctx.get('agint.selfModel') 恒 undefined。
+  // agint-curriculum 就栽在这上面（2026-09-09 记录：probe() 永远走软降级，
+  // 一个待练域都找不出来），当时只能在消费方写「父键 → 子键组装」绕过。
+  // 补 umbrella 键后消费方可直接按命名空间取；纯加法，全名子键不动。
+  ctx.provide('agint.selfModel', {
+    snapshot,
+    update,
+    calibrate,
+    stats,
+    inspectSummary,
+  });
+
   // 影子消费：A6 diagnosis.completed / A8 dream.completed → 真实调用 selfUpdate 写库
   // （2026-09-20 更正：原注释写「audit-only」与实现不符 —— handler 走的是
   //  selfUpdate(ctx, store, ...) 会落库，实测 capability_map.lastVerifiedAt 随事件更新。

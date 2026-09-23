@@ -148,6 +148,29 @@ function apply(ctx, _config = {}) {
         }
         catch { return []; }
     });
+    // ── umbrella 键（2026-09-24 补）────────────────────────────────────────
+    // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
+    // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方
+    // 都得自己写「先试全名、再试伞键」的回退链 —— 漏写一处就静默降级：
+    //   · agint-mount 10 处 mount.* 发布曾因此全部降级到 ctx.emitEvent，生产 0 条
+    //     （2026-09-20 取证，见 docs/known-limitations/event-bus-shadow-publish-gap.md）
+    //   · agint-evolution-memory / agint-quality-sandbox 同样只能靠回退链活
+    // 补这个 umbrella 键是**纯加法**：现有全名子键一个不动，已有回退链也不会误判
+    // （它们先试全名、命中即返回）。收益是以后新消费方不用再写回退链。
+    // ⚠️ 本文件是 tsc 产物 —— 同步改 src/index.ts，否则下次 build 会静默回退（K78）。
+    ctx.provide('agint.eventBus', {
+        publish: (input) => publish(busCtx, input),
+        subscribe: (rawSub, handler) => subscribe(rawSub, handler),
+        inspect: (filter) => inspect((filter ?? {})),
+        inspectSummary: (filter) => inspectSummary((filter ?? {})),
+        deadletters: async () => {
+            try {
+                return await listDeadletters(busCtx);
+            }
+            catch { return []; }
+        },
+        metricsSnapshot: async () => metricsSnapshot(busCtx),
+    });
     ctx.provide('agint.eventBus.metricsSnapshot', async () => {
         // A10 尾巴（Sprint 13 / s12-09 收口）：死信率分子 + 分母 + sync 订阅数。
         // 分母 publishedCount 由 bus.js 维护 —— v0.7.0 缺失导致

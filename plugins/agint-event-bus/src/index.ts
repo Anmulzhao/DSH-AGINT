@@ -116,6 +116,26 @@ function apply(ctx: any, _config: any = {}) {
   ctx.provide('agint.eventBus.deadletters', async () => {
     try { return await listDeadletters(busCtx); } catch { return []; }
   });
+  // ── umbrella 键（2026-09-24 补）───────────────────────────────────────────
+  // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
+  // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方都得
+  // 自己写「先试全名、再试伞键」的回退链，漏写一处就静默降级 —— agint-mount 的
+  // 10 处 mount.* 发布曾因此全部降级到 ctx.emitEvent，生产 0 条（2026-09-20 取证）。
+  // 补 umbrella 键是纯加法：全名子键不动，已有回退链先试全名、命中即返回，不受影响。
+  // ⚠️ 与 lib/index.js 同步维护（lib 是本文件的 tsc 产物，K78）。
+  ctx.provide('agint.eventBus', {
+    publish: (input: unknown): Promise<PublishResult> =>
+      publish(busCtx, input as EventEnvelope | import('./envelope.js').PublishInput),
+    subscribe: (rawSub: unknown, handler: Handler): Unsubscribe =>
+      subscribe(rawSub as Subscription, handler),
+    inspect: (filter: unknown): EventLogEntry[] => inspect((filter ?? {}) as InspectFilter),
+    inspectSummary: (filter: unknown) => inspectSummary((filter ?? {}) as InspectFilter),
+    deadletters: async () => {
+      try { return await listDeadletters(busCtx); } catch { return []; }
+    },
+    metricsSnapshot: async () => metricsSnapshot(busCtx),
+  });
+
   ctx.provide('agint.eventBus.metricsSnapshot', async () => {
     // A10 尾巴（Sprint 13 / s12-09 收口）：死信率分子 + 分母 + sync 订阅数。
     // 分母 publishedCount 由 bus.ts 维护 —— v0.7.0 缺失导致
