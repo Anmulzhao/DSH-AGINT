@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "接线门禁（bin/check-wiring.mjs）的豁免清单。",
+    "",
+    "用途：把「已判定不接 / 已立项另做 / 上游未通电导致的连带空转」从 FAIL 里摘出去，",
+    "让门禁输出保持为「当下真正该动手的清单」，而不是一张常年不变的旧账单。",
+    "",
+    "⚠️ 加一条豁免必须写全三件事，否则等于埋雷：",
+    "  1) reason —— 为什么不接（一句话讲清因果，别写「暂不处理」）",
+    "  2) evidence —— 判据出处（文档章节 / CHANGELOG / commit hash）",
+    "  3) since —— 判定日期",
+    "",
+    "⛔ 豁免不是永久的：上游一旦通电，连带豁免必须立刻复查（见 sandbox.* 的 unblockWhen）。"
+  ],
+
+  "shellServices": [],
+
+  "topics": [
+    {
+      "topic": "evoorch.task-started",
+      "reason": "P2-3（子代理编排事件化）尚未实施；订阅方（agint-trajectory）已就位，等发布方落地。",
+      "evidence": "plugins/agint-trajectory/CHANGELOG.md §P2-3 实施提醒；docs/plugins/agint-trajectory.md:57",
+      "since": "2026-09-24"
+    },
+    {
+      "topic": "evoorch.task-completed",
+      "reason": "同上，P2-3 未实施。",
+      "evidence": "plugins/agint-trajectory/CHANGELOG.md §P2-3 实施提醒",
+      "since": "2026-09-24"
+    },
+    {
+      "topic": "memory.pre-compress-checkpoint",
+      "reason": "发布方 runPreCompressCheckpoint 无生产调用者，整个 pre_compress 机制从未通电。属压缩流程改造议题，不是总线接线能解决的，单独立项。",
+      "evidence": "docs/known-limitations/event-bus-shadow-publish-gap.md §6.5",
+      "since": "2026-09-24"
+    },
+    {
+      "topic": "hmr.settled",
+      "reason": "需真实挂载后重启才会产生；订阅方已就位，属「等待自然触发」而非接线缺口。",
+      "evidence": "docs/known-limitations/event-bus-shadow-publish-gap.md §6.5 / §6.6",
+      "since": "2026-09-24"
+    },
+    {
+      "topic": "sandbox.passed",
+      "reason": "连带空转：唯一发布路径是 mutator.commit → sandbox.runSmoke，而 agint-mutator 从未通电（存储域 agint_mutator 不存在）。修发布方 = 先让 mutator 通电，加了订阅方也没用。",
+      "evidence": "plugins/agint-mutator/lib/index.js:596；2026-09-24 查 D 取证（agint_mutator 域从未通电）",
+      "since": "2026-09-24",
+      "unblockWhen": "agint_mutator 存储域通电后"
+    },
+    {
+      "topic": "sandbox.failed",
+      "reason": "同上，mutator 从未通电导致的连带空转。订阅方（agint-diagnosis.analyzeFailedSmoke）已就位。",
+      "evidence": "plugins/agint-mutator/lib/index.js:596；plugins/agint-diagnosis/lib/index.js:414",
+      "since": "2026-09-24",
+      "unblockWhen": "agint_mutator 存储域通电后"
+    }
+  ],
+
+  "domains": [
+    {
+      "domain": "agint_search",
+      "reason": "搜索工具，按需调用才会写存储；无人调用不算故障。",
+      "evidence": "2026-09-24 查 D 取证",
+      "since": "2026-09-24"
+    }
+  ]
+}
