@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-event-bus",
-  "version": "0.7.0",
-  "description": "AGINT 事件总线 v0.7.0：纯基础设施插件（第 20 个），不承载进化语义。3 Service（agint.eventBus.publish / agint.eventBus.subscribe / agint.eventBus.inspect）。FROZEN EventEnvelope + Subscription schema（v0.7.0 发版日冻结）。at-least-once + 单订阅者隔离 + 指数退避 + 死信落 agint_event_bus 存储域 + traceId 透传。Sprint 12 通信架构解耦 / 设计稿 Sprint12 §A1-A3。",
+  "version": "0.7.1",
+  "description": "AGINT 事件总线 v0.7.1：纯基础设施插件（第 20 个），不承载进化语义。3 Service（agint.eventBus.publish / agint.eventBus.subscribe / agint.eventBus.inspect）。FROZEN EventEnvelope + Subscription schema（v0.7.0 发版日冻结；v0.7.1 放宽 topic 首段连字符 —— 修与 P0-1 设计稿的契约冲突）。at-least-once + 单订阅者隔离 + 指数退避 + 死信落 agint_event_bus 存储域 + traceId 透传。Sprint 12 通信架构解耦 / 设计稿 Sprint12 §A1-A3。",
   "main": "lib/index.js",
 
   "agint": {

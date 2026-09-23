@@ -5,8 +5,28 @@
 #   - Subscription 顶层 5 字段 + mode enum (sync | async)
 #   - reason 仅在 mode=sync 时必填（哲学对齐审查前置）
 #
+# ⚠️ 冻结口径差异（2026-09-23 发现，尚未收口）：本文件自述冻结「顶层字段」；
+#   同插件 CHANGELOG v0.7.0 段自述冻结「顶层字段 + **字面正则**」——后者更严。
+#   两份冻结声明从未交叉校验过 ⇒ 今后引用冻结范围必须两份都看，取更严者。
+#
 # 不冻结：topic payload 子 schema（由发布方插件自带独立演进，正交）。
 # 变更流程：FROZEN 字段修改走 L0 治理（人类多签 + 7 天影子 + major 版本）。
+#
+# 变更记录：
+#   2026-09-23 — topic.pattern 首段放宽：`[a-z][a-z0-9]*` → `[a-z][a-z0-9-]*`
+#     性质：按 CHANGELOG 的冻结口径，本 pattern 的**字面正则**属 FROZEN ⇒ 严格流程应走
+#           L0 治理。本次按「修契约冲突缺陷」先行落地，L0 手续待补（详见 CHANGELOG 0.7.1 段）。
+#     理由：① 原约束禁首段连字符、而后续段却允许，这个不一致无设计论证；
+#           ② 与 `设计-P0-1-技能自动创建机制.md`（第 414-426 行明文事件契约表）冲突 ——
+#              导致 skill-autocreate.*(14) / skill-graph.updated / compress-guard.*(2)
+#              共 17 个 topic 自建成起静默失效（发布侧 publish 返回 accepted:false 而
+#              调用方不检查返回值 → 零日志；订阅侧 validateSubscription 抛错被启动日志淹没）。
+#     回归论证：生产存储 941 条 / 12 种 topic 在新 pattern 下全部仍合法（零回归）；
+#               event-bus 自身测试样本（evolution.evaluated / mount.succeeded 等）不受影响；
+#               非法样本 'invalid'（无段分隔符）在新 pattern 下仍非法。
+#     同步改动（三处必须一致，少改一处 = 修复被静默回退）：
+#       `src/schemas.ts`（tsc 输入）+ `lib/schemas.js`（运行时产物）。
+#     ⚠️ L0 状态：未走人类多签 + 7 天影子流程，按「修契约冲突缺陷」处理，待人工复核。
 
 schemaVersion: 1
 
@@ -20,8 +40,8 @@ EventEnvelope:
       description: 事件唯一 id（总线或发布方生成；UUIDv4 形式）
     topic:
       type: string
-      pattern: '^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,3}$'
-      description: 主题名；统一小写，段分隔符为 . ；示例：evolution.evaluated / mount.succeeded / self.*
+      pattern: '^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$'
+      description: 主题名；统一小写，段分隔符为 . ；示例：evolution.evaluated / mount.succeeded / skill-autocreate.released
     version:
       type: integer
       minimum: 1
