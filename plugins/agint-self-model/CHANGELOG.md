@@ -1,5 +1,47 @@
 # Changelog — agint-self-model
 
+## v0.7.6 (T2 A7 结算触发修复 · 2026-09-24)
+- **修复「批永远不结算」——A7 一致率恒为 null 的真因**：结算原本只在「批切换
+  （`generatedAt` 变化）」与 `flush()`（dispose）时触发。但一次采集是在**同一个
+  `generatedAt` 下连发多条**，`generatedAt` 从头到尾不变 ⇒ **批永远不会切换**，
+  也就永远等不到结算。生产实读：`batches:0 / compared:0 / consistencyRate:null`，
+  而事件侧照常在发 —— A7 是唯一已切流量的边，却拿不到任何对账证据。
+- **修法：新增空闲结算 `settleIdleMs`（默认 30s，`0` = 禁用）**。批打开后若这么久
+  没有新事件流入，视为「这批发完了」→ 自动结算并强制落盘。每来一条事件重新计时。
+  ⭐ 选择「空闲超时」而非「让发布端在最后一条事件上打标记」，是因为它**不需要发布端配合**，
+  订阅侧单方面即可收批；代价是最多延迟 `settleIdleMs` 才出一致率（对账场景可接受）。
+  定时器 `unref()` —— 否则一个挂着的 timer 会吊住进程不让它退出。
+- 生产验证前置事实（2026-09-24 23:47）：靠 v0.7.5 新加的 `lastIngestAt` 完成二分 ——
+  手动触发一次采集后 `lastIngestAt` 从「09-12 孤本」跳到 `15:45:55`，**证明事件投到了
+  订阅方**，排除投递/订阅故障，把问题收敛到结算语义。这就是 v0.7.5 那个诊断字段的价值。
+- 测试 48/48 PASS（新增 8 条：超时前后状态 / 批关闭 / 两条都进重建 / 自动落盘 /
+  一致率可算出 / `settleIdleMs=0` 保留旧行为）；smoke 19/19 无回归。
+
+## v0.7.5 (T2 A7 对账可观测性修复 · 2026-09-24)
+- **修复「落盘只在批切换时发生」导致的观测黑洞**：`createSnapshotIngest` 原先只有
+  `settle()`（批切换）与 `flush()`（dispose）会触发 `onPersist`。批迟迟不切换时，
+  外部读到的是一份**几周前的死快照**，与「handler 根本没被调用」在数据上无法区分。
+  现改为：每收到一条未触发结算的事件也（按 5 分钟节流）落盘一次。
+- **新增诊断字段 `stats.lastIngestAt`**（最后一次收到事件的时刻，区别于 `lastComparedAt`
+  最后一次结算时刻）。两者组合即可判定停滞性质：
+  - `lastIngestAt` 在涨 + `compared` 不涨 ⇒ 收到了，但批切换语义没触发；
+  - `lastIngestAt` 也不涨 ⇒ handler 没被调用（订阅/投递侧问题）。
+- `bin/t2-reconcile.mjs` 同步：输出 `shadowLastIngestAt`，并新增停滞诊断行
+  （拿事件侧最新一条 `occurredAt` 与 `lastIngestAt` 对比，直接给出"疑似未收到"提示）。
+- 触发本修复的实读事实（2026-09-24）：生产 `metrics_ingest` 停在 `compared=1`、
+  落盘 `2026-09-12T18:15:26Z`，而事件侧 09-13~09-23 仍发了 108 条 `metrics.snapshot`
+  ⇒ A7 是唯一已切流量的边，却 12 天拿不到任何对账证据。
+- 测试 40/40 PASS（新增 5 条：收到事件即落盘 / 不重复写 / lastIngestAt 三态）；smoke 19/19 无回归。
+
+## v0.7.4 (Sprint 16 / T2 A7 切换) — ⚠️ 本段为 2026-09-24 补记
+（package.json 当时已升到 0.7.4，但 CHANGELOG 漏记；内容据 wiki `T2-切边清单.md` §3 摘录。）
+- **A7 切流量**：`metricsIngest` 启用 `mode='apply'`，结算批次重建的快照经 `getLastSnapshot()`
+  成为 `resource_baseline` 的 `latency-ms` 权威数据源；直连 `metrics.summary()` 保留作对账与兜底。
+- **修静默缺陷**：真实存储域热切换漏 `metrics_ingest` 表（v0.7.3 生产落盘静默失败）。
+- **修契约 bug**：`agint.metrics` 的 FROZEN 契约只有 `collect()/summary()`，`snapshot()` 从未存在，
+  导致 apply 后对账空转（`compared=0/skipped=1`）。改用 `summary()`。
+- 重启后手动采集终验：首轮 `compared=1/matched=1`，一致率 100%，`t2-reconcile` 判 A7 PASS。
+
 ## v0.7.3 (Sprint 16 / T2 准备件补强)
 - **A7 统计落盘**：新增 `metrics_ingest` 单行观测表（id='latest'，spec 仍为 version 1，
   参照 skill-autocreate 加表先例）。影子对账统计经 `onPersist` 钩子节流落盘

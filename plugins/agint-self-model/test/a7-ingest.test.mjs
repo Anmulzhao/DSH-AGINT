@@ -150,11 +150,14 @@ ok('影子期一致率为 1', inspect.metricsIngest.consistencyRate === 1);
     persistIntervalMs: 0, // 关闭节流，方便断言
   });
   await inst.ingest(ev('P1', 'e2e.latency-ms', 42, 's1'));
+  // v0.7.5 起：未触发结算的事件也要落盘一次（原来只有批切换才落盘，
+  // 批迟迟不切换时外部看到的是一份死快照）。故 P1 后 writes=1（compared=0）。
+  ok('收到事件即落盘（未结算也落）', writes.length === 1 && writes[0].compared === 0, `writes=${writes.length}`);
   await inst.ingest(ev('P2', 'e2e.latency-ms', 42, 's2')); // 批切换 → 结算 → onPersist
-  ok('结算触发 onPersist', writes.length === 1 && writes[0].compared === 1, `writes=${writes.length}`);
-  ok('onPersist 收到一致率快照', writes[0].consistencyRate === 1);
+  ok('结算触发 onPersist（不重复写）', writes.length === 2 && writes[1].compared === 1, `writes=${writes.length}`);
+  ok('onPersist 收到一致率快照', writes[1].consistencyRate === 1);
   await inst.ingest(ev('P3', 'e2e.latency-ms', 42, 's3'));
-  ok('interval=0 时每次结算都落盘', writes.length === 2, `writes=${writes.length}`);
+  ok('interval=0 时每次结算都落盘', writes.length === 3, `writes=${writes.length}`);
 
   const bad = ingest.createSnapshotIngest({
     getDirectSnapshot: async () => ({ asOf: 'now', count: 1, metrics: [{ key: 'x', value: 1 }] }),
@@ -179,6 +182,59 @@ ok('影子期一致率为 1', inspect.metricsIngest.consistencyRate === 1);
   // 2 次属预期：settle 的 skipped 路径节流落盘 1 次（首次必落）+ flush 强制兜底 1 次（幂等覆盖）
   ok('flush 后统计已落盘（节流 + 强制兜底，幂等）', fw.length === 2, `fw=${fw.length}`);
   ok('落盘内容记录了 skipped', fw[1].skipped === 1);
+}
+
+// ── 8. v0.7.5 lastIngestAt：判别「没结算」还是「没收到」───────────────────
+// 生产背景（2026-09-24 实读）：metrics_ingest 停在 compared=1 / 落盘 09-12，
+// 而事件侧仍在发。旧实现只在批切换时落盘 ⇒ 两种故障在数据上长得一模一样。
+{
+  const writes = [];
+  const inst = ingest.createSnapshotIngest({ onPersist: (s) => writes.push(s), persistIntervalMs: 0 });
+  ok('初始 lastIngestAt 为 null', inst.stats().lastIngestAt === null);
+  await inst.ingest(ev('R1', 'e2e.latency-ms', 1, 'r1'));
+  await inst.ingest(ev('R1', 'e2e.latency-ms', 2, 'r2')); // 同批：不同 snapshotId，不结算
+  const s = inst.stats();
+  ok('同批事件也记录 lastIngestAt', typeof s.lastIngestAt === 'string' && s.lastIngestAt.length > 0);
+  ok('同批不产生结算（compared 仍为 0）', s.compared === 0, `compared=${s.compared}`);
+  ok('但 events 已增长到 2（可与"没收到"区分）', s.events === 2, `events=${s.events}`);
+  ok('stats 暴露 openBatch 便于看批是否卡住', s.openBatch && s.openBatch.keys === 1);
+}
+
+// ── 9. v0.7.6 空闲结算：没有"批结束"信号也要能自动收批 ──────────────────
+// 生产背景（2026-09-24 实读）：一次采集在同一个 generatedAt 下连发多条，
+// 中间没有任何批结束信号 ⇒ 生产实测 batches:0 / compared:0，一致率永远 null，
+// 而事件侧照常在发。修法：用「多久没新事件」代替批结束信号。
+{
+  const writes = [];
+  const direct = { asOf: 'G1', count: 2, metrics: [{ key: 'e2e.latency-ms', value: 1 }, { key: 'tool.calls', value: 2 }] };
+  const inst = ingest.createSnapshotIngest({
+    getDirectSnapshot: async () => direct,
+    onPersist: (s) => writes.push(s),
+    persistIntervalMs: 0,
+    settleIdleMs: 60,
+  });
+  await inst.ingest(ev('G1', 'e2e.latency-ms', 1, 's1'));
+  await inst.ingest(ev('G1', 'tool.calls', 2, 's2')); // 同批第二条：不切换、不结算
+  ok('超时前不结算', inst.stats().compared === 0, `compared=${inst.stats().compared}`);
+  await new Promise((r) => setTimeout(r, 160));
+  const s = inst.stats();
+  ok('静默 settleIdleMs 后自动结算', s.compared === 1, `compared=${s.compared}`);
+  ok('结算后批已关闭', s.openBatch === null, JSON.stringify(s.openBatch));
+  ok('结算计入 batches', s.batches === 1, `batches=${s.batches}`);
+  ok('同批两条都进了重建快照', s.lastBatchSize === 2, `size=${s.lastBatchSize}`);
+  ok('自动结算也落了盘', writes.length > 0 && writes[writes.length - 1].compared === 1);
+  ok('一致率可算出来了（这是修它的目的）', s.consistencyRate === 1, `rate=${s.consistencyRate}`);
+}
+
+// 开关必须能关：0 = 保持旧行为（不自动结算），避免强制改变既有部署语义。
+{
+  const inst = ingest.createSnapshotIngest({
+    getDirectSnapshot: async () => ({ asOf: 'G9', count: 1, metrics: [{ key: 'e2e.latency-ms', value: 1 }] }),
+    settleIdleMs: 0,
+  });
+  await inst.ingest(ev('G9', 'e2e.latency-ms', 1, 'z1'));
+  await new Promise((r) => setTimeout(r, 90));
+  ok('settleIdleMs=0 禁用空闲结算（保留旧行为）', inst.stats().compared === 0, `compared=${inst.stats().compared}`);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

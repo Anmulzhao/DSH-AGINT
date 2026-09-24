@@ -106,6 +106,13 @@ export function compareSnapshot(rebuilt, direct) {
  *   metrics_ingest 表；钩子内部异常由本模块吞掉，绝不影响影子主流程。
  * @param {number} [opts.persistIntervalMs] 落盘节流间隔（默认 5 分钟）
  * @param {number} [opts.maxBatchKeys] 单批 key 上限，防异常 payload 撑爆内存
+ * @param {number} [opts.settleIdleMs] **空闲结算阈值**（默认 30s，0 = 禁用）。
+ *   批打开后若这么久没有新事件流入，视为「这批发完了」→ 自动结算并强制落盘。
+ *   为什么需要它（2026-09-24 生产实证）：结算原本只在「批切换（generatedAt 变化）」
+ *   和 dispose 时触发，可一次采集是在**同一个 generatedAt 下连发多条**，
+ *   **中间没有任何"批结束"信号** ⇒ 批永远等不到结算。生产实读结果就是
+ *   `batches:0 / compared:0`，而事件侧照常在发 —— 一致率永远是 null。
+ *   有了空闲结算，无需发布端配合即可自动收批。
  * @returns {{ingest:Function, flush:Function, stats:Function}}
  */
 export function createSnapshotIngest(opts = {}) {
@@ -116,6 +123,7 @@ export function createSnapshotIngest(opts = {}) {
     onPersist = null,
     persistIntervalMs = 5 * 60 * 1000,
     maxBatchKeys = 512,
+    settleIdleMs = 30 * 1000,
   } = opts;
 
   let current = null; // { generatedAt, metrics: Map<key,value>, seen: Set<string> }
@@ -134,6 +142,13 @@ export function createSnapshotIngest(opts = {}) {
   let lastMismatch = null;
   let lastBatchSize = 0;
   let lastPersistAt = 0;
+  // v0.7.5：最后一次「收到事件」的时刻（不是结算时刻）。
+  // 背景（2026-09-24 实读）：生产 metrics_ingest 停在 compared=1 / 落盘 09-12，
+  // 而事件侧 09-13~09-23 仍发了 108 条 —— 结算只在批切换时触发，于是
+  // 「没结算」与「没收到」在数据上完全无法区分。补这个字段后，一眼可判别：
+  //   lastIngestAt 在涨、compared 不涨  ⇒ 收到了但批从未切换（结算语义问题）
+  //   lastIngestAt 也不涨              ⇒ handler 根本没被调用（订阅/投递问题）
+  let lastIngestAt = null;
   // apply 模式：最近一次结算批次重建的 snapshot（权威路径数据源，供消费方读取）。
   // 事件批次 = 上一次 collect 的快照，与直连存在时差是必然的（值漂移不判定）。
   let lastRebuilt = null;
@@ -149,6 +164,21 @@ export function createSnapshotIngest(opts = {}) {
 
   function openBatch(generatedAt) {
     return { generatedAt, metrics: new Map(), seen: new Set() };
+  }
+
+  // ── 空闲结算定时器（v0.7.6）──────────────────────────────────────────────
+  // 一次采集在同一个 generatedAt 下连发多条，没有"批结束"信号，所以批永远不会切换。
+  // 用「多久没新事件了」代替「批结束信号」：超时即视作本批收完，自动结算。
+  // unref 是必须的 —— 否则一个挂着的定时器会吊住整个进程不让它退出。
+  let idleTimer = null;
+  function clearIdleTimer() {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  }
+  function armIdleTimer() {
+    if (!(settleIdleMs > 0)) return;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => { idleTimer = null; void flush(); }, settleIdleMs);
+    idleTimer.unref?.();
   }
 
   /** 结算一个批次：重建 → 取直连 → 对账 → 计数 */
@@ -204,10 +234,14 @@ export function createSnapshotIngest(opts = {}) {
       const p = envelope?.payload;
       if (!p || typeof p.key !== 'string') return null;
       const generatedAt = typeof p.generatedAt === 'string' ? p.generatedAt : '';
+      let settled = false; // v0.7.5：本条是否触发过结算（结算内部已落盘，不重复写）
       if (!current || current.generatedAt !== generatedAt) {
         const prev = current;
         current = openBatch(generatedAt);
-        if (prev) await settle(prev);
+        if (prev) {
+          await settle(prev);
+          settled = true;
+        }
       }
       const dedupKey = `${p.snapshotId ?? ''}|${p.key}`;
       if (current.seen.has(dedupKey)) {
@@ -217,6 +251,11 @@ export function createSnapshotIngest(opts = {}) {
       current.seen.add(dedupKey);
       if (current.metrics.size < maxBatchKeys) current.metrics.set(p.key, p.value);
       counters.events += 1;
+      lastIngestAt = nowIso();
+      armIdleTimer(); // v0.7.6：每来一条就重新计时；静默 settleIdleMs 后自动收批
+      // v0.7.5：未结算的事件也要（节流）落盘一次。原来只有批切换才落盘，
+      // 于是「批迟迟不切换」时外部看到的是一份 12 天前的死快照 —— 观测被实现细节吞掉。
+      if (!settled) maybePersist();
       return null;
     } catch {
       return null; // 影子期红线：handler 永不抛
@@ -226,6 +265,7 @@ export function createSnapshotIngest(opts = {}) {
   /** 强制结算当前批（dispose / 测试用）。结算后强制落盘一次，别丢尾部数据。 */
   async function flush() {
     try {
+      clearIdleTimer(); // 手动/超时结算都要撤掉待触发的定时器，避免重复结算
       if (!current) return null;
       const batch = current;
       current = null;
@@ -245,6 +285,7 @@ export function createSnapshotIngest(opts = {}) {
       ...counters,
       consistencyRate: total > 0 ? Number((counters.matched / total).toFixed(4)) : null,
       lastComparedAt,
+      lastIngestAt, // v0.7.5：见 createSnapshotIngest 内的说明（判别"没结算" vs "没收到"）
       lastMismatch,
       lastBatchSize,
       openBatch: current ? { generatedAt: current.generatedAt, keys: current.metrics.size } : null,
