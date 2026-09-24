@@ -116,3 +116,42 @@ agint-mutator 从未通电
 - `docs/known-limitations/event-bus-shadow-publish-gap.md` —— K63 的原型；本文是它的**上游根因**
 - K77 / 文档 §6.14 —— 外部直写生产存储不算落库（本次查 D 依赖该结论：磁盘文件是可信判据）
 - `docs/plugins/agint-mutator.md:113` —— "未来消费方"死结的出处
+
+---
+
+## 七、2026-09-24 修复进展（未完 —— 差一次重启）
+
+### 7.1 根因层已修：5 个 umbrella 键
+
+`commit 5a0…`（详见历史）给 5 个插件补了命名空间键（纯加法，全名子键一个没动）：
+`agint.eventBus` / `agint.diagnosis` / `agint.mutator` / `agint.population` / `agint.selfModel`。
+
+**判据变化**：`bin/verify-umbrella.mjs` 用 mock ctx 真跑 `apply()`，不再靠 grep 证伪。
+当前 bundle + mirror 双位置 **10/10 PASS**，两条真实依赖链已通电：
+`agint-mutator → agint.eventBus.publish/subscribe`（此前必降级到 `ctx.emitEvent`）、
+`agint-population → agint.mutator`（此前 `softDep` 恒空）。
+
+### 7.2 ⚠ 尚未生效 —— 部署晚于 boot
+
+| 时间 (UTC+8) | 事件 |
+|---|---|
+| 09-24 00:35 | 宿主 boot（pid 4860，见 `.agint-restart/marker.json`）|
+| 09-24 02:20 | umbrella 键 6 个文件部署到 bundle + 镜像位 |
+| 09-24 08:40 | metrics / dreamCounters 补齐部署 |
+
+**部署晚于启动 ⇒ 当前宿主进程里跑的仍是旧代码**，
+`verify-umbrella` 全绿只能证明"磁盘上的字节码是对的"，证明不了"进程加载的是它"。
+→ **必须再重启一次**，之后按 §7.3 验收。
+
+这条险些漏掉：门禁、自测、以及"已重启"这句话当时全部看起来正常。
+固化判据见同批新增的门禁**查 H**（`check-wiring.mjs`）——仓库与部署位 191 个 lib 文件逐 hash 比对，
+待上线清单直接输出，专治"改了没上线"的静默失败。
+
+### 7.3 重启后验收清单
+
+1. `bin/check-wiring.mjs` → PASS（0 硬缺口，查 H 报"已全部同步"）
+2. `bin/verify-umbrella.mjs` → 10/10 PASS
+3. 隔一段时间后复查 Topics 计数：
+   - `mount.requested / mount.succeeded` 是否**从 0 变成非 0**（此前因缺 umbrella 键全降级）
+   - `agint_mount` / `agint_population` 域文件是否出现（此前查 D 判 DEAD）
+4. 若 3 仍为 0：说明还有下游触发链条没通，回到本文 §二重新盘点 —— 别直接认定"修好了"
