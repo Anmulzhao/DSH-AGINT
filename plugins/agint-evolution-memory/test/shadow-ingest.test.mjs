@@ -79,6 +79,27 @@ test('回归：提案阶段语义不得丢失（origin / kind / stage 进 tags�
   assert.match(call, /stage:proposed/, 'tags 必须标注 stage:proposed，便于与 Phase 4 决策区分');
 });
 
+test('T2 切换：事件路径须标记权威身份 t2:authoritative', () => {
+  // 2026-09-25：A1 已确认无直连可切（evolution_log 里 stage:proposed 行 100% 带 event-bus），
+  // 事件即唯一权威路径。该标记让「权威身份」在数据上可查，不只是注释里写着。
+  const call = extractHandlerCall(indexSrc);
+  assert.match(
+    call,
+    /t2:authoritative/,
+    'tags 必须含 t2:authoritative（A1 已无直连对照，事件路径即权威）',
+  );
+});
+
+test('T2 切换：对账依赖的旧 tag 不得移除（消费方兼容）', () => {
+  // 双向 grep 确认的消费方：
+  //   'event-bus'     → bin/t2-reconcile.mjs:141 isShadow 判定
+  //   'shadow-ingest' → eval/scenarios/driver.js:280 主 driver 断言
+  // 名字虽已与语义不符（本边不再是影子），但移除会破坏门禁 ⇒ 必须保留。
+  const call = extractHandlerCall(indexSrc);
+  assert.match(call, /'event-bus'/, "必须保留 'event-bus'（对账脚本依赖）");
+  assert.match(call, /'shadow-ingest'/, "必须保留 'shadow-ingest'（主 driver 断言依赖）");
+});
+
 test('回归：影子订阅不得静默吞错（禁止空 catch 块）', () => {
   // 只看 handler 函数体（unsubscribe 清理用的空 catch 不在检查范围：dispose 阶段合理）
   const start = indexSrc.indexOf('async (envelope) =>');

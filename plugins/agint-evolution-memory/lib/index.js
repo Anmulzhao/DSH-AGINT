@@ -399,11 +399,24 @@ function apply(ctx) {
     limits: LIMITS,
   });
 
-  // ── Sprint 12 A1（T1 影子期）：订阅 evolution.proposed → 写 evolution_log ─
+  // ── Sprint 12 A1：订阅 evolution.proposed → 写 evolution_log ──────────────
   // 设计稿 §A1：population → (bus) → evolution-memory 的异步通路。
-  // **直连路径完整保留**：上层仍可走 evo.logPhase4() / addFailure()；
-  //   本 handler 把 event-bus 收到的 proposal 影子写一份入 evolution_log，
-  //   tag = 'event-bus' 便于 T2 灰度期对账（bus vs 直连 写入差集）。
+  //
+  // 【2026-09-25 T2 切换：本边已无「影子」语义，事件路径即唯一权威路径】
+  // 生产取证（evolution_log 170 行）：`stage:proposed` 行**仅 2 条，且 100% 带
+  //   'event-bus' 标签** —— **不存在任何直连写入的提案阶段记录**。
+  //   ⇒ 上层 `evo.logPhase4()` 写的是 Phase 4 **决策**记录（decision 枚举四值），
+  //      与本 handler 写的**提案阶段**记录是**两类不同记录，不是同一条的双写**。
+  //   ⇒ 因此本边**没有直连可切**：流量自 A1 接线起就 100% 走事件。
+  //   ⇒ **对账口径随之修正**（见 bin/t2-reconcile.mjs）：`shadowCoverage` 在此边上
+  //      的真实语义是「事件 → 落库率」，**不是**「影子 vs 直连一致率」。
+  //
+  // ⛔ tag 兼容性（改动前必看，双向 grep 已确认消费方）：
+  //   - 'event-bus'        → bin/t2-reconcile.mjs:141 `isShadow` 判定依赖，**不可移除**
+  //   - 'shadow-ingest'    → eval/scenarios/driver.js:280 断言依赖，**不可移除**
+  //      （名字已与语义不符——本边不再是影子；保留仅为不破坏主 driver 门禁）
+  //   - 'stage:proposed'   → 本插件单测断言依赖
+  //   新增 't2:authoritative' 标记权威身份（消费方只做 includes 判定，加 tag 安全）。
   // fix-20260907（提案 f9d8550b 真因）：原实现往 logPhase4Buffered 传了
   //   decision='PROPOSED' 和 targetKind='evolution.proposed:*'，两者都**不在**
   //   evolutionLogEntrySchema 的枚举里（decision 只允许 Phase 4 四决策；
@@ -459,6 +472,7 @@ function apply(ctx) {
               tags: [
                 'event-bus',
                 'shadow-ingest',
+                't2:authoritative',
                 'stage:proposed',
                 `origin:${p.origin || 'unknown'}`,
                 `kind:${p.kind || 'unknown'}`,
