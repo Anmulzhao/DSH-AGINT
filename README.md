@@ -6,7 +6,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**Latest**：v0.8.3 · **32 个 Cordis 插件** · 24 个 preset 工具行 · 14 个 cron job · D-QAF v0.2 · HARM 四维
+**Latest**：v0.8.4 · **32 个 Cordis 插件** · 24 个 preset 工具行 · 14 个 cron job · D-QAF v0.2 · HARM 四维
 
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**，以及 P7.5 的**自进化执行层**（技能自动创建 / 策展 / 学习图谱 / 轨迹记录 / 记忆压缩守卫）。
 
@@ -127,14 +127,14 @@ cd ~/projects/AGINT
 
 AGINT 依赖 dsh，不 fork、不修改 dsh 源码；能力通过 **bundle 层**（`dsh.profile.bundles`）与 **agent-preset 层** 注入。dsh 升级后：`node bin/check-dsh-compat.mjs` → 重跑 `install/install.sh`。详细边界见 [`docs/dsh-integration.md`](./docs/dsh-integration.md) 与 Wiki 与 dsh 的关系。
 
-## 哲学对齐检查（v0.8.3）
+## 哲学对齐检查（v0.8.4）
 
-- **真实 > 讨好**：`--dry-run` 全绿**不等于**真跑过 —— v0.8.2 那批 install 改动，靠「原样调用真函数的最小复现」才抓到「真跑一次 = 装完自毁」。验收方式本身有盲区时，换一种取证方式，而不是宣布通过。
-- **靠谱 > 聪明**：安全检查的绝对路径判定放宽，**只改「像不像绝对路径」这一条** —— 后面的含 `..` / 存在性 / 可写性 / 磁盘空间一条未动。修门框，不拆门。
-- **简洁 > 冗余**：注册 bundle 走 python/json 解析改写，已注册时**逐字节不重写文件**（`diff` 只差那一行），不靠 `sed` 兜，也不整份重排清单。
-- **安全 > 效率**：`rollback()` 加 `rc=0` 守卫修「成功退出即自毁」，同时**保住失败时的回滚能力**（`exit 1` 仍照删）—— 修一个洞，不能顺手把护栏废掉。
+- **真实 > 讨好**：wiki 上「A7 一致率 100% PASS」躺了 12 天，实读生产才看清那是 **09-12 的孤本、对账早已停摆**（`batches:0 / compared:0`，事件侧照常在发）。**指标没在动 ≠ 指标在通过** —— 也顺带纠偏了「演练 14/14 过」不能当 A2 放行依据（它只验降级，没验决策回传）。
+- **靠谱 > 聪明**：A1 放宽门禁**只放宽样本量，不放宽正确率**（`PASS_WEAK` 要求窗口内 100% 全覆盖），且给排除名单配了 `--no-exclude-known` 关闭开关 —— 能随时看未排除的原始数。**没有开关的排除名单就是后门。**
+- **简洁 > 冗余**：A7 修法选「订阅侧空闲超时收批」而不是「让发布端在末条打 index/total 标记」—— 单边可收批，不用动两边，发布端以后怎么改都不影响。
+- **安全 > 效率**：A2 **决议不切**（耦合豁免）。sync 超时降级是 `PENDING_REVIEW`，用在通知场景是保守，用在门禁决策上会 **fail-closed 反噬** —— 总线一抖，所有部署全部卡住。不为「形式上统一走事件」去换一个更糟的故障模式。
 
-历史版本（v0.7.x–v0.8.2）的检查记录见 git 历史与 Wiki [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
+历史版本（v0.7.x–v0.8.3）的检查记录见 git 历史与 Wiki [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
 
 ## 许可
 
