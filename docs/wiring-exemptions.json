@@ -50,6 +50,13 @@
       "since": "2026-09-24"
     },
     {
+      "topic": "self.model.updated",
+      "reason": "实际消费走 agint.selfModel.snapshot() 直连，不经过总线；本事件是 A11 的 T1 影子期 publish-only 产物（self-model 插件注释明写）。预期订阅方 agint-curriculum 又从未通电。硬造一个订阅方只会多一个没人读的计数器。",
+      "evidence": "plugins/agint-self-model/lib/index.js:6,17（publish-only 声明）；plugins/agint-curriculum/lib/schema.js:6 用的是 snapshot() 直连而非事件",
+      "since": "2026-09-24",
+      "unblockWhen": "若将来真有消费方需要「自模型变更通知」语义（而非按需拉取），再接订阅；否则应反过来考虑停发"
+    },
+    {
       "topic": "sandbox.passed",
       "reason": "连带空转：唯一发布路径是 mutator.commit → sandbox.runSmoke，而 agint-mutator 从未通电（存储域 agint_mutator 不存在）。修发布方 = 先让 mutator 通电，加了订阅方也没用。",
       "evidence": "plugins/agint-mutator/lib/index.js:596；2026-09-24 查 D 取证（agint_mutator 域从未通电）",

@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { computeMetrics, describeMetric } from './metrics.js';
 import { attachPolicyCounterSubscription } from './policyCounters.js';
 import { attachMountCounterSubscription } from './mountCounters.js';
+import { attachDreamCounterSubscription } from './dreamCounters.js';
 import { metricSchema, defaultRandomId, buildMetricsService } from './service.js';
 
 const name = 'agint-metrics';
@@ -45,6 +46,7 @@ function apply(ctx) {
   let disposed = false;
   let _policyBusUnsubscribe = null;
   let _mountBusUnsubscribe = null;
+  let _dreamBusUnsubscribe = null;
 
   // ctx.effect semantics: callback runs IMMEDIATELY; its RETURN value is the
   // disposer that runs when this fiber is disposed (K4/K8 double-sentinel).
@@ -55,6 +57,8 @@ function apply(ctx) {
     try { if (typeof _policyBusUnsubscribe === 'function') _policyBusUnsubscribe(); }
     catch { /* ignore */ }
     try { if (typeof _mountBusUnsubscribe === 'function') _mountBusUnsubscribe(); }
+    catch { /* ignore */ }
+    try { if (typeof _dreamBusUnsubscribe === 'function') _dreamBusUnsubscribe(); }
     catch { /* ignore */ }
     if (domain) return domain.close();
   });
@@ -86,6 +90,13 @@ function apply(ctx) {
       // A2 接线（2026-09-20）：mount.* 六个 topic 此前**有发布方、零订阅方**，
       // 挂载成功/失败完全不可观测。这里补上计数订阅。
       _mountBusUnsubscribe = attachMountCounterSubscription({
+        subscribeFn: _subscribeBus,
+        tableFn: table,
+        randomIdFn: randomId,
+      });
+      // 2026-09-24：dream.rejected 有发布方、零订阅方 —— dream 拒了多少完全不可观测。
+      // dream 当前真实卡点是去重（K68），拒绝率是最直接的诊断信号。
+      _dreamBusUnsubscribe = attachDreamCounterSubscription({
         subscribeFn: _subscribeBus,
         tableFn: table,
         randomIdFn: randomId,

@@ -447,6 +447,61 @@ if (existsSync(BUNDLE_PLUGINS) && existsSync(MIRROR_PLUGINS)) {
 }
 const dupOk = dup.divergent.length === 0 && dup.mirrorMissing.length === 0;
 
+// ───────────── 查 H：仓库 ↔ 部署位漂移（改了没上线 / 线上比仓库新） ─────────
+// MEMORY 三层之痛：仓库有代码 ≠ 部署到宿主 ≠ 挂载生效。
+// 查 E 只对比两份部署位，覆盖不到「改了仓库但忘了跑 install」——
+// 而 umbrella 键那次就是这么差点漏验收的（02:20 部署，宿主 00:35 就起来了）。
+//
+// 这类漂移在开发中是**常态**（改完还没部署），所以默认只报清单、不进退出码；
+// --strict 下才视为缺口。目的是让"上线前还有什么没同步"一眼可见。
+const REPO_PLUGINS = join(fileURLToPath(new URL('..', import.meta.url)), 'plugins');
+
+function listLibFiles(root) {
+  const out = [];
+  if (!existsSync(root)) return out;
+  for (const d of readdirSync(root, { withFileTypes: true })) {
+    if (!d.isDirectory() || d.name.startsWith('.')) continue;
+    const libDir = join(root, d.name, 'lib');
+    if (!existsSync(libDir)) continue;
+    const walk = (cur, rel) => {
+      for (const e of readdirSync(cur, { withFileTypes: true })) {
+        const p = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(join(cur, e.name), p);
+        else if (e.name.endsWith('.js')) out.push(`${d.name}/lib/${p}`);
+      }
+    };
+    walk(libDir, '');
+  }
+  return out;
+}
+
+const drift = { checked: 0, repoNewer: [], hostNewer: [], repoOnly: [], hostOnly: [] };
+if (existsSync(BUNDLE_PLUGINS) && existsSync(REPO_PLUGINS)) {
+  const repoFiles = new Set(listLibFiles(REPO_PLUGINS));
+  const hostFiles = new Set(listLibFiles(BUNDLE_PLUGINS));
+  for (const rel of repoFiles) {
+    drift.checked++;
+    const rp = join(REPO_PLUGINS, rel);
+    const hp = join(BUNDLE_PLUGINS, rel);
+    if (!hostFiles.has(rel)) {
+      drift.repoOnly.push(rel);
+      continue;
+    }
+    try {
+      const a = readFileSync(rp);
+      const b = readFileSync(hp);
+      if (sha(a) !== sha(b)) drift.repoNewer.push(rel);
+    } catch {
+      /* ignore */
+    }
+  }
+  // 反方向：部署位有、仓库没有 —— 更危险，说明宿主被本地改过而仓库不知情
+  for (const rel of hostFiles) {
+    if (!repoFiles.has(rel)) drift.hostOnly.push(rel);
+  }
+}
+const driftOk = drift.repoNewer.length === 0 && drift.hostOnly.length === 0;
+
 // ─────────────────────────── 输出 ────────────────────────────────────────
 const fails = [
   ...shellServices.filter((s) => !exempService.has(s.name)).map((s) => ({ kind: 'SHELL_SERVICE', name: s.name })),
@@ -493,6 +548,13 @@ if (AS_JSON) {
         })),
         tsDrift,
         dualCopy: dup,
+        drift: {
+          checked: drift.checked,
+          repoNewer: drift.repoNewer,
+          repoOnly: drift.repoOnly,
+          hostOnly: drift.hostOnly,
+          ok: driftOk,
+        },
         domains: {
           energized: energized.map((d) => ({ domain: d.domain, plugin: d.plugin, bytes: d.size })),
           neverEnergized: neverEnergized.map((d) => ({
@@ -511,7 +573,7 @@ if (AS_JSON) {
   process.exit(exitCode);
 }
 
-const C = { red: '\x1b[31m', yel: '\x1b[33m', dim: '\x1b[2m', b: '\x1b[1m', r: '\x1b[0m' };
+const C = { red: '\x1b[31m', grn: '\x1b[32m', yel: '\x1b[33m', dim: '\x1b[2m', b: '\x1b[1m', r: '\x1b[0m' };
 console.log(`${C.b}AGINT 接线完整性门禁${C.r}  ${C.dim}${new Date().toISOString()}${C.r}`);
 console.log(`${C.dim}生产存储: ${BUS_STORAGE}${C.r}`);
 if (prodError) console.log(`${C.yel}⚠ 生产存储读不到：${prodError}${C.r}\n`);
@@ -599,7 +661,30 @@ if (!dup.checked) {
   for (const d of dup.mirrorMissing) console.log(`  ${C.yel}MIRROR-MISSING${C.r} ${d}`);
 }
 
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}`);
+console.log(`\n${C.b}── 查 H：仓库 ↔ 部署位漂移 ──${C.r}`);
+if (!drift.checked) {
+  console.log(`  ${C.dim}跳过：未检出 bundle 部署布局${C.r}`);
+} else {
+  console.log(
+    `  ${C.dim}比对 ${drift.checked} 个 lib 文件${C.r}  ` +
+      `${drift.repoNewer.length ? `${C.yel}待上线 ${drift.repoNewer.length}${C.r}  ` : `${C.grn}已全部同步${C.r}  `}` +
+      `${drift.hostOnly.length ? `${C.red}部署位多出 ${drift.hostOnly.length}${C.r}  ` : ''}` +
+      `${drift.repoOnly.length ? `${C.dim}仓库独有 ${drift.repoOnly.length}${C.r}` : ''}`,
+  );
+  const VERBOSE = argv.includes('--verbose');
+  const show = (label, arr, color) => {
+    if (!arr.length) return;
+    const head = VERBOSE ? arr : arr.slice(0, 8);
+    console.log(`  ${color}${label}${C.r}`);
+    for (const f of head) console.log(`    ${C.dim}${f}${C.r}`);
+    if (!VERBOSE && arr.length > head.length) console.log(`    ${C.dim}… 另 ${arr.length - head.length} 条（--verbose 展开）${C.r}`);
+  };
+  show('待上线（仓库已改，部署位还是旧的 —— 需跑 install 才生效）', drift.repoNewer, C.yel);
+  show('部署位独有（宿主被本地改过，仓库不知情 —— 下次 install 会被覆盖）', drift.hostOnly, C.red);
+  show('仓库独有（新文件尚未部署）', drift.repoOnly, C.dim);
+}
+
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}${driftOk ? '' : ' / 存在待上线改动'}`);
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
 else console.log(`${C.dim}PASS${C.r}`);

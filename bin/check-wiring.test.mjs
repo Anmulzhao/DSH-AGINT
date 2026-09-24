@@ -56,8 +56,20 @@ describe('输出契约', () => {
     assert.ok(report.prodTotal > 0, '生产事件数为 0 —— 要么存储路径错了，要么总线真的空了');
   });
 
-  test('存在缺口时退出码为 1（门禁必须真的能拦）', () => {
-    assert.equal(exitCode, 1, `退出码 ${exitCode} —— 有缺口却不报错，门禁形同虚设`);
+  test('退出码与缺口一致（有缺口必须 exit 1，无缺口才 exit 0）', () => {
+    const hardGaps =
+      report.topics.filter((t) => t.verdict === 'ORPHAN_TOPIC' || t.verdict === 'NO_SUBSCRIBER').length +
+      report.missingServices.length +
+      (report.tsDrift?.length ?? 0) +
+      (report.dualCopy?.divergent?.length ?? 0) +
+      (report.dualCopy?.mirrorMissing?.length ?? 0);
+    assert.equal(
+      exitCode,
+      hardGaps > 0 ? 1 : 0,
+      `缺口 ${hardGaps} 条却退出 ${exitCode} —— 门禁的拦与放必须对得上`,
+    );
+    // 反向验证：不能因为"什么都查不出来"才绿。生产数据必须真的读到了。
+    assert.ok(report.topics.some((t) => t.prodCount > 0), '一条生产数据都没有 —— 门禁可能根本没连上存储');
   });
 });
 
@@ -112,6 +124,33 @@ describe('豁免机制', () => {
 
   test('查 G：TS 源与产物无漂移（只改 lib 会被下次 build 静默回退）', () => {
     assert.deepEqual(report.tsDrift ?? [], [], 'lib 与 src 的 provide 键集合不一致 —— 下次 build 会丢服务');
+  });
+
+  test('查 H：仓库改动已全部上线（部署位不应停留在旧 hash）', () => {
+    assert.ok(
+      Array.isArray(report.drift.repoNewer),
+      'JSON 里缺少 drift.repoNewer —— 查 H 没导出结果',
+    );
+    assert.deepEqual(
+      report.drift.repoNewer,
+      [],
+      `这些文件改了仓库还没部署到宿主：\n${report.drift.repoNewer.join('\n')}`,
+    );
+  });
+
+  test('查 H：部署位没有仓库不知情的本地改动', () => {
+    assert.deepEqual(
+      report.drift.hostOnly,
+      [],
+      `宿主部署位有仓库里不存在的文件（下次 install 会覆盖，需先回收）：\n${report.drift.hostOnly.join('\n')}`,
+    );
+  });
+
+  test('查 H：漂移比对确实扫到了足够多的文件（挂空档要能发现）', () => {
+    assert.ok(
+      report.drift.checked > 100,
+      `只比对了 ${report.drift.checked} 个文件 —— 多半是路径算错了，查 H 形同虚设`,
+    );
   });
 
   test('双副本没有走偏（bundle 位 vs 兼容镜像位逐字节一致）', () => {
