@@ -6,7 +6,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**Latest**：v0.8.2 · **32 个 Cordis 插件** · 24 个 preset 工具行 · 14 个 cron job · D-QAF v0.2 · HARM 四维
+**Latest**：v0.8.3 · **32 个 Cordis 插件** · 24 个 preset 工具行 · 14 个 cron job · D-QAF v0.2 · HARM 四维
 
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**，以及 P7.5 的**自进化执行层**（技能自动创建 / 策展 / 学习图谱 / 轨迹记录 / 记忆压缩守卫）。
 
@@ -77,9 +77,9 @@ cd ~/projects/AGINT
 ./install/install.sh
 ```
 
-`install.sh` 按序：① 跑 `agint-security-checks.sh`，任一 fail 即中止；② 铺 preset → `$DSH_HOME/.agent-presets/`；③ 建两个依赖解析入口（见下）；④ zod bootstrap；⑤ 镜像插件 → bundle 部署位（同时留 `profiles/web/plugins` 兼容位，供少数按老路径定位的代码用）；⑥ **整份复制**挂载层（`cordis.patch.yml` + `package.json`）；⑦ 装后静态校验。幂等可回滚：备份到 `$DSH_HOME/.agint-backups/`（保留 10 份），`trap EXIT` 跟踪部分安装、失败自动还原；`--dry-run` 只打印不落盘。
+`install.sh` 按序：① 跑 `agint-security-checks.sh`，任一 fail 即中止；② 铺 preset → `$DSH_HOME/.agent-presets/`；③ 建两个依赖解析入口（见下）；④ zod bootstrap；⑤ 镜像插件 → bundle 部署位（同时留 `profiles/web/plugins` 兼容位，供少数按老路径定位的代码用）；⑥ **整份复制**挂载层（`cordis.patch.yml` + `package.json`）；⑦ **注册 bundle**：把 `@agint/host` 追加进 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles`（幂等：已注册只打印跳过、不重写文件；清单不存在则 warn 并给出手工补救）；⑧ 装后静态校验。幂等可回滚：备份到 `$DSH_HOME/.agint-backups/`（保留 10 份），`trap EXIT` 跟踪部分安装、失败自动还原；`--dry-run` 只打印不落盘。
 
-**还要手动一步 —— 注册 bundle**（`install.sh` 目前不代劳）：在 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles` 里加上 `@agint/host`。⚠️ `uninstall.sh` 会**自动摘掉**它但 `install.sh` 不会加回来 ⇒ **卸载后重装必须确认这一行**，否则 bundle 躺在磁盘上却不加载，**且不报错**。
+> ⛔ 第 ⑦ 步不能省：少了它，bundle 目录在、patch 在，但 dsh **根本不加载它** —— 现象是「装完像没装」，**且零报错**。`uninstall.sh` 会对称地把它摘掉，所以卸载后重装也不会漏。
 
 装完须重启 `dsh web`（bundle 层与 profile 层都不热更新）；启动 stderr 不该出现 `skipping profile bundle "@agint/host"`。
 
@@ -127,14 +127,14 @@ cd ~/projects/AGINT
 
 AGINT 依赖 dsh，不 fork、不修改 dsh 源码；能力通过 **bundle 层**（`dsh.profile.bundles`）与 **agent-preset 层** 注入。dsh 升级后：`node bin/check-dsh-compat.mjs` → 重跑 `install/install.sh`。详细边界见 [`docs/dsh-integration.md`](./docs/dsh-integration.md) 与 Wiki 与 dsh 的关系。
 
-## 哲学对齐检查（v0.8.2）
+## 哲学对齐检查（v0.8.3）
 
-- **真实 > 讨好**：交付形态大改后，静态验收全绿也**没有**宣布「已生效」—— 明确标注真机重启验收未做，不把"装了"说成"跑通了"。
-- **靠谱 > 聪明**：zod「相对路径借依赖」这个坑用 A/B 单变量定位（同一份文件在 bundle 位 EPERM、兼容位 OK），不靠猜。
-- **简洁 > 冗余**：`anchorInsertedPluginNames` 只锚 `name:` ⇒ 没为了"看起来干净"去批量改写 36 行 `./plugins/…` 路径，改动面压到最小。
-- **安全 > 效率**：profile 级 patch 残留 AGINT 段 ⇒ `install.sh` **fail-closed 中止**（防双重挂载）；`uninstall.sh` 保留包内 junction（防 `rm -rf` 连坐删掉 dsh 的 266 个包）。
+- **真实 > 讨好**：`--dry-run` 全绿**不等于**真跑过 —— v0.8.2 那批 install 改动，靠「原样调用真函数的最小复现」才抓到「真跑一次 = 装完自毁」。验收方式本身有盲区时，换一种取证方式，而不是宣布通过。
+- **靠谱 > 聪明**：安全检查的绝对路径判定放宽，**只改「像不像绝对路径」这一条** —— 后面的含 `..` / 存在性 / 可写性 / 磁盘空间一条未动。修门框，不拆门。
+- **简洁 > 冗余**：注册 bundle 走 python/json 解析改写，已注册时**逐字节不重写文件**（`diff` 只差那一行），不靠 `sed` 兜，也不整份重排清单。
+- **安全 > 效率**：`rollback()` 加 `rc=0` 守卫修「成功退出即自毁」，同时**保住失败时的回滚能力**（`exit 1` 仍照删）—— 修一个洞，不能顺手把护栏废掉。
 
-历史版本（v0.7.x–v0.8.1）的检查记录见 git 历史与 Wiki [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
+历史版本（v0.7.x–v0.8.2）的检查记录见 git 历史与 Wiki [变更日志](https://github.com/Anmulzhao/DSH-AGINT/wiki/变更日志)。
 
 ## 许可
 
