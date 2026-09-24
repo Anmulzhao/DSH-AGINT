@@ -1,5 +1,41 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.7 (2026-09-25) — A1 T2 切换：事件路径标记权威（本边无直连可切）
+
+### Changed
+
+- **A1 `evolution.proposed`：T1 影子期 → T2 权威路径**（实为「摘影子帽」，不是切流量 —— 见下）。
+- 新增 tag **`t2:authoritative`**，让「本边由事件路径唯一供给」在数据上可查（不只是注释里写着）。
+
+### 为什么是「标记权威」而不是「切换流量」
+
+生产取证（`evolution_log` 170 行）：`stage:proposed` 行**仅 2 条，且 100% 带 `event-bus` 标签**
+⇒ **不存在任何直连写入的提案阶段记录**。上层 `evo.logPhase4()` 写的是 Phase 4 **决策**记录
+（decision 枚举四值），与本 handler 写的**提案阶段**记录是**两类不同记录，不是同一条的双写**。
+
+⇒ **A1 自接线起流量就 100% 走事件，没有直连可切。** 所谓「影子」是历史命名遗留：
+本边从来没有直连对照物，`shadowCoverage` 在此边上的真实语义是「事件 → 落库率」，
+**不是**「影子 vs 直连一致率」。
+
+### ⛔ tag 兼容性（改动前必看，双向 grep 已确认消费方）
+
+| tag | 消费方 | 处置 |
+|---|---|---|
+| `event-bus` | `bin/t2-reconcile.mjs:141` `isShadow` 判定 | **保留**（移除即对账失效） |
+| `shadow-ingest` | `eval/scenarios/driver.js:280` 主 driver 断言 | **保留**（名字已与语义不符，移除即破门禁） |
+| `stage:proposed` | 本插件单测断言 | 保留 |
+
+新增 `t2:authoritative`：消费方只做 `includes` 判定，追加 tag 安全。
+
+### Tests
+
+- `test/shadow-ingest.test.mjs` 6 → **8 pass**（新增 2 条）：
+  ① 事件路径须标记 `t2:authoritative`；② 对账依赖的旧 tag 不得移除（锁住上表兼容性）。
+- `domain-race` 4/4、`log-buffer` 9/9 无回归。
+- `test/smoke.mjs` 13/13 绿（第 14 项挂起为**既有问题**，stash 对照验证：改动前同样挂起，与本改动无关）。
+
+---
+
 ## 0.6.6 (2026-09-07) — 影子订阅写入契约修复（fix f9d8550b）
 
 ### Fixed
