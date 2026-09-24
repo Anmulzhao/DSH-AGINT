@@ -123,7 +123,7 @@ agint-mutator 从未通电
 
 ### 7.1 根因层已修：5 个 umbrella 键
 
-`commit 5a0…`（详见历史）给 5 个插件补了命名空间键（纯加法，全名子键一个没动）：
+`fcc9a76` 给 5 个插件补了命名空间键（纯加法，全名子键一个没动）：
 `agint.eventBus` / `agint.diagnosis` / `agint.mutator` / `agint.population` / `agint.selfModel`。
 
 **判据变化**：`bin/verify-umbrella.mjs` 用 mock ctx 真跑 `apply()`，不再靠 grep 证伪。
