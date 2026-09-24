@@ -455,8 +455,10 @@ function apply(ctx, cfg = {}) {
       }),
     }],
     source: {
-      kind: 'plugin',
-      plugin: 'agint-restart',
+      // ⚠️ v4 硬契约（K78 / dsh 0.1.7+）：kind 必须是 producer-owned 形态
+      // `plugin:<name>`；旧的 kind:'plugin' 会被 v4 校验硬拒（同 K78）。
+      kind: `plugin:${name}`,
+      plugin: name,
       form: 'notice',
       summary: `agint-restart: DSH restarted at ${doc.bootAt}`,
     },

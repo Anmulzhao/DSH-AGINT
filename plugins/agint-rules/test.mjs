@@ -139,7 +139,9 @@ try {
   assert.equal(msg.role, 'user', 'advisory message must carry role:user');
   assert.equal(typeof msg.id, 'string', 'advisory message must carry an id');
   assert.ok(msg.id.length > 0, 'advisory id must be non-empty');
-  assert.equal(msg.source.kind, 'plugin', 'advisory source.kind must be plugin');
+  // K78：v4 会话格式（dsh 0.1.7+）只接受 producer-owned kind，即 `plugin:<name>`。
+  // 旧断言的裸 'plugin' 会让注入那一轮被 v4 校验硬拒。
+  assert.equal(msg.source.kind, 'plugin:agint-rules', 'advisory source.kind must be producer-owned (plugin:agint-rules)');
   assert.equal(msg.source.plugin, 'agint-rules', 'advisory source.plugin must be set');
   assert.ok(
     Array.isArray(msg.content) && msg.content.length > 0 && msg.content[0].type === 'text',

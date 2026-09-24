@@ -385,7 +385,11 @@ export function buildAdvisoryMessage(toolName, advisories) {
   return {
     role: 'user',
     id: randomUUID(),
-    source: { kind: 'plugin', plugin: name, form: 'advisory' },
+    // ⚠️ v4 硬契约（K78 / dsh 0.1.7+）：source.kind 必须是 producer-owned 形态
+    // `plugin:<name>`。旧写法 kind:'plugin' 被 v4 校验硬拒 ——
+    // "format v4 message requires a producer-owned source kind"，注入那一轮直接失败。
+    // `plugin` 字段保留（v4 迁移会丢弃它，但 AGINT 测试与审计按它认人）。
+    source: { kind: `plugin:${name}`, plugin: name, form: 'advisory' },
     content: [{
       type: 'text',
       text: `agint-rules advisory: tool=${toolName} matched ${advisories.length} rule(s).\n${lines.join('\n')}\n(本会话首次命中，仅提示一次；这是系统规则提醒，不是阻断。后续同规则命中不再重复注入。)`,
@@ -407,7 +411,7 @@ export function buildEpistemicMessage(toolName, hits) {
   return {
     role: 'user',
     id: randomUUID(),
-    source: { kind: 'plugin', plugin: name, form: 'epistemic-advisory' },
+    source: { kind: `plugin:${name}`, plugin: name, form: 'epistemic-advisory' },
     content: [{
       type: 'text',
       text: `agint-rules 断言型护栏：刚才的 ${toolName} 输出里有 ${hits.length} 处**未取证的断言**。\n`
