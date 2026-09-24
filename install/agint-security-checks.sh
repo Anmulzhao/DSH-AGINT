@@ -43,6 +43,26 @@ report_fail() { echo "  ✗ $*"; FAILED=$((FAILED + 1)); }
 
 heading() { echo ""; echo "── $* ──"; }
 
+# is_abs_path <path> —— 绝对路径判定，兼容三种写法：
+#   /c/Users/…   MSYS / Git Bash
+#   C:/Users/…   Windows（正斜杠，cygpath -m / realpath 的产物）
+#   C:\Users\…   Windows（反斜杠）
+#
+# ⚠️ 为什么不只认 `/*`：install.sh 会对 DSH_HOME 跑一次 `realpath -m`，而 MSYS 版
+#    realpath 会把 `/c/Users/…` 规范成 `C:/Users/…` —— 同一条链路里「绝对路径」换了
+#    写法，只认 `/*` 会让这道检查在 Git Bash 下**恒 fail**（2026-09-24 实测：报
+#    「DSH_HOME 不是绝对路径: C:/Users/Administrator/.dsh」，而目录明明存在，
+#    结果 install.sh 在第 0 步就中止）。判定放宽只针对「像不像绝对路径」，
+#    后面「含 ..」「存在性」「可写」等硬检查一条都没放松。
+is_abs_path() {
+  case "$1" in
+    /*)     return 0 ;;   # MSYS / POSIX
+    ?:/*)   return 0 ;;   # Windows 正斜杠
+    ?:\\*)  return 0 ;;   # Windows 反斜杠
+    *)      return 1 ;;
+  esac
+}
+
 # ─────────────────────────────────────────────────────────────
 # path checks (cheap, runnable anytime)
 # ─────────────────────────────────────────────────────────────
@@ -56,10 +76,11 @@ check_agint_home_realpath() {
   fi
   report_pass "AGINT_HOME 存在: $AGINT_HOME"
 
-  case "$AGINT_HOME" in
-    /*) report_pass "AGINT_HOME 是绝对路径" ;;
-    *)  report_fail "AGINT_HOME 不是绝对路径: $AGINT_HOME" ;;
-  esac
+  if is_abs_path "$AGINT_HOME"; then
+    report_pass "AGINT_HOME 是绝对路径"
+  else
+    report_fail "AGINT_HOME 不是绝对路径: $AGINT_HOME"
+  fi
 
   local resolved
   resolved="$(cd "$AGINT_HOME" && pwd -P 2>/dev/null)" || {
@@ -82,10 +103,11 @@ check_dsh_home() {
     report_warn "DSH_HOME 不存在: $DSH_HOME（install 会引导你先跑 dsh web 一次）"
   fi
 
-  case "$DSH_HOME" in
-    /*) report_pass "DSH_HOME 是绝对路径" ;;
-    *)  report_fail "DSH_HOME 不是绝对路径: $DSH_HOME" ;;
-  esac
+  if is_abs_path "$DSH_HOME"; then
+    report_pass "DSH_HOME 是绝对路径"
+  else
+    report_fail "DSH_HOME 不是绝对路径: $DSH_HOME"
+  fi
 
   case "$DSH_HOME" in
     *..*) report_fail "DSH_HOME 含 '..'" ;;

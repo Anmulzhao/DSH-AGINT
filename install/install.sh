@@ -133,6 +133,10 @@ BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
 BUNDLE_PATCH_DST="$BUNDLE_DST/cordis.patch.yml"
 BUNDLE_MANIFEST_DST="$BUNDLE_DST/package.json"
 
+# profile 清单：dsh.profile.bundles 的注册位。
+# ⛔ 不注册 = bundle 目录与 patch 都在，但 dsh 根本不加载它，**零报错**（见步骤 3.5）
+PROFILE_MANIFEST="$DSH_HOME/profiles/web/package.json"
+
 PRESETS_DST="$DSH_HOME/.agent-presets"
 # 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
 # quality-bridge.js）与三条 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
@@ -193,7 +197,10 @@ register_step() {
 
 rollback() {
   local rc=$?
-  if [ "${#PARTIAL_STEPS[@]}" -eq 0 ] || [ "$DRY_RUN" = "1" ]; then
+  # ⛔ rc=0 = **正常跑完**，不是失败。`trap rollback EXIT` 在成功退出时同样触发 ——
+  #    少了这一句守卫，安装成功的那一次会把刚铺好的 presets / plugins 全部删掉
+  #    （2026-09-24 最小复现：脚本 rc=0 退出，却打印「安装失败，开始回滚 (rc=0)」并删目录）。
+  if [ "$rc" -eq 0 ] || [ "${#PARTIAL_STEPS[@]}" -eq 0 ] || [ "$DRY_RUN" = "1" ]; then
     return
   fi
   warn "安装失败，开始回滚 (rc=$rc)..."
@@ -214,6 +221,21 @@ rollback() {
   done
 }
 trap rollback EXIT
+
+# ── 成功收尾：清回滚标记 ────────────────────────────────────────────────────
+# 安装正常跑完时调用：把 backup() 留下的 `<file>.bak-current` 清掉（否则安装位里
+# 会残留一份旧内容副本），并清空回滚栈 —— rollback 另有 rc=0 守卫，这里是双保险。
+commit_install() {
+  [ "${#PARTIAL_STEPS[@]}" -gt 0 ] || return 0
+  local step action target
+  for step in "${PARTIAL_STEPS[@]}"; do
+    IFS='|' read -r action target <<< "$step"
+    if [ "$action" = "restore_backup" ] && [ -e "$target.bak-current" ]; then
+      rm -f "$target.bak-current" && log "   清理回滚标记: $target.bak-current"
+    fi
+  done
+  PARTIAL_STEPS=()
+}
 
 # ── 备份函数：中央备份目录 + 数量上限 ────────────────────────────────────────
 ensure_backup_dir() {
@@ -248,6 +270,14 @@ backup() {
   base="$(basename "$target")"
   (cd "$parent" && tar -czf "$archive" "$base") || die "备份失败: $target → $archive"
   log "   备份: $target → $archive"
+
+  # 回滚标记：rollback 的 restore_backup 分支就是靠 `<target>.bak-current` 还原的
+  # （tar 只作历史留档 / 人工恢复，路径带时间戳，回滚逻辑不解析它）。
+  # ⚠️ 只对**文件**建标记：目录类（presets/<id>）的还原语义是 rm_dst「删掉新装的」，
+  #    原内容在 tar 里；安装成功后由 commit_install 清掉这些标记。
+  if [ -f "$target" ]; then
+    cp -f "$target" "$target.bak-current" || die "写回滚标记失败: $target.bak-current"
+  fi
 
   # 注册回滚：从 target 删除 + 把 archive 解到原位
   register_step "restore_backup|$target"
@@ -540,6 +570,39 @@ if [ "$DRY_RUN" != "1" ]; then
   register_step "restore_backup|$BUNDLE_PATCH_DST"
 fi
 
+# ── 3.5 注册 bundle 到 profile 清单（dsh.profile.bundles）────────────────────
+# 与 uninstall.sh 2.6「摘除」对称。⛔ 少这一步：bundle 目录在、patch 在，
+# 但 dsh 根本不加载它 —— 现象是「装完像没装」，**且没有任何报错**。
+# 幂等：已注册则只打印跳过，不重写文件。
+log "3.5/4 注册 bundle 到 profile 清单（dsh.profile.bundles）"
+if [ ! -f "$PROFILE_MANIFEST" ]; then
+  warn "  跳过：$PROFILE_MANIFEST 不存在（该 profile 还没被 dsh 初始化过？）"
+  warn "  手工补救：在 dsh.profile.bundles 里加上 $BUNDLE_NAME"
+elif [ "$DRY_RUN" = "1" ]; then
+  log "   注册 (dry): $BUNDLE_NAME @ $PROFILE_MANIFEST"
+else
+  backup "profile-manifest" "$PROFILE_MANIFEST"
+  python3 - "$(winpath "$PROFILE_MANIFEST")" "$BUNDLE_NAME" <<'PY' || warn "profile 清单注册失败，请手工把 $BUNDLE_NAME 加入 dsh.profile.bundles（备份见 $BACKUP_DIR）"
+import sys, json, io
+path, name = sys.argv[1], sys.argv[2]
+data = json.loads(io.open(path, encoding='utf-8').read())
+profile = data.setdefault('dsh', {}).setdefault('profile', {})
+bundles = profile.get('bundles')
+if bundles is None:
+    profile['bundles'] = [name]
+elif not isinstance(bundles, list):
+    print(f"[AGINT]   ✗ dsh.profile.bundles 不是数组（{type(bundles).__name__}），拒绝改写，请手工修")
+    sys.exit(1)
+elif name in bundles:
+    print(f"[AGINT]   ↻ bundles 中已有 {name}，跳过")
+    sys.exit(0)
+else:
+    bundles.append(name)  # 追加末尾 = 优先级最低；官方 bundle 在前
+io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+print(f"[AGINT]   ✓ 已注册 {name}，bundles = {', '.join(profile['bundles'])}")
+PY
+fi
+
 # ── 4. 装后静态校验 ─────────────────────────────────────────────────────────
 log "4/4 装后静态校验"
 if [ "$DRY_RUN" = "1" ]; then
@@ -705,14 +768,21 @@ else
   log "   ⊘ 跳过防御性补装（dry-run）"
 fi
 
+# 安装成功收尾：清掉回滚标记（rollback 的 rc=0 守卫已保证不会误回滚，这里是清理动作）
+if [ "$DRY_RUN" != "1" ]; then
+  commit_install
+fi
+
 log ""
 log "✅ 安装完成"
 log ""
 log "下一步："
 log "  1. 重启 dsh web（bundle 层与 profile 层都不热更新）："
 log "       dsh web"
-log "  2. 验证：dsh 启动 stderr 不应出现 'skipping profile bundle \"@agint/host\"'"
-log "     （出现即 bundle 层被跳过，按上文提示补 node_modules 解析入口）"
+log "  2. 验证 bundle 真的被认（两步都要看）："
+log "       ① profile 清单里有它：grep '@agint/host' $PROFILE_MANIFEST"
+log "       ② stderr 不出现 'skipping profile bundle \"@agint/host\"'"
+log "          （出现即 bundle 层被跳过，按上文提示补 node_modules 解析入口）"
 log "  3. 在浏览器里新建会话，确认 agint preset 可选、工具齐全"
 log ""
 log "回滚方式："
