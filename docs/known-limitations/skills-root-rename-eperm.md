@@ -221,6 +221,27 @@ const WINDOWS_RENAME_RETRY_LIMIT = 8;
 `release_publish_failed` 只有 1 条，原因字段明确指向 **skills_root 的目录 rename**，
 没有任何一条证据指向存储域落盘。**存储域从来没被观测到 EPERM。**
 
+> ⛔ **2026-09-26 反证 —— 上述结论已被推翻**
+>
+> 当日「诊断自激环」事故中，`agint-diagnosis` 的 `memory.write` **反复报 EPERM**，
+> 目标正是存储域文件 `C:\Users\Administrator\.dsh\storages\agint.json`
+> （写临时文件后 rename 覆盖失败）。**存储域确实会发生 EPERM，而且是反复发生，不是孤例。**
+>
+> **为什么此前"没观测到" —— 这是取样偏差，不是它没发生。**
+> 上文的依据是「生产 audit 里没有存储域条目」。但**存储域的落盘失败根本不写 audit**：
+> 宿主 `dsh-storage-json` 的写链是 fire-and-forget，失败被 `write.catch(() => {})` 静默吞掉；
+> AGINT 侧 `memory.write` 调用点又用 try/catch 包住、只 `console.warn`。
+> **两条静默叠加 ⇒ audit 天然看不到它 ⇒「audit 里没有」推不出「从未发生」。**
+> ⇒ **教训（可复用）：在用「某审计面没有记录」推断「某事件不存在」之前，
+> 先确认该事件**是否会被写进这个审计面**。** 同类：静默失败（`docs/known-limitations/` 多处）。
+>
+> **触发条件（推断，未确证）**：存储域是 `atomic: json` 的**单文件全量重写** ——
+> 每写一条都要把整个文件重写一遍。事故中 `agint.json` 被自激环撑到 **50 MB**
+> （基线 211 KB，涨 200+ 倍），单次全量重写耗时显著拉长，
+> 撞上 Windows「文件正被占用」窗口的概率随之上升。
+> 与 skills_root 的目录 rename **不是同一条路径，但同属一类根因：
+> Windows 占用窗口 + 无重试**。
+
 ## 7. 复现方式
 
 探针已归档进仓库（`bin/`），可直接跑：
