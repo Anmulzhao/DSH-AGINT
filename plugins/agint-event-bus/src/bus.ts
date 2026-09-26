@@ -67,6 +67,23 @@ export function publishedCounter(): number {
   return publishedCount;
 }
 
+/**
+ * events 表写入失败计数（2026-09-26 新增）。
+ *
+ * 背景：publish 的顺序是「**先分发、再写 events 表**」，而写表失败此前只打
+ * 一个内部 metric、不打任何日志 —— 结果是「事件已经在 handler 里跑过了，但
+ * events 表里查不到」，排查时看起来像"总线上什么都没发生"（2026-09-26 的
+ * 诊断自激环就是这样被隐藏了 26 小时）。
+ *
+ * 现在：失败即 console.warn（限流：首条 + 每 100 条一条）+ 计数入 metricsSnapshot。
+ */
+let eventWriteFailedCount = 0;
+
+/** 读取 events 表写入失败计数 */
+export function eventWriteFailedCounter(): number {
+  return eventWriteFailedCount;
+}
+
 function countSyncSubs(): number {
   let n = 0;
   for (const sub of subscriptions.values()) if (sub.mode === 'sync') n += 1;
@@ -140,7 +157,14 @@ export async function publish(
       occurredAt: envelope.occurredAt,
       traceId: envelope.traceId,
     });
-  } catch {
+  } catch (err) {
+    // 不再静默：events 表是"事件真的发生过"的唯一持久证据，写失败必须可见。
+    // 限流（首条 + 每 100 条）以避免存储风暴期把日志刷爆。
+    eventWriteFailedCount += 1;
+    if (eventWriteFailedCount === 1 || eventWriteFailedCount % 100 === 0) {
+      const msg = err instanceof Error ? err.message : String(err ?? 'unknown');
+      console.warn(`[agint-event-bus] events 表写入失败（事件已分发但未落库）第 ${eventWriteFailedCount} 次：${msg}`);
+    }
     if (ctx.metrics) ctx.metrics('eventBus.eventWriteFailed', 1);
   }
 
@@ -218,6 +242,7 @@ export function disposeBus(): void {
   subscriptions.clear();
   ring.clear();
   publishedCount = 0;
+  eventWriteFailedCount = 0;
 }
 
 /**
@@ -231,6 +256,7 @@ export async function metricsSnapshot(ctx: EventBusContext): Promise<{
   publishedCount: number;
   syncSubscriptions: number;
   syncGlobalLimit: number;
+  eventWriteFailedCount: number;
 }> {
   let deadletterCount = 0;
   try {
@@ -242,5 +268,5 @@ export async function metricsSnapshot(ctx: EventBusContext): Promise<{
   let syncSubscriptions = 0;
   try { syncSubscriptions = countSyncSubs(); } catch { /* 软降级 */ }
 
-  return { deadletterCount, publishedCount, syncSubscriptions, syncGlobalLimit: SYNC_GLOBAL_LIMIT };
+  return { deadletterCount, publishedCount, syncSubscriptions, syncGlobalLimit: SYNC_GLOBAL_LIMIT, eventWriteFailedCount };
 }

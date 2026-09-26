@@ -1,5 +1,26 @@
 # Changelog — agint-event-bus
 
+## 2026-09-26 — events 表写入失败不再静默
+
+### 背景
+
+`publish` 的顺序是「**先分发订阅者、再写 events 表**」（`src/bus.ts` 的 publish 尾部）。
+写表失败此前只打一个内部 metric（`eventBus.eventWriteFailed`），**不打日志、不进快照**。
+
+后果：事件已经在 handler 里跑过了，但 `events` 表里查不到 —— 排查时看起来像
+"总线上什么都没发生"。2026-09-26 的诊断自激环正是被这层静默隐藏了很久
+（`events` 表里 `diagnosis.completed` 只有 6 条，而 mutator 计数器显示收到数万次）。
+
+### 修复
+
+- 写表失败改为 **可见**：`console.warn`（**限流**：首条 + 每 100 条一条，避免存储风暴期刷爆日志）
+- 新增计数 `eventWriteFailedCount`：经 `eventWriteFailedCounter()` 与
+  `metricsSnapshot().eventWriteFailedCount` 暴露
+- `disposeBus()` 一并重置该计数
+- 新增 `test/event-write-visibility.test.mjs`（3 例）：告警可见 / 限流不吞计数 /
+  失败**不击穿**投递与 publish 返回
+- `src/bus.ts` 与 `lib/bus.js` 成对修改（本插件是 tsc 产物，只改 lib 会被下次 build 静默回退）
+
 ## 0.7.1 (2026-09-23) — topic 正则首段放宽：修一条自建成起即死的契约冲突
 
 > 起因：预演场（影子 home + AGINT 挂载）首跑即抓到 `agint-skill-graph` 订阅失败。
