@@ -10,6 +10,7 @@
  *   metrics-collect daily 04:00 进化指标采集（时间序列）
  *   evolve-review   Sun 03:45  周复盘报告（数据快照 + 自动发现）
  *   curriculum-weekly Sun 05:00 自主课程：边界探测 → 待练域生成挑战
+ *   diagnosis-watchdog every 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
  */
 
 import { parseCron, nextFire, lastFire } from './cron.js';
@@ -349,6 +350,75 @@ export const defaultJobs = [
         calibration: updated.calibration ?? null,
         error: updated.error ?? null,
       };
+    },
+  },
+  {
+    // 诊断域看门狗（2026-09-26 事故后新增，每 30 分钟）。
+    //
+    // 背景：09-26 诊断报告自激环把 reports 表灌到 12,605 条（cap 50），而
+    // **没有任何机制在逼近上限前示警** —— 环跑了 18 分钟才靠人肉发现日志刷屏。
+    // 事后二修给 report() 加了频率熔断，但即便熔断真被咬，也只有登录翻日志才知道。
+    // 本 job 把「诊断域有没有失控」变成一个每半小时可见的信号。
+    //
+    // 三条判据（全是绝对值 ⇒ **无需持久化历史**）：
+    //   ① 表占用率：≥80% cap → WARN；≥cap → CRITICAL（守门本应已拦住新写入）
+    //   ② reportRateGuard.trips > 0 → WARN ★ 「频率熔断真被咬过」的唯一直接证据
+    //   ③ reportRateGuard.recent > max/2 → WARN（近一个窗口内调用密集）
+    //
+    // 异常一律 throw：throw 会走 runOne 的 catch ⇒ console.error 立即可见 +
+    // cron_state.lastError 落盘 + cron_list 报 lastOk=false。看门狗本该安静，
+    // 要响就响得能被看见（静默失败正是 09-26 事故的教训之一）。
+    // 服务未挂载时 soft-skip（返回 skipped），与其它 job 同策略。
+    id: 'diagnosis-watchdog',
+    name: '诊断域看门狗',
+    schedule: '*/30 * * * *', // 每 30 分钟
+    description: '巡检诊断各表占用率 + 频率熔断状态；逼近 cap / 熔断被咬 / 调用密集时告警（每 30 分钟）',
+    action: async (services) => {
+      const stats = services['agint.diagnosis.stats'];
+      if (!stats) return { skipped: true, reason: 'agint.diagnosis.stats not available' };
+
+      const s = await stats();
+      const limits = s.limits ?? {};
+      const guard = s.reportRateGuard ?? {};
+      const WARN_RATIO = 0.8;
+      const alerts = [];
+      const usage = {};
+
+      for (const [table, cap] of [
+        ['annotations', limits.ANNOTATIONS],
+        ['clusters', limits.CLUSTERS],
+        ['reports', limits.REPORTS],
+      ]) {
+        const used = s[table];
+        if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) continue;
+        const ratio = used / cap;
+        usage[table] = { used, cap, pct: Math.round(ratio * 100) };
+        if (used >= cap) {
+          alerts.push(`CRITICAL ${table} 表已满 ${used}/${cap}（守门本应已拦住新写入 ⇒ 守门失效）`);
+        } else if (ratio >= WARN_RATIO) {
+          alerts.push(`WARN ${table} 表逼近上限 ${used}/${cap}（${Math.round(ratio * 100)}%）`);
+        }
+      }
+
+      if (Number.isFinite(guard.max) && guard.max > 0) {
+        if (Number(guard.trips) > 0) {
+          alerts.push(
+            `WARN report() 频率熔断已被咬 ${guard.trips} 次（window ${guard.windowMs}ms / max ${guard.max}）` +
+            ' —— 存在短窗口高频调用 report 的驱动方，去看日志里的「调用方栈」',
+          );
+        }
+        if (Number(guard.recent) > guard.max * 0.5) {
+          alerts.push(`WARN 近 ${guard.windowMs}ms 内 report 调用 ${guard.recent} 次（上限 ${guard.max}）`);
+        }
+      }
+
+      const summary = { usage, reportRateGuard: guard, checkedAt: new Date().toISOString() };
+      if (alerts.length) {
+        // 先打详细指标（含各表 used/cap 与熔断计数），再 throw 让调度层记账。
+        console.warn('[agint-cron:diagnosis-watchdog] ' + alerts.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
+        throw new Error('diagnosis-watchdog: ' + alerts.join(' ｜ '));
+      }
+      return { alert: false, ...summary };
     },
   },
 ];

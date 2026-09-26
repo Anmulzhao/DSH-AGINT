@@ -126,6 +126,10 @@ function apply(ctx) {
     // P2-2 技能图谱（mountOrder 28）。ctx.get 在 tick 时懒解析，晚挂载也能取到；
     // 未挂载时为 undefined → skill-graph-weekly job 走 soft-skip 不报错。
     'agint.skillGraph': ctx.get('agint.skillGraph'),
+    // 诊断域看门狗（2026-09-26 事故后新增）：job 用它读各表占用率与 report()
+    // 频率熔断状态（trips/recent）。同样懒解析；agint-diagnosis 未挂载时为
+    // undefined → job 返回 {skipped:true} 而非报错。
+    'agint.diagnosis.stats': ctx.get('agint.diagnosis.stats'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 

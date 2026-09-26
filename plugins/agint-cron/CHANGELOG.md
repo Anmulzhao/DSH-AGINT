@@ -23,6 +23,17 @@
 ## [Unreleased]
 
 ### Added
+- 新增 cron job `diagnosis-watchdog`（**每 30 分钟**，2026-09-26 诊断报告自激环事故后新增）：
+  巡检 `agint_diagnosis` 各表占用率与 `report()` 频率熔断状态。三条判据全为绝对值
+  （故**无需持久化历史**）：① 表占用率 ≥80% cap → WARN、≥cap → CRITICAL；
+  ② `reportRateGuard.trips > 0`（★ 频率熔断真被咬过的唯一直接证据）→ WARN；
+  ③ 近一个窗口内 `recent > max/2` → WARN。异常走 `throw`，使告警同时进
+  `console.error` + `cron_state.lastError` + `cron_list` 的 `lastOk=false`（不静默）。
+- `index.js` services map 增补 `agint.diagnosis.stats`（与既有条目同款懒解析；未挂载时 job soft-skip）。
+- 测试 `test/diagnosis-watchdog.test.mjs`（11 例）：soft-skip / 健康态无告警输出 /
+  80% 阈值边界（78% 不报、80% 报）/ 表满 CRITICAL / annotations 同样受检 /
+  熔断被咬 / 调用密集 / `recent = max/2` 不算 / stats 缺字段容错。
+- README 的 job 表由 8 个补齐至 **15 个**（此前只列了 8 个，与实际注册数不符）。
 - 新增 cron job `curriculum-weekly`（P7 自主课程生成器，Sprint 14 Part B）：**Sun 05:00**（老板拍板），排在周日全家桶（curator 02:00 / wiki-lint 03:00 / baseline-regression 03:15 / evolve-review 03:45）之后。流程：`agint.curriculum.probe()` 找待练域（UNCERTAIN / 校准失准 / CAN 超期未复验）→ 逐域 `generate({count:1})`（自带同域 24h 冷却 + 无模板域诚实留白）。挑战生成后**不自动执行**（P7 §4.5），由 agent 用 `curriculum_next` 领取。插件未挂载 / paused 时 soft-skip，不报错。
 - `index.js` services map 增补 `agint.curriculum`（与既有 `agint.curator` 同款懒解析）。
 
