@@ -22,16 +22,43 @@
 
 ### 默认注册的 job
 
+共 15 个（按调度粒度分组，组内按时刻排序）：
+
+**高频巡检**
+
 | job id | 调度 | 说明 |
 |---|---|---|
-| `memory-decay` | `30 2 * * 1` | L1–L4 衰减扫描 + 应用降级/清除（weekly） |
-| `curator-weekly` | `0 2 * * 0` | 技能策展：陈旧检测 + 归档（weekly，早于周复盘；P0-2 Sprint 14） |
-| `wiki-lint` | `0 3 * * 0` | 断链/矛盾/孤岛三项检查（weekly） |
-| `metrics-collect` | `0 4 * * *` | 采集 memory/wiki/cron/rules 健康指标（daily） |
-| `evolve-review` | `45 3 * * 0` | 采集数据快照 → 自动发现 → 写周复盘（weekly） |
+| `diagnosis-watchdog` | `*/30 * * * *` | 诊断域看门狗：各表占用率 + report() 频率熔断状态（2026-09-26 事故后新增） |
+
+**每日**
+
+| job id | 调度 | 说明 |
+|---|---|---|
 | `night-dream` | `0 3 * * *` | 读会话日志 → 提取候选 → 评分 → 提升进记忆（daily） |
+| `metrics-collect` | `0 4 * * *` | 采集 memory/wiki/cron/rules 健康指标（daily） |
 | `tool-stats-backfill` | `30 4 * * *` | 用 session log 给工具统计反向补 latencyMs（daily） |
 | `prompt-static-check` | `45 4 * * *` | 扫 prompt manifest+template 静态检查（daily） |
+| `skill-autocreate-aggregate` | `45 4 * * *` | 聚合工具调用 → 检测重复任务模式 → 生成候选（daily） |
+| `skill-autocreate-release` | `15 5 * * *` | 评估桥 + 发布队列：三道门自动发布（daily） |
+| `skill-autocreate-observe` | `30 5 * * *` | 观察期判定：STABLE / 0 调用自动回滚 / 展期（daily） |
+
+**每周**
+
+| job id | 调度 | 说明 |
+|---|---|---|
+| `curator-weekly` | `0 2 * * 0` | 技能策展：陈旧检测 + 归档（Sun 02:00，早于周复盘；P0-2 Sprint 14） |
+| `memory-decay` | `30 2 * * 1` | L1–L4 衰减扫描 + 应用降级/清除（Mon 02:30） |
+| `wiki-lint` | `0 3 * * 0` | 断链/矛盾/孤岛三项检查（Sun 03:00） |
+| `baseline-regression-suite` | `15 3 * * 0` | 写一行 mount 通道 baseline 状态（Sun 03:15） |
+| `evolve-review` | `45 3 * * 0` | 采集数据快照 → 自动发现 → 写周复盘（Sun 03:45） |
+| `curriculum-weekly` | `0 5 * * 0` | 边界探测 → 待练域生成挑战（Sun 05:00，出队不自动执行） |
+| `skill-graph-weekly` | `0 7 * * 0` | 技能节点全量刷新 + 四类边重算（Sun 07:00，默认 count-only 标定期） |
+
+> **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、
+> ≥cap 报 CRITICAL；`reportRateGuard.trips > 0`（频率熔断真被咬过）报 WARN；
+> 近一个窗口内 `recent > max/2` 报 WARN。异常走 `throw` —— 这样告警会同时进
+> `console.error`、`cron_state.lastError` 与 `cron_list` 的 `lastOk=false`，
+> 而不是被静默吞掉。服务未挂载时 soft-skip。
 
 ### 存储域：`agint_cron`
 
