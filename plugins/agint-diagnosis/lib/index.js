@@ -63,16 +63,64 @@ const name = 'agint-diagnosis';
 // 用 ctx.get 读取，不阻塞挂载。
 const inject = ['storageDomain'];
 
-const Config = z.object({}); // 当前无配置；保留供后续 sprint 加 limits 调参等
+const Config = z.object({
+  // report() 频率熔断上限（次/分钟）。默认 30，出厂即开；调大即可放宽（不改代码）。
+  // 注意：调过 reports cap（50）后本守门就形同虚设，应与 cap 一起改。
+  rate_max_per_min: z.number().int().positive().optional(),
+});
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function apply(ctx) {
+function apply(ctx, config = {}) {
   let domain = null;
   let domainError = null;
   let disposed = false;
+
+  // ── report() 频率熔断（2026-09-26 二修）─────────────────────────────────
+  //
+  // 现场：11:40:40 → 11:58:10 之间 report() 被调用 **12,605 次**（每秒 ~11 次），
+  // 且 reports 表 -> 12,615 条而 cap 是 50 —— 表满守门**没有拦住**。
+  // 上一轮（同日）只在 agint-self-model 内部堵了「trigger==='diagnosis-completed'」
+  // 那一处再入边；但这次全部报告都是 `windowDays=7`，即
+  // `aggregateCapabilityEvidence` 的 `fromDiagnosisEvent=false` 分支 —— 说明
+  // **驱动来自 self-model 之外的连续调用**，堵再入边对它无效。
+  //
+  // 因此这里改为「与调用方无关」的守门：60s 滑动窗口内第 N 次调用直接拒绝，
+  // 并在首次触发时打印调用栈前若干帧，把调用方钉死在日志里。
+  // 设计权衡：reports 表上限 50/窗口，因此取 30 次/分钟——**低于 cap**，
+  // 让频率熔断当第一道防线（它会抛错、带调用栈），cap 退为存储兜底。
+  // 宁可误伤极端批量场景（会显式抛错、可看见），也不要再一次静默灌满存储。
+  const RATE_WINDOW_MS = 60_000;
+  const RATE_MAX = Number.isInteger(config?.rate_max_per_min) && config.rate_max_per_min > 0
+    ? config.rate_max_per_min
+    : 30;
+  let _rateHits = [];
+  let _rateTrips = 0;
+  // 已通过守门、但尚未落盘的 report 数。cap 判据是「读内存 -> 写磁盘」，
+  // 并发调用会集体读到同一个 size 从而集体放行（现场 12,615 条就是这么来的）；
+  // 把在途数并进判据即闭合该窗口。
+  let _reportsInFlight = 0;
+  /** 与调用方无关的频率熔断；超限即抛（不静默降级）。 */
+  function rateGuard(where) {
+    const now = Date.now();
+    _rateHits = _rateHits.filter((t) => now - t < RATE_WINDOW_MS);
+    _rateHits.push(now);
+    if (_rateHits.length <= RATE_MAX) return;
+    _rateTrips += 1;
+    if (_rateTrips === 1 || _rateTrips % 100 === 0) {
+      const frames = String(new Error('rate-limit').stack ?? '')
+        .split('\n').slice(1, 9).join('\n');
+      console.warn(
+        `[agint-diagnosis] ${where} 频率熔断：${RATE_WINDOW_MS}ms 内第 ${_rateHits.length} 次`
+        + `（上限 ${RATE_MAX}）被拒，累计 ${_rateTrips} 次。调用方栈：\n${frames}`,
+      );
+    }
+    throw new Error(
+      `${where} rate limited: ${_rateHits.length} calls within ${RATE_WINDOW_MS}ms (max ${RATE_MAX})`,
+    );
+  }
 
   // lifecycle：所有副作用走 ctx.effect，保证 graceful shutdown（设计稿 §八 + AGENTS.md 挂载红线）
   ctx.effect(() => () => {
@@ -114,6 +162,7 @@ function apply(ctx) {
       clusters: c.size,
       reports: r.size,
       limits: LIMITS,
+      reportRateGuard: { windowMs: RATE_WINDOW_MS, max: RATE_MAX, trips: _rateTrips, recent: _rateHits.length },
     };
   }
 
@@ -311,6 +360,8 @@ function apply(ctx) {
    * 软依赖 evolution（必填）/ wiki / memory；表满抛错；不写 failure_pattern。
    */
   async function report(input) {
+    // 与调用方无关的频率熔断：任何来源 60s 内超限即拒（见 apply() 内的说明）。
+    rateGuard('agint.diagnosis.report');
     const windowDays = (input && typeof input.windowDays === 'number') ? input.windowDays : 7;
     const maxClusters = (input && typeof input.maxClusters === 'number') ? input.maxClusters : LIMITS.CLUSTERS;
     const evolution = ctx.get && typeof ctx.get === 'function' ? ctx.get('agint.evolution') : null;
@@ -318,7 +369,7 @@ function apply(ctx) {
     const memory = ctx.get && typeof ctx.get === 'function' ? ctx.get('agint.memory') : null;
 
     const tr = await t_reports();
-    if (tr.size >= LIMITS.REPORTS) {
+    if (tr.size + _reportsInFlight >= LIMITS.REPORTS) {
       throw new Error(`reports table full (cap ${LIMITS.REPORTS})`);
     }
 
@@ -328,7 +379,15 @@ function apply(ctx) {
 
     const reportData = await aggregateReport({ annotations, evolution, windowDays, maxClusters });
     const entry = packReport(reportData);
-    await tr.put(entry.id, entry);
+    _reportsInFlight += 1;
+    try {
+      if (tr.size + _reportsInFlight > LIMITS.REPORTS) {
+        throw new Error(`reports table full (cap ${LIMITS.REPORTS})`);
+      }
+      await tr.put(entry.id, entry);
+    } finally {
+      _reportsInFlight -= 1;
+    }
 
     // 副作用：写 wiki + memory 钩子（容错——失败不阻断 report 返回）
     const dateStr = (reportData.generatedAt || nowIso()).slice(0, 10);

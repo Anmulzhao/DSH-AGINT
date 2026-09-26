@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-09-26（二修）— `report()` 加「与调用方无关」的频率熔断 + 闭合 cap 并发窗口
+
+### 现场
+
+同日一修（`.entries().length` → `.size`）之后，环**仍在转**：
+11:40:40 → 11:58:10 之间 `report()` 被调用 **12,605 次**（~11 次/秒，持续 18 分钟），
+`reports` 表堆到 **12,615 条**（cap = 50），`memory` 同步多出 12,605 条同源 pattern 记录。
+
+### 为什么一修没挡住
+
+一修只在 `agint-self-model` 内部堵了 `trigger === 'diagnosis-completed'` 那一处再入边。
+**现场全部报告的 `windowDays` 都是 7** —— 那是 `aggregateCapabilityEvidence` 的
+`fromDiagnosisEvent === false` 分支，即**驱动来自 self-model 之外的连续调用**。
+堵再入边对"外部连续调用"无效。（11:39 启动后 12 秒起爆，见 `docs/known-limitations/diagnosis-report-loop.md`。）
+
+### 改动
+
+1. **频率熔断（主）**：`report()` 入口加 60s 滑动窗口计数，超过 `RATE_MAX`（默认 30）即
+   **抛错**，并在首次触发时把**调用方栈前 8 帧**打进 `console.warn` —— 下一次同类故障
+   能一眼看到"是谁在调"。可通过 `Config.rate_max_per_min` 放宽（不改代码）。
+2. **闭合 cap 并发窗口（辅）**：cap 判据原为「读内存 `size` → 写磁盘」，并发调用会集体
+   读到同一个 `size` 从而集体放行。新增 `_reportsInFlight` 在途计数并入判据，
+   并在 `tr.put` 处二次校验 + `finally` 归还。
+3. **可观测**：`stats().reportRateGuard = { windowMs, max, trips, recent }`。
+
+出厂即开（K51）；`rate_max_per_min` 是调参不是开关。
+
+### 验收
+
+- 新增 `test/report-rate-guard.test.mjs`（4 例，含"熔断早于 cap""被拒调用不落盘"）
+- 回归：`cap-enforcement`(7/7)、`smoke`(9/9)、`diagnosis-completed-publish`(4/4)、
+  `agint-self-model/diagnosis-loop-guard`(22/22)
+- 静态门禁：`check-storage-table-api` ✓、`check-tool-schemas` 0 invalid、`verify-umbrella` PASS 10/10
+
+---
+
 ## 2026-09-26 — 表满守门全部失效（`.entries().length` 恒为 undefined）
 
 ### 缺陷
