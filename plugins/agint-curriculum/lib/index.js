@@ -169,7 +169,7 @@ function apply(ctx, config) {
     const t = await table('difficulty_state');
     const packed = packDifficulty(state, state);
     await t.put(packed.id, packed);
-    const warn = checkLimit('difficulty_state', t.entries().length);
+    const warn = checkLimit('difficulty_state', t.size);
     if (warn) console.warn(`[${name}] ${warn._warn}`);
     return packed;
   }
@@ -243,7 +243,7 @@ function apply(ctx, config) {
       await ct.put(packed.id, packed);
       created.push(packed);
     }
-    const warn = checkLimit('challenges', ct.entries().length);
+    const warn = checkLimit('challenges', ct.size);
     if (warn) console.warn(`[${name}] ${warn._warn}`);
 
     await writeDifficulty({ ...df, lastGeneratedAt: nowIso() });
@@ -339,7 +339,7 @@ function apply(ctx, config) {
       verifiedAt: nowIso(),
     });
     await at.put(attempt.id, attempt);
-    const aw = checkLimit('attempts', at.entries().length);
+    const aw = checkLimit('attempts', at.size);
     if (aw) console.warn(`[${name}] ${aw._warn}`);
 
     // 更新挑战状态

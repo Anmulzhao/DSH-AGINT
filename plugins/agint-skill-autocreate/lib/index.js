@@ -727,7 +727,7 @@ function apply(ctx, config) {
       if (!proposal) continue;
 
       const cd = await table('candidates');
-      const candWarn = checkLimit('candidates', cd.entries().length);
+      const candWarn = checkLimit('candidates', cd.size);
       if (candWarn) console.warn(`[${name}] ${candWarn._warn}`);
 
       const candidate = packCandidate({
@@ -1140,7 +1140,7 @@ function apply(ctx, config) {
       estimatedBenefit: candidate.estimatedBenefit,
     });
     const pt = await table('proposals');
-    const propWarn = checkLimit('proposals', pt.entries().length);
+    const propWarn = checkLimit('proposals', pt.size);
     if (propWarn) console.warn(`[${name}] ${propWarn._warn}`);
     await pt.put(proposal.id, proposal);
 
@@ -1232,7 +1232,7 @@ function apply(ctx, config) {
         byStatus: releases.reduce((m, r) => ({ ...m, [r.status]: (m[r.status] ?? 0) + 1 }), {}),
         budgetWeek: releases.filter((r) => r.budgetWeek === releaseManager._internals.weekKey()).length,
       },
-      auditLogEntries: al.entries().length,
+      auditLogEntries: al.size,
       limits: LIMITS,
       paused,
       config: {

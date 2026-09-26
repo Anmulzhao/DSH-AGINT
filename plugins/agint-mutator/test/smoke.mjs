@@ -112,7 +112,7 @@ test('storage spec: agint_mutator 域 + 4 表 + checkLimit + pack/unpack round-t
 function buildServices(opts = {}) {
   const services = {}, disposers = [];
   plugin.apply({
-    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
+    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ get size() { return s.size; }, entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
     get: (n) => opts.softDeps?.[n] || null,
     provide: (n, f) => { services[n] = f; },
     effect: (d) => { disposers.push(d); return () => {}; },
@@ -175,7 +175,7 @@ test('apply(ctx) lifecycle：open domain + 4 Service 全注册 + disposer 已注
     storageDomain: {
       open: async (s) => {
         openCalls.push(s.name);
-        const d = { table: () => ({ entries: () => [], put: async () => undefined }), close: async () => {} };
+        const d = { table: () => ({ get size() { return 0; }, entries: () => [], put: async () => undefined }), close: async () => {} };
         closeFn = d.close; return d;
       },
     },

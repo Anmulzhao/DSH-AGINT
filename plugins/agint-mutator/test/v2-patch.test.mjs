@@ -114,7 +114,7 @@ test('apply() 集成：同 atomicScope 二次 propose 必被唯一索引拒 + lo
     storageDomain: { open: async () => ({
       table: (name) => {
         const s = tables[name] || (tables[name] = new Map());
-        return { entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); }, close: async () => {} };
+        return { get size() { return s.size; }, entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); }, close: async () => {} };
       },
       close: async () => {},
     }) },

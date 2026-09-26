@@ -201,7 +201,7 @@ function apply(ctx, config) {
       await publishEvent('curator.overlap-detected', { skillA, skillB, similarity: dims });
       await publishEvent('curator.consolidate-proposed', { skillA, skillB, recommendation: recommendation.rationale });
     }
-    const lw = checkLimit('overlap_candidates', t.entries().length);
+    const lw = checkLimit('overlap_candidates', t.size);
     if (lw) console.warn(`[${name}] ${lw._warn}`);
     void trigger;
     return written;
@@ -248,7 +248,7 @@ function apply(ctx, config) {
       synced.push(withRealCreatedAt);
     }
 
-    const limitWarn = checkLimit('skill_states', t.entries().length);
+    const limitWarn = checkLimit('skill_states', t.size);
     if (limitWarn) console.warn(`[${name}] ${limitWarn._warn}`);
     void nowMs;
     return synced;
@@ -355,7 +355,7 @@ function apply(ctx, config) {
       const existing = rt.entries().find(([, v]) => v.week === report.week);
       const packed = packReport(report, existing?.[1]);
       await rt.put(packed.id, packed);
-      const rw = checkLimit('reports', rt.entries().length);
+      const rw = checkLimit('reports', rt.size);
       if (rw) console.warn(`[${name}] ${rw._warn}`);
     }
 
@@ -422,11 +422,11 @@ function apply(ctx, config) {
         declining: states.filter((s) => s.quality?.qualityState === 'declining').length, // Sprint 15
         reviewSuggested: states.filter((s) => s.quality?.reviewSuggested === true).length, // Sprint 15
       },
-      overlaps: { total: oc.entries().length, proposed: [...oc.entries()].filter(([, v]) => v.status === 'proposed').length }, // Sprint 15
+      overlaps: { total: oc.size, proposed: [...oc.entries()].filter(([, v]) => v.status === 'proposed').length }, // Sprint 15
       actionsThisWeek: actions.filter((a) => isoWeek(new Date(a.timestamp)) === week).length,
       archivedThisWeek: await executor.archivedThisWeek(),
-      reports: rp.entries().length,
-      auditLogEntries: al.entries().length,
+      reports: rp.size,
+      auditLogEntries: al.size,
       limits: LIMITS,
       paused,
       lastRunAt,

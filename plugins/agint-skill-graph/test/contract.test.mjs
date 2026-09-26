@@ -213,8 +213,8 @@ test('e2e-1 标定期：count-only 只写 meta（正式数据表 0 行），但�
     assert.equal(r.calibration.edges, 1);
     assert.equal(r.calibration.promotable, true);
     // 正式表必须是空的（只扫不落）
-    assert.equal(ctx._domain.table('usage_stats').entries().length, 0);
-    assert.equal(ctx._domain.table('skill_edges').entries().length, 0);
+    assert.equal(ctx._domain.table('usage_stats').size, 0);
+    assert.equal(ctx._domain.table('skill_edges').size, 0);
     // meta 里有标定报告
     const cov = await svc.getCoverage();
     assert.equal(cov.mode, 'count-only');
@@ -328,7 +328,7 @@ test('标定期切档护栏：count-only 下 overlap 事件进缓冲，不落正
     await bus.emit('curator.overlap-detected', {
       skillA: 'alpha', skillB: 'beta', similarity: { dimsMet: 2, desc: 0.9, tools: 1, triggers: 0, descHit: true, toolsHit: true, triggersHit: false },
     });
-    assert.equal(ctx._domain.table('skill_edges').entries().length, 0);
+    assert.equal(ctx._domain.table('skill_edges').size, 0);
     // 但下次标定会把它算进"若转 live 会得到多少条边"
     const r = await svc.updateFull({ nowMs: NOW });
     assert.equal(r.edgesByType.overlap, 1);

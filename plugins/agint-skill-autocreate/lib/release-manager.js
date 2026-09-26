@@ -542,7 +542,7 @@ export function createReleaseManager(deps) {
       releasedBy: manual ? 'human' : 'auto',
     });
     const rt = await table('releases');
-    const relWarn = checkLimit('releases', rt.entries().length);
+    const relWarn = checkLimit('releases', rt.size);
     if (relWarn) console.warn(`[agint-skill-autocreate] ${relWarn._warn}`);
     await rt.put(releaseEntry.id, releaseEntry);
 

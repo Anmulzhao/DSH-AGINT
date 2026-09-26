@@ -239,8 +239,8 @@ function apply(ctx) {
   async function stats() {
     const p = await t_proposals(), c = await t_commits(), f = await t_findings(), m = await t_metrics();
     return {
-      proposals: p.entries().length, commits: c.entries().length,
-      findings: f.entries().length, metrics_log: m.entries().length, limits: LIMITS,
+      proposals: p.size, commits: c.size,
+      findings: f.size, metrics_log: m.size, limits: LIMITS,
     };
   }
 
@@ -248,7 +248,7 @@ function apply(ctx) {
   // eventType ∈ { 'mutation.success' | 'mutation.failure' | 'mutation.rollback' | 'mutation.policy_reject' }
   async function logMetric(business) {
     const t = await t_metrics();
-    const currentCount = t.entries().length;
+    const currentCount = t.size;
     if (currentCount >= LIMITS.METRICS_LOG) {
       throw new Error(`metrics_log table full (cap ${LIMITS.METRICS_LOG}); #4 commit/rollback 需手动 prune`);
     }
@@ -316,7 +316,7 @@ function apply(ctx) {
 
     // ── 6) LIMITS 守门
     const t = await t_proposals();
-    const currentCount = t.entries().length;
+    const currentCount = t.size;
     if (currentCount >= LIMITS.PROPOSALS) {
       throw new Error(`proposals table full (cap ${LIMITS.PROPOSALS})`);
     }
@@ -463,7 +463,7 @@ function apply(ctx) {
 
     // 失败 findings 写入 findings 表（不抛错，不改 proposal.status）
     const tF = await t_findings();
-    if (tF.entries().length >= LIMITS.FINDINGS) {
+    if (tF.size >= LIMITS.FINDINGS) {
       throw new Error(`findings table full (cap ${LIMITS.FINDINGS}) — 请手动 prune`);
     }
     const written = [];
@@ -632,7 +632,7 @@ function apply(ctx) {
 
     // ── 4) 写 commits 表（不管 decision 都写，方便 rollback）
     const tC = await t_commits();
-    if (tC.entries().length >= LIMITS.COMMITS) {
+    if (tC.size >= LIMITS.COMMITS) {
       throw new Error(`commits table full (cap ${LIMITS.COMMITS}) — 请手动 prune`);
     }
     const commitEntry = packCommit({
@@ -721,7 +721,7 @@ function apply(ctx) {
     if (actualHash !== commitEntry.preimageHash) {
       // 防篡改：写 findings + 抛错
       const tF = await t_findings();
-      if (tF.entries().length >= LIMITS.FINDINGS) {
+      if (tF.size >= LIMITS.FINDINGS) {
         throw new Error(`findings table full (cap ${LIMITS.FINDINGS}) — 请手动 prune`);
       }
       const fb = packFinding({
@@ -764,7 +764,7 @@ function apply(ctx) {
     // ── 4) restoredHash 比对（事务后，校验事务返回的 restoredHash 与 preimageHash 一致）
     if (txResult.restoredHash !== commitEntry.preimageHash) {
       const tF2 = await t_findings();
-      if (tF2.entries().length >= LIMITS.FINDINGS) {
+      if (tF2.size >= LIMITS.FINDINGS) {
         throw new Error(`findings table full (cap ${LIMITS.FINDINGS}) — 请手动 prune`);
       }
       const fb2 = packFinding({
@@ -838,7 +838,7 @@ function apply(ctx) {
   function softDepOrReturn(name) { const s = ctx && typeof ctx.get === 'function' ? ctx.get(name) : null; return { available: Boolean(s), service: s }; }
   async function degrade(source, reason, details) {
     const tF = await t_findings();
-    if (tF.entries().length >= LIMITS.FINDINGS) throw new Error(`findings table full (cap ${LIMITS.FINDINGS})`);
+    if (tF.size >= LIMITS.FINDINGS) throw new Error(`findings table full (cap ${LIMITS.FINDINGS})`);
     const fb = packFinding({ proposalId: 'unknown', severity: 'warn', message: `${source}: ${reason}${details ? ' — ' + details : ''}` });
     await tF.put(fb.id, fb); return { ok: false, reason, finding: unpackFinding(fb) };
   }

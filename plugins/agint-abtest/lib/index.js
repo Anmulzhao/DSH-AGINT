@@ -113,7 +113,7 @@ function apply(ctx, config) {
       throw new Error(`start: taskSuite 长度 ${taskSuite?.length ?? 0} < 10（设计稿 §二.6 + 老板拍板初版宽松门槛）`);
     }
     const t = await t_tests();
-    if (t.entries().length >= LIMITS.ABTESTS) {
+    if (t.size >= LIMITS.ABTESTS) {
       throw new Error(`abtests table full (cap ${LIMITS.ABTESTS})`);
     }
     const id = randomId('abt');

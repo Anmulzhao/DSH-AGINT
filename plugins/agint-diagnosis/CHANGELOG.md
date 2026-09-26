@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-09-26 — 表满守门全部失效（`.entries().length` 恒为 undefined）
+
+### 缺陷
+
+宿主 `dsh-storage-domain` 的 table API 中，`entries()` 返回的是**迭代器**
+（`return [...this.records.entries()][Symbol.iterator]()`），迭代器没有 `.length`。
+官方提供的计数入口是 `get size()`。
+
+而本插件三处守门全部写成 `X.entries().length`：
+
+| 位置 | 写法 | 后果 |
+|---|---|---|
+| `lib/index.js:184` | `t.entries().length >= LIMITS.ANNOTATIONS` | annotations 上限 200 **永不触发** |
+| `lib/index.js:288` | `const existingCount = t.entries().length` | clusters 上限 50 **永不触发** |
+| `lib/index.js:321` | `tr.entries().length >= LIMITS.REPORTS` | reports 上限 50 **永不触发** |
+
+`undefined >= 50` 恒为 `false`。生产实测：reports 表堆到 **68,789 条**（上限 50），
+annotations/clusters 三处守门一次都没拦过。
+
+### 修复
+
+- 三处 `X.entries().length` → `X.size`（`stats()` 里的三处计数同修，此前恒返 `undefined`）
+- 新增 `test/cap-enforcement.test.mjs`（7 例）：用**忠实 mock**（迭代器 `entries()` + `size` getter）
+  逐条断言三个 cap 会真抛错，并含一条"旧写法在此必然失效"的自证用例
+- 同类误用为**全仓系统性**问题（9 插件 38 处），已一并修正；新增静态护栏
+  `bin/check-storage-table-api.mjs` 防止回归
+
+### 运维必读
+
+**修复后 `report()` 会在 `reports.size >= 50` 时抛错**——这是设计意图（硬刹车），
+但对已被污染的存储意味着**必须先把 reports 清到 50 条以下**，否则 diagnosis 永久不可用。
+
+---
+
 ## v0.7.0 — Sprint 12 / A6 — diagnosis.completed 事件化（T1 影子期）
 
 ### 新增

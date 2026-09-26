@@ -434,7 +434,7 @@ function apply(ctx, config) {
           }, ex);
           await usageTable.put(rec.id, rec);
         }
-        const uw = checkLimit('usage_stats', usageTable.entries().length, c.limits);
+        const uw = checkLimit('usage_stats', usageTable.size, c.limits);
         if (uw) console.warn(`[${name}] ${uw._warn}`);
 
         const edgeTable = await table('skill_edges');
@@ -456,7 +456,7 @@ function apply(ctx, config) {
           if (!hit) { await edgeTable.put(e.edgeId, packEdge(e)); edgesAdded++; }
         }
         heldEdges.clear();
-        const ew = checkLimit('skill_edges', edgeTable.entries().length, c.limits);
+        const ew = checkLimit('skill_edges', edgeTable.size, c.limits);
         if (ew) console.warn(`[${name}] ${ew._warn}`);
       } else {
         // 标定期：事件边进缓冲，供计数

@@ -28,7 +28,7 @@ function makeCtx(opts = {}) {
   const store = opts.existing ? new Map(opts.existing) : new Map();
   const services = {};
   plugin.apply({
-    storageDomain: { open: async () => ({ table: () => ({ entries: () => Array.from(store, ([id, v]) => ({ id, ...v })), put: async (id, v) => { store.set(id, v); } }), close: async () => {} }) },
+    storageDomain: { open: async () => ({ table: () => ({ get size() { return store.size; }, entries: () => Array.from(store, ([id, v]) => ({ id, ...v })), put: async (id, v) => { store.set(id, v); } }), close: async () => {} }) },
     get: (n) => opts.nullDeps?.includes(n) ? null : (n === 'agint.diagnosis' ? DIAG : n === 'agint.evolution' ? EVO : null),
     provide: (n, f) => { services[n] = f; },
     effect: () => () => {},

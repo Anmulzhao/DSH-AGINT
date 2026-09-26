@@ -110,9 +110,9 @@ function apply(ctx) {
     const c = await t_clusters();
     const r = await t_reports();
     return {
-      annotations: a.entries().length,
-      clusters: c.entries().length,
-      reports: r.entries().length,
+      annotations: a.size,
+      clusters: c.size,
+      reports: r.size,
       limits: LIMITS,
     };
   }
@@ -181,7 +181,7 @@ function apply(ctx) {
 
     // ── 表满守门（不静默）
     const t = await t_annotations();
-    if (t.entries().length >= LIMITS.ANNOTATIONS) {
+    if (t.size >= LIMITS.ANNOTATIONS) {
       throw new Error(`annotations table full (cap ${LIMITS.ANNOTATIONS})`);
     }
 
@@ -285,7 +285,7 @@ function apply(ctx) {
     }
 
     const t = await t_clusters();
-    const existingCount = t.entries().length;
+    const existingCount = t.size;
     if (existingCount >= LIMITS.CLUSTERS) {
       throw new Error(`clusters table full (cap ${LIMITS.CLUSTERS})`);
     }
@@ -318,7 +318,7 @@ function apply(ctx) {
     const memory = ctx.get && typeof ctx.get === 'function' ? ctx.get('agint.memory') : null;
 
     const tr = await t_reports();
-    if (tr.entries().length >= LIMITS.REPORTS) {
+    if (tr.size >= LIMITS.REPORTS) {
       throw new Error(`reports table full (cap ${LIMITS.REPORTS})`);
     }
 

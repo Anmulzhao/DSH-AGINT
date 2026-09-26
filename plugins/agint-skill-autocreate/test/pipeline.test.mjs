@@ -15,6 +15,7 @@ function fakeTable() {
   const m = new Map();
   return {
     put: async (k, v) => { if (v === undefined) m.delete(k); else m.set(k, v); },
+    get size() { return m.size; },
     entries: () => [...m.entries()],
     del: async (k) => { m.delete(k); },
     _map: m,

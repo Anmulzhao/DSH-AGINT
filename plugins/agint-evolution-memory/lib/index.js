@@ -256,7 +256,7 @@ function apply(ctx) {
     await t.put(entry.id, entry);
 
     // 上限检查：超过 LIMITS.FAILURE_PATTERNS → 返回 warn
-    const count = t.entries().length;
+    const count = t.size;
     if (count > LIMITS.FAILURE_PATTERNS) {
       return { ...entry, _warn: `failure-patterns count ${count} > limit ${LIMITS.FAILURE_PATTERNS}` };
     }
@@ -280,7 +280,7 @@ function apply(ctx) {
     });
     await t.put(entry.id, entry);
 
-    const count = t.entries().length;
+    const count = t.size;
     if (count > LIMITS.SUCCESS_TEMPLATES) {
       return { ...entry, _warn: `success-templates count ${count} > limit ${LIMITS.SUCCESS_TEMPLATES}` };
     }
@@ -376,9 +376,9 @@ function apply(ctx) {
     const t2 = await t_fail();
     const t3 = await t_template();
     return {
-      evolution_log: t1.entries().length,
-      failure_pattern: t2.entries().length,
-      success_template: t3.entries().length,
+      evolution_log: t1.size,
+      failure_pattern: t2.size,
+      success_template: t3.size,
       limits: LIMITS,
     };
   }

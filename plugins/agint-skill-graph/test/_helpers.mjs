@@ -9,6 +9,9 @@ export function fakeTable() {
   const m = new Map();
   return {
     put: async (k, v) => { if (v === undefined) m.delete(k); else m.set(k, v); },
+    // 宿主 dsh-storage-domain 的计数入口是 `size` getter（2026-09-26 补：此前
+    // mock 只给数组式 entries()，导致 `.entries().length` 的误用在测试里看不出问题）
+    get size() { return m.size; },
     entries: () => [...m.entries()],
     get: (k) => m.get(k),
     del: async (k) => { m.delete(k); },

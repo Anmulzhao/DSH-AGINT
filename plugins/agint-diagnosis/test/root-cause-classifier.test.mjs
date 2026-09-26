@@ -223,6 +223,9 @@ function makeFakeCtx({ failurePatternCount = 0, annotationsCount = 0 } = {}) {
     storageDomain: {
       open: async () => ({
         table: (name) => ({
+          // 忠实对齐宿主 dsh-storage-domain 的 table API：`size` 是 getter
+          // （entries() 在宿主返回迭代器、无 .length —— 2026-09-26 修的正是这个）
+          get size() { return name === 'annotations' ? annotationsEntries.length : 0; },
           entries: () => (name === 'annotations' ? annotationsEntries : []),
           put: async () => undefined,
         }),
@@ -278,6 +281,7 @@ test('service annotate: success path returns unpacked annotation + writes', asyn
   // 覆盖 ctx 上的 put，收集写入
   ctx.storageDomain.open = async () => ({
     table: () => ({
+      get size() { return 0; },
       entries: () => [],
       put: async (id, entry) => { written.push({ id, entry }); },
     }),
