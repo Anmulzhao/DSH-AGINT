@@ -1,5 +1,38 @@
 # Changelog — agint-self-model
 
+## 2026-09-26 — 诊断自激环熔断（修复闭合正反馈环）
+- **修复诊断事件风暴的真因（闭合正反馈环）**：A6 订阅 `diagnosis.completed`
+  → `selfUpdate()` → 内部回调 `diagnosis.report()` → report() 末尾重新
+  publish 同一 topic ⇒ 再次进入本订阅。环上**无重入保护、无深度计数、无熔断**，
+  且三处 `catch` 全吞异常（handler `catch{}` / `recomputeObservation` 降级 /
+  订阅 `mode:'async'`），所以能一直转下去。
+  现场表相：`agint-mutator` **持续输出** `[agint-mutator.observe] diagnosis.completed
+  ... observationCount=21681` —— 注意 mutator 是 A6 的旁路观察者，**只 console.log、
+  不产生任何报告**，它是「显示屏」不是「源头」，修 bug 别找错插件。
+- **`selfUpdate()` 内部有「两处」调用点，只堵一处仍会转**：
+  1) `aggregateCapabilityEvidence()`（`windowDays: 7`，算非环境根因占比）
+  2) `recomputeObservation()`（`windowDays: 28`，算推理画像）
+  ⭐ 两个窗口口径不同，**不是重复调用、不可合并**（这正是端到端测试量到的基线 2 次）。
+  故熔断做在 `selfUpdate` 层，按来源统一关掉两条路径。
+- **熔断判据取「来源」而非「是否带载荷」**：`trigger === 'diagnosis-completed'`
+  ⇒ 本次刷新禁止回调 `report()`，根因分布改取**事件 payload**（就是刚发布的那份
+  报告，语义更准，且零新增写路径）。若按载荷有无判定，一条畸形事件就能让环重新闭合。
+- **不丢数据**：熔断路径照常写推理画像，只是分布来源从「再查一次」换成「用刚到的
+  这份」；`reasoning_profile` 内容与熔断前一致（有测试断言）。
+- **可回滚**：新增 `Config.diagnosis_loop_guard`（默认 `true`，K51 出厂即开）；
+  置 `false` 恢复 2026-09-26 之前的行为，供回滚 / 对照实验。
+- **可观测**：熔断触发时打首条 `console.warn`（后续静默累计，避免风暴期刷屏），
+  计数经 `stats()` / `inspectSummary()` 的 `diagnosisLoopGuard: {enabled, trips}` 暴露。
+- 测试 `test/diagnosis-loop-guard.test.mjs` **22/22 PASS**，含**端到端闭环对照**
+  （真 `report()` 会 publish → 真 bus 分发 → 真 A6 handler）：熔断开时调用次数收敛；
+  对照关闭熔断时同一链路失控。后者是证明前者「真抓得住这个 bug」而非碰巧通过的关键。
+  回归：`smoke` 19/19、`a7-ingest` 48/48、`real-compat` 10/10，全绿。
+- ⚠️ **本改动未覆盖的独立待查项**：`report()` 的 reports 表容量刹车
+  （`LIMITS.REPORTS = 50`，`agint-diagnosis/lib/index.js:321`）为何在此前风暴中
+  未生效 —— 现场 `observationCount` 远超 50，说明刹车没按预期触发。**未查清，另案。**
+- ⚠️ **未验证部分**：静态测试只证明代码路径正确；生产侧事件量是否回落，
+  **必须真实重启宿主**后才能观测（参见验收公式：静态 PASS + 宿主端到端 PASS + 真的重启过）。
+
 ## v0.7.6 (T2 A7 结算触发修复 · 2026-09-24)
 - **修复「批永远不结算」——A7 一致率恒为 null 的真因**：结算原本只在「批切换
   （`generatedAt` 变化）」与 `flush()`（dispose）时触发。但一次采集是在**同一个

@@ -47,7 +47,17 @@ const inject = [
   'agint.metrics',
   'agint.toolStats',
 ];
-const Config = z.object({});
+const Config = z.object({
+  /**
+   * 自激环熔断开关（2026-09-26 新增；默认 true = 出厂即开，K51）。
+   *
+   * 背景：A6 订阅 diagnosis.completed → selfUpdate → 回调 diagnosis.report()
+   * → report() 末尾重新 publish diagnosis.completed ⇒ 无界正反馈环。
+   * 开：来源为 diagnosis.completed 的刷新不再回调 report()（分布取事件载荷）。
+   * 关（false）：恢复 2026-09-26 之前的行为，仅供回滚 / 对照实验。
+   */
+  diagnosis_loop_guard: z.boolean().default(true),
+});
 
 // ── 数据来源访问器（软降级；D6 复用既有 Service）────────────────────────────
 
@@ -66,7 +76,7 @@ function buildDeps(ctx) {
 
 // ── 聚合：能力图谱证据（从 evolution + diagnosis 按 domain 聚合）──────────────
 
-async function aggregateCapabilityEvidence(deps, { windowDays = 7 } = {}) {
+async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosisEvent = false, diagnosisDistribution = null } = {}) {
   let failures = [];
   let templates = [];
   const evo = deps.get('agint.evolution');
@@ -84,12 +94,24 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7 } = {}) {
   catch { templates = []; }
 
   // 全局非环境根因占比（diagnosis 根因分布代理；ENVIRONMENT_SHIFT 视为环境噪音）
+  //
+  // 自激环熔断（2026-09-26）：来源为 diagnosis.completed 时**不得**回调
+  // diagnosis.report() —— 那是 selfUpdate 里第二条会把环合上的路径
+  // （第一条在 observation.js 的 recomputeObservation）。分布取事件载荷。
   let nonEnvRatio = 1;
   try {
-    const diag = deps.get('agint.diagnosis');
-    if (diag && typeof diag.report === 'function') {
-      const rep = await diag.report({ windowDays });
-      const dist = rep?.rootCauseDistribution ?? {};
+    let dist = null;
+    if (fromDiagnosisEvent) {
+      dist = (diagnosisDistribution && typeof diagnosisDistribution === 'object') ? diagnosisDistribution : {};
+    }
+    else {
+      const diag = deps.get('agint.diagnosis');
+      if (diag && typeof diag.report === 'function') {
+        const rep = await diag.report({ windowDays });
+        dist = rep?.rootCauseDistribution ?? {};
+      }
+    }
+    if (dist) {
       const total = Object.values(dist).reduce((s, v) => s + (Number(v) || 0), 0);
       const env = Number(dist.ENVIRONMENT_SHIFT) || 0;
       nonEnvRatio = total > 0 ? Math.max(0, Math.min(1, (total - env) / total)) : 1;
@@ -192,13 +214,24 @@ async function buildSnapshot(store) {
 
 // ── 主 update（轻量重算 + 可选全量校准 + A11 发布）─────────────────────────
 
-async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest }) {
+async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest, diagnosisDistribution = null, loopGuard = true, onGuardTrip = null }) {
   // 校验 trigger（FROZEN enum；非法即抛）
   UpdateTriggerSchema.parse(trigger);
   const now = nowIso();
-  const aggregated = await aggregateCapabilityEvidence(deps, { windowDays: 7 });
+  // 自激环熔断（2026-09-26）：本次刷新的来源若是 diagnosis.completed，则
+  // selfUpdate 内部**两处**都不许回调 diagnosis.report()（aggregateCapabilityEvidence
+  // 与 recomputeObservation 各一处），否则 report() 会重新 publish
+  // diagnosis.completed ⇒ 再次进入本函数 ⇒ 无界正反馈环。
+  // loopGuard=false 关闭熔断 = 恢复旧行为（可回滚开关，见 Config.diagnosis_loop_guard）。
+  const fromDiagnosisEvent = loopGuard === true && trigger === 'diagnosis-completed';
+  // 熔断计数在 selfUpdate 统一记一次（一次刷新 = 一次熔断）；两处调用点各记
+  // 一次会让计数翻倍，对外不可解释。
+  if (fromDiagnosisEvent && typeof onGuardTrip === 'function') {
+    try { onGuardTrip(); } catch { /* ignore */ }
+  }
+  const aggregated = await aggregateCapabilityEvidence(deps, { windowDays: 7, fromDiagnosisEvent, diagnosisDistribution });
   const updatedDomains = await recomputeCapabilities(store, aggregated, { now });
-  await recomputeObservation(store, deps, { now, metricsIngest });
+  await recomputeObservation(store, deps, { now, metricsIngest, fromDiagnosisEvent, diagnosisDistribution });
 
   // weekly 触发器走全量校准主路径（设计稿 §4.5）
   let miscalibrated = [];
@@ -235,10 +268,27 @@ async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest }
 
 // ── apply ───────────────────────────────────────────────────────────────────
 
-function apply(ctx, _config = {}) {
+function apply(ctx, config = {}) {
   const store = openStore(ctx);
   const deps = buildDeps(ctx);
   const disposers = [];
+
+  // ── 自激环熔断（2026-09-26）────────────────────────────────────────────
+  // 默认开（config.diagnosis_loop_guard !== false，K51「出厂即开」）。
+  // 可观测 > 可审批：触发时计数 + 打一条日志（仅首次，避免风暴期刷屏），
+  // 计数经 stats() / inspectSummary() 的 diagnosisLoopGuard 暴露给外部巡检。
+  const loopGuard = config?.diagnosis_loop_guard !== false;
+  let guardTrips = 0;
+  const onGuardTrip = () => {
+    guardTrips += 1;
+    if (guardTrips === 1) {
+      console.warn(
+        '[agint-self-model] diagnosis.completed 自激环熔断触发：本次刷新不再回调 '
+        + 'diagnosis.report()（根因分布改取事件载荷）。后续同类事件静默累计，'
+        + '计数见 stats().diagnosisLoopGuard.trips。',
+      );
+    }
+  };
 
   // A7 对账器（Sprint 16）：消费 metrics.snapshot 事件，与直连 metrics.snapshot() 对账。
   // v0.7.3：统计经 onPersist 节流落 metrics_ingest 单行表（纯观测表，非业务表），
@@ -296,6 +346,9 @@ function apply(ctx, _config = {}) {
       trigger: input?.trigger ?? 'weekly',
       evidence: input?.evidence,
       metricsIngest,
+      diagnosisDistribution: input?.diagnosisDistribution ?? null,
+      loopGuard,
+      onGuardTrip,
     });
   }
 
@@ -332,6 +385,8 @@ function apply(ctx, _config = {}) {
     return {
       capabilityMap: cap, reasoningProfile: reason,
       resourceBaseline: res, calibrationLog: cal,
+      // 自激环熔断的观测出口：enabled=false 表示已回滚到旧行为。
+      diagnosisLoopGuard: { enabled: loopGuard, trips: guardTrips },
     };
   }
 
@@ -348,6 +403,7 @@ function apply(ctx, _config = {}) {
       calibrationCount: await store.tables.calibrationLog.size(),
       calibrationSummary: calSummary,
       metricsIngest: metricsIngest.stats(),
+      diagnosisLoopGuard: { enabled: loopGuard, trips: guardTrips },
     };
   }
 
@@ -380,11 +436,24 @@ function apply(ctx, _config = {}) {
     if (typeof subscribe === 'function') {
       const offA6 = subscribe(
         { subscriber: 'agint-self-model', topics: ['diagnosis.completed'], mode: 'async' },
-        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'diagnosis-completed', metricsIngest }); } catch { /* ignore */ } },
+        // 自激环熔断（2026-09-26）：本 handler 由 diagnosis.completed 驱动，
+        // 其内部**不得**再回调 diagnosis.report()。根因分布直接取自本事件
+        // 载荷（就是刚发布的那份报告），既不丢数据也不会把环重新合上。
+        async (envelope) => {
+          try {
+            await selfUpdate(ctx, store, deps, {
+              trigger: 'diagnosis-completed',
+              metricsIngest,
+              diagnosisDistribution: envelope?.payload?.rootCauseDistribution ?? null,
+              loopGuard,
+              onGuardTrip,
+            });
+          } catch { /* ignore */ }
+        },
       );
       const offA8 = subscribe(
         { subscriber: 'agint-self-model', topics: ['dream.completed'], mode: 'async' },
-        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'dream-completed', metricsIngest }); } catch { /* ignore */ } },
+        async () => { try { await selfUpdate(ctx, store, deps, { trigger: 'dream-completed', metricsIngest, loopGuard, onGuardTrip }); } catch { /* ignore */ } },
       );
       if (typeof offA6 === 'function') disposers.push(offA6);
       if (typeof offA8 === 'function') disposers.push(offA8);

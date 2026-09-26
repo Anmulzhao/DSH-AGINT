@@ -98,15 +98,33 @@ export async function recomputeObservation(store, deps, opts = {}) {
   const now = opts.now ?? nowIso();
 
   // 1) 推理画像（diagnosis 根因分布，软降级）
+  //
+  // ── 自激环熔断（2026-09-26）────────────────────────────────────────────
+  // `fromDiagnosisEvent=true` 表示本次刷新由 `diagnosis.completed` 事件驱动。
+  // 此时**禁止**回调 `diagnosis.report()`：report() 末尾会重新 publish 同一
+  // topic ⇒ 再次触发 agint-self-model 的 A6 订阅 ⇒ 无界正反馈环。
+  //
+  // 判据取「来源」而非「是否带载荷」：事件载荷缺失时同样熔断（分布降级为空）。
+  // 若按载荷有无判定，一条畸形事件就能让环重新闭合。
+  // 分布改由事件 payload 直接提供 —— 语义更准（就是刚发布的那份报告），
+  // 且不引入任何新的写路径。
+  const fromDiagnosisEvent = opts.fromDiagnosisEvent === true;
   let distribution = {};
-  try {
-    const diagnosis = deps.get('agint.diagnosis');
-    if (diagnosis && typeof diagnosis.report === 'function') {
-      const rep = await diagnosis.report({ windowDays: 28 });
-      distribution = rep?.rootCauseDistribution ?? {};
-    }
+  if (fromDiagnosisEvent) {
+    distribution = (opts.diagnosisDistribution && typeof opts.diagnosisDistribution === 'object')
+      ? opts.diagnosisDistribution
+      : {};
   }
-  catch { distribution = {}; }
+  else {
+    try {
+      const diagnosis = deps.get('agint.diagnosis');
+      if (diagnosis && typeof diagnosis.report === 'function') {
+        const rep = await diagnosis.report({ windowDays: 28 });
+        distribution = rep?.rootCauseDistribution ?? {};
+      }
+    }
+    catch { distribution = {}; }
+  }
   const reasoning = buildReasoningProfile(distribution);
 
   // 2) 资源基线（tool-stats + metrics，软降级）
