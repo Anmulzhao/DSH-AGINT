@@ -77,7 +77,7 @@
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-24 00:28 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-26 09:36 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
@@ -88,6 +88,6 @@
 - **preset tool rows**（24 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-search
 - **preset skills**（7 个）：agint-install-bootstrap-rescue、causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
 - **cordis.patch.yml agint 段**（host web profile，0 个）：无
-- **cron 实况**（14 个 job，按最近 tick 排序）：metrics-collect 2026-09-24 15:57Z、skill-autocreate-observe 2026-09-23 21:30Z、skill-autocreate-release 2026-09-23 21:15Z、skill-autocreate-aggregate 2026-09-23 20:45Z、prompt-static-check 2026-09-23 20:45Z、tool-stats-backfill 2026-09-23 20:31Z、night-dream 2026-09-23 19:01Z、memory-decay 2026-09-20 18:30Z、skill-graph-weekly 2026-09-20 05:06Z、curriculum-weekly 2026-09-20 05:06Z、curator-weekly 2026-09-20 05:06Z、baseline-regression-suite 2026-09-20 05:06Z、evolve-review 2026-09-20 05:05Z、wiki-lint 2026-09-20 05:05Z
+- **cron 实况**（14 个 job，按最近 tick 排序）：skill-autocreate-observe 2026-09-26 01:34Z、skill-autocreate-release 2026-09-26 01:34Z、skill-autocreate-aggregate 2026-09-26 01:34Z、prompt-static-check 2026-09-26 01:34Z、tool-stats-backfill 2026-09-26 01:34Z、metrics-collect 2026-09-26 01:33Z、night-dream 2026-09-23 19:01Z、memory-decay 2026-09-20 18:30Z、skill-graph-weekly 2026-09-20 05:06Z、curriculum-weekly 2026-09-20 05:06Z、curator-weekly 2026-09-20 05:06Z、baseline-regression-suite 2026-09-20 05:06Z、evolve-review 2026-09-20 05:05Z、wiki-lint 2026-09-20 05:05Z
 
 <!-- LOCAL-STATE:END -->
