@@ -1,5 +1,12 @@
 # 自进化主链路从未通电（2026-09-24 取证）
 
+> ✅ **已解决（2026-09-27，v0.8.6）**：`agint-evolution-driver` v0.2.0–v0.2.4 上线后，
+> 主链路（evolve 提案 → driver 驱动 → LLM 构造 → 幻觉闸门 + 实体存在性门 → mutator →
+> population → commit）于 18:30 端到端首次跑通，四判据全中（mutator/population 落盘、
+> proposed/committed 事件、仓库真实改动带 preimage）。cron job `evolution-cycle`
+> （周日 04:15）+ 手动 `cron_run_now` 驱动。本文保留作历史取证快照，现状以
+> README「进化闭环引擎」行与 VERSION v0.8.6 行为准。
+
 > 一句话：**AGINT 现在在跑的是「观测侧」，不是「进化侧」。**
 > 变异引擎（`agint-mutator`）与种群选择引擎（`agint-population`）挂载了、代码完整、
 > 测试全绿，但**在生产里一次都没运行过** —— 连它们的存储域文件都不存在。
