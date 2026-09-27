@@ -1,0 +1,73 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-ov-strategy",
+  "version": "0.1.0",
+  "description": "AGINT × OpenViking 策略层（单缝原则）：全仓唯一消费官方 openvikingMemory runtime 的插件。经验沉淀写入（dream/diagnosis 产物 write-through 投影进 OV，经官方 enqueueWrite/enqueuePending/dispose 全链，不重建传输）+ 按域过滤（scope 白名单 + 长度过滤 + bus 订阅自动沉淀）+ 策略侧召回（软失败契约）。不持有 storageDomain（正本与投影规则），全程软失败可脱 OV 运转。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.ovStrategy"
+      ],
+      "consumes": [
+        "openvikingMemory",
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe"
+      ],
+      "events": [
+        "ov.strategy.remembered",
+        "ov.strategy.write-failed"
+      ],
+      "subscriptions": [
+        "dream.completed",
+        "diagnosis.completed"
+      ],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "softDependencies": {
+      "@openviking/dsh-memory-plugin": ">=0.5.8",
+      "agint-event-bus": ">=0.7.0"
+    },
+    "mountOrder": 60,
+    "permissions": {
+      "env": [
+        "AGINT_OV_STRATEGY"
+      ],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "event-bus(async)",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.ovStrategy": "OpenViking 策略层：remember(scope,text) 经验投影写入 / recall(query) 策略侧召回（软失败契约）/ status() 健康与计数"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "design": "proposals/agint-ov-strategy.md",
+    "compatSince": "0.1.0"
+  }
+}

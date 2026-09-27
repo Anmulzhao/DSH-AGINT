@@ -402,3 +402,17 @@
     - id: agint-compress-guard
       name: ./plugins/agint-compress-guard/lib/index.js
       config: {}
+
+    # agint-ov-strategy: OpenViking 策略层 v0.1.0（2026-09-27 挂载）。
+    # 全仓唯一消费官方 openvikingMemory runtime 的缝（单缝原则 R1）：dream/diagnosis
+    # 产物 write-through 投影进 OV（经官方 enqueueWrite/pending/dispose 全链，
+    # 不重建传输 R4）+ scope 白名单过滤 + 策略侧召回（软失败契约 R3）。
+    # 不持有存储域（R2）；全软依赖（bundle/总线缺席照常 apply）；
+    # kill-switch env AGINT_OV_STRATEGY=off（出厂即开）。
+    # Service：agint.ovStrategy（remember/recall/status）。总线订阅
+    # dream.completed（promoted>0 才记）与 diagnosis.completed（恒记），
+    # 发布 ov.strategy.remembered / ov.strategy.write-failed。
+    # 设计稿：proposals/agint-ov-strategy.md。
+    - id: agint-ov-strategy
+      name: ./plugins/agint-ov-strategy/lib/index.js
+      config: {}

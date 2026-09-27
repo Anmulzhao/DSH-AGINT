@@ -132,6 +132,13 @@ export async function publish(ctx, input) {
             payloadPreview: previewEntry(envelope),
             occurredAt: envelope.occurredAt,
             traceId: envelope.traceId,
+            // 2026-09-27（提案 0f91c868 问题2）：顶层冗余 topic/source。
+            // 此前外部工具想按 topic/source 过滤必须拆 value.envelope；
+            // 补两个标量字段让存储文件可直读。声明进 EventRecordSchema（optional，
+            // 存量 1155 条没有这两个字段）。hashtable 形状本身是 dsh-storage-domain
+            // 的 KV 契约，不改（改数组 = 破坏全仓存储域统一格式，且仓库内零读取方）。
+            topic: envelope.topic,
+            source: envelope.source,
         });
     }
     catch (err) {

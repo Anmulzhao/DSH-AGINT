@@ -36,6 +36,33 @@ function apply(ctx) {
           diaryRoot: { required: true, type: 'string' },
           recallPath: { required: true, type: 'string' },
           lookbackDays: { required: true, type: 'number' },
+          // 2026-09-27（提案 0f91c868 问题1）：status() 早已透出的两个字段补进 schema。
+          // 此前 additionalProperties:false 撞上实际返回 → dream_status 整体校验失败。
+          dedupe: { required: true,
+            type: 'object', additionalProperties: false,
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+            properties: {
+              tieredEnabled: { required: true, type: 'boolean' },
+              high: { required: true, type: 'number' },
+              mid: { required: true, type: 'number' },
+              // 值类型混合（dedupeTieredEnabled=boolean / dedupeHigh|dedupeMid=number），
+              // 白名单见 lib/index.js RUNTIME_CONFIG_KEYS
+              overrides: { required: true, type: 'object', additionalProperties: true },
+            },
+          },
+          health: { required: true,
+            type: 'object', additionalProperties: false,
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+            // shape 与 lib/health.js evaluateZeroHitHealth 对齐
+            properties: {
+              status: { required: true, type: 'string' },
+              consecutiveZeroHit: { required: true, type: 'number' },
+              threshold: { required: true, type: 'number' },
+              enabled: { required: true, type: 'boolean' },
+              lastNonZeroAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+              reason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+            },
+          },
           windows: { required: true,
             type: 'object', additionalProperties: false,
             // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
@@ -185,6 +212,21 @@ function apply(ctx) {
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-09-21（方案 B）：分级去重统计。2026-09-27（提案 0f91c868 问题1）补进
+              // schema —— sweep.js result.counts 一直带着它，此前 additionalProperties:false
+              // 撞上实际返回 → dream_run_now 整体校验失败。
+              // shape 与 lib/sweep.js dedupeStatsOf 对齐（恒为对象，不返回 null）
+              dedupeStats: { required: true,
+                type: 'object', additionalProperties: false,
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+                properties: {
+                  enabled: { required: true, type: 'boolean' },
+                  dropped: { required: true, type: 'number' },
+                  suspicious: { required: true, type: 'number' },
+                  checked: { required: true, type: 'number' },
+                  maxSimilarity: { required: true, type: 'number' },
+                },
+              },
               validationOk: { required: true, type: 'boolean' },
               validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               recovered: { required: true, type: 'number' },
@@ -217,6 +259,20 @@ function apply(ctx) {
                   boost: { required: true, type: 'number' },
                 },
               },
+            },
+          },
+          // 2026-09-27（提案 0f91c868 问题1）：顶层零命中健康度补进 schema。
+          // shape 与 lib/health.js evaluateZeroHitHealth 对齐（恒为对象）
+          health: { required: true,
+            type: 'object', additionalProperties: false,
+            // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+            properties: {
+              status: { required: true, type: 'string' },
+              consecutiveZeroHit: { required: true, type: 'number' },
+              threshold: { required: true, type: 'number' },
+              enabled: { required: true, type: 'boolean' },
+              lastNonZeroAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+              reason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
             },
           },
           promoted: {

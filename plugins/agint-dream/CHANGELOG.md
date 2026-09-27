@@ -5,6 +5,31 @@
 
 ---
 
+## v0.3.3 — output schema 补 dedupeStats / health + 一致性守卫测试（2026-09-27，提案 0f91c868 问题1）
+
+**根因**：`lib/sweep.js` / `lib/index.js` 陆续给返回值加了 `dedupeStats`（去重统计）、`health`
+（零命中健康度）字段，但 `lib/tools.js` 的 output schema 是 `additionalProperties:false` ——
+漏声明一个字段，host 端整体校验失败，**整个工具不可用**（不是降级）。这正是 2026-09-11
+`evolutionTemplates` 漏同步导致 `dream_status` 全挂的同一形态（教训：schema 同步的验收单位是
+「每个 tool × 每个返回字段」，不是「每个新增字段」）。
+
+**修复**（纯 schema 补声明，无行为变更）：
+
+- `dream_run_now`：counts 补 `dedupeStats`（required，形状对齐 `lib/sweep.js` `dedupeStatsOf`，
+  恒为对象不返回 null）；顶层补 `health`（required，形状对齐 `lib/health.js` `evaluateZeroHitHealth`）
+- `dream_status`：顶层补 `health`（required，同形状）
+- 两个工具都过 host 真实校验管线（`validateJsonSchemaValue`），不再只靠人眼对字段
+
+**测试**：新增 `test/output-schema-conformance.test.mjs`（2 例）—— 用**真 dsh-tools 管线**
+（defineTool 编译 + `validateJsonSchemaValue` 断言）分别校验 `status()` 与 `runSweep({apply:false})`
+实际返回能过各自的 output schema；以后给 sweep 返回值加任何顶层 / counts 字段，先改 schema 再跑
+本测试，否则这里红。
+
+**验收**：本插件全量 **110/110 通过**（原 108 + 新 2，含 smoke / sweep / consolidation /
+zero-hit-health 全绿）。
+
+---
+
 ## v0.3.2 — 零命中告警：连续 N 次扫不到会话 → degraded（2026-09-18）
 
 **背景（为什么光修命名还不够）**：v0.3.1 修好了会话日志命名，Light 通道恢复。

@@ -1,5 +1,46 @@
 # Changelog — agint-event-bus
 
+## 0.7.2 (2026-09-27) — 事件记录顶层补 topic/source + EventEnvelope zod schema 补全（提案 0f91c868 / 932486d6）
+
+> 起因（两个提案，合并一次改）：
+> ① 外部工具按 topic / source 过滤事件必须拆 `value.envelope`（envelope 才是真身）——
+>    events 表 record 此前只有 `{ envelope, payloadPreview, occurredAt, traceId }`；
+> ② 工具返回的 zod schema 只声明了 envelope / payloadPreview / occurredAt / traceId 4 个字段，
+>    实际 envelope 含 7 个（id / topic / version / occurredAt / source / traceId / payload）——
+>    调用方读 `source` 做 topic 路由会拿到 undefined。
+
+### 改动
+
+1. **events 表 record 顶层补 `topic` / `source` 冗余标量**（`src/bus.ts` + `lib/bus.js` 成对修改）：
+   - 写入时 `topic: envelope.topic`、`source: envelope.source` —— 存储文件可直读，外部工具不再拆 envelope
+   - `lib/index.js` 的 `EventRecordSchema` 声明为 **optional**（兼容存量 1155 条无此字段的记录）
+   - **方案决策**：保留 hashtable 存储形状（dsh-storage-domain 的 KV 契约；改数组 = 破坏全仓存储域
+     统一格式，且仓库内零按数组读取方），否决提案方案 A（改数组）/ B（补索引文件）
+2. **EventEnvelope zod schema 补全**（`src/schemas.ts` + `lib/schemas.js` 成对修改）：
+   - 顶层 7 required（id / topic / version / occurredAt / source / traceId / payload）+ correlationId optional，
+     与 `schemas/event-bus.schema.yaml` 的 FROZEN 字面**对齐**（yaml 自 v0.7.0 起一直声明 8 字段，
+     zod 落后 = schema 不一致缺陷，非契约变更 ⇒ yaml 无需改）
+   - **source 改 enum 已否决**（子提案 932486d6 建议）：strict enum 会让未来任何新插件的 publish 被
+     静默拒绝（accepted:false 不报错），正是本项目反复被咬的静默失败模式；改为 `KNOWN_EVENT_SOURCES`
+     冻结快照清单（文档化防 typo，**非白名单**，新 source 上线往清单补一行即可）
+3. 新增 `test/event-record-shape.test.mjs`（2 例）：publish 落库 record 顶层带 topic/source 且与
+   envelope 交叉一致；envelope 7 字段全在（子提案关心 source/id/version 可达性）；KNOWN_EVENT_SOURCES
+   导出为冻结数组。
+
+### 验收
+
+- `event-record-shape` 2/2 + `a9-a10` 4/4 + `event-write-visibility` 3/3 + `smoke` 10/10 +
+  `t2-sync-drill` 1/1（须 cwd=仓库根）—— 合计 **20/20**，零回归。
+- 兼容性：存量 1155 条无顶层 topic/source，optional schema 放行；读旧记录仍需拆 envelope
+  （不回填，避免对生产存储做大规模写操作）。
+
+### ⚠️ 注意
+
+- `lib/index.js` 与 `src/index.ts` 存在**既有漂移**（src 还是旧版 storageDomain.open API 形态）：
+  `EventRecordSchema` **只存在于 lib/index.js**，勿跑 `npm run build` 覆盖（build 会用旧 src 生成缺
+  topic/source 的 schema）。本次所有改动均 **src 与 lib 成对手改**，未跑 build。
+- 宿主部署位（容器 `/dsh/profiles/web`）待下一次 dsh 部署时同步仓库变更（仓库惯例）。
+
 ## 2026-09-26 — events 表写入失败不再静默
 
 ### 背景

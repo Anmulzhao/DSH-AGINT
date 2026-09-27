@@ -27,6 +27,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const BUS_STORAGE = process.env.DSH_HOME
@@ -502,6 +503,45 @@ if (existsSync(BUNDLE_PLUGINS) && existsSync(REPO_PLUGINS)) {
 }
 const driftOk = drift.repoNewer.length === 0 && drift.hostOnly.length === 0;
 
+// ───────── 查 I：漂移插件 smoke 验证（文件一致 ≠ 代码可用） ─────────
+// 背景（2026-09-27 复盘收录）：同步 ov-strategy 时哈希/语法全过、门禁 PASS，
+// 上线后 smoke 12/16 红 —— 根因是 lib 与 smoke 契约漂移（status().observe vs
+// observer、apply 未初始 ensureObserver）。哈希一致只证明字节相同，不证明可用。
+// 本查把「漂移插件的 smoke 必须通过」固化成门禁：
+//   漂移集合 = 查 E divergent + 查 H repoNewer/hostOnly/repoOnly 的插件名；
+//   无漂移时零成本跳过；有漂移时只跑漂移插件的 manifest.spec.tests.entry
+//   （cwd=REPO_ROOT，满足「须 cwd=仓库根」的 smoke 前提）。
+const driftPlugins = new Set();
+for (const d of [...dup.divergent, ...drift.repoNewer, ...drift.hostOnly, ...drift.repoOnly]) {
+  const m = /^([a-z0-9-]+)\//.exec(d);
+  if (m) driftPlugins.add(m[1]);
+}
+const smokeI = { checked: 0, pass: [], fail: [], skipped: driftPlugins.size === 0 };
+for (const plugin of [...driftPlugins].sort()) {
+  let entry = 'test/smoke.mjs';
+  try {
+    const man = JSON.parse(readFileSync(join(REPO_PLUGINS, plugin, 'manifest.json'), 'utf8'));
+    entry = man?.spec?.tests?.entry || man?.tests?.entry || 'test/smoke.mjs';
+  } catch {
+    /* 无 manifest：用默认入口 */
+  }
+  const entryPath = join(REPO_PLUGINS, plugin, entry);
+  if (!existsSync(entryPath)) {
+    smokeI.fail.push(`${plugin}（入口 ${entry} 不存在）`);
+    continue;
+  }
+  smokeI.checked++;
+  const r = spawnSync(process.execPath, [entryPath], {
+    cwd: REPO_ROOT,
+    timeout: 60_000,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (r.status === 0) smokeI.pass.push(plugin);
+  else smokeI.fail.push(`${plugin}（exit=${r.status ?? 'timeout'}${r.error ? ` ${r.error.code}` : ''}）`);
+}
+const smokeIOk = smokeI.fail.length === 0;
+
 // ─────────────────────────── 输出 ────────────────────────────────────────
 const fails = [
   ...shellServices.filter((s) => !exempService.has(s.name)).map((s) => ({ kind: 'SHELL_SERVICE', name: s.name })),
@@ -511,7 +551,7 @@ const fails = [
 ];
 const soft = topicRows.filter((r) => r.verdict === 'NOT_YET_FIRED');
 const exitCode =
-  fails.length > 0 || (STRICT && soft.length > 0) || !dupOk || tsDrift.length > 0 ? 1 : 0;
+  fails.length > 0 || (STRICT && soft.length > 0) || !dupOk || tsDrift.length > 0 || !smokeIOk ? 1 : 0;
 
 if (AS_JSON) {
   console.log(
@@ -554,6 +594,13 @@ if (AS_JSON) {
           repoOnly: drift.repoOnly,
           hostOnly: drift.hostOnly,
           ok: driftOk,
+        },
+        smokeI: {
+          checked: smokeI.checked,
+          pass: smokeI.pass,
+          fail: smokeI.fail,
+          skipped: smokeI.skipped,
+          ok: smokeIOk,
         },
         domains: {
           energized: energized.map((d) => ({ domain: d.domain, plugin: d.plugin, bytes: d.size })),
@@ -684,7 +731,25 @@ if (!drift.checked) {
   show('仓库独有（新文件尚未部署）', drift.repoOnly, C.dim);
 }
 
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}${driftOk ? '' : ' / 存在待上线改动'}`);
+console.log(`\n${C.b}── 查 I：漂移插件 smoke 验证（文件一致 ≠ 代码可用）──${C.r}`);
+if (driftPlugins.size === 0) {
+  console.log(`  ${C.dim}跳过：无漂移插件（零成本）${C.r}`);
+} else {
+  console.log(
+    `  ${smokeIOk ? C.dim : C.red}${smokeI.pass.length}/${smokeI.checked} 通过${C.r}` +
+      (smokeI.fail.length ? `  ${C.red}FAIL ${smokeI.fail.join(', ')}${C.r}` : ''),
+  );
+  for (const f of smokeI.fail) {
+    console.log(`    ${C.red}✗ ${f}${C.r}`);
+  }
+  if (smokeI.fail.length) {
+    console.log(`    ${C.red}漂移插件 smoke 必须通过才能上线（K：哈希一致 ≠ 可用，2026-09-27 ov-strategy 教训）${C.r}`);
+  } else {
+    console.log(`    ${C.dim}漂移插件（${[...driftPlugins].sort().join(', ')}）smoke 全过，可上线${C.r}`);
+  }
+}
+
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}${driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}`);
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
 else console.log(`${C.dim}PASS${C.r}`);

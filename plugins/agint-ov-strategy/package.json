@@ -1,0 +1,20 @@
+{
+  "name": "agint-ov-strategy",
+  "version": "0.1.0",
+  "description": "AGINT × OpenViking 策略层（单缝原则）：全仓唯一消费官方 openvikingMemory runtime 的插件。经验沉淀写入 + 按域过滤 + 策略侧召回；不重建传输（R4），不持有存储域（R2），全程软失败（R3）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "openviking",
+    "memory",
+    "strategy-layer",
+    "sprint-15"
+  ],
+  "license": "MIT",
+  "peerDependencies": {}
+}

@@ -33,13 +33,19 @@ const inject = ['storageDomain'];
 /** sync 订阅硬上限（设计稿 §A2.6 + schema yaml constraints） */
 export const SYNC_GLOBAL_LIMIT = 3;
 // ── 存储域声明（对齐 dsh-storage-domain defineDomain API） ─────────────
-// events 表 value：{ envelope, payloadPreview, occurredAt, traceId }
+// events 表 value：{ envelope, payloadPreview, occurredAt, traceId, topic?, source? }
+//   topic/source 为 2026-09-27（提案 0f91c868 问题2）新增顶层冗余标量 ——
+//   外部工具不用拆 envelope 即可按 topic/source 过滤；optional 兼容存量记录。
+//   ⚠️ src/index.ts 与本文件已漂移（src 还是旧版 storageDomain.open API，无
+//   defineDomain spec）—— EventRecordSchema 只存在于本文件，勿跑 build 覆盖。
 // deadletter 表 value：死信条目（id = `${envelope.id}:${sub.id}`）
 const EventRecordSchema = z.object({
   envelope: EventEnvelopeSchema,
   payloadPreview: z.unknown(),
   occurredAt: z.string(),
   traceId: z.string(),
+  topic: z.string().optional(),
+  source: z.string().optional(),
 }).passthrough();
 const DeadletterEntrySchema = z.object({
   id: z.string().min(1),

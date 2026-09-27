@@ -47,6 +47,33 @@ export const EventEnvelopeSchema = z.object({
     payload: z.unknown(),
 });
 /**
+ * 已知 source 清单（2026-09-27 快照，来自生产 `agint_event_bus.json` 1155 条）。
+ *
+ * 用途：**文档化防 typo**（观测 / 仪表盘 / 排障时对照），**不是发布校验** ——
+ * publish 对 source 仍然只要求非空字符串（提案 932486d6 建议改 enum，已否决）：
+ * strict enum 会让未来任何新插件/新探针的发布被静默拒绝（publish 返回
+ * accepted:false 不报错），正是本项目反复被咬的静默失败模式。新 source 上线后
+ * 往本清单补一行即可；这里的元素**只是快照**，不是白名单。
+ */
+export const KNOWN_EVENT_SOURCES = Object.freeze([
+    'agint-curator',
+    'agint-curriculum',
+    'agint-diagnosis',
+    'agint-dream',
+    'agint-evolution-memory-probe',
+    'agint-evolve',
+    'agint-metrics',
+    'agint-memory-provider',
+    'agint-quality-eval',
+    'agint-quality-policy',
+    'agint-self-model',
+    'agint-skill-autocreate',
+    'agint-skill-graph',
+    // 历史一次性探针（勿复用，也勿删除：存量事件里还在）
+    'verify-after-fix',
+    'verify-final',
+]);
+/**
  * Subscription：mode=sync 时 reason 必填 + 非空字符串（哲学对齐审查前置）
  *
  * 实现方式：先放宽 reason（任意 string），再在 mode=sync 上做 .refine 二次校验。
