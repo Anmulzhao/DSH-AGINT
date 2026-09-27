@@ -167,6 +167,19 @@ export function extractRepoPaths(text) {
 }
 
 /**
+ * 定位失败时的诊断串：提案文本里到底提了哪些反引号路径、几条真实命中仓库。
+ * 2026-09-27 观测升级：summary 的 failures 只留前 10 条，隐藏条目让「路径命中了却报
+ * no target」这类矛盾无法取证 —— 把关键判据直接写进失败串本身。
+ */
+export function resolutionDiag(candidate, repoFiles = []) {
+  const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}\n${candidate?.source ?? ''}`;
+  const mentioned = extractRepoPaths(hay);
+  const set = new Set(repoFiles);
+  const hits = mentioned.filter((p) => set.has(p));
+  return `mentioned:${mentioned.length} inRepo:${hits.length} bodyLen:${String(candidate?.body ?? '').length}`;
+}
+
+/**
  * 目标资产定位（2026-09-27 边界扩展）：技能名命中 → 提案内仓库路径命中 → null。
  * 返回 {type:'skill', id} | {type:'repo', id} | null。repoFiles = 仓库相对路径集合。
  */
@@ -412,7 +425,7 @@ export function apply(ctx, config = {}) {
           availableCount: Array.isArray(available) ? available.length : 0,
           repoFilesCount: repoFiles.length,
         });
-        failures.push(`${candidate.id}: no target asset resolved`);
+        failures.push(`${candidate.id}: no target asset resolved (${resolutionDiag(candidate, repoFiles)})`);
         continue;
       }
       const targetId = target.id;
@@ -576,7 +589,7 @@ export function apply(ctx, config = {}) {
       availableSkills: Array.isArray(available) ? available.length : 0,
       repoFiles: repoFiles.length,
       repoRoot: repoRoot ?? null,
-      failures: failures.slice(0, 10),
+      failures: failures.slice(0, 30), // 2026-09-27 观测升级：pool 上限 20，10 条 cap 会藏住诊断尾巴
       failuresTotal: failures.length,
     });
 
