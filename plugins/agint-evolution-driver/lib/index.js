@@ -170,8 +170,15 @@ export function apply(ctx) {
     const bus = dep('agint.eventBus.publish');
     if (typeof bus !== 'function') return false;
     try {
-      await bus(topic, payload, { source: 'agint-evolution-driver' });
-      return true;
+      // ⛔ 单参数，别再传三个：`agint.eventBus.publish` 的签名是
+      // `(input) => publish(busCtx, input)`，input = { topic, source, payload }。
+      // 传 (topic, payload, opts) 时 bus.js 的 `'id' in input` 对**字符串**抛
+      // TypeError，被它内部 catch 成 accepted:false 静默丢弃 —— 2026-09-27
+      // 两轮触发零 evolution.* 事件，全部丢在这里。
+      // topic 正则（schemas.js）：^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$，本插件三个 topic 均合法。
+      const res = await bus({ topic, payload, source: 'agint-evolution-driver' });
+      // accepted:false 是 bus 内部校验失败的唯一信号，不能当成功
+      return res?.accepted === true;
     } catch {
       return false; // 观测失败绝不影响主流程
     }
@@ -226,7 +233,25 @@ export function apply(ctx) {
    * @param {object} [opts.inject] 测试注入：{ evolve, mutator, population, skills, fs, llm }
    */
   async function runOnce(opts = {}) {
+    // 全路径出口：每条 return 都发一条 summary（2026-09-27 三修）。
+    // 前两版只覆盖了「走到循环末尾」的情况，早期 return（依赖缺失等）照样静默。
+    const emitSummary = async (exitReason, extra = {}) =>
+      publish('evolution.cycle.summary', {
+        exitReason,
+        runs: state.runs,
+        seen: state.seen.size,
+        proposed: state.proposed,
+        ingested: state.ingested,
+        degraded: state.degraded,
+        lastError: state.lastError,
+        failures: [],
+        failuresTotal: 0,
+        commitEnabled: isCommitEnabled(opts.env ?? process.env),
+        ...extra,
+      });
+
     if (isDisabled(opts.env ?? process.env)) {
+      await emitSummary('paused');
       return { skipped: true, reason: `paused（${KILL_ENV}=off）` };
     }
     state.runs += 1;
@@ -242,12 +267,14 @@ export function apply(ctx) {
       state.degraded += 1;
       state.lastError = 'agint.evolve unavailable';
       warn('runOnce skipped', { reason: state.lastError, hasEvolve: Boolean(evolve) });
+      await emitSummary('evolve-unavailable');
       return { skipped: true, reason: 'agint.evolve unavailable' };
     }
     if (!mutator || typeof mutator.propose !== 'function') {
       state.degraded += 1;
       state.lastError = 'agint.mutator unavailable';
       warn('runOnce skipped', { reason: state.lastError, hasMutator: Boolean(mutator) });
+      await emitSummary('mutator-unavailable');
       return { skipped: true, reason: 'agint.mutator unavailable' };
     }
 
@@ -258,6 +285,7 @@ export function apply(ctx) {
       state.degraded += 1;
       state.lastError = `listProposals failed: ${error?.message ?? String(error)}`;
       warn('runOnce skipped', { reason: state.lastError });
+      await emitSummary('listProposals-failed');
       return { skipped: true, reason: state.lastError };
     }
 
@@ -408,18 +436,11 @@ export function apply(ctx) {
 
     // ⭐ 无论有没有产出都发一条 summary：这是本插件唯一「外部可读」的出口
     // （warn→stdout 常驻读不到；cron 持久化只写死 "ok"）。零产出时更要发。
-    await publish('evolution.cycle.summary', {
-      runs: state.runs,
+    await emitSummary('no-actionable-candidate', {
       poolSize: pool.length,
       availableSkills: Array.isArray(available) ? available.length : 0,
-      seen: state.seen.size,
-      proposed: state.proposed,
-      ingested: state.ingested,
-      degraded: state.degraded,
-      lastError: state.lastError,
       failures: failures.slice(0, 10),
       failuresTotal: failures.length,
-      commitEnabled: isCommitEnabled(opts.env ?? process.env),
     });
 
     // 跑完一轮什么都没产出 —— 必须留痕，否则与「根本没跑」无法区分。

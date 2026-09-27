@@ -31,9 +31,12 @@ function makeCtx(services = {}) {
 
 function busRecorder(ctx) {
   const out = [];
-  ctx.services['agint.eventBus.publish'] = async (topic, payload) => {
-    out.push({ topic, payload });
-    return true;
+  // ⛔ 契约：`agint.eventBus.publish` 是**单参数** (input) => publish(busCtx, input)，
+  // input = { topic, source, payload }。2026-09-27 三参数调用被静默丢弃过一轮，
+  // 这里按真实签名实现：传错形态 input.topic 会是 undefined，用例立刻变红。
+  ctx.services['agint.eventBus.publish'] = async (input) => {
+    out.push({ topic: input?.topic, source: input?.source, payload: input?.payload });
+    return { accepted: typeof input?.topic === 'string' && typeof input?.source === 'string' };
   };
   return out;
 }
@@ -305,4 +308,32 @@ test('T15: 零产出必发 evolution.cycle.summary 且带失败清单（唯一�
   assert.equal(s[0].payload.poolSize, 1);
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T15）');
+test('T16: publish 必须按单参数契约调用（三参数会被 bus 静默丢弃）', async () => {
+  // 2026-09-27 真实故障：`bus(topic, payload, {source})` 三参数 → bus.js 内部
+  // `'id' in input` 对字符串抛 TypeError → catch 成 accepted:false 静默丢弃
+  // ⇒ 两轮触发零 evolution.* 事件。这条用例把契约钉死。
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: 'plugin-preflight 补 fixture', status: 'proposed', createdAt: '2026-09-01', body: '' }]),
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  const raw = [];
+  ctx.services['agint.eventBus.publish'] = async (...args) => {
+    raw.push(args);
+    return { accepted: true };
+  };
+  apply(ctx);
+  await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: { skillNames: ['plugin-preflight'], fs: { readSkill: async () => SKILL_TEXT }, llm: GOOD_LLM },
+  });
+  assert.ok(raw.length >= 1, '至少发过一次事件');
+  for (const args of raw) {
+    assert.equal(args.length, 1, `publish 必须是单参数调用，实际 ${args.length} 个`);
+    assert.equal(typeof args[0], 'object', 'publish 首参必须是 envelope 对象');
+    assert.equal(typeof args[0].topic, 'string', 'input.topic 必填');
+    assert.equal(args[0].source, 'agint-evolution-driver', 'input.source 必填（插件名）');
+  }
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T16）');
