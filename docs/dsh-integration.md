@@ -32,6 +32,10 @@ AGINT 整体就是一个 dsh **bundle**：仓库根 `package.json` 声明 `dsh.b
 0.1.7 起 profile 级 patch 优先级**高于** bundle 层 —— 两边都写同一批 id = 重复挂载，
 所以 AGINT 的挂载行全部搬进 bundle 层；`install.sh` 会在装前检测该文件是否残留 `agint-*` 段并 fail-closed。
 
+**⛔ 仓库内的 `profile-patches/web/cordis.patch.yml` 是历史副本，别再改它当挂载源**：
+`install.sh` 已**不再把它写入** profile 级 patch，但仍会**读**它作为 `uninstall.sh` 的挂载 id 清单源
+（`PATCH_SRC=`，缺失直接 `die`）。**改挂载行只改仓库根那份 `cordis.patch.yml`**，动副本是白动。
+
 ### 2. agent-preset 层
 
 `presets/agint/agent.cordis.yml` 是一个 dsh agent preset —— 一个 `name: '@deepseek-ai/dsh-*'` 工具行的有序列表。
@@ -95,6 +99,77 @@ agint-cron 监听 dsh 内部的 tick 事件（通过 `@deepseek-ai/cordis-plugin
 - `agint-quality-eval` 不评估自己（递归陷阱由 dsh 进程边界兜底）
 - `agint-quality-contract` L0 字段变更 → 人类否决权 + 不能单独部署（必须发 major 版本）
 - 任何 plugin 修改 `agint_quality` 相关代码 → 触发 `agint-rules` 中 `bash-edit-quality-core` 规则（deny）
+
+## 安装：`install.sh` 实际做什么
+
+前置：Node.js ≥ 20 · `@deepseek-ai/dsh` ≥ 0.1.7-rc.1（矩阵见 `VERSION`）· dsh 已初始化（`dsh web` 跑过至少一次）。
+
+```sh
+git clone https://github.com/Anmulzhao/DSH-AGINT.git ~/projects/AGINT
+cd ~/projects/AGINT
+./install/install.sh
+```
+
+实际步骤（照脚本段号，README 早期版本列的 ①–⑧ 已与此漂移）：
+
+| 段 | 做什么 | 备注 |
+|---|---|---|
+| 0.5 | 建中央备份目录 | `$DSH_HOME/.agint-backups/`，保留 10 份 |
+| 1 | 铺 preset → `.agent-presets/` | |
+| 1.1 | **preset 依赖解析入口** | dsh ≥ 0.1.7 必需，见下 |
+| 1.2 | **bundle 内解析入口** | bundle 形态必需，见下 |
+| 1.5 | zod bootstrap | ⛔ 必须在 plugin 同步**之前** |
+| 2 | 安装 plugins（`profiles/web/plugins` 兼容位） | 少数按老路径定位的代码用 |
+| 2.5 | 镜像插件 → bundle 部署位 | bundle 形态的**主挂载源** |
+| 3 | 同步 bundle 挂载层（patch + 清单 + 解析入口） | 仓库根本 `cordis.patch.yml` |
+| 3.5 | **注册 bundle 到 `dsh.profile.bundles`** | ⛔ 见下，漏了 = 装完像没装 |
+| 4 | 装后静态校验 | |
+| 4.5 / 4.55 | zod / zstd bootstrap 兜底 | 覆盖手动 rsync 场景 |
+| 4.6 | 回写 `AGENTS.md` 本机实况块 | |
+| 4.7 | 防御性补装 `dsh-workflow-worker-thread` | |
+
+幂等可回滚：`trap EXIT` 跟踪部分安装，任一 step 失败即 reverse 回滚；`--dry-run` 只打印不落盘；
+`agint-security-checks.sh` 任一 fail 即中止。
+
+> ⛔ **第 3.5 步不能省**：少了它，bundle 目录在、patch 在，但 dsh **根本不加载它** ——
+> 现象是「装完像没装」，**且零报错**。`uninstall.sh` 会对称地把它摘掉，所以卸载后重装也不会漏。
+
+装完须**重启 `dsh web`**（bundle 层与 profile 层都不热更新）；启动 stderr 不该出现
+`skipping profile bundle "@agint/host"`。
+
+卸载：`./install/uninstall.sh` —— 摘 bundle 本体 + 从 `dsh.profile.bundles` 摘名 + 清插件，支持从备份列表回滚。
+⛔ 包内 `node_modules` junction **必须保留**：`rm -rf` 会跟进链接目标，把 dsh 自身那 266 个官方包一起删掉。
+
+### dsh 0.1.7 的两个坑
+
+**坑一：preset 不再被扫目录发现。** 0.1.7 起 dsh **不扫** `.agent-presets/`（包名也从复数 `dsh-agent-presets`
+变单数 `dsh-agent-preset`）。只铺目录 = preset 永远不出现在列表里，**且不报错**。AGINT 改为在 patch 里显式声明
+三条 preset，用 `cordis:include` 指回 `.agent-presets/<id>/agent.cordis.yml` —— 定义保持单份，相对路径继续正确。
+⛔ 别给 include 那行加 `group: true`（它的语义是「子插件行放在 `config` 数组里」，不是 carrier 标记），
+加错会让整条 preset 抛 `must hold a list of plugin rows`，UI 只显示「加载失败」。
+
+**坑二：依赖解析入口（1.1 / 1.2 两步）。** `cordis:include` 会把子条目的 `baseUrl` 挪到 `.agent-presets/<id>/`，
+preset 里的裸包名（`@deepseek-ai/dsh-persona` / `dsh-tool-fs` …）都从那儿向上解析 —— 那儿没有 `node_modules`
+⇒ 官方插件行全部 `never started` ⇒ 注册表判 broken ⇒ **UI 只说「加载失败」，且不落日志**。
+`install.sh` 因此建两个 junction 指向 dsh 自带的 `node_modules`（266 个包）：
+`.agent-presets/node_modules`（preset 侧）与 `node_modules/@agint/host/node_modules/@deepseek-ai`（bundle 侧）。
+⛔ 两处都不能被同步删掉：preset 子目录会被 `rsync --delete` 镜像清空，bundle 同步必须 `--exclude=node_modules`。
+
+### 排障三板斧
+
+1. `dsh --profile web --dump-config` —— 官方工具，不挂载、零风险。正确结果：exit 0、无 stderr、三条 preset 声明都在。
+2. 上一步全绿但 UI 仍失败 ⇒ 基本是 `never started`，检查两个解析入口（1.1 / 1.2）是否存在。
+3. ⚠ preset 激活错误**只打 stdout 不落日志** —— 必须 `dsh --profile web > boot.log 2>&1` 才看得到。
+
+### 技能落点（升级时什么会丢）
+
+| 技能来源 | 落点 | 升级/重装后 |
+|---|---|---|
+| preset 自带（`presets/agint*/skills/`） | 随 preset 同步 | 以仓库为准（镜像覆盖） |
+| **AGINT 自动生成的技能** | `$DSH_HOME/skills/`（用户级） | ✅ **保留**，不会被清空 |
+
+三个消费者都读这个根：`agint-skill-autocreate.skills_root` · `agint-curator.skills_dir` ·
+`agint-skill-graph.extraSkillDirs`。改投放目标必须三处一起改，否则图谱/策展会看不到新技能。
 
 ## 升级 dsh 时怎么测
 
