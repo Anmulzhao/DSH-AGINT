@@ -45,6 +45,23 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_SNIPPET = 6000;
 const MAX_CANDIDATES = 5;
 
+/**
+ * ⭐⭐ 子代理必须显式带 preset —— 这是 2026-09-27 用 30 个空壳会话换来的硬知识。
+ *
+ * 现象：`agents.create()` 只传 `{sessionId, meta:{cwd,origin}, signal}` 也能成功，
+ * 会话文件照样落盘、subagent.identity.label 照样写上 —— **看起来完全正常**。
+ * 但 child 的 `agentPreset=null` ⇒ `modelSelection={lastUsed:null}` ⇒
+ * 没有任何模型路由 ⇒ turnOutline 的 prompt/response 都是空串、contextPressure=0。
+ * 结果：会话建得出来，一步都跑不动，且**不报错**（静默空壳）。
+ *
+ * 本机实证：成功会话 `agentPreset:"agint"` + `modelSelection: minimax-cn/MiniMax-M3`；
+ * 空壳 `agentPreset:null` + `modelSelection:null`。差别只有这一个字段。
+ *
+ * ⛔ 不要因为这个字段"看着像可选"就省掉它：meta.agentPreset 在类型上是可选的，
+ *    但对 host plane 凭空 create 的临时 parent 来说，它是模型路由的唯一来源。
+ */
+export const DEFAULT_AGENT_PRESET = 'agint';
+
 /** 结构化输出契约（subagents.start 方言：required 挂在父对象数组上，K70） */
 export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
   type: 'object',
@@ -506,11 +523,15 @@ async function listSkillNames({ roots } = {}) {
   return entries.filter((e) => e.isDirectory() && !String(e.name).startsWith('.')).map((e) => e.name);
 }
 
-async function spawnLlm(ctx, { system, user, schema, timeoutMs }) {
+export async function spawnLlm(ctx, { system, user, schema, timeoutMs, preset = DEFAULT_AGENT_PRESET }) {
   const agents = ctx?.get?.('agents');
   const subagents = ctx?.get?.('subagents');
   if (!agents || typeof agents.create !== 'function') return { ok: false, reason: 'agents unavailable' };
   if (!subagents || typeof subagents.start !== 'function') return { ok: false, reason: 'subagents unavailable' };
+  // 前置自检：provider 没注册就别建会话了 —— 否则每次跑都在磁盘上多一个空壳会话。
+  if (typeof subagents.getProvider === 'function' && !subagents.getProvider('spawn')) {
+    return { ok: false, reason: 'spawn provider not registered' };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('evolution-driver-timeout'), timeoutMs);
@@ -519,7 +540,8 @@ async function spawnLlm(ctx, { system, user, schema, timeoutMs }) {
   try {
     handle = await agents.create({
       sessionId: `evolution-driver-${randomUUID()}`,
-      meta: { cwd: process.cwd(), origin: 'subagent' },
+      // ⭐ agentPreset 不能省：省了 ⇒ child 无模型路由 ⇒ 建得出会话、跑不动一步（30 个空壳的血债）
+      meta: { cwd: process.cwd(), origin: 'subagent', ...(preset ? { agentPreset: preset } : {}) },
       signal: controller.signal,
     });
     run = await subagents.start('spawn', {
@@ -533,7 +555,19 @@ async function spawnLlm(ctx, { system, user, schema, timeoutMs }) {
     if (result?.stopReason !== 'completed') {
       return { ok: false, reason: `stopReason=${result?.stopReason ?? 'unknown'}` };
     }
-    return { ok: true, value: result?.output ?? null };
+    // ⭐ 结果在 `structured`，不在 `output`（第二处血泪 bug）。
+    //    readResult() 的契约：带 outputSchema 时，结构化产出挂在 result.structured；
+    //    result.output 只是 assistant 的最终文本。读 output ⇒ applicable 恒 undefined
+    //    ⇒ 每条都被判「不适用」⇒ 又是一种零产出，且同样不报错。
+    const structured = result?.structured;
+    if (structured === undefined || structured === null) {
+      return {
+        ok: false,
+        reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`,
+        degraded: true,
+      };
+    }
+    return { ok: true, value: structured };
   } catch (error) {
     return { ok: false, reason: `llm error: ${error?.message ?? String(error)}` };
   } finally {

@@ -8,6 +8,8 @@ import {
   resolveTargetSkill,
   anchorExists,
   pickCandidate,
+  spawnLlm,
+  DEFAULT_AGENT_PRESET,
 } from '../lib/index.js';
 
 // ── mock ctx ────────────────────────────────────────────────────────────
@@ -336,4 +338,57 @@ test('T16: publish 必须按单参数契约调用（三参数会被 bus 静默�
   }
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T16）');
+// ── T17/T18：子代理 spawn 契约（2026-09-27 用 30 个空壳会话换来的两条硬约束）──
+
+/** 假 agents/subagents，记录 create 的参数与 start 的返回 */
+function fakeRuntime({ result = { stopReason: 'completed', structured: { applicable: false } } } = {}) {
+  const created = [];
+  const started = [];
+  const agents = {
+    create: async (options) => {
+      created.push(options);
+      return { agent: { id: 'fake-parent' }, dispose: async () => {} };
+    },
+  };
+  const subagents = {
+    getProvider: (name) => (name === 'spawn' ? { name } : undefined),
+    start: async (name, request) => {
+      started.push({ name, request });
+      return { result: Promise.resolve(result), dispose: async () => {} };
+    },
+  };
+  return { agents, subagents, created, started };
+}
+
+test('T17: agents.create 必须带 meta.agentPreset —— 缺了 child 就没有模型路由', async () => {
+  const rt = fakeRuntime();
+  const ctx = makeCtx({ agents: rt.agents, subagents: rt.subagents });
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
+
+  assert.equal(rt.created.length, 1, '应创建一次 parent');
+  const meta = rt.created[0].meta;
+  assert.ok(meta, 'meta 必传');
+  assert.equal(
+    meta.agentPreset,
+    DEFAULT_AGENT_PRESET,
+    'meta.agentPreset 缺失 ⇒ child 的 agentPreset=null ⇒ modelSelection=null ⇒ 会话建得出但跑不动（30 个空壳的血债）',
+  );
+});
+
+test('T18: 结果读 structured，不是 output —— 缺 structured 必须报出来而不是静默', async () => {
+  // ① 有 structured ⇒ ok
+  const ok = fakeRuntime({ result: { stopReason: 'completed', structured: { applicable: true } } });
+  const ctxOk = makeCtx({ agents: ok.agents, subagents: ok.subagents });
+  const r1 = await spawnLlm(ctxOk, { system: 's', user: 'u', schema: { type: 'object' } });
+  assert.equal(r1.ok, true);
+  assert.deepEqual(r1.value, { applicable: true }, 'value 必须来自 result.structured');
+
+  // ② 只有 output、没有 structured ⇒ 必须失败且说明原因（不能静默当"不适用"）
+  const bad = fakeRuntime({ result: { stopReason: 'completed', output: [{ type: 'text', text: 'x' }] } });
+  const ctxBad = makeCtx({ agents: bad.agents, subagents: bad.subagents });
+  const r2 = await spawnLlm(ctxBad, { system: 's', user: 'u', schema: { type: 'object' } });
+  assert.equal(r2.ok, false, '只有 output 没有 structured 必须判失败');
+  assert.match(r2.reason, /structured output missing/);
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T18）');
