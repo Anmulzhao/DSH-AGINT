@@ -1,5 +1,32 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.5 — 2026-09-27（实体门抽成可复用模块 + 服务扩展点）
+
+### 背景
+
+v0.2.4 的实体门只服务本插件。但「LLM 产出的文本引用了不存在的实体」是**所有 LLM 写盘
+路径**的共同风险（K117）——K115 幽灵接口已经证明：判据抄几份就会漂移，而漂移的闸门
+等于假绿。老板 2026-09-27 拍板「做通用化」。
+
+### 变更
+
+- 新增 `lib/entity-gate.js`：`findFabricatedEntities` / `buildCodeIndex` + 容量常量
+  **原样搬移**，`index.js` re-export 保持既有导入面（对既有消费方与测试零影响）。
+- 服务新增只读扩展点 **`checkEntities(text, opts)`**（挂在既有 `agint.evolutionDriver` 上）：
+  别的插件用软依赖 `ctx.get('agint.evolutionDriver').checkEntities(t)` 即可复用同一份判据
+  与同一份代码索引，**不需要**跨插件 import、**不需要**各自配 repoRoot。
+- 查询口径（防误用）：`{ checked, ok, fabricated, repoFiles, reason? }`。
+  `checked:false` = **缺证据**（没 repoRoot / 门被关 / 门自己抛错），调用方应**放行**，
+  不能当成"检出问题"。门自己出错时同样放行 + 告警留痕 —— 观测装置不允许变成新的单点故障。
+- 索引缓存：`svcRepoFiles` / `svcCodeIndex` 一次构建、进程内复用（门的语义取"启动后快照"）。
+- 测试 T33–T35（缺证据不许假通过 / 判据复用拦编造放真实 / 门自身出错放行），smoke 35/35。
+  `fs` 可注入 ⇒ 测试 hermetic，不扫真仓库。
+
+### 未做（待拍板）
+
+`agint-skill-autocreate` 发布前调用本扩展点的**接线**未做：那会改变发布门的失败语义
+（终态 REJECTED vs 可恢复 hold），属产品决策，见项目记忆当日日志。
+
 ## v0.2.4 — 2026-09-27（实体存在性门：内容级编造在落盘前拦死）
 
 ### 背景

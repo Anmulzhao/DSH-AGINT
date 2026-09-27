@@ -728,4 +728,62 @@ test('T32: entityGate 放行真实实体；索引不可用（null）时 snake �
   assert.equal(skip.ok, true);
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T32）');
+// ── T33–T35: checkEntities 服务扩展点（v0.2.5）—— 判据复用给别的插件 ──
+
+test('T33: checkEntities —— 缺证据（门关 / 无 repoRoot）必须报 checked:false，不许假通过', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+
+  const off = await svc.checkEntities('见 `agint-nope`', {
+    env: { AGINT_EVOLUTION_DRIVER_ENTITY_GATE: 'off' },
+    repoRoot: '/tmp/x',
+  });
+  assert.equal(off.checked, false);
+  assert.match(off.reason, /off/);
+  assert.deepEqual(off.fabricated, []);
+
+  const noRoot = await svc.checkEntities('见 `agint-nope`', { env: {} });
+  assert.equal(noRoot.checked, false);
+  assert.match(noRoot.reason, /repoRoot/);
+});
+
+test('T34: checkEntities —— 复用同一份判据：拦编造、放真实（hermetic fs 注入）', async () => {
+  const repoFiles = ['plugins/agint-metrics/lib/metrics.js', 'presets/agint/skills/plugin-preflight/SKILL.md'];
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  const fsMock = {
+    scanRepo: async () => repoFiles,
+    codeIndex: async () => 'const t = table("evolution_log");',
+  };
+
+  const bad = await svc.checkEntities('数据源见 `agint-evolution-viz` 与 `evolution_nope_log`。', {
+    env: {}, repoRoot: '/repo', fs: fsMock,
+  });
+  assert.equal(bad.checked, true);
+  assert.deepEqual(bad.fabricated, ['agint-evolution-viz', 'evolution_nope_log']);
+
+  const good = await svc.checkEntities('读 `evolution_log`，技能见 `plugin-preflight`。', {
+    env: {}, repoRoot: '/repo', fs: fsMock,
+  });
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.fabricated, []);
+  assert.equal(good.repoFiles, 2);
+});
+
+test('T35: checkEntities —— 门自己抛错时放行 + 留痕（观测装置不能变成新的单点故障）', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  const out = await svc.checkEntities('见 `agint-nope`', {
+    env: {},
+    repoRoot: '/repo',
+    fs: { scanRepo: async () => { throw new Error('scan boom'); } },
+  });
+  assert.equal(out.checked, false);
+  assert.match(out.reason, /scan boom/);
+  assert.deepEqual(out.fabricated, []);
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T35）');
