@@ -6,7 +6,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**Latest**：v0.8.4 · **32 个 Cordis 插件** · 24 个 preset 工具行 · 15 个 cron job · D-QAF v0.2 · HARM 四维
+**Latest**：v0.8.4 · **33 个 Cordis 插件** · 24 个 preset 工具行 · 15 个 cron job · D-QAF v0.2 · HARM 四维
 
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**，以及 P7.5 的**自进化执行层**（技能自动创建 / 策展 / 学习图谱 / 轨迹记录 / 记忆压缩守卫）。
 
@@ -36,10 +36,10 @@ AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「
 |---|---|---|
 | **bundle** | AGINT 整体 = 一个 dsh bundle 包 `@agint/host`（下图所有插件 + 挂载 patch 都在包内） | 仓库根 `package.json` + `cordis.patch.yml` |
 | **preset** | 智进人格 + 工具集（含 AGINT 专属 skills）。3 套：`agint`（主线）、`agint-blockchain`、`agint-investor` | `presets/agint*/` |
-| **plugin** | **32 个** Cordis 插件（另有 2 个嵌套在 `agint-quality/` 内不单列：`quality-contract` / `quality-policy`），提供 host Services | `plugins/agint-*/` |
+| **plugin** | **33 个** Cordis 插件（另有 2 个嵌套在 `agint-quality/` 内不单列：`quality-contract` / `quality-policy`），提供 host Services | `plugins/agint-*/` |
 | **data** | 记忆 / 规则 / 指标 / 提案 / 梦境 / 复盘 / 评估历史 | runtime 数据，**不**进仓库 |
 
-## 插件全景（32）
+## 插件全景（33）
 
 | 分组 | 插件 |
 |---|---|
@@ -49,7 +49,7 @@ AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「
 | **D-QAF 质量层**（6 + 2 嵌套） | `quality`（聚合入口）· `quality-sdk`（Prompt SDK）· `quality-static`（静态准入，6 族 checker）· `quality-sandbox`（动态沙箱）· `quality-eval`（7 维评分）· `quality-report`（HARM 报告）· 嵌套：`quality-contract`（L0 FROZEN 契约）· `quality-policy`（策略引擎） |
 | **进化闭环引擎**（4） | `mutator`（变异构造）· `population`（种群管理）· `abtest`（A/B 检验）· `mount`（三段式挂载事务） |
 | **自进化执行层**（5，P7.5） | `skill-autocreate`（技能自动创建：检测 → 评估 → 发布三道门）· `curator`（技能策展 / 陈旧归档）· `skill-graph`（技能关系图谱）· `trajectory`（进化轨迹 / 训练数据层）· `compress-guard`（记忆压缩检查点守卫） |
-| **观测与基础设施**（4） | `self-model`（自我模型，只读观察者）· `event-bus`（事件总线）· `restart`（重启编排 + 代码指纹）· `session-extract`（中立会话提取器） |
+| **观测与基础设施**（5） | `self-model`（自我模型，只读观察者）· `event-bus`（事件总线）· `restart`（重启编排 + 代码指纹）· `session-extract`（中立会话提取器）· `ov-strategy`（OpenViking 策略层：dream/diagnosis 产物 write-through 投影 + 策略召回，单缝 R1 / 全软依赖 / kill-switch） |
 
 ## 自进化宪法（速览）
 
@@ -107,7 +107,7 @@ cd ~/projects/AGINT
 | 命令 | 查什么 |
 |---|---|
 | `node bin/check-dsh-compat.mjs` | dsh 兼容性四查：悬挂包名 / peer 兼容性预演 / 版本漂移 / 改名残留。`--json` 给 CI，`--strict` 让 info 也算失败 |
-| `node bin/check-wiring.mjs` | 接线完整性：空壳服务（注册了没人用）/ 孤儿主题 / 与生产数据对账 —— 「挂载了」≠「通电了」 |
+| `node bin/check-wiring.mjs` | 接线完整性九查（A~I）：空壳服务 / 主题接线 × 生产数据 / 存储域通电 / 命名空间错配 / TS 源产物漂移 / 双副本一致性（bundle 位 vs 镜像位）/ 仓库↔部署位漂移 / **漂移插件 smoke 门禁（文件一致 ≠ 代码可用）** —— 「挂载了」≠「通电了」 |
 | `node bin/check-tool-schemas.mjs` | tool schema 两套方言真编译一遍（写错会让整条 preset 起不来） |
 
 ⛔ `npm install -g @deepseek-ai/dsh@latest` 会**静默降级** —— `latest` 可能低于在跑的版本（2026-09-24 实测 `latest`=0.1.5-rc.3，本机在跑 0.1.7-rc.1）。**必须带精确版本号**。
@@ -121,7 +121,7 @@ cd ~/projects/AGINT
 
 ## 运行现状（本机实测）
 
-**32 个 Cordis 插件 · 24 个 preset 工具行 · 15 个 cron job · 7 个 preset skills。** 数字随部署变化，权威实况见 [`AGENTS.md`](./AGENTS.md) 文末的 LOCAL-STATE 自动块（由 `bin/agents-local-state.mjs` 探测回写）。
+**33 个 Cordis 插件 · 24 个 preset 工具行 · 15 个 cron job · 7 个 preset skills。** 数字随部署变化，权威实况见 [`AGENTS.md`](./AGENTS.md) 文末的 LOCAL-STATE 自动块（由 `bin/agents-local-state.mjs` 探测回写）。
 
 ## 与 dsh 的关系
 
