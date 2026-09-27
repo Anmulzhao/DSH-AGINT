@@ -151,6 +151,19 @@ export function apply(ctx) {
     seen: new Set(),
   };
 
+  // 可观测出口（2026-09-27 补）：本插件第一条 job 跑完（evolution-cycle
+  // 06:32Z，lastResult ok）却零产出、零留痕 —— 静默失败是本项目头号杀手，
+  // 每一条 skipped / continue 都必须留下一句话，否则「跑过但没产出」和
+  // 「根本没跑」在生产上无法区分。logger 可能不存在 ⇒ 全链路可选调用。
+  const logger = ctx?.logger ?? null;
+  const warn = (msg, extra) => {
+    try {
+      logger?.warn?.(`evolution-driver: ${msg}`, extra ?? {});
+    } catch {
+      /* 日志失败绝不阻断主流程 */
+    }
+  };
+
   // 软依赖：调用时取，不缓存（bundle apply 顺序不保证）
   const dep = (name) => (ctx && typeof ctx.get === 'function' ? ctx.get(name) : null);
   const publish = async (topic, payload) => {
@@ -228,11 +241,13 @@ export function apply(ctx) {
     if (!evolve || typeof evolve.listProposals !== 'function') {
       state.degraded += 1;
       state.lastError = 'agint.evolve unavailable';
+      warn('runOnce skipped', { reason: state.lastError, hasEvolve: Boolean(evolve) });
       return { skipped: true, reason: 'agint.evolve unavailable' };
     }
     if (!mutator || typeof mutator.propose !== 'function') {
       state.degraded += 1;
       state.lastError = 'agint.mutator unavailable';
+      warn('runOnce skipped', { reason: state.lastError, hasMutator: Boolean(mutator) });
       return { skipped: true, reason: 'agint.mutator unavailable' };
     }
 
@@ -242,6 +257,7 @@ export function apply(ctx) {
     } catch (error) {
       state.degraded += 1;
       state.lastError = `listProposals failed: ${error?.message ?? String(error)}`;
+      warn('runOnce skipped', { reason: state.lastError });
       return { skipped: true, reason: state.lastError };
     }
 
@@ -261,19 +277,38 @@ export function apply(ctx) {
       state.seen.add(candidate.id);
 
       const skillName = resolveTargetSkill(candidate, available);
-      if (!skillName) continue; // 定位不到目标资产 → 换下一条，不硬凑
+      if (!skillName) {
+        // 定位不到目标资产 → 换下一条，不硬凑。留痕：这是「有提案但没目标」的静默路径。
+        warn('candidate skipped: no target skill resolved', {
+          candidateId: candidate.id,
+          title: candidate.title ?? '',
+          availableCount: Array.isArray(available) ? available.length : 0,
+        });
+        continue;
+      }
 
       let fileText = null;
       try {
         fileText = await readSkillText({ skillName, fs, roots: inj.skillRoots });
-      } catch {
+      } catch (error) {
         fileText = null;
+        warn('candidate skipped: target file unreadable', {
+          candidateId: candidate.id,
+          skillName,
+          error: error?.message ?? String(error),
+        });
       }
       if (typeof fileText !== 'string' || !fileText) continue;
 
       const built = await construct({ candidate, skillName, fileText, llm: inj.llm ?? null });
       if (built.ok !== true) {
         if (built.degraded) state.degraded += 1;
+        warn('candidate skipped: construct failed', {
+          candidateId: candidate.id,
+          skillName,
+          reason: built.reason ?? 'unknown',
+          degraded: built.degraded === true,
+        });
         continue;
       }
       const v = built.value;
@@ -301,6 +336,11 @@ export function apply(ctx) {
         });
       } catch (error) {
         state.lastError = `propose failed: ${error?.message ?? String(error)}`;
+        warn('candidate skipped: mutator.propose threw', {
+          candidateId: candidate.id,
+          skillName,
+          reason: state.lastError,
+        });
         continue;
       }
       state.proposed += 1;
@@ -355,7 +395,20 @@ export function apply(ctx) {
       };
     }
 
-    return { skipped: true, reason: 'no actionable candidate（无候选 / 定位不到目标 / LLM 判定不适用）' };
+    // 跑完一轮什么都没产出 —— 必须留痕，否则与「根本没跑」无法区分。
+    const summary = {
+      poolSize: pool.length,
+      availableSkills: Array.isArray(available) ? available.length : 0,
+      seen: state.seen.size,
+      degraded: state.degraded,
+      lastError: state.lastError,
+    };
+    warn('runOnce ended with no actionable candidate', summary);
+    return {
+      skipped: true,
+      reason: 'no actionable candidate（无候选 / 定位不到目标 / LLM 判定不适用）',
+      ...summary,
+    };
   }
 
   function status() {
