@@ -54,3 +54,6 @@ DSH自进化系统整体优化改进方案.md
 
 # 本地工具缓存（workbuddy 的运行时数据，不进版本库）
 .workbuddy/
+
+# evolution-driver commit 的 preimage 备份（引擎自动写，不进版本库）
+.agint-preimage/
