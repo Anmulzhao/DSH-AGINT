@@ -12,14 +12,18 @@
  *     只在调用方显式传 `llmAuthoring` 且开关打开时才生效，且**必须过本地
  *     校验**（见 `validateLlmAuthoring`）——生成侧与判据侧天然分离，
  *     比让 LLM 自评可靠得多。
+ *   - 回落路径同设防（2026-09-27 P0）：LLM 没写的字段落回模板/工具序列时，
+ *     名字判「是否工具名拼接」（来源判据，见 isToolAssembledName）、描述判
+ *     「是否工具链复述」（authoring.isToolChainDescription），命中整条不生成。
+ *     修复 `pwsh-pwsh-pwsh-pwsh` 一类「名不可读 = 技能不可达」的产出。
  *   - 预估收益是启发式（D-QAF Phase 2/3 才量实测），公式在此集中注释，
  *     Sprint 15 接入实测后回填校准。
  */
 
-import { selectTemplate, renderBody, extractTriggers, hasConcreteValue } from './templates.js';
+import { selectTemplate, renderBody, extractTriggers, hasConcreteValue, TOOL_CANONICAL_MAP } from './templates.js';
 import { isSelfReferential } from './schema.js';
 import { renderSemanticSections } from './semantic-window.js';
-import { isHostSkillName, isToolChainName } from './authoring.js';
+import { isHostSkillName, isToolChainName, isToolChainDescription } from './authoring.js';
 
 /**
  * 本地校验 LLM 撰写的产出（LLM 接入方案 §5.2）——**不相信模型守规矩**。
@@ -100,6 +104,27 @@ export function buildProposal(pattern, opts = {}) {
     ?? pattern.toolSequence.join(' → ');
   const name = llmAuthoring?.name ?? skillName(pattern);
 
+  // ── P0 回落判据对称化（2026-09-27）────────────────────────────────────
+  // `validateLlmAuthoring` 只拦 LLM 产出；**回落路径（LLM off / 降级 / 字段
+  // 缺失 / 产出被拒）过去不设防** —— `pwsh-pwsh-pwsh-pwsh` 一类技能全部从
+  // 这里漏出（K57 发现 1 的生产路径，2026-09-27 实测 3 个存量、0 调用）。
+  // 命中即整条丢弃——宁可没有技能，不要不可发现的技能（真实 > 讨好）。
+  //
+  // 为什么名字门不用 `isToolChainName`（形状判据）而用 `isToolAssembledName`：
+  // 形状正则对「≥4 段的英文自然 slug」有误伤面（如 batch-process-markdown-
+  // frontmatter 会被判红）。回落路径**知道名字的来源**，可以判得更准：
+  // ≥3 段且每段都是本次序列（或已知工具族）里的工具名，才确证是工具拼的。
+  // 形状判据留给 LLM 路径（那边没有来源信息，只有形状可用），判据所有权
+  // 不变（authoring.js），这里不另立正则。
+  // 判据只挂**回落字段**：LLM 给的字段在 validateLlmAuthoring 已过门，
+  // 不重复判（拒绝原因里也就能区分「LLM 产出被拒」和「回落产出被拒」）。
+  if (!llmAuthoring?.name && isToolAssembledName(pattern, name)) {
+    return skip('name-fallback-tool-chain');
+  }
+  if (!llmAuthoring?.description && isToolChainDescription(description)) {
+    return skip('description-fallback-tool-chain');
+  }
+
   // ── 自我评估禁止（§9.4）：命中即不生成，写 audit 由调用方处理 ──
   if (isSelfReferential(name, description)) return skip('self-referential');
 
@@ -164,6 +189,30 @@ export function skillName(pattern) {
     ? fromDesc
     : [...new Set(pattern.toolSequence)].join('-').replace(/_/g, '-').replace(/[^a-z0-9-]/g, '');
   return (base || 'repeated-task').slice(0, 48);
+}
+
+/**
+ * 回落名是否「工具序列拼接」（P0，2026-09-27）。
+ *
+ * ≥3 段且**每段都是本次序列（或已知工具族 TOOL_CANONICAL_MAP）里的工具名**
+ * 才算——名字里出现任何一个非工具词（batch/process/review…）就说明它来自
+ * 自然语言描述，放行。这比形状正则（authoring.TOOL_CHAIN_NAME_RE）准：
+ * 那条对 ≥4 段的英文自然 slug 会误伤，本函数用「来源」而非「形状」判。
+ *
+ * 附带收益：3 段工具名（如 pwsh-glob-webfetch）形状正则够不着
+ * （`^([a-z_]+-){3,}` 需要 3 个尾随连字符 = 4 段），这里够得着。
+ *
+ * 纯函数，不依赖 authoring.js（不重复实现它的判据，只回答另一个问题：
+ * 「名字是不是工具拼的」——那是来源问题，只有生成侧答得了）。
+ */
+export function isToolAssembledName(pattern, name) {
+  const segs = String(name ?? '').split('-').filter(Boolean);
+  if (segs.length < 3) return false;
+  const known = new Set([
+    ...(pattern.toolSequence ?? []),
+    ...Object.keys(TOOL_CANONICAL_MAP),
+  ]);
+  return segs.every((s) => known.has(s));
 }
 
 /**

@@ -47,6 +47,40 @@ function mockCtx(services = {}) {
   };
 }
 
+// ── LLM mock（P0 2026-09-27）────────────────────────────────────────────
+// schema 默认即生产默认：llm_judge_mode=primary + llm_authoring_mode=on。
+// 生成侧回落门收紧后，「LLM 不可用 → 候选诚实归零」成了新语义——流程闭环
+// 测试要建候选，fixture 必须走真实的 LLM 判定+撰写路径。此处按 judgeViaLLM
+// 的服务协议（agents.create / subagents.start('spawn') → run.result.structured）
+// mock 一个最小可用实现；产出形状 = JUDGE_OUTPUT_SCHEMA 的合法子集。
+function mockLlmServices(overrides = {}) {
+  return {
+    agents: {
+      create: async () => ({ agent: { sessionId: 'mock-parent' }, dispose: async () => {} }),
+    },
+    subagents: {
+      getProvider: (name) => (name === 'spawn' ? { name } : null),
+      start: async (_provider, _opts) => ({
+        result: Promise.resolve({
+          stopReason: 'completed',
+          structured: {
+            standardizable: true,
+            confidence: 0.9,
+            rationale: 'mock verdict: repeated read-then-write on paired files',
+            name: 'markdown-file-pair',
+            description: 'Use when paired files must be read then updated together.',
+            why: ['同一对文件被反复读取后修改'],
+            pitfalls: ['写回前确认文件未被并发修改'],
+            ...overrides,
+          },
+        }),
+        localAgent: null,
+        dispose: async () => {},
+      }),
+    },
+  };
+}
+
 // ── 构造模拟数据：同一 (session, turn) 形态的任务重复 3 次 ────────────────
 // Sprint 17：跨会话聚合默认 primary（idleMs=30s），
 // helper 内每次调用间隔 60s 模拟独立会话，避免被合成一个跨会话任务。
@@ -60,10 +94,12 @@ function taskRecords({ sessionId, turn, path }) {
   ];
 }
 
-function setupCtx(tmpDir) {
+function setupCtx(tmpDir, opts = {}) {
   const events = [];
+  const llm = opts.llm === false ? {} : mockLlmServices();
   const ctx = mockCtx({
     'agint.eventBus.publish': async (envelope) => { events.push(envelope); },
+    ...llm,
   });
   const jsonlPath = join(tmpDir, `stats_${Math.random().toString(36).slice(2)}.jsonl`);
   const records = [
@@ -132,6 +168,24 @@ test('增量检测：第二次跑不重复生成候选', async () => {
     const second = await svc.detect({});
     assert.equal(second.candidatesCreated, 0); // 已回链，不重复
     assert.equal(second.newRepeatPatterns, 0); // 已跨过阈值不再重复报
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// P0（2026-09-27）语义锁定：生成侧回落门收紧后，LLM 不可用（降级/预算耗尽/
+// 服务缺失）⇒ 候选诚实归零，而不是产出「pwsh-pwsh-pwsh-pwsh」式不可发现技能。
+// 这是对 2026-09-27 取证（3 个存量自动技能 0 调用）的回归防线。
+test('P0 语义锁定：LLM 不可用 → 模式照常检测，但候选诚实归零', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'autocreate-'));
+  try {
+    const { svc } = setupCtx(tmp, { llm: false });
+    const result = await svc.detect({});
+    assert.equal(result.newRepeatPatterns, 1, '模式检测不受影响，只是不再产出垃圾候选');
+    assert.equal(result.candidatesCreated, 0, '宁可没有技能，不要不可发现的技能（真实 > 讨好）');
+    // 第二次跑不得因「没有候选」而改变检测语义
+    const second = await svc.detect({});
+    assert.equal(second.candidatesCreated, 0);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -242,6 +296,7 @@ function setupEvalCtx(tmpDir, options = {}) {
     'agint.qualityEvaluator': qualityEvaluator,
     'agint.evolution': evolution,
     'skills': skills,
+    ...mockLlmServices(),
   });
   const jsonlPath = join(tmpDir, `stats_${Math.random().toString(36).slice(2)}.jsonl`);
   const records = [

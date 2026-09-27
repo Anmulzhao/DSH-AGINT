@@ -1,5 +1,67 @@
 # Changelog — agint-skill-autocreate
 
+## 0.5.3 (2026-09-27) — 生成侧回落判据对称化（P0）+ LLM 接入默认对齐（P1）
+
+> 与 0.5.2 互补：0.5.2 在**发布侧**拦（name-gate，事后兜底），本版在**生成侧**拦
+> （proposer，源头不产）。两层正交：发布门保护已入队的候选，生成门让垃圾候选
+> 根本不被创建——省掉评估/发布的预算与审计噪声。
+
+**病根（grep 取证）**：判据早就有了（`authoring.TOOL_CHAIN_NAME_RE`，实测自动产物
+5/5 命中、人工 0/6 误杀），但只装在 `validateLlmAuthoring`（LLM 路径）上；
+**回落路径**（LLM off / 降级 / 预算耗尽 / 产出被拒）不设防——`name = llmAuthoring?.name
+?? skillName(pattern)`，而 `skillName()` 的兜底就是工具序列拼接。LLM 一缺位，
+`pwsh-pwsh-pwsh-pwsh` 式技能必然漏出。0 调用是这条接线不对称设计出来的。
+
+**改动（P0，proposer.js）**
+
+- 名字门：回落名 ≥3 段且**每段都是本次序列（或已知工具族）的工具名** ⇒ 整条不生成
+  （`isToolAssembledName`，来源判据）。为什么不用形状正则：`TOOL_CHAIN_NAME_RE`
+  对 ≥4 段的英文自然 slug 有误伤面（batch-process-markdown-frontmatter 会被判红）；
+  回落路径**知道名字来源**，判得比形状更准。附带收益：3 段工具名（pwsh-glob-webfetch）
+  形状正则够不着（它需要 4 段），这里够得着。
+- 描述门：回落描述是工具链复述（`authoring.isToolChainDescription`，判据单一所有权）
+  ⇒ 整条不生成。
+- 判据只挂**回落字段**：LLM 给的字段在 `validateLlmAuthoring` 已过门，不重复判——
+  拒绝原因因此能区分「LLM 产出被拒」和「回落产出被拒」。
+
+**改动（P1，index.js）**
+
+- `llm_judge_mode` / `llm_authoring_mode` 的防御性兜底值 `?? 'off'` 与 schema 默认
+  （`primary` / `on`）**分叉**——历史上写死 off 是 K57 同类「两处漂移」病。
+  对齐为 `?? 'primary'` / `?? 'on'`，并留注释：改默认请改 schema.js，别只改这里。
+- 效果：LLM 不可用时系统行为从「产垃圾技能」变为「候选诚实归零」——
+  **宁可没有技能，不要不可发现的技能**（真实 > 讨好）。
+
+**测试**
+
+- `proposer.test.mjs` +5：回落名工具拼接必拦 / 复述描述必拦 / 字段级对称
+  （LLM 给了名字没给描述 → 描述仍过门）/ LLM 齐全不误杀 / 英文自然 slug 不误杀。
+- `pipeline.test.mjs`：setup 补 `agents`/`subagents` mock（对齐生产默认 judge=primary
+  + authoring=on，协议照 `judgeViaLLM`：`subagents.start('spawn') → run.result.structured`）；
+  新增「P0 语义锁定」——LLM 不可用 ⇒ 模式照常检测、候选归零。
+- 全套件 340/340 PASS。
+
+**其他**：补 0.5.2 漏改的 `package.json` version 号（0.5.1 → 0.5.3）。
+
+## 0.5.2 (2026-09-27) — 语义命名门禁（治 0 调用，而不只是事后下架）
+
+> 起因：已发布的 3 个技能叫 `pwsh-pwsh-pwsh-pwsh` / `pwsh-glob-webfetch-webfetch` /
+> `agintsearch-pwsh-askuserquestion-pwsh`，描述是「pwsh → pwsh → …（参数：command）」——
+> **名字和描述就是工具调用序列原样拼出来的**。技能被发现靠模型读 name+description 判断
+> 是否适用，没有模型会选中这种名字 ⇒ **0 调用是设计出来的，不是运气差**。
+
+**做法**：新增 `lib/name-gate.js`（纯函数），两处接入：
+
+- **发布前**（`releaseCandidate`，三道门之后的补充门）：名字非 kebab-case / 连续重复 token /
+  全是工具名 / ≥3 词且工具名占比 ≥2/3 / 描述是 ≥3 段工具序列骨架 ⇒ 终态 REJECTED。
+- **观察期**（`observe`）：存量 OBSERVING release 同样补查，不合规直接归档
+  （不等 zero-usage 护栏跑满观察窗）。
+
+**kill-switch**：`skill_name_gate_enabled`；未显式设置时**跟随** `release_specificity_gate_enabled`
+（后者是发布前质量门总闸，关掉它 ⇒ 所有质量门退场，命名门不应例外）。默认开。
+
+**测试**：`test/name-gate.test.mjs` T1–T10（含 5 个历史真实病例必拒 + 9 个正常技能名不误杀）。
+
 ## 0.5.1+retarget (2026-09-23) — 投放目标改投用户级技能根（修「重装清空自动生成技能」）
 
 > 起因：09-23 从源码全量重装 AGINT 后，5 个自动生成的技能整片消失

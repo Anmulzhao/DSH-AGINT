@@ -369,9 +369,14 @@ function apply(ctx, config) {
     let semanticFilled = 0;   // 本次有多少候选拿到了非空语义段
 
     // ── LLM 接入（2026-09-18《LLM 接入 autocreate 方案》§1.3/§4/§5）───────
-    // 两个接入点：判定闸门（轨道 C）+ 提案生成。默认全 off ⟹ 合入即零行为变化。
-    const judgeMode = c.llm_judge_mode ?? 'off';
-    const authoringMode = c.llm_authoring_mode ?? 'off';
+    // 两个接入点：判定闸门（轨道 C）+ 提案生成。
+    // ⚠️ `c` 恒出自 ConfigSchema.parse（line 69），schema 默认即生效值
+    // （judge=primary / authoring=on，出厂即开）——此处 `??` 是防御性兜底，
+    // **必须与 schema 默认对齐**。历史上写死 'off' 与 schema 分叉（2026-09-27
+    // 纠正）：分叉的兜底值一旦真被走到，行为与文档/schema 各说各话，
+    // 属 K57 同类「两处漂移」病。改默认请改 schema.js，别只改这里。
+    const judgeMode = c.llm_judge_mode ?? 'primary';
+    const authoringMode = c.llm_authoring_mode ?? 'on';
     const llmStats = {
       mode: judgeMode,
       authoringMode,

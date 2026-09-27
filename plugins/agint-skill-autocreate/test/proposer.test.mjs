@@ -100,10 +100,12 @@ test('extractTriggers：最多 3 个', () => {
 // ══════════════════════════════════════════════════════════════════════════
 
 test('A2：无具体值的模式 → 不生成候选，并给出精确 reason', () => {
+  // 描述用自然语言：P0（2026-09-27）起「描述=工具序列复述」会在更早的门
+  // （description-fallback-tool-chain）被拦，别让本测试的 A2 断言被抢跑。
   const noValue = {
     toolSequence: ['read', 'edit', 'pwsh'],
     paramSignature: { read: 'path:str', edit: 'path:str', pwsh: 'command:str' },
-    description: 'read → edit → pwsh',
+    description: 'standard edit verify flow',
     occurrenceCount: 9,
     successRate: 1,
     sampleArgs: { read: { file_path: 'a/b' }, edit: { file_path: 'a/b' }, pwsh: {} },
@@ -134,6 +136,96 @@ test('A2：模板不匹配 → reason=no-matching-template', () => {
   assert.equal(reasonOut.reason, 'no-matching-template');
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// P0（2026-09-27）：回落判据对称化 —— LLM 没写的字段落到模板/工具序列时，
+// 过与 validateLlmAuthoring 同一组判据，命中整条不生成。
+// 生产病灶：pwsh-pwsh-pwsh-pwsh 等 5 个自动技能名全是工具序列拼接、0 调用。
+// ══════════════════════════════════════════════════════════════════════════
+
+test('P0：无 LLM 撰写、名字回落成工具链名 → 整条不生成（K57 生产路径）', () => {
+  // 中文描述被 skillName() 的 ASCII 过滤剥空 → 回落 toolSequence 去重拼接
+  // → 'pwsh-glob-webfetch-read'（≥3 段 kebab，命中 TOOL_CHAIN_NAME_RE）。
+  const p = {
+    toolSequence: ['pwsh', 'glob', 'webfetch', 'read'],
+    paramSignature: { pwsh: 'command:str', glob: 'pattern:str', webfetch: 'url:str', read: 'path:str' },
+    description: '批量扫描目录并抓取页面内容',
+    occurrenceCount: 6,
+    successRate: 0.9,
+    sampleArgs: {
+      pwsh: { command: 'node --test test/proposer.test.mjs' },
+      glob: { pattern: 'src/**/*.js' },
+      webfetch: { url: 'https://example.com/docs' },
+      read: { file_path: 'src/index.js' },
+    },
+  };
+  const reasonOut = {};
+  assert.equal(buildProposal(p, { reasonOut }), null);
+  assert.equal(reasonOut.reason, 'name-fallback-tool-chain');
+});
+
+test('P0：无 LLM 撰写、描述是工具链复述 → 整条不生成（名字能过、描述拦）', () => {
+  // 序列去重只有 1 段 → 名字 slug 只有一段，名字门不命中；但描述是复述。
+  const p = {
+    toolSequence: ['pwsh', 'pwsh', 'pwsh', 'pwsh'],
+    paramSignature: { pwsh: 'command:str' },
+    description: 'pwsh → pwsh（参数：command/description）',
+    occurrenceCount: 6,
+    successRate: 0.9,
+    sampleArgs: { pwsh: { command: 'node --test test/proposer.test.mjs' } },
+  };
+  const reasonOut = {};
+  assert.equal(buildProposal(p, { reasonOut }), null);
+  assert.equal(reasonOut.reason, 'description-fallback-tool-chain');
+});
+
+test('P0：LLM 给了名字但没给描述 → 描述回落仍要过门（字段级对称）', () => {
+  const p = {
+    toolSequence: ['pwsh', 'pwsh', 'pwsh', 'pwsh'],
+    paramSignature: { pwsh: 'command:str' },
+    occurrenceCount: 6,
+    successRate: 0.9,
+    sampleArgs: { pwsh: { command: 'node --test test/proposer.test.mjs' } },
+  };
+  const reasonOut = {};
+  assert.equal(buildProposal(p, {
+    reasonOut,
+    llmAuthoring: { name: 'repeat-shell-check', why: ['同一命令反复跑'], pitfalls: [] },
+  }), null);
+  assert.equal(reasonOut.reason, 'description-fallback-tool-chain');
+  assert.ok(reasonOut.llmAuthoringRejected === undefined, 'LLM 产出本身没被拒');
+});
+
+test('P0：LLM 撰写齐全且名字合法 → 不被回落门误杀', () => {
+  const p = {
+    toolSequence: ['pwsh', 'pwsh', 'pwsh', 'pwsh'],
+    paramSignature: { pwsh: 'command:str' },
+    description: 'pwsh → pwsh → pwsh（参数：command/description）',
+    occurrenceCount: 6,
+    successRate: 0.9,
+    sampleArgs: { pwsh: { command: 'node --test test/proposer.test.mjs' } },
+  };
+  const out = buildProposal(p, {
+    llmAuthoring: {
+      name: 'repeat-shell-check',
+      description: '反复用 shell 验证同一批文件改动时复用已验证的命令序列。',
+      why: ['同一命令重复执行 ≥4 次'],
+      pitfalls: ['命令含副作用时先 dry-run'],
+    },
+  });
+  assert.ok(out, 'LLM 名字合法时，回落门不得拦截');
+  assert.equal(out.skillDraft.name, 'repeat-shell-check');
+});
+
+test('P0：既有路径不受影响——英文描述可 slug 化时照常生成', () => {
+  const p = {
+    ...filePattern,
+    description: 'batch process markdown frontmatter files',
+  };
+  const out = buildProposal(p);
+  assert.ok(out);
+  assert.equal(out.skillDraft.name, 'batch-process-markdown-frontmatter');
+});
+
 test('语义窗口：semanticMarkdown 注入正文，出现 `## 为什么` / `## 避坑`', () => {
   const md = ['## 为什么', '- 老板要求先 dry-run 再真正拉起（避免中断进行中的会话）', '', '## 避坑', '- 曾遇到：Error: EPERM: operation not permitted, rename', ''].join('\n');
   const p = buildProposal(filePattern, { semanticMarkdown: md });
@@ -151,10 +243,11 @@ test('语义窗口：无语义时**不渲染**空段（宁缺毋滥，不拿话�
 });
 
 test('语义窗口：失败证据同样能解开 A2（窗口带真实值即可）', () => {
+  // 描述用自然语言（同上：复述描述会被 P0 门先拦，抢走 A2 的断言对象）。
   const p = {
     toolSequence: ['read', 'edit'],
     paramSignature: { read: 'path:str', edit: 'path:str' },
-    description: 'read → edit',
+    description: '编辑项目文件并验证结果',
     occurrenceCount: 3,
     successRate: 1,
     sampleArgs: { read: {}, edit: {} },

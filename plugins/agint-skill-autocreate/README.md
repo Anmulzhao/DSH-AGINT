@@ -75,6 +75,7 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 - **合成顺序**（`lib/standardizable.js`）：硬否决 5 条 → 轨道 C（LLM）→ 轨道 A（diagnosis）→ 轨道 B（启发式兜底）。LLM 与规则共用同一 `min_standardizable_confidence`。
 - **LLM 只在过了 5 条硬否决的 pattern 上调用**——那五条是结构性事实，让 LLM 重判等于白付一次调用。
 - **本地校验兜底**：LLM 撰写的 name/description 过宿主 SKILL_NAME 正则 + 工具链名判据 + 自我指涉检查，任一不过整条丢弃（audit `llm_authoring_rejected`）。
+- **回落路径同设防（v0.5.3 起）**：LLM 没写的字段落回模板/工具序列时同样过门——名字判「是否工具名拼接」（`proposer.isToolAssembledName`，来源判据）、描述判「是否工具链复述」（`authoring.isToolChainDescription`），命中整条不生成。即 **LLM 不可用 ⇒ 候选诚实归零**，不再产出 `pwsh-pwsh-pwsh-pwsh` 式不可发现技能。发布侧还有一道独立的名字门（`name-gate.js`，`skill_name_gate_enabled`）兜底。
 - **审计**：`llm_judge_called` / `llm_judge_degraded`（必带 reason）/ `llm_judge_shadow`（含 agree 分歧样本）/ `llm_budget_exhausted` / `llm_authoring_rejected`。
 - **schema 约束下移**：宿主 enforced JSON Schema 子集不支持 `pattern`/`maxLength`/`minimum`（不支持会在子 agent 创建前抛错），相关约束全部在 `lib/llm-verdict.js` 本地校验执行。
 
