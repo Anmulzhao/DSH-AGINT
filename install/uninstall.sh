@@ -106,7 +106,9 @@ restore_from_backup() {
 
   log "从备份恢复: $archive"
   log ""
-  tar -tzf "$archive" | head -5
+  # --force-local：Git Bash/MSYS 下 $archive 形如 C:/...，tar 会把「C:」当远程主机
+  #   （与 install.sh 备份同坑，2026-09-28 修）。
+  tar --force-local -tzf "$archive" | head -5
   log "  ..."
 
   if [ "$DRY_RUN" = "1" ]; then
@@ -117,7 +119,7 @@ restore_from_backup() {
   # 解到 archive 同级目录（archive 是绝对路径，-C 到其父目录）
   local parent
   parent="$(dirname "$archive")"
-  tar -xzf "$archive" -C "$parent"
+  tar --force-local -xzf "$archive" -C "$parent"
   log "✓ 已从 $archive 恢复"
 }
 

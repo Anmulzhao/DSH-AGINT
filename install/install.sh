@@ -268,7 +268,10 @@ backup() {
   parent="$(dirname "$target")"
   local base
   base="$(basename "$target")"
-  (cd "$parent" && tar -czf "$archive" "$base") || die "备份失败: $target → $archive"
+  # --force-local：Git Bash/MSYS 下 $archive 形如 C:/Users/...，GNU tar 会把
+  #   「C:」误判为远程主机（报 "Cannot connect to C: resolve failed"）——
+  #   该选项强制含冒号路径按本地文件处理；Linux 上无副作用（2026-09-28 实测坑）。
+  (cd "$parent" && tar --force-local -czf "$archive" "$base") || die "备份失败: $target → $archive"
   log "   备份: $target → $archive"
 
   # 回滚标记：rollback 的 restore_backup 分支就是靠 `<target>.bak-current` 还原的

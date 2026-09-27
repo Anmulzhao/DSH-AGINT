@@ -31,24 +31,36 @@ AGINT_HOME_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGINT_HOME="${AGINT_HOME:-$AGINT_HOME_DEFAULT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
+# ⛔ 2026-09-28 修坑：某些 Git Bash 环境（如本机）预先导出 **反斜杠格式** 的
+#   DSH_HOME（C:\Users\Administrator\.dsh）。bash 工具链大多容忍混合斜杠，但：
+#   ① run() 的 eval 二次解析会把 \U \A \. 里的反斜杠当转义吃掉 → rm/cp 拿到
+#      毁掉的路径，rm -f 还静默 exit 0（「已清理」假日志，实际没删）；
+#   ② Windows python3 认 C:\ 但脚本侧配合复杂。
+#   统一在入口处规范化成 C:/ 正斜杠格式：MSYS 工具链（cp/rm/ls/test）与
+#   Windows python 全都认，且 cygpath -m 对已是 C:/ 的输入幂等。
+#   Linux/macOS 无 cygpath，原样保留。
+if command -v cygpath >/dev/null 2>&1; then
+  DSH_HOME="$(cygpath -m "$DSH_HOME" 2>/dev/null || printf '%s' "$DSH_HOME")"
+fi
+
 # ── MSYS → Windows 路径转换 ──────────────────────────────────────────────────
 # 与 install.sh 里同一个坑：Git Bash 的 $DSH_HOME 形如 /c/Users/...（MSYS 路径），
 # bash 自己能读，但传给 Windows 原生 python3 会被当成不存在的相对路径，
 # open() 直接 FileNotFoundError。本脚本所有 python3 读文件路径的调用都必须过
 # 一次 winpath()，否则版本号会静默读成 "0"，zod 被误判为版本不符而跳过。
-# 探测方式同 install.sh：拿 SCRIPT_DIR 试一次，python 认得就不转。
-PYTHON_NEEDS_WINPATH=0
-if command -v cygpath >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-  if ! python3 -c 'import os,sys; sys.exit(0 if os.path.isdir(sys.argv[1]) else 1)' \
-      "$SCRIPT_DIR" 2>/dev/null; then
-    PYTHON_NEEDS_WINPATH=1
-  fi
-fi
+#
+# ⛔ 2026-09-28 修坑：旧实现用「拿 SCRIPT_DIR 探测 python 认不认」来决定转不转，
+#   但探测样本（D:/DSH/...，Windows python 认得）与实际查找路径（$HOME 派生的
+#   /c/Users/...，Windows python 不认得）**路径风格不一致** ⇒ 探测得出「不用转」，
+#   python3 读版本全部静默失败 ⇒ 本机明明有 zod 4.6.5 却误报「没找到」。
+#   修法：删掉探测，cygpath 存在就**无条件**过 `cygpath -m` ——
+#   它对 C:/、D:/ 格式输入幂等，对 /c/、/d/ 格式做转换，两个世界通吃；
+#   Linux/macOS 没有 cygpath，走 fallback 原样输出（那边路径本来就认）。
 # 用 `cygpath -m`（输出 C:/Users/...）而不是 `-w`（输出 C:\Users\...）：
 # 本脚本把路径嵌进 Python 字符串字面量（open('...')），-w 的反斜杠会被 Python
 # 当成转义符（\U / \x 尤其致命），路径当场变形。-m 的正斜杠两处都安全。
 winpath() {
-  if [ "$PYTHON_NEEDS_WINPATH" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+  if command -v cygpath >/dev/null 2>&1; then
     cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
   else
     printf '%s' "$1"
@@ -81,7 +93,12 @@ warn() { echo "[zod-bootstrap] ⚠ $*" >&2; }
 die()  { echo "[zod-bootstrap] ✗ $*" >&2; exit 1; }
 
 run() {
-  if [ "$DRY_RUN" = "1" ]; then echo "DRY: $*"; else eval "$@"; fi
+  # ⛔ 2026-09-28 修坑：旧实现 `eval "$@"` 会把参数做**二次解析**——
+  #   反斜杠格式的 Windows 路径（C:\Users\...）里的 \U \A \. 被当转义吃掉，
+  #   rm/cp 拿到毁掉的路径；rm -f 对不存在路径静默 exit 0 ⇒ uninstall 假删
+  #   （「已清理」日志照打，目标原封不动）。本脚本 run 的调用方全是
+  #   简单命令（无管道/重定向/通配），`"$@"` 直接执行即可，不需要 eval。
+  if [ "$DRY_RUN" = "1" ]; then echo "DRY: $*"; else "$@"; fi
 }
 
 # ── uninstall 路径 ───────────────────────────────────────────────────────────
@@ -156,6 +173,16 @@ find_local_zod() {
 }
 
 SRC="$(find_local_zod || true)"
+if [ -n "$SRC" ]; then
+  # ⛔ 2026-09-28 修坑：首选源 $DSH_HOME/profiles/node_modules/zod 本机是个
+  #   symlink（→ AppData 全局 npm 里 dsh 自带的 zod）。MSYS(Git Bash) 的
+  #   `cp -r <symlink> <dst>` 会**静默什么都不复制且 exit 0**，症状是
+  #   「脚本说复制成功、目标目录空」。cp 前先 readlink -f 解析到真实物理路径；
+  #   不是 symlink 时 readlink -f 原样返回（Linux 也安全，macOS 老版无 -f 时
+  #   fallback 原路径，行为同旧版）。
+  local_src="$(readlink -f "$SRC" 2>/dev/null || printf '%s' "$SRC")"
+  if [ -d "$local_src" ]; then SRC="$local_src"; fi
+fi
 if [ -z "$SRC" ]; then
   cat >&2 <<'MSG'
 [zod-bootstrap] ✗ 本机没找到可用的 zod (v3+/v4+)。
