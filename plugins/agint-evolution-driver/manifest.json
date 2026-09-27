@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolution-driver",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "闭环引擎的驱动源（变异构造器）：补上 mutator 缺的那个 caller —— 从 agint.evolve 的真实提案出发，spawn subagent（真 LLM）把提案编译成一次原子文档编辑，硬校验 oldText 必须真实存在于原文（幻觉闸门），再走 mutator.propose → validate → population.ingest。不持存储域（正本在 mutator/population），全软依赖，全程可关。第一阶段不 commit。",
   "main": "lib/index.js",
   "agint": {

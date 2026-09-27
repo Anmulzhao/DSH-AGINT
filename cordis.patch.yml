@@ -417,16 +417,19 @@
       name: ./plugins/agint-ov-strategy/lib/index.js
       config: {}
 
-    # agint-evolution-driver: 闭环引擎的驱动源 v0.1.0（2026-09-27 挂载）。
+    # agint-evolution-driver: 闭环引擎的驱动源 v0.2.0（2026-09-27 挂载，同日两次升级）。
     # mutator/population 从未运行的第二层根因：propose() 要求 caller 自带变异
     # 内容，而 mutator 红线是「不调真 LLM」⇒ 缺一个「想出变异」的部件。
     # 本插件就是那个 caller：evolve 提案 → spawn subagent 生成原子编辑 →
-    # 幻觉闸门（oldText 必须真实存在于原文）→ propose → validate → ingest。
+    # 幻觉闸门（oldText 必须真实存在于原文且唯一）→ propose → validate → ingest
+    # → commit 写回仓库正本（preimage 备份 + git 可回滚 + committed 事件）。
     # 不持存储域（正本在 mutator/population）；全软依赖；
     # kill-switch env AGINT_EVOLUTION_DRIVER=off（出厂即开）。
-    # ⛔ 第一阶段不 commit：AGINT_EVOLUTION_DRIVER_COMMIT=on 才开（默认关）。
+    # commit 默认开（2026-09-27 老板拍板「开放改仓库代码」；AGINT_EVOLUTION_DRIVER_COMMIT=off 可关）。
+    # repoRoot：仓库正本绝对路径（env AGINT_EVOLUTION_DRIVER_REPO_ROOT 优先于它）。
     # Service：agint.evolutionDriver（runOnce/status/construct）。
     # 设计稿：proposals/agint-evolution-driver.md。
     - id: agint-evolution-driver
       name: ./plugins/agint-evolution-driver/lib/index.js
-      config: {}
+      config:
+        repoRoot: "D:/DSH/project源码/DSH-AGINT"

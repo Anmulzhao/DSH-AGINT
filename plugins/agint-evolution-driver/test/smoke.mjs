@@ -6,6 +6,10 @@ import {
   isDisabled,
   isCommitEnabled,
   resolveTargetSkill,
+  resolveTargetAsset,
+  extractRepoPaths,
+  resolveRepoRoot,
+  commitToRepo,
   anchorExists,
   pickCandidate,
   spawnLlm,
@@ -99,10 +103,11 @@ test('T1: kill-switch — 只有显式 off 才关；未设 / 乱值都算开', (
   assert.equal(isDisabled({ AGINT_EVOLUTION_DRIVER: 'yes' }), false);
 });
 
-test('T2: commit 默认关 —— 改自己代码必须显式开', () => {
-  assert.equal(isCommitEnabled({}), false);
+test('T2: commit 默认开（2026-09-27 老板拍板开放改仓库代码）—— 显式 off 才关', () => {
+  assert.equal(isCommitEnabled({}), true);
   assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'on' }), true);
-  assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'true' }), false);
+  assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'OFF' }), false);
+  assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'true' }), true);
 });
 
 test('T3: resolveTargetSkill — 长名优先 + 词边界（push 不应命中 github-push）', () => {
@@ -177,7 +182,7 @@ test('T8: 全流程通 —— propose → validate → ingest → 发 proposed �
   assert.equal(out.variantId, 'v_1');
   assert.equal(events.length, 1);
   assert.equal(events[0].topic, 'evolution.mutation.proposed');
-  assert.equal(events[0].payload.commitEnabled, false); // 默认不 commit
+  assert.equal(events[0].payload.commitEnabled, true); // 2026-09-27 起默认 commit（老板拍板）；本用例无 repoRoot ⇒ 不落盘只发事件
   const st = d.status();
   assert.equal(st.proposed, 1);
   assert.equal(st.ingested, 1);
@@ -269,7 +274,7 @@ test('T13: status() 反映计数与开关，seen 去重（同一候选不重复�
   assert.equal(st.runs, 2);
   assert.equal(st.proposed, 1);
   assert.equal(st.killSwitch, 'on');
-  assert.equal(st.commitEnabled, false);
+  assert.equal(st.commitEnabled, true);
 });
 
 test('T14: 事件总线不可用时主流程照走（观测失败不影响变异）', async () => {
@@ -438,4 +443,149 @@ test('T19c: 显式入参覆盖宿主默认；宿主服务缺失时兜底到常�
   assert.equal(rt2.created[0].agentOptions.model, 'X-M');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T19）');
+// ── T20: extractRepoPaths —— 从提案文本提取反引号路径 ──────────────────────
+test('T20: extractRepoPaths 提取反引号仓库路径并去重', () => {
+  const text =
+    '修复 `plugins/agint-metrics/lib/service.js` 的同名 spec bug，见 `docs/x.md` 和 `plugins/agint-metrics/lib/service.js`';
+  const paths = extractRepoPaths(text);
+  assert.deepEqual(paths, ['plugins/agint-metrics/lib/service.js', 'docs/x.md']);
+  assert.deepEqual(extractRepoPaths('没有路径'), []);
+});
+
+// ── T21: resolveTargetAsset —— 技能命中 > 仓库路径命中 > null ──────────────
+test('T21: resolveTargetAsset 三级定位', () => {
+  const repoFiles = ['plugins/agint-metrics/lib/service.js', 'README.md'];
+  const skillHit = resolveTargetAsset(
+    { title: '改进 plugin-preflight 技能', body: '' },
+    ['plugin-preflight'],
+    repoFiles,
+  );
+  assert.deepEqual(skillHit, { type: 'skill', id: 'plugin-preflight' });
+
+  const repoHit = resolveTargetAsset(
+    { title: '修 dsh-storage 同名 spec bug', body: '目标 `plugins/agint-metrics/lib/service.js`' },
+    ['plugin-preflight'],
+    repoFiles,
+  );
+  assert.deepEqual(repoHit, { type: 'repo', id: 'plugins/agint-metrics/lib/service.js' });
+
+  assert.equal(resolveTargetAsset({ title: '改 agint-restart 护栏', body: '' }, ['plugin-preflight'], repoFiles), null);
+  assert.equal(resolveTargetAsset({ title: 'x', body: 'y' }, [], []), null);
+});
+
+// ── T22: isCommitEnabled 默认开（K51 + 2026-09-27 老板拍板）────────────────
+test('T22: commit 默认开，显式 off 才关', () => {
+  assert.equal(isCommitEnabled({}), true);
+  assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'on' }), true);
+  assert.equal(isCommitEnabled({ AGINT_EVOLUTION_DRIVER_COMMIT: 'OFF' }), false);
+});
+
+// ── T23: resolveRepoRoot —— env > config > null ───────────────────────────
+test('T23: resolveRepoRoot 优先级', () => {
+  assert.equal(resolveRepoRoot({ AGINT_EVOLUTION_DRIVER_REPO_ROOT: '/env/root' }, { repoRoot: '/cfg/root' }), '/env/root');
+  assert.equal(resolveRepoRoot({}, { repoRoot: '/cfg/root' }), '/cfg/root');
+  assert.equal(resolveRepoRoot({}, {}), null);
+});
+
+// ── T24: commitToRepo —— preimage 备份 + 唯一性 + denylist ─────────────────
+test('T24: commitToRepo 落盘三保险', async () => {
+  const { mkdtemp, readFile, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const root = await mkdtemp(join(tmpdir(), 'evodriver-'));
+  await writeFile(join(root, 'lib.js'), 'const a = 1;\nconst b = 2;\n', 'utf8');
+
+  const okRes = await commitToRepo({
+    repoRoot: root,
+    relPath: 'lib.js',
+    oldText: 'const b = 2;',
+    newText: 'const b = 42;',
+    now: new Date('2026-09-27T00:00:00Z'),
+  });
+  assert.equal(okRes.ok, true);
+  assert.equal(await readFile(join(root, 'lib.js'), 'utf8'), 'const a = 1;\nconst b = 42;\n');
+  const backup = await readFile(join(root, okRes.preimagePath), 'utf8');
+  assert.equal(backup, 'const a = 1;\nconst b = 2;\n');
+
+  // 多处命中拒绝
+  await writeFile(join(root, 'dup.js'), 'x\nx\n', 'utf8');
+  const dup = await commitToRepo({ repoRoot: root, relPath: 'dup.js', oldText: 'x', newText: 'y' });
+  assert.equal(dup.ok, false);
+  assert.match(dup.reason, /occurs 2 times/);
+
+  // denylist：cordis.patch.yml 绝不碰
+  const deny = await commitToRepo({ repoRoot: root, relPath: 'cordis.patch.yml', oldText: 'a', newText: 'b' });
+  assert.equal(deny.ok, false);
+  assert.match(deny.reason, /denylist/);
+
+  // 目录穿越拒绝
+  const evil = await commitToRepo({ repoRoot: root, relPath: '../evil.js', oldText: 'a', newText: 'b' });
+  assert.equal(evil.ok, false);
+});
+
+// ── T25: runOnce 全链路 —— repo 目标 → LLM → propose → commit 事件 ─────────
+test('T25: repo 目标全链路，commit 默认开且发 committed 事件', async () => {
+  const SKILL_TEXT = '# demo\nhello world\n';
+  const calls = [];
+  const fakeEvolve = {
+    listProposals: async () => [
+      { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+    ],
+  };
+  const fakeMutator = {
+    propose: async (input) => {
+      calls.push(['propose', input.promptPayload.promptId]);
+      return { id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' };
+    },
+    validate: async () => ({ ok: true, findings: [] }),
+  };
+  const fakePopulation = { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) };
+  const agents = { create: async () => { throw new Error('should not spawn (llm injected)'); } };
+  const subagents = { start: async () => { throw new Error('should not spawn (llm injected)'); } };
+
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve,
+    'agint.mutator': fakeMutator,
+    'agint.population': fakePopulation,
+    agents,
+    subagents,
+  });
+  const events = busRecorder(ctx);
+  apply(ctx, { repoRoot: '/fake/repo' });
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: {
+      llm: async () => ({
+        ok: true,
+        value: {
+          applicable: true,
+          targetSkill: 'lib/service.js',
+          oldText: 'hello world',
+          newText: 'hello AGINT world',
+          rationale: 'test',
+        },
+      }),
+      skillNames: [],
+      fs: {
+        scanRepo: async () => ['lib/service.js', 'README.md'],
+        readRepo: async (p) => (p === 'lib/service.js' ? 'hello world\n' : null),
+        writeRepo: async (p, text) => {
+          calls.push(['write', p, text]);
+        },
+      },
+    },
+  });
+  assert.equal(out.skipped, false);
+  assert.deepEqual(out.target, { type: 'repo', id: 'lib/service.js' });
+  assert.deepEqual(calls[0], ['propose', 'lib/service.js']);
+  assert.equal(calls[1][0], 'write');
+  assert.equal(calls[1][2], 'hello AGINT world\n');
+  const topics = events.map((e) => e.topic);
+  assert.ok(topics.includes('evolution.mutation.proposed'));
+  assert.ok(topics.includes('evolution.mutation.committed'));
+  const committed = events.find((e) => e.topic === 'evolution.mutation.committed');
+  assert.equal(committed.payload.path, 'lib/service.js');
+  assert.equal(committed.payload.proposalId, 'p1');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T25）');

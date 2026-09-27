@@ -12,21 +12,25 @@
  *
  * ```
  * agint.evolve 的 proposed 提案（真实、人工审核过的改进点）
- *   → 定位目标资产（preset skills 的 SKILL.md）
+ *   → 定位目标资产（preset skills 的 SKILL.md ／ 仓库文件 —— 2026-09-27 老板拍板开放改仓库代码）
  *   → spawn subagent（真 LLM）生成 oldText → newText
  *   → 硬校验：oldText 必须真实存在于原文（防幻觉）
  *   → agint.mutator.propose()  → validate()
  *   → agint.population.ingest()   （走 policy gate）
  *   → 发布 evolution.mutation.proposed
+ *   → commit：写回仓库正本（preimage 备份 + git 可回滚 + 事件留痕）
  * ```
  *
  * ## 边界（三条红线，改代码前先读）
  *
- * 1. **第一阶段不 commit。** commit 会真改文件；且改部署位没用（install.sh 会镜像覆盖），
- *    必须落到仓库正本 —— 「仓库路径怎么拿」是未决项，见设计稿 §6。
- *    在它被解决前，commit 由 `AGINT_EVOLUTION_DRIVER_COMMIT=on` 显式开启（默认 off）。
+ * 1. **commit 写仓库正本，不写部署位**（部署位 install.sh 会镜像覆盖，写了白写）。
+ *    仓库根 repoRoot 解析优先级：env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > patch config
+ *    `repoRoot` > 不 commit。落盘三保险：preimage 备份（`.agint-preimage/`）、
+ *    git 工作区天然可 diff/checkout 回滚、事件 `evolution.mutation.committed` 留痕。
+ *    总开关 `AGINT_EVOLUTION_DRIVER_COMMIT=off` 可关（2026-09-27 老板拍板开放改仓库后
+ *    默认开 —— K51「可回滚 > 可审批、kill-switch ≠ 默认关」）。
  * 2. **不自己造变异内容。** 内容一律来自 LLM 的结构化输出，且 oldText 必须能在原文里
- *    找到；找不到就放弃本次（记 degraded），绝不写入"看起来像"的文本。
+ *    找到（且唯一）；找不到就放弃本次（记 degraded），绝不写入"看起来像"的文本。
  * 3. **全软依赖。** inject=[]，bundle apply 顺序不保证 ⇒ runtime 必须**调用时** ctx.get，
  *    不许在 apply() 里缓存。
  *
@@ -41,9 +45,17 @@ import { randomUUID } from 'node:crypto';
 
 const KILL_ENV = 'AGINT_EVOLUTION_DRIVER';
 const COMMIT_ENV = 'AGINT_EVOLUTION_DRIVER_COMMIT';
+const REPO_ENV = 'AGINT_EVOLUTION_DRIVER_REPO_ROOT';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_SNIPPET = 6000;
 const MAX_CANDIDATES = 5;
+/** commit 拒绝写入的路径（任何位置命中即拒）：挂载配置与 git 内部绝不碰。 */
+const COMMIT_DENYLIST = ['cordis.patch.yml', '.git/', 'node_modules/'];
+const REPO_SCAN_IGNORES = new Set([
+  '.git', 'node_modules', '.workbuddy', 'dist', 'build', 'coverage',
+  '.agint-preimage', '.DS_Store',
+]);
+const REPO_SCAN_MAX_FILES = 3000;
 
 /**
  * ⭐⭐ 子代理必须显式带 preset —— 这是 2026-09-27 用 30 个空壳会话换来的硬知识。
@@ -76,12 +88,13 @@ export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
     applicable: {
       type: 'boolean',
       description:
-        'Whether this proposal can be expressed as a concrete, atomic edit to the target skill file. ' +
-        'Answer false if the proposal is too vague, needs new files, or would require code changes.',
+        'Whether this proposal can be expressed as a concrete, atomic edit to the target file shown. ' +
+        'Answer false if the proposal is too vague, needs new files, or belongs in a different file.',
     },
     targetSkill: {
       type: 'string',
-      description: 'Kebab-case name of the preset skill to edit. Must be one of the listed candidates.',
+      description:
+        'Echo back the target identifier given in the prompt (the skill name or the repo-relative path).',
     },
     oldText: {
       type: 'string',
@@ -103,12 +116,14 @@ export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
 const SYSTEM_PROMPT = Object.freeze(
   'You are the mutation constructor of an agent framework called AGINT. ' +
   'You are given an improvement proposal that a human has already reviewed, plus the verbatim text of ' +
-  'one skill document. Your ONLY job: turn the proposal into ONE atomic edit of that document.\n\n' +
+  'one target file (a skill document, a source file, or a doc). Your ONLY job: turn the proposal into ' +
+  'ONE atomic edit of that file.\n\n' +
   'HARD RULES:\n' +
-  '1. oldText MUST be a verbatim substring of the document you were shown — copy, never paraphrase.\n' +
+  '1. oldText MUST be a verbatim substring of the file you were shown — copy, never paraphrase.\n' +
   '2. The edit must be atomic: one coherent block, no unrelated changes.\n' +
-  '3. If the proposal cannot be expressed as a document edit, reply applicable=false and leave the text fields empty.\n' +
-  '4. Do not invent file paths, APIs, or commands that do not appear in the document.',
+  '3. If the proposal cannot be expressed as a single atomic edit of THIS file (vague, needs new files, ' +
+  'or belongs in a different file), reply applicable=false and leave the text fields empty.\n' +
+  '4. Do not invent APIs, commands, or text that does not appear in the file.',
 );
 
 // ── 纯函数（可单测，不碰 ctx）────────────────────────────────────────────
@@ -119,10 +134,54 @@ export function isDisabled(env = {}) {
   return v === 'off';
 }
 
-/** commit 开关：只有显式 'on' 才开 —— 改自己代码这件事默认不做。 */
+/**
+ * commit 开关：默认开（2026-09-27 老板拍板「开放改仓库代码」+ K51 出厂即开），
+ * 显式 'off' 才关。回滚靠 git 工作区（diff/checkout），不靠审批。
+ */
 export function isCommitEnabled(env = {}) {
   const v = String(env?.[COMMIT_ENV] ?? '').trim().toLowerCase();
-  return v === 'on';
+  return v !== 'off';
+}
+
+/**
+ * 仓库根解析：env > patch config > null。null ⇒ commit 关闭（skills 模式照旧）。
+ */
+export function resolveRepoRoot(env = {}, config = {}) {
+  const fromEnv = String(env?.[REPO_ENV] ?? '').trim();
+  if (fromEnv) return fromEnv;
+  const fromCfg = String(config?.repoRoot ?? '').trim();
+  if (fromCfg) return fromCfg;
+  return null;
+}
+
+/** 从提案文本里提取反引号包裹的仓库相对路径（`plugins/x/lib/y.js` 形态）。 */
+export function extractRepoPaths(text) {
+  const out = [];
+  const re = /`([A-Za-z0-9_\-./]+\.(?:js|mjs|cjs|json|md|yml|yaml|txt|sh))`/g;
+  let m;
+  while ((m = re.exec(String(text ?? ''))) !== null) {
+    const p = m[1].replace(/^\.\//, '');
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * 目标资产定位（2026-09-27 边界扩展）：技能名命中 → 提案内仓库路径命中 → null。
+ * 返回 {type:'skill', id} | {type:'repo', id} | null。repoFiles = 仓库相对路径集合。
+ */
+export function resolveTargetAsset(candidate, availableSkills = [], repoFiles = []) {
+  const skill = resolveTargetSkill(candidate, availableSkills);
+  if (skill) return { type: 'skill', id: skill };
+  if (Array.isArray(repoFiles) && repoFiles.length) {
+    const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}`;
+    const mentioned = extractRepoPaths(`${hay}\n${(candidate?.source ?? '')}`);
+    const set = new Set(repoFiles);
+    // 长路径优先：`plugins/a/lib/x.js` 应优先于片段 `a/lib/x.js`
+    const hits = mentioned.filter((p) => set.has(p)).sort((a, b) => b.length - a.length);
+    if (hits.length) return { type: 'repo', id: hits[0] };
+  }
+  return null;
 }
 
 /**
@@ -161,7 +220,7 @@ export function pickCandidate(proposals = [], seen = new Set()) {
 
 // ── 插件主体 ────────────────────────────────────────────────────────────
 
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
   const state = {
     runs: 0,
     proposed: 0,
@@ -172,6 +231,8 @@ export function apply(ctx) {
     lastProposalId: null,
     seen: new Set(),
   };
+  // 仓库根（patch config 静态部分）；env 优先级在 resolveRepoRoot 里
+  const cfgRepoRoot = String(config?.repoRoot ?? '').trim() || null;
 
   // 可观测出口（2026-09-27 补）：本插件第一条 job 跑完（evolution-cycle
   // 06:32Z，lastResult ok）却零产出、零留痕 —— 静默失败是本项目头号杀手，
@@ -210,7 +271,7 @@ export function apply(ctx) {
    * 让 LLM 把提案变成一次原子编辑。
    * 注入点：opts.llm（测试用），否则走 agents.create + subagents.start。
    */
-  async function construct({ candidate, skillName, fileText, timeoutMs = DEFAULT_TIMEOUT_MS, llm = null }) {
+  async function construct({ candidate, targetId, fileText, timeoutMs = DEFAULT_TIMEOUT_MS, llm = null }) {
     const build = llm ?? ((args) => spawnLlm(ctx, args));
     const out = await build({
       system: SYSTEM_PROMPT,
@@ -222,7 +283,7 @@ export function apply(ctx) {
         '',
         candidate.body ?? '',
         '',
-        `## Target skill document: ${skillName}`,
+        `## Target file: ${targetId}`,
         '```',
         String(fileText).slice(0, DEFAULT_SNIPPET),
         '```',
@@ -326,44 +387,61 @@ export function apply(ctx) {
     // 每轮结束必发一条 evolution.cycle.summary，把「跑了几个 / 卡在哪」写进去。
     const failures = [];
 
+    // 仓库根 + 仓库文件清单（2026-09-27 边界扩展：开放改仓库代码）
+    const repoRoot = resolveRepoRoot(opts.env ?? process.env, { repoRoot: cfgRepoRoot });
+    const commitOn = isCommitEnabled(opts.env ?? process.env);
+    let repoFiles = [];
+    if (repoRoot) {
+      try {
+        repoFiles = await listRepoFiles(repoRoot, { fs: inj.fs });
+      } catch (error) {
+        warn('repo scan failed; falling back to skills-only', { error: error?.message ?? String(error) });
+      }
+    }
+
     for (const candidate of pool) {
       if (state.seen.has(candidate.id)) continue;
       state.seen.add(candidate.id);
 
-      const skillName = resolveTargetSkill(candidate, available);
-      if (!skillName) {
+      const target = resolveTargetAsset(candidate, available, repoFiles);
+      if (!target) {
         // 定位不到目标资产 → 换下一条，不硬凑。留痕：这是「有提案但没目标」的静默路径。
-        warn('candidate skipped: no target skill resolved', {
+        warn('candidate skipped: no target asset resolved', {
           candidateId: candidate.id,
           title: candidate.title ?? '',
           availableCount: Array.isArray(available) ? available.length : 0,
+          repoFilesCount: repoFiles.length,
         });
-        failures.push(`${candidate.id}: no target skill resolved`);
+        failures.push(`${candidate.id}: no target asset resolved`);
         continue;
       }
+      const targetId = target.id;
 
       let fileText = null;
       try {
-        fileText = await readSkillText({ skillName, fs, roots: inj.skillRoots });
+        fileText =
+          target.type === 'skill'
+            ? await readSkillText({ skillName: targetId, fs, roots: inj.skillRoots })
+            : await readRepoText({ repoRoot, relPath: targetId, fs: inj.fs });
       } catch (error) {
         fileText = null;
         warn('candidate skipped: target file unreadable', {
           candidateId: candidate.id,
-          skillName,
+          targetId,
           error: error?.message ?? String(error),
         });
       }
       if (typeof fileText !== 'string' || !fileText) {
-        failures.push(`${candidate.id}: target file unreadable (${skillName})`);
+        failures.push(`${candidate.id}: target file unreadable (${targetId})`);
         continue;
       }
 
-      const built = await construct({ candidate, skillName, fileText, llm: inj.llm ?? null });
+      const built = await construct({ candidate, targetId, fileText, llm: inj.llm ?? null });
       if (built.ok !== true) {
         if (built.degraded) state.degraded += 1;
         warn('candidate skipped: construct failed', {
           candidateId: candidate.id,
-          skillName,
+          targetId,
           reason: built.reason ?? 'unknown',
           degraded: built.degraded === true,
         });
@@ -382,7 +460,7 @@ export function apply(ctx) {
           expectedEffect: 'baseline 通过率 >= 95% 在 7 天',
           rollbackCondition: 'regression → auto-rollback',
           promptPayload: {
-            promptId: skillName,
+            promptId: targetId,
             oldText: v.oldText,
             newText: v.newText,
             diffStrategy: 'unified_diff',
@@ -397,7 +475,7 @@ export function apply(ctx) {
         state.lastError = `propose failed: ${error?.message ?? String(error)}`;
         warn('candidate skipped: mutator.propose threw', {
           candidateId: candidate.id,
-          skillName,
+          targetId,
           reason: state.lastError,
         });
         failures.push(`${candidate.id}: propose threw — ${state.lastError}`);
@@ -438,21 +516,56 @@ export function apply(ctx) {
       await publish('evolution.mutation.proposed', {
         proposalId: proposal.id,
         candidateId: candidate.id,
-        skill: skillName,
+        target: { type: target.type, id: targetId },
+        skill: target.type === 'skill' ? targetId : null,
         variantId: variant?.variant_id ?? null,
         policyDecision: variant?.policy_decision ?? null,
         stage: variant?.stage ?? null,
-        commitEnabled: isCommitEnabled(opts.env ?? process.env),
+        commitEnabled: commitOn,
       });
+
+      // ── commit：写回仓库正本（2026-09-27 老板拍板开放改仓库代码后默认开）。
+      //    三保险：denylist + oldText 唯一性 + preimage 备份；git 工作区天然可回滚。
+      let commit = null;
+      if (commitOn && repoRoot) {
+        const commitPath =
+          target.type === 'skill' ? `presets/agint/skills/${targetId}/SKILL.md` : targetId;
+        try {
+          commit = await commitToRepo({
+            repoRoot,
+            relPath: commitPath,
+            oldText: v.oldText,
+            newText: v.newText,
+            fs: inj.fs,
+          });
+          if (commit.ok === true) {
+            await publish('evolution.mutation.committed', {
+              proposalId: proposal.id,
+              candidateId: candidate.id,
+              path: commit.path,
+              preimagePath: commit.preimagePath,
+              bytesBefore: commit.bytesBefore,
+              bytesAfter: commit.bytesAfter,
+            });
+          } else {
+            warn('commit skipped', { proposalId: proposal.id, path: commitPath, reason: commit.reason });
+          }
+        } catch (error) {
+          state.lastError = `commit failed: ${error?.message ?? String(error)}`;
+          warn('commit threw', { proposalId: proposal.id, path: commitPath, reason: state.lastError });
+        }
+      }
 
       return {
         skipped: false,
         candidateId: candidate.id,
-        skill: skillName,
+        target: { type: target.type, id: targetId },
+        skill: target.type === 'skill' ? targetId : null,
         proposalId: proposal.id,
         variantId: variant?.variant_id ?? null,
         policyDecision: variant?.policy_decision ?? null,
         rationale: v.rationale ?? '',
+        commit: commit?.ok === true ? { path: commit.path, preimagePath: commit.preimagePath } : null,
       };
     }
 
@@ -461,6 +574,8 @@ export function apply(ctx) {
     await emitSummary('no-actionable-candidate', {
       poolSize: pool.length,
       availableSkills: Array.isArray(available) ? available.length : 0,
+      repoFiles: repoFiles.length,
+      repoRoot: repoRoot ?? null,
       failures: failures.slice(0, 10),
       failuresTotal: failures.length,
     });
@@ -469,6 +584,8 @@ export function apply(ctx) {
     const summary = {
       poolSize: pool.length,
       availableSkills: Array.isArray(available) ? available.length : 0,
+      repoFiles: repoFiles.length,
+      repoRoot: repoRoot ?? null,
       seen: state.seen.size,
       degraded: state.degraded,
       lastError: state.lastError,
@@ -492,6 +609,7 @@ export function apply(ctx) {
       lastProposalId: state.lastProposalId,
       seenCandidates: state.seen.size,
       commitEnabled: isCommitEnabled(process.env),
+      repoRoot: cfgRepoRoot,
       killSwitch: isDisabled(process.env) ? 'off' : 'on',
     };
   }
@@ -526,6 +644,94 @@ async function listSkillNames({ roots } = {}) {
   const base = fileURLToPath(new URL('../../../presets/agint/skills/', import.meta.url));
   const entries = await readdir(base, { withFileTypes: true });
   return entries.filter((e) => e.isDirectory() && !String(e.name).startsWith('.')).map((e) => e.name);
+}
+
+/** 读仓库文件（repoRoot + 相对路径；fs.readRepo 可注入测试）。 */
+async function readRepoText({ repoRoot, relPath, fs }) {
+  const read = fs?.readRepo;
+  if (typeof read === 'function') return await read(relPath);
+  const { readFile } = await import('node:fs/promises');
+  const { join, resolve: pathResolve } = await import('node:path');
+  const abs = pathResolve(repoRoot, relPath);
+  return await readFile(abs, 'utf8');
+}
+
+/**
+ * 递归列仓库相对路径（跳过 REPO_SCAN_IGNORES，封顶 REPO_SCAN_MAX_FILES）。
+ * fs.scanRepo 可注入测试；无 repoRoot 返回 []。
+ */
+async function listRepoFiles(repoRoot, { fs } = {}) {
+  if (!repoRoot) return [];
+  const scan = fs?.scanRepo;
+  if (typeof scan === 'function') return await scan(repoRoot);
+  const { readdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const out = [];
+  const walk = async (dir) => {
+    if (out.length >= REPO_SCAN_MAX_FILES) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (out.length >= REPO_SCAN_MAX_FILES) return;
+      if (e.name.startsWith('.') && e.name !== '.github') continue;
+      if (REPO_SCAN_IGNORES.has(e.name)) continue;
+      const rel = join(dir, e.name).slice(repoRoot.length + 1).split('\\').join('/');
+      if (e.isDirectory()) await walk(join(dir, e.name));
+      else out.push(rel);
+    }
+  };
+  await walk(repoRoot);
+  return out;
+}
+
+/**
+ * 把一次原子编辑写回仓库正本（commit 落盘本体）。
+ * 三保险：preimage 备份 + oldText 唯一性校验 + denylist。
+ * fs.writeRepo 可注入测试。返回 {ok, path, preimagePath, bytes} 或 {ok:false, reason}。
+ */
+export async function commitToRepo({ repoRoot, relPath, oldText, newText, fs, now = new Date() }) {
+  const norm = String(relPath ?? '').split('\\').join('/').replace(/^\.\//, '');
+  if (!repoRoot) return { ok: false, reason: 'no repoRoot' };
+  if (!norm || norm.includes('..')) return { ok: false, reason: `unsafe path: ${norm}` };
+  if (COMMIT_DENYLIST.some((d) => norm === d || norm.includes(d))) {
+    return { ok: false, reason: `denylist hit: ${norm}` };
+  }
+  let text;
+  try {
+    text = await readRepoText({ repoRoot, relPath: norm, fs });
+  } catch (error) {
+    return { ok: false, reason: `read failed: ${error?.message ?? error}` };
+  }
+  const count = text.split(oldText).length - 1;
+  if (count !== 1) {
+    return { ok: false, reason: `oldText occurs ${count} times (need exactly 1)` };
+  }
+  const postimage = text.replace(oldText, newText);
+  const { writeFile, mkdir, copyFile } = await import('node:fs/promises');
+  const { join, dirname, resolve: pathResolve } = await import('node:path');
+  const abs = pathResolve(repoRoot, norm);
+  // preimage 备份：.agint-preimage/<路径扁平化>-<ISO 时间>.bak
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const backupRel = `.agint-preimage/${norm.split('/').join('__')}__${stamp}.bak`;
+  const backupAbs = join(repoRoot, backupRel);
+  await mkdir(dirname(backupAbs), { recursive: true });
+  if (typeof fs?.writeRepo === 'function') {
+    await fs.writeRepo(norm, postimage);
+  } else {
+    await copyFile(abs, backupAbs);
+    await writeFile(abs, postimage, 'utf8');
+  }
+  return {
+    ok: true,
+    path: norm,
+    preimagePath: backupRel,
+    bytesBefore: Buffer.byteLength(text, 'utf8'),
+    bytesAfter: Buffer.byteLength(postimage, 'utf8'),
+  };
 }
 
 export async function spawnLlm(ctx, {

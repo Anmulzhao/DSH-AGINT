@@ -1,5 +1,34 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.0 — 2026-09-27（老板拍板「开放改仓库代码」）
+
+### 变更
+
+- **目标资产边界扩展**：技能（SKILL.md）→ 技能 + 仓库任意文件。定位三级：
+  技能名命中（原 resolveTargetSkill）→ 提案里反引号路径命中仓库文件（新
+  `resolveTargetAsset` + `extractRepoPaths`）→ 放弃。仓库清单靠运行时扫描
+  （跳 .git/node_modules/dist 等，封顶 3000 文件）。此前 19/20 候选
+  `no target skill resolved` 的主因即目标面太窄。
+- **commit 默认开**（原默认关）：老板 2026-09-27 拍板最高档「开放改仓库代码」+
+  K51「可回滚 > 可审批、kill-switch ≠ 默认关」。落点 = 仓库正本（部署位会被
+  install.sh 镜像覆盖，写了白写）。
+- **commit 落盘三保险**（新 `commitToRepo`）：denylist（cordis.patch.yml / .git /
+  node_modules 绝不碰）+ oldText 必须在目标文件中**恰好出现一次** + preimage 备份
+  到 `.agint-preimage/<路径扁平化>-<时间戳>.bak`。git 工作区天然可 diff/checkout
+  回滚；每次 commit 发 `evolution.mutation.committed` 事件。
+- **repoRoot 解析**：env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > patch config
+  `repoRoot` > null（null ⇒ 只 propose 不落盘）。
+- SYSTEM_PROMPT / schema 描述同步：删除"would require code changes → false"
+  旧导向（正是挡住代码类提案的另一只手）。
+
+### 测试
+
+T20–T25 新增（路径提取 / 三级定位 / commit 默认开 / repoRoot 优先级 /
+commitToRepo 三保险 / repo 目标全链路），T2/T8/T13 断言随默认值翻转更新。
+共 27 用例全绿。
+
+---
+
 ## 0.1.0 — 2026-09-27
 
 闭环引擎第一次有驱动源。
