@@ -5,6 +5,38 @@
 
 ---
 
+## v0.3.4 — 修子代理空壳：梦境 LLM 整合自 09-05 起从未真跑过（2026-09-27，K114）
+
+**根因**：`lib/consolidation.js` 建临时 parent agent 时只传了
+`meta: { cwd, origin: 'subagent' }` + `agentOptions: { provider, model }`，**漏了
+`meta.agentPreset`**。这个字段类型上可选，不传不报错 —— 会话照建、`label` 照写，
+但 child 拿不到 preset ⇒ 解析不出模型路由 ⇒ 一步都跑不动，静默落回
+`heuristic-degraded`。
+
+**取证**：`storages/session_projcache/sessions/dream-consolidation-*.json` 共 **18 个**，
+全部 `agentPreset=null` / `modelSelection=null` / `turnOutline` 空 / `surfaceTokens=0` /
+`turns=0`。对比老板在 UI 手动触发、真实跑通的子代理会话（`agentPreset:"agint"`、
+`minimax-cn/MiniMax-M3`、outTokens=393）—— 差异就这一个字段。
+
+**影响**：**梦境的 LLM 整合自 2026-09-05 上线起从未真正执行过**，二十多天一直在走
+启发式降级。日志与事件上完全看不出来（每次都记「跑了、没报错」）。
+
+**修复**：
+
+- 新增导出常量 `DEFAULT_AGENT_PRESET = 'agint'`（与 `DEFAULT_PROVIDER`/`DEFAULT_MODEL` 同级）
+- `consolidate({ ..., agentPreset = DEFAULT_AGENT_PRESET })` —— 新增可选参数，换 profile 不用改源码
+- `agents.create({ meta: { cwd, origin: 'subagent', agentPreset } })`
+- ⚠️ 保留一处待验证标记：补 preset 后 child 是否会 join 到 preset 的工具集（原注释假定
+  「无 join 即无工具」）尚未实证，若出现预期外工具调用再显式加 `toolFilter`。
+
+**顺带修正**：`lib/sweep.js` 参数注释写「默认 deepseek / deepseek-chat」，实际不传时落
+`DEFAULT_PROVIDER='minimax-cn'`（deepseek 在本机只是 fallback adapter）—— 误导性注释已改。
+
+**测试**：`test/consolidation.test.js` 新增 2 条（缺省带 agentPreset、显式传参可覆盖），
+17 → 19 全绿；dream 全量 11 个测试文件通过。
+
+---
+
 ## v0.3.3 — output schema 补 dedupeStats / health + 一致性守卫测试（2026-09-27，提案 0f91c868 问题1）
 
 **根因**：`lib/sweep.js` / `lib/index.js` 陆续给返回值加了 `dedupeStats`（去重统计）、`health`

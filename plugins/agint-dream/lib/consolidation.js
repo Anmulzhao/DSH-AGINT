@@ -68,6 +68,15 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 export const DEFAULT_PROVIDER = 'minimax-cn';
 export const DEFAULT_MODEL = 'MiniMax-M3';
 
+// ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，30 个空壳换来的，见项目 KNOWLEDGE.md K114）。
+// `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**：
+// 不传 → child 会话 `agentPreset=null`、`modelSelection=null`、turn 的 prompt/response 全空、
+// surfaceTokens=0 —— 会话照建、label 照写、**全程不报错**，但一步都跑不动，
+// 最终静默落回 heuristic-degraded。类型上它是可选的，对 host plane 凭空 create 的
+// 临时 parent 却等于必填。
+// ⛔ 别指望用 `agentOptions` 补：它只有 {provider, model, reasoningEffort, maxTokens}，没有 preset。
+export const DEFAULT_AGENT_PRESET = 'agint';
+
 const SYSTEM_PROMPT = `You are a memory consolidation agent for the 智进 (Zhijin) AI worker.
 Your job: decide for each candidate whether to ADD it as new memory, MERGE it into
 an existing entry that covers the same claim, or SUPERSEDE an existing entry whose
@@ -173,6 +182,7 @@ export async function consolidate({
   day,
   provider = DEFAULT_PROVIDER,
   model = DEFAULT_MODEL,
+  agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   logger = null,
 }) {
@@ -230,7 +240,10 @@ export async function consolidate({
       // 给临时 agent 一个 cwd —— 否则 child session inherit 的 deployment
       // persona section 用 {{cwd}} 找不到值会 throw，agent 启动后第一轮 turn
       // 就 error（2026-09-05 实测）。
-      meta: { cwd: process.cwd(), origin: 'subagent' },
+      // ⭐ agentPreset：模型路由的唯一来源。缺失 ⇒ child 是空壳（见 DEFAULT_AGENT_PRESET 注释）。
+      //   2026-09-27 前这里只有 {cwd, origin}，18 个 dream-consolidation-* 会话因此全部
+      //   turns=0 / outTokens=0，梦境整合自 09-05 起一直在走 heuristic-degraded。
+      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
       agentOptions: { provider, model },
       signal: abortController.signal,
     });
@@ -247,6 +260,10 @@ export async function consolidate({
       // 工具，模型只能调它结束回合。这是 DSH 比 openclaw 干净的地方 —— openclaw
       // 要靠 toolFilter: {deny: ['*']} 强制禁止工具，但 * 不是 known global tool
       // 名会抛错；DSH 利用 child scope 的"无 join 即无工具"自然实现隔离。
+      // ⚠️ 2026-09-27 待验证：上面补了 meta.agentPreset 之后，child 是否会因此
+      //    join 到 preset 的工具集（不再是空工具集）尚未实证。若观察到子会话出现
+      //    预期外的工具调用，在此显式加 toolFilter 限制即可 —— 但**先修 preset**，
+      //    空壳状态下这条讨论毫无意义（模型根本没被调起来）。
       label: `agint-dream consolidation ${day}`,
     });
     // B 方案诊断：订阅 child agent 的 agent/error 事件，捕获真实失败原因。

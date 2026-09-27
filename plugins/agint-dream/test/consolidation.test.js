@@ -22,6 +22,7 @@ import {
   CONSOLIDATION_OUTPUT_SCHEMA,
   DEFAULT_PROVIDER,
   DEFAULT_MODEL,
+  DEFAULT_AGENT_PRESET,
 } from '../lib/consolidation.js';
 
 // ── 纯函数：buildConsolidationPrompt ──────────────────────────────────────
@@ -303,6 +304,48 @@ test('consolidate: structured 缺失 → degraded', async () => {
   });
   assert.equal(result.mode, 'heuristic-degraded');
   assert.match(result.reason, /structured output invalid/);
+});
+
+// ── 子代理空壳根因回归（2026-09-27，K114）──────────────────────────────────
+// 病灶：agents.create() 未传 meta.agentPreset ⇒ child 会话 agentPreset=null、
+// modelSelection=null、turn 空、surfaceTokens=0 —— 不报错，但一步都跑不动，
+// 静默落回 heuristic-degraded。18 个 dream-consolidation-* 会话全是这么死的。
+// 这两条断言是唯一能挡住它复发的防线：mock 层不会替我们发现"会话建了但没跑"。
+test('consolidate: agents.create 必带 meta.agentPreset（缺省 = DEFAULT_AGENT_PRESET）', async () => {
+  const { ctx, calls } = makeMockCtx({
+    runResult: {
+      output: [],
+      structured: { operations: [{ candidateKey: 'c1', action: 'added', priorEntries: [] }] },
+      stopReason: 'completed',
+    },
+  });
+  await consolidate({
+    ctx,
+    gated: [{ key: 'c1', text: '禁止 rm -rf', type: 'lesson', score: 0.85 }],
+    existing: [],
+    day: '2026-09-27',
+  });
+  assert.equal(calls.createArgs.meta.agentPreset, DEFAULT_AGENT_PRESET, '缺 agentPreset ⇒ 空壳子代理');
+  assert.equal(calls.createArgs.meta.origin, 'subagent');
+  assert.ok(calls.createArgs.meta.cwd, 'cwd 缺失会让 child persona 的 {{cwd}} throw');
+});
+
+test('consolidate: agentPreset 显式传参可覆盖默认（换 profile 不用改源码）', async () => {
+  const { ctx, calls } = makeMockCtx({
+    runResult: {
+      output: [],
+      structured: { operations: [{ candidateKey: 'c1', action: 'added', priorEntries: [] }] },
+      stopReason: 'completed',
+    },
+  });
+  await consolidate({
+    ctx,
+    gated: [{ key: 'c1', text: '禁止 rm -rf', type: 'lesson', score: 0.85 }],
+    existing: [],
+    day: '2026-09-27',
+    agentPreset: 'agint-investor',
+  });
+  assert.equal(calls.createArgs.meta.agentPreset, 'agint-investor');
 });
 
 test('consolidate: agents.create 抛错 → degraded, 不向外抛', async () => {

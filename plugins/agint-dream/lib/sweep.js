@@ -876,8 +876,11 @@ export async function runSweep({
   // P1：LLM consolidation 配置（host-plane 通过 ctx 自动建临时 subagent）
   consolidation = null,         // 显式 consolidation runner { run(gated, existing) → { mode, operations, reason } }
                                 //  null 时 sweep 内部按需调默认 consolidate()
-  consolidationProvider,        // 默认 'deepseek'
-  consolidationModel,           // 默认 'deepseek-chat'
+  // 不传 ⇒ 落 consolidation.js 的 DEFAULT_PROVIDER / DEFAULT_MODEL（实测 minimax-cn /
+  // MiniMax-M3，由 ~/.dsh/settings.yaml 的 agent-default-model 决定）。
+  // ⛔ 注释曾写"默认 deepseek"，deepseek 在本机只是 fallback adapter —— 别照抄那个默认值。
+  consolidationProvider,
+  consolidationModel,
   consolidationTimeoutMs,       // 默认 60000
   // 可选：sweep 完成时 publish dream.rejected 事件（默认不 publish，保持向后兼容）
   publishReject = null,         // function: (reason, count) => Promise<void>
