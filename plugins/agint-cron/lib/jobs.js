@@ -446,6 +446,52 @@ export const defaultJobs = [
       return { ...out, status };
     },
   },
+  {
+    // 美的神谕层三档广播（2026-09-27 新增，配合新插件 agint-aesthetic-oracle，
+    // 方案 v2.3 §5/§8 Day 1-2）。agint-metrics 之上的薄评论员：读 summary →
+    // 评分 → 三问 → 广播；本插件只负责「按节奏唤它」，不碰任何数据面。
+    //
+    // 三档时刻与现有 job 无冲突（§7 错峰复核）：
+    //   oracle-daily    0 9 * * *   daily 09:00（吃 04:00 metrics-collect 的数据，
+    //                               广播首行如实标注 asOf，禁止反向触发采集）
+    //   oracle-weekly   0 21 * * 0  weekly 周日 21:00（周日全家桶都跑完之后）
+    //   oracle-monthly  0 10 1 * *  monthly 每月 1 日 10:00
+    //
+    // 自保全在服务侧（§6.2/§6.3）：runScheduled 内 3 次重试（1s/4s/16s 指数
+    // 退避）+ 连续 3 次失败沉默 + 配额护栏 + kill-switch（config enabled:false
+    // ⇒ 神谕层不 provide 服务 ⇒ 本三 job soft-skip，与 evolution-driver 同策略）。
+    id: 'oracle-daily',
+    name: '美谕晨报',
+    schedule: '0 9 * * *', // daily 09:00
+    description: '美的神谕层每日广播：读 metrics summary → 美总分 → 三问 → ≤5 行美评（daily）',
+    action: async (services) => {
+      const oracle = services['agint.aestheticOracle'];
+      if (!oracle) return { skipped: true, reason: 'agint.aestheticOracle not mounted' };
+      return oracle.runScheduled('daily');
+    },
+  },
+  {
+    id: 'oracle-weekly',
+    name: '美谕周报',
+    schedule: '0 21 * * 0', // Sun 21:00
+    description: '美的神谕层每周广播：Q1 三问全量判定 + 周区间美评（weekly）',
+    action: async (services) => {
+      const oracle = services['agint.aestheticOracle'];
+      if (!oracle) return { skipped: true, reason: 'agint.aestheticOracle not mounted' };
+      return oracle.runScheduled('weekly');
+    },
+  },
+  {
+    id: 'oracle-monthly',
+    name: '美谕月报',
+    schedule: '0 10 1 * *', // 每月 1 日 10:00
+    description: '美的神谕层每月广播：月度三问汇总 + 基线趋势（monthly）',
+    action: async (services) => {
+      const oracle = services['agint.aestheticOracle'];
+      if (!oracle) return { skipped: true, reason: 'agint.aestheticOracle not mounted' };
+      return oracle.runScheduled('monthly');
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */

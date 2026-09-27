@@ -133,6 +133,10 @@ function apply(ctx) {
     // 闭环引擎驱动（2026-09-27 新增 job evolution-cycle）。懒解析；
     // agint-evolution-driver 未挂载时为 undefined → job soft-skip 不报错。
     'agint.evolutionDriver': ctx.get('agint.evolutionDriver'),
+    // 美的神谕层（2026-09-27 新增 job oracle-daily/weekly/monthly）。懒解析；
+    // agint-aesthetic-oracle 未挂载（含 kill-switch enabled:false ⇒ 不 provide）
+    // 时为 undefined → job soft-skip 不报错（§6.4：kill-switch 秒级可逆）。
+    'agint.aestheticOracle': ctx.get('agint.aestheticOracle'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 
