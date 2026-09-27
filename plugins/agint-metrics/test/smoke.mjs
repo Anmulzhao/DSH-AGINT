@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +19,9 @@ test('real lib exists', () => {
 });
 
 test('plugin module loads without throwing', async () => {
-  const mod = await import(REAL_LIB);
+  // Windows 下 ESM 动态 import 必须用 file:// URL（裸 D:\ 路径会抛
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME —— 2026-09-27 修复的存量问题）。
+  const mod = await import(pathToFileURL(REAL_LIB).href);
   assert.equal(typeof mod.apply, 'function', 'must export apply(ctx, config)');
   assert.equal(typeof mod.name, 'string', 'must export name');
 });

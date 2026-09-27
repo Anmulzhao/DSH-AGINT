@@ -14,9 +14,20 @@
  *   任务步数中位数     → 未采集（需 session 日志统计，同上）
  *   规则冗余度         → rules.lintIssues
  * Plus memory scale/health (memory.total / memory.avgConfidence).
+ *
+ * 2026-09-27 美的神谕层 Day 0（方案 C）：新增 4 个原子 key，计算块在
+ * metrics-ext.js（本文件保持行数纪律）；同时给三个既有 key 的 meta 增补
+ * 派生所需的原子事实（**value 一律不动**，summary 值与扩展前逐项 diff=0）：
+ *   rules.lintIssues.meta.rulesTotal  — 规则全量数（rules.list()，冗余度分母）
+ *   wiki.orphans.meta.total           — wiki 全量页数（lint().checked，噪声分母）
+ *   memory.total.meta                 — 无证据 id 清单（cap 50）+ Σ(conf×compliance)/N
+ *                                       （神谕层 Q3 证据清单与决策确信度分子）
+ * 复合派生（noise_ratio / aesthetic_score）永远不进本插件——§9.4。
  */
 
-export const METRIC_DEFS = [
+import { METRIC_DEFS_EXT, computeMetricsExt, describeMetricExt, NO_EVIDENCE_IDS_CAP } from './metrics-ext.js';
+
+export const METRIC_DEFS_BASE = [
   { key: 'cron.staleJobs', label: '定时任务失效数（盲区）', unit: 'count', source: 'cron' },
   { key: 'cron.maxOverdueDays', label: '最大任务逾期天数', unit: 'days', source: 'cron' },
   { key: 'rules.hits', label: '门禁命中总数', unit: 'count', source: 'rules' },
@@ -31,6 +42,9 @@ export const METRIC_DEFS = [
   { key: 'eventBus.syncSubscriptions', label: 'Event Bus sync 订阅数', unit: 'count', source: 'eventBus' },
   { key: 'eventBus.deadletterRate', label: 'Event Bus 死信率', unit: '', source: 'eventBus' },
 ];
+
+/** 对外完整定义表 = 基础 13 + Day 0 扩展 4。 */
+export const METRIC_DEFS = [...METRIC_DEFS_BASE, ...METRIC_DEFS_EXT];
 
 /** Metrics the PLAN lists but that need session-log mining (future work). */
 export const UNCOLLECTED = [
@@ -93,7 +107,17 @@ export async function computeMetrics(sources) {
       }
       if (typeof rules.lint === 'function') {
         const issues = await awaitMaybe(rules.lint());
-        push('rules.lintIssues', Array.isArray(issues) ? issues.length : 0, { issues: issues ?? [] });
+        // Day 0 meta 增补：rulesTotal = 规则全量数（冗余度分母）。rules.list()
+        // 是既有服务方法；缺席时 null（神谕层侧 N/A 处理），不影响 value。
+        let rulesTotal = null;
+        try {
+          if (typeof rules.list === 'function') {
+            const all = await awaitMaybe(rules.list());
+            rulesTotal = Array.isArray(all) ? all.length : null;
+          }
+        } catch { /* rulesTotal 保持 null */ }
+        push('rules.lintIssues', Array.isArray(issues) ? issues.length : 0,
+          { issues: issues ?? [], rulesTotal });
       }
     } catch { /* skip */ }
   }
@@ -107,8 +131,9 @@ export async function computeMetrics(sources) {
         { links: lint?.brokenLinks ?? [] });
       push('wiki.contradictions', Array.isArray(lint?.contradictions) ? lint.contradictions.length : 0,
         { files: lint?.contradictions ?? [] });
+      // Day 0 meta 增补：total = wiki 全量页数（lint().checked，噪声比分母）
       push('wiki.orphans', Array.isArray(lint?.orphans) ? lint.orphans.length : 0,
-        { files: lint?.orphans ?? [] });
+        { files: lint?.orphans ?? [], total: lint?.checked ?? null });
     } catch { /* skip */ }
   }
 
@@ -117,7 +142,33 @@ export async function computeMetrics(sources) {
   if (memory && typeof memory.stats === 'function') {
     try {
       const stats = await awaitMaybe(memory.stats());
-      push('memory.total', stats?.total ?? 0, stats?.byType ?? {});
+      // Day 0 meta 增补：无证据 id 清单（cap 50）+ Σ(conf×compliance)/N。
+      // 神谕层的决策确信度公式是「逐条 conf×evidence 有无」的均值，与
+      // avgConfidence（不乘 compliance）不同口径——两个数都要给。
+      // list() 缺席/失败 → meta 退化为 { byType }，value 不受影响。
+      let meta = { byType: stats?.byType ?? {} };
+      try {
+        if (typeof memory.list === 'function') {
+          const all = await awaitMaybe(memory.list());
+          if (Array.isArray(all)) {
+            const noEvidenceIds = all
+              .filter((e) => !e?.evidence || String(e.evidence).trim() === '')
+              .map((e) => String(e.id));
+            let sumConfXComp = 0;
+            for (const e of all) {
+              const c = Number(e?.confidence);
+              if (!Number.isFinite(c)) continue;
+              if (e?.evidence && String(e.evidence).trim() !== '') sumConfXComp += c;
+            }
+            meta = {
+              ...meta,
+              noEvidence: { count: noEvidenceIds.length, ids: noEvidenceIds.slice(0, NO_EVIDENCE_IDS_CAP), capped: noEvidenceIds.length > NO_EVIDENCE_IDS_CAP },
+              avgConfXCompliance: all.length > 0 ? round(sumConfXComp / all.length, 4) : null,
+            };
+          }
+        }
+      } catch { /* meta 保持退化形态 */ }
+      push('memory.total', stats?.total ?? 0, meta);
       push('memory.avgConfidence', round(stats?.avgConfidence ?? 0, 2));
     } catch { /* skip */ }
   }
@@ -136,6 +187,16 @@ export async function computeMetrics(sources) {
       if (rate !== null) push('eventBus.deadletterRate', rate, { deadletterCount, publishedCount: published });
     } catch { /* skip：bus 不可用时不 push eventBus 指标 */ }
   }
+
+  // ---- Day 0 扩展块（metrics-ext.js）：4 个新原子 key ----
+  try {
+    const ext = await computeMetricsExt({
+      skillAutocreate: sources?.skillAutocreate,
+      evolution: sources?.evolution,
+      skillsFs: sources?.skillsFs,
+    });
+    out.push(...ext);
+  } catch { /* 扩展块整体失败不拖垮基础 13 key */ }
 
   return out;
 }

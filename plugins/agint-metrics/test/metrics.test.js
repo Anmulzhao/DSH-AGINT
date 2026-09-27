@@ -114,6 +114,10 @@ test('computeMetrics handles sync and async source methods uniformly', async () 
     wiki: { lint: async () => ({ checked: 0, brokenLinks: [], contradictions: [], orphans: [], healthy: true }) },
     memory: { stats: () => ({ total: 0, byType: {}, byLevel: {}, avgConfidence: 0 }) },
     eventBus: { metricsSnapshot: async () => ({ deadletterCount: 0, syncSubscriptions: 0 }) },
+    // Day 0 扩展 source：全健康 ⇒ 每个可算 key（含 4 个新 key）都应出现
+    skillAutocreate: { stats: () => ({ candidates: { total: 0, byStatus: {} } }) },
+    evolution: { getLogRange: () => [] },
+    skillsFs: { measure: () => ({ totalBytes: 0, fileCount: 0, roots: ['fake-root'], missingRoots: [] }) },
   };
   const recs = await computeMetrics(mixed);
   assert.equal(recs.length, METRIC_DEFS.length); // every computable key present

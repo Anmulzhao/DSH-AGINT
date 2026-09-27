@@ -1,5 +1,19 @@
 # Changelog — agint-metrics
 
+## 1.1.0 — 2026-09-27 美的神谕层 Day 0（方案 C：原子归 metrics，派生归神谕层）
+
+- 新增 `lib/metrics-ext.js`：METRIC_DEFS_EXT 4 个原子 key
+  - `autocreate.candidatesRejected`（skillAutocreate.stats().candidates.byStatus.REJECTED；stats 缺席退化 listCandidates 自数）
+  - `skills.totalBytes`（两处 skills 根 Σ SKILL.md 字节；`makeSkillsFsSource` 递归遍历）
+  - `evolution.logCount7d` / `evolution.logCount30d`（agint.evolution.getLogRange 一次 30d 窗 + 本地分窗，limit 放开避免 200 截断）
+- `metrics.js`：METRIC_DEFS = 基础 13 + 扩展 4 = 17；computeMetrics 尾部接入扩展块（整体 try/catch 不拖垮基础 key）
+- 三个既有 key 的 **meta 增补**（value 一律不动）：
+  - `rules.lintIssues.meta.rulesTotal`（rules.list()，冗余度分母）
+  - `wiki.orphans.meta.total`（lint().checked，噪声比分母）
+  - `memory.total.meta`：`noEvidence{count,ids(cap50),capped}` + `avgConfXCompliance`（Σ(conf×[evidence非空])/N，神谕层决策确信度口径）
+- `service.js`：sources() +3（skillAutocreate / evolution / skillsFs），懒解析软降级
+- 新增 `test/metrics-ext.test.js`（扩展 key / 防御 / meta 增补 / 17 defs 断言）
+
 ## 2026-09-20 — 事件总线接线（方案 A / A2）：mount.* 补订阅方
 
 **背景**：mount 六个 topic 有真实发布方、但**订阅方为 0**，挂载成功/失败完全不可观测，

@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { flushSnapshotOnce, METRICS_SNAPSHOT_TOPIC } from './snapshotPublisher.js';
+import { makeSkillsFsSource } from './metrics-ext.js';
 
 export const metricSchema = z.object({
   id: z.string().min(1),
@@ -48,6 +49,11 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
     memory: ctx.get('agint.memory'),
     // event-bus 提供单 service 接口（无伞键）；metricsSnapshot 为 A10 尾巴暴露的指标入口
     eventBus: { metricsSnapshot: ctx.get('agint.eventBus.metricsSnapshot') },
+    // Day 0（2026-09-27，方案 C）：神谕层所需原子指标的三个新 source。
+    // 懒解析 + 缺席软降级（computeMetricsExt 内部防御），未挂载只跳过对应 key。
+    skillAutocreate: ctx.get('agint.skillAutocreate'),
+    evolution: ctx.get('agint.evolution'),
+    skillsFs: makeSkillsFsSource(),
   });
 
   // Sprint 12 / A7 — T1 影子期：collect 尾部 fire-and-forget publish metrics.snapshot。
