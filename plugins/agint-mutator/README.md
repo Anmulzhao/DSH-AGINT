@@ -201,7 +201,7 @@ input → ProposeInputSchema.parse (zod)
 
 ### 3 类构造器（独立可测，已 export）
 
-- `_proposePromptMutation(input, diagnosis)` — 拼 `PromptMutationPayload`；软依赖验 `diagnosis.queryAnnotations`
+- `_proposePromptMutation(input, diagnosis)` — 拼 `PromptMutationPayload`；软依赖验 `diagnosis.annotate`
 - `_proposeToolSynthesis(input, evolution)` — 拼 `ToolSynthesisPayload`；软依赖验 `evolution.queryFailures`，探一次 `category:'integration'`
 - `_proposeStrategyRewrite(input, diagnosis)` — 拼 `StrategyRewritePayload`；软依赖验 `diagnosis.report`
 

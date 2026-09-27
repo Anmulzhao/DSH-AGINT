@@ -20,8 +20,8 @@ function buildEnv({ deps = null } = {}) {
   return { services, tables };
 }
 
-// 通用 propose() 软依赖 mock（happy 路径必须满足 #3 propose 的 queryAnnotations / report / queryFailures）
-const PROPOSE_DEPS = { diagnosis: { queryAnnotations: async () => [], report: async () => ({}) }, evolution: { queryFailures: async () => [] } };
+// 通用 propose() 软依赖 mock（happy 路径必须满足 #3 propose 的 annotate / report / queryFailures）
+const PROPOSE_DEPS = { diagnosis: { annotate: async () => [], report: async () => ({}) }, evolution: { queryFailures: async () => [] } };
 
 // ── attributionDriven ──
 test('attributionDriven happy PROMPT_DEFICIENCY + trajectory→ok:true+proposal 落库', async () => {

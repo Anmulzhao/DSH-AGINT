@@ -129,7 +129,7 @@ const POSITIVE_CASES = [
 ];
 
 test('propose 子任务 #3 已实装：合法输入返回完整 MutationProposal 形态（不再抛 not implemented）', async () => {
-  const { services } = buildServices({ softDeps: { 'agint.diagnosis': { queryAnnotations: async () => [], report: async () => ({}) }, 'agint.evolution': { queryFailures: async () => [] } } });
+  const { services } = buildServices({ softDeps: { 'agint.diagnosis': { annotate: async () => [], report: async () => ({}) }, 'agint.evolution': { queryFailures: async () => [] } } });
   const propose = services['agint.mutator.propose'];
   const out = await propose({
     source: 'attribution-driven', failureId: 'f-prompt-smoke', rootCause: 'PROMPT_DEFICIENCY',
@@ -213,7 +213,7 @@ function makeDeps() {
   return {
     softDeps: {
       'agint.diagnosis': {
-        queryAnnotations: async () => [{ id: 'a-1', rootCause: 'PROMPT_DEFICIENCY', evidence: '{}' }],
+        annotate: async () => [{ id: 'a-1', rootCause: 'PROMPT_DEFICIENCY', evidence: '{}' }],
         report: async () => ({ generatedAt: '2026-08-25T00:00:00.000Z', annotationCount: 1, clusterCount: 0 }),
       },
       'agint.evolution': { queryFailures: async () => [] },

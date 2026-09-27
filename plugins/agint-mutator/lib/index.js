@@ -168,14 +168,14 @@ function softDepOrThrow(ctx, serviceName, missingMsg) {
 // 独立可测：export 出去供 test/propose.test.mjs 直接调用。
 // 表驱动：每个 kind 对应 (软依赖校验、payload 字段抽取、可选副作用)。
 const PROPOSERS = {
-  PROMPT_MUTATION: { softDep: 'agint.diagnosis', check: 'queryAnnotations', field: 'promptPayload', fields: ['promptId','oldText','newText','diffStrategy'], probe: null },
+  PROMPT_MUTATION: { softDep: 'agint.diagnosis', check: 'annotate', field: 'promptPayload', fields: ['promptId','oldText','newText','diffStrategy'], probe: null },
   TOOL_SYNTHESIS: { softDep: 'agint.evolution', check: 'queryFailures', field: 'toolPayload', fields: ['toolName','signature','stubs','intent'], probe: (d) => d.queryFailures({ category: 'integration', limit: 1 }) },
   STRATEGY_REWRITE: { softDep: 'agint.diagnosis', check: 'report', field: 'strategyPayload', fields: ['strategyId','oldSteps','newSteps','ordering'], probe: null },
 };
 
 function _checkDep(spec, dep) {
   if (!dep || typeof dep[spec.check] !== 'function') {
-    throw new Error(`propose: ${spec.softDep}.${spec.check} ${spec.softDep === 'agint.diagnosis' ? 'queryAnnotations' : spec.check} 不可用`);
+    throw new Error(`propose: ${spec.softDep}.${spec.check} 不可用`);
   }
 }
 
@@ -308,7 +308,7 @@ function apply(ctx) {
     const needDiagnosis = validInput.atomicScope === 'prompt' || validInput.atomicScope === 'strategy';
     if (needDiagnosis) {
       softDepOrThrow(ctx, 'agint.diagnosis',
-        validInput.atomicScope === 'prompt' ? 'PROMPT_MUTATION 需要 queryAnnotations 读取 evidence' : 'STRATEGY_REWRITE 需要 report 读 windowDays 报告');
+        validInput.atomicScope === 'prompt' ? 'PROMPT_MUTATION 需要 annotate 读取 evidence' : 'STRATEGY_REWRITE 需要 report 读 windowDays 报告');
     }
     if (validInput.atomicScope === 'tool') {
       softDepOrThrow(ctx, 'agint.evolution', 'TOOL_SYNTHESIS 需要 queryFailures 读取 category=integration 失败模式');

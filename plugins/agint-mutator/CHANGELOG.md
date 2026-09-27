@@ -4,6 +4,25 @@
 
 ---
 
+## v0.6.4 (2026-09-27) — 修 PROMPT_MUTATION 幽灵接口：`queryAnnotations` 从未存在（K115）
+
+### 修复
+
+- `PROPOSERS.PROMPT_MUTATION.check` 从 `'queryAnnotations'` 改为 `'annotate'`（agint.diagnosis 真实提供的方法）。
+  **`queryAnnotations` 是自造接口**：diagnosis 从未提供过它，全仓只有 mutator 自己的代码/文档/测试 mock 引用它 ——
+  测试 mock 自己把这个方法造了出来所以永远绿，生产第一次执行到这行（2026-09-27，evolution-driver 首次打通 LLM 环节后）即抛
+  `propose: agint.diagnosis.queryAnnotations 不可用`。
+- `_checkDep` 报错信息去掉硬编码三元（不再需要）。
+- 同步：README §propose、6 个测试文件的 DIAG mock（`annotate: async () => []`）。
+- mutator 全部 8 个测试文件回归 PASS。
+
+### 教训（进 K115）
+
+⛔ **测试 mock 能造出不存在的接口** —— mock 是"实现"而不是"对账单"。写软依赖检查前先 grep 被依赖方
+到底 `ctx.provide` 了什么；两者对不上 = 幽灵接口，测试全绿也拦不住。
+
+---
+
 ## v0.6.3 — Sprint 10 子任务 #5（2026-08-?）
 
 Sprint 10 #5 交付：rollback 三段式原子事务（设计稿 §二.4）+ 进程级互斥锁。

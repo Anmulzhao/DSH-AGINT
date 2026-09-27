@@ -118,7 +118,7 @@ test('apply() 集成：同 atomicScope 二次 propose 必被唯一索引拒 + lo
       },
       close: async () => {},
     }) },
-    get: (n) => ({ 'agint.diagnosis': { queryAnnotations: async () => [], report: async () => ({}) }, 'agint.evolution': { queryFailures: async () => [] } })[n] || null,
+    get: (n) => ({ 'agint.diagnosis': { annotate: async () => [], report: async () => ({}) }, 'agint.evolution': { queryFailures: async () => [] } })[n] || null,
     provide: (n, f) => { services[n] = f; },
     effect: (d) => { disposers.push(d); return () => {}; },
   });

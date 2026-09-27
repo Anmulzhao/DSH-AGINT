@@ -68,7 +68,7 @@ function makeEnv({ commitSandboxOk = true, rollbackSmokeOk = true, rollbackSmoke
     get: (n) => {
       if (n === 'agint.qualitySandbox') return mockSandbox;
       if (n === 'agint.qualityPolicy') return mockPolicy;
-      if (n === 'agint.diagnosis') return { queryAnnotations: async () => [], report: async () => ({}) };
+      if (n === 'agint.diagnosis') return { annotate: async () => [], report: async () => ({}) };
       if (n === 'agint.evolution') return { queryFailures: async () => [] };
       return null;
     },

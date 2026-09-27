@@ -21,7 +21,7 @@ const FIX = {
     strategyPayload: { strategyId: 's-default', oldSteps: ['fetch_context', 'plan_subtasks', 'execute', 'verify'], newSteps: ['plan_subtasks', 'fetch_context', 'execute', 'verify'], ordering: 'replace' } },
 };
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const DIAG = { queryAnnotations: async () => [], report: async () => ({ generatedAt: '2026-08-25T00:00:00.000Z' }) };
+const DIAG = { annotate: async () => [], report: async () => ({ generatedAt: '2026-08-25T00:00:00.000Z' }) };
 const EVO = { queryFailures: async () => [] };
 
 function makeCtx(opts = {}) {
@@ -96,7 +96,7 @@ test('Case 11: LIMITS.PROPOSALS=100 满表抛错', async () => {
   await assert.rejects(() => services['agint.mutator.propose'](FIX.prompt), /proposals table full/i);
 });
 for (const [scope, dep, pattern] of [
-  ['prompt', 'agint.diagnosis', /agint\.diagnosis|queryAnnotations/i],
+  ['prompt', 'agint.diagnosis', /agint\.diagnosis|annotate/i],
   ['tool', 'agint.evolution', /agint\.evolution|queryFailures/i],
   ['strategy', 'agint.diagnosis', /agint\.diagnosis|report/i],
 ]) {

@@ -279,7 +279,7 @@ test('联动：validate happy path 不改 proposal.status（PENDING 保留）', 
   plugin.apply({
     storageDomain: { open: async () => ({ table: (n) => { const s = tables[n] || (tables[n] = new Map()); return { entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }; } }) },
     get: (n) => {
-      if (n === 'agint.diagnosis') return { queryAnnotations: async () => [], report: async () => ({}) };
+      if (n === 'agint.diagnosis') return { annotate: async () => [], report: async () => ({}) };
       if (n === 'agint.evolution') return { queryFailures: async () => [] };
       return null;
     },
