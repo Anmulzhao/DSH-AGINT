@@ -271,6 +271,10 @@ export function apply(ctx) {
       }
     }
     const pool = Array.isArray(proposals) ? proposals.slice(0, MAX_CANDIDATES * 4) : [];
+    // ⭐ 失败清单（2026-09-27 二修）：warn 走宿主 stdout，常驻进程下**读不到**；
+    // cron 持久化只写死字符串 "ok"，统计也不落盘。唯一外部可读的出口是事件总线。
+    // 每轮结束必发一条 evolution.cycle.summary，把「跑了几个 / 卡在哪」写进去。
+    const failures = [];
 
     for (const candidate of pool) {
       if (state.seen.has(candidate.id)) continue;
@@ -284,6 +288,7 @@ export function apply(ctx) {
           title: candidate.title ?? '',
           availableCount: Array.isArray(available) ? available.length : 0,
         });
+        failures.push(`${candidate.id}: no target skill resolved`);
         continue;
       }
 
@@ -298,7 +303,10 @@ export function apply(ctx) {
           error: error?.message ?? String(error),
         });
       }
-      if (typeof fileText !== 'string' || !fileText) continue;
+      if (typeof fileText !== 'string' || !fileText) {
+        failures.push(`${candidate.id}: target file unreadable (${skillName})`);
+        continue;
+      }
 
       const built = await construct({ candidate, skillName, fileText, llm: inj.llm ?? null });
       if (built.ok !== true) {
@@ -309,6 +317,7 @@ export function apply(ctx) {
           reason: built.reason ?? 'unknown',
           degraded: built.degraded === true,
         });
+        failures.push(`${candidate.id}: construct failed — ${built.reason ?? 'unknown'}`);
         continue;
       }
       const v = built.value;
@@ -341,6 +350,7 @@ export function apply(ctx) {
           skillName,
           reason: state.lastError,
         });
+        failures.push(`${candidate.id}: propose threw — ${state.lastError}`);
         continue;
       }
       state.proposed += 1;
@@ -361,6 +371,7 @@ export function apply(ctx) {
           candidateId: candidate.id,
           findings: (verdict.findings ?? []).slice(0, 5),
         });
+        failures.push(`${candidate.id}: validate rejected — ${(verdict.findings ?? []).slice(0, 2).join(' | ')}`);
         continue;
       }
 
@@ -394,6 +405,22 @@ export function apply(ctx) {
         rationale: v.rationale ?? '',
       };
     }
+
+    // ⭐ 无论有没有产出都发一条 summary：这是本插件唯一「外部可读」的出口
+    // （warn→stdout 常驻读不到；cron 持久化只写死 "ok"）。零产出时更要发。
+    await publish('evolution.cycle.summary', {
+      runs: state.runs,
+      poolSize: pool.length,
+      availableSkills: Array.isArray(available) ? available.length : 0,
+      seen: state.seen.size,
+      proposed: state.proposed,
+      ingested: state.ingested,
+      degraded: state.degraded,
+      lastError: state.lastError,
+      failures: failures.slice(0, 10),
+      failuresTotal: failures.length,
+      commitEnabled: isCommitEnabled(opts.env ?? process.env),
+    });
 
     // 跑完一轮什么都没产出 —— 必须留痕，否则与「根本没跑」无法区分。
     const summary = {

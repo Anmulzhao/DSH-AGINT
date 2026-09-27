@@ -283,4 +283,26 @@ test('T14: 事件总线不可用时主流程照走（观测失败不影响变异
   assert.equal(out.proposalId, 'mp_1');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T14）');
+test('T15: 零产出必发 evolution.cycle.summary 且带失败清单（唯一外部可读出口）', async () => {
+  // 2026-09-27 教训：warn→stdout 常驻进程读不到、cron 持久化只写死 "ok"，
+  // 结果「跑了 4 个子代理但零产出」在生产上完全无法归因。这条用例锁住出口。
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: '无关提案', status: 'proposed', createdAt: '2026-09-01', body: '' }]),
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  const rec = busRecorder(ctx);
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT } }, // 无可用技能 ⇒ 定位失败
+  });
+  assert.equal(out.skipped, true);
+  const s = rec.filter((e) => e.topic === 'evolution.cycle.summary');
+  assert.equal(s.length, 1, '零产出也必须发 summary');
+  assert.ok(s[0].payload.failuresTotal >= 1, 'summary 必须带失败清单');
+  assert.ok(String(s[0].payload.failures[0]).includes('c1'), '失败清单要能定位到具体候选');
+  assert.equal(s[0].payload.poolSize, 1);
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T15）');
