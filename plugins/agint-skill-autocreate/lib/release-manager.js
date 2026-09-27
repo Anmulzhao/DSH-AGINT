@@ -36,6 +36,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { renderSkillMd, renderManifest, assertSafeCandidateId, cleanupCandidate } from './staging.js';
 import { nowIso, datedId, releaseEntrySchema, checkLimit } from './storage.js';
 import { classifySpecificity } from './detector.js';
+import { judgeSkillIdentity } from './name-gate.js';
 
 // ── 纯函数（可单测）───────────────────────────────────────────────────────
 
@@ -505,6 +506,26 @@ export function createReleaseManager(deps) {
       return { candidateId: id, released: false, gate: gates.gate, reason: gates.reason, decision: gates.decision ?? null };
     }
 
+    // 语义命名门禁（2026-09-27，末道补充门）：名字必须表达"做什么"，不是"用了哪些工具"。
+    // 放在既有三道门之后，是为了不抢 specificity 门的判定（那道门已经能拦掉大部分
+    // 工具序列名，且它的期望是 terminate 到 REJECTED）；本门补的是**漏网**：
+    // 工具组合看起来够特定、但名字仍是工具序列的情况。
+    // 教训来源：pwsh-pwsh-pwsh-pwsh 这类名字没有任何模型会选中 ⇒ 0 调用是设计出来的。
+    // kill-switch：`skill_name_gate_enabled` 未显式设置时**跟随** release_specificity_gate_enabled
+    // —— 后者是发布前质量门的总闸，关掉它意味着"所有质量门退场"，命名门不应例外。
+    // 默认开。
+    const cfg0 = effectiveConfig();
+    const nameGateOn = cfg0.skill_name_gate_enabled ?? cfg0.release_specificity_gate_enabled ?? true;
+    const identity = nameGateOn === false
+      ? { ok: true, code: null, reason: null }
+      : judgeSkillIdentity(skillName, candidate.skillDraft?.description ?? '');
+    if (!identity.ok) {
+      await rejectCandidate(cd, id, candidate, 'gate-skill-identity', identity.reason, {
+        toolSequence: false,
+      });
+      return { candidateId: id, released: false, gate: 'gate-skill-identity', reason: identity.reason };
+    }
+
     // 重名预检（门 3.5：文件系统硬防线）
     const target = join(skillsRootOf(), skillName);
     if (await pathExists(target)) {
@@ -694,6 +715,18 @@ export function createReleaseManager(deps) {
     const records = await readToolStatsRecords();
     const out = { observing: observing.length, stable: [], rolledBack: [], postponed: 0 };
     for (const release of observing) {
+      // 语义命名门禁（2026-09-27）：存量技能也要补查。
+      // 名字是工具序列的技能永远不会被选中，继续观察只是浪费一个观察窗 —— 直接归档。
+      const identity = judgeSkillIdentity(release.skillName);
+      if (!identity.ok) {
+        const r = await rollback({
+          skillName: release.skillName,
+          reason: `skill-identity: ${identity.reason}`,
+          actor: 'system',
+        });
+        out.rolledBack.push({ skillName: release.skillName, reason: identity.reason, ...r });
+        continue;
+      }
       const verdict = judgeObservation(release, records, c, new Date());
       // metrics 回写（即使 postpone 也刷新计数，可观测）
       const { total, byDay } = callsByDay(records, release.skillName, release.createdAt, release.observationEndAt ?? nowIso());
