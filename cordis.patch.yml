@@ -433,3 +433,28 @@
       name: ./plugins/agint-evolution-driver/lib/index.js
       config:
         repoRoot: "D:/DSH/project源码/DSH-AGINT"
+
+    # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
+    # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），
+    # 评分纯函数 + 美之三问（Q1 全排序无洞判定）→ 三档 cron 广播
+    # （agint-cron 的 oracle-daily 09:00 / oracle-weekly 周日 21:00 / oracle-monthly
+    # 每月 1 日 10:00）。首行透出 asOf（§5 硬规则：数据截至 04:00 采集，禁止反向
+    # 触发 _collectRaw）；单条 ≤2KB（§7）；分档配额 + oracle.alert 独立日配额（§5.4）。
+    # 写白名单（§9.1）：evolution_log（经 agint.evolution.logPhase4，targetKind=
+    # oracle-*，decision=ABSTAIN——评论员不做部署决策）+ 自有存储域
+    # agint_aesthetic_oracle（oracle_state / oracle_broadcasts 2 表）。
+    # 回滚与自保（§6.2/§6.3/§6.4）：runScheduled 3 次重试（1s/4s/16s）→ 连续 3 次
+    # 失败沉默（只写审计；24h 后 oracle.alert 一次）→ 配额违规 ≥3 自动沉默+告警；
+    # 系统总分不触发任何回滚（P0-1：不杀信使）。
+    # kill-switch：config enabled:false 或 env AGINT_AESTHETIC_ORACLE=off ⇒ 不
+    # provide 服务 ⇒ 3 个 cron job soft-skip（秒级可逆）；运行时 pause/resume 落
+    # oracle_state（老板 oracle_pause 语义）。基线：前 7 条 daily 均值，建立后 Δ
+    # 全部相对基线（§3.6）。
+    # Service：agint.aestheticOracle（runBroadcast / runScheduled / alert /
+    # pause / resume / getState / status / history）。
+    # 软依赖：agint.metrics（硬消费面，缺席则跳过+告警）、agint.evolution（审计，
+    # 缺席 auditLogged=false）、agint.eventBus.publish（oracle.* topic，缺席 false）。
+    - id: agint-aesthetic-oracle
+      name: ./plugins/agint-aesthetic-oracle/lib/index.js
+      config:
+        enabled: true

@@ -1,0 +1,84 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-aesthetic-oracle",
+  "version": "0.3.0",
+  "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只消费 summary() 读仪表，评分纯函数 + 美之三问下判断，三档 cron 广播按节奏开口。写白名单仅 evolution_log 审计（targetKind=oracle-*，decision=ABSTAIN）+ 自有存储域；asOf 透出（禁止反向采集）；单条 ≤2KB + 分档配额；连续失败沉默 + 配额回滚 + kill-switch；系统总分只告警不回滚（不杀信使）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain"
+      ],
+      "provides": [
+        "agint.aestheticOracle"
+      ],
+      "consumes": [
+        "agint.metrics",
+        "agint.evolution",
+        "agint.eventBus.publish",
+        "agint.evolve"
+      ],
+      "events": [
+        "oracle.daily",
+        "oracle.weekly",
+        "oracle.monthly",
+        "oracle.alert"
+      ],
+      "subscriptions": [
+        "oracle.daily",
+        "oracle.weekly",
+        "oracle.monthly",
+        "oracle.alert"
+      ],
+      "tools": []
+    },
+    "storage": {
+      "domains": [
+        "agint_aesthetic_oracle"
+      ],
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "softDependencies": {
+      "agint-metrics": ">=1.1.0",
+      "agint-evolution-memory": ">=0.6.4",
+      "agint-event-bus": ">=0.7.0",
+      "agint-evolve": ">=0.1.0"
+    },
+    "mountOrder": 62,
+    "permissions": {
+      "env": [
+        "AGINT_AESTHETIC_ORACLE"
+      ],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none（三档广播由 agint-cron 驱动：oracle-daily/weekly/monthly）",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/oracle.test.js",
+      "command": "node --test",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.aestheticOracle": "美的神谕层：runBroadcast(kind) 单次广播 / runScheduled(kind) 调度入口（重试+连续失败记账）/ alert(reason) 告警出口 / pause-resume（oracle_pause 语义）/ getState / status / history / cards()（dashboard 卡片快照，订阅 oracle.* 落 oracle_cards 表）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "design": "D:/DSH/project源码/DSH-AGINT.wiki/agint-aesthetic-oracle.md",
+    "compatSince": "0.1.0"
+  }
+}

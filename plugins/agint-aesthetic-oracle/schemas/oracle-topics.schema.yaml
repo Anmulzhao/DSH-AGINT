@@ -1,0 +1,61 @@
+# oracle-topics.schema.yaml — oracle.* 四 topic 的 payload 合同（发布方自带）
+#
+# 契约边界（对齐 agint-event-bus/schemas/event-bus.schema.yaml 第 12/64 行）：
+#   event-bus 的 FROZEN 面只管 envelope 8 字段；payload 子 schema「由发布方
+#   插件自带独立演进，正交」。本文件即 oracle 发布方自带的合同（人读版）；
+#   机读单一事实源 = plugins/agint-aesthetic-oracle/lib/topics.js（zod）。
+#   两者必须同步改——只改本文件 = 合同与实现分叉；只改 topics.js = 消费方无据可查。
+#
+# 违约处理：publish 前自校验（validateTopicPayload），违约 payload 不发布、
+#   落 oracle_broadcasts 痕（outcome=schema-rejected）。坏数据不进事件历史。
+#
+# schemaVersion: 1（topic payload 版本随 envelope.version=1 起步；破坏性变更
+#   递增 envelope.version 并在此登记变更记录）
+
+schemaVersion: 1
+
+oracle.daily:
+  description: 日度美评广播（cron 0 9 * * *；runBroadcast('daily') 出口）
+  required: [kind, asOf, score, verdict, worstKey, lines, text]
+  properties:
+    kind:    { const: daily }
+    asOf:    { type: string,  description: 数据时间戳（§5 硬规则；缓存回退时为缓存时点） }
+    score:   { type: [number, 'null'], description: 美总分 0-100；全维 N/A 时 null }
+    verdict: { enum: [beautiful, ugly, flat] }
+    worstKey: { type: [string, 'null'], description: 最丑维度 key（noise/confidence/redundancy/bloat）；无则 null }
+    lines:   { type: array, items: { type: string }, description: 广播行（与 text 一致） }
+    text:    { type: string, description: 广播全文（≤2KB） }
+    staleDays: { type: integer, minimum: 0, optional: true, description: §6.1 缓存回退标注（数据距今天数）；新鲜广播不传 }
+
+oracle.weekly:
+  description: 周度美谕（cron 0 21 * * 0；结构同 oracle.daily，kind=weekly）
+  extends: oracle.daily
+  properties:
+    kind: { const: weekly }
+
+oracle.monthly:
+  description: 月度美鉴（cron 0 10 1 * *；结构同 oracle.daily，kind=monthly）
+  extends: oracle.daily
+  properties:
+    kind: { const: monthly }
+
+oracle.alert:
+  description: 警报（沉默 24h / 配额违规 / summary 不可用 / 程序化 alert()）。双形态合同：
+    内部告警形（reason 必含其一）与警报广播形（text 必含其一）；reason/text 至少其一非空。
+  required: []   # 双形态联合约束由 refine 表达：reason 或 text 至少其一非空
+  properties:
+    reason:     { type: string,  optional: true, description: 内部告警形——警报原因（非空才计数） }
+    since:      { type: string,  optional: true, description: 沉默模式起始时刻（ISO） }
+    violations: { type: integer, optional: true, description: 单日配额违规次数 }
+    error:      { type: string,  optional: true, description: 触发告警的错误文本 }
+    kind:       { const: alert,  optional: true, description: 警报广播形——以下 7 字段同三档 }
+    asOf:       { type: string,  optional: true }
+    score:      { type: [number, 'null'], optional: true }
+    verdict:    { enum: [beautiful, ugly, flat], optional: true }
+    worstKey:   { type: [string, 'null'], optional: true }
+    lines:      { type: array, items: { type: string }, optional: true }
+    text:       { type: string,  optional: true }
+
+# 消费方（GUI dashboard 卡片 / 未来 LLM 增强档）订阅姿势：
+#   subscribe({ subscriber: '<your-name>', topics: ['oracle.daily','oracle.alert'], mode: 'async' })
+#   事件对象 = EventEnvelope（8 字段）；payload 即上表结构。
