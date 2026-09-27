@@ -1,6 +1,10 @@
 # Changelog — agint-skill-autocreate
 
-## 0.5.4 (2026-09-27) — 修子代理空壳：judgeViaLLM 从未真调过模型（K114）
+## v0.5.4 (2026-09-27) — 修子代理空壳：judgeViaLLM 从未真调过模型（K114）
+
+> 注：本条目起标题带 `v` 前缀 —— `bin/agents-local-state.mjs` 用 `^##\s+(v[\d][\w.-]*)`
+> 取版本号回写实况块，不带 v 的条目会静默回落到 package.json 的脚手架版本，
+> 导致实况块长期显示旧版本（刚发现它显示 0.5.3）。历史条目未批量改。
 
 与 dream v0.3.4 同源同修。`judgeViaLLM` 建临时 parent agent 时只传
 `meta: { cwd, origin: 'subagent' }`，漏了 **`meta.agentPreset`** —— 该字段类型上
