@@ -1,0 +1,20 @@
+{
+  "name": "agint-evolution-driver",
+  "version": "0.1.0",
+  "description": "闭环引擎的驱动源（变异构造器）：提案 → LLM 原子编辑 → mutator.propose → population.ingest；幻觉闸门 + 全软依赖 + 可关。第一阶段不 commit。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "evolution",
+    "mutator",
+    "driver",
+    "sprint-15"
+  ],
+  "license": "MIT",
+  "peerDependencies": {}
+}

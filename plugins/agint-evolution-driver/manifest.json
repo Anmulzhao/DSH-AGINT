@@ -1,0 +1,77 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-evolution-driver",
+  "version": "0.1.0",
+  "description": "闭环引擎的驱动源（变异构造器）：补上 mutator 缺的那个 caller —— 从 agint.evolve 的真实提案出发，spawn subagent（真 LLM）把提案编译成一次原子文档编辑，硬校验 oldText 必须真实存在于原文（幻觉闸门），再走 mutator.propose → validate → population.ingest。不持存储域（正本在 mutator/population），全软依赖，全程可关。第一阶段不 commit。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.evolutionDriver"
+      ],
+      "consumes": [
+        "agint.evolve",
+        "agint.mutator",
+        "agint.population",
+        "agint.eventBus.publish",
+        "agents",
+        "subagents"
+      ],
+      "events": [
+        "evolution.mutation.proposed",
+        "evolution.mutation.rejected"
+      ],
+      "subscriptions": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "softDependencies": {
+      "agint-evolve": ">=0.7.0",
+      "agint-mutator": ">=0.6.0",
+      "agint-population": ">=0.6.0"
+    },
+    "mountOrder": 61,
+    "permissions": {
+      "env": [
+        "AGINT_EVOLUTION_DRIVER",
+        "AGINT_EVOLUTION_DRIVER_COMMIT"
+      ],
+      "fs": [
+        "read:presets/agint/skills"
+      ],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.evolutionDriver": "闭环驱动：runOnce() 挑提案→LLM 构造→propose→ingest / status() 计数与开关 / construct() 可注入的构造环节"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "design": "proposals/agint-evolution-driver.md",
+    "compatSince": "0.1.0"
+  }
+}

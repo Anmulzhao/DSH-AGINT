@@ -130,6 +130,9 @@ function apply(ctx) {
     // 频率熔断状态（trips/recent）。同样懒解析；agint-diagnosis 未挂载时为
     // undefined → job 返回 {skipped:true} 而非报错。
     'agint.diagnosis.stats': ctx.get('agint.diagnosis.stats'),
+    // 闭环引擎驱动（2026-09-27 新增 job evolution-cycle）。懒解析；
+    // agint-evolution-driver 未挂载时为 undefined → job soft-skip 不报错。
+    'agint.evolutionDriver': ctx.get('agint.evolutionDriver'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 

@@ -421,6 +421,31 @@ export const defaultJobs = [
       return { alert: false, ...summary };
     },
   },
+  {
+    // 闭环引擎的驱动入口（2026-09-27 新增，配合新插件 agint-evolution-driver）。
+    // mutator / population 挂载至今从未运行，根因不是接线，是**缺 caller**：
+    // mutate 的内容（oldText→newText）必须有人提供，而它自己的红线是「不调真 LLM」。
+    // driver 就是那个 caller —— 本 job 只负责「每周唤它一次」。
+    //
+    // 时机：周日 04:15，紧跟 evolve-review（03:45）之后 —— 复盘刚产出新提案，
+    // driver 才有东西可挑。早于 curriculum-weekly（05:00）。
+    //
+    // ⛔ 这个 job 不产生代码改动：driver 第一阶段的 commit 是默认关的
+    // （AGINT_EVOLUTION_DRIVER_COMMIT=on 才开）。它只做「提案 → 变异候选 → 入种群」。
+    // 服务未挂载时 soft-skip（与其它 job 同策略）—— driver 是软依赖插件，
+    // 没挂它不代表 cron 出错。
+    id: 'evolution-cycle',
+    name: '闭环引擎驱动',
+    schedule: '15 4 * * 0', // Sun 04:15
+    description: '唤 agint-evolution-driver 跑一轮：提案 → LLM 构造原子编辑 → propose → ingest（weekly）',
+    action: async (services) => {
+      const driver = services['agint.evolutionDriver'];
+      if (!driver) return { skipped: true, reason: 'agint.evolutionDriver not mounted' };
+      const out = await driver.runOnce({});
+      const status = typeof driver.status === 'function' ? driver.status() : {};
+      return { ...out, status };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */
