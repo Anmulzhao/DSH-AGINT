@@ -12,6 +12,7 @@ import {
   commitToRepo,
   anchorExists,
   slugifyPromptId,
+  findFabricatedEntities,
   pickCandidate,
   spawnLlm,
   DEFAULT_AGENT_PRESET,
@@ -627,4 +628,104 @@ test('T29: validate 调用约定 —— 必传 { proposal } 整对象（mutator 
   assert.match(arg.proposal.promptPayload.promptId, /^[a-z][a-z0-9-]{2,30}$/);
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T29）');
+// ── T30–T32: 实体存在性门（v0.2.4）—— 防内容级编造（agint-evolution-viz 事件）──
+
+test('T30: findFabricatedEntities —— 结构化证据；文本提及不算数（K115）', () => {
+  const repoFiles = [
+    'lib/service.js', 'README.md', 'bin/check.sh', 'plugins/agint-metrics/lib/metrics.js',
+  ];
+  const codeText = 'const t = table("evolution_log"); // metrics_summary 由 agint-metrics 写入';
+  // 编造实体落网：插件名不存在（即使代码文本「提到」它 —— 提及≠证据）；
+  // 发明的表名不在生产代码里。
+  assert.deepEqual(
+    findFabricatedEntities('数据源见 `agint-evolution-viz` 与 `evolution_summary_log`。', {
+      repoFiles,
+      codeText: `${codeText} agint-evolution-viz`,
+    }),
+    ['agint-evolution-viz', 'evolution_summary_log'],
+  );
+  // 真实实体放行：插件目录在 repoFiles、表在代码索引、路径在 repoFiles
+  assert.deepEqual(
+    findFabricatedEntities(
+      '跑 `bin/check.sh`，读 `evolution_log` / `metrics_summary`，代码见 `plugins/agint-metrics/lib/metrics.js`。',
+      { repoFiles, codeText },
+    ),
+    [],
+  );
+  // 不可校验的 token（点路径/普通词/中文/IP）一律放行，压误报
+  assert.deepEqual(
+    findFabricatedEntities('检查 `manifest.spec.permissions`、`Hello World`、`连通性`、`192.168.1.88`。', {
+      repoFiles,
+      codeText,
+    }),
+    [],
+  );
+  // codeText=null（索引不可用）：snake 类放行；agint-* 结构化校验与路径校验照常硬卡
+  assert.deepEqual(
+    findFabricatedEntities('引用 `evolution_log`、`agint-evolution-viz` 与 `plugins/x/config.yml`。', {
+      repoFiles,
+      codeText: null,
+    }),
+    ['agint-evolution-viz', 'plugins/x/config.yml'],
+  );
+  // 非法入参
+  assert.deepEqual(findFabricatedEntities(null, {}), []);
+  assert.deepEqual(findFabricatedEntities('', {}), []);
+});
+
+test('T31: construct + entityGate —— newText 编造实体必须被拦在落盘前', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  const out = await svc.construct({
+    candidate: { id: 'c9', title: 'x', body: '', status: 'proposed' },
+    targetId: 'plugin-preflight',
+    fileText: 'Step 2: smoke.\n',
+    llm: async () => ({
+      ok: true,
+      value: {
+        applicable: true,
+        targetSkill: 'plugin-preflight',
+        oldText: 'Step 2: smoke.',
+        newText: 'Step 2: smoke. 数据源见 `agint-evolution-viz` 的 `evolution_log`。',
+        rationale: 'adds reference',
+      },
+    }),
+    entityGate: { repoFiles: [], getCodeIndex: async () => 'some unrelated code text' },
+  });
+  assert.equal(out.ok, false, JSON.stringify(out));
+  assert.match(out.reason, /entity gate/);
+  assert.deepEqual(out.fabricated, ['agint-evolution-viz', 'evolution_log']);
+});
+
+test('T32: entityGate 放行真实实体；索引不可用（null）时 snake 类跳过不误杀', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  const good = {
+    candidate: { id: 'c9', title: 'x', body: '', status: 'proposed' },
+    targetId: 'plugin-preflight',
+    fileText: 'Step 2: smoke.\n',
+    llm: async () => ({
+      ok: true,
+      value: {
+        applicable: true,
+        targetSkill: 'plugin-preflight',
+        oldText: 'Step 2: smoke.',
+        newText: 'Step 2: smoke. 健康度读 `cron_health`，路径见 `lib/service.js`。',
+        rationale: 'ok',
+      },
+    }),
+  };
+  // 真实实体 → 放行
+  const pass = await svc.construct({
+    ...good,
+    entityGate: { repoFiles: ['lib/service.js'], getCodeIndex: async () => 'cron_health table lives here' },
+  });
+  assert.equal(pass.ok, true, JSON.stringify(pass));
+  // 索引构建失败（null）→ snake 类放行（agint-*/路径类仍硬卡）
+  const skip = await svc.construct({ ...good, entityGate: { repoFiles: ['lib/service.js'], getCodeIndex: async () => null } });
+  assert.equal(skip.ok, true);
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T32）');

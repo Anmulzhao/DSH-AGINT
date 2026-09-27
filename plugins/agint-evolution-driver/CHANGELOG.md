@@ -1,5 +1,43 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.4 — 2026-09-27（实体存在性门：内容级编造在落盘前拦死）
+
+### 背景
+
+18:30 五轮验收四判据全中（闭环闭合），但引擎写入 SKILL.md 的新增段落引用了
+不存在的插件 `agint-evolution-viz`。幻觉闸门只锚 verbatim oldText（编辑位置真实），
+防不了 newText 的内容级编造。老板拍板：加「引用实体必须存在」硬校验。
+
+### 变更
+
+- 新增 `findFabricatedEntities(newText, { repoFiles, codeText })`：校验 newText 反引号
+  token 中三类可机器验证的实体，其余放行（压误报）：
+  1. **仓库路径**（含 `/` 且扩展名可识别）→ 必须在 repoFiles；
+  2. **agint-\* 插件/技能名** → `plugins/<name>/`、`presets/agint/skills/<name>/`、
+     `presets/<name>/` 目录必须真实存在（**结构化证据**）；
+  3. **snake_case 表/存储名** → 必须出现在插件生产代码索引里。
+- ⭐ 证据必须是结构化的：**文本「提及」不算数**——docs 规划文档 / eval mock / 代码
+  注释都会提及从未存在的实体（K115 病毒式自举）。实测修正：`evolution_log` 与
+  `metrics_summary` 其实真实存在（agint-evolution-memory / agint-metrics），
+  全仓子串匹配会把它们连同真凶一起误伤/漏放；agint-\* 必须看目录，snake 类证据源 =
+  `plugins/*/lib` 代码且**剥离注释行**（否则本插件自己的注释就构成「证据」）。
+- `buildCodeIndex`：懒构建、单 runOnce 只建一次、容量护栏（单文件 256KB / 总 4MB）、
+  失败返回 null → snake 类放行不误杀（留痕告警，K113）。
+- construct 在幻觉闸门之后调用实体门；拦截形态 `{ ok:false, reason:'fabricated entities
+  in newText: ... (entity gate)', fabricated:[...] }`，**不算 degraded**（LLM 通道正常）。
+- kill-switch：`AGINT_EVOLUTION_DRIVER_ENTITY_GATE=off`（默认开，K51：出厂即开）。
+- ⚠️ 解构默认值坑：`codeText: undefined` 会触发默认 `''`（=严格空索引），必须显式
+  传 `null` 才是「索引不可用→跳过」语义。
+
+### 测试
+
+- smoke 新增 T30（结构化证据语义 + 提及≠证据反例 + null 语义）、T31（construct 集成拦截）、
+  T32（真实实体放行 + null 跳过），32/32 绿。
+- 真实数据离线验证：今天已落盘的那条编辑（排除目标文件模拟落盘前世界），门精确拦下
+  `agint-evolution-viz`，其余实体零误报。
+
+## v0.2.3 — 2026-09-27（mutator 首次真实落盘后两处调用约定修正）
+
 ## v0.2.3 — 2026-09-27（里程碑：mutator 首次真实落盘；两处调用约定修正）
 
 ### 18:18 三轮实测

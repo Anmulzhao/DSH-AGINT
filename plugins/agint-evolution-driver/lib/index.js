@@ -46,6 +46,7 @@ import { randomUUID } from 'node:crypto';
 const KILL_ENV = 'AGINT_EVOLUTION_DRIVER';
 const COMMIT_ENV = 'AGINT_EVOLUTION_DRIVER_COMMIT';
 const REPO_ENV = 'AGINT_EVOLUTION_DRIVER_REPO_ROOT';
+const ENTITY_GATE_ENV = 'AGINT_EVOLUTION_DRIVER_ENTITY_GATE';
 const DEFAULT_TIMEOUT_MS = 120_000;
 // 2026-09-27 v0.2.2：6000 → 20000。实测 metrics.js 7334B 被截断，而提示词声称
 // "verbatim text of one target file" —— LLM 看不到尾部却以为看全了，会误判
@@ -59,6 +60,11 @@ const REPO_SCAN_IGNORES = new Set([
   '.agint-preimage', '.DS_Store',
 ]);
 const REPO_SCAN_MAX_FILES = 3000;
+// 实体存在性门（v0.2.4）：代码索引容量护栏 + 证据源约定。
+const CODE_INDEX_MAX_BYTES = 4_000_000;
+const CODE_FILE_MAX_BYTES = 262_144;
+/** 代码证据源：仅插件生产代码 lib/（docs/eval/test 里的提及不算证据 —— K115：mock 不是证据）。 */
+const CODE_PATH_RX = /^plugins\/[^/]+\/lib\/.+\.(?:js|mjs|cjs|ts)$/;
 
 /**
  * ⭐⭐ 子代理必须显式带 preset —— 这是 2026-09-27 用 30 个空壳会话换来的硬知识。
@@ -229,6 +235,53 @@ export function anchorExists(fileText, oldText) {
 }
 
 /**
+ * 实体存在性门（v0.2.4，第二道闸）：oldText 锚得住只保证「编辑位置真实」，
+ * 防不了 newText 内容级编造——实测（09-27 18:30）引擎写入的文档引用了
+ * 不存在的插件 agint-evolution-viz。
+ *
+ * ⭐ 证据必须是结构化的，文本子串不算数：docs 规划文档 / eval mock / 代码注释
+ * 都会「提及」从未存在的实体（K115 病毒式自举；本次三类 token 中两个其实真实存在）。
+ * 三类可机器验证的实体，其余 token 一律放行（压误报）：
+ *   1. 仓库路径（含 / 且扩展名可识别）→ 必须在 repoFiles 里
+ *   2. agint-* 插件/技能名 → 插件目录/技能目录必须真实存在（repoFiles 前缀，结构化）
+ *   3. snake_case 标识符（表/存储名）→ 必须出现在插件生产代码索引里（注释已剥离）
+ * 返回编造实体列表（去重排序，空数组 = 通过）。
+ */
+export function findFabricatedEntities(newText, { repoFiles = [], codeText = '' } = {}) {
+  const fabricated = new Set();
+  if (typeof newText !== 'string' || !newText) return [];
+  const paths = new Set(Array.isArray(repoFiles) ? repoFiles : []);
+  const pathList = Array.isArray(repoFiles) ? repoFiles : [];
+  const code = typeof codeText === 'string' ? codeText : null;
+  const dirExists = (prefix) => pathList.some((p) => p.startsWith(prefix));
+  const rx = /`([^`\n]{3,120})`/g;
+  let m;
+  while ((m = rx.exec(newText)) !== null) {
+    const token = m[1].trim();
+    // 1. 仓库路径
+    if (token.includes('/') && /\.[A-Za-z][A-Za-z0-9]{1,5}$/.test(token)) {
+      if (!paths.has(token)) fabricated.add(token);
+      continue;
+    }
+    // 2. agint-* 命名实体 —— 结构化证据：插件目录或 preset 技能目录真实存在
+    if (/^agint-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(token)) {
+      const ok =
+        dirExists(`plugins/${token}/`) ||
+        dirExists(`presets/agint/skills/${token}/`) ||
+        dirExists(`presets/${token}/`);
+      if (!ok) fabricated.add(token);
+      continue;
+    }
+    // 3. snake_case 标识符 —— 证据=插件生产代码（codeText=null 时索引不可用，放行）
+    if (/^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+$/.test(token)) {
+      if (code !== null && !code.includes(token)) fabricated.add(token);
+      continue;
+    }
+  }
+  return [...fabricated].sort();
+}
+
+/**
  * mutator 的 promptPayload.promptId 要求 kebab slug（^[a-z][a-z0-9-]{2,30}$），
  * 而 repo 目标是带斜杠/点的相对路径。取末段 slug 化；不合规时加 'evo-' 前缀兜底。
  * 2026-09-27 v0.2.3：18:18 实跑 52542886 因 promptId='plugins/.../x.mjs' 被 zod 拒。
@@ -308,8 +361,10 @@ export function apply(ctx, config = {}) {
   /**
    * 让 LLM 把提案变成一次原子编辑。
    * 注入点：opts.llm（测试用），否则走 agents.create + subagents.start。
+   * @param {object} [opts.entityGate] 实体存在性门：{ repoFiles, getCodeIndex }；
+   *   缺省/null = 不启用（旧测试兼容）。getCodeIndex() 返回 null = 索引不可用 → snake 类放行并降级告警。
    */
-  async function construct({ candidate, targetId, fileText, timeoutMs = DEFAULT_TIMEOUT_MS, llm = null }) {
+  async function construct({ candidate, targetId, fileText, timeoutMs = DEFAULT_TIMEOUT_MS, llm = null, entityGate = null }) {
     const build = llm ?? ((args) => spawnLlm(ctx, args));
     const out = await build({
       system: SYSTEM_PROMPT,
@@ -344,6 +399,27 @@ export function apply(ctx, config = {}) {
     }
     if (!v.newText || v.newText === v.oldText) {
       return { ok: false, reason: 'empty or no-op edit' };
+    }
+    if (entityGate && typeof entityGate.getCodeIndex === 'function') {
+      const codeText = await entityGate.getCodeIndex();
+      if (codeText === null) {
+        // 索引构建失败 → snake 类无从验证，放行但必须留痕（K113：每条分支都有出口）
+        warn('entity gate: code index unavailable; snake-class checks skipped');
+      }
+      const fabricated = findFabricatedEntities(v.newText, {
+        repoFiles: entityGate.repoFiles ?? [],
+        // ⚠️ 必须显式传 null：undefined 会触发解构默认 ''（=严格空索引）而非「跳过」语义
+        codeText: codeText ?? null,
+      });
+      if (fabricated.length > 0) {
+        // ⛔ 实体门：newText 引用了仓库里不存在的实体 ⇒ 内容级编造，落盘前拦死。
+        //   注意不算 degraded —— LLM 通道本身是好的，是产出不合格。
+        return {
+          ok: false,
+          reason: `fabricated entities in newText: ${fabricated.join(', ')} (entity gate)`,
+          fabricated,
+        };
+      }
     }
     return { ok: true, value: v };
   }
@@ -437,6 +513,25 @@ export function apply(ctx, config = {}) {
       }
     }
 
+    // 实体存在性门（v0.2.4）：默认开，ENTITY_GATE_ENV=off 可关（K51：出厂即开）。
+    // 代码索引懒构建：首个走到门的候选才扫，全程只建一次。
+    const entityGateOn =
+      String((opts.env ?? process.env)[ENTITY_GATE_ENV] ?? 'on') !== 'off' && Boolean(repoRoot);
+    let codeIndexCache;
+    let codeIndexBuilt = false;
+    const getCodeIndex = async () => {
+      if (codeIndexBuilt) return codeIndexCache;
+      codeIndexBuilt = true;
+      try {
+        codeIndexCache = await buildCodeIndex(repoRoot, repoFiles, { fs: inj.fs });
+      } catch (error) {
+        warn('entity gate: code index build failed', { error: error?.message ?? String(error) });
+        codeIndexCache = null;
+      }
+      return codeIndexCache;
+    };
+    const entityGate = entityGateOn ? { repoFiles, getCodeIndex } : null;
+
     for (const candidate of pool) {
       if (state.seen.has(candidate.id)) continue;
       state.seen.add(candidate.id);
@@ -474,7 +569,7 @@ export function apply(ctx, config = {}) {
         continue;
       }
 
-      const built = await construct({ candidate, targetId, fileText, llm: inj.llm ?? null });
+      const built = await construct({ candidate, targetId, fileText, llm: inj.llm ?? null, entityGate });
       if (built.ok !== true) {
         if (built.degraded) state.degraded += 1;
         warn('candidate skipped: construct failed', {
@@ -482,6 +577,7 @@ export function apply(ctx, config = {}) {
           targetId,
           reason: built.reason ?? 'unknown',
           degraded: built.degraded === true,
+          fabricated: built.fabricated ?? undefined,
         });
         failures.push(`${candidate.id}: construct failed — ${built.reason ?? 'unknown'}`);
         continue;
@@ -726,6 +822,41 @@ async function listRepoFiles(repoRoot, { fs } = {}) {
   };
   await walk(repoRoot);
   return out;
+}
+
+/**
+ * 代码证据索引（实体存在性门的 snake_case 证据源）：
+ * 只读 plugins/<name>/lib/ 下的生产代码，剥离注释行（注释会提及从未存在的实体）。
+ * fs.codeIndex 可注入测试；失败返回 null（调用方放行 snake 类并留痕）。
+ */
+async function buildCodeIndex(repoRoot, repoFiles, { fs } = {}) {
+  if (!repoRoot || !Array.isArray(repoFiles) || repoFiles.length === 0) return '';
+  const inj = fs?.codeIndex;
+  if (typeof inj === 'function') return await inj(repoRoot, repoFiles);
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const chunks = [];
+  let total = 0;
+  for (const rel of repoFiles) {
+    if (total >= CODE_INDEX_MAX_BYTES) break;
+    if (!CODE_PATH_RX.test(rel)) continue;
+    try {
+      const raw = await readFile(join(repoRoot, rel), 'utf8');
+      const stripped = raw
+        .split('\n')
+        .filter((line) => {
+          const t = line.trim();
+          return !(t.startsWith('//') || t.startsWith('/*') || t.startsWith('*') || t.startsWith('*/'));
+        })
+        .join('\n');
+      const clipped = stripped.length > CODE_FILE_MAX_BYTES ? stripped.slice(0, CODE_FILE_MAX_BYTES) : stripped;
+      chunks.push(clipped);
+      total += clipped.length;
+    } catch {
+      // 单文件读不出来就跳过，索引允许不完整但不允许中断
+    }
+  }
+  return chunks.join('\n');
 }
 
 /**
