@@ -61,6 +61,11 @@ const MAX_CANDIDATES = 5;
  *    但对 host plane 凭空 create 的临时 parent 来说，它是模型路由的唯一来源。
  */
 export const DEFAULT_AGENT_PRESET = 'agint';
+// 兜底 provider/model：仅在宿主服务 agentDefaultModel 不可用时使用。
+// 值与 dream 的 DEFAULT_PROVIDER/MODEL 同源（本机 ~/.dsh 实测 minimax-cn / MiniMax-M3），
+// ⛔ deepseek 在本机只是 fallback adapter，别写它（K99）。
+const DEFAULT_LLM_PROVIDER = 'minimax-cn';
+const DEFAULT_LLM_MODEL = 'MiniMax-M3';
 
 /** 结构化输出契约（subagents.start 方言：required 挂在父对象数组上，K70） */
 export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
@@ -523,7 +528,15 @@ async function listSkillNames({ roots } = {}) {
   return entries.filter((e) => e.isDirectory() && !String(e.name).startsWith('.')).map((e) => e.name);
 }
 
-export async function spawnLlm(ctx, { system, user, schema, timeoutMs, preset = DEFAULT_AGENT_PRESET }) {
+export async function spawnLlm(ctx, {
+  system,
+  user,
+  schema,
+  timeoutMs,
+  preset = DEFAULT_AGENT_PRESET,
+  provider = null,
+  model = null,
+}) {
   const agents = ctx?.get?.('agents');
   const subagents = ctx?.get?.('subagents');
   if (!agents || typeof agents.create !== 'function') return { ok: false, reason: 'agents unavailable' };
@@ -538,10 +551,26 @@ export async function spawnLlm(ctx, { system, user, schema, timeoutMs, preset = 
   let handle = null;
   let run = null;
   try {
+    // ⭐⭐ 第二个根因（2026-09-27 二次取证）：只给 meta.agentPreset **还不够**。
+    //   实测对照：dream 的 child 跑通（modelSelection=minimax-cn/MiniMax-M3、outTok=409），
+    //   driver 的 child 空壳（modelSelection=null、surfaceTokens=0、outTok=0），
+    //   两边 parent 字段完全一致 —— 唯一差异是 dream 额外传了 agentOptions:{provider, model}。
+    //   即：preset 管 persona/工具，**provider+model 才是模型路由本身**；不传 ⇒ 无路由 ⇒ 空壳。
+    //   来源优先级：显式入参 > 宿主服务 agentDefaultModel.currentSelection() > 兜底常量。
+    //   走宿主服务是为了**不硬编码模型名**（K99：配错比不配更糟，模型名会随部署漂移）。
+    const selection = typeof ctx?.get === 'function'
+      ? ctx.get('agentDefaultModel')?.currentSelection?.() ?? null
+      : null;
+    const resolvedProvider = provider ?? selection?.provider ?? DEFAULT_LLM_PROVIDER;
+    const resolvedModel = model ?? selection?.model ?? DEFAULT_LLM_MODEL;
+    const agentOptions = { provider: resolvedProvider, model: resolvedModel };
+
     handle = await agents.create({
       sessionId: `evolution-driver-${randomUUID()}`,
       // ⭐ agentPreset 不能省：省了 ⇒ child 无模型路由 ⇒ 建得出会话、跑不动一步（30 个空壳的血债）
       meta: { cwd: process.cwd(), origin: 'subagent', ...(preset ? { agentPreset: preset } : {}) },
+      // ⭐ agentOptions 同样不能省：它是 provider/model 的载体（第二个空壳根因）
+      agentOptions,
       signal: controller.signal,
     });
     run = await subagents.start('spawn', {

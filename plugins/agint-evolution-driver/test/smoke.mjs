@@ -391,4 +391,51 @@ test('T18: 结果读 structured，不是 output —— 缺 structured 必须报�
   assert.match(r2.reason, /structured output missing/);
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T18）');
+// ── T19：agentOptions 是模型路由载体（第二个空壳根因，2026-09-27 二次取证）──
+// 对照实证：dream child 跑通（modelSelection=minimax-cn/MiniMax-M3、outTok=409），
+// driver child 空壳（modelSelection=null、surfaceTokens=0、outTok=0），两边 parent
+// 字段完全一致 —— 唯一差异就是 dream 多传了 agentOptions:{provider, model}。
+// ⇒ preset 管 persona/工具，provider+model 才是路由本身，两者都不可省。
+
+test('T19a: agentOptions 必须带 provider/model —— 只给 agentPreset 仍是空壳', async () => {
+  const rt = fakeRuntime();
+  const ctx = makeCtx({ agents: rt.agents, subagents: rt.subagents });
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
+  const opts = rt.created[0].agentOptions;
+  assert.ok(opts, 'agentOptions 必传（缺 ⇒ child modelSelection=null ⇒ 空壳）');
+  assert.ok(opts.provider, 'provider 必传');
+  assert.ok(opts.model, 'model 必传');
+});
+
+test('T19b: provider/model 优先取自宿主服务 agentDefaultModel（不硬编码模型名）', async () => {
+  const rt = fakeRuntime();
+  const ctx = makeCtx({
+    agents: rt.agents,
+    subagents: rt.subagents,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'host-provider', model: 'Host-Model' }) },
+  });
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
+  const opts = rt.created[0].agentOptions;
+  assert.equal(opts.provider, 'host-provider', '应用宿主默认 provider');
+  assert.equal(opts.model, 'Host-Model', '应用宿主默认 model');
+});
+
+test('T19c: 显式入参覆盖宿主默认；宿主服务缺失时兜底到常量（不静默空壳）', async () => {
+  const rt = fakeRuntime();
+  const ctx = makeCtx({ agents: rt.agents, subagents: rt.subagents }); // 无 agentDefaultModel
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
+  const fallback = rt.created[0].agentOptions;
+  assert.ok(fallback.provider && fallback.model, '宿主服务缺失时必须兜底到常量，不能省 agentOptions');
+
+  const rt2 = fakeRuntime();
+  const ctx2 = makeCtx({
+    agents: rt2.agents,
+    subagents: rt2.subagents,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'host-p', model: 'Host-M' }) },
+  });
+  await spawnLlm(ctx2, { system: 's', user: 'u', schema: { type: 'object' }, provider: 'x-p', model: 'X-M' });
+  assert.equal(rt2.created[0].agentOptions.provider, 'x-p', '显式入参优先于宿主默认');
+  assert.equal(rt2.created[0].agentOptions.model, 'X-M');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T19）');
