@@ -109,6 +109,7 @@ cd ~/projects/AGINT
 | `node bin/check-dsh-compat.mjs` | dsh 兼容性四查：悬挂包名 / peer 兼容性预演 / 版本漂移 / 改名残留。`--json` 给 CI，`--strict` 让 info 也算失败 |
 | `node bin/check-wiring.mjs` | 接线完整性九查（A~I）：空壳服务 / 主题接线 × 生产数据 / 存储域通电 / 命名空间错配 / TS 源产物漂移 / 双副本一致性（bundle 位 vs 镜像位）/ 仓库↔部署位漂移 / **漂移插件 smoke 门禁（文件一致 ≠ 代码可用）** —— 「挂载了」≠「通电了」 |
 | `node bin/check-tool-schemas.mjs` | tool schema 两套方言真编译一遍（写错会让整条 preset 起不来） |
+| `node bin/check-memory.mjs` | 记忆层自检（元数据与正文的一致性）：索引引用的 K 号是否真实存在（**索引指向不存在的条目 = 自造事实**）/ 重复 K 号的声明是否与实测一致 / 记忆目录分裂 / 体积超限 / 路径与技能引用存在性。`--json` 供 CI |
 
 ⛔ `npm install -g @deepseek-ai/dsh@latest` 会**静默降级** —— `latest` 可能低于在跑的版本（2026-09-24 实测 `latest`=0.1.5-rc.3，本机在跑 0.1.7-rc.1）。**必须带精确版本号**。
 
