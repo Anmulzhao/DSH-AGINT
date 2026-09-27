@@ -47,7 +47,10 @@ const KILL_ENV = 'AGINT_EVOLUTION_DRIVER';
 const COMMIT_ENV = 'AGINT_EVOLUTION_DRIVER_COMMIT';
 const REPO_ENV = 'AGINT_EVOLUTION_DRIVER_REPO_ROOT';
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_SNIPPET = 6000;
+// 2026-09-27 v0.2.2：6000 → 20000。实测 metrics.js 7334B 被截断，而提示词声称
+// "verbatim text of one target file" —— LLM 看不到尾部却以为看全了，会误判
+// not applicable；若 oldText 恰在截断点之后还会触发幻觉闸门误伤。
+const DEFAULT_SNIPPET = 20_000;
 const MAX_CANDIDATES = 5;
 /** commit 拒绝写入的路径（任何位置命中即拒）：挂载配置与 git 内部绝不碰。 */
 const COMMIT_DENYLIST = ['cordis.patch.yml', '.git/', 'node_modules/'];
@@ -121,8 +124,10 @@ const SYSTEM_PROMPT = Object.freeze(
   'HARD RULES:\n' +
   '1. oldText MUST be a verbatim substring of the file you were shown — copy, never paraphrase.\n' +
   '2. The edit must be atomic: one coherent block, no unrelated changes.\n' +
-  '3. If the proposal cannot be expressed as a single atomic edit of THIS file (vague, needs new files, ' +
-  'or belongs in a different file), reply applicable=false and leave the text fields empty.\n' +
+  '3. If the proposal needs several edits, apply the FIRST coherent atomic step of THIS file and ' +
+  'name the remaining steps in rationale — do not refuse just because the full proposal is bigger ' +
+  'than one edit. Reply applicable=false only when the proposal is vague, requires creating new ' +
+  'files, or belongs in a completely different file.\n' +
   '4. Do not invent APIs, commands, or text that does not appear in the file.',
 );
 
