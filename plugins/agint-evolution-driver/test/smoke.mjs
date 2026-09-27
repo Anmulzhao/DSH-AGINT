@@ -11,6 +11,7 @@ import {
   resolveRepoRoot,
   commitToRepo,
   anchorExists,
+  slugifyPromptId,
   pickCandidate,
   spawnLlm,
   DEFAULT_AGENT_PRESET,
@@ -577,7 +578,8 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件', asyn
   });
   assert.equal(out.skipped, false);
   assert.deepEqual(out.target, { type: 'repo', id: 'lib/service.js' });
-  assert.deepEqual(calls[0], ['propose', 'lib/service.js']);
+  // v0.2.3 起 promptId 走 slugifyPromptId（mutator 正则要求 kebab slug）
+  assert.deepEqual(calls[0], ['propose', 'service-js']);
   assert.equal(calls[1][0], 'write');
   assert.equal(calls[1][2], 'hello AGINT world\n');
   const topics = events.map((e) => e.topic);
@@ -588,4 +590,41 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件', asyn
   assert.equal(committed.payload.proposalId, 'p1');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T25）');
+test('T28: slugifyPromptId —— repo 相对路径转 kebab slug，满足 mutator 正则', () => {
+  const re = /^[a-z][a-z0-9-]{2,30}$/;
+  // 常规：取末段
+  assert.equal(slugifyPromptId('plugins/agint-metrics/lib/metrics.js'), 'metrics-js');
+  assert.equal(slugifyPromptId('presets/agint/skills/plugin-preflight/SKILL.md'), 'skill-md');
+  // 数字开头 → evo- 前缀兜底（正则要求首字符 [a-z]）
+  const digit = slugifyPromptId('lib/2026-report.md');
+  assert.match(digit, re);
+  // 空值兜底
+  assert.match(slugifyPromptId(''), re);
+  assert.match(slugifyPromptId(null), re);
+  // 超长截断后仍合规
+  const long = slugifyPromptId('a/very/deeply/nested/path/with-an-extremely-long-filename-kept-for-compatibility.mjs');
+  assert.match(long, re);
+  assert.ok(long.length <= 31);
+});
+
+test('T29: validate 调用约定 —— 必传 { proposal } 整对象（mutator 读 input.proposal.id）', async () => {
+  const mut = fakeMutator();
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: 'plugin-preflight 补 fixture', status: 'proposed', createdAt: '2026-09-01', body: '' }]),
+    'agint.mutator': mut,
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: { skillNames: ['plugin-preflight'], fs: { readSkill: async () => SKILL_TEXT }, llm: GOOD_LLM },
+  });
+  assert.equal(out.skipped, false, JSON.stringify(out));
+  assert.equal(mut.calls.validate.length, 1);
+  const arg = mut.calls.validate[0];
+  assert.ok(arg && arg.proposal && typeof arg.proposal.id === 'string', 'validate 入参必须含 proposal.id');
+  // promptId 也必须是合规 slug（fakeMutator 不校验，这里锁契约）
+  assert.match(arg.proposal.promptPayload.promptId, /^[a-z][a-z0-9-]{2,30}$/);
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T29）');

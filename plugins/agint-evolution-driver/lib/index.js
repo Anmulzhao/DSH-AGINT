@@ -228,6 +228,26 @@ export function anchorExists(fileText, oldText) {
   return fileText.includes(oldText);
 }
 
+/**
+ * mutator 的 promptPayload.promptId 要求 kebab slug（^[a-z][a-z0-9-]{2,30}$），
+ * 而 repo 目标是带斜杠/点的相对路径。取末段 slug 化；不合规时加 'evo-' 前缀兜底。
+ * 2026-09-27 v0.2.3：18:18 实跑 52542886 因 promptId='plugins/.../x.mjs' 被 zod 拒。
+ */
+export function slugifyPromptId(relPath) {
+  const base = String(relPath ?? '').split('/').pop() ?? '';
+  let slug = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 30)
+    .replace(/-+$/g, '');
+  if (!/^[a-z][a-z0-9-]{2,29}$/.test(slug)) {
+    const rest = (slug || 'target').replace(/[^a-z0-9-]/g, '').replace(/^-+/, '').slice(0, 26);
+    slug = `evo-${rest}`;
+  }
+  return slug;
+}
+
 /** 挑候选：最老的未处理提案（避免每次都挑同一条，也避免随机）。 */
 export function pickCandidate(proposals = [], seen = new Set()) {
   const open = (Array.isArray(proposals) ? proposals : [])
@@ -478,7 +498,7 @@ export function apply(ctx, config = {}) {
           expectedEffect: 'baseline 通过率 >= 95% 在 7 天',
           rollbackCondition: 'regression → auto-rollback',
           promptPayload: {
-            promptId: targetId,
+            promptId: slugifyPromptId(targetId),
             oldText: v.oldText,
             newText: v.newText,
             diffStrategy: 'unified_diff',
@@ -503,10 +523,12 @@ export function apply(ctx, config = {}) {
       state.lastProposalId = proposal?.id ?? null;
 
       // validate 是"不通过不抛错"的形态：写 findings + 返回 {ok, findings}
+      // 2026-09-27 v0.2.3：mutator.validate 入参是 { proposal }（整个对象），
+      // 传 { proposalId } 会报「入参缺 proposal.id」（18:18 实跑 531e2631 实证）。
       let verdict = { ok: true, findings: [] };
       if (typeof mutator.validate === 'function') {
         try {
-          verdict = await mutator.validate({ proposalId: proposal.id });
+          verdict = await mutator.validate({ proposal });
         } catch (error) {
           verdict = { ok: false, findings: [String(error?.message ?? error)] };
         }

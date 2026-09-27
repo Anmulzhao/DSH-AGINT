@@ -1,5 +1,24 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.3 — 2026-09-27（里程碑：mutator 首次真实落盘；两处调用约定修正）
+
+### 18:18 三轮实测
+
+- ⭐ **`agint_mutator.json` 首次落盘**：提案 `09f7342c`（plugin-preflight SKILL.md
+  的真实原子编辑，oldText 为原文）。22 天闭环引擎第一次产出真实变异提案。
+- `proposed: 1`；另 52542886 走完 construct+幻觉闸门后被 mutator zod 拒。
+- 四判据进度：① mutator 落盘 ✓ ② proposed 事件（被 rejected 事件先行，修复后可达）
+  ③ committed 事件+git 改动 ✗ ④ population 落盘 ✗。
+
+### 变更（均为 driver 侧调用约定错误，K115 教训重演：调软依赖前必 grep 被依赖方签名）
+
+- **promptId slug 化**（新 `slugifyPromptId`）：mutator 要求
+  `^[a-z][a-z0-9-]{2,30}$`，repo 路径带斜杠/点必被拒 —— 取末段转 kebab，
+  数字开头/空值加 `evo-` 前缀兜底。
+- **validate 入参**：`{ proposalId }` → `{ proposal }`（mutator 读
+  `input.proposal.id`）。
+- smoke 新增 T28/T29 锁两个契约；T25 断言同步更新；29/29 绿。
+
 ## v0.2.2 — 2026-09-27（干净进程首轮 5/20 进到 LLM，全判 not applicable → 两处根因修正）
 
 ### 干净进程实测（18:10 触发，pid 7932）
