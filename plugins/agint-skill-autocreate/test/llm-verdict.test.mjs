@@ -27,6 +27,7 @@ import {
   NAME_MAX,
   DESCRIPTION_MAX,
   LIST_MAX_ITEMS,
+  DEFAULT_AGENT_PRESET,
 } from '../lib/llm-verdict.js';
 
 // ── mock 装置 ────────────────────────────────────────────────────────────
@@ -141,6 +142,29 @@ test('正常返回：verdict + authoring 都清洗后返回', async () => {
   // 资源释放
   assert.equal(disposed.run, 1);
   assert.equal(disposed.handle, 1);
+});
+
+// ── 子代理空壳根因回归（2026-09-27，K114）──────────────────────────────────
+// agents.create() 未传 meta.agentPreset ⇒ child 无模型路由 ⇒ 会话建了但一步不跑，
+// 全程不报错、静默落回 degraded。dream 的 18 个 dream-consolidation-* 会话、
+// evolution-driver 的 12 个会话全这么死的。mock 层发现不了它 —— 只有这条断言能挡复发。
+test('agents.create 必带 meta.agentPreset（缺了就是空壳子代理）', async () => {
+  const { ctx, created } = mockCtx({
+    result: Promise.resolve({ stopReason: 'completed', structured: { standardizable: true, confidence: 0.8, rationale: 'ok' } }),
+  });
+  await judgeViaLLM({ ctx, pattern: PATTERN });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].meta.agentPreset, DEFAULT_AGENT_PRESET);
+  assert.equal(created[0].meta.origin, 'subagent');
+  assert.ok(created[0].meta.cwd, 'cwd 缺失会让 child persona 的 {{cwd}} throw');
+});
+
+test('agentPreset 显式传参可覆盖默认（换 profile 不用改源码）', async () => {
+  const { ctx, created } = mockCtx({
+    result: Promise.resolve({ stopReason: 'completed', structured: { standardizable: true, confidence: 0.8, rationale: 'ok' } }),
+  });
+  await judgeViaLLM({ ctx, pattern: PATTERN, agentPreset: 'agint-investor' });
+  assert.equal(created[0].meta.agentPreset, 'agint-investor');
 });
 
 test('authoring 缺失不降级（Phase A/B 本来就不用它）', async () => {

@@ -1,5 +1,29 @@
 # Changelog — agint-skill-autocreate
 
+## 0.5.4 (2026-09-27) — 修子代理空壳：judgeViaLLM 从未真调过模型（K114）
+
+与 dream v0.3.4 同源同修。`judgeViaLLM` 建临时 parent agent 时只传
+`meta: { cwd, origin: 'subagent' }`，漏了 **`meta.agentPreset`** —— 该字段类型上
+可选、不传不报错，但 child 拿不到 preset ⇒ 解析不出模型路由 ⇒ 会话建了却一步不跑，
+静默落回 `degraded`。本机 `autocreate-judge-*` 会话 0 个（该路径尚未被自然触发），
+但 bug 与已实证空壳的 dream（18 个）/ evolution-driver（12 个）完全一致。
+
+**修复**：
+- 新增导出常量 `DEFAULT_AGENT_PRESET = 'agint'`
+- `judgeViaLLM({ ..., agentPreset = DEFAULT_AGENT_PRESET })` —— 新增可选参数
+- `agents.create({ meta: { cwd, origin: 'subagent', agentPreset } })`
+
+⚠️ 与 provider/model「跟随宿主默认（不硬编码）」的策略不同，**preset 必须给默认值** ——
+不给就是空壳，不存在"继承父级"这回事（host plane 凭空 create 的临时 parent 没有父级）。
+
+**顺带作废一条误导性注释**：文件头曾写「consolidation.js 是这台机器上唯一跑通过真模型的
+样板」—— 已证伪（它的 18 个会话全是空壳）。抄样板抄来了同一个 bug，注释已改为警示。
+
+**测试**：`test/llm-verdict.test.mjs` 新增 2 条（缺省必带 agentPreset、显式传参可覆盖），
+19 → 21 全绿；本插件 28 个测试文件全绿。
+
+---
+
 ## 0.5.3 (2026-09-27) — 生成侧回落判据对称化（P0）+ LLM 接入默认对齐（P1）
 
 > 与 0.5.2 互补：0.5.2 在**发布侧**拦（name-gate，事后兜底），本版在**生成侧**拦

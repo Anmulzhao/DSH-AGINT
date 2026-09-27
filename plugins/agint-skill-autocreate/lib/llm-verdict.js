@@ -13,15 +13,20 @@
  * 这样它才能被 mock ctx 隔离测试（不调真模型）。
  *
  * ── 与 dream/consolidation.js 的关系：形态照抄，短板不照抄 ───────────────
- * consolidation.js 是这台机器上唯一跑通过真模型的样板，调用形态（agents.create
- * + subagents.start('spawn', {outputSchema}) + 双超时保险 + finally dispose）
- * 全部照抄。但有两处**刻意不同**：
+ * 调用形态（agents.create + subagents.start('spawn', {outputSchema}) + 双超时
+ * 保险 + finally dispose）照抄 consolidation.js。但有三处**刻意不同**：
  *   ① dream 把 provider/model 写成常量（连配置项都没暴露），换模型那天就是
  *      静默故障。本模块默认空字符串 = **跟随宿主默认**（agentOptions 整个不传
  *      = 继承父级 provider/model）。
  *   ② dream 的降级不印原因（只印 `heuristic-degraded`），导致「没有候选」与
  *      「429 超限」在日记上长得一模一样 → 错误归因被固化 12 天（K59）。
  *      本模块**每个 degraded 都必须带 reason**，且 reason 会进人可读产物。
+ *
+ * ⛔ 2026-09-27 作废一条旧注释：这里曾写「consolidation.js 是这台机器上唯一
+ *    跑通过真模型的样板」—— **已证伪**。它的 18 个 dream-consolidation-* 会话
+ *    全是空壳（turns=0 / outTokens=0），跟本模块同源：都没传
+ *    `meta.agentPreset`（详见 DEFAULT_AGENT_PRESET 注释 + 项目 KNOWLEDGE.md K114）。
+ *    「照抄样板」抄来的也包括这个 bug —— **抄代码前先验它真的跑通过**。
  *
  * ── ⚠️ outputSchema 只能用宿主受限子集（本轮取证，方案 §3.2 在此需修正）──
  * 方案 §3.2 的 schema 用了 `minimum`/`maximum`/`maxLength`/`pattern`。取证
@@ -338,6 +343,15 @@ export function normalizeAuthoring(raw) {
 
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
+// ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，项目 KNOWLEDGE.md K114）。
+// `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**。
+// 不传 → child 会话 agentPreset=null / modelSelection=null / turn 空 / surfaceTokens=0
+// —— 会话照建、label 照写、**全程不报错**，但一步都跑不动，静默落回 degraded。
+// 类型上可选，对 host plane 凭空 create 的临时 parent 却等于必填。
+// ⛔ 别指望 agentOptions 补：它只有 {provider, model, reasoningEffort, maxTokens}，没有 preset。
+// ⚠️ 与 provider/model「跟随宿主默认」不同，这个**必须**给默认值 —— 不给就是空壳。
+export const DEFAULT_AGENT_PRESET = 'agint';
+
 /**
  * 一次 LLM 调用 → verdict + authoring。**永不抛错**：任何异常都转成
  * `{ ok: true, mode: 'degraded', reason }`（与 dream 同契约——语义是增益，
@@ -367,6 +381,7 @@ export async function judgeViaLLM({
   windowText = '',
   provider = '',
   model = '',
+  agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal = null,
 } = {}) {
@@ -421,7 +436,8 @@ export async function judgeViaLLM({
     handle = await agents.create({
       sessionId: `autocreate-judge-${pattern?.id ?? 'pattern'}-${randomUUID()}`,
       // cwd 必须给：child session 继承的 persona 段落用 {{cwd}}，取不到会 throw
-      meta: { cwd: process.cwd(), origin: 'subagent' },
+      // agentPreset 必须给：模型路由的唯一来源，缺失 ⇒ 空壳子代理（见 DEFAULT_AGENT_PRESET 注释）
+      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
       // 空 = 整个不传 = 继承父级 provider/model（**不硬编码任何模型名**）
       ...(Object.keys(agentOptions).length ? { agentOptions } : {}),
       signal: abortController.signal,
