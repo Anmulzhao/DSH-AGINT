@@ -38,7 +38,12 @@ export const evolutionLogEntrySchema = z.object({
   kind: z.literal('evolution-log'),
   ts: z.string().default(() => new Date().toISOString()),
   targetId: z.string().min(1),
-  targetKind: z.enum(['plugin', 'skill', 'preset', 'composite']),
+  // 2026-09-27：+oracle-daily/weekly/monthly/alert 四个静态档——美的神谕层
+  // （agint-aesthetic-oracle）白名单写表 §9.1 的审计条目。保持**封闭枚举**
+  // （不放开任意字符串）：shadow-ingest 回归测试静态扫描锁死 z.enum 形态，
+  // 且封闭枚举本身就是"防任意写入"的守门。唯一性由 targetId 承担
+  // （如 oracle-daily-2026-09-27）；activity 排除按 startsWith('oracle') 前缀匹配。
+  targetKind: z.enum(['plugin', 'skill', 'preset', 'composite', 'oracle-daily', 'oracle-weekly', 'oracle-monthly', 'oracle-alert']),
   decision: z.enum(['AUTO_DEPLOY', 'PENDING_REVIEW', 'REJECT', 'ABSTAIN']),
   scores: z.record(z.string(), z.number()).default({}),
   // 触发决策的具体 findings（指向 EvalResult.findings 的子集）
