@@ -398,3 +398,16 @@
     - id: agint-compress-guard
       name: ./plugins/agint-compress-guard/lib/index.js
       config: {}
+
+    # agint-input-gateway: 多源输入网关 v0.1.0（P0，2026-09-29）。
+    # 统一接入异构信息 Channel，经归一化/去重/过滤/配额后发布到 eventBus。
+    # P0 交付：Gateway 核心框架 + C2 系统自观测 Channel（toolStats异常/metrics退化/
+    # 规则高频命中/压缩丢失/session完整性）。
+    # Service：agint.inputGateway（registerChannel/fetchAll/forceFetch/getStatus/
+    # getChannelStatus/setQuota/setChannelEnabled）。
+    # 独占 agint_input_gateway 存储域（4 表 schemaVersion 1）。
+    # 软依赖 event-bus（信号发布）/ agint.compressGuard（C2 压缩丢失子源）。
+    # 每日 02:00 自动 fetch C2 Channel（在 dream 03:00 之前，让 dream 纳入当日信号）。
+    - id: agint-input-gateway
+      name: ./plugins/agint-input-gateway/lib/index.js
+      config: {}

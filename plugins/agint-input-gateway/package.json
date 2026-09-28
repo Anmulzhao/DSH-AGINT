@@ -1,0 +1,16 @@
+{
+  "name": "agint-input-gateway",
+  "version": "0.1.0",
+  "description": "AGINT multi-source input gateway: normalize, filter, route and publish signals from heterogeneous channels to the event bus.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/gateway.js": "./lib/gateway.js",
+    "./lib/schema.js": "./lib/schema.js",
+    "./lib/storage.js": "./lib/storage.js",
+    "./lib/channels/self-observation.js": "./lib/channels/self-observation.js"
+  },
+  "license": "MIT"
+}

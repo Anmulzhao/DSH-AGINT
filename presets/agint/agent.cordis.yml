@@ -498,6 +498,15 @@
 - id: agint-compress-guard-tools
   name: ../../profiles/web/plugins/agint-compress-guard/lib/tools.js
 
+# ── 智进 input-gateway tools（多源输入网关 v0.1.0，P0）
+# Consumes host `agint.inputGateway`。6 个工具：
+#   只读：input_gateway_status / input_gateway_channel_status
+#   写操作（ask 门禁）：input_gateway_force_fetch / input_gateway_set_quota /
+#     input_gateway_channel_enable / input_gateway_channel_disable
+# 信号发布到 eventBus topic: input.signal.<channelType>.<signalType>
+- id: agint-input-gateway-tools
+  name: ../../profiles/web/plugins/agint-input-gateway/lib/tools.js
+
 # ── 智进 cross-domain search tool ──────────────────────────────────────────
 # Consumes host `agint.memory` + `agint.wiki`. Merges both into a single
 # `agint_search` tool (memory hits ranked by effectiveConfidence, wiki hits
