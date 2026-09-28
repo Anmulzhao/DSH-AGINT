@@ -1,4 +1,4 @@
-﻿# Your patch layer for this dsh profile, applied after every bundle layer:
+# Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
 # overrides, disables, and insert lists; `!!js` expressions allowed).
 #
@@ -414,6 +414,14 @@
     #    NO_SOURCE_REACHED，是如实报警不是故障。转正由老板一周后拍板。
     - id: agint-compress-guard
       name: ./plugins/agint-compress-guard/lib/index.js
+      config: {}
+
+    # agint-input-gateway: 多源输入网关 v0.1.0（P0，2026-09-29）。
+    # 统一接入异构信息 Channel，经归一化/去重/过滤/配额后发布到 eventBus。
+    # P0：Gateway 核心框架 + C2 系统自观测 Channel（toolStats异常/metrics退化/
+    # 规则高频命中/压缩丢失/session完整性）。每日 02:00 自动 fetch。
+    - id: agint-input-gateway
+      name: ./plugins/agint-input-gateway/lib/index.js
       config: {}
 
     # agint-ov-strategy: OpenViking 策略层 v0.1.0（2026-09-27 挂载）。
