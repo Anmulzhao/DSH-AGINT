@@ -3,14 +3,32 @@
  * it may call. Action failures are caught and logged; they never crash the
  * scheduler.
  *
- * Jobs (as of P4 / Sprint 14):
+ * Jobs (as of P4 / Sprint 14；排期于 2026-09-28 重排，见
+ * docs/operations/cron-schedule-principles.md)：
  *   memory-decay    Mon 02:30  L1-L4 遗忘扫描
- *   curator-weekly  Sun 02:00  技能策展（陈旧检测 + 归档，早于周复盘）
- *   wiki-lint       Sun 03:00  Wiki 健康检查（断链/矛盾/孤岛）
+ *   night-dream     daily 03:00 梦境 sweep
  *   metrics-collect daily 04:00 进化指标采集（时间序列）
- *   evolve-review   Sun 03:45  周复盘报告（数据快照 + 自动发现）
- *   curriculum-weekly Sun 05:00 自主课程：边界探测 → 待练域生成挑战
- *   diagnosis-watchdog every 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
+ *   tool-stats-backfill daily 04:30 D2 工具统计反向回填
+ *   prompt-static-check daily 04:45 Prompt SDK 静态检查
+ *   skill-autocreate-aggregate daily 05:15 技能候选聚合（LLM 密集）
+ *   skill-autocreate-release   daily 05:45 评估桥 + 发布队列
+ *   skill-autocreate-observe   daily 06:15 观察期滚动
+ *   curator-weekly  Mon 07:00  技能策展（**必须早于 evolve-review**）
+ *   evolve-review   Mon 07:30  周复盘报告（数据快照 + 自动发现）
+ *   oracle-weekly   Mon 08:00  美谕周报
+ *   wiki-lint       Mon 09:30  Wiki 健康检查（断链/矛盾/孤岛）
+ *   evolution-cycle Tue 07:00  闭环引擎驱动（复盘之后第一波）
+ *   baseline-regression-suite Tue 09:30 mount 通道 baseline 状态
+ *   curriculum-weekly Thu 09:30 自主课程：边界探测 → 待练域生成挑战
+ *   skill-graph-weekly Fri 09:30 技能图谱周更
+ *   oracle-daily    daily 09:00 美谕晨报
+ *   oracle-monthly  每月 1 日 10:00 美谕月报
+ *   diagnosis-watchdog 每 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
+ *
+ * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
+ *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
+ *   ② 相邻触发间隔 ≥15 分钟；LLM 密集型之间 ≥30 分钟
+ *   ③ curator-weekly 必须早于 evolve-review（周复盘要吃本周策展报告）
  */
 
 import { parseCron, nextFire, lastFire } from './cron.js';
@@ -31,7 +49,11 @@ export const defaultJobs = [
   {
     id: 'wiki-lint',
     name: 'Wiki 健康检查',
-    schedule: '0 3 * * 0', // Sun 03:00
+    // 2026-09-28 重排：周日 03:00 → 周一 09:30。
+    // ① 原 03:00 与 night-dream（daily 03:00）同分钟撞车；
+    // ② 挪到周一白天，lint 结果在老板在线时产出；
+    // ③ 不可取周一 09:00 —— 那是 oracle-daily（daily 09:00）的固定位。
+    schedule: '30 9 * * 1', // Mon 09:30
     description: '断链/矛盾/孤岛三项检查（weekly）',
     action: async (services) => {
       const wiki = services['agint.wiki'];
@@ -53,9 +75,50 @@ export const defaultJobs = [
     },
   },
   {
+    // P0-2 技能策展（Sprint 14 阶段 1）：每周策展。
+    // - 2026-09-28 重排：Sun 02:00 → Mon 07:00 —— 仍刻意排在 evolve-review
+    //   （现在周一 07:30）**之前**，让周复盘能吃到本周的策展报告
+    //   （P0-2 §2.2 / §8.1 run_before_evolve_review）。
+    // - 插件未挂载时 soft-skip（不报错），便于先挂 cron 再挂 curator。
+    // - 归档是破坏性操作：首次挂载建议先跑 curator_dry_run 看一遍。
+    //
+    // ⛔⛔ 声明位置也是契约的一部分，不要挪动本块：
+    // tick() 对到期 job 按 **声明顺序** 串行执行，所以「curator 早于 evolve-review」
+    // 只在两种情况下都成立才叫成立 ——
+    //   ① 正常排期：07:00 < 07:30（两个 tick，天然有序）；
+    //   ② **同 tick 补跑**（宿主停机后重启，isDue 会把错过的一把全判 due）：
+    //      此时排期时刻完全失效，谁先跑只由声明顺序决定。
+    // 若把本块挪到 evolve-review 之后，补跑场景下周复盘就会读不到本周策展
+    // 报告 —— 不报错，只是静默读到上周数据。test/schedule-layout.test.mjs
+    // 对①②各有一条断言。
+    id: 'curator-weekly',
+    name: '技能策展',
+    schedule: '0 7 * * 1',
+    description: '扫描技能 → 聚合使用 → 状态转换 → 归档陈旧技能 → 写策展报告（weekly）',
+    action: async (services) => {
+      const curator = services['agint.curator'];
+      if (!curator) return { skipped: true, reason: 'agint.curator not mounted' };
+      const result = await curator.run({ trigger: 'cron:curator-weekly' });
+      if (result.skipped) return { skipped: true, reason: result.reason };
+      return {
+        week: result.week,
+        dryRun: result.dryRun,
+        skillsScanned: result.skillsScanned,
+        inference: result.inference,
+        staled: result.applied?.staled?.length ?? 0,
+        archived: result.applied?.archived?.length ?? 0,
+        reactivated: result.applied?.reactivated?.length ?? 0,
+      };
+    },
+  },
+  {
     id: 'evolve-review',
     name: '智进周复盘',
-    schedule: '45 3 * * 0', // Sun 03:45
+    // 2026-09-28 重排：周日 03:45 → 周一 07:30。
+    // ⛔ 必须晚于 curator-weekly（周一 07:00）—— 周复盘要吃本周策展报告
+    // （P0-2 §2.2 / §8.1 run_before_evolve_review）。这条顺序契约由
+    // test/schedule-layout.test.mjs 断言，调换会被测试拦下。
+    schedule: '30 7 * * 1', // Mon 07:30
     description: '采集数据快照 → 自动发现 → 写入周复盘报告（weekly）',
     action: async (services) => {
       const evolve = services['agint.evolve'];
@@ -109,7 +172,8 @@ export const defaultJobs = [
     // - 扫描所有 prompt manifest.json + template.md
     // - 跑 staticCheckPrompt (注入 / 占位符 / manifest 不一致 三类)
     // - blocker → evo.addFailure(pattern='prompt-static:<code>', category='prompt')
-    // daily 04:45, idempotent (manifest 没变就不进 evo).
+    // daily 04:45 不变；2026-09-28 重排后 04:45 独占（原 skill-autocreate-aggregate
+    // 已挪到 05:15），与上一个触发点 tool-stats-backfill(04:30) 间隔 15 分钟。
     id: 'prompt-static-check',
     name: 'Prompt 静态检查',
     schedule: '45 4 * * *',
@@ -142,7 +206,8 @@ export const defaultJobs = [
   },
   {
     // Sprint 12 B3: baseline-regression-suite 真 cron hook.
-    // - weekly Sun 03:15（夹在 wiki-lint 03:00 与 evolve-review 03:45 之间）
+    // - 2026-09-28 重排：Sun 03:15 → Tue 09:30（去周日单点，落老板在线时段）。
+    //   不可取 09:00 —— oracle-daily 的固定位。
     // - 调 `agint.evolve.recordBaselineRun({channel:'mount', passRate, passed, total})`
     //   把 passRate < 0.95 写为 frozen=true
     // - 不直接跑回归测试 —— 测试入口是 `eval/run-baseline-regression.mjs`；
@@ -151,7 +216,7 @@ export const defaultJobs = [
     //   真实 passRate 由后续 Sprint 13 B4 接入回归 runner 注入（见 design Sprint12 §B3）。
     id: 'baseline-regression-suite',
     name: 'Baseline Regression 周检',
-    schedule: '15 3 * * 0', // Sun 03:15
+    schedule: '30 9 * * 2', // Tue 09:30
     description: '把 mount 通道 baseline-regression 状态写一行 baseline_history（weekly）',
     action: async (services) => {
       const evolve = services['agint.evolve'];
@@ -175,12 +240,14 @@ export const defaultJobs = [
   },
   {
     // P0-1 技能自动创建：每日聚合（设计稿 §3.1 [2]，Sprint 14 检测层）。
-    // - daily 04:45（设计稿指定；与 prompt-static-check 同刻但两 job 独立互斥）
+    // 2026-09-28 重排：04:45 → 05:15。原时刻与 prompt-static-check（04:45）
+    // 同分钟撞车（本 job 是 LLM 密集型，与静态检查挤同一 tick）。
     // - 读 agint_tool_stats.jsonl 过去 24h → 任务实例聚合 → 模式检测 → 候选生成
+    // - 仍在 tool-stats-backfill（04:30）之后 —— 吃它补完的 latencyMs/turn/step。
     // - 插件未挂载时 soft-skip（不报错），便于先挂 cron 再挂 autocreate。
     id: 'skill-autocreate-aggregate',
     name: '技能自动创建聚合',
-    schedule: '45 4 * * *',
+    schedule: '15 5 * * *',
     description: '聚合工具调用 → 检测重复任务模式 → 生成技能候选提案（daily）',
     action: async (services) => {
       const ac = services['agint.skillAutocreate'];
@@ -198,7 +265,7 @@ export const defaultJobs = [
   },
   {
     // P0-1 发布层（Sprint 16 + B 修复 2026-09-13）：每日发布窗口检查。
-    // - daily 05:15（聚合 04:45 之后，给新候选留出评估时间）
+    // - daily 05:45（聚合 05:15 之后，给新候选留出评估时间）
     // - 先 evaluateQueue 把 PENDING_EVAL 候选推进评估（接通评估桥，此前无自动驱动），
     //   再 releaseQueue 遍历 QUEUED_FOR_RELEASE / BUDGET_WAIT 候选走三道门自动发布；
     //   两步在同一 cron 内顺序执行 → detect → eval → release → observe 单日闭环。
@@ -206,7 +273,7 @@ export const defaultJobs = [
     // - 插件未挂载时 soft-skip
     id: 'skill-autocreate-release',
     name: '技能自动创建发布窗口',
-    schedule: '15 5 * * *',
+    schedule: '45 5 * * *',
     description: '评估桥(evaluateQueue)+发布队列(releaseQueue)：开关/确认窗/policy/预算 → 原子挂载（daily）',
     action: async (services) => {
       const ac = services['agint.skillAutocreate'];
@@ -227,12 +294,12 @@ export const defaultJobs = [
   },
   {
     // P0-1 发布层（Sprint 16）：每日观察期滚动。
-    // - daily 05:30（发布窗口之后）
+    // - daily 06:15（发布窗口 05:45 之后）
     // - OBSERVING release 判定：STABLE（窗满+调用达标）/ 自动回滚（0 调用三重确认）
     //   / 展期一次 / 数据源失效顺延
     id: 'skill-autocreate-observe',
     name: '技能自动创建观察期滚动',
-    schedule: '30 5 * * *',
+    schedule: '15 6 * * *',
     description: '观察期判定：STABLE / 0调用自动回滚 / 展期（daily）',
     action: async (services) => {
       const ac = services['agint.skillAutocreate'];
@@ -247,37 +314,9 @@ export const defaultJobs = [
     },
   },
   {
-    // P0-2 技能策展（Sprint 14 阶段 1）：每周策展。
-    // - weekly Sun 02:00 —— 刻意排在 evolve-review(03:45) **之前**，让周复盘
-    //   能吃到本周的策展报告（P0-2 §2.2 / §8.1 run_before_evolve_review）。
-    //   注：Sprint14 设计稿 §3.5 写「周日 05:00」与其自述的「在 evolve-review
-    //   之前」互相矛盾（05:00 晚于 03:45），此处按后者取 02:00。
-    // - 插件未挂载时 soft-skip（不报错），便于先挂 cron 再挂 curator。
-    // - 归档是破坏性操作：首次挂载建议先跑 curator_dry_run 看一遍。
-    id: 'curator-weekly',
-    name: '技能策展',
-    schedule: '0 2 * * 0',
-    description: '扫描技能 → 聚合使用 → 状态转换 → 归档陈旧技能 → 写策展报告（weekly）',
-    action: async (services) => {
-      const curator = services['agint.curator'];
-      if (!curator) return { skipped: true, reason: 'agint.curator not mounted' };
-      const result = await curator.run({ trigger: 'cron:curator-weekly' });
-      if (result.skipped) return { skipped: true, reason: result.reason };
-      return {
-        week: result.week,
-        dryRun: result.dryRun,
-        skillsScanned: result.skillsScanned,
-        inference: result.inference,
-        staled: result.applied?.staled?.length ?? 0,
-        archived: result.applied?.archived?.length ?? 0,
-        reactivated: result.applied?.reactivated?.length ?? 0,
-      };
-    },
-  },
-  {
     // P7 自主课程生成器（Sprint 14 Part B）：每周生成挑战。
-    // - weekly Sun 05:00 —— 排在周日全家桶（curator 02:00 / wiki-lint 03:00 /
-    //   baseline-regression 03:15 / evolve-review 03:45）之后，不挤同时段。
+    // - 2026-09-28 重排：Sun 05:00 → Thu 09:30（去周日单点，分散到周中）。
+    //   不可取 09:00 —— oracle-daily（daily 09:00）的固定位。
     // - probe() 找待练域（UNCERTAIN / 校准失准 / CAN 超期未复验）→ 逐域
     //   generate({ count: 1 })。generate 自带同域 24h 冷却 + 批量上限 +
     //   无模板域诚实留白（unverifiable → skipped，不硬造）。
@@ -286,7 +325,7 @@ export const defaultJobs = [
     // - 插件未挂载 / paused 时 soft-skip（不报错），与 curator-weekly 同策略。
     id: 'curriculum-weekly',
     name: '自主课程生成',
-    schedule: '0 5 * * 0', // Sun 05:00
+    schedule: '30 9 * * 4', // Thu 09:30
     description: '边界探测 → 对待练域逐一生成挑战（出队不自动执行）（weekly）',
     action: async (services) => {
       const curriculum = services['agint.curriculum'];
@@ -315,9 +354,8 @@ export const defaultJobs = [
   },
   {
     // P2-2 技能图谱周更（Sprint 20）：全量重算节点 + 四类边，并上报覆盖率。
-    // - weekly Sun 07:00 —— 排进既有周日流水线
-    //   （curator 02:00 / wiki-lint 03:00 / baseline 03:15 / evolve 03:45 /
-    //    curriculum 05:00）之后的空档，不挤同时段。
+    // - 2026-09-28 重排：Sun 07:00 → Fri 09:30（去周日单点，分散到周中）。
+    //   不可取 09:00 —— oracle-daily（daily 09:00）的固定位。
     // - 聚合一律走周更，事件只做脏标记 + 状态同步（P2-2 §5.1「简洁 > 冗余」）。
     // - **count-only 标定期是默认档**：updateFull 只写 meta，正式表 0 行，
     //   返回 lastCalibration 告诉老板「若转 live 会得到多少节点/边」。
@@ -325,7 +363,7 @@ export const defaultJobs = [
     // - updateFull 永不 throw（fail-open）；未挂载时 soft-skip（不报错）。
     id: 'skill-graph-weekly',
     name: '技能图谱周更',
-    schedule: '0 7 * * 0', // Sun 07:00
+    schedule: '30 9 * * 5', // Fri 09:30
     description: '技能节点全量刷新 + 四类边重算 + 覆盖率上报（weekly，默认 count-only 标定期）',
     action: async (services) => {
       const graph = services['agint.skillGraph'];
@@ -369,6 +407,11 @@ export const defaultJobs = [
     // cron_state.lastError 落盘 + cron_list 报 lastOk=false。看门狗本该安静，
     // 要响就响得能被看见（静默失败正是 09-26 事故的教训之一）。
     // 服务未挂载时 soft-skip（返回 skipped），与其它 job 同策略。
+    //
+    // ⏳ 待验证不改（2026-09-28 提案登记）：`*/30 * * * *` → `*/30 7-23 * * *`
+    // （48→34 次/日，-29%）的前提是「深夜无人活动」。先观测 diagnosis annotations
+    // 的产出时间分布，确认深夜确无会话活动后再改；否则夜间失控将失去唯一告警源。
+    // 表达式本身已验证可被 parseCron 解析（`*/30` 分钟位 × `7-23` 小时位）。
     id: 'diagnosis-watchdog',
     name: '诊断域看门狗',
     schedule: '*/30 * * * *', // 每 30 分钟
@@ -427,8 +470,10 @@ export const defaultJobs = [
     // mutate 的内容（oldText→newText）必须有人提供，而它自己的红线是「不调真 LLM」。
     // driver 就是那个 caller —— 本 job 只负责「每周唤它一次」。
     //
-    // 时机：周日 04:15，紧跟 evolve-review（03:45）之后 —— 复盘刚产出新提案，
-    // driver 才有东西可挑。早于 curriculum-weekly（05:00）。
+    // 时机：2026-09-28 重排：Sun 04:15 → Tue 07:00。仍是「紧跟 evolve-review
+    // （周一 07:30）之后的第一波」—— 复盘刚产出新提案，driver 才有东西可挑。
+    // ⛔ 不可取 04:00 —— 那是 metrics-collect（daily 04:00）的固定位；
+    //    提案原稿写的 `0 4 * * 3` 正是踩了这个坑（新引入一处同分钟撞车）。
     //
     // ⛔ 这个 job 不产生代码改动：driver 第一阶段的 commit 是默认关的
     // （AGINT_EVOLUTION_DRIVER_COMMIT=on 才开）。它只做「提案 → 变异候选 → 入种群」。
@@ -436,7 +481,7 @@ export const defaultJobs = [
     // 没挂它不代表 cron 出错。
     id: 'evolution-cycle',
     name: '闭环引擎驱动',
-    schedule: '15 4 * * 0', // Sun 04:15
+    schedule: '0 7 * * 2', // Tue 07:00
     description: '唤 agint-evolution-driver 跑一轮：提案 → LLM 构造原子编辑 → propose → ingest（weekly）',
     action: async (services) => {
       const driver = services['agint.evolutionDriver'];
@@ -454,7 +499,9 @@ export const defaultJobs = [
     // 三档时刻与现有 job 无冲突（§7 错峰复核）：
     //   oracle-daily    0 9 * * *   daily 09:00（吃 04:00 metrics-collect 的数据，
     //                               广播首行如实标注 asOf，禁止反向触发采集）
-    //   oracle-weekly   0 21 * * 0  weekly 周日 21:00（周日全家桶都跑完之后）
+    //   oracle-weekly   0 8 * * 1   weekly 周一 08:00（2026-09-28 重排：原周日
+    //                               21:00 老板未必在，且把周报类都堆在周日；
+    //                               挪到周一紧接 evolve-review 07:30 之后串读）
     //   oracle-monthly  0 10 1 * *  monthly 每月 1 日 10:00
     //
     // 自保全在服务侧（§6.2/§6.3）：runScheduled 内 3 次重试（1s/4s/16s 指数
@@ -473,7 +520,7 @@ export const defaultJobs = [
   {
     id: 'oracle-weekly',
     name: '美谕周报',
-    schedule: '0 21 * * 0', // Sun 21:00
+    schedule: '0 8 * * 1', // Mon 08:00
     description: '美的神谕层每周广播：Q1 三问全量判定 + 周区间美评（weekly）',
     action: async (services) => {
       const oracle = services['agint.aestheticOracle'];

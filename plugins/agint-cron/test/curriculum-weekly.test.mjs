@@ -7,9 +7,11 @@ import { defaultJobs } from '../lib/jobs.js';
 
 const job = defaultJobs.find((j) => j.id === 'curriculum-weekly');
 
-test('curriculum-weekly 已注册，调度为周日 05:00', () => {
+// 2026-09-28 重排：周日 05:00 → 周四 09:30（去周日单点；不可取 09:00，那是
+// oracle-daily 的固定位）。排期布局本身由 test/schedule-layout.test.mjs 把关。
+test('curriculum-weekly 已注册，调度为周四 09:30', () => {
   assert.ok(job, 'defaultJobs 中存在 curriculum-weekly');
-  assert.equal(job.schedule, '0 5 * * 0');
+  assert.equal(job.schedule, '30 9 * * 4');
   assert.match(job.description, /不自动执行/);
 });
 

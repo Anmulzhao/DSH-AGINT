@@ -22,13 +22,16 @@
 
 ### 默认注册的 job
 
-共 15 个（按调度粒度分组，组内按时刻排序）：
+共 19 个（按调度粒度分组，组内按时刻排序）。**2026-09-28 全体重排**：
+原本 8 个周任务全部堆在周日凌晨，另有 2 组同分钟撞车。排期原则与改动理由见
+[`docs/operations/cron-schedule-principles.md`](../../docs/operations/cron-schedule-principles.md)，
+并由 `test/schedule-layout.test.mjs` 强制（改排期违反原则会直接测试红）。
 
 **高频巡检**
 
 | job id | 调度 | 说明 |
 |---|---|---|
-| `diagnosis-watchdog` | `*/30 * * * *` | 诊断域看门狗：各表占用率 + report() 频率熔断状态（2026-09-26 事故后新增） |
+| `diagnosis-watchdog` | `*/30 * * * *` | 诊断域看门狗：各表占用率 + report() 频率熔断状态（2026-09-26 事故后新增；限流待验证，未动） |
 
 **每日**
 
@@ -38,21 +41,30 @@
 | `metrics-collect` | `0 4 * * *` | 采集 memory/wiki/cron/rules 健康指标（daily） |
 | `tool-stats-backfill` | `30 4 * * *` | 用 session log 给工具统计反向补 latencyMs（daily） |
 | `prompt-static-check` | `45 4 * * *` | 扫 prompt manifest+template 静态检查（daily） |
-| `skill-autocreate-aggregate` | `45 4 * * *` | 聚合工具调用 → 检测重复任务模式 → 生成候选（daily） |
-| `skill-autocreate-release` | `15 5 * * *` | 评估桥 + 发布队列：三道门自动发布（daily） |
-| `skill-autocreate-observe` | `30 5 * * *` | 观察期判定：STABLE / 0 调用自动回滚 / 展期（daily） |
+| `skill-autocreate-aggregate` | `15 5 * * *` | 聚合工具调用 → 检测重复任务模式 → 生成候选（daily，LLM 密集；原 04:45 与 prompt-static-check 撞车） |
+| `skill-autocreate-release` | `45 5 * * *` | 评估桥 + 发布队列：三道门自动发布（daily，原 05:15） |
+| `skill-autocreate-observe` | `15 6 * * *` | 观察期判定：STABLE / 0 调用自动回滚 / 展期（daily，原 05:30） |
+| `oracle-daily` | `0 9 * * *` | 美谕晨报（daily 09:00 —— **周任务要避开这个固定位**） |
 
 **每周**
 
 | job id | 调度 | 说明 |
 |---|---|---|
-| `curator-weekly` | `0 2 * * 0` | 技能策展：陈旧检测 + 归档（Sun 02:00，早于周复盘；P0-2 Sprint 14） |
-| `memory-decay` | `30 2 * * 1` | L1–L4 衰减扫描 + 应用降级/清除（Mon 02:30） |
-| `wiki-lint` | `0 3 * * 0` | 断链/矛盾/孤岛三项检查（Sun 03:00） |
-| `baseline-regression-suite` | `15 3 * * 0` | 写一行 mount 通道 baseline 状态（Sun 03:15） |
-| `evolve-review` | `45 3 * * 0` | 采集数据快照 → 自动发现 → 写周复盘（Sun 03:45） |
-| `curriculum-weekly` | `0 5 * * 0` | 边界探测 → 待练域生成挑战（Sun 05:00，出队不自动执行） |
-| `skill-graph-weekly` | `0 7 * * 0` | 技能节点全量刷新 + 四类边重算（Sun 07:00，默认 count-only 标定期） |
+| `memory-decay` | `30 2 * * 1` | L1–L4 衰减扫描 + 应用降级/清除（Mon 02:30，纯计算无 LLM，未动） |
+| `curator-weekly` | `0 7 * * 1` | 技能策展：陈旧检测 + 归档（Mon 07:00，**必须早于 evolve-review**；P0-2 Sprint 14） |
+| `evolve-review` | `30 7 * * 1` | 采集数据快照 → 自动发现 → 写周复盘（Mon 07:30，老板在线时段） |
+| `oracle-weekly` | `0 8 * * 1` | 美谕周报（Mon 08:00，紧接周复盘串读；原周日 21:00） |
+| `wiki-lint` | `30 9 * * 1` | 断链/矛盾/孤岛三项检查（Mon 09:30；原周日 03:00 与 night-dream 撞车） |
+| `evolution-cycle` | `0 7 * * 2` | 闭环引擎驱动（Tue 07:00，复盘后第一波；原周日 04:15） |
+| `baseline-regression-suite` | `30 9 * * 2` | 写一行 mount 通道 baseline 状态（Tue 09:30；原周日 03:15） |
+| `curriculum-weekly` | `30 9 * * 4` | 边界探测 → 待练域生成挑战（Thu 09:30，出队不自动执行；原周日 05:00） |
+| `skill-graph-weekly` | `30 9 * * 5` | 技能节点全量刷新 + 四类边重算（Fri 09:30，默认 count-only 标定期；原周日 07:00） |
+
+**每月**
+
+| job id | 调度 | 说明 |
+|---|---|---|
+| `oracle-monthly` | `0 10 1 * *` | 美谕月报（每月 1 日 10:00，未动） |
 
 > **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、
 > ≥cap 报 CRITICAL；`reportRateGuard.trips > 0`（频率熔断真被咬过）报 WARN；

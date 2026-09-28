@@ -1,7 +1,84 @@
 # CHANGELOG
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
-## [0.2.2] — 行动 #2 宿主 schedule 桥（2026-09-28）
+## [0.2.3] — 排期重排 + 排期布局门禁（2026-09-28）
+
+提案 `e6cbe895`：「错开 cron 排期：解 2 组同分钟撞车 + 周度 8 任务去周日单点」。
+落地时对原提案做了修正（见下方 Fixed），理由全部写进 `lib/jobs.js` 的时机注释。
+
+### Changed — 排期（19 个 job，改 11 个）
+
+**每日尾段错开（解同分钟撞车）**
+
+| job | 原 | 新 | 理由 |
+|---|---|---|---|
+| `skill-autocreate-aggregate` | `45 4 * * *` | `15 5 * * *` | 与 `prompt-static-check`(04:45) 撞车；本 job LLM 密集 |
+| `skill-autocreate-release` | `15 5 * * *` | `45 5 * * *` | 让位；仍保持「聚合 → 发布 → 观察」30 分钟梯度 |
+| `skill-autocreate-observe` | `30 5 * * *` | `15 6 * * *` | 同上 |
+
+**周任务去周日单点（8 个 → 分散周一/周二/周四/周五）**
+
+| job | 原 | 新 |
+|---|---|---|
+| `curator-weekly` | `0 2 * * 0` | `0 7 * * 1` |
+| `evolve-review` | `45 3 * * 0` | `30 7 * * 1` |
+| `oracle-weekly` | `0 21 * * 0` | `0 8 * * 1` |
+| `wiki-lint` | `0 3 * * 0` | `30 9 * * 1` |
+| `evolution-cycle` | `15 4 * * 0` | `0 7 * * 2` |
+| `baseline-regression-suite` | `15 3 * * 0` | `30 9 * * 2` |
+| `curriculum-weekly` | `0 5 * * 0` | `30 9 * * 4` |
+| `skill-graph-weekly` | `0 7 * * 0` | `30 9 * * 5` |
+
+不变：`memory-decay`（Mon 02:30）、`night-dream` / `metrics-collect` /
+`tool-stats-backfill` / `prompt-static-check` / `oracle-daily` / `oracle-monthly`、
+`diagnosis-watchdog`（限流待验证，不动）。
+
+收益：同分钟撞车 2 组 → 0；周日 02:00–07:00 任务数 13 → 7。
+
+### Added
+
+- `test/schedule-layout.test.mjs`（8 条断言）：把排期原则编码成可自动验证的规则 ——
+  同分钟唯一 / 相邻 ≥15 分钟 / LLM 密集 ≥30 分钟 / **curator-weekly 必须早于
+  evolve-review（时刻 + 声明顺序各一条）** / 周任务 dow 取值 ≥3 / watchdog
+  表达式不得顺手改。
+- `docs/operations/cron-schedule-principles.md`：排期原则全文 + 改排期五步操作法
+  + 已知边界（补跑风暴、漏跑、watchdog 限流待验证）。
+
+### Fixed — 对原提案的修正
+
+1. **提案阶段 1 自己引入了 4 组新撞车**：`wiki-lint` / `curriculum-weekly` /
+   `skill-graph-weekly` 都取 09:00（撞 `oracle-daily` 的固定位），`evolution-cycle`
+   取 `0 4 * * 3`（撞 `metrics-collect` 的固定位）。统一改到 `30 9 * * N` 与
+   `0 7 * * 2`。
+2. **提案反转了 curator-weekly 与 evolve-review 的顺序**（curator 07:30 晚于
+   evolve-review 07:00）。这是硬契约而非习惯（P0-2 §8.1 `run_before_evolve_review`）：
+   反了不会报错，只会让周复盘静默读到上周的策展报告。已改回 curator 07:00 →
+   evolve-review 07:30，并加测试断言钉死。
+3. 提案遗漏的边界：三处副本（仓库 / host bundle / profile 镜像）都要同步；
+   **改完必须重启 dsh 才生效**（boot 期插件）；`cordis.patch.yml` 有 4 处提到
+   cron 时刻的注释要同步改。
+4. **补跑场景下排期时刻保证不了顺序**（提案与我第一版落地都没考虑到）：宿主停机后
+   重启，`isDue()` 把错过的 job 一次性全判 due，落在同一 tick 内按**声明顺序**串行
+   执行。原声明顺序里 `curator-weekly`(第 12 位) 晚于 `evolve-review`(第 4 位)，
+   补跑时周复盘会先跑、静默读到上周策展报告。已把 `curator-weekly` 挪到
+   `evolve-review` 之前，并加断言钉死声明顺序。
+
+### Changed — 声明顺序
+
+`defaultJobs` 中 `curator-weekly` 从第 12 位移到第 4 位（紧邻 `evolve-review`
+之前）。`skill-autocreate-aggregate → release → observe` 的相对顺序未变。
+
+### Notes
+
+- 提案 P1 的「周日断电 = 整周停摆 7 天」不成立：`isDue()` 是补跑语义，错过的周
+  任务会在宿主下次启动后补跑一次（2026-09-28 22:36 重启即观察到 `memory-decay`
+  补跑）。真实收益是**补跑不再成坨 + 结果落在老板在线时段**，不是「不再漏跑」。
+- 提案 P2 的「三个 last 全是手动触发、无按排程样本」不成立：UTC 时间戳换算 +8
+  后，周日（2026-09-27）的 6 个周任务 lastRunAt 精确落在各自排程分钟上。
+- 提案 P0 的「同刻起跑争抢推理资源」理由不准确：同一 tick 内 job 是**串行**
+  `await` 执行（`tick()`）。真害处是顺序由声明顺序决定、拖尾、以及归因困难。
+
+
 
 ### Added
 

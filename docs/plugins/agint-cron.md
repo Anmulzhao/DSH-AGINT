@@ -5,38 +5,48 @@
 ## 职责
 
 - 提供 `agint.cron` host Service
-- 提供 `cron_*` model 工具（list / run / create / remove / enable / disable）
+- 提供 `cron_*` model 工具：`cron_list` / `cron_run_now` / `cron_health`
+  （**没有** add / remove / enable / disable —— 任务集是 `lib/jobs.js` 里的静态表）
 - 依赖 `@deepseek-ai/cordis-plugin-timer` 的 tick 源
 - 自带 5 字段 cron 表达式解析（`* / , - / step`）
 
-## 内置任务（默认 seed）
+## 内置任务（19 个，`lib/jobs.js` 的 `defaultJobs`）
 
-| job | 表达式（UTC+8） | 触发 |
+排期于 **2026-09-28 全体重排**（去周日单点 + 解 2 组同分钟撞车）。完整表与
+「为什么是这个点」见 [`plugins/agint-cron/README.md`](../../plugins/agint-cron/README.md)，
+排期原则与操作步骤见 [`../operations/cron-schedule-principles.md`](../operations/cron-schedule-principles.md)。
+
+| 时刻 | job | 频率 |
 |---|---|---|
-| `metrics-collect` | `17 0 * * *`（每日 00:17） | agint.metrics 采集快照 |
-| `evolve-review` | `0 18 * * 0`（周日 18:00） | agint.evolve 写周复盘 |
-| `night-dream` | `0 19 * * *`（每日 03:00，时区偏移） | agint.dream sweep |
-| `wiki-lint` | `0 3 * * 0`（周日 03:00） | agint.wiki.lint + 写指标 |
-| `memory-decay` | `0 4 * * 0`（周日 04:00） | agint.memory.forget_scan dry-run |
-| `quality-eval-weekly` | `30 4 * * 0`（周日 04:30） | agint.qualityEvaluator 批量评估所有 AGINT Skills + Plugins（v0.2 起） |
+| Mon 02:30 | memory-decay | weekly |
+| daily 03:00 | night-dream | daily |
+| daily 04:00 | metrics-collect | daily |
+| daily 04:30 | tool-stats-backfill | daily |
+| daily 04:45 | prompt-static-check | daily |
+| daily 05:15 | skill-autocreate-aggregate | daily |
+| daily 05:45 | skill-autocreate-release | daily |
+| daily 06:15 | skill-autocreate-observe | daily |
+| Mon 07:00 | curator-weekly | weekly |
+| Mon 07:30 | evolve-review | weekly |
+| Mon 08:00 | oracle-weekly | weekly |
+| Mon 09:30 | wiki-lint | weekly |
+| Tue 07:00 | evolution-cycle | weekly |
+| Tue 09:30 | baseline-regression-suite | weekly |
+| Thu 09:30 | curriculum-weekly | weekly |
+| Fri 09:30 | skill-graph-weekly | weekly |
+| daily 09:00 | oracle-daily | daily |
+| 每月 1 日 10:00 | oracle-monthly | monthly |
+| 每 30 分钟 | diagnosis-watchdog | high-freq |
 
-**AGENTS.md 红线**：改这些时间前必须 audit + 让老板确认。
-
-## 进化健康度联动（v0.2 起）
-
-`agint-cron` 在每次 `quality-eval-weekly` 触发后调用 `agint.metrics` 写：
-- `quality.evaluatedCount`：本周评估任务数
-- `quality.harm`：综合 HARM 趋势（HARM 公式见 `docs/evolution-framework.md` 第三章）
-
-`agint-evolve` 周复盘时读这些指标，写入护栏报告（详见 `路线图` 节奏章节）。
-
-**自动部署上限**：每周自动部署 ≤ 3 次（进化健康度护栏之一），超限必须人工审核。
+**红线（已自动化）**：改排期前必须跑 `node --test plugins/agint-cron/test/schedule-layout.test.mjs`，
+并把「为什么是这个点」写进 `lib/jobs.js` 的时机注释。原则违反 = 测试红。
+⚠️ 改完**必须重启 dsh** 才生效（boot 期插件，热重载不覆盖）。
 
 ## 模型接口
 
-- `cron_list` 看全部
-- `cron_run_now(id)` 手动跑一次（仅模型可见，user 触发）
-- `cron_add / cron_remove / cron_set_enabled` 增删改
+- `cron_list` 看全部（schedule / lastRunAt / nextRunAt / lastOk / lastResultSummary）
+- `cron_run_now(id)` 手动跑一次（回写 `lastRunAt`，不用改 schedule、不用重启）
+- `cron_health` 看逾期 job 与错过窗口
 
 ## 与其他插件的关系
 

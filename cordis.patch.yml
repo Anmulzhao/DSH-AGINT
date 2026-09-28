@@ -272,7 +272,8 @@
     # release / rollback 显式抛未实现（Sprint 16 发布层接力，prune 默认禁用）。
     # 独占 agint_skill_autocreate 存储域（5 表）。软依赖 event-bus
     # （pattern-detected / candidate-created 两事件）+ quality-static（软）。
-    # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（04:45）。
+    # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（05:15；
+    # 2026-09-28 重排，原 04:45 与 prompt-static-check 同分钟撞车）。
     - id: agint-skill-autocreate
       name: ./plugins/agint-skill-autocreate/lib/index.js
       config:
@@ -299,7 +300,9 @@
     # 独占 agint_curator 存储域（5 表）。软依赖 event-bus
     # （skill-staled/archived/reactivated/pinned/run-completed/overlap-detected/
     # quality-declining/consolidate-proposed）+ agint.evolution（软，缺失降级）。
-    # 每周策展由 agint-cron 的 curator-weekly job 驱动（周日 02:00）。
+    # 每周策展由 agint-cron 的 curator-weekly job 驱动（周一 07:00；2026-09-28
+    # 重排，原周日 02:00。⛔ 必须早于 evolve-review（周一 07:30）—— 周复盘要吃
+    # 本周策展报告，见 docs/operations/cron-schedule-principles.md）。
     # ⚠️ 保守：auto_curation_enabled: false → cron 全流程 dry-run（重叠/归档只检测不落盘），
     #    观察两周报告后改 true 放行（或随时 curator_pause/curator_resume）。
     - id: agint-curator
@@ -368,7 +371,8 @@
     # 独占 agint_skill_graph 存储域（3 表：usage_stats / skill_edges / graph_meta）。
     # 软依赖 event-bus / curator / evolve / skill-autocreate（任一缺失均降级不报错）。
     # **只读消费上游**：不调用 curator 任何写方法，不进 policy / HARM / evolution 决策。
-    # 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周日 07:00）。
+    # 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周五 09:30；
+    # 2026-09-28 重排，原周日 07:00）。
     # ⚠️ 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
     #    看几周 lastCalibration（「若转 live 会得到多少节点/边」）、promotable=true
     #    后才用 skillGraph_set_mode('live') 切档（未跑过标定期调用会直接抛错）。
@@ -446,8 +450,10 @@
     # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
     # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），
     # 评分纯函数 + 美之三问（Q1 全排序无洞判定）→ 三档 cron 广播
-    # （agint-cron 的 oracle-daily 09:00 / oracle-weekly 周日 21:00 / oracle-monthly
-    # 每月 1 日 10:00）。首行透出 asOf（§5 硬规则：数据截至 04:00 采集，禁止反向
+    # （agint-cron 的 oracle-daily 09:00 / oracle-weekly 周一 08:00 / oracle-monthly
+    # 每月 1 日 10:00；2026-09-28 重排，oracle-weekly 原为周日 21:00）。
+    # ⚠️ 09:00 是 oracle-daily 的**固定位**，新增周任务不得占用（排期原则②）。
+    # 首行透出 asOf（§5 硬规则：数据截至 04:00 采集，禁止反向
     # 触发 _collectRaw）；单条 ≤2KB（§7）；分档配额 + oracle.alert 独立日配额（§5.4）。
     # 写白名单（§9.1）：evolution_log（经 agint.evolution.logPhase4，targetKind=
     # oracle-*，decision=ABSTAIN——评论员不做部署决策）+ 自有存储域
