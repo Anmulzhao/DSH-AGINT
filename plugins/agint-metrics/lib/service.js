@@ -121,6 +121,12 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
           label: rec.label,
           value: rec.value,
           unit: rec.unit,
+          // 2026-09-28 修复：summary 必须透传 meta。神谕层的 noise/confidence/
+          // redundancy 派生全靠 meta（noEvidence.count / rulesTotal / wiki.total /
+          // avgConfXCompliance / fileCount）——本字段缺席时消费侧全 null，权重
+          // 归一后美总分虚标 100（2026-09-28 晨报事故）。series() 一直带 meta
+          // （见下），summary 漏了，属于 Day 0 接缝缺口。
+          meta: rec.meta,
           ts: rec.ts,
           delta: p && typeof p.value === 'number' && typeof rec.value === 'number' ? rec.value - p.value : null,
         });

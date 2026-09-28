@@ -1,5 +1,24 @@
 # Changelog — agint-metrics
 
+## 1.1.1 — 2026-09-28 修复：summary() 透传 meta（神谕层总分虚标 100 根因）
+
+**事故**：2026-09-28 晨报（oracle-daily）美总分播 100，同日标定应为 52.4。四维里
+noise / confidence / redundancy 全 N/A——采集侧数据齐（存储 meta 完整）、消费侧
+全 null。根因：`service.js` `summary()` 返回体漏带 `meta` 字段（`series()` 一直带），
+而神谕层派生全靠 meta（noEvidence.count / rulesTotal / wiki.total /
+avgConfXCompliance / fileCount）。两侧单测各自全绿、接缝处静默断裂——Day 0 的
+AC-0a 用 computeMetrics 直测，绕过了 service 层，接缝无测试覆盖。
+
+- 修复：`summary()` 的 metrics.push 补 `meta: rec.meta`（与 series() 口径一致）
+- 新增 `test/service-summary.test.js`：真实 service（内存表 + 假源）走 collect →
+  summary，断言四类 meta 落地且与 series() 同源——把接缝钉死
+- 复算验证：用 2026-09-27 20:00 生产 meta 逐项代入 §3.6 公式 = 53.6 分（与
+  09-27 标定 52.4 的差异为 wiki 18→19 页、memory 336→362 条的自然波动）
+- 部署：bundle 位 + 兼容位两处 service.js 已同步（需重启 dsh web 生效）
+
+**连带澄清**：09-28 weekly 广播 `proposals: 0` 是同一根因的下游症状（四维 N/A →
+无扣分 → buildWeeklyProposals 无料可提），修复后自愈，非独立 bug。
+
 ## 1.1.0 — 2026-09-27 美的神谕层 Day 0（方案 C：原子归 metrics，派生归神谕层）
 
 - 新增 `lib/metrics-ext.js`：METRIC_DEFS_EXT 4 个原子 key
