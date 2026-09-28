@@ -1,4 +1,4 @@
-/**
+﻿/**
  * C4 对抗挑战 Channel — 订阅已有模块事件，只转发失败/边界/异常结果。
  *
  * 不新建采集逻辑，只做事件转发和过滤：
@@ -22,7 +22,6 @@ let _subscribed = false;
  */
 function initSubscriptions(ctx) {
   if (_subscribed) return;
-  _subscribed = true;
 
   try {
     let subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
@@ -34,6 +33,8 @@ function initSubscriptions(ctx) {
       console.warn('[agint-input-gateway] adversarial: eventBus subscribe unavailable');
       return;
     }
+
+    _subscribed = true; // 确认拿到 subscribe 函数后才标记
 
     const disposer = subscribe(
       {
@@ -158,3 +159,4 @@ export const adversarialChannel = {
 };
 
 export { initSubscriptions };
+
