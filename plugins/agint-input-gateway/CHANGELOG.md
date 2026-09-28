@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+> 0.1.0（`8dee9a9`）之后至今的改动，此前未记录，一并补上。
+
+### 新增
+
+- **C4 对抗挑战 Channel**（`lib/channels/adversarial.js`）——0.1.0 的「不做什么」把 C4 列为 P2，本次提前落地
+  - 订阅 `diagnosis.completed` / `curriculum.challenge-verdicted` / `curriculum.boundary-probed`，只转发失败与不可验证边界
+  - 入队条件：`clusterCount > 0` / `result === 'fail'` / `unverifiable` 非空；不满足者静默丢弃
+  - cron `30 3 * * *`（每日 03:30），排在 C2 `0 2 * * 0` 之后、C3 `0 4 * * 0` 之前
+  - `health()` 自报 `status` / `initError` / `queuedSignals` / `detectors`
+
+### 修复
+
+- `inject` 补 `agint.compressGuard`——此前压缩丢失子源恒为空（`6155611`）
+- `optionalInject` 补 `agint.eventBus.subscribe`（`bc92c21`）及 `publish`（`ff620ee`）
+- adversarial 的 `_subscribed` 移到 `subscribe()` 成功后才置位——取到函数不足以说明订阅成立，否则 `health()` 假绿（`ff620ee`）
+- `getChannelStatus` 附加 Channel 自报 `health`（`babbda4`）
+- `input_gateway_channel_status` 的 render 输出 `health` 段——gateway 已挂上该字段但工具未渲染，导致 `initError` 不可见，订阅失败与成功在输出里无法区分（`5553e5f`）
+- 注册 Channel 改用 `emptyChannelState` 替代手工构造（`c10e469`）
+
+### 已知问题
+
+- `package.json` 的 `exports` 未列出 `./lib/channels/adversarial.js`（C4 落地时漏更），按该子路径 import 会解析失败
+- adversarial 的真实总线投递未验证：其三个订阅 topic 在生产总线上尚无发布记录，handler 逻辑已单测覆盖（23 项），端到端投递待验
+
 ## 0.1.0 — 2026-09-29
 
 ### 新增
