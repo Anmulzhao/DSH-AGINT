@@ -90,7 +90,9 @@ export const DEFAULT_AGENT_PRESET = 'agint';
 // 值与 dream 的 DEFAULT_PROVIDER/MODEL 同源（本机 ~/.dsh 实测 minimax-cn / MiniMax-M3），
 // ⛔ deepseek 在本机只是 fallback adapter，别写它（K99）。
 const DEFAULT_LLM_PROVIDER = 'minimax-cn';
-const DEFAULT_LLM_MODEL = 'MiniMax-M3';
+// 2026-09-28：host 已把 minimax-cn 注册模型换成 MiniMax-M3.1-Flash-Preview
+// （cordis.patch.yml llm-pi-ai.providers.minimax-cn.models 只剩这一条）。
+const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash-Preview';
 
 /** 结构化输出契约（subagents.start 方言：required 挂在父对象数组上，K70） */
 export const MUTATION_OUTPUT_SCHEMA = Object.freeze({

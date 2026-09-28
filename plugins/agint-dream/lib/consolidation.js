@@ -66,7 +66,10 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 // **绝对不能硬编码 'deepseek'/'deepseek-chat'**——DSH 把 deepseek 仅作 fallback
 // adapter，host 真实可用 provider 由 settings.yaml 决定。
 export const DEFAULT_PROVIDER = 'minimax-cn';
-export const DEFAULT_MODEL = 'MiniMax-M3';
+// 2026-09-28：host 已把 minimax-cn 的注册模型换成 MiniMax-M3.1-Flash-Preview
+// （cordis.patch.yml llm-pi-ai.providers.minimax-cn.models 只剩这一条），
+// 旧值 'MiniMax-M3' 已不可路由，必须同步。
+export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
 
 // ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，30 个空壳换来的，见项目 KNOWLEDGE.md K114）。
 // `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**：

@@ -437,7 +437,7 @@ function apply(ctx) {
     description: 'P1 验证工具：跑一次 minimal LLM consolidation。消耗 1 次 LLM call，验证 DSH host 端 ctx.agents / ctx.subagents 通路是否真可用。不写 agint.memory，仅返回 schema-validated structured result。设计文档第一步要求的"独立验证脚本"。',
     parameters: {
       provider: { type: 'string', description: 'LLM provider（默认 settings.yaml agent-default-model：minimax-cn）' },
-      model: { type: 'string', description: 'model id（默认 MiniMax-M3）' },
+      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash-Preview）' },
       timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
     },
     output: {

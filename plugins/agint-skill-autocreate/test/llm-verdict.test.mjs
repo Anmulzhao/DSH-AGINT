@@ -182,8 +182,8 @@ test('provider/model 为空 → 不传 agentOptions（继承宿主默认，不�
   assert.equal('agentOptions' in created[0], false, 'empty provider/model must not override host defaults');
 
   const second = mockCtx({});
-  await judgeViaLLM({ ctx: second.ctx, pattern: PATTERN, provider: 'minimax-cn', model: 'MiniMax-M3' });
-  assert.deepEqual(second.created[0].agentOptions, { provider: 'minimax-cn', model: 'MiniMax-M3' });
+  await judgeViaLLM({ ctx: second.ctx, pattern: PATTERN, provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' });
+  assert.deepEqual(second.created[0].agentOptions, { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' });
 });
 
 // ── ③④ 降级路径：永远返回、永远带 reason ──────────────────────────────────

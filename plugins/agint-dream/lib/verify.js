@@ -66,9 +66,10 @@ function buildMinimalFixtures() {
  */
 export async function runVerification({
   ctx,
-  // 默认值跟 settings.yaml agent-default-model 对齐（2026-09-05 实测：minimax-cn / MiniMax-M3）
+  // 默认值跟 host 注册模型对齐（2026-09-28 实测 cordis.patch.yml：
+  // minimax-cn 只注册 MiniMax-M3.1-Flash-Preview，旧 MiniMax-M3 已不可路由）
   provider = 'minimax-cn',
-  model = 'MiniMax-M3',
+  model = 'MiniMax-M3.1-Flash-Preview',
   timeoutMs = 60_000,
   day = `verify-${new Date().toISOString().slice(0, 10)}`,
 } = {}) {
