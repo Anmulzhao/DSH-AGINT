@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 // agint-input-gateway smoke — `node test/smoke.mjs` 一行能跑。
 //
 // 不挂 Cordis、不真打开 storage domain。只验证：
@@ -25,7 +25,7 @@ const read = (p) => readFileSync(p, 'utf8');
 
 test('导出契约：name / inject / apply', () => {
   assert.equal(plugin.name, 'agint-input-gateway');
-  assert.deepEqual(plugin.inject, ['storageDomain']);
+  assert.deepEqual(plugin.inject, ['storageDomain', 'agint.compressGuard']);
   assert.equal(typeof plugin.apply, 'function');
 });
 
