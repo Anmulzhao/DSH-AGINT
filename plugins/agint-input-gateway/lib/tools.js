@@ -42,7 +42,7 @@ function apply(ctx) {
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
-    execute() { return svc.getStatus().then(json); },
+    async execute() { return json(svc.getStatus()); },
   }));
 
   // ── 只读：单 Channel 状态 ──────────────────────────────────────────────
