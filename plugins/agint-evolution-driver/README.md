@@ -53,6 +53,14 @@ commit 会真改文件，而**改部署位没有意义**——`install.sh` 下�
 
 ## 测试
 
+## goal 桥（v0.2.6，行动 #2）
+
+`lib/goal-bridge.js`：进化提案 → dsh goal objective → `goals.create`（软依赖 `agint.goals`；
+未挂载 / 无 create / 抛错 → `{ created:false, reason }`，不影响 runOnce 既有路径）。
+kill-switch `AGINT_EVOLUTION_DRIVER_GOAL=on` 才启用（默认关）；**2026-09-28 已在宿主
+User 级环境置 on**（宿主重启后生效）。只创建、不接管：轮次驱动完全由宿主 goal-round-driver 承担。
+
+
 ```sh
 node test/smoke.mjs   # T1–T14
 ```

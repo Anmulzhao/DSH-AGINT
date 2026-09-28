@@ -1,7 +1,7 @@
 {
   "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-policy",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "D-QAF Phase 4 策略引擎（v0.8.0）。Sprint 12 / A5 加 policy.deployed / policy.rolledback 双 topic 事件化（T1 影子期，走单 service 接口，不伞键）。",
   "main": "lib/index.js",
   "agint": {

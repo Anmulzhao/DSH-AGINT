@@ -1,6 +1,20 @@
 # CHANGELOG
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
+## [0.2.2] — 行动 #2 宿主 schedule 桥（2026-09-28）
+
+### Added
+
+- 新增 `lib/host-schedule.js`：桥接宿主 `@deepseek-ai/dsh-schedule`（0.1.7-rc.2，宿主已带）。
+  - 全部 job 用宿主 `canonicalizeCronExpression` 校验；catalog 只读镜像（不写宿主存储）；懒加载（首次访问才 import 宿主包）。
+  - 宿主缺失时降级 `hostAvailable:false`，既有 cron 行为完全不变。
+- **有意不调用宿主 `create()`**：宿主投递语义是"提醒注入 agent session"，与 cron 的 action 直调不同，投递策略留待拍板。
+- Service 面新增只读 `agint.cron.hostSchedule`（`{ hostAvailable, jobs, hostPackage }`）。
+
+### Notes
+
+- 对应《三仓库对比分析报告_20260928.md》§7.1 行动 #2；测试 `test/host-schedule.test.mjs`。
+
 
 ## [0.2.1] — Sprint 16 发布层 cron（2026-09-09）
 

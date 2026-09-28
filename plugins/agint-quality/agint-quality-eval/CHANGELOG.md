@@ -1,6 +1,33 @@
 # Changelog — agint-quality-eval
 
 ## 0.3.0 (2026-08-29) — Sprint 12 / A2 evolution.evaluated 发布
+## 0.3.1 (2026-09-28) — 行动 #5 权重外置可配置
+
+### Added
+
+- 新增 `lib/weights.js`：
+  - `DEFAULT_DIMENSION_WEIGHTS`：内置权重表快照（单一事实源）。
+  - `WEIGHT_KEYS` / `WEIGHTS_SCHEMA`：8 键权重 schema。
+  - `validateWeights(patch)`：未知键 / 越界（非 0..1）/ 非数字 → invalid（含原因）。
+  - `resolveWeights(patch)`：partial 覆盖内置默认；非法 patch **回退默认 + issues，不抛**。
+  - `mergedWeights(patch)`：快捷合并。
+- `compositeScore(evalResult, weights = DIMENSION_WEIGHTS)`：权重注入（缺省向后兼容）。
+- Config 新增 `dimensionWeights`（zod partial，键 0..1 可选）。
+- `evaluator.weights` 从手写硬编码改为单一事实源 `{ ...resolvedWeights.weights }`（消除与
+  evaluators.js 的重复漂移）。
+- `score()` / `currentSnapshot()` / `runBaselineSuite()` 均按配置权重计分。
+- 新增服务面 `agint.qualityEvaluator.weights`：`{ get, validate, resolve, defaults }`。
+
+### Compatibility
+
+- 默认权重不变（trust .20 / reliability .20 / effectiveness .10 / safety .30 / integrability .20 / promptStatic .20 / convention 0 / adaptability 0）。
+- safety 一票否决（<0.5 → composite null）不受权重配置影响。
+- 非法 `dimensionWeights` → console.warn + 回退默认，评估主路径不受影响。
+
+### 验证
+
+- `test/weights.test.mjs` 14/14；quality-eval 全套 25/25。
+
 
 ### Added
 

@@ -60,6 +60,7 @@ import {
 import { judgeViaLLM } from './llm-verdict.js';
 import { createDailyBudget, localDayKey } from './llm-budget.js';
 import { runVerification } from './verify.js';
+import { notifyToolAddition, assertToolAdditionAppendOnly } from './tool-addition.js';
 
 const name = 'agint-skill-autocreate';
 // storageDomain 硬依赖；tools 在宿主不注册 model 工具（preset 平面经 lib/tools.js）
@@ -1177,8 +1178,25 @@ function apply(ctx, config) {
   }
 
   // Sprint 16 发布层 Service 出口（原 notImplemented 桩替换为真实现）
-  const release = (input = {}) => releaseManager.releaseCandidate(input);
-  const releaseQueue = (input = {}) => releaseManager.releaseQueue(input);
+  // 行动 #3（2026-09-28）：技能产出走 dsh 工具注册路径 + KV Cache 安全判据。
+  // 发布成功后软依赖通知宿主（agents 服务可用即确认；不可用降级 deferred）。
+  // 通知失败绝不影响发布结果（catch 兜底 + 仅审计）。
+  const notifyReleased = async (result, actor) => {
+    if (!result?.released || !result.skillName) return result;
+    const notified = await notifyToolAddition({ ctx, skillName: result.skillName })
+      .catch((error) => ({ notified: false, deferred: true, reason: String(error?.message ?? error) }));
+    await audit({
+      actor: actor ?? 'system',
+      action: 'release_tool_addition',
+      targetType: 'release',
+      targetId: result.releaseId,
+      details: notified,
+      reason: null,
+    }).catch(() => {});
+    return result;
+  };
+  const release = async (input = {}) => notifyReleased(await releaseManager.releaseCandidate(input), input?.actor);
+  const releaseQueue = async (input = {}) => notifyReleased(await releaseManager.releaseQueue(input), input?.actor);
   const rollback = (input = {}) => releaseManager.rollback(input);
   const observe = () => releaseManager.observe();
   const listReleases = (input = {}) => releaseManager.listReleases(input);
@@ -1336,6 +1354,9 @@ function apply(ctx, config) {
     pause,
     resume,
     config: configApi,
+
+    // 行动 #3（2026-09-28）：KV Cache 安全判据（append-only 纯函数，供调用方/工具验证）
+    toolAddition: { assertAppendOnly: assertToolAdditionAppendOnly },
   });
 }
 

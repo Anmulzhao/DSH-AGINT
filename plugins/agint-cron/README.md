@@ -99,6 +99,14 @@ cron_run_now --id wiki-lint
 
 ## 依赖与约束
 
+## 宿主 schedule 桥（v0.2.2，行动 #2）
+
+`lib/host-schedule.js`：桥接宿主 `@deepseek-ai/dsh-schedule`（0.1.7-rc.2，宿主已带）。
+宿主 `canonicalizeCronExpression` 校验全部 job、catalog 只读镜像、懒加载；宿主缺失时降级
+`hostAvailable:false`。**有意不调用宿主 `create()`**（宿主投递语义是"提醒注入 agent session"，
+与 cron action 直调不同，留待拍板）。Service 面新增只读 `agint.cron.hostSchedule`。
+
+
 - **inject**：`timer`（cordis-plugin-timer）、`storageDomain`（dsh-storage-domain）
 - **生命周期**：60s `setInterval` 通过 `ctx.effect` 注册 disposer；无事件监听
 - **权限**：读 `DSH_HOME`、读 `plugins/`；无网络；不 spawn 子进程

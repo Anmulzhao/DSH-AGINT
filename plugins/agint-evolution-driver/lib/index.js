@@ -42,6 +42,12 @@
 import { randomUUID } from 'node:crypto';
 
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
+import {
+  isGoalBridgeEnabled,
+  buildGoalObjective,
+  createEvolutionGoal,
+  GOAL_BRIDGE_ENV,
+} from './goal-bridge.js';
 
 // ── 常量 ────────────────────────────────────────────────────────────────
 
@@ -745,7 +751,16 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  ctx.provide('agint.evolutionDriver', { runOnce, status, construct, checkEntities });
+  const goalsSvc = () => (typeof ctx.get === 'function' ? ctx.get('goals') : null);
+  const goalBridgeStatus = () => ({
+    enabled: isGoalBridgeEnabled(process.env),
+    goalsAvailable: goalsSvc() !== undefined && goalsSvc() !== null,
+    env: GOAL_BRIDGE_ENV,
+  });
+  const driveAsGoal = async ({ agent, candidate, opts = {} }) =>
+    createEvolutionGoal({ agent, candidate, goals: goalsSvc(), env: process.env, opts });
+
+  ctx.provide('agint.evolutionDriver', { runOnce, status, construct, checkEntities, driveAsGoal, goalBridgeStatus, buildGoalObjective });
 
   ctx.effect(() => () => {
     /* 无 interval / 无订阅：生命周期干净 */

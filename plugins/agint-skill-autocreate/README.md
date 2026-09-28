@@ -90,6 +90,15 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 
 ## 测试
 
+## 工具注册路径与 KV Cache 判据（v0.5.5，行动 #3）
+
+`lib/tool-addition.js`：`computeToolDeltas` / `assertToolAdditionAppendOnly`（"新增工具可
+append-only 表达 + 既有顺序不重排" = KV Cache 安全判据）；`notifyToolAddition` 软依赖通知
+（AGINT 不自己写 developer message，由宿主 agent-loop 自动 tool-addition）；release /
+releaseQueue 出口 `notifyReleased` + 审计 `release_tool_addition`。
+Service：`agint.skillAutocreate.toolAddition.assertAppendOnly`。
+
+
 ```sh
 node --test "test/*.test.mjs" test/smoke.mjs   # 321 tests，零外部依赖可跑
 ```

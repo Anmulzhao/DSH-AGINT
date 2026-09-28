@@ -48,6 +48,18 @@ abtest dimension 不参与 safety/trust 一票否决（设计稿 §二.6 + §十
 
 ## 验证
 
+## 人工兜底 + 决策 provider（v0.8.1，行动 #4/#5）
+
+- 人工兜底：`lib/human-approval.js` —— 四分支映射（AUTO_DEPLOY→skip / PENDING_REVIEW→ask /
+  REJECT·ABSTAIN→escalate）+ "REJECT + allowed-once → PENDING_REVIEW" 状态机 +
+  `askHuman` 无 open turn 降级 deferred。Service：`agint.qualityPolicy.humanApproval`。
+- 决策 provider 化（OpenClaw Decision Models 思路）：`lib/provider.js` —— DecisionProvider
+  接口 + 注册表（register/unregister/list/setActive/getActive/resolveAndEvaluate）；
+  内置 provider 包装 decidePolicy（默认 active）；未注册/抛错回退内置 + fallback 审计；
+  Decision 增加非 FROZEN 字段 `providerId`。Service：`agint.qualityPolicy.policyProviders`；
+  Config 新增 `policyProvider`（初始 active id，未注册回退内置）。
+
+
 ```sh
 node --test plugins/agint-quality/agint-quality-policy/test/abtest-weighted.test.mjs
 bin/plugin-check.sh plugins/agint-quality/agint-quality-policy

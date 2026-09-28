@@ -1,6 +1,25 @@
 # Changelog — agint-skill-autocreate
 
 ## v0.5.4 (2026-09-27) — 修子代理空壳：judgeViaLLM 从未真调过模型（K114）
+## v0.5.5 (2026-09-28) — 行动 #3 工具注册路径 + KV Cache 安全判据
+
+### Added
+
+- 新增 `lib/tool-addition.js`：
+  - `computeToolDeltas(before, after)`：新增/删除工具 → 增删 delta 列表（纯函数）。
+  - `assertToolAdditionAppendOnly(before, after)`：**KV Cache 安全判据** —— "新增工具可
+    append-only 表达 + 既有工具顺序不重排" ⇒ 工具注册不破坏既有 KV Cache 键序。
+  - `notifyToolAddition`：软依赖通知（`ctx.get('agint.toolAddition')` 可选）；
+    **AGINT 不自己写 developer message** —— 由宿主 agent-loop 自动 tool-addition。
+  - `notifyReleased`：release / releaseQueue 出口包一层通知 + 审计
+    `release_tool_addition`（evidence = delta 摘要）。
+- Service：`agint.skillAutocreate.toolAddition.assertAppendOnly(before, after)`。
+
+### Compatibility
+
+- release/releaseQueue 行为不变（新增通知与审计副作用；宿主 toolAddition 缺失时静默跳过）。
+- 对应《三仓库对比分析报告_20260928.md》§7.1 行动 #3；测试 `test/tool-addition.test.mjs`。
+
 
 > 注：本条目起标题带 `v` 前缀 —— `bin/agents-local-state.mjs` 用 `^##\s+(v[\d][\w.-]*)`
 > 取版本号回写实况块，不带 v 的条目会静默回落到 package.json 的脚手架版本，

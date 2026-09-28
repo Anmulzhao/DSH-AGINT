@@ -39,6 +39,15 @@
       config:
         root: !!js (process.env.DSH_WIKI_ROOT || 'D:/DSH/wiki')
 
+    # dsh-schedule: 宿主原生调度（0.1.7-rc.2，行动 #2a 2026-09-28 挂载）。
+    # agint-cron 的宿主调度桥（plugins/agint-cron/lib/host-schedule.js）依赖它做
+    # cron 表达式规范化校验 + catalog 只读镜像。投递语义（提醒注入 agent session）
+    # 与 agint-cron 的 action 直调不同，桥不调用 create()，仅校验/镜像，零行为变更。
+    # 回滚：删除本行并重启 dsh；agint-cron 桥自动降级为 hostAvailable:false。
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
+      config: {}
+
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     - id: agint-cron
       name: ./plugins/agint-cron/lib/index.js

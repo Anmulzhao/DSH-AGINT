@@ -412,14 +412,18 @@ export async function evaluateAll(ctx, target) {
  *   score = 100 * sum(weight_i * score_i) / sum(weight_i for i where score_i !== null)
  *   任一维度的 score === null → 该维度不计入分母
  *   safety < SAFETY_VETO_THRESHOLD → null（让 caller 走 REJECT 路径）
+ *
+ * @param {object} evalResult
+ * @param {Record<string, number>} [weights] 权重表；缺省用内置 DIMENSION_WEIGHTS
+ *   （行动 #5 2026-09-28：权重外置可配置 —— lib/weights.js 的 mergedWeights 可注入）。
  */
-export function compositeScore(evalResult) {
+export function compositeScore(evalResult, weights = DIMENSION_WEIGHTS) {
   let num = 0;
   let den = 0;
   for (const d of evalResult.dimensions) {
     const s = d.score?.score;
     if (s === null || s === undefined) continue;
-    const w = DIMENSION_WEIGHTS[d.key] ?? 0;
+    const w = weights[d.key] ?? 0;
     if (w === 0) continue;
     num += w * s;
     den += w;

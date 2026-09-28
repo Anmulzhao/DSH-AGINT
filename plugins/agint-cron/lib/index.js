@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { nextFire, isDue } from './cron.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
+import { createHostBridge } from './host-schedule.js';
 
 const name = 'agint-cron';
 const inject = ['timer', 'storageDomain'];
@@ -88,6 +89,18 @@ function apply(ctx) {
   }));
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   const bootTime = Date.now();
+
+  // 行动 #2a（2026-09-28）：宿主原生调度桥。job 表静态快照；宿主 dsh-schedule
+  // 在首次 validateSchedules / mirrorCatalog 时懒加载（失败降级 hostAvailable:false，
+  // 不影响 tick 执行）。cron 语义与宿主 canonicalizeCronExpression 对齐。
+  const hostSchedule = createHostBridge({
+    getService: (n) => (typeof ctx.get === 'function' ? ctx.get(n) : null),
+    jobs: jobs.map((j) => ({ id: j.id, schedule: j.schedule })),
+  });
+  console.info(
+    '[agint-cron] host-schedule bridge ' + JSON.stringify(hostSchedule.status()) +
+    '（宿主 dsh-schedule 懒加载；cron_list 可查 hostSchedule 面）',
+  );
 
   // Hydrate persisted lastRunAt/lastResult/lastError per job so a rebooted
   // host does not report every job as never-run. The domain opens async, so we
@@ -280,6 +293,16 @@ function apply(ctx) {
     // useful for the boot-level diagnostic.
     _tickNow() { return tick(); },
     _jobs() { return jobById; },
+
+    // 行动 #2a（2026-09-28）：宿主原生调度桥面。validateSchedules 用宿主
+    // canonicalizeCronExpression 校验全部 job；mirrorCatalog 只读镜像宿主
+    // schedule.catalog() 的 agint-cron: 前缀条目。全软依赖，宿主未接入时
+    // 返回 hostAvailable:false（不影响本调度器）。
+    hostSchedule: {
+      status: () => hostSchedule.status(),
+      validateSchedules: () => hostSchedule.validateSchedules(),
+      mirrorCatalog: () => hostSchedule.mirrorCatalog(),
+    },
   });
 }
 

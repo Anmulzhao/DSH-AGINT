@@ -26,6 +26,13 @@ import {
   validateThresholds,
   DEFAULT_POLICY_ID,
 } from './decide.js';
+import {
+  mapDecisionToApproval,
+  applyHumanOutcome,
+  askHuman,
+  decideWithHumanFallback,
+} from './human-approval.js';
+import { createProviderRegistry, BUILTIN_PROVIDER_ID } from './provider.js';
 import { runHarmonyDetectors, DEFAULT_HARMONY_CONFIG } from './falseHarmonyDetector.js';
 import {
   makeCommitteeStorage,
@@ -53,10 +60,14 @@ const Config = z.object({
   autoReportRejection: z.boolean().default(true),
   /** 是否写 memory 审计（默认 true） */
   writeMemoryAudit: z.boolean().default(true),
+  /** 行动 #5（2026-09-28）：初始 active 决策 provider id（缺省内置；未注册回退内置） */
+  policyProvider: z.string().optional(),
 }).optional();
 
 function apply(ctx, config) {
   const cfg = Config.parse(config || {});
+  // 行动 #5（2026-09-28）：决策 provider 注册表（OpenClaw Decision Models 思路）。
+  const policyRegistry = createProviderRegistry({ initialActiveId: cfg.policyProvider });
   let disposed = false;
 
   // Sprint 4.3: 元评估委员会的内存 storage (sibling 可注入以持久化)
@@ -178,7 +189,19 @@ function apply(ctx, config) {
   async function decide({ results, config: overrideConfig, options } = {}) {
     if (disposed) throw new Error('agint-quality-policy: disposed');
     const mergedConfig = { ...cfg, ...overrideConfig };
-    const decision = await decidePolicy({ results, config: mergedConfig, options });
+    // 行动 #5（2026-09-28）：决策 provider 化 —— 默认走内置 provider（decidePolicy），
+    // 可注册/切换外部 provider；provider 不可用回退内置 + fallback 审计。
+    const providerIdHint = overrideConfig?.policyProvider ?? null;
+    const { decision, providerId, fallback, fallbackReason } = await policyRegistry.resolveAndEvaluate({
+      results,
+      config: mergedConfig,
+      options,
+      ...(providerIdHint ? { providerId: providerIdHint } : {}),
+    });
+    if (fallback && !disposed) {
+      console.warn(`[agint-quality-policy] decision provider fallback: ${fallbackReason}`);
+    }
+    decision.providerId = providerId; // 非 FROZEN 扩展字段（决策审计：这条决策由谁做的）
 
     const evo = ctx.get('agint.evolution');
     const memory = ctx.get('agint.memory');
@@ -303,6 +326,27 @@ function apply(ctx, config) {
     health,
     config: cfg,
     harmonyConfig: DEFAULT_HARMONY_CONFIG,
+
+    // 行动 #4（2026-09-28）：policy.decide() 分支 ↔ 宿主 dsh-user-approval 人工兜底对齐。
+    // map/apply 为纯函数（可单测）；askHuman 软依赖（无 open turn 降级 deferred，不阻断）。
+    humanApproval: {
+      mapDecisionToApproval,
+      applyHumanOutcome,
+      askHuman: (args) => askHuman(args),
+      decideWithHumanFallback: (args) => decideWithHumanFallback(args),
+      getApproval: () => (typeof ctx.get === 'function' ? ctx.get('approval') : null),
+    },
+
+    // 行动 #5（2026-09-28）：决策 provider 化服务面（可注册/切换/列举 provider；
+    // resolveAndEvaluate 不可用时回退内置）。让决策者本身可参与进化。
+    policyProviders: {
+      register: (p) => policyRegistry.register(p),
+      unregister: (id) => policyRegistry.unregister(id),
+      list: () => policyRegistry.list(),
+      setActive: (id) => policyRegistry.setActive(id),
+      getActive: () => policyRegistry.getActive(),
+      resolveAndEvaluate: (args) => policyRegistry.resolveAndEvaluate(args),
+    },
     // ── Sprint 4.3: 元评估委员会（shadow / rollback / history） ──
     committee: {
       runShadowPolicy: (args) => runShadowPolicy({ ...args, storage: committeeStorage }),

@@ -1,6 +1,35 @@
 # CHANGELOG — agint-evolution-driver
 
 ## v0.2.5 — 2026-09-27（实体门抽成可复用模块 + 服务扩展点）
+## v0.2.6 — 2026-09-28（行动 #2 goal 桥：提案 → dsh goal 驱动）
+
+### 背景
+
+报告行动 #2 后半段：`dsh-goal-round-driver` 已在宿主挂载（dsh-base bundle），会自动驱动
+"同一 agent 会话的连续轮次"直到目标完成。本版把 AGINT 进化提案转成 dsh goal
+（`goals.create(agent, { objective })`），让 goal-round-driver 接管后续改进轮次 ——
+而不是 AGINT 在 host 平面自己 for 循环挑候选。
+
+### 变更
+
+- 新增 `lib/goal-bridge.js`：`proposalToGoal`（提案 → objective，body 截断 280 字符）+
+  `createGoalBridge`（软依赖 `ctx.get('agint.goals')`；未挂载 / 无 create / 抛错 →
+  `{ created:false, reason }`，不影响 runOnce 既有路径）。
+- kill-switch：`AGINT_EVOLUTION_DRIVER_GOAL=on` 才启用（大小写不敏感 + 去空格），默认关。
+  **2026-09-28 已在宿主 User 级环境置 on**（`[Environment]::SetEnvironmentVariable(..., 'User')`），
+  宿主进程重启后生效。
+- Service：`agint.evolutionDriver.goalBridge`（`{ enabled, create }`）。
+
+### 边界
+
+- 只创建、不接管：轮次驱动完全由宿主 goal-round-driver 承担，AGINT 不重复实现。
+- 影子接入先验证链路再切换，避免无人值守 job 行为漂移。
+
+### 验证
+
+- `test/goal-bridge.test.mjs` 9/9；evolution-driver smoke 35/35。
+- 未验证：宿主重启后 goal 创建链路的实际行为（需重启后观察）。
+
 
 ### 背景
 

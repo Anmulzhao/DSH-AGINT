@@ -1,6 +1,41 @@
 # Changelog — agint-quality-policy
 
 ## 0.8.0 (2026-09-01) — Sprint 12 / A5 policy.deployed / policy.rolledback 事件化（T1 影子期）
+## 0.8.1 (2026-09-28) — 行动 #4 人工兜底对齐 + #5 决策 provider 化
+
+### Added（行动 #4）
+
+- 新增 `lib/human-approval.js`：
+  - `mapDecisionToApproval`：四分支映射 AUTO_DEPLOY→skip / PENDING_REVIEW→ask /
+    REJECT·ABSTAIN→escalate。
+  - `applyHumanOutcome`：状态机"REJECT + allowed-once → 升级 PENDING_REVIEW 可继续"。
+  - `askHuman`：软依赖宿主 approval；无 open turn 时降级 `deferred`（宿主 request() 要求
+    turn-enclosed，宿主源码实测）。
+- Service：`agint.qualityPolicy.humanApproval`（map/apply/askHuman/getApproval/decideWithHumanFallback）。
+
+### Added（行动 #5）
+
+- 新增 `lib/provider.js`（OpenClaw Decision Models 思路）：
+  - `DecisionProvider` 接口：`{ id, version, describe?(), evaluate({results, config, options}) }`。
+  - `createProviderRegistry`：register / unregister / list / setActive / getActive /
+    `resolveAndEvaluate`；内置 provider（`BUILTIN_PROVIDER_ID='builtin'`）包装既有
+    `decidePolicy`（默认 active，决策结果与 0.8.0 完全一致）。
+  - **不可用降级**：providerId 未注册 / evaluate 抛错 → 回退内置 + `{ fallback, fallbackReason }`，
+    决策永不丢失。
+- `decide()` 改走 registry；Decision 增加非 FROZEN 扩展字段 `providerId`（决策者审计，与
+  perTarget 先例一致）。
+- Config 新增 `policyProvider`（初始 active id；未注册回退内置）。
+- Service：`agint.qualityPolicy.policyProviders`（register/unregister/list/setActive/getActive/resolveAndEvaluate）。
+
+### Compatibility
+
+- 默认路径 = 内置 provider 包装 decidePolicy ⇒ decide() 行为与 0.8.0 逐位一致（新增 providerId 扩展字段）。
+- 注册表进程内内存态（与 committee 同生命周期），持久化切换由 config.policyProvider 承担。
+
+### 验证
+
+- `test/human-approval.test.mjs` 19/19；`test/provider.test.mjs` 13/13；quality-policy 全套 46/46。
+
 
 ### Added
 

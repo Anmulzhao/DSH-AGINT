@@ -33,6 +33,7 @@ import {
   compositeScore,
   DIMENSION_KEYS,
 } from './evaluators.js';
+import { resolveWeights, validateWeights, DEFAULT_DIMENSION_WEIGHTS } from './weights.js';
 import { WeeklyScheduler } from './scheduler.js';
 import {
   BASELINE_TARGETS,
@@ -59,6 +60,17 @@ const Config = z.object({
   schedule: z.string().default('30 4 * * 0'),
   /** tick 间隔（毫秒）——默认 5 分钟 */
   tickIntervalMs: z.number().int().positive().default(5 * 60 * 1000),
+  /** 行动 #5（2026-09-28）：综合分维度权重外置（partial；缺失键回退内置默认） */
+  dimensionWeights: z.object({
+    trust: z.number().min(0).max(1).optional(),
+    reliability: z.number().min(0).max(1).optional(),
+    effectiveness: z.number().min(0).max(1).optional(),
+    safety: z.number().min(0).max(1).optional(),
+    convention: z.number().min(0).max(1).optional(),
+    adaptability: z.number().min(0).max(1).optional(),
+    integrability: z.number().min(0).max(1).optional(),
+    promptStatic: z.number().min(0).max(1).optional(),
+  }).optional(),
 }).optional();
 
 /** EvalTarget schema 镜像（不依赖 contract plugin 的运行时 import） */
@@ -85,6 +97,12 @@ const DEFAULT_DEPLOY_GUARD = Object.freeze({
 
 function apply(ctx, config) {
   const cfg = Config.parse(config || {});
+  // 行动 #5（2026-09-28）：权重外置可配置 —— patch config.dimensionWeights 覆盖内置默认；
+  // 非法 patch 回退默认并告警（不抛，不影响评估主路径）。
+  const resolvedWeights = resolveWeights(cfg.dimensionWeights);
+  if (resolvedWeights.issues.length > 0) {
+    console.warn('[agint-quality-eval] dimensionWeights invalid, using defaults: ' + resolvedWeights.issues.join('; '));
+  }
   let scheduler = null;
   let disposed = false;
 
@@ -161,8 +179,8 @@ function apply(ctx, config) {
     const results = await evaluator.evaluateAll(BASELINE_TARGETS);
     const perTarget = results.map((r) => ({
       id: r.targetId,
-      ok: compositeScore(r) !== null,
-      score: compositeScore(r),
+      ok: compositeScore(r, resolvedWeights.weights) !== null,
+      score: compositeScore(r, resolvedWeights.weights),
     }));
     return makeBaselineSnapshot({ results: perTarget });
   }
@@ -270,7 +288,7 @@ function apply(ctx, config) {
      *   - 缺 agint.eventBus.publish Service → 纯静默跳过（软降级）
      */
     async score(evalResult) {
-      const composite = compositeScore(evalResult);
+      const composite = compositeScore(evalResult, resolvedWeights.weights);
 
       // 拉取 eventBus publish（optionalInject 软依赖）
       const publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
@@ -313,16 +331,8 @@ function apply(ctx, config) {
       return scheduler.getLastRun();
     },
 
-    /** 暴露维度权重（供 policy / reporter 调用） */
-    weights: {
-      trust: 0.20,
-      reliability: 0.20,
-      effectiveness: 0.10,
-      safety: 0.30,
-      integrability: 0.20,
-      convention: 0.00,
-      adaptability: 0.00,
-    },
+    /** 暴露维度权重（行动 #5 2026-09-28：单一事实源 = resolvedWeights；config 可覆盖） */
+    weights: { ...resolvedWeights.weights },
 
     /** 暴露维度键顺序 */
     dimensionKeys: DIMENSION_KEYS,
@@ -342,8 +352,8 @@ function apply(ctx, config) {
       const results = await evaluator.evaluateAll(targets);
       const perTarget = results.map((r) => ({
         id: r.targetId,
-        ok: compositeScore(r) !== null,  // safety veto / null score = REJECT
-        score: compositeScore(r),
+        ok: compositeScore(r, resolvedWeights.weights) !== null,  // safety veto / null score = REJECT
+        score: compositeScore(r, resolvedWeights.weights),
       }));
       const snapshot = makeBaselineSnapshot({ results: perTarget });
       const baselineHistory = await loadBaselineHistory(evo);
@@ -424,6 +434,14 @@ function apply(ctx, config) {
   };
 
   ctx.provide('agint.qualityEvaluator', evaluator);
+
+  // 行动 #5（2026-09-28）：权重外置可配置服务面（get/validate/resolve + 内置默认）。
+  ctx.provide('agint.qualityEvaluator.weights', {
+    get: () => ({ ...resolvedWeights.weights }),
+    validate: (patch) => validateWeights(patch),
+    resolve: (patch) => resolveWeights(patch),
+    defaults: { ...DEFAULT_DIMENSION_WEIGHTS },
+  });
 
   // ── Sprint 13 §3.3 部署预算护栏（weekly hook 每周 ≤3 次自动部署）────────
   // 数据源 = quality-policy 既有 audit 日志（agint.evolution evolution_log），不自建存储。

@@ -222,3 +222,37 @@ agint-quality-eval/
 3. **不绕过 D-QAF 自身**（无任何 self-deputize 路径）
 4. **L0 字段变更需要人类多签**（详见 `docs/evolution-framework.md` §8.2）
 5. **安全边界对齐**（详见 `docs/security-boundary.md` 第三章）
+
+---
+
+## 第四部分 · 2026-09-28 行动 #4/#5 落地（人工兜底 + 决策 provider 化 + 权重外置）
+
+### 决策 provider 化（agint-quality-policy v0.8.1，行动 #5，OpenClaw Decision Models 思路）
+
+借鉴 OpenClaw `src/decisions`（DecisionProviderV1 / 宿主路由 / unavailable 降级）：
+
+- `lib/provider.js`：`DecisionProvider` 接口 `{ id, version, describe?(), evaluate({results, config, options}) }`；
+  `createProviderRegistry`（register / unregister / list / setActive / getActive / resolveAndEvaluate）；
+  内置 provider（`builtin`）包装既有 `decidePolicy`，默认 active。
+- **不可用降级**：providerId 未注册 / evaluate 抛错 → 回退内置 + `{ fallback, fallbackReason }`，决策永不丢失。
+- `decide()` 走 registry；Decision 增加非 FROZEN 扩展字段 `providerId`（决策者审计，与 perTarget 先例一致）。
+- Service：`agint.qualityPolicy.policyProviders`；Config 新增 `policyProvider`（初始 active id；未注册回退内置）。
+
+### 人工兜底对齐（agint-quality-policy v0.8.1，行动 #4）
+
+- `lib/human-approval.js`：四分支映射 AUTO_DEPLOY→skip / PENDING_REVIEW→ask / REJECT·ABSTAIN→escalate；
+  状态机"REJECT + allowed-once → 升级 PENDING_REVIEW 可继续"；`askHuman` 无 open turn 降级 `deferred`
+  （宿主 request() 要求 turn-enclosed，宿主源码实测）。
+- Service：`agint.qualityPolicy.humanApproval`（map/apply/askHuman/getApproval/decideWithHumanFallback）。
+
+### 权重外置可配置（agint-quality-eval v0.3.1，行动 #5）
+
+- `lib/weights.js`：`DEFAULT_DIMENSION_WEIGHTS`（单一事实源）/ `WEIGHT_KEYS` / `validateWeights` /
+  `resolveWeights`（partial 覆盖；非法 patch 回退默认 + issues，不抛）。
+- Config 新增 `dimensionWeights`（zod partial，键 0..1 可选）；`compositeScore(evalResult, weights)`
+  权重注入（缺省向后兼容）；`evaluator.weights` = 单一事实源 `{ ...resolvedWeights.weights }`；
+  新增服务面 `agint.qualityEvaluator.weights`：`{ get, validate, resolve, defaults }`。
+- safety 一票否决（<0.5 → composite null）不受权重配置影响；非法 `dimensionWeights` → warn + 回退默认。
+
+验证：quality-eval 25/25（含 weights 14）、quality-policy 46/46（含 provider 13、human-approval 19）；
+五套受影响插件全量 491/491。

@@ -79,6 +79,22 @@ ctx.agint.qualityEvaluator.dimensionKeys            // → ['trust', 'reliabilit
 
 ## 文件
 
+## 权重外置可配置（v0.3.1，行动 #5）
+
+- `lib/weights.js`：`DEFAULT_DIMENSION_WEIGHTS`（单一事实源）/ `validateWeights` /
+  `resolveWeights`（partial 覆盖、非法回退默认 + issues 不抛）。
+- Config 新增 `dimensionWeights`（zod partial，键 0..1）；`compositeScore(evalResult, weights)` 缺省不变；
+  `evaluator.weights` = 单一事实源；服务面 `agint.qualityEvaluator.weights`（get/validate/resolve/defaults）。
+- safety 一票否决不受权重配置影响。示例：
+
+```yaml
+config:
+  dimensionWeights:
+    safety: 0.35
+    trust: 0.15
+```
+
+
 ```
 agint-quality-eval/
 ├── lib/
