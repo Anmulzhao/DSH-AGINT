@@ -134,6 +134,31 @@ node plugins/agint-<name>/test/smoke.mjs
 - `package.json` 里有 semver 版本号
 - 没有裸 `setInterval` / `setTimeout` —— 必须 `ctx.effect` 注册 disposer
 
+**字节保真自查（2026-09-29 实测踩坑）**：编辑工具会静默剥掉 UTF-8 BOM 并把换行统一规范化。
+仓内 `plugins/**/lib/*.js` 与 `presets/**/skills/*/SKILL.md` 约定是 **BOM + LF**，
+部分文件末尾还多一个 CRLF（实测 `tools.js` 结尾是 `};\n\r\n`）。
+一个只改一行的 render 修复曾被撑成 `172 insert / 169 delete` 的全文件 diff。
+
+- 改完必须 `git diff --stat` 核对：行数与预期不符就是编码被动过，不是你的改动
+- 取原始字节**不要用 `git show HEAD:file`** —— PowerShell 5.1 的管道会转码 LF→CRLF，
+  量出来的「原始是 CRLF」是假的（2026-09-29 因此差点反向改错）。正确做法：
+
+  ```powershell
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = "git"; $psi.Arguments = 'cat-file blob "HEAD:<path>"'
+  $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $ms = New-Object System.IO.MemoryStream
+  $p.StandardOutput.BaseStream.CopyTo($ms); $p.WaitForExit(); $b = $ms.ToArray()
+  ```
+
+- 还原：`[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($true)))`，
+  再按实测的原始字节约定重建尾部
+
+**技能自身的副本同样要同步**：`presets/<preset>/skills/<name>/SKILL.md` 是真源，
+部署位是 `~/.dsh/.agent-presets/<preset>/skills/<name>/SKILL.md`——只改部署位会被下次同步静默回退。
+子 preset（agint-blockchain / agint-investor）里的同名技能是**指针桩**，明写「以母 preset 为准」，不必重复维护。
+
 ### 第 5 步：走完整挂载 / 上线流程
 
 **先分清编辑目标**（2026-09-28 实测澄清）。仓库源码与 host 部署位是**两份独立副本**，不是链接：
