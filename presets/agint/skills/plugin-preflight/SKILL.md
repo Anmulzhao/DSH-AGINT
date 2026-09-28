@@ -172,7 +172,7 @@ tar tzf <上面那个 tar> | grep -c '^agint-[^/]*/$'   # 应等于已挂载插�
 #   三重护栏（confirm + 冷却期 + 熔断）、dryRun 可先看计划、--no-open、sideEffect 回报
 # ❌ safe-update.sh restart：Windows Git Bash 缺 pgrep/pkill
 #   graceful_stop_dsh 空转不报错 → start_dsh 拉起第二个实例抢 3080
-# ⚠️ bin/restart-runbook.ps1：能跑，但插件 README 明确写它已被 restart_request 取代
+# （历史备选 bin/restart-runbook.ps1 已于 2026-09-28 废弃删除，勿再引用）
 ```
 
 重启后验收用 `restart_status` 的时间戳差，而不是 sentinel.lease（后者在部分机器上不生成）：
