@@ -152,8 +152,8 @@ function detectMetricRegression() {
  * 子源 3：规则高频命中
  *
  * 从 tool_stats 统计 errorKind === 'denied' 的频率。
- * 真实数据：全量 11125 条里 denied=5，最近 200 条里 denied=0。
- * 阈值：最近 200 条里 denied ≥3 次才报告（当前基线 ~0）。
+ * 真实数据：全量 9277 条里 denied=4（0.04%），基线 ≈ 0。
+ * 阈值：最近 200 条里 denied ≥1 就报告——基线是 0，任何一次规则拒绝都值得注意。
  *
  * 不再扫描 rules.json 的静态配置数量——那是配置状态，不是异常。
  */
@@ -162,7 +162,7 @@ function detectRuleHotspot() {
   if (recent.length === 0) return [];
 
   const denied = recent.filter((r) => r.errorKind === 'denied');
-  if (denied.length < 3) return [];
+  if (denied.length < 1) return [];
 
   // 看被 denied 的是什么工具
   const byTool = {};
@@ -178,7 +178,7 @@ function detectRuleHotspot() {
       deniedCount: denied.length,
       windowSize: recent.length,
       byTool,
-      note: `最近 ${recent.length} 次工具调用中 ${denied.length} 次被规则拒绝（阈值 3）`,
+      note: `最近 ${recent.length} 次工具调用中 ${denied.length} 次被规则拒绝（基线 0，任何 1 次即报告）`,
     },
     confidence: 0.7,
     relevance: 0.6,
@@ -260,7 +260,7 @@ export const selfObservationChannel = {
       detectors: {
         toolAnomaly: { active: true, schema: 'ok===false', threshold: 'failRate>15% or streak>=3' },
         metricRegression: { active: false, reason: 'P1: needs historical baseline' },
-        ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=3 in last 200' },
+        ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=1 in last 200 (baseline=0)' },
         compressLoss: { active: true, depends: 'agint.compressGuard' },
         sessionIntegrity: { active: false, reason: 'P1: needs session/event' },
       },
