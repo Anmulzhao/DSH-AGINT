@@ -15,7 +15,8 @@
 
 import { InputGateway } from './gateway.js';
 import { selfObservationChannel } from './channels/self-observation.js';
-import { PLUGIN_NAME, C2_CRON } from './schema.js';
+import { externalGitChannel } from './channels/external-git.js';
+import { PLUGIN_NAME, C2_CRON, C3_CRON } from './schema.js';
 import { spec, emptyConfig, packConfig, emptyCounters } from './storage.js';
 
 const name = PLUGIN_NAME;
@@ -113,12 +114,16 @@ function apply(ctx, config) {
       }),
     });
 
+    // 注册 C3 Channel（外部世界 git 子源）
+    gateway.registerChannel(externalGitChannel);
+
     // 启动调度
     schedulerDisposer = gateway.startScheduler({
       'self-observation': C2_CRON,
+      'external-git': C3_CRON,
     });
 
-    debug(`initialized: 1 channel registered (self-observation), cron=${C2_CRON}`);
+    debug(`initialized: 2 channels (self-observation cron=${C2_CRON}, external-git cron=${C3_CRON})`);
   }).catch((e) => {
     console.error(`[${name}] init failed:`, e?.message ?? e);
   });

@@ -40,12 +40,24 @@ export const DEFAULTS = Object.freeze({
   payloadMaxBytes: 2048,       // payload ≤2KB
 });
 
-/** C2 系统自观测 Channel 的 cron 表达式（每日 02:00） */
-export const C2_CRON = '0 2 * * *';
+/** C2 系统自观测 Channel 的 cron（每周日 02:00，在 dream 03:00 之前） */
+export const C2_CRON = '0 2 * * 0';
+
+/** C3 外部世界 Channel 的 cron（每周日 04:00，错峰） */
+export const C3_CRON = '0 4 * * 0';
+
+/** C3 git 仓库列表（本地快照路径，不做网络 fetch） */
+export const C3_GIT_REPOS = Object.freeze([
+  { id: 'dsh', path: 'D:/DSH/project源码/dsh', label: 'dsh (DeepSeek Harness)' },
+  { id: 'openclaw', path: 'D:/DSH/project源码/openclaw', label: 'openclaw' },
+  { id: 'hermes', path: 'D:/DSH/project源码/Hermes', label: 'Hermes' },
+  { id: 'dsh-agint', path: 'D:/DSH/project源码/DSH-AGINT', label: 'DSH-AGINT (self)' },
+]);
 
 /** 已注册 Channel 的 id 常量 */
 export const CHANNEL_IDS = Object.freeze({
   SELF_OBSERVATION: 'self-observation',
+  EXTERNAL: 'external-git',
 });
 
 /** eventBus topic 精确匹配——预定义的 topic 集合（不支持 wildcard） */
@@ -55,4 +67,5 @@ export const KNOWN_TOPICS = Object.freeze([
   'input.signal.self-observation.rule-hotspot',
   'input.signal.self-observation.compress-loss',
   'input.signal.self-observation.session-integrity',
+  'input.signal.external.repo-diff',
 ]);
