@@ -1,18 +1,18 @@
 /**
- * C2 系统自观测 Channel — P0.1（2026-09-29 修复 schema 错配）。
+ * C2 系统自观测 Channel — v0.2（2026-09-29 实现 metrics 退化检测）。
  *
  * 从现有 AGINT 状态文件提取异常信号，不引入新数据源。
  * 文件路径基于 DSH_HOME 环境变量，不存在时静默返回空。
  *
  * 5 个子源：
  *   1. toolStats 异常    — ok===false 失败率突增 + 单工具连续失败
- *   2. metrics 退化      — P0 需历史基线，暂留空（P1 实现环比）
+ *   2. metrics 退化      — error 类指标快照对比，涨幅 >50% 报告
  *   3. 规则高频命中      — 从 tool_stats 统计 errorKind==='denied' 频率
  *   4. 压缩丢失          — 调用 agint.compressGuard.stats()
- *   5. session 完整性    — P0 留接口
+ *   5. session 完整性    — P2 留接口（需 session/event 事件流）
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
@@ -72,7 +72,6 @@ function detectToolAnomaly() {
   const failed = recent.filter((r) => r.ok === false);
   const failRate = failed.length / recent.length;
   if (failRate > 0.15) {
-    // 按 errorKind 分组，提供上下文
     const byKind = {};
     for (const f of failed) {
       const k = f.errorKind || '(unclassified)';
@@ -111,7 +110,6 @@ function detectToolAnomaly() {
         maxStreakTool = r.tool;
       }
     } else {
-      // 连续失败被成功调用打断
       break;
     }
   }
@@ -136,16 +134,82 @@ function detectToolAnomaly() {
   return signals;
 }
 
+// ── 子源 2：metrics 退化 ──────────────────────────────────────────────────
+
+const ERROR_METRIC_KEYS = /blocked|rejected|fail|error|deny|stale|anomaly/i;
+
+function metricsSnapshotFile() {
+  return join(dshHome(), 'storages', 'agint_input_gateway_metrics_snapshot.json');
+}
+
+function loadMetricsSnapshot() {
+  try {
+    if (!existsSync(metricsSnapshotFile())) return {};
+    return JSON.parse(readFileSync(metricsSnapshotFile(), 'utf8'));
+  } catch { return {}; }
+}
+
+function saveMetricsSnapshot(snap) {
+  try {
+    const dir = join(dshHome(), 'storages');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(metricsSnapshotFile(), JSON.stringify(snap, null, 2), 'utf8');
+  } catch { /* 软降级 */ }
+}
+
 /**
  * 子源 2：metrics 退化
  *
- * 真实 schema：{unit, global, tables: {tableName: {recordId: {id,key,label,value,unit,meta,ts}}}}
- * P0：时间序列数据需要历史基线才能检测"退化"，当前没有环比能力。
- * TODO P1：对比最近两条同 key 记录，value 下降 >20% 时报告。
+ * tables.metric 下按时间追加 {id, key, label, value, unit, meta, ts}。
+ * 取 error 类指标的最新值，与上次快照对比。
+ * 触发：当前值 > 上次值 × 1.5 且差值 > 5。
  */
 function detectMetricRegression() {
-  // P0 暂留空——没有历史基线就检测"退化"是伪信号
-  return [];
+  const metrics = safeReadJson(join(storagesDir(), 'agint_metrics.json'));
+  if (!metrics?.tables?.metric) return [];
+
+  // 取每个 error 类 key 的最新记录
+  const latestByKey = {};
+  for (const [, rec] of Object.entries(metrics.tables.metric)) {
+    if (!ERROR_METRIC_KEYS.test(rec.key)) continue;
+    const existing = latestByKey[rec.key];
+    if (!existing || (rec.ts || '') > (existing.ts || '')) {
+      latestByKey[rec.key] = rec;
+    }
+  }
+
+  const prev = loadMetricsSnapshot();
+  const newSnap = {};
+  const signals = [];
+
+  for (const [key, rec] of Object.entries(latestByKey)) {
+    newSnap[key] = rec.value;
+    const old = prev[key];
+    if (typeof old !== 'number' || old === 0) continue; // 首次记录不报告
+    const increase = rec.value - old;
+    if (increase > 5 && rec.value > old * 1.5) {
+      signals.push({
+        signalId: `metric-regression-${key}-${Date.now()}`,
+        source: 'metrics',
+        signalType: 'metric.regression',
+        payload: {
+          metricKey: key,
+          previousValue: old,
+          currentValue: rec.value,
+          increase: Math.round(increase * 100) / 100,
+          ratio: Math.round((rec.value / old) * 100) / 100,
+          note: `指标 ${key} 从 ${old} 涨到 ${rec.value}（×${(rec.value / old).toFixed(1)}）`,
+        },
+        confidence: 0.6,
+        relevance: 0.6,
+        occurredAt: new Date().toISOString(),
+        rawRef: join(storagesDir(), 'agint_metrics.json'),
+      });
+    }
+  }
+
+  saveMetricsSnapshot(newSnap);
+  return signals;
 }
 
 /**
@@ -154,8 +218,6 @@ function detectMetricRegression() {
  * 从 tool_stats 统计 errorKind === 'denied' 的频率。
  * 真实数据：全量 9277 条里 denied=4（0.04%），基线 ≈ 0。
  * 阈值：最近 200 条里 denied ≥1 就报告——基线是 0，任何一次规则拒绝都值得注意。
- *
- * 不再扫描 rules.json 的静态配置数量——那是配置状态，不是异常。
  */
 function detectRuleHotspot() {
   const recent = readRecentToolStats(200);
@@ -164,7 +226,6 @@ function detectRuleHotspot() {
   const denied = recent.filter((r) => r.errorKind === 'denied');
   if (denied.length < 1) return [];
 
-  // 看被 denied 的是什么工具
   const byTool = {};
   for (const d of denied) {
     byTool[d.tool] = (byTool[d.tool] || 0) + 1;
@@ -190,7 +251,6 @@ function detectRuleHotspot() {
 /**
  * 子源 4：压缩丢失
  * 通过 ctx 获取 agint.compressGuard service，调用 stats()。
- * 如果 service 不可用，返回空。
  */
 function detectCompressLoss(ctx) {
   const compressGuard = ctx?.services?.compressGuard;
@@ -223,7 +283,7 @@ function detectCompressLoss(ctx) {
 
 /**
  * 子源 5：session 完整性
- * P0 留接口。TODO P1：通过 session/event 事件检测中断/超时会话。
+ * P2 留接口。需 session/event 事件流。
  */
 function detectSessionIntegrity() {
   return [];
@@ -237,10 +297,6 @@ export const selfObservationChannel = {
   type: CHANNEL_TYPES.SELF_OBSERVATION,
   cron: C2_CRON,
 
-  /**
-   * @param {object} ctx
-   * @param {object} [ctx.services] — 可选的 host services（compressGuard 等）
-   */
   async fetch(ctx) {
     const signals = [
       ...detectToolAnomaly(),
@@ -259,12 +315,12 @@ export const selfObservationChannel = {
       subSources: 5,
       detectors: {
         toolAnomaly: { active: true, schema: 'ok===false', threshold: 'failRate>15% or streak>=3' },
-        metricRegression: { active: false, reason: 'P1: needs historical baseline' },
+        metricRegression: { active: true, schema: 'error-metric snapshot diff', threshold: 'current>prev*1.5 & increase>5' },
         ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=1 in last 200 (baseline=0)' },
         compressLoss: { active: true, depends: 'agint.compressGuard' },
-        sessionIntegrity: { active: false, reason: 'P1: needs session/event' },
+        sessionIntegrity: { active: false, reason: 'P2: needs session/event stream' },
       },
-      note: 'v0.1.1: fixed schema mismatch (ok field not status/error; denied from tool_stats not rules.json)',
+      note: 'v0.2: metricRegression implemented via snapshot diff; only sessionIntegrity remains P2',
     };
   },
 };

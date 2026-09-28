@@ -215,18 +215,51 @@ function apply(ctx) {
       if (typeof subscribe !== 'function') return; // 软降级
 
       const unsubscribe = subscribe(
-        { subscriber: 'agint-memory', topics: ['input.signal.external.repo-diff'], mode: 'async' },
+        {
+          subscriber: 'agint-memory',
+          topics: [
+            'input.signal.external.repo-diff',
+            'input.signal.self-observation.tool-anomaly',
+            'input.signal.self-observation.rule-hotspot',
+            'input.signal.self-observation.metric-regression',
+            'input.signal.self-observation.compress-loss',
+          ],
+          mode: 'async',
+        },
         async (envelope) => {
           const p = envelope?.payload ?? {};
-          if (!p.repoId || !p.newHead) return;
+          const topic = envelope?.topic || '';
           try {
+            let content = '';
+            let confidence = 0.6;
+
+            if (topic === 'input.signal.external.repo-diff') {
+              if (!p.repoId || !p.newHead) return;
+              content = `仓库 ${p.repoLabel || p.repoId} 更新: ${p.oldHead} → ${p.newHead}` +
+                (p.newCommitCount ? ` (+${p.newCommitCount} commits)` : '') +
+                `\n最新: ${p.latestCommit || '(无 message)'}`;
+              confidence = 0.7;
+            } else if (topic === 'input.signal.self-observation.tool-anomaly') {
+              content = `工具异常: ${p.note || JSON.stringify(p)}`;
+              confidence = 0.8;
+            } else if (topic === 'input.signal.self-observation.rule-hotspot') {
+              content = `规则拒绝: ${p.note || JSON.stringify(p)}`;
+              confidence = 0.7;
+            } else if (topic === 'input.signal.self-observation.metric-regression') {
+              content = `指标退化: ${p.note || JSON.stringify(p)}`;
+              confidence = 0.6;
+            } else if (topic === 'input.signal.self-observation.compress-loss') {
+              content = `压缩护栏异常: ${p.status || ''} ${p.note || ''}`;
+              confidence = 0.9;
+            } else {
+              return;
+            }
+
             await write({
               type: 'pattern',
-              content: `仓库 ${p.repoLabel || p.repoId} 更新: ${p.oldHead} → ${p.newHead}` +
-                (p.newCommitCount ? ` (+${p.newCommitCount} commits)` : '') +
-                `\n最新: ${p.latestCommit || '(无 message)'}`,
-              confidence: 0.7,
-              evidence: `signalId=${envelope?.signalId || '?'}; rawRef=${p.rawRef || ''}`,
+              content,
+              confidence,
+              evidence: `signalId=${envelope?.signalId || '?'}; topic=${topic}`,
               level: 'L1',
             });
           } catch { /* 写入失败不阻塞总线 */ }
