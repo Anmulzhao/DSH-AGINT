@@ -354,10 +354,10 @@ export class InputGateway {
 
   // ── 状态查询 ────────────────────────────────────────────────────────────
 
-  getStatus() {
+  async getStatus() {
     const channels = [];
     for (const [id, ch] of this._channels) {
-      channels.push(this.getChannelStatus(id));
+      channels.push(await this.getChannelStatus(id));
     }
     return {
       gateway: PLUGIN_NAME,
@@ -368,10 +368,10 @@ export class InputGateway {
     };
   }
 
-  getChannelStatus(channelId) {
+  async getChannelStatus(channelId) {
     const state = this._channelState.get(channelId) || {};
     const counters = this._counters.get(channelId) || emptyCounters(channelId);
-    return {
+    const result = {
       channelId,
       channelType: state.channelType,
       enabled: state.enabled !== false,
@@ -381,6 +381,12 @@ export class InputGateway {
       lastError: state.lastError,
       counters: { ...counters },
     };
+    // 附加 Channel 自报健康（如 adversarial 的 initError）
+    const ch = this._channels.get(channelId);
+    if (ch && typeof ch.health === 'function') {
+      try { result.health = await ch.health(); } catch {}
+    }
+    return result;
   }
 
   // ── 写操作（走 rule_check ask 门禁由 tools 层负责）─────────────────────
@@ -423,3 +429,5 @@ export class InputGateway {
     } catch { /* 软降级 */ }
   }
 }
+
+

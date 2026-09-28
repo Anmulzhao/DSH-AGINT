@@ -15,6 +15,7 @@ const CHANNEL_TYPE = 'adversarial';
 // 事件队列（内存态，fetch 时清空）
 let _queue = [];
 let _subscribed = false;
+let _initError = null;
 
 /**
  * 初始化事件订阅。在 Gateway 注册后由 index.js 调用。
@@ -30,14 +31,13 @@ function initSubscriptions(ctx) {
       if (ns && typeof ns.subscribe === 'function') subscribe = ns.subscribe;
     }
     if (typeof subscribe !== 'function') {
-      console.warn('[agint-input-gateway] adversarial: eventBus subscribe unavailable');
+      _initError = 'eventBus subscribe unavailable: ctx.get(agint.eventBus.subscribe) returned null';
+      console.warn('[agint-input-gateway] adversarial: ' + _initError);
       return;
     }
 
-    _subscribed = true; // 确认拿到 subscribe 函数后才标记
-
-    const disposer = subscribe(
-      {
+    let disposer;
+    disposer = subscribe({
         subscriber: 'agint-input-gateway/adversarial',
         topics: [
           'diagnosis.completed',
@@ -119,11 +119,16 @@ function initSubscriptions(ctx) {
       },
     );
 
+    // 注册成功后才置位：取到 subscribe 函数不足以说明订阅成立，
+    // subscribe() 自身抛错（schema 校验失败 / sync 配额超限）同样会让 health() 假绿。
+    _subscribed = true;
+
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => { try { disposer(); } catch {} });
     }
   } catch (e) {
-    console.warn('[agint-input-gateway] adversarial init error:', e?.message ?? e);
+    _initError = e?.message ?? String(e);
+    console.warn('[agint-input-gateway] adversarial init error:', _initError);
   }
 }
 
@@ -148,6 +153,7 @@ export const adversarialChannel = {
     return {
       channelId: CHANNEL_ID,
       status: _subscribed ? 'ok' : 'degraded',
+      initError: _initError,
       queuedSignals: _queue.length,
       detectors: {
         counterfactual: { active: true, source: 'diagnosis.completed' },
@@ -159,4 +165,9 @@ export const adversarialChannel = {
 };
 
 export { initSubscriptions };
+
+
+
+
+
 

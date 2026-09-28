@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agint-input-gateway: preset-scoped tools。
  *
  * 只读（裸调）：input_gateway_status / input_gateway_channel_status
@@ -167,3 +167,4 @@ function apply(ctx) {
 }
 
 export { name, inject, apply };
+

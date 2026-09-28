@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Gateway 核心逻辑测试：过滤 / 去重 / 噪声抑制 / 配额 / topic 构建 / payload 截断 / 写操作。
  *
  * 不挂 Cordis、不真打开 storage domain——直接实例化 InputGateway，注入 mock table 和 publish。
@@ -35,10 +35,10 @@ const mockChannel = {
   async fetch() { return []; },
 };
 
-test('注册 Channel：基本属性正确', () => {
+test('注册 Channel：基本属性正确', async () => {
   const { gw } = makeGateway();
   gw.registerChannel(mockChannel);
-  const status = gw.getStatus();
+  const status = await gw.getStatus();
   assert.equal(status.channelCount, 1);
   assert.equal(status.channels[0].channelId, 'test-channel');
   assert.equal(status.channels[0].channelType, 'self-observation');
@@ -135,28 +135,28 @@ test('payload 截断：超过 2KB 的 payload 被截断', () => {
   // （published 数组里的 payload.payload 是截断后的）
 });
 
-test('写操作 setQuota：正常设置和非法值', () => {
+test('写操作 setQuota：正常设置和非法值', async () => {
   const { gw } = makeGateway();
   gw.registerChannel(mockChannel);
 
   const r = gw.setQuota('test-channel', 25);
   assert.equal(r.quota, 25);
-  assert.equal(gw.getChannelStatus('test-channel').quota, 25);
+  assert.equal((await gw.getChannelStatus('test-channel')).quota, 25);
 
   assert.throws(() => gw.setQuota('test-channel', -1));
   assert.throws(() => gw.setQuota('test-channel', 9999));
   assert.throws(() => gw.setQuota('nonexistent', 10));
 });
 
-test('写操作 setChannelEnabled：开关 Channel', () => {
+test('写操作 setChannelEnabled：开关 Channel', async () => {
   const { gw } = makeGateway();
   gw.registerChannel(mockChannel);
 
-  assert.equal(gw.getChannelStatus('test-channel').enabled, true);
+  assert.equal((await gw.getChannelStatus('test-channel')).enabled, true);
   gw.setChannelEnabled('test-channel', false);
-  assert.equal(gw.getChannelStatus('test-channel').enabled, false);
+  assert.equal((await gw.getChannelStatus('test-channel')).enabled, false);
   gw.setChannelEnabled('test-channel', true);
-  assert.equal(gw.getChannelStatus('test-channel').enabled, true);
+  assert.equal((await gw.getChannelStatus('test-channel')).enabled, true);
 });
 
 test('eventBus 返回 accepted=false 时不抛错', () => {
@@ -186,3 +186,6 @@ test('eventBus 不可用时软降级', () => {
   // eventBus 不可用时 emitted=0（publish 返回 false）
   assert.equal(result.emitted, 0);
 });
+
+
+
