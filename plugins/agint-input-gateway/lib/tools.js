@@ -62,7 +62,10 @@ function apply(ctx) {
           + `  type=${v.channelType} enabled=${v.enabled} quota=${v.quota}\n`
           + `  lastFetch=${v.lastFetchAt ?? 'never'} duration=${v.lastFetchDurationMs ?? '-'}ms\n`
           + `  counters: ${JSON.stringify(v.counters ?? {})}`
-          + (v.lastError ? `\n  lastError: ${v.lastError}` : ''),
+          + (v.lastError ? `\n  lastError: ${v.lastError}` : '')
+          // Channel 自报健康（如 adversarial 的 initError / status）。
+          // gateway.getChannelStatus 已挂在返回值上，不渲染 = 假绿：算出来了但看不见。
+          + (v.health ? `\n  health: ${JSON.stringify(v.health)}` : ''),
       }],
     },
     async execute(args) {
