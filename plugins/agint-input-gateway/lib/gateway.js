@@ -205,6 +205,7 @@ export class InputGateway {
       state.lastError = e.message || String(e);
       state.lastFetchAt = new Date(startedAt).toISOString();
       state.lastFetchDurationMs = this._now() - startedAt;
+      counters.lastFetchAt = state.lastFetchAt;
       this._counters.set(channelId, counters);
       this._channelState.set(channelId, state);
       await this._persistCounters(channelId, counters);
@@ -216,6 +217,7 @@ export class InputGateway {
     state.lastFetchAt = new Date(startedAt).toISOString();
     state.lastFetchDurationMs = this._now() - startedAt;
     state.lastError = null;
+    counters.lastFetchAt = state.lastFetchAt;
 
     // 处理信号（过滤/去重/配额/路由/发布）
     const result = this.processSignals(signals, channel);
