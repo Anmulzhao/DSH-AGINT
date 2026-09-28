@@ -83,14 +83,12 @@ export class InputGateway {
 
   /**
    * 启动定时调度。返回 disposer。
-   * @param {object} cronExprs — { channelId: 'm h dom mon dow' }（P0 简化：只存下次 fetch 时间）
+   * @param {object} cronExprs — { channelId: 'm h dom mon dow' }
    */
   startScheduler(cronExprs) {
-    // P0 简化：不解析完整 cron，而是存每个 Channel 的 nextFetchAt
-    // C2 默认每日 02:00，force_fetch 可手动触发
     this._nextFetch = new Map();
     for (const [channelId, expr] of Object.entries(cronExprs || {})) {
-      this._nextFetch.set(channelId, this._computeNextDaily(expr));
+      this._nextFetch.set(channelId, this._computeNextCron(expr));
     }
 
     this._timer = setInterval(() => {
@@ -104,15 +102,34 @@ export class InputGateway {
     };
   }
 
-  /** P0 简化：只支持 "0 H * * *" 每日格式 */
-  _computeNextDaily(expr) {
+  /**
+   * 计算下一次 fetch 时间。
+   * 支持格式: "m h * * dow"，dow=-1/缺省 = 每天，dow=0 = 周日。
+   */
+  _computeNextCron(expr) {
     const parts = String(expr || '').trim().split(/\s+/);
+    const minute = parseInt(parts[0] || '0', 10);
     const hour = parseInt(parts[1] || '2', 10);
+    const dow = parts[4] ? parseInt(parts[4], 10) : -1; // -1 = 每天
     const now = new Date(this._now());
     const next = new Date(now);
-    next.setHours(hour, 0, 0, 0);
-    if (next.getTime() <= now.getTime()) {
-      next.setDate(next.getDate() + 1);
+    next.setHours(hour, minute, 0, 0);
+
+    if (dow >= 0 && !Number.isNaN(dow)) {
+      // 每周模式：找到下一个匹配 dow 的日期
+      // JavaScript: 0=周日, 1=周一, ..., 6=周六（与 cron 一致）
+      let daysAhead = (dow - next.getDay() + 7) % 7;
+      if (daysAhead === 0 && next.getTime() <= now.getTime()) {
+        daysAhead = 7; // 今天已过，等下周
+      }
+      if (daysAhead > 0) {
+        next.setDate(next.getDate() + daysAhead);
+      }
+    } else {
+      // 每日模式
+      if (next.getTime() <= now.getTime()) {
+        next.setDate(next.getDate() + 1);
+      }
     }
     return next.getTime();
   }
@@ -129,7 +146,7 @@ export class InputGateway {
         // 计算下一次
         const channel = this._channels.get(channelId);
         if (channel && channel.cron) {
-          this._nextFetch.set(channelId, this._computeNextDaily(channel.cron));
+          this._nextFetch.set(channelId, this._computeNextCron(channel.cron));
         }
       }
     }
@@ -190,6 +207,8 @@ export class InputGateway {
       state.lastFetchDurationMs = this._now() - startedAt;
       this._counters.set(channelId, counters);
       this._channelState.set(channelId, state);
+      await this._persistCounters(channelId, counters);
+      await this._persistChannelState(channelId, state);
       this._debug(`fetch ${channelId} error: ${state.lastError}`);
       return { ok: false, error: state.lastError, signals: 0 };
     }
@@ -207,15 +226,16 @@ export class InputGateway {
     this._counters.set(channelId, counters);
     this._channelState.set(channelId, state);
 
-    // 持久化 counters
+    // 持久化 counters 和 channel_state（lastFetchAt 不能只在内存）
     await this._persistCounters(channelId, counters);
+    await this._persistChannelState(channelId, state);
 
     this._debug(`fetch ${channelId}: in=${signals.length} emitted=${result.emitted} filtered=${result.filtered} dedup=${result.deduplicated}`);
     return { ok: true, in: signals.length, ...result };
   }
 
   _channelCtx(channelId) {
-    // P0：Channel 需要的 ctx 最小集。后续按需扩展。
+    // Channel 需要的 ctx 最小集。后续按需扩展。
     return {
       channelId,
       debug: this._debug,
