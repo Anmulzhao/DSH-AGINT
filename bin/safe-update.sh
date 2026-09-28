@@ -18,6 +18,21 @@ set -uo pipefail   # 不加 -e：希望收集所有错误后统一报告
 
 AGINT_HOME="${AGINT_HOME:-$HOME/projects/AGINT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+
+# 2026-09-28 根因 fix（本机实测取证）。Windows 上 DSH 运行时注入的 DSH_HOME 是
+# 反斜杠路径（实测 DSH_HOME=C:\Users\Administrator\.dsh，而 $HOME=/c/Users/...），
+# 于是所有派生路径都成了混合分隔符，引发两个互相掩盖的故障：
+#   1) compgen -G "$PLUGINS_DIR/agint-*" 恒 MISS → snapshot_plugins 走「跳过」分支
+#      只打一行 warning 却 exit 0 → 改了源码却没回滚点，调用方以为快照成功了；
+#   2) tar czf "$BACKUP_ROOT/..." 把 "C:" 当成远程主机前缀解析 →
+#      `Cannot connect to C: resolve failed`，tar exit 128，但脚本无 set -e 仍继续
+#      并打印 ✓ —— 假成功。
+# 在源头归一化成 POSIX 路径，一次修好全部派生变量（BACKUP_ROOT / PLUGINS_DIR / …）。
+if command -v cygpath >/dev/null 2>&1; then
+  DSH_HOME="$(cygpath -u "$DSH_HOME")"
+  AGINT_HOME="$(cygpath -u "$AGINT_HOME")"
+fi
+
 BACKUP_ROOT="$DSH_HOME/.agint-backups"
 TS="$(date +%Y%m%d-%H%M%S)"
 # 脚本自定位：不依赖 cwd / AGINT_HOME（本机仓库实际在 D:/DSH/project/DSH-AGINT）
@@ -54,13 +69,25 @@ snapshot_plugins() {
   # 仍由外层 shell 在 AGINT_HOME 提前展开,会把根目录的 agint-*.bundle 等非 plugin
   # 文件错配进来,导致 tar 报"无法 stat"或打包为空。改为 subshell + cd 进 PLUGINS_DIR
   # 后再展开 glob,确保只匹配真实的 plugin 子目录。
-  if compgen -G "$PLUGINS_DIR/agint-*" >/dev/null; then
-    ( cd "$PLUGINS_DIR" && tar czf "$BACKUP_ROOT/agint-plugins-$TS.tar.gz" \
-        --exclude='*.bak-*' agint-* )
-    ok "plugins → $BACKUP_ROOT/agint-plugins-$TS.tar.gz"
-  else
-    log "无 agint-* 插件，跳过"
+  #
+  # 2026-09-28 fix (本机实测取证): 判据 compgen -G "$PLUGINS_DIR/agint-*" 在 Windows 上
+  # 恒 MISS —— DSH 运行时注入的 DSH_HOME 是反斜杠路径(C:\Users\x\.dsh),拼出的混合分隔符
+  # glob bash 匹配不到。实测同一时刻: compgen MISS 而 (cd 后 ls -d agint-*/) = 35。
+  # 后果: 走 else 分支只打一行 warning 就 exit 0 ——「改了源码却没回滚点」,调用方却以为
+  # 快照拍成功了。修复两处: (1) 判据改成先 cd 进目录再 ls -d; (2) 拍不到就 fail 而非
+  # warning —— 安全网缺失是危险信号,不该当可跳过项。
+  local n
+  if ! cd "$PLUGINS_DIR" 2>/dev/null; then
+    fail "插件目录 cd 失败,plugins 快照未生成,已中止(不会带着无回滚点继续): $PLUGINS_DIR"
   fi
+  n="$(ls -d agint-*/ 2>/dev/null | wc -l)"
+  if [ "${n:-0}" -eq 0 ]; then
+    fail "插件目录存在但未找到 agint-* 子目录,plugins 快照未生成,已中止: $PLUGINS_DIR"
+  fi
+  ( cd "$PLUGINS_DIR" && tar czf "$BACKUP_ROOT/agint-plugins-$TS.tar.gz" \
+      --exclude='*.bak-*' agint-* ) \
+    || fail "tar 打包失败,plugins 快照未生成,已中止: $BACKUP_ROOT/agint-plugins-$TS.tar.gz"
+  ok "plugins → $BACKUP_ROOT/agint-plugins-$TS.tar.gz（$n 个插件）"
 }
 
 snapshot_storages() {

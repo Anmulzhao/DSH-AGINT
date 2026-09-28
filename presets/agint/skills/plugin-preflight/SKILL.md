@@ -1,13 +1,15 @@
 ---
 name: plugin-preflight
-description: "新增 / 修改 agint-* 插件挂到 cordis.patch.yml 前的强制准入工作流。10 分钟搞定，比挂上去再崩 30 分钟排障便宜十倍。涉及任何 plugin 源码变更、新插件创建、cordis.patch.yml 新增 - id 行时调用。"
+description: "agint-* 插件挂载 / 源码变更的强制准入工作流。10 分钟搞定，比挂上去再崩 30 分钟排障便宜十倍。涉及任何 plugin 源码变更、存量插件改常量/provider/默认值、新插件创建、cordis.patch.yml 新增 - id 行时调用。"
 tools:
   - bin/plugin-check.sh
+  - bin/check-wiring.mjs
   - safe-update.sh
   - node
 triggers:
   - "新增/修改 agint-* 插件挂到 cordis.patch.yml 前"
   - "任何 plugin 源码变更、新插件创建"
+  - "改存量插件的常量 / provider / 默认模型值"
   - "cordis.patch.yml 新增 - id 行"
 related_skills:
   - editing-cordis-compositions
@@ -18,7 +20,14 @@ related_skills:
 
 # 插件准入预检（Plugin Preflight）
 
-把任何 agint-* 插件挂到 `cordis.patch.yml` 之前必须走完这条流水线。本 skill 是 PLUGIN-SPEC 8 维度的「**事中**」兜底，**事前**已经做了还不够 —— 因为 lint 只能看到静态源码，看不到运行时 waterfall 契约。
+**适用两种场景**（2026-09-28 补充）：
+
+| 场景 | 典型动作 | 差异 |
+|---|---|---|
+| **A. 挂新插件** | 新建 `plugins/agint-<name>/`、往 `cordis.patch.yml` 加 `- id` 行 | 走满 5 步 |
+| **B. 改存量插件** | 改已挂载插件的常量 / provider / 默认值 | 第 2 步通常**免写**（已有 smoke），但第 5 步的**双副本同步是硬要求**，见下 |
+
+本 skill 是 PLUGIN-SPEC 8 维度的「**事中**」兜底，**事前**已经做了还不够 —— 因为 lint 只能看到静态源码，看不到运行时 waterfall 契约。
 
 ## 为什么需要 preflight
 
@@ -125,14 +134,52 @@ node plugins/agint-<name>/test/smoke.mjs
 - `package.json` 里有 semver 版本号
 - 没有裸 `setInterval` / `setTimeout` —— 必须 `ctx.effect` 注册 disposer
 
-### 第 5 步：safe-update 走完整挂载流程
+### 第 5 步：走完整挂载 / 上线流程
+
+**先分清编辑目标**（2026-09-28 实测澄清）。仓库源码与 host 部署位是**两份独立副本**，不是链接：
+
+```
+仓库真源  <repo>/plugins/agint-*/lib/*.js
+mirror 位  $DSH_HOME/profiles/web/plugins/agint-*/lib/*.js        ← preset tools 引用
+bundle 位  $DSH_HOME/profiles/web/node_modules/@agint/host/plugins/agint-*/lib/*.js  ← 服务真正加载
+```
+
+**正确顺序：改仓库 → 同步到 mirror 位 + bundle 位 → 重启。**
+只改 host 两份 = 下次部署静默回退；只改仓库不同步 = 服务跑的仍是旧代码且**不报错**。
+
+> ⚠️ 两份副本只同步一处 = **静默分叉**（两个模块实例、状态不共享、不抛错）。`bin/check-wiring.mjs` 查 E 会报 `DIVERGED` 并 exit 1。改完必跑。
 
 ```sh
 bin/safe-update.sh smoke         # 当前 prod 状态冒烟
-bin/safe-update.sh mount-patch   # 拍 4 份快照（patch / preset / plugins tar / storages）
-# 编辑 profile-patches/web/cordis.patch.yml（按 AGENTS.md 红线：顶层 patch 改动必须走 SOP）
-bin/safe-update.sh restart       # 优雅重启（SIGTERM，让 fiber dispose 跑完）
-cat sentinel.lease                # 看 at < 30s
+bin/safe-update.sh edit-source   # 改源码时用这个（拍快照）
+bin/safe-update.sh mount-patch   # 改 cordis.patch.yml 时用这个（拍快照）
+# 编辑仓库 <repo>/plugins/... 与 <repo>/profile-patches/web/cordis.patch.yml
+# 然后同步双副本，并用 check-wiring 验证：
+node bin/check-wiring.mjs         # 查 E 双副本 + 查 H 仓库↔部署，查 I 漂移插件 smoke
+```
+
+**快照必须自己核实产物。** 2026-09-28 修掉一个静默失效：`compgen -G` 对 Windows 混合分隔符路径恒 MISS，`snapshot_plugins` 走「跳过」分支只打一行 warning 却 **exit 0** —— 改了源码却没回滚点，而调用方以为拍成功了。同源第二个坑：`tar` 把 `C:` 当远程主机前缀 → `Cannot connect to C: resolve failed`，因脚本无 `set -e` 仍打印 ✓（假成功）。两处已在 `bin/safe-update.sh` 修掉（`cygpath` 归一化 + 判据改 `cd` 后 `ls -d` + tar 失败即 `fail`），但**升级到旧版脚本的机器上仍会复发**，所以照例核对：
+
+```sh
+ls -la "$DSH_HOME/.agint-backups"/agint-plugins-*.tar.gz | tail -1
+tar tzf <上面那个 tar> | grep -c '^agint-[^/]*/$'   # 应等于已挂载插件数（本机 35）
+```
+
+**重启 —— 首选 `restart_request` 工具，不要用 `safe-update.sh restart`：**
+
+```sh
+# ✅ 首选：restart_request 工具（agint-restart 插件 v0.2.0+）
+#   三重护栏（confirm + 冷却期 + 熔断）、dryRun 可先看计划、--no-open、sideEffect 回报
+# ❌ safe-update.sh restart：Windows Git Bash 缺 pgrep/pkill
+#   graceful_stop_dsh 空转不报错 → start_dsh 拉起第二个实例抢 3080
+# ⚠️ bin/restart-runbook.ps1：能跑，但插件 README 明确写它已被 restart_request 取代
+```
+
+重启后验收用 `restart_status` 的时间戳差，而不是 sentinel.lease（后者在部分机器上不生成）：
+
+```
+lastRestart=07:43:49.992Z   boot=07:44:00.352Z   → 启动延迟 ≈10.4s（红线 <30s）
+lastResult=ok=true ready=true
 ```
 
 崩了就 `plugin → patch → preset` 倒序回滚（详见 `docs/operations/safe-update-sop.md`）。
@@ -147,7 +194,13 @@ cat sentinel.lease                # 看 at < 30s
 
 ## 输出契约
 
-preflight 完成的标志是 `bin/plugin-check.sh --all` 全绿 + smoke exit 0 + 第 5 步 4 份快照齐。在 SOP 工具栈里留任何一步没做都等于"裸挂"。
+preflight 完成的标志是：`bin/plugin-check.sh --all` 无**新增** fail（既存 fail 记基线再对比，不是要求绝对 0）+ smoke exit 0 + `check-wiring.mjs` PASS + 第 5 步快照**经 tar 条目数核实**齐备。
+
+> 基线对比：本机仓库有 **4 个既存 fail**（1×K19 schema + 3×manifest 缺失），与本次改动无关。判据是「改动前后 fail 数与清单是否一致」，不是「必须 0」。
+
+**改存量插件（场景 B）另加一条硬验收：真实调用一次，证明默认路径解析正确。** smoke 与单测证明不了这件事 —— 断言常量的单测在改常量后必然自证通过，smoke 全是 mock，check-wiring 只管文件一致性。只有真实 LLM call 才能证明运行时路由到了新值。
+
+例：`dream_verify_consolidation` 返回 `mode=llm · schemaOk=true · provider=… model=…`，`mode=llm` 即真调用（非兜底）。
 
 ## 关联
 

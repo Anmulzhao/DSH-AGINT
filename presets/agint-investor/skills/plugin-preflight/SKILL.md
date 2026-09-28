@@ -25,7 +25,9 @@ related_skills:
 ```sh
 bin/plugin-check.sh --all
 node bin/_verify-dim9.mjs plugins/agint-<name>/lib/index.js
-bin/safe-update.sh smoke && bin/safe-update.sh mount-patch
+bin/safe-update.sh smoke && bin/safe-update.sh edit-source   # 改源码 / mount-patch 改 patch
+node bin/check-wiring.mjs                                   # 双副本 + 仓库↔部署 校验
+# 重启用 restart_request 工具，不用 safe-update.sh restart（Windows 缺 pgrep 会拉起双实例）
 ```
 
 详见母 preset `presets/agint/skills/plugin-preflight/SKILL.md`。
