@@ -1,5 +1,29 @@
 # Changelog — agint-rules
 
+## [0.2.1] — 2026-09-28
+
+### Fixed — lint() 不再误报 epistemic 三规则为 duplicate-pattern
+
+**根因**：`lint()` 的 pairwise 去重段（动作层正则通道）从未排除 `claim: true`
+的规则。三条 claim 种子在 `seedEpistemic` 时被显式注入占位 pattern `(?!)`
+（schema 通过用），三条 pattern 字符串字面相等，导致 lint 把 epistemic 三规则
+两两报为 `duplicate-pattern`，每周被 `agint-aesthetic-oracle` 当作"冗余度"
+扣分（redundancy 7.55%，满扣 20 分）。
+
+**修法**：lint 的 pairwise 段加一行
+```js
+if (a.claim || b.claim) continue;   // 认知层规则走独立 engine，不参与动作层去重
+```
+
+**验证**：
+- 单元 smoke 4/4 通过（plugin-preflight §2 兜底）
+- `node test/smoke.mjs` 退出 0
+- 旧的 23 条动作型规则回归不变（smoke 中 fake-dup-a<+fake-dup-b 仍被报 duplicate）
+- 实测 oracle weekly 在修后冗余度维从 7.55% → 0%（待 oracle 跑后复验）
+
+**回滚**：单行 delete `if (a.claim || b.claim) continue;` 即可。lint 行为退回到
+误报 epistemic 三规则但动作层逻辑零影响。
+
 ## [0.2.0] — 2026-09-21
 
 ### Added — 断言型护栏（epistemic guard）

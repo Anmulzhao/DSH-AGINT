@@ -674,12 +674,18 @@ function apply(ctx) {
         if (re === null) issues.push({ ruleId: r.id, kind: 'invalid-pattern', detail: r.pattern });
       }
       // Pairwise: same tool + same action + overlapping pattern (rough).
+      //
+      // 2026-09-28 修：跳过 `claim: true` 的规则——它们走 epistemic 通道（认知层），
+      // 不走 pattern 正则通道；seed 注入时显式占位 `(?!)` 是为了让 schema 通过，
+      // 不参与动作层去重判定。详见 plugins/agint-rules/CHANGELOG.md 的 v0.2.1。
       for (let i = 0; i < all.length; i++) {
         for (let j = i + 1; j < all.length; j++) {
           const a = all[i]; const b = all[j];
           if (a.tool !== b.tool) continue;
           if (a.action !== b.action) continue;
           if (a.enabled !== b.enabled) continue;
+          // 认知层规则（epistemic guard）拥有独立的 engine，不与动作层去重。
+          if (a.claim || b.claim) continue;
           if (a.pattern === b.pattern) {
             issues.push({ ruleId: a.id, kind: 'duplicate-pattern', with: b.id });
           }
