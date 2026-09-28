@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agint-input-gateway — Gateway 核心逻辑。
  *
  * 职责：注册 Channel → 定时/手动 fetch → 过滤去重配额 → 归一化 → 路由发布到 eventBus。
@@ -63,15 +63,10 @@ export class InputGateway {
 
     // 初始化内存态（如果 storage 里有则加载）
     if (!this._channelState.has(channel.id)) {
-      this._channelState.set(channel.id, {
-        channelId: channel.id,
-        channelType: channel.type || CHANNEL_TYPES.SELF_OBSERVATION,
-        enabled: true,
-        quotaOverride: null,
-        lastFetchAt: null,
-        lastFetchDurationMs: null,
-        lastError: null,
-      });
+      this._channelState.set(channel.id, emptyChannelState(
+        channel.id,
+        channel.type || CHANNEL_TYPES.SELF_OBSERVATION,
+      ));
     }
     if (!this._counters.has(channel.id)) {
       this._counters.set(channel.id, emptyCounters(channel.id));
