@@ -22,6 +22,7 @@ import { spec, emptyConfig, packConfig, emptyCounters } from './storage.js';
 
 const name = PLUGIN_NAME;
 const inject = ['storageDomain', 'agint.compressGuard'];
+const optionalInject = ['agint.eventBus.subscribe'];
 
 function apply(ctx, config) {
   const cfg = {
@@ -141,4 +142,6 @@ function apply(ctx, config) {
   });
 }
 
-export { name, inject, apply };
+export { name, inject, optionalInject, apply };
+
+
