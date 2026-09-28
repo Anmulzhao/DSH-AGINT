@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { decayScan, effectiveConfidence, nextLevel, shouldClear } from './decay.js';
 
 const name = 'agint-memory';
-const inject = ['storageDomain'];
+const inject = ['storageDomain', 'agint.eventBus.subscribe'];
 
 const Config = z.object({});
 
@@ -201,6 +201,39 @@ function apply(ctx) {
       }
       return { total, byType, byLevel, avgConfidence: total ? confidenceSum / total : 0 };
     },
+  });
+
+  // ── C5: 订阅 input.signal.* 自动沉淀记忆 ──────────────────────────────
+  void ready.then(async (d) => {
+    if (disposed || !d) return;
+    try {
+      let subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+      if (typeof subscribe !== 'function') {
+        const ns = ctx.get('agint.eventBus');
+        if (ns && typeof ns.subscribe === 'function') subscribe = ns.subscribe;
+      }
+      if (typeof subscribe !== 'function') return; // 软降级
+
+      const unsubscribe = subscribe(
+        { subscriber: 'agint-memory', topics: ['input.signal.external.repo-diff'], mode: 'async' },
+        async (envelope) => {
+          const p = envelope?.payload ?? {};
+          if (!p.repoId || !p.newHead) return;
+          try {
+            await write({
+              type: 'pattern',
+              content: `仓库 ${p.repoLabel || p.repoId} 更新: ${p.oldHead} → ${p.newHead}` +
+                (p.newCommitCount ? ` (+${p.newCommitCount} commits)` : '') +
+                `\n最新: ${p.latestCommit || '(无 message)'}`,
+              confidence: 0.7,
+              evidence: `signalId=${envelope?.signalId || '?'}; rawRef=${p.rawRef || ''}`,
+              level: 'L1',
+            });
+          } catch { /* 写入失败不阻塞总线 */ }
+        },
+      );
+      ctx.effect(() => () => { try { unsubscribe(); } catch {} });
+    } catch { /* 订阅初始化失败不崩 */ }
   });
 }
 
