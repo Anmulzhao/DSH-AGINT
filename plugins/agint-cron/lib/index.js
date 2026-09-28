@@ -33,10 +33,22 @@ const Config = z.object({}).optional();
 // agint-dream fixed by recovering lastSweep from diary mtime. We persist job
 // state to an exclusive `agint_cron` storage domain so a rebooted host restores
 // real last-run timestamps instead of looking never-run.
-const cronStateSchema = z.object({
+// Exported for the regression test that pins the `.nullish()` contract below.
+// Not part of the plugin's runtime surface.
+export const cronStateSchema = z.object({
   lastRunAt: z.string().nullable(),
   lastResult: z.string().nullable(),
   lastError: z.string().nullable(),
+  // Job outcome summary (JSON string). MUST stay `.nullish()`, never `.nullable()`:
+  // zod's `.nullable()` allows a null VALUE but still requires the KEY to be
+  // present, so every record stored before this field existed would fail
+  // `valueSchema.parse` at open (dsh-storage-domain README:94 / lib/index.js:371,
+  // code `invalid-record`). That rejects the whole domain open, which silently
+  // downgrades cron state to in-memory — the exact bug the persistence block
+  // above was written to fix. Adding an optional key needs no version bump for
+  // the same reason: README:153 rejects a spec whose version differs from the
+  // stored one, so `version: 1` below must stay 1.
+  lastResultSummary: z.string().nullish(),
   updatedAt: z.string(),
 });
 
@@ -85,6 +97,7 @@ function apply(ctx) {
     lastRunAt: null,
     lastResult: null,
     lastError: null,
+    lastResultSummary: null,
     running: false,
   }));
   const jobById = new Map(jobs.map((j) => [j.id, j]));
@@ -115,6 +128,9 @@ function apply(ctx) {
       if (rec.lastRunAt) job.lastRunAt = new Date(rec.lastRunAt).getTime();
       if (rec.lastResult === 'ok') job.lastResult = { ok: true, restored: true };
       if (rec.lastError) job.lastError = { message: rec.lastError };
+      // `.nullish()` in cronStateSchema means a record written before this field
+      // existed parses to `undefined` here — normalise to null for the tool face.
+      if (rec.lastResultSummary !== undefined) job.lastResultSummary = rec.lastResultSummary;
     }
   }).catch(() => { /* domain unavailable or empty — jobs stay in-memory-only */ });
 
@@ -159,9 +175,9 @@ function apply(ctx) {
   // 2026-09-18 10:10 wake-up backfill: observe 10:10:54 → release 10:10:55 →
   // aggregate 10:11:30. The pass that *generates* candidates landed 36s AFTER
   // the pass that releases them, so everything it created missed that bus and
-  // waited for the next one (next day 05:15, or the next wake-up) — collapsing
-  // the deliberate 30-minute gap (aggregate 04:45 → release 05:15, see jobs.js)
-  // into roughly a day.
+  // waited for the next one (next day 05:45, or the next wake-up) — collapsing
+  // the deliberate 30-minute gap (aggregate 05:15 → release 05:45, see jobs.js；
+  // 2026-09-28 重排前是 04:45 → 05:15）into roughly a day.
   //
   // A serialised tick can outlive the 60s interval, so re-entrant ticks are
   // suppressed. STALL_MS is the watchdog for a wedged job (e.g. a provider
@@ -229,6 +245,46 @@ function apply(ctx) {
     }
   }
 
+  // Job outcomes were reduced to the single string 'ok' on the way to disk, so
+  // "what did it actually do?" was unanswerable after a restart. This extracts
+  // a small, strictly structural summary: only fields that are provably present
+  // are copied, nothing is inferred, and an unrecognised shape degrades to the
+  // list of keys it returned. Must never throw — a failed summary degrades to
+  // null, per the same "state write must never break the run" rule below.
+  const SUMMARY_MAX_BYTES = 2000;
+  const PREVIEW_MAX = 10;
+
+  function summarizeResult(result) {
+    try {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+      const actions = Array.isArray(result.actions) ? result.actions : null;
+      const report = result.report && typeof result.report === 'object' ? result.report : null;
+      const summary = {};
+      if (report && typeof report.scanned === 'number') summary.scanned = report.scanned;
+      if (report && report.counts && typeof report.counts === 'object') summary.counts = report.counts;
+      if (actions) {
+        summary.actionsTotal = actions.length;
+        summary.actionsPreview = actions.slice(0, PREVIEW_MAX).map((a) => {
+          const o = a && typeof a === 'object' ? a : {};
+          return {
+            id: o.id ?? null,
+            action: o.action ?? null,
+            from: o.from ?? null,
+            to: o.to ?? null,
+            reason: o.reason ?? null,
+          };
+        });
+      }
+      if (Object.keys(summary).length === 0) summary.keys = Object.keys(result).slice(0, 10);
+      const json = JSON.stringify(summary);
+      // Never slice mid-JSON — an unparseable summary is worse than a marker.
+      if (json.length > SUMMARY_MAX_BYTES) return JSON.stringify({ truncated: true, bytes: json.length });
+      return json;
+    } catch {
+      return null;
+    }
+  }
+
   // Best-effort persist of a job's run state to the cron_state domain so a
   // later process restart can hydrate lastRunAt/lastResult/lastError. Failures
   // are swallowed: the in-memory state is authoritative for the current run.
@@ -237,6 +293,7 @@ function apply(ctx) {
       lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
       lastResult: job.lastResult ? 'ok' : null,
       lastError: job.lastError ? job.lastError.message : null,
+      lastResultSummary: job.lastResult ? summarizeResult(job.lastResult.result) : null,
       updatedAt: new Date().toISOString(),
     };
     const table = await stateTable();
@@ -255,6 +312,7 @@ function apply(ctx) {
         nextRunAt: nextFire(j.parsed, new Date(j.lastRunAt ?? bootTime))?.toISOString() ?? null,
         lastOk: j.lastResult ? true : (j.lastError ? false : null),
         lastError: j.lastError ? j.lastError.message : null,
+        lastResultSummary: j.lastResultSummary ?? null,
         running: j.running,
       }));
     },

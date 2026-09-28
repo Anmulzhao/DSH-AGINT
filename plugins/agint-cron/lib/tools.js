@@ -35,6 +35,32 @@ function toLocalIso(iso) {
 const name = 'agint-cron-tools';
 const inject = ['tools', 'agint.cron'];
 
+// Render a stored job-outcome summary (JSON string) as a compact trailing tag.
+// Anything unparseable is shown as such rather than swallowed — a summary that
+// silently renders as empty is exactly the "looks fine, says nothing" failure
+// this field exists to end.
+function fmtSummary(json) {
+  if (!json) return '';
+  let s;
+  try {
+    s = JSON.parse(json);
+  } catch {
+    return ' [summary unparseable]';
+  }
+  if (!s || typeof s !== 'object') return ' [summary?]';
+  if (s.truncated) return ` [summary ${s.bytes}B truncated]`;
+  const bits = [];
+  if (typeof s.scanned === 'number') bits.push(`scanned=${s.scanned}`);
+  if (s.counts && typeof s.counts === 'object') {
+    for (const k of Object.keys(s.counts)) {
+      if (typeof s.counts[k] === 'number') bits.push(`${k}=${s.counts[k]}`);
+    }
+  }
+  if (typeof s.actionsTotal === 'number') bits.push(`actions=${s.actionsTotal}`);
+  if (Array.isArray(s.keys)) bits.push(`keys=${s.keys.join('|')}`);
+  return bits.length ? ` [${bits.join(' ')}]` : '';
+}
+
 function apply(ctx) {
   const cron = ctx['agint.cron'];
 
@@ -65,6 +91,7 @@ function apply(ctx) {
                 nextRunAt: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 lastOk: { oneOf: [{ type: 'boolean' }, { type: 'null' }] },
                 lastError: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+                lastResultSummary: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                 running: { required: true, type: 'boolean' },
               },
             },
@@ -78,7 +105,7 @@ function apply(ctx) {
             text: v.jobs.map((j) => {
               const last = j.lastRunAt ? toLocalIso(j.lastRunAt).slice(0, 25) : 'never';
               const next = j.nextRunAt ? toLocalIso(j.nextRunAt).slice(0, 25) : 'n/a';
-              return `${j.id.padEnd(18)} ${j.schedule.padEnd(12)} last=${last}  next=${next}  ${j.running ? '[running]' : (j.lastError ? '[ERROR: ' + j.lastError + ']' : '')}`;
+              return `${j.id.padEnd(18)} ${j.schedule.padEnd(12)} last=${last}  next=${next}  ${fmtSummary(j.lastResultSummary)}${j.running ? '[running]' : (j.lastError ? '[ERROR: ' + j.lastError + ']' : '')}`;
             }).join('\n'),
           }],
     },
