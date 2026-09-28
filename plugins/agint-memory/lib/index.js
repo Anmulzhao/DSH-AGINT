@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agint-memory: host service plugin (provides `agint.memory`).
  *
  * HOST plane, single instance: opens the `agint` storage domain once and
@@ -223,6 +223,9 @@ function apply(ctx) {
             'input.signal.self-observation.rule-hotspot',
             'input.signal.self-observation.metric-regression',
             'input.signal.self-observation.compress-loss',
+            'input.signal.adversarial.counterfactual-result',
+            'input.signal.adversarial.curriculum-result',
+            'input.signal.adversarial.boundary-divergence',
           ],
           mode: 'async',
         },
