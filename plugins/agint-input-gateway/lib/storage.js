@@ -51,6 +51,7 @@ const ChannelStateSchema = z.object({
   lastFetchDurationMs: z.number().nullable(),
   lastError: z.string().nullable(),
   createdAt: z.string(),
+  updatedAt: z.string().optional(),
 });
 
 // ── defineDomain ──────────────────────────────────────────────────────────
