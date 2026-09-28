@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agint-input-gateway — schema 与常量。
  *
  * ChannelType / SignalType / 默认配额 / topic 前缀 / 配置 schema。
@@ -46,8 +46,8 @@ export const C2_CRON = '0 2 * * 0';
 /** C3 外部世界 Channel 的 cron（每周日 04:00，错峰） */
 export const C3_CRON = '0 4 * * 0';
 
-/** C4 对抗挑战 Channel 的 cron（每周日 03:00，C2 之后 C3 之前） */
-export const C4_CRON = '0 3 * * 0';
+/** C4 对抗挑战 Channel 的 cron（每天 03:30，dream 03:00 之后半小时，事件最多压 24h） */
+export const C4_CRON = '30 3 * * *';
 
 /** C3 git 仓库列表（本地快照路径，不做网络 fetch） */
 export const C3_GIT_REPOS = Object.freeze([
