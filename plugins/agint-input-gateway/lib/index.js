@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agint-input-gateway — host service 入口。
  *
  * 注册 agint.inputGateway service，挂载 C2 Channel，启动定时调度。
@@ -21,7 +21,7 @@ import { PLUGIN_NAME, C2_CRON, C3_CRON, C4_CRON } from './schema.js';
 import { spec, emptyConfig, packConfig, emptyCounters } from './storage.js';
 
 const name = PLUGIN_NAME;
-const inject = ['storageDomain'];
+const inject = ['storageDomain', 'agint.compressGuard'];
 
 function apply(ctx, config) {
   const cfg = {
@@ -101,17 +101,12 @@ function apply(ctx, config) {
       }
     } catch {}
 
-    // 注册 C2 Channel
+    // 注册 C2 Channel（compressGuard 已通过 inject 注入）
     gateway.registerChannel({
       ...selfObservationChannel,
-      // 注入 services 引用（compressGuard 等）
       fetch: (ctx2) => selfObservationChannel.fetch({
         ...ctx2,
-        services: {
-          compressGuard: typeof ctx.get === 'function'
-            ? (() => { try { return ctx.get('agint.compressGuard'); } catch { return null; } })()
-            : null,
-        },
+        services: { compressGuard: ctx['agint.compressGuard'] || null },
       }),
     });
 
