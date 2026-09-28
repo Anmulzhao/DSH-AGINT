@@ -1,15 +1,15 @@
 /**
- * C2 系统自观测 Channel — P0。
+ * C2 系统自观测 Channel — P0.1（2026-09-29 修复 schema 错配）。
  *
  * 从现有 AGINT 状态文件提取异常信号，不引入新数据源。
  * 文件路径基于 DSH_HOME 环境变量，不存在时静默返回空。
  *
  * 5 个子源：
- *   1. toolStats 异常    — 读 agint_tool_stats.jsonl，失败率突增
- *   2. metrics 退化      — 读 agint_metrics.json，关键指标下降
- *   3. 规则高频命中      — 读 agint_rules.json，统计配置（实际命中需 tool_stats 关联，P0 简化）
+ *   1. toolStats 异常    — ok===false 失败率突增 + 单工具连续失败
+ *   2. metrics 退化      — P0 需历史基线，暂留空（P1 实现环比）
+ *   3. 规则高频命中      — 从 tool_stats 统计 errorKind==='denied' 频率
  *   4. 压缩丢失          — 调用 agint.compressGuard.stats()
- *   5. session 完整性    — P0 留接口（读 session 目录，统计中断会话，简化版）
+ *   5. session 完整性    — P0 留接口
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -43,41 +43,91 @@ function safeReadLines(filePath) {
   }
 }
 
-/**
- * 子源 1：toolStats 异常
- * 读 agint_tool_stats.jsonl，统计最近 N 条记录的失败率。
- * 失败率 > 30% 或单工具连续失败 ≥3 次 → 产信号。
- */
-function detectToolAnomaly() {
+/** 读取最近 N 条 tool_stats 记录 */
+function readRecentToolStats(n = 200) {
   const lines = safeReadLines(join(storagesDir(), 'agint_tool_stats.jsonl'));
   if (lines.length === 0) return [];
-
-  // 取最近 200 条
-  const recent = lines.slice(-200).map((l) => {
+  return lines.slice(-n).map((l) => {
     try { return JSON.parse(l); } catch { return null; }
   }).filter(Boolean);
+}
 
-  if (recent.length === 0) return [];
-
-  // 统计失败率
-  const failed = recent.filter((r) => r.status === 'error' || r.status === 'failed' || r.error);
-  const failRate = failed.length / recent.length;
+/**
+ * 子源 1：toolStats 异常
+ *
+ * 真实 schema：{ts, sessionId, turn, step, tool, callId, latencyMs, ok, errorKind, ...}
+ * 失败判定：ok === false（不管 errorKind 是否为空——空是"未分类失败"，仍是失败）
+ *
+ * 两个检测条件（任一触发）：
+ *   a) 失败率突增：最近 200 条失败率 > 15%（基线 ~5-7%，3 倍突增）
+ *   b) 单工具连续失败：同一 tool 连续 ≥3 次 ok===false
+ */
+function detectToolAnomaly() {
+  const recent = readRecentToolStats(200);
+  if (recent.length < 20) return [];
 
   const signals = [];
-  if (failRate > 0.3 && recent.length >= 20) {
+
+  // a) 失败率突增
+  const failed = recent.filter((r) => r.ok === false);
+  const failRate = failed.length / recent.length;
+  if (failRate > 0.15) {
+    // 按 errorKind 分组，提供上下文
+    const byKind = {};
+    for (const f of failed) {
+      const k = f.errorKind || '(unclassified)';
+      byKind[k] = (byKind[k] || 0) + 1;
+    }
     signals.push({
-      signalId: `tool-anomaly-${Date.now()}`,
+      signalId: `tool-anomaly-rate-${Date.now()}`,
       source: 'tool-stats',
       signalType: 'tool.anomaly',
       payload: {
+        detection: 'fail_rate_spike',
         recentCalls: recent.length,
         failedCalls: failed.length,
         failRate: Number(failRate.toFixed(3)),
-        threshold: 0.3,
-        note: `最近 ${recent.length} 次工具调用失败率 ${(failRate * 100).toFixed(1)}%，超过阈值 30%`,
+        threshold: 0.15,
+        byErrorKind: byKind,
+        note: `最近 ${recent.length} 次工具调用失败率 ${(failRate * 100).toFixed(1)}%，超过阈值 15%（基线 ~6%）`,
       },
       confidence: 0.8,
       relevance: 0.7,
+      occurredAt: new Date().toISOString(),
+      rawRef: join(storagesDir(), 'agint_tool_stats.jsonl'),
+    });
+  }
+
+  // b) 单工具连续失败（从后往前找）
+  const streak = {};
+  let maxStreakTool = null;
+  let maxStreakCount = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const r = recent[i];
+    if (r.ok === false) {
+      streak[r.tool] = (streak[r.tool] || 0) + 1;
+      if (streak[r.tool] > maxStreakCount) {
+        maxStreakCount = streak[r.tool];
+        maxStreakTool = r.tool;
+      }
+    } else {
+      // 连续失败被成功调用打断
+      break;
+    }
+  }
+  if (maxStreakCount >= 3 && maxStreakTool) {
+    signals.push({
+      signalId: `tool-anomaly-streak-${Date.now()}`,
+      source: 'tool-stats',
+      signalType: 'tool.anomaly',
+      payload: {
+        detection: 'consecutive_failures',
+        tool: maxStreakTool,
+        consecutiveFailures: maxStreakCount,
+        note: `工具 ${maxStreakTool} 连续 ${maxStreakCount} 次调用失败`,
+      },
+      confidence: 0.85,
+      relevance: 0.75,
       occurredAt: new Date().toISOString(),
       rawRef: join(storagesDir(), 'agint_tool_stats.jsonl'),
     });
@@ -88,79 +138,53 @@ function detectToolAnomaly() {
 
 /**
  * 子源 2：metrics 退化
- * 读 agint_metrics.json，检查关键指标。
- * P0 简化：如果文件存在且有数据，检查是否有数值下降。
+ *
+ * 真实 schema：{unit, global, tables: {tableName: {recordId: {id,key,label,value,unit,meta,ts}}}}
+ * P0：时间序列数据需要历史基线才能检测"退化"，当前没有环比能力。
+ * TODO P1：对比最近两条同 key 记录，value 下降 >20% 时报告。
  */
 function detectMetricRegression() {
-  const metrics = safeReadJson(join(storagesDir(), 'agint_metrics.json'));
-  if (!metrics || typeof metrics !== 'object') return [];
-
-  const signals = [];
-
-  // P0 简化：只检查是否有明显的 error/failure 字段
-  for (const [key, val] of Object.entries(metrics)) {
-    if (val && typeof val === 'object') {
-      const errCount = val.errorCount || val.errors || 0;
-      if (typeof errCount === 'number' && errCount > 10) {
-        signals.push({
-          signalId: `metric-regression-${key}-${Date.now()}`,
-          source: 'metrics',
-          signalType: 'metric.regression',
-          payload: {
-            metricKey: key,
-            errorCount: errCount,
-            note: `指标 ${key} 有 ${errCount} 次错误记录`,
-          },
-          confidence: 0.6,
-          relevance: 0.6,
-          occurredAt: new Date().toISOString(),
-          rawRef: join(storagesDir(), 'agint_metrics.json'),
-        });
-      }
-    }
-  }
-
-  return signals;
+  // P0 暂留空——没有历史基线就检测"退化"是伪信号
+  return [];
 }
 
 /**
  * 子源 3：规则高频命中
- * 读 agint_rules.json，检查规则配置。
- * P0 简化：只报告规则数量和是否有 deny 规则（实际命中频率需 tool_stats 关联，留 TODO）。
+ *
+ * 从 tool_stats 统计 errorKind === 'denied' 的频率。
+ * 真实数据：全量 11125 条里 denied=5，最近 200 条里 denied=0。
+ * 阈值：最近 200 条里 denied ≥3 次才报告（当前基线 ~0）。
+ *
+ * 不再扫描 rules.json 的静态配置数量——那是配置状态，不是异常。
  */
 function detectRuleHotspot() {
-  const rules = safeReadJson(join(storagesDir(), 'agint_rules.json'));
-  if (!rules || typeof rules !== 'object') return [];
+  const recent = readRecentToolStats(200);
+  if (recent.length === 0) return [];
 
-  const signals = [];
+  const denied = recent.filter((r) => r.errorKind === 'denied');
+  if (denied.length < 3) return [];
 
-  // 统计 deny 规则数量
-  const denyRules = [];
-  for (const [name, rule] of Object.entries(rules)) {
-    if (rule && (rule.action === 'deny' || rule.severity === 'high')) {
-      denyRules.push(name);
-    }
+  // 看被 denied 的是什么工具
+  const byTool = {};
+  for (const d of denied) {
+    byTool[d.tool] = (byTool[d.tool] || 0) + 1;
   }
 
-  // P0：不做频率检测（需要关联 tool_stats），只在 deny 规则很多时报告
-  if (denyRules.length >= 10) {
-    signals.push({
-      signalId: `rule-hotspot-${Date.now()}`,
-      source: 'rules',
-      signalType: 'rule.hotspot',
-      payload: {
-        denyRuleCount: denyRules.length,
-        sampleRules: denyRules.slice(0, 5),
-        note: `当前有 ${denyRules.length} 条 deny/high 规则；P1 将关联 tool_stats 检测高频命中`,
-      },
-      confidence: 0.5,
-      relevance: 0.4,
-      occurredAt: new Date().toISOString(),
-      rawRef: join(storagesDir(), 'agint_rules.json'),
-    });
-  }
-
-  return signals;
+  return [{
+    signalId: `rule-hotspot-${Date.now()}`,
+    source: 'tool-stats',
+    signalType: 'rule.hotspot',
+    payload: {
+      deniedCount: denied.length,
+      windowSize: recent.length,
+      byTool,
+      note: `最近 ${recent.length} 次工具调用中 ${denied.length} 次被规则拒绝（阈值 3）`,
+    },
+    confidence: 0.7,
+    relevance: 0.6,
+    occurredAt: new Date().toISOString(),
+    rawRef: join(storagesDir(), 'agint_tool_stats.jsonl'),
+  }];
 }
 
 /**
@@ -199,12 +223,9 @@ function detectCompressLoss(ctx) {
 
 /**
  * 子源 5：session 完整性
- * P0 简化：统计 sessions 目录中的 session 文件数量。
- * TODO P1：检测中断/超时会话。
+ * P0 留接口。TODO P1：通过 session/event 事件检测中断/超时会话。
  */
 function detectSessionIntegrity() {
-  // P0 留接口：不主动扫描（可能很慢），只返回空
-  // 后续通过 session/event 事件检测
   return [];
 }
 
@@ -236,7 +257,14 @@ export const selfObservationChannel = {
       channelId: this.id,
       status: 'ok',
       subSources: 5,
-      note: 'P0: toolStats/metrics/rules/compress-guard 文件读取；session 完整性留接口',
+      detectors: {
+        toolAnomaly: { active: true, schema: 'ok===false', threshold: 'failRate>15% or streak>=3' },
+        metricRegression: { active: false, reason: 'P1: needs historical baseline' },
+        ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=3 in last 200' },
+        compressLoss: { active: true, depends: 'agint.compressGuard' },
+        sessionIntegrity: { active: false, reason: 'P1: needs session/event' },
+      },
+      note: 'v0.1.1: fixed schema mismatch (ok field not status/error; denied from tool_stats not rules.json)',
     };
   },
 };
