@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-dream",
-  "version": "0.3.4",
-  "description": "夜间梦境 sweep（light→REM→deep 三阶段）。会话日志 → 候选 → 6 维评分 → 门槛 → 提升进 agint.memory。梦境日记写 <root>/YYYY-MM-DD.md。v0.2.0 起带零命中健康度告警（连续 N 次扫不到会话 → degraded）。",
+  "version": "0.4.1",
+  "description": "夜间梦境 sweep（light→REM→deep 三阶段）。会话日志 → 候选 → 6 维评分 → 门槛 → 提升进 agint.memory。梦境日记写 <root>/YYYY-MM-DD.md。v0.2.0 起带零命中健康度告警（连续 N 次扫不到会话 → degraded）。v0.4.0 起工具错误信号走诊断化过滤（原始 stderr 不再直接进候选池，toolErrorDiagnosticOnly 可一键回退）。v0.4.1 起 dry-run 真正只读：预览写 <day>.preview.md 且不写 recall store。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",

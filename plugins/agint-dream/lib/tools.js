@@ -113,6 +113,19 @@ function apply(ctx) {
               userMessages: { required: true, type: 'number' },
               memWrites: { required: true, type: 'number' },
               toolErrors: { required: true, type: 'number' },
+              // 2026-09-28：工具错误诊断过滤统计。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（前科 evolutionTemplates 2026-09-11）。
+              // 形状刻意扁平：byReason 是开放字典，在本 DSL 里没法声明。
+              toolErrorFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+                properties: {
+                  enabled: { required: true, type: 'boolean' },
+                  total: { required: true, type: 'number' },
+                  kept: { required: true, type: 'number' },
+                  dropped: { required: true, type: 'number' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
@@ -173,6 +186,7 @@ function apply(ctx) {
           lines.push(`    ${v.qualityEval.note}`);
         }
         if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} recovered=${v.counts.recovered} promoted=${v.counts.promoted} recallAppended=${v.counts.recallAppended} recallPruned=${v.counts.recallPruned}`);
+        if (v.counts) lines.push(`  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0}`);
         if (v.counts) lines.push(`  consolidation=${v.counts.consolidationMode ?? 'n/a'}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''} · validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
@@ -209,6 +223,19 @@ function apply(ctx) {
               userMessages: { required: true, type: 'number' },
               memWrites: { required: true, type: 'number' },
               toolErrors: { required: true, type: 'number' },
+              // 2026-09-28：工具错误诊断过滤统计。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（前科 evolutionTemplates 2026-09-11）。
+              // 形状刻意扁平：byReason 是开放字典，在本 DSL 里没法声明。
+              toolErrorFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+                properties: {
+                  enabled: { required: true, type: 'boolean' },
+                  total: { required: true, type: 'number' },
+                  kept: { required: true, type: 'number' },
+                  dropped: { required: true, type: 'number' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
@@ -296,6 +323,7 @@ function apply(ctx) {
         const lines = [
           `dream_run_now: ${v.apply ? 'APPLIED' : 'dry-run preview'} · day=${v.day} · ${(v.durationMs / 1000).toFixed(1)}s`,
           `  sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} errors=${v.counts.toolErrors}`,
+          `  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0}`,
           `  candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} promoted=${v.counts.promoted}`,
           `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
           `  consolidation=${v.counts.consolidationMode}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''}`,

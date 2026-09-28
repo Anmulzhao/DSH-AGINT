@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import {
   collectSessionSignals,
   extractCandidates,
+  classifyToolError,
+  aggregateToolErrorStats,
   scoreCandidates,
   gateCandidates,
   entryFor,
@@ -72,6 +74,170 @@ test('extractCandidates: 引用块与 (id=...) 前缀文本被拦下，不进候
     `引用块/前缀形态不得成为候选: ${JSON.stringify(cands.map((c) => c.text))}`,
   );
   assert.ok(cands.some((c) => /SHA256 哈希判定/.test(c.text)), '正常主张必须保留');
+});
+
+// ── 2026-09-28：工具错误信号诊断化过滤（噪音治理） ───────────────────────────
+//
+// fixture 全部取自 09-28 真实观测：这些条目以 score=0.00 进 recall store 并被
+// promoted 进长期记忆，污染 367 条记忆的信噪比。前 5 条是噪音形态，
+// 最后 1 条是真正带根因的（rule_list schema mismatch）—— 必须留下。
+
+const TOOL_ERROR_NOISE_FIXTURES = [
+  '(no output) [exit code: 1]',
+  '<!-- source:workbuddy | synced_from: ~/.workbuddy/ME',
+  'Lines Chars ----- ----- 0 45 [exit code: 1]',
+  'D:\\DSH\\project源码\\DSH-AGINT\\presets\\agint\\agent.',
+  '(no such file or directory)',
+  '',
+];
+
+const TOOL_ERROR_DIAGNOSTIC_FIXTURE =
+  'Error: tool "rule_list" returned invalid output: "value.rules[0].claim" is not a declared property (additionalProperties: false)';
+
+test('classifyToolError: 噪音形态一律拦下（09-28 真实样本）', () => {
+  for (const fx of TOOL_ERROR_NOISE_FIXTURES) {
+    const v = classifyToolError(fx);
+    assert.equal(v.keep, false, `必须拦下: ${JSON.stringify(fx)} → ${v.reason}`);
+  }
+});
+
+test('classifyToolError: 带根因线索的报错必须放行', () => {
+  const v = classifyToolError(TOOL_ERROR_DIAGNOSTIC_FIXTURE);
+  assert.equal(v.keep, true, `不该拦: ${v.reason}`);
+  assert.equal(v.reason, 'diagnostic');
+});
+
+test('classifyToolError: kill-switch 关闭时完全回退旧行为', () => {
+  for (const fx of TOOL_ERROR_NOISE_FIXTURES) {
+    const v = classifyToolError(fx, { toolErrorDiagnosticOnly: false });
+    assert.equal(v.keep, true, '开关关掉就该全放行（回退语义）');
+    assert.equal(v.reason, 'filter-disabled');
+  }
+});
+
+test('extractCandidates: 工具错误噪音不再进候选（09-28 回归）', () => {
+  const session = {
+    sessionKey: 's1',
+    userTexts: [],
+    errors: [
+      ...TOOL_ERROR_NOISE_FIXTURES.map((text) => ({ text, time: NOW })),
+      { text: TOOL_ERROR_DIAGNOSTIC_FIXTURE, time: NOW },
+    ],
+  };
+  const cands = extractCandidates(session, NOW);
+  const errorCands = cands.filter((c) => c.text.startsWith('工具执行报错'));
+  assert.equal(errorCands.length, 1, `只应剩 1 条诊断型，实际 ${errorCands.length}：${JSON.stringify(errorCands.map((c) => c.text))}`);
+  assert.match(errorCands[0].text, /rule_list/);
+  assert.ok(cands.every((c) => !/no output/i.test(c.text)), '(no output) 不得成为候选');
+});
+
+test('extractCandidates: toolErrorStats 是非枚举属性，数组语义不受影响', () => {
+  const session = {
+    sessionKey: 's1',
+    userTexts: [],
+    errors: TOOL_ERROR_NOISE_FIXTURES.map((text) => ({ text, time: NOW })),
+  };
+  const cands = extractCandidates(session, NOW);
+  assert.equal(cands.length, 0);
+  assert.deepEqual(cands, []);                       // 非枚举 ⇒ 不进 deepEqual
+  assert.equal(JSON.stringify(cands), '[]');
+  const s = cands.toolErrorStats;
+  assert.equal(s.total, 6);
+  assert.equal(s.kept, 0);
+  assert.equal(s.dropped, 6);
+  assert.equal(s.enabled, true);
+});
+
+test('aggregateToolErrorStats: 跨会话聚合（flatMap 会丢非枚举属性，只能事后聚合）', () => {
+  const mk = (n) => {
+    const c = [];
+    Object.defineProperty(c, 'toolErrorStats', {
+      value: { enabled: true, total: n, kept: 0, dropped: n, byReason: { 'no-diagnostic-signal': n } },
+      enumerable: false,
+    });
+    return c;
+  };
+  const agg = aggregateToolErrorStats([mk(3), mk(4)]);
+  assert.equal(agg.total, 7);
+  assert.equal(agg.dropped, 7);
+  assert.equal(agg.byReason['no-diagnostic-signal'], 7);
+});
+
+test('renderDiary: 过滤统计必须可见（不可见的治理 = 又一个盲区）', () => {
+  const diary = renderDiary({
+    day: '2026-09-28',
+    signals: [{ userTexts: [], memWrites: [], errors: [{ text: 'x' }, { text: 'y' }] }],
+    memWrites: [],
+    candidates: [],
+    gated: [],
+    promoted: [],
+    durationMs: 1000,
+    toolErrorStats: { enabled: true, total: 2, kept: 0, dropped: 2, byReason: { 'no-diagnostic-signal': 2 } },
+  });
+  assert.match(diary, /工具错误诊断过滤：留 0 \/ 拦 2/);
+  assert.match(diary, /no-diagnostic-signal×2/);
+});
+
+test('renderDiary: 过滤统计缺席时不得凭空捏造一行', () => {
+  const diary = renderDiary({
+    day: '2026-09-28', signals: [], memWrites: [], candidates: [],
+    gated: [], promoted: [], durationMs: 1000,
+  });
+  assert.ok(!/工具错误诊断过滤/.test(diary));
+});
+
+test('renderDiary: 预览件自带声明（apply=false），不冒充真实夜间记录', () => {
+  const diary = renderDiary({
+    day: '2026-09-28', apply: false, signals: [], memWrites: [], candidates: [],
+    gated: [], promoted: [], durationMs: 1000,
+  });
+  assert.match(diary, /dry-run 预览（apply=false）/);
+  assert.match(diary, /不是.*真实夜间 sweep 记录/);
+});
+
+test('renderDiary: apply 默认 true 时不得出现预览声明', () => {
+  const diary = renderDiary({
+    day: '2026-09-28', signals: [], memWrites: [], candidates: [],
+    gated: [], promoted: [], durationMs: 1000,
+  });
+  assert.ok(!/dry-run 预览/.test(diary), '真实 sweep 日记不得带预览字样');
+});
+
+test('runSweep: dry-run 不写 recall store、不覆盖当天真实日记（2026-09-28 回归）', async () => {
+  const { mkdtemp, mkdir, readFile, readdir, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const base = await mkdtemp(join(tmpdir(), 'dream-preview-'));
+  const sessions = join(base, 'sessions');
+  const diary = join(base, 'diary');
+  const recall = join(base, 'recall.jsonl');
+  await mkdir(sessions, { recursive: true });
+  await mkdir(diary, { recursive: true });
+
+  // 先摆一份「当天真实记录」，模拟 03:01 那次真实 sweep 的产物。
+  // day 由 NOW 本地推导（sweep 内部走 fmtDay(nowMs)），不写死字面量 ——
+  // 写死过一次，NOW 是 2026-08-15 而断言写 2026-09-28，直接红。
+  const d = new Date(NOW);
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const realBody = `# 梦境日记 ${day}\n\n- 提升写入记忆：24 条\n`;
+  await writeFile(join(diary, `${day}.md`), realBody, 'utf8');
+
+  const result = await runSweep({
+    sessionsRoot: sessions, diaryRoot: diary, recallPath: recall,
+    nowMs: NOW, apply: false, qualityEval: false, evolution: false,
+  });
+
+  // 1) 真实日记必须一字未动（09-28 实测被 dry-run 冲掉过）
+  assert.equal(await readFile(join(diary, `${day}.md`), 'utf8'), realBody,
+    'dry-run 覆写了当天的真实日记');
+  // 2) 预览件另存，且自带声明
+  assert.ok(result.diaryPath.endsWith(`${day}.preview.md`), `预览路径不对: ${result.diaryPath}`);
+  assert.match(await readFile(result.diaryPath, 'utf8'), /dry-run 预览（apply=false）/);
+  // 3) recall store 未被写
+  assert.equal(result.counts.recallAppended, 0, 'dry-run 仍写 recall store');
+  assert.ok(!(await readdir(base)).includes('recall.jsonl'), 'dry-run 竟然创建了 recall store 文件');
+
+  await rm(base, { recursive: true, force: true });
 });
 
 test('scoreCandidates: six-signal formula groups and sorts', () => {

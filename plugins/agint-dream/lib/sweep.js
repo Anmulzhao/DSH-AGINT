@@ -102,6 +102,14 @@ export const DEFAULTS = {
   dedupeTieredEnabled: true,
   dedupeHigh: 0.85,         // ≥ 此值 = 真重复 → 丢弃
   dedupeMid: 0.6,           // ≥ 此值 = 疑似 → 放行 + 标记（= 原 dedupeTokenOverlap）
+  // ── 2026-09-28：工具错误信号「诊断化」过滤（噪音治理）──
+  // 背景：extractCandidates 此前把 `session.errors`（工具 stderr 原文）**零过滤**
+  // 转成 lesson 候选。09-28 实测：23 条错误信号 → 196 候选里大量是
+  // 「工具执行报错：(no output) [exit code: 1]」这类原始输出，score=0.00，
+  // 仍被 recall store 收走并 promoted 进长期记忆，稀释 367 条记忆的信噪比。
+  // 判据（见 classifyToolError）：原始 stderr 不是主张，**只有说清「为什么 /
+  // 应该怎样」的报错才配当教训**。默认开；kill-switch 设 false 即完全回退旧行为。
+  toolErrorDiagnosticOnly: true,
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -319,12 +327,112 @@ function tokenOverlap(a, b) {
   return union === 0 ? 0 : hit / union;
 }
 
+// ── 2026-09-28：工具错误信号诊断化过滤 ─────────────────────────────────────
+
+// 宿主追加在工具结果尾部的退出码标记。判定形态前先剥掉，否则它会挡住形态匹配
+// （`Lines Chars ----- ----- 0 45 [exit code: 1]` 里真正要判的是前半截）。
+const EXIT_CODE_SUFFIX_RE = /\s*[\[(]?\s*exit code\s*:\s*-?\d+\s*[\])]?\s*$/i;
+
+/**
+ * 噪音**形态** —— 「形态即证据」。
+ * 这些是输出被截断 / 转义后的残骸，不是报错本身：裸空输出、单侧标记残片、
+ * 表格残片、纯框线。命中任一即判噪音，不因为后面还有内容而放行。
+ */
+const TOOL_ERROR_NOISE_SHAPE_RE = new RegExp([
+  /^\(no output\)\s*$/i,                            // 裸空输出
+  /^\(no such file or directory\)\s*$/i,           // 裸系统错误
+  /^<[!?/]?[\w.!?/:=-]*\s*>?\s*$/,                 // 单个 XML/HTML 标记残片
+  /^[\w.-]+(?:\s{2,}[\w.-]+){1,}\s*$/,             // 表格残片（多列空格分隔）
+  /^[-+|=\s]+$/,                                    // 纯分隔线 / 表格框线
+].map((r) => `(?:${r.source})`).join('|'), 'i');
+
+/**
+ * 诊断**信号** —— 文本里出现了「为什么 / 应该怎样」的线索。
+ * 命中即认为这条报错**可迁移**（换个场景仍成立），配当教训。
+ * 覆盖 schema 类（rule_list 的 additionalProperties 报错属这类，值得留）、
+ * 根因类（because / 因为 / 实际是）、祈使类（必须 / should be）。
+ */
+const TOOL_ERROR_DIAGNOSTIC_RE = new RegExp([
+  /schema/i,
+  /not a declared property|additionalproperties/i,
+  /validation|validate\b|invalid\b/i,
+  /mismatch|不一致|不匹配|对不上/,
+  /expected|应为|预期|应该是|而不是/,
+  /实际(?:是|为|值|上)/,
+  /cannot read propert|cannot access|cannot find module|module_not_found/i,
+  /cannot connect to|cannot resolve host/i,
+  /enoent|eacces|eperm|eaddrinuse|econnrefused|eaconnreset/i,
+  /address already in use|too many open files/i,
+  /path escapes|outside root|越界|逃逸/,
+  /因为|由于|原因是|根因/,
+  /缺少|缺失|漏了|漏掉|没带/,
+  /必须|应该|应当|切记|务必|记得/,
+  /instead of|should be|rather than/i,
+].map((r) => `(?:${r.source})`).join('|'), 'i');
+
+/**
+ * 判定一条工具错误信号是否值得进候选池。
+ *
+ * 取舍（错杀 vs 误放，代价不对称）：
+ *   - **错杀**（漏一条教训）：这条根因下次靠人 / 我手工 memory_write 补。
+ *   - **误放**（灌原始 stderr）：永久污染长期记忆，且这类候选 score 恒为 0.00，
+ *     稀释所有真信号的召回 —— 09-28 实测的 23 条错误信号就是这么烂进来的。
+ *   → 因此默认**拒绝**：无诊断信号 = 拦下。
+ *
+ * 开关 `opts.toolErrorDiagnosticOnly=false` 时完全回退旧行为（全部放行）。
+ *
+ * @returns {{ keep: boolean, reason: string }} reason：
+ *   'diagnostic'（放行）｜'filter-disabled'（开关关）｜'empty'｜
+ *   'noise-shape'（噪音形态）｜'no-diagnostic-signal'（无诊断线索）
+ */
+export function classifyToolError(text, opts = {}) {
+  const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
+  if (!diagnosticOnly) return { keep: true, reason: 'filter-disabled' };
+  const line = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!line) return { keep: false, reason: 'empty' };
+  const core = line.replace(EXIT_CODE_SUFFIX_RE, '').trim() || line;
+  if (TOOL_ERROR_NOISE_SHAPE_RE.test(core)) return { keep: false, reason: 'noise-shape' };
+  if (!TOOL_ERROR_DIAGNOSTIC_RE.test(core)) return { keep: false, reason: 'no-diagnostic-signal' };
+  return { keep: true, reason: 'diagnostic' };
+}
+
+/** 单个 extractCandidates 结果上的过滤统计（由 extractCandidates 挂载）。 */
+export function toolErrorStatsOfOne(candidates) {
+  const s = candidates?.toolErrorStats;
+  if (s && typeof s === 'object') return { ...s, byReason: { ...s.byReason } };
+  return { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, byReason: {} };
+}
+
+/**
+ * 跨会话聚合过滤统计（runSweep 用；flatMap 会丢非枚举属性，只能事后聚合）。
+ * 返回值形状刻意保持扁平 —— tools.js 的 output schema 是
+ * additionalProperties:false，byReason 这种开放字典不好声明。
+ */
+export function aggregateToolErrorStats(candidateLists) {
+  const out = { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, byReason: {} };
+  for (const list of candidateLists ?? []) {
+    const s = toolErrorStatsOfOne(list);
+    out.total += s.total;
+    out.kept += s.kept;
+    out.dropped += s.dropped;
+    for (const [k, v] of Object.entries(s.byReason ?? {})) {
+      out.byReason[k] = (out.byReason[k] ?? 0) + v;
+    }
+  }
+  return out;
+}
+
 /**
  * Extract durable candidates from one session's collected signals.
  * Each candidate: { text, type, sessionKey, time, signals: [...] }.
  * memWrites are returned separately (already consolidated; diary-only).
+ *
+ * opts.toolErrorDiagnosticOnly: 工具错误是否走诊断化过滤（默认开，DEFAULTS）。
+ * 返回数组上挂**非枚举** `toolErrorStats`（同 dedupeStats 的既有约定：
+ * 数组语义不变，埋点/日记侧单独读）。
  */
-export function extractCandidates(session, nowMs = Date.now()) {
+export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
+  const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
   const candidates = [];
   const seen = new Set();
   for (const { text, time } of session.userTexts) {
@@ -357,7 +465,17 @@ export function extractCandidates(session, nowMs = Date.now()) {
       }
     }
   }
+  // 工具错误信号：09-28 起走诊断化过滤（见 classifyToolError）。
+  // 此前是无条件 push，等于把 stderr 原文当教训灌进长期记忆。
+  const errorStats = { enabled: diagnosticOnly, total: session.errors.length, kept: 0, dropped: 0, byReason: {} };
   for (const { text, time } of session.errors) {
+    const verdict = classifyToolError(text, { toolErrorDiagnosticOnly: diagnosticOnly });
+    if (!verdict.keep) {
+      errorStats.dropped += 1;
+      errorStats.byReason[verdict.reason] = (errorStats.byReason[verdict.reason] ?? 0) + 1;
+      continue;
+    }
+    errorStats.kept += 1;
     candidates.push({
       text: `工具执行报错：${text}`.slice(0, DEFAULTS.maxCandidateChars),
       type: 'lesson',
@@ -366,6 +484,9 @@ export function extractCandidates(session, nowMs = Date.now()) {
       signals: [text],
     });
   }
+  // 非枚举：保持数组语义（`deepEqual(candidates, [...])` / `.length` 不变），
+  // 但 runSweep / 日记可读 `.toolErrorStats` 做观测。
+  Object.defineProperty(candidates, 'toolErrorStats', { value: errorStats, enumerable: false });
   return candidates;
 }
 
@@ -702,10 +823,16 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
  *           validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
+  // 2026-09-28：预览件必须自带声明，否则日后回看会把它当真实夜间记录
+  // （它写着 promoted=0，看起来像「那天一条都没提升」）。
+  if (!apply) {
+    lines.push('> ⚠️ **dry-run 预览（apply=false）**：候选未提升进记忆，未写 recall store，');
+    lines.push('> 未剪枝。本文件**不是**当天的真实夜间 sweep 记录。');
+  }
   lines.push(`> 智进夜间梦境 · sweep 耗时 ${(durationMs / 1000).toFixed(1)}s · 模式：后台记忆整合（light→REM→deep）`);
   if (windows) lines.push(`> 窗口：Light ${windows.light}d / REM ${windows.rem}d / Deep恢复 ${windows.deep}d`);
   lines.push('');
@@ -715,6 +842,14 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push(`- 用户消息信号：${signals.reduce((n, s) => n + s.userTexts.length, 0)} 条`);
   lines.push(`- 会话内 memory_write（已沉淀，不再重复提升）：${memWrites.length} 条`);
   lines.push(`- 工具错误信号：${signals.reduce((n, s) => n + s.errors.length, 0)} 条`);
+  // 2026-09-28：过滤器必须**可见**。否则「拦了多少」无从判断，噪音治理就退化成
+  // 一个看不见的黑洞 —— 跟当初 Light 通道静默失效 7 天是同一类盲区。
+  if (toolErrorStats && toolErrorStats.total > 0) {
+    const reasons = Object.entries(toolErrorStats.byReason ?? {})
+      .map(([k, v]) => `${k}×${v}`).join(' · ');
+    lines.push(`- 工具错误诊断过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
+      + `${reasons ? `（${reasons}）` : ''}${toolErrorStats.enabled ? '' : ' · 过滤已关闭(kill-switch)'}`);
+  }
   lines.push('');
   if (memWrites.length > 0) {
     lines.push('### 当日已沉淀记忆（会话中显式写入）');
@@ -868,6 +1003,8 @@ export async function runSweep({
   dedupeTieredEnabled,
   dedupeHigh,
   dedupeMid,
+  // 2026-09-28：工具错误信号诊断化过滤（kill-switch；默认开）
+  toolErrorDiagnosticOnly = DEFAULTS.toolErrorDiagnosticOnly,
   // P2 (Sprint 13 / 2026-09-05)：short-term recall store 路径
   recallPath,
   // P0：validation gate 调优（loss fraction budget 等）
@@ -935,27 +1072,37 @@ export async function runSweep({
   }
 
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
-  const candidates = signals.flatMap((s) => extractCandidates(s, nowMs));
+  // 2026-09-28：先按会话产出再 flat()，因为过滤统计挂在每个数组的非枚举属性上，
+  // flatMap 会把它丢掉 —— 统计必须事后聚合（aggregateToolErrorStats）。
+  const candidateLists = signals.map((s) => extractCandidates(s, nowMs, { toolErrorDiagnosticOnly }));
+  const candidates = candidateLists.flat();
+  const toolErrorStats = aggregateToolErrorStats(candidateLists);
 
   // ── P2 Light: 把候选写入 recall store（带 recallKey 归一化）──────────
+  // 2026-09-28：apply=false（dry-run preview）不再写 recall store。
+  // 此前 dry-run 也照写 —— 09-28 实测一次预览 append 286 条，把「没过门槛、
+  // 也永远不会被 promote」的候选混进了跨日累积池。预览的定义就是不改状态；
+  // 下方读 storeEntries 的逻辑不受影响（本来就不写）。
   let recallWriteResult = null;
-  try {
-    const writeCandidates = candidates.map((c) => ({
-      key: recallKey(normalizeForCompare(c.text)),
-      text: c.text,
-      type: c.type,
-      path: c.path,
-      startLine: c.startLine,
-      endLine: c.endLine,
-      signalCount: 1,
-      dailyCount: 0,
-      groundedCount: 0,
-      queryHashes: [],
-      days: [day],
-    }));
-    recallWriteResult = await recallStoreRecord(rPath, writeCandidates, { nowMs, dayBucket: day });
-  } catch (err) {
-    errors.push(`recall-store write failed: ${err.message}`);
+  if (apply) {
+    try {
+      const writeCandidates = candidates.map((c) => ({
+        key: recallKey(normalizeForCompare(c.text)),
+        text: c.text,
+        type: c.type,
+        path: c.path,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        signalCount: 1,
+        dailyCount: 0,
+        groundedCount: 0,
+        queryHashes: [],
+        days: [day],
+      }));
+      recallWriteResult = await recallStoreRecord(rPath, writeCandidates, { nowMs, dayBucket: day });
+    } catch (err) {
+      errors.push(`recall-store write failed: ${err.message}`);
+    }
   }
 
   // ── P2 Deep 阶段前：读 store 获取 promotedAt 集合，用于过滤已提 ──
@@ -980,7 +1127,7 @@ export async function runSweep({
         errors.push(`${log.dir}(rem): ${err.message}`);
       }
     }
-    reinforcement = remSignals.flatMap((s) => extractCandidates(s, nowMs));
+    reinforcement = remSignals.flatMap((s) => extractCandidates(s, nowMs, { toolErrorDiagnosticOnly }));
   }
 
   // ── v0.2 / C2: REM 阶段 qualityEvaluator 评估核心 plugin ──────────────
@@ -1136,7 +1283,10 @@ export async function runSweep({
           errors.push(`${log.dir}(recover): ${err.message}`);
         }
       }
-      const recScored = scoreCandidates(recSignals.flatMap((s) => extractCandidates(s, nowMs)), { nowMs });
+      const recScored = scoreCandidates(
+        recSignals.flatMap((s) => extractCandidates(s, nowMs, { toolErrorDiagnosticOnly })),
+        { nowMs },
+      );
       const recGated = gateCandidates(
         recScored.filter((c) => c.signalCount >= 3 && c.uniqueDays >= 2),
         existing,
@@ -1187,6 +1337,7 @@ export async function runSweep({
   // ── Diary ───────────────────────────────────────────────────────────────
   const diary = renderDiary({
     day,
+    apply,
     signals,
     memWrites,
     candidates,
@@ -1214,9 +1365,16 @@ export async function runSweep({
     health,
     // 2026-09-21（方案 B）：去重分档统计
     dedupeStats,
+    // 2026-09-28：工具错误诊断过滤统计
+    toolErrorStats,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
-  const diaryPath = join(resolve(diaryRoot), `${day}.md`);
+  // 2026-09-28：dry-run 写 `<day>.preview.md`，不碰 `<day>.md`。
+  // 此前两者共用一个文件名 ⇒ 一次预览就把当天真实 sweep 的日记覆盖成
+  // 「promoted=0」的预览（09-28 实测：24 条提升明细被冲掉）。
+  // 预览文件名不匹配 `^\d{4}-\d{2}-\d{2}\.md$`，因此不会被 dream_diary 的
+  // 「取最新一篇」和 index.js 的 readLatestDiaryMtime 误认成真实记录。
+  const diaryPath = join(resolve(diaryRoot), apply ? `${day}.md` : `${day}.preview.md`);
   await writeFile(diaryPath, diary, 'utf8');
 
   const result = {
@@ -1228,6 +1386,14 @@ export async function runSweep({
       userMessages: signals.reduce((n, s) => n + s.userTexts.length, 0),
       memWrites: memWrites.length,
       toolErrors: signals.reduce((n, s) => n + s.errors.length, 0),
+      // 2026-09-28：过滤统计（扁平形状 —— tools.js 的 output schema 是
+      // additionalProperties:false，byReason 开放字典没法声明，故不进工具返回）
+      toolErrorFilter: {
+        enabled: toolErrorStats.enabled,
+        total: toolErrorStats.total,
+        kept: toolErrorStats.kept,
+        dropped: toolErrorStats.dropped,
+      },
       candidates: scored.length,
       gated: gated.length,
       skippedPromoted,

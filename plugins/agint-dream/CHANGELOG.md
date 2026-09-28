@@ -5,6 +5,94 @@
 
 ---
 
+## v0.4.1 — dry-run 预览真正只读：不再覆盖当天日记、不再写 recall store（2026-09-28）
+
+**根因**：`runSweep` 有两处副作用被 `apply` 漏掉了。
+
+1. **日记文件名**：`apply` 与否都写 `<day>.md`。预览和真实 sweep 抢同一个文件名
+   ⇒ 跑一次 `dream_run_now(apply=false)`，当天 03:01 那次真实 sweep 的日记就被
+   覆盖成一份写着 `提升写入记忆：0 条` 的预览。**这是自毁证据**。
+2. **recall store**：`recallStoreRecord` 在 `if (apply && ...)` 之外无条件执行。
+   09-28 实测一次预览 `recall: appended=286` —— 把「没过门槛、也永远不会被
+   promote」的候选混进了跨日累积池。
+
+**取证**（2026-09-28 21:45 实跑）：
+- `dreams/2026-09-28.md` 由 12648 字节（含 24 条提升明细）被换成 dry-run 版（0 条提升）；
+- `dream_run_now` 输出 `recall: appended=286`。
+两件事当时是靠人工备份 `.bak-before-dryrun` 兜住的 —— 事后补救不算修复。
+
+**修复**：
+- 日记路径按 `apply` 分流：真实 → `<day>.md`，预览 → `<day>.preview.md`。
+  预览文件名不匹配 `^\d{4}-\d{2}-\d{2}\.md$`，因此不会被 `dream_diary` 的「取最新一篇」
+  也不会被 `readLatestDiaryMtime` 误认成真实记录。
+- `recallStoreRecord` 收进 `if (apply)`。读 `storeEntries` 的逻辑本来就不写，不受影响。
+- `renderDiary` 新增 `apply` 参数，`!apply` 时在正文顶部打**预览声明** ——
+  否则日后回看会把 `promoted=0` 的预览当成「那天一条都没提升」。
+
+**语义**：从这版起，「预览」的定义就是不改状态。`dream_run_now` 不传 `apply`
+默认仍是 `apply=false`（`Boolean(args.apply)`），行为对调用方不变。
+
+**测试**：`test/sweep.test.js` 新增 3 条（预览声明有无、runSweep 端到端回归
+—— 预置一份真实日记 + 断言它一字未动 + 断言 recall store 文件根本没被创建）。
+全量实测 **125 通过 / 0 失败**，`plugin-check` 9 维度全过，`check-tool-schemas` 0 invalid。
+
+**已知未修**：`dream_diary(date)` 读不到 `.preview.md`（需要改 dream_diary 的 schema
+加 preview 参数）。预览文件路径由 `dream_run_now` 返回，可直接读盘查看。
+
+---
+
+## v0.4.0 — 工具错误信号不再零过滤进记忆（2026-09-28，噪音治理）
+
+**根因**：`lib/sweep.js` 的 `extractCandidates` 里，`session.errors` 被**无条件**
+`push` 成 `type:'lesson'` 候选 —— 从 Light 采集到 Deep 提升之间没有任何一道判据。
+于是 `(no output) [exit code: 1]`、`Lines Chars ----- ----- 0 45`、XML 注释残片、
+裸文件路径这类**输出残骸**一路走到 `memory_write`，长期记忆里躺着的「教训」是：
+
+```
+lesson/L1  工具执行报错：(no output) [exit code: 1]
+lesson/L1  工具执行报错：Error: tool "rule_list" returned invalid output: ...
+```
+
+**取证**：2026-09-28 实跑后
+- 梦境日记 09-28：Light 采到 **23 条工具错误信号**，REM 启发式候选 **196 条**；
+- `recall_store_inspect` 抽样（默认时间倒序）**前 5 条全是**工具报错原文，
+  `score=0.00`，其中 3 条 `promoted=✓`；
+- `memory_search "工具执行报错"` 至少命中 2 条已进长期记忆的噪音条目。
+
+这类候选 score 恒为 0.00，召回价值≈0，却在稀释 367 条记忆的信噪比。
+
+**修复**：新增 `classifyToolError(text, opts)`，把「原始 stderr 不是主张」写成显式判据：
+
+| 判定 | 规则 | 例子 |
+|---|---|---|
+| `noise-shape` 拦 | **形态即证据**：裸空输出 / 单侧标记残片 / 表格残片 / 纯框线 | `Lines Chars ----- ----- 0 45 [exit code: 1]` |
+| `no-diagnostic-signal` 拦 | 文本里没有「为什么 / 应该怎样」线索 | `D:\DSH\...\agent.`（裸路径） |
+| `diagnostic` 放行 | 命中 schema / expected / 根因 / 祈使 等诊断线索 | `rule_list ... is not a declared property (additionalProperties: false)` |
+
+判定前先剥尾部 `[exit code: N]`（宿主追加的形态），否则它会挡住形态匹配。
+
+**取舍**：默认**拒绝**。错杀（漏一条教训）靠下次手工 `memory_write` 补；
+误放（灌原始 stderr）会永久污染记忆且稀释所有真信号 —— 代价不对称。
+
+**接线**：
+- `DEFAULTS.toolErrorDiagnosticOnly = true`（出厂即开），`Config` + `RUNTIME_CONFIG_KEYS`
+  提供 kill-switch：`agint.dream.config({ toolErrorDiagnosticOnly: false })` 完全回退旧行为；
+- Light / REM 强化 / Deep 恢复三处 `extractCandidates` 调用点统一过滤；
+- 统计以**非枚举** `toolErrorStats` 挂数组（同 `dedupeStats` 既有约定，数组语义不变），
+  `aggregateToolErrorStats` 跨会话聚合（`flatMap` 会丢非枚举属性，只能事后聚合）；
+- 日记新增「工具错误诊断过滤：留 X / 拦 Y（分档）」行 —— **过滤器必须可见**，
+  否则「拦了多少」无从判断，治理动作退化成看不见的黑洞；
+- `result.counts.toolErrorFilter` 扁平形状透出到 `dream_status` / `dream_run_now`
+  与 `dream.completed` 事件（`byReason` 开放字典在 value-schema DSL 里没法声明，故不进工具返回）。
+
+**测试**：`test/sweep.test.js` 新增 8 条（fixture 全部取自 09-28 真实观测样本，含
+kill-switch 回退与非枚举属性护栏）；`test/runtime-config.test.js` 新增 2 条
+（默认值对齐 + kill-switch 可运行时回退）。改动后全量实测 **122 通过 / 0 失败**
+（本次新增 10 条在内），`test/smoke.mjs` exit 0，
+`plugin-check` agint-dream **0 fail**（唯一 warn 是全仓共性的 `未装 jq，跳过 manifest 深度校验`）。
+
+---
+
 ## v0.3.4 — 修子代理空壳：梦境 LLM 整合自 09-05 起从未真跑过（2026-09-27，K114）
 
 **根因**：`lib/consolidation.js` 建临时 parent agent 时只传了

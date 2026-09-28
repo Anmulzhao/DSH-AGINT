@@ -42,6 +42,17 @@ test('Config 默认值：分级去重三键与 DEFAULTS 对齐，且出厂即开
   assert.equal(parsed.dedupeMid, 0.6);
 });
 
+test('Config 默认值：工具错误诊断过滤与 DEFAULTS 对齐，且出厂即开（2026-09-28）', () => {
+  const parsed = Config.parse({ root: '/tmp/dreams-test' });
+  assert.equal(parsed.toolErrorDiagnosticOnly, DEFAULTS.toolErrorDiagnosticOnly);
+  assert.equal(parsed.toolErrorDiagnosticOnly, true, '出厂即开 —— 噪音治理不该默认关着等老板批');
+});
+
+test('RUNTIME_CONFIG_KEYS: 诊断过滤开关必须可运行时回退（kill-switch 不只是装饰）', () => {
+  assert.ok(RUNTIME_CONFIG_KEYS.includes('toolErrorDiagnosticOnly'),
+    '回退开关不在 RUNTIME_CONFIG_KEYS 里 ⇒ config() 改它会静默无效');
+});
+
 test('DEFAULTS 自洽：dedupeMid 必须等于 dedupeTokenOverlap（兼容承诺）', () => {
   // gateCandidates 里 dedupeMid 的默认值跟 dedupeTokenOverlap 走；若两者不等，
   // 只改 dedupeTokenOverlap 的部署会得到意外档位。

@@ -67,6 +67,11 @@ const Config = z.object({
   dedupeTieredEnabled: z.boolean().default(DEFAULTS.dedupeTieredEnabled),
   dedupeHigh: z.number().min(0).max(1).default(DEFAULTS.dedupeHigh),
   dedupeMid: z.number().min(0).max(1).default(DEFAULTS.dedupeMid),
+  // ── 2026-09-28：工具错误信号诊断化过滤 ──
+  // 此前 extractCandidates 把工具 stderr 原文零过滤转成 lesson 候选，
+  // `(no output) [exit code: 1]` 这类输出残骸被灌进长期记忆（score 恒 0.00）。
+  // 出厂即开；kill-switch：设 false → 完全回退旧行为（全部放行）。
+  toolErrorDiagnosticOnly: z.boolean().default(DEFAULTS.toolErrorDiagnosticOnly),
 });
 
 /**
@@ -78,6 +83,8 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'dedupeTieredEnabled',
   'dedupeHigh',
   'dedupeMid',
+  // 2026-09-28：诊断化过滤的回退开关
+  'toolErrorDiagnosticOnly',
 ]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -167,6 +174,8 @@ function apply(ctx, config) {
           dedupeTieredEnabled: opts.dedupeTieredEnabled ?? eff.dedupeTieredEnabled,
           dedupeHigh: opts.dedupeHigh ?? eff.dedupeHigh,
           dedupeMid: opts.dedupeMid ?? eff.dedupeMid,
+          // 2026-09-28：工具错误诊断化过滤（kill-switch 走运行时覆盖，见 config() API）
+          toolErrorDiagnosticOnly: opts.toolErrorDiagnosticOnly ?? eff.toolErrorDiagnosticOnly,
           publishReject,
           // 2026-09-18：零命中告警（默认开；配置可关 / 可调阈值）
           zeroHitAlert: opts.zeroHitAlert ?? eff.zeroHitAlert,
@@ -198,6 +207,9 @@ function apply(ctx, config) {
                 // 「gated=0」既可能是没候选也可能是全被去重吃了 —— 分不清。
                 // shape: { enabled, dropped, suspicious, checked, maxSimilarity }
                 dedupeStats: result.counts?.dedupeStats ?? null,
+                // 2026-09-28：工具错误过滤遥测 —— 「拦了多少噪音」也该可观测，
+                // 否则治理动作在指标上完全隐形。
+                toolErrorFilter: result.counts?.toolErrorFilter ?? null,
               },
             });
           }
@@ -281,6 +293,9 @@ function apply(ctx, config) {
           qualityEval: { status: 'unavailable', compositeMean: null, harmMean: null, targetCount: 0, okCount: 0 },
           // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要兜底
           evolutionTemplates: { status: 'unavailable', count: 0, topConfidence: null, boost: 0 },
+          // 2026-09-28：工具错误诊断过滤兜底（形状必须与 sweep result.counts 一致，
+          // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
+          toolErrorFilter: { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0 },
         },
       };
     },
