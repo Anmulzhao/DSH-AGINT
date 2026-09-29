@@ -556,6 +556,7 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
   const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
   try {
     const calls = [];
+    let policySaw = null;
     const fakeEvolve = {
       listProposals: async () => [
         { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
@@ -593,7 +594,19 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
         // （去 bin/plugin-check.sh/package.json 找插件清单），导致 commit 100% 被拒。
         // 这里让它一被调用就抛错 —— 若代码退回到 runSmoke，本用例会红。
         sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
-        policy: { decide: async () => ({ kind: 'AUTO_DEPLOY' }) },
+        // v0.2.9：mock 必须复刻真实 policy 的契约，否则测不出字段名错配。
+        // 真 policy（decide.js:88/96）只按 `d.key` 取权重：`weights[d.key] ?? 0`
+        // 在只给 name 时为 0 → den===0 → composite=null → 恒 REJECT。
+        // v0.2.8 的 mock 固定返回 AUTO_DEPLOY，所以把 driver 传 `name` 这个 bug 放了过去，
+        // 直到 2026-09-29 真实实跑才暴露（decision=REJECT 而 verifyOk=true）。
+        policy: {
+          decide: async ({ results }) => {
+            const dims = results?.[0]?.dimensions ?? [];
+            policySaw = results?.[0];
+            const keyed = dims.some((d) => d.key === 'safety') && dims.some((d) => d.key === 'trust');
+            return keyed ? { kind: 'AUTO_DEPLOY' } : { kind: 'REJECT', reason: 'unknown-veto' };
+          },
+        },
         evolution: evolutionLog,
         llm: async () => ({
           ok: true,
@@ -629,6 +642,16 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
     assert.equal(committed.payload.policyDecision, 'AUTO_DEPLOY');
     // v0.2.8：verifyMode 证明走的是语法检查而非 runSmoke
     assert.equal(committed.payload.verifyMode, 'syntax:.js');
+    // ⭐ v0.2.9：锁住交给 policy 的契约形状 —— dimensions 必须带 key，
+    // 否则真 policy 的 computeComposite 取不到权重（weights[d.key] ?? 0 → 0）→ 恒 REJECT。
+    assert.ok(policySaw, 'policy 必须被调用');
+    assert.deepEqual(
+      policySaw.dimensions.map((d) => d.key),
+      ['safety', 'trust'],
+      'dimensions 缺 key ⇒ policy 恒 REJECT（v0.2.8 实跑踩过）',
+    );
+    assert.deepEqual(policySaw.dimensions.map((d) => d.name), ['safety', 'trust'],
+      'name 也要保留，兼容按 name 读旧结构的调用方');
     // 成功路径不应记录 failure
     assert.equal(calls.some((c) => c[0] === 'addFailure'), false);
   } finally {

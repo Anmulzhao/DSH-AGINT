@@ -1,5 +1,55 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.9 — 2026-09-29（修 policy 契约错配：dimensions 必须带 key）
+
+### 背景
+
+v0.2.8 部署重启后第一次实跑，`evolution_queryFailures` 里出现：
+
+```
+pattern: evolution-commit-rejected:policy
+evidence: proposalId=8d0c51eb path=bin/plugin-check.sh decision=REJECT
+          verifyMode=syntax:.sh verifyOk=true reason=n/a reverted=true
+```
+
+v0.2.8 本身工作正常（`verifyOk=true` 说明 `bash -n` 通过，回滚也成功）。但
+**语法检查满分却被 REJECT**，说明问题在 policy 这一侧。
+
+### 根因：EvalResult.dimensions 字段名错配
+
+`agint-quality-policy/lib/decide.js` 的 `computeComposite` 全程只认 `d.key`：
+
+- line 88 `const w = weights[d.key] ?? 0;` — 只给 `name` 时 `weights[undefined] === 0` → `continue`
+- line 93 `if (den === 0) return null;` — 所有维度被跳过 ⇒ `den===0` ⇒ 返回 `null`
+- line 244 `if (composite === null) → anyVeto = true → REJECT`
+
+即**只要 `dimensions` 用 `name` 而不是 `key`，policy 必然 REJECT，与分数无关**。
+driver 的 synthEval 写的是 `{ name: 'safety', ... }`。
+
+**这不是笔误，是照抄来的**：`agint-mutator/lib/index.js:609` 至今仍只传 `name`。
+所以 `mutator.commit` 一旦被真正启用也会恒被 REJECT —— 它至今 `commits=0`，
+这个 bug 从未暴露过。driver 走自己的 commit 路径，才第一次把它撞出来。
+
+### 为什么单测没抓到
+
+v0.2.8 的 T25 用 `policy.decide: async () => ({ kind: 'AUTO_DEPLOY' })` —— 固定返回值、
+不校验入参形状，字段名写错也照样绿。**mock 要复读契约，而不是复读被测代码的期望。**
+
+### 变更
+
+- synthEval 的 `dimensions` 同时写 `key` 与 `name`：`key` 满足 policy 契约，
+  `name` 兼容按 `name` 读旧结构的调用方。
+- **不是改 FROZEN 契约**：`key` 才是 `EvalResult` 的契约字段，这里是**回到**契约，
+  不触发 L0（人类多签 / 7 天影子 / major 版本）。
+- T25 的 policy mock 改为复刻真实契约（无 `key` → REJECT），并断言
+  `dimensions[].key === ['safety','trust']` 与 `.name` 同时存在。
+- **自证**：把 `key` 去掉后重跑，T25 变红（40/41, exit 1）；恢复后 41/41。
+
+### 遗留（本版未做）
+
+`agint-mutator/lib/index.js:605-618` 的 synthEval 仍是 `name`-only，属同一处契约错配。
+修它要改 `agint-mutator` 插件源码（另一个插件的 preflight），本版未动。
+
 ## v0.2.8 — 2026-09-29（换掉选错的验证器 + 失败原因落 failure_pattern）
 
 ### 背景

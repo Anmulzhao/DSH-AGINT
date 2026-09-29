@@ -700,14 +700,25 @@ export function apply(ctx, config = {}) {
               });
               const synthEval = {
                 target: { id: commit.path, kind: 'plugin-postimage' },
+                // ⭐ v0.2.9：必须带 `key`，且与 `name` 并存。
+                // policy 的 computeComposite（agint-quality-policy/lib/decide.js:88/96-97）
+                // 全程只按 `d.key` 取权重与判 veto：`weights[d.key] ?? 0` 在只给 name 时
+                // 得到 0 → continue → den===0 → return null → **恒 REJECT**，与分数无关。
+                //
+                // 这不是笔误：agint-mutator/lib/index.js:609 至今仍只传 `name`，
+                // 所以 mutator.commit 一旦被真正启用也会恒被拒。driver 是照抄来的，
+                // 2026-09-29 首次实跑才暴露（本轮 decision=REJECT / verifyOk=true）。
+                //
+                // 两个字段都写：key 满足 policy 契约，name 兼容任何按 name 读的旧调用方。
+                // 这**不是**改 FROZEN 契约 —— key 才是契约字段，这里是回到契约。
                 dimensions: sandboxResult?.ok
                   ? [
-                      { name: 'safety', score: { score: 1.0, veto: false } },
-                      { name: 'trust', score: { score: 1.0, veto: false } },
+                      { key: 'safety', name: 'safety', score: { score: 1.0, veto: false } },
+                      { key: 'trust', name: 'trust', score: { score: 1.0, veto: false } },
                     ]
                   : [
-                      { name: 'safety', score: { score: 0.0, veto: true } },
-                      { name: 'trust', score: { score: 0.0, veto: true } },
+                      { key: 'safety', name: 'safety', score: { score: 0.0, veto: true } },
+                      { key: 'trust', name: 'trust', score: { score: 0.0, veto: true } },
                     ],
                 ok: Boolean(sandboxResult?.ok),
                 reason: sandboxResult?.ok ? undefined : sandboxResult?.reason,
