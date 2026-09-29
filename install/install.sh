@@ -744,32 +744,22 @@ fi
 PARTIAL_STEPS=()
 trap - EXIT
 
-# ── 4.7 防御性补装 dsh-workflow-worker-thread（AGINT evolve 提案上下文）────
-# 历史：AGINT preset 历史上引用过 @deepseek-ai/dsh-workflow-worker-thread，
-# 但该包是 dsh 0.0.1-rc.3 发布候选、dsh 官方不携带。2026-09-20 智进
-# picker 显示 4 个 preset 全部「加载失败」，根因即此包未装。
-# 修法（已落地于 presets/*.yml）：三处 preset 改用 dsh 默认的
-# workflow-ptc（stable、dsh 官方 deps 携带），不再依赖 worker-thread。
-# 本步骤作为防御性兜底：profile node_modules 中残留的孤儿 worker-thread
-# 软链可能仍在，若未来 preset 临时回退或 fork 复制者引用旧版，
-# 此处确保包就位。失败仅 warn，不阻断安装。
-if [ "$DRY_RUN" != "1" ]; then
-  if command -v pnpm >/dev/null 2>&1; then
-    if [ -d "$DSH_HOME/profiles" ] && [ -d "$DSH_HOME/profiles/node_modules" ]; then
-      if pnpm add --silent --no-frozen-lockfile @deepseek-ai/dsh-workflow-worker-thread --dir "$DSH_HOME/profiles" 2>/dev/null; then
-        log "   ✓ 防御性补装 dsh-workflow-worker-thread OK"
-      else
-        warn "防御性补装 dsh-workflow-worker-thread 失败（preset 已不依赖，可忽略）"
-      fi
-    else
-      log "   ⊘ 跳过防御性补装（profiles/node_modules 不存在）"
-    fi
-  else
-    warn "未找到 pnpm，跳过防御性补装（preset 已不依赖，可忽略）"
-  fi
-else
-  log "   ⊘ 跳过防御性补装（dry-run）"
-fi
+# ── 4.7 ~~防御性补装 dsh-workflow-worker-thread~~ 已下线（2026-09-29）────
+# 历史包袱：AGINT preset 曾在 2026-09-20 硬引用 @deepseek-ai/dsh-workflow-worker-thread
+# （0.0.1-rc.3 发布候选，dsh 官方不携带），导致 4 个 preset 全部「加载失败」。
+# 根因已修：presets/*.yml 三处全部改用 dsh 默认的 @deepseek-ai/dsh-workflow-ptc
+# （stable，随 dsh 官方 deps 携带）。
+#
+# 本步骤原为「防御性补装旧包」的兜底，2026-09-29 下线，理由三条：
+#   1. 补装对象已不存在——dsh 0.1.7-rc.2 官方 deps 只有 dsh-workflow-ptc，
+#      worker-thread 是 dsh 0.0.1 时代的 RC 包，当前 dsh 不带。
+#   2. preset 不再依赖它——三个 preset 引用的 ptc 走 include baseUrl 向上解析到
+#      dsh 官方包，补装一个不受 dsh 版本管理的包救不了任何真实故障。
+#   3. 换成 ptc 补装同样不可取——`pnpm add <pkg>` 不带版本号会拉 npm 最新版，
+#      与本机 dsh 版本漂移；比留着旧引用更糟。
+#
+# 若日后确有插件真依赖某个 dsh 未携带的包，正确做法是带精确版本号补装
+# （`pnpm add @deepseek-ai/<pkg>@<dsh同版本>`），并同步登记进 VERSION 兼容矩阵。
 
 # 安装成功收尾：清掉回滚标记（rollback 的 rc=0 守卫已保证不会误回滚，这里是清理动作）
 if [ "$DRY_RUN" != "1" ]; then
