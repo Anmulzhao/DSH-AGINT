@@ -1,5 +1,76 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.8 — 2026-09-29（换掉选错的验证器 + 失败原因落 failure_pattern）
+
+### 背景
+
+v0.2.7 部署 + 重启 + 实跑 cron 后暴露两个问题。**两个都不是设计问题，是实现问题，
+且都要靠真实生产跑才发现 —— 单测全绿也照样漏掉。**
+
+**① 第 4 道闸选错了工具，commit 100% 失败。**
+v0.2.7 用 `sandbox.runSmoke` 做写入后验证。实测把 `bin/plugin-check.sh` 交给它，返回
+`ok:false reason=package-json-missing`（它去 `bin/plugin-check.sh/package.json` 找插件清单）——
+`runSmoke` 是**插件结构冒烟**（dynamic import `lib/index.js` + 校验 package.json +
+exports 含 apply/inject），而本插件的目标是**任意仓库文件**。语义不匹配 ⇒ 恒失败 ⇒
+policy 恒拒 ⇒ commit 恒被拒。这不是配置问题，调 `allowInProcessFallback` 修不好
+（schema.js:41 默认即 `true`）。
+
+**② 失败原因完全不可见（v0.2.7 自己引入的缺陷）。**
+catch 分支只 `warn` 走 stdout（常驻进程读不到），cron 持久化又只写死 `"ok"`，
+叠加 driver 事件未进 event-bus（T1 影子期，`evolution.cycle.summary` 也是 0），
+结果是这一轮为什么失败**查不到任何线索**。
+
+### 变更
+
+- 新增 `verifyTargetFile({ repoRoot, relPath, sandbox })`：按文件类型选验证器。
+  目录 → 仍走 `sandbox.runSmoke`（它唯一擅长的场景）；`.sh`/`.bash` → `bash -n`；
+  `.js`/`.mjs`/`.cjs` → `node --check`；其余（`.md`/`.yaml`/`.json`…）→ 跳过，
+  明确标注「交给 policy.decide 定夺」而不是假装通过。结果仍交 `policy.decide`，
+  本函数不自行决定去留。
+- 新增 `recordFailure()`：三条失败路径（commit-skipped / 拒则回滚 / 写入后异常）
+  全部写 `agint.evolution.addFailure`，pattern 区分
+  `evolution-commit-skipped:verify-unavailable` /
+  `evolution-commit-rejected:{policy|verify}` / `evolution-commit-threw`，
+  evidence 带 verifyMode + 原因 + 回滚结果。
+- 事件补 `verifyMode` 字段；`rolledback` 另带 `reason`。
+- fail-closed 判据放宽为「policy 必须有 + sandbox 仅在目标是目录时才必需」。
+
+### ⭐ 拦下一个会让第 4 道闸彻底失灵的坑
+
+写单测时发现 `node --check` 对 ESM **漏检**（本机 node v22+ 实测）：
+
+| 内容 | 扩展名 | 退出码 |
+| --- | --- | --- |
+| `export const a = ;` | `.js` | **0 —— 漏检** |
+| `const a = ;` | `.js` | 1 ✅ |
+| `export const a = ;` | `.mjs` | 1 ✅ |
+
+而 AGINT 仓库里几乎所有 `lib/*.js` 都是 ESM —— 不处理这条，第 4 道闸**恰好在最需要它的
+场景上完全失灵**，比没有闸更危险（看起来绿了，其实什么都没验）。
+
+修法：`.js` 先按内容判是否 ESM（含顶层 import/export 形式），是则复制成临时 `.mjs` 再检
+（实测可检出）；否则直接检，避免把合法 CJS 判死造成假阳性。`.mjs`/`.cjs` 扩展名自带语义，
+直接检。
+
+### 影响
+
+- 行为变更：文件目标不再调用 `runSmoke`。单测 T25 把 `sandbox.runSmoke` 设成**抛错**，
+  代码一旦退回旧路径立刻变红。
+- 失败原因现在可在 `evolution_queryFailures` 查到，不必再猜。
+- 不改 FROZEN 契约：仍未触碰 `MutationPayloadSchema`；A 方案（统一到 `mutator.commit`）
+  依然需要 L0 变更，未做。
+
+### 验证
+
+- `test/smoke.mjs` 41/41（新增 T26a/b/c/d）；`test/goal-bridge.test.mjs` 9/9。
+- **T25/T25c 改用真实 tmpdir**（v0.2.7 的虚拟 fs 满足不了「真跑 node --check」），
+  T25c 现在真断言「回滚后磁盘内容与改动前逐字节一致」，而不只是断言返回值。
+- 真实仓库抽查无假阳性：driver lib/index.js、quality-sandbox lib/index.js、
+  test/smoke.mjs、bin/plugin-check.sh、bin/check-wiring.mjs、install/install.sh 全 PASS；
+  `.md`/`.json`/`.yml`/无扩展名正确 skip；路径不存在正确判死。
+- `bin/plugin-check.sh --all`：driver 9 维度全过；全仓 4 既存 FAIL 与改动前一致。
+- 字节保真：两文件 BOM/换行/尾字节与 HEAD 逐字节一致。
+
 ## v0.2.7 — 2026-09-29（commit 补写入后 D-QAF 验证 + fail-closed）
 
 ### 背景

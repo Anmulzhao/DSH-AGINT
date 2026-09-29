@@ -1,7 +1,7 @@
 {
   "name": "agint-evolution-driver",
-  "version": "0.2.7",
-  "description": "闭环引擎的驱动源（变异构造器）：提案 → LLM 原子编辑 → mutator.propose → population.ingest；幻觉闸门 + 全软依赖 + 可关。commit 自 v0.2.7 起写入后必过 sandbox+policy，缺验证通道则不写（fail-closed）。",
+  "version": "0.2.8",
+  "description": "闭环引擎的驱动源（变异构造器）：提案 → LLM 原子编辑 → mutator.propose → population.ingest；幻觉闸门 + 全软依赖 + 可关。commit 自 v0.2.7 起写入后必过验证+policy，缺验证通道则不写（fail-closed）；v0.2.8 起验证器按文件类型选（.sh→bash -n，.js→node --check，目录→sandbox.runSmoke），失败原因落 evolution.failure_pattern。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   apply,
@@ -10,6 +13,9 @@ import {
   extractRepoPaths,
   resolveRepoRoot,
   commitToRepo,
+  restoreFromPreimage,
+  verifyTargetFile,
+  recordFailure,
   anchorExists,
   slugifyPromptId,
   findFabricatedEntities,
@@ -17,6 +23,24 @@ import {
   spawnLlm,
   DEFAULT_AGENT_PRESET,
 } from '../lib/index.js';
+
+/**
+ * 建一个真实的临时仓库根（v0.2.8）。
+ *
+ * 之前 T25/T25c 用 `inj.fs` 虚拟文件系统，commitToRepo 走注入分支不碰磁盘；
+ * 但 v0.2.8 的 `verifyTargetFile` 要按扩展名真的去跑 `bash -n` / `node --check`，
+ * 虚拟 fs 满足不了（'/fake/repo' 在磁盘上不存在 ⇒ statSync 直接失败）。
+ * 改用真实 tmpdir 后，语法检查、preimage 备份、回滚全都是真跑真验。
+ */
+async function makeRepo(files = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'agint-driver-'));
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(root, rel);
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, content, 'utf8');
+  }
+  return root;
+}
 
 // ── mock ctx ────────────────────────────────────────────────────────────
 
@@ -526,76 +550,90 @@ test('T24: commitToRepo 落盘三保险', async () => {
 });
 
 // ── T25: runOnce 全链路 —— repo 目标 → LLM → propose → commit 事件 ─────────
-test('T25: repo 目标全链路，commit 默认开且发 committed 事件', async () => {
-  const SKILL_TEXT = '# demo\nhello world\n';
-  const calls = [];
-  const fakeEvolve = {
-    listProposals: async () => [
-      { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
-    ],
-  };
-  const fakeMutator = {
-    propose: async (input) => {
-      calls.push(['propose', input.promptPayload.promptId]);
-      return { id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' };
-    },
-    validate: async () => ({ ok: true, findings: [] }),
-  };
-  const fakePopulation = { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) };
-  const agents = { create: async () => { throw new Error('should not spawn (llm injected)'); } };
-  const subagents = { start: async () => { throw new Error('should not spawn (llm injected)'); } };
-
-  const ctx = makeCtx({
-    'agint.evolve': fakeEvolve,
-    'agint.mutator': fakeMutator,
-    'agint.population': fakePopulation,
-    agents,
-    subagents,
-  });
-  const events = busRecorder(ctx);
-  apply(ctx, { repoRoot: '/fake/repo' });
-  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
-    env: {},
-    inject: {
-      // 2026-09-29（B 方案）：commit 是 fail-closed 的 —— 没有验证通道就不写仓库。
-      // 原有夹具未注入 sandbox/policy，commit 会被跳过，这里补上以保持「全链路」语义。
-      sandbox: { runSmoke: async () => ({ ok: true, kind: 'PASS' }) },
-      policy: { decide: async () => ({ kind: 'AUTO_DEPLOY' }) },
-      llm: async () => ({
-        ok: true,
-        value: {
-          applicable: true,
-          targetSkill: 'lib/service.js',
-          oldText: 'hello world',
-          newText: 'hello AGINT world',
-          rationale: 'test',
-        },
-      }),
-      skillNames: [],
-      fs: {
-        scanRepo: async () => ['lib/service.js', 'README.md'],
-        readRepo: async (p) => (p === 'lib/service.js' ? 'hello world\n' : null),
-        writeRepo: async (p, text) => {
-          calls.push(['write', p, text]);
-        },
+test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2.8 真实 tmpdir）', async () => {
+  // v0.2.8：真实磁盘仓库。内容必须是**合法 JS** —— 写入后验证会真的跑 `node --check`，
+  // 用 'hello world' 这种裸文本会直接被语法检查判死（那正是 v0.2.7 的真实故障形态）。
+  const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
+  try {
+    const calls = [];
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      propose: async (input) => {
+        calls.push(['propose', input.promptPayload.promptId]);
+        return { id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' };
       },
-    },
-  });
-  assert.equal(out.skipped, false);
-  assert.deepEqual(out.target, { type: 'repo', id: 'lib/service.js' });
-  // v0.2.3 起 promptId 走 slugifyPromptId（mutator 正则要求 kebab slug）
-  assert.deepEqual(calls[0], ['propose', 'service-js']);
-  assert.equal(calls[1][0], 'write');
-  assert.equal(calls[1][2], 'hello AGINT world\n');
-  const topics = events.map((e) => e.topic);
-  assert.ok(topics.includes('evolution.mutation.proposed'));
-  assert.ok(topics.includes('evolution.mutation.committed'));
-  const committed = events.find((e) => e.topic === 'evolution.mutation.committed');
-  assert.equal(committed.payload.path, 'lib/service.js');
-  assert.equal(committed.payload.proposalId, 'p1');
-  // B 方案：committed 事件必须带验证结论，否则事后无从判断这处改动是否过了 D-QAF
-  assert.equal(committed.payload.sandboxOk, true);
-  assert.equal(committed.payload.policyDecision, 'AUTO_DEPLOY');
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    const fakePopulation = { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) };
+    const agents = { create: async () => { throw new Error('should not spawn (llm injected)'); } };
+    const subagents = { start: async () => { throw new Error('should not spawn (llm injected)'); } };
+    const evolutionLog = {
+      addFailure: async (f) => { calls.push(['addFailure', f.pattern]); return { id: 'f1' }; },
+    };
+
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': fakePopulation,
+      'agint.evolution': evolutionLog,
+      agents,
+      subagents,
+    });
+    const events = busRecorder(ctx);
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        // ⭐ v0.2.8 核心回归点：目标是**文件**，不该再走 runSmoke。
+        // 2026-09-29 生产实跑证明 runSmoke 对任意文件恒返回 package-json-missing
+        // （去 bin/plugin-check.sh/package.json 找插件清单），导致 commit 100% 被拒。
+        // 这里让它一被调用就抛错 —— 若代码退回到 runSmoke，本用例会红。
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: { decide: async () => ({ kind: 'AUTO_DEPLOY' }) },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: {
+            applicable: true,
+            targetSkill: 'lib/service.js',
+            oldText: 'hello world',
+            newText: 'hello AGINT world',
+            rationale: 'test',
+          },
+        }),
+        skillNames: [],
+        // 只注入 scanRepo：目标解析需要它；读取与写入走真实磁盘，
+        // 这样 preimage 备份与 node --check 才验的是真东西。
+        fs: { scanRepo: async () => ['lib/service.js', 'README.md'] },
+      },
+    });
+    assert.equal(out.skipped, false);
+    assert.deepEqual(out.target, { type: 'repo', id: 'lib/service.js' });
+    // v0.2.3 起 promptId 走 slugifyPromptId（mutator 正则要求 kebab slug）
+    assert.deepEqual(calls[0], ['propose', 'service-js']);
+    // 真实文件确实被改写了，且改后仍是合法 JS
+    const onDisk = await readFile(join(repoRoot, 'lib/service.js'), 'utf8');
+    assert.equal(onDisk, "export const greeting = 'hello AGINT world';\n");
+    const topics = events.map((e) => e.topic);
+    assert.ok(topics.includes('evolution.mutation.proposed'));
+    assert.ok(topics.includes('evolution.mutation.committed'));
+    const committed = events.find((e) => e.topic === 'evolution.mutation.committed');
+    assert.equal(committed.payload.path, 'lib/service.js');
+    assert.equal(committed.payload.proposalId, 'p1');
+    // 事件必须带验证结论，否则事后无从判断这处改动是否过了 D-QAF
+    assert.equal(committed.payload.sandboxOk, true);
+    assert.equal(committed.payload.policyDecision, 'AUTO_DEPLOY');
+    // v0.2.8：verifyMode 证明走的是语法检查而非 runSmoke
+    assert.equal(committed.payload.verifyMode, 'syntax:.js');
+    // 成功路径不应记录 failure
+    assert.equal(calls.some((c) => c[0] === 'addFailure'), false);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test('T25b: fail-closed —— sandbox/policy 不可用时不写仓库，只发 commit-skipped', async () => {
@@ -643,53 +681,159 @@ test('T25b: fail-closed —— sandbox/policy 不可用时不写仓库，只发 
   assert.ok(!topics.includes('evolution.mutation.committed'), '未验证不得发 committed');
 });
 
-test('T25c: policy REJECT → 从 preimage 回滚，且不发 committed', async () => {
-  const calls = [];
-  const fakeEvolve = {
-    listProposals: async () => [
-      { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
-    ],
-  };
-  const fakeMutator = {
-    propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
-    validate: async () => ({ ok: true, findings: [] }),
-  };
-  const ctx = makeCtx({
-    'agint.evolve': fakeEvolve,
-    'agint.mutator': fakeMutator,
-    'agint.population': { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) },
-    agents: { create: async () => { throw new Error('no spawn'); } },
-    subagents: { start: async () => { throw new Error('no spawn'); } },
-  });
-  const events = busRecorder(ctx);
-  apply(ctx, { repoRoot: '/fake/repo' });
-  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
-    env: {},
-    inject: {
-      sandbox: { runSmoke: async () => ({ ok: false, kind: 'FAIL', reason: 'smoke blew up' }) },
-      policy: { decide: async () => ({ kind: 'REJECT', reason: 'veto' }) },
-      llm: async () => ({
-        ok: true,
-        value: { applicable: true, targetSkill: 'lib/service.js', oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test' },
-      }),
-      skillNames: [],
-      fs: {
-        scanRepo: async () => ['lib/service.js'],
-        readRepo: async () => 'hello world\n',
-        writeRepo: async (p, text) => { calls.push(['write', p, text]); },
+test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir），且不发 committed', async () => {
+  // v0.2.8 改真实磁盘：v0.2.7 用虚拟 fs 时"回滚成功"只是断言了返回值，
+  // 并没有证明文件真的被还原。这里跑真文件，真回滚。
+  const ORIGINAL = "export const greeting = 'hello world';\n";
+  const repoRoot = await makeRepo({ 'lib/service.js': ORIGINAL });
+  try {
+    const calls = [];
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    const evolutionLog = {
+      addFailure: async (f) => { calls.push(['addFailure', f.pattern]); return { id: 'f1' }; },
+    };
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) },
+      'agint.evolution': evolutionLog,
+      agents: { create: async () => { throw new Error('no spawn'); } },
+      subagents: { start: async () => { throw new Error('no spawn'); } },
+    });
+    const events = busRecorder(ctx);
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        // 语法检查会通过（改后仍是合法 JS），拒它的只能是 policy —— 这才能证明
+        // 「policy 决策 -> 回滚」这条链本身是通的，而不是被验证失败顺手拦下的。
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: { decide: async () => ({ kind: 'REJECT', reason: 'veto' }) },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: { applicable: true, targetSkill: 'lib/service.js', oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test' },
+        }),
+        skillNames: [],
+        fs: { scanRepo: async () => ['lib/service.js'] },
       },
-    },
+    });
+    const topics = events.map((e) => e.topic);
+    assert.ok(!topics.includes('evolution.mutation.committed'), '被拒不得发 committed');
+    assert.ok(topics.includes('evolution.mutation.rolledback'), '必须发 rolledback 留痕');
+    const rb = events.find((e) => e.topic === 'evolution.mutation.rolledback');
+    assert.equal(rb.payload.policyDecision, 'REJECT');
+    assert.equal(rb.payload.sandboxOk, true, '语法检查是通过的 —— 拒它的只能是 policy');
+    assert.equal(rb.payload.reverted, true, '必须回滚成功');
+    // ⭐ v0.2.8 真正的回滚断言：磁盘内容必须与改动前逐字节一致
+    assert.equal(await readFile(join(repoRoot, 'lib/service.js'), 'utf8'), ORIGINAL,
+      '回滚后磁盘内容必须与改动前完全一致 —— 仓库不能留下任何未验证改动');
+    // 返回值要能区分「被拒」与「路径不合法」
+    assert.equal(out.commit.ok, false);
+    assert.equal(out.commit.reverted, true);
+    // v0.2.8：失败原因必须留痕，且 pattern 要能区分「验证挂」与「policy 拒」
+    const failure = calls.find((c) => c[0] === 'addFailure');
+    assert.ok(failure, '被拒必须记 failure_pattern —— 否则事后查不到原因');
+    assert.equal(failure[1], 'evolution-commit-rejected:policy');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// ── v0.2.8：验证器与留痕的单元测试 ─────────────────────────────────────
+
+test('T26a: verifyTargetFile —— .sh 走 bash -n，改坏语法要判死', async () => {
+  const repoRoot = await makeRepo({ 'bin/ok.sh': 'echo hello\n', 'bin/bad.sh': 'if [ -z "$1" ; then\n' });
+  try {
+    const sandbox = { runSmoke: async () => { throw new Error('must not reach runSmoke'); } };
+    const good = await verifyTargetFile({ repoRoot, relPath: 'bin/ok.sh', sandbox });
+    assert.equal(good.ok, true);
+    assert.equal(good.mode, 'syntax:.sh');
+    const bad = await verifyTargetFile({ repoRoot, relPath: 'bin/bad.sh', sandbox });
+    assert.equal(bad.ok, false, '语法错误的 .sh 必须判死 —— 这是第 4 道闸的本职');
+    assert.equal(bad.mode, 'syntax:.sh');
+    assert.match(bad.reason, /exited \d+/);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T26b: verifyTargetFile —— .js 走 node --check；.md 跳过；目录仍走 runSmoke', async () => {
+  const repoRoot = await makeRepo({
+    // ⭐ bad.js 必须是 ESM 语法：`node --check` 对 `.js` 里的顶层 import/export 会漏检
+    // （实测 `export const a = ;` 退出码 0），实现靠「复制成 .mjs 再检」兜住这一条。
+    'lib/bad.js': 'export const a = ;\n',
+    'lib/good.js': 'export const a = 1;\n',
+    // 合法 CJS 必须仍然通过 —— 若无条件按 .mjs 检，require/module.exports 会被误判死
+    'lib/cjs.js': "const fs = require('node:fs');\nmodule.exports = { fs };\n",
+    'docs/notes.md': '# 标题\n随便写点什么\n',
+    'plugins/demo/lib/index.js': 'export function apply() {}\n',
   });
-  const topics = events.map((e) => e.topic);
-  assert.ok(!topics.includes('evolution.mutation.committed'), '被拒不得发 committed');
-  assert.ok(topics.includes('evolution.mutation.rolledback'), '必须发 rolledback 留痕');
-  const rb = events.find((e) => e.topic === 'evolution.mutation.rolledback');
-  assert.equal(rb.payload.policyDecision, 'REJECT');
-  assert.equal(rb.payload.sandboxOk, false);
-  assert.equal(rb.payload.reverted, true, '必须回滚成功');
-  // 返回值要能区分「被拒」与「路径不合法」
-  assert.equal(out.commit.ok, false);
-  assert.equal(out.commit.reverted, true);
+  await writeFile(join(repoRoot, 'plugins/demo/package.json'),
+    JSON.stringify({ name: 'demo', main: 'lib/index.js', type: 'module' }), 'utf8');
+  try {
+    const seen = [];
+    const sandbox = { runSmoke: async (a) => { seen.push(a.target.path); return { ok: true, reason: undefined }; } };
+
+    const good = await verifyTargetFile({ repoRoot, relPath: 'lib/good.js', sandbox });
+    assert.equal(good.ok, true);
+    assert.equal(good.mode, 'syntax:.js');
+
+    const bad = await verifyTargetFile({ repoRoot, relPath: 'lib/bad.js', sandbox });
+    assert.equal(bad.ok, false, 'ESM 语法错误的 .js 必须判死（node --check 直接检会漏）');
+    assert.equal(bad.mode, 'syntax:.js');
+
+    const cjs = await verifyTargetFile({ repoRoot, relPath: 'lib/cjs.js', sandbox });
+    assert.equal(cjs.ok, true, '合法 CJS 不能被误判死');
+
+    // 文档没有「语法可用」概念 —— 跳过而不是假装通过；最终去留交给 policy.decide
+    const md = await verifyTargetFile({ repoRoot, relPath: 'docs/notes.md', sandbox });
+    assert.equal(md.ok, true);
+    assert.equal(md.skipped, true);
+    assert.equal(md.mode, 'skip');
+    assert.equal(seen.length, 0, '前四个都不该碰 runSmoke');
+
+    // 目录 = 插件目录，runSmoke 唯一擅长的场景，保留
+    const dir = await verifyTargetFile({ repoRoot, relPath: 'plugins/demo', sandbox });
+    assert.equal(dir.mode, 'sandbox');
+    assert.equal(seen.length, 1);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T26c: verifyTargetFile —— 路径安全与不存在文件不静默通过', async () => {
+  const repoRoot = await makeRepo({ 'lib/a.js': 'export const a = 1;\n' });
+  try {
+    const sandbox = { runSmoke: async () => ({ ok: true }) };
+    const escape = await verifyTargetFile({ repoRoot, relPath: '../../etc/passwd', sandbox });
+    assert.equal(escape.ok, false);
+    assert.match(escape.reason, /unsafe path/);
+    const missing = await verifyTargetFile({ repoRoot, relPath: 'lib/nope.js', sandbox });
+    assert.equal(missing.ok, false, '不存在的文件不能当通过');
+    assert.match(missing.reason, /stat failed/);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T26d: recordFailure —— 软依赖缺失不抛，evolve 抛错也不影响主流程', async () => {
+  assert.deepEqual(await recordFailure({ evolve: null, pattern: 'x' }),
+    { ok: false, reason: 'agint.evolution unavailable' });
+  const boom = { addFailure: async () => { throw new Error('table full'); } };
+  const r = await recordFailure({ evolve: boom, pattern: 'x' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'table full');
+  const ok = { addFailure: async () => ({ id: 'f9' }) };
+  assert.deepEqual(await recordFailure({ evolve: ok, pattern: 'x' }), { ok: true });
 });
 
 test('T28: slugifyPromptId —— repo 相对路径转 kebab slug，满足 mutator 正则', () => {

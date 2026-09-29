@@ -436,6 +436,10 @@ export function apply(ctx, config = {}) {
     // 不是可选项 —— 见下方 `if (commitOn && repoRoot)` 分支。
     const sandbox = inj.sandbox ?? dep('agint.qualitySandbox');
     const policy = inj.policy ?? dep('agint.qualityPolicy');
+    // v0.2.8：失败原因留痕用。注意这**不是**上面那个 `agint.evolve` ——
+    // addFailure 由 agint-evolution-memory 提供，挂在 agint.evolution 命名空间下
+    // （sandbox / policy / mount / population 等插件都是这么调的）。
+    const evolutionLog = inj.evolution ?? dep('agint.evolution');
     const fs = inj.fs ?? null;
 
     if (!evolve || typeof evolve.listProposals !== 'function') {
@@ -644,20 +648,34 @@ export function apply(ctx, config = {}) {
       //    2026-09-29（B 方案）补上第 4 道：**写入后验证**。改动前本分支只做「写入前闸门」
       //    （denylist / oldText 唯一性 / preimage），写完就发 committed 事件直接结束 ——
       //    全程不过 D-QAF，等于 AGENTS.md 明令禁止的「绕过 D-QAF 直接部署」。
-      //    现在写入后强制走 sandbox.runSmoke → policy.decide，REJECT/ABSTAIN 即从 preimage 回滚。
+      //    现在写入后强制走 verifyTargetFile → policy.decide，REJECT/ABSTAIN 即从 preimage 回滚。
       //
-      //    ⛔ fail-closed：sandbox / policy 不可用时**根本不写**，不是「写了再想办法验」。
+      //    2026-09-29 v0.2.8 两处修正（均由生产实跑暴露）：
+      //    ① 验证器从 sandbox.runSmoke 换成 verifyTargetFile —— runSmoke 是「插件结构冒烟」，
+      //       对任意仓库文件恒返回 package-json-missing，导致 policy 恒拒、commit 100% 失败。
+      //    ② 三条失败路径全部写 evolve.addFailure —— 此前只有 warn 走 stdout（常驻进程读不到），
+      //       cron 又只写死 "ok"，失败原因完全不可见。
+      //
+      //    ⛔ fail-closed：policy 或验证能力不可用时**根本不写**，不是「写了再想办法验」。
       //    没有验证能力就不改仓库，这是 B 方案与 mutator.commit 的关键差异
       //    （后者写完才发现 sandbox 缺失，只能抛错留下半成品）。
       let commit = null;
       if (commitOn && repoRoot) {
         const commitPath =
           target.type === 'skill' ? `presets/agint/skills/${targetId}/SKILL.md` : targetId;
-        if (typeof sandbox?.runSmoke !== 'function' || typeof policy?.decide !== 'function') {
+        // fail-closed 判据 v0.2.8：policy 必须有；sandbox 只在「目标是目录」时才必需
+        // （verifyTargetFile 对文件走语法检查，不碰 sandbox）。
+        const sandboxMissing = typeof sandbox?.runSmoke !== 'function';
+        if (typeof policy?.decide !== 'function' || sandboxMissing) {
           // 不可用即不写：留痕但不落盘，避免出现「无验证的仓库改动」。
-          const reason = `verify-unavailable (sandbox=${typeof sandbox?.runSmoke}, policy=${typeof policy?.decide})`;
+          const reason = `verify-unavailable (sandbox=${sandboxMissing ? 'missing' : 'ok'}, policy=${typeof policy?.decide})`;
           state.lastError = `commit skipped: ${reason}`;
           warn('commit skipped (fail-closed)', { proposalId: proposal.id, path: commitPath, reason });
+          await recordFailure({
+            evolve: evolutionLog,
+            pattern: 'evolution-commit-skipped:verify-unavailable',
+            evidence: `proposalId=${proposal.id} path=${commitPath} ${reason}`,
+          });
           await publish('evolution.mutation.commit-skipped', {
             proposalId: proposal.id,
             candidateId: candidate.id,
@@ -676,9 +694,9 @@ export function apply(ctx, config = {}) {
             if (commit.ok !== true) {
               warn('commit skipped', { proposalId: proposal.id, path: commitPath, reason: commit.reason });
             } else {
-              // ── 写入后验证：sandbox → policy（语义对齐 mutator.commit 步骤 5/6）
-              const sandboxResult = await sandbox.runSmoke({
-                target: { path: commit.path, name: `${target.type}/${commit.path}` },
+              // ── 写入后验证：按文件类型选验证器 → policy（语义对齐 mutator.commit 步骤 5/6）
+              const sandboxResult = await verifyTargetFile({
+                repoRoot, relPath: commit.path, sandbox,
               });
               const synthEval = {
                 target: { id: commit.path, kind: 'plugin-postimage' },
@@ -717,12 +735,23 @@ export function apply(ctx, config = {}) {
                   proposalId: proposal.id, path: commit.path,
                   decision, reverted: restored.ok, sandboxOk: sandboxResult?.ok,
                 });
+                // v0.2.8：失败原因落 evolve.failure_pattern（此前只有 stdout warn，事后查不到）
+                await recordFailure({
+                  evolve: evolutionLog,
+                  pattern: `evolution-commit-rejected:${sandboxResult?.ok ? 'policy' : 'verify'}`,
+                  severity: sandboxResult?.ok ? 'medium' : 'high',
+                  evidence: `proposalId=${proposal.id} path=${commit.path} decision=${decision} `
+                    + `verifyMode=${sandboxResult?.mode} verifyOk=${sandboxResult?.ok} `
+                    + `reason=${sandboxResult?.reason ?? 'n/a'} reverted=${restored.ok}`,
+                });
                 await publish('evolution.mutation.rolledback', {
                   proposalId: proposal.id,
                   candidateId: candidate.id,
                   path: commit.path,
                   policyDecision: decision,
                   sandboxOk: Boolean(sandboxResult?.ok),
+                  verifyMode: sandboxResult?.mode ?? null,
+                  reason: sandboxResult?.reason ?? null,
                   reverted: restored.ok,
                 });
               } else {
@@ -735,6 +764,7 @@ export function apply(ctx, config = {}) {
                   bytesAfter: commit.bytesAfter,
                   policyDecision: decision,
                   sandboxOk: Boolean(sandboxResult?.ok),
+                  verifyMode: sandboxResult?.mode ?? null,
                 });
               }
             }
@@ -750,6 +780,13 @@ export function apply(ctx, config = {}) {
             state.lastError = `commit failed: ${error?.message ?? String(error)}`;
             warn('commit threw', {
               proposalId: proposal.id, path: commitPath, reason: state.lastError, revert: revertNote,
+            });
+            // v0.2.8：异常路径同样要留痕，否则「为什么没落库」永远查不到
+            await recordFailure({
+              evolve: evolutionLog,
+              pattern: 'evolution-commit-threw',
+              evidence: `proposalId=${proposal.id} path=${commitPath} `
+                + `error=${error?.message ?? String(error)} revert=${revertNote ?? 'n/a'}`,
             });
           }
         }
@@ -985,6 +1022,169 @@ export async function commitToRepo({ repoRoot, relPath, oldText, newText, fs, no
     bytesBefore: Buffer.byteLength(text, 'utf8'),
     bytesAfter: Buffer.byteLength(postimage, 'utf8'),
   };
+}
+
+/**
+ * 按文件类型选择验证器（v0.2.8）。
+ *
+ * ## 为什么不能只用 sandbox.runSmoke
+ *
+ * `agint-quality-sandbox` 的 `runSmoke` 是**插件结构冒烟**：dynamic import
+ * `lib/index.js` + 校验 `package.json` 含 name/main/type + exports 含 apply/inject
+ * （见该插件 lib/smoke.js 头注释）。而本插件的 commit 目标是**任意仓库文件** ——
+ * SKILL.md / cordis.patch.yml / bin/*.sh / 任何 subagent 指名的文件。
+ *
+ * 2026-09-29 实测：把 `bin/plugin-check.sh` 交给 runSmoke，返回
+ * `ok:false reason=package-json-missing`（去 `bin/plugin-check.sh/package.json`
+ * 找插件清单）。即 runSmoke 对非插件目录**恒失败** ⇒ policy 恒 REJECT/ABSTAIN ⇒
+ * commit 恒被拒。这是语义不匹配，不是配置问题，调 allowInProcessFallback 修不好。
+ *
+ * ## 一个必须绕开的坑：node --check 对 ESM 漏检
+ *
+ * 2026-09-29 实测（本机 node v22+）：
+ *
+ * | 文件内容 | 扩展名 | `node --check` 退出码 |
+ * | --- | --- | --- |
+ * | `export const a = ;`（明显语法错） | `.js` | **0 —— 漏检** |
+ * | `const a = ;` | `.js` | 1 ✅ |
+ * | `export const a = ;` | `.mjs` | 1 ✅ |
+ *
+ * 即 `node --check` 按 CJS 规则解析 `.js`，遇到顶层 ESM 标记就不报错。
+ * 而 AGINT 仓库里几乎所有 `lib/*.js` 都是 ESM —— **不处理这一条，第 4 道闸恰好在
+ * 最需要它的场景上完全失灵**，比没有闸更危险（看起来绿了，其实什么都没验）。
+ *
+ * 修法：`.js` 先按内容判是不是 ESM（含顶层 import/export 形式），是则复制成临时
+ * `.mjs` 再 `--check`（实测可检出）；不是则直接 `--check`（CJS 保持原路径，避免把
+ * 合法 CJS 判死 —— 那样会产生假阳性）。`.mjs` / `.cjs` 扩展名自带语义，直接检。
+ *
+ * ## 现在的策略
+ *
+ * | 目标 | 验证器 |
+ * | --- | --- |
+ * | 目录（插件目录） | `sandbox.runSmoke`（它唯一擅长的场景，保留） |
+ * | `.sh` / `.bash` | `bash -n` 语法检查（只解析，不执行） |
+ * | `.js` / `.mjs` / `.cjs` | `node --check`（`.js` 按 ESM/CJS 分流，见上） |
+ * | 其他（`.md` / `.yaml` / `.json` / `.txt` …） | 跳过 —— 纯数据/文档无「语法可用」概念 |
+ *
+ * 语义对齐「这个文件改完还解析得了吗」，而非「这个插件结构完不完整」。
+ * 结果仍交 `policy.decide` 定夺，本函数不自行决定去留。
+ *
+ * 返回 `{ ok, mode, reason?, exitCode?, skipped? }`。
+ * 验证器缺失（PATH 里没有 bash 等）不静默当通过 —— 返回 `ok:false` 并说明。
+ */
+export async function verifyTargetFile({ repoRoot, relPath, sandbox }) {
+  const norm = String(relPath ?? '').split('\\').join('/').replace(/^\.\//, '');
+  if (!repoRoot) return { ok: false, mode: 'none', reason: 'no repoRoot' };
+  if (!norm || norm.includes('..')) return { ok: false, mode: 'none', reason: `unsafe path: ${norm}` };
+  // 本文件顶层没有 node:path 静态导入（commitToRepo 等一律函数内动态 import），这里保持一致。
+  const { join: pathJoin } = await import('node:path');
+  const abs = pathJoin(repoRoot, norm);
+
+  let isDir = false;
+  try {
+    const { statSync } = await import('node:fs');
+    isDir = statSync(abs).isDirectory();
+  } catch (error) {
+    return { ok: false, mode: 'none', reason: `stat failed: ${error?.message ?? error}` };
+  }
+
+  // 目录 = 插件目录，交给 runSmoke（它唯一擅长的场景）
+  if (isDir) {
+    if (typeof sandbox?.runSmoke !== 'function') {
+      return { ok: false, mode: 'sandbox', reason: 'directory target but sandbox.runSmoke unavailable' };
+    }
+    try {
+      const r = await sandbox.runSmoke({ target: { path: abs, name: norm } });
+      return { ok: Boolean(r?.ok), mode: 'sandbox', reason: r?.reason, exitCode: r?.exitCode };
+    } catch (error) {
+      return { ok: false, mode: 'sandbox', reason: `runSmoke threw: ${error?.message ?? error}` };
+    }
+  }
+
+  const dot = norm.lastIndexOf('.');
+  const ext = dot < 0 ? '' : norm.slice(dot).toLowerCase();
+  const isShell = ext === '.sh' || ext === '.bash';
+  const isJs = ext === '.js' || ext === '.mjs' || ext === '.cjs';
+  if (!isShell && !isJs) {
+    return {
+      ok: true, mode: 'skip', skipped: true,
+      reason: `no syntax concept for '${ext || "(no ext)"}' — 交给 policy.decide 定夺`,
+    };
+  }
+
+  // `.js` 若是 ESM，复制成临时 `.mjs` 再检（见文件头「node --check 对 ESM 漏检」）
+  let checkPath = abs;
+  let tmpPath = null;
+  if (ext === '.js') {
+    try {
+      const { readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const source = await readFile(abs, 'utf8');
+      const looksEsm = /^[ \t]*(?:import[ \t{*'"]|export[ \t{*])/m.test(source);
+      if (looksEsm) {
+        tmpPath = pathJoin(tmpdir(), `agint-verify-${randomUUID()}.mjs`);
+        await writeFile(tmpPath, source, 'utf8');
+        checkPath = tmpPath;
+      }
+    } catch (error) {
+      return { ok: false, mode: 'syntax:.js', reason: `ESM sniff failed: ${error?.message ?? error}` };
+    }
+  }
+
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const [cmd, args] = isShell
+      ? ['bash', ['-n', checkPath]]
+      : [process.execPath, ['--check', checkPath]];
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 30_000 });
+    if (r.error) {
+      // 验证器本身不可用（PATH 里没有 bash 等）—— 不静默当通过。
+      return { ok: false, mode: `syntax:${ext}`, reason: `runner unavailable: ${r.error.message}` };
+    }
+    const ok = r.status === 0;
+    return {
+      ok,
+      mode: `syntax:${ext}`,
+      exitCode: r.status ?? null,
+      reason: ok ? undefined : `${cmd} exited ${r.status}: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`,
+    };
+  } catch (error) {
+    return { ok: false, mode: `syntax:${ext}`, reason: `spawn failed: ${error?.message ?? error}` };
+  } finally {
+    if (tmpPath) {
+      try {
+        const { rm } = await import('node:fs/promises');
+        await rm(tmpPath, { force: true });
+      } catch { /* 临时文件残留无害，不影响判定 */ }
+    }
+  }
+}
+
+/**
+ * 把失败原因记进 `agint.evolution` 的 failure_pattern 表（v0.2.8）。
+ *
+ * ## 为什么落在 evolve 而不是 mutator.findings
+ *
+ * `agint.mutator` 没有暴露 findings 的直接写入口 —— 唯一写 `findings` 表的是
+ * `validate()`，而它的 4 条约束全是**提案形态**校验（原子性 / 可证伪 / 回滚条件 /
+ * payload 形态，见 agint-mutator/lib/index.js:453-461）。把「commit 写入后验证失败」
+ * 塞进去属于滥用该表语义，会让 findings 表混入两种互不相干的含义。
+ *
+ * `agint.evolution.addFailure` 才是这个用途的正路：**sandbox 插件自己就在用**
+ * （agint-quality-sandbox/lib/index.js:296-299 写 `sandbox-smoke-failed:*`），
+ * 有 pattern / category / severity / evidence 四个字段，且直接喂给 self-model 与
+ * evolve 循环 —— 失败因此能变成下次改进的输入，而不是躺在没人看的表里。
+ *
+ * 软依赖：evolve 不可用时静默跳过（记录失败不该反过来打断主流程）。
+ */
+export async function recordFailure({ evolve, pattern, category = 'integration', severity = 'high', evidence = '' }) {
+  if (!evolve || typeof evolve.addFailure !== 'function') return { ok: false, reason: 'agint.evolution unavailable' };
+  try {
+    await evolve.addFailure({ pattern, category, severity, evidence });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error?.message ?? String(error) };
+  }
 }
 
 /**
