@@ -6,27 +6,84 @@
 > |---|---|---|
 > | mutator 域 | ✅ 已通电 | `agint_mutator.json` 13629 B，mtime 2026-09-28 22:49:39；`mutator_stats` proposals=3 |
 > | population 域 | ✅ 已通电 | `agint_population.json` 5438 B；`population_stats` variants=2（全 PENDING_REVIEW、active=0） |
-> | **mutator.commit** | ❌ **0 条** | `mutator_stats` commits=0 |
-> | **sandbox.passed / failed** | ❌ **0 条** | `eventBus_inspectSummary` 按 topic 全量过滤，两条均 total=0 |
-> | **evolution.mutation.proposed/committed** | ❌ **0 条** | 同上，total=0（全量查询，非最近窗口） |
+> | **mutator.commit** | ❌ **0 条，且无人调用** | `mutator_stats` commits=0；全仓 grep 无 `.commit(` 调用点 |
+> | **sandbox.passed / failed** | ❌ **0 条**（driver v0.2.7 已部署，宿主未重启） | `eventBus_inspectSummary` 按 topic 全量过滤 total=0 |
+> | **evolution.mutation.committed** | ❌ **0 条** | 同上，total=0（全量查询，非最近窗口） |
 >
-> 即：**提案层真跑了**（proposals 与 variants 都有落盘、带 preimage 的仓库改动由
-> `agint-evolution-driver` 驱动），**但没有任何一次走到 commit**，而 commit 是
-> `sandbox.runSmoke` 的唯一调用点 —— 所以订阅方 `agint-diagnosis.analyzeFailedSmoke`
-> 仍收不到消息，§二 的下游链条依旧断着。
->
-> 另记一条待查：两个 variant 的 `commit_id`（`c663cb3a` / `b8193229`）在当前仓库
-> 执行 `git cat-file -t` 均返回 `Not a valid object name`。可能是 squash/rebase 后
-> 对象名变化，也可能是提案 id 与 git commit hash 混用 —— **本文不下结论**，留待查证。
->
-> 一句话：**AGINT 现在跑通的是「提案」，不是「提交」。** 主链路的最后一公里仍未接上。
+> 即：**提案层真跑了**（proposals 与 variants 都有落盘），**但没有任何一次走到 commit**。
+
+## ⭐ 2026-09-29 根因定性：不是「没接通」，是架构分叉
+
+2026-09-27 的 VERSION 记为「四判据全中」，2026-09-29 复核只复现了前两环。根因查清了：
+
+```
+agint-evolution-driver.runOnce()
+   ├─ mutator.propose()      ✅ 提案落盘
+   ├─ mutator.validate()     ✅
+   ├─ population.ingest()    ✅ variant 落盘（stage=PENDING_REVIEW）
+   └─ commitToRepo()         ← 走自己的落盘路径，不经过 mutator.commit
+        ├─ COMMIT_DENYLIST / oldText 唯一性 / preimage 备份   ← 只有「写入前闸门」
+        └─ 直接发 evolution.mutation.committed               ← 没有「写入后验证」
+             └─> sandbox.runSmoke 从不被调用 ⇒ sandbox.passed/failed 恒 0
+             └─> policy.decide 从不被调用
+             └─> mutator.commits 表永远 0 条
+```
+
+`mutator.commit()` 本身是完整的（preimage 5 MB 备份 + SHA-256 防篡改 + sandbox → policy →
+REJECT/ABSTAIN 自动恢复），但**全仓没有任何代码调用它**。真正在跑的 `commitToRepo()` 绕开了
+整个 D-QAF —— 这正是 AGENTS.md 明令禁止的「绕过 D-QAF 任意阶段直接部署」。
+
+顺带查实两个此前存疑的点：
+
+1. `mutator.commits` 恒 0 **与 mutator 域是否通电无关**。域早于 2026-09-27 就落盘了，
+   断的是 commit 这一环，不是域。
+2. `agint_qualitySandbox` / `agint_qualityPolicy` 两个 Service **一直存在**
+   （`plugins/agint-quality-sandbox/lib/index.js:364`、`plugins/agint-quality/agint-quality-policy/lib/index.js:322`），
+   从来不是「依赖缺失」，只是没人调。
+
+## ✅ 2026-09-29 处置：driver v0.2.7 补写入后验证（老板拍板 B 方案）
+
+commit `7e8bffc`。原 A 方案（统一到 `mutator.commit`）经核对后**不可行**：
+
+- `mutator.generatePostimage` 对 `PROMPT_MUTATION` 直接 `return p.newText` 当**整份文件内容**，
+  而 driver 是 `text.replace(oldText, newText)` **局部替换** —— 直接接线会把 SKILL.md
+  整份覆盖成一个小节。
+- `mutator.deriveTargetPath` 硬编码 `plugins/{pluginId}/prompts/{promptId}.md`，
+  对 driver 的 skill / repo 目标**全部算错**。
+- 修这两处要给 FROZEN 的 `PromptMutationPayloadSchema` 加 `targetPath` ⇒ 触发 **L0 变更**
+  （人类多签 + 7 天影子模式 + major 版本）。
+
+顺带发现一个**独立的契约 bug**：`diffStrategy` 在 FROZEN 枚举里声明了
+`unified_diff`（局部替换语义），但全插件 30 处引用**无一处消费它**，
+`generatePostimage` 永远整文件覆盖。待单独修。
+
+### v0.2.7 做了什么
+
+| | 改动前 | v0.2.7 后 |
+|---|---|---|
+| 写入前闸门 | denylist / oldText 唯一性 / preimage | 不变 |
+| 写入后验证 | ❌ 无 | `sandbox.runSmoke` → `policy.decide` |
+| 决策为拒 | — | 从 `.agint-preimage/*.bak` 回滚，发 `rolledback` |
+| 验证通道缺失 | 照写（无验证） | ⛔ **fail-closed，根本不写**，发 `commit-skipped` |
+| 事件留痕 | `committed` | 增 `policyDecision` / `sandboxOk`；新增 `rolledback` / `commit-skipped` |
+
+**为什么这样就能通电**：`agint-quality-sandbox` 的 `runSmoke()` 内部**自己发布**
+`sandbox.passed` / `sandbox.failed`（`lib/index.js:230`，另有 `test/runSmoke-publish.test.mjs`
+专门防漏接线回归）。所以 driver 调一次 `runSmoke`，事件就产生；
+`agint-diagnosis` 早已订阅 `sandbox.failed`（`lib/index.js:463-487`），
+`analyzeFailedSmoke` 这条断了两年的支路即被唤醒。
+
+### 尚未验证
+
+改动已部署到双副本（mirror + bundle，各留 8 份 `.bak-` 备份），
+**宿主尚未重启**，`sandbox.*` 仍为 0 条。重启 + 跑一次 `evolution-cycle` 后才能确认通电；
+若届时收到的是 `commit-skipped` 而非 `committed`，说明 sandbox/policy Service 在运行时
+未就绪，需回头查 Service 挂载（不是继续等）。
 
 > 📜 历史归档（2026-09-27，v0.8.6）：`agint-evolution-driver` v0.2.0–v0.2.4 上线后，
-> 主链路（evolve 提案 → driver 驱动 → LLM 构造 → 幻觉闸门 + 实体存在性门 → mutator →
-> population → commit）于 18:30 端到端首次跑通，VERSION v0.8.6 记为「四判据全中」。
-> 2026-09-29 复核时，前两环（mutator/population 落盘）可复现，**后两环（committed 事件、
-> 仓库真实改动对应的 git 对象）在当前数据里未取到证**，故状态从「已解决」下调为
-> 「半通电」。本文正文保留 2026-09-24 的原始取证快照。
+> 主链路于 18:30 端到端首次跑通，VERSION v0.8.6 记为「四判据全中」。
+> 2026-09-29 复核：前两环可复现，**后两环（committed 事件、smoke 验证）在当前数据里未取到证**，
+> 且已查明根因是 driver 的 commitToRepo 绕过 mutator.commit。状态由「已解决」下调为「半通电」。
 >
 > 建档人：智（自动盘点取证）｜判据脚本：`bin/check-wiring.mjs`｜自测：`bin/check-wiring.test.mjs`
 

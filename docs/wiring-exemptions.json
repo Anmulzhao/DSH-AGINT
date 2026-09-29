@@ -58,19 +58,19 @@
     },
     {
       "topic": "sandbox.passed",
-      "reason": "连带空转（2026-09-29 复核更新）。原理由「agint-mutator 从未通电」已失效：agint_mutator.json 现已落盘（13629 字节，mtime 2026-09-28 22:49:39），域已通电。但链路仍断在下一环 —— mutator_stats 显示 commits=0，即 mutator.commit 从未执行，而 commit 是 sandbox.runSmoke 的唯一调用点（plugins/agint-mutator/lib/index.js:596）。订阅方（agint-diagnosis.analyzeFailedSmoke）已就位，缺的是上游真跑一次 commit。",
-      "evidence": "2026-09-29 实测：mutator_stats proposals=3 / commits=0；population_stats variants=2 且全部 stage=PENDING_REVIEW、active=0；eventBus_inspectSummary 按 topic 全量过滤 evolution.mutation.proposed 与 sandbox.passed 均返回 total=0（全量非窗口）；bin/check-wiring.mjs 查 D 已通电 16 域含 agint_mutator / agint_population",
+      "reason": "连带空转（2026-09-29 二次更新：发布方已接线，尚未重启生效）。发布方不是 mutator.commit —— 全仓没有任何代码调用 mutator.commit；真正的发布方是 agint-quality-sandbox 的 runSmoke() 内部（lib/index.js:230，另有 test/runSmoke-publish.test.mjs 防漏接线回归）。此前为 0 条的根因是 agint-evolution-driver 的 commitToRepo 只做写入前闸门（denylist/oldText 唯一性/preimage），从不调 runSmoke。driver v0.2.7（commit 7e8bffc）已在 commitToRepo 成功后接入 sandbox.runSmoke + policy.decide，双副本已部署但**宿主尚未重启**，故仍为 0 条。",
+      "evidence": "2026-09-29：grep 'sandbox\\.passed' 命中发布方 plugins/agint-quality-sandbox/lib/index.js:230 与 plugins/agint-quality/agint-quality-sandbox/lib/index.js:270；eventBus_inspectSummary 按 topic 全量过滤 sandbox.passed 返回 total=0（重启前）；mutator_stats commits=0（driver 不走 mutator.commit，全仓无 .commit( 调用点）",
       "since": "2026-09-24",
       "updatedAt": "2026-09-29",
-      "unblockWhen": "agint_mutator 出现第一条 commit 记录（mutator_stats commits > 0）后 —— 届时 commit → runSmoke 才会真的产生 sandbox.passed；在此之前加订阅方无意义。"
+      "unblockWhen": "宿主重启加载 driver v0.2.7 后跑一次 evolution-cycle：若 commit 走到 runSmoke，本条即自然解除；若 evolution-cycle 因 fail-closed 发 commit-skipped（说明 sandbox/policy Service 未就绪），则需先查 Service 挂载而非继续等。"
     },
     {
       "topic": "sandbox.failed",
-      "reason": "同上（2026-09-29 复核更新）：mutator 域已通电但 commits=0，commit → sandbox.runSmoke 路径从未走过。订阅方 agint-diagnosis.analyzeFailedSmoke 已就位，等上游第一次 commit。",
-      "evidence": "同 sandbox.passed 条（mutator_stats commits=0；eventBus 按 topic 全量查询 sandbox.passed total=0）；plugins/agint-mutator/lib/index.js:596；plugins/agint-diagnosis/lib/index.js:414",
+      "reason": "同上（2026-09-29 二次更新）：发布方 runSmoke 已存在且被 driver v0.2.7 接入，宿主未重启故仍 0 条。订阅方 agint-diagnosis.analyzeFailedSmoke 已就位（lib/index.js:463-487 订阅 sandbox.failed），一旦 runSmoke 真跑一次即通电。",
+      "evidence": "同 sandbox.passed 条；订阅方 plugins/agint-diagnosis/lib/index.js:463-487；eventBus sandbox.failed 待重启后复核",
       "since": "2026-09-24",
       "updatedAt": "2026-09-29",
-      "unblockWhen": "同 sandbox.passed：agint_mutator commits > 0 后"
+      "unblockWhen": "同 sandbox.passed：重启后跑一次 evolution-cycle。"
     }
   ],
 
