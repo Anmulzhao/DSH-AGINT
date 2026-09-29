@@ -24,7 +24,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { runSmoke as runSmokeInProcess } from './smoke.js';
@@ -287,6 +287,41 @@ function apply(ctx, config) {
   async function runSmoke({ target, opts = {} }) {
     if (!target?.path) throw new Error('runSmoke: target.path is required');
     if (disposed) throw new Error('runSmoke: plugin disposed');
+
+    // ⛔ v0.7.2 fail-closed：target.path 必须是**绝对路径**。
+    //
+    // 真实事故（2026-09-29 05:26Z）：evolution-driver v0.2.7 传的是**相对路径**
+    // `commit.path`（'bin/plugin-check.sh'），而下面这行 `resolve(target.path)`
+    // 是 Node 的 path.resolve —— 按 process.cwd() 解析。宿主 cwd 是
+    // C:\Users\Administrator\Desktop，于是它把仓库文件验成了
+    // Desktop\bin\plugin-check.sh，failure_pattern 记 plugin-not-found。
+    // **验的根本不是仓库里的那个文件，却一路走到了 policy.decide。**
+    //
+    // 为什么这里必须拒而不是继续 resolve：静默按 cwd 兜底 = 验错对象且结果像真的。
+    // fail-closed 的语义是「路径不可信就不验」，让调用方立刻看见。
+    //
+    // ⚠️ 返回而不是 throw：runSmoke 的调用方（driver / mutator / quality-eval）
+    // 把 ok:false 当成一次正常的门禁结果；throw 会把「门禁判死」变成「链路崩」。
+    if (!isAbsolute(target.path)) {
+      const startedAt = Date.now();
+      const reason = 'relative-path-rejected';
+      const evo = ctx.get('agint.evolution');
+      if (evo?.addFailure) {
+        try {
+          await evo.addFailure({
+            pattern: `sandbox-smoke-failed:${reason}`, category: 'integration', severity: 'high',
+            evidence: `target=${target.path} reason=${reason} cwd=${process.cwd()} —— 相对路径会被 path.resolve 按 cwd 解析（v0.2.7 事故：bin/plugin-check.sh 被验成 Desktop 下的同名文件）`,
+          });
+        } catch { /* ignore */ }
+      }
+      return {
+        target: { path: null, name: target.name },
+        ok: false, mode: 'rejected', exitCode: null, stdout: '',
+        stderr: `runSmoke: target.path 必须是绝对路径（收到 ${JSON.stringify(target.path)}，cwd=${process.cwd()}）—— 相对路径会被 path.resolve 按 cwd 解析，验的就不是调用方指的那个文件`,
+        checks: [], reason, durationMs: Date.now() - startedAt,
+      };
+    }
+
     const targetPath = resolve(target.path);
     const startedAt = Date.now();
     const sandboxService = ctx.get('sandbox');

@@ -1,5 +1,61 @@
 # Changelog — agint-quality-sandbox
 
+## 0.7.2 — runSmoke 拒相对路径（fail-closed）· 2026-09-29
+
+### 事故
+
+2026-09-29 05:26Z 的 `sandbox-smoke-failed:plugin-not-found`，evidence 是
+`target=C:\Users\Administrator\Desktop\bin\plugin-check.sh`。
+
+**验的根本不是仓库里那个文件。** evolution-driver v0.2.7 传的是**相对路径**
+`commit.path`（`'bin/plugin-check.sh'`），而 `runSmoke` 内部第一行就是
+`resolve(target.path)` —— Node 的 `path.resolve` **按 `process.cwd()` 解析**。
+宿主 cwd 是 `C:\Users\Administrator\Desktop`，于是仓库里的
+`bin/plugin-check.sh` 被验成了桌面上的同名路径，一路走到 `policy.decide` 才被拒。
+
+根因不在 driver（它已随 v0.2.8 改用 `verifyTargetFile` 传绝对路径），而在
+**sandbox 侧静默兜底**：`path.resolve` 对相对路径的解析看起来总是成功，
+于是「验错对象」的结果长得和「验对了但没过」一模一样。
+
+### 变更
+
+`runSmoke` 增加前置判据：`target.path` 必须是**绝对路径**，否则
+fail-closed 返回 `ok:false` / `reason:'relative-path-rejected'` / `mode:'rejected'`。
+
+- `target.path` 回填 `null` —— **不把相对路径「帮忙」解析成某个绝对路径**，
+  那正是事故本身。
+- 同时写 `agint.evolution.addFailure` 留痕，`evidence` 带 `cwd`
+  （同一个相对路径在不同 cwd 下验的是不同文件，缺 cwd 事后无从归因）。
+- **返回而不是 throw**：`quality-eval evaluate()` 对任何 `!smoke.ok` 一律
+  REJECT（无 provisional 分支），`driver`/`mutator` 也把 `ok:false` 当门禁结果。
+  throw 会把「门禁判死」升级成「链路崩」，与 `argv-shape-guard` 的降级理由同源。
+- 路径不可信就不进 sandbox：被拒时 `confine` 零调用。
+
+**Service 签名未变**（仍是 `runSmoke({ target, opts })`）⇒ 不触发 L0。
+
+### 影响面
+
+生产上 5 个 `runSmoke` 调用点逐个查过（2026-09-29）：
+
+| 调用点 | 路径形态 | 影响 |
+|---|---|---|
+| `evolution-driver:1160` | 绝对（`pathJoin(repoRoot, …)`） | 无 |
+| `agint-skill-autocreate:109` | 绝对（`resolve(dshHome, …)`） | 无 |
+| `agint-quality-eval:233` | 生产数据全无 `path` ⇒ 不触发 | 无 |
+| `agint-mutator:596` | **相对** | 本就会 fail-closed；`commits=0`，从未被调用 |
+| `agint-mutator/rollback:140` | **相对** | 同上 |
+
+mutator 那两处是**故意留给它暴露**的：它们要修就得给 FROZEN payload 加
+`targetPath`（L0 变更），在那之前宁可显式判死，也不静默按 cwd 验错对象。
+
+### 测试
+
+新增 `test/relative-path-guard.test.mjs`（6 例）：相对路径 fail-closed 且
+`confine` 零调用、`./` 与 `../` 与裸名都拒、被拒必须留痕且 evidence 带 cwd、
+evolve 缺席时不抛、绝对路径照常放行、绝对路径的失败仍走原分支。
+自证：把判据改成 `false && …` 后 4/6 变红，恢复后 6/6。
+sandbox 全量 44/44；plugin-check 无新增 fail（仍 4 既存）；字节保真无 BOM / CRLF=0。
+
 ## 2026-09-20 — 事件总线接线（方案 A / A3）+ 修复迁移遗留的 zod 硬编码路径
 
 **背景**：`sandbox.passed` / `sandbox.failed` 既无发布方也无数据。根因是 v0.6.3 把本插件从

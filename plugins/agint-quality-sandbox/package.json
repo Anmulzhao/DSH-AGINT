@@ -1,7 +1,7 @@
 {
   "name": "agint-quality-sandbox",
-  "version": "0.7.1",
-  "description": "D-QAF Phase 2 动态沙箱独立 Cordis 插件：verify/explore 双模式 + seccomp/SBPL syscall 白名单 profile 注入。Sprint 10 #2 + #3 收口：从 agint-quality 基座剥离。",
+  "version": "0.7.2",
+  "description": "D-QAF Phase 2 动态沙箱独立 Cordis 插件：verify/explore 双模式 + seccomp/SBPL syscall 白名单 profile 注入。Sprint 10 #2 + #3 收口：从 agint-quality 基座剥离。v0.7.2：runSmoke 拒相对路径（fail-closed）——原先 path.resolve 按 cwd 静默兜底，导致相对路径被验成别的文件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
