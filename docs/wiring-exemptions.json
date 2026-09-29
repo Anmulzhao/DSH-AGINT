@@ -58,19 +58,19 @@
     },
     {
       "topic": "sandbox.passed",
-      "reason": "连带空转（2026-09-29 二次更新：发布方已接线，尚未重启生效）。发布方不是 mutator.commit —— 全仓没有任何代码调用 mutator.commit；真正的发布方是 agint-quality-sandbox 的 runSmoke() 内部（lib/index.js:230，另有 test/runSmoke-publish.test.mjs 防漏接线回归）。此前为 0 条的根因是 agint-evolution-driver 的 commitToRepo 只做写入前闸门（denylist/oldText 唯一性/preimage），从不调 runSmoke。driver v0.2.7（commit 7e8bffc）已在 commitToRepo 成功后接入 sandbox.runSmoke + policy.decide，双副本已部署但**宿主尚未重启**，故仍为 0 条。",
-      "evidence": "2026-09-29：grep 'sandbox\\.passed' 命中发布方 plugins/agint-quality-sandbox/lib/index.js:230 与 plugins/agint-quality/agint-quality-sandbox/lib/index.js:270；eventBus_inspectSummary 按 topic 全量过滤 sandbox.passed 返回 total=0（重启前）；mutator_stats commits=0（driver 不走 mutator.commit，全仓无 .commit( 调用点）",
+      "reason": "上游已通电，但本条尚无生产数据（2026-09-29 07:20Z 实测 prodCount=0）。发布方不是 mutator.commit —— 全仓 grep 无任何 `.commit(` 调用点；真正的发布方是 agint-quality-sandbox 的 runSmoke() 内部（plugins/agint-quality-sandbox/lib/index.js:230，另有 test/runSmoke-publish.test.mjs 防漏接线回归）。它只发 sandbox.passed 的**前提是 runSmoke 返回 ok** —— 2026-09-29 之前唯一一次 runSmoke 调用（driver v0.2.7，05:26Z）返回 plugin-not-found，事件因而落在 sandbox.failed 上（该条 prodCount=1）。driver v0.2.9 起文件目标改走 verifyTargetFile（bash -n / node --check），**不再调用 runSmoke**，故本条当前没有产生路径；只有 commit 目标为目录时才会走 runSmoke。",
+      "evidence": "2026-09-29 07:20Z 实测（node bin/check-wiring.mjs --json）：sandbox.passed prodCount=0 / rawVerdict=ORPHAN_TOPIC / subscribers=1；sandbox.failed prodCount=1 / rawVerdict=PUBLISHER_DYNAMIC（判定逻辑 bin/check-wiring.mjs:274：静态无发布方但生产有数据 ⇒ 动态发布方，非缺口）。同期 evolution.mutation.committed prodCount=2、rolledback prodCount=2。",
       "since": "2026-09-24",
       "updatedAt": "2026-09-29",
-      "unblockWhen": "宿主重启加载 driver v0.2.7 后跑一次 evolution-cycle：若 commit 走到 runSmoke，本条即自然解除；若 evolution-cycle 因 fail-closed 发 commit-skipped（说明 sandbox/policy Service 未就绪），则需先查 Service 挂载而非继续等。"
+      "unblockWhen": "出现一次 runSmoke 返回 ok 的调用（当前唯一路径：commit 目标为目录）。若长期不产生数据，应把本条从「待通电」改判为「当前不需要」——因为 driver 已不把文件目标交给 runSmoke，继续挂着会误导复查。"
     },
     {
       "topic": "sandbox.failed",
-      "reason": "同上（2026-09-29 二次更新）：发布方 runSmoke 已存在且被 driver v0.2.7 接入，宿主未重启故仍 0 条。订阅方 agint-diagnosis.analyzeFailedSmoke 已就位（lib/index.js:463-487 订阅 sandbox.failed），一旦 runSmoke 真跑一次即通电。",
-      "evidence": "同 sandbox.passed 条；订阅方 plugins/agint-diagnosis/lib/index.js:463-487；eventBus sandbox.failed 待重启后复核",
+      "reason": "已产生生产数据（prodCount=1），本条实质解除（2026-09-29 07:20Z）。rawVerdict 已按「生产有数据 ⇒ 动态发布方」从 ORPHAN_TOPIC 翻转为 PUBLISHER_DYNAMIC，不再是缺口。保留条目仅为记录判定翻转的来由：该条数据来自 driver v0.2.7 那轮实跑（runSmoke 对 bin/plugin-check.sh 返回 plugin-not-found）。driver v0.2.9 起文件目标走 verifyTargetFile，runSmoke 只在目标是目录时调用。",
+      "evidence": "2026-09-29 07:20Z：check-wiring --json sandbox.failed prodCount=1 / rawVerdict=PUBLISHER_DYNAMIC / subscribers=3；对应 failure_pattern sandbox-smoke-failed:plugin-not-found（evidence: target=C:\\Users\\Administrator\\Desktop\\bin\\plugin-check.sh，createdAt 2026-09-29T05:26:53.238Z，occurrences=1）。注：该 evidence 路径指向桌面而非仓库，说明 v0.2.7 那轮 repoRoot 解析有误 —— repoRoot 来源（driver lib/index.js:299/487/871 的 resolveRepoRoot）待单独排查。",
       "since": "2026-09-24",
       "updatedAt": "2026-09-29",
-      "unblockWhen": "同 sandbox.passed：重启后跑一次 evolution-cycle。"
+      "unblockWhen": "已解除（prodCount 1 > 0）。本条可从豁免清单移除，暂保留作历史记录。"
     }
   ],
 

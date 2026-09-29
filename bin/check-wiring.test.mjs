@@ -111,7 +111,18 @@ describe('豁免机制', () => {
   });
 
   test('豁免过的主题仍保留原始判定，便于复查', () => {
-    assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'ORPHAN_TOPIC');
+    // 2026-09-29 更新：sandbox.failed 已有 **1 条**生产数据（v0.2.7 实跑时 runSmoke
+    // 返回 plugin-not-found，sandbox 插件仍发了 sandbox.failed —— 见
+    // plugins/agint-quality-sandbox/lib/index.js:296-300 的 addFailure 与 :230 的 withPublish）。
+    // 于是 check-wiring 的判定按「生产有数据 ⇒ 发布方是动态构造」翻转：
+    //   decide 逻辑 bin/check-wiring.mjs:274
+    //   if (pubs.length === 0 && subs.length > 0) verdict = n > 0 ? 'PUBLISHER_DYNAMIC' : 'ORPHAN_TOPIC'
+    // 从 ORPHAN_TOPIC 变成 PUBLISHER_DYNAMIC。**这是本断言按设计触发**（它本来就是
+    // 「上游通电就提醒复查」的 watchdog），不是回归。
+    assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'PUBLISHER_DYNAMIC');
+    // sandbox.passed 至今 n=0（runSmoke 从未返回过 ok），维持 ORPHAN_TOPIC。
+    // 它一旦变成 PUBLISHER_DYNAMIC，这里就该红 —— 那同样是要复查豁免的信号。
+    assert.equal(byTopic.get('sandbox.passed')?.rawVerdict, 'ORPHAN_TOPIC');
   });
 
   test('查 F：没有任何「取了但没注册」的命名空间（恒 undefined 不报错，最阴的一类）', () => {

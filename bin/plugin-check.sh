@@ -237,6 +237,140 @@ check_one() {
     fi
   fi
 
+  # ── 维度 11 (soft warning, 2026-09-29 提案): observability-reachability ──
+  # 第 3 层「观测侧假绿」：service 可以在返回值上挂诊断字段，工具的 render 却
+  # 不必消费它——这个差集没有任何检查覆盖，于是「算出来了但看不见」。
+  # 实例（2026-09-29 实测，6e2992f 修复前）：lib/gateway.js 把 channel 自报的
+  # status / initError / queuedSignals / detectors 挂到 result.health，而
+  # input_gateway_channel_status 的 render 只拼 channelId / type / enabled /
+  # quota / lastFetch / counters / lastError，不读 v.health —— health.initError
+  # 在工具输出里不可见，「订阅失败」与「订阅成功」的输出完全一致。
+  #
+  # 先只查高危字段：挂上返回值的目的就是被人或被模型看见，没人消费几乎总是
+  # bug。全字段差集 + 忽略名单（`_` 前缀 / 调试透传 / 内部字段）留到下一步；
+  # 本维度定位是「抓明显的漏」而非完备证明——跨文件 service 方法、运行时拼装
+  # 的返回对象会漏检，结论表述不能夸大。warn 不设 fail。
+  # 参考：wiki/AGINT/观测侧假绿-识别与排查.md
+  if command -v node >/dev/null 2>&1 && [ -d "$dir/lib" ]; then
+    local dim11_out
+    dim11_out="$(
+      PLUGIN_DIR="$dir" node 2>/dev/null <<'DIM11_JS' || true
+        const fs = require("fs"), path = require("path");
+        const dir = process.env.PLUGIN_DIR || "";
+        const lib = path.join(dir, "lib");
+        if (!fs.existsSync(lib)) process.exit(0);
+
+        // 高危字段：这些字段挂上返回值的目的就是被看见，没被 render 消费几乎总是 bug
+        const HIGH_RISK = new Set([
+          "health", "diagnostics", "diagnostic", "initError", "lastError",
+          "counters", "quota", "usage", "errors", "warnings", "metrics", "alerts"
+        ]);
+
+        const files = [];
+        (function walk(d) {
+          let entries = [];
+          try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+          for (const e of entries) {
+            if (e.name === "node_modules" || e.name.charAt(0) === ".") continue;
+            const p = path.join(d, e.name);
+            if (e.isDirectory()) walk(p);
+            else if (/\.(js|mjs|cjs)$/.test(e.name)) files.push(p);
+          }
+        })(lib);
+
+        const lineOf = (t, i) => t.slice(0, i).split("\n").length;
+        const blockAt = (t, from) => {
+          const i = t.indexOf("{", from);
+          if (i < 0) return null;
+          let depth = 0;
+          for (let j = i; j < t.length; j++) {
+            if (t[j] === "{") depth++;
+            else if (t[j] === "}" && --depth === 0) return t.slice(i, j + 1);
+          }
+          return null;
+        };
+
+        // (1) service 侧产出：execute 返回对象上挂的字面量字段
+        //     a) result.<field> = ...   b) return { field, ... }
+        const produced = new Map();
+        const sources = [];
+        const note = (site, field) => {
+          if (!produced.has(field)) produced.set(field, []);
+          produced.get(field).push(site);
+        };
+        for (const f of files) {
+          const t = fs.readFileSync(f, "utf8");
+          sources.push({ f: f, t: t });
+          let m;
+          const reAssign = /\bresult\s*\.\s*([A-Za-z_$][\w$]*)\s*=/g;
+          while ((m = reAssign.exec(t)) !== null) {
+            note(path.relative(dir, f) + ":" + lineOf(t, m.index), m[1]);
+          }
+          const reReturn = /\breturn\s*\{([^{}]*)\}/g;
+          while ((m = reReturn.exec(t)) !== null) {
+            for (const raw of m[1].split(",")) {
+              const piece = raw.trim();
+              if (!piece || piece.slice(0, 3) === "...") continue;
+              const key = piece.split(":")[0].trim();
+              if (/^[A-Za-z_$][\w$]*$/.test(key)) {
+                note(path.relative(dir, f) + ":" + lineOf(t, m.index), key);
+              }
+            }
+          }
+        }
+        if (produced.size === 0) process.exit(0);
+
+        // (2) render 侧消费：任何 defineTool 的 render 体里读到的字段
+        const rendered = new Set();
+        for (const src of sources) {
+          const t = src.t;
+          const reTool = /\bdefineTool\s*\(/g;
+          let tm;
+          while ((tm = reTool.exec(t)) !== null) {
+            const body = blockAt(t, tm.index + tm[0].length);
+            if (!body) continue;
+            const reRender = /(?:^|[\s,{])render\s*[:(]/g;
+            let rm;
+            while ((rm = reRender.exec(body)) !== null) {
+              const rbody = blockAt(body, rm.index + rm[0].length);
+              if (rbody) {
+                const reRead = /[A-Za-z_$][\w$]*\s*\.\s*([A-Za-z_$][\w$]*)/g;
+                let pm;
+                while ((pm = reRead.exec(rbody)) !== null) rendered.add(pm[1]);
+              }
+              // render({ a, b }) 形状的解构参数也算消费
+              const sig = body.slice(rm.index, rm.index + 240);
+              const dm = /\(\s*\{([^{}]*)\}/.exec(sig) || /[:(]\s*\{([^{}]*)\}/.exec(sig);
+              if (dm) {
+                for (const raw of dm[1].split(",")) {
+                  const key = raw.split(":")[0].replace(/=.*$/, "").trim();
+                  if (/^[A-Za-z_$][\w$]*$/.test(key)) rendered.add(key);
+                }
+              }
+            }
+          }
+        }
+
+        // (3) 差集：service 产出了、但全插件没有任何 render 读过的字段
+        const out = [];
+        for (const [field, sites] of produced) {
+          if (!HIGH_RISK.has(field) || rendered.has(field)) continue;
+          const shown = sites.slice(0, 3).join(", ");
+          out.push(field + " <- " + shown + (sites.length > 3 ? " (+" + (sites.length - 3) + " more)" : ""));
+        }
+        out.sort();
+        if (out.length > 0) process.stdout.write(out.join("\n") + "\n");
+DIM11_JS
+    )"
+    if [ -n "$dim11_out" ]; then
+      local dim11_n
+      dim11_n="$(printf '%s\n' "$dim11_out" | grep -c '[^[:space:]]' || true)"
+      log_warn "维度 11 observability-reachability：${dim11_n} 个高危字段 service 返回里有、但没有任何 tool render 消费（详见下方 + wiki/AGINT/观测侧假绿-识别与排查.md）"
+      printf '%s\n' "$dim11_out" | sed 's/^/    /'
+      warns=$((warns + dim11_n))
+    fi
+  fi
+
   # 汇总
   if [ "$fails" -gt 0 ]; then
     printf '  → %s%d fail%s, %d warn\n' "$RED" "$fails" "$RST" "$warns"

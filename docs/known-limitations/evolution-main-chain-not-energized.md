@@ -1,16 +1,44 @@
 # 自进化主链路从未通电（2026-09-24 取证）
 
-> ⚠️ **半通电（2026-09-29 复核）**：域层面已通电，commit 层面未见生产数据。
+> ✅ **已通电（2026-09-29 06:20Z 实跑取证）** —— 走的是 driver 自有 commit 路径（B 方案），
+> **不是** `mutator.commit`。
 >
-> | 环节 | 2026-09-29 实测 | 判据 |
-> |---|---|---|
-> | mutator 域 | ✅ 已通电 | `agint_mutator.json` 13629 B，mtime 2026-09-28 22:49:39；`mutator_stats` proposals=3 |
-> | population 域 | ✅ 已通电 | `agint_population.json` 5438 B；`population_stats` variants=2（全 PENDING_REVIEW、active=0） |
-> | **mutator.commit** | ❌ **0 条，且无人调用** | `mutator_stats` commits=0；全仓 grep 无 `.commit(` 调用点 |
-> | **sandbox.passed / failed** | ❌ **0 条**（driver v0.2.7 已部署，宿主未重启） | `eventBus_inspectSummary` 按 topic 全量过滤 total=0 |
-> | **evolution.mutation.committed** | ❌ **0 条** | 同上，total=0（全量查询，非最近窗口） |
+> 决定性证据（`evolution-cycle` 实跑一轮）：
 >
-> 即：**提案层真跑了**（proposals 与 variants 都有落盘），**但没有任何一次走到 commit**。
+> | 判据 | 结果 |
+> |---|---|
+> | `git status --porcelain` | **`M bin/plugin-check.sh`** —— 改动**留在仓库**，不是回滚后的 clean |
+> | `.agint-preimage/` | +1 条 `bin__plugin-check.sh__2026-09-29T07-19-59-845Z.bak`（写入前已备份） |
+> | `agint_mutator.proposals` | 5 → 6 |
+> | `evolution_queryFailures` | 本轮**无** `evolution-commit-rejected` 记录（前两轮都有） |
+> | `bash -n`（v0.2.9 验证器） | 通过 |
+>
+> 即完整走通：**提案 → LLM 编辑 → 幻觉闸门 → 写入仓库（带 preimage）→ 写入后验证
+> → policy 批准 → 落盘**。
+>
+> ⚠️ **仍不确定的一点**：`policyDecision` 的具体值拿不到 —— cron 持久化只写 `keys` 不写值
+> （`agint_cron.json` 的 `lastResultSummary`），event-bus 又收不到 driver 事件（T1 影子期）。
+> 只能从「改动落盘」反推它**不是** REJECT/ABSTAIN，**是 AUTO_DEPLOY 还是 PENDING_REVIEW 未取证**。
+> 这属于可观测性缺口，已记在下方待办。
+>
+> ⚠️ 另：`mutator.commit` 至今 `commits=0` 且**全仓仍无调用点**。本条通电**不代表** A 方案
+> （统一到 mutator.commit）已完成 —— 它需要给 FROZEN 的 `PromptMutationPayloadSchema` 加
+> `targetPath`，触发 L0 变更（人类多签 + 7 天影子 + major 版本），**未做**。
+
+## 📌 三轮实跑踩到的坑（全部是「单测全绿也照样漏掉」的真实案例）
+
+| 版本 | 问题 | 发现方式 |
+|---|---|---|
+| v0.2.7 | commit 绕过整个 D-QAF，只做写入前闸门 | 读代码 + grep 调用点 |
+| v0.2.8 | 验证器选错：`sandbox.runSmoke` 是**插件结构冒烟**（校验 package.json/exports），对任意仓库文件恒返回 `package-json-missing` | **真实 cron 跑** |
+| v0.2.8 | `node --check` 对 ESM **漏检**：`.js` 里 `export const a = ;` 退出码 0（`.mjs` 才是 1）——而仓库几乎所有 `lib/*.js` 都是 ESM | **写单测时实测** |
+| v0.2.9 | policy 契约错配：`computeComposite` 只认 `d.key`，`name`-only ⇒ `weights[undefined]=0` ⇒ `den===0` ⇒ 恒 REJECT | **真实 cron 跑 + 查 failure_pattern** |
+
+> 共同教训：**mock 要复读契约，不是复读被测代码的期望**。v0.2.8 的 T25 用
+> `policy.decide: async () => ({ kind: 'AUTO_DEPLOY' })` 固定返回值，字段名写错也照样绿。
+> 改成复刻真实契约（无 `key` → REJECT）后，去掉 `key` 立刻变红。
+
+> 📜 历史归档（2026-09-27，v0.8.6）与 2026-09-24 原始取证快照见文末。
 
 ## ⭐ 2026-09-29 根因定性：不是「没接通」，是架构分叉
 
