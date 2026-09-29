@@ -48,11 +48,27 @@ function makeEnv({ sandboxOk = true, sandboxReason, policyDecision = 'AUTO_DEPLO
       durationMs: 1,
     }),
   };
+  const policySaw = { current: null };
+  // v0.6.5：mock 复刻 policy 真实入参契约（K115 教训泛化）——dimensions 缺 key → REJECT unknown-veto；
+  // score.veto=true → REJECT。不复刻入参形状 = 字段名写错也照样绿（driver v0.2.8 同根因）。
   const mockPolicy = {
-    decide: async () => ({
-      kind: policyDecision, score: 80, reason: policyReason || `mock-policy-${policyDecision}`,
-      triggeredBy: [], decidedAt: new Date().toISOString(), policyId: 'mock@v0',
-    }),
+    decide: async ({ results }) => {
+      const r = results?.[0] ?? null;
+      policySaw.current = r;
+      const dims = r?.dimensions ?? [];
+      const keyed = dims.some((d) => d?.key === 'safety') && dims.some((d) => d?.key === 'trust');
+      if (!keyed) {
+        return { kind: 'REJECT', score: 0, reason: 'unknown-veto', triggeredBy: ['undefined:unknown-veto'], decidedAt: new Date().toISOString(), policyId: 'mock@v0' };
+      }
+      const vetoed = dims.filter((d) => d?.score?.veto === true);
+      if (vetoed.length > 0) {
+        return { kind: 'REJECT', score: 0, reason: 'policy-reject:veto-or-low-composite', triggeredBy: vetoed.map((d) => `${d.key}:veto`), decidedAt: new Date().toISOString(), policyId: 'mock@v0' };
+      }
+      return {
+        kind: policyDecision, score: 80, reason: policyReason || `mock-policy-${policyDecision}`,
+        triggeredBy: [], decidedAt: new Date().toISOString(), policyId: 'mock@v0',
+      };
+    },
     detectFalseHarmony: async () => ({}),
     setThresholds: async () => ({}),
     health: () => ({ serviceAvailable: true }),
@@ -80,7 +96,7 @@ function makeEnv({ sandboxOk = true, sandboxReason, policyDecision = 'AUTO_DEPLO
     provide: (n, f) => { services[n] = f; },
     effect: () => () => {},
   });
-  return { services, tables, workdir, cleanup: () => rmSync(workdir, { recursive: true, force: true }) };
+  return { services, tables, workdir, policySaw, cleanup: () => rmSync(workdir, { recursive: true, force: true }) };
 }
 
 async function proposeAndCommit(fix, env, extra = {}) {
@@ -399,5 +415,36 @@ test('兼容：rollback 新增可选字段 preimageHashAtStart 存在', async ()
     assert.ok(rb.preimageHashAtStart, 'preimageHashAtStart 应存在');
     assert.equal(typeof rb.preimageHashAtStart, 'string');
     assert.equal(rb.preimageHashAtStart.length, 64, 'SHA-256 hex 应 64 字符');
+  } finally { env.cleanup(); }
+});
+
+// ── v0.6.5：commit synthEval 契约（K115 教训泛化 —— mock 复刻 policy 真实入参形状） ────
+
+test('commit synthEval 契约：dimensions 必须带 key（policy 实读 d.key；缺 key 必红）', async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    await proposeAndCommit(FIX.prompt, env);
+    const r = env.policySaw.current;
+    assert.ok(r, 'policy 应收到 synthEval');
+    const dims = r.dimensions ?? [];
+    assert.deepEqual(dims.map((d) => d.key), ['safety', 'trust'], 'dimensions.key 必须为 safety/trust');
+    assert.deepEqual(dims.map((d) => d.name), ['safety', 'trust'], 'name 并存（兼容旧读取方，与 driver v0.2.9 同一契约）');
+  } finally { env.cleanup(); }
+});
+
+test('commit synthEval 契约：sandbox 失败分支同样带 key + veto 语义', async () => {
+  const env = makeEnv({ sandboxOk: false, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    // sandbox ok=false → veto:true → 契约 mock 返回 REJECT → commit 抛错回滚
+    await assert.rejects(async () => {
+      await proposeAndCommit(FIX.prompt, env);
+    }, /policyDecision=REJECT/);
+    const r = env.policySaw.current;
+    assert.ok(r, 'policy 应收到 synthEval（失败路径）');
+    assert.deepEqual((r.dimensions ?? []).map((d) => d.key), ['safety', 'trust']);
+    assert.ok((r.dimensions ?? []).every((d) => d.score.veto === true), '失败路径 veto 语义');
+    // preimage 已恢复
+    const restored = readFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'utf8');
+    assert.equal(restored, 'OLD prompt content');
   } finally { env.cleanup(); }
 });

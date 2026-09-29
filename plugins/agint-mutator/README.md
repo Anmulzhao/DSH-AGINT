@@ -1,6 +1,6 @@
 # agint-mutator
 
-> v0.6.1 / Sprint 8 变异构造器（host service plugin）。
+> v0.6.5 / Sprint 8 变异构造器（host service plugin）——v0.6.5 修 commit synthEval 契约错配（dimensions 缺 key，K115 泛化）。
 >
 > 当前已交付：骨架 + FROZEN schema + storage 域装配 + 4 个 Service 占位（抛 `not implemented`）。3 类 mutation 构造器 / validate 4 约束 / commit 沙箱闭环 / 3 条来源接口由子任务 #3-#5 接力。
 

@@ -52,7 +52,19 @@ function makeEnv({ commitSandboxOk = true, rollbackSmokeOk = true, rollbackSmoke
     },
   };
   const mockPolicy = {
-    decide: async () => ({ kind: commitPolicyDecision, score: 80, reason: 'mock-policy', triggeredBy: [], decidedAt: new Date().toISOString(), policyId: 'mock@v0' }),
+    // v0.6.5：契约复刻（K115 教训泛化）——dimensions 缺 key → REJECT unknown-veto；veto → REJECT
+    decide: async ({ results }) => {
+      const dims = results?.[0]?.dimensions ?? [];
+      const keyed = dims.some((d) => d?.key === 'safety') && dims.some((d) => d?.key === 'trust');
+      if (!keyed) {
+        return { kind: 'REJECT', score: 0, reason: 'unknown-veto', triggeredBy: ['undefined:unknown-veto'], decidedAt: new Date().toISOString(), policyId: 'mock@v0' };
+      }
+      const vetoed = dims.filter((d) => d?.score?.veto === true);
+      if (vetoed.length > 0) {
+        return { kind: 'REJECT', score: 0, reason: 'policy-reject:veto-or-low-composite', triggeredBy: vetoed.map((d) => `${d.key}:veto`), decidedAt: new Date().toISOString(), policyId: 'mock@v0' };
+      }
+      return { kind: commitPolicyDecision, score: 80, reason: 'mock-policy', triggeredBy: [], decidedAt: new Date().toISOString(), policyId: 'mock@v0' };
+    },
     detectFalseHarmony: async () => ({}),
     setThresholds: async () => ({}),
     health: () => ({ serviceAvailable: true }),

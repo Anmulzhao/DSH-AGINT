@@ -606,12 +606,12 @@ function apply(ctx) {
       target: { id: targetPath, kind: 'plugin-postimage' },
       dimensions: sandboxResult.ok
         ? [
-            { name: 'safety', score: { score: 1.0, veto: false } },
-            { name: 'trust', score: { score: 1.0, veto: false } },
+            { key: 'safety', name: 'safety', score: { score: 1.0, veto: false } },
+            { key: 'trust', name: 'trust', score: { score: 1.0, veto: false } },
           ]
         : [
-            { name: 'safety', score: { score: 0.0, veto: true } },
-            { name: 'trust', score: { score: 0.0, veto: true } },
+            { key: 'safety', name: 'safety', score: { score: 0.0, veto: true } },
+            { key: 'trust', name: 'trust', score: { score: 0.0, veto: true } },
           ],
       ok: sandboxResult.ok,
       reason: sandboxResult.ok ? undefined : sandboxResult.reason,

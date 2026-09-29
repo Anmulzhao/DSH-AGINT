@@ -4,6 +4,28 @@
 
 ---
 
+## v0.6.5 (2026-09-29) — 修 commit synthEval 契约错配：dimensions 缺 key（K115 教训泛化）
+
+### 修复
+
+- `commit()` 步骤 6 的 `synthEval.dimensions` 从 `{ name: 'safety', ... }` 改为 `{ key: 'safety', name: 'safety', ... }`
+  （key 满足 policy 契约，name 兼容旧读取方；与 evolution-driver v0.2.9 同一契约，见 driver CHANGELOG v0.2.9）。
+  **错配后果**：`agint-quality-policy.decide` 的 `computeComposite` 按 `d.key` 查权重 —— 只传 `name` 时
+  `weights[undefined]=0` → `den=0` → composite=null → `unknown-veto` 恒 REJECT。
+  `mutator.commit` 一旦被启用（driver 走自己的 commit 路径，mutator 至今 commits=0）会恒 REJECT，
+  这个 bug 从未在真实运行中暴露。
+- 测试 mock 升级为**契约复刻**：`test/commit-rollback.test.mjs` / `test/rollback-transaction.test.mjs` 的
+  `policy.decide` 从"固定返回"改为"复刻真实 policy 入参契约"（dimensions 缺 `key` → REJECT unknown-veto；
+  `score.veto=true` → REJECT）。新增 2 个契约断言用例（keys=['safety','trust'] + name 并存 + 失败分支同构）。
+  **自证**：临时去掉 lib 的 `key` → 21 用例变红（两个契约用例 + 全部 happy 路径）；恢复 → 113/113 全绿。
+- 版本对齐：package.json 0.6.3 → 0.6.5（manifest/CHANGELOG 已在 0.6.4，package.json 落后一拍，一并拉齐）。
+
+### 教训（进 K115 泛化）
+
+⛔ 同一个坑同时存在于 driver（v0.2.8→0.2.9）与 mutator（v0.6.4→0.6.5）——同一份 `synthEval` 形状。
+**修一处就要 grep 全仓同名/同形构造**；mock 必须复读被依赖方（policy）的真实入参契约，否则字段名写错也照样绿。
+
+---
 ## v0.6.4 (2026-09-27) — 修 PROMPT_MUTATION 幽灵接口：`queryAnnotations` 从未存在（K115）
 
 ### 修复
