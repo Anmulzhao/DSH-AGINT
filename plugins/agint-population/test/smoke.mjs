@@ -185,8 +185,11 @@ test('plugin 模块 entry / inject / name + 依赖图自洽', () => {
   assert.equal(typeof states.checkPromote, 'function');
   assert.equal(typeof states.enterFROZEN_OBSERVE, 'function');
 
-  // 4. DEFAULT_CONFIG 13 项（设计稿 §十）
-  assert.equal(Object.keys(plugin.Config).length, 0); // plugin.Config 是 entry 占位
+  // 4. DEFAULT_CONFIG 14 项（设计稿 §十）
+  // ⛔ 断言 zod schema 的字段数要看 .shape，不能 Object.keys(schema 实例) ——
+  // 后者枚举的是 zod 内部键（def/type，恒 2），与配置字段无关。
+  // 7bef3fa 把 Config 从普通对象改成 zod schema 时本行没跟上，挂了两周。
+  assert.equal(Object.keys(plugin.Config.shape).length, 0); // plugin.Config 是 entry 占位（空 zod object）
   const cfgKeys = Object.keys(schema.DEFAULT_CONFIG);
   assert.equal(typeof cfgKeys, 'object');
   const cfgCount = Object.keys(schema.DEFAULT_CONFIG).length;
