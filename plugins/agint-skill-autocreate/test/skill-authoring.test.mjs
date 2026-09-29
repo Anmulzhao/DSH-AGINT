@@ -283,6 +283,27 @@ test('契约：空 description → description-missing（blocker）', () => {
   assert.deepEqual(codesOf(checkDescription('')), ['description-missing']);
 });
 
+test('契约：句末标点缺失 → 必多一条判红（「以句号结尾」此前只被间接调用）', () => {
+  // 方案 §3 把 description 的硬标准列为三条：≤60 字符、以句号结尾、不含营销词。
+  // 本文件此前**专门断言**了长度（DESCRIPTION_MAX）与营销词，而「句号」只被 §5 的
+  // codesOf(checkDescription('没有句末标点')) 间接调用 —— 它断言的是 codes 数组内容，
+  // 不直接断言「缺句号 ⇒ 多一条判红」这个行为。
+  //
+  // ⚠️ 措辞更正（2026-09-29 review）：原先此处写的是「此前无任何断言守」，偏强。
+  //   实测把 lib/authoring.js:209 的 `if (!TERMINATOR_RE.test(d))` 改成 `false && ...` 后，
+  //   本文件有 **2** 个用例变红（本条 + §5 的间接用例），并非零个。
+  //   即：这条判据此前有间接覆盖，但没有**直接断言其行为**的用例 —— 缺口是真的，
+  //   只是原措辞夸大了。补上这条对比断言封住的是「行为未被直接锁定」这个缺口。
+  const withPunct = '按工具序列复述的多步探查流程。';
+  const noPunct = '按工具序列复述的多步探查流程';
+  const strict = codesOf(checkDescription(noPunct));
+  const loose = codesOf(checkDescription(withPunct));
+  assert.equal(strict.length > loose.length, true,
+    `去掉句号必须多出判红（无句号=${JSON.stringify(strict)} 有句号=${JSON.stringify(loose)}）`);
+  assert.equal(strict.filter((c) => !loose.includes(c)).length >= 1, true,
+    '至少有一条判红只由「缺句末标点」触发');
+});
+
 // ══ 4. 回归 fixture：真实产物必须被判红（标准被放宽即此测试变红）════════
 
 test('回归：已发布技能 glob-glob-glob-glob —— 正文合格但名字不可达', () => {
