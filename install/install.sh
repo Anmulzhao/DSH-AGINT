@@ -43,6 +43,19 @@
 
 set -uo pipefail  # 注意：不加 -e，因为我们要收集失败后 trap 回滚
 
+# ⛔ 2026-09-29 修坑：python3 子进程 stdout 强制 UTF-8。
+# 本脚本 4 处 python heredoc 的 print 里带 ✓ / ✗ / ↻ / ⚠ 等符号；中文 Windows 上
+# python 的 stdout 编码是 GBK，打印 U+2713 直接抛 UnicodeEncodeError
+# （'gbk' codec can't encode character '\u2713'），**非零退出**。
+# 致命之处在于它伪装成业务故障：install.sh:560 的残留检测本来 hits=0（干净），
+# 却在紧随其后的 print("✓ …") 上崩掉 → `|| die` 触发 → 报「profile 级 patch 仍含
+# AGINT 挂载段」，把人引向完全错误的修复方向（去删本来正确的 profile patch）。
+# 同一坑在 uninstall.sh 也中招：python 输出喂给 shell 变量时崩溃，会被管道吞掉
+# 退出码，导致「静默跳过全部插件删除」。
+# 这里用环境变量而非 sys.stdout.reconfigure()：不依赖 Python 版本，且对
+# `-c` 单行调用与 heredoc 块一视同仁。
+export PYTHONIOENCODING=utf-8
+
 # ── 参数 ────────────────────────────────────────────────────────────────────
 DRY_RUN=0
 FORCE=0

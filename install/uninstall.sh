@@ -17,6 +17,14 @@
 
 set -uo pipefail
 
+# ⛔ 2026-09-29 修坑：与 install.sh 同源。
+# 本脚本 3 处 python heredoc 的 print 带 ✓ / ↻ / ⚠；中文 Windows 上 python 的
+# stdout 是 GBK，打印非 ASCII 符号抛 UnicodeEncodeError。
+# 本脚本更隐蔽的一处：L~194 `ids=$(python3 … <<'PY' | tr -d '\r')` ——
+# python 崩溃时退出码被管道末端的 tr 吞掉，ids 静默变空 ⇒ 「无插件可删」假象，
+# 卸载看起来成功，实际什么都没删。这里同样以环境变量一次性覆盖所有 python 调用。
+export PYTHONIOENCODING=utf-8
+
 # ── 参数 ────────────────────────────────────────────────────────────────────
 DRY_RUN=0
 LIST_BACKUPS=0
