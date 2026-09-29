@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AGINT 家族面板：以宿主原生停靠面板（root main keyed slot + sidebar.panellist 入口行）展示整个 agint 插件家族的分组、行状态与通电信号。host 半只开一条回环 JSON 路由；浏览器半经 shell 自带席位注册，席位不存在即静默不挂。",
   "main": "lib/index.js",
   "agint": {

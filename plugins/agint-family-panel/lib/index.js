@@ -64,6 +64,7 @@ const Config = z.object({
  * hiding anything.
  */
 const FAMILY_GROUPS = [
+  { id: 'preset', label: 'AGENT预设', members: ['agint-preset', 'agint-blockchain-preset', 'agint-investor-preset'] },
   { id: 'memory', label: '记忆与知识', members: ['agint-memory', 'agint-wiki', 'agint-memory-provider', 'agint-search-tools'] },
   { id: 'governance', label: '调度与治理', members: ['agint-cron', 'agint-rules', 'agint-metrics', 'agint-tool-stats'] },
   { id: 'evolution', label: '反思与进化', members: ['agint-dream', 'agint-evolve', 'agint-evolution-memory', 'agint-diagnosis', 'agint-curriculum', 'agint-evolution-driver'] },

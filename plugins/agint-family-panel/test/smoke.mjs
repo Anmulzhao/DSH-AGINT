@@ -26,7 +26,7 @@ function row(id, fiberState = 2, disabled = false) {
 function makeCtx(overrides = {}) {
   const registered = [];
   const provided = {};
-  const entries = overrides.entries ?? [row('agint-memory'), row('agint-cron'), row('other-plugin')];
+  const entries = overrides.entries ?? [row('agint-memory'), row('agint-cron'), row('agint-preset'), row('agint-mystery'), row('other-plugin')];
   return {
     config: overrides.config ?? {},
     loader: { entries: () => entries },
@@ -85,12 +85,18 @@ assert.equal(ok.status, 200, 'status 200');
 const payload = JSON.parse(ok.body);
 assert.equal(payload.ok, true);
 assert.equal(payload.enabled, true);
-assert.equal(payload.counts.total, 2, 'counts only agint-* rows');
-assert.equal(payload.counts.active, 2, 'fiber.state=2 → active（真实 loader 结构）');
+assert.equal(payload.counts.total, 4, 'counts only agint-* rows');
+assert.equal(payload.counts.active, 4, 'fiber.state=2 → active（真实 loader 结构）');
 assert.equal(payload.counts.unknown, 0, '不再全部 unknown');
 assert.ok(payload.groups.some((g) => g.id === 'memory'), 'memory group present');
-assert.ok(payload.groups.some((g) => g.id === 'unmapped') === false, 'no unmapped rows in the fixture');
-assert.equal(payload.hostRowCount, 3, 'reports the whole host roster');
+const presetGroup = payload.groups.find((g) => g.id === 'preset');
+assert.ok(presetGroup && presetGroup.label === 'AGENT预设', 'preset group present with label');
+assert.equal(presetGroup.members.length, 1, 'preset member present');
+assert.equal(presetGroup.members[0].declared, true, 'preset member declared');
+const unmappedGroup = payload.groups.find((g) => g.id === 'unmapped');
+assert.ok(unmappedGroup && unmappedGroup.members.length === 1 && unmappedGroup.members[0].id === 'agint-mystery' && unmappedGroup.members[0].declared === false, 'unmapped holds only an agint-* row absent from the label map');
+assert.deepEqual(payload.unmappedIds, ['agint-mystery'], 'unmappedIds lists the leftover id');
+assert.equal(payload.hostRowCount, 5, 'reports the whole host roster');
 assert.equal(payload.signals.length, 3, 'three signal probes');
 
 // 12. fiber state mapping (v0.1.1) --------------------------------------------

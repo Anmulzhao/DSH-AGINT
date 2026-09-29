@@ -1,5 +1,22 @@
 # agint-family-panel CHANGELOG
 
+## 0.1.2 — 2026-09-29
+
+### 分组语义修正
+
+- **「未归类（分组表待补）」组中的三个 AGENT 预设插件归位**：agint-preset、
+  agint-blockchain-preset、agint-investor-preset 此前不在分组表（label map），
+  落入 unmapped 兜底组（declared:false）。新增分组
+  `{ id: 'preset', label: 'AGENT预设' }` 收纳三者，面板上显示为「AGENT预设」，
+  declared 转 true；unmapped 兜底组保留，仅收纳真正未入表的 agint-* 行。
+- smoke 测试同步：fixture 增补 agint-preset（断言落入 preset 组、declared:true）
+  与 agint-mystery（断言 unmapped 兜底只收未入表行、unmappedIds 正确）。
+
+### 验证
+
+- smoke 11 组 PASS；浏览器实测 8 组（memory/governance/evolution/quality/
+  closed-loop/execution/infra/preset），三个 preset 成员 declared:true。
+
 ## 0.1.1 — 2026-09-29
 
 ### 修复
