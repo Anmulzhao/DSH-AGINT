@@ -1,0 +1,74 @@
+{
+  "_comment": "L0 FROZEN 契约哈希基线。改这个文件 = 承认一次 L0 变更。AGENTS.md 要求：人类多签 + 7 天影子 + major 版本 + 旧版保留 ≥3 minor。生成方式：node bin/check-l0-frozen.mjs --update",
+  "_source": "plugins/agint-quality/agint-quality-contract/lib/index.js",
+  "_hashAlgo": "sha256(去独立注释行 + 去所有空白) 前 16 位",
+  "generatedAt": "2026-09-29T10:10:02.400Z",
+  "units": {
+    "EvalTargetSchema": {
+      "hash": "9bab0a56be56cf0a",
+      "startLine": 37,
+      "endLine": 48,
+      "markerLine": 49
+    },
+    "HARMSchema": {
+      "hash": "72825da6f6b669ef",
+      "startLine": 52,
+      "endLine": 57,
+      "markerLine": 58
+    },
+    "DimensionScoreSchema": {
+      "hash": "c0e46492d431a59c",
+      "startLine": 61,
+      "endLine": 70,
+      "markerLine": 71
+    },
+    "EvalResultSchema": {
+      "hash": "370aae35b77979d2",
+      "startLine": 74,
+      "endLine": 100,
+      "markerLine": 101
+    },
+    "DecisionKindSchema": {
+      "hash": "85b9a8720c7afc38",
+      "startLine": 104,
+      "endLine": 109,
+      "markerLine": 110
+    },
+    "DecisionSchema": {
+      "hash": "dca884499760cef2",
+      "startLine": 112,
+      "endLine": 124,
+      "markerLine": 125
+    },
+    "DreamPhaseSchema": {
+      "hash": "30e50d12b427d09b",
+      "startLine": 128,
+      "endLine": 128,
+      "markerLine": 129
+    },
+    "QualityEvaluatorIface": {
+      "hash": "9b6ded9ffcbb60b4",
+      "startLine": 191,
+      "endLine": 196,
+      "markerLine": 192
+    },
+    "QualityPolicyIface": {
+      "hash": "772cc3115d9b9942",
+      "startLine": 199,
+      "endLine": 204,
+      "markerLine": 200
+    },
+    "QualityReporterIface": {
+      "hash": "1750d7c613f8da00",
+      "startLine": 207,
+      "endLine": 212,
+      "markerLine": 208
+    },
+    "QualityLifecycleIface": {
+      "hash": "b044c52d6f55916a",
+      "startLine": 215,
+      "endLine": 226,
+      "markerLine": 216
+    }
+  }
+}

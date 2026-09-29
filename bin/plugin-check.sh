@@ -464,3 +464,27 @@ esac
 
 echo
 echo "─── plugin-check 完成（lint 模式，不阻断） ───"
+
+# ── L0 FROZEN 契约门禁 ──────────────────────────────────────────────────────
+# 这条**阻断**（上面的 lint 不阻断，是两回事）。
+# AGENTS.md 与 docs/evolution-framework.md §8.2 都写「CI 任务检测到 L0 字段修改
+# 自动失败」，但该检测此前从未实现 —— bin/ 下无任何脚本 grep FROZEN、
+# .github/workflows 目录不存在，即这条护栏是纸面约定。
+# 现在补上：FROZEN 契约被改动 ⇒ exit 1。
+# 放行只能显式 `node bin/check-l0-frozen.mjs --update`，且那仍需人类多签 +
+# 7 天影子 + major 版本 —— 本检查替代不了多签，只替代「没人发现」。
+L0_SCRIPT="$(dirname "$0")/check-l0-frozen.mjs"
+if [ -f "$L0_SCRIPT" ]; then
+  echo
+  echo "─── L0 FROZEN 契约检查 ───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$L0_SCRIPT"; then
+      echo "  [PASS] L0 FROZEN 契约未变更"
+    else
+      echo "  [FAIL] L0 FROZEN 契约被改动（见上方明细）—— 这是 L0 变更，需人类多签 + 7 天影子 + major 版本"
+      exit 1
+    fi
+  else
+    echo "  [WARN] node 不可用，L0 检查跳过（这条门禁在无 node 环境下形同虚设）"
+  fi
+fi

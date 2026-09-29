@@ -56,7 +56,12 @@
 
 ## L0 变更（agint-quality-contract FROZEN 字段）
 
-人类多签 + 7 天影子模式 + major 版本 + 旧版保留 ≥3 minor 周期。CI 自动失败检测。详见 `docs/evolution-framework.md` §8.2
+人类多签 + 7 天影子模式 + major 版本 + 旧版保留 ≥3 minor 周期。详见 `docs/evolution-framework.md` §8.2
+
+**自动检测现状（2026-09-29 实测，勿再沿用「CI 自动失败检测」的说法）**：
+本仓库此前**没有**任何 CI 配置（`.github/workflows/` 目录不存在），这条护栏是纸面约定。
+现已补上**本地门禁**：`node bin/check-l0-frozen.mjs`（违例 exit 1），并接入 `bin/plugin-check.sh`
+末尾（该步阻断）。绕过本地检查直接 push 仍不会被拦 —— 要名副其实还需另建 CI 流水线，未做。
 
 ## 快速参考
 
