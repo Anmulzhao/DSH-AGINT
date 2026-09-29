@@ -25,10 +25,17 @@
  *
  * 1. **commit 写仓库正本，不写部署位**（部署位 install.sh 会镜像覆盖，写了白写）。
  *    仓库根 repoRoot 解析优先级：env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > patch config
- *    `repoRoot` > 不 commit。落盘三保险：preimage 备份（`.agint-preimage/`）、
- *    git 工作区天然可 diff/checkout 回滚、事件 `evolution.mutation.committed` 留痕。
+ *    `repoRoot` > 不 commit。落盘四保险：**preimage 备份**（`.agint-preimage/`）、
+ *    git 工作区天然可 diff/checkout 回滚、事件 `evolution.mutation.committed` 留痕、
+ *    以及 2026-09-29 补上的**写入后 D-QAF 验证**（`sandbox.runSmoke` → `policy.decide`
+ *    → REJECT/ABSTAIN 从 preimage 回滚）。
  *    总开关 `AGINT_EVOLUTION_DRIVER_COMMIT=off` 可关（2026-09-27 老板拍板开放改仓库后
  *    默认开 —— K51「可回滚 > 可审批、kill-switch ≠ 默认关」）。
+ *
+ *    ⛔ **fail-closed**：`sandbox` / `policy` 任一不可用 ⇒ 根本不写仓库，只发
+ *    `evolution.mutation.commit-skipped`。理由：本插件的 commitToRepo 走的是自己的落盘
+ *    路径（不经过 `mutator.commit`），若验证通道缺失还照写，就等于 AGENTS.md 明令禁止的
+ *    「绕过 D-QAF 任意阶段直接部署」。「没有验证能力就不改仓库」是硬约束，不是降级策略。
  * 2. **不自己造变异内容。** 内容一律来自 LLM 的结构化输出，且 oldText 必须能在原文里
  *    找到（且唯一）；找不到就放弃本次（记 degraded），绝不写入"看起来像"的文本。
  * 3. **全软依赖。** inject=[]，bundle apply 顺序不保证 ⇒ runtime 必须**调用时** ctx.get，
@@ -424,6 +431,11 @@ export function apply(ctx, config = {}) {
     const evolve = inj.evolve ?? dep('agint.evolve');
     const mutator = inj.mutator ?? dep('agint.mutator');
     const population = inj.population ?? dep('agint.population');
+    // 2026-09-29（B 方案）：commit 的「写入后验证」通道。sandbox 跑 smoke、policy 给决策，
+    // 与 mutator.commit 步骤 5/6 同语义。两者的存在性是 commit 的**前置条件**（fail-closed），
+    // 不是可选项 —— 见下方 `if (commitOn && repoRoot)` 分支。
+    const sandbox = inj.sandbox ?? dep('agint.qualitySandbox');
+    const policy = inj.policy ?? dep('agint.qualityPolicy');
     const fs = inj.fs ?? null;
 
     if (!evolve || typeof evolve.listProposals !== 'function') {
@@ -628,33 +640,118 @@ export function apply(ctx, config = {}) {
 
       // ── commit：写回仓库正本（2026-09-27 老板拍板开放改仓库代码后默认开）。
       //    三保险：denylist + oldText 唯一性 + preimage 备份；git 工作区天然可回滚。
+      //
+      //    2026-09-29（B 方案）补上第 4 道：**写入后验证**。改动前本分支只做「写入前闸门」
+      //    （denylist / oldText 唯一性 / preimage），写完就发 committed 事件直接结束 ——
+      //    全程不过 D-QAF，等于 AGENTS.md 明令禁止的「绕过 D-QAF 直接部署」。
+      //    现在写入后强制走 sandbox.runSmoke → policy.decide，REJECT/ABSTAIN 即从 preimage 回滚。
+      //
+      //    ⛔ fail-closed：sandbox / policy 不可用时**根本不写**，不是「写了再想办法验」。
+      //    没有验证能力就不改仓库，这是 B 方案与 mutator.commit 的关键差异
+      //    （后者写完才发现 sandbox 缺失，只能抛错留下半成品）。
       let commit = null;
       if (commitOn && repoRoot) {
         const commitPath =
           target.type === 'skill' ? `presets/agint/skills/${targetId}/SKILL.md` : targetId;
-        try {
-          commit = await commitToRepo({
-            repoRoot,
-            relPath: commitPath,
-            oldText: v.oldText,
-            newText: v.newText,
-            fs: inj.fs,
+        if (typeof sandbox?.runSmoke !== 'function' || typeof policy?.decide !== 'function') {
+          // 不可用即不写：留痕但不落盘，避免出现「无验证的仓库改动」。
+          const reason = `verify-unavailable (sandbox=${typeof sandbox?.runSmoke}, policy=${typeof policy?.decide})`;
+          state.lastError = `commit skipped: ${reason}`;
+          warn('commit skipped (fail-closed)', { proposalId: proposal.id, path: commitPath, reason });
+          await publish('evolution.mutation.commit-skipped', {
+            proposalId: proposal.id,
+            candidateId: candidate.id,
+            path: commitPath,
+            reason,
           });
-          if (commit.ok === true) {
-            await publish('evolution.mutation.committed', {
-              proposalId: proposal.id,
-              candidateId: candidate.id,
-              path: commit.path,
-              preimagePath: commit.preimagePath,
-              bytesBefore: commit.bytesBefore,
-              bytesAfter: commit.bytesAfter,
+        } else {
+          try {
+            commit = await commitToRepo({
+              repoRoot,
+              relPath: commitPath,
+              oldText: v.oldText,
+              newText: v.newText,
+              fs: inj.fs,
             });
-          } else {
-            warn('commit skipped', { proposalId: proposal.id, path: commitPath, reason: commit.reason });
+            if (commit.ok !== true) {
+              warn('commit skipped', { proposalId: proposal.id, path: commitPath, reason: commit.reason });
+            } else {
+              // ── 写入后验证：sandbox → policy（语义对齐 mutator.commit 步骤 5/6）
+              const sandboxResult = await sandbox.runSmoke({
+                target: { path: commit.path, name: `${target.type}/${commit.path}` },
+              });
+              const synthEval = {
+                target: { id: commit.path, kind: 'plugin-postimage' },
+                dimensions: sandboxResult?.ok
+                  ? [
+                      { name: 'safety', score: { score: 1.0, veto: false } },
+                      { name: 'trust', score: { score: 1.0, veto: false } },
+                    ]
+                  : [
+                      { name: 'safety', score: { score: 0.0, veto: true } },
+                      { name: 'trust', score: { score: 0.0, veto: true } },
+                    ],
+                ok: Boolean(sandboxResult?.ok),
+                reason: sandboxResult?.ok ? undefined : sandboxResult?.reason,
+              };
+              const decision = (await policy.decide({ results: [synthEval] }))?.kind ?? 'ABSTAIN';
+
+              if (decision === 'REJECT' || decision === 'ABSTAIN') {
+                // 决策为拒 → 从 preimage 回滚，绝不把没验证过的改动留在仓库里。
+                const restored = await restoreFromPreimage({
+                  repoRoot,
+                  relPath: commit.path,
+                  preimagePath: commit.preimagePath,
+                  fs: inj.fs,
+                });
+                commit = {
+                  ...commit,
+                  ok: false,
+                  reverted: restored.ok,
+                  policyDecision: decision,
+                  sandboxOk: Boolean(sandboxResult?.ok),
+                  reason: `policy=${decision}${restored.ok ? '' : ` (回滚失败: ${restored.reason})`}`,
+                };
+                state.lastError = `commit rejected: ${commit.reason}`;
+                warn('commit rejected', {
+                  proposalId: proposal.id, path: commit.path,
+                  decision, reverted: restored.ok, sandboxOk: sandboxResult?.ok,
+                });
+                await publish('evolution.mutation.rolledback', {
+                  proposalId: proposal.id,
+                  candidateId: candidate.id,
+                  path: commit.path,
+                  policyDecision: decision,
+                  sandboxOk: Boolean(sandboxResult?.ok),
+                  reverted: restored.ok,
+                });
+              } else {
+                await publish('evolution.mutation.committed', {
+                  proposalId: proposal.id,
+                  candidateId: candidate.id,
+                  path: commit.path,
+                  preimagePath: commit.preimagePath,
+                  bytesBefore: commit.bytesBefore,
+                  bytesAfter: commit.bytesAfter,
+                  policyDecision: decision,
+                  sandboxOk: Boolean(sandboxResult?.ok),
+                });
+              }
+            }
+          } catch (error) {
+            // 写入后异常：已经落盘了就必须回滚，否则留下「未验证改动」在仓库里。
+            let revertNote = null;
+            if (commit?.ok === true && commit.preimagePath) {
+              const restored = await restoreFromPreimage({
+                repoRoot, relPath: commit.path, preimagePath: commit.preimagePath, fs: inj.fs,
+              });
+              revertNote = restored.ok ? 'reverted' : `revert-failed: ${restored.reason}`;
+            }
+            state.lastError = `commit failed: ${error?.message ?? String(error)}`;
+            warn('commit threw', {
+              proposalId: proposal.id, path: commitPath, reason: state.lastError, revert: revertNote,
+            });
           }
-        } catch (error) {
-          state.lastError = `commit failed: ${error?.message ?? String(error)}`;
-          warn('commit threw', { proposalId: proposal.id, path: commitPath, reason: state.lastError });
         }
       }
 
@@ -667,7 +764,13 @@ export function apply(ctx, config = {}) {
         variantId: variant?.variant_id ?? null,
         policyDecision: variant?.policy_decision ?? null,
         rationale: v.rationale ?? '',
-        commit: commit?.ok === true ? { path: commit.path, preimagePath: commit.preimagePath } : null,
+        // 2026-09-29（B 方案）：ok=false 时把决策与回滚结果一并带出，否则调用方
+        // （cron 持久化只写死 "ok"）无从区分「写入被拒」与「路径不合法」两类失败。
+        commit: commit?.ok === true
+          ? { path: commit.path, preimagePath: commit.preimagePath }
+          : commit
+            ? { ok: false, path: commit.path, policyDecision: commit.policyDecision ?? null, sandboxOk: commit.sandboxOk ?? null, reverted: commit.reverted ?? false, reason: commit.reason ?? null }
+            : null,
       };
     }
 
@@ -882,6 +985,42 @@ export async function commitToRepo({ repoRoot, relPath, oldText, newText, fs, no
     bytesBefore: Buffer.byteLength(text, 'utf8'),
     bytesAfter: Buffer.byteLength(postimage, 'utf8'),
   };
+}
+
+/**
+ * 从 preimage 备份恢复文件（B 方案的回滚本体）。
+ *
+ * commitToRepo 每次写入前都 copyFile 到 `.agint-preimage/<扁平化路径>-<时间>.bak`，
+ * 所以回滚不需要 git、不需要额外快照 —— 直接把那份备份拷回原位即可。
+ *
+ * 与 `commitToRepo` 的 fs 注入约定保持一致：注入 `fs.writeRepo` 的测试场景不碰真实磁盘，
+ * 这里同样直接返回 ok（测试自己维护虚拟文件系统状态）。
+ *
+ * 返回 `{ok:true, restoredBytes}` 或 `{ok:false, reason}`。
+ */
+export async function restoreFromPreimage({ repoRoot, relPath, preimagePath, fs }) {
+  const norm = String(relPath ?? '').split('\\').join('/').replace(/^\.\//, '');
+  if (!repoRoot) return { ok: false, reason: 'no repoRoot' };
+  if (!norm || norm.includes('..')) return { ok: false, reason: `unsafe path: ${norm}` };
+  if (COMMIT_DENYLIST.some((d) => norm === d || norm.includes(d))) {
+    return { ok: false, reason: `denylist hit: ${norm}` };
+  }
+  if (!preimagePath) return { ok: false, reason: 'no preimagePath' };
+  if (typeof fs?.writeRepo === 'function') {
+    // 注入虚拟 fs：写回内容由调用方测试夹具处理，这里只做形状校验后放行。
+    return { ok: true, restoredBytes: null, injected: true };
+  }
+  try {
+    const { readFile, writeFile, mkdir } = await import('node:fs/promises');
+    const { join: j, dirname: d, resolve: r } = await import('node:path');
+    const backup = await readFile(j(repoRoot, preimagePath));
+    const abs = r(repoRoot, norm);
+    await mkdir(d(abs), { recursive: true });
+    await writeFile(abs, backup);
+    return { ok: true, restoredBytes: backup.length, preimagePath };
+  } catch (error) {
+    return { ok: false, reason: `restore failed: ${error?.message ?? error}` };
+  }
 }
 
 export async function spawnLlm(ctx, {

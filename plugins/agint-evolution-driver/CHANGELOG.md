@@ -1,5 +1,59 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.7 — 2026-09-29（commit 补写入后 D-QAF 验证 + fail-closed）
+
+### 背景
+
+排查「自进化主链最后一公里」时确认：本插件的 `commitToRepo` 走**自己的**落盘路径，
+不经过 `mutator.commit`，因此整条 commit 链路**只过写入前闸门**（denylist / oldText 唯一性 /
+preimage 备份），写完直接发 `evolution.mutation.committed` 事件结束 —— **不跑
+`sandbox.runSmoke`、不过 `policy.decide`**。后果是三处同时为零：`mutator.commits` 表 0 条、
+`sandbox.passed` / `sandbox.failed` 事件 0 条、提案永远停在 `PENDING`。
+
+这等于 AGENTS.md 明令禁止的「绕过 D-QAF 任意阶段直接部署」：**仓库被改了，但没有任何
+东西验证过这次改动**。
+
+### 变更
+
+- `runOnce` 的 commit 分支接入 `agint.qualitySandbox` 与 `agint.qualityPolicy`（软依赖，
+  与 `agint.evolve` / `agint.mutator` / `agint.population` 同样的 `inj.x ?? dep()` 取法）。
+- **写入后验证**：`commitToRepo` 成功后强制 `sandbox.runSmoke` → 合成 EvalResult →
+  `policy.decide`，语义与 `mutator.commit` 步骤 5/6 对齐（safety/trust 双维，
+  sandbox 失败则 score 0 + veto）。
+- **决策为 `REJECT` / `ABSTAIN` 即回滚**：新增导出函数 `restoreFromPreimage()`，
+  从 `commitToRepo` 已生成的 `.agint-preimage/*.bak` 拷回原位，不依赖 git。
+  回滚后发 `evolution.mutation.rolledback`，**不发** `committed`。
+- **⛔ fail-closed（破环性）**：`sandbox` 或 `policy` 不可用时**根本不写仓库**，只发
+  `evolution.mutation.commit-skipped`。这是与 `mutator.commit` 的关键差异 —— 后者写完才发现
+  sandbox 缺失，只能抛错并留下半成品；本版把检查前置。
+- 写入后抛异常时同样尝试回滚，避免留下未验证改动。
+- `runOnce` 返回值的 `commit` 字段在失败时不再恒为 `null`，改为携带
+  `{ ok:false, path, policyDecision, sandboxOk, reverted, reason }`，
+  让调用方能区分「被拒」与「路径不合法」。**注意：cron 持久化仍只写死 `"ok"`，
+  真实原因要看事件总线。**
+- `evolution.mutation.committed` 事件新增 `policyDecision` / `sandboxOk` 两个字段。
+
+### 影响
+
+- 这是**行为变更**：未挂载 `agint-quality-sandbox` 或 `agint-quality-policy` 的部署，
+  `evolution-cycle` 将**不再修改仓库**（此前会改）。这是有意的 —— 没有验证能力就不改仓库。
+- 不改 FROZEN 契约：`mutator.commit` 的 `input.pluginId` / `propose` 的 `targetPlugin`
+  按既有 back-compat 通道走，本版未触碰 `MutationPayloadSchema`（仍是 4 字段 FROZEN）。
+- **未统一到 `mutator.commit`**（原计划 A 方案）：核对后发现
+  `mutator.generatePostimage` 对 `PROMPT_MUTATION` 直接 `return p.newText` 当整文件内容，
+  而本插件是 `text.replace(oldText, newText)` 局部替换；`deriveTargetPath` 又硬编码
+  `plugins/{pluginId}/prompts/{promptId}.md`，对本插件的 skill / repo 目标全部算错。
+  直接接线会把 SKILL.md 整份覆盖成一个小节。统一需给 FROZEN payload 加 `targetPath`
+  ⇒ 触发 L0 变更流程（人类多签 + 7 天影子模式 + major 版本），2026-09-29 老板改选 B 方案。
+
+### 验证
+
+- `test/smoke.mjs` 37/37（新增 T25b fail-closed、T25c policy REJECT 回滚）；
+  `test/goal-bridge.test.mjs` 9/9。
+- `bin/plugin-check.sh --all`：agint-evolution-driver 9 维度全过；
+  全仓 4 个既存 FAIL（3×manifest 缺失 + 1×K19）与改动前一致，无新增。
+- 字节保真：`lib/index.js` 与 `test/smoke.mjs` 的 BOM/换行/尾字节与 HEAD 逐字节一致。
+
 ## v0.2.5 — 2026-09-27（实体门抽成可复用模块 + 服务扩展点）
 ## v0.2.6 — 2026-09-28（行动 #2 goal 桥：提案 → dsh goal 驱动）
 

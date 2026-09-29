@@ -557,6 +557,10 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件', asyn
   const out = await ctx.provided['agint.evolutionDriver'].runOnce({
     env: {},
     inject: {
+      // 2026-09-29（B 方案）：commit 是 fail-closed 的 —— 没有验证通道就不写仓库。
+      // 原有夹具未注入 sandbox/policy，commit 会被跳过，这里补上以保持「全链路」语义。
+      sandbox: { runSmoke: async () => ({ ok: true, kind: 'PASS' }) },
+      policy: { decide: async () => ({ kind: 'AUTO_DEPLOY' }) },
       llm: async () => ({
         ok: true,
         value: {
@@ -589,6 +593,103 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件', asyn
   const committed = events.find((e) => e.topic === 'evolution.mutation.committed');
   assert.equal(committed.payload.path, 'lib/service.js');
   assert.equal(committed.payload.proposalId, 'p1');
+  // B 方案：committed 事件必须带验证结论，否则事后无从判断这处改动是否过了 D-QAF
+  assert.equal(committed.payload.sandboxOk, true);
+  assert.equal(committed.payload.policyDecision, 'AUTO_DEPLOY');
+});
+
+test('T25b: fail-closed —— sandbox/policy 不可用时不写仓库，只发 commit-skipped', async () => {
+  const calls = [];
+  const fakeEvolve = {
+    listProposals: async () => [
+      { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+    ],
+  };
+  const fakeMutator = {
+    propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
+    validate: async () => ({ ok: true, findings: [] }),
+  };
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve,
+    'agint.mutator': fakeMutator,
+    'agint.population': { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) },
+    agents: { create: async () => { throw new Error('no spawn'); } },
+    subagents: { start: async () => { throw new Error('no spawn'); } },
+  });
+  const events = busRecorder(ctx);
+  apply(ctx, { repoRoot: '/fake/repo' });
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: {
+      // 故意不注入 sandbox / policy
+      llm: async () => ({
+        ok: true,
+        value: { applicable: true, targetSkill: 'lib/service.js', oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test' },
+      }),
+      skillNames: [],
+      fs: {
+        scanRepo: async () => ['lib/service.js'],
+        readRepo: async () => 'hello world\n',
+        writeRepo: async (p, text) => { calls.push(['write', p, text]); },
+      },
+    },
+  });
+  assert.equal(out.skipped, false);
+  // ⛔ 核心断言：一次 write 都不能发生 —— 没有验证能力就不许改仓库
+  assert.equal(calls.filter((c) => c[0] === 'write').length, 0, 'fail-closed 失败：无验证通道却写了仓库');
+  const topics = events.map((e) => e.topic);
+  assert.ok(topics.includes('evolution.mutation.proposed'), 'proposed 仍应照常发');
+  assert.ok(topics.includes('evolution.mutation.commit-skipped'), '必须发 commit-skipped 留痕');
+  assert.ok(!topics.includes('evolution.mutation.committed'), '未验证不得发 committed');
+});
+
+test('T25c: policy REJECT → 从 preimage 回滚，且不发 committed', async () => {
+  const calls = [];
+  const fakeEvolve = {
+    listProposals: async () => [
+      { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+    ],
+  };
+  const fakeMutator = {
+    propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
+    validate: async () => ({ ok: true, findings: [] }),
+  };
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve,
+    'agint.mutator': fakeMutator,
+    'agint.population': { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) },
+    agents: { create: async () => { throw new Error('no spawn'); } },
+    subagents: { start: async () => { throw new Error('no spawn'); } },
+  });
+  const events = busRecorder(ctx);
+  apply(ctx, { repoRoot: '/fake/repo' });
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: {
+      sandbox: { runSmoke: async () => ({ ok: false, kind: 'FAIL', reason: 'smoke blew up' }) },
+      policy: { decide: async () => ({ kind: 'REJECT', reason: 'veto' }) },
+      llm: async () => ({
+        ok: true,
+        value: { applicable: true, targetSkill: 'lib/service.js', oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test' },
+      }),
+      skillNames: [],
+      fs: {
+        scanRepo: async () => ['lib/service.js'],
+        readRepo: async () => 'hello world\n',
+        writeRepo: async (p, text) => { calls.push(['write', p, text]); },
+      },
+    },
+  });
+  const topics = events.map((e) => e.topic);
+  assert.ok(!topics.includes('evolution.mutation.committed'), '被拒不得发 committed');
+  assert.ok(topics.includes('evolution.mutation.rolledback'), '必须发 rolledback 留痕');
+  const rb = events.find((e) => e.topic === 'evolution.mutation.rolledback');
+  assert.equal(rb.payload.policyDecision, 'REJECT');
+  assert.equal(rb.payload.sandboxOk, false);
+  assert.equal(rb.payload.reverted, true, '必须回滚成功');
+  // 返回值要能区分「被拒」与「路径不合法」
+  assert.equal(out.commit.ok, false);
+  assert.equal(out.commit.reverted, true);
 });
 
 test('T28: slugifyPromptId —— repo 相对路径转 kebab slug，满足 mutator 正则', () => {
