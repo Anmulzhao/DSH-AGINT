@@ -20,15 +20,30 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
-const REPO = dirname(HERE);
+const REPO = dirname(HERE); // 仅用于定位 SCRIPT；探针**不**建在 REPO 下，见 PROBE_ROOT 注释
 const SCRIPT = join(HERE, 'plugin-check.sh');
 const PROBE_NAME = 'agint-dim11probe';
 
+/**
+ * ⛔ 探针必须建在**仓库外**的临时目录。
+ *
+ * 2026-09-29 踩过的坑：原先建在 `REPO/plugins/` 下，每个 test 建一次、afterEach 删一次。
+ * 而 `check-wiring.test.mjs` 会扫全仓库 plugins/ —— 并发跑时它正好撞上探针的**半成品
+ * 状态**（mkdir 之后、manifest.json 写完之前），把它算成 SHELL_SERVICE 缺口，
+ * 于是「有缺口 0 条却退出 1」，让 check-wiring 的退出码断言稳定假红。
+ *
+ * 症状：单独跑 18/18 全绿，`node --test bin/*.test.mjs` 合并跑恒挂 1 例。
+ * 教训：**测试不该在别人的扫描路径上留半成品**。plugin-check.sh 按路径收参
+ * （`bash plugin-check.sh <dir>`），所以仓库外建探针完全可行。
+ */
+const PROBE_ROOT = mkdtempSync(join(tmpdir(), 'dim11probe-'));
+
 function makeProbe(libSource) {
-  const dir = join(REPO, 'plugins', PROBE_NAME);
+  const dir = join(PROBE_ROOT, PROBE_NAME);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, 'lib'), { recursive: true });
   writeFileSync(join(dir, 'package.json'),
@@ -48,7 +63,7 @@ function runCheck(dir) {
 }
 
 afterEach(() => {
-  rmSync(join(REPO, 'plugins', PROBE_NAME), { recursive: true, force: true });
+  rmSync(join(PROBE_ROOT, PROBE_NAME), { recursive: true, force: true });
 });
 
 describe('维度 11 observability-reachability（2026-09-29 evolution-cycle 自改产出）', () => {
