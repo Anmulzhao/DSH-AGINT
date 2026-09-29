@@ -1,8 +1,10 @@
 /**
  * tools.js 真调测试：mock ctx + mock service，实际调用 execute()。
  *
- * 这个测试捕捉的 bug：getStatus() 是同步方法，tools 层错用 .then 导致崩溃。
- * smoke.mjs 只做字符串 includes 断言，抓不到这种运行时错误。
+ * 契约：gateway.getStatus() 是 async 方法（v0.1.1 security 面 / getChannelStatus 均 await）。
+ * 2026-09-29 真实运行验收抓出：input_gateway_status 的 execute 漏 await svc.getStatus()，
+ * 把 Promise 序列化成 {} → enabled=undefined channels=undefined。
+ * 本测试 mock 复刻 async 契约：若 execute 再漏 await，result.enabled 断言变红。
  */
 
 import test from 'node:test';
@@ -22,10 +24,10 @@ function makeMockCtx(mockService) {
   };
 }
 
-test('input_gateway_status: execute() 不崩溃（同步 service 不用 .then）', async () => {
-  // 关键：getStatus 返回同步对象（不是 Promise）——这就是触发 bug 的条件
+test('input_gateway_status: execute() 拿到真实状态（async getStatus 必须 await）', async () => {
+  // 关键：getStatus 是 async 契约——execute 漏 await 会把 Promise 序列化成 {}，enabled/channelCount 断言变红
   const mockService = {
-    getStatus: () => ({
+    getStatus: async () => ({
       gateway: 'agint-input-gateway',
       enabled: true,
       channelCount: 1,

@@ -30,11 +30,14 @@ function apply(ctx) {
       ...out,
       render: (_a, v) => {
         const lines = [`input_gateway_status: enabled=${v.enabled} channels=${v.channelCount}`];
+        const sec = v.security;
+        lines.push(`  security: action=${sec?.action ?? 'n/a'} rules=${sec?.ruleCount ?? 0} checked=[${(sec?.checkedTypes ?? []).join(',')}]`);
         for (const ch of v.channels ?? []) {
           lines.push(
             `  [${ch.channelId}] type=${ch.channelType} enabled=${ch.enabled} quota=${ch.quota}`
             + ` lastFetch=${ch.lastFetchAt ?? 'never'}`
             + ` emitted=${ch.counters?.signalsEmitted ?? 0} filtered=${ch.counters?.signalsFiltered ?? 0}`
+            + ` scanned=${ch.counters?.securityScanned ?? 0} flagged=${ch.counters?.securityFlagged ?? 0}`
             + ` errors=${ch.counters?.errorCount ?? 0}`
             + (ch.lastError ? ` error="${ch.lastError}"` : ''),
           );
@@ -42,7 +45,7 @@ function apply(ctx) {
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
-    async execute() { return json(svc.getStatus()); },
+    async execute() { return json(await svc.getStatus()); },
   }));
 
   // ── 只读：单 Channel 状态 ──────────────────────────────────────────────
