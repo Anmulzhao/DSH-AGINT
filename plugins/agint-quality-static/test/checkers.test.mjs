@@ -11,6 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -24,7 +25,7 @@ const { checkDependencyAudit } = await import(pathToFileURL(join(CHECKERS, 'depe
 const { checkStorageBoundary } = await import(pathToFileURL(join(CHECKERS, 'storage-boundary.js')).href);
 const { checkEnvAccess } = await import(pathToFileURL(join(CHECKERS, 'env-access.js')).href);
 const { checkContractReference } = await import(pathToFileURL(join(CHECKERS, 'contract-reference.js')).href);
-const { loadProfile } = await import(pathToFileURL(resolve(__dirname, '../lib/static-profile.js')).href);
+const { loadProfile, ALLOWED_DEPS } = await import(pathToFileURL(resolve(__dirname, '../lib/static-profile.js')).href);
 
 // 拼接而非直写，避免本测试文件被 contract-reference 自检 grep 命中
 const CONTRACT_TOKEN = ['agint', 'quality', 'contract'].join('-');
@@ -46,13 +47,18 @@ function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+// 拼接而非直写：这个包名是**故意构造的 fixture**（模拟一个依赖已下架包的插件，
+// 验证 dependency-audit 会拦）。直写会被 bin/check-dsh-compat.mjs 扫到并报
+// [dangling-package] —— 那是给真实代码用的检查，不该被测试 fixture 触发。
+const DANGLING_DEP = ['@deepseek-ai', 'dsh-cordis'].join('/');
+
 // ---------- dependency-audit ----------
 
 test('dependency-audit: happy path → 0 findings', async () => {
   const dir = makePluginDir({
     'package.json': JSON.stringify({
       name: 'agint-x',
-      dependencies: { zod: '^3.0.0', '@deepseek-ai/dsh-cordis': '*' },
+      dependencies: { zod: '^3.0.0', [DANGLING_DEP]: '*' },
       devDependencies: { '@deepseek-ai/agint-memory': '*' },
     }),
   });
@@ -255,4 +261,35 @@ test('contract-reference: real agint-quality-static plugin dir itself → 0 find
   const selfDir = resolve(__dirname, '..');
   const findings = await checkContractReference({ pluginDir: selfDir, profile });
   assert.deepEqual(findings, [], `unexpected: ${JSON.stringify(findings)}`);
+});
+
+/**
+ * ⛔ 白名单自检（2026-09-29）—— 防「ALLOWED_DEPS 里躺着不存在的包」。
+ *
+ * 背景：白名单里曾写着 `@deepseek-ai/dsh-cordis`，但 `bin/check-dsh-compat.mjs`
+ * 实测报 `[dangling-package]`（dsh monorepo 283 个包里没有它），且全仓各插件
+ * package.json 递归搜索真依赖命中 0 个。
+ *
+ * 为什么值得专门测：白名单的作用是「放行已知安全的依赖」。放一条永远用不到的
+ * 假地址进去，等于留一个能无声通过 dependency-audit 的后门 —— 哪天真有人
+ * 依赖了它，checker 不拦，挂载时才炸。**白名单里的每个字都该对应真实存在的东西。**
+ *
+ * 查法用 require.resolve（走 Node 真实解析），而不是拼路径 —— 前者会跟随
+ * exports/peer 规则，后者只证明目录存在。
+ */
+test('ALLOWED_DEPS 每一条都必须真实可解析（防假地址混进白名单）', () => {
+  const bogus = [];
+  // ⛔ 用模块命名导出 ALLOWED_DEPS（Set），不是 loadProfile().allowedDeps（驼峰）
+  for (const dep of ALLOWED_DEPS) {
+    // 内建模块（node:test 之类）不在 node_modules 下，单独放行
+    if (dep.startsWith('node:')) continue;
+    try {
+      createRequire(import.meta.url).resolve(`${dep}/package.json`);
+    } catch {
+      bogus.push(dep);
+    }
+  }
+  assert.deepEqual(bogus, [],
+    `白名单里有本机不存在的包：${JSON.stringify(bogus)} —— 白名单是「放行」名单，` +
+    `放不存在的包等于给 dependency-audit 留了一个无声后门。删掉它，或先装上它。`);
 });

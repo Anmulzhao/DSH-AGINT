@@ -1,5 +1,31 @@
 # Changelog — agint-quality-static
 
+## 0.8.1 (2026-09-29) — 白名单假地址清除 + JSDoc 注释炸弹修复
+
+### Fixed
+
+- **`ALLOWED_DEPS` 删除 `@deepseek-ai/dsh-cordis`**：`bin/check-dsh-compat.mjs` 实测报
+  `[dangling-package]` —— 本机 dsh 0.1.7-rc.2 的 283 个包里 cordis 相关只有 `cordis` /
+  `cordis-plugin-*` / `dsh-cordis-client-runner` / `dsh-cordis-host-runner` / `dsh-tool-cordis`，
+  **没有 `dsh-cordis` 这个包**；全仓各插件 package.json 递归搜索真依赖命中 0。
+  白名单的作用是「放行已知安全的依赖」，放一条永远用不到的名字 = 给未来留一个能无声
+  通过 dependency-audit 的假地址。**白名单里的每个字都该对应真实存在的东西。**
+- **JSDoc 注释炸弹**：`static-profile.js` 注释里写了 glob 形式的 plugins 双星斜杠
+  package.json，其中「双星+斜杠」的后两字符恰好构成块注释终止序列，**JSDoc 被提前
+  终止**，`package.json` 变成裸代码 → 整个文件 SyntaxError，**12 个测试全挂**且报错
+  位置完全不指向真凶。修法：注释里改用文字描述，绝不写含「星+斜杠」的 glob。
+  ⚠️ 描述这个坑的文字本身也会触发它（第一版修复就炸在了解释文字上），注释里只能
+  用「双星斜杠」这类文字指代。
+
+### Added
+
+- **白名单自检测试**：`ALLOWED_DEPS` 每一条必须 `require.resolve` 真实可解析（防假地址
+  再混进白名单）。用模块命名导出 `ALLOWED_DEPS`（Set），不是 `loadProfile().allowedDeps`
+  （驼峰小写，语义是「合并后 profile」）。
+- **fixture 防扫描误报**：dependency-audit 测试里故意构造的非法依赖改为
+  `['@deepseek-ai', 'dsh-cordis'].join('/')` 拼接 —— 字面量会被 `check-dsh-compat.mjs`
+  当成生效引用扫出 `[dangling-package]`（fixture ≠ 生效引用，扫描器只认行级字面量）。
+
 ## 0.8.0 (2026-09-08) — Sprint 15 T2 技能向四族 checker
 
 ### Added

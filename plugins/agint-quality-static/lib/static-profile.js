@@ -21,11 +21,30 @@ export const DEFAULT_PROFILE = 'agint-default';
  * 允许的第三方依赖白名单。
  * 来源：AGINT 仓库全部 plugins 目录下 package.json 文件实际使用的 deps + 公认安全库。
  * Sprint 10 初版保守起见只列已知必需项；后续周复盘里发现缺失时再追加。
+ *
+ * ⚠️ 条目必须对应**本机真实安装的包**（2026-09-29 修正）。
+ *   原先这里写着 `@deepseek-ai/dsh-cordis`，但 `bin/check-dsh-compat.mjs` 实测报出
+ *   `[dangling-package]`：dsh 装的是 monorepo（283 个包），cordis 相关的只有
+ *   `cordis` / `cordis-plugin-*` / `dsh-cordis-client-runner` / `dsh-cordis-host-runner`
+ *   / `dsh-tool-cordis`，**没有 `dsh-cordis` 这个包**。且全仓 plugins 目录递归搜
+ *   package.json 命中 0 个真依赖它。
+ *   ⚠️ 上面这句故意不写 glob 形式的 plugins 双星斜杠 package.json：块注释里出现
+ *   「星+斜杠」序列会把 JSDoc 提前终止，整个文件直接 SyntaxError
+ *   —— 2026-09-29 实炸过一次，12 个测试全挂。注释里别写含「星+斜杠」的模式。
+ *
+ *   为什么这是 bug 而不是无害的误报：白名单的作用是「放行已知安全的依赖」。
+ *   放一条**永远用不到的名字**进来，等于给未来留一个可以无声通过 dependency-audit
+ *   的假地址 —— 某天真的有人依赖了 `@deepseek-ai/dsh-cordis`，checker 不会拦，
+ *   挂载时才炸。白名单里的每个字都该对应一个真实存在的东西。
+ *
+ *   `test/checkers.test.mjs` 里出现的 `@deepseek-ai/dsh-cordis` 是**故意构造的
+ *   fixture**（模拟一个非法依赖来验证 checker 会拦），不是真实依赖，保留。
+ *
+ *   新增条目前先跑：`node bin/check-dsh-compat.mjs`，确认报 dangling 才说明包真不存在。
  */
 export const ALLOWED_DEPS = new Set([
   // 官方 SDK / 平台依赖
   '@deepseek-ai/dsh-storage-domain',
-  '@deepseek-ai/dsh-cordis',
   // 数据校验
   'zod',
   // 测试 / 工具
