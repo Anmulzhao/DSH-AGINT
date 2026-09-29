@@ -1,17 +1,34 @@
 # 自进化主链路从未通电（2026-09-24 取证）
 
-> ✅ **已解决（2026-09-27，v0.8.6）**：`agint-evolution-driver` v0.2.0–v0.2.4 上线后，
+> ⚠️ **半通电（2026-09-29 复核）**：域层面已通电，commit 层面未见生产数据。
+>
+> | 环节 | 2026-09-29 实测 | 判据 |
+> |---|---|---|
+> | mutator 域 | ✅ 已通电 | `agint_mutator.json` 13629 B，mtime 2026-09-28 22:49:39；`mutator_stats` proposals=3 |
+> | population 域 | ✅ 已通电 | `agint_population.json` 5438 B；`population_stats` variants=2（全 PENDING_REVIEW、active=0） |
+> | **mutator.commit** | ❌ **0 条** | `mutator_stats` commits=0 |
+> | **sandbox.passed / failed** | ❌ **0 条** | `eventBus_inspectSummary` 按 topic 全量过滤，两条均 total=0 |
+> | **evolution.mutation.proposed/committed** | ❌ **0 条** | 同上，total=0（全量查询，非最近窗口） |
+>
+> 即：**提案层真跑了**（proposals 与 variants 都有落盘、带 preimage 的仓库改动由
+> `agint-evolution-driver` 驱动），**但没有任何一次走到 commit**，而 commit 是
+> `sandbox.runSmoke` 的唯一调用点 —— 所以订阅方 `agint-diagnosis.analyzeFailedSmoke`
+> 仍收不到消息，§二 的下游链条依旧断着。
+>
+> 另记一条待查：两个 variant 的 `commit_id`（`c663cb3a` / `b8193229`）在当前仓库
+> 执行 `git cat-file -t` 均返回 `Not a valid object name`。可能是 squash/rebase 后
+> 对象名变化，也可能是提案 id 与 git commit hash 混用 —— **本文不下结论**，留待查证。
+>
+> 一句话：**AGINT 现在跑通的是「提案」，不是「提交」。** 主链路的最后一公里仍未接上。
+
+> 📜 历史归档（2026-09-27，v0.8.6）：`agint-evolution-driver` v0.2.0–v0.2.4 上线后，
 > 主链路（evolve 提案 → driver 驱动 → LLM 构造 → 幻觉闸门 + 实体存在性门 → mutator →
-> population → commit）于 18:30 端到端首次跑通，四判据全中（mutator/population 落盘、
-> proposed/committed 事件、仓库真实改动带 preimage）。cron job `evolution-cycle`
-> （周日 04:15）+ 手动 `cron_run_now` 驱动。本文保留作历史取证快照，现状以
-> README「进化闭环引擎」行与 VERSION v0.8.6 行为准。
-
-> 一句话：**AGINT 现在在跑的是「观测侧」，不是「进化侧」。**
-> 变异引擎（`agint-mutator`）与种群选择引擎（`agint-population`）挂载了、代码完整、
-> 测试全绿，但**在生产里一次都没运行过** —— 连它们的存储域文件都不存在。
-
-建档人：智（自动盘点取证）｜判据脚本：`bin/check-wiring.mjs`｜自测：`bin/check-wiring.test.mjs`
+> population → commit）于 18:30 端到端首次跑通，VERSION v0.8.6 记为「四判据全中」。
+> 2026-09-29 复核时，前两环（mutator/population 落盘）可复现，**后两环（committed 事件、
+> 仓库真实改动对应的 git 对象）在当前数据里未取到证**，故状态从「已解决」下调为
+> 「半通电」。本文正文保留 2026-09-24 的原始取证快照。
+>
+> 建档人：智（自动盘点取证）｜判据脚本：`bin/check-wiring.mjs`｜自测：`bin/check-wiring.test.mjs`
 
 ---
 
@@ -23,13 +40,27 @@
 所以 `$DSH_HOME/storages/agint_xxx.json` 存不存在，就是这个插件有没有真跑过的**外部可观测判据**
 —— 不需要进宿主进程，看磁盘就知道。
 
-`$DSH_HOME/storages/` 实读（2026-09-24）：
+`$DSH_HOME/storages/` 实读（**2026-09-29 复核**，取代下方 09-24 原表）：
+
+判据：`node bin/check-wiring.mjs --json` → `domains.energized` 共 **16** 个。
 
 | 状态 | 数量 | 域 |
 | --- | --- | --- |
-| ✅ 已通电 | 13 | abtest / compress_guard / cron / curator / diagnosis / event_bus / evolution / evolve / memory_provider / metrics / mount / rules / self_model / skill_autocreate / skill_graph / trajectory |
-| ⛔ **从未通电** | **3（未豁免）** | **`agint_mutator` / `agint_population` / `agint_curriculum`** |
-| 豁免 | 1 | `agint_search`（按需调用，无人调用不算故障） |
+| ✅ 已通电 | 16 | abtest / compress_guard / cron / curator / diagnosis / event_bus / evolution / evolve / input_gateway / memory_provider / metrics / mount / **mutator** / **population** / rules / skill_autocreate |
+| 从未通电 | 0（未豁免） | —— 2026-09-29 起 `agint_curriculum` 按「上游 self-model 无待练域导致的连带空转」豁免 |
+| 豁免 | 2 | `agint_search`（按需调用）/ `agint_curriculum`（连带空转） |
+
+> 两处口径提醒，避免下次又按旧表下结论：
+> 1. `self_model` / `skill_graph` / `trajectory` 三个域**在磁盘上有文件**
+>    （5618 B / 1195 B / 4065 B），但**不在上面 16 个里** —— 查 D 的正则只认
+>    `name: 'agint_xxx'` 字面量，这三个插件没用字面量声明，故扫描器没发现它们。
+>    也就是说「已通电 16」是**扫描口径**，不等于「磁盘上有文件的域总数」。
+> 2. 2026-09-24 原表（见下）写「已通电 13」却列了 16 个名字，**原表本身数量与列表即不符**，
+>    引用时请以本表为准。
+
+> 2026-09-24 原表（保留供对照）：已通电 13、`agint_mutator` / `agint_population` /
+> `agint_curriculum` 三个未通电、`agint_search` 豁免。
+> 其中 `agint_mutator` 与 `agint_population` 已于 09-27 前后通电，见文首复核块。
 
 ### 1.2 服务调用点检查（查 A）
 

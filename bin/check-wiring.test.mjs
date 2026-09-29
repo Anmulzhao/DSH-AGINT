@@ -165,20 +165,27 @@ describe('豁免机制', () => {
   });
 });
 
-describe('当前真实状态断言（修好后这里会红 —— 那时请更新豁免与文档）', () => {
+describe('当前真实状态断言（再变红时请更新豁免与文档）', () => {
   const dead = report.domains.neverEnergized.filter((d) => !d.exemption).map((d) => d.domain);
+  const energized = report.domains.energized.map((d) => d.domain);
 
-  test('agint_mutator 尚未通电', () => {
+  // 2026-09-29：mutator / population 域已通电（agint_mutator.json 13629B mtime 2026-09-28 22:49:39，
+  // proposals=3；agint_population.json 5438B，variants=2）。原断言是「尚未通电」的看门狗，
+  // 通电后故意红以提醒同步豁免与文档 —— 豁免（sandbox.*）与 known-limitations 已于同日更新，
+  // 断言随之翻转为「已通电」。下半链（commit → sandbox.runSmoke）仍未通，另由豁免条目盯着。
+  test('agint_mutator 已通电', () => {
     assert.ok(
-      dead.includes('agint_mutator'),
-      'agint_mutator 已通电 —— 好消息。请：①更新 docs/wiring-exemptions.json 里 sandbox.* 的连带豁免 ②更新 known-limitations ③把本断言改为「已通电」',
+      !dead.includes('agint_mutator'),
+      'agint_mutator 又退回未通电 —— 请查 $DSH_HOME/storages/agint_mutator.json 是否消失，并复查 wiring-exemptions 里 sandbox.* 的 unblockWhen',
     );
+    assert.ok(energized.includes('agint_mutator'), `agint_mutator 应在已通电列表里，当前已通电 ${energized.length} 个`);
   });
 
-  test('agint_population 尚未通电', () => {
+  test('agint_population 已通电', () => {
     assert.ok(
-      dead.includes('agint_population'),
-      'agint_population 已通电 —— 同上，请同步文档与本断言',
+      !dead.includes('agint_population'),
+      'agint_population 又退回未通电 —— 同上，请复查 agint_population.json 与 sandbox.* 豁免',
     );
+    assert.ok(energized.includes('agint_population'), `agint_population 应在已通电列表里，当前已通电 ${energized.length} 个`);
   });
 });
