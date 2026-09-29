@@ -78,6 +78,13 @@ function apply(ctx) {
                 label: { required: true, type: 'string' },
                 value: { required: true, type: 'number' },
                 unit: { required: true, type: 'string' },
+                // 2026-09-29 修复：service.js summary() 自 09-28 起透传 meta
+                // （z.string().default('')，JSON 串），但本 schema 未声明，而
+                // additionalProperties:false ⇒ 宿主按 schema 校验返回值时整条
+                // 工具调用失败（agint 侧表现为 "tool metrics_summary schema
+                // validation error"）。与 metrics_series 的 meta 声明保持一致：
+                // 不挂 required，避免单条记录 meta 缺失时整个自检工具报废。
+                meta: { type: 'string' },
                 ts: { required: true, type: 'string' },
                 delta: { oneOf: [{ type: 'number' }, { type: 'null' }] },
               },
