@@ -11,11 +11,23 @@
   与 agint-aesthetic-oracle 等成熟插件一致。`allowNonLoopback` 改为闭包常量。
 - `test/smoke.mjs` 同步：apply 第二参数传配置（此前 stub ctx 塞 `ctx.config`
   掩盖了真实宿主差异，测试过而宿主炸）。
+- **成员状态全 unknown（38/38）**：v0.1.0 的 `readRows` 读 `entry.runtime.status`，
+  但 cordis-plugin-loader 的 entry 没有 `runtime` 字段——真实生命周期状态在
+  `entry.fiber.state`（FiberState 枚举：PENDING=0/LOADING=1/ACTIVE=2/FAILED=3/
+  DISPOSED=4/UNLOADING=5）。新增 `fiberStateToStatus` 映射（2→active、3→failed、
+  0/1→loading、4→disposed、5→unloading、无 state→unknown），`readRows` 改读
+  `entry.fiber.state`。修复后实测 38 成员全部 `status:"active"`、`unknown:0`。
+- **panelVersion 硬编码 `'0.1.0'`**：改为 `createRequire` 读 `package.json` 的
+  version，面板自报版本与包版本永远一致（修复后实测 `panelVersion=0.1.1`）。
+- `test/smoke.mjs` 的 row() stub 同步为真实 loader 结构
+  （`options + disabled + fiber.state`），新增状态映射与 counts 断言。
 
 ### 验证
 
-- smoke 11 组 PASS；重启后宿主应无 `1 entry did not activate`，路由
-  `GET /api/agint-family/status` 真正注册。
+- smoke 11 组 PASS（含 fiberStateToStatus 8 组映射断言、混合 counts 断言）；
+  重启后宿主无 `1 entry did not activate`，路由 `GET /api/agint-family/status`
+  真正注册；浏览器实测 `panelVersion=0.1.1`、`counts {total:38, active:38,
+  unknown:0}`、signals 三项全 ok。
 
 ## 0.1.0 — 2026-09-29
 
