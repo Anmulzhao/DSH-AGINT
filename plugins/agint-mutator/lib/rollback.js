@@ -137,7 +137,11 @@ export async function runRollbackTransaction({
       smokeResult = { ok: false, reason: 'sandbox-unavailable', checks: [] };
     } else {
       const raw = await sandbox.runSmoke({
-        target: { path: targetPath, name: `${pluginName}/${targetPath.split('/').pop()}` },
+        // ⛔ 传 absTarget（绝对路径，见 step 2 上面已算好的），不是 targetPath。
+        //   sandbox 内部 `resolve(target.path)` 按 process.cwd() 解析，传相对路径
+        //   会验成 cwd 下的另一个文件 —— 2026-09-29 driver 的真实事故同源。
+        //   sandbox v0.7.2 起对相对路径 fail-closed，这里不改就会全判死。
+        target: { path: absTarget, name: `${pluginName}/${targetPath.split('/').pop()}` },
       });
       smokeResult = {
         ok: Boolean(raw && raw.ok),

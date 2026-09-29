@@ -593,8 +593,18 @@ function apply(ctx) {
     // 软依赖：sandbox（决策 D3：默认 verify 模式）。mutation 关键路径，不静默。
     const sandbox = softDepOrThrow(ctx, 'agint.qualitySandbox', 'commit verify 必须 sandbox.runSmoke（决策 D3 默认 verify）；FROZEN Service 接口');
     // ── 5) sandbox verify
+    // ⛔ 传 absTarget（绝对路径），不是 targetPath。理由与 driver v0.2.7→v0.2.8 同源：
+    //   sandbox 内部 `const targetPath = resolve(target.path)` 是 Node 的 path.resolve，
+    //   **按 process.cwd() 解析**。传相对路径会把它验成 cwd 下的另一个文件 ——
+    //   2026-09-29 05:26Z 真实事故：driver 传 'bin/plugin-check.sh'，宿主 cwd 是
+    //   C:\Users\Administrator\Desktop，于是仓库里那个文件被验成了桌面上的同名路径，
+    //   failure_pattern 记 plugin-not-found，一路走到 policy.decide 才被拒。
+    //   sandbox v0.7.2 已加 fail-closed 拒相对路径，这里改对即可（正确答案就在上方
+    //   第 567 行，absTarget 早就算好了）。**不动 FROZEN payload schema** ——
+    //   targetPath 本就是仓库相对路径，commit 侧有 repoRoot 能拼绝对路径，
+    //   没必要把绝对路径塞进契约。
     const sandboxResult = await sandbox.runSmoke({
-      target: { path: targetPath, name: `${targetPlugin}/${basename(targetPath)}` },
+      target: { path: absTarget, name: `${targetPlugin}/${basename(targetPath)}` },
     });
     const sandboxKind = classifySandboxResult(sandboxResult);
 

@@ -4,6 +4,51 @@
 
 ---
 
+## 0.6.6 (2026-09-29) — commit/rollback 传绝对路径给 sandbox
+
+### 修复
+
+一处**从不会被现有测试发现**的 bug：`commit()` 与 `runRollbackTransaction()` 都给
+`sandbox.runSmoke` 传了**仓库相对** `targetPath`，而 sandbox 内部
+`const targetPath = resolve(target.path)`（`agint-quality-sandbox/lib/index.js`）是 Node 的
+`path.resolve`，**按 `process.cwd()` 解析**。于是验的不是 commit 刚写下的那个文件。
+
+与 2026-09-29 05:26Z 那起 driver 事故**完全同源**：driver 传 `bin/plugin-check.sh`，
+宿主 cwd 是 `C:\Users\Administrator\Desktop`，仓库里那个文件被验成了桌面上的同名路径。
+driver 侧 v0.2.8 已修，mutator 侧一直没动。
+
+**为什么之前没人发现**：`mutator.commit` 在生产上 `commits=0`（B-plan 走 driver 自有提交路径，
+不走 mutator.commit），这条代码路径从未被真实触发过。而且它错得**很安静** —— commit 写对了
+文件、policy 判对了、返回 `ok:true`，只有 sandbox 验的对象是错的。
+
+**为什么不需要动 FROZEN schema**（此前误判「两处相对路径的修法依赖给 FROZEN payload 加
+targetPath」，所以一直挂起等 L0）：正确答案 `absTarget` 就在**各自上一行**已经算好了 ——
+`index.js:567 const absTarget = resolve(repoRoot, targetPath)`、`rollback.js:100` 同。
+`targetPath` 作为仓库相对路径进契约本身没问题（它要落进 `commits` 表做审计），
+是**传给 sandbox 时**该转绝对路径。所以本次**零 FROZEN 变更**，不走影子期。
+（2026-09-29 老板同时废除多签与 major 策略，L0 只剩 7 天影子一条，此处恰好用不上。）
+
+- `lib/index.js:597` `target: { path: targetPath }` → `{ path: absTarget }`
+- `lib/rollback.js:140` 同样的改法
+
+### 测试
+
+`commit-rollback.test.mjs` 新增 `assertSandboxGotAbsoluteTarget` 与 `sandboxSaw` 记录：
+判据是 `isAbsolute(p)` **且** `p.startsWith(resolve(repoRoot))` —— 后者比前者强，
+它锁的是「拼的基准是 repoRoot，不是 cwd」。旧 mock 只把 `target.path` 原样回显、
+其它断言全绿，正是这类 bug 的藏身处。
+rollback 用例断言 `sandboxSaw.length === 2`，覆盖 commit + rollback **两处**调用。
+
+**自证**：把两处改回 `path: targetPath` → commit-rollback 15/17，两条断言精确报出
+`"plugins/agint-mutator/tools/fetch-weather-api.js"` 与
+`"plugins/agint-mutator/prompts/sys-prompt.md"`（均为相对路径）；恢复 → 17/17，`CRLF=0` 无残留。
+
+### 验收
+
+mutator 102/102、sandbox 44/44、driver 41/41、L0 检测 13/13。
+
+---
+
 ## v0.6.5 (2026-09-29) — 修 commit synthEval 契约错配：dimensions 缺 key（K115 教训泛化）
 
 ### 修复

@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as plugin from '../lib/index.js';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const { LIMITS } = plugin;
@@ -39,14 +39,22 @@ function makeEnv({ sandboxOk = true, sandboxReason, policyDecision = 'AUTO_DEPLO
   }
   const tables = { proposals: new Map(), commits: new Map(), findings: new Map(), metrics_log: new Map() };
   const services = {};
+  // ⛔ 路径形状守门（v0.6.6）：记录 sandbox 实际收到的 target.path。
+  //   相对路径会被 sandbox 内部 `resolve(target.path)` 按 process.cwd() 解析 ——
+  //   验的就不是 commit 写的那个文件（2026-09-29 driver 真实事故同源）。
+  //   mock 原样回显 target.path，别的断言都绿，正是这类 bug 藏身之处。
+  const sandboxSaw = [];
   const mockSandbox = {
-    runSmoke: async ({ target }) => ({
-      target: { path: target.path, name: target.name },
-      ok: sandboxOk, mode: 'in-process', exitCode: sandboxOk ? 0 : 1,
-      stdout: '', stderr: '', checks: [{ name: 'mock-smoke', ok: sandboxOk, detail: 'mock' }],
-      reason: sandboxReason,
-      durationMs: 1,
-    }),
+    runSmoke: async ({ target }) => {
+      sandboxSaw.push(target.path);
+      return {
+        target: { path: target.path, name: target.name },
+        ok: sandboxOk, mode: 'in-process', exitCode: sandboxOk ? 0 : 1,
+        stdout: '', stderr: '', checks: [{ name: 'mock-smoke', ok: sandboxOk, detail: 'mock' }],
+        reason: sandboxReason,
+        durationMs: 1,
+      };
+    },
   };
   const policySaw = { current: null };
   // v0.6.5：mock 复刻 policy 真实入参契约（K115 教训泛化）——dimensions 缺 key → REJECT unknown-veto；
@@ -96,7 +104,25 @@ function makeEnv({ sandboxOk = true, sandboxReason, policyDecision = 'AUTO_DEPLO
     provide: (n, f) => { services[n] = f; },
     effect: () => () => {},
   });
-  return { services, tables, workdir, policySaw, cleanup: () => rmSync(workdir, { recursive: true, force: true }) };
+  return { services, tables, workdir, policySaw, sandboxSaw, cleanup: () => rmSync(workdir, { recursive: true, force: true }) };
+}
+
+/**
+ * ⛔ 路径形状守门（v0.6.6）。
+ *
+ * 这类 bug 最阴的地方在于：**所有别的断言都是绿的**。commit 写对了文件、
+ * policy 判对了、返回 ok:true —— 只有 sandbox 验的对象是错的。
+ * 2026-09-29 driver 的真实事故就是这么一路走到生产 policy.decide 才被拒的。
+ *
+ * 判据：sandbox 收到的 target.path 必须是绝对路径，且以 env.workdir（= repoRoot）为前缀。
+ * 后者比 isAbsolute 更强 —— 它锁的是「拼的基准是 repoRoot，不是 cwd」。
+ */
+function assertSandboxGotAbsoluteTarget(sandboxSaw, workdir) {
+  assert.ok(sandboxSaw.length > 0, 'sandbox.runSmoke 一次都没被调用');
+  for (const p of sandboxSaw) {
+    assert.ok(isAbsolute(p), `传给 runSmoke 的必须是绝对路径，实际是 ${JSON.stringify(p)} —— 相对路径会被 sandbox 按 cwd 解析（2026-09-29 事故）`);
+    assert.ok(p.startsWith(resolve(workdir)), `路径必须以 repoRoot=${workdir} 为基准拼，实际是 ${JSON.stringify(p)} —— 说明依赖了 cwd`);
+  }
 }
 
 async function proposeAndCommit(fix, env, extra = {}) {
@@ -158,6 +184,8 @@ test('commit happy TOOL_SYNTHESIS: 新建文件 + sandbox ok + AUTO_DEPLOY', asy
     const commitEntry = Array.from(env.tables.commits.values())[0];
     assert.equal(commitEntry.audit.sandboxResult, 'ok');
     assert.equal(commitEntry.preimageContent, ''); // TOOL_SYNTHESIS preimageContent 为空（文件原本不存在）
+    // ⛔ commit 侧路径形状（v0.6.6）
+    assertSandboxGotAbsoluteTarget(env.sandboxSaw, env.workdir);
     // metrics_log mutation.success
     assert.equal(Array.from(env.tables.metrics_log.values())[0].eventType, 'mutation.success');
   } finally { env.cleanup(); }
@@ -234,6 +262,10 @@ test('rollback happy PROMPT_MUTATION：commit 后 rollback → file 还原', asy
     // metrics_log mutation.rollback
     const rbMetric = Array.from(env.tables.metrics_log.values()).find((m) => m.eventType === 'mutation.rollback');
     assert.ok(rbMetric);
+    // ⛔ commit 与 rollback **两次**调用都必须收到绝对路径（v0.6.6）
+    //    两处曾各自传相对 targetPath，而正确答案 absTarget 就在各自上一行
+    assert.equal(env.sandboxSaw.length, 2, `预期 commit + rollback 各调一次 runSmoke，实际 ${env.sandboxSaw.length} 次`);
+    assertSandboxGotAbsoluteTarget(env.sandboxSaw, env.workdir);
   } finally { env.cleanup(); }
 });
 
