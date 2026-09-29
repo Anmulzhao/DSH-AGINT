@@ -276,6 +276,22 @@ function apply(ctx) {
         });
       }
       if (Object.keys(summary).length === 0) summary.keys = Object.keys(result).slice(0, 10);
+      // 2026-09-29：约定式摘要通道。
+      // 判据与本函数完全一致 —— 只搬「显式约定」的结构，**不猜**任何 job 特有字段
+      //（nothing is inferred，见头注释）。job 想让运行结果在重启后仍可读，就自己放
+      // `result.summary`，cron 只做限长搬运。
+      //
+      // 起因：evolution-cycle 的 commit 阶段 policyDecision 完全不可见 —— 它只出现在
+      // driver 发的事件里，而事件未落盘；cron 这边又只写 Object.keys(result)。
+      // 顶层那个 `policyDecision` 是**提案阶段**的 variant.policy_decision，与 commit
+      // 阶段的决策不是一回事，抄它会得到误导性的答案。
+      if (result.summary && typeof result.summary === 'object' && !Array.isArray(result.summary)) {
+        // 先单独试一次可序列化性：job 的 summary 若含循环引用，不能连带把上面
+        // 已经摘好的 scanned / counts / actions 一起拖成 null。
+        let safe = true;
+        try { JSON.stringify(result.summary); } catch { safe = false; }
+        summary.result = safe ? result.summary : '[unserializable]';
+      }
       const json = JSON.stringify(summary);
       // Never slice mid-JSON — an unparseable summary is worse than a marker.
       if (json.length > SUMMARY_MAX_BYTES) return JSON.stringify({ truncated: true, bytes: json.length });

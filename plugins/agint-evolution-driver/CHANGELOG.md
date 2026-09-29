@@ -1,5 +1,54 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.10 — 2026-09-29（commit 阶段的 policyDecision 落盘可查）
+
+### 问题
+
+主链通电后仍有一处永久盲区：**policy 到底是 AUTO_DEPLOY 还是 PENDING_REVIEW，无从查证**。
+
+三处叠加造成的：
+
+1. `committed` 事件里其实**已经带了** `policyDecision`（`lib/index.js:776`）—— 但事件未落盘
+   （T1 影子期 publish-only），事后查不到。
+2. cron 的 `summarizeResult` 只写 `Object.keys(result)`，值全丢。
+3. **driver 自己的返回值也有 bug**：
+   ```js
+   policyDecision: variant?.policy_decision ?? null,   // ← 提案阶段
+   commit: commit?.ok === true
+     ? { path, preimagePath }                          // ← 成功分支不带 policyDecision
+     : { ok: false, policyDecision, ... }              // ← 只有失败分支才带
+   ```
+   **恰恰是 commit 成功时拿不到决策**。而且顶层那个 `policyDecision` 是提案阶段的
+   `variant.policy_decision`，与 commit 阶段不是一回事 —— 抄它会得到误导性的答案。
+
+### 变更
+
+- `decision` 改为保留完整决策对象：新增 `decisionRaw = await policy.decide(...)`，
+  `decision` 仍取 `.kind`。**`reason` 字段是排障抓手**（`policy-abstain:empty-results` /
+  `safety-veto:below-0.5` 这类），原先 `(await decide())?.kind ?? 'ABSTAIN'` 把它丢掉了。
+- 新增外层 `let commitAudit`，在 committed / rolledback 两个分支分别记录
+  `policyDecision` / `policyReason` / `verifyMode` / `verifyOk` / `verifyReason` /
+  `reverted` / `sandboxOk` / 字节数 / preimagePath。
+- `commit` 对象的**成功分支**补上 `policyDecision` 与 `verifyMode`。
+- 返回值新增 `summary`，交给 agint-cron v0.2.4 的约定式摘要通道落盘。
+
+### 踩坑：作用域
+
+`commitAudit` 第一次声明在 `} else {` 与 `try {` 之间（紧跟 `commitToRepo` 那个分支），
+结果 `ReferenceError: commitAudit is not defined`（8 例挂）。原因是
+`policy.decide` / `verifyTargetFile` 都在**该 `else` 块内部**，而 `runOnce` 的 `return`
+在那一层之外。**必须与 `let commit = null` 同级**。
+
+### 测试
+
+- T25（成功路径）新增断言：`out.commit.policyDecision` / `out.summary.policyDecision` /
+  `policyReason` / `verifyMode` / `reverted` / `proposalId`；mock policy 补上
+  `reason: 'score-85'` 以证明 reason 真被带出。
+- T25c（REJECT 路径）新增断言：`out.summary.policyDecision === 'REJECT'` /
+  `policyReason === 'veto'` / `reverted === true` / `verifyOk === true`。
+- **自证**：把 `commit` 成功分支的 `commitAudit?.policyDecision ?? null` 换成 `null`
+  后 T25 变红（40/41）；恢复后 41/41。
+
 ## v0.2.9 — 2026-09-29（修 policy 契约错配：dimensions 必须带 key）
 
 ### 背景

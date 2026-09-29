@@ -1,6 +1,41 @@
 # CHANGELOG
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
+## [0.2.4] — 约定式 summary 通道：让 job 的运行结果以值落盘（2026-09-29）
+
+### 问题
+
+`summarizeResult` 只在没摘到任何东西时写 `Object.keys(result)`，其余情况只抄
+`report.scanned` / `report.counts` / `actions`。于是 job 返回值里**其余字段的值全部丢失**。
+
+真实后果（2026-09-29 实测）：`evolution-cycle` 的 commit 阶段 `policyDecision` 在进程退出后
+无从查证 —— 它只出现在 driver 发的事件里而事件未落盘，cron 这边又只写 keys。
+更糟的是顶层那个 `policyDecision` 是**提案阶段**的 `variant.policy_decision`，
+如果有人图省事抄它，会得到一个**看起来对、其实是另一个阶段**的答案。
+
+### 变更
+
+`summarizeResult` 增加一条约定式摘要通道：job 自己放 `result.summary`（普通对象），
+cron 把它搬进 `lastResultSummary.result`。
+
+刻意保持本函数原有的 **`nothing is inferred` 判据**（见函数头注释）：
+
+- **不猜**任何 job 特有字段。cron 只搬「显式约定」的结构 —— 要摘要就自己放。
+- 数组 / 字符串 / null 一律不当摘要（`!Array.isArray` + `typeof === 'object'`）。
+- summary 单独试一次可序列化性再放。job 若传了循环引用，**不能连带**把已经摘好的
+  `scanned` / `counts` / `actions` 一起拖成 `null`（落 `[unserializable]`）。
+- 超出 `SUMMARY_MAX_BYTES`（2000）时整体标记 `truncated`，不截半个 JSON。
+
+### 兼容性
+
+没放 `summary` 的 job 行为逐字节不变（仍退化成 `keys`）。现有 19 个 job 全部不受影响。
+
+### 测试
+
+新增 `test/summary-channel.test.mjs`（6 例）：值被搬走、无 summary 时行为不变、
+与 report/actions 共存、循环引用不连累已摘好的字段、数组/字符串不被当摘要、超限标 truncated。
+自证：把通道判据改成 `false && ...` 后 4/6 变红，恢复后 6/6。
+
 ## [0.2.3] — 排期重排 + 排期布局门禁（2026-09-28）
 
 提案 `e6cbe895`：「错开 cron 排期：解 2 组同分钟撞车 + 周度 8 任务去周日单点」。

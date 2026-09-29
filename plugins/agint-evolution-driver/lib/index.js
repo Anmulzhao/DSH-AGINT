@@ -660,6 +660,11 @@ export function apply(ctx, config = {}) {
       //    没有验证能力就不改仓库，这是 B 方案与 mutator.commit 的关键差异
       //    （后者写完才发现 sandbox 缺失，只能抛错留下半成品）。
       let commit = null;
+      // 2026-09-29：commit 阶段的审计信息，交给返回值里的 summary 通道落盘。
+      // 必须声明在**这个层级**（与 commit 同级）—— policy 决策与 verify 结果都产生在
+      // 下面更深的 try 内部，而 runOnce 的 return 在那一层之外。
+      // 没有它，「policy 到底是 AUTO_DEPLOY 还是 PENDING_REVIEW」在进程退出后永远无从查证。
+      let commitAudit = null;
       if (commitOn && repoRoot) {
         const commitPath =
           target.type === 'skill' ? `presets/agint/skills/${targetId}/SKILL.md` : targetId;
@@ -723,7 +728,11 @@ export function apply(ctx, config = {}) {
                 ok: Boolean(sandboxResult?.ok),
                 reason: sandboxResult?.ok ? undefined : sandboxResult?.reason,
               };
-              const decision = (await policy.decide({ results: [synthEval] }))?.kind ?? 'ABSTAIN';
+              // 2026-09-29：保留完整决策对象而不只取 .kind —— reason 字段（如
+              // policy-abstain:empty-results / safety-veto:below-0.5）才是排障的抓手，
+              // 丢了它就只能看到「被拒了」，看不到「为什么」。
+              const decisionRaw = await policy.decide({ results: [synthEval] });
+              const decision = decisionRaw?.kind ?? 'ABSTAIN';
 
               if (decision === 'REJECT' || decision === 'ABSTAIN') {
                 // 决策为拒 → 从 preimage 回滚，绝不把没验证过的改动留在仓库里。
@@ -755,6 +764,19 @@ export function apply(ctx, config = {}) {
                     + `verifyMode=${sandboxResult?.mode} verifyOk=${sandboxResult?.ok} `
                     + `reason=${sandboxResult?.reason ?? 'n/a'} reverted=${restored.ok}`,
                 });
+                commitAudit = {
+                  path: commit.path,
+                  policyDecision: decision,
+                  policyReason: decisionRaw?.reason ?? null,
+                  verifyMode: sandboxResult?.mode ?? null,
+                  verifyOk: Boolean(sandboxResult?.ok),
+                  verifyReason: sandboxResult?.reason ?? null,
+                  reverted: true,
+                  sandboxOk: Boolean(sandboxResult?.ok),
+                  bytesBefore: commit.bytesBefore ?? null,
+                  bytesAfter: commit.bytesAfter ?? null,
+                  preimagePath: commit.preimagePath ?? null,
+                };
                 await publish('evolution.mutation.rolledback', {
                   proposalId: proposal.id,
                   candidateId: candidate.id,
@@ -766,6 +788,19 @@ export function apply(ctx, config = {}) {
                   reverted: restored.ok,
                 });
               } else {
+                commitAudit = {
+                  path: commit.path,
+                  policyDecision: decision,
+                  policyReason: decisionRaw?.reason ?? null,
+                  verifyMode: sandboxResult?.mode ?? null,
+                  verifyOk: Boolean(sandboxResult?.ok),
+                  verifyReason: sandboxResult?.reason ?? null,
+                  reverted: false,
+                  sandboxOk: Boolean(sandboxResult?.ok),
+                  bytesBefore: commit.bytesBefore ?? null,
+                  bytesAfter: commit.bytesAfter ?? null,
+                  preimagePath: commit.preimagePath ?? null,
+                };
                 await publish('evolution.mutation.committed', {
                   proposalId: proposal.id,
                   candidateId: candidate.id,
@@ -814,11 +849,28 @@ export function apply(ctx, config = {}) {
         rationale: v.rationale ?? '',
         // 2026-09-29（B 方案）：ok=false 时把决策与回滚结果一并带出，否则调用方
         // （cron 持久化只写死 "ok"）无从区分「写入被拒」与「路径不合法」两类失败。
+        // v0.2.10 补齐成功分支：此前 policyDecision 只在**失败**分支带出，成功时
+        // 恰恰查不到 commit 阶段的决策 —— 而顶层那个是提案阶段的，两回事。
         commit: commit?.ok === true
-          ? { path: commit.path, preimagePath: commit.preimagePath }
+          ? {
+              ok: true,
+              path: commit.path,
+              preimagePath: commit.preimagePath,
+              policyDecision: commitAudit?.policyDecision ?? null,
+              verifyMode: commitAudit?.verifyMode ?? null,
+            }
           : commit
             ? { ok: false, path: commit.path, policyDecision: commit.policyDecision ?? null, sandboxOk: commit.sandboxOk ?? null, reverted: commit.reverted ?? false, reason: commit.reason ?? null }
             : null,
+        // 2026-09-29：走 cron 的约定式 summary 通道落盘（见 agint-cron/lib/index.js
+        // summarizeResult）。不落盘的话，policy 到底是 AUTO_DEPLOY 还是 PENDING_REVIEW
+        // 在进程退出后就永久不可知 —— 只能从「改动有没有留在仓库」反推。
+        summary: {
+          proposalId: proposal.id,
+          candidateId: candidate.id,
+          commitAttempted: commit != null,
+          ...(commitAudit ?? { note: commit == null ? 'no-commit-attempted' : 'commit-ok-unknown' }),
+        },
       };
     }
 

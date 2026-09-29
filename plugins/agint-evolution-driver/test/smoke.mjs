@@ -604,7 +604,9 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
             const dims = results?.[0]?.dimensions ?? [];
             policySaw = results?.[0];
             const keyed = dims.some((d) => d.key === 'safety') && dims.some((d) => d.key === 'trust');
-            return keyed ? { kind: 'AUTO_DEPLOY' } : { kind: 'REJECT', reason: 'unknown-veto' };
+            return keyed
+              ? { kind: 'AUTO_DEPLOY', reason: 'score-85' }
+              : { kind: 'REJECT', reason: 'unknown-veto' };
           },
         },
         evolution: evolutionLog,
@@ -652,6 +654,19 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
     );
     assert.deepEqual(policySaw.dimensions.map((d) => d.name), ['safety', 'trust'],
       'name 也要保留，兼容按 name 读旧结构的调用方');
+    // ⭐ v0.2.10：返回值必须把 commit 阶段的决策以**值**交给调用方。
+    // 此前它只在 publish 的事件里（事件未落盘），cron 侧只写 Object.keys(result)，
+    // 于是「AUTO_DEPLOY 还是 PENDING_REVIEW」进程退出后无从查证。
+    // 注意别和 out.policyDecision（提案阶段 variant.policy_decision）搞混。
+    assert.equal(out.commit.ok, true);
+    assert.equal(out.commit.policyDecision, 'AUTO_DEPLOY',
+      'commit 成功分支此前不带 policyDecision —— 恰恰是成功时查不到');
+    assert.equal(out.summary.policyDecision, 'AUTO_DEPLOY', 'summary 通道必须带出决策值');
+    assert.equal(out.summary.policyReason, 'score-85',
+      'policy 的 reason 才是排障抓手；此前 (await decide())?.kind 把 reason 丢掉了');
+    assert.equal(out.summary.verifyMode, 'syntax:.js');
+    assert.equal(out.summary.reverted, false);
+    assert.equal(out.summary.proposalId, 'p1');
     // 成功路径不应记录 failure
     assert.equal(calls.some((c) => c[0] === 'addFailure'), false);
   } finally {
@@ -766,6 +781,13 @@ test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir）�
     const failure = calls.find((c) => c[0] === 'addFailure');
     assert.ok(failure, '被拒必须记 failure_pattern —— 否则事后查不到原因');
     assert.equal(failure[1], 'evolution-commit-rejected:policy');
+    // ⭐ v0.2.10：被拒路径的 summary 同样要带出决策与回滚结果 ——
+    // 「被拒了」必须能在重启后查成「被 policy 以某理由拒，且已回滚成功」。
+    assert.equal(out.summary.policyDecision, 'REJECT');
+    assert.equal(out.summary.policyReason, 'veto', 'policy 的 reason 也要落盘');
+    assert.equal(out.summary.reverted, true);
+    assert.equal(out.summary.verifyOk, true, '语法检查是通过的 —— 拒它的是 policy，摘要里要能看出这一点');
+    assert.equal(out.summary.verifyMode, 'syntax:.js');
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }
