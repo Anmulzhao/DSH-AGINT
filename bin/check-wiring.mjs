@@ -297,6 +297,14 @@ for (const t of [...allTopics].sort()) {
 const STORAGE_DIR = BUS_STORAGE.slice(0, BUS_STORAGE.lastIndexOf(sep));
 const domains = new Map(); // domain -> {plugin, file, line}
 for (const { abs, rel } of allFiles) {
+  // ⛔ 2026-09-29 修误报：必须与查 F 一样只扫生产路径。
+  // 查 D 的正则 `name: 'agint_xxx'` 只认字面量、不认上下文，测试里造的假对象
+  // 属性会同样命中。实例：plugins/agint-skill-autocreate/test/tool-addition.test.mjs:72
+  // 的 `{ name: 'agint_skill_x' }` 是「验证工具列表 append-only」的测试假数据，
+  // 不是 defineDomain 声明，却被报成「存储域从未通电」。
+  // 反向确认：已通电的 16 个域 + agint_curriculum 全部声明在 lib/*.js（生产路径），
+  // 过滤 test/ 后无一漏网。
+  if (!isProdPath(rel)) continue;
   let src;
   try {
     src = readFileSync(abs, 'utf8');

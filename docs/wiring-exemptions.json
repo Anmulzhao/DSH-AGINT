@@ -78,6 +78,13 @@
       "reason": "搜索工具，按需调用才会写存储；无人调用不算故障。",
       "evidence": "2026-09-24 查 D 取证",
       "since": "2026-09-24"
+    },
+    {
+      "domain": "agint_curriculum",
+      "reason": "连带空转，非代码故障。cron curriculum-weekly 的 action 正常执行：probe() 跑通并返回 {probedDomains,unverifiable,generated,results}，但 self-model 里 0 个域命中 probe 的四条筛选条件（UNCERTAIN / calibration miscalibrated / CAN 无 lastVerifiedAt / CAN 超 30 天未复验），于是 domains 为空 → generate() 零调用 → challenges 永远 0 条 → 存储域无文件可落盘。根因在上游 self-model 能力画像太薄，不在 curriculum。",
+      "evidence": "2026-09-29 实测：手动 cron_run_now curriculum-weekly 后 curriculum_stats.lastProbeAt 由 null 变为 2026-09-29T05:00:07.723Z、cron_state.lastResultSummary={keys:[probedDomains,unverifiable,generated,results]}（证明非 skipped）；同刻 selfModel_snapshot 3 条 capability = integration:CANNOT / correctness:CANNOT / unknown:CAN(2026-09-28 复验)，calibrationSummary.miscalibrated=[]，逐条比对 plugins/agint-curriculum/lib/boundary-probe.js:53-68 的四个条件 0 命中；$DSH_HOME/storages 下 *curricul* 匹配 0 个文件（目录共 169 文件）",
+      "since": "2026-09-29",
+      "unblockWhen": "self-model 出现任一 UNCERTAIN 域、miscalibrated 非空、或某 CAN 域超 30 天未复验 —— probe 即可产出待练域，域自然通电。在此之前本域无写入属预期。"
     }
   ]
 }
