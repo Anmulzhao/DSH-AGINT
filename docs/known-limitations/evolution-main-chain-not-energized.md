@@ -85,6 +85,13 @@ commit `7e8bffc`。原 A 方案（统一到 `mutator.commit`）经核对后**不
 `unified_diff`（局部替换语义），但全插件 30 处引用**无一处消费它**，
 `generatePostimage` 永远整文件覆盖。待单独修。
 
+> ✅ **已修（mutator v0.6.7，2026-09-29）**：两值全部实装，零 FROZEN 变更。
+> 更正一点：本段初稿把 `unified_diff` 理解为「局部替换语义」是**反的** —— 全仓 30 处
+> 调用（driver:582、eval 场景、各测试）无一例外把 `unified_diff` 当「newText 即完整
+> 内容」的标记用，无一处传真正的补丁文本。故接线语义定为：`unified_diff` = 整文件
+> 覆盖（与既有用法逐字节兼容，30 处调用零迁移）；`line_replace`（缺省默认）= oldText
+> 局部替换，oldText 缺失或不唯一即 throw（fail-closed）。详见 mutator CHANGELOG 0.6.7。
+
 ### v0.2.7 做了什么
 
 | | 改动前 | v0.2.7 后 |

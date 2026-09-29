@@ -47,8 +47,11 @@ function listDirs(dir) {
 function pluginVersion(pluginDir) {
   try {
     const cl = readFileSync(join(pluginDir, 'CHANGELOG.md'), 'utf8');
-    const m = cl.match(/^##\s+(v[\d][\w.-]*)/m);
-    if (m) return m[1];
+    // ⚠️ v 前缀可选（仓库两种格式并存：`## v0.6.5` 与 `## 0.6.6`），输出统一带 v。
+    // 否则新条目不写 v 时正则跳过它、倒退抓到更旧的带 v 条目 —— 实锤：
+    // mutator 0.6.7 期间本探测器显示 v0.6.5（2026-09-29）。
+    const m = cl.match(/^##\s+(v?[\d][\w.-]*)/m);
+    if (m) return m[1].startsWith('v') ? m[1] : `v${m[1]}`;
   } catch { /* no changelog */ }
   try {
     const pkg = JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8'));
