@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-aesthetic-oracle",
-  "version": "0.3.0",
-  "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只消费 summary() 读仪表，评分纯函数 + 美之三问下判断，三档 cron 广播按节奏开口。写白名单仅 evolution_log 审计（targetKind=oracle-*，decision=ABSTAIN）+ 自有存储域；asOf 透出（禁止反向采集）；单条 ≤2KB + 分档配额；连续失败沉默 + 配额回滚 + kill-switch；系统总分只告警不回滚（不杀信使）。",
+  "version": "0.4.1",
+  "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只消费 summary() 读仪表，评分纯函数 + 美之三问下判断，三档 cron 广播按节奏开口。v0.4.0 新增 §8.1 LLM 增强档（L1 措辞/L2 深挖/L3 提案润色），评分链路永久零 LLM；kill-switch AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2/all（默认 all）；降级不阻断广播。v0.4.1 §4 真实关：Q3 建议必须绑定真实 lint 证据（wiki 矛盾/孤儿清单透传），查不到就输出「本日无可执行建议」，不编造建议。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -54,7 +54,8 @@
     "mountOrder": 62,
     "permissions": {
       "env": [
-        "AGINT_AESTHETIC_ORACLE"
+        "AGINT_AESTHETIC_ORACLE",
+        "AGINT_AESTHETIC_ORACLE_LLM"
       ],
       "fs": [],
       "network": [],

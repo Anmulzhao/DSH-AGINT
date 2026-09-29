@@ -170,6 +170,73 @@ test('AC-4b：activity 只取 metrics 排除后的 logCount7d/30d，本层无二
   assert.equal(empty.activity, null, 'logCount 缺席 → activity null（不猜 0）');
 });
 
+// ── §4 真实关（2026-09-29 修复）：建议必须绑定真实 lint 证据 ──────────────────
+
+/** 2026-09-29 生产实况（老板实测：rule_lint 0 issues、wiki 3 矛盾 16 孤儿）→ redundancy 最丑。 */
+const todaySummary = () => ({
+  asOf: new Date(2026, 8, 28, 20, 0, 0).toISOString(), // 本地 2026-09-29 04:00
+  count: 7,
+  metrics: [
+    {
+      key: 'wiki.orphans', value: 16,
+      meta: JSON.stringify({
+        files: [
+          '.archive/diagnosis-report-2026-09-10.md', 'AGINT/diagnosis-report-2026-09-24.md',
+          'AGINT/diagnosis-report-2026-09-25.md', 'AGINT/diagnosis-report-2026-09-26.md',
+          'AGINT/diagnosis-report-2026-09-27.md', 'AGINT/diagnosis-report-2026-09-28.md',
+          'AGINT/OpenViking-接入状态.md', 'AGINT/skill-autocreate-种子改写方案.md',
+          'AGINT/渐进式披露-对照-Hermes.md', 'AGINT/观测侧假绿-识别与排查.md',
+          'DSH-subagent集成坑.md', 'evol-reports/2026-09-06-dshagint-settings-error.md',
+          'sandbox-escalation-discussion.md', 'subagent派活原则.md',
+          '挂载-重启红线.md', '核实-3.1-3.2-2026-09-09.md',
+        ],
+        total: 21,
+      }),
+    },
+    {
+      key: 'wiki.contradictions', value: 3,
+      meta: JSON.stringify({ files: ['DSH-subagent集成坑.md', '挂载-重启红线.md', '核实-3.1-3.2-2026-09-09.md'] }),
+    },
+    { key: 'rules.lintIssues', value: 0, meta: JSON.stringify({ issues: [], rulesTotal: 26 }) },
+    {
+      key: 'memory.total', value: 460,
+      meta: JSON.stringify({
+        noEvidence: { count: 71, ids: Array.from({ length: 71 }, (_, i) => `mem-${i}`), capped: true },
+        avgConfXCompliance: 0.551,
+      }),
+    },
+    { key: 'skills.totalBytes', value: 86039, meta: JSON.stringify({ fileCount: 8 }) },
+    { key: 'evolution.logCount7d', value: 5, meta: JSON.stringify({ excludedOracle: 0 }) },
+    { key: 'evolution.logCount30d', value: 173, meta: JSON.stringify({ excludedOracle: 0 }) },
+  ],
+});
+
+test('Q3 证据绑定：extractAtomic 把 wiki 矛盾/孤儿清单透传进 adviceCtx', () => {
+  const view = extractAtomic(todaySummary());
+  assert.deepEqual(view.adviceCtx.wikiContradictionFiles,
+    ['DSH-subagent集成坑.md', '挂载-重启红线.md', '核实-3.1-3.2-2026-09-09.md']);
+  assert.equal(view.adviceCtx.wikiContradictionCount, 3);
+  assert.equal(view.adviceCtx.wikiOrphanFiles.length, 16);
+  assert.ok(view.adviceCtx.wikiOrphanFiles.includes('DSH-subagent集成坑.md'));
+  assert.deepEqual(view.adviceCtx.ruleLintIssues, []);
+  assert.equal(view.adviceCtx.curatorOverlaps, 0);
+});
+
+test('daily 回归（2026-09-29 bug）：redundancy 最丑但 rule_lint 0 命中 → 建议指 wiki 矛盾', async () => {
+  const env = makeEnv({ summary: todaySummary });
+  const out = await env.svc.runBroadcast('daily');
+  assert.equal(out.ok, true);
+  assert.equal(out.worstKey, 'redundancy', 'redundancy 扣 20 > noise 17.75 → 最丑');
+  assert.equal(out.score, 58, '与 2026-09-29 生产分一致');
+  assert.ok(out.text.includes('冗余度'), out.text);
+  assert.ok(out.text.includes('3 条 wiki 矛盾'), out.text);
+  assert.ok(out.text.includes('建议：解决 wiki 矛盾标记'), out.text);
+  assert.ok(!out.text.includes('合并 rule_lint'), '不得再编造 duplicate 建议');
+  assert.ok(out.text.includes('证据：wiki_lint contradictions 明细'), out.text);
+  assert.ok(out.lines <= 5 && out.bytes <= MAX_BYTES);
+  env.dispose();
+});
+
 // ── §6.2 / §6.3：失败重试 → 沉默；kill-switch；配额回滚 ─────────────────────
 
 test('§6.2 连续 3 次调度失败 → 沉默模式；期间只写审计不开口', async () => {
@@ -561,14 +628,16 @@ test('Day2-3 alert 通道不依赖 metrics：summary 恒抛 → alert() 仍成�
 import { evaluateAesthetics } from '../lib/scoring.js';
 import { buildWeeklyProposals } from '../lib/broadcast.js';
 
-test('Day4-5 buildWeeklyProposals：绝对扣分 top3，0 扣分不提，evidence 必填', () => {
+test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），0 扣分不提，evidence 必填', () => {
   const view = extractAtomic(fixtureSummary());
   const evaluation = evaluateAesthetics(view.atomic, { adviceCtx: view.adviceCtx });
   const proposals = buildWeeklyProposals(evaluation, view.adviceCtx, { weekKey: '2026-W39', targetId: 'oracle-weekly-2026-W39' });
-  // 标定数据：noise 23.16 / redundancy 20（超阈封顶）/ confidence 4.46 / bloat 0
-  assert.equal(proposals.length, 3, '恰好 3 条（bloat 零扣分不提）');
+  // 标定数据：noise 23.16 / redundancy 20 / confidence 4.46 / bloat 0。
+  // §4 真实关：confidence 的 lowConfidenceNoEvidence 行级清单 metrics 不提供 →
+  // q3Advice 回 NO_ADVICE → 跳过；bloat 零扣分不提。故恰 2 条。
+  assert.equal(proposals.length, 2, 'noise + redundancy 各 1 条；confidence 无证据跳过、bloat 零扣分不提');
   assert.deepEqual(proposals.map((p) => p.title.match(/噪声比|冗余度|决策确信度|臃肿度/g)?.[0]).sort(),
-    ['决策确信度', '噪声比', '冗余度'].sort());
+    ['噪声比', '冗余度'].sort());
   for (const p of proposals) {
     assert.ok(p.title.startsWith('美谕提案：'), p.title);
     assert.match(p.body, /建议：/, 'body 必含建议');
@@ -605,8 +674,8 @@ test('Day4-5 weekly 广播提 3 条提案：evolve.propose 收到、审计留痕
   });
   const out = await env.svc.runBroadcast('weekly');
   assert.equal(out.ok, true);
-  assert.equal(out.proposals, 3, 'weekly 应提交 3 条提案');
-  assert.equal(proposed.length, 3);
+  assert.equal(out.proposals, 2, 'weekly 应提交 2 条提案（confidence 无行级证据跳过）');
+  assert.equal(proposed.length, 2);
   for (const p of proposed) {
     assert.equal(p.status, 'proposed', 'status 锁 proposed');
     assert.equal(p.source, 'agint-aesthetic-oracle');
@@ -617,10 +686,10 @@ test('Day4-5 weekly 广播提 3 条提案：evolve.propose 收到、审计留痕
   const weeklyAudit = env.audit.filter((e) => e.targetKind === 'oracle-weekly').pop();
   const propFinding = weeklyAudit.findings.find((f) => f.ruleId === 'oracle-proposals');
   assert.ok(propFinding, '审计应携带提案 id 清单');
-  assert.match(propFinding.detail, /prop-1,prop-2,prop-3/);
-  // oracle.daily 事件 payload 带 proposals 计数……不，weekly 才带
+  assert.match(propFinding.detail, /prop-1,prop-2/);
+  // oracle.weekly 事件 payload 带 proposals 计数
   const evt = env.bus.find((e) => e.topic === 'oracle.weekly');
-  assert.equal(evt.payload.proposals, 3);
+  assert.equal(evt.payload.proposals, 2);
   // ⭐ 永不 auto-apply：oracle 从不触碰 setStatus
   assert.equal(statusCalls.length, 0, 'oracle 不得调 setStatus（§5：只提不 commit）');
   // daily 不提提案
@@ -651,8 +720,8 @@ test('Day4-5 evolve 缺席/抛错 → weekly 广播照发（提案降级不阻�
   const out2 = await env2.svc.runBroadcast('weekly');
   assert.equal(out2.ok, true, '提案失败不得阻断广播');
   assert.equal(out2.proposals, 0);
-  assert.equal(out2.proposalsFailed, 3, '3 条提案各自失败记账');
-  assert.equal(throws, 3);
+  assert.equal(out2.proposalsFailed, 2, '2 条提案各自失败记账（confidence 无证据跳过）');
+  assert.equal(throws, 2);
   const rows = await env2.svc.history(5);
   const weeklyRow = rows.find((r) => r.kind === 'weekly' && r.outcome === 'ok');
   assert.equal(weeklyRow.proposals, 0, '落账行反映真实提交数');

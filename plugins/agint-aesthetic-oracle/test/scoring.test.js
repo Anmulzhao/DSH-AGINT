@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   THRESHOLDS, DIM_KEYS, deriveComposites, computeAestheticScore,
-  q1Verdict, q2Worst, q3Advice, evaluateAesthetics,
+  q1Verdict, q2Worst, q3Advice, evaluateAesthetics, NO_ADVICE,
 } from '../lib/scoring.js';
 
 /** 方案 §3.6 / 附录 C 的 2026-09-27 钉死原子值（复算链见 calibration 脚本）。 */
@@ -176,10 +176,16 @@ test('Q2：按绝对扣分取最丑维（与 §5 示例口径一致：23.2 > 20 
   assert.ok(Math.abs(worst.deduction - 23.1579) < 0.01);
 });
 
-test('Q3：四条映射齐全，均附证据（§4 P2-10 修复：不再缺 3/4）', () => {
+test('Q3：有证据时四条映射齐全，均附证据（§4 P2-10 修复：不再缺 3/4）', () => {
+  const ctxByKey = {
+    noise: { memoryNoEvidenceCount: 71, memoryNoEvidenceIds: ['a', 'b'] },
+    confidence: { lowConfidenceNoEvidence: ['lesson-a', 'lesson-b'] },
+    redundancy: { ruleLintIssues: [{ ruleId: 'R1', kind: 'duplicate-pattern', with: 'R2' }] },
+    bloat: { skillsBytes: THRESHOLDS.BLOAT_BUDGET_BYTES * 2 },
+  };
   for (const key of DIM_KEYS) {
-    const a = q3Advice(key, { memoryNoEvidenceCount: 71, memoryNoEvidenceIds: ['a', 'b'] });
-    assert.ok(a.advice, `${key} must have advice`);
+    const a = q3Advice(key, ctxByKey[key]);
+    assert.ok(a.advice && a.advice !== NO_ADVICE, `${key} must have real advice`);
     assert.ok(a.evidence, `${key} must have evidence`);
   }
   const noise = q3Advice('noise', { memoryNoEvidenceCount: 71, memoryNoEvidenceIds: Array.from({ length: 60 }, (_, i) => `id${i}`) });
@@ -187,6 +193,35 @@ test('Q3：四条映射齐全，均附证据（§4 P2-10 修复：不再缺 3/4�
   assert.ok(noise.advice.includes('id0'));
   const red = q3Advice('redundancy', { ruleLintIssues: [{ ruleId: 'R1', kind: 'duplicate-pattern', with: 'R2' }] });
   assert.ok(red.advice.includes('R1+R2'));
+});
+
+test('Q3 证据绑定：redundancy 无重复规则但 wiki 有矛盾 → 建议指向矛盾（2026-09-29 编建议 bug 回归）', () => {
+  const red = q3Advice('redundancy', {
+    ruleLintIssues: [],
+    wikiContradictionFiles: ['DSH-subagent集成坑.md', '挂载-重启红线.md', '核实-3.1-3.2-2026-09-09.md'],
+    curatorOverlaps: 0,
+  });
+  assert.ok(red.advice.includes('解决 wiki 矛盾'), red.advice);
+  assert.ok(red.advice.includes('3 处'), red.advice);
+  assert.ok(!red.advice.includes('合并 rule_lint'), '不得再编造 duplicate 建议');
+  assert.equal(red.evidence, 'wiki_lint contradictions 明细');
+});
+
+test('Q3 证据绑定：redundancy 全零分子 → 输出「本日无可执行建议」', () => {
+  const red = q3Advice('redundancy', { ruleLintIssues: [], wikiContradictionFiles: [], curatorOverlaps: 0 });
+  assert.equal(red.advice, NO_ADVICE);
+  const noise = q3Advice('noise', { memoryNoEvidenceCount: 0, wikiOrphanFiles: [] });
+  assert.equal(noise.advice, NO_ADVICE);
+  const conf = q3Advice('confidence', {});
+  assert.equal(conf.advice, NO_ADVICE);
+  const bloat = q3Advice('bloat', { skillsBytes: 0 });
+  assert.equal(bloat.advice, NO_ADVICE);
+});
+
+test('Q3 证据绑定：noise 无无证据记忆但 wiki 有孤儿 → 建议归档孤儿', () => {
+  const noise = q3Advice('noise', { memoryNoEvidenceCount: 0, wikiOrphanFiles: ['a.md', 'b.md'] });
+  assert.ok(noise.advice.includes('归档 wiki orphans'), noise.advice);
+  assert.ok(noise.advice.includes('a.md'), noise.advice);
 });
 
 test('evaluateAesthetics 一站式：钉死数据 → 52.4；worst/readvice 齐备', () => {

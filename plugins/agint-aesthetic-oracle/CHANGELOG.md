@@ -1,5 +1,66 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.4.1 — 2026-09-29
+
+§4 真实关修复：Q3 建议必须绑定真实 lint 证据，查不到就输出「本日无可执行建议」，不许兜底编一句。
+（2026-09-29 老板实测抓包：rule_lint 0 命中时 redundancy 建议仍编「合并 rule_lint 命中的 duplicate
+规则」，且方向反了——当天 redundancy 分子 3/55 全由 3 处 wiki 矛盾构成。）
+
+### 修复
+
+- **q3Advice 证据绑定**（lib/scoring.js）：redundancy 分支按序查证——rule_lint duplicate 明细 →
+  wiki 矛盾文件清单 → curator 重叠 → 全空回 `NO_ADVICE`（「本日无可执行建议」）；noise 分支同构
+  （无证据记忆 → wiki 孤儿 → NO_ADVICE）；confidence 无行级清单、bloat 未超预算均回 NO_ADVICE。
+- **adviceCtx 补齐真实清单**（lib/broadcast.js extractAtomic）：透传 `wiki.contradictions` 的
+  meta.files（wikiContradictionFiles / wikiContradictionCount）与 `wiki.orphans` 的 meta.files
+  （wikiOrphanFiles）——此前 adviceCtx 只有 ruleLintIssues，q3Advice 想指对方向也没料可用。
+- **redundancy 建议方向修正**：redundancy 最丑且 rule_lint 0 命中时，建议指向 wiki 矛盾
+  （真实分子），不再编 duplicate 建议。
+- **L1 措辞增强闸门**（lib/index.js）：advice === NO_ADVICE 时跳过 LLM 润色——不给模型把
+  「没有建议」润色成编造建议的机会。
+- **weekly 提案**（lib/broadcast.js buildWeeklyProposals）：q3Advice 回 NO_ADVICE 的维直接跳过
+  （「本日无可执行建议」不是提案正文）。受此影响，confidence 维在 metrics 不提供行级清单时
+  不再出提案（旧逻辑该维一直在编「定向复核…」空壳建议）。
+
+### 测试
+
+- scoring.test.js：Q3 测试改为按维供证据（四条映射齐全）；新增 3 例——redundancy→wiki 矛盾
+  回归、全零分子→NO_ADVICE、noise→孤儿。
+- oracle.test.js：新增 extractAtomic 透传断言 + daily 链路回归（2026-09-29 生产实况：
+  worst=redundancy、score=58、建议=解决 wiki 矛盾、不出现「合并 rule_lint」）；weekly 提案
+  期望 3→2（confidence 无证据跳过）。
+- 全量 51 pass / 0 fail。
+
+## 0.4.0 — 2026-09-29
+
+LLM 增强档（方案 v2.4 §8.1）：神谕层接入 LLM 子代理，三级增强。
+
+### 新增
+
+- **lib/llm-enhance.js**：kill-switch 解析（env AGINT_AESTHETIC_ORACLE_LLM = off/l1/l1l2/all，默认 all）、
+  spawnOracleLlm 封装（照 agint-evolution-driver 范式：agents.create + subagents.start，
+  meta.agentPreset='agint'，label='oracle-llm'）、L1 措辞增强、L2 行级深挖、L3 提案润色。
+  所有失败降级不 throw。
+- **L1 措辞增强**（daily/weekly）：广播渲染后，worst 维度的建议/证据行由 LLM 重写为自然语言。
+- **L2 行级深挖**（weekly）：对 worstKey 做行级根因分析，结果存 view 供 L3 消费。
+- **L3 提案润色**（weekly）：submitWeeklyProposals 里提案 body 经 LLM 润色。
+- **payload mode 字段**：template / llm / heuristic-degraded，标记本轮广播实际走了哪条路径。
+  topics.js tieredShape 加 mode: z.enum([...]).default('template')。
+- **manifest.json**：版本 0.4.0，加 env 权限 AGINT_AESTHETIC_ORACLE_LLM。
+
+### 修复
+
+- mode 兜底假信号：worst 为空时 L1 不触发，原兜底误标 heuristic-degraded（实际没调 LLM），
+  改为 eport.mode ?? 'template'——heuristic-degraded 仅在 L1 真尝试但失败时设置。
+
+### 测试
+
+- 	est/llm-enhance.test.js：11 个测试覆盖 AC-16/17/18/18b/20（kill-switch、spawn、L1/L2/L3、降级路径）。
+- 全量 47 pass / 0 fail。
+
+### 已验证
+
+- 浏览器会话手动触发 daily broadcast：mode="llm"，建议行被自然语言重写，eventBus 出现 oracle-llm- 子会话。
 ## 0.3.0 — 2026-09-28
 
 美的神谕层 Day 4-5（方案 v2.3 §5 weekly）：美谕提案闭环。

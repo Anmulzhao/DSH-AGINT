@@ -31,6 +31,14 @@ const tieredShape = (kind) =>
     worstKey: z.string().nullable(),
     lines: z.array(z.string()),
     text: z.string(),
+    /**
+     * 输出模式（§8.1.6，v2.4 新增可观测字段）：
+     *   'template'           — v2.3 模板化输出（kill-switch=off 或 LLM 未启用）
+     *   'llm'                — LLM 增强档生效（L1 措辞 / L2 深挖 / L3 润色至少一级成功）
+     *   'heuristic-degraded' — LLM 调用失败降级回模板（§6.1 不阻断广播）
+     * 缺省 = 'template'（向后兼容 v0.3.0 已发布的事件）。
+     */
+    mode: z.enum(['template', 'llm', 'heuristic-degraded']).default('template'),
     /** 缓存回退标注（§6.1 series 缓存）：数据距今天数；新鲜广播不传。 */
     staleDays: z.number().int().min(0).optional(),
   });

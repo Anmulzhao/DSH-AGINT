@@ -12,7 +12,7 @@
  *     各自独立窗口）+ oracle.alert 独立日配额（防告警风暴）。
  */
 
-import { DIM_KEYS, DIM_WEIGHTS, q3Advice } from './scoring.js';
+import { DIM_KEYS, DIM_WEIGHTS, q3Advice, NO_ADVICE } from './scoring.js';
 
 // ── 常量 ───────────────────────────────────────────────────────────────────
 
@@ -117,6 +117,7 @@ export function extractAtomic(summary) {
 
   const rulesMeta = meta('rules.lintIssues');
   const wikiMeta = meta('wiki.orphans');
+  const contradMeta = meta('wiki.contradictions');
   const memoryMeta = meta('memory.total');
   const skillsMeta = meta('skills.totalBytes');
 
@@ -128,6 +129,10 @@ export function extractAtomic(summary) {
   const ruleDuplicates = byKey.has('rules.lintIssues')
     ? (Array.isArray(rulesMeta.issues) ? duplicates.length : (num('rules.lintIssues') ?? null))
     : null;
+
+  // Q3 证据绑定的真实清单（§4 真实关）：wiki_lint 的 contradictions/orphans 明细
+  // 原样透传（metrics 侧已整形成数组；防御形态归一化成 String）。
+  const strList = (v) => (Array.isArray(v) ? v.map((x) => String(x)) : []);
 
   const noEv = memoryMeta.noEvidence ?? {};
   const log7 = num('evolution.logCount7d');
@@ -151,9 +156,16 @@ export function extractAtomic(summary) {
       skillsBytes: num('skills.totalBytes'),
     },
     // Q3 建议的证据上下文（广播文本只引用计数与机制，id 清单进审计条目——§5 示例口径）
+    // §4 真实关（2026-09-29）：建议必须绑定真实 lint 证据，故把 wiki 矛盾/孤儿
+    // 的明细清单一并透传（redundancy 最丑但 rule_lint 0 命中时，q3Advice 靠
+    // wikiContradictionFiles 指向真正的问题，而不是编一条 duplicate 建议）。
     adviceCtx: {
       memoryNoEvidenceCount: isNum(noEv.count) ? noEv.count : null,
       ruleLintIssues: lintIssues,
+      wikiContradictionFiles: strList(contradMeta.files),
+      wikiContradictionCount: num('wiki.contradictions'),
+      wikiOrphanFiles: strList(wikiMeta.files),
+      curatorOverlaps: 0,
       skillsBytes: num('skills.totalBytes'),
     },
     // id 清单：只给审计 findings 用，不进广播正文（防 2KB 爆掉）
@@ -352,6 +364,9 @@ const PROPOSAL_CATEGORY = Object.freeze({
  * q3Advice 生成（纯机械动作 + 必附证据），⭐ 只产出文本，不执行任何动作：
  * 归档/合并由老板决定后走各自插件，oracle 永不调 curator_archive。
  *
+ * §4 真实关（2026-09-29）：q3Advice 返回 NO_ADVICE 的维直接跳过——
+ * 查不到证据就不提提案（「本日无可执行建议」不是提案正文）。
+ *
  * @returns {Array<{title, body, category, note}>}
  */
 export function buildWeeklyProposals(evaluation, adviceCtx = {}, meta = {}) {
@@ -360,21 +375,24 @@ export function buildWeeklyProposals(evaluation, adviceCtx = {}, meta = {}) {
   const ranked = DIM_KEYS
     .filter((k) => dims[k]?.available && isNum(dims[k]?.deduction) && dims[k].deduction > 0)
     .map((k) => ({ key: k, deduction: dims[k].deduction }))
-    .sort((a, b) => b.deduction - a.deduction)
-    .slice(0, 3);
-  return ranked.map(({ key, deduction }) => {
+    .sort((a, b) => b.deduction - a.deduction);
+  const drafts = [];
+  for (const { key, deduction } of ranked) {
+    if (drafts.length >= 3) break;
     const a = q3Advice(key, adviceCtx) ?? {};
+    if (!a.advice || a.advice === NO_ADVICE) continue; // 无可执行建议的维不提
     const c = composites?.[key] ?? {};
     const valTxt = isNum(c.value) ? (key === 'confidence' ? c.value.toFixed(3) : pct(c.value)) : 'N/A';
     const title = `美谕提案：${WORST_LABELS[key] ?? key} 扣 ${deduction.toFixed(1)} 分`;
     const body = [
-      `建议：${a.advice ?? '（无机械建议）'}`,
+      `建议：${a.advice}`,
       `证据：${a.evidence ?? '（无）'}`,
       `现状：${valTxt}（${THRESHOLD_TEXT[key] ?? ''}），绝对扣分 ${deduction.toFixed(1)}/${DIM_WEIGHTS[key]}`,
       meta.weekKey ? `周期：${meta.weekKey}` : null,
       meta.targetId ? `审计：${meta.targetId}（id 清单等详情见审计 findings）` : null,
       '性质：纯机械动作提案（status 锁 proposed，永不 auto-apply；执行与否由老板定）',
     ].filter(Boolean).join('\n');
-    return { title, body, category: PROPOSAL_CATEGORY[key] ?? 'other' };
-  });
+    drafts.push({ title, body, category: PROPOSAL_CATEGORY[key] ?? 'other' });
+  }
+  return drafts;
 }

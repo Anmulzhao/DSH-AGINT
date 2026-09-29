@@ -1,0 +1,67 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-family-panel",
+  "version": "0.1.0",
+  "description": "AGINT 家族面板：以宿主原生停靠面板（root main keyed slot + sidebar.panellist 入口行）展示整个 agint 插件家族的分组、行状态与通电信号。host 半只开一条回环 JSON 路由；浏览器半经 shell 自带席位注册，席位不存在即静默不挂。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "dual",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "alpha"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "webServer"
+      ],
+      "optionalInject": [
+        "agint.metrics",
+        "agint.cron",
+        "agint.selfModel"
+      ],
+      "provides": [
+        "agint.familyPanel"
+      ],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "mountOrder": 95,
+    "permissions": {
+      "env": [
+        "AGINT_HOME",
+        "DSH_HOME"
+      ],
+      "fs": [],
+      "network": [
+        "loopback:read"
+      ],
+      "shell": []
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.familyPanel": "家族面板 host 半：只读聚合 loader 行与 AGINT 服务信号，经一条回环 JSON 路由供浏览器半消费"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

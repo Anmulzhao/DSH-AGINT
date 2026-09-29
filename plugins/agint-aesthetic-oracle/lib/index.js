@@ -36,12 +36,16 @@ import {
   openStore, loadState, randomId, nowIso,
   oracleBroadcastSchema,
 } from './storage.js';
-import { evaluateAesthetics, DIM_KEYS } from './scoring.js';
+import { evaluateAesthetics, DIM_KEYS, NO_ADVICE } from './scoring.js';
 import {
   extractAtomic, renderReport, rollQuota, dimsFromRecord, compositesRecord,
   auditScores, auditTargetId, buildWeeklyProposals, isoWeekKey, KIND_TOPIC, QUOTA_LIMITS,
 } from './broadcast.js';
 import { validateTopicPayload, TOPIC_KIND } from './topics.js';
+import {
+  llmMode as parseLlmMode, canL1, canL2, canL3,
+  l1EnhanceAdvice, l2DeepDive, l3PolishProposal,
+} from './llm-enhance.js';
 
 const name = 'agint-aesthetic-oracle';
 // 硬注入仅 storageDomain（自己的状态面）；其余全懒解析——apply 顺序不保证，
@@ -217,42 +221,56 @@ function apply(ctx, config) {
    * 动作 + 必附证据）。⭐ 只写文本不执行：永不调 curator_archive / setStatus；
    * evolve 侧 status 硬锁 proposed。失败降级不阻断广播（§6.1 原则）。
    */
-  async function submitWeeklyProposals({ evaluation, adviceCtx, now, targetId }) {
+  async function submitWeeklyProposals({ evaluation, adviceCtx, now, targetId, l2DeepDiveResult = null, llmModeVal = 'off' }) {
     const evo = svcEvolve();
     if (!evo || typeof evo.propose !== 'function') return { ids: [], failed: 0, degraded: true };
     const drafts = buildWeeklyProposals(evaluation, adviceCtx ?? {}, { weekKey: isoWeekKey(now), targetId });
     const ids = [];
     let failed = 0;
+    let l3AnyLlm = false;
     for (const d of drafts) {
+      // L3（§8.1.4）：weekly 提案正文润色。失败降级回模板 body，不阻断。
+      let finalBody = d.body;
+      if (canL3(llmModeVal)) {
+        const l3 = await l3PolishProposal(ctx, { title: d.title, templateBody: d.body, deepDive: l2DeepDiveResult ?? {} });
+        if (l3.mode === 'llm') { finalBody = l3.body; l3AnyLlm = true; }
+      }
       try {
         const rec = await evo.propose({
-          title: d.title, body: d.body, category: d.category,
+          title: d.title, body: finalBody, category: d.category,
           source: name, note: `${targetId}（美的神谕层 weekly；evidence 见正文）`,
         });
         if (rec?.id) ids.push(rec.id); else failed += 1;
       } catch { failed += 1; }
     }
-    return { ids, failed };
+    return { ids, failed, l3AnyLlm };
   }
 
   /**
    * 共享出口（Day 2-3 抽取）：事件 → 审计 → 自表落账 → 配额记账。
    * 主路径与缓存回退路径共用；任何一路失败都只降级不阻断。
    */
-  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '' }) {
+  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', llmModeVal = 'off', l2DeepDiveResult = null }) {
     // Day 4-5：weekly 提案先行——提案 id 要进审计 findings（evidence 可追溯）
     let proposalIds = [];
     let proposalsFailed = 0;
     if (kind === 'weekly') {
       const submitted = await submitWeeklyProposals({
         evaluation, adviceCtx: view.adviceCtx, now, targetId: auditTargetId('weekly', now),
+        l2DeepDiveResult, llmModeVal,
       });
       proposalIds = submitted.ids;
       proposalsFailed = submitted.failed;
     }
+    // §8.1.6：mode 字段——本轮广播实际用了什么输出路径
+    //   template           = kill-switch off / 无 LLM 增强
+    //   llm                = L1/L2/L3 至少一级成功
+    //   heuristic-degraded = LLM 启用但全部降级
+    const payloadMode = report.mode ?? 'template';
     const published = await publishBus(KIND_TOPIC[kind], {
       kind, asOf: view.asOf, score: evaluation.scored.score, verdict: evaluation.verdict.verdict,
       worstKey: evaluation.worst?.key ?? null, lines: report.lines, text: report.text,
+      mode: payloadMode,
       ...(isNum(report.staleDays) ? { staleDays: report.staleDays } : {}),
       ...(kind === 'weekly' ? { proposals: proposalIds.length } : {}),
     });
@@ -462,8 +480,49 @@ function apply(ctx, config) {
       baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
       dayIndex, reason: opts.reason, detail: opts.detail,
     });
+
+    // ── §8.1 LLM 增强档（v2.4；只作用于输出层，不碰评分链路）────────────────
+    // kill-switch: AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2/all（默认 all）
+    const llmModeVal = parseLlmMode(process.env);
+    let l2DeepDiveResult = null;
+    if (llmModeVal !== 'off' && kind !== 'alert') {
+      // L1：Q3 措辞增强（daily/weekly/monthly 同步短超时；失败降级不阻断）
+      // §4 真实关：advice 为 NO_ADVICE（「本日无可执行建议」）时跳过 LLM——
+      // 不能让模型把「没有建议」润色成一条编造的建议。
+      if (canL1(llmModeVal) && evaluation.worst && evaluation.advice?.advice && evaluation.advice.advice !== NO_ADVICE) {
+        const l1 = await l1EnhanceAdvice(ctx, {
+          templateAdvice: evaluation.advice.advice,
+          templateEvidence: evaluation.advice.evidence ?? '',
+          worstKey: evaluation.worst.key,
+          value: evaluation.worst.value,
+        });
+        if (l1.mode === 'llm') {
+          report.lines = report.lines.map((line) => {
+            if (line.startsWith('建议：')) return `建议：${l1.advice}`;
+            if (line.startsWith('证据：')) return `证据：${l1.evidence}`;
+            return line;
+          });
+          report.text = report.lines.join('\n');
+          report.mode = 'llm';
+        } else {
+          report.mode = 'heuristic-degraded';
+        }
+      }
+      // L2：weekly 行级深挖（失败降级，结果供 L3 消费）
+      if (kind === 'weekly' && canL2(llmModeVal) && evaluation.worst) {
+        l2DeepDiveResult = await l2DeepDive(ctx, {
+          worstKey: evaluation.worst.key,
+          value: evaluation.worst.value,
+          threshold: evaluation.composites?.[evaluation.worst.key]?.value,
+          auditIds: view.auditIds ?? [],
+          adviceCtx: view.adviceCtx ?? {},
+        });
+        if (l2DeepDiveResult.mode === 'llm') report.mode = 'llm';
+      }
+    }
+
     report.wallMs = Date.now() - t0;
-    const out = await finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex });
+    const out = await finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, llmModeVal, l2DeepDiveResult });
 
     // 成功后写 lastGood 缓存（§6.1 回退面；缓存的是本轮真实采集，供下次 metrics 挂掉时用）
     const latest = await loadState(tables().state);

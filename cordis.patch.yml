@@ -481,3 +481,25 @@
       name: ./plugins/agint-aesthetic-oracle/lib/index.js
       config:
         enabled: true
+
+    # agint-family-panel: AGINT 家族面板 v0.1.0（2026-09-29 挂载）。
+    # 双半插件（dual）：host 半开一条回环 JSON 路由 GET /api/agint-family/status，
+    # 浏览器半（package.json 的 dsh.client + exports ./client）注册到**宿主原生
+    # 布局席位**——侧栏 panellist 入口行 + root 作用域 main keyed slot 面板页，
+    # 两者共用同一个 id（sidebar 契约：行 id 即 main 的 key）。
+    # ⛔ 席位注册一律走 ctx.slots.inject：宿主没声明该席位就静默不挂，
+    #    绝不拖垮 GUI 启动（第三方 client 插件不得让宿主启动失败）。
+    # ⛔ 浏览器半禁止 require 任何 @deepseek-ai/dsh-client-ui-* 包（非 API 面），
+    #    样式只准用 --dsw-alias-* token，保证明暗主题跟宿主走。
+    # 数据源（全软依赖，缺席即降级为 unavailable 并带 reason）：
+    #   ctx.loader.entries()（权威名册，与 patch 声明无关）+ agint.cron.list()
+    #   + agint.metrics.summary() + agint.selfModel.stats()。
+    # 真实优先：读不到就报「未通电/状态未读到」，绝不用 0 冒充绿。
+    # kill-switch：config enabled:false ⇒ 路由仍应答 {enabled:false}，面板显示
+    # 「已关闭」而非「未挂载」；allowNonLoopback 默认 false（只放行回环）。
+    # Service：agint.familyPanel（status / apiPrefix / setEnabled / isEnabled）。
+    - id: agint-family-panel
+      name: ./plugins/agint-family-panel/lib/index.js
+      config:
+        enabled: true
+        allowNonLoopback: false

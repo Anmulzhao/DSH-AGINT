@@ -1,0 +1,22 @@
+{
+  "name": "agint-family-panel",
+  "version": "0.1.0",
+  "description": "AGINT family panel: a native docked panel in the DSH Web GUI's center column showing the whole agint plugin family (groups, row state, live signals). Host half serves one loopback JSON route; browser half registers through the shell's own slot seats.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
+  "license": "MIT"
+}

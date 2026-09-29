@@ -40,6 +40,14 @@ export const DIM_WEIGHTS = {
 
 export const DIM_KEYS = ['noise', 'confidence', 'redundancy', 'bloat'];
 
+/**
+ * Q3 无真实证据可依时的诚实占位（§4 真实关：建议必须绑定 lint 证据，
+ * 查不到就明说，不许兜底编一句）。调用方（renderReport / buildWeeklyProposals /
+ * L1 措辞增强）见它即知「本日无可执行建议」——渲染原样透出，提案跳过，
+ * LLM 不再拿它润色。
+ */
+export const NO_ADVICE = '本日无可执行建议';
+
 const round = (n, d = 4) => {
   const f = 10 ** d;
   return Math.round(n * f) / f;
@@ -246,6 +254,12 @@ export function q2Worst(composites, dims) {
 /**
  * Q3：建议怎么做才能更美？（§4 映射表，四条全量；纯机械动作 + 必附证据）
  *
+ * ⛔ §4 真实关（2026-09-29 修复）：建议必须绑定真实 lint 证据——
+ * 每条建议先查 ctx 里的实际清单，查不到就输出 NO_ADVICE（「本日无可执行
+ * 建议」），不许兜底编一句。例：redundancy 最丑但 rule_lint 0 命中时，旧
+ * 逻辑仍输出「合并 rule_lint 命中的 duplicate 规则」（编造）；现在先看
+ * wiki 矛盾 / curator 重叠的真实分子，全空才回 NO_ADVICE。
+ *
  * @param {string} worstKey q2Worst().key
  * @param {object} ctx 证据上下文（各清单；缺了相应字段就降级为机制引用）
  */
@@ -254,37 +268,72 @@ export function q3Advice(worstKey, ctx = {}) {
     case 'noise': {
       const ids = Array.isArray(ctx.memoryNoEvidenceIds) ? ctx.memoryNoEvidenceIds : null;
       const orphanList = Array.isArray(ctx.wikiOrphanFiles) ? ctx.wikiOrphanFiles : null;
-      const head = ctx.memoryNoEvidenceCount
-        ? `为 ${ctx.memoryNoEvidenceCount} 条无 evidence 记忆补证据`
-        : '归档 wiki orphans';
-      const detail = ids
-        ? `（id 清单${ids.length >= 50 ? '前 50 条' : ''}：${ids.slice(0, 50).join(', ')}）`
-        : (orphanList ? `（orphan 清单：${orphanList.slice(0, 10).join(', ')}${orphanList.length > 10 ? ' …' : ''}）` : '');
-      return { advice: `${head}${detail}`, evidence: 'memory 表 evidence 字段扫描 + wiki_lint 报告' };
+      const noEvCount = isNum(ctx.memoryNoEvidenceCount) ? ctx.memoryNoEvidenceCount : 0;
+      if (noEvCount > 0) {
+        const detail = ids
+          ? `（id 清单${ids.length >= 50 ? '前 50 条' : ''}：${ids.slice(0, 50).join(', ')}）`
+          : '';
+        return { advice: `为 ${noEvCount} 条无 evidence 记忆补证据${detail}`, evidence: 'memory 表 evidence 字段扫描' };
+      }
+      if (orphanList && orphanList.length > 0) {
+        return {
+          advice: `归档 wiki orphans（${orphanList.slice(0, 10).join('、')}${orphanList.length > 10 ? ' …' : ''}）`,
+          evidence: 'wiki_lint 报告（orphans 明细）',
+        };
+      }
+      return {
+        advice: NO_ADVICE,
+        evidence: `noise 分子实测：${noEvCount} 条无证据记忆 / ${orphanList?.length ?? 0} 个 wiki 孤儿 / 0 条重复规则`,
+      };
     }
     case 'redundancy': {
       const issues = Array.isArray(ctx.ruleLintIssues) ? ctx.ruleLintIssues : [];
       const dups = issues.filter((i) => i?.kind === 'duplicate-pattern');
-      const pairs = dups.map((i) => `${i.ruleId}+${i.with}`).join(', ');
+      if (dups.length > 0) {
+        const pairs = dups.map((i) => `${i.ruleId}+${i.with}`).join(', ');
+        return {
+          advice: `合并 rule_lint 命中的 duplicate 规则${pairs ? `：${pairs}` : ''}`,
+          evidence: 'rule_lint issues 明细',
+        };
+      }
+      const contradFiles = Array.isArray(ctx.wikiContradictionFiles) ? ctx.wikiContradictionFiles : [];
+      if (contradFiles.length > 0) {
+        const names = contradFiles.slice(0, 5).join('、');
+        return {
+          advice: `解决 wiki 矛盾标记（${contradFiles.length} 处：${names}${contradFiles.length > 5 ? ' …' : ''}）`,
+          evidence: 'wiki_lint contradictions 明细',
+        };
+      }
+      const overlaps = isNum(ctx.curatorOverlaps) ? ctx.curatorOverlaps : 0;
+      if (overlaps > 0) {
+        return { advice: `归档 curator 判定的 ${overlaps} 对重叠技能`, evidence: 'curator overlaps 明细' };
+      }
       return {
-        advice: `合并 rule_lint 命中的 duplicate 规则${pairs ? `：${pairs}` : ''}`,
-        evidence: 'rule_lint issues 明细',
+        advice: NO_ADVICE,
+        evidence: `redundancy 分子实测：${dups.length} 条重复规则 / ${contradFiles.length} 处 wiki 矛盾 / ${overlaps} 对 curator 重叠`,
       };
     }
     case 'confidence': {
       const rows = Array.isArray(ctx.lowConfidenceNoEvidence) ? ctx.lowConfidenceNoEvidence : [];
+      if (rows.length === 0) {
+        return { advice: NO_ADVICE, evidence: 'low-confidence 无证据清单为空，无具体条目可复核' };
+      }
       const head = '定向复核低置信且无证据的 lesson 条目';
-      const detail = rows.length ? `（${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' …' : ''}）` : '';
+      const detail = `（${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' …' : ''}）`;
       return { advice: `${head}${detail}`, evidence: 'memory id + confidence 排序列表' };
     }
     case 'bloat': {
+      const bytes = isNum(ctx.skillsBytes) ? ctx.skillsBytes : null;
+      if (bytes === null || bytes <= THRESHOLDS.BLOAT_BUDGET_BYTES) {
+        return { advice: NO_ADVICE, evidence: `skillsBytes 实测 ${bytes ?? '?'} / 预算 ${THRESHOLDS.BLOAT_BUDGET_BYTES}，未超限` };
+      }
       return {
-        advice: `归档 curator 判定陈旧/重叠的技能（当前 ${ctx.skillsBytes ?? '?'} 字节 / 预算 ${THRESHOLDS.BLOAT_BUDGET_BYTES}）`,
+        advice: `归档 curator 判定陈旧/重叠的技能（当前 ${bytes} 字节 / 预算 ${THRESHOLDS.BLOAT_BUDGET_BYTES}）`,
         evidence: 'curator overlaps / 陈旧检测输出',
       };
     }
     default:
-      return { advice: null, evidence: null };
+      return { advice: NO_ADVICE, evidence: `未知最丑维度 ${worstKey}，无可执行建议` };
   }
 }
 
