@@ -78,7 +78,7 @@ execFileSync(process.execPath, ['--check', join(root, 'lib/client.js')], { stdio
 
 // 4. route answers a snapshot ------------------------------------------------
 const ctx = makeCtx();
-apply(ctx);
+apply(ctx, {});
 const ok = await callRoute(ctx);
 assert.equal(ok.status, 200, 'status 200');
 const payload = JSON.parse(ok.body);
@@ -101,7 +101,7 @@ assert.equal(badMethod.status, 405, 'POST refused');
 // 7. a throwing loader degrades, never crashes -------------------------------
 const brokenCtx = makeCtx({ entries: undefined });
 brokenCtx.loader = { entries: () => { throw new Error('loader exploded'); } };
-apply(brokenCtx);
+apply(brokenCtx, {});
 const degraded = await callRoute(brokenCtx);
 assert.equal(degraded.status, 200, 'degrades to 200');
 const degradedBody = JSON.parse(degraded.body);
@@ -110,7 +110,7 @@ assert.equal(degradedBody.counts.total, 0, 'empty roster, not a fabricated one')
 
 // 8. a missing signal source is reported as unavailable ----------------------
 const noSignalsCtx = makeCtx({ services: {} });
-apply(noSignalsCtx);
+apply(noSignalsCtx, {});
 const noSignals = JSON.parse((await callRoute(noSignalsCtx)).body);
 assert.ok(noSignals.signals.every((s) => s.state === 'unavailable'), 'absent services read unavailable');
 assert.ok(noSignals.signals.every((s) => typeof s.reason === 'string' && s.reason.length > 0), 'with a reason');
@@ -123,7 +123,7 @@ const throwingCtx = makeCtx({
     'agint.selfModel': { stats: () => ({ count: 7 }) },
   },
 });
-apply(throwingCtx);
+apply(throwingCtx, {});
 const mixed = JSON.parse((await callRoute(throwingCtx)).body);
 const cronSignal = mixed.signals.find((s) => s.key === 'cron');
 assert.equal(cronSignal.state, 'error', 'throwing probe reads error');
@@ -132,8 +132,8 @@ assert.equal(mixed.signals.find((s) => s.key === 'metrics').value, 2, 'metrics r
 assert.equal(mixed.signals.find((s) => s.key === 'selfModel').value, 7, 'self-model reduced');
 
 // 10. kill-switch keeps the route alive but empty ----------------------------
-const offCtx = makeCtx({ config: { enabled: false } });
-apply(offCtx);
+const offCtx = makeCtx();
+apply(offCtx, { enabled: false });
 const off = JSON.parse((await callRoute(offCtx)).body);
 assert.equal(off.enabled, false, 'reports switched off');
 assert.equal(off.counts, undefined, 'no data served while off');

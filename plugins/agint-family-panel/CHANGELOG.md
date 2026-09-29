@@ -1,5 +1,22 @@
 # agint-family-panel CHANGELOG
 
+## 0.1.1 — 2026-09-29
+
+### 修复
+
+- **apply 签名不符 cordis 契约导致宿主拒绝加载**：v0.1.0 写成 `apply(ctx)` 内读
+  `ctx.config`，cordis 报 `cannot get property "config" without inject`、条目激活失败
+  （宿主日志 `dsh: warning: 1 entry did not activate`，面板从未真正挂载）。
+  改为 cordis 标准姿势 `apply(ctx, config = {})` —— config 是 apply **第二参数**，
+  与 agint-aesthetic-oracle 等成熟插件一致。`allowNonLoopback` 改为闭包常量。
+- `test/smoke.mjs` 同步：apply 第二参数传配置（此前 stub ctx 塞 `ctx.config`
+  掩盖了真实宿主差异，测试过而宿主炸）。
+
+### 验证
+
+- smoke 11 组 PASS；重启后宿主应无 `1 entry did not activate`，路由
+  `GET /api/agint-family/status` 真正注册。
+
 ## 0.1.0 — 2026-09-29
 
 首次发布：AGINT 家族面板以**宿主原生停靠面板**形态上线（此前 AGINT 没有任何浏览器半代码，

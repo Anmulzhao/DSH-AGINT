@@ -300,10 +300,15 @@ function writeJson(res, status, payload) {
 
 /**
  * Mount the panel's host half.
+ *
+ * ⛔ cordis 契约：config 是 apply 的**第二参数**（不是 ctx.config——那需要
+ * inject 声明 config，宿主不会给）。v0.1.0 曾写成 `ctx.config`，导致
+ * 「cannot get property config without inject」、条目激活失败。
  * @param {object} ctx - host context (services: webServer).
+ * @param {object} [config] - cordis 注入的插件配置（cordis.patch.yml 的 config 段）。
  */
-function apply(ctx) {
-  const config = ctx.config ?? {};
+function apply(ctx, config = {}) {
+  const allowNonLoopback = config.allowNonLoopback === true;
   let enabled = config.enabled !== false;
 
   ctx.webServer.register({
@@ -315,7 +320,7 @@ function apply(ctx) {
           writeJson(res, 200, { ok: true, enabled: false, apiPrefix: API_PREFIX, note: '面板已被 kill-switch 关闭（host 半仍在，可即时 reopen）' });
           return;
         }
-        if (config.allowNonLoopback !== true && !isLoopback(req)) {
+        if (!allowNonLoopback && !isLoopback(req)) {
           writeJson(res, 403, { ok: false, error: 'loopback-only' });
           return;
         }
