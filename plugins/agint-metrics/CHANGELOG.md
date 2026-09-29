@@ -1,5 +1,37 @@
 # Changelog — agint-metrics
 
+## 1.1.2 — 2026-09-29 修复：metrics_summary output schema 缺 meta ⇒ 宿主整条拒收
+
+**事故**：agint 自检调 `metrics_summary` 返回 `Error: tool "metrics_summary" ... schema
+validation error`——不是指标算错，是**工具压根没跑起来**。宿主拿 `output.schema`
+校验返回值，校验不过就把整条 tool result 换成错误，agint 侧只看到一句报错。
+
+**根因**：1.1.1（09-28）给 `summary()` 补了 `meta: rec.meta` 透传，但 `tools.js` 里
+`metrics_summary` 的 output schema 没同步声明 `meta`，而 `additionalProperties: false`
+⇒ 多出来的 meta 直接判非法。**同一根因的第二次发作**：09-28 钉的是 service 侧
+（summary 漏字段），这次断的是工具侧（schema 漏字段），两侧都各有一半。
+
+**为什么既有门禁没拦住**（三条一起失效，值得记住）：
+- `bin/check-tool-schemas.mjs` 只验证 schema **字面量能否编译**，不验证 service
+  返回值能否装得进去——所以修复前它照样 PASS；
+- `test/service-summary.test.js` 只钉 service 侧，不碰工具 schema；
+- 唯一的真相在宿主运行时，而静态链路没有宿主。
+
+- 修复：`metrics[].items.properties` 补 `meta: { type: 'string' }`，与 `metrics_series`
+  口径一致。**不挂 `required`**——避免单条记录 meta 缺失时整个自检工具报废
+  （宁可少一个字段，不可看不到全部指标）。
+- 新增 `test/tools-schema-contract.test.js`：真调 `apply()` 取注册的工具定义，
+  真调 `summary()`/`series()` 取真实返回，交叉断言字段集合——把这道接缝钉死。
+- **红验证**：临时撤掉 meta 声明后该测试确实变红并精确报出
+  `缺少 "cron.maxOverdueDays.meta"`（不是摆设），恢复后 18/18 绿。
+- 顺带修版本脱节：`package.json` 停在 `0.1.0`，而 manifest 是 `1.1.0`、CHANGELOG
+  是 `1.1.1`（09-28 漏 bump）。`agint-family-panel` 的 panelVersion 读 package.json
+  ⇒ 面板长期显示错误版本。三处统一到 1.1.2。
+
+**部署**：bundle 位 + 兼容镜像位两处 `lib/tools.js` 已同步（需重启 dsh web 生效）。
+
+---
+
 ## 1.1.1 — 2026-09-28 修复：summary() 透传 meta（神谕层总分虚标 100 根因）
 
 **事故**：2026-09-28 晨报（oracle-daily）美总分播 100，同日标定应为 52.4。四维里
