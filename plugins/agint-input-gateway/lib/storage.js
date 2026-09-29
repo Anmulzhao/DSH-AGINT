@@ -14,27 +14,30 @@ import { DEFAULTS } from './schema.js';
 
 // ── Zod valueSchema ────────────────────────────────────────────────────────
 
-const ConfigSchema = z.object({
+export const ConfigSchema = z.object({
   id: z.literal('config'),
   enabled: z.boolean(),
   confidenceThreshold: z.number(),
   relevanceLowQueue: z.number(),
   noiseMaxPerSource: z.number(),
-  securityAction: z.enum(['flag', 'drop', 'off']),
-  forwardEmptyDiagnosis: z.boolean(),
+  // v0.1.1：新增配置键 optional —— 生产 config 可能为空或旧格式，向后兼容。
+  securityAction: z.enum(['flag', 'drop', 'off']).optional(),
+  forwardEmptyDiagnosis: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 
-const CountersSchema = z.object({
+export const CountersSchema = z.object({
   channelId: z.string().min(1),
   fetchCount: z.number().int(),
   signalsEmitted: z.number().int(),
   signalsFiltered: z.number().int(),
   signalsDeduplicated: z.number().int(),
-  securityScanned: z.number().int(),
-  securityFlagged: z.number().int(),
-  securityDropped: z.number().int(),
+  // v0.1.1：新增计数键 optional —— 生产 counters 旧记录不含 security* 字段，
+  // 必填会令 dsh-storage-domain open 校验失败（domain 整体拒绝，gateway 初始化中断）。
+  securityScanned: z.number().int().optional(),
+  securityFlagged: z.number().int().optional(),
+  securityDropped: z.number().int().optional(),
   errorCount: z.number().int(),
   lastFetchAt: z.string().nullable(),
   createdAt: z.string(),
