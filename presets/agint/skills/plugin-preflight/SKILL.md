@@ -117,6 +117,19 @@ for (const evil of ['../escape.md', '../../etc/passwd.md']) {
 
 plugin-check.sh 在 dim9 扫描外会追加一条 **soft warning**（不阻断）：若 `manifest.spec.permissions.fs` 非空但 smoke 没出现 `'foo/bar.md'` / `'../escape.md'` 这类字符串字面量，提示「建议加跨平台 fixture」。
 
+#### 第 2 步补强（v0.5 新增）：静默零（silent-zero）fixture
+
+若 plugin 里有**读本地存储做自观测 / 统计 / 检测**的代码（`*.jsonl`、metrics JSON、规则表），smoke **必须**额外覆盖一类 case：**喂真实 schema 的样本，断言检测器真的产出信号**。
+
+> **2026-09-29 事故**：agint-input-gateway 的 self-observation channel 5 个检测器里 4 个恒返回 0 —— 判定条件读的是自造字段（`status==='error'`、`errorCount`、`severity`），真实存储却是 `agint_tool_stats.jsonl` 的 boolean `ok`，以及 metrics / rules 里 `tables.*[uuid]` 下按 `id,key,label,value` 记的条目、规则用的是 `level`（L1-L4）不是 `severity`。结果是 force_fetch `ok=true in=0 emitted=0`、errors=0，**看起来健康，其实静默失明**：lint 全绿、smoke exit 0，全绿掩盖了失明。
+
+smoke 里至少断言三件事：
+- **正样本**：用真实 schema 造的坏数据（`ok:false` 的工具调用、下降的 `rules.adherencePct`、真实 `level:'L1'` 的 deny 规则）必须产出 ≥1 条信号
+- **负样本**：全好数据必须产出 0 条（防"永远有信号"的反向失明）
+- **接线状态**：未实现的检测器不许伪装成在跑 —— status / `health()` 显式暴露活跃子源数（如 `subSources: 1/5`）与每个检测器是否 active，让"0 信号"与"检测器全瞎"在状态层可区分
+
+写检测逻辑前**先取证再写码**：dump 真实存储（字段名、成功标记是 boolean 还是字符串、条目在顶层还是 `tables.*[uuid]`），不得凭字段名直觉假设；阈值必须按真实规模重估（真实 deny=2、L1=2 时，`>=10` 的阈值等于永久静默）。修好前在 shadow 档观察，防止一次性被历史信号刷屏。
+
 ### 第 3 步：跑 smoke
 
 ```sh
