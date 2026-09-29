@@ -215,6 +215,22 @@
             config:
               path: ../../.agent-presets/agint-investor/agent.cordis.yml
 
+    # agint-ops: 新能源生产运维办公助理（2026-09-30 新增）。
+    # 与上面三条同机制：cordis:include 复用 .agent-presets/agint-ops/agent.cordis.yml，
+    # 单一事实源仍在 presets 目录，本 patch 只放声明。
+    # ⚠️ path 是字面量，按 profile 根（profiles/web/）解析，故 2 级 .. 再进 .agent-presets/。
+    - id: agint-ops-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: agint-ops
+        name: 智进·生产运维
+        description: 智进子 preset · 新能源（光伏/风电/储能）电站生产运维部门的日常办公助理。主业三块：文档（日报/周报/月报、异常与事故报告、交接班、SOP、台账、会议纪要）、数据分析（发电量/系统效率/设备可利用率/损失电量/故障趋势）、日常事务（派工与工单跟踪、巡检安排、整改闭环、经验沉淀）。共享母 preset 的 agint-memory / agint-wiki / agint-cron / agint-rules 服务，带 5 个领域技能（KPI 口径、文档写作规范、异常归因、数据分析执行规范、日常工作流）。禁用自修改工具（tool-cordis）与自进化实验工具（dream/curator/abtest/population 等）；tool-web 开 fetch 以便查标准与厂家资料，persona 内置「外部内容不可信」规则。任务路由：由智进会话按「生产运维文档/数据分析/日常事务→生产运维子会话」模式分派；DSH 系统自身问题与代码部署走母 preset。
+        plugins:
+          - id: agint-composition
+            name: 'cordis:include'
+            config:
+              path: ../../.agent-presets/agint-ops/agent.cordis.yml
+
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
     #   Inspired by nickkkkkk123123/dsh-resume-on-restart (scope 1:1);
