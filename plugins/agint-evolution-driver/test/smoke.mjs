@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, isAbsolute, resolve as pathResolve } from 'node:path';
 
 import {
   apply,
@@ -850,6 +850,25 @@ test('T26b: verifyTargetFile —— .js 走 node --check；.md 跳过；目录�
     const dir = await verifyTargetFile({ repoRoot, relPath: 'plugins/demo', sandbox });
     assert.equal(dir.mode, 'sandbox');
     assert.equal(seen.length, 1);
+
+    // ⭐ v0.2.11：交给 runSmoke 的必须是 repoRoot 拼出的**绝对路径**。
+    // 真实事故（v0.2.7，2026-09-29 05:26Z）：driver 传的是相对路径 commit.path，
+    // 而 sandbox 内部 `const targetPath = resolve(target.path)`
+    // （agint-quality-sandbox/lib/index.js:290，Node path.resolve 按 process.cwd() 解析）
+    // —— 宿主 cwd 是 C:\Users\Administrator\Desktop，于是 bin/plugin-check.sh
+    // 被验成 Desktop\bin\plugin-check.sh，failure_pattern 记 plugin-not-found。
+    // 那次验的根本不是仓库里的文件，却一路走到了 policy。
+    assert.ok(isAbsolute(seen[0]),
+      `传给 runSmoke 的必须是绝对路径，实际是 ${JSON.stringify(seen[0])} —— 相对路径会被 sandbox 按 cwd 解析`);
+    assert.equal(seen[0], join(repoRoot, 'plugins', 'demo'),
+      '必须以 repoRoot 为基准拼，不能依赖 cwd');
+    // 反向自查：同样的相对路径若落到 cwd 下，那里并没有这个目录。
+    // 这条不是重复断言，是把「为什么绝对路径不可省」钉成可执行的判据。
+    assert.notEqual(
+      pathResolve('plugins/demo'),
+      seen[0],
+      '若两者相等，说明路径真的被 cwd 解析了（本测试运行 cwd 下不存在该目录时必红）',
+    );
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }
