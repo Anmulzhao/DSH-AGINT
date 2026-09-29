@@ -22,13 +22,28 @@ function row(id, fiberState = 2, disabled = false) {
   return { options: { id, name: `./plugins/${id}/lib/index.js` }, disabled, fiber: { state: fiberState } };
 }
 
-/** Build a stub host context. */
+/**
+ * Build a stub host context.
+ *
+ * ⛔ 用 Proxy 复刻 cordis 语义：**读未注入的属性会抛**（`cannot get property X
+ * without inject`），而不是返回 undefined。v0.1.0 的 apply 写成 `ctx.config`
+ * 就是被「普通对象假 ctx 静默返回 undefined」放过去的——本地 11 组全绿，真宿主
+ * 直接拒绝加载。假 ctx 必须比真宿主更严格，否则测试是装饰品。
+ *
+ * 白名单 = manifest 声明的 inject/optionalInject + cordis Context 内建方法。
+ * 注意 `config` **不在**白名单：它是 apply 的第二参数，绝不能从 ctx 上读。
+ */
+const CTX_ALLOWED = new Set([
+  'webServer', 'loader', // inject / 本插件实际声明
+  'provide', 'get', 'effect', 'on', // cordis Context 内建
+  '_registered', '_provided', // 测试侧探针
+]);
+
 function makeCtx(overrides = {}) {
   const registered = [];
   const provided = {};
   const entries = overrides.entries ?? [row('agint-memory'), row('agint-cron'), row('agint-preset'), row('agint-mystery'), row('other-plugin')];
-  return {
-    config: overrides.config ?? {},
+  const base = {
     loader: { entries: () => entries },
     webServer: {
       register(route) {
@@ -42,6 +57,17 @@ function makeCtx(overrides = {}) {
     _registered: registered,
     _provided: provided,
   };
+  return new Proxy(base, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (typeof prop === 'symbol') return undefined;
+      if (CTX_ALLOWED.has(prop)) return undefined;
+      throw new Error(`cannot get property ${String(prop)} without inject`);
+    },
+    has(target, prop) {
+      return prop in target || CTX_ALLOWED.has(prop);
+    },
+  });
 }
 
 /** Call a registered route handler and capture the response. */
@@ -168,4 +194,14 @@ assert.equal(off.counts, undefined, 'no data served while off');
 // 11. service face -----------------------------------------------------------
 assert.equal(typeof ctx._provided['agint.familyPanel']?.status, 'function', 'provides agint.familyPanel');
 
-console.log('agint-family-panel smoke: PASS (11 groups)');
+// 13. cordis 契约：config 只能来自 apply 第二参数 ------------------------------
+// v0.1.0 事故：apply 写成 `ctx.config`，本测试用的普通对象假 ctx 静默返回
+// undefined ⇒ 本地全绿、真宿主抛 `cannot get property config without inject`
+// ⇒ 面板挂上去了但宿主半没起来（接口 401）。这里先确认陷阱已武装，再确认
+// apply 在陷阱之上仍能跑完——两者缺一都说明测试在放水。
+const trapCtx = makeCtx();
+assert.throws(() => trapCtx.config, /without inject/, '假 ctx 对未注入属性必须抛（陷阱已武装）');
+assert.doesNotThrow(() => { apply(trapCtx, { enabled: true }); }, 'apply 不得从 ctx 上读 config');
+assert.doesNotThrow(() => { apply(makeCtx(), {}); }, '默认参下 apply 亦不得触碰 ctx.config');
+
+console.log('agint-family-panel smoke: PASS (12 groups)');

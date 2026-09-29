@@ -1,5 +1,21 @@
 # agint-family-panel CHANGELOG
 
+## [Unreleased]
+
+### 测试加固（无功能变更）
+
+- **假 ctx 改用 Proxy 复刻 cordis 语义**：`makeCtx()` 此前返回带 `config` 的普通
+  对象 —— 读未注入属性静默返回 `undefined`，于是 0.1.0 那个
+  `apply(ctx){ ctx.config }` 的 bug **本地 11 组全绿、真宿主直接拒绝加载**。
+  现在白名单外的属性读取一律抛
+  `cannot get property X without inject`，`config` 明确不在白名单（它是 apply
+  第二参数，绝不能从 ctx 上读）。
+- **新增第 13 组断言（cordis 契约）**：先断言陷阱已武装（`ctx.config` 读取必抛），
+  再断言 `apply` 在陷阱之上仍能跑完 —— 缺任一都说明测试在放水。
+- **反向对照已做**：把 `void ctx.config` 塞回 `apply` 第一行，测试在第 4 组即抛
+  `cannot get property config without inject`（与真宿主报错一致），确认新断言
+  真能抓到该类回归；验毕还原源码，smoke 12 组 PASS。
+
 ## 0.1.2 — 2026-09-29
 
 ### 分组语义修正
