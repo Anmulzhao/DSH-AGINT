@@ -5,15 +5,18 @@
  * 有序列表。**纯函数**：输入（capabilities + calibrationSummary + 配置 +
  * 当前时间）→ 输出（待练域列表 + unverifiable 列表），无副作用。
  *
- * 筛选规则（§4.3 [1]）：
+ * 筛选规则（§4.3 [1]，v0.1.2 扩展 CANNOT）：
  *   - status === 'UNCERTAIN'                    → 必练（能力缺口）
+ *   - status === 'CANNOT'                       → 必练（明确能力缺口，
+ *                                                 优先级最高，见下 gapWeight）
  *   - calibrationSummary.miscalibrated 命中     → 必练（校准失准，缺口同级）
  *   - status === 'CAN' 但 lastVerifiedAt 超过
  *     stale_reverify_days 未复验                → 复验
  *
  * 排序：按「缺口大小 × 久未验证」。
  *   score = gapWeight × (nowMs − lastVerifiedAtMs)
- *   gapWeight：UNCERTAIN = 2，miscalibrated = 2（缺口同级，叠加至多 4），
+ *   gapWeight：CANNOT = 3（明确能力缺口，最高优先），
+ *              UNCERTAIN = 2，miscalibrated = 2（缺口同级，叠加至多 4），
  *              CAN 复验 = 1
  *   lastVerifiedAt 缺失 → 视为 epoch（最久未验证，优先练）。
  *
@@ -50,6 +53,15 @@ export function probeDomains(snapshot, { staleReverifyDays = 30, nowMs = Date.no
     let reason = [];
     let gapWeight = 0;
 
+    if (status === 'CANNOT') {
+      // v0.1.2（2026-09-29 激活上游）：CANNOT=明确"不会做"的能力缺口，
+      // 比 UNCERTAIN（不确定会不会）更该练，gapWeight 最高。
+      // 此前 CANNOT 完全不在筛选条件里 —— 与"零挑战"直接相关
+      // （self-model 能力画像 integration/correctness 都是 CANNOT，
+      //  probe 却永远返回空待练域）。
+      reason.push('capability CANNOT（明确能力缺口）');
+      gapWeight = Math.max(gapWeight, 3);
+    }
     if (status === 'UNCERTAIN') {
       reason.push('capability UNCERTAIN（能力缺口）');
       gapWeight = Math.max(gapWeight, 2);

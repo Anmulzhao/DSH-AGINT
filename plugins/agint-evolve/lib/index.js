@@ -179,6 +179,7 @@ function apply(ctx, config) {
     const rules = ctx.get('agint.rules');
     const metrics = ctx.get('agint.metrics');
     const sessionQuery = ctx.get('sessionQuery');
+    const inputGateway = ctx.get('agint.inputGateway');
 
     const snapshot = { collectedAt: nowIso() };
 
@@ -210,6 +211,11 @@ function apply(ctx, config) {
         const arr = Array.isArray(list) ? list : [];
         return { count: arr.length, latest: arr[0] ? (arr[0].title ?? arr[0].id ?? '') : '' };
       });
+    }
+
+    // v0.7.2：多源输入网关（外部信号 Channel 状态 + security 门禁计数）
+    if (inputGateway && typeof inputGateway.getStatus === 'function') {
+      snapshot.inputGateway = await safe(() => inputGateway.getStatus());
     }
 
     return snapshot;

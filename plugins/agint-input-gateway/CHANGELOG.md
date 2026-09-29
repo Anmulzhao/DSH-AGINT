@@ -1,10 +1,24 @@
 # Changelog
 
-## [Unreleased]
+## 0.1.1 — 2026-09-29
 
-> 0.1.0（`8dee9a9`）之后至今的改动，此前未记录，一并补上。
+> 0.1.0（`8dee9a9`）之后至今的改动，此前未记录，一并补上；本轮定稿为 0.1.1。
 
 ### 新增
+
+- **C2 sessionIntegrity 检测器实装**（`lib/channels/self-observation.js`）——0.1.0 留接口 P1 实现
+  - `detectSessionIntegrity`：zstd 解压最近 8 个会话（复用 agint-session-extract 探测逻辑），检测坏行 / seq 断裂 / 缺 content / 未配对 call，产出 session-integrity 信号
+  - 导出 `listRecentSessions` / `inspectSessionFile` 供复用与测试；zstd 缺失软降级返回空
+  - `health()` 更新为 `active: true`
+- **security 模块**（`lib/security.js` 新建）：8 条外部信号 prompt injection 规则（中英指令劫持 / 覆盖 / 身份劫持 / 系统提示词探测 / 伪造标签 / 紧急施压）
+  - `checkExternalText` / `checkSignal` / `getSecurityRules` 导出
+  - gateway 流程插入 2.5 security 门禁：`securityAction=flag`（默认，命中标记放行）/ `drop`（命中丢弃）/ `off`（跳过）；检查范围 external / adversarial / cross-agent 三类外部信号
+  - 计数面 `securityScanned/securityFlagged/securityDropped` + `getStatus().security{action,ruleCount,checkedTypes}`
+- **C5 跨 Agent Channel**（`lib/channels/cross-agent.js` 新建）：OV 检索增量 diff + 会话聚类 pattern + 跨 preset 只读概览
+  - 增量去重状态 `DSH_HOME/storages/agint_input_gateway_cross_agent_state.json`
+  - 调度 `C5_CRON=0 5 * * 0`（每周日 05:00）
+- **adversarial 空壳事件转发**：`forwardEmptyDiagnosis=true`（默认）时 clusterCount=0 空壳 diagnosis 事件转发为 `counterfactual-empty-<reportId>` 信号（影子期诊断链空转可观测）
+- schema/storage 扩展：`CHANNEL_IDS.CROSS_AGENT`、`KNOWN_TOPICS` 加 cross-agent.diff/pattern、`ConfigSchema.securityAction/forwardEmptyDiagnosis`、CountersSchema 加 security* 计数
 
 - **C4 对抗挑战 Channel**（`lib/channels/adversarial.js`）——0.1.0 的「不做什么」把 C4 列为 P2，本次提前落地
   - 订阅 `diagnosis.completed` / `curriculum.challenge-verdicted` / `curriculum.boundary-probed`，只转发失败与不可验证边界

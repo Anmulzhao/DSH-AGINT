@@ -12,7 +12,8 @@
  *   5. session 完整性    — P2 留接口（需 session/event 事件流）
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
@@ -281,12 +282,177 @@ function detectCompressLoss(ctx) {
   }
 }
 
+// ── 子源 5：session 完整性（v0.3.0 实装）──────────────────────────────────
+
+/** zstd 二进制解析（对齐 agint-session-extract 的 resolveZstdBin 语义） */
+function resolveZstdBin() {
+  if (process.env.ZSTD_BIN) return process.env.ZSTD_BIN;
+  const fallback = process.platform === 'win32'
+    ? ['D:/Tools/zstd/zstd.exe', 'C:/Tools/zstd/zstd.exe', 'D:/Tools/zstd/zstd', 'C:/Tools/zstd/zstd']
+    : ['/usr/bin/zstd', '/usr/local/bin/zstd', '/bin/zstd'];
+  for (const p of fallback) {
+    try { if (existsSync(p)) return p; } catch { /* ignore */ }
+  }
+  return 'zstd';
+}
+
+const SESSION_FILE_NAMES = Object.freeze([
+  'session.v4.jsonl.zstd',
+  'session.v3.jsonl.zstd',
+  'session.jsonl.zstd',
+]);
+
 /**
- * 子源 5：session 完整性
- * P2 留接口。需 session/event 事件流。
+ * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
+ * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
+ */
+export function listRecentSessions(maxCount = 8) {
+  const root = join(dshHome(), 'sessions');
+  let workspaces;
+  try { workspaces = readdirSync(root, { withFileTypes: true }); } catch { return []; }
+  const found = [];
+  for (const ws of workspaces) {
+    if (!ws.isDirectory()) continue;
+    const wsDir = join(root, ws.name);
+    let dirs;
+    try { dirs = readdirSync(wsDir, { withFileTypes: true }); } catch { continue; }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const dirPath = join(wsDir, d.name);
+      for (const fname of SESSION_FILE_NAMES) {
+        const p = join(dirPath, fname);
+        try {
+          const st = statSync(p);
+          found.push({ path: p, sessionId: d.name, mtimeMs: st.mtimeMs });
+          break;
+        } catch { /* 该格式不存在 */ }
+      }
+    }
+  }
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return found.slice(0, maxCount);
+}
+
+/**
+ * 检测单个会话文件的完整性（解压 + 解析 + 结构检查）。
+ * 真实 v4 事件形状（2026-09-29 探针）：
+ *   首行 {type:'session', version, id, createdAt, ...}（无 seq）
+ *   后续 {type, seq:0,1,2..., time, data:{...}}
+ * 检测项：
+ *   - 坏行：JSON.parse 失败的行
+ *   - seq 断裂：相邻事件 seq 跳跃次数
+ *   - 缺 content：有 content/message 字段但内容为空的事件
+ *   - 未配对 call：tool/call 的 callId 无对应 tool/result
+ * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
+ */
+export function inspectSessionFile(file) {
+  const bin = resolveZstdBin();
+  let text;
+  try {
+    text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    return { decompressError: String(e?.message || e).slice(0, 200) };
+  }
+  const lines = text.split('\n').filter((l) => l.trim());
+  let badLines = 0;
+  let prevSeq = null;
+  let seqGaps = 0;
+  let missingContent = 0;
+  const callIds = new Set();
+  const resultIds = new Set();
+
+  for (const line of lines) {
+    let ev;
+    try { ev = JSON.parse(line); } catch { badLines += 1; continue; }
+    const seq = ev.seq;
+    if (typeof seq === 'number') {
+      if (prevSeq !== null && seq !== prevSeq + 1) seqGaps += 1;
+      prevSeq = seq;
+    }
+    const data = ev.data;
+    if (data && typeof data === 'object') {
+      const hasContentField = data.content !== undefined || data.message !== undefined;
+      if (hasContentField) {
+        const content = data.content ?? data.message?.content;
+        const empty = content == null
+          || (typeof content === 'string' && content.trim() === '')
+          || (Array.isArray(content) && content.length === 0);
+        if (empty) missingContent += 1;
+      }
+    }
+    if (ev.type === 'tool/call') {
+      const callId = data?.callId;
+      if (callId) callIds.add(callId);
+    }
+    if (ev.type === 'tool/result') {
+      const tcId = data?.message?.content?.[0]?.toolCallId;
+      if (tcId) resultIds.add(tcId);
+    }
+  }
+
+  const unpairedCalls = [...callIds].filter((id) => !resultIds.has(id)).length;
+  const isRecent = Date.now() - file.mtimeMs < 24 * 60 * 60 * 1000;
+  return {
+    sessionId: file.sessionId,
+    path: file.path,
+    totalLines: lines.length,
+    badLines,
+    badLineRate: lines.length ? badLines / lines.length : 0,
+    seqGaps,
+    missingContent,
+    unpairedCalls,
+    isRecent,
+  };
+}
+
+/**
+ * 子源 5：session 完整性（v0.3.0）。
+ * 数据源：~/.dsh/sessions/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
+ * 最近 8 个会话（mtime 排序）。zstd 不可用时整体软降级返回 []（不误报"全会话损坏"）。
  */
 function detectSessionIntegrity() {
-  return [];
+  if (!existsSync(resolveZstdBin())) return [];     // zstd 缺失 → 软降级
+  const files = listRecentSessions(8);
+  if (files.length === 0) return [];
+
+  const issues = [];
+  for (const f of files) {
+    const insp = inspectSessionFile(f);
+    if (insp.decompressError) {
+      issues.push({ sessionId: f.sessionId, flags: ['undecompressible'], totalLines: 0, badLines: 0, badLineRate: 0, seqGaps: 0, missingContent: 0, unpairedCalls: 0, path: f.path });
+      continue;
+    }
+    const flags = [];
+    if (insp.badLines >= 5 && insp.badLineRate > 0.05) flags.push('malformed-lines');
+    if (insp.seqGaps >= 5) flags.push('seq-gaps');
+    if (insp.missingContent >= 3) flags.push('missing-content');
+    if (!insp.isRecent && insp.totalLines > 0 && insp.unpairedCalls / insp.totalLines > 0.2) {
+      flags.push('unpaired-calls');
+    }
+    if (flags.length) issues.push({ ...insp, flags });
+  }
+
+  if (issues.length === 0) return [];
+  return issues.map((i) => ({
+    signalId: 'session-integrity-' + i.sessionId + '-' + Date.now(),
+    source: 'sessions',
+    signalType: 'session.integrity',
+    payload: {
+      sessionId: i.sessionId,
+      flags: i.flags,
+      totalLines: i.totalLines,
+      badLines: i.badLines,
+      badLineRate: Number(Number(i.badLineRate).toFixed(4)),
+      seqGaps: i.seqGaps,
+      missingContent: i.missingContent,
+      unpairedCalls: i.unpairedCalls,
+      note: '会话 ' + i.sessionId + ' 完整性异常：' + i.flags.join('；'),
+    },
+    confidence: 0.7,
+    relevance: 0.7,
+    occurredAt: new Date().toISOString(),
+    rawRef: i.path,
+  }));
 }
 
 /**
@@ -318,9 +484,9 @@ export const selfObservationChannel = {
         metricRegression: { active: true, schema: 'error-metric snapshot diff', threshold: 'current>prev*1.5 & increase>5' },
         ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=1 in last 200 (baseline=0)' },
         compressLoss: { active: true, depends: 'agint.compressGuard' },
-        sessionIntegrity: { active: false, reason: 'P2: needs session/event stream' },
+        sessionIntegrity: { active: true, schema: '~/.dsh/sessions/<ws>/<sid>/session.{v3,v4,}.jsonl.zstd', threshold: 'badLines>=5&>5% | seqGaps>=5 | missingContent>=3 | unpaired>20%(非进行中)' },
       },
-      note: 'v0.2: metricRegression implemented via snapshot diff; only sessionIntegrity remains P2',
+      note: 'v0.3: sessionIntegrity 实装（zstd 解压最近 8 会话，检测坏行/seq 断裂/缺 content/未配对 call）',
     };
   },
 };

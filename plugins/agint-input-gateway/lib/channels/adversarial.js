@@ -2,7 +2,9 @@
  * C4 对抗挑战 Channel — 订阅已有模块事件，只转发失败/边界/异常结果。
  *
  * 不新建采集逻辑，只做事件转发和过滤：
- *   diagnosis.completed → 有诊断结果时转发
+ *   diagnosis.completed → 有诊断结果时转发；v0.3.0 起 clusterCount=0 的空壳
+ *                         事件也转发（forwardEmptyDiagnosis，默认开）——
+ *                         让"诊断链空转"对下游可见，而不是静默过滤
  *   curriculum.challenge-verdicted → 只转发 fail
  *   curriculum.boundary-probed → 有不可验证边界时转发
  *
@@ -16,13 +18,16 @@ const CHANNEL_TYPE = 'adversarial';
 let _queue = [];
 let _subscribed = false;
 let _initError = null;
+// v0.3.0：diagnosis.completed 空壳事件（clusterCount=0）是否转发（默认开）
+let _forwardEmptyDiagnosis = true;
 
 /**
  * 初始化事件订阅。在 Gateway 注册后由 index.js 调用。
  * @param {object} ctx — 最小 ctx（含 get/effect）
  */
-function initSubscriptions(ctx) {
+function initSubscriptions(ctx, config = {}) {
   if (_subscribed) return;
+  _forwardEmptyDiagnosis = config?.forwardEmptyDiagnosis !== false;
 
   try {
     let subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
@@ -52,25 +57,47 @@ function initSubscriptions(ctx) {
         const now = new Date().toISOString();
 
         try {
-          // diagnosis.completed: 有诊断结果才转发
+          // diagnosis.completed: 有诊断结果转发；无结果（空壳）默认也转发——
+          // 让"诊断链空转"成为可见信号（2026-09-29 激活上游事件源）。
           if (topic === 'diagnosis.completed') {
-            if ((p.clusterCount ?? 0) === 0) return; // 无诊断结果，静默
-            _queue.push({
-              signalId: `counterfactual-${p.reportId || Date.now()}`,
-              channelId: CHANNEL_ID,
-              channelType: CHANNEL_TYPE,
-              source: 'diagnosis',
-              signalType: 'counterfactual-result',
-              payload: {
-                reportId: p.reportId,
-                clusterCount: p.clusterCount,
-                rootCauses: p.rootCauseDistribution,
-              },
-              confidence: 0.8,
-              relevance: 0.7,
-              occurredAt: p.evaluatedAt || now,
-              rawRef: `diagnosis:${p.reportId}`,
-            });
+            if ((p.clusterCount ?? 0) === 0) {
+              if (!_forwardEmptyDiagnosis) return; // 显式关闭空壳转发时静默
+              _queue.push({
+                signalId: `counterfactual-empty-${p.reportId || Date.now()}`,
+                channelId: CHANNEL_ID,
+                channelType: CHANNEL_TYPE,
+                source: 'diagnosis',
+                signalType: 'counterfactual-result',
+                payload: {
+                  reportId: p.reportId,
+                  clusterCount: 0,
+                  rootCauses: null,
+                  empty: true,
+                  note: '诊断链空转：report 无聚类结果（annotations/clusters 为空），非 Gateway bug',
+                },
+                confidence: 0.5,
+                relevance: 0.5,
+                occurredAt: p.evaluatedAt || now,
+                rawRef: `diagnosis:${p.reportId}`,
+              });
+            } else {
+              _queue.push({
+                signalId: `counterfactual-${p.reportId || Date.now()}`,
+                channelId: CHANNEL_ID,
+                channelType: CHANNEL_TYPE,
+                source: 'diagnosis',
+                signalType: 'counterfactual-result',
+                payload: {
+                  reportId: p.reportId,
+                  clusterCount: p.clusterCount,
+                  rootCauses: p.rootCauseDistribution,
+                },
+                confidence: 0.8,
+                relevance: 0.7,
+                occurredAt: p.evaluatedAt || now,
+                rawRef: `diagnosis:${p.reportId}`,
+              });
+            }
           }
 
           // curriculum.challenge-verdicted: 只转发 fail

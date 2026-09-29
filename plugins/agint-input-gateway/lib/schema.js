@@ -38,6 +38,12 @@ export const DEFAULTS = Object.freeze({
   fetchTimeoutMs: 30_000,      // 单 Channel fetch 超时
   cronCheckIntervalMs: 60 * 1000,  // 每分钟检查一次是否到 fetch 时间
   payloadMaxBytes: 2048,       // payload ≤2KB
+  // security 门禁（v0.3.0）：外部信号 prompt injection 检测
+  //   action=flag（默认，命中标记放行）| drop（命中丢弃）| off（不检测）
+  securityAction: 'flag',
+  // C4 对抗 Channel（v0.3.0）：diagnosis.completed 空壳事件（clusterCount=0）
+  // 是否也转发——让"诊断链空转"对下游可见，而不是静默过滤
+  forwardEmptyDiagnosis: true,
 });
 
 /** C2 系统自观测 Channel 的 cron（每周日 02:00，在 dream 03:00 之前） */
@@ -45,6 +51,9 @@ export const C2_CRON = '0 2 * * 0';
 
 /** C3 外部世界 Channel 的 cron（每周日 04:00，错峰） */
 export const C3_CRON = '0 4 * * 0';
+
+/** C5 跨 Agent Channel 的 cron（每周日 05:00，错峰；C3 04:00 之后 1h） */
+export const C5_CRON = '0 5 * * 0';
 
 /** C4 对抗挑战 Channel 的 cron（每天 03:30，dream 03:00 之后半小时，事件最多压 24h） */
 export const C4_CRON = '30 3 * * *';
@@ -62,6 +71,7 @@ export const CHANNEL_IDS = Object.freeze({
   SELF_OBSERVATION: 'self-observation',
   EXTERNAL: 'external-git',
   ADVERSARIAL: 'adversarial',
+  CROSS_AGENT: 'cross-agent',
 });
 
 /** eventBus topic 精确匹配——预定义的 topic 集合（不支持 wildcard） */
@@ -75,4 +85,6 @@ export const KNOWN_TOPICS = Object.freeze([
   'input.signal.adversarial.counterfactual-result',
   'input.signal.adversarial.curriculum-result',
   'input.signal.adversarial.boundary-divergence',
+  'input.signal.cross-agent.diff',
+  'input.signal.cross-agent.pattern',
 ]);

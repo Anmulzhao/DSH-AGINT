@@ -118,3 +118,36 @@ test('coolingDomains：无 lastGeneratedAt 或空列表 → 不冷却', () => {
   assert.deepEqual(coolingDomains([], { cooldownHours: 24, nowMs: NOW }), []);
   assert.deepEqual(coolingDomains([{ domain: 'x', lastGeneratedAt: null }], { cooldownHours: 24, nowMs: NOW }), []);
 });
+
+
+// ── v0.1.2（2026-09-29）：CANNOT 明确能力缺口纳入待练 ───────────────────
+
+test('CANNOT 域必练（v0.1.2 激活上游：明确能力缺口）', () => {
+  const snap = makeSnapshot([
+    makeCapability('codegen', 'CANNOT', { lastVerifiedAt: '2026-09-07T00:00:00Z' }),
+  ]);
+  const { domains } = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW });
+  assert.equal(domains.length, 1);
+  assert.equal(domains[0].domain, 'codegen');
+  assert.ok(domains[0].reason.some((r) => r.includes('CANNOT')));
+});
+
+test('CANNOT 优先级高于 UNCERTAIN（gapWeight 3 → 排最前）', () => {
+  const snap = makeSnapshot([
+    makeCapability('codegen', 'UNCERTAIN', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+    makeCapability('codegen', 'CANNOT', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+  ]);
+  const { domains } = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW });
+  assert.deepEqual(domains.map((d) => d.domain), ['codegen']);
+  assert.ok(domains[0].reason.some((r) => r.includes('CANNOT')));
+});
+
+test('CANNOT 但不在模板域内 → 诚实留白进 unverifiable（C1/Q5 不变）', () => {
+  const snap = makeSnapshot([
+    makeCapability('some-non-template-domain', 'CANNOT', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+  ]);
+  const { domains, unverifiable } = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW });
+  assert.equal(domains.length, 0);
+  assert.equal(unverifiable.length, 1);
+  assert.equal(unverifiable[0].domain, 'some-non-template-domain');
+});

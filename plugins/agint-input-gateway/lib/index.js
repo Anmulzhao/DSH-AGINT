@@ -17,7 +17,8 @@ import { InputGateway } from './gateway.js';
 import { selfObservationChannel } from './channels/self-observation.js';
 import { externalGitChannel } from './channels/external-git.js';
 import { adversarialChannel, initSubscriptions } from './channels/adversarial.js';
-import { PLUGIN_NAME, C2_CRON, C3_CRON, C4_CRON } from './schema.js';
+import { crossAgentChannel } from './channels/cross-agent.js';
+import { PLUGIN_NAME, C2_CRON, C3_CRON, C4_CRON, C5_CRON } from './schema.js';
 import { spec, emptyConfig, packConfig, emptyCounters } from './storage.js';
 
 const name = PLUGIN_NAME;
@@ -30,6 +31,8 @@ function apply(ctx, config) {
     confidenceThreshold: config?.confidenceThreshold ?? 0.3,
     relevanceLowQueue: config?.relevanceLowQueue ?? 0.2,
     noiseMaxPerSource: config?.noiseMaxPerSource ?? 5,
+    securityAction: config?.securityAction ?? 'flag',
+    forwardEmptyDiagnosis: config?.forwardEmptyDiagnosis !== false,
   };
 
   let domain = null;
@@ -116,16 +119,20 @@ function apply(ctx, config) {
 
     // 注册 C4 Channel（对抗挑战：订阅已有事件，只转发失败/边界）
     gateway.registerChannel(adversarialChannel);
-    initSubscriptions(ctx);
+    initSubscriptions(ctx, cfg);
+
+    // 注册 C5 Channel（跨 Agent：OpenViking 检索 / 会话聚类 / 跨 preset 只读差异）
+    gateway.registerChannel(crossAgentChannel);
 
     // 启动调度
     schedulerDisposer = gateway.startScheduler({
       'self-observation': C2_CRON,
       'external-git': C3_CRON,
       'adversarial': C4_CRON,
+      'cross-agent': C5_CRON,
     });
 
-    debug(`initialized: 3 channels (self-observation=${C2_CRON}, external-git=${C3_CRON}, adversarial=${C4_CRON})`);
+    debug(`initialized: 4 channels (self-observation=${C2_CRON}, external-git=${C3_CRON}, adversarial=${C4_CRON}, cross-agent=${C5_CRON})`);
   }).catch((e) => {
     console.error(`[${name}] init failed:`, e?.message ?? e);
   });

@@ -1,6 +1,18 @@
 # CHANGELOG
 
-## 0.1.1（2026-09-09 · 挂载 prod 前修复）
+## 0.1.2（2026-09-29 · 激活上游：CANNOT 明确能力缺口纳入待练）
+
+### 修复
+
+- **boundary-probe 筛选规则补 CANNOT**（`lib/boundary-probe.js`）。此前筛选条件只认
+  UNCERTAIN / miscalibrated / CAN 超期，`CANNOT` 完全不在条件里——self-model 能力画像
+  integration/correctness 都是 CANNOT，probe 却永远返回空待练域（「curriculum 零挑战」根因）。
+  现 CANNOT 以 `gapWeight=3` 纳入（高于 UNCERTAIN=2），reason 标注 `capability CANNOT（明确能力缺口）`。
+  模板域外 CANNOT 仍走 C1/Q5 诚实留白进 `unverifiable`（设计不变）。
+
+### 验证
+
+- boundary-probe 测试 +3 项 CANNOT 用例（必练 / 优先级最高 / 模板域外留白）；全插件测试 53/53 PASS。
 
 挂载冒烟（mock ctx + host 真代码）抓出两个 blocker，均在 defineTool / 服务注册
 路径上，不修则挂载即失败或核心功能残废。

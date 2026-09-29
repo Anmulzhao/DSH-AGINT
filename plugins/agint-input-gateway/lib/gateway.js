@@ -21,6 +21,15 @@ import {
 import {
   emptyCounters, packCounters, emptyChannelState, packDedup,
 } from './storage.js';
+import { checkSignal, getSecurityRules } from './security.js';
+
+// security 门禁检查范围：外部来源信号（外部世界 / 对抗 / 跨 Agent）。
+// 内部通道（self-observation）与 human 不检 —— 它们不是"外部信号"。
+const SECURITY_CHECKED_TYPES = new Set([
+  CHANNEL_TYPES.EXTERNAL,
+  CHANNEL_TYPES.ADVERSARIAL,
+  CHANNEL_TYPES.CROSS_AGENT,
+]);
 
 export class InputGateway {
   /**
@@ -48,6 +57,9 @@ export class InputGateway {
     this._dedup = new Map();
     /** @type {Map<string, Map<string, number>>} channelId → Map<source:signalType, countInWindow> */
     this._noise = new Map();
+
+    // security 门禁动作（flag=标记放行 / drop=丢弃 / off=不检测）
+    this._securityAction = config?.securityAction ?? DEFAULTS.securityAction;
   }
 
   // ── Channel 注册 ────────────────────────────────────────────────────────
@@ -220,6 +232,9 @@ export class InputGateway {
     counters.signalsEmitted += result.emitted;
     counters.signalsFiltered += result.filtered;
     counters.signalsDeduplicated += result.deduplicated;
+    counters.securityScanned += result.securityScanned ?? 0;
+    counters.securityFlagged += result.securityFlagged ?? 0;
+    counters.securityDropped += result.securityDropped ?? 0;
     this._counters.set(channelId, counters);
     this._channelState.set(channelId, state);
 
@@ -247,6 +262,7 @@ export class InputGateway {
    */
   processSignals(rawSignals, channel) {
     let emitted = 0, filtered = 0, deduplicated = 0;
+    let securityScanned = 0, securityFlagged = 0, securityDropped = 0;
     const now = this._now();
     const state = this._channelState.get(channel.id);
     const quota = (state?.quotaOverride != null)
@@ -260,6 +276,29 @@ export class InputGateway {
 
       // 2. payload 大小截断
       sig.payload = this._truncatePayload(sig.payload);
+
+      // 2.5 security 门禁（v0.3.0）：外部信号 prompt injection 检查。
+      //   action=flag（默认）：命中标记 security 元数据后放行；
+      //   action=drop：命中即丢弃；action=off：跳过本步。
+      if (this._securityAction !== 'off' && SECURITY_CHECKED_TYPES.has(channel.type)) {
+        securityScanned += 1;
+        const sec = checkSignal(sig);
+        if (sec.verdict === 'flagged') {
+          securityFlagged += 1;
+          if (this._securityAction === 'drop') {
+            securityDropped += 1;
+            filtered += 1;
+            continue;
+          }
+          const rules = sec.matches.map((m) => m.ruleId);
+          const labels = sec.matches.map((m) => m.label);
+          if (sig.payload && typeof sig.payload === 'object') {
+            sig.payload.security = { verdict: 'flagged', rules, labels };
+          } else {
+            sig.security = { verdict: 'flagged', rules, labels };
+          }
+        }
+      }
 
       // 3. 置信度过滤
       const conf = Number(sig.confidence ?? 0.5);
@@ -287,7 +326,10 @@ export class InputGateway {
       if (published) { emitted++; quotaUsed++; } else { filtered++; }
     }
 
-    return { emitted, filtered, deduplicated, quotaUsed, quota };
+    return {
+      emitted, filtered, deduplicated, quotaUsed, quota,
+      securityScanned, securityFlagged, securityDropped,
+    };
   }
 
   _buildTopic(channel, sig) {
@@ -365,6 +407,11 @@ export class InputGateway {
       channelCount: channels.length,
       channels,
       config: { ...this._config },
+      security: {
+        action: this._securityAction,
+        ruleCount: getSecurityRules().length,
+        checkedTypes: [...SECURITY_CHECKED_TYPES],
+      },
     };
   }
 

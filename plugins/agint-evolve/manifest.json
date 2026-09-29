@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolve",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "agint-evolve v0.7.0: 智进 review/self-evolution loop. 9 services (dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory). storage domain `agint_evolve` schemaVersion=2 (新增 baseline_history 表，由 cron baseline-regression-suite 写入，driver mount 通道读 baselineGate)。",
   "main": "lib/index.js",
   "agint": {

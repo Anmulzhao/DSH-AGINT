@@ -173,3 +173,49 @@ test('buildReport always emits a 哲学对齐检查 section (v0.2 强制)', () =
     assert.match(md, /evolution-philosophy-checkpoints\.md/);
   }
 });
+
+
+// ── v0.7.2（2026-09-29）：外部信号与多源输入 ───────────────────────────
+
+const gatewaySnapshot = {
+  ...healthySnapshot,
+  inputGateway: {
+    channelCount: 4,
+    channels: [
+      { channelId: 'self-observation', channelType: 'self-observation', enabled: true, counters: { fetchCount: 2, signalsEmitted: 0, signalsFiltered: 0, securityFlagged: 0, securityDropped: 0 } },
+      { channelId: 'external-git', channelType: 'external', enabled: true, counters: { fetchCount: 3, signalsEmitted: 3, signalsFiltered: 0, securityFlagged: 0, securityDropped: 0 } },
+      { channelId: 'adversarial', channelType: 'adversarial', enabled: true, counters: { fetchCount: 3, signalsEmitted: 0, signalsFiltered: 5, securityFlagged: 1, securityDropped: 0 } },
+      { channelId: 'cross-agent', channelType: 'cross-agent', enabled: true, counters: { fetchCount: 1, signalsEmitted: 2, signalsFiltered: 0, securityFlagged: 0, securityDropped: 0 } },
+    ],
+    security: { action: 'flag', ruleCount: 8, checkedTypes: ['external', 'adversarial', 'cross-agent'] },
+  },
+};
+
+test('findingsFromSnapshot: 长期 0 信号 channel 提示上游链空转', () => {
+  const findings = findingsFromSnapshot(gatewaySnapshot);
+  assert.ok(findings.find((f) => f.key === 'gateway.silent.self-observation'), 'self-observation fetched 2 次 0 信号');
+  assert.ok(findings.find((f) => f.key === 'gateway.silent.adversarial'), 'adversarial fetched 3 次 0 信号');
+  assert.ok(!findings.find((f) => f.key === 'gateway.silent.external-git'), 'external-git 有产出不应提示');
+});
+
+test('findingsFromSnapshot: security 命中 → warn 发现', () => {
+  const findings = findingsFromSnapshot(gatewaySnapshot);
+  const sec = findings.find((f) => f.key === 'gateway.security');
+  assert.ok(sec, 'expected gateway.security finding');
+  assert.equal(sec.level, 'warn');
+  assert.match(sec.message, /命中 1 条/);
+});
+
+test('buildReport: 渲染外部信号章节（二·A）', () => {
+  const md = buildReport({ date: '2026-09-29', snapshot: gatewaySnapshot, findings: [], notes: '' });
+  assert.match(md, /## 二·A、外部信号与多源输入/);
+  assert.match(md, /\| cross-agent \|/);
+  assert.match(md, /action=flag，规则 8 条/);
+  assert.match(md, /命中 1 \/ 丢 0/);
+});
+
+test('buildReport: 网关不可用 → 章节如实标注', () => {
+  const md = buildReport({ date: '2026-09-29', snapshot: { ...healthySnapshot }, findings: [], notes: '' });
+  assert.match(md, /## 二·A、外部信号与多源输入/);
+  assert.match(md, /输入网关未挂载或不可用/);
+});

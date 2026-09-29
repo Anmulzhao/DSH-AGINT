@@ -61,6 +61,35 @@ export function findingsFromSnapshot(snapshot) {
     }
   }
 
+  // ---- input gateway: external signals + security (v0.7.2) ----
+  const ig = s.inputGateway;
+  if (ig) {
+    const channels = Array.isArray(ig.channels) ? ig.channels : [];
+    for (const ch of channels) {
+      const emitted = ch.counters?.signalsEmitted ?? 0;
+      const fetched = ch.counters?.fetchCount ?? 0;
+      if (fetched >= 2 && emitted === 0 && ch.enabled) {
+        out.push({
+          level: 'info',
+          key: 'gateway.silent.' + ch.channelId,
+          message: '输入网关 ' + ch.channelId + ' 已采集 ' + fetched + ' 次但从未产出信号——上游链可能空转（如 diagnosis 无聚类 / curriculum 无待练域）',
+        });
+      }
+    }
+    const sec = ig.security;
+    if (sec && typeof sec.ruleCount === 'number' && sec.ruleCount > 0) {
+      const flagged = channels.reduce((acc, c) => acc + (c.counters?.securityFlagged ?? 0), 0);
+      const dropped = channels.reduce((acc, c) => acc + (c.counters?.securityDropped ?? 0), 0);
+      if (flagged > 0 || dropped > 0) {
+        out.push({
+          level: 'warn',
+          key: 'gateway.security',
+          message: '外部信号 prompt injection 命中 ' + flagged + ' 条 / 丢弃 ' + dropped + ' 条（安全门禁 action=' + (sec.action ?? '-') + '）',
+        });
+      }
+    }
+  }
+
   // ---- metrics trends (when a metrics summary exists) ----
   const metrics = s.metrics;
   if (metrics && Array.isArray(metrics.metrics)) {
@@ -124,6 +153,14 @@ function renderSnapshotTable(s) {
   if (s.sessions) {
     rows.push(snapshotRow('会话', s.sessions.count !== undefined ? `${s.sessions.count} 个历史会话` : '（sessionQuery 未接入）'));
   }
+  if (s.inputGateway) {
+    const ig = s.inputGateway;
+    const chs = Array.isArray(ig.channels) ? ig.channels : [];
+    const emitted = chs.reduce((acc, c) => acc + (c.counters?.signalsEmitted ?? 0), 0);
+    const flagged = chs.reduce((acc, c) => acc + (c.counters?.securityFlagged ?? 0), 0);
+    const sec = ig.security ?? {};
+    rows.push(snapshotRow('外部信号', chs.length + ' 个 Channel，累计产出 ' + emitted + ' 条信号；security 命中 ' + flagged + ' 条（action=' + (sec.action ?? '-') + '，' + (sec.ruleCount ?? 0) + ' 条规则）'));
+  }
   if (rows.length === 0) rows.push(snapshotRow('数据源', '全部不可用——检查 host 服务是否已挂载'));
   return rows.join('\n');
 }
@@ -139,7 +176,7 @@ export function buildReport({ date, snapshot, findings, notes }) {
   const lines = [];
   lines.push(`# 智进周复盘 ${d}`);
   lines.push('');
-  lines.push(`> 自动生成于 ${collectedAt}｜数据源：agint-memory / agint-wiki / agint-cron / agint-rules / agint-metrics`);
+  lines.push(`> 自动生成于 ${collectedAt}｜数据源：agint-memory / agint-wiki / agint-cron / agint-rules / agint-metrics / agint-input-gateway`);
   lines.push('');
   lines.push('## 一、数据快照');
   lines.push('');
@@ -156,6 +193,23 @@ export function buildReport({ date, snapshot, findings, notes }) {
       const icon = f.level === 'warn' ? '⚠️' : f.level === 'info' ? 'ℹ️' : '✅';
       lines.push(`- ${icon} [${f.key}] ${f.message}`);
     }
+  }
+  lines.push('');
+  lines.push('## 二·A、外部信号与多源输入');
+  lines.push('');
+  const ig = snapshot?.inputGateway;
+  if (ig && Array.isArray(ig.channels) && ig.channels.length > 0) {
+    lines.push('| Channel | 类型 | 状态 | 采集 | 产出 | 过滤 | security |');
+    lines.push('|---|---|---|---|---|---|---|');
+    for (const ch of ig.channels) {
+      const c = ch.counters ?? {};
+      lines.push('| ' + ch.channelId + ' | ' + ch.channelType + ' | ' + (ch.enabled ? '开' : '关') + ' | ' + (c.fetchCount ?? 0) + ' | ' + (c.signalsEmitted ?? 0) + ' | ' + (c.signalsFiltered ?? 0) + '（去重 ' + (c.signalsDeduplicated ?? 0) + '） | 命中 ' + (c.securityFlagged ?? 0) + ' / 丢 ' + (c.securityDropped ?? 0) + ' |');
+    }
+    const sec = ig.security ?? {};
+    lines.push('');
+    lines.push('> 门禁 action=' + (sec.action ?? '-') + '，规则 ' + (sec.ruleCount ?? 0) + ' 条，检查范围 ' + (Array.isArray(sec.checkedTypes) ? sec.checkedTypes.join(' / ') : '-') + '；命中信号附 security 元数据供下游复核。');
+  } else {
+    lines.push('- 输入网关未挂载或不可用（agint-input-gateway 未提供 getStatus）。');
   }
   lines.push('');
   lines.push('## 三、改进提案');

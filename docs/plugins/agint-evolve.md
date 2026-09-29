@@ -89,3 +89,9 @@ lib/report.js   writeReview 引擎（纯函数 + storage 写入）
 lib/tools.js    evolve_* model 工具
 test/report.test.js
 ```
+
+## v0.7.2（2026-09-29 · 周报纳入外部信号章节）
+
+- `dataSnapshot()` 软取 `agint.inputGateway`（未挂载降级），snapshot 增 `inputGateway` 面
+- 发现新增：`gateway.silent.<channel>`（info，fetch≥2 且 emitted=0）与 `gateway.security`（warn，命中/丢弃）
+- 报告新增 `## 二·A、外部信号与多源输入` 章节与「外部信号与多源输入」快照行

@@ -1,6 +1,18 @@
 # agint-evolve CHANGELOG
 
-## 2026-09-20 — 事件总线接线（方案 A / A1）：propose() 发布 evolution.proposed
+## v0.7.2（2026-09-29 · 周报纳入外部信号章节）
+
+### 新增
+
+- `dataSnapshot()` 取 `agint.inputGateway` 状态（`ctx.get` 软依赖，未挂载降级 `undefined`），snapshot 增 `inputGateway` 面
+- `findingsFromSnapshot()` 增两类发现：
+  - `gateway.silent.<channel>`（info）：fetch ≥2 且 emitted=0 → 上游链空转提示（本轮真实证据：self-observation 长期 0 信号）
+  - `gateway.security`（warn）：security 命中 / 丢弃 → 外部信号注入风险提示
+- `renderSnapshotTable()` 增「外部信号与多源输入」行；`buildReport()` 新增 `## 二·A、外部信号与多源输入` 章节（网关未挂载时如实标注）
+
+### 验证
+
+- report.test.js +4 项外部信号用例（silent/security/章节渲染/不可用降级）；全插件测试 19/19 PASS。
 
 **背景**：`evolution.proposed` 只有订阅方（evolution-memory / quality-eval / trajectory）、
 没有生产发布方 —— 生产仅 3 条 09-04 历史探针。本插件的 propose() 才是真实提案源（生产 55 条）。
