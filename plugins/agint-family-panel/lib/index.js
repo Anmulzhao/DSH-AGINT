@@ -28,9 +28,14 @@
  */
 
 import { z } from 'zod';
+import { createRequire } from 'node:module';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
+
+const require = createRequire(import.meta.url);
+/** 版本号读 package.json（v0.1.1 修复：此前硬编码字面量，永远自报 0.1.0）。 */
+const PANEL_VERSION = (require('../package.json')?.version) ?? '0.0.0';
 
 /**
  * Root-absolute prefix the host registers. The browser half strips the leading
@@ -79,11 +84,33 @@ function shortModule(specifier) {
 }
 
 /**
+ * Map a cordis fiber lifecycle state to a panel status string.
+ *
+ * cordis-plugin-loader 的 entry 不带 `runtime.status`——真实状态在
+ * `entry.fiber.state`（FiberState 枚举：PENDING=0/LOADING=1/ACTIVE=2/
+ * FAILED=3/DISPOSED=4/UNLOADING=5）。v0.1.1 修复：改从这里取。
+ * @param {number|undefined|null} state - entry.fiber?.state
+ * @returns {'active'|'failed'|'disposed'|'unloading'|'loading'|'unknown'}
+ */
+export function fiberStateToStatus(state) {
+  if (typeof state !== 'number') return 'unknown';
+  switch (state) {
+    case 2: return 'active';    // ACTIVE — 已加载并对外提供
+    case 3: return 'failed';    // FAILED — 回调或配置抛错
+    case 4: return 'disposed';  // DISPOSED — 已移除不可重启
+    case 5: return 'unloading'; // UNLOADING — 正在卸载
+    case 0: return 'loading';   // PENDING — 等待必需服务
+    case 1: return 'loading';   // LOADING — 回调运行中
+    default: return 'unknown';
+  }
+}
+
+/**
  * Read the live loader table.
  *
  * `entries()` is the only authoritative roster: the patch file says what we
  * asked for, the loader says what actually got mounted. Entry shape is probed
- * defensively because only `options` is contractual; `runtime.status` is read
+ * defensively because only `options` is contractual; `fiber.state` is read
  * when the loader happens to expose it and otherwise degrades to `unknown`
  * (never to a confident "ok").
  * @param {object} ctx - host context (services: loader).
@@ -98,9 +125,7 @@ function readRows(ctx) {
       const options = entry && entry.options;
       const id = (options && options.id) ?? (entry && entry.id);
       if (typeof id !== 'string' || id === '') continue;
-      const status = entry && entry.runtime && typeof entry.runtime.status === 'string'
-        ? entry.runtime.status
-        : 'unknown';
+      const status = fiberStateToStatus(entry && entry.fiber && entry.fiber.state);
       rows.push({
         id,
         module: shortModule(options && options.name),
@@ -270,7 +295,7 @@ async function buildStatus(ctx) {
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    panelVersion: '0.1.0',
+    panelVersion: PANEL_VERSION,
     apiPrefix: API_PREFIX,
     counts,
     hostRowCount,

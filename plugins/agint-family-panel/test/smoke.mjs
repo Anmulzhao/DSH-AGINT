@@ -11,14 +11,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { apply, name, inject } from '../lib/index.js';
+import { apply, name, inject, fiberStateToStatus } from '../lib/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
-/** Minimal stub loader row. */
-function row(id, status = 'active', disabled = false) {
-  return { options: { id, name: `./plugins/${id}/lib/index.js` }, disabled, runtime: { status } };
+/** Minimal stub loader row. cordis-plugin-loader 的 entry 真实结构：
+ *  `options` + `disabled` + `fiber.state`（FiberState 枚举），没有 runtime.status。 */
+function row(id, fiberState = 2, disabled = false) {
+  return { options: { id, name: `./plugins/${id}/lib/index.js` }, disabled, fiber: { state: fiberState } };
 }
 
 /** Build a stub host context. */
@@ -85,10 +86,30 @@ const payload = JSON.parse(ok.body);
 assert.equal(payload.ok, true);
 assert.equal(payload.enabled, true);
 assert.equal(payload.counts.total, 2, 'counts only agint-* rows');
+assert.equal(payload.counts.active, 2, 'fiber.state=2 → active（真实 loader 结构）');
+assert.equal(payload.counts.unknown, 0, '不再全部 unknown');
 assert.ok(payload.groups.some((g) => g.id === 'memory'), 'memory group present');
 assert.ok(payload.groups.some((g) => g.id === 'unmapped') === false, 'no unmapped rows in the fixture');
 assert.equal(payload.hostRowCount, 3, 'reports the whole host roster');
 assert.equal(payload.signals.length, 3, 'three signal probes');
+
+// 12. fiber state mapping (v0.1.1) --------------------------------------------
+assert.equal(fiberStateToStatus(2), 'active');
+assert.equal(fiberStateToStatus(3), 'failed');
+assert.equal(fiberStateToStatus(0), 'loading');
+assert.equal(fiberStateToStatus(1), 'loading');
+assert.equal(fiberStateToStatus(4), 'disposed');
+assert.equal(fiberStateToStatus(5), 'unloading');
+assert.equal(fiberStateToStatus(undefined), 'unknown');
+assert.equal(fiberStateToStatus(null), 'unknown');
+// counts 只认 active/failed/disabled，其余归 unknown（loading 是瞬态）
+const mixedCtx = makeCtx({ entries: [row('agint-a', 2), row('agint-b', 3), row('agint-c', 0), row('agint-d', 2, true)] });
+apply(mixedCtx, {});
+const mixedPayload = JSON.parse((await callRoute(mixedCtx)).body);
+assert.equal(mixedPayload.counts.active, 1, 'a active、d disabled 不计 active');
+assert.equal(mixedPayload.counts.failed, 1, 'b failed');
+assert.equal(mixedPayload.counts.disabled, 1, 'd disabled');
+assert.equal(mixedPayload.counts.unknown, 1, 'c loading → unknown（瞬态归位）');
 
 // 5. non-loopback is refused -------------------------------------------------
 const denied = await callRoute(ctx, { remoteAddress: '10.0.0.7' });
