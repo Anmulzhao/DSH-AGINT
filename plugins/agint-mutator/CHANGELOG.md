@@ -4,6 +4,39 @@
 
 ---
 
+## 0.6.7 (2026-09-29) — diffStrategy 从死字段到真消费（接线，零 FROZEN 变更）
+
+### 修复（契约 bug：声明与消费脱节）
+
+`DiffStrategySchema`（`lib/schema.js:36`）在 FROZEN 枚举里声明了 `unified_diff | line_replace`，
+但 `generatePostimage` 一直 `return p.newText` **整文件覆盖**，从不读这个字段 ——
+`docs/known-limitations/evolution-main-chain-not-energized.md:84` 记过，挂了约一个月没人修。
+
+**诊断三件套**（2026-09-29 补全）：
+- **定义**：FROZEN 枚举两值，payload 必填（`propose` 约束 4 会拦缺省/白名单外值）。
+- **消费方**：缺席。调用方却**已在传它** —— `agint-evolution-driver:582`、eval 场景 7 处、
+  测试 20+ 处，全部传 `unified_diff`，且全部把它当「newText 即完整内容」的标记用，
+  无一处传真正的 `@@ -x,y +a,b @@` 补丁文本。
+- **生产数据**：字段随 proposal 入库（payload 审计），但 commit 路径从未因它改变行为。
+
+**为什么选接线而不是删**：字段在 FROZEN schema 里，删字段 = 动 L0（影子期流程）；
+而 30+ 调用方在传它并期待它被消费 —— 契约已存在，缺的是消费方。
+接线**不改 schema 本身**（枚举值、字段名、类型都未动）⇒ 零 FROZEN 变更。
+
+**语义（两值都实装）**：
+- `unified_diff`：`newText` = 改完后的完整文件内容，整文件覆盖 —— **与历史行为逐字节一致**
+  （30 处既有调用零迁移成本；改成真解析补丁会让它们全部静默失败）。
+- `line_replace`（**缺省默认**）：把 preimage 里的 `oldText` 片段替换成 `newText`，
+  文件其余部分逐字保留 —— 局部替换的真实语义。
+- **fail-closed**：`line_replace` 下 `oldText` 找不到或出现多次 ⇒ **throw**，不静默整文件覆盖
+  —— 宁可 commit 写 finding 跳过，也不能把「我以为改一段」变成「我换掉整个文件」。
+
+### Added
+
+- `commit-rollback.test.mjs` 新增 4 例：line_replace 局部替换判据 / unified_diff 历史兼容判据 /
+  oldText 缺失 throw + 文件原封不动 / oldText 多次出现 throw。全部 fixture 原本都用
+  unified_diff，17 例全绿**证明不了** line_replace 工作，必须单独测。
+
 ## 0.6.6 (2026-09-29) — commit/rollback 传绝对路径给 sandbox
 
 ### 修复

@@ -480,3 +480,84 @@ test('commit synthEval 契约：sandbox 失败分支同样带 key + veto 语义'
     assert.equal(restored, 'OLD prompt content');
   } finally { env.cleanup(); }
 });
+
+// ── diffStrategy 消费（v0.6.7）─────────────────────────────────────────
+//
+// `DiffStrategySchema` 声明了 unified_diff | line_replace，但 generatePostimage
+// 一直只 return p.newText 整文件覆盖 —— 两个值**都没有消费**，契约形同虚设
+// （docs/known-limitations/evolution-main-chain-not-energized.md:84 记过，一直没修）。
+//
+// 这一组是**消费方的判据**：全部 fixture 都用 unified_diff，所以上面 17 例全绿
+// **并不能证明** line_replace 真的工作。必须单独测它，否则修了等于没修。
+
+test("diffStrategy='line_replace'：只替换 oldText 那一段，文件其余部分逐字保留", async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    // preimage = 'OLD prompt content'（makeEnv 写入）。构造 oldText 命中其中的片段。
+    const fix = {
+      source: 'attribution-driven', failureId: 'f-lr', rootCause: 'PROMPT_DEFICIENCY',
+      expectedEffect: 'baseline 通过率 >= 95% 在 7 天', rollbackCondition: 'regression -> rollback',
+      atomicScope: 'prompt',
+      promptPayload: { promptId: 'sys-prompt', oldText: 'OLD', newText: 'FRESH', diffStrategy: 'line_replace' },
+    };
+    const { commit: c } = await proposeAndCommit(fix, env);
+    assert.equal(c.ok, true);
+    const written = readFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'utf8');
+    // ⛔ 核心判据：局部替换，不是整文件覆盖
+    assert.equal(written, 'FRESH prompt content',
+      `line_replace 必须只换掉 oldText 那一段，实际写入：${JSON.stringify(written)}`);
+    assert.ok(written.includes('prompt content'),
+      'line_replace 把文件其余内容也弄丢了 —— 那就退化成整文件覆盖，这个字段仍然没意义');
+  } finally { env.cleanup(); }
+});
+
+test("diffStrategy='unified_diff'：newText 视为完整内容，行为与历史逐字节一致", async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    const { commit: c } = await proposeAndCommit(FIX.prompt, env);   // fixture 用 unified_diff
+    assert.equal(c.ok, true);
+    const written = readFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'utf8');
+    // 历史行为 = return p.newText = 'new prompt'。这个断言锁的是「兼容性」，不是「正确性」。
+    assert.equal(written, 'new prompt',
+      'unified_diff 的历史行为是整文件覆盖；改它会让 30 处现有调用全部静默失败');
+  } finally { env.cleanup(); }
+});
+
+test("diffStrategy='line_replace' 且 oldText 不在 preimage 里 ⇒ 必须 throw，不得整文件覆盖", async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    const fix = {
+      source: 'attribution-driven', failureId: 'f-miss', rootCause: 'PROMPT_DEFICIENCY',
+      expectedEffect: 'baseline 通过率 >= 95% 在 7 天', rollbackCondition: 'regression -> rollback',
+      atomicScope: 'prompt',
+      // preimage 是 'OLD prompt content'，这里给一个根本不存在的片段
+      promptPayload: { promptId: 'sys-prompt', oldText: '这段文字不在文件里', newText: 'X', diffStrategy: 'line_replace' },
+    };
+    await assert.rejects(
+      () => proposeAndCommit(fix, env),
+      /找不到 oldText/,
+      'oldText 找不到时必须 fail-closed：宁可不写，也不能把「改一段」变成「换掉整个文件」',
+    );
+    // ⛔ 文件必须原封不动
+    const after = readFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'utf8');
+    assert.equal(after, 'OLD prompt content', 'throw 之后文件被改了 —— 失败路径没有 fail-closed');
+  } finally { env.cleanup(); }
+});
+
+test("diffStrategy='line_replace' 且 oldText 出现多次 ⇒ 必须 throw，不猜哪一处", async () => {
+  const env = makeEnv({ sandboxOk: true, policyDecision: 'AUTO_DEPLOY' });
+  try {
+    // 让 oldText 在 preimage 中出现两次
+    writeFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'A-A-B', 'utf8');
+    const fix = {
+      source: 'attribution-driven', failureId: 'f-dup', rootCause: 'PROMPT_DEFICIENCY',
+      expectedEffect: 'baseline 通过率 >= 95% 在 7 天', rollbackCondition: 'regression -> rollback',
+      atomicScope: 'prompt',
+      promptPayload: { promptId: 'sys-prompt', oldText: 'A', newText: 'Z', diffStrategy: 'line_replace' },
+    };
+    await assert.rejects(() => proposeAndCommit(fix, env), /出现多次/,
+      'oldText 不唯一时必须拒绝 —— 猜错一处就改了错误的地方');
+    const after = readFileSync(join(env.workdir, 'plugins/agint-mutator/prompts/sys-prompt.md'), 'utf8');
+    assert.equal(after, 'A-A-B', '拒绝后文件被改了');
+  } finally { env.cleanup(); }
+});

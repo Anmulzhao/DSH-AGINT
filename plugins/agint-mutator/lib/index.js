@@ -491,10 +491,61 @@ function apply(ctx) {
   }
 
   // postimage 生成（设计稿 §二.2 表：PROMPT_MUTATION/STRATEGY_REWRITE 整文件替换；TOOL_SYNTHESIS 新建文件）
-  function generatePostimage(proposal) {
+  /**
+   * FROZEN payload 的 `diffStrategy` 落到哪（v0.6.7）。
+   *
+   * 背景：`DiffStrategySchema`（`lib/schema.js:36`）声明了
+   * `unified_diff | line_replace` 两个值，但**本函数一直 `return p.newText` 整文件覆盖**，
+   * 从不读这个字段。`docs/known-limitations/evolution-main-chain-not-energized.md:84`
+   * 记过这个契约 bug 但一直没修。
+   *
+   * 为什么这次修：字段在 FROZEN schema 里，调用方（`agint-evolution-driver:582`、
+   * eval 场景 JSON、各测试）**已经在传它并期待它被消费**。契约已经存在，消费方缺席。
+   * 补消费方是接线，**不改 FROZEN schema 本身**（枚举值、字段名、类型都未动）⇒
+   * 不触发 L0 变更。
+   *
+   * 语义（两个值都实装，不再只有一个是摆设）：
+   *   - `line_replace`  **默认**：把 preimage 里的 `oldText` 片段替换成 `newText`。
+   *     这是「局部替换」的真实语义 —— 改一段，不动文件其余部分。
+   *   - `unified_diff`：`newText` 视为**改完后的完整文件内容**，整文件覆盖。
+   *     与历史行为逐字节一致（下面有「兼容性」注释说明为何这样定）。
+   *
+   * 为什么 unified_diff 选「整文件覆盖」而不是「解析 unified diff 格式」：
+   * 该值在仓库里的实际用法（driver:582、eval 场景 7 处、测试 20+ 处）**全部**把它当
+   * 「我用 newText 整份给你」的标记用，从无一处传真正的 `@@ -x,y +a,b @@` 补丁文本。
+   * 若改成解析补丁格式，这 30 处调用**全部**会静默失败（patch 解析不出来）。
+   * 保守选择 = 与既有实际用法一致。
+   *
+   * ⚠️ `line_replace` 找不到 `oldText` 时 **throw**，不静默整文件覆盖。
+   *    这正是 fail-closed：宁可不写（commit 会写 finding 并跳过），也不能把
+   *    「我以为改了一段」变成「我把整个文件换掉了」——后者会毁掉别人的内容。
+   */
+  function generatePostimage(proposal, preimage) {
     const p = proposal.payload;
     if (proposal.kind === 'PROMPT_MUTATION') {
-      return p.newText;
+      const strategy = p.diffStrategy ?? 'line_replace';
+      if (strategy === 'unified_diff') {
+        return p.newText;   // 兼容：历史行为，逐字节一致
+      }
+      if (strategy === 'line_replace') {
+        const base = typeof preimage === 'string' ? preimage : '';
+        const idx = base.indexOf(p.oldText);
+        if (idx === -1) {
+          throw new Error(
+            `commit: diffStrategy='line_replace' 但 preimage 中找不到 oldText（promptId=${p.promptId}）` +
+            ` —— 拒绝整文件覆盖：调用方以为只改一段，实际会换掉整个文件。` +
+            `oldText 前 60 字：${JSON.stringify(String(p.oldText).slice(0, 60))}`,
+          );
+        }
+        if (base.indexOf(p.oldText, idx + 1) !== -1) {
+          throw new Error(
+            `commit: diffStrategy='line_replace' 且 oldText 在 preimage 中出现多次（promptId=${p.promptId}）` +
+            ` —— 拒绝猜哪一处，调用方需给更长的唯一 oldText`,
+          );
+        }
+        return base.slice(0, idx) + p.newText + base.slice(idx + p.oldText.length);
+      }
+      throw new Error(`commit: 未知 diffStrategy='${strategy}'（promptId=${p.promptId}）`);
     }
     if (proposal.kind === 'TOOL_SYNTHESIS') {
       // 简单拼接（设计稿 §八：不调真 LLM；stubs = 人类 owner 编辑的源码片段）
@@ -583,7 +634,8 @@ function apply(ctx) {
     const preimageContentHash = await contentHash(preimageContent);
 
     // ── 3) 写 postimage 到 targetPath
-    const postimage = generatePostimage(proposal);
+    // v0.6.7：把 preimage 传进去 —— diffStrategy='line_replace' 需要它做局部替换
+    const postimage = generatePostimage(proposal, preimageContent);
     await nodeFs.mkdir(dirname(absTarget), { recursive: true });
     await nodeFs.writeFile(absTarget, postimage, 'utf8');
     const postimageHash = await contentHash(postimage);
