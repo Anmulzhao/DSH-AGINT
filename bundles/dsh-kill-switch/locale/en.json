@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Kill switch",
+    "description": "A two-step button below the composer that terminates the DSH host process on confirmation. The same operation is available as the /kill-dsh command."
+  }
+}

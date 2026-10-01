@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-kill-switch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds a two-step button to the composer dock that terminates the DSH host process.",
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "Kill Switch",
+    "description": "Two-step button below the composer that terminates the DSH host process on confirmation."
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "icon.svg",
+    "locale/*.json"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

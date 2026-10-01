@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-kill-switch
+      name: '@local/dsh-kill-switch'
