@@ -174,6 +174,27 @@ preset 里的裸包名（`@deepseek-ai/dsh-persona` / `dsh-tool-fs` …）都从
 2. 上一步全绿但 UI 仍失败 ⇒ 基本是 `never started`，检查两个解析入口（1.1 / 1.2）是否存在。
 3. ⚠ preset 激活错误**只打 stdout 不落日志** —— 必须 `dsh --profile web > boot.log 2>&1` 才看得到。
 
+### ⛔ 别拿 `profiles/<p>/cordis.yml` 当生效组合读（2026-10-01 实测）
+
+同一版本 dsh 0.2.0-rc.2，那个文件出现过**两种形态**：
+
+| 启动方式 | `profiles/web/cordis.yml` |
+|---|---|
+| `dsh web --profile web` | 物化后的树，**238 行** |
+| `dsh web`（`agint-restart` 拉起，不带 `--profile`） | **4 行空根**：`# dsh profile root — an empty entry list. The tree is composed as patches` + `[]` |
+
+⇒ 它的形态**取决于启动方式**，不是稳定的生效组合来源。任何拿它当基线的脚本都会
+在某种启动方式下**读到空、然后静默跳过那条基线还照样报绿**。
+
+**权威来源只有 `dsh --profile <p> --dump-config`**（本机实测：1579 行，
+`preset-cordis` 在第 1108 行，递归展开 33 条能力行）。`bin/check-preset-parity.mjs`
+已按「先试 cordis.yml 拿不到就回退 dump-config，两者都拿不到判红」实现。
+通用化的教训见技能 `check-soundness`。
+
+**活体验收**（比静态检查硬）：`Config.listConfigs` 报 `total`（本机 238）、
+`Service.listService` 目录（91 个 key）都能直接问活着的宿主。新装的 cron job
+在重启后自己跑了一次（19 → 20 个 job）就是最硬的证据。
+
 ### 技能落点（升级时什么会丢）
 
 | 技能来源 | 落点 | 升级/重装后 |

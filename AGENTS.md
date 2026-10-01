@@ -13,6 +13,7 @@
 - preset 文件位于 `$DSH_HOME/.agent-presets/agint/`，组合文件 `agent.cordis.yml` **可自编辑**（先加载 `editing-cordis-compositions` skill）
 - 插件源码位于 `$DSH_HOME/profiles/web/plugins/agint-*/`，**不要动** —— 属 AGINT 仓库
 - **红线**：不动 `dsh` 安装目录（官方 preset 在那里）
+- **红线（两台机器共用本仓库）**：机器私有事实——绝对路径、host 插件版本、cron tick、仓库↔host 同步状态——**不进入库文件**。入库的只放仓库级事实且**只从仓库读**（读部署位会让一台机器覆盖另一台的事实）；本机那份进 `AGENTS.local.md`（已 gitignore，每台各持一份）。通用教训与自查清单见技能 `check-soundness`
 - 运行时数据落点 `$DSH_HOME/storages/`（dream / wiki / evolve / cron 等插件数据）—— 由 `$DSH_HOME` 推导，**不要写死绝对路径**，本仓库两台机器（Linux / Windows）路径不同
 - `AGINT_HOME` = **本仓库根目录**（权威定义见 `install/agint-security-checks.sh`：`AGINT_HOME_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd)"`），它**不是数据目录**
   - ⚠️ 本行原写「数据根 `AGINT_HOME = /workspace/DSH-AGINT/AGINT-data`」是错的：`AGINT_HOME` 是仓根，且那个绝对路径在任何一台机器上都不存在
@@ -103,6 +104,6 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 
 - **仓库版本**：v0.9.0（VERSION 表首行）
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
-- **preset skills**（7 个）：agint-install-bootstrap-rescue、causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
+- **preset skills**（8 个）：agint-install-bootstrap-rescue、causal-reasoning、check-soundness、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
 
 <!-- LOCAL-STATE:END -->
