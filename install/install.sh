@@ -767,6 +767,48 @@ PY
     fi
   done
 
+  # 4d. **裸 import 冒烟**（2026-10-01 新增）：每个 bundle 插件真跑一次
+  #     `import(<bundle>/plugins/<…>)`。
+  #     为什么必须在这里：dsh 的 boot 期只会打一行
+  #     `agint-memory (…): failed to import` 就继续，**不报缺哪个包**；
+  #     而「装完 → 重启 → 发现 11 个插件挂了 → 才知道是 zod 解析不到」这条路
+  #     要绕一整圈才知道根因。哈希一致 / YAML 合法都不等于代码能 import
+  #     （K78 教训：文件一致 ≠ 代码可用）。本步把那个圈砍掉。
+  #
+  #     条目来源 = **bundle patch 里 `name: ./plugins/…` 的真实声明**
+  #     （`^[[:space:]]*name:` 开头，注释行天然不匹配），不是 glob 目录：
+  #     agint-quality-eval / -contract / -policy / -report 是 agint-quality 的
+  #     **嵌套子模块**（./plugins/agint-quality/agint-quality-eval/lib/index.js），
+  #     顶层 `agint-*` glob 扫不到它们。
+  if command -v node >/dev/null 2>&1; then
+    smoke_fail=0; smoke_n=0
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      full="$BUNDLE_DST/${entry#./}"
+      smoke_n=$((smoke_n+1))
+      if [ ! -f "$full" ]; then
+        warn "patch 声明的插件入口不存在：$entry"
+        smoke_fail=$((smoke_fail+1)); continue
+      fi
+      if ! node --input-type=module -e "await import('file://$full')" >/dev/null 2>&1; then
+        warn "插件 import 失败：$entry — $(node --input-type=module -e "await import('file://$full')" 2>&1 | grep -oE "(Cannot find package '[^']*'|Error \[ERR_[A-Z_]+\])" | head -1)"
+        smoke_fail=$((smoke_fail+1))
+      fi
+    done < <(grep -oE '^[[:space:]]*name:[[:space:]]*\./plugins/[^ ]*\.js' "$BUNDLE_PATCH_DST" \
+             | sed -E 's/^[[:space:]]*name:[[:space:]]*//' | sort -u)
+    if [ "$smoke_n" -eq 0 ]; then
+      warn "未能从 bundle patch 解析出任何插件入口，冒烟未执行"
+      failed=$((failed+1))
+    elif [ "$smoke_fail" -gt 0 ]; then
+      warn "插件 import 冒烟：$smoke_fail/$smoke_n 失败（上面已打印根因）"
+      failed=$((failed+1))
+    else
+      log "   ✓ 插件 import 冒烟全通（$smoke_n 个声明入口）"
+    fi
+  else
+    warn "未找到 node，跳过插件 import 冒烟"
+  fi
+
   if [ "$failed" -gt 0 ]; then
     die "装后校验失败 $failed 项（已自动回滚）"
   fi

@@ -75,6 +75,22 @@ REL="agint-quality/node_modules/zod"
 DST="$DSH_HOME/profiles/web/node_modules/@agint/host/plugins/$REL"
 DST_PARENT="$(dirname "$DST")"
 MIRROR="$DSH_HOME/profiles/web/plugins/$REL"
+# 2026-10-01 新增第三位：bundle 自身的依赖根（<bundle>/node_modules/zod）。
+#
+# ⛔ 为什么必须有这一位：上面那两个位置**都只解决相对路径导入**
+# （agint-quality-eval 用 `../../node_modules/zod/index.js` 借 zod）。
+# 裸 `import { z } from 'zod'` 走的是 Node 的向上查找，而查找的祖先链取决于
+# **bundle 实体装在哪**：
+#   · 旧部署位 profiles/web/node_modules/@agint/host/ → 祖先链含
+#     profiles/node_modules → 恰好命中那里的 zod（能用，但纯属位置巧合）；
+#   · 新部署位 $DSH_HOME/.agint-bundle/ → 祖先链只有 .agint-bundle 与 .dsh，
+#     **不含 profiles/** ⇒ 11 个插件（memory / dream / cron / metrics /
+#     evolve / tool-stats / compress-guard / input-gateway / aesthetic-oracle /
+#     family-panel）全部 ERR_MODULE_NOT_FOUND: Cannot find package 'zod'。
+# <bundle>/node_modules 是这个包**自己的**依赖根，对插件而言恒为祖先，
+# 与 bundle 装在哪、与 node_modules 那条软链都解耦。
+BUNDLE_DEP_ROOT="$DSH_HOME/.agint-bundle/node_modules"
+BUNDLE_ZOD="$BUNDLE_DEP_ROOT/zod"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -103,7 +119,7 @@ run() {
 
 # ── uninstall 路径 ───────────────────────────────────────────────────────────
 if [ "$UNINSTALL" = "1" ]; then
-  for d in "$DST" "$MIRROR"; do
+  for d in "$DST" "$MIRROR" "$BUNDLE_ZOD"; do
     if [ ! -e "$d" ]; then
       log "no-op: $d 不存在"
       continue
@@ -118,10 +134,10 @@ if [ "$UNINSTALL" = "1" ]; then
   exit 0
 fi
 
-# ── 已就绪检查（主位 + 兼容位都齐才算就绪）───────────────────────────────────
-if [ -f "$DST/index.js" ] && [ -f "$DST/package.json" ] && [ -f "$MIRROR/index.js" ]; then
+# ── 已就绪检查（三个位都齐才算就绪）─────────────────────────────────────────
+if [ -f "$DST/index.js" ] && [ -f "$DST/package.json" ] && [ -f "$MIRROR/index.js" ] && [ -f "$BUNDLE_ZOD/index.js" ]; then
   ver=$(python3 -c "import json,sys; print(json.load(open('$(winpath "$DST/package.json")'))['version'])" 2>/dev/null || echo "?")
-  log "已就绪: $DST + 兼容位 (zod $ver)"
+  log "已就绪: $DST + 兼容位 + bundle 依赖根 (zod $ver)"
   exit 0
 fi
 
@@ -208,27 +224,39 @@ fi
 src_ver=$(python3 -c "import json; print(json.load(open('$(winpath "$SRC/package.json")'))['version'])")
 log "复用本地 zod $src_ver from $SRC"
 
-run mkdir -p "$DST_PARENT"
-if [ -e "$DST" ]; then
-  die "$DST 已存在但不是合法 zod 目录（可能是历史残留或别的东西），拒绝覆盖。请人工检查。"
-fi
-run cp -r "$SRC" "$DST"
+# ⛔ 2026-10-01 修坑：原实现对每个目标位只判 `[ -e "$d" ]` 就 die
+# 「已存在但不是合法 zod 目录」。三个位里只要有一个已就绪、另一个还没有
+# （部分就绪态，例如换过部署位、只补了 bundle 依赖根），重跑就必然卡死在这里
+# —— 而它唯一的补救手段是人工删目录。改为**按内容判**：
+#   已是合法 zod → 跳过；存在但不是 zod → 才拒绝。
+# 「同一个 bundle 里出现两份不同版本的 zod」是真正要防的事，所以跳过时比版本。
+place_zod() {
+  local dst="$1" label="$2" want="$src_ver" have
+  run mkdir -p "$(dirname "$dst")"
+  if [ -e "$dst" ]; then
+    if [ -f "$dst/index.js" ] && [ -f "$dst/package.json" ]; then
+      have=$(python3 -c "import json; print(json.load(open('$(winpath "$dst/package.json")'))['version'])" 2>/dev/null || echo "?")
+      if [ "$have" = "$want" ]; then
+        log "↻ $label 已是 zod $have，跳过"
+        return 0
+      fi
+      warn "$label 已有 zod $have（期望 $want）——两份 zod 实例可能导致跨实例校验失败，请人工确认"
+      return 0
+    fi
+    die "$label 已存在但不是合法 zod 目录（$dst），拒绝覆盖。请人工检查。"
+  fi
+  run cp -r "$SRC" "$dst"
+  log "✓ $label 就绪：$dst（zod $want）"
+}
 
-# 兼容位：同一份源再放一份（AGINT 自身代码 / preset tools 行按老路径定位）
-run mkdir -p "$(dirname "$MIRROR")"
-if [ -e "$MIRROR" ]; then
-  warn "兼容位已存在，跳过：$MIRROR（若为历史软链请人工确认指向）"
-else
-  run cp -r "$SRC" "$MIRROR"
-fi
+place_zod "$DST"        "主位（bundle 内 agint-quality，相对路径导入用）"
+place_zod "$MIRROR"     "兼容位（mirror，AGINT 自身代码 / preset tools 行用）"
+place_zod "$BUNDLE_ZOD" "bundle 依赖根（裸 import 'zod' 唯一解析入口）"
 
 if [ "$DRY_RUN" != "1" ]; then
-  if [ -f "$DST/index.js" ]; then
-    log "✓ $DST/index.js 就绪（zod $src_ver）"
-    [ -f "$MIRROR/index.js" ] && log "✓ $MIRROR/index.js 就绪（兼容位）"
-    exit 0
-  else
-    die "cp 失败：$DST/index.js 不存在"
-  fi
+  for d in "$DST" "$MIRROR" "$BUNDLE_ZOD"; do
+    [ -f "$d/index.js" ] || die "放置失败：$d/index.js 不存在"
+  done
+  log "✓ 三位齐备（zod $src_ver）"
 fi
 exit 0
