@@ -8,7 +8,7 @@
 | 项 | 结论 |
 |---|---|
 | Codex CLI | `@openai/codex 0.147.0`，走 MiniMax provider |
-| 当前会话 preset 里 `tool-subagent-codex` | **已 enabled**（DSH 挂载的 `~/.dsh/.agent-presets/agint/agent.cordis.yml` line 204） |
+| 当前会话 preset 里 `tool-subagent-codex` | **当日为 `disabled: true`** —— 本行原写「已 enabled，line 204」，2026-10-02 查证为错，见文末「2026-10-02 更正」 |
 | `codex doctor` | 通过（auth ✓） |
 | `codex exec` 实跑 | 成功，28,308 tokens，返回 Codex 4 行回复 |
 | 调用的关键坑 | DSH bash 工具每次调用是**新 shell**，export 不持久；必须 `env MINIMAX_API_KEY=... codex exec` 单次前缀 |
@@ -118,3 +118,35 @@ when Client(HttpRequest(HttpRequest("http/request failed: error sending request 
 
 这是 codex-cli 加载本地 MCP 配置时尝试连 `mcp.figma.com`，本机没配 figma MCP server 导致。
 **不影响 Codex 主输出**。如果要清，看 `~/.codex/config.toml` 里 `mcp_servers` 配置。
+
+---
+
+## 8. 2026-10-02 更正：本文档 TL;DR 的一处错报
+
+**原文第 11 行写**：「`tool-subagent-codex` **已 enabled**（`~/.dsh/.agent-presets/agint/agent.cordis.yml` line 204）」。
+
+**2026-10-02 实测为假**，三条独立取证：
+
+1. **git 溯源**：`git log -L 233,240:presets/agint/agent.cordis.yml` 只命中一个提交 `bc28ee8`
+   （`feat(v0.1): AGINT self-evolution framework`），该提交引入时就是 `+      disabled: true`，
+   此后该行再未被修改。`git log -S "tool-subagent-codex" -- presets/agint/agent.cordis.yml`
+   同样只返回 `bc28ee8` 一个提交。
+2. **部署位现值**：`~/.dsh/.agent-presets/agint/agent.cordis.yml` 中该行 `disabled: true`
+   （2026-10-02 03:06 前为第 235 行）。文档写的「line 204」也对不上——行号在多次 preset
+   改版后已漂移，2026-10-01 14:46 的备份里该行在第 219 行。
+3. **当时 8-21 的机制也解释不了它能用**：同文档 §1 第 4 点自己就写了「当前会话的
+   `subagent` 工具签名里**没有** `provider` 字段——所以 DSH subagent tool 这条路走不通」。
+
+**同时更正一处隐含前提**：本机 dsh 0.2.0-rc.2 未随包提供任何名为 `codex` 的 subagent
+provider。`grep -rn "name: *'codex'" <dsh>/node_modules/@deepseek-ai/*/lib/index.js`
+命中 **0 行**；随包只有 `dsh-subagent`（注册表）、`dsh-subagent-spawn-in-process`（`spawn`）、
+`dsh-subagent-fork-in-process`（`fork`）。`dsh-hooks-codex` 是跑 Codex `hooks.json` 的桥，
+不是 provider。
+
+**2026-10-02 的处置**：老板要求开启该行，于是移除了 `disabled`，并在 bundle 顶层新增
+host 行 `subagent-spawn-in-process-codex`（`@deepseek-ai/dsh-subagent-spawn-in-process`，
+`providerName: codex`）把 provider 注册上。**该 provider 跑的是进程内 DSH agent，不是 codex
+CLI**，名字对齐而已。分工与协作纪律见 `docs/agent-collaboration.md`。
+
+**保留下来的教训**：8-21 那份文档的观测手段是「看 preset 里那行有没有 `disabled`」，
+这只能证明**工具行**的状态，证明不了**provider 行**是否存在。两者要分开验。

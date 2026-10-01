@@ -230,9 +230,13 @@
     # Product providers are host-plane singletons. Copy this preset, then
     # remove `disabled` from either ordinary tool row to expose that product
     # only to agents composed from the copy.
+    #
+    # 2026-10-02：`tool-subagent-codex` 的 `disabled` 已移除 —— 老板要求开启。对应的
+    # provider 由 host 平面的 `subagent-spawn-in-process-codex` 行以 providerName:
+    # codex 注册（见 cordis.patch.yml）。**注意那个 provider 跑的是进程内 DSH agent，
+    # 不是 codex CLI**，名字对齐而已。
     - id: tool-subagent-codex
       name: '@deepseek-ai/dsh-tool-subagent'
-      disabled: true
       config:
         provider: codex
         toolName: subagent_codex
