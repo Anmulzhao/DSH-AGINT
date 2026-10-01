@@ -249,27 +249,22 @@ export async function killTree(req) {
     return { ...plan, signalled: [], escalated: [], survivors: [], ok: false, dryRun: true };
   }
 
-  // ── 阶段 1：SIGTERM（mode='kill' 才直接跳到强杀）─────────────────
+  // ── 两层投递：组信号 + 逐个补刀，二者缺一不可 ──────────────────
   //
-  // ⚠️ 组信号与逐个信号有一处本质差别：组信号是内核按进程组一次性投递的，
-  // **无法逐个校验指纹**，所以 pid 复用防护在组模式下不生效。那里的安全性全部
-  // 押在 canUseGroup 的三条判据上（dsh 自称组长 / 非 pid 1 / 不是执行者自己的组）。
-  // 这是刻意的取舍：组杀能收掉「快照之后才冒出来的子进程」，逐个杀收不掉。
+  // ⚠️ 组信号只能打到**与宿主同进程组**的进程。实测（2026-10-01 17:22，dsh pid 531931）：
+  // dsh 起的工具进程 PGID ≠ PPID（当时那个 bash 的 PGID 就是它自己 pid），
+  // 也就是**每个工具都在独立进程组里**。只发组信号会漏掉它们，漏掉的就变孤儿。
+  // 所以：组信号负责「快 + 收掉快照之后才加入本组的进程」，逐个信号负责「不漏」。
+  //
+  // 组信号的另一个代价：**无法逐个校验指纹**，pid 复用防护在那一路上不生效。
+  // 安全性押在 canUseGroup 的三条判据上（dsh 自称组长 / 非 pid 1 / 不是执行者自己的组）。
   const signalled = [];
-  if (mode === 'kill') {
-    if (canUseGroup) {
-      if (signal(-target.pgid, 'SIGKILL')) signalled.push(-target.pgid);
-    } else {
-      for (const pid of targets) if (signal(pid, 'SIGKILL')) signalled.push(pid);
-    }
-  } else if (canUseGroup) {
-    if (signal(-target.pgid, 'SIGTERM')) signalled.push(-target.pgid);
-  } else {
-    for (const pid of targets) {
-      // 指纹变了说明这个 pid 已经被别的进程复用了，打过去是误伤
-      if (!stillSameProcess(table, pid, fingerprints.get(pid))) continue;
-      if (signal(pid, 'SIGTERM')) signalled.push(pid);
-    }
+  const termSig = mode === 'kill' ? 'SIGKILL' : 'SIGTERM';
+  if (canUseGroup && signal(-target.pgid, termSig)) signalled.push(-target.pgid);
+  for (const pid of targets) {
+    // 指纹变了说明这个 pid 已经被别的进程复用了，打过去是误伤
+    if (mode !== 'kill' && !stillSameProcess(table, pid, fingerprints.get(pid))) continue;
+    if (signal(pid, termSig)) signalled.push(pid);
   }
 
   const afterTerm = await waitGone(targets, mode === 'kill' ? killWaitMs : graceMs);
@@ -279,10 +274,12 @@ export async function killTree(req) {
   if (afterTerm.length) {
     if (isWin32) {
       await taskkillTree(afterTerm[0]);
-    } else if (canUseGroup) {
-      if (signal(-target.pgid, 'SIGKILL')) escalated.push(-target.pgid);
     } else {
-      for (const pid of afterTerm) {
+      if (canUseGroup && signal(-target.pgid, 'SIGKILL')) escalated.push(-target.pgid);
+      // 补刀：等组信号生效一小会儿再看谁还活着 —— 组信号够不到的那些
+      // （异进程组的子孙）只有这一层能收掉。
+      await sleep(POLL_MS * 3);
+      for (const pid of targets.filter(isAlive)) {
         if (signal(pid, 'SIGKILL')) escalated.push(pid);
       }
     }

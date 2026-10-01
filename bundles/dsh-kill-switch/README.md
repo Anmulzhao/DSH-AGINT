@@ -35,7 +35,8 @@ killer.js（孤儿） 枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKIL
 |---|---|---|
 | 枚举 | 读 `/proc/*/stat`（win32 走 PowerShell CIM） | 只用 node 内置模块——它是最后一道执行者，宿主正在退出，任何一次 import 失败都等于这次终止静默失效 |
 | 顺序 | **叶子优先**，宿主排最后 | 先让子进程收尾（它知道自己该关什么）；宿主先死会让子进程变孤儿、丢收尾逻辑 |
-| 组信号 | dsh 自称组长（`PGID=SID=pid`）时用 `kill(-pgid)` | 逐个杀收不掉「快照之后才冒出来的子进程」，组杀能 —— 前提已实测（`test/group-signal.test.mjs`，让组长在快照后才 fork，结果照样被收掉） |
+| 组信号 | dsh 自称组长（`PGID=SID=pid`）时先发 `kill(-pgid)` | 逐个杀收不掉「快照之后才冒出来的子进程」，组杀能 —— 前提已实测（`test/group-signal.test.mjs`） |
+| 逐个补刀 | 组信号之后，对 `targets` 里仍活着的逐个发信号 | **组信号只覆盖同组进程**，dsh 起的工具各自成组，只发组信号会漏（见下） |
 | 升级 | SIGTERM 后超 `graceMs` 仍活 → SIGKILL | dsh 有优雅关闭逻辑，必要时得强杀 |
 | 验证 | 回执记 `survivors`；`ok` 要求目标已消失**且**无孤儿 | 「发出信号」不等于「杀干净了」 |
 
@@ -81,6 +82,36 @@ inputActions.submit()                // 走 composer 自己的命令仲裁
 另外 `setDraft` 会**清空输入框里已有的草稿**——对终止开关来说这个取舍可接受
 （一份草稿远不如一个停不下来的宿主值钱），但它不是静默的。
 
+## v2.0.2 改了什么：只发组信号会漏掉 dsh 起的工具
+
+真机回执（2026-10-01 17:22，`requestId=5f750d0e`）第二次 `tree` 长度还是 1，顺着查下去
+撞到一个真 bug。
+
+`killer.js` 原来在 `canUseGroup` 分支里**只发组信号**，一个逐个信号都不发。
+但组信号只能打到**与宿主同进程组**的进程，而实测 dsh 起的工具进程 **PGID ≠ PPID**：
+
+```
+PID    PPID    PGID    SESS
+531931 531931  531931        dsh 本体（组长）
+645001 531931  531931        mcp-proxy        ← 同组，组杀覆盖得到
+645330 531931  645330        bash（工具进程）   ← 异组，组杀够不到
+645333 645330  645330        sleep（孙层）       ← 异组，组杀够不到
+```
+
+也就是说**每个工具都在独立进程组里**。只发组信号会把它们全漏掉，漏掉的当场变 PPID=1 的孤儿 ——
+正是 v2.0.0 花大力气要消灭的那种东西。
+
+上一轮为什么没测出来：`spawnFakeTree` 用 `detached:true` 起假 dsh，它 fork 的子进程**继承**
+dsh 的进程组，于是全落在组杀的覆盖范围内，**异组这种形状压根没被造出来过**。
+
+现在改成**两层投递**，缺一不可：
+
+1. **组信号**（`-pgid`）：快，且能收掉「快照之后才加入本组」的进程
+2. **逐个补刀**（`targets` 里仍活着的）：负责「不漏」——组信号够不到的异组子孙只有这层能收
+
+阶段 2 升级 SIGKILL 时同样两层都发。`test/own-group.test.mjs` 用 `detached:true`
+造出与真机同形的异组子孙，term / kill 两种模式各一条用例。
+
 ## 结构
 
 | 文件 | 角色 |
@@ -90,7 +121,7 @@ inputActions.submit()                // 走 composer 自己的命令仲裁
 | `client.js` | 浏览器半边。只负责画按钮和两步确认，不含任何进程逻辑 |
 | `cordis.patch.yml` | Loader patch，插入宿主行 |
 | `locale/{en,zh}.json` | 插件清单里的展示名与描述 |
-| `test/*.test.mjs` | killer 进程树 / 组信号前提 / index 命令面 / client 契约，共 27 条 |
+| `test/*.test.mjs` | killer 进程树 / 组信号前提 / 异组子孙 / index 命令面 / client 契约，共 29 条 |
 
 **一个操作，两个入口。** 按钮点击最终变成一条 `kill-dsh` 命令行交给宿主执行，
 所以 GUI 和 composer 里手敲 `/kill-dsh` 走的是同一段代码，不会各自漂移。
@@ -193,5 +224,5 @@ plugin_manager install_bundle  # target 指向本目录的绝对路径
 ## 自测
 
 ```bash
-node --test "test/*.test.mjs"   # 27 条，约 3.5 秒
+node --test "test/*.test.mjs"   # 29 条，约 5 秒
 ```

@@ -157,13 +157,15 @@ test('SIGTERM 模式：扛得住 SIGTERM 的进程会被升级到 SIGKILL', asyn
   const result = await killTree({ targetPid: pid, mode: 'term', scope: 'tree', graceMs: 800 })
 
   assert.equal(result.ok, true, '忽略 SIGTERM 也必须被升级强杀后终止')
-  // stubborn 是 detached 启动的组长，走的是组信号分支，所以 escalated 记的是**组 id**
-  // （负数 = -pgid）。这是刻意的：组杀能收掉快照之后才冒出来的子进程，逐个杀收不掉。
+  // v2.0.2 起是**两层投递**：组信号（负数 = -pgid，能收掉快照后加入本组的进程）
+  // + 逐个信号（正数 pid，负责组信号够不到的异组子孙）。两层都该留下痕迹。
+  assert.ok(result.signalled.some((s) => s < 0), `应发出组信号，实际 ${JSON.stringify(result.signalled)}`)
+  assert.ok(result.signalled.includes(pid), `term 阶段应对 pid ${pid} 逐个发 SIGTERM，实际 ${JSON.stringify(result.signalled)}`)
+  // 它忽略 SIGTERM，所以必须升级
   assert.ok(
     result.escalated.some((e) => Math.abs(e) === pid),
     `pid ${pid} 应被升级强杀（escalated=${JSON.stringify(result.escalated)}）`,
   )
-  assert.equal(result.signalled.every((s) => s < 0), true, 'term 阶段先发的应是组 SIGTERM，不该直接强杀')
   assert.equal(isAlive(pid), false)
 })
 
