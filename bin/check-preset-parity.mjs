@@ -80,7 +80,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -235,15 +235,66 @@ function readShippedTarget() {
   return rows.length === 0 ? null : { label: 'shipped', file, rows };
 }
 
-/** live 组合：启动期生成的 cordis.yml 里的 preset-cordis 行。 */
+/**
+ * live 组合：正在跑的 profile 实际用的那棵树。
+ *
+ * ⚠️ 为什么不能只读 profiles/<p>/cordis.yml（2026-10-01 实测踩坑）：
+ * 该文件**不保证是物化后的树**。dsh 0.2.0-rc.2 用 `agint-restart` 拉起（`dsh web`、
+ * 不带 --profile）后，它被写成 4 行的空根：
+ *     # dsh profile root — an empty entry list. The tree is composed as patches...
+ *     []
+ * 同一版本、早先那次带 --profile 的启动则写了 238 行。两种形态取决于启动方式。
+ * 于是「文件里没有 preset-cordis → 返回 null → 调用方 if(live) 跳过」，门禁会
+ * **静默丢掉整条 live 基线还照样报绿** —— 正是本门禁要防的那类假绿。
+ *
+ * 现在：先试 cordis.yml（快路径，兼容物化形态），拿不到再回退到
+ * `dsh --profile <p> --dump-config`（权威、与启动方式无关）。两条都拿不到时
+ * 返回 reason，由调用方**判红**，不再静默跳过。
+ */
 function readLiveTarget(profile = 'web') {
   const file = path.join(dshHome, 'profiles', profile, 'cordis.yml');
-  if (!fs.existsSync(file)) return null;
-  const doc = parseYaml(fs.readFileSync(file, 'utf8'));
-  const entries = Array.isArray(doc) ? doc : [doc];
-  for (const row of entries) {
+  if (fs.existsSync(file)) {
+    const doc = parseYaml(fs.readFileSync(file, 'utf8'));
+    const entries = Array.isArray(doc) ? doc : [doc];
+    for (const row of entries) {
+      if (row?.id === 'preset-cordis') {
+        const rows = collectRows(row.config?.plugins);
+        if (rows.length > 0) return { label: 'live', file, rows };
+      }
+    }
+  }
+
+  // 回退：向 dsh 要权威组合。慢（要起一次进程）但与启动方式无关。
+  let out;
+  try {
+    out = execFileSync('dsh', ['--profile', profile, '--dump-config'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 120000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (e) {
+    return { error: `dsh --profile ${profile} --dump-config 执行失败：${e.message.split('\n')[0]}` };
+  }
+  const rows = pickPresetCordis(out);
+  if (rows === null) {
+    return { error: `dsh --profile ${profile} --dump-config 的输出里没有 preset-cordis 行` };
+  }
+  return { label: 'live', file: `dsh --profile ${profile} --dump-config`, rows };
+}
+
+/** 从一段 YAML 文本里取出 preset-cordis 的能力行；取不到返回 null。 */
+function pickPresetCordis(text) {
+  let doc;
+  try {
+    doc = parseYaml(text);
+  } catch {
+    return null;
+  }
+  for (const row of Array.isArray(doc) ? doc : [doc]) {
     if (row?.id === 'preset-cordis') {
-      return { label: 'live', file, rows: collectRows(row.config?.plugins) };
+      const rows = collectRows(row.config?.plugins);
+      if (rows.length > 0) return rows;
     }
   }
   return null;
@@ -403,6 +454,8 @@ function compareCopies(repoCopy, deployedCopy) {
  * ------------------------------------------------------------------ */
 
 const targets = [];
+// 基线取不到时收集在这里，最后与比对结果合并（不能就地 push：issues 在下方才声明）
+const baselineFailures = [];
 if (TARGET_OVERRIDES.length > 0) {
   try {
     targets.push(...readTargetOverrides());
@@ -414,14 +467,32 @@ if (TARGET_OVERRIDES.length > 0) {
   if (TARGET_FILTER !== 'live') {
     const shipped = readShippedTarget();
     if (!shipped) {
-      console.error('找不到 shipped cordis preset（<dsh>/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml）。');
+      // 附上已探测的位置，别只丢一句「找不到」让人无从下手
+      const tried = path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml');
+      const hint = fs.existsSync(tried)
+        ? `${tried} 存在但里面没有 preset-cordis 行（该文件可能被换版）`
+        : `${tried} 不存在（dsh 安装于 ${dsh.dir}；可用 DSH_ROOT 覆盖）`;
+      console.error(`读不到 shipped cordis preset 基线。已探测：${hint}`);
       process.exit(2);
     }
     targets.push(shipped);
   }
   if (TARGET_FILTER !== 'shipped') {
     const live = readLiveTarget(process.env.DSH_PROFILE || 'web');
-    if (live) targets.push(live);
+    if (live?.error) {
+      // 关键：拿不到基线必须判红。静默跳过 = 门禁少查一半还报绿（2026-10-01 实踩）。
+      baselineFailures.push({
+        level: 'critical',
+        kind: 'baseline-unavailable',
+        row: 'preset-cordis',
+        copy: 'live',
+        targets: [],
+        message: `取不到 live 基线，本次没查它：${live.error}`,
+        remedy: '确认 dsh 可执行且 `dsh --profile <p> --dump-config` 能出组合；或用 --target=shipped 只查 shipped 基线',
+      });
+    } else if (live) {
+      targets.push(live);
+    }
   }
 }
 if (targets.length === 0) {
@@ -458,13 +529,15 @@ function mergeIssues(issues) {
   return [...byKey.values()];
 }
 
-const issues = mergeIssues(
-  targets.flatMap((target) =>
+const issues = mergeIssues([
+  // 基线缺失也要进 issues（2026-10-01：静默跳过 = 少查一半还报绿）
+  ...baselineFailures,
+  ...targets.flatMap((target) =>
     copies.flatMap((copy) =>
       compare(target, copy).map((i) => ({ ...i, target: target.label, copy: copy.label })),
     ),
   ),
-);
+]);
 for (const i of compareCopies(
   copies.find((c) => c.label === 'repo'),
   copies.find((c) => c.label === 'deployed'),
