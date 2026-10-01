@@ -37,7 +37,7 @@
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
-        root: !!js (process.env.DSH_WIKI_ROOT || 'D:/DSH/wiki')
+        root: !!js (process.env.DSH_WIKI_ROOT || '/home/kylin/projects/DSH/wiki')
 
     # dsh-schedule: 宿主原生调度（0.1.7-rc.2，行动 #2a 2026-09-28 挂载）。
     # agint-cron 的宿主调度桥（plugins/agint-cron/lib/host-schedule.js）依赖它做

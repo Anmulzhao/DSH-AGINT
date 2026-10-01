@@ -91,17 +91,17 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-29 19:23 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-29 00:44 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
 - **仓库版本**：v0.8.6（VERSION 表首行）
-- **DSH_HOME**：`C:\Users\Administrator\.dsh`
+- **DSH_HOME**：`/home/kylin/.dsh`
 - **仓库 ↔ host 同步**：37/37 个插件 lib/index.js 哈希一致，无漂移 ✅
-- **host 挂载插件**（37 个）：agint-abtest@v0.6.5、agint-aesthetic-oracle@v0.4.1、agint-compress-guard@v0.1.0、agint-cron@pkg:0.2.4、agint-curator@v0.2.0、agint-curriculum@v0.1.1、agint-diagnosis@v2026-09-26、agint-dream@v0.4.1、agint-event-bus@v0.7.2、agint-evolution-driver@v0.2.10、agint-evolution-memory@v0.6.7、agint-evolve@v2026-09-20、agint-family-panel@v0.1.2、agint-input-gateway@v0.1.0、agint-memory@pkg:0.1.0、agint-memory-provider@v0.2.1、agint-metrics@v1.1.2、agint-mount@v2026-09-20、agint-mutator@v0.6.7、agint-ov-strategy@v0.1.0、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@v0.7.2、agint-quality-sdk@pkg:0.5.0、agint-quality-static@v0.8.1、agint-restart@v0.8.2、agint-rules@pkg:0.2.1、agint-search-tools@pkg:0.1.0、agint-self-model@v2026-09-26、agint-session-extract@pkg:0.1.0、agint-skill-autocreate@v0.5.4、agint-skill-graph@v0.1.0、agint-tool-stats@pkg:0.1.0、agint-trajectory@v0.1.1、agint-wiki@v0.2.0
+- **host 挂载插件**（37 个）：agint-abtest@v0.6.5、agint-aesthetic-oracle@v0.4.1、agint-compress-guard@v0.1.0、agint-cron@pkg:0.2.4、agint-curator@v0.2.0、agint-curriculum@v0.1.2、agint-diagnosis@v2026-09-26、agint-dream@v0.4.1、agint-event-bus@v0.7.2、agint-evolution-driver@v0.2.10、agint-evolution-memory@v0.6.7、agint-evolve@v0.7.2、agint-family-panel@v0.1.2、agint-input-gateway@v0.1.1、agint-memory@pkg:0.1.0、agint-memory-provider@v0.2.1、agint-metrics@v1.1.2、agint-mount@v2026-09-20、agint-mutator@v0.6.7、agint-ov-strategy@v0.1.0、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@v0.7.2、agint-quality-sdk@pkg:0.5.0、agint-quality-static@v0.8.1、agint-restart@v0.8.2、agint-rules@pkg:0.2.1、agint-search-tools@pkg:0.1.0、agint-self-model@v2026-09-26、agint-session-extract@pkg:0.1.0、agint-skill-autocreate@v0.5.4、agint-skill-graph@v0.1.0、agint-tool-stats@pkg:0.1.0、agint-trajectory@v0.1.1、agint-wiki@v0.2.0
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
 - **preset skills**（7 个）：agint-install-bootstrap-rescue、causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
 - **cordis.patch.yml agint 段**（host web profile，0 个）：无
-- **cron 实况**（19 个 job，按最近 tick 排序）：diagnosis-watchdog 2026-09-29 11:00Z、evolution-cycle 2026-09-29 10:04Z、curriculum-weekly 2026-09-29 05:00Z、baseline-regression-suite 2026-09-29 01:30Z、oracle-daily 2026-09-29 01:00Z、skill-autocreate-observe 2026-09-28 22:15Z、skill-autocreate-release 2026-09-28 21:45Z、skill-autocreate-aggregate 2026-09-28 21:15Z、prompt-static-check 2026-09-28 20:45Z、tool-stats-backfill 2026-09-28 20:31Z、metrics-collect 2026-09-28 20:00Z、night-dream 2026-09-28 19:02Z、evolve-review 2026-09-28 15:49Z、curator-weekly 2026-09-28 15:49Z、wiki-lint 2026-09-28 15:49Z、memory-decay 2026-09-28 14:48Z、oracle-weekly 2026-09-28 04:43Z、oracle-monthly 2026-09-27 17:06Z、skill-graph-weekly 2026-09-26 23:00Z
+- **cron 实况**（0 个 job，按最近 tick 排序）：（agint_cron.json 无 cron_state 或不可读）
 
 <!-- LOCAL-STATE:END -->
