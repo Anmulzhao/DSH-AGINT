@@ -1,5 +1,24 @@
 # Changelog — agint-quality-eval
 
+## 0.3.2 (2026-10-01) — 修复评估池恒空：manifest 漏声明 `skills` 注入
+
+### Fixed
+
+- `manifest.json` 的 `spec.cordis.inject` 补上 `skills`。`lib/index.js` 的 `enumerateTargets()`
+  一直调用 `ctx.get('skills')`，但 `skills` 从未出现在 `inject` 列表里。按 PLUGIN-SPEC §1
+  「缺 `inject`：硬依赖会永远 pending，调度不起来」，`ctx.get('skills')` 恒为 `undefined`，
+  函数在 `if (skills && typeof skills.list === 'function')` 处整段跳过，评估目标数组恒为空，
+  `runWeekly()` 走 early return 返回 `{ evaluated: 0, persisted: 0, loggedToEvo: 0,
+  baseline: null, stagnation: null }` —— **调用成功、产出恒 0、且不报错**。
+
+### Impact
+
+- 修复前：`quality_eval_run_now` 与 weekly scheduler 一律 `evaluated=0`，`evolution_log`
+  30 天零记录（D-QAF 形同虚设）。
+- 修复后：评估目标取自 `skills.list()`，经 `name.toLowerCase().includes('agint')` 过滤后
+  命中 `agint-install-bootstrap-rescue`。
+- **枚举口径本身未改** —— 仍只评名字含 `agint` 的技能。本次只恢复取数能力，不扩大评估范围。
+
 ## 0.3.0 (2026-08-29) — Sprint 12 / A2 evolution.evaluated 发布
 ## 0.3.1 (2026-09-28) — 行动 #5 权重外置可配置
 
