@@ -2,8 +2,21 @@
  * Browser half of the kill-switch bundle.
  *
  * Renders one button in the composer dock. It holds no process logic: the click
- * becomes a `kill-dsh` command line that the host half owns, so the button and
- * the composer slash command cannot drift apart.
+ * becomes a `/kill-dsh` draft that the composer submits through its own
+ * adjudication pipeline, which is exactly the path a human gets by typing the
+ * command — one operation, one implementation, two human-facing callers.
+ *
+ * ── v2.0.1 修正：v1 用的 `ctx.remote.commands.execute(...)` 从未存在 ──────
+ * v1.0.0 写的是 `ctx.remote.commands.execute(sessionId, '/kill-dsh', [])`。
+ * 取证（cordis_inspect_list，client 平台，2026-10-01）显示客户端一共只有 8 个服务：
+ * layout / locale / sessions / slots / theme / timer / uiWorkspace / workspaces ——
+ * **没有 remote，也没有 commands**。点按钮必然抛
+ * `cannot get property "remote.commands" without inject`。
+ *
+ * 正确通道是 composer 自己的 InputActions（slot 标准 prop，契约定义见
+ * dsh-client-ui-conversation/lib/types/client/contract/input.d.ts）：
+ *   setDraft('/kill-dsh') → submit() → adjudication → host 侧 kill-dsh handler
+ * 这条路径完全不需要 RPC，也不需要 dynamic Plugin 的 `host` builtin。
  *
  * The action ends this page, so it takes two deliberate clicks and a visible
  * countdown — a single mis-click should never be able to stop the host.
@@ -27,10 +40,13 @@ window.__ModuleLoader__.load({
       idle: 'Stop DSH',
       armed: 'Click again to stop',
       sending: 'Stopping…',
-      // The host only *schedules* the kill at this point; nothing has died yet,
-      // so the copy says scheduled. Claiming "stopped" here was the v1 lie.
-      sent: 'Stop scheduled. The page will disconnect in a moment.',
+      // Honest limits of this path: we submit the command but get no return value
+      // back (submit() is void, and the page is about to die anyway). "Submitted"
+      // is all we can claim — and if the page does NOT go blank, the command was
+      // refused; `/kill-dsh` in the composer is the manual way to find out why.
+      sent: 'Stop submitted. The page will disconnect. If it stays, the command was refused — try /kill-dsh in the composer.',
       failed: 'Could not stop DSH',
+      noComposer: 'This composer has no input actions — run /kill-dsh here instead.',
     }
 
     const ZH = {
@@ -38,19 +54,26 @@ window.__ModuleLoader__.load({
       idle: '终止 DSH',
       armed: '再次点击以终止',
       sending: '正在终止…',
-      // 此刻宿主只是**排程**了终止，还没有进程真的死掉 —— 所以说"已排程"，不说"已终止"。
-      sent: '已排程终止，页面即将断开。',
+      // 这条路径拿不到宿主回执（submit() 无返回值，页面也马上就要断），所以只能说
+      // 「已提交」。若页面没断，就是命令被拒了 —— 用 /kill-dsh 手动查原因。
+      sent: '已提交终止，页面即将断开。若页面没断，说明命令被拒，可在本输入框手动输 /kill-dsh 排查。',
       failed: '终止失败',
+      noComposer: '该输入框没有可用的输入动作 —— 请在此手动输 /kill-dsh。',
     }
 
     return {
-      inject: ['slots', 'remote', 'locale'],
+      // `remote` removed in v2.0.1: it was never a client Service, and declaring it
+      // is exactly what made the click fail. `slots` and `locale` are the real needs.
+      inject: ['slots', 'locale'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
         const stopEn = ctx.locale.register(NS, 'en', EN)
         const stopZh = ctx.locale.register(NS, 'zh', ZH)
 
-        function KillButton({ sessionId }) {
+        // `inputActions` arrives as a slot standard prop (see the catalog in
+        // dsh-client-ui-conversation contract/slots.d.ts). It is per-session, which
+        // is why this slot is session-scoped.
+        function KillButton({ inputActions }) {
           const [phase, setPhase] = useState('idle')
           const [left, setLeft] = useState(0)
           const [note, setNote] = useState('')
@@ -74,35 +97,41 @@ window.__ModuleLoader__.load({
             return () => clearInterval(handle)
           }, [phase])
 
-          const send = useCallback(async () => {
+          const send = useCallback(() => {
+            // A slot occupant is not guaranteed to receive every standard prop
+            // (replaceRisk is "none" here, but a future owner could narrow it).
+            // Degrade to an actionable message instead of throwing inside a click.
+            if (!inputActions || typeof inputActions.submit !== 'function') {
+              setPhase('idle')
+              setNote(t('noComposer'))
+              return
+            }
             setPhase('sending')
             setNote('')
             try {
-              const result = await ctx.remote.commands.execute(sessionId, COMMAND, [])
-              if (!result || result.ok !== true) {
-                const detail = result && result.error
-                  ? `${result.error.code}: ${result.error.message}`
-                  : 'the host refused the call'
-                throw new Error(detail)
-              }
-              if (result.value === undefined) {
-                throw new Error('the /kill-dsh command is not registered on this host')
-              }
-              const settled = result.value.result
-              if (settled && settled.kind === 'error') throw new Error(settled.text)
-              setNote((settled && settled.text) || t('sent'))
+              // The same two steps a human takes: type the slash line, press Enter.
+              // The composer arbitrates the leading `/` and routes it to the host
+              // handler registered as `kill-dsh`.
+              //
+              // Side effect worth stating plainly: setDraft replaces the whole draft,
+              // so anything already typed in the composer is discarded. For a stop
+              // control that is an acceptable trade — a draft is worth far less than
+              // a host that refuses to stop — but it is not silent.
+              inputActions.setDraft(COMMAND)
+              inputActions.submit()
+              setNote(t('sent'))
             } catch (error) {
               setPhase('idle')
               setNote(`${t('failed')}: ${error instanceof Error ? error.message : String(error)}`)
             }
-          }, [sessionId, t])
+          }, [inputActions, t])
 
           const onClick = () => {
             if (phase === 'idle') {
               setNote('')
               setPhase('armed')
             } else if (phase === 'armed') {
-              void send()
+              send()
             }
           }
 

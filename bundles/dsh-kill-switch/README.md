@@ -42,6 +42,45 @@ killer.js（孤儿） 枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKIL
 **宿主不自杀**，这是刻意的：killer 的 pid 复用防护比对的是「ppid 仍在原主」的指纹，
 宿主先死会让子进程 ppid 变成 1、指纹失配、被当成「不是那个进程」而漏杀。
 
+## v2.0.1 改了什么：按钮本来压根点不动
+
+v1.0.0 的 `client.js` 写的是：
+
+```js
+ctx.remote.commands.execute(sessionId, '/kill-dsh', [])
+```
+
+**这个 API 在 dsh 里不存在。** 取证（`cordis_inspect_list`，client 平台，2026-10-01）
+显示客户端一共只有 8 个服务：`layout` / `locale` / `sessions` / `slots` / `theme` /
+`timer` / `uiWorkspace` / `workspaces` —— 没有 `remote`，也没有 `commands`。
+点按钮必然抛 `cannot get property "remote.commands" without inject`。
+（`@deepseek-ai/dsh-api-remotes` 是 **host 侧**的包，不是客户端服务。）
+
+按钮渲染得出来——slot occupants 里 `dsh-kill-switch` 一直是 `active: true`——
+所以这个 bug 在外观上完全看不出来，只有点下去才炸。
+
+现在走 composer 自己的 `InputActions`（slot 标准 prop，契约见
+`dsh-client-ui-conversation/lib/types/client/contract/input.d.ts`）：
+
+```js
+inputActions.setDraft('/kill-dsh')   // 替换整个草稿
+inputActions.submit()                // 走 composer 自己的命令仲裁
+```
+
+`submit()` 内部就是 Enter 提交管道（adjudication → claim transaction → sink），
+以 `/` 开头的行会被判为命令并送到 host 的 `kill-dsh` handler。**不需要任何 RPC**，
+也正是 v1.0.0 那句「一个操作，两个入口」本来就该有的实现。
+
+> 为什么没走 `host.call(method, args)`：`host` 是 dynamic Cordis Plugin 的 builtin
+> （"Package-private JSON RPC from Client to this Package's Host half"），
+> 而本 bundle 走的是 `window.__ModuleLoader__` 的 bundle 通道。
+> **我没有验证 bundle 形态下能否拿到 `host` builtin**，所以选了有硬契约证据的这条。
+
+**代价（如实交代）**：`submit()` 无返回值，按钮拿不到宿主回执文案。页面断 = 成功；
+页面没断 = 命令被拒。UI 上明写了这个判据，并指向手动 `/kill-dsh` 排查。
+另外 `setDraft` 会**清空输入框里已有的草稿**——对终止开关来说这个取舍可接受
+（一份草稿远不如一个停不下来的宿主值钱），但它不是静默的。
+
 ## 结构
 
 | 文件 | 角色 |
@@ -51,7 +90,7 @@ killer.js（孤儿） 枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKIL
 | `client.js` | 浏览器半边。只负责画按钮和两步确认，不含任何进程逻辑 |
 | `cordis.patch.yml` | Loader patch，插入宿主行 |
 | `locale/{en,zh}.json` | 插件清单里的展示名与描述 |
-| `test/*.test.mjs` | killer 进程树 / index 命令面，共 19 条 |
+| `test/*.test.mjs` | killer 进程树 / index 命令面 / client 契约，共 24 条 |
 
 **一个操作，两个入口。** 按钮点击最终变成一条 `kill-dsh` 命令行交给宿主执行，
 所以 GUI 和 composer 里手敲 `/kill-dsh` 走的是同一段代码，不会各自漂移。
@@ -131,5 +170,5 @@ plugin_manager install_bundle  # target 指向本目录的绝对路径
 ## 自测
 
 ```bash
-node --test "test/*.test.mjs"   # 19 条，约 3 秒
+node --test "test/*.test.mjs"   # 24 条，约 3 秒
 ```

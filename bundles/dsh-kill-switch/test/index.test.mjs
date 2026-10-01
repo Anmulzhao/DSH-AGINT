@@ -163,5 +163,7 @@ test('package.json 会把 killer.js 一起装出去', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.ok(pkg.files.includes('killer.js'), 'files 必须含 killer.js')
   assert.equal(pkg.exports['./killer'], './killer.js', 'exports 应暴露 killer 入口')
-  assert.equal(pkg.version, '2.0.0', '行为已破环（只杀自己 → 杀整棵树），主版本应跟进')
+  // 2.0.0 破了环（只杀自己 → 杀整棵树）；2.0.1 才真正修好 client 那个不存在的 API。
+  // 断言 major >= 2 而不是钉死补丁号 —— 后者只会在正常升版时制造噪音。
+  assert.match(pkg.version, /^2\.\d+\.\d+$/, `主版本应 >= 2（行为已破环），实际 ${pkg.version}`)
 })

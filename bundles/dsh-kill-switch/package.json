@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-kill-switch",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "description": "Adds a two-step button to the composer dock that terminates the DSH host process and its child processes.",
