@@ -63,6 +63,31 @@ const Config = z.object({
  * up as "unmapped" rather than silently vanishing — the map can drift without
  * hiding anything.
  */
+/**
+ * 家族外部成员：不在 `agint-*` 命名空间，但确实是智进家族的组成部分。
+ *
+ * 收录理由：终止开关是**给智进这台宿主当急停用的**，bundle 只是它的封装
+ * 形式，名字叫 dsh- 不改变归属。其余 agint 之外的 host 插件不在此表内 ——
+ * 判据是 Set 精确匹配，机制上只有 module 名逐字符等于表内字符串的行会命中，
+ * 想多收一行必须在这里显式加一行（可审计）。
+ *
+ * 判据按 **module 名精确匹配**，不是 id 前缀，两个原因：
+ *   1. loader 会给 patch 插入行加 `include:` 前缀（dsh-kill-switch 实机
+ *      entry id = `include:dsh-kill-switch`），按 id 前缀写会漏；
+ *   2. 按前缀放宽会把 200+ 条 host 官方行全拖进家族。
+ *
+ * ⚠️ 未做过的核对：全量运行时 roster 的逐行复算。Config inspect provider 的
+ * 分页参数在本机 bridge 过不去（`limit` 恒报 must be a number），拿不到 239 行
+ * 明细。替代证据是面板全量计数对比——改动前后 `counts.total` 的增量必须
+ * 恰好等于 1，见 test/smoke.mjs 用例 14 与实机验收记录（CHANGELOG v0.1.3）。
+ */
+const EXTERNAL_FAMILY_MEMBERS = new Set([
+  // 终止开关：两步确认，终止宿主整棵进程树。独立 bundle
+  //（bundles/dsh-kill-switch，包名 @local/dsh-kill-switch），按 bundle
+  // 规范不落在 plugins/agint-* 命名空间下，但它是家族的一等公民。
+  'dsh-kill-switch',
+]);
+
 const FAMILY_GROUPS = [
   { id: 'preset', label: 'AGENT预设', members: ['agint-preset', 'agint-blockchain-preset', 'agint-investor-preset'] },
   { id: 'memory', label: '记忆与知识', members: ['agint-memory', 'agint-wiki', 'agint-memory-provider', 'agint-search-tools'] },
@@ -71,7 +96,9 @@ const FAMILY_GROUPS = [
   { id: 'quality', label: 'D-QAF 质量层', members: ['agint-quality', 'agint-quality-contract', 'agint-quality-policy', 'agint-quality-sdk', 'agint-quality-static', 'agint-quality-sandbox', 'agint-quality-eval', 'agint-quality-report'] },
   { id: 'closed-loop', label: '进化闭环引擎', members: ['agint-mutator', 'agint-population', 'agint-abtest', 'agint-mount'] },
   { id: 'execution', label: '自进化执行层', members: ['agint-skill-autocreate', 'agint-curator', 'agint-skill-graph', 'agint-trajectory', 'agint-compress-guard'] },
-  { id: 'infra', label: '观测与基础设施', members: ['agint-self-model', 'agint-event-bus', 'agint-restart', 'agint-session-extract', 'agint-ov-strategy', 'agint-input-gateway', 'agint-aesthetic-oracle', 'agint-family-panel'] },
+  { id: 'infra', label: '观测与基础设施', members: ['agint-self-model', 'agint-event-bus', 'agint-session-extract', 'agint-ov-strategy', 'agint-input-gateway', 'agint-aesthetic-oracle', 'agint-family-panel'] },
+  // 宿主生命周期：重启与终止是同一件事的两头，并排放才看得出对偶。
+  { id: 'host-lifecycle', label: '宿主生命周期', members: ['agint-restart', 'dsh-kill-switch'] },
 ];
 
 /** Group id for rows the label map does not name. */
@@ -145,6 +172,12 @@ function readRows(ctx) {
 
 /**
  * Split the roster into the agint family and the rest of the host.
+ *
+ * Membership is namespace-driven (`agint-*`) plus the explicit
+ * `EXTERNAL_FAMILY_MEMBERS` allow-list. It is deliberately NOT "everything that
+ * isn't a known host plugin": the live host roster measured 239 rows against 39
+ * family rows (2026-10-01), so a widened test would promote the large majority
+ * of the host into the family panel.
  * @param {Array<object>} rows - loader rows.
  * @returns {{ family: Array<object>, hostRowCount: number }} family rows + total.
  */
@@ -154,7 +187,8 @@ function splitFamily(rows) {
     const moduleName = row.module ?? '';
     const isFamily = row.id.startsWith('agint-')
       || /^agint[-_]/i.test(moduleName)
-      || moduleName.startsWith('agint-');
+      || moduleName.startsWith('agint-')
+      || EXTERNAL_FAMILY_MEMBERS.has(moduleName);
     if (isFamily) family.push(row);
   }
   return { family, hostRowCount: rows.length };
@@ -162,20 +196,33 @@ function splitFamily(rows) {
 
 /**
  * Group family rows by the label map.
+ *
+ * Members are matched against two keys: the loader entry id first, then the
+ * module short name. Both spellings resolve to the same row for `agint-*`
+ * plugins (their module name equals their id), so the second lookup is a no-op
+ * there. It exists for external bundles, whose entry id carries dsh's
+ * composition-only `include:` marker (dsh's own plugin-inventory UI strips it
+ * before display too — see dsh-client-ui-settings-plugin-inventory/lib/client.js).
+ * Writing that marker into the label map would bake a loader bookkeeping detail
+ * into this table; matching the module name keeps the table readable and stable.
  * @param {Array<object>} family - family rows.
  * @returns {{ groups: Array<object>, unmappedIds: string[] }} groups + leftovers.
  */
 function groupFamily(family) {
   const byId = new Map();
-  for (const row of family) byId.set(row.id, row);
+  const byModule = new Map();
+  for (const row of family) {
+    byId.set(row.id, row);
+    if (typeof row.module === 'string' && row.module !== '') byModule.set(row.module, row);
+  }
   const groups = [];
   const claimed = new Set();
   for (const group of FAMILY_GROUPS) {
     const members = [];
     for (const memberId of group.members) {
-      const row = byId.get(memberId);
+      const row = byId.get(memberId) ?? byModule.get(memberId);
       if (row === undefined) continue;
-      claimed.add(memberId);
+      claimed.add(row.id);
       members.push({
         id: row.id,
         status: row.status,

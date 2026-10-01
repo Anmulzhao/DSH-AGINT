@@ -62,6 +62,29 @@ slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ ctx }) }, FamilyP
 3. **分组表只是标签映射，不是白名单。** 名册里没被归类的一律进「未归类」组并在面板底部列出 id，
    新增插件会显示成"待补"，不会静默消失。
 
+4. **谁算家族成员，判据只有命名空间 + 一张显式外部名单。** `splitFamily` 收
+   `agint-` 前缀（entry id 或 module 名），外加 `EXTERNAL_FAMILY_MEMBERS`。
+   **不是**"凡是没进已知 host 插件表的就算家族"——实机 host 名册 239 行对家族 39 行
+   （2026-10-01），判据一放宽就会把绝大多数 host 行卷进面板。当前外部名单只有
+   `dsh-kill-switch`（终止开关，见下）。
+
+## 家族外部成员：终止开关
+
+终止开关（`bundles/dsh-kill-switch`，包名 `@local/dsh-kill-switch`）是**独立 DSH
+bundle**，按 bundle 规范不落在 `plugins/agint-*` 命名空间下，但它是家族的一等公民，
+因此进了 `EXTERNAL_FAMILY_MEMBERS`，与 `agint-restart` 同列「宿主生命周期」组
+（重启与终止是同一件事的两头）。
+
+判据按 **module 名精确匹配**而非 id 前缀：loader 会给 patch 插入行加
+composition-only 的 `include:` 标记（实机 entry id = `include:dsh-kill-switch`，
+dsh 自己的 plugin-inventory UI 也要剥掉它才显示），按 id 前缀写会漏，按前缀放宽会误伤。
+配套地，`groupFamily` 匹配成员时先查 entry id、再查 module 名，因此分组表里写的是
+可读的 `dsh-kill-switch`，而面板展示的仍是 loader 原样的 `include:dsh-kill-switch`。
+
+> 未做过的核对：全量运行时 roster 的逐行复算（Config inspect provider 的分页参数在
+> 本机 bridge 过不去）。替代证据是全量计数对比——本机 `counts.total` 由 39 变 40、
+> 增量恰好 1，见 CHANGELOG 0.1.3 的真机验收记录。
+
 ## kill-switch
 
 ```yaml
@@ -74,7 +97,7 @@ slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ ctx }) }, FamilyP
 ## 验证
 
 ```sh
-node plugins/agint-family-panel/test/smoke.mjs   # 11 组断言（含降级与 kill-switch）
+node plugins/agint-family-panel/test/smoke.mjs   # 14 组断言（含降级、kill-switch、外部家族成员正负样本）
 dsh --profile web --dump-config | grep -A4 agint-family-panel
 ```
 

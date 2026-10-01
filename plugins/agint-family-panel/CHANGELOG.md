@@ -1,5 +1,65 @@
 # agint-family-panel CHANGELOG
 
+## 0.1.3 — 2026-10-01
+
+### 终止开关（`dsh-kill-switch`）并入 agint 家族
+
+**为什么**：终止开关是独立 DSH bundle（`bundles/dsh-kill-switch`，包名
+`@local/dsh-kill-switch`），按 bundle 规范不落在 `plugins/agint-*` 命名空间。
+`splitFamily` 的三条判据全是 `agint-` 前缀，于是它在面板上被划进 host 名册——
+实机确认：家族 39 行里 `/kill-switch/` 零命中，而它确实在跑（host loader entry
+`include:dsh-kill-switch`；客户端 dock slot occupant `dsh-kill-switch` active:true）。
+**跑得好好的组件，在家族视图里不存在。**
+
+**改了什么**：
+
+- 新增 `EXTERNAL_FAMILY_MEMBERS`（当前仅 `dsh-kill-switch`）：家族成员 =
+  `agint-` 命名空间 **+ 这张显式外部名单**。判据是 module 名**精确匹配**。
+- `FAMILY_GROUPS` 新增 `{ id: 'host-lifecycle', label: '宿主生命周期' }`，
+  收纳 `agint-restart` 与 `dsh-kill-switch`；`agint-restart` 同时从 `infra` 组移出
+  （同列一组的行若在两处重复列出会在面板上重复计数）。
+- `groupFamily` 匹配成员时**先查 entry id、再查 module 名**。
+
+**过程中被 smoke 抓到的真 bug**（先写 id 匹配时）：分组表按 entry id 命中，
+而外部 bundle 的 entry id 带 dsh 的 composition-only `include:` 标记，于是该行
+虽然归了族、却落进「未归类」兜底组。取证：`include:` 是组合期标记，dsh 自己的
+`dsh-client-ui-settings-plugin-inventory/lib/client.js:131` 注释原话即
+"composition-only `include:` marker"，且它显示前也要剥掉。因此没有把这个标记
+写进分组表，而是加 module 名兜底——分组表保持可读，展示 id 保持 loader 原样。
+
+**测试**：smoke 增至 14 组。第 14 组含正负样本 ——
+正样本照抄实机那一行的真实形状（`id: include:dsh-kill-switch` /
+`name: @local/dsh-kill-switch`），断言它落进宿主生命周期组、`declared:true`、
+家族计数增量恰好 1、host roster 分母不变；负样本用 `dsh-twin-preset` 与
+`dsh-kill-switch-extra` 两条前缀相近的行，断言它们**不**被拖进家族（白名单是
+精确匹配，放宽成前缀就会把别的 bundle 一并吞掉）。另有断言确保 `agint-restart`
+不会同时出现在两组。
+
+**未做**：全量运行时 roster 的逐行复算。`Config.listConfigs` 的分页参数在本机
+bridge 过不去（`limit` 恒报 `must be a number`），拿不到 239 行明细；替代证据是
+面板全量计数对比，见下方真机验收记录。
+
+**真机验收**（2026-10-01，`requestId=0bdcad50` 重启后实测
+`GET /api/agint-family/status`）：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `counts.total` | 39 | **40**（增量恰好 1） |
+| `hostRowCount` | 239 | **239**（不变） |
+| `counts.active` | 39 | 40 |
+| 「宿主生命周期」组成员 | 组不存在（restart 在 infra） | `agint-restart`, `dsh-kill-switch` |
+| infra 组是否仍含 `agint-restart` | 是 | **否** |
+| `dsh-kill-switch` 所在位置 | 不在家族（落 host 名册） | 宿主生命周期组，`declared:true` |
+| `unmappedIds` | `["agint-ops-preset"]` | `["agint-ops-preset"]`（未变） |
+
+**`total` 增量恰好 1 且 `hostRowCount` 239 未变**，即全量口径上只多认了终止开关
+一行，其余 238 条 host 行没有一条被卷进家族 —— 这正是上面「未做逐行复算」所缺的
+那格证据。
+
+回归确认：重启后 `conversation.composer.dock` 的 occupant `dsh-kill-switch`
+仍 `active:true`（本插件只改只读统计，未触碰终止开关本体）。
+`agint-ops-preset` 落 unmapped 是既有问题，与本次改动无关，未处理。
+
 ## [Unreleased]
 
 ### 测试加固（无功能变更）

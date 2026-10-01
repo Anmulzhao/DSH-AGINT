@@ -204,4 +204,53 @@ assert.throws(() => trapCtx.config, /without inject/, '假 ctx 对未注入属�
 assert.doesNotThrow(() => { apply(trapCtx, { enabled: true }); }, 'apply 不得从 ctx 上读 config');
 assert.doesNotThrow(() => { apply(makeCtx(), {}); }, '默认参下 apply 亦不得触碰 ctx.config');
 
-console.log('agint-family-panel smoke: PASS (12 groups)');
+// 14. 终止开关并入家族（v0.1.3）----------------------------------------------
+// 照抄实机那一行的真实形状：loader 给 patch 插入行加了 `include:` 前缀，
+// name 是 @local/ 包名。判据若写成 id 前缀匹配，这里会当场露馅。
+const KILL_ROW = {
+  options: { id: 'include:dsh-kill-switch', name: '@local/dsh-kill-switch' },
+  disabled: false,
+  fiber: { state: 2 },
+};
+const killCtx = makeCtx({ entries: [KILL_ROW, row('agint-memory'), row('other-plugin')] });
+apply(killCtx, {});
+const killPayload = JSON.parse((await callRoute(killCtx)).body);
+const lifecycle = killPayload.groups.find((g) => g.id === 'host-lifecycle');
+assert.ok(lifecycle, '宿主生命周期组存在');
+assert.ok(
+  lifecycle.members.some((m) => m.id === 'include:dsh-kill-switch' && m.declared === true),
+  '终止开关归入宿主生命周期组（loader 的 include: 前缀不影响归族）',
+);
+assert.equal(killPayload.counts.total, 2, '家族计数 = 终止开关 + agint-memory（增量恰好 1）');
+assert.equal(killPayload.hostRowCount, 3, 'host roster 分母含全部三行，归族不改分母');
+assert.equal(killPayload.unmappedIds.length, 0, '已被分组表认领，不落未归类');
+assert.equal(
+  killPayload.groups.find((g) => g.id === 'infra').members.some((m) => m.id === 'agint-restart'),
+  false,
+  'agint-restart 已从观测与基础设施移出（与终止开关同组，不再重复计数）',
+);
+
+// 负样本：前缀相近但不在白名单里的 host 行不得被拖进家族 —— 白名单是精确
+// module 名匹配，放宽成前缀就会把别的 bundle 一并吞掉。
+for (const [label, id] of [['同前缀的另一个 bundle', 'dsh-twin-preset'], ['白名单名的变体', 'dsh-kill-switch-extra']]) {
+  const c = makeCtx({ entries: [row(id), row('agint-memory')] });
+  apply(c, {});
+  const p = JSON.parse((await callRoute(c)).body);
+  assert.equal(p.counts.total, 1, `${label}（${id}）不进家族，只有 agint-memory 算`);
+  assert.equal(p.hostRowCount, 2, `${label} 仍计入 host roster`);
+}
+
+const restartCtx = makeCtx({ entries: [row('agint-restart'), row('agint-self-model')] });
+apply(restartCtx, {});
+const restartPayload = JSON.parse((await callRoute(restartCtx)).body);
+assert.ok(
+  restartPayload.groups.find((g) => g.id === 'host-lifecycle').members.some((m) => m.id === 'agint-restart'),
+  'agint-restart 归入宿主生命周期组',
+);
+assert.equal(
+  restartPayload.groups.find((g) => g.id === 'infra').members.some((m) => m.id === 'agint-restart'),
+  false,
+  '同一行不会同时出现在两组（分组表重复列会导致重复计数）',
+);
+
+console.log('agint-family-panel smoke: PASS (14 groups)');
