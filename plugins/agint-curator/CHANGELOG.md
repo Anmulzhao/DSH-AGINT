@@ -1,5 +1,32 @@
 # agint-curator 变更日志
 
+## v0.2.1 (2026-10-01) — 多根扫描 + 孤儿清扫 + lastRunAt 落盘（策展「账实不符」三修）
+
+> 起因：本机 `curator_status` 恒显 `lastRun=never`、preset 自带的 7 个手工技能**在账上
+> 一条都没有**，账上 12 条里 5 条是**已被回滚的自动技能**却仍以 active 充当分母。
+> 三处都是「静默失真」——不抛错，只是结果不对。
+
+**① `skills_dir` 接受目录列表（多根合并、按 name 去重）**
+
+原为单字符串，默认 `$DSH_HOME/skills`。2026-09-23 与 autocreate 同步改投用户级根后，
+AGINT 手工维护的技能仍在 `$DSH_HOME/.agent-presets/agint/skills`，**整批落在账外**。
+改为 `z.union([z.string(), z.array(z.string())])`——向后兼容单值，不破坏既有配置。
+扫描结果携带 `dirs`（实际扫了哪几个根），**「扫了哪些根」必须可取证，不靠读配置猜**。
+
+**② orphan 清扫（`orphan_sweep_enabled`，默认 true）**
+
+账本里有、任何扫描根里都没有 → 判定为已移除/已回滚，只把账改成 `archived`
+并写审计，**不移动目录、不删记录**（`curator_unarchive` 可回滚）。
+护栏：扫描结果为空时整体跳过——配置写错或目录不可读时，不能把整本账扫成孤儿。
+
+**③ `lastRunAt` 落盘回读**
+
+`lastRunAt` 原是内存态 → 每次重启归零，`curator_status` 恒显 `lastRun=never`，
+而 cron 记录里明明有成功运行。改为 `run()` 每次往 `audit_log` 写一条
+`weekly_run` / `dry_run`，挂载时回读时间戳最新的一条；读不到就保持 null，**不假装有值**。
+
+**不做的**：不自动判定「用着差」（无成败数据，硬造指标=自我评估）；不动存储 schema。
+
 ## v0.2.0+retarget (2026-09-23) — skills_dir 与 autocreate 投放目标对齐
 
 `skills_dir` 默认值：`$DSH_HOME/.agent-presets/agint/skills` → `$DSH_HOME/skills`。

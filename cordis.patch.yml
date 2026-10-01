@@ -319,12 +319,22 @@
     # 每周策展由 agint-cron 的 curator-weekly job 驱动（周一 07:00；2026-09-28
     # 重排，原周日 02:00。⛔ 必须早于 evolve-review（周一 07:30）—— 周复盘要吃
     # 本周策展报告，见 docs/operations/cron-schedule-principles.md）。
-    # ⚠️ 保守：auto_curation_enabled: false → cron 全流程 dry-run（重叠/归档只检测不落盘），
-    #    观察两周报告后改 true 放行（或随时 curator_pause/curator_resume）。
+    # 2026-09-29 放行：三周 dryRun（W38/39/40）零 stale/archive/overlap/declining，
+    # 观察窗 16 天到期，auto_curation_enabled: true → cron 真归档（或随时 curator_pause）。
+    #
+    # 2026-10-01 补 skills_dir 多根（curator v0.2.1）：放行后实测「账实不符」——
+    # 用户级根 $DSH_HOME/skills 只装 autocreate 投放的技能，AGINT 手工维护的 7 个技能
+    # 仍在 preset 目录里，**整批不在账上**。改单根为列表：先用户级（投放位），
+    # 后 preset 目录（手工位），多根按 name 去重（声明顺序在前者优先）。
+    # ⚠️ 用 process.env.DSH_HOME 而不是 dshHomePath()：后者在 bundle 级 patch 的
+    #    !!js 求值作用域里未定义（本文件其余 !!js 一律走 process.env，保持一致）。
     - id: agint-curator
       name: ./plugins/agint-curator/lib/index.js
       config:
-        auto_curation_enabled: false
+        auto_curation_enabled: true
+        skills_dir: !!js >-
+          [(process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/skills',
+           (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/.agent-presets/agint/skills']
 
     # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
     # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +

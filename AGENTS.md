@@ -1,11 +1,11 @@
 # AGENTS.md — 智进工作守则（精简版）
 
-> 精简版（2026-09-17）。详细 SOP 已迁入 `wiki/AGINT/`：
-> - 挂载/重启流程 → `AGINT/挂载-重启红线.md`
-> - 插件准入 10 维度 → `AGINT/插件准入-10维度.md`
-> - subagent 派活原则 → `AGINT/subagent派活原则.md`
+> 精简版（2026-09-17）。详细 SOP 在 `D:\DSH\wiki\` 根目录（**不在** `wiki/AGINT/` 子目录；该子目录放的是诊断报告与状态页，索引见 `wiki/README.md`）：
+> - 挂载/重启流程 → `wiki/挂载-重启红线.md`
+> - 插件准入 10 维度 → `wiki/插件准入-10维度.md`（另见 `插件准入-9维度.md` / `插件准入-决策形状.md`）
+> - subagent 派活原则 → `wiki/subagent派活原则.md`
 >
-> 哲学见 `PHILOSOPHY.md`；自进化宪法见 `docs/evolution-framework.md`；本机实况见文末自动块。
+> 哲学见 `wiki/设计与哲学.md`（原 `PHILOSOPHY.md`，2026-09-21 由 commit `8b84f6d` 迁入 wiki；本仓 `PHILOSOPHY.md` 已不存在）；自进化宪法见 `docs/evolution-framework.md`；本机实况见文末自动块。
 
 ## 你的家
 
@@ -75,7 +75,7 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 
 | 想知道 | 去看 |
 |---|---|
-| 哲学来源 | `PHILOSOPHY.md` |
+| 哲学来源 | `wiki/设计与哲学.md`（原 `PHILOSOPHY.md`） |
 | 工程化哲学检查项 | `docs/evolution-philosophy-checkpoints.md` |
 | D-QAF / HARM / 进化记忆 | `docs/evolution-framework.md` |
 | 安全边界 | `docs/security-boundary.md` |
@@ -84,24 +84,25 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 | dsh 集成边界 | `docs/dsh-integration.md` |
 | 插件详细 | `docs/plugins/agint-*.md` |
 | 评估场景集 | `eval/scenarios/README.md` |
-| 挂载/重启 SOP | `wiki/AGINT/挂载-重启红线.md` |
-| 插件准入 10 维度 | `wiki/AGINT/插件准入-10维度.md` |
-| subagent 派活 | `wiki/AGINT/subagent派活原则.md` |
+| 挂载/重启 SOP | `wiki/挂载-重启红线.md` |
+| 插件准入 10 维度 | `wiki/插件准入-10维度.md` |
+| subagent 派活 | `wiki/subagent派活原则.md` |
+| wiki 索引 | `wiki/README.md` |
 
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
 ## 本机实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-10-01 17:31 UTC。
+> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-09-29 21:20 UTC。
 > 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
 > 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
 
-- **仓库版本**：v0.9.0（VERSION 表首行）
-- **DSH_HOME**：`/home/kylin/.dsh`
+- **仓库版本**：v0.8.6（VERSION 表首行）
+- **DSH_HOME**：`C:/Users/Administrator/.dsh`
 - **仓库 ↔ host 同步**：37/37 个插件 lib/index.js 哈希一致，无漂移 ✅
 - **host 挂载插件**（37 个）：agint-abtest@v0.6.5、agint-aesthetic-oracle@v0.4.1、agint-compress-guard@v0.1.0、agint-cron@pkg:0.2.4、agint-curator@v0.2.0、agint-curriculum@v0.1.2、agint-diagnosis@v2026-09-26、agint-dream@v0.4.1、agint-event-bus@v0.7.2、agint-evolution-driver@v0.2.10、agint-evolution-memory@v0.6.7、agint-evolve@v0.7.2、agint-family-panel@v0.1.2、agint-input-gateway@v0.1.1、agint-memory@pkg:0.1.0、agint-memory-provider@v0.2.1、agint-metrics@v1.1.2、agint-mount@v2026-09-20、agint-mutator@v0.6.7、agint-ov-strategy@v0.1.0、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@v0.7.2、agint-quality-sdk@pkg:0.5.0、agint-quality-static@v0.8.1、agint-restart@v0.8.2、agint-rules@pkg:0.2.1、agint-search-tools@pkg:0.1.0、agint-self-model@v2026-09-26、agint-session-extract@pkg:0.1.0、agint-skill-autocreate@v0.5.4、agint-skill-graph@v0.1.0、agint-tool-stats@pkg:0.1.0、agint-trajectory@v0.1.1、agint-wiki@v0.2.0
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
 - **preset skills**（7 个）：agint-install-bootstrap-rescue、causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
 - **cordis.patch.yml agint 段**（host web profile，0 个）：无
-- **cron 实况**（19 个 job，按最近 tick 排序）：diagnosis-watchdog 2026-10-01 09:30Z、oracle-monthly 2026-10-01 02:00Z、curriculum-weekly 2026-10-01 01:30Z、oracle-daily 2026-10-01 01:00Z、skill-autocreate-observe 2026-09-30 22:15Z、skill-autocreate-release 2026-09-30 21:45Z、skill-autocreate-aggregate 2026-09-30 21:15Z、prompt-static-check 2026-09-30 20:45Z、tool-stats-backfill 2026-09-30 20:30Z、metrics-collect 2026-09-30 20:00Z、night-dream 2026-09-30 19:00Z、oracle-weekly 2026-09-29 16:55Z、evolution-cycle 2026-09-29 16:55Z、skill-graph-weekly 2026-09-29 16:55Z、baseline-regression-suite 2026-09-29 16:55Z、evolve-review 2026-09-29 16:55Z、curator-weekly 2026-09-29 16:55Z、wiki-lint 2026-09-29 16:55Z、memory-decay 2026-09-29 16:55Z
+- **cron 实况**（19 个 job，按最近 tick 排序）：diagnosis-watchdog 2026-09-29 13:00Z、evolution-cycle 2026-09-29 10:04Z、curriculum-weekly 2026-09-29 05:00Z、baseline-regression-suite 2026-09-29 01:30Z、oracle-daily 2026-09-29 01:00Z、skill-autocreate-observe 2026-09-28 22:15Z、skill-autocreate-release 2026-09-28 21:45Z、skill-autocreate-aggregate 2026-09-28 21:15Z、prompt-static-check 2026-09-28 20:45Z、tool-stats-backfill 2026-09-28 20:31Z、metrics-collect 2026-09-28 20:00Z、night-dream 2026-09-28 19:02Z、evolve-review 2026-09-28 15:49Z、curator-weekly 2026-09-28 15:49Z、wiki-lint 2026-09-28 15:49Z、memory-decay 2026-09-28 14:48Z、oracle-weekly 2026-09-28 04:43Z、oracle-monthly 2026-09-27 17:06Z、skill-graph-weekly 2026-09-26 23:00Z
 
 <!-- LOCAL-STATE:END -->

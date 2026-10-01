@@ -207,8 +207,52 @@ function apply(ctx, config) {
     return written;
   }
 
+  /**
+   * 多根技能扫描（2026-10-01）：skills_dir 接受单目录或目录列表，逐根 scanSkills
+   * 后按 name 去重（声明顺序在前者优先）。返回 dirs 供审计/排障——「扫了哪几个根」
+   * 必须是可取证的事实，不能靠读配置猜。
+   */
+  async function scanSkillRoots() {
+    const declared = effectiveConfig().skills_dir;
+    const list = Array.isArray(declared) ? declared : [declared];
+    const dirs = [];
+    const seen = new Set();
+    const skills = [];
+    for (const raw of list) {
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const abs = resolvePath(raw);
+      dirs.push(abs);
+      for (const s of await scanSkills(abs)) {
+        if (seen.has(s.name)) continue;
+        seen.add(s.name);
+        skills.push(s);
+      }
+    }
+    return { skills, dirs };
+  }
+
+  /**
+   * lastRunAt 落盘回读（2026-10-01）。lastRunAt 本是内存态 → 每次重启归零，
+   * curator_status 恒显 `lastRun=never`，而 cron 记录里明明有成功运行。
+   * 落盘通道复用 audit_log：run() 每次写一条 weekly_run / dry_run，
+   * 挂载时回读时间戳最新的一条；读不到就保持 null（不假装有值）。
+   */
+  async function restoreLastRunAt() {
+    try {
+      const t = await table('audit_log');
+      let latest = null;
+      for (const [, v] of t.entries()) {
+        if (v.action !== 'weekly_run' && v.action !== 'dry_run') continue;
+        if (!latest || String(v.timestamp) > String(latest)) latest = v.timestamp;
+      }
+      if (latest && lastRunAt === null) lastRunAt = latest;
+    } catch { /* domain 不可用 → 保持 null，不阻断挂载 */ }
+  }
+
+  void ready.then(() => restoreLastRunAt()).catch(() => {});
+
   /** 扫描到的技能 → skill_states 表同步（保留人工设置，只刷新 usage/描述） */
-  async function syncSkillStates(skills, usageMap, { nowMs }) {
+  async function syncSkillStates(skills, usageMap, { nowMs, dryRun = false, trigger = 'weekly_curation' } = {}) {
     const c = effectiveConfig();
     const cronRefs = await detectCronReferenced();
     const t = await table('skill_states');
@@ -216,7 +260,9 @@ function apply(ctx, config) {
     for (const [, v] of t.entries()) existingByName.set(v.skillName, v);
 
     const synced = [];
+    const scannedNames = new Set();
     for (const s of skills) {
+      scannedNames.add(s.name);
       const ex = existingByName.get(s.name);
       const protectedFlag = ex?.protected === true
         || c.protected_skills.includes(s.name)
@@ -248,10 +294,48 @@ function apply(ctx, config) {
       synced.push(withRealCreatedAt);
     }
 
+    // ── orphan 清扫（2026-10-01）────────────────────────────────────────
+    // 账本里有、任何扫描根里都没有 → 技能目录已被移除/回滚，账上却仍算 active。
+    // 只把账改成 archived 并写审计：**不移动目录、不删记录**（可 curator_unarchive 回滚）。
+    // 护栏：扫描结果为空时整体跳过 —— 配置写错/目录不可读时不能把整本账扫成孤儿。
+    const orphans = [];
+    if (c.orphan_sweep_enabled !== false && skills.length > 0) {
+      for (const [key, v] of t.entries()) {
+        if (scannedNames.has(v.skillName)) continue;
+        if (v.state === 'archived') continue;
+        orphans.push({ id: key, skillName: v.skillName, fromState: v.state, record: v });
+      }
+      if (!dryRun) {
+        for (const o of orphans) {
+          const at = nowIso();
+          const packed = packSkillState({
+            ...o.record,
+            state: 'archived',
+            stateChangedAt: at,
+            archivedAt: at,
+            archiveReason: 'orphan: 源目录中已不存在（curator orphan sweep）',
+            stateHistory: [
+              ...(o.record.stateHistory ?? []),
+              { from: o.fromState, to: 'archived', at, reason: 'orphan sweep: 源目录中已不存在', actor: 'system' },
+            ],
+          }, o.record);
+          await t.put(packed.id, packed);
+          await audit({
+            actor: 'system',
+            action: 'archive',
+            targetType: 'skill',
+            targetId: o.skillName,
+            details: { fromState: o.fromState, toState: 'archived', trigger, dryRun: false, sweep: 'orphan', filesMoved: false },
+            reason: `orphan：${o.skillName} 不在任何扫描根中`,
+          });
+        }
+      }
+    }
+
     const limitWarn = checkLimit('skill_states', t.size);
     if (limitWarn) console.warn(`[${name}] ${limitWarn._warn}`);
     void nowMs;
-    return synced;
+    return { synced, orphans, scannedNames: [...scannedNames] };
   }
 
   // ── 主流程：run / dryRun 同一条路径（验收标准）────────────────────────
@@ -270,7 +354,7 @@ function apply(ctx, config) {
       nowMs,
     });
     const tasks = groupTaskCalls(records);
-    const skills = await scanSkills(resolvePath(c.skills_dir));
+    const { skills, dirs: skillsDirs } = await scanSkillRoots();
     const { usage, inference } = aggregateUsage(tasks, skills, {
       inferenceEnabled: c.usage_inference_enabled !== false,
       minToolCoverage: c.usage_inference_min_tool_coverage,
@@ -282,7 +366,7 @@ function apply(ctx, config) {
     // 本阶段用于候选质量池计数，规则 1/2/3 的 HARM 分支以单测覆盖。
     const evolutionEntries = await readEvolutionProvisional();
 
-    const states = await syncSkillStates(skills, usage, { nowMs });
+    const { synced: states, orphans } = await syncSkillStates(skills, usage, { nowMs, dryRun, trigger });
 
     // Sprint 15 T2：质量周快照 + 趋势评估（挂 skill.quality，state-engine 消费）
     for (const s of states) {
@@ -364,15 +448,36 @@ function apply(ctx, config) {
       week: report.week, trigger, dryRun, summary: report.summary,
     });
 
+    // 落盘 lastRunAt（2026-10-01）：curator_status 的 lastRun 必须重启后仍为真值。
+    // dry-run 同样留痕——「跑过但只是 dry-run」与「从没跑过」是两件事，不能混为一谈。
+    await audit({
+      actor: args.actor ?? 'system',
+      action: dryRun ? 'dry_run' : 'weekly_run',
+      targetType: 'curator',
+      targetId: report.week,
+      details: {
+        week: report.week,
+        trigger,
+        dryRun,
+        skillsScanned: skills.length,
+        skillsDirs,
+        orphansDetected: orphans.length,
+        orphansSwept: dryRun ? 0 : orphans.length,
+      },
+      reason: null,
+    }).catch(() => { /* 审计写失败不阻断本次运行结果 */ });
+
     return {
       week: report.week,
       dryRun,
       trigger,
       skillsScanned: skills.length,
+      skillsDirs,
       tasksAggregated: tasks.length,
       inference,                 // 'explicit' | 'inferred' | 'disabled'
       overlaps,                  // Sprint 15
       declining,                 // Sprint 15
+      orphans,                   // 2026-10-01：账上有、扫描根没有的技能
       applied,
       report,
       lastRunAt,
