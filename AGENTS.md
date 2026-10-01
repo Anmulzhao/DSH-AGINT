@@ -88,6 +88,7 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 | 插件详细 | `docs/plugins/agint-*.md` |
 | 评估场景集 | `eval/scenarios/README.md` |
 | 挂载/重启 SOP | `wiki/挂载-重启红线.md` |
+| **双 agent 协作规约（Codex + DSH）** | `docs/agent-collaboration.md` |
 | 插件准入 10 维度 | `wiki/插件准入-10维度.md` |
 | subagent 派活 | `wiki/subagent派活原则.md` |
 | wiki 索引 | `wiki/README.md` |
