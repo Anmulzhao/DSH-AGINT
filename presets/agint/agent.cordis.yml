@@ -517,3 +517,24 @@
 # baseUrl to the host's profile/plugins copy installed by install.sh.
 - id: agint-search-tools
   name: ../../profiles/web/plugins/agint-search-tools/lib/tools.js
+
+# ── 插件热插拔（2026-10-01 新增）────────────────────────────────────────────
+# 与内置 cordis / twin preset 同构的一行：把 `plugin_manager` 工具交给本 preset。
+# host 层同名行（dsh-web-app 的 patch）是 `disabled: true` —— 即 host 不主动暴露，
+# 由各 preset 显式 opt-in；standard / ptc 两个 preset 选了不 opt-in。
+#
+# `disabled: !!js "!ctx.get('profileContext')"` 的含义：只有跑在 profile 形态
+# （dsh web / desktop）下才有 profile 上下文、才能真的改 profile；headless /
+# sdk 形态下自动退化为禁用，避免模型对着一个空操作反复重试。
+#
+# ⚠️ 与 tool-cordis 的区别（别混）：tool-cordis 改的是**运行中的 composition**
+# （插插件行、改 enabled），plugin_manager 改的是**profile 的包与 bundle 清单**
+# （装/卸包、启用停用行、装 bundle），两者互补，本 preset 只要后者。
+#
+# ⚠️ 副作用（2026-10-01 已修）：plugin_manager 装/卸 bundle 会在 profile 目录
+# 跑 pnpm，而 pnpm 会剪掉 package.json 里没声明的包。@agint/host 必须作为
+# `dependencies` 条目存在，否则 AGINT 会把自己从 host 上剪掉（详见
+# install/install.sh 文件头「为什么 bundle 实体不在 node_modules 里」）。
+- id: tool-plugin-manager
+  name: '@deepseek-ai/dsh-plugin-manager/tools'
+  disabled: !!js "!ctx.get('profileContext')"

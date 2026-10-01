@@ -11,7 +11,19 @@
 AGINT 整体就是一个 dsh **bundle**：仓库根 `package.json` 声明 `dsh.bundle.patch: ./cordis.patch.yml`，
 那 400 行的 `insert` 列表（31 个 host service 行 + 3 条 preset 声明行）就是它的挂载层。
 
-部署位 `$DSH_HOME/profiles/web/node_modules/@agint/host/`，profile 的 `dsh.profile.bundles` 里列 `@agint/host`。
+部署位 `$DSH_HOME/.agint-bundle/`（实体），`$DSH_HOME/profiles/web/node_modules/@agint/host` 是指过去的一条软链。
+profile 的 `package.json` 里**两处**都要有它：`dsh.profile.bundles` 列 `@agint/host`（dsh 靠它加载），
+`dependencies` 里写 `"@agint/host": "link:<实体目录>"`（让 pnpm 认领这条软链）。
+
+> ⛔ **只写 `dsh.profile.bundles`、不写 `dependencies` = 定时自毁**（2026-10-01 修）。
+> `dsh.profile.bundles` 只决定「dsh 要不要加载」，**不让 pnpm 知道这个包存在**；
+> 而 `plugin_manager` 每次装/卸 bundle 都会在 profile 目录跑一次 `pnpm add|remove`，
+> pnpm 会把清单里没有的包从 `node_modules` 剪掉。症状：某次热插拔之后，
+> **37 个插件和 4 条 preset 一起从 host 上消失，host 一声不吭**（本机在给 AGINT
+> 装 kill-switch / twin preset 之后首次实机验收时才发现 bundle 早就没了）。
+> v0.8.2 的 VERSION 记录写的「不写 dependencies 也能挂，已实测」是**错的**——
+> 当时确实挂上了，但没测过「挂上之后再装别的包」这一步。
+> `install.sh` 3.5 步现在同时写 `bundles` 与 `dependencies`，3.6 步建软链。
 
 **⛔ 两条路径基准不一样，这是最容易翻车的地方（K83）**：
 
@@ -152,7 +164,8 @@ cd ~/projects/AGINT
 preset 里的裸包名（`@deepseek-ai/dsh-persona` / `dsh-tool-fs` …）都从那儿向上解析 —— 那儿没有 `node_modules`
 ⇒ 官方插件行全部 `never started` ⇒ 注册表判 broken ⇒ **UI 只说「加载失败」，且不落日志**。
 `install.sh` 因此建两个 junction 指向 dsh 自带的 `node_modules`（266 个包）：
-`.agent-presets/node_modules`（preset 侧）与 `node_modules/@agint/host/node_modules/@deepseek-ai`（bundle 侧）。
+`.agent-presets/node_modules`（preset 侧）与 `.agint-bundle/node_modules/@deepseek-ai`（bundle 侧，
+经 `node_modules/@agint/host` 软链同样可达）。
 ⛔ 两处都不能被同步删掉：preset 子目录会被 `rsync --delete` 镜像清空，bundle 同步必须 `--exclude=node_modules`。
 
 ### 排障三板斧

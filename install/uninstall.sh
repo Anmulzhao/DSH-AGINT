@@ -63,8 +63,10 @@ PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
 
 # 2026-09-24：bundle 形态（AGINT 的主载体）
 BUNDLE_NAME="@agint/host"
-BUNDLE_DST="$DSH_HOME/profiles/web/node_modules/@agint/host"
+BUNDLE_DST="$DSH_HOME/.agint-bundle"
 BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
+# 2026-10-01 起 bundle 实体在 .agint-bundle/，node_modules 下是它的一条软链
+BUNDLE_LINK="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
 PROFILE_MANIFEST="$DSH_HOME/profiles/web/package.json"
 
 BACKUP_DIR="$DSH_HOME/.agint-backups"
@@ -222,6 +224,22 @@ fi
 
 log ""
 log "2.5/3 移除 bundle 本体（$BUNDLE_DST）"
+if [ -L "$BUNDLE_LINK" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   ✓ 删除软链 (dry): $BUNDLE_LINK"
+  else
+    rm -f "$BUNDLE_LINK"
+    log "   ✓ 删除软链 $BUNDLE_LINK"
+  fi
+elif [ -d "$BUNDLE_LINK" ]; then
+  # 2026-10-01 之前的旧部署位：node_modules 下是一整份实体目录
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   ✓ 删除旧部署目录 (dry): $BUNDLE_LINK"
+  else
+    rm -rf "$BUNDLE_LINK"
+    log "   ✓ 删除旧部署目录 $BUNDLE_LINK"
+  fi
+fi
 if [ -d "$BUNDLE_DST" ]; then
   for item in plugins cordis.patch.yml package.json; do
     if [ -e "$BUNDLE_DST/$item" ]; then
@@ -244,7 +262,7 @@ else
 fi
 
 log ""
-log "2.6/3 从 dsh.profile.bundles 摘掉 $BUNDLE_NAME"
+log "2.6/3 从 dsh.profile.bundles 摘掉 $BUNDLE_NAME，并清掉 dependencies 条目"
 if [ -f "$PROFILE_MANIFEST" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     log "   ✓ 摘除 (dry): $BUNDLE_NAME @ $PROFILE_MANIFEST"
@@ -254,13 +272,22 @@ if [ -f "$PROFILE_MANIFEST" ]; then
 import sys, json, io
 path, name = sys.argv[1], sys.argv[2]
 data = json.loads(io.open(path, encoding='utf-8').read())
+changed = []
 bundles = (data.get('dsh') or {}).get('profile', {}).get('bundles')
-if not isinstance(bundles, list) or name not in bundles:
-    print(f"[AGINT]   ↻ bundles 中无 {name}，跳过")
+if isinstance(bundles, list) and name in bundles:
+    data['dsh']['profile']['bundles'] = [b for b in bundles if b != name]
+    changed.append('bundles')
+# 2026-10-01 新增的依赖声明：不摘的话 pnpm 会继续认为 bundle 该存在于
+# node_modules，下次 install_bundle 又会把它"装"回来。
+deps = data.get('dependencies')
+if isinstance(deps, dict) and name in deps:
+    del deps[name]
+    changed.append('dependencies')
+if not changed:
+    print(f"[AGINT]   ↻ 清单中无 {name}，跳过")
     sys.exit(0)
-data['dsh']['profile']['bundles'] = [b for b in bundles if b != name]
 io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-print(f"[AGINT]   ✓ 已从 bundles 摘除 {name}")
+print(f"[AGINT]   ✓ 已摘除 {name}（{', '.join(changed)}）")
 PY
   fi
 else

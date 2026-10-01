@@ -179,7 +179,10 @@ node plugins/agint-<name>/test/smoke.mjs
 ```
 仓库真源  <repo>/plugins/agint-*/lib/*.js
 mirror 位  $DSH_HOME/profiles/web/plugins/agint-*/lib/*.js        ← preset tools 引用
-bundle 位  $DSH_HOME/profiles/web/node_modules/@agint/host/plugins/agint-*/lib/*.js  ← 服务真正加载
+bundle 位  $DSH_HOME/.agint-bundle/plugins/agint-*/lib/*.js        ← 服务真正加载
+          （2026-10-01 起实体在此；$DSH_HOME/profiles/web/node_modules/@agint/host
+            是指过去的软链，写旧路径也能通，但别再往那儿手工放文件——
+            pnpm 会按 dependencies 重算它）
 ```
 
 **正确顺序：改仓库 → 同步到 mirror 位 + bundle 位 → 重启。**

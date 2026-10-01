@@ -7,13 +7,25 @@
 # ## 交付形态（2026-09-24 起）
 #   $DSH_HOME/.agent-presets/<id>/                      ← 三条 preset 的定义文件
 #   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
-#   $DSH_HOME/profiles/web/node_modules/@agint/host/    ← the bundle（主载体）
+#   $DSH_HOME/.agint-bundle/                            ← the bundle 的实体（主载体）
 #        ├── cordis.patch.yml   挂载行（insert 行 name 相对本目录解析）
 #        ├── package.json       dsh.bundle.patch 声明
 #        ├── plugins/           agint-* 插件
 #        └── node_modules/@deepseek-ai  官方包解析入口
+#   $DSH_HOME/profiles/web/node_modules/@agint/host     ← 指向上面那个目录的 symlink
 #   $DSH_HOME/profiles/web/plugins/                     ← 兼容镜像位（AGINT 自身代码按此路径找插件）
 #   $DSH_HOME/profiles/web/cordis.patch.yml             ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
+#
+# ⛔ 为什么 bundle 实体不在 node_modules 里（2026-10-01 修，AGINT 自毁坑）：
+#   dsh 的 plugin_manager 每次 install_bundle / remove_bundle 都会在 profile 目录
+#   跑一次 `pnpm add|remove`，而 pnpm 会**剪掉 package.json 里没声明的包**。
+#   AGINT 的 bundle 当初是 rsync 一整份目录到 profiles/web/node_modules/@agint/host/，
+#   只在 dsh.profile.bundles 里注册、**没进 dependencies** ⇒ 任何一次插件热插拔
+#   （包括 AGINT 自己用 plugin_manager 装东西）都会把整个 bundle 删掉，症状是
+#   「AGINT 从 preset 列表里凭空消失、37 个插件全没了、host 一声不吭」。
+#   修法：实体挪到 .agint-bundle/，node_modules/@agint/host 改成 symlink，并且把
+#   "@agint/host": "link:<实体目录>" 写进 profile 的 dependencies —— pnpm 认账的
+#   条目它不剪，dsh 的 createRequire 解析照旧穿过 symlink 找到 package.json。
 # 幂等：已存在则备份 + 同步，不破坏用户已有内容（非 agint-* 段原样保留）。
 #
 # ## 安全设计（§5.2 安全左移 + docs/security-boundary.md）
@@ -133,7 +145,8 @@ PLUGINS_SRC="$AGINT_HOME/plugins"
 # ── 2026-09-24：AGINT 改以 dsh **bundle** 形态交付 ──────────────────────────
 # 挂载层 = 仓库根 cordis.patch.yml（package.json 里 dsh.bundle.patch 指向它）
 # 插件   = 仓库根 plugins/
-# 部署位 = $DSH_HOME/profiles/web/node_modules/@agint/host/
+# 部署位 = $DSH_HOME/.agint-bundle/（实体）+ profiles/web/node_modules/@agint/host
+#         （symlink，且必须在 profile 的 dependencies 里声明，见文件头）
 # profile-patches/web/cordis.patch.yml 已**不再写入** profile 级 patch，
 # 仅保留为「卸载时的 id 清单源」（uninstall.sh 依赖它）。
 BUNDLE_PATCH_SRC="$AGINT_HOME/cordis.patch.yml"
@@ -141,10 +154,13 @@ BUNDLE_MANIFEST_SRC="$AGINT_HOME/package.json"
 PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
 
 BUNDLE_NAME="@agint/host"
-BUNDLE_DST="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
+BUNDLE_DST="$DSH_HOME/.agint-bundle"
 BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
 BUNDLE_PATCH_DST="$BUNDLE_DST/cordis.patch.yml"
 BUNDLE_MANIFEST_DST="$BUNDLE_DST/package.json"
+# dsh 解析 bundle 只认这一个位置（app-boot resolveBundleDir → profile 目录下的
+# node_modules/<name>）；实体放别处时，这里必须是指过去的 symlink。
+BUNDLE_LINK="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
 
 # profile 清单：dsh.profile.bundles 的注册位。
 # ⛔ 不注册 = bundle 目录与 patch 都在，但 dsh 根本不加载它，**零报错**（见步骤 3.5）
@@ -371,7 +387,7 @@ def ignore(path, names):
 tmp = dst + '.tmp'
 if os.path.exists(tmp):
     shutil.rmtree(tmp)
-os.makedirs(tmp)
+os.makedirs(tmp, exist_ok=True)  # 同 rsync 分支：中间层缺失时 os.makedirs 负责补
 shutil.copytree(src, tmp, ignore=ignore, dirs_exist_ok=True)
 
 # 兜底清扫：copytree 的 ignore 已挡掉绝大多数软链，这里再扫一遍确保零残留
@@ -545,7 +561,10 @@ done
 #     $DSH_HOME/profiles/web/plugins/<id>），三条 preset 的 tools 行同理 ⇒ 保留兼容位。
 #   两处同源、同一次 sync，天然一致，不引入漂移。
 log "2.5/4 镜像到 bundle → $BUNDLE_PLUGINS_DST"
-mkdir -p "$BUNDLE_DST"
+# ⛔ 必须建到 plugins 这一层：rsync 3.1.3 只建 dst 的最后一级，中间目录缺失就
+#    `mkdir ... failed: No such file or directory (2)` + code 11（python3 后端
+#    走 os.makedirs，会自动补中间层——两个后端在这里的行为不对称）。
+mkdir -p "$BUNDLE_PLUGINS_DST"
 for src in "$PLUGINS_SRC"/agint-*/; do
   [ -d "$src" ] || continue
   name="$(basename "$src")"
@@ -586,11 +605,15 @@ if [ "$DRY_RUN" != "1" ]; then
   register_step "restore_backup|$BUNDLE_PATCH_DST"
 fi
 
-# ── 3.5 注册 bundle 到 profile 清单（dsh.profile.bundles）────────────────────
+# ── 3.5 注册 bundle 到 profile 清单（dsh.profile.bundles + dependencies）──────
 # 与 uninstall.sh 2.6「摘除」对称。⛔ 少这一步：bundle 目录在、patch 在，
 # 但 dsh 根本不加载它 —— 现象是「装完像没装」，**且没有任何报错**。
 # 幂等：已注册则只打印跳过，不重写文件。
-log "3.5/4 注册 bundle 到 profile 清单（dsh.profile.bundles）"
+#
+# ⛔ dependencies 里那一项是 2026-10-01 新增的，**不是冗余**：plugin_manager 每次
+# 装/卸 bundle 都在 profile 目录跑 pnpm，pnpm 会剪掉没声明的包。bundle 实体
+# 改成 symlink 之后，声明这一项才让它免于被剪（详见文件头）。
+log "3.5/4 注册 bundle 到 profile 清单（dsh.profile.bundles + dependencies）"
 if [ ! -f "$PROFILE_MANIFEST" ]; then
   warn "  跳过：$PROFILE_MANIFEST 不存在（该 profile 还没被 dsh 初始化过？）"
   warn "  手工补救：在 dsh.profile.bundles 里加上 $BUNDLE_NAME"
@@ -598,26 +621,69 @@ elif [ "$DRY_RUN" = "1" ]; then
   log "   注册 (dry): $BUNDLE_NAME @ $PROFILE_MANIFEST"
 else
   backup "profile-manifest" "$PROFILE_MANIFEST"
-  python3 - "$(winpath "$PROFILE_MANIFEST")" "$BUNDLE_NAME" <<'PY' || warn "profile 清单注册失败，请手工把 $BUNDLE_NAME 加入 dsh.profile.bundles（备份见 $BACKUP_DIR）"
+  python3 - "$(winpath "$PROFILE_MANIFEST")" "$BUNDLE_NAME" "link:$BUNDLE_DST" <<'PY' || warn "profile 清单注册失败，请手工把 $BUNDLE_NAME 加入 dsh.profile.bundles（备份见 $BACKUP_DIR）"
 import sys, json, io
-path, name = sys.argv[1], sys.argv[2]
+path, name, spec = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.loads(io.open(path, encoding='utf-8').read())
 profile = data.setdefault('dsh', {}).setdefault('profile', {})
+changed = []
 bundles = profile.get('bundles')
 if bundles is None:
     profile['bundles'] = [name]
+    changed.append('bundles+')
 elif not isinstance(bundles, list):
     print(f"[AGINT]   ✗ dsh.profile.bundles 不是数组（{type(bundles).__name__}），拒绝改写，请手工修")
     sys.exit(1)
-elif name in bundles:
-    print(f"[AGINT]   ↻ bundles 中已有 {name}，跳过")
-    sys.exit(0)
-else:
+elif name not in bundles:
     bundles.append(name)  # 追加末尾 = 优先级最低；官方 bundle 在前
+    changed.append('bundles+')
+deps = data.setdefault('dependencies', {})
+if not isinstance(deps, dict):
+    print(f"[AGINT]   ✗ dependencies 不是对象（{type(deps).__name__}），拒绝改写，请手工修")
+    sys.exit(1)
+if deps.get(name) != spec:
+    deps[name] = spec
+    changed.append('dependencies')
+if not changed:
+    print(f"[AGINT]   ↻ {name} 已注册（bundles + dependencies），跳过")
+    sys.exit(0)
 io.open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-print(f"[AGINT]   ✓ 已注册 {name}，bundles = {', '.join(profile['bundles'])}")
+print(f"[AGINT]   ✓ 已更新 {', '.join(changed)}：bundles = {', '.join(profile['bundles'])}，dependencies[{name}] = {spec}")
 PY
 fi
+
+# ── 3.6 materialize node_modules/@agint/host 软链 ────────────────────────────
+# dsh 解析 bundle 的唯一位置是 profiles/web/node_modules/<name>，实体在
+# $DSH_HOME/.agint-bundle/ ⇒ 这里必须有一条指过去的链接。3.5 已把
+# "link:<实体目录>" 写进 dependencies，pnpm 下次跑会认领这条链接；本步只保证
+# 「装完当下 dsh 就能看见 bundle」，不依赖 pnpm 被调用过。
+log "3.6/4 建立 bundle 解析软链 → $BUNDLE_LINK"
+ensure_bundle_link() {
+  local link="$BUNDLE_LINK" target="$BUNDLE_DST"
+  if [ -L "$link" ]; then
+    local cur; cur="$(readlink "$link")"
+    if [ "$cur" = "$target" ]; then
+      log "   ✓ 软链已就位（$link → $target）"
+      return 0
+    fi
+    log "   ↻ 软链指向已变（$cur → $target），重建"
+    rm -f "$link"
+  elif [ -e "$link" ]; then
+    # 2026-10-01 前的旧部署位：一整份实体目录。让位给软链（内容已由 BUNDLE_DST 持有）。
+    log "   ↻ $link 是旧部署留下的实体目录，移入 .agint-bundle 后改为软链"
+    if [ "$DRY_RUN" != "1" ]; then
+      backup "bundle-legacy" "$link"
+      rm -rf "$link"
+    fi
+  fi
+  [ "$DRY_RUN" = "1" ] && { log "   [DRY] 建软链 $link → $target"; return 0; }
+  mkdir -p "$(dirname "$link")"
+  # -n：已存在同名链接时覆盖，不动实体目录
+  ln -sfn "$target" "$link" 2>/dev/null \
+    && log "   ✓ 软链已建立（$link → $target）" \
+    || warn "软链建立失败：$link → $target。dsh 会因解析不到 $BUNDLE_NAME 跳过整个 bundle。"
+}
+ensure_bundle_link
 
 # ── 4. 装后静态校验 ─────────────────────────────────────────────────────────
 log "4/4 装后静态校验"
@@ -785,9 +851,10 @@ log ""
 log "下一步："
 log "  1. 重启 dsh web（bundle 层与 profile 层都不热更新）："
 log "       dsh web"
-log "  2. 验证 bundle 真的被认（两步都要看）："
+log "  2. 验证 bundle 真的被认（三步都要看）："
 log "       ① profile 清单里有它：grep '@agint/host' $PROFILE_MANIFEST"
-log "       ② stderr 不出现 'skipping profile bundle \"@agint/host\"'"
+log "       ② 软链在位：ls -l $BUNDLE_LINK"
+log "       ③ stderr 不出现 'skipping profile bundle \"@agint/host\"'"
 log "          （出现即 bundle 层被跳过，按上文提示补 node_modules 解析入口）"
 log "  3. 在浏览器里新建会话，确认 agint preset 可选、工具齐全"
 log ""

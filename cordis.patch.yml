@@ -184,7 +184,7 @@
       config:
         id: agint
         name: 智进
-        description: 基于 DeepSeek Harness 的自进化智能体框架。具备标准模式的全部能力，并携带动态插件与组合自修改能力，作为进化闭环的基础。
+        description: 基于 DeepSeek Harness 的自进化智能体框架。具备标准模式的全部能力，并携带动态插件与组合自修改能力，以及插件热插拔能力（plugin_manager：装/卸插件与 bundle、启停插件行），作为进化闭环的基础。
         plugins:
           - id: agint-composition
             name: 'cordis:include'

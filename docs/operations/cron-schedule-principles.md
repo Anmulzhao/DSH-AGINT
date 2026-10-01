@@ -81,7 +81,7 @@
    若某条原则是故意违反的，改测试并在注释里写清理由——不要悄悄删断言。
 3. 同步**三处**副本（漏一处 = 存量债，下次同步会被覆盖回去）：
    - `D:/DSH/project源码/DSH-AGINT/plugins/agint-cron/`（仓库，唯一事实源）
-   - `C:/Users/Administrator/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-cron/`（bundle 加载位）
+   - `C:/Users/Administrator/.dsh/.agint-bundle/plugins/agint-cron/`（bundle 加载位，实体）
    - `C:/Users/Administrator/.dsh/profiles/web/plugins/agint-cron/`（镜像位）
    同步后用 `md5sum` 对账，别信 mtime。
 4. **必须重启 dsh 才生效** —— `agint-cron` 是 boot 期插件，`lib/*.js` 的热重载
