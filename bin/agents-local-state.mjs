@@ -227,6 +227,12 @@ function renderLocal(p) {
 // 那会让 --check 每次都误报 STALE —— 比对前先归一。
 const norm = (s) => s.replace(/\r\n/g, '\n');
 
+// 比对时必须剔除时间戳。⚠️ 本机块带分钟级「探测时间」：若把它算进漂移，
+// 每次运行哪怕状态毫无变化也必然判定 STALE，这个门禁就废了。
+// 真正要回答的问题是「本机状态变了吗」，时间戳只是最后一次写入的留痕。
+const VOLATILE = /^> 本机探测时间：.*$/m;
+const stripVolatile = (s) => s.replace(VOLATILE, '');
+
 function inject(block, file) {
   const doc = existsSync(file) ? readFileSync(file, 'utf8') : '';
   const d = norm(doc);
@@ -261,7 +267,7 @@ if (checkOnly) {
   let stale = 0;
   for (const t of targets) {
     const existing = readBlock(t.file);
-    if (existing === t.block) {
+    if (existing !== null && stripVolatile(existing) === stripVolatile(t.block)) {
       console.log(`OK: ${t.label} 与实测一致，无漂移。`);
       continue;
     }
