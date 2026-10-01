@@ -52,6 +52,13 @@ DSH自进化系统整体优化改进方案.md
 /\.agint-backups/
 /.agint-backups/.workbuddy/
 
+# 本机私有实况快照（bin/agents-local-state.mjs 生成）
+# 为什么必须不入库：里面的 DSH_HOME 绝对路径、host 挂载插件版本、cron tick 时间
+# 每台机器都不同。原先写进 AGENTS.md，于是谁最后跑谁的机器就成了仓库事实 —— 另一台
+# 机器读到的不是「过期」而是 outright 错误（Windows 的 C:\Users\... 写给 Linux 读）。
+# 仓库级事实留在 AGENTS.md 的「仓库实况」块，那里只从仓库读，两台机器产出必然相同。
+AGENTS.local.md
+
 # 本地工具缓存（workbuddy 的运行时数据，不进版本库）
 .workbuddy/
 

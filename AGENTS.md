@@ -5,7 +5,7 @@
 > - 插件准入 10 维度 → `wiki/插件准入-10维度.md`（另见 `插件准入-9维度.md` / `插件准入-决策形状.md`）
 > - subagent 派活原则 → `wiki/subagent派活原则.md`
 >
-> 哲学见 `wiki/设计与哲学.md`（原 `PHILOSOPHY.md`，2026-09-21 由 commit `8b84f6d` 迁入 wiki；本仓 `PHILOSOPHY.md` 已不存在）；自进化宪法见 `docs/evolution-framework.md`；本机实况见文末自动块。
+> 哲学见 `wiki/设计与哲学.md`（原 `PHILOSOPHY.md`，2026-09-21 由 commit `8b84f6d` 迁入 wiki；本仓 `PHILOSOPHY.md` 已不存在）；自进化宪法见 `docs/evolution-framework.md`；仓库实况见文末自动块，**本机实测值见 `AGENTS.local.md`**（不入库，两台机器各持一份）。
 
 ## 你的家
 
@@ -13,13 +13,15 @@
 - preset 文件位于 `$DSH_HOME/.agent-presets/agint/`，组合文件 `agent.cordis.yml` **可自编辑**（先加载 `editing-cordis-compositions` skill）
 - 插件源码位于 `$DSH_HOME/profiles/web/plugins/agint-*/`，**不要动** —— 属 AGINT 仓库
 - **红线**：不动 `dsh` 安装目录（官方 preset 在那里）
-- 数据根 `AGINT_HOME = /workspace/DSH-AGINT/AGINT-data`（dream/wiki/evolve 数据落点）
+- 运行时数据落点 `$DSH_HOME/storages/`（dream / wiki / evolve / cron 等插件数据）—— 由 `$DSH_HOME` 推导，**不要写死绝对路径**，本仓库两台机器（Linux / Windows）路径不同
+- `AGINT_HOME` = **本仓库根目录**（权威定义见 `install/agint-security-checks.sh`：`AGINT_HOME_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd)"`），它**不是数据目录**
+  - ⚠️ 本行原写「数据根 `AGINT_HOME = /workspace/DSH-AGINT/AGINT-data`」是错的：`AGINT_HOME` 是仓根，且那个绝对路径在任何一台机器上都不存在
 
 ## 你的能力来自哪里
 
-- **Cordis 插件**（host 平面）：实时数量以文末 LOCAL-STATE 块为准；22+ 个 agint-* 段
+- **Cordis 插件**（host 平面）：**本机**实时数量与版本以 `AGENTS.local.md` 为准（不入库，host 平面因机器而异）；22+ 个 agint-* 段
 - **Tool 工具**（model 平面）：preset 暴露给模型的工具集，按 batch 分批挂载；写工具默认走 `rule_check` ask gate
-- **Skills**：preset 自带 `~/.dsh/.agent-presets/agint/skills/`（随仓库同步）；**自动生成**的技能落在 `~/.dsh/skills/`（用户级技能根，不在 install.sh 管理范围内 ⇒ 重装不会清空）；数量以文末 LOCAL-STATE 块为准，调用前 `skill` 加载
+- **Skills**：preset 自带 `presets/agint/skills/`（随仓库同步，装到 `$DSH_HOME/.agent-presets/agint/skills/`）；**自动生成**的技能落在用户级技能根（不在 install.sh 管理范围内 ⇒ 重装不会清空）；数量以文末「仓库实况」块为准，调用前 `skill` 加载
 
 ## 工作流（接到任何复杂任务前）
 
@@ -90,19 +92,17 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 | wiki 索引 | `wiki/README.md` |
 
 <!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->
-## 本机实况（自动生成）
+## 仓库实况（自动生成）
 
-> 本块由 `bin/agents-local-state.mjs` 探测本机 host 实测回写，最近一次：2026-10-01 18:18 UTC。
-> 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。
-> 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。
+> 本块由 `bin/agents-local-state.mjs` 回写，**只含仓库级事实**，任何机器跑出来都一样。
+> 与上文任何手写快照冲突时以本块为准。勿手改；更新方式：`node bin/agents-local-state.mjs`。
+>
+> ⚠️ **本机实测值（DSH_HOME 绝对路径、host 挂载插件版本、cron tick、仓库↔host 同步状态）不在这里**
+> —— 它们两台机器各不相同，写进来会让一台机器把另一台的事实覆盖掉。
+> 本机那份见 `AGENTS.local.md`（已 .gitignore，每台机器各持一份，由同一脚本生成）。
 
 - **仓库版本**：v0.9.0（VERSION 表首行）
-- **DSH_HOME**：`C:\Users\Administrator\.dsh`
-- **仓库 ↔ host 同步**：37/37 个插件 lib/index.js 哈希一致，无漂移 ✅
-- **host 挂载插件**（37 个）：agint-abtest@v0.6.5、agint-aesthetic-oracle@v0.4.1、agint-compress-guard@v0.1.0、agint-cron@pkg:0.2.4、agint-curator@v0.2.1、agint-curriculum@v0.1.2、agint-diagnosis@v2026-09-26、agint-dream@v0.4.1、agint-event-bus@v0.7.2、agint-evolution-driver@v0.2.10、agint-evolution-memory@v0.6.7、agint-evolve@v0.7.2、agint-family-panel@v0.1.2、agint-input-gateway@v0.1.1、agint-memory@pkg:0.1.0、agint-memory-provider@v0.2.1、agint-metrics@v1.1.2、agint-mount@v2026-09-20、agint-mutator@v0.6.7、agint-ov-strategy@v0.1.0、agint-population@v0.6.2、agint-quality@pkg:0.1.0、agint-quality-eval@pkg:0.2.0、agint-quality-report@pkg:0.4.0、agint-quality-sandbox@v0.7.2、agint-quality-sdk@pkg:0.5.0、agint-quality-static@v0.8.1、agint-restart@v0.8.2、agint-rules@pkg:0.2.1、agint-search-tools@pkg:0.1.0、agint-self-model@v2026-09-26、agint-session-extract@pkg:0.1.0、agint-skill-autocreate@v0.5.4、agint-skill-graph@v0.1.0、agint-tool-stats@pkg:0.1.0、agint-trajectory@v0.1.1、agint-wiki@v0.2.0
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
 - **preset skills**（7 个）：agint-install-bootstrap-rescue、causal-reasoning、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
-- **cordis.patch.yml agint 段**（host web profile，0 个）：无
-- **cron 实况**（19 个 job，按最近 tick 排序）：diagnosis-watchdog 2026-10-01 10:00Z、curator-weekly 2026-10-01 04:02Z、oracle-monthly 2026-10-01 03:38Z、oracle-daily 2026-10-01 03:38Z、curriculum-weekly 2026-10-01 03:38Z、skill-autocreate-observe 2026-10-01 03:38Z、skill-autocreate-release 2026-10-01 03:38Z、skill-autocreate-aggregate 2026-10-01 03:38Z、prompt-static-check 2026-10-01 03:38Z、tool-stats-backfill 2026-10-01 03:38Z、night-dream 2026-10-01 03:37Z、metrics-collect 2026-10-01 03:36Z、evolution-cycle 2026-09-29 10:04Z、baseline-regression-suite 2026-09-29 01:30Z、evolve-review 2026-09-28 15:49Z、wiki-lint 2026-09-28 15:49Z、memory-decay 2026-09-28 14:48Z、oracle-weekly 2026-09-28 04:43Z、skill-graph-weekly 2026-09-26 23:00Z
 
 <!-- LOCAL-STATE:END -->

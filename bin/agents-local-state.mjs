@@ -1,17 +1,29 @@
 #!/usr/bin/env node
-// AGENTS.md「本机实况」自动同步器
+// 本机实况自动同步器 —— **按归属拆成两个文件**
 //
 // 背景（2026-09-07 提案）：AGENTS.md 里的「本机实况快照」全是手写的，反复过期
-// （例：文档写 13 个 preset tool rows，host 实际 16 个）。文档自己都写了三遍
-// 「不要相信本文档字面，先实测 host 端」。本脚本把这件事自动化：
-// 探测本机 host 真实状态 → 回写 AGENTS.md 文末标记块。
+// （例：文档写 13 个 preset tool rows，host 实际 16 个）。本脚本把这件事自动化。
+//
+// 2026-10-01 拆分的原因（多机仓库）：原设计把**每台机器私有的实测值**（DSH_HOME
+// 绝对路径、host 挂载插件版本、cron tick 时间、仓库↔host 同步状态）写进了一个
+// **两台机器共享提交的文件**。后果不是「过期」而是「对另一台机器 outright 错误」
+// —— Windows 机器提交后，Linux 机器读到的 AGENTS.md 会声称自己的 DSH_HOME 是
+// `C:\Users\Administrator\.dsh`。谁最后跑，谁的机器就是仓库事实。
+//
+// 拆分后按「谁来决定这个值」分：
+//   AGENTS.md（入库，两机字节相同）  —— 仓库级事实：仓库版本 / preset tool rows /
+//     preset skills。只从**仓库**读，不碰 host 部署位，所以两台机器产出必然一致。
+//   AGENTS.local.md（.gitignore）   —— 本机私有实测：DSH_HOME / 仓库↔host 同步 /
+//     host 挂载插件 / profile patch 段 / cron 实况 / 本机时间戳。
 //
 // 用法：
-//   node bin/agents-local-state.mjs           # 探测并回写 AGENTS.md 标记块
+//   node bin/agents-local-state.mjs           # 探测并回写两个文件的标记块
 //   node bin/agents-local-state.mjs --check   # 只检查是否过期；过期 exit 1，不写
 //
 // 设计约束：
 // - 零依赖（仓库无 node_modules 也能跑）
+// - 跨平台：路径一律走 join()/DSH_HOME env；写盘固定 LF，Windows 上不会被编辑器
+//   转成 CRLF 后导致每次 --check 都误报 STALE
 // - 只动 BEGIN/END 标记之间的内容，绝不碰 AGENTS.md 其他部分
 // - hash 比对用 lib/index.js（2026-09-04「仓库 ≠ host 加载点」教训的自动化）
 
@@ -23,12 +35,17 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AGENTS_MD = join(REPO_ROOT, 'AGENTS.md');
+// 本机私有块：不入库（.gitignore），两台机器各持一份
+const AGENTS_LOCAL = join(REPO_ROOT, 'AGENTS.local.md');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
 const HOST_PLUGINS_DIR = join(DSH_HOME, 'profiles', 'web', 'plugins');
 const HOST_PRESET_DIR = join(DSH_HOME, '.agent-presets', 'agint');
 const HOST_PATCH_YML = join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml');
 const HOST_CRON_JSON = join(DSH_HOME, 'storages', 'agint_cron.json');
 const REPO_PLUGINS_DIR = join(REPO_ROOT, 'plugins');
+// 仓库级事实只从仓库读 —— 这是两台机器产出相同字节的关键，绝不能回退到 host 部署位
+const REPO_PRESET_YML = join(REPO_ROOT, 'presets', 'agint', 'agent.cordis.yml');
+const REPO_PRESET_SKILLS = join(REPO_ROOT, 'presets', 'agint', 'skills');
 
 const BEGIN = '<!-- LOCAL-STATE:BEGIN (自动生成，勿手改) -->';
 const END = '<!-- LOCAL-STATE:END -->';
@@ -87,15 +104,17 @@ function probe() {
   const hostOnly = [...host.keys()].filter((n) => !repo.has(n));
   const repoOnly = [...repo.keys()].filter((n) => !host.has(n));
 
-  // preset tool rows
+  // preset tool rows —— ⚠️ 读**仓库** presets/agint/agent.cordis.yml，不读 host 部署位。
+  // 这是「两台机器产出相同字节」的关键：读部署位的话，Windows 机器装过什么就决定
+  // 仓库里写什么，Linux 机器跑一次就把它改回去，来回打架。
   let presetRows = [];
   try {
-    const yml = readFileSync(join(HOST_PRESET_DIR, 'agent.cordis.yml'), 'utf8');
+    const yml = readFileSync(REPO_PRESET_YML, 'utf8');
     presetRows = [...yml.matchAll(/^- id: (agint-[a-z0-9-]+)-tools\s*$/gm)].map((m) => m[1]);
   } catch { /* preset missing */ }
 
-  // preset skills
-  const presetSkills = listDirs(join(HOST_PRESET_DIR, 'skills'));
+  // preset skills —— 同理，读仓库 presets/agint/skills
+  const presetSkills = listDirs(REPO_PRESET_SKILLS);
 
   // host patch agint 段
   let patchSegs = [];
@@ -129,7 +148,29 @@ function probe() {
   return { host, repo, drift, hostOnly, repoOnly, presetRows, presetSkills, patchSegs, cronJobs, repoVersion };
 }
 
-function render(p) {
+// ── 入库块：只放仓库级事实。两台机器跑出来必须字节相同（否则 git 天天打架）──
+function renderRepo(p) {
+  return [
+    BEGIN,
+    '## 仓库实况（自动生成）',
+    '',
+    '> 本块由 `bin/agents-local-state.mjs` 回写，**只含仓库级事实**，任何机器跑出来都一样。',
+    '> 与上文任何手写快照冲突时以本块为准。勿手改；更新方式：`node bin/agents-local-state.mjs`。',
+    '>',
+    '> ⚠️ **本机实测值（DSH_HOME 绝对路径、host 挂载插件版本、cron tick、仓库↔host 同步状态）不在这里**',
+    '> —— 它们两台机器各不相同，写进来会让一台机器把另一台的事实覆盖掉。',
+    '> 本机那份见 `AGENTS.local.md`（已 .gitignore，每台机器各持一份，由同一脚本生成）。',
+    '',
+    `- **仓库版本**：${p.repoVersion}（VERSION 表首行）`,
+    `- **preset tool rows**（${p.presetRows.length} 个）：${p.presetRows.join('、') || '无'}`,
+    `- **preset skills**（${p.presetSkills.length} 个）：${p.presetSkills.join('、') || '无'}`,
+    '',
+    END,
+  ].join('\n');
+}
+
+// ── 不入库块：纯本机私有。含绝对路径是应该的 —— 它永远不会被另一台机器读到 ──
+function renderLocal(p) {
   const now = new Date();
   const ts = `${now.toISOString().slice(0, 10)} ${now.toTimeString().slice(0, 5)} UTC`;
 
@@ -138,11 +179,13 @@ function render(p) {
     .map(([n, v]) => `${n}@${v.version}`)
     .join('、');
 
-  const syncLine = p.drift.length === 0 && p.hostOnly.length === 0 && p.repoOnly.length === 0
-    ? `${p.host.size}/${p.repo.size} 个插件 lib/index.js 哈希一致，无漂移 ✅`
-    : `⚠️ lib/index.js 哈希漂移：${p.drift.join('、') || '无'}`
-      + (p.hostOnly.length ? `；仅 host 有：${p.hostOnly.join('、')}` : '')
-      + (p.repoOnly.length ? `；仅仓库有：${p.repoOnly.join('、')}` : '');
+  const syncLine = p.host.size === 0
+    ? '⚠️ 未探测到 host 插件目录（DSH_HOME 无 profiles/web/plugins？）'
+    : p.drift.length === 0 && p.hostOnly.length === 0 && p.repoOnly.length === 0
+      ? `${p.host.size}/${p.repo.size} 个插件 lib/index.js 哈希一致，无漂移 ✅`
+      : `⚠️ lib/index.js 哈希漂移：${p.drift.join('、') || '无'}`
+        + (p.hostOnly.length ? `；仅 host 有：${p.hostOnly.join('、')}` : '')
+        + (p.repoOnly.length ? `；仅仓库有：${p.repoOnly.join('、')}` : '');
 
   const cronLine = p.cronJobs.length === 0
     ? '（agint_cron.json 无 cron_state 或不可读）'
@@ -154,20 +197,25 @@ function render(p) {
         })
         .join('、');
 
+  const hostList = pluginList || '（未探测到）';
+
   return [
     BEGIN,
-    '## 本机实况（自动生成）',
+    '# 本机实况（自动生成，**不入库**）',
     '',
-    `> 本块由 \`bin/agents-local-state.mjs\` 探测本机 host 实测回写，最近一次：${ts}。`,
-    '> 与上文任何手写快照冲突时，**以本块为准**。勿手改；更新方式：`node bin/agents-local-state.mjs`。',
-    '> 注：本段是部署报告，不是通用文档 —— 面向本机部署实况；新读者请以上方通用描述为准。',
+    '> 本文件由 `bin/agents-local-state.mjs` 生成，已在 `.gitignore` 中。',
+    `> 本机探测时间：${ts}。勿手改；更新方式：` + '`node bin/agents-local-state.mjs`。',
+    '>',
+    '> 为什么要单独一个文件：这些值**每台机器都不同**（绝对路径、host 版本、cron tick）。',
+    '> 原先它们写在 AGENTS.md 里，谁最后跑谁的机器就成了仓库事实，另一台机器读到的',
+    '> 不是过期而是 outright 错误。仓库级事实见 AGENTS.md 的「仓库实况」块。',
     '',
-    `- **仓库版本**：${p.repoVersion}（VERSION 表首行）`,
     `- **DSH_HOME**：\`${DSH_HOME}\``,
+    '  （推导：优先 `$DSH_HOME`；未设置时取用户主目录下的 `.dsh`）',
+    `- **本机平台**：${process.platform} / ${process.arch}，Node ${process.version}`,
+    `- **仓库根**：\`${REPO_ROOT}\``,
     `- **仓库 ↔ host 同步**：${syncLine}`,
-    `- **host 挂载插件**（${p.host.size} 个）：${pluginList}`,
-    `- **preset tool rows**（${p.presetRows.length} 个）：${p.presetRows.join('、') || '无'}`,
-    `- **preset skills**（${p.presetSkills.length} 个）：${p.presetSkills.join('、') || '无'}`,
+    `- **host 挂载插件**（${p.host.size} 个）：${hostList}`,
     `- **cordis.patch.yml agint 段**（host web profile，${p.patchSegs.length} 个）：${p.patchSegs.join('、') || '无'}`,
     `- **cron 实况**（${p.cronJobs.length} 个 job，按最近 tick 排序）：${cronLine}`,
     '',
@@ -175,48 +223,69 @@ function render(p) {
   ].join('\n');
 }
 
-function inject(block) {
-  const doc = readFileSync(AGENTS_MD, 'utf8');
-  const b = doc.indexOf(BEGIN);
-  const e = doc.indexOf(END);
+// 跨机器读写：统一 LF。Windows 编辑器可能把已入库的块转成 CRLF，
+// 那会让 --check 每次都误报 STALE —— 比对前先归一。
+const norm = (s) => s.replace(/\r\n/g, '\n');
+
+function inject(block, file) {
+  const doc = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const d = norm(doc);
+  const b = d.indexOf(BEGIN);
+  const e = d.indexOf(END);
   let next;
   if (b !== -1 && e !== -1) {
-    next = doc.slice(0, b) + block + doc.slice(e + END.length);
+    next = d.slice(0, b) + block + d.slice(e + END.length);
   } else {
-    next = doc.replace(/\s*$/, '\n\n') + block + '\n';
+    next = d.replace(/\s*$/, '\n') + '\n' + block + '\n';
   }
-  if (next !== doc) writeFileSync(AGENTS_MD, next);
-  return next !== doc;
+  if (next !== d) writeFileSync(file, next, 'utf8');
+  return next !== d;
 }
 
 const checkOnly = process.argv.includes('--check');
 const p = probe();
-const block = render(p);
+const targets = [
+  { label: 'AGENTS.md（入库·仓库实况）', file: AGENTS_MD, block: renderRepo(p) },
+  { label: 'AGENTS.local.md（不入库·本机实况）', file: AGENTS_LOCAL, block: renderLocal(p) },
+];
 
-if (checkOnly) {
-  const doc = readFileSync(AGENTS_MD, 'utf8');
-  const b = doc.indexOf(BEGIN);
-  const e = doc.indexOf(END);
-  const existing = b !== -1 && e !== -1 ? doc.slice(b, e + END.length) : null;
-  if (existing === block) {
-    console.log('OK: AGENTS.md 本机实况块与 host 实测一致，无漂移。');
-    process.exit(0);
-  }
-  console.log('STALE: AGENTS.md 本机实况块过期（或缺失）。变化点：');
-  if (existing) {
-    for (const line of block.split('\n')) {
-      if (line.startsWith(BEGIN) || line.startsWith(END) || line.startsWith('##')) continue;
-      if (!existing.includes(line)) console.log('  + ' + line.slice(0, 160));
-    }
-    for (const line of existing.split('\n')) {
-      if (line.startsWith(BEGIN) || line.startsWith(END) || line.startsWith('##') || line.startsWith('>')) continue;
-      if (!block.includes(line)) console.log('  - ' + line.slice(0, 160));
-    }
-  } else {
-    console.log('  （标记块不存在，需要首次写入）');
-  }
-  process.exit(1);
+function readBlock(file) {
+  if (!existsSync(file)) return null;
+  const d = norm(readFileSync(file, 'utf8'));
+  const b = d.indexOf(BEGIN);
+  const e = d.indexOf(END);
+  return b !== -1 && e !== -1 ? d.slice(b, e + END.length) : null;
 }
 
-const changed = inject(block);
-console.log(changed ? 'AGENTS.md 本机实况块已回写。' : 'AGENTS.md 本机实况块已是最新，无需改动。');
+if (checkOnly) {
+  let stale = 0;
+  for (const t of targets) {
+    const existing = readBlock(t.file);
+    if (existing === t.block) {
+      console.log(`OK: ${t.label} 与实测一致，无漂移。`);
+      continue;
+    }
+    stale++;
+    console.log(`STALE: ${t.label} 过期（或缺失）。变化点：`);
+    if (existing) {
+      for (const line of t.block.split('\n')) {
+        if (line.startsWith(BEGIN) || line.startsWith(END) || line.startsWith('##')) continue;
+        if (!existing.includes(line)) console.log('  + ' + line.slice(0, 160));
+      }
+      for (const line of existing.split('\n')) {
+        if (line.startsWith(BEGIN) || line.startsWith(END) || line.startsWith('##') || line.startsWith('>') || line.startsWith('#')) continue;
+        if (!t.block.includes(line)) console.log('  - ' + line.slice(0, 160));
+      }
+    } else {
+      console.log('  （标记块不存在，需要首次写入）');
+    }
+  }
+  process.exit(stale ? 1 : 0);
+}
+
+for (const t of targets) {
+  const changed = inject(t.block, t.file);
+  console.log(changed
+    ? `${t.label} 已回写：${t.file}`
+    : `${t.label} 已是最新，无需改动：${t.file}`);
+}
