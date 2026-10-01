@@ -6,7 +6,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**Latest**：v0.8.6 · **37 个 Cordis 插件** · 25 个 AGINT preset 工具行 · 19 个 cron job · D-QAF v0.2 · HARM 四维
+**Latest**：v0.9.0 · **37 个 Cordis 插件** · 25 个 AGINT preset 工具行 · 19 个 cron job · D-QAF v0.2 · HARM 四维
 
 AGINT = **AGI INTelligence**。把 dsh 当 runtime，在它之上构建一套「持续自进化」的能力：长期记忆、定时反思、规则门禁、进化指标、周复盘、梦境整合、**D-QAF 质量评估**，以及 P7.5 的**自进化执行层**（技能自动创建 / 策展 / 学习图谱 / 轨迹记录 / 记忆压缩守卫）。
 
