@@ -43,11 +43,32 @@ node bin/check-dsh-compat.mjs
 - 升级 dsh **前后各跑一次** `--json`，diff 两条基线，只关注新增项
 - 若 dsh 新版本断接口：`cordis.patch.yml` 改不动 → 报 issue 在 AGINT 仓
 
+### preset 平价门禁（与上面并列的独立一条）
+
+```sh
+node bin/check-preset-parity.mjs
+```
+
+`check-dsh-compat` 管**包名**契约；这条管**能力行**平价 —— 智进 preset 是手抄 shipped
+`cordis` preset 的拷贝，dsh 升级时上游加了新行、智进不会自动跟进，
+症状是**智进会话照常起，只是少了某个工具，没有任何一行报错**（2026-10-01 实测过：
+`command-goal` / `tool-cordis` / `present` 三行当时只补进了部署位）。
+
+它做五查：能力行缺失 / 同 id 包名分歧 / 启用倒挂 / 双副本漂移 / agint 超集（info）。
+基线取两处并跨基线去重：shipped `<dsh>/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml`
+（随包发版，不需要起宿主）与启动期组合 `$DSH_HOME/profiles/<profile>/cordis.yml`；
+被检两份：仓库 `presets/agint/agent.cordis.yml` 与部署位 `$DSH_HOME/.agent-presets/agint/agent.cordis.yml`。
+`--json` 给机器读，`--strict` 让 info 级也算失败，自测 `node --test bin/check-preset-parity.test.mjs`。
+
+**双副本必须同时同步**（与「挂载-重启红线」同一条）：只改部署位而不改仓库，重装即回退；
+反向则是仓库改动从未真正生效过。
+
 ## 升级 dsh 后
 
 ```sh
 # 1. 静态门禁（机械可判定的部分，脚本兜住）
 node bin/check-dsh-compat.mjs
+node bin/check-preset-parity.mjs
 
 # 2. 真机冒烟：entry 真加载数 / patch import 数 / preset 对账 / storages 零污染
 dsh --profile headless "..." && dsh --dump-config

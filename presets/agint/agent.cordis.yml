@@ -2,12 +2,17 @@
 # AGINT host-service toolset and a persona carrying the 智进 identity
 # (理念：美是起源与终极追求).
 #
-# Originally copied from the shipped `cordis` preset, but `tool-cordis` is
-# removed because the shipped `cordis` preset is the default and both presets
-# would stand-mount `tool-cordis`; its inspect providers are process-global
-# singletons and a second mount throws "Host Cordis inspect provider ... is
-# already registered". Use the shipped `cordis` preset directly when you need
-# the self-referential Cordis toolset.
+# Originally copied from the shipped `cordis` preset.
+#
+# ⚠️ 2026-10-01 更正：本段原注释称 tool-cordis 被移除，理由是「inspect provider
+# 是进程级单例，第二个 preset 再挂会抛 already registered」。**该理由与已发布代码
+# 矛盾，已作废** —— provider 由 host 层的 cordis-inspect-providers 行全进程只注册
+# 一次，preset 行的 tool-cordis 只是读它，多 preset 挂载安全（详见文件末尾
+# tool-cordis 行的取证）。故本 preset 现已补挂 tool-cordis，与内置 cordis preset
+# 对齐。若日后又想移除，请先读那段取证再决定。
+#
+# 与 cordis preset 的能力差已补齐（command-goal / tool-cordis / present），
+# 智进在其余 dsh-* 工具面与 cordis preset 一致，另有 25 个 agint-* 工具模块。
 #
 # Phase 0: skeleton only. Memory / cron / rules / metrics / evolve plugins
 # arrive in later phases, mostly as HOST composition rows.
@@ -110,6 +115,17 @@
 # session. What a preset chooses is whether its agent can call the goal tool.
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
+
+# `/goal` 人类命令行。与 tool-goal 成对挂载（同 built-in cordis / standard /
+# ptc preset 的写法）。
+# 已取证：host 层同名行在 dsh-web-app 的 patch 里是 `disabled: true`（dump-config
+# 第 236-238 行），而 standard / ptc / cordis 三个 preset 各自补了一行自己的
+# command-goal（dump-config 第 691 / 873 / 1293 行附近）来 opt-in。
+# 本 preset 此前只挂了 tool-goal，未 opt-in 这一行。
+# （create_goal 工具本身不受影响：它由 tool-goal 提供，已在本会话 59 个 live
+# 工具中实测在列。）
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
 
 # ── plan mode ───────────────────────────────────────────────────────────────
 
@@ -539,3 +555,36 @@
 - id: tool-plugin-manager
   name: '@deepseek-ai/dsh-plugin-manager/tools'
   disabled: !!js "!ctx.get('profileContext')"
+
+# ── 与内置 cordis preset 对齐：自省工具 + 交付物卡片（2026-10-01 补齐）──────
+#
+# 【tool-cordis：推翻本文件原头注释的结论】
+# 原头注释（见文件顶部）称 tool-cordis 因「inspect provider 是进程级单例、
+# 第二个 preset 再挂会抛 already registered」而被移除。**该结论与已发布代码
+# 矛盾，已作废**。取证：
+#   - dsh-tool-cordis/lib/index.js 全文只做两件事：ctx.tools.register 注册
+#     cordis_inspect_list / cordis_inspect_query 两个工具，然后读
+#     ctx.cordisInspect.list() / .query()。**它从不注册任何 inspect provider。**
+#   - 真正注册 provider 的是 dsh-tool-cordis/lib/types/host.js，它只挂在 host
+#     层的 `cordis-inspect-providers` 行（dsh-web-app patch，全进程仅一处）。
+#   - host.js 的 JSDoc 原文即写明设计意图：「this row belongs to the host
+#     composition beside `cordis-host-runner`; **every per-session tool-cordis
+#     row reads the shared set** through its tools.」
+# 即：provider 全进程注册一次，任意多个 preset 的 tool-cordis 行都只是读它。
+# 多 preset 挂载是安全的，原注释的报错前提不成立。
+#
+# 工具面说明（重要，别再误判）：这两个工具是**只读**的，只查 API 目录 /
+# Service 签名 / Config schema / Theme / Slot 树。它们**不能**创建或修改任何
+# 插件。上游 dsh-cordis-host-runner/README.md 明确写着「Shipped model tools
+# cannot create or update dynamic definitions」——所以本 preset 依然拿不到
+# cordis_define / cordis_run / cordis_stop / cordis_undefine /
+# cordis_inspect_self，那是上游**有意不暴露**的（它们是服务方法 + 浏览器
+# UI 卡片 key，不是模型工具）。要改 profile 里的插件，仍然只有下面的
+# plugin_manager 一条路。
+- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
+
+# `present`：把文件作为可点击交付物卡片挂到回复上。与 built-in cordis /
+# standard / ptc preset 同构的一行。
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
