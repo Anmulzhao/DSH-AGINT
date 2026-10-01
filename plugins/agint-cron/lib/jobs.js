@@ -24,6 +24,7 @@
  *   oracle-daily    daily 09:00 美谕晨报
  *   oracle-monthly  每月 1 日 10:00 美谕月报
  *   diagnosis-watchdog 每 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
+ *   memory-provider-health daily 08:30 记忆 provider 定期健康检查（阶段 3）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -537,6 +538,48 @@ export const defaultJobs = [
       const oracle = services['agint.aestheticOracle'];
       if (!oracle) return { skipped: true, reason: 'agint.aestheticOracle not mounted' };
       return oracle.runScheduled('monthly');
+    },
+  },
+  {
+    // P1-1 阶段 3（2026-10-01）：记忆 Provider 定期健康检查。
+    //
+    // 与「降级」是两件事：降级是**调用失败时**的护栏（阶段 2，实时），本 job 是
+    // **没人调用时**也能发现 provider 悄悄不可用（周期性）。
+    // ⚠️ 只告警不处置：连续未通过达阈值只发 memory.provider-unhealthy 事件 +
+    // 一条 audit_log，切不切 provider 由人工决定（§9.3 自我评估禁止）。
+    //
+    // 排期：daily 08:30 —— ① 08:00 是 oracle-weekly（周一）固定位，09:00 是
+    // oracle-daily 固定位，08:30 是两者之间唯一的空档；② 赶在老板在线前产出，
+    // 白天会话开始时就能看到「外部 provider 还活着吗」。
+    // 轻量（配置/凭证级校验，provider 实现 healthCheck() 才做真实探活），
+    // 不进 HEAVY 集合。
+    id: 'memory-provider-health',
+    name: '记忆 Provider 健康检查',
+    schedule: '30 8 * * *', // daily 08:30
+    description: '巡检已注册记忆 provider 并落 health_checks（只告警，不自动切换）',
+    action: async (services) => {
+      const mp = services['agint.memoryProvider'];
+      if (!mp) return { skipped: true, reason: 'agint.memoryProvider not mounted' };
+      const r = await mp.runHealthCheck({ trigger: 'cron' });
+      if (!r.enabled) return { skipped: true, reason: r.reason };
+      return {
+        checkedAt: r.checkedAt,
+        total: r.total,
+        healthy: r.healthy,
+        unhealthy: r.unhealthy,
+        skipped: r.skipped,
+        error: r.error,
+        activeProvider: r.activeProvider,
+        // 连续未通过次数（>0 即告警中）；不在这里做任何处置动作
+        unhealthyStreaks: r.unhealthyStreaks,
+        providers: (r.results ?? []).map((x) => ({
+          providerName: x.providerName,
+          result: x.result,
+          networkProbed: x.networkProbed,
+          durationMs: x.durationMs,
+          consecutiveFailures: x.consecutiveFailures,
+        })),
+      };
     },
   },
 ];

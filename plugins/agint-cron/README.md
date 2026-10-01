@@ -22,7 +22,7 @@
 
 ### 默认注册的 job
 
-共 19 个（按调度粒度分组，组内按时刻排序）。**2026-09-28 全体重排**：
+共 20 个（按调度粒度分组，组内按时刻排序）。**2026-09-28 全体重排**：
 原本 8 个周任务全部堆在周日凌晨，另有 2 组同分钟撞车。排期原则与改动理由见
 [`docs/operations/cron-schedule-principles.md`](../../docs/operations/cron-schedule-principles.md)，
 并由 `test/schedule-layout.test.mjs` 强制（改排期违反原则会直接测试红）。
@@ -44,6 +44,7 @@
 | `skill-autocreate-aggregate` | `15 5 * * *` | 聚合工具调用 → 检测重复任务模式 → 生成候选（daily，LLM 密集；原 04:45 与 prompt-static-check 撞车） |
 | `skill-autocreate-release` | `45 5 * * *` | 评估桥 + 发布队列：三道门自动发布（daily，原 05:15） |
 | `skill-autocreate-observe` | `15 6 * * *` | 观察期判定：STABLE / 0 调用自动回滚 / 展期（daily，原 05:30） |
+| `memory-provider-health` | `30 8 * * *` | 记忆 provider 定期健康检查（daily 08:30；落 `health_checks`，**只告警不自动切换**；2026-10-01 新增，P1-1 阶段 3） |
 | `oracle-daily` | `0 9 * * *` | 美谕晨报（daily 09:00 —— **周任务要避开这个固定位**） |
 
 **每周**

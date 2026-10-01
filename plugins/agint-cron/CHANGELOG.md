@@ -1,6 +1,27 @@
 # CHANGELOG
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
+
+## [0.2.5] — 新增 memory-provider-health job（P1-1 阶段 3，2026-10-01）
+
+### 新增
+
+- **第 20 个 job `memory-provider-health`**（daily 08:30）：巡检已注册记忆
+  provider，结果落 `agint_memory_provider` 域的 `health_checks` 表。
+  - 与阶段 2 的「运行时降级」互补：降级是**调用失败时**的实时护栏，
+    本 job 是**没人调用时**也能发现 provider 悄悄不可用。
+  - **只告警不处置**：连续未通过达阈值只发 `memory.provider-unhealthy` 事件 +
+    一条 audit_log，切不切 provider 由人工决定（§9.3 自我评估禁止）。
+  - 轻量（配置/凭证级校验；provider 实现了 `healthCheck()` 才做真实探活），
+    不进 HEAVY 集合。
+- `services()` 映射加 `agint.memoryProvider`（懒解析；未挂载 → job soft-skip）。
+
+### 排期理由
+
+08:30 是 08:00（oracle-weekly，周一）与 09:00（oracle-daily）之间唯一的空档 ——
+两条排期原则（任意两 job 不同分钟、相邻 ≥15 分钟）由 `schedule-layout.test.mjs`
+强制，8/8 PASS。
+
 ## [0.2.4] — 约定式 summary 通道：让 job 的运行结果以值落盘（2026-09-29）
 
 ### 问题

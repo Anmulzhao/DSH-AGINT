@@ -166,6 +166,10 @@ function apply(ctx) {
     // agint-aesthetic-oracle 未挂载（含 kill-switch enabled:false ⇒ 不 provide）
     // 时为 undefined → job soft-skip 不报错（§6.4：kill-switch 秒级可逆）。
     'agint.aestheticOracle': ctx.get('agint.aestheticOracle'),
+    // P1-1 记忆 provider（阶段 3 定期健康检查，2026-10-01 新增 job
+    // memory-provider-health）。懒解析；agint-memory-provider 未挂载时为
+    // undefined → job soft-skip 不报错（该插件稳定性标记为 experimental）。
+    'agint.memoryProvider': ctx.get('agint.memoryProvider'),
     sessionPersistence: ctx.get('sessionPersistence'),
   });
 
