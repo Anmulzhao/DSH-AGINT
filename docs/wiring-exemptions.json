@@ -38,6 +38,13 @@
       "since": "2026-09-24"
     },
     {
+      "topic": "input.signal.external.repo-diff",
+      "reason": "发布方是数据驱动而非静态调用：external-git 频道（cron 周日 04:00）fetch() 检测到被监听仓库 HEAD 变化后才经 gateway 动态发布，静态扫描认不出 ⇒ pubs=0；装机首跑只记基线不产信号 ⇒ prod=0 ⇒ 被判 ORPHAN_TOPIC。与 sandbox.passed 同构（生产有数据即翻转为 PUBLISHER_DYNAMIC）。⚠️ 本机特有：C3_GIT_REPOS 已于 2026-10-01 收敛为本机唯一有效路径 /home/kylin/projects/DSH/DSH-AGINT（423 commits + origin）—— dsh 本机无源码仓库（仅 npm 全局装）、Hermes 不存在、openclaw 的 ~/.openclaw/workspace 是 0-commit 无 origin 空壳，故 4 条 Windows 路径 D:/DSH/project源码/* 删去 3 条。改配后通道仍不产信号：C3 external-git 至今未启用（channel_state 仅 adversarial），且首个周期需真检测到 HEAD 变化才发布。",
+      "evidence": "plugins/agint-input-gateway/lib/channels/external-git.js:105（动态发布点）；lib/schema.js:92（KNOWN_TOPICS 订阅注册）；agint-input-gateway CHANGELOG §C3（cron 0 4 * * 0，首次记录为基线不产信号）；2026-09-30 本机 check-wiring 实测 prodCount=0 / subs=1 / ORPHAN_TOPIC",
+      "since": "2026-09-30",
+      "unblockWhen": "C3_GIT_REPOS 改配本机有效路径且首个周日周期检测到 HEAD 变化后，rawVerdict 将翻转为 PUBLISHER_DYNAMIC，本条可摘除；若决定本机不接 C3 外部世界，应改判「当前不需要」并停用该频道"
+    },
+    {
       "topic": "memory.pre-compress-checkpoint",
       "reason": "发布方 runPreCompressCheckpoint 无生产调用者，整个 pre_compress 机制从未通电。属压缩流程改造议题，不是总线接线能解决的，单独立项。",
       "evidence": "docs/known-limitations/event-bus-shadow-publish-gap.md §6.5",

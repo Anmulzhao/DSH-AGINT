@@ -58,12 +58,20 @@ export const C5_CRON = '0 5 * * 0';
 /** C4 对抗挑战 Channel 的 cron（每天 03:30，dream 03:00 之后半小时，事件最多压 24h） */
 export const C4_CRON = '30 3 * * *';
 
-/** C3 git 仓库列表（本地快照路径，不做网络 fetch） */
+/**
+ * C3 git 仓库列表（本地快照路径，不做网络 fetch）
+ *
+ * 2026-10-01 本机收敛：原为 4 条硬编码 Windows 路径 D:/DSH/project源码/{dsh,openclaw,Hermes,DSH-AGINT}。
+ * 本机实测后只保留 DSH-AGINT —— 判据是「能 rev-parse 且至少 1 个 commit」：
+ *   - DSH-AGINT  → /home/kylin/projects/DSH/DSH-AGINT（423 commits，origin Anmulzhao/DSH-AGINT）✅
+ *   - dsh        → 本机无本地仓库，仅 npm 全局安装 @deepseek-ai/dsh            ❌
+ *   - openclaw   → ~/.openclaw/workspace 是 0-commit / 无 origin 的空壳，getHead 取不到 ❌
+ *   - Hermes     → 本机不存在                                                  ❌
+ * 保留 3 条无效路径只会让 getHead 静默失败，故删除。
+ * 附带：C3 external-git channel 目前未启用（channel_state 仅 adversarial），本改动当前零运行时影响。
+ */
 export const C3_GIT_REPOS = Object.freeze([
-  { id: 'dsh', path: 'D:/DSH/project源码/dsh', label: 'dsh (DeepSeek Harness)' },
-  { id: 'openclaw', path: 'D:/DSH/project源码/openclaw', label: 'openclaw' },
-  { id: 'hermes', path: 'D:/DSH/project源码/Hermes', label: 'Hermes' },
-  { id: 'dsh-agint', path: 'D:/DSH/project源码/DSH-AGINT', label: 'DSH-AGINT (self)' },
+  { id: 'dsh-agint', path: '/home/kylin/projects/DSH/DSH-AGINT', label: 'DSH-AGINT (self)' },
 ]);
 
 /** 已注册 Channel 的 id 常量 */
