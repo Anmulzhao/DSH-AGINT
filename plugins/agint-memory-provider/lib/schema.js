@@ -20,6 +20,7 @@ export const LIMITS = Object.freeze({
   FALLBACK_EVENTS: 5000,            // 超限滚动清理最旧的（Sprint 16 写入）
   PRE_COMPRESS_CHECKPOINTS: 500,    // 超限 warn（Sprint 16 写入）
   AUDIT_LOG: 1000,                  // 超限滚动清理最旧的
+  HEALTH_CHECKS: 2000,              // 超限滚动清理最旧的（阶段 3 健康检查写入）
 });
 
 /** 超限自动滚动清理最旧记录的表（其余仅 warn，不 prune） */
@@ -27,6 +28,7 @@ export const ROLLING_TABLES = Object.freeze([
   'activation_log',
   'fallback_events',
   'audit_log',
+  'health_checks',
 ]);
 
 // ── 枚举（设计稿 §4.3 / §4.4 / §4.5）────────────────────────────────────
@@ -59,6 +61,21 @@ export const RECOVERY_ACTIONS = Object.freeze([
 /** pre_compress_checkpoints.checkpointStatus（§4.5） */
 export const CHECKPOINT_STATUSES = Object.freeze([
   'success', 'failed', 'skipped', 'best_effort',
+]);
+
+/**
+ * health_checks.result（阶段 3 新增，设计稿 §4.7）。
+ * 与 VALIDATION_RESULTS（available/unavailable/error，用于 testConnection 的
+ * 「配置级」校验）刻意分开命名：健康检查是**周期性巡检**语义，多一个
+ * 'skipped'（provider 未注册 / 被配置排除 / 暂停中）。
+ */
+export const HEALTH_RESULTS = Object.freeze([
+  'healthy', 'unhealthy', 'skipped', 'error',
+]);
+
+/** health_checks.trigger（谁发起的巡检） */
+export const HEALTH_TRIGGERS = Object.freeze([
+  'cron', 'tool', 'startup',
 ]);
 
 /** 内置 provider 名（§9.1 L0：始终可用，不可被卸载） */
@@ -129,6 +146,29 @@ export const AuditLogSchema = z.object({
   reason: z.string().nullable().default(null),
 });
 
+/**
+ * health_checks（阶段 3，设计稿 §4.7）：定期健康检查的**每次巡检一条**。
+ *
+ * 诚实边界：默认只做「配置/凭证级 + initialize 试探」，`networkProbed=false`。
+ * 只有当 provider 自己 override 了 `healthCheck()`（可选 hook）时才做真实探活，
+ * 那时 `networkProbed=true`。字段显式记录，避免调用方把「配置没问题」误读成
+ * 「外部服务端到端可达」。
+ */
+export const HealthCheckSchema = z.object({
+  timestamp: z.string(),
+  providerName: z.string().min(1),
+  result: z.enum(HEALTH_RESULTS),
+  trigger: z.enum(HEALTH_TRIGGERS).default('tool'),
+  reason: z.string().default(''),
+  durationMs: z.number().int().min(0).default(0),
+  networkProbed: z.boolean().default(false),
+  /** 该 provider 连续 unhealthy/error 次数（成功即清零，内存态） */
+  consecutiveFailures: z.number().int().min(0).default(0),
+  /** 巡检当时的激活 provider（判「降级中」用） */
+  activeProvider: z.string().min(1).default(BUILTIN_PROVIDER),
+  sessionId: z.string().nullable().default(null),
+});
+
 // ── 配置（设计稿 §8.1）───────────────────────────────────────────────────
 
 export const ConfigSchema = z.object({
@@ -170,6 +210,17 @@ export const ConfigSchema = z.object({
   // 安全（§9.1 L3）
   require_human_approval_switch: z.boolean().default(true),
   log_sensitive_data: z.boolean().default(false),
+
+  // 阶段 3 定期健康检查（§12.3）
+  health_check_enabled: z.boolean().default(true),
+  // builtin 恒可用，默认仍纳入巡检（记录基线，便于对比外部 provider 的耗时）
+  health_check_include_builtin: z.boolean().default(true),
+  // 连续 unhealthy 达此阈值 → 发 memory.provider-unhealthy 事件 + audit_log。
+  // ⚠️ 只告警，**绝不自动切换 provider**（§9.3 自我评估禁止）
+  health_check_fail_threshold: z.number().int().min(1).default(3),
+  // 单个 provider 探活（provider.healthCheck()）的超时上限；超时记 unhealthy
+  // 而非挂住 cron tick。不实现 healthCheck() 的 provider 用不到这个值。
+  health_check_probe_timeout_ms: z.number().int().min(100).default(5000),
 
   // 调试
   debug_mode: z.boolean().default(false),

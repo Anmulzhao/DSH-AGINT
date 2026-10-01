@@ -4,7 +4,7 @@
 // 不挂 Cordis、不真打开 storage domain。只验证（设计稿 §11.4）：
 //   - 导出契约（name / inject / apply / ConfigSchema）
 //   - FROZEN schema + LIMITS 与设计稿 §4 一致
-//   - storage spec shape（域名 / 5 表 / 版本）
+//   - storage spec shape（域名 / 6 表 / 版本；第 6 表 health_checks 属阶段 3）
 //   - pack 函数元数据注入
 //   - ExternalProvider 契约 + validateProvider 完整性校验
 //   - BuiltinProvider 始终可用 + 默认只读（不写 recalls）
@@ -20,6 +20,10 @@ import * as plugin from '../lib/index.js';
 import { ExternalProvider, validateProvider } from '../lib/provider.js';
 import { BuiltinProvider, formatMemories } from '../lib/builtin-provider.js';
 import { MockProvider } from '../lib/mock-provider.js';
+import { FileProvider } from '../examples/file-provider.js';
+import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ProviderRegistry } from '../lib/registry.js';
 import { MemoryManager, classifyErrorType, withTimeout, PrefetchTimeoutError, MAX_CHECKPOINT_FAILURES } from '../lib/manager.js';
 import { isTrivialPrompt } from '../lib/trivial.js';
@@ -66,13 +70,27 @@ test('LIMITS：provider_config 20 / activation 1000 / fallback 5000 / checkpoint
   assert.equal(storage.LIMITS.FALLBACK_EVENTS, 5000);
   assert.equal(storage.PRE_COMPRESS_CHECKPOINTS ?? storage.LIMITS.PRE_COMPRESS_CHECKPOINTS, 500);
   assert.equal(storage.LIMITS.AUDIT_LOG, 1000);
+  // 阶段 3：health_checks 上限（§4.7）
+  assert.equal(storage.LIMITS.HEALTH_CHECKS, 2000);
 });
 
-test('滚动清理表：activation_log / fallback_events / audit_log（§4.3 §4.4 §4.6）', () => {
-  assert.deepEqual([...schema.ROLLING_TABLES], ['activation_log', 'fallback_events', 'audit_log']);
+test('阶段 3 配置项默认值：健康检查默认开 / 含 builtin / 阈值 3 / 探活超时 5s', () => {
+  const c = plugin.ConfigSchema.parse({});
+  assert.equal(c.health_check_enabled, true);
+  assert.equal(c.health_check_include_builtin, true);
+  assert.equal(c.health_check_fail_threshold, 3);
+  assert.equal(c.health_check_probe_timeout_ms, 5000);
+  assert.deepEqual([...schema.HEALTH_RESULTS], ['healthy', 'unhealthy', 'skipped', 'error']);
+  assert.deepEqual([...schema.HEALTH_TRIGGERS], ['cron', 'tool', 'startup']);
+});
+
+test('滚动清理表：activation_log / fallback_events / audit_log / health_checks（§4.3 §4.4 §4.6 §4.7）', () => {
+  assert.deepEqual([...schema.ROLLING_TABLES],
+    ['activation_log', 'fallback_events', 'audit_log', 'health_checks']);
   assert.equal(storage.isRolling('activation_log'), true);
   assert.equal(storage.isRolling('audit_log'), true);
   assert.equal(storage.isRolling('fallback_events'), true);
+  assert.equal(storage.isRolling('health_checks'), true);
   // provider_config / pre_compress_checkpoints 只 warn 不 prune
   assert.equal(storage.isRolling('provider_config'), false);
   assert.equal(storage.isRolling('pre_compress_checkpoints'), false);
@@ -90,13 +108,13 @@ test('FROZEN 枚举与设计稿 §4.3/§4.4/§4.5 一致', () => {
   assert.equal(schema.BUILTIN_PROVIDER, 'builtin');
 });
 
-test('storage spec：agint_memory_provider 域 + 5 表 + version 1', () => {
+test('storage spec：agint_memory_provider 域 + 6 表 + version 1', () => {
   assert.equal(storage.spec.name, 'agint_memory_provider');
   assert.equal(storage.spec.version, 1);
   const tables = Object.keys(storage.spec.tables ?? storage.spec.config?.tables ?? {});
   if (tables.length) {
     for (const t of ['provider_config', 'activation_log', 'fallback_events',
-      'pre_compress_checkpoints', 'audit_log']) {
+      'pre_compress_checkpoints', 'audit_log', 'health_checks']) {
       assert.ok(tables.includes(t), `缺表 ${t}`);
     }
   }
@@ -1331,4 +1349,147 @@ test('§9.3 自我评估禁止：自动降级/恢复只改运行时激活态，�
   await h.manager.beginTurn('实义问题关于架构', {});
   assert.equal(h.manager.getActiveProviderName(), 'mock');
   assert.equal(JSON.stringify(h.cfg), cfgBefore, '恢复后配置仍不得被修改');
+});
+
+// ── 阶段 3：定期健康检查（§12.3）────────────────────────────────────────
+
+test('runHealthCheck：巡检全部已注册 provider，逐条落 health_checks', async () => {
+  const h = harness();
+  const r = await h.manager.runHealthCheck({ trigger: 'cron' });
+  assert.equal(r.enabled, true);
+  assert.equal(r.trigger, 'cron');
+  assert.equal(r.total, 2, 'builtin + mock');
+  assert.equal(r.healthy, 2);
+  assert.equal(r.unhealthy, 0);
+  // 每条都落表
+  const rows = h.records.filter((x) => x.table === 'health_checks');
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.ok(['healthy', 'unhealthy', 'skipped', 'error'].includes(row.business.result));
+    assert.equal(row.business.trigger, 'cron');
+  }
+  // MockProvider 未实现 healthCheck hook → 不得谎报探活
+  const mockRow = rows.find((x) => x.business.providerName === 'mock');
+  assert.equal(mockRow.business.networkProbed, false);
+  // 汇总事件
+  assert.ok(h.events.some((e) => e.topic === 'memory.provider-health-check'));
+});
+
+test('runHealthCheck：health_check_enabled=false 时整轮跳过，不写表', async () => {
+  const h = harness({ config: { health_check_enabled: false } });
+  const r = await h.manager.runHealthCheck({ trigger: 'cron' });
+  assert.equal(r.enabled, false);
+  assert.equal(r.total, 0);
+  assert.equal(h.records.filter((x) => x.table === 'health_checks').length, 0);
+});
+
+test('runHealthCheck：连续未通过达阈值 → 只告警，绝不自动切换（§9.3）', async () => {
+  // mock 不可用（模拟缺凭证），阈值设 3
+  const h = harness({ mockConfig: { available: false }, config: { health_check_fail_threshold: 3 } });
+  await h.manager.start('s1', {});
+  assert.equal(h.manager.getActiveProviderName(), 'builtin');
+
+  for (let i = 1; i <= 3; i++) {
+    const r = await h.manager.runHealthCheck({ trigger: 'cron' });
+    assert.equal(r.unhealthy, 1, `第 ${i} 轮：mock 不可用`);
+    const mockRow = r.results.find((x) => x.providerName === 'mock');
+    assert.equal(mockRow.consecutiveFailures, i, '连续失败计数必须逐轮累加');
+  }
+
+  // 达阈值那一跳发一次 unhealthy 事件 + 一条 audit_log
+  const unhealthyEvents = h.events.filter((e) => e.topic === 'memory.provider-unhealthy');
+  assert.equal(unhealthyEvents.length, 1, '阈值那一跳只发一次，不每轮重复');
+  assert.equal(unhealthyEvents[0].payload.consecutiveFailures, 3);
+  assert.ok(h.records.some((x) => x.table === 'audit_log'
+    && x.business.action === 'provider_unhealthy_threshold'));
+
+  // ⛔ 关键：健康检查不切换 provider、不改配置
+  assert.equal(h.manager.getActiveProviderName(), 'builtin');
+  assert.equal(h.cfg.active_provider, 'builtin');
+
+  // 恢复（mock 变可用）→ 计数清零
+  h.mock.setAvailability(true);
+  const r = await h.manager.runHealthCheck({ trigger: 'cron' });
+  assert.equal(r.healthy, 2);
+  assert.equal(r.unhealthyStreaks.mock, 0, '成功一次即清零');
+});
+
+test('runHealthCheck：provider 实现 healthCheck() hook 时才做真实探活（networkProbed=true）', async () => {
+  const h = harness();
+  let probeCalls = 0;
+  h.mock.healthCheck = async () => { probeCalls += 1; return { ok: true, reason: 'mock 探活通过' }; };
+
+  const r = await h.manager.runHealthCheck({ trigger: 'tool' });
+  const mockRow = r.results.find((x) => x.providerName === 'mock');
+  assert.equal(probeCalls, 1);
+  assert.equal(mockRow.networkProbed, true);
+  assert.equal(mockRow.result, 'healthy');
+
+  // 探活返回 ok:false → unhealthy 且仍标记探活过
+  h.mock.healthCheck = async () => ({ ok: false, reason: 'mock 探活失败' });
+  const r2 = await h.manager.runHealthCheck({ trigger: 'tool' });
+  const row2 = r2.results.find((x) => x.providerName === 'mock');
+  assert.equal(row2.result, 'unhealthy');
+  assert.equal(row2.networkProbed, true);
+  assert.match(row2.reason, /探活失败/);
+});
+
+test('runHealthCheck：只查指定 provider / 排除 builtin 时记 skipped', async () => {
+  const h = harness({ config: { health_check_include_builtin: false } });
+  const r = await h.manager.runHealthCheck({ trigger: 'tool' });
+  assert.equal(r.skipped, 1);
+  assert.equal(r.results.find((x) => x.providerName === 'builtin').result, 'skipped');
+
+  const r2 = await h.manager.runHealthCheck({ trigger: 'tool', providerNames: ['mock'] });
+  assert.equal(r2.total, 1);
+  assert.equal(r2.results[0].providerName, 'mock');
+});
+
+// ── 阶段 3：示例外部 provider（FileProvider）────────────────────────────
+
+test('示例 FileProvider：通过实现完整性校验，可注册/激活/召回/同步/探活', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agint-mp-file-'));
+  try {
+    const fp = new FileProvider({ dir });
+    // 注册期校验（REQUIRED 三项都必须 override）
+    const report = validateProvider(fp);
+    assert.equal(report.valid, true, `校验未通过: ${[...report.errors, ...report.missing].join('; ')}`);
+    assert.deepEqual(report.recommended, [], '示例应实现全部 recommended 方法');
+    assert.equal(report.name, 'file');
+
+    // 挂进 harness 的 registry 并激活
+    const h = harness();
+    assert.equal(h.reg.register(fp).registered, true);
+    const act = await h.manager.activate('file', { sessionId: 's1', actor: 'human', reason: '示例验证' });
+    assert.equal(act.ok, true);
+    assert.equal(h.manager.getActiveProviderName(), 'file');
+
+    // 同步一轮 → 落 JSONL
+    await h.manager.endTurn('我们讨论了可插拔记忆架构', '结论是分层：官方管存储，AGINT 管组织', {});
+    assert.equal(existsSync(fp.file), true, '记忆文件应已创建');
+    const lines = readFileSync(fp.file, 'utf8').split('\n').filter(Boolean);
+    assert.ok(lines.length >= 1);
+
+    // 召回（关键词命中）
+    const recall = await h.manager.beginTurn('可插拔记忆架构怎么分层', {});
+    assert.ok(recall, 'beginTurn 应返回结果');
+    assert.ok(fp.lastRecallCount >= 1, '关键词应命中至少一条');
+
+    // 阶段 3 探活 hook
+    const probe = await fp.healthCheck();
+    assert.equal(probe.ok, true);
+    assert.equal(probe.details.lines, lines.length);
+
+    // 工具路由（manager 已把 provider 的 JSON 字符串解析回对象）
+    const res = await h.manager.routeToolCall('file_memory_search', { query: '架构' });
+    assert.equal(res.ok, true);
+    assert.ok(res.count >= 1);
+
+    // 安全：目录穿越必须被拒
+    assert.equal(fp.safePath('../../../etc/passwd'), null);
+
+    await h.manager.shutdown();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

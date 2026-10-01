@@ -105,6 +105,8 @@ const RESERVED_TOOL_NAMES = Object.freeze(new Set([
   'memory_provider_list', 'memory_provider_status', 'memory_provider_activate',
   'memory_provider_deactivate', 'memory_provider_test', 'memory_provider_config_get',
   'memory_provider_config_set', 'memory_provider_fallback_stats',
+  // 阶段 3（§12.3）：健康检查工具（pause/resume 亦在此列）
+  'memory_provider_health_check', 'memory_provider_health',
   'memory_provider_pause', 'memory_provider_resume',
 ]));
 
@@ -249,6 +251,8 @@ class MemoryManager {
     this.registeredTools = new Map();
     /** pre_compress 检查点连续失败次数（§13.2 防死锁：N 次后回退 best-effort） */
     this.checkpointFailures = 0;
+    /** 阶段 3：各 provider 的健康检查连续未通过次数（成功清零；内存态） */
+    this.unhealthyStreaks = {};
   }
 
   // ── 内部工具 ───────────────────────────────────────────────────────────
@@ -1411,6 +1415,170 @@ class MemoryManager {
     out.reason = '配置/凭证校验通过（未做网络探活，见方法注释）';
     await this.recordValidation(target, 'available', out.reason);
     return out;
+  }
+
+  // ── 阶段 3：定期健康检查（设计稿 §12.3）───────────────────────────────
+
+  /**
+   * 对所有已注册 provider 做一次健康检查，逐条落 `health_checks` 表（§4.7）。
+   *
+   * **诚实边界**（与 testConnection 一致）：
+   *   - 默认只做「isAvailable() 配置/凭证校验」，`networkProbed=false`。
+   *   - 只有当 provider 自己 override 了可选 hook `healthCheck()` 时才做真实
+   *     探活，此时 `networkProbed=true`。没实现就是没探活，不假装探过。
+   *
+   * **绝不自动切换 provider**（§9.3 自我评估禁止）：连续 unhealthy 达阈值只做
+   * 两件事——发 `memory.provider-unhealthy` 事件 + 写一条 audit_log。切不切由
+   * 人工决定（工具 `memory_provider_activate`，需 ask 门禁）。
+   *
+   * @param {object} [opts]
+   * @param {'cron'|'tool'|'startup'} [opts.trigger='tool']
+   * @param {string[]} [opts.providerNames] 只查这些；缺省查全部已注册的
+   * @returns {Promise<{checkedAt: string, enabled: boolean, total: number,
+   *   healthy: number, unhealthy: number, skipped: number, error: number,
+   *   results: Array, unhealthyStreaks: object}>}
+   */
+  async runHealthCheck(opts = {}) {
+    const cfg = this.cfg();
+    const checkedAt = new Date().toISOString();
+    const trigger = ['cron', 'tool', 'startup'].includes(opts.trigger) ? opts.trigger : 'tool';
+
+    if (!cfg.health_check_enabled) {
+      return {
+        checkedAt, enabled: false, trigger, total: 0, healthy: 0, unhealthy: 0,
+        skipped: 0, error: 0, results: [], unhealthyStreaks: { ...this.unhealthyStreaks },
+        reason: 'health_check_enabled=false（配置关闭，本次未巡检）',
+      };
+    }
+
+    const names = Array.isArray(opts.providerNames) && opts.providerNames.length
+      ? opts.providerNames
+      : this.registry.list();
+
+    const results = [];
+    const tally = { healthy: 0, unhealthy: 0, skipped: 0, error: 0 };
+
+    for (const name of names) {
+      const r = await this.checkOne(name, { trigger, cfg, checkedAt });
+      results.push(r);
+      tally[r.result] = (tally[r.result] ?? 0) + 1;
+    }
+
+    // 汇总事件（软依赖 event-bus，不可用时 publish 返回 false，不抛）
+    await this.publish('memory.provider-health-check', {
+      trigger, checkedAt, total: results.length, ...tally,
+      activeProvider: this.getActiveProviderName(),
+      providers: results.map((r) => ({
+        providerName: r.providerName, result: r.result, networkProbed: r.networkProbed,
+        durationMs: r.durationMs, consecutiveFailures: r.consecutiveFailures,
+      })),
+    }).catch(() => false);
+
+    return {
+      checkedAt, enabled: true, trigger, total: results.length, ...tally,
+      results,
+      unhealthyStreaks: { ...this.unhealthyStreaks },
+      activeProvider: this.getActiveProviderName(),
+    };
+  }
+
+  /**
+   * 单个 provider 的健康检查（runHealthCheck 的内循环）。
+   * @returns {Promise<object>} health_checks 记录（含 result / reason / …）
+   */
+  async checkOne(name, { trigger, cfg, checkedAt }) {
+    const isBuiltin = name === BUILTIN_PROVIDER;
+    const provider = isBuiltin ? this.builtin : this.registry.get(name);
+    const base = {
+      timestamp: checkedAt,
+      providerName: name,
+      trigger,
+      activeProvider: this.getActiveProviderName(),
+      sessionId: this.sessionId ?? null,
+    };
+
+    const finish = async (result, reason, extra = {}) => {
+      // 连续失败计数：成功清零，失败累加（内存态，重启还原）
+      const ok = result === 'healthy';
+      const prev = this.unhealthyStreaks[name] ?? 0;
+      const streak = ok ? 0 : prev + 1;
+      this.unhealthyStreaks[name] = streak;
+
+      const entry = {
+        ...base,
+        result,
+        reason: String(reason ?? '').slice(0, 500),
+        durationMs: extra.durationMs ?? 0,
+        networkProbed: extra.networkProbed ?? false,
+        consecutiveFailures: streak,
+      };
+      await this.record('health_checks', entry).catch(() => null);
+
+      // 达阈值只告警一次（streak === threshold 的那一跳），不每次重复发
+      if (!ok && cfg.health_check_fail_threshold > 0 && streak === cfg.health_check_fail_threshold) {
+        await this.publish('memory.provider-unhealthy', {
+          providerName: name,
+          consecutiveFailures: streak,
+          threshold: cfg.health_check_fail_threshold,
+          reason: entry.reason,
+          activeProvider: entry.activeProvider,
+        }).catch(() => false);
+        await this.record('audit_log', {
+          actor: 'system',
+          action: 'provider_unhealthy_threshold',
+          targetType: 'provider',
+          targetId: name,
+          details: { consecutiveFailures: streak, threshold: cfg.health_check_fail_threshold, trigger },
+          reason: `连续 ${streak} 次健康检查未通过（只告警，不自动切换，§9.3）`,
+        }).catch(() => null);
+      }
+
+      return entry;
+    };
+
+    if (isBuiltin && !cfg.health_check_include_builtin) {
+      return finish('skipped', 'health_check_include_builtin=false（builtin 排除在巡检外）');
+    }
+    if (!provider) {
+      return finish('skipped', `provider '${name}' 未注册`);
+    }
+
+    const t0 = Date.now();
+    let available = false;
+    try {
+      available = provider.isAvailable() === true;
+    } catch (e) {
+      return finish('error', `isAvailable() 抛错: ${e?.message ?? e}`, { durationMs: Date.now() - t0 });
+    }
+    if (!available) {
+      return finish('unhealthy', this.safeReason(provider) || 'isAvailable() === false（未配置或凭证缺失）',
+        { durationMs: Date.now() - t0 });
+    }
+
+    // 可选 hook：provider 自己实现真实探活（唯一允许做网络请求的地方）
+    if (typeof provider.healthCheck === 'function') {
+      try {
+        const probe = await withTimeout(
+          Promise.resolve(provider.healthCheck()),
+          cfg.health_check_probe_timeout_ms,
+          (ms) => new PrefetchTimeoutError(ms),
+        );
+        const durationMs = Date.now() - t0;
+        if (probe === false) {
+          return finish('unhealthy', 'healthCheck() 返回 false（provider 自报不健康）', { durationMs, networkProbed: true });
+        }
+        if (probe && typeof probe === 'object' && probe.ok === false) {
+          return finish('unhealthy', probe.reason || 'healthCheck() 返回 ok:false', { durationMs, networkProbed: true });
+        }
+        return finish('healthy', 'provider 探活通过（healthCheck hook）', { durationMs, networkProbed: true });
+      } catch (e) {
+        return finish('unhealthy', `healthCheck() 失败: ${e?.message ?? e}`,
+          { durationMs: Date.now() - t0, networkProbed: true });
+      }
+    }
+
+    return finish('healthy', '配置/凭证校验通过（未做网络探活：provider 未实现 healthCheck hook）',
+      { durationMs: Date.now() - t0 });
   }
 
   /** 把校验结果写回 provider_config（§4.2 lastValidatedAt / validationResult） */

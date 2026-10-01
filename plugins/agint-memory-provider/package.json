@@ -1,7 +1,7 @@
 {
   "name": "agint-memory-provider",
-  "version": "0.2.0",
-  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层 + Sprint 16 降级与检查点）：ExternalProvider 抽象基类 + BuiltinProvider（封装 agint-memory）+ MemoryManager（激活/降级/生命周期调度/琐碎输入过滤/召回指示器 + 运行时降级/pre_compress fail-closed 检查点/provider 工具动态注册）+ ProviderRegistry。",
+  "version": "0.3.0",
+  "description": "P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层 + Sprint 16 降级与检查点 + 阶段 3 定期健康检查 / 开发指南 / 示例 provider）：ExternalProvider 抽象基类 + BuiltinProvider（封装 agint-memory）+ MemoryManager（激活/降级/生命周期调度/琐碎输入过滤/召回指示器 + 运行时降级/pre_compress fail-closed 检查点/provider 工具动态注册 + 定期健康检查 runHealthCheck）+ ProviderRegistry + 示例 FileProvider（examples/file-provider.js）。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -14,7 +14,8 @@
     "./lib/registry.js": "./lib/registry.js",
     "./lib/manager.js": "./lib/manager.js",
     "./lib/trivial.js": "./lib/trivial.js",
-    "./lib/tools.js": "./lib/tools.js"
+    "./lib/tools.js": "./lib/tools.js",
+    "./examples/file-provider.js": "./examples/file-provider.js"
   },
   "keywords": [
     "dsh-plugin",
@@ -22,7 +23,8 @@
     "memory-provider",
     "p1-1",
     "sprint-15",
-    "sprint-16"
+    "sprint-16",
+    "stage-3"
   ],
   "license": "MIT",
   "peerDependencies": {

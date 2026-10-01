@@ -2,9 +2,9 @@
  * agint-memory-provider: storage domain 声明 + entry pack + 上限滚动清理。
  *
  * 设计稿 §4.1：storage domain `agint_memory_provider`（与 agint /
- * agint_evolution / agint_skill_autocreate / agint_diagnosis 互斥），5 张表：
+ * agint_evolution / agint_skill_autocreate / agint_diagnosis 互斥），6 张表：
  *   provider_config / activation_log / fallback_events /
- *   pre_compress_checkpoints / audit_log
+ *   pre_compress_checkpoints / audit_log / health_checks（阶段 3 新增）
  *
  * fallback_events / pre_compress_checkpoints 在 Sprint 16 写入；本 Sprint 先建
  * 表（避免后续 schemaVersion 破环性变更，与 skill-autocreate 预置
@@ -26,6 +26,7 @@ import {
   FallbackEventSchema,
   PreCompressCheckpointSchema,
   AuditLogSchema,
+  HealthCheckSchema,
   LIMITS,
   ROLLING_TABLES,
 } from './schema.js';
@@ -57,6 +58,12 @@ const auditLogEntrySchema = AuditLogSchema.extend({
   kind: z.literal('audit_log'),
 });
 
+// 阶段 3（§12.3 定期健康检查）：新增表，不改既有 5 表的任何字段。
+const healthCheckEntrySchema = HealthCheckSchema.extend({
+  id: z.string().min(1),
+  kind: z.literal('health_check'),
+});
+
 // ── domain spec ──────────────────────────────────────────────────────────
 
 const name = 'agint-memory-provider';
@@ -70,6 +77,7 @@ const spec = defineDomain({
     fallback_events: { valueSchema: fallbackEventEntrySchema },
     pre_compress_checkpoints: { valueSchema: preCompressCheckpointEntrySchema },
     audit_log: { valueSchema: auditLogEntrySchema },
+    health_checks: { valueSchema: healthCheckEntrySchema },
   },
 });
 
@@ -81,6 +89,7 @@ const TABLE_TO_LIMIT_KEY = Object.freeze({
   fallback_events: 'FALLBACK_EVENTS',
   pre_compress_checkpoints: 'PRE_COMPRESS_CHECKPOINTS',
   audit_log: 'AUDIT_LOG',
+  health_checks: 'HEALTH_CHECKS',
 });
 
 function limitOf(tableName) {
@@ -190,6 +199,15 @@ function packAudit(business) {
   });
 }
 
+function packHealthCheck(business) {
+  return healthCheckEntrySchema.parse({
+    id: datedId('hc'),
+    kind: 'health_check',
+    timestamp: nowIso(),
+    ...business,
+  });
+}
+
 export {
   name,
   spec,
@@ -207,9 +225,11 @@ export {
   packFallbackEvent,
   packCheckpoint,
   packAudit,
+  packHealthCheck,
   providerConfigEntrySchema,
   activationLogEntrySchema,
   fallbackEventEntrySchema,
   preCompressCheckpointEntrySchema,
   auditLogEntrySchema,
+  healthCheckEntrySchema,
 };

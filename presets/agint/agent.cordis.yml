@@ -440,11 +440,12 @@
 - id: agint-curator-tools
   name: ../../profiles/web/plugins/agint-curator/lib/tools.js
 
-# ── 智进 memory-provider tools (P1-1 可插拔记忆 Provider 架构 v0.1.0 — 2026-09-08 挂载) ──
-# Consumes host `agint.memoryProvider`. 4 个工具：
-# 只读裸调：memory_provider_list / memory_provider_status
+# ── 智进 memory-provider tools (P1-1 可插拔记忆 Provider 架构 v0.3.0 — 2026-09-08 挂载) ──
+# Consumes host `agint.memoryProvider`. 12 个工具（阶段 3 后）：
+# 只读裸调：memory_provider_list / status / test / config_get / fallback_stats /
+#           health_check（手动巡检，不改激活态）/ health（历史）
 # 写操作（ask 确认，走 rule_check 门禁）：memory_provider_activate /
-#           memory_provider_deactivate
+#           deactivate / config_set / pause / resume
 # 现有记忆工具（memory_write/search/read/stats/forget_scan）仍由 agint-memory
 # 的 preset 平面提供（设计稿 §14.1 决策 B），不在此注册。
 - id: agint-memory-provider-tools

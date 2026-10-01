@@ -22,6 +22,14 @@
  *   - 新增事件：memory.provider-fallback / provider-recovered /
  *     pre-compress-checkpoint / tool-called
  *
+ * 阶段 3 范围（§12.3，2026-10-01 落地）：
+ *   - 定期健康检查：runHealthCheck()（cron + 工具共用同一实现）+
+ *     health_checks 表（§4.7）+ getHealthHistory()
+ *   - 连续未通过达阈值只发 memory.provider-unhealthy 事件 + audit_log，
+ *     **绝不自动切换 provider**（§9.3 自我评估禁止）
+ *   - 示例外部 provider：examples/file-provider.js
+ *   - 外部 provider 开发指南：docs/plugins/agint-memory-provider.md
+ *
  * **不修改 agint-memory**（§1.3 非目标第 1 条）：本插件只注入其
  * `agint.memory` 服务做封装，不重开 `agint` 域（该域进程内独占）。
  *
@@ -49,6 +57,7 @@ import {
   packFallbackEvent,
   packCheckpoint,
   packAudit,
+  packHealthCheck,
 } from './storage.js';
 import { ProviderRegistry } from './registry.js';
 import { BuiltinProvider } from './builtin-provider.js';
@@ -122,6 +131,7 @@ function apply(ctx, config) {
     fallback_events: packFallbackEvent,
     pre_compress_checkpoints: packCheckpoint,
     audit_log: packAudit,
+    health_checks: packHealthCheck,
   };
 
   async function record(tableName, business) {
@@ -135,7 +145,8 @@ function apply(ctx, config) {
       await t.put(entry.id, entry);
       const warn = checkLimit(tableName, t.size);
       if (warn) {
-        // 滚动清理仅对 activation_log / audit_log / fallback_events 生效
+        // 滚动清理仅对 activation_log / audit_log / fallback_events /
+        // health_checks 生效（ROLLING_TABLES）
         const removed = await pruneOldest(t, tableName);
         if (removed === 0) console.warn(`[${name}] ${warn._warn}`);
       }
@@ -355,6 +366,39 @@ function apply(ctx, config) {
     };
   }
 
+  /**
+   * 阶段 3（§12.3）：跑一次健康检查并落 `health_checks` 表。
+   * 供 cron job（定期）与工具（手动）共用同一实现，避免两套逻辑分叉。
+   */
+  function runHealthCheck(opts = {}) {
+    return manager.runHealthCheck(opts);
+  }
+
+  /**
+   * 读最近的健康检查记录（倒序）。limit 缺省 20，硬上限 200（防一次性拉爆）。
+   */
+  async function getHealthHistory(opts = {}) {
+    const t = await table('health_checks').catch(() => null);
+    const all = t ? [...t.entries()].map(([, v]) => ({ ...v })) : [];
+    const providerName = opts.providerName ?? null;
+    const filtered = providerName ? all.filter((e) => e.providerName === providerName) : all;
+    const limit = Math.min(Math.max(Number(opts.limit ?? 20) || 20, 1), 200);
+    filtered.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+    const items = filtered.slice(0, limit);
+    const lastByProvider = {};
+    for (const e of filtered) {
+      if (!lastByProvider[e.providerName]) lastByProvider[e.providerName] = e;
+    }
+    return {
+      total: all.length,
+      returned: items.length,
+      limit,
+      items,
+      lastByProvider,
+      unhealthyStreaks: { ...manager.unhealthyStreaks },
+    };
+  }
+
   // ── 对话循环入口（§3.1 [5]）：供 preset / dsh 集成层调用 ────────────────
 
   /** 每轮开始：琐碎过滤 + 召回（§3.1 [5]） */
@@ -387,10 +431,10 @@ function apply(ctx, config) {
   }
 
   async function stats() {
-    const [pc, al, fe, pcc, audit] = await Promise.all([
+    const [pc, al, fe, pcc, audit, hc] = await Promise.all([
       table('provider_config'), table('activation_log'), table('fallback_events'),
-      table('pre_compress_checkpoints'), table('audit_log'),
-    ]).catch(() => [null, null, null, null, null]);
+      table('pre_compress_checkpoints'), table('audit_log'), table('health_checks'),
+    ]).catch(() => [null, null, null, null, null, null]);
 
     const count = (t) => (t && typeof t.size === 'number' ? t.size : 0);
     return {
@@ -408,6 +452,7 @@ function apply(ctx, config) {
         fallback_events: count(fe),
         pre_compress_checkpoints: count(pcc),
         audit_log: count(audit),
+        health_checks: count(hc),
       },
       limits: LIMITS,
       config: {
@@ -430,7 +475,14 @@ function apply(ctx, config) {
       },
       degradation: manager.getDegradationState(),
       providerTools: manager.listProviderTools(),
-      sprint: '16-fallback-checkpoints',
+      // 阶段 3（2026-10-01）：定期健康检查 + 开发指南 + 示例 provider
+      healthCheck: {
+        enabled: effectiveConfig().health_check_enabled,
+        includeBuiltin: effectiveConfig().health_check_include_builtin,
+        failThreshold: effectiveConfig().health_check_fail_threshold,
+        unhealthyStreaks: { ...manager.unhealthyStreaks },
+      },
+      sprint: '17-health-check-docs-example',
     };
   }
 
@@ -539,6 +591,9 @@ function apply(ctx, config) {
     config: configApi,
     // Sprint 16（§12.2）：降级 / 检查点 / 工具暴露 / 连接测试
     testConnection: (n) => manager.testConnection(n),
+    // 阶段 3（§12.3）：定期健康检查（cron 与工具共用同一实现）
+    runHealthCheck,
+    getHealthHistory,
     runPreCompressCheckpoint: (m) => manager.runPreCompressCheckpoint(m),
     registerProviderTools: () => manager.registerProviderTools(),
     routeToolCall: (t, a, k) => manager.routeToolCall(t, a, k),

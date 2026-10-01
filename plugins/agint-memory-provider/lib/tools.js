@@ -273,6 +273,123 @@ function apply(ctx) {
       return roundTrip(await svc.getFallbackStats());
     },
   }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_health_check',
+    description:
+      '对已注册的记忆 Provider 跑一次健康检查，逐条落 health_checks 表。' +
+      '**Read-only 语义**：不改激活态、不改配置、不自动切换 provider（§9.3）；' +
+      '唯一的副作用是写入巡检记录。默认只做配置/凭证级校验，' +
+      '**只有当 provider 实现了 healthCheck() hook 才做真实探活**（返回里 `networkProbed` 如实标注）。',
+    parameters: {
+      providerName: {
+        type: 'string',
+        description: '只查指定 provider；缺省查全部已注册的（含 builtin，受 health_check_include_builtin 控制）',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        if (!v.enabled) {
+          return [{ type: 'text', text: `memory_provider_health_check: 已跳过（${v.reason ?? 'health_check_enabled=false'}）` }];
+        }
+        const lines = (v.results ?? []).map((r) => {
+          const flag = r.result === 'healthy' ? '✅' : r.result === 'skipped' ? '⏭' : '❌';
+          return `  ${flag} ${r.providerName} · ${r.result}` +
+            `${r.networkProbed ? ' · 真实探活' : ' · 未探活（配置级）'}` +
+            ` · ${r.durationMs}ms · 连续失败=${r.consecutiveFailures}` +
+            `${r.reason ? `\n      ${r.reason}` : ''}`;
+        });
+        return [{
+          type: 'text',
+          text: `memory_provider_health_check: ${v.checkedAt}（trigger=${v.trigger}）` +
+            `  healthy=${v.healthy} unhealthy=${v.unhealthy} skipped=${v.skipped} error=${v.error}\n${lines.join('\n')}`,
+        }];
+      },
+    },
+    async execute(args) {
+      return roundTrip(await svc.runHealthCheck({
+        trigger: 'tool',
+        ...(args?.providerName ? { providerNames: [args.providerName] } : {}),
+      }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_health',
+    description:
+      '查看记忆 Provider 的健康检查历史（倒序）+ 每个 provider 最近一次结果 + 连续未通过次数。' +
+      '**Read-only**。排查「外部 provider 是不是早就悄悄不可用了」看这个。',
+    parameters: {
+      limit: { type: 'integer', description: '返回条数（1-200，缺省 20）' },
+      providerName: { type: 'string', description: '只看某个 provider；缺省全部' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => {
+        const items = v.items ?? [];
+        if (!items.length) {
+          return [{ type: 'text', text: 'memory_provider_health: 暂无健康检查记录（跑一次 memory_provider_health_check 或等 cron 巡检）' }];
+        }
+        const lines = items.map((e) =>
+          `  ${e.timestamp}  ${e.providerName}  ${e.result}` +
+          `${e.networkProbed ? '·探活' : '·配置级'}  ${e.durationMs}ms` +
+          `${e.reason ? `  ${e.reason}` : ''}`);
+        const streak = Object.entries(v.unhealthyStreaks ?? {})
+          .filter(([, n]) => n > 0)
+          .map(([p, n]) => `${p}=${n}`).join(', ') || '无';
+        return [{
+          type: 'text',
+          text: `memory_provider_health: 共 ${v.total} 条（返回 ${v.returned}）\n${lines.join('\n')}\n  连续未通过: ${streak}`,
+        }];
+      },
+    },
+    async execute(args) {
+      return roundTrip(await svc.getHealthHistory({
+        limit: args?.limit,
+        providerName: args?.providerName,
+      }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_pause',
+    description:
+      '暂停记忆召回（调试用），暂停期间 prefetch 不执行。**Write 操作，需人工确认**。' +
+      '内存态，重启后自动恢复（不改配置）。',
+    parameters: {
+      reason: { type: 'string', description: '暂停原因，写入 audit_log' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: `memory_provider_pause: paused=${v.paused}${v.reason ? `（${v.reason}）` : ''}`,
+      }],
+    },
+    async execute(args) {
+      return roundTrip(svc.pause({ actor: 'human', reason: args?.reason ?? '工具调用 pause' }));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'memory_provider_resume',
+    description:
+      '恢复记忆召回（对应 memory_provider_pause）。**Write 操作，需人工确认**。',
+    parameters: {
+      reason: { type: 'string', description: '恢复原因，写入 audit_log' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{
+        type: 'text',
+        text: `memory_provider_resume: paused=${v.paused}${v.reason ? `（${v.reason}）` : ''}`,
+      }],
+    },
+    async execute(args) {
+      return roundTrip(svc.resume({ actor: 'human', reason: args?.reason ?? '工具调用 resume' }));
+    },
+  }));
 }
 
 export { apply, inject, name };

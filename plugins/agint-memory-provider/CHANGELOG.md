@@ -1,5 +1,45 @@
 # Changelog — agint-memory-provider
 
+## 0.3.0（2026-10-01）
+
+P1-1 阶段 3「完善与文档」落地（设计稿 §12.3 三项：定期健康检查 / 外部 provider
+开发指南 / 示例 provider）。95/95 测试 PASS（原 88 + 新增 7）。
+
+### 新增
+
+- **定期健康检查**：`MemoryManager.runHealthCheck({ trigger })` —— 遍历已注册
+  provider（可只查指定），逐条落**新表 `health_checks`**（§4.7，上限 2000、
+  超限滚动清理）。cron `memory-provider-health`（daily 08:30）与工具
+  `memory_provider_health_check` 共用同一实现，避免两套逻辑分叉。
+  - **诚实边界**：默认只做配置/凭证级校验，`networkProbed=false`；只有 provider
+    自己 override 了可选 hook `healthCheck()` 才做真实探活，届时 `networkProbed=true`。
+    没实现就是没探过，不假装。
+  - **连续未通过达 `health_check_fail_threshold`（默认 3）只告警**：发一次
+    `memory.provider-unhealthy` 事件 + 一条 audit_log，**绝不自动切换 provider**
+    （§9.3 自我评估禁止）。切换永远走人工 `memory_provider_activate`（ask 门禁）。
+- **新工具 4 个**：`memory_provider_health_check`（手动巡检，不改激活态/配置）、
+  `memory_provider_health`（历史 + 每个 provider 最近一次 + 连续未通过次数）、
+  `memory_provider_pause` / `memory_provider_resume`（manager 早已实现，本次工具化）。
+- **Service 新增**：`runHealthCheck` / `getHealthHistory`；`stats()` 增加
+  `health_checks` 表计数与 `healthCheck` 段（开关 / 阈值 / 连续未通过）。
+- **配置项**（§8.1 新增，均有默认值）：`health_check_enabled` /
+  `health_check_include_builtin` / `health_check_fail_threshold` /
+  `health_check_probe_timeout_ms`。
+- **事件 2 个**：`memory.provider-health-check`（每轮汇总）/
+  `memory.provider-unhealthy`（达阈值那一跳，只发一次）。
+- **示例外部 provider**：`examples/file-provider.js`（FileProvider）——本地 JSONL
+  存储、不依赖外部服务，实现**全部**必须/建议/可选方法（含 `healthCheck()`），
+  可直接 `registerProvider` → `activate` → 召回 → 同步 → 探活。带目录穿越防护。
+- **外部 provider 开发指南**：`docs/plugins/agint-memory-provider.md`（三步跑起来 /
+  接口契约 / 工具暴露 / 配置与密钥 / 安全约束 / 健康检查接入 / 排障速查）。
+
+### 变更
+
+- 存储域 5 表 → **6 表**（新增 `health_checks`）；既有 5 表字段一字未动。
+- `ROLLING_TABLES` 加入 `health_checks`（与 audit_log 同策略，超限滚动清最旧）。
+- `RESERVED_TOOL_NAMES` 补 2 个新工具名（pause/resume 本已在列）。
+- `stats().sprint`：`16-fallback-checkpoints` → `17-health-check-docs-example`。
+
 ## 0.2.1（2026-09-13，未发版仅源码）
 
 P3-1 最小 PR（设计稿《设计-P3-1-记忆压缩检查点机制.md》§5.1 载荷缺口正解②，
