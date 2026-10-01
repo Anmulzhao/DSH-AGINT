@@ -35,7 +35,7 @@ killer.js（孤儿） 枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKIL
 |---|---|---|
 | 枚举 | 读 `/proc/*/stat`（win32 走 PowerShell CIM） | 只用 node 内置模块——它是最后一道执行者，宿主正在退出，任何一次 import 失败都等于这次终止静默失效 |
 | 顺序 | **叶子优先**，宿主排最后 | 先让子进程收尾（它知道自己该关什么）；宿主先死会让子进程变孤儿、丢收尾逻辑 |
-| 组信号 | dsh 自称组长（`PGID=SID=pid`）时用 `kill(-pgid)` | 逐个杀收不掉「快照之后才冒出来的子进程」，组杀能 |
+| 组信号 | dsh 自称组长（`PGID=SID=pid`）时用 `kill(-pgid)` | 逐个杀收不掉「快照之后才冒出来的子进程」，组杀能 —— 前提已实测（`test/group-signal.test.mjs`，让组长在快照后才 fork，结果照样被收掉） |
 | 升级 | SIGTERM 后超 `graceMs` 仍活 → SIGKILL | dsh 有优雅关闭逻辑，必要时得强杀 |
 | 验证 | 回执记 `survivors`；`ok` 要求目标已消失**且**无孤儿 | 「发出信号」不等于「杀干净了」 |
 
@@ -90,7 +90,7 @@ inputActions.submit()                // 走 composer 自己的命令仲裁
 | `client.js` | 浏览器半边。只负责画按钮和两步确认，不含任何进程逻辑 |
 | `cordis.patch.yml` | Loader patch，插入宿主行 |
 | `locale/{en,zh}.json` | 插件清单里的展示名与描述 |
-| `test/*.test.mjs` | killer 进程树 / index 命令面 / client 契约，共 24 条 |
+| `test/*.test.mjs` | killer 进程树 / 组信号前提 / index 命令面 / client 契约，共 27 条 |
 
 **一个操作，两个入口。** 按钮点击最终变成一条 `kill-dsh` 命令行交给宿主执行，
 所以 GUI 和 composer 里手敲 `/kill-dsh` 走的是同一段代码，不会各自漂移。
@@ -124,7 +124,26 @@ inputActions.submit()                // 走 composer 自己的命令仲裁
 # last kill (…): ok=true scope=tree mode=term tree=3 signalled=2 escalated=[] survivors=0
 ```
 
-`survivors` 非 0 就说明还有进程没死干净（回执里直接列出 pid）。
+### 读回执的关键：`tree` 长度才是分母，`ok` 不是
+
+`ok: true` 只说明「目标已消失 **且** 快照里那些都死了」。它**不覆盖**快照之后才存在的东西。
+所以 `tree` 有几个进程，决定了这次到底验到了什么：
+
+| 回执 | 含义 |
+|---|---|
+| `ok=true, tree=1, survivors=0` | 只验到「dsh 自己被杀掉了」，**没验到子进程清理**（当时没有子进程） |
+| `ok=true, tree=2+, survivors=0` | 这次真的验到了「子进程跟着死」 |
+
+2026-10-01 17:02:50 的真机回执（`requestId=ba99fd7d`）就是前者：`tree` 长度 1，
+因为那一刻 `mcp-proxy` 尚未启动。按钮链路与「终止生效」由它证明，**子进程清理由它证明不了**。
+
+`survivors` 非 0 则更直接：还有进程没死干净，回执里直接列出 pid。
+
+## 真机验证记录
+
+| 时间 | requestId | tree | ok | 证明了什么 | 没证明什么 |
+|---|---|---|---|---|---|
+| 2026-10-01 17:02:50 | `ba99fd7d` | 1 | true | 按钮链路通（client→host 经 InputActions 生效）；dsh 确实被杀；耗时 2.3s | 子进程清理（当时无子进程） |
 
 ## 为什么不给 agent 工具
 
@@ -141,7 +160,11 @@ inputActions.submit()                // 走 composer 自己的命令仲裁
   一行 `[kill-switch] killer dispatch failed …`，并立即自兜底——宁可只杀自己，也不让宿主在用户
   以为已经停机的情况下继续跑。
 - **测试不碰真 dsh。** `test/killer.test.mjs` 里所有目标 pid 都由测试自己 spawn，
-  树是假的（`fake-dsh.cjs` fork 出模拟 mcp-proxy 的子进程）。真机行为仍建议人工验一次。
+  树是假的（`fake-dsh.cjs` fork 出模拟 mcp-proxy 的子进程）。
+- **真机按钮链路已验一次**（2026-10-01 17:02，见上表）：证明按钮能用、dsh 能被杀干净。
+  **子进程清理的真机证据仍待补**——那次回执的 `tree` 长度是 1。
+- **组信号的前提已实测**（`test/group-signal.test.mjs`）：让组长在快照**之后**才 fork，
+  该子进程照样被组信号收掉。这条原本只是设计推理——若不成立，组杀路线的理由就没了。
 
 ## 终止后重新拉起
 
@@ -170,5 +193,5 @@ plugin_manager install_bundle  # target 指向本目录的绝对路径
 ## 自测
 
 ```bash
-node --test "test/*.test.mjs"   # 24 条，约 3 秒
+node --test "test/*.test.mjs"   # 27 条，约 3.5 秒
 ```

@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../index.js'
@@ -46,18 +46,94 @@ test('apply 注册 kill-dsh，dispose 能撤销', () => {
   assert.equal(ctx.registered.length, 0, 'dispose 应撤销注册')
 })
 
-test('status 在无待杀时报「正在运行」，并说明没有回执', () => {
-  const ctx = fakeCtx()
-  const dispose = apply(ctx)
+/**
+ * 把插件的落盘目录指到临时目录再跑。
+ *
+ * 为什么必须隔离：`stateDir()` 取 `process.env.DSH_HOME`，所以 status 会去读
+ * **真实的** `~/.dsh/.dsh-kill-switch/kill-result.json`。2026-10-01 真机点过一次
+ * 按钮之后这个文件就存在了，同一个用例的输出随之改变 —— 结论取决于开发机点没点过
+ * 按钮，那是测试没关好门，不是代码问题。
+ */
+function withStateDir(fn) {
+  const prev = process.env.DSH_HOME
+  const dir = mkdtempSync(join(tmpdir(), 'kill-switch-state-'))
+  process.env.DSH_HOME = dir
   try {
-    const out = run(ctx, 'status')
-    assert.equal(out.kind, 'success')
-    assert.match(out.text, /pending: none; this process is running/)
-    // 回执只在上一次 kill 之后才存在；这里至多只能说"没有"，不能编一个 ok
-    assert.ok(/last kill: (no receipt on disk|ok=)/.test(out.text), `实际输出：${out.text}`)
+    return fn(join(dir, '.dsh-kill-switch'))
   } finally {
-    dispose()
+    if (prev === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prev
+    rmSync(dir, { recursive: true, force: true })
   }
+}
+
+test('status 在无待杀时报「正在运行」，并说明没有回执', () => {
+  withStateDir(() => {
+    const ctx = fakeCtx()
+    const dispose = apply(ctx)
+    try {
+      const out = run(ctx, 'status')
+      assert.equal(out.kind, 'success')
+      assert.match(out.text, /pending: none; this process is running/)
+      // 隔离目录下不可能有回执；这条断言「查不到就说查不到」，不许编一个 ok
+      assert.match(out.text, /last kill: no receipt on disk/)
+    } finally {
+      dispose()
+    }
+  })
+})
+
+test('status 能读出上一次终止的真实回执（含 tree 长度与 survivors）', () => {
+  withStateDir((stateDir) => {
+    // 造一份真机回执的形状：tree 长度 1、survivors 0（2026-10-01 17:02 那次）
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'kill-result.json'), JSON.stringify({
+      requestId: 'testreq1',
+      finishedAt: '2026-10-01T09:02:52.727Z',
+      targetPid: 424242,
+      scope: 'tree',
+      mode: 'term',
+      ok: true,
+      tree: [{ pid: 424242, ppid: 1, comm: 'node' }],
+      signalled: [-424242],
+      escalated: [],
+      survivors: [],
+    }))
+
+    const ctx = fakeCtx()
+    const dispose = apply(ctx)
+    try {
+      const out = run(ctx, 'status')
+      assert.match(out.text, /last kill \(2026-10-01T09:02:52\.727Z\)/)
+      assert.match(out.text, /ok=true scope=tree mode=term tree=1 .*survivors=0/)
+    } finally {
+      dispose()
+    }
+  })
+})
+
+test('status 在有孤儿时点名列出 survivors —— ok=true 不等于杀干净', () => {
+  withStateDir((stateDir) => {
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'kill-result.json'), JSON.stringify({
+      finishedAt: '2026-10-01T09:02:52.727Z',
+      ok: false,
+      scope: 'tree',
+      mode: 'term',
+      tree: [{ pid: 1, ppid: 0, comm: 'node' }],
+      survivors: [5150],
+    }))
+
+    const ctx = fakeCtx()
+    const dispose = apply(ctx)
+    try {
+      const out = run(ctx, 'status')
+      assert.match(out.text, /ok=false/)
+      assert.match(out.text, /survivor pids: 5150/)
+    } finally {
+      dispose()
+    }
+  })
 })
 
 test('排程后 status 报出倒计时与作用域，cancel 能撤销', () => {

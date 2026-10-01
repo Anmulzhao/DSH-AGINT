@@ -85,6 +85,8 @@ function readProcTable() {
       ppid,
       pgid,
       state,
+      // comm 可能含空格与括号（`(my proc)`），原样留着，事后能看出这个 pid 是谁
+      comm,
       // pid 复用防护用的指纹：信号发出去之前必须还是这个进程
       fingerprint: `${comm}|${ppid}|${state}`,
     });
@@ -234,7 +236,14 @@ export async function killTree(req) {
     killWaitMs,
     dryRun,
     groupSignal: canUseGroup ? target.pgid : null,
-    tree: targets.map((pid) => ({ pid, ppid: table.get(pid)?.ppid ?? 0, ...(target ? {} : {}) })),
+    // `comm` 留痕：真机回执（2026-10-01 17:02 那次）里 tree 只有 pid/ppid，
+    // 事后无法判断「这个 pid 当时到底是什么进程」，也无法把一次回执和另一次对上号。
+    // cmd 不落盘（可能很长且含用户数据），只留内核给的 comm 短名。
+    tree: targets.map((pid) => ({
+      pid,
+      ppid: table.get(pid)?.ppid ?? 0,
+      comm: table.get(pid)?.comm ?? '',
+    })),
   };
   if (dryRun) {
     return { ...plan, signalled: [], escalated: [], survivors: [], ok: false, dryRun: true };
