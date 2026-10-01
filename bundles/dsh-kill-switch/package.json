@@ -1,23 +1,25 @@
 {
   "name": "@local/dsh-kill-switch",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Adds a two-step button to the composer dock that terminates the DSH host process.",
+  "description": "Adds a two-step button to the composer dock that terminates the DSH host process and its child processes.",
   "icon": "./icon.svg",
   "meta": {
     "title": "Kill Switch",
-    "description": "Two-step button below the composer that terminates the DSH host process on confirmation."
+    "description": "Two-step button below the composer that terminates the DSH host process and its children on confirmation."
   },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./killer": "./killer.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
     "client.js",
+    "killer.js",
     "icon.svg",
     "locale/*.json"
   ],

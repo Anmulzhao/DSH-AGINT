@@ -1,6 +1,6 @@
 # dsh-kill-switch
 
-给 Harness Web GUI 加一个**两步确认的「终止 DSH」按钮**，按下去结束宿主进程。
+给 Harness Web GUI 加一个**两步确认的「终止 DSH」按钮**，按下去结束宿主进程**及其子进程**。
 
 不是 agint 插件，是一个独立的 DSH bundle，所以放在 `bundles/` 而不是 `plugins/`——
 `plugins/` 是 agint 插件命名空间，`bin/plugin-check.sh` 会按 `docs/plugins/PLUGIN-SPEC.md`
@@ -11,20 +11,47 @@
 按钮落在输入框下方的 dock（`conversation.composer.dock`）：
 
 - **第一次点** → 变红，显示 `再次点击以终止 · 4s` 倒计时
-- **4 秒内再点** → 发送终止信号
+- **4 秒内再点** → 排程终止
 - **4 秒内不动** → 自动还原，不会误杀
 
 宿主是 PPID 1 拉起的，**没有任何东西看着它**，杀进程不会自动重启，需要手动
-`dsh web --no-open` 重新拉起。
+`dsh web --no-open` 重新拉起（命令见文末）。
+
+## v2.0.0 改了什么：真把整棵树杀掉
+
+v1.0.0 在宿主内部做 `process.kill(process.pid, sig)` —— **只打给自己一个 pid**。
+实测（2026-10-01，dsh pid 1509258 挂子进程 `mcp-proxy.mjs` pid 1515057）：
+主进程一死，子进程立刻变成 PPID=1 的孤儿继续跑，端口和内存都不回收。
+「终止」要的是整棵树干净，不是换一个孤儿接着跑。
+
+v2 把真正发信号的代码挪到一个**独立进程** `killer.js`，与 agint-restart 的 respawn 同一形状：
+
+```
+宿主 index.js     写 kill-request.json → detached 拉起 killer.js → 静候
+killer.js（孤儿） 枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKILL → 写 kill-result.json
+```
+
+| 环节 | 做法 | 为什么 |
+|---|---|---|
+| 枚举 | 读 `/proc/*/stat`（win32 走 PowerShell CIM） | 只用 node 内置模块——它是最后一道执行者，宿主正在退出，任何一次 import 失败都等于这次终止静默失效 |
+| 顺序 | **叶子优先**，宿主排最后 | 先让子进程收尾（它知道自己该关什么）；宿主先死会让子进程变孤儿、丢收尾逻辑 |
+| 组信号 | dsh 自称组长（`PGID=SID=pid`）时用 `kill(-pgid)` | 逐个杀收不掉「快照之后才冒出来的子进程」，组杀能 |
+| 升级 | SIGTERM 后超 `graceMs` 仍活 → SIGKILL | dsh 有优雅关闭逻辑，必要时得强杀 |
+| 验证 | 回执记 `survivors`；`ok` 要求目标已消失**且**无孤儿 | 「发出信号」不等于「杀干净了」 |
+
+**宿主不自杀**，这是刻意的：killer 的 pid 复用防护比对的是「ppid 仍在原主」的指纹，
+宿主先死会让子进程 ppid 变成 1、指纹失配、被当成「不是那个进程」而漏杀。
 
 ## 结构
 
 | 文件 | 角色 |
 |---|---|
-| `index.js` | 宿主半边。注册 `kill-dsh` 命令，是唯一真正杀进程���代码 |
+| `index.js` | 宿主半边。注册 `kill-dsh` 命令，只负责**派发**与**留痕**，不含进程逻辑 |
+| `killer.js` | 独立进程。**唯一真正发信号的地方**，也可单独 `node killer.js <request.json>` 跑 |
 | `client.js` | 浏览器半边。只负责画按钮和两步确认，不含任何进程逻辑 |
 | `cordis.patch.yml` | Loader patch，插入宿主行 |
 | `locale/{en,zh}.json` | 插件清单里的展示名与描述 |
+| `test/*.test.mjs` | killer 进程树 / index 命令面，共 19 条 |
 
 **一个操作，两个入口。** 按钮点击最终变成一条 `kill-dsh` 命令行交给宿主执行，
 所以 GUI 和 composer 里手敲 `/kill-dsh` 走的是同一段代码，不会各自漂移。
@@ -32,22 +59,61 @@
 ## 命令用法
 
 ```
-/kill-dsh                    800ms 后 SIGTERM（默认）
+/kill-dsh                    800ms 后终止整棵进程树（默认）
 /kill-dsh 3000               自定义延迟
-/kill-dsh 0 exit             走 process.exit(0)
-/kill-dsh kill               SIGKILL
-/kill-dsh status             查当前有没有待杀、还剩几毫秒
+/kill-dsh kill               全程 SIGKILL
+/kill-dsh self               只杀宿主自己，不动子进程（= v1.0.0 行为）
+/kill-dsh exit               process.exit(0)，不走 killer
+/kill-dsh status             查待杀倒计时 + 上一次终止的真实回执
 /kill-dsh cancel             撤销待杀
 ```
 
 延迟被夹在 100ms–30000ms：下限保证命令结果先回到浏览器，上限避免误填出一个永远不触发的杀。
-`SIGTERM` 之后 2 秒不退再强杀。重复排程不叠加，只保留最后一个。
+重复排程不叠加，只保留最后一个。插件卸载（dispose）会丢弃待杀。
+
+## 留痕：终止后怎么确认杀干净了
+
+| 文件 | 内容 |
+|---|---|
+| `~/.dsh/.dsh-kill-switch/kill-request.json` | 本次请求（`requestId` / `targetPid` / `mode` / `scope`） |
+| `~/.dsh/.dsh-kill-switch/kill-result.json` | **回执**：`ok` / `tree` / `signalled` / `escalated` / **`survivors`** |
+
+⚠️ 宿主是被 killer 杀掉的，**当场没人能读回执**。要看结果得在**下次启动后**跑：
+
+```
+/kill-dsh status
+# last kill (…): ok=true scope=tree mode=term tree=3 signalled=2 escalated=[] survivors=0
+```
+
+`survivors` 非 0 就说明还有进程没死干净（回执里直接列出 pid）。
 
 ## 为什么不给 agent 工具
 
 模型可以在自己正在运行的宿主里调一个把自己掐掉的工具。这个口子不该开，
 所以只注册了人点的路径——这也是 `references/user-actions.md` 里
 「授予或确认权限的动作只留给用户」那条的同一种判断。
+
+## 已知边界（诚实交代）
+
+- **组信号模式下 pid 复用防护不生效。** `kill(-pgid)` 是内核按组一次性投递的，无法逐个校验指纹；
+  那一路的全部安全性押在三条判据上（dsh 自称组长 / 非 pid 1 / 不是执行者自己的组）。
+  逐个杀分支才有指纹校验。
+- **killer 起不来会退化成 v1.0.0 行为**（只杀自己，留孤儿）。派发失败时 `index.js` 会在宿主日志打
+  一行 `[kill-switch] killer dispatch failed …`，并立即自兜底——宁可只杀自己，也不让宿主在用户
+  以为已经停机的情况下继续跑。
+- **测试不碰真 dsh。** `test/killer.test.mjs` 里所有目标 pid 都由测试自己 spawn，
+  树是假的（`fake-dsh.cjs` fork 出模拟 mcp-proxy 的子进程）。真机行为仍建议人工验一次。
+
+## 终止后重新拉起
+
+本机（Kylin aarch64）实测的启动命令：
+
+```bash
+/home/kylin/.nvm/versions/node/v24.19.0/bin/node \
+  /home/kylin/.nvm/versions/node/v24.19.0/bin/dsh web --no-open
+```
+
+入口 URL（带 token）只印在新实例 stdout 里。token 每次启动都变，旧页面刷不出来。
 
 ## 安装
 
@@ -56,7 +122,14 @@ plugin_manager install_bundle  # target 指向本目录的绝对路径
 ```
 
 装完 `application` 字段应为 `applied`；宿主侧行 `include:dsh-kill-switch`
-应为 `fiberPhase: active`。
+应为 `fiberPhase: active`。**确认部署位里有 `killer.js`**——缺了它按钮仍会「生效」，
+但静默退化成只杀自己（`node -e "import('@local/dsh-kill-switch/killer')"` 可验）。
 
 **浏览器半边需要刷新页面才可见。** bundle 是在页面 boot 之后才装的，
 客户端 bundle 不会热喂给已开的页面。`/kill-dsh` 命令不用刷新，宿主侧已就绪。
+
+## 自测
+
+```bash
+node --test "test/*.test.mjs"   # 19 条，约 3 秒
+```

@@ -27,7 +27,9 @@ window.__ModuleLoader__.load({
       idle: 'Stop DSH',
       armed: 'Click again to stop',
       sending: 'Stopping…',
-      sent: 'Stop signal sent. The page will go blank.',
+      // The host only *schedules* the kill at this point; nothing has died yet,
+      // so the copy says scheduled. Claiming "stopped" here was the v1 lie.
+      sent: 'Stop scheduled. The page will disconnect in a moment.',
       failed: 'Could not stop DSH',
     }
 
@@ -36,7 +38,8 @@ window.__ModuleLoader__.load({
       idle: '终止 DSH',
       armed: '再次点击以终止',
       sending: '正在终止…',
-      sent: '终止信号已发出，页面即将断开。',
+      // 此刻宿主只是**排程**了终止，还没有进程真的死掉 —— 所以说"已排程"，不说"已终止"。
+      sent: '已排程终止，页面即将断开。',
       failed: '终止失败',
     }
 
