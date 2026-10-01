@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-eval",
-  "version": "0.2.0",
-  "description": "AGINT D-QAF 评估引擎。Sprint 12 A1（T1 影子期）：订阅 agint.eventBus 'evolution.proposed' 主题，写影子 ring（不进 model 工具）；**直连路径完整保留**。代码实现在 plugins/agint-quality/agint-quality-eval/（monorepo 形式），顶层 manifest 为 plugin-check 入口。",
+  "version": "0.3.3",
+  "description": "AGINT D-QAF 评估引擎。评估目标由技能目录扫描枚举（0.3.3，同 curator 多根口径）；Sprint 12 A1 影子订阅 + 直连路径完整保留。代码实现在 plugins/agint-quality/agint-quality-eval/（monorepo 形式），顶层 manifest 为 plugin-check 入口，cordis 段与 monorepo 真身 manifest 保持一致。",
   "main": "../agint-quality/agint-quality-eval/lib/index.js",
   "agint": {
     "kind": "host",
@@ -12,14 +12,19 @@
   },
   "spec": {
     "cordis": {
-      "inject": [],
+      "inject": [
+        "timer",
+        "agint.evolution",
+        "agint.qualitySandbox"
+      ],
       "provides": [
         "agint.qualityEvaluator"
       ],
       "events": [],
       "tools": [],
       "optionalInject": [
-        "agint.eventBus"
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe"
       ]
     },
     "storage": {
@@ -56,7 +61,7 @@
     "docs": {
       "readme": "../agint-quality/agint-quality-eval/README.md",
       "serviceDocs": {
-        "agint.qualityEvaluator": "D-QAF 评估器（5 维 + safety 硬门控 + Sprint 12 A1 影子订阅）"
+        "agint.qualityEvaluator": "QualityEvaluatorIface.evaluate(target) — 7 维评分 + 一票否决 + 反自评；Sprint 12 起 score() 出口 publish evolution.evaluated"
       }
     },
     "changelog": "../agint-quality/agint-quality-eval/CHANGELOG.md",

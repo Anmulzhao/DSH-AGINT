@@ -28,6 +28,8 @@
  */
 
 import { z } from '../../node_modules/zod/index.js';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   evaluateAll,
   compositeScore,
@@ -53,6 +55,9 @@ import {
 } from './deployBudget.js';
 
 const name = 'agint-quality-eval';
+// 0.3.3：运行时 inject 只列真实存在的 cordis 服务（timer=平台、agint.evolution=evolution-memory、
+// agint.qualitySandbox=sandbox）。'skills' 不是 cordis 服务（dsh 全仓无注册方），放进 inject
+// 会让本插件永久 pending —— 见 CHANGELOG 0.3.3。技能目标改由 enumerateTargets 目录扫描枚举。
 const inject = ['timer', 'agint.evolution', 'agint.qualitySandbox'];
 
 const Config = z.object({
@@ -60,6 +65,12 @@ const Config = z.object({
   schedule: z.string().default('30 4 * * 0'),
   /** tick 间隔（毫秒）——默认 5 分钟 */
   tickIntervalMs: z.number().int().positive().default(5 * 60 * 1000),
+  /**
+   * 0.3.3：技能根目录列表（评估目标枚举源，同 agint-curator v0.2.1 的 skills_dir 多根口径）。
+   * 缺省 = [DSH_HOME/skills, DSH_HOME/.agent-presets/agint/skills]（投放位在前，手工位在后，
+   * 多根按 name 去重、声明顺序在前者优先）。
+   */
+  skillsDirs: z.array(z.string()).optional(),
   /** 行动 #5（2026-09-28）：综合分维度权重外置（partial；缺失键回退内置默认） */
   dimensionWeights: z.object({
     trust: z.number().min(0).max(1).optional(),
@@ -185,31 +196,63 @@ function apply(ctx, config) {
     return makeBaselineSnapshot({ results: perTarget });
   }
 
-  /** 枚举 AGINT 已注册的 Skills + Plugins 作为评估目标 */
+  /**
+   * 枚举 AGINT Skills 作为评估目标。
+   *
+   * 0.3.3 修正：原实现走 ctx.get('skills')，但 'skills' 不是 cordis 服务
+   * （dsh 全仓没有任何注册方），恒 undefined → 评估池恒空（0.3.2 想修的就是它，
+   * 但 manifest 声明救不了运行时）。改为目录扫描，口径与 agint-curator v0.2.1
+   * 的 skills_dir 多根一致：子目录含 SKILL.md 视为技能，name 取 frontmatter、
+   * 缺省用目录名，多根按 name 去重（声明顺序在前者优先）。
+   *
+   * 产出形态保持 { id, kind: 'skill', version: '0.0.0' }——不带 path，
+   * 不触发 sandbox gate（只恢复取数能力，不扩大评估行为面）。
+   */
   async function enumerateTargets() {
     const targets = [];
-    // 1. AGINT Skills（用 dsh skills service，名字带 'agint' 前缀或 'AGINT' tag）
-    const skills = ctx.get('skills');
-    if (skills && typeof skills.list === 'function') {
-      try {
-        const list = await skills.list({});
-        const items = list?.items || list || [];
-        for (const s of items) {
-          const name = typeof s === 'string' ? s : (s.name || s.id);
-          if (!name) continue;
-          // 只评 AGINT 自己相关的 skill（名字包含 agint 或挂在 AGINT 目录）
-          if (name.toLowerCase().includes('agint') || name.startsWith('AGINT')) {
-            targets.push({ id: name, kind: 'skill', version: '0.0.0' });
-          }
+    const dshHome = process.env.DSH_HOME || join(process.env.HOME || '', '.dsh');
+    const roots = cfg?.skillsDirs?.length
+      ? cfg.skillsDirs
+      : [
+          join(dshHome, 'skills'),                              // 用户级投放位（skill-autocreate）
+          join(dshHome, '.agent-presets', 'agint', 'skills'),   // AGINT 手工位（preset 随仓库同步）
+        ];
+    const seen = new Set();
+    for (const root of roots) {
+      for (const s of await scanSkillDir(root)) {
+        if (seen.has(s.name)) continue;
+        seen.add(s.name);
+        if (s.name.toLowerCase().includes('agint')) {
+          targets.push({ id: s.name, kind: 'skill', version: '0.0.0' });
         }
-      } catch (err) {
-        console.error('agint-quality-eval: skills.list failed', err.message);
       }
     }
-    // 2. AGINT Plugins（从 dsh plugin registry 拿）
-    //    dsh 没有直接 service 暴露 plugin 列表 — 退化为：从 cordis 的插件表读
-    //    这里用 ctx.plugin? — 不一定有；保守只评 skills + 显式传入的 targets
     return targets;
+  }
+
+  /** 扫描单个技能根（精简自 agint-curator/lib/aggregator.js scanSkills，宁漏勿错） */
+  async function scanSkillDir(root) {
+    let entries = [];
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      return []; // 目录不存在 → 空清单，不抛（冒烟友好）
+    }
+    const out = [];
+    for (const ent of entries) {
+      if (!ent.isDirectory() || ent.name.startsWith('.')) continue; // .archive 等隐藏目录不扫
+      let name = ent.name;
+      try {
+        const text = await readFile(join(root, ent.name, 'SKILL.md'), 'utf8');
+        const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? '';
+        const nm = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '');
+        if (nm) name = nm;
+      } catch {
+        continue; // SKILL.md 缺失/不可读 → 跳过
+      }
+      out.push({ name });
+    }
+    return out;
   }
 
   // ── Service: agint.qualityEvaluator ──

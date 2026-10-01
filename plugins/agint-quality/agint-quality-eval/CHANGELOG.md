@@ -1,6 +1,37 @@
 # Changelog — agint-quality-eval
 
+## 0.3.3 (2026-10-01) — 注入声明与运行时对齐：评估池取数改目录扫描
+
+### Fixed
+
+- **0.3.2 的修复不完整**：它只在 manifest.json 声明层补了 `skills`，但
+  1. `'skills'` 根本不是 cordis 服务——dsh 全仓（host 本体 + @deepseek-ai/* 插件集）
+     没有任何 `set('skills')` 注册方。运行时等待一个永不存在的服务，插件会永久
+     pending（PLUGIN-SPEC §1），比评估池恒空更糟。
+  2. manifest 是纸面契约（plugin-check 层），cordis 运行时读的是 lib/index.js 导出的
+     `inject` 数组——那里面没有 `skills`，`ctx.get('skills')` 照旧恒 undefined。
+- `enumerateTargets()` 改为**技能目录扫描**（口径同 agint-curator v0.2.1 的
+  `skills_dir` 多根）：默认扫 `$DSH_HOME/skills`（投放位）+
+  `$DSH_HOME/.agent-presets/agint/skills`（手工位），子目录含 SKILL.md 视为技能，
+  name 取 frontmatter `name`、缺省用目录名，多根按 name 去重（声明顺序在前者优先）。
+  可用 config `skillsDirs` 覆盖（zod optional string[]）。
+- 运行时 `inject` 导出与 manifest `spec.cordis.inject` 收敛为同一份事实：
+  `['timer', 'agint.evolution', 'agint.qualitySandbox']`——全部是真实存在的服务。
+  `optionalInject` 补 `agint.eventBus.subscribe`（lib:subscribe 软获取早已存在，声明缺失）。
+- manifest 移除 `'agint.quality'`：代码从未 `ctx.get('agint.quality')`，属多写的契约。
+
+### Impact
+
+- 评估目标从「恒 0」（ctx.get('skills') 恒 undefined）恢复为枚举本机技能根下名字含
+  `agint` 的技能（本机命中 `agint-install-bootstrap-rescue`）。
+- 目标产出形态保持 `{ id, kind: 'skill', version: '0.0.0' }`——不带 `path`，
+  不触发 sandbox gate；**只恢复取数能力，不扩大评估行为面**（0.3.2 原则沿用）。
+
 ## 0.3.2 (2026-10-01) — 修复评估池恒空：manifest 漏声明 `skills` 注入
+
+> ⚠️ 0.3.3 勘误：本条目「修复后」段落的取数链路（`skills.list()`）实际不可达——
+> `'skills'` 非 cordis 服务，且 manifest 声明不被运行时读取。真正的修复见 0.3.3。
+> 本条目对「症状」（评估池恒空 / evolution_log 零记录）的诊断仍然有效。
 
 ### Fixed
 
