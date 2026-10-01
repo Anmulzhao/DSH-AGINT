@@ -78,7 +78,7 @@ agint.evolve 的 proposed 提案（真实、人工审核过的改进点）
 |---|---|
 | 静态 | `node test/smoke.mjs` T1–T14 全绿（已过） |
 | 接线 | `bin/check-wiring.mjs` PASS |
-| 通电 | 重启后首个周日 04:15（或手动唤 `runOnce`）⇒ `agint_mutator.json` / `agint_population.json` **首次出现** |
+| 通电 | 重启后首个**周二 07:00**（`0 7 * * 2`；原周日 04:15，2026-09-29 `c86eb17` 排期重排后改期）或手动唤 `runOnce` ⇒ `agint_mutator.json` / `agint_population.json` **首次出现** |
 | 观测 | 事件总线出现 `evolution.mutation.proposed`；`status().proposed ≥ 1` |
 | ⛔ 反向 | 若只出现 `degraded` 增长而 `proposed=0`，说明 LLM 通道或定位环节有问题，回到 §五 逐条查 —— **别直接认定"还没触发"** |
 
