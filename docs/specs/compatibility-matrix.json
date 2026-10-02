@@ -1,0 +1,57 @@
+{
+  "matrixVersion": "1.0",
+  "_comment": "协议间版本兼容矩阵。Phase 3 设计 §2.2.2。✅ 校验逻辑已实施在 bin/check-spec-versioning.mjs —— 本文件的 upgradePolicy / invariants 由它逐条机器校验，改声明不改实现会被门禁抓出。",
+  "agintVersion": "0.9.0",
+  "rules": [
+    {
+      "spec": "evolution-contract",
+      "currentVersion": "1.0",
+      "consumers": [
+        "agint-evolution-driver@1 (contract-manager.js, 未挂载)",
+        "bin/validate-contract-schema.mjs (已实施)"
+      ],
+      "breakingChanges": [],
+      "upgradePolicy": "Phase 1 扩展 outcome 字段属【向后兼容的新增】，不升 major；若需改既有字段语义 → 升 v2 并保留 v1 读取能力 ≥2 个 minor 版本"
+    },
+    {
+      "spec": "evaluation-protocol",
+      "currentVersion": "1.0",
+      "consumers": [
+        "bin/build-scenario-inventory.mjs (已实施)"
+      ],
+      "breakingChanges": [],
+      "upgradePolicy": "visibility 与 labelAuthority 均按【纯新增枚举值】处理：新增枚举值不升 major，但新增值需同步更新生成器枚举列表与 check-spec-consistency 的合法性校验。⚠️ 改枚举【含义】（如 HELDOUT 的触发条件）属破坏性变更 → 升 major"
+    },
+    {
+      "spec": "evolution-package",
+      "currentVersion": "1.0",
+      "consumers": [
+        "bin/export-evolution-package.mjs (已实施)",
+        "bin/verify-evolution-package.mjs (已实施)"
+      ],
+      "breakingChanges": [],
+      "upgradePolicy": "包结构变更（分区增删、manifest 字段语义变化）→ 升 minor 并在 manifest 标 packageVersion；删除分区或改 reproductionLevel 语义 → 升 major。⚠️ 脱敏规则（D1~D6）只可**收紧**不可放松：放松脱敏属破坏性变更且必须老板重新签字"
+    }
+  ],
+  "invariants": [
+    "任何 spec 升 major 必须：① 保留旧版读取能力 ② 在 INDEX.json 标 supersedes ③ 过 check-l0-frozen",
+    "L0-frozen 字段（docs/l0-frozen-baseline.json）不得被任何 spec 重定义",
+    "FROZEN 枚举（MutationKindSchema 3 值 / MutationSourceSchema 3 值）不得被任何 spec 扩展",
+    "⛔ 脱敏规则只可收紧不可放松（D1~D6）—— 放松等于把已泄露面重新打开",
+    "⛔ 「文件存在」≠「运行时已挂载」≠「有生产数据」—— status=ACTIVE 必须能指出后两者之一"
+  ],
+  "knownGaps": [
+    {
+      "gap": "evolution-ledger 规范未建，但 evolution-package 的 ledgerProof 依赖它",
+      "impact": "R2 级复现的信任锚不存在；package 的 ledgerProofAvailable 当前必为 false ⇒ 实算等级封顶 R1（沙箱无 git/preimage 时为 R0）",
+      "evidence": "2026-10-03 实测：生产 agint_evolution.json 的 tables 仅 3 张，无 evolution_ledger；verify-ledger-chain.mjs 报 LEDGER_EMPTY",
+      "plannedBy": "Phase 1 收口后"
+    },
+    {
+      "gap": "「FROZEN 枚举不得被扩展」只有文字声明，尚无枚举值级门禁",
+      "impact": "MutationKindSchema / MutationSourceSchema 若被加值，L0 单元哈希会变（被 check-l0-frozen 抓到），但「加值」与「重定义」在错误信息里不区分，需人工判断",
+      "mitigation": "check-spec-versioning.mjs 已委派 check-l0-frozen.mjs 做单元级校验；枚举语义级门禁待 Phase 1 收口后补",
+      "plannedBy": "Phase 1 收口后"
+    }
+  ]
+}

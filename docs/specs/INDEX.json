@@ -1,0 +1,170 @@
+{
+  "indexVersion": "1.0",
+  "generatedBy": "bin/build-spec-index.mjs",
+  "agintVersion": "0.9.0",
+  "dshCompat": {
+    "minimum": "0.1.7-rc.1",
+    "tested": "0.2.0-rc.2"
+  },
+  "statusLegend": {
+    "ACTIVE": "已实施且有生产数据或运行时已挂载（evidence 段必须给出依据）",
+    "DESIGN": "规范已定，实现未落地 —— ⚠️ 最容易被虚报的状态",
+    "BLOCKED": "被外部条件阻塞，规范先行",
+    "ARCHIVED": "已存档（如 external-anchor 提案），不在当前周期实施"
+  },
+  "honestyNote": "⚠️ 本索引由脚本从 REGISTRY 生成，REGISTRY 的每个字段须经代码核实后填写。「文件存在」≠「运行时已挂载」≠「有生产数据」—— 这是三件事。判 ACTIVE 必须能指出后两者之一，并写进 evidence。",
+  "specs": [
+    {
+      "id": "evolution-contract",
+      "version": "1.0",
+      "status": "DESIGN",
+      "files": [
+        "evolution-contract-v1.schema.json",
+        "evolution-contract-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "machineReadable": true,
+      "dependencies": [],
+      "consumers": [
+        "bin/validate-contract-schema.mjs",
+        "agint-evolution-driver/lib/contract-manager.js"
+      ],
+      "implementedBy": "⚠️ schema 校验器已实装（bin/validate-contract-schema.mjs，含 20 用例自测）；contract-manager.js 存在于 plugins/agint-evolution-driver/lib/，但**未被 index.js import**（实测 grep 零命中）⇒ 未挂载为运行时服务。生产 contract_locks 表 0 行。⇒ 判 DESIGN，不判 ACTIVE。",
+      "evidence": [
+        "bin/validate-contract-schema.mjs 存在且 --fixtures 20 用例",
+        "plugins/agint-evolution-driver/lib/contract-manager.js 存在（216 行）",
+        "grep \"contract-manager\" plugins/ 仅命中自身与 prediction-scoring.js 的一句注释",
+        "生产 ~/.dsh/storages/agint_evolution.json 的 tables 只有 3 张（evolution_log / failure_pattern / success_template），无 contract_locks"
+      ],
+      "schemaHash": "sha256:a700cd42a35bc9669ce616436c6aa46818b75c2218ae4cfc833b774f061ed7e9"
+    },
+    {
+      "id": "evaluation-protocol",
+      "version": "1.0",
+      "status": "DESIGN",
+      "files": [
+        "evaluation-protocol-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "machineReadable": false,
+      "dependencies": [],
+      "consumers": [
+        "bin/build-scenario-inventory.mjs",
+        "bin/check-spec-consistency.mjs"
+      ],
+      "implementedBy": "⚠️ **协议已实装，能力未落地**（这是本条判 DESIGN 的原因）：inventory.json 的 123 个单元已带 visibility + labelAuthority 两字段，生成器 --check 可校验枚举合法性；但 visibility 全为 EVOLUTION（Phase 0 三层隔离未落地）、labelAuthority 全为 UNSET（external-anchor 提案 2026-10-01 已存档）⇒ **字段存在 ≠ 能力具备**。",
+      "evidence": [
+        "eval/scenarios/inventory.json 123/123 单元含 visibility 与 labelAuthority",
+        "bin/build-scenario-inventory.mjs --check 枚举校验生效（5 个新单测钉住，含防自证循环）",
+        "eval/scenarios/ 下只有 dedicated/ 与 mocks/，无三层目录（实测）"
+      ],
+      "conflictsResolved": [
+        "phase0-frozen-vs-anchor-heldout"
+      ],
+      "schemaHash": null
+    },
+    {
+      "id": "evolution-package",
+      "version": "1.0",
+      "status": "DESIGN",
+      "files": [
+        "evolution-package-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "machineReadable": false,
+      "dependencies": [
+        "evolution-contract",
+        "evaluation-protocol"
+      ],
+      "consumers": [
+        "bin/export-evolution-package.mjs",
+        "bin/verify-evolution-package.mjs"
+      ],
+      "implementedBy": "⚠️ **部分实施**（2026-10-03 端到端实跑）。已实施：D1–D6 脱敏闸门、可复现打包（tar+gzip 定 mtime=0 / level=9 ⇒ 同输入同字节）、逐文件 sha256、Merkle root、包内 verify.mjs 与外部 bin/verify-evolution-package.mjs 双路校验（13 项测试）。未实施：01-code/diff.patch（只给 preimage-manifest.json 清单）、02-contract/ 与 03-evaluation/benchmark-results.json 分区（依赖 contract-manager 挂载与 Evolution Ledger）。reproductionLevel 为**实算**：git HEAD + preimage 同时成立才给 R1，否则降 R0。ledgerProofAvailable 恒为 false ⇒ R2 不可达。",
+      "evidence": [
+        "node bin/export-evolution-package.test.mjs ⇒ 19/19 PASS",
+        "node bin/verify-evolution-package.test.mjs ⇒ 13/13 PASS（每个用例都先篡改再断言报红）",
+        "2026-10-03 端到端：packages/test-R1.tar.gz 48.5 KB · 15 文件 · 内外双路 INTEGRITY_VERIFIED",
+        "生产 agint_evolution.json 无 evolution_ledger 表 ⇒ 无 Merkle proof 可用（2026-10-03 实测）"
+      ],
+      "blockedBy": [
+        "evolution-ledger"
+      ],
+      "schemaHash": null
+    }
+  ],
+  "pendingSpecs": [
+    {
+      "id": "evolution-ledger",
+      "version": "1.0",
+      "status": "DESIGN",
+      "plannedFiles": [
+        "evolution-ledger-v1.md"
+      ],
+      "owner": "agint-evolution-memory",
+      "blockedBy": [],
+      "note": "⚠️ **代码全套已实装但生产零落行**（Phase 3 启动时实测）：lib/ledger.js + ledger-hash.js + ledger-anchor.js + ledger-rebuild.js，bin/verify-ledger-chain.mjs + anchor-ledger.mjs + rebuild-ledger-history.mjs，cron job `ledger-anchor` 已在 jobs.js 声明。但生产 evolution_ledger 表 0 行、`verify-ledger-chain.mjs` 报 LEDGER_EMPTY ⇒ **已实装 ≠ 已跑通**。规范化时必须核实这两件事，不能只看代码存在。"
+    },
+    {
+      "id": "benchmark-isolation",
+      "version": "1.0",
+      "status": "DESIGN",
+      "plannedFiles": [
+        "benchmark-isolation-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "note": "Phase 0 §3 三层隔离的规范化。⚠️ 三层目录实测未落地，规范化会固化一个不存在的机制。"
+    },
+    {
+      "id": "prediction-scoring",
+      "version": "1.0",
+      "status": "DESIGN",
+      "plannedFiles": [
+        "prediction-scoring-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "note": "Phase 1 §2。prediction-scoring.js 存在（纯函数），但宿主 contract-manager 未挂载 ⇒ 链路未通。"
+    },
+    {
+      "id": "strategy-space",
+      "version": "1.0",
+      "status": "BLOCKED",
+      "plannedFiles": [
+        "strategy-space-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "blockedBy": [
+        "Phase 2 未启动"
+      ],
+      "note": "Phase 2 §3。Phase 2 整体未启动 ⇒ 规范先行。"
+    },
+    {
+      "id": "memory-utility",
+      "version": "1.0",
+      "status": "BLOCKED",
+      "plannedFiles": [
+        "memory-utility-v1.md"
+      ],
+      "owner": "agint-evolution-memory",
+      "blockedBy": [
+        "Phase 2 未启动"
+      ],
+      "note": "Phase 2 §2。Phase 2 整体未启动 ⇒ 规范先行。"
+    },
+    {
+      "id": "cross-model-validation",
+      "version": "1.0",
+      "status": "BLOCKED",
+      "plannedFiles": [
+        "cross-model-validation-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "blockedBy": [
+        "dsh 官方市场 GA",
+        "第二个真实使用方"
+      ],
+      "note": "Phase 2 §4。**外部硬阻塞**（Phase 3 §0.4）—— 只做协议预留，不做接入设计。当前本机模型 = minimax-cn / MiniMax-M3.1-Flash-Preview。"
+    }
+  ],
+  "untrackedSpecFiles": []
+}

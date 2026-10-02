@@ -1,0 +1,343 @@
+#!/usr/bin/env node
+// bin/build-spec-index.mjs —— 协议索引生成/校验器（Phase 3 交付物一，Tier A）
+//
+// 职责：扫描 docs/specs/，生成或校验 INDEX.json。
+//
+// ⛔ 形态决策（Phase 3 设计 §6.5）：协议是**仓库内的文档资产 + 一个索引文件**，
+//    **不是运行时服务**。不新建插件、不新建存储域。
+//    依据：路线图.md:271 红线「不引入新的中心化宏观架构层」。
+//
+// ⭐ 核心价值：把「规范文件」与「代码实况」的对应关系变成**可自动校验的**。
+//    本系列方案反复查出的问题就是文档与代码脱节（Phase 2 §0 查出 3 处矛盾、
+//    §0.1 查出场景基线过期）。索引里的 status / implementedBy 字段是
+//    **诚实性载体** —— 每个字段都必须经代码核实后填写。
+//
+// 用法：
+//   node bin/build-spec-index.mjs            # 生成/更新 INDEX.json
+//   node bin/build-spec-index.mjs --check    # 只校验不写盘（CI / 门禁用）
+//
+// ⚠️ --check 必须早于写盘，否则它会拿刚生成的版本跟自己对账 ⇒ 永远「一致」
+//    ⇒ 门禁变成自证循环。这个坑是本脚本第一版的真实 bug，已修并有单测钉住。
+
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { canonicalHash, textHash } from './lib/canonical-json.mjs';
+import { computeSpecHash } from './lib/spec-hash.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, '..');
+const SPECS_DIR = join(REPO_ROOT, 'docs', 'specs');
+const INDEX_PATH = join(SPECS_DIR, 'INDEX.json');
+const MATRIX_PATH = join(SPECS_DIR, 'compatibility-matrix.json');
+const VERSION_PATH = join(REPO_ROOT, 'VERSION');
+
+const INDEX_VERSION = '1.0';
+const GENERATED_BY = 'bin/build-spec-index.mjs';
+
+/** status 枚举。语义严格 —— 见 statusLegend。 */
+const STATUS_VALUES = ['ACTIVE', 'DESIGN', 'BLOCKED', 'ARCHIVED'];
+
+/**
+ * 规范登记表 —— 单一事实源。
+ *
+ * ⭐ 这里的每一项都必须经**代码核实**后填写，不能凭「文件存在」推断能力已具备。
+ *    `implementedBy` 尤其重要：文件存在 ≠ 运行时已挂载 ≠ 有生产数据。
+ *    三者是三件事（K129：看到一个差异先问「为什么」）。
+ *
+ * 填表纪律：
+ *   status=ACTIVE  ⇒ 必须有生产数据或运行时已挂载，二者至少其一，并写进 evidence
+ *   status=DESIGN  ⇒ 规范已定，实现未落地。**这是最容易被虚报的状态**
+ *   status=BLOCKED ⇒ 被外部条件阻塞，规范先行（写清阻塞源）
+ *   status=ARCHIVED⇒ 已存档，不在当前周期实施
+ */
+const REGISTRY = [
+  {
+    id: 'evolution-contract',
+    version: '1.0',
+    status: 'DESIGN',
+    files: ['evolution-contract-v1.schema.json', 'evolution-contract-v1.md'],
+    owner: 'agint-evolution-driver',
+    machineReadable: true,
+    dependencies: [],
+    consumers: ['bin/validate-contract-schema.mjs', 'agint-evolution-driver/lib/contract-manager.js'],
+    implementedBy:
+      '⚠️ schema 校验器已实装（bin/validate-contract-schema.mjs，含 20 用例自测）；' +
+      'contract-manager.js 存在于 plugins/agint-evolution-driver/lib/，' +
+      '但**未被 index.js import**（实测 grep 零命中）⇒ 未挂载为运行时服务。' +
+      '生产 contract_locks 表 0 行。⇒ 判 DESIGN，不判 ACTIVE。',
+    evidence: [
+      'bin/validate-contract-schema.mjs 存在且 --fixtures 20 用例',
+      'plugins/agint-evolution-driver/lib/contract-manager.js 存在（216 行）',
+      'grep "contract-manager" plugins/ 仅命中自身与 prediction-scoring.js 的一句注释',
+      '生产 ~/.dsh/storages/agint_evolution.json 的 tables 只有 3 张（evolution_log / failure_pattern / success_template），无 contract_locks',
+    ],
+  },
+  {
+    id: 'evaluation-protocol',
+    version: '1.0',
+    status: 'DESIGN',
+    files: ['evaluation-protocol-v1.md'],
+    owner: 'agint-evolution-driver',
+    machineReadable: false,
+    dependencies: [],
+    consumers: ['bin/build-scenario-inventory.mjs', 'bin/check-spec-consistency.mjs'],
+    implementedBy:
+      '⚠️ **协议已实装，能力未落地**（这是本条判 DESIGN 的原因）：' +
+      'inventory.json 的 123 个单元已带 visibility + labelAuthority 两字段，' +
+      '生成器 --check 可校验枚举合法性；但 visibility 全为 EVOLUTION' +
+      '（Phase 0 三层隔离未落地）、labelAuthority 全为 UNSET' +
+      '（external-anchor 提案 2026-10-01 已存档）⇒ **字段存在 ≠ 能力具备**。',
+    evidence: [
+      'eval/scenarios/inventory.json 123/123 单元含 visibility 与 labelAuthority',
+      'bin/build-scenario-inventory.mjs --check 枚举校验生效（5 个新单测钉住，含防自证循环）',
+      'eval/scenarios/ 下只有 dedicated/ 与 mocks/，无三层目录（实测）',
+    ],
+    conflictsResolved: ['phase0-frozen-vs-anchor-heldout'],
+  },
+  {
+    id: 'evolution-package',
+    version: '1.0',
+    status: 'DESIGN',
+    files: ['evolution-package-v1.md'],
+    owner: 'agint-evolution-driver',
+    machineReadable: false,
+    dependencies: ['evolution-contract', 'evaluation-protocol'],
+    consumers: ['bin/export-evolution-package.mjs', 'bin/verify-evolution-package.mjs'],
+    implementedBy:
+      '⚠️ **部分实施**（2026-10-03 端到端实跑）。已实施：D1–D6 脱敏闸门、可复现打包' +
+      '（tar+gzip 定 mtime=0 / level=9 ⇒ 同输入同字节）、逐文件 sha256、Merkle root、' +
+      '包内 verify.mjs 与外部 bin/verify-evolution-package.mjs 双路校验（13 项测试）。' +
+      '未实施：01-code/diff.patch（只给 preimage-manifest.json 清单）、02-contract/ 与 ' +
+      '03-evaluation/benchmark-results.json 分区（依赖 contract-manager 挂载与 Evolution Ledger）。' +
+      'reproductionLevel 为**实算**：git HEAD + preimage 同时成立才给 R1，否则降 R0。' +
+      'ledgerProofAvailable 恒为 false ⇒ R2 不可达。',
+    evidence: [
+      'node bin/export-evolution-package.test.mjs ⇒ 19/19 PASS',
+      'node bin/verify-evolution-package.test.mjs ⇒ 13/13 PASS（每个用例都先篡改再断言报红）',
+      '2026-10-03 端到端：packages/test-R1.tar.gz 48.5 KB · 15 文件 · 内外双路 INTEGRITY_VERIFIED',
+      '生产 agint_evolution.json 无 evolution_ledger 表 ⇒ 无 Merkle proof 可用（2026-10-03 实测）',
+    ],
+    blockedBy: ['evolution-ledger'],
+  },
+];
+
+/**
+ * 阻塞关系（登记但未建规范者）。
+ *
+ * ⭐ 为什么要显式登记「已识别但未落地」的规范：
+ *    否则后来者 grep docs/specs/ 会以为「没登记 = 不存在」，
+ *    从而重新设计一遍 —— 这正是 Phase 2 §5.1「按类推填空」的同型风险（K129）。
+ */
+const PENDING = [
+  {
+    id: 'evolution-ledger',
+    version: '1.0',
+    status: 'DESIGN',
+    plannedFiles: ['evolution-ledger-v1.md'],
+    owner: 'agint-evolution-memory',
+    blockedBy: [],
+    note:
+      '⚠️ **代码全套已实装但生产零落行**（Phase 3 启动时实测）：' +
+      'lib/ledger.js + ledger-hash.js + ledger-anchor.js + ledger-rebuild.js，' +
+      'bin/verify-ledger-chain.mjs + anchor-ledger.mjs + rebuild-ledger-history.mjs，' +
+      'cron job `ledger-anchor` 已在 jobs.js 声明。' +
+      '但生产 evolution_ledger 表 0 行、`verify-ledger-chain.mjs` 报 LEDGER_EMPTY ⇒ ' +
+      '**已实装 ≠ 已跑通**。规范化时必须核实这两件事，不能只看代码存在。',
+  },
+  {
+    id: 'benchmark-isolation',
+    version: '1.0',
+    status: 'DESIGN',
+    plannedFiles: ['benchmark-isolation-v1.md'],
+    owner: 'agint-evolution-driver',
+    note: 'Phase 0 §3 三层隔离的规范化。⚠️ 三层目录实测未落地，规范化会固化一个不存在的机制。',
+  },
+  {
+    id: 'prediction-scoring',
+    version: '1.0',
+    status: 'DESIGN',
+    plannedFiles: ['prediction-scoring-v1.md'],
+    owner: 'agint-evolution-driver',
+    note: 'Phase 1 §2。prediction-scoring.js 存在（纯函数），但宿主 contract-manager 未挂载 ⇒ 链路未通。',
+  },
+  {
+    id: 'strategy-space',
+    version: '1.0',
+    status: 'BLOCKED',
+    plannedFiles: ['strategy-space-v1.md'],
+    owner: 'agint-evolution-driver',
+    blockedBy: ['Phase 2 未启动'],
+    note: 'Phase 2 §3。Phase 2 整体未启动 ⇒ 规范先行。',
+  },
+  {
+    id: 'memory-utility',
+    version: '1.0',
+    status: 'BLOCKED',
+    plannedFiles: ['memory-utility-v1.md'],
+    owner: 'agint-evolution-memory',
+    blockedBy: ['Phase 2 未启动'],
+    note: 'Phase 2 §2。Phase 2 整体未启动 ⇒ 规范先行。',
+  },
+  {
+    id: 'cross-model-validation',
+    version: '1.0',
+    status: 'BLOCKED',
+    plannedFiles: ['cross-model-validation-v1.md'],
+    owner: 'agint-evolution-driver',
+    blockedBy: ['dsh 官方市场 GA', '第二个真实使用方'],
+    note:
+      'Phase 2 §4。**外部硬阻塞**（Phase 3 §0.4）—— ' +
+      '只做协议预留，不做接入设计。当前本机模型 = minimax-cn / MiniMax-M3.1-Flash-Preview。',
+  },
+];
+
+/** 从 VERSION 文件解析 dsh 兼容区间（不硬编码 —— 单一事实源是 VERSION）。 */
+function readDshCompat() {
+  const text = readFileSync(VERSION_PATH, 'utf8');
+  // 匹配形如：| v0.9.0 | 0.1.7-rc.1   | 0.2.0-rc.2  | ... |
+  const row = text.match(/^\|\s*v\d+\.\d+\.\d+\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|/m);
+  if (!row) return { minimum: 'UNKNOWN', tested: 'UNKNOWN' };
+  return { minimum: row[1], tested: row[2] };
+}
+
+function readAgintVersion() {
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+  return pkg.version;
+}
+
+/**
+ * 算 spec 的 machineReadable 文件 hash（schemaHash）。
+ *
+ * ⭐ 实现抽到 bin/lib/spec-hash.mjs —— 生成器与 check-spec-consistency.mjs 共用。
+ *    两份实现必然会分叉（改一处忘另一处 ⇒ 门禁永远绿或永远红），K110 同源。
+ */
+function schemaHashOf(files) {
+  return computeSpecHash({ files }, SPECS_DIR);
+}
+
+/** 列出 docs/specs/ 下应被索引的实体文件（排除索引与矩阵自身）。 */
+function listSpecFiles() {
+  if (!existsSync(SPECS_DIR)) return [];
+  return readdirSync(SPECS_DIR)
+    .filter((f) => /\.(md|json)$/.test(f))
+    .filter((f) => f !== 'INDEX.json' && f !== 'compatibility-matrix.json')
+    .filter((f) => f !== 'dependency-inventory.json')
+    .sort();
+}
+
+function buildIndex() {
+  const specs = REGISTRY.map((s) => ({
+    ...s,
+    schemaHash: schemaHashOf(s.files),
+  }));
+
+  return {
+    indexVersion: INDEX_VERSION,
+    generatedBy: GENERATED_BY,
+    agintVersion: readAgintVersion(),
+    dshCompat: readDshCompat(),
+    statusLegend: {
+      ACTIVE: '已实施且有生产数据或运行时已挂载（evidence 段必须给出依据）',
+      DESIGN: '规范已定，实现未落地 —— ⚠️ 最容易被虚报的状态',
+      BLOCKED: '被外部条件阻塞，规范先行',
+      ARCHIVED: '已存档（如 external-anchor 提案），不在当前周期实施',
+    },
+    honestyNote:
+      '⚠️ 本索引由脚本从 REGISTRY 生成，REGISTRY 的每个字段须经代码核实后填写。' +
+      '「文件存在」≠「运行时已挂载」≠「有生产数据」—— 这是三件事。' +
+      '判 ACTIVE 必须能指出后两者之一，并写进 evidence。',
+    specs,
+    pendingSpecs: PENDING,
+    untrackedSpecFiles: listSpecFiles().filter(
+      (f) => ![...REGISTRY.flatMap((s) => s.files)].includes(f),
+    ),
+  };
+}
+
+/** 校验逻辑抽出来，供 --check 与 check-spec-consistency.mjs 复用。 */
+export function validateIndex(index, specFilesOnDisk) {
+  const errors = [];
+
+  for (const s of index.specs ?? []) {
+    if (!STATUS_VALUES.includes(s.status)) {
+      errors.push(`${s.id}：status = ${JSON.stringify(s.status)} 不在枚举 ${STATUS_VALUES.join('/')}`);
+    }
+    for (const dep of s.dependencies ?? []) {
+      if (!(index.specs ?? []).some((x) => x.id === dep)) {
+        errors.push(`${s.id}：dependencies 里的 ${dep} 未在本索引登记（悬空依赖）`);
+      }
+    }
+    for (const f of s.files ?? []) {
+      if (!specFilesOnDisk.includes(f)) {
+        errors.push(`${s.id}：files 里的 ${f} 在 docs/specs/ 下不存在（悬空引用）`);
+      }
+    }
+    if (s.status === 'ACTIVE' && !(s.evidence ?? []).length) {
+      errors.push(`${s.id}：status=ACTIVE 但 evidence 为空 —— ACTIVE 必须给出依据，否则视为虚报`);
+    }
+  }
+
+  // 反向：磁盘上的 spec 文件必须被索引（防孤儿规范）
+  const indexed = new Set(index.specs.flatMap((s) => s.files ?? []));
+  for (const f of specFilesOnDisk) {
+    if (!indexed.has(f)) {
+      errors.push(`孤儿规范：docs/specs/${f} 未被 INDEX.json 登记`);
+    }
+  }
+
+  return errors;
+}
+
+function main() {
+  const CHECK_ONLY = process.argv.includes('--check');
+  const onDisk = listSpecFiles();
+  const index = buildIndex();
+
+  if (CHECK_ONLY) {
+    // ⚠️ 必须早于写盘（本脚本第一版的真实 bug —— 详见文件头注释）
+    if (!existsSync(INDEX_PATH)) {
+      console.error('[build-spec-index] ❌ INDEX.json 不存在。修法：跑 `node bin/build-spec-index.mjs`');
+      process.exit(1);
+    }
+    const existing = JSON.parse(readFileSync(INDEX_PATH, 'utf8'));
+    const errors = validateIndex(existing, onDisk);
+    // schemaHash 漂移：规范文件改了但索引没重生成
+    const fresh = new Map(buildIndex().specs.map((s) => [s.id, s.schemaHash]));    for (const s of existing.specs ?? []) {
+      if (fresh.has(s.id) && s.schemaHash !== fresh.get(s.id)) {
+        errors.push(
+          `${s.id}：schemaHash 与磁盘文件不一致（索引 ${s.schemaHash} vs 实际 ${fresh.get(s.id)}）` +
+            ` ⇒ 规范改了但索引未重新生成`,
+        );
+      }
+    }
+    if (errors.length > 0) {
+      console.error(`[build-spec-index] ❌ 索引校验失败（${errors.length} 处）：`);
+      for (const e of errors) console.error(`  - ${e}`);
+      console.error('\n⇒ 修法：改规范后跑 `node bin/build-spec-index.mjs` 重新生成。');
+      process.exit(1);
+    }
+    console.log(
+      `[build-spec-index] ✅ --check 通过：${existing.specs.length} 份规范已登记` +
+        `${(existing.pendingSpecs ?? []).length ? ` · ${existing.pendingSpecs.length} 份已识别未落地` : ''}`,
+    );
+    process.exit(0);
+  }
+
+  writeFileSync(INDEX_PATH, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+  console.log(`[build-spec-index] 已写入 ${INDEX_PATH}`);
+  console.log(`  规范 ${index.specs.length} 份（ACTIVE ${index.specs.filter((s) => s.status === 'ACTIVE').length} / ` +
+    `DESIGN ${index.specs.filter((s) => s.status === 'DESIGN').length} / ` +
+    `BLOCKED ${index.specs.filter((s) => s.status === 'BLOCKED').length}）`);
+  console.log(`  已识别未落地 ${index.pendingSpecs.length} 份（不占 implementedBy，防「没登记=不存在」误判）`);
+  console.log(`  AGINT ${index.agintVersion} · dsh ${index.dshCompat.minimum} / tested ${index.dshCompat.tested}`);
+  if (index.untrackedSpecFiles.length > 0) {
+    console.warn(`  ⚠️ 未登记的 spec 文件 ${index.untrackedSpecFiles.length} 个：${index.untrackedSpecFiles.join(', ')}`);
+  }
+  process.exit(0);
+}
+
+// 仅在直接运行时执行（被 import 时只导出 validateIndex）
+if (process.argv[1] && process.argv[1].endsWith('build-spec-index.mjs')) {
+  main();
+}
