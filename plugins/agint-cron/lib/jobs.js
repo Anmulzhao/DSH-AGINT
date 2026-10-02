@@ -17,6 +17,7 @@
  *   evolve-review   Mon 07:30  周复盘报告（数据快照 + 自动发现）
  *   oracle-weekly   Mon 08:00  美谕周报
  *   wiki-lint       Mon 09:30  Wiki 健康检查（断链/矛盾/孤岛）
+ *   ledger-anchor   Mon 10:15  Evolution Ledger 外部锚定（git commit，⛔ 不 push）
  *   evolution-cycle Tue 07:00  闭环引擎驱动（复盘之后第一波）
  *   baseline-regression-suite Tue 09:30 mount 通道 baseline 状态
  *   curriculum-weekly Thu 09:30 自主课程：边界探测 → 待练域生成挑战
@@ -61,6 +62,24 @@ export const defaultJobs = [
       if (!wiki) throw new Error('wiki-lint: agint.wiki not available');
       const report = await wiki.lint();
       return report;
+    },
+  },
+  {
+    id: 'ledger-anchor',
+    name: 'Ledger 外部锚定',
+    // Mon 10:15：排在 evolve-review(07:30) 与 wiki-lint(09:30) 之后、且与
+    // oracle-monthly(每月 1 日 10:00) 留足 15 分钟 —— 由 schedule-layout 门禁校验。
+    schedule: '15 10 * * 1', // Mon 10:15
+    description: '把 evolution_ledger 链头写入 docs 锚点文件并本地提交（§4.4.2；⛔ 不 push）',
+    action: async (services) => {
+      const evo = services['agint.evolution'];
+      if (!evo?.ledger?.anchor) throw new Error('ledger-anchor: agint.evolution.ledger.anchor not available');
+      const result = await evo.ledger.anchor();
+      // 空链是正常状态（还没有进化入链），不算失败；其余 anchored:false 都要出声。
+      if (!result.anchored && result.code !== 'LEDGER_EMPTY') {
+        throw new Error(`ledger-anchor: 锚定未完成（${result.code}）${result.detail ? ` —— ${result.detail}` : ''}`);
+      }
+      return result;
     },
   },
   {

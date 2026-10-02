@@ -142,8 +142,130 @@ export const contractLockEntrySchema = z.object({
   lockEventId: z.string().nullable().default(null),
 });
 
-// ── 上限常量（owner：plugin index.js 引用） ────────────────────────────────
+// ── Evolution Ledger 条目（Phase 1 交付物 3 §4.3）──────────────────────
 
+/**
+ * evolution_ledger 表 entry：进化历史的**链式**索引（一条 = 一个 Contract）。
+ *
+ * ## 这张表证明的是「序列与顺序」
+ *
+ * 同域已有的 hash 各管一件事（设计 §4.2.2）：`contract_locks.hypothesisLock`
+ * 证明预测先于执行、Contract 的 `audit.contractHash` 证明单份内容完整，
+ * 而本表的 `entryHash` / `batchRoot` / `merkleRoot` 证明**ledger 序列完整且
+ * 顺序未变**。三者正交，缺任一层都留一个洞（只锁内容 ⇒ 可整链重写；
+ * 只锁序列 ⇒ 可无痕补写单份 Contract）。
+ *
+ * ## 为什么条目里只有摘要和引用，不存 Contract 全文
+ *
+ * 继承本文件 `contractLockEntrySchema` 的纪律：存一份全文就出现两个真相源，
+ * 改 Contract 而不改本表时二者会「互相印证」，反而削弱校验能力。
+ *
+ * ## ⛔ 分隔线以下的字段不参与 entryHash
+ *
+ * `anchorStatus` / `anchorSeq` / `integrity` / `reconstructed` /
+ * `evidenceCompleteness` 是**条目追加之后才成立的事实**（v1.2 勘误 #8）。
+ * §4.4.2 步骤 6 锚定成功后要回写 `anchorStatus` —— 若它参与哈希，
+ * 锚定那一刻条目就自证为被篡改。清单由 `ledger-hash.js`
+ * 的 `ENTRY_HASH_FIELD_ORDER` 单点定义，边界由
+ * `test/ledger-canonical.test.mjs` 断言。
+ */
+const sha256String = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const nullableSha256 = sha256String.nullable().default(null);
+
+/**
+ * summary 子 schema。**单独导出**是因为写入侧必须在算 entryHash **之前**
+ * 拿到归一后的值：z.object 默认**静默丢弃未知键**，若先算 hash 再 parse，
+ * 落盘条目的 summary 少几个键 ⇒ 校验侧从存储重算得到的 entryHash 与
+ * 存的不一致 ⇒ 一条正常写入的条目自证为 TAMPERED（假阳性，而且每周都假）。
+ * 所以顺序是「先归一 → 用归一值算 hash → 再整体 parse 落盘」。
+ */
+export const LEDGER_MUTATION_TYPES = Object.freeze(['PROMPT_MUTATION', 'TOOL_SYNTHESIS', 'STRATEGY_REWRITE']);
+export const LEDGER_DECISIONS = Object.freeze(['AUTO_DEPLOY', 'PENDING_REVIEW', 'REJECT', 'ABSTAIN']);
+
+export const ledgerSummarySchema = z.object({
+  // ⛔ 生产 FROZEN 枚举只有这三类（agint-mutator/lib/schema.js:21）。
+  // 设计 v1.0 示例里的 "MEMORY" 永远不会产生数据（勘误 #5）。
+  // 常量导出给 lib/ledger-rebuild.js 共用：重建侧判「这个历史字段有没有证据」
+  // 必须问同一个清单，自己抄一份就是第二个真相源。
+  mutationType: z.enum(LEDGER_MUTATION_TYPES),
+  changedPlugins: z.array(z.string()).default([]),
+  targetMetric: z.string().min(1),
+  hypothesisDigest: z.string().min(1),
+  predictedDelta: z.number().nullable().default(null),
+  actualDelta: z.number().nullable().default(null),
+  predictionQuality: z.number().min(0).max(1).nullable().default(null),
+  predictionSource: z.enum(['KNOWLEDGE_BASE', 'ANALOGY', 'DEFAULT_RULE']).nullable().default(null),
+  // REJECT / ABSTAIN 同样入链：Ledger 记的是「进化发生过什么」，
+  // 不是「进化成功过什么」（§4.3.4 末段）。
+  decision: z.enum(LEDGER_DECISIONS),
+});
+
+/** references 子 schema：归一纪律同 ledgerSummarySchema（外层字段参与哈希）。 */
+export const ledgerReferencesSchema = z.object({
+  contractHash: nullableSha256,
+  lockEventId: z.string().nullable().default(null),
+  eventBusIds: z.array(z.string()).default([]),
+  populationCandidateId: z.string().nullable().default(null),
+  mountTicketId: z.string().nullable().default(null),
+  abTestId: z.string().nullable().default(null),
+  preimagePath: z.string().nullable().default(null),
+  gitCommit: z.string().nullable().default(null),
+}).default({});
+
+export const ledgerEntrySchema = z.object({
+  // 全局递增序号：永不复用、永不跳号（§4.3.2）。表主键即 String(seq)。
+  seq: z.number().int().min(1),
+  // 幂等键：同 contractId 不重复追加（§4.3.4 纪律 5）。
+  contractId: z.string().min(1),
+  generation: z.string().min(1),
+
+  summary: ledgerSummarySchema,
+
+  chain: z.object({
+    entryHash: sha256String,
+    // seq=1 恒为 GENESIS_PARENT_HASH（sha256:0*64），由代码常量写入
+    parentHash: sha256String,
+    // 批内树根；首条写入前由 service 计算，永不为 null（null 只在读旧数据
+    // 且该字段是后加的场合出现，故不给 default —— 写入侧必须显式提供）
+    batchRoot: sha256String,
+    merkleRoot: sha256String,
+  }),
+
+  references: ledgerReferencesSchema,
+
+  // §4.3.1 ①：UTC + 毫秒 + Z。落库前由 assertUtcMillisIso 再校验一次
+  // （zod 只管形状，「是不是真实时刻」交给哈希层拒收，两处都不放行）。
+  timestamp: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+
+  // ── 以下字段不参与 entryHash（事后回写 / 派生）────────────────────────
+  anchorStatus: z.enum(['PENDING', 'ANCHORED', 'ANCHOR_MISMATCH']).default('PENDING'),
+  anchorSeq: z.number().int().min(0).nullable().default(null),
+  integrity: z.enum(['OK', 'TAMPERED', 'UNVERIFIED', 'GAP_BEFORE']).default('OK'),
+  // 历史重建标记（§4.3.5）：原始条目恒为 false。
+  reconstructed: z.boolean().default(false),
+  evidenceCompleteness: z.enum(['FULL', 'PARTIAL']).nullable().default(null),
+});
+
+/**
+ * 「可哈希核」schema：entryHash 输入那 7 个字段的校验形状（§4.3.1 约束 1-4）。
+ *
+ * 由 ledgerEntrySchema **派生**（omit chain + 把 parentHash 摊平成一个普通字段），
+ * 而不是另写一份字段清单 —— 否则「哪些字段参与哈希」会出现两个真相源，
+ * 加字段时改了一处忘另一处，正是本交付物要防的那类漂移。
+ *
+ * 写入侧的用法（lib/ledger.js）：先用本 schema 归一 + 校验 → 用归一值算 entryHash
+ * → 再用完整 schema 落盘。顺序不能反，理由见 ledgerSummarySchema 的注释。
+ *
+ * ⚠️ 派生形状里 `parentHash` 是平铺的（chain 里的派生摘要此时还不存在），
+ * 而 `projectEntryHashInput()` 读的是 `entry.chain.parentHash` ——
+ * 两者的对应由 ENTRY_HASH_FIELD_ORDER 单点定义，并由
+ * test/ledger-canonical.test.mjs 的「哈希入参字段集合」断言锁死。
+ */
+export const ledgerEntryCoreSchema = ledgerEntrySchema
+  .omit({ chain: true })
+  .extend({ parentHash: sha256String });
+
+// ── 上限常量（owner：plugin index.js 引用） ────────────────────────────────
 export const LIMITS = {
   FAILURE_PATTERNS: 100,
   SUCCESS_TEMPLATES: 50,
@@ -156,6 +278,14 @@ export const LIMITS = {
    * 删一条就等于给一段历史开一个后门（防篡改机制自身被消解）。
    */
   CONTRACT_LOCKS: 1000,
+  /**
+   * evolution_ledger 条目上限（**只 warn 不 prune**）。
+   * 依据：设计 §4.3.3 按 <1k 条量级设计，Phase 1 目标 ≥20 条 + 重建 ≥5 条。
+   * ⛔ 条目永不删除（继承 contract_locks 纪律）：删一条等于给一段历史开后门；
+   * 删尾造成 head 倒退、删中间造出 GAP，两者都是篡改级事件（§4.4.4）。
+   * 超限的正确动作是升 Ledger 规格版本并启用分卷，不是就地轮转。
+   */
+  LEDGER_ENTRIES: 2000,
 };
 
 // ── 内容子串匹配（queryFailures / queryTemplates 用） ─────────────────────

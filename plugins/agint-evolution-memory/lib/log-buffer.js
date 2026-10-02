@@ -15,7 +15,7 @@
  *   - 不引入新的中心化服务（仅本地 buffer 抽象）
  */
 
-import { setTimeout as setTimeoutPromise } from 'node:timers/promises';
+import { setTimeout } from 'node:timers';
 
 export const DEFAULT_FLUSH_COUNT = 10;
 export const DEFAULT_FLUSH_MS = 5000;
@@ -40,10 +40,18 @@ export function createLogBuffer({ storage, memFallback, flushCount = DEFAULT_FLU
 
   function ensureTimer() {
     if (timer || disposed) return;
-    timer = setTimeoutPromise(flushMs).then(() => {
+    // ⚠️ 必须用 `node:timers` 的 setTimeout（返回 Timeout 句柄），不能用
+    //   `node:timers/promises` 的版本：后者返回 **Promise**，而 shutdown() 里的
+    //   `clearTimeout(timer)` 对 Promise 是空操作 —— 定时器照旧挂着，
+    //   进程被它吊住最长 flushMs 秒才退出。
+    //   实测取证（2026-10-03）：test/smoke.mjs 13 个用例合计 0.5s，进程却跑
+    //   60.2s —— 正好等于用例里 flushMs: 60_000，于是 bin/check-wiring.mjs 的
+    //   smoke 门禁（60s 超时）恒红。改句柄后 clearTimeout 生效，那个名为
+    //   「shutdown 强制 flush + 清理 timer」的用例也才真的在它测的名字上。
+    timer = setTimeout(() => {
       timer = null;
-      return doFlush('timer');
-    }).catch(() => { timer = null; });
+      doFlush('timer').catch(() => { /* doFlush 自带 buffer-lost 兜底 */ });
+    }, flushMs);
   }
 
   async function doFlush(reason = 'manual') {

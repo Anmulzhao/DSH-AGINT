@@ -30,11 +30,16 @@ import {
   failurePatternSchema,
   successTemplateSchema,
   contractLockEntrySchema,
+  ledgerEntrySchema,
   LIMITS,
   matchesQuery,
 } from './schema.js';
 import { decayScan } from './decay.js';
 import { createLogBuffer, DEFAULT_FLUSH_COUNT, DEFAULT_FLUSH_MS } from './log-buffer.js';
+import { createLedgerService } from './ledger.js';
+import { createLedgerAnchorService } from './ledger-anchor.js';
+import { createLedgerRebuildService } from './ledger-rebuild.js';
+import { createDefaultSourceLoader } from './ledger-rebuild-sources.js';
 
 const name = 'agint-evolution-memory';
 // fix-20260907（host 热修回灌）：eventBus.subscribe 原为软依赖（ctx.get 一次性
@@ -73,6 +78,9 @@ const spec = defineDomain({
     success_template: { valueSchema: successTemplateSchema },
     // Phase 1 交付物 1 §2.5.1：预测锁定记录（hypothesisLock）
     contract_locks: { valueSchema: contractLockEntrySchema },
+    // Phase 1 交付物 3 §4.3：进化账本（哈希链）。主键 = String(seq)，
+    // 一个 contractId 一条（§4.3.4 纪律 6）；追加只经 lib/ledger.js。
+    evolution_ledger: { valueSchema: ledgerEntrySchema },
   },
 });
 
@@ -137,6 +145,11 @@ function apply(ctx) {
     try { if (typeof ctx.metrics === 'function') ctx.metrics(key, n); } catch { /* ignore */ }
   };
 
+  // 失败必须暴露：订阅不可用 / payload 缺字段 / 写入抛错，三种情况都 warn。
+  const warn = (msg, extra) => {
+    try { if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(msg, extra ?? {}); } catch { /* noop */ }
+  };
+
   const table = async (name) => {
     if (disposed) throw new Error('agint-evolution-memory: disposed');
     if (domainError) throw domainError;
@@ -149,6 +162,43 @@ function apply(ctx) {
   const t_fail = () => table('failure_pattern');
   const t_template = () => table('success_template');
   const t_lock = () => table('contract_locks');
+  const t_ledger = () => table('evolution_ledger');
+
+  // ── Ledger（Phase 1 交付物 3 §4.3.4）─────────────────────────────────────
+  // 链的**唯一写入口**。⛔ 不接 logBuffer：批量 flush 崩溃即 seq 空洞，
+  // 而空洞在 ledger 里是安全事件（§4.3.4 纪律 2/3，lib/ledger.js 头部详述）。
+  const ledger = createLedgerService({ getTable: t_ledger, now: nowIso, warn, bump });
+
+  // ── 外部锚定（§4.4.2）────────────────────────────────────────────────────
+  // 必须在宿主内跑：独立进程写 agint_evolution.json 会被宿主下一次 put 覆盖
+  // （lib/ledger.js 头部取证）。所以这里是**服务方法**，由 cron 的 ledger-anchor
+  // 任务调用；bin/anchor-ledger.mjs 退化为只读预览。
+  // publish 用软依赖、调用时取：本方法只在 cron 触发时执行，远晚于插件装配，
+  // 不会撞上 fix-20260907 那类「启动时一次性读取取不到」的时序问题。
+  const ledgerAnchor = createLedgerAnchorService({
+    ledger,
+    now: nowIso,
+    warn,
+    bump,
+    publish: async (topic, payload) => {
+      const bus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      if (typeof bus !== 'function') return false;
+      // ⛔ 单参数 { topic, payload, source }：签名见 evolution-driver/lib/index.js:317
+      // 的取证，多传参数会被 bus 静默丢成 accepted:false。
+      const res = await bus({ topic, payload, source: name });
+      return res?.accepted === true;
+    },
+  });
+
+  // ── 历史重建（§4.3.5 / §4.6 #7）──────────────────────────────────────────
+  // 取数与推导都不碰 fs 之外的写：apply 逐条走 ledger.appendEntry（唯一写入口）。
+  // 时序硬约束由这里判定：链上已有实时条目 ⇒ 拒绝插入（lib/ledger-rebuild.js 头注）。
+  const ledgerRebuild = createLedgerRebuildService({
+    ledger,
+    loadSources: createDefaultSourceLoader(),
+    warn,
+    bump,
+  });
 
   // ── 写入 helpers ────────────────────────────────────────────────────────
 
@@ -476,10 +526,12 @@ function apply(ctx) {
     const t1 = await t_log();
     const t2 = await t_fail();
     const t3 = await t_template();
+    const t4 = await t_ledger();
     return {
       evolution_log: t1.size,
       failure_pattern: t2.size,
       success_template: t3.size,
+      evolution_ledger: t4.size,
       limits: LIMITS,
     };
   }
@@ -500,6 +552,24 @@ function apply(ctx) {
     getLogRange,
     decayScanRun,
     stats,
+    // Phase 1 交付物 3 §4.3.4：Ledger 是**唯一写入口**；driver / 锚定 cron /
+    // 重建脚本一律经此命名空间，⛔ 不得直写 agint_evolution.json。
+    ledger: {
+      append: ledger.appendEntry,
+      head: ledger.getHead,
+      list: ledger.listEntries,
+      findByContractId: ledger.findByContractId,
+      proofFor: ledger.proofFor,
+      markAnchored: ledger.markAnchored,
+      stats: ledger.stats,
+      // §4.4.2：外部锚定（cron `ledger-anchor` 调用；⛔ 只 commit，不 push）
+      anchor: ledgerAnchor.anchor,
+      anchorPreview: ledgerAnchor.preview,
+      anchorFile: ledgerAnchor.anchorFile,
+      // §4.3.5：历史重建（只读核对用 plan；apply 必须显式 true 且时序窗口未关）
+      rebuildPlan: ledgerRebuild.plan,
+      rebuild: ledgerRebuild.apply,
+    },
     // 暴露 LIMIT 给上游读取
     limits: LIMITS,
   });
@@ -530,11 +600,6 @@ function apply(ctx) {
   // 结果：订阅注册成功、bus 返回 deliveredTo 包含本插件，看起来链路完全正常，
   //   但 evolution_log 永远 0 条 —— 教科书式 silent failure。
   // 修法：字段取枚举内合法值，"这是提案阶段"的语义改用 tags 保留（可查询）。
-  //
-  // 失败必须暴露：订阅不可用 / payload 缺字段 / 写入抛错，三种情况都 warn。
-  const warn = (msg, extra) => {
-    try { if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(msg, extra ?? {}); } catch { /* noop */ }
-  };
   try {
     // 兼容两种形态：1) 子键直查 ctx.get('agint.eventBus.subscribe')（sibling 范本）
     //              2) namespace 解析 ctx.get('agint.eventBus')?.subscribe（少数 host 变体）
@@ -606,4 +671,4 @@ function apply(ctx) {
   }
 }
 
-export { Config, apply, inject, name };
+export { Config, apply, inject, name, spec };

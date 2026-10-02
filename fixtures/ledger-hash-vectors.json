@@ -1,0 +1,793 @@
+{
+  "version": 1,
+  "purpose": "三份 canonical 实现的防漂移向量表（设计 §4.3.1 / §6.1 S22-0 / §7.1 首行）",
+  "generatedBy": "S22-0（expected 值取自插件侧 canonical.js + ledger-hash.js，再由三份实现各自跑通对拍）",
+  "algorithm": "sha256",
+  "hashPrefix": "sha256:",
+  "hashDecimals": 4,
+  "batchSize": 8,
+  "genesisParentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "notRepresentableInJson": "值为 undefined 的键必须整个省略（§4.3.1 ④）—— JSON 无法表达 undefined，该契约由 plugins/agint-evolution-memory/test/ledger-canonical.test.mjs 的用例覆盖",
+  "canonical": [
+    {
+      "name": "negative_numbers",
+      "expectedCanonical": "{\"delta\":-4,\"ratio\":-0.5,\"zero\":0}",
+      "expectedSha256": "sha256:2a2bb41c4ff23dd2c010134c795354917e740d85be7beca79fcb3ca9c2d078a4",
+      "input": {
+        "delta": -4,
+        "ratio": -0.5,
+        "zero": 0
+      }
+    },
+    {
+      "name": "empty_array",
+      "expectedCanonical": "{\"changedPlugins\":[]}",
+      "expectedSha256": "sha256:d78c5d301601189db9c4ef046357202c6712c17d1bf07ae711ccf43c8fab3ee6",
+      "input": {
+        "changedPlugins": []
+      }
+    },
+    {
+      "name": "nested_structure",
+      "expectedCanonical": "{\"a\":{\"b\":[1,{\"c\":\"d\"},[]]},\"z\":null}",
+      "expectedSha256": "sha256:e5014a49d34dbabde57bb50f60353ef806b875fda9833b90aaa50fb03d412a5c",
+      "input": {
+        "a": {
+          "b": [
+            1,
+            {
+              "c": "d"
+            },
+            []
+          ]
+        },
+        "z": null
+      }
+    },
+    {
+      "name": "long_key_ordering",
+      "expectedCanonical": "{\"aA\":\"x\",\"aa\":\"w\",\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":\"v\"}",
+      "expectedSha256": "sha256:ad1550c8a1836c52776d307d47b47d1c7bd28b7321e43421c6853a229fafe355",
+      "input": {
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "v",
+        "aa": "w",
+        "aA": "x"
+      }
+    },
+    {
+      "name": "non_ascii_values",
+      "expectedCanonical": "{\"中文键\":\"值\",\"排序\":[\"a\",\"A\",\"é\"]}",
+      "expectedSha256": "sha256:481593a230c1f78c3f393727a0fbc18a2ce1b5f2bf02fc5fdb91926645476a9a",
+      "input": {
+        "排序": [
+          "a",
+          "A",
+          "é"
+        ],
+        "中文键": "值"
+      }
+    },
+    {
+      "name": "surrogate_pair_key_order",
+      "expectedCanonical": "{\"￿\":\"bmp_max\",\"😀\":\"astral\"}",
+      "expectedSha256": "sha256:cb5add3739afeef96456db441498e7d4d6c2a8b23f8cbd73ee15c5a80c52d0bf",
+      "input": {
+        "￿": "bmp_max",
+        "😀": "astral"
+      }
+    },
+    {
+      "name": "float_mantissa",
+      "expectedCanonical": "{\"v\":0.9400000000000001,\"w\":0.30000000000000004}",
+      "expectedSha256": "sha256:c4e95451d14854f39b1dc5580c9be060ec3e3ec936c9016d74a9288efb243829",
+      "input": {
+        "v": 0.9400000000000001,
+        "w": 0.30000000000000004
+      }
+    },
+    {
+      "name": "negative_zero",
+      "expectedCanonical": "{\"p\":0,\"z\":0}",
+      "expectedSha256": "sha256:d6c54f012ae3df10c1647eabb693e48fb0ed0df730ba5f1c77f771657406475c",
+      "inputJson": "{\"z\":-0,\"p\":0}"
+    },
+    {
+      "name": "escape_sequences",
+      "expectedCanonical": "{\"bs\":\"a\\\\b\",\"nl\":\"a\\nb\",\"q\":\"he said \\\"hi\\\"\",\"tb\":\"a\\tb\"}",
+      "expectedSha256": "sha256:7bf9f4193785d00578fb9bb6ca202c0027dc8c165169454c085199bb5c30ce5b",
+      "input": {
+        "q": "he said \"hi\"",
+        "bs": "a\\b",
+        "nl": "a\nb",
+        "tb": "a\tb"
+      }
+    },
+    {
+      "name": "empty_containers",
+      "expectedCanonical": "{\"arr\":[[],{},null],\"obj\":{},\"str\":\"\"}",
+      "expectedSha256": "sha256:1b3fe455bf337ea116b545125fb308306e4c54e592dde65ad179564538b9701d",
+      "input": {
+        "obj": {},
+        "arr": [
+          [],
+          {},
+          null
+        ],
+        "str": ""
+      }
+    },
+    {
+      "name": "key_insertion_order_invariant",
+      "expectedCanonical": "{\"a\":1,\"b\":2}",
+      "expectedSha256": "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
+      "input": {
+        "b": 2,
+        "a": 1
+      },
+      "alsoInput": {
+        "a": 1,
+        "b": 2
+      }
+    }
+  ],
+  "entryHash": [
+    {
+      "name": "basic_seq1_genesis",
+      "entry": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "expectedEntryHash": "sha256:74b725eb61b19a4dbd03f4354533c20b19e3ea5d75aec4019cd57938bba8023d"
+    },
+    {
+      "name": "seq2_with_parent",
+      "entry": {
+        "seq": 2,
+        "contractId": "EVO-VECTOR-002",
+        "generation": "GEN-VEC-2",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:20:00.000Z"
+      },
+      "expectedEntryHash": "sha256:133ea7e02d4bca5989280e16e4fc05a5b76b72d7ea611f78c3f35962c702de66"
+    },
+    {
+      "name": "unicode_and_float_noise",
+      "entry": {
+        "seq": 3,
+        "contractId": "EVO-VECTOR-003",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "STRATEGY_REWRITE",
+          "changedPlugins": [
+            "b-plugin",
+            "a-plugin",
+            "c-plugin"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "收敛指代歧义，预期成功率 +4.0%（中文摘要入哈希）",
+          "predictedDelta": 0.9400000000000001,
+          "actualDelta": -1.4,
+          "predictionQuality": 0.30000000000000004,
+          "predictionSource": null,
+          "decision": "REJECT"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "expectedEntryHash": "sha256:b96aed1865fb3ed81083d3b5114330f31912a45ed72e54ee0f2ae0b9559db9d1"
+    },
+    {
+      "name": "null_references_minimal",
+      "entry": {
+        "seq": 4,
+        "contractId": "EVO-VECTOR-004",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": null,
+          "predictionQuality": null,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "ABSTAIN"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": null,
+          "lockEventId": null,
+          "eventBusIds": []
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "expectedEntryHash": "sha256:abfbe7d0ac7a1f15627b1f886e4727de52306f1661dba4da3476ebe6910cabc8"
+    }
+  ],
+  "invariance": [
+    {
+      "name": "float_noise_quantized",
+      "note": "predictedDelta 0.9400000000000001 与 0.94 必须得到同一 entryHash（§4.3.1 ②）",
+      "entryA": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 0.9400000000000001,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "entryB": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 0.94,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "expectedEntryHash": "sha256:7994ef17f3a1fe68e9c9112b5c6a0a38d8b373a1c1ff26233751c159fdb64852"
+    },
+    {
+      "name": "string_list_order",
+      "note": "changedPlugins 顺序不同 ⇒ 同一事实同一 hash（§4.3.1 ③）",
+      "entryA": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "a-plugin",
+            "b-plugin"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "entryB": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "b-plugin",
+            "a-plugin"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z"
+      },
+      "expectedEntryHash": "sha256:7bb7eb5d2b85bf53577e597899c1f22e2295729d957f7cf18980f08369c4084b"
+    },
+    {
+      "name": "post_writeback_fields_excluded",
+      "note": "锚定回写字段不参与哈希（v1.2 勘误 #8，§4.6 验收 2c）",
+      "entryA": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z",
+        "anchorStatus": "PENDING",
+        "anchorSeq": null,
+        "integrity": "OK",
+        "reconstructed": false
+      },
+      "entryB": {
+        "seq": 1,
+        "contractId": "EVO-VECTOR-001",
+        "generation": "GEN-VEC-1",
+        "summary": {
+          "mutationType": "PROMPT_MUTATION",
+          "changedPlugins": [
+            "agint-evolution-driver"
+          ],
+          "targetMetric": "SUCCESS_RATE",
+          "hypothesisDigest": "vector fixture digest",
+          "predictedDelta": 4,
+          "actualDelta": 3.8,
+          "predictionQuality": 0.94,
+          "predictionSource": "DEFAULT_RULE",
+          "decision": "AUTO_DEPLOY"
+        },
+        "chain": {
+          "entryHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "parentHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "batchRoot": "sha256:5050505050505050505050505050505050505050505050505050505050505050",
+          "merkleRoot": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+        },
+        "references": {
+          "contractHash": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "lockEventId": "evt_vec_1",
+          "eventBusIds": [
+            "evt_b",
+            "evt_a"
+          ],
+          "populationCandidateId": "cand-vec-1",
+          "mountTicketId": null,
+          "abTestId": null,
+          "preimagePath": null,
+          "gitCommit": "abc1234"
+        },
+        "timestamp": "2026-10-29T04:15:00.000Z",
+        "anchorStatus": "ANCHORED",
+        "anchorSeq": 3,
+        "integrity": "GAP_BEFORE",
+        "reconstructed": true,
+        "evidenceCompleteness": "PARTIAL"
+      },
+      "expectedEntryHash": "sha256:74b725eb61b19a4dbd03f4354533c20b19e3ea5d75aec4019cd57938bba8023d"
+    }
+  ],
+  "merkle": {
+    "batchRoot": [
+      {
+        "name": "full_batch_8",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+          "sha256:0808080808080808080808080808080808080808080808080808080808080808"
+        ],
+        "expectedBatchRoot": "sha256:d398283fb6df0f76b319dc39ed3834997c579f224b374538ffea5c6e6afdd3a4"
+      },
+      {
+        "name": "odd_batch_7_self_pair",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707"
+        ],
+        "expectedBatchRoot": "sha256:9813e9a51a3e86b0d2af0f89cbd21ca96baa1f5ba443efbdbce43f7c9038feb8"
+      },
+      {
+        "name": "single_leaf_batch",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+        ],
+        "expectedBatchRoot": "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      {
+        "name": "two_leaves",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202"
+        ],
+        "expectedBatchRoot": "sha256:9fa7db6474909116d21be4ada21d715d6b1d5dec47d361f2da9ae19aed17ce62"
+      },
+      {
+        "name": "three_leaves",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303"
+        ],
+        "expectedBatchRoot": "sha256:17e18c76add07ff2378298b4349ea0e3d53f171349393d55cf5406bd1000badc"
+      }
+    ],
+    "path": [
+      {
+        "name": "path_first_of_full_batch",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+          "sha256:0808080808080808080808080808080808080808080808080808080808080808"
+        ],
+        "leafIndex": 0,
+        "expectedPath": [
+          {
+            "hash": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+            "side": "right"
+          },
+          {
+            "hash": "sha256:915631c9f4c0cd992c4d3f5cde2c0d2802c765370770084f4a2533993986f666",
+            "side": "right"
+          },
+          {
+            "hash": "sha256:6f8190cb997148c7c73e229a78933abdc0b719eb212172d0256819e23801fb69",
+            "side": "right"
+          }
+        ],
+        "expectedBatchRoot": "sha256:d398283fb6df0f76b319dc39ed3834997c579f224b374538ffea5c6e6afdd3a4"
+      },
+      {
+        "name": "path_last_of_full_batch",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+          "sha256:0808080808080808080808080808080808080808080808080808080808080808"
+        ],
+        "leafIndex": 7,
+        "expectedPath": [
+          {
+            "hash": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+            "side": "left"
+          },
+          {
+            "hash": "sha256:8aff8b132a72a5bd53b188ed20e112ff6992e12f4109adb0dac8eb6444660f39",
+            "side": "left"
+          },
+          {
+            "hash": "sha256:8c95fd7c5cbe75cd12f611ddd8ba4495fb955894a8a6e2bca6b44ea020ac2a6d",
+            "side": "left"
+          }
+        ],
+        "expectedBatchRoot": "sha256:d398283fb6df0f76b319dc39ed3834997c579f224b374538ffea5c6e6afdd3a4"
+      },
+      {
+        "name": "path_odd_last_self_paired",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707"
+        ],
+        "leafIndex": 6,
+        "expectedPath": [
+          {
+            "hash": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+            "side": "self"
+          },
+          {
+            "hash": "sha256:8aff8b132a72a5bd53b188ed20e112ff6992e12f4109adb0dac8eb6444660f39",
+            "side": "left"
+          },
+          {
+            "hash": "sha256:8c95fd7c5cbe75cd12f611ddd8ba4495fb955894a8a6e2bca6b44ea020ac2a6d",
+            "side": "left"
+          }
+        ],
+        "expectedBatchRoot": "sha256:9813e9a51a3e86b0d2af0f89cbd21ca96baa1f5ba443efbdbce43f7c9038feb8"
+      },
+      {
+        "name": "path_middle_odd_index",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+          "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+          "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+          "sha256:0808080808080808080808080808080808080808080808080808080808080808"
+        ],
+        "leafIndex": 5,
+        "expectedPath": [
+          {
+            "hash": "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+            "side": "left"
+          },
+          {
+            "hash": "sha256:bef396876a438ee308e2dc585341a125008087aedaf49750c4010ddba790766e",
+            "side": "right"
+          },
+          {
+            "hash": "sha256:8c95fd7c5cbe75cd12f611ddd8ba4495fb955894a8a6e2bca6b44ea020ac2a6d",
+            "side": "left"
+          }
+        ],
+        "expectedBatchRoot": "sha256:d398283fb6df0f76b319dc39ed3834997c579f224b374538ffea5c6e6afdd3a4"
+      },
+      {
+        "name": "path_single_leaf",
+        "leaves": [
+          "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+        ],
+        "leafIndex": 0,
+        "expectedPath": [],
+        "expectedBatchRoot": "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+      }
+    ],
+    "orderSensitivity": {
+      "name": "reversed_leaves_differ",
+      "leaves": [
+        "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+        "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+        "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+      ],
+      "expectedBatchRoot": "sha256:84f8c685d4d49045877d48eb81086a5f2a7c55c041e0a9e30f19a9e1f21f52d3",
+      "differsFrom": "sha256:17e18c76add07ff2378298b4349ea0e3d53f171349393d55cf5406bd1000badc"
+    }
+  },
+  "rollup": [
+    {
+      "name": "empty_is_genesis",
+      "batchRoots": [],
+      "expectedRollupRoot": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "one_batch",
+      "batchRoots": [
+        "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+      ],
+      "expectedRollupRoot": "sha256:872cc950d51306607b190aab991ec5437026f877682cf5f8e77254792adeb3f0"
+    },
+    {
+      "name": "two_batches",
+      "batchRoots": [
+        "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+      ],
+      "expectedRollupRoot": "sha256:34843fd283979ec6060b66cccfdab543bdd1af21c6a3e3dbe5284d663bc1c2dd"
+    },
+    {
+      "name": "three_batches",
+      "batchRoots": [
+        "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+      ],
+      "expectedRollupRoot": "sha256:575b60803d1a8cf40b644bad114b641e892909d9d210c808c2e8fc7f831bf3f4"
+    }
+  ],
+  "throws": [
+    {
+      "name": "nan_number",
+      "expectThrow": true
+    },
+    {
+      "name": "infinity_number",
+      "expectThrow": true
+    },
+    {
+      "name": "bigint_value",
+      "expectThrow": true
+    },
+    {
+      "name": "empty_batch_root",
+      "expectThrow": true
+    }
+  ]
+}

@@ -1,10 +1,12 @@
 /**
  * agint-evolution-memory: preset-scoped evolution memory tools (v0.6.4+).
- * Batch 2.1 (Sprint 14+): 11 model-visible tools.
+ * Batch 2.1 (Sprint 14+): 11 model-visible tools. Phase 1 Sprint 22 加 2 个（重建）。
  *
- * Tool list (11):
+ * Tool list (13):
  *   write:    logPhase4 / logPhase4Buffered / addFailure / addSuccess / flushLogBufferNow / decayScanRun
+ *             / ledgerRebuildApply
  *   read-only: readLogRangeMerged / queryFailures / queryTemplates / getLogRange / stats
+ *             / ledgerRebuildPlan
  *
  * Ask gate (per老板 2026-09-04 决策):
  *   - logPhase4 / logPhase4Buffered / addFailure / addSuccess / flushLogBufferNow = ask
@@ -64,6 +66,7 @@ function apply(ctx) {
     getLogRange,
     decayScanRun,
     stats,
+    ledger,
   } = ctx['agint.evolution'];
 
   // ── write tools (5) ─────────────────────────────────────────────────
@@ -175,8 +178,47 @@ function apply(ctx) {
     },
   }));
 
-  // ── read-only tools (5) ───────────────────────────────────────────
+  // ── Ledger 历史重建（§4.3.5 / §4.6 #7）─────────────────────────────────
+  // 计划与入链共用 lib/ledger-rebuild.js 的同一份推导：报告与写入不会是两套口径。
+  // ⚠️ 运行时 ask 门禁（storages/agint_rules.json 的 rule 行）不归仓库管，
+  //    这个工具应当按 write 登记 ask；登记前它仍有三道代码内闸门：
+  //    apply 缺省 false、链上有实时条目即拒、可重建 <5 条即拒。
 
+  ctx.tools.register(defineTool({
+    name: 'evolution_ledgerRebuildPlan',
+    description:
+      'Read-only: derive reconstructable evolution-ledger entries from event_bus + population + preimage (§4.3.5). ' +
+      'Returns { entries, blockers, counts } — entries whose evidence is incomplete are listed with reasons, never guessed values.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: `evolution_ledgerRebuildPlan: ${JSON.stringify(v)}` }],
+    },
+    execute() {
+      return ledger.rebuildPlan().then((s) => JSON.parse(JSON.stringify(s)));
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'evolution_ledgerRebuildApply',
+    description:
+      'Append reconstructed history entries to the evolution ledger through the ledger service (the only legal write path). ' +
+      'ASK-gated — ledger writes. Default is dry-run: pass { opts: { apply: true } } to write. ' +
+      'Refuses when the chain already holds live (non-reconstructed) entries (§4.3.5 timing constraint) or when fewer than 5 entries are evidenced.',
+    parameters: {
+      opts: { type: 'object', additionalProperties: true,
+        description: 'RebuildOptions: { apply?: boolean } — apply defaults to false' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: `evolution_ledgerRebuildApply: ${JSON.stringify(v)}` }],
+    },
+    execute(args) {
+      return ledger.rebuild({ apply: args?.opts?.apply === true }).then((s) => JSON.parse(JSON.stringify(s)));
+    },
+  }));
+
+  // ── read-only tools (5) ───────────────────────────────────────────
   ctx.tools.register(defineTool({
     name: 'evolution_readLogRangeMerged',
     description:

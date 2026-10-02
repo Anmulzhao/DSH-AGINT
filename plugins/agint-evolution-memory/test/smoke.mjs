@@ -67,6 +67,7 @@ nodeTest('计数触发 flush（≥10 条立即 flush）', async () => {
   const stored = (await storage.table('evolution_log')).entries();
   assert.equal(stored.length, 10, '≥10 条立即 flush 应全部落盘');
   assert.equal(buf._size(), 0, 'flush 后 buffer 应清空');
+  await buf.shutdown(); // 关掉那个 60s 的兜底定时器，否则进程被它吊住（见 log-buffer.js ensureTimer）
 });
 
 nodeTest('时间触发 flush（5s 定时器；用 flushMs=50 加速）', async () => {
@@ -93,6 +94,7 @@ nodeTest('flush 失败 → 写 buffer-lost 到 memFallback', async () => {
   await new Promise(r => setImmediate(r));
   assert.equal(mem.writes.length, 1, 'flush 失败应写一条 buffer-lost 到 memFallback');
   assert.match(mem.writes[0].content, /buffer-lost|lost=5/);
+  await buf.shutdown();
 });
 
 nodeTest('readMerged: buffer 在前 + storage 合并去重', async () => {
@@ -107,6 +109,7 @@ nodeTest('readMerged: buffer 在前 + storage 合并去重', async () => {
   assert.equal(merged.length, 2, 'stored-1 去重 + buffer-2 新增');
   assert.equal(merged[0].id, 'stored-1');
   assert.equal(merged[0].evidence, 'from-buffer-overwrite');
+  await buf.shutdown();
 });
 
 nodeTest('readMerged with query: 子串过滤', async () => {
@@ -119,6 +122,7 @@ nodeTest('readMerged with query: 子串过滤', async () => {
   const r = await buf.readMerged('plugin-static');
   assert.equal(r.length, 1);
   assert.equal(r[0].id, 'a');
+  await buf.shutdown();
 });
 
 nodeTest('shutdown 强制 flush + 清理 timer', async () => {
@@ -166,12 +170,12 @@ nodeTest('plugin 真实路径 logPhase4Buffered + flushLogBufferNow 端到端', 
 
 // ── 2. tools.js preset-scoped apply() 路径 ─────────────────────────
 
-nodeTest('tools.js: apply(ctx) 不抛 + 11 工具注册成功', async () => {
+nodeTest('tools.js: apply(ctx) 不抛 + 13 工具注册成功', async () => {
   const toolRegistry = [];
   const fakeTools = { register: (t) => { toolRegistry.push(t); return t; } };
   const fakeCtx = {
     // 2026-09-04 伞解析重构：tools.js inject ['tools','agint.evolution']，
-    // 从 ctx['agint.evolution'] 伞对象上解构 11 个服务（不再逐键 inject）。
+    // 从 ctx['agint.evolution'] 伞对象上解构 12 个服务（不再逐键 inject）。
     'agint.evolution': {
       logPhase4: async (entry) => ({ id: `lp4-${Date.now()}`, ...entry }),
       logPhase4Buffered: async (entry) => ({ queued: true, id: `lpb-${Date.now()}`, ...entry }),
@@ -187,6 +191,13 @@ nodeTest('tools.js: apply(ctx) 不抛 + 11 工具注册成功', async () => {
         evolution_log: 0, failure_pattern: 0, success_template: 0,
         limits: { LOG: 5000, FAILURE: 100, TEMPLATE: 50 },
       }),
+      // Phase 1 Sprint 22：tools.js 从伞上多解构一个 `ledger`（历史重建工具用）。
+      // 方法名对齐 index.js:570-571 —— rebuildPlan: ledgerRebuild.plan、
+      // rebuild: ledgerRebuild.apply。apply 期不调用，execute 期才用。
+      ledger: {
+        rebuildPlan: async () => ({ entries: [], blockers: [], counts: {} }),
+        rebuild: async () => ({ applied: 0, skipped: 0 }),
+      },
     },
     tools: fakeTools,
     storageDomain: { open: async () => ({ table: async () => ({ put: async () => true, get: () => null, delete: async () => true, entries: () => [] }), close: async () => {} }) },
@@ -208,6 +219,8 @@ nodeTest('tools.js: apply(ctx) 不抛 + 11 工具注册成功', async () => {
     'evolution_getLogRange',
     'evolution_decayScanRun',
     'evolution_stats',
+    'evolution_ledgerRebuildPlan',
+    'evolution_ledgerRebuildApply',
   ];
   assert.equal(toolRegistry.length, expectedTools.length, `期望 ${expectedTools.length} 工具注册，实得 ${toolRegistry.length}`);
   for (const toolName of expectedTools) {
