@@ -49,6 +49,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
+import { createLedgerWriter } from './ledger-writer.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -290,6 +291,10 @@ export function apply(ctx, config = {}) {
     proposed: 0,
     ingested: 0,
     degraded: 0,
+    // §4.3.4：Ledger 写入的两个计数器。`ledgerFailed` 非 0 = 有决定的进化没留下链上证据，
+    // 这是事故而不是性能问题，必须走 summary 事件外部可读（warn→stdout 常驻读不到）。
+    ledgerWritten: 0,
+    ledgerFailed: 0,
     lastRunAt: null,
     lastError: null,
     lastProposalId: null,
@@ -315,7 +320,7 @@ export function apply(ctx, config = {}) {
   const dep = (name) => (ctx && typeof ctx.get === 'function' ? ctx.get(name) : null);
   const publish = async (topic, payload) => {
     const bus = dep('agint.eventBus.publish');
-    if (typeof bus !== 'function') return false;
+    if (typeof bus !== 'function') return null;
     try {
       // ⛔ 单参数，别再传三个：`agint.eventBus.publish` 的签名是
       // `(input) => publish(busCtx, input)`，input = { topic, source, payload }。
@@ -324,12 +329,18 @@ export function apply(ctx, config = {}) {
       // 两轮触发零 evolution.* 事件，全部丢在这里。
       // topic 正则（schemas.js）：^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$，本插件三个 topic 均合法。
       const res = await bus({ topic, payload, source: 'agint-evolution-driver' });
-      // accepted:false 是 bus 内部校验失败的唯一信号，不能当成功
-      return res?.accepted === true;
+      // accepted:false 是 bus 内部校验失败的唯一信号，不能当成功。
+      // §4.3.4：返回 envelopeId 而不是布尔 —— Ledger 条目的 `references.eventBusIds`
+      // 要靠它把「链上这条决定」接到「总线里那条真实事件」。失败即 null（不猜 id）。
+      return res?.accepted === true ? (res.envelopeId ?? null) : null;
     } catch {
-      return false; // 观测失败绝不影响主流程
+      return null; // 观测失败绝不影响主流程
     }
   };
+
+  // §4.3.4 写入侧接线：决策 → Ledger 条目（⛔ 唯一写入口是 agint.evolution.ledger.append）。
+  // 实例在 apply() 建，但依赖**调用时**取（同上「全软依赖」红线 #3）。
+  const ledgerWriter = createLedgerWriter(ctx, { warn });
 
   /**
    * 让 LLM 把提案变成一次原子编辑。
@@ -413,6 +424,10 @@ export function apply(ctx, config = {}) {
         proposed: state.proposed,
         ingested: state.ingested,
         degraded: state.degraded,
+        // §4.3.4 纪律 3：Ledger 写入结果必须外部可读。ledgerFailed>0 = 有决定没留下
+        // 链上证据（事件总线是本插件唯一读得到的出口）。
+        ledgerWritten: state.ledgerWritten,
+        ledgerFailed: state.ledgerFailed,
         lastError: state.lastError,
         failures: [],
         failuresTotal: 0,
@@ -733,6 +748,8 @@ export function apply(ctx, config = {}) {
               // 丢了它就只能看到「被拒了」，看不到「为什么」。
               const decisionRaw = await policy.decide({ results: [synthEval] });
               const decision = decisionRaw?.kind ?? 'ABSTAIN';
+              // 执行事实事件的 envelopeId ⇒ Ledger 的 references.eventBusIds
+              let outcomeEventId = null;
 
               if (decision === 'REJECT' || decision === 'ABSTAIN') {
                 // 决策为拒 → 从 preimage 回滚，绝不把没验证过的改动留在仓库里。
@@ -771,13 +788,16 @@ export function apply(ctx, config = {}) {
                   verifyMode: sandboxResult?.mode ?? null,
                   verifyOk: Boolean(sandboxResult?.ok),
                   verifyReason: sandboxResult?.reason ?? null,
-                  reverted: true,
+                  // 回滚**结果**而不是回滚意图：此前这里写死 true，于是
+                  // 「policy 拒了但 preimage 没恢复回去」（改动还在仓库里）在
+                  // cron 落盘的 summary 里长得和成功回滚一模一样。
+                  reverted: restored.ok,
                   sandboxOk: Boolean(sandboxResult?.ok),
                   bytesBefore: commit.bytesBefore ?? null,
                   bytesAfter: commit.bytesAfter ?? null,
                   preimagePath: commit.preimagePath ?? null,
                 };
-                await publish('evolution.mutation.rolledback', {
+                outcomeEventId = await publish('evolution.mutation.rolledback', {
                   proposalId: proposal.id,
                   candidateId: candidate.id,
                   path: commit.path,
@@ -801,7 +821,7 @@ export function apply(ctx, config = {}) {
                   bytesAfter: commit.bytesAfter ?? null,
                   preimagePath: commit.preimagePath ?? null,
                 };
-                await publish('evolution.mutation.committed', {
+                outcomeEventId = await publish('evolution.mutation.committed', {
                   proposalId: proposal.id,
                   candidateId: candidate.id,
                   path: commit.path,
@@ -813,6 +833,47 @@ export function apply(ctx, config = {}) {
                   verifyMode: sandboxResult?.mode ?? null,
                 });
               }
+
+              // ── §4.3.4：这次决策入链。REJECT / ABSTAIN 同样入 ——
+              //    Ledger 记的是「进化发生过什么」，不是「进化成功过什么」；
+              //    只记 AUTO_DEPLOY 等于在证据层又把历史美化了一遍。
+              const ledgerRes = await ledgerWriter.writeDecision({
+                evolution: evolutionLog,
+                proposal,
+                variant,
+                outcome: {
+                  decision,
+                  path: commitAudit.path,
+                  preimagePath: commitAudit.preimagePath,
+                  bytesBefore: commitAudit.bytesBefore,
+                  bytesAfter: commitAudit.bytesAfter,
+                  verifyMode: commitAudit.verifyMode,
+                  sandboxOk: commitAudit.sandboxOk,
+                  reverted: commitAudit.reverted,
+                  reason: commitAudit.policyReason ?? commitAudit.verifyReason,
+                  eventIds: [outcomeEventId],
+                },
+              });
+              if (ledgerRes.ok) {
+                state.ledgerWritten += 1;
+              } else {
+                state.ledgerFailed += 1;
+                state.lastError = `ledger write failed: ${ledgerRes.status}`;
+                // 纪律 3：写入失败必须外部可读。warn 只到 stdout（常驻进程读不到），
+                // 所以再落一条 failure_pattern —— 这是 cron / 周报查得动的通道。
+                await recordFailure({
+                  evolve: evolutionLog,
+                  pattern: `evolution-ledger-${ledgerRes.status}`,
+                  severity: 'high',
+                  evidence: `proposalId=${proposal.id} decision=${decision} `
+                    + `path=${commitAudit.path} ${ledgerRes.error ?? ledgerRes.reason ?? '未知原因'}`,
+                });
+              }
+              commitAudit = {
+                ...commitAudit,
+                ledgerSeq: ledgerRes.seq,
+                ledgerStatus: ledgerRes.status,
+              };
             }
           } catch (error) {
             // 写入后异常：已经落盘了就必须回滚，否则留下「未验证改动」在仓库里。
@@ -909,6 +970,8 @@ export function apply(ctx, config = {}) {
       proposed: state.proposed,
       ingested: state.ingested,
       degraded: state.degraded,
+      ledgerWritten: state.ledgerWritten,
+      ledgerFailed: state.ledgerFailed,
       lastRunAt: state.lastRunAt,
       lastError: state.lastError,
       lastProposalId: state.lastProposalId,

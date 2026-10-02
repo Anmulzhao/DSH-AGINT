@@ -1,5 +1,64 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.8 (2026-10-03) — Phase 1 交付物 3：evolution_ledger 防篡改链 + Git 外部锚定 + 历史重建
+
+设计依据 `Phase-1 Evidence-Based Evolution 设计方案.md` §4（v1.2），Sprint 22。
+
+### 新增
+
+| 文件 | 职责 |
+|---|---|
+| `lib/canonical.js` | 插件侧 canonical 序列化 / 量化 / `assertUtcMillisIso` / `GENESIS_PARENT_HASH`（⛔ 不 import `bin/lib/`，`bin/` 不随 bundle 部署） |
+| `lib/ledger-hash.js` | `ENTRY_HASH_FIELD_ORDER`（7 字段单点定义）+ `computeEntryHash` + 批内 Merkle + roll-up 根链 + `buildProof`/`verifyProof` |
+| `lib/ledger.js` | 链的**唯一写入口**：逐条同步、进程内 appendLock、CAS 复核、contractId 幂等、`markAnchored` 只回写非哈希字段 |
+| `lib/ledger-anchor.js` | §4.4.2 外部锚定（宿主内跑；pathspec 提交、失败还原、⛔ 从不 push） |
+| `lib/ledger-rebuild.js` | §4.3.5 历史重建：纯函数 `buildRebuildPlan` + `apply()`（时序窗口 / dry-run / <5 拒写） |
+| `lib/ledger-rebuild-sources.js` | 三个证据源的只读取数器（整单元 JSON + preimage 探测，路径限定仓内） |
+| `fixtures/ledger-hash-vectors.json` | S22-0 golden hash 向量（≥8 条边界形态），钉住三份 canonical 实现不漂移 |
+| tools | `evolution_ledgerRebuildPlan`（只读）/ `evolution_ledgerRebuildApply`（写，缺省 dry-run） |
+
+### 关键取舍（改这里之前先读）
+
+- **`evolution_ledger` 以 `version: 1` 加表，不升域版本**：整单元格式是严格相等校验，
+  升版 ⇒ 整个域打不开 ⇒ 202 行 evolution_log 全读不出（取证见 `lib/index.js` 注释）。
+- **`anchorStatus` / `anchorSeq` / `integrity` / `reconstructed` / `evidenceCompleteness`
+  不参与 entryHash**（v1.2 勘误 #8）：否则锚定回写那一刻条目自证为被篡改。
+- **⛔ 不重建 Contract / contract_locks**：`hypothesisLock` 证明的是"预测先于执行"，
+  今天补算一份写去 9 月就是伪造证据。重建条目 `contractHash` / `lockEventId` 恒 null。
+- **证据取不到即拒绝该条**，不补默认值。生产实测：可重建 6 条（全 FULL）+ 拒 1 条
+  （`NO_VARIANT_ROW`，09-27 validate 阶段被拒的那条从未生成变体）。
+- **`log-buffer.js` 顺手修了两个"进程被空挂定时器拖住"的 bug**：
+  ① `node:timers/promises` 的 `setTimeout` 返回 Promise，`clearTimeout` 对它为空操作
+  ⇒ 定时器根本撤不掉；改用 `node:timers`（返回 Timeout 句柄）。
+  ② flush 完成后不撤销那条定时器 ⇒ 缓冲已空却还在空等 `flushMs`。现在 flush 即撤、
+  下次 enqueue 重新 arm，并加 `_hasTimer()` + 一条断言把这个不变量钉住。
+  实测：`test/smoke.mjs` 60233ms → 314ms，`test/log-buffer.test.mjs` 60461ms → 578ms。
+  （这不是性能优化：60s 挂在 `check-wiring` 的查 I smoke 超时上，会让门禁恒红。）
+
+### Tests
+
+`test/ledger-vectors.test.mjs` / `ledger-canonical.test.mjs` / `ledger-service.test.mjs` /
+`ledger-proof.test.mjs` / `ledger-anchor.test.mjs` / `ledger-rebuild.test.mjs` /
+`domain-race.test.mjs` + `bin/verify-ledger-chain.test.mjs` /
+`bin/rebuild-ledger-history.test.mjs`。端到端一条：真 fixture 文件 → 重建 6 条 → 落盘 →
+**独立校验器**（`bin/verify-ledger-chain.mjs`，不 import 插件）判 `seq 1-6, no gap`。
+
+**§4.6 逐项核账补测（同日，2026-10-03）**：核账时发现 **#4c 只有承诺没有测试** ——
+§7.1 写「测试副本上伪造一行锚点并 commit → `--anchors` 必须抓出」，而 `--anchors` 此前
+只测了"文件未入库 ⇒ 失败"一条（因为临时目录不在 `REPO_ROOT` 的 git 历史里）。
+判据代码本身四道齐全（行数单调 / 新增行对链重放 / commit 链连续 / 旧行逐字段回比），缺的是绑定它的测试。
+补法：把校验器**复制进临时 git 仓**（`bin/` + `bin/lib/canonical-json.mjs`），
+REPO_ROOT 就成了这座仓 ⇒ 跑的是同一份生产代码路径，不是复刻逻辑。加 5 case：
+正例逐 commit 两行 exit 0（证明重放不是误报机器）、伪造行 ⇒ `ANCHOR_ROW_UNREPLAYABLE`、
+**重写已提交的历史行 ⇒ `ANCHOR_ROW_REWRITTEN`，并断言同一份字节在 `--anchor`（只看工作区最新行）下恒绿**
+—— 这句就是「v1.0 的 git blame 方案在此恒绿」的可执行对照、删行 ⇒ `ANCHOR_ROWS_SHRANK`、
+一次塞两行 ⇒ `ANCHOR_ROWS_JUMPED`。该文件 19 → 24 case。
+顺带记下一条**判据实测修正**：#5b 原写"删 head ⇒ head 单调性检查失败"，实跑是
+纯链内察觉不到尾部删除（存量仍是各自追加时的前缀值，自洽），校验器只输出
+`TAIL_TRUNCATION_UNCHECKABLE` 这条 note；抓它必须靠 git 锚点的计数与摘要比对。
+逐项结论与运行态取证（ledger 未进运行槽、cron 未部署、链上 0 条、锚点 0 行、
+`evolution.ledger.anchored` 生产 0 事件）写在设计文档 §4.6「验收执行记录」。
+
 ## 0.6.7 (2026-09-25) — A1 T2 切换：事件路径标记权威（本边无直连可切）
 
 ### Changed

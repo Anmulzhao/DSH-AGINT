@@ -1,5 +1,72 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.11 — 2026-10-03（决策入 Evolution Ledger，§4.3.4 / Sprint 22 #10）
+
+### 问题
+
+Ledger 侧（交付物 3）已经建好链、算好 hash、能锚定，但**生产里一条实时条目都不会产生**：
+driver 的决策只发到事件总线和 `commitAudit`，从来没有人调 `ledger.append`。
+取证：`grep -rn "ledger" plugins/agint-evolution-driver/` 在改动前**零命中**。
+
+同时有一条设计内部矛盾必须裁定：§7.1 的集成测试行写的是
+「outcome 回填 → PQ 计算 → ledger 写入」，即**等 T+7 度量出来再入链**。按字面实现会同时踩三个坑：
+`summary` 参与 entryHash 且条目永不重写（纪律 9）⇒ 那七天里这次进化在链上不存在；
+REJECT/ABSTAIN 根本没有 T+7 窗口（改动已回滚）⇒ 被拒绝的历史永远不进链，
+正是 §4.3.4 末段禁止的「在证据层重新美化历史」；且 `prediction_outcomes` 是 Sprint 24 的交付物，现在还不存在。
+
+### 变更
+
+- **新增 `lib/ledger-writer.js`**：
+  - `buildLedgerEntry()` 纯函数 —— 证据 → 条目。缺证据即返回 blocker 并**拒写**，⛔ 不代填：
+    `NO_PROPOSAL_ID` / `MUTATION_TYPE_UNEVIDENCED` / `NO_VARIANT_ROW` /
+    `TARGET_METRIC_UNEVIDENCED` / `DECISION_UNEVIDENCED` / `TIMESTAMP_UNEVIDENCED`。
+  - `createLedgerWriter().writeDecision()` —— 只经 `agint.evolution.ledger.append`
+    （§4.3.4 纪律 1 单写者），一次决策一次 `await`（纪律 2，⛔ 不复用 EvolutionLogBuffer），
+    **永不抛**但失败四通道可见：返回值 + warn + `state.ledgerFailed`（进 cycle.summary）
+    + `failure_pattern` 落行（纪律 3）。
+- `index.js`：committed / rolledback 两个分支之后统一入链；`publish()` 改返回 `envelopeId`
+  （原来只回布尔），条目 `references.eventBusIds` 由此接上真实事件。
+- **裁定：写在「决策当时」，度量不回填**。`predictedDelta` / `actualDelta` /
+  `predictionQuality` / `predictionSource` / `contractHash` / `lockEventId` / `gitCommit` /
+  `mountTicketId` / `abTestId` 一律 null —— 前四个等 Contract 锁定与 Sprint 24 回填，
+  `gitCommit` 等人工提交。条目的定位是「这一期进化做了什么决定」，后续度量走
+  `prediction_outcomes`，用 `contractId` 交叉引用，⛔ 不回来改链。
+- `commitAudit.reverted`：原来在 REJECT 分支**写死 `true`**，于是「policy 拒了但 preimage
+  没恢复回去」（改动仍在仓库里）在落盘 summary 里与成功回滚长得一模一样。改为 `restored.ok`，
+  并把回滚结果固化进 `hypothesisDigest`（`exec=reverted` / `exec=NOT-reverted`）——
+  摘要参与 entryHash，事后无法改写。
+
+### 测试
+
+- 新增 `test/ledger-writer.test.mjs` 19 case：字段口径 / null 纪律 / GEN-### 与 GEN-UNKNOWN /
+  `plugins/` 归属判据（含 Windows 反斜杠）/ `metric:"unspecified"` 照原样入链（生产 7/7 行实况）/
+  eventBusIds 去重排序 / 摘要确定性与 200 截断 / 六个 blocker / 幂等重放 /
+  CAS 抛错 → `APPEND_FAILED` / 依赖后挂载（软依赖不缓存）/ 裸 ctx 不抛 TypeError。
+- `test/smoke.mjs`：T25 断言 AUTO_DEPLOY 真实入链（14 项字段核对）；
+  **T25c 参数化为 REJECT 与 ABSTAIN 两条用例**，各跑真实 tmpdir 回滚 + 真实入链。
+  mock 补真契约：`bus.publish` 返回 `envelopeId`（bus.js:164-169 实况）、
+  `population.ingest` 返回带 `generation` / `expected_effect` 的 variant 行
+  （生产 `agint_population.json` 实况）、`agint.evolution` 提供 `ledger.append` 命名空间。
+- 红绿自证：把 `outcome.decision` 硬改成 `'AUTO_DEPLOY'` ⇒ T25c 立即变红（断言真的绑在决策值上），
+  改回后 42/42 绿。
+- 套件：ledger-writer 19 + smoke 42 + contract-manager 27 + predictor 46 + prediction-scoring 38 + goal-bridge 9。
+- 接线后的跨插件回归（2026-10-03 实测全绿）：`agint-evolution-memory` 9 个 test 文件 151 case
+  + `smoke.mjs` 13 case；门禁 `bin/verify-event-topics.mjs` `failed:false`、
+  `bin/verify-ledger-chain.mjs` 报 `LEDGER_EMPTY`（生产链上 0 条，属预期，非失败）。
+
+### 已知未收口（不在本轮）
+
+- ⚠️ **时序副作用**：首条实时条目入链即永久关闭 §4.3.5 的重建窗口。
+  正确顺序是先 `ledger.rebuild({apply:true})` 补那 6 条历史（窗口现为【开】），再部署本接线；
+  若接线先上线，历史只能追加尾部并标 `reconstructed: true`（合法，但 seq 与事件时序不再一致）。
+- 运行态仍未验证：本轮全是单元/契约层。**真实入链要等宿主部署 + 跑一期 evolution-cycle**，
+  判据是 `agint_evolution.json` 的 `evolution_ledger` 出现非重建条目（§7.1 分层验证纪律）。
+- `contract_locks` / `evolution.contract.locked` 尚未接进 commit 路径（`createContractManager`
+  在生产代码里无调用点）⇒ `references.contractHash` / `lockEventId` 持续为 null。
+- 版本对齐：manifest.json 0.2.6 与 package.json 0.2.10 长期漂移（`verify-manifests.mjs` 有
+  VERSION_DRIFT 记录），本次一并对齐到 0.2.11。
+
+
 ## v0.2.10 — 2026-09-29（commit 阶段的 policyDecision 落盘可查）
 
 ### 问题

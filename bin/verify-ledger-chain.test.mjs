@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -358,3 +358,171 @@ test('--anchors 在文件未入库时必须失败并给出原因（⛔ 不得恒
   assert.equal(code, 1, out);
   assert.match(out, /ANCHOR_GIT_UNAVAILABLE|ANCHOR_NOT_COMMITTED/);
 });
+
+// ── §4.6 #4c：锚点文件的 git 历史重放 ────────────────────────────────────
+//
+// ⚠️ 这一组必须跑在**真 git 仓**里：--anchors 读的是 REPO_ROOT（脚本自身的上级目录）
+// 的提交历史，把锚点文件写在临时目录再传 --anchor-file 只会得到 ANCHOR_NOT_COMMITTED。
+// 所以这里把校验器复制进仓内（它只 import ./lib/canonical-json.mjs），
+// 于是 REPO_ROOT 就是这座测试仓 —— 验的是同一份生产代码路径，不是复刻品。
+//
+// 三种「没动最新行」的篡改（重写历史行 / 删行 / 一次塞两行）各带一条对照断言：
+// 同一份字节在「只看工作区最新行」的 --anchor 模式下是绿的。
+// 这正是 §7.1 那句「v1.0 的 git blame 方案在此恒绿」的可执行形式。
+
+const REPO_FILES = {
+  'bin/verify-ledger-chain.mjs': readFileSync(SCRIPT, 'utf8'),
+  'bin/lib/canonical-json.mjs': readFileSync(join(HERE, 'lib', 'canonical-json.mjs'), 'utf8'),
+};
+
+/** 建一座已 init 且配好身份的测试仓。 */
+function makeRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-anchor-history-'));
+  git(dir, ['init', '-q']);
+  git(dir, ['config', 'user.name', 'anchor-history-test']);
+  git(dir, ['config', 'user.email', 'anchor-history-test@local']);
+  git(dir, ['config', 'core.autocrlf', 'false']);
+  for (const [rel, content] of Object.entries(REPO_FILES)) {
+    const abs = join(dir, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content, 'utf8');
+  }
+  return dir;
+}
+
+function git(dir, args) {
+  return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+}
+
+/** 在测试仓里跑校验器（脚本复制进仓 ⇒ REPO_ROOT = 这座仓）。 */
+function runInRepo(dir, args) {
+  let code = 0;
+  let out = '';
+  try {
+    out = execFileSync(process.execPath, [
+      join(dir, 'bin', 'verify-ledger-chain.mjs'), ...args,
+      '--ledger', join(dir, 'agint_evolution.json'),
+      '--anchor-file', join(dir, 'docs', 'evolution-ledger-anchor.md'),
+    ], { encoding: 'utf8', cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    code = typeof err.status === 'number' ? err.status : 2;
+    out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+  }
+  return { code, out };
+}
+
+/** 锚点行：count 条链的第 count 条是这一行声称的 head。 */
+function rowFor(entries, count, prevCommit, anchoredAt = '2026-10-05T08:00:00.000Z') {
+  const head = entries[String(count)];
+  return anchorRow({
+    anchoredAt,
+    seq: count,
+    headEntryHash: head.chain.entryHash,
+    rollupRoot: head.chain.merkleRoot,
+    entryCount: count,
+    prevCommit,
+  });
+}
+
+/** 写锚点文件并提交，返回该 commit 的 sha（真实锚定就是这一串）。 */
+function commitAnchor(dir, body, message) {
+  const abs = join(dir, 'docs', 'evolution-ledger-anchor.md');
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, body, 'utf8');
+  git(dir, ['add', '--', 'docs/evolution-ledger-anchor.md']);
+  git(dir, ['commit', '-q', '-m', message]);
+  return git(dir, ['rev-parse', 'HEAD']).trim();
+}
+
+/** 造一座「ledger 已落盘 + 锚点已提交 k 行」的仓，返回各 commit sha。 */
+async function repoWithAnchorRows(total, rows) {
+  const { text, entries } = await buildLedgerFile(total);
+  const dir = makeRepo();
+  writeFileSync(join(dir, 'agint_evolution.json'), text, 'utf8');
+  let body = ANCHOR_HEAD;
+  const commits = [];
+  let prev = 'GENESIS';
+  for (let i = 1; i <= rows; i++) {
+    body += `${rowFor(entries, i, prev)}\n`;
+    prev = commitAnchor(dir, body, `anchor row ${i}`);
+    commits.push(prev);
+  }
+  return { dir, entries, commits, body };
+}
+
+test('#4c 对照正例：逐 commit 追加两行 ⇒ --anchors 通过（重放不是误报机器）', async () => {
+  const { dir } = await repoWithAnchorRows(2, 2);
+  const { code, out } = runInRepo(dir, ['--anchors']);
+  assert.equal(code, 0, out);
+  assert.match(out, /ANCHOR_HISTORY: 2 次提交，最终 2 行/);
+});
+
+test('#4c 伪造一行并 commit（声称 seq 不在链上）⇒ --anchors 抓出 ANCHOR_ROW_UNREPLAYABLE', async () => {
+  const { dir } = await repoWithAnchorRows(2, 2);
+  // 追加一行假锚点：seq=99 链上根本没有，但 prevCommit 取真 sha ⇒ commit 链连续性这关过得去
+  const abs = join(dir, 'docs', 'evolution-ledger-anchor.md');
+  const head = git(dir, ['rev-parse', 'HEAD']).trim();
+  const body = readFileSync(abs, 'utf8')
+    + `| 2026-10-06T08:00:00.000Z | 99 | sha256:${'a'.repeat(64)} | sha256:${'b'.repeat(64)} | 99 | ${head} |\n`;
+  writeFileSync(abs, body, 'utf8');
+  git(dir, ['add', '--', 'docs/evolution-ledger-anchor.md']);
+  git(dir, ['commit', '-q', '-m', 'forged anchor']);
+
+  const replay = runInRepo(dir, ['--anchors']);
+  assert.equal(replay.code, 1, replay.out);
+  assert.match(replay.out, /ANCHOR_ROW_UNREPLAYABLE/);
+});
+
+test('#4c 重写已提交的历史行再 commit ⇒ ANCHOR_ROW_REWRITTEN，且 --anchor 恒绿（v1.0 的盲区）', async () => {
+  const { dir, entries } = await repoWithAnchorRows(2, 2);
+  // 只改第 1 行的 headEntryHash（换成同链上另一条的真摘要 ⇒ 形状合法、内容说谎）
+  const abs = join(dir, 'docs', 'evolution-ledger-anchor.md');
+  const body = readFileSync(abs, 'utf8');
+  const rewritten = body.replace(
+    entries['1'].chain.entryHash,
+    entries['2'].chain.entryHash,
+  );
+  assert.notEqual(rewritten, body, '篡改必须真的落到字节上');
+  writeFileSync(abs, rewritten, 'utf8');
+  git(dir, ['add', '--', 'docs/evolution-ledger-anchor.md']);
+  git(dir, ['commit', '-q', '-m', 'rewrite history']);
+
+  const replay = runInRepo(dir, ['--anchors']);
+  assert.equal(replay.code, 1, replay.out);
+  assert.match(replay.out, /ANCHOR_ROW_REWRITTEN/);
+  // 对照：只看工作区最新行的 --anchor 抓不到（最新行没被动过）
+  const latest = runInRepo(dir, ['--anchor']);
+  assert.equal(latest.code, 0, `对照组应当为绿，否则这条对照断言没有意义：${latest.out}`);
+});
+
+test('#4c 删掉已提交的一行再 commit ⇒ ANCHOR_ROWS_SHRANK（行数单调是追加式的唯一证据）', async () => {
+  const { dir } = await repoWithAnchorRows(2, 2);
+  const abs = join(dir, 'docs', 'evolution-ledger-anchor.md');
+  const lines = readFileSync(abs, 'utf8').split('\n');
+  // 去掉倒数第二条（即第 2 行数据），保留表头
+  const kept = lines.filter((l) => l !== lines[lines.length - 2]).join('\n');
+  writeFileSync(abs, kept, 'utf8');
+  git(dir, ['add', '--', 'docs/evolution-ledger-anchor.md']);
+  git(dir, ['commit', '-q', '-m', 'drop a row']);
+
+  const replay = runInRepo(dir, ['--anchors']);
+  assert.equal(replay.code, 1, replay.out);
+  assert.match(replay.out, /ANCHOR_ROWS_SHRANK/);
+});
+
+test('#4c 一次 commit 塞两行 ⇒ ANCHOR_ROWS_JUMPED（正常锚定每次只加 1 行）', async () => {
+  const { text, entries } = await buildLedgerFile(2);
+  const dir = makeRepo();
+  writeFileSync(join(dir, 'agint_evolution.json'), text, 'utf8');
+  // 两行一次提交：第 1 行 GENESIS，第 2 行的 prevCommit 是形状合法（40 位）但历史里
+  // 不存在的 sha ⇒ 摘要与行序都骗得过单行比对，只有「每次 commit 只加 1 行」的单调性抓得住
+  const body = ANCHOR_HEAD
+    + `${rowFor(entries, 1, 'GENESIS')}\n`
+    + `${rowFor(entries, 2, 'c'.repeat(40))}\n`;
+  commitAnchor(dir, body, 'two rows in one commit');
+
+  const replay = runInRepo(dir, ['--anchors']);
+  assert.equal(replay.code, 1, replay.out);
+  assert.match(replay.out, /ANCHOR_ROWS_JUMPED/);
+});
+

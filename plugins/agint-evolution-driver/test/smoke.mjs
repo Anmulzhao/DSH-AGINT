@@ -67,8 +67,15 @@ function busRecorder(ctx) {
   // input = { topic, source, payload }。2026-09-27 三参数调用被静默丢弃过一轮，
   // 这里按真实签名实现：传错形态 input.topic 会是 undefined，用例立刻变红。
   ctx.services['agint.eventBus.publish'] = async (input) => {
-    out.push({ topic: input?.topic, source: input?.source, payload: input?.payload });
-    return { accepted: typeof input?.topic === 'string' && typeof input?.source === 'string' };
+    const accepted = typeof input?.topic === 'string' && typeof input?.source === 'string';
+    const envelopeId = `env-${out.length + 1}`;
+    out.push({ topic: input?.topic, source: input?.source, payload: input?.payload, envelopeId });
+    // ⛔ 真实 bus 的返回形状（agint-event-bus/lib/bus.js:164-169）：accepted:true 时带
+    // envelopeId。driver 用它填 Ledger 的 references.eventBusIds —— mock 不给就是假契约，
+    // 「链上引用接不上真实事件」这类错永远测不出来。
+    return accepted
+      ? { accepted: true, envelopeId, deliveredTo: [], deadLettered: [] }
+      : { accepted: false };
   };
   return out;
 }
@@ -102,7 +109,43 @@ function fakePopulation() {
     calls,
     ingest: async (input) => {
       calls.push(input);
-      return { variant_id: `v_${calls.length}`, policy_decision: 'PENDING_REVIEW', stage: 'PENDING_REVIEW' };
+      // 形状取自生产副本 agint_population.json 的 variants 行（2026-10-03 实测 7 行）。
+      // ⛔ 别退回 { variant_id, policy_decision, stage } 三字段：Ledger 入链要读
+      // generation（→ GEN-###）与 expected_effect.metric（→ targetMetric），
+      // mock 少给字段就等于把「实时条目写不进去」这条真故障测不出来。
+      return {
+        variant_id: `v_${calls.length}`,
+        mutation_kind: 'PROMPT_MUTATION',
+        generation: 0,
+        expected_effect: { metric: 'unspecified', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW',
+        stage: 'PENDING_REVIEW',
+      };
+    },
+  };
+}
+
+/**
+ * agint.evolution 的契约复刻：真实 provide 里 Ledger 是一个命名空间
+ * （plugins/agint-evolution-memory/lib/index.js:557 `ledger: { append, ... }`），
+ * append 的返回是 `{ entry, idempotent }`（lib/ledger.js:262）。
+ * 这里按同一形状给，并把入链条目留在 `ledger.entries` 供断言。
+ */
+function fakeEvolutionLog({ calls = [], ledgerThrows = null } = {}) {
+  const appended = [];
+  return {
+    appended,
+    addFailure: async (f) => { calls.push(['addFailure', f.pattern]); return { id: 'f1' }; },
+    ledger: {
+      append: async (entry) => {
+        if (ledgerThrows) throw new Error(ledgerThrows);
+        // 幂等键复刻：同 contractId 已有条目 ⇒ 返回既有那条、不新增（§4.3.4 纪律 5）
+        const hit = appended.find((e) => e.contractId === entry.contractId);
+        if (hit) return { entry: hit, idempotent: true };
+        const stored = { ...entry, seq: appended.length + 1 };
+        appended.push(stored);
+        return { entry: stored, idempotent: false };
+      },
     },
   };
 }
@@ -569,12 +612,16 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
       },
       validate: async () => ({ ok: true, findings: [] }),
     };
-    const fakePopulation = { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) };
+    const fakePopulation = {
+      ingest: async () => ({
+        variant_id: 'v1', generation: 2, mutation_kind: 'PROMPT_MUTATION',
+        expected_effect: { metric: 'SUCCESS_RATE', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+      }),
+    };
     const agents = { create: async () => { throw new Error('should not spawn (llm injected)'); } };
     const subagents = { start: async () => { throw new Error('should not spawn (llm injected)'); } };
-    const evolutionLog = {
-      addFailure: async (f) => { calls.push(['addFailure', f.pattern]); return { id: 'f1' }; },
-    };
+    const evolutionLog = fakeEvolutionLog({ calls });
 
     const ctx = makeCtx({
       'agint.evolve': fakeEvolve,
@@ -667,6 +714,37 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
     assert.equal(out.summary.verifyMode, 'syntax:.js');
     assert.equal(out.summary.reverted, false);
     assert.equal(out.summary.proposalId, 'p1');
+
+    // ── §4.3.4 接线（Sprint 22 #10）：AUTO_DEPLOY 必须入链 ────────────────────
+    const appended = evolutionLog.appended;
+    assert.equal(appended.length, 1, 'AUTO_DEPLOY 决策必须写出一条 ledger 条目');
+    const le = appended[0];
+    assert.equal(le.contractId, 'p1', 'contractId 取 proposal.id（幂等键）');
+    assert.equal(le.generation, 'GEN-002', 'generation 由 variant.generation 补零而来');
+    assert.equal(le.summary.decision, 'AUTO_DEPLOY');
+    assert.equal(le.summary.mutationType, 'PROMPT_MUTATION', '取自 proposal.kind（FROZEN 同枚举）');
+    assert.equal(le.summary.targetMetric, 'SUCCESS_RATE', '取自 variant.expected_effect.metric');
+    assert.deepEqual(le.summary.changedPlugins, [],
+      'lib/service.js 不在 plugins/ 下 ⇒ 不硬凑插件名（空数组=如实没有）');
+    assert.ok(le.summary.hypothesisDigest.includes('target=lib-service-js')
+      || le.summary.hypothesisDigest.includes('path='), `摘要要含定位信息：${le.summary.hypothesisDigest}`);
+    // ⛔ 无证据字段必须是 null，不能是"看起来对"的值
+    for (const k of ['predictedDelta', 'actualDelta', 'predictionQuality', 'predictionSource']) {
+      assert.equal(le.summary[k], null, `summary.${k} 无证据 ⇒ null（§4.3.5 规则 3 同源纪律）`);
+    }
+    for (const k of ['contractHash', 'lockEventId', 'mountTicketId', 'abTestId', 'gitCommit']) {
+      assert.equal(le.references[k], null, `references.${k} 无证据 ⇒ null`);
+    }
+    assert.equal(le.references.populationCandidateId, 'v1');
+    assert.equal(le.references.preimagePath, committed.payload.preimagePath,
+      'preimage 路径要能接上事件里那一份');
+    assert.deepEqual(le.references.eventBusIds, [committed.envelopeId],
+      'references.eventBusIds 必须接到真实 envelopeId');
+    assert.equal(le.timestamp, le.timestamp, 'UTC 毫秒串（service 侧 assertUtcMillisIso 把关）');
+    assert.match(le.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal(le.reconstructed, undefined, '实时条目不带 reconstructed ⇒ 由 schema 默认 false');
+    assert.equal(out.summary.ledgerSeq, 1, 'summary 通道要带出 seq（cron 落盘后唯一读得到）');
+    assert.equal(out.summary.ledgerStatus, 'APPENDED');
     // 成功路径不应记录 failure
     assert.equal(calls.some((c) => c[0] === 'addFailure'), false);
   } finally {
@@ -719,7 +797,10 @@ test('T25b: fail-closed —— sandbox/policy 不可用时不写仓库，只发 
   assert.ok(!topics.includes('evolution.mutation.committed'), '未验证不得发 committed');
 });
 
-test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir），且不发 committed', async () => {
+// REJECT 与 ABSTAIN 在 driver 里走**同一条**分支（`decision === 'REJECT' || decision === 'ABSTAIN'`），
+// 但 §4.3.4 末段的承诺是两者都入链 ⇒ 各跑一遍真实 tmpdir 回滚 + 真实入链，不靠"代码同路径"推断。
+for (const rejectedKind of ['REJECT', 'ABSTAIN']) {
+test(`T25c${rejectedKind === 'REJECT' ? '' : '-b'}: policy ${rejectedKind} → 从 preimage 真回滚（v0.2.8 真实 tmpdir），不发 committed，且必须入链`, async () => {
   // v0.2.8 改真实磁盘：v0.2.7 用虚拟 fs 时"回滚成功"只是断言了返回值，
   // 并没有证明文件真的被还原。这里跑真文件，真回滚。
   const ORIGINAL = "export const greeting = 'hello world';\n";
@@ -735,13 +816,17 @@ test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir）�
       propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
       validate: async () => ({ ok: true, findings: [] }),
     };
-    const evolutionLog = {
-      addFailure: async (f) => { calls.push(['addFailure', f.pattern]); return { id: 'f1' }; },
-    };
+    const evolutionLog = fakeEvolutionLog({ calls });
     const ctx = makeCtx({
       'agint.evolve': fakeEvolve,
       'agint.mutator': fakeMutator,
-      'agint.population': { ingest: async () => ({ variant_id: 'v1', policy_decision: 'ALLOW', stage: 'shadow' }) },
+      'agint.population': {
+        ingest: async () => ({
+          variant_id: 'v1', generation: 1, mutation_kind: 'PROMPT_MUTATION',
+          expected_effect: { metric: 'SUCCESS_RATE', direction: 'increase', window: '7d' },
+          policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+        }),
+      },
       'agint.evolution': evolutionLog,
       agents: { create: async () => { throw new Error('no spawn'); } },
       subagents: { start: async () => { throw new Error('no spawn'); } },
@@ -754,7 +839,7 @@ test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir）�
         // 语法检查会通过（改后仍是合法 JS），拒它的只能是 policy —— 这才能证明
         // 「policy 决策 -> 回滚」这条链本身是通的，而不是被验证失败顺手拦下的。
         sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
-        policy: { decide: async () => ({ kind: 'REJECT', reason: 'veto' }) },
+        policy: { decide: async () => ({ kind: rejectedKind, reason: 'veto' }) },
         evolution: evolutionLog,
         llm: async () => ({
           ok: true,
@@ -768,7 +853,7 @@ test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir）�
     assert.ok(!topics.includes('evolution.mutation.committed'), '被拒不得发 committed');
     assert.ok(topics.includes('evolution.mutation.rolledback'), '必须发 rolledback 留痕');
     const rb = events.find((e) => e.topic === 'evolution.mutation.rolledback');
-    assert.equal(rb.payload.policyDecision, 'REJECT');
+    assert.equal(rb.payload.policyDecision, rejectedKind);
     assert.equal(rb.payload.sandboxOk, true, '语法检查是通过的 —— 拒它的只能是 policy');
     assert.equal(rb.payload.reverted, true, '必须回滚成功');
     // ⭐ v0.2.8 真正的回滚断言：磁盘内容必须与改动前逐字节一致
@@ -783,15 +868,32 @@ test('T25c: policy REJECT → 从 preimage 真回滚（v0.2.8 真实 tmpdir）�
     assert.equal(failure[1], 'evolution-commit-rejected:policy');
     // ⭐ v0.2.10：被拒路径的 summary 同样要带出决策与回滚结果 ——
     // 「被拒了」必须能在重启后查成「被 policy 以某理由拒，且已回滚成功」。
-    assert.equal(out.summary.policyDecision, 'REJECT');
+    assert.equal(out.summary.policyDecision, rejectedKind);
     assert.equal(out.summary.policyReason, 'veto', 'policy 的 reason 也要落盘');
     assert.equal(out.summary.reverted, true);
     assert.equal(out.summary.verifyOk, true, '语法检查是通过的 —— 拒它的是 policy，摘要里要能看出这一点');
     assert.equal(out.summary.verifyMode, 'syntax:.js');
+
+    // ── §4.3.4 接线（Sprint 22 #10）：REJECT / ABSTAIN 同样必须入链 ──────────
+    // Ledger 记的是「进化发生过什么」，不是「进化成功过什么」。只记 AUTO_DEPLOY
+    // 就等于在证据层把被拒的历史重新美化一遍（§4.3.4 末段）。
+    assert.equal(evolutionLog.appended.length, 1, `${rejectedKind} 也必须写出一条 ledger 条目`);
+    const le = evolutionLog.appended[0];
+    assert.equal(le.summary.decision, rejectedKind);
+    assert.equal(le.contractId, 'p1');
+    assert.equal(le.generation, 'GEN-001');
+    assert.ok(le.summary.hypothesisDigest.includes('exec=reverted'),
+      `回滚结果必须固化进摘要（哈希保护）：${le.summary.hypothesisDigest}`);
+    assert.deepEqual(le.references.eventBusIds, [rb.envelopeId]);
+    assert.equal(out.summary.ledgerStatus, 'APPENDED');
+    // 被拒路径本就该记一条 commit-rejected failure；ledger 写入成功 ⇒ 不能再多一条
+    assert.equal(calls.filter((c) => c[0] === 'addFailure'
+      && String(c[1]).startsWith('evolution-ledger-')).length, 0, 'ledger 写入成功时不该记 ledger 失败');
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }
 });
+}
 
 // ── v0.2.8：验证器与留痕的单元测试 ─────────────────────────────────────
 

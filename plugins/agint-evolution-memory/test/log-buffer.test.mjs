@@ -59,6 +59,25 @@ test('计数触发 flush（≥10 条立即 flush）', async () => {
   const stored = (await storage.table('evolution_log')).entries();
   assert.equal(stored.length, 10, '≥10 条立即 flush 应全部落盘');
   assert.equal(buf._size(), 0, 'flush 后 buffer 应清空');
+  await buf.shutdown();
+});
+
+test('flush 之后不空挂定时器（进程不该被 flushMs 拖住）', async () => {
+  // 实测教训：log-buffer.test.mjs 曾经单文件跑 60s —— 定时器 flush 完不撤销，
+  // 进程就一直等那条已经没意义的 60_000ms 定时器。这条断言把它钉住。
+  const storage = makeMockStorage();
+  const mem = makeMockMemory();
+  const buf = createLogBuffer({ storage, memFallback: mem, flushCount: 2, flushMs: 60_000 });
+  buf.enqueue({ id: 'a', kind: 'evolution-log', targetId: 't', targetKind: 'plugin', decision: 'OK' });
+  assert.equal(buf._hasTimer(), true, '未满计数前定时器应 armed');
+  buf.enqueue({ id: 'b', kind: 'evolution-log', targetId: 't', targetKind: 'plugin', decision: 'OK' });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(buf._size(), 0, '计数 flush 应已完成');
+  assert.equal(buf._hasTimer(), false, 'flush 完必须撤定时器（下一次 enqueue 再 arm）');
+  buf.enqueue({ id: 'c', kind: 'evolution-log', targetId: 't', targetKind: 'plugin', decision: 'OK' });
+  assert.equal(buf._hasTimer(), true, '重新入队要重新 arm，否则条目会一直躺着不落盘');
+  await buf.shutdown();
 });
 
 test('时间触发 flush（5s 定时器；用 flushMs=50 加速）', async () => {
@@ -106,6 +125,7 @@ test('readMerged: buffer 在前 + storage 合并去重', async () => {
   assert.equal(merged.length, 2, 'stored-1 去重 + buffer-2 新增');
   assert.equal(merged[0].id, 'stored-1');
   assert.equal(merged[0].evidence, 'from-buffer-overwrite');
+  await buf.shutdown();
 });
 
 test('readMerged with query: 子串过滤', async () => {
@@ -118,6 +138,7 @@ test('readMerged with query: 子串过滤', async () => {
   const r = await buf.readMerged('plugin-static');
   assert.equal(r.length, 1);
   assert.equal(r[0].id, 'a');
+  await buf.shutdown();
 });
 
 test('shutdown 强制 flush + 清理 timer', async () => {

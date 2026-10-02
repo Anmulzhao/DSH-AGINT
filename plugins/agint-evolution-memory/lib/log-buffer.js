@@ -57,6 +57,11 @@ export function createLogBuffer({ storage, memFallback, flushCount = DEFAULT_FLU
   async function doFlush(reason = 'manual') {
     if (flushing) return flushing;
     if (buffer.length === 0) return { flushed: 0, lost: 0 };
+    // 定时器存在的唯一理由是「别让已入队的条目等太久」。
+    // 批已被取空 ⇒ 没有待办 ⇒ 句柄必须撤掉，否则一次计数 flush 之后
+    // 那条 flushMs 定时器还在空挂（生产 flushMs=5s 无所谓，但测试与
+    // 一次性进程里它就是把进程拖满 5s/60s 的元凶）。下一次 enqueue 会重新 arm。
+    if (timer) { clearTimeout(timer); timer = null; }
 
     flushing = (async () => {
       const batch = buffer.splice(0, buffer.length);
@@ -121,5 +126,5 @@ export function createLogBuffer({ storage, memFallback, flushCount = DEFAULT_FLU
     return doFlush('shutdown');
   }
 
-  return { enqueue, flush: doFlush, readMerged, shutdown, _size: () => buffer.length };
+  return { enqueue, flush: doFlush, readMerged, shutdown, _size: () => buffer.length, _hasTimer: () => timer !== null };
 }
