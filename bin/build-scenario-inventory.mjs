@@ -511,7 +511,12 @@ function build() {
       deltaExplanations.push(
         `PASS：实测 ${measured.pass} vs 声称 ${CLAIMED.pass}（${passDelta > 0 ? '+' : ''}${passDelta}）；`,
         `FAIL：实测 ${measured.fail} vs 声称 ${CLAIMED.fail}（${failDelta > 0 ? '+' : ''}${failDelta}）。`,
-        '存量 fail 由 12 降至实测值，说明部分 fail 已被修复；另有一部分口径变化来自单元总数增长。',
+        // ⚠️ 这句话曾经是「说明部分 fail 已被修复」—— 与同一份 JSON 里
+        // failSetReconciliation 的严谨算术自相矛盾（旧文案没跟着 10-02 的差集对账更新）。
+        // 「部分已修复」是拿不出对象的话术：它无法回答 H1 配额的对象是谁。
+        // 权威表述见 failSetReconciliation.arithmetic：F = 8 + R ⇒ 至少 8 个旧 fail 已修复，
+        // 另有 R ∈ [0,4] 个旧单元回归，R 因旧名单未留存无法确定。净变化 −7 = −8 + 1（新增 s12-05）。
+        '⇒ 12 → 5 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。',
         '⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。',
       );
     }

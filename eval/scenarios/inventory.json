@@ -1,6 +1,6 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-02T11:23:45.847Z",
+  "generatedAt": "2026-10-02T13:14:01.060Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
   "driverVersion": "e8c75cd3e198a5c5415d03d468ccc2eb432ab409",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
@@ -2290,7 +2290,7 @@
     "measuredPass": 118,
     "measuredFail": 5,
     "delta": 19,
-    "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 118 vs 声称 92（+26）；\nFAIL：实测 5 vs 声称 12（-7）。\n存量 fail 由 12 降至实测值，说明部分 fail 已被修复；另有一部分口径变化来自单元总数增长。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
+    "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 118 vs 声称 92（+26）；\nFAIL：实测 5 vs 声称 12（-7）。\n⇒ 12 → 5 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
     "driverSummaryLine": "118 passed, 5 failed, 0 skipped (of 123)",
     "failSetReconciliation": {
       "method": "1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。\n2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。\n3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。\n4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。",
