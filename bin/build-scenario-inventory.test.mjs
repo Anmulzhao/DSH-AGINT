@@ -90,8 +90,47 @@ test('dedicated 单元不在计量范围内，但被如实记录（不静默丢�
   assert.equal(inventory.dedicatedUnits.count, inventory.dedicatedUnits.units.length);
 });
 
-test('scope 段必须声明 dedicated 归属是待拍板事项（附录 C.2 第 9 项）', () => {
-  assert.match(inventory.scope.dedicatedDecisionPending, /C\.2|拍板/);
+test('★ dedicated 单元粒度 = runner 的实际执行粒度（不是「一个文件一个单元」）', () => {
+  const d = inventory.dedicatedUnits;
+  // 旧版按文件计数 ⇒ 2 个单元且 unitId 全是 "( unnamed )"。
+  // 实测两个 runner 的取数：mutator 19 场景 / counterfactual 10 fixture。
+  assert.equal(d.count, 29, `dedicated 应为 29 个可执行单元，实得 ${d.count}`);
+  assert.equal(d.fileCount, 2);
+  assert.equal(
+    d.units.filter((u) => u.unitKind === 'fixture').length,
+    10,
+    'counterfactual 的 10 条 fixture 粒度不对',
+  );
+  assert.equal(
+    d.units.filter((u) => u.unitKind === 'scenario').length,
+    19,
+    'mutator 的 19 个场景粒度不对',
+  );
+});
+
+test('★ 每个 dedicated 单元都有可唯一标识的 unitId（不得再出现 unnamed）', () => {
+  for (const u of inventory.dedicatedUnits.units) {
+    assert.ok(u.unitId && !u.unitId.includes('unnamed'), `unitId 无效：${u.unitId}`);
+    assert.match(u.unitId, /\//, 'unitId 应带文件归属前缀，否则分层/导出时丢上下文');
+    assert.ok(u.executedBy, `${u.unitId} 未标注由哪个 runner 执行`);
+  }
+});
+
+test('★ 口径边界已拍板并写入清单：123 = driver 口径，dedicated 不进分母', () => {
+  assert.match(inventory.scope.dedicatedDecision, /维持独立 runner/);
+  assert.match(inventory.scope.dedicatedDecision, /UNKNOWN/);
+  assert.match(inventory.scope.included, /123/);
+  // 边界句必须写进 unitScope（定义旁边），否则 123/125 会在不同文档里混用
+  assert.match(inventory.unitScope, /123（driver 口径）/);
+  assert.match(inventory.unitScope, /29 个可执行单元/);
+  assert.match(inventory.unitScope, /反转条件/);
+});
+
+test('口径自洽：dedicated 单元不得出现在计量总数里', () => {
+  assert.equal(inventory.summary.totalUnits, 123);
+  const inScope = inventory.units.some((u) => u.sourceFile.includes('/dedicated/'));
+  assert.equal(inScope, false, 'dedicated 单元混进了 driver 计量范围');
+  assert.equal(inventory.dedicatedUnits.count, inventory.dedicatedUnits.units.length);
 });
 
 // ── domain 归类（设计 §2.2.3）──────────────────────────────────────────────
@@ -129,6 +168,48 @@ test('脚本本身零第三方依赖：import 只允许 node:* 或相对路径',
       `第三方/裸包名 import: ${spec}`,
     );
   }
+});
+
+// ── FAIL 差集对账（用户要求：12 → 5 的 −7 必须逐项溯源）─────────────────────
+// ⚠️ 这一组必须读**完整模式的入仓清单**：上面 `inventory` 是 --static-only 产物，
+// lastKnownStatus 全为 UNKNOWN，拿它比对 FAIL 集合会永远得到空集（假绿）。
+const REPO_INVENTORY = JSON.parse(
+  readFileSync(join(REPO_ROOT, 'eval', 'scenarios', 'inventory.json'), 'utf8'),
+);
+test('★ FAIL 差集对账已落盘，且排除「改名/删除导致静默失忆」', () => {
+  const r = REPO_INVENTORY.reconciliation?.failSetReconciliation;
+  assert.ok(r, '缺少 failSetReconciliation 段 —— 12→5 的 −7 不能被一句「部分已修复」带过');
+  assert.equal(REPO_INVENTORY.reconciliation.measuredBy, 'driver.js 全量回归实测', '入仓清单必须是完整模式产物');
+  assert.equal(r.confirmed.renamedOrRemoved, 0, '若有改名/删除，说明我们丢掉过已知问题的追踪');
+  assert.match(r.irreducible, /从未被任何 artifact 记录/, '必须写明无法逐项复原的原因');
+  assert.match(r.method, /worktree/);
+});
+
+test('对账结论与当前实测 FAIL 集合自洽（防止日后漂移）', () => {
+  const r = REPO_INVENTORY.reconciliation.failSetReconciliation;
+  const actualFails = REPO_INVENTORY.units
+    .filter((u) => u.lastKnownStatus === 'FAIL')
+    .map((u) => u.unitId)
+    .sort();
+  const claimed = [
+    ...r.confirmed.currentlyFailingThatExistedThen,
+    ...r.confirmed.currentlyFailingThatAreNew,
+  ].sort();
+  assert.deepEqual(
+    actualFails,
+    claimed,
+    `对账里登记的 FAIL 与实测不符：\n实测 ${JSON.stringify(actualFails)}\n登记 ${JSON.stringify(claimed)}`,
+  );
+});
+
+test('对账必须声明 remediation：本清单即首个持久化的 fail 名单', () => {
+  const r = REPO_INVENTORY.reconciliation.failSetReconciliation;
+  assert.match(r.remediation, /持久化/);
+  // 且 attribution.pendingUnits 必须真的列出当前 fail
+  assert.deepEqual(
+    [...REPO_INVENTORY.attribution.pendingUnits].sort(),
+    REPO_INVENTORY.units.filter((u) => u.lastKnownStatus === 'FAIL').map((u) => u.unitId).sort(),
+  );
 });
 
 test('对账口径：声称值 104/92/12 必须与文档一致，不得被悄悄改写', () => {

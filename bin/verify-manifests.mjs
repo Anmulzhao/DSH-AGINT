@@ -15,9 +15,19 @@
  *   因此 name / main 以 manifest 为准；version 谁是权威**没有文档定义**
  *   （实测 34 个插件里 14 个两边不一致），故 version 漂移只报不拦，等定权威源。
  *
+ * 挂载声明才是「谁需要 manifest」的判据（2026-10-02 修订，修掉 3 处误报）：
+ *   旧版对 plugins/* 做 glob，凡目录无 manifest.json 一律报警。实测 3 处全是误报 ——
+ *     · agint-quality        是嵌套父容器，patch 里挂的是它的子模块，父目录本就不该有 manifest
+ *     · agint-search-tools   在 cordis.patch.yml 里完全没有挂载声明
+ *     · agint-session-extract 同上
+ *   挂载脚本（agint-mount.sh）只处理 patch 里声明过的条目，所以**没被声明的目录缺 manifest
+ *   不是风险**。改为从 cordis.patch.yml 的 `name: ./plugins/...` 行反查真实挂载集合，
+ *   与 v0.9.0 的 4d 冒烟门禁同一思路：条目来源必须是 patch 里的真实声明，不是目录 glob。
+ *   ⚠️ 正则必须锚定行首：patch 里存在被注释掉的条目（`# - id: agint-quality-report`），
+ *      不锚定会把注释行当成真挂载（实测会多算 1 条）。
+ *
  * 分档原则（为什么不一律 FAIL）：
- *   实测当前有 26 处不一致，其中 14 处是 version 漂移、8 处是声明了却不存在的文件。
- *   一刀切 FAIL ⇒ 门禁第一天就红 26 处 ⇒ 没人会去修，只会学会绕过它。
+ *   修订后实测 22 处不一致：14 处 version 漂移、8 处声明了却不存在的文件。
  *   ⚠️ 一个一上来就红的门禁比没有门禁更糟：它训练人忽略红灯。
  *   所以：破坏性的（name / main 指错）设 ERROR 默认拦；
  *        漂移性的设 WARN，`--strict` 才升级为失败（对齐 check-wiring 的 --strict 惯例）。
@@ -56,6 +66,60 @@ const DECLARED_PATH_FIELDS = [
   ['spec.tests.entry', (s) => s?.tests?.entry],
 ];
 
+const PATCH_FILE = join(REPO_ROOT, 'cordis.patch.yml');
+
+/**
+ * 从 cordis.patch.yml 反查「真正被挂载的插件目录」。
+ *
+ * 为什么不用目录 glob：见文件头注释。核心是挂载脚本只处理 patch 里声明过的条目。
+ *
+ * 目录归属的判定：条目形如 `./plugins/<dir>/<...>/lib/index.js`，但 `<...>` 有多深
+ * 无法从字符串推断（顶层插件是 `X/lib/index.js`，quality 子模块是
+ * `agint-quality/agint-quality-contract/lib/index.js`）。
+ * 判据 = **最深的那层含有 manifest.json 或 package.json 的目录** —— 那才是插件根。
+ * 两个实侧都成立：agint-memory/lib 无 manifest ⇒ 归到 agint-memory；
+ * agint-quality/agint-quality-contract 有 package.json ⇒ 归到子模块而非父容器。
+ *
+ * @returns {{ok: boolean, reason?: string, dirs: Set<string>, entries: number}}
+ */
+export function loadMountedPluginDirs() {
+  if (!existsSync(PATCH_FILE)) {
+    return { ok: false, reason: `找不到 ${PATCH_FILE}`, dirs: new Set(), entries: 0 };
+  }
+  let yml;
+  try {
+    yml = readFileSync(PATCH_FILE, 'utf8');
+  } catch (e) {
+    return { ok: false, reason: `读取失败：${e?.message || e}`, dirs: new Set(), entries: 0 };
+  }
+  // ⚠️ 锚定行首：patch 里存在被注释掉的挂载条目，不锚定会误算进来。
+  const specs = [
+    ...new Set(
+      [...yml.matchAll(/^\s*name:\s*['"]?(\.\/plugins\/[^'"\s]+)['"]?\s*$/gm)].map((m) => m[1]),
+    ),
+  ];
+  const dirs = new Set();
+  for (const spec of specs) {
+    const parts = spec.replace(/^\.\/plugins\//, '').split('/');
+    let picked = parts[0];
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const cand = parts.slice(0, i).join('/');
+      if (
+        existsSync(join(PLUGINS_DIR, cand, 'manifest.json')) ||
+        existsSync(join(PLUGINS_DIR, cand, 'package.json'))
+      ) {
+        picked = cand;
+        break;
+      }
+    }
+    dirs.add(picked);
+  }
+  if (dirs.size === 0) {
+    return { ok: false, reason: 'patch 里未解析出任何 ./plugins/ 挂载条目', dirs, entries: specs.length };
+  }
+  return { ok: true, dirs, entries: specs.length };
+}
+
 function readJsonSafe(path) {
   try {
     return { ok: true, value: JSON.parse(readFileSync(path, 'utf8')) };
@@ -77,28 +141,44 @@ function normalizeMain(v) {
  *
  * @param {string} pluginDir 插件目录绝对路径
  * @param {string} dirName   目录名（用于 name 一致性比对）
+ * @param {{mounted?: boolean}} opts
+ *        mounted = 该目录是否在 cordis.patch.yml 里被声明挂载。
+ *        默认 true（拿不到挂载声明时退化为「都当作已挂载」，保守不漏报）。
+ *        只有 mounted 时缺 manifest 才算 ERROR —— 未挂载的目录挂载脚本根本不读。
  */
-export function checkPlugin(pluginDir, dirName) {
+export function checkPlugin(pluginDir, dirName, opts = {}) {
+  const mounted = opts.mounted !== false;
   const errors = [];
   const warnings = [];
+  const notes = [];
   const mPath = join(pluginDir, 'manifest.json');
   const pPath = join(pluginDir, 'package.json');
   const hasM = existsSync(mPath);
   const hasP = existsSync(pPath);
 
   if (!hasM) {
-    warnings.push({
-      plugin: dirName,
-      kind: 'MANIFEST_MISSING',
-      detail: '无 manifest.json —— 挂载脚本（bin/agint-mount.sh:99）会直接 fail',
-    });
-    return { errors, warnings, hasManifest: false, hasPackage: hasP };
+    if (mounted) {
+      // ERROR：被声明挂载却无 manifest ⇒ 挂载脚本读不到 .name/.main 直接 fail。
+      // 该类在真实仓库当前为 0 处（3 处旧报全是误报），所以升级不引入新红灯。
+      errors.push({
+        plugin: dirName,
+        kind: 'MANIFEST_MISSING',
+        detail: '已挂载但无 manifest.json —— 挂载脚本（bin/agint-mount.sh:99）会直接 fail',
+      });
+    } else {
+      notes.push({
+        plugin: dirName,
+        kind: 'NOT_MOUNTED_NO_MANIFEST',
+        detail: 'cordis.patch.yml 无挂载声明，且无 manifest.json —— 挂载脚本不读它，不校验',
+      });
+    }
+    return { errors, warnings, notes, hasManifest: false, hasPackage: hasP, mounted };
   }
 
   const mr = readJsonSafe(mPath);
   if (!mr.ok) {
     errors.push({ plugin: dirName, kind: 'MANIFEST_UNPARSEABLE', detail: mr.error });
-    return { errors, warnings, hasManifest: true, hasPackage: hasP };
+    return { errors, warnings, notes, hasManifest: true, hasPackage: hasP, mounted };
   }
   const m = mr.value;
 
@@ -173,7 +253,7 @@ export function checkPlugin(pluginDir, dirName) {
     }
   }
 
-  return { errors, warnings, hasManifest: true, hasPackage: hasP };
+  return { errors, warnings, notes, hasManifest: true, hasPackage: hasP, mounted };
 }
 
 function main() {
@@ -187,28 +267,68 @@ function main() {
     .map((e) => e.name)
     .sort();
 
+  const mount = loadMountedPluginDirs();
+  // 拿不到挂载声明时退化：全部按「已挂载」校验（宁可多报，不可漏报），并显式告警。
+  const mountKnown = mount.ok;
+
   const errors = [];
   const warnings = [];
-  const stats = { plugins: dirs.length, withManifest: 0, withPackage: 0 };
+  const notes = [];
+  const stats = { plugins: dirs.length, withManifest: 0, withPackage: 0, mounted: 0, notMounted: 0 };
 
   for (const dir of dirs) {
-    const r = checkPlugin(join(PLUGINS_DIR, dir), dir);
+    const isMounted = mountKnown ? mount.dirs.has(dir) : true;
+    if (isMounted) stats.mounted++;
+    else stats.notMounted++;
+    const r = checkPlugin(join(PLUGINS_DIR, dir), dir, { mounted: isMounted });
     if (r.hasManifest) stats.withManifest++;
     if (r.hasPackage) stats.withPackage++;
     errors.push(...r.errors);
     warnings.push(...r.warnings);
+    notes.push(...r.notes);
+  }
+
+  // 嵌套挂载目录（如 agint-quality/agint-quality-contract）不在顶层 glob 范围内。
+  // ⛔ 已知覆盖缺口，显式列出而不是假装没看见 —— 见下方输出说明。
+  const uncovered = mountKnown
+    ? [...mount.dirs].filter((d) => d.includes('/')).sort()
+    : [];
+
+  if (!mountKnown) {
+    warnings.push({
+      plugin: '(全局)',
+      kind: 'MOUNT_SOURCE_UNREADABLE',
+      detail: `无法从 cordis.patch.yml 解析挂载集合（${mount.reason}）—— 已退化为「全部按已挂载校验」，可能多报`,
+    });
   }
 
   const failed = errors.length > 0 || (STRICT && warnings.length > 0);
 
   if (AS_JSON) {
     console.log(
-      JSON.stringify({ stats, errors, warnings, strict: STRICT, failed }, null, 2),
+      JSON.stringify(
+        {
+          stats,
+          mountSource: { file: 'cordis.patch.yml', ok: mountKnown, entries: mount.entries, reason: mount.reason },
+          uncoveredNestedMounts: uncovered,
+          errors,
+          warnings,
+          notes,
+          strict: STRICT,
+          failed,
+        },
+        null,
+        2,
+      ),
     );
   } else {
     console.log(
       `[verify-manifests] 扫描 ${stats.plugins} 个插件目录` +
         `（manifest ${stats.withManifest} / package ${stats.withPackage}）`,
+    );
+    console.log(
+      `  挂载判据：cordis.patch.yml ${mountKnown ? `${mount.entries} 条声明 → ${mount.dirs.size} 个插件目录` : `不可用（${mount.reason}）`}` +
+        ` · 顶层已挂载 ${stats.mounted} / 未挂载 ${stats.notMounted}`,
     );
     console.log(`  ERROR ${errors.length} 处 · WARN ${warnings.length} 处` + (STRICT ? ' · --strict' : ''));
 
@@ -219,6 +339,19 @@ function main() {
     if (warnings.length > 0) {
       console.log(`\n  ⚠️ WARN（${STRICT ? 'strict 模式下计为失败' : '默认不拦，--strict 才拦'}）:`);
       for (const w of warnings) console.log(`     [${w.plugin}] ${w.kind}: ${w.detail}`);
+    }
+    if (notes.length > 0) {
+      console.log(`\n  · 不校验（未挂载，非问题）:`);
+      for (const n of notes) console.log(`     [${n.plugin}] ${n.detail}`);
+    }
+    if (uncovered.length > 0) {
+      console.log(
+        `\n  ⚠️ 覆盖缺口：以下 ${uncovered.length} 个已挂载插件位于嵌套目录，不在本次顶层扫描范围内：`,
+      );
+      for (const d of uncovered) console.log(`     ${d}`);
+      console.log(
+        `     （纳入需先修 checkPlugin 的 name 比对：它拿全路径比 manifest.name，嵌套目录会误报 NAME_DIR_MISMATCH）`,
+      );
     }
     if (errors.length === 0 && warnings.length === 0) {
       console.log('\n  ✓ 全部一致');

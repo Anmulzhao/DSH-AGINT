@@ -41,7 +41,7 @@
  */
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -54,9 +54,101 @@ const DRIVER_PATH = join(SCENARIOS_DIR, 'driver.js');
 
 const INVENTORY_VERSION = '1.0';
 
-/** 设计 §2.2.1 的计量单位定义，原样写入 inventory.json。 */
+/**
+ * 设计 §2.2.1 的计量单位定义 + Sprint 18 拍板确认的**范围边界**（附录 C.2 第 9 项）。
+ *
+ * 边界为什么必须写进定义本身：口径一旦不写清，123 与 125 会在不同文档里混用，
+ * 通过率就会变成不可比较的量。此处是唯一权威表述。
+ */
 const UNIT_DEFINITION =
   'driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元';
+
+/**
+ * FAIL 差集对账（实测方法与结论，2026-10-02）。
+ *
+ * ⚠️ 关键方法论警示：拿旧 commit 重跑 driver **不能**复原历史 fail 名单 ——
+ * 实测在 b6a14f7（2026-08-28）跑出 13 passed / 91 failed (of 104)，
+ * 因为旧 plugin 代码配当前 dsh 运行时会大面积不兼容。那是环境污染值，不是历史真值。
+ */
+const FAIL_RECON = {
+  method: [
+    '1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。',
+    '2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。',
+    '3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。',
+    '4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。',
+  ].join('\n'),
+
+  confirmed: {
+    renamedOrRemoved: 0,
+    renamedOrRemovedNote:
+      '旧时点 102 个具名单元**全部**仍以同名存在于当前 driver 口径 ⇒ ' +
+      '排除「因重构/改名而消失导致静默失忆」这一分支。这是本次对账最关键的结论。',
+    addedUnits: 21,
+    addedNote: '123 − 102 = 21 个新增具名单元（总数差 +19 = 21 新增 − 2 个 dedicated 文件移出扫描范围）。',
+    currentlyFailingThatExistedThen: [
+      'cron-default-jobs-registered',
+      'service-annotations-table-full-throws',
+      'policy-decide-clean-results-pending-or-deploy',
+      'sprint6-cron-job-prompt-static-check-registered',
+    ],
+    currentlyFailingThatAreNew: ['s12-05-policy-policy-deployed-rolledback-shadow'],
+    newFailNote: '该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。',
+  },
+
+  arithmetic:
+    '设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。' +
+    '当前失败的旧单元数 4 = (12 − F) + R ⇒ F = 8 + R。' +
+    '⇒ **至少 8 个旧 fail 已被修复**；另有 R ∈ [0,4] 个旧单元发生回归（无法确定，因名单未留存）。' +
+    '净变化 −7 = −8（修复）+ 1（新增 s12-05），与 12 → 5 自洽。',
+
+  candidates: {
+    note:
+      '旧时点即存在、且单元内容此后被改过的只有 5 个。其中 3 个现已 PASS —— ' +
+      '它们是最可能「由 FAIL 转 PASS」的对象（改测试或改代码都可能）。',
+    changedAndNowPass: [
+      'sandbox-falls-back-when-ctx-sandbox-missing',
+      'sandbox-gate-passes-when-sandbox-ok',
+      'sandbox-gate-skipped-when-no-sandbox-service',
+    ],
+    changedAndStillFail: [
+      'cron-default-jobs-registered',
+      'sprint6-cron-job-prompt-static-check-registered',
+    ],
+    changedAndStillFailNote:
+      '这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。',
+    untouchedAndNowPass: 95,
+    untouchedNote:
+      '其余 97 个旧单元内容从未改动，其中 95 个现为 PASS ⇒ 若旧 fail 在其中，' +
+      '是被 plugin 代码修复（不是靠改测试），属于真正的修复。',
+  },
+
+  irreducible:
+    '⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，' +
+    '仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。' +
+    '这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。',
+
+  remediation:
+    '本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，' +
+    '且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。',
+};
+
+/** 范围边界句，与 UNIT_DEFINITION 一并写入 inventory.json。 */
+const UNIT_SCOPE = [
+  '计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。',
+  '权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— ' +
+    '它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），' +
+    '在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。',
+  'dedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），' +
+    '不进任何分层、配额与通过率分母。',
+  '反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，' +
+    '则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。' +
+    '⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；' +
+    '按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 ' +
+    'docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。' +
+    '两者不可混用。',
+  '注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / ' +
+    'deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。',
+].join('\n');
 
 /**
  * 设计 §2.2.3 的 domain 归类表（按**文件前缀**匹配，自上而下首个命中生效）。
@@ -226,6 +318,57 @@ function runDriver() {
   return { statuses, summary, raw };
 }
 
+/**
+ * dedicated 单元的取数方式必须与**各文件自己的 runner** 一致，否则清单里的单元
+ * 与实际被执行的东西不是一回事。实测两个 runner 的取数：
+ *   eval/run-mutator-eval.mjs:37        parsed.scenarios（19 条）
+ *   eval/run-counterfactual-stress.mjs:40 parsed.fixtures（10 条）
+ * 两者都是「对象包数组」而非顶层数组 —— 旧版 parseUnits 把整个文件当成 1 个单元，
+ * 于是 2 个文件被记成 2 个单元（unitId 全是 "( unnamed )"），与真实执行粒度不符。
+ */
+function parseDedicatedUnits(absPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(absPath, 'utf8'));
+  } catch (e) {
+    fail(`场景文件 JSON 解析失败：${absPath} — ${e.message}`);
+  }
+  if (Array.isArray(parsed)) return parsed.map((u) => ({ unit: u, unitKind: 'scenario' }));
+  if (Array.isArray(parsed?.scenarios))
+    return parsed.scenarios.map((u) => ({ unit: u, unitKind: 'scenario' }));
+  if (Array.isArray(parsed?.fixtures))
+    return parsed.fixtures.map((u) => ({ unit: u, unitKind: 'fixture' }));
+  return [{ unit: parsed, unitKind: 'file' }];
+}
+
+/**
+ * dedicated 文件 → 由哪个专属 runner 执行。
+ * 从 runner 源码里反查（而不是写死映射表）：新增文件只要 README 登记 + runner 引用，
+ * 这里自动跟上；反之只改 README 没写 runner，这里会如实报 null。
+ */
+function loadDedicatedRunners() {
+  const map = new Map();
+  const evalDir = join(REPO_ROOT, 'eval');
+  let files = [];
+  try {
+    files = readdirSync(evalDir).filter((f) => f.endsWith('.mjs'));
+  } catch {
+    return map;
+  }
+  for (const f of files) {
+    let src;
+    try {
+      src = readFileSync(join(evalDir, f), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const m of src.matchAll(/scenarios[\\/]dedicated[\\/]([A-Za-z0-9._-]+\.json)/g)) {
+      map.set(m[1], `eval/${f}`);
+    }
+  }
+  return map;
+}
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 function build() {
   const allFiles = collectFiles(SCENARIOS_DIR);
@@ -271,14 +414,30 @@ function build() {
   }
 
   const dedicatedUnits = [];
+  const runnerMap = loadDedicatedRunners();
   for (const f of dedicatedFiles) {
-    for (const u of parseUnits(f.abs)) {
+    const stem = basename(f.rel, '.scenario.json');
+    for (const { unit: u, unitKind } of parseDedicatedUnits(f.abs)) {
+      // unitId 必须全局唯一且稳定：不带前缀时 counterfactual 的 fix-N 与
+      // mutator 的 scenario 名虽不冲突，但无法一眼看出归属哪个文件 / runner，
+      // 分层与导出时会丢上下文。故用 "<文件 stem>/<单元名>"。
+      const name = typeof u?.scenario === 'string' ? u.scenario : u?.id;
+      if (typeof name !== 'string' || name === '') {
+        fail(`dedicated 单元缺少稳定的 scenario/id 名称，无法唯一标识：${f.rel}`);
+      }
+      const unitId = `${stem}/${name}`;
+      if (unitIds.has(unitId)) {
+        fail(`unitId 重复：${unitId}（出现在 ${f.rel}）—— 违反验收项 2 的唯一性断言`);
+      }
+      unitIds.add(unitId);
       dedicatedUnits.push({
-        unitId: u.scenario ?? '( unnamed )',
+        unitId,
         sourceFile: f.rel,
         plugin: u.plugin ?? null,
         domain: classifyDomain(f.rel),
         kind: 'dedicated',
+        unitKind,
+        executedBy: runnerMap.get(basename(f.rel)) ?? null,
         lastKnownStatus: 'UNKNOWN',
         failCategory: null,
         contentHash: canonicalHash(u, { prefix: true }),
@@ -364,12 +523,20 @@ function build() {
     generatedBy: 'bin/build-scenario-inventory.mjs',
     driverVersion: gitBlobHash(DRIVER_PATH),
     unitDefinition: UNIT_DEFINITION,
+    unitScope: UNIT_SCOPE,
     // 计量范围声明：明确写出什么是范围内、什么是范围外，避免口径二次失真。
     scope: {
-      included: 'eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）',
-      excluded: 'eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到，见 dedicatedUnits 段',
-      dedicatedDecisionPending:
-        '设计 §附录 C.2 第 9 项：dedicated 是纳入 driver 统一扫描还是维持独立 runner，须在 Sprint 18 拍板。本清单按 §2.2.1 字面定义将其排除在计量范围外，但如实记录不丢弃。',
+      included:
+        'eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 123',
+      excluded:
+        'eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到；' +
+        '由专属 runner 执行，单独记录在 dedicatedUnits 段，不进任何分层与分母',
+      dedicatedDecision:
+        '设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。' +
+        '决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，' +
+        '混入分母会让通过率变成不可计算的量（118/123 是有效指标，118/152 不是）。' +
+        '附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），' +
+        '合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。',
     },
 
     summary: {
@@ -387,7 +554,12 @@ function build() {
 
     dedicatedUnits: {
       count: dedicatedUnits.length,
-      note: '不被 driver.js 扫描（driver 只扫 __dirname 且不递归），由 run-diagnosis-eval.mjs / run-mutator-eval.mjs 独立执行。',
+      fileCount: dedicatedFiles.length,
+      note:
+        '不被 driver.js 扫描（driver 只扫 __dirname 且不递归），由专属 runner 独立执行。' +
+        '单元粒度与各 runner 的取数一致（mutator: parsed.scenarios；counterfactual: parsed.fixtures），' +
+        '不是「一个文件 = 一个单元」—— 旧版按文件计数会把它记成 2 个单元，与实际执行粒度不符。',
+      outOfScope: '按 Sprint 18 拍板维持独立 runner，不计入任何分层、配额与通过率分母。',
       units: dedicatedUnits,
     },
 
@@ -411,6 +583,11 @@ function build() {
       driverSummaryLine: driverSummary
         ? `${driverSummary.pass} passed, ${driverSummary.fail} failed, ${driverSummary.skipped} skipped (of ${driverSummary.total})`
         : null,
+      // ── FAIL 差集对账（12 → 5 的 −7 逐项溯源，2026-10-02 实测）─────────────
+      // 为什么单独一段：+19 的总数差有完整 git 溯源，但「12 个 fail 只剩 5 个」
+      // 若只写「部分已修复」就与 +19 的严谨度不匹配，而它直接决定 Phase 1
+      // 交付物 4（H1 配额）的对象。这里给出能确定的部分与**不能确定的边界**。
+      failSetReconciliation: FAIL_RECON,
       // 降级模式：显式声明未完成实测对账（设计 §2.2.4）
       measuredBy: STATIC_ONLY ? 'STATIC_ONLY（未执行 driver.js）' : 'driver.js 全量回归实测',
       complete: !STATIC_ONLY,

@@ -100,12 +100,31 @@ const files = (await readdir(dir)).filter((f) => f.endsWith('.scenario.json'));
 但**不静默丢弃**：它们完整记录在 `dedicatedUnits` 段（含 contentHash / domain / kind），
 `scope` 段显式声明这是待拍板事项。
 
-> ⚠️ **待拍板（设计附录 C.2 第 9 项）**：
-> `dedicated/` 是纳入 driver 统一扫描，还是维持独立 runner？
-> 此决策影响单位定义与 104 口径的写法，**须在 Sprint 18 结束前拍板**。
-> 本清单按当前事实（driver 不扫它）如实记录两种口径：
-> - driver 口径（采用）：**123**
-> - 含 dedicated：**125**
+> ✅ **已拍板（设计附录 C.2 第 9 项，Sprint 18）：维持独立 runner，不并入 driver。**
+>
+> 决定性理由不是成本，而是**口径纯净度**：dedicated 的 29 个单元在 driver 口径内的
+> `lastKnownStatus` 是 `UNKNOWN`（inventory.json 实测）。把状态未知的单元混进权威分母，
+> 通过率就成了不可计算的量 —— **118/123 是有效指标，118/152 不是**。
+>
+> 附带理由：两个 runner 的执行模型与 driver 不同（`run-mutator-eval.mjs` 自述
+> 「单文件、零依赖、一行 node 跑；不修改 lib/，仅读 + 调用真 Service」），
+> 而 driver 走场景 JSON dispatch。合并意味着改 driver 的执行模型，
+> 风险落在当前唯一能跑通的全量门禁上。
+>
+> 口径写法（**唯一权威表述，所有文档统一照此写**）：
+> - **driver 口径（采用）：123** —— 本清单 `summary.totalUnits`，一切分层/配额/通过率的分母
+> - dedicated（**不在任何分母内**）：2 个文件 / **29 个可执行单元**
+>   （mutator 19 个场景 + counterfactual 10 条 fixture；粒度取自各 runner 自己的取数）
+>
+> ⚠️ 关于历史数字 125：`docs/operations/eval-fail-attribution-20260909.md` 记
+> 「主 driver（125 场景）… 2 SKIP」，那是这两个文件还在根目录时 **driver 把它们各计 1 个单元**
+> 的口径。并入后按 runner 粒度应为 152、按该历史口径才是 125 —— **两者不可混用**。
+>
+> 反转条件：若两个专属 runner 被退役、这些场景改由 driver dispatch，则并入并**重跑全部配额计算**。
+>
+> 附注（消除歧义）：提交 `be115d1` 的信息写「主 driver 成为唯一门禁」，该表述针对的是
+> diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，**不等于要求 dedicated 并入**。
+> 此处按实测维持独立 runner —— 写清是为了避免后人当成未完成事项反复提起。
 
 ---
 
@@ -134,10 +153,45 @@ const files = (await readdir(dir)).filter((f) => f.endsWith('.scenario.json'));
 
 **⇒ 结论：104 是历史快照，不是错误。当前 driver 口径下的权威值是 123。**
 
-### 4.3 为什么 FAIL 从 12 降到 5
+### 4.3 为什么 FAIL 从 12 降到 5（差集对账，逐项溯源）
 
-存量 fail 由 12 降至 5，说明部分 fail 已被后续 Sprint 修复。
-另有一部分差异来自单元总数增长（新增单元多数为 PASS）。
+旧写法「部分 fail 已被修复；另有一部分口径变化来自单元总数增长」**不够**，因为
+12 → 5 直接决定 Phase 1 交付物 4（H1 配额）的对象。以下为实测结论。
+
+**方法**：git worktree 检出 `b6a14f7`（92/104 声称时点）→ 静态提取 104 个单元名
+（102 具名 + 2 个当时还在根目录的 dedicated 文件，正对应历史记载的「125 场景 / 2 SKIP」）
+→ 与当前 123 做差集 → 逐个比对单元内容。
+
+> ⚠️ **方法论警示**：拿旧 commit **重跑** driver 无法复原历史 fail 名单 ——
+> 实测在 `b6a14f7` 跑出 **13 passed / 91 failed (of 104)**，那是旧 plugin 代码配当前
+> dsh 运行时的**环境污染值**，不是历史真值。别拿它当证据。
+
+**能确定的部分**：
+
+| 结论 | 值 | 意义 |
+|---|---|---|
+| 改名 / 删除的旧单元 | **0** | ✅ 排除「因重构/改名而消失 ⇒ 静默失忆」这一分支 |
+| 新增具名单元 | 21 | 123 − 102（总数差 +19 = 21 新增 − 2 个 dedicated 移出扫描范围） |
+| 当前 FAIL 中旧时点就存在的 | 4 | cron-default-jobs-registered / service-annotations-table-full-throws / policy-decide-clean-results-pending-or-deploy / sprint6-cron-job-prompt-static-check-registered |
+| 当前 FAIL 中新增的 | 1 | `s12-05-policy-policy-deployed-rolledback-shadow`（08-29 随 Sprint 12 新增，不可能是旧 12 之一） |
+
+**算术分解**：设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点 PASS 但如今回归的数量。
+`4 = (12 − F) + R` ⇒ `F = 8 + R` ⇒ **至少 8 个旧 fail 已被修复**，另有 R ∈ [0,4] 个回归。
+净变化 **−7 = −8（修复）+ 1（新增 s12-05）**，与 12 → 5 自洽。
+
+**候选集**（旧时点即存在、且内容此后被改过的只有 5 个）：
+
+- 改过且现已 PASS（3 个，`sandbox-*` 三兄弟）—— 最可能是「由 FAIL 转 PASS」的对象
+- 改过且仍 FAIL（2 个，两个 cron 预期列表）—— 预期被更新过但仍落后实况，**不是改测试改绿**
+- 从未改动却 PASS 的旧单元：95 个 ⇒ 若旧 fail 在其中，是被**plugin 代码**修复（真修复）
+
+**不能确定的边界**：那 12 个 unitId **无法逐项复原** —— wiki 只有数字 12，仓库无存档的
+driver 输出，旧 commit 重跑会被运行时污染。这不是本次对账的疏漏，而是**此前从未持久化
+fail 名单**造成的既成事实。
+
+**补救**：本 `inventory.json` 入仓后即成为首个持久化的 fail 名单
+（`units[].lastKnownStatus = FAIL` 即完整列表，`attribution.pendingUnits` 单独列出），
+此后每次生成都留痕，同类失忆不会再发生。
 
 ⚠️ **本 Inventory 只负责报数与留证，不做 fail 归因** —— 归因属 Sprint 17
 （"12 存量 eval fail 归因 ≥80%"），见设计 §6.3 的协同约定。

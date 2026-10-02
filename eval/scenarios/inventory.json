@@ -1,13 +1,14 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-02T10:23:25.106Z",
+  "generatedAt": "2026-10-02T11:23:45.847Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
   "driverVersion": "e8c75cd3e198a5c5415d03d468ccc2eb432ab409",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
+  "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。",
   "scope": {
-    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）",
-    "excluded": "eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到，见 dedicatedUnits 段",
-    "dedicatedDecisionPending": "设计 §附录 C.2 第 9 项：dedicated 是纳入 driver 统一扫描还是维持独立 runner，须在 Sprint 18 拍板。本清单按 §2.2.1 字面定义将其排除在计量范围外，但如实记录不丢弃。"
+    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 123",
+    "excluded": "eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到；由专属 runner 执行，单独记录在 dedicatedUnits 段，不进任何分层与分母",
+    "dedicatedDecision": "设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，混入分母会让通过率变成不可计算的量（118/123 是有效指标，118/152 不是）。附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。"
   },
   "summary": {
     "totalUnits": 123,
@@ -1797,32 +1798,470 @@
     }
   ],
   "dedicatedUnits": {
-    "count": 2,
-    "note": "不被 driver.js 扫描（driver 只扫 __dirname 且不递归），由 run-diagnosis-eval.mjs / run-mutator-eval.mjs 独立执行。",
+    "count": 29,
+    "fileCount": 2,
+    "note": "不被 driver.js 扫描（driver 只扫 __dirname 且不递归），由专属 runner 独立执行。单元粒度与各 runner 的取数一致（mutator: parsed.scenarios；counterfactual: parsed.fixtures），不是「一个文件 = 一个单元」—— 旧版按文件计数会把它记成 2 个单元，与实际执行粒度不符。",
+    "outOfScope": "按 Sprint 18 拍板维持独立 runner，不计入任何分层、配额与通过率分母。",
     "units": [
       {
-        "unitId": "( unnamed )",
+        "unitId": "agint-diagnosis-counterfactual/fix-1-toolgap-primary",
         "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
         "plugin": null,
         "domain": "diagnosis",
         "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
         "lastKnownStatus": "UNKNOWN",
         "failCategory": null,
-        "contentHash": "sha256:c241c5d665b576f806a8b4503966fe73a52d1bd07ca517194b302d51fd02df59",
+        "contentHash": "sha256:126155ae616412e98c3bfe045df6f7b07fa6712e2097cc0e388913119813e6e3",
         "externalDeps": [
           "dsh-runtime"
         ],
         "runtimeRequired": true
       },
       {
-        "unitId": "( unnamed )",
-        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "unitId": "agint-diagnosis-counterfactual/fix-2-toolgap-no-prompt",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
         "plugin": null,
-        "domain": "mutator",
+        "domain": "diagnosis",
         "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
         "lastKnownStatus": "UNKNOWN",
         "failCategory": null,
-        "contentHash": "sha256:82dfa6ccd8a8b6bd50f101c8cdab9cb253f130dad1bd4319c1e7ab0e04403b17",
+        "contentHash": "sha256:dd3de88b169746f9109befa3355c67bcdaa625b67d2dde0459c8e406238b6e3f",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-3-prompt-multi-step",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:63d22b920dd1fc604a73e6f7ed9195dc09bde7530edef67f2c29da3b05a4c6a1",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-4-planning",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:3dd3469d8d9ba7e41f76fa44b30622c40201bc24d3be9054263fb31abcc61f5a",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-5-uncertain-fallback",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:244e9265c437717ddad2b5c4fee2d2d795bc51cd4bbd3f3f427eb2a3c8f9c5e4",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-6-knowledge-gap",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:c4c461b9e6bbb4711a850361d0bb907cf4c724e5b450e91952f6fc09e54b4255",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-7-reasoning-error",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:73c1c274204ee902e171133924c106fcd83ba5d71667f2782964acf05f661d24",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-8-environment-shift",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:25846db1187d7082549eecde2d6b82d139ea34e480779d75f28ed0b0fd94d87d",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-9-toolgap-edge-empty-trajectory",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:0ec7296e276ce1dcc55acf6ab4a0d32557de4a85b2c4ead94bdded37521ff13a",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-diagnosis-counterfactual/fix-10-prompt-no-trajectory",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "unitKind": "fixture",
+        "executedBy": "eval/run-counterfactual-stress.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:17c01f18d4a361995298b833f1cfd4f9e581c216f9506199ec8e45469d26d86a",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/pure-helper-deriveTargetPlugin-metadata-first",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:3d8b4815d1aa00535f7c9278a95931b275932c26fa0c021dcf5f301c4e47e7a5",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/pure-helper-deriveTargetPlugin-text-scan",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:64f1981597564df56f4f5494e060d22d571c2629c65e85905788b6e6e9299892",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/pure-helper-deriveTargetPlugin-null-fallback",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:b8d6022bd65ac6649daf9284d26549fba01f09223f81d6fc2b3a9ecad265d95d",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/pure-helper-pickKindFromSeed-deterministic",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:860d2cbd778b6396a4ffbe8f6af72df260c3b24433b371e187e19d48fc4ad60f",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/propose-PROMPT_MUTATION-happy",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:8b7a2d83bcb17665f963eb4d060d54b00f0605346da801028944fabf167e87d4",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/propose-TOOL_SYNTHESIS-happy",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:d7f92c2000f6c7a9cf1f9a7e244249a25ced8fb0d5b4b6d9704539f27007368f",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/propose-STRATEGY_REWRITE-happy",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:db78c7a430ca64280b74857001789eab1f5f2fbd217416d347d85111bbec0a14",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/validate-reject-subjective-expectedEffect",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:225371915d4ce14e7d69367d2c67f20b13747ef85f9fda9f8f0c94522bc2598b",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/validate-reject-empty-rollbackCondition",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:73c063cb68345102117ce4b90a678ca7dfe37c254e171b8bbb7a182aa2564b57",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/validate-reject-kind-atomicScope-mismatch",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:7598b3f65e8c3d006f2897ced36749018e566422521b316790b9d79a33d424a1",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/validate-reject-empty-payload-toolName",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:1ae0209317677d2403d838bb59b45c3c93e2d1ecd1ab827ee20a02779a421b1e",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/source-attributionDriven-happy",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:4e76cfdf57bb624c5bbb0c3af3cae3c4a7db37b7d682de32eb7584cdd10bd95e",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/source-attributionDriven-degrade-uncertain",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:c1e72f1297842eb8d27c8e8602cc24ceb19db0611e533d3514e523bf5ed622c6",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/source-dreamRandom-degrade-unavailable",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:99296e506e7c1836c95cb05c7744b34a2c9d8aa527e041b5d1d65ee7627b1d41",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/source-evolutionReversed-degrade-no-match",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:446b1e6715bd5eb9ba28203a7f2a040731de8c24108e3e44ec67e12d46abf3b3",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/commit-happy-AUTO_DEPLOY-metrics-success",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:00583c12fc162650a8d48d57adafc90c000c663933ff2f3d0b55fd921c5e52e6",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/commit-fail-policy-REJECT-metrics-failure",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:add79bf739dcc455a96fa53486dd9dbcff0b75054a279b58fd82ad14f796077f",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/rollback-happy-metrics-rollback",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:7a69c46ed5997b89f6b25f2e099172bacc7b61a8567811964e604c07f4835ea7",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "agint-mutator/metrics-three-event-types-distinct",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": "agint-mutator",
+        "domain": "mutator",
+        "kind": "dedicated",
+        "unitKind": "scenario",
+        "executedBy": "eval/run-mutator-eval.mjs",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:00e9d6592cdd91b1d927b1ac17e5f33462a75db46836bbd15b48c5685f6cbc2e",
         "externalDeps": [
           "dsh-runtime"
         ],
@@ -1853,6 +2292,43 @@
     "delta": 19,
     "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 118 vs 声称 92（+26）；\nFAIL：实测 5 vs 声称 12（-7）。\n存量 fail 由 12 降至实测值，说明部分 fail 已被修复；另有一部分口径变化来自单元总数增长。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
     "driverSummaryLine": "118 passed, 5 failed, 0 skipped (of 123)",
+    "failSetReconciliation": {
+      "method": "1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。\n2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。\n3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。\n4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。",
+      "confirmed": {
+        "renamedOrRemoved": 0,
+        "renamedOrRemovedNote": "旧时点 102 个具名单元**全部**仍以同名存在于当前 driver 口径 ⇒ 排除「因重构/改名而消失导致静默失忆」这一分支。这是本次对账最关键的结论。",
+        "addedUnits": 21,
+        "addedNote": "123 − 102 = 21 个新增具名单元（总数差 +19 = 21 新增 − 2 个 dedicated 文件移出扫描范围）。",
+        "currentlyFailingThatExistedThen": [
+          "cron-default-jobs-registered",
+          "service-annotations-table-full-throws",
+          "policy-decide-clean-results-pending-or-deploy",
+          "sprint6-cron-job-prompt-static-check-registered"
+        ],
+        "currentlyFailingThatAreNew": [
+          "s12-05-policy-policy-deployed-rolledback-shadow"
+        ],
+        "newFailNote": "该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。"
+      },
+      "arithmetic": "设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。当前失败的旧单元数 4 = (12 − F) + R ⇒ F = 8 + R。⇒ **至少 8 个旧 fail 已被修复**；另有 R ∈ [0,4] 个旧单元发生回归（无法确定，因名单未留存）。净变化 −7 = −8（修复）+ 1（新增 s12-05），与 12 → 5 自洽。",
+      "candidates": {
+        "note": "旧时点即存在、且单元内容此后被改过的只有 5 个。其中 3 个现已 PASS —— 它们是最可能「由 FAIL 转 PASS」的对象（改测试或改代码都可能）。",
+        "changedAndNowPass": [
+          "sandbox-falls-back-when-ctx-sandbox-missing",
+          "sandbox-gate-passes-when-sandbox-ok",
+          "sandbox-gate-skipped-when-no-sandbox-service"
+        ],
+        "changedAndStillFail": [
+          "cron-default-jobs-registered",
+          "sprint6-cron-job-prompt-static-check-registered"
+        ],
+        "changedAndStillFailNote": "这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。",
+        "untouchedAndNowPass": 95,
+        "untouchedNote": "其余 97 个旧单元内容从未改动，其中 95 个现为 PASS ⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。"
+      },
+      "irreducible": "⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。",
+      "remediation": "本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。"
+    },
     "measuredBy": "driver.js 全量回归实测",
     "complete": true
   }
