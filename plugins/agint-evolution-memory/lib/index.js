@@ -29,6 +29,7 @@ import {
   evolutionLogEntrySchema,
   failurePatternSchema,
   successTemplateSchema,
+  contractLockEntrySchema,
   LIMITS,
   matchesQuery,
 } from './schema.js';
@@ -46,11 +47,32 @@ const Config = z.object({}).optional();
 // 三表 schema（用 zod）
 const spec = defineDomain({
   name: 'agint_evolution',
+  // ⚠️ version 保持 1，**加表不升版本**（2026-10-02 实测取证，勿改）。
+  //
+  // 依据（dsh-storage-json/lib/index.js 生产在用的整单元格式）：
+  //   第 102 行 `if (version !== descriptor.version) throw version-mismatch`
+  //   —— 整单元格式做的是**严格相等**校验，`compatibleVersions` 只对
+  //      per-record 格式生效（acceptedStamps()，第 354 行），整单元完全不看它。
+  //   第 110-113 行：`for (const table of descriptor.tables)`，文件里没有的表
+  //      **补空 Map**，文件里多出来的表**直接忽略**。
+  //
+  // ⇒ 升 version 的后果：现有文件 unit.version=1 vs 新 descriptor=2
+  //   ⇒ 直接 version-mismatch，**整个域打不开**，202 行 evolution_log /
+  //   8 行 failure_pattern / 5 行 success_template 全部读不出来，
+  //   且 recovery 是手动改生产存储文件（回滚代码不改文件就永久打不开）。
+  // ⇒ 不升 version 加表的后果：现有 3 张表照常解析，新表补空 Map 从 0 行开始。
+  //   已用生产文件副本实证：202 行全部保留，contract_locks 0 行。
+  //
+  // 代价（如实记录）：同一 version 下 schema 发生了扩张。dsh 未来若把
+  // version 升级为「schema 破坏性变更的计数器」，这里需要补一次显式迁移。
+  // 本仓可控（自有存储、无外部消费者），暂不为此冒生产不可用之险。
   version: 1,
   tables: {
     evolution_log: { valueSchema: evolutionLogEntrySchema },
     failure_pattern: { valueSchema: failurePatternSchema },
     success_template: { valueSchema: successTemplateSchema },
+    // Phase 1 交付物 1 §2.5.1：预测锁定记录（hypothesisLock）
+    contract_locks: { valueSchema: contractLockEntrySchema },
   },
 });
 
@@ -126,6 +148,7 @@ function apply(ctx) {
   const t_log = () => table('evolution_log');
   const t_fail = () => table('failure_pattern');
   const t_template = () => table('success_template');
+  const t_lock = () => table('contract_locks');
 
   // ── 写入 helpers ────────────────────────────────────────────────────────
 
@@ -287,6 +310,84 @@ function apply(ctx) {
     return { ...entry };
   }
 
+  // ── Contract 预测锁（Phase 1 交付物 1 §2.4.2）─────────────────────────
+
+  /**
+   * recordContractLock — 落一条预测锁定记录。
+   *
+   * 由 caller（driver）在 **mutation 执行之前**调用。本方法只负责
+   * 「算好的 lock 存进表」，**不自己算 hash** —— 算 hash 的纯函数在
+   * `agint-evolution-driver/lib/predictor.js`（computeHypothesisLock）。
+   * 刻意分离：本插件不 import driver（跨插件 lib import 会造成耦合与加载顺序问题），
+   * 由 driver 把结果传进来，职责边界清楚。
+   *
+   * ## 为什么要「不可覆盖」
+   *
+   * `put(key, ...)` 同 key 会**直接覆盖**。若允许同一 contractId 二次写入，
+   * 攻击者（或 bug）只要重算一遍新 hash 覆盖旧值，篡改就查不出来了 ——
+   * 锁也就失去了意义。所以：已存在同 contractId 的锁 ⇒ **拒绝并报 already_locked**，
+   * 绝不覆盖（真实 > 讨好：宁可写入失败，也不能让「锁」名存实亡）。
+   *
+   * @param {object} params
+   * @param {string} params.contractId
+   * @param {string} params.hypothesisLock  `sha256:<64 hex>`
+   * @param {string} params.lockedAt        ISO 时间串（caller 传入，本方法不取时钟）
+   * @param {string|null} [params.predictionSource] KNOWLEDGE_BASE / ANALOGY / DEFAULT_RULE
+   * @param {string|null} [params.lockEventId] 对应的 evolution.contract.locked 事件 id
+   * @returns {Promise<object>} 落盘后的 entry
+   * @throws 同 contractId 已锁 ⇒ Error('contract-lock-already-exists')
+   */
+  async function recordContractLock({
+    contractId, hypothesisLock, lockedAt, predictionSource = null, lockEventId = null,
+  }) {
+    if (!contractId) throw new Error('recordContractLock: contractId is required');
+    if (!hypothesisLock) throw new Error('recordContractLock: hypothesisLock is required');
+    if (!lockedAt) throw new Error('recordContractLock: lockedAt is required');
+    const t = await t_lock();
+    if (t.get(contractId)) {
+      // ⛔ 不可覆盖：见上方「为什么要不可覆盖」。重算 hash 覆盖旧值 = 篡改不留痕。
+      throw new Error('contract-lock-already-exists');
+    }
+    const entry = contractLockEntrySchema.parse({
+      hypothesisLock,
+      lockAlgorithm: 'sha256',
+      contractId,
+      lockedAt,
+      predictionSource: predictionSource ?? null,
+      lockEventId: lockEventId ?? null,
+    });
+    await t.put(entry.contractId, entry);
+    const count = t.size;
+    if (count > LIMITS.CONTRACT_LOCKS) {
+      return { ...entry, _warn: `contract_locks count ${count} > limit ${LIMITS.CONTRACT_LOCKS}` };
+    }
+    return { ...entry };
+  }
+
+  /**
+   * getContractLock — 取某 Contract 的锁定记录。
+   * 归档校验时与「重算的 hash」比对，不一致即 CONTRACT_TAMPERED。
+   * @param {string} contractId
+   * @returns {Promise<object|null>} 找不到返回 null（**缺失≠通过**，由 caller 判红）
+   */
+  async function getContractLock(contractId) {
+    if (!contractId) return null;
+    const t = await t_lock();
+    const rec = t.get(contractId);
+    return rec ? { ...rec } : null;
+  }
+
+  /**
+   * listContractLocks — 列出全部锁定记录（供 Growth Report / 审计对账）。
+   * @returns {Promise<Array<object>>}
+   */
+  async function listContractLocks() {
+    const t = await t_lock();
+    const out = [];
+    for (const [, rec] of t.entries()) out.push({ ...rec });
+    return out;
+  }
+
   // ── 读取 helpers ────────────────────────────────────────────────────────
 
   /** Query failure patterns. opts: { query?, category?, severity?, limit? } */
@@ -392,6 +493,10 @@ function apply(ctx) {
     addSuccess,
     queryFailures,
     queryTemplates,
+    // Phase 1 交付物 1 §2.5.1：预测锁定
+    recordContractLock,
+    getContractLock,
+    listContractLocks,
     getLogRange,
     decayScanRun,
     stats,
