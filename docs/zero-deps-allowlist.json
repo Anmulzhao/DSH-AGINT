@@ -3,21 +3,36 @@
   "allowPrefixes": [
     {
       "prefix": "@deepseek-ai/",
+      "providedBy": "dsh-runtime",
       "reason": "dsh 上游 runtime 提供的官方包（dsh-storage-domain / dsh-tools / dsh-schedule …）。AGINT 是 dsh 的 bundle，不 fork 也不自带这些包；它们由 install.sh 建的 node_modules junction 从 dsh 安装目录解析。属「宿主提供」，不是「AGINT 引入的第三方依赖」。"
     },
     {
       "prefix": "@deepseek-ai/agint-",
+      "providedBy": "dsh-runtime",
       "reason": "AGINT 自身的插件包名（quality-static 的 L0 隔离测试里出现）。同属宿主 bundle 内的名字，非外部依赖。"
     }
   ],
   "allowExact": [
     {
       "name": "zod",
+      "providedBy": "dsh-bootstrap",
       "reason": "install/install.sh 步骤 1.5 通过 install/agint-zod-bootstrap.sh 从 dsh 的 node_modules 复制进来（不是 npm install 装进 AGINT）。README「仓库自检」一节明确：AGINT 仓不引入第三方运行时依赖，zod 走的是宿主 bootstrap 通道。若哪天改为 npm 依赖，本条必须删除并让门禁红。"
     },
     {
       "name": "react",
+      "providedBy": "dsh-browser-module-table",
       "reason": "仅出现在 plugins/agint-family-panel/lib/client.js，且是在 window.__ModuleLoader__.load({ factory(require) }) 内 —— 该 require 由 dsh shell 的浏览器模块表注入，与官方 client 插件同一解析路径，属宿主提供。不是 Node 侧依赖，也不进 AGINT 的 package.json。若将来在 Node 侧（非 __ModuleLoader__ 上下文）出现 require('react')，本条不再适用。"
+    },
+    {
+      "name": "yaml",
+      "providedBy": "dsh-runtime",
+      "evidence": [
+        "bin/check-preset-parity.mjs:77 用法注释自述「退出码 2 = 环境不满足（找不到 dsh / yaml / 目标文件）」",
+        "同文件 :157 错误提示「找不到 yaml（应在 <dsh.dir>/node_modules 下）」⇒ 作者本意就是从 dsh 解析",
+        "实测 dsh 安装目录 node_modules/yaml 存在，部署位 require.resolve('yaml') 可解析",
+        "根 package.json 无 yaml 依赖 ⇒ 不是 AGINT 自己 npm 装的"
+      ],
+      "reason": "仅出现在 bin/check-preset-parity.mjs:155（preset 能力行平价门禁），由 dsh 宿主的 node_modules 提供，AGINT 未引入该 npm 依赖。注意：yaml 本身是通用 npm 包名，所以本条必须保留 evidence 数组 —— 缺证据的同名包一律仍判违规。若哪天改为 npm install 装进 AGINT，本条必须删除并让门禁红。"
     }
   ],
   "notes": [
