@@ -155,3 +155,63 @@ Codex 另提两点，已采纳为规则：
 2. 修 `bin/plugin-check.sh` 第 474-475、484 行已作废的 L0 措辞——仍写「需人类多签 + major 版本」，
    而 AGENTS.md 记 2026-09-29 已废除多签与 major 策略。纯文案，不触 FROZEN 字段。
 3. 规约的 patch 由 Codex 出内容、DSH 侧落盘 commit——**已于本轮完成**（§5.2 表格即结果）。
+
+---
+
+## 6. 第二次握手记录
+
+**2026-10-02 09:29** ｜ 发起方：DSH 侧 Agent ｜ 通道：`codex exec --skip-git-repo-check`（非交互，`codex-cli 0.159.3`）
+
+### 6.1 送达侧
+
+一次投递即成，无重试。两处与 §5.1 不同：
+
+- §5.1 记的 `ERROR: Reconnecting... waiting for network` 本次**未复现**——因为仍用了同一条一次性覆盖
+  `codex exec -c 'model_providers.minimax.base_url="https://api.minimax.cn/v1"' -`。
+- **新增必需 flag**：`--skip-git-repo-check`。不加则 exit 1，根因与复现表见
+  `docs/operations/codex-handshake-20260821.md` §9.1。
+
+### 6.2 Codex 报到（本轮回执）
+
+| 项 | 值 |
+|---|---|
+| cwd | `/home/kylin/projects/DSH`（**不是** `DSH-AGINT`，仓库在其下 `./DSH-AGINT`） |
+| 模型 / provider | `MiniMax-M3.1-Flash-Preview` / `minimax`（与 DSH 侧同一个后端） |
+| 沙箱 | `workspace-write`，可写仅 workdir 与 `/tmp` |
+| session id | **可见**（stderr 横幅）——更正 §5 记的「不可见」，见握手文档 §9.2 |
+
+它确认了 §5.3 三条清单的现状，并**自行核对** `bin/offline-verify.sh` 不存在（`ls` 报 No such file）之后才下结论，不是复述 DSH 侧的说法。
+
+### 6.3 它对 §5.3-1 的表态（仍是「等裁决」）
+
+明确说**自己是新会话、无上次上下文**，拒绝凭印象给设计，反问是否要基于当前仓状态实做，理由是
+「直接读 `plugin-check.sh` 的现有编排来定检查顺序，比凭印象设计可靠」。
+
+**这条比设计本身值钱**：它没有拿「我记得」当事实。反过来对 DSH 侧也是同一条约束——
+**每次 `codex exec` 都是新会话，不能假设它记得上一轮结论**，要接续必须把上下文写进 prompt。
+
+### 6.4 待裁决（均未认领）
+
+- [ ] §5.3-1 `bin/offline-verify.sh` —— Codex 已请缨，等发话
+- [ ] §5.3-2 `bin/plugin-check.sh` 第 474-475、484 行作废的 L0 措辞 —— 纯文案，不触 FROZEN
+- [ ] 8899 中转：是否恢复监听，还是正式把 `~/.codex/config.toml` 改直连
+
+### 6.5 同日另一件事：`subagent_codex` 的启用结论
+
+老板要求「开启 codex 作为 subagent 的工具」。取证三处，结论是**声明层已开，但它不是宿主可寻址的 entry**：
+
+1. 部署位 `~/.dsh/.agent-presets/agint/agent.cordis.yml:238-244` 的 `tool-subagent-codex` 只有 `config`，
+   **无 `disabled` 键**；对照同文件 `:246-248` 的 `tool-subagent-claude-code` 带 `disabled: true`。
+2. `plugin_manager list_plugins` 中 `include:subagent-spawn-in-process-codex` 为
+   `enabled: true, fiberPhase: "active"` —— `codex` provider **此刻已注册在运行中的宿主**。
+3. 但三页翻完 239/239 个 entry，**没有** `tool-subagent-codex` 这个 entryId（它是 preset 内部行）。
+   照 GUI 提示调 `set_plugin enabled: true`，实测返回
+   `{"stage":"enable","changed":false,"application":"failed","error":{"code":"unknown-plugin"}}`。
+
+**所以 GUI 上的「已停用」是状态误读**——它表示「这不是宿主 fiber」，不是「preset 里被禁了」。
+
+**要让 `subagent_codex` 出现在工具表里，只能让会话 mount `agint` preset**（GUI 切 preset，或新开会话选智进）。
+已运行会话保留启动时的插件版本，工具侧做不到。
+
+⚠️ 仍然成立：那个 `codex` provider 是 `@deepseek-ai/dsh-subagent-spawn-in-process`（`providerName: codex`），
+**跑的是进程内 DSH agent，不是 codex CLI**。真要调 CLI 走 `codex exec`。

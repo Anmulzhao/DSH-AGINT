@@ -36,7 +36,9 @@
 KEY="$(grep -E '^\s*MINIMAX_CN_API_KEY\s*:' ~/.dsh/.credentials.yaml | head -1 | sed -E 's/.*:\s*//')"
 
 # 2. 单次前缀 env 注入 + stdin 接 prompt（必须 env 前缀，不要 export）
-env MINIMAX_API_KEY="$KEY" codex exec - <<'PROMPT'
+#    --skip-git-repo-check：cwd 不是真 git 仓时必加，否则 exit 1。进真仓里也无害。
+#    2026-10-02 实测，见 §9.1
+env MINIMAX_API_KEY="$KEY" codex exec --skip-git-repo-check - <<'PROMPT'
 你的 prompt 在这里。heredoc 比 argv 更稳（避免 quote 转义）。
 PROMPT
 ```
@@ -60,10 +62,14 @@ cordis plugin 里的 apply() 调用 `bash` 子进程时，**也是新 shell**—
 which codex                 # 1. 二进制在不在
 codex --version             # 2. 版本
 codex doctor                # 3. cli runtime 自检
-env MINIMAX_API_KEY="$KEY" codex exec "PONG"  # 4. 端到端最小测试
+# 4. 端到端最小测试（cwd 不是真 git 仓时必须带 --skip-git-repo-check，见 §9.1）
+env MINIMAX_API_KEY="$KEY" codex exec --skip-git-repo-check "PONG"
 ```
 
 少一步都不行。`codex doctor` 通 ≠ `codex exec` 通（doctor 看 cli runtime env，exec 重启子进程）。
+
+**第 4 步还要看 stderr 横幅**（不是只看 stdout）：横幅里有 `sandbox`、`approval`、`reasoning effort`、
+`session id` 四个字段，随 cwd 变（§9.3）。**只读 stdout 会把「取不到 session id」这类结论判错**（§9.2）。
 
 ## 3. Codex 的回复（原文，4 行 bullet）
 
@@ -150,3 +156,57 @@ CLI**，名字对齐而已。分工与协作纪律见 `docs/agent-collaboration.
 
 **保留下来的教训**：8-21 那份文档的观测手段是「看 preset 里那行有没有 `disabled`」，
 这只能证明**工具行**的状态，证明不了**provider 行**是否存在。两者要分开验。
+
+---
+
+## 9. 2026-10-02 第二次握手：两处更正
+
+**2026-10-02 09:29** ｜ 发起方：DSH 侧 Agent ｜ 通道：`codex exec --skip-git-repo-check`（`codex-cli 0.159.3`）
+
+按 §4 的规矩做：**不删旧结论**，只并列更正。
+
+### 9.1 §2.1 的命令模板缺 `--skip-git-repo-check`
+
+原文 §2.1 / §2.4 的命令**不带**该 flag，8-21 当日能通是因为当时 cwd 是真 git 仓。
+
+**2026-10-02 实测：该 flag 不是恒定必需，取决于 cwd**。
+
+| cwd | `.git` 状态 | 不带 flag 的结果 |
+|---|---|---|
+| `/home/kylin/projects/DSH` | 空目录（`ls -A .git \| wc -l` = **0**） | `Not inside a trusted directory and --skip-git-repo-check was not specified.`（exit 1） |
+| `/home/kylin/projects/DSH/DSH-AGINT` | 真 git 仓 | 正常启动，无此报错 |
+
+**根因**：DSH bash 工具每次开新 shell，其 cwd 是会话工作区 `/home/kylin/projects/DSH`，
+那里有一个**空的 `.git` 目录**（`file .git` = `directory`，0 个条目），codex 的信任目录判定不认它。
+
+**处置**：§2.1 模板已加该 flag（进真仓里也无害），§2.4 清单同步。
+
+### 9.2 §3 第 2 点与 §5 的「session id 不可见」为假
+
+原文两处写 Codex 的 session id 取不到。本次实测**取得到**——`codex exec` 的 **stderr 横幅**里直接打印：
+
+```
+session id: 01a0fa3b-e261-7f32-a4f9-77725b909747
+```
+
+几分钟后第二次调用又打印 `session id: 01a0fa40-39d1-72d3-8430-9a88ee340261`（两个 id 不同，确属两次独立会话）。
+
+**为什么 8-21 判成「不可见」**：当日版本 0.147.0，本次 0.159.3。**但更可能是观测位置错了**——
+该横幅走 stderr，而 §2.1 / §2.3 只示范了 stdout 的用法。
+**没验证过就别下「拿不到」的结论**，这是这次留下的教训。
+
+**新增可关联标识**：`ctx.subagents` 侧的关联键改用 codex 打印的 session id + `cwd`，不再指望端点暴露。
+
+### 9.3 附带记一条：沙箱模式会随 cwd 变
+
+同一天两次调用，横幅里的 `sandbox` 字段不同：真 git 仓内是 `sandbox: read-only`；
+非信任目录（加了 `--skip-git-repo-check`）那次是 `sandbox: workspace-write [workdir, /tmp, $TMPDIR]`。
+
+§5.2 的「只读沙箱下 Codex 无法 commit」只在**真 git 仓**那条路径下成立。
+写权限相关的判断必须先看当次横幅，别沿用上次的结论。
+
+### 9.4 投递侧现状（未处置，等裁决）
+
+`~/.codex/config.toml:43` 的 `base_url = "http://127.0.0.1:8899/v1"` 仍未改；`ss -ltn | grep 8899` 0 命中。
+`codex doctor` 报 `19 ok · 1 idle · 2 notes · 0 warn · 1 fail`，那 1 fail 就是它。
+**继续用一次性 `-c` 覆盖直连，不擅自改用户配置。**
