@@ -7,6 +7,57 @@
 
 ---
 
+## 0bis. 执行结果（2026-10-03 当日实跑，§0 之前先看这节）
+
+**并行判断成立。** 五条轨道在同一天全部推进，无一条因「等前一阶段」而停摆。
+下表是**实况**，不是计划；任何与此表不符的表述以本表为准。
+
+| 轨道 | 状态 | 落地物 | 测试 |
+|---|---|---|---|
+| **E 三层统一** | ✅ 完成 | `visibility` + `labelAuthority` 双枚举入 123 单元；`--check` 模式 | 25/25 |
+| **A 协议族** | ✅ 完成 | `build-spec-index.mjs`、`check-spec-consistency.mjs`、**`check-spec-versioning.mjs`**、`lib/spec-hash.mjs`、兼容矩阵 | 15/15 + **17/17** |
+| **B 发布准备** | ✅ 完成 | `package.json` files 白名单、`check-publish-safety.mjs`、`dependency-inventory.json` | 13/13 |
+| **C 工具链** | ✅ 完成 | `lib/tar.mjs`、`lib/redact.mjs`（D2+D3） | 18/18 + **34/34** |
+| **D 导包装配** | ✅ R1 线完成 | `export-evolution-package.mjs`、`check-preimage-retention.mjs`、**`verify-evolution-package.mjs`**（外部独立校验） | 19/19 + **13/13** |
+
+**端到端实跑**：`packages/test-R1.tar.gz` · 48.5 KB · 15 文件 ·
+内外双路 `INTEGRITY_VERIFIED` · `STRUCTURE_VERIFIED` · 等级 R1（实算）。
+
+### 0bis.1 实施中被门禁抓到的真缺陷（比「按计划做完」更有价值）
+
+这几条不是「按设计实现」，是**实现之后被自己写的检查抓出来的**。逐条已加回归钉：
+
+| # | 缺陷 | 后果 | 抓出者 |
+|---|---|---|---|
+| 1 | JSON 序列化后路径变 `C:\\Users\\…`，惰性 `+?` 被 `\\` 阻断 | **用户名必然随脱敏报告出包** | `export.test` 9 号用例 |
+| 2 | `verify.mjs` 不在 hash 表内 | 换掉唯一被执行的那份代码，哈希校验抓不到（**自己验自己不算校验**） | `verify` 的「未受保护文件」检查 |
+| 3 | Merkle root 把 `manifest.json` 算进去 | 固定点方程无解，root 永远对不上 | root 交叉核对 |
+| 4 | 包内 `sha256()` 已带前缀，校验侧又拼一次 | `sha256:sha256:…` ⇒ 假失败 | 包内 verify 跑真实包 |
+| 5 | `reproductionLevel` 硬编码 `'R1'` | 空 01-code 也宣称代码级可复现（**协议诚实性破口**） | 「分区非空」检查 |
+| 6 | `readGitHead` 捕获组漏 `refs/heads/`，拼成 `.git/main` | git-commit **永远**缺失 ⇒ R1 被静默降级，且只报「拿不到 git HEAD」，看不出是 bug | 等级实算后暴露 |
+| 7 | `check-spec-versioning` 想自造 L0 检查，读的字段根本不存在 | 一道永远报「字段缺失」却查不出真实漂移的**假防线** | 门禁自测基线用例 |
+| 8 | 门禁沙箱用 `cpSync({recursive:true})` | **崩原生层** 0xC0000409，零输出、exit 127 | 隔离复现 |
+
+⭐ **第 5、6、8 条的共性**：失败方向一致且静默 —— 报出来的是「能力不可用」，
+实际是「实现有 bug」。**这两类必须能区分开**，否则会一直拿「环境限制」当借口。
+
+### 0bis.2 明确未做（不是遗漏，是有理由）
+
+- `01-code/diff.patch` 真实生成 —— 需 diff 工具与 preimage→postimage 配对，属 Tier B。
+- `02-contract/`、`03-evaluation/benchmark-results.json` 分区 —— 依赖 contract-manager 挂载。
+- **R2 级复现** —— 生产 `evolution_ledger` 表 0 行（2026-10-03 实测）⇒ 信任锚不存在。
+- 6 份 `pendingSpecs` 正文 —— 索引已登记「已识别未落地」，防「没登记=不存在」误判。
+- `.github/` CI —— 仓库无 CI 目录，本批未引入。
+- `cron` 的 `spec-index-refresh` job —— 改排期属 boot 期变更，需重启，本批不做。
+
+### 0bis.3 存量债（stash 验过，**非本批引入**）
+
+`check-preset-parity.test.mjs`（11/14）与 `check-wiring.test.mjs`（23/24）基线就是红的。
+验法：`git stash push -u` 后单跑，两者仍 `exit=1`。**改前先 stash 验一次是不是我引入的。**
+
+---
+
+
 ## 0. 结论
 
 Phase 3 可以同时推进。但要改排期方式。
