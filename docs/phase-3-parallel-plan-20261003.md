@@ -44,11 +44,32 @@
 ### 0bis.2 明确未做（不是遗漏，是有理由）
 
 - `01-code/diff.patch` 真实生成 —— 需 diff 工具与 preimage→postimage 配对，属 Tier B。
+  ✅ **已于同日补齐**：`bin/lib/diff.mjs` + 导出器集成，与 `git apply -R` 双向交叉验证。
 - `02-contract/`、`03-evaluation/benchmark-results.json` 分区 —— 依赖 contract-manager 挂载。
 - **R2 级复现** —— 生产 `evolution_ledger` 表 0 行（2026-10-03 实测）⇒ 信任锚不存在。
 - 6 份 `pendingSpecs` 正文 —— 索引已登记「已识别未落地」，防「没登记=不存在」误判。
 - `.github/` CI —— 仓库无 CI 目录，本批未引入。
-- `cron` 的 `spec-index-refresh` job —— 改排期属 boot 期变更，需重启，本批不做。
+
+### 0bis.2b 同日补做：`spec-index-refresh` job
+
+原列「本批不做」（理由：改排期属 boot 期变更需重启）。**已实施**，
+并连带修掉一个真缺陷。详见 `plugins/agint-cron/CHANGELOG.md` §0.2.6。三点结论：
+
+| 项 | 结论 |
+|---|---|
+| **排期** | 设计稿建议的「1 日 09:30」**不可用** —— 09:30 已被 4 个周任务占满，`dom=1` 落任意星期几必撞。改 **10:30**（全窗口唯一空闲半点） |
+| **形态** | **只读审计**，不写盘。索引是仓库资产，改它要过 review，不能由宿主进程单方面决定 |
+| **可用性** | 部署位（bundle）**没有 `docs/` 也没有 `bin/`** ⇒ 常驻宿主上默认 soft-skip。`repoRoot` 默认 null，**不猜目录** —— 猜错会审计另一份仓库并报假漂移 |
+
+⭐⭐ **实施中抓到的真缺陷（比新功能更值钱）**：
+`validateIndex` 函数名像「全部校验」，实际**不含 `schemaHash` 漂移检查** ——
+那段判据只写在 `main()` 的 `--check` 分支里。按名字复用它 ⇒ 最常见的漂移
+**永远查不出、一路绿灯** ⇒ 一道假防线。已抽成导出的 `validateSchemaHashDrift()`，
+`--check` 与 cron 巡检共用同一份，并加回归钉。
+
+> **一般教训**：**函数名承诺的覆盖面必须等于实际覆盖面**。它若是「唯一权威判据」，
+> 下游会理所当然以为它查全了 —— 复用即埋雷。
+
 
 ### 0bis.3 存量债（stash 验过，**非本批引入**）
 
