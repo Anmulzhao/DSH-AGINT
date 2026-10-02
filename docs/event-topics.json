@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "generatedAt": "2026-10-02T10:09:23.422Z",
+  "generatedAt": "2026-10-02T14:26:09.748Z",
   "generatedBy": "bin/verify-event-topics.mjs --update",
   "source": {
     "code": "plugins/<name>/lib/ + plugins/<name>/*.js（排除 test/）",
@@ -8,7 +8,7 @@
     "productionAvailable": true
   },
   "note": "事实清单 = 代码字面量 ∪ 生产实测 topic。生产侧能捞到静态扫不到的动态构造 topic （模板串/变量），两者缺一都会漏。新增 topic 需刻意登记：先改代码再跑 --update，让 diff 里能看见这个新主题。",
-  "topicCount": 45,
+  "topicCount": 46,
   "topics": {
     "compress-guard.blocked": {
       "evidence": {
@@ -63,6 +63,14 @@
           "plugins/agint-dream/lib/index.js"
         ],
         "productionCount": 1
+      }
+    },
+    "evolution.contract.locked": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/contract-manager.js"
+        ],
+        "productionCount": 0
       }
     },
     "evolution.cycle.summary": {
@@ -167,7 +175,7 @@
         "code": [
           "plugins/agint-memory-provider/lib/manager.js"
         ],
-        "productionCount": 249
+        "productionCount": 250
       }
     },
     "memory.provider-activation-failed": {
@@ -262,19 +270,19 @@
     "ov.profile.delivered": {
       "evidence": {
         "code": [],
-        "productionCount": 97
+        "productionCount": 98
       }
     },
     "ov.recall.checked": {
       "evidence": {
         "code": [],
-        "productionCount": 2326
+        "productionCount": 2327
       }
     },
     "ov.session.flushed": {
       "evidence": {
         "code": [],
-        "productionCount": 10227
+        "productionCount": 10233
       }
     },
     "ov.tool.called": {
