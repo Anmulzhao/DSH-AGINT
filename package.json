@@ -4,6 +4,27 @@
   "private": true,
   "description": "AGINT 智进 —— dsh bundle：自进化智能体框架（host 服务 + 4 个 preset + 插件热插拔）",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Anmulzhao/DSH-AGINT.git"
+  },
+  "homepage": "https://github.com/Anmulzhao/DSH-AGINT#readme",
+  "bugs": {
+    "url": "https://github.com/Anmulzhao/DSH-AGINT/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "bundle",
+    "cordis",
+    "self-improving",
+    "agent",
+    "evolution",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

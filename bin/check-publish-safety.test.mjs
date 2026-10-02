@@ -45,8 +45,29 @@ function run(root) {
   return { status: r.status, output: `${r.stdout || ''}\n${r.stderr || ''}` };
 }
 
+/** 读出沙箱 package.json、改完写回。用 JSON 往返避免手拼字符串出错。 */
+function patchPkg(root, mutate) {
+  const p = join(root, 'package.json');
+  const obj = JSON.parse(readFileSync(p, 'utf8'));
+  mutate(obj);
+  writeFileSync(p, JSON.stringify(obj, null, 2), 'utf8');
+}
+
 const GOOD_FILES = ['cordis.patch.yml', 'VERSION', 'plugins/', 'presets/'];
-const BASE = { name: '@agint/host', version: '0.9.0', private: true, files: GOOD_FILES };
+// ⭐ 基线必须满足**全部**检查（含 §4.4 元数据），否则「基线通过」这条测试
+//   会在新增检查后自动变红 —— 那种红是「测试没跟上」而不是「门禁抓到了真问题」，
+//   会让人误以为门禁坏了。
+const BASE = {
+  name: '@agint/host',
+  version: '0.9.0',
+  private: true,
+  files: GOOD_FILES,
+  repository: { type: 'git', url: 'git+https://github.com/Anmulzhao/DSH-AGINT.git' },
+  homepage: 'https://github.com/Anmulzhao/DSH-AGINT#readme',
+  bugs: { url: 'https://github.com/Anmulzhao/DSH-AGINT/issues' },
+  keywords: ['dsh', 'cordis', 'agent'],
+  engines: { node: '>=20' },
+};
 
 test('基线：private + 合理白名单 ⇒ 通过', () => {
   const root = makeSandbox(BASE);
@@ -196,4 +217,75 @@ test('真实仓库当前状态必须通过（防测试与实况脱节）', () =>
   const out = `${r.stdout || ''}\n${r.stderr || ''}`;
   assert.equal(r.status, 0, `真实仓库必须通过本门禁：\n${out}`);
   assert.match(out, /private=true/);
+});
+
+// ── §4.4 验收项 1：元数据齐备度。逐字段证明门禁能抓。─────────────────────
+test('⛔ 缺 repository（§4.4-1）必须被抓', () => {
+  const root = makeSandbox(BASE);
+  try {
+    patchPkg(root, (p) => { delete p.repository; });
+    const r = run(root);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, /缺 `repository`/);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
+});
+
+test('⛔ homepage 不是 URL（写成一句话）必须被抓', () => {
+  const root = makeSandbox(BASE);
+  try {
+    patchPkg(root, (p) => { p.homepage = '我们主页'; });
+    const r = run(root);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, /`homepage` 形状不对/);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
+});
+
+test('⛔ keywords 少于 3 个必须被抓（2 个 = 检索不到）', () => {
+  const root = makeSandbox(BASE);
+  try {
+    patchPkg(root, (p) => { p.keywords = ['dsh']; });
+    const r = run(root);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, /keywords 只有 1 个/);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
+});
+
+test('⛔ engines.node 通配必须被抓（"*" 等于没声明）', () => {
+  const root = makeSandbox(BASE);
+  try {
+    patchPkg(root, (p) => { p.engines = { node: '*' }; });
+    const r = run(root);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, /通配等于没有约束/);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
+});
+
+test('⛔ engines.node 与 README 冲突必须被抓（两份各说各话）', () => {
+  const root = makeSandbox(BASE, { 'README.md': '前置：Node.js ≥ 22 · dsh 已初始化。' });
+  try {
+    patchPkg(root, (p) => { p.engines = { node: '>=20' }; });
+    const r = run(root);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, /与 README 声明的 "Node\.js ≥ 22" 不一致/);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
+});
+
+test('⛔ README 无 Node 版本声明时不得误报（缺声明 ≠ 冲突）', () => {
+  const root = makeSandbox(BASE, { 'README.md': '# 说明\n本项目需要一个宿主。' });
+  try {
+    const r = run(root);
+    assert.equal(r.status, 0, r.output);
+  } finally {
+    rmSync(root, { recursive:true, force: true });
+  }
 });

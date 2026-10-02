@@ -39,6 +39,22 @@ const GENERATED_BY = 'bin/build-spec-index.mjs';
 const STATUS_VALUES = ['ACTIVE', 'DESIGN', 'BLOCKED', 'ARCHIVED'];
 
 /**
+ * 「不是规范」的磁盘文件白名单 —— 生成器与一致性门禁**必须共用同一份**。
+ *
+ * ⭐ 踩过的坑：两份各写一份判据 ⇒ 生成器认为 X 是孤儿、`--check` 却认为 X 已登记
+ *   （或反过来）。表现为「刚跑完生成器，`--check` 立刻报错」，看起来像生成器坏了，
+ *   实际是两个判据分叉了 —— 与 K133 的「同源共用」是同一类问题。
+ *
+ * ⛔ 每个条目都必须能回答「它为什么不是一份 spec」。答不上来就不该加。
+ */
+export const NON_SPEC_FILES = new Set([
+  'INDEX.json',                 // 索引本身
+  'compatibility-matrix.json',  // 版本兼容规则（非能力契约）
+  'dependency-inventory.json',  // 依赖清单（非行为约定）
+  'market-readiness-gaps.md',   // 缺口台账：**待办清单**不是契约（登记成 spec 会让 Blocked 像已定规范）
+]);
+
+/**
  * 规范登记表 —— 单一事实源。
  *
  * ⭐ 这里的每一项都必须经**代码核实**后填写，不能凭「文件存在」推断能力已具备。
@@ -190,9 +206,42 @@ const PENDING = [
       'Phase 2 §4。**外部硬阻塞**（Phase 3 §0.4）—— ' +
       '只做协议预留，不做接入设计。当前本机模型 = minimax-cn / MiniMax-M3.1-Flash-Preview。',
   },
+  {
+    // ⭐ Phase-3 设计稿 §4 整章（交付物四）此前**在索引里没有条目**——
+    //   后果是「市场接入是 Blocked」这个判定只活在设计稿正文里，
+    //   任何只看 INDEX.json 的人会以为 Phase 3 只有三个交付物。
+    //   §4.4 验收项 7 要求的正是这条登记，故补上。
+    id: 'market-integration',
+    version: '0.0',
+    status: 'BLOCKED',
+    plannedFiles: ['market-integration-v1.md'],
+    owner: '(未指派 —— 依赖 dsh 官方定标准)',
+    blockedBy: [
+      'B1 private:true 未解除（AGINT）',
+      'B2 dsh 官方市场未 GA（dsh）',
+      'B3 无第二个真实使用方（外部）',
+      'B4 无 SBOM / 签名格式标准（dsh 定标准）',
+    ],
+    note:
+      'Phase 3 §4 交付物四。**Blocked，只做元数据补全与缺口清单，不做接入设计。** ' +
+      '已完成的可执行部分：`repository`/`files`/`keywords`/`engines`/`bugs`/`homepage` 已补全并由 ' +
+      '`check-publish-safety.mjs` 机器校验；`private:true` 按 B1 保留；B1~B8 缺口见 ' +
+      '`docs/specs/market-readiness-gaps.md`。⛔ 仓库内无 Registry 客户端 / 市场接入 / 上传代码 —— ' +
+      '若出现即违反 §4.4 验收项 6。',
+  },
 ];
 
-/** 从 VERSION 文件解析 dsh 兼容区间（不硬编码 —— 单一事实源是 VERSION）。 */
+/**
+ * 「已被登记」的磁盘文件全集 = specs 的 files + pendingSpecs 的 plannedFiles。
+ *
+ * ⭐ 两个段都要算：第一版只算 specs.files ⇒ 未落地规范的 plannedFiles
+ *   被报成「未登记」，而它明明在索引里 pendingSpecs 段写着。
+ *   孤儿检查的判据错了，比没有孤儿检查更糟 —— 它会训练人忽略这条告警。
+ */
+const REGISTERED_FILES = new Set([
+  ...REGISTRY.flatMap((s) => s.files),
+  ...PENDING.flatMap((s) => s.plannedFiles || []),
+]);
 function readDshCompat() {
   const text = readFileSync(VERSION_PATH, 'utf8');
   // 匹配形如：| v0.9.0 | 0.1.7-rc.1   | 0.2.0-rc.2  | ... |
@@ -219,10 +268,11 @@ function schemaHashOf(files) {
 /** 列出 docs/specs/ 下应被索引的实体文件（排除索引与矩阵自身）。 */
 function listSpecFiles() {
   if (!existsSync(SPECS_DIR)) return [];
+  // ⛔ 这里曾有第三份硬编码排除（INDEX.json / compatibility-matrix.json / dependency-inventory.json），
+  //   与 NON_SPEC_FILES 并存 ⇒ 新增白名单项时只改一处就分叉。
+  //   现在唯一来源是 NON_SPEC_FILES —— 加白名单只改一个地方。
   return readdirSync(SPECS_DIR)
-    .filter((f) => /\.(md|json)$/.test(f))
-    .filter((f) => f !== 'INDEX.json' && f !== 'compatibility-matrix.json')
-    .filter((f) => f !== 'dependency-inventory.json')
+    .filter((f) => /\.(md|json)$/.test(f) && !NON_SPEC_FILES.has(f))
     .sort();
 }
 
@@ -250,7 +300,7 @@ function buildIndex() {
     specs,
     pendingSpecs: PENDING,
     untrackedSpecFiles: listSpecFiles().filter(
-      (f) => ![...REGISTRY.flatMap((s) => s.files)].includes(f),
+      (f) => !REGISTERED_FILES.has(f) && !NON_SPEC_FILES.has(f),
     ),
   };
 }
@@ -289,6 +339,44 @@ export function validateIndex(index, specFilesOnDisk) {
   return errors;
 }
 
+/**
+ * schemaHash 漂移检查 —— 「规范改了但索引没重新生成」。
+ *
+ * ⭐ 为什么要单独抽出来（2026-10-03 实施 cron 巡检时暴露）：
+ *   这段判据原先**只写在 main() 的 --check 分支里**，没被导出。于是
+ *   `validateIndex` 这个名字听起来像「全部校验」，实际不含漂移检查 ——
+ *   任何按名字复用它的调用方（本次是 cron 的 spec-index-refresh）都会
+ *   **查不出最常见的那种漂移**，且一路绿灯 ⇒ 一道假防线。
+ *   「函数名承诺的覆盖面」必须等于「实际覆盖面」，否则复用即埋雷。
+ *
+ * @param {object} index    磁盘上的 INDEX.json（已解析）
+ * @param {object} fresh    buildIndex() 的结果（用于取重算后的 schemaHash）
+ * @returns {string[]} 错误列表
+ */
+export function validateSchemaHashDrift(index, fresh) {
+  const errors = [];
+  const byId = new Map((fresh.specs ?? []).map((s) => [s.id, s.schemaHash]));
+  for (const s of index.specs ?? []) {
+    if (byId.has(s.id) && s.schemaHash !== byId.get(s.id)) {
+      errors.push(
+        `${s.id}：schemaHash 与磁盘文件不一致（索引 ${s.schemaHash} vs 实际 ${byId.get(s.id)}）` +
+          ` ⇒ 规范改了但索引未重新生成`,
+      );
+    }
+  }
+  return errors;
+}
+
+/** 按磁盘现状重算一份索引（不写盘）。审计与 --check 共用同一份判据来源。 */
+export function computeIndex() {
+  return buildIndex();
+}
+
+/** 列出 docs/specs/ 下应被索引的实体文件（排除索引与矩阵自身）。 */
+export function listSpecFilesOnDisk() {
+  return listSpecFiles();
+}
+
 function main() {
   const CHECK_ONLY = process.argv.includes('--check');
   const onDisk = listSpecFiles();
@@ -301,16 +389,13 @@ function main() {
       process.exit(1);
     }
     const existing = JSON.parse(readFileSync(INDEX_PATH, 'utf8'));
-    const errors = validateIndex(existing, onDisk);
-    // schemaHash 漂移：规范文件改了但索引没重生成
-    const fresh = new Map(buildIndex().specs.map((s) => [s.id, s.schemaHash]));    for (const s of existing.specs ?? []) {
-      if (fresh.has(s.id) && s.schemaHash !== fresh.get(s.id)) {
-        errors.push(
-          `${s.id}：schemaHash 与磁盘文件不一致（索引 ${s.schemaHash} vs 实际 ${fresh.get(s.id)}）` +
-            ` ⇒ 规范改了但索引未重新生成`,
-        );
-      }
-    }
+    // ⛔ 判据必须与 cron 巡检共用同一份（validateSchemaHashDrift / validateIndex）。
+    //   这里自己写一遍就是分叉的起点 —— 而分叉的方向恰好是「--check 能查出的
+    //   漂移，cron 查不出」，也就是巡检永远绿灯。
+    const errors = [
+      ...validateIndex(existing, onDisk),
+      ...validateSchemaHashDrift(existing, buildIndex()),
+    ];
     if (errors.length > 0) {
       console.error(`[build-spec-index] ❌ 索引校验失败（${errors.length} 处）：`);
       for (const e of errors) console.error(`  - ${e}`);
@@ -326,10 +411,18 @@ function main() {
 
   writeFileSync(INDEX_PATH, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
   console.log(`[build-spec-index] 已写入 ${INDEX_PATH}`);
-  console.log(`  规范 ${index.specs.length} 份（ACTIVE ${index.specs.filter((s) => s.status === 'ACTIVE').length} / ` +
-    `DESIGN ${index.specs.filter((s) => s.status === 'DESIGN').length} / ` +
-    `BLOCKED ${index.specs.filter((s) => s.status === 'BLOCKED').length}）`);
-  console.log(`  已识别未落地 ${index.pendingSpecs.length} 份（不占 implementedBy，防「没登记=不存在」误判）`);
+  // ⭐ 状态分布必须**两段都数**。第一版只数 specs 段 ⇒ 打印「BLOCKED 0」，
+  //   而 pendingSpecs 里躺着 6 份 BLOCKED —— 摘要行会让人以为「没有阻塞项」，
+  //   恰好把最该被看见的信息藏起来了（观测字段按「最能归因」设计，K116 纪律 B）。
+  const tally = (list) =>
+    STATUS_VALUES.reduce((acc, s) => ({ ...acc, [s]: list.filter((x) => x.status === s).length }), {});
+  const a = tally(index.specs);
+  const b = tally(index.pendingSpecs);
+  const fmt = (t) => STATUS_VALUES.map((s) => `${s} ${t[s]}`).join(' / ');
+  console.log(`  已落地规范 ${index.specs.length} 份（${fmt(a)}）`);
+  console.log(`  已识别未落地 ${index.pendingSpecs.length} 份（${fmt(b)}）` +
+    `${index.pendingSpecs.some((p) => p.status === 'BLOCKED') ? ' ⛔ 有 BLOCKED 项，见 blockedBy' : ''}`);
+  console.log(`    ↑ 未落地项不占 implementedBy，防「没登记=不存在」误判`);
   console.log(`  AGINT ${index.agintVersion} · dsh ${index.dshCompat.minimum} / tested ${index.dshCompat.tested}`);
   if (index.untrackedSpecFiles.length > 0) {
     console.warn(`  ⚠️ 未登记的 spec 文件 ${index.untrackedSpecFiles.length} 个：${index.untrackedSpecFiles.join(', ')}`);

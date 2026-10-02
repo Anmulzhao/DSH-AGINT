@@ -144,6 +144,51 @@ test('build-spec-index 报出未登记的 spec 文件（孤儿预警）', () => 
 
 // ── B. check-spec-consistency ───────────────────────────────────────────────
 
+test('⛔ 回归：生成器与一致性门禁的「非规范文件」判据必须同源', () => {
+  // ⭐ 这条钉的是 10-03 真实踩的分叉：两份各写一份 NON_SPEC 判据 ⇒
+  //   生成器认为某文件已登记（不算孤儿）、门禁认为没登记（报红），
+  //   表现是「刚跑完生成器，--check 立刻报错」，看着像生成器坏了。
+  //   同一份判据必须从 build-spec-index.mjs **import**，不许各自维护。
+  const root = makeSandbox({ ...baseFiles(), 'market-readiness-gaps.md': '# 缺口台账\n' });
+  try {
+    const gen = run(root, 'build-spec-index.mjs');
+    assert.equal(gen.status, 0, gen.output);
+    // 白名单内的文件不得被算作「未登记」
+    assert.doesNotMatch(
+      gen.output,
+      /未登记的 spec 文件.*market-readiness-gaps/,
+      '已在 NON_SPEC_FILES 白名单里的文件不该被报成孤儿',
+    );
+    // 紧接着 --check 必须过 —— 「刚生成就报错」是分叉的典型症状
+    const chk = run(root, 'build-spec-index.mjs', ['--check']);
+    assert.equal(chk.status, 0, `刚生成就 --check 失败 ⇒ 两处判据分叉：\n${chk.output}`);
+    const cons = run(root, 'check-spec-consistency.mjs');
+    assert.equal(cons.status, 0, `刚生成就一致性报红 ⇒ 两处判据分叉：\n${cons.output}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 回归：pendingSpecs 的 plannedFiles 不算孤儿（第一版只算 specs.files）', () => {
+  // plannedFiles 尚未落盘是**正常**状态（规范先行），把它报成孤儿会训练人忽略这条告警。
+  const root = makeSandbox(baseFiles());
+  try {
+    const gen = run(root, 'build-spec-index.mjs');
+    assert.equal(gen.status, 0, gen.output);
+    const idx = JSON.parse(readFileSync(join(root, 'docs', 'specs', 'INDEX.json'), 'utf8'));
+    const planned = (idx.pendingSpecs || []).flatMap((p) => p.plannedFiles || []);
+    assert.ok(planned.length > 0, '本用例需要至少一个 plannedFiles 才有意义');
+    for (const f of idx.untrackedSpecFiles) {
+      assert.ok(
+        !planned.includes(f),
+        `${f} 是 pendingSpecs 的 plannedFiles，不该出现在 untrackedSpecFiles`,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('check-spec-consistency：孤儿规范必须报红', () => {
   const root = makeSandbox({ ...baseFiles(), 'rogue-spec.md': '# 忘了登记\n' });
   try {

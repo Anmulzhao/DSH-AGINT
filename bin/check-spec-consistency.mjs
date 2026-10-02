@@ -28,7 +28,7 @@ const MATRIX_PATH = join(SPECS_DIR, 'compatibility-matrix.json');
 const STATUS_VALUES = new Set(['ACTIVE', 'DESIGN', 'BLOCKED', 'ARCHIVED']);
 
 /** 不该被索引为「规范」的文件（索引自身、矩阵、依赖清单）。 */
-const NON_SPEC_FILES = new Set(['INDEX.json', 'compatibility-matrix.json', 'dependency-inventory.json']);
+import { NON_SPEC_FILES } from './build-spec-index.mjs';
 
 const errors = [];
 const warns = [];

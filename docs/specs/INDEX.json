@@ -164,6 +164,22 @@
         "第二个真实使用方"
       ],
       "note": "Phase 2 §4。**外部硬阻塞**（Phase 3 §0.4）—— 只做协议预留，不做接入设计。当前本机模型 = minimax-cn / MiniMax-M3.1-Flash-Preview。"
+    },
+    {
+      "id": "market-integration",
+      "version": "0.0",
+      "status": "BLOCKED",
+      "plannedFiles": [
+        "market-integration-v1.md"
+      ],
+      "owner": "(未指派 —— 依赖 dsh 官方定标准)",
+      "blockedBy": [
+        "B1 private:true 未解除（AGINT）",
+        "B2 dsh 官方市场未 GA（dsh）",
+        "B3 无第二个真实使用方（外部）",
+        "B4 无 SBOM / 签名格式标准（dsh 定标准）"
+      ],
+      "note": "Phase 3 §4 交付物四。**Blocked，只做元数据补全与缺口清单，不做接入设计。** 已完成的可执行部分：`repository`/`files`/`keywords`/`engines`/`bugs`/`homepage` 已补全并由 `check-publish-safety.mjs` 机器校验；`private:true` 按 B1 保留；B1~B8 缺口见 `docs/specs/market-readiness-gaps.md`。⛔ 仓库内无 Registry 客户端 / 市场接入 / 上传代码 —— 若出现即违反 §4.4 验收项 6。"
     }
   ],
   "untrackedSpecFiles": []

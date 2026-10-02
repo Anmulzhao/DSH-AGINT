@@ -168,7 +168,42 @@ if (pkg.private === true) {
   warn('package.json 没有 private 字段 —— npm 默认 private:false，等同于「可直接发布」');
 }
 
-// ── ③ 版本一致性 ───────────────────────────────────────────────────────────
+// ── ③ 元数据齐备度（Phase-3 设计 §4.4 验收项 1）─────────────────────────
+// ⭐ 为什么把它做成门禁而不是「人工评审」：§4.4 原文写的是「人工核对」，
+//   而人工核对过一次就没人再看第二次 —— 元数据是那种「删了也不会立刻出事」
+//   的字段，等出事时已经在 npm 上躺了很久。
+//   这里的判据是**字段存在且形状正确**，不判内容对不对（内容要人工看）。
+const REQUIRED_META = [
+  ['repository', (v) => typeof v === 'string' || (v && typeof v.url === 'string'), '仓库地址（§4.4-1）'],
+  ['homepage', (v) => typeof v === 'string' && /^https?:\/\//.test(v), '主页（§4.4-1）'],
+  ['bugs', (v) => typeof v === 'string' || (v && typeof v.url === 'string'), '问题反馈入口（§4.4-1）'],
+  ['keywords', Array.isArray, '关键词数组（§4.4-1）'],
+  ['engines', (v) => v && typeof v === 'object', '运行环境约束（§4.4-1）'],
+];
+for (const [field, shape, why] of REQUIRED_META) {
+  const v = pkg[field];
+  if (v === undefined || v === null) err(`package.json 缺 \`${field}\`（${why}）—— 市场接入准备项未补全`);
+  else if (!shape(v)) err(`package.json 的 \`${field}\` 形状不对（${why}）`);
+}
+if (Array.isArray(pkg.keywords) && pkg.keywords.length < 3) {
+  err(`keywords 只有 ${pkg.keywords.length} 个（§4.4-1 要求可被检索，<3 个等于没有）`);
+}
+// engines.node 必须真的是约束 —— 写成 "*" 等于没写
+if (pkg.engines && typeof pkg.engines.node === 'string' && /^\*$|^\s*$/.test(pkg.engines.node)) {
+  err(`engines.node = "${pkg.engines.node}" —— 通配等于没有约束，等于没声明`);
+// ⛔ 别把 engines.node 写成与 README 冲突的值：两份各说各话时，安装器只认一份。
+} else if (pkg.engines && typeof pkg.engines.node === 'string') {
+  const readme = join(REPO_ROOT, 'README.md');
+  if (existsSync(readme)) {
+    const txt = readFileSync(readme, 'utf8');
+    const declared = txt.match(/Node\.js\s*(?:≥|>=)\s*(\d+)/);
+    if (declared && !pkg.engines.node.includes(declared[1])) {
+      err(`engines.node = "${pkg.engines.node}" 与 README 声明的 "Node.js ≥ ${declared[1]}" 不一致 —— 两份各说各话时安装器只认一份`);
+    }
+  }
+}
+
+// ── ④ 版本一致性 ───────────────────────────────────────────────────────────
 const versionErrors = [];
 if (existsSync(join(REPO_ROOT, 'VERSION'))) {
   const v = readFileSync(join(REPO_ROOT, 'VERSION'), 'utf8');
