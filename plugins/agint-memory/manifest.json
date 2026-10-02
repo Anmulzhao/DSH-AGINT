@@ -58,8 +58,8 @@
       "shutdown": "graceful"
     },
     "tests": {
-      "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs",
+      "entry": "test/decay.test.js",
+      "command": "node test/decay.test.js",
       "expectedExit": 0
     },
     "docs": {

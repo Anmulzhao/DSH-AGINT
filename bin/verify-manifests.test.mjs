@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, 'verify-manifests.mjs');
 const REPO_ROOT = join(__dirname, '..');
 
-const { checkPlugin, loadMountedPluginDirs } = await import(pathToFileURL(SCRIPT).href);
+const { checkPlugin, loadMountedPluginDirs, loadExemptions } = await import(pathToFileURL(SCRIPT).href);
 
 /** 造一个临时插件目录。files: { 'manifest.json': obj|string, 'package.json': obj, 'lib/index.js': '' } */
 function makePlugin(dirName, files = {}) {
@@ -278,4 +278,170 @@ test('--json 输出结构完整', () => {
   assert.ok(Array.isArray(j.errors));
   assert.ok(Array.isArray(j.warnings));
   assert.equal(typeof j.failed, 'boolean');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 纳入嵌套挂载目录后的三条护栏
+//
+// 背景：patch 里 3 个插件挂在嵌套路径（agint-quality/agint-quality-{contract,eval,policy}），
+// 此前不在顶层 glob 范围内 ⇒ 门禁对它们失明。要纳入，必须先修 name 比对：
+// checkPlugin 拿到的 dirName 是含 '/' 的相对路径，直接比 manifest.name 会 100% 误报。
+// ─────────────────────────────────────────────────────────────────────────────
+test('★ 嵌套目录不误报 NAME_DIR_MISMATCH（name 必须按目录基名比对）', () => {
+  // dirName 传全路径、manifest.name 写基名 —— 这正是嵌套插件的真实形态
+  const p = makePlugin('agint-quality-policy', {
+    'manifest.json': JSON.stringify({
+      name: 'agint-quality-policy',
+      version: '0.8.1',
+      description: 'd',
+      main: 'lib/index.js',
+      spec: { docs: { readme: 'README.md' } },
+    }),
+    'package.json': JSON.stringify({ name: 'agint-quality-policy', version: '0.8.1', main: 'lib/index.js' }),
+    'lib/index.js': '',
+    'README.md': '',
+  });
+  try {
+    const r = checkPlugin(p.dir, 'agint-quality/agint-quality-policy');
+    const nameErr = r.errors.find((e) => e.kind === 'NAME_DIR_MISMATCH');
+    assert.equal(
+      nameErr,
+      undefined,
+      `嵌套目录被误报 NAME_DIR_MISMATCH：${nameErr?.detail}（name 比对必须用 basename）`,
+    );
+  } finally {
+    cleanup(p);
+  }
+});
+
+test('★ 扁平结构（无 spec 包裹）的声明文件同样被检查', () => {
+  // 仓库里 agint-abtest / agint-quality-sandbox / agint-quality-static 是扁平结构。
+  // 只查 spec.* 会让它们永久失明。
+  const p = makePlugin('agint-flat', {
+    'manifest.json': JSON.stringify({
+      name: 'agint-flat',
+      version: '1.0.0',
+      description: 'd',
+      main: 'lib/index.js',
+      docs: { readme: 'README.md' },
+      changelog: 'CHANGELOG.md',
+      tests: { entry: 'test/smoke.mjs' },
+    }),
+    'package.json': JSON.stringify({ name: 'agint-flat', version: '1.0.0', main: 'lib/index.js' }),
+    'lib/index.js': '',
+  });
+  try {
+    const r = checkPlugin(p.dir, 'agint-flat');
+    const kinds = r.warnings.filter((w) => w.kind === 'DECLARED_FILE_MISSING').map((w) => w.detail);
+    assert.ok(
+      kinds.some((d) => d.includes('README.md')),
+      `扁平结构的 docs.readme 未被检查：${JSON.stringify(kinds)}`,
+    );
+    assert.ok(
+      kinds.some((d) => d.includes('CHANGELOG.md')),
+      '扁平结构的 changelog 未被检查',
+    );
+    assert.ok(
+      kinds.some((d) => d.includes('test/smoke.mjs')),
+      '扁平结构的 tests.entry 未被检查',
+    );
+  } finally {
+    cleanup(p);
+  }
+});
+
+test('★ 真实仓库：嵌套挂载目录已被纳入扫描（不再是覆盖缺口）', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--json'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const j = JSON.parse(r.stdout);
+  assert.ok(Array.isArray(j.nestedMounts), 'json 输出缺少 nestedMounts');
+  for (const d of [
+    'agint-quality/agint-quality-contract',
+    'agint-quality/agint-quality-eval',
+    'agint-quality/agint-quality-policy',
+  ]) {
+    assert.ok(j.nestedMounts.includes(d), `${d} 未被纳入扫描 —— 覆盖缺口复现`);
+  }
+  // 纳入后不得出现 NAME_DIR_MISMATCH 误报
+  assert.equal(
+    j.errors.filter((e) => e.kind === 'NAME_DIR_MISMATCH').length,
+    0,
+    `嵌套纳入后产生 NAME_DIR_MISMATCH 误报：${JSON.stringify(j.errors)}`,
+  );
+});
+
+test('★ 真实仓库：已挂载插件缺 manifest 为 0（contract 已补齐）', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--json'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const j = JSON.parse(r.stdout);
+  assert.equal(
+    j.errors.filter((e) => e.kind === 'MANIFEST_MISSING').length,
+    0,
+    `仍有已挂载却无 manifest 的插件：${JSON.stringify(j.errors)}`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 声明文件豁免（agint-quality-sdk 无 test 目录，无法「改指向」，只能删声明）
+//
+// 核心纪律：豁免只是「允许不声明」，绝不允许「声明一个不存在的文件」。
+// 所以必须有反向检查 —— 登记了豁免却仍声明了入口 ⇒ 冲突告警。
+// 没有这条，后人可以把假声明悄悄加回来而无人察觉。
+// ─────────────────────────────────────────────────────────────────────────────
+test('★ 豁免命中：声明缺失但已登记 ⇒ 不计 WARN，且显式记为 note', () => {
+  const p = makePlugin('agint-quality-sdk-real', {
+    'manifest.json': JSON.stringify({
+      name: 'agint-quality-sdk-real',
+      version: '0.5.0',
+      description: 'd',
+      main: 'lib/index.js',
+      spec: { tests: { entry: 'test/smoke.mjs' } },
+    }),
+    'package.json': JSON.stringify({ name: 'agint-quality-sdk-real', version: '0.5.0', main: 'lib/index.js' }),
+    'lib/index.js': '',
+  });
+  try {
+    const r = checkPlugin(p.dir, 'agint-quality-sdk-real', {
+      exemptions: new Map([['agint-quality-sdk-real::tests.entry', '无 test 目录']]),
+    });
+    assert.equal(
+      r.warnings.filter((w) => w.kind === 'DECLARED_FILE_MISSING').length,
+      0,
+      '已豁免的字段不该再报 DECLARED_FILE_MISSING',
+    );
+    const n = r.notes.find((x) => x.kind === 'DECLARED_FILE_EXEMPT');
+    assert.ok(n, '豁免必须显式可见（note），不能静默放过');
+    assert.match(n.detail, /无 test 目录/);
+  } finally {
+    cleanup(p);
+  }
+});
+
+test('★ 豁免清单只接受 tests.entry（README/CHANGELOG 缺失一律补文档，不接受豁免）', () => {
+  const ex = loadExemptions();
+  assert.ok(ex.ok, `豁免清单加载失败：${ex.reason}`);
+  for (const key of ex.map.keys()) {
+    assert.ok(
+      key.endsWith('::tests.entry'),
+      `豁免了不该豁免的字段：${key} —— 文档类缺失必须补文档而不是豁免`,
+    );
+  }
+});
+
+test('★ 真实仓库：DECLARED_FILE_MISSING 已清零（5 处补文档 + 2 处改指向 + 1 处删声明）', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--json'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const j = JSON.parse(r.stdout);
+  assert.equal(
+    j.warnings.filter((w) => w.kind === 'DECLARED_FILE_MISSING').length,
+    0,
+    `仍有声明指向不存在的文件：${JSON.stringify(j.warnings.filter((w) => w.kind === 'DECLARED_FILE_MISSING'))}`,
+  );
+});
+
+test('★ 真实仓库：无「登记豁免却仍声明入口」的冲突', () => {
+  const r = spawnSync(process.execPath, [SCRIPT, '--json'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const j = JSON.parse(r.stdout);
+  assert.equal(
+    j.warnings.filter((w) => w.kind === 'EXEMPTION_CONFLICT' || w.kind === 'EXEMPTION_STALE').length,
+    0,
+    `豁免清单与 manifest 冲突：${JSON.stringify(j.warnings.filter((w) => w.kind.startsWith('EXEMPTION')))}`,
+  );
 });

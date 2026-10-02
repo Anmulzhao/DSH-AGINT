@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "manifest 声明文件豁免清单 —— 供 bin/verify-manifests.mjs 消费。",
+    "",
+    "为什么需要它：manifest 的 tests.entry 被 bin/check-wiring.mjs 查 I 用来跑 smoke。",
+    "声明一个不存在的入口，比不声明更糟 —— 它会让「有 smoke 门禁」这件事变成假的。",
+    "所以当插件确实没有可跑的测试时，正确做法是**删除声明**而不是编造一个空文件，",
+    "同时在这里登记，让「没有测试」这个事实是显式的、可审计的，而不是静默消失。",
+    "",
+    "⛔ 纪律：每条必须写 reason 与 reversal（反转条件）。没有 reason 的条目就是后门。",
+    "⛔ 本清单只豁免 tests.entry。README/CHANGELOG 缺失一律补文档，不接受豁免。",
+    "   理由：文档可以如实写出来，不存在「编造」问题；而测试入口指向不存在的文件是欺骗。"
+  ],
+
+  "exemptions": [
+    {
+      "plugin": "agint-quality-sdk",
+      "field": "tests.entry",
+      "reason": "该插件是**分发型 SDK**（对外发布的开发包），不含可独立执行的 smoke 入口。实测目录构成：README.md / bin/ / examples/ / lib/ —— 没有 test/ 目录，也没有任何 *.test.* 或 *smoke* 文件。它的验证方式是 examples/ 下的示例脚本，而非 smoke 测试。",
+      "reversal": "若将来新增 test/ 目录并落地可执行 smoke，则删除本条豁免并恢复 tests.entry 声明。",
+      "verifiedAt": "2026-10-02",
+      "verifiedBy": "目录枚举 + find -name '*.test.*' -o -name '*smoke*' 均无命中"
+    }
+  ]
+}

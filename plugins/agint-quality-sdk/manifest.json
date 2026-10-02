@@ -43,11 +43,6 @@
       "tools": "always",
       "shutdown": "graceful"
     },
-    "tests": {
-      "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs",
-      "expectedExit": 0
-    },
     "docs": {
       "readme": "README.md",
       "serviceDocs": {

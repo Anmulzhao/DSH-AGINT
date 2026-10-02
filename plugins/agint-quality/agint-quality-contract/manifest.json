@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-quality-contract",
+  "version": "0.1.0",
+  "description": "D-QAF 评估框架核心契约：定义评估/策略/报告/生命周期接口（FROZEN 层）。不包含实现；实现由 agint-quality-{eval,sandbox,policy,report} 承担。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "stable"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": ["agint.quality"],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {
+      "zod": "^3.0.0"
+    },
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.quality": "Seam 层（FROZEN）。导出 EvalTarget/EvalResult/Decision/QualityConfig 等 zod schema 与 QualityEvaluator/Policy/Reporter/Lifecycle 四个 Iface；运行时提供 getConfig / getLayer(fieldPath) / isFrozen / validatePatch(patch) —— L0 字段冻结守卫，供 setConfig 入口自检。"
+      }
+    },
+    "compatSince": "0.1.0"
+  }
+}

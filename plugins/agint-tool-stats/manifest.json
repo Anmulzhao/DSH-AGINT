@@ -50,8 +50,8 @@
       "shutdown": "graceful"
     },
     "tests": {
-      "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs",
+      "entry": "test/aggregate.test.js",
+      "command": "node test/aggregate.test.js",
       "expectedExit": 0
     },
     "docs": {
