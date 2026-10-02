@@ -64,3 +64,6 @@ AGENTS.local.md
 
 # evolution-driver commit 的 preimage 备份（引擎自动写，不进版本库）
 .agint-preimage/
+
+# 进化包导出产物（含生产存储脱敏后的运行时数据，绝不进版本库）
+packages/
