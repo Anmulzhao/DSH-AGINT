@@ -1,0 +1,349 @@
+{
+  "version": "1.0",
+  "generatedAt": "2026-10-02T10:09:23.422Z",
+  "generatedBy": "bin/verify-event-topics.mjs --update",
+  "source": {
+    "code": "plugins/<name>/lib/ + plugins/<name>/*.js（排除 test/）",
+    "production": "C:/Users/Administrator/.dsh/storages/agint_event_bus.json",
+    "productionAvailable": true
+  },
+  "note": "事实清单 = 代码字面量 ∪ 生产实测 topic。生产侧能捞到静态扫不到的动态构造 topic （模板串/变量），两者缺一都会漏。新增 topic 需刻意登记：先改代码再跑 --update，让 diff 里能看见这个新主题。",
+  "topicCount": 45,
+  "topics": {
+    "compress-guard.blocked": {
+      "evidence": {
+        "code": [
+          "plugins/agint-compress-guard/lib/engine.js",
+          "plugins/agint-compress-guard/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "compress-guard.checkpointed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-compress-guard/lib/engine.js"
+        ],
+        "productionCount": 6
+      }
+    },
+    "curator.run-completed": {
+      "evidence": {
+        "code": [],
+        "productionCount": 9
+      }
+    },
+    "curriculum.boundary-probed": {
+      "evidence": {
+        "code": [],
+        "productionCount": 5
+      }
+    },
+    "diagnosis.completed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-diagnosis/lib/index.js",
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 30
+      }
+    },
+    "dream.completed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-dream/lib/index.js",
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 53
+      }
+    },
+    "dream.rejected": {
+      "evidence": {
+        "code": [
+          "plugins/agint-dream/lib/index.js"
+        ],
+        "productionCount": 1
+      }
+    },
+    "evolution.cycle.summary": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 7
+      }
+    },
+    "evolution.evaluated": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 345
+      }
+    },
+    "evolution.mutation.commit-skipped": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "evolution.mutation.committed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 4
+      }
+    },
+    "evolution.mutation.proposed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 7
+      }
+    },
+    "evolution.mutation.rejected": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 1
+      }
+    },
+    "evolution.mutation.rolledback": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
+        ],
+        "productionCount": 2
+      }
+    },
+    "evolution.proposed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-memory/lib/index.js",
+          "plugins/agint-evolve/lib/index.js",
+          "plugins/agint-population/lib/index.js",
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 16
+      }
+    },
+    "evoorch.task-completed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "evoorch.task-started": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "input.signal.external.repo-diff": {
+      "evidence": {
+        "code": [],
+        "productionCount": 3
+      }
+    },
+    "memory.pre-compress-checkpoint": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.provider-activated": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 249
+      }
+    },
+    "memory.provider-activation-failed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.provider-fallback": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.provider-health-check": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 2
+      }
+    },
+    "memory.provider-recovered": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.provider-unhealthy": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.recall-injected": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "memory.tool-called": {
+      "evidence": {
+        "code": [
+          "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "metrics.snapshot": {
+      "evidence": {
+        "code": [],
+        "productionCount": 500
+      }
+    },
+    "mount.requested": {
+      "evidence": {
+        "code": [
+          "plugins/agint-mutator/lib/index.js",
+          "plugins/agint-population/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "oracle.daily": {
+      "evidence": {
+        "code": [],
+        "productionCount": 6
+      }
+    },
+    "oracle.monthly": {
+      "evidence": {
+        "code": [],
+        "productionCount": 2
+      }
+    },
+    "oracle.weekly": {
+      "evidence": {
+        "code": [],
+        "productionCount": 2
+      }
+    },
+    "ov.profile.delivered": {
+      "evidence": {
+        "code": [],
+        "productionCount": 97
+      }
+    },
+    "ov.recall.checked": {
+      "evidence": {
+        "code": [],
+        "productionCount": 2326
+      }
+    },
+    "ov.session.flushed": {
+      "evidence": {
+        "code": [],
+        "productionCount": 10227
+      }
+    },
+    "ov.tool.called": {
+      "evidence": {
+        "code": [],
+        "productionCount": 37
+      }
+    },
+    "policy.deployed": {
+      "evidence": {
+        "code": [],
+        "productionCount": 47
+      }
+    },
+    "policy.rolledback": {
+      "evidence": {
+        "code": [],
+        "productionCount": 111
+      }
+    },
+    "sandbox.failed": {
+      "evidence": {
+        "code": [],
+        "productionCount": 1
+      }
+    },
+    "self.model.updated": {
+      "evidence": {
+        "code": [
+          "plugins/agint-self-model/lib/index.js"
+        ],
+        "productionCount": 79
+      }
+    },
+    "skill-autocreate.rolled-back": {
+      "evidence": {
+        "code": [],
+        "productionCount": 5
+      }
+    },
+    "skill-graph.updated": {
+      "evidence": {
+        "code": [],
+        "productionCount": 2
+      }
+    },
+    "trajectory.budget-exhausted": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "trajectory.pruned": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/governance.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "trajectory.recorded": {
+      "evidence": {
+        "code": [
+          "plugins/agint-trajectory/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    }
+  }
+}

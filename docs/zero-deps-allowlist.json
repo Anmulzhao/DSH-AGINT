@@ -1,0 +1,27 @@
+{
+  "_comment": "零第三方依赖门禁（bin/check-zero-deps.mjs）的允许清单。⚠️ 没有门禁的排除名单就是后门 —— 每一条都必须写清 reason，且该文件随 PR 一起被 review。格式对齐 docs/wiring-exemptions.json。",
+  "allowPrefixes": [
+    {
+      "prefix": "@deepseek-ai/",
+      "reason": "dsh 上游 runtime 提供的官方包（dsh-storage-domain / dsh-tools / dsh-schedule …）。AGINT 是 dsh 的 bundle，不 fork 也不自带这些包；它们由 install.sh 建的 node_modules junction 从 dsh 安装目录解析。属「宿主提供」，不是「AGINT 引入的第三方依赖」。"
+    },
+    {
+      "prefix": "@deepseek-ai/agint-",
+      "reason": "AGINT 自身的插件包名（quality-static 的 L0 隔离测试里出现）。同属宿主 bundle 内的名字，非外部依赖。"
+    }
+  ],
+  "allowExact": [
+    {
+      "name": "zod",
+      "reason": "install/install.sh 步骤 1.5 通过 install/agint-zod-bootstrap.sh 从 dsh 的 node_modules 复制进来（不是 npm install 装进 AGINT）。README「仓库自检」一节明确：AGINT 仓不引入第三方运行时依赖，zod 走的是宿主 bootstrap 通道。若哪天改为 npm 依赖，本条必须删除并让门禁红。"
+    },
+    {
+      "name": "react",
+      "reason": "仅出现在 plugins/agint-family-panel/lib/client.js，且是在 window.__ModuleLoader__.load({ factory(require) }) 内 —— 该 require 由 dsh shell 的浏览器模块表注入，与官方 client 插件同一解析路径，属宿主提供。不是 Node 侧依赖，也不进 AGINT 的 package.json。若将来在 Node 侧（非 __ModuleLoader__ 上下文）出现 require('react')，本条不再适用。"
+    }
+  ],
+  "notes": [
+    "裸内置模块（fs / path / util …）不在这里 —— 它们不是第三方依赖，门禁只作 BUILTIN_NO_PREFIX 提示（建议补 node: 前缀），不计为违规。",
+    "新增白名单条目的门槛：必须能指出「由谁提供」，且提供者是 dsh 宿主或浏览器模块表。若答案是 npm，就应该让门禁红。"
+  ]
+}

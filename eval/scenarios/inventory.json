@@ -1,0 +1,1859 @@
+{
+  "inventoryVersion": "1.0",
+  "generatedAt": "2026-10-02T10:23:25.106Z",
+  "generatedBy": "bin/build-scenario-inventory.mjs",
+  "driverVersion": "e8c75cd3e198a5c5415d03d468ccc2eb432ab409",
+  "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
+  "scope": {
+    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）",
+    "excluded": "eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到，见 dedicatedUnits 段",
+    "dedicatedDecisionPending": "设计 §附录 C.2 第 9 项：dedicated 是纳入 driver 统一扫描还是维持独立 runner，须在 Sprint 18 拍板。本清单按 §2.2.1 字面定义将其排除在计量范围外，但如实记录不丢弃。"
+  },
+  "summary": {
+    "totalUnits": 123,
+    "passCount": 118,
+    "failCount": 5,
+    "skipCount": 0,
+    "fileCount": 35,
+    "unitsPerFile": {
+      "eval/scenarios/agint-cron.scenario.json": 2,
+      "eval/scenarios/agint-diagnosis.scenario.json": 10,
+      "eval/scenarios/agint-dream.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-02.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-03.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-04.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-05-policy.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-05.scenario.json": 1,
+      "eval/scenarios/agint-event-bus-s12-06.scenario.json": 1,
+      "eval/scenarios/agint-evolution-memory.scenario.json": 7,
+      "eval/scenarios/agint-memory.scenario.json": 1,
+      "eval/scenarios/agint-metrics.scenario.json": 2,
+      "eval/scenarios/agint-mount-s11-01-happy.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-02-static-reject.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-03-signature-diff.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-04-sandbox-smoke-fail.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-05-health-probe-fail.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-06-sandbox-unavailable.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-07-baseline-regression-fail.scenario.json": 1,
+      "eval/scenarios/agint-mount-s11-08-idempotent.scenario.json": 1,
+      "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json": 5,
+      "eval/scenarios/agint-quality-eval-regression.scenario.json": 6,
+      "eval/scenarios/agint-quality-eval-sandbox-gate.scenario.json": 4,
+      "eval/scenarios/agint-quality-eval-weekly-hook.scenario.json": 4,
+      "eval/scenarios/agint-quality-policy-committee.scenario.json": 6,
+      "eval/scenarios/agint-quality-policy-decisions.scenario.json": 10,
+      "eval/scenarios/agint-quality-policy-false-harmony.scenario.json": 7,
+      "eval/scenarios/agint-quality-report.scenario.json": 3,
+      "eval/scenarios/agint-quality-sandbox.scenario.json": 5,
+      "eval/scenarios/agint-quality-sdk.scenario.json": 7,
+      "eval/scenarios/agint-rules-policy-deny.scenario.json": 4,
+      "eval/scenarios/agint-rules.scenario.json": 1,
+      "eval/scenarios/agint-self-model.scenario.json": 10,
+      "eval/scenarios/agint-sprint6-pipeline.scenario.json": 8,
+      "eval/scenarios/install-security.scenario.json": 6
+    },
+    "domainCounts": {
+      "cron": 2,
+      "diagnosis": 10,
+      "dream": 1,
+      "event-bus": 6,
+      "evolution-memory": 7,
+      "install-security": 6,
+      "memory": 1,
+      "metrics": 2,
+      "mount": 8,
+      "pipeline": 8,
+      "quality": 57,
+      "rules": 5,
+      "self-model": 10
+    },
+    "kindCounts": {
+      "e2e": 8,
+      "integration": 115
+    }
+  },
+  "units": [
+    {
+      "unitId": "cron-parse-and-nextFire",
+      "sourceFile": "eval/scenarios/agint-cron.scenario.json",
+      "plugin": "agint-cron",
+      "domain": "cron",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3e3ff4fc4b7eccb4674cf42e4a374a9167d88b28889cd2f14f12bc1e6a58dec1",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "cron-default-jobs-registered",
+      "sourceFile": "eval/scenarios/agint-cron.scenario.json",
+      "plugin": "agint-cron",
+      "domain": "cron",
+      "kind": "integration",
+      "lastKnownStatus": "FAIL",
+      "failCategory": null,
+      "contentHash": "sha256:6cc996dc3e13a6d1051ed1372db18ad52d7cfdc9c533e5095a0181dac2e8ba9c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-prompt-deficiency",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:76b0599a783796a7231b8ede99bfd7d35efe48151f5a90c3f4d8fd7718542435",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-tool-gap",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:c812f300a50236165d78f727e63fea081b35690e3a2105b52f8eeb20152e0f13",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-knowledge-gap",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3b18bf161040996c1583c0bf66371282abcebfdc4eb5fd8cea99ea3a609af634",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-reasoning-error",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:e896817ca11e887c9355f07a17c4321a06fddf230e4e6f3f6d5e3160d7b16d2b",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-planning-failure",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:461bec80de9417f6dafcf62f5dc3d1e5629303c912d565dbdee7f73f3cc95205",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-environment-shift",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:8705be50e0e6e2b135e099a25298aa8effb36f1ed2ac418fe1d4b3413439266c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-uncertain-no-class-matches",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:ea992bb179312280d1c149851f0c0b7330d974076ff2ebbe7752044dbeaf4856",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "classify-tied-knowledge-and-tool",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:4de28b076332978d0a49d67e9829f7b9204bd12b8bac5acc6df954f7e7319364",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "service-cold-start-throws",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:70aa66d1ca7513b2aae0a2017a5b2cb08d55e23dc4d61d480d7ec85ea5aa5824",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "service-annotations-table-full-throws",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "plugin": "agint-diagnosis",
+      "domain": "diagnosis",
+      "kind": "integration",
+      "lastKnownStatus": "FAIL",
+      "failCategory": null,
+      "contentHash": "sha256:a25dbf94f13d728e5dec32e78556b4393712ce3a7e87f79d7d223463d59cc51d",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "dream-gate-thresholds",
+      "sourceFile": "eval/scenarios/agint-dream.scenario.json",
+      "plugin": "agint-dream",
+      "domain": "dream",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:031e987bf4b48338a48445a89d7f8f526886785b4dce301a5bd39f98a8504310",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-02-evolution-evaluated-sync-edge",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-02.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:6c3731560cf1ace275d6604e5d27e6a7343e9ffb64f9462bfaf6d0e813fcd3aa",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-03-sandbox-passed-failed-via-event-bus",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-03.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b92409a63fed78db8092df5a799ebb219bb53b264ff451f276574ff0a73eb2fa",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-04-mount-requested-via-event-bus",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-04.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:10abee078fdba8658a4e80bec2be2a9ed7caac200692b4be18a9fb90e2d06686",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-05-policy-policy-deployed-rolledback-shadow",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-05-policy.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "FAIL",
+      "failCategory": null,
+      "contentHash": "sha256:2de81b6bfa8e842be0fcfd53137eb920d5abb1e00adaf70e25f167c2e7d9f6cb",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-05-mount-succeeded-population-and-evolution-memory-observe",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-05.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:8dec5c00fa68acdda3cfda9c02e563d0a902df20231f1d41a16a438a5d36ea4c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s12-06-mount-failed-diagnosis-trigger",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-06.scenario.json",
+      "plugin": "agint-event-bus",
+      "domain": "event-bus",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:6d004e0aa064c91c1c28bb1efb43137a5c0c96be915b2c6cbcbd139ba321679d",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "evolution-log-write-read",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:8402ef61538fca3279f163f7870efa71f3952da3f7b285e7da63dda2a9f14edf",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "failure-patterns-add-and-dedupe",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:fb5895b2f70b8699dacd4e74cdfabf0d310f8cf00af8181d331e2006c7b21dc2",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "failure-patterns-substring-search",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:6b95507fa9feceeded01a958955f4aa2b12ae9c33ecb4de6c91b873385791500",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "success-templates-add-and-query",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:840aa721ded7e7c17bdd6c007f10c770d93e96a716c03bcfad3b43a1ad31a2be",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "decay-scan-no-mutation-without-apply",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:57cfff72e3523c6b61db8aa06e273ec66d61a5cc6cf093a62d197f189d13c2ff",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "physical-isolation-from-task-memory",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:59f5d20cd777696ba08ad828b2267c257660e78984329fe2e2dda9afe777874f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "stats-reports-counts-and-limits",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "plugin": "agint-evolution-memory",
+      "domain": "evolution-memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:c33255d209b6194dc587f6df241874b918b3a2f381b8dcc677c7ca7b58965efa",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "memory-write-read",
+      "sourceFile": "eval/scenarios/agint-memory.scenario.json",
+      "plugin": "agint-memory",
+      "domain": "memory",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:2bcb13fb52a4485e74697462a610886d58b6b581fb984cafff789cb2af2b4f3c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "metrics-compute-empty-sources",
+      "sourceFile": "eval/scenarios/agint-metrics.scenario.json",
+      "plugin": "agint-metrics",
+      "domain": "metrics",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:6dcc089d88c3ae7eda01b4ba82f11a85c633b7bfd8ea6727e2b28df9460feae1",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "metrics-compute-cron-source",
+      "sourceFile": "eval/scenarios/agint-metrics.scenario.json",
+      "plugin": "agint-metrics",
+      "domain": "metrics",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:0872fc56f3c334646cf87f86f72039f7115bc3776f095afa4cdb71be3ddf886b",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-01-happy-path-healthy-mount",
+      "sourceFile": "eval/scenarios/agint-mount-s11-01-happy.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:4aaf1418416976cd15f78785e962c3e40228f5b91e8618dfdcf59fc5129bc216",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-02-static-reject-before-prepare",
+      "sourceFile": "eval/scenarios/agint-mount-s11-02-static-reject.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:acc8ce4699ce2542b65bd4baeb25fb66759a5f5414e98675cbe854f431313735",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-03-frozen-signature-diff-rejects-mount",
+      "sourceFile": "eval/scenarios/agint-mount-s11-03-signature-diff.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:db978e547589c524fccb5d1f1c1f8c8295e886dde2582c3450b1e92d7885a21b",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-04-sandbox-smoke-fail-rollback",
+      "sourceFile": "eval/scenarios/agint-mount-s11-04-sandbox-smoke-fail.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3e400cdb16c569cb80837ec6639adb3bc5001d52c26db9edf120c39269322486",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-05-health-probe-fail-auto-disable",
+      "sourceFile": "eval/scenarios/agint-mount-s11-05-health-probe-fail.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:9a8abae9bb98aad6bde9eaba4057d2d650ad671ec4a34de83d80666e77380bb6",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-06-sandbox-unavailable-degrade-pending-review",
+      "sourceFile": "eval/scenarios/agint-mount-s11-06-sandbox-unavailable.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b9fee8a54a711970acebf5e8604a996d87e718f6652da2abf92b3299de77f315",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-07-baseline-regression-fail-rollback-and-freeze",
+      "sourceFile": "eval/scenarios/agint-mount-s11-07-baseline-regression-fail.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:f08dbd7405fd72f902185c22710e98845a10c36ea73a06a4a2493d6ae99cf96b",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "s11-08-idempotent-same-ticket-returned",
+      "sourceFile": "eval/scenarios/agint-mount-s11-08-idempotent.scenario.json",
+      "plugin": "agint-mount",
+      "domain": "mount",
+      "kind": "e2e",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:68ff0d51ff245ef0d6036ec91ad611e07830d69dc7fec9cca714c4c0a1ec24af",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "deploy-budget-is-auto-deploy-entry",
+      "sourceFile": "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:ce8d8cf39da6feed5b458b733de8ce076135b436915ec9374d34c3e9552e54d1",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "deploy-budget-count-rolling-7d",
+      "sourceFile": "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:47cf910afebcdf248661f54405b205f144270cee947501c763d4826e343561bc",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "deploy-budget-within-limit",
+      "sourceFile": "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:0dd7a2b500eaa952142e4619b142841688bb6b88b0127405bea5f88099285aec",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "deploy-budget-over-limit-forces-review",
+      "sourceFile": "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:4dfb2c90a2844a10a5df98daf2ec2848378553ccd931916e9f8edebf2ec51f2f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "deploy-budget-weekly-hook-wired",
+      "sourceFile": "eval/scenarios/agint-quality-eval-deploy-budget.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:efd6ad1ee3332d149d63f0a12fc61cdd71d4f831312755ed7a78b5755da91196",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "regression-baseline-delta-tiers",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:69fb724fd70d9d0b7ea1f1d9912f19c9cea25484b9307a0bdbf10cc6db376afe",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "regression-stagnation-active-growth",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:eb7ff9254cf59947d9efdd25c33f1cbb8a29e7cb18a85b43c01a36ce2d90a232",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "regression-stagnation-detected",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:db6fd781bbf2ac0006851bc5d2ac3f66ebc09d937b75f7a61d8822d26bde4ce6",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "regression-stagnation-insufficient-data",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:2e3684032805d1bbfad6ca19bfc317adf1ec903a6ee3b7ed1b67d6ffbe79eb62",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "compute-passrate-from-per-target-results",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3b66d9ed6c9ca64c1d74138811a57e3ef2c4a419de5b2784381b6571f3b7ee83",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "regression-baseline-targets-fixed-set",
+      "sourceFile": "eval/scenarios/agint-quality-eval-regression.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:2a3c2c0d808362aff1a23c413ee73fd5a9d648be7ed1d40b6a4221164b04a0fe",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-gate-passes-when-sandbox-ok",
+      "sourceFile": "eval/scenarios/agint-quality-eval-sandbox-gate.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:5adbd77dca3625bfc9d12e2486d2252b6bda3f1f4cffbbaa94ae1d1d8f6e176a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-gate-rejects-when-sandbox-fails",
+      "sourceFile": "eval/scenarios/agint-quality-eval-sandbox-gate.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:66963614983698de37f8353abf0f598a6f1ffbb73acb4d33e7efb0fd0dae7d44",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-gate-skipped-when-no-sandbox-service",
+      "sourceFile": "eval/scenarios/agint-quality-eval-sandbox-gate.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:8bd6a6dabca9f26caa4cca28df25e48bfba9c0a145328e3df28e7909a3eeabd4",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-gate-skipped-when-target-has-no-path",
+      "sourceFile": "eval/scenarios/agint-quality-eval-sandbox-gate.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:7e45bb7c3d73dca2ecdd58c3a5fe3cebb081d8c8f4e3019b51a364daef5fb27a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "weekly-hook-writes-eval-results-to-evolution-log",
+      "sourceFile": "eval/scenarios/agint-quality-eval-weekly-hook.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:f80e04c4675f94f090c8db8f1960dfd7b64ed1dfcccef063e1c4608f1c6ad7b6",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "weekly-hook-runs-baseline-suite",
+      "sourceFile": "eval/scenarios/agint-quality-eval-weekly-hook.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:e53d4147fe7efca6ef879cbccf9d26052960689709e52a7a52fc83bf9eb074a0",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "weekly-hook-detects-stagnation-after-many-runs",
+      "sourceFile": "eval/scenarios/agint-quality-eval-weekly-hook.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:c28a33fffd6d14781ec2c3d3023fdd1ec41255c892675c57132f6a31a0de925d",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "weekly-hook-triggers-regression-when-baseline-drops",
+      "sourceFile": "eval/scenarios/agint-quality-eval-weekly-hook.scenario.json",
+      "plugin": "agint-quality-eval",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:f236276e8521885c85fc8b586637ceb708e2fd889cd00aab83678feeffb4efd4",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-shadow-agrees-with-prod",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:cfb699c8b7ee72659f12d5f24018f7b27531b5d5e539df36aef8117031bf316f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-shadow-disagrees-with-prod",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:59169edc8549079b2a109b09f0a4643d0bfd066327a399192ae781bb3b21a654",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-shadow-10-agrees-promotes",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:ff3e25d4a6e6ab04722a6bb84f83ce89dcc3f04254aaacaaa277b56394df8255",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-rollback-triggers-on-high-reject-rate",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:1b2f3158468e6f7faa09eb4839e046bb2545f75f6c367c614a6432be4640af4e",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-rollback-skipped-on-low-reject-rate",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:c499fddba5df721411e0bcbc1b942cbd12f03d48a469c40a4cf5e4abe1459d3c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "committee-history-append-query-roundtrip",
+      "sourceFile": "eval/scenarios/agint-quality-policy-committee.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:35d7486e893cd2b04c2ee46d99ce5ae076a66020ec44b28ef1189cdb21118ea9",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-empty-results-abstain",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:be741f8635159ff0e75b8927625dcf626c30162b95932a88c11f0f6ccbad001f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-safety-veto-rejects",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:0109a57aa4b8edd47f941800b6a2c970dd343d48611f7fad6e3ba670c63aeb59",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-clean-results-pending-or-deploy",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "FAIL",
+      "failCategory": null,
+      "contentHash": "sha256:298016c2786d34a58feb98719a4ba7bd5da4fb3e61a14d250263d6ea4783ab01",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-weights-composite-correct",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:77c44488b17c68021a4f42489525888411b8cc864d16db6d5eefbbe3b7806a35",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-true-auto-deploy",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:a017229e2ebe57adc6b123b81a2d723e35ded76085796fe603b0a28f84c6ea60",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-trust-veto-rejects",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b7e8a8d12dd95d7e5900a8413b3571d5254e36e1c9e2c0ea384544ec2d7b0b9c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-abstain-insufficient-signal",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:75c43f4e539e4321106070632d136af51b09acab453c60c23359ce01840f26d9",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-setThresholds-audits-via-quality",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:187c842f1f201c2b03b38bd5825d4af797150ed6add666b92362217a1da514b1",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-setThresholds-rejects-invalid-range",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:34b9ebb4c034bd00a56134ece1b05b3f891f9fb7aa5a69f12cdce1b74a7123b2",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-decide-audits-memory",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:baa600d4a9dfcb207e8268cebee7f5a517a32d88630c9ed4e2f9a79107bf6e23",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-rejection-uniformity",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:727fc28ecd7422c1a9b9086b6e2e8867d360a88f1e1cfbe10a6bb9ea812a1ef0",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-rejection-uniformity-clean-with-variance",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:59c4c2f9e6bea29733c638c98fa243bb036ce5a964f49ceeab0ce048a56938ae",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-false-consensus-all-AUTO_DEPLOY",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:cb8c735cc4831ba16d9cd61169f400b46ccaae16614065c66052da08acd489f9",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-false-consensus-with-mixed-decisions",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:322c3ca1a4b7a9ef3dce53d73e8547a9d6fab602e33b16525d2572ac10b9ea77",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-regression-underreporting",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:221b4dddb0c9718bc88a75277141d6c927e6255f8f2a429161cfd9bd94f7c0c1",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "harmony-detect-regression-underreporting-clean",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:91afd32b229703380b31697849595c5bdce0f668f1a149fb50b6d3c8b228c4e9",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "policy-detectFalseHarmony-Service-full-run",
+      "sourceFile": "eval/scenarios/agint-quality-policy-false-harmony.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:70b4e7a91b579575a8ca7aa1667a28b2daf089a28b9caa1b7e659d89c627e7f3",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "report-generate-markdown-and-json",
+      "sourceFile": "eval/scenarios/agint-quality-report.scenario.json",
+      "plugin": "agint-quality-report",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:d066f2c16985f3493d15e3d96ed9ad1ef1588329bd74e14bc853ad31a89f8e73",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "report-writeToWiki-and-memory",
+      "sourceFile": "eval/scenarios/agint-quality-report.scenario.json",
+      "plugin": "agint-quality-report",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:6d999d7855e5cae4aa04db27066fade18f4163244a4321242555a80abc292ece",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "report-missing-decision-throws",
+      "sourceFile": "eval/scenarios/agint-quality-report.scenario.json",
+      "plugin": "agint-quality-report",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:bb39d8f9135cbbb9293bcd9258173efb97cc4523af522358ba0126ff96930c58",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-service-starts-with-config",
+      "sourceFile": "eval/scenarios/agint-quality-sandbox.scenario.json",
+      "plugin": "agint-quality-sandbox",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:814681c180e37c16ccca84c61602720edeff7c984fce56685e0178511e04934a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-falls-back-when-ctx-sandbox-missing",
+      "sourceFile": "eval/scenarios/agint-quality-sandbox.scenario.json",
+      "plugin": "agint-quality-sandbox",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b7cbc4e37dfdeb2e719047e73fe400660c9dab52115fb1aceb1db2f6af850be9",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-fails-on-nonexistent-plugin",
+      "sourceFile": "eval/scenarios/agint-quality-sandbox.scenario.json",
+      "plugin": "agint-quality-sandbox",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:a1133e1093da96926e1e628c7be8a7e5e0e6826a19b5e11e6ec2569e65f99753",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-rejects-missing-target-path",
+      "sourceFile": "eval/scenarios/agint-quality-sandbox.scenario.json",
+      "plugin": "agint-quality-sandbox",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:a0c81ec533035735fb747049a7c4cfa36d792419f6f59a02f8834504c907792a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sandbox-backend-health-reports-availability",
+      "sourceFile": "eval/scenarios/agint-quality-sandbox.scenario.json",
+      "plugin": "agint-quality-sandbox",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:e31a93e0c49409dad69b08af28dae2520a0dc9f49f18b9dc80b818c6886f4f8f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-validate-manifest-valid",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:241cad70e0f8b2d1d352ee368a24d88c3fb2317aa0a5c81f95e431d629e9e467",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-validate-manifest-too-few-tests",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3df51534e58e5508b017e7656cc9cbbe9e3dd51c1675e59459c719849493f57f",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-template-render-with-values",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3acdd5c42c96eb76e2bd4a33639ca036aeb046eafb10a0ee8ccd52e0c1918dc5",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-static-check-injection-blocker",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:a62cb854ab78669a4db12773dc040ab2f7ae1a3438a04e5b27f0fab75c749bd0",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-static-check-clean-prompt",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:151f114990b5563d00a869b5ddeb3a758835edd666f26f9b24ffbee59297b6f5",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-static-check-placeholder-typo",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:afe134eee0590f17981fd4866a30c75418032efff1cfdfdc22a6585f380e3224",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sdk-regression-tests-run-all-pass",
+      "sourceFile": "eval/scenarios/agint-quality-sdk.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "quality",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:63f473ccf6a34da3d105057a51ab2273315a7d8c8c9e1e2e62e6b9996802d563",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rules-deny-delete-evolution-log-rm",
+      "sourceFile": "eval/scenarios/agint-rules-policy-deny.scenario.json",
+      "plugin": "agint-rules",
+      "domain": "rules",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:7704333d6cf4f96194f5935a4bdd489f39836c0d53761dae4be758dfd2801829",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rules-deny-delete-evolution-log-rmrf",
+      "sourceFile": "eval/scenarios/agint-rules-policy-deny.scenario.json",
+      "plugin": "agint-rules",
+      "domain": "rules",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:216ee08f265d5764a23f2c958e7b31caadf6ce8067e344e6a80592e76849fcb7",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rules-deny-delete-evolution-log-unlink",
+      "sourceFile": "eval/scenarios/agint-rules-policy-deny.scenario.json",
+      "plugin": "agint-rules",
+      "domain": "rules",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:9e552220fa80dac6e8642f469707f7edfa46d8859dc63fb8686023f9cc908ce8",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rules-allow-mv-evolution-log-rotation",
+      "sourceFile": "eval/scenarios/agint-rules-policy-deny.scenario.json",
+      "plugin": "agint-rules",
+      "domain": "rules",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:992f5ea68e5ba29fd6a39ce1da0a202d578e05d0954e2972065b4b2f229108a7",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rules-deny-rm-rf-root",
+      "sourceFile": "eval/scenarios/agint-rules.scenario.json",
+      "plugin": "agint-rules",
+      "domain": "rules",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:ef1b3b35009bef851ac407dca801618cfcbceefdc3eb7deef31ec53bc3a4d30e",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-capability-can",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:0a7eb21915d997e60e9907b0fe1c18a3c02c3cc568b8e41fea2a3ab7d385ba37",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-capability-cannot",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:fed583b71df57afd38acc29716652ab64550906c0f8c26bb80f387d5b2ded2c4",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-capability-uncertain-low-samples",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:dff520df6a51134e79e7399f516df67a0de486afb557ca8ae002a3985de0fd49",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-calibration-cold-start-guard",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:024fbd1b377b645b1d8ee2015b943063f398edf0ae626b25c45b3311600bb633",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-calibration-miscalibration-guard",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:66db3c3a57e262c29bc1e9fdce1bbd9471a584bb261cac42956aabeca70592ab",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-frozen-lastVerifiedAt-required",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:9db0a36349120ecda2819cb973da2281cf41558deccfb2689d66601eacdc7457",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-a11-publish-payload",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:943fc1f98445b384479ac6fe7183a20f6a06561b1a566b01dd0afa6ea3cd12a4",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-update-changedDomains",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:50edfdc66deab23e8cc38debae4d7cb2da0ddffe6cd5b14f2ff9a17bbe736013",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-snapshot-four-blocks",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:e22302a83bf17c5fd4a354f63b5b39a449daded5e12babd38299fb3988696405",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "self-model-reasoning-profile-from-diagnosis",
+      "sourceFile": "eval/scenarios/agint-self-model.scenario.json",
+      "plugin": "agint-self-model",
+      "domain": "self-model",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:09b9af3c2e59c61c19df6fa52fcefba98bbeecf338a3015276db9d0c6d20b21e",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-batchStaticCheck-cleans-and-bad",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-quality-sdk",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:e21a89161dce76090a464e856f892815ace83c07ea39715768b57e4c22491b78",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-cron-job-prompt-static-check-registered",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-cron",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "FAIL",
+      "failCategory": null,
+      "contentHash": "sha256:0ef6fc9788c4bb5270fe7871eea46789efec97591a1b9bd1b1fa20fa4fd84bfe",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-evalPromptStatic-no-prompt-target",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-sprint6-prompt-eval",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b6cbb6621d8d8e9387dae997b0ff1fe39db7ec6a275fe7daf65896050ee3e168",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-evalPromptStatic-clean-prompt",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-sprint6-prompt-eval",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b61c32f3c38f34ac7e1c0574384af5c2c866e563b696f0216a46cbebb13b123a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-evalPromptStatic-bad-prompt-score-dropped",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-sprint6-prompt-eval",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:5080618e76b6ea155593b04d181f62ee6360f56afc5495dc9991dbacd76a2881",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-policy-prompt-blocker-finding-forces-REJECT",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:c748a6b0f77fff1325f8b8e4bb75041abf7f80b208083176009b91ee648b2c7a",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-policy-clean-prompt-PENDING_REVIEW",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-quality-policy",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:2177d276bc0fb7b8ab5e91060617a60ea54d44f4a08aed010c351f5d81b3cf7d",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "sprint6-report-prompt-section-rendered",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "plugin": "agint-quality-report",
+      "domain": "pipeline",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:3c48ef22227af1dfdb3009be2da4a4910ff0a26aa3aa27c428808c58d939afd8",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "rsync-no-links-excludes-node-modules",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:9846636b0e6bfb02b8b4673af6cf32eb0bd42bab3e84da8fa3d4e9477d1d1934",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "install-trap-registers-partial-steps",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:fd48cf008147776b93c0dcc83fd43c9a1690b087b2ab48f69ff081940d7d9b28",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "install-rejects-path-traversal",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:55596c08e8b74b2f56ed5862dc2fde57606473988ea79749119180c69c054027",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "install-uses-central-backup-dir",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:8e819c97625fd90b1f50a9ee34c254b21c7b160109c684f58aed9bd7fee4c1a8",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "uninstall-supports-restore-and-list",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:b3ac36c0425592ee2b4bea36dd968135c480a4382d6d874d82c20cefebee7adc",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    },
+    {
+      "unitId": "security-checks-script-is-self-contained",
+      "sourceFile": "eval/scenarios/install-security.scenario.json",
+      "plugin": "agint-install",
+      "domain": "install-security",
+      "kind": "integration",
+      "lastKnownStatus": "PASS",
+      "failCategory": null,
+      "contentHash": "sha256:42fa78038fb497a4ca2f79439ae7ca47cd0d0119ec5e475eb75e143ff054925c",
+      "externalDeps": [
+        "dsh-runtime"
+      ],
+      "runtimeRequired": true
+    }
+  ],
+  "dedicatedUnits": {
+    "count": 2,
+    "note": "不被 driver.js 扫描（driver 只扫 __dirname 且不递归），由 run-diagnosis-eval.mjs / run-mutator-eval.mjs 独立执行。",
+    "units": [
+      {
+        "unitId": "( unnamed )",
+        "sourceFile": "eval/scenarios/dedicated/agint-diagnosis-counterfactual.scenario.json",
+        "plugin": null,
+        "domain": "diagnosis",
+        "kind": "dedicated",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:c241c5d665b576f806a8b4503966fe73a52d1bd07ca517194b302d51fd02df59",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      },
+      {
+        "unitId": "( unnamed )",
+        "sourceFile": "eval/scenarios/dedicated/agint-mutator.scenario.json",
+        "plugin": null,
+        "domain": "mutator",
+        "kind": "dedicated",
+        "lastKnownStatus": "UNKNOWN",
+        "failCategory": null,
+        "contentHash": "sha256:82dfa6ccd8a8b6bd50f101c8cdab9cb253f130dad1bd4319c1e7ab0e04403b17",
+        "externalDeps": [
+          "dsh-runtime"
+        ],
+        "runtimeRequired": true
+      }
+    ]
+  },
+  "attribution": {
+    "owner": "Sprint 17（12 存量 fail 归因 ≥80%）",
+    "phase0Role": "只提供清单基础设施，不做归因（设计 §6.3）",
+    "failCategoryValues": "null = 未归因。禁止用占位值填充。",
+    "pendingUnits": [
+      "cron-default-jobs-registered",
+      "service-annotations-table-full-throws",
+      "s12-05-policy-policy-deployed-rolledback-shadow",
+      "policy-decide-clean-results-pending-or-deploy",
+      "sprint6-cron-job-prompt-static-check-registered"
+    ]
+  },
+  "reconciliation": {
+    "claimedTotal": 104,
+    "claimedPass": 92,
+    "claimedFail": 12,
+    "claimSource": "Sprint12-设计稿 .md:159 / AGINT‐智进.md:9 / 路线图.md:188",
+    "measuredTotal": 123,
+    "measuredPass": 118,
+    "measuredFail": 5,
+    "delta": 19,
+    "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 118 vs 声称 92（+26）；\nFAIL：实测 5 vs 声称 12（-7）。\n存量 fail 由 12 降至实测值，说明部分 fail 已被修复；另有一部分口径变化来自单元总数增长。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
+    "driverSummaryLine": "118 passed, 5 failed, 0 skipped (of 123)",
+    "measuredBy": "driver.js 全量回归实测",
+    "complete": true
+  }
+}

@@ -200,3 +200,60 @@ describe('当前真实状态断言（再变红时请更新豁免与文档）', (
     assert.ok(energized.includes('agint_population'), `agint_population 应在已通电列表里，当前已通电 ${energized.length} 个`);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 0 交付物（设计 §5.2.2）：--static-only 静态模式
+//
+// 为什么单独立测：这条模式是给 CI / 未部署环境用的。它最大的风险不是报错，
+// 而是**静默地什么都不查** —— 查 E/H 在没有部署位时本来就恒空（existsSync 守卫
+// 直接短路），如果不显式标注，那张"一致"是假绿。所以断言里必须验「跳过了」
+// 这件事被**说出来**了，而不只是没报错。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('--static-only 静态模式', () => {
+  const run = (args) =>
+    execFileSync(NODE, [SCRIPT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+  test('跳过查 E 与查 H，并且**显式说出**跳过了（不是静默不查）', () => {
+    const out = run(['--static-only']);
+    assert.match(out, /查 E：双副本一致性/);
+    assert.match(out, /查 H：仓库 ↔ 部署位漂移/);
+    assert.match(out, /⊘ 跳过（--static-only）/, '跳过状态必须在输出里可见，否则与假绿无法区分');
+    // 出现两次：E 一次、H 一次
+    assert.equal((out.match(/⊘ 跳过（--static-only）/g) || []).length, 2);
+  });
+
+  test('保留 A/B/C/D/F/G/I（设计 §5.2.2 只跳 E/H）', () => {
+    const out = run(['--static-only']);
+    for (const label of ['查 A：空壳服务', '查 B/C：主题接线', '查 D：存储域通电', '查 F：命名空间错配', '查 G：TS 源/产物漂移', '查 I：漂移插件 smoke 验证']) {
+      assert.ok(out.includes(label), `静态模式漏了 ${label}`);
+    }
+  });
+
+  test('结论行标注静态模式', () => {
+    const out = run(['--static-only']);
+    assert.match(out, /静态模式：查 E\/H 已跳过/);
+  });
+
+  test('向后兼容：不带参数时不得出现静态模式标记（既有调用方行为不变）', () => {
+    const out = run([]);
+    assert.doesNotMatch(out, /⊘ 跳过（--static-only）/, '默认模式被静态模式污染了');
+    assert.doesNotMatch(out, /静态模式：查 E\/H 已跳过/);
+  });
+
+  test('--json 下 E/H 带 skipped 标记（静态模式必须自证没查过，而不是报"一致"）', () => {
+    const j = JSON.parse(run(['--static-only', '--json']));
+    assert.equal(j.dualCopy.skipped, true, '查 E 未标记 skipped');
+    assert.ok(j.dualCopy.skipReason && j.dualCopy.skipReason.length > 0);
+    assert.equal(j.drift.skipped, true, '查 H 未标记 skipped');
+    assert.ok(j.drift.skipReason && j.drift.skipReason.length > 0);
+    // 跳过的检查不得产出"一致"这种假结论
+    assert.equal(j.dualCopy.checked, 0);
+    assert.equal(j.drift.checked, 0);
+  });
+
+  test('默认模式 --json 下 E/H 不带 skipped 标记（向后兼容）', () => {
+    const j = JSON.parse(run(['--json']));
+    assert.notEqual(j.dualCopy.skipped, true);
+    assert.notEqual(j.drift.skipped, true);
+  });
+});

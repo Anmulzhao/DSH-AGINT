@@ -20,6 +20,8 @@
  *   node bin/check-wiring.mjs              人读输出
  *   node bin/check-wiring.mjs --json       CI 消费
  *   node bin/check-wiring.mjs --strict     NOT_YET_FIRED 也算失败
+ *   node bin/check-wiring.mjs --static-only  静态模式：跳过查 E / 查 H（部署位相关）
+ *                                            保留 A/B/C/D/F/G/I（设计 §5.2.2）
  *
  * 退出码：0 = 无缺口 / 1 = 有缺口 / 2 = 脚本自身出错
  */
@@ -39,6 +41,13 @@ const EXEMPTIONS_FILE = join(REPO_ROOT, 'docs', 'wiring-exemptions.json');
 const argv = process.argv.slice(2);
 const AS_JSON = argv.includes('--json');
 const STRICT = argv.includes('--strict');
+// Phase 0 交付物（设计 §5.2.2）：静态模式跳过**部署位相关**的查 E / 查 H。
+//   查 E（bundle 位 vs 镜像位）与查 H（仓库 ↔ 部署位）都需要 $DSH_HOME 真实存在，
+//   在 CI / 未部署环境里它们要么恒空（existsSync 守卫直接短路），要么拿不到
+//   部署位 —— 报出来的"一致"是**假绿**。静态模式下显式跳过并标注，
+//   而不是让它静静地什么都不查。
+//   查 I 依赖 E/H 产出的漂移集合，静态模式下集合为空 ⇒ 自然零成本跳过。
+const STATIC_ONLY = argv.includes('--static-only');
 
 /** 读豁免清单。⛔ 清单文件缺失 = 门禁失去治理入口，直接报错而不是静默放行。 */
 let exemp = { shellServices: [], topics: [], domains: [] };
@@ -419,7 +428,10 @@ function sha(s) {
 }
 
 const dup = { checked: 0, identical: 0, divergent: [], mirrorMissing: [], presetRefs: 0 };
-if (existsSync(BUNDLE_PLUGINS) && existsSync(MIRROR_PLUGINS)) {
+if (STATIC_ONLY) {
+  dup.skipped = true;
+  dup.skipReason = '依赖部署位（bundle 位 + 镜像位），静态模式不查';
+} else if (existsSync(BUNDLE_PLUGINS) && existsSync(MIRROR_PLUGINS)) {
   for (const dir of readdirSync(BUNDLE_PLUGINS, { withFileTypes: true })) {
     if (!dir.isDirectory()) continue;
     for (const sub of ['lib/tools.js', 'lib/index.js']) {
@@ -485,7 +497,10 @@ function listLibFiles(root) {
 }
 
 const drift = { checked: 0, repoNewer: [], hostNewer: [], repoOnly: [], hostOnly: [] };
-if (existsSync(BUNDLE_PLUGINS) && existsSync(REPO_PLUGINS)) {
+if (STATIC_ONLY) {
+  drift.skipped = true;
+  drift.skipReason = '对比仓库与部署位，静态模式不查';
+} else if (existsSync(BUNDLE_PLUGINS) && existsSync(REPO_PLUGINS)) {
   const repoFiles = new Set(listLibFiles(REPO_PLUGINS));
   const hostFiles = new Set(listLibFiles(BUNDLE_PLUGINS));
   for (const rel of repoFiles) {
@@ -597,6 +612,8 @@ if (AS_JSON) {
         tsDrift,
         dualCopy: dup,
         drift: {
+          skipped: !!drift.skipped,
+          skipReason: drift.skipReason ?? null,
           checked: drift.checked,
           repoNewer: drift.repoNewer,
           repoOnly: drift.repoOnly,
@@ -706,7 +723,9 @@ if (tsDrift.length === 0) {
 }
 
 console.log(`\n${C.b}── 查 E：双副本一致性（bundle 位 vs 兼容镜像位）──${C.r}`);
-if (!dup.checked) {
+if (dup.skipped) {
+  console.log(`  ${C.dim}⊘ 跳过（--static-only）：${dup.skipReason}${C.r}`);
+} else if (!dup.checked) {
   console.log(`  ${C.dim}跳过：未检出双副本布局（非 bundle 部署）${C.r}`);
 } else {
   console.log(
@@ -717,7 +736,9 @@ if (!dup.checked) {
 }
 
 console.log(`\n${C.b}── 查 H：仓库 ↔ 部署位漂移 ──${C.r}`);
-if (!drift.checked) {
+if (drift.skipped) {
+  console.log(`  ${C.dim}⊘ 跳过（--static-only）：${drift.skipReason}${C.r}`);
+} else if (!drift.checked) {
   console.log(`  ${C.dim}跳过：未检出 bundle 部署布局${C.r}`);
 } else {
   console.log(
@@ -757,7 +778,8 @@ if (driftPlugins.size === 0) {
   }
 }
 
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${dupOk ? '' : ' / 双副本已走偏'}${driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}`);
+const modeSuffix = STATIC_ONLY ? '  [静态模式：查 E/H 已跳过]' : '';
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
 else console.log(`${C.dim}PASS${C.r}`);

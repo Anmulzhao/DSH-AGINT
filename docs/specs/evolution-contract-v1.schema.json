@@ -1,0 +1,248 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./evolution-contract-v1.schema.json",
+  "title": "Evolution Contract v1.0",
+  "description": "单次进化的完整记录契约（假设 → 执行 → 裁决 → 结果）。来源：Phase-0 设计方案 §4.2.1。格式纪律：JSON 而非 YAML（eval/scenarios/README.md:297 零依赖要求）；校验用手写校验器 bin/validate-contract-schema.mjs，不引入 ajv。",
+  "_annotationKeys": "以 '_' 开头的键（如 _comment）一律视为注解，不参与校验、不受 additionalProperties 限制。设计 §4.2.1 的示例里就带 _comment。",
+
+  "type": "object",
+  "required": ["contractVersion", "identity", "hypothesis", "evaluationPlan", "budget", "audit"],
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+
+    "identity": {
+      "type": "object",
+      "required": ["contractId", "createdAt", "createdBy"],
+      "additionalProperties": false,
+      "properties": {
+        "contractId": { "type": "string", "minLength": 1 },
+        "parentVersion": { "type": ["string", "null"] },
+        "candidateVersion": { "type": ["string", "null"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "hypothesis": {
+      "type": "object",
+      "description": "修改前必填。锁定后不可改（见设计 §4.2.4）。",
+      "required": ["summary", "targetMetric", "reasoning", "changedComponents"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "targetMetric": {
+          "type": "string",
+          "enum": ["SUCCESS_RATE", "TOKEN_EFFICIENCY", "LATENCY", "REGRESSION", "SAFETY"]
+        },
+        "predictedDelta": {
+          "type": ["number", "null"],
+          "description": "Phase 0 允许 null 并显式标注 NOT_PREDICTED；禁止用 0 冒充「无预测」（设计 §4.2.3）。"
+        },
+        "predictedDeltaNote": {
+          "type": ["string", "null"],
+          "enum": ["NOT_PREDICTED", null]
+        },
+        "confidenceLevel": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "reasoning": { "type": "string", "minLength": 1 },
+        "changedComponents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pluginName", "filesChanged", "changeType"],
+            "additionalProperties": false,
+            "properties": {
+              "pluginName": { "type": "string", "minLength": 1 },
+              "filesChanged": { "type": "array", "items": { "type": "string" } },
+              "changeType": { "type": "string", "enum": ["ADD", "MODIFY", "DELETE", "CONFIG"] }
+            }
+          }
+        }
+      }
+    },
+
+    "evaluationPlan": {
+      "type": "object",
+      "description": "修改前必填。benchmarkSet 只能是 EVOLUTION 或 VALIDATION，不得为 FROZEN（设计 §4.2.1 修正表）。",
+      "required": ["benchmarkSet", "sampleSize", "statisticalTest", "significanceLevel", "effectSizeThreshold"],
+      "additionalProperties": false,
+      "properties": {
+        "benchmarkSet": {
+          "type": "string",
+          "enum": ["EVOLUTION", "VALIDATION"],
+          "_rule": "FROZEN 被显式排除：Frozen Set 只用于发版裁决，反复观察会失去冻结性质。"
+        },
+        "sampleSize": { "type": "integer", "minimum": 1 },
+        "statisticalTest": { "type": "string", "enum": ["T_TEST", "WILCOXON", "BOOTSTRAP"] },
+        "significanceLevel": { "type": "number", "minimum": 0, "maximum": 1 },
+        "effectSizeThreshold": { "type": "number", "minimum": 0 },
+        "regressionGuard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRegressionRate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "guardScenarios": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+
+    "budget": {
+      "type": "object",
+      "required": ["sandboxRequired", "deployBudgetCheck"],
+      "additionalProperties": false,
+      "properties": {
+        "maxTokens": { "type": ["number", "null"], "minimum": 0 },
+        "maxDuration": { "type": ["number", "null"], "minimum": 0 },
+        "sandboxRequired": { "type": "boolean" },
+        "deployBudgetCheck": { "type": "boolean" }
+      }
+    },
+
+    "execution": {
+      "type": "object",
+      "description": "各阶段逐步回填，允许空串占位（未回填）—— 但不得用 0 冒充「无改进」（设计 §4.2.5）。",
+      "additionalProperties": false,
+      "properties": {
+        "diagnosis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rootCauseCategory": {
+              "type": "string",
+              "enum": [
+                "KNOWLEDGE_GAP",
+                "TOOL_MISUSE",
+                "REASONING_FAILURE",
+                "CONTEXT_OVERFLOW",
+                "CAPABILITY_BOUNDARY",
+                "EVAL_ARTIFACT"
+              ]
+            },
+            "clusterId": { "type": "string" },
+            "evidence": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "mutation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mutationId": { "type": "string" },
+            "mutationType": {
+              "type": "string",
+              "enum": ["TOOL", "MEMORY", "WORKFLOW", "PROMPT", "MIDDLEWARE"]
+            },
+            "diffDigest": { "type": "string" },
+            "sandboxResult": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED"] }
+          }
+        },
+        "population": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidateId": { "type": "string" },
+            "finalState": { "type": "string" },
+            "safetyScore": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+          }
+        },
+        "mount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ticketId": { "type": "string" },
+            "smokeResult": { "type": "string", "enum": ["PASS", "FAIL"] },
+            "activationResult": { "type": "string", "enum": ["ACTIVE", "DISABLED", "ROLLED_BACK"] }
+          }
+        },
+        "abtest": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "testId": { "type": "string" },
+            "pValue": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "effectSize": { "type": ["number", "null"] },
+            "significant": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policyResult": { "type": "string", "enum": ["AUTO_DEPLOY", "PENDING_REVIEW", "REJECT"] },
+        "policyReason": { "type": "string" },
+        "decidedAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+
+    "outcome": {
+      "type": "object",
+      "description": "D-QAF 评估完成后回填。四源全空时必须标 NO_EVIDENCE，不得写 0（设计 §4.2.5）。",
+      "additionalProperties": false,
+      "properties": {
+        "actualDeltas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["metric"],
+            "additionalProperties": false,
+            "properties": {
+              "metric": { "type": "string", "minLength": 1 },
+              "baseline": { "type": ["number", "null"] },
+              "candidate": { "type": ["number", "null"] },
+              "delta": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "dataSources": {
+          "type": "object",
+          "required": ["primary"],
+          "additionalProperties": false,
+          "properties": {
+            "primary": {
+              "type": "string",
+              "enum": ["event_bus", "population", "preimage", "mutator_stats", "NO_EVIDENCE", "EVIDENCE_CONFLICT"]
+            },
+            "queriedDomains": { "type": "array", "items": { "type": "string" } },
+            "mutatorStatsReliable": { "type": "boolean" }
+          }
+        },
+        "regressionDetected": { "type": "boolean" },
+        "rollbackAvailable": { "type": "boolean" },
+        "rollbackExecuted": { "type": "boolean" }
+      }
+    },
+
+    "audit": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "contractHash": { "type": "string" },
+        "parentContractHash": { "type": "string" },
+        "eventBusIds": { "type": "array", "items": { "type": "string" } },
+        "preimagePath": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "DIAGNOSED",
+            "MUTATED",
+            "EVALUATED",
+            "MOUNTED",
+            "TESTED",
+            "DECIDED",
+            "COMPLETED",
+            "ARCHIVED",
+            "TAMPERED"
+          ]
+        }
+      }
+    }
+  }
+}
