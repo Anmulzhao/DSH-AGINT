@@ -210,8 +210,52 @@ Codex 另提两点，已采纳为规则：
 
 **所以 GUI 上的「已停用」是状态误读**——它表示「这不是宿主 fiber」，不是「preset 里被禁了」。
 
-**要让 `subagent_codex` 出现在工具表里，只能让会话 mount `agint` preset**（GUI 切 preset，或新开会话选智进）。
-已运行会话保留启动时的插件版本，工具侧做不到。
+> **2026-10-02 10:45 更正（本节初版第 1 点前提错了）**
+>
+> 初版说「本会话是 `agint` preset」，依据是会话日志首行 `"agentPreset":"agint"`。
+> **该判断是错的**：这份会话用的是 **`cordis` preset（显示名「创造模式」）**，依据
+> `dsh-client-ui-agent-preset/lib/client.js:315` → `presetCordisName: "创造模式"`。
+> 同一份日志里其实**同时**出现过 `cordis` 这个值，当时两个候选并存却只取了一个就往下走。
+> 所以第 1 点查的是**别人的 preset 文件**，与本会话无关。
+
+#### 6.5.1 实际生效路径（已真调验证）
+
+四个官方 preset 里 `standard` / `ptc` / `cordis` **都**带这一行，且**都写死 `disabled: true`**：
+`presets/standard.patch.yml:105`、`presets/ptc.patch.yml:105`、`presets/cordis.patch.yml:104`
+（三处均以 `grep -n "id: tool-subagent-codex" -A3` 实测）；`presets/minimal.patch.yml` 里
+codex 命中 **0 行**，没有这一行。host 侧 provider 行在 commit `aee5941` 已就位。
+
+**所以要做的是把所用 preset 里那一行 `disabled` 去掉**，路径是覆盖 **profile patch**
+（`~/.dsh/profiles/web/cordis.patch.yml`，机器本地、不入库）：
+
+```yaml
+- id: preset-cordis          # Loader 按行 id 覆盖；config 是整块替换，不能只写一行
+  name: '@deepseek-ai/dsh-agent-preset'
+  config: …                  # 重列 preset 全部字段
+```
+
+两个坑：
+
+- **整块替换**：官方 preset 有 **4 处 `!!js` 表达式**（第 25/28/147/154 行），用 YAML 解析器
+  重新序列化会毁掉它们。本次改用**纯文本手术**（逐行搬原文，只删那一行），并断言
+  `覆盖文本 === 官方文本.replace(那一行 + '\n', '')`。
+- **需要重启**：`agentPresets` 的 revision 是 eagerly activated once 且共享，
+  覆盖写盘后不重启不生效。实测宿主 10:32:52 重启（覆盖写于 09:45:02）后生效。
+
+**闭环三步**（§4.3）：重启 → `Tool.listTools` 命中 `subagent_codex`（重启前 44 个工具里 0 命中）
+→ 真调一次，子 agent 回报「跑在 DeepSeek provider 上，模型 MiniMax-M3.1-Flash-Preview」。
+
+回滚：`cp ~/.dsh/profiles/web/cordis.patch.yml.bak-codex-20261002014502. ~/.dsh/profiles/web/cordis.patch.yml`。
 
 ⚠️ 仍然成立：那个 `codex` provider 是 `@deepseek-ai/dsh-subagent-spawn-in-process`（`providerName: codex`），
-**跑的是进程内 DSH agent，不是 codex CLI**。真要调 CLI 走 `codex exec`。
+**跑的是进程内 DSH agent，不是 codex CLI**——子 agent 自己就是这么报的。真要调 CLI 走 `codex exec`。
+
+#### 6.5.2 它的能力与 `subagent` 不同
+
+- **无 `provider` / `model` / `reasoning_effort` 参数**：cordis preset 那行没开
+  `modelSelectionSettings`，子 agent 固定继承父级 LLM 路由。
+- **默认同步阻塞**：该行 `enableRunInBackground: false`，描述为
+  "This call waits for the result by default"；并行要显式传 `run_in_background: true`，
+  结果用 `job_output` 回收。
+
+完整复盘见 `docs/lessons/2026-10-02-preset-codex启用与取证.md`。
