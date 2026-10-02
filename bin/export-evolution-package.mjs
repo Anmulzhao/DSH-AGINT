@@ -18,10 +18,11 @@
 //   理由：离线批处理；让插件在运行时导出等于把「数据离开本机」变成常规能力，风险面扩大。
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { packTarGz } from './lib/tar.mjs';
+import { unifiedDiff, applyReverse } from './lib/diff.mjs';
 import { generalizePaths, scanSensitiveDeep, redactText } from './lib/redact.mjs';
 import { textHash } from './lib/canonical-json.mjs';
 
@@ -179,28 +180,168 @@ function collectCode() {
     notes.push('拿不到 git HEAD（可能不是 git 仓库或未装 git）⇒ 01-code/git-commit.txt 缺失');
   }
 
-  // ② preimage 清单（diff.patch 需要 diff 工具，这里只列清单并说明）
+  // ② preimage → 真实 diff.patch（Tier B）
+  //
+  // ⭐ 命名规则来自引擎侧 `plugins/agint-evolution-driver/lib/index.js:1135`：
+  //   `.agint-preimage/${norm.split('/').join('__')}__${stamp}.bak`
+  //   即**路径分隔符换成 `__`，再加 `__<时间戳>`**。反解必须与它一一对应 ——
+  //   反解错了会拿 A 文件的备份去对 B 文件，产出「看着像 diff」的假 diff。
+  //
+  //   配对策略：同一路径有多份备份时，取**时间戳最早**的那份作为 before
+  //   （即「该期进化之前的原始内容」），与当前文件比。
+  //   理由：多份备份是同一路径被反复改动的历史；最早那份才代表「本轮改之前」。
   const preimages = existsSync(PREIMAGE_DIR)
     ? readdirSync(PREIMAGE_DIR).filter((f) => f.endsWith('.bak')).sort()
     : [];
-  if (preimages.length > 0) {
+
+  const diffParts = [];
+  const diffMeta = [];
+  const diffSkipped = [];
+
+  // ⭐⭐ 同一路径只能有**一条** diff：从时间戳**最早**的备份算。
+  //
+  //   踩过的坑：6 份备份里有 3 份是同一个 `bin/plugin-check.sh`，
+  //   不去重就生成 3 条 diff，全部 apply 到当前文件 —— `git apply` 报
+  //   「patch does not apply at bin/plugin-check.sh:464」，
+  //   而且**报错行号各不相同**（每条 diff 假定自己 apply 完就能对上）。
+  //
+  //   为什么取最早那份而不是最新：备份是该路径**每次被改前**的快照，
+  //   最早那份 = 本轮改动之前的原始内容，与当前文件的 diff 才是完整的。
+  //   （第二早/第三早是「中间态」，与当前文件 diff 只会得到残缺片段。）
+  const byPath = new Map();
+  for (const bak of preimages) {
+    const relPath = decodePreimageName(bak);
+    if (!relPath) {
+      diffSkipped.push({ backup: bak, reason: '文件名不符合 `<路径>__<时间戳>.bak` 约定' });
+      continue;
+    }
+    if (!byPath.has(relPath)) byPath.set(relPath, []);
+    byPath.get(relPath).push(bak);
+  }
+
+  for (const [relPath, baks] of [...byPath.entries()].sort()) {
+    // 备份文件名按时间戳升序（时间戳是 ISO 定长，字典序 = 时间序）
+    const bak = baks[0];
+    if (baks.length > 1) {
+      diffSkipped.push({
+        backup: baks.slice(1).join(', '),
+        reason: `同路径有 ${baks.length} 份备份，只用最早的 ${bak}（更晚的是中间态，diff 会残缺且互相冲突）`,
+      });
+    }
+    const live = join(REPO_ROOT, relPath);
+    // ⛔ 安全闸：反解出的路径必须仍在仓库内。
+    //   备份文件名来自磁盘，不可信；`../../etc/passwd` 这类必须在这里被拦住，
+    //   而不是等 readFileSync 把它读进包。
+    if (!isInside(REPO_ROOT, live)) {
+      diffSkipped.push({ backup: bak, reason: '反解路径越出仓库根，已拒绝读取' });
+      continue;
+    }
+    if (!existsSync(live)) {
+      diffSkipped.push({ backup: bak, reason: `对应文件已不存在（${relPath}），无法配对` });
+      continue;
+    }
+    const before = readFileSync(join(PREIMAGE_DIR, bak), 'utf8');
+    const after = readFileSync(live, 'utf8');
+    const patch = unifiedDiff(before, after, `a/${relPath}`, `b/${relPath}`);
+    if (patch === '') {
+      diffSkipped.push({ backup: bak, reason: '与当前文件内容一致（无差异）' });
+      continue;
+    }
+    // ⭐ 往返自证：能生成 diff 的实现很多，能证明 diff 真能还原的很少。
+    //   R1 的实际含义是「接收方 apply 后得到逐字节相同的文件」，
+    //   所以打不进包之前先自己 apply 一次，失败就不出这条 diff。
+    const restored = applyReverse(patch, after, `b/${relPath}`);
+    if (restored !== before) {
+      throw new Error(
+        `diff 往返校验失败，拒绝出包：${relPath}\n` +
+          '  生成器产出的 diff 无法反向还原出原文件 —— 这种 diff 比没有更危险' +
+          '（接收方会以为还原成功）。\n' +
+          `  before 长度 ${before.length} · 还原长度 ${restored === null ? 'null' : restored.length}`,
+      );
+    }
+    diffParts.push(patch);
+    diffMeta.push({ path: relPath, backup: bak, bytes: patch.length });
+  }
+
+  if (diffParts.length > 0) {
+    const header =
+      '# 01-code/diff.patch —— AGINT 进化包代码差异\n' +
+      '# 由 bin/export-evolution-package.mjs 生成（零依赖手写 unified diff）\n' +
+      `# 覆盖 ${diffMeta.length} 个文件。每条 diff 生成后都跑过 apply 往返自检。\n` +
+      '# 用途：接收方在 preimage 备份缺失时，可用本文件把代码还原到进化前的状态。\n' +
+      '#\n' +
+      diffMeta.map((m) => `#   ${m.path}（来自 ${m.backup}）`).join('\n') +
+      '\n\n';
     items.push({
-      path: '01-code/preimage-manifest.json',
+      path: '01-code/diff.patch',
+      content: header + diffParts.join(''),
+    });
+    items.push({
+      path: '01-code/diff-manifest.json',
       content: `${JSON.stringify(
         {
-          note: '本包不含 diff.patch —— 生成 diff 需要 diff 工具，属 Tier B 实跑范围。当前先给清单，供接收方判断可还原性。',
-          count: preimages.length,
-          files: preimages,
+          note: '每个 diff 都已通过 apply 往返自检（还原结果与 preimage 逐字节相同）。',
+          count: diffMeta.length,
+          files: diffMeta,
+          skipped: diffSkipped,
         },
         null,
         2,
       )}\n`,
     });
+    if (diffSkipped.length > 0) {
+      notes.push(`preimage 有 ${preimages.length} 份，其中 ${diffSkipped.length} 份无法配对（详见 diff-manifest.json 的 skipped）`);
+    }
   } else {
-    notes.push('preimage 目录为空或不存在 ⇒ 01-code 无备份清单，R1 级复现不可用');
+    items.push({
+      path: '01-code/preimage-manifest.json',
+      content: `${JSON.stringify(
+        {
+          note:
+            preimages.length > 0
+              ? 'preimage 存在但无法生成任何 diff（全部无法配对）⇒ 见 skipped 原因。'
+              : 'preimage 目录为空或不存在 ⇒ 01-code 无备份清单，R1 级复现不可用。',
+          count: preimages.length,
+          files: preimages,
+          skipped: diffSkipped,
+        },
+        null,
+        2,
+      )}\n`,
+    });
+    notes.push('未产出 diff.patch（无 preimage 或无可配对项）⇒ R1 的代码 diff 部分不可用');
   }
 
   return { items, notes, preimageCount: preimages.length };
+}
+
+/**
+ * 反解 preimage 文件名 → 仓库相对路径。
+ *
+ * 命名规则见 `plugins/agint-evolution-driver/lib/index.js:1135`：
+ *   `<相对路径各段用 __ 连接>__<ISO 时间戳，冒号换短横线>.bak`
+ *
+ * ⛔ 时间戳里也含 `-`（如 `2026-09-29T05-26-53-216Z`），所以**从右往左**
+ *   找最后一个 `__`，按它切开才是对的。按第一个 `__` 切会把路径段吃掉。
+ */
+function decodePreimageName(bak) {
+  if (!bak.endsWith('.bak')) return null;
+  const stem = bak.slice(0, -4);
+  const idx = stem.lastIndexOf('__');
+  if (idx <= 0) return null;
+  const pathPart = stem.slice(0, idx);
+  const stamp = stem.slice(idx + 2);
+  // 时间戳形态校验：`2026-09-29T05-26-53-216Z`
+  if (!/^\d{4}-\d{2}-\d{2}T[\d-]+Z$/.test(stamp)) return null;
+  const relPath = pathPart.split('__').join('/');
+  return relPath === '' ? null : relPath;
+}
+
+/** p 是否在 root 之内（防目录穿越）。 */
+function isInside(root, p) {
+  const r = resolve(root);
+  const t = resolve(p);
+  return t === r || t.startsWith(r + sep);
 }
 
 function readGitHead() {
@@ -233,7 +374,7 @@ function readGitHead() {
 
 // ── 生成 manifest ───────────────────────────────────────────────────────────
 
-function buildManifest({ runtime, code, preimageCount, fileHashes, ledgerAvailable, ledgerReason }) {
+function buildManifest({ runtime, code, preimageCount, hasDiffPatch, fileHashes, ledgerAvailable, ledgerReason }) {
   const now = new Date().toISOString();
   const packageId = `EVO-PKG-${now.slice(0, 10).replace(/-/g, '')}-${textHash(now).slice(0, 8)}`;
 
@@ -268,7 +409,9 @@ function buildManifest({ runtime, code, preimageCount, fileHashes, ledgerAvailab
       '变异由 LLM 生成，重跑结果不保证相同（R3 不可达，见规范 §2.1 三条原因）',
       '宿主私有包未随包分发，需接收方自行安装 dsh',
       '判定基准非外部锚定（NOT_ANCHORED），评估结论的可信度受限（见 03-evaluation/PROVENANCE.json）',
-      '本包不含 diff.patch（需 diff 工具生成）⇒ 代码复现依赖接收方自行比对 preimage',
+      hasDiffPatch
+        ? 'diff.patch 只覆盖**有 preimage 备份且当前文件仍存在**的路径；未覆盖部分见 01-code/diff-manifest.json 的 skipped'
+        : '本包不含 diff.patch（无可配对的 preimage）⇒ 代码复现依赖接收方自行比对 preimage',
     ],
     integrity: {
       packageHash,
@@ -424,6 +567,23 @@ function main() {
   }
 
   // NOT-REPRODUCIBLE
+  const diffCount = code.items.find((it) => it.path === '01-code/diff-manifest.json')
+    ? JSON.parse(code.items.find((it) => it.path === '01-code/diff-manifest.json').content).count
+    : 0;
+  const skippedCount = code.items.find((it) => it.path === '01-code/diff-manifest.json')
+    ? JSON.parse(code.items.find((it) => it.path === '01-code/diff-manifest.json').content).skipped.length
+    : 0;
+  const diffSection = diffCount > 0
+      ? `## 2. 代码 diff —— 本包含 \`01-code/diff.patch\`（${diffCount} 个文件）\n\n` +
+        `每条 diff 生成后都跑过 \`apply\` 往返自检：反向应用后必须逐字节等于 preimage 备份，否则导出器拒绝出包。\n` +
+        (skippedCount > 0
+          ? `\n⚠️ 另有 ${skippedCount} 份 preimage 未能配对（原因见 \`01-code/diff-manifest.json\` 的 \`skipped\`），` +
+            '这些路径**不在** diff 覆盖范围内。\n'
+          : '\n') +
+        `\n**局限**：diff 只覆盖「有 preimage 且当前文件仍在」的路径。preimage 保留期是 ≥90 天或 ≥20 期` +
+        `（\`docs/known-limitations\` 同级规范），超期清理后旧期 diff 将不可用。\n`
+      : '## 2. 代码 diff —— 本包不含 diff.patch\n\n' +
+        '无可配对的 preimage 备份（或全部配对失败），因此无 diff。接收方只能依据 `01-code/preimage-manifest.json` 自行比对。\n\n';
   allItems.push({
     path: '05-environment/NOT-REPRODUCIBLE.md',
     content:
@@ -432,8 +592,7 @@ function main() {
       '1. 变异由 LLM 生成，非确定性（同 prompt + 同模型 ≠ 同输出）\n' +
       '2. 模型侧不可复现：AGINT 运行时解析 provider/model，接收方默认模型几乎必然不同\n' +
       '3. 时间维度不可复现：工具链、网络、外部服务状态随时间变\n\n' +
-      '## 2. 代码 diff —— 本包不含 diff.patch\n\n' +
-      '生成 diff 需要 diff 工具（Tier B 实跑范围）。当前只给 `01-code/preimage-manifest.json` 清单。\n\n' +
+    diffSection +
       '## 3. 评估结论 —— 基准非外部锚定\n\n' +
       '见 `03-evaluation/PROVENANCE.json`。基准存于 `success_template`（同池可写、无 provenance）。\n\n' +
       '## 4. 路径已泛化\n\n' +
@@ -470,6 +629,7 @@ function main() {
     runtime,
     code,
     preimageCount: code.preimageCount,
+    hasDiffPatch: code.items.some((it) => it.path === '01-code/diff.patch'),
     fileHashes,
     ledgerAvailable,
     ledgerReason,

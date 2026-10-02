@@ -29,7 +29,7 @@ function makeSandbox() {
   mkdirSync(join(bin, 'lib'), { recursive: true });
   cpSync(EXPORTER, join(bin, 'export-evolution-package.mjs'));
   cpSync(VERIFIER, join(bin, 'verify-evolution-package.mjs'));
-  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs']) {
+  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs', 'diff.mjs']) {
     cpSync(join(__dirname, 'lib', f), join(bin, 'lib', f));
   }
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', version: '0.9.0' }));

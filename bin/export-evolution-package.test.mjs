@@ -32,7 +32,7 @@ function makeSandbox(storages = {}) {
   const bin = join(root, 'bin');
   mkdirSync(join(bin, 'lib'), { recursive: true });
   cpSync(SCRIPT, join(bin, 'export-evolution-package.mjs'));
-  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs']) {
+  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs', 'diff.mjs']) {
     cpSync(join(__dirname, 'lib', f), join(bin, 'lib', f));
   }
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', version: '0.9.0' }));
@@ -455,6 +455,154 @@ test('✅ 打包可复现：同输入两次打包字节一致（packageHash 可�
       if (hb.get(p) !== c) diffs.push(p);
     }
     assert.deepEqual(diffs, [], `这些文件两次打包内容不同：${diffs.join(', ')}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── 01-code/diff.patch（Phase-3 设计 §3.6 Tier B 验收项 13）────────────────
+
+/**
+ * 在沙箱里造 preimage 备份。命名规则必须与引擎侧一致：
+ *   `plugins/agint-evolution-driver/lib/index.js:1135`
+ *   `.agint-preimage/${norm.split('/').join('__')}__${stamp}.bak`
+ */
+function seedPreimage(root, relPath, content, stamp = '2026-09-29T05-26-53-216Z') {
+  const dir = join(root, '.agint-preimage');
+  mkdirSync(dir, { recursive: true });
+  const bak = `${relPath.split('/').join('__')}__${stamp}.bak`;
+  writeFileSync(join(dir, bak), content, 'utf8');
+  return bak;
+}
+
+test('✅ diff.patch：有 preimage 时必须产出，且内容可被 git apply 还原', () => {
+  const { root, dsh } = makeSandbox();
+  try {
+    const relPath = 'plugins/demo/mod.js';
+    const before = Array.from({ length: 30 }, (_, i) => `const x${i} = ${i};`).join('\n') + '\n';
+    const after = `${before}\nconst added = 'new';\nconsole.log(added);\n`;
+    mkdirSync(join(root, 'plugins/demo'), { recursive: true });
+    writeFileSync(join(root, relPath), after, 'utf8');
+    seedPreimage(root, relPath, before);
+
+    const pkg = join(root, 'p.tar.gz');
+    const r = run(root, dsh, ['--confirm', `--out=${pkg}`]);
+    assert.equal(r.status, 0, r.output);
+
+    const files = new Map(
+      unpackTar(readFileSync(pkg))
+        .filter((e) => e.type === 'file')
+        .map((e) => [e.path, e.content.toString('utf8')]),
+    );
+    assert.ok(files.has('01-code/diff.patch'), '包内必须有 diff.patch');
+    const patch = files.get('01-code/diff.patch');
+    assert.match(patch, /^\+\+\+ b\/plugins\/demo\/mod\.js$/m, 'patch 必须指向真实路径');
+    assert.match(patch, /^\+const added = 'new';$/m);
+
+    // ⭐ 端到端：接收方解包后用真 git apply 还原，必须逐字节等于 preimage
+    const work = mkdtempSync(join(tmpdir(), 'evo-apply-'));
+    try {
+      // ⚠️ 必须先建目录：writeFileSync 不会自动建父目录，
+      //    漏这一步的报错是 ENOENT，看着像「导出失败」其实是测试自己没建。
+      mkdirSync(join(work, 'plugins/demo'), { recursive: true });
+      writeFileSync(join(work, relPath), after, 'utf8');
+      writeFileSync(join(work, 'p.patch'), patch, 'utf8');
+      spawnSync('git', ['init', '-q'], { cwd: work });
+      const ap = spawnSync('git', ['apply', '-R', '--whitespace=nowarn', 'p.patch'], {
+        cwd: work,
+        encoding: 'utf8',
+      });
+      assert.equal(ap.status, 0, `git apply -R 失败：${ap.stderr}\n${patch}`);
+      assert.equal(readFileSync(join(work, relPath), 'utf8'), before, '还原结果必须逐字节等于 preimage');
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 同路径多份 preimage 只取最早的（多份会互相冲突，git apply 必失败）', () => {
+  const { root, dsh } = makeSandbox();
+  try {
+    const relPath = 'plugins/demo/a.js';
+    const v1 = 'a\nb\nc\n';
+    const v2 = 'a\nB\nc\n';
+    const after = 'a\nB\nc\nd\ne\n';
+    mkdirSync(join(root, 'plugins/demo'), { recursive: true });
+    writeFileSync(join(root, relPath), after, 'utf8');
+    seedPreimage(root, relPath, v1, '2026-09-01T00-00-00-000Z');
+    seedPreimage(root, relPath, v2, '2026-09-15T00-00-00-000Z');
+    seedPreimage(root, relPath, v2, '2026-09-20T00-00-00-000Z');
+
+    const pkg = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${pkg}`]).status, 0);
+    const files = new Map(
+      unpackTar(readFileSync(pkg))
+        .filter((e) => e.type === 'file')
+        .map((e) => [e.path, e.content.toString('utf8')]),
+    );
+    const manifest = JSON.parse(files.get('01-code/diff-manifest.json'));
+    assert.equal(manifest.count, 1, `同路径只应有 1 条 diff，实际 ${manifest.count} 条`);
+    assert.match(manifest.files[0].backup, /2026-09-01/, '必须取时间戳最早的备份');
+    // 更晚的两份必须记进 skipped 并说明原因
+    assert.ok(
+      manifest.skipped.some((s) => /同路径有 3 份备份/.test(s.reason)),
+      `未记录去重原因：${JSON.stringify(manifest.skipped)}`,
+    );
+    // 文件头只出现一次该路径
+    const headers = files.get('01-code/diff.patch').match(/^\+\+\+ b\/plugins\/demo\/a\.js$/gm) || [];
+    assert.equal(headers.length, 1, `patch 里同一路径只应有一条，实际 ${headers.length} 条`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 备份名反解出的路径越出仓库根 ⇒ 必须拒绝（防目录穿越）', () => {
+  const { root, dsh } = makeSandbox();
+  try {
+    // 恶意备份名：路径段 `..` `..` 一路往上
+    mkdirSync(join(root, '.agint-preimage'), { recursive: true });
+    writeFileSync(
+      join(root, '.agint-preimage', '..__..__..__etc__passwd__2026-09-01T00-00-00-000Z.bak'),
+      'root:x:0:0\n',
+      'utf8',
+    );
+    const pkg = join(root, 'p.tar.gz');
+    const r = run(root, dsh, ['--confirm', `--out=${pkg}`]);
+    assert.equal(r.status, 0, r.output);
+    const files = new Map(
+      unpackTar(readFileSync(pkg))
+        .filter((e) => e.type === 'file')
+        .map((e) => [e.path, e.content.toString('utf8')]),
+    );
+    // 不管是有 diff 还是退回清单，都**不能**把 etc/passwd 的内容放进包
+    const patch = files.get('01-code/diff.patch') || '';
+    assert.ok(!patch.includes('root:x:0:0'), '越界路径的内容绝不能进包');
+    const manifestText = files.get('01-code/diff-manifest.json') || files.get('01-code/preimage-manifest.json') || '';
+    assert.match(manifestText, /越出仓库根|已不存在|无法配对/, `必须如实记录跳过原因：\n${manifestText}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('✅ 无 preimage 时退回清单，且 R1 如实降级（不虚报）', () => {
+  const { root, dsh } = makeSandbox();
+  try {
+    const pkg = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${pkg}`]).status, 0);
+    const files = new Map(
+      unpackTar(readFileSync(pkg))
+        .filter((e) => e.type === 'file')
+        .map((e) => [e.path, e.content.toString('utf8')]),
+    );
+    assert.ok(!files.has('01-code/diff.patch'), '无 preimage 时不得凭空生成 diff.patch');
+    const mf = JSON.parse(files.get('manifest.json'));
+    assert.notEqual(mf.reproductionLevel, 'R1', '无 preimage + 无 git HEAD ⇒ 不得宣称 R1');
+    assert.ok(
+      mf.reproductionCaveats.some((c) => c.includes('不含 diff.patch')),
+      `caveats 必须如实说明：${JSON.stringify(mf.reproductionCaveats)}`,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
