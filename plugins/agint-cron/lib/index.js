@@ -25,7 +25,19 @@ import { createHostBridge } from './host-schedule.js';
 const name = 'agint-cron';
 const inject = ['timer', 'storageDomain'];
 
-const Config = z.object({}).optional();
+const Config = z
+  .object({
+    /**
+     * AGINT 仓库根（绝对路径）。spec-index-refresh 读 `docs/specs/INDEX.json` 用。
+     *
+     * ⛔ 默认 null 是有意的：不猜目录。宿主上可能有多份 AGINT 检出（K125：
+     *   两机共仓 + 硬编码绝对路径 = 谁后装谁覆盖），猜错会去审计另一份仓库，
+     *   报出一堆并不存在的漂移 —— **假警报比不报警更坏**，它会训练人忽略这条。
+     *   没配就 soft-skip，理由写进 lastResultSummary。
+     */
+    repoRoot: z.string().min(1).nullish(),
+  })
+  .optional();
 
 // Persisted per-job run state. The scheduler keeps lastRunAt/lastResult/
 // lastError in memory only, so a dsh process restart makes cron_list report
@@ -58,7 +70,7 @@ const spec = defineDomain({
   tables: { cron_state: { valueSchema: cronStateSchema } },
 });
 
-function apply(ctx) {
+function apply(ctx, config) {
   // Persisted state domain. Opened lazily; if it fails to open (or is empty on
   // first boot) we degrade to in-memory-only (the previous behaviour) rather
   // than blocking the scheduler.
@@ -171,6 +183,11 @@ function apply(ctx) {
     // undefined → job soft-skip 不报错（该插件稳定性标记为 experimental）。
     'agint.memoryProvider': ctx.get('agint.memoryProvider'),
     sessionPersistence: ctx.get('sessionPersistence'),
+    // Phase-3 轨道 C（spec-index-refresh）：审计要读**仓库里的** docs/specs/。
+    // ⛔ 这不是宿主服务，是一个路径 —— 用 config 传，不进 ctx.get。
+    //   默认为空 ⇒ job 走 REPO_ROOT_UNKNOWN soft-skip，而不是去猜一个目录
+    //   （猜错 =  audits 另一份仓库的索引，报出一堆假的漂移，比不跑更坏）。
+    'agint.repoRoot': config?.repoRoot ?? null,
   });
 
   // Jobs in one tick run to completion, in declaration order. Previously each

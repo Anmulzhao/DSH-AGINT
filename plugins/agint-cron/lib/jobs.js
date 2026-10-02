@@ -26,6 +26,7 @@
  *   oracle-monthly  每月 1 日 10:00 美谕月报
  *   diagnosis-watchdog 每 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
  *   memory-provider-health daily 08:30 记忆 provider 定期健康检查（阶段 3）
+ *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -34,6 +35,7 @@
  */
 
 import { parseCron, nextFire, lastFire } from './cron.js';
+import { auditSpecIndex } from './spec-index-audit.js';
 
 export const defaultJobs = [
   {
@@ -598,6 +600,55 @@ export const defaultJobs = [
           durationMs: x.durationMs,
           consecutiveFailures: x.consecutiveFailures,
         })),
+      };
+    },
+  },
+  {
+    // Phase-3 轨道 C（2026-10-03）：协议索引月度巡检。
+    //
+    // 目的：INDEX.json 由 `node bin/build-spec-index.mjs` 在开发机生成并随
+    // review 走；规范文件改了而索引没重生成时，`--check` 会红，但**没人会想起来跑**
+    // —— 这正是 §0.1 反复出事的那类「静默漂移」。本 job 每月把它顶到台面上。
+    //
+    // ⛔ **只读**：审计不写盘（lib/spec-index-audit.js 头部有形态论证）。
+    //   索引是仓库资产，改它要过 review，不能由宿主进程单方面决定。
+    //
+    // ⛔ **soft-skip 而不是抛错**：判据不可用（部署位没有 docs/、生成器缺失）
+    //   属于「能力不在这一层」，不是「本次巡检失败」。抛错会在 cron 健康里
+    //   留一条永久红色，而那条红色不指向任何可修的东西 —— 那是噪声，不是信号。
+    //   ⚠️ 但 skip 必须写清**缺哪一项**（K134：能力不可用 vs 实现有 bug 要能分开）。
+    //
+    // ⚠️ 真正有漂移时**抛错**：那是要人修的，红色是对的。
+    //
+    // 排期：每月 1 日 10:30。
+    //   ⛔ 设计稿建议的是 09:30 —— **不可用**。09:30 已被 4 个周任务占满
+    //   （wiki-lint / baseline-regression-suite / curriculum-weekly / skill-graph-weekly），
+    //   而 dom=1 会落在任意星期几 ⇒ 每月必撞一次。schedule-layout 门禁会拦下它。
+    //   10:30 的理由：① 全窗口唯一空闲的半点（10:00 是 oracle-monthly）；
+    //   ② 距 oracle-monthly 30 分钟，够它先跑完；③ 不占周一上午链路。
+    id: 'spec-index-refresh',
+    name: '协议索引月度巡检',
+    schedule: '30 10 1 * *', // 每月 1 日 10:30
+    description: '只读审计 docs/specs/INDEX.json 与磁盘规范是否漂移；漂移抛错，判据不可用则显式 skip（不写盘）',
+    action: async (services) => {
+      const repoRoot = services['agint.repoRoot'];
+      const r = await auditSpecIndex({ repoRoot });
+      if (r.status === 'skipped') {
+        return { skipped: true, reason: r.reason, job: 'spec-index-refresh' };
+      }
+      if (r.status === 'drift') {
+        // 抛错让 cron 健康记录留下明确失败。修法写进消息里，省一次查文档。
+        throw new Error(
+          `spec-index-refresh: 协议索引漂移 ${r.errors.length} 处` +
+            ` —— 修法：跑 \`node bin/build-spec-index.mjs\` 重新生成后提交。\n` +
+            r.errors.map((e) => `  - ${e}`).join('\n'),
+        );
+      }
+      return {
+        status: 'ok',
+        specCount: r.specCount,
+        pendingCount: r.pendingCount,
+        untracked: r.untracked,
       };
     },
   },

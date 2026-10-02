@@ -2,6 +2,49 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.6] — 新增 spec-index-refresh job（Phase-3 轨道 C，2026-10-03）
+
+### 新增
+
+- **第 21 个 job `spec-index-refresh`**（每月 1 日 10:30）：只读审计
+  `docs/specs/INDEX.json` 与磁盘规范文件是否漂移。
+  - **动机**：`build-spec-index.mjs --check` 能查出漂移，但没人会想起来跑。
+    这是 §0.1 反复出事的那类**静默漂移** —— 索引与代码脱节而不报错。
+  - **⛔ 只读**：审计不写盘。索引是**仓库资产**，由开发机上的生成器产出、
+    随 code review 走；宿主进程单方面改它等于绕过 review。
+  - 判据**复用** `bin/build-spec-index.mjs` 的导出函数，不自造第二份
+    （两份校验器必然分叉，且分叉方向恰好是「--check 查得出、巡检查不出」）。
+- `lib/spec-index-audit.js`：`auditSpecIndex({ repoRoot })`。三种结果
+  `ok` / `drift` / `skipped` 必须可区分 —— **判据不可用绝不报 ok**（那是假防线）。
+- 配置项 `repoRoot`（`z.string().min(1).nullish()`，默认 null），
+  经 `services()` 的 `agint.repoRoot` 传给 job。
+  - ⛔ **默认 null，不猜目录**：宿主上可能有多份 AGINT 检出，猜错会去审计
+    另一份仓库并报出一堆并不存在的漂移 —— **假警报比不报警更坏**。
+- `services()` 映射加 `agint.repoRoot`，并在 `docs/wiring-exemptions.json`
+  的 `nonServiceNames` 登记（它是配置键不是宿主服务，查 F 会判成命名空间错配）。
+
+### 排期理由
+
+⛔ **设计稿建议的「1 日 09:30」不可用**：09:30 已被 4 个周任务占满
+（wiki-lint / baseline-regression-suite / curriculum-weekly / skill-graph-weekly），
+而 `dom=1` 每月落任意星期几 ⇒ 每月必撞一次。`schedule-layout.test.mjs` 会拦下它。
+
+改用 10:30：全窗口唯一空闲的半点（10:00 是 oracle-monthly），距其 30 分钟，
+且不占周一上午链路。原则①/② 由排期门禁强制，8/8 PASS。
+
+### 顺带修掉的真缺陷（比新功能更值钱）
+
+**`validateIndex` 名不副实** —— 它的名字听起来像「全部校验」，实际**不含
+schemaHash 漂移检查**：那段判据原先只写在 `main()` 的 `--check` 分支里。
+本 job 按名字复用它 ⇒ **最常见的那种漂移永远查不出，一路绿灯** ⇒ 一道假防线。
+
+修法：漂移判据抽成导出的 `validateSchemaHashDrift()`，`--check` 分支与
+`auditSpecIndex` 共用同一份（`validateIndex` + `validateSchemaHashDrift` + `computeIndex`）。
+回归钉在 `test/spec-index-refresh.test.mjs`：导出面缩回去就红。
+
+**一般教训**：**函数名承诺的覆盖面必须等于实际覆盖面**，否则复用即埋雷 ——
+尤其当它是「唯一权威判据」时，下游会理所当然地以为它查全了。
+
 ## [0.2.5] — 新增 memory-provider-health job（P1-1 阶段 3，2026-10-01）
 
 ### 新增

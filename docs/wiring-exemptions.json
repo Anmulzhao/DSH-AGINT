@@ -21,6 +21,12 @@
       "reason": "不是服务名，是 mount orchestrator 在配置里按优先级查找的键（lookupKeys = ['core.hmr','host.hmr','agint.hmr']）。",
       "evidence": "plugins/agint-mount/lib/orchestrator.js:162",
       "since": "2026-09-24"
+    },
+    {
+      "name": "agint.repoRoot",
+      "reason": "不是服务名，是 cron 配置项 repoRoot 在 services() 里的传递键。spec-index-refresh 要读仓库里的 docs/specs/，那是磁盘路径不是宿主服务 —— 宿主没有这个服务可 get。",
+      "evidence": "plugins/agint-cron/lib/index.js（services() 映射，值取自 config.repoRoot 而非 ctx.get）",
+      "since": "2026-10-03"
     }
   ],
 

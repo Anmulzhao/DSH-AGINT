@@ -22,7 +22,7 @@
 
 ### 默认注册的 job
 
-共 20 个（按调度粒度分组，组内按时刻排序）。**2026-09-28 全体重排**：
+共 22 个（按调度粒度分组，组内按时刻排序）。**2026-09-28 全体重排**：
 原本 8 个周任务全部堆在周日凌晨，另有 2 组同分钟撞车。排期原则与改动理由见
 [`docs/operations/cron-schedule-principles.md`](../../docs/operations/cron-schedule-principles.md)，
 并由 `test/schedule-layout.test.mjs` 强制（改排期违反原则会直接测试红）。
@@ -66,6 +66,15 @@
 | job id | 调度 | 说明 |
 |---|---|---|
 | `oracle-monthly` | `0 10 1 * *` | 美谕月报（每月 1 日 10:00，未动） |
+| `spec-index-refresh` | `30 10 1 * *` | 协议索引只读巡检：审计 `docs/specs/INDEX.json` 与磁盘是否漂移（每月 1 日 10:30；**⛔ 只读不写盘**；需配 `repoRoot`，否则 soft-skip；2026-10-03 新增，Phase-3 轨道 C） |
+
+> ⚠️ `spec-index-refresh` 需要配置项 `repoRoot` 指向 AGINT 仓库根。
+> **默认 null 是有意的**：宿主上可能有多份 AGINT 检出，猜错会去审计另一份仓库
+> 并报出一堆并不存在的漂移 —— **假警报比不报警更坏**。未配置时 job 走 soft-skip，
+> 理由写进 `lastResultSummary`（`REPO_ROOT_UNKNOWN`）。
+> ⚠️ 常驻宿主上通常 soft-skip：bundle 部署位只有 `cordis.patch.yml` / `package.json` /
+> `plugins/`，**没有 `docs/` 也没有 `bin/`** —— 这是「能力不在这一层」，不是故障。
+
 
 > **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、
 > ≥cap 报 CRITICAL；`reportRateGuard.trips > 0`（频率熔断真被咬过）报 WARN；
