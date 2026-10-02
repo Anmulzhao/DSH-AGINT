@@ -8,5 +8,18 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
-  }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "VERSION",
+    "LICENSE",
+    "README.md",
+    "plugins/",
+    "presets/",
+    "bundles/",
+    "patches/",
+    "install/",
+    "docs/specs/",
+    "bin/lib/"
+  ]
 }

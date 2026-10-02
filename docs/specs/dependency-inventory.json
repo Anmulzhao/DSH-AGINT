@@ -1,0 +1,77 @@
+{
+  "inventoryVersion": "1.0",
+  "_comment": "依赖清单（SBOM 的原始数据）。Phase 3 设计 §5.1。⚠️ 本文件是【清单】不是【SBOM】—— 官方 SBOM 格式尚未明确（外部阻塞），故只落原始数据。生成方式见 generatedBy。",
+  "generatedBy": "手工核实（2026-10-03，扫 plugins/*/package.json + 根 package.json 的 dependencies / peerDependencies）",
+  "agintVersion": "0.9.0",
+  "dshCompat": {
+    "minimum": "0.1.7-rc.1",
+    "tested": "0.2.0-rc.2"
+  },
+
+  "externalDependencies": [
+    {
+      "name": "@deepseek-ai/cordis",
+      "versionRange": "^4.0.1",
+      "providedBy": "dsh-runtime",
+      "inZeroDepsAllowlist": true,
+      "note": "Cordis 框架本体。宿主提供，AGINT 不 fork。"
+    },
+    {
+      "name": "@deepseek-ai/dsh-storage-domain",
+      "versionRange": "*",
+      "providedBy": "dsh-runtime",
+      "inZeroDepsAllowlist": true,
+      "note": "存储域服务。install.sh 建的 node_modules junction 从 dsh 安装目录解析。⚠️ 进程实测：仓库内是 83 字节 stub，真实现由运行时注入 ⇒ 裸跑测试不适用是设计不是缺陷（K62）。"
+    },
+    {
+      "name": "@deepseek-ai/dsh-tools",
+      "versionRange": "*",
+      "providedBy": "dsh-runtime",
+      "inZeroDepsAllowlist": true,
+      "note": "同上，83 字节 stub + 运行时注入。"
+    },
+    {
+      "name": "zod",
+      "versionRange": "^3.0.0",
+      "providedBy": "dsh-bootstrap",
+      "inZeroDepsAllowlist": true,
+      "note": "⛔ 不是 npm 装的。install/install.sh 步骤 1.5 经 install/agint-zod-bootstrap.sh 从 dsh 的 node_modules 复制到三个位置（bundle/node_modules/zod 等）。⚠️ 根 package.json 不含 dependencies 段 —— 本条来自 plugins/*/package.json 的声明。"
+    }
+  ],
+
+  "internalDependencies": [
+    { "name": "agint-diagnosis", "versionRange": ">=0.1.0", "providedBy": "本仓库 plugins/" },
+    { "name": "agint-event-bus", "versionRange": ">=0.7.0", "providedBy": "本仓库 plugins/" },
+    { "name": "agint-evolution-memory", "versionRange": ">=0.6.4", "providedBy": "本仓库 plugins/" },
+    { "name": "agint-metrics", "versionRange": ">=0.1.0", "providedBy": "本仓库 plugins/" },
+    { "name": "agint-tool-stats", "versionRange": ">=0.1.0", "providedBy": "本仓库 plugins/" }
+  ],
+
+  "rootPackageDependencies": {
+    "_note": "根 package.json 【无】dependencies / devDependencies 段 —— 这是零依赖纪律的直接体现，由 bin/check-zero-deps.mjs + docs/zero-deps-allowlist.json 强制。",
+    "dependencies": null,
+    "devDependencies": null
+  },
+
+  "unresolvedImports": {
+    "_note": "⚠️ 门禁白名单豁免但本清单未收录的 require —— 这些由宿主提供或走浏览器模块表，需要时查 docs/zero-deps-allowlist.json 的 evidence 数组。",
+    "items": [
+      { "name": "yaml", "usedBy": "bin/check-preset-parity.mjs", "resolution": "dsh 宿主的 node_modules" },
+      { "name": "react", "usedBy": "plugins/agint-family-panel/lib/client.js", "resolution": "浏览器模块表注入（window.__ModuleLoader__）" }
+    ]
+  },
+
+  "knownGaps": [
+    {
+      "gap": "这不是标准 SBOM（缺 SPDX / CycloneDX 字段）",
+      "impact": "官方市场若要求标准 SBOM 格式，本文件不能直接提交",
+      "blockedBy": "官方 SBOM 格式未明确（Phase 3 §0.4 外部硬阻塞）",
+      "plannedBy": "官方明确格式后写转换器 —— ⛔ 格式未定就写转换器必返工（Phase 3 §4.1 明确列为「现在明确不做」）"
+    },
+    {
+      "gap": "无传递依赖树",
+      "impact": "只列了直接依赖，看不到 zod 的依赖（若宿主版本变化引入新传递依赖，无法察觉）",
+      "reason": "零依赖纪律下没有 lockfile（无 npm install 可锁）；宿主依赖树由 dsh 掌握，AGINT 侧不可见"
+    }
+  ]
+}
