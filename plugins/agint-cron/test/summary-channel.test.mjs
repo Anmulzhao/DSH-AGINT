@@ -61,11 +61,29 @@ describe('cron summarizeResult · 约定式 summary 通道', () => {
     assert.equal(parsed.result.reverted, false);
   });
 
-  test('没放 summary 的 job 行为不变（向后兼容，仍退化成 keys）', () => {
+  test('没放 summary 的 job：keys 保留，顶层标量值同时带上（2026-10-04 行为变更）', () => {
     const out = summarizeResult({ alpha: 1, beta: 2 });
     const parsed = JSON.parse(out);
-    assert.deepEqual(parsed.keys, ['alpha', 'beta'], '没 summary 时必须保持旧的 keys 行为');
+    assert.deepEqual(parsed.keys, ['alpha', 'beta'], 'keys 行为保留（旧读者不破）');
+    assert.equal(parsed.alpha, 1, '标量值必须落盘 —— 只剩键名等于没读数');
+    assert.equal(parsed.beta, 2);
     assert.equal(parsed.result, undefined, '没 summary 就不能凭空造 result 键');
+  });
+
+  test('anchor 形状：anchored/code/commit 字符串值带上，对象只进 keys', () => {
+    const longX = 'x'.repeat(200);
+    const out = summarizeResult({
+      anchored: true, code: 'ANCHORED', row: { seq: 7 }, commit: '0e0fe65abc',
+      writeback: { ok: true }, anchorFile: longX,
+    });
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.keys.sort(), ['anchorFile', 'anchored', 'code', 'commit', 'row', 'writeback'].sort());
+    assert.equal(parsed.anchored, true);
+    assert.equal(parsed.code, 'ANCHORED');
+    assert.equal(parsed.commit, '0e0fe65abc');
+    assert.equal(parsed.row, undefined, '对象/数组不带值，留给约定通道');
+    assert.equal(parsed.writeback, undefined);
+    assert.equal(parsed.anchorFile.length, 121, '长字符串截到 120 + 省略号');
   });
 
   test('summary 与 report/actions 共存，互不覆盖', () => {
@@ -102,4 +120,15 @@ describe('cron summarizeResult · 约定式 summary 通道', () => {
     assert.equal(out.truncated, true, '超限必须整体标记，不能产出半截不可解析的 JSON');
     assert.equal(typeof out.bytes, 'number');
   });
+});
+
+// ── runNow 出口的 lastError 形状守卫（源码级，同 services-map 风格）────────
+// 2026-10-04 实测：runNow 原样返回 job.lastError（{ startedAt, message } 对象），
+// 工具输出 schema 声明 oneOf [string, null] ⇒ matched 0，失败原因整条被吞。
+test('runNow 出口把 lastError 转成字符串后才返回（⛔ 不许原样返回对象）', () => {
+  const i = src.indexOf('async runNow(');
+  assert.ok(i > 0, '找不到 runNow');
+  const seg = src.slice(i, i + 900);
+  assert.match(seg, /err\.message \?\? String\(err\)/, 'runNow 必须做 message 转换');
+  assert.doesNotMatch(seg, /lastError: job\.lastError \}/, '不许原样返回 lastError 对象');
 });

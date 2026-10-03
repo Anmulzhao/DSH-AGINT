@@ -301,7 +301,19 @@ function apply(ctx, config) {
           };
         });
       }
-      if (Object.keys(summary).length === 0) summary.keys = Object.keys(result).slice(0, 10);
+      if (Object.keys(summary).length === 0) {
+        summary.keys = Object.keys(result).slice(0, 10);
+        // 退化到 keys 时把顶层标量值一起搬上。「跑过、返回了这些键」回答不了
+        // 「做了什么」—— 2026-10-04 实测：observe 与 anchor 都落这条分支，
+        // observing=0 / anchored=true / commit=… 全部只余键名。数组/对象仍留给
+        // 显式 result.summary 约定通道（nothing is inferred 不破：值一律原样抄）。
+        for (const k of summary.keys) {
+          const v = result[k];
+          const t = typeof v;
+          if (t === 'number' || t === 'boolean') summary[k] = v;
+          else if (t === 'string') summary[k] = v.length > 120 ? v.slice(0, 120) + '…' : v;
+        }
+      }
       // 2026-09-29：约定式摘要通道。
       // 判据与本函数完全一致 —— 只搬「显式约定」的结构，**不猜**任何 job 特有字段
       //（nothing is inferred，见头注释）。job 想让运行结果在重启后仍可读，就自己放
@@ -364,7 +376,12 @@ function apply(ctx, config) {
       if (!job) throw new Error(`agint-cron: no job '${id}'`);
       if (job.running) throw new Error(`agint-cron: job '${id}' already running`);
       await runOne(job);
-      return { ok: job.lastError === null, lastResult: job.lastResult, lastError: job.lastError };
+      // lastError 在内存里是 { startedAt, message } 对象（L265），而本工具输出
+      // schema 声明 oneOf [string, null] ⇒ 原样返回会校验失败（matched 0），
+      // 恰好把「为什么失败」这条最该看见的信息吞掉（2026-10-04 实测两次撞上）。
+      // 出口统一转字符串；render 的 FAILED 分支因此恢复可用。
+      const err = job.lastError;
+      return { ok: job.lastError === null, lastResult: job.lastResult, lastError: err ? (err.message ?? String(err)) : null };
     },
 
     health() {
