@@ -21,6 +21,12 @@
 - 新增 `G12`（盘符判据按**槽文件里的数据**核：URL 不命中、真盘符命中）、`G13`（通配符引用一个都不落到文件系统）。
 - 套件 301 绿（+2）。
 
+### 同批数据变更（不升版本）
+- 老板签了 B 路线子集：四条 `must-not-*` × 9 个技能 = 36 条 ⇒ `addedBy:boss` + UTC 毫秒 `approvedAt`。
+- 每条另带 `scribedBy:agent` + `approvedVia:boss-instruction` + `approvedNote` —— 判据读的是 `addedBy`，多这三栏只为审计上分得清"谁判的"与"谁敲的字"（老板代笔这条不能无痕）。
+- 每技能分母从 0 变 4 ⇒ R2 从空槽变成在跑的仪器。基线读数：6 个技能 100%，`check-soundness` / `github-push` / `plugin-preflight` 各 75%（同红在盘符那条）。
+- `test/skill-gate.test.mjs` 的 `G11` 跟着改成新不变量：断言已签集合恰是老板点的那四条、`total=4`、`passRate` 有限。
+
 ## v0.2.17 — 2026-10-03（R2：技能类有了第二台仪器，但只在人签了标签之后）
 
 

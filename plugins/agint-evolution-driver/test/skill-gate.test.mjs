@@ -199,17 +199,35 @@ test('G10: 对全仓 32 个真技能，本文件的解析器与 skill-format che
 
 // ── 6. 候选槽的形状（老板签核的接口） ───────────────────────────────────
 
-test('G11: 生成的候选槽全部未签核 ⇒ 一台空仪器（total 0），签一条就活一条', () => {
+test('G11: 槽形状 —— 老板签的子集（四条 must-not-*）算数，其余只报数', () => {
   const dir = join(REPO, 'eval', 'skills', 'agint');
   const files = readdirSync(dir).filter((f) => f.endsWith('.cases.json'));
   assert.equal(files.length, 9, 'agint preset 9 个技能 ⇒ 9 个槽');
+  const SIGNED = [
+    'redline-no-machine-absolute-path', 'redline-no-secret-shaped-string',
+    'redline-no-bypass-instruction', 'redline-asd-no-ambiguous-qualifiers',
+  ];
   for (const f of files) {
     const doc = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-    const { approved, invalid } = splitCases(doc);
-    assert.equal(approved.length, 0, `${f}: 候选槽里不该有已签核条目`);
-    assert.equal(invalid.length, 0, `${f}: 候选 case 的形状必须本来就合法（老板只改两个字段）`);
-    assert.ok(doc.cases.length >= 6, `${f}: 每槽至少 6 条候选`);
-    assert.equal(doc.status, 'CANDIDATE-UNAPPROVED');
+    const { approved, proposed, invalid } = splitCases(doc);
+    assert.equal(invalid.length, 0, `${f}: case 形状必须本来就合法`);
+    assert.deepEqual(approved.map((c) => c.id).sort(), [...SIGNED].sort(), `${f}: 已签核集合就是老板点的那四条`);
+    assert.deepEqual(proposed.map((c) => c.id).sort(),
+      ['redline-name-equals-dir', 'redline-referenced-paths-exist']
+        .concat(f === 'plugin-preflight.cases.json' ? ['accepted-mutation-section'] : []).sort(),
+      `${f}: 没签的不进分母，但条数要报得出`);
+    for (const c of approved) {
+      assert.equal(c.scribedBy, 'agent', '审计口径：谁敲的字与谁做的判定要分得开');
+      assert.equal(c.approvedVia, 'boss-instruction');
+    }
+    // 关键行为：签过的进了分母 ⇒ 这台仪器不再是空槽
+    const run = runSkillGate({
+      skillText: readFileSync(join(REPO, 'presets', 'agint', 'skills', f.replace(/\.cases\.json$/, ''), 'SKILL.md'), 'utf8'),
+      caseDoc: doc, repoRoot: REPO, exists: (p) => existsSync(p),
+    });
+    assert.equal(run.total, 4, `${f}: 分母 = 已签核 4 条`);
+    assert.equal(run.proposedCount, f === 'plugin-preflight.cases.json' ? 3 : 2);
+    assert.ok(Number.isFinite(run.passRate), `${f}: 有分母就该有 passRate（不是 null）`);
   }
 });
 

@@ -2,7 +2,7 @@
   "skill": "measure-before-quota",
   "preset": "agint",
   "schema": "agint.skill-gate.cases.v1",
-  "status": "CANDIDATE-UNAPPROVED",
+  "status": "PARTIALLY-APPROVED",
   "generatedAt": "2026-10-03T09:58:37.679Z",
   "generator": "bin/skill-gate-candidates.mjs",
   "reviewNote": "这些条目的 addedBy 都是 agent ⇒ 一条都不进分母。要生效：把 addedBy 改成 \"boss\"，approvedAt 填 UTC 毫秒串。",
@@ -13,9 +13,12 @@
       "expect": "(?<![A-Za-z0-9])[A-Za-z]:[\\\\/]",
       "source": "AGENTS.md：机器私有事实（绝对路径）不入库",
       "note": "只认盘符 + 分隔符。前缀断言把 https:// 与 :7890 这类 URL/端口排掉（2026-10-03 首版在这两处报过假阳性）。",
-      "addedBy": "agent",
-      "approvedAt": null,
-      "supersedes": null
+      "addedBy": "boss",
+      "approvedAt": "2026-10-03T10:11:32.000Z",
+      "supersedes": null,
+      "scribedBy": "agent",
+      "approvedVia": "boss-instruction",
+      "approvedNote": "老板 2026-10-03 指示：签 B 路线的子集 = 四条 must-not-* 全签（第 2/3/4 项今天 9/9 通过）。我代笔，判定权在他。"
     },
     {
       "id": "redline-no-secret-shaped-string",
@@ -23,9 +26,12 @@
       "expect": "sk-[A-Za-z0-9]{10,}|-----BEGIN|Bearer\\s+[A-Za-z0-9._-]{20,}",
       "source": "AGENTS.md：secrets 不写文件，走 $DSH_HOME/secrets/",
       "note": "技能会被注入每次会话的提示词，写进去等于广播。",
-      "addedBy": "agent",
-      "approvedAt": null,
-      "supersedes": null
+      "addedBy": "boss",
+      "approvedAt": "2026-10-03T10:11:32.000Z",
+      "supersedes": null,
+      "scribedBy": "agent",
+      "approvedVia": "boss-instruction",
+      "approvedNote": "老板 2026-10-03 指示：签 B 路线的子集 = 四条 must-not-* 全签（第 2/3/4 项今天 9/9 通过）。我代笔，判定权在他。"
     },
     {
       "id": "redline-no-bypass-instruction",
@@ -33,9 +39,12 @@
       "expect": "绕过\\s*D-?QAF|跳过[^\\n。]{0,12}(阶段|检查|门禁)",
       "source": "AGENTS.md 边界：不要绕过 D-QAF 任意阶段",
       "note": "技能是给系统看的指令，写\"可以跳过\"就是永久授权。",
-      "addedBy": "agent",
-      "approvedAt": null,
-      "supersedes": null
+      "addedBy": "boss",
+      "approvedAt": "2026-10-03T10:11:32.000Z",
+      "supersedes": null,
+      "scribedBy": "agent",
+      "approvedVia": "boss-instruction",
+      "approvedNote": "老板 2026-10-03 指示：签 B 路线的子集 = 四条 must-not-* 全签（第 2/3/4 项今天 9/9 通过）。我代笔，判定权在他。"
     },
     {
       "id": "redline-asd-no-ambiguous-qualifiers",
@@ -43,9 +52,12 @@
       "expect": "robust|seamless|深入|赋能|全面|优化|大幅|显著|非常",
       "source": "AGENTS.md §首要准则（2026-10-03 老板定的禁用词表）",
       "note": "模糊限定词不可证伪 ⇒ 不能当验收条件。",
-      "addedBy": "agent",
-      "approvedAt": null,
-      "supersedes": null
+      "addedBy": "boss",
+      "approvedAt": "2026-10-03T10:11:32.000Z",
+      "supersedes": null,
+      "scribedBy": "agent",
+      "approvedVia": "boss-instruction",
+      "approvedNote": "老板 2026-10-03 指示：签 B 路线的子集 = 四条 must-not-* 全签（第 2/3/4 项今天 9/9 通过）。我代笔，判定权在他。"
     },
     {
       "id": "redline-name-equals-dir",
@@ -68,5 +80,7 @@
       "approvedAt": null,
       "supersedes": null
     }
-  ]
+  ],
+  "approvedScope": "四条 must-not-* （B 路线子集）",
+  "approvedAt": "2026-10-03T10:11:32.000Z"
 }
