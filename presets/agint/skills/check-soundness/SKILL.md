@@ -61,7 +61,7 @@ existing !== null && stripVolatile(existing) === stripVolatile(block)
 `DSH_HOME` 绝对路径、host 插件版本、cron tick、仓库↔host 同步状态。
 
 后果不是「过期」而是 **outright 错误**：Windows 机器提交后，Linux 机器读到的
-AGENTS.md 声称自己的 `DSH_HOME` 是 `C:\Users\Administrator\.dsh`。
+AGENTS.md 声称自己的 `DSH_HOME` 是 `<系统盘>:\Users\<user>\.dsh`（本机真值见 `AGENTS.local.md`，不入库）。
 谁最后跑，谁的机器就是仓库事实。
 
 按「**谁来决定这个值**」拆：

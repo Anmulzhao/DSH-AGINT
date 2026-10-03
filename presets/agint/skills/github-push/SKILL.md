@@ -101,7 +101,7 @@ git rev-list --objects 'origin/<branch>..HEAD' |
     ForEach-Object { ($_ -split ' ')[0] } |
     Set-Content objects.txt -Encoding ASCII
 Get-Content objects.txt | git pack-objects --stdout > pack.pack
-# ⚠️ 落地路径必须在 workspace-write 范围内（D:\DSH\...），不能用 $env:TEMP——
+# ⚠️ 落地路径必须在 workspace-write 范围内（本会话的 workspace-write 根，例 `<工作区根>\...`），不能用 $env:TEMP——
 #    沙箱里 Set-Content 到 $env:TEMP 后下次命令读不到，被清掉
 ```
 
@@ -273,13 +273,13 @@ curl -sS -x "$PX" -H "Authorization: token $PAT" \
 
 ```sh
 # 优先 curl 走 7890，比 git clone 稳得多
-curl -sSL -x "$PX" -o D:\openclaw.tar.gz \
+curl -sSL -x "$PX" -o <工作盘>\openclaw.tar.gz \
   https://codeload.github.com/openclaw/openclaw/tar.gz/refs/heads/main
 
 # 解压注意 Windows MAX_PATH：先解到短路径，再 robocopy 移动
-tar -xzf D:\openclaw.tar.gz -C C:\
-mv C:\openclaw-main C:\oc
-robocopy C:\oc D:\openclaw /E /MOVE
+tar -xzf <工作盘>\openclaw.tar.gz -C <工作盘>:\
+mv <工作盘>\openclaw-main <工作盘>\oc
+robocopy <工作盘>\oc <工作盘>\openclaw /E /MOVE
 ```
 
 ## 代理切换历史

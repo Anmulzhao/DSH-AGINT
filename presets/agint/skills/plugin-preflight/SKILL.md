@@ -92,7 +92,7 @@ ctx.on('tools/post-execute', (exec, result) => { ... });         // 缺 next 参
 
 #### 第 2 步补强（v0.4 新增）：跨平台 fixture
 
-若 plugin 的 `permissions.fs` 非空（涉及文件系统路径），smoke **必须**额外覆盖**跨平台路径 case** —— 既测 forward-slash 相对路径（典型：模型/工具传参风格）也测 native-sep 根（典型：`resolve()` 在 Windows 返回 `D:\...`）。原因：v0.4 agint-wiki 教训里，`clean()` 用 `abs.startsWith(root + '/')` 检查越界在 Linux/macOS 永远成立，在 Windows 永远不成立，仓内 master 一直绿但 Windows 上一跑全挂。
+若 plugin 的 `permissions.fs` 非空（涉及文件系统路径），smoke **必须**额外覆盖**跨平台路径 case** —— 既测 forward-slash 相对路径（典型：模型/工具传参风格）也测 native-sep 根（典型：`resolve()` 在 Windows 返回 `<盘符>:\...`）。原因：v0.4 agint-wiki 教训里，`clean()` 用 `abs.startsWith(root + '/')` 检查越界在 Linux/macOS 永远成立，在 Windows 永远不成立，仓内 master 一直绿但 Windows 上一跑全挂。
 
 参考模板（agint-wiki v0.4 test/smoke.mjs 的正向 + 负向 case）：
 
