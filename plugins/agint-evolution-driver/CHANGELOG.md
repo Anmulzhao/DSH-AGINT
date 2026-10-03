@@ -1,5 +1,59 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.3.0 — 2026-10-04（路线图 A5：driver commit 补 mutator 记账，闭环从「改得进」到「回得退」）
+
+minor 跨级（0.2.19 → 0.3.0）。功能依据：`docs/AGINT-路线图待做清单-20261003.md` A5，
+commit `4f6cba0`。
+
+### 为什么跨 minor
+
+0.2.x 的 driver commit 是**单边写入**：`commitToRepo()` 自己落盘 + 备份 preimage，
+**从不调 `mutator.commit()`** ⇒ mutator 的 `commits` 表天生为 0。三处后果：
+
+1. `mutator.rollback(commitId)` 查不到行 ⇒ **driver 产出的 commit 无法回滚**；
+2. `evolution-reconcile` 的 `mutatorCommits === 0` 告警**恒真** ——
+   恒真的告警等于没有告警，它训练读者忽略这一行，真出事也不会被当真；
+3. proposal 停在 `PENDING` 会撞 `uniq_atomicScope_pending` 唯一索引，
+   同`atomicScope` 的后续提案可能被历史 PENDING 行挡住。
+
+### 本版交付
+
+- **mutator 新增 `recordExternalCommit()`**（本插件的改动）：
+  只做记账，不写文件、不跑 sandbox、不跑 policy。`preimageContent` 非空是硬校验
+  （空串会让「可回滚到空文件」的假记录进表）。commitId 幂等。
+  守门沿用 `LIMITS.COMMITS` 与 `LIMITS.PREIMAGE_BYTES`。
+- **driver commit 后调用它**（`plugins/agint-evolution-driver/lib/index.js`）：
+  commitId 优先取 `evolution.mutation.committed` 的 `envelopeId`（**与事件同源**，
+  账目与事件对得上）；事件总线不可用时退化为本地 `evt-…`（不用 null ——
+  null 会让所有 commit 共用同一个空幂等键）。
+- 记账失败**不发** `evolve.addFailure`：那是进化失败模式通道，
+  账目故障走独立事件 `evolution.mutation.accounting-failed`（否则污染 A4 的失败归因）。
+- `status()` 新增 `mutatorRecorded` / `mutatorRecordFailed` 两个计数器。
+- `commitToRepo()` 返回值补`preimageContent` / `postimageContent` ——
+  此前preimage 只落磁盘备份，**内容没进返回值**，记账入口拿不到。
+
+### 三态对账判据
+
+`evolution-reconcile` 的第 4 源从单一布尔拆成三态
+（`absent` / `unwired` / `gap` / `consistent`）。原 `mutatorDegraded` 的定义
+在 driver 不写表的时代**恒真**，恒真告警训练读者忽略告警。
+
+### 验收
+
+- driver smoke 48/48、mutator 119/119、reconcile 22/22
+- A5 新增单测 38 条（mutator 13 / driver 10 / reconcile 15），
+  3 组「放宽⇒变红」实验均产生精确变红、还原后全绿、零实验残留
+- 部署位（bundle 槽）端到端复跑全绿
+
+### 仍未达成：数据态
+
+生产 `mutator_stats.commits` 仍为 0 ⇒ `mutatorState = unwired`。
+取证：已committed 的 5 笔里，最新那笔由**独立进程**产生
+（非宿主 driver 走的），天然绕过宿主记账入口。
+⇒ 记账入口已就位但**宿主 driver 还没 commit 过**，读数是诚实的。
+转 `consistent` 只能等宿主 driver 自己产生一笔 commit；
+**补记存量不可行** —— 独立进程直写存储会被宿主 last-write-wins 静默覆盖。
+
 ## v0.2.19 — 2026-10-04（修 insideRepo 在 Windows 正斜杠 repoRoot 下的全量误拒）
 
 ### 症状
