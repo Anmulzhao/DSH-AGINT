@@ -47,16 +47,16 @@
       "labelAuthority": "UNSET"
     },
     "service-annotations-table-full-throws": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "dream-gate-thresholds": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
     "s12-02-evolution-evaluated-sync-edge": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "s12-03-sandbox-passed-failed-via-event-bus": {
       "visibility": "EVOLUTION",
@@ -67,8 +67,8 @@
       "labelAuthority": "UNSET"
     },
     "s12-05-policy-policy-deployed-rolledback-shadow": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "s12-05-mount-succeeded-population-and-evolution-memory-observe": {
       "visibility": "EVOLUTION",
@@ -391,8 +391,8 @@
       "labelAuthority": "UNSET"
     },
     "rules-allow-mv-evolution-log-rotation": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "rules-deny-rm-rf-root": {
       "visibility": "EVOLUTION",

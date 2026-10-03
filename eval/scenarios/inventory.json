@@ -1,6 +1,6 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-03T11:19:50.852Z",
+  "generatedAt": "2026-10-03T17:06:15.790Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
   "driverVersion": "ec362b56c9c007474afb1db46709eb49b322a03b",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
@@ -73,15 +73,15 @@
       "integration": 115
     },
     "tierCounts": {
-      "EVOLUTION": 123,
+      "EVOLUTION": 119,
       "VALIDATION": 0,
-      "FROZEN": 0
+      "FROZEN": 4
     },
     "tierSum": 123,
     "labelAuthorityCounts": {
-      "UNSET": 123,
+      "UNSET": 119,
       "SILVER": 0,
-      "GOLD": 0,
+      "GOLD": 4,
       "HELDOUT": 0
     },
     "qualityRatio": {
@@ -281,8 +281,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "dream-gate-thresholds",
@@ -313,8 +313,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "s12-03-sandbox-passed-failed-via-event-bus",
@@ -361,8 +361,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "s12-05-mount-succeeded-population-and-evolution-memory-observe",
@@ -1657,8 +1657,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "rules-deny-rm-rf-root",
@@ -2065,9 +2065,14 @@
     "tieringFile": "eval/tiers/agint-tiering.json",
     "tieringVersion": "1.0",
     "note": "Frozen 集的聚合 hash 与名单。入 evolution-memory 的 `benchmark_frozen_set` 表后，即可回答「这一版冻结集有没有被偷偷改过」：增删任一 Frozen 单元、或改任一 Frozen 单元的 contentHash，聚合 hash 都会变。⛔ hash 只对 {unitId, contentHash} 计算，不含 labelAuthority —— HELDOUT→GOLD 是合法降级，算进来会变成假阳性。",
-    "frozenUnitIds": [],
-    "frozenCount": 0,
-    "frozenAggregateHash": "sha256:643c0e8f0c0598386e2056773526a7e2e3158e719e793becc64ad695b1ba7627",
+    "frozenUnitIds": [
+      "rules-allow-mv-evolution-log-rotation",
+      "s12-02-evolution-evaluated-sync-edge",
+      "s12-05-policy-policy-deployed-rolledback-shadow",
+      "service-annotations-table-full-throws"
+    ],
+    "frozenCount": 4,
+    "frozenAggregateHash": "sha256:a2a7fd9ff4174a81a67e7ba0a76f1d1383c45a9f879b9486b3d4f02d095e08ab",
     "failCount": 6,
     "h1EvolutionMinFail": 4,
     "h3FrozenFailProbeCap": 2,
