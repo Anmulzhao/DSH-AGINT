@@ -51,6 +51,7 @@ import { randomUUID } from 'node:crypto';
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
 import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
 import { createPredictionLocker } from './prediction-locker.js';
+import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import {
   isGoalBridgeEnabled,
@@ -602,7 +603,9 @@ export function apply(ctx, config = {}) {
           failureId: candidate.id,
           rootCause: `PROMPT_DEFICIENCY: ${candidate.category ?? 'other'}`,
           atomicScope: 'prompt',
-          expectedEffect: 'baseline 通过率 >= 95% 在 7 天',
+          // v0.2.14：期望按目标类型声明（⛔ 不再对所有变异写同一句"通过率"）。
+          // 判据见 lib/expected-effect.js —— 只声明有仪器能兑现的期望。
+          expectedEffect: expectedEffectForTarget({ targetType: target.type }),
           rollbackCondition: 'regression → auto-rollback',
           promptPayload: {
             promptId: slugifyPromptId(targetId),

@@ -27,6 +27,7 @@ import {
 // 1a 归档复原断言用（T25f）：hash 纯函数 + 锁定用的 hypothesis 形状
 import { computeHypothesisLock } from '../lib/predictor.js';
 import { buildLockHypothesis } from '../lib/prediction-locker.js';
+import { EXPECTED_EFFECT_CODE, EXPECTED_EFFECT_SKILL } from '../lib/expected-effect.js';
 
 /**
  * 建一个真实的临时仓库根（v0.2.8）。
@@ -609,9 +610,11 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
         { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
       ],
     };
+    const proposeInputs = [];
     const fakeMutator = {
       propose: async (input) => {
         calls.push(['propose', input.promptPayload.promptId]);
+        proposeInputs.push(input);
         return { id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' };
       },
       validate: async () => ({ ok: true, findings: [] }),
@@ -681,6 +684,9 @@ test('T25: repo 目标全链路，commit 默认开且发 committed 事件（v0.2
     assert.deepEqual(out.target, { type: 'repo', id: 'lib/service.js' });
     // v0.2.3 起 promptId 走 slugifyPromptId（mutator 正则要求 kebab slug）
     assert.deepEqual(calls[0], ['propose', 'service-js']);
+    // v0.2.14：代码类目标声明`场景集通过率`（点名 R1 仪器），不再是那句对所有变异通用的谎话
+    assert.equal(proposeInputs[0].expectedEffect, EXPECTED_EFFECT_CODE,
+      'repo 目标的期望必须与 metric-resolver 能解析成 SUCCESS_RATE 的那句一致');
     // 真实文件确实被改写了，且改后仍是合法 JS
     const onDisk = await readFile(join(repoRoot, 'lib/service.js'), 'utf8');
     assert.equal(onDisk, "export const greeting = 'hello AGINT world';\n");
@@ -1259,6 +1265,45 @@ test('T25g: 期望串也读不出指标 ⇒ 不锁、链上留 unspecified（不
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }
+});
+
+test('T25h: 技能类目标声明的是它自己能兑现的期望（不复用代码类那句）', async () => {
+  const proposeInputs = [];
+  let lockCalls = 0;
+  const evolutionLog = fakeEvolutionLog({ calls: [] });
+  evolutionLog.recordContractLock = async () => { lockCalls += 1; return {}; };
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([
+      { id: 'c1', title: 'plugin-preflight 补 fixture', category: 'skill', status: 'proposed', createdAt: '2026-09-01', body: '' },
+    ]),
+    'agint.mutator': {
+      propose: async (input) => {
+        proposeInputs.push(input);
+        return { id: 'p-skill', kind: 'PROMPT_MUTATION', status: 'PENDING', expectedEffect: input.expectedEffect };
+      },
+      validate: async () => ({ ok: true, findings: [] }),
+    },
+    'agint.population': fakePopulation(),
+    'agint.evolution': evolutionLog,
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: {
+      skillNames: ['plugin-preflight', 'github-push'],
+      fs: { readSkill: async () => SKILL_TEXT },
+      llm: GOOD_LLM,
+    },
+  });
+  assert.equal(out.skipped, false, JSON.stringify(out));
+  assert.equal(out.skill, 'plugin-preflight', '本用例走的就是 skill 目标分支');
+  assert.equal(proposeInputs.length, 1);
+  assert.equal(proposeInputs[0].expectedEffect, EXPECTED_EFFECT_SKILL,
+    '技能类不得借用"通过率"——metric-resolver 会照词面把它锁成一条没人测的预测');
+  assert.notEqual(proposeInputs[0].expectedEffect, EXPECTED_EFFECT_CODE);
+  // 没有 repoRoot ⇒ 本轮不进 commit 分支，所以这里不锁是"没走到锁"而不是"锁被拒"；
+  // 真正证明技能类不锁的是 test/expected-effect.test.mjs 的 METRIC_UNSTATED 断言。
+  assert.equal(lockCalls, 0);
 });
 
 test('T26a: verifyTargetFile —— .sh 走 bash -n，改坏语法要判死', async () => {

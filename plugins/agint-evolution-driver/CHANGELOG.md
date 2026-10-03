@@ -1,5 +1,55 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.14 — 2026-10-03（修掉 expectedEffect 的谎报：期望按目标类型声明，1b 前置）
+
+### 问题
+
+driver 给**每一个**变异硬写同一句 `expectedEffect: 'baseline 通过率 >= 95% 在 7 天'`（原 `index.js:605`）。
+两个缺陷：
+1. 不分目标。改一个 `SKILL.md` 也声称"通过率"会涨，而技能类改动今天没有任何测量手段
+   （1b 取证实测：`agint_abtest` 0 行、`agint_population` fitness_history/traffic_log 0 行、
+   trajectory 的 token/durationMs 无生产者、`agint_metrics` 的 15 个 key 一个都不属于四类指标）。
+2. **借词**。v0.2.13 的 `metric-resolver.js` 会照词面把"通过率"解析成 `SUCCESS_RATE`
+   ⇒ 每条变异（含多数量的技能类）都被锁成一条预测。时序合法、锁也真能验，
+   但它承诺的是一个**没人测、也测不到**的数 —— 攒出来的校准分是"预测 vs 无证据"的混合物。
+
+危害的落点在解析后果，不在措辞。所以修的是"声明什么"，不是"怎么写得好看"。
+
+### 变更
+
+- **新增 `lib/expected-effect.js`**：`expectedEffectForTarget({ targetType })`，两句封闭声明。
+  - 代码类（repo 文件）⇒ `场景集通过率 >= 95% 在 7 天`。**点名仪器**（`eval/scenarios/driver.js`
+    离线、确定性、零 LLM + `agint-quality-eval` 的 `computePassRate`/`baselineDelta`），
+    也就是 1b 方案里的 R1。解析 ⇒ `SUCCESS_RATE` ⇒ 可以锁。
+  - 技能/preset 类 ⇒ `技能输出质量评分 >= 90% 在 7 天`。这个词**刻意不进** `METRIC_KEYWORDS`
+    ⇒ 解析 `METRIC_UNSTATED` ⇒ 外壳不落锁 ⇒ 链上 `predictedDelta` 留 null。
+    等 R2（技能评估集）建好并登记指标，这条才升级成可测承诺。
+  - 为什么技能类也给一句而不是留空：mutator 的 FROZEN 契约**必须**收到可证伪串
+    （`agint-mutator/lib/index.js:369` 的 `VALIDATE_EXPECTED_RE`，缺了就 validate 失败）。
+    所以给的是"这次改动真实想改善的量"，而不是一个恰好过正则、又恰好被解析成有仪器的指标。
+- `index.js`：propose 的 `expectedEffect` 改为 `expectedEffectForTarget({ targetType: target.type })`。
+- ⛔ `expected-effect.js` **不抄** mutator 的正则做二次校验（第二个真相源）。
+  契约校验由真 `agint.mutator.validate` 在测试里跑（跨插件 import 只出现在测试，
+  与 `test/contract-manager.test.mjs` 引 evolution-memory lib 同一先例）。
+
+### 测试
+
+- 新增 `test/expected-effect.test.mjs` 5 case：映射与"不复用" / 代码串点名仪器 /
+  代码串解析成 SUCCESS_RATE / **技能串解析为 null + METRIC_UNSTATED** /
+  两句都过真 mutator 的 FROZEN 可证伪校验。
+- `test/smoke.mjs` **T25h**：skill 目标分支实际发出的 `propose` 入参必须是技能那句。
+- `test/smoke.mjs` T25：新增断言 repo 目标发出的是 `EXPECTED_EFFECT_CODE`。
+- 套件：driver 220（原 214）全绿，9 个门禁 exit 0。
+- 红绿自证：把 `index.js` 改回那句硬编码 ⇒ T25 与 T25h 立即变红，改回后全绿。
+
+### 影响面（要说给老板的口径）
+
+- 生产链上从现在起：**代码类变异**才会有 predictedDelta；**技能类**（占比多数：
+  09-17→10-03 实测 skill 124 / plugin 12）继续留 null 并记 `targetMetricReason: METRIC_UNSTATED`。
+  这是有意的：宁缺不假。覆盖率要等 R2。
+- 本轮未动 metric-resolver / prediction-locker / ledger-writer 的判据，只换了声明源。
+
+
 ## v0.2.13 — 2026-10-03（targetMetric 从提案期望里读出来，1a 补片 / 方案②）
 
 ### 问题

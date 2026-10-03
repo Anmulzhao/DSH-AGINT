@@ -81,6 +81,19 @@ Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：�
 解析结果**同一个值**要同时进锁和 Ledger 条目：`hypothesisLock` 把 targetMetric 折进了摘要，
 两边不一致，归档重算必判假篡改。出处（`VARIANT` / `EXPECTED_EFFECT`）落 `cycle.summary.prediction`。
 
+### 期望串按目标类型声明（v0.2.14）
+
+`lib/expected-effect.js`：`expectedEffectForTarget({ targetType })`。
+代码类目标 ⇒ `场景集通过率 >= 95% 在 7 天`（点名 R1 仪器 `eval/scenarios/driver.js`）⇒ 解析成
+`SUCCESS_RATE` ⇒ 锁。技能/preset 类 ⇒ `技能输出质量评分 >= 90% 在 7 天`，这个词刻意不进
+`METRIC_KEYWORDS` ⇒ `METRIC_UNSTATED` ⇒ **不锁**，链上留 null。
+
+改动前对所有变异硬写同一句「baseline 通过率…」，于是改 SKILL.md 也声称通过率会涨——
+而技能类今天没有测量手段（abtest 0 行、population fitness/traffic 0 行、token/latency 无生产者）。
+⛔ 别把技能类那句改回带「通过率/成功率」的措辞：`metric-resolver` 会照词面锁一条测不到的预测，
+`test/expected-effect.test.mjs` 就是钉这条的。mutator 的 FROZEN 契约要求必须给可证伪串，
+所以给的是真实想改善的量，不是留空。
+
 ## 测试
 
 ## goal 桥（v0.2.6，行动 #2）
