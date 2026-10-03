@@ -30,6 +30,8 @@ import {
 } from '../lib/outcome-measurer.js';
 
 import { scorePrediction } from '../lib/prediction-scoring.js';
+import { computeHypothesisLock } from '../lib/predictor.js';
+import { buildLockHypothesis } from '../lib/prediction-locker.js';
 
 // ── 夹具 ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +39,7 @@ const STAMP = '2026-10-03T08-00-00-000Z';
 const CHANGED = 'plugins/agint-demo/lib/index.js';
 const PREIMAGE = `.agint-preimage/plugins__agint-demo__lib__index.js__${STAMP}.bak`;
 const CONTRACT = 'EVO-20261003-1';
+const LOCKED_AT = '2026-10-03T07:59:00.000Z';
 
 function entryOver(over = {}) {
   return {
@@ -47,10 +50,39 @@ function entryOver(over = {}) {
       mutationType: 'PROMPT_MUTATION',
       changedPlugins: ['agint-demo'],
       targetMetric: 'SUCCESS_RATE',
+      hypothesisDigest: '提高保守阈值，减少误发布',
       predictedDelta: 3.0,
+      predictionSource: 'DEFAULT_RULE', // 实时路径与 predictedDelta 成对出现（ledger-writer 的证据门）
       decision: 'AUTO_DEPLOY',
     },
     references: { preimagePath: PREIMAGE },
+    ...over,
+  };
+}
+
+/**
+ * 造一把**真锁**：与 `contract-manager.lockPrediction` 同一配方
+ * （条目字段复原 hypothesis + lockedAt ⇒ 同一个 hash）。
+ * ⛔ 夹具里随手写死一个 hash 是假契约 —— 篡改门会把每条都判红，
+ *    于是测试要么恒红、要么被改成"关掉门禁"，两头都得不到证据。
+ */
+function lockRowFor(entry, over = {}) {
+  const s = entry.summary;
+  const hypothesis = {
+    ...buildLockHypothesis({
+      mutationType: s.mutationType,
+      targetMetric: s.targetMetric,
+      changedComponents: s.changedPlugins,
+    }),
+    predictedDelta: s.predictedDelta,
+    predictionSource: s.predictionSource,
+  };
+  return {
+    contractId: entry.contractId,
+    hypothesisLock: computeHypothesisLock({ hypothesis, contractId: entry.contractId, createdAt: LOCKED_AT }),
+    lockAlgorithm: 'sha256',
+    lockedAt: LOCKED_AT,
+    predictionSource: s.predictionSource ?? null,
     ...over,
   };
 }
@@ -77,15 +109,23 @@ function tap(pass, fail, extra = {}) {
 }
 
 /** 落表 mock。返回的 evo 带 .rows / .store，供断言"有没有写行"。 */
-function makeEvo({ entry = entryOver(), lock = { hypothesisLock: `sha256:${'b'.repeat(64)}` }, entries = null } = {}) {
+function makeEvo({ entry = entryOver(), lock, entries = null } = {}) {
   const rows = new Map();
+  const lockRow = lock === undefined ? lockRowFor(entry) : lock; // 传 null ⇒ 模拟锁行被删
   return {
     rows,
+    lockRow,
     ledger: {
       findByContractId: async (id) => (entry && id === entry.contractId ? entry : null),
       list: async () => entries ?? (entry ? [entry] : []),
     },
-    getContractLock: async () => lock,
+    getContractLock: async (id) => {
+      // 主条目用显式夹具（可能是"被删的锁"或"对不上的锁"）；
+      // 批量场景里的其它条目按各自内容现算一把真锁 ⇒ 夹具不会替被测对象造假。
+      if (id === entry?.contractId) return lockRow;
+      const other = (entries ?? []).find((x) => x?.contractId === id);
+      return other ? lockRowFor(other) : null;
+    },
     getPredictionOutcome: async (id) => rows.get(id) ?? null,
     listPredictionOutcomes: async () => [...rows.values()],
     recordPredictionOutcome: async (r) => {
@@ -252,7 +292,7 @@ test('D1: 一次成功测量 —— 双态真换了文件、落一行、算完�
   assert.equal(row.baselineNoiseStd, null, '拿不到就不编');
   assert.equal(row.evidence.preimagePath, PREIMAGE);
   assert.equal(row.evidence.ledgerSeq, 7);
-  assert.equal(row.evidence.hypothesisLock, `sha256:${'b'.repeat(64)}`);
+  assert.equal(row.evidence.hypothesisLock, evo.lockRow.hypothesisLock);
   assert.equal(row.evidence.candidateSha, sha256Buf(Buffer.from('export const v = "FIXED";\n')));
   assert.equal(row.evidence.baselineSha, sha256Buf(Buffer.from('export const v = "BROKEN";\n')));
 });
@@ -524,12 +564,63 @@ test('F1: 复原后 sha 不一致 ⇒ 仍落表但 restoreVerified:false + needs
   assert.ok(warns.some(([m]) => /sha 不一致/.test(m)));
 });
 
+// ── H. 篡改门（§2.4.2 第 6 步的调用点）─────────────────────────────────
+
+test('H1: 条目里的 predictedDelta 被改写 ⇒ CONTRACT_TAMPERED，不跑测试、不换文件、不写行', async () => {
+  const e = entryOver();
+  const evo = makeEvo({ entry: e });
+  // 篡改 = **只动存储**（锁行原样留着）。若改条目也顺手重算锁，那条记录就自洽了，
+  // 测的是"没被改过"的情形 —— 假夹具（与 §3.14 bus envelopeId 同一条教训）。
+  e.summary.predictedDelta = 9.9;
+  const calls = [];
+  const { measurer, warns } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.CONTRACT_TAMPERED);
+  assert.equal(res.auditStatus, 'CONTRACT_TAMPERED');
+  assert.equal(calls.length, 0, '⛔ 门禁在任何副作用之前');
+  assert.equal(String(await readFile(join(repo.dir, CHANGED), 'utf8')), 'export const v = "FIXED";\n');
+  assert.equal(evo.rows.size, 0, '篡改过的预测不得进 PQ 与知识桶');
+  assert.ok(warns.some(([m]) => /预测锁校验未过/.test(m)), '必须出声');
+});
+
+test('H2: 链上写着预测、锁行却不在了（删证据）⇒ 同样拒测并点名 LOCK_ROW_MISSING', async () => {
+  const evo = makeEvo({ lock: null });
+  const calls = [];
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.CONTRACT_TAMPERED);
+  assert.equal(res.auditStatus, 'LOCK_ROW_MISSING');
+  assert.equal(calls.length, 0);
+  assert.equal(evo.rows.size, 0);
+});
+
+test('H3: 摘要成分复原不出来（缺 predictionSource）⇒ UNEVIDENCED_HYPOTHESIS，⛔ 不当通过', async () => {
+  const e = entryOver();
+  const evo = makeEvo({ entry: e }); // 锁按完整条目算；存储里随后抽掉 predictionSource
+  e.summary.predictionSource = null;
+  const calls = [];
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.CONTRACT_TAMPERED);
+  assert.deepEqual(res.missing, ['predictionSource']);
+  assert.equal(calls.length, 0);
+});
+
+test('H4: 没有预测的条目不受篡改门影响（actualDelta 仍是真观测，喂 τ 重标定）', async () => {
+  const e = entryOver({ summary: { ...entryOver().summary, predictedDelta: null, predictionSource: null } });
+  const evo = makeEvo({ entry: e, lock: null });
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls: [] }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+  assert.equal(res.predictedDelta, null);
+  assert.equal(evo.rows.get(CONTRACT).evidence.hypothesisLock, null);
+});
+
 // ── G. 批量：measurePending ──────────────────────────────────────────────
 
 test('G1: 扫链只测"该测且没测过"的条目，limit 生效，deferred 可见', async () => {
   const a = entryOver({ contractId: 'EVO-A', seq: 1 });
-  const b = entryOver({ contractId: 'EVO-B', seq: 2, summary: { ...entryOver().summary, decision: 'REJECT' } });
-  const c = entryOver({ contractId: 'EVO-C', seq: 3 });
+  const b = entryOver({ contractId: 'EVO-B', seq: 2, summary: { ...entryOver().summary, decision: 'REJECT' } });  const c = entryOver({ contractId: 'EVO-C', seq: 3 });
   const entries = [a, b, c];
   const evo = makeEvo({ entry: a, entries });
   const calls = [];

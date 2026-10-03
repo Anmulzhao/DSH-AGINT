@@ -125,6 +125,32 @@ Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：�
 ⚠️ `nodeTestRunner` 必须清掉 `NODE_TEST_CONTEXT`：宿主若本身跑在 `node --test` 下，
 这个变量会传给子进程，子 node 认定"递归调用"就跳过跑文件（E2E 实测踩到，症状 `RUNNER_UNPARSABLE`）。
 
+## 归档校验（v0.2.16，设计 §2.4.2 第 6 步）
+
+`lib/contract-audit.js` 是 `verifyHypothesisLock` 的**调用点**。校验函数与它的单测一直有，
+缺的是 caller —— 而没人校验的锁只防"改 predictedDelta 数值"，防不到改 `targetMetric` /
+`changedComponents` / `lockedAt`（这些都在摘要里），更防不到**删掉 `contract_locks` 的行**。
+
+三向清点（`sweep()`）：
+
+1. 表里每行按条目重算 ⇒ 对不上 = `CONTRACT_TAMPERED`。
+2. 链上写了 `predictedDelta` 却没有锁行 = `LOCK_ROW_MISSING`（删证据）。
+3. 条目缺任一摘要成分 ⇒ `UNEVIDENCED_HYPOTHESIS`，⛔ 不硬算。硬算会得到另一个 hash，
+   把一条没被改过的锁判成篡改 —— 假警报会让整套判据失去可信度。
+
+hypothesis 从 **Ledger 条目**复原（`summary.{mutationType,targetMetric,changedPlugins,
+predictedDelta,predictionSource}` + `contract_locks.lockedAt`）。实时路径不产 Contract 对象，
+条目就是唯一可复原的来源；这条配方由 `test/smoke.mjs` T25f 逐字节钉住。
+
+调用顺序：**先验锁，再量账**。`measureOutcomes()` 开头跑一次全表 sweep（结果进返回值 `audit`
+块与 `status().auditChecked` / `auditTampered`）；measurer 每条测之前再验一次自己那条，
+对不上就 `CONTRACT_TAMPERED` —— **在跑测试之前**拒，不写 `prediction_outcomes`。
+没有预测的条目（`predictedDelta=null`）不受这道门影响：它的 `actualDelta` 仍是真观测，
+而"预测 vs 实测"这对关系它压根没有，伪造不了任何东西。
+
+⛔ 只判定，绝不修复。修复等于重写历史，会让防篡改机制自我消解。处置 = 标记 + 不计入统计 +
+出声（cron `outcome-measure` 对 `tampered` / `orphanPredictions` 抛错）。
+
 ## 测试
 
 ## goal 桥（v0.2.6，行动 #2）

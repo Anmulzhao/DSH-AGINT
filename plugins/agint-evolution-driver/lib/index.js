@@ -52,6 +52,7 @@ import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
 import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
 import { createPredictionLocker } from './prediction-locker.js';
 import { createOutcomeMeasurer, DEFAULT_OUTCOME_LIMIT } from './outcome-measurer.js';
+import { createContractAuditor } from './contract-audit.js';
 import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import {
@@ -310,6 +311,10 @@ export function apply(ctx, config = {}) {
     outcomeMeasured: 0,
     outcomeRefused: 0,
     outcomeAttention: 0,
+    // §2.4.2 归档校验：扫过多少把锁、发现多少把对不上（含"链上有预测但锁行没了"）。
+    // 非 0 就是安全事件，⛔ 不是统计噪声 —— 报告与 cron 都要看得见它。
+    auditChecked: 0,
+    auditTampered: 0,
     lastRunAt: null,
     lastError: null,
     lastProposalId: null,
@@ -367,34 +372,75 @@ export function apply(ctx, config = {}) {
   // `listRepoFiles` 用本文件那份（带 fs.scanRepo 注入位）—— 判据单一源，⛔ 不在 measurer 里再抄一份扫描。
   const outcomeMeasurer = createOutcomeMeasurer(ctx, { listRepoFiles, warn });
 
+  // 设计 §2.4.2 第 6 步「归档校验」的**调用点**。校验本体一直有
+  // （`predictor.verifyHypothesisLock`，纯函数 + 单测），但全仓没有一个 caller ⇒
+  // 那把锁只防"改 predictedDelta 数值"，不防"改完 hypothesis 内容让摘要对不上"，
+  // 更不防"直接把 contract_locks 的行删掉"。sweep 把这三向都补上。
+  const contractAuditor = createContractAuditor(ctx, { warn });
+
+  /** 给报告用的截断版审计结论（verdicts 全表可能上百条，不进 summary）。 */
+  function auditBrief(audit) {
+    if (!audit) return null;
+    return {
+      ok: audit.ok,
+      status: audit.status,
+      checked: audit.checked ?? 0,
+      counts: audit.counts ?? {},
+      tampered: (audit.tampered ?? []).slice(0, 10),
+      orphanPredictions: (audit.orphanPredictions ?? []).slice(0, 10),
+      unverifiable: (audit.unverifiable ?? []).length,
+      reason: audit.reason ?? null,
+    };
+  }
+
   /**
    * measureOutcomes —— 给 cron `outcome-measure` 用的服务入口。
    *
    * 与 runOnce 分开的理由：一个是"往前做进化"，一个是"往后量账"，
    * 排期窗口、成本、失败影响面都不同（量账要真跑测试，一次双态 ≈ 2× 子集耗时）。
    *
-   * 永不抛（外壳在 outcome-measurer 里已经做完，这里只加计数与截断）。
+   * **先验锁，再量账**：篡改过的预测不许喂进 PQ 与知识桶。per-entry 的校验在
+   * measurer 里（每条测之前重算一次），这里的 sweep 是**全表**的 ——
+   * 它看得见那些本轮根本没被测量的锁（例如从没有条目接得上的、或历史遗留的）。
+   *
+   * 永不抛（外壳在 outcome-measurer / contract-audit 里已经做完，这里只加计数与截断）。
    * @param {object} [opts] { repoRoot?, env?, limit?, inject? }
-   *   `inject.measurer` = 测试缝（与 runOnce 的 `inject.fs/llm` 同一条约定）：
-   *   给定形状 `{ measurePending }` 即用它，生产不传 ⇒ 用 apply() 建的那个。
-   * @returns {Promise<object>} 本轮测量概览
+   *   `inject.measurer` / `inject.auditor` = 测试缝（与 runOnce 的 `inject.fs/llm` 同一约定）。
+   * @returns {Promise<object>} 本轮测量概览（含 `audit` 块）
    */
   async function measureOutcomes(opts = {}) {
     const env = opts.env ?? process.env;
     const repoRoot = opts.repoRoot ?? resolveRepoRoot(env, { repoRoot: cfgRepoRoot });
     const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_OUTCOME_LIMIT;
     const measurer = opts.inject?.measurer ?? outcomeMeasurer;
+    const auditor = opts.inject?.auditor ?? contractAuditor;
+
+    const audit = await auditor.sweep();
+    state.auditChecked += audit?.checked ?? 0;
+    state.auditTampered += (audit?.tampered ?? []).length + (audit?.orphanPredictions ?? []).length;
+    for (const v of audit?.tampered ?? []) {
+      warn('contract-audit: ⛔ 锁重算对不上（该条不计入任何统计）', {
+        contractId: v.contractId, status: v.status, storedLock: v.storedLock, recomputed: v.recomputed,
+      });
+    }
+    for (const o of audit?.orphanPredictions ?? []) {
+      warn('contract-audit: ⛔ 链上有预测却没有锁行（证据被删？）', {
+        contractId: o.contractId, seq: o.seq, predictedDelta: o.predictedDelta,
+      });
+    }
+
     const out = await measurer.measurePending({ repoRoot, limit });
     for (const r of out.results ?? []) {
       if (r.status === 'MEASURED') state.outcomeMeasured += 1;
       else state.outcomeRefused += 1;
+      if (r.status === 'CONTRACT_TAMPERED') state.auditTampered += 1;
       if (r.needsAttention === true) {
         state.outcomeAttention += 1;
         warn('outcome: 护栏未核过，需人工确认仓库状态', { contractId: r.contractId, status: r.status, changedPath: r.changedPath ?? null });
       }
     }
     // results 里塞不进日志的一行摘要：每条只留判读字段，整份留给 cron 落盘文件。
-    return { ...out, repoRoot: repoRoot ?? null, limit };
+    return { ...out, repoRoot: repoRoot ?? null, limit, audit: auditBrief(audit) };
   }
 
   /**
@@ -1079,6 +1125,8 @@ export function apply(ctx, config = {}) {
       outcomeMeasured: state.outcomeMeasured,
       outcomeRefused: state.outcomeRefused,
       outcomeAttention: state.outcomeAttention,
+      auditChecked: state.auditChecked,
+      auditTampered: state.auditTampered,
       lastRunAt: state.lastRunAt,
       lastError: state.lastError,
       lastProposalId: state.lastProposalId,

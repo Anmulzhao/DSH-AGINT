@@ -1,7 +1,7 @@
 {
   "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-cron",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。",
   "main": "lib/index.js",
   "agint": {

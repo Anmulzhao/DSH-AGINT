@@ -1,5 +1,43 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.16 — 2026-10-03（§2.4.2 归档校验终于有了调用点：先验锁，再量账）
+
+### 问题
+
+`predictor.verifyHypothesisLock` 是纯函数、有单测，**但全仓没有一个调用方**。
+一把没人校验的锁只防"改 predictedDelta 数值"这一种动作，防不到：
+
+1. 改完 `hypothesis` 的其它成分（`targetMetric` / `changedPlugins` / `lockedAt`）—— 摘要随之变了，没人重算。
+2. **删掉 `contract_locks` 的行** —— 链上还写着 `predictedDelta`，见证却没了。
+3. 复原路径本身没人验证过 —— `buildLockHypothesis` 只准放三个字段这条纪律，缺一个"从链上字段能否重建 hypothesis"的实测。
+
+### 新增
+
+- `lib/contract-audit.js`：
+  - `hypothesisFromEntry(entry)` —— 从 Ledger 条目复原锁定时的 hypothesis；缺任一摘要成分就点名缺哪个（⛔ 不硬算，硬算必得另一个 hash ⇒ 假篡改）。
+  - `auditOne({entry, lockRow})` —— 单向判定，五种终态：`VERIFIED` / `CONTRACT_TAMPERED` / `LOCK_ROW_MISSING` / `UNEVIDENCED_HYPOTHESIS` / `LEDGER_ENTRY_MISSING`。
+  - `createContractAuditor(ctx).sweep()` —— **双向清点**：表里每行重算 + 链上每个预测都要有锁行。永不抛（`SERVICE_UNAVAILABLE` / `AUDIT_FAILED` 如实上报，⛔ 不可用 ≠ "没有篡改"）。
+- `measureOutcomes()` 现在**先 sweep 再测量**，返回值带 `audit` 块（`checked` / `counts` / `tampered` / `orphanPredictions`，各截 10 条）。
+- `status()` 加 `auditChecked` / `auditTampered` 两个计数器（"对不上"与"锁行缺失"都计入后者）。
+- `outcome-measurer` 加篡改门（第 22 种终态 `CONTRACT_TAMPERED`）：条目自称有预测时，锁重算不回来就**在跑测试之前**拒测，不写 `prediction_outcomes`。
+  没有预测的条目不受此门影响 —— 它的 `actualDelta` 仍是真观测，没有"预测 vs 实测"这对关系可供伪造。
+
+### 只判定，绝不修复
+
+与 `contract-manager.verifyLock` 同一条纪律：修复等于重写历史。处置是**标记 + 不计入统计 + 出声**，
+出声通道是 cron `outcome-measure` 的 `throw`（见 `agint-cron` 0.2.9）。
+
+### 测试
+
+- `test/contract-audit.test.mjs`（15）：正向 VERIFIED 一条（证明判据不是恒红机器）+ 三种篡改各一条
+  （改预测值 / 改指标 / 改 changedPlugins / 改 predictionSource / 改 lockedAt）+ 删锁行 + 缺条目 + 复原不出来 + sweep 双向 + 服务不可用 + 抛错外壳 + 空表。
+- `test/outcome-measurer.test.mjs` 新增 H1~H4（篡改门在任何副作用之前：一次测试都没跑、文件没换、没写行）。
+- `test/outcome-e2e.test.mjs` 新增第三条：**真服务真 hash** 下改掉存储里的条目 ⇒ 拒测；改回原值 ⇒ 同一条立刻可测（证明拒测的因是"对不上"，不是门禁恒红）。
+- 红绿自证：把篡改门改成 `if (false && …)` ⇒ H1/H2/H3 立即变红（3 条），恢复后 31/31 绿。
+- 夹具纪律：锁一律用 `computeHypothesisLock` 真算。写死 hash 的夹具会让每条都判红 —— 那是 mock 失真
+  （同 §3.14 `bus.publish` 的 `envelopeId` 教训）。但"篡改"类夹具必须**只动存储、不重算锁**，否则记录自洽，测的是没被改过的情形。
+- 本插件 280/280 绿。
+
 ## v0.2.15 — 2026-10-03（1b R1′ 落地：actualDelta 的尺子 = 改动面测试子集双态跑）
 
 ### 新增

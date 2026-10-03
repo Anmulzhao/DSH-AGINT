@@ -571,15 +571,28 @@ export const defaultJobs = [
         return { skipped: true, reason: 'agint.evolutionDriver.measureOutcomes not mounted' };
       }
       const out = await driver.measureOutcomes({});
-      // 复原护栏没核过的条目必须出声：那意味着临时换文件这一步没干净收尾，
-      // 仓库可能仍处基线态（⛔ 静默 = 让老板的源码树带伤跑一周）。
+      // 出声条件有两类，都不许静默过一周：
+      //   ① 复原护栏未核过（临时换文件没干净收尾，源码树可能仍处基线态）；
+      //   ② 归档校验发现篡改（锁重算对不上，或链上写着预测而锁行没了 = 删证据）。
+      // ②是安全事件：`contract_locks` 既不可覆盖也不可删除，缺一行就有一段历史失去见证。
       const attention = (out.results ?? []).filter((r) => r.needsAttention === true);
+      const tampered = out.audit?.tampered ?? [];
+      const orphans = out.audit?.orphanPredictions ?? [];
+      const problems = [];
       if (attention.length > 0) {
-        throw new Error(
-          `outcome-measure: ${attention.length} 条测量的复原护栏未核过：` +
-            attention.map((r) => `${r.contractId}(${r.status}) → ${r.changedPath ?? '?'}`).join('; '),
-        );
+        problems.push(`复原护栏未核 ${attention.length} 条：`
+          + attention.map((r) => `${r.contractId}(${r.status}) → ${r.changedPath ?? '?'}`).join('; '));
       }
+      if (tampered.length > 0) {
+        problems.push(`⛔ 锁重算对不上 ${tampered.length} 条：`
+          + tampered.map((v) => `${v.contractId}(${v.status})`).join('; ')
+          + ' —— 这些 Contract 不计入任何统计（设计 §2.4.2）');
+      }
+      if (orphans.length > 0) {
+        problems.push(`⛔ 链上有预测而锁行缺失 ${orphans.length} 条：`
+          + orphans.map((o) => `${o.contractId}(seq=${o.seq ?? '?'})`).join('; '));
+      }
+      if (problems.length > 0) throw new Error(`outcome-measure: ${problems.join(' / ')}`);
       return {
         status: out.ok ? 'ok' : 'skipped',
         report: {
@@ -589,6 +602,8 @@ export const defaultJobs = [
           deferred: out.deferred ?? 0,
           counts: out.counts ?? {},
           repoRoot: out.repoRoot ?? null,
+          auditChecked: out.audit?.checked ?? 0,
+          auditCounts: out.audit?.counts ?? {},
         },
       };
     },

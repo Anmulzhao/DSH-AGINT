@@ -2,11 +2,13 @@
  * 端到端：真实临时 git 仓库 + 真实 node --test + 真实 agint-evolution-memory 服务
  *
  * 单元层（outcome-measurer.test.mjs）用假 runner 与假 evo，证的是判据分支。
- * 本文件证的是**接起来真的跑得通**，三件事缺一不可：
+ * 本文件证的是**接起来真的跑得通**，四件事缺一不可：
  *   1. 真子进程跑真测试 —— 两侧结果差异来自真文件内容，不是我编的 TAP 串。
  *   2. 真 memory 服务落表 —— 写进去的 entry 必须过 `predictionOutcomeEntrySchema`，
  *      schema 在这里是**裁判**，不是装饰（单测里的 mock 不吃 schema）。
  *   3. 真 Ledger 条目 —— 测量以链上条目为输入（preimagePath / predictedDelta 都从链读）。
+ *   4. 真 hash 的篡改门 —— 锁行必须按 lockPrediction 的配方算出来，
+ *      夹具里写死一个 hash 会让每条都判红（那正是 mock 失真的经典形状）。
  *
  * Run: node --test plugins/agint-evolution-driver/test/outcome-e2e.test.mjs
  */
@@ -18,6 +20,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createOutcomeMeasurer, MEASURE_STATUS } from '../lib/outcome-measurer.js';
+import { computeHypothesisLock } from '../lib/predictor.js';
+import { buildLockHypothesis } from '../lib/prediction-locker.js';
+
+const LOCKED_AT = '2026-10-03T07:59:00.000Z';
+
+/** 与 contract-manager.lockPrediction 同一配方造一把真锁（夹具写死 hash 会被篡改门全判红）。 */
+function realLock(entry) {
+  const s = entry.summary;
+  return computeHypothesisLock({
+    hypothesis: {
+      ...buildLockHypothesis({
+        mutationType: s.mutationType,
+        targetMetric: s.targetMetric,
+        changedComponents: s.changedPlugins,
+      }),
+      predictedDelta: s.predictedDelta,
+      predictionSource: s.predictionSource,
+    },
+    contractId: entry.contractId,
+    createdAt: LOCKED_AT,
+  });
+}
 
 const CONTRACT = 'EVO-CC82368A';
 const STAMP = '2026-10-03T08-00-00-000Z';
@@ -104,11 +128,12 @@ test('E2E: 双态真跑 → 真 delta → 过真 schema 落表 → 跑完文件�
   assert.equal(appended.ok !== false, true, JSON.stringify(appended));
   const seq = appended.entry.seq;
 
-  // ② 锁在先（1a 的产物）
+  // ② 锁在先（1a 的产物），且必须是**真锁**：篡改门会重算比对
+  const hypothesisLock = realLock(appended.entry);
   await evo.recordContractLock({
     contractId: CONTRACT,
-    hypothesisLock: `sha256:${'c'.repeat(64)}`,
-    lockedAt: '2026-10-03T07:59:00.000Z',
+    hypothesisLock,
+    lockedAt: LOCKED_AT,
     predictionSource: 'DEFAULT_RULE',
   });
 
@@ -149,7 +174,7 @@ test('E2E: 双态真跑 → 真 delta → 过真 schema 落表 → 跑完文件�
   assert.equal(row.actualDelta, 100);
   assert.ok(Number.isFinite(row.predictionQuality) && row.predictionQuality > 0 && row.predictionQuality < 1);
   assert.equal(row.evidence.ledgerSeq, seq);
-  assert.equal(row.evidence.hypothesisLock, `sha256:${'c'.repeat(64)}`);
+  assert.equal(row.evidence.hypothesisLock, hypothesisLock);
   assert.equal(row.evidence.preimagePath, PREIMAGE);
   assert.match(row.evidence.candidateSha, /^sha256:[0-9a-f]{64}$/);
   assert.match(row.evidence.baselineSha, /^sha256:[0-9a-f]{64}$/);
@@ -170,7 +195,7 @@ test('E2E: 覆盖门在真仓库上同样成立 —— 改 README 没有任何�
   await writeFile(join(dir, docRel), '# note (改后)\n');
   await writeFile(join(dir, docPre), '# note (改前)\n');
 
-  await evo.ledger.append({
+  const appended = await evo.ledger.append({
     contractId: 'EVO-DOC1',
     generation: 'GEN-022',
     summary: {
@@ -182,7 +207,8 @@ test('E2E: 覆盖门在真仓库上同样成立 —— 改 README 没有任何�
     timestamp: '2026-10-03T08:00:00.000Z',
   });
   await evo.recordContractLock({
-    contractId: 'EVO-DOC1', hypothesisLock: `sha256:${'d'.repeat(64)}`, lockedAt: '2026-10-03T07:59:00.000Z',
+    contractId: 'EVO-DOC1', hypothesisLock: realLock(appended.entry), lockedAt: LOCKED_AT,
+    predictionSource: 'DEFAULT_RULE',
   });
 
   const measurer = createOutcomeMeasurer(
@@ -193,5 +219,60 @@ test('E2E: 覆盖门在真仓库上同样成立 —— 改 README 没有任何�
   assert.equal(res.status, MEASURE_STATUS.NO_EVIDENCE);
   assert.equal(res.reason, 'NO_INSTRUMENT_FOR_TARGET_KIND');
   assert.equal(await evo.getPredictionOutcome('EVO-DOC1'), null, '⛔ 测不到不是度量');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('E2E: 事后改写链上的预测值 ⇒ 篡改门在跑测试之前就拦下（真 hash、真服务、真盘）', async () => {
+  const dir = await makeGitRepo();
+  const { evo, tableOf } = await bootEvolutionService();
+  const appended = await evo.ledger.append({
+    contractId: CONTRACT,
+    generation: 'GEN-022',
+    summary: {
+      mutationType: 'PROMPT_MUTATION', changedPlugins: ['agint-e2e'], targetMetric: 'SUCCESS_RATE',
+      hypothesisDigest: 'fix add()', predictedDelta: 3.0, actualDelta: null, predictionQuality: null,
+      predictionSource: 'DEFAULT_RULE', decision: 'AUTO_DEPLOY',
+    },
+    references: { preimagePath: PREIMAGE },
+    timestamp: '2026-10-03T08:00:00.000Z',
+  });
+  await evo.recordContractLock({
+    contractId: CONTRACT, hypothesisLock: realLock(appended.entry), lockedAt: LOCKED_AT,
+    predictionSource: 'DEFAULT_RULE',
+  });
+
+  // 篡改：把存储里那条**条目的预测值**改掉（锁行原样留着 ⇒ 重算必对不上）。
+  const ledger = tableOf('evolution_ledger');
+  let targetKey = null;
+  for (const [k, v] of ledger.entries()) if (v?.contractId === CONTRACT) targetKey = k;
+  assert.ok(targetKey !== null, '条目应已按 seq 落进链表');
+  const orig = ledger.get(targetKey);
+  await ledger.put(targetKey, { ...orig, summary: { ...orig.summary, predictedDelta: 9.9 } });
+
+  let ran = 0;
+  const measurer = createOutcomeMeasurer(
+    { get: () => evo },
+    {
+      listRepoFiles: async () => [CHANGED, TEST_FILE, PREIMAGE, 'node_modules/.keep'],
+      runTests: async () => { ran += 1; return { ok: true, timedOut: false, stdout: '', stderr: '', error: null }; },
+    },
+  );
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: dir });
+
+  assert.equal(res.status, MEASURE_STATUS.CONTRACT_TAMPERED, JSON.stringify(res));
+  assert.equal(res.auditStatus, 'CONTRACT_TAMPERED');
+  assert.equal(ran, 0, '⛔ 篡改门在前 ⇒ 一次测试都没跑、一次文件都没换');
+  assert.equal(String(await readFile(join(dir, CHANGED), 'utf8')), CODE_FIXED, '盘上内容原样');
+  assert.equal(await evo.getPredictionOutcome(CONTRACT), null, '篡改过的预测不得进 PQ / 知识桶');
+
+  // 反向自愈：把条目改回原值 ⇒ 同一条现在可测（证明拒测的因是"对不上"而不是"门禁恒红"）
+  await ledger.put(targetKey, orig);
+  const measurer2 = createOutcomeMeasurer(
+    { get: () => evo },
+    { listRepoFiles: async () => [CHANGED, TEST_FILE, PREIMAGE, 'node_modules/.keep'] },
+  );
+  const back = await measurer2.measureOne({ contractId: CONTRACT, repoRoot: dir });
+  assert.equal(back.status, MEASURE_STATUS.MEASURED, JSON.stringify(back));
+  assert.equal(back.actualDelta, 100);
   await rm(dir, { recursive: true, force: true });
 });

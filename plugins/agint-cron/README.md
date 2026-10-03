@@ -90,9 +90,12 @@
 > 本插件的 action 只做映射与出声。它需要 **driver 那一侧** 能解析出 `repoRoot`
 > （env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > driver `config.repoRoot`）；
 > 两者都没有 ⇒ `NO_REPOROOT` ⇒ `lastResult.status = skipped`，不是失败也不是"没东西可测"。
-> ⚠️ 它与 `evolution-reconcile` 一样会 `throw`，但触发条件更硬：
-> 某条测量的复原护栏没核上（`needsAttention`）—— 那意味着临时换文件没干净收尾，
-> 源码树可能仍处基线态，必须当轮出声。
+> ⚠️ 它与 `evolution-reconcile` 一样会 `throw`，触发条件有两类：
+> ① 某条测量的复原护栏没核上（`needsAttention`）—— 临时换文件没干净收尾，源码树可能仍处基线态；
+> ② 归档校验发现异常（`audit.tampered` 锁重算对不上 / `audit.orphanPredictions` 链上有预测而锁行没了）——
+>   这是安全事件，`contract_locks` 既不可覆盖也不可删除。
+>   ⛔ 但 `audit.ok:false`（服务不可用 / 插件未重启）**不抛错**，只在 `report.auditChecked=0` 里如实带出：
+>   "查不了"与"查过没问题"靠数字区分，不靠每周一次的常驻红色区分。
 
 
 > **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、

@@ -1606,7 +1606,7 @@ test('T35: checkEntities —— 门自己抛错时放行 + 留痕（观测装置
   assert.deepEqual(out.fabricated, []);
 });
 
-test('T36: 1b 接线 —— measureOutcomes 服务入口：没仓库根就拒，计数器随结果动', async () => {
+test('T36: 1b 接线 —— measureOutcomes 先验锁再量账：没仓库根就拒，计数器随结果动', async () => {
   const ctx = makeCtx({});
   apply(ctx);
   const svc = ctx.provided['agint.evolutionDriver'];
@@ -1642,6 +1642,31 @@ test('T36: 1b 接线 —— measureOutcomes 服务入口：没仓库根就拒，
   assert.equal(st.outcomeMeasured, 1);
   assert.equal(st.outcomeRefused, 1);
   assert.equal(st.outcomeAttention, 1, '护栏未核的条数必须单独看得见（静默 = 源码树带伤跑一周）');
+
+  // ③ 先验锁再量账：sweep 结果要进返回值与计数器（§2.4.2 归档校验的调用点）
+  const swept = [];
+  const auditor = {
+    sweep: async () => {
+      swept.push(1);
+      return {
+        ok: true, status: 'AUDITED', checked: 3,
+        counts: { VERIFIED: 1, CONTRACT_TAMPERED: 1, LOCK_ROW_MISSING: 1 },
+        verdicts: [],
+        tampered: [{ contractId: 'EVO-T1', status: 'CONTRACT_TAMPERED', storedLock: 'sha256:a', recomputed: 'sha256:b' }],
+        orphanPredictions: [{ contractId: 'EVO-T2', seq: 9, predictedDelta: 2 }],
+        unverifiable: [],
+      };
+    },
+  };
+  const measurer2 = { measurePending: async () => ({ ok: true, scanned: 0, measurable: 0, attempted: 0, deferred: 0, counts: {}, results: [] }) };
+  const audited = await svc.measureOutcomes({ repoRoot: '/repo', inject: { measurer: measurer2, auditor } });
+  assert.equal(swept.length, 1, 'sweep 在测量之前跑一次');
+  assert.equal(audited.audit.checked, 3);
+  assert.equal(audited.audit.tampered.length, 1);
+  assert.equal(audited.audit.orphanPredictions.length, 1);
+  const st2 = svc.status();
+  assert.equal(st2.auditChecked, 3);
+  assert.equal(st2.auditTampered, 2, '对不上 1 条 + 删行 1 条都算安全事件');
 });
 
 console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T36）');

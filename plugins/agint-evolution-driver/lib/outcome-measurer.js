@@ -54,6 +54,7 @@ import { join, resolve as pathResolve, sep } from 'node:path';
 
 import { parsePreimagePath, deriveTestFiles, planTestScope } from './outcome-scope.js';
 import { scorePrediction, deadZoneThreshold } from './prediction-scoring.js';
+import { auditOne, AUDIT_STATUS } from './contract-audit.js';
 
 /** 终态枚举。只有 `MEASURED` 与 `IDEMPOTENT` 会在表里留下行。 */
 export const MEASURE_STATUS = Object.freeze({
@@ -76,6 +77,7 @@ export const MEASURE_STATUS = Object.freeze({
   RUNNER_UNPARSABLE: 'RUNNER_UNPARSABLE',      // 输出里没有 node:test 的 TAP 汇总行
   RUNNER_TIMEOUT: 'RUNNER_TIMEOUT',            // 超时，或有 cancelled 计数
   CONCURRENT_WRITE: 'CONCURRENT_WRITE',        // 动手前发现文件已变：不是我们要测的那个态
+  CONTRACT_TAMPERED: 'CONTRACT_TAMPERED',      // 锁重算对不上 / 链上带预测却没锁行 ⇒ 不写测量（§2.4.2）
   RESTORE_FAILED: 'RESTORE_FAILED',            // 换不回候选态（仓库此刻仍是基线态！）
   RECORD_FAILED: 'RECORD_FAILED',              // 测量成立但落表抛错
 });
@@ -307,6 +309,25 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         });
       }
 
+      // 篡改门（§2.4.2 第 6 步的调用点之一）：**条目自称有预测**时，锁必须重算得回来。
+      // 判据只压"有预测"的那些 —— 没有预测的条目 (predictedDelta=null) 的 actualDelta
+      // 仍是真观测（喂 τ 重标定），它没有"预测 vs 实测"这对关系可供伪造，不该被锁挡住。
+      // ⛔ 反过来，锁对不上还照写 = 把篡改过的预测喂进 PQ 与知识桶。
+      const lock = await evo.getContractLock(contractId);
+      const claimsPrediction = Number.isFinite(entry.summary?.predictedDelta);
+      if (claimsPrediction) {
+        const v = auditOne({ entry, lockRow: lock });
+        if (v.status !== AUDIT_STATUS.VERIFIED) {
+          warn('outcome-measurer: ⛔ 预测锁校验未过，本次测量不落表', {
+            contractId, status: v.status, missing: v.missing ?? null,
+            storedLock: v.storedLock ?? null, recomputed: v.recomputed ?? null,
+          });
+          return fail(MEASURE_STATUS.CONTRACT_TAMPERED, {
+            reason: v.reason ?? v.status, missing: v.missing ?? null, auditStatus: v.status,
+          });
+        }
+      }
+
       const preimagePath = entry.references.preimagePath;
       const parsed = parsePreimagePath(preimagePath);
       if (!parsed.ok) return fail(MEASURE_STATUS.PREIMAGE_UNPARSEABLE, { reason: parsed.reason, preimagePath });
@@ -399,7 +420,6 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         return fail(MEASURE_STATUS.NO_EVIDENCE, { reason: 'passRate 缺失，算不出 delta' });
       }
 
-      const lock = await evo.getContractLock(contractId);
       const predictedDelta = Number.isFinite(entry.summary?.predictedDelta) ? entry.summary.predictedDelta : null;
       const scored = scorePrediction({
         predictedDelta,

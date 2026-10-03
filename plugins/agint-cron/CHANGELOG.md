@@ -2,6 +2,27 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.9] — outcome-measure 增加第二类出声条件（归档校验，2026-10-03）
+
+### 改
+
+`outcome-measure` 的 `throw` 判据从一类扩到两类（driver 0.2.16 起 `measureOutcomes()` 返回值带 `audit` 块）：
+
+1. 复原护栏未核过（`needsAttention`）—— 临时换文件没干净收尾，源码树可能仍处基线态。
+2. **归档校验发现异常** —— `audit.tampered`（锁重算对不上）或 `audit.orphanPredictions`
+   （链上写着 `predictedDelta` 而 `contract_locks` 的行没了 = 删证据）。
+   判据依据：`contract_locks` 既不可覆盖也不可删除，缺一行就有一段历史失去外部见证（设计 §2.4.2）。
+
+### 未改（如实记录）
+
+- `audit.ok:false`（服务不可用 / 扫描抛错）**不抛错**，只在 `report.auditChecked=0` 里如实带出。
+  理由：插件未重启时每条都会 unavailable，抛错只会变成每周一次的常驻噪声；
+  "查不了"与"查出来没问题"靠 `auditChecked` 区分，不靠红色区分。
+
+### 测试
+
+- `test/outcome-measure.test.mjs` 增至 8 条：篡改点名 Contract 且带"不计入任何统计"、删锁行单独一类、unavailable 不抛错但 `auditChecked=0`。
+
 ## [0.2.8] — 新增 outcome-measure job（Phase 1.1 支点 1b，2026-10-03）
 
 ### 新增
