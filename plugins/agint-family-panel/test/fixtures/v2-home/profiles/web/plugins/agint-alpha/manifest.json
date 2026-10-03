@@ -1,0 +1,2 @@
+{ "name": "agint-alpha", "version": "0.0.1",
+  "spec": { "cordis": { "provides": ["agint.alpha"], "consumes": ["agint.beta.svc"] } } }

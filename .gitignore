@@ -71,3 +71,6 @@ packages/
 # 机器级环境变量 override（Phase -1.4：绝对路径等本机事实，每台各持一份，不入库）
 # 模板见 .agint-env.local.example；校验脚本 bin/validate-env-config.mjs
 .agint-env.local
+
+# family-panel v2 夹具的运行时生成物（时间戳相对当前，不入库）
+plugins/agint-family-panel/test/fixtures/v2-home/storages/
