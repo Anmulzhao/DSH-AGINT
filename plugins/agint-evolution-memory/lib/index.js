@@ -30,6 +30,7 @@ import {
   failurePatternSchema,
   successTemplateSchema,
   contractLockEntrySchema,
+  predictionOutcomeEntrySchema,
   ledgerEntrySchema,
   LIMITS,
   matchesQuery,
@@ -78,6 +79,10 @@ const spec = defineDomain({
     success_template: { valueSchema: successTemplateSchema },
     // Phase 1 交付物 1 §2.5.1：预测锁定记录（hypothesisLock）
     contract_locks: { valueSchema: contractLockEntrySchema },
+    // Phase 1.1 支点 1b / R1′：预测的**实际度量**（设计里 Sprint 24 的那张表）。
+    // ⛔ 不参与链哈希、不回填链（§4.3.4 裁定）—— 用 contractId 与 Ledger 条目交叉引用。
+    // 加表不升 version 的先例与本域生产文件行为，见本文件 51-73 行的取证注释。
+    prediction_outcomes: { valueSchema: predictionOutcomeEntrySchema },
     // Phase 1 交付物 3 §4.3：进化账本（哈希链）。主键 = String(seq)，
     // 一个 contractId 一条（§4.3.4 纪律 6）；追加只经 lib/ledger.js。
     evolution_ledger: { valueSchema: ledgerEntrySchema },
@@ -163,6 +168,7 @@ function apply(ctx) {
   const t_template = () => table('success_template');
   const t_lock = () => table('contract_locks');
   const t_ledger = () => table('evolution_ledger');
+  const t_outcome = () => table('prediction_outcomes');
 
   // ── Ledger（Phase 1 交付物 3 §4.3.4）─────────────────────────────────────
   // 链的**唯一写入口**。⛔ 不接 logBuffer：批量 flush 崩溃即 seq 空洞，
@@ -438,6 +444,69 @@ function apply(ctx) {
     return out;
   }
 
+  // ── Phase 1.1 支点 1b / R1′：预测的实际度量（设计里 Sprint 24 的那张表）────
+  //
+  // 本方法**只存不算**。跑测试、算 actualDelta、判死区全在 driver 的
+  // `lib/outcome-measurer.js`；这里只做落盘 + 两道守门（不可覆盖、schema 校验）。
+  // 分离的理由与 recordContractLock 同一条：本插件不 import driver 的 lib。
+
+  /**
+   * recordPredictionOutcome — 落一条「预测 vs 实测」记录。
+   *
+   * ## 为什么不可覆盖
+   * 与 contract_locks 同一条纪律：度量记录是历史事实。可覆盖就意味着事后能挑一次
+   * 好看的数字重写它 —— 这正是设计 §4.2.5 要拦的「反事后偏」。已存在同 contractId
+   * ⇒ **拒绝并报 already-exists，绝不覆盖**。
+   *
+   * ## ⛔ 不回填链（§4.3.4 裁定「度量不回填链」）
+   * 本表不参与 Ledger 链哈希。预测与实测的对应关系用 `contractId` 交叉引用：
+   * 回填会让已锚定的 seq 全部重算，等于把锚点作废。
+   *
+   * @param {object} entry 形状见 `schema.js:predictionOutcomeEntrySchema`
+   * @returns {Promise<object>} 落盘后的 entry（超限带 `_warn`）
+   * @throws 缺 contractId ⇒ Error；同 contractId 已写 ⇒ Error('prediction-outcome-already-exists')
+   */
+  async function recordPredictionOutcome(entry) {
+    if (!entry?.contractId) throw new Error('recordPredictionOutcome: contractId is required');
+    const t = await t_outcome();
+    if (t.get(entry.contractId)) {
+      // ⛔ 不可覆盖：见上方「为什么要不可覆盖」。
+      throw new Error('prediction-outcome-already-exists');
+    }
+    const parsed = predictionOutcomeEntrySchema.parse(entry);
+    await t.put(parsed.contractId, parsed);
+    const count = t.size;
+    if (count > LIMITS.PREDICTION_OUTCOMES) {
+      return { ...parsed, _warn: `prediction_outcomes count ${count} > limit ${LIMITS.PREDICTION_OUTCOMES}` };
+    }
+    return { ...parsed };
+  }
+
+  /**
+   * getPredictionOutcome — 取某 Contract 的实测记录（幂等判据 + 对账用）。
+   * @param {string} contractId
+   * @returns {Promise<object|null>} 找不到返回 null（**缺失≠已测**，由 caller 判）
+   */
+  async function getPredictionOutcome(contractId) {
+    if (!contractId) return null;
+    const t = await t_outcome();
+    const rec = t.get(contractId);
+    return rec ? { ...rec } : null;
+  }
+
+  /**
+   * listPredictionOutcomes — 列出全部实测记录。
+   * Phase 1 收口门槛「非死区记录 ≥20 条」从这里数（⛔ 不是从 contract_locks 数 ——
+   * 锁了没测出来的那些条，一条都不算证据）。
+   * @returns {Promise<Array<object>>}
+   */
+  async function listPredictionOutcomes() {
+    const t = await t_outcome();
+    const out = [];
+    for (const [, rec] of t.entries()) out.push({ ...rec });
+    return out;
+  }
+
   // ── 读取 helpers ────────────────────────────────────────────────────────
 
   /** Query failure patterns. opts: { query?, category?, severity?, limit? } */
@@ -549,6 +618,10 @@ function apply(ctx) {
     recordContractLock,
     getContractLock,
     listContractLocks,
+    // Phase 1.1 支点 1b / R1′：实测落盘（同 contractId 不可覆盖 ⇒ measurer 重跑幂等）
+    recordPredictionOutcome,
+    getPredictionOutcome,
+    listPredictionOutcomes,
     getLogRange,
     decayScanRun,
     stats,

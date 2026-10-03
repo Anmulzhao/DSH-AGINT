@@ -2,7 +2,29 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.8] — 新增 outcome-measure job（Phase 1.1 支点 1b，2026-10-03）
+
+### 新增
+
+- **job `outcome-measure`**（Tue 10:15，`15 10 * * 2`）：每周唤 `agint-evolution-driver.measureOutcomes()`
+  给上一期 evolution-cycle 锁掉的预测补上实测 `actualDelta`（双态跑改动面测试子集），落 `prediction_outcomes`。
+  - **时机**：evolution-cycle(Tue 07:00) 与 evolution-reconcile(Tue 08:00) 之后，链上条目与对账都已就位；
+    与 09:30 `baseline-regression-suite` 留 45 分钟（原则②）。
+    ⛔ 不可取 10:00 / 10:30 —— 每月 1 日恰逢周二时那是 `oracle-monthly` / `spec-index-refresh` 的固定位。
+  - **判据不在本插件**：全在 driver 的 `lib/outcome-measurer.js`（部署包无 `bin/`，经验教训 §3.13）。
+    本 job 只做三件事：服务没挂 ⇒ soft-skip；正常 ⇒ 计数进 `report`；
+    **复原护栏未核过 ⇒ 抛错出声**（那意味着临时换文件没干净收尾，仓库可能仍处基线态）。
+  - **成本**：一次测量 = 2× 子集耗时；子集实测插件级 <5 秒，一轮上限 5 条 ⇒ 排得进周窗口。
+  - ⚠️ 不进 HEAVY 集合：本 job 零 LLM 调用（只 spawn `node --test`），原则②b 的 30 分钟是给 LLM 任务留的。
+
+### 测试
+
+- `test/outcome-measure.test.mjs`（5）：注册与排期、soft-skip、report 字段、护栏未核必抛、`ok:false` 记 skipped。
+- `test/schedule-layout.test.mjs` 仍绿（24 个 job 无同分钟撞车、相邻 ≥15 分钟）。
+
 ## [0.2.7] — 新增 evolution-reconcile job（Phase -1.1 收口，2026-10-03）
+
+
 
 ### 新增
 

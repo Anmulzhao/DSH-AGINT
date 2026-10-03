@@ -94,6 +94,37 @@ Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：�
 `test/expected-effect.test.mjs` 就是钉这条的。mutator 的 FROZEN 契约要求必须给可证伪串，
 所以给的是真实想改善的量，不是留空。
 
+## 实测 actualDelta（v0.2.15，Phase 1.1 支点 1b / R1′）
+
+1a 锁住了「预测」。本层补对面那半：量出「实际」，`actualDelta` 才有值，PQ 与 τ 才有得算。
+
+判据来自一次真实对照实验（2026-10-03，拿 2026-09-29 那次自改做的）：
+`eval/scenarios` 场景集 123 条对那处 160 行改动**逐条零差异**；按被改文件筛出的测试子集
+看得见（3/3 → 2/3）；全仓 1928 条 passRate 只动 0.05pp，远小于死区 1.5pp。
+⇒ 度量集 = **改动面筛出的测试子集**，双态各跑一遍。不是场景集，也不是全仓。
+
+| 文件 | 职责 |
+|---|---|
+| `lib/outcome-scope.js` | 纯判据：preimage 名 → 被改文件；被改文件 → 该跑哪些测试；筛不出就 `NO_EVIDENCE`。不读盘、不读时钟 |
+| `lib/outcome-measurer.js` | 外部世界那一侧：跑候选态 → 临时换回 preimage 跑基线态 → 换回来核 sha → 打分 → 落 `prediction_outcomes` |
+
+四条护栏（每条都对应一次会出事的形状）：
+
+1. ⛔ 只换**一个**文件，且必须落在 `repoRoot` 内，不碰 `.git/`、`.agint-preimage/`。
+2. ⛔ 换完必须换回来并核 sha。核不上 ⇒ 记录照写但 `restoreVerified:false` + `needsAttention`，
+   cron job 据此抛错出声（静默等于让老板的源码树带伤跑一周）。
+3. ⛔ `repoRoot` 下没有 `node_modules` 就拒测（`NO_TEST_RUNTIME`）。裸 worktree 实测得假基线 23/123。
+4. ⛔ 测不到 ≠ 没改进。覆盖门没过 ⇒ `NO_EVIDENCE`，表里**一行都不写**（设计 §4.2.5）。
+
+服务入口 `measureOutcomes({ repoRoot?, env?, limit?, inject? })`（cron job `outcome-measure`，Tue 10:15）。
+`limit` 默认 5 条/轮；`status()` 暴露 `outcomeMeasured` / `outcomeRefused` / `outcomeAttention` 三个计数器。
+只有 `decision ∈ {AUTO_DEPLOY, PENDING_REVIEW}` 的条目可测 —— REJECT/ABSTAIN 已从 preimage 回滚，
+盘上没有"改后态"可量。`targetMetric` 只认 `SUCCESS_RATE`：跑测试数不出 token 也数不出延迟，
+其余指标一律 `UNSUPPORTED_METRIC`（⛔ 不许换成"看起来像"的代理指标）。
+
+⚠️ `nodeTestRunner` 必须清掉 `NODE_TEST_CONTEXT`：宿主若本身跑在 `node --test` 下，
+这个变量会传给子进程，子 node 认定"递归调用"就跳过跑文件（E2E 实测踩到，症状 `RUNNER_UNPARSABLE`）。
+
 ## 测试
 
 ## goal 桥（v0.2.6，行动 #2）

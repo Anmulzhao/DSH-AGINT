@@ -266,6 +266,74 @@ export const ledgerEntryCoreSchema = ledgerEntrySchema
   .extend({ parentHash: sha256String });
 
 // ── 上限常量（owner：plugin index.js 引用） ────────────────────────────────
+/**
+ * prediction_outcomes 表 entry（Phase 1.1 支点 1b / R1′，Sprint 24 计划的度量表）。
+ *
+ * ## 它与链的关系：只交叉引用，不参与哈希
+ *
+ * §4.3.4 已裁定「度量不回填链」：Ledger 条目记的是「这一期进化做了什么决定」，
+ * 事后测到的 actual 写在这张表里，用 `contractId` 交叉引用。
+ * 好处：链的 entryHash 永不因度量而变（否则一条记录要被重写多次，纪律 9 直接崩）；
+ * 代价：这张表**可以合法地晚于链**，读侧必须能处理"有锁、有条目、还没测"。
+ *
+ * ## 为什么字段这样收
+ *
+ * - `baseline` / `candidate` 两侧都存**原始计数**（passed/total）而不只存 passRate：
+ *   90.9% 是 10/11 还是 100/110，可信度完全不同。只留比率会把样本量信息抹掉，
+ *   而 Phase 2 学派生指标时要按样本量加权。
+ * - `restoreVerified` 必填：双态对照要把被改文件临时换回 preimage 再换回来。
+ *   护栏没核过（假）的那条测量**不可信**，必须在数据里带着这个标记，
+ *   而不是靠"事后有人记得这条是异常窗口跑的"。
+ * - `actualDelta` 单位 = **百分点**（与 `TAU_METRIC.SUCCESS_RATE = 3.0`「3.0pp」同量纲）。
+ *   跨单位换算由读侧负责，这里不做归一 —— 归一会把 τ 表的语义绑到存储上。
+ * - ⛔ 不存 `NO_EVIDENCE` 之类的"测不到"记录：测不到不是度量。
+ *   那种状态走 `cycle.summary` + `failure_pattern`，表里每一行都必须是一次真测量。
+ */
+export const OUTCOME_METHODS = Object.freeze(['TEST_CORPUS_PAIR_RUN']);
+export const OUTCOME_METRICS = Object.freeze(['SUCCESS_RATE', 'TOKEN_EFFICIENCY', 'LATENCY', 'REGRESSION']);
+
+const outcomeSideSchema = z.object({
+  passed: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  total: z.number().int().min(1),
+  passRate: z.number().min(0).max(1),
+});
+
+export const predictionOutcomeEntrySchema = z.object({
+  contractId: z.string().min(1),
+  // UTC 毫秒串（与 Ledger 同一条判据：时间形状不统一，跨源对账就得靠猜）
+  measuredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+  method: z.enum(OUTCOME_METHODS),
+  targetMetric: z.enum(OUTCOME_METRICS),
+  changedPath: z.string().min(1),
+  // 实际跑了哪些测试文件（覆盖门的产物）。空数组到不了这里 —— 覆盖门先拦掉。
+  testFiles: z.array(z.string().min(1)).min(1),
+  baseline: outcomeSideSchema,
+  candidate: outcomeSideSchema,
+  actualDelta: z.number(),
+  predictedDelta: z.number().nullable().default(null),
+  predictionQuality: z.number().min(0).max(1).nullable().default(null),
+  pqReason: z.string().nullable().default(null),
+  isDeadZone: z.boolean().default(false),
+  deadZoneThreshold: z.number().nullable().default(null),
+  baselineNoiseStd: z.number().nullable().default(null),
+  restoreVerified: z.boolean(),
+  // ⚠️ 内层默认值必须**逐个写全**，不能只给 `.default({})`。
+  // 实测（zod 4.6.5）：对象字段的 `.default({})` 只在 key 缺失时塞进 `{}`，
+  // **不再把 `{}` 送回内层 schema 跑一遍** ⇒ 内层的 `.default(null)` 不生效，
+  // 读出来是 `undefined` 而不是 `null`。
+  // 这条纪律要保住的正是「缺失显式为 null」，所以这里手写全量默认值。
+  evidence: z.object({
+    preimagePath: z.string().nullable().default(null),
+    baselineSha: z.string().nullable().default(null),
+    candidateSha: z.string().nullable().default(null),
+    ledgerSeq: z.number().int().nullable().default(null),
+    hypothesisLock: z.string().nullable().default(null),
+  }).default({
+    preimagePath: null, baselineSha: null, candidateSha: null, ledgerSeq: null, hypothesisLock: null,
+  }),
+});
+
 export const LIMITS = {
   FAILURE_PATTERNS: 100,
   SUCCESS_TEMPLATES: 50,
@@ -286,6 +354,14 @@ export const LIMITS = {
    * 超限的正确动作是升 Ledger 规格版本并启用分卷，不是就地轮转。
    */
   LEDGER_ENTRIES: 2000,
+  /**
+   * prediction_outcomes 上限（**只 warn 不 prune**）。
+   * 依据：设计 §9 的 Phase 1 收口门槛是「非死区记录 ≥20 条」，每周 1 期、
+   * 一期 0~N 个 Contract ⇒ 2000 条够跑几十年。
+   * 与 contract_locks 同一条纪律：度量记录是历史事实，删一条等于把一段校准史抹掉；
+   * 超限的正确动作是分卷或升规格，不是轮转。
+   */
+  PREDICTION_OUTCOMES: 2000,
 };
 
 // ── 内容子串匹配（queryFailures / queryTemplates 用） ─────────────────────

@@ -59,6 +59,7 @@
 | `evolution-cycle` | `0 7 * * 2` | 闭环引擎驱动（Tue 07:00，复盘后第一波；原周日 04:15） |
 | `evolution-reconcile` | `0 8 * * 2` | 闭环取数三方对账（Tue 08:00，evolution-cycle 后 1h；Phase -1.1；**⛔ 只读出声不写盘**，见下方注） |
 | `baseline-regression-suite` | `30 9 * * 2` | 写一行 mount 通道 baseline 状态（Tue 09:30；原周日 03:15） |
+| `outcome-measure` | `15 10 * * 2` | 进化实测对账：双态跑改动面测试子集量 `actualDelta` 落 `prediction_outcomes`（Tue 10:15；Phase 1.1 支点 1b；零 LLM；**护栏未核过即抛错出声**，见下方注） |
 | `curriculum-weekly` | `30 9 * * 4` | 边界探测 → 待练域生成挑战（Thu 09:30，出队不自动执行；原周日 05:00） |
 | `skill-graph-weekly` | `30 9 * * 5` | 技能节点全量刷新 + 四类边重算（Fri 09:30，默认 count-only 标定期；原周日 07:00） |
 
@@ -83,6 +84,15 @@
 > `.agint-preimage/` 的仓根；未配则降级为「跳过 preimage 源」并记 note，**不影响前 3 源**。
 > ⇒ 想让 R2 也生效：在 HOME `cordis.patch.yml` 给 agint-cron 加 `config: {repoRoot: <仓根>}`
 >   并重启（部署动作，每台机器各配，不入库）。
+
+> ℹ️ `outcome-measure`（Phase 1.1 支点 1b）与上面两个又是第三种形状：**判据与副作用都在
+> `agint-evolution-driver` 的 lib 里**（双态跑测试 + 临时换 preimage + 复原核 sha），
+> 本插件的 action 只做映射与出声。它需要 **driver 那一侧** 能解析出 `repoRoot`
+> （env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > driver `config.repoRoot`）；
+> 两者都没有 ⇒ `NO_REPOROOT` ⇒ `lastResult.status = skipped`，不是失败也不是"没东西可测"。
+> ⚠️ 它与 `evolution-reconcile` 一样会 `throw`，但触发条件更硬：
+> 某条测量的复原护栏没核上（`needsAttention`）—— 那意味着临时换文件没干净收尾，
+> 源码树可能仍处基线态，必须当轮出声。
 
 
 > **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、

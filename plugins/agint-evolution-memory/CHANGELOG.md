@@ -1,5 +1,42 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.9 (2026-10-03) — 新增 `prediction_outcomes` 表（Phase 1.1 支点 1b / R1′）
+
+### 新增
+
+- `lib/schema.js`：`predictionOutcomeEntrySchema` + `OUTCOME_METHODS=['TEST_CORPUS_PAIR_RUN']`
+  + `outcomeSideSchema`（`passed`/`failed`/`total≥1`/`passRate 0..1`）+ `LIMITS.PREDICTION_OUTCOMES = 2000`。
+- `lib/index.js`：表注册 + `recordPredictionOutcome` / `getPredictionOutcome` / `listPredictionOutcomes`，
+  一并挂进 `agint.evolution` 服务。**加表不升 descriptor.version**（沿用 51-73 行取证注释：
+  整单元格式做严格相等校验，升版本会让整个域打不开）。
+
+### 三条纪律
+
+1. **同 `contractId` 不可覆盖**：已存在即抛 `prediction-outcome-already-exists`。
+   可覆盖 = 事后能挑一次好看的数字重写它 —— 正是设计 §4.2.5 要拦的「反事后偏」。
+2. ⛔ **不回填链**（§4.3.4 裁定「度量不回填链」）：本表不参与 Ledger 链哈希，
+   用 `contractId` 与链上条目交叉引用。代价如实记录：这张表**可以合法地晚于链**，
+   读侧必须能处理"有锁、有条目、还没测"。
+3. **超限只 warn 不 prune**：度量记录是历史事实，删一条等于抹掉一段校准史。
+
+字段形状的两条理由：
+
+- `baseline` / `candidate` 都存**原始计数**不只存比率 —— 90.9% 是 10/11 还是 100/110 可信度不同。
+- `restoreVerified` 必填 —— 双态对照临时换过文件，护栏没核过的那条不可信，标记必须随数据走。
+- ⛔ 不存 `NO_EVIDENCE` 这类"测不到"：测不到不是度量，表里每一行都必须是一次真测量。
+
+### 修
+
+- `evidence` 的内层默认值改为**逐个写全**。实测（zod 4.6.5）：对象字段的 `.default({})`
+  在 key 缺失时只塞 `{}`，不会把 `{}` 再送回内层 schema ⇒ 内层 `.default(null)` 不生效，
+  读出来是 `undefined` 而不是 `null` —— 而这条纪律要的正是「缺失显式为 null」。
+
+### 测试
+
+- `test/prediction-outcomes.test.mjs`（11）：真插件起真服务，覆盖不可覆盖性、schema 拒收九种脏值、
+  表间隔离（锁与实测同 key 不串表）、超限不 prune。本插件 175/175 绿。
+
+
 ## 0.6.8 (2026-10-03) — Phase 1 交付物 3：evolution_ledger 防篡改链 + Git 外部锚定 + 历史重建
 
 设计依据 `Phase-1 Evidence-Based Evolution 设计方案.md` §4（v1.2），Sprint 22。

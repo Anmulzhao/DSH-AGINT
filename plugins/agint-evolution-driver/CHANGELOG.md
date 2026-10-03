@@ -1,5 +1,49 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.15 — 2026-10-03（1b R1′ 落地：actualDelta 的尺子 = 改动面测试子集双态跑）
+
+### 新增
+
+| 文件 | 职责 |
+|---|---|
+| `lib/outcome-scope.js` | 判据层（纯函数）：`parsePreimagePath` 反解被改文件、`deriveTestFiles` 收测试全集、`planTestScope` 按路径规则定子集 + 覆盖门 |
+| `lib/outcome-measurer.js` | 测量层：双态跑（候选态 → 临时换回 preimage 跑基线态 → 换回并核 sha）→ `scorePrediction` → 落 `prediction_outcomes`。**永不抛**，21 种终态各自可归因 |
+
+- 服务入口 `measureOutcomes({ repoRoot, env, limit, inject })`；`status()` 加 `outcomeMeasured` /
+  `outcomeRefused` / `outcomeAttention` 三个计数器。cron 侧新增 job `outcome-measure`（Tue 10:15，在 `agint-cron` v0.2.8）。
+- 存储侧配套在 `agint-evolution-memory` v0.6.9（`prediction_outcomes` 表 + 三个服务方法）。
+
+### 判据依据（2026-10-03 三路实测，见 `D:/DSH/_1b_actualDelta尺子方案_20261003.md` §8）
+
+拿 2026-09-29 那次真实自改（给 `bin/plugin-check.sh` 加维度 11，与 HEAD 差 160 行）做对照：
+场景集 123 条**逐条零差异**（看不见改动）；改动面子集 3/3 → 2/3（看得见）；
+全仓 1928 条 passRate 只动 0.05pp（远小于死区 1.5pp，会被读成"无实质变化"）。
+⇒ 度量集必须是按被改文件筛出的子集。**推荐 R1（场景集双跑）被这次实验推翻了一半**，改为 R1′。
+
+### 四条护栏
+
+1. ⛔ 只换一个文件且必须在 `repoRoot` 内（`pathResolve` 核前缀，不碰 `.git/`、`.agint-preimage/`）。
+2. ⛔ 换完必核 sha：核不上仍落表但 `restoreVerified:false` + `needsAttention:true`，job 据此抛错出声。
+   换不回去（写失败）⇒ `RESTORE_FAILED` 且不落表 —— 仓库仍处基线态这件事优先于一次测量。
+3. ⛔ 裸工作树拒测 `NO_TEST_RUNTIME`：首轮实验在缺 `node_modules` 的 worktree 得到假基线 23/123。
+4. ⛔ 覆盖门 `NO_EVIDENCE` 不写行（设计 §4.2.5「不得写 0/null 冒充无改进」）。
+   另有 `SUPERSEDED`（同文件后续又被改 ⇒ 归因不唯一）与 `CONCURRENT_WRITE`（动手前现状 sha 变了 ⇒ 不换文件）。
+
+### 修
+
+- `nodeTestRunner` spawn 时清掉 `NODE_TEST_CONTEXT`。E2E 实测：宿主自己跑在 `node --test` 下时
+  该变量传给子进程 ⇒ 子 node 判"测试递归"直接跳过跑文件 ⇒ 永远 `RUNNER_UNPARSABLE`。
+
+### 测试
+
+- `test/outcome-scope.test.mjs`（10，用仓库里 6 个真实 preimage 名做夹具）
+- `test/outcome-measurer.test.mjs`（27，真临时仓库 + 内容驱动假 runner：**双态真的换了文件**是被证出来的）
+- `test/outcome-e2e.test.mjs`（2，真 `node --test` 子进程 + 真 `agint-evolution-memory` 服务：
+  写出的行必须过真 `predictionOutcomeEntrySchema`，覆盖门在真仓库上同样拦得住）
+- `test/smoke.mjs` T36（`measureOutcomes` 入口与三个计数器）
+- 本插件 260/260 绿。
+
+
 ## v0.2.14 — 2026-10-03（修掉 expectedEffect 的谎报：期望按目标类型声明，1b 前置）
 
 ### 问题

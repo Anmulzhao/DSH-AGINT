@@ -1606,4 +1606,42 @@ test('T35: checkEntities —— 门自己抛错时放行 + 留痕（观测装置
   assert.deepEqual(out.fabricated, []);
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T35）');
+test('T36: 1b 接线 —— measureOutcomes 服务入口：没仓库根就拒，计数器随结果动', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  assert.equal(typeof svc.measureOutcomes, 'function', 'cron outcome-measure 靠这个入口');
+
+  // ① 没有仓库根（env 空 + config 空）⇒ 如实拒测，⛔ 不抛、不去猜一个仓库路径
+  const none = await svc.measureOutcomes({ env: {} });
+  assert.equal(none.ok, false);
+  assert.equal(none.status, 'NO_REPOROOT');
+  assert.deepEqual(none.results, []);
+
+  // ② 计数器：一次测量 + 一次护栏未核 + 一次拒测
+  const measurer = {
+    measurePending: async ({ repoRoot, limit }) => {
+      assert.equal(repoRoot, '/repo');
+      assert.equal(limit, 2, 'limit 必须透传（成本闸门在调用侧可调）');
+      return {
+        ok: true, scanned: 5, measurable: 3, attempted: 2, deferred: 1,
+        counts: { MEASURED: 1, CONCURRENT_WRITE: 1 },
+        results: [
+          { status: 'MEASURED', contractId: 'EVO-A', actualDelta: 27.3 },
+          { status: 'CONCURRENT_WRITE', contractId: 'EVO-B', changedPath: 'plugins/x/lib/i.js', needsAttention: true },
+        ],
+      };
+    },
+  };
+  const out = await svc.measureOutcomes({ repoRoot: '/repo', limit: 2, inject: { measurer } });
+  assert.equal(out.repoRoot, '/repo', '返回值要能看出这次是照着哪个仓库量的');
+  assert.equal(out.limit, 2);
+  assert.equal(out.counts.MEASURED, 1);
+
+  const st = svc.status();
+  assert.equal(st.outcomeMeasured, 1);
+  assert.equal(st.outcomeRefused, 1);
+  assert.equal(st.outcomeAttention, 1, '护栏未核的条数必须单独看得见（静默 = 源码树带伤跑一周）');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T36）');

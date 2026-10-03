@@ -28,6 +28,7 @@
  *   memory-provider-health daily 08:30 记忆 provider 定期健康检查（阶段 3）
  *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
  *   evolution-reconcile Tue 08:00 闭环取数三方对账（evolution-cycle 之后；Phase -1.1）
+ *   outcome-measure   Tue 10:15 进化实测对账：双态跑改动面测试子集量 actualDelta（Phase 1.1 支点 1b）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -543,6 +544,53 @@ export const defaultJobs = [
       }
       // 返回 { report } → summarizeResult 把 report.counts 写进 cron 健康摘要。
       return { status: 'ok', report: r.result };
+    },
+  },
+  {
+    // Phase 1.1 支点 1b / R1′：给 1a 锁掉的预测补上对面那半 —— 实测的 actualDelta。
+    //
+    // 判据全在 `agint-evolution-driver/lib/outcome-measurer.js`（部署包无 bin/，
+    // 见经验教训 §3.13）。本 job 只是薄壳：唤服务、把"需要人看"的情况出声报红。
+    //
+    // 时机：Tue 10:15。① 紧跟 evolution-cycle(Tue 07:00) 与 evolution-reconcile
+    //   (Tue 08:00) 之后 —— 链上条目、对账都已完成，改动还在盘上（driver 不做 git
+    //   commit，工作区没被后续提交冲掉）；② 与 09:30 baseline-regression-suite
+    //   留 45 分钟（原则②），⛔ 不可取 10:00 / 10:30 —— 每月 1 日恰逢周二时那是
+    //   oracle-monthly / spec-index-refresh 的固定位（原则① 同分钟撞车）。
+    // 成本：一次测量 = 2× 子集耗时。子集是"改动面筛出来的测试"，实测插件级 <5 秒；
+    //   一轮最多 DEFAULT_OUTCOME_LIMIT=5 条 ⇒ 排得进周窗口。
+    // ⚠️ 不加进 HEAVY 集合：本 job 零 LLM 调用（只 spawn `node --test`），
+    //   原则②b 的 30 分钟是给 LLM 密集任务留的。
+    id: 'outcome-measure',
+    name: '进化实测对账',
+    schedule: '15 10 * * 2', // Tue 10:15
+    description: '按改动面筛测试子集，双态跑（改后 / preimage 改前）量出 actualDelta 落 prediction_outcomes（weekly，零 LLM）',
+    action: async (services) => {
+      const driver = services['agint.evolutionDriver'];
+      if (!driver || typeof driver.measureOutcomes !== 'function') {
+        return { skipped: true, reason: 'agint.evolutionDriver.measureOutcomes not mounted' };
+      }
+      const out = await driver.measureOutcomes({});
+      // 复原护栏没核过的条目必须出声：那意味着临时换文件这一步没干净收尾，
+      // 仓库可能仍处基线态（⛔ 静默 = 让老板的源码树带伤跑一周）。
+      const attention = (out.results ?? []).filter((r) => r.needsAttention === true);
+      if (attention.length > 0) {
+        throw new Error(
+          `outcome-measure: ${attention.length} 条测量的复原护栏未核过：` +
+            attention.map((r) => `${r.contractId}(${r.status}) → ${r.changedPath ?? '?'}`).join('; '),
+        );
+      }
+      return {
+        status: out.ok ? 'ok' : 'skipped',
+        report: {
+          scanned: out.scanned ?? 0,
+          measurable: out.measurable ?? 0,
+          attempted: out.attempted ?? 0,
+          deferred: out.deferred ?? 0,
+          counts: out.counts ?? {},
+          repoRoot: out.repoRoot ?? null,
+        },
+      };
     },
   },
   {

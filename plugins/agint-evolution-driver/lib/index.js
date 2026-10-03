@@ -51,6 +51,7 @@ import { randomUUID } from 'node:crypto';
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
 import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
 import { createPredictionLocker } from './prediction-locker.js';
+import { createOutcomeMeasurer, DEFAULT_OUTCOME_LIMIT } from './outcome-measurer.js';
 import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import {
@@ -304,6 +305,11 @@ export function apply(ctx, config = {}) {
     // 否则「没指标所以没预测」与「锁服务挂了」在事后长得一模一样。
     predictionLocked: 0,
     predictionSkipped: 0,
+    // 1b R1′：实测的三个计数器。`outcomeAttention` 非 0 = 有测量没核过复原护栏
+    // （仓库可能仍处基线态，或 sha 对不上）—— 这是需要人看的，不是统计噪声。
+    outcomeMeasured: 0,
+    outcomeRefused: 0,
+    outcomeAttention: 0,
     lastRunAt: null,
     lastError: null,
     lastProposalId: null,
@@ -356,6 +362,40 @@ export function apply(ctx, config = {}) {
   // 那时 policy 结果已经出来，再算预测就是事后编造，锁也就白锁。
   // 外壳是软失败（warn + 计数 + predictedDelta 留 null），理由见 prediction-locker.js 头部。
   const predictionLocker = createPredictionLocker(ctx, { warn });
+
+  // Phase 1.1 支点 1b / R1′：actualDelta 的测量器（双态跑改动面测试子集）。
+  // `listRepoFiles` 用本文件那份（带 fs.scanRepo 注入位）—— 判据单一源，⛔ 不在 measurer 里再抄一份扫描。
+  const outcomeMeasurer = createOutcomeMeasurer(ctx, { listRepoFiles, warn });
+
+  /**
+   * measureOutcomes —— 给 cron `outcome-measure` 用的服务入口。
+   *
+   * 与 runOnce 分开的理由：一个是"往前做进化"，一个是"往后量账"，
+   * 排期窗口、成本、失败影响面都不同（量账要真跑测试，一次双态 ≈ 2× 子集耗时）。
+   *
+   * 永不抛（外壳在 outcome-measurer 里已经做完，这里只加计数与截断）。
+   * @param {object} [opts] { repoRoot?, env?, limit?, inject? }
+   *   `inject.measurer` = 测试缝（与 runOnce 的 `inject.fs/llm` 同一条约定）：
+   *   给定形状 `{ measurePending }` 即用它，生产不传 ⇒ 用 apply() 建的那个。
+   * @returns {Promise<object>} 本轮测量概览
+   */
+  async function measureOutcomes(opts = {}) {
+    const env = opts.env ?? process.env;
+    const repoRoot = opts.repoRoot ?? resolveRepoRoot(env, { repoRoot: cfgRepoRoot });
+    const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_OUTCOME_LIMIT;
+    const measurer = opts.inject?.measurer ?? outcomeMeasurer;
+    const out = await measurer.measurePending({ repoRoot, limit });
+    for (const r of out.results ?? []) {
+      if (r.status === 'MEASURED') state.outcomeMeasured += 1;
+      else state.outcomeRefused += 1;
+      if (r.needsAttention === true) {
+        state.outcomeAttention += 1;
+        warn('outcome: 护栏未核过，需人工确认仓库状态', { contractId: r.contractId, status: r.status, changedPath: r.changedPath ?? null });
+      }
+    }
+    // results 里塞不进日志的一行摘要：每条只留判读字段，整份留给 cron 落盘文件。
+    return { ...out, repoRoot: repoRoot ?? null, limit };
+  }
 
   /**
    * 让 LLM 把提案变成一次原子编辑。
@@ -1036,6 +1076,9 @@ export function apply(ctx, config = {}) {
       ledgerFailed: state.ledgerFailed,
       predictionLocked: state.predictionLocked,
       predictionSkipped: state.predictionSkipped,
+      outcomeMeasured: state.outcomeMeasured,
+      outcomeRefused: state.outcomeRefused,
+      outcomeAttention: state.outcomeAttention,
       lastRunAt: state.lastRunAt,
       lastError: state.lastError,
       lastProposalId: state.lastProposalId,
@@ -1092,7 +1135,11 @@ export function apply(ctx, config = {}) {
   const driveAsGoal = async ({ agent, candidate, opts = {} }) =>
     createEvolutionGoal({ agent, candidate, goals: goalsSvc(), env: process.env, opts });
 
-  ctx.provide('agint.evolutionDriver', { runOnce, status, construct, checkEntities, driveAsGoal, goalBridgeStatus, buildGoalObjective });
+  ctx.provide('agint.evolutionDriver', {
+    runOnce, status, construct, checkEntities, driveAsGoal, goalBridgeStatus, buildGoalObjective,
+    // Phase 1.1 支点 1b：给 cron `outcome-measure` 的测量入口
+    measureOutcomes,
+  });
 
   ctx.effect(() => () => {
     /* 无 interval / 无订阅：生命周期干净 */
