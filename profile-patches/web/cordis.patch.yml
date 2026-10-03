@@ -62,8 +62,15 @@
       config:
         root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
         # A4: eval 存量 FAIL 归因产物（`node bin/attribute-eval-fails.mjs --json > eval/attribution/fail-attribution.json`）。
-        # 省略时插件从自身位置推仓库根；显式给则以此为准。
-        # ⛔ 读不到则周报该章印「本周未采到」，绝不印「0 个 FAIL」（没查 ≠ 没有）。
+        # ⛔ 2026-10-04 修正注释（原文写「省略时插件从自身位置推仓库根」——已被部署位实测证伪）：
+        #   自动探测是「逐级向上找含 eval/ 的祖先」。在**仓库**里它能命中（插件住
+        #   plugins/agint-evolve/lib/，往上是仓库根）⇒ 本仓库源**不配这一项**，走自动探测。
+        #   但在**部署位**必然失败（插件住 ~/.dsh/.agint-bundle/plugins/，祖先无 eval/）
+        #   ⇒ 加载位那一行必须显式给绝对路径，否则周报该章只印「归因路径未解析」。
+        #   该降级是诚实的（≠「0 个 FAIL」），但要出数就得给路径。
+        # ⛔ 依赖 config 注入时，`evalAttributionPath` 的 schema 是 `.min(1)` ——
+        #   空串会被 zod 拒并让插件加载失败，所以「不配」只能靠**整行不写**，
+        #   不能写 `evalAttributionPath: ''`。
 
     # agint-tool-stats: tool usage profile. Listens on tools/result events,
     # appends to ~/.dsh/storages/agint_tool_stats.jsonl.
