@@ -264,8 +264,13 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
   function insideRepo(repoRoot, rel) {
     const norm = String(rel).replace(/\\/g, '/');
     if (norm.startsWith('.git/') || norm.startsWith('.agint-preimage/')) return false;
-    const root = repoRoot.endsWith(sep) ? repoRoot : `${repoRoot}${sep}`;
-    return pathResolve(repoRoot, norm).startsWith(root);
+    // ⛔ 不许拿字符串拼 sep 比：repoRoot 配置常是正斜杠（"D:/x/y"），而
+    // path.resolve 产出平台分隔符（Windows 反斜杠）⇒ 混比在 Windows 上恒 false，
+    // 把所有测量误判成 PREIMAGE_UNPARSEABLE/CHANGED_PATH_OUTSIDE_REPO（2026-10-04 实跑钉死）。
+    // 两侧同走 resolve 归一后再比，跨平台成立。
+    const root = pathResolve(repoRoot);
+    const abs = pathResolve(root, norm);
+    return abs === root || abs.startsWith(root + sep);
   }
 
   /**

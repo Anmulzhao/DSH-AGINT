@@ -1,5 +1,22 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.19 — 2026-10-04（修 insideRepo 在 Windows 正斜杠 repoRoot 下的全量误拒）
+
+### 症状
+生产首跑 `outcome-measure`（手工 runNow，2026-10-04 00:04 本地）：`scanned 7 / measurable 1 /
+attempted 1 / counts {PREIMAGE_UNPARSEABLE:1}`。唯一的可测条目 seq 7 被拒，`prediction_outcomes` 0 落行。
+
+### 根因
+`outcome-measurer.js` 的 `insideRepo()` 把 `repoRoot` 用 `path.sep` 拼串后与
+`path.resolve()` 的产物比 `startsWith`。Windows 上 `resolve` 产出反斜杠，而配置值
+`repoRoot: "D:/..."` 是正斜杠 ⇒ 两侧形状永不相等 ⇒ 所有测量被误判「改动不在仓库内」。
+麒麟（Linux，原生正斜杠）不受影响，属 **Windows-only** 缺陷。
+
+### 修法
+两侧同走 `path.resolve` 归一再比对（护栏语义不变：仍拒 `.git/`、`.agint-preimage/` 与仓库外路径）。
+回归测试 `test/outcome-measurer.test.mjs` 新增 J1（正斜杠 root 放行并双态真跑）/
+J2（仓库外反解路径照旧拒）。
+
 ## v0.2.18 — 2026-10-03（修 R2 首版两处假阳性；核签核清单时发现）
 
 ### 症状

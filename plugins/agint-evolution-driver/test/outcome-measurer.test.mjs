@@ -803,3 +803,27 @@ test('G3: 意外异常也不抛（外壳纪律）—— 内部 IO 炸了返回�
   assert.equal(calls.length, 0);
   assert.ok(warns.some(([m]) => /意外异常/.test(m)));
 });
+
+// ── J. repoRoot 分隔符归一（Windows 误判护栏，2026-10-04 生产实跑钉出）────────
+
+test('J1: repoRoot 用正斜杠配置时 insideRepo 必须放行（旧实现 Windows 恒 false ⇒ 全量测量被误判 PREIMAGE_UNPARSEABLE）', async () => {
+  const slashDir = repo.dir.replace(/[\\/]/g, '/');
+  const calls = [];
+  const evo = makeEvo();
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: slashDir });
+  assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+  assert.equal(calls.length, 2, '斜杠归一不改「文件在仓库内」这个事实 ⇒ 两侧真跑');
+});
+
+test('J2: 反解出仓库外的路径仍被拒（护栏没因归一而放松）', async () => {
+  const odd = `.agint-preimage/..__..__evil.js__${STAMP}.bak`;
+  const evo = makeEvo({ entry: entryOver({ references: { preimagePath: odd } }) });
+  const calls = [];
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.PREIMAGE_UNPARSEABLE, JSON.stringify(res));
+  assert.equal(res.reason, 'CHANGED_PATH_OUTSIDE_REPO');
+  assert.equal(calls.length, 0, '拒测不跑测试');
+  assert.equal(evo.rows.size, 0, '拒测不落表');
+});
