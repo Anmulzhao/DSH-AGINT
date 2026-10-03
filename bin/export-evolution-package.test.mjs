@@ -607,3 +607,84 @@ test('✅ 无 preimage 时退回清单，且 R1 如实降级（不虚报）', ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── ledgerProofAvailable 的判据（2026-10-03 A1 补）───────────────────────
+//
+// ⭐ 这组用例盯的是一个**已经造成过假结论**的真 bug：
+//   判据原写成 `Array.isArray(t) ? t.length : 0`，而 dsh 存储域的表在磁盘上是 dict
+//   （`{"1": {...}}`）⇒ 6 条真条目被判成「0 行」。
+//   失败方向是**恒低报**：它把一个可解锁的能力（R2 信任锚）永久锁死，
+//   且理由（「表是空的」）把人引向「去造数据」而不是「去修判据」。
+//
+// ⛔ 每个用例都先造出会报错的形状再断言 —— 否则测的是「代码恰好这么写」，
+//   不是「判据真的按意图工作」（K133 纪律 ③ 的同型要求）。
+
+/** 造一条最小 ledger 条目。anchorStatus 是判据的输入，必须显式给。 */
+function ledgerRow(seq, anchorStatus) {
+  return {
+    seq,
+    contractId: `c-${seq}`,
+    generation: 'GEN-000',
+    summary: { mutationType: 'PROMPT_MUTATION', targetMetric: 'm', hypothesisDigest: 'd', decision: 'AUTO_DEPLOY' },
+    chain: { entryHash: `sha256:${'0'.repeat(63)}${seq}`, parentHash: `sha256:${'0'.repeat(64)}`, batchRoot: `sha256:${'0'.repeat(64)}`, merkleRoot: `sha256:${'0'.repeat(64)}` },
+    references: {},
+    timestamp: '2026-10-03T00:00:00.000Z',
+    anchorStatus,
+    anchorSeq: anchorStatus === 'ANCHORED' ? 1 : null,
+    integrity: 'OK',
+    reconstructed: true,
+    evidenceCompleteness: 'FULL',
+  };
+}
+
+/** 从包里取出 manifest.json 的文本（判据断言都落在它身上）。 */
+function manifestTextOf(pkg) {
+  const text = unpackTar(readFileSync(pkg))
+    .filter((e) => e.type === 'file')
+    .map((e) => e.content.toString('utf8'))
+    .find((c) => c.includes('ledgerProofAvailable'));
+  assert.ok(text, 'manifest 必须含 ledgerProofAvailable');
+  return text;
+}
+
+test('dict 形状的 ledger 表必须被计到行数（Array.isArray 判据会判 0）', () => {
+  const rows = { 1: ledgerRow(1, 'PENDING'), 2: ledgerRow(2, 'PENDING'), 3: ledgerRow(3, 'PENDING') };
+  const { root, dsh } = makeSandbox({ agint_evolution: { tables: { evolution_ledger: rows } } });
+  try {
+    const pkg = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${pkg}`]).status, 0);
+    const manifestText = manifestTextOf(pkg);
+    assert.match(manifestText, /evolution_ledger 表 3 行/,
+      `行数必须按 dict 数出 3（不是 0）：\n${manifestText}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 有条目但 0 条已锚定 ⇒ ledgerProofAvailable 必须为 false（不得虚报 R2 已解锁）', () => {
+  const rows = { 1: ledgerRow(1, 'PENDING'), 2: ledgerRow(2, 'PENDING') };
+  const { root, dsh } = makeSandbox({ agint_evolution: { tables: { evolution_ledger: rows } } });
+  try {
+    const pkg = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${pkg}`]).status, 0);
+    const manifestText = manifestTextOf(pkg);
+    assert.match(manifestText, /"ledgerProofAvailable": false/,
+      `未锚定的链不得报 proof 可用：\n${manifestText}`);
+    assert.match(manifestText, /已锚定 0 条/, `理由必须说清是「没锚定」而不是「表空」：\n${manifestText}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('✅ 至少 1 条已锚定 ⇒ ledgerProofAvailable 为 true', () => {
+  const rows = { 1: ledgerRow(1, 'ANCHORED'), 2: ledgerRow(2, 'PENDING') };
+  const { root, dsh } = makeSandbox({ agint_evolution: { tables: { evolution_ledger: rows } } });
+  try {
+    const pkg = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${pkg}`]).status, 0);
+    assert.match(manifestTextOf(pkg), /"ledgerProofAvailable": true/,
+      '有已锚定条目时必须解锁');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

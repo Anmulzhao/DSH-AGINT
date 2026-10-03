@@ -99,6 +99,54 @@ function tablesOf(data) {
   return out;
 }
 
+/**
+ * 数一张表的行数 —— **dict 与 array 两种形状都要认**。
+ *
+ * ⚠️ 这不是洁癖，是一个已经造成过假结论的真 bug（2026-10-03 A1 实测）：
+ *   本函数原先在 ledger 判定处写成 `Array.isArray(t) ? t.length : 0`，
+ *   而 dsh 存储域的表在磁盘上是 **dict**（`{"1": {...}, "2": {...}}`，
+ *   见 `$DSH_HOME/storages/agint_evolution.json` 实测）。
+ *   ⇒ 6 条真条目被判成「0 行」⇒ `ledgerProofAvailable` 报 false 且**理由是错的**
+ *   （说「表 0 行」，实际是「读表的人不认 dict」）。
+ *
+ * ⛔ 失败方向：恒低报。它不会把「有数据」说成「没数据」的**危害方向**好看 ——
+ *   恰好相反，它把一个**可解锁的能力**（R2 信任锚）永久锁死，
+ *   而给出的理由（表是空的）把人引向「去造数据」而不是「去修判据」。
+ *   这就是 K134 的镜像：能力不可用 ≠ 实现有 bug。
+ *
+ * @param {unknown} table tables[tname] 的原值
+ * @returns {number} 行数；表不存在或不是容器形态时 0
+ */
+function rowCountOf(table) {
+  if (Array.isArray(table)) return table.length;
+  if (table && typeof table === 'object') return Object.keys(table).length;
+  return 0;
+}
+
+/**
+ * 数 ledger 里**已锚定**的条目数（`anchorStatus === 'ANCHORED'`）。
+ *
+ * 为什么不复用行数：`evolution_ledger` 落盘的每条都带 `anchorStatus`
+ * （`PENDING` / `ANCHORED` / `ANCHOR_MISMATCH`，见 `ledgerEntrySchema`），
+ * 它由 `ledger-anchor` 在**锚点行进了 git 之后**回写。重建条目与尚未跑过锚定的
+ * 实时条目都是 `PENDING` ⇒ 「有行」不等于「有信任锚」。
+ *
+ * ⛔ 认 dict 形状（理由同 rowCountOf 的头注）。
+ *
+ * @param {unknown} table tables.evolution_ledger 的原值
+ * @returns {number}
+ */
+function countAnchoredLedgerRows(table) {
+  const rows = Array.isArray(table)
+    ? table
+    : (table && typeof table === 'object' ? Object.values(table) : []);
+  let n = 0;
+  for (const r of rows) {
+    if (r && typeof r === 'object' && r.anchorStatus === 'ANCHORED') n += 1;
+  }
+  return n;
+}
+
 // ── 收集素材 ────────────────────────────────────────────────────────────────
 
 function collectRuntime() {
@@ -446,13 +494,19 @@ function main() {
   // 演化 Ledger 可用性 —— 必须查生产存储，不能假设
   const evo = readStorage('agint_evolution');
   const evoTables = tablesOf(evo.data);
-  const ledgerRows = Array.isArray(evoTables.evolution_ledger)
-    ? evoTables.evolution_ledger.length
-    : 0;
-  const ledgerAvailable = ledgerRows > 0;
+  // ⚠️ 必须用 rowCountOf（认 dict），不能用 Array.isArray —— 见该函数头注的实测 bug。
+  const ledgerRows = rowCountOf(evoTables.evolution_ledger);
+  const ledgerAnchored = countAnchoredLedgerRows(evoTables.evolution_ledger);
+  // ⛔ 判据是「有**已锚定**条目」，不是「表非空」（K138：函数名承诺的覆盖面 = 实际覆盖面）。
+  //   `ledgerProofAvailable` 承诺的是「包里有可验证的 Merkle proof」，而 proof 的价值
+  //   恰恰在于它对**链外**的锚点成立。6 条全 PENDING 时给 true，等于把一份
+  //   「谁都能改的链」包装成「可外部验证的信任锚」—— 比报 false 更危险，
+  //   因为它让人以为 R2 已解锁。现状实测（2026-10-03）：6 条 / 0 ANCHORED。
+  const ledgerAvailable = ledgerAnchored > 0;
   const ledgerReason = ledgerAvailable
     ? null
-    : `生产 agint_evolution.json 的 evolution_ledger 表 ${ledgerRows} 行（2026-10-03 实测）⇒ 无 Merkle proof`;
+    : `生产 agint_evolution.json 的 evolution_ledger 表 ${ledgerRows} 行、其中已锚定 ${ledgerAnchored} 条`
+      + `（2026-10-03 实测）⇒ 无带外部锚点的 Merkle proof`;
 
   console.log(`\n  ── 收集结果 ──`);
   console.log(`  runtime 表 ${runtime.items.length} 张 · 排除 ${runtime.excluded.length} 项`);
