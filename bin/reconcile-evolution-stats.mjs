@@ -19,40 +19,32 @@
  *   · 报告性差异（计入 diff，非零即告警）：
  *       R1 committed 事件的 proposalId 在 population 找不到对应 variant —— 事件与种群失同步。
  *       R2 committed 事件的 preimagePath 在磁盘不存在 —— **有 commit 无备份 = 不可回滚**（安全红线）。
- *       R3 population 有 variant 但既无 committed 事件、磁盘也无其 preimage —— 无法佐证是否真落盘。
+ *       R3 population 有 variant 但无 committed 事件 —— 无法佐证是否真落盘（软差异）。
+ *
+ * 判据单一源：cron 的 evolution-reconcile job 经 lib/evolution-reconcile-audit.js 动态
+ *   import 本文件的 reconcileEvolutionStats()，不自造第二份（两份校验器必然分叉）。
  *
  * 跑法：
  *   node bin/reconcile-evolution-stats.mjs
  *   node bin/reconcile-evolution-stats.mjs --json
- *   node bin/reconcile-evolution-stats.mjs --storage=C:/Users/Administrator/.dsh/storages --repo-root=D:/DSH/project源码/DSH-AGINT
+ *   node bin/reconcile-evolution-stats.mjs --storage=... --repo-root=...
  *   node bin/reconcile-evolution-stats.mjs --strict   # R3 也算 FAIL（默认只 warn）
  *
  * 退出码：0 = 无报告性差异；1 = 存在 R1/R2（或 --strict 下含 R3）。
  */
 
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 
-// ── 参数 ────────────────────────────────────────────────────────────────────
-const argv = process.argv.slice(2);
-const arg = (k, dflt) => {
-  const hit = argv.find((a) => a.startsWith(`--${k}=`));
-  return hit ? hit.slice(k.length + 3) : dflt;
-};
-const has = (k) => argv.includes(`--${k}`);
+// ── 存储 json 落在 $DSH_HOME/storages/（DSH_HOME 是基目录，不含 storages 段）──
+export function defaultStorageDir() {
+  return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'storages');
+}
 
-const AS_JSON = has('json');
-const STRICT = has('strict');
-const DEFAULT_HOME = join(homedir(), '.dsh');
-// 存储 json 落在 $DSH_HOME/storages/（DSH_HOME 是基目录，不含 storages 段）。
-const STORAGE = resolve(arg('storage', join(process.env.DSH_HOME || DEFAULT_HOME, 'storages')));
-// repoRoot = preimage 目录所在。committed.payload.preimagePath 是相对 repoRoot 的路径。
-const REPO_ROOT = resolve(arg('repo-root', process.env.DSH_PROJECT_ROOT || process.cwd()));
-
-// ── 读取工具（与 bin/t2-reconcile.mjs 同约定）───────────────────────────────
-function readJson(file) {
-  const p = join(STORAGE, file);
+function readJson(dir, file) {
+  const p = join(dir, file);
   if (!existsSync(p)) return null;
   try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
 }
@@ -69,9 +61,9 @@ function tableOf(store, name) {
   return rowsOf(store.tables[name]);
 }
 
-// ── 源 1：event_bus committed ───────────────────────────────────────────────
-function readCommitted() {
-  const store = readJson('agint_event_bus.json');
+// ── 四个源各读一遍 ──────────────────────────────────────────────────────────
+function readCommitted(dir) {
+  const store = readJson(dir, 'agint_event_bus.json');
   const out = [];
   if (!store?.tables) return out;
   for (const key of Object.keys(store.tables)) {
@@ -91,114 +83,159 @@ function readCommitted() {
   return out;
 }
 
-// ── 源 2：population variants（commit_id == proposalId）─────────────────────
-function readPopulation() {
-  const store = readJson('agint_population.json');
+function readPopulation(dir) {
+  const store = readJson(dir, 'agint_population.json');
   return tableOf(store, 'variants')
     .map((v) => ({ commitId: v.commit_id ?? null, variantId: v.variant_id ?? null, stage: v.stage ?? null }))
     .filter((v) => v.commitId);
 }
 
-// ── 源 3：磁盘 preimage 目录清单 ────────────────────────────────────────────
-function readPreimageDir() {
-  const dir = join(REPO_ROOT, '.agint-preimage');
+function readPreimageDir(repoRoot) {
+  if (!repoRoot) return { dir: null, present: false, files: new Set() };
+  const dir = join(repoRoot, '.agint-preimage');
   if (!existsSync(dir)) return { dir, present: false, files: new Set() };
   let files = [];
   try { files = readdirSync(dir).filter((f) => f.endsWith('.bak')); } catch { files = []; }
   return { dir, present: true, files: new Set(files) };
 }
 
-function preimageOnDisk(relPath) {
-  if (!relPath) return false;
-  const abs = isAbsolute(relPath) ? relPath : join(REPO_ROOT, relPath);
-  return existsSync(abs);
-}
-
-// ── 源 4：mutator_stats.commits（已知不可靠，只上报）────────────────────────
-function readMutator() {
-  const store = readJson('agint_mutator.json');
+function readMutator(dir) {
+  const store = readJson(dir, 'agint_mutator.json');
   return tableOf(store, 'commits').length;
 }
 
-// ── 对账 ────────────────────────────────────────────────────────────────────
-const committed = readCommitted();
-const population = readPopulation();
-const preimage = readPreimageDir();
-const mutatorCommits = readMutator();
+/**
+ * 纯判据函数：给定存储目录与仓库根，返回结构化对账结果。
+ * @param {object} [opts]
+ * @param {string} [opts.storageDir] 生产存储目录（默认 $DSH_HOME/storages）
+ * @param {string} [opts.repoRoot]   AGINT 仓根（preimage 在其下；缺则跳过 preimage 源）
+ * @returns {{status:'ok'|'diff'|'unavailable', counts, structural, diffs, verdict, notes}}
+ *   status：'unavailable' = 存储不可读（既不 fallthrough 成 0-diff 的假 PASS）。
+ */
+export function reconcileEvolutionStats(opts = {}) {
+  const storageDir = resolve(opts.storageDir || defaultStorageDir());
+  const repoRoot = opts.repoRoot ? resolve(opts.repoRoot) : null;
 
-const popCommitIds = new Set(population.map((p) => p.commitId));
-const committedIds = new Set(committed.map((c) => c.proposalId).filter(Boolean));
+  // 诚实守卫：存储里既无 event_bus 也无 population 文件 = 读不到数据源。
+  // 绝不能把「读不到」当成「零差异通过」——那正是本工具要治的病的翻版。
+  const busReadable = existsSync(join(storageDir, 'agint_event_bus.json'));
+  const popReadable = existsSync(join(storageDir, 'agint_population.json'));
+  if (!busReadable && !popReadable) {
+    return {
+      status: 'unavailable',
+      reason: `STORAGE_UNREADABLE: ${storageDir} 下无 agint_event_bus.json / agint_population.json`,
+      counts: null, structural: null, diffs: null, verdict: { hardDiffs: 0, softDiffs: 0, pass: false }, notes: [],
+    };
+  }
 
-const R1 = []; // committed 事件在 population 找不到
-const R2 = []; // committed 事件磁盘无 preimage（不可回滚）
-for (const c of committed) {
-  if (c.proposalId && !popCommitIds.has(c.proposalId)) R1.push(c);
-  if (!preimageOnDisk(c.preimagePath)) R2.push(c);
+  const committed = readCommitted(storageDir);
+  const population = readPopulation(storageDir);
+  const preimage = readPreimageDir(repoRoot);
+  const mutatorCommits = readMutator(storageDir);
+
+  const committedIds = new Set(committed.map((c) => c.proposalId).filter(Boolean));
+  const popCommitIds = new Set(population.map((p) => p.commitId));
+
+  const notes = [];
+  const R1 = [];
+  const R2 = [];
+  const preimageCheckable = preimage.present;
+  if (!preimageCheckable) notes.push(repoRoot ? 'PREIMAGE_DIR_ABSENT: 无 .agint-preimage（R2 无法核）' : 'REPO_ROOT_UNKNOWN: 跳过 preimage 源（R2 无法核）');
+
+  for (const c of committed) {
+    if (c.proposalId && !popCommitIds.has(c.proposalId)) R1.push(c);
+    // 只有能查 preimage 时才判 R2；查不了不等于「缺失」，不得虚报不可回滚。
+    if (preimageCheckable) {
+      const rel = c.preimagePath;
+      const abs = !rel ? null : (isAbsolute(rel) ? rel : join(repoRoot, rel));
+      const ok = abs && existsSync(abs) && statSync(abs).isFile();
+      if (!ok) R2.push(c);
+    }
+  }
+
+  const R3 = population.filter((p) => !committedIds.has(p.commitId));
+
+  const referencedPreimages = new Set(committed.map((c) => c.preimagePath).filter(Boolean).map((p) => p.split(/[\\/]/).pop()));
+  const orphanPreimages = preimage.present ? [...preimage.files].filter((f) => !referencedPreimages.has(f)) : [];
+
+  const hardDiffs = R1.length + R2.length;
+  const softDiffs = R3.length;
+
+  return {
+    status: hardDiffs > 0 ? 'diff' : 'ok',
+    generatedAt: new Date().toISOString(),
+    sources: { storageDir, repoRoot, preimageDir: preimage.dir, preimageDirPresent: preimage.present, preimageCheckable },
+    counts: {
+      eventBusCommitted: committed.length,
+      populationVariants: population.length,
+      diskPreimages: preimage.present ? preimage.files.size : 0,
+      mutatorCommits,
+      mutatorDegraded: mutatorCommits === 0 && committed.length > 0,
+    },
+    structural: {
+      populationWithoutEvent: R3.length,
+      orphanPreimages: orphanPreimages.length,
+    },
+    diffs: {
+      R1_committedNotInPopulation: R1.map((c) => c.proposalId),
+      R2_committedMissingPreimage: R2.map((c) => ({ proposalId: c.proposalId, preimagePath: c.preimagePath })),
+      R3_populationUncorroborated: R3.map((p) => ({ commitId: p.commitId, stage: p.stage })),
+    },
+    verdict: { hardDiffs, softDiffs, pass: hardDiffs === 0 },
+    notes,
+  };
 }
 
-// population 有但 committed 事件没有的 variant —— 无法用事件佐证其落盘，记软差异（warn）。
-// 结构上多是「已 propose 未 commit」的候选，故默认不判 FAIL；--strict 时收紧。
-const R3 = population.filter((p) => !committedIds.has(p.commitId));
-
-// 磁盘孤儿 .bak（无 committed 事件引用）——纯信息项。
-const referencedPreimages = new Set(committed.map((c) => c.preimagePath).filter(Boolean).map((p) => p.split(/[\\/]/).pop()));
-const orphanPreimages = preimage.present
-  ? [...preimage.files].filter((f) => !referencedPreimages.has(f))
-  : [];
-
-// 判定：R1 + R2 恒为报告性差异；R3 在 --strict 下才算 FAIL。
-const hardDiffs = R1.length + R2.length;
-const softDiffs = R3.length;
-const fail = hardDiffs > 0 || (STRICT && softDiffs > 0);
-
-// ── 输出 ────────────────────────────────────────────────────────────────────
-const report = {
-  generatedAt: new Date().toISOString(),
-  sources: { storage: STORAGE, repoRoot: REPO_ROOT, preimageDir: preimage.dir, preimageDirPresent: preimage.present },
-  counts: {
-    eventBusCommitted: committed.length,
-    populationVariants: population.length,
-    diskPreimages: preimage.present ? preimage.files.size : 0,
-    mutatorCommits,
-    mutatorDegraded: mutatorCommits === 0 && committed.length > 0,
-  },
-  structural: {
-    populationWithoutEvent: R3.length,
-    orphanPreimages: orphanPreimages.length,
-  },
-  diffs: {
-    R1_committedNotInPopulation: R1.map((c) => c.proposalId),
-    R2_committedMissingPreimage: R2.map((c) => ({ proposalId: c.proposalId, preimagePath: c.preimagePath })),
-    R3_populationUncorroborated: R3.map((p) => ({ commitId: p.commitId, stage: p.stage })),
-  },
-  verdict: { hardDiffs, softDiffs, strict: STRICT, pass: !fail },
-};
-
-if (AS_JSON) {
-  console.log(JSON.stringify(report, null, 2));
-} else {
-  const c = report.counts;
+// ── CLI 渲染（仅直接运行时执行，import 时不触发）─────────────────────────────
+function render(r, { strict }) {
+  if (r.status === 'unavailable') {
+    console.error(`⛔ 存储不可读，无法对账：${r.reason}`);
+    return 1;
+  }
+  const c = r.counts;
+  const fail = r.verdict.hardDiffs > 0 || (strict && r.verdict.softDiffs > 0);
   console.log('闭环进化取数三方对账（Phase -1.1）');
-  console.log(`  存储: ${STORAGE}`);
-  console.log(`  repoRoot: ${REPO_ROOT}`);
+  console.log(`  存储: ${r.sources.storageDir}`);
+  console.log(`  repoRoot: ${r.sources.repoRoot || '(未配置)'}  preimage: ${r.sources.preimageDirPresent ? '✓' : '✗'}${r.sources.preimageCheckable ? '' : '（R2 跳过）'}`);
   console.log('');
   console.log('源计数：');
   console.log(`  1 event_bus committed : ${c.eventBusCommitted}`);
   console.log(`  2 population variants : ${c.populationVariants}`);
-  console.log(`  3 磁盘 preimage .bak  : ${c.diskPreimages}${report.sources.preimageDirPresent ? '' : '（目录不存在）'}`);
+  console.log(`  3 磁盘 preimage .bak  : ${c.diskPreimages}`);
   console.log(`  4 mutator_stats.commits: ${c.mutatorCommits}${c.mutatorDegraded ? '  ⚠ 恒空，不作真值' : ''}`);
   console.log('');
   console.log('结构差异（不计 FAIL）：');
-  console.log(`  population 候选无 committed 事件 : ${report.structural.populationWithoutEvent}`);
-  console.log(`  磁盘孤儿 .bak（无事件引用）      : ${report.structural.orphanPreimages}`);
+  console.log(`  population 候选无 committed 事件 : ${r.structural.populationWithoutEvent}`);
+  console.log(`  磁盘孤儿 .bak（无事件引用）      : ${r.structural.orphanPreimages}`);
   console.log('');
   console.log('报告性差异：');
-  console.log(`  R1 committed 不在 population : ${R1.length}`);
-  console.log(`  R2 committed 磁盘缺 preimage : ${R2.length}${R2.length ? '  ⛔ 有 commit 无备份 = 不可回滚' : ''}`);
-  console.log(`  R3 population 无法佐证       : ${R3.length}${STRICT ? '（strict → 计 FAIL）' : '（warn）'}`);
-  for (const r of R2) console.log(`      · ${r.proposalId} → ${r.preimagePath}`);
+  console.log(`  R1 committed 不在 population : ${r.diffs.R1_committedNotInPopulation.length}`);
+  console.log(`  R2 committed 磁盘缺 preimage : ${r.diffs.R2_committedMissingPreimage.length}${r.diffs.R2_committedMissingPreimage.length ? '  ⛔ 有 commit 无备份 = 不可回滚' : ''}`);
+  console.log(`  R3 population 无法佐证       : ${r.diffs.R3_populationUncorroborated.length}${strict ? '（strict → 计 FAIL）' : '（warn）'}`);
+  for (const x of r.diffs.R2_committedMissingPreimage) console.log(`      · ${x.proposalId} → ${x.preimagePath}`);
+  for (const n of r.notes) console.log(`  ⓘ ${n}`);
   console.log('');
-  console.log(fail ? `判定：FAIL（hard=${hardDiffs}${STRICT ? ` soft=${softDiffs}` : ''}）` : '判定：PASS（零报告性差异）');
+  console.log(fail ? `判定：FAIL（hard=${r.verdict.hardDiffs}${strict ? ` soft=${r.verdict.softDiffs}` : ''}）` : '判定：PASS（零报告性差异）');
+  return fail ? 1 : 0;
 }
 
-process.exit(fail ? 1 : 0);
+function main() {
+  const argv = process.argv.slice(2);
+  const arg = (k, dflt) => {
+    const hit = argv.find((a) => a.startsWith(`--${k}=`));
+    return hit ? hit.slice(k.length + 3) : dflt;
+  };
+  const has = (k) => argv.includes(`--${k}`);
+  const strict = has('strict');
+  const opts = {
+    storageDir: arg('storage') || defaultStorageDir(),
+    repoRoot: arg('repo-root') || process.env.DSH_PROJECT_ROOT || process.cwd(),
+  };
+  const r = reconcileEvolutionStats(opts);
+  if (has('json')) { console.log(JSON.stringify(r, null, 2)); process.exit(r.status === 'diff' ? 1 : r.status === 'unavailable' ? 1 : 0); }
+  process.exit(render(r, { strict }));
+}
+
+// 仅当被直接执行时跑 CLI；被 import（cron 审计）时不触发。
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) main();

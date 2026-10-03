@@ -27,6 +27,7 @@
  *   diagnosis-watchdog 每 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
  *   memory-provider-health daily 08:30 记忆 provider 定期健康检查（阶段 3）
  *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
+ *   evolution-reconcile Tue 08:00 闭环取数三方对账（evolution-cycle 之后；Phase -1.1）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -36,6 +37,7 @@
 
 import { parseCron, nextFire, lastFire } from './cron.js';
 import { auditSpecIndex } from './spec-index-audit.js';
+import { auditEvolutionReconcile } from './evolution-reconcile-audit.js';
 
 export const defaultJobs = [
   {
@@ -511,6 +513,36 @@ export const defaultJobs = [
       const out = await driver.runOnce({});
       const status = typeof driver.status === 'function' ? driver.status() : {};
       return { ...out, status };
+    },
+  },
+  {
+    // Phase -1.1 收口：每期 evolution-cycle 后跑三方对账（取数口径统一）。
+    // 排期 Tue 08:00 = evolution-cycle(Tue 07:00) 之后 1h，与 daily 08:30 留 30min，
+    // 由 schedule-layout 门禁校验。判据复用 bin/reconcile-evolution-stats.mjs（单一源，
+    // 见 lib/evolution-reconcile-audit.js）。只读不写盘；skipped ≠ ok（部署位无 bin/）。
+    id: 'evolution-reconcile',
+    name: '闭环取数对账',
+    schedule: '0 8 * * 2', // Tue 08:00
+    description: 'evolution-cycle 后按 event_bus→population→preimage→mutator 交叉对账，有报告性差异(R1/R2)抛错出声（Phase -1.1）',
+    action: async (services) => {
+      const repoRoot = services['agint.repoRoot'];
+      const r = await auditEvolutionReconcile({ repoRoot });
+      if (r.status === 'skipped') {
+        return { skipped: true, reason: r.reason, job: 'evolution-reconcile' };
+      }
+      const c = r.result.counts;
+      if (r.status === 'diff') {
+        const d = r.result.diffs;
+        throw new Error(
+          `evolution-reconcile: 闭环取数报告性差异 R1=${d.R1_committedNotInPopulation.length} ` +
+            `R2=${d.R2_committedMissingPreimage.length}（committed=${c.eventBusCommitted} / population=${c.populationVariants} / mutator=${c.mutatorCommits}）\n` +
+            d.R2_committedMissingPreimage
+              .map((x) => `  ⛔ 有 commit 无 preimage（不可回滚）: ${x.proposalId} → ${x.preimagePath}`)
+              .join('\n'),
+        );
+      }
+      // 返回 { report } → summarizeResult 把 report.counts 写进 cron 健康摘要。
+      return { status: 'ok', report: r.result };
     },
   },
   {
