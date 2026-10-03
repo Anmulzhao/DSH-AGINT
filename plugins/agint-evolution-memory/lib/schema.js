@@ -376,7 +376,65 @@ export const LIMITS = {
    * 超限的正确动作是分卷或升规格，不是轮转。
    */
   PREDICTION_OUTCOMES: 2000,
+  /**
+   * benchmark_frozen_set 上限（**只 warn 不 prune**）。
+   * 依据：Frozen 集每次入账一条，一次进化周期至多几次（重生成清单 / Frozen 增长）。
+   * 取 500 够跑多年。⛔ 与 contract_locks 同一条纪律：**永不删除** ——
+   * 删一条就抹掉一段「当时冻结集是什么」的历史，防篡改比对随之失去基线。
+   */
+  BENCHMARK_FROZEN_SETS: 500,
 };
+
+// ── Frozen 基准集快照（Phase 0.1 / Sprint 19）────────────────────────────
+
+/**
+ * benchmark_frozen_set 表 entry：某一时刻**冻结集是什么**的防篡改留证。
+ *
+ * ## 它回答的问题
+ *
+ * 三层隔离（Evolution / Validation / Frozen）的全部价值押在一句话上：
+ * **Frozen 集自冻结以来没被改过**。这句话以前只是文档里的一句承诺 ——
+ * 没有任何 artifact 记录过「当时的冻结集是哪些单元、各自内容是什么」。
+ * 本表就是那个 artifact：每次清单重生成 / Frozen 集增长时落一条。
+ *
+ * ## 为什么存聚合 hash 而不存 123 个单元
+ *
+ * 存全集会让每一行随单元数线性膨胀，且比对的复杂度转移到读侧。
+ * 聚合 hash（`frozenAggregateHash`，算法在 `bin/lib/scenario-tier.mjs`）
+ * 把「名单 + 各单元 contentHash」压成一个值：增删任一 Frozen 单元、
+ * 或改任一 Frozen 单元的内容，hash 必变。
+ *
+ * ⚠️ hash **不含** `labelAuthority`：HELDOUT → GOLD 是合法的一次性降级，
+ *    算进来会让合法降级被判成篡改（假阳性，而且每周都假）。
+ *
+ * ## ⛔ 只增不改（与 contract_locks 同一条纪律）
+ *
+ * 同 `setId` 二次写入 ⇒ 拒绝并抛错。允许覆盖 = 重算一遍新 hash 盖掉旧值
+ * ⇒ 篡改不留痕 ⇒ 这张表也就名存实亡。
+ */
+export const benchmarkFrozenSetSchema = z.object({
+  /** 主键。`frozen-<ISO>` 形态，由 caller 传（本方法不取时钟）。 */
+  setId: z.string().min(1),
+  /** 快照时刻（ISO，caller 传）。 */
+  capturedAt: z.string().min(1),
+  /** sidecar 格式版本。版本变了 ⇒ 比对口径变了，必须显式标注而不是混着比。 */
+  tieringVersion: z.string().min(1),
+  frozenCount: z.number().int().min(0),
+  /** Frozen 单元名单（排序后）。空集是合法值 —— 首期还没分配 Frozen 就是空。 */
+  frozenUnitIds: z.array(z.string().min(1)).default([]),
+  /** `sha256:<64 hex>`，见文件头注释。 */
+  frozenAggregateHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  /** 当时的清单单元总数（123）—— 让「分母变了」这件事可读。 */
+  inventoryTotalUnits: z.number().int().min(0),
+  failCount: z.number().int().min(0),
+  /** H1 下限 = ⌈0.6 × failCount⌉。fail 数变化时它必须跟着重算。 */
+  h1EvolutionMinFail: z.number().int().min(0),
+  /** H3 上限 = failCount − h1EvolutionMinFail。同上。 */
+  h3FrozenFailProbeCap: z.number().int().min(0),
+  /** 谁写的（如 `bin/anchor-frozen-set.mjs`）。无 provenance 的留证不可信。 */
+  source: z.string().min(1),
+  note: z.string().default(''),
+});
 
 // ── 内容子串匹配（queryFailures / queryTemplates 用） ─────────────────────
 

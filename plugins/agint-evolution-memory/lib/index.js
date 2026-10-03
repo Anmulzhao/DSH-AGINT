@@ -32,6 +32,7 @@ import {
   contractLockEntrySchema,
   predictionOutcomeEntrySchema,
   ledgerEntrySchema,
+  benchmarkFrozenSetSchema,
   LIMITS,
   matchesQuery,
 } from './schema.js';
@@ -41,6 +42,7 @@ import { createLedgerService } from './ledger.js';
 import { createLedgerAnchorService } from './ledger-anchor.js';
 import { createLedgerRebuildService } from './ledger-rebuild.js';
 import { createDefaultSourceLoader } from './ledger-rebuild-sources.js';
+import { createFrozenSetService } from './frozen-set.js';
 
 const name = 'agint-evolution-memory';
 // fix-20260907（host 热修回灌）：eventBus.subscribe 原为软依赖（ctx.get 一次性
@@ -86,6 +88,10 @@ const spec = defineDomain({
     // Phase 1 交付物 3 §4.3：进化账本（哈希链）。主键 = String(seq)，
     // 一个 contractId 一条（§4.3.4 纪律 6）；追加只经 lib/ledger.js。
     evolution_ledger: { valueSchema: ledgerEntrySchema },
+    // Phase 0.1 / Sprint 19：Frozen 基准集快照（防篡改留证）。
+    // 加表不升 version —— 依据见本文件 51-73 行的取证注释（整单元格式做严格相等
+    // 校验，升版本会让生产 202 行 evolution_log 直接读不出来）。
+    benchmark_frozen_set: { valueSchema: benchmarkFrozenSetSchema },
   },
 });
 
@@ -169,6 +175,7 @@ function apply(ctx) {
   const t_lock = () => table('contract_locks');
   const t_ledger = () => table('evolution_ledger');
   const t_outcome = () => table('prediction_outcomes');
+  const t_frozen = () => table('benchmark_frozen_set');
 
   // ── Ledger（Phase 1 交付物 3 §4.3.4）─────────────────────────────────────
   // 链的**唯一写入口**。⛔ 不接 logBuffer：批量 flush 崩溃即 seq 空洞，
@@ -507,6 +514,22 @@ function apply(ctx) {
     return out;
   }
 
+  // ── Frozen 基准集快照（Phase 0.1 / Sprint 19）────────────────────────────
+  //
+  // 为什么落在这里而不是别处：三层隔离的验收原文要求「Frozen 集的 hash 落
+  // evolution-memory 防篡改」。它是**进化记忆**，不是任务记忆，也不属于
+  // 任何单个 Contract ⇒ 归本域。表结构见 schema.js 的 benchmarkFrozenSetSchema，
+  // 服务逻辑见 lib/frozen-set.js。
+  //
+  // ⛔ 聚合 hash 由 caller 算好传进来（bin/lib/scenario-tier.mjs 的
+  //    frozenAggregateHash）：本插件不 import eval 侧脚本 —— 部署位没有 eval/，
+  //    跨层 import 会让插件在部署位加载失败。
+  const frozenSet = createFrozenSetService({ getTable: t_frozen, now: nowIso, warn, bump });
+  const recordFrozenSet = (p) => frozenSet.record(p);
+  const getFrozenSet = (setId) => frozenSet.get(setId);
+  const listFrozenSets = () => frozenSet.list();
+  const verifyFrozenSet = (p) => frozenSet.verify(p);
+
   // ── 读取 helpers ────────────────────────────────────────────────────────
 
   /** Query failure patterns. opts: { query?, category?, severity?, limit? } */
@@ -622,6 +645,11 @@ function apply(ctx) {
     recordPredictionOutcome,
     getPredictionOutcome,
     listPredictionOutcomes,
+    // Phase 0.1 / Sprint 19：Frozen 基准集快照（三层隔离的防篡改留证）
+    recordFrozenSet,
+    getFrozenSet,
+    listFrozenSets,
+    verifyFrozenSet,
     getLogRange,
     decayScanRun,
     stats,
