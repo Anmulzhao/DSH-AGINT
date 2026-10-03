@@ -1,0 +1,62 @@
+/**
+ * v2-scan 单测：三分类（code/comment/umbrella）、注释状态解析、路径规范、错误降级。
+ * 夹具事实（test/fixtures/v2-home/profiles/web/plugins/）：
+ *  - agint-alpha: L3 get agint.beta.svc=code；L4 注释 get agint.alpha=comment；
+ *    L5 get agint.alpha=code（精确键无子键）；L6 get agint.beta=umbrella（只有子键）；
+ *    L7 provide agint.alpha
+ *  - agint-beta: index L3 注释 get agint.alpha=comment；extra L2 get agint.alpha=code
+ *  - not-family: 非 agint- 前缀，必须不扫
+ */
+import assert from 'node:assert/strict';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { commentMask, scanPlugins } from '../lib/v2-scan.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const HOME = join(here, 'fixtures', 'v2-home');
+const PLUGINS = join(HOME, 'profiles', 'web', 'plugins');
+
+// commentMask：行注释、字符串里的 // 不算注释、块注释跨行
+{
+  const a = commentMask("const x = 1; // ctx.get('agint.a')", { block: false, tick: false });
+  assert.equal(a.mask[20], true, '// 之后是注释');
+  assert.equal(a.mask[10], false, '代码区不是注释');
+  const b = commentMask("const s = 'http://x';", { block: false, tick: false });
+  assert.equal(b.mask[14], false, '字符串里的 // 不触发注释');
+  const c1 = commentMask('/* start', { block: false, tick: false });
+  assert.equal(c1.state.block, true, '块注释状态跨行携带');
+  const c2 = commentMask('still comment */ code(1)', c1.state);
+  assert.equal(c2.mask[5], true);
+  assert.equal(c2.mask[20], false);
+  assert.equal(c2.state.block, false);
+}
+
+// scanPlugins：夹具全量断言
+{
+  const r = scanPlugins(PLUGINS);
+  assert.deepEqual(r.familyDirs, ['agint-alpha', 'agint-beta'], 'non-agint 目录不扫');
+  assert.equal(r.provided['agint.alpha'], 'agint-alpha');
+  assert.equal(r.provided['agint.beta.svc'], 'agint-beta');
+  assert.ok(!('agint.beta' in r.provided), '裸键未被 provide');
+  const at = (pl, key) => r.hits.filter((h) => h[0] === pl && h[3] === key);
+  assert.equal(at('agint-alpha', 'agint.beta.svc').filter((h) => h[4] === 'code').length, 1);
+  assert.equal(at('agint-alpha', 'agint.beta').filter((h) => h[4] === 'umbrella').length, 1);
+  assert.equal(at('agint-alpha', 'agint.alpha').filter((h) => h[4] === 'code').length, 1);
+  assert.equal(r.hits.filter((h) => h[4] === 'comment').length, 2, 'alpha L4 + beta index L3');
+  assert.equal(at('agint-beta', 'agint.alpha').filter((h) => h[4] === 'code').length, 1, 'extra.js 多层 glob 命中');
+  assert.equal(r.hits.length, 3 + 2 + 1, 'code 3 + comment 2 + umbrella 1');
+  for (const h of r.hits) {
+    assert.match(h[1], /^lib\//, 'relFile 用 / 分隔且相对插件根');
+    assert.ok(!h[1].includes('\\'));
+  }
+  assert.deepEqual(r.errors, []);
+}
+
+// 目录不存在 → 降级不抛
+{
+  const r = scanPlugins(join(HOME, 'nope'));
+  assert.deepEqual(r.hits, []);
+  assert.equal(r.errors.length, 1);
+}
+
+console.log('v2-scan.test.mjs PASS');
