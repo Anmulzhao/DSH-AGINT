@@ -13,7 +13,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -217,4 +217,191 @@ test('对账口径：声称值 104/92/12 必须与文档一致，不得被悄悄
   assert.equal(inventory.reconciliation.claimedPass, 92);
   assert.equal(inventory.reconciliation.claimedFail, 12);
   assert.match(inventory.reconciliation.claimSource, /Sprint12|路线图/);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Phase 0.1 三层隔离（Sprint 19）
+//
+// 重心理念：字段是标注，**过滤才是隔离**。下面三组分别钉住
+//   ① 生成器真的吐出两个字段且三层计数自洽
+//   ② --check 真的会红（把门临时放宽 ⇒ 必须变红，否则是假防线）
+//   ③ contentHash 一条都没变（防「顺手把标签写进场景文件」）
+// ────────────────────────────────────────────────────────────────────────────
+
+const TIERING_PATH = join(REPO_ROOT, 'eval', 'tiers', 'agint-tiering.json');
+
+/** 读入仓 sidecar 的原文（绝不在测试里写入仓文件）。 */
+function repoTiering() {
+  return JSON.parse(readFileSync(TIERING_PATH, 'utf8'));
+}
+
+/**
+ * 在临时目录里跑一次 --check。
+ *
+ * @param {(t: object) => void} mutateTiering  改 sidecar（在副本上改）
+ * @param {(i: object) => void} mutateOutInv   改「上一版清单」（在副本上改，用于造 H5 基线）
+ */
+function runCheck(mutateTiering = () => {}, mutateOutInv = () => {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'inv-check-'));
+  const tieringPath = join(dir, 'tiering.json');
+  const outPath = join(dir, 'inventory.json');
+  const t = repoTiering();
+  mutateTiering(t);
+  writeFileSync(tieringPath, `${JSON.stringify(t, null, 2)}\n`, 'utf8');
+  const inv = JSON.parse(readFileSync(join(REPO_ROOT, 'eval', 'scenarios', 'inventory.json'), 'utf8'));
+  mutateOutInv(inv);
+  writeFileSync(outPath, `${JSON.stringify(inv, null, 2)}\n`, 'utf8');
+
+  const r = spawnSync(NODE, [SCRIPT, '--check', `--tiering=${tieringPath}`, `--out=${outPath}`], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  rmSync(dir, { recursive: true, force: true });
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+}
+
+test('★ 入仓清单：123/123 单元都带 visibility 与 labelAuthority', () => {
+  for (const u of REPO_INVENTORY.units) {
+    assert.ok(u.visibility, `${u.unitId} 缺 visibility`);
+    assert.ok(u.labelAuthority, `${u.unitId} 缺 labelAuthority`);
+  }
+  assert.equal(REPO_INVENTORY.units.length, 123);
+});
+
+test('★ 三层计数加总必须等于总数（有单元层名非法时会小于总数）', () => {
+  const t = REPO_INVENTORY.summary.tierCounts;
+  assert.equal(t.EVOLUTION + t.VALIDATION + t.FROZEN, REPO_INVENTORY.summary.totalUnits);
+  assert.equal(REPO_INVENTORY.summary.tierSum, 123);
+});
+
+test('★ quality 占比已回写且与实测一致（配额 §3.2 要求产出里给实际占比）', () => {
+  const q = REPO_INVENTORY.summary.qualityRatio;
+  assert.equal(q.domain, 'quality');
+  assert.equal(q.count, 57);
+  assert.equal(q.total, 123);
+  assert.ok(Math.abs(q.ratio - 57 / 123) < 1e-9);
+});
+
+test('★ 入仓清单必须是完整模式产物（否则 H1/H3 会被跳过，判据不全）', () => {
+  assert.equal(REPO_INVENTORY.reconciliation.measuredBy, 'driver.js 全量回归实测');
+  assert.deepEqual(REPO_INVENTORY.tierBaseline.criteriaSkipped, []);
+  assert.equal(REPO_INVENTORY.tierBaseline.criteriaOk, true);
+});
+
+test('★ Frozen 基线已落盘：名单 + 聚合 hash + H1/H3 重算值', () => {
+  const b = REPO_INVENTORY.tierBaseline;
+  assert.deepEqual(b.frozenUnitIds, []);
+  assert.match(b.frozenAggregateHash, /^sha256:[0-9a-f]{64}$/, '空集也要有合法 hash（空集是事实，不是缺失）');
+  assert.equal(b.failCount, 6);
+  assert.equal(b.h1EvolutionMinFail, 4, '⌈0.6 × 6⌉ = 4');
+  assert.equal(b.h3FrozenFailProbeCap, 2, '6 − 4 = 2');
+});
+
+// ── --check 的红绿自证 ──────────────────────────────────────────────────────
+test('--check 基线：不动任何东西 ⇒ 退出码 0', () => {
+  const r = runCheck();
+  assert.equal(r.status, 0, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stdout, /--check 通过/);
+});
+
+test('★ --check 抓非法 visibility 枚举', () => {
+  const r = runCheck((t) => {
+    const k = Object.keys(t.units)[0];
+    t.units[k].visibility = 'frozen';
+  });
+  assert.equal(r.status, 1, '非法枚举居然通过了 ⇒ 门禁是摆设');
+  assert.match(r.stderr, /不在枚举/);
+});
+
+test('★ --check 抓非法 labelAuthority 枚举', () => {
+  const r = runCheck((t) => {
+    const k = Object.keys(t.units)[0];
+    t.units[k].labelAuthority = 'PLATINUM';
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /labelAuthority/);
+});
+
+test('★ --check 抓缺映射（删一条 sidecar 条目）', () => {
+  const r = runCheck((t) => {
+    delete t.units[Object.keys(t.units)[0]];
+  });
+  assert.equal(r.status, 1, '缺映射给默认值兜底 ⇒ 「缺失映射」这条判据永远绿');
+  assert.match(r.stderr, /没有映射条目/);
+});
+
+test('★ --check 抓 H5：Frozen 集变少', () => {
+  // 造一个「上一版有 3 个 Frozen、这一版只剩 2 个」的局面
+  const r = runCheck(
+    (t) => {
+      const ks = Object.keys(t.units);
+      t.units[ks[0]].visibility = 'FROZEN';
+      t.units[ks[1]].visibility = 'FROZEN';
+    },
+    (inv) => {
+      const ks = inv.units.map((u) => u.unitId);
+      inv.tierBaseline.frozenUnitIds = [ks[0], ks[1], 'gone-unit'];
+    },
+  );
+  assert.equal(r.status, 1, 'Frozen 缩减竟然放行 ⇒ H5 没生效');
+  assert.match(r.stderr, /H5 违例/);
+  assert.match(r.stderr, /gone-unit/);
+});
+
+test('★ --check 抓 quality 占比漂移（入仓值 vs 重算值）', () => {
+  const r = runCheck(() => {}, (inv) => {
+    inv.summary.qualityRatio = { domain: 'quality', count: 1, total: 123, ratio: 0.008 };
+  });
+  assert.equal(r.status, 1, '占比回写错了却不报 ⇒ 「回写」这条判据是摆设');
+  assert.match(r.stderr, /quality 占比漂移/);
+});
+
+test('★ --check 抓单元级漂移（改一条 contentHash）', () => {
+  const r = runCheck(() => {}, (inv) => {
+    inv.units[0].contentHash = 'sha256:' + 'f'.repeat(64);
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /单元级漂移/);
+});
+
+test('★ --check 抓「实测有、入仓清单没有」的单元（新增场景忘了重生成）', () => {
+  // 从「上一版清单」里删掉一条 ⇒ 这一版相对它就是新增 ⇒ 必须报出来要求补登记。
+  const r = runCheck(() => {}, (inv) => {
+    inv.units = inv.units.slice(1);
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /清单新增单元/);
+});
+
+test('★ --check 抓「入仓清单有、实测没有」的单元（场景被删，H5 需人工确认）', () => {
+  const r = runCheck(() => {}, (inv) => {
+    inv.units.push({ ...inv.units[0], unitId: 'ghost-unit', contentHash: 'sha256:' + 'a'.repeat(64) });
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /清单少了单元/);
+  assert.match(r.stderr, /ghost-unit/);
+});
+
+// ── 防「顺手把标签写进场景文件」的护栏 ──────────────────────────────────────
+test('★ 重新生成的 contentHash 必须一条都不变（sidecar 方案的护栏）', () => {
+  const fresh = runStatic();
+  const before = new Map(REPO_INVENTORY.units.map((u) => [u.unitId, u.contentHash]));
+  const after = new Map(fresh.inventory.units.map((u) => [u.unitId, u.contentHash]));
+  assert.equal(before.size, after.size);
+  const changed = [...before.keys()].filter((id) => before.get(id) !== after.get(id));
+  assert.deepEqual(
+    changed,
+    [],
+    `contentHash 变了 ${changed.length} 条 ⇒ 标签被写进了场景文件，` +
+      `Frozen 防篡改基线随之失效：${changed.slice(0, 5).join(', ')}`,
+  );
+});
+
+test('★ 三层标签来自 sidecar，不是写死在生成器里', () => {
+  const src = readFileSync(SCRIPT, 'utf8');
+  assert.match(src, /eval\/tiers\/agint-tiering\.json/, '生成器必须默认读 sidecar');
+  const t = repoTiering();
+  assert.equal(t.tieringVersion, '1.0');
+  assert.equal(Object.keys(t.units).length, 123);
 });
