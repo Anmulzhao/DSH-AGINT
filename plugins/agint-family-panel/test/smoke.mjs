@@ -42,7 +42,7 @@ const CTX_ALLOWED = new Set([
 function makeCtx(overrides = {}) {
   const registered = [];
   const provided = {};
-  const entries = overrides.entries ?? [row('agint-memory'), row('agint-cron'), row('agint-preset'), row('agint-mystery'), row('other-plugin')];
+  const entries = overrides.entries ?? [row('agint-memory'), row('agint-cron'), row('agint-preset'), row('agint-ops-preset'), row('agint-mystery'), row('other-plugin')];
   const base = {
     loader: { entries: () => entries },
     webServer: {
@@ -111,18 +111,23 @@ assert.equal(ok.status, 200, 'status 200');
 const payload = JSON.parse(ok.body);
 assert.equal(payload.ok, true);
 assert.equal(payload.enabled, true);
-assert.equal(payload.counts.total, 4, 'counts only agint-* rows');
-assert.equal(payload.counts.active, 4, 'fiber.state=2 → active（真实 loader 结构）');
+assert.equal(payload.counts.total, 5, 'counts only agint-* rows');
+assert.equal(payload.counts.active, 5, 'fiber.state=2 → active（真实 loader 结构）');
 assert.equal(payload.counts.unknown, 0, '不再全部 unknown');
 assert.ok(payload.groups.some((g) => g.id === 'memory'), 'memory group present');
 const presetGroup = payload.groups.find((g) => g.id === 'preset');
 assert.ok(presetGroup && presetGroup.label === 'AGENT预设', 'preset group present with label');
-assert.equal(presetGroup.members.length, 1, 'preset member present');
+assert.equal(presetGroup.members.length, 2, 'preset members present');
 assert.equal(presetGroup.members[0].declared, true, 'preset member declared');
+// v0.1.4：生产运维子 preset（智进·生产运维）此前落在 unmapped 兜底组。
+assert.ok(
+  presetGroup.members.some((m) => m.id === 'agint-ops-preset' && m.declared === true),
+  'agint-ops-preset 归入 AGENT预设 组且 declared:true',
+);
 const unmappedGroup = payload.groups.find((g) => g.id === 'unmapped');
 assert.ok(unmappedGroup && unmappedGroup.members.length === 1 && unmappedGroup.members[0].id === 'agint-mystery' && unmappedGroup.members[0].declared === false, 'unmapped holds only an agint-* row absent from the label map');
 assert.deepEqual(payload.unmappedIds, ['agint-mystery'], 'unmappedIds lists the leftover id');
-assert.equal(payload.hostRowCount, 5, 'reports the whole host roster');
+assert.equal(payload.hostRowCount, 6, 'reports the whole host roster');
 assert.equal(payload.signals.length, 3, 'three signal probes');
 
 // 12. fiber state mapping (v0.1.1) --------------------------------------------

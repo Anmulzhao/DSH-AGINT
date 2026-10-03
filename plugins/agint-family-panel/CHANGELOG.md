@@ -1,5 +1,22 @@
 # agint-family-panel CHANGELOG
 
+## 0.1.4 — 2026-10-03
+
+### 分组表补录 `agint-ops-preset`
+
+**为什么**：生产运维子 preset（`~/.dsh/.agent-presets/agint-ops/preset.yml`，
+名「智进·生产运维」）的 loader 行 `agint-ops-preset` 此前不在分组表（label map），
+落进「未归类（分组表待补）」兜底组，`declared:false`。它是 AGENT 预设，不是杂项。
+
+**取证**：实机 `GET /api/agint-family/status` 返回 `unmappedIds: ["agint-ops-preset"]`、
+`unmapped` 组 1 成员；`.agent-presets/agint-ops/preset.yml:1` 写明「智进子 preset」。
+
+**改了什么**：`FAMILY_GROUPS` 的 `preset` 组（`AGENT预设`）成员表追加
+`agint-ops-preset`，排在其余三个 preset 之后（组内按成员表顺序渲染，追加不影响既有下标）。
+
+**测试**：smoke fixture 增补 `agint-ops-preset` 一行，断言它落进 `preset` 组且
+`declared:true`；兜底组断言同步为只收 `agint-mystery` 一行。smoke 14 组 PASS。
+
 ## 0.1.3 — 2026-10-01
 
 ### 终止开关（`dsh-kill-switch`）并入 agint 家族
