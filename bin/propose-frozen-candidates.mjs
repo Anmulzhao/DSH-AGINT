@@ -58,6 +58,20 @@ const DEFAULT_INVENTORY = join(REPO_ROOT, 'eval', 'scenarios', 'inventory.json')
 /** 首期 Frozen 名额（设计稿 §2.4.3：新编 6 + 现有 4 = 10）。 */
 export const FIRST_PHASE_SIZE = 10;
 
+/**
+ * ⛔ 真实存量 fail（**排除负控制**）—— 2026-10-04 A3 槽位 1 踩到。
+ *
+ * 负控制（`negativeControl: true`）是「故意让判据变红」的测试夹具，
+ * **预期就是 FAIL**，不算真实缺陷。`scenario-tier.mjs` 的 `checkTierAssignment`
+ * 已把它们从 `failCount` 里排除；本模块原先**自己数 `lastKnownStatus === 'FAIL'`**
+ * ⇒ 两边口径不一致（判据说 4、提案器说 7）⇒ 提案自相矛盾、H1/H3 全错。
+ *
+ * ⇒ 三处数 fail 全部改走这一个过滤器，**不各数一套**。
+ * 口径与 `checkTierAssignment` 逐字一致（判据不信脚本自述，两边同源）。
+ */
+export const isRealFail = (u) => u?.lastKnownStatus === 'FAIL' && u?.negativeControl !== true;
+export const realFails = (units) => units.filter(isRealFail);
+
 // ── 候选筛选（纯函数）─────────────────────────────────────────────────────
 
 /**
@@ -103,7 +117,7 @@ export function eligibleDomains(units) {
  */
 export function selectFailProbes(units, { cap, eligibleDomainSet }) {
   const pool = units
-    .filter((u) => u.lastKnownStatus === 'FAIL')
+    .filter(isRealFail)
     .filter((u) => eligibleDomainSet.has(u.domain ?? 'UNKNOWN'))
     .sort((a, b) => {
       const da = a.domain ?? '';
@@ -126,7 +140,7 @@ export function selectFailProbes(units, { cap, eligibleDomainSet }) {
     picked.push(u);
   }
   const skippedByH4 = units
-    .filter((u) => u.lastKnownStatus === 'FAIL' && !eligibleDomainSet.has(u.domain ?? 'UNKNOWN'))
+    .filter((u) => isRealFail(u) && !eligibleDomainSet.has(u.domain ?? 'UNKNOWN'))
     .map((u) => ({ unitId: u.unitId, domain: u.domain, reason: `H4：域 ${u.domain} 单元数不足，fail 探针也进不了 Frozen` }));
   return { picked, cap, skippedByH4, eligibleFailCount: pool.length };
 }
@@ -227,11 +241,11 @@ export function proposeNewSlots(units, { need, eligibleDomainSet }) {
  * @param {number} [input.failCount] 存量 fail 数；省略则从 units 数
  * @param {number} [input.size] 名额，默认 10
  */
-export function proposeFrozenCandidates({ units = [], failCount = null, size = FIRST_PHASE_SIZE } = {}) {
+export function proposeFrozenCandidates({ units = [], failCount = null, size = FIRST_PHASE_SIZE, proposalSummaryFailCount = null } = {}) {
   const list = Array.isArray(units) ? units : [];
   const fail = Number.isFinite(Number(failCount)) && failCount !== null
     ? Number(failCount)
-    : list.filter((u) => u.lastKnownStatus === 'FAIL').length;
+    : realFails(list).length;
 
   const dom = eligibleDomains(list);
   const eligibleDomainSet = new Set(dom.eligible.map((d) => d.domain));
@@ -275,6 +289,14 @@ export function proposeFrozenCandidates({ units = [], failCount = null, size = F
   return {
     size,
     failCount: fail,
+    // ⛔ 2026-10-04：负控制排除的**可观测**（静默排除 = 调用方不知道为什么 fail 数变了）。
+    //   summaryFailCount = 清单汇总里的 fail 数（**含**负控制）；
+    //   negativeControlCount = 被排除的负控制条数。
+    //   两者之差应当等于 negativeControlCount —— 不等就是清单汇总口径坏了，要出声。
+    summaryFailCount: proposalSummaryFailCount,
+    negativeControlCount: list.filter(
+      (u) => u?.lastKnownStatus === 'FAIL' && u?.negativeControl === true,
+    ).length,
     budget: {
       newRequired,
       newRatio: H2_FROZEN_NEW_RATIO,
@@ -471,9 +493,14 @@ function main() {
   if (!existsSync(opts.inventory)) throw new Error(`清单不存在：${opts.inventory}`);
   const inv = JSON.parse(readFileSync(opts.inventory, 'utf8'));
   const units = Array.isArray(inv.units) ? inv.units : [];
-  const failCount = inv.summary?.failCount ?? null;
+  // ⛔ 2026-10-04：原先读 `inv.summary.failCount`，那是**清单汇总**，
+  //   含负控制（负控制也是 FAIL）⇒ 与 checkTierAssignment 的口径不一致
+  //   （实测：判据说 4、这里说 7 ⇒ 提案自相矛盾、H1/H3 全错）。
+  // ⇒ 改为**现算**并走 realFails（与判据层同源）。汇总值只作参考，不作真值。
+  const failCount = realFails(units).length;
+  const summaryFailCount = inv.summary?.failCount ?? null;
 
-  const proposal = proposeFrozenCandidates({ units, failCount });
+  const proposal = proposeFrozenCandidates({ units, failCount, proposalSummaryFailCount: summaryFailCount });
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
   } else if (opts.out) {

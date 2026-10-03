@@ -473,6 +473,13 @@ function build() {
         // 归因属 Sprint 17」。此处保留 null 并由 attribution 段声明归属，
         // 不用占位值冒充已归因。
         failCategory: null,
+        // ⛔ 2026-10-04（A3 槽位 1）：负控制标记透传（**主路径**，rules 等域走这里）。
+        //   负控制是「故意让判据变红」的测试夹具，**预期就是 FAIL** ——
+        //   若算进 failCount 会污染 H1 下限与 A4 归因队列（scenario-tier.mjs 侧排除）。
+        //   ⛔ 用**显式字段**，不靠 id 命名约定（无法审计、改个名就失效）。
+        //   ⚠️ 落成显式 true/false（不能是 undefined）—— undefined 会被
+        //   JSON.stringify 省掉，清单里就没这个键，判据侧读不到（实测踩过）。
+        negativeControl: u.negativeControl === true,
         contentHash: canonicalHash(u, { prefix: true }),
         externalDeps: [...DEFAULT_EXTERNAL_DEPS],
         runtimeRequired: true,
@@ -562,6 +569,10 @@ function build() {
         executedBy: runnerMap.get(basename(f.rel)) ?? null,
         lastKnownStatus: 'UNKNOWN',
         failCategory: null,
+        // ⛔ 2026-10-04（A3 槽位 1）：负控制标记透传（**dedicated 路径**）。
+        //   ⚠️ 负控制单元都在普通路径（本文件上方 units.push）—— 这条是同一口径的
+        //   重复声明，防将来有 dedicated 负控制时漏掉。口径见 scenario-tier.mjs。
+        negativeControl: u.negativeControl === true,
         contentHash: canonicalHash(u, { prefix: true }),
         externalDeps: [...DEFAULT_EXTERNAL_DEPS],
         runtimeRequired: true,

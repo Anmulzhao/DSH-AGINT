@@ -2,19 +2,7 @@
   "tieringVersion": "1.0",
   "note": "三层标签 sidecar（unitId → visibility / labelAuthority）。⛔ 标签不写进 .scenario.json —— 那会推翻全部 contentHash，与 Frozen 防篡改基线冲突。每个 unitId 必须显式登记；缺映射即判据失败，不给默认值兜底。合法值：visibility ∈ EVOLUTION/VALIDATION/FROZEN；labelAuthority ∈ UNSET/SILVER/GOLD/HELDOUT。",
   "units": {
-    "cron-parse-and-nextFire": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "cron-default-jobs-registered": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "classify-prompt-deficiency": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "classify-tool-gap": {
+    "classify-environment-shift": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -22,19 +10,15 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "classify-reasoning-error": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
     "classify-planning-failure": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "classify-environment-shift": {
+    "classify-prompt-deficiency": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "classify-uncertain-no-class-matches": {
+    "classify-reasoning-error": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -42,39 +26,75 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "service-cold-start-throws": {
+    "classify-tool-gap": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "service-annotations-table-full-throws": {
-      "visibility": "FROZEN",
-      "labelAuthority": "GOLD"
+    "classify-uncertain-no-class-matches": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-history-append-query-roundtrip": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-rollback-skipped-on-low-reject-rate": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-rollback-triggers-on-high-reject-rate": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-shadow-10-agrees-promotes": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-shadow-agrees-with-prod": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "committee-shadow-disagrees-with-prod": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "compute-passrate-from-per-target-results": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "cron-default-jobs-registered": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "cron-parse-and-nextFire": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "decay-scan-no-mutation-without-apply": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "deploy-budget-count-rolling-7d": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "deploy-budget-is-auto-deploy-entry": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "deploy-budget-over-limit-forces-review": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "deploy-budget-weekly-hook-wired": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "deploy-budget-within-limit": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     "dream-gate-thresholds": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "s12-02-evolution-evaluated-sync-edge": {
-      "visibility": "FROZEN",
-      "labelAuthority": "GOLD"
-    },
-    "s12-03-sandbox-passed-failed-via-event-bus": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "s12-04-mount-requested-via-event-bus": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "s12-05-policy-policy-deployed-rolledback-shadow": {
-      "visibility": "FROZEN",
-      "labelAuthority": "GOLD"
-    },
-    "s12-05-mount-succeeded-population-and-evolution-memory-observe": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "s12-06-mount-failed-diagnosis-trigger": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -90,19 +110,39 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "success-templates-add-and-query": {
+    "harmony-detect-false-consensus-all-AUTO_DEPLOY": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "decay-scan-no-mutation-without-apply": {
+    "harmony-detect-false-consensus-with-mixed-decisions": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "physical-isolation-from-task-memory": {
+    "harmony-detect-regression-underreporting": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "stats-reports-counts-and-limits": {
+    "harmony-detect-regression-underreporting-clean": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "harmony-detect-rejection-uniformity": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "harmony-detect-rejection-uniformity-clean-with-variance": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "install-rejects-path-traversal": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "install-trap-registers-partial-steps": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "install-uses-central-backup-dir": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -110,13 +150,149 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
+    "metrics-compute-cron-source": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
     "metrics-compute-empty-sources": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "metrics-compute-cron-source": {
+    "physical-isolation-from-task-memory": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
+    },
+    "policy-decide-abstain-insufficient-signal": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-audits-memory": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-clean-results-pending-or-deploy": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-empty-results-abstain": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-safety-veto-rejects": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-true-auto-deploy": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-trust-veto-rejects": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-decide-weights-composite-correct": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-detectFalseHarmony-Service-full-run": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-setThresholds-audits-via-quality": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "policy-setThresholds-rejects-invalid-range": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "regression-baseline-delta-tiers": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "regression-baseline-targets-fixed-set": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "regression-stagnation-active-growth": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "regression-stagnation-detected": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "regression-stagnation-insufficient-data": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "report-generate-markdown-and-json": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "report-missing-decision-throws": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "report-writeToWiki-and-memory": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rsync-no-links-excludes-node-modules": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rules-advisory-negctl-also-blocked": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-advisory-npm-publish-does-not-block": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-allow-mv-evolution-log-rotation": {
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
+    },
+    "rules-ask-git-push-force-main": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-ask-hit-but-deny-also-matches": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-deny-delete-evolution-log-rm": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rules-deny-delete-evolution-log-rmrf": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rules-deny-delete-evolution-log-unlink": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rules-deny-rm-rf-root": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "rules-tier-negctl-no-deny-but-expect-deny": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-tier-precedence-ask-only-no-deny": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-tier-precedence-deny-beats-ask": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
+    },
+    "rules-tier-precedence-safe-command-all-clear": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "GOLD"
     },
     "s11-01-happy-path-healthy-mount": {
       "visibility": "EVOLUTION",
@@ -150,47 +326,39 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "deploy-budget-is-auto-deploy-entry": {
+    "s12-02-evolution-evaluated-sync-edge": {
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
+    },
+    "s12-03-sandbox-passed-failed-via-event-bus": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "deploy-budget-count-rolling-7d": {
+    "s12-04-mount-requested-via-event-bus": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "deploy-budget-within-limit": {
+    "s12-05-mount-succeeded-population-and-evolution-memory-observe": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "deploy-budget-over-limit-forces-review": {
+    "s12-05-policy-policy-deployed-rolledback-shadow": {
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
+    },
+    "s12-06-mount-failed-diagnosis-trigger": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "deploy-budget-weekly-hook-wired": {
+    "sandbox-backend-health-reports-availability": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "regression-baseline-delta-tiers": {
+    "sandbox-fails-on-nonexistent-plugin": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "regression-stagnation-active-growth": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "regression-stagnation-detected": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "regression-stagnation-insufficient-data": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "compute-passrate-from-per-target-results": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "regression-baseline-targets-fixed-set": {
+    "sandbox-falls-back-when-ctx-sandbox-missing": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -210,123 +378,7 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "weekly-hook-writes-eval-results-to-evolution-log": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "weekly-hook-runs-baseline-suite": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "weekly-hook-detects-stagnation-after-many-runs": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "weekly-hook-triggers-regression-when-baseline-drops": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-shadow-agrees-with-prod": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-shadow-disagrees-with-prod": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-shadow-10-agrees-promotes": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-rollback-triggers-on-high-reject-rate": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-rollback-skipped-on-low-reject-rate": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "committee-history-append-query-roundtrip": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-empty-results-abstain": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-safety-veto-rejects": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-clean-results-pending-or-deploy": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-weights-composite-correct": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-true-auto-deploy": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-trust-veto-rejects": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-abstain-insufficient-signal": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-setThresholds-audits-via-quality": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-setThresholds-rejects-invalid-range": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-decide-audits-memory": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-rejection-uniformity": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-rejection-uniformity-clean-with-variance": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-false-consensus-all-AUTO_DEPLOY": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-false-consensus-with-mixed-decisions": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-regression-underreporting": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "harmony-detect-regression-underreporting-clean": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "policy-detectFalseHarmony-Service-full-run": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "report-generate-markdown-and-json": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "report-writeToWiki-and-memory": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "report-missing-decision-throws": {
+    "sandbox-rejects-missing-target-path": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -334,35 +386,7 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "sandbox-falls-back-when-ctx-sandbox-missing": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sandbox-fails-on-nonexistent-plugin": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sandbox-rejects-missing-target-path": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sandbox-backend-health-reports-availability": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sdk-validate-manifest-valid": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sdk-validate-manifest-too-few-tests": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sdk-template-render-with-values": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sdk-static-check-injection-blocker": {
+    "sdk-regression-tests-run-all-pass": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -370,31 +394,39 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
+    "sdk-static-check-injection-blocker": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
     "sdk-static-check-placeholder-typo": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "sdk-regression-tests-run-all-pass": {
+    "sdk-template-render-with-values": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "rules-deny-delete-evolution-log-rm": {
+    "sdk-validate-manifest-too-few-tests": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "rules-deny-delete-evolution-log-rmrf": {
+    "sdk-validate-manifest-valid": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "rules-deny-delete-evolution-log-unlink": {
+    "security-checks-script-is-self-contained": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "rules-allow-mv-evolution-log-rotation": {
-      "visibility": "FROZEN",
-      "labelAuthority": "GOLD"
+    "self-model-a11-publish-payload": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
-    "rules-deny-rm-rf-root": {
+    "self-model-calibration-cold-start-guard": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "self-model-calibration-miscalibration-guard": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -410,23 +442,11 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "self-model-calibration-cold-start-guard": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "self-model-calibration-miscalibration-guard": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
     "self-model-frozen-lastVerifiedAt-required": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "self-model-a11-publish-payload": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "self-model-update-changedDomains": {
+    "self-model-reasoning-profile-from-diagnosis": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -434,7 +454,15 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "self-model-reasoning-profile-from-diagnosis": {
+    "self-model-update-changedDomains": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "service-annotations-table-full-throws": {
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
+    },
+    "service-cold-start-throws": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -446,7 +474,7 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "sprint6-evalPromptStatic-no-prompt-target": {
+    "sprint6-evalPromptStatic-bad-prompt-score-dropped": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -454,11 +482,7 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "sprint6-evalPromptStatic-bad-prompt-score-dropped": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "sprint6-policy-prompt-blocker-finding-forces-REJECT": {
+    "sprint6-evalPromptStatic-no-prompt-target": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -466,23 +490,19 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
+    "sprint6-policy-prompt-blocker-finding-forces-REJECT": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
     "sprint6-report-prompt-section-rendered": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "rsync-no-links-excludes-node-modules": {
+    "stats-reports-counts-and-limits": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "install-trap-registers-partial-steps": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "install-rejects-path-traversal": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
-    "install-uses-central-backup-dir": {
+    "success-templates-add-and-query": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
@@ -490,7 +510,19 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "security-checks-script-is-self-contained": {
+    "weekly-hook-detects-stagnation-after-many-runs": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "weekly-hook-runs-baseline-suite": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "weekly-hook-triggers-regression-when-baseline-drops": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "weekly-hook-writes-eval-results-to-evolution-log": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     }

@@ -709,6 +709,57 @@ const dispatchers = {
       const ok = check.deny.length === 0;
       return { ok, detail: `deny.length=${check.deny.length} (must=0)` };
     }
+    // ── A4 槽位 1（2026-10-04）：ask / advisory 两档此前零断言 ──────────
+    //
+    // 缺口背景：rules 域原有 5 条只测 deny(3) + no-deny(1)，
+    // `ask` 档**一条都没有**。而 ask 是三档里唯一「不阻断但要问用户」的档 ——
+    // 它测错的失败模式是**静默**的（该问的没问 = 直接执行了破坏性操作）。
+    // 生产里ask 档有真实规则（bash-git-push-force-main / git push --force origin main）。
+    //
+    // ⛔ 关键：`check()` 返回的是**三档平行数组** `{deny:[], ask:[], advisory:[]}`，
+    //   优先级裁决（deny 优先于 ask，index.js:730-741）发生在 **pre-execute钩子**里，
+    //   不在 check() 里。所以只断 check() 的返回**证明不了分流是对的** ——
+    //   真正要断的是「谁盖过谁」，故下面有 tier-precedence 判据。
+    if (exp.kind === 'ask-hit') {
+      const top = check.ask[0];
+      const ok = check.ask.length >= 1 && (!exp.ruleId || top.ruleId === exp.ruleId);
+      // ⛔ 同时断 deny 档为空：ask 命中时若deny 也命中，说明分流坏了。
+      const denyClean = check.deny.length === 0;
+      return {
+        ok: ok && denyClean,
+        detail: `ask[0]=${top?.ruleId} (expect ${exp.ruleId ?? 'any'}) deny.length=${check.deny.length} (must=0)`,
+      };
+    }
+    if (exp.kind === 'advisory-hit') {
+      const top = check.advisory[0];
+      const ok = check.advisory.length >= 1 && (!exp.ruleId || top.ruleId === exp.ruleId);
+      // ⛔ advisory 绝不进 deny/ask 档（它只注入 context，不阻断也不问）。
+      const notBlocking = check.deny.length === 0 && check.ask.length === 0;
+      return {
+        ok: ok && notBlocking,
+        detail: `advisory[0]=${top?.ruleId} deny=${check.deny.length} ask=${check.ask.length} (后两者 must=0)`,
+      };
+    }
+    if (exp.kind === 'tier-precedence') {
+      // 三档同时命中（或按expect 指定的组合）时，断言**裁决顺序**：
+      // deny 盖过 ask ⇒ 阻断；两者皆空 ⇒ 放行(next)。
+      // 这条是「证明按 action 分流、不是一律最严」的那条 differential 判据。
+      const d = check.deny.length, a = check.ask.length;
+      let ok, got;
+      if (exp.expect === 'deny-wins') {
+        ok = d >= 1;
+        got = `deny=${d} ask=${a}`;
+      } else if (exp.expect === 'ask-only') {
+        ok = d === 0 && a >= 1;
+        got = `deny=${d} ask=${a}`;
+      } else if (exp.expect === 'all-clear') {
+        ok = d === 0 && a === 0;
+        got = `deny=${d} ask=${a}`;
+      } else {
+        return { ok: false, detail: `tier-precedence 缺 expect（got ${JSON.stringify(exp.expect)}）` };
+      }
+      return { ok, detail: `${got} expect=${exp.expect}` };
+    }
     return { ok: false, detail: `unsupported expected shape` };
   },
 

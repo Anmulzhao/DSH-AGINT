@@ -1,0 +1,195 @@
+[
+  {
+    "scenario": "rules-ask-git-push-force-main",
+    "plugin": "agint-rules",
+    "_purpose": "A4 槽位 1（2026-10-04）：ask 档此前**零断言** —— 原有 5 条只测 deny(3) + no-deny(1)。ask 是三档里唯一「不阻断但要问用户」的档，它测错的失败模式是**静默**的：该问的没问 = 直接执行了破坏性操作。生产里 ask 档有真实规则 bash-git-push-force-main。本条断它命中 ask 档且**不污染 deny 档**。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git push --force origin main"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "ask-hit",
+        "ruleId": "bash-git-push-force-main",
+        "_note": "命中 ask 档；deny 档必须为空（若deny 也命中说明分流坏了）"
+      }
+    ]
+  },
+  {
+    "scenario": "rules-advisory-npm-publish-does-not-block",
+    "plugin": "agint-rules",
+    "_purpose": "advisory 档同样零断言。advisory 只注入 context 提醒，**既不阻断也不问**（README:11）。本条断它落advisory 档，且 deny/ask 两档都空 —— 这才证明「三档是平行数组、不是一律最严」。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "npm publish"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "advisory-hit",
+        "ruleId": "bash-npm-publish",
+        "_note": "命中 advisory；deny=0 且 ask=0（advisory 绝不阻断）"
+      }
+    ]
+  },
+  {
+    "scenario": "rules-tier-precedence-deny-beats-ask",
+    "plugin": "agint-rules",
+    "_purpose": "⭐ differential 判据（本槽位的核心）。只断「ask 会问」排除不掉「实现永远返 ask」。本条用**同时命中 ask + deny** 的命令，断裁决顺序：deny 盖过 ask ⇒ 阻断。这证明分流是按 action 字段判的，不是一律最严。裁决逻辑在 plugins/agint-rules/lib/index.js:730-741（deny 先判，ask 次之，都空才 next()）。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git push --force origin main && rm -rf /"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "tier-precedence",
+        "expect": "deny-wins",
+        "_note": "同时命中 ask(git push --force) + deny(rm -rf /) ⇒ deny 盖过 ask"
+      }
+    ]
+  },
+  {
+    "scenario": "rules-tier-precedence-ask-only-no-deny",
+    "plugin": "agint-rules",
+    "_purpose": "与上一条成对：只命中 ask、deny 为空时，**不能**误报成 deny。这是「differential 的另一半」—— 两条合起来才能证明分流是按 action 判的，而不是碰巧总返 deny。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git push --force origin main"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "tier-precedence",
+        "expect": "ask-only",
+        "_note": "只命中 ask ⇒ deny 必须为 0（误报 deny = 该问的变成硬阻断）"
+      }
+    ]
+  },
+  {
+    "scenario": "rules-tier-precedence-safe-command-all-clear",
+    "plugin": "agint-rules",
+    "_purpose": "安全命令必须三档全空（放行）。⛔ 这条是 negative control 的载体：若实现的判据写反（把安全命令也报成 ask/deny），本条会红。三条tier-precedence 合起来 = deny 优先、ask 次之、全空放行，**完整通路**。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git status --short"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "tier-precedence",
+        "expect": "all-clear",
+        "_note": "安全命令 ⇒ deny=0 ask=0（放行）"
+      }
+    ]
+  },
+  {
+    "scenario": "rules-ask-hit-but-deny-also-matches",
+    "plugin": "agint-rules",
+    "_purpose": "⭐ negative control：这条命令**同时**命中 ask(git push --force main) 与 deny(rm -rf /)。若ask-hit 判据没有 deny 守门，本条会误判 PASS —— 那就证明守门是空壳。期望：判据**红**（因为 ask 档命中时 deny 不该同时命中，说明分流有问题）。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git push --force origin main && rm -rf /"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "ask-hit",
+        "_note": "故意构造 deny 也命中 ⇒ 守门必须把它判红"
+      }
+    ],
+    "negativeControl": true
+  },
+  {
+    "scenario": "rules-tier-negctl-no-deny-but-expect-deny",
+    "plugin": "agint-rules",
+    "_purpose": "⭐ negative control #2：命令**只**命中 ask（git push --force main），但expected 写 deny-wins。若deny-wins 判据没有真在数 deny 档，本条会误判 PASS ⇒ 证明该判据是空壳。期望：判据**红**。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "git push --force origin main"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "tier-precedence",
+        "expect": "deny-wins",
+        "_note": "故意只命中 ask 却期望 deny-wins ⇒ 必须判红"
+      }
+    ],
+    "negativeControl": true
+  },
+  {
+    "scenario": "rules-advisory-negctl-also-blocked",
+    "plugin": "agint-rules",
+    "_purpose": "⭐ negative control #3：命令同时命中 advisory(npm publish) + deny(rm -rf /)，走advisory-hit 判据。若「advisory 不阻断」守门是空壳，本条会误判 PASS。期望：判据**红**。",
+    "input": [
+      {
+        "service": "rules",
+        "action": "check",
+        "args": {
+          "tool": "bash",
+          "args": {
+            "command": "npm publish && rm -rf /"
+          }
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "advisory-hit",
+        "_note": "advisory 与 deny 同时命中 ⇒ 不阻断守门必须判红"
+      }
+    ],
+    "negativeControl": true
+  }
+]

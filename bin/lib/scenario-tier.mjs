@@ -337,7 +337,21 @@ export function checkTierAssignment(input = {}) {
     }
   }
 
-  const failUnits = units.filter((u) => u.lastKnownStatus === 'FAIL');
+  // ⛔⛔ 2026-10-04（A3 槽位 1 踩到）：**负控制（negative control）必须从 fail 集合里排除。**
+  //
+  // 负控制 = 「故意构造 inputs 让判据变红」的测试夹具，用来证明判据真在守。
+  // 它们**预期就是 FAIL** —— 若把它们算进 failCount，会：
+  //   ① 污染 H1 下限（本轮：4 个真存量 + 3 个负控制 ⇒ H1 从 4 变 5，
+  //      而真实存量只有 4 个 ⇒ 判据要求「保留 5 个 fail」永远不可能满足）；
+  //   ② 污染 A4 归因器与 driver 的 fail 队列（归因会去找根本不存在的缺陷）。
+  //
+  // 判定口径用**显式字段** `negativeControl: true`（写在场景的 `_meta` 里、由生成器带下来），
+  // ⛔ 不用「id 里有 negctl 字样」这类隐式约定 —— 隐式约定无法审计、改个名就失效。
+  const isNegativeControl = (u) => u?.negativeControl === true;
+  const failUnits = units.filter((u) => u.lastKnownStatus === 'FAIL' && !isNegativeControl(u));
+  const negativeControlCount = units.filter(
+    (u) => u.lastKnownStatus === 'FAIL' && isNegativeControl(u),
+  ).length;
   const failCount =
     Number.isFinite(Number(input.failCount)) && input.failCount !== undefined && input.failCount !== null
       ? Number(input.failCount)
@@ -414,6 +428,13 @@ export function checkTierAssignment(input = {}) {
     tierCounts,
     labelAuthorityCounts: labelCounts,
     failCount,
+    // ⛔ 负控制被排除这件事必须**可观测**：静默排除 = 调用方看到 failCount 变小却不知道为什么
+    //   （本轮真发生过：H1 从 4 悄悄变 5，没人知道是哪 3 个负控制干的）。
+    //   显式列出数量与 id 名单，调用方能自己判断这个排除合不合理。
+    negativeControlCount,
+    negativeControlIds: units
+      .filter((u) => u.lastKnownStatus === 'FAIL' && isNegativeControl(u))
+      .map((u) => u.unitId),
     h1EvolutionMinFail: minFail,
     h3FrozenFailProbeCap: cap,
     frozenCount: frozenIds.length,

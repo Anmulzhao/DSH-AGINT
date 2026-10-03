@@ -27,18 +27,33 @@
       {
         "kind": "default-jobs-registered",
         "expectedIds": [
-          "memory-decay",
-          "wiki-lint",
-          "metrics-collect",
-          "evolve-review",
-          "night-dream",
-          "tool-stats-backfill",
-          "prompt-static-check",
           "baseline-regression-suite",
+          "curator-weekly",
+          "curriculum-weekly",
+          "diagnosis-watchdog",
+          "evolution-cycle",
+          "evolution-reconcile",
+          "evolve-review",
+          "frozen-anchor",
+          "ledger-anchor",
+          "memory-decay",
+          "memory-provider-health",
+          "metrics-collect",
+          "night-dream",
+          "oracle-daily",
+          "oracle-monthly",
+          "oracle-weekly",
+          "outcome-measure",
+          "prompt-static-check",
           "skill-autocreate-aggregate",
-          "curator-weekly"
+          "skill-autocreate-observe",
+          "skill-autocreate-release",
+          "skill-graph-weekly",
+          "spec-index-refresh",
+          "tool-stats-backfill",
+          "wiki-lint"
         ],
-        "_note": "Sprint 12 B3: 新增 baseline-regression-suite（Sun 03:15 周节奏）"
+        "_note": "Sprint 12 B3: 新增 baseline-regression-suite（Sun 03:15 周节奏） ⚠️ 2026-10-04 订正：判据是 id **全等**（JSON.stringify 比字符串），所以每加一个 job 都得同步这份清单 —— 漏改就红（本次 frozen-anchor 加入时漏改，是存量缺口被新 job 暴露）。"
       }
     ]
   },
