@@ -1,2 +1,736 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>AGINT 家族面板 v2</title></head>
-<body><p>panel-v2 placeholder — Task 5 替换为真前端。</p></body></html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGINT 家族面板 v2</title>
+<style>
+/* ═══ SECTION: tokens — 设计令牌（字号 5 档 / 字重 3 档 / 圆角 2 档 / 间距 4px 网格） ═══ */
+:root{
+  color-scheme:dark;
+  /* 中性层：偏冷 zinc，不用纯黑纯白 */
+  --bg:#101215; --bg-l1:#171a1e; --bg-l2:#1e2228; --bg-l3:#272c34;
+  --border:rgba(255,255,255,.07); --border-strong:rgba(255,255,255,.14);
+  --fg:#e8eaee; --fg-2:#a8afba; --fg-3:#767d89;
+  /* 语义色：降饱和，只着色文字与色点，不铺背景 */
+  --ok:#4aa877; --err:#d9706f; --warn:#c9a24a;
+  /* 交互色：选中 / 焦点 / 链接（与数据色分离） */
+  --accent:#7ba3d9; --accent-soft:rgba(123,163,217,.13);
+  /* 数据色：仅图表使用 */
+  --data-1:#7ba3d9; --data-bar:rgba(123,163,217,.34);
+  /* 字号：5 档，中文最小 12px，11px 只给等宽 ASCII */
+  --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px; --fs-lg:19px;
+  /* 字重：3 档（原 650 为非法值，已去除） */
+  --fw-reg:400; --fw-med:500; --fw-semi:600;
+  /* 圆角：2 档 + 胶囊（胶囊仅用于筛选 chip） */
+  --r-sm:4px; --r-md:8px; --r-pill:99px;
+  /* 间距：4px 网格 */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s8:48px;
+  --mono:ui-monospace,"SFMono-Regular","Cascadia Mono",Consolas,"Liberation Mono",monospace;
+  --dur:140ms; --ease:cubic-bezier(.4,0,.2,1);
+}
+/* SECTION: tokens-light */
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f7f8f9; --bg-l1:#ffffff; --bg-l2:#f0f2f4; --bg-l3:#e5e8ec;
+  --border:rgba(16,20,26,.08); --border-strong:rgba(16,20,26,.16);
+  --fg:#191c20; --fg-2:#4a515b; --fg-3:#6d7480;
+  --ok:#2c7a52; --err:#b04a49; --warn:#8a6a1e;
+  --accent:#3f6ca8; --accent-soft:rgba(63,108,168,.10);
+  --data-1:#3f6ca8; --data-bar:rgba(63,108,168,.26);
+}
+
+/* ═══ SECTION: base ═══ */
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:var(--fs-base)/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+       "HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",sans-serif;
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;}
+code{font-family:var(--mono);font-size:.94em;color:var(--fg-2);
+  background:var(--bg-l2);padding:1px 5px;border-radius:var(--r-sm);}
+.wrap{max-width:1200px;margin:0 auto;padding:0 var(--s6) var(--s8);}
+/* 焦点态：全局统一，原文件只有 tr.row 有 */
+:where(button,input,a,[tabindex]):focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:1ms!important;animation-duration:1ms!important;}
+}
+
+/* ═══ SECTION: topbar — sticky 只保留标题 / 分区 / 检索 ═══ */
+.topbar{position:sticky;top:0;z-index:9;background:var(--bg);
+  border-bottom:1px solid var(--border);padding:var(--s3) 0;}
+.topbar .bar{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);flex-wrap:wrap;}
+.topbar h1{font-size:var(--fs-md);font-weight:var(--fw-semi);margin:0;letter-spacing:-.01em;
+  display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;}
+.btns{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;}
+.search{font:inherit;font-size:var(--fs-base);padding:6px var(--s3);min-height:32px;
+  border-radius:var(--r-md);border:1px solid var(--border-strong);
+  background:var(--bg-l1);color:var(--fg);width:220px;
+  transition:border-color var(--dur) var(--ease),background-color var(--dur) var(--ease);}
+.search::placeholder{color:var(--fg-3);}
+.search:hover{border-color:var(--fg-3);}
+.demo-badge{font-size:var(--fs-xs);font-weight:var(--fw-med);padding:2px var(--s2);
+  border-radius:var(--r-sm);background:rgba(201,162,74,.14);color:var(--warn);letter-spacing:.02em;}
+
+/* SECTION: tabs — 与 chip 区分：tab 用小圆角，chip 才用胶囊 */
+.tabs{display:flex;gap:var(--s1);margin:var(--s3) 0 0;flex-wrap:wrap;}
+.tab{font:inherit;font-size:var(--fs-sm);cursor:pointer;border-radius:var(--r-sm);
+  padding:7px var(--s3);min-height:32px;border:1px solid transparent;
+  background:transparent;color:var(--fg-3);
+  transition:background-color var(--dur) var(--ease),color var(--dur) var(--ease);}
+.tab:hover{background:var(--bg-l2);color:var(--fg-2);}
+.tab.on{background:var(--accent-soft);color:var(--accent);font-weight:var(--fw-med);}
+
+/* ═══ SECTION: overview — 说明 / 关键数字 / 数据新鲜度，随页面滚走 ═══ */
+.overview{margin:var(--s4) 0 var(--s5);}
+.sub{font-size:var(--fs-sm);color:var(--fg-3);line-height:1.8;margin:0 0 var(--s4);max-width:82ch;}
+/* stat：去外框去底色，只留左侧 2px 竖线，靠间距分组 */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:var(--s3) var(--s5);margin:0 0 var(--s4);}
+.stat{border-left:2px solid var(--border-strong);padding:var(--s1) 0 var(--s1) var(--s3);}
+.stat .k{font-size:var(--fs-xs);color:var(--fg-3);letter-spacing:.02em;line-height:1.5;}
+.stat .v{font-size:var(--fs-lg);font-weight:var(--fw-semi);line-height:1.3;margin:2px 0;}
+/* 数据新鲜度：由胶囊行降为一行等宽小字 */
+.ages{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s5);margin:0;
+  padding:var(--s3) 0 0;border-top:1px solid var(--border);
+  font-size:var(--fs-xs);color:var(--fg-3);line-height:1.6;}
+.age{display:inline-flex;align-items:center;gap:6px;}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;background:currentColor;}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+.dot.err{background:var(--err)} .dot.gray{background:var(--fg-3)}
+
+/* ═══ SECTION: card ═══ */
+.card{border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg-l1);
+  padding:var(--s4) var(--s5) var(--s5);margin-bottom:var(--s4);}
+.card>h2{font-size:var(--fs-md);font-weight:var(--fw-semi);margin:0 0 var(--s1);
+  letter-spacing:-.01em;display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;}
+.card .cap{font-size:var(--fs-sm);color:var(--fg-3);line-height:1.8;
+  margin-bottom:var(--s4);max-width:92ch;}
+.subtable{margin-top:var(--s5);}
+.subtable h3{font-size:var(--fs-sm);color:var(--fg-2);margin:0 0 var(--s2);font-weight:var(--fw-semi);}
+.panel{display:none;}
+.panel.on{display:block;}
+.hidden{display:none!important;}
+
+/* ═══ SECTION: buttons / chips ═══ */
+.btn{font:inherit;font-size:var(--fs-sm);font-weight:var(--fw-med);cursor:pointer;
+  border-radius:var(--r-md);padding:7px var(--s3);min-height:32px;
+  border:1px solid var(--border-strong);background:var(--bg-l2);color:var(--fg-2);
+  transition:background-color var(--dur) var(--ease),color var(--dur) var(--ease),
+             border-color var(--dur) var(--ease);}
+.btn:hover{background:var(--bg-l3);color:var(--fg);}
+.btn.sm{padding:3px 10px;font-size:var(--fs-xs);min-height:24px;}
+.btn.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+.btn.warnbtn{border-color:rgba(201,162,74,.42);color:var(--warn);background:transparent;}
+.btn.warnbtn:hover{background:rgba(201,162,74,.10);color:var(--warn);}
+.chips{display:flex;gap:var(--s2);flex-wrap:wrap;margin-bottom:var(--s3);}
+.chip{font:inherit;font-size:var(--fs-sm);cursor:pointer;border-radius:var(--r-pill);
+  padding:4px var(--s3);min-height:28px;border:1px solid var(--border);
+  background:transparent;color:var(--fg-3);
+  transition:background-color var(--dur) var(--ease),color var(--dur) var(--ease);}
+.chip:hover{color:var(--fg-2);background:var(--bg-l2);}
+.chip.on{border-color:transparent;background:var(--accent-soft);
+  color:var(--accent);font-weight:var(--fw-med);}
+
+/* ═══ SECTION: table ═══ */
+table{width:100%;border-collapse:collapse;}
+th{font-size:var(--fs-xs);color:var(--fg-3);text-align:left;font-weight:var(--fw-med);
+  padding:var(--s2);border-bottom:1px solid var(--border-strong);
+  white-space:nowrap;letter-spacing:.03em;}
+td{padding:var(--s2);border-bottom:1px solid var(--border);
+  vertical-align:top;font-size:var(--fs-base);}
+tr.row{cursor:pointer;transition:background-color var(--dur) var(--ease);}
+tr.row:hover{background:var(--bg-l2);}
+tr.row td.name{font-weight:var(--fw-med);white-space:nowrap;}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;}
+.ev{font-family:var(--mono);font-size:var(--fs-xs);color:var(--fg-3);
+  white-space:nowrap;letter-spacing:-.01em;}
+.prov{color:var(--fg-2);}
+.fail-hi{color:var(--err);font-weight:var(--fw-semi);}
+.fail-mid{color:var(--warn);}
+.zero{color:var(--fg-3);}
+/* 展开详情行 */
+tr.detail{display:none;}
+tr.detail.open{display:table-row;}
+tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong);
+  padding:var(--s4);}
+.dgrid{display:grid;grid-template-columns:1.5fr 1fr;gap:var(--s5);}
+.dcol h3{font-size:var(--fs-xs);color:var(--fg-3);margin:0 0 var(--s2);
+  font-weight:var(--fw-med);letter-spacing:.04em;}
+.edges{width:100%;border-collapse:collapse;}
+.edges td{padding:var(--s1) var(--s2);border:none;font-size:var(--fs-sm);}
+.kv{font-size:var(--fs-sm);color:var(--fg-2);margin:var(--s1) 0;line-height:1.65;}
+.kv b{color:var(--fg);font-weight:var(--fw-med);}
+
+/* ═══ SECTION: tag — 由「背景+边框+色字」三重强调降为「色点 + 文字」 ═══ */
+.tag{display:inline-flex;align-items:center;gap:5px;margin-left:var(--s2);
+  font-size:var(--fs-xs);line-height:1.4;color:var(--fg-3);white-space:nowrap;
+  background:none;border:0;padding:0;}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;
+  background:currentColor;flex:none;opacity:.9;}
+.tag.code{color:var(--ok)}
+.tag.comment{color:var(--err)}
+.tag.umbrella{color:var(--warn)}
+.tag.noop{color:var(--fg-3)}
+.tag.self{color:var(--accent)}
+/* 实测 / 示意标记：单层淡底，不再叠加虚线边框 */
+.mock,.real{font-size:var(--fs-xs);font-weight:var(--fw-med);margin-left:var(--s2);
+  padding:1px 6px;border-radius:var(--r-sm);letter-spacing:.02em;}
+.mock{color:var(--warn);background:rgba(201,162,74,.13);}
+.real{color:var(--ok);background:rgba(74,168,119,.13);}
+
+/* ═══ SECTION: barcell — 数量级条改为单元格底部细线，文字不再压在色块上 ═══ */
+.barcell{position:relative;}
+.barcell i{position:absolute;left:var(--s2);bottom:3px;height:3px;border-radius:2px;
+  background:var(--data-bar);pointer-events:none;}
+.barcell span{position:relative;}
+
+/* ═══ SECTION: misc ═══ */
+.umb-list{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.9;
+  margin:0;padding-left:var(--s5);}
+.umb-list li{margin:var(--s1) 0;}
+.foot{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.95;
+  margin-top:var(--s6);padding-top:var(--s4);border-top:1px solid var(--border);}
+
+/* ═══ SECTION: responsive — 1024 / 640 两档 ═══ */
+@media(max-width:1024px){
+  .wrap{padding:0 var(--s4) var(--s6);}
+  .card{padding:var(--s4);}
+  .dgrid{grid-template-columns:1fr;gap:var(--s4);}
+}
+@media(max-width:640px){
+  .topbar{position:static;}
+  .search{width:100%;font-size:16px;}   /* 防止 iOS 聚焦缩放 */
+  .btns{width:100%;}
+  /* 触控目标提到 44px */
+  .tab,.btn,.chip{min-height:44px;padding:10px var(--s4);}
+  .btn.sm{min-height:32px;padding:6px var(--s3);}
+  .stats{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}
+  /* 密集表格：窄屏改为卡片内横向滚动，不挤压列 */
+  .card{overflow-x:auto;}
+  .card table{min-width:620px;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- SECTION: topbar — sticky 区只留标题 / 检索 / 分区导航 -->
+  <header class="topbar">
+    <div class="bar">
+      <h1>AGINT 家族 · 面板 v2 <span class="demo-badge">v2 生产 · 只读</span></h1>
+      <div class="btns">
+        <input class="search" id="q" type="search" placeholder="过滤插件 / 服务 / 任务…" aria-label="过滤" data-primary-action>
+        <button class="btn" id="themeBtn" title="切换明暗主题">切换亮色</button>
+        <button class="btn" id="expandAll" data-primary-action>全部展开</button>
+        <button class="btn" id="refreshBtn">刷新</button>
+      </div>
+    </div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="面板分区">
+      <button class="tab on" data-t="q1" role="tab" aria-selected="true">Q1 谁依赖谁</button>
+      <button class="tab" data-t="q2" role="tab" aria-selected="false">Q2 谁在干活</button>
+      <button class="tab" data-t="q3" role="tab" aria-selected="false">Q3 哪里在腐化</button>
+      <button class="tab" data-t="chain" role="tab" aria-selected="false">事件链</button>
+      <button class="tab" data-t="umb" role="tab" aria-selected="false">伞键清单</button>
+    </div>
+  </header>
+
+  <!-- SECTION: overview — 口径说明 / 关键数字 / 数据新鲜度，不占 sticky 高度 -->
+  <section class="overview">
+    <p class="sub">边 = 源码 <code>ctx.get('agint.*')</code>（真源）。产出 = 系统已在写的存储。不画力导向图。伞键不建边。只读。</p>
+    <div class="stats" id="stats"></div>
+    <div class="ages" id="ages"></div>
+  </section>
+
+  <!-- ═══════════ Q1 ═══════════ -->
+  <div class="card panel on" id="q1">
+    <h2>Q1 · 谁依赖谁 <button class="btn sm" id="viewBtn">切到按服务视图</button></h2>
+    <div class="cap">边来自源码扫描，每条带 <code>文件:行号</code>。点行（或回车）就地展开。
+    标记：<span class="tag code">代码</span>真依赖 <span class="tag comment">仅注释</span>文档腐化候选
+    <span class="tag umbrella">伞键不可达</span>恒 undefined 不建边 <span class="tag noop">无提供方</span>未见 ctx.provide</div>
+    <table id="tblPlugin">
+      <thead><tr>
+        <th>插件</th><th class="num">出边(代码)</th><th class="num">出边(仅注释)</th><th class="num">入边</th><th>依赖的服务（前 4）</th>
+      </tr></thead>
+      <tbody id="tbodyQ1"></tbody>
+    </table>
+    <table id="tblService" class="hidden">
+      <thead><tr><th>服务</th><th>提供方</th><th class="num">消费插件数</th><th>消费方</th></tr></thead>
+      <tbody id="tbodySvc"></tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════ Q2 ═══════════ -->
+  <div class="card panel" id="q2">
+    <h2>Q2 · 谁真的在干活（实测产出）</h2>
+    <div class="cap">数据源：<code>agint_tool_stats.jsonl</code>（30 天窗口）、<code>agint_cron.json/cron_state</code>、<code>agint_event_bus.json/events</code>。
+    单元格底部细线 = 调用量占全表最大值的比例（线性）。7 天曲线为实测，<b>全表统一 √ 尺度</b>——跨行可直接比较高低，不再各行独立归一。
+    0 产出行沉底。工具归属按命名前缀（U4 待宿主枚举 API 证实）。延迟指标不进面板（U2）。</div>
+    <table>
+      <thead><tr>
+        <th>插件</th><th class="num">工具调用</th><th class="num">失败率</th><th>cron 上次跑</th><th class="num">bus 发布</th><th>7 天产出曲线</th><th>最近活动</th>
+      </tr></thead>
+      <tbody id="tbodyQ2"></tbody>
+    </table>
+    <div class="subtable">
+      <h3>宿主内建 / MCP 工具（单列，不计入任何 agint 插件）<span class="real">实测</span></h3>
+      <table>
+        <thead><tr><th>工具</th><th class="num">调用</th><th class="num">失败</th><th class="num">失败率</th></tr></thead>
+        <tbody id="tbodyHost"></tbody>
+      </table>
+    </div>
+    <div class="subtable">
+      <h3>归属待复核的 cron 任务（不猜归属）</h3>
+      <div class="kv" id="cronUnmapped"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ Q3 ═══════════ -->
+  <div class="card panel" id="q3">
+    <h2>Q3 · 哪里在腐化（L2 三源对差，每条带证据）</h2>
+    <div class="cap">代码扫描 × manifest 声明 × 实测产出对差。⛔ 不自动喂 evolve.propose。导出只生成草稿文件。</div>
+    <div class="chips" id="q3chips"></div>
+    <div style="margin-bottom:var(--s3)"><button class="btn warnbtn" id="exportBtn">导出 evolve 提案草稿（Markdown · 只读出口）</button></div>
+    <table>
+      <thead><tr><th>判定</th><th>对象</th><th>证据</th><th>说明</th></tr></thead>
+      <tbody id="tbodyQ3"></tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════ 事件链辅助 ═══════════ -->
+  <div class="card panel" id="chain">
+    <h2>辅助 · 事件链（发布数实测；投递数无查询接口，标 unknown）</h2>
+    <div class="cap">来自 <code>agint_event_bus.json/tables/events</code> 全量聚合。订阅表是模块级 Map、重启即重建（评审 3.3），
+    「投递」列一律琥珀色 unknown——不拿猜测冒充测量。</div>
+    <table>
+      <thead><tr><th>topic</th><th class="num">发布（实测）</th><th>投递</th></tr></thead>
+      <tbody id="tbodyChain"></tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════ 伞键清单 ═══════════ -->
+  <div class="card panel" id="umb">
+    <h2>伞键不可达清单（§1.4 硬约束）</h2>
+    <div class="cap">cordis 服务存储是扁平的。以下伞键形命中一律不建边，只登记。</div>
+    <ul class="umb-list" id="umbList"></ul>
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+// 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
+let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
+    FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[];
+
+function render(){
+if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
+  stats.innerHTML=""; ages.innerHTML="";
+  tbodyQ1.innerHTML=""; tbodySvc.innerHTML=""; tbodyQ2.innerHTML=""; tbodyHost.innerHTML="";
+  tbodyQ3.innerHTML=""; tbodyChain.innerHTML=""; q3chips.innerHTML=""; umbList.innerHTML="";
+  cronUnmapped.innerHTML="—";
+  return;
+}
+function providerOf(service){
+  if(PROVIDED[service]) return PROVIDED[service];
+  const parts=service.split(".");
+  while(parts.length>2){parts.pop(); if(PROVIDED[parts.join(".")]) return PROVIDED[parts.join(".")];}
+  return null;
+}
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const fmtDate=ms=>ms?new Date(ms).toISOString().slice(5,16).replace("T"," "):"—";
+function rel(iso){
+  if(!iso) return "—";
+  const d=(Date.now()-new Date(iso).getTime())/1000;
+  if(d<60) return Math.round(d)+" 秒前";
+  if(d<3600) return Math.round(d/60)+" 分钟前";
+  if(d<86400) return Math.round(d/3600)+" 小时前";
+  return Math.round(d/86400)+" 天前";
+}
+/** 7 天迷你折线（SVG，实测数据）
+ *  尺度：全表统一 √ 归一（SPARK_MAX 在 q2rows 算出后赋值）。
+ *  原版每行各自 Math.max(...arr) 归一，5771 条/天与 1 条/天画出来一样高，横向不可比——已修。
+ *  用 √ 而非线性：线性下 ov-strategy 会把其余所有行压成贴底直线。 */
+let SPARK_MAX=1;
+function spark(arr,color){
+  if(!arr||!arr.some(v=>v>0)) return '<span class="zero">—</span>';
+  const w=84,h=22,base=h-1,c=color||"var(--data-1)";
+  const X=i=>(i*(w/(arr.length-1))).toFixed(1);
+  const Y=v=>(base-Math.sqrt(Math.min(v,SPARK_MAX)/SPARK_MAX)*(h-5)).toFixed(1);
+  const pts=arr.map((v,i)=>`${X(i)},${Y(v)}`).join(" ");
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="近 7 天产出曲线">
+    <line x1="0" y1="${base}" x2="${w}" y2="${base}" stroke="currentColor" stroke-width="1" opacity=".2"/>
+    <polygon points="0,${base} ${pts} ${w},${base}" fill="${c}" opacity=".13"/>
+    <polyline points="${pts}" fill="none" stroke="${c}" stroke-width="1.4"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+// ── Q1 聚合 ────────────────────────────────────────────────────────
+const byPlugin={};
+for(const [pl,file,line,svc,kind] of HITS){
+  (byPlugin[pl] ??= {code:new Map(),comment:[],umbrella:[]});
+  if(kind==="code"){ if(!byPlugin[pl].code.has(svc)) byPlugin[pl].code.set(svc,[]); byPlugin[pl].code.get(svc).push({file,line}); }
+  else if(kind==="comment") byPlugin[pl].comment.push({svc,file,line});
+  else byPlugin[pl].umbrella.push({svc,file,line});
+}
+const inEdges={};
+for(const [pl,g] of Object.entries(byPlugin))
+  for(const svc of g.code.keys()){
+    const p=providerOf(svc);
+    if(p&&p!==pl) (inEdges[p] ??= new Set()).add(pl);
+  }
+const rowsQ1=Object.entries(byPlugin).map(([pl,g])=>({pl,g,codeN:g.code.size,commentN:g.comment.length,inN:inEdges[pl]?.size??0}));
+rowsQ1.sort((a,b)=>b.codeN-a.codeN||a.pl.localeCompare(b.pl));
+const sumCode=rowsQ1.reduce((s,r)=>s+r.codeN,0);
+const sumComment=HITS.filter(h=>h[4]==="comment").length;
+const sumUmbrella=HITS.filter(h=>h[4]==="umbrella").length;
+const noProviderEv=[];
+for(const [pl,g] of Object.entries(byPlugin))
+  for(const [svc,evs] of g.code)
+    if(!providerOf(svc)&&svc!=="agint.rules")
+      for(const ev of evs) noProviderEv.push({pl,svc,...ev});
+// 按服务反查视图
+const svcView=new Map();
+for(const [pl,g] of Object.entries(byPlugin))
+  for(const [svc,evs] of g.code){
+    if(svc==="agint.rules") continue;
+    (svcView.get(svc) ?? svcView.set(svc,{svc,provider:providerOf(svc),consumers:new Map()}).get(svc)).consumers.set(pl,evs);
+  }
+const svcRows=[...svcView.values()].sort((a,b)=>b.consumers.size-a.consumers.size||a.svc.localeCompare(b.svc));
+
+// ── Q2 归属 ────────────────────────────────────────────────────────
+const TOOL_OWNER=[
+ ["memory_provider_","agint-memory-provider"],["memory_","agint-memory"],["wiki_","agint-wiki"],
+ ["rule_","agint-rules"],["cron_","agint-cron"],["job_","agint-cron"],["dream_","agint-dream"],
+ ["evolve_","agint-evolve"],["metrics_","agint-metrics"],["eventBus_","agint-event-bus"],
+ ["curator_","agint-curator"],["autocreate_","agint-skill-autocreate"],["selfModel_","agint-self-model"],
+ ["skillGraph_","agint-skill-graph"],["mutator_","agint-mutator"],["population_","agint-population"],
+ ["mount_","agint-mount"],["abtest_","agint-abtest"],["diagnosis_","agint-diagnosis"],["diagnose_","agint-diagnosis"],
+ ["input_gateway_","agint-input-gateway"],["curriculum_","agint-curriculum"],["quality_eval_","agint-quality-eval"],
+ ["tool_stats_","agint-tool-stats"],["agint_search","agint-search"],["compress_guard_","agint-compress-guard"],
+ ["restart_","agint-restart"],["evolution_ledger","agint-evolution-driver"],["evolution_","agint-evolution-memory"],
+ ["recall_store","agint-ov-strategy"],
+];
+const ownerOf=t=>{for(const [p,o] of TOOL_OWNER) if(t.startsWith(p)) return o; return null;};
+const CRON_OWNER={
+ "prompt-static-check":"agint-quality-static","metrics-collect":"agint-metrics","tool-stats-backfill":"agint-tool-stats",
+ "night-dream":"agint-dream","wiki-lint":"agint-wiki","evolve-review":"agint-evolve","memory-decay":"agint-memory",
+ "skill-autocreate-aggregate":"agint-skill-autocreate","skill-autocreate-release":"agint-skill-autocreate","skill-autocreate-observe":"agint-skill-autocreate",
+ "skill-graph-weekly":"agint-skill-graph","curriculum-weekly":"agint-curriculum","curator-weekly":"agint-curator",
+ "diagnosis-watchdog":"agint-diagnosis","evolution-cycle":"agint-evolution-driver","oracle-daily":"agint-aesthetic-oracle",
+ "oracle-weekly":"agint-aesthetic-oracle","oracle-monthly":"agint-aesthetic-oracle","memory-provider-health":"agint-memory-provider",
+ "evolution-reconcile":"agint-evolution-driver","outcome-measure":"agint-evolution-driver",
+};
+const busSrc=Object.fromEntries(BUS.sources);
+const q2={};
+for(const t of TOOLS){
+  const o=ownerOf(t.t); if(!o) continue;
+  const a=q2[o] ?? (q2[o]={n:0,f:0,last:0});
+  a.n+=t.n; a.f+=t.f; if(t.last>a.last)a.last=t.last;
+}
+const cronByPlugin={};
+for(const c of CRON){ const o=CRON_OWNER[c.j]; if(!o) continue; (cronByPlugin[o] ??= []).push(c); }
+function dailyOf(pl){
+  const out=[0,0,0,0,0,0,0];
+  for(const t of TOOLS){ if(ownerOf(t.t)!==pl) continue; const d=TOOL_DAILY[t.t]; if(d) d.forEach((v,i)=>out[i]+=v); }
+  const b=BUS_DAILY[pl]; if(b) b.forEach((v,i)=>out[i]+=v);
+  return out;
+}
+const pluginUniverse=[...new Set([...FAMILY_DIRS,...Object.keys(byPlugin),...Object.keys(q2),...BUS.sources.map(s=>s[0]),...Object.keys(cronByPlugin)])]
+  .filter(p=>p.startsWith("agint-")||p.startsWith("dsh-"));
+const q2rows=pluginUniverse.map(pl=>{
+  const a=q2[pl]||{n:0,f:0,last:0};
+  const jobs=(cronByPlugin[pl]||[]).slice().sort((x,y)=>(y.last||"").localeCompare(x.last||""));
+  return {pl,n:a.n,f:a.f,last:a.last,bus:busSrc[pl]??0,jobs,daily:dailyOf(pl)};
+});
+q2rows.sort((x,y)=>(y.n+y.bus)-(x.n+x.bus)||x.pl.localeCompare(y.pl));
+const maxQ2=Math.max(...q2rows.map(r=>r.n+r.bus),1);
+/* 全表统一的 7 天曲线尺度（原版缺失，导致行间不可比） */
+SPARK_MAX=Math.max(...q2rows.flatMap(r=>r.daily),1);
+const hostTools=TOOLS.filter(t=>!ownerOf(t.t)).sort((a,b)=>b.n-a.n);
+const hostTotal=hostTools.reduce((s,t)=>s+t.n,0), hostFail=hostTools.reduce((s,t)=>s+t.f,0);
+const unmappedCron=CRON.filter(c=>!CRON_OWNER[c.j]);
+function failCell(n,f){
+  if(!n) return '<td class="num zero">—</td>';
+  const r=f/n*100;
+  return `<td class="num ${r>=10?"fail-hi":r>=5?"fail-mid":""}">${r.toFixed(1)}%</td>`;
+}
+
+// ── Q3 判定 ────────────────────────────────────────────────────────
+ANOM=[];
+for(const [pl,g] of Object.entries(byPlugin))
+  if(g.code.size===0&&g.comment.length>0)
+    ANOM.push({v:"从未接线",o:pl,ev:g.comment.map(c=>`${c.file}:${c.line}`).join("、"),
+      note:"代码 0 条可执行 ctx.get，命中全在注释里。文档说了，代码没做（或走了扫描未覆盖的调用形）。"});
+const npBySvc={};
+for(const e of noProviderEv) (npBySvc[e.svc]??=[]).push(`${e.pl} ${e.file}:${e.line}`);
+for(const [svc,evs] of Object.entries(npBySvc))
+  ANOM.push({v:"无提供方",o:svc,ev:evs.join("、"),
+    note:"消费方代码在调，本次 provide 扫描未见提供方。仓库 plugins/ 无对应目录 → 部署态与仓库态对差。"});
+const undeclared=[];
+for(const [pl,g] of Object.entries(byPlugin)){
+  if(MANIFEST_CONSUMES[pl]) continue;
+  if(g.code.size>=5) undeclared.push(`${pl}（${g.code.size} 条边）`);
+}
+ANOM.push({v:"manifest 漏写",o:`${undeclared.length} 个插件有 ≥5 条代码边但无 consumes 声明`,
+  ev:undeclared.slice(0,6).join("、")+(undeclared.length>6?` …共 ${undeclared.length}`:""),
+  note:"consumes 覆盖率 "+Object.keys(MANIFEST_CONSUMES).length+"/"+FAMILY_DIRS.length+"。依赖是真的，契约没跟上。"});
+for(const [pl,decl] of Object.entries(MANIFEST_CONSUMES)){
+  const g=byPlugin[pl]; if(!g) continue;
+  const missing=decl.filter(s=>!g.code.has(s)&&!g.comment.some(c=>c.svc===s)&&!g.umbrella.some(u=>u.svc===s));
+  const commentOnly=decl.filter(s=>g.code.size===0&&g.comment.some(c=>c.svc===s));
+  if(missing.length) ANOM.push({v:"文档腐化",o:pl,ev:missing.join("、"),note:"manifest consumes 声明了这些服务，代码扫描（含注释）无对应命中。"});
+  if(commentOnly.length) ANOM.push({v:"文档腐化",o:pl,ev:commentOnly.join("、"),note:"声明的服务只在注释里出现，可执行代码未调用。"});
+}
+ANOM.push({v:"无法判定",o:"订阅 → 投递对差",ev:"event-bus 订阅表为模块级 Map，无查询接口（评审 3.3）",
+  note:"「声明无流量 / 隐藏耦合」要 deliveries，当前给不出。标 unknown，不猜。",amber:true});
+if(Array.isArray(REPO_DIRS)){
+  const known=new Set([...REPO_DIRS,...FAMILY_DIRS]);
+  for(const [src,n] of BUS.sources)
+    if(!known.has(src))
+      ANOM.push({v:"运行态不在仓库",o:src,ev:`bus 发布 ${n} 条`,
+        note:"运行时有此 source，仓库与部署位 plugins/ 均无此目录。家族名册派生时需覆盖部署态。"});
+}else{
+  ANOM.push({v:"无法判定",o:"运行态不在仓库",ev:REPO_DIRS?.reason??"仓库位不可得",
+    note:"仓库位目录清单不可得，该判据降级为 unknown，不猜。",amber:true});
+}
+for(const c of CRON.filter(c=>c.res!=="ok"))
+  ANOM.push({v:"cron 结果未读到",o:c.j,ev:`cron_state.${c.j} lastResult="${c.res}" last=${c.last}`,
+    note:"上次运行结果不可读或非 ok。",amber:c.res!=="error"});
+const zombies=q2rows.filter(r=>r.n===0&&r.bus===0&&(!r.jobs||r.jobs.length===0));
+ANOM.push({v:"僵尸候选",o:zombies.map(r=>r.pl).slice(0,8).join("、"),ev:"tool_stats 30 天 + bus + cron 三源皆零",
+  note:`共 ${zombies.length} 个插件 30 天零产出（含聚合容器/无主目录，按三态判据复核后再定）。`});
+
+// ── 龄期条 ─────────────────────────────────────────────────────────
+const toolTotal=TOOLS.reduce((s,t)=>s+t.n,0);
+const AGES=[
+ {label:"代码扫描",state:"ok",age:OBS.scan?("命中 "+HITS.length+" 处 · "+rel(OBS.scan)):"unknown · 扫描源降级"},
+ {label:"manifest",state:"ok",age:Object.keys(MANIFEST_CONSUMES).length+"/"+FAMILY_DIRS.length+" 声明 consumes"},
+ {label:"tool_stats",state:"ok",age:toolTotal.toLocaleString()+" 行 · "+rel(OBS.tools)},
+ {label:"cron",state:"ok",age:CRON.length+" 任务 · "+rel(OBS.cron)},
+ {label:"eventBus 发布",state:"ok",age:BUS.total.toLocaleString()+" 条 · 死信 "+BUS.deadletter+" · "+rel(OBS.bus)},
+ {label:"eventBus 投递",state:"warn",age:"unknown · 订阅表无查询接口"},
+ {label:"工具归属",state:"warn",age:"前缀推断 · U4 未证实"},
+];
+ages.innerHTML=AGES.map(a=>`<span class="age"><span class="dot ${a.state}"></span>${a.label} · ${a.age}</span>`).join("");
+
+// ── 顶部 5 个数字 ──────────────────────────────────────────────────
+const STATS=[
+ {k:"依赖边（代码）",v:sumCode,n:`${rowsQ1.filter(r=>r.codeN>0).length} 个消费插件`},
+ {k:"仅注释命中",v:sumComment,n:"文档腐化候选",c:"var(--err)"},
+ {k:"伞键不可达",v:sumUmbrella,n:"不建边",c:"var(--warn)"},
+ {k:"30 天工具调用",v:toolTotal.toLocaleString(),n:`宿主内建占 ${Math.round(hostTotal/toolTotal*100)}%`},
+ {k:"L2 异常",v:ANOM.length,n:"Q3 · 每条带证据",c:"var(--warn)"},
+];
+stats.innerHTML=STATS.map(s=>`<div class="stat"><div class="k">${s.k}</div><div class="v" style="${s.c?`color:${s.c}`:""}">${s.v}</div><div class="k">${s.n}</div></div>`).join("");
+
+// ── Q1 表（插件视图 + 服务视图）────────────────────────────────────
+function tagFor(svc,kind){
+  if(kind==="comment") return '<span class="tag comment">仅注释</span>';
+  if(kind==="umbrella") return '<span class="tag umbrella">伞键不可达</span>';
+  if(svc==="agint.rules") return '<span class="tag self">自引用</span>';
+  if(!providerOf(svc)) return '<span class="tag noop">无提供方</span>';
+  return '<span class="tag code">代码</span>';
+}
+tbodyQ1.innerHTML=rowsQ1.map((r,i)=>{
+  const top=[...r.g.code.keys()].slice(0,4).join("、");
+  const more=r.codeN>4?` +${r.codeN-4}`:"";
+  const badge=r.codeN===0?' <span class="tag comment">从未接线</span>':"";
+  const outRows=[
+    ...[...r.g.code.entries()].map(([svc,evs])=>evs.map(ev=>
+      `<tr><td class="ev">${esc(svc)}</td><td class="prov">${esc(providerOf(svc)??"（未见 provide）")}</td><td class="ev">${esc(ev.file)}:${ev.line}</td><td>${tagFor(svc,"code")}</td></tr>`).join("")),
+    ...r.g.comment.map(c=>`<tr><td class="ev">${esc(c.svc)}</td><td class="prov">—</td><td class="ev">${esc(c.file)}:${c.line}</td><td>${tagFor(c.svc,"comment")}</td></tr>`),
+    ...r.g.umbrella.map(u=>`<tr><td class="ev">${esc(u.svc)}</td><td class="prov">—</td><td class="ev">${esc(u.file)}:${u.line}</td><td>${tagFor(u.svc,"umbrella")}</td></tr>`),
+  ].join("");
+  const ins=inEdges[r.pl]?.size?[...inEdges[r.pl]].map(p=>`<div class="kv">← <b>${esc(p)}</b></div>`).join("")
+    :'<div class="kv" style="color:var(--fg-3)">（无代码级入边）</div>';
+  return `<tr class="row" tabindex="0" data-g="q1" data-i="${i}">
+    <td class="name">${esc(r.pl)}${badge}</td><td class="num">${r.codeN}</td><td class="num">${r.commentN}</td><td class="num">${r.inN}</td>
+    <td style="color:var(--fg-2)">${esc(top)}${esc(more)}</td></tr>
+  <tr class="detail" id="d-q1-${i}"><td colspan="5"><div class="dgrid">
+    <div class="dcol"><h3>依赖（出边）· 每条带证据</h3>
+      <table class="edges"><thead><tr><th>服务</th><th>提供方插件</th><th>证据</th><th>标记</th></tr></thead>
+      <tbody>${outRows||'<tr><td colspan="4" style="color:var(--fg-3)">（无命中）</td></tr>'}</tbody></table></div>
+    <div class="dcol"><h3>被依赖（入边）</h3>${ins}
+      <h3 style="margin-top:var(--s3)">最后改动 <span class="mock">示意 · 待接 ledger</span></h3>
+      <div class="kv">commit / rollback 按 targetId 归属（步 2）</div></div>
+  </div></td></tr>`;
+}).join("");
+tbodySvc.innerHTML=svcRows.map((s,i)=>`<tr class="row" tabindex="0" data-g="svc" data-i="${i}">
+  <td class="ev" style="color:var(--fg)">${esc(s.svc)}</td>
+  <td class="prov">${esc(s.provider??"（未见 provide）")}</td>
+  <td class="num">${s.consumers.size}</td>
+  <td style="color:var(--fg-2);font-size:12px">${esc([...s.consumers.keys()].slice(0,6).join("、"))}${s.consumers.size>6?` +${s.consumers.size-6}`:""}</td></tr>
+  <tr class="detail" id="d-svc-${i}"><td colspan="4"><div class="dcol">
+    <h3>消费方 · 证据</h3>
+    <table class="edges"><tbody>${[...s.consumers.entries()].map(([pl,evs])=>
+      `<tr><td class="prov">${esc(pl)}</td><td class="ev">${evs.map(e=>`${e.file}:${e.line}`).join("、")}</td></tr>`).join("")}</tbody></table>
+  </div></td></tr>`).join("");
+viewBtn.onclick=()=>{
+  const toSvc=tblPlugin.classList.contains("hidden")===false;
+  tblPlugin.classList.toggle("hidden",toSvc);
+  tblService.classList.toggle("hidden",!toSvc);
+  viewBtn.textContent=toSvc?"切到按插件视图":"切到按服务视图";
+  viewBtn.classList.toggle("on",toSvc);
+};
+
+// ── Q2 表 ──────────────────────────────────────────────────────────
+tbodyQ2.innerHTML=q2rows.map((r,i)=>{
+  const zero=r.n===0&&r.bus===0&&(!r.jobs||r.jobs.length===0);
+  const w=Math.round((r.n+r.bus)/maxQ2*100);
+  /* 数量级条改为单元格底部 3px 细线；宽度扣掉左右各 8px 内边距，
+     避免文字压在色块上导致同一行左右对比度不一致 */
+  const bw=w>0?"calc("+w+"% - 16px)":"0";
+  const jobs=r.jobs.length?r.jobs.map(j=>`<div class="kv">${esc(j.j)} · ${j.last?j.last.slice(5,16).replace("T"," "):"—"} · <span style="color:${j.res==="ok"?"var(--ok)":"var(--warn)"}">${esc(j.res)}</span></div>`).join("")
+    :'<div class="kv" style="color:var(--fg-3)">（无归属任务）</div>';
+  return `<tr class="row${zero?" zero":""}" tabindex="0" data-g="q2" data-i="${i}">
+    <td class="name">${esc(r.pl)}</td>
+    <td class="num barcell"><i style="width:${bw}"></i><span>${r.n?r.n.toLocaleString():"0"}</span></td>
+    ${failCell(r.n,r.f)}
+    <td style="font-size:12px;color:var(--fg-2)">${r.jobs.length?esc(r.jobs[0].j)+" "+r.jobs[0].last.slice(5,10):'<span class="zero">—</span>'}</td>
+    <td class="num${r.bus?"":" zero"}">${r.bus||0}</td>
+    <td>${spark(r.daily)}</td>
+    <td class="num" style="text-align:left">${fmtDate(r.last)}</td></tr>
+  <tr class="detail" id="d-q2-${i}"><td colspan="7"><div class="dgrid">
+    <div class="dcol"><h3>cron 任务（归属：命名前缀，U4 待证实）</h3>${jobs}</div>
+    <div class="dcol"><h3>7 天产出 <span class="real">实测</span></h3>${spark(r.daily)}
+      <div class="kv">${r.daily.join(" / ")}（工具调用 + bus 发布，按天）</div>
+      <h3 style="margin-top:12px">归属到本插件的工具 <span class="real">实测 30 天</span></h3>
+      ${TOOLS.filter(t=>ownerOf(t.t)===r.pl).slice(0,10).map(t=>`<div class="kv"><b>${esc(t.t)}</b> · ${t.n} 次 · 失败 ${t.f}</div>`).join("")||'<div class="kv" style="color:var(--fg-3)">（无归属工具）</div>'}</div>
+  </div></td></tr>`;
+}).join("");
+tbodyHost.innerHTML=hostTools.slice(0,14).map(t=>{
+  const r=t.n?t.f/t.n*100:0;
+  return `<tr><td class="ev" style="color:var(--fg-2)">${esc(t.t)}</td><td class="num">${t.n.toLocaleString()}</td><td class="num">${t.f}</td><td class="num ${r>=10?"fail-hi":r>=5?"fail-mid":""}">${r.toFixed(1)}%</td></tr>`;
+}).join("")+`<tr><td class="name" style="color:var(--fg-3)">其余 ${hostTools.length-14} 个 + 合计</td><td class="num">${hostTotal.toLocaleString()}</td><td class="num">${hostFail}</td><td class="num">${(hostFail/hostTotal*100).toFixed(1)}%</td></tr>`;
+cronUnmapped.innerHTML=unmappedCron.map(c=>`<b>${esc(c.j)}</b>（last ${c.last?c.last.slice(5,16).replace("T"," "):"—"} · res ${esc(c.res)}）`).join("　")||"—";
+
+// ── Q3 表 + 判定过滤 ───────────────────────────────────────────────
+const verdicts=[...new Set(ANOM.map(a=>a.v))];
+q3chips.innerHTML=`<button class="chip on" data-v="">全部 ${ANOM.length}</button>`+
+  verdicts.map(v=>`<button class="chip" data-v="${esc(v)}">${esc(v)} ${ANOM.filter(a=>a.v===v).length}</button>`).join("");
+function renderQ3(filter){
+  tbodyQ3.innerHTML=ANOM.filter(a=>!filter||a.v===filter).map(a=>`<tr>
+    <td><span class="tag ${a.amber?"umbrella":"comment"}" style="margin-left:0">${esc(a.v)}</span></td>
+    <td class="name" style="font-weight:500">${esc(a.o)}</td>
+    <td class="ev" style="white-space:normal;word-break:break-all">${esc(a.ev)}</td>
+    <td style="font-size:12px;color:var(--fg-2)">${esc(a.note)}</td></tr>`).join("");
+}
+renderQ3("");
+q3chips.addEventListener("click",e=>{
+  const c=e.target.closest(".chip"); if(!c) return;
+  q3chips.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on",x===c));
+  renderQ3(c.dataset.v);
+});
+exportBtn.onclick=()=>{
+  const md=["# AGINT 家族面板 Q3 异常清单（evolve 提案草稿）","",
+    "> 由面板 v2 导出。只读出口：不自动提交 evolve.propose，需老板确认后手动提交。",
+    `> 导出时间：${new Date().toISOString()}　数据时点：${(BUS.range&&BUS.range[1]||new Date().toISOString()).slice(0,10)}`,"",
+    ...ANOM.map((a,i)=>`${i+1}. **${a.v}** — ${a.o}\n   - 证据：${a.ev}\n   - 说明：${a.note}`)].join("\n");
+  const b=new Blob([md],{type:"text/markdown"});
+  const u=URL.createObjectURL(b); const el=document.createElement("a");
+  el.href=u; el.download="agint-family-Q3-draft-"+new Date().toISOString().slice(0,10)+".md"; el.click(); URL.revokeObjectURL(u);
+};
+
+// ── 事件链 / 伞键 ──────────────────────────────────────────────────
+tbodyChain.innerHTML=BUS.topics.map(([t,n])=>`<tr>
+  <td class="ev" style="color:var(--fg)">${esc(t)}</td>
+  <td class="num">${n.toLocaleString()}</td>
+  <td><span class="tag umbrella" style="margin-left:0">unknown · 无查询接口</span></td></tr>`).join("")
+  +`<tr><td class="name" style="color:var(--fg-3)">合计（${BUS.topics.length} 个 topic）</td><td class="num">${BUS.total.toLocaleString()}</td><td style="font-size:12px;color:var(--ok)">死信 ${BUS.deadletter}</td></tr>`;
+umbList.innerHTML=HITS.filter(h=>h[4]==="umbrella").map(h=>
+  `<li><span class="ev">${esc(h[0])} / ${esc(h[1])}:${h[2]}</span> → <code>${esc(h[3])}</code>（恒 undefined，不建边）</li>`).join("");
+
+q.dispatchEvent(new Event("input")); // 重渲染后恢复过滤态
+}
+
+// ── 交互：展开 / 键盘 / 搜索 / 主题 ─
+function toggleRow(row){ document.getElementById(`d-${row.dataset.g}-${row.dataset.i}`)?.classList.toggle("open"); }
+document.addEventListener("click",e=>{
+  const row=e.target.closest("tr.row"); if(row) toggleRow(row);
+});
+document.addEventListener("keydown",e=>{
+  if((e.key==="Enter"||e.key===" ")&&e.target.matches?.("tr.row")){ e.preventDefault(); toggleRow(e.target); }
+});
+let allOpen=false;
+expandAll.onclick=()=>{allOpen=!allOpen;
+  document.querySelectorAll("tr.detail").forEach(d=>d.classList.toggle("open",allOpen));
+  expandAll.textContent=allOpen?"全部收起":"全部展开";};
+q.addEventListener("input",()=>{
+  const s=q.value.trim().toLowerCase();
+  for(const tb of [tbodyQ1,tbodyQ2,tbodySvc]){
+    for(const row of tb.querySelectorAll("tr.row")){
+      const hit=!s||row.textContent.toLowerCase().includes(s);
+      row.classList.toggle("hidden",!hit);
+      document.getElementById(`d-${row.dataset.g}-${row.dataset.i}`)?.classList.toggle("hidden",!hit);
+    }
+  }
+});
+tabs.addEventListener("click",e=>{
+  const b=e.target.closest(".tab"); if(!b) return;
+  tabs.querySelectorAll(".tab").forEach(x=>{const on=x===b;
+    x.classList.toggle("on",on); x.setAttribute("aria-selected",on?"true":"false");});
+  for(const id of ["q1","q2","q3","chain","umb"])
+    document.getElementById(id).classList.toggle("on",id===b.dataset.t);
+});
+/* 按钮文案改为「点击后的目标状态」，原「暗 / 明」单字分不清是现状还是动作 */
+themeBtn.onclick=()=>{
+  const light=document.documentElement.dataset.theme!=="light";
+  document.documentElement.dataset.theme=light?"light":"";
+  themeBtn.textContent=light?"切换暗色":"切换亮色";
+};
+
+// ── 脚注 ───────────────────────────────────────────────────────────
+foot.innerHTML=`数据说明：
+① 依赖边与 <code>文件:行号</code> 由 host 半实时扫描部署位插件 lib 目录（L0.5 真源，mtime+30s 缓存）。伞键不建边（设计稿 §1.4）。
+② 工具调用（30 天窗口）、cron、bus 发布、7 天曲线实时聚合自 <code>$DSH_HOME/storages/</code> 三文件；延迟指标不进面板（U2 未查清）。
+③ 工具→插件归属按命名前缀推断（U4 未证实）；宿主内建与 <code>mcp__*</code> 单列。
+④ bus「投递」列一律 unknown：订阅表是模块级 Map，无查询接口，不拿猜测冒充测量。
+⑤ 仍属示意的只有一处：Q1 详情「最后改动」（待接 evolution ledger）。
+⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。`;
+
+// ── 数据装载 ──────────────────────────────────────────────
+function applyPayload(D){
+  SRC_ERRORS=[];
+  const bad=(name,blk)=>{ if(blk&&blk.state){ SRC_ERRORS.push(name+"："+blk.reason); return true; } return false; };
+  if(D.scan&&D.scan.hits){ HITS=D.scan.hits; PROVIDED=D.scan.provided; FAMILY_DIRS=D.scan.familyDirs; OBS.scan=D.scan.scannedAt; }
+  else bad("源码扫描",D.scan);
+  if(D.tools&&D.tools.rows){ TOOLS=D.tools.rows; TOOL_DAILY=D.tools.daily??{}; OBS.tools=D.tools.observedAt; }
+  else bad("tool_stats",D.tools);
+  if(D.cron&&D.cron.jobs){ CRON=D.cron.jobs; OBS.cron=D.cron.observedAt; }
+  else bad("cron",D.cron);
+  if(D.bus&&typeof D.bus.total==="number"){ BUS=D.bus; BUS_DAILY=D.bus.daily??{}; OBS.bus=D.bus.observedAt; }
+  else bad("eventBus",D.bus);
+  MANIFEST_CONSUMES=D.manifestConsumes??{};
+  REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
+  if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
+}
+function showSrcErrors(){
+  let el=document.getElementById("srcErr");
+  if(!SRC_ERRORS.length){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement("div"); el.id="srcErr";
+    el.style.cssText="margin:8px 0;padding:8px 12px;border:1px solid rgba(201,162,74,.42);border-radius:8px;color:var(--warn);font-size:12px";
+    document.querySelector(".overview").prepend(el); }
+  el.textContent="⚠ 数据源降级 — "+SRC_ERRORS.join("；");
+}
+async function load(){
+  refreshBtn.disabled=true; refreshBtn.textContent="刷新中…";
+  try{
+    const r=await fetch(new URL("v2/data",location.href),{cache:"no-store"});
+    const D=await r.json();
+    if(!D) throw new Error("空响应");
+    if(D.ok===false&&D.enabled!==false) throw new Error(D.error||"数据端点报错");
+    applyPayload(D); render();
+  }catch(e){
+    SRC_ERRORS=["取数失败："+e.message]; render();
+  }finally{
+    showSrcErrors();
+    refreshBtn.disabled=false; refreshBtn.textContent="刷新";
+  }
+}
+refreshBtn.onclick=load;
+load();
+
+</script>
+</body>
+</html>
