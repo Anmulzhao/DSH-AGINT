@@ -23,6 +23,18 @@
       "upgradePolicy": "visibility 与 labelAuthority 均按【纯新增枚举值】处理：新增枚举值不升 major，但新增值需同步更新生成器枚举列表与 check-spec-consistency 的合法性校验。⚠️ 改枚举【含义】（如 HELDOUT 的触发条件）属破坏性变更 → 升 major"
     },
     {
+      "spec": "benchmark-isolation",
+      "currentVersion": "1.0",
+      "consumers": [
+        "bin/lib/scenario-tier.mjs (已实施)",
+        "bin/build-scenario-inventory.mjs (已实施)",
+        "eval/scenarios/driver.js (已实施)",
+        "plugins/agint-evolution-memory/lib/frozen-set.js (已实施)"
+      ],
+      "breakingChanges": [],
+      "upgradePolicy": "sidecar 层名（tieringVersion）按【独立版本】管理：新增枚举值不升 major；⛔ 改 `frozenAggregateHash` 的**入参集合**（增删参与哈希的字段）→ 升 major，因为历史快照的 hash 会全部失效、防篡改比对断裂。改 H1/H3 的比例常数不升 major（判据按实测 fail 数现算，不读常量）。⛔ 把标签从 sidecar 挪进 `.scenario.json` 属破坏性变更 → 升 major：那会让 123 个 contentHash 全变，Frozen 基线自毁"
+    },
+    {
       "spec": "evolution-package",
       "currentVersion": "1.0",
       "consumers": [

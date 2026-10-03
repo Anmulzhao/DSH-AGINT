@@ -50,17 +50,49 @@
       "dependencies": [],
       "consumers": [
         "bin/build-scenario-inventory.mjs",
-        "bin/check-spec-consistency.mjs"
+        "bin/check-spec-consistency.mjs",
+        "bin/lib/scenario-tier.mjs",
+        "eval/scenarios/driver.js"
       ],
-      "implementedBy": "⚠️ **协议已实装，能力未落地**（这是本条判 DESIGN 的原因）：inventory.json 的 123 个单元已带 visibility + labelAuthority 两字段，生成器 --check 可校验枚举合法性；但 visibility 全为 EVOLUTION（Phase 0 三层隔离未落地）、labelAuthority 全为 UNSET（external-anchor 提案 2026-10-01 已存档）⇒ **字段存在 ≠ 能力具备**。",
+      "implementedBy": "⚠️ **协议已实装，能力部分落地**（仍判 DESIGN：三层物理隔离与 Frozen 集未建立）。已实装（Sprint 19，2026-10-03 实测）：123/123 单元带 visibility + labelAuthority（sidecar `eval/tiers/agint-tiering.json`，⛔ 不写进场景文件 ⇒ 123 个 contentHash 零变化）；`bin/build-scenario-inventory.mjs --check` 真会红（判据层 36 + 生成器 36 条单测，12 条「放宽⇒变红」实验实测）；**读端门已生效**：`eval/scenarios/driver.js` 默认只吃 EVOLUTION 层，宽视图须显式 `--tier=ALL`，sidecar 缺失或映射缺失 ⇒ fail-closed exit 1。未落地：三层目录未建（本 Sprint 不动，`driver.js:2499` 非递归发现）、Frozen 集 0 个单元、labelAuthority 全为 UNSET ⇒ **机制落地了，「三层」本身还没建**。",
       "evidence": [
-        "eval/scenarios/inventory.json 123/123 单元含 visibility 与 labelAuthority",
-        "bin/build-scenario-inventory.mjs --check 枚举校验生效（5 个新单测钉住，含防自证循环）",
+        "eval/scenarios/inventory.json 123/123 单元含 visibility 与 labelAuthority（sidecar eval/tiers/agint-tiering.json）",
+        "重生成前后逐条比对：contentHash 变化 0 条，单元集合无增无减",
+        "bin/build-scenario-inventory.mjs --check 生效：判据层 36 条 + 生成器 36 条单测，12 条放宽实验实测变红",
+        "eval/scenarios/driver.js 读端门实测：默认 EVOLUTION 123/123、--tier=ALL 117 passed/6 failed、--tier=FROZEN 0、非法值 exit 1",
         "eval/scenarios/ 下只有 dedicated/ 与 mocks/，无三层目录（实测）"
       ],
       "conflictsResolved": [
         "phase0-frozen-vs-anchor-heldout"
       ],
+      "schemaHash": null
+    },
+    {
+      "id": "benchmark-isolation",
+      "version": "1.0",
+      "status": "DESIGN",
+      "files": [
+        "benchmark-isolation-v1.md"
+      ],
+      "owner": "agint-evolution-driver",
+      "machineReadable": false,
+      "dependencies": [
+        "evaluation-protocol"
+      ],
+      "consumers": [
+        "bin/lib/scenario-tier.mjs",
+        "bin/build-scenario-inventory.mjs",
+        "eval/scenarios/driver.js",
+        "plugins/agint-evolution-memory/lib/frozen-set.js"
+      ],
+      "implementedBy": "⚠️ **机制已实装，三层未建立**（这是判 DESIGN 的原因）。已实装（Sprint 19，2026-10-03 实测）：判据层 `bin/lib/scenario-tier.mjs`（H1–H5 纯函数，36 条单测）；读端门 `eval/scenarios/driver.js --tier`（默认只吃 EVOLUTION，sidecar 缺失 fail-closed）；Frozen 防篡改 `benchmark_frozen_set` 表 + `frozen-set.js`（17 条单测）+ 只读预览 `bin/anchor-frozen-set.mjs`（12 条单测）。未落地：Frozen 集 0 个单元（首期 10 个未分配）、三层物理目录未建、`benchmark_frozen_set` 生产 0 行（入账须部署后走宿主方法，⛔ 独立进程直写会被 last-write-wins 覆盖）。",
+      "evidence": [
+        "eval/tiers/agint-tiering.json 123/123 单元登记（全部 EVOLUTION / UNSET）",
+        "driver.js 三层视图实测：默认 123/123、--tier=ALL 123（117 passed / 6 failed）、--tier=FROZEN 0、非法值 exit 1",
+        "生产 agint_evolution.json 的 benchmark_frozen_set 0 行（bin/anchor-frozen-set.mjs 实测）",
+        "eval/scenarios/ 下无三层目录（实测）"
+      ],
+      "conflictsResolved": [],
       "schemaHash": null
     },
     {
@@ -104,16 +136,6 @@
       "owner": "agint-evolution-memory",
       "blockedBy": [],
       "note": "⚠️ **代码全套已实装但生产零落行**（Phase 3 启动时实测）：lib/ledger.js + ledger-hash.js + ledger-anchor.js + ledger-rebuild.js，bin/verify-ledger-chain.mjs + anchor-ledger.mjs + rebuild-ledger-history.mjs，cron job `ledger-anchor` 已在 jobs.js 声明。但生产 evolution_ledger 表 0 行、`verify-ledger-chain.mjs` 报 LEDGER_EMPTY ⇒ **已实装 ≠ 已跑通**。规范化时必须核实这两件事，不能只看代码存在。"
-    },
-    {
-      "id": "benchmark-isolation",
-      "version": "1.0",
-      "status": "DESIGN",
-      "plannedFiles": [
-        "benchmark-isolation-v1.md"
-      ],
-      "owner": "agint-evolution-driver",
-      "note": "Phase 0 §3 三层隔离的规范化。⚠️ 三层目录实测未落地，规范化会固化一个不存在的机制。"
     },
     {
       "id": "prediction-scoring",

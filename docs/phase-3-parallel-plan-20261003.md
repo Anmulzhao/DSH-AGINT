@@ -14,7 +14,7 @@
 
 | 轨道 | 状态 | 落地物 | 测试 |
 |---|---|---|---|
-| **E 三层统一** | ✅ 完成 | `visibility` + `labelAuthority` 双枚举入 123 单元；`--check` 模式 | 25/25 |
+| **E 三层统一** | ⚠️ 部分完成 | `visibility` + `labelAuthority` 双枚举入 123/123 单元（sidecar，⛔ 不写进场景文件）；`--check` 真会红；**读端门** `driver.js --tier` 默认只吃 EVOLUTION | 36+36+17+12 |
 | **A 协议族** | ✅ 完成 | `build-spec-index.mjs`、`check-spec-consistency.mjs`、**`check-spec-versioning.mjs`**、`lib/spec-hash.mjs`、兼容矩阵 | 15/15 + **17/17** |
 | **B 发布准备** | ✅ 完成 | `package.json` files 白名单、`check-publish-safety.mjs`、`dependency-inventory.json` | 13/13 |
 | **C 工具链** | ✅ 完成 | `lib/tar.mjs`、`lib/redact.mjs`（D2+D3） | 18/18 + **34/34** |
@@ -22,6 +22,32 @@
 
 **端到端实跑**：`packages/test-R1.tar.gz` · 48.5 KB · 15 文件 ·
 内外双路 `INTEGRITY_VERIFIED` · `STRUCTURE_VERIFIED` · 等级 R1（实算）。
+
+### 0bis.0 轨道 E 的「✅ 完成」是错的（2026-10-03 晚，Sprint 19 实跑后订正）
+
+> 本节晚于上表写入。上表把轨道 E 标成「✅ 完成」，与本文**附录 A 第 2 条直接矛盾**
+> —— 第 2 条实测 `units[]` 无 `visibility` / `labelAuthority` 两个字段。
+> **这两句话不可能同时为真。**
+
+**初稿错在哪**：写初稿时 `inventory.json` 的 `units[]` 只有 10 个字段，两个枚举都不存在。
+「✅ 完成」是**把计划语气写成了实况**，不是实测结论。同类错误还有一处：
+`docs/specs/INDEX.json` 的 `implementedBy` 当时写「123 个单元已带两字段」，
+而生成器 `bin/build-spec-index.mjs` 里有一段**硬编码的同一句散文** ——
+改 INDEX.json 会被下次生成覆盖回去，所以**必须改生成脚本本身**。
+
+**订正后的实况**（2026-10-03 Sprint 19 实测）：
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 两个枚举入 123/123 单元 | ✅ 已落地 | `node bin/build-scenario-inventory.mjs --check` exit 0；`summary.tierCounts` 加总 = 123 |
+| 标签存哪 | sidecar `eval/tiers/agint-tiering.json` | 写进场景文件会让 123 个 `contentHash` 全变、与 Frozen 防篡改基线自相矛盾 ⇒ 实测 `contentHash` 变化 **0 条** |
+| `--check` 真会红 | ✅ | 判据层 8 条 + 生成器 4 条 + 存储层 5 条「放宽⇒变红」实验全部实测红 |
+| 读端门（三层隔离唯一真正起作用的地方） | ✅ 已落地 | `eval/scenarios/driver.js` 默认 `--tier=EVOLUTION`；宽视图须显式 `--tier=ALL`；sidecar 缺失或映射缺 ⇒ fail-closed exit 1 |
+| 三层物理目录 | ⛔ 未建 | 本 Sprint 不动目录：`driver.js:2499` 非递归发现，迁目录会连带 `sourceFile` 历史路径 |
+| Frozen 集 | ⛔ **0 个单元** | 首期 10 个未分配；`visibility` 全 `EVOLUTION`，`labelAuthority` 全 `UNSET` |
+| `benchmark_frozen_set` 生产行数 | ⛔ **0 行** | 表 + 服务方法 `frozen-set.js` 已就绪（17 单测）；入账须部署后走宿主方法 —— 独立进程直写会被 last-write-wins 覆盖 |
+
+**一句话**：**机制**落地了，**三层**还没建。「三层隔离已落地」这句话现在仍然不能说。
 
 ### 0bis.1 实施中被门禁抓到的真缺陷（比「按计划做完」更有价值）
 
@@ -246,7 +272,7 @@ Phase 3 方案 §5.4 写「累计已在周一上午排了 8 个 job」，引 `�
 | 结论 | 证据 |
 |---|---|
 | 场景基线 123 单元 | `inventory.json` 实测 `units` 长度 123 |
-| `units[]` 无 `labelAuthority` | 字段清单实测（§2.4） |
+| `units[]` 已含 `visibility` + `labelAuthority`（10 → 12 字段） | 见 §0bis.0 订正：初稿此行写「无 `labelAuthority`」，Sprint 19 后已不成立 |
 | 三层目录未建 | 目录实测（§2.2） |
 | `.github/` 不存在 | 目录实测 |
 | `package.json` 仅 12 行、`private: true`、无 `files` | 文件全文实测 |
@@ -437,7 +463,7 @@ GitHub remote 已确认可用（`git@github.com/Anmulzhao/DSH-AGINT.git`）。
 | # | 验收项 | 判据 | 验证方式 |
 |---|---|---|---|
 | 1 | 四轨道文件无交集 | 逐轨道列出写入文件集，两两求交为空 | 人工核对 |
-| 2 | 抢窗口项先落地 | `labelAuthority` 在 `inventory.json` 中存在，且三层目录仍未建 | `ls` + 读文件 |
+| 2 | 抢窗口项先落地 | `labelAuthority` 在 `inventory.json` 中存在，且三层目录仍未建 | `ls` + 读文件 —— ✅ **达成**（2026-10-03 Sprint 19 实测：123/123 单元含该字段；`eval/scenarios/` 下仍无三层目录） |
 | 3 | 加法不改语义 | `inventory.json` 的 `reconciliation.delta` 仍为 0 | 跑 `build-scenario-inventory.mjs` |
 | 4 | 123 基线未漂移 | 重建后 `units` 仍为 123 | 同上 |
 | 5 | 协议 status 诚实 | 未实施的规范标 DESIGN / BLOCKED，不标 ACTIVE | 人工评审 + 索引比对代码 |
@@ -467,7 +493,7 @@ GitHub remote 已确认可用（`git@github.com/Anmulzhao/DSH-AGINT.git`）。
 | # | 结论 | 证据 | 状态 |
 |---|---|---|---|
 | 1 | 场景基线 123 单元 | `inventory.json` 的 `units` 长度 123（Python 直读） | 实测 |
-| 2 | `units[]` 10 个字段，无 `labelAuthority` / `visibility` | 字段清单（§2.4） | 实测 |
+| 2 | `units[]` **12** 个字段，**含** `visibility` / `labelAuthority`（Sprint 19 新增） | `inventory.json` 字段清单实测 + `--check` exit 0 | 实测（**初稿写「无这两个字段」，与第 17 行「✅ 完成」直接矛盾 —— 见 §0bis.0**） |
 | 3 | 三层目录未建 | `ls eval/scenarios/`：35 个 json + `dedicated/` `mocks/` `inventory.json` `driver.js` `README.md` | 实测 |
 | 4 | Phase 1 已落地 | `git log` 8 条 Phase 1 commit（§3.1） | 实测 |
 | 5 | `contract_locks` 0 行 | `agint_evolution.json` 的 `tables` 实测 + `index.js:66-67` 注释 | 实测（生产） |
