@@ -650,6 +650,143 @@ test('G2: 批量入口在服务不可用 / 无 repoRoot 时如实返回，不抛
   assert.equal((await m2.measurePending({ repoRoot: null })).status, MEASURE_STATUS.NO_REPOROOT);
 });
 
+// ── I. R2 技能门禁：第二台仪器（2026-10-03 老板拍 7-1=1 / 7-2=1 / 7-3=1）─────
+//
+// 这一节盯四件事：① 仪器按 scope 的 rule 选（技能档 ⛔ 不许去 spawn node --test）；
+// ② 双态真的换了 SKILL.md 且换回来；③ 槽是空的（无人签核）⇒ NO_EVIDENCE 且不写行；
+// ④ 篡改门仍在**任何副作用之前** —— 我把指标门挪到了覆盖门之后，这道没挪。
+
+const SKILL_REL = 'presets/agint/skills/demo/SKILL.md';
+const CASE_REL = 'eval/skills/agint/demo.cases.json';
+const SKILL_PRE = `.agint-preimage/presets__agint__skills__demo__SKILL.md__${STAMP}.bak`;
+const SIGN = '2026-10-03T07:00:00.000Z';
+const CANDIDATE_TEXT = '---\nname: demo\n---\n必须段 A\n必须段 B\n';
+const BASELINE_TEXT = '---\nname: demo\n---\n必须段 A\n';
+
+function skillEntry({ metric = 'unspecified', predictedDelta = null, lock = undefined, ...rest } = {}) {
+  const base = entryOver();
+  const summary = {
+    ...base.summary,
+    targetMetric: metric,
+    changedPlugins: [],
+    predictedDelta,
+    predictionSource: predictedDelta === null ? null : base.summary.predictionSource,
+  };
+  return { evo: makeEvo({ entry: { ...base, ...rest, summary, references: { preimagePath: SKILL_PRE } }, lock }), entry: summary };
+}
+
+async function makeSkillRepo({ approved = 2, badShape = false } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'agint-skill-gate-'));
+  await mkdir(join(dir, '.agint-preimage'), { recursive: true });
+  await mkdir(join(dir, 'presets', 'agint', 'skills', 'demo'), { recursive: true });
+  await mkdir(join(dir, 'node_modules'), { recursive: true });
+  await writeFile(join(dir, SKILL_REL), CANDIDATE_TEXT);
+  await writeFile(join(dir, SKILL_PRE), BASELINE_TEXT);
+  const cases = [];
+  if (badShape) {
+    cases.push({ id: 'broken-regex', kind: 'body/must-not-match', expect: '(', addedBy: 'boss', approvedAt: SIGN });
+  } else {
+    if (approved >= 1) cases.push({ id: 'has-a', kind: 'body/must-include', expect: '必须段 A', addedBy: 'boss', approvedAt: SIGN });
+    if (approved >= 2) cases.push({ id: 'has-b', kind: 'body/must-include', expect: '必须段 B', addedBy: 'boss', approvedAt: SIGN });
+  }
+  await mkdir(join(dir, 'eval', 'skills', 'agint'), { recursive: true });
+  await writeFile(join(dir, CASE_REL), JSON.stringify({ skill: 'demo', cases }));
+  return { dir, files: [SKILL_REL, SKILL_PRE, CASE_REL, 'node_modules/.keep'] };
+}
+
+test('I1: 技能档走门禁 runner，双态真换文件 ⇒ +50pp 落表，method=SKILL_GATE_PAIR_RUN', async () => {
+  const repo = await makeSkillRepo({ approved: 2 });
+  const { evo } = skillEntry();                       // 条目链上 targetMetric='unspecified'
+  const testCalls = [];
+  const { measurer } = build({
+    dir: repo.dir, files: repo.files, evo,
+    runner: (a) => { testCalls.push(a); return { ok: true, timedOut: false, stdout: '', stderr: '' }; },
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+  assert.equal(testCalls.length, 0, '⛔ 技能档不许去 spawn node --test（仪器选型错了就会 >0）');
+  assert.equal(res.actualDelta, 50, '基线 1/2 → 候选 2/2 = +50 百分点');
+  assert.equal(res.method, 'SKILL_GATE_PAIR_RUN');
+  const row = evo.rows.get(CONTRACT);
+  assert.equal(row.method, 'SKILL_GATE_PAIR_RUN');
+  assert.deepEqual(row.testFiles, [SKILL_REL, CASE_REL], '7-3=1：testFiles 语义 = 触达面文件');
+  assert.equal(row.targetMetric, 'SUCCESS_RATE', '门禁按构造产通过率 ⇒ 死区按 3.0pp 那档取');
+  assert.equal(row.evidence.entryTargetMetric, 'unspecified', '⛔ 不是改写历史：条目原话必须留在证据里');
+  assert.equal(row.baseline.total, 2);
+  assert.equal(row.candidate.passed, 2);
+  assert.equal(row.restoreVerified, true);
+  assert.equal(await readFile(join(repo.dir, SKILL_REL), 'utf8'), CANDIDATE_TEXT, '跑完必须仍是候选态');
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
+test('I2: 槽是空的（0 条已签核）⇒ NO_EVIDENCE、没换文件、没落表', async () => {
+  const repo = await makeSkillRepo({ approved: 0 });
+  const { evo } = skillEntry();
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: async () => ({ ok: true, timedOut: false, stdout: '' }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.NO_EVIDENCE);
+  assert.match(res.reason, /已签核 case 0 条/, '要报得出"空槽"而不是"跑挂了"');
+  assert.equal(evo.rows.size, 0, '⛔ 测不到不是度量（设计 §4.2.5）');
+  assert.equal(await readFile(join(repo.dir, SKILL_REL), 'utf8'), CANDIDATE_TEXT, '拒绝发生在换文件之前');
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
+test('I3: case 形状坏（正则不合法）⇒ SKILL_GATE_INVALID，不写行', async () => {
+  const repo = await makeSkillRepo({ badShape: true });
+  const { evo } = skillEntry();
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: async () => ({ ok: true, timedOut: false, stdout: '' }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.SKILL_GATE_INVALID);
+  assert.match(res.error ?? res.reason ?? '', /SKILL_GATE_INVALID/);
+  assert.equal(evo.rows.size, 0, '仪器故障不能伪装成一次回归');
+  assert.equal(await readFile(join(repo.dir, SKILL_REL), 'utf8'), CANDIDATE_TEXT);
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
+test('I4: 条目预测的是别的量纲（TOKEN_EFFICIENCY）⇒ 拒测，⛔ 不拿门禁通过率顶', async () => {
+  const repo = await makeSkillRepo({ approved: 2 });
+  const { evo } = skillEntry({ metric: 'TOKEN_EFFICIENCY', predictedDelta: 8.0 });
+  const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: async () => ({ ok: true, timedOut: false, stdout: '' }) });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.UNSUPPORTED_METRIC);
+  assert.match(res.reason, /不拿门禁通过率去代替它/);
+  assert.equal(evo.rows.size, 0);
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
+test('I5: 篡改门仍在副作用之前 —— 指标门挪走没把它挪走', async () => {
+  const repo = await makeSkillRepo({ approved: 2 });
+  const { evo } = skillEntry({ metric: 'SUCCESS_RATE', predictedDelta: 3.0, lock: null }); // 锁行被删
+  const calls = [];
+  const { measurer } = build({
+    dir: repo.dir, files: repo.files, evo,
+    runner: (a) => { calls.push(a); return { ok: true, timedOut: false, stdout: '' }; },
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.CONTRACT_TAMPERED);
+  assert.equal(evo.rows.size, 0);
+  assert.equal(await readFile(join(repo.dir, SKILL_REL), 'utf8'), CANDIDATE_TEXT, '拒测发生在换文件之前');
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
+test('I6: 技能档没金标文件 ⇒ 覆盖门先拦（NO_EVIDENCE），runner 一次都不跑', async () => {
+  const repo = await makeSkillRepo({ approved: 2 });
+  const { evo } = skillEntry();
+  let gateRuns = 0;
+  const { measurer } = build({
+    dir: repo.dir,
+    files: repo.files.filter((f) => f !== CASE_REL),   // 金标文件不在清单里
+    evo,
+    runner: async () => ({ ok: true, timedOut: false, stdout: '' }),
+    opts: { runSkillGate: async (a) => { gateRuns += 1; return { ok: true, timedOut: false, gate: { passed: 1, failed: 0, total: 1, passRate: 1, approvedCount: 1, proposedCount: 0 } }; } },
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
+  assert.equal(res.status, MEASURE_STATUS.NO_EVIDENCE);
+  assert.equal(res.rule, 'SKILL_GATE_NO_CASE_FILE');
+  assert.equal(gateRuns, 0);
+  await rm(repo.dir, { recursive: true, force: true });
+});
+
 test('G3: 意外异常也不抛（外壳纪律）—— 内部 IO 炸了返回状态 + needsAttention', async () => {
   const evo = makeEvo();
   const calls = [];

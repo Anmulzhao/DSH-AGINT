@@ -1,5 +1,54 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.17 — 2026-10-03（R2：技能类有了第二台仪器，但只在人签了标签之后）
+
+
+### 为什么要加
+
+1b 收口报告 §6.5 留了一条诚实空档：技能 / preset 类变异没有仪器 ⇒ 不锁不测。
+老板拍「建 R2」。我先做实验再动手（playbook §3.18 那条纪律）：把 11 条确定性规则断言
+（skill-format + AGENTS.md 红线 + ASD 禁用词 + 路径存在性）跑在两次真实技能变异上 ——
+9/11 → 9/11，**delta 0.0pp、零条翻转**，而那两次变异一次加了 16 行必需段、一次改对了 bundle 位路径。
+规则集只查形式，看不见内容 ⇒ 它当体检合格，当尺子不合格。
+能翻的只有**人工签核的内容断言**。实验数据与方案：`D:/DSH/_R2技能评估集方案_20261003.md`。
+
+### 新增
+
+- `lib/skill-gate.js`：R2 判据层。kind 封闭五类（`body/must-include` / `must-not-include` /
+  `must-not-match` / `frontmatter/field` / `reference/path-exists`）。
+  **只有 `addedBy:'boss'` 且 `approvedAt` 是 UTC 毫秒串的 case 进分母**（`GATE_APPROVER`）——
+  裁判不能是选手，这条写进判据而不是写在文档里（外部锚定 §5）。
+  0 条已签核 ⇒ `passRate: null`；case 形状坏 ⇒ `ok:false` + `SKILL_GATE_INVALID`，
+  ⛔ 仪器故障不许被读成"技能不合格"（与 `cancelled` 不进 TAP 分母同一条纪律）。
+- `lib/outcome-scope.js`：`skillCaseFileFor()` + 新分支 `SKILL_GATE`。
+  `presets/<preset>/skills/<skill>/SKILL.md` 且**同路有 `eval/skills/<preset>/<skill>.cases.json`** 才算覆盖；
+  没金标文件 ⇒ `SKILL_GATE_NO_CASE_FILE`（槽是空的 = 仍没仪器）。preset 名从路径取 ⇒ 拿 agint 的标签判 agint-ops 会被拦。
+- `lib/outcome-measurer.js`：第二台仪器（`INSTRUMENT` / `OUTCOME_METHOD`）。
+  指标门从"覆盖门之前"挪到"之后"：能不能测取决于用哪台仪器。
+  技能条目链上写 `targetMetric:'unspecified'`（1a 刻意不给技能解析指标）⇒ 门禁那台照样量，
+  记录按构造写 `SUCCESS_RATE`，**条目原话进 `evidence.entryTargetMetric`**；
+  条目预测的是别的量纲（如 TOKEN_EFFICIENCY）⇒ `UNSUPPORTED_METRIC`，⛔ 不拿门禁通过率顶。
+  新增终态 `SKILL_GATE_FAULT` / `SKILL_GATE_INVALID`。篡改门位置未动（仍在任何副作用之前）。
+- `eval/skills/agint/*.cases.json`：9 个技能的槽，全部 `addedBy:'agent'` + `approvedAt:null`
+  ⇒ 一条都不进分母。老板改两个字段即生效。
+- `bin/skill-gate-candidates.mjs`：候选生成器（判据来源两路封闭：AGENTS.md 红线 / 已被接受的变异新增段）。
+  默认 dry-run，`--write` 才落文件，已存在的文件不覆盖。
+
+### 未做（有意）
+
+- 老板拍 7-2=1「只测不锁」⇒ `expected-effect.js` 与 `metric-resolver.js` **一字未动**，
+  技能类仍不锁预测（`predictedDelta:null` ⇒ `pqReason:'NOT_PREDICTED'`）。等攒够 gate delta 分布再谈。
+- `trigger/match-*` 类 case 未做：运行时触发匹配器在 dsh 宿主里，AGINT 侧没有同源判据。
+
+### 测试
+
+- 新增 `test/skill-gate.test.mjs` 11 条（含与 `skill-format` checker 的 frontmatter 等价性锁、9 个槽全未签核）。
+- `test/outcome-measurer.test.mjs` 加 I 系列 6 条（仪器选型 / 空槽拒测 / 形状坏 / 量纲不符 / 篡改门仍在最前 / 无金标文件）。
+- `test/outcome-e2e.test.mjs` 加 E2E-R2：真双态换 SKILL.md ⇒ 基线 1/2 → 候选 2/2 = +50pp，
+  过**真 zod schema** 落表（未签核那条没进分母，分母 = 2）。
+- `test/outcome-scope.test.mjs` 那条"presets 一律 NO_INSTRUMENT"改成新判据（保留"无金标文件仍不覆盖"那一半）。
+- 套件：driver 299 绿（原 260 + 39）。
+
 ## v0.2.16 — 2026-10-03（§2.4.2 归档校验终于有了调用点：先验锁，再量账）
 
 ### 问题

@@ -1,5 +1,27 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.10 (2026-10-03) — `prediction_outcomes` 接第二把尺子（R2 技能门禁）
+
+### 变更
+
+- `OUTCOME_METHODS` 加 `SKILL_GATE_PAIR_RUN`（原 `TEST_CORPUS_PAIR_RUN` 保留）。
+  值必须与 driver `outcome-measurer.js` 的 `OUTCOME_METHOD` 一字不差 —— 那边是生产者，这里是 zod 硬门。
+- `evidence` 加 `entryTargetMetric`（nullable，缺省 null）：技能条目链上写的是 `'unspecified'`，
+  而门禁集按构造产出通过率 ⇒ 记录 `targetMetric` 写 `SUCCESS_RATE`。
+  没有这一栏，读的人只看见"指标被改过"，看不见依据。
+- `testFiles` 注释改语义：它是**触达面文件**（R1′ 填测试文件，R2 填 `[SKILL.md, .cases.json]`），
+  `.min(1)` 与"空数组到不了这里 = 覆盖门先拦"这条都没变。
+
+### 未变（有意）
+
+- **descriptor.version 保持 1**：加表/加字段不升版本，严格相等校验会把整个域锁在门外（`lib/index.js:51-73` 取证注释）。
+- 同 `contractId` 不可覆盖、超限只 warn 不 prune、⛔ 不存 `NO_EVIDENCE` 行 —— 三条都没动。
+
+### 测试
+
+- 新增 T11：`SKILL_GATE_PAIR_RUN` 被接受、`entryTargetMetric` 缺省补 null 且传入值留得住、
+  method 拼错被 zod 拦下且表里不留半成品。套件 176 绿（原 175 + 1）。
+
 ## 0.6.9 (2026-10-03) — 新增 `prediction_outcomes` 表（Phase 1.1 支点 1b / R1′）
 
 ### 新增

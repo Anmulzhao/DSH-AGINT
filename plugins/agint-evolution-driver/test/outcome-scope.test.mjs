@@ -118,21 +118,44 @@ test('bin/** ⇒ 按文件名前缀匹配（真实形状：plugin-check.sh ⇒ p
     '没有同名前缀测试的 bin 脚本必须判无覆盖，而不是抓一条不相干的测试凑数');
 });
 
-test('⛔ 覆盖门：presets / docs / 纯文本 一律 NO_INSTRUMENT 且 files 为空', () => {
+test('⛔ 覆盖门：没有仪器的目标类型一律不覆盖（docs / wiki / proposals / 无金标文件的 SKILL.md）', () => {
   const pool = deriveTestFiles(['plugins/agint-x/test/a.test.mjs']);
-  for (const p of [
-    'presets/agint/skills/plugin-preflight/SKILL.md',
-    'docs/AGINT-经验教训技能沉淀-20260929.md',
-    'wiki/x.md',
-    'proposals/agint-cron.md',
+  for (const [p, rule] of [
+    ['docs/AGINT-经验教训技能沉淀-20260929.md', 'NO_INSTRUMENT'],
+    ['wiki/x.md', 'NO_INSTRUMENT'],
+    ['proposals/agint-cron.md', 'NO_INSTRUMENT'],
+    ['presets/agint/agent.cordis.yml', 'NO_INSTRUMENT'],
+    // R2（2026-10-03 拍 7-1=1）：技能有了第二台仪器，但**金标文件不在 = 槽是空的 = 仍没仪器**
+    ['presets/agint/skills/plugin-preflight/SKILL.md', 'SKILL_GATE_NO_CASE_FILE'],
   ]) {
     const r = planTestScope({ changedPath: p, testFiles: pool });
     assert.equal(r.covered, false, p);
     assert.deepEqual(r.files, [], p);
-    assert.equal(r.rule, 'NO_INSTRUMENT', p);
-    assert.equal(r.reason, 'NO_INSTRUMENT_FOR_TARGET_KIND', p);
+    assert.equal(r.rule, rule, p);
+    assert.equal(r.reason, rule === 'SKILL_GATE_NO_CASE_FILE' ? 'NO_SKILL_CASE_FILE' : 'NO_INSTRUMENT_FOR_TARGET_KIND', p);
   }
-  // 与 v0.2.14 的期望声明同源：技能类没有仪器，量不到就如实说量不到
+  // 与 v0.2.14 的期望声明同一条纪律：量不到就如实说量不到，⛔ 不许凑一个看起来像的分数
+});
+
+test('R2 覆盖门：SKILL.md 且同路有 .cases.json ⇒ 覆盖，files = [SKILL.md, 金标文件]', () => {
+  const skill = 'presets/agint/skills/plugin-preflight/SKILL.md';
+  const caseFile = 'eval/skills/agint/plugin-preflight.cases.json';
+  const repoFiles = [skill, caseFile, 'plugins/agint-x/test/a.test.mjs'];
+  const r = planTestScope({
+    changedPath: skill,
+    testFiles: deriveTestFiles(repoFiles),
+    repoFiles,
+  });
+  assert.equal(r.covered, true);
+  assert.equal(r.rule, 'SKILL_GATE');
+  assert.deepEqual(r.files, [skill, caseFile], '标签文件也算触达面 —— 它是这次判定的输入之一');
+  // 别的 preset 的技能不串槽：preset 名从路径里取
+  const other = planTestScope({
+    changedPath: 'presets/agint-ops/skills/plugin-preflight/SKILL.md',
+    testFiles: [], repoFiles: ['presets/agint-ops/skills/plugin-preflight/SKILL.md', caseFile],
+  });
+  assert.equal(other.covered, false, '⛔ 拿 agint 的标签去判 agint-ops 的技能 = 假归属');
+  assert.equal(other.rule, 'SKILL_GATE_NO_CASE_FILE');
 });
 
 test('有插件目录但其 test/ 为空 ⇒ NO_EVIDENCE，不许退化成全仓 passRate', () => {

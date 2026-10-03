@@ -87,19 +87,39 @@ function pluginRootOf(segments) {
 }
 
 /**
+ * 技能文件 → 金标 case 文件路径（R2，2026-10-03）。
+ *
+ * `presets/<preset>/skills/<skill>/SKILL.md` ⇒ `eval/skills/<preset>/<skill>.cases.json`。
+ * 不是这个形状返回 null。
+ *
+ * 为什么标签放 `eval/` 而不是技能目录旁边：① 与被测文件不同池（外部锚定 §3.1 不变量 3）；
+ * ② 测量器只换 `SKILL.md` 一个文件（护栏 1），换不到 `eval/` 下的标签 ⇒ 外部性由构造保证。
+ *
+ * @param {string} changedPath 仓库相对路径（已归一成正斜杠）
+ * @returns {string|null}
+ */
+export function skillCaseFileFor(changedPath) {
+  const m = /^presets\/([^/]+)\/skills\/([^/]+)\/SKILL\.md$/.exec(String(changedPath ?? ''));
+  if (!m) return null;
+  return `eval/skills/${m[1]}/${m[2]}.cases.json`;
+}
+
+/**
  * 一次变异该跑哪些测试。
  *
  * 规则按序命中即停（顺序=具体度，不是优先级游戏）：
  *   1. `plugins/**`        ⇒ 同插件 `test/` 目录下的全部测试
  *   2. `bin/<base>.*`      ⇒ `bin/<base>*.test.mjs`（前缀匹配，如 plugin-check.sh ⇒ plugin-check-dim11.test.mjs）
  *   3. `test/**` 根级      ⇒ 仓库根 test/ 下的测试
- *   4. presets/docs/纯文本 ⇒ NO_INSTRUMENT（今天没有能测它的仪器）
- *   5. 其它                ⇒ NO_MAPPING
+ *   4. `presets/<preset>/skills/<skill>/SKILL.md` ⇒ R2 技能门禁集（**同路有 `.cases.json` 才算覆盖**）
+ *   5. presets/docs/纯文本 ⇒ NO_INSTRUMENT（今天没有能测它的仪器）
+ *   6. 其它                ⇒ NO_MAPPING
  *
  * @param {object} input
  * @param {string} input.changedPath 仓库相对路径（parsePreimagePath 的产物）
  * @param {string[]} input.testFiles deriveTestFiles 的产物
- * @param {string[]} [input.repoFiles] 用于核验解出的路径真实存在（防 `__` 有损编码骗过判据）
+ * @param {string[]} [input.repoFiles] 用于核验解出的路径真实存在（防 `__` 有损编码骗过判据），
+ *                 也是技能金标文件存在性的判据
  * @returns {{files: string[], rule: string, covered: boolean, reason: string|null, changedPath: string}}
  */
 export function planTestScope({ changedPath, testFiles, repoFiles = null } = {}) {
@@ -137,10 +157,21 @@ export function planTestScope({ changedPath, testFiles, repoFiles = null } = {})
     return { files, rule: 'ROOT_TEST_DIR', covered: true, reason: null, changedPath: p };
   }
 
+  // R2：技能文件走人工签核的内容断言集（判据在 skill-gate.js）。
+  // 没金标文件 = 没仪器，照旧不写行 —— ⛔ 不许因为"改了个技能"就凑一个看起来像的分数。
+  const caseFile = skillCaseFileFor(p);
+  if (caseFile) {
+    if (Array.isArray(repoFiles) && repoFiles.includes(caseFile)) {
+      return { files: [p, caseFile], rule: 'SKILL_GATE', covered: true, reason: null, changedPath: p };
+    }
+    return empty('SKILL_GATE_NO_CASE_FILE', 'NO_SKILL_CASE_FILE');
+  }
+
   const isPreset = UNMEASURABLE_PREFIXES.some((pre) => p.startsWith(pre));
   const isText = UNMEASURABLE_EXT.some((ext) => p.endsWith(ext));
   if (isPreset || isText) {
     // 与 v0.2.14 的期望声明同一条纪律：技能/preset 类今天没有仪器，就别假装量得到。
+    // （例外只有上面那条：有签核金标文件的 SKILL.md。）
     return empty('NO_INSTRUMENT', 'NO_INSTRUMENT_FOR_TARGET_KIND');
   }
 
@@ -151,6 +182,7 @@ export const SCOPE_RULES = Object.freeze({
   PLUGIN_TEST_DIR: 'PLUGIN_TEST_DIR',
   BIN_PREFIX_MATCH: 'BIN_PREFIX_MATCH',
   ROOT_TEST_DIR: 'ROOT_TEST_DIR',
+  SKILL_GATE: 'SKILL_GATE',
 });
 
-export default { parsePreimagePath, deriveTestFiles, planTestScope, SCOPE_RULES };
+export default { parsePreimagePath, deriveTestFiles, planTestScope, skillCaseFileFor, SCOPE_RULES };

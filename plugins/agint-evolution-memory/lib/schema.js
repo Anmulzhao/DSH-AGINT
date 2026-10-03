@@ -289,7 +289,13 @@ export const ledgerEntryCoreSchema = ledgerEntrySchema
  * - ⛔ 不存 `NO_EVIDENCE` 之类的"测不到"记录：测不到不是度量。
  *   那种状态走 `cycle.summary` + `failure_pattern`，表里每一行都必须是一次真测量。
  */
-export const OUTCOME_METHODS = Object.freeze(['TEST_CORPUS_PAIR_RUN']);
+/**
+ * 两把尺子（2026-10-03）：
+ * - `TEST_CORPUS_PAIR_RUN`（R1′）：按被改文件筛出的 node:test 子集，双态各跑一遍。
+ * - `SKILL_GATE_PAIR_RUN`（R2）：技能文件的双态内容断言集，判据见 driver 的 `lib/skill-gate.js`。
+ *   分母 = **人工签核**的 case 条数；签核为空 ⇒ 上层记 NO_EVIDENCE，走不到这里。
+ */
+export const OUTCOME_METHODS = Object.freeze(['TEST_CORPUS_PAIR_RUN', 'SKILL_GATE_PAIR_RUN']);
 export const OUTCOME_METRICS = Object.freeze(['SUCCESS_RATE', 'TOKEN_EFFICIENCY', 'LATENCY', 'REGRESSION']);
 
 const outcomeSideSchema = z.object({
@@ -306,7 +312,8 @@ export const predictionOutcomeEntrySchema = z.object({
   method: z.enum(OUTCOME_METHODS),
   targetMetric: z.enum(OUTCOME_METRICS),
   changedPath: z.string().min(1),
-  // 实际跑了哪些测试文件（覆盖门的产物）。空数组到不了这里 —— 覆盖门先拦掉。
+  // 实际跑了哪些文件（覆盖门的产物）—— 语义是**触达面文件**，两把尺子都填这里（老板 2026-10-03 拍 7-3=1）：
+  // R1′ 填测试文件；R2 填 `[SKILL.md, <skill>.cases.json]`。空数组到不了这里 —— 覆盖门先拦掉。
   testFiles: z.array(z.string().min(1)).min(1),
   baseline: outcomeSideSchema,
   candidate: outcomeSideSchema,
@@ -329,8 +336,15 @@ export const predictionOutcomeEntrySchema = z.object({
     candidateSha: z.string().nullable().default(null),
     ledgerSeq: z.number().int().nullable().default(null),
     hypothesisLock: z.string().nullable().default(null),
+    /**
+     * R2 留证：条目链上原话的 `targetMetric`（技能类现在多是 `'unspecified'`）。
+     * 门禁集按构造产出通过率 ⇒ 记录的 `targetMetric` 写 SUCCESS_RATE；
+     * 没有这一栏，读的人只看见"指标被改过"，看不见依据。⛔ 不做成推断字段。
+     */
+    entryTargetMetric: z.string().nullable().default(null),
   }).default({
     preimagePath: null, baselineSha: null, candidateSha: null, ledgerSeq: null, hypothesisLock: null,
+    entryTargetMetric: null,
   }),
 });
 

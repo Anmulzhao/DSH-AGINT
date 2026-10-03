@@ -1,0 +1,72 @@
+{
+  "skill": "agint-install-bootstrap-rescue",
+  "preset": "agint",
+  "schema": "agint.skill-gate.cases.v1",
+  "status": "CANDIDATE-UNAPPROVED",
+  "generatedAt": "2026-10-03T09:09:08.661Z",
+  "generator": "bin/skill-gate-candidates.mjs",
+  "reviewNote": "这些条目的 addedBy 都是 agent ⇒ 一条都不进分母。要生效：把 addedBy 改成 \"boss\"，approvedAt 填 UTC 毫秒串。",
+  "cases": [
+    {
+      "id": "redline-no-machine-absolute-path",
+      "kind": "body/must-not-match",
+      "expect": "[A-Za-z]:[\\\\/]",
+      "source": "AGENTS.md：机器私有事实（绝对路径）不入库",
+      "note": "技能体里出现盘符路径 = 另一台机器上必错。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    },
+    {
+      "id": "redline-no-secret-shaped-string",
+      "kind": "body/must-not-match",
+      "expect": "sk-[A-Za-z0-9]{10,}|-----BEGIN|Bearer\\s+[A-Za-z0-9._-]{20,}",
+      "source": "AGENTS.md：secrets 不写文件，走 $DSH_HOME/secrets/",
+      "note": "技能会被注入每次会话的提示词，写进去等于广播。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    },
+    {
+      "id": "redline-no-bypass-instruction",
+      "kind": "body/must-not-match",
+      "expect": "绕过\\s*D-?QAF|跳过[^\\n。]{0,12}(阶段|检查|门禁)",
+      "source": "AGENTS.md 边界：不要绕过 D-QAF 任意阶段",
+      "note": "技能是给系统看的指令，写\"可以跳过\"就是永久授权。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    },
+    {
+      "id": "redline-asd-no-ambiguous-qualifiers",
+      "kind": "body/must-not-match",
+      "expect": "robust|seamless|深入|赋能|全面|优化|大幅|显著|非常",
+      "source": "AGENTS.md §首要准则（2026-10-03 老板定的禁用词表）",
+      "note": "模糊限定词不可证伪 ⇒ 不能当验收条件。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    },
+    {
+      "id": "redline-name-equals-dir",
+      "kind": "frontmatter/field",
+      "field": "name",
+      "op": "equals",
+      "expect": "agint-install-bootstrap-rescue",
+      "source": "技能按目录名挂载（preset skills 清单）",
+      "note": "name 与目录名不一致 ⇒ 加载与调用对不上号。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    },
+    {
+      "id": "redline-referenced-paths-exist",
+      "kind": "reference/path-exists",
+      "source": "文件系统存在性（外部真值）",
+      "note": "技能引用了不存在的脚本/文档 = 让下一次会话去猜。",
+      "addedBy": "agent",
+      "approvedAt": null,
+      "supersedes": null
+    }
+  ]
+}

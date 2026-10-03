@@ -105,8 +105,9 @@ Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：�
 
 | 文件 | 职责 |
 |---|---|
-| `lib/outcome-scope.js` | 纯判据：preimage 名 → 被改文件；被改文件 → 该跑哪些测试；筛不出就 `NO_EVIDENCE`。不读盘、不读时钟 |
+| `lib/outcome-scope.js` | 纯判据：preimage 名 → 被改文件；被改文件 → 该跑哪台仪器（测试子集 / 技能金标集）；都筛不出就 `NO_EVIDENCE`。不读盘、不读时钟 |
 | `lib/outcome-measurer.js` | 外部世界那一侧：跑候选态 → 临时换回 preimage 跑基线态 → 换回来核 sha → 打分 → 落 `prediction_outcomes` |
+| `lib/skill-gate.js` | R2 第二台仪器：技能的**人工签核内容断言集**（`eval/skills/<preset>/<skill>.cases.json`）。未签核的 case 不进分母；0 条已签核 ⇒ 上层记 `NO_EVIDENCE` |
 
 四条护栏（每条都对应一次会出事的形状）：
 

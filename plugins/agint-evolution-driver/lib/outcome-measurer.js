@@ -52,9 +52,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve as pathResolve, sep } from 'node:path';
 
-import { parsePreimagePath, deriveTestFiles, planTestScope } from './outcome-scope.js';
+import { parsePreimagePath, deriveTestFiles, planTestScope, SCOPE_RULES } from './outcome-scope.js';
 import { scorePrediction, deadZoneThreshold } from './prediction-scoring.js';
 import { auditOne, AUDIT_STATUS } from './contract-audit.js';
+import { createSkillGateRunner } from './skill-gate.js';
 
 /** 终态枚举。只有 `MEASURED` 与 `IDEMPOTENT` 会在表里留下行。 */
 export const MEASURE_STATUS = Object.freeze({
@@ -76,6 +77,8 @@ export const MEASURE_STATUS = Object.freeze({
   RUNNER_FAILED: 'RUNNER_FAILED',              // 进程起不来
   RUNNER_UNPARSABLE: 'RUNNER_UNPARSABLE',      // 输出里没有 node:test 的 TAP 汇总行
   RUNNER_TIMEOUT: 'RUNNER_TIMEOUT',            // 超时，或有 cancelled 计数
+  SKILL_GATE_FAULT: 'SKILL_GATE_FAULT',        // R2 仪器故障：文件配对/读取/case JSON 解析不成 ⇒ 不是技能不合格
+  SKILL_GATE_INVALID: 'SKILL_GATE_INVALID',    // R2 case 形状不合法（kind 不认 / 正则坏）⇒ 仪器故障，不写行
   CONCURRENT_WRITE: 'CONCURRENT_WRITE',        // 动手前发现文件已变：不是我们要测的那个态
   CONTRACT_TAMPERED: 'CONTRACT_TAMPERED',      // 锁重算对不上 / 链上带预测却没锁行 ⇒ 不写测量（§2.4.2）
   RESTORE_FAILED: 'RESTORE_FAILED',            // 换不回候选态（仓库此刻仍是基线态！）
@@ -87,6 +90,30 @@ export const MEASURABLE_DECISIONS = Object.freeze(['AUTO_DEPLOY', 'PENDING_REVIE
 
 /** 本仪器只认得出"通过率"这一种效应量 —— 跑测试数数，别的量不出来。 */
 export const MEASURABLE_METRICS = Object.freeze(['SUCCESS_RATE']);
+
+/**
+ * R2 技能门禁可接的条目指标。
+ *
+ * 门禁集产出的天然是通过率 ⇒ 记 `targetMetric:'SUCCESS_RATE'`。
+ * 但技能条目现在链上写的是 `'unspecified'`（1a 不锁技能 ⇒ 没人给它解析出指标，
+ * v0.2.14 起技能类刻意如此）。所以：
+ *   - `'unspecified'` / null ⇒ 可以测，没预测可评（`pqReason:'NOT_PREDICTED'`），量到的是真观测；
+ *   - 其它真实指标（如 TOKEN_EFFICIENCY）⇒ ⛔ 拒测。那意味着"预测的是别的维度"，
+ *     拿门禁通过率去比它就是把两种量纲硬减，与 §6.4「不许找代理指标」同一条纪律。
+ */
+export const SKILL_GATE_ENTRY_METRICS = Object.freeze(['SUCCESS_RATE', 'unspecified', null, undefined]);
+
+/**
+ * 两种仪器。`outcome-scope` 的 rule 决定用哪一种：
+ * `TEST` = spawn `node --test` 数通过率；`SKILL_GATE` = 进程内跑人工签核的内容断言。
+ */
+export const INSTRUMENT = Object.freeze({ TEST: 'TEST', SKILL_GATE: 'SKILL_GATE' });
+
+/** `prediction_outcomes.method` 的两个取值（权威枚举在 memory 的 zod 里）。 */
+export const OUTCOME_METHOD = Object.freeze({
+  TEST: 'TEST_CORPUS_PAIR_RUN',
+  SKILL_GATE: 'SKILL_GATE_PAIR_RUN',
+});
 
 /** 单次跑的默认上限（实测：全仓 60 秒，插件子集通常 <5 秒）。 */
 export const DEFAULT_RUN_TIMEOUT_MS = 180_000;
@@ -227,6 +254,9 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
     exists = existsSync,
     timeoutMs = DEFAULT_RUN_TIMEOUT_MS,
   } = opts;
+  // 技能门禁 runner：默认用本模块的注入位建（read/exists 与换文件用的是同一对，
+  // ⇒ 单测里换了文件后 runner 读到的就是换完的那份）。
+  const runSkillGate = opts.runSkillGate ?? createSkillGateRunner({ read, exists });
 
   const dep = (n) => (ctx && typeof ctx.get === 'function' ? ctx.get(n) : null);
 
@@ -238,10 +268,37 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
     return pathResolve(repoRoot, norm).startsWith(root);
   }
 
-  /** 一侧跑完的判读：把 runner 结果换成 summary 或终态。 */
-  async function runSide({ label, repoRoot, files }) {
-    const res = await runTests({ repoRoot, files, timeoutMs });
+  /**
+   * 一侧跑完的判读：把 runner 结果换成 summary 或终态。
+   *
+   * 两种仪器，一份判读口径（都归成 `{passed, failed, total, passRate}`）：
+   *   - `INSTRUMENT.TEST`      ⇒ spawn `node --test`，解析 TAP 汇总行
+   *   - `INSTRUMENT.SKILL_GATE` ⇒ 进程内跑 `skill-gate.js` 的已签核断言集
+   * @param {object} input { label, repoRoot, files, kind }
+   */
+  async function runSide({ label, repoRoot, files, kind = INSTRUMENT.TEST }) {
+    const gate = kind === INSTRUMENT.SKILL_GATE;
+    const res = await (gate ? runSkillGate : runTests)({ repoRoot, files, timeoutMs });
     if (res?.timedOut) return { status: MEASURE_STATUS.RUNNER_TIMEOUT, side: label, error: res.error ?? null };
+    if (gate) {
+      // 仪器故障与"技能不合格"必须分开：前者不写行、后者是测量结果。混在一起，
+      // 一个坏掉的 case 文件就会把整条链的技能条目读成回归。
+      const err = String(res?.error ?? '');
+      if (!res?.ok) {
+        const status = err.startsWith('SKILL_GATE_INVALID') ? MEASURE_STATUS.SKILL_GATE_INVALID : MEASURE_STATUS.SKILL_GATE_FAULT;
+        return { status, side: label, error: err || null, reason: err || 'gate runner failed' };
+      }
+      const g = res.gate ?? {};
+      const run = { passed: g.passed ?? 0, failed: g.failed ?? 0, skipped: 0, todo: 0, cancelled: 0, total: g.total ?? 0, passRate: g.passRate ?? null };
+      if (!Number.isFinite(run.passRate)) {
+        return {
+          status: MEASURE_STATUS.NO_EVIDENCE, side: label,
+          // 说清"槽是空的"而不是"跑挂了"：待签核条数就是给老板的那句提示。
+          reason: `已签核 case ${g.approvedCount ?? 0} 条（待签核 ${g.proposedCount ?? 0} 条）⇒ 没有仪器，不写行`,
+        };
+      }
+      return { side: label, run, gate: g };
+    }
     const summary = parseTapSummary(res?.stdout);
     if (!summary) {
       return {
@@ -302,12 +359,10 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       const gate = isMeasurableEntry(entry);
       if (!gate.ok) return fail(gate.status, { reason: gate.reason ?? null, decision: entry.summary?.decision ?? null });
 
+      // 指标门挪到覆盖门之后（v0.2.17 / R2）：能不能测取决于**用的是哪台仪器** ——
+      // 跑测试那台只认 SUCCESS_RATE；技能门禁那台天然产通过率，条目写着 'unspecified'
+      // 也量得到（没预测 ⇒ PQ null + NOT_PREDICTED，仍是喂 τ 的真观测）。
       const metric = entry.summary?.targetMetric;
-      if (!MEASURABLE_METRICS.includes(metric)) {
-        return fail(MEASURE_STATUS.UNSUPPORTED_METRIC, {
-          reason: `targetMetric=${metric ?? 'null'}；本仪器只量得出通过率`,
-        });
-      }
 
       // 篡改门（§2.4.2 第 6 步的调用点之一）：**条目自称有预测**时，锁必须重算得回来。
       // 判据只压"有预测"的那些 —— 没有预测的条目 (predictedDelta=null) 的 actualDelta
@@ -367,6 +422,22 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         return fail(MEASURE_STATUS.TEST_SET_TOO_LARGE, { count: scope.files.length, rule: scope.rule });
       }
 
+      // 仪器选型 + 指标门（挪到这里的那道，判据见 SKILL_GATE_ENTRY_METRICS 的注释）
+      const instrument = scope.rule === SCOPE_RULES.SKILL_GATE ? INSTRUMENT.SKILL_GATE : INSTRUMENT.TEST;
+      if (instrument === INSTRUMENT.TEST && !MEASURABLE_METRICS.includes(metric)) {
+        return fail(MEASURE_STATUS.UNSUPPORTED_METRIC, {
+          reason: `targetMetric=${metric ?? 'null'}；跑测试那台仪器只量得出通过率`, rule: scope.rule, changedPath,
+        });
+      }
+      if (instrument === INSTRUMENT.SKILL_GATE && !SKILL_GATE_ENTRY_METRICS.includes(metric ?? 'unspecified')) {
+        return fail(MEASURE_STATUS.UNSUPPORTED_METRIC, {
+          reason: `targetMetric=${metric ?? 'null'}；条目预测的是别的量纲，⛔ 不拿门禁通过率去代替它`,
+          rule: scope.rule, changedPath,
+        });
+      }
+      // 门禁集产出的就是通过率 ⇒ 记录按 SUCCESS_RATE 存，条目原话进 evidence 留证。
+      const recordMetric = instrument === INSTRUMENT.SKILL_GATE ? 'SUCCESS_RATE' : metric;
+
       // 动手前取现状：它既是"候选态"的定义，也是稍后要核回去的东西。
       changedAbs = pathResolve(repoRoot, changedPath);
       try {
@@ -377,7 +448,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       const candidateSha = sha256Buf(candidateBuf);
 
       // 候选态先跑：这一刻盘上没有任何临时改动，失败也不用回滚。
-      const cand = await runSide({ label: 'candidate', repoRoot, files: scope.files });
+      const cand = await runSide({ label: 'candidate', repoRoot, files: scope.files, kind: instrument });
       if (cand.status) return fail(cand.status, { ...cand, changedPath, testFiles: scope.files });
 
       // 换基线态前的最后两道核：备份读得出、现状没被人动过。
@@ -397,7 +468,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       try {
         await write(changedAbs, baselineBuf);
         swapHappened = true;
-        baseline = await runSide({ label: 'baseline', repoRoot, files: scope.files });
+        baseline = await runSide({ label: 'baseline', repoRoot, files: scope.files, kind: instrument });
         if (baseline.status) return fail(baseline.status, { ...baseline, changedPath, testFiles: scope.files });
       } finally {
         try {
@@ -421,13 +492,15 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       }
 
       const predictedDelta = Number.isFinite(entry.summary?.predictedDelta) ? entry.summary.predictedDelta : null;
+      // τ 与死区按**仪器产出的量纲**取（门禁 = 通过率 ⇒ SUCCESS_RATE 的 3.0pp），
+      // ⛔ 不按条目里那句 'unspecified' 取 —— 那查不到 τ，死区会退化成"永远有意义"。
       const scored = scorePrediction({
         predictedDelta,
         actualDelta,
-        targetMetric: metric,
+        targetMetric: recordMetric,
         baselineNoiseStd: null, // 生产无人写这个值 ⇒ 不参与（拿不到就不编，见 prediction-scoring 头注）
       });
-      const dz = deadZoneThreshold(metric, null);
+      const dz = deadZoneThreshold(recordMetric, null);
       // scorePrediction 只在"有预测可评"时给 isDeadZone；没预测时自己按阈值判。
       const isDeadZone = typeof scored.isDeadZone === 'boolean'
         ? scored.isDeadZone
@@ -436,8 +509,9 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       const record = {
         contractId,
         measuredAt: now(),
-        method: 'TEST_CORPUS_PAIR_RUN',
-        targetMetric: metric,
+        // ⛔ 值必须与 memory `schema.js:292` 的 OUTCOME_METHODS 一字不差（那边是 zod 硬门）。
+        method: instrument === INSTRUMENT.SKILL_GATE ? OUTCOME_METHOD.SKILL_GATE : OUTCOME_METHOD.TEST,
+        targetMetric: recordMetric,
         changedPath,
         testFiles: scope.files,
         baseline: {
@@ -462,6 +536,9 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
           candidateSha,
           ledgerSeq: Number.isInteger(entry.seq) ? entry.seq : null,
           hypothesisLock: lock?.hypothesisLock ?? null,
+          // 门禁那台按构造产出通过率 ⇒ 记录写 SUCCESS_RATE。条目原话留在这里，
+          // ⛔ 不是改写历史：读的人要能看见"链上当时说的是 unspecified"。
+          entryTargetMetric: metric ?? null,
         },
       };
 
@@ -483,6 +560,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         contractId,
         changedPath,
         rule: scope.rule,
+        method: record.method,
         testCount: scope.files.length,
         baseline: record.baseline,
         candidate: record.candidate,

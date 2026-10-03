@@ -276,3 +276,62 @@ test('E2E: 事后改写链上的预测值 ⇒ 篡改门在跑测试之前就拦�
   assert.equal(back.actualDelta, 100);
   await rm(dir, { recursive: true, force: true });
 });
+
+// ── R2 端到端：真双态换 SKILL.md + 真 memory 服务落表 ────────────────────────
+
+const SK2 = 'presets/agint/skills/demo/SKILL.md';
+const SK2_PRE = `.agint-preimage/presets__agint__skills__demo__SKILL.md__${STAMP}.bak`;
+const SK2_CASES = 'eval/skills/agint/demo.cases.json';
+const SK2_CANDIDATE = '---\nname: demo\n---\n## 步骤\n1. 先取证再动手\n2. 复原要核 sha\n';
+const SK2_BASELINE = '---\nname: demo\n---\n## 步骤\n1. 先取证再动手\n';
+
+test('E2E-R2: 技能双态真跑 ⇒ +50pp 过真 schema 落表，method=SKILL_GATE_PAIR_RUN', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agint-r2-'));
+  const { evo } = await bootEvolutionService();
+  await mkdir(join(dir, 'presets', 'agint', 'skills', 'demo'), { recursive: true });
+  await mkdir(join(dir, 'eval', 'skills', 'agint'), { recursive: true });
+  await mkdir(join(dir, '.agint-preimage'), { recursive: true });
+  await mkdir(join(dir, 'node_modules'), { recursive: true });
+  await writeFile(join(dir, SK2), SK2_CANDIDATE);
+  await writeFile(join(dir, SK2_PRE), SK2_BASELINE);
+  const SIGN = '2026-10-03T07:00:00.000Z';
+  await writeFile(join(dir, SK2_CASES), JSON.stringify({
+    skill: 'demo',
+    cases: [
+      { id: 'has-step1', kind: 'body/must-include', expect: '先取证再动手', addedBy: 'boss', approvedAt: SIGN },
+      { id: 'has-step2', kind: 'body/must-include', expect: '复原要核 sha', addedBy: 'boss', approvedAt: SIGN },
+      { id: 'draft-not-counted', kind: 'body/must-include', expect: '这条还没签', addedBy: 'agent', approvedAt: null },
+    ],
+  }));
+
+  await evo.ledger.append({
+    contractId: 'EVO-R2-1',
+    generation: 'GEN-023',
+    summary: {
+      mutationType: 'PROMPT_MUTATION', changedPlugins: [], targetMetric: 'unspecified',
+      hypothesisDigest: '给技能补第二步', predictedDelta: null, actualDelta: null, predictionQuality: null,
+      predictionSource: null, decision: 'AUTO_DEPLOY',
+    },
+    references: { preimagePath: SK2_PRE },
+    timestamp: '2026-10-03T08:00:00.000Z',
+  });
+
+  const measurer = createOutcomeMeasurer(
+    { get: () => evo },
+    { listRepoFiles: async () => [SK2, SK2_PRE, SK2_CASES, 'node_modules/.keep'] },
+  );
+  const res = await measurer.measureOne({ contractId: 'EVO-R2-1', repoRoot: dir });
+  assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+  assert.equal(res.actualDelta, 50, '基线 1/2 → 候选 2/2（未签核那条不进分母）');
+
+  // 真 schema 当裁判：单测里的 mock 不吃 zod，这里读回来才证明 0.6.10 的枚举放行
+  const row = await evo.getPredictionOutcome('EVO-R2-1');
+  assert.equal(row.method, 'SKILL_GATE_PAIR_RUN');
+  assert.equal(row.targetMetric, 'SUCCESS_RATE');
+  assert.equal(row.evidence.entryTargetMetric, 'unspecified');
+  assert.equal(row.pqReason, 'NOT_PREDICTED');
+  assert.equal(row.baseline.total, 2, '⛔ 分母是已签核数 2，不是文件里的 3');
+  assert.equal(row.restoreVerified, true);
+  assert.equal(await readFile(join(dir, SK2), 'utf8'), SK2_CANDIDATE, '跑完文件必须回到候选态');
+  await rm(dir, { recursive: true, force: true });
+});

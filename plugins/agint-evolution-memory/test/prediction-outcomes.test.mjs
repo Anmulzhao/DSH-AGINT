@@ -231,3 +231,28 @@ test('T10: 计数超 LIMITS 仍落盘、仍在 list 里（只 warn，⛔ 不删�
   assert.equal((await evo.listPredictionOutcomes()).length, n + 1);
   assert.equal((await evo.getPredictionOutcome('EVO-0'))?.actualDelta, 27.3, '最早那条不得被轮转掉');
 });
+
+test('T11: R2 的 method 与 evidence.entryTargetMetric 过 schema（0.6.10 加的两栏）', async () => {
+  const { evo } = await bootPlugin();
+  const row = await evo.recordPredictionOutcome(outcomeEntry({
+    contractId: 'EVO-R2',
+    method: 'SKILL_GATE_PAIR_RUN',
+    testFiles: ['presets/agint/skills/demo/SKILL.md', 'eval/skills/agint/demo.cases.json'],
+  }));
+  assert.equal(row.method, 'SKILL_GATE_PAIR_RUN');
+  assert.equal(row.evidence.entryTargetMetric, null,
+    '缺失必须显式为 null（与 zod 的 .default({}) 不回落内层那条坑同源，见 schema 注）');
+
+  const row2 = await evo.recordPredictionOutcome(outcomeEntry({
+    contractId: 'EVO-R2B', method: 'SKILL_GATE_PAIR_RUN',
+    evidence: { entryTargetMetric: 'unspecified' },
+  }));
+  assert.equal(row2.evidence.entryTargetMetric, 'unspecified', '条目原话要留得住');
+  assert.equal(row2.evidence.preimagePath, null, '部分 evidence 的其余项照样补 null');
+
+  const bad = await evo.recordPredictionOutcome(
+    outcomeEntry({ contractId: 'EVO-R2C', method: 'SKILL_GATE_RUN' }),
+  ).catch((e) => e);
+  assert.ok(bad instanceof Error, 'method 拼错必须被 zod 拦下（两把尺子的名字不许混写）');
+  assert.equal(await evo.getPredictionOutcome('EVO-R2C'), null, '拒收后表里不留半成品');
+});
