@@ -6,3 +6,4 @@
 
 | 锚定时间(UTC) | Ledger Seq | Head Entry Hash | Rollup Root | Entry Count | Prev Anchor Commit |
 |---|---|---|---|---|---|
+| 2026-10-03T17:09:58.736Z | 7 | sha256:2ddbdd2a666eacd0816825de2ebdf6004c3f8f7d12213f5135cc60096b3cbf22 | sha256:d2787f8f0c0efd3e6cb58c462dbe12942aac2d2c6eacc99943f9777f91622314 | 7 | GENESIS |
