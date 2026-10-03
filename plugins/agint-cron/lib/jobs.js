@@ -88,6 +88,53 @@ export const defaultJobs = [
     },
   },
   {
+    id: 'frozen-anchor',
+    name: 'Frozen 基准集锚定',
+    // Mon 10:30：紧随 ledger-anchor(10:15)，语义相邻（都是「把仓库侧事实锚进宿主存储」）。
+    // 排期门禁 test/schedule-layout.test.mjs 实测该位满足 ≥15 分间隔（原则②）。
+    //
+    // ⛔⛔ 为什么必须有这个 job（2026-10-04 取证）：
+    //   `agint.evolution.recordFrozenSet` 只能**在宿主内**调 —— dsh 把整个存储域读进内存、
+    //   每次 put 用内存态整体重写文件（last-write-wins），独立进程直写会被静默覆盖。
+    //   而宿主侧**没有任何现成入口**能调它（已穷举）：
+    //     · `/api/` RPC 通道：404（那是 platform 层，宿主服务不走它）
+    //     · `agint-evolution-memory/lib/tools.js`：11 个工具全是 log/failure/template 族，
+    //       **没有 frozen 工具**（preset 只挂了它，等于没挂）
+    //   ⇒ cron job 的 `action(services)` 是唯一在宿主内执行的入口
+    //   （先例：ledger-anchor 调 `agint.evolution.ledger.anchor`）。
+    schedule: '30 10 * * 1', // Mon 10:30
+    description: '读仓库侧 tiering 清单，入账一条 Frozen 基准集快照（只增不改）',
+    action: async (services) => {
+      const evo = services['agint.evolution'];
+      if (!evo?.recordFrozenSet) throw new Error('frozen-anchor: agint.evolution.recordFrozenSet not available');
+      // ⛔ repoRoot 未配时必须**显式失败**，不能静默跳过 ——
+      //   「没配」与「没有变更」是两件事，混起来等于入账 job 看着成功其实没干活。
+      const repoRoot = services['agint.repoRoot'];
+      if (!repoRoot) {
+        throw new Error('frozen-anchor: agint.repoRoot 未配置（cordis.patch.yml 的 agint-cron 行'
+          + ' 需给 repoRoot）—— 无法读仓库侧清单，拒不入账');
+      }
+
+      // 聚合 hash 与名单**从仓库侧算**（唯一真源在 eval/；部署位没有 eval/）。
+      // 复用 anchor-frozen-set.mjs 的判据层，避免「job 里的算法」与「脚本里的算法」两套口径。
+      const { computeFrozenEntry } = await import('./frozen-anchor-core.js');
+      const entry = await computeFrozenEntry({ repoRoot });
+
+      // 已入账过同一份快照 ⇒ 不重复写（record() 对同 setId 会抛 frozen-set-already-exists，
+      // 而 setId 含毫秒时间戳 ⇒ 每次 cron 跑都是新 id ⇒ 会在表里堆重复行）。
+      const list = typeof evo.listFrozenSets === 'function' ? await evo.listFrozenSets() : null;
+      if (Array.isArray(list)) {
+        const dup = list.find((e) => e?.frozenAggregateHash === entry.frozenAggregateHash);
+        if (dup) {
+          return { recorded: false, reason: 'already-anchored', setId: dup.setId, ...entry };
+        }
+      }
+
+      const written = await evo.recordFrozenSet({ ...entry, source: 'cron/frozen-anchor' });
+      return { recorded: true, setId: written?.setId ?? null, ...entry };
+    },
+  },
+  {
     id: 'metrics-collect',
     name: '进化指标采集',
     schedule: '0 4 * * *', // daily 04:00
