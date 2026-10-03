@@ -1,6 +1,6 @@
 # agint-input-gateway
 
-AGINT 多源输入网关 v0.1.1。
+AGINT 多源输入网关 v0.1.2。
 
 ## 一句话
 
@@ -15,7 +15,7 @@ Channels → Gateway（filter/dedup/quota/route）→ eventBus → memory/evolve
 ## P0 包含
 
 - C2 系统自观测 Channel：toolStats 异常 / metrics 退化 / 规则高频命中 / 压缩丢失 / **session 完整性（0.1.1 实装）**
-- **security 门禁（0.1.1）**：8 条外部信号 prompt injection 规则，`securityAction=flag/drop/off`
+- **security 门禁（0.1.1）**：8 条外部信号 prompt injection 规则，`securityAction=flag/drop/off`；计数 schema 兼容旧记录 null 值（0.1.2）
 - **C4 对抗挑战 Channel**（已落地）：diagnosis / curriculum 事件转发，空壳事件默认转发（`forwardEmptyDiagnosis=true`）
 - **C5 跨 Agent Channel**（已落地）：OV 检索增量 diff + 会话聚类 + 跨 preset 概览，每周日 05:00
 - 6 个 model 工具（2 只读 + 4 写操作 ask 门禁）

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 — 2026-10-03
+
+> 生产故障修复：CountersSchema 的 security* 三字段此前为 `.optional()`，只认 undefined 不认 null；
+> 生产 adversarial 记录的 security* 字段值为 null（非字段缺失），导致整域 open 失败、gateway 空转。
+
+### 修复
+
+- **CountersSchema security* 改 `.nullish()`**（`lib/storage.js`）——生产 `counters.adversarial` 的
+  `securityScanned/securityFlagged/securityDropped` 曾写成 `null`（security 门禁落地期间写入），
+  `.optional()` 校验拒绝 null → `dsh-storage-domain` open 整体失败 → input-gateway 未初始化
+  （4 通道未注册、调度未启动，`input_gateway_status` 返回 fallback channels=0）。
+  改为 `.nullish()`（同时接受 undefined 与 null），并对现场存储数据做 null→0 修正
+  （备份 `agint_input_gateway.json.bak-20261003-124612`，无 BOM 写回）。
+- **补回归测试**（`test/storage-schema.test.mjs`）——新增「生产 adversarial 旧记录（security* 为 null）可解析」
+  用例；红绿自证：改前红（5 选 4 过 1 红）、改后全绿（5/5），全量 46/46 通过。
+
 ## 0.1.1 — 2026-09-29
 
 > 0.1.0（`8dee9a9`）之后至今的改动，此前未记录，一并补上；本轮定稿为 0.1.1。

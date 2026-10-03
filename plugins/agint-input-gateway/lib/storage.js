@@ -35,9 +35,11 @@ export const CountersSchema = z.object({
   signalsDeduplicated: z.number().int(),
   // v0.1.1：新增计数键 optional —— 生产 counters 旧记录不含 security* 字段，
   // 必填会令 dsh-storage-domain open 校验失败（domain 整体拒绝，gateway 初始化中断）。
-  securityScanned: z.number().int().optional(),
-  securityFlagged: z.number().int().optional(),
-  securityDropped: z.number().int().optional(),
+  // v0.3.1：改 nullish —— 生产 adversarial 记录曾把 security* 三字段写成 null（非缺失），
+  // .optional() 只认 undefined 不认 null，仍致整域 open 失败（2026-10-03 现场取证）。
+  securityScanned: z.number().int().nullish(),
+  securityFlagged: z.number().int().nullish(),
+  securityDropped: z.number().int().nullish(),
   errorCount: z.number().int(),
   lastFetchAt: z.string().nullable(),
   createdAt: z.string(),
