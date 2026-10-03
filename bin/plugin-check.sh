@@ -379,7 +379,7 @@ DIM11_JS
     printf '  → 0 fail, %s%d warn%s\n' "$YEL" "$warns" "$RST"
     return 0
   else
-    log_ok "9 维度全过"
+    log_ok "11 维度全过（含维度 11 observability-reachability）"
     return 0
   fi
 }
