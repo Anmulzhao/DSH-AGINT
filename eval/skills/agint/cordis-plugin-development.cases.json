@@ -3,16 +3,16 @@
   "preset": "agint",
   "schema": "agint.skill-gate.cases.v1",
   "status": "CANDIDATE-UNAPPROVED",
-  "generatedAt": "2026-10-03T09:09:08.678Z",
+  "generatedAt": "2026-10-03T09:58:37.676Z",
   "generator": "bin/skill-gate-candidates.mjs",
   "reviewNote": "这些条目的 addedBy 都是 agent ⇒ 一条都不进分母。要生效：把 addedBy 改成 \"boss\"，approvedAt 填 UTC 毫秒串。",
   "cases": [
     {
       "id": "redline-no-machine-absolute-path",
       "kind": "body/must-not-match",
-      "expect": "[A-Za-z]:[\\\\/]",
+      "expect": "(?<![A-Za-z0-9])[A-Za-z]:[\\\\/]",
       "source": "AGENTS.md：机器私有事实（绝对路径）不入库",
-      "note": "技能体里出现盘符路径 = 另一台机器上必错。",
+      "note": "只认盘符 + 分隔符。前缀断言把 https:// 与 :7890 这类 URL/端口排掉（2026-10-03 首版在这两处报过假阳性）。",
       "addedBy": "agent",
       "approvedAt": null,
       "supersedes": null

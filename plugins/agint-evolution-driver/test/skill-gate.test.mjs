@@ -212,3 +212,38 @@ test('G11: 生成的候选槽全部未签核 ⇒ 一台空仪器（total 0），
     assert.equal(doc.status, 'CANDIDATE-UNAPPROVED');
   }
 });
+
+// ── 7. 假阳性锁（2026-10-03 首版清单核出来的两处）─────────────────────────
+
+test('G12: 盘符类判据不把 URL 与端口读成违例（正则住在槽文件里，故按数据核）', () => {
+  const dir = join(REPO, 'eval', 'skills', 'agint');
+  const doc = JSON.parse(readFileSync(join(dir, 'github-push.cases.json'), 'utf8'));
+  const c = doc.cases.find((x) => x.id === 'redline-no-machine-absolute-path');
+  assert.ok(c, '槽里应有这条');
+  const re = new RegExp(c.expect);
+  for (const ok of [
+    '代理 `https://abc.cdnkuaishou.com:443` 已死',
+    '本地明文 HTTP 代理 `http://127.0.0.1:7890`',
+    'api.github.com:443 走不通',
+  ]) assert.equal(re.test(ok), false, `URL/端口不该被判成机器私有路径：${ok}`);
+  for (const bad of [
+    String.raw`数据根 C:\Users\Administrator\.dsh`,
+    String.raw`崩溃触发条件：spawn 了 C:\Program Files\Git\usr\bin\ssh.exe`,
+    '写成 D:/DSH/xxx 也是机器私有事实',
+  ]) assert.equal(re.test(bad), true, `真盘符必须仍被抓住：${bad}`);
+});
+
+test('G13: 引用存在性判据跳过通配符与占位符（首版在 plugins/**/lib/*.js 上报了 4 条假的）', () => {
+  const touched = [];
+  const exists = (p) => { touched.push(p); return p.endsWith('docs/real.md'); };
+  const run = (text) => evalCase({
+    c: { kind: GATE_KINDS.REFERENCE_PATH_EXISTS }, skillText: text, parsed: null, repoRoot: '/r', exists,
+  });
+  assert.equal(run('模式类引用：`plugins/**/lib/*.js`、`presets/<preset>/skills/<name>/SKILL.md`、`bin/check-*.mjs`'), true,
+    '全是通配符/占位符 ⇒ 不该去 stat');
+  assert.deepEqual(touched, [], '⛔ 一个都不该落到文件系统');
+  assert.equal(run('具体引用 `docs/real.md`'), true);
+  assert.deepEqual(touched, ['/r/docs/real.md']);
+  touched.length = 0;
+  assert.equal(run('真缺失的具体引用 `docs/gone.md`'), false, '真违例照旧要报');
+});

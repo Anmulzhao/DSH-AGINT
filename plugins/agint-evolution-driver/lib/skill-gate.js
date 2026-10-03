@@ -143,7 +143,11 @@ export function evalCase({ c, skillText, parsed, repoRoot, exists }) {
       return new RegExp(c.expect, 'm').test(actual);   // 正则由已签核的 case 提供，不是用户输入通道
     }
     case GATE_KINDS.REFERENCE_PATH_EXISTS: {
-      const refs = [...skillText.matchAll(/`((?:docs|wiki|eval|bin|plugins|presets)\/[^`\s]*?\.(?:md|js|mjs|sh|json|yml))`/g)].map((m) => m[1]);
+      // 只核"看起来就是具体路径"的反引号引用。带 `*` / `<name>` 的是通配符与占位符，
+      // 拿它们去 stat 会得到假阳性（2026-10-03 首版就在 `plugins/**/lib/*.js` 上报了 4 条假的）。
+      const refs = [...skillText.matchAll(/`((?:docs|wiki|eval|bin|presets|plugins)\/[^`\s]*?\.(?:md|js|mjs|sh|json|ya?ml))`/g)]
+        .map((m) => m[1])
+        .filter((r) => !/[*<>]/.test(r));
       return refs.every((r) => exists(`${repoRoot}/${r}`.replace(/\/+/g, '/')));
     }
     default:

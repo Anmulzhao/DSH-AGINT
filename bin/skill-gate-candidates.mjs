@@ -18,6 +18,7 @@
  *   node bin/skill-gate-candidates.mjs                    # dry-run（默认，只打印）
  *   node bin/skill-gate-candidates.mjs --preset agint     # 指定 preset
  *   node bin/skill-gate-candidates.mjs --write            # 真写文件（已存在的文件不覆盖）
+ *   node bin/skill-gate-candidates.mjs --write --refresh    # 刷新判据形状：仅覆盖没人签过核的槽
  */
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -30,8 +31,8 @@ const AMBIG = ['robust', 'seamless', '深入', '赋能', '全面', '优化', '�
 function redlineCases(skillDirName) {
   return [
     { id: 'redline-no-machine-absolute-path', kind: 'body/must-not-match',
-      expect: '[A-Za-z]:[\\\\/]', source: 'AGENTS.md：机器私有事实（绝对路径）不入库',
-      note: '技能体里出现盘符路径 = 另一台机器上必错。' },
+      expect: '(?<![A-Za-z0-9])[A-Za-z]:[\\\\/]', source: 'AGENTS.md：机器私有事实（绝对路径）不入库',
+      note: '只认盘符 + 分隔符。前缀断言把 https:// 与 :7890 这类 URL/端口排掉（2026-10-03 首版在这两处报过假阳性）。' },
     { id: 'redline-no-secret-shaped-string', kind: 'body/must-not-match',
       expect: 'sk-[A-Za-z0-9]{10,}|-----BEGIN|Bearer\\s+[A-Za-z0-9._-]{20,}',
       source: 'AGENTS.md：secrets 不写文件，走 $DSH_HOME/secrets/',
@@ -73,6 +74,7 @@ function flatName(repoRel) {
 function main() {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
+  const refresh = argv.includes('--refresh');   // 只刷新没人签过核的槽，⛔ 不覆盖老板的手改
   const pi = argv.indexOf('--preset');
   const preset = pi >= 0 && argv[pi + 1] && !argv[pi + 1].startsWith('--') ? argv[pi + 1] : 'agint';
   const skillsDir = join(REPO, 'presets', preset, 'skills');
@@ -108,7 +110,15 @@ function main() {
       console.log(`[dry-run] ${outPath.slice(REPO.length + 1)}  ${doc.cases.length} 条候选`);
       continue;
     }
-    if (existsSync(outPath)) { console.log(`跳过（已存在，不覆盖）：${outPath.slice(REPO.length + 1)}`); skipped += 1; continue; }
+    if (existsSync(outPath)) {
+      const old = JSON.parse(readFileSync(outPath, 'utf8'));
+      const signedCount = (old.cases ?? []).filter((c) => c.addedBy === 'boss' && typeof c.approvedAt === 'string').length;
+      if (!refresh || signedCount > 0) {
+        console.log(`跳过（${signedCount > 0 ? `已签核 ${signedCount} 条，签过的不覆盖` : `已存在，要刷新请加 --refresh`}）：${outPath.slice(REPO.length + 1)}`);
+        skipped += 1; continue;
+      }
+      console.log(`刷新（一条都没签过 ⇒ 覆盖安全）：${outPath.slice(REPO.length + 1)}`);
+    }
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, json, 'utf8');
     written += 1;
