@@ -300,6 +300,12 @@ export function apply(ctx, config = {}) {
     // 这是事故而不是性能问题，必须走 summary 事件外部可读（warn→stdout 常驻读不到）。
     ledgerWritten: 0,
     ledgerFailed: 0,
+    // A5：mutator 记账的两个计数器。`mutatorRecorded` = 写进 mutator.commits 的条数
+    // （这条 commit 因此可被 mutator.rollback 回滚）；`mutatorRecordFailed` 非 0 =
+    // 改动已落盘但账没记上 —— 后果是「改动能回滚、却查不到该回滚哪一条」。
+    // 与 ledger 计数器同理，必须从 summary 外部可读。
+    mutatorRecorded: 0,
+    mutatorRecordFailed: 0,
     // 1a：预测锁定的两个计数器。`predictionSkipped` 非 0 = 这一期的进化
     // 没有留下「当时预测了什么」的不可篡改证据，Ledger 的 predictedDelta 就是 null。
     // 与 ledger 计数器同理：**必须能从 summary 看到是哪个状态跳的**，
@@ -529,6 +535,9 @@ export function apply(ctx, config = {}) {
         // 链上证据（事件总线是本插件唯一读得到的出口）。
         ledgerWritten: state.ledgerWritten,
         ledgerFailed: state.ledgerFailed,
+        // A5：mutator 记账结果同理外部可读。
+        mutatorRecorded: state.mutatorRecorded,
+        mutatorRecordFailed: state.mutatorRecordFailed,
         lastError: state.lastError,
         failures: [],
         failuresTotal: 0,
@@ -868,9 +877,12 @@ export function apply(ctx, config = {}) {
                 // 全程只按 `d.key` 取权重与判 veto：`weights[d.key] ?? 0` 在只给 name 时
                 // 得到 0 → continue → den===0 → return null → **恒 REJECT**，与分数无关。
                 //
-                // 这不是笔误：agint-mutator/lib/index.js:609 至今仍只传 `name`，
-                // 所以 mutator.commit 一旦被真正启用也会恒被拒。driver 是照抄来的，
-                // 2026-09-29 首次实跑才暴露（本轮 decision=REJECT / verifyOk=true）。
+                // 这不是笔误：agint-mutator/lib/index.js:871 那条注释说
+                // 「mutator 至今仍只传 name，所以 mutator.commit 一旦被真正启用也会恒被拒」。
+                // **该注释已于2026-10-03 复核为过期**（A5 取证）：mutator 侧早已在
+                // commit() 里同时传 key 与 name（agint-mutator/lib/index.js:877-885
+                // 同形），sandbox 的绝对路径传参也已修好（:658-660 传 absTarget）。
+                // driver 是照抄来的，两边现在口径一致。留此注记以防照着过期注释去"修"好的代码。
                 //
                 // 两个字段都写：key 满足 policy 契约，name 兼容任何按 name 读的旧调用方。
                 // 这**不是**改 FROZEN 契约 —— key 才是契约字段，这里是回到契约。
@@ -975,6 +987,81 @@ export function apply(ctx, config = {}) {
                   sandboxOk: Boolean(sandboxResult?.ok),
                   verifyMode: sandboxResult?.mode ?? null,
                 });
+                // ── A5（2026-10-03）：把这次 commit 记进 mutator 的 commits 表。
+                //   此前 driver 走自己的 commitToRepo 落盘路径，commits 表恒空 ⇒
+                //   (1) mutator_stats.commits 恒 0（reconcile 的 mutatorDegraded 恒告警）；
+                //   (2) 更要紧的是 mutator.rollback 读不到这条 commit ⇒ driver 产出的
+                //       改动在 mutator 侧不可回滚。
+                //   ⛔ 幂等键**不**直接用 outcomeEventId（2026-10-03 修正）。publish() 在事件总线
+                //   不可用 / accepted:false 时返回 null（:349/:361），而 commitId 是
+                //   recordExternalCommit 的必填项 —— 用它当键会让「总线恰好坏了」这一次
+                //   commit 永远记不上账。第一版真会如此：mock 用错 publish 签名 ⇒
+                //   envelopeId 全 null ⇒ 10 条用例 5 条红。改成「有 envelopeId 就用它
+                //   （能与事件对账），没有就本地生成」—— 记账不该依赖观测通道是否可用。
+                //   ⛔ 记账失败**不**回滚已落盘的改动，也不改 policyDecision：
+                //     改动已经过了 sandbox + policy 两道闸，记账是账目问题不是安全问题。
+                //     但必须外部可读 —— 发一条 accounting-failed 事件（纪律 3）。
+                try {
+                  if (typeof mutator?.recordExternalCommit !== 'function') {
+                    throw new Error('recordExternalCommit unavailable（mutator 版本过旧）');
+                  }
+                  const commitId = outcomeEventId
+                    || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+                  // postimageHash 必须是内容哈希，不能拿 bytesAfter 顶替 ——
+                  // 字段名叫 hash，填字节数会让日后任何"比对 postimage 是否被改过"
+                  // 的判据静默失效（K138：函数/字段名承诺的覆盖面 = 实际覆盖面）。
+                  const postimageHash = await contentHashOf(commit.postimageContent);
+                  const recorded = await mutator.recordExternalCommit({
+                    commitId,
+                    proposalId: proposal.id,
+                    targetPath: commit.path,
+                    preimageContent: commit.preimageContent,
+                    postimageHash,
+                    policyDecision: decision,
+                    audit: {
+                      proposalId: proposal.id,
+                      commitId,
+                      kind: proposal.kind ?? 'PROMPT_MUTATION',
+                      source: proposal.source ?? 'evolution-reversed',
+                      timestamp: new Date().toISOString(),
+                      // driver 的 verify 语义与 mutator.commit 的 sandbox 同名不同源，
+                      // 这里记实际跑出来的 mode，不假装成 mutator 的 sandboxResult。
+                      sandboxResult: sandboxResult?.ok ? 'ok' : (sandboxResult?.reason ?? 'fail'),
+                      rollbackTrigger: proposal.rollbackCondition ?? 'manual',
+                    },
+                  });
+                  state.mutatorRecorded += (recorded?.recorded === true ? 1 : 0);
+                  if (!outcomeEventId) {
+                    // 事件没发出去但账记上了 —— 记账成功、观测失败。
+                    // 必须留痕：否则事后「commits 表里有这条、事件总线里查不到」看着像数据不一致。
+                    state.mutatorRecordFailed += 1;
+                    state.lastError = 'committed event not published (accounting recorded without envelopeId)';
+                    warn('committed event missing', {
+                      proposalId: proposal.id, path: commit.path, commitId,
+                    });
+                  }
+                } catch (recErr) {
+                  state.mutatorRecordFailed += 1;
+                  state.lastError = `mutator record failed: ${recErr?.message ?? String(recErr)}`;
+                  warn('mutator record failed', {
+                    proposalId: proposal.id, path: commit.path, reason: state.lastError,
+                  });
+                  // ⛔ 刻意**不**走 evolve.addFailure（2026-10-03 改判）。此前第一版
+                  //   记在 addFailure 上，driver smoke 的「成功路径不应记录 failure」
+                  //   立刻变红（T25/T25d）—— 那条红灯是对的：addFailure 是**进化失败模式**
+                  //   通道，喂给 failure 归因与后续进化决策。账目没记上是运维/接线问题，
+                  //   混进去会让「进化失败原因」被账目故障污染，归因器（A4）的读数跟着失真。
+                  //   改走事件总线：这是本插件唯一外部可读的出口（纪律 3，warn→stdout读不到），
+                  //   且 ledger-rebuild 只认 4 个固定 outcome topic（ledger-rebuild.js:68-72），
+                  //   新 topic 不会混进 Ledger 重建。
+                  await publish('evolution.mutation.accounting-failed', {
+                    proposalId: proposal.id,
+                    path: commit.path,
+                    committedEventId: outcomeEventId,
+                    policyDecision: decision,
+                    reason: recErr?.message ?? String(recErr),
+                  });
+                }
               }
 
               // ── §4.3.4：这次决策入链。REJECT / ABSTAIN 同样入 ——
@@ -1120,6 +1207,11 @@ export function apply(ctx, config = {}) {
       degraded: state.degraded,
       ledgerWritten: state.ledgerWritten,
       ledgerFailed: state.ledgerFailed,
+      // A5：记账计数器与 ledger 计数器同处status()（成功路径唯一的结构化出口）。
+      // cycle.summary 只在跳过/降级路径发（见下方 emitSummary 的 5 个调用点），
+      // 所以成功路径的记账结果**只能**从 status() 读到 —— 挂在 summary 上是读不到的。
+      mutatorRecorded: state.mutatorRecorded,
+      mutatorRecordFailed: state.mutatorRecordFailed,
       predictionLocked: state.predictionLocked,
       predictionSkipped: state.predictionSkipped,
       outcomeMeasured: state.outcomeMeasured,
@@ -1230,6 +1322,25 @@ async function readRepoText({ repoRoot, relPath, fs }) {
 }
 
 /**
+ * 内容 SHA-256（十六进制裸串，无前缀）。
+ *
+ * A5：mutator.commits.postimageHash 的口径必须与 mutator.contentHash() 一致
+ * （agint-mutator/lib/storage.js:103），否则两个插件写出的 hash 无法互相校验。
+ * 拿不到 crypto.subtle 时**抛错而不是退化到 djb2** —— 退化算法写出的值会被
+ * 当成真 SHA-256 用，让「比对内容是否被改过」静默失效（K138）。
+ * mutator 侧有 djb2 兜底是因为它是展示性占位；这里是记账字段，不能有占位。
+ */
+async function contentHashOf(content) {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  const c = globalThis.crypto;
+  if (!c?.subtle?.digest) {
+    throw new Error('contentHashOf: crypto.subtle.digest 不可用 —— 不写占位 hash');
+  }
+  const buf = await c.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * 递归列仓库相对路径（跳过 REPO_SCAN_IGNORES，封顶 REPO_SCAN_MAX_FILES）。
  * fs.scanRepo 可注入测试；无 repoRoot 返回 []。
  */
@@ -1306,6 +1417,14 @@ export async function commitToRepo({ repoRoot, relPath, oldText, newText, fs, no
     preimagePath: backupRel,
     bytesBefore: Buffer.byteLength(text, 'utf8'),
     bytesAfter: Buffer.byteLength(postimage, 'utf8'),
+    // A5（2026-10-03）：把 preimage **内容**一并带出去。
+    // 此前只给 preimagePath，导致 mutator.recordExternalCommit 拿不到 commits.preimageContent
+    // —— 而那是 `mutator.rollback` 唯一的还原凭据（agint-mutator/lib/index.js:770 读表、
+    // :786 用 SHA-256 校验、然后把 preimageContent 写回文件）。少这一项，driver 产出的
+    // commit 在 mutator 侧**不可回滚**，且 mutator_stats.commits 恒为 0。
+    // ⛔ 不返回 postimage：记账方需要的是「回退到什么」，不是「现在是什么」。
+    preimageContent: text,
+    postimageContent: postimage,
   };
 }
 

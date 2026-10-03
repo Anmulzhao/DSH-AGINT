@@ -34,7 +34,17 @@ function render(r, { strict }) {
   console.log(`  1 event_bus committed : ${c.eventBusCommitted}`);
   console.log(`  2 population variants : ${c.populationVariants}`);
   console.log(`  3 磁盘 preimage .bak  : ${c.diskPreimages}`);
-  console.log(`  4 mutator_stats.commits: ${c.mutatorCommits}${c.mutatorDegraded ? '  ⚠ 恒空，不作真值' : ''}`);
+  console.log(`  4 mutator_stats.commits: ${c.mutatorCommits}  [${c.mutatorState}]`);
+  // A5：三态各有各的含义，不能压成一句「恒空，不作真值」（那句话在 driver
+  // 开始记账之前是对的，现在恒假，而恒假的说明比没有说明更坏）。
+  if (c.mutatorState === 'absent') {
+    console.log('      ⓘ mutator 存储读不到 —— 本源不参与对账（无数据 ≠ 0 数据）');
+  } else if (c.mutatorState === 'unwired') {
+    console.log('      ⚠ 有 committed 事件但 commits 表为 0 —— 这批 commit 未记账，不可被 mutator.rollback 回滚');
+    console.log('        （存量债：A5 的记账入口只对修复后的 commit 生效，宿主重启并产生新 commit 后自动转consistent）');
+  } else if (c.mutatorState === 'gap') {
+    console.log(`      ⚠ commits 表 ${c.mutatorCommits} 条 < committed 事件 ${c.eventBusCommitted} 条 —— 部分 commit 未记账`);
+  }
   console.log('');
   console.log('结构差异（不计 FAIL）：');
   console.log(`  population 候选无 committed 事件 : ${r.structural.populationWithoutEvent}`);
@@ -44,6 +54,8 @@ function render(r, { strict }) {
   console.log(`  R1 committed 不在 population : ${r.diffs.R1_committedNotInPopulation.length}`);
   console.log(`  R2 committed 磁盘缺 preimage : ${r.diffs.R2_committedMissingPreimage.length}${r.diffs.R2_committedMissingPreimage.length ? '  ⛔ 有 commit 无备份 = 不可回滚' : ''}`);
   console.log(`  R3 population 无法佐证       : ${r.diffs.R3_populationUncorroborated.length}${strict ? '（strict → 计 FAIL）' : '（warn）'}`);
+  console.log(`  R4 mutator 记账缺口          : ${r.diffs.R4_mutatorAccountingGap.length}${r.diffs.R4_mutatorAccountingGap.length ? `${strict ? '（strict → 计 FAIL）' : '（warn）'}` : ''}`);
+  for (const x of r.diffs.R4_mutatorAccountingGap) console.log(`      · ${x.state}：committed=${x.committed} vs mutator.commits=${x.mutatorCommits}`);
   for (const x of r.diffs.R2_committedMissingPreimage) console.log(`      · ${x.proposalId} → ${x.preimagePath}`);
   for (const n of r.notes) console.log(`  ⓘ ${n}`);
   console.log('');

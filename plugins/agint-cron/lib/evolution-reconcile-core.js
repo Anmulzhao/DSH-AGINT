@@ -12,7 +12,25 @@
 //   1. event_bus   —— topic='evolution.mutation.committed'，envelope.payload.proposalId（优先）
 //   2. population  —— table='variants'，行.commit_id（次选；commit_id 值 == proposalId）
 //   3. 磁盘 preimage —— repoRoot/.agint-preimage/*.bak，命中 committed.payload.preimagePath（兜底）
-//   4. mutator_stats —— agint_mutator.json.commits（当前不可靠，只读上报，不作真值）
+//   4. mutator_stats —— agint_mutator.json.commits（A5 起升为**可核对源**，见下）
+//
+// A5（2026-10-03） mutator 源的口径变更：
+//   此前第4 源标注「不可靠，只读上报，不作真值」，判据 `mutatorDegraded` 定义为
+//   `mutatorCommits === 0 && committed.length > 0`。取证发现该告警**恒真**：
+//   driver 走自己的 commitToRepo 落盘路径、从不调 mutator.commit（该插件头注已明记），
+//   所以 commits 表天生为 0。恒真的告警等于没有告警 —— 它训练读者忽略这一行，
+//   真出事时也不会被当真。
+//   根因已修：mutator 新增 recordExternalCommit() 记账入口，driver commit 成功后调用，
+//   commits 表恢复为真实凭据（且 driver 的改动从此可被 mutator.rollback 回滚）。
+//   故本判据把第 4 源拆成**三态**，不再用单一布尔：
+//     · 'unwired'   —— mutator 存储可读但 commits 表为空且存在 committed 事件。
+//                      **这不可能是健康态**（记账入口已就位），按报告性差异 R4 计。
+//     · 'gap'       —— commits 表有行，但行数少于 committed 事件数 ⇒ 部分 commit 没记账。
+//     · 'consistent'—— commits 表行数 ≥ committed 事件数。
+//   ⚠️ 存量债：A5 修复只对**修复后**的 commit 生效。宿主重启前那批 commit 不会补记
+//     （补记需走宿主服务方法，独立进程直写会被 last-write-wins 静默覆盖 —— 见
+//     plugins/agint-cron 的宿主存储语义）。所以首次跑本判据大概率仍报 'unwired'，
+//     这是**存量债的诚实读数**，不是判据坏了。宿主重启并产生新 commit 后自动转 'consistent'。
 //
 // 差异分类：
 //   · 结构差异（不计入 diff）：population 跟踪所有候选而 committed 只是子集；preimage 目录可能有孤儿 .bak。
@@ -82,9 +100,32 @@ function readPreimageDir(repoRoot) {
   try { files = readdirSync(dir).filter((f) => f.endsWith('.bak')); } catch { files = []; }
   return { dir, present: true, files: new Set(files) };
 }
+/**
+ * 第 4 源读数。**必须区分「表不存在/读不到」与「表存在但0 行」** ——
+ * 前者是存储缺失（unavailable），后者是真实的 0。两者混为一谈会把
+ * 「没装 mutator」印成「装了一直没记账」（A5 之前正是这个混淆）。
+ * @returns {{readable: boolean, count: number}} readable=false 时 count 恒 0，不参与判据。
+ */
 function readMutator(dir) {
+  const p = join(dir, 'agint_mutator.json');
+  if (!existsSync(p)) return { readable: false, count: 0 };
   const store = readJson(dir, 'agint_mutator.json');
-  return tableOf(store, 'commits').length;
+  // ⛔ readJson 对 JSON 损坏返回 null —— 那也是「读不到」，不是 0 行。
+  if (store === null) return { readable: false, count: 0 };
+  return { readable: true, count: tableOf(store, 'commits').length };
+}
+
+/**
+ * 第 4 源三态判定（A5）。
+ * @param {{readable:boolean,count:number}} mutator
+ * @param {number} committedCount event_bus 里committed 事件数
+ * @returns {'absent'|'unwired'|'gap'|'consistent'}
+ */
+export function judgeMutatorSource(mutator, committedCount) {
+  if (!mutator?.readable) return 'absent';
+  if (mutator.count >= committedCount) return 'consistent';
+  if (mutator.count === 0) return committedCount > 0 ? 'unwired' : 'consistent';
+  return 'gap';
 }
 
 /**
@@ -114,7 +155,9 @@ export function reconcileEvolutionStats(opts = {}) {
   const committed = readCommitted(storageDir);
   const population = readPopulation(storageDir);
   const preimage = readPreimageDir(repoRoot);
-  const mutatorCommits = readMutator(storageDir);
+  const mutator = readMutator(storageDir);
+  // A5：第 4 源三态。'absent' = mutator 存储都读不到 ⇒ 不参与判据（无数据 ≠ 0 数据）。
+  const mutatorState = judgeMutatorSource(mutator, committed.length);
 
   const committedIds = new Set(committed.map((c) => c.proposalId).filter(Boolean));
   const popCommitIds = new Set(population.map((p) => p.commitId));
@@ -139,11 +182,18 @@ export function reconcileEvolutionStats(opts = {}) {
 
   const R3 = population.filter((p) => !committedIds.has(p.commitId));
 
+  // ── A5：R4 —— mutator 记账缺口（第 4 源与第 1 源对不上）
+  // ⛔ 'absent' 不计差异：mutator 存储读不到是「没这个源」，不是「源报0」。
+  //   把它算成差异会让任何未装 mutator 的部署恒红（A5 之前 `mutatorDegraded` 的病根）。
+  const R4 = (mutatorState === 'unwired' || mutatorState === 'gap')
+    ? [{ state: mutatorState, committed: committed.length, mutatorCommits: mutator.count }]
+    : [];
+
   const referencedPreimages = new Set(committed.map((c) => c.preimagePath).filter(Boolean).map((p) => p.split(/[\\/]/).pop()));
   const orphanPreimages = preimage.present ? [...preimage.files].filter((f) => !referencedPreimages.has(f)) : [];
 
   const hardDiffs = R1.length + R2.length;
-  const softDiffs = R3.length;
+  const softDiffs = R3.length + R4.length;
 
   return {
     status: hardDiffs > 0 ? 'diff' : 'ok',
@@ -153,14 +203,23 @@ export function reconcileEvolutionStats(opts = {}) {
       eventBusCommitted: committed.length,
       populationVariants: population.length,
       diskPreimages: preimage.present ? preimage.files.size : 0,
-      mutatorCommits,
-      mutatorDegraded: mutatorCommits === 0 && committed.length > 0,
+      mutatorCommits: mutator.count,
+      // A5：语义收紧。原值 = `mutatorCommits===0 && committed.length>0`，在 driver
+      // 不写 commits 表的年代**恒为 true** ⇒ 恒真告警。现在只在真有缺口时为 true。
+      mutatorDegraded: R4.length > 0,
+      // A5：三态读数。'absent' 时 mutatorCommits 恒 0 但**不代表** 0 笔 commit ——
+      // 读数旁边必须带状态，否则又被读成「跑成了 0 次」。
+      mutatorState,
+      mutatorSourceReadable: mutator.readable,
     },
     structural: { populationWithoutEvent: R3.length, orphanPreimages: orphanPreimages.length },
     diffs: {
       R1_committedNotInPopulation: R1.map((c) => c.proposalId),
       R2_committedMissingPreimage: R2.map((c) => ({ proposalId: c.proposalId, preimagePath: c.preimagePath })),
       R3_populationUncorroborated: R3.map((p) => ({ commitId: p.commitId, stage: p.stage })),
+      // A5：R4 是对象不是 id 列表 —— 它说的是「两个源的**量**对不上」，
+      // 不是「某个 id 对不上」，只给数字会让排障的人不知道该去看哪张表。
+      R4_mutatorAccountingGap: R4,
     },
     verdict: { hardDiffs, softDiffs, pass: hardDiffs === 0 },
     notes,

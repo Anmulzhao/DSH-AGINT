@@ -742,6 +742,116 @@ function apply(ctx) {
   }
 
   /**
+   * `agint.mutator.recordExternalCommit(input) → { ok, commitId, recorded, reason? }`
+   *
+   * A5（2026-10-03 新增）**记账入口**，不是第二条落盘路径。
+   *
+   * 为什么需要它（这不是"补个计数"，是补一个功能缺口）：
+   *   `agint-evolution-driver` 的 `commitToRepo` 走自己的落盘路径（见该文件头注
+   *   「本插件的 commitToRepo 走的是自己的落盘路径（不经过 mutator.commit）」），
+   *   所以 driver 产出的 commit **从不写 commits 表**。而 commits 表是
+   *   `rollback()` 的唯一凭据：:770 从表里查 commitEntry、:786 用
+   *   SHA-256 校验 preimageContent 防篡改、然后把内容写回 targetPath。
+   *   ⇒ driver 的 commit 在 mutator 侧**根本无法回滚**，
+   *     且 `mutator_stats.commits` 恒为 0（evolution-reconcile-core 的
+   *     `mutatorDegraded` 因此恒告警）。
+   *
+   * 边界（本函数**只**做记账，绝不碰文件系统）：
+   *   - 写盘、preimage 备份、sandbox、policy 决策：全是 driver 的活，本函数不重复做。
+   *   - 因此 `policyDecision` 由 caller 传入，本函数**信任但不校验**（它没有
+   *     独立证据可校验，硬校验只会自造假门禁）。`audit.sandboxResult` 同理。
+   *   - 幂等：commitId 已存在 ⇒ 返回 { ok:true, recorded:false, reason:'duplicate' }，
+   *     不重复写、不抛错（重试安全）。
+   *
+   * @param {object} input
+   * @param {string} input.commitId      调用方生成的 commit 主键（幂等键）
+   * @param {string} input.proposalId    对应 proposals 表的行（不强制存在，见下）
+   * @param {string} input.targetPath     仓库相对路径（决策 D8 语义，与 commit() 一致）
+   * @param {string} input.preimageContent 回退目标内容（rollback 的唯一凭据）
+   * @param {string} input.postimageHash  落盘后内容的 SHA-256
+   * @param {'AUTO_DEPLOY'|'PENDING_REVIEW'|'REJECT'|'ABSTAIN'} input.policyDecision
+   * @param {object} input.audit          AuditSchema 字段
+   * @returns {Promise<{ok:true, commitId:string, recorded:boolean, reason?:string}>}
+   */
+  async function recordExternalCommit(input) {
+    if (!input || !input.commitId) throw new Error('recordExternalCommit: 缺 commitId');
+    if (!input.proposalId) throw new Error('recordExternalCommit: 缺 proposalId');
+    if (!input.targetPath) throw new Error('recordExternalCommit: 缺 targetPath');
+    if (typeof input.preimageContent !== 'string' || input.preimageContent.length === 0) {
+      // ⛔ 显式失败，不拿 '' 兜底。preimageContent 缺失/为空 = rollback 无凭据，
+      //   写一条空内容进表会**假装**这条 commit 可回滚（rollback 会把文件写成空）。
+      //   schema 侧 preimageContent 是 min(0)（TOOL_SYNTHESIS 新建文件确实没有
+      //   preimage），所以空串必须在这里挡 —— 那类场景不该走本入口记账。
+      throw new Error('recordExternalCommit: 缺 preimageContent（rollback 唯一凭据，不接受空串兜底）');
+    }
+    if (!input.postimageHash) throw new Error('recordExternalCommit: 缺 postimageHash');
+    if (!input.audit) throw new Error('recordExternalCommit: 缺 audit');
+
+    const tC = await t_commits();
+    // 幂等：同 commitId 已记账则不重复写。
+    if (tC.entries().some((e) => e.id === input.commitId)) {
+      return { ok: true, commitId: input.commitId, recorded: false, reason: 'duplicate' };
+    }
+    if (tC.size >= LIMITS.COMMITS) {
+      throw new Error(`recordExternalCommit: commits table full (cap ${LIMITS.COMMITS}) — 请手动 prune`);
+    }
+    // preimageContent 字节守门：与 commit() 同一上限（决策 D7），不新造第二个阈值。
+    const preimageBytes = contentByteLength(input.preimageContent);
+    if (preimageBytes > LIMITS.PREIMAGE_BYTES) {
+      throw new Error(
+        `recordExternalCommit: preimageContent ${preimageBytes} 字节超 `
+        + `LIMITS.PREIMAGE_BYTES=${LIMITS.PREIMAGE_BYTES}（决策 D7 5MB 上限）`,
+      );
+    }
+    // commits.preimageHash = SHA-256(实际文件内容)。driver 的 proposal.preimageHash
+    // 是 payload 序列化 hash（设计稿 §2.1），语义不同，**不能**拿来填这个字段 ——
+    // rollback 的 SHA-256 防篡改校验会比对 preimageContent 与 preimageHash。
+    const preimageHash = await contentHash(input.preimageContent);
+    const commitEntry = packCommit({
+      ok: true,
+      commitId: input.commitId,
+      postimageHash: input.postimageHash,
+      committedAt: input.committedAt || nowIso(),
+      policyDecision: input.policyDecision,
+      audit: input.audit,
+      proposalId: input.proposalId,
+      preimageHash,
+      preimageContent: input.preimageContent,
+      targetPath: input.targetPath,
+    });
+    await tC.put(commitEntry.id, commitEntry);
+
+    // proposal 状态推进：commit() 会把 PENDING 改成 COMMITTED/REJECTED，driver 路径
+    // 同样需要 —— 否则 proposal 永远停在 PENDING，而 proposals 表有
+    // `uniq_atomicScope_pending` 唯一索引（决策 §2.6 v2）：同 atomicScope 的下一个
+    // 提案会被自己的历史行永久挡住。生产实况正是如此（4 笔已 commit 的 proposal
+    // 至今全是 PENDING）。
+    // ⛔ 查不到 proposal 不抛错：driver 的 proposal 可能来自别的域（它自己有
+    //   `evolve.listProposals`），mutator 不强求 proposals 表一定有对应行。
+    //   但状态推不动这件事必须让调用方知道 ⇒ 记进 reason。
+    let proposalNote = null;
+    try {
+      const tP = await t_proposals();
+      const pe = tP.entries().find((e) => e.id === input.proposalId);
+      if (!pe) {
+        proposalNote = 'proposal-absent';
+      } else {
+        const nextStatus = (input.policyDecision === 'REJECT' || input.policyDecision === 'ABSTAIN')
+          ? 'REJECTED' : 'COMMITTED';
+        if (pe.status !== nextStatus) await tP.put(pe.id, { ...pe, status: nextStatus });
+      }
+    } catch (err) {
+      // 记账本身已成功落表；状态推不动只降级为 reason，不把整次记账判失败。
+      proposalNote = `proposal-update-failed: ${err?.message ?? String(err)}`;
+    }
+
+    return {
+      ok: true, commitId: commitEntry.id, recorded: true,
+      ...(proposalNote ? { reason: proposalNote } : {}),
+    };
+  }
+
+  /**
    * `agint.mutator.rollback(input) → { ok, restoredHash, commitId, audit }`
    * 设计稿 §2.1 + Sprint 10 #5 §二.4：5 步 + 三段式事务
    *   1) 从 commits 表查 commit 记录
@@ -1008,6 +1118,11 @@ function apply(ctx) {
   ctx.provide('agint.mutator.propose', propose);
   ctx.provide('agint.mutator.validate', validate);
   ctx.provide('agint.mutator.commit', commit);
+  // A5：记账入口。与其余 8 个 FROZEN 入口一样给**平铺 key**，不能只挂 umbrella 对象 ——
+  // 伞键（agint.mutator）只有全名子键时 ctx.get('agint.mutator') 恒 undefined（见本文件
+  // 2026-09-24 那段注释），而 driver 侧 dep('agint.mutator.recordExternalCommit') 取的是平铺 key。
+  // 只挂伞键会让 driver 侧永远拿到 undefined，然后走 recordExternalCommit unavailable 分支。
+  ctx.provide('agint.mutator.recordExternalCommit', recordExternalCommit);
   ctx.provide('agint.mutator.rollback', rollback);
   ctx.provide('agint.mutator.attributionDriven', attributionDriven);
   ctx.provide('agint.mutator.dreamRandom', dreamRandom);
@@ -1079,6 +1194,7 @@ function apply(ctx) {
     propose,
     validate,
     commit,
+    recordExternalCommit,
     rollback,
     attributionDriven,
     dreamRandom,
