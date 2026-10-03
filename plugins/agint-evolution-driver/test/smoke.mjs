@@ -24,6 +24,10 @@ import {
   DEFAULT_AGENT_PRESET,
 } from '../lib/index.js';
 
+// 1a 归档复原断言用（T25f）：hash 纯函数 + 锁定用的 hypothesis 形状
+import { computeHypothesisLock } from '../lib/predictor.js';
+import { buildLockHypothesis } from '../lib/prediction-locker.js';
+
 /**
  * 建一个真实的临时仓库根（v0.2.8）。
  *
@@ -1077,6 +1081,181 @@ test('T25e: 1a 生产实况 —— metric=unspecified 时无预测可锁，主�
     assert.equal(st.predictionLocked, 0);
     assert.equal(st.predictionSkipped, 1);
     assert.equal(out.commit.ok, true, '没有预测不影响进化本身（软失败外壳的意义）');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T25f: 1a 补片（方案②）—— variant 落兜底时从提案期望读出指标，锁真能落', async () => {
+  const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
+  try {
+    const calls = [];
+    const order = [];
+    const locks = new Map();
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      // 生产真实形状：driver 传给 propose、mutator 原样带回的**字符串**期望
+      //（index.js:591 'baseline 通过率 >= 95% 在 7 天'，FROZEN 契约要 string）。
+      propose: async () => ({
+        id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING',
+        expectedEffect: 'baseline 通过率 >= 95% 在 7 天',
+      }),
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    const fakePopulation = {
+      // population 只认对象形式的 expectedEffect ⇒ 实时路径恒落这个兜底
+      ingest: async () => ({
+        variant_id: 'v1', generation: 1, mutation_kind: 'PROMPT_MUTATION',
+        expected_effect: { metric: 'unspecified', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+      }),
+    };
+    const evolutionLog = fakeEvolutionLog({ calls });
+    evolutionLog.recordContractLock = async (input) => {
+      order.push('lock');
+      const disk = await readFile(join(repoRoot, 'lib/service.js'), 'utf8');
+      assert.ok(disk.includes('hello world'), '锁定时改动尚未落盘');
+      if (locks.has(input.contractId)) throw new Error('contract-lock-already-exists');
+      const row = { ...input, lockAlgorithm: 'sha256', lockedAt: input.lockedAt };
+      locks.set(input.contractId, row);
+      return { ...row };
+    };
+
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': fakePopulation,
+      'agint.evolution': evolutionLog,
+      agents: { create: async () => { throw new Error('llm injected'); } },
+      subagents: { start: async () => { throw new Error('llm injected'); } },
+    });
+    const events = busRecorder(ctx);
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: {
+          decide: async () => { order.push('policy'); return { kind: 'AUTO_DEPLOY', reason: 'score-85' }; },
+        },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: {
+            applicable: true, targetSkill: 'lib/service.js',
+            oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test',
+          },
+        }),
+        skillNames: [],
+        fs: { scanRepo: async () => ['lib/service.js'] },
+      },
+    });
+
+    assert.deepEqual(order, ['lock', 'policy'], '指标解析不改变时序：锁仍在评估之前');
+    assert.equal(locks.size, 1, '方案②的意义就是让生产形态下真能落一行锁');
+
+    const le = evolutionLog.appended[0];
+    assert.equal(le.summary.targetMetric, 'SUCCESS_RATE',
+      '条目用解析出的指标，而不是 variant 行里的 unspecified —— 否则与锁定的 hash 分叉');
+    assert.equal(le.summary.predictedDelta, 1.0, 'DEFAULT_RULE 表 DR-PROMPT-SUCCESS');
+    assert.equal(le.summary.predictionSource, 'DEFAULT_RULE');
+    assert.ok(le.summary.hypothesisDigest.includes('expected SUCCESS_RATE increase within 7d'),
+      `摘要要与 summary 同一个指标名：${le.summary.hypothesisDigest}`);
+
+    // 出处落盘可查（不能靠读代码反推"这条预测建立在解析出的指标上"）
+    assert.equal(out.summary.prediction.targetMetric, 'SUCCESS_RATE');
+    assert.equal(out.summary.prediction.targetMetricSource, 'EXPECTED_EFFECT');
+    assert.equal(out.summary.prediction.targetMetricReason, null);
+    assert.equal(out.summary.prediction.status, 'LOCKED');
+
+    // ⭐ 归档可复原：1b 只拿这条 Ledger 条目 + 表里的 lockedAt 就得重算出同一个 hash
+    const row = locks.get('p1');
+    const recomputed = computeHypothesisLock({
+      contractId: le.contractId,
+      createdAt: row.lockedAt,
+      hypothesis: {
+        ...buildLockHypothesis({
+          mutationType: le.summary.mutationType,
+          targetMetric: le.summary.targetMetric,
+          changedComponents: le.summary.changedPlugins,
+        }),
+        predictedDelta: le.summary.predictedDelta,
+        predictionSource: le.summary.predictionSource,
+      },
+    });
+    assert.equal(recomputed, row.hypothesisLock,
+      '复原不回来 = 锁作废（条目与锁定用了不同的 targetMetric 就会这样）');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T25g: 期望串也读不出指标 ⇒ 不锁、链上留 unspecified（不猜）', async () => {
+  const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
+  try {
+    const calls = [];
+    let lockCalls = 0;
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      propose: async () => ({
+        id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING',
+        expectedEffect: '通过率 >= 95% 且延迟 <= 1s 在 7 天', // 两个指标 ⇒ 歧义
+      }),
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    const fakePopulation = {
+      ingest: async () => ({
+        variant_id: 'v1', generation: 1, mutation_kind: 'PROMPT_MUTATION',
+        expected_effect: { metric: 'unspecified', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+      }),
+    };
+    const evolutionLog = fakeEvolutionLog({ calls });
+    evolutionLog.recordContractLock = async () => { lockCalls += 1; return {}; };
+
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': fakePopulation,
+      'agint.evolution': evolutionLog,
+      agents: { create: async () => { throw new Error('llm injected'); } },
+      subagents: { start: async () => { throw new Error('llm injected'); } },
+    });
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: { decide: async () => ({ kind: 'AUTO_DEPLOY', reason: 'score-85' }) },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: {
+            applicable: true, targetSkill: 'lib/service.js',
+            oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test',
+          },
+        }),
+        skillNames: [],
+        fs: { scanRepo: async () => ['lib/service.js'] },
+      },
+    });
+
+    assert.equal(lockCalls, 0, '歧义 ⇒ 不猜指标 ⇒ 不落锁');
+    assert.equal(out.summary.prediction.targetMetric, null);
+    assert.equal(out.summary.prediction.targetMetricReason, 'METRIC_AMBIGUOUS');
+    assert.equal(out.summary.prediction.status, 'NO_PREDICTION_AVAILABLE');
+    const le = evolutionLog.appended[0];
+    assert.equal(le.summary.targetMetric, 'unspecified', '指标缺失照原样入链（Sprint 22 同一条纪律）');
+    assert.equal(le.summary.predictedDelta, null);
+    assert.equal(out.commit.ok, true, '读不出指标不影响进化本身');
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
   }

@@ -217,6 +217,35 @@ test('带锁预测参与 entryHash 上游字段：同锁两次构造必须逐字
     '预测字段是哈希输入，非确定就把幂等键打乱了');
 });
 
+// ── 1a 补片：targetMetric 入参（与锁定值必须同一个，否则 hash 分叉）──────
+
+test('targetMetric 入参覆盖 variant 兜底值，摘要与 summary 同步', () => {
+  const e = ok({
+    variant: { ...variant, expected_effect: { metric: 'unspecified', direction: 'increase', window: '7d' } },
+    targetMetric: 'SUCCESS_RATE',
+  });
+  assert.equal(e.summary.targetMetric, 'SUCCESS_RATE');
+  assert.ok(e.summary.hypothesisDigest.includes('expected SUCCESS_RATE increase within 7d'),
+    `摘要必须用同一个指标名：${e.summary.hypothesisDigest}`);
+});
+
+test('targetMetric 非串 / 空串 / 全空格 ⇒ 回落到 variant（不认脏值是指标）', () => {
+  for (const bad of [null, undefined, '', '   ', 42, {}, []]) {
+    const e = ok({ targetMetric: bad });
+    assert.equal(e.summary.targetMetric, 'SUCCESS_RATE', `${JSON.stringify(bad)} 不该顶掉 variant 值`);
+  }
+  // variant 也没有指标时，脏的入参同样救不回来 —— 拒写，不猜。
+  const built = buildLedgerEntry({ proposal, variant: { ...variant, expected_effect: {} }, outcome, targetMetric: '  ' });
+  assert.equal(built.blocker, 'TARGET_METRIC_UNEVIDENCED');
+});
+
+test('variant 行缺失时 targetMetric 入参不许绕过 NO_VARIANT_ROW', () => {
+  const built = buildLedgerEntry({ proposal, variant: null, outcome, targetMetric: 'SUCCESS_RATE' });
+  assert.equal(built.ok, false);
+  assert.equal(built.blocker, 'NO_VARIANT_ROW',
+    'generation / 候选 id 仍无出处，给个指标名也补不齐这条目');
+});
+
 // ── 写入器 ──────────────────────────────────────────────────────────────
 
 /** append 的真实契约（lib/ledger.js:262）：{ entry, idempotent }。 */

@@ -84,7 +84,7 @@ function generationLabel(variant) {
  * 不复用重建侧的 buildDigest：那边从事件流水反推（手里只有 payload），
  * 这边握着 proposal 原文。两者形状相似但不是同一函数，各自被自己的测试锁死。
  */
-function buildDigest({ proposal, variant, outcome }) {
+function buildDigest({ proposal, variant, outcome, targetMetric }) {
   const parts = [];
   parts.push(`${proposal?.kind ?? 'mutation'}`);
   const promptId = proposal?.payload?.promptId ?? variant?.payload?.promptId;
@@ -94,8 +94,10 @@ function buildDigest({ proposal, variant, outcome }) {
     parts.push(`bytes ${outcome.bytesBefore}->${outcome.bytesAfter}`);
   }
   const ee = variant?.expected_effect;
-  if (ee?.metric) {
-    parts.push(`expected ${ee.metric} ${ee.direction ?? '?'} within ${ee.window ?? '?'}`);
+  if (targetMetric) {
+    // 指标名用**条目最终定的那一个**（可能与 variant 行里的 'unspecified' 不同，见
+    // buildLedgerEntry 的 targetMetric 入参）：摘要与 summary 分叉 = 两条真相。
+    parts.push(`expected ${targetMetric} ${ee?.direction ?? '?'} within ${ee?.window ?? '?'}`);
   }
   if (outcome.verifyMode) parts.push(`verify=${outcome.verifyMode}`);
   if (outcome.sandboxOk === false) parts.push('verify=fail');
@@ -149,9 +151,12 @@ function lockedPredictionOf(prediction) {
  * @param {object|null} [input.prediction]
  *   **评估之前**锁定的预测（`createPredictionLocker().lock()` 的返回值原样传入）。
  *   缺省 / 未入库 ⇒ 三个预测字段留 null（守卫测试「⛔ 无证据字段一律 null」锁的就是这个形状）。
+ * @param {string|null} [input.targetMetric]
+ *   调用方定出的目标指标（`metric-resolver.js`）。只在 variant 行落兜底时用得上，
+ *   且**必须与锁定时同一个值**（见下面的注释）。
  * @returns {{ok: true, entry: object} | {ok: false, blocker: string, reason: string}}
  */
-export function buildLedgerEntry({ proposal, variant, outcome, prediction = null } = {}) {
+export function buildLedgerEntry({ proposal, variant, outcome, prediction = null, targetMetric: targetMetricOverride = null } = {}) {
   // contractId：实时路径此刻没有 Contract 对象（Phase 0 的 contracts 表未接入本链路），
   // 用 FROZEN proposal.id 顶替 —— 它是这次进化真实且唯一的身份，重放时同一个值 ⇒ 幂等成立。
   // ⛔ 不要加前缀：重建侧的 `REBUILD:<proposalId>` 才是"后补记录"的标记，
@@ -172,9 +177,18 @@ export function buildLedgerEntry({ proposal, variant, outcome, prediction = null
   // targetMetric 直接取 variant 行记录的值。生产实况是 `metric: "unspecified"`
   // （population 的 ingest 缺省）——**照原样入链**，不把它当"缺证据"：
   // 这条目要证的是"系统当时确实没定指标"，替它编一个指标才是造假。
-  const targetMetric = variant.expected_effect?.metric;
+  //
+  // 唯一例外：调用方传入 `targetMetric`（1a 方案② = `metric-resolver.js` 从
+  // **提案自己声明的** `expectedEffect` 串里读出来的指标）。⛔ 这条入参不是给
+  // "填个好看的指标"开的后门，它服务的是密码学约束：`hypothesisLock` 把
+  // targetMetric 折进了摘要，条目里若写另一个值，1b 归档复原重算必判**假篡改**，
+  // 整把锁作废。所以"锁用什么指标，条目就必须用什么指标"。
+  const variantMetric = variant.expected_effect?.metric;
+  const targetMetric = (typeof targetMetricOverride === 'string' && targetMetricOverride.trim() !== '')
+    ? targetMetricOverride
+    : variantMetric;
   if (typeof targetMetric !== 'string' || targetMetric === '') {
-    return { ok: false, blocker: 'TARGET_METRIC_UNEVIDENCED', reason: 'variant.expected_effect.metric 不是非空串 ⇒ 拒写' };
+    return { ok: false, blocker: 'TARGET_METRIC_UNEVIDENCED', reason: 'targetMetric 入参与 variant.expected_effect.metric 都不是非空串 ⇒ 拒写' };
   }
 
   const decision = outcome?.decision;
@@ -203,7 +217,7 @@ export function buildLedgerEntry({ proposal, variant, outcome, prediction = null
         mutationType,
         changedPlugins: pluginFromPath(outcome.path),
         targetMetric,
-        hypothesisDigest: buildDigest({ proposal, variant, outcome }),
+        hypothesisDigest: buildDigest({ proposal, variant, outcome, targetMetric }),
         predictedDelta: locked ? locked.predictedDelta : null,
         actualDelta: null,
         predictionQuality: null,
@@ -253,6 +267,7 @@ export function createLedgerWriter(ctx, { warn = () => {}, now = () => new Date(
       variant: input.variant,
       outcome: { ...input.outcome, timestamp: input.outcome?.timestamp ?? now() },
       prediction: input.prediction ?? null,
+      targetMetric: input.targetMetric ?? null,
     });
     if (!built.ok) {
       // 拒写不是"跳过"：缺证据必须留下是哪个字段缺，否则事后与"没跑这条分支"无法区分。

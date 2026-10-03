@@ -51,6 +51,7 @@ import { randomUUID } from 'node:crypto';
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
 import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
 import { createPredictionLocker } from './prediction-locker.js';
+import { resolveTargetMetric } from './metric-resolver.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -693,6 +694,10 @@ export function apply(ctx, config = {}) {
       // 下面更深的 try 内部，而 runOnce 的 return 在那一层之外。
       // 没有它，「policy 到底是 AUTO_DEPLOY 还是 PENDING_REVIEW」在进程退出后永远无从查证。
       let commitAudit = null;
+      // 1a 的观测段声明在这一层（与 commitAudit 同级）：commit 被跳过时 commitAudit
+      // 是 null，summary 会只剩一句 note —— 那一刻已经落表的锁就成了"表里有 hash、
+      // 别处查不到预测内容"的孤行。把 predictionAudit 提到外层，跳过分支也带得出去。
+      let predictionAudit = null;
       if (commitOn && repoRoot) {
         const commitPath =
           target.type === 'skill' ? `presets/agint/skills/${targetId}/SKILL.md` : targetId;
@@ -719,11 +724,20 @@ export function apply(ctx, config = {}) {
           // ── Phase 1.1 支点 1a：预测锁定（§2.4.2「锁定必须先于执行」）
           //    放在 commitToRepo 之前：这一刻 policy / verify / 写入结果**都还不存在**，
           //    锁进去的数字不可能是照着一个还没发生的结果编的。
+          //
+          // 1a 补片（方案②）：先定这次要预测哪个指标。variant 行本来就记着就用它；
+          // 落兜底 'unspecified' 时才去读**提案自己声明的** expectedEffect 串
+          // （lib/metric-resolver.js）。读不出就留 null ⇒ 外壳判 NO_PREDICTION、不落锁。
+          // ⛔ 同一个 metric 必须同时喂给锁和条目：hypothesisLock 把它折进了摘要。
+          const metricResolution = resolveTargetMetric({
+            variantMetric: variant?.expected_effect?.metric ?? null,
+            expectedEffect: proposal.expectedEffect,
+          });
           let prediction = null;
           const lockRes = await predictionLocker.lock({
             contractId: proposal.id,
             mutationType: proposal.kind,
-            targetMetric: variant?.expected_effect?.metric ?? null,
+            targetMetric: metricResolution.metric,
             changedComponents: pluginFromPath(commitPath),
           });
           if (lockRes.ok === true) {
@@ -732,11 +746,16 @@ export function apply(ctx, config = {}) {
           } else {
             state.predictionSkipped += 1;
           }
-          const predictionAudit = {
+          predictionAudit = {
             status: lockRes.status,
             predictedDelta: lockRes.ok === true ? lockRes.predictedDelta : null,
             predictionSource: lockRes.predictionSource ?? null,
             lockEventId: lockRes.lockEventId ?? null,
+            // 指标出处必须落盘可查：报告要能分清「variant 记过指标」与
+            // 「从期望串解析出来的」两类预测，不能靠读代码反推。
+            targetMetric: metricResolution.metric,
+            targetMetricSource: metricResolution.source,
+            targetMetricReason: metricResolution.reason,
           };
           try {
             commit = await commitToRepo({
@@ -889,6 +908,8 @@ export function apply(ctx, config = {}) {
                   eventIds: [outcomeEventId],
                 },
                 prediction,
+                // ⛔ 与锁定时同一个指标：条目写另一个值，1b 归档重算必判假篡改。
+                targetMetric: metricResolution.metric,
               });
               if (ledgerRes.ok) {
                 state.ledgerWritten += 1;
@@ -909,10 +930,6 @@ export function apply(ctx, config = {}) {
                 ...commitAudit,
                 ledgerSeq: ledgerRes.seq,
                 ledgerStatus: ledgerRes.status,
-                // 1a：锁定的状态经 summary 通道落盘（cron 只持久化 result.summary）。
-                // 没有它，「predictedDelta 为 null」到底是**没指标可预测**（NO_PREDICTION）
-                // 还是**锁服务不可用**（LOCK_UNAVAILABLE）在进程退出后就再也分不清。
-                prediction: predictionAudit,
               };
             }
           } catch (error) {
@@ -971,6 +988,8 @@ export function apply(ctx, config = {}) {
           candidateId: candidate.id,
           commitAttempted: commit != null,
           ...(commitAudit ?? { note: commit == null ? 'no-commit-attempted' : 'commit-ok-unknown' }),
+          // 1a：锁的观测段独立于 commitAudit —— 跳过 commit 时也要看得见。
+          prediction: predictionAudit,
         },
       };
     }

@@ -1,5 +1,63 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.13 — 2026-10-03（targetMetric 从提案期望里读出来，1a 补片 / 方案②）
+
+### 问题
+
+v0.2.12 把锁接进了主循环，但明写了「生产当前形态下不产生锁行」：
+mutator 的 `expectedEffect` 是**字符串**（FROZEN，`agint-mutator/lib/index.js:128`），
+population 只认**对象**（`agint-population/lib/index.js:173`）⇒ 实时路径
+`variant.expected_effect.metric` 恒为 `'unspecified'` ⇒ `DEFAULT_RULE_TABLE` 查不到 ⇒
+每周期 `NO_PREDICTION_AVAILABLE`。老板拍板走方案②（不动 FROZEN、不等 1b）。
+
+### 变更
+
+- **新增 `lib/metric-resolver.js`**：`resolveTargetMetric({ variantMetric, expectedEffect })`。
+  - 优先级只有一条：variant 行记过指标就用它，本模块不插手（四类之外的指标名也原样放行 ——
+    它是真实记录，不是"不在表里就作废"）。只有落兜底（`'unspecified'` / 空）才去读期望串。
+  - 关键词表封闭（`METRIC_KEYWORDS` 四类，中英都收）。⛔ 不替提案编指标：
+    一个都不匹配 ⇒ `METRIC_UNSTATED`；匹配两类以上 ⇒ `METRIC_AMBIGUOUS` + `matched` 列出全部。
+  - **为什么歧义时不取第一个命中**：一旦按顺序取，就是**关键词表的顺序**在替系统做预测，
+    而不是提案在说它要改什么。宁可这一期没预测。
+  - 返回值带 `source`（`VARIANT` / `EXPECTED_EFFECT`），出处必须分栏可查。
+- `index.js`：锁定前先解析指标，同一个值**同时**喂给 `predictionLocker.lock()` 与
+  `ledgerWriter.writeDecision()`。理由不是美观，是密码学：`hypothesisLock` 把 targetMetric
+  折进了摘要，条目里写另一个值 ⇒ 1b 归档复原重算必判**假篡改**，整把锁作废。
+- `index.js`：`predictionAudit` 提到与 `commitAudit` 同一层，并直接挂进 `runOnce` 返回的
+  `summary.prediction`（不再只挂在 commitAudit 里）。跳过 commit 时 commitAudit 是 null，
+  那一刻已经落表的锁会成"表里有 hash、别处查不到预测内容"的孤行；提到外层就看得见。
+  新增三个字段：`targetMetric` / `targetMetricSource` / `targetMetricReason`。
+- `ledger-writer.js`：`buildLedgerEntry` 收可选 `targetMetric` 入参（非空串才认，脏值回落到
+  variant 行，⛔ 不许用来补一个"看起来对"的指标）；`hypothesisDigest` 改用**同一个**指标名，
+  否则摘要与 `summary.targetMetric` 分叉成两条真相。`variant: null` 仍判 `NO_VARIANT_ROW`
+  —— 给个指标名补不齐 generation 与候选 id 的出处。
+
+### 测试
+
+- 新增 `test/metric-resolver.test.mjs` 8 case：variant 优先（含四类之外）/ 兜底值与脏值都不算指标 /
+  七种生产措辞解析 / 不匹配 / 歧义 / 期望缺失 / 纯函数 / **两张表分叉守卫**
+  （解析表每个指标必须在 `DEFAULT_RULE_TABLE` 每一类里有条目，反向也必须一一对应 ——
+  否则就是"解析得到却预测不出来"的哑弹）。
+- `test/smoke.mjs` **T25f**：生产形状（variant `unspecified` + 期望串"通过率 >= 95%"）⇒
+  真落一行锁、条目 `targetMetric` 是 `SUCCESS_RATE`、摘要与预测字段齐全、出处标 `EXPECTED_EFFECT`，
+  并**只用这条 Ledger 条目 + 表里的 lockedAt 重算 hash 必须逐字节相同**（归档真跑得起来）。
+  **T25g**：期望串含两个指标 ⇒ 不锁、`METRIC_AMBIGUOUS` 落 summary、链上照原样留 `unspecified`、
+  commit 不受影响。
+- `test/ledger-writer.test.mjs` +3 case：入参覆盖 + 摘要同步 / 脏值回落且拒写不被绕过 /
+  `NO_VARIANT_ROW` 不被指标入参绕过。
+- 套件：driver 214（原 201）全绿。红绿自证：把条目的 `targetMetric` 改回 variant 值
+  ⇒ T25f 的 hash 复原断言立即变红，改回后全绿。
+
+### 已知未收口（不在本轮）
+
+- 期望串的措辞覆盖面 = 目前实际会产生的那些（driver 硬编码 `'baseline 通过率 >= 95% 在 7 天'`
+  + mutator `SOURCE_STUBS` 三类）。将来新增措辞要先加关键词表与用例，否则走 `METRIC_UNSTATED`
+  ⇒ 不锁（安全侧，但会静默少数据；`summary.prediction.targetMetricReason` 可查）。
+- 1b（actualDelta 的尺子与回填）、归档校验调用点、`prediction_outcomes` 表仍未做。
+- 运行态：本轮仍全是单元/契约层。判据是部署后 `contract_locks` 出现行、链上条目带非 null
+  `predictedDelta`，且 `summary.prediction.targetMetricSource` 两类都有分布。
+
+
 ## v0.2.12 — 2026-10-03（预测锁定进主循环，Phase 1.1 支点 1a / §2.4.2）
 
 ### 问题

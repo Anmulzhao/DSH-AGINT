@@ -70,6 +70,17 @@ Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：�
 + 有限数 + 非空 `hypothesisLock` + enum 内来源的入参，四个条件缺一就留 null。
 ⛔ 不要在 `buildLedgerEntry` 里现算预测 —— 守卫测试「无证据字段一律 null」锁的就是这个。
 
+### targetMetric 从哪来（v0.2.13）
+
+`lib/metric-resolver.js`：variant 行记过指标就用它；落兜底 `unspecified` 时才读
+**提案自己声明的** `expectedEffect` 串（mutator FROZEN 要求它可证伪，如
+`'baseline 通过率 >= 95% 在 7 天'` ⇒ `SUCCESS_RATE`）。关键词表封闭，四类之外的指标名原样放行。
+读不出就 `null`：一个都不匹配是 `METRIC_UNSTATED`，命中两类以上是 `METRIC_AMBIGUOUS`（歧义不取第一个 ——
+那是让关键词表的顺序替系统做预测）。
+
+解析结果**同一个值**要同时进锁和 Ledger 条目：`hypothesisLock` 把 targetMetric 折进了摘要，
+两边不一致，归档重算必判假篡改。出处（`VARIANT` / `EXPECTED_EFFECT`）落 `cycle.summary.prediction`。
+
 ## 测试
 
 ## goal 桥（v0.2.6，行动 #2）
