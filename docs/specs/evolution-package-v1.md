@@ -9,8 +9,8 @@
 > - ✅ 已实施：D1–D6 脱敏、可复现打包（tar+gzip 定 mtime/level）、逐文件 hash、Merkle root、包内外双路校验。
 > - ⚠️ **部分实施**：`01-code/diff.patch` 仍只给 `preimage-manifest.json` 清单（需 diff 工具生成）⇒ **代码级复现 R1 依赖接收方自行比对 preimage**。
 > - ⚠️ `reproductionLevel` **实算**（非硬编码）：需 git HEAD + preimage 同时成立才给 R1，否则降级为 **R0**（R0 = 只能复现「包内容本身」，规范 §2 未列此级，是实现补的诚实档）。
-> - ⛔ `02-contract/`、`03-evaluation/benchmark-results.json` 等分区**尚未产出**（依赖 Evolution Ledger 与 contract-manager 挂载）。
-> - ⛔ `ledgerProofAvailable` 恒为 `false`（生产 `evolution_ledger` 表 0 行，2026-10-03 实测）⇒ **R2 不可达**。
+> - ⛔ `02-contract/`、`03-evaluation/benchmark-results.json` 等分区**尚未产出**（依赖 contract-manager 挂载与 Evolution Ledger 锚定）。
+> - ⛔ `ledgerProofAvailable` 恒为 `false`（生产 `evolution_ledger` **有 6 条但 0 条 ANCHORED**，锚点文件 0 行，2026-10-03 实测）⇒ **R2 不可达**。详见 [`evolution-ledger-v1.md` §10](./evolution-ledger-v1.md)。
 
 ---
 
@@ -121,7 +121,7 @@ evolution-package-GEN-0NN.tar.gz
     "packageHash": "sha256:<对全部文件 hash 的 Merkle root>",
     "fileCount": 0,
     "ledgerProofAvailable": false,
-    "ledgerProofReason": "生产 evolution_ledger 表 0 行（2026-10-03 实测）⇒ 无 Merkle proof 可用"
+    "ledgerProofReason": "生产 evolution_ledger 6 条中 0 条 ANCHORED、锚点文件 0 行（2026-10-03 实测）⇒ 无可用 Merkle proof"
   },
 
   "redaction": {
@@ -300,8 +300,10 @@ external-anchor 提案指出的 **G1**（判定基准与被评对象同池、可
 
 ## 9. 已知限制
 
-1. **`ledgerProofAvailable` 当前必为 `false`** —— 生产 `evolution_ledger` 表 0 行（2026-10-03 实测），
-   `verify-ledger-chain.mjs` 报 `LEDGER_EMPTY`。⇒ **R2 依赖的信任锚不存在**。
+1. **`ledgerProofAvailable` 当前必为 `false`** —— 生产 `evolution_ledger` 有 6 条（seq 1-6 无空洞），
+   但 **0 条 `ANCHORED`**、锚点文件 `docs/evolution-ledger-anchor.md` **0 行**（2026-10-03 实测），
+   `verify-ledger-chain.mjs --anchor` 报 `ANCHOR_NO_ROWS`，信任层级 **L0**。
+   ⇒ **R2 依赖的信任锚不存在**（链在，锚没落地）。
 2. **R3 不可达**（§2.1 三条原因）—— 不是待修的缺陷，是结构性的。
 3. **preimage 无保留策略**（§7.1）—— 首次真实导出前必须核实目标期的 preimage 还在。
 4. **D2 路径泛化破坏直接还原性** —— 泛化后无法用 preimage 直接回滚，接收方需人工适配路径。

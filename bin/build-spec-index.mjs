@@ -69,6 +69,46 @@ export const NON_SPEC_FILES = new Set([
  */
 const REGISTRY = [
   {
+    id: 'evolution-ledger',
+    version: '1.0',
+    status: 'DESIGN',
+    files: ['evolution-ledger-v1.md'],
+    owner: 'agint-evolution-memory',
+    machineReadable: false,
+    dependencies: [],
+    consumers: [
+      'plugins/agint-evolution-memory/lib/ledger.js',
+      'plugins/agint-evolution-memory/lib/ledger-hash.js',
+      'plugins/agint-evolution-memory/lib/ledger-anchor.js',
+      'plugins/agint-evolution-memory/lib/ledger-rebuild.js',
+      'bin/verify-ledger-chain.mjs',
+      'bin/anchor-ledger.mjs',
+      'bin/rebuild-ledger-history.mjs',
+      'bin/export-evolution-package.mjs',
+      'plugins/agint-cron/lib/jobs.js',
+    ],
+    implementedBy:
+      '⚠️ **链已跑通，账本未成立**（仍判 DESIGN：外部锚定 0 行 ⇒ 信任层级 L0）。' +
+      '已实装（2026-10-03 实测）：写入协议 `lib/ledger.js`（单写者锁 + contractId 幂等 + ' +
+      '空洞按篡改级拒 + 落盘前 CAS 复核 + 逐条同步失败即抛）；纯计算层 `lib/ledger-hash.js` ' +
+      '（BATCH_SIZE=8 的批内 Merkle + roll-up + proof，`fixtures/ledger-hash-vectors.json` 锁住' +
+      '三份实现的一致性）；外部锚定 `lib/ledger-anchor.js`（cron `ledger-anchor` 调，⛔ 只 commit 不 push）；' +
+      '历史重建 `lib/ledger-rebuild.js`；独立校验器 `bin/verify-ledger-chain.mjs`（⛔ 不 import 插件代码）。' +
+      '生产实况：`evolution_ledger` **6 条、seq 1-6 无空洞、roll-up root sha256:949345879ab0…**，' +
+      '但 **0 ANCHORED / 6 PENDING**，锚点文件 `docs/evolution-ledger-anchor.md` **0 行** ⇒ ' +
+      '`ANCHOR_NO_ROWS`、信任层级 L0。且 6 条**全是 `reconstructed: true`，实时入链 0 条**。' +
+      '⇒ 「Ledger 已跑通」现在还不能说：跑通的是链，不是账本 —— 账本要有链外锚定才成立。',
+    evidence: [
+      'node bin/verify-ledger-chain.mjs --full ⇒ Chain integrity: 6 entries, seq 1-6, no gap',
+      'node bin/verify-ledger-chain.mjs --full ⇒ Merkle: 1 batch(es), roll-up root sha256:949345879ab0…',
+      'node bin/verify-ledger-chain.mjs --full ⇒ Anchor status: 0 ANCHORED, 6 PENDING',
+      'node bin/verify-ledger-chain.mjs --anchor ⇒ ANCHOR_NO_ROWS: 锚点文件 0 行 ⇒ 从未锚定（信任层级 L0）',
+      'node bin/rebuild-ledger-history.mjs ⇒ 6 条（实时 0 / 重建 6），§4.3.5 时序窗口【开】',
+      'BATCH_OPEN（批 1 未满 6/8）是 note 不是 fail —— 未满批的根本就会随追加变化',
+    ],
+    conflictsResolved: ['phase1-ledger-zero-rows-claim'],
+  },
+  {
     id: 'evolution-contract',
     version: '1.0',
     status: 'DESIGN',
@@ -182,25 +222,15 @@ const REGISTRY = [
  *    从而重新设计一遍 —— 这正是 Phase 2 §5.1「按类推填空」的同型风险（K129）。
  */
 const PENDING = [
-  {
-    id: 'evolution-ledger',
-    version: '1.0',
-    status: 'DESIGN',
-    plannedFiles: ['evolution-ledger-v1.md'],
-    owner: 'agint-evolution-memory',
-    blockedBy: [],
-    note:
-      '⚠️ **代码全套已实装但生产零落行**（Phase 3 启动时实测）：' +
-      'lib/ledger.js + ledger-hash.js + ledger-anchor.js + ledger-rebuild.js，' +
-      'bin/verify-ledger-chain.mjs + anchor-ledger.mjs + rebuild-ledger-history.mjs，' +
-      'cron job `ledger-anchor` 已在 jobs.js 声明。' +
-      '但生产 evolution_ledger 表 0 行、`verify-ledger-chain.mjs` 报 LEDGER_EMPTY ⇒ ' +
-      '**已实装 ≠ 已跑通**。规范化时必须核实这两件事，不能只看代码存在。',
-  },
-  // ⛔ benchmark-isolation 已于 Sprint 19（2026-10-03）从本段**移出**：
-  //    docs/specs/benchmark-isolation-v1.md 已写出并登记进 specs[]。
+  // ⛔ evolution-ledger 已于 2026-10-03 从本段**移出**：
+  //    docs/specs/evolution-ledger-v1.md 已写出并登记进 specs[]。
   //    一份规范不能同时在「已落地登记」与「已识别未落地」两段
   //    （check-spec-consistency.mjs 会报「结构冲突」）。
+  //
+  // ⚠️ 移出时顺手订正了一处假「零落行」：旧 note 写「生产 evolution_ledger 表 0 行、
+  //    verify-ledger-chain 报 LEDGER_EMPTY」—— 那是 Phase 3 启动时的快照。
+  //    2026-10-03 实测已是 6 条（重建），仅锚点仍 0 行。K129：先问「为什么是这个数」。
+  //
   {
     id: 'prediction-scoring',
     version: '1.0',

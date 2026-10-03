@@ -4,6 +4,21 @@
   "agintVersion": "0.9.0",
   "rules": [
     {
+      "spec": "evolution-ledger",
+      "currentVersion": "1.0",
+      "consumers": [
+        "plugins/agint-evolution-memory/lib/ledger.js (已实施)",
+        "plugins/agint-evolution-memory/lib/ledger-hash.js (已实施)",
+        "plugins/agint-evolution-memory/lib/ledger-anchor.js (已实施)",
+        "plugins/agint-evolution-memory/lib/ledger-rebuild.js (已实施)",
+        "bin/verify-ledger-chain.mjs (已实施)",
+        "bin/anchor-ledger.mjs (已实施)",
+        "bin/rebuild-ledger-history.mjs (已实施)"
+      ],
+      "breakingChanges": [],
+      "upgradePolicy": "⛔ `ENTRY_HASH_FIELD_ORDER`（7 个入哈希字段）**只可增不可删**：删任何一个都会让全部历史 entryHash 失效、已发 proof 全部作废。新增字段按【纯新增】处理不升 major，但它对旧条目一律取默认值 ⇒ 旧链重算结果不变。⛔ 改 `LEDGER_BATCH_SIZE`（=8）→ 升 major：它让历史 proof 的形状变化。⛔ 把事后回写字段（anchorStatus / anchorSeq / integrity / reconstructed / evidenceCompleteness）加入哈希 → 升 major：锚定成功那一刻会把自己判成 TAMPERED。⛔ 改时间戳正则（UTC+毫秒+Z）→ 升 major。⛔ 把写入路径从 lib/ledger.js 挪走 → 升 major：CAS 复核与幂等是这条链唯一的防直写闸门"
+    },
+    {
       "spec": "evolution-contract",
       "currentVersion": "1.0",
       "consumers": [
@@ -54,10 +69,10 @@
   ],
   "knownGaps": [
     {
-      "gap": "evolution-ledger 规范未建，但 evolution-package 的 ledgerProof 依赖它",
+      "gap": "evolution-ledger 规范已建（2026-10-03），但外部锚点仍 0 行 ⇒ evolution-package 的 ledgerProof 仍拿不到信任锚",
       "impact": "R2 级复现的信任锚不存在；package 的 ledgerProofAvailable 当前必为 false ⇒ 实算等级封顶 R1（沙箱无 git/preimage 时为 R0）",
-      "evidence": "2026-10-03 实测：生产 agint_evolution.json 的 tables 仅 3 张，无 evolution_ledger；verify-ledger-chain.mjs 报 LEDGER_EMPTY",
-      "plannedBy": "Phase 1 收口后"
+      "evidence": "2026-10-03 实测：链有 6 条（seq 1-6 无空洞、roll-up root sha256:949345879ab0…），但 0 ANCHORED / 6 PENDING；docs/evolution-ledger-anchor.md 0 行 ⇒ verify-ledger-chain --anchor 报 ANCHOR_NO_ROWS，信任层级 L0",
+      "plannedBy": "部署 + 重启后跑一次 cron `ledger-anchor`（周一 10:15）"
     },
     {
       "gap": "「FROZEN 枚举不得被扩展」只有文字声明，尚无枚举值级门禁",
