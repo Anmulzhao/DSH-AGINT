@@ -261,6 +261,14 @@ window.__ModuleLoader__.load({
           title: 'AGINT 家族',
           subtitle: data && data.generatedAt ? `快照 ${new Date(data.generatedAt).toLocaleString('zh-CN')}` : '家族插件总览',
         },
+          h('button', {
+            type: 'button', className: 'agintfp-btn',
+            title: '在新标签页打开 v2 全页（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
+            onClick: () => {
+              const prefix = (data && data.apiPrefix) || '/api/agint-family';
+              window.open(prefix + '/v2', '_blank', 'noopener');
+            },
+          }, '打开 v2 全页'),
           h('button', { type: 'button', className: 'agintfp-btn', onClick: () => void load(), disabled: loading }, loading ? '刷新中…' : '刷新'),
           h('button', { type: 'button', className: 'agintfp-btn', onClick: back }, '返回会话'),
         ),

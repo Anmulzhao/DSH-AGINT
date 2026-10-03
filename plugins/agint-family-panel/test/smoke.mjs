@@ -100,6 +100,9 @@ assert.ok(clientSrc.includes(`id: 'agint-family-panel'`), 'factory id equals the
 assert.ok(!/\brequire\(['"]@deepseek-ai\/dsh-client-ui-primitives['"]\)/.test(clientSrc), 'imports no Harness client package');
 assert.ok(clientSrc.includes('var(--dsw-alias-'), 'styles through host theme tokens');
 assert.ok(clientSrc.includes('var(--dsh-frame-top-clearance'), 'honours the window-chrome clearance');
+// v0.2.0：v1 停靠面板必须带「打开 v2 全页」入口（新标签页，noopener）
+assert.match(clientSrc, /window\.open\([^)]*\/v2/, 'client.js 有 v2 全页入口');
+assert.match(clientSrc, /打开 v2 全页/, '入口按钮文案就位');
 // syntax check in a child process (the artifact references window)
 execFileSync(process.execPath, ['--check', join(root, 'lib/client.js')], { stdio: 'pipe' });
 
