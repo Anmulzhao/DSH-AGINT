@@ -68,6 +68,41 @@ function countNewCommits(repoPath, oldHash, newHash) {
   return parseInt(count, 10) || 0;
 }
 
+/**
+ * 从环境变量解析实际仓库列表（Phase -1.4）。schema.js 的 C3_GIT_REPOS 只声明槽位、
+ * path 留空，机器级绝对路径一律经此注入，避免他机路径入库。
+ *   DSH_PROJECT_ROOT         → dsh-agint 槽位的 checkout 根
+ *   DSH_INPUT_GATEWAY_REPOS  → `id=path;path2` 追加/覆盖（`;` 或 `,` 分隔）
+ * 未配置的槽位 path 为空，会被丢弃（channel 空转而非拿假路径瞎跑）。
+ */
+export function resolveGitRepos(env = process.env) {
+  const byId = new Map();
+  for (const slot of C3_GIT_REPOS) byId.set(slot.id, { ...slot, path: '' });
+
+  if (env.DSH_PROJECT_ROOT) {
+    const self = byId.get('dsh-agint');
+    if (self) self.path = env.DSH_PROJECT_ROOT;
+    else byId.set('dsh-agint', { id: 'dsh-agint', path: env.DSH_PROJECT_ROOT, label: 'DSH-AGINT (self)' });
+  }
+
+  const extra = env.DSH_INPUT_GATEWAY_REPOS;
+  if (extra) {
+    for (const seg of extra.split(/[;,]/).map((s) => s.trim()).filter(Boolean)) {
+      const eq = seg.indexOf('=');
+      if (eq > 0) {
+        const id = seg.slice(0, eq).trim();
+        const path = seg.slice(eq + 1).trim();
+        const prev = byId.get(id);
+        byId.set(id, { id, path, label: prev?.label || id });
+      } else {
+        byId.set(seg, { id: seg, path: seg, label: seg });
+      }
+    }
+  }
+
+  return [...byId.values()].filter((r) => r.path);
+}
+
 export const externalGitChannel = {
   id: 'external-git',
   type: CHANNEL_TYPES.EXTERNAL,
@@ -78,7 +113,7 @@ export const externalGitChannel = {
     const newState = {};
     const signals = [];
 
-    for (const repo of C3_GIT_REPOS) {
+    for (const repo of resolveGitRepos()) {
       const head = getHead(repo.path);
       if (!head) {
         // 仓库不可读，记录上次已知状态
@@ -127,7 +162,7 @@ export const externalGitChannel = {
 
   async health() {
     const state = loadState();
-    const tracked = C3_GIT_REPOS.map((r) => ({
+    const tracked = resolveGitRepos().map((r) => ({
       repo: r.id,
       knownHead: state[r.id]?.hash?.slice(0, 8) || 'unknown',
     }));

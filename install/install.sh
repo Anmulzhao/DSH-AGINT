@@ -397,13 +397,53 @@ for root, dirnames, filenames in os.walk(tmp):
         if os.path.islink(p):
             os.unlink(p)
 
-# --delete 语义：stage 成功后整体换入
+# --delete 语义：stage 成功后整体换入。
+# ⚠ dsh 运行时 chokidar 会锁 dst，rmtree 必 PermissionError(WinError 5)。
+#   捕获后退化为「覆盖式同步」：只把 tmp 的文件写进 dst（dirs_exist_ok=True），
+#   不删目录、不清旧实体。代价是 dst 内 src 已删除的文件会残留（--delete 语义丢失）——
+#   这是「装不动」与「残留旧文件」之间的取舍，优先保证安装能完成。
+mode = 'replace'
 if os.path.exists(dst):
-    shutil.rmtree(dst)
-os.rename(tmp, dst)
+    try:
+        shutil.rmtree(dst)
+    except PermissionError as e:
+        mode = 'overwrite'
+        sys.stderr.write(f"WARN safe_rsync: dst 被占用（{e.__class__.__name__}），退化覆盖式同步（不删旧文件）: {dst}\n")
+
+if mode == 'replace':
+    os.rename(tmp, dst)
+else:
+    shutil.copytree(tmp, dst, ignore=ignore, dirs_exist_ok=True)
+    # 覆盖式同样要挡软链：再扫一遍 dst，清掉跟进来的符号链接
+    for root, dirnames, filenames in os.walk(dst):
+        for n in list(dirnames) + filenames:
+            p = os.path.join(root, n)
+            if os.path.islink(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    try:
+        shutil.rmtree(tmp)
+    except OSError:
+        pass
 PY
   fi
 }
+
+# ── 0.4 dsh 运行检测（信息性，不阻断）─────────────────────────────────────────
+# dsh 在跑时 chokidar 会锁插件目录文件，令 rmtree 失败。真正的安全网是 safe_rsync
+# 的覆盖式退化分支（见上）；本检测只负责「能认出来就提前提醒一声」，认不出也不误报。
+# pgrep 在 Windows Git Bash 常缺失，缺失即静默跳过——不假装检测过。
+detect_dsh_running() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  if pgrep -x dsh >/dev/null 2>&1 || pgrep -if 'dsh-app-boot|dsh/bin/dsh' >/dev/null 2>&1; then
+    warn "检测到 dsh 进程疑似在运行。"
+    warn "  建议先停 dsh 再装以避免文件锁；不停也行 —— safe_rsync 会自动退化为覆盖式同步。"
+  fi
+  return 0
+}
+detect_dsh_running
 
 # ── 0.5 确保中央备份目录存在 ─────────────────────────────────────────────────
 # backup() 里 tar -czf 打开的是 $BACKUP_DIR 下的文件，目录不存在会直接

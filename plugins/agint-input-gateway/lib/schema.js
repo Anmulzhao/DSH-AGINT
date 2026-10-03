@@ -61,17 +61,16 @@ export const C4_CRON = '30 3 * * *';
 /**
  * C3 git 仓库列表（本地快照路径，不做网络 fetch）
  *
- * 2026-10-01 本机收敛：原为 4 条硬编码 Windows 路径 D:/DSH/project源码/{dsh,openclaw,Hermes,DSH-AGINT}。
- * 本机实测后只保留 DSH-AGINT —— 判据是「能 rev-parse 且至少 1 个 commit」：
- *   - DSH-AGINT  → /home/kylin/projects/DSH/DSH-AGINT（423 commits，origin Anmulzhao/DSH-AGINT）✅
- *   - dsh        → 本机无本地仓库，仅 npm 全局安装 @deepseek-ai/dsh            ❌
- *   - openclaw   → ~/.openclaw/workspace 是 0-commit / 无 origin 的空壳，getHead 取不到 ❌
- *   - Hermes     → 本机不存在                                                  ❌
- * 保留 3 条无效路径只会让 getHead 静默失败，故删除。
- * 附带：C3 external-git channel 目前未启用（channel_state 仅 adversarial），本改动当前零运行时影响。
+ * ⚠ 机器级绝对路径不在此硬编码（Phase -1.4）：旧值 `/home/kylin/projects/DSH/DSH-AGINT`
+ *   是麒麟机路径，Windows 机每次装会覆盖且本机取不到。此处只声明「仓库槽位」（id + label），
+ *   path 一律留空，由消费者 external-git.js 的 resolveGitRepos() 从环境变量注入：
+ *     DSH_PROJECT_ROOT         → 填 dsh-agint 槽位（DSH-AGINT checkout 根）
+ *     DSH_INPUT_GATEWAY_REPOS  → 追加/覆盖额外仓库，格式 `id=path;path2`（`;` 或 `,` 分隔）
+ *   两者优先级与校验见 bin/validate-env-config.mjs。未配置时该列表解析为空，channel 空转
+ *   （C3 external-git 当前本就未启用，零运行时影响）。
  */
 export const C3_GIT_REPOS = Object.freeze([
-  { id: 'dsh-agint', path: '/home/kylin/projects/DSH/DSH-AGINT', label: 'DSH-AGINT (self)' },
+  { id: 'dsh-agint', path: '', label: 'DSH-AGINT (self)' },
 ]);
 
 /** 已注册 Channel 的 id 常量 */
