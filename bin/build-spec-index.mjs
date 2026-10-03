@@ -106,7 +106,7 @@ const REGISTRY = [
       '`bin/build-scenario-inventory.mjs --check` 真会红（判据层 36 + 生成器 36 条单测，' +
       '12 条「放宽⇒变红」实验实测）；**读端门已生效**：`eval/scenarios/driver.js` 默认只吃 ' +
       'EVOLUTION 层，宽视图须显式 `--tier=ALL`，sidecar 缺失或映射缺失 ⇒ fail-closed exit 1。' +
-      '未落地：三层目录未建（本 Sprint 不动，`driver.js:2499` 非递归发现）、Frozen 集 0 个单元、' +
+      '未落地：三层目录未建（本 Sprint 不动，`driver.js` 场景发现是单层 `readdir`（非递归；2026-10-03 时点在 2543 行附近））、Frozen 集 0 个单元、' +
       'labelAuthority 全为 UNSET ⇒ **机制落地了，「三层」本身还没建**。',
     evidence: [
       'eval/scenarios/inventory.json 123/123 单元含 visibility 与 labelAuthority（sidecar eval/tiers/agint-tiering.json）',

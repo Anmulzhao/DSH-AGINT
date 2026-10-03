@@ -43,7 +43,7 @@
 | 标签存哪 | sidecar `eval/tiers/agint-tiering.json` | 写进场景文件会让 123 个 `contentHash` 全变、与 Frozen 防篡改基线自相矛盾 ⇒ 实测 `contentHash` 变化 **0 条** |
 | `--check` 真会红 | ✅ | 判据层 8 条 + 生成器 4 条 + 存储层 5 条「放宽⇒变红」实验全部实测红 |
 | 读端门（三层隔离唯一真正起作用的地方） | ✅ 已落地 | `eval/scenarios/driver.js` 默认 `--tier=EVOLUTION`；宽视图须显式 `--tier=ALL`；sidecar 缺失或映射缺 ⇒ fail-closed exit 1 |
-| 三层物理目录 | ⛔ 未建 | 本 Sprint 不动目录：`driver.js:2499` 非递归发现，迁目录会连带 `sourceFile` 历史路径 |
+| 三层物理目录 | ⛔ 未建 | 本 Sprint 不动目录：`driver.js` 场景发现是单层 `readdir`（非递归；2026-10-03 时点在 2543 行附近），迁目录会连带 `sourceFile` 历史路径 |
 | Frozen 集 | ⛔ **0 个单元** | 首期 10 个未分配；`visibility` 全 `EVOLUTION`，`labelAuthority` 全 `UNSET` |
 | `benchmark_frozen_set` 生产行数 | ⛔ **0 行** | 表 + 服务方法 `frozen-set.js` 已就绪（17 单测）；入账须部署后走宿主方法 —— 独立进程直写会被 last-write-wins 覆盖 |
 
