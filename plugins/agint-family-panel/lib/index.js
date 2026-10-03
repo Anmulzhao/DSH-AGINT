@@ -29,6 +29,10 @@
 
 import { z } from 'zod';
 import { createRequire } from 'node:module';
+import { readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { collectV2Data, resolveV2Dirs } from './v2-data.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
@@ -47,6 +51,27 @@ const API_PREFIX = '/api/agint-family';
 
 /** Route path served by this half. */
 const STATUS_PATH = `${API_PREFIX}/status`;
+
+/** v2 整页与其实时数据端点（0.2.0）。 */
+const V2_PAGE_PATH = `${API_PREFIX}/v2`;
+const V2_DATA_PATH = `${API_PREFIX}/v2/data`;
+const HERE = dirname(fileURLToPath(import.meta.url));
+const V2_HTML_PATH = resolve(HERE, '..', 'assets', 'panel-v2.html');
+
+/** HTML 资产按 mtime 缓存；文件丢失时回降级页而不是 500 裸文本。 */
+const htmlCache = { mtimeMs: 0, text: null };
+function readV2Html() {
+  try {
+    const st = statSync(V2_HTML_PATH);
+    if (htmlCache.text === null || htmlCache.mtimeMs !== st.mtimeMs) {
+      htmlCache.mtimeMs = st.mtimeMs;
+      htmlCache.text = readFileSync(V2_HTML_PATH, 'utf8');
+    }
+    return htmlCache.text;
+  } catch {
+    return '<!DOCTYPE html><meta charset="utf-8"><p>panel-v2.html 资产缺失（部署不完整）。</p>';
+  }
+}
 
 const Config = z.object({
   /** Master switch. Off keeps the route answering `{ enabled: false }` so the
@@ -411,9 +436,52 @@ function apply(ctx, config = {}) {
     },
   });
 
+  ctx.webServer.register({
+    kind: 'exact',
+    path: V2_PAGE_PATH,
+    handler: (req, res) => {
+      if (!enabled) { writeJson(res, 200, { ok: true, enabled: false, note: '面板已被 kill-switch 关闭' }); return; }
+      if (!allowNonLoopback && !isLoopback(req)) { writeJson(res, 403, { ok: false, error: 'loopback-only' }); return; }
+      if (req.method !== 'GET' && req.method !== 'HEAD') { writeJson(res, 405, { ok: false, error: 'method-not-allowed' }); return; }
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+      });
+      res.end(readV2Html());
+    },
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: V2_DATA_PATH,
+    handler: async (req, res) => {
+      try {
+        if (!enabled) {
+          writeJson(res, 200, { ok: true, enabled: false, apiPrefix: API_PREFIX, note: '面板已被 kill-switch 关闭（host 半仍在，可即时 reopen）' });
+          return;
+        }
+        if (!allowNonLoopback && !isLoopback(req)) {
+          writeJson(res, 403, { ok: false, error: 'loopback-only' });
+          return;
+        }
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
+          return;
+        }
+        const payload = collectV2Data(resolveV2Dirs());
+        writeJson(res, 200, { ...payload, enabled: true });
+      } catch (err) {
+        writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
+      }
+    },
+  });
+
   ctx.provide('agint.familyPanel', {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
+    /** v2 聚合快照；与 /v2/data 路由同源同缓存。 */
+    v2Data: () => collectV2Data(resolveV2Dirs()),
     /** The prefix the browser half fetches (root-absolute). */
     apiPrefix: API_PREFIX,
     /** Kill-switch: off keeps the route alive but empty. */

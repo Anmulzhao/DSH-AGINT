@@ -258,4 +258,46 @@ assert.equal(
   '同一行不会同时出现在两组（分组表重复列会导致重复计数）',
 );
 
-console.log('agint-family-panel smoke: PASS (14 groups)');
+// ── 15. v2 路由（0.2.0）────────────────────────────────────────────
+{
+  const { makeStorages } = await import('./fixtures/make-storages.mjs');
+  process.env.DSH_HOME = join(here, 'fixtures', 'v2-home');
+  makeStorages(process.env.DSH_HOME);
+  delete process.env.AGINT_HOME;
+  const v2ctx = makeCtx();
+  apply(v2ctx, {});
+  // 三条路由都注册
+  for (const p of ['/api/agint-family/status', '/api/agint-family/v2', '/api/agint-family/v2/data'])
+    assert.ok(v2ctx._registered.some((r) => r.path === p), `route ${p} registered`);
+  // data 路由：JSON、ok:true、scan/tools/cron/bus 四块就位（fixture 数据）
+  const d = await callRoute(v2ctx, { path: '/api/agint-family/v2/data' });
+  assert.equal(d.status, 200);
+  const body = JSON.parse(d.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.enabled, true);
+  assert.ok(body.scan.hits.length > 0, 'fixture 扫描有命中');
+  assert.ok(body.tools.rows.some((r) => r.t === 'alpha_do'), 'fixture tool_stats 进聚合');
+  assert.equal(body.cron.count, 2);
+  assert.equal(body.bus.total, 3);
+  // HTML 路由：text/html + 200
+  const h = await callRoute(v2ctx, { path: '/api/agint-family/v2' });
+  assert.equal(h.status, 200);
+  assert.match(h.headers['content-type'], /text\/html/);
+  // 非回环 → 403（两条新路由同守卫）
+  for (const p of ['/api/agint-family/v2', '/api/agint-family/v2/data']) {
+    const f = await callRoute(v2ctx, { path: p, remoteAddress: '8.8.8.8' });
+    assert.equal(f.status, 403, `${p} 非回环 403`);
+  }
+  // kill-switch：enabled=false → data 不吐家族数据
+  const off2 = makeCtx();
+  apply(off2, {});
+  off2._provided['agint.familyPanel'].setEnabled(false);
+  const offBody = JSON.parse((await callRoute(off2, { path: '/api/agint-family/v2/data' })).body);
+  assert.equal(offBody.enabled, false);
+  assert.equal(offBody.scan, undefined, '关闭时不吐数据');
+  // 服务面新增 v2Data 方法
+  assert.equal(typeof v2ctx._provided['agint.familyPanel'].v2Data, 'function', 'agint.familyPanel.v2Data 存在');
+  delete process.env.DSH_HOME;
+}
+
+console.log('agint-family-panel smoke: PASS (15 groups)');
