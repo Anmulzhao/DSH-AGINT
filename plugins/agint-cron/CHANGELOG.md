@@ -2,6 +2,27 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.7] — 新增 evolution-reconcile job（Phase -1.1 收口，2026-10-03）
+
+### 新增
+
+- **job `evolution-reconcile`**（Tue 08:00，排在 evolution-cycle Tue 07:00 之后 1h）：
+  每期闭环后按 `event_bus → population → 磁盘 preimage → mutator_stats` 优先级链交叉对账。
+  - **动机**：`mutator_stats.commits` 恒为空表，只按它读会把"跑成了"读成"没跑过"（Phase -1.1 要治的病）。
+  - **⛔ 只读出声不写盘**：有报告性差异（R1 事件与种群失同步 / R2 committed 磁盘缺 preimage=不可回滚红线）
+    时抛错进 cron 健康记录；修复由人做。`ok` 时把 `report.counts` 写进摘要。
+  - 排期经 `test/schedule-layout.test.mjs` 门禁（≥15min 间隔，`*/30` watchdog 除外）。
+- `lib/evolution-reconcile-core.js`：判据单一源。`reconcileEvolutionStats({storageDir, repoRoot})`
+  纯函数，三种结局 `ok` / `diff` / `unavailable` 可区分 —— **存储读不到 = unavailable，绝不冒充零差异通过**。
+  repoRoot 未知只降级为跳过 preimage 第 4 源，3 个存储源照常对账。
+- `lib/evolution-reconcile-audit.js`：cron job 决策封装，静态 import core（随 bundle 部署，**宿主可跑**）。
+- `bin/reconcile-evolution-stats.mjs` 改薄 CLI：反向 import core（判据不分叉；dev-only，不部署）。
+
+### 变更 / 依赖
+
+- 与 `spec-index-refresh` 的差别：那个 job 判据在 `bin/`，常驻宿主无 `bin/` ⇒ 通常 soft-skip；
+  本 job 判据**下沉进插件 lib**，故 3 存储源在宿主真跑。preimage 第 4 源需 `config.repoRoot`（可选）。
+
 ## [0.2.6] — 新增 spec-index-refresh job（Phase-3 轨道 C，2026-10-03）
 
 ### 新增

@@ -57,6 +57,7 @@
 | `oracle-weekly` | `0 8 * * 1` | 美谕周报（Mon 08:00，紧接周复盘串读；原周日 21:00） |
 | `wiki-lint` | `30 9 * * 1` | 断链/矛盾/孤岛三项检查（Mon 09:30；原周日 03:00 与 night-dream 撞车） |
 | `evolution-cycle` | `0 7 * * 2` | 闭环引擎驱动（Tue 07:00，复盘后第一波；原周日 04:15） |
+| `evolution-reconcile` | `0 8 * * 2` | 闭环取数三方对账（Tue 08:00，evolution-cycle 后 1h；Phase -1.1；**⛔ 只读出声不写盘**，见下方注） |
 | `baseline-regression-suite` | `30 9 * * 2` | 写一行 mount 通道 baseline 状态（Tue 09:30；原周日 03:15） |
 | `curriculum-weekly` | `30 9 * * 4` | 边界探测 → 待练域生成挑战（Thu 09:30，出队不自动执行；原周日 05:00） |
 | `skill-graph-weekly` | `30 9 * * 5` | 技能节点全量刷新 + 四类边重算（Fri 09:30，默认 count-only 标定期；原周日 07:00） |
@@ -74,6 +75,14 @@
 > 理由写进 `lastResultSummary`（`REPO_ROOT_UNKNOWN`）。
 > ⚠️ 常驻宿主上通常 soft-skip：bundle 部署位只有 `cordis.patch.yml` / `package.json` /
 > `plugins/`，**没有 `docs/` 也没有 `bin/`** —— 这是「能力不在这一层」，不是故障。
+
+> ℹ️ `evolution-reconcile`（Phase -1.1）与 `spec-index-refresh` 不同：判据已**下沉进本插件
+> `lib/evolution-reconcile-core.js`**（随 bundle 部署），所以 3 个存储源（event_bus /
+> population / mutator，读 `$DSH_HOME/storages/`）在**常驻宿主上照常对账**，不依赖 `bin/`。
+> 只有第 4 源 preimage（回滚备份核对，R2 安全红线）需要 `config.repoRoot` 指向含
+> `.agint-preimage/` 的仓根；未配则降级为「跳过 preimage 源」并记 note，**不影响前 3 源**。
+> ⇒ 想让 R2 也生效：在 HOME `cordis.patch.yml` 给 agint-cron 加 `config: {repoRoot: <仓根>}`
+>   并重启（部署动作，每台机器各配，不入库）。
 
 
 > **`diagnosis-watchdog` 的判据**（全为绝对值，故无需持久化历史）：表占用率 ≥80% cap 报 WARN、
