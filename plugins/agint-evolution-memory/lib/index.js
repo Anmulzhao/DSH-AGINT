@@ -24,6 +24,7 @@
  */
 
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   evolutionLogEntrySchema,
@@ -103,7 +104,7 @@ function randomId() {
 
 function nowIso() { return new Date().toISOString(); }
 
-function apply(ctx) {
+function apply(ctx, config) {
   let domain = null;
   let domainError = null;
   let disposed = false;
@@ -193,6 +194,15 @@ function apply(ctx) {
     now: nowIso,
     warn,
     bump,
+    // 锚点写盘位置 = <repoRoot>/docs/evolution-ledger-anchor.md。默认值从模块自身
+    // 位置退三级，只在全仓 checkout 里成立；部署位（.agint-bundle）退出来指向
+    // bundle 根（无 docs/ ⇒ ENOENT，2026-10-04 实跑钉出）。repoRoot 走本机 config
+    // override（HOME cordis.patch.yml，与 agint-cron/agint-evolution-driver 同机制、
+    // 同值），⛔ 不入库写死 —— 两台机器各配各的（Phase -1.4 原则）。缺 config 时
+    // 落回模块默认（开发仓直跑路径），行为不变。
+    ...(config?.repoRoot
+      ? { repoRoot: config.repoRoot, anchorFile: join(config.repoRoot, 'docs', 'evolution-ledger-anchor.md') }
+      : {}),
     publish: async (topic, payload) => {
       const bus = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
       if (typeof bus !== 'function') return false;

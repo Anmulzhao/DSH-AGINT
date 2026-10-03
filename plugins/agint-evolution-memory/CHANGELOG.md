@@ -1,5 +1,24 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.11 (2026-10-04) — ledger-anchor 锚点写盘根支持 config.repoRoot
+
+### 症状
+cron `ledger-anchor` 在部署位实跑（重启后，服务接线已通）抛
+`ENOENT ... \.agint-bundle\docs\evolution-ledger-anchor.md.tmp-*`。
+
+### 根因
+`lib/ledger-anchor.js` 的默认 `REPO_ROOT` 从模块文件位置退三级。全仓 checkout 里成立；
+部署位（`.agint-bundle/plugins/...`）退出来指向 bundle 根——那里没有 `docs/`。
+构造点（`lib/index.js` createLedgerAnchorService）此前不传 repoRoot/anchorFile。
+
+### 修法
+`apply(ctx, config)` 接第二参数；`config.repoRoot` 在场时同时注入
+`repoRoot` 与 `anchorFile = <repoRoot>/docs/evolution-ledger-anchor.md`。
+缺省仍走模块默认（开发直跑不变）。本机值走 HOME cordis override（与 cron/driver
+同值同机制，⛔ 不入库；麒麟机须自配，否则同样 ENOENT 出声）。
+`test/` 全量 180/180 绿（anchor 相关测试本就显式注入 anchorFile/repoRoot，
+本修法与测试形状一致）。
+
 ## 0.6.10 (2026-10-03) — `prediction_outcomes` 接第二把尺子（R2 技能门禁）
 
 ### 变更
