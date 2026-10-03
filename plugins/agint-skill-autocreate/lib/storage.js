@@ -51,6 +51,11 @@ const releaseEntrySchema = z.object({
   // Sprint 16：发布主体 + 预算计数归属周（含已回滚的发布——回滚也算消耗预算）
   releasedBy: z.enum(['auto', 'human']).default('auto'),
   budgetWeek: z.string().nullable().default(null),
+  // B4 形状 A（2026-10-03 老板拍板）：skill-identity 修复提案（observe() 宽限机制）。
+  // null = 无提案；{code, reason, proposedAt, deadlineAt, dismissed} = 提案期内；
+  // dismissed=true = 人工拍板保留（identity 门放行，走正常观察）。
+  // 存量行无此字段 → default null，parse 向后安全。
+  identityFixProposal: z.record(z.any()).nullable().default(null),
 });
 
 // proposals 表 Sprint 15 写入（Phase 3 通过后转正）；§7.2 字段（rankingScore /

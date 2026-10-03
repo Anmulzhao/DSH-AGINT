@@ -305,7 +305,7 @@ const DAY = 86400000;
 function daysAgoIso(n) { return new Date(Date.now() - n * DAY).toISOString(); }
 
 /** 造一条 release 记录直接入表（绕过发布流程，控制 createdAt/observationEndAt） */
-async function insertRelease(svc, ctx, { skillName, createdAt, observationEndAt, status = 'OBSERVING' }) {
+async function insertRelease(svc, ctx, { skillName, createdAt, observationEndAt, status = 'OBSERVING', identityFixProposal = null }) {
   const domain = await ctx.storageDomain.open();
   const t = domain.table('releases');
   const rec = {
@@ -323,6 +323,7 @@ async function insertRelease(svc, ctx, { skillName, createdAt, observationEndAt,
     rollbackReason: null,
     releasedBy: 'manual',
     budgetWeek: weekKey(new Date(Date.parse(createdAt))),
+    identityFixProposal,
   };
   await t.put(rec.id, rec);
   return rec;
@@ -390,6 +391,64 @@ test('observe：窗满不达标但有零星使用 → 展期一次', async () =>
   assert.equal(releases[0].status, 'OBSERVING');
   assert.equal(releases[0].observationMetrics.extensions, 1);
   assert.ok(Date.parse(releases[0].observationEndAt) > Date.now(), 'observationEndAt 已展期到未来');
+});
+
+// ── B4 形状 A：skill-identity 修复提案（2026-10-03）────────────────────────
+
+const BAD_NAME = 'pwsh-pwsh-pwsh-pwsh'; // rule 2 连续重复 token，必挂 identity 门
+
+test('observe：坏名无提案 → 写修复提案、不直接回滚；再跑一轮 = 宽限等待', async () => {
+  const h = setup({ jsonl: '' });
+  await insertRelease(h.svc, h.ctx, {
+    skillName: BAD_NAME, createdAt: daysAgoIso(20), observationEndAt: daysAgoIso(6),
+  });
+  const out1 = await h.svc.observe();
+  assert.equal(out1.rolledBack.length, 0, '本轮不得回滚');
+  assert.equal(out1.identityProposed.length, 1);
+  assert.equal(out1.identityProposed[0].code, 'repeated-token');
+  const p1 = (await h.svc.listReleases({}))[0].identityFixProposal;
+  assert.equal(p1.dismissed, false);
+  assert.ok(Date.parse(p1.deadlineAt) > Date.now(), 'deadlineAt = 现在 + 一个观察窗');
+
+  const out2 = await h.svc.observe();
+  assert.equal(out2.identityProposed.length, 0, '已有提案不得覆盖重写');
+  assert.equal(out2.identityPending.length, 1);
+  const p2 = (await h.svc.listReleases({}))[0].identityFixProposal;
+  assert.equal(p2.proposedAt, p1.proposedAt, '提案保持首次登记时间');
+  assert.equal((await h.svc.listReleases({}))[0].status, 'OBSERVING');
+});
+
+test('observe：提案到期未处理 → 仍回滚（质量底线不松）', async () => {
+  const h = setup({ jsonl: '' });
+  await insertRelease(h.svc, h.ctx, {
+    skillName: BAD_NAME, createdAt: daysAgoIso(30), observationEndAt: daysAgoIso(20),
+    identityFixProposal: {
+      code: 'repeated-token', reason: '技能名含连续重复 token',
+      proposedAt: daysAgoIso(20), deadlineAt: daysAgoIso(2), dismissed: false,
+    },
+  });
+  const out = await h.svc.observe();
+  assert.equal(out.rolledBack.length, 1);
+  const rel = (await h.svc.listReleases({}))[0];
+  assert.equal(rel.status, 'ROLLED_BACK');
+  assert.match(rel.rollbackReason, /修复提案到期未处理/);
+});
+
+test('observe：提案 dismissed=true → 人工拍板保留，identity 门放行走正常观察', async () => {
+  // 数据源失效 → 正常观察路径应「顺延」而非回滚
+  const stale = JSON.stringify({ ts: daysAgoIso(30), sessionId: 's1', turn: 1, tool: 'file_read', ok: true, args: { path: '/x' } });
+  const h = setup({ jsonl: stale + '\n' });
+  await insertRelease(h.svc, h.ctx, {
+    skillName: BAD_NAME, createdAt: daysAgoIso(20), observationEndAt: daysAgoIso(6),
+    identityFixProposal: {
+      code: 'repeated-token', reason: '技能名含连续重复 token',
+      proposedAt: daysAgoIso(10), deadlineAt: daysAgoIso(1), dismissed: true,
+    },
+  });
+  const out = await h.svc.observe();
+  assert.equal(out.rolledBack.length, 0);
+  assert.equal(out.identityProposed.length, 0);
+  assert.equal(out.postponed, 1);
 });
 
 test('modifyCandidate：QUEUED_FOR_RELEASE 改草稿 → 回 PENDING_EVAL 重评', async () => {

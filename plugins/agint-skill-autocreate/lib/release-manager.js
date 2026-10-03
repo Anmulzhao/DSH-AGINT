@@ -713,18 +713,48 @@ export function createReleaseManager(deps) {
     const observing = [...rt.entries()].map(([, v]) => v).filter((v) => v.status === 'OBSERVING');
     if (!observing.length) return { observing: 0, stable: [], rolledBack: [], postponed: 0 };
     const records = await readToolStatsRecords();
-    const out = { observing: observing.length, stable: [], rolledBack: [], postponed: 0 };
+    const out = { observing: observing.length, stable: [], rolledBack: [], postponed: 0, identityProposed: [], identityPending: [] };
     for (const release of observing) {
       // 语义命名门禁（2026-09-27）：存量技能也要补查。
-      // 名字是工具序列的技能永远不会被选中，继续观察只是浪费一个观察窗 —— 直接归档。
+      // B4 形状 A（2026-10-03 老板拍板）：不过时不再直接归档——先写 identityFixProposal
+      // 进 release 行，宽限一个观察窗；到期未处理仍回滚。质量底线不松（回滚是延后非豁免）。
+      // 处理契约：人工把 proposal.dismissed 置 true = 拍板保留；真改名修复属形状 B（需服务方法）。
       const identity = judgeSkillIdentity(release.skillName);
-      if (!identity.ok) {
-        const r = await rollback({
-          skillName: release.skillName,
-          reason: `skill-identity: ${identity.reason}`,
-          actor: 'system',
-        });
-        out.rolledBack.push({ skillName: release.skillName, reason: identity.reason, ...r });
+      const proposal = release.identityFixProposal;
+      const dismissed = proposal != null && proposal.dismissed === true;
+      if (!identity.ok && !dismissed) {
+        if (!proposal) {
+          const deadlineAt = new Date(Date.now() + (c.observation_period_days ?? 14) * 86400000).toISOString();
+          await rt.put(release.id, {
+            ...release,
+            identityFixProposal: {
+              code: identity.code, reason: identity.reason,
+              proposedAt: nowIso(), deadlineAt, dismissed: false,
+            },
+          });
+          await publishEvent('skill-autocreate.identity-fix-proposed', {
+            candidateId: release.candidateId, skillName: release.skillName,
+            releaseId: release.id, code: identity.code, reason: identity.reason, deadlineAt,
+          });
+          await audit({
+            actor: 'system', action: 'skill_identity_fix_proposed', targetType: 'release', targetId: release.id,
+            details: { skillName: release.skillName, code: identity.code, deadlineAt },
+            reason: identity.reason,
+          });
+          out.identityProposed.push({ skillName: release.skillName, code: identity.code, deadlineAt });
+          continue;
+        }
+        if (Date.parse(proposal.deadlineAt) <= Date.now()) {
+          const r = await rollback({
+            skillName: release.skillName,
+            reason: `skill-identity（修复提案到期未处理）: ${identity.reason}`,
+            actor: 'system',
+          });
+          out.rolledBack.push({ skillName: release.skillName, reason: identity.reason, ...r });
+          continue;
+        }
+        // 宽限未到期：跳过本轮观察——坏名字不会被选中，观察也无调用信号
+        out.identityPending.push({ skillName: release.skillName, deadlineAt: proposal.deadlineAt });
         continue;
       }
       const verdict = judgeObservation(release, records, c, new Date());
