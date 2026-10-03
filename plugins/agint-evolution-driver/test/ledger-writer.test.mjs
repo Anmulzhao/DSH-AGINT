@@ -161,6 +161,62 @@ test('四类缺证据各自返回自己的 blocker', () => {
   }
 });
 
+// ── 1a：预测证据门（predictedDelta 只认「已入库的锁」）───────────────────
+
+/** 锁定成功的最小凭证 —— 形状即 prediction-locker.js 的返回（外壳给什么，这里吃做什么）。 */
+const LOCK = {
+  locked: true,
+  hypothesisLock: `sha256:${'a'.repeat(64)}`,
+  lockEventId: 'env-lock-1',
+  predictedDelta: 1.0,
+  predictionSource: 'DEFAULT_RULE',
+  confidence: 0.2,
+};
+
+test('带锁的预测流入 summary 与 references（1a 接线要看到的形状）', () => {
+  const e = ok({ prediction: LOCK });
+  assert.equal(e.summary.predictedDelta, 1.0);
+  assert.equal(e.summary.predictionSource, 'DEFAULT_RULE');
+  assert.equal(e.references.lockEventId, 'env-lock-1');
+  // ⛔ 这两项与锁无关，绝不能因为"有预测"就顺带填上
+  assert.equal(e.summary.actualDelta, null, 'actualDelta 要等 1b 回填');
+  assert.equal(e.summary.predictionQuality, null, 'PQ 要等 actual 到位才算得出');
+  assert.equal(e.references.contractHash, null,
+    'contractHash 是 Contract 正文的审计哈希，不是 hypothesisLock —— 拿锁顶替就是造假');
+});
+
+test('⛔ 没有锁的预测一律留 null（§2.4.2 反事后编造的证据门）', () => {
+  const noFlag = { ...LOCK, locked: false };
+  for (const bad of [
+    null,
+    undefined,
+    { predictedDelta: 1.0, predictionSource: 'DEFAULT_RULE' },
+    noFlag,
+    { ...LOCK, predictedDelta: NaN },
+    { ...LOCK, predictedDelta: '1.0' },
+    { ...LOCK, hypothesisLock: null },
+    { ...LOCK, hypothesisLock: '' },
+    { ...LOCK, predictionSource: 'LLM_GUESS' },
+    { ...LOCK, predictionSource: null },
+  ]) {
+    const e = ok({ prediction: bad });
+    assert.equal(e.summary.predictedDelta, null, `无凭证的预测不能入链：${JSON.stringify(bad)}`);
+    assert.equal(e.summary.predictionSource, null);
+    assert.equal(e.references.lockEventId, null, 'lockEventId 同样只在有锁时带出');
+  }
+});
+
+test('锁在场但 lockEventId 缺失 ⇒ 只少那一个引用，预测照入链', () => {
+  const e = ok({ prediction: { ...LOCK, lockEventId: null } });
+  assert.equal(e.summary.predictedDelta, 1.0);
+  assert.equal(e.references.lockEventId, null, '总线不可用时事件 id 是真缺，不能编一个');
+});
+
+test('带锁预测参与 entryHash 上游字段：同锁两次构造必须逐字节相同', () => {
+  assert.deepEqual(ok({ prediction: LOCK }), ok({ prediction: LOCK }),
+    '预测字段是哈希输入，非确定就把幂等键打乱了');
+});
+
 // ── 写入器 ──────────────────────────────────────────────────────────────
 
 /** append 的真实契约（lib/ledger.js:262）：{ entry, idempotent }。 */
@@ -245,6 +301,19 @@ test('缺证据时不碰写入通道（拒写发生在 append 之前）', async 
   assert.equal(touched, 0, '证据不全的条目绝不进链');
   assert.equal(warns.length, 1, '拒写也要留痕');
   assert.match(warns[0].msg, /拒写/);
+});
+
+test('写入器透传 prediction（1a 唯一的传递路径；不传就留 null）', async () => {
+  const { warn } = recorder();
+  const ev = mockEvolution();
+  const w = createLedgerWriter({ get: () => ev }, { warn, now: () => TS });
+  await w.writeDecision({ proposal, variant, outcome, prediction: LOCK });
+  assert.equal(ev.appended[0].summary.predictedDelta, 1.0, '外壳的锁必须能走到 append 的入参');
+  await w.writeDecision({
+    proposal: { ...proposal, id: 'p-2' }, variant, outcome,
+    prediction: { ...LOCK, locked: false },
+  });
+  assert.equal(ev.appended[1].summary.predictedDelta, null, '透传不等于放行：证据门在构造阶段');
 });
 
 test('ctx 没有 get（单测裸对象）⇒ LEDGER_UNAVAILABLE 而不是 TypeError', async () => {

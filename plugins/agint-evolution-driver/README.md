@@ -27,7 +27,7 @@ agint.evolve 的 proposed 提案（真实、人工审核过）
 | 方法 | 说明 |
 |---|---|
 | `runOnce({ env, inject })` | 跑一轮。返回 `{skipped, candidateId, skill, proposalId, variantId, policyDecision}` 或 `{skipped:true, reason}` |
-| `status()` | `{runs, proposed, ingested, degraded, lastRunAt, lastError, killSwitch, commitEnabled}` |
+| `status()` | `{runs, proposed, ingested, degraded, ledgerWritten, ledgerFailed, predictionLocked, predictionSkipped, lastRunAt, lastError, killSwitch, commitEnabled}` |
 | `construct({candidate, skillName, fileText, llm})` | 单独的构造环节，可注入（测试 / 换实现） |
 
 ## 开关
@@ -50,6 +50,25 @@ commit 会真改文件，而**改部署位没有意义**——`install.sh` 下�
 1. **不自己编变异内容**：一律来自 LLM 结构化输出，且 `oldText` 必须是原文的真实子串；找不到就丢弃本次。
 2. **全软依赖**：`inject=[]`，bundle apply 顺序不保证 ⇒ runtime 一律**调用时** `ctx.get`，不在 `apply()` 里缓存。
 3. **观测失败不影响主流程**：事件总线挂了照样 propose/ingest。
+
+## 预测锁定（v0.2.12，Phase 1.1 支点 1a / 设计 §2.4.2）
+
+`lib/prediction-locker.js` 是 `contract-manager.lockPrediction` 的软失败外壳，调用点在
+**`commitToRepo` 之前**（写入与验证都还没发生）。顺序不可调换：锁定晚于执行一步，
+"预测"就变成"照着一个已经发生的结果编的数字"，`hypothesisLock` 防事后编造的意义归零。
+
+- 锁成功：落 `contract_locks` 一行 + 发 `evolution.contract.locked`（不可撤回的外部见证），
+  返回带 `locked:true` 的凭证。
+- 无预测可用（生产实况是 `targetMetric:'unspecified'`）：返回 `NO_PREDICTION_AVAILABLE`，
+  **不写锁行** —— 表里的"覆盖"必须是真覆盖。
+- 锁不上（服务缺失 / 落表抛错 / 已锁过）：warn + `predictionSkipped` 计数 +
+  `cycle.summary.prediction.status` 带出，`predictedDelta` 留 null，主流程照走。
+  外壳存在的理由：`lockPrediction` 的硬失败（抛错中止进化）若直接进主循环，
+  会被 commit 的 `catch` 收成"commit threw"并触发真实回滚 —— 观测缺陷不该毁掉一次仓库改动。
+
+Ledger 条目侧的证据门在 `ledger-writer.js` 的 `lockedPredictionOf`：只认带 `locked:true`
++ 有限数 + 非空 `hypothesisLock` + enum 内来源的入参，四个条件缺一就留 null。
+⛔ 不要在 `buildLedgerEntry` 里现算预测 —— 守卫测试「无证据字段一律 null」锁的就是这个。
 
 ## 测试
 

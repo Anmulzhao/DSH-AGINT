@@ -1,7 +1,7 @@
 {
   "name": "agint-evolution-driver",
-  "version": "0.2.11",
-  "description": "闭环引擎的驱动源（变异构造器）：提案 → LLM 原子编辑 → mutator.propose → population.ingest；幻觉闸门 + 全软依赖 + 可关。commit 自 v0.2.7 起写入后必过验证+policy，无验证通道则不写（fail-closed）；v0.2.8 验证器按文件类型选（.sh→bash -n，.js→node --check，目录→sandbox.runSmoke）且失败原因落 evolution.failure_pattern；v0.2.9 修 policy 契约错配（dimensions 必须带 key，否则恒 REJECT）；v0.2.10 commit 阶段的 policyDecision/verifyMode/reverted 经 summary 通道落盘可查；v0.2.11 决策入 Evolution Ledger（§4.3.4，AUTO_DEPLOY/PENDING_REVIEW/REJECT/ABSTAIN 四种决策一律经 agint.evolution.ledger.append 逐条同步入链，失败经 failure_pattern + cycle.summary 双通道可见）。",
+  "version": "0.2.12",
+  "description": "闭环引擎的驱动源（变异构造器）：提案 → LLM 原子编辑 → mutator.propose → population.ingest；幻觉闸门 + 全软依赖 + 可关。commit 自 v0.2.7 起写入后必过验证+policy，无验证通道则不写（fail-closed）；v0.2.8 验证器按文件类型选（.sh→bash -n，.js→node --check，目录→sandbox.runSmoke）且失败原因落 evolution.failure_pattern；v0.2.9 修 policy 契约错配（dimensions 必须带 key，否则恒 REJECT）；v0.2.10 commit 阶段的 policyDecision/verifyMode/reverted 经 summary 通道落盘可查；v0.2.11 决策入 Evolution Ledger（§4.3.4，AUTO_DEPLOY/PENDING_REVIEW/REJECT/ABSTAIN 四种决策一律经 agint.evolution.ledger.append 逐条同步入链，失败经 failure_pattern + cycle.summary 双通道可见）；v0.2.12 预测锁定进主循环（§2.4.2 1a：commitToRepo 之前经 contract-manager 锁 predictedDelta，软失败外壳 + contract_locks 落表 + evolution.contract.locked 事件，锁到的预测作为入参流入 Ledger）。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

@@ -1,5 +1,84 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.2.12 — 2026-10-03（预测锁定进主循环，Phase 1.1 支点 1a / §2.4.2）
+
+### 问题
+
+v0.2.11 收口时留了一条明示缺口：`createContractManager` 在生产代码里**无调用点**
+⇒ `contract_locks` 0 行、链上 `predictedDelta` 恒 null ⇒ 整个
+「预测 vs 实际」的校准回路没有源头数据（`grep contract-manager plugins/**/lib/index.js` 零命中）。
+
+试做时先在 `buildLedgerEntry` 里直接调 `generatePrediction` 填数，被仓内守卫测试
+「⛔ 无证据字段一律 null」挡下。这次判定**守卫是对的，不动它**：
+`generatePrediction` 虽是 prior-only，但在「写链那一刻」计算仍把预测与结果的先后
+交给了进程时序而非密码学 —— §2.4.2 要防的正是这种"看着像先见之明"。
+所以 1a 的形态是**把锁接进主循环的评估之前**，再把锁里的预测**当入参**传给条目。
+
+### 变更
+
+- **新增 `lib/prediction-locker.js`** —— `contract-manager.lockPrediction` 外面的**软失败外壳**：
+  - **永不抛**。`lockPrediction` 的硬失败语义（域不可用即抛、caller 中止进化）保持不变，
+    但主循环没有"中止进化"这条通道：抛上去会被 commit 的 `catch` 收成「commit threw」
+    并触发一次真实回滚 —— 等于让观测缺陷毁掉一次仓库改动。外壳按 `ledger-writer` 的
+    同一套纪律改成**可见的跳过**：warn + 计数器 + `cycle.summary` 带 status，predictedDelta 留 null。
+  - **无预测 ⇒ 不落锁**。三级降级链查不到条目（如生产恒见的 `metric:'unspecified'`）就返回
+    `NO_PREDICTION_AVAILABLE`，不往 `contract_locks` 写空锁占行 —— 表里的"覆盖"必须是真覆盖。
+  - 状态清单 `PREDICTION_LOCK_STATUS`：LOCKED / NO_CONTRACT_ID / NO_PREDICTION_AVAILABLE /
+    LOCK_UNAVAILABLE / ALREADY_LOCKED / LOCK_FAILED。只有 LOCKED 带 `locked:true` 凭证。
+  - `buildLockHypothesis()` —— 参与 hash 的 hypothesis **限定三个字段**
+    （mutationType / targetMetric / changedComponents）。理由不是简洁，是**可复原**：
+    `contract_locks` 只存 hash 不存内容（单一真相源纪律），1b 归档校验要能只靠
+    同一条 Ledger 条目 + 表里的 `lockedAt` 把 hash 重算回来。加一个复原不回的字段
+    = 造一把永远验不了的锁。
+- `index.js`：**锁定调用点在 `commitToRepo` 之前**（fail-closed 闸门之后、写入与验证之前）。
+  `contractId = proposal.id`、`mutationType = proposal.kind`、`targetMetric = variant.expected_effect.metric`、
+  `changedComponents = pluginFromPath(commitPath)`。锁到的预测作为 `prediction` 入参传给
+  `ledgerWriter.writeDecision`；`commitAudit` 新增 `prediction` 段（status / predictedDelta /
+  predictionSource / lockEventId）经 summary 通道落盘。计数器 `predictionLocked` / `predictionSkipped` 进 `status()`。
+- `ledger-writer.js`：`buildLedgerEntry` 收 `prediction` 入参，并加**证据门** `lockedPredictionOf` ——
+  只认 `locked:true` + 有限数 + 非空 `hypothesisLock` + enum 内来源，四个条件缺一就留 null。
+  `actualDelta` / `predictionQuality` / `contractHash` 不受影响，继续 null。
+  `pluginFromPath` 改为导出（主循环取 changedComponents 用，⛔ 不留第二份实现）。
+- `contract-manager.js`：**修 `lockEventId` 恒 null 的字段名错配** ——
+  `publishLocked` 读 `res.id`，而真实 bus 返回的是 `envelopeId`（`agint-event-bus/lib/bus.js:163-169`）。
+  既有测试的 mock 返回 `{ok:true}`（连 `accepted` 都没有），所以照不出这个洞。
+  生产后果：表里那条锁接不回总线里那条真实事件，而 `evolution.contract.locked` 正是
+  「当时确实这么预测过」的外部见证。
+
+### 测试
+
+- 新增 `test/prediction-locker.test.mjs` 13 case：成功形状（含 hash 与事件 payload）/
+  **只用 Ledger 字段重算 hash 必须逐字节相同** / 改一个字段即判 `CONTRACT_TAMPERED` /
+  bus 缺失仍落表 / `unspecified` ⇒ 零写库 + 三级 attempts 留痕 / 四类跳过全部不抛 /
+  重放 ALREADY_LOCKED 且不出凭证 / 裸 ctx 与空参不炸 / `buildLockHypothesis` 形状。
+- 新增 `test/smoke.mjs` **T25d / T25e**（真实 tmpdir，真跑 verify+policy）：
+  T25d 断 `order === ['lock','policy']`，并在 `recordContractLock` 里**读磁盘**证明
+  「锁定那一刻仓库还是原文」（数组顺序证不了"结果尚未发生"，文件内容证得了）；
+  再断预测流入条目 + `lockEventId` 接得上总线那条事件 + 改动照常落盘。
+  T25e 复刻生产实况（`metric:'unspecified'`）⇒ 不锁、不发事件、链上 null、commit 照成功。
+- `test/ledger-writer.test.mjs` +5 case：带锁预测入 summary/references；
+  **十种无凭证形状一律留 null**（含 `locked:false`、NaN、字符串数字、脏 source）；
+  `contractHash` 不许被 `hypothesisLock` 顶替；写入器透传。守卫测试原文未动。
+- 套件：driver 201（原 181）全绿；`agint-evolution-memory` 164 全绿；
+  门禁 `check-wiring` / `check-l0-frozen` / `check-spec-consistency` / `verify-event-topics` /
+  `check-zero-deps` / `check-tool-schemas` / `check-storage-table-api` / `check-publish-safety` 全 exit 0。
+- ⚠️ `check-preset-parity.test.mjs`(3) 与 `check-wiring.test.mjs`(1) 有失败，**与本次无关**：
+  同两条在 HEAD 基线（干净 worktree）上分别红 3 与 4，报的是「部署副本 vs 仓库」的部署漂移
+  （input-gateway / family-panel 等未上线文件）。本轮未新增失败项。
+
+### 已知未收口（不在本轮）
+
+- **1a 在生产上暂时"接了但锁不到数"**：mutator 的 `expectedEffect` 是**字符串**
+  （FROZEN 契约，`agint-mutator/lib/index.js:128`），而 population 只认**对象**
+  （`agint-population/lib/index.js:173`）⇒ 实时路径 `metric` 恒为 `'unspecified'`
+  ⇒ `DEFAULT_RULE` 表查不到 ⇒ 每周期返回 `NO_PREDICTION_AVAILABLE`、不锁。
+  要让链上真出现 predictedDelta，得先定「targetMetric 从哪来」—— 这是设计分叉，见根目录
+  `_Phase1.1_PredictionOutcome_支点上_20261003.md` §4.6，等老板拍板，本轮不猜。
+- 1b（actualDelta 度量源与回填）、归档校验（`verifyLock` 调用点）仍未做。
+- 运行态：本轮全部为单元/契约层。真实锁行要等部署 + 跑一期 evolution-cycle，
+  判据是 `agint_evolution.json` 的 `contract_locks` 出现行、且链上条目带非 null `predictedDelta`。
+
+
 ## v0.2.11 — 2026-10-03（决策入 Evolution Ledger，§4.3.4 / Sprint 22 #10）
 
 ### 问题

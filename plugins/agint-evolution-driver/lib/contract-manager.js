@@ -97,7 +97,12 @@ export function createContractManager(ctx) {
         payload: { contractId, hypothesisLock },
         source: CONTRACT_LOCK_SOURCE,
       });
-      return res?.accepted === true ? (res.id ?? null) : null;
+      // ⛔ 字段名是 `envelopeId` 而不是 `id`：真实 bus 的返回形状见
+      //    agint-event-bus/lib/bus.js:163-169（{accepted, deliveredTo, deadLettered, envelopeId, traceId}）。
+      //    本行原来读 `res.id` ⇒ 生产上恒得 null ⇒ contract_locks.lockEventId 永远为空，
+      //    表里那条"锁"就接不回总线里那条真实事件（2026-10-03 接 1a 时发现，
+      //    既有测试的 mock 返回 {ok:true} 没有 accepted，所以照不出这个洞）。
+      return res?.accepted === true ? (res.envelopeId ?? null) : null;
     } catch {
       return null; // 观测失败不阻断锁定（表里已有 lockEventId=null 可查）
     }

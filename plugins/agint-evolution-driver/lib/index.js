@@ -49,7 +49,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
-import { createLedgerWriter } from './ledger-writer.js';
+import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
+import { createPredictionLocker } from './prediction-locker.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -295,6 +296,12 @@ export function apply(ctx, config = {}) {
     // 这是事故而不是性能问题，必须走 summary 事件外部可读（warn→stdout 常驻读不到）。
     ledgerWritten: 0,
     ledgerFailed: 0,
+    // 1a：预测锁定的两个计数器。`predictionSkipped` 非 0 = 这一期的进化
+    // 没有留下「当时预测了什么」的不可篡改证据，Ledger 的 predictedDelta 就是 null。
+    // 与 ledger 计数器同理：**必须能从 summary 看到是哪个状态跳的**，
+    // 否则「没指标所以没预测」与「锁服务挂了」在事后长得一模一样。
+    predictionLocked: 0,
+    predictionSkipped: 0,
     lastRunAt: null,
     lastError: null,
     lastProposalId: null,
@@ -341,6 +348,12 @@ export function apply(ctx, config = {}) {
   // §4.3.4 写入侧接线：决策 → Ledger 条目（⛔ 唯一写入口是 agint.evolution.ledger.append）。
   // 实例在 apply() 建，但依赖**调用时**取（同上「全软依赖」红线 #3）。
   const ledgerWriter = createLedgerWriter(ctx, { warn });
+
+  // Phase 1.1 支点 1a：预测锁定（§2.4.2「锁定必须先于执行」）。
+  // ⛔ 调用点在 commitToRepo **之前**（见下面的 lock 调用），不在写 Ledger 的时候 ——
+  // 那时 policy 结果已经出来，再算预测就是事后编造，锁也就白锁。
+  // 外壳是软失败（warn + 计数 + predictedDelta 留 null），理由见 prediction-locker.js 头部。
+  const predictionLocker = createPredictionLocker(ctx, { warn });
 
   /**
    * 让 LLM 把提案变成一次原子编辑。
@@ -703,6 +716,28 @@ export function apply(ctx, config = {}) {
             reason,
           });
         } else {
+          // ── Phase 1.1 支点 1a：预测锁定（§2.4.2「锁定必须先于执行」）
+          //    放在 commitToRepo 之前：这一刻 policy / verify / 写入结果**都还不存在**，
+          //    锁进去的数字不可能是照着一个还没发生的结果编的。
+          let prediction = null;
+          const lockRes = await predictionLocker.lock({
+            contractId: proposal.id,
+            mutationType: proposal.kind,
+            targetMetric: variant?.expected_effect?.metric ?? null,
+            changedComponents: pluginFromPath(commitPath),
+          });
+          if (lockRes.ok === true) {
+            state.predictionLocked += 1;
+            prediction = lockRes; // ⛔ 只把「已入库」的那一份交给 Ledger
+          } else {
+            state.predictionSkipped += 1;
+          }
+          const predictionAudit = {
+            status: lockRes.status,
+            predictedDelta: lockRes.ok === true ? lockRes.predictedDelta : null,
+            predictionSource: lockRes.predictionSource ?? null,
+            lockEventId: lockRes.lockEventId ?? null,
+          };
           try {
             commit = await commitToRepo({
               repoRoot,
@@ -853,6 +888,7 @@ export function apply(ctx, config = {}) {
                   reason: commitAudit.policyReason ?? commitAudit.verifyReason,
                   eventIds: [outcomeEventId],
                 },
+                prediction,
               });
               if (ledgerRes.ok) {
                 state.ledgerWritten += 1;
@@ -873,6 +909,10 @@ export function apply(ctx, config = {}) {
                 ...commitAudit,
                 ledgerSeq: ledgerRes.seq,
                 ledgerStatus: ledgerRes.status,
+                // 1a：锁定的状态经 summary 通道落盘（cron 只持久化 result.summary）。
+                // 没有它，「predictedDelta 为 null」到底是**没指标可预测**（NO_PREDICTION）
+                // 还是**锁服务不可用**（LOCK_UNAVAILABLE）在进程退出后就再也分不清。
+                prediction: predictionAudit,
               };
             }
           } catch (error) {
@@ -972,6 +1012,8 @@ export function apply(ctx, config = {}) {
       degraded: state.degraded,
       ledgerWritten: state.ledgerWritten,
       ledgerFailed: state.ledgerFailed,
+      predictionLocked: state.predictionLocked,
+      predictionSkipped: state.predictionSkipped,
       lastRunAt: state.lastRunAt,
       lastError: state.lastError,
       lastProposalId: state.lastProposalId,

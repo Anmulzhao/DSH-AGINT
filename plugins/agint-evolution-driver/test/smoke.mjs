@@ -897,6 +897,191 @@ test(`T25c${rejectedKind === 'REJECT' ? '' : '-b'}: policy ${rejectedKind} → �
 
 // ── v0.2.8：验证器与留痕的单元测试 ─────────────────────────────────────
 
+// ── Phase 1.1 支点 1a：预测锁定接线（§2.4.2「锁定必须先于执行」）────────────
+
+test('T25d: 1a —— 锁必须早于仓库写入与评估，predictedDelta 随锁流入 Ledger', async () => {
+  const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
+  try {
+    const calls = [];
+    const order = [];
+    const locks = new Map();
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    const fakePopulation = {
+      ingest: async () => ({
+        variant_id: 'v1', generation: 1, mutation_kind: 'PROMPT_MUTATION',
+        expected_effect: { metric: 'SUCCESS_RATE', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+      }),
+    };
+    const evolutionLog = fakeEvolutionLog({ calls });
+    evolutionLog.recordContractLock = async (input) => {
+      order.push('lock');
+      // ⭐ 时序铁律的**直接**证据：被调用那一刻磁盘上还是原文。
+      //    只比数组顺序证明不了"结果还没发生"——文件内容才证明得了。
+      const disk = await readFile(join(repoRoot, 'lib/service.js'), 'utf8');
+      assert.ok(disk.includes('hello world'), '锁定时改动尚未落盘 ⇒ 预测不可能是照着结果编的');
+      if (locks.has(input.contractId)) throw new Error('contract-lock-already-exists');
+      const row = {
+        contractId: input.contractId,
+        hypothesisLock: input.hypothesisLock,
+        lockAlgorithm: 'sha256',
+        lockedAt: input.lockedAt,
+        predictionSource: input.predictionSource ?? null,
+        lockEventId: input.lockEventId ?? null,
+      };
+      locks.set(input.contractId, row);
+      return { ...row };
+    };
+
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': fakePopulation,
+      'agint.evolution': evolutionLog,
+      agents: { create: async () => { throw new Error('llm injected'); } },
+      subagents: { start: async () => { throw new Error('llm injected'); } },
+    });
+    const events = busRecorder(ctx);
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: {
+          decide: async ({ results }) => {
+            order.push('policy');
+            const dims = results?.[0]?.dimensions ?? [];
+            const keyed = dims.some((d) => d.key === 'safety') && dims.some((d) => d.key === 'trust');
+            return keyed ? { kind: 'AUTO_DEPLOY', reason: 'score-85' } : { kind: 'REJECT', reason: 'unknown-veto' };
+          },
+        },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: {
+            applicable: true, targetSkill: 'lib/service.js',
+            oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test',
+          },
+        }),
+        skillNames: [],
+        fs: { scanRepo: async () => ['lib/service.js'] },
+      },
+    });
+
+    // ── 时序：锁在评估之前（order 里 lock 必须排第一）
+    assert.deepEqual(order, ['lock', 'policy'], '锁定必须早于 verify/policy（§2.4.2）');
+    // ── 锁定事件与表
+    const lockEvent = events.find((e) => e.topic === 'evolution.contract.locked');
+    assert.ok(lockEvent, '必须发 evolution.contract.locked');
+    assert.equal(lockEvent.payload.contractId, 'p1');
+    assert.match(lockEvent.payload.hypothesisLock, /^sha256:[0-9a-f]{64}$/);
+    const row = locks.get('p1');
+    assert.equal(row.predictionSource, 'DEFAULT_RULE');
+    assert.equal(row.lockEventId, lockEvent.envelopeId,
+      '表里的 lockEventId 必须接得上总线那条事件（读错字段名就恒为 null）');
+    // ── 预测流入 Ledger
+    assert.equal(evolutionLog.appended.length, 1);
+    const le = evolutionLog.appended[0];
+    assert.equal(le.summary.predictedDelta, 1.0, 'DEFAULT_RULE 表 DR-PROMPT-SUCCESS 的值');
+    assert.equal(le.summary.predictionSource, 'DEFAULT_RULE');
+    assert.equal(le.references.lockEventId, lockEvent.envelopeId);
+    assert.equal(le.summary.actualDelta, null, 'actual 属 1b，本次不许带出');
+    assert.equal(le.summary.predictionQuality, null, 'PQ 要等 actual 到位才算得出');
+    assert.equal(le.references.contractHash, null, 'hypothesisLock ≠ contractHash');
+    // ── 外部可读：summary 通道 + status 计数
+    assert.equal(out.summary.prediction.status, 'LOCKED');
+    assert.equal(out.summary.prediction.predictedDelta, 1.0);
+    const st = ctx.provided['agint.evolutionDriver'].status();
+    assert.equal(st.predictionLocked, 1);
+    assert.equal(st.predictionSkipped, 0);
+    // ── 主流程没被观测装置拖住：改动确实落盘、committed 事件照发
+    const after = await readFile(join(repoRoot, 'lib/service.js'), 'utf8');
+    assert.ok(after.includes('hello AGINT world'), '锁定成功不应阻断 commit');
+    assert.ok(events.some((e) => e.topic === 'evolution.mutation.committed'));
+    assert.equal(calls.some((c) => c[0] === 'addFailure'), false);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('T25e: 1a 生产实况 —— metric=unspecified 时无预测可锁，主流程照跑且链上留 null', async () => {
+  const repoRoot = await makeRepo({ 'lib/service.js': "export const greeting = 'hello world';\n" });
+  try {
+    const calls = [];
+    let lockCalls = 0;
+    const fakeEvolve = {
+      listProposals: async () => [
+        { id: 'c1', title: '修 metrics bug', body: '目标 `lib/service.js` 的超时', status: 'proposed' },
+      ],
+    };
+    const fakeMutator = {
+      propose: async () => ({ id: 'p1', kind: 'PROMPT_MUTATION', status: 'PENDING' }),
+      validate: async () => ({ ok: true, findings: [] }),
+    };
+    // 生产实况：mutator 的 expectedEffect 是**字符串**，population 只认对象
+    // （agint-population/lib/index.js:173）⇒ metric 恒落 'unspecified'。
+    const fakePopulation = {
+      ingest: async () => ({
+        variant_id: 'v1', generation: 1, mutation_kind: 'PROMPT_MUTATION',
+        expected_effect: { metric: 'unspecified', direction: 'increase', window: '7d' },
+        policy_decision: 'PENDING_REVIEW', stage: 'shadow',
+      }),
+    };
+    const evolutionLog = fakeEvolutionLog({ calls });
+    evolutionLog.recordContractLock = async () => { lockCalls += 1; return {}; };
+
+    const ctx = makeCtx({
+      'agint.evolve': fakeEvolve,
+      'agint.mutator': fakeMutator,
+      'agint.population': fakePopulation,
+      'agint.evolution': evolutionLog,
+      agents: { create: async () => { throw new Error('llm injected'); } },
+      subagents: { start: async () => { throw new Error('llm injected'); } },
+    });
+    const events = busRecorder(ctx);
+    apply(ctx, { repoRoot });
+    const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+      env: {},
+      inject: {
+        sandbox: { runSmoke: async () => { throw new Error('file target must NOT reach runSmoke'); } },
+        policy: { decide: async () => ({ kind: 'AUTO_DEPLOY', reason: 'score-85' }) },
+        evolution: evolutionLog,
+        llm: async () => ({
+          ok: true,
+          value: {
+            applicable: true, targetSkill: 'lib/service.js',
+            oldText: 'hello world', newText: 'hello AGINT world', rationale: 'test',
+          },
+        }),
+        skillNames: [],
+        fs: { scanRepo: async () => ['lib/service.js'] },
+      },
+    });
+
+    assert.equal(lockCalls, 0, '无预测 ⇒ 不占一行锁（表里的"覆盖"必须是真覆盖）');
+    assert.equal(events.some((e) => e.topic === 'evolution.contract.locked'), false);
+    assert.equal(out.summary.prediction.status, 'NO_PREDICTION_AVAILABLE');
+    assert.equal(out.summary.prediction.predictedDelta, null);
+    const le = evolutionLog.appended[0];
+    assert.equal(le.summary.targetMetric, 'unspecified', '指标缺失本身要如实入链');
+    assert.equal(le.summary.predictedDelta, null);
+    const st = ctx.provided['agint.evolutionDriver'].status();
+    assert.equal(st.predictionLocked, 0);
+    assert.equal(st.predictionSkipped, 1);
+    assert.equal(out.commit.ok, true, '没有预测不影响进化本身（软失败外壳的意义）');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('T26a: verifyTargetFile —— .sh 走 bash -n，改坏语法要判死', async () => {
   const repoRoot = await makeRepo({ 'bin/ok.sh': 'echo hello\n', 'bin/bad.sh': 'if [ -z "$1" ; then\n' });
   try {

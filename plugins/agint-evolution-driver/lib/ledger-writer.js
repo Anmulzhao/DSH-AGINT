@@ -34,8 +34,12 @@
  *
  * - ⛔ **不填没有证据的字段**。`predictedDelta` / `actualDelta` / `predictionQuality` /
  *   `predictionSource` / `contractHash` / `lockEventId` / `gitCommit` / `mountTicketId` /
- *   `abTestId` 全部 null：前四个要等锁定与回填（`contract_locks` 生产 0 行，§2.4.2），
+ *   `abTestId` 默认全部 null：`actualDelta` / `predictionQuality` 要等 1b 的度量回填，
  *   `gitCommit` 要等人真提交。**缺就是缺**，写个"看起来对"的值就是把伪造证据入链。
+ *   `predictedDelta` / `predictionSource` / `lockEventId` 是**唯一有条件例外**的三个：
+ *   调用方传入 `prediction` 且它带着**已入库的锁**（`locked:true` + `hypothesisLock`）
+ *   时照原样入链。见下面的 `lockedPredictionOf` —— 判据是「锁先于结果」，
+ *   不是「有人给了个数」。
  * - ⛔ **不复用 EvolutionLogBuffer**（纪律 2）：这里一次决策一次 `await append`，
  *   批内崩溃 = seq 空洞 = 断链。
  * - ⛔ **不静默降级**（纪律 3）：写入失败必须让外部看得见 —— 返回值 + warn +
@@ -62,7 +66,7 @@ const DIGEST_MAX = 200;
  * `preset skills` 路径（`presets/agint/skills/...`）两边都返回 `[]`，
  * 因为改的是 preset 内容而不是插件代码，硬凑一个插件名就是假归属。
  */
-function pluginFromPath(path) {
+export function pluginFromPath(path) {
   if (typeof path !== 'string' || path === '') return [];
   const m = /^plugins\/([^/]+)\//.exec(path.replace(/\\/g, '/'));
   return m ? [m[1]] : [];
@@ -106,6 +110,35 @@ function buildDigest({ proposal, variant, outcome }) {
 }
 
 /**
+ * 「这条预测算不算有证据」。三个条件缺一就当没证据（⇒ 留 null）：
+ *
+ * 1. `locked === true` ⇒ 外壳在 `contract_locks` 落行成功后才会置真。
+ *    ⛔ 不认「调用方自称预测过」：没有锁的 predictedDelta 正是 §2.4.2
+ *    要防的事后编造，放进不可重写的链上等于把造假固化。
+ * 2. `predictedDelta` 是有限数。
+ * 3. `hypothesisLock` 是非空串且 predictionSource 在 enum 内（schema 会拒脏值，
+ *    这里先拒在门外，免得一条好好的决策因为一个坏引用被整条拒写）。
+ *
+ * @returns {{predictedDelta: number, predictionSource: string, lockEventId: string|null, hypothesisLock: string} | null}
+ */
+function lockedPredictionOf(prediction) {
+  if (!prediction || prediction.locked !== true) return null;
+  if (!Number.isFinite(prediction.predictedDelta)) return null;
+  const lock = prediction.hypothesisLock;
+  if (typeof lock !== 'string' || lock === '') return null;
+  const source = prediction.predictionSource;
+  if (source !== 'KNOWLEDGE_BASE' && source !== 'ANALOGY' && source !== 'DEFAULT_RULE') return null;
+  return {
+    predictedDelta: prediction.predictedDelta,
+    predictionSource: source,
+    hypothesisLock: lock,
+    lockEventId: typeof prediction.lockEventId === 'string' && prediction.lockEventId !== ''
+      ? prediction.lockEventId
+      : null,
+  };
+}
+
+/**
  * 纯函数：一次决策 → 一条待入链条目。
  *
  * @param {object} input
@@ -113,9 +146,12 @@ function buildDigest({ proposal, variant, outcome }) {
  * @param {object|null} input.variant  population.ingest 返回的 variant 行
  * @param {object} input.outcome    执行事实：{ decision, path, preimagePath,
  *   bytesBefore, bytesAfter, verifyMode, sandboxOk, reverted, reason, eventIds, timestamp }
+ * @param {object|null} [input.prediction]
+ *   **评估之前**锁定的预测（`createPredictionLocker().lock()` 的返回值原样传入）。
+ *   缺省 / 未入库 ⇒ 三个预测字段留 null（守卫测试「⛔ 无证据字段一律 null」锁的就是这个形状）。
  * @returns {{ok: true, entry: object} | {ok: false, blocker: string, reason: string}}
  */
-export function buildLedgerEntry({ proposal, variant, outcome } = {}) {
+export function buildLedgerEntry({ proposal, variant, outcome, prediction = null } = {}) {
   // contractId：实时路径此刻没有 Contract 对象（Phase 0 的 contracts 表未接入本链路），
   // 用 FROZEN proposal.id 顶替 —— 它是这次进化真实且唯一的身份，重放时同一个值 ⇒ 幂等成立。
   // ⛔ 不要加前缀：重建侧的 `REBUILD:<proposalId>` 才是"后补记录"的标记，
@@ -155,6 +191,9 @@ export function buildLedgerEntry({ proposal, variant, outcome } = {}) {
     ? [...new Set(outcome.eventIds.filter((id) => typeof id === 'string' && id !== ''))].sort()
     : [];
 
+  // 预测证据门：没过这道门就留 null（⛔ 不是「调用方给了个数就认」）
+  const locked = lockedPredictionOf(prediction);
+
   return {
     ok: true,
     entry: {
@@ -165,16 +204,18 @@ export function buildLedgerEntry({ proposal, variant, outcome } = {}) {
         changedPlugins: pluginFromPath(outcome.path),
         targetMetric,
         hypothesisDigest: buildDigest({ proposal, variant, outcome }),
-        predictedDelta: null,
+        predictedDelta: locked ? locked.predictedDelta : null,
         actualDelta: null,
         predictionQuality: null,
-        predictionSource: null,
+        predictionSource: locked ? locked.predictionSource : null,
         decision,
       },
       references: {
-        // 这四个字段等 Phase 0 的 Contract 与 Sprint 24 的回填接入；现在全是真缺。
+        // contractHash 仍等 Phase 0 的 Contract 正文；gitCommit 仍等人真提交。
+        // 预测侧两个字段现在**有证据了**：锁在 contract-manager 里落表成功，
+        // 值由调用方作为入参传进来（⛔ 不是本函数算的 —— 见 lockedPredictionOf）。
         contractHash: null,
-        lockEventId: null,
+        lockEventId: locked ? locked.lockEventId : null,
         eventBusIds,
         populationCandidateId: variant.variant_id ?? null,
         mountTicketId: null,
@@ -211,6 +252,7 @@ export function createLedgerWriter(ctx, { warn = () => {}, now = () => new Date(
       proposal: input.proposal,
       variant: input.variant,
       outcome: { ...input.outcome, timestamp: input.outcome?.timestamp ?? now() },
+      prediction: input.prediction ?? null,
     });
     if (!built.ok) {
       // 拒写不是"跳过"：缺证据必须留下是哪个字段缺，否则事后与"没跑这条分支"无法区分。
