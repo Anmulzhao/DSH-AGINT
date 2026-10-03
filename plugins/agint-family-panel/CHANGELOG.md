@@ -1,5 +1,41 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.0 — 2026-10-04
+
+### v2 家族面板上线：整页 + 实时数据端点
+
+**为什么**：现面板只显示激活状态，产出与关系没体现（老板 2026-10-03 起因）。效果稿
+（Q1/Q2/Q3）拍板转生产：入口=独立整页 + 停靠面板留链接；数据=实时端点按需计算 + 缓存；
+范围=端点 + 整页全量，`FAMILY_GROUPS` 本版本**保留不删**（设计稿 §10 删表决策另行拍板）。
+
+**改了什么**：
+
+- host 半新增两条回环路由：`GET /api/agint-family/v2`（text/html 整页，资产
+  `assets/panel-v2.html` 按 mtime 缓存）与 `GET /api/agint-family/v2/data`（实时聚合
+  JSON）。与 `/status` 同一套 `enabled` kill-switch 与回环守卫。
+- 新增 `lib/v2-scan.js`：源码扫描器（L0.5 真源，设计稿 §1.2/§1.4）。
+  `ctx.get/provide('agint.*')` 三分类 code/comment/umbrella；伞键（有子键的命名空间
+  裸键）不建边。与 2026-10-03 效果稿基线的两处规则差（注释中伞键命中一律标 comment；
+  provide 伞键行不进 hits）在实施计划 Task 2 声明并逐条对账。
+- 新增 `lib/v2-data.js`：storages 三源聚合（tool_stats 30 天窗口 + 7 天日聚合、
+  cron_state、event_bus events/deadletter）+ manifest 三形态 consumes + repoDirs；
+  TTL 30s + mtime 签名缓存；每源独立降级 `{state:'error',reason}`，不装绿；
+  `latencyMs` 不聚合（U2）。
+- `assets/panel-v2.html`：效果稿转生产——删 `g.alicdn.com` itrace 外部埋点；内嵌常量
+  改 `fetch ./v2/data`；渲染包进 `render()`，刷新按钮真实重算；龄期条/覆盖率改动态，
+  不留硬编码；Q3「运行态不在仓库」改数据驱动（部署位+仓库位目录对差，不可得时标
+  unknown）；「最后改动」仍为示意（待接 evolution ledger）。
+- v1 停靠面板 Head 加「打开 v2 全页」按钮（新标签页，noopener）。
+- `agint.familyPanel` 服务新增 `v2Data()` 方法（与路由同源同缓存）。
+- 版本漂移修复：manifest 0.1.2 与 package 0.1.4 统一到 0.2.0。
+- manifest：`permissions.fs` 补三条读声明（storages / profiles/web/plugins / plugins）。
+
+**测试**：新增 `test/v2-scan.test.mjs`（三分类 + 注释状态解析 + 基线回归容差 ±2，
+基线冻结于 `test/fixtures/v2-scan-baseline.json`）、`test/v2-data.test.mjs`（聚合形状、
+窗口、降级、缓存）与夹具树 `test/fixtures/v2-home/`；smoke 增第 15 组（三条路由注册、
+data 形状、HTML content-type、非回环 403、kill-switch 不吐数据、v2Data 存在）。
+全量 PASS；假 host + 真实存储联调经浏览器断言（表非空、无 NaN、刷新/过滤/展开/主题可用）。
+
 ## 0.1.4 — 2026-10-03
 
 ### 分组表补录 `agint-ops-preset`

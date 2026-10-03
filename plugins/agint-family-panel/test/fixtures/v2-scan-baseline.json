@@ -1,0 +1,12 @@
+{
+  "generatedFrom": "repo plugins/ (DSH-AGINT)",
+  "generatedAt": "2026-10-03T17:59:51.996Z",
+  "counts": {
+    "code": 104,
+    "comment": 32,
+    "umbrella": 7
+  },
+  "providedKeys": 84,
+  "familyDirs": 37,
+  "note": "对账 2026-10-03 效果稿基线 93/24/10：行号漂移 14 条（agint-cron c685975 修表 +10 行、agint-evolution-memory +6 行）；规则差① 注释中的伞键命中改标 comment（+4）；规则差② provide 伞键行不再进 hits（-2）；今日新增代码边（frozen-anchor job 等）。无消失边、无误报边。漂移超容差时人工对账后重新冻结。"
+}

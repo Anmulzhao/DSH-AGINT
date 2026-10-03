@@ -2,7 +2,7 @@
 
 AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGINT 插件家族：分组、行状态、通电信号。
 
-- 版本：v0.1.0（2026-09-29 首次挂载）
+- 版本：v0.2.0（2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
 - 形态：双半插件（host 半 + 浏览器半）
 - 席位：侧栏 `sidebar.panellist` 入口行 + root 作用域 `main` keyed slot 面板页
 
@@ -10,8 +10,10 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 
 | 半 | 文件 | 职责 |
 |---|---|---|
-| host | `lib/index.js` | 开一条**只读回环** JSON 路由 `GET /api/agint-family/status`；不碰 DOM |
-| browser | `lib/client.js` | 注册到宿主自带席位；渲染面板；不接管任何宿主 DOM |
+| host | `lib/index.js` | 开三条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）；不碰 DOM |
+| host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类）+ storages 三源聚合 + manifest consumes；每源独立降级，不装绿 |
+| browser | `lib/client.js` | 注册到宿主自带席位；渲染 v1 停靠面板（含「打开 v2 全页」入口）；不接管任何宿主 DOM |
+| asset | `assets/panel-v2.html` | v2 整页前端（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
 
 它**不是**独立窗口、**不是** iframe、也不是第三方侧栏里的一个 tab：
 

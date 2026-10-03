@@ -8,6 +8,7 @@
  *  - not-family: 非 agint- 前缀，必须不扫
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commentMask, scanPlugins } from '../lib/v2-scan.js';
@@ -57,6 +58,18 @@ const PLUGINS = join(HOME, 'profiles', 'web', 'plugins');
   const r = scanPlugins(join(HOME, 'nope'));
   assert.deepEqual(r.hits, []);
   assert.equal(r.errors.length, 1);
+}
+
+// 基线回归（仓库位扫描，容差 ±2；漂移超限 → 人工对账后重新冻结基线）
+{
+  const base = JSON.parse(readFileSync(join(here, 'fixtures', 'v2-scan-baseline.json'), 'utf8'));
+  const r = scanPlugins(join(here, '..', '..'));
+  const c = { code: 0, comment: 0, umbrella: 0 };
+  for (const h of r.hits) c[h[4]] += 1;
+  for (const k of ['code', 'comment', 'umbrella'])
+    assert.ok(Math.abs(c[k] - base.counts[k]) <= 2, `${k} 计数漂移超容差：${c[k]} vs 基线 ${base.counts[k]}，重新对账冻结`);
+  assert.ok(Math.abs(Object.keys(r.provided).length - base.providedKeys) <= 2, 'provided 漂移超容差');
+  assert.ok(r.familyDirs.length >= base.familyDirs, '家族目录只增不减（新插件不应让基线变小）');
 }
 
 console.log('v2-scan.test.mjs PASS');

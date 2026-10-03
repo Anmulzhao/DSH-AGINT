@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.1.2",
-  "description": "AGINT 家族面板：以宿主原生停靠面板（root main keyed slot + sidebar.panellist 入口行）展示整个 agint 插件家族的分组、行状态与通电信号。host 半只开一条回环 JSON 路由；浏览器半经 shell 自带席位注册，席位不存在即静默不挂。",
+  "version": "0.2.0",
+  "description": "AGINT 家族面板：v1 停靠面板（分组/行状态/信号）+ v2 整页（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）。host 半开三条回环只读路由：/api/agint-family/status、/v2、/v2/data；数据实时来自源码扫描（L0.5 真源）与 $DSH_HOME/storages 三源，TTL+mtime 缓存。",
   "main": "lib/index.js",
   "agint": {
     "kind": "dual",
@@ -38,7 +38,11 @@
         "AGINT_HOME",
         "DSH_HOME"
       ],
-      "fs": [],
+      "fs": [
+        "read:storages",
+        "read:profiles/web/plugins",
+        "read:plugins"
+      ],
       "network": [
         "loopback:read"
       ],
@@ -52,7 +56,7 @@
     },
     "tests": {
       "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs",
+      "command": "node test/smoke.mjs && node test/v2-scan.test.mjs && node test/v2-data.test.mjs",
       "expectedExit": 0
     },
     "docs": {
