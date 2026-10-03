@@ -104,6 +104,36 @@ export function findingsFromSnapshot(snapshot) {
     }
   }
 
+  // ---- eval 存量 FAIL 归因（A4 / 路线图 1.4）----
+  // ⛔ 这里只报「有没有归因盲区」和「有没有真缺陷」，不报「fail 数减少」
+  //   （fail 数变化是 driver 口径问题，误报会让人以为产品在变好）。
+  const ev = s.evalFailAttribution;
+  if (ev) {
+    const unattr = ev.byCategory?.NOT_ATTRIBUTED ?? 0;
+    if (unattr > 0) {
+      out.push({
+        level: 'warn',
+        key: 'eval.fail.unattributed',
+        message: `eval 存量 ${ev.total} 条 FAIL 里有 ${unattr} 条未归因 —— 归因盲区会让修法选错（改场景 vs 改代码）`,
+      });
+    }
+    const defects = ev.byCategory?.REAL_DEFECT ?? 0;
+    if (defects > 0) {
+      out.push({
+        level: 'warn',
+        key: 'eval.fail.realDefect',
+        message: `eval 有 ${defects} 条 REAL_DEFECT —— 被测代码不满足场景契约，须改产品代码并过门禁`,
+      });
+    }
+    if (typeof ev.coverageMin === 'number' && typeof ev.coverage === 'number' && ev.coverage < ev.coverageMin) {
+      out.push({
+        level: 'warn',
+        key: 'eval.fail.coverage',
+        message: `eval FAIL 归因覆盖率 ${(ev.coverage * 100).toFixed(1)}% < 阈值 ${(ev.coverageMin * 100).toFixed(0)}%`,
+      });
+    }
+  }
+
   if (out.length === 0) out.push({ level: 'ok', key: 'all.healthy', message: '未发现明显问题' });
   return out;
 }
@@ -153,6 +183,20 @@ function renderSnapshotTable(s) {
   if (s.sessions) {
     rows.push(snapshotRow('会话', s.sessions.count !== undefined ? `${s.sessions.count} 个历史会话` : '（sessionQuery 未接入）'));
   }
+  // ── A4：eval 存量 FAIL 归因（固定章节的数据行）────────────────────
+  // ⛔ 三态诚实：没采到 ≠ 0 个 fail。缺席时整行不印，不印「0 个」。
+  if (s.evalFailAttribution) {
+    const e = s.evalFailAttribution;
+    const cov = e.coverage === null || e.coverage === undefined
+      ? 'N/A'
+      : `${(e.coverage * 100).toFixed(1)}%`;
+    rows.push(snapshotRow(
+      'eval 存量 FAIL 归因',
+      `${e.total} 条 FAIL，已归因 ${e.attributed} 条（覆盖率 ${cov}）`
+      + `；ASSERT_DRIFT ${e.byCategory?.ASSERT_DRIFT ?? 0} / HARNESS_GAP ${e.byCategory?.HARNESS_GAP ?? 0}`
+      + ` / REAL_DEFECT ${e.byCategory?.REAL_DEFECT ?? 0} / NOT_ATTRIBUTED ${e.byCategory?.NOT_ATTRIBUTED ?? 0}`,
+    ));
+  }
   if (s.inputGateway) {
     const ig = s.inputGateway;
     const chs = Array.isArray(ig.channels) ? ig.channels : [];
@@ -163,6 +207,72 @@ function renderSnapshotTable(s) {
   }
   if (rows.length === 0) rows.push(snapshotRow('数据源', '全部不可用——检查 host 服务是否已挂载'));
   return rows.join('\n');
+}
+
+/**
+ * 渲染 eval 存量 FAIL 归因固定章节（A4）。
+ *
+ * ⛔ 三态诚实（K 纪律）：
+ *   - 数据源缺席 ⇒ 印「本周未采到」，**不印「0 个 FAIL」**
+ *     （「没查」与「没有」在报告里长得一样，但含义相反）
+ *   - 采到了 0 个 FAIL ⇒ 明说「0 个 FAIL（driver 全绿）」并提示「无内容可归因」
+ *   - 归因盲区 / REAL_DEFECT 明写出来，不藏在总数里
+ *
+ * @param {string[]} lines
+ * @param {object|null|undefined} e snapshot.evalFailAttribution
+ */
+export function renderEvalFailAttribution(lines, e) {
+  if (!e) {
+    lines.push('- 本周未采到 eval 归因数据（`agint-evolve` 未读到 `evalFailAttribution` 快照项）。');
+    lines.push('  ⛔ 这不等于「0 个 FAIL」—— 没采到与没有，两回事。');
+    lines.push('  补齐方式：让 `bin/attribute-eval-fails.mjs` 出 JSON，接进 `dataSnapshot()`。');
+    return;
+  }
+
+  // ⛔ parseError 必须在任何 `?? 0` 之前短路。
+  //   否则「产物坏了」会被 `total ?? 0` 吞成「0 个 FAIL」——
+  //   那正是本节存在的理由要防的那类静默降级（K：空数据≠0）。
+  if (e.parseError) {
+    lines.push(`- ⛔ 归因产物解析失败：\`${e.parseError}\``);
+    lines.push('  本章数据**不可信**，不许按 0 个 FAIL 读。请重跑 `bin/attribute-eval-fails.mjs --json` 后重试。');
+    return;
+  }
+
+  const total = e.total ?? 0;
+  const attributed = e.attributed ?? 0;
+  const cov = typeof e.coverage === 'number' ? `${(e.coverage * 100).toFixed(1)}%` : 'N/A';
+  const covMin = typeof e.coverageMin === 'number' ? `${(e.coverageMin * 100).toFixed(0)}%` : '未设阈值';
+  lines.push(`- FAIL **${total}** 条，已归因 **${attributed}** 条，覆盖率 **${cov}**（阈值 ${covMin}）`);
+
+  if (total === 0) {
+    lines.push('  - driver 本轮 0 个 FAIL ⇒ **无内容可归因**。这与「没跑」不同，driver 口径见 §一。');
+    return;
+  }
+
+  if (e.parseError) {
+    lines.push(`> ⛔ 归因产物解析失败：\`${e.parseError}\` ⇒ 本章数据不可信，请重跑 \`bin/attribute-eval-fails.mjs --json\`。`);
+    return;
+  }
+  const cat = e.byCategory ?? {};
+  lines.push('');
+  lines.push('| 根因类 | 条数 | 该改什么 |');
+  lines.push('|---|---|---|');
+  lines.push(`| ASSERT_DRIFT（断言漂移） | ${cat.ASSERT_DRIFT ?? 0} | 改场景期望 |`);
+  lines.push(`| HARNESS_GAP（评估基建缺口） | ${cat.HARNESS_GAP ?? 0} | 改 driver mock/派发 |`);
+  lines.push(`| REAL_DEFECT（真产品缺陷） | ${cat.REAL_DEFECT ?? 0} | 改产品代码 + 过门禁 |`);
+  lines.push(`| NOT_ATTRIBUTED（未归因） | ${cat.NOT_ATTRIBUTED ?? 0} | 人工取证 |`);
+  lines.push('');
+  if ((cat.NOT_ATTRIBUTED ?? 0) > 0) {
+    lines.push(`> ⚠️ **${cat.NOT_ATTRIBUTED} 条未归因** —— 归因盲区。错类会把修法引到反方向（改场景 vs 改代码），不许猜。`);
+  }
+  if ((cat.REAL_DEFECT ?? 0) > 0) {
+    lines.push(`> ⚠️ **${cat.REAL_DEFECT} 条 REAL_DEFECT** —— 被测代码不满足场景契约，这是产品缺陷，须过门禁 + 实测。`);
+  }
+  if (Array.isArray(e.unattributedUnitIds) && e.unattributedUnitIds.length > 0) {
+    lines.push(`> 未归因单元：${e.unattributedUnitIds.map((x) => '`' + x + '`').join(' · ')}`);
+  }
+  lines.push('> ⛔ 本章**不许**为了让 driver 全绿而放宽判据 —— 下一次真回归会被一起放过。');
+  lines.push('> 完整证据链见 `docs/operations/eval-fail-attribution-<日期>.md`（由 `bin/attribute-eval-fails.mjs` 生成）。');
 }
 
 /**
@@ -194,6 +304,10 @@ export function buildReport({ date, snapshot, findings, notes }) {
       lines.push(`- ${icon} [${f.key}] ${f.message}`);
     }
   }
+  lines.push('');
+  lines.push('## 二·B、eval 存量 FAIL 归因（A4 固定章节）');
+  lines.push('');
+  renderEvalFailAttribution(lines, snapshot?.evalFailAttribution);
   lines.push('');
   lines.push('## 二·A、外部信号与多源输入');
   lines.push('');

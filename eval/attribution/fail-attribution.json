@@ -1,0 +1,128 @@
+{
+  "_generatedBy": {
+    "tool": "bin/attribute-eval-fails.mjs",
+    "command": "node bin/attribute-eval-fails.mjs --json > eval/attribution/fail-attribution.json",
+    "doNotHandEdit": true,
+    "why": "生成物，勿手改。入库是部署位 evolve-review 周报的数据源 + check-wiring 的校验对象。"
+  },
+  "generatedAt": "2026-10-03T15:10:32.764Z",
+  "total": 6,
+  "attributed": 6,
+  "coverage": 1,
+  "coverageMin": 0.8,
+  "coverageOk": true,
+  "byCategory": {
+    "ASSERT_DRIFT": 5,
+    "HARNESS_GAP": 1
+  },
+  "realDefects": 0,
+  "results": [
+    {
+      "unitId": "cron-default-jobs-registered",
+      "domain": "cron",
+      "plugin": "agint-cron",
+      "sourceFile": "eval/scenarios/agint-cron.scenario.json",
+      "probe": "defaultJobs",
+      "category": "ASSERT_DRIFT",
+      "reason": "场景漏列了 14 个新增默认 job（真实集合 ⊇ 场景集合）⇒ 断言比实现旧",
+      "evidence": [
+        "场景 expectedIds（10 个）：baseline-regression-suite,curator-weekly,evolve-review,memory-decay,metrics-collect,night-dream,prompt-static-check,skill-autocreate-aggregate,tool-stats-backfill,wiki-lint",
+        "jobs.js 真值（24 个）：baseline-regression-suite,curator-weekly,curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,evolve-review,ledger-anchor,memory-decay,memory-provider-health,metrics-collect,night-dream,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,prompt-static-check,skill-autocreate-aggregate,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh,tool-stats-backfill,wiki-lint",
+        "真实有、场景无：curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,ledger-anchor,memory-provider-health,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh",
+        "场景有、真实无：（无）",
+        "driver 断言方式：JSON.stringify(ids) === JSON.stringify(expectedIds.sort()) ⇒ 严格逐项相等，多一个即 fail"
+      ],
+      "fix": "改场景：把 expectedIds 补齐到与 jobs.js 一致。⛔ 不要改 driver 的相等判据 —— 放宽后新增 job 就再也不会被发现。"
+    },
+    {
+      "unitId": "service-annotations-table-full-throws",
+      "domain": "diagnosis",
+      "plugin": "agint-diagnosis",
+      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
+      "probe": "tableFull",
+      "category": "HARNESS_GAP",
+      "reason": "driver 的 fake table 只提供 entries()，没有 size；而插件的守门读的是 t.size ⇒ undefined >= cap 恒 false ⇒ 守门永不触发 ⇒ 场景永远看不到抛错",
+      "evidence": [
+        "场景想造满：annotationsCount=200（cap=200）、failurePatternCount=20",
+        "守门顺序：表满(annotations>=cap) → 无后续守门（failurePatternCount=20 ≥ 10，cold-start 不拦）",
+        "插件读法：plugins/agint-diagnosis/lib/index.js:233 `if (t.size >= LIMITS.ANNOTATIONS) throw ...`",
+        "真实 Table 接口：@deepseek-ai/dsh-storage-domain/lib/index.js:253 `get size() { return this.records.size }`",
+        "driver fake table：有 entries=true、有 size=false",
+        "driver detail（实跑）：`未抛错，反而返回 rootCause=TOOL_GAP` ⇒ 守门确实没触发"
+      ],
+      "fix": "给 driver 的 makeFakeCtx 的 table 加上 `size: entries.length`（⛔ 不改插件的守门逻辑 —— 用 undefined 比较来「通过」是假防线）。⚠️ 这是 K141 同款：部署位测试红了先判调用前提。"
+    },
+    {
+      "unitId": "s12-05-policy-policy-deployed-rolledback-shadow",
+      "domain": "event-bus",
+      "plugin": "agint-event-bus",
+      "sourceFile": "eval/scenarios/agint-event-bus-s12-05-policy.scenario.json",
+      "probe": "umbrellaKey",
+      "category": "ASSERT_DRIFT",
+      "reason": "断言的**测量方式**基于一个已被推翻的前提：「伞键上不该有 publish」。event-bus 后来主动补了 `ctx.provide('agint.eventBus', {...publish...})`（纯加法，让消费方免写回退链）⇒ 伞键有 publish 是**当前设计的正确行为**，而场景仍把它当成缺陷。真正该守的是「policy 走的是单 service 接口」",
+      "evidence": [
+        "场景 assertion 原文：`publishDoesNotUseUmbrellaKey = umbrellaKeyCalled === false`",
+        "场景测量代码：先 `ctx.get('agint.eventBus')`，再判 `.publish` 是否函数 ⇒ 测的是「伞键存不存在」",
+        "event-bus 现状：plugins/agint-event-bus/lib/index.js:167 `ctx.provide('agint.eventBus', { publish, subscribe, inspect, ... })`",
+        "实时核对：hasUmbrellaProvide=true umbrellaProvidesPublish=true",
+        "policy 侧实际写法（对）：policyEvents.js:108 `ctx.get('agint.eventBus.publish')` —— 单 service 接口，符合设计",
+        "driver detail（实跑）：12 项断言里 11 项 true，只有 `publishDoesNotUseUmbrellaKey:false` 红",
+        "⇒ 其余 11 项都过，说明被测行为是对的，错的只是这一项的测量方式"
+      ],
+      "fix": "改 branch 的测量方式：不再问「伞键有没有 publish」，改为**替换 publish 单 service 接口**（ctx.get 劫持成返回计数函数），再断言调用计数 === 0。⛔ 不要删掉这项断言 —— 「policy 不走伞键」这条设计约定仍要守，只是测法要换。"
+    },
+    {
+      "unitId": "stats-reports-counts-and-limits",
+      "domain": "evolution-memory",
+      "plugin": "agint-evolution-memory",
+      "sourceFile": "eval/scenarios/agint-evolution-memory.scenario.json",
+      "probe": "statsLimits",
+      "category": "ASSERT_DRIFT",
+      "reason": "schema.js 的 LIMITS 新增了 key（4 个）/ 场景多了 key（0 个） ⇒ driver 用 JSON.stringify 全等比对，新加一个上限就 fail",
+      "evidence": [
+        "场景 limitsShape（3 个）：{\"FAILURE_PATTERNS\":100,\"SUCCESS_TEMPLATES\":50,\"EVOLUTION_LOG_LINES_PER_DAY\":1000}",
+        "schema.js LIMITS（7 个）：{\"FAILURE_PATTERNS\":100,\"SUCCESS_TEMPLATES\":50,\"EVOLUTION_LOG_LINES_PER_DAY\":1000,\"CONTRACT_LOCKS\":1000,\"LEDGER_ENTRIES\":2000,\"PREDICTION_OUTCOMES\":2000,\"BENCHMARK_FROZEN_SETS\":500}",
+        "真实有、场景无：CONTRACT_LOCKS,LEDGER_ENTRIES,PREDICTION_OUTCOMES,BENCHMARK_FROZEN_SETS",
+        "场景有、真实无：（无）",
+        "⛔ 这一条是「全等比对」的必然后果：以后每加一个上限常量都会红一次。"
+      ],
+      "fix": "两种改法：(a) 改场景补齐 key；(b) 把 driver 的 limitsShape 断言从「全等」改成「场景声明的每个 key 都必须一致」（**新增 key 不再 fail**，删 key / 改值仍 fail）。(b) 更好，但改的是判据，要走门禁。"
+    },
+    {
+      "unitId": "policy-decide-clean-results-pending-or-deploy",
+      "domain": "quality",
+      "plugin": "agint-quality-policy",
+      "sourceFile": "eval/scenarios/agint-quality-policy-decisions.scenario.json",
+      "probe": "policyDecision",
+      "category": "ASSERT_DRIFT",
+      "reason": "按当前权重实算 composite=80 → AUTO_DEPLOY，场景期望 PENDING_REVIEW",
+      "evidence": [
+        "权重（evaluators.js DIMENSION_WEIGHTS）：{\"trust\":0.2,\"reliability\":0.2,\"effectiveness\":0.1,\"safety\":0.3,\"convention\":0,\"adaptability\":0,\"integrability\":0.2,\"promptStatic\":0.2}",
+        "阈值（decide.js 默认）：autoDeploy=70 pendingReview=60",
+        "参与计分：safety=1×0.3 + trust=0.5×0.2 + reliability=0.6×0.2 + integrability=1×0.2",
+        "实算：(0.7200 / 0.9000) × 100 = 80",
+        "分类：composite ≥ 70 ? AUTO_DEPLOY : ≥ 60 ? PENDING_REVIEW : REJECT ⇒ AUTO_DEPLOY",
+        "场景 _note 自带的算式 = 68.9 ⇒ 场景里那句手算注释本身也算错了（分子写成 0.62，实际 0.72）",
+        "⛔ 场景期望值不是从权重表推出来的，是手写的 ⇒ 权重一改就漂。"
+      ],
+      "fix": "改场景的 decision/scoreAtLeast；⛔ 不要改阈值来迁就场景 —— 阈值是老板 2026-09-17 拍板的。"
+    },
+    {
+      "unitId": "sprint6-cron-job-prompt-static-check-registered",
+      "domain": "pipeline",
+      "plugin": "agint-cron",
+      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
+      "probe": "defaultJobs",
+      "category": "ASSERT_DRIFT",
+      "reason": "场景漏列了 14 个新增默认 job（真实集合 ⊇ 场景集合）⇒ 断言比实现旧",
+      "evidence": [
+        "场景 expectedIds（10 个）：baseline-regression-suite,curator-weekly,evolve-review,memory-decay,metrics-collect,night-dream,prompt-static-check,skill-autocreate-aggregate,tool-stats-backfill,wiki-lint",
+        "jobs.js 真值（24 个）：baseline-regression-suite,curator-weekly,curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,evolve-review,ledger-anchor,memory-decay,memory-provider-health,metrics-collect,night-dream,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,prompt-static-check,skill-autocreate-aggregate,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh,tool-stats-backfill,wiki-lint",
+        "真实有、场景无：curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,ledger-anchor,memory-provider-health,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh",
+        "场景有、真实无：（无）",
+        "driver 断言方式：JSON.stringify(ids) === JSON.stringify(expectedIds.sort()) ⇒ 严格逐项相等，多一个即 fail"
+      ],
+      "fix": "改场景：把 expectedIds 补齐到与 jobs.js 一致。⛔ 不要改 driver 的相等判据 —— 放宽后新增 job 就再也不会被发现。"
+    }
+  ]
+}

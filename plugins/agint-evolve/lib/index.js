@@ -25,6 +25,7 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, rm } from 'node:fs/promises';
 import { join, resolve, dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { findingsFromSnapshot, buildReport } from './report.js';
@@ -34,7 +35,24 @@ const inject = ['storageDomain'];
 
 const Config = z.object({
   root: z.string().min(1, 'agint-evolve: config.root is required'),
+  // A4：eval 存量 FAIL 归因产物（`node bin/attribute-eval-fails.mjs --json` 的落盘产物）。
+  // 可选 —— 不配就整章印「本周未采到」，⛔ 绝不印「0 个 FAIL」（K：没查 ≠ 没有）。
+  // ⚠️ 路径在 apply() 里从 import.meta.url 推导（仓库根 = 插件所在 plugins/<name>/lib 的上两级），
+  //    不用环境变量：cron 的 cwd 与宿主环境都不可靠（与 quality-sandbox 同款做法）。
+  evalAttributionPath: z.string().min(1).optional(),
 });
+
+/**
+ * 从本文件位置推仓库根。
+ * 本文件在 `plugins/agint-evolve/lib/index.js`，故 `../../..` 才是仓库根
+ *（`../` = agint-evolve/，`../../` = plugins/，`../../../` = 仓库根）。
+ * ⛔ 层数写错会「静默推到一个不存在的目录」⇒ 归因永远读不到 ⇒ 周报永远印「未采到」。
+ *   所以下面有断言：推出的路径必须存在 eval/ 目录。
+ */
+function repoRootFromHere() {
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  return root;
+}
 
 const proposalSchema = z.object({
   id: z.string().min(1),
@@ -76,6 +94,11 @@ const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugi
 
 function apply(ctx, config) {
   const root = resolve(config.root);
+  // A4：归因 JSON 路径。config 显式给就用它，否则从插件自身位置推仓库根
+  //（不依赖 cwd / 环境变量 —— cron 的 cwd 不保证是仓库根，宿主环境变量也没约定）。
+  const evalAttributionPath = config.evalAttributionPath
+    ? resolve(config.evalAttributionPath)
+    : resolve(repoRootFromHere(), 'eval', 'attribution', 'fail-attribution.json');
 
   // ---- storage domain (double-sentinel pattern, K4/K8) ----
   let domain = null;
@@ -216,6 +239,38 @@ function apply(ctx, config) {
     // v0.7.2：多源输入网关（外部信号 Channel 状态 + security 门禁计数）
     if (inputGateway && typeof inputGateway.getStatus === 'function') {
       snapshot.inputGateway = await safe(() => inputGateway.getStatus());
+    }
+
+    // A4：eval 存量 FAIL 归因。⛔ 读不到 ⇒ 整个键缺席，让周报印「本周未采到」，
+    //   绝不塞一个 { total: 0 } —— 「没采到」与「真的 0 个 fail」含义相反。
+    if (evalAttributionPath) {
+      const raw = await safe(() => readFile(evalAttributionPath, 'utf8'));
+      if (typeof raw === 'string' && raw.trim() !== '') {
+        try {
+          const parsed = JSON.parse(raw);
+          // 只取白名单字段：周报是给人读的，不该被产物文件里的额外键带偏。
+          snapshot.evalFailAttribution = {
+            total: Number(parsed.total) || 0,
+            attributed: Number(parsed.attributed) || 0,
+            coverage: typeof parsed.coverage === 'number' ? parsed.coverage : null,
+            coverageMin: typeof parsed.coverageMin === 'number' ? parsed.coverageMin : null,
+            byCategory: parsed.byCategory && typeof parsed.byCategory === 'object' ? parsed.byCategory : {},
+            realDefects: Number(parsed.realDefects) || 0,
+            generatedAt: typeof parsed.generatedAt === 'string' ? parsed.generatedAt : null,
+            unattributedUnitIds: Array.isArray(parsed.results)
+              ? parsed.results.filter((r) => r?.category === 'NOT_ATTRIBUTED').map((r) => r.unitId).filter(Boolean)
+              : [],
+          };
+        } catch (parseErr) {
+          // 产物文件坏了也要如实说，不能静默当 0。
+          snapshot.evalFailAttribution = {
+            total: null, attributed: null, coverage: null, coverageMin: null,
+            byCategory: {}, realDefects: 0, generatedAt: null,
+            parseError: parseErr?.message ?? String(parseErr),
+            unattributedUnitIds: [],
+          };
+        }
+      }
     }
 
     return snapshot;

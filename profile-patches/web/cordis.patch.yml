@@ -61,6 +61,9 @@
       name: ./plugins/agint-evolve/lib/index.js
       config:
         root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+        # A4: eval 存量 FAIL 归因产物（`node bin/attribute-eval-fails.mjs --json > eval/attribution/fail-attribution.json`）。
+        # 省略时插件从自身位置推仓库根；显式给则以此为准。
+        # ⛔ 读不到则周报该章印「本周未采到」，绝不印「0 个 FAIL」（没查 ≠ 没有）。
 
     # agint-tool-stats: tool usage profile. Listens on tools/result events,
     # appends to ~/.dsh/storages/agint_tool_stats.jsonl.
