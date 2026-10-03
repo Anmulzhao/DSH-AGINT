@@ -1,5 +1,20 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.12 (2026-10-04) — Config schema 声明 repoRoot（0.6.11 的修法当时不生效，实跑钉出）
+
+### 症状
+0.6.11 + cordis 两块（HOME 与 bundle 各写一遍）+ 重启后，`ledger-anchor` 仍 ENOENT，
+路径逐字不变。 ⇒ 值没到 `apply()`。
+
+### 根因（对照组定位）
+driver 无 `Config` schema ⇒ `config.repoRoot` 原样进 apply ⇒ 一次通过。
+memory 的 `Config = z.object({}).optional()` —— zod 对象默认**剥掉未声明的键** ⇒
+cordis 里写的 `repoRoot` 在宿主校验那一刻被剥，apply 永远拿到 `{}`。
+
+### 修法
+`Config = z.object({ repoRoot: z.string().optional() }).optional()`。
+教训（已进 playbook）：**接新 config 键必须同时改 Config schema，缺了它代码写得再对也收不到值。**
+
 ## 0.6.11 (2026-10-04) — ledger-anchor 锚点写盘根支持 config.repoRoot
 
 ### 症状

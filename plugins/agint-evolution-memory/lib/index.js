@@ -51,7 +51,12 @@ const name = 'agint-evolution-memory';
 //   经常取不到而影子订阅永久降级。改为硬 inject 让 DI 等待服务就绪。
 const inject = ['storageDomain', 'agint.eventBus.subscribe'];
 
-const Config = z.object({}).optional();
+// repoRoot 必须在此声明：宿主用本 schema 校验 patch 里的 config 块，
+// 未声明的键会在到达 apply() 之前被 zod 剥掉（2026-10-04 ledger-anchor 三连败钉出；
+// 对照组 driver 没有 Config ⇒ 值原样进 apply ⇒ 同机制一次通过）。
+const Config = z.object({
+  repoRoot: z.string().optional(),
+}).optional();
 
 // 三表 schema（用 zod）
 const spec = defineDomain({
