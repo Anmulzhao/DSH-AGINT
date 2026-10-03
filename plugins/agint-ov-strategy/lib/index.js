@@ -208,6 +208,14 @@ function apply(ctx, config) {
     wrapState.recallMessage = wrapMethod(rt, 'recallMessage', (args, result, err) => {
       counters.observedRecall += 1;
       publishEvent('ov.recall.checked', {
+        // A6（2026-10-03）：补sessionId —— 检索质量分析原本做不了，因为
+        // 一条 ov.recall.checked 不指向任何会话，只能看全局比率。
+        // 身份来源与 ov.session.flushed **完全同源**（同一 runtime 方法族的
+        // 第 0 个入参就是会话对象），不是另找一条推断路径。
+        // ⛔ 兜底口径照抄 flushed 那行（`?? null`）：拿不到就报 null，
+        // 绝不拿 args[1] 的消息内容去"猜"会话 —— 那是自造字段名，
+        // 下游按 sessionId 分组时会把一堆猜测值聚成假簇。
+        sessionId: args?.[0]?.id ?? null,
         injected: !err && Boolean(result),
         querySize: lastMessageSize(args[1]),
         blockSize: err ? 0 : jsonSize(result),
