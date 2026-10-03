@@ -2,6 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.11] — 修接线缺失：services 快照表补 `agint.evolution`（2026-10-04，手工 runNow 实跑钉出）
+
+### 问题
+`ledger-anchor` 每次实跑必报 `agint.evolution.ledger.anchor not available`（部署前后同错）。
+根因不在 evolution-memory（其 `ledger.anchor` 接线一直在），而在本插件：`lib/index.js`
+的 services 快照表没有 `'agint.evolution'` 键 ⇒ `jobs.js:80` 的 `services['agint.evolution']`
+恒 undefined。同理受伤的还有 `prompt-static-check`（`evo` 恒 undefined，失败上报走空）。
+既有单测把 services **直传给 action**，绕过快照表，所以从未测出这个洞。
+
+### 修法
+快照表补一行懒解析 `'agint.evolution': ctx.get('agint.evolution')`。
+新增回归测试 `test/services-map.test.mjs`：静态比对 jobs.js 引用的全部
+`services['<key>']` ⊆ 快照表键。已知豁免 `agint.manifestsRoots`（全仓无人 provide，
+`??` 兜底成空数组 ⇒ prompt-static-check 恒扫 0 根）——另案处理，本测试留了案底。
+
 ## [0.2.10] — 修观测缺口：outcome-measure 补约定式 summary 通道（2026-10-03，重启实跑发现）
 
 ### 问题

@@ -158,6 +158,11 @@ function apply(ctx, config) {
     'agint.wiki': ctx.get('agint.wiki'),
     'agint.metrics': ctx.get('agint.metrics'),
     'agint.evolve': ctx.get('agint.evolve'),
+    // 进化记忆域（ledger-anchor job 的 `evo.ledger.anchor` 从这里来）。懒解析；
+    // agint-evolution-memory 未挂载时为 undefined → job 出声报错（该 job 不允许静默）。
+    // ⛔ 别再漏这行：jobs.js 的 ledger-anchor 读的就是这个键，缺了它每次必报
+    //   "not available"（2026-10-03 手工 runNow 实测钉死，test/ 的 stub 直传 services 遮住了这个洞）。
+    'agint.evolution': ctx.get('agint.evolution'),
     'agint.toolStats': ctx.get('agint.toolStats'),
     'agint.dream': ctx.get('agint.dream'),
     'agint.promptSDK': ctx.get('agint.promptSDK'),
