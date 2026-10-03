@@ -1,8 +1,8 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-02T13:14:01.060Z",
+  "generatedAt": "2026-10-03T11:19:50.852Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
-  "driverVersion": "e8c75cd3e198a5c5415d03d468ccc2eb432ab409",
+  "driverVersion": "ec362b56c9c007474afb1db46709eb49b322a03b",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
   "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。",
   "scope": {
@@ -12,8 +12,8 @@
   },
   "summary": {
     "totalUnits": 123,
-    "passCount": 118,
-    "failCount": 5,
+    "passCount": 117,
+    "failCount": 6,
     "skipCount": 0,
     "fileCount": 35,
     "unitsPerFile": {
@@ -71,6 +71,24 @@
     "kindCounts": {
       "e2e": 8,
       "integration": 115
+    },
+    "tierCounts": {
+      "EVOLUTION": 123,
+      "VALIDATION": 0,
+      "FROZEN": 0
+    },
+    "tierSum": 123,
+    "labelAuthorityCounts": {
+      "UNSET": 123,
+      "SILVER": 0,
+      "GOLD": 0,
+      "HELDOUT": 0
+    },
+    "qualityRatio": {
+      "domain": "quality",
+      "count": 57,
+      "total": 123,
+      "ratio": 0.4634146341463415
     }
   },
   "units": [
@@ -86,7 +104,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "cron-default-jobs-registered",
@@ -100,7 +120,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-prompt-deficiency",
@@ -114,7 +136,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-tool-gap",
@@ -128,7 +152,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-knowledge-gap",
@@ -142,7 +168,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-reasoning-error",
@@ -156,7 +184,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-planning-failure",
@@ -170,7 +200,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-environment-shift",
@@ -184,7 +216,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-uncertain-no-class-matches",
@@ -198,7 +232,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "classify-tied-knowledge-and-tool",
@@ -212,7 +248,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "service-cold-start-throws",
@@ -226,7 +264,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "service-annotations-table-full-throws",
@@ -240,7 +280,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "dream-gate-thresholds",
@@ -254,7 +296,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-02-evolution-evaluated-sync-edge",
@@ -268,7 +312,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-03-sandbox-passed-failed-via-event-bus",
@@ -282,7 +328,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-04-mount-requested-via-event-bus",
@@ -296,7 +344,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-05-policy-policy-deployed-rolledback-shadow",
@@ -310,7 +360,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-05-mount-succeeded-population-and-evolution-memory-observe",
@@ -324,7 +376,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s12-06-mount-failed-diagnosis-trigger",
@@ -338,7 +392,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "evolution-log-write-read",
@@ -352,7 +408,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "failure-patterns-add-and-dedupe",
@@ -366,7 +424,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "failure-patterns-substring-search",
@@ -380,7 +440,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "success-templates-add-and-query",
@@ -394,7 +456,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "decay-scan-no-mutation-without-apply",
@@ -408,7 +472,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "physical-isolation-from-task-memory",
@@ -422,7 +488,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "stats-reports-counts-and-limits",
@@ -430,13 +498,15 @@
       "plugin": "agint-evolution-memory",
       "domain": "evolution-memory",
       "kind": "integration",
-      "lastKnownStatus": "PASS",
+      "lastKnownStatus": "FAIL",
       "failCategory": null,
       "contentHash": "sha256:c33255d209b6194dc587f6df241874b918b3a2f381b8dcc677c7ca7b58965efa",
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "memory-write-read",
@@ -450,7 +520,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "metrics-compute-empty-sources",
@@ -464,7 +536,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "metrics-compute-cron-source",
@@ -478,7 +552,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-01-happy-path-healthy-mount",
@@ -492,7 +568,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-02-static-reject-before-prepare",
@@ -506,7 +584,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-03-frozen-signature-diff-rejects-mount",
@@ -520,7 +600,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-04-sandbox-smoke-fail-rollback",
@@ -534,7 +616,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-05-health-probe-fail-auto-disable",
@@ -548,7 +632,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-06-sandbox-unavailable-degrade-pending-review",
@@ -562,7 +648,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-07-baseline-regression-fail-rollback-and-freeze",
@@ -576,7 +664,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "s11-08-idempotent-same-ticket-returned",
@@ -590,7 +680,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "deploy-budget-is-auto-deploy-entry",
@@ -604,7 +696,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "deploy-budget-count-rolling-7d",
@@ -618,7 +712,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "deploy-budget-within-limit",
@@ -632,7 +728,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "deploy-budget-over-limit-forces-review",
@@ -646,7 +744,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "deploy-budget-weekly-hook-wired",
@@ -660,7 +760,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "regression-baseline-delta-tiers",
@@ -674,7 +776,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "regression-stagnation-active-growth",
@@ -688,7 +792,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "regression-stagnation-detected",
@@ -702,7 +808,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "regression-stagnation-insufficient-data",
@@ -716,7 +824,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "compute-passrate-from-per-target-results",
@@ -730,7 +840,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "regression-baseline-targets-fixed-set",
@@ -744,7 +856,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-gate-passes-when-sandbox-ok",
@@ -758,7 +872,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-gate-rejects-when-sandbox-fails",
@@ -772,7 +888,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-gate-skipped-when-no-sandbox-service",
@@ -786,7 +904,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-gate-skipped-when-target-has-no-path",
@@ -800,7 +920,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "weekly-hook-writes-eval-results-to-evolution-log",
@@ -814,7 +936,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "weekly-hook-runs-baseline-suite",
@@ -828,7 +952,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "weekly-hook-detects-stagnation-after-many-runs",
@@ -842,7 +968,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "weekly-hook-triggers-regression-when-baseline-drops",
@@ -856,7 +984,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-shadow-agrees-with-prod",
@@ -870,7 +1000,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-shadow-disagrees-with-prod",
@@ -884,7 +1016,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-shadow-10-agrees-promotes",
@@ -898,7 +1032,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-rollback-triggers-on-high-reject-rate",
@@ -912,7 +1048,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-rollback-skipped-on-low-reject-rate",
@@ -926,7 +1064,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "committee-history-append-query-roundtrip",
@@ -940,7 +1080,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-empty-results-abstain",
@@ -954,7 +1096,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-safety-veto-rejects",
@@ -968,7 +1112,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-clean-results-pending-or-deploy",
@@ -982,7 +1128,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-weights-composite-correct",
@@ -996,7 +1144,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-true-auto-deploy",
@@ -1010,7 +1160,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-trust-veto-rejects",
@@ -1024,7 +1176,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-abstain-insufficient-signal",
@@ -1038,7 +1192,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-setThresholds-audits-via-quality",
@@ -1052,7 +1208,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-setThresholds-rejects-invalid-range",
@@ -1066,7 +1224,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-decide-audits-memory",
@@ -1080,7 +1240,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-rejection-uniformity",
@@ -1094,7 +1256,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-rejection-uniformity-clean-with-variance",
@@ -1108,7 +1272,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-false-consensus-all-AUTO_DEPLOY",
@@ -1122,7 +1288,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-false-consensus-with-mixed-decisions",
@@ -1136,7 +1304,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-regression-underreporting",
@@ -1150,7 +1320,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "harmony-detect-regression-underreporting-clean",
@@ -1164,7 +1336,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "policy-detectFalseHarmony-Service-full-run",
@@ -1178,7 +1352,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "report-generate-markdown-and-json",
@@ -1192,7 +1368,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "report-writeToWiki-and-memory",
@@ -1206,7 +1384,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "report-missing-decision-throws",
@@ -1220,7 +1400,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-service-starts-with-config",
@@ -1234,7 +1416,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-falls-back-when-ctx-sandbox-missing",
@@ -1248,7 +1432,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-fails-on-nonexistent-plugin",
@@ -1262,7 +1448,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-rejects-missing-target-path",
@@ -1276,7 +1464,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sandbox-backend-health-reports-availability",
@@ -1290,7 +1480,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-validate-manifest-valid",
@@ -1304,7 +1496,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-validate-manifest-too-few-tests",
@@ -1318,7 +1512,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-template-render-with-values",
@@ -1332,7 +1528,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-static-check-injection-blocker",
@@ -1346,7 +1544,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-static-check-clean-prompt",
@@ -1360,7 +1560,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-static-check-placeholder-typo",
@@ -1374,7 +1576,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sdk-regression-tests-run-all-pass",
@@ -1388,7 +1592,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rules-deny-delete-evolution-log-rm",
@@ -1402,7 +1608,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rules-deny-delete-evolution-log-rmrf",
@@ -1416,7 +1624,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rules-deny-delete-evolution-log-unlink",
@@ -1430,7 +1640,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rules-allow-mv-evolution-log-rotation",
@@ -1444,7 +1656,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rules-deny-rm-rf-root",
@@ -1458,7 +1672,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-capability-can",
@@ -1472,7 +1688,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-capability-cannot",
@@ -1486,7 +1704,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-capability-uncertain-low-samples",
@@ -1500,7 +1720,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-calibration-cold-start-guard",
@@ -1514,7 +1736,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-calibration-miscalibration-guard",
@@ -1528,7 +1752,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-frozen-lastVerifiedAt-required",
@@ -1542,7 +1768,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-a11-publish-payload",
@@ -1556,7 +1784,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-update-changedDomains",
@@ -1570,7 +1800,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-snapshot-four-blocks",
@@ -1584,7 +1816,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "self-model-reasoning-profile-from-diagnosis",
@@ -1598,7 +1832,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-batchStaticCheck-cleans-and-bad",
@@ -1612,7 +1848,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-cron-job-prompt-static-check-registered",
@@ -1626,7 +1864,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-evalPromptStatic-no-prompt-target",
@@ -1640,7 +1880,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-evalPromptStatic-clean-prompt",
@@ -1654,7 +1896,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-evalPromptStatic-bad-prompt-score-dropped",
@@ -1668,7 +1912,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-policy-prompt-blocker-finding-forces-REJECT",
@@ -1682,7 +1928,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-policy-clean-prompt-PENDING_REVIEW",
@@ -1696,7 +1944,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "sprint6-report-prompt-section-rendered",
@@ -1710,7 +1960,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "rsync-no-links-excludes-node-modules",
@@ -1724,7 +1976,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "install-trap-registers-partial-steps",
@@ -1738,7 +1992,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "install-rejects-path-traversal",
@@ -1752,7 +2008,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "install-uses-central-backup-dir",
@@ -1766,7 +2024,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "uninstall-supports-restore-and-list",
@@ -1780,7 +2040,9 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     },
     {
       "unitId": "security-checks-script-is-self-contained",
@@ -1794,9 +2056,26 @@
       "externalDeps": [
         "dsh-runtime"
       ],
-      "runtimeRequired": true
+      "runtimeRequired": true,
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     }
   ],
+  "tierBaseline": {
+    "tieringFile": "eval/tiers/agint-tiering.json",
+    "tieringVersion": "1.0",
+    "note": "Frozen 集的聚合 hash 与名单。入 evolution-memory 的 `benchmark_frozen_set` 表后，即可回答「这一版冻结集有没有被偷偷改过」：增删任一 Frozen 单元、或改任一 Frozen 单元的 contentHash，聚合 hash 都会变。⛔ hash 只对 {unitId, contentHash} 计算，不含 labelAuthority —— HELDOUT→GOLD 是合法降级，算进来会变成假阳性。",
+    "frozenUnitIds": [],
+    "frozenCount": 0,
+    "frozenAggregateHash": "sha256:643c0e8f0c0598386e2056773526a7e2e3158e719e793becc64ad695b1ba7627",
+    "failCount": 6,
+    "h1EvolutionMinFail": 4,
+    "h3FrozenFailProbeCap": 2,
+    "criteriaOk": true,
+    "criteriaErrors": [],
+    "criteriaSkipped": [],
+    "statusKnown": true
+  },
   "dedicatedUnits": {
     "count": 29,
     "fileCount": 2,
@@ -2277,6 +2556,7 @@
       "cron-default-jobs-registered",
       "service-annotations-table-full-throws",
       "s12-05-policy-policy-deployed-rolledback-shadow",
+      "stats-reports-counts-and-limits",
       "policy-decide-clean-results-pending-or-deploy",
       "sprint6-cron-job-prompt-static-check-registered"
     ]
@@ -2287,11 +2567,11 @@
     "claimedFail": 12,
     "claimSource": "Sprint12-设计稿 .md:159 / AGINT‐智进.md:9 / 路线图.md:188",
     "measuredTotal": 123,
-    "measuredPass": 118,
-    "measuredFail": 5,
+    "measuredPass": 117,
+    "measuredFail": 6,
     "delta": 19,
-    "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 118 vs 声称 92（+26）；\nFAIL：实测 5 vs 声称 12（-7）。\n⇒ 12 → 5 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
-    "driverSummaryLine": "118 passed, 5 failed, 0 skipped (of 123)",
+    "deltaExplanation": "实测 123 vs 声称 104，差 +19。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 117 vs 声称 92（+25）；\nFAIL：实测 6 vs 声称 12（-6）。\n⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
+    "driverSummaryLine": "117 passed, 6 failed, 0 skipped (of 123)",
     "failSetReconciliation": {
       "method": "1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。\n2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。\n3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。\n4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。",
       "confirmed": {
@@ -2303,14 +2583,27 @@
           "cron-default-jobs-registered",
           "service-annotations-table-full-throws",
           "policy-decide-clean-results-pending-or-deploy",
-          "sprint6-cron-job-prompt-static-check-registered"
+          "sprint6-cron-job-prompt-static-check-registered",
+          "stats-reports-counts-and-limits"
         ],
         "currentlyFailingThatAreNew": [
           "s12-05-policy-policy-deployed-rolledback-shadow"
         ],
-        "newFailNote": "该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。"
+        "newFailNote": "该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。",
+        "confirmedRegression": {
+          "unitId": "stats-reports-counts-and-limits",
+          "wasStatus": "PASS",
+          "wasSource": "eval/scenarios/inventory.json @ generatedAt 2026-10-02T13:14:01Z（入仓清单实测值）",
+          "nowStatus": "FAIL",
+          "nowSource": "2026-10-03 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 117 passed, 6 failed (of 123)",
+          "detail": "driver 报 `keys_ok=true limits_ok=false`",
+          "rootCause": "场景断言 `stats-shape.limitsShape` 写死了 LIMITS 的**全量形状**（3 键：FAILURE_PATTERNS / SUCCESS_TEMPLATES / EVOLUTION_LOG_LINES_PER_DAY）。而 plugins/agint-evolution-memory/lib/schema.js 的 LIMITS 此后新增了 CONTRACT_LOCKS（b1731c3，2026-10-02）与 PREDICTION_OUTCOMES（3d576b6，2026-10-03）⇒ 形状对不上 ⇒ limits_ok=false。**加表即挂**，属既存缺陷，不是本次改动引入。",
+          "sceneUnchanged": true,
+          "sceneUnchangedEvidence": "git diff --stat b6a14f7 HEAD -- eval/scenarios/agint-evolution-memory.scenario.json ⇒ 空。⇒ 场景文件自旧基线起未被改过 ⇒ 是 plugin 代码侧的回归，不是「改场景改挂」。",
+          "notFixedHere": "本轮**不修**它。改这个断言等于改判据，属 Sprint 17 归因/修复范围，须老板点头；且本 Sprint 的交付是三层隔离。此处只负责把真值写进清单，让回归不再隐形。"
+        }
       },
-      "arithmetic": "设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。当前失败的旧单元数 4 = (12 − F) + R ⇒ F = 8 + R。⇒ **至少 8 个旧 fail 已被修复**；另有 R ∈ [0,4] 个旧单元发生回归（无法确定，因名单未留存）。净变化 −7 = −8（修复）+ 1（新增 s12-05），与 12 → 5 自洽。",
+      "arithmetic": "设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。当前失败的旧单元数 5 = (12 − F) + R ⇒ F = 7 + R。⇒ **至少 7 个旧 fail 已被修复**；另有 R ∈ [0,5] 个旧单元发生回归（无法确定，因名单未留存）。净变化 −6 = −F（修复）+ R（回归）+ 1（新增 s12-05），与 12 → 6 自洽。⚠️ 与 2026-10-02 那版（当时是 12 → 5）相比**变差了 1 个**：stats-reports-counts-and-limits 从 PASS 转 FAIL，根因见 confirmedRegression。⚠️ 它是否属于 R 无法确证：只知道它 2026-10-02 是 PASS，不知道它在 b6a14f7 时点的状态（那 12 个 fail 的名单从未被任何 artifact 记录）。故 R 的下界仍取 0。",
       "candidates": {
         "note": "旧时点即存在、且单元内容此后被改过的只有 5 个。其中 3 个现已 PASS —— 它们是最可能「由 FAIL 转 PASS」的对象（改测试或改代码都可能）。",
         "changedAndNowPass": [
@@ -2323,8 +2616,8 @@
           "sprint6-cron-job-prompt-static-check-registered"
         ],
         "changedAndStillFailNote": "这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。",
-        "untouchedAndNowPass": 95,
-        "untouchedNote": "其余 97 个旧单元内容从未改动，其中 95 个现为 PASS ⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。"
+        "untouchedAndNowPass": 94,
+        "untouchedNote": "其余 97 个旧单元内容从未改动，其中 **94 个现为 PASS**、3 个现为 FAIL（service-annotations-table-full-throws / policy-decide-clean-results-pending-or-deploy / stats-reports-counts-and-limits）⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。⚠️ 2026-10-02 那版写的是 95 个 PASS —— 少掉的这一个正是新确认的回归stats-reports-counts-and-limits（见 confirmedRegression），不是统计口径变了。"
       },
       "irreducible": "⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。",
       "remediation": "本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。"
