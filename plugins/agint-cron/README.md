@@ -94,6 +94,11 @@
 > ① 某条测量的复原护栏没核上（`needsAttention`）—— 临时换文件没干净收尾，源码树可能仍处基线态；
 > ② 归档校验发现异常（`audit.tampered` 锁重算对不上 / `audit.orphanPredictions` 链上有预测而锁行没了）——
 >   这是安全事件，`contract_locks` 既不可覆盖也不可删除。
+
+> ℹ️ 读数位置（0.2.10 起）：`cron_state['outcome-measure'].lastResultSummary` 的 `result` 对象里
+> 有 `scanned / measurable / attempted / deferred / counts / auditChecked / auditStatus`。
+> `summarizeResult` 的自动搬运只认 `report.scanned` 与 `report.counts`，其余字段必须由 job 自己放
+> 进显式 `summary` 才会落盘 —— 只写 `report` 会静默丢数，`measurable:0` 就与"根本没跑"同形。
 >   ⛔ 但 `audit.ok:false`（服务不可用 / 插件未重启）**不抛错**，只在 `report.auditChecked=0` 里如实带出：
 >   "查不了"与"查过没问题"靠数字区分，不靠每周一次的常驻红色区分。
 
