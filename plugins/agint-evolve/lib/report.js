@@ -221,8 +221,20 @@ function renderSnapshotTable(s) {
  * @param {string[]} lines
  * @param {object|null|undefined} e snapshot.evalFailAttribution
  */
-export function renderEvalFailAttribution(lines, e) {
+export function renderEvalFailAttribution(lines, e, opts = {}) {
   if (!e) {
+    // ⛔ 2026-10-04：区分「路径没解析出来」与「没采到数据」。
+    //   部署位（~/.dsh/.agint-bundle/plugins/…）的祖先目录里没有 eval/ ⇒ 自动探测
+    //   解析不出仓库根。这时报「未采到」会把运维引去查归因脚本，而真因是路径没解析出来。
+    if (opts.pathUnresolved) {
+      lines.push('- ⛔ **归因路径未解析**：本插件不在仓库布局内，向上找不到含 `eval/` 的目录。');
+      lines.push('  这**不是**「0 个 FAIL」，也**不是**「本周没跑归因」—— 是插件根本没拿到产物路径。');
+      lines.push('  修法二选一：');
+      lines.push('  1. 在 `cordis.patch.yml` 的 `agint-evolve` 行显式给 `evalAttributionPath`（指向仓库的 `eval/attribution/fail-attribution.json`）；');
+      lines.push('  2. 把 `eval/attribution/fail-attribution.json` 放到部署位可解析到的位置。');
+      lines.push('  改完需重启宿主（boot 期配置）。');
+      return;
+    }
     lines.push('- 本周未采到 eval 归因数据（`agint-evolve` 未读到 `evalFailAttribution` 快照项）。');
     lines.push('  ⛔ 这不等于「0 个 FAIL」—— 没采到与没有，两回事。');
     lines.push('  补齐方式：让 `bin/attribute-eval-fails.mjs` 出 JSON，接进 `dataSnapshot()`。');
@@ -307,7 +319,9 @@ export function buildReport({ date, snapshot, findings, notes }) {
   lines.push('');
   lines.push('## 二·B、eval 存量 FAIL 归因（A4 固定章节）');
   lines.push('');
-  renderEvalFailAttribution(lines, snapshot?.evalFailAttribution);
+  renderEvalFailAttribution(lines, snapshot?.evalFailAttribution, {
+    pathUnresolved: snapshot?.evalFailAttributionUnresolved === true,
+  });
   lines.push('');
   lines.push('## 二·A、外部信号与多源输入');
   lines.push('');

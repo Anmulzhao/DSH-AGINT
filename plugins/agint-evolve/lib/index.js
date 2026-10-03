@@ -24,6 +24,7 @@
  */
 
 import { readFile, writeFile, readdir, stat, mkdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
@@ -43,15 +44,37 @@ const Config = z.object({
 });
 
 /**
- * 从本文件位置推仓库根。
- * 本文件在 `plugins/agint-evolve/lib/index.js`，故 `../../..` 才是仓库根
- *（`../` = agint-evolve/，`../../` = plugins/，`../../../` = 仓库根）。
- * ⛔ 层数写错会「静默推到一个不存在的目录」⇒ 归因永远读不到 ⇒ 周报永远印「未采到」。
- *   所以下面有断言：推出的路径必须存在 eval/ 目录。
+ * 从本文件位置向上找**真实存在 `eval/` 的仓库根**。
+ *
+ * ⛔ 2026-10-04 部署位实测修正（A4 原实现的真缺陷）：
+ *   原实现按固定层数 `new URL('../../../')` 推根，这隐含假设「插件住在**仓库**的
+ *   plugins/ 下」。但宿主真正加载的是**部署位**那份：
+ *     boot 源  ~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js
+ *     镜像位  ~/.dsh/profiles/web/plugins/agint-evolve/lib/index.js
+ *   往上三级分别是 `.agint-bundle/` 与 `profiles/web/` —— **两处都没有 `eval/`**。
+ *   ⇒ 固定层数在部署位必推错目录，周报永远印「本周未采到」，而且看不出是路径错
+ *     还是真没数据（静默降级，正是本节要防的那类失败）。
+ *
+ * 改为**逐级向上探测 + 存在性判据**：命中含 `eval/` 的祖先才算找到。
+ * 找不到就返回 null，让调用方把「路径没解析出来」当成一种**独立的可观测状态**
+ * 报出来，而不是伪装成「没采到数据」。
+ *
+ * 不用环境变量、不用 cwd（K：cron 的 cwd 与宿主环境都不可靠）。
+ * @returns {string|null} 仓库根绝对路径；探测不到返回 null
+ * 导出供单测直接验「生产函数在当前所在位置的行为」——
+ * ⛔ 只在测试里复算一遍算法不算数：复算的那份和生产的不是同一份代码。
  */
-function repoRootFromHere() {
-  const root = fileURLToPath(new URL('../../../', import.meta.url));
-  return root;
+export function repoRootFromHere() {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  // 最多向上 8 级：lib→插件→plugins→(仓库|bundle|profile)→…
+  // 超過这个深度还没命中 eval/，基本可判定「此处不是仓库布局」，早停不空转。
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(join(dir, 'eval'))) return dir;
+    const up = dirname(dir);
+    if (up === dir) break; // 到根了
+    dir = up;
+  }
+  return null;
 }
 
 const proposalSchema = z.object({
@@ -94,11 +117,20 @@ const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugi
 
 function apply(ctx, config) {
   const root = resolve(config.root);
-  // A4：归因 JSON 路径。config 显式给就用它，否则从插件自身位置推仓库根
-  //（不依赖 cwd / 环境变量 —— cron 的 cwd 不保证是仓库根，宿主环境变量也没约定）。
+  // A4：归因 JSON 路径。两级来源，优先级 config > 自动探测。
+  // 不依赖 cwd / 环境变量（cron 的 cwd 不保证是仓库根，宿主环境变量也没约定）。
+  //
+  // ⛔ 自动探测在**部署位**多半解析不出仓库根（插件住在 ~/.dsh/.agint-bundle/plugins/
+  //    或 ~/.dsh/profiles/web/plugins/ 下，祖先里没有 eval/）。此时 pathResolved=false
+  //    会进快照，由周报明确印「路径没解析出来」——
+  //    这与「解析出来了但文件不存在」「文件坏了」是三件不同的事，不能混成一个「未采到」。
+  const autoRoot = config.evalAttributionPath ? null : repoRootFromHere();
+  const pathResolved = Boolean(config.evalAttributionPath) || autoRoot !== null;
   const evalAttributionPath = config.evalAttributionPath
     ? resolve(config.evalAttributionPath)
-    : resolve(repoRootFromHere(), 'eval', 'attribution', 'fail-attribution.json');
+    : autoRoot
+      ? resolve(autoRoot, 'eval', 'attribution', 'fail-attribution.json')
+      : null;
 
   // ---- storage domain (double-sentinel pattern, K4/K8) ----
   let domain = null;
@@ -243,7 +275,21 @@ function apply(ctx, config) {
 
     // A4：eval 存量 FAIL 归因。⛔ 读不到 ⇒ 整个键缺席，让周报印「本周未采到」，
     //   绝不塞一个 { total: 0 } —— 「没采到」与「真的 0 个 fail」含义相反。
-    if (evalAttributionPath) {
+    //
+    //   ⛔⛔ 2026-10-04 部署位实测：三种失败态必须各自可观测，不能都退化成「未采到」——
+    //     ① pathUnresolved 路径没解析出来（部署位插件不在仓库布局里，祖先无 eval/）
+    //     ② 文件不存在        （路径对，产物没生成）
+    //     ③ parseError        （路径对，文件坏）
+    //   ①②③ 混成一个「未采到」时，运维会去查归因脚本，而真因是插件根本找不到仓库。
+    if (!pathResolved) {
+      // 状态①：显式带上，让周报说清是「路径没解析出来」而不是「没数据」。
+      snapshot.evalFailAttributionUnresolved = true;
+      try {
+        ctx.logger?.warn?.('evolve: eval 归因路径未解析（不在仓库布局内，需在 config 显式给 evalAttributionPath）', {
+          pluginLocation: fileURLToPath(import.meta.url),
+        });
+      } catch { /* noop */ }
+    } else if (evalAttributionPath) {
       const raw = await safe(() => readFile(evalAttributionPath, 'utf8'));
       if (typeof raw === 'string' && raw.trim() !== '') {
         try {

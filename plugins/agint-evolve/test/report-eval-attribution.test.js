@@ -12,9 +12,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import { findingsFromSnapshot, buildReport, renderEvalFailAttribution } from '../lib/report.js';
+import { repoRootFromHere } from '../lib/index.js';
 
 const base = {
   collectedAt: '2026-10-03T00:00:00.000Z',
@@ -208,27 +209,171 @@ test('sectionOf 提取的章节内容完整（含护栏）', () => {
 });
 
 // ── 7. 路径推导（K141：调用前提）─────────────────────────────────────
+//
+// ⛔ 2026-10-04 部署位实测修正：这两条原先**只按仓库布局**断言
+//   （`new URL('../../../')` 必须含 eval/），拷到部署位后必红——
+//   部署位插件在 ~/.dsh/.agint-bundle/plugins/ 或 ~/.dsh/profiles/web/plugins/ 下，
+//   祖先里根本没有 eval/。真缺陷在**生产代码**（固定层数推导必推错目录），
+//   已改为「逐级向上探测 + 存在性判据，探测不到返回 null」。
+//   ⇒ 测试改成**双形态**：在仓库位必须解析成功；在非仓库位必须**诚实降级**。
+//   判据是「行为对不对」，不是「我在哪个目录」。
 
-test('⛔ 从 import.meta.url 推的仓库根层数必须对（写错 ⇒ 永远「未采到」）', async () => {
+test('⛔ 路径推导：直接调生产函数（不许在测试里复算算法）', async () => {
+  const { existsSync } = await import('node:fs');
+  const { repoRootFromHere } = await import('../lib/index.js');
+  const found = repoRootFromHere();
+  if (found === null) {
+    // 部署位形态（非仓库布局）：合法结果，但**必须是 null**，不能是某个猜测路径。
+    // ⛔ 若这里返回非 null，运维会去查一个根本不存在的目录。
+    return;
+  }
+  // 仓库位形态：探测到的根必须真的含 eval/ 与 plugins/（不是碰巧像的目录）
+  assert.ok(existsSync(join(found, 'eval')), `生产函数返回的根 ${found} 下没有 eval/`);
+  assert.ok(existsSync(join(found, 'plugins')), `生产函数返回的根 ${found} 下没有 plugins/`);
+  assert.ok(existsSync(join(found, 'eval', 'scenarios', 'inventory.json')), '推出的根应含场景清单');
+});
+
+test('⛔ 路径推导：探测逻辑本身在任意位置都不得返回猜测路径', async () => {
   const { fileURLToPath } = await import('node:url');
   const { existsSync } = await import('node:fs');
   const selfUrl = new URL('../lib/index.js', import.meta.url);
-  const root = fileURLToPath(new URL('../../../', selfUrl));
-  // 推出的根必须真的含 eval/ 与 plugins/ —— 错一层就会指向 plugins/ 或 plugins/agint-evolve/
-  assert.ok(existsSync(join(root, 'eval')), `推出的根 ${root} 下没有 eval/ ⇒ 层数写错了`);
-  assert.ok(existsSync(join(root, 'plugins')), `推出的根 ${root} 下没有 plugins/ ⇒ 层数写错了`);
-  assert.ok(existsSync(join(root, 'eval', 'scenarios', 'inventory.json')), '推出的根应含场景清单');
+  // 用探测逻辑（同款逐级向上 + eval/ 判据）复算，不依赖固定层数
+  let dir = dirname(fileURLToPath(selfUrl));
+  let found = null;
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(join(dir, 'eval'))) { found = dir; break; }
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  if (found === null) {
+    assert.equal(found, null, '非仓库布局下必须返回 null（诚实降级），不得返回猜测路径');
+    return;
+  }
+  assert.ok(existsSync(join(found, 'eval')), `探测到的根 ${found} 下没有 eval/`);
+  assert.ok(existsSync(join(found, 'plugins')), `探测到的根 ${found} 下没有 plugins/`);
+  assert.ok(existsSync(join(found, 'eval', 'scenarios', 'inventory.json')), '推出的根应含场景清单');
 });
 
-test('⛔ 归因产物必须已落盘（否则自动推导也读不到 → 周报永远「未采到」）', async () => {
+test('⛔ 非仓库布局（部署位）必须诚实降级：报「路径未解析」，不许伪装成「未采到」', () => {
+  const lines = [];
+  // 模拟部署位快照：路径没解析出来，键缺席
+  renderEvalFailAttribution(lines, undefined, { pathUnresolved: true });
+  const md = lines.join('\n');
+  assert.match(md, /路径未解析/, '必须明说路径没解析出来');
+  assert.match(md, /evalAttributionPath/, '必须给出可执行的修法');
+  // ⛔ 关键：不许印成「本周未采到」—— 那会把排障方向引到归因脚本上
+  assert.doesNotMatch(md, /本周未采到/, '路径未解析不得退化成「未采到」');
+  // 且不许出现任何暗示「0 个 FAIL」的措辞
+  assert.doesNotMatch(md, /FAIL \*\*0\*\*/, '路径未解析不得印成 0 个 FAIL');
+});
+
+test('⛔ 没采到（路径解析出来了但文件不存在）才印「未采到」—— 与「路径未解析」分开', () => {
+  const lines = [];
+  renderEvalFailAttribution(lines, undefined, { pathUnresolved: false });
+  const md = lines.join('\n');
+  assert.match(md, /本周未采到/);
+  assert.match(md, /不等于「0 个FAIL」|不等于「0 个 FAIL」/);
+  assert.doesNotMatch(md, /路径未解析/, '普通未采到不该印「路径未解析」');
+});
+
+test('⛔ 生产代码里探测逻辑必须是「逐级向上 + eval 判据」，不许固定层数', () => {
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
+  // ⛔ 固定层数 `new URL('../../../')` 在部署位必推错目录 —— 这是本条判据拦的东西
+  assert.doesNotMatch(src, /repoRootFromHere[\s\S]{0,400}new URL\('\.\.\/\.\.\/\.\.\/'\)/,
+    'repoRootFromHere 不得用固定层数推导（部署位祖先无 eval/，必推错）');
+  assert.match(src, /existsSync\(join\(dir, 'eval'\)\)/, '必须用 eval/ 存在性作判据');
+  assert.match(src, /return null;/, '探测不到必须返回 null（诚实降级），不许返回猜测路径');
+});
+
+test('⛔ 端到端：快照带 pathUnresolved ⇒ 周报全文必须印「路径未解析」（走 buildReport，不走内部函数）', () => {
+  // ⛔ 这条是**端到端**判据：只经 buildReport，不直接调 renderEvalFailAttribution。
+  //   原因：单测内部函数时，「生产代码有没有真的设这个标志位」是测不到的 ——
+  //   删掉标志位那行，函数级单测照样全绿（实测过），只有端到端才变红。
+  const md = buildReport({
+    date: '2026-10-04',
+    snapshot: { ...base, evalFailAttributionUnresolved: true },
+    findings: [],
+  });
+  assert.match(md, /路径未解析/, '端到端：周报必须印「路径未解析」');
+  assert.doesNotMatch(md, /本周未采到/, '端到端：不得退化成「本周未采到」');
+  assert.match(md, /evalAttributionPath/, '端到端：必须给可执行修法');
+});
+
+// ── 8. 真·端到端（起真插件 → 调生产 dataSnapshot → 喂 buildReport）──────
+//
+// ⛔ 为什么要这一节：前面所有判据都是「喂手写快照给 report.js」。
+//   那样测不到生产代码**有没有真的设标志位** ——
+//   实测：把 `snapshot.evalFailAttributionUnresolved = true` 删掉，
+//   仓库位与部署位都**照样 26/26 全绿**。判据是空壳。
+//   唯一能咬住它的办法：真起插件、真调 dataSnapshot()、真把返回值喂进 buildReport。
+
+function makeMockCtx() {
+  const provides = new Map();
+  return {
+    provides,
+    effects: [],
+    warns: [],
+    storageDomain: {
+      async open(spec) {
+        return {
+          name: spec.name, version: spec.version,
+          table() {
+            return { get: () => null, put: async () => true, delete: async () => true, entries: () => [] };
+          },
+          async close() {},
+        };
+      },
+    },
+    logger: { warn: (msg, extra) => { this.parent?.warns?.push?.({ msg, extra }); } },
+    effect(fn) { this.parent?.effects?.push?.(fn()); },
+    provide(k, v) { provides.set(k, v); },
+    get(k) { return provides.get(k) ?? null; },
+    on() {}, setInterval() { return { dispose() {} }; },
+  };
+}
+
+test('⛔ 真·端到端：起真插件 → dataSnapshot() → buildReport，标志位必须真被设上', async () => {
+  const { apply } = await import('../lib/index.js');
   const { existsSync } = await import('node:fs');
-  const { fileURLToPath } = await import('node:url');
-  const root = fileURLToPath(new URL('../../../', new URL('../lib/index.js', import.meta.url)));
-  const p = join(root, 'eval', 'attribution', 'fail-attribution.json');
-  assert.ok(existsSync(p), `缺少归因产物 ${p} —— 请跑 node bin/attribute-eval-fails.mjs --json > ${p}`);
-  const parsed = JSON.parse(readFileSync(p, 'utf8'));
-  assert.equal(typeof parsed.total, 'number');
-  assert.equal(typeof parsed.byCategory, 'object');
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+
+  // 关键：**不传** evalAttributionPath ⇒ 走自动探测分支
+  const root = await mkdtemp(join(tmpdir(), 'agint-evolve-e2e-'));
+  const ctx = makeMockCtx();
+  ctx.parent = ctx;
+  apply(ctx, { root });
+  const evo = ctx.get('agint.evolve');
+  assert.ok(evo && typeof evo.dataSnapshot === 'function', '拿不到生产 dataSnapshot');
+
+  const snapshot = await evo.dataSnapshot();
+
+  // 判据按「当前所在位置」分支，但**两边都必须真的被观察到**：
+  const resolved = existsSync(join(repoRootFromHere() ?? '', 'eval'));
+  if (resolved) {
+    // 仓库位：路径解析出来了 ⇒ 标志位必须**不存在**
+    assert.notEqual(snapshot.evalFailAttributionUnresolved, true,
+      '仓库位路径能解析，不该报「未解析」');
+    // 且真产物在位时应读到数据
+    assert.ok(snapshot.evalFailAttribution, '仓库位应读到归因产物');
+    assert.equal(typeof snapshot.evalFailAttribution.total, 'number');
+  } else {
+    // 部署位：路径解析不出来 ⇒ 标志位必须**为 true**（否则周报会误报「未采到」）
+    assert.equal(snapshot.evalFailAttributionUnresolved, true,
+      '⛔ 部署位路径解析不出来，dataSnapshot() 必须设 unresolved 标志位 —— '
+      + '没设的话周报会印「本周未采到」，把排障方向引到归因脚本上（真因是路径）');
+    // 端到端：周报全文必须据此改口
+    const md = buildReport({ date: '2026-10-04', snapshot, findings: [] });
+    assert.match(md, /路径未解析/, '端到端：周报必须印「路径未解析」');
+    assert.doesNotMatch(md, /本周未采到/, '端到端：不得退化成「本周未采到」');
+  }
+});
+
+test('⛔ 端到端：标志位缺失时不得印「路径未解析」（标志位是唯一触发来源）', () => {
+  const md = buildReport({ date: '2026-10-04', snapshot: { ...base }, findings: [] });
+  assert.doesNotMatch(md, /路径未解析/, '没有标志位就不该印「路径未解析」');
+  assert.match(md, /本周未采到/, '无标志位时应印普通「未采到」');
 });
 
 test('⛔ Config schema 认 evalAttributionPath（可选），但认不出就静默丢配置', async () => {
