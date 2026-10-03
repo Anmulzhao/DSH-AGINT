@@ -593,8 +593,21 @@ export const defaultJobs = [
           + orphans.map((o) => `${o.contractId}(seq=${o.seq ?? '?'})`).join('; '));
       }
       if (problems.length > 0) throw new Error(`outcome-measure: ${problems.join(' / ')}`);
+      // `report` 走 cron 的自动搬运（只认 scanned / counts）；
+      // `summary` 是约定式通道（`summarizeResult` 原样搬进 lastResultSummary）。
+      // ⛔ 只写 report 会丢数：measurable / attempted / deferred / auditChecked
+      //   在 cron_state 里读不到，重启后与"根本没跑"无法区分（2026-10-03 实跑踩到）。
       return {
         status: out.ok ? 'ok' : 'skipped',
+        summary: {
+          scanned: out.scanned ?? 0,
+          measurable: out.measurable ?? 0,
+          attempted: out.attempted ?? 0,
+          deferred: out.deferred ?? 0,
+          counts: out.counts ?? {},
+          auditChecked: out.audit?.checked ?? 0,
+          auditStatus: out.audit?.status ?? null,
+        },
         report: {
           scanned: out.scanned ?? 0,
           measurable: out.measurable ?? 0,

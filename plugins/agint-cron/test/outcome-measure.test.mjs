@@ -51,6 +51,20 @@ test('正常一轮 ⇒ status ok + 计数进 report（limit/repoRoot 也留痕�
   assert.deepEqual(r.report.auditCounts, { VERIFIED: 2 });
 });
 
+test('约定式 summary 通道带全六个数（⛔ 只写 report 会丢：自动搬运只认 scanned/counts）', async () => {
+  const services = { 'agint.evolutionDriver': { measureOutcomes: async () => OK_OUT } };
+  const { summary } = await job.action(services);
+  assert.equal(summary.scanned, 9);
+  assert.equal(summary.measurable, 2);
+  assert.equal(summary.attempted, 2);
+  assert.equal(summary.deferred, 0);
+  assert.deepEqual(summary.counts, { MEASURED: 2 });
+  assert.equal(summary.auditChecked, 2);
+  assert.equal(summary.auditStatus, 'AUDITED');
+  // 可序列化（含循环引用的 summary 会被 cron 换成 '[unserializable]'）
+  assert.equal(typeof JSON.stringify(summary), 'string');
+});
+
 test('归档校验发现篡改 ⇒ 抛错点名 Contract，并说明"不计入任何统计"', async () => {
   const services = {
     'agint.evolutionDriver': {

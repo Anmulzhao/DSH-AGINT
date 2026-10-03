@@ -2,7 +2,30 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.10] — 修观测缺口：outcome-measure 补约定式 summary 通道（2026-10-03，重启实跑发现）
+
+### 问题
+
+首次真跑（本次部署后的重启补跑）落在 `cron_state` 的 `lastResultSummary` 只有
+`{"scanned":6,"counts":{}}`。原因在 `summarizeResult`（`lib/index.js:278-318`）的自动搬运
+**只认 `report.scanned` 与 `report.counts`** —— 我 return 的 `measurable` / `attempted` /
+`deferred` / `auditChecked` 全部丢失。后果不是难看，是**读数失真**：`counts:{}` 在报告里
+分不清"扫过 6 条、0 条可测"与"根本没跑"。这正是本项目反复踩的静默失败形状。
+
+### 改
+
+`outcome-measure` 的返回值补 `summary`（约定式通道，`summarizeResult` 原样搬进
+`lastResultSummary`），六个数一次带全：`scanned / measurable / attempted / deferred / counts /
+auditChecked / auditStatus`。`report` 保留不动（自动搬运与其它消费方仍按原形状读）。
+
+### 测试
+
+- 新增一条：断 `summary` 六个字段齐 + 可 JSON 序列化（含循环引用时 cron 会换成 `[unserializable]`）。
+- `test/outcome-measure.test.mjs` 9 条全绿。
+
 ## [0.2.9] — outcome-measure 增加第二类出声条件（归档校验，2026-10-03）
+
+
 
 ### 改
 
