@@ -31,21 +31,38 @@
  *   node bin/build-scenario-inventory.mjs                 完整模式（跑 driver，Tier B）
  *   node bin/build-scenario-inventory.mjs --static-only    降级模式（不跑 driver，Tier A）
  *   node bin/build-scenario-inventory.mjs --out=<path>     指定输出（测试用）
+ *   node bin/build-scenario-inventory.mjs --check          只校验不写盘（三层隔离门禁）
+ *   node bin/build-scenario-inventory.mjs --emit-tiering   生成/补全三层 sidecar 映射文件
+ *
+ * ⛔ --check 必须早于写盘（见 build-spec-index.mjs 文件头的同型坑）：
+ *    先写盘再校验 ⇒ 拿刚生成的版本跟自己对账 ⇒ 永远一致 ⇒ 门禁变自证循环。
  *
  * 退出码（设计 §2.2.4）：
  *   0 = 生成成功且对账一致（或降级模式显式声明未完成对账）
  *   2 = 生成成功但对账不一致（delta ≠ 0）⇒ 打印差异，需人工确认后才可继续
- *   1 = 生成失败
+ *   1 = 生成失败 / --check 校验不通过
  *
  * 零依赖：只用 node:fs / node:path / node:crypto / node:child_process。
  */
 
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { canonicalHash } from './lib/canonical-json.mjs';
+import {
+  TIER_VALUES,
+  LABEL_AUTHORITY_VALUES,
+  DEFAULT_TIER,
+  DEFAULT_LABEL_AUTHORITY,
+  TIERING_VERSION,
+  readTierMap,
+  assignTiers,
+  summarizeTiers,
+  checkTierAssignment,
+  frozenAggregateHash,
+} from './lib/scenario-tier.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -90,16 +107,48 @@ const FAIL_RECON = {
       'service-annotations-table-full-throws',
       'policy-decide-clean-results-pending-or-deploy',
       'sprint6-cron-job-prompt-static-check-registered',
+      // 2026-10-03 新增：见下方 confirmedRegression。
+      // 它**在旧时点就存在**（实测 b6a14f7 的 102 个具名单元里含此名），
+      // 故归入「旧单元」而不是「新增单元」。
+      'stats-reports-counts-and-limits',
     ],
     currentlyFailingThatAreNew: ['s12-05-policy-policy-deployed-rolledback-shadow'],
     newFailNote: '该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。',
+
+    // ⚠️ 2026-10-03 实测新确认的一处回归。写在这里是因为：入仓清单此前记它 PASS，
+    //    现在是 FAIL，而清单是本仓**唯一持久化的 fail 名单** —— 不记就等于失忆。
+    confirmedRegression: {
+      unitId: 'stats-reports-counts-and-limits',
+      wasStatus: 'PASS',
+      wasSource: 'eval/scenarios/inventory.json @ generatedAt 2026-10-02T13:14:01Z（入仓清单实测值）',
+      nowStatus: 'FAIL',
+      nowSource: '2026-10-03 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 117 passed, 6 failed (of 123)',
+      detail: 'driver 报 `keys_ok=true limits_ok=false`',
+      rootCause:
+        '场景断言 `stats-shape.limitsShape` 写死了 LIMITS 的**全量形状**（3 键：' +
+        'FAILURE_PATTERNS / SUCCESS_TEMPLATES / EVOLUTION_LOG_LINES_PER_DAY）。' +
+        '而 plugins/agint-evolution-memory/lib/schema.js 的 LIMITS 此后新增了 ' +
+        'CONTRACT_LOCKS（b1731c3，2026-10-02）与 PREDICTION_OUTCOMES（3d576b6，2026-10-03）' +
+        '⇒ 形状对不上 ⇒ limits_ok=false。**加表即挂**，属既存缺陷，不是本次改动引入。',
+      sceneUnchanged: true,
+      sceneUnchangedEvidence:
+        'git diff --stat b6a14f7 HEAD -- eval/scenarios/agint-evolution-memory.scenario.json ⇒ 空。' +
+        '⇒ 场景文件自旧基线起未被改过 ⇒ 是 plugin 代码侧的回归，不是「改场景改挂」。',
+      notFixedHere:
+        '本轮**不修**它。改这个断言等于改判据，属 Sprint 17 归因/修复范围，须老板点头；' +
+        '且本 Sprint 的交付是三层隔离。此处只负责把真值写进清单，让回归不再隐形。',
+    },
   },
 
   arithmetic:
     '设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。' +
-    '当前失败的旧单元数 4 = (12 − F) + R ⇒ F = 8 + R。' +
-    '⇒ **至少 8 个旧 fail 已被修复**；另有 R ∈ [0,4] 个旧单元发生回归（无法确定，因名单未留存）。' +
-    '净变化 −7 = −8（修复）+ 1（新增 s12-05），与 12 → 5 自洽。',
+    '当前失败的旧单元数 5 = (12 − F) + R ⇒ F = 7 + R。' +
+    '⇒ **至少 7 个旧 fail 已被修复**；另有 R ∈ [0,5] 个旧单元发生回归（无法确定，因名单未留存）。' +
+    '净变化 −6 = −F（修复）+ R（回归）+ 1（新增 s12-05），与 12 → 6 自洽。' +
+    '⚠️ 与 2026-10-02 那版（当时是 12 → 5）相比**变差了 1 个**：' +
+    'stats-reports-counts-and-limits 从 PASS 转 FAIL，根因见 confirmedRegression。' +
+    '⚠️ 它是否属于 R 无法确证：只知道它 2026-10-02 是 PASS，不知道它在 b6a14f7 时点的状态' +
+    '（那 12 个 fail 的名单从未被任何 artifact 记录）。故 R 的下界仍取 0。',
 
   candidates: {
     note:
@@ -116,10 +165,14 @@ const FAIL_RECON = {
     ],
     changedAndStillFailNote:
       '这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。',
-    untouchedAndNowPass: 95,
+    untouchedAndNowPass: 94,
     untouchedNote:
-      '其余 97 个旧单元内容从未改动，其中 95 个现为 PASS ⇒ 若旧 fail 在其中，' +
-      '是被 plugin 代码修复（不是靠改测试），属于真正的修复。',
+      '其余 97 个旧单元内容从未改动，其中 **94 个现为 PASS**、3 个现为 FAIL' +
+      '（service-annotations-table-full-throws / policy-decide-clean-results-pending-or-deploy / ' +
+      'stats-reports-counts-and-limits）⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），' +
+      '属于真正的修复。' +
+      '⚠️ 2026-10-02 那版写的是 95 个 PASS —— 少掉的这一个正是新确认的回归' +
+      'stats-reports-counts-and-limits（见 confirmedRegression），不是统计口径变了。',
   },
 
   irreducible:
@@ -196,10 +249,21 @@ const DEFAULT_EXTERNAL_DEPS = ['dsh-runtime'];
 // ── 参数 ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
 const STATIC_ONLY = argv.includes('--static-only');
+const CHECK_ONLY = argv.includes('--check');
 const outArg = argv.find((a) => a.startsWith('--out='));
 const OUT_PATH = outArg
   ? resolve(process.cwd(), outArg.slice('--out='.length))
   : join(SCENARIOS_DIR, 'inventory.json');
+const tieringArg = argv.find((a) => a.startsWith('--tiering='));
+const TIERING_PATH = tieringArg
+  ? resolve(process.cwd(), tieringArg.slice('--tiering='.length))
+  : join(REPO_ROOT, 'eval', 'tiers', 'agint-tiering.json');
+const emitArg = argv.find((a) => a.startsWith('--emit-tiering'));
+const EMIT_TIERING = emitArg
+  ? emitArg.includes('=')
+    ? resolve(process.cwd(), emitArg.slice('--emit-tiering='.length))
+    : TIERING_PATH
+  : null;
 
 // ── 小工具 ──────────────────────────────────────────────────────────────────
 function fail(msg) {
@@ -276,7 +340,10 @@ const SUMMARY_RE = /^=== (\d+) passed, (\d+) failed, (\d+) skipped \(of (\d+)\) 
  * @returns {{ statuses: Map<string,string>, summary: object|null, raw: string }}
  */
 function runDriver() {
-  const r = spawnSync(process.execPath, [DRIVER_PATH], {
+  // ⛔ 必须显式 --tier=ALL：清单是**全量门禁口径**，要覆盖 Validation / Frozen，
+  //    否则它们的 lastKnownStatus 会是 UNKNOWN，而 UNKNOWN 正是「三层外」的标记
+  //    ⇒ 清单会把「被隐藏」误记成「没跑」。driver 默认是 EVOLUTION 视图（读端门）。
+  const r = spawnSync(process.execPath, [DRIVER_PATH, '--tier=ALL'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     // 场景量大，默认 1M 缓冲可能截断 stdout
@@ -378,7 +445,7 @@ function build() {
   const driverScopeFiles = allFiles.filter((f) => !f.rel.includes('/dedicated/'));
   const dedicatedFiles = allFiles.filter((f) => f.rel.includes('/dedicated/'));
 
-  const units = [];
+  let units = [];
   const unitsPerFile = {};
   const unitIds = new Set();
 
@@ -412,6 +479,61 @@ function build() {
       });
     }
   }
+
+  // ── 三层标签：从 sidecar 挂到 unit 上（⛔ 绝不写进 scenario JSON）──────────
+  // 写进场景文件的后果：`contentHash` 是对单元内容算的，加两个字段会让 123 个
+  // hash 全部变化 ⇒ 「Frozen 集防篡改基线」这条不变量自毁。判据必须与被评对象
+  // 不同池（与 R2 技能金标同构：判据在 eval/skills/，被改的只有 SKILL.md）。
+  // --emit-tiering：先补齐 sidecar（幂等：已有条目原样保留，只补缺失的），
+  // 这样「首次建库」与「新增场景后补登记」是同一条命令。
+  if (EMIT_TIERING) {
+    const existing = existsSync(EMIT_TIERING) ? readTierMap(EMIT_TIERING) : { ok: false, entries: new Map() };
+    const unitsOut = {};
+    for (const u of units) {
+      const m = existing.entries.get(u.unitId);
+      unitsOut[u.unitId] = m
+        ? { visibility: m.visibility, labelAuthority: m.labelAuthority }
+        : { visibility: DEFAULT_TIER, labelAuthority: DEFAULT_LABEL_AUTHORITY };
+    }
+    const added = units.filter((u) => !existing.entries.has(u.unitId)).length;
+    writeFileSync(
+      EMIT_TIERING,
+      `${JSON.stringify(
+        {
+          tieringVersion: TIERING_VERSION,
+          note:
+            '三层标签 sidecar（unitId → visibility / labelAuthority）。' +
+            '⛔ 标签不写进 .scenario.json —— 那会推翻全部 contentHash，与 Frozen 防篡改基线冲突。' +
+            '每个 unitId 必须显式登记；缺映射即判据失败，不给默认值兜底。' +
+            `合法值：visibility ∈ ${TIER_VALUES.join('/')}；labelAuthority ∈ ${LABEL_AUTHORITY_VALUES.join('/')}。`,
+          units: unitsOut,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    console.log(
+      `[build-scenario-inventory] 已写入三层 sidecar ${EMIT_TIERING}` +
+        `（${Object.keys(unitsOut).length} 条，其中新增 ${added} 条）`,
+    );
+  }
+
+  const tiering = readTierMap(TIERING_PATH);
+  if (!tiering.ok) {
+    fail(
+      `三层 sidecar 读不到或不合法：${TIERING_PATH}\n  ${tiering.errors.join('\n  ')}\n` +
+        `修法：跑 node bin/build-scenario-inventory.mjs --emit-tiering 生成一份。`,
+    );
+  }
+  const assigned = assignTiers(units, tiering.entries);
+  if (!assigned.ok) {
+    fail(
+      `三层映射不完整（${assigned.errors.length} 处）：\n  ${assigned.errors.slice(0, 20).join('\n  ')}` +
+        `${assigned.errors.length > 20 ? `\n  …还有 ${assigned.errors.length - 20} 条` : ''}`,
+    );
+  }
+  units = assigned.units;
 
   const dedicatedUnits = [];
   const runnerMap = loadDedicatedRunners();
@@ -450,9 +572,13 @@ function build() {
   const measured = { total: null, pass: null, fail: null, skip: null };
   let driverSummary = null;
 
-  if (STATIC_ONLY) {
+  // --check 也不跑 driver：它是**静态门禁**（Tier A 可跑），
+  // fail 数从上一版入仓清单读 —— 那正是 H5 要比对的基线来源。
+  const NO_DRIVER = STATIC_ONLY || CHECK_ONLY;
+
+  if (NO_DRIVER) {
     console.warn(
-      '[build-scenario-inventory] ⚠️ --static-only 降级模式：未执行 driver.js，\n' +
+      `[build-scenario-inventory] ⚠️ ${CHECK_ONLY ? '--check 静态门禁' : '--static-only 降级'}模式：未执行 driver.js，\n` +
         '  lastKnownStatus 全部为 UNKNOWN，reconciliation.measuredTotal 留空。\n' +
         '  这是设计 §2.2.4 允许的降级：宁可交付不完整的 Inventory 并声明边界，\n' +
         '  也不用推算值冒充实测值。',
@@ -487,6 +613,24 @@ function build() {
     }
   }
 
+  // ── 三层判据（Phase 0.1：让隔离从文档变成代码里生效的约束）────────────────
+  // H5「只增不减」要比对上一版入仓清单里的 Frozen 名单；fail 数也取那里的实测值
+  // （静态门禁不跑 driver，但 H1/H3 的算术需要 fail 数，取上一版是唯一可信来源）。
+  const prev = existsSync(OUT_PATH) ? JSON.parse(readFileSync(OUT_PATH, 'utf8')) : null;
+  const previousFrozenIds = prev?.tierBaseline?.frozenUnitIds ?? null;
+  const failCountForCriteria =
+    measured.fail ?? prev?.summary?.failCount ?? prev?.reconciliation?.measuredFail ?? null;
+
+  const criteria = checkTierAssignment({
+    units,
+    previousFrozenIds,
+    failCount: failCountForCriteria,
+    // 静态门禁不跑 driver ⇒ 单元状态是 UNKNOWN ⇒ H1/H3 的输入不存在。
+    // 不声明这一点，判据会拿上一版的 fail 数去配这一版的 0 个 FAIL ⇒ 稳定假阳性。
+    statusKnown: !NO_DRIVER,
+  });
+  const tierSummary = summarizeTiers(units);
+
   // ── 对账（设计 §2.2.2：reconciliation 是本交付物的诚实性核心）────────────
   const CLAIMED = { total: 104, pass: 92, fail: 12 };
   const CLAIM_SOURCE = 'Sprint12-设计稿 .md:159 / AGINT‐智进.md:9 / 路线图.md:188';
@@ -516,7 +660,8 @@ function build() {
         // 「部分已修复」是拿不出对象的话术：它无法回答 H1 配额的对象是谁。
         // 权威表述见 failSetReconciliation.arithmetic：F = 8 + R ⇒ 至少 8 个旧 fail 已修复，
         // 另有 R ∈ [0,4] 个旧单元回归，R 因旧名单未留存无法确定。净变化 −7 = −8 + 1（新增 s12-05）。
-        '⇒ 12 → 5 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。',
+        '⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。' +
+        '⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。',
         '⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。',
       );
     }
@@ -553,9 +698,43 @@ function build() {
       unitsPerFile,
       domainCounts: countBy(units, 'domain'),
       kindCounts: countBy(units, 'kind'),
+      // ── 三层计数（Phase 0.1）：加总必须等于 totalUnits ──
+      tierCounts: tierSummary.tierCounts,
+      tierSum: tierSummary.tierSum,
+      labelAuthorityCounts: criteria.observed.labelAuthorityCounts,
+      // 配额 §3.2 要求「产出里回写实际占比」：quality 单域占 46.3%，
+      // 不回写就无法判断抽样有没有被它主导。
+      qualityRatio: criteria.observed.qualityRatio,
     },
 
     units,
+
+    // ── 三层基线（Frozen 防篡改的落账源）───────────────────────────────────
+    tierBaseline: {
+      tieringFile: TIERING_PATH === join(REPO_ROOT, 'eval', 'tiers', 'agint-tiering.json')
+        ? 'eval/tiers/agint-tiering.json'
+        : TIERING_PATH,
+      tieringVersion: TIERING_VERSION,
+      note:
+        'Frozen 集的聚合 hash 与名单。入 evolution-memory 的 `benchmark_frozen_set` 表后，' +
+        '即可回答「这一版冻结集有没有被偷偷改过」：增删任一 Frozen 单元、或改任一 Frozen ' +
+        '单元的 contentHash，聚合 hash 都会变。⛔ hash 只对 {unitId, contentHash} 计算，' +
+        '不含 labelAuthority —— HELDOUT→GOLD 是合法降级，算进来会变成假阳性。',
+      frozenUnitIds: units
+        .filter((u) => u.visibility === 'FROZEN')
+        .map((u) => u.unitId)
+        .sort(),
+      frozenCount: criteria.observed.frozenCount,
+      frozenAggregateHash: criteria.observed.frozenAggregateHash,
+      failCount: criteria.observed.failCount,
+      h1EvolutionMinFail: criteria.observed.h1EvolutionMinFail,
+      h3FrozenFailProbeCap: criteria.observed.h3FrozenFailProbeCap,
+      criteriaOk: criteria.ok,
+      criteriaErrors: criteria.errors,
+      // ⛔ 静态门禁下 H1/H3 会被跳过 —— 写进清单，让「这次没查」这件事可被人看见。
+      criteriaSkipped: criteria.observed.skipped,
+      statusKnown: criteria.observed.statusKnown,
+    },
 
     dedicatedUnits: {
       count: dedicatedUnits.length,
@@ -599,6 +778,78 @@ function build() {
     },
   };
 
+  // ── --check：只校验不写盘（⛔ 必须早于写盘，否则是自证循环）────────────────
+  if (CHECK_ONLY) {
+    const errors = [...criteria.errors];
+
+    // (1) 三层计数加总必须等于总数（有单元层名非法时 tierSum < total）
+    if (tierSummary.tierSum !== units.length) {
+      errors.push(
+        `三层计数加总 ${tierSummary.tierSum} ≠ 单元总数 ${units.length}` +
+          `（未知层名：${tierSummary.unknownVisibility.slice(0, 5).join(', ') || '（空）'}）`,
+      );
+    }
+    // (2) 每个单元都必须带两个字段
+    const missingFields = units.filter(
+      (u) => !TIER_VALUES.includes(u.visibility) || !LABEL_AUTHORITY_VALUES.includes(u.labelAuthority),
+    );
+    if (missingFields.length > 0) {
+      errors.push(`${missingFields.length} 个单元缺少合法的 visibility / labelAuthority 字段`);
+    }
+    // (3) quality 占比必须回写且与重算值一致（配额 §3.2）
+    const q = criteria.observed.qualityRatio;
+    if (!q || typeof q.ratio !== 'number' || !Number.isFinite(q.ratio)) {
+      errors.push('quality 占比未回写 —— 配额 §3.2 要求产出里给出实际占比');
+    }
+    if (prev) {
+      if (typeof prev.summary?.qualityRatio?.ratio === 'number') {
+        if (Math.abs(prev.summary.qualityRatio.ratio - q.ratio) > 1e-9) {
+          errors.push(
+            `quality 占比漂移：入仓 ${prev.summary.qualityRatio.ratio} vs 重算 ${q.ratio}` +
+              ` ⇒ 域归类或单元集变了，必须重新生成清单`,
+          );
+        }
+      }
+      // (4) 单元级漂移：unitId / contentHash / 两个标签
+      const prevUnits = new Map((prev.units ?? []).map((u) => [u.unitId, u]));
+      const curUnits = new Map(units.map((u) => [u.unitId, u]));
+      const added = [...curUnits.keys()].filter((id) => !prevUnits.has(id));
+      const removed = [...prevUnits.keys()].filter((id) => !curUnits.has(id));
+      const changed = [];
+      for (const [id, cu] of curUnits) {
+        const pu = prevUnits.get(id);
+        if (!pu) continue;
+        if (pu.contentHash !== cu.contentHash) changed.push(`${id}:contentHash`);
+        else if (pu.visibility !== cu.visibility) changed.push(`${id}:visibility ${pu.visibility}→${cu.visibility}`);
+        else if (pu.labelAuthority !== cu.labelAuthority) changed.push(`${id}:labelAuthority`);
+      }
+      if (added.length) errors.push(`清单新增单元 ${added.length} 个（${added.slice(0, 5).join(', ')}）⇒ sidecar 需补登记并重生成`);
+      if (removed.length) errors.push(`清单少了单元 ${removed.length} 个（${removed.slice(0, 5).join(', ')}）⇒ 场景被删，H5 需人工确认`);
+      if (changed.length) errors.push(`单元级漂移 ${changed.length} 处（${changed.slice(0, 8).join(', ')}）⇒ 入仓清单与实测不一致`);
+    }
+
+    if (errors.length > 0) {
+      console.error(`[build-scenario-inventory] ❌ --check 失败（${errors.length} 处）：`);
+      for (const e of errors) console.error(`  - ${e}`);
+      console.error('\n⇒ 修法：改 sidecar / 场景后重跑 `node bin/build-scenario-inventory.mjs` 重新生成。');
+      process.exit(1);
+    }
+    const t = tierSummary.tierCounts;
+    if (criteria.observed.skipped.length > 0) {
+      console.warn(
+        `[build-scenario-inventory] ⚠️ 本次为静态门禁，以下判据因缺实测状态而跳过：` +
+          `${criteria.observed.skipped.join(' / ')}。要全量校验请跑不带 --check 的完整生成。`,
+      );
+    }
+    console.log(
+      `[build-scenario-inventory] ✅ --check 通过：${units.length} 单元 · ` +
+        `EVOLUTION ${t.EVOLUTION} / VALIDATION ${t.VALIDATION} / FROZEN ${t.FROZEN}` +
+        ` · Frozen hash ${criteria.observed.frozenAggregateHash}` +
+        ` · quality 占比 ${(q.ratio * 100).toFixed(1)}%（${q.count}/${q.total}）`,
+    );
+    process.exit(0);
+  }
+
   writeFileSync(OUT_PATH, `${JSON.stringify(inventory, null, 2)}\n`, 'utf8');
 
   // ── 输出与退出码 ──────────────────────────────────────────────────────────
@@ -611,6 +862,22 @@ function build() {
   );
   console.log(`  dedicated（范围外，独立 runner）: ${dedicatedUnits.length}`);
   console.log(`  driver blob: ${inventory.driverVersion}`);
+  {
+    const t = inventory.summary.tierCounts;
+    console.log(
+      `  三层：EVOLUTION ${t.EVOLUTION} / VALIDATION ${t.VALIDATION} / FROZEN ${t.FROZEN}` +
+        `（加总 ${inventory.summary.tierSum} / 总数 ${inventory.summary.totalUnits}）`,
+    );
+    console.log(`  Frozen 聚合 hash: ${inventory.tierBaseline.frozenAggregateHash}`);
+    console.log(
+      `  quality 占比 ${(inventory.summary.qualityRatio.ratio * 100).toFixed(1)}%` +
+        `（${inventory.summary.qualityRatio.count}/${inventory.summary.qualityRatio.total}）`,
+    );
+    if (!criteria.ok) {
+      console.warn(`  ⚠️ 三层判据未通过（${criteria.errors.length} 处）—— 清单已写出但不应入仓：`);
+      for (const e of criteria.errors) console.warn(`    - ${e}`);
+    }
+  }
 
   if (delta !== null && delta !== 0) {
     console.warn(`\n[build-scenario-inventory] ⚠️ 对账不一致：delta = ${delta}`);

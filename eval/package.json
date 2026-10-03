@@ -6,13 +6,15 @@
   "type": "module",
   "main": "scenarios/driver.js",
   "scripts": {
-    "test": "node scenarios/driver.js",
-    "test:memory": "node scenarios/driver.js --file=agint-memory",
-    "test:rules": "node scenarios/driver.js --file=agint-rules",
-    "test:metrics": "node scenarios/driver.js --file=agint-metrics",
-    "test:cron": "node scenarios/driver.js --file=agint-cron",
-    "test:dream": "node scenarios/driver.js --file=agint-dream"
+    "test": "node scenarios/driver.js --tier=ALL",
+    "test:evolution": "node scenarios/driver.js",
+    "test:memory": "node scenarios/driver.js --tier=ALL --file=agint-memory",
+    "test:rules": "node scenarios/driver.js --tier=ALL --file=agint-rules",
+    "test:metrics": "node scenarios/driver.js --tier=ALL --file=agint-metrics",
+    "test:cron": "node scenarios/driver.js --tier=ALL --file=agint-cron",
+    "test:dream": "node scenarios/driver.js --tier=ALL --file=agint-dream"
   },
+  "_tierNote": "driver 默认是 EVOLUTION 视图（三层读端门，fail-closed）。`test` 是全量门禁口径，必须显式 --tier=ALL；`test:evolution` 才是进化/调参路径该用的视图。",
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.0-rc.6",
     "@deepseek-ai/dsh-storage-domain": "*"

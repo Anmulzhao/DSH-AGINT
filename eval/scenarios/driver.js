@@ -14,8 +14,22 @@
  *     service apply() 调用走 plugin 的 lib 子模块 + mock ctx
  *
  * 运行：
- *   node eval/scenarios/driver.js
+ *   node eval/scenarios/driver.js                 # 默认只加载 Evolution 层（读端门，fail-closed）
+ *   node eval/scenarios/driver.js --tier=ALL      # 全量门禁口径（清单生成器用这个）
  *   node eval/scenarios/driver.js --file=agint-memory
+ *
+ * ── 三层读端门（Phase 0.1，2026-10-03）────────────────────────────────────
+ * ⛔ 这条是三层隔离**唯一真正起作用的地方**。只加字段不过滤等于没做。
+ *
+ * 默认视图 = `EVOLUTION`：进化 / 调参路径看得见的只有进化集。
+ * 想看全部必须显式 `--tier=ALL`（全量门禁 / 清单生成的口径）。
+ * 理由：把宽视图做成默认，等于把门开成默认开 —— 与 fail-closed 纪律相反。
+ *
+ * ⛔ 副作用提醒（读这段再改默认）：`--tier` 从「无」改成 `ALL` 会让
+ *    `build-scenario-inventory.mjs` 扫到的单元数与 driver 汇总行不一致吗？
+ *    不会 —— 生成器显式传 `--tier=ALL`，两边都按全量走。
+ *    反过来，若这里默认改成 ALL 而生成器忘了传，Frozen 单元会被记成
+ *    UNKNOWN，Frozen 集的 contentHash 基线随之一条条失真。
  *
  * Sprint 1.3 状态：
  *   - mock ctx 已实现，覆盖 5 个核心 plugin
@@ -29,6 +43,12 @@ import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { mountCtxFor } from './mocks/agint-mount-ctx.mjs';
+import {
+  readTierMap,
+  selectVisible,
+  assertNoLeak,
+  TIER_VALUES,
+} from '../../bin/lib/scenario-tier.mjs';
 
 // Resolve dsh packages from the global install. AGINT plugins are dsh
 // extensions and must not bundle their runtime; node's module resolver
@@ -2494,7 +2514,31 @@ const dispatchers = {
 // Loader + main
 // ─────────────────────────────────────────────────────────────
 
-async function loadScenarios(filterFile) {
+/**
+ * 三层 sidecar 的位置。标签不写进场景文件（会推翻 contentHash），故独立存放。
+ * 与 `bin/build-scenario-inventory.mjs` 的默认 `--tiering` 指向同一个文件。
+ */
+const TIER_MAP_PATH = join(AGINT_ROOT, 'eval', 'tiers', 'agint-tiering.json');
+
+/**
+ * 解析 `--tier=`。
+ *
+ * ⛔ 缺省 = `EVOLUTION`（最严）。`ALL` 必须显式请求。
+ *    传了非法值 ⇒ 报出合法值后退出 1，绝不静默退回宽视图。
+ */
+function resolveTierArg() {
+  const arg = process.argv.find((a) => a.startsWith('--tier='));
+  if (!arg) return 'EVOLUTION';
+  const v = arg.slice('--tier='.length);
+  if (v === 'ALL') return 'ALL';
+  if (TIER_VALUES.includes(v)) return v;
+  console.error(
+    `[driver] --tier=${JSON.stringify(v)} 不是合法层名。合法值：${[...TIER_VALUES, 'ALL'].join(' / ')}`,
+  );
+  process.exit(1);
+}
+
+async function loadScenarios(filterFile, tier = 'EVOLUTION') {
   const dir = join(__dirname);
   const files = (await readdir(dir)).filter((f) => f.endsWith('.scenario.json'));
   const out = [];
@@ -2505,7 +2549,60 @@ async function loadScenarios(filterFile) {
     const items = Array.isArray(parsed) ? parsed : [parsed];
     for (const item of items) out.push({ file: f, scenario: substituteRoot(item) });
   }
-  return out;
+
+  // ── 三层读端门 ──────────────────────────────────────────────────────────
+  // 加载完再按层过滤：**没被加载 = 跑不到 = 结果里不会有一行**。
+  // 这比「跑了但把结果藏起来」可靠 —— 后者要靠调用方自觉不读。
+  if (tier === 'ALL') return out;
+
+  const tiering = readTierMap(TIER_MAP_PATH);
+  if (!tiering.ok) {
+    console.error(
+      `[driver] 三层 sidecar 不可用 ⇒ 无法确定 ${tier} 视图，按 fail-closed 中止：\n` +
+        `  ${TIER_MAP_PATH}\n  ${tiering.errors.join('\n  ')}\n` +
+        `修法：node bin/build-scenario-inventory.mjs --emit-tiering；` +
+        `或显式 --tier=ALL 声明你确实要全量（全量门禁要用 ALL）。`,
+    );
+    process.exit(1);
+  }
+
+  // 单元名 = item.scenario；sidecar 的键也是 unitId（= 同名）。
+  // ⛔ 映射缺失必须硬失败：静默按 EVOLUTION 放行 = 「新增场景忘了登记」永远看不出来。
+  const unmapped = [];
+  const tagged = [];
+  for (const entry of out) {
+    const id = entry.scenario?.scenario;
+    if (typeof id !== 'string' || id === '') {
+      unmapped.push(`${entry.file}:(unnamed)`);
+      continue;
+    }
+    const m = tiering.entries.get(id);
+    if (!m) {
+      unmapped.push(id);
+      continue;
+    }
+    tagged.push({ ...entry, visibility: m.visibility });
+  }
+  if (unmapped.length > 0) {
+    console.error(
+      `[driver] 三层 sidecar 缺 ${unmapped.length} 条映射 ⇒ 无法定层，按 fail-closed 中止：\n` +
+        `  ${unmapped.slice(0, 10).join(', ')}${unmapped.length > 10 ? ` …还有 ${unmapped.length - 10} 条` : ''}\n` +
+        `修法：node bin/build-scenario-inventory.mjs --emit-tiering（只补缺失，已有条目不动）。`,
+    );
+    process.exit(1);
+  }
+
+  const visible = selectVisible(tagged, tier);
+  const leak = assertNoLeak(visible, tier);
+  if (leak.length > 0) {
+    console.error(`[driver] ${leak.join('\n')}`);
+    process.exit(1);
+  }
+  console.log(
+    `[driver] 三层视图 tier=${tier}：可见 ${visible.length} / 全部 ${out.length}` +
+      `（隐藏 ${out.length - visible.length}）`,
+  );
+  return visible;
 }
 
 // Scenario paths may reference the repo root via the `$AGINT_ROOT` token so
@@ -2551,7 +2648,7 @@ export async function runScenario(entry) {
 async function main() {
   const arg = process.argv.find((a) => a.startsWith('--file='));
   const filterFile = arg ? arg.slice('--file='.length) : null;
-  const scenarios = await loadScenarios(filterFile);
+  const scenarios = await loadScenarios(filterFile, resolveTierArg());
   if (scenarios.length === 0) {
     console.error('no scenarios found');
     process.exit(1);
