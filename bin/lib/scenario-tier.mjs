@@ -307,7 +307,11 @@ export function domainRatio(units, domain) {
  * @param {object} input
  * @param {Array<{unitId:string, visibility:string, labelAuthority:string, domain:string, lastKnownStatus?:string}>} input.units
  * @param {string[]} [input.previousFrozenIds] 上一版入账的 Frozen 名单（H5 基线）
- * @param {number} [input.failCount] 存量 fail 数；省略时从 units 里数 lastKnownStatus === 'FAIL'
+ * @param {number} [input.failCount] 存量 fail 数（**必须已排除负控制**，即等于本函数
+ *        按 units 实算出的真存量 fail 数）。省略时从 units 里数
+ *        `lastKnownStatus === 'FAIL' && negativeControl !== true`。
+ *        ⛔ 传「含负控制」的全量 FAIL 数会被口径护栏判为 error（2026-10-04 起）——
+ *        分子分母不同口径会让 H1 下限虚高到数学上永不可满足。
  * @param {boolean} [input.statusKnown=true] units 里的 lastKnownStatus 是不是**实测值**。
  *        ⛔ 静态门禁（不跑 driver）必须传 false —— 那时 H1/H3 的输入根本不存在，
  *        拿上一版的 fail 数去配这一版「0 个 FAIL」会**稳定产出假阳性**。
@@ -352,10 +356,38 @@ export function checkTierAssignment(input = {}) {
   const negativeControlCount = units.filter(
     (u) => u.lastKnownStatus === 'FAIL' && isNegativeControl(u),
   ).length;
-  const failCount =
-    Number.isFinite(Number(input.failCount)) && input.failCount !== undefined && input.failCount !== null
-      ? Number(input.failCount)
-      : failUnits.length;
+
+  // ⛔⛔ 2026-10-04：failCount 入参与内部自算的**口径一致性护栏**。
+  //
+  // 背景（真实事故）：调用方 build-scenario-inventory.mjs 传的是 `measured.fail`
+  // —— driver 报的全部 FAIL，**含负控制**（7）；而本函数内部的 failUnits 已按
+  // `!isNegativeControl` 排除负控制（4）。同一个「存量 fail 数」在上下游用了两套
+  // 口径 ⇒ 分子按 4 算、分母按 7 算 ⇒ h1min = ⌈0.6×7⌉ = 5，而真实可用存量
+  // 总共只有 4 个 ⇒ **H1 在数学上永不可满足**，无论怎么调 tier 划分都过不了。
+  //
+  // 为什么之前没人发现：判据只管算，不问「你给我的数和我说的一样吗」。
+  // 数值恰好合法（7 是正整数）⇒ 静默接受 ⇒ 死锁表现为「内容层样本不足」的
+  // 假象，把排查引向完全错误的方向（我第一轮就判成了「清单是旧数据生成的」）。
+  //
+  // 现在入参与自算冲突时**直接报错**，把口径漂移变成显式失败。
+  // 静态门禁（statusKnown=false）下 units 全是 UNKNOWN、自算为 0，此时入参是
+  // 唯一来源、不校验 —— 但那一档本来就跳过 H1/H3，不构成同类风险。
+  const failCountSelf = failUnits.length;
+  const failCountGiven = input.failCount;
+  const failCountGivenNum = Number(failCountGiven);
+  const hasGiven =
+    failCountGiven !== undefined &&
+    failCountGiven !== null &&
+    Number.isFinite(failCountGivenNum);
+  const failCount = hasGiven ? failCountGivenNum : failCountSelf;
+  if (input.statusKnown !== false && hasGiven && failCountGivenNum !== failCountSelf) {
+    errors.push(
+      `failCount 口径不一致：调用方传 ${failCountGivenNum}，但按 units 实算真存量 fail 为 ` +
+        `${failCountSelf}（含负控制 ${negativeControlCount} 个，已按约定排除）。` +
+        `两者必须同口径 —— 分子分母不一致会让 H1 下限虚高，` +
+        `表现为「进化档样本不足」的假象。修法：调用方应传「排除负控制后的 FAIL 数」。`,
+    );
+  }
 
   const frozenIds = units.filter((u) => u.visibility === 'FROZEN').map((u) => u.unitId);
   const frozenSet = new Set(frozenIds);
@@ -428,6 +460,11 @@ export function checkTierAssignment(input = {}) {
     tierCounts,
     labelAuthorityCounts: labelCounts,
     failCount,
+    // ⛔ failCount 的来源与自算值都要可观测：口径漂移是本函数唯一无法自查的错误
+    //   （数值合法、算得出结果、只是分母大了）。不暴露自算值，排查就只能靠猜。
+    failCountGiven: hasGiven ? failCountGivenNum : null,
+    failCountSelfComputed: failCountSelf,
+    failCountSource: hasGiven ? 'caller' : 'self-computed',
     // ⛔ 负控制被排除这件事必须**可观测**：静默排除 = 调用方看到 failCount 变小却不知道为什么
     //   （本轮真发生过：H1 从 4 悄悄变 5，没人知道是哪 3 个负控制干的）。
     //   显式列出数量与 id 名单，调用方能自己判断这个排除合不合理。

@@ -86,6 +86,13 @@ const UNIT_DEFINITION =
  * ⚠️ 关键方法论警示：拿旧 commit 重跑 driver **不能**复原历史 fail 名单 ——
  * 实测在 b6a14f7（2026-08-28）跑出 13 passed / 91 failed (of 104)，
  * 因为旧 plugin 代码配当前 dsh 运行时会大面积不兼容。那是环境污染值，不是历史真值。
+ *
+ * ⚠️⚠️ 2026-10-04：这类污染**不只来自「代码版本不匹配」，也来自「环境没配好」**。
+ *   本轮实测：仓库位裸跑 driver 报 91 failed，其中 84 个是缺依赖链（zod /
+ *   dsh-storage-domain 解析不到）；跑过 eval/setup.sh 后降到 6 failed。
+ *   ⇒ **采信任何 fail 数之前必须先确认环境**。fail 数是 H1/H3 配额的唯一输入，
+ *   拿污染值算配额会把「环境没配好」误报成「评估集内容层出问题」。
+ *   根因与修法见 failSetReconciliation.currentlyFixedOn20261004。
  */
 const FAIL_RECON = {
   method: [
@@ -102,18 +109,120 @@ const FAIL_RECON = {
       '排除「因重构/改名而消失导致静默失忆」这一分支。这是本次对账最关键的结论。',
     addedUnits: 21,
     addedNote: '123 − 102 = 21 个新增具名单元（总数差 +19 = 21 新增 − 2 个 dedicated 文件移出扫描范围）。',
+
+    // ⛔⛔ 2026-10-04 大改：下面两个数组从「6 个 fail」变成「5 个，其中 3 个是负控制」。
+    //
+    // 起因是修掉了两个**假 fail**（此前它们让 fail 数虚高，污染 H1/H3 配额）：
+    //   1) cron-default-jobs-registered / sprint6-cron-job-prompt-static-check-registered
+    //      —— 二者在 eval/setup.sh 漏登记时因缺 zod 链而报缺包失败（环境噪音），
+    //         setup.sh 改为自动发现全部插件后恢复 PASS。
+    //   2) service-annotations-table-full-throws（归因 HARNESS_GAP）
+    //      —— driver 与 run-diagnosis-eval 的 fake table 缺 size getter，
+    //         而插件表满守门读 t.size ⇒ 守门永不触发 ⇒ 场景永远等不到抛错。
+    //         两处 fake 已按 KvTableImpl 契约补齐（get/entries/keys/size/put/delete/update）。
+    //   3) s12-05-policy-policy-deployed-rolledback-shadow（归因 ASSERT_DRIFT）
+    //      —— 断言测的是「伞键存不存在 publish」，而伞键是 event-bus 主动提供的
+    //         纯加法能力（lib/index.js:167）⇒ 每跑必红。已改为两侧计数：
+    //         policy 走单 service 接口（publishSvcCallCount>0）且不经伞键
+    //         （umbrellaPublishCallCount===0）。
+    //
+    // ⚠️ 负控制单列：它们**预期就是 FAIL**（故意让判据变红以证明判据在守），
+    //   计入 failCount 会污染 H1 下限。判据侧已按 negativeControl 字段排除，
+    //   这里也分开登记，避免日后误把它们当缺陷去「修」。
     currentlyFailingThatExistedThen: [
-      'cron-default-jobs-registered',
-      'service-annotations-table-full-throws',
       'policy-decide-clean-results-pending-or-deploy',
-      'sprint6-cron-job-prompt-static-check-registered',
       // 2026-10-03 新增：见下方 confirmedRegression。
       // 它**在旧时点就存在**（实测 b6a14f7 的 102 个具名单元里含此名），
       // 故归入「旧单元」而不是「新增单元」。
       'stats-reports-counts-and-limits',
+      // 2026-10-04：随 Sprint 19 的 rules ask/advisory 档引入的负控制，
+      // 在 b6a14f7 时点不存在，但**单元本身不是缺陷** —— 预期就是 FAIL。
+      'rules-ask-hit-but-deny-also-matches',
+      'rules-tier-negctl-no-deny-but-expect-deny',
+      'rules-advisory-negctl-also-blocked',
     ],
-    currentlyFailingThatAreNew: ['s12-05-policy-policy-deployed-rolledback-shadow'],
-    newFailNote: '该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。',
+    currentlyFailingThatAreNew: [],
+    newFailNote:
+      '2026-10-04 起为空：s12-05-policy-policy-deployed-rolledback-shadow 已修（ASSERT_DRIFT，' +
+      '测法错而非行为错），移入「已修」段 currentlyFixedOn20261004。',
+
+    // ⛔ 2026-10-04：本轮修掉的假 fail 留档。清单是本仓唯一持久化的 fail 名单，
+    //    「曾经红过、为什么变绿」不记就等于失忆 —— 日后环境再坏时无从判断是新问题还是回归。
+    currentlyFixedOn20261004: {
+      note:
+        '这 3 个单元在 2026-10-04 之前一直是 FAIL，2026-10-04 修夹具/测法后转 PASS。' +
+        '**都不是产品缺陷被修好，而是「假 fail」被揭穿** —— 判据一直是对的，被污染的是夹具。',
+      items: [
+        {
+          unitId: 'service-annotations-table-full-throws',
+          class: 'HARNESS_GAP',
+          rootCause:
+            'driver.js 与 run-diagnosis-eval.mjs 的 fake storage table 只提供 entries()/put()，' +
+            '**缺 size getter**；而插件表满守门读 `t.size >= LIMITS.ANNOTATIONS` ' +
+            '(plugins/agint-diagnosis/lib/index.js:233) ⇒ undefined >= 200 恒 false ⇒ 守门永不触发。',
+          fix:
+            '两处 fake table 按 @deepseek-ai/dsh-storage-domain 的 KvTableImpl 契约补齐 ' +
+            'get/entries/keys/size/put/delete/update，size 读底层 Map.size。',
+          impact:
+            '「夹具不全 ⇒ 假 fail」比真缺陷更坏：它污染 fail 数，而 fail 数是 H1/H3 配额的唯一输入 ' +
+            '⇒ 配额算错 ⇒ 判据报「进化档样本不足」，把排查引向完全错误的方向。',
+        },
+        {
+          unitId: 's12-05-policy-policy-deployed-rolledback-shadow',
+          class: 'ASSERT_DRIFT',
+          rootCause:
+            '断言 `publishDoesNotUseUmbrellaKey = umbrellaKeyCalled === false`，' +
+            '而 umbrellaKeyCalled 测的是「伞键 agint.eventBus 上存不存在 publish」。' +
+            '但伞键是 event-bus 2026-09-24 主动补的**纯加法**能力' +
+            '(plugins/agint-event-bus/lib/index.js:167，注释写明：cordis service store 是扁平的，' +
+            '不补伞键每个消费方都得自己写回退链，漏一处就静默降级) ⇒ 伞键有 publish 是正确行为，' +
+            '断言却把它当缺陷 ⇒ 每跑必红。**被测行为是对的，错的只是这一项的测量方式。**',
+          fix:
+            '改为两侧计数：代理转发（不改行为）单 service 接口 agint.eventBus.publish 与伞键对象的 ' +
+            'publish，断言 policy 走单 service 接口（>0）且不经伞键（===0）。断言本身不删。',
+          note:
+            '12 项断言里 11 项本来就 true，只有这一项红 —— 这本身就是「测法错而非行为错」的证据。',
+        },
+        {
+          unitIds: [
+            'cron-default-jobs-registered',
+            'sprint6-cron-job-prompt-static-check-registered',
+          ],
+          class: 'ENV_NOISE',
+          rootCause:
+            'eval/setup.sh 的 PLUGINS 是硬编码 11 项，仓库实有 34 个带 manifest.json 的插件 ⇒ ' +
+            '漏登记的插件无法解析 zod / dsh-storage-domain ⇒ 其单元在 driver 里**全部**报缺包。' +
+            '更隐蔽的是：仓库里有一个被 git 追踪的坏 symlink ' +
+            'plugins/agint-event-bus/node_modules → /home/anmul/projects/AGINT/...（bbf6ff2 误提交，' +
+            '指向另一台机器的绝对路径；.gitignore 拦不住已追踪条目），' +
+            '而旧代码用 `[ -L "$target" ] && continue` 判存在 ⇒ 坏链永不被修。',
+          fix:
+            'PLUGINS 改为扫描 plugins/*/manifest.json 自动发现（34 个全覆盖，新增插件自动生效）；' +
+            '软链存在性判断从 `[ -L ]` 改为 `[ -L ] && [ -e ]`（可达才算存在）并自动清理重建坏链；' +
+            '`git rm --cached` 移除被追踪的坏 symlink。',
+          impact:
+            '实测 driver 从 91 failed → 37 failed → 6 failed。' +
+            '⚠️ 判据类结论对这类噪音极其敏感：27 个假 fail 会让 H1/H3 配额算错，' +
+            '把「环境没配好」误报成「评估集内容层出问题」。**跑 driver 前必须先跑 eval/setup.sh。**',
+        },
+      ],
+    },
+
+    // ⚠️ 负控制登记（2026-10-04）。它们**预期就是 FAIL** —— 用来证明判据真在守。
+    //   ⛔ 不计入 failCount：判据侧按显式字段 negativeControl 排除（scenario-tier.mjs）。
+    //   ⛔ 不该被当缺陷「修掉」：修掉反而是判据失守。
+    negativeControls: {
+      note:
+        '负控制 = 故意构造 inputs 让判据变红的夹具。它们在清单里 lastKnownStatus=FAIL 是**正确状态**。' +
+        '⚠️ 这三个正是 2026-10-04 之前 fail 数虚高的主要来源之一（真存量 2 个却被算成 5 个），' +
+        '叠加生成器传参口径错误（failCount 传含负控制的 7）⇒ H1 下限虚高到 ⌈0.6×7⌉=5，' +
+        '而真实可用存量只有 4 个 ⇒ 数学上永不可满足。',
+      ids: [
+        'rules-ask-hit-but-deny-also-matches',
+        'rules-tier-negctl-no-deny-but-expect-deny',
+        'rules-advisory-negctl-also-blocked',
+      ],
+    },
 
     // ⚠️ 2026-10-03 实测新确认的一处回归。写在这里是因为：入仓清单此前记它 PASS，
     //    现在是 FAIL，而清单是本仓**唯一持久化的 fail 名单** —— 不记就等于失忆。
@@ -122,7 +231,7 @@ const FAIL_RECON = {
       wasStatus: 'PASS',
       wasSource: 'eval/scenarios/inventory.json @ generatedAt 2026-10-02T13:14:01Z（入仓清单实测值）',
       nowStatus: 'FAIL',
-      nowSource: '2026-10-03 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 117 passed, 6 failed (of 123)',
+      nowSource: '2026-10-04 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 126 passed, 5 failed (of 131)',
       detail: 'driver 报 `keys_ok=true limits_ok=false`',
       rootCause:
         '场景断言 `stats-shape.limitsShape` 写死了 LIMITS 的**全量形状**（3 键：' +
@@ -141,14 +250,16 @@ const FAIL_RECON = {
   },
 
   arithmetic:
+    '⚠️ 2026-10-04 起本段只对**真存量 fail** 计数（负控制 3 个单列，见 negativeControls，不计入）。' +
     '设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。' +
-    '当前失败的旧单元数 5 = (12 − F) + R ⇒ F = 7 + R。' +
-    '⇒ **至少 7 个旧 fail 已被修复**；另有 R ∈ [0,5] 个旧单元发生回归（无法确定，因名单未留存）。' +
-    '净变化 −6 = −F（修复）+ R（回归）+ 1（新增 s12-05），与 12 → 6 自洽。' +
-    '⚠️ 与 2026-10-02 那版（当时是 12 → 5）相比**变差了 1 个**：' +
-    'stats-reports-counts-and-limits 从 PASS 转 FAIL，根因见 confirmedRegression。' +
-    '⚠️ 它是否属于 R 无法确证：只知道它 2026-10-02 是 PASS，不知道它在 b6a14f7 时点的状态' +
-    '（那 12 个 fail 的名单从未被任何 artifact 记录）。故 R 的下界仍取 0。',
+    '当前失败的旧单元数 2 = (12 − F) + R ⇒ F = 10 + R。' +
+    '⇒ **至少 10 个旧 fail 已被修复**；另有 R ∈ [0,2] 个旧单元发生回归（无法确定，因名单未留存）。' +
+    '⚠️ 这里的 F 比「字面修好的」多：2026-10-04 转 PASS 的 3 个里，' +
+    '**没有一个是产品缺陷被修好** —— 全是「假 fail」被揭穿（夹具缺 size getter / 断言测错对象 / ' +
+    '环境缺依赖链，见 currentlyFixedOn20261004）。判据一直是对的，被污染的是夹具。' +
+    '把它们算进「已修复」会高估工程进展，故在此显式声明。' +
+    '⚠️ stats-reports-counts-and-limits 是当前唯一确认的**真**回归（根因见 confirmedRegression），' +
+    '它是否属于 R 仍无法确证（名单从未留存），故 R 的下界取 0。',
 
   candidates: {
     note:
@@ -159,18 +270,19 @@ const FAIL_RECON = {
       'sandbox-gate-passes-when-sandbox-ok',
       'sandbox-gate-skipped-when-no-sandbox-service',
     ],
-    changedAndStillFail: [
-      'cron-default-jobs-registered',
-      'sprint6-cron-job-prompt-static-check-registered',
-    ],
+    changedAndStillFail: [],
     changedAndStillFailNote:
-      '这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。',
+      '2026-10-04 起为空：原列的 cron-default-jobs-registered 与 ' +
+      'sprint6-cron-job-prompt-static-check-registered 已转 PASS —— ' +
+      '不是「改测试改绿」，是 eval/setup.sh 漏登记插件导致它们在缺 zod 链时报缺包失败（ENV_NOISE，' +
+      '见 currentlyFixedOn20261004）。setup.sh 改为自动发现全部插件后恢复正常。',
     untouchedAndNowPass: 94,
     untouchedNote:
-      '其余 97 个旧单元内容从未改动，其中 **94 个现为 PASS**、3 个现为 FAIL' +
-      '（service-annotations-table-full-throws / policy-decide-clean-results-pending-or-deploy / ' +
-      'stats-reports-counts-and-limits）⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），' +
-      '属于真正的修复。' +
+      '其余 97 个旧单元内容从未改动，其中 94 个现为 PASS、2 个现为真存量 FAIL' +
+      '（policy-decide-clean-results-pending-or-deploy / stats-reports-counts-and-limits）' +
+      '⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。' +
+      '⚠️ service-annotations-table-full-throws 也曾在此列，但它是 HARNESS_GAP 假 fail，' +
+      '2026-10-04 修夹具后转 PASS ⇒ 不能算「被 plugin 代码修复」，已移出本口径。' +
       '⚠️ 2026-10-02 那版写的是 95 个 PASS —— 少掉的这一个正是新确认的回归' +
       'stats-reports-counts-and-limits（见 confirmedRegression），不是统计口径变了。',
   },
@@ -178,11 +290,17 @@ const FAIL_RECON = {
   irreducible:
     '⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，' +
     '仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。' +
-    '这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。',
+    '这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。' +
+    '⚠️ 2026-10-04 补充：**环境污染值这一类错误有反复发生的倾向**，本轮又中了一次 —— ' +
+    'eval/setup.sh 漏登记插件导致 27 个单元因缺依赖链而假 fail（91 → 37 → 6）。' +
+    '⇒ 教训：**任何 driver 数字在采信前必须先确认环境是配好的**（`./eval/setup.sh`），' +
+    '否则 fail 数会被环境噪音抬高，而 fail 数是 H1/H3 配额的唯一输入。',
 
   remediation:
     '本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，' +
-    '且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。',
+    '且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。' +
+    '⚠️ 2026-10-04 起另加两处留痕：negativeControls（负控制单列，防止日后误当缺陷去「修」）与 ' +
+    'currentlyFixedOn20261004（修掉的假 fail 留档，防止环境再坏时无法区分「新问题」与「旧问题复发」）。',
 };
 
 /** 范围边界句，与 UNIT_DEFINITION 一并写入 inventory.json。 */
@@ -629,8 +747,24 @@ function build() {
   // （静态门禁不跑 driver，但 H1/H3 的算术需要 fail 数，取上一版是唯一可信来源）。
   const prev = existsSync(OUT_PATH) ? JSON.parse(readFileSync(OUT_PATH, 'utf8')) : null;
   const previousFrozenIds = prev?.tierBaseline?.frozenUnitIds ?? null;
-  const failCountForCriteria =
-    measured.fail ?? prev?.summary?.failCount ?? prev?.reconciliation?.measuredFail ?? null;
+
+  // ⛔⛔ 2026-10-04 修口径 bug：判据侧的 failUnits 已按 `negativeControl !== true`
+  //   排除负控制，而这里传的是 `measured.fail`（driver 报的全部 FAIL，**含负控制**）。
+  //   分子按 4 算、分母按 7 算 ⇒ h1min = ⌈0.6×7⌉ = 5，而真实可用存量总共只有 4 个
+  //   ⇒ H1 数学上永不可满足，表现为「进化档样本不足」的假象。
+  //   引入时间线：82e8f4a（判据层）先写了这个入参，de500af（负控制机制）只改了判据侧
+  //   没回头改这里 —— 两笔各自正确的改动叠出的口径裂缝。
+  // 现在判据侧加了护栏（口径不一致直接 error），本侧改为传同口径的值。
+  //
+  // ⚠️ 静态门禁（--check / --static-only）下 units 全是 UNKNOWN，算不出真存量数，
+  //   只能沿用上一版清单的 `tierBaseline.failCount`（那是判据侧已记的同口径值）。
+  //   那一档 H1/H3 本来就跳过，不构成同类风险。
+  const realFailCountThisRun = measured.fail === null
+    ? null
+    : units.filter((u) => u.lastKnownStatus === 'FAIL' && u.negativeControl !== true).length;
+  const failCountForCriteria = NO_DRIVER
+    ? (prev?.tierBaseline?.failCount ?? prev?.summary?.failCount ?? prev?.reconciliation?.measuredFail ?? null)
+    : realFailCountThisRun;
 
   const criteria = checkTierAssignment({
     units,

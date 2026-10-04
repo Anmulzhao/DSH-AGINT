@@ -112,11 +112,52 @@ export async function policyDeployedRolledbackShadowBranch(input, ctx) {
   if (!committee) return { ok: false, detail: 'policy.committee not exposed' };
   committee.saveProdSnapshot({ policyId: 'prev-policy-v1', config: { thresholds: { autoDeploy: 80 } } });
 
-  // ── 7b. probe umbrella key (must NOT be used) ──
-  // umbrellaKeyCalled: if anyone (mutator / population / future) calls ctx.get('agint.eventBus').publish,
-  // it would be undefined — we track by checking the bus's own provide registered services
-  const umbrella = ctx.get('agint.eventBus');
-  const umbrellaKeyCalled = !!(umbrella && typeof umbrella.publish === 'function');
+  // ── 7b. 守「policy 不走伞键」：劫持单 service 接口计数，断言调用数为 0 ──
+  //
+  // ⛔⛔ 2026-10-04 改测法（此前测的是错的东西，导致本单元长期假 fail）。
+  //
+  // 旧测法：`umbrellaKeyCalled = !!(ctx.get('agint.eventBus')?.publish)`，
+  // 然后断言它为 false。这测的是「**伞键存不存在 publish**」，
+  // 而断言想守的是「**policy 有没有走伞键**」—— 两件事。
+  //
+  // 为何旧测法必然红：event-bus 后来主动补了
+  // `ctx.provide('agint.eventBus', { publish, subscribe, inspect, ... })`
+  // （plugins/agint-event-bus/lib/index.js:167，纯加法 —— 让 mutator/population
+  // 免写回退链）。⇒ 伞键**有** publish 是当前设计的**正确行为**，
+  // 旧断言却把它当缺陷 ⇒ 每跑必红。
+  //
+  // 新测法守同一条约定，但方式可靠：劫持 policy 会去取的那个
+  // **单 service 接口** `agint.eventBus.publish`，断言 policy 全程没碰它。
+  // policy 的实际写法是 `ctx.get('agint.eventBus.publish')`
+  // （policyEvents.js:108，且是**每次 publish 时才 get**，不在 apply 时缓存）
+  // ⇒ 在 decide 之前替换 ctx 上的该键即可完整捕获。
+  //
+  // ⚠️ 必须**代理转发**而不是替换成空实现：policy 仍要通过它真发布，
+  // 否则 policyDeployedEnvelopes / metricsCounterRecords 等另外 11 项断言全崩。
+  // 这里只加一层计数 + 标记，不改行为。
+  //
+  // 同时给**伞键对象**的 publish 也加计数 —— 只有两侧都数，才能真的区分
+  // 「policy 走单 service 接口」与「policy 走伞键对象」：
+  //   期望态：publishSvcCallCount > 0 且 umbrellaPublishCallCount === 0
+  //   违规态：umbrellaPublishCallCount > 0（policy 抄近路走伞键）
+  // 伞键整体替换成代理对象，保留 publish/subscribe/inspect 原行为供其他插件用。
+  const realPublishSvc = ctx.get('agint.eventBus.publish');
+  const realUmbrella = ctx.get('agint.eventBus');
+  let publishSvcCallCount = 0;
+  let umbrellaPublishCallCount = 0;
+  ctx.provide('agint.eventBus.publish', async (envelope) => {
+    publishSvcCallCount += 1;
+    return realPublishSvc(envelope);
+  });
+  if (realUmbrella && typeof realUmbrella === 'object') {
+    ctx.provide('agint.eventBus', {
+      ...realUmbrella,
+      publish: async (envelope) => {
+        umbrellaPublishCallCount += 1;
+        return realUmbrella.publish(envelope);
+      },
+    });
+  }
 
   // ── 8. AUTO_DEPLOY path: expect 1 policy.deployed envelope ──
   const autoDeployDecision = await policy.decide({ results: [input.autoDeployTarget] });
@@ -156,7 +197,12 @@ export async function policyDeployedRolledbackShadowBranch(input, ctx) {
     deployedPayloadTargetIdMatches: deployedPayload0?.targetId === input.autoDeployTarget.targetId,
     rolledbackPayloadHasRollbackTargetField: rolledbackPayload0 != null && Object.prototype.hasOwnProperty.call(rolledbackPayload0, 'rollbackTarget') === true,
     directDecideReturnPathPreserved: autoDeployDecision?.kind === 'AUTO_DEPLOY' && rejectDecisions.every((d) => d?.kind === 'REJECT'),
-    publishDoesNotUseUmbrellaKey: !umbrellaKeyCalled,
+    // 「policy 不走伞键」的正确测法：policy 必须走**单 service 接口**
+    // `agint.eventBus.publish`（policyEvents.js:108），且**不**经伞键对象发布。
+    // 旧测法问的是「伞键存不存在 publish」—— 那是设计**主动提供**的纯加法能力，
+    // 拿它的有无当判据 ⇒ 每跑必红（详见上方 7b 注释）。
+    // ⛔ 断言不删：约定仍要守，只是换成两侧计数这个可观测的测法。
+    publishDoesNotUseUmbrellaKey: publishSvcCallCount > 0 && umbrellaPublishCallCount === 0,
   };
 
   const ok = Object.values(checks).every(Boolean);
@@ -174,7 +220,11 @@ export async function policyDeployedRolledbackShadowBranch(input, ctx) {
       reportMemoryAuditSample: reportMemoryAuditLog.slice(0, 3).map((e) => e.content),
       metricsCounterRecordsCount: metricsCounterRecords.length,
       metricsCounterKeys: [...new Set(metricsCounterRecords.map((r) => r.key))],
-      umbrellaKeyCalled,
+      // 两个计数都要进 detail：红了要能一眼看出是「压根没走单 service 接口」
+      // （publishSvcCallCount=0，说明 policy 换了别的发布路径）还是
+      // 「抄近路走了伞键」（umbrellaPublishCallCount>0）。
+      publishSvcCallCount,
+      umbrellaPublishCallCount,
       sources: policyDeployedEnvelopes.map((e) => e?.source).concat(policyRolledbackEnvelopes.map((e) => e?.source)),
     }),
   };
