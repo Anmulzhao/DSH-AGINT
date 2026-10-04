@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listSessionLogs, readSessionRecords, resolveZstdBin } from '../index.js';
@@ -67,11 +67,16 @@ test('readSessionRecords 真实 zstd 往返：解析 tool/call + 配对 result',
       JSON.stringify({ type: 'tool/call', time: 2000, seq: 3, data: { turn: 1, step: 2, callId: 'c2', name: 'grep', arguments: '{"pattern":"foo"}' } }),
     ].join('\n');
     const file = join(dir, 'session.v3.jsonl.zstd');
-    const { stdout } = await execFileAsync(bin, ['-c', '-'], { input: jsonl, encoding: 'utf8' });
-    await writeFile(file, stdout);
-    // 确认真的写成了 zstd（magic 25 232 35 1）
-    const magic = Buffer.from(await import('node:fs/promises').then((fs) => fs.readFile(file)));
-    assert.deepEqual([...magic.slice(0, 4)], [0x28, 0xb5, 0x2f, 0xfd]);
+    // ⚠️ 本机实测（2026-10-04）：`execFile(zstd, ['-c','-'], {input})` **会挂**
+    // （15 秒不返回，standalone 最小复现同样挂），所以下面改用「先落明文、再 `-o` 压」
+    // 这条能走通的路。⛔ 不要退回管道喂 stdin —— 那不是本模块的问题，是 harness 的。
+    const plain = join(root, 'fixture.jsonl');
+    await writeFile(plain, jsonl);
+    await execFileAsync(bin, ['-q', '-f', plain, '-o', file]);
+    const got = Buffer.from(await readFile(file));
+    assert.ok(got.length > 0, 'zstd 产物为空 ⇒ fixture 没造出来');
+    // 确认真的写成了 zstd（magic 28 b5 2f fd）
+    assert.deepEqual([...got.subarray(0, 4)], [0x28, 0xb5, 0x2f, 0xfd]);
 
     const recs = await readSessionRecords(root);
     assert.equal(recs.length, 2);

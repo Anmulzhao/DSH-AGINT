@@ -3,8 +3,8 @@
  *
  * 设计依据：2026-09-17《技能生成-分治架构设计.md》§4 / §7。
  * 目的：让 agint-dream 与 agint-skill-autocreate 各读各的、但读同一份真相
- * （~/.dsh/sessions/.../session.{v3,}.jsonl.zstd），从源头消除对
- * agint_tool_stats.jsonl「04:30 回填」的隐式时序依赖（静默漏检头号来源）。
+ * （~/.dsh/sessions/.../session.<ver>.jsonl.zstd，ver 现为 v4 / v3 / 无版本），
+ * 从源头消除对 agint_tool_stats.jsonl「04:30 回填」的隐式时序依赖（静默漏检头号来源）。
  *
  * 不变量（约束 2）：
  *   - 不 import 任一插件（agint-dream / agint-skill-autocreate 一律不引）；
@@ -48,11 +48,33 @@ export function resolveZstdBin() {
   return 'zstd';
 }
 
-/** dsh 两种会话文件名；v3 较新，双格式并存时优先取 v3。 */
+/**
+ * dsh 会话文件名候选，**新→旧**排（同目录多版本并存时取第一个命中的）。
+ *
+ * 2026-09-22 15:52 宿主把会话日志改名为 `session.v4.jsonl.zstd`。本表当时只有
+ * v3 与无版本名 ⇒ 09-22 之后的 260 个会话目录全部不可见，autocreate 供料归零
+ * 12 天（读不到文件时返回 [] 不抛，所以没人看见）。同源先例：
+ * `agint-input-gateway/lib/channels/{cross-agent,self-observation}.js` 已按这三名查。
+ * ⚠️ 宿主再改版本号时本表还会落后 ⇒ `listSessionLogs` 另带 `.jsonl.zstd` 后缀
+ * 兜底：认不出的版本名也要发现，并且**读不到要出声**。
+ */
 export const SESSION_FILE_NAMES = Object.freeze([
+  'session.v4.jsonl.zstd',
   'session.v3.jsonl.zstd',
   'session.jsonl.zstd',
 ]);
+
+/** 会话日志统一后缀，用于兜底发现未知版本名。 */
+export const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+
+/**
+ * 版本排序键（越大越新）：`session.v4…` → 4，`session.v12…` → 12，无版本名 → 0。
+ * 用它做兜底挑选，避免「按字典序取第一个」把 v9 排在 v10 前面。
+ */
+export function sessionVerRank(fileName) {
+  const m = /^session\.v(\d+)\.jsonl\.zstd$/.exec(fileName);
+  return m ? Number(m[1]) : 0;
+}
 
 /**
  * 解压单个 zstd 会话文件 → 原始 jsonl 文本。
@@ -81,34 +103,76 @@ export async function loadSession(path) {
 }
 
 /**
- * 列出某 sessions root 下所有会话日志。
- * 返回 [{ path, sessionId, format }]。同会话双格式并存时取 v3（更新）。
- * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,}.jsonl.zstd
+ * 会话日志排序键（越大越新）：`session.v4…` → 4；`session.jsonl.zstd` → 0；
+ * 其它带后缀的杂项（如实测存在的 `session.jsonl.dec.jsonl.zstd` 派生名）→ -1。
+ * ⛔ 不认名字列表之外的版本就返回 -1 以下 —— 那正是 09-22 那次改名的失效方式。
  */
-export async function listSessionLogs(sessionsRoot) {
+export function sessionLogRank(name) {
+  const m = /^session\.v(\d+)\.jsonl\.zstd$/.exec(name);
+  if (m) return Number(m[1]);
+  if (name === 'session.jsonl.zstd') return 0;
+  return -1;
+}
+
+/** 会话日志的格式标识（用于 `format` 字段与日志定位）。 */
+export function sessionLogFormat(name) {
+  const m = /^session\.(v\d+)\.jsonl\.zstd$/.exec(name);
+  if (m) return m[1];
+  if (name === 'session.jsonl.zstd') return 'jsonl';
+  return name;
+}
+
+/**
+ * 挑一个会话目录里最新的日志。
+ * 先按 `.jsonl.zstd` 后缀列目录（**不靠名字表**，故宿主改名不再致盲），
+ * 再按 `sessionLogRank` 取版本最高者。列不出目录 → null（不猜路径）。
+ */
+async function pickSessionLog(dirPath) {
+  let names;
+  try { names = await readdir(dirPath); }
+  catch { return null; }
+  const cands = names
+    .filter((f) => f.startsWith('session.') && f.endsWith(SESSION_LOG_SUFFIX))
+    .map((f) => ({ f, rank: sessionLogRank(f) }))
+    .sort((a, b) => (b.rank - a.rank) || a.f.localeCompare(b.f));
+  if (!cands.length) return null;
+  return { path: join(dirPath, cands[0].f), format: sessionLogFormat(cands[0].f) };
+}
+
+/**
+ * 列出某 sessions root 下所有会话日志。
+ * 返回 [{ path, sessionId, format }]。同会话多版本并存时取版本最高者。
+ * 结构：sessionsRoot/<workspace>/<sessionId>/session.<ver>.jsonl.zstd
+ *
+ * `warn`（可选）：发现异常的出口。默认走 `process.emitWarning`，标签
+ * `SessionLogDiscovery`。⛔ 静默返回 [] 是本次断供拖 12 天的直接原因 ——
+ * 「会话目录存在但里面没有可读日志」和「根本没有会话」必须能区分开。
+ */
+export async function listSessionLogs(sessionsRoot, { warn = null } = {}) {
   const root = resolve(sessionsRoot);
+  const report = warn ?? ((msg) => { process.emitWarning(msg, 'SessionLogDiscovery'); });
   const logs = [];
   let workspaces;
   try { workspaces = await readdir(root, { withFileTypes: true }); }
-  catch { return []; }
+  catch {
+    report(`sessions root 不可读：${root}`);
+    return [];
+  }
   for (const ws of workspaces) {
     if (!ws.isDirectory()) continue;
     const wsDir = join(root, ws.name);
     let dirs;
     try { dirs = await readdir(wsDir, { withFileTypes: true }); }
     catch { continue; }
+    let missed = 0;
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
-      const dirPath = join(wsDir, d.name);
-      const v3 = join(dirPath, 'session.v3.jsonl.zstd');
-      const jsonl = join(dirPath, 'session.jsonl.zstd');
-      const hasV3 = await stat(v3).then(() => true).catch(() => false);
-      if (hasV3) {
-        logs.push({ path: v3, sessionId: d.name, format: 'v3' });
-      } else {
-        const hasJsonl = await stat(jsonl).then(() => true).catch(() => false);
-        if (hasJsonl) logs.push({ path: jsonl, sessionId: d.name, format: 'jsonl' });
-      }
+      const found = await pickSessionLog(join(wsDir, d.name));
+      if (found) logs.push({ path: found.path, sessionId: d.name, format: found.format });
+      else missed += 1;
+    }
+    if (missed > 0) {
+      report(`workspace「${ws.name}」有 ${missed} 个会话目录没发现 ${SESSION_LOG_SUFFIX} 日志（root: ${root}）⇒ 这些会话不进供料`);
     }
   }
   return logs;
@@ -144,11 +208,20 @@ export function extractToolCalls(events, { sessionId = null } = {}) {
   for (const e of events) {
     if (e?.type !== 'tool/result') continue;
     const d = e.data || {};
-    const content = Array.isArray(d?.message?.content) ? d.message.content : [];
+    const msg = d.message ?? null;
+    // v3 / 无版本名：id 与 isError 挂在 content 的 tool-result 块上
+    const content = Array.isArray(msg?.content) ? msg.content : [];
     for (const blk of content) {
       if (blk?.type === 'tool-result' && blk.toolCallId) {
         results.set(blk.toolCallId, { isError: blk.isError === true, time: e.time ?? null });
       }
+    }
+    // v4（宿主 2026-09-22 起）：id 与 isError 提到 message 层，
+    // content 块只剩 `{type:'text', text:'…'}`。
+    // ⛔ 漏这一支的后果不是「看不见」，是「看得见但读错」：tool/call 照样出 record，
+    //    而 ok / latencyMs 恒 null ⇒ 失败调用被读成「没有失败」。
+    if (typeof msg?.toolCallId === 'string' && msg.toolCallId) {
+      results.set(msg.toolCallId, { isError: msg.isError === true, time: e.time ?? null });
     }
   }
 
@@ -269,7 +342,9 @@ export function eventToText(e) {
   if (e.type === 'tool/result') {
     const content = Array.isArray(d?.message?.content) ? d.message.content : [];
     const txt = content
-      .filter((b) => b?.type === 'tool-result')
+      // v3/无版本名给 `tool-result` 块；v4（2026-09-22 起）给 `text` 块。
+      // v3 的结果体里不存在 text 块 ⇒ 加这个或是**零变化**，v4 才第一次可见。
+      .filter((b) => b?.type === 'tool-result' || b?.type === 'text')
       .map((b) => blockText(b))
       .filter(Boolean)
       .join('\n');
