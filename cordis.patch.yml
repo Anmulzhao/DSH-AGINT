@@ -524,13 +524,17 @@
     - id: agint-evolution-driver
       name: ./plugins/agint-evolution-driver/lib/index.js
       config:
-        # ⚠ 机器私有绝对路径按 AGENTS.md:16 红线不入库：这里保持 Windows 机原值
-        # "D:/DSH/project源码/DSH-AGINT"，各机真值走 $DSH_HOME 侧的 HOME override
-        # （方案 A）。麒麟机真值 = /home/kylin/projects/DSH/DSH-AGINT，已写在其
-        # .agint-bundle/cordis.patch.yml:509。install.sh 铺仓时会用本行覆盖槽 ——
-        # 两机各自的 HOME override 需在 install 之后再点一次，或改走 env
-        # AGINT_EVOLUTION_DRIVER_REPO_ROOT（:503 注释：env 优先于它）。
-        repoRoot: "D:/DSH/project源码/DSH-AGINT"
+        # 2026-10-04：与 agint-cron 块同一形状改成 `!!js`（老板拍板方案 2，两块并存）。
+        # 起因：这里原是字面量 + $DSH_HOME 侧 HOME override，而 install.sh 的
+        # `cp -f` 整文件覆盖把 override 静默冲掉过一次（2026-10-04 20:30 实测事故：
+        # 覆盖后生效位与仓库模板 md5 完全相同）。`!!js` 由 dsh 在加载时求值 ⇒
+        #   ① 机器私有绝对路径不入库（AGENTS.md:16 红线）；
+        #   ② 部署覆盖不掉它（覆盖的只是表达式，值每次加载现算）；
+        #   ③ 每台机算出自己的路径，逃生口 = 环境变量 AGINT_REPO_ROOT。
+        # ⚠ 回退值 `$HOME/projects/DSH/DSH-AGINT` 在**麒麟机**与实机路径一致
+        # （/home/kylin/projects/DSH/DSH-AGINT）；**Windows 机不成立**（那边真仓库是
+        # D:/DSH/project源码/DSH-AGINT）⇒ 那台机必须在环境里设 AGINT_REPO_ROOT。
+        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
 
     # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
     # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），

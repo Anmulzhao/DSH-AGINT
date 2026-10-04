@@ -1,19 +1,19 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-03T17:49:23.744Z",
+  "generatedAt": "2026-10-04T13:26:28.596Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
-  "driverVersion": "0f5214213343883aac07c4a57920623fe34d233e",
+  "driverVersion": "43af364f325d24d59952b2b87cc49ef04512affa",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
-  "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。",
+  "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 131（driver 口径，本次实测）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 131+29=160；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。\n⚠️ 数字的权威来源顺序：driver 汇总行 > sidecar（eval/tiers/agint-tiering.json）条目数 > 本段文本。若三者不一致，以 driver 实测为准并**重新生成清单** —— 本段是函数生成的，不应再与实测脱节。",
   "scope": {
-    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 123",
+    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 131（本次实测）",
     "excluded": "eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到；由专属 runner 执行，单独记录在 dedicatedUnits 段，不进任何分层与分母",
-    "dedicatedDecision": "设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，混入分母会让通过率变成不可计算的量（118/123 是有效指标，118/152 不是）。附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。"
+    "dedicatedDecision": "设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，混入分母会让通过率变成不可计算的量（126/131 是有效指标，126/160 不是）。附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。"
   },
   "summary": {
     "totalUnits": 131,
-    "passCount": 124,
-    "failCount": 7,
+    "passCount": 126,
+    "failCount": 5,
     "skipCount": 0,
     "fileCount": 36,
     "unitsPerFile": {
@@ -286,7 +286,7 @@
       "plugin": "agint-diagnosis",
       "domain": "diagnosis",
       "kind": "integration",
-      "lastKnownStatus": "FAIL",
+      "lastKnownStatus": "PASS",
       "failCategory": null,
       "negativeControl": false,
       "contentHash": "sha256:a25dbf94f13d728e5dec32e78556b4393712ce3a7e87f79d7d223463d59cc51d",
@@ -371,7 +371,7 @@
       "plugin": "agint-event-bus",
       "domain": "event-bus",
       "kind": "integration",
-      "lastKnownStatus": "FAIL",
+      "lastKnownStatus": "PASS",
       "failCategory": null,
       "negativeControl": false,
       "contentHash": "sha256:2de81b6bfa8e842be0fcfd53137eb920d5abb1e00adaf70e25f167c2e7d9f6cb",
@@ -2333,13 +2333,11 @@
     ],
     "frozenCount": 4,
     "frozenAggregateHash": "sha256:a2a7fd9ff4174a81a67e7ba0a76f1d1383c45a9f879b9486b3d4f02d095e08ab",
-    "failCount": 7,
-    "h1EvolutionMinFail": 5,
-    "h3FrozenFailProbeCap": 2,
-    "criteriaOk": false,
-    "criteriaErrors": [
-      "H1 违例：Evolution 只保留 2 个存量 fail，下限 5（= ⌈0.6 × 7⌉）。进化集看不见足够的失败样本 ⇒ 学不到东西。"
-    ],
+    "failCount": 2,
+    "h1EvolutionMinFail": 2,
+    "h3FrozenFailProbeCap": 0,
+    "criteriaOk": true,
+    "criteriaErrors": [],
     "criteriaSkipped": [],
     "statusKnown": true
   },
@@ -2849,8 +2847,6 @@
     "phase0Role": "只提供清单基础设施，不做归因（设计 §6.3）",
     "failCategoryValues": "null = 未归因。禁止用占位值填充。",
     "pendingUnits": [
-      "service-annotations-table-full-throws",
-      "s12-05-policy-policy-deployed-rolledback-shadow",
       "stats-reports-counts-and-limits",
       "policy-decide-clean-results-pending-or-deploy",
       "rules-ask-hit-but-deny-also-matches",
@@ -2864,11 +2860,11 @@
     "claimedFail": 12,
     "claimSource": "Sprint12-设计稿 .md:159 / AGINT‐智进.md:9 / 路线图.md:188",
     "measuredTotal": 131,
-    "measuredPass": 124,
-    "measuredFail": 7,
+    "measuredPass": 126,
+    "measuredFail": 5,
     "delta": 27,
-    "deltaExplanation": "实测 131 vs 声称 104，差 +27。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 124 vs 声称 92（+32）；\nFAIL：实测 7 vs 声称 12（-5）。\n⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
-    "driverSummaryLine": "124 passed, 7 failed, 0 skipped (of 131)",
+    "deltaExplanation": "实测 131 vs 声称 104，差 +27。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n  5. 2026-10-04 de500af 新增 agint-rules-ask-advisory（8 单元，含 3 个负控制），123 → 131。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 131（本次实测）。\n⚠️ 若 131 与上一行第 5 步的终点不符，说明又有场景增减 —— 请重跑生成器让本段与 unitScope / scope.included 同步刷新（它们已函数化，不再手写）。\nPASS：实测 126 vs 声称 92（+34）；\nFAIL：实测 5 vs 声称 12（-7）。\n⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
+    "driverSummaryLine": "126 passed, 5 failed, 0 skipped (of 131)",
     "failSetReconciliation": {
       "method": "1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。\n2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。\n3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。\n4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。",
       "confirmed": {
@@ -2877,22 +2873,57 @@
         "addedUnits": 21,
         "addedNote": "123 − 102 = 21 个新增具名单元（总数差 +19 = 21 新增 − 2 个 dedicated 文件移出扫描范围）。",
         "currentlyFailingThatExistedThen": [
-          "cron-default-jobs-registered",
-          "service-annotations-table-full-throws",
           "policy-decide-clean-results-pending-or-deploy",
-          "sprint6-cron-job-prompt-static-check-registered",
-          "stats-reports-counts-and-limits"
+          "stats-reports-counts-and-limits",
+          "rules-ask-hit-but-deny-also-matches",
+          "rules-tier-negctl-no-deny-but-expect-deny",
+          "rules-advisory-negctl-also-blocked"
         ],
-        "currentlyFailingThatAreNew": [
-          "s12-05-policy-policy-deployed-rolledback-shadow"
-        ],
-        "newFailNote": "该单元 2026-08-29 才随 Sprint 12 的 event-bus 系列新增，不可能是旧 12 fail 之一。",
+        "currentlyFailingThatAreNew": [],
+        "newFailNote": "2026-10-04 起为空：s12-05-policy-policy-deployed-rolledback-shadow 已修（ASSERT_DRIFT，测法错而非行为错），移入「已修」段 currentlyFixedOn20261004。",
+        "currentlyFixedOn20261004": {
+          "note": "这 3 个单元在 2026-10-04 之前一直是 FAIL，2026-10-04 修夹具/测法后转 PASS。**都不是产品缺陷被修好，而是「假 fail」被揭穿** —— 判据一直是对的，被污染的是夹具。",
+          "items": [
+            {
+              "unitId": "service-annotations-table-full-throws",
+              "class": "HARNESS_GAP",
+              "rootCause": "driver.js 与 run-diagnosis-eval.mjs 的 fake storage table 只提供 entries()/put()，**缺 size getter**；而插件表满守门读 `t.size >= LIMITS.ANNOTATIONS` (plugins/agint-diagnosis/lib/index.js:233) ⇒ undefined >= 200 恒 false ⇒ 守门永不触发。",
+              "fix": "两处 fake table 按 @deepseek-ai/dsh-storage-domain 的 KvTableImpl 契约补齐 get/entries/keys/size/put/delete/update，size 读底层 Map.size。",
+              "impact": "「夹具不全 ⇒ 假 fail」比真缺陷更坏：它污染 fail 数，而 fail 数是 H1/H3 配额的唯一输入 ⇒ 配额算错 ⇒ 判据报「进化档样本不足」，把排查引向完全错误的方向。"
+            },
+            {
+              "unitId": "s12-05-policy-policy-deployed-rolledback-shadow",
+              "class": "ASSERT_DRIFT",
+              "rootCause": "断言 `publishDoesNotUseUmbrellaKey = umbrellaKeyCalled === false`，而 umbrellaKeyCalled 测的是「伞键 agint.eventBus 上存不存在 publish」。但伞键是 event-bus 2026-09-24 主动补的**纯加法**能力(plugins/agint-event-bus/lib/index.js:167，注释写明：cordis service store 是扁平的，不补伞键每个消费方都得自己写回退链，漏一处就静默降级) ⇒ 伞键有 publish 是正确行为，断言却把它当缺陷 ⇒ 每跑必红。**被测行为是对的，错的只是这一项的测量方式。**",
+              "fix": "改为两侧计数：代理转发（不改行为）单 service 接口 agint.eventBus.publish 与伞键对象的 publish，断言 policy 走单 service 接口（>0）且不经伞键（===0）。断言本身不删。",
+              "note": "12 项断言里 11 项本来就 true，只有这一项红 —— 这本身就是「测法错而非行为错」的证据。"
+            },
+            {
+              "unitIds": [
+                "cron-default-jobs-registered",
+                "sprint6-cron-job-prompt-static-check-registered"
+              ],
+              "class": "ENV_NOISE",
+              "rootCause": "eval/setup.sh 的 PLUGINS 是硬编码 11 项，仓库实有 34 个带 manifest.json 的插件 ⇒ 漏登记的插件无法解析 zod / dsh-storage-domain ⇒ 其单元在 driver 里**全部**报缺包。更隐蔽的是：仓库里有一个被 git 追踪的坏 symlink plugins/agint-event-bus/node_modules → /home/anmul/projects/AGINT/...（bbf6ff2 误提交，指向另一台机器的绝对路径；.gitignore 拦不住已追踪条目），而旧代码用 `[ -L \"$target\" ] && continue` 判存在 ⇒ 坏链永不被修。",
+              "fix": "PLUGINS 改为扫描 plugins/*/manifest.json 自动发现（34 个全覆盖，新增插件自动生效）；软链存在性判断从 `[ -L ]` 改为 `[ -L ] && [ -e ]`（可达才算存在）并自动清理重建坏链；`git rm --cached` 移除被追踪的坏 symlink。",
+              "impact": "实测 driver 从 91 failed → 37 failed → 6 failed。⚠️ 判据类结论对这类噪音极其敏感：27 个假 fail 会让 H1/H3 配额算错，把「环境没配好」误报成「评估集内容层出问题」。**跑 driver 前必须先跑 eval/setup.sh。**"
+            }
+          ]
+        },
+        "negativeControls": {
+          "note": "负控制 = 故意构造 inputs 让判据变红的夹具。它们在清单里 lastKnownStatus=FAIL 是**正确状态**。⚠️ 这三个正是 2026-10-04 之前 fail 数虚高的主要来源之一（真存量 2 个却被算成 5 个），叠加生成器传参口径错误（failCount 传含负控制的 7）⇒ H1 下限虚高到 ⌈0.6×7⌉=5，而真实可用存量只有 4 个 ⇒ 数学上永不可满足。",
+          "ids": [
+            "rules-ask-hit-but-deny-also-matches",
+            "rules-tier-negctl-no-deny-but-expect-deny",
+            "rules-advisory-negctl-also-blocked"
+          ]
+        },
         "confirmedRegression": {
           "unitId": "stats-reports-counts-and-limits",
           "wasStatus": "PASS",
           "wasSource": "eval/scenarios/inventory.json @ generatedAt 2026-10-02T13:14:01Z（入仓清单实测值）",
           "nowStatus": "FAIL",
-          "nowSource": "2026-10-03 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 117 passed, 6 failed (of 123)",
+          "nowSource": "2026-10-04 实测：node eval/scenarios/driver.js --tier=ALL ⇒ 126 passed, 5 failed (of 131)",
           "detail": "driver 报 `keys_ok=true limits_ok=false`",
           "rootCause": "场景断言 `stats-shape.limitsShape` 写死了 LIMITS 的**全量形状**（3 键：FAILURE_PATTERNS / SUCCESS_TEMPLATES / EVOLUTION_LOG_LINES_PER_DAY）。而 plugins/agint-evolution-memory/lib/schema.js 的 LIMITS 此后新增了 CONTRACT_LOCKS（b1731c3，2026-10-02）与 PREDICTION_OUTCOMES（3d576b6，2026-10-03）⇒ 形状对不上 ⇒ limits_ok=false。**加表即挂**，属既存缺陷，不是本次改动引入。",
           "sceneUnchanged": true,
@@ -2900,7 +2931,7 @@
           "notFixedHere": "本轮**不修**它。改这个断言等于改判据，属 Sprint 17 归因/修复范围，须老板点头；且本 Sprint 的交付是三层隔离。此处只负责把真值写进清单，让回归不再隐形。"
         }
       },
-      "arithmetic": "设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。当前失败的旧单元数 5 = (12 − F) + R ⇒ F = 7 + R。⇒ **至少 7 个旧 fail 已被修复**；另有 R ∈ [0,5] 个旧单元发生回归（无法确定，因名单未留存）。净变化 −6 = −F（修复）+ R（回归）+ 1（新增 s12-05），与 12 → 6 自洽。⚠️ 与 2026-10-02 那版（当时是 12 → 5）相比**变差了 1 个**：stats-reports-counts-and-limits 从 PASS 转 FAIL，根因见 confirmedRegression。⚠️ 它是否属于 R 无法确证：只知道它 2026-10-02 是 PASS，不知道它在 b6a14f7 时点的状态（那 12 个 fail 的名单从未被任何 artifact 记录）。故 R 的下界仍取 0。",
+      "arithmetic": "⚠️ 2026-10-04 起本段只对**真存量 fail** 计数（负控制 3 个单列，见 negativeControls，不计入）。设 F = 旧 12 个 fail 中现已转 PASS 的数量，R = 旧时点存在但当时 PASS、如今回归为 FAIL 的数量。当前失败的旧单元数 2 = (12 − F) + R ⇒ F = 10 + R。⇒ **至少 10 个旧 fail 已被修复**；另有 R ∈ [0,2] 个旧单元发生回归（无法确定，因名单未留存）。⚠️ 这里的 F 比「字面修好的」多：2026-10-04 转 PASS 的 3 个里，**没有一个是产品缺陷被修好** —— 全是「假 fail」被揭穿（夹具缺 size getter / 断言测错对象 / 环境缺依赖链，见 currentlyFixedOn20261004）。判据一直是对的，被污染的是夹具。把它们算进「已修复」会高估工程进展，故在此显式声明。⚠️ stats-reports-counts-and-limits 是当前唯一确认的**真**回归（根因见 confirmedRegression），它是否属于 R 仍无法确证（名单从未留存），故 R 的下界取 0。",
       "candidates": {
         "note": "旧时点即存在、且单元内容此后被改过的只有 5 个。其中 3 个现已 PASS —— 它们是最可能「由 FAIL 转 PASS」的对象（改测试或改代码都可能）。",
         "changedAndNowPass": [
@@ -2908,16 +2939,13 @@
           "sandbox-gate-passes-when-sandbox-ok",
           "sandbox-gate-skipped-when-no-sandbox-service"
         ],
-        "changedAndStillFail": [
-          "cron-default-jobs-registered",
-          "sprint6-cron-job-prompt-static-check-registered"
-        ],
-        "changedAndStillFailNote": "这两个的 expected 列表被改过（随新增 cron job 更新）但仍 FAIL ⇒ 不是「改测试改绿」，是预期仍落后于实况。",
+        "changedAndStillFail": [],
+        "changedAndStillFailNote": "2026-10-04 起为空：原列的 cron-default-jobs-registered 与 sprint6-cron-job-prompt-static-check-registered 已转 PASS —— 不是「改测试改绿」，是 eval/setup.sh 漏登记插件导致它们在缺 zod 链时报缺包失败（ENV_NOISE，见 currentlyFixedOn20261004）。setup.sh 改为自动发现全部插件后恢复正常。",
         "untouchedAndNowPass": 94,
-        "untouchedNote": "其余 97 个旧单元内容从未改动，其中 **94 个现为 PASS**、3 个现为 FAIL（service-annotations-table-full-throws / policy-decide-clean-results-pending-or-deploy / stats-reports-counts-and-limits）⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。⚠️ 2026-10-02 那版写的是 95 个 PASS —— 少掉的这一个正是新确认的回归stats-reports-counts-and-limits（见 confirmedRegression），不是统计口径变了。"
+        "untouchedNote": "其余 97 个旧单元内容从未改动，其中 94 个现为 PASS、2 个现为真存量 FAIL（policy-decide-clean-results-pending-or-deploy / stats-reports-counts-and-limits）⇒ 若旧 fail 在其中，是被 plugin 代码修复（不是靠改测试），属于真正的修复。⚠️ service-annotations-table-full-throws 也曾在此列，但它是 HARNESS_GAP 假 fail，2026-10-04 修夹具后转 PASS ⇒ 不能算「被 plugin 代码修复」，已移出本口径。⚠️ 2026-10-02 那版写的是 95 个 PASS —— 少掉的这一个正是新确认的回归stats-reports-counts-and-limits（见 confirmedRegression），不是统计口径变了。"
       },
-      "irreducible": "⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。",
-      "remediation": "本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。"
+      "irreducible": "⚠️ 无法逐项复原那 12 个 unitId：它们从未被任何 artifact 记录 —— wiki 只有数字 12，仓库无存档的 driver 输出，旧 commit 重跑会被当前 dsh 运行时污染（实测 13/91/104 不可用）。这不是本次对账的疏漏，而是**此前从未持久化 fail 名单**造成的既成事实。⚠️ 2026-10-04 补充：**环境污染值这一类错误有反复发生的倾向**，本轮又中了一次 —— eval/setup.sh 漏登记插件导致 27 个单元因缺依赖链而假 fail（91 → 37 → 6）。⇒ 教训：**任何 driver 数字在采信前必须先确认环境是配好的**（`./eval/setup.sh`），否则 fail 数会被环境噪音抬高，而 fail 数是 H1/H3 配额的唯一输入。",
+      "remediation": "本 inventory.json 入仓后即成为首个持久化的 fail 名单（units[].lastKnownStatus = FAIL 即完整列表，且 attribution.pendingUnits 单独列出）。此后每次生成都留痕，同类失忆不会再发生。⚠️ 2026-10-04 起另加两处留痕：negativeControls（负控制单列，防止日后误当缺陷去「修」）与 currentlyFixedOn20261004（修掉的假 fail 留档，防止环境再坏时无法区分「新问题」与「旧问题复发」）。"
     },
     "measuredBy": "driver.js 全量回归实测",
     "complete": true

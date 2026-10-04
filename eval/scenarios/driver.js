@@ -1034,10 +1034,40 @@ const dispatchers = {
         ctx: {
           storageDomain: {
             open: async () => ({
-              table: (name) => ({
-                entries: () => (name === 'annotations' ? annotationEntries : []),
-                put: async () => undefined,
-              }),
+              // ⛔⛔ 2026-10-04 补齐 Table 契约（service-annotations-table-full-throws 长期 FAIL 的根因）。
+              //
+              // 此前这个 fake 只有 entries() 和 put()，**缺 size getter**。而插件的
+              // 表满守门读的是 `t.size`（plugins/agint-diagnosis/lib/index.js:233
+              // `if (t.size >= LIMITS.ANNOTATIONS) throw`）⇒ undefined >= 200 恒为
+              // false ⇒ 守门永不触发 ⇒ 场景永远等不到抛错 ⇒ 该单元自 Sprint 7 起
+              // 就是**假 fail**（归因器 attribute-eval-fails.mjs 判为 HARNESS_GAP）。
+              //
+              // ⛔ 这类「夹具不全 ⇒ 假 fail」比真缺陷更坏：它污染 fail 数，而 fail 数
+              // 是 H1/H3 配额的唯一输入 ⇒ 配额算错 ⇒ 判据报「进化档样本不足」，
+              // 把排查引向完全错误的方向（本轮真实发生过）。
+              //
+              // 契约基准 = @deepseek-ai/dsh-storage-domain 的 KvTableImpl：
+              //   get(key) / entries() / keys() / get size() / put / delete / update
+              // 这里按同构实现，size 读底层 Map 而非另设计数，避免两处不同步。
+              table: (name) => {
+                const rows = new Map(
+                  (name === 'annotations' ? annotationEntries : []).map((r) => [r.id, r]),
+                );
+                return {
+                  get: (key) => rows.get(key),
+                  entries: () => [...rows.entries()][Symbol.iterator](),
+                  keys: () => [...rows.keys()][Symbol.iterator](),
+                  get size() { return rows.size; },
+                  put: async (key, value) => { rows.set(key, value); },
+                  delete: async (key) => rows.delete(key),
+                  update: async (key, fn) => {
+                    if (!rows.has(key)) throw new Error(`missing-key: ${key}`);
+                    const next = fn(rows.get(key));
+                    rows.set(key, next);
+                    return next;
+                  },
+                };
+              },
               close: async () => undefined,
             }),
           },

@@ -57,10 +57,32 @@ function makeFakeCtx({ failurePatternCount = 0, annotationsCount = 0 } = {}) {
     ctx: {
       storageDomain: {
         open: async () => ({
-          table: (name) => ({
-            entries: () => (name === 'annotations' ? annotationEntries : []),
-            put: async () => undefined,
-          }),
+          // ⛔ 2026-10-04：与 eval/scenarios/driver.js 同步补齐 Table 契约。
+          //   此前此处与 driver 都只有 entries()/put()，缺 size getter，而插件的表满
+          //   守门读 `t.size`（plugins/agint-diagnosis/lib/index.js:233）
+          //   ⇒ undefined >= cap 恒 false ⇒ 守门永不触发 ⇒ 表满场景假 fail。
+          //   两处必须同构：driver 与本 runner 执行同一场景文件，夹具不同步就会出现
+          //   「一条路径 PASS 另一条 FAIL」的自相矛盾，且没人知道该信哪个。
+          //   契约基准 = @deepseek-ai/dsh-storage-domain 的 KvTableImpl。
+          table: (name) => {
+            const rows = new Map(
+              (name === 'annotations' ? annotationEntries : []).map((r) => [r.id, r]),
+            );
+            return {
+              get: (key) => rows.get(key),
+              entries: () => [...rows.entries()][Symbol.iterator](),
+              keys: () => [...rows.keys()][Symbol.iterator](),
+              get size() { return rows.size; },
+              put: async (key, value) => { rows.set(key, value); },
+              delete: async (key) => rows.delete(key),
+              update: async (key, fn) => {
+                if (!rows.has(key)) throw new Error(`missing-key: ${key}`);
+                const next = fn(rows.get(key));
+                rows.set(key, next);
+                return next;
+              },
+            };
+          },
           close: async () => undefined,
         }),
       },
