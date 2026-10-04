@@ -89,10 +89,58 @@ assert.ok(hits.length >= 1, `search("hello") should hit`);
 assert.equal(hits[0].path, 'hello.md', 'top hit should be hello.md');
 console.log(`[smoke] search "hello" → ${hits[0].path}:${hits[0].line} ✓`);
 
+// ── 3b. lint: 「条目自相矛盾」 vs 「作者警告」 must be told apart ──
+// Positive sample: a ⚠️ line sitting in a correction/contradiction context
+//   (two mutually conflicting claims) → must be RED.
+// Negative sample: an author warning line that states no conflict at all —
+//   the exact shape that used to be miscounted as a contradiction —
+//   → must surface in the separate `warnings` bucket, never in `contradictions`.
+// Index sample: the same conflict on README.md → exempt from the verdict.
+await wiki.write(
+  'conflicting.md',
+  '# conflicting\n\n- 本条目认定推理档位固定为 3。\n- ⚠️ 更正：推理档位固定为 1，与上文矛盾。\n',
+);
+await wiki.write(
+  'author-warning.md',
+  '# author-warning\n\n- ⚠️ 排查禁忌：不要用 grep UNSUPPORTED_REASONING_EFFORT 判断是否报错，须结构化解析 data.type。\n',
+);
+await wiki.write(
+  'README.md',
+  `# index\n\n- 本索引认定矛盾判据即 content.includes('⚠️')。\n- ⚠️ 更正：矛盾判据另有口径，与上文矛盾。\n`,
+);
+
+const listWithFixtures = await wiki.list();
 const lintReport = await wiki.lint();
-assert.equal(lintReport.checked, list.length, 'lint.checked should match list length');
+assert.equal(lintReport.checked, listWithFixtures.length, 'lint.checked should match list length');
 assert.equal(lintReport.brokenLinks.length, 0, 'no broken links in fresh fixture');
-console.log(`[smoke] lint: checked=${lintReport.checked} broken=${lintReport.brokenLinks.length} ✓`);
+
+assert.ok(Array.isArray(lintReport.contradictions), 'lint.contradictions must be an array');
+for (const c of lintReport.contradictions) {
+  assert.equal(typeof c.path, 'string', 'each contradiction must carry .path, not a bare filename string');
+  assert.equal(typeof c.line, 'number', 'each contradiction must carry a 1-based .line for review');
+  assert.equal(typeof c.snippet, 'string', 'each contradiction must carry the matched .snippet for review');
+}
+const flagged = lintReport.contradictions.filter((c) => c.path === 'conflicting.md');
+assert.equal(flagged.length, 1, `positive sample must be flagged exactly once, got ${JSON.stringify(lintReport.contradictions)}`);
+assert.ok(flagged[0].snippet.includes('更正'), 'flagged .snippet must be reviewable (should show the conflicting claim)');
+assert.equal(
+  lintReport.contradictions.some((c) => c.path === 'author-warning.md'),
+  false,
+  'an author warning with no conflicting claim must NOT be counted as a contradiction',
+);
+assert.ok(Array.isArray(lintReport.warnings), 'suspected ⚠️ hits must surface in lint.warnings, not be silently dropped');
+assert.ok(
+  lintReport.warnings.some((w) => w.path === 'author-warning.md'),
+  'author-warning.md must be reported as 疑似 (suspected) in lint.warnings',
+);
+assert.equal(
+  lintReport.contradictions.some((c) => c.path === 'README.md'),
+  false,
+  'index page (README.md) must be exempt from the contradiction verdict',
+);
+console.log(
+  `[smoke] lint: checked=${lintReport.checked} broken=${lintReport.brokenLinks.length} contradictions=${lintReport.contradictions.length} warnings=${lintReport.warnings.length} ✓`,
+);
 
 // ── 4. negative case: still rejects path-escape attempts ──
 let escapeBlocked = 0;
