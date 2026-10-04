@@ -83,7 +83,67 @@ function selfRepoCandidate(selfUrl) {
 }
 
 /**
+ * Is `dir` a dsh home root — i.e. does it hold a `storages/` directory?
+ *
+ * Marker is `storages/` (not `profiles/`): every dsh home has it regardless of
+ * whether the bundle entity lives under `profiles/web/plugins` or
+ * `.agint-bundle/plugins`, which is exactly the ambiguity that broke the old
+ * fixed-depth walk (see resolveStoragesHome).
+ *
+ * @param {string} dir
+ * @returns {boolean}
+ */
+export function isDshHome(dir) {
+  try {
+    return statSync(join(dir, 'storages')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 探测 dsh home 根目录 —— 根治「上溯固定级数」假设。
+ *
+ * ⛔ 2026-10-04 bug（部署位 v2 面板三源全 ENOENT，`/home/kylin/storages` 少一层 `.dsh`）：
+ * 旧实现是 `resolve(pluginsDir, '..', '..', '..')` —— 写死「pluginsDir 在
+ * `profiles/web/plugins` 下，故三级正好到 home」。但 bundle 实体自 2026-10-01
+ * 修「AGINT 自毁」起挪到了 `<home>/.agint-bundle/plugins`，同样三级只到
+ * `<home>` 的**同级** ⇒ storagesDir 落到 home 之外 ⇒ 三个源各自 try/catch
+ * 降级成 `state:error`，面板挂「⚠ 数据源降级」横幅。
+ *
+ * 修法：**不猜级数，改为认标**。从 pluginsDir 逐级上溯，每级都验「有没有
+ * storages/」，第一个命中的即 home。这样 home 相对 pluginsDir 的深度是几都无所谓
+ * （profiles/web/plugins → 3 级、.agint-bundle/plugins → 2 级），也不再依赖
+ * 启动时有没有注入 DSH_HOME。
+ *
+ * 顺序刻意「就近优先」：先查 pluginsDir 的各级祖先（含自身），保证嵌套安装
+ * （测试 fixture 里 home 套在另一个目录下）取最近的那层，而不是文件系统根附近
+ * 某个同名 `storages/`。设上限 `maxUp` 防御病态自引用导致的死循环。
+ *
+ * @param {string} pluginsDir
+ * @param {{maxUp?: number}} [opts]
+ * @returns {string|null} home 根；找不到返回 null
+ */
+function resolveStoragesHome(pluginsDir, { maxUp = 12 } = {}) {
+  let cur = resolve(pluginsDir);
+  for (let i = 0; i <= maxUp; i++) {
+    if (isDshHome(cur)) return cur;
+    const up = dirname(cur);
+    if (up === cur) break; // 触到文件系统根仍未命中
+    cur = up;
+  }
+  return null;
+}
+
+/**
  * 解析 v2 需要的三个目录。
+ *
+ * storagesDir 口径（v0.3.1，2026-10-04 修「三源全 ENOENT」）：
+ *  ① DSH_HOME 环境变量（显式注入，最高优先级）
+ *  ② 从自身 pluginsDir 逐级上溯，取第一个确有 `storages/` 的祖先（认标不猜级数，
+ *     对 `.agint-bundle/plugins` 与 `profiles/web/plugins` 两种布局都成立）
+ * ③ 仍推不出 → 给出必不存在的绝对路径：每个源各自 try/catch 降级成
+ *     `{state:'error',reason}`，面板显示「源降级」横幅；绝不因推导失败整页崩。
  *
  * repoPluginsDir 口径（v0.3.0，2026-10-04 修「运行态不在仓库」判据长期unknown）：
  * 三级回退，**全部来自环境变量或自身路径推导，不写死任何机器绝对路径** ——
@@ -107,7 +167,11 @@ export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url) {
     // {state:'error',reason}，面板显示「源降级」横幅；绝不因路径推导失败整页崩。
     pluginsDir = derived ?? resolve(process.cwd(), '__unresolved_plugins__');
   }
-  const dshHome = env.DSH_HOME ?? resolve(pluginsDir, '..', '..', '..');
+  // 认标探测，替代旧的 resolve(pluginsDir,'..','..','..') 固定三级。
+  // 探测失败（无 DSH_HOME 且自路径推不出 home）时保留旧行为：拼一个大概率不存在的
+  // 路径，让三源各自降级成 state:error —— 与「整页崩」相比这是更可取的失败形态。
+  const probedHome = env.DSH_HOME ?? resolveStoragesHome(pluginsDir);
+  const dshHome = probedHome ?? resolve(pluginsDir, '..', '..', '..');
   const selfRepoGuess = selfRepoCandidate(selfUrl);
   const candidates = [
     env.AGINT_HOME ? { source: 'AGINT_HOME', path: join(env.AGINT_HOME, 'plugins') } : null,
@@ -120,6 +184,7 @@ export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url) {
   return {
     pluginsDir,
     storagesDir: join(dshHome, 'storages'),
+    dshHomeSource: env.DSH_HOME ? 'DSH_HOME' : (probedHome ? 'self-probe' : 'fallback'),
     repoPluginsDir: chosen === null ? null : chosen.path,
     repoPluginsSource: chosen === null ? 'unresolved' : chosen.source,
   };

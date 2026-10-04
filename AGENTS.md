@@ -105,6 +105,6 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 
 - **仓库版本**：v0.9.0（VERSION 表首行）
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
-- **preset skills**（8 个）：agint-install-bootstrap-rescue、causal-reasoning、check-soundness、cordis-plugin-development、editing-cordis-compositions、github-push、memory-discipline、plugin-preflight
+- **preset skills**（10 个）：agint-install-bootstrap-rescue、causal-reasoning、check-soundness、cordis-plugin-development、editing-cordis-compositions、github-push、measure-before-quota、memory-discipline、plugin-preflight、three-state-audit
 
 <!-- LOCAL-STATE:END -->

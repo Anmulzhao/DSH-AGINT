@@ -1,5 +1,44 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.3 — 2026-10-04
+
+### storages home 认标探测（修「v2 三源全 ENOENT」，根治不依赖 DSH_HOME）
+
+**为什么**：v2 面板顶部挂「⚠ 数据源降级 — ENOENT … `/home/kylin/storages/xxx`」，
+`agint_tool_stats.jsonl` / `agint_cron.json` / `agint_event_bus.json` 三源同时报错，路径**少一层
+`.dsh`**。真机（Linux）复现：dsh 进程**未注入 `DSH_HOME`**（`/proc/<pid>/environ` 确认），
+于是走 `resolveV2Dirs` 的回退分支 `resolve(pluginsDir,'..','..','..')`——**固定三级**隐含假设
+「pluginsDir 在 `<home>/profiles/web/plugins` 下」。但 bundle 实体自 2026-10-01 修「AGINT 自毁」
+起挪到 `<home>/.agint-bundle/plugins`，同样三级只到 home 的**同级** ⇒ `storagesDir` 落到 home 之外
+⇒ 三源各自 try/catch 降级成 `state:error`。即：**代码里的层级假设与 10-01 的部署位改动脱节**。
+
+**改了什么**：`lib/v2-data.js` 把回退分支从「猜级数」改成「**认标**」——
+
+- 新增 `isDshHome(dir)`（导出）：只看 `storages/` 是不是目录。刻意**不看** `profiles/`，
+  因为两种布局都可能有 profiles。
+- 新增 `resolveStoragesHome(pluginsDir, {maxUp=12})`（内部）：从 pluginsDir **逐级上溯**，
+  每级验一次 `isDshHome`，第一个命中的即 home。就近优先（先查祖先含自身），触到文件系统根
+  或超上限即停（防病态自引用死循环）。
+- `resolveV2Dirs` 返回值新增诊断字段 **`dshHomeSource`**：`DSH_HOME` / `self-probe` / `fallback`。
+- `DSH_HOME` 显式注入仍是最高优先，不被探测绕过；探测全失败时保留旧行为（拼一个大概率不存在的
+  路径），让三源各自降级——**绝不整页 500**。
+
+**效果**：home 相对 pluginsDir 的深度是几都无所谓。`.agint-bundle/plugins`（2 级）与
+`profiles/web/plugins`（3 级）两种布局同时成立，**不再依赖启动时有没有注入 `DSH_HOME`**，
+手敲 `dsh web` 也不会复发。
+
+**测试**：新增 `test/v2-storages-home.test.mjs`（5 组断言）——`isDshHome` 三态；
+**depth=2 与 depth=3 两种布局都解析出同一 home**（核心回归断言）；`DSH_HOME` 优先；
+就近优先（嵌套 home 取内层）；推不出时降级不崩。全量 `node --test "test/*.test.mjs"` **6/6 绿**。
+
+**真机验收**：**故意不注入 `DSH_HOME` 启动**（复现原 bug 场景，`/proc/<pid>/environ` 确认未设置），
+`GET /api/agint-family/v2/data` 返回 `ok:true`，三源均无 `state:error`：
+tools.total=2357 / cron=25 / bus.total=6905。日志 `skipping profile bundle` /
+`failed to import` / `ENOENT` 三查全 0。`install.sh` 装后 35 入口 import 冒烟全通。
+
+**已知无关项**：仓库位跑 `node test/smoke.mjs` 报 `Cannot find package 'zod'` —— zod 只装在部署位
+`~/.agint-bundle/node_modules/zod`（K78 已知形态），`git stash` 对比确认改动前同样失败，非本改动引入。
+
 ## 0.2.2 — 2026-10-04
 
 ### v2 内嵌高度自适应（老板反馈：固定视口高不如 v1 的整页下拉）
