@@ -103,6 +103,8 @@ assert.ok(clientSrc.includes('var(--dsh-frame-top-clearance'), 'honours the wind
 // 0.2.1：v2 默认内嵌在停靠面板里（iframe 走文档相对路径），v1 名册保留可切换
 assert.ok(clientSrc.includes(`const V2_PATH = 'api/agint-family/v2'`), 'v2 路径为文档相对（base-href 纪律）');
 assert.match(clientSrc, /h\('iframe'/, 'v2 视图走 iframe 内嵌');
+assert.match(clientSrc, /contentDocument/, '0.2.2 iframe 自适应内页高度（同源直读）');
+assert.match(clientSrc, /ResizeObserver/, '高度跟随内页变化（ResizeObserver + 轮询兜底）');
 assert.match(clientSrc, /window\.open\(V2_PATH/, '新标签页打开按钮指向 V2_PATH');
 assert.match(clientSrc, /切换到 v1 名册/, 'v1/v2 视图切换按钮就位');
 // syntax check in a child process (the artifact references window)

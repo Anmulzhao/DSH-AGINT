@@ -1,5 +1,23 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.2 — 2026-10-04
+
+### v2 内嵌高度自适应（老板反馈：固定视口高不如 v1 的整页下拉）
+
+**为什么**：0.2.1 iframe 固定 `calc(100vh-190px)`，实测内页内容高 ≈6000px 而视口
+≈900px——面板只显示 1/6，内容在内滚一层，体验割裂。v1 是整页在外层 `.agintfp-root`
+里下拉，老板要同样的效果。
+
+**改了什么**：`lib/client.js` 的 v2 视图加高度自适应——同源直读
+`contentDocument` 的 `scrollHeight` 设进 iframe 高度（load 时 + ResizeObserver
+监听内页 body + 3s 轮询兜异步取数后的高度变化；同源读不到时退回视口高兜底，不抛）。
+内页满高展开、`scrolling=no`，滚动统一归外层面板，与 v1 一致。「刷新」在 v2 模式
+先复位高度再换 cache-buster src。路由与数据层零改动。
+
+**测试**：smoke 静态断言加 `contentDocument`/`ResizeObserver` 两条；全量测试 +
+`node --check` PASS。两槽（`.agint-bundle` + `profiles/web`）同步后 GUI 强刷新
+（不行再 restart_request）。
+
 ## 0.2.1 — 2026-10-04
 
 ### v2 内嵌进停靠面板（老板改令：页面不单独放外面）

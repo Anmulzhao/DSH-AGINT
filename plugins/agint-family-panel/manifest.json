@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "AGINT 家族面板：停靠面板默认内嵌 v2 视图（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定，iframe 走文档相对路由），可切 v1 名册（分组/行状态/信号）。host 半三条回环只读路由：/api/agint-family/status、/v2、/v2/data；数据实时来自源码扫描（L0.5 真源）与 $DSH_HOME/storages 三源，TTL+mtime 缓存。",
   "main": "lib/index.js",
   "agint": {

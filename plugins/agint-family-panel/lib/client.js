@@ -177,6 +177,49 @@ window.__ModuleLoader__.load({
       // 0.2.1：v2 内嵌为默认视图；v1 名册（分组/信号）保留可切换。
       const [view, setView] = React.useState('v2');
       const frameRef = React.useRef(null);
+      const [frameH, setFrameH] = React.useState(0);
+
+      // 0.2.2：v2 iframe 自适应内页高度（同源直读 scrollHeight；跨域或未就绪
+      // 退回视口高兜底）。外层 .agintfp-root 统一滚动，与 v1 的整页下拉一致；
+      // 内页滚到底不再撞在半高窗口里。load 后 3s 轮询兜异步取数引起的高度变化。
+      React.useEffect(() => {
+        if (view !== 'v2') return undefined;
+        const f = frameRef.current;
+        if (!f) return undefined;
+        let ro = null;
+        let poll = null;
+        let alive = true;
+        const sync = () => {
+          if (!alive) return;
+          try {
+            const doc = f.contentDocument;
+            if (!doc || !doc.documentElement) return;
+            const hgt = Math.max(
+              doc.documentElement.scrollHeight,
+              doc.body ? doc.body.scrollHeight : 0,
+            );
+            if (hgt > 120) setFrameH(hgt + 24);
+          } catch { /* 同源读不了：维持兜底高度，不抛 */ }
+        };
+        const onLoad = () => {
+          sync();
+          try {
+            if (typeof ResizeObserver === 'function') {
+              ro = new ResizeObserver(sync);
+              if (f.contentDocument && f.contentDocument.body) ro.observe(f.contentDocument.body);
+            }
+          } catch { /* RO 挂不上就只靠轮询 */ }
+          poll = setInterval(sync, 3000);
+        };
+        f.addEventListener('load', onLoad);
+        sync();
+        return () => {
+          alive = false;
+          if (ro) { try { ro.disconnect(); } catch {} }
+          if (poll) clearInterval(poll);
+          f.removeEventListener('load', onLoad);
+        };
+      }, [view]);
 
       const load = React.useCallback(async () => {
         setLoading(true);
@@ -237,8 +280,11 @@ window.__ModuleLoader__.load({
             ref: frameRef,
             title: 'AGINT 家族 v2 面板（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
             src: V2_PATH,
+            scrolling: frameH > 0 ? 'no' : 'auto',
             style: {
-              display: 'block', width: '100%', height: 'calc(100vh - 190px)', minHeight: 480,
+              display: 'block', width: '100%',
+              height: frameH > 0 ? `${frameH}px` : 'calc(100vh - 190px)',
+              minHeight: 480,
               border: '1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22))', borderRadius: 10,
               background: 'var(--dsw-alias-bg-l1,transparent)',
             },
@@ -291,8 +337,10 @@ window.__ModuleLoader__.load({
           h('button', {
             type: 'button', className: 'agintfp-btn',
             onClick: () => {
-              if (view === 'v2' && frameRef.current) frameRef.current.src = V2_PATH + '?r=' + Date.now();
-              else void load();
+              if (view === 'v2' && frameRef.current) {
+                setFrameH(0);
+                frameRef.current.src = V2_PATH + '?r=' + Date.now();
+              } else void load();
             },
           }, loading && view === 'v1' ? '刷新中…' : '刷新'),
           h('button', {
