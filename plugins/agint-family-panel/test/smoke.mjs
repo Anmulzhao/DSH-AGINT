@@ -100,9 +100,11 @@ assert.ok(clientSrc.includes(`id: 'agint-family-panel'`), 'factory id equals the
 assert.ok(!/\brequire\(['"]@deepseek-ai\/dsh-client-ui-primitives['"]\)/.test(clientSrc), 'imports no Harness client package');
 assert.ok(clientSrc.includes('var(--dsw-alias-'), 'styles through host theme tokens');
 assert.ok(clientSrc.includes('var(--dsh-frame-top-clearance'), 'honours the window-chrome clearance');
-// v0.2.0：v1 停靠面板必须带「打开 v2 全页」入口（新标签页，noopener）
-assert.match(clientSrc, /window\.open\([^)]*\/v2/, 'client.js 有 v2 全页入口');
-assert.match(clientSrc, /打开 v2 全页/, '入口按钮文案就位');
+// 0.2.1：v2 默认内嵌在停靠面板里（iframe 走文档相对路径），v1 名册保留可切换
+assert.ok(clientSrc.includes(`const V2_PATH = 'api/agint-family/v2'`), 'v2 路径为文档相对（base-href 纪律）');
+assert.match(clientSrc, /h\('iframe'/, 'v2 视图走 iframe 内嵌');
+assert.match(clientSrc, /window\.open\(V2_PATH/, '新标签页打开按钮指向 V2_PATH');
+assert.match(clientSrc, /切换到 v1 名册/, 'v1/v2 视图切换按钮就位');
 // syntax check in a child process (the artifact references window)
 execFileSync(process.execPath, ['--check', join(root, 'lib/client.js')], { stdio: 'pipe' });
 

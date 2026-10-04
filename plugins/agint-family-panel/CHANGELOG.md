@@ -1,5 +1,28 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.1 — 2026-10-04
+
+### v2 内嵌进停靠面板（老板改令：页面不单独放外面）
+
+**为什么**：0.2.0 把 v2 做成独立整页 + 停靠面板留链接；老板要求收进「AGINT 家族」
+面板本身。
+
+**改了什么**：
+
+- `lib/client.js`：停靠面板新增视图状态，**默认 v2**——iframe 内嵌 `api/agint-family/v2`
+  （文档相对路径，沿用 base-href 子路径纪律；不用 `data.apiPrefix` 根绝对）。
+  顶栏四个按钮：v2/v1 视图切换、刷新（v2 模式给 iframe 换 cache-buster src，
+  v1 模式重取 /status）、新标签页打开（保留逃生口）、返回会话。
+- v1 名册视图（分组/行状态/通电信号）原样保留，一键可切。
+- kill-switch / 读失败 / 载入中的降级路径对两种视图同时生效（先判 data，再进 v2 分支）。
+- 路由与数据层零改动；`/v2` 与 `/v2/data` 独立可达性不变（iframe 源就是它们）。
+- package/manifest 0.2.1（顺带：manifest 描述改述内嵌形态）。
+
+**测试**：smoke 用例 3 的静态断言改为匹配新实现（V2_PATH 文档相对、iframe 内嵌、
+window.open(V2_PATH)、切换按钮文案）；`node --check` client.js；全量测试 +
+plugin-check 11 维度 + L0 门禁通过。部署：仓库 → `.agint-bundle/plugins` +
+`profiles/web/plugins` 两槽同步 → restart_request（playbook §3.27 纪律）。
+
 ## 0.2.0 — 2026-10-04
 
 ### v2 家族面板上线：整页 + 实时数据端点

@@ -39,6 +39,13 @@ window.__ModuleLoader__.load({
      */
     const API_PATH = 'api/agint-family/status';
 
+    /**
+     * v2 整页的文档相对路径（同 API_PATH 的 base-href 纪律）。0.2.1 起 v2 是
+     * 停靠面板的默认视图（iframe 内嵌），这个路径同时用作内嵌 src 与「新标签页
+     * 打开」的目标；不用 data.apiPrefix 的根绝对路径，防子路径部署逃逸。
+     */
+    const V2_PATH = 'api/agint-family/v2';
+
     /** Auto refresh interval while the panel is mounted. */
     const REFRESH_MS = 60000;
 
@@ -167,6 +174,9 @@ window.__ModuleLoader__.load({
       const [data, setData] = React.useState(null);
       const [error, setError] = React.useState(null);
       const [loading, setLoading] = React.useState(true);
+      // 0.2.1：v2 内嵌为默认视图；v1 名册（分组/信号）保留可切换。
+      const [view, setView] = React.useState('v2');
+      const frameRef = React.useRef(null);
 
       const load = React.useCallback(async () => {
         setLoading(true);
@@ -222,6 +232,18 @@ window.__ModuleLoader__.load({
               'host 半仍在监听，把 agint-family-panel 的 enabled 改回 true 并重启 dsh web 即可恢复。'),
           );
         }
+        if (view === 'v2') {
+          return h('iframe', {
+            ref: frameRef,
+            title: 'AGINT 家族 v2 面板（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
+            src: V2_PATH,
+            style: {
+              display: 'block', width: '100%', height: 'calc(100vh - 190px)', minHeight: 480,
+              border: '1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22))', borderRadius: 10,
+              background: 'var(--dsw-alias-bg-l1,transparent)',
+            },
+          });
+        }
         const counts = data.counts || {};
         return h('div', { style: { display: 'grid', gap: 16 } },
           h('div', { className: 'agintfp-grid' },
@@ -263,13 +285,21 @@ window.__ModuleLoader__.load({
         },
           h('button', {
             type: 'button', className: 'agintfp-btn',
-            title: '在新标签页打开 v2 全页（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
+            title: view === 'v2' ? '切回 v1 名册视图（分组 / 行状态 / 通电信号）' : '切回 v2 面板视图（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
+            onClick: () => setView(view === 'v2' ? 'v1' : 'v2'),
+          }, view === 'v2' ? '切换到 v1 名册' : '切换到 v2 面板'),
+          h('button', {
+            type: 'button', className: 'agintfp-btn',
             onClick: () => {
-              const prefix = (data && data.apiPrefix) || '/api/agint-family';
-              window.open(prefix + '/v2', '_blank', 'noopener');
+              if (view === 'v2' && frameRef.current) frameRef.current.src = V2_PATH + '?r=' + Date.now();
+              else void load();
             },
-          }, '打开 v2 全页'),
-          h('button', { type: 'button', className: 'agintfp-btn', onClick: () => void load(), disabled: loading }, loading ? '刷新中…' : '刷新'),
+          }, loading && view === 'v1' ? '刷新中…' : '刷新'),
+          h('button', {
+            type: 'button', className: 'agintfp-btn',
+            title: '在新标签页打开 v2 整页',
+            onClick: () => window.open(V2_PATH, '_blank', 'noopener'),
+          }, '新标签页打开'),
           h('button', { type: 'button', className: 'agintfp-btn', onClick: back }, '返回会话'),
         ),
         body,
