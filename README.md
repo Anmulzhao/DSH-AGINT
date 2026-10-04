@@ -4,6 +4,8 @@
 
 # AGINT
 
+[English](README.en.md) | 中文
+
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
 **v0.9.0** · 37 个 Cordis 插件 · 4 套 preset · 25 个工具行。实时运行数字见 [`AGENTS.md`](./AGENTS.md) 文末 LOCAL-STATE 块。
