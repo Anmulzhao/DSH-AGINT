@@ -1,14 +1,14 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-04T13:15:53.433Z",
+  "generatedAt": "2026-10-04T13:26:28.596Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
   "driverVersion": "43af364f325d24d59952b2b87cc49ef04512affa",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
-  "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。",
+  "unitScope": "计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。\n权威总数 = 131（driver 口径，本次实测）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— 它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。\ndedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。\n反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 131+29=160；按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。两者不可混用。\n注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。\n⚠️ 数字的权威来源顺序：driver 汇总行 > sidecar（eval/tiers/agint-tiering.json）条目数 > 本段文本。若三者不一致，以 driver 实测为准并**重新生成清单** —— 本段是函数生成的，不应再与实测脱节。",
   "scope": {
-    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 123",
+    "included": "eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 131（本次实测）",
     "excluded": "eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到；由专属 runner 执行，单独记录在 dedicatedUnits 段，不进任何分层与分母",
-    "dedicatedDecision": "设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，混入分母会让通过率变成不可计算的量（118/123 是有效指标，118/152 不是）。附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。"
+    "dedicatedDecision": "设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，混入分母会让通过率变成不可计算的量（126/131 是有效指标，126/160 不是）。附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。"
   },
   "summary": {
     "totalUnits": 131,
@@ -2863,7 +2863,7 @@
     "measuredPass": 126,
     "measuredFail": 5,
     "delta": 27,
-    "deltaExplanation": "实测 131 vs 声称 104，差 +27。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。\nPASS：实测 126 vs 声称 92（+34）；\nFAIL：实测 5 vs 声称 12（-7）。\n⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
+    "deltaExplanation": "实测 131 vs 声称 104，差 +27。\n原因（git 历史实测，非推算）：\n  1. 「92/104」出自 v0.6.5 / Sprint 11 时点（2026-08-28）。实测该时点仓库确为 104 个单元 —— 声称当时是准确的。\n  2. 2026-08-29 Sprint 12 新增 agint-event-bus-s12-02..06 + s12-05-policy 共 6 个文件，单元数 104 → 110。\n  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。\n  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。\n     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。\n  5. 2026-10-04 de500af 新增 agint-rules-ask-advisory（8 单元，含 3 个负控制），123 → 131。\n⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 131（本次实测）。\n⚠️ 若 131 与上一行第 5 步的终点不符，说明又有场景增减 —— 请重跑生成器让本段与 unitScope / scope.included 同步刷新（它们已函数化，不再手写）。\nPASS：实测 126 vs 声称 92（+34）；\nFAIL：实测 5 vs 声称 12（-7）。\n⇒ 12 → 6 的逐项溯源见同文件 failSetReconciliation 段（不等于归因）。⚠️ 2026-10-03 实测为 6（不是 5）：多出的一个是新确认的回归 stats-reports-counts-and-limits。\n⚠️ 本脚本只负责报数与留证，不做 fail 归因（设计 §6.3：归因属 Sprint 17）。",
     "driverSummaryLine": "126 passed, 5 failed, 0 skipped (of 131)",
     "failSetReconciliation": {
       "method": "1) 用 git worktree 检出 b6a14f7（92/104 声称时点），静态提取 104 个单元的 scenario 名（其中 102 个具名，另 2 个是当时还在根目录的 dedicated 文件——它们没有 scenario 字段，正对应历史记载的「125 场景 / 2 SKIP」）。\n2) 与当前 driver 口径 123 个单元名做差集，判定「改名 / 删除 / 新增」。\n3) 对旧时点即存在的单元，逐个比对单元 JSON 内容，找出此后被改过的。\n4) 尝试复原 12 个旧 fail 的 unitId：检索 wiki 与仓库全部文档 + git 历史，未发现任何记录过名单的 artifact（只有数字 12）。",

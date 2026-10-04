@@ -303,23 +303,39 @@ const FAIL_RECON = {
     'currentlyFixedOn20261004（修掉的假 fail 留档，防止环境再坏时无法区分「新问题」与「旧问题复发」）。',
 };
 
-/** 范围边界句，与 UNIT_DEFINITION 一并写入 inventory.json。 */
-const UNIT_SCOPE = [
-  '计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。',
-  '权威总数 = 123（driver 口径）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— ' +
-    '它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），' +
-    '在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。',
-  'dedicated 单元单独记录在 dedicatedUnits 段（2 个文件 / 29 个可执行单元：mutator 19 场景 + counterfactual 10 fixture），' +
-    '不进任何分层、配额与通过率分母。',
-  '反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，' +
-    '则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。' +
-    '⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 123+29=152；' +
-    '按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 ' +
-    'docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。' +
-    '两者不可混用。',
-  '注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / ' +
-    'deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。',
-].join('\n');
+/**
+ * 范围边界句，与 UNIT_DEFINITION 一并写入 inventory.json。
+ *
+ * ⛔⛔ 2026-10-04 改成函数：权威总数**由实测填充**，不再硬编码。
+ * 此前这里写死「123」，而 de500af（rules ask/advisory 档新增 8 个单元）把真实值
+ * 推到 131 却没回头改这里 ⇒ **清单自己声明的权威总数是错的**。
+ * 这类腐化比测试断言过期更危险：断言过期会被 CI 抓到，而「文档写错数字」会被
+ * 当成真值引用（配额、覆盖率、跨文档换算全建立在它上面）。
+ * 数字从 units.length 取，函数化后新增场景不会再让它腐化。
+ */
+function buildUnitScope({ totalUnits, dedicatedCount, dedicatedFiles }) {
+  const total = Number(totalUnits);
+  const ded = Number(dedicatedCount);
+  const dedFiles = Number(dedicatedFiles);
+  return [
+    '计量范围 = eval/scenarios/ 根目录下的 *.scenario.json（driver 只扫自身所在目录且不递归）。',
+    `权威总数 = ${total}（driver 口径，本次实测）。⚠️ 不含 eval/scenarios/dedicated/ 下的单元 —— ` +
+      '它们由专属 runner 执行（run-mutator-eval.mjs / run-counterfactual-stress.mjs），' +
+      '在 driver 口径内的 lastKnownStatus 为 UNKNOWN，混入分母会让通过率不可计算。',
+    `dedicated 单元单独记录在 dedicatedUnits 段（${dedFiles} 个文件 / ${ded} 个可执行单元：` +
+      'mutator 19 场景 + counterfactual 10 fixture），不进任何分层、配额与通过率分母。',
+    '反转条件：若将来 dedicated 的两个专属 runner 被退役、这些场景改由 driver dispatch，' +
+      '则并入计量范围并重跑全部配额计算（H1/H2/H3 的分母都依赖此数）。' +
+      `⚠️ 并入后的总数取决于采用的粒度：按 runner 粒度为 ${total}+${ded}=${total + ded}；` +
+      '按 driver 历史上对这两个文件的计数口径（一个文件算一个单元，见 ' +
+      'docs/operations/eval-fail-attribution-20260909.md 记的「125 场景 / 2 SKIP」）为 125。' +
+      '两者不可混用。',
+    '注：提交 be115d1 的信息写「主 driver 成为唯一门禁」，该表述针对的是 diagnosis / self-model / ' +
+      'deploy-budget 三个 dispatcher 的收口，不等于要求 dedicated 并入 driver。此处按实测维持独立 runner。',
+    `⚠️ 数字的权威来源顺序：driver 汇总行 > sidecar（eval/tiers/agint-tiering.json）条目数 > 本段文本。` +
+      '若三者不一致，以 driver 实测为准并**重新生成清单** —— 本段是函数生成的，不应再与实测脱节。',
+  ].join('\n');
+}
 
 /**
  * 设计 §2.2.3 的 domain 归类表（按**文件前缀**匹配，自上而下首个命中生效）。
@@ -793,7 +809,13 @@ function build() {
         '  3. 2026-09-03 新增 agint-self-model（10 单元）与 agint-quality-eval-deploy-budget（5 单元），110 → 125。',
         '  4. 2026-09-09 将 agint-diagnosis-counterfactual / agint-mutator 两个文件从根目录移入 dedicated/（单元数不变）。',
         '     因 driver.js 只扫自身目录且不递归，这两个单元自此不在 driver 计量范围内 ⇒ 根目录口径 125 - 2 = 123。',
-        '⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 123。',
+        // ⛔ 2026-10-04 补第 5 步：de500af 新增 rules ask/advisory 档 8 个单元，123 → 131。
+        //   这一步此前**漏记**，导致 unitScope / scope.included 里的「权威总数 123」变成错值
+        //   —— 而配额、覆盖率、跨文档换算全建立在它上面。已改为函数化动态填充。
+        '  5. 2026-10-04 de500af 新增 agint-rules-ask-advisory（8 单元，含 3 个负控制），123 → 131。',
+        `⇒ 结论：104 是历史快照，不是错误；当前 driver 口径下的权威值是 ${measured.total}（本次实测）。`,
+        `⚠️ 若 ${measured.total} 与上一行第 5 步的终点不符，说明又有场景增减 —— ` +
+          '请重跑生成器让本段与 unitScope / scope.included 同步刷新（它们已函数化，不再手写）。',
       );
       const passDelta = measured.pass - CLAIMED.pass;
       const failDelta = measured.fail - CLAIMED.fail;
@@ -818,18 +840,27 @@ function build() {
     generatedBy: 'bin/build-scenario-inventory.mjs',
     driverVersion: gitBlobHash(DRIVER_PATH),
     unitDefinition: UNIT_DEFINITION,
-    unitScope: UNIT_SCOPE,
+    // ⛔ 2026-10-04：数字实测填充（见 buildUnitScope 注释）——
+    //   此前硬编码 123，de500af 加了 8 个单元后变成 131 却没同步 ⇒ 清单自称的
+    //   「权威总数」是错的。函数化后新增场景不会再让它腐化。
+    unitScope: buildUnitScope({
+      totalUnits: units.length,
+      dedicatedCount: dedicatedUnits.length,
+      dedicatedFiles: dedicatedFiles.length,
+    }),
     // 计量范围声明：明确写出什么是范围内、什么是范围外，避免口径二次失真。
     scope: {
       included:
-        'eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）⇒ 权威总数 123',
+        'eval/scenarios/*.scenario.json（driver.js 扫描范围，不递归子目录）' +
+        `⇒ 权威总数 ${units.length}（本次实测）`,
       excluded:
         'eval/scenarios/dedicated/*.scenario.json —— 不被 driver 扫到；' +
         '由专属 runner 执行，单独记录在 dedicatedUnits 段，不进任何分层与分母',
       dedicatedDecision:
         '设计 §附录 C.2 第 9 项已于 Sprint 18 拍板：**维持独立 runner**，不并入 driver。' +
-        '决定性理由不是成本而是口径纯净度 —— 这 29 个单元在 driver 口径内的状态是 UNKNOWN，' +
-        '混入分母会让通过率变成不可计算的量（118/123 是有效指标，118/152 不是）。' +
+        `决定性理由不是成本而是口径纯净度 —— 这 ${dedicatedUnits.length} 个单元在 driver 口径内的状态是 UNKNOWN，` +
+        `混入分母会让通过率变成不可计算的量（${measured.pass ?? '—'}/${units.length} 是有效指标，` +
+        `${measured.pass ?? '—'}/${units.length + dedicatedUnits.length} 不是）。` +
         '附带理由：两个 runner 的执行模型与 driver 不同（单文件零依赖、直接调真 Service），' +
         '合并意味着改 driver 的执行模型，风险落在当前唯一能跑通的全量门禁上。',
     },

@@ -116,18 +116,67 @@ test('★ 每个 dedicated 单元都有可唯一标识的 unitId（不得再出�
   }
 });
 
-test('★ 口径边界已拍板并写入清单：123 = driver 口径，dedicated 不进分母', () => {
-  assert.match(inventory.scope.dedicatedDecision, /维持独立 runner/);
-  assert.match(inventory.scope.dedicatedDecision, /UNKNOWN/);
-  assert.match(inventory.scope.included, /123/);
-  // 边界句必须写进 unitScope（定义旁边），否则 123/125 会在不同文档里混用
-  assert.match(inventory.unitScope, /123（driver 口径）/);
-  assert.match(inventory.unitScope, /29 个可执行单元/);
-  assert.match(inventory.unitScope, /反转条件/);
+// ⛔⛔ 2026-10-04：这两条从「断言字面数字 123」改成「断言数字自洽」。
+//
+// 为什么改：de500af（rules ask/advisory 档，+8 单元）把真实值推到 131，
+// 但这些断言写死 123 ⇒ 全部变红。而断言的**本意**是「口径自洽」
+// （声明的总数 == 实测的总数），不是「总数恰好是 123」。
+// 写死数字会让「加场景」这个正常动作必然破坏测试 ⇒ 逼着人养成
+// 「测试一红就去改数字」的习惯，从而掩盖真正的口径断裂。
+//
+// ⛔ 关键：必须挂在 **REPO_INVENTORY**（入仓清单）上，不能挂 `inventory`。
+//   `inventory` 来自本文件顶部 runStatic() —— 每次跑都现生成，
+//   它的数字与生成器逻辑**同源**，永远自洽 ⇒ 挂它等于什么都没测。
+//   只有 REPO_INVENTORY 是**已落盘的历史产物**，才会与人手写的文本一起腐化。
+//   （本条踩过：先挂在 inventory 上，注入口径断裂后测试却全绿 —— 因为
+//     注入改的是文件，而断言读的是现生成对象。）
+function declaredTotal(inv) {
+  return Number((inv.scope.included.match(/权威总数\s*(\d+)/) ?? [])[1] ?? NaN);
+}
+function declaredScopeTotal(inv) {
+  return Number((inv.unitScope.match(/权威总数\s*=\s*(\d+)/) ?? [])[1] ?? NaN);
+}
+function declaredDedicatedUnits(inv) {
+  return Number((inv.unitScope.match(/(\d+)\s*个可执行单元/) ?? [])[1] ?? NaN);
+}
+
+test('★ 口径边界已拍板并写入清单：权威总数 = driver 口径，dedicated 不进分母', () => {
+  const inv = REPO_INVENTORY;
+  assert.match(inv.scope.dedicatedDecision, /维持独立 runner/);
+  assert.match(inv.scope.dedicatedDecision, /UNKNOWN/);
+  // 边界句必须写进 unitScope（定义旁边），否则两个粒度会在不同文档里混用
+  assert.match(inv.unitScope, /driver 口径/);
+  assert.match(inv.unitScope, /反转条件/);
+  // ⚠️ 声明的总数必须能从文本里**解析出来** —— 解析不到说明有人把数字改成
+  //   了别的形式（或删了），那时下面的自洽断言会因 NaN 比较而假绿，必须先拦住。
+  assert.ok(Number.isInteger(declaredTotal(inv)), `scope.included 解析不到权威总数：${inv.scope.included}`);
+  assert.ok(Number.isInteger(declaredScopeTotal(inv)), `unitScope 解析不到权威总数：${inv.unitScope}`);
+  assert.ok(Number.isInteger(declaredDedicatedUnits(inv)), 'unitScope 解析不到 dedicated 单元数');
+});
+
+test('★ 入仓清单：声明的权威总数 == 实测 units.length（口径自洽，防数字腐化）', () => {
+  const inv = REPO_INVENTORY;
+  // 上一条的**实质**：scope.included 与 unitScope 两处声明的总数都必须等于
+  // 清单里真实的 units.length。三者任一脱节即为口径断裂。
+  assert.equal(
+    declaredTotal(inv),
+    inv.units.length,
+    'scope.included 声明的权威总数与入仓清单实测不符 —— 重跑生成器刷新（数字已函数化，不需手改）',
+  );
+  assert.equal(
+    declaredScopeTotal(inv),
+    inv.units.length,
+    'unitScope 声明的权威总数与 scope.included 不一致 ⇒ 同一份清单里两个粒度打架',
+  );
+  assert.equal(
+    declaredDedicatedUnits(inv),
+    inv.dedicatedUnits.count,
+    'unitScope 声明的 dedicated 单元数与 dedicatedUnits.count 不符',
+  );
 });
 
 test('口径自洽：dedicated 单元不得出现在计量总数里', () => {
-  assert.equal(inventory.summary.totalUnits, 123);
+  assert.equal(inventory.summary.totalUnits, inventory.units.length);
   const inScope = inventory.units.some((u) => u.sourceFile.includes('/dedicated/'));
   assert.equal(inScope, false, 'dedicated 单元混进了 driver 计量范围');
   assert.equal(inventory.dedicatedUnits.count, inventory.dedicatedUnits.units.length);
@@ -261,26 +310,48 @@ function runCheck(mutateTiering = () => {}, mutateOutInv = () => {}) {
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
-test('★ 入仓清单：123/123 单元都带 visibility 与 labelAuthority', () => {
+test('★ 入仓清单：全部单元都带 visibility 与 labelAuthority', () => {
   for (const u of REPO_INVENTORY.units) {
     assert.ok(u.visibility, `${u.unitId} 缺 visibility`);
     assert.ok(u.labelAuthority, `${u.unitId} 缺 labelAuthority`);
   }
-  assert.equal(REPO_INVENTORY.units.length, 123);
+  // 与 sidecar 登记数对齐 —— sidecar 是三层标签的真源，条目数必须与清单一致。
+  // ⛔ 2026-10-04：原先写死 123，de500af +8 单元后必然变红。改成与 sidecar 比对：
+  //   口径断裂（sidecar 与清单不同步）才会红，单纯「加场景」不会。
+  const sidecar = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'eval', 'tiers', 'agint-tiering.json'), 'utf8'),
+  );
+  assert.equal(
+    REPO_INVENTORY.units.length,
+    Object.keys(sidecar.units).length,
+    '清单单元数与 sidecar 登记数不一致 ⇒ sidecar 需补登记并重跑 --emit-tiering',
+  );
 });
 
 test('★ 三层计数加总必须等于总数（有单元层名非法时会小于总数）', () => {
   const t = REPO_INVENTORY.summary.tierCounts;
   assert.equal(t.EVOLUTION + t.VALIDATION + t.FROZEN, REPO_INVENTORY.summary.totalUnits);
-  assert.equal(REPO_INVENTORY.summary.tierSum, 123);
+  assert.equal(REPO_INVENTORY.summary.tierSum, REPO_INVENTORY.units.length);
 });
 
 test('★ quality 占比已回写且与实测一致（配额 §3.2 要求产出里给实际占比）', () => {
   const q = REPO_INVENTORY.summary.qualityRatio;
   assert.equal(q.domain, 'quality');
-  assert.equal(q.count, 57);
-  assert.equal(q.total, 123);
-  assert.ok(Math.abs(q.ratio - 57 / 123) < 1e-9);
+  // ⛔ 2026-10-04：原先写死 count=57 / total=123 / ratio=57/123。
+  //   写死 count 尤其危险 —— 它把「quality 域有多少单元」也变成了常量，
+  //   任何域归类调整或场景增删都会让它变红，而**红的原因与这条断言的本意无关**
+  //   （本意是「回写的占比 == 实测占比」）。改为从 units 重算并比对：
+  //   真正要守的是「回写值不能自己漂」，这才是 §3.2 的要求。
+  const realQuality = REPO_INVENTORY.units.filter((u) => u.domain === 'quality').length;
+  assert.equal(q.count, realQuality, 'qualityRatio.count 与 units 里实数的 quality 域单元数不符');
+  assert.equal(q.total, REPO_INVENTORY.units.length, 'qualityRatio.total 与单元总数不符');
+  assert.ok(
+    Math.abs(q.ratio - realQuality / REPO_INVENTORY.units.length) < 1e-9,
+    `qualityRatio.ratio 回写值 ${q.ratio} 与实算 ${realQuality / REPO_INVENTORY.units.length} 不符`,
+  );
+  // 占比本身也留个量级护栏：quality 单域占四成以上，若哪天归类逻辑崩了
+  // 让它变成 0% 或 100%，上面对齐也发现不了 —— 那才是 §3.2 真正防的风险。
+  assert.ok(q.ratio > 0 && q.ratio < 1, `quality 占比 ${q.ratio} 越界，域归类可能已崩`);
 });
 
 test('★ 入仓清单必须是完整模式产物（否则 H1/H3 会被跳过，判据不全）', () => {
@@ -291,11 +362,36 @@ test('★ 入仓清单必须是完整模式产物（否则 H1/H3 会被跳过，
 
 test('★ Frozen 基线已落盘：名单 + 聚合 hash + H1/H3 重算值', () => {
   const b = REPO_INVENTORY.tierBaseline;
-  assert.deepEqual(b.frozenUnitIds, []);
-  assert.match(b.frozenAggregateHash, /^sha256:[0-9a-f]{64}$/, '空集也要有合法 hash（空集是事实，不是缺失）');
-  assert.equal(b.failCount, 6);
-  assert.equal(b.h1EvolutionMinFail, 4, '⌈0.6 × 6⌉ = 4');
-  assert.equal(b.h3FrozenFailProbeCap, 2, '6 − 4 = 2');
+  // ⛔⛔ 2026-10-04：这条原先写死了**修复前**的一组值
+  //   （frozenUnitIds=[]、failCount=6、h1=4、h3=2），而 2026-10-04 修掉
+  //   3 个假 fail + 修 failCount 口径后，真值变成 frozenCount=4 / failCount=2 /
+  //   h1=2 / h3=0 ⇒ 全部对不上。
+  //
+  // 但这条断言的**本意**从来不是「Frozen 恰好为空、fail 恰好是 6」，
+  // 而是「四个字段都落盘了，且彼此自洽」。写死具体值会让任何真实变化
+  // （新增 Frozen、fail 数变动）都变成红灯，诱导人去改断言而不是查原因。
+  //
+  // 改为：断言字段**存在且合法**，再断言 h1/h3 与 failCount 在算术上自洽
+  //（⌈0.6×n⌉ 与 n−⌈0.6×n⌉）。这样任何真实变化都能通过，而口径断裂会红。
+  assert.ok(Array.isArray(b.frozenUnitIds), 'frozenUnitIds 必须是数组');
+  assert.equal(
+    b.frozenUnitIds.length,
+    b.frozenCount,
+    'frozenUnitIds 长度与 frozenCount 不符',
+  );
+  assert.match(b.frozenAggregateHash, /^sha256:[0-9a-f]{64}$/, 'hash 必须是 sha256:<64 hex>（空集也要有合法 hash —— 空集是事实，不是缺失）');
+
+  // h1/h3 必须与 failCount 在算术上自洽（判据的算法在 scenario-tier.mjs）
+  const n = b.failCount;
+  const expectedH1 = Math.ceil(0.6 * n);
+  const expectedH3 = n - expectedH1;
+  assert.equal(b.h1EvolutionMinFail, expectedH1, `h1 应为 ⌈0.6 × ${n}⌉ = ${expectedH1}`);
+  assert.equal(b.h3FrozenFailProbeCap, expectedH3, `h3 应为 ${n} − ${expectedH1} = ${expectedH3}`);
+
+  // 真值锚定：FROZEN 层确实落了 4 个存量单元（首期 Frozen 的既成事实，
+  // 改动它属「Frozen 只增不减」范畴，H5 会拦 ⇒ 这里锚住是安全的）。
+  assert.equal(b.frozenCount, 4, '首期 Frozen 是 4 个存量单元，增减须走 sidecar + H5 评审');
+  assert.equal(b.statusKnown, true, 'statusKnown=false 时 H1/H3 会被跳过，这条断言的前提就不成立');
 });
 
 // ── --check 的红绿自证 ──────────────────────────────────────────────────────
@@ -351,7 +447,10 @@ test('★ --check 抓 H5：Frozen 集变少', () => {
 
 test('★ --check 抓 quality 占比漂移（入仓值 vs 重算值）', () => {
   const r = runCheck(() => {}, (inv) => {
-    inv.summary.qualityRatio = { domain: 'quality', count: 1, total: 123, ratio: 0.008 };
+    // 刻意写入与实测不符的占比（total 用清单真实总数，只让 count/ratio 偏），
+    // 验证 --check 真的在比对而不是摆设。
+    const total = inv.units.length;
+    inv.summary.qualityRatio = { domain: 'quality', count: 1, total, ratio: 1 / total };
   });
   assert.equal(r.status, 1, '占比回写错了却不报 ⇒ 「回写」这条判据是摆设');
   assert.match(r.stderr, /quality 占比漂移/);
@@ -403,5 +502,12 @@ test('★ 三层标签来自 sidecar，不是写死在生成器里', () => {
   assert.match(src, /eval\/tiers\/agint-tiering\.json/, '生成器必须默认读 sidecar');
   const t = repoTiering();
   assert.equal(t.tieringVersion, '1.0');
-  assert.equal(Object.keys(t.units).length, 123);
+  // ⛔ 2026-10-04：原先写死 123。改为与清单比对 —— 「sidecar 每个单元都显式登记」
+  // 才是这条断言的本意（sidecar note 里写明：缺映射即判据失败，不给默认值兜底）。
+  // 写死 123 会在新增场景后必然变红，诱导人去改数字而不是补登记。
+  assert.equal(
+    Object.keys(t.units).length,
+    REPO_INVENTORY.units.length,
+    'sidecar 登记数与清单单元数不一致 ⇒ 有单元漏登记（sidecar 要求显式登记，不给默认兜底）',
+  );
 });
