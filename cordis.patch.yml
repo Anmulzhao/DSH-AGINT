@@ -71,9 +71,27 @@
         providerName: codex
 
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
+    #
+    # repoRoot（2026-10-04 补）：三个 job 此前一直在空转，因为拿不到仓库根 ——
+    #   · frozen-anchor（Mon 10:30）**显式抛错**「agint.repoRoot 未配置」（刻意如此：
+    #     「没配」与「没有变更」是两件事，混起来等于入账 job 看着成功其实没干活）
+    #   · evolution-reconcile（Tue 08:00）、spec-index-refresh（每月 1 日）静默 soft-skip
+    # 它们要读的都是**仓库侧**文件：eval/scenarios/inventory.json、
+    # bin/anchor-frozen-set.mjs、docs/specs/INDEX.json（部署位没有这些）。
+    #
+    # 为什么用 `!!js` 而不是写死绝对路径 / 靠装脚本注入：
+    #   · 写死 ⇒ 违反 AGENTS.md:16 红线（机器私有值不入库，两机共用本仓）；
+    #   · 装脚本注入 ⇒ install.sh 的 `cp -f` 整份覆盖会把它静默冲掉
+    #     （evolution-driver 的 repoRoot override 就这么丢过一次，见该段旁红字）。
+    #   `!!js` 由 dsh 在加载时求值（与本文件里 agint-dream / agint-wiki 的 root 同一套做法），
+    #   两机各自算出自己的路径，不入库、不会被覆盖冲掉。
+    #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
+    #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
+    #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
     - id: agint-cron
       name: ./plugins/agint-cron/lib/index.js
-      config: {}
+      config:
+        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
 
     # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
     # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
