@@ -21,6 +21,13 @@
         "agint.diagnosis.report",
         "agint.diagnosis.analyzeFailedSmoke"
       ],
+      "consumes": [
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "agint.memory",
+        "agint.wiki"
+      ],
       "events": [],
       "tools": []
     },

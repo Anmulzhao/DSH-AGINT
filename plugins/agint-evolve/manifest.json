@@ -18,6 +18,16 @@
       "provides": [
         "agint.evolve"
       ],
+      "consumes": [
+        "agint.cron",
+        "agint.eventBus.publish",
+        "agint.inputGateway",
+        "agint.memory",
+        "agint.metrics",
+        "agint.rules",
+        "agint.wiki",
+        "sessionQuery"
+      ],
       "events": [],
       "tools": [
         "evolve_read",

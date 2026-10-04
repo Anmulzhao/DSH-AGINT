@@ -19,6 +19,25 @@
       "provides": [
         "agint.cron"
       ],
+      "consumes": [
+        "agint.aestheticOracle",
+        "agint.curator",
+        "agint.curriculum",
+        "agint.diagnosis.stats",
+        "agint.dream",
+        "agint.evolution",
+        "agint.evolutionDriver",
+        "agint.evolve",
+        "agint.memory",
+        "agint.memoryProvider",
+        "agint.metrics",
+        "agint.promptSDK",
+        "agint.skillAutocreate",
+        "agint.skillGraph",
+        "agint.toolStats",
+        "agint.wiki",
+        "sessionPersistence"
+      ],
       "events": [],
       "tools": [
         "cron_list",

@@ -27,6 +27,13 @@
         "agint.mount.status",
         "agint.mount.rollback"
       ],
+      "consumes": [
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "dshHome",
+        "profilesDir"
+      ],
       "events": [
         "tools/post-execute"
       ],

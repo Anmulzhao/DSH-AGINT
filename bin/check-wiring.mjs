@@ -114,6 +114,17 @@ const provided = new Map(); // name -> [{file,line}]
 const consumed = new Map(); // name -> [{file,line}]
 
 for (const { abs, rel } of allFiles) {
+  // ⛔ provide 侧也必须过滤生产路径（2026-10-04 补）。
+  //
+  // 原来只对**消费侧**调 isProdPath，于是「提供侧」把 test/ 与 fixtures/ 里的
+  // 夹具代码也当成真注册：family-panel 新增扫描器夹具后，check-wiring 一次冒出
+  // 13 条 SHELL_SERVICE(agint.shell.svc / agint.dup.top / agint.inner.svc …)，
+  // 而基线只有 1 条 —— 全是夹具噪音，不是家族退化。
+  //
+  // 为什么以前没炸：family-panel 的旧夹具（test/fixtures/v2-home/…）里没有
+  // ctx.provide，提供侧一直没被污染。判据一放宽就暴露了。
+  // 夹具里的 provide 恰恰最该被排除：它测的是扫描器，不是插件。
+  if (!isProdPath(rel)) continue;
   let src;
   try {
     src = readFileSync(abs, 'utf8');

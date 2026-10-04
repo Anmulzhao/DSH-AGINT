@@ -18,6 +18,14 @@
       "provides": [
         "agint.qualityPolicy"
       ],
+      "consumes": [
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "agint.memory",
+        "agint.quality",
+        "approval"
+      ],
       "events": [],
       "tools": [],
       "optionalInject": [

@@ -19,6 +19,13 @@
       "provides": [
         "agint.dream"
       ],
+      "consumes": [
+        "agents",
+        "agint.eventBus.publish",
+        "agint.evolution",
+        "agint.memory",
+        "subagents"
+      ],
       "events": [],
       "tools": [
         "dream_status",

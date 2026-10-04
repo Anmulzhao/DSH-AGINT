@@ -16,6 +16,17 @@
       "provides": [
         "agint.metrics"
       ],
+      "consumes": [
+        "agint.cron",
+        "agint.eventBus.metricsSnapshot",
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "agint.memory",
+        "agint.rules",
+        "agint.skillAutocreate",
+        "agint.wiki"
+      ],
       "events": [],
       "tools": [],
       "optionalInject": [

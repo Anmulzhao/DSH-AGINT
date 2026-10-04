@@ -28,6 +28,14 @@
         "agint.mutator.dreamRandom",
         "agint.mutator.evolutionReversed"
       ],
+      "consumes": [
+        "agint.dream",
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "agint.qualityPolicy",
+        "agint.qualitySandbox"
+      ],
       "events": [],
       "tools": []
     },
