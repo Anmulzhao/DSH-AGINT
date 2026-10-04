@@ -1,0 +1,11 @@
+{
+  "name": "agint-facade-real",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "facade.real"
+      ]
+    }
+  }
+}

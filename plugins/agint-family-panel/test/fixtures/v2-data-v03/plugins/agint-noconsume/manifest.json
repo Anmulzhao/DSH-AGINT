@@ -1,0 +1,8 @@
+{
+  "name": "agint-noconsume",
+  "spec": {
+    "cordis": {
+      "consumes": []
+    }
+  }
+}

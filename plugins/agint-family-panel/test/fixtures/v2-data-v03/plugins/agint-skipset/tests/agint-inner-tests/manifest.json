@@ -1,0 +1,10 @@
+{
+  "name": "agint-inner-tests",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.inner"
+      ]
+    }
+  }
+}

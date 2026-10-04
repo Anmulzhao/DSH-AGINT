@@ -1,0 +1,11 @@
+{
+  "name": "agint-libskip",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "x"
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "agint-facade",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "facade.stub"
+      ]
+    }
+  }
+}

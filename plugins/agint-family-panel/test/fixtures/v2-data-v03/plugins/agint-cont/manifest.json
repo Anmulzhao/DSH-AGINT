@@ -1,0 +1,11 @@
+{
+  "name": "agint-cont",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.cont"
+      ]
+    }
+  }
+}

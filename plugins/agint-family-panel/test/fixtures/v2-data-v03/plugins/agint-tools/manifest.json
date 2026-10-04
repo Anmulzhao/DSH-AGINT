@@ -1,0 +1,12 @@
+{
+  "name": "agint-tools",
+  "main": "lib/tools.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "t1",
+        "t2"
+      ]
+    }
+  }
+}

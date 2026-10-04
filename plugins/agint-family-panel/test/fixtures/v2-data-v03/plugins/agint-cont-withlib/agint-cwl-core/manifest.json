@@ -1,0 +1,11 @@
+{
+  "name": "agint-cwl-core",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.cwl.core"
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{"ts":1791089425609,"tool":"alpha_do","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1791089425609,"tool":"alpha_do","ok":false,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1790920225609,"tool":"beta_act","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1790920225609,"tool":"beta_act","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1790920225609,"tool":"beta_act","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1790833825609,"tool":"pwsh","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1790833825609,"tool":"pwsh","ok":false,"latencyMs":0,"sessionId":"s","callId":"c"}
+{"ts":1787637025609,"tool":"old_tool","ok":true,"latencyMs":0,"sessionId":"s","callId":"c"}

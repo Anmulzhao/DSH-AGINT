@@ -1,0 +1,14 @@
+{
+  "name": "agint-hostx",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "h.a"
+      ],
+      "provides": [
+        "agint.hostx"
+      ]
+    }
+  }
+}

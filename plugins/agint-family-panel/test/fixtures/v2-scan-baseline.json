@@ -1,12 +1,12 @@
 {
   "generatedFrom": "repo plugins/ (DSH-AGINT)",
-  "generatedAt": "2026-10-03T17:59:51.996Z",
+  "generatedAt": "2026-10-04T13:40:00.000Z",
   "counts": {
-    "code": 104,
-    "comment": 32,
-    "umbrella": 7
+    "code": 173,
+    "comment": 40,
+    "umbrella": 15
   },
-  "providedKeys": 84,
+  "providedKeys": 96,
   "familyDirs": 37,
-  "note": "对账 2026-10-03 效果稿基线 93/24/10：行号漂移 14 条（agint-cron c685975 修表 +10 行、agint-evolution-memory +6 行）；规则差① 注释中的伞键命中改标 comment（+4）；规则差② provide 伞键行不再进 hits（-2）；今日新增代码边（frozen-anchor job 等）。无消失边、无误报边。漂移超容差时人工对账后重新冻结。"
+  "note": "v0.3.0 重冻（2026-10-04，修面板 6 条误报）。上一版 104/32/7 是**扫描器能力不足**下的计数，不是真值；本次三处口径扩张，逐项归因（无消失边、无误报边，均已逐条 grep 回原文核对）：① 嵌套插件目录：quality 家族的 eval/policy/report/sandbox/contract 真身住在 plugins/agint-quality/<name>/lib，此前只扫顶层 lib（顶层 agint-quality 无 lib）⇒ 漏扫 code 37 / comment 3 / umbrella 1，provided 84→96（agint.qualityEvaluator / agint.qualityPolicy / agint.qualityReporter 三个真实提供方此前报「无提供方」）。② 键前缀：不再只认 agint.*，宿主服务键纳入扫描 ⇒ code +22（agents 5 / subagents 4 / sandbox 3 / agentDefaultModel 2 / approval·dshHome·goals·openvikingMemory·profilesDir·sessionPersistence·sessionQuery·skills 各 1）。③ 间接取服务形态：本仓薄包装 const dep = (n) => ctx.get(n)（evolution-driver 6 文件 / mutator softDepOrReturn）此前不算边 ⇒ evolution-driver code 边 0→9，agint.evolve / agint.mutator / agint.population / agint.qualityPolicy 等原本被误判「从未接线 + 文档腐化」的依赖现已被认出。同时排除浏览器半 lib/client.js（其 ctx 是 React props，非 cordis 上下文；否则 layout 被当服务键）。umbrella 7→15 的增量来自嵌套目录里的裸命名空间取键。计数漂移超容差时人工对账后重新冻结。"
 }

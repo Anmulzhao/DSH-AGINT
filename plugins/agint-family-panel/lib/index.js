@@ -36,6 +36,18 @@ import { collectV2Data, resolveV2Dirs } from './v2-data.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
+/**
+ * eventBus 是**软依赖**（v0.3.0，2026-10-04）。
+ *
+ * 为什么要它：家族面板 v2 的「订阅 → 投递对差」判据需要运行态订阅表，而订阅表
+ * 只存在于event-bus 进程内（模块级 Map，deliveries 只进内存 ring），**不落
+ * agint_event_bus.json** ⇒ 面板自己读文件永远给不出这个数。event-bus v0.7.1 起
+ * 提供 agint.eventBus.subscriptions 只读出口，面板经 ctx.get 取。
+ *
+ * ⛔ 不进 inject：event-bus 未挂载 / 旧版本（无该服务）时面板必须照常出数，
+ *   只把该判据降级为 unknown（见 collectSubscriptions 的 catch）。
+ */
+const optionalInject = ['agint.eventBus'];
 
 const require = createRequire(import.meta.url);
 /** 版本号读 package.json（v0.1.1 修复：此前硬编码字面量，永远自报 0.1.0）。 */
@@ -397,6 +409,62 @@ function writeJson(res, status, payload) {
 }
 
 /**
+ * Read the event-bus subscription table through its read-only outlet.
+ *
+ * Why in-process: the subscription table is a module-level `Map` in event-bus and
+ * `deliveries` only lands in the in-memory ring — neither reaches
+ * `agint_event_bus.json`, so no amount of file reading can answer
+ * "subscribed but never delivered". event-bus v0.7.1 exposes it as
+ * `agint.eventBus.subscriptions`; that is the only channel.
+ *
+ * Never throws: a missing/older event-bus, or a service shape we do not
+ * understand, degrades this one verdict to `unknown` with the reason kept. The
+ * panel must not lose the other six verdicts over it.
+ *
+ * `bootAt` is this process's start time — delivery counters reset on restart, so
+ * "0 deliveries" is only ever "0 since boot", never "never".
+ * @param {object} ctx - host context.
+ */
+function collectSubscriptions(ctx) {
+  const bootAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+  try {
+    const bus = ctx.get('agint.eventBus');
+    if (bus === null || bus === undefined) {
+      return { state: 'unavailable', reason: 'event-bus 未挂载（面板未拿到 agint.eventBus）', bootAt };
+    }
+    const read = typeof bus.subscriptions === 'function'
+      ? bus.subscriptions
+      : (typeof bus === 'function' ? bus : null);
+    if (typeof read !== 'function') {
+      return { state: 'unavailable', reason: 'event-bus 版本过旧：无 subscriptions() 出口', bootAt };
+    }
+    const raw = read.call(bus);
+    if (raw === null || raw === undefined || typeof raw !== 'object' || !Array.isArray(raw.entries)) {
+      return { state: 'unavailable', reason: 'subscriptions() 返回结构未知', bootAt };
+    }
+    const entries = raw.entries.map((e) => ({
+      subscriber: String((e && e.subscriber) ?? '?'),
+      mode: (e && e.mode) ?? '?',
+      topics: Array.isArray(e && e.topics) ? e.topics : [],
+      createdAt: (e && e.createdAt) ?? null,
+      deliveries: Number.isFinite(e && e.deliveries) ? e.deliveries : 0,
+      outcomes: (e && typeof e.outcomes === 'object' && e.outcomes !== null) ? e.outcomes : {},
+    }));
+    return {
+      state: 'ok',
+      bootAt,
+      generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : new Date().toISOString(),
+      total: entries.length,
+      syncCount: Number.isFinite(raw.syncCount) ? raw.syncCount : 0,
+      syncGlobalLimit: Number.isFinite(raw.syncGlobalLimit) ? raw.syncGlobalLimit : null,
+      entries,
+    };
+  } catch (err) {
+    return { state: 'error', reason: String((err && err.message) ?? err).slice(0, 160), bootAt };
+  }
+}
+
+/**
  * Mount the panel's host half.
  *
  * ⛔ cordis 契约：config 是 apply 的**第二参数**（不是 ctx.config——那需要
@@ -470,6 +538,7 @@ function apply(ctx, config = {}) {
           return;
         }
         const payload = collectV2Data(resolveV2Dirs());
+        payload.subscriptions = collectSubscriptions(ctx);
         writeJson(res, 200, { ...payload, enabled: true });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
@@ -480,8 +549,8 @@ function apply(ctx, config = {}) {
   ctx.provide('agint.familyPanel', {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
-    /** v2 聚合快照；与 /v2/data 路由同源同缓存。 */
-    v2Data: () => collectV2Data(resolveV2Dirs()),
+    /** v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表）。 */
+    v2Data: () => ({ ...collectV2Data(resolveV2Dirs()), subscriptions: collectSubscriptions(ctx) }),
     /** The prefix the browser half fetches (root-absolute). */
     apiPrefix: API_PREFIX,
     /** Kill-switch: off keeps the route alive but empty. */
@@ -490,4 +559,4 @@ function apply(ctx, config = {}) {
   });
 }
 
-export { Config, apply, inject, name };
+export { Config, apply, inject, name, optionalInject };

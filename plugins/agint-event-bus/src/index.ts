@@ -17,7 +17,7 @@
  *   - 不主动 evaluate self；评估走 agint.qualityEval 跨插件（self-evaluation forbidden）
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
-import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, disposeBus } from './bus.js';
+import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, disposeBus } from './bus.js';
 import { listDeadletters } from './deadletter.js';
 import type { EventEnvelope } from './envelope.js';
 import type { EventBusContext, EventLogEntry, InspectFilter, Handler, PublishResult, Subscription, Unsubscribe } from './types.js';
@@ -116,6 +116,10 @@ function apply(ctx: any, _config: any = {}) {
   ctx.provide('agint.eventBus.deadletters', async () => {
     try { return await listDeadletters(busCtx); } catch { return []; }
   });
+  // 订阅 → 投递对差（评审 3.3 缺口，2026-10-04 补）：只读出口，给家族面板 v2 与
+  // 排障用。此前订阅表是模块级 Map 且无查询接口，该判据只能标 unknown。
+  // ⚠️ 计数只覆盖本进程生命周期（重启清零），面板须照此口径措辞，不得说「从来没有流量」。
+  ctx.provide('agint.eventBus.subscriptions', () => subscriptionsSummary());
   // ── umbrella 键（2026-09-24 补）───────────────────────────────────────────
   // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
   // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方都得
@@ -134,6 +138,7 @@ function apply(ctx: any, _config: any = {}) {
       try { return await listDeadletters(busCtx); } catch { return []; }
     },
     metricsSnapshot: async () => metricsSnapshot(busCtx),
+    subscriptions: () => subscriptionsSummary(),
   });
 
   ctx.provide('agint.eventBus.metricsSnapshot', async () => {

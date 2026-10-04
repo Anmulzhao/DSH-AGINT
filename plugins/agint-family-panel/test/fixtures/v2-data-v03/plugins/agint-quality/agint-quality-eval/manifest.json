@@ -1,0 +1,11 @@
+{
+  "name": "agint-quality-eval",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "agint.q.eval"
+      ]
+    }
+  }
+}

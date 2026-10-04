@@ -321,7 +321,8 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 <script>
 // 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
-    FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[];
+    FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
+    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -331,12 +332,22 @@ if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
   cronUnmapped.innerHTML="—";
   return;
 }
+/** 宿主提供的服务/配置键（非 agint.* 家族）。它们的 provider 在 dsh 宿主里，
+ *  本仓 PROVIDED 表永远查不到 —— 渲染时必须标「宿主」，不能显示「无提供方」。
+ *  证据：这些键在本仓 34 个插件里被 ctx.get 消费，但全仓无对应 ctx.provide。
+ *  ⛔ providerOf 刻意**不**把宿主键折成某个假 provider：那会让 inEdges 把宿主
+ *    当成一个插件，Q1「被谁消费」列出现不存在的行。宿主键在展示层单独处理。 */
+const HOST_KEYS=new Set(["agents","subagents","skills","sandbox","approval","openvikingMemory",
+  "dshHome","profilesDir","sessionQuery","sessionPersistence","agentDefaultModel","goals","layout"]);
+const isHostKey=svc=>!svc.startsWith("agint.")&&HOST_KEYS.has(svc);
 function providerOf(service){
   if(PROVIDED[service]) return PROVIDED[service];
   const parts=service.split(".");
   while(parts.length>2){parts.pop(); if(PROVIDED[parts.join(".")]) return PROVIDED[parts.join(".")];}
   return null;
 }
+/** 展示用 provider 名：宿主键显式标「dsh 宿主」，不伪装成本仓插件。 */
+const providerLabel=svc=>PROVIDED[svc]??(isHostKey(svc)?"dsh 宿主":"（未见 provide）");
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
 const fmtDate=ms=>ms?new Date(ms).toISOString().slice(5,16).replace("T"," "):"—";
 function rel(iso){
@@ -387,7 +398,7 @@ const sumUmbrella=HITS.filter(h=>h[4]==="umbrella").length;
 const noProviderEv=[];
 for(const [pl,g] of Object.entries(byPlugin))
   for(const [svc,evs] of g.code)
-    if(!providerOf(svc)&&svc!=="agint.rules")
+    if(!providerOf(svc)&&svc!=="agint.rules"&&!isHostKey(svc))
       for(const ev of evs) noProviderEv.push({pl,svc,...ev});
 // 按服务反查视图
 const svcView=new Map();
@@ -458,15 +469,43 @@ function failCell(n,f){
 
 // ── Q3 判定 ────────────────────────────────────────────────────────
 ANOM=[];
-for(const [pl,g] of Object.entries(byPlugin))
-  if(g.code.size===0&&g.comment.length>0)
+/* 判据纪律（2026-10-04 修 6 条误报）：
+   ① 「无提供方」只对 agint.* 家族键成立。agents / subagents / skills / sandbox /
+      openvikingMemory / dshHome / profilesDir / sessionQuery / sessionPersistence /
+      agentDefaultModel / goals / approval / layout 是**宿主服务键或宿主配置键**，
+      本仓不可能 provide，拿它们报「无提供方」是定义错误（v2-scan v0.3.0 起纳入扫描）。
+   ② 「从未接线」只在**该服务确实被声明为消费**（manifest consumes）时才成立。
+      quality-static 是 checker：它扫别的插件源码里的字面量 token，自己的 ctx 命中
+      为 0 是职责，不是断线。
+   ③ 「僵尸候选」按插件形态豁免：容器 / 纯函数库 / 纯工具 / SDK / 未挂载 的零产出
+      是结构决定的，不是死代码。面板只列**形态豁免后仍三源全零**的行。
+   判据一律给证据来源，不给「疑似」。 */
+const isFamilyKey=svc=>svc.startsWith("agint.");
+/* 从未接线：**只在 manifest 声明了该服务、而代码里没有可执行 get 时**才成立。
+   ⛔ 早期版本用「code 边为 0 且有注释命中」当判据，会把 14 个正常插件全列进来
+      （它们代码里有大量 code 边，只是注释里也提了别的服务）—— 噪音远大于信号。
+   ⛔ checker 插件（存在 lib/checkers/ 目录，如 quality-static）扫的是别的插件源码里
+      的字面量 token，自己不消费任何服务，code 边为 0 是职责，必须排除。 */
+for(const [pl,g] of Object.entries(byPlugin)){
+  if(g.code.size>0) continue;
+  if((PLUGIN_KINDS[pl]||{}).checker) continue;
+  const decl=MANIFEST_CONSUMES[pl]||[];
+  const unbacked=decl.filter(s=>!g.comment.some(c=>c.svc===s)&&!g.umbrella.some(u=>u.svc===s));
+  const commented=decl.filter(s=>g.comment.some(c=>c.svc===s));
+  if(decl.length===0){
     ANOM.push({v:"从未接线",o:pl,ev:g.comment.map(c=>`${c.file}:${c.line}`).join("、"),
-      note:"代码 0 条可执行 ctx.get，命中全在注释里。文档说了，代码没做（或走了扫描未覆盖的调用形）。"});
+      note:"代码 0 条可执行 get，且 manifest 未声明 consumes。注释里提到的服务无法判定是否为真依赖，需人工确认后补契约或删注释。"});
+  }else if(unbacked.length||commented.length){
+    ANOM.push({v:"从未接线",o:pl,
+      ev:[...commented.map(s=>`${s}(仅注释)`),...unbacked].join("、"),
+      note:`manifest 声明 ${decl.length} 个consumes，其中 ${commented.length} 个仅在注释里出现、${unbacked.length} 个代码与注释皆无。`});
+  }
+}
 const npBySvc={};
-for(const e of noProviderEv) (npBySvc[e.svc]??=[]).push(`${e.pl} ${e.file}:${e.line}`);
+for(const e of noProviderEv) if(isFamilyKey(e.svc)) (npBySvc[e.svc]??=[]).push(`${e.pl} ${e.file}:${e.line}`);
 for(const [svc,evs] of Object.entries(npBySvc))
   ANOM.push({v:"无提供方",o:svc,ev:evs.join("、"),
-    note:"消费方代码在调，本次 provide 扫描未见提供方。仓库 plugins/ 无对应目录 → 部署态与仓库态对差。"});
+    note:"消费方代码在调，本次 provide 扫描未见提供方（含嵌套插件目录）。"});
 const undeclared=[];
 for(const [pl,g] of Object.entries(byPlugin)){
   if(MANIFEST_CONSUMES[pl]) continue;
@@ -482,8 +521,24 @@ for(const [pl,decl] of Object.entries(MANIFEST_CONSUMES)){
   if(missing.length) ANOM.push({v:"文档腐化",o:pl,ev:missing.join("、"),note:"manifest consumes 声明了这些服务，代码扫描（含注释）无对应命中。"});
   if(commentOnly.length) ANOM.push({v:"文档腐化",o:pl,ev:commentOnly.join("、"),note:"声明的服务只在注释里出现，可执行代码未调用。"});
 }
-ANOM.push({v:"无法判定",o:"订阅 → 投递对差",ev:"event-bus 订阅表为模块级 Map，无查询接口（评审 3.3）",
-  note:"「声明无流量 / 隐藏耦合」要 deliveries，当前给不出。标 unknown，不猜。",amber:true});
+/* 订阅 → 投递对差（评审 3.3）：event-bus v0.7.1 起提供 agint.eventBus.subscriptions
+   只读出口（per-subscriber投递计数 + outcomes），本面板不再无条件标unknown。
+   ⚠️ 口径边界照实写：计数只覆盖宿主进程生命周期，重启清零 ⇒ 「0投递」只能读作
+   「自上次重启起未被投递」，不能读作「从来没有流量」。宿主未重启过则该判据仍降级。 */
+const SUBOBS=SUB_SUMMARY;
+if(SUBOBS&&SUBOBS.state==="ok"){
+  const zero=SUBOBS.entries.filter(e=>e.deliveries===0);
+  ANOM.push({v:"订阅 → 投递对差",o:`${SUBOBS.total} 个订阅，其中 ${zero.length} 个零投递`,
+    ev:zero.length?zero.map(e=>`${e.subscriber}(${e.topics.join("/")||"*"})`).join("、"):"无零投递订阅",
+    note:`出口已可用：订阅总数 ${SUBOBS.total}，sync ${SUBOBS.syncCount}/${SUBOBS.syncGlobalLimit}。`
+      +`零投递 = 自上次宿主重启（${rel(SUBOBS.bootAt)}）起未被投递，可能是隐藏耦合或死订阅者，需人工判。`,
+    amber:zero.length>0});
+}else{
+  ANOM.push({v:"无法判定",o:"订阅 → 投递对差",
+    ev:SUBOBS?.reason??"未接入 agint.eventBus.subscriptions",
+    note:"订阅表只在进程内且计数随宿主重启清零；需 event-bus 提供 subscriptions 出口并重启宿主后才可判。不猜。",
+    amber:true});
+}
 if(Array.isArray(REPO_DIRS)){
   const known=new Set([...REPO_DIRS,...FAMILY_DIRS]);
   for(const [src,n] of BUS.sources)
@@ -497,9 +552,29 @@ if(Array.isArray(REPO_DIRS)){
 for(const c of CRON.filter(c=>c.res!=="ok"))
   ANOM.push({v:"cron 结果未读到",o:c.j,ev:`cron_state.${c.j} lastResult="${c.res}" last=${c.last}`,
     note:"上次运行结果不可读或非 ok。",amber:c.res!=="error"});
-const zombies=q2rows.filter(r=>r.n===0&&r.bus===0&&(!r.jobs||r.jobs.length===0));
-ANOM.push({v:"僵尸候选",o:zombies.map(r=>r.pl).slice(0,8).join("、"),ev:"tool_stats 30 天 + bus + cron 三源皆零",
-  note:`共 ${zombies.length} 个插件 30 天零产出（含聚合容器/无主目录，按三态判据复核后再定）。`});
+/* 僵尸候选：先按插件形态豁免，再看三源是否全零。
+   豁免依据来自 v2-data 的 classifyPlugins（读manifest/package.json 的结构事实），
+   不来自人工名单：
+     container  聚合容器（顶层无 lib、子目录才是插件）→ 零产出是结构决定
+     library    纯函数库（main=index.js，被别的插件 import，不挂载）
+     tool-only  纯工具集（main=lib/tools.js，工具名不属agint.* 前缀 ⇒ tool_stats 归属推断不到）
+     sdk        provides 服务但无 tools（被 import 的服务库）
+     unmounted  manifest 在、patch 未挂载（REMOVED）
+   剩余三源全零的行才是真候选。**豁免不等于确认在用**，故仍标 amber 并给出形态。 */
+const ZOMBIE_EXEMPT={container:"聚合容器（子目录才是插件）",library:"纯函数库（被 import，不挂载）",
+  "tool-only":"纯工具集（工具名不属 agint.* 前缀，tool_stats 归属推断不到）",
+  sdk:"服务库（provides 服务、无 tools，产出体现为被消费方调用）",
+  unmounted:"patch 未挂载（REMOVED，目录与代码仍在）",
+  checker:"静态检查器（扫别的插件源码里的 token，不经服务总线）"};
+const zeroRows=q2rows.filter(r=>r.n===0&&r.bus===0&&(!r.jobs||r.jobs.length===0));
+const exemptZ=zeroRows.filter(r=>ZOMBIE_EXEMPT[(PLUGIN_KINDS[r.pl]||{}).kind]);
+const realZ=zeroRows.filter(r=>!ZOMBIE_EXEMPT[(PLUGIN_KINDS[r.pl]||{}).kind]);
+ANOM.push({v:"僵尸候选",o:realZ.length?realZ.map(r=>r.pl).slice(0,8).join("、"):"无",
+  ev:`三源（tool_stats 30 天 + bus + cron）皆零；已按插件形态豁免 ${exemptZ.length} 个`,
+  note:realZ.length
+    ? `${realZ.length} 个插件三源全零且形态为 host/sdk 之外，仍需人工复核后才谈下线。`
+    : `零产出插件全部落在已知形态豁免内（${exemptZ.map(r=>r.pl+"="+ZOMBIE_EXEMPT[(PLUGIN_KINDS[r.pl]||{}).kind]).join("；")||"无"}），无新增下线候选。`,
+  amber:realZ.length===0});
 
 // ── 龄期条 ─────────────────────────────────────────────────────────
 const toolTotal=TOOLS.reduce((s,t)=>s+t.n,0);
@@ -529,16 +604,17 @@ function tagFor(svc,kind){
   if(kind==="comment") return '<span class="tag comment">仅注释</span>';
   if(kind==="umbrella") return '<span class="tag umbrella">伞键不可达</span>';
   if(svc==="agint.rules") return '<span class="tag self">自引用</span>';
-  if(!providerOf(svc)) return '<span class="tag noop">无提供方</span>';
+  if(!providerOf(svc)&&!isHostKey(svc)) return '<span class="tag noop">无提供方</span>';
+  if(isHostKey(svc)) return '<span class="tag comment">宿主服务</span>';
   return '<span class="tag code">代码</span>';
 }
 tbodyQ1.innerHTML=rowsQ1.map((r,i)=>{
   const top=[...r.g.code.keys()].slice(0,4).join("、");
   const more=r.codeN>4?` +${r.codeN-4}`:"";
-  const badge=r.codeN===0?' <span class="tag comment">从未接线</span>':"";
+  const badge=r.codeN===0?((r.commentN>0&&!MANIFEST_CONSUMES[r.pl])?' <span class="tag comment">注释提及</span>':""):"";
   const outRows=[
     ...[...r.g.code.entries()].map(([svc,evs])=>evs.map(ev=>
-      `<tr><td class="ev">${esc(svc)}</td><td class="prov">${esc(providerOf(svc)??"（未见 provide）")}</td><td class="ev">${esc(ev.file)}:${ev.line}</td><td>${tagFor(svc,"code")}</td></tr>`).join("")),
+      `<tr><td class="ev">${esc(svc)}</td><td class="prov">${esc(providerLabel(svc))}</td><td class="ev">${esc(ev.file)}:${ev.line}</td><td>${tagFor(svc,"code")}</td></tr>`).join("")),
     ...r.g.comment.map(c=>`<tr><td class="ev">${esc(c.svc)}</td><td class="prov">—</td><td class="ev">${esc(c.file)}:${c.line}</td><td>${tagFor(c.svc,"comment")}</td></tr>`),
     ...r.g.umbrella.map(u=>`<tr><td class="ev">${esc(u.svc)}</td><td class="prov">—</td><td class="ev">${esc(u.file)}:${u.line}</td><td>${tagFor(u.svc,"umbrella")}</td></tr>`),
   ].join("");
@@ -558,7 +634,7 @@ tbodyQ1.innerHTML=rowsQ1.map((r,i)=>{
 }).join("");
 tbodySvc.innerHTML=svcRows.map((s,i)=>`<tr class="row" tabindex="0" data-g="svc" data-i="${i}">
   <td class="ev" style="color:var(--fg)">${esc(s.svc)}</td>
-  <td class="prov">${esc(s.provider??"（未见 provide）")}</td>
+  <td class="prov">${esc(providerLabel(s.svc))}</td>
   <td class="num">${s.consumers.size}</td>
   <td style="color:var(--fg-2);font-size:12px">${esc([...s.consumers.keys()].slice(0,6).join("、"))}${s.consumers.size>6?` +${s.consumers.size-6}`:""}</td></tr>
   <tr class="detail" id="d-svc-${i}"><td colspan="4"><div class="dcol">
@@ -693,7 +769,7 @@ foot.innerHTML=`数据说明：
 function applyPayload(D){
   SRC_ERRORS=[];
   const bad=(name,blk)=>{ if(blk&&blk.state){ SRC_ERRORS.push(name+"："+blk.reason); return true; } return false; };
-  if(D.scan&&D.scan.hits){ HITS=D.scan.hits; PROVIDED=D.scan.provided; FAMILY_DIRS=D.scan.familyDirs; OBS.scan=D.scan.scannedAt; }
+  if(D.scan&&D.scan.hits){ HITS=D.scan.hits; PROVIDED=D.scan.provided; FAMILY_DIRS=D.scan.familyDirs; UNITS=D.scan.units??[]; OBS.scan=D.scan.scannedAt; }
   else bad("源码扫描",D.scan);
   if(D.tools&&D.tools.rows){ TOOLS=D.tools.rows; TOOL_DAILY=D.tools.daily??{}; OBS.tools=D.tools.observedAt; }
   else bad("tool_stats",D.tools);
@@ -702,6 +778,8 @@ function applyPayload(D){
   if(D.bus&&typeof D.bus.total==="number"){ BUS=D.bus; BUS_DAILY=D.bus.daily??{}; OBS.bus=D.bus.observedAt; }
   else bad("eventBus",D.bus);
   MANIFEST_CONSUMES=D.manifestConsumes??{};
+  PLUGIN_KINDS=D.pluginKinds??{};
+  SUB_SUMMARY=D.subscriptions??null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }

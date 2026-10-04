@@ -1,0 +1,6 @@
+# 家族 patch
+  - id: agint-on
+    name: ./plugins/agint-on/lib/index.js
+  # - id: agint-off
+  #   name: ./plugins/agint-off/lib/index.js
+    - id: agint-nested-on

@@ -200,6 +200,50 @@ export function inspect(filter = {}) {
 export function _subscriptionsSnapshot() {
     return Array.from(subscriptions.values());
 }
+/**
+ * 订阅 → 投递对差（评审 3.3 缺口，2026-10-04 补；与 src/bus.ts 同步维护，K78）。
+ *
+ * 为什么之前给不出：订阅表是模块级 Map（进程内、重启重建），既无对外查询接口，
+ * deliveries 也只进内存 ring 且 events 表 put 不带该字段 ⇒ 存储里无据可查。
+ * 现在 per-subscriber 计数从 ring 的 deliveries 聚合而来，「订阅存在但投递恒 0」
+ * = 隐藏耦合或死订阅者，可直接判。
+ *
+ * ⚠️ 口径边界：计数只覆盖本进程生命周期，重启清零；「0」等价于「自上次重启起
+ * 没被投递过」，不等于「从来没有流量」。
+ */
+export function subscriptionsSummary() {
+    const bySubscriber = new Map();
+    const bump = (name, status) => {
+        const rec = bySubscriber.get(name) ?? { deliveries: 0, outcomes: {} };
+        rec.deliveries += 1;
+        rec.outcomes[status] = (rec.outcomes[status] ?? 0) + 1;
+        bySubscriber.set(name, rec);
+    };
+    for (const entry of ring.snapshot()) {
+        for (const [name, outcome] of Object.entries(entry.deliveries ?? {}))
+            bump(name, outcome);
+    }
+    const entries = [...subscriptions.values()].map((s) => {
+        const stat = bySubscriber.get(s.subscriber) ?? { deliveries: 0, outcomes: {} };
+        return {
+            id: s.id,
+            subscriber: s.subscriber,
+            mode: s.mode,
+            topics: Array.isArray(s.topics) ? [...s.topics] : [],
+            createdAt: s.createdAt,
+            deliveries: stat.deliveries,
+            outcomes: { ...stat.outcomes },
+        };
+    });
+    entries.sort((a, b) => b.deliveries - a.deliveries || a.subscriber.localeCompare(b.subscriber));
+    return {
+        generatedAt: new Date().toISOString(),
+        total: entries.length,
+        syncCount: countSyncSubs(),
+        syncGlobalLimit: SYNC_GLOBAL_LIMIT,
+        entries,
+    };
+}
 /** inspect 聚合（语义糖：summary + filter + sync 计数；A9 尾巴，仪表盘可读） */
 export function inspectSummary(filter = {}) {
     const entries = inspect(filter);

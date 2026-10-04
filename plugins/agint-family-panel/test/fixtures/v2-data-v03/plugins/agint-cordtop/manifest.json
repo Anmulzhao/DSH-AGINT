@@ -1,0 +1,9 @@
+{
+  "name": "agint-cordtop",
+  "main": "lib/svc.js",
+  "cordis": {
+    "provides": [
+      "agint.ct"
+    ]
+  }
+}

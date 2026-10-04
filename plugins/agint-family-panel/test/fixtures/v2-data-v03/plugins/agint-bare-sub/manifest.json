@@ -1,0 +1,11 @@
+{
+  "name": "agint-bare-sub",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.bare"
+      ]
+    }
+  }
+}

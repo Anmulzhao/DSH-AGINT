@@ -1,0 +1,10 @@
+{
+  "name": "agint-inner-schemas",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.inner"
+      ]
+    }
+  }
+}

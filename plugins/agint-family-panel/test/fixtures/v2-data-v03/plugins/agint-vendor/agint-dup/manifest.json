@@ -1,0 +1,11 @@
+{
+  "name": "agint-dup",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "dup.nested"
+      ]
+    }
+  }
+}

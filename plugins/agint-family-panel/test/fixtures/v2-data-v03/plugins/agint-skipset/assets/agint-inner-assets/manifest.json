@@ -1,0 +1,10 @@
+{
+  "name": "agint-inner-assets",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.inner"
+      ]
+    }
+  }
+}

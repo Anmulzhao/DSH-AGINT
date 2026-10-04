@@ -1,0 +1,11 @@
+{
+  "name": "agint-toolmiss",
+  "main": "tools.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "x"
+      ]
+    }
+  }
+}

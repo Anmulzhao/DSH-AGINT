@@ -1,0 +1,11 @@
+{
+  "name": "agint-tooldeep",
+  "main": "lib/tools/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "x"
+      ]
+    }
+  }
+}

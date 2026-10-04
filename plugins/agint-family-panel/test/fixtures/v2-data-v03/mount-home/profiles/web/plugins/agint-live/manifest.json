@@ -1,0 +1,11 @@
+{
+  "name": "agint-live",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "a"
+      ]
+    }
+  }
+}

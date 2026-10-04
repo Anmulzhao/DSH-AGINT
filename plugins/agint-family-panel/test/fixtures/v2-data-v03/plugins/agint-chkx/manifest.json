@@ -1,0 +1,14 @@
+{
+  "name": "agint-chkx",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "c.a"
+      ],
+      "provides": [
+        "agint.chkx"
+      ]
+    }
+  }
+}

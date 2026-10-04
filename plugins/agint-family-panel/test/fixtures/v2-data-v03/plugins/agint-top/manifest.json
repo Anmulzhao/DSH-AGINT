@@ -1,0 +1,10 @@
+{
+  "name": "agint-top",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "top.only"
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "agint-gone",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "b"
+      ]
+    }
+  }
+}

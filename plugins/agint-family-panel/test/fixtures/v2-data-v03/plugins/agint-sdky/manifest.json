@@ -1,0 +1,11 @@
+{
+  "name": "agint-sdky",
+  "main": "lib/svc.js",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.sdky"
+      ]
+    }
+  }
+}

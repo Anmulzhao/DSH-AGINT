@@ -1,0 +1,10 @@
+{
+  "name": "agint-facade-real",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "facade.real"
+      ]
+    }
+  }
+}

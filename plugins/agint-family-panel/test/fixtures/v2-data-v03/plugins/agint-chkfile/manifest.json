@@ -1,0 +1,14 @@
+{
+  "name": "agint-chkfile",
+  "main": "lib/index.js",
+  "spec": {
+    "cordis": {
+      "tools": [
+        "c.b"
+      ],
+      "provides": [
+        "agint.chkfile"
+      ]
+    }
+  }
+}

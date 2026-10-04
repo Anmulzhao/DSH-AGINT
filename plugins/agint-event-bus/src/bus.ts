@@ -233,6 +233,73 @@ export function _subscriptionsSnapshot(): SubscriptionRecord[] {
   return Array.from(subscriptions.values());
 }
 
+/** 一个订阅者的可观测摘要（不含 handler 引用 —— 那是不可序列化的函数）。 */
+export interface SubscriptionSummary {
+  id: string;
+  subscriber: string;
+  mode: 'sync' | 'async';
+  /** 订阅的 topic 列表（通配订阅如实给 ['*']）。 */
+  topics: string[];
+  createdAt: string;
+  /** 本进程生命周期内该订阅者收到的投递次数。 */
+  deliveries: number;
+  /** 其中状态分布：DELIVERED / DEAD_LETTERED / FAILED / PENDING。 */
+  outcomes: Record<string, number>;
+}
+
+/**
+ * 订阅 → 投递对差（评审3.3 缺口，2026-10-04 补）。
+ *
+ * 为什么之前给不出：订阅表是模块级 `Map`（进程内、重启重建），既没有对外查询
+ * 接口，deliveries 也只写进内存ring（capacity 2000）且 events 表 put 不带该字段
+ * ⇒ 「声明无流量 / 隐藏耦合」这类判据在存储里无据可查，只能标 unknown。
+ *
+ * 现在给得出：per-subscriber 计数器在 publish 路径上累加（本函数读它），
+ * 于是「订阅存在但投递恒0」= 隐藏耦合或死订阅者，可直接判。
+ *
+ * ⚠️ 口径边界（不猜）：计数器**只覆盖本进程生命周期**，重启即清零；
+ * 「已投递 0」等价于「自上次重启起没被投递过」，不等于「从来没有流量」。
+ * 跨重启口径要靠 events 表落deliveries，那是另一个改动（会改存储 schema）。
+ */
+export function subscriptionsSummary(): {
+  generatedAt: string;
+  total: number;
+  syncCount: number;
+  syncGlobalLimit: number;
+  entries: SubscriptionSummary[];
+} {
+  const bySubscriber = new Map<string, { deliveries: number; outcomes: Record<string, number> }>();
+  const bump = (name: string, status: string): void => {
+    const rec = bySubscriber.get(name) ?? { deliveries: 0, outcomes: {} };
+    rec.deliveries += 1;
+    rec.outcomes[status] = (rec.outcomes[status] ?? 0) + 1;
+    bySubscriber.set(name, rec);
+  };
+  for (const entry of ring.snapshot()) {
+    for (const [name, outcome] of Object.entries(entry.deliveries ?? {})) bump(name, outcome);
+  }
+  const entries = [...subscriptions.values()].map((s) => {
+    const stat = bySubscriber.get(s.subscriber) ?? { deliveries: 0, outcomes: {} };
+    return {
+      id: s.id,
+      subscriber: s.subscriber,
+      mode: s.mode,
+      topics: Array.isArray(s.topics) ? [...s.topics] : [],
+      createdAt: s.createdAt,
+      deliveries: stat.deliveries,
+      outcomes: { ...stat.outcomes },
+    };
+  });
+  entries.sort((a, b) => b.deliveries - a.deliveries || a.subscriber.localeCompare(b.subscriber));
+  return {
+    generatedAt: new Date().toISOString(),
+    total: entries.length,
+    syncCount: countSyncSubs(),
+    syncGlobalLimit: SYNC_GLOBAL_LIMIT,
+    entries,
+  };
+}
+
 /** inspect 聚合（语义糖：summary + filter + sync 计数；A9 尾巴，仪表盘可读） */
 export function inspectSummary(filter: InspectFilter = {}): {
   entries: EventLogEntry[];

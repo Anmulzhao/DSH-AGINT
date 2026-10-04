@@ -1,0 +1,5 @@
+{
+  "name": "agint-shell",
+  "version": "0.0.0",
+  "note": "扁平空壳：只有 manifest.json，没有 lib/（对齐部署位 profiles/web/plugins/agint-quality-eval）"
+}

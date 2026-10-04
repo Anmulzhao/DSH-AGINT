@@ -1,0 +1,10 @@
+{
+  "name": "agint-dup",
+  "spec": {
+    "cordis": {
+      "consumes": [
+        "dup.top"
+      ]
+    }
+  }
+}

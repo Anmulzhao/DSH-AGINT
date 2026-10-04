@@ -1,0 +1,10 @@
+{
+  "name": "agint-inner-bin",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.inner"
+      ]
+    }
+  }
+}

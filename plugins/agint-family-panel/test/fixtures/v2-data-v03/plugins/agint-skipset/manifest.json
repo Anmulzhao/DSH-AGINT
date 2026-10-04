@@ -1,0 +1,10 @@
+{
+  "name": "agint-skipset",
+  "spec": {
+    "cordis": {
+      "provides": [
+        "agint.skip"
+      ]
+    }
+  }
+}
