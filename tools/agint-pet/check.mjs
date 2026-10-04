@@ -21,6 +21,10 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { encodePng } from './png.mjs'
 import { rasterize, insidePolygon, inAnnulusSector, hexToRgb, MarkTransform } from './raster.mjs'
+// The mascot plugin is what actually calls `setSkin`, so it is the other end
+// of this contract. `announce.js` is a pure module with no imports, so pulling
+// it in here costs nothing and lets this file check BOTH ends.
+import { skinIdForHealth } from '../../plugins/agint-mascot/lib/announce.js'
 import {
   LETTER_A, LOOP_CENTER, LOOP_R_INNER, LOOP_R_OUTER, LOOP_BEHIND, LOOP_SWEEP_DEG,
   MARK_BBOX, COLORS,
@@ -41,6 +45,21 @@ const PHASES = {
 }
 const PHASE_ORDER = ['idle', 'waiting', 'thinking', 'tool', 'review', 'done', 'failed']
 
+// Mirrors build.mjs. The three skin looks carry health through MOTION, not
+// colour: only `failed` is allowed to change palette.
+const SKIN_TRACKS = {
+  'idle-degraded': { frames: 6, ms: 700, turn: [0, 14, 16, 34, 36, 52], loopAlpha: 0.9, tone: 'normal' },
+  'idle-unknown': { frames: 6, ms: 900, turn: [0, 14, 22, 14, 0, -14], loopAlpha: 0.9, tone: 'normal' },
+  'idle-failed': { frames: 1, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault' },
+}
+const SKIN_ORDER = ['idle-degraded', 'idle-unknown', 'idle-failed']
+const SKINS = [
+  { id: 'healthy', label: '健康', idleTrack: 'idle' },
+  { id: 'degraded', label: '亚健康', idleTrack: 'idle-degraded' },
+  { id: 'unknown', label: '未知', idleTrack: 'idle-unknown' },
+  { id: 'failed', label: '故障', idleTrack: 'idle-failed' },
+]
+
 const RGB = {
   normal: { a: hexToRgb(COLORS.A), loop: hexToRgb(COLORS.LOOP) },
   fault: { a: hexToRgb(COLORS.STATE_A), loop: hexToRgb(COLORS.STATE_LOOP) },
@@ -50,10 +69,18 @@ const HIGHLIGHT = hexToRgb('#EAFBFD')
 /** Mirrors build.mjs. Changing one without the other invalidates this file. */
 const DEPTH_DIM = 0.5
 
-function frameState(phase, i, n) {
-  const spec = PHASES[phase]
+const SPEC_BY_TRACK = { ...PHASES, ...SKIN_TRACKS }
+
+function frameState(track, i, n) {
+  const spec = SPEC_BY_TRACK[track]
+  if (spec === undefined) throw new Error(`no such track: ${track}`)
   const p = n <= 1 ? 0 : i / n
-  const turn = spec.turn === 'osc' ? 14 * Math.sin(2 * Math.PI * p) : spec.turn * i
+  let turn
+  if (spec.turn === 'osc') turn = (spec.oscAmp ?? 14) * Math.sin(2 * Math.PI * p)
+  else if (Array.isArray(spec.turn)) {
+    if (spec.turn.length !== n) throw new Error(`track ${track}: ${spec.turn.length} turn angles for ${n} frames`)
+    turn = spec.turn[i]
+  } else turn = spec.turn * i
   const hump = n <= 1 ? 0 : Math.sin(Math.PI * p)
   return {
     turn,
@@ -320,6 +347,126 @@ function main() {
       fail(`weave missing: only ${over} letter pixels are covered by the loop (need ${MIN}) — nothing rides in front`)
     } else {
       console.log(`weave OK: ${behind} loop pixels pass behind the letter, ${over} ride over it (frame 0)`)
+    }
+  }
+
+  // 7. The health skins must be told apart by motion. Colour is one channel
+  //    and `failed` owns it; the other three keep the brand palette and have
+  //    to earn their difference from how the loop moves. If a future edit
+  //    makes two of them move alike, this fails even though every frame is
+  //    still "valid" — which is the whole point.
+  {
+    console.log('\nskin              motion/frame  palette')
+    console.log('-'.repeat(52))
+    const framesOf = { healthy: all.idle }
+    const motion = {}
+    for (const track of SKIN_ORDER) {
+      const n = SKIN_TRACKS[track].frames
+      let m = 0
+      let prev = null
+      framesOf[track] = []
+      for (let i = 0; i < n; i += 1) {
+        const rgba = renderFrame(track, i, n)
+        framesOf[track].push(rgba)
+        if (prev !== null) m += diffCount(prev, rgba)
+        prev = rgba
+      }
+      motion[track] = n <= 1 ? 0 : m / (n - 1)
+      const tone = SKIN_TRACKS[track].tone
+      console.log(`${track.padEnd(16)} ${String(Math.round(motion[track])).padStart(12)}  ${tone}`)
+
+      // The failing look is the only one allowed off-palette.
+      const first = renderFrame(track, 0, n)
+      const wantLoop = tone === 'fault' ? RGB.fault.loop : RGB.normal.loop
+      if (!contains(first, CELL, wantLoop)) fail(`${track}: wrong palette — ${tone} expects a different loop colour`)
+      if (tone === 'normal' && contains(first, CELL, RGB.fault.loop)) fail(`${track}: only the failed look may use the fault palette`)
+    }
+
+    // Reference, measured: the slowest look already approved, `idle` (which is
+    // the healthy skin), changes ~256 px per frame. A skin must be in reach of
+    // that or it is motion nobody sees.
+    const MIN_MOTION = 150
+    for (const track of ['idle-degraded', 'idle-unknown']) {
+      if (motion[track] < MIN_MOTION) {
+        fail(`${track}: only ${Math.round(motion[track])} changed pixels per frame (need ${MIN_MOTION}) — the look does not read as motion`)
+      }
+    }
+
+    // `failed` IS stillness: one frame, nothing moving. If it ever grows a
+    // travelling frame, the worst state stops being the calmest one.
+    if (SKIN_TRACKS['idle-failed'].frames !== 1) {
+      fail(`idle-failed has ${SKIN_TRACKS['idle-failed'].frames} frames — the failed rest must be a single still frame`)
+    } else if (motion['idle-failed'] !== 0) {
+      fail('idle-failed is one frame yet reports motion — stillness is not being held')
+    }
+
+    // No two skins may be one picture wearing two names.
+    //
+    // The test is per-POSE, not per-pair: two tracks that both move will
+    // always have some pair of frames that differs, so comparing the widest
+    // pair proves nothing. A look is a duplicate when EVERY frame of it has a
+    // near-twin in the other look — and that has to hold in BOTH directions,
+    // or a superset with one extra pose would count as "the same".
+    const LOOKS = ['healthy', 'idle-degraded', 'idle-unknown', 'idle-failed']
+    const MIN_POSE_DIFF = 60
+    /** The most "unmatched" frame of `a`, i.e. how far from `b` it can get. */
+    const unmatched = (a, b) => {
+      let worst = 0
+      for (const fa of a) {
+        let best = Infinity
+        for (const fb of b) best = Math.min(best, diffCount(fa, fb))
+        worst = Math.max(worst, best)
+      }
+      return worst
+    }
+    for (let x = 0; x < LOOKS.length; x += 1) {
+      for (let y = x + 1; y < LOOKS.length; y += 1) {
+        const A = framesOf[LOOKS[x]]
+        const B = framesOf[LOOKS[y]]
+        const outward = Math.max(unmatched(A, B), unmatched(B, A))
+        if (unmatched(A, B) < MIN_POSE_DIFF && unmatched(B, A) < MIN_POSE_DIFF) {
+          fail(`${LOOKS[x]} and ${LOOKS[y]} share every pose (worst pose gap ${outward} px) — one of them carries no state`)
+        }
+      }
+    }
+
+    // 8. every skin must point at a track that actually exists and loops, or
+    //    `setSkin` silently falls back and the health channel goes dead.
+    const declared = new Set([...PHASE_ORDER, ...SKIN_ORDER])
+    const ids = new Set()
+    for (const skin of SKINS) {
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skin.id)) fail(`skin id "${skin.id}" is not lowercase kebab`)
+      if (typeof skin.label !== 'string' || skin.label.length === 0) fail(`skin "${skin.id}" has no label`)
+      if (ids.has(skin.id)) fail(`duplicate skin id "${skin.id}"`)
+      ids.add(skin.id)
+      if (!declared.has(skin.idleTrack)) fail(`skin "${skin.id}" points at undeclared track "${skin.idleTrack}"`)
+    }
+
+    // 9. The other half of the same contract. The plugin picks the id, this
+    //    manifest declares it. An id the plugin can emit but this file does not
+    //    declare gets `unknown-skin` back from the host, and the resting look
+    //    silently stays whatever it was — a failure with no sound. So walk
+    //    every verdict shape the plugin can be handed and require each result
+    //    to exist here.
+    const reachable = new Set()
+    for (const verdict of [
+      { tone: 'ok', errorCount: 0 },
+      { tone: 'warn', errorCount: 0 },
+      { tone: 'low', errorCount: 0 },
+      { tone: 'low', errorCount: 2 },
+      null,
+    ]) {
+      reachable.add(skinIdForHealth(verdict))
+    }
+    for (const id of reachable) {
+      if (!ids.has(id)) fail(`the mascot plugin can request skin "${id}", which this manifest does not declare`)
+    }
+    const undeclared = [...reachable].filter((id) => !ids.has(id))
+    if (undeclared.length === 0) {
+      console.log(`skin contract OK: plugin can ask for {${[...reachable].join(', ')}}, manifest declares {${SKINS.map((s) => s.id).join(', ')}}`)
+    } else {
+      // Do not print OK on the same run that just failed the same check.
+      console.error(`skin contract BROKEN: {${undeclared.join(', ')}} requested but not declared`)
     }
   }
 

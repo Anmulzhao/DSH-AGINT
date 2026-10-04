@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { aggregateHealth } from '../lib/health.js';
-import { toAnnouncePayload, clampTtl, KIND, SOURCE } from '../lib/announce.js';
+import { toAnnouncePayload, clampTtl, skinIdForHealth, KIND, SOURCE } from '../lib/announce.js';
 import { collectProbes } from '../lib/index.js';
 
 let passed = 0;
@@ -266,6 +266,69 @@ test('a cron job with no run field counts as never run', async () => {
   const cron = probes.find((p) => p.id === 'cron');
   assert.equal(cron.state, 'warn');
   assert.match(cron.detail, /1 个从未跑过/);
+});
+
+/* ---- resting look (skins) ---- */
+
+test('a green verdict rests as healthy', () => {
+  const h = aggregateHealth([ok('cron'), ok('metrics')]);
+  assert.equal(skinIdForHealth(h), 'healthy');
+});
+
+test('a degraded verdict rests as degraded', () => {
+  const h = aggregateHealth([ok('cron'), { id: 'metrics', state: 'absent' }]);
+  assert.equal(h.tone, 'warn');
+  assert.equal(skinIdForHealth(h), 'degraded');
+});
+
+test('a throwing source rests as failed', () => {
+  const h = aggregateHealth([ok('cron'), { id: 'metrics', state: 'error' }]);
+  assert.equal(skinIdForHealth(h), 'failed');
+});
+
+test('NOTHING READABLE is unknown, not failed', () => {
+  // The load-bearing one. "Nothing could be read" and "something is broken"
+  // are different claims; only the second one is a fault.
+  //
+  // The skin follows the TONE, and the tone is floored by the percentage
+  // (LOW_AT_OR_BELOW = 60, each absent source costs 15). So with the four
+  // production probes, everything unreadable lands on 40 => `low`, and `low`
+  // with nothing throwing is `unknown`. Two absent sources only reach 70, which
+  // really is a degraded system rather than an unknown one.
+  const h = aggregateHealth([]);
+  assert.equal(h.errorCount, 0);
+  assert.equal(skinIdForHealth(h), 'unknown');
+
+  const allAbsent = aggregateHealth([
+    { id: 'cron', state: 'absent' },
+    { id: 'metrics', state: 'absent' },
+    { id: 'selfModel', state: 'absent' },
+    { id: 'plugins', state: 'absent' },
+  ]);
+  assert.equal(allAbsent.tone, 'low');
+  assert.equal(allAbsent.errorCount, 0);
+  assert.equal(skinIdForHealth(allAbsent), 'unknown');
+
+  const twoAbsent = aggregateHealth([ok('cron'), ok('metrics'), { id: 'selfModel', state: 'absent' }, { id: 'plugins', state: 'absent' }]);
+  assert.equal(twoAbsent.tone, 'warn');
+  assert.equal(skinIdForHealth(twoAbsent), 'degraded');
+});
+
+test('a missing verdict is unknown, not a crash', () => {
+  assert.equal(skinIdForHealth(null), 'unknown');
+  assert.equal(skinIdForHealth(undefined), 'unknown');
+});
+
+test('every reachable skin id comes from a fixed set', () => {
+  // If this set and tools/agint-pet's SKINS ever drift, the pet shows a
+  // default look and nobody can tell why. check.mjs asserts the other half of
+  // the same contract: that every id this function can emit is declared.
+  const seen = new Set();
+  for (const state of ['ok', 'warn', 'absent', 'error']) {
+    seen.add(skinIdForHealth(aggregateHealth([{ id: 'cron', state }])));
+  }
+  seen.add(skinIdForHealth(null));
+  assert.deepEqual([...seen].sort(), ['degraded', 'failed', 'healthy', 'unknown']);
 });
 
 console.log(`\n${passed} passed`);

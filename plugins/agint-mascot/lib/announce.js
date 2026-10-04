@@ -74,3 +74,28 @@ export function clampTtl(ms) {
   if (!Number.isFinite(ms)) return TTL_MIN_MS;
   return Math.max(TTL_MIN_MS, Math.min(TTL_MAX_MS, Math.round(ms)));
 }
+
+/**
+ * Pick the resting look (`frames2d.skins` id) for a verdict.
+ *
+ * Health is a STATE, not a sentence: `announce` is what the pet says once,
+ * `setSkin` is how it rests until something changes. So the persistent part of
+ * the verdict rides the skins channel.
+ *
+ * The four ids are declared by the installed pet asset (`pet.json` →
+ * `frames2d.skins`) and are told apart by MOTION first: healthy drifts,
+ * degraded limps, unknown swings without advancing, failed is still. Only
+ * `failed` leaves the brand palette.
+ *
+ * @param {MascotHealth} health
+ * @returns {'healthy' | 'degraded' | 'unknown' | 'failed'}
+ */
+export function skinIdForHealth(health) {
+  if (health === null || health === undefined) return 'unknown';
+  if (health.tone === 'ok') return 'healthy';
+  if (health.tone === 'warn') return 'degraded';
+  // `low` with nothing throwing means nothing could be READ, which is not the
+  // same as something being broken. Reporting it as failed would be a claim
+  // we cannot make.
+  return health.errorCount > 0 ? 'failed' : 'unknown';
+}

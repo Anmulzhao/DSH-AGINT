@@ -118,6 +118,54 @@ const PHASES = {
 const PHASE_ORDER = ['idle', 'waiting', 'thinking', 'tool', 'review', 'done', 'failed']
 
 /* ------------------------------------------------------------------ *
+ * System-health skins
+ * ------------------------------------------------------------------ */
+
+/**
+ * The skins say how AGINT is doing. Health is a STATE, not a moment, so it
+ * rides `ctx.pet.setSkin()` rather than `announce` — an announcement is a
+ * sentence the pet says once; a skin is how it rests until things change.
+ *
+ * The four looks are told apart by MOTION first and colour second. Colour
+ * alone cannot carry state (see the character spec), so three of the four
+ * keep the brand palette and differ only in how the loop moves:
+ *
+ *   healthy   drifts forward at a steady pace (reuses the `idle` track)
+ *   degraded  still goes forward, but it limps: long stalls, then a snatch
+ *   unknown   swings back and forth and NEVER advances; nothing is progressing
+ *   failed    one still frame. Not moving is the message, and it is the only
+ *             look allowed off-palette.
+ *
+ * `turn` may be:
+ *   - a number: degrees per frame
+ *   - 'osc':    a back-and-forth swing of `oscAmp` degrees (default 14)
+ *   - an array: one absolute angle per frame.  Needed when the step PATTERN
+ *               carries the meaning — see `idle-unknown`.
+ *
+ * `ms` may be a number or an array of per-frame dwells. Uneven dwells are how
+ * `idle-degraded` limps without changing how far it travels per frame: the
+ * angle steps stay even, the cadence does not. check.mjs asserts each skin
+ * still moves enough to read, so neither channel can go quietly dead.
+ */
+const SKIN_TRACKS = {
+  'idle-degraded': { frames: 6, ms: 700, turn: [0, 14, 16, 34, 36, 52], loopAlpha: 0.9, tone: 'normal' },
+  'idle-unknown': { frames: 6, ms: 900, turn: [0, 14, 22, 14, 0, -14], loopAlpha: 0.9, tone: 'normal' },
+  'idle-failed': { frames: 1, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault' },
+}
+
+const SKIN_ORDER = ['idle-degraded', 'idle-unknown', 'idle-failed']
+
+const SKINS = [
+  { id: 'healthy', label: '健康', idleTrack: 'idle' },
+  { id: 'degraded', label: '亚健康', idleTrack: 'idle-degraded' },
+  { id: 'unknown', label: '未知', idleTrack: 'idle-unknown' },
+  { id: 'failed', label: '故障', idleTrack: 'idle-failed' },
+]
+
+/** Every rendered track: the seven phases plus the skins that need their own. */
+const TRACK_ORDER = [...PHASE_ORDER, ...SKIN_ORDER]
+
+/* ------------------------------------------------------------------ *
  * Frame state
  * ------------------------------------------------------------------ */
 
@@ -133,14 +181,26 @@ const HIGHLIGHT = hexToRgb('#EAFBFD')
  * The per-frame state of the mark, derived from the phase and the frame index.
  * @param {string} phase @param {number} i @param {number} n
  */
+const SPEC_BY_TRACK = { ...PHASES, ...SKIN_TRACKS }
+
+/**
+ * @param {string} phase - a phase name or a skin track name.
+ * @param {number} i @param {number} n
+ */
 function frameState(phase, i, n) {
-  const spec = PHASES[phase]
+  const spec = SPEC_BY_TRACK[phase]
+  if (spec === undefined) throw new Error(`no such track: ${phase}`)
   const phaseProgress = n <= 1 ? 0 : i / n
 
   let turn
   if (spec.turn === 'osc') {
     // A full sine cycle over the track, so frame n-1 flows into frame 0.
-    turn = 14 * Math.sin(2 * Math.PI * phaseProgress)
+    turn = (spec.oscAmp ?? 14) * Math.sin(2 * Math.PI * phaseProgress)
+  } else if (Array.isArray(spec.turn)) {
+    if (spec.turn.length !== n) {
+      throw new Error(`track ${phase}: ${spec.turn.length} turn angles for ${n} frames`)
+    }
+    turn = spec.turn[i]
   } else {
     turn = spec.turn * i
   }
@@ -316,17 +376,26 @@ export function verifyGeometry() {
  * Manifest
  * ------------------------------------------------------------------ */
 
+/** Per-frame dwell list. A number repeats; an array must cover every frame. */
+function frameMsOf(track, spec) {
+  if (!Array.isArray(spec.ms)) return Array.from({ length: spec.frames }, () => spec.ms)
+  if (spec.ms.length !== spec.frames) {
+    throw new Error(`track ${track}: ${spec.ms.length} dwell values for ${spec.frames} frames`)
+  }
+  return spec.ms.slice()
+}
+
 function buildManifest() {
   const tracks = {}
   const phases = {}
-  for (const phase of PHASE_ORDER) {
-    const spec = PHASES[phase]
-    tracks[phase] = {
+  for (const track of TRACK_ORDER) {
+    const spec = SPEC_BY_TRACK[track]
+    tracks[track] = {
       frames: Array.from({ length: spec.frames }, (_, i) => `${String(i).padStart(3, '0')}.png`),
-      frameMs: Array.from({ length: spec.frames }, () => spec.ms),
+      frameMs: frameMsOf(track, spec),
       loop: true,
     }
-    phases[phase] = phase
+    if (PHASES[track] !== undefined) phases[track] = track
   }
   return {
     petManifestVersion: 2,
@@ -338,6 +407,7 @@ function buildManifest() {
       defaultFrameMs: 200,
       tracks,
       phases,
+      skins: SKINS,
     },
     description:
       '智进（AGINT）的形象：一个字母 A 与自进化回环交织。字母不动，回环绕着它转 —— '
@@ -396,12 +466,12 @@ function main() {
   if (existsSync(framesRoot)) rmSync(framesRoot, { recursive: true })
 
   let total = 0
-  for (const phase of PHASE_ORDER) {
-    const spec = PHASES[phase]
-    const dir = join(framesRoot, phase)
+  for (const track of TRACK_ORDER) {
+    const spec = SPEC_BY_TRACK[track]
+    const dir = join(framesRoot, track)
     mkdirSync(dir, { recursive: true })
     for (let i = 0; i < spec.frames; i += 1) {
-      const png = encodePng(CELL, CELL, renderFrame(phase, i, spec.frames))
+      const png = encodePng(CELL, CELL, renderFrame(track, i, spec.frames))
       writeFileSync(join(dir, `${String(i).padStart(3, '0')}.png`), png)
       total += 1
     }

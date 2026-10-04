@@ -65,6 +65,8 @@ export function registerMascotTools(ctx, api) {
           pollMs: { required: true, type: 'integer' },
           enabled: { required: true, type: 'boolean' },
           lastPush: { required: true, type: 'string' },
+          skin: { required: true, type: 'string' },
+          lastSkinPush: { required: true, type: 'string' },
           sources: { required: true, type: 'array', items: probeSchema },
         },
       },
@@ -73,6 +75,7 @@ export function registerMascotTools(ctx, api) {
         lines.push(`  ${v.headline}（${v.note}）`);
         for (const s of v.sources) lines.push(`  [${s.state}] ${s.id}${s.detail ? ` — ${s.detail}` : ''}`);
         lines.push(`  lastPush=${v.lastPush} pollMs=${v.pollMs}`);
+        lines.push(`  skin=${v.skin} lastSkinPush=${v.lastSkinPush}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },
@@ -88,6 +91,11 @@ export function registerMascotTools(ctx, api) {
         pollMs: api.pollMs(),
         enabled: api.isEnabled(),
         lastPush: api.lastPush().result,
+        // `unset` is a sentinel, not a skin: it means no skin has been pushed
+        // successfully yet. Reporting it as a real id would be a claim the
+        // host has not confirmed.
+        skin: api.currentSkin() ?? 'unset',
+        lastSkinPush: api.lastSkinPush().result,
         sources: health.sources.map((s) => ({ id: s.id, state: s.state, ...(s.detail ? { detail: s.detail } : {}) })),
       };
     },

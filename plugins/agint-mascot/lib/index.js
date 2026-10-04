@@ -36,7 +36,7 @@
  */
 
 import { aggregateHealth } from './health.js';
-import { toAnnouncePayload, clampTtl } from './announce.js';
+import { toAnnouncePayload, clampTtl, skinIdForHealth } from './announce.js';
 import { registerMascotTools } from './tools.js';
 
 const name = 'agint-mascot';
@@ -223,6 +223,8 @@ function apply(ctx, config = {}) {
   let last = null;
   /** Last announce result, for diagnostics. `skipped` is the normal state when no pet is mounted. */
   let lastPush = { at: 0, result: 'not-run' };
+  let lastSkin = null;
+  let lastSkinPush = { at: 0, result: 'not-run' };
   let timer = null;
 
   /**
@@ -255,6 +257,30 @@ function apply(ctx, config = {}) {
     } catch (err) {
       lastPush = { at: Date.now(), result: `throw: ${shortError(err)}` };
     }
+
+    // The resting look. `announce` says it once; the skin holds it until the
+    // verdict changes, so this is only pushed on a change.
+    const wanted = skinIdForHealth(health);
+    if (wanted === lastSkin) return;
+    if (typeof pet.setSkin !== 'function') {
+      // An older pet build without the skins channel. Not a fault of AGINT, and
+      // it must not disturb the announcement we just pushed.
+      lastSkinPush = { at: Date.now(), result: 'no-setSkin' };
+      return;
+    }
+    try {
+      const res = await pet.setSkin(wanted);
+      if (res?.ok === true) {
+        lastSkin = wanted;
+        lastSkinPush = { at: Date.now(), result: `ok:${wanted}` };
+      } else {
+        // e.g. `unknown-skin` from a pet asset that does not declare it. Keep
+        // the previous value so the next tick retries instead of giving up.
+        lastSkinPush = { at: Date.now(), result: `rejected:${wanted}` };
+      }
+    } catch (err) {
+      lastSkinPush = { at: Date.now(), result: `throw: ${shortError(err)}` };
+    }
   }
 
   const tick = () => {
@@ -278,6 +304,8 @@ function apply(ctx, config = {}) {
     status: () => last,
     collect: () => collectProbes(ctx).then((probes) => aggregateHealth(probes)),
     lastPush: () => lastPush,
+    lastSkinPush: () => lastSkinPush,
+    currentSkin: () => lastSkin,
     pollMs: () => pollMs,
     setEnabled: (next) => {
       enabled = next === true;
@@ -299,6 +327,10 @@ function apply(ctx, config = {}) {
     pollMs: () => pollMs,
     /** Outcome of the last push attempt, for diagnostics. */
     lastPush: () => lastPush,
+    /** The resting look currently pushed, or null before the first success. */
+    currentSkin: () => lastSkin,
+    /** Outcome of the last `setSkin` attempt, for diagnostics. */
+    lastSkinPush: () => lastSkinPush,
     setEnabled: (next) => {
       enabled = next === true;
       if (enabled) tick();
