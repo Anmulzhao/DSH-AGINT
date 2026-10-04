@@ -481,7 +481,7 @@ async function main() {
 
   const manifest = {
     petManifestVersion: 2,
-    id: 'agint-zhijin',
+    id: 'agint-pet',
     displayName: '智进',
     version: '0.1.0',
     description: 'AGINT 桌宠。一条不闭合的单笔环形路径 —— 缺口永不闭合，成功不意味着终结。',

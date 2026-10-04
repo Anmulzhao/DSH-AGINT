@@ -909,7 +909,7 @@ frames2d 吃**独立帧文件**，不是图集：
 2. **四皮肤灰度可辨 ✅**。虚线 / 渐隐 / 断开 / 实线四线型在不依赖颜色的情况下可区分，
    满足 §12 验收的蒙色判据。
 3. **上游校验器通过 ✅**。`node scripts/dsh-pet.cjs validate` 输出
-   `valid: agint-zhijin (renderer frames2d)`。
+   `valid: agint-pet (renderer frames2d)`。
 
 **仍测不出：**
 
@@ -930,24 +930,33 @@ frames2d 吃**独立帧文件**，不是图集：
 | 参数表 | ✅ **定稿**（§9.8，含实测修正：r₀ 0.39、Δ=9°、dash 0.35/0.45） |
 | 渲染脚本 | ✅ **已写并跑通**。`tools/zhijin-frames/render.cjs`，sharp 渲染 SVG → 无损 webp |
 | 帧资产 | ✅ **已生成**。10 轨 90 帧（256 与 96 双档）+ `pet.json`，**上游校验器通过** |
-| 安装 | ⏸ **已装后移除**（老板 2026-10-04 21:01 指令删 `agint-zhijin`）。<br>装过、`validate` 通过、随后按指令移出。**帧可随时重装**：`node render.cjs && cp -r dist/agint $DSH_HOME/pets/agint-zhijin` |
+| 安装 | ✅ **已安装**（老板 21:07 定案）。`$DSH_HOME/pets/agint-pet/`，91 文件，安装位复验 `valid: agint-pet` |
 | 真机观感 | ❌ 未验。宿主启动时才扫描 pets 目录，**要老板重启 dsh / 刷新宠物列表后才看得到** |
 
-⚠️ **重名冲突已由老板解决，但解决方式留下一个未闭合的问题。**
+### 9.11.1 安装位定案过程（两度改口，留档）
 
-老板 21:01 指令：**删 `pets/agint-zhijin/`（本版）**，保留 `pets/agint/`（并发会话 20:22 装，44 帧）。
-现在 pets 目录只剩 `agint` 一个，选择器不会重名了。但保留下来的这一版有两个已知缺陷：
+老板对本版的安装位下过两次相反的指令，最终定案如下。**保留过程记录，避免后人看不懂为什么目录名和 id 都叫 `agint-pet`。**
 
-| 项 | `pets/agint`（保留） | 后果 |
+| 时间 | 指令 | 执行 |
 |---|---|---|
-| 描述含「字母 A 与回环交织」 | ❌ 违反 §9.9 许可硬规则① | 老板 10-04 已裁定派生形象算衍生作品，硬规则禁止可识别 A 字形 |
-| `skins` 字段 | **0 个** | 决策 2 的 `setSkin` **无处可切**，系统健康状态通道实际不可用 |
+| 20:49 | 安装 | 装为 `$DSH_HOME/pets/agint-zhijin/`（91 文件，校验通过） |
+| 21:01 | 删 `agint-zhijin`，留并发会话的 `pets/agint` | 移出到 `.trash/`，pets 只剩 `agint` |
+| **21:07** | **反悔：删 `pets/agint`，恢复本版并改名 `agint-pet`** | **定案：pets 只剩 `agint-pet`** |
 
-也就是说：**删掉的那版能跑决策 2，留下的这版跑不了。**
+**改名不是只改目录名。** 实证：`dsh-pet install` 用 `manifest.id` 建目录（`scripts/dsh-pet.cjs:152`），
+registry 也用 pet.json 的 `id` 作索引（`src/registry.ts:457`），schema 要求 `^[a-z0-9][a-z0-9-]*$`。
+⇒ **目录名必须与 `pet.json.id` 一致**，否则重装会建出另一个目录、选择器出现两个条目。
 
-本版（90 帧、4 skins、无字母 A）的源在 `tools/zhijin-frames/`（已 push 远端），
-移除的副本留在 `D:\DSH\2026-10-04-19-07-47\.trash\pets-agint-zhijin-20261004-2101\`，随时可装回。
-**若决策 2 仍要落地，需让 `pets/agint` 补 skins，或重装本版。此项待老板定，本版不擅自动 `pets/agint`。** |
+故本版同步改了两处：`render.cjs:484` 的 `id` 改为 `agint-pet`，安装位 `pet.json.id` 同步。
+`displayName` 仍是「智进」，不变。
+
+**并发会话那版（48 文件）未直删**，移出到 `.trash/pets-agint-concurrent-20261004-2107/`，可还原。
+它的两处已知缺陷记录在此，供老板判断要不要救：
+
+| 项 | 缺陷 |
+|---|---|
+| 描述含「字母 A 与回环交织」 | ❌ 违反 §9.9 许可硬规则①（禁止可识别 A 字形） |
+| `skins` 字段 | 0 个 ⇒ 决策 2 的 `setSkin` 无处可切 |
 
 ## 10. 人格与语气
 
@@ -1257,12 +1266,10 @@ python scan_brand.py D:/DSH/agint-brand-png/agint-icon-1024.png
 3. ~~渲染库没选定~~ → **v0.6 已选定**：sharp（本机 node workspace 已装，SVG → 无损 webp 带 alpha）。Pillow 本机未装、cwebp 不存在。
 4. ~~96 px 描边可辨性没实测~~ → **v0.6 实测通过**，增强 B 疑虑解除（§9.5.1）。
 5. ~~11 套帧资产没生成~~ → **v0.6 已生成**：10 轨 90 帧（healthy 复用 idle），`pet.json` 同步产出，上游校验器通过。
-6. ~~帧资产未安装~~ → **装过、validate 通过、随后按老板 21:01 指令移除**。
-   拷贝留在 `D:\DSH\2026-10-04-19-07-47\.trash\pets-agint-zhijin-20261004-2101\`（91 文件）。
-   源在 `tools/zhijin-frames/`，**一条命令可重装**。当前 pets 目录只剩 `agint`（并发会话版）。
+6. ~~帧资产未安装~~ → **已安装**：`$DSH_HOME/pets/agint-pet/`（91 文件，安装位 `validate` 通过）。
+   定案过程见 §9.11.1（老板两度改口，21:07 定案）。
+   宿主启动时才扫描 pets 目录，**未重启前选择器里看不到**。
 7. **动画节奏没做真机验证。** 校验器只验结构与资产闭包；呼吸 / 微颤 / 伸缩的实际观感要装进 dsh web 才知道。
-   ⚠️ 现在没有可验证的对象了 —— 本版已移除，留下的 `pets/agint` 与本规范的形式定义不同源。
-8. **`pets/agint` 的两处缺陷未解决**（许可规则①含字母 A、skins 为 0）。属并发会话产物，本版不动。见 §9.11。
    ⚠️ **安装位另有 `pets/agint/`（并发会话产物，含字母 A、0 skins）**，与本版重名且违反许可规则①，未处理（§9.11）。
 8. **voice.json 没做。** 人格已定（§10），台词已给（§10.5-10.7），但 `voice.json` 文件本身未生成——它属于插件侧产物，等 `agint-mascot` 通道落地时一起做。
 9. **48 px 档没做。** 目标值已给（第 4 节规则 2），资产未生成。渲染脚本 `--canvas=48` 即可出。
