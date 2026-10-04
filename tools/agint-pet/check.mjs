@@ -35,21 +35,21 @@ const FILL = 0.86
 const SAMPLES = 5
 
 const PHASES = {
-  idle: { frames: 6, ms: 900, turn: 5, loopAlpha: 1, tone: 'normal' },
-  waiting: { frames: 4, ms: 700, turn: 1.5, loopAlpha: 0.7, tone: 'normal' },
-  thinking: { frames: 8, ms: 200, turn: 13, loopAlpha: 1, tone: 'normal' },
-  tool: { frames: 6, ms: 130, turn: 26, loopAlpha: 1, tone: 'normal', sweep: 45 },
-  review: { frames: 8, ms: 380, turn: 'osc', loopAlpha: 1, tone: 'normal' },
+  idle: { frames: 6, ms: 900, swing: 20, loopAlpha: 1, tone: 'normal' },
+  waiting: { frames: 4, ms: 700, swing: 14, loopAlpha: 0.7, tone: 'normal' },
+  thinking: { frames: 8, ms: 200, swing: 35, loopAlpha: 1, tone: 'normal' },
+  tool: { frames: 6, ms: 130, swing: 50, loopAlpha: 1, tone: 'normal', sweep: 45 },
+  review: { frames: 8, ms: 380, swing: 14, loopAlpha: 1, tone: 'normal' },
   done: { frames: 8, ms: 150, turn: 45, loopAlpha: 1, tone: 'normal', lift: 0.03 },
   failed: { frames: 4, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault', sink: 0.015 },
 }
 const PHASE_ORDER = ['idle', 'waiting', 'thinking', 'tool', 'review', 'done', 'failed']
 
 // Mirrors build.mjs. The three skin looks carry health through MOTION, not
-// colour: only `failed` is allowed to change palette.
+// colour: only `failed` is allowed to change palette. All of them are closed.
 const SKIN_TRACKS = {
-  'idle-degraded': { frames: 6, ms: 700, turn: [0, 14, 16, 34, 36, 52], loopAlpha: 0.9, tone: 'normal' },
-  'idle-unknown': { frames: 6, ms: 900, turn: [0, 14, 22, 14, 0, -14], loopAlpha: 0.9, tone: 'normal' },
+  'idle-degraded': { frames: 6, ms: 700, turn: [-20, 0, 20, 8, -8, -20], loopAlpha: 0.9, tone: 'normal' },
+  'idle-unknown': { frames: 6, ms: 1400, swing: 34, loopAlpha: 0.9, tone: 'normal' },
   'idle-failed': { frames: 1, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault' },
 }
 const SKIN_ORDER = ['idle-degraded', 'idle-unknown', 'idle-failed']
@@ -71,12 +71,26 @@ const DEPTH_DIM = 0.5
 
 const SPEC_BY_TRACK = { ...PHASES, ...SKIN_TRACKS }
 
+/** Radians to degrees, for the screen-angle probes. */
+const DEG = 180 / Math.PI
+
+/** Degrees into [0, 360). */
+const norm360 = (d) => ((d % 360) + 360) % 360
+
+/** Every rendered track: the seven phases plus the skins that need their own. */
+const TRACKS_TO_CHECK = [...PHASE_ORDER, ...SKIN_ORDER]
+
 function frameState(track, i, n) {
   const spec = SPEC_BY_TRACK[track]
   if (spec === undefined) throw new Error(`no such track: ${track}`)
   const p = n <= 1 ? 0 : i / n
   let turn
-  if (spec.turn === 'osc') turn = (spec.oscAmp ?? 14) * Math.sin(2 * Math.PI * p)
+  if (spec.swing !== undefined) {
+    const half = n / 2
+    const denom = half - 1 || 1
+    if (i <= half) turn = -spec.swing + ((2 * spec.swing) / denom) * i
+    else turn = spec.swing - ((2 * spec.swing) / denom) * (i - half)
+  } else if (spec.turn === 'osc') turn = (spec.oscAmp ?? 14) * Math.sin(2 * Math.PI * p)
   else if (Array.isArray(spec.turn)) {
     if (spec.turn.length !== n) throw new Error(`track ${track}: ${spec.turn.length} turn angles for ${n} frames`)
     turn = spec.turn[i]
@@ -98,7 +112,9 @@ function renderFrame(phase, i, n, cell = CELL, fill = FILL, samples = SAMPLES) {
   const xf = new MarkTransform({
     bbox: MARK_BBOX, canvas: cell, fill, scaleMul: st.scaleMul, offsetY: st.offsetY * (cell / CELL),
   })
-  const rot = -st.turn
+  // Mirrors build.mjs: rotation is ADDED so a positive `turn` reads clockwise.
+  // Measured from rendered pixels by assertion 10, not assumed.
+  const rot = st.turn
   const letter = (px, py) => {
     const m = xf.unmap(px, py)
     return insidePolygon(m.x, m.y, LETTER_A)
@@ -467,6 +483,165 @@ function main() {
     } else {
       // Do not print OK on the same run that just failed the same check.
       console.error(`skin contract BROKEN: {${undeclared.join(', ')}} requested but not declared`)
+    }
+  }
+
+  // 10. Every track must CLOSE, i.e. the last frame must flow into the first
+  //     without a jump. This is the property the boss's complaint was really
+  //     about: a track that does not close shows a sawtooth, and the eye reads
+  //     a sawtooth as "the mark is spinning the wrong way".
+  //
+  //     "Closes" has two different meanings and both are checked, because the
+  //     two motion models satisfy different ones:
+  //       swing  (idle/waiting/thinking/tool + skins): frame n-1 EQUALS frame 0,
+  //              so the wrap step is zero and there is nothing to snap.
+  //       spin   (done): frame n-1 differs from frame 0 by the amount that
+  //              completes a whole number of turns, so the wrap step is also
+  //              continuous.
+  //     A track passes if EITHER form holds, and the table prints which.
+  {
+    const norm = (d) => ((d % 360) + 360) % 360
+    console.log('\ntrack              mode      wrap step   verdict')
+    console.log('-'.repeat(56))
+    for (const track of TRACKS_TO_CHECK) {
+      const spec = SPEC_BY_TRACK[track]
+      const n = spec.frames
+      if (n <= 1) {
+        console.log(`${track.padEnd(16)} ${'static'.padStart(9)}   ${'n/a'.padStart(10)}   single frame`)
+        continue
+      }
+      const angles = Array.from({ length: n }, (_, i) => frameState(track, i, n).turn)
+      // The seam is the move from the last frame back to the first. It is
+      // invisible when that move is CONTINUOUS with the live steps:
+      //   swing  last frame == first frame     => seam is exactly 0
+      //   spin   seam == one more step         => e.g. `done` steps 45 deg
+      //          eight times; the move back to 0 is another 45, and
+      //          315 + 45 = 360, so the lap closes
+      //
+      // Compare the seam ON THE CIRCLE, not the raw angle. A rotation of -315
+      // and a rotation of +45 are the same pose, so `done`'s perfectly
+      // continuous next step is written as -315 in raw form. Two earlier
+      // versions of this assertion got this wrong in opposite directions —
+      // one compared |seam| to 360 (reporting a 315 deg "jump"), the next
+      // compared the raw seam to the step size (rejecting the same good track).
+      // The pose is what renders, so the circle is what gets compared.
+      const liveSigned = []
+      for (let i = 0; i < n - 1; i += 1) liveSigned.push(angles[i + 1] - angles[i])
+      const seam = angles[0] - angles[n - 1]
+      // Live steps live on the circle too, so a multi-turn phase compares equal.
+      const seamOnCircle = norm360(seam)
+      const liveOnCircle = liveSigned.filter((v) => Math.abs(norm360(v)) > 0.01).map((v) => norm360(v))
+      const stepSize = liveOnCircle.length > 0
+        ? liveOnCircle.reduce((s, v) => s + v, 0) / liveOnCircle.length
+        : 0
+      const swingForm = Math.abs(seam) < 0.01
+      const spinForm = swingForm || (
+        stepSize > 0
+        && Math.abs(seamOnCircle - stepSize) < Math.max(0.01, stepSize * 0.01)
+      )
+      const mode = spec.swing !== undefined ? 'swing' : 'spin'
+      const ok = mode === 'swing' ? swingForm : spinForm
+      const verdict = !ok
+        ? `SNAPS ${seamOnCircle.toFixed(1)} deg against a ${stepSize.toFixed(1)} deg step`
+        : swingForm
+          ? 'closed (last frame = first)'
+          : `closed (seam is one more ${stepSize.toFixed(1)} deg step)`
+      console.log(`${track.padEnd(16)} ${mode.padStart(9)}   ${(seamOnCircle.toFixed(1) + ' deg').padStart(10)}   ${verdict}`)
+      if (!ok) {
+        fail(`${track}: the seam moves ${seamOnCircle.toFixed(1)} deg while the live steps are ${stepSize.toFixed(1)} deg — that jump is the sawtooth`)
+      }
+    }
+  }
+
+  // 11. The loop must travel CLOCKWISE on screen.
+  //
+  //     The sign in `renderFrame` is easy to get backwards: canvas y grows
+  //     downward and the sector test ADDS the rotation, so reading the code does
+  //     not settle it. It is measured instead, from the production render.
+  //
+  //     The landmark is the HIGHLIGHT arc that only `tool` draws (near-white,
+  //     45 degrees wide, expressed in the loop's own rotating frame). Three
+  //     earlier probes failed and each failure is worth recording:
+  //       - the 52-degree gap: the letter A crosses the band and FILLS the gap,
+  //         so "find the empty window" measures nothing at all;
+  //       - the sector edges: antialiasing plus the letter occluding the band
+  //         leaves edges that jump between frames, so the probe tracked a
+  //         different edge on each frame and reported the mark reversed;
+  //       - reading `frameState` and re-rendering with our own `rot`: that
+  //         bypasses the sign entirely, so it stayed green with the sign
+  //         reverted — a check that could not fail.
+  //     The highlight is thresholded by colour, is absent from every other
+  //     phase, and is carried by the same `rot` as the ring, so it can only
+  //     report the truth if the production path is what got measured.
+  {
+    const xf = new MarkTransform({ bbox: MARK_BBOX, canvas: CELL, fill: FILL })
+    // (palette sum is not used: the b-r separation is the discriminator)
+
+    /** Screen angle of the near-white highlight, or null when not visible. */
+    const highlightAngle = (rgba) => {
+      let sx = 0
+      let sy = 0
+      let n = 0
+      for (let y = 0; y < CELL; y += 1) {
+        for (let x = 0; x < CELL; x += 1) {
+          const o = (y * CELL + x) * 4
+          if (rgba[o + 3] < 200) continue
+          const r = rgba[o]
+          const g = rgba[o + 1]
+          const b = rgba[o + 2]
+          // Near-white and clearly not the cyan loop. Measured, not guessed:
+          // the highlight renders as rgb(234,251,253) with b-r = 19, the cyan
+          // loop as rgb(36,211,229) with b-r = 193, and the dimmed far side
+          // falls to b-r ~ 115. So a b-r ceiling of 40 separates the
+          // highlight from every loop tone with room to spare, and a
+          // brightness floor rejects the dim ramp.
+          if (r < 200 || g < 230 || b < 230) continue
+          if (b - r > 40) continue
+          const m = xf.unmap(x + 0.5, y + 0.5)
+          const rad = Math.hypot(m.x - LOOP_CENTER.cx, m.y - LOOP_CENTER.cy)
+          if (rad < LOOP_R_INNER || rad > LOOP_R_OUTER) continue
+          const a = Math.atan2(m.y - LOOP_CENTER.cy, m.x - LOOP_CENTER.cx)
+          sx += Math.cos(a)
+          sy += Math.sin(a)
+          n += 1
+        }
+      }
+      if (n < 20) return null
+      return { deg: norm360(Math.atan2(sy, sx) * DEG), px: n }
+    }
+
+    const TOOL_N = SPEC_BY_TRACK.tool.frames
+    // Only the OUTBOUND half of the swing is measured. `tool` is a triangle
+    // swing: it travels out to +A, then folds back, and that fold is a real
+    // reversal on screen. Reading all six frames reported frames 4-5 as
+    // "counter-clockwise", which is the return stroke, not a wrong sign — so
+    // the probe has to stop where the fold starts. The step is the same on
+    // the way out every time, so two steps are enough to fix the direction.
+    const OUTBOUND = Math.ceil(TOOL_N / 2)
+    let previous = null
+    let measured = 0
+    for (const frame of [0, 1, 2, 3]) {
+      if (frame >= OUTBOUND) break
+      const seen = highlightAngle(renderFrame('tool', frame, TOOL_N))
+      if (seen === null) {
+        fail(`direction probe: no highlight found in tool frame ${frame} — the probe cannot see the loop's frame`)
+        break
+      }
+      if (previous !== null) {
+        const delta = norm360(seen.deg - previous)
+        const label = delta < 180 ? 'CLOCKWISE' : 'COUNTER-CLOCKWISE'
+        console.log(`direction: tool frame ${frame} highlight at ${seen.deg.toFixed(1).padStart(6)} deg (${seen.px} px), moved +${delta.toFixed(1)} => ${label}`)
+        if (delta >= 180) {
+          fail(`tool frame ${frame}: the loop travels ${label} on screen — the boss reads that as spinning backwards`)
+        }
+      } else {
+        console.log(`direction: tool frame ${frame} highlight at ${seen.deg.toFixed(1)} deg (${seen.px} px)`)
+      }
+      previous = seen.deg
+      measured += 1
+    }
+    if (measured === OUTBOUND) {
+      console.log(`direction OK: the highlight travels clockwise over the ${OUTBOUND} outbound frames, measured from the production render`)
     }
   }
 

@@ -98,19 +98,19 @@ const DEPTH_DIM = 0.5
  * ------------------------------------------------------------------ */
 
 /**
- * `turn` is degrees per frame. A number turns clockwise; the string 'osc'
- * swings back and forth instead, which is what reading/reviewing looks like.
+ * `turn` is degrees per frame, and the loop travels CLOCKWISE on screen for a
+ * positive value. It is a closed orbit, not a spin: see `swing` below.
  *
  * `lift` and `sink` are fractions of the cell edge, applied to the whole mark
  * and used only where the phase earns them. A 2% move is felt, not seen;
  * anything past 4% stops being tasteful and starts being a cartoon.
  */
 const PHASES = {
-  idle: { frames: 6, ms: 900, turn: 5, loopAlpha: 1, tone: 'normal' },
-  waiting: { frames: 4, ms: 700, turn: 1.5, loopAlpha: 0.7, tone: 'normal' },
-  thinking: { frames: 8, ms: 200, turn: 13, loopAlpha: 1, tone: 'normal' },
-  tool: { frames: 6, ms: 130, turn: 26, loopAlpha: 1, tone: 'normal', sweep: 45 },
-  review: { frames: 8, ms: 380, turn: 'osc', loopAlpha: 1, tone: 'normal' },
+  idle: { frames: 6, ms: 900, swing: 20, loopAlpha: 1, tone: 'normal' },
+  waiting: { frames: 4, ms: 700, swing: 14, loopAlpha: 0.7, tone: 'normal' },
+  thinking: { frames: 8, ms: 200, swing: 35, loopAlpha: 1, tone: 'normal' },
+  tool: { frames: 6, ms: 130, swing: 50, loopAlpha: 1, tone: 'normal', sweep: 45 },
+  review: { frames: 8, ms: 380, swing: 14, loopAlpha: 1, tone: 'normal' },
   done: { frames: 8, ms: 150, turn: 45, loopAlpha: 1, tone: 'normal', lift: 0.03 },
   failed: { frames: 4, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault', sink: 0.015 },
 }
@@ -127,12 +127,14 @@ const PHASE_ORDER = ['idle', 'waiting', 'thinking', 'tool', 'review', 'done', 'f
  * sentence the pet says once; a skin is how it rests until things change.
  *
  * The four looks are told apart by MOTION first and colour second. Colour
- * alone cannot carry state (see the character spec), so three of the four
- * keep the brand palette and differ only in how the loop moves:
+ * alone cannot carry state (see the character spec), so three of the four keep
+ * the brand palette and differ only in how the loop moves. All three are
+ * CLOSED orbits — a skin sits there until the verdict changes, so a visible
+ * sawtooth would be a defect the user stares at for minutes:
  *
- *   healthy   drifts forward at a steady pace (reuses the `idle` track)
- *   degraded  still goes forward, but it limps: long stalls, then a snatch
- *   unknown   swings back and forth and NEVER advances; nothing is progressing
+ *   healthy   the plain `idle` swing: even steps, even cadence (reuses it)
+ *   degraded  the same amplitude, but the STEPS are uneven — a limp
+ *   unknown   a wide, drowsy 34 deg sway at half speed: nothing is happening
  *   failed    one still frame. Not moving is the message, and it is the only
  *             look allowed off-palette.
  *
@@ -140,16 +142,17 @@ const PHASE_ORDER = ['idle', 'waiting', 'thinking', 'tool', 'review', 'done', 'f
  *   - a number: degrees per frame
  *   - 'osc':    a back-and-forth swing of `oscAmp` degrees (default 14)
  *   - an array: one absolute angle per frame.  Needed when the step PATTERN
- *               carries the meaning — see `idle-unknown`.
+ *               carries the meaning — see `idle-degraded`.
  *
- * `ms` may be a number or an array of per-frame dwells. Uneven dwells are how
- * `idle-degraded` limps without changing how far it travels per frame: the
- * angle steps stay even, the cadence does not. check.mjs asserts each skin
- * still moves enough to read, so neither channel can go quietly dead.
+ * `ms` may be a number or an array of per-frame dwells, for the case where the
+ * CADENCE carries the meaning rather than the distance.
  */
 const SKIN_TRACKS = {
-  'idle-degraded': { frames: 6, ms: 700, turn: [0, 14, 16, 34, 36, 52], loopAlpha: 0.9, tone: 'normal' },
-  'idle-unknown': { frames: 6, ms: 900, turn: [0, 14, 22, 14, 0, -14], loopAlpha: 0.9, tone: 'normal' },
+  // A limp, not a clean triangle: the steps are +20, +20, -12, -16, -12, so it
+  // closes on its first frame (wrap 0) yet never matches `idle`'s poses. The
+  // uneven cadence is the message — same amplitude, walked badly.
+  'idle-degraded': { frames: 6, ms: 700, turn: [-20, 0, 20, 8, -8, -20], loopAlpha: 0.9, tone: 'normal' },
+  'idle-unknown': { frames: 6, ms: 1400, swing: 34, loopAlpha: 0.9, tone: 'normal' },
   'idle-failed': { frames: 1, ms: 1000, turn: 0, loopAlpha: 0.85, tone: 'fault' },
 }
 
@@ -193,7 +196,28 @@ function frameState(phase, i, n) {
   const phaseProgress = n <= 1 ? 0 : i / n
 
   let turn
-  if (spec.turn === 'osc') {
+  if (spec.swing !== undefined) {
+    // A closed TRIANGLE swing: -A -> +A -> -A, with the peak and the trough
+    // each held for one frame.
+    //
+    // Why a swing and not a spin: a spinning loop only closes when
+    // step x frames lands on a whole number of turns, and at reading speed
+    // that needs dozens of frames (idle at 5 deg/frame would need 72). Slow
+    // motion and a closed track are mathematically exclusive. A swing closes
+    // for free, because the last frame IS the first frame.
+    //
+    // The two held frames are what make it read calm rather than mechanical:
+    // the loop reaches each end and stops, the way a pendulum does. Every
+    // other step is the same size, so nothing snaps. check.mjs asserts both
+    // properties (closure and equal live steps) on the angle sequence.
+    const half = n / 2
+    const denom = half - 1 || 1
+    if (i <= half) {
+      turn = -spec.swing + ((2 * spec.swing) / denom) * i
+    } else {
+      turn = spec.swing - ((2 * spec.swing) / denom) * (i - half)
+    }
+  } else if (spec.turn === 'osc') {
     // A full sine cycle over the track, so frame n-1 flows into frame 0.
     turn = (spec.oscAmp ?? 14) * Math.sin(2 * Math.PI * phaseProgress)
   } else if (Array.isArray(spec.turn)) {
@@ -233,9 +257,13 @@ export function renderFrame(phase, i, n) {
   const palette = RGB[st.tone]
   const xf = new MarkTransform({ bbox: MARK_BBOX, canvas: CELL, fill: FILL, scaleMul: st.scaleMul, offsetY: st.offsetY })
 
-  // Rotation is subtracted inside the sector test, so a positive `turn` here
-  // moves the loop clockwise on screen.
-  const rot = -st.turn
+  // Rotation is ADDED inside the sector test, so a positive `turn` moves the
+  // loop CLOCKWISE on screen. Canvas y grows downward, which is why the sign
+  // looks inverted at a glance — this line was measured, not reasoned: with
+  // `-turn` the gap travelled counter-clockwise, and the boss read that as the
+  // loop spinning backwards. Do not "simplify" this sign away; check.mjs asserts
+  // the direction from rendered pixels.
+  const rot = st.turn
 
   const letter = (px, py) => {
     const m = xf.unmap(px, py)
