@@ -155,6 +155,10 @@ function apply(ctx) {
               type: 'object', additionalProperties: false,
               // D-QAF frozenness 字段 (提案 a6ba79a3) — 存储层新增, 输出 schema 必须同步声明,
               // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list 返回 invalid output)。
+              // ─── 断言型护栏字段 (epistemic guard, 2026-09-21) ─────────────
+              // 存储层新增 4 个 claim 字段, 输出 schema 必须同步声明,
+              // 否则 additionalProperties:false 会拒绝整个返回值 (rule_list
+              // 返回 invalid output)。与 tools.js:156 frozenness 同一 bug 类。
               // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
               properties: {
                 id: { required: true, type: 'string' },
@@ -170,6 +174,10 @@ function apply(ctx) {
                 frozenness: { type: 'string' },
                 lastChangedAt: { type: 'string' },
                 softDeleteDeadline: { type: 'string' },
+                claim: { type: 'boolean' },
+                claimKind: { type: 'string' },
+                claimVerbs: { type: 'array', items: { type: 'string' } },
+                claimQualifiers: { type: 'array', items: { type: 'string' } },
               },
             },
           },
@@ -213,6 +221,10 @@ function apply(ctx) {
                 denies: { required: true, type: 'number' },
                 asks: { required: true, type: 'number' },
                 advisories: { required: true, type: 'number' },
+                // epistemic guard (2026-09-21): audit 计数初始化即含 epistemics
+                // (lib/index.js:511) ⇒ 每条都会带, 必须声明, 否则被
+                // additionalProperties:false 拒绝。
+                epistemics: { required: true, type: 'number' },
               },
             },
           },
@@ -224,6 +236,9 @@ function apply(ctx) {
               denies: { required: true, type: 'number' },
               asks: { required: true, type: 'number' },
               advisories: { required: true, type: 'number' },
+              // epistemic guard (2026-09-21): 同上, totals 归约恒含 epistemics
+              // (lib/index.js:624)。
+              epistemics: { required: true, type: 'number' },
             },
           },
         },
