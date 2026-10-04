@@ -32,6 +32,7 @@ function apply(ctx) {
       evidence: { type: 'string', description: 'Evidence string (tool+action+location) — required for lessons.' },
       level: { type: 'string', enum: LEVELS, description: 'Decay level (default L1).' },
       confidence: { type: 'number', description: '0..1 confidence (default 0.5).' },
+      replacedBy: { type: 'string', description: 'Id of the entry that supersedes this one. Sets replacedBy; decay scan skips entries where replacedBy or resolved is set (decay.js:71). Omit unless this conclusion was overturned.' },
     },
     output: {
       // memory.write returns the full memorySchema record (14 fields since P0

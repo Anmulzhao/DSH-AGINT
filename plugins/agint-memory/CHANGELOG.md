@@ -5,6 +5,14 @@
 
 ## Unreleased
 
+- `memory_write` 参数表补 `replacedBy`（2026-10-04）：service 层早已实现
+  （`lib/index.js:142` `input.replacedBy ?? existing?.replacedBy`），
+  但 `lib/tools.js` 的参数表一直没暴露 ⇒ 「本条已被 X 取代」这类关系
+  写不进去，只能改 `content`—— 而改 content 不是合法路径。
+  纯增量字段，**不破坏既有调用方**。新增 `test/tools-contract.test.mjs` 锁住
+  「参数表必须暴露 `replacedBy` + output schema 必须声明它」这条契约。
+  ⚠️ 该断言属「改常量后必然自证通过」类型：真正的运行时证据是宿主重启后
+  真实调一次 `memory_write` 再 `memory_read` 核对落库。
 - C5：订阅 `input.signal.external.repo-diff`，自动把外部信号沉淀为记忆
   （2026-09-29 `b50a01c`）。
 - C2 信号扩展：metrics 退化检测器接入后，memory 订阅面扩大（2026-09-29 `306bde6`）。
