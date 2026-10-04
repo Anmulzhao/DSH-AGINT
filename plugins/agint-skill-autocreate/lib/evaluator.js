@@ -25,6 +25,7 @@
 import { createStaging, stagingRootFor, assertSafeCandidateId } from './staging.js';
 import { SKILL_FAMILY_ENABLED } from '../../agint-quality-static/lib/static-profile.js';
 import { checkSkillSemantics } from './semantics.js';
+import { checkModelScope } from './model-scope.js';
 
 // ── rankingScore（设计稿 §7.2 例 0.62）：预估收益 0.5 + 模式频次 0.3 + 安全 0.2 ──
 export function computeRankingScore(candidate, pattern = {}) {
@@ -80,7 +81,16 @@ export async function evaluateCandidate(args) {
     pattern,
     cfg,
   });
-  const allFindings = [...staticFindings, ...semanticFindings];
+  // ── Phase 1 第三段：模型归属（2026-10-03）──────────────────────────────
+  // 问「这段经验在哪个模型上被验证过、正文有没有说」。**全是 warn，不产生
+  // blocker**（见 model-scope.js 文件头「边界」：模型字段在 v3 会话与
+  // tool-stats 源取不到，升级成门会把那批候选全拒）。
+  // 存在的意义是**可观测**：评估结果里能一眼看出「这条技能的适用前提是未知的」，
+  // 而不是靠翻 SKILL.md 才发现。开关 model_scope_enabled 与生成侧同一个。
+  const modelScopeFindings = cfg.model_scope_enabled === false
+    ? []
+    : checkModelScope({ draft: candidate.skillDraft });
+  const allFindings = [...staticFindings, ...semanticFindings, ...modelScopeFindings];
   const blockers = allFindings.filter((f) => f.severity === 'blocker');
   evalResults.phase1 = {
     status: blockers.length ? 'reject' : 'pass',
@@ -88,6 +98,7 @@ export async function evaluateCandidate(args) {
     findings: allFindings,
     // 便于周复盘区分「安全向被拒」与「语义向被拒」
     semanticFindings: semanticFindings.length,
+    modelScopeFindings: modelScopeFindings.length,
     semanticCodes: semanticFindings.map((f) => f.code),
   };
   if (blockers.length) {

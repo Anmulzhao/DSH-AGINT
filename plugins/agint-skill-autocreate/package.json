@@ -1,7 +1,7 @@
 {
   "name": "agint-skill-autocreate",
-  "version": "0.5.3",
-  "description": "P0-1 技能自动创建机制（检测+评估+发布全链路）：三道门发布、14 天观察期、自动回滚只归档不删除。0.4.0 接入 LLM（判定轨道 C + 提案撰写 + 每日硬预算）；0.5.0 按自进化默认出厂即开（primary + on），LLM 失败自动回落规则轨道，kill-switch 常在。",
+  "version": "0.6.0",
+  "description": "P0-1 技能自动创建机制（检测+评估+发布全链路）：三道门发布、14 天观察期、自动回滚只归档不删除。0.4.0 接入 LLM（判定轨道 C + 提案撰写 + 每日硬预算）；0.5.0 按自进化默认出厂即开（primary + on），LLM 失败自动回落规则轨道，kill-switch 常在；0.6.0 技能标注来源模型与跨模型适用风险（model-scope）。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -16,7 +16,8 @@
     "./lib/llm-verdict.js": "./lib/llm-verdict.js",
     "./lib/llm-budget.js": "./lib/llm-budget.js",
     "./lib/verify.js": "./lib/verify.js",
-    "./lib/tools.js": "./lib/tools.js"
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/model-scope.js": "./lib/model-scope.js"
   },
   "keywords": [
     "dsh-plugin",

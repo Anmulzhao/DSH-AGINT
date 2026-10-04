@@ -24,6 +24,7 @@ import { selectTemplate, renderBody, extractTriggers, hasConcreteValue, TOOL_CAN
 import { isSelfReferential } from './schema.js';
 import { renderSemanticSections } from './semantic-window.js';
 import { isHostSkillName, isToolChainName, isToolChainDescription } from './authoring.js';
+import { normalizeModelScope, renderModelSection } from './model-scope.js';
 
 /**
  * 本地校验 LLM 撰写的产出（LLM 接入方案 §5.2）——**不相信模型守规矩**。
@@ -165,8 +166,19 @@ export function buildProposal(pattern, opts = {}) {
       description,
       triggers,
       tools,
+      // 模型归属（2026-10-03）：pattern 的模型清单**快照**。
+      // 为什么是快照不回查：pattern 的 modelScope 会随新会话继续增长，
+      // 而技能已定稿（发布层还有重名硬防线不允许覆盖）——回查会让
+      // 「草稿里写的模型」与「最终 SKILL.md 里的模型」不一致。
+      modelScope: normalizeModelScope(pattern.modelScope),
     },
-    body: renderBody(pattern, template, { semanticMarkdown }),
+    body: renderBody(pattern, template, {
+      semanticMarkdown,
+      // 「## 适用模型」段插在「## 避坑」之后、「## 步骤」之前：
+      // 执行者读正文的顺序是「能不能用 → 为什么 → 怎么做」，适用前提属第一层，
+      // 放步骤之后会被人跳过。
+      modelSection: opts.modelScopeEnabled === false ? '' : renderModelSection(pattern.modelScope),
+    }),
     references: [],
     scripts: [],
   };

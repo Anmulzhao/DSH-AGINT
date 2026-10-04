@@ -16,9 +16,17 @@
  */
 
 import { signatureOf } from './aggregator.js';
+import { mergeModelScope } from './model-scope.js';
 
 /** 成功率准入门默认值（配置键 min_pattern_success_rate，见 schema.js） */
 export const DEFAULT_MIN_SUCCESS_RATE = 0.6;
+
+/**
+ * 模型归属的合并规则（消息数加权并集）在 `model-scope.js` 的
+ * `mergeModelScope`——**单一所有权**，本文件只调用不重写。
+ * 重写过一次（2026-10-03 初版把并集逻辑同时写在 detector 与 aggregator 两处），
+ * 两份阈值/边界日后必然漂移，故收敛到一处。
+ */
 
 /**
  * 领域工具：携带「这件事到底在干什么」语义的工具（质量门方案 §2 A1）。
@@ -261,6 +269,11 @@ export function detectPatterns(taskInstances, opts = {}) {
         // 用本地窗口填 `## 为什么` / `## 避坑`（不依赖 dream 的 LLM 通路）。
         // 缺此字段 → 提案降级为纯模板；不阻断链路。
         sampleAnchor: task.anchor ?? null,
+        // 模型归属（2026-10-03）：这段经验产生自哪些模型。取自 task.modelScope
+        // （aggregator 从源会话的 assistant/message 提取）。
+        // 缺此字段 → null；proposer 层会显式渲染成 status='unknown' 的说明段，
+        // **不留白**（静默留白 = 读者以为没有适用前提）。
+        modelScope: task.modelScope ?? null,
         description: describe(task),
         occurrenceCount: 0,
         firstSeenAt: nowIso,
@@ -281,6 +294,9 @@ export function detectPatterns(taskInstances, opts = {}) {
       p.sampleArgs = task.sampleArgs ?? p.sampleArgs ?? {};
       // 锚点同 sampleArgs 策略：刷新为最新一次真实调用的位置（语义窗口取最新现场）
       if (task.anchor) p.sampleAnchor = task.anchor;
+      // 模型归属只增不减：老会话是 v3（无模型字段）、新会话是 v4（有）时，
+      // 若按「刷新」语义会被 unknown 覆盖掉已积累的证据 ⇒ 必须合并。
+      p.modelScope = mergeModelScope(p.modelScope, task.modelScope ?? null);
       p.avgDurationMs = p.avgDurationMs == null && task.durationMs == null
         ? null
         : Math.round(((p.avgDurationMs ?? 0) * p.occurrenceCount + (task.durationMs ?? 0)) / (p.occurrenceCount + 1));

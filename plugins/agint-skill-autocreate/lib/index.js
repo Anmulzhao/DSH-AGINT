@@ -57,6 +57,7 @@ import {
   extractSemanticEvidence,
   renderSemanticSections,
 } from './semantic-window.js';
+import { summarizeModelScope } from './model-scope.js';
 import { judgeViaLLM } from './llm-verdict.js';
 import { createDailyBudget, localDayKey } from './llm-budget.js';
 import { runVerification } from './verify.js';
@@ -471,6 +472,9 @@ function apply(ctx, config) {
         semanticEvidence: evidence,
         reasonOut,
         llmAuthoring,
+        // 模型归属开关（2026-10-03）。默认开 = 出厂即带「## 适用模型」段与
+        // frontmatter 模型字段；置 false 退回 2026-10-03 之前的产物形态。
+        modelScopeEnabled: c.model_scope_enabled !== false,
       });
 
       // ── LLM 撰写被本地校验打回（方案 §5.2）──────────────────────────────
@@ -502,6 +506,7 @@ function apply(ctx, config) {
             sampleArgKeys: Object.keys(stored.sampleArgs ?? {}).length,
             window: windowInfo,
             toolSequence: stored.toolSequence,
+            modelScope: summarizeModelScope(stored.modelScope),
           },
         });
         return null;
@@ -536,7 +541,14 @@ function apply(ctx, config) {
           action: 'pattern_detected',
           targetType: 'task_pattern',
           targetId: stored.id,
-          details: { occurrenceCount: stored.occurrenceCount, toolSequence: stored.toolSequence },
+          // modelScope 一并留痕（2026-10-03）：否则「技能是哪个模型的」
+          // 只能去翻 SKILL.md，而模型归属恰恰是**要能事后回答**的问题。
+          // 记 status 而非只记 models：unknown 才是需要被看见的那种情况。
+          details: {
+            occurrenceCount: stored.occurrenceCount,
+            toolSequence: stored.toolSequence,
+            modelScope: summarizeModelScope(stored.modelScope),
+          },
         });
       } else {
         // forceRecheck 走独立审计，不发 pattern-detected（因为不是新跨过门槛）

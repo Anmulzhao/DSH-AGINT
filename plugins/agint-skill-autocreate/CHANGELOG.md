@@ -1,5 +1,87 @@
 # Changelog — agint-skill-autocreate
 
+## v0.6.0 (2026-10-03) — 技能模型归属：标注来源模型 + 适用前提与跨模型风险
+
+**背景（老板拍板）**：每个模型的能力特点、风格偏好与常见盲区不同，同一套技能在不同
+模型上的表现与出错点也不同。技能是从真实执行痕迹里长出来的，而这些痕迹全部产生自某个
+模型 ⇒ 技能的适用性天然带模型前提。不标注的后果是：下一个模型读到的是一条**没有适用
+前提**的通用断言。
+
+### Added
+
+- 新增 `lib/model-scope.js`（判据与渲染的**唯一所有者**）：
+  - `buildModelScope(events)`：从会话事件构造模型归属（`status` / `models[]` /
+    `providers` / `dominant` / `verifiedOn` / `unverifiedOn`）。
+  - `mergeModelScope(a,b)`：消息数加权并集。跨会话聚合与pattern 增量更新共用。
+  - `renderModelFrontmatter(scope)`：扁平 frontmatter 键 `model-scope` /
+    `verified-on` / `verified-on-note`（扁平是为了能 grep）。
+  - `renderModelSection(scope)`：正文「## 适用模型」段 + 「跨模型复用注意」。
+  - `checkModelScope({scope| draft, body})`：**warn only** 判据族 `skill-model-scope`。
+  - `summarizeModelScope(scope)`：审计用的紧凑摘要（去 `messages` 噪声）。
+- `schema.js`：`TaskPatternSchema.modelScope` 与 `SkillDraftSchema.frontmatter.modelScope`
+  两个字段（**必须在 schema 里声明** —— 未声明会被 zod `.parse()` 静默 strip，K45.4 教训）。
+- `ConfigSchema`：`model_scope_enabled`（默认 **true**，kill-switch）、
+  `model_scope_max_models`；两者均入`RUNTIME_CONFIG_KEYS`（运行时可改，不必重启）。
+- `agint-session-extract`：`extractModels(events)` —— 从 `assistant/message
+  .data.message.source.{provider,model}` 取模型清单（中立形状：只有消息计数）。
+  `readSessionRecords({withModels:true})` 给每条 record 挂 `models`。
+- 链路接线：`session-source.toModelScope` → `aggregator.taskModelScope` →
+  `detector.modelScope` → `proposer.frontmatter.modelScope` → `staging` 写盘。
+- `evaluator.js`：Phase 1 第三段检查（findings 合进 `allFindings`，`modelScopeFindings` 计数）。
+- `index.js`：`pattern_detected` 与 `candidate_skipped` 审计带 `modelScope` 摘要。
+- 测试：`test/model-scope.test.mjs`（28 例）、`test/model-frontmatter.test.mjs`（10 例）。
+
+### Fixed
+
+- **`agint-session-extract` 读不到 v4 会话（存量 bug，本次功能的前提）**：
+  `SESSION_FILE_NAMES` 只列 v3 + 无版本名 ⇒ 生产 438 个会话目录里 **225 个
+  v4-only 的一个都进不来**（漏掉的是过半且全部是最新数据）。模型字段只写在 v4 里
+  ⇒ 不修这条，本功能恒为unknown（典型的静默失效：接口正常、字段全空）。
+  取证：修前 `listSessionLogs` 命中 213 条（全是 v3/无版本名），修后按
+  `SESSION_FILE_NAMES` 顺序取第一个存在的文件。
+
+### 设计约束（改这块前先读）
+
+- **不新增门禁**：本族永不产生 blocker。模型字段在 v3 会话与 tool-stats 源里本来就取不到，
+  升级成门会把那批候选**全拒** —— 用一个字段的缺失去否决整条技能，代价远大于收益。
+  有测试 `【硬契约】本族永不产生 blocker` 钉住。
+- **保留通用性**：「## 适用模型」是**附加**说明，正文主体（步骤/为什么/避坑）保持跨模型
+  可迁移。风险提示写成可执行动作（「先拿小样本对照跑一次」），不写免责话术。
+- **不谎称已知**：任一来源缺证据 → `status='unknown'`；`status='known'` 但清单为空
+  → 也退unknown（渲染成「有标题没条目」比没有标题更糟）。
+- **`unverifiedOn` 恒空**：插件只能观察「模型 A 犯过什么错」，观察不到「模型 B 在这条
+  技能上会怎么错」。凭空列 B 叫编造。字段先留着，将来接宿主模型清单时不用破 schema。
+- **两处形态分工**：frontmatter 只列展示用的（上限 `MODELS_DISPLAY_MAX`），
+  完整清单与 `messages` 留在 `manifest.json` 的 `modelScope`。
+- **防注入是白名单**：`safeToken` 只放行 `[\w.@:/+-]`，危险字符在到达 `yamlScalar`
+  之前就被剥掉；`yamlScalar`（staging.js）是第二道防线。宿主
+  `dsh-skill-filesystem.parseSkillFile` 在 frontmatter 解析失败时只打一行 warn 就
+  **静默忽略整个技能文件** —— 这是必须守住的不变量。
+- **存量/手工草稿不变形**：草稿没有 `modelScope` 时**完全不加**模型键，
+  不写 `model-scope: unknown`（「没这个维度」与「来源未知」是两件事）。
+- **A3 信息量门要认识新章节**：`semantics.TEMPLATE_SKELETON` 已加入
+  `适用模型 / 跨模型复用注意 / 未列出的模型 / 占记录 / 小样本 / 来源模型`，
+  否则模型段会被当成「比工具文档多知道的知识」算进60 字符门槛。
+
+### Verification
+
+- 静态：`node --test plugins/agint-skill-autocreate/test/` → **395/395 PASS**；
+  session-extract 11/11；dream 124/124。
+- 端到端（真实生产会话）：`readSourceRecords` 取 4000 条 record，
+  **4000 条全部带 `status:'known'` 的模型归属**；`aggregateTasks` 产出 359 个 task，
+  359 个全部归属到真实模型（`minimax-cn/MiniMax-M3`）。`buildProposal` →
+  `renderSkillMd` → SKILL.md 里 `model-scope: observed` + `verified-on` +
+  「## 适用模型」段齐全；`manifest.modelScope` 完整清单在位。
+- 宿主兼容：用宿主自带的 `yaml`（`parseSkillFile` 同一解析器）解析真实产出的
+  frontmatter **通过**；额外键被忽略而非报错（`parseSkillFile` 只挑 name /
+  description / whenToUse / metadata / 两个 invocation 布尔）。
+- kill-switch：`model_scope_enabled=false` → 正文不再有「## 适用模型」段。
+- 自检：`check-wiring` PASS（明确列出本插件为「待上线改动」）·
+  `check-dsh-compat` PASS · `check-tool-schemas` 116 schema 0 invalid ·
+  `check-zero-deps` 无第三方依赖违规。
+- 全仓基线对照：`agint-abtest`(8 fail) / `agint-curator`(1) / `agint-self-model`(2) /
+  `agint-trajectory`(1) 在 **stash 掉本次改动后失败数完全相同** ⇒ 存量债，非本次引入。
+
 ## v0.5.4 (2026-09-27) — 修子代理空壳：judgeViaLLM 从未真调过模型（K114）
 ## v0.5.5 (2026-09-28) — 行动 #3 工具注册路径 + KV Cache 安全判据
 

@@ -265,6 +265,55 @@ export function extractToolCalls(events, { sessionId = null } = {}) {
 }
 
 /**
+ * 模型标识提取（2026-10-03 新增，模型归属功能的数据源）。
+ *
+ * 取证（2026-10-03 解压生产 v4 会话，6 个文件 / 832 事件）：
+ *   `assistant/message` 事件 61 次**全部**带
+ *     data.message.source.provider = 'minimax-cn'
+ *     data.message.source.model    = 'MiniMax-M3.1-Flash-Preview'
+ *   同事件另有 `source.replayState.response.{provider,model}`（同值）。
+ *   另有三个次要来源：`request/header.header.config.*`、`request/context.*`、
+ *   `subagent/model-selection-policy.allowedModels[]`。
+ *   ⚠️ v3 / 无版本名日志里**没有**这些字段 → 旧会话取不到模型是正常的，
+ *   不是 bug（对应 `listSessionLogs` 修好后仍会有的空洞）。
+ *
+ * 为什么按「整会话一个模型」而不按调用逐条归属：assistant/message 与
+ * tool/call 是**不同事件**，一条 tool/call 归属到哪个 assistant 消息需要按
+ * turn/step 反查，既脆又会造出「半条记录有模型、半条没有」的脏口径。
+ * 技能级归属只需要「这条技能的经验来自哪些模型」，会话级粒度恰好够。
+ *
+ * @param {object[]} events loadSession 的输出
+ * @returns {{models: Array<{provider: string, model: string, messages: number}>,
+ *            providers: string[], unknown: boolean}}
+ *   `unknown: true` = 一条都没取到（调用方据此标「来源模型未知」，不许编造）
+ */
+export function extractModels(events) {
+  const tally = new Map();
+  let total = 0;
+  for (const e of events ?? []) {
+    // 主来源：assistant 消息的 source；replayState 是它的同值镜像，不重复计票
+    const src = e?.type === 'assistant/message'
+      ? (e?.data?.message?.source ?? null)
+      : null;
+    if (!src) continue;
+    const provider = typeof src.provider === 'string' ? src.provider.trim() : '';
+    const model = typeof src.model === 'string' ? src.model.trim() : '';
+    if (!provider && !model) continue;
+    const key = `${provider}\u0000${model}`;
+    const cur = tally.get(key);
+    if (cur) cur.messages += 1;
+    else tally.set(key, { provider, model, messages: 1 });
+    total += 1;
+  }
+  const models = [...tally.values()].sort((a, b) => b.messages - a.messages);
+  return {
+    models,
+    providers: [...new Set(models.map((m) => m.provider).filter(Boolean))],
+    unknown: total === 0,
+  };
+}
+
+/**
  * 文本窗口：给定锚点 {turn, step}，取前后 radius 条「人话」文本（提案语义原料）。
  * 收集带可读文本的事件（user/assistant 消息、tool/result 文本），按与锚点的距离
  * 选最近锚点，切片返回 before/after。
@@ -404,13 +453,20 @@ export function extractMemorySignals(events) {
  * 高层 I/O：读某 sessions root 下所有会话，产出聚合器兼容的 record 数组。
  * 仅 autocreate 的 detect 用；带 mtime 预过滤避免解压旧会话（性能护栏）。
  *
- * opts: { sinceMs, limit, signal }
- *   sinceMs — 仅取 mtime >= sinceMs 的会话（默认不过滤）
- *   limit   — 最多返回多少条 record（默认不限）
+ * opts: { sinceMs, limit, signal, withModels }
+ *   sinceMs    — 仅取 mtime >= sinceMs 的会话（默认不过滤）
+ *   limit      — 最多返回多少条 record（默认不限）
+ *   withModels — true 时给每条 record 挂 `models`（`extractModels` 的原样输出，
+ *                **中立形状**：只有消息计数，没有 share/dominant —— 那些是
+ *                autocreate 侧的口径，不该污染共享单点）。默认 false（向后
+ *                兼容：不加这个字段，dream 等消费方零变化）。
+ *   ⚠️ 模型字段**只在 v4 会话里存在**（见 extractModels 的取证）⇒ v3 会话的
+ *      record 恒带 `models.unknown = true`，这是诚实缺失。
  */
 export async function readSessionRecords(sessionsRoot, opts = {}) {
   const sinceMs = typeof opts.sinceMs === 'number' ? opts.sinceMs : null;
   const limit = opts.limit ?? Infinity;
+  const withModels = opts.withModels === true;
   const logs = await listSessionLogs(sessionsRoot);
   const out = [];
   for (const log of logs) {
@@ -423,9 +479,12 @@ export async function readSessionRecords(sessionsRoot, opts = {}) {
     let events;
     try { events = await loadSession(log.path); }
     catch { continue; }
+    // 每个会话只算一次模型清单（对该会话的全部 record 共用）
+    const models = withModels ? extractModels(events) : null;
     const recs = extractToolCalls(events, { sessionId: log.sessionId });
     for (const r of recs) {
       if (sinceMs != null && typeof r.ts === 'number' && r.ts < sinceMs) continue;
+      if (models) r.models = models;
       out.push(r);
       if (out.length >= limit) break;
     }

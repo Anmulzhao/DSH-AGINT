@@ -136,6 +136,10 @@ export function selectTemplate(toolSequence) {
  * ② 新增 `opts.semanticMarkdown`（由 semantic-window.renderSemanticSections
  *    产出）：把会话文本窗口里**真实出现过**的 WHY / 坑 原样搬进正文。
  *    为空则不渲染该段——**绝不拿固定话术凑字数**。
+ * ③ 新增 `opts.modelSection`（2026-10-03，由 model-scope.renderModelSection
+ *    产出）：「## 适用模型」段。位置在 WHY/避坑之后、步骤之前——
+ *    执行者读正文的顺序是「能不能用 → 为什么 → 怎么做」，适用前提属第一层。
+ *    空串则不渲染（kill-switch 关闭时的既有形态）。
  */
 export function renderBody(pattern, template, opts = {}) {
   const seq = [...new Set(pattern.toolSequence)];
@@ -147,6 +151,7 @@ export function renderBody(pattern, template, opts = {}) {
       : `${i + 1}. 调用 ${tool}`;
   });
   const semantic = String(opts.semanticMarkdown ?? '').trim();
+  const modelSection = String(opts.modelSection ?? '').trim();
   const parts = [
     '## 适用场景',
     pattern.description,
@@ -157,6 +162,7 @@ export function renderBody(pattern, template, opts = {}) {
     '',
   ];
   if (semantic) parts.push(semantic, '');
+  if (modelSection) parts.push(modelSection, '');
   parts.push(
     '## 步骤',
     ...steps,

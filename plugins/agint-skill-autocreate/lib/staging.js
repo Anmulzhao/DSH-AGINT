@@ -17,6 +17,7 @@
 
 import { mkdir, writeFile, readdir, rm, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
+import { renderModelFrontmatter, normalizeModelScope } from './model-scope.js';
 
 export const STAGING_SUBDIR = 'staging';
 export const DEFAULT_TTL_DAYS = 7;
@@ -34,7 +35,53 @@ export function assertSafeCandidateId(id) {
   }
 }
 
-/** SKILL.md 渲染：frontmatter（name/description/triggers/tools）+ body */
+/**
+ * YAML 标量加引号（**只在该加时加**）。
+ *
+ * 模型名里会出现 `minimax-cn/MiniMax-M3.1-Flash-Preview` 这类含 `/` `.` `-`
+ * 的串，以及 `provider/model` 形态。YAML 里 `/` 与 `.` 开头在特定位置有语法
+ * 含义（`/` 无、`~` 与 `*` 有），未加引号的 `~`/`*` 开头会解析失败 → 整个
+ * frontmatter 报错 → **宿主静默忽略整个技能文件**（最高危的失效形态）。
+ * 所以这里对**所有**模型相关标量一律加引号：多余引号 YAML 会正确去掉，
+ * 漏引号则可能让技能凭空消失。代价为零。
+ */
+function yamlScalar(value) {
+  const s = String(value ?? '');
+  if (s === '') return '""';
+  const needsQuote = /^[~*&!%@`>|{}[\]#,"']/.test(s)   // YAML 有语法意义的起始字符
+    || /:\s/.test(s)                                   // ": " 会被解析成嵌套映射
+    || /\s#/.test(s)                                   // " #" 会被当注释起点
+    || /^\s|\s$/.test(s)                               // 首尾空格会被 YAML trim
+    || s.includes(String.fromCharCode(10));
+  if (!needsQuote) return s;
+  return '"' + s.split('\\').join('\\\\').split('"').join('\\"') + '"';
+}
+
+/**
+ * 模型字段的 frontmatter 块（2026-10-03）。
+ * 形态（扁平键，便于 grep）：
+ *   model-scope: observed|unknown
+ *   verified-on: [provider/model, ...]      # 空则 []
+ *   verified-on-note: <一句话说明>
+ * 取证：宿主 `dsh-skill-filesystem` 的 `parseSkillFile` 只挑
+ * name / description / whenToUse / metadata / 两个 invocation 布尔 ⇒
+ * **额外 frontmatter 键被忽略而不报错**（不会导致技能被忽略）。
+ */
+function modelFrontmatterLines(scope) {
+  const fm = renderModelFrontmatter(scope);
+  const lines = [`model-scope: ${yamlScalar(fm['model-scope'])}`];
+  const verified = Array.isArray(fm['verified-on']) ? fm['verified-on'] : [];
+  if (verified.length) {
+    lines.push('verified-on:');
+    for (const v of verified) lines.push(`  - ${yamlScalar(v)}`);
+  } else {
+    lines.push('verified-on: []');
+  }
+  lines.push(`verified-on-note: ${yamlScalar(fm['verified-on-note'])}`);
+  return lines;
+}
+
+/** SKILL.md 渲染：frontmatter（name/description/triggers/tools + 模型归属）+ body */
 export function renderSkillMd(draft) {
   const fm = draft?.frontmatter ?? {};
   const lines = ['---', `name: ${fm.name ?? draft.name ?? ''}`, `description: ${fm.description ?? draft.description ?? ''}`];
@@ -52,6 +99,12 @@ export function renderSkillMd(draft) {
   } else {
     lines.push('tools: []');
   }
+  // 模型归属：只在草稿带 modelScope 时写（存量草稿 / 手工草稿保持原样输出，
+  // 不凭空加一个 model-scope: unknown —— 那会把「本来就没这个维度」的
+  // 人工技能说成「来源未知」，两者含义不同）。
+  if (fm.modelScope !== undefined && fm.modelScope !== null) {
+    lines.push(...modelFrontmatterLines(fm.modelScope));
+  }
   lines.push('---', '');
   lines.push(draft?.body ?? '');
   return `${lines.join('\n')}\n`;
@@ -59,7 +112,7 @@ export function renderSkillMd(draft) {
 
 export function renderManifest(draft, candidateId, nowIso) {
   const fm = draft?.frontmatter ?? {};
-  return {
+  const manifest = {
     name: fm.name ?? draft.name,
     version: '0.0.0',               // 候选评估版本，发布时由 release 侧正式定版
     description: fm.description ?? draft.description,
@@ -73,6 +126,15 @@ export function renderManifest(draft, candidateId, nowIso) {
     createdAt: nowIso,
     stagedBy: 'agint-skill-autocreate/sprint15',
   };
+  // 模型归属的**完整**清单（2026-10-03）：SKILL.md 的 frontmatter 只列展示用的
+  // 前 N 个（见 renderModelFrontmatter 的 MODELS_DISPLAY_MAX），完整占比与
+  // 消息数留在这里 —— 「完整清单见 manifest.json」这句话必须真的找得到。
+  // 存量/手工草稿无 modelScope → 不加这个键（不凭空声明一个 unknown）。
+  const scope = normalizeModelScope(fm.modelScope ?? draft?.modelScope);
+  if (fm.modelScope !== undefined && fm.modelScope !== null) {
+    manifest.modelScope = scope;
+  }
+  return manifest;
 }
 
 /**

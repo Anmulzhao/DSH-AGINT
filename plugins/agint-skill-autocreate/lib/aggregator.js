@@ -32,9 +32,29 @@
  */
 
 import { isExcludedRecord } from './schema.js';
+import { mergeModelScope, unknownModelScope } from './model-scope.js';
 
 /** 单任务实例工具数上限：超过视为探索性任务（非标准化候选），降噪 */
 const MAX_TOOLS_PER_TASK = 30;
+
+/**
+ * 任务实例的模型归属（2026-10-03）。
+ *
+ * 数据从哪来：record 上的 `modelScope`（由 session-source 从源会话提取，
+ * 见 lib/session-source.js）。tool-stats 源**没有**这个字段（那是会话日志的
+ * 派生 JSONL，不含 assistant 消息的 source）⇒ 走 tool-stats 的任务恒为
+ * unknown，这是**诚实缺失**，不是静默失败。
+ *
+ * 跨会话聚合（aggregateTasksCrossSession）把多个会话合成一个任务 ⇒ 该任务的
+ * 模型归属是**并集**（多个模型共同贡献了这段经验），这正是「已验证适用多个
+ * 模型」的情形，也是 model-scope 最该发挥作用的场景。合并规则复用
+ * `mergeModelScope`（单一所有权，本文件不另写并集逻辑）。
+ */
+function taskModelScope(recs) {
+  const scopes = recs.map((r) => r?.modelScope).filter(Boolean);
+  if (scopes.length === 0) return unknownModelScope();
+  return scopes.reduce(mergeModelScope, null) ?? unknownModelScope();
+}
 
 /**
  * 模式分发：返回 { tasks, unmatched, excluded, mode }。
@@ -114,6 +134,7 @@ function aggregateBySessionTurn(records) {
         turn: first.turn ?? null,
         step: Number.isInteger(first.step) ? first.step : null,
       },
+      modelScope: taskModelScope(recs),   // 模型归属（2026-10-03）
       startedAt: first.ts ?? null,
       endedAt: last.ts ?? null,
       durationMs: withLatency.length ? withLatency.reduce((s, r) => s + r.latencyMs, 0) : null,
@@ -202,6 +223,7 @@ export function aggregateTasksCrossSession(records, options = {}) {
         turn: first.turn ?? null,
         step: Number.isInteger(first.step) ? first.step : null,
       },
+      modelScope: taskModelScope(recs),   // 模型归属（2026-10-03；跨会话 = 并集）
       startedAt: first.ts ?? null,
       endedAt: last.ts ?? null,
       firstSeenAt: first.ts != null ? new Date(first.ts).toISOString() : null,

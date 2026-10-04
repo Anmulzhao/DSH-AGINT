@@ -79,10 +79,63 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 - **审计**：`llm_judge_called` / `llm_judge_degraded`（必带 reason）/ `llm_judge_shadow`（含 agree 分歧样本）/ `llm_budget_exhausted` / `llm_authoring_rejected`。
 - **schema 约束下移**：宿主 enforced JSON Schema 子集不支持 `pattern`/`maxLength`/`minimum`（不支持会在子 agent 创建前抛错），相关约束全部在 `lib/llm-verdict.js` 本地校验执行。
 
+## 技能模型归属（v0.6.0 起出厂即开）
+
+每条技能都标注**它是在哪个模型上积累经验的**，并在正文写出跨模型复用时的注意事项。
+
+### 为什么要
+
+不同模型的能力特点、风格偏好与常见盲区不同 ⇒ 同一套步骤在 A 模型上省事、在 B 模型上
+可能反而多踩坑。技能是从真实执行痕迹长出来的，而这些痕迹全部产生自某个模型 ⇒
+适用性天然带模型前提。不标注的后果是：下一个模型读到的是一条**没有适用前提**的
+通用断言。
+
+### 产出形态
+
+**frontmatter**（扁平键，便于 `grep verified`）：
+
+```yaml
+model-scope: observed          # observed | unknown
+verified-on:
+  - minimax-cn/MiniMax-M3
+verified-on-note: 经验仅在下列模型上被观察到；其他模型按「未验证」对待。
+```
+
+**正文**：「## 适用模型」段插在 `## 避坑` 之后、`## 步骤` 之前（读者顺序是
+「能不能用 → 为什么 → 怎么做」，适用前提属第一层）。完整清单（含占比与消息数）
+留在 `manifest.json` 的 `modelScope`。
+
+正文段刻意保留**通用性**：明说「上面的模型是这段经验的**来源**，不是本技能的唯一可用
+对象」，风险提示写成可执行动作（「先拿一个小样本任务对照跑一次」），不写免责话术。
+
+### 数据来源
+
+`assistant/message.data.message.source.{provider,model}`（**只在 v4 会话里有**）。
+链路：`session-source.toModelScope` → `aggregator.taskModelScope`（跨会话取并集）→
+`detector.modelScope`（增量合并）→ `proposer`（快照进草稿）→ `staging`（写盘）。
+
+### 配置
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `model_scope_enabled` | `true` | 置 false → 正文不写「## 适用模型」段、frontmatter 不带模型键、评估层判据静音 |
+| `model_scope_max_models` | 8 | 单次技能最多记录几个模型（超出按占比截断，完整清单仍在 manifest） |
+
+### 三条边界（如实标注）
+
+- **不设门禁**：模型归属判据族（`skill-model-scope`）**永不产生 blocker**。模型字段在
+  v3 会话与 tool-stats 源里本来就取不到，升级成门会把那批候选全拒。有单测钉住。
+- **`unverifiedOn` 恒空**：插件只能观察「模型 A 犯过什么错」，观察不到「模型 B 在这条
+  技能上会怎么错」。凭空列 B 叫编造。该字段留着，将来接宿主模型清单时不用破 schema。
+- **存量/手工草稿不变形**：草稿没有 `modelScope` 时**完全不加**模型键——
+  「本来没这个维度」与「来源未知」是两件事。
+
 ## 已知边界（如实标注）
 
 - **token 成本恒 null**：tool-stats 不记录 token，`avgTokenCost` 字段保留待其增补。
 - **sessionId/turn 缺失的记录**不参与检测（宁可漏检，不可错检）。
+- **v3 会话与 tool-stats 源取不到模型**：模型字段只写在 v4 会话的 assistant 消息里 ⇒
+  这两类来源的技能 `model-scope: unknown`。这是**诚实缺失**，正文会明说「无法确定」。
 - **可标准化判断**：LLM 轨道 C（primary）为主、轨道 B 启发式兜底（true/false/null 三态，null=需人工）；LLM 降级时自动回落轨道 B，详见上文 LLM 配置一节。
 - **参数签名 v1**：顶层 key + 粗类型 + 扩展名；扩展名不同视为不同模式（有意为之——批量 .md 和 .js 是不同任务）。
 - **预估收益是启发式**：公式集中在 `lib/proposer.js`，Sprint 15/16 实测后校准。

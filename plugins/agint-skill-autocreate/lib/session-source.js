@@ -18,6 +18,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readSessionRecords } from '../../agint-session-extract/index.js';
+import { unknownModelScope } from './model-scope.js';
 
 /**
  * 读 tool-stats JSONL（旧路径，保留作兜底/回滚）。
@@ -50,6 +51,50 @@ function dedupeKey(r) {
 }
 
 /**
+ * 中立 `models` 字段（agint-session-extract 的 extractModels 输出）
+ *   → autocreate 的 `modelScope`（model-scope.js 的口径）。
+ *
+ * 两层分开的原因：extractModels 是**两条链共享的中立单点**，只报事实
+ * （哪些模型、各多少条助手消息）；share / dominant / verifiedOn 是
+ * autocreate 的**呈现口径**，不该倒灌进共享模块。
+ *
+ * `models` 缺失（tool-stats 源、或读会话时未开 withModels）→ unknownModelScope()，
+ * **不留白**：下游 proposer 会显式渲染成「来源模型未知」的说明段。
+ */
+export function toModelScope(models) {
+  if (!models || models.unknown === true || !Array.isArray(models.models) || models.models.length === 0) {
+    return unknownModelScope();
+  }
+  const total = models.models.reduce((s, m) => s + (Number.isFinite(m.messages) ? m.messages : 0), 0) || 1;
+  const max = models.models[0]?.messages ?? 0;
+  return buildModelScopeFromEntries(models.models, total, max);
+}
+
+/**
+ * 由 (provider, model, messages) 三元组列表构造 modelScope。
+ * 独立成函数是为了能单测（buildModelScope 吃的是会话事件）。
+ */
+function buildModelScopeFromEntries(entries, total, max) {
+  const models = entries.map((m) => ({
+    provider: String(m.provider ?? ''),
+    model: String(m.model ?? ''),
+    messages: Number.isFinite(m.messages) ? m.messages : 0,
+    share: +((Number.isFinite(m.messages) ? m.messages : 0) / total).toFixed(4),
+    dominant: (Number.isFinite(m.messages) ? m.messages : 0) === max,
+  }));
+  return {
+    status: 'known',
+    models,
+    providers: [...new Set(models.map((m) => m.provider).filter(Boolean))],
+    dominant: models[0]
+      ? { provider: models[0].provider, model: models[0].model, dominant: true }
+      : null,
+    verifiedOn: [],
+    unverifiedOn: [],
+  };
+}
+
+/**
  * 按配置读取源 record 数组（aggregator 兼容形状）。
  *
  * opts: { source, sessionsRoot, jsonlPath, sinceMs, limit }
@@ -77,8 +122,12 @@ export async function readSourceRecords(opts = {}) {
   if (wanted.session) {
     let recs = [];
     try {
-      recs = await readSessionRecords(opts.sessionsRoot, { sinceMs, limit });
+      // withModels: true → 每条 record 挂中立 models 形状（模型归属的数据源）。
+      // 关掉它就回到 2026-10-03 之前的行为（record 无模型字段 ⇒ 归属恒 unknown）。
+      recs = await readSessionRecords(opts.sessionsRoot, { sinceMs, limit, withModels: true });
     } catch { recs = []; }
+    // 中立形状 → autocreate 的 modelScope 口径（转换失败/无数据 → 显式 unknown）
+    for (const r of recs) r.modelScope = toModelScope(r.models);
     bySource.session = recs.length;
     batches.push(recs);
   }

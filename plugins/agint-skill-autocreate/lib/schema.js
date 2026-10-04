@@ -64,6 +64,34 @@ export const TaskPatternSchema = z.object({
   // 渲染「参数参考」与触发器；修复 K45.4 静默丢字段——此前未声明被 zod strip）。
   // 存量行无此字段 → default({}) 保证向后 parse 安全。
   sampleArgs: z.record(z.any()).default({}),
+  // ── 模型归属（2026-10-03；判据与渲染的所有者是 lib/model-scope.js）──────
+  // 这条 pattern 的经验**产生自哪些模型**。取自源会话的 assistant/message
+  // `.data.message.source.{provider,model}`（实测只在 v4 会话里有，v3 无）。
+  // 形状与 model-scope 的返回一致：`{status, models[], providers[], dominant,
+  // verifiedOn[], unverifiedOn[]}`。
+  // **必须在此声明**——未声明字段会被 zod .parse() 静默 strip（K45.4 的教训）。
+  // 存量行 / v3 会话 → status='unknown'（诚实缺失，不猜）。
+  modelScope: z.object({
+    status: z.enum(['known', 'unknown']).default('unknown'),
+    models: z.array(z.object({
+      provider: z.string().default(''),
+      model: z.string().default(''),
+      share: z.number().nullable().default(null),
+      dominant: z.boolean().default(false),
+      messages: z.number().nullable().default(null),
+    })).default([]),
+    providers: z.array(z.string()).default([]),
+    dominant: z.object({
+      provider: z.string().default(''),
+      model: z.string().default(''),
+      dominant: z.boolean().default(true),
+    }).nullable().default(null),
+    verifiedOn: z.array(z.string()).default([]),
+    // 未验证但已识别的模型。当前恒空（见 model-scope.js 的说明：
+    // 插件观察不到「别的模型会怎么错」，凭空列 = 编造）。字段先留着，
+    // 将来接上宿主模型清单时不用破 schema。
+    unverifiedOn: z.array(z.string()).default([]),
+  }).nullable().default(null),
   // ── Phase 2：语义窗口锚点（2026-09-17 分治架构设计 §5.2）─────────────────
   // 提案层据此回查会话日志、用本地文本窗口填 `## 为什么` / `## 避坑`。
   // **必须在此声明**——未声明字段会被 zod .parse() 静默 strip（K45.4 的教训）。
@@ -98,6 +126,31 @@ export const SkillDraftSchema = z.object({
     description: z.string(),
     triggers: z.array(z.string()),
     tools: z.array(z.string()),
+    // ── 模型归属（2026-10-03）─────────────────────────────────────────
+    // 证据来自 taskPattern.modelScope 的拷贝（**快照**：生成那一刻的观测，
+    // 不回查 pattern——pattern 的模型清单会随新会话继续增长，而技能已定稿）。
+    // 形态见 lib/model-scope.js `buildModelScope`。存量草稿无此字段 → null。
+    // 写入 SKILL.md 时由 staging.renderSkillMd 转成 `model-scope` /
+    // `verified-on` / `verified-on-note` 三个**扁平** frontmatter 键
+    // （嵌套对象在 YAML 里可读但难 grep，故对外扁平）。
+    modelScope: z.object({
+      status: z.enum(['known', 'unknown']).default('unknown'),
+      models: z.array(z.object({
+        provider: z.string().default(''),
+        model: z.string().default(''),
+        share: z.number().nullable().default(null),
+        dominant: z.boolean().default(false),
+        messages: z.number().nullable().default(null),
+      })).default([]),
+      providers: z.array(z.string()).default([]),
+      dominant: z.object({
+        provider: z.string().default(''),
+        model: z.string().default(''),
+        dominant: z.boolean().default(true),
+      }).nullable().default(null),
+      verifiedOn: z.array(z.string()).default([]),
+      unverifiedOn: z.array(z.string()).default([]),
+    }).nullable().default(null),
   }),
   body: z.string().min(1),
   references: z.array(z.string()).default([]),
@@ -369,6 +422,18 @@ export const ConfigSchema = z.object({
   cross_session_aggregation: z.enum(['off', 'shadow', 'primary']).default('primary'), // 2026-09-17 老板拍板：切 primary 一步到位
   cross_session_idle_ms: z.number().int().min(1000).default(30_000),
   cross_session_max_sessions_per_task: z.number().int().min(1).default(20),
+
+  // ── 模型归属标注（2026-10-03；lib/model-scope.js）───────────────────────
+  // 目的：让每条技能都能回答「这段经验是在哪个模型上积累的、在别的模型上
+  // 有什么风险」。**只标注不拦截**（K51：本族无 blocker，见 model-scope.js
+  // 文件头「边界」——v3 会话与 tool-stats 源取不到模型，升级成门会全量拒收）。
+  // 出厂即开：这是「让产物信息更全」的能力，不是「拦错误」的门。
+  // kill-switch：置 false → 正文不写「## 适用模型」段、frontmatter 不带模型字段
+  // （回到 2026-10-03 之前的行为）。判据 findings 也一并静音。
+  model_scope_enabled: z.boolean().default(true),
+  // 单次技能最多记录几个模型（超出的按占比截断，只留在 manifest 完整清单里）。
+  // 防某个会话在多模型间反复切换时 frontmatter 撑爆。
+  model_scope_max_models: z.number().int().min(1).default(8),
 });
 
 export const DEFAULT_CONFIG = Object.freeze(ConfigSchema.parse({}));
@@ -403,6 +468,9 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'orphan_sweep_ttl_minutes',
   'semantic_window_radius',
   'semantics_quality_gate_enabled',
+  // 模型归属标注（2026-10-03）：出问题先关再查，不用改代码不用重启
+  'model_scope_enabled',
+  'model_scope_max_models',
   // ── LLM 接入（2026-09-18）：两个接入点全部可运行时启停（K51 kill-switch）
   // 出问题先关再查，不用改代码不用重启。注意运行时改的是**内存态**，
   // 重启还原为 patch.yml 的值。

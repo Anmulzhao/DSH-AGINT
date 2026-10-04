@@ -21,6 +21,15 @@
       "provides": [
         "agint.skillAutocreate"
       ],
+      "consumes": [
+        "agents",
+        "agint.eventBus.publish",
+        "agint.evolution",
+        "agint.qualitySandbox",
+        "agint.qualityStatic",
+        "skills",
+        "subagents"
+      ],
       "events": [
         "skill-autocreate.pattern-detected",
         "skill-autocreate.candidate-created",
