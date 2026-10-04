@@ -37,6 +37,10 @@ secrets/
 
 # 安装临时产物
 install/.tmp/
+
+# 智进帧生成物（tools/zhijin-frames/render.cjs 产出，可随时重跑重建）
+tools/zhijin-frames/dist/
+tools/zhijin-frames/dist-*/
 # bundle 传输文件
 *.bundle
 
