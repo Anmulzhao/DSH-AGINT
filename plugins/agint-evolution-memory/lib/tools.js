@@ -166,15 +166,16 @@ function apply(ctx) {
       'Run L1-L4 decay scan on evolution memory entries. ' +
       'Side-effect: downgrades stale entries; clear L4 entries resolved/replaced and 730+ days stale when apply=true.',
     parameters: {
-      opts: { type: 'object', additionalProperties: true,
-        description: 'DecayScanOptions: { apply?: boolean, dryRun?: boolean }' },
+      apply: { type: 'boolean', description: 'Set true to apply the decay actions. Defaults to false (dry-run).' },
+      dryRun: { type: 'boolean', description: 'Explicit dry-run. Defaults to false.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: `evolution_decayScanRun: ${JSON.stringify(v)}` }],
     },
     execute(args) {
-      return decayScanRun(args.opts || {}).then((s) => JSON.parse(JSON.stringify(s)));
+      return decayScanRun({ apply: args?.apply === true, dryRun: args?.dryRun === true })
+        .then((s) => JSON.parse(JSON.stringify(s)));
     },
   }));
 
@@ -203,18 +204,18 @@ function apply(ctx) {
     name: 'evolution_ledgerRebuildApply',
     description:
       'Append reconstructed history entries to the evolution ledger through the ledger service (the only legal write path). ' +
-      'ASK-gated — ledger writes. Default is dry-run: pass { opts: { apply: true } } to write. ' +
+      'ASK-gated — ledger writes. Default is dry-run: pass { apply: true } to write. ' +
       'Refuses when the chain already holds live (non-reconstructed) entries (§4.3.5 timing constraint) or when fewer than 5 entries are evidenced.',
     parameters: {
-      opts: { type: 'object', additionalProperties: true,
-        description: 'RebuildOptions: { apply?: boolean } — apply defaults to false' },
+      apply: { type: 'boolean',
+        description: 'Pass true to write the planned entries into the ledger. Defaults to false (dry-run).' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: `evolution_ledgerRebuildApply: ${JSON.stringify(v)}` }],
     },
     execute(args) {
-      return ledger.rebuild({ apply: args?.opts?.apply === true }).then((s) => JSON.parse(JSON.stringify(s)));
+      return ledger.rebuild({ apply: args?.apply === true }).then((s) => JSON.parse(JSON.stringify(s)));
     },
   }));
 
@@ -225,15 +226,20 @@ function apply(ctx) {
       'Read evolution_log merged view (buffer + storage). ' +
       'Sprint 10 v0.6.4 #8: read-side merge covers in-flight buffered entries.',
     parameters: {
-      opts: { type: 'object', additionalProperties: true,
-        description: 'RangeOptions: { fromDate?, toDate?, limit? }' },
+      fromDate: { type: 'string', description: 'Inclusive lower bound, ISO date-time. Optional.' },
+      toDate: { type: 'string', description: 'Inclusive upper bound, ISO date-time. Optional.' },
+      limit: { type: 'number', description: 'Max rows to return. Defaults to 200.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args) {
-      return asObjectResult(await readLogRangeMerged(args.opts || {}));
+      return asObjectResult(await readLogRangeMerged({
+        ...(args?.fromDate === undefined ? {} : { fromDate: args.fromDate }),
+        ...(args?.toDate === undefined ? {} : { toDate: args.toDate }),
+        ...(args?.limit === undefined ? {} : { limit: args.limit }),
+      }));
     },
   }));
 
@@ -242,15 +248,22 @@ function apply(ctx) {
     description:
       'Linear-scan + lowercase substring query on failure_pattern table (cap 100).',
     parameters: {
-      opts: { type: 'object', additionalProperties: true,
-        description: 'QueryOptions: { keyword?, category?, severity?, limit? }' },
+      keyword: { type: 'string', description: 'Lowercase substring match against the entry. Optional.' },
+      category: { type: 'string', description: 'Exact category match. Optional.' },
+      severity: { type: 'string', description: 'Exact severity match. Optional.' },
+      limit: { type: 'number', description: 'Max rows to return. Optional.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args) {
-      return asObjectResult(await queryFailures(args.opts || {}));
+      return asObjectResult(await queryFailures({
+        ...(args?.keyword === undefined ? {} : { keyword: args.keyword }),
+        ...(args?.category === undefined ? {} : { category: args.category }),
+        ...(args?.severity === undefined ? {} : { severity: args.severity }),
+        ...(args?.limit === undefined ? {} : { limit: args.limit }),
+      }));
     },
   }));
 
@@ -259,15 +272,18 @@ function apply(ctx) {
     description:
       'Linear-scan + lowercase substring query on success_template table (cap 50).',
     parameters: {
-      opts: { type: 'object', additionalProperties: true,
-        description: 'QueryOptions: { keyword?, limit? }' },
+      keyword: { type: 'string', description: 'Lowercase substring match against the entry. Optional.' },
+      limit: { type: 'number', description: 'Max rows to return. Optional.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args) {
-      return asObjectResult(await queryTemplates(args.opts || {}));
+      return asObjectResult(await queryTemplates({
+        ...(args?.keyword === undefined ? {} : { keyword: args.keyword }),
+        ...(args?.limit === undefined ? {} : { limit: args.limit }),
+      }));
     },
   }));
 
@@ -276,15 +292,20 @@ function apply(ctx) {
     description:
       'Range query on evolution_log: { fromDate, toDate, limit=200 }.',
     parameters: {
-      range: { type: 'object', additionalProperties: true,
-        description: 'RangeOptions: { fromDate?, toDate?, limit? }' },
+      fromDate: { type: 'string', description: 'Inclusive lower bound, ISO date-time. Optional.' },
+      toDate: { type: 'string', description: 'Inclusive upper bound, ISO date-time. Optional.' },
+      limit: { type: 'number', description: 'Max rows to return. Defaults to 200.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args) {
-      return asObjectResult(await getLogRange(args.range || {}));
+      return asObjectResult(await getLogRange({
+        ...(args?.fromDate === undefined ? {} : { fromDate: args.fromDate }),
+        ...(args?.toDate === undefined ? {} : { toDate: args.toDate }),
+        ...(args?.limit === undefined ? {} : { limit: args.limit }),
+      }));
     },
   }));
 

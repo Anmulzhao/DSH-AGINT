@@ -1,5 +1,41 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.13 (2026-10-04) — ⚠️ 破坏性：5 个工具的 `opts` 包装层拆平为扁平参数
+
+### 为什么改
+`opts: { type: 'object', additionalProperties: true }` 把每个字段的
+类型与语义全塞进一句 description 里，宿主侧工具面板**看不到任何字段**，
+模型只能靠猜。拆平后每个参数有自己的 `type` 与 `description`。
+
+### 受影响的 5 个工具（旧 → 新）
+
+| 工具 | 旧参数 | 新参数 |
+|---|---|---|
+| `evolution_decayScanRun` | `opts: { apply?, dryRun? }` | `apply: boolean`、`dryRun: boolean` |
+| `evolution_ledgerRebuildApply` | `opts: { apply? }` | `apply: boolean` |
+| `evolution_readLogRangeMerged` | `opts: { fromDate?, toDate?, limit? }` | `fromDate: string`、`toDate: string`、`limit: number` |
+| `evolution_queryFailures` | `opts: { keyword?, category?, severity?, limit? }` | 四个参数各自扁平 |
+| `evolution_queryTemplates` | `opts: { keyword?, limit? }` | `keyword: string`、`limit: number` |
+
+### ⚠️ 调用方必须改
+
+旧写法 `{ opts: { apply: true } }` 在新 schema 下**不会报错，会静默变成 dry-run**
+（`args.opts` 为 undefined ⇒ 三个参数全取默认值）。
+⚠️ 其中 `evolution_ledgerRebuildApply` 是 **ASK-gated 写操作** ——
+静默退化成 dry-run 是**安全方向**，但会让"以为写了其实没写"。
+
+**服务调用不受影响**：`ctx.get('agint.evolutionMemory').decayScanRun({ apply: true })`
+走的是服务函数签名，本来就是扁平参数（`agint-cron/lib/jobs.js:52` 已在用）。
+
+**迁移写法**：`{ opts: { apply: true } }` ⇒ `{ apply: true }`。
+
+### 验证
+
+- `bin/check-tool-schemas.mjs`：26 文件 / **116 个 schema 字面量全部编译通过，0 invalid**。
+- 插件测试 `test/*.test.mjs`：**180/180 通过**。
+- 生产侧证据：`agint_tool_stats.jsonl` 里这 5 个工具 **30 天零调用记录**
+  ⇒ 实际破坏面为零（`evolution_stats` / `evolution_getLogRange` 未改，仍带 `opts`）。
+
 ## 0.6.12 (2026-10-04) — Config schema 声明 repoRoot（0.6.11 的修法当时不生效，实跑钉出）
 
 ### 症状
