@@ -619,18 +619,21 @@ log "3/4 同步 bundle 挂载层 → $BUNDLE_PATCH_DST"
 mkdir -p "$BUNDLE_DST"
 backup "patch" "$BUNDLE_PATCH_DST"
 
-# 3a. 抓取本机已存在的机器私有 override（**必须在 cp 之前**）。
-#     背景：cordis.patch.yml 是**两机共用的模板**，而 repoRoot 这类机器私有绝对路径
-#     按 AGENTS.md:16 红线不入库 ⇒ 各机真值只住在 $DSH_HOME 侧这份副本（HOME override）。
-#     实测事故（2026-10-04 20:30）：另一会话 deploy family-panel 0.2.3 时，下面这行
-#     `cp -f` 把生效位整文件覆盖回模板值，麒麟机的 override 被**静默**冲掉
-#     （事后生效位与仓库模板 md5 完全相同）⇒ frozen-anchor 每日 10:30 重新硬失败。
-#     方案 1（老板 2026-10-04 拍板）：部署时**保留**本机 override。
+# 3a. 抓取模板值与本机已存在的 override（**都必须在 cp 之前**）。
+#     背景：cordis.patch.yml 是**两机共用的模板**。机器私有绝对路径按 AGENTS.md:16
+#     红线不入库，早期靠「各机手改 $DSH_HOME 侧副本（HOME override）」解决；实测事故
+#     （2026-10-04 20:30）：另一会话 deploy family-panel 0.2.3 时，下面这行 `cp -f`
+#     把生效位整文件覆盖回模板值，麒麟机 override 被**静默**冲掉（事后生效位与仓库
+#     模板 md5 完全相同）⇒ frozen-anchor 每日 10:30 重新硬失败。
+#     现在模板改用 `!!js` 加载时求值（见仓库 cordis.patch.yml 两处 repoRoot），于是：
+#       模板值是 `!!js…`  ⇒ **不保留**：表达式才是本机真值来源，强行保留会把
+#                        旧字面量钉死、让 AGINT_REPO_ROOT 逃生口失效（本条即那次事故的
+#                        同类隐患：机制被静默冻结）。
+#       模板值是字面量    ⇒ 保留本机 override（老模板/未来新增的机器私有键仍受保护）。
 #     只认 agint-evolution-driver 段里那一处 repoRoot；要扩到别的机器私有键时，
-#     在下面两个正则里各加一条即可（键 → 该机真值 → 部署后不被模板冲掉）。
-PATCH_KEPT_REPO_ROOT=""
-if [ -f "$BUNDLE_PATCH_DST" ]; then
-  PATCH_KEPT_REPO_ROOT="$(python3 - "$(winpath "$BUNDLE_PATCH_DST")" <<'PY' 2>/dev/null
+#     在下面两个正则里各加一条即可。
+patch_read_repo_root() {  # $1=文件 → 打印该文件 agint-evolution-driver 段的 repoRoot 原值（无则空）
+  python3 - "$(winpath "$1")" <<'PY' 2>/dev/null || true
 import re, sys
 try:
     text = open(sys.argv[1], encoding='utf-8').read()
@@ -640,18 +643,26 @@ except OSError:
 m = re.search(r'-\s+id:\s+agint-evolution-driver\b(?:(?!-\s+id:).)*?repoRoot:\s*(\S[^\n]*)', text, re.S)
 print(m.group(1).strip() if m else '')
 PY
-)"
-fi
+}
+PATCH_TPL_REPO_ROOT=""
+[ -f "$BUNDLE_PATCH_SRC" ] && PATCH_TPL_REPO_ROOT="$(patch_read_repo_root "$BUNDLE_PATCH_SRC")"
+PATCH_KEPT_REPO_ROOT=""
+[ -f "$BUNDLE_PATCH_DST" ] && PATCH_KEPT_REPO_ROOT="$(patch_read_repo_root "$BUNDLE_PATCH_DST")"
 
 cp -f "$BUNDLE_PATCH_SRC"    "$BUNDLE_PATCH_DST"    || die "bundle patch 复制失败: $BUNDLE_PATCH_SRC"
 
-# 3b. 写回 override（只在与模板值不同时才动手；相同 = 这台机没设过 override，静默跳过）。
-if [ -n "$PATCH_KEPT_REPO_ROOT" ]; then
-  if [ "$DRY_RUN" = "1" ]; then
-    log "   [DRY] 将保留本机 repoRoot override：$PATCH_KEPT_REPO_ROOT"
-  else
-    python3 - "$(winpath "$BUNDLE_PATCH_DST")" "$PATCH_KEPT_REPO_ROOT" <<'PY' \
-      || warn "保留 repoRoot override 失败（槽里是模板值，frozen-anchor 等依赖本机路径的 job 会失败）"
+# 3b. 写回 override（模板是 `!!js` 表达式时不写回，见上方注释）。
+case "$PATCH_TPL_REPO_ROOT" in
+  '!!js'*)
+    log "   ✓ 模板用 !!js 求值 repoRoot，不做保留（各机加载时自算，逃生口 AGINT_REPO_ROOT 有效）"
+    ;;
+  *)
+    if [ -n "$PATCH_KEPT_REPO_ROOT" ]; then
+      if [ "$DRY_RUN" = "1" ]; then
+        log "   [DRY] 将保留本机 repoRoot override：$PATCH_KEPT_REPO_ROOT"
+      else
+        python3 - "$(winpath "$BUNDLE_PATCH_DST")" "$PATCH_KEPT_REPO_ROOT" <<'PY' \
+          || warn "保留 repoRoot override 失败（槽里是模板值，frozen-anchor 等依赖本机路径的 job 会失败）"
 import re, sys
 path, keep = sys.argv[1], sys.argv[2]
 text = open(path, encoding='utf-8').read()
@@ -665,8 +676,10 @@ open(path, 'w', encoding='utf-8', newline='').write(
     text[:m.start(2)] + keep + text[m.end(2):])
 print(f'[AGINT]   ✓ 保留本机 repoRoot override：{keep}（模板值「{m.group(2).strip()}」已让位）')
 PY
-  fi
-fi
+      fi
+    fi
+    ;;
+esac
 
 cp -f "$BUNDLE_MANIFEST_SRC" "$BUNDLE_MANIFEST_DST" || die "bundle package.json 复制失败: $BUNDLE_MANIFEST_SRC"
 
