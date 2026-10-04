@@ -15,6 +15,18 @@
       "inject": ["timer", "agint.evolution", "agint.qualitySandbox"],
       "optionalInject": ["agint.eventBus.publish", "agint.eventBus.subscribe"],
       "provides": ["agint.qualityEvaluator"],
+      "consumes": [
+        "agint.eventBus.publish",
+        "agint.eventBus.subscribe",
+        "agint.evolution",
+        "agint.memory",
+        "agint.metrics",
+        "agint.promptSDK",
+        "agint.qualitySandbox",
+        "agint.rules",
+        "agint.selfModel.update",
+        "agint.toolStats"
+      ],
       "events": [],
       "tools": []
     },
