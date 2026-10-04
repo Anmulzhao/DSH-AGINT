@@ -1,0 +1,11 @@
+{
+  "name": "agint-mascot",
+  "version": "0.1.0",
+  "description": "AGINT 桌宠状态源：聚合 cron / metrics / selfModel / 插件通电四源，经 ctx.pet.announce 推进 dsh-pet 气泡。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  }
+}

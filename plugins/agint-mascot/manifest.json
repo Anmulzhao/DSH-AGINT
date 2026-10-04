@@ -1,0 +1,71 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-mascot",
+  "version": "0.1.0",
+  "description": "AGINT 桌宠状态源。读四个 AGINT 信号源（cron / metrics / selfModel / loader 通电）聚合成一条健康判定，经兄弟插件通道 ctx.pet.announce() 推进 dsh-pet 的气泡。核心纪律：读不到的状态源记 absent/warn 并扣分，绝不冒充健康；抛异常记 error 并把 tone 压到 low。宿主半单实例，无存储域、无文件、无网络、无 DOM。",
+  "main": "./lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.mascot"
+      ],
+      "consumes": [
+        "agint.cron",
+        "agint.metrics",
+        "agint.selfModel",
+        "loader",
+        "pet"
+      ],
+      "events": [],
+      "tools": [
+        "mascot_status"
+      ],
+      "optionalInject": [
+        "tools",
+        "loader",
+        "agint.cron",
+        "agint.metrics",
+        "agint.selfModel"
+      ]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "mountOrder": 96,
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "./test/smoke.mjs",
+      "command": "node ./test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "./README.md",
+      "serviceDocs": {
+        "agint.mascot": "桌宠状态源 host 半：四源探测聚合健康判定，经 ctx.pet.announce 推进宠物气泡"
+      }
+    },
+    "changelog": "./CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
