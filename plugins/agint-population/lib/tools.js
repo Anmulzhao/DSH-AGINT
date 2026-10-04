@@ -34,7 +34,7 @@ function apply(ctx) {
     name: 'population_evaluate',
     description:
       'Run the population fitness evaluator against a candidate spec. **ASK-gated**. ' +
-      'Exposed for unit-test parity; full tournament scheduling deferred to Batch 2.',
+      'Full tournament scheduling is not available (deferred to Batch 2).',
     parameters: {
       spec: { type: 'object', required: true, additionalProperties: true,
         description: 'Candidate spec: { id, kind, payload }' },

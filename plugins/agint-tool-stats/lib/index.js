@@ -138,10 +138,10 @@ function apply(ctx, config) {
   ctx.tools.register(defineTool({
     name: 'tool_stats_summary',
     description:
-      '查询最近一段时间内 DSH 工具使用画像：每个工具的调用次数、失败率、平均延迟、p95 延迟。' +
-      '数据来源：~/.dsh/storages/agint_tool_stats.jsonl（由 agint-tool-stats 插件持续追加）。' +
+      '查询工具使用画像：每个工具的调用次数、失败率、平均延迟、p95 延迟。' +
+      '数据来源：~/.dsh/storages/agint_tool_stats.jsonl。' +
       '典型用法：会话结束看一眼本周的工具表现，定位失败率高/延迟高的工具。' +
-      `限速：${5}/小时（防失控）。超限会抛错，可直接读 JSONL 文件获取原始数据。`,
+      `限速：${5}/小时（防失控）。超限抛错，此时可直接读上述 JSONL 取原始数据。`,
     parameters: {
       since: { type: 'string', description: '时间窗口，支持 s/m/h/d 后缀（如 "1h"、"7d"）；省略 = 全部' },
       limit: { type: 'number', description: '返回最多多少条（默认 20，按 calls 降序）' },

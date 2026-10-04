@@ -36,7 +36,7 @@ function apply(ctx) {
     name: 'evolve_review',
     description:
       '生成一份智进周复盘报告：采集 memory/wiki/cron/rules/metrics 数据快照 → 自动发现失效任务/断链/矛盾/规则冗余/指标恶化 → ' +
-      '写入 reviews/ 目录。周日由 cron 自动执行；手动调用用于即时复盘。返回报告路径与自动发现列表。',
+      '写入 reviews/ 目录。周一 07:30 由 cron 自动执行；手动调用用于即时复盘。返回报告路径与自动发现列表。',
     parameters: {
       date: { type: 'string', description: '报告日期 YYYY-MM-DD（默认今天）' },
       notes: { type: 'string', description: '附加备注（如本周关注点），会写入报告' },

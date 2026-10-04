@@ -26,9 +26,8 @@ function apply(ctx) {
     name: 'agint_search',
     description:
       'Cross-domain unified search across agint memory (long-term principles) ' +
-      'and agint wiki (knowledge files). Returns a merged list of hits tagged ' +
-      'by source. Use this before manually cross-referencing memory_search + ' +
-      'wiki_search.',
+      'and agint wiki (knowledge files), returning merged hits tagged by source. ' +
+      'Use this before manually cross-referencing memory_search + wiki_search.',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword(s) to match.' },
       sources: {
