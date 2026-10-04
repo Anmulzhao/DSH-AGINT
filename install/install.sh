@@ -618,7 +618,56 @@ done
 log "3/4 同步 bundle 挂载层 → $BUNDLE_PATCH_DST"
 mkdir -p "$BUNDLE_DST"
 backup "patch" "$BUNDLE_PATCH_DST"
+
+# 3a. 抓取本机已存在的机器私有 override（**必须在 cp 之前**）。
+#     背景：cordis.patch.yml 是**两机共用的模板**，而 repoRoot 这类机器私有绝对路径
+#     按 AGENTS.md:16 红线不入库 ⇒ 各机真值只住在 $DSH_HOME 侧这份副本（HOME override）。
+#     实测事故（2026-10-04 20:30）：另一会话 deploy family-panel 0.2.3 时，下面这行
+#     `cp -f` 把生效位整文件覆盖回模板值，麒麟机的 override 被**静默**冲掉
+#     （事后生效位与仓库模板 md5 完全相同）⇒ frozen-anchor 每日 10:30 重新硬失败。
+#     方案 1（老板 2026-10-04 拍板）：部署时**保留**本机 override。
+#     只认 agint-evolution-driver 段里那一处 repoRoot；要扩到别的机器私有键时，
+#     在下面两个正则里各加一条即可（键 → 该机真值 → 部署后不被模板冲掉）。
+PATCH_KEPT_REPO_ROOT=""
+if [ -f "$BUNDLE_PATCH_DST" ]; then
+  PATCH_KEPT_REPO_ROOT="$(python3 - "$(winpath "$BUNDLE_PATCH_DST")" <<'PY' 2>/dev/null
+import re, sys
+try:
+    text = open(sys.argv[1], encoding='utf-8').read()
+except OSError:
+    sys.exit(0)
+# 只在 agint-evolution-driver 这个 - id: 块内找，别处同名键不误伤
+m = re.search(r'-\s+id:\s+agint-evolution-driver\b(?:(?!-\s+id:).)*?repoRoot:\s*(\S[^\n]*)', text, re.S)
+print(m.group(1).strip() if m else '')
+PY
+)"
+fi
+
 cp -f "$BUNDLE_PATCH_SRC"    "$BUNDLE_PATCH_DST"    || die "bundle patch 复制失败: $BUNDLE_PATCH_SRC"
+
+# 3b. 写回 override（只在与模板值不同时才动手；相同 = 这台机没设过 override，静默跳过）。
+if [ -n "$PATCH_KEPT_REPO_ROOT" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 将保留本机 repoRoot override：$PATCH_KEPT_REPO_ROOT"
+  else
+    python3 - "$(winpath "$BUNDLE_PATCH_DST")" "$PATCH_KEPT_REPO_ROOT" <<'PY' \
+      || warn "保留 repoRoot override 失败（槽里是模板值，frozen-anchor 等依赖本机路径的 job 会失败）"
+import re, sys
+path, keep = sys.argv[1], sys.argv[2]
+text = open(path, encoding='utf-8').read()
+m = re.search(r'(-\s+id:\s+agint-evolution-driver\b(?:(?!-\s+id:).)*?repoRoot:\s*)(\S[^\n]*)', text, re.S)
+if not m:
+    print('[AGINT]   ! 模板里没有 repoRoot 行，本机 override 未写回')
+    sys.exit(0)
+if m.group(2).strip() == keep:
+    sys.exit(0)          # 这台机本来就没 override（值与模板相同）⇒ 不动、不吵
+open(path, 'w', encoding='utf-8', newline='').write(
+    text[:m.start(2)] + keep + text[m.end(2):])
+print(f'[AGINT]   ✓ 保留本机 repoRoot override：{keep}（模板值「{m.group(2).strip()}」已让位）')
+PY
+  fi
+fi
+
 cp -f "$BUNDLE_MANIFEST_SRC" "$BUNDLE_MANIFEST_DST" || die "bundle package.json 复制失败: $BUNDLE_MANIFEST_SRC"
 
 # bundle 内解析入口：插件用裸包名 import 的官方包（@deepseek-ai/dsh-*）必须能在
