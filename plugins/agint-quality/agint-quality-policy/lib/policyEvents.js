@@ -28,7 +28,7 @@ import { shouldRollback, recordRollback, pickRollbackTarget } from './committee.
  */
 function buildDeployedPayload(t, decision) {
   return {
-    targetId: t?.targetId,
+    targetId: t?.targetId ?? '<unknown>', // 修 2026-10-05：评估结果缺 targetId 时值为 undefined，会击穿宿主 lossless JSON 校验（eventBus_inspect 报 value is not lossless JSON）
     decision: 'AUTO_DEPLOY',
     score: typeof t?.score === 'number' ? t.score : decision.score,
     reason: t?.reason ?? decision.reason ?? '',
@@ -46,7 +46,7 @@ function buildDeployedPayload(t, decision) {
 function buildRolledbackPayload(t, decision, rollbackTarget, rollbackReason) {
   const reason = `rollback:${rollbackReason ?? 'reject-rate-exceeded'} | ${t?.reason ?? decision.reason ?? ''}`.slice(0, 500);
   return {
-    targetId: t?.targetId,
+    targetId: t?.targetId ?? '<unknown>', // 修 2026-10-05：评估结果缺 targetId 时值为 undefined，会击穿宿主 lossless JSON 校验（eventBus_inspect 报 value is not lossless JSON）
     decision: 'REJECT',
     score: typeof t?.score === 'number' ? t.score : decision.score,
     reason,
