@@ -78,3 +78,8 @@ packages/
 
 # family-panel v2 夹具的运行时生成物（时间戳相对当前，不入库）
 plugins/agint-family-panel/test/fixtures/v2-home/storages/
+
+# 2026-09-21 一次性运维产物：host 侧 AGINT 插件同步（btrfs ACL 只读场景走 host root）。
+# 一次性用完即弃；插件源码的权威副本在仓库 plugins/ 下，勿把快照当交付物。
+agint-host-sync-*.tar.gz
+agint-host-sync-*.sh
