@@ -1,5 +1,6 @@
 /**
- * v2-data: /v2/data 的聚合层。L0.5（源码扫描）+ L1（storages 三源）+ manifest consumes。
+ * v2-data: /v2/data 的聚合层。L0.5（源码扫描）+ L1（storages 三源）+ manifest 声明消费
+ * （consumes ∪ optionalInject；声明同时作为 v2-scan 补边的白名单）。
  *
  * 纪律（设计稿 §2/D4）：
  *  - 每源独立降级：一源挂 → 该字段 {state:'error',reason}，其余照常，不装绿。
@@ -345,12 +346,21 @@ export function topLevelPluginDirs(pluginsDir) {
 }
 
 /**
- * 三形态 manifest 解析（spec.cordis / 顶层 cordis / 无 manifest 跳过），只收非空 consumes。
+ * 三形态 manifest 解析（spec.cordis / 顶层 cordis / 无 manifest 跳过），只收非空声明。
+ *
+ * 口径（2026-10-05 改）：声明消费 = `consumes` ∪ `optionalInject`（去重、保序）。
+ *  - 为什么并 optionalInject：两者都是「本插件要读别的服务」的契约，只是缺失时
+ *    一个报错一个降级。此前只读 consumes，导致把消费全写在 optionalInject 的
+ *    插件（agint-family-panel 三条）被算成「未声明」，判定层因此报它「从未接线」。
+ *  - 为什么**不并 inject**：inject 是宿主 DI 注入名（webServer / timer /
+ *    storageDomain），不写在 ctx.get 调用位。并进来实测多 2 条假腐化
+ *    （agint-quality-policy→storageDomain；agint-dream→agint.metrics 走注入参数），
+ *    2026-10-05 两口径对照同一冻结判据跑过。
  *
  * 身份口径见 pluginIdentities()：门面目录不产生身份，契约从真身读。
  *
  * @param {string} pluginsDir
- * @returns {Record<string,string[]>} 插件身份 → consumes 列表
+ * @returns {Record<string,string[]>} 插件身份 → 声明消费的服务键列表
  */
 function readManifestConsumes(pluginsDir) {
   const out = {};
@@ -359,8 +369,10 @@ function readManifestConsumes(pluginsDir) {
     if (!existsSync(file)) continue;
     try {
       const m = JSON.parse(readFileSync(file, 'utf8'));
-      const consumes = m?.spec?.cordis?.consumes ?? m?.cordis?.consumes ?? null;
-      if (Array.isArray(consumes) && consumes.length > 0) out[u.id] = consumes;
+      const c = m?.spec?.cordis ?? m?.cordis ?? {};
+      const pick = (k) => (Array.isArray(c[k]) ? c[k] : []);
+      const decl = [...new Set([...pick('consumes'), ...pick('optionalInject')])].filter(Boolean);
+      if (decl.length > 0) out[u.id] = decl;
     } catch { /* 坏 manifest 单插件跳过 */ }
   }
   return out;
@@ -544,14 +556,15 @@ export function collectV2Data(dirs, opts = {}) {
   if (!opts.force && hit && now - hit.builtAt < TTL_MS && hit.sig === sig) return hit.value;
 
   const payload = { ok: true, generatedAt: new Date(now).toISOString(), panelVersion: PANEL_VERSION };
+  // 契约先读：scanPlugins 的第二参要用它补边（v2-scan LITERAL_RE）。
+  try { payload.manifestConsumes = readManifestConsumes(dirs.pluginsDir); } catch { payload.manifestConsumes = {}; }
   try {
-    const r = scanPlugins(dirs.pluginsDir);
+    const r = scanPlugins(dirs.pluginsDir, payload.manifestConsumes);
     payload.scan = { hits: r.hits, provided: r.provided, familyDirs: r.familyDirs, units: r.units ?? [], scannedAt: r.scannedAt, errors: r.errors };
   } catch (e) { payload.scan = errOf(e); }
   try { payload.tools = aggTools(dirs.storagesDir, now); } catch (e) { payload.tools = errOf(e); }
   try { payload.cron = aggCron(dirs.storagesDir); } catch (e) { payload.cron = errOf(e); }
   try { payload.bus = aggBus(dirs.storagesDir, now); } catch (e) { payload.bus = errOf(e); }
-  try { payload.manifestConsumes = readManifestConsumes(dirs.pluginsDir); } catch { payload.manifestConsumes = {}; }
   try {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;

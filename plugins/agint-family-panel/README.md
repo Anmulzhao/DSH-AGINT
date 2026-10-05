@@ -11,7 +11,7 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 | 半 | 文件 | 职责 |
 |---|---|---|
 | host | `lib/index.js` | 开三条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）；不碰 DOM |
-| host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类）+ storages 三源聚合 + manifest consumes；每源独立降级，不装绿 |
+| host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类 + manifest 声明补边）+ storages 三源聚合 + 声明消费契约（`consumes` ∪ `optionalInject`，同时作补边白名单）；每源独立降级，不装绿 |
 | browser | `lib/client.js` | 注册到宿主自带席位；停靠面板**默认内嵌 v2 视图**（iframe 走文档相对 `api/agint-family/v2`），一键可切 v1 名册（分组/行状态/信号），另有「新标签页打开」逃生口；不接管任何宿主 DOM |
 | asset | `assets/panel-v2.html` | v2 整页前端（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
 

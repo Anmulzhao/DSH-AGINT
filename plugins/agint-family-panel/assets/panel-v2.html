@@ -474,7 +474,7 @@ ANOM=[];
       openvikingMemory / dshHome / profilesDir / sessionQuery / sessionPersistence /
       agentDefaultModel / goals / approval / layout 是**宿主服务键或宿主配置键**，
       本仓不可能 provide，拿它们报「无提供方」是定义错误（v2-scan v0.3.0 起纳入扫描）。
-   ② 「从未接线」只在**该服务确实被声明为消费**（manifest consumes）时才成立。
+   ② 「从未接线」只在**该服务确实被声明为消费**（manifest consumes ∪ optionalInject）时才成立。
       quality-static 是 checker：它扫别的插件源码里的字面量 token，自己的 ctx 命中
       为 0 是职责，不是断线。
    ③ 「僵尸候选」按插件形态豁免：容器 / 纯函数库 / 纯工具 / SDK / 未挂载 的零产出
@@ -484,21 +484,43 @@ const isFamilyKey=svc=>svc.startsWith("agint.");
 /* 从未接线：**只在 manifest 声明了该服务、而代码里没有可执行 get 时**才成立。
    ⛔ 早期版本用「code 边为 0 且有注释命中」当判据，会把 14 个正常插件全列进来
       （它们代码里有大量 code 边，只是注释里也提了别的服务）—— 噪音远大于信号。
+   ⛔ 2026-10-05 再收一刀：**没有任何声明的插件一律不报**（下面 decl.length===0 直接 continue）。
+      此前那个分支照样报「从未接线」并把注释行当证据，实测把 agint-family-panel 自己
+      列了进去 —— 而它 `lib/index.js:431` 有可执行 `ctx.get('agint.eventBus')`，
+      被列出的 `lib/v2-scan.js:13/48/62` 全是该文件 docblock 里的**反例说明**。
+      判据②的本意就是「声明了却没接线」：无声明 ⇒ 无可判契约 ⇒ 不进表。
    ⛔ checker 插件（存在 lib/checkers/ 目录，如 quality-static）扫的是别的插件源码里
-      的字面量 token，自己不消费任何服务，code 边为 0 是职责，必须排除。 */
+      的字面量 token，自己不消费任何服务，code 边为 0 是职责，必须排除。
+   口径：MANIFEST_CONSUMES 自 2026-10-05 起 = consumes ∪ optionalInject（宿主 DI 的
+      inject 不算消费，理由见 v2-data.js readManifestConsumes）。 */
+/* 同族即同一依赖（2026-10-05）：cordis 服务键是点分层级。声明命名空间、代码取子键
+   （manifest 写 agint.eventBus，代码调 ctx.get('agint.eventBus.publish')）是本仓
+   主流写法（compress-guard / curator / curriculum / diagnosis / metrics / mount /
+   skill-autocreate 七个插件皆如此），反向同理。按严格等值比会把它们全报成
+   「声明了却没接线」——并 optionalInject 后实测凭空多出 11 条假腐化。
+   判据：声明键与命中键互为前缀（K 与 K.x）即算有依据。 */
+const famIn=(svc,arr)=>arr.some(k=>k===svc||k.startsWith(svc+".")||svc.startsWith(k+"."));
+const codeSvcs=(g)=>[...g.code.keys()];
+const commentSvcs=(g)=>g.comment.map(c=>c.svc);
+const umbrellaSvcs=(g)=>g.umbrella.map(u=>u.svc);
+const hasCode=(g,s)=>famIn(s,codeSvcs(g));
+const hasComment=(g,s)=>famIn(s,commentSvcs(g));
+const hasUmbrella=(g,s)=>famIn(s,umbrellaSvcs(g));
+/** 无任何同族依据（code/注释/伞键都没提到）= 声明悬空。 */
+const unbackedOf=(g,s)=>!hasCode(g,s)&&!hasComment(g,s)&&!hasUmbrella(g,s);
+/** 只有注释或伞键依据、可执行代码里没有 = 仅注释。 */
+const commentOnlyOf=(g,s)=>!hasCode(g,s)&&(hasComment(g,s)||hasUmbrella(g,s));
 for(const [pl,g] of Object.entries(byPlugin)){
   if(g.code.size>0) continue;
   if((PLUGIN_KINDS[pl]||{}).checker) continue;
   const decl=MANIFEST_CONSUMES[pl]||[];
-  const unbacked=decl.filter(s=>!g.comment.some(c=>c.svc===s)&&!g.umbrella.some(u=>u.svc===s));
-  const commented=decl.filter(s=>g.comment.some(c=>c.svc===s));
-  if(decl.length===0){
-    ANOM.push({v:"从未接线",o:pl,ev:g.comment.map(c=>`${c.file}:${c.line}`).join("、"),
-      note:"代码 0 条可执行 get，且 manifest 未声明 consumes。注释里提到的服务无法判定是否为真依赖，需人工确认后补契约或删注释。"});
-  }else if(unbacked.length||commented.length){
+  if(decl.length===0) continue;
+  const unbacked=decl.filter(s=>unbackedOf(g,s));
+  const commented=decl.filter(s=>commentOnlyOf(g,s)&&hasComment(g,s));
+  if(unbacked.length||commented.length){
     ANOM.push({v:"从未接线",o:pl,
       ev:[...commented.map(s=>`${s}(仅注释)`),...unbacked].join("、"),
-      note:`manifest 声明 ${decl.length} 个consumes，其中 ${commented.length} 个仅在注释里出现、${unbacked.length} 个代码与注释皆无。`});
+      note:`manifest 声明 ${decl.length} 个消费键（consumes ∪ optionalInject），其中 ${commented.length} 个仅在注释里出现、${unbacked.length} 个代码与注释皆无。`});
   }
 }
 const npBySvc={};
@@ -511,14 +533,14 @@ for(const [pl,g] of Object.entries(byPlugin)){
   if(MANIFEST_CONSUMES[pl]) continue;
   if(g.code.size>=5) undeclared.push(`${pl}（${g.code.size} 条边）`);
 }
-ANOM.push({v:"manifest 漏写",o:`${undeclared.length} 个插件有 ≥5 条代码边但无 consumes 声明`,
+ANOM.push({v:"manifest 漏写",o:`${undeclared.length} 个插件有 ≥5 条代码边但无消费声明`,
   ev:undeclared.slice(0,6).join("、")+(undeclared.length>6?` …共 ${undeclared.length}`:""),
-  note:"consumes 覆盖率 "+Object.keys(MANIFEST_CONSUMES).length+"/"+FAMILY_DIRS.length+"。依赖是真的，契约没跟上。"});
+  note:"声明消费覆盖率（consumes ∪ optionalInject）"+Object.keys(MANIFEST_CONSUMES).length+"/"+FAMILY_DIRS.length+"。依赖是真的，契约没跟上。"});
 for(const [pl,decl] of Object.entries(MANIFEST_CONSUMES)){
   const g=byPlugin[pl]; if(!g) continue;
-  const missing=decl.filter(s=>!g.code.has(s)&&!g.comment.some(c=>c.svc===s)&&!g.umbrella.some(u=>u.svc===s));
-  const commentOnly=decl.filter(s=>g.code.size===0&&g.comment.some(c=>c.svc===s));
-  if(missing.length) ANOM.push({v:"文档腐化",o:pl,ev:missing.join("、"),note:"manifest consumes 声明了这些服务，代码扫描（含注释）无对应命中。"});
+  const missing=decl.filter(s=>unbackedOf(g,s));
+  const commentOnly=decl.filter(s=>commentOnlyOf(g,s));
+  if(missing.length) ANOM.push({v:"文档腐化",o:pl,ev:missing.join("、"),note:"manifest 消费声明（consumes ∪ optionalInject）里有这些服务，代码扫描（含注释）无同族命中。"});
   if(commentOnly.length) ANOM.push({v:"文档腐化",o:pl,ev:commentOnly.join("、"),note:"声明的服务只在注释里出现，可执行代码未调用。"});
 }
 /* 订阅 → 投递对差（评审 3.3）：event-bus v0.7.1 起提供 agint.eventBus.subscriptions

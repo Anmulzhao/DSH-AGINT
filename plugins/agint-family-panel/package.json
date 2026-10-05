@@ -1,6 +1,6 @@
 {
   "name": "agint-family-panel",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "AGINT family panel: v1 native docked panel (groups, row state, live signals) plus a v2 full-page board (Q1 dependency topology / Q2 measured output / Q3 decay verdicts) served from the same loopback host half. Data is computed live from source scanning (L0.5) and the three DSH_HOME storages, with TTL+mtime caching and per-source degradation.",
   "type": "module",
   "main": "lib/index.js",

@@ -1,12 +1,12 @@
 {
   "generatedFrom": "repo plugins/ (DSH-AGINT)",
-  "generatedAt": "2026-10-04T13:40:00.000Z",
+  "generatedAt": "2026-10-05T13:45:00.000Z",
   "counts": {
-    "code": 173,
-    "comment": 40,
-    "umbrella": 15
+    "code": 189,
+    "comment": 41,
+    "umbrella": 0
   },
-  "providedKeys": 96,
-  "familyDirs": 37,
-  "note": "v0.3.0 重冻（2026-10-04，修面板 6 条误报）。上一版 104/32/7 是**扫描器能力不足**下的计数，不是真值；本次三处口径扩张，逐项归因（无消失边、无误报边，均已逐条 grep 回原文核对）：① 嵌套插件目录：quality 家族的 eval/policy/report/sandbox/contract 真身住在 plugins/agint-quality/<name>/lib，此前只扫顶层 lib（顶层 agint-quality 无 lib）⇒ 漏扫 code 37 / comment 3 / umbrella 1，provided 84→96（agint.qualityEvaluator / agint.qualityPolicy / agint.qualityReporter 三个真实提供方此前报「无提供方」）。② 键前缀：不再只认 agint.*，宿主服务键纳入扫描 ⇒ code +22（agents 5 / subagents 4 / sandbox 3 / agentDefaultModel 2 / approval·dshHome·goals·openvikingMemory·profilesDir·sessionPersistence·sessionQuery·skills 各 1）。③ 间接取服务形态：本仓薄包装 const dep = (n) => ctx.get(n)（evolution-driver 6 文件 / mutator softDepOrReturn）此前不算边 ⇒ evolution-driver code 边 0→9，agint.evolve / agint.mutator / agint.population / agint.qualityPolicy 等原本被误判「从未接线 + 文档腐化」的依赖现已被认出。同时排除浏览器半 lib/client.js（其 ctx 是 React props，非 cordis 上下文；否则 layout 被当服务键）。umbrella 7→15 的增量来自嵌套目录里的裸命名空间取键。计数漂移超容差时人工对账后重新冻结。"
+  "providedKeys": 97,
+  "familyDirs": 38,
+  "note": "2026-10-05 重冻（修「agint-family-panel 被误判从未接线」+「agint-mascot 被误判文档腐化」）。归因方法：`git show HEAD:plugins/agint-family-panel/lib/v2-scan.js` 导出为临时模块，与改后版对**同一份工作树**各跑一遍 scanPlugins('plugins') 对照 —— HEAD code 174 / comment 41 / umbrella 15 / provided 97；改后 code 189 / comment 41 / umbrella 0 / provided 97；重分类 15 条、新增 0、消失 0。① 裸键自身被 provide 不再降级为 umbrella：agint.eventBus（event-bus 同 provide 裸键 + 7 个子键）、agint.diagnosis、agint.population、agint.mutator、agint.selfModel、agint.qualityEvaluator 六个键的 15 处取用是真边，逐条 grep 回 ctx.provide('…') 原文核对；运行时反证 = 面板 Q4 订阅表正是从 ctx.get('agint.eventBus') 读到生产 15 条订阅。umbrella 归 0 是本仓事实（命名空间裸键全部另有 provide），规则本身保留：只 provide 子键的形态仍会命中。② comment 40→41、provided 96→97 与本改动无关，是 2026-10-04 冻结后其他会话提交带来的漂移，本次一并记账。③ 声明补边（scanPlugins 第二参 declaredKeys）不影响本基线计数：基线用单参调用，走的是旧入口形态；补边效果的验收在 q3-verdicts.test.mjs（从未接线 0 行 / 悬空声明冻结集合）。上一版基线（code 173 / comment 40 / umbrella 15 / provided 96 / familyDirs 37，2026-10-04 v0.3.0）的三段归因文字见 CHANGELOG 0.2.3 与本文件历史。计数漂移超容差时人工对账后重新冻结。"
 }

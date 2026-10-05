@@ -1,5 +1,60 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.4 — 2026-10-05
+
+### 修两条误报判定：family-panel「从未接线」+ mascot「文档腐化」（判据与扫描口径）
+
+**为什么**：老板把 Q3 判定表贴出来要求逐条核实。结论：六行判定里四行是误报，根因全在
+面板自己身上，共四条：
+
+1. `lib/v2-scan.js` 的 umbrella 判据只查「有无子键」，不查裸键自身是否被 provide。
+   `agint.eventBus` 由 event-bus 同时 provide 裸键与 7 个子键 ⇒ `lib/index.js:431`
+   这条真边被降级为「不建边」⇒ family-panel 的 code 边数算成 0。
+2. 扫描器只认 `ctx.get('字面量')`。本仓另一类写法把服务名放在**声明表 / 多参包装器**
+   的实参位之外：mascot `probe(ctx, 'cron', 'agint.cron', 'list', …)` 与
+   `late(ctx, 'pet')`，family-panel `service: 'agint.cron'` ⇒ mascot 声明的 5 个服务
+   一个都看不见 ⇒ 被判「文档腐化」。
+3. 判据层 `assets/panel-v2.html` 有一条「`decl.length===0` 也照样报从未接线」的分支，
+   直接违反同文件判据②；它拿注释行当证据，把 family-panel 自己列进了表。
+   被列出的 `lib/v2-scan.js:13/48/62` 全是该文件 docblock 里的**反例说明**。
+4. `readManifestConsumes` 只读 `consumes`，把消费写在 `optionalInject` 的插件算成
+   「未声明」⇒ 覆盖率报 14/38，且第 3 条的分支因此被触发。
+
+**改了什么**：
+
+- `lib/v2-scan.js`：三分类先查裸键自身是否被 provide（是 → code）；新增第二参
+  `declaredKeys` 与 `LITERAL_RE`「声明补边」，三重闸门 = manifest 声明白名单 +
+  该行非注释态 + 同行未被直呼/间接形态命中。不传第二参即旧行为，单测口径不变。
+- `lib/v2-data.js`：声明消费 = `consumes` ∪ `optionalInject`（去重保序），并先于扫描
+  算出、作为白名单传给 `scanPlugins`。**不并 `inject`**：那是宿主 DI 注入名
+  （webServer / timer / storageDomain），不写在 ctx.get 调用位，并进来实测多 2 条
+  假腐化（`agint-quality-policy→storageDomain`、`agint-dream→agint.metrics` 走注入参数）。
+- `assets/panel-v2.html`：删 `decl.length===0` 分支；新增同族判据 `famIn`（声明 K、
+  代码取 K.x 视为同一依赖，反向同理）。本仓 7 个插件按命名空间声明、按子键取用，
+  严格等值比会凭空造 11 条假腐化。
+- `manifest.json`：补 `consumes: [agint.eventBus, agint.metrics, agint.cron, agint.selfModel]`；
+  version 0.2.2 → 0.2.4（package.json 早前已走 0.2.3，manifest 那份没跟上）。
+- `test/q3-verdicts.test.mjs`：判据 1 同步删分支；判据 2 改用与面板同口径的 `agint.`
+  前缀闸（补边会带出 tools / loader / pet 这类宿主键，本仓不可能 provide）；
+  判据 3 从「必须为 0」改为**冻结 5 条真实悬空声明**，新增一条即变红。
+- `test/fixtures/v2-scan-baseline.json`：重冻 189/41/0、provided 97、familyDirs 38，
+  附 HEAD 对照归因（同一工作树跑两遍：重分类 15 条、新增 0、消失 0）。
+
+**结果**（q3 真实数据回放，部署位 + 仓库位双口径）：从未接线 0 行（原 1 行误报）、
+无提供方 0 行、manifest 漏写 0、僵尸真候选 0、文档腐化 = 冻结的 5 个插件 / 7 条悬空声明；
+声明消费覆盖 14 → 25/38。七个测试文件全绿（含 smoke 15 组）。
+
+**新暴露的真实问题（待老板拍，本次不动别人家 manifest）**：5 条声明在代码里从不取用 ——
+`agint-event-bus→agint.memory`、`agint-input-gateway→agint.memory`、
+`agint-mount→agint.population.ingest`、
+`agint-population→agint.diagnosis / agint.qualitySandbox / agint.memory`、
+`agint-skill-graph→agint.skillAutocreate`。逐条 grep 过对应插件 `lib/`：前四条属
+契约写在前、接线没做（population 文档写「软依赖 6 个」，实取 3 个）；skill-graph 消费的是
+`skill-autocreate.*` 事件而非其服务。
+
+**未部署**：本次只改仓库位。生效需铺两槽（`.agint-bundle/plugins` + `profiles/web/plugins`）
+并重启，重启只能在 dsh 会话内发 `restart_request`。
+
 ## 0.2.3 — 2026-10-04
 
 ### storages home 认标探测（修「v2 三源全 ENOENT」，根治不依赖 DSH_HOME）

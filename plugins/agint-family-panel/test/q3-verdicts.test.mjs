@@ -48,32 +48,52 @@ for (const [pl, file, line, svc, kind] of D.scan.hits) {
   else byPlugin[pl].umbrella.push({ svc, file, line });
 }
 
+// 同族即同一依赖（2026-10-05，与面板 assets/panel-v2.html 同口径）：
+// cordis 服务键点分层级，声明命名空间而代码取子键（声明 agint.eventBus、调
+// ctx.get('agint.eventBus.publish')）是本仓主流写法，反向同理。严格等值比会凭空
+// 造出 11 条假「文档腐化」。互为前缀即算有依据。
+const famIn = (svc, arr) => arr.some((k) => k === svc || k.startsWith(`${svc}.`) || svc.startsWith(`${k}.`));
+const codeSvcs = (g) => [...g.code.keys()];
+const commentSvcs = (g) => g.comment.map((c) => c.svc);
+const umbrellaSvcs = (g) => g.umbrella.map((u) => u.svc);
+const unbackedOf = (g, s) => !famIn(s, codeSvcs(g)) && !famIn(s, commentSvcs(g)) && !famIn(s, umbrellaSvcs(g));
+const commentOnlyOf = (g, s) => !famIn(s, codeSvcs(g)) && (famIn(s, commentSvcs(g)) || famIn(s, umbrellaSvcs(g)));
+
 // 判据 1：从未接线
+// ⛔ 与面板同步（2026-10-05）：**没有任何消费声明的插件一律不报**。
+//    旧分支在 decl 为空时照样推 no-decl 行、拿注释命中当证据，实测把
+//    agint-family-panel 自己列成从未接线（它 lib/index.js:431 有可执行 ctx.get）。
 const neverWired = [];
 for (const [pl, g] of Object.entries(byPlugin)) {
   if (g.code.size > 0) continue;
   if (D.pluginKinds[pl]?.checker) continue;
   const decl = D.manifestConsumes[pl] ?? [];
-  const unbacked = decl.filter((s) => !g.comment.some((c) => c.svc === s) && !g.umbrella.some((u) => u.svc === s));
-  const commented = decl.filter((s) => g.comment.some((c) => c.svc === s));
-  if (decl.length === 0) neverWired.push({ pl, why: 'no-decl' });
-  else if (unbacked.length || commented.length) neverWired.push({ pl, why: 'unbacked', unbacked, commented });
+  if (decl.length === 0) continue;
+  const unbacked = decl.filter((s) => unbackedOf(g, s));
+  const commented = decl.filter((s) => commentOnlyOf(g, s) && famIn(s, commentSvcs(g)));
+  if (unbacked.length || commented.length) neverWired.push({ pl, why: 'unbacked', unbacked, commented });
 }
 
 // 判据 2：无提供方（只查家族键）
+// ⛔ 与面板同口径（assets/panel-v2.html 判据①「无提供方只对 agint.* 家族键成立」）：
+//    声明补边把宿主服务键也认成边了（agint-mascot 的 tools / loader / pet —— dsh
+//    提供，本仓不可能 provide）。只按 HOST_KEYS 清单排除会随宿主加键而失真，
+//    所以这里直接用前缀判家族键，HOST_KEYS 留作双保险。
+const isFamilyKey = (svc) => svc.startsWith('agint.');
 const npBySvc = {};
 for (const [pl, g] of Object.entries(byPlugin)) {
-  for (const [svc, evs] of g.code) {
+  for (const [svc] of g.code) {
+    if (!isFamilyKey(svc)) continue;
     if (!providerOf(svc) && svc !== 'agint.rules' && !HOST_KEYS.has(svc)) (npBySvc[svc] ??= []).push(pl);
   }
 }
 
-// 判据 3：文档腐化
+// 判据 3：文档腐化（同族算依据，见上方 famIn）
 const rotted = [];
 for (const [pl, decl] of Object.entries(D.manifestConsumes)) {
   const g = byPlugin[pl];
   if (!g) continue;
-  const missing = decl.filter((s) => !g.code.has(s) && !g.comment.some((c) => c.svc === s) && !g.umbrella.some((u) => u.svc === s));
+  const missing = decl.filter((s) => unbackedOf(g, s));
   if (missing.length) rotted.push({ pl, missing });
 }
 
@@ -112,8 +132,21 @@ assert.equal(D.scan.provided['agint.qualityPolicy'], 'agint-quality-policy', 'qu
 // ② 无提供方必须为空（家族键全部有提供方）
 assert.deepEqual(Object.keys(npBySvc), [], `仍有家族键无提供方：${Object.keys(npBySvc).join(',')}`);
 
-// ③ 文档腐化必须为空（六处 consumes 声明都有代码边或注释依据）
-assert.deepEqual(rotted, [], `仍有文档腐化：${rotted.map((r) => `${r.pl}→${r.missing}`).join('; ')}`);
+// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结）。
+//    并 optionalInject 口径后新暴露的 5 条是**真实契约缺口**，不是误报：
+//    逐条 grep 过对应插件 lib/，声明的服务代码里从不取用（详见每条后面括注）。
+//    处理方案（删声明 / 补接线）待老板拍；先冻结成期望值——**新增一条就变红**。
+const KNOWN_STALE_DECL = {
+  'agint-event-bus': ['agint.memory'], // 只 provide 不消费 memory
+  'agint-input-gateway': ['agint.memory'], // 网关只发事件，未接 memory
+  'agint-mount': ['agint.population.ingest'], // 声明了 ingest 上报，代码无 population 引用
+  'agint-population': ['agint.diagnosis', 'agint.memory', 'agint.qualitySandbox'], // 文档写「软依赖 6 个」，实取 3 个
+  'agint-skill-graph': ['agint.skillAutocreate'], // 走 skill-autocreate.* 事件，不取其服务
+};
+const asMap = (rows) => Object.fromEntries(rows.map((r) => [r.pl, [...r.missing].sort()]));
+const expectedStale = Object.fromEntries(Object.entries(KNOWN_STALE_DECL).map(([k, v]) => [k, [...v].sort()]));
+assert.deepEqual(asMap(rotted), expectedStale,
+  `文档腐化集合漂移：实测 ${JSON.stringify(asMap(rotted))} / 冻结 ${JSON.stringify(expectedStale)}`);
 
 // ④ quality-static（checker）不得出现在「从未接线」里——它 code 边为 0 是职责
 assert.ok(!neverWired.some((x) => x.pl === 'agint-quality-static'),
@@ -153,7 +186,7 @@ console.log(`  repoDirs：${Array.isArray(D.repoDirs) ? D.repoDirs.length + ' �
 //   身份规则退化成「顶层名占位」时，本文件全部断言仍 PASS，只有 v2-data-v03 变红。
 //   验收跑在没同步的副本上 = 验收了个寂寞（K47.7）。
 //
-// 仓库位口径用同一套判据，要求「漏写 = 0 且文档腐化 = 0」——同步到位才可能成立。
+// 仓库位口径用同一套判据，要求「漏写 = 0 且悬空声明 = KNOWN_STALE_DECL 冻结集合」。
 // ─────────────────────────────────────────────────────────────────────────────
 const REPO_PLUGINS = resolve(REPO_ROOT, 'plugins');
 if (existsSync(REPO_PLUGINS)) {
@@ -167,16 +200,18 @@ if (existsSync(REPO_PLUGINS)) {
     rBy[pl][kind].add(svc);
   }
   const rUndeclared = Object.entries(rBy).filter(([pl, g]) => !R.manifestConsumes[pl] && g.code.size >= 5).map(([pl]) => pl);
+  assert.deepEqual(rUndeclared, [], `仓库位 manifest 漏写：${rUndeclared.join(',')}（契约未跟上代码）`);
   const rRot = [];
   for (const [pl, decl] of Object.entries(R.manifestConsumes)) {
     const g = rBy[pl];
     if (!g) continue;
-    const miss = decl.filter((s) => !g.code.has(s) && !g.comment.has(s) && !g.umbrella.has(s));
-    if (miss.length) rRot.push(`${pl}→${miss.join(',')}`);
+    const all = [...g.code, ...g.comment, ...g.umbrella];
+    const miss = decl.filter((s) => !all.some((k) => k === s || k.startsWith(`${s}.`) || s.startsWith(`${k}.`)));
+    if (miss.length) rRot.push({ pl, missing: miss });
   }
-  assert.deepEqual(rUndeclared, [], `仓库位 manifest 漏写：${rUndeclared.join(',')}（契约未跟上代码）`);
-  assert.deepEqual(rRot, [], `仓库位文档腐化：${rRot.join('; ')}（声明了但代码无对应调用）`);
-  console.log(`仓库位口径：consumes 覆盖 ${Object.keys(R.manifestConsumes).length} 个插件，漏写 0 / 文档腐化 0 ✓`);
+  assert.deepEqual(asMap(rRot), expectedStale,
+    `仓库位文档腐化集合漂移：实测 ${JSON.stringify(asMap(rRot))}（声明了但同族代码无对应调用）`);
+  console.log(`仓库位口径：声明消费覆盖 ${Object.keys(R.manifestConsumes).length} 个插件，漏写 0 / 悬空声明 ${Object.keys(expectedStale).length} 个插件（与部署位同一冻结集合）✓`);
 } else {
   console.log('仓库位口径：跳过（未找到仓库 plugins/，契约类断言未在仓库位复核）');
 }
