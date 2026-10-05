@@ -299,11 +299,12 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 
   <!-- ═══════════ 事件链辅助 ═══════════ -->
   <div class="card panel" id="chain">
-    <h2>辅助 · 事件链（发布数=全历史实测；投递数=ring 窗口实测）</h2>
-    <div class="cap">「发布」列来自 <code>agint_event_bus.json/tables/events</code> 全量聚合，跨重启有效。
-    「投递」列来自 <code>agint.eventBus.deliveryByTopic</code>，<b>只覆盖 ring 窗口</b>：本进程生命周期 + 最近 2000 条发布，
-    重启即清零（悬停单元格看窗口起点）。窗口外的 topic 标「窗口外」，<b>不写0</b>——那是没测到，不是测到没有。
-    跨重启的 per-topic 投递数要events 表落<code>deliveries</code>，尚未做。</div>
+    <h2>辅助 · 事件链（发布数=全历史实测；投递数=全历史实测，存量行标 unknown）</h2>
+    <div class="cap">「发布」与「投递」两列都来自 <code>agint_event_bus.json/tables/events</code> 全量聚合，<b>跨重启有效</b>。
+    「投递」是 2026-10-05 起随事件落盘的新字段（<code>deliveries</code>）——
+    <b>此前写入的存量行没有它，永远补不回</b>，这类 topic 标 <code>unknown · 存量行</code> 而非 0；
+    部分行有数据的标 <code>≥</code>，因为那是<b>下界</b>不是全量。
+    悬停单元格看coverage 详情。若event-bus 版本过旧读不到全历史口径，会退回 ring 窗口口径并标「窗口外」。</div>
     <table>
       <thead><tr><th>topic</th><th class="num">发布（实测）</th><th>投递</th></tr></thead>
       <tbody id="tbodyChain"></tbody>
@@ -324,7 +325,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 // 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
-    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null;
+    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -622,6 +623,19 @@ if(DELIVERY&&DELIVERY.state==="ok"){
     ev:DELIVERY?.reason??"未接入 agint.eventBus.deliveryByTopic",
     note:"需 event-bus 提供 deliveryByTopic 出口并重启宿主后才可判。不猜。",amber:true});
 }
+/* 存量行（方案 A 的诚实边界）：这些行的投递数**永久未知**，不是 0。
+   数量会随时间被新写入行稀释，但已写入的历史永远补不回来——所以必须报。 */
+if(DELIVERY_H&&DELIVERY_H.state==="ok"&&DELIVERY_H.legacyRows>0){
+  ANOM.push({v:"投递数未知（存量行）",o:`${DELIVERY_H.legacyRows} / ${DELIVERY_H.scanned} 行无deliveries 字段`,
+    ev:`涉及 ${(DELIVERY_H.unknownDeliveryTopics||[]).length} 个 topic（全行皆存量）`,
+    note:"2026-10-05 起 publish 才把 deliveries 落盘。此前写入的行永久缺失该字段，**不能回填也不伪造**——"
+      +"事件链的「投递」列对这些 topic 显示 unknown而非 0。随新事件写入该比例会下降，但历史缺口不会消失。",
+    amber:true});
+}else if(DELIVERY_H&&DELIVERY_H.state==="error"){
+  ANOM.push({v:"投递全历史口径",o:"读取失败",
+    ev:DELIVERY_H.reason??"events 表读取异常",
+    note:"读不到全历史口径，已退回 ring 窗口口径（重启清零）。不显示半截数字。",amber:true});
+}
 if(Array.isArray(REPO_DIRS)){
   /* 名册口径 = 顶层目录名 ∪ **插件身份表 UNITS**（v2-scan 的 codeRoots 含嵌套一层）。
      只按顶层名核会把 agint-quality-policy 这类嵌套真身报成「运行态不在仓库」——
@@ -677,10 +691,12 @@ const AGES=[
  {label:"tool_stats",state:"ok",age:toolTotal.toLocaleString()+" 行 · "+rel(OBS.tools)},
  {label:"cron",state:"ok",age:CRON.length+" 任务 · "+rel(OBS.cron)},
  {label:"eventBus 发布",state:"ok",age:BUS.total.toLocaleString()+" 条 · 死信 "+BUS.deadletter+" · "+rel(OBS.bus)},
- {label:"eventBus 投递",state:(DELIVERY&&DELIVERY.state==="ok")?"ok":"warn",
-  age:(DELIVERY&&DELIVERY.state==="ok")
-    ? `deliveryByTopic() 已读：窗口内 ${(DELIVERY.topics||[]).length} 个 topic · 送达 ${DELIVERY.totals?DELIVERY.totals.delivered:0} · 死信 ${DELIVERY.totals?DELIVERY.totals.deadLettered:0} · 孤岛 topic ${(DELIVERY.orphanPublished||[]).length} · 窗口 ${DELIVERY.ring?DELIVERY.ring.size:0}/${DELIVERY.ring?DELIVERY.ring.capacity:"?"}${DELIVERY.ring&&DELIVERY.ring.full?"（已满）":""}`
-    : `unknown · ${(DELIVERY&&DELIVERY.reason)||"投递聚合不可得"}`},
+ {label:"eventBus 投递",state:(DELIVERY_H&&DELIVERY_H.state==="ok")?"ok":((DELIVERY&&DELIVERY.state==="ok")?"warn":"warn"),
+  age:(DELIVERY_H&&DELIVERY_H.state==="ok")
+    ? `全历史口径：${(DELIVERY_H.topics||[]).length} 个 topic · 送达 ${DELIVERY_H.totals&&DELIVERY_H.totals.delivered?DELIVERY_H.totals.delivered:0} · 死信 ${DELIVERY_H.totals&&DELIVERY_H.totals.deadLettered?DELIVERY_H.totals.deadLettered:0} · 存量行 ${DELIVERY_H.legacyRows}（投递数未知）`
+    : (DELIVERY&&DELIVERY.state==="ok"
+      ? `退回 ring 窗口口径：窗口内送达 ${DELIVERY.totals.delivered??0} · 孤岛 topic ${(DELIVERY.orphanPublished||[]).length}`
+      : `unknown · ${(DELIVERY_H&&DELIVERY_H.reason)||(DELIVERY&&DELIVERY.reason)||"投递聚合不可得"}`)},
  {label:"接线豁免表",state:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")?"ok":"warn",
   age:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")
     ? `${WIRING_EXEMPT.count} 条在册 · ${rel(WIRING_EXEMPT.observedAt)}（docs/wiring-exemptions.json）`
@@ -809,15 +825,33 @@ exportBtn.onclick=()=>{
 };
 
 // ── 事件链 / 伞键 ──────────────────────────────────────────────────
-/** 「投递」列渲染。DELIVERY 出口不可得时退回 unknown·无出口（琥珀），绝不拿推测填数。
- *  口径提醒写进 title：ring 窗口内（非全历史）、重启清零。 */
+/** 「投递」列渲染。**全历史口径优先**（DELIVERY_H，读 events 表⇒跨重启有效），
+ *  拿不到才退回 ring 窗口口径（DELIVERY）。两者都不可得才标 unknown·无出口。
+ *  ⛔ coverage 是可信度，不是装饰：legacyOnly 的行显示 unknown（不是 0）——
+ *     2026-10-05 之前的存量行没有 deliveries 字段，永远补不回。
+ *  ⛔ partial 的数字是**下界**，标题明说，不当全量报。
+ *  口径提醒写进 title：全历史 / ring 窗口、是否 partial。 */
 function deliveryCell(topic){
+  if(DELIVERY_H&&DELIVERY_H.state==="ok"){
+    const r=(DELIVERY_H.topics||[]).find(x=>x.topic===topic);
+    if(!r) return `<span class="tag umbrella" style="margin-left:0" title="events 表里没有这个 topic 的行">无行</span>`;
+    if(r.coverage==="legacyOnly")
+      return `<span class="tag umbrella" style="margin-left:0" title="该 topic 全部 ${r.rows} 行都是 2026-10-05 之前写入的，没有 deliveries 字段 ⇒ 投递数未知（不是 0）">unknown · 存量行</span>`;
+    const bits=[`${r.delivered} 送达`];
+    if(r.deadLettered) bits.push(`${r.deadLettered} 死信`);
+    const pre=r.coverage==="partial"?`≥ `:``;
+    const cov=r.coverage==="partial"
+      ? `⛔ 部分行有数据（${r.rowsWithDeliveries}/${r.rows}），这是**下界**不是全量`
+      : `全历史口径（${r.rows} 行全部带 deliveries）`;
+    const tip=`${cov}｜投递尝试 ${r.deliveryAttempts} 次 · 订阅者：${r.subscribers.join(", ")||"?"}`;
+    const bad=r.deadLettered;
+    return `<span style="color:var(--${bad?"warn":"ok"})" title="${esc(tip)}">${esc(pre+bits.join(" · "))}</span>`;
+  }
   if(!DELIVERY||DELIVERY.state!=="ok"){
     const why=(DELIVERY&&DELIVERY.reason)?DELIVERY.reason:"无查询出口";
     return `<span class="tag umbrella" style="margin-left:0" title="${esc(why)}">unknown · 无出口</span>`;
   }
   const r=(DELIVERY.topics||[]).find(x=>x.topic===topic);
-  // 该 topic 不在 ring 窗口内 = 窗口内没发布过，不是「投递 0」。
   if(!r) return `<span class="tag umbrella" style="margin-left:0" title="不在当前 ring 窗口内（自上次重启起最近 ${DELIVERY.ring?DELIVERY.ring.capacity:2000} 条发布）">窗口外</span>`;
   if(r.deliveryAttempts===0) return `<span class="tag umbrella" style="margin-left:0" title="窗口内发布过，但没有任何订阅者命中">0 · 无人订阅</span>`;
   const bits=[`${r.delivered} 送达`];
@@ -826,9 +860,9 @@ function deliveryCell(topic){
   if(r.failed) bits.push(`${r.failed} 失败`);
   if(r.other) bits.push(`${r.other} 其他`);
   const who=r.subscribers.length?r.subscribers.join(", "):"";
-  const tip=`窗口内发布 ${r.published} 次 · 投递尝试 ${r.deliveryAttempts} 次 · 订阅者：${who||"?"}`
-    +`（ring 窗口：自 ${DELIVERY.ring&&DELIVERY.ring.oldestOccurredAt?DELIVERY.ring.oldestOccurredAt.slice(0,19).replace("T"," "):"?"} 起，`
-    +`${DELIVERY.ring&&DELIVERY.ring.full?`已满 ${DELIVERY.ring.capacity} 条，更早的投递记录已被淘汰`:`未满 ${DELIVERY.ring?DELIVERY.ring.size:0}/${DELIVERY.ring?DELIVERY.ring.capacity:"?"}`}）`;
+  const tip=`ring 窗口口径：发布 ${r.published} 次 · 投递尝试 ${r.deliveryAttempts} 次 · 订阅者：${who||"?"}`
+    +`（自 ${DELIVERY.ring&&DELIVERY.ring.oldestOccurredAt?DELIVERY.ring.oldestOccurredAt.slice(0,19).replace("T"," "):"?"} 起，`
+    +`${DELIVERY.ring&&DELIVERY.ring.full?`已满 ${DELIVERY.ring.capacity} 条，更早的已被淘汰`:`未满 ${DELIVERY.ring?DELIVERY.ring.size:0}/${DELIVERY.ring?DELIVERY.ring.capacity:"?"}`}）`;
   const bad=r.deadLettered||r.failed;
   return `<span style="color:var(--${bad?"warn":"ok"})" title="${esc(tip)}">${esc(bits.join(" · "))}</span>`;
 }
@@ -837,7 +871,9 @@ tbodyChain.innerHTML=BUS.topics.map(([t,n])=>`<tr>
   <td class="num">${n.toLocaleString()}</td>
   <td>${deliveryCell(t)}</td></tr>`).join("")
   +`<tr><td class="name" style="color:var(--fg-3)">合计（${BUS.topics.length} 个 topic）</td><td class="num">${BUS.total.toLocaleString()}</td><td style="font-size:12px;color:var(--ok)">死信 ${BUS.deadletter}${
-    DELIVERY&&DELIVERY.state==="ok"?`　<span style="color:var(--fg-3)">窗口内送达 ${DELIVERY.totals.delivered??0}</span>`:""}</td></tr>`;
+    DELIVERY_H&&DELIVERY_H.state==="ok"
+      ? `　<span style="color:var(--fg-3)">全历史送达 ${DELIVERY_H.totals&&DELIVERY_H.totals.delivered?DELIVERY_H.totals.delivered:0} ·未知 ${(DELIVERY_H.unknownDeliveryTopics||[]).length} 个 topic（存量行）</span>`
+      : (DELIVERY&&DELIVERY.state==="ok"?`　<span style="color:var(--fg-3)">窗口内送达 ${DELIVERY.totals.delivered??0}</span>`:"")}</td></tr>`;
 umbList.innerHTML=HITS.filter(h=>h[4]==="umbrella").map(h=>
   `<li><span class="ev">${esc(h[0])} / ${esc(h[1])}:${h[2]}</span> → <code>${esc(h[3])}</code>（恒 undefined，不建边）</li>`).join("");
 
@@ -885,7 +921,7 @@ foot.innerHTML=`数据说明：
 ① 依赖边与 <code>文件:行号</code> 由 host 半实时扫描部署位插件 lib 目录（L0.5 真源，mtime+30s 缓存）。伞键不建边（设计稿 §1.4）。
 ② 工具调用（30 天窗口）、cron、bus 发布、7 天曲线实时聚合自 <code>$DSH_HOME/storages/</code> 三文件；延迟指标不进面板（U2 未查清）。
 ③ 工具→插件归属按命名前缀推断（U4 未证实）；宿主内建与 <code>mcp__*</code> 单列。
-④ bus 两列口径不同：「发布」= events 表全历史（跨重启）；「投递」= ring 窗口（本进程 + 最近 2000 条，重启清零）。窗口外标「窗口外」而非 0——没测到不等于没有。
+④ bus 两列都读 <code>tables/events</code>，跨重启有效。「投递」依赖 2026-10-05 起落盘的 <code>deliveries</code> 字段：存量行显示 <code>unknown · 存量行</code>、部分行有数据的加 <code>≥</code>（下界）——都不写 0。读不到全历史口径时退回 ring 窗口口径并标「窗口外」。
 ⑤ 仍属示意的只有一处：Q1 详情「最后改动」（待接 evolution ledger）。
 ⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。`;
 
@@ -907,6 +943,7 @@ function applyPayload(D){
   SUB_AUDIT=D.subscriptionAudit??null;
   WIRING_EXEMPT=D.wiringExemptions??null;
   DELIVERY=D.deliveryByTopic??null;
+  DELIVERY_H=D.deliveryHistory??null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }

@@ -19,7 +19,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectDeliveryByTopic, collectSubscriptions } from '../lib/index.js';
+import { collectDeliveryByTopic, collectDeliveryHistory, collectSubscriptions } from '../lib/index.js';
 
 const okRing = {
   generatedAt: '2026-10-05T13:00:00.000Z',
@@ -130,4 +130,72 @@ test('collectSubscriptions：同契约回归（旧出口不能因本批改动退
   assert.equal(collectSubscriptions(ctxWith({})).state, 'unavailable', '出口缺失须降级');
   assert.equal(collectSubscriptions(ctxWith({ subscriptions: () => ({}) })).state, 'unavailable', '结构不认识须降级');
   assert.equal(collectSubscriptions({ get: () => { throw new Error('x'); } }).state, 'error');
+});
+
+// ── collectDeliveryHistory（方案 A：全历史跨重启口径，2026-10-05）──────────
+const okHist = {
+  generatedAt: '2026-10-05T14:00:00.000Z',
+  scope: 'events-table',
+  state: 'ok',
+  reason: null,
+  scanned: 100,
+  withDeliveries: 10,
+  legacyRows: 90,
+  totals: { rows: 100, delivered: 5, deadLettered: 1, deliveryAttempts: 6 },
+  topics: [
+    { topic: 'h.full', coverage: 'full', rows: 5, rowsWithDeliveries: 5, delivered: 5, deadLettered: 0, deliveryAttempts: 5, subscribers: ['a', 'b'] },
+    { topic: 'h.partial', coverage: 'partial', rows: 3, rowsWithDeliveries: 1, delivered: 1, deadLettered: 0, deliveryAttempts: 1, subscribers: ['c'] },
+    { topic: 'h.legacy', coverage: 'legacyOnly', rows: 92, rowsWithDeliveries: 0, delivered: 0, deadLettered: 0, deliveryAttempts: 0, subscribers: [] },
+  ],
+  unknownDeliveryTopics: ['h.legacy'],
+};
+
+test('collectDeliveryHistory：coverage 三档原样透传，legacyRows 必给', async () => {
+  let called = null;
+  const bus = { deliveryHistory: async function () { called = this; return okHist; } };
+  const out = await collectDeliveryHistory({ get: () => bus });
+  assert.equal(out.state, 'ok');
+  assert.equal(called, bus, '必须以 bus 为 this 调用（伞键方法）');
+  assert.equal(out.scope, 'events-table');
+  assert.equal(out.legacyRows, 90, '存量行数必给——前端据此报「投递数未知」');
+  assert.equal(out.scanned, 100);
+  const byName = Object.fromEntries(out.topics.map((t) => [t.topic, t]));
+  assert.equal(byName['h.full'].coverage, 'full');
+  assert.equal(byName['h.partial'].coverage, 'partial');
+  assert.equal(byName['h.legacy'].coverage, 'legacyOnly');
+  assert.deepEqual(out.unknownDeliveryTopics, ['h.legacy']);
+});
+
+test('collectDeliveryHistory：非法 coverage 收窄成 legacyOnly（宁保守勿乐观）', async () => {
+  const bus = {
+    deliveryHistory: async () => ({
+      ...okHist,
+      topics: [{ topic: 'h.weird', coverage: 'garbage', rows: 1, delivered: 9 }],
+      unknownDeliveryTopics: [],
+    }),
+  };
+  const out = await collectDeliveryHistory({ get: () => bus });
+  assert.equal(out.topics[0].coverage, 'legacyOnly', '认不出的 coverage 必须当未知处理，不能当 full');
+  assert.equal(out.topics[0].delivered, 9, '数值仍透传（前端按 coverage 决定怎么措辞）');
+});
+
+test('collectDeliveryHistory：event-bus 侧读失败 → state=error，不得显示成全 0', async () => {
+  const bus = { deliveryHistory: async () => ({ ...okHist, state: 'error', reason: 'storage down', topics: [] }) };
+  const out = await collectDeliveryHistory({ get: () => bus });
+  assert.equal(out.state, 'error');
+  assert.match(out.reason, /storage down/);
+  assert.equal(out.topics, undefined, 'error 时不得再给 topics，前端会误当零值渲染');
+});
+
+test('collectDeliveryHistory：出口缺失 / bus 缺失 / await 抛错，四条降级全不抛', async () => {
+  assert.equal((await collectDeliveryHistory({ get: () => ({}) })).state, 'unavailable');
+  assert.equal((await collectDeliveryHistory({ get: () => null })).state, 'unavailable');
+  assert.equal((await collectDeliveryHistory({ get: () => ({ deliveryHistory: async () => ({}) }) })).state, 'unavailable');
+  assert.equal((await collectDeliveryHistory({ get: () => ({ deliveryHistory: async () => null }) })).state, 'unavailable');
+  const thrown = await collectDeliveryHistory({ get: () => ({ deliveryHistory: async () => { throw new Error('boom'); } }) });
+  assert.equal(thrown.state, 'error');
+  assert.match(thrown.reason, /boom/);
+  // ctx.get 本身抛错也要兜住
+  const ctxThrow = await collectDeliveryHistory({ get: () => { throw new Error('no ctx'); } });
+  assert.equal(ctxThrow.state, 'error');
 });

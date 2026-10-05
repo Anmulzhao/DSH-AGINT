@@ -537,23 +537,88 @@ function collectDeliveryByTopic(ctx) {
 }
 
 /**
+ * 跨重启口径的 topic → 投递聚合（2026-10-05 补；配 event-bus 的
+ * `agint.eventBus.deliveryHistory`）。与 collectDeliveryByTopic 读的不是同一份数据：
+ *   - collectDeliveryByTopic  读内存 ring ⇒ 本进程 + 最近 2000 条，但分类全
+ *   - collectDeliveryHistory  读 events 表 ⇒ 全历史跨重启，但给不出订阅侧孤岛
+ * 事件链表同时用两者：投递列取「全历史口径优先，partial 标下界，legacyOnly 标 unknown」。
+ *
+ * ⚠️ coverage 是可信度标记，不是装饰：2026-10-05 之前的存量行没有 deliveries 字段，
+ * 永远补不回。legacyOnly 的 topic 投递数必须显示 unknown，**不能显示 0**。
+ *
+ * Never throws: 与 collectDeliveryByTopic 同契约（出口缺失/结构不认识只降级自己）。
+ * @param {object} ctx - host context.
+ * @returns {Promise<object>}
+ */
+async function collectDeliveryHistory(ctx) {
+    const bootAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+    try {
+        const bus = ctx.get('agint.eventBus');
+        if (bus === null || bus === undefined) {
+            return { state: 'unavailable', reason: 'event-bus 未挂载（面板未拿到 agint.eventBus）', bootAt };
+        }
+        const read = typeof bus.deliveryHistory === 'function' ? bus.deliveryHistory : null;
+        if (typeof read !== 'function') {
+            return { state: 'unavailable', reason: 'event-bus 版本过旧：无 deliveryHistory() 出口', bootAt };
+        }
+        const raw = await read.call(bus);
+        if (raw === null || raw === undefined || typeof raw !== 'object' || !Array.isArray(raw.topics)) {
+            return { state: 'unavailable', reason: 'deliveryHistory() 返回结构未知', bootAt };
+        }
+        // event-bus 侧软降级已把读失败包成 state:'error' + 零值；此处照原样透出，
+        // 不把 error 悄悄显示成「全 0」——那是把读失败说成没有投递。
+        if (raw.state === 'error') {
+            return { state: 'error', reason: String(raw.reason ?? '未知读失败').slice(0, 160), bootAt };
+        }
+        const num = (v) => (Number.isFinite(v) ? v : 0);
+        const topics = raw.topics.map((r) => ({
+            topic: String((r && r.topic) ?? ''),
+            coverage: ['full', 'partial', 'legacyOnly'].includes(r && r.coverage) ? r.coverage : 'legacyOnly',
+            rows: num(r && r.rows),
+            rowsWithDeliveries: num(r && r.rowsWithDeliveries),
+            delivered: num(r && r.delivered),
+            deadLettered: num(r && r.deadLettered),
+            deliveryAttempts: num(r && r.deliveryAttempts),
+            subscribers: Array.isArray(r && r.subscribers) ? r.subscribers.map(String) : [],
+        }));
+        return {
+            state: 'ok',
+            bootAt,
+            generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : new Date().toISOString(),
+            scope: 'events-table',
+            scanned: num(raw.scanned),
+            withDeliveries: num(raw.withDeliveries),
+            legacyRows: num(raw.legacyRows),
+            totals: raw.totals && typeof raw.totals === 'object' ? raw.totals : {},
+            topics,
+            unknownDeliveryTopics: Array.isArray(raw.unknownDeliveryTopics)
+                ? raw.unknownDeliveryTopics.map(String)
+                : topics.filter((t) => t.coverage === 'legacyOnly').map((t) => t.topic),
+        };
+    } catch (err) {
+        return { state: 'error', reason: String((err && err.message) ?? err).slice(0, 160), bootAt };
+    }
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
  * 在浏览器里再判一次就会把已归档的断链重报成新问题（见 v2-data classifySubscriptions）。
  * @param {object} ctx - host context.
  * @param {object} [config] - cordis 注入的插件配置；只用到 repoRoot（仓库位根，候选 ⓪）。
- * @returns {object} payload
+ * @returns {Promise<object>} payload —— 异步：deliveryHistory 读存储域。
  */
-function buildV2Payload(ctx, config = {}) {
-  const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
-    ? config.repoRoot.trim()
-    : null;
-  const payload = collectV2Data(resolveV2Dirs(process.env, import.meta.url, repoRoot));
-  payload.subscriptions = collectSubscriptions(ctx);
-  payload.deliveryByTopic = collectDeliveryByTopic(ctx);
-  payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
-  return payload;
+async function buildV2Payload(ctx, config = {}) {
+    const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
+        ? config.repoRoot.trim()
+        : null;
+    const payload = collectV2Data(resolveV2Dirs(process.env, import.meta.url, repoRoot));
+    payload.subscriptions = collectSubscriptions(ctx);
+    payload.deliveryByTopic = collectDeliveryByTopic(ctx);
+    payload.deliveryHistory = collectDeliveryHistory(ctx);
+    payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
+    return payload;
 }
 
 /**
@@ -629,7 +694,7 @@ function apply(ctx, config = {}) {
           writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
           return;
         }
-        const payload = buildV2Payload(ctx, config);
+        const payload = await buildV2Payload(ctx, config);
         writeJson(res, 200, { ...payload, enabled: true });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
@@ -640,7 +705,11 @@ function apply(ctx, config = {}) {
   ctx.provide('agint.familyPanel', {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
-    /** v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表与零投递分层）。 */
+    /**
+     * v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表与零投递分层）。
+     * ⛔ 返回 Promise：deliveryHistory 要读 events 表存储域（2026-10-05 方案 A）。
+     * 消费方必须 await —— 把它当同步对象用会拿到未 resolve 的半截payload。
+     */
     v2Data: () => buildV2Payload(ctx, config),
     /** The prefix the browser half fetches (root-absolute). */
     apiPrefix: API_PREFIX,
@@ -658,4 +727,5 @@ export {
   optionalInject,
   collectSubscriptions,
   collectDeliveryByTopic,
+  collectDeliveryHistory,
 };
