@@ -423,7 +423,17 @@
     # D-QAF auto-write landing.
     - id: agint-evolution-memory
       name: ./plugins/agint-evolution-memory/lib/index.js
-      config: {}
+      # 2026-10-05：补 repoRoot（老板未点名的 C1 收口项，先改代码态、**未部署**）。
+      # 根因（实测+源码取证）：ledger-anchor cron（Mon 10:15）调 `evo.ledger.anchor()`，
+      # 锚点路径由 lib/ledger-anchor.js:61 的 `REPO_ROOT = <模块>/../../..` 推导 ——
+      # 在仓库里算出仓根，但在**部署位**算出 ~/.dsh/.agint-bundle ⇒ 写
+      # `~/.dsh/.agint-bundle/docs/evolution-ledger-anchor.md` 时 ENOENT（该目录不存在，
+      # 实测确认）。lib/index.js:208-209 已实现「config.repoRoot 存在则用它算 anchorFile」
+      # 的正确分支（config schema 在 :58 声明 repoRoot: z.string().optional()），
+      # 只是**没人给这个块填值** —— 之前 2ecb16d 填的是 agint-cron 块，治的是 job 读文件，
+      # 不是这条写路径。形状沿用同仓 `!!js` 惯例（与 cron / evolution-driver 两块一致）。
+      config:
+        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
 
     # agint-memory-provider: P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）
     # v0.1.0 — 2026-09-08 挂载. ExternalProvider 抽象基类 + BuiltinProvider（封装
