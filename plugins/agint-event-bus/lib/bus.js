@@ -244,6 +244,112 @@ export function subscriptionsSummary() {
         entries,
     };
 }
+/**
+ * topic → 投递聚合（评审 3.3 缺口，2026-10-05 补；与 src/bus.ts 同步维护，K78）。
+ *
+ * 为什么需要：面板事件链表一行一个 topic，「投递」列此前一律标 unknown。根因是
+ * 两条路径口径不通 —— events 表按 topic 聚合但不带 deliveries，deliveries 只在
+ * 内存 ring 里。subscriptionsSummary 出的是 per-subscriber 计数，面板拿不到
+ * 「这个 topic 投递了几次」。
+ *
+ * 这个出口把ring 按 topic 折一次，顺带给出两侧的对差：
+ *   - orphanPublished      发布过但窗口内零订阅者命中（发布侧孤岛）
+ *   - orphanSubscriptions  订阅存在但窗口内零投递（消费侧孤岛，可直接判死订阅者）
+ * 这两个集合才是评审 3.3 真正要的判据；光有per-topic 投递数答不了「谁在跟谁说话」。
+ *
+ * ⚠️ 口径边界（三条，不猜）：
+ *   1. 只覆盖本进程生命周期，重启清零（ring 与订阅表都是模块级内存态）。
+ *   2. 只覆盖 ring 窗口内最近 2000 条发布，更早的投递记录已被 FIFO 淘汰 ——
+ *      `ring.full` 与 `ring.oldestOccurredAt` 就是这个边界的读数。
+ *   3. `published` 是**ring 窗口内**的发布数，不是全历史发布数。全历史口径只有
+ *      events 表（不含 deliveries）能答，两者不可混算。
+ * 跨重启的 per-topic 投递数要靠 events 表落 deliveries（方案 A），那是另一个改动。
+ */
+export function deliveryByTopic() {
+    const snapshot = ring.snapshot();
+    const byTopic = new Map();
+    const touch = (topic) => {
+        const rec = byTopic.get(topic) ?? {
+            topic,
+            published: 0,
+            delivered: 0,
+            deadLettered: 0,
+            pending: 0,
+            failed: 0,
+            other: 0,
+            deliveryAttempts: 0,
+            subscribers: new Set(),
+            lastOccurredAt: null,
+        };
+        byTopic.set(topic, rec);
+        return rec;
+    };
+    for (const entry of snapshot) {
+        const topic = entry.topic ?? '';
+        const rec = touch(topic);
+        rec.published += 1;
+        if (entry.occurredAt && (!rec.lastOccurredAt || entry.occurredAt > rec.lastOccurredAt)) {
+            rec.lastOccurredAt = entry.occurredAt;
+        }
+        for (const [name, status] of Object.entries(entry.deliveries ?? {})) {
+            rec.deliveryAttempts += 1;
+            rec.subscribers.add(name);
+            if (status === 'DELIVERED')
+                rec.delivered += 1;
+            else if (status === 'DEAD_LETTERED')
+                rec.deadLettered += 1;
+            else if (status === 'PENDING')
+                rec.pending += 1;
+            else if (status === 'FAILED')
+                rec.failed += 1;
+            else
+                rec.other += 1;
+        }
+    }
+    const rows = [...byTopic.values()].map((r) => ({ ...r, subscribers: [...r.subscribers].sort() }));
+    // 判定用 deliveryAttempts 而非 delivered：一次投递被判死信也算「命中了订阅者」——
+    // 对「谁消费了这个 topic」这个问题，死信仍算接触。而 orphanPublished 判的是
+    // 「压根没人订」，这时 deliveryAttempts 必然为 0。
+    const topicsWithDelivery = new Set(rows.filter((r) => r.deliveryAttempts > 0).map((r) => r.topic));
+    const orphanPublished = rows
+        .filter((r) => r.deliveryAttempts === 0)
+        .map((r) => r.topic)
+        .sort();
+    const orphanSubscriptions = [...subscriptions.values()]
+        .map((s) => ({
+            subscriber: s.subscriber,
+            mode: s.mode,
+            topics: Array.isArray(s.topics) ? [...s.topics] : [],
+        }))
+        .filter((s) => !s.topics.some((t) => topicsWithDelivery.has(t)))
+        .sort((a, b) => a.subscriber.localeCompare(b.subscriber));
+    const totals = rows.reduce((acc, r) => {
+        acc.published += r.published;
+        acc.delivered += r.delivered;
+        acc.deadLettered += r.deadLettered;
+        acc.pending += r.pending;
+        acc.failed += r.failed;
+        acc.other += r.other;
+        acc.deliveryAttempts += r.deliveryAttempts;
+        return acc;
+    }, { published: 0, delivered: 0, deadLettered: 0, pending: 0, failed: 0, other: 0, deliveryAttempts: 0 });
+    const sorted = [...rows].sort((a, b) => b.published - a.published || a.topic.localeCompare(b.topic));
+    const occurred = snapshot.map((e) => e.occurredAt).filter(Boolean).sort();
+    return {
+        generatedAt: new Date().toISOString(),
+        ring: {
+            size: snapshot.length,
+            capacity: ring.capacity,
+            full: snapshot.length >= ring.capacity,
+            oldestOccurredAt: occurred[0] ?? null,
+            newestOccurredAt: occurred[occurred.length - 1] ?? null,
+        },
+        totals,
+        topics: sorted,
+        orphanPublished,
+        orphanSubscriptions,
+    };
+}
 /** inspect 聚合（语义糖：summary + filter + sync 计数；A9 尾巴，仪表盘可读） */
 export function inspectSummary(filter = {}) {
     const entries = inspect(filter);

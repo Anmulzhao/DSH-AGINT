@@ -26,7 +26,8 @@ function asObjectResult(value, key = 'entries') {
 const name = 'agint-event-bus-tools';
 const inject = ['tools', 'agint.eventBus.publish', 'agint.eventBus.subscribe',
   'agint.eventBus.inspect', 'agint.eventBus.inspectSummary',
-  'agint.eventBus.deadletters', 'agint.eventBus.metricsSnapshot'];
+  'agint.eventBus.deadletters', 'agint.eventBus.metricsSnapshot',
+  'agint.eventBus.deliveryByTopic'];
 
 function apply(ctx) {
   const publish = ctx['agint.eventBus.publish'];
@@ -35,6 +36,7 @@ function apply(ctx) {
   const inspectSummary = ctx['agint.eventBus.inspectSummary'];
   const deadletters = ctx['agint.eventBus.deadletters'];
   const metricsSnapshot = ctx['agint.eventBus.metricsSnapshot'];
+  const deliveryByTopic = ctx['agint.eventBus.deliveryByTopic'];
 
   ctx.tools.register(defineTool({
     name: 'eventBus_publish',
@@ -129,6 +131,27 @@ function apply(ctx) {
     },
     execute() {
       return metricsSnapshot();
+    },
+  }));
+
+  // topic → 投递聚合（2026-10-05 补；评审 3.3）。description 必须写清口径，
+  // 否则调用方会把「ring 窗口内 0」读成「从来没有流量」。
+  ctx.tools.register(defineTool({
+    name: 'eventBus_deliveryByTopic',
+    description:
+      'Per-topic delivery counts aggregated from the in-memory ring, plus two orphan sets. ' +
+      '**Window-scoped**: covers only this process lifetime AND the most recent 2000 published ' +
+      'events (check ring.full / ring.oldestOccurredAt). Counts reset on host restart, and ' +
+      'published here is the in-window count, NOT the all-time count from the events table. ' +
+      'orphanPublished = topics published in-window with zero subscriber hits; ' +
+      'orphanSubscriptions = subscriptions with zero deliveries in-window.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
+    },
+    execute() {
+      return deliveryByTopic();
     },
   }));
 }
