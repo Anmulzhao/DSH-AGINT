@@ -1,6 +1,6 @@
 {
   "name": "@agint/host",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "AGINT 智进 —— dsh bundle：自进化智能体框架（host 服务 + 4 个 preset + 插件热插拔）",
   "license": "MIT",

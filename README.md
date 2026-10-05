@@ -8,7 +8,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**v0.10.0** · 38 个 Cordis 插件 · 4 套 preset · 25 个工具行。实时运行数字见 [`AGENTS.md`](./AGENTS.md) 文末 LOCAL-STATE 块。
+**v0.11.0** · 38 个 Cordis 插件 · 4 套 preset · 25 个工具行。实时运行数字见 [`AGENTS.md`](./AGENTS.md) 文末 LOCAL-STATE 块。
 
 - **哲学**：美 = 简洁 + 真实 + 靠谱 + 主动 + 安全；冲突时取前者。论述见 Wiki [PHILOSOPHY](https://github.com/Anmulzhao/DSH-AGINT/wiki/PHILOSOPHY)。
 - **定位**：dsh 是上游 runtime，AGINT 是其上的规范 + 组件，不是 fork；不是 AGI 实现，是通往 AGI 的工程化骨架（记忆 / 反思 / 约束 / 度量 / 评估）；新增功能必须经 D-QAF 评估。
