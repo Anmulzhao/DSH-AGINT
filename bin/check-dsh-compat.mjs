@@ -286,7 +286,7 @@ function checkPeerCompatibility(semver, runtimeVersion, installed) {
 }
 
 /** C 项：VERSION 兼容矩阵声明的 tested 版本 vs 本机实际。 */
-function checkVersionDrift(runtimeVersion) {
+function checkVersionDrift(runtimeVersion, semver) {
   const versionFile = path.join(REPO_ROOT, 'VERSION');
   if (!fs.existsSync(versionFile)) return [];
   const text = fs.readFileSync(versionFile, 'utf8');
@@ -310,15 +310,23 @@ function checkVersionDrift(runtimeVersion) {
     issues.push({ level: 'info', kind: 'version-matrix-unparsed', message: `无法解析 minimum=${minimum}` });
   }
   if (minimum && /^\d/.test(minimum)) {
-    // 粗判：本机版本低于声明的 minimum（字符串比较兜底，无 semver 也能用）
-    const cmp = (a, b) => {
-      const pa = a.split(/[.-]/), pb = b.split(/[.-]/);
-      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const na = Number(pa[i] ?? 0), nb = Number(pb[i] ?? 0);
-        if (na !== nb) return na < nb ? -1 : 1;
-      }
-      return 0;
-    };
+    // 用 semver 比而不是自己拆字符串：预发布后缀（-rc.N）拆开后 Number('rc') 是 NaN，
+    // 而 NaN !== NaN 恒真，会让比较在走到后缀段时直接短路返回错误结果——既把
+    // 「完全相等」判成不等（0.1.7-rc.1 vs 自身 → 1），也把「预发布低于正式版」
+    // 判反（0.1.7-rc.1 vs 0.1.7 → 1，应为 -1），后者会漏报 below-minimum。
+    let cmp;
+    try {
+      semver.parse(minimum);
+      semver.parse(runtimeVersion);
+      cmp = (a, b) => semver.compare(a, b);
+    } catch {
+      issues.push({
+        level: 'info',
+        kind: 'version-matrix-unparsed',
+        message: `minimum=${minimum} 或本机版本 ${runtimeVersion} 不是合法 semver，跳过下限比对`,
+      });
+      return issues;
+    }
     if (cmp(runtimeVersion, minimum) < 0) {
       issues.push({
         level: 'critical',
@@ -374,7 +382,7 @@ const refs = scanReferences();
 const issues = [
   ...checkDangling(refs, installed),
   ...checkPeerCompatibility(semver, dsh.version, installed),
-  ...checkVersionDrift(dsh.version),
+  ...checkVersionDrift(dsh.version, semver),
   ...checkRenames(refs, installed),
 ];
 
