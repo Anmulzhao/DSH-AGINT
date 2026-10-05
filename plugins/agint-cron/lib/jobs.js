@@ -496,7 +496,12 @@ export const defaultJobs = [
       const limits = s.limits ?? {};
       const guard = s.reportRateGuard ?? {};
       const WARN_RATIO = 0.8;
-      const alerts = [];
+      // 2026-10-05（老板裁定第 3 项）：告警分两级。
+      //   warnings = 提示（逼近 80% / 熔断被咬）⇒ 只记不抛，job 仍算成功。
+      //   criticals = 故障（表已满 = 守门失效）⇒ 抛，让调度层记failed。
+      // 此前两级混在 `alerts` 里一起抛 ⇒ 纯观测任务因「逼近上限」被记 failed，污染 cron 状态。
+      const warnings = [];
+      const criticals = [];
       const usage = {};
 
       for (const [table, cap] of [
@@ -509,31 +514,43 @@ export const defaultJobs = [
         const ratio = used / cap;
         usage[table] = { used, cap, pct: Math.round(ratio * 100) };
         if (used >= cap) {
-          alerts.push(`CRITICAL ${table} 表已满 ${used}/${cap}（守门本应已拦住新写入 ⇒ 守门失效）`);
+          criticals.push(`CRITICAL ${table} 表已满 ${used}/${cap}（守门本应已拦住新写入 ⇒ 守门失效）`);
         } else if (ratio >= WARN_RATIO) {
-          alerts.push(`WARN ${table} 表逼近上限 ${used}/${cap}（${Math.round(ratio * 100)}%）`);
+          warnings.push(`WARN ${table} 表逼近上限 ${used}/${cap}（${Math.round(ratio * 100)}%）`);
         }
       }
 
       if (Number.isFinite(guard.max) && guard.max > 0) {
         if (Number(guard.trips) > 0) {
-          alerts.push(
+          warnings.push(
             `WARN report() 频率熔断已被咬 ${guard.trips} 次（window ${guard.windowMs}ms / max ${guard.max}）` +
             ' —— 存在短窗口高频调用 report 的驱动方，去看日志里的「调用方栈」',
           );
         }
         if (Number(guard.recent) > guard.max * 0.5) {
-          alerts.push(`WARN 近 ${guard.windowMs}ms 内 report 调用 ${guard.recent} 次（上限 ${guard.max}）`);
+          warnings.push(`WARN 近 ${guard.windowMs}ms 内 report 调用 ${guard.recent} 次（上限 ${guard.max}）`);
         }
       }
 
-      const summary = { usage, reportRateGuard: guard, checkedAt: new Date().toISOString() };
-      if (alerts.length) {
-        // 先打详细指标（含各表 used/cap 与熔断计数），再 throw 让调度层记账。
-        console.warn('[agint-cron:diagnosis-watchdog] ' + alerts.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
-        throw new Error('diagnosis-watchdog: ' + alerts.join(' ｜ '));
+      const summary = {
+        usage,
+        reportRateGuard: guard,
+        checkedAt: new Date().toISOString(),
+        warningCount: warnings.length,
+        criticalCount: criticals.length,
+      };
+      if (warnings.length) {
+        // WARN 只记不抛（2026-10-05 老板裁定第 3 项）。
+        // 理由：watchdog 是**纯观测任务**，「逼近上限 80%」是提示不是故障；
+        // 抛错会让调度层把本job 记成 failed，污染 cron 状态并掩盖真正的 CRITICAL。
+        console.warn('[agint-cron:diagnosis-watchdog] ' + warnings.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
       }
-      return { alert: false, ...summary };
+      // 只有 CRITICAL 才抛：表已满 = 守门失效，是真故障，必须让调度层知道。
+      if (criticals.length) {
+        console.warn('[agint-cron:diagnosis-watchdog] ' + criticals.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
+        throw new Error('diagnosis-watchdog: ' + criticals.join(' ｜ '));
+      }
+      return { alert: warnings.length > 0, ...summary };
     },
   },
   {
