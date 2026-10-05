@@ -129,6 +129,24 @@ function apply(ctx) {
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-10-05 补：分级去重统计。K164 第四次咬人 —— status() 返回
+              // `counts: last?.counts ?? {兜底}`，跑过 sweep 时 last.counts 带 dedupeStats
+              // （sweep.js:1401），但本 schema 漏声明 → additionalProperties:false 撞上
+              // 实际返回 → dream_status 整体不可用。
+              // 前科同形状：toolErrorFilter（2026-09-28 补）/ evolutionTemplates（2026-09-11 补）
+              // / dedupeStats 在 dream_run_now（2026-09-27 补，本文件 :246）—— **只补了 run_now，漏了 status**。
+              // shape 与 lib/sweep.js dedupeStatsOf 对齐（恒为对象，不返回 null）
+              dedupeStats: { required: true,
+                type: 'object', additionalProperties: false,
+                // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+                properties: {
+                  enabled: { required: true, type: 'boolean' },
+                  dropped: { required: true, type: 'number' },
+                  suspicious: { required: true, type: 'number' },
+                  checked: { required: true, type: 'number' },
+                  maxSimilarity: { required: true, type: 'number' },
+                },
+              },
               validationOk: { required: true, type: 'boolean' },
               validationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               recovered: { required: true, type: 'number' },

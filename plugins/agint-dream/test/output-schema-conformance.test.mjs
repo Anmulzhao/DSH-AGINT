@@ -106,3 +106,31 @@ test('dream_run_now 实际返回（dry-run sweep）过得了自己的 output sch
 
   await rm(dirsByPrefix.get('sweep').base, { recursive: true, force: true });
 });
+
+/**
+ * K164 第四次咬人的那条路径（2026-10-05 修 dream_status 时补的）。
+ *
+ * 为什么上面那条 status 用例抓不到本bug：
+ *   status() 返回 `counts: last?.counts ?? {兜底}`。
+ *   「还没跑过 sweep」时 last 为 null ⇒ 走兜底 ⇒ **碰不到 dedupeStats**；
+ *   跑过 sweep 后 last.counts 才带上 dedupeStats（sweep.js:1401）。
+ *   前者永远绿，后者红 —— 而生产上宿主重启前必然是后者。
+ * 所以必须显式先 sweep 一次再查 status，让它走真分支。
+ */
+test('dream_status 在**跑过 sweep 之后**仍过得了自己的 output schema（counts 带 dedupeStats）', async () => {
+  dirsByPrefix.set('after-sweep', await makeDirs('after-sweep'));
+  const dream = makeDream('after-sweep');
+
+  // 先跑一次，让 state.lastResult 有真counts
+  await dream.sweep({ apply: false });
+
+  const value = await dream.status();
+  // 先坐实前提：这条路径真的带上了 dedupeStats（否则本用例是假绿）
+  assert.ok(
+    value.counts.dedupeStats,
+    '前提不成立：sweep 后 status().counts.dedupeStats 仍缺失，本用例什么也没测到',
+  );
+  assertConforms(captureTools(dream).dream_status, value, 'status() after sweep');
+
+  await rm(dirsByPrefix.get('after-sweep').base, { recursive: true, force: true });
+});
