@@ -16,7 +16,7 @@ AGINT 桌宠状态源。读四个 AGINT 信号源，聚合成一条健康判定�
 
 | 块 | 位置 | 许可 |
 |---|---|---|
-| 宠物插件本体 | `Anmulzhao/agint-pet` fork | Apache-2.0 |
+| 宠物插件本体 | `Anmulzhao/agint-pet` fork | MIT（2026-10-05 定） |
 | 状态源（本插件） | `DSH-AGINT/plugins/agint-mascot` | MIT |
 | AGINT 宠物资产 | `$DSH_HOME/pets/agint/` | MIT 或 CC0 |
 

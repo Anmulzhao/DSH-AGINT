@@ -11,11 +11,12 @@
  *
  * ## Why this is a separate plugin rather than a fork change
  *
- * The pet plugin is a third-party Apache-2.0 project we fork for asset
- * reasons. Its own `src/` stays untouched. This plugin lives in the AGINT repo
- * (MIT) and reaches the pet only through the documented sibling-plugin channel
- * `ctx.pet.announce(...)`. That keeps the fork rebase-clean and keeps the
- * AGINT repo free of Apache-2.0 code.
+ * The pet plugin is a third-party project we fork for asset reasons. Its own
+ * `src/` stays untouched. This plugin lives in the AGINT repo and reaches the
+ * pet only through the documented sibling-plugin channel `ctx.pet.announce(...)`.
+ * That keeps the fork rebase-clean and keeps AGINT behaviour out of `src/`.
+ *
+ * License: the fork is MIT (owner decision 2026-10-05). This plugin is MIT.
  *
  * ## Design constraints
  *
