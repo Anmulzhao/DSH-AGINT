@@ -52,9 +52,11 @@
     },
     {
       "topic": "memory.pre-compress-checkpoint",
-      "reason": "发布方 runPreCompressCheckpoint 无生产调用者，整个 pre_compress 机制从未通电。属压缩流程改造议题，不是总线接线能解决的，单独立项。",
-      "evidence": "docs/known-limitations/event-bus-shadow-publish-gap.md §6.5",
-      "since": "2026-09-24"
+      "reason": "原豁免理由（「发布方 runPreCompressCheckpoint 无生产调用者，整个 pre_compress 机制从未通电」）在 2026-10-05 被实测**证伪**：本 boot 订阅方 agint-compress-guard 对该主题计到 deliveries=1、outcome=DELIVERED。按本文件规则（上游一旦通电，连带豁免必须立刻复查），本条**已解除**，保留记录仅作历史。⚠️ 同时暴露一个新异常，另案跟踪，不要用本条掩盖：该次投递在总线全历史里**查不到对应 envelope**（events 表 20249 条命中 0，deadletter 表 0 行，而 bus 文件 mtime 是 2026-10-05T10:04:34Z（新鲜））⇒ 「订阅收到但未落全历史」的链路可疑，缺直接证据（不确定：可能是发布走了不落历史的分支，也可能是订阅计数把非 publish 的投递算进来了）。",
+      "evidence": "2026-10-05 10:04Z 实测：/api/agint-family/v2/data 的 subscriptions 行 {subscriber:agint-compress-guard, topics:[memory.pre-compress-checkpoint], createdAt:2026-10-05T09:35:41.952Z, deliveries:1, outcomes.DELIVERED:1}；同期 ~/.dsh/storages/agint_event_bus.json tables.events 内该主题 0 条、tables.deadletter 0 行、memory.* 只有 provider-activated(250)/provider-health-check(5)；原判定见 docs/known-limitations/event-bus-shadow-publish-gap.md §6.5",
+      "since": "2026-09-24",
+      "updatedAt": "2026-10-05",
+      "unblockWhen": "已解除（有真实投递）。后续动作不是接线，而是查「投递已发生但全历史无记录」的落盘链路。"
     },
     {
       "topic": "hmr.settled",
@@ -72,9 +74,9 @@
     {
       "topic": "sandbox.passed",
       "reason": "上游已通电，但本条尚无生产数据（2026-09-29 07:20Z 实测 prodCount=0）。发布方不是 mutator.commit —— 全仓 grep 无任何 `.commit(` 调用点；真正的发布方是 agint-quality-sandbox 的 runSmoke() 内部（plugins/agint-quality-sandbox/lib/index.js:230，另有 test/runSmoke-publish.test.mjs 防漏接线回归）。它只发 sandbox.passed 的**前提是 runSmoke 返回 ok** —— 2026-09-29 之前唯一一次 runSmoke 调用（driver v0.2.7，05:26Z）返回 plugin-not-found，事件因而落在 sandbox.failed 上（该条 prodCount=1）。driver v0.2.9 起文件目标改走 verifyTargetFile（bash -n / node --check），**不再调用 runSmoke**，故本条当前没有产生路径；只有 commit 目标为目录时才会走 runSmoke。",
-      "evidence": "2026-09-29 07:20Z 实测（node bin/check-wiring.mjs --json）：sandbox.passed prodCount=0 / rawVerdict=ORPHAN_TOPIC / subscribers=1；sandbox.failed prodCount=1 / rawVerdict=PUBLISHER_DYNAMIC（判定逻辑 bin/check-wiring.mjs:274：静态无发布方但生产有数据 ⇒ 动态发布方，非缺口）。同期 evolution.mutation.committed prodCount=2、rolledback prodCount=2。",
+      "evidence": "2026-09-29 07:20Z 实测（node bin/check-wiring.mjs --json）：sandbox.passed prodCount=0 / rawVerdict=ORPHAN_TOPIC / subscribers=1；sandbox.failed prodCount=1 / rawVerdict=PUBLISHER_DYNAMIC（判定逻辑 bin/check-wiring.mjs:274：静态无发布方但生产有数据 ⇒ 动态发布方，非缺口）。同期 evolution.mutation.committed prodCount=2、rolledback prodCount=2。复查（2026-10-05 10:04Z，总线全历史 20249 条）：sandbox.passed 仍 0 条、sandbox.failed 仍 1 条 ⇒ 判定不变，本条继续豁免。",
       "since": "2026-09-24",
-      "updatedAt": "2026-09-29",
+      "updatedAt": "2026-10-05",
       "unblockWhen": "出现一次 runSmoke 返回 ok 的调用（当前唯一路径：commit 目标为目录）。若长期不产生数据，应把本条从「待通电」改判为「当前不需要」——因为 driver 已不把文件目标交给 runSmoke，继续挂着会误导复查。"
     },
     {
@@ -91,6 +93,86 @@
       "evidence": "plugins/agint-evolution-driver/README.md:60（锁成功 = 落表 + 发事件，不可撤回的外部见证）；plugins/agint-evolution-memory/lib/index.js:414（lockEventId 供交叉查事件总线）；2026-10-05 check-wiring 实测 pubs=1 / subs=0 / prodCount=1（首把锁已在生产发出）",
       "since": "2026-10-05",
       "unblockWhen": "若出现真需「锁完成即时反应」语义的消费方（例：账本侧要随事件刷新状态而非按需查表），摘除本条并接订阅"
+    },
+
+    {
+      "topic": "mount.requested",
+      "reason": "发布方已接线，缺的是「一次真正走完的挂载」。orchestrator 在决策点各分支都有发布调用（requested/failed/succeeded/restart-*），订阅方 agint-metrics 也按六个主题建了计数器。但工单表只有 1 行且停在 PREPARED（外部探针造的），probe_history 与 rollback_log 均 0 行 ⇒ 挂载链在生产从未跑到任何终态。属「等待自然触发」，不是接线缺口；给它排期「补发布方」是重复劳动。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:307（requested）/:333/:368/:374/:396/:429/:442/:463（failed 各分支）/:454（succeeded）/:591（restart-failed）/:608（restart-completed）+ health-probe.js:66；订阅方 plugins/agint-metrics/lib/mountCounters.js:16-31；2026-10-05 实测：总线全历史 20249 条里 mount.* 命中 0，~/.dsh/storages/agint_mount.json tickets=1（phase=PREPARED，mtime 2026-09-21T12:06:07Z）/probe_history=0/rollback_log=0；docs/known-limitations/event-bus-shadow-publish-gap.md §6.14 记「§6.13 曾点亮 1 条，已被内存快照回滚归 0」",
+      "since": "2026-10-05",
+      "unblockWhen": "工单 phase 首次到 ACTIVATED 或 ROLLED_BACK 且有对应 mount.* 落库，本条族（六主题）可整批摘除。跟踪口径另立路线图项「mount 端到端首次真实挂载」，不在本豁免面内。"
+    },
+    {
+      "topic": "mount.succeeded",
+      "reason": "同 mount.requested 族：发布点 orchestrator.js:454（激活成功分支）在册，从未有工单走到该分支。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:454；2026-10-05 实测总线全历史 0 条",
+      "since": "2026-10-05",
+      "unblockWhen": "见 mount.requested 同族条款"
+    },
+    {
+      "topic": "mount.failed",
+      "reason": "同族：发布点最多（7 个失败分支 + 健康探针），但生产连一次失败终态都没到过 —— 不是失败接线坏了，是根本没有挂载发生。注意与 releases 5/5 ROLLED_BACK 是两回事（后者属 population 的发布记录）。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:333/368/374/396/429/442/463 + lib/health-probe.js:66；2026-10-05 实测总线全历史 0 条、agint_mount.json 无 FAILED/ROLLED_BACK 工单",
+      "since": "2026-10-05",
+      "unblockWhen": "见 mount.requested 同族条款"
+    },
+    {
+      "topic": "mount.restart-requested",
+      "reason": "同族：发布点 orchestrator.js:407，需工单走到「声明新依赖 ⇒ INSTALLED/RESTART_REQUESTED」分支才会发；从未到达。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:407；2026-10-05 实测总线全历史 0 条",
+      "since": "2026-10-05",
+      "unblockWhen": "见 mount.requested 同族条款"
+    },
+    {
+      "topic": "mount.restart-completed",
+      "reason": "同族：发布点 orchestrator.js:608（重启回执核对成功后）。它比其余五条多一层依赖：必须有一次 restart_request 被真正批准并执行完，才有回执可对。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:608；2026-10-05 实测总线全历史 0 条",
+      "since": "2026-10-05",
+      "unblockWhen": "见 mount.requested 同族条款"
+    },
+    {
+      "topic": "mount.restart-failed",
+      "reason": "同族：发布点 orchestrator.js:591（重启回执判定失败）。与 restart-completed 成对，二者都到不了说明「挂载后重启」这条链整体未被触发过。",
+      "evidence": "plugins/agint-mount/lib/orchestrator.js:591；2026-10-05 实测总线全历史 0 条",
+      "since": "2026-10-05",
+      "unblockWhen": "见 mount.requested 同族条款"
+    },
+
+    {
+      "topic": "input.signal.self-observation.tool-anomaly",
+      "reason": "发布方是 input-gateway 的 C2 通道（进程内调度器 cron '0 2 * * 0'，不走宿主 agint.cron）。通道确实在跑：落盘计数器 fetchCount=3、errorCount=0；但 signalsEmitted=0 **且 signalsFiltered=0** ⇒ 每次采集都判定「条件不成立」，既不是断链、也不是被过滤或去重吃掉。零投递在这里表示「没检测到异常」，属健康读数。",
+      "evidence": "2026-10-05 实测 ~/.dsh/storages/agint_input_gateway.json tables.counters = {channelId:self-observation, fetchCount:3, signalsEmitted:0, signalsFiltered:0, signalsDeduplicated:0, errorCount:0}，tables.channel_state.lastFetchAt=2026-10-03T18:00:54.110Z（耗时 908ms）；检测条件见 plugins/agint-input-gateway/lib/channels/self-observation.js:82（比率）/:119（连续段）；调度常量 lib/schema.js:50（C2_CRON）",
+      "since": "2026-10-05",
+      "unblockWhen": "signalsEmitted 首次 > 0 即自然解除。若长期 0 且怀疑阈值定得过高，复查对象是阈值（self-observation.js 的判据），不是给主题补订阅方。"
+    },
+    {
+      "topic": "input.signal.self-observation.rule-hotspot",
+      "reason": "同 C2 通道族：规则热点检测需同一规则命中到阈值才产信号；3 次采集均为 0 产出。",
+      "evidence": "同上 counters 读数；检测条件 plugins/agint-input-gateway/lib/channels/self-observation.js:236",
+      "since": "2026-10-05",
+      "unblockWhen": "同 tool-anomaly 条款（signalsEmitted > 0）"
+    },
+    {
+      "topic": "input.signal.self-observation.metric-regression",
+      "reason": "同 C2 通道族：指标恶化需趋势序列出现回归才产信号。",
+      "evidence": "同上 counters 读数；检测条件 plugins/agint-input-gateway/lib/channels/self-observation.js:193",
+      "since": "2026-10-05",
+      "unblockWhen": "同 tool-anomaly 条款（signalsEmitted > 0）"
+    },
+    {
+      "topic": "input.signal.self-observation.compress-loss",
+      "reason": "同 C2 通道族：压缩信息丢失检测依赖 compressGuard 服务（index.js 经 inject 注入后传给 fetch）；条件未达成则不产信号。",
+      "evidence": "同上 counters 读数；检测条件 plugins/agint-input-gateway/lib/channels/self-observation.js:266；compressGuard 注入 plugins/agint-input-gateway/lib/index.js:110-115",
+      "since": "2026-10-05",
+      "unblockWhen": "同 tool-anomaly 条款。另注：schema.js:86-90 枚举了第 5 个 self-observation 主题 session-integrity，但无订阅方且全历史 0 条 —— 属枚举/订阅不一致，另案处理，不在本豁免面内。"
+    },
+
+    {
+      "topic": "input.signal.adversarial.curriculum-result",
+      "reason": "转发条件是上游 curriculum.challenge-verdicted 且 result=fail。上游发布方存在（agint-curriculum 会发），但该主题总线全历史 0 条 —— curriculum 从未判定出任何 challenge。根因不属网关接线：同文件 domains 的 agint_curriculum 条已查明 self-model 能力画像过薄，probe 命中 0 域 ⇒ 无 challenge 可判。本条是上游未通电的连带空转。",
+      "evidence": "plugins/agint-curriculum/lib/index.js:369（发布点）；plugins/agint-input-gateway/lib/channels/adversarial.js:104-122（只转发 fail）；2026-10-05 实测总线有 curriculum.boundary-probed=5 条、无 curriculum.challenge-verdicted；gateway counters adversarial: fetchCount=6 / signalsEmitted=0",
+      "since": "2026-10-05",
+      "unblockWhen": "curriculum 开始出分且出现 fail 判定（同 agint_curriculum 域的 unblockWhen：self-model 出现 UNCERTAIN 域 / miscalibrated 非空 / CAN 超 30 天未复验）"
     }
   ],
 
