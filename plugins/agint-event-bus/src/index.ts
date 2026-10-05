@@ -17,7 +17,7 @@
  *   - 不主动 evaluate self；评估走 agint.qualityEval 跨插件（self-evaluation forbidden）
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
-import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, disposeBus } from './bus.js';
+import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, deliveryHistory, disposeBus } from './bus.js';
 import { listDeadletters } from './deadletter.js';
 import type { EventEnvelope } from './envelope.js';
 import type { EventBusContext, EventLogEntry, InspectFilter, Handler, PublishResult, Subscription, Unsubscribe } from './types.js';
@@ -125,6 +125,26 @@ function apply(ctx: any, _config: any = {}) {
   // ⚠️ 口径：ring 窗口内（本进程 + 最近 2000 条发布），重启清零。
   //   `ring.full === true` 时更早的投递记录已被 FIFO 淘汰，面板须照此措辞。
   ctx.provide('agint.eventBus.deliveryByTopic', () => deliveryByTopic());
+  // 跨重启口径的同名聚合（评审 3.3 方案 A，2026-10-05 补）：读 events 表 ⇒ 全历史有效。
+  // **但 2026-10-05 之前的存量行没有 deliveries 字段，永远补不回** —— 故每行带
+  // `coverage`（full / partial / legacyOnly），legacyOnly 的投递数是 unknown 不报数。
+  ctx.provide('agint.eventBus.deliveryHistory', async () => {
+    try { return await deliveryHistory(busCtx); }
+    catch (err) {
+      return {
+        generatedAt: new Date().toISOString(),
+        scope: 'events-table' as const,
+        state: 'error' as const,
+        reason: err instanceof Error ? err.message : String((err as unknown) ?? 'unknown'),
+        scanned: 0,
+        withDeliveries: 0,
+        legacyRows: 0,
+        totals: { rows: 0, delivered: 0, deadLettered: 0, deliveryAttempts: 0 },
+        topics: [],
+        unknownDeliveryTopics: [],
+      };
+    }
+  });
   // ── umbrella 键（2026-09-24 补）───────────────────────────────────────────
   // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
   // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方都得
@@ -145,6 +165,23 @@ function apply(ctx: any, _config: any = {}) {
     metricsSnapshot: async () => metricsSnapshot(busCtx),
     subscriptions: () => subscriptionsSummary(),
     deliveryByTopic: () => deliveryByTopic(),
+    deliveryHistory: async () => {
+      try { return await deliveryHistory(busCtx); }
+      catch (err) {
+        return {
+          generatedAt: new Date().toISOString(),
+          scope: 'events-table' as const,
+          state: 'error' as const,
+          reason: err instanceof Error ? err.message : String((err as unknown) ?? 'unknown'),
+          scanned: 0,
+          withDeliveries: 0,
+          legacyRows: 0,
+          totals: { rows: 0, delivered: 0, deadLettered: 0, deliveryAttempts: 0 },
+          topics: [],
+          unknownDeliveryTopics: [],
+        };
+      }
+    },
   });
 
   ctx.provide('agint.eventBus.metricsSnapshot', async () => {

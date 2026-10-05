@@ -26,8 +26,8 @@ function asObjectResult(value, key = 'entries') {
 const name = 'agint-event-bus-tools';
 const inject = ['tools', 'agint.eventBus.publish', 'agint.eventBus.subscribe',
   'agint.eventBus.inspect', 'agint.eventBus.inspectSummary',
-  'agint.eventBus.deadletters', 'agint.eventBus.metricsSnapshot',
-  'agint.eventBus.deliveryByTopic'];
+  'agint.eventBus.deadletters',   'agint.eventBus.metricsSnapshot',
+  'agint.eventBus.deliveryByTopic', 'agint.eventBus.deliveryHistory'];
 
 function apply(ctx) {
   const publish = ctx['agint.eventBus.publish'];
@@ -37,6 +37,7 @@ function apply(ctx) {
   const deadletters = ctx['agint.eventBus.deadletters'];
   const metricsSnapshot = ctx['agint.eventBus.metricsSnapshot'];
   const deliveryByTopic = ctx['agint.eventBus.deliveryByTopic'];
+  const deliveryHistory = ctx['agint.eventBus.deliveryHistory'];
 
   ctx.tools.register(defineTool({
     name: 'eventBus_publish',
@@ -152,6 +153,28 @@ function apply(ctx) {
     },
     execute() {
       return deliveryByTopic();
+    },
+  }));
+
+  // 跨重启口径（2026-10-05 补；评审 3.3 方案 A）。description 必须写清 coverage ——
+  // 存量行没有 deliveries 字段，partial 的数字是下界不是全量。
+  ctx.tools.register(defineTool({
+    name: 'eventBus_deliveryHistory',
+    description:
+      'Per-topic delivery counts aggregated from the PERSISTED events table (survives restart). ' +
+      '**Read `coverage` before trusting any number**: "full" = every row for that topic has a ' +
+      'deliveries field; "partial" = only some do, so the counts are a LOWER BOUND; ' +
+      '"legacyOnly" = every row predates deliveries being persisted (added 2026-10-05), so the ' +
+      'delivery count is UNKNOWN and must not be reported as 0. Use eventBus_deliveryByTopic for ' +
+      'the in-memory ring window instead — it cannot answer cross-restart but does separate ' +
+      'orphan subscriptions.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
+    },
+    async execute() {
+      return deliveryHistory();
     },
   }));
 }

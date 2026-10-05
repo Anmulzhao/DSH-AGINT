@@ -17,7 +17,7 @@
  *   - 不主动 evaluate self；评估走 agint.qualityEval 跨插件（self-evaluation forbidden）
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
-import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, disposeBus } from './bus.js';
+import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, deliveryHistory, disposeBus } from './bus.js';
 import { listDeadletters } from './deadletter.js';
 import { EventEnvelopeSchema } from './schemas.js';
 import { z } from 'zod';
@@ -40,12 +40,17 @@ export const SYNC_GLOBAL_LIMIT = 3;
 //   defineDomain spec）—— EventRecordSchema 只存在于本文件，勿跑 build 覆盖。
 // deadletter 表 value：死信条目（id = `${envelope.id}:${sub.id}`）
 const EventRecordSchema = z.object({
-  envelope: EventEnvelopeSchema,
-  payloadPreview: z.unknown(),
-  occurredAt: z.string(),
-  traceId: z.string(),
-  topic: z.string().optional(),
-  source: z.string().optional(),
+    envelope: EventEnvelopeSchema,
+    payloadPreview: z.unknown(),
+    occurredAt: z.string(),
+    traceId: z.string(),
+    topic: z.string().optional(),
+    source: z.string().optional(),
+    // 2026-10-05（评审 3.3 方案 A）：顶层 deliveries = { [subscriber]: status }。
+    // 存的是 publish 路径的**终态**（DELIVERED / DEAD_LETTERED / PENDING / FAILED），
+    // 取自内存 ring 那份的浅拷贝。optional：存量 21,803 行没有此字段，永远补不回，
+    // 读侧必须把「无此字段」判成 unknown 而不是 0。
+    deliveries: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 const DeadletterEntrySchema = z.object({
   id: z.string().min(1),
@@ -163,6 +168,29 @@ function apply(ctx, _config = {}) {
     // ⚠️ 口径：ring 窗口内（本进程 + 最近 2000 条发布），重启清零。
     //   `ring.full === true` 时更早的投递记录已被 FIFO 淘汰，面板须照此措辞。
     ctx.provide('agint.eventBus.deliveryByTopic', () => deliveryByTopic());
+    // 跨重启口径的同名聚合（评审 3.3 方案 A，2026-10-05 补；与 src/index.ts 同步，K78）：
+    // 读 events 表 ⇒ 全历史有效。**但 2026-10-05 之前的存量行没有 deliveries 字段，
+    // 永远补不回** —— 故每行带 `coverage`（full / partial / legacyOnly），
+    // legacyOnly 的投递数是 unknown 不报数。软降级：读失败返回 state:'error' + reason。
+    ctx.provide('agint.eventBus.deliveryHistory', async () => {
+        try {
+            return await deliveryHistory(busCtx);
+        }
+        catch (err) {
+            return {
+                generatedAt: new Date().toISOString(),
+                scope: 'events-table',
+                state: 'error',
+                reason: err instanceof Error ? err.message : String(err ?? 'unknown'),
+                scanned: 0,
+                withDeliveries: 0,
+                legacyRows: 0,
+                totals: { rows: 0, delivered: 0, deadLettered: 0, deliveryAttempts: 0 },
+                topics: [],
+                unknownDeliveryTopics: [],
+            };
+        }
+    });
     // ── umbrella 键（2026-09-24 补）────────────────────────────────────────
     // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
     // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方
@@ -187,6 +215,25 @@ function apply(ctx, _config = {}) {
         metricsSnapshot: async () => metricsSnapshot(busCtx),
         subscriptions: () => subscriptionsSummary(),
         deliveryByTopic: () => deliveryByTopic(),
+        deliveryHistory: async () => {
+            try {
+                return await deliveryHistory(busCtx);
+            }
+            catch (err) {
+                return {
+                    generatedAt: new Date().toISOString(),
+                    scope: 'events-table',
+                    state: 'error',
+                    reason: err instanceof Error ? err.message : String(err ?? 'unknown'),
+                    scanned: 0,
+                    withDeliveries: 0,
+                    legacyRows: 0,
+                    totals: { rows: 0, delivered: 0, deadLettered: 0, deliveryAttempts: 0 },
+                    topics: [],
+                    unknownDeliveryTopics: [],
+                };
+            }
+        },
     });
     ctx.provide('agint.eventBus.metricsSnapshot', async () => {
         // A10 尾巴（Sprint 13 / s12-09 收口）：死信率分子 + 分母 + sync 订阅数。

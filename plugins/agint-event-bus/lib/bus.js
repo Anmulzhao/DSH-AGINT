@@ -139,6 +139,13 @@ export async function publish(ctx, input) {
             // 的 KV 契约，不改（改数组 = 破坏全仓存储域统一格式，且仓库内零读取方）。
             topic: envelope.topic,
             source: envelope.source,
+            // 2026-10-05（评审 3.3 方案 A）：顶层 deliveries 落盘。
+            // 此前投递结果只进内存 ring，重启即丢 ⇒ per-topic 投递数跨重启不可答。
+            // 这里把publish 路径已填好的 entry.deliveries 原样落库（此时分发已完成，
+            // 读的是终态而非意图）。取 {...entry.deliveries} 浅拷贝：entry 随后进 ring
+            // 且可能被 recordDelivery 继续写，直接存引用会让存储与ring 共享同一对象。
+            // ⚠️ 存量行没有这个字段，永远补不回——历史口径仍是unknown，不回填不伪造。
+            deliveries: { ...entry.deliveries },
         });
     }
     catch (err) {
@@ -348,6 +355,137 @@ export function deliveryByTopic() {
         topics: sorted,
         orphanPublished,
         orphanSubscriptions,
+    };
+}
+/**
+ * 跨重启口径的 topic → 投递聚合（评审 3.3 方案 A，2026-10-05 补；与 src/bus.ts 同步）。
+ *
+ * 与 deliveryByTopic 的分工（两个都要有，别只用其一）：
+ *   - deliveryByTopic()读内存 ring ⇒ 口径 = 本进程 + 最近 2000 条，但**分类最全**
+ *     （能给出 orphanSubscriptions：订阅侧的孤岛，只有内存态订阅表答得出）
+ *   - deliveryHistory(ctx)  读 events 表 ⇒ 口径 = 全历史、跨重启，但**分类少**
+ *     （订阅表不在存储里，给不出消费侧孤岛）
+ *
+ * ⚠️ 一条硬边界，违反就是把猜测当测量：
+ *   events 表里2026-10-05 之前写入的行**没有 deliveries 字段，永远补不回**。
+ *   本函数把这类行单独计入 `legacyRows`，并在 topic 行上标 `coverage`：
+ *     - 'full'      该 topic 全部行都带 deliveries ⇒ 数字可信
+ *     - 'partial'   部分行带 ⇒ 数字是**下界**，不是全量
+ *     - 'legacyOnly'该 topic 全部行都是存量行 ⇒ 投递数 unknown，不报数
+ *   绝不用 0 冒充「没投递过」，也不把 partial 的下界当全量报。
+ */
+export async function deliveryHistory(ctx) {
+    const byTopic = new Map();
+    let scanned = 0;
+    let withDeliveries = 0;
+    let legacyRows = 0;
+    let readError = null;
+    try {
+        const table = ctx?.tables?.events;
+        if (!table || typeof table.entries !== 'function')
+            throw new Error('events 表句柄不可用');
+        for (const [, record] of table.entries()) {
+            if (!record || typeof record !== 'object')
+                continue;
+            scanned += 1;
+            // 顶层 topic 优先；缺失时（存量行）拆 envelope，两条路都要走通。
+            const topic = typeof record.topic === 'string' && record.topic
+                ? record.topic
+                : (record.envelope && typeof record.envelope.topic === 'string' ? record.envelope.topic : '');
+            if (!topic)
+                continue;
+            const rec = byTopic.get(topic) ?? {
+                topic,
+                rows: 0,
+                rowsWithDeliveries: 0,
+                delivered: 0,
+                deadLettered: 0,
+                pending: 0,
+                failed: 0,
+                other: 0,
+                deliveryAttempts: 0,
+                subscribers: new Set(),
+                firstOccurredAt: null,
+                lastOccurredAt: null,
+            };
+            rec.rows += 1;
+            const at = typeof record.occurredAt === 'string'
+                ? record.occurredAt
+                : (record.envelope && typeof record.envelope.occurredAt === 'string' ? record.envelope.occurredAt : null);
+            if (at && (!rec.firstOccurredAt || at < rec.firstOccurredAt))
+                rec.firstOccurredAt = at;
+            if (at && (!rec.lastOccurredAt || at > rec.lastOccurredAt))
+                rec.lastOccurredAt = at;
+            // ⛔ deliveries 缺失 ≠ 投递数 0。存量行归入 legacyRows，topic 标 legacyOnly。
+            if (!record.deliveries || typeof record.deliveries !== 'object') {
+                legacyRows += 1;
+                byTopic.set(topic, rec);
+                continue;
+            }
+            rec.rowsWithDeliveries += 1;
+            withDeliveries += 1;
+            for (const [name, status] of Object.entries(record.deliveries)) {
+                rec.deliveryAttempts += 1;
+                rec.subscribers.add(name);
+                if (status === 'DELIVERED')
+                    rec.delivered += 1;
+                else if (status === 'DEAD_LETTERED')
+                    rec.deadLettered += 1;
+                else if (status === 'PENDING')
+                    rec.pending += 1;
+                else if (status === 'FAILED')
+                    rec.failed += 1;
+                else
+                    rec.other += 1;
+            }
+            byTopic.set(topic, rec);
+        }
+    }
+    catch (err) {
+        readError = err instanceof Error ? err.message : String(err ?? 'unknown');
+    }
+    const topics = [...byTopic.values()].map((r) => {
+        const coverage = r.rowsWithDeliveries === 0
+            ? 'legacyOnly'
+            : (r.rowsWithDeliveries === r.rows ? 'full' : 'partial');
+        return {
+            topic: r.topic,
+            coverage,
+            rows: r.rows,
+            rowsWithDeliveries: r.rowsWithDeliveries,
+            delivered: r.delivered,
+            deadLettered: r.deadLettered,
+            pending: r.pending,
+            failed: r.failed,
+            other: r.other,
+            deliveryAttempts: r.deliveryAttempts,
+            subscribers: [...r.subscribers].sort(),
+            firstOccurredAt: r.firstOccurredAt,
+            lastOccurredAt: r.lastOccurredAt,
+        };
+    }).sort((a, b) => b.rows - a.rows || a.topic.localeCompare(b.topic));
+    return {
+        generatedAt: new Date().toISOString(),
+        scope: 'events-table',
+        /** 读失败时 state=error + reason，面板据此降级为 unknown，不显示半截数字。 */
+        state: readError ? 'error' : 'ok',
+        reason: readError,
+        scanned,
+        withDeliveries,
+        legacyRows,
+        totals: {
+            rows: topics.reduce((s, r) => s + r.rows, 0),
+            delivered: topics.reduce((s, r) => s + r.delivered, 0),
+            deadLettered: topics.reduce((s, r) => s + r.deadLettered, 0),
+            deliveryAttempts: topics.reduce((s, r) => s + r.deliveryAttempts, 0),
+        },
+        topics,
+        /**
+         * 发布侧孤岛（全历史口径）：有行但全部为存量行 ⇒ 投递数不可知。
+         * 与 deliveryByTopic().orphanPublished 语义不同：那个是「窗口内有人发布
+         * 但没人订」，这个是「全历史有发布但投递数查不到」。两者不可混算。
+         */
+        unknownDeliveryTopics: topics.filter((r) => r.coverage === 'legacyOnly').map((r) => r.topic),
     };
 }
 /** inspect 聚合（语义糖：summary + filter + sync 计数；A9 尾巴，仪表盘可读） */
