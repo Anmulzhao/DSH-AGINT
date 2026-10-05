@@ -1,6 +1,6 @@
 {
   "name": "agint-aesthetic-oracle",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只读 summary + 评分纯函数 + 三问 + 三档广播；写白名单 evolution_log 审计 + 自有存储域；不杀信使。",
   "type": "module",
   "main": "lib/index.js",

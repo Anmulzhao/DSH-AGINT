@@ -228,12 +228,14 @@ function apply(ctx, config) {
     const ids = [];
     let failed = 0;
     let l3AnyLlm = false;
+    const l3Degradations = [];
     for (const d of drafts) {
       // L3（§8.1.4）：weekly 提案正文润色。失败降级回模板 body，不阻断。
       let finalBody = d.body;
       if (canL3(llmModeVal)) {
         const l3 = await l3PolishProposal(ctx, { title: d.title, templateBody: d.body, deepDive: l2DeepDiveResult ?? {} });
         if (l3.mode === 'llm') { finalBody = l3.body; l3AnyLlm = true; }
+        else l3Degradations.push({ level: 'L3', reason: l3.reason ?? 'unknown' });
       }
       try {
         const rec = await evo.propose({
@@ -243,17 +245,18 @@ function apply(ctx, config) {
         if (rec?.id) ids.push(rec.id); else failed += 1;
       } catch { failed += 1; }
     }
-    return { ids, failed, l3AnyLlm };
+    return { ids, failed, l3AnyLlm, l3Degradations };
   }
 
   /**
    * 共享出口（Day 2-3 抽取）：事件 → 审计 → 自表落账 → 配额记账。
    * 主路径与缓存回退路径共用；任何一路失败都只降级不阻断。
    */
-  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', llmModeVal = 'off', l2DeepDiveResult = null }) {
+  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', llmModeVal = 'off', l2DeepDiveResult = null, llmDiag = [] }) {
     // Day 4-5：weekly 提案先行——提案 id 要进审计 findings（evidence 可追溯）
     let proposalIds = [];
     let proposalsFailed = 0;
+    let l3Degradations = [];
     if (kind === 'weekly') {
       const submitted = await submitWeeklyProposals({
         evaluation, adviceCtx: view.adviceCtx, now, targetId: auditTargetId('weekly', now),
@@ -261,6 +264,7 @@ function apply(ctx, config) {
       });
       proposalIds = submitted.ids;
       proposalsFailed = submitted.failed;
+      l3Degradations = submitted.l3Degradations ?? [];
     }
     // §8.1.6：mode 字段——本轮广播实际用了什么输出路径
     //   template           = kill-switch off / 无 LLM 增强
@@ -288,6 +292,18 @@ function apply(ctx, config) {
         detail: `agint_evolve proposal id：${proposalIds.join(',')}（status=proposed，永不 auto-apply）`,
       });
     }
+    // §8.1.6 可观测性（v0.4.3）：本轮实际走了哪条输出路径 + LLM 降级原因。
+    // 此前 mode 只进事件 payload、降级 reason 只活在内存里 —— 2026-10-05 排障时
+    // evolution_log 查不到 mode，只能靠墙钟反推（见 CHANGELOG 0.4.2 根因段）。
+    const degradationNotes = [...new Set(
+      [...llmDiag, ...l3Degradations].map((d) => `${d.level ?? '?'}:${d.reason ?? 'unknown'}`),
+    )];
+    findings.push({
+      ruleId: 'oracle-llm-mode', severity: 'low',
+      detail: degradationNotes.length
+        ? `mode=${payloadMode} | 降级 ${degradationNotes.join('; ')}`
+        : `mode=${payloadMode}`,
+    });
     const auditLogged = await auditLog({
       targetId: auditTargetId(kind, now, kind === 'alert' ? (quota.alerts ?? 0) + 1 : null),
       targetKind: `oracle-${kind}`,
@@ -485,6 +501,7 @@ function apply(ctx, config) {
     // kill-switch: AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2/all（默认 all）
     const llmModeVal = parseLlmMode(process.env);
     let l2DeepDiveResult = null;
+    const llmDiag = [];   // §8.1.6（v0.4.3）：LLM 降级原因，进审计 findings
     if (llmModeVal !== 'off' && kind !== 'alert') {
       // L1：Q3 措辞增强（daily/weekly/monthly 同步 60s 超时；失败降级不阻断）
       // §4 真实关：advice 为 NO_ADVICE（「本日无可执行建议」）时跳过 LLM——
@@ -506,6 +523,7 @@ function apply(ctx, config) {
           report.mode = 'llm';
         } else {
           report.mode = 'heuristic-degraded';
+          llmDiag.push({ level: 'L1', reason: l1.reason ?? 'unknown' });
         }
       }
       // L2：weekly 行级深挖（失败降级，结果供 L3 消费）
@@ -518,11 +536,12 @@ function apply(ctx, config) {
           adviceCtx: view.adviceCtx ?? {},
         });
         if (l2DeepDiveResult.mode === 'llm') report.mode = 'llm';
+        else llmDiag.push({ level: 'L2', reason: l2DeepDiveResult.reason ?? 'unknown' });
       }
     }
 
     report.wallMs = Date.now() - t0;
-    const out = await finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, llmModeVal, l2DeepDiveResult });
+    const out = await finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, llmModeVal, l2DeepDiveResult, llmDiag });
 
     // 成功后写 lastGood 缓存（§6.1 回退面；缓存的是本轮真实采集，供下次 metrics 挂掉时用）
     const latest = await loadState(tables().state);

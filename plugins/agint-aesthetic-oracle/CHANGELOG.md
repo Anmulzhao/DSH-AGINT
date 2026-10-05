@@ -1,5 +1,28 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.4.3 — 2026-10-05
+
+可观测性补全：`mode` 与 LLM 降级 reason 进审计 findings。
+
+### 背景
+
+0.4.2 排障时暴露缺口：`evolution_log` 的 oracle 记录里没有 `mode`，降级 reason
+只活在 `l1EnhanceAdvice` 的返回值里、随即被丢弃。判断某天的 daily 是否走了 LLM，
+只能靠广播墙钟（`wall 10780ms` 对 10 秒上限）反推。
+
+### 变更
+
+- **新增审计 finding `oracle-llm-mode`**（lib/index.js `finalizeBroadcast`）：每条广播
+  都记 `mode=template|llm|heuristic-degraded`；发生降级时追加
+  `| 降级 L1:<reason>; L2:<reason>; L3:<reason>`（同 level+reason 去重）。
+- **降级 reason 收集**：L1 / L2 在 `runBroadcast` 收进 `llmDiag`；L3 由
+  `submitWeeklyProposals` 新增返回 `l3Degradations`（lib/index.js）。
+
+### 测试
+
+- oracle.test.js +2：LLM 通路不可用时 finding 含 `mode=heuristic-degraded` 与
+  `L1:agents unavailable`；kill-switch `off` 时 finding 恰为 `mode=template`。
+
 ## 0.4.2 — 2026-10-05
 
 L1 措辞增强超时由 10 秒提到 60 秒。

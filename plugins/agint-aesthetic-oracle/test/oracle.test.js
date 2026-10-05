@@ -727,3 +727,38 @@ test('Day4-5 evolve 缺席/抛错 → weekly 广播照发（提案降级不阻�
   assert.equal(weeklyRow.proposals, 0, '落账行反映真实提交数');
   env2.dispose();
 });
+
+// ── §8.1.6 可观测性（v0.4.3）：mode 与 LLM 降级 reason 进审计 findings ──────
+// 2026-10-05 排障缺口回归钉：此前 mode 只进事件 payload、降级 reason 只活在
+// 内存里，evolution_log 查不到，只能靠广播墙钟反推走没走 LLM。
+
+test('审计带 oracle-llm-mode：LLM 通路不可用时记 mode + 降级 reason', async () => {
+  const env = makeEnv();   // ctx 无 agents/subagents 服务 → L1 立即降级（不真调 LLM）
+  const out = await env.svc.runBroadcast('daily');
+  assert.equal(out.ok, true);
+
+  const audit = env.audit.filter((e) => e.targetKind === 'oracle-daily');
+  assert.equal(audit.length, 1);
+  const finding = audit[0].findings.find((f) => f.ruleId === 'oracle-llm-mode');
+  assert.ok(finding, '审计必须带 oracle-llm-mode finding');
+  assert.ok(finding.detail.includes('mode=heuristic-degraded'), finding.detail);
+  assert.ok(finding.detail.includes('L1:agents unavailable'), finding.detail);
+  env.dispose();
+});
+
+test('审计带 oracle-llm-mode：kill-switch off 时记 mode=template 且不带降级段', async () => {
+  const prev = process.env.AGINT_AESTHETIC_ORACLE_LLM;
+  process.env.AGINT_AESTHETIC_ORACLE_LLM = 'off';
+  try {
+    const env = makeEnv();
+    await env.svc.runBroadcast('daily');
+    const audit = env.audit.filter((e) => e.targetKind === 'oracle-daily');
+    const finding = audit[0].findings.find((f) => f.ruleId === 'oracle-llm-mode');
+    assert.ok(finding, '审计必须带 oracle-llm-mode finding');
+    assert.equal(finding.detail, 'mode=template');
+    env.dispose();
+  } finally {
+    if (prev === undefined) delete process.env.AGINT_AESTHETIC_ORACLE_LLM;
+    else process.env.AGINT_AESTHETIC_ORACLE_LLM = prev;
+  }
+});
