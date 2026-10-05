@@ -25,6 +25,7 @@
         "agents",
         "agint.eventBus.publish",
         "agint.evolution",
+        "agint.qualityPolicy",
         "agint.qualitySandbox",
         "agint.qualityStatic",
         "skills",
