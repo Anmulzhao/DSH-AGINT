@@ -4,6 +4,40 @@
 
 ---
 
+## v0.6.3 — 2026-10-05 — fixate 落记忆 notify 实装 + 删两条补不了的悬空声明
+
+**起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」
+的键列为悬空声明。本插件被点名三条：`agint.diagnosis` / `agint.qualitySandbox` / `agint.memory`
+（README 的软依赖表原本写「6 个」，代码实际只取 3 个）。老板拍「补接线」，逐条查接口后分三种处理：
+
+### 实装（Added）
+
+- **`agint.memory.write()` notify**（README 软依赖表里那条 `write()`（notify）落地）：
+  `fixate` 在固化落库、同 scope 对手置 FROZEN_OBSERVE 之后，落一条 `type=decision` 的记忆
+  （内容 = 变体 id + hash 校验拿到的 preimageHash + 被冻结的同 scope 变体清单）。
+  - 新增内部函数 `notifyFixateMemory()`（`lib/index.js`，紧跟 `recordFailurePattern`）。
+  - `fixate` 返回值新增 **`memory: { written, id? , reason? }`** —— 加法字段，老调用方不依赖它。
+  - id 用稳定值 `population-fixate-<variant_id>`，重复固化走 memory.write 的 upsert 分支，不堆同义条目。
+  - **软降级三条**：服务缺位 → `{written:false, reason:'agint.memory unavailable'}`；
+    `write()` 抛错 → 带回原因；两者都**不回滚、不改写固化结果**（固化在前，记忆补写是事后的事）。
+  - 测试：`test/e2e.mjs` 场景 2 加 5 条断言（落一条 / type / 内容带变体与 hash / id 稳定），
+    新增场景 2b 覆盖缺位与抛错两条降级路径（`ℹ pass 7 / fail 0`）。
+
+### 删声明（Removed，两条补不了的）
+
+- ~~`agint.diagnosis` — `annotate()`（溯源；可选）~~ —— **接口对不上，不是漏接线**：
+  `annotate(input)` 硬要求 `failureId`（`plugins/agint-diagnosis/lib/index.js:191-193`），
+  而 fixate 是成功路径，没有 failure 可标注。溯源链本来就已闭上：本插件失败侧走
+  `agint.evolution.addFailure()` 落 failure_pattern（`lib/index.js:71-81`），diagnosis 侧再按
+  failureId 反查该表做标注（`agint-diagnosis/lib/index.js:196-207`）。再加一条直连是绕开那层，
+  且 `diagnosis annotate 系` 在 AGENTS.md 边界段点名属写工具 ask 门禁面，不该由本插件自动触发。
+- ~~`agint.qualitySandbox` — `runSmoke()`（可选 verify）~~ —— 接进 ingest 就是准入闸：
+  会把「可选校验」变成能 REJECT 的前置条件，改变 ingest 语义。要做需先定「沙箱失败算不算拒」，
+  属新设计，不在契约清理里顺手加。
+
+**非破环性**：Service 签名与存储 schema 均未变；`fixate` 返回体只增字段。README「软依赖」表
+与 `lib/index.js` 头注释同步改为 5 个（mutator / qualityPolicy / memory / evolution / eventBus）。
+
 ## v0.6.2 — 2026-08-26 — Sprint 9 收口
 
 **首次发版**（起步阶段，N=3 — D3）。

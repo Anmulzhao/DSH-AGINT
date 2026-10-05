@@ -75,12 +75,15 @@ test('E2E 场景1: baseline + 定向变异 + 随机变异 Ingest → Evaluate �
 
 test('E2E 场景2: 阶梯晋升至 FULL + fixate(hash 校验 + baseline 更新)', async () => {
   let commitGetCalled = 0;
+  const memWrites = [];
   const ctx = setup({
     'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) },
     'agint.mutator': {
       commit: { get: async () => { commitGetCalled++; return { preimageHash: 'h-fixate' }; } },
       rollback: async () => ({ ok: true, restoredHash: 'h' }),
     },
+    // W3 接线（2026-10-05）：fixate 成功后落一条 decision 记忆（README 软依赖表里的 write() notify）
+    'agint.memory': { write: async (input) => { memWrites.push(input); return { ...input }; } },
   });
   const v = await ctx._providers['agint.population.ingest']({ proposal: makeProposal() });
   await ctx._providers['agint.population.recordEvaluation'](v.variant_id, GOOD_METRICS, BASELINE);
@@ -96,6 +99,44 @@ test('E2E 场景2: 阶梯晋升至 FULL + fixate(hash 校验 + baseline 更新)'
   assert.equal(fr.variant.stage, 'FIXED');
   assert.ok(fr.variant.fixed_at);
   assert.equal(commitGetCalled, 1, 'mutator.commit.get 应被调一次做 hash 校验');
+  assert.equal(fr.memory.written, true, 'fixate 应调 agint.memory.write 落 notify');
+  assert.equal(memWrites.length, 1, '一次固化只落一条记忆');
+  assert.equal(memWrites[0].type, 'decision', '固化是决策留痕，不是 lesson/pattern');
+  assert.ok(memWrites[0].content.includes(v.variant_id), 'notify 内容要能定位到被固化的变体');
+  assert.ok(memWrites[0].content.includes('h-fixate'), 'notify 要带 hash 校验拿到的 preimageHash');
+  assert.equal(memWrites[0].id, `population-fixate-${v.variant_id}`, 'id 必须稳定 ⇒ 重复固化走 write 的 upsert，不堆同义条目');
+});
+
+// 场景 2b：notify 是**事后补写**，记忆服务缺位或抛错都不许动固化结果（软降级纪律）
+test('E2E 场景2b: memory 缺位 / 抛错 → 固化照常完成，memory.written=false 带原因', async () => {
+  const driveToFull = async (c) => {
+    const v = await c._providers['agint.population.ingest']({ proposal: makeProposal() });
+    await c._providers['agint.population.recordEvaluation'](v.variant_id, GOOD_METRICS, BASELINE);
+    for (let i = 0; i < 4; i++) await c._providers['agint.population.promote']({ variant_id: v.variant_id });
+    return v;
+  };
+  const MUTATOR = {
+    commit: { get: async () => ({ preimageHash: 'h-2b' }) },
+    rollback: async () => ({ ok: true, restoredHash: 'h' }),
+  };
+
+  const c1 = setup({ 'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) }, 'agint.mutator': MUTATOR });
+  const v1 = await driveToFull(c1);
+  const r1 = await c1._providers['agint.population.fixate']({ variant_id: v1.variant_id });
+  assert.equal(r1.variant.stage, 'FIXED', '记忆服务缺位时固化必须照常完成');
+  assert.equal(r1.memory.written, false);
+  assert.match(r1.memory.reason, /agint\.memory unavailable/, '缺位要写清缺的是哪项证据');
+
+  const c2 = setup({
+    'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) },
+    'agint.mutator': MUTATOR,
+    'agint.memory': { write: async () => { throw new Error('EPERM: operation not permitted, rename .tmp'); } },
+  });
+  const v2 = await driveToFull(c2);
+  const r2 = await c2._providers['agint.population.fixate']({ variant_id: v2.variant_id });
+  assert.equal(r2.variant.stage, 'FIXED', 'memory.write 抛错也不许回滚或改写固化结果');
+  assert.equal(r2.memory.written, false);
+  assert.match(r2.memory.reason, /memory\.write threw/, '抛错要把原因带回来，别静默吞');
 });
 
 // ── 场景 3: safety_violation > 0 → Emergency Rollback ───────────────

@@ -142,11 +142,21 @@ FROZEN_OBSERVE --1世代后fitness≥0.9x-> 重新进入 Ingest 队列
 
 **软依赖**（manifest 声明 + 用 `ctx.get()` 取，缺则降级）：
 - `agint.mutator` — `commit.get()` / `rollback()`（D11 强制调）/ `dreamRandom()`（多样性注入）
-- `agint.diagnosis` — `annotate()`（溯源；可选）
 - `agint.qualityPolicy` — `decide()`（Ingest Policy Gate）
-- `agint.qualitySandbox` — `runSmoke()`（可选 verify）
-- `agint.memory` — `write()`（notify）
+- `agint.memory` — `write()`（notify：fixate 成功后落一条 decision，2026-10-05 实装）
 - `agint.evolution` — `addFailure()`（写 failure_pattern — cull/rollback 强制）
+- `agint.eventBus` — `publish()`（T1 影子期发布，主路径仍直连）
+
+**2026-10-05 从软依赖里删掉两条**（它们此前只在文档里、代码从不取用，属悬空声明）：
+
+- ~~`agint.diagnosis` — `annotate()`（溯源；可选）~~ —— 接口对不上：`annotate(input)` 硬要求
+  `failureId`（`plugins/agint-diagnosis/lib/index.js:191-193`），而 fixate 是**成功**路径，没有
+  failure 可标注。溯源这条链本来就已经闭上了：population 失败侧走
+  `agint.evolution.addFailure()` 落 failure_pattern（`lib/index.js:71-81`），
+  diagnosis 侧再按 failureId 反查该表做标注（`agint-diagnosis/lib/index.js:196-207`）。
+  直连调用等于绕过那层，且 `diagnosis annotate 系` 在 AGENTS.md 里点名属写工具 ask 门禁面，不该由本插件自动触发。
+- ~~`agint.qualitySandbox` — `runSmoke()`（可选 verify）~~ —— 一旦接进 ingest 就是准入闸，
+  把「可选校验」变成会 REJECT 的前置条件，改变 ingest 语义。要做也得先定「失败算不算拒」再设计。
 
 **调用约定**：
 - mutator.rollback 失败 → cull/rollback 仍完成（记录 rollbackError + failure_pattern），不阻断当前 cull

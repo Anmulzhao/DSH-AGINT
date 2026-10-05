@@ -6,11 +6,12 @@
  *     ingest      摄入（前置校验 + Policy Gate + 1% 起步流量 + 谱系记录）
  *     promote     阶梯式晋升（NEW → OBSERVING → PROMOTING → EXPANDING → FULL）
  *     cull        淘汰（强制 mutator.rollback + failure_pattern tag=population-cull）
- *     fixate      固化（hash 校验 + baseline 更新 + 同 scope 其余 → FROZEN_OBSERVE）
+ *     fixate      固化（hash 校验 + baseline 更新 + 同 scope 其余 → FROZEN_OBSERVE + memory notify）
  *     rollback    紧急回滚（强制 mutator.rollback + failure_pattern tag=population-rollback）
  *     stats       种群总览（host-side dashboard，不进 model 工具）
  *   - 独占 agint_population 存储域（4 表 variants/fitness_history/traffic_log/generation_log）
- *   - 软依赖 6 个：mutator / diagnosis / qualityPolicy / qualitySandbox / memory / evolution
+ *   - 软依赖 5 个：mutator / qualityPolicy / memory / evolution / eventBus
+ *     （2026-10-05 删 diagnosis 与 qualitySandbox 两条悬空声明，理由见 README「软依赖」段）
  *   - 调 mutator.rollback 是非可选（D11）—— cull + rollback 强制走 mutator
  *
  * 装载红线（AGENTS.md）：本文件不挂顶层 cordis.patch.yml，由老板走 safe-update 重启。
@@ -77,6 +78,44 @@ function recordFailurePattern(ctx, payload, tags) {
     return { written: true, id: evo.addFailure({ pattern: JSON.stringify(payload).slice(0, 200), category: 'population', severity: 'high', evidence: payload.summary || 'population lifecycle event', tags }) };
   } catch (err) {
     return { written: false, reason: `addFailure threw: ${err.message || err}` };
+  }
+}
+
+/**
+ * fixate 成功后往记忆里落一条 decision（设计依据 README「软依赖」表：
+ * `agint.memory` — `write()`（notify），降级=本地日志 + 异步补写）。
+ *
+ * 三条纪律：
+ *  - **绝不影响固化结果**：固化在调用前已落库，服务缺位或抛错都只回 {written:false,reason}。
+ *  - id 用 `population-fixate-<variant_id>` 稳定值 ⇒ 重复 fixate 走 memory.write 的
+ *    upsert 分支，不会堆出多条同义记忆。
+ *  - 只写事实（variant / commit / 被冻结的同 scope 对手），不写评价 —— 评价归 quality-eval。
+ * @param {object} ctx - cordis context
+ * @param {object} updated - 固化后的 variant 行（含 variant_id / commit_id / fixed_at）
+ * @param {object|null} commitInfo - mutator.commit.get() 的返回（hash 校验证据）
+ * @param {string[]} frozenIds - 本次被置为 FROZEN_OBSERVE 的同 scope 变体
+ * @returns {Promise<{written:boolean, id?:string, reason?:string}>}
+ */
+async function notifyFixateMemory(ctx, updated, commitInfo, frozenIds) {
+  const mem = softDep(ctx, 'agint.memory');
+  if (!mem || typeof mem.write !== 'function') {
+    return { written: false, reason: 'agint.memory unavailable' };
+  }
+  const id = `population-fixate-${updated.variant_id}`;
+  try {
+    const rec = await mem.write({
+      id,
+      type: 'decision',
+      content: `变体 ${updated.variant_id} 固化为 baseline（commit ${commitInfo?.preimageHash || updated.commit_id}）；`
+        + `同 scope 冻结 ${frozenIds.length} 个：${frozenIds.join(', ') || '无'}`,
+      level: 'L2',
+      confidence: 1,
+      evidence: `population.fixate variant_id=${updated.variant_id} fixed_at=${updated.fixed_at}`,
+      resolved: true,
+    });
+    return { written: true, id: rec?.id || id };
+  } catch (err) {
+    return { written: false, reason: `memory.write threw: ${err.message || String(err)}` };
   }
 }
 
@@ -349,7 +388,11 @@ function apply(ctx) {
     const tl = await t_log();
     await writeTrafficLog(ctx, tl, v.variant_id, v.traffic_pct, 100, 'FIXATE', { commit: commitInfo?.preimageHash || null });
 
-    return { variant: unpackVariant(updated), frozen: competitors.map((c) => c.variant_id), commitInfo };
+    // notify 只在固化已成功之后。它自己吞错、不参与结果判定：固化已落库，记忆补写是事后的事。
+    const frozenIds = competitors.map((c) => c.variant_id);
+    const memory = await notifyFixateMemory(ctx, updated, commitInfo, frozenIds);
+
+    return { variant: unpackVariant(updated), frozen: frozenIds, commitInfo, memory };
   }
 
   // ── Service: rollback（紧急回滚：safety_violation>0 / 全局回滚 avg<0.5）──

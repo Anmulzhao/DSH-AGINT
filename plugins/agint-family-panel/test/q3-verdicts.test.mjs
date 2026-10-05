@@ -132,15 +132,14 @@ assert.equal(D.scan.provided['agint.qualityPolicy'], 'agint-quality-policy', 'qu
 // ② 无提供方必须为空（家族键全部有提供方）
 assert.deepEqual(Object.keys(npBySvc), [], `仍有家族键无提供方：${Object.keys(npBySvc).join(',')}`);
 
-// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结，同日 W1 清掉三条）。
-//    并 optionalInject 口径后新暴露的条目是**真实契约缺口**，不是误报：逐条 grep 过对应
-//    插件 lib/，声明的服务代码里从不取用。
-//    已处理（改判「删声明」，各自 CHANGELOG）：agint-event-bus→agint.memory（0.7.3）、
-//    agint-input-gateway→agint.memory（0.1.3）、agint-skill-graph→agint.skillAutocreate（0.1.1）。
-//    待处理（老板已拍「补接线」，进行中）：下面两条。新增一条即变红。
+// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结，同日 W1/W3 已清掉五条）。
+//    已处理·删声明：agint-event-bus→agint.memory（0.7.3）、agint-input-gateway→agint.memory（0.1.3）、
+//    agint-skill-graph→agint.skillAutocreate（0.1.1）、
+//    agint-population→diagnosis/qualitySandbox（接口对不上/会变准入闸，0.6.3 删）、
+//    agint-population→memory（0.6.3 实装 fixate notify）。
+//    待处理（W2 进行中）：下面这一条。新增一条即变红。
 const KNOWN_STALE_DECL = {
   'agint-mount': ['agint.population.ingest'], // 设计依据 plugins/agint-mount/README.md:168（SMOKE PASS 后投样本）
-  'agint-population': ['agint.diagnosis', 'agint.memory', 'agint.qualitySandbox'], // 设计依据 README.md:145-148
 };
 const asMap = (rows) => Object.fromEntries(rows.map((r) => [r.pl, [...r.missing].sort()]));
 const expectedStale = Object.fromEntries(Object.entries(KNOWN_STALE_DECL).map(([k, v]) => [k, [...v].sort()]));

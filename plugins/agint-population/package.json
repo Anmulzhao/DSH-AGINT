@@ -1,6 +1,6 @@
 {
   "name": "agint-population",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "AGINT 种群管理器 v0.6.2：变异体生命周期 + 阶梯式灰度 + 6 维适应度（safety 硬门控）+ HARM 映射。Sprint 9 收口。",
   "type": "module",
   "main": "lib/index.js",
