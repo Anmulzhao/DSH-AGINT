@@ -38,7 +38,7 @@ const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash-Preview';
 const DEFAULT_AGENT_PRESET = 'agint';
 
 // ── 超时（§8.1.6；对齐 dream 的 DEFAULT_TIMEOUT_MS = 60_000） ──
-export const L1_TIMEOUT_MS = 10_000;   // daily L1：短超时（措辞增强输入小）
+export const L1_TIMEOUT_MS = 60_000;   // L1 措辞增强：2026-10-05 由 10_000 提到 60_000（daily 实测 wall 10.78s/11.09s 连续越线降级）
 export const L2_TIMEOUT_MS = 60_000;   // weekly L2 深挖
 export const L3_TIMEOUT_MS = 60_000;   // weekly L3 提案润色
 

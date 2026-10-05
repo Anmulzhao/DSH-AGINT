@@ -1,5 +1,32 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.4.2 — 2026-10-05
+
+L1 措辞增强超时由 10 秒提到 60 秒。
+
+### 根因
+
+2026-10-05 两次 daily 广播的墙钟都越过 L1 的 10 秒上限，`report.mode` 落 `heuristic-degraded`：
+
+- 09:00 定时那次 `wall 10780ms`（广播记录 `0aee1431-cbe3-4885-8871-8067755ee5f0`）
+- 18:30 复现那次 `wall 11089ms`（广播记录 `84ce8ff8-8e6f-49dd-b503-62f0f40977b4`）
+
+两次差值（780ms / 1089ms）是非 LLM 部分耗时。同机同进程的 weekly 广播 `mode=llm` 成功，
+排除服务缺失与 kill-switch 关闭。超时信号覆盖会话创建与模型推理两段
+（lib/llm-enhance.js:101-116），本次没区分是哪一段；降级 reason 此前不进任何持久层
+（lib/index.js:291-296 的 findings 不含 mode 与 reason）。
+
+### 变更
+
+- **L1_TIMEOUT_MS 10_000 → 60_000**（lib/llm-enhance.js:41）。与 L2/L3 一致，
+  也对齐同文件 :40 注释里「对齐 dream 的 DEFAULT_TIMEOUT_MS = 60_000」的既有意图。
+- lib/index.js:489 注释同步：「短超时」→「60s 超时」。
+
+### 影响
+
+降级只丢措辞润色，广播的判断与数字不变。daily 广播的最坏墙钟上限从约 11 秒变为约 61 秒；
+daily 走 cron，不影响交互路径。
+
 ## 0.4.1 — 2026-09-29
 
 §4 真实关修复：Q3 建议必须绑定真实 lint 证据，查不到就输出「本日无可执行建议」，不许兜底编一句。

@@ -486,7 +486,7 @@ function apply(ctx, config) {
     const llmModeVal = parseLlmMode(process.env);
     let l2DeepDiveResult = null;
     if (llmModeVal !== 'off' && kind !== 'alert') {
-      // L1：Q3 措辞增强（daily/weekly/monthly 同步短超时；失败降级不阻断）
+      // L1：Q3 措辞增强（daily/weekly/monthly 同步 60s 超时；失败降级不阻断）
       // §4 真实关：advice 为 NO_ADVICE（「本日无可执行建议」）时跳过 LLM——
       // 不能让模型把「没有建议」润色成一条编造的建议。
       if (canL1(llmModeVal) && evaluation.worst && evaluation.advice?.advice && evaluation.advice.advice !== NO_ADVICE) {
