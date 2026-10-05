@@ -651,6 +651,47 @@ PATCH_KEPT_REPO_ROOT=""
 
 cp -f "$BUNDLE_PATCH_SRC"    "$BUNDLE_PATCH_DST"    || die "bundle patch 复制失败: $BUNDLE_PATCH_SRC"
 
+# 3a-bis. 展开 `__DSH_HOME__` 占位符 → 本机真实路径。
+#     为什么需要（dsh 0.2.0-rc.2 实测，AGINT 0.11.0 模板踩坑）：
+#       cordis:include 用 new URL(config.path, ctx.baseUrl) 解析 include 路径
+#       （cordis-plugin-include/lib/index.js:123），而 dsh 把 ctx.baseUrl 定为
+#       **本层配置文件所在目录**（dsh-app-boot/lib/index.js:4070）——bundle 层的
+#       preset 声明行因此按 $DSH_HOME/.agint-bundle/ 解析，不是 profile 根。
+#       模板里写死 `../../.agent-presets/…` 会落到 file:///.agent-presets/…
+#       （文件系统根，不存在）⇒ `agent-preset/invalid: … config file not found`
+#       ⇒ agint / agint-blockchain / agint-investor / agint-ops 四个 preset
+#         永远不注册，UI 里只剩 standard/ptc/minimal/cordis。
+#     为什么用占位符而不是直接写绝对路径：
+#       ① include 的 path 禁止 `!!js`（app-boot:3041
+#          "include path must be literal; config expressions are not evaluated"）；
+#       ② cordis.patch.yml 是**两机共用模板**（见 3a 段事故记录），机器私有绝对
+#          路径按 AGENTS.md:16 红线不入库。
+#     本步骤与 3a/3b 同构：模板给占位符，装脚本按 $DSH_HOME 求真值。
+if grep -q '__DSH_HOME__' "$BUNDLE_PATCH_DST" 2>/dev/null; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 将把 __DSH_HOME__ 展开为：$DSH_HOME"
+  else
+    python3 - "$(winpath "$BUNDLE_PATCH_DST")" "$DSH_HOME" <<'PY' \
+      || die "bundle patch 的 __DSH_HOME__ 展开失败"
+import re, sys
+path, home = sys.argv[1], sys.argv[2].rstrip('/')
+text = open(path, encoding='utf-8').read()
+# 只替换 `path:` 键上的占位符。注释里也会出现 __DSH_HOME__（K83 说明段举例
+# 引用了旧写法的 ../../.agent-presets/…），那些是文档不是配置，替换掉会
+# 让注释指向与自身描述不符的路径。
+pattern = re.compile(r'(^\s*path:\s*)__DSH_HOME__', re.M)
+new_text, n = pattern.subn(lambda m: m.group(1) + 'file://' + home, text)
+if n == 0:
+    print('[AGINT]   ! 没有 `path:` 行含 __DSH_HOME__，未改动')
+    sys.exit(0)
+open(path, 'w', encoding='utf-8', newline='').write(new_text)
+print(f"[AGINT]   ✓ 展开 __DSH_HOME__ → file://{home}（{n} 处 preset include 路径）")
+PY
+  fi
+else
+  log "   ✓ 模板无 __DSH_HOME__ 占位符（老模板，无需展开）"
+fi
+
 # 3b. 写回 override（模板是 `!!js` 表达式时不写回，见上方注释）。
 case "$PATCH_TPL_REPO_ROOT" in
   '!!js'*)

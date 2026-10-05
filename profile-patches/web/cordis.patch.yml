@@ -36,7 +36,7 @@
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
-        root: !!js (process.env.DSH_WIKI_ROOT || '/home/kylin/projects/DSH/wiki')
+        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
 
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     - id: agint-cron
@@ -168,10 +168,28 @@
     #      所以 agent.cordis.yml 一个字都不用改，仍按 .agent-presets/<id>/ 解析。
     #   ⇒ preset 定义保持单份（仍在 .agent-presets/），本 patch 只放声明。
     #
-    # ⛔ 约束（2026-09-24 实测纠正）：includeConfig.path 是**字面量**，按 **profile 根**解析
-    #    （= 根层 Include 的 baseUrl，即 profiles/web/），**不是**「本 patch 文件所在目录」。
-    #    本文件位于仓库 profile-patches/web/，只是**源**；合并进 profile 后基准才是 profile 根。
-    #    ⇒ 路径只能按 profile 根写：2 级 .. = ~/.dsh/，再进 .agent-presets/<id>/。
+    # ⛔ 约束（2026-10-05 复测，本段取代 2026-09-24 的 K83 取证）：
+    #    `includeConfig.path` 是**字面量**（`!!js` 也不行 —— app-boot:3041
+    #    "include path must be literal; config expressions are not evaluated"），
+    #    按 `new URL(config.path, ctx.baseUrl)` 解析（cordis-plugin-include:123）。
+    #
+    #    ⛔⛔ 但 ctx.baseUrl 的定义变了：
+    #      · dsh 0.1.7-rc.1（本段原结论）：baseUrl = **profile 根** = profiles/web/
+    #      · dsh 0.2.0-rc.2（现测）：baseUrl = **本层配置文件所在目录**，
+    #        即 `ctx.baseUrl = dirname(<本层 config>) + '/'`（dsh-app-boot:4070）
+    #
+    #    本文件是 profile 层的**源**。合并进 profile 后 baseUrl = profiles/web/，此时
+    #    `../../.agent-presets/…` 恰好正确；但 AGINT 0.11.0 起实际挂载走 **bundle 层**
+    #    （仓库根 cordis.patch.yml），baseUrl 变成 $DSH_HOME/.agint-bundle/，同一路径
+    #    落到 `file:///.agent-presets/…`（文件系统根，不存在）⇒
+    #    `agent-preset/invalid: <id> (cordis:include): config file not found`
+    #    ⇒ 四个 AGINT preset 全部永远不注册，且装完零报错。
+    #
+    #    ⇒ 两份模板统一改用 `__DSH_HOME__` 占位符，install.sh 3a-bis 段在复制后展开成
+    #      `file://$DSH_HOME`。绝对 file URL 与 baseUrl 语义解耦，0.1.7 / 0.2.0 都命中。
+    #
+    # ⛔ 历史（保留供追溯，已失效）：2026-09-24 K83 断言「config 值恒字面量、按 profile
+    #    根解析」，据此写下 `../../` 路径。0.1.7 上成立，0.2.0 上不成立。
     # 回滚：删掉下面三段并重启 dsh；.agent-presets/ 与插件都无需动。
     #
     # 旧版 preset.yml 里已有 name/description，但 0.1.7 不再读该文件 → 名称说明
@@ -186,7 +204,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: ../../.agent-presets/agint/agent.cordis.yml
+              path: __DSH_HOME__/.agent-presets/agint/agent.cordis.yml
 
     - id: agint-blockchain-preset
       name: '@deepseek-ai/dsh-agent-preset'
@@ -198,7 +216,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: ../../.agent-presets/agint-blockchain/agent.cordis.yml
+              path: __DSH_HOME__/.agent-presets/agint-blockchain/agent.cordis.yml
 
     - id: agint-investor-preset
       name: '@deepseek-ai/dsh-agent-preset'
@@ -210,7 +228,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: ../../.agent-presets/agint-investor/agent.cordis.yml
+              path: __DSH_HOME__/.agent-presets/agint-investor/agent.cordis.yml
 
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
