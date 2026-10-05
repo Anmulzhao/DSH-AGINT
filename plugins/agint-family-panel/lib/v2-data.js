@@ -251,6 +251,7 @@ function aggBus(storagesDir, now) {
   const events = body?.tables?.events;
   if (!events || typeof events !== 'object') return { state: 'error', reason: 'events 表缺失或形态未知' };
   const topics = new Map();
+  const topicLast = new Map();
   const sources = new Map();
   const daily = new Map();
   let total = 0;
@@ -260,7 +261,12 @@ function aggBus(storagesDir, now) {
     const e = v?.envelope;
     if (!e) continue;
     total += 1;
-    if (e.topic) topics.set(e.topic, (topics.get(e.topic) ?? 0) + 1);
+    if (e.topic) {
+      topics.set(e.topic, (topics.get(e.topic) ?? 0) + 1);
+      if (e.occurredAt && (!topicLast.get(e.topic) || e.occurredAt > topicLast.get(e.topic))) {
+        topicLast.set(e.topic, e.occurredAt);
+      }
+    }
     if (e.source) sources.set(e.source, (sources.get(e.source) ?? 0) + 1);
     const ts = Date.parse(e.occurredAt ?? '');
     if (Number.isFinite(ts)) {
@@ -280,6 +286,9 @@ function aggBus(storagesDir, now) {
     total,
     deadletter: dl && typeof dl === 'object' ? Object.keys(dl).length : 0,
     topics: sortDesc(topics),
+    /** topic → 全历史最后一次发布的 occurredAt。订阅投递分层要用：投递计数随进程重启
+     *  清零，而「这个主题到底有没有人发过」只有全历史能回答。 */
+    topicLast: Object.fromEntries(topicLast),
     sources: sortDesc(sources),
     daily: Object.fromEntries(daily),
     range: [first, last],
@@ -544,6 +553,109 @@ function signature(dirs) {
 }
 
 /**
+ * 读接线豁免表 `docs/wiring-exemptions.json`（bin/check-wiring.mjs 消费的同一份档案）。
+ *
+ * 为什么要读它而不是面板自己判：豁免表是「有订阅方、暂无发布方」这类断链的**权威出处**，
+ * 每条带 reason / evidence / since（2026-10-05 实测：evoorch.* 两条自 2026-09-24 就归档为
+ * 「P2-3 未实施，订阅方已就位等发布方」）。面板此前把已归档的断链当成新问题重报一遍，
+ * 属 playbook §3.28 那一族坑（自己造发现逻辑，不认上游注册处）。
+ *
+ * 只在**仓库位**读：部署位 `.agint-bundle/` 下没有 docs/（2026-10-05 实测），
+ * 读不到就照实降级，不猜、不把已豁免的重新变成待判。
+ *
+ * @param {string|null} repoPluginsDir - 仓库位 plugins/ 目录
+ * @returns {{state:string, file?:string, count?:number, byTopic?:Record<string,{reason:string,since:string|null,evidence:string|null}>, reason?:string, observedAt?:string}}
+ */
+export function readWiringExemptions(repoPluginsDir) {
+  if (!repoPluginsDir) {
+    return { state: 'unavailable', byTopic: {}, count: 0, reason: '仓库位未解析：豁免表只存仓库位 docs/，部署位无 docs/' };
+  }
+  const file = join(repoPluginsDir, '..', 'docs', 'wiring-exemptions.json');
+  if (!existsSync(file)) return { state: 'unavailable', byTopic: {}, count: 0, file, reason: `豁免表文件不存在：${file}` };
+  try {
+    const body = JSON.parse(readFileSync(file, 'utf8'));
+    const byTopic = {};
+    for (const t of Array.isArray(body?.topics) ? body.topics : []) {
+      if (!t || !t.topic) continue;
+      byTopic[t.topic] = {
+        reason: String(t.reason ?? '').slice(0, 240),
+        since: t.since ?? null,
+        evidence: t.evidence ? String(t.evidence).slice(0, 160) : null,
+      };
+    }
+    return { state: 'ok', file, count: Object.keys(byTopic).length, byTopic, observedAt: mtimeIso(file) };
+  } catch (err) {
+    return { state: 'error', byTopic: {}, count: 0, file, reason: String((err && err.message) ?? err).slice(0, 200) };
+  }
+}
+
+/**
+ * 零投递订阅分层（纯函数，面板与 q3 回放共用同一实现）。
+ *
+ * 背景：`agint.eventBus.subscriptions` 的投递计数**随宿主进程重启清零**
+ * （lib/index.js 的 bootAt 注释已写明「0 since boot ≠ never」），所以「零投递」
+ * 必须再分一层，否则每次重启后面板都报一批假异常：
+ *  - exempted       主题全在豁免表在册 → 已归档断链，不再当待判。
+ *  - lowFrequency   主题在全历史里发布过 → 只是本窗口没触发；给次数与最后一次。
+ *  - neverPublished 既无豁免、全历史又从未发布 → 这才是真缺口，需要人工判。
+ *
+ * @param {object|null} sub - collectSubscriptions() 的返回
+ * @param {object|null} bus - aggBus() 的返回（要 topics 计数与 topicLast）
+ * @param {object|null} exempt - readWiringExemptions() 的返回
+ * @returns {object} { state, buckets:{exempted,lowFrequency,neverPublished}, ... }
+ */
+export function classifySubscriptions(sub, bus, exempt) {
+  if (!sub || sub.state !== 'ok') {
+    return { state: 'unavailable', reason: (sub && sub.reason) ? String(sub.reason).slice(0, 200) : '订阅表未接入（agint.eventBus.subscriptions 不可得）' };
+  }
+  const entries = Array.isArray(sub.entries) ? sub.entries : [];
+  const busOk = !!bus && !bus.state;
+  const counts = new Map((busOk && Array.isArray(bus.topics) ? bus.topics : []).map(([t, n]) => [t, n]));
+  const lastMap = (busOk && bus.topicLast) || {};
+  const byTopic = (exempt && exempt.state === 'ok') ? exempt.byTopic : {};
+  const out = {
+    state: 'ok',
+    bootAt: sub.bootAt ?? null,
+    total: entries.length,
+    zero: 0,
+    syncCount: sub.syncCount ?? null,
+    syncGlobalLimit: sub.syncGlobalLimit ?? null,
+    busOk,
+    exemptionState: exempt ? exempt.state : 'unavailable',
+    exemptionCount: exempt && exempt.state === 'ok' ? exempt.count : 0,
+    buckets: { exempted: [], lowFrequency: [], neverPublished: [] },
+  };
+  for (const e of entries) {
+    if (e.deliveries !== 0) continue;
+    out.zero += 1;
+    const raw = Array.isArray(e.topics) ? e.topics.filter(Boolean) : [];
+    const wildcard = raw.length === 0 || raw.includes('*');
+    const topics = wildcard ? ['*'] : raw;
+    const row = { subscriber: e.subscriber ?? '?', topics };
+    const hits = topics.map((t) => byTopic[t]).filter(Boolean);
+    if (!wildcard && hits.length === topics.length) {
+      out.buckets.exempted.push({ ...row, since: hits[0].since ?? null, exemptReason: hits[0].reason ?? null });
+      continue;
+    }
+    if (!busOk) {
+      // 全历史不可读 ⇒ 分不清「低频」还是「从未发布」，照实并进待判层并说明缺哪项证据。
+      out.buckets.neverPublished.push({ ...row, undetermined: true, note: '总线全历史不可读，无法区分低频与从未发布' });
+      continue;
+    }
+    const history = topics
+      .map((t) => ({ topic: t, published: counts.get(t) ?? 0, last: lastMap[t] ?? null }))
+      .filter((h) => h.published > 0);
+    if (wildcard) {
+      out.buckets.lowFrequency.push({ ...row, wildcard: true, busTotal: bus.total ?? 0, note: '通配订阅：本进程窗口内零投递；总线已有全历史，属低频而非断链' });
+      continue;
+    }
+    if (history.length > 0) { out.buckets.lowFrequency.push({ ...row, history }); continue; }
+    out.buckets.neverPublished.push(row);
+  }
+  return out;
+}
+
+/**
  * 组装 /v2/data payload。opts 仅供测试注入（now/force/独立 cache）。
  * @param {{pluginsDir:string, storagesDir:string, repoPluginsDir:string|null}} dirs
  * @param {{now?:number, force?:boolean, cache?:Map}} [opts]
@@ -558,6 +670,7 @@ export function collectV2Data(dirs, opts = {}) {
   const payload = { ok: true, generatedAt: new Date(now).toISOString(), panelVersion: PANEL_VERSION };
   // 契约先读：scanPlugins 的第二参要用它补边（v2-scan LITERAL_RE）。
   try { payload.manifestConsumes = readManifestConsumes(dirs.pluginsDir); } catch { payload.manifestConsumes = {}; }
+  try { payload.wiringExemptions = readWiringExemptions(dirs.repoPluginsDir ?? null); } catch (e) { payload.wiringExemptions = { state: 'error', byTopic: {}, count: 0, reason: String((e && e.message) ?? e).slice(0, 200) }; }
   try {
     const r = scanPlugins(dirs.pluginsDir, payload.manifestConsumes);
     payload.scan = { hits: r.hits, provided: r.provided, familyDirs: r.familyDirs, units: r.units ?? [], scannedAt: r.scannedAt, errors: r.errors };

@@ -32,7 +32,7 @@ import { createRequire } from 'node:module';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectV2Data, resolveV2Dirs } from './v2-data.js';
+import { collectV2Data, resolveV2Dirs, classifySubscriptions } from './v2-data.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
@@ -465,6 +465,21 @@ function collectSubscriptions(ctx) {
 }
 
 /**
+ * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
+ *
+ * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
+ * 在浏览器里再判一次就会把已归档的断链重报成新问题（见 v2-data classifySubscriptions）。
+ * @param {object} ctx - host context.
+ * @returns {object} payload
+ */
+function buildV2Payload(ctx) {
+  const payload = collectV2Data(resolveV2Dirs());
+  payload.subscriptions = collectSubscriptions(ctx);
+  payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
+  return payload;
+}
+
+/**
  * Mount the panel's host half.
  *
  * ⛔ cordis 契约：config 是 apply 的**第二参数**（不是 ctx.config——那需要
@@ -537,8 +552,7 @@ function apply(ctx, config = {}) {
           writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
           return;
         }
-        const payload = collectV2Data(resolveV2Dirs());
-        payload.subscriptions = collectSubscriptions(ctx);
+        const payload = buildV2Payload(ctx);
         writeJson(res, 200, { ...payload, enabled: true });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
@@ -549,8 +563,8 @@ function apply(ctx, config = {}) {
   ctx.provide('agint.familyPanel', {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
-    /** v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表）。 */
-    v2Data: () => ({ ...collectV2Data(resolveV2Dirs()), subscriptions: collectSubscriptions(ctx) }),
+    /** v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表与零投递分层）。 */
+    v2Data: () => buildV2Payload(ctx),
     /** The prefix the browser half fetches (root-absolute). */
     apiPrefix: API_PREFIX,
     /** Kill-switch: off keeps the route alive but empty. */

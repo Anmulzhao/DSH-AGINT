@@ -322,7 +322,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 // 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
-    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null;
+    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -543,30 +543,66 @@ for(const [pl,decl] of Object.entries(MANIFEST_CONSUMES)){
   if(missing.length) ANOM.push({v:"文档腐化",o:pl,ev:missing.join("、"),note:"manifest 消费声明（consumes ∪ optionalInject）里有这些服务，代码扫描（含注释）无同族命中。"});
   if(commentOnly.length) ANOM.push({v:"文档腐化",o:pl,ev:commentOnly.join("、"),note:"声明的服务只在注释里出现，可执行代码未调用。"});
 }
-/* 订阅 → 投递对差（评审 3.3）：event-bus v0.7.1 起提供 agint.eventBus.subscriptions
-   只读出口（per-subscriber投递计数 + outcomes），本面板不再无条件标unknown。
-   ⚠️ 口径边界照实写：计数只覆盖宿主进程生命周期，重启清零 ⇒ 「0投递」只能读作
-   「自上次重启起未被投递」，不能读作「从来没有流量」。宿主未重启过则该判据仍降级。 */
-const SUBOBS=SUB_SUMMARY;
-if(SUBOBS&&SUBOBS.state==="ok"){
-  const zero=SUBOBS.entries.filter(e=>e.deliveries===0);
-  ANOM.push({v:"订阅 → 投递对差",o:`${SUBOBS.total} 个订阅，其中 ${zero.length} 个零投递`,
-    ev:zero.length?zero.map(e=>`${e.subscriber}(${e.topics.join("/")||"*"})`).join("、"):"无零投递订阅",
-    note:`出口已可用：订阅总数 ${SUBOBS.total}，sync ${SUBOBS.syncCount}/${SUBOBS.syncGlobalLimit}。`
-      +`零投递 = 自上次宿主重启（${rel(SUBOBS.bootAt)}）起未被投递，可能是隐藏耦合或死订阅者，需人工判。`,
-    amber:zero.length>0});
+/* 订阅 → 投递对差（评审 3.3；2026-10-05 加分层）：投递计数来自 event-bus v0.7.1 的
+   agint.eventBus.subscriptions 只读出口，**随宿主进程重启清零** ⇒ 「0 投递」只能读作
+   「自上次重启起未被投递」，不能读作「从来没有流量」。
+   分层在 host 半算（lib/v2-data.js classifySubscriptions），浏览器只渲染，理由：
+   豁免表只存仓库位、全历史只在 storages 里，浏览器两样都拿不到，在浏览器再判一次
+   就会把已归档的断链重报成新问题（playbook §3.28 那一族坑）。三档：
+     已归档断链   主题全在 docs/wiring-exemptions.json 在册（check-wiring 消费同一份档案）
+     低频未投递   主题在总线全历史里发布过，只是本窗口没触发
+     需人工判     既无豁免、全历史又 0 条 —— 只有这一档是真缺口候选 */
+const SBA=SUB_AUDIT;
+if(SBA&&SBA.state==="ok"){
+  const b=SBA.buckets;
+  const head=`${SBA.total} 个订阅，其中 ${SBA.zero} 个自上次重启（${SBA.bootAt?rel(SBA.bootAt):"?"}）起零投递`;
+  if(b.neverPublished.length){
+    ANOM.push({v:"订阅 → 投递对差",o:head,
+      ev:b.neverPublished.map(e=>`${e.subscriber}(${e.topics.join("/")})`).join("、"),
+      note:`豁免表外且全历史从未发布 ${b.neverPublished.length} 条，需人工判（隐藏耦合或死订阅者）。`
+        +(SBA.exemptionState==="ok"?`豁免表已读：${SBA.exemptionCount} 条在册。`:`⚠ 豁免表不可用（${SBA.exemptionState}），本档条数可能偏多。`)
+        +(SBA.busOk?"":"⚠ 总线全历史不可读，本档混有「分不清低频还是从未发布」的条目。")
+        +` sync ${SBA.syncCount}/${SBA.syncGlobalLimit}。`,
+      amber:true});
+  }
+  if(b.lowFrequency.length){
+    ANOM.push({v:"低频未投递",o:`${b.lowFrequency.length} 个订阅本窗口零投递`,
+      ev:b.lowFrequency.map(e=>`${e.subscriber}(${e.topics.join("/")}${e.history?"，全历史 "+e.history.map(h=>h.published+" 条·末次 "+(h.last?rel(h.last):"?")).join(" / "):""})`).join("、"),
+      note:"这些主题在总线全历史里发布过，只是自上次重启起没触发 —— 属低频，不是接线缺口。",
+      amber:false});
+  }
+  if(b.exempted.length){
+    ANOM.push({v:"已归档断链",o:`${b.exempted.length} 个订阅的主题在豁免表在册`,
+      ev:b.exempted.map(e=>`${e.subscriber}(${e.topics.join("/")}${e.since?"，since "+e.since:""})`).join("、"),
+      note:"出处 docs/wiring-exemptions.json（bin/check-wiring.mjs 消费同一份档案）。面板只转录 reason 与出处，不重判。",
+      amber:false});
+  }
+  if(!b.neverPublished.length&&!b.lowFrequency.length&&!b.exempted.length){
+    ANOM.push({v:"订阅 → 投递对差",o:head,ev:"无零投递订阅",
+      note:`出口已可用，全部订阅在本窗口内都有投递。sync ${SBA.syncCount}/${SBA.syncGlobalLimit}。`,amber:false});
+  }
 }else{
   ANOM.push({v:"无法判定",o:"订阅 → 投递对差",
-    ev:SUBOBS?.reason??"未接入 agint.eventBus.subscriptions",
+    ev:SBA?.reason??"未接入 agint.eventBus.subscriptions",
     note:"订阅表只在进程内且计数随宿主重启清零；需 event-bus 提供 subscriptions 出口并重启宿主后才可判。不猜。",
     amber:true});
 }
 if(Array.isArray(REPO_DIRS)){
-  const known=new Set([...REPO_DIRS,...FAMILY_DIRS]);
-  for(const [src,n] of BUS.sources)
-    if(!known.has(src))
-      ANOM.push({v:"运行态不在仓库",o:src,ev:`bus 发布 ${n} 条`,
-        note:"运行时有此 source，仓库与部署位 plugins/ 均无此目录。家族名册派生时需覆盖部署态。"});
+  /* 名册口径 = 顶层目录名 ∪ **插件身份表 UNITS**（v2-scan 的 codeRoots 含嵌套一层）。
+     只按顶层名核会把 agint-quality-policy 这类嵌套真身报成「运行态不在仓库」——
+     它就在 plugins/agint-quality/agint-quality-policy/，有 manifest+lib+159 条发布史
+     （2026-10-05 实测误报，与 checks 里的 qualityEvaluator/qualityPolicy 同源）。 */
+  const known=new Set([...REPO_DIRS,...FAMILY_DIRS,...UNITS]);
+  for(const [src,n] of BUS.sources){
+    if(known.has(src)) continue;
+    if(!src.startsWith("agint-")){
+      ANOM.push({v:"非插件来源",o:src,ev:`bus 发布 ${n} 条`,
+        note:"source 标签不是 agint-* 插件名，多为一次性手工验证时手填的 source（如 verify-after-fix）。家族名册不纳它，别当部署缺口处理。"});
+      continue;
+    }
+    ANOM.push({v:"运行态不在仓库",o:src,ev:`bus 发布 ${n} 条`,
+      note:"运行时有此 source，仓库与部署位的**插件身份表**（顶层 ∪ 嵌套一层）都无此身份。家族名册派生时需覆盖部署态。"});
+  }
 }else{
   ANOM.push({v:"无法判定",o:"运行态不在仓库",ev:REPO_DIRS?.reason??"仓库位不可得",
     note:"仓库位目录清单不可得，该判据降级为 unknown，不猜。",amber:true});
@@ -606,7 +642,14 @@ const AGES=[
  {label:"tool_stats",state:"ok",age:toolTotal.toLocaleString()+" 行 · "+rel(OBS.tools)},
  {label:"cron",state:"ok",age:CRON.length+" 任务 · "+rel(OBS.cron)},
  {label:"eventBus 发布",state:"ok",age:BUS.total.toLocaleString()+" 条 · 死信 "+BUS.deadletter+" · "+rel(OBS.bus)},
- {label:"eventBus 投递",state:"warn",age:"unknown · 订阅表无查询接口"},
+ {label:"eventBus 投递",state:(SBA&&SBA.state==="ok")?"ok":"warn",
+  age:(SBA&&SBA.state==="ok")
+    ? `subscriptions() 出口已读：${SBA.total} 个订阅 · 零投递 ${SBA.zero}（需判 ${SBA.buckets.neverPublished.length}）· 自 ${SBA.bootAt?rel(SBA.bootAt):"?"}`
+    : `unknown · ${(SBA&&SBA.reason)||"订阅表不可得"}`},
+ {label:"接线豁免表",state:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")?"ok":"warn",
+  age:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")
+    ? `${WIRING_EXEMPT.count} 条在册 · ${rel(WIRING_EXEMPT.observedAt)}（docs/wiring-exemptions.json）`
+    : `不可用 · ${(WIRING_EXEMPT&&WIRING_EXEMPT.reason)||"仓库位未解析"}`},
  {label:"工具归属",state:"warn",age:"前缀推断 · U4 未证实"},
 ];
 ages.innerHTML=AGES.map(a=>`<span class="age"><span class="dot ${a.state}"></span>${a.label} · ${a.age}</span>`).join("");
@@ -802,6 +845,8 @@ function applyPayload(D){
   MANIFEST_CONSUMES=D.manifestConsumes??{};
   PLUGIN_KINDS=D.pluginKinds??{};
   SUB_SUMMARY=D.subscriptions??null;
+  SUB_AUDIT=D.subscriptionAudit??null;
+  WIRING_EXEMPT=D.wiringExemptions??null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }

@@ -1,5 +1,60 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.5 — 2026-10-05
+
+### 零投递订阅分三档 + 名册认嵌套身份（面板改读 check-wiring 的权威口径）
+
+**为什么**：0.2.4 修完误报后，Q3 还剩两条「面板自造口径」的错：
+
+1. 「订阅 → 投递对差」把 13 条零投递一律标成「可能是隐藏耦合或死订阅者，需人工判」。
+   用总线全历史（12.4 万条）反查后分成两类：10 个主题**有发布史只是低频**
+   （`metrics.snapshot` 533 条、`evolution.evaluated` 372 条、`policy.rolledback` 111 条），
+   16 个主题**从未发布**。而从未发布的那批里，`evoorch.task-started/completed` 早在
+   **2026-09-24 就归档在 `docs/wiring-exemptions.json`**（reason：P2-3 未实施、订阅方已就位等发布方），
+   `bin/check-wiring.mjs` 也判它们 EXEMPTED。面板不认这份档案，等于每次重启都重报一遍已归档的事
+   —— playbook §3.28 那一族坑：自己造发现逻辑，不认上游注册处。
+2. 「运行态不在仓库」按**顶层目录名**核名册，于是 `agint-quality-policy` 被报成「仓库无此目录」——
+   它实际在 `plugins/agint-quality/agint-quality-policy/`（有 manifest + lib + 159 条发布史），
+   而且扫描器早就把它认成身份了。名册用错了集合。
+
+**改了什么**：
+
+- `lib/v2-data.js`
+  - `aggBus` 新增 **`topicLast`**（topic → 全历史最后一次发布的 occurredAt）。投递计数随进程清零，
+    「有没有人发过」只有全历史能回答。
+  - 新增导出 **`readWiringExemptions(repoPluginsDir)`**：读仓库位 `docs/wiring-exemptions.json`
+    （`bin/check-wiring.mjs` 消费的同一份），逐条带 reason / since / evidence。
+    ⛔ 只在仓库位读：部署位 `.agint-bundle/` 下没有 `docs/`（实测），读不到就 state:unavailable 照实降级。
+  - 新增导出 **`classifySubscriptions(sub, bus, exempt)`**（纯函数）：零投递分三档
+    —— `exempted`（主题全在豁免表在册）/ `lowFrequency`（全历史发布过，给次数与末次时间）/
+    `neverPublished`（既无豁免又全历史 0 条，只有这一档需要人工判）。
+    两条降级纪律：豁免表不可用 ⇒ 不许凭空判「已豁免」，在册那条落回待判并说明缺哪项证据；
+    总线全历史不可读 ⇒ **不许判低频**，分不清就标 `undetermined` 留在待判。
+  - `collectV2Data` payload 新增 `wiringExemptions`。
+- `lib/index.js`：路由与 `agint.familyPanel.v2Data()` 合并成同一份 `buildV2Payload(ctx)`，
+  在 host 半算出 `subscriptionAudit`（浏览器两样输入都拿不到：豁免表在仓库位、全历史在 storages）。
+- `assets/panel-v2.html`
+  - Q3 的订阅行按三档渲染：「订阅 → 投递对差」只在有 `neverPublished` 时出现；
+    另出「低频未投递」（不标琥珀）与「已归档断链」（只转录 reason 与出处，面板不重判）。
+  - 名册集合并入 **`UNITS`**（扫描器身份表，含嵌套一层）；非 `agint-*` 形态的 bus source
+    单列为「非插件来源」（一次性手工验证时手填的标签，如 `verify-after-fix`），不再当部署缺口。
+  - 龄期条：「eventBus 投递」从恒 warn 的「无查询接口」改成真读数
+    （N 个订阅 / 零投递 N / 需判 N / 自举时间），并新增「接线豁免表」一行带在册条数。
+- `test/q3-verdicts.test.mjs`：新增断言 ⑦ —— 喂合成订阅 × 真实全历史 × 真实豁免表，验三档归属、
+  验两种降级路径不许越权判定；仓库位段补一条 `R.wiringExemptions.state==='ok'`。
+
+**结果**：7 个测试文件全绿。合成订阅下三档 = 已归档 1（trajectory 的 evoorch 两条）/
+低频 2（metrics.snapshot 有全历史 + 通配订阅）/ 待人工判 1（虚构主题）。
+部署位口径下 `wiringExemptions` 正确报 unavailable（bundle 无 docs/），此时面板 note 里写明
+「豁免表不可用，此档条数可能偏多」，不假装判过。
+
+**仍未了结（等老板拍）**：`mount.requested/succeeded/failed/restart-*` 6 条与
+`input.signal.self-observation.*` / `input.signal.adversarial.*` 7 条既无发布方、
+**也不在豁免表里**（`check-wiring` 判它们 NOT_YET_FIRED / DATA_ONLY）。要么补进豁免表并注明出处，
+要么按真缺口排期——不能靠面板一直挂着「需人工判」。
+
+**未部署**：本次只改仓库位。
+
 ## 0.2.4 — 2026-10-05
 
 ### 修两条误报判定：family-panel「从未接线」+ mascot「文档腐化」（判据与扫描口径）

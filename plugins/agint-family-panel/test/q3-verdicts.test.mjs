@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { collectV2Data, resolveV2Dirs } from '../lib/v2-data.js';
+import { collectV2Data, resolveV2Dirs, classifySubscriptions, readWiringExemptions } from '../lib/v2-data.js';
 
 const DSH = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 const PLUGINS = join(DSH, 'profiles', 'web', 'plugins');
@@ -169,6 +169,49 @@ assert.ok(exemptZ.length >= 7, `形态豁免数 ${exemptZ.length} 偏少`);
 assert.ok(Array.isArray(D.repoDirs) || (D.repoDirs && typeof D.repoDirs.reason === 'string' && D.repoDirs.reason.length > 0),
   'repoDirs 既不是数组也没给 reason');
 
+// ⑦ 零投递分层（v2-data classifySubscriptions 的真实数据回放）。
+//    订阅投递计数随宿主进程重启清零，运行时表（subscriptions()）在测试里拿不到，
+//    所以这里喂**合成订阅**、配**真实总线全历史 + 真实豁免表**，只验分层逻辑本身。
+//    ⚠️ 豁免表只存**仓库位** docs/（部署位 .agint-bundle 下没有 docs/，2026-10-05 实测），
+//       所以上面那段 D（部署位口径）里 wiringExemptions 必然不可用 —— 那是正确降级，
+//       不是 bug；仓库位口径单读一次喂进来，两种情形都验。
+{
+  const exempt = readWiringExemptions(REPO_ROOT ? resolve(REPO_ROOT, 'plugins') : null);
+  assert.equal(exempt.state, 'ok', `豁免表应能从仓库位读到（仓库位不可得时本文件前面已 SKIP）：${exempt.reason ?? ''}`);
+  assert.ok(exempt.count >= 9, `豁免表在册条数异常少：${exempt.count}`);
+  const sub = {
+    state: 'ok', bootAt: new Date().toISOString(), total: 5, syncCount: 1, syncGlobalLimit: 3,
+    entries: [
+      { subscriber: 'agint-trajectory', topics: ['evoorch.task-started', 'evoorch.task-completed'], deliveries: 0 },
+      { subscriber: 'agint-metrics', topics: ['metrics.snapshot'], deliveries: 0 },
+      { subscriber: 'agint-unknown', topics: ['nope.never.fired'], deliveries: 0 },
+      { subscriber: 'agint-wild', topics: [], deliveries: 0 },
+      { subscriber: 'agint-live', topics: ['dream.completed'], deliveries: 7 },
+    ],
+  };
+  const A = classifySubscriptions(sub, D.bus, exempt);
+  assert.equal(A.state, 'ok', '订阅表 ok 时分层必须可算');
+  assert.equal(A.zero, 4, '零投递计数应剔除有投递的那条');
+  assert.deepEqual(A.buckets.exempted.map((e) => e.subscriber), ['agint-trajectory'],
+    'evoorch.* 在 docs/wiring-exemptions.json 自 2026-09-24 在册，必须归「已归档断链」，不许再当待人工判');
+  assert.deepEqual(A.buckets.lowFrequency.map((e) => e.subscriber).sort(), ['agint-metrics', 'agint-wild'],
+    '全历史发布过的主题属低频；通配订阅按「总线已有全历史」处理');
+  assert.deepEqual(A.buckets.neverPublished.map((e) => e.subscriber), ['agint-unknown'],
+    '既无豁免、全历史又 0 条的才留作真缺口候选');
+  const ms = A.buckets.lowFrequency.find((e) => e.subscriber === 'agint-metrics');
+  assert.ok((ms.history?.[0]?.published ?? 0) > 0 && !!ms.history?.[0]?.last, '低频档必须带全历史次数与末次时间');
+  // 豁免表读不到时不许把已归档的断链冒充真缺口，也不许把待判说成已判
+  const C = classifySubscriptions(sub, D.bus, { state: 'unavailable', byTopic: {}, count: 0, reason: '仓库位未解析' });
+  assert.equal(C.buckets.exempted.length, 0, '豁免表不可用时不得凭空判「已豁免」');
+  assert.deepEqual(C.buckets.neverPublished.map((e) => e.subscriber).sort(), ['agint-trajectory', 'agint-unknown'],
+    '豁免表不可用时，在册的那条会落回待判档（面板据此在 note 里写明豁免表不可用）');
+  const B = classifySubscriptions(sub, { state: 'error', reason: 'storages 不可读' }, exempt);
+  assert.equal(B.buckets.lowFrequency.length, 0, '总线不可读时**不得**判低频（分不清就是分不清）');
+  assert.equal(B.buckets.neverPublished.length, 3, '不可读的三条应落在待判档并标 undetermined');
+  assert.ok(B.buckets.neverPublished.every((e) => e.undetermined === true), '待判档要带 undetermined 标记与缺证说明');
+  console.log(`  零投递分层（合成订阅 × 真实全历史 × 真实豁免表）：已归档 ${A.buckets.exempted.length} / 低频 ${A.buckets.lowFrequency.length} / 待人工判 ${A.buckets.neverPublished.length}，豁免表 ${A.exemptionCount} 条在册`);
+}
+
 // ── 报告 ──
 console.log('Q3 判定真实数据回放（部署位 + 生产三源）：');
 console.log(`  从未接线 ${neverWired.length} 行：${neverWired.map((x) => x.pl + '/' + x.why).join('、') || '无'}`);
@@ -201,6 +244,7 @@ if (existsSync(REPO_PLUGINS)) {
   }
   const rUndeclared = Object.entries(rBy).filter(([pl, g]) => !R.manifestConsumes[pl] && g.code.size >= 5).map(([pl]) => pl);
   assert.deepEqual(rUndeclared, [], `仓库位 manifest 漏写：${rUndeclared.join(',')}（契约未跟上代码）`);
+  assert.equal(R.wiringExemptions?.state, 'ok', '仓库位 payload 应带得出豁免表（面板部署位读不到属正确降级，仓库位必须读得到）');
   const rRot = [];
   for (const [pl, decl] of Object.entries(R.manifestConsumes)) {
     const g = rBy[pl];
