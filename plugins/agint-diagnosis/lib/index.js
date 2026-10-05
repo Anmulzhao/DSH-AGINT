@@ -379,6 +379,38 @@ function apply(ctx, config = {}) {
 
     const reportData = await aggregateReport({ annotations, evolution, windowDays, maxClusters });
     const entry = packReport(reportData);
+
+    // 2026-10-05（老板裁定A+C 组合）：空壳报告守门——无annotation 时**不落 reports 行**。
+    //
+    // 背景（生产取证）：reports 表47/50（94%），但 47/47 条的annotationCount=0 且
+    // clusterCount=0、rootCauseDistribution 七键全 0 ⇒ 100% 无信息量空壳。
+    // 根因不在本插件：annotations表恒 0 行，因为 annotate() 要failure_pattern
+    // 样本 ≥ COLD_START_MIN(=10) 才放行（lib/index.js COLD_START_MIN，设计稿 §二.2
+    // 的冷启动守门，**有意设计，不改**）而生产表只有 8 条 ⇒ 差 2 条。
+    //
+    // 为什么挡在这里而不是聚合前：aggregateReport 要读 evolution 做统计，
+    // 先聚合再判能拿到真实 annotationCount；返回结构与事件发布路径**完全不变**，
+    // 只把「本来要写进磁盘的空壳」掐掉。
+    //
+    // 语义变化（须与老板确认过的 C 项对齐）：无原料时 report() **不再写表、不发
+    // diagnosis.completed 事件**，直接返回未落盘的 report。冷启动期
+    // 「没有诊断产物」改由 stats() 与本返回值体现，不再在表里堆垃圾行。
+    if ((reportData.annotationCount || 0) === 0) {
+      const skipped = {
+        ...unpackReport(entry),
+        skipped: true,
+        skipReason: 'no-annotations',
+        skipDetail: `annotations 表 0 行（failure_pattern 样本不足 COLD_START_MIN=${COLD_START_MIN}，冷启动守门），本轮不落 reports 行`,
+      };
+      if (!disposed) {
+        console.warn(
+          `[agint-diagnosis] report()跳过落盘：annotations=0（空壳报告守门）。` +
+          `windowDays=${windowDays}；样本恢复后自动恢复正常落盘。`,
+        );
+      }
+      return skipped;
+    }
+
     _reportsInFlight += 1;
     try {
       if (tr.size + _reportsInFlight > LIMITS.REPORTS) {

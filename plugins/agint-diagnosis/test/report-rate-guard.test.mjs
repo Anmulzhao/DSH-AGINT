@@ -87,5 +87,44 @@ test('熔断发生在 cap 之前：表空也不能被高频灌满', async () => 
   const report = services['agint.diagnosis.report'];
   for (let i = 0; i < 5; i += 1) await report({ windowDays: 7 });
   await assert.rejects(() => report({ windowDays: 7 }), /rate limited/);
-  assert.equal(stores.reports.size, 5, '被拒绝的调用不得落盘');
+  // 上界断言，不要求恰好 5 行。
+  // 本条真正守护的行为是「被拒绝的那次调用不落盘」⇒ 落盘数 **不得超过** 放行次数 5。
+  // 为什么不是 `equal 5`：2026-10-05 加了空壳报告守门后，annotations 表为 0 行时
+  // report() **有意不落盘**（老板裁定A+C 组合，冷启动期不产空壳）。
+  // 那个 mock 的 annotations 表恒空 ⇒ 5 次放行全部不落盘，行数是 0 而非 5。
+  // 写成 equal 会把「熔断不落盘」与「空壳不落盘」两条语义焊死在一起，
+  // 任何一条改动都会误伤另一条 ⇒ 上界 + 下界（0）才能同时守住两者。
+  assert.ok(stores.reports.size <= 5, `被拒绝的调用不得落盘，实际 ${stores.reports.size} 行不应超过放行次数 5`);
+  assert.equal(stores.reports.size, 0, '本mock 的 annotations 表为空，空壳守门应拦下全部落盘');
+});
+
+/**
+ * 上面那条把落盘数放宽到「≤5 + 恒 0」之后，「被拒绝的调用不得落盘」
+ * 就只能由本条来守——它带真实 annotation，空壳守门不生效，
+ * 于是落盘行数 == 放行次数，熔断那条多出来的调用必须一行都不多。
+ *
+ * 2026-10-05：拆成两条是因为两条守门会互相遮蔽。
+ * 上面的空表用例验「空壳不落盘」，本条验「熔断不落盘」，
+ * 任何一条单独存在都会让另一条变成假绿。
+ */
+test('熔断拒绝的调用一行都不落盘（带真实 annotation，不受空壳守门影响）', async () => {
+  const { services, stores } = makeCtx({ config: { rate_max_per_min: 5 } });
+  // 预填一条 annotation ⇒ aggregateReport 得出 annotationCount>0 ⇒ 正常落盘路径
+  stores.annotations.set('a1', {
+    id: 'a1',
+    kind: 'annotation',
+    createdAt: new Date().toISOString(),
+    failureId: 'f-1',
+    rootCause: 'TOOL_GAP',
+    confidence: 0.7,
+    evidence: 'e',
+  });
+
+  const report = services['agint.diagnosis.report'];
+  for (let i = 0; i < 5; i += 1) await report({ windowDays: 7 });
+  assert.equal(stores.reports.size, 5, '前5 次放行应各落 1 行');
+
+  const before = stores.reports.size;
+  await assert.rejects(() => report({ windowDays: 7 }), /rate limited/);
+  assert.equal(stores.reports.size, before, '被熔断拒绝的调用不得落盘');
 });
