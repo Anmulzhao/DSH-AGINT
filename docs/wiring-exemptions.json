@@ -84,6 +84,13 @@
       "since": "2026-09-24",
       "updatedAt": "2026-09-29",
       "unblockWhen": "已解除（prodCount 1 > 0）。本条可从豁免清单移除，暂保留作历史记录。"
+    },
+    {
+      "topic": "evolution.contract.locked",
+      "reason": "设计定位为「不可撤回的外部见证」：锁成功时 contract_locks 落一行 + 发本事件，供事后对账取证；消费方不订阅总线，而是拿 lockEventId 反查事件本体（evolution-memory）。硬接一个订阅方只会多一个没人读的计数器（与 self.model.updated 同理）。",
+      "evidence": "plugins/agint-evolution-driver/README.md:60（锁成功 = 落表 + 发事件，不可撤回的外部见证）；plugins/agint-evolution-memory/lib/index.js:414（lockEventId 供交叉查事件总线）；2026-10-05 check-wiring 实测 pubs=1 / subs=0 / prodCount=1（首把锁已在生产发出）",
+      "since": "2026-10-05",
+      "unblockWhen": "若出现真需「锁完成即时反应」语义的消费方（例：账本侧要随事件刷新状态而非按需查表），摘除本条并接订阅"
     }
   ],
 
