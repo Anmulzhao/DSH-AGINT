@@ -165,7 +165,7 @@ Sprint 11 通过 `ctx.emitEvent → agint.evolution.recordEvent` 点对点发布
 | 交互 | 方式 | 说明 |
 |---|---|---|
 | static / sandbox → mount | `mount.request` Service 调用 | 门禁顺序：先静后动（安全左移） |
-| mount → population | `agint.population.ingest`（仅 SMOKE PASS 后调用） | 新个体标记 `origin=synthesized` |
+| mount → population | `agint.population.ingest`（仅 SMOKE PASS 后调用） | 新个体标记 `origin=synthesized`（2026-10-05 实装：`recordSynthesizedVariant()`，软失败不改挂载结果，见 CHANGELOG 0.7.1） |
 | mount → evolution-memory | `agint.evolution.addFailure / recordEvent` | 挂载全程留痕 |
 | 人类否决 | `mount.rollback` Service + CLI | 显式回滚入口 |
 

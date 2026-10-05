@@ -1,5 +1,47 @@
 # Changelog — agint-mount
 
+## 0.7.1 (2026-10-05) — 实装 mount → population.ingest（此前只在文档里，被面板判为悬空声明）
+
+**起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」
+的键列为悬空声明。本插件的 `agint.population.ingest` 被点名，但这条与另外三条不同 ——
+**它有设计依据**：`README.md:168`「mount → population｜`agint.population.ingest`（仅 SMOKE PASS 后调用）｜
+新个体标记 `origin=synthesized`」，wiki `Sprint11-设计稿.md:169` 同源，初始 commit 起 dependencies 就含
+`agint-population >=0.6.2`。老板拍「补接线」，本次实装。
+
+### 新增（Added）
+
+- `resolvePopulationIngest(ctx)`（导出）：按四种形态试解析 —— `ctx.get('agint.population.ingest')` /
+  `ctx.getService('agint.population.ingest')` / `ctx.get('agint.population').ingest`（bind）/
+  `ctx.getService('agint.population').ingest`（bind）。为什么不能只认一种：本文件里
+  `resolveBusPublish` 上面那段注释记着 event-bus 那起事故 —— 只认伞键导致 10 处 `mount.*` 发布
+  静默降级、生产存储 0 条、测试还全绿。agint-population 同时 provide 子键与裸键，两种都得试。
+- `recordSynthesizedVariant(ctx, proposal, ticketId)`（导出，**软失败**）：SMOKE PASS 之后投 ingest，
+  `source` 缺省时补 `'synthesized'`（自带 source 时尊重原归属，不覆盖）。
+  三条自挡：服务缺位 / proposal 非法 / **proposal 缺 `expectedEffect` 或 `rollbackCondition`** ——
+  最后一条必须前置挡：`agint-population/lib/index.js:134-146` 对这两个字段硬要求非空，缺了必抛错
+  并顺带写一条 failure_pattern，等于挂载侧制造假失败样本。
+- 调用点：`mountRequest` 里 SMOKE 通过后、4 态判定之前。返回体 `MountResult` 新增可选字段
+  **`population: { ingested, variantId?, reason?, ticketId }`**（`src/types.ts`），
+  `RESTART_REQUESTED` 与 `ACTIVATED` 两条返回带上它。
+- **不改挂载结果**：登记失败只 `console.warn` 带原因，绝不抛错、绝不回滚 —— 产物已过 SMOKE，
+  种群留痕是事后对账的事。
+
+### 同步与版本
+
+- `src/orchestrator.ts` 与 `src/types.ts` 同步改（K78：lib 是 tsc 产物）。⚠️ **本机无 TypeScript**
+  （`command -v tsc` 空、三处 node_modules 均无 typescript），所以 lib 那份是按现有产物风格手写镜像，
+  **未经 tsc 验证**；下次在有编译器的机器上 build 前需复核，别把这次改动当已编译产物对待。
+- 版本位对齐：manifest 原 0.6.5、package.json 原 0.7.0（c1152b2「v0.7.0 真重启」只升了 package.json），
+  两处本就不一致 → 一并对齐到 **0.7.1**。
+
+### 测试
+
+- 新增 `test/population-ingest.test.mjs`：4 条解析形态（含裸键必须 bind，否则 `this` 丢）+
+  6 条软失败纪律（缺位 / 正常带 origin / 尊重原 source / 缺字段自挡且**不得**调到 ingest /
+  ingest 抛错带回原因 / 非法 proposal）⇒ `ℹ tests 10 / pass 10 / fail 0`。
+- 回归：`test/smoke.mjs` 12/12、`test/bus-resolve.test.mjs` 6/6。
+- 家族面板 `test/q3-verdicts.test.mjs` 的悬空声明冻结集合随本次清空（仓库位 0 条）。
+
 ## 2026-09-20 — 事件总线接线（方案 A / A4）：修 bus 服务解析 + 补 hmr.settled 发布方
 
 **⚠️ 修复一个长期静默故障**：`mountEventBusPublish` 取 bus 用的是

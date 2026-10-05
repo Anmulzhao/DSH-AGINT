@@ -132,15 +132,13 @@ assert.equal(D.scan.provided['agint.qualityPolicy'], 'agint-quality-policy', 'qu
 // ② 无提供方必须为空（家族键全部有提供方）
 assert.deepEqual(Object.keys(npBySvc), [], `仍有家族键无提供方：${Object.keys(npBySvc).join(',')}`);
 
-// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结，同日 W1/W3 已清掉五条）。
-//    已处理·删声明：agint-event-bus→agint.memory（0.7.3）、agint-input-gateway→agint.memory（0.1.3）、
-//    agint-skill-graph→agint.skillAutocreate（0.1.1）、
-//    agint-population→diagnosis/qualitySandbox（接口对不上/会变准入闸，0.6.3 删）、
-//    agint-population→memory（0.6.3 实装 fixate notify）。
-//    待处理（W2 进行中）：下面这一条。新增一条即变红。
-const KNOWN_STALE_DECL = {
-  'agint-mount': ['agint.population.ingest'], // 设计依据 plugins/agint-mount/README.md:168（SMOKE PASS 后投样本）
-};
+// ③ 文档腐化 = 已知悬空声明集合。**2026-10-05 清空**：并 optionalInject 口径后暴露的
+//    五个插件七条悬空声明已全部处理完 —— 三条改判删声明（agint-event-bus 0.7.3 /
+//    agint-input-gateway 0.1.3 / agint-skill-graph 0.1.1，证据是接口对不上或架构分工写明不消费），
+//    agint-population 0.6.3 实装 memory.write notify 并删 diagnosis/qualitySandbox 两条补不了的，
+//    agint-mount 0.7.1 实装 mount → population.ingest（README:168 的设计）。
+//    现在是硬闸：**任何新增悬空声明直接变红**。
+const KNOWN_STALE_DECL = {};
 const asMap = (rows) => Object.fromEntries(rows.map((r) => [r.pl, [...r.missing].sort()]));
 const expectedStale = Object.fromEntries(Object.entries(KNOWN_STALE_DECL).map(([k, v]) => [k, [...v].sort()]));
 // 部署位只能比冻结集合**多**（仓库删了声明但没部署 ⇒ 部署位还留着旧的），不许**少**。

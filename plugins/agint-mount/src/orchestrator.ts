@@ -106,6 +106,75 @@ export function resolveBusSubscribe(ctx: MountContext): ((sub: any, handler: any
   return null;
 }
 
+export type PopulationIngestResult = {
+  ingested: boolean;
+  variantId?: string | null;
+  reason?: string;
+  ticketId: string;
+};
+
+/**
+ * 解析 population 的 ingest 入口（README「与兄弟插件的接口」：mount → `agint.population.ingest`，
+ * 仅 SMOKE PASS 后调用，新个体标 origin=synthesized）。
+ *
+ * 为什么要多种形态：resolveBusPublish 上方那段注释记着 event-bus 那起事故 —— 「只认一种取法」
+ * 会静默降级成生产 0 条。agint-population 同时 provide 了 `agint.population.ingest` 子键与
+ * `agint.population` 裸键，两种都得试。
+ */
+export function resolvePopulationIngest(ctx: MountContext): ((input: unknown) => Promise<unknown>) | null {
+  const c = ctx as any;
+  const bind = (svc: any): ((input: unknown) => Promise<unknown>) | null => {
+    if (typeof svc === 'function') return svc;
+    if (svc && typeof svc.ingest === 'function') return svc.ingest.bind(svc);
+    return null;
+  };
+  const candidates: Array<() => any> = [
+    () => c.get?.('agint.population.ingest'),
+    () => c.getService?.('agint.population.ingest'),
+    () => bind(c.get?.('agint.population')),
+    () => bind(c.getService?.('agint.population')),
+  ];
+  for (const probe of candidates) {
+    try {
+      const fn = probe();
+      if (typeof fn === 'function') return fn;
+    } catch { /* 试下一个形态 */ }
+  }
+  return null;
+}
+
+/**
+ * 把这次 SMOKE 通过的产物登记为种群个体。**软失败**：登记不成只带 reason 回来，
+ * 绝不抛错、绝不改挂载结果 —— 产物已激活，种群留痕是事后对账的事。
+ *
+ * 前置自挡：ingest 硬要求 expectedEffect / rollbackCondition 非空
+ * （agint-population/lib/index.js 的 ingest 开头），缺了它必抛错并顺带写一条
+ * failure_pattern。挂载侧先把原因说清楚，不去制造假失败样本。
+ */
+export async function recordSynthesizedVariant(
+  ctx: MountContext,
+  proposal: any,
+  ticketId: string,
+): Promise<PopulationIngestResult> {
+  const ingest = resolvePopulationIngest(ctx);
+  if (!ingest) return { ingested: false, reason: 'agint.population.ingest unavailable', ticketId };
+  if (!proposal || typeof proposal !== 'object') return { ingested: false, reason: 'invalid-proposal', ticketId };
+  if (!proposal.expectedEffect || !proposal.rollbackCondition) {
+    return { ingested: false, reason: 'proposal missing expectedEffect/rollbackCondition', ticketId };
+  }
+  // origin=synthesized：proposal 自带 source 时尊重原归属，只在缺失时补设计稿要求的标记
+  const ingestProposal = { ...proposal, source: proposal.source || 'synthesized' };
+  try {
+    const v: any = await ingest({
+      proposal: ingestProposal,
+      parent_variant_id: proposal.parentVariantId ?? null,
+    });
+    return { ingested: true, variantId: v?.variant_id ?? null, ticketId };
+  } catch (err: any) {
+    return { ingested: false, reason: `ingest threw: ${String(err?.message ?? err)}`.slice(0, 200), ticketId };
+  }
+}
+
 async function mountEventBusPublish(
   ctx: MountContext,
   topic: 'mount.requested' | 'mount.succeeded' | 'mount.failed' | 'mount.restart-requested' | 'mount.restart-completed' | 'mount.restart-failed' | 'hmr.settled',
@@ -330,6 +399,15 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
       return { ticketId, proposalId: proposal.id, phase: 'ROLLED_BACK', contractCheck, activatedAt: null };
     }
 
+    // ── 种群登记（README「与兄弟插件的接口」：SMOKE PASS 后调 agint.population.ingest，
+    //    新个体标 origin=synthesized。2026-10-05 实装，此前只在文档里）────────────
+    // 软失败纪律：登记不成只带 reason 回来并 warn，绝不动挂载结果 —— 产物已过 SMOKE，
+    // 后面该装依赖该激活照常走；种群留痕是事后对账的事。
+    const population = await recordSynthesizedVariant(ctx, proposal, ticketId);
+    if (!population.ingested) {
+      console.warn(`[agint-mount] 种群登记跳过：${population.reason}（ticketId=${ticketId}，不影响挂载）`);
+    }
+
     // ── 4 态判定：plugin 声明新依赖才走 INSTALLED/RESTART_REQUESTED ─────────
     if (needsInstall(deps)) {
       // 调 pnpm install（仅 deps.length > 0 时触发）
@@ -357,7 +435,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
           restartInfo.requestId, restartInfo.resultFile, 'auto');
         await mountEventBusPublish(ctx, 'mount.restart-requested', { ticketId, restartRequestId: restartInfo.requestId, artifactName });
         // 不在当前进程做 HMR settle——旧进程没加载新 plugin；续接交给新 dsh 启动钩子 mountResumeOnBoot
-        return { ticketId, proposalId: proposal.id, phase: 'RESTART_REQUESTED', contractCheck, activatedAt: null };
+        return { ticketId, proposalId: proposal.id, phase: 'RESTART_REQUESTED', contractCheck, activatedAt: null, population };
       }
       // fallback（agint.restart 不可用）：不写 patch，落到下方 shared ACTIVATE 走 v0.6.5 兼容
       // （当前进程 HMR settle，可能 DISABLED——plugin 实际不会被新 dsh 加载）
@@ -406,7 +484,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
     // 8) publish mount.succeeded（A4 — bus 优先，emitEvent fallback）
     await mountEventBusPublish(ctx, 'mount.succeeded', { ticketId, artifactName, decision: 'AUTO_DEPLOY' });
 
-    return { ticketId, proposalId: proposal.id, phase: 'ACTIVATED', contractCheck, activatedAt };
+    return { ticketId, proposalId: proposal.id, phase: 'ACTIVATED', contractCheck, activatedAt, population };
 
   } catch (e: any) {
     // 顶层兜底：任一未捕获异常 → rollback

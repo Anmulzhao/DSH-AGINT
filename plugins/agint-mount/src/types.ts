@@ -54,6 +54,12 @@ export type MountResult = {
   proposalId: string;
   phase: Phase;
   contractCheck: ContractCheck;
+  /**
+   * 种群登记结果（2026-10-05 接线：SMOKE PASS 后投 `agint.population.ingest`，
+   * 新个体标 origin=synthesized，设计依据 README「与兄弟插件的接口」）。
+   * 软失败字段：登记缺位或抛错都只带 reason 回来，**不影响挂载结果**，所以是可选的。
+   */
+  population?: { ingested: boolean; variantId?: string | null; reason?: string; ticketId: string };
   activatedAt: string | null;
 };
 
