@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.3 — 2026-10-05
+
+### manifest 删 `agint.memory` 悬空声明（纯契约，无代码改动）
+
+**依据（这次是白纸黑字的反证，不是「找不到用法」）**：本插件的分工从来是「只发事件、不自己消费」——
+
+- `lib/gateway.js:8`：「不自己消费信号（memory/evolve/dream 通过 eventBus subscribe 消费）」；
+- `README.md:12` 管道图：`Channels → Gateway → eventBus → memory/...`；
+- `CHANGELOG.md:98`（0.1.0 P0 边界）：「不修改 memory/evolve/dream 的消费端订阅」；
+- 对端**早已实装**：`plugins/agint-memory/lib/index.js:206-228` 订阅 8 个 `input.signal.*` 主题自动沉淀记忆；
+- 本插件唯一的取服务点是 `lib/index.js:67` 的 `ctx.get('agint.eventBus.publish')`，`_publish` 也只有总线一个出口。
+
+所以 optionalInject 里那行 `agint.memory` 若真去补接线，效果是同一条信号写两份记忆，直接违背上面的分工。
+判据出处：家族面板 0.2.4 起把「声明了却从不取用」的键列为悬空声明（见 `plugins/agint-family-panel/CHANGELOG.md`）。
+
 ## 0.1.2 — 2026-10-03
 
 > 生产故障修复：CountersSchema 的 security* 三字段此前为 `.optional()`，只认 undefined 不认 null；

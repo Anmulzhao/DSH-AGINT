@@ -1,5 +1,26 @@
 # agint-skill-graph 变更日志
 
+## 0.1.1 — 2026-10-05
+
+### manifest 删 `agint.skillAutocreate` 悬空声明（纯契约，无代码改动）
+
+**为什么删而不是补线**：本图谱与 autocreate 的集成**从一开始就是事件方案**——
+设计稿 `设计-P2-2-技能使用统计与学习图谱.md:167`（R6）与 `:381-383` 里，autocreate 的接入全部走
+`skill-autocreate.candidate-created` / `.released` / `.rolled-back` 三个主题加文件扫描，
+没有任何一处写「调用 agint.skillAutocreate 服务」。实装也只取事件 payload 里的
+`skillName` / `candidateId`（`lib/index.js:304-333`），`candidateId` 存进 meta 只作留档、从不回查。
+
+同批声明的另外两个键在代码里是**真取的**，保留：`agint.curator` → `lib/index.js:155`、
+`agint.evolve` → `lib/index.js:705`；`agint.eventBus` → `lib/index.js:180/194`。
+唯独 skillAutocreate 一个取用点都没有。
+
+**如果将来真要反查候选元数据**：服务侧确有可用出口
+（`plugins/agint-skill-autocreate/lib/index.js:916` 的 `getCandidate(id)`，经 `:1354` provide），
+但那是**新需求**，得先在设计稿里补写依据，不在本次契约清理里凭空造一条链路。
+
+判据出处：家族面板 0.2.4 起把「声明了却从不取用」的键列为悬空声明
+（`plugins/agint-family-panel/CHANGELOG.md`）。
+
 ## v0.1.0+retarget (2026-09-23) — 新增 extraSkillDirs：图谱覆盖用户级技能根
 
 **新增配置** `extraSkillDirs: string[]`，默认 `['$DSH_HOME/skills']`。

@@ -1,6 +1,6 @@
 {
   "name": "agint-skill-graph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "P2-2 技能使用统计与学习图谱（Sprint 19 v0.1.0）：四类边（related 声明式首选 / overlap 订阅 curator 事件 / co_use 会话共现 / similar 默认关）+ FROZEN 6 Service + count-only 标定期。独占 agint_skill_graph 存储域（usage_stats / skill_edges / graph_meta）。",
   "type": "module",
   "main": "lib/index.js",

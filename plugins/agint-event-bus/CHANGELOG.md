@@ -1,5 +1,24 @@
 # Changelog — agint-event-bus
 
+## 0.7.3 (2026-10-05) — manifest 契约对齐代码：删 `agint.memory` 悬空声明，补两个实际取用的服务
+
+**起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」
+的键判为悬空声明（判据与实证见 `plugins/agint-family-panel/CHANGELOG.md` 0.2.4）。
+
+- 删 `agint.memory`：它自 v0.7.0 骨架提交就在 optionalInject，而 `lib/index.js:73-78` 的 ctx 能力
+  文档只列 `agint.evolution` / `agint.qualitySandbox` / `agint.metrics`，只字未提 memory；
+  全 lib 也没有任何 memory 取用点 ⇒ 未清理的占位声明。总线是纯基础设施层
+  （manifest 自述「不承载进化语义」），硬补线等于每条 envelope 双写一份记忆，无设计支撑。
+- 补两个**漏声明**（方向相反的同一类错，代码取了却没写进契约）：`lib/index.js:107` 取
+  `agint.qualitySandbox`（sync 超时降级 pendingReview）、`lib/index.js:112` 取 `agint.metrics`
+  （健康度计数）。
+
+**影响**：纯契约文档，无运行时代码改动。`optionalInject` 不改变本机注入行为
+（agint 插件取服务一律走 `ctx.get`，关键依赖不靠 optionalInject —— 见 `lib/index.js:102` 的软降级写法）。
+
+**另记（不顺手改）**：`package.json` 版本位是 0.7.1、`manifest.json` 是 0.7.2，本次只动 manifest
+那份 → 0.7.3。两处本就不一致，留到有 TS 构建窗口时对齐；现在盲改 package.json 会把宿主自报版本带偏。
+
 ## 0.7.2 (2026-09-27) — 事件记录顶层补 topic/source + EventEnvelope zod schema 补全（提案 0f91c868 / 932486d6）
 
 > 起因（两个提案，合并一次改）：

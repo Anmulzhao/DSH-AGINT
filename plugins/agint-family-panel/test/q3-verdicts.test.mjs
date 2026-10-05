@@ -132,21 +132,25 @@ assert.equal(D.scan.provided['agint.qualityPolicy'], 'agint-quality-policy', 'qu
 // ② 无提供方必须为空（家族键全部有提供方）
 assert.deepEqual(Object.keys(npBySvc), [], `仍有家族键无提供方：${Object.keys(npBySvc).join(',')}`);
 
-// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结）。
-//    并 optionalInject 口径后新暴露的 5 条是**真实契约缺口**，不是误报：
-//    逐条 grep 过对应插件 lib/，声明的服务代码里从不取用（详见每条后面括注）。
-//    处理方案（删声明 / 补接线）待老板拍；先冻结成期望值——**新增一条就变红**。
+// ③ 文档腐化 = 已知悬空声明集合（2026-10-05 冻结，同日 W1 清掉三条）。
+//    并 optionalInject 口径后新暴露的条目是**真实契约缺口**，不是误报：逐条 grep 过对应
+//    插件 lib/，声明的服务代码里从不取用。
+//    已处理（改判「删声明」，各自 CHANGELOG）：agint-event-bus→agint.memory（0.7.3）、
+//    agint-input-gateway→agint.memory（0.1.3）、agint-skill-graph→agint.skillAutocreate（0.1.1）。
+//    待处理（老板已拍「补接线」，进行中）：下面两条。新增一条即变红。
 const KNOWN_STALE_DECL = {
-  'agint-event-bus': ['agint.memory'], // 只 provide 不消费 memory
-  'agint-input-gateway': ['agint.memory'], // 网关只发事件，未接 memory
-  'agint-mount': ['agint.population.ingest'], // 声明了 ingest 上报，代码无 population 引用
-  'agint-population': ['agint.diagnosis', 'agint.memory', 'agint.qualitySandbox'], // 文档写「软依赖 6 个」，实取 3 个
-  'agint-skill-graph': ['agint.skillAutocreate'], // 走 skill-autocreate.* 事件，不取其服务
+  'agint-mount': ['agint.population.ingest'], // 设计依据 plugins/agint-mount/README.md:168（SMOKE PASS 后投样本）
+  'agint-population': ['agint.diagnosis', 'agint.memory', 'agint.qualitySandbox'], // 设计依据 README.md:145-148
 };
 const asMap = (rows) => Object.fromEntries(rows.map((r) => [r.pl, [...r.missing].sort()]));
 const expectedStale = Object.fromEntries(Object.entries(KNOWN_STALE_DECL).map(([k, v]) => [k, [...v].sort()]));
-assert.deepEqual(asMap(rotted), expectedStale,
-  `文档腐化集合漂移：实测 ${JSON.stringify(asMap(rotted))} / 冻结 ${JSON.stringify(expectedStale)}`);
+// 部署位只能比冻结集合**多**（仓库删了声明但没部署 ⇒ 部署位还留着旧的），不许**少**。
+// 精确等值只在仓库位判（下面第二段），这里判包含关系是为了不被部署滞后骗成绿灯的同时也不误报。
+const depStale = asMap(rotted);
+for (const [pl, keys] of Object.entries(expectedStale)) {
+  assert.deepEqual([...(depStale[pl] ?? [])].sort(), keys, `部署位 ${pl} 的悬空声明与冻结集合不符`);
+}
+const lagExtra = Object.entries(depStale).filter(([pl]) => !expectedStale[pl]);
 
 // ④ quality-static（checker）不得出现在「从未接线」里——它 code 边为 0 是职责
 assert.ok(!neverWired.some((x) => x.pl === 'agint-quality-static'),
@@ -215,7 +219,8 @@ assert.ok(Array.isArray(D.repoDirs) || (D.repoDirs && typeof D.repoDirs.reason =
 // ── 报告 ──
 console.log('Q3 判定真实数据回放（部署位 + 生产三源）：');
 console.log(`  从未接线 ${neverWired.length} 行：${neverWired.map((x) => x.pl + '/' + x.why).join('、') || '无'}`);
-console.log(`  无提供方 ${Object.keys(npBySvc).length} 行 / 文档腐化 ${rotted.length} 行`);
+console.log(`  无提供方 ${Object.keys(npBySvc).length} 行 / 文档腐化 ${rotted.length} 行`
+  + (lagExtra.length ? `（其中 ${lagExtra.length} 个插件属部署位滞后：${lagExtra.map(([p]) => p).join('、')}）` : ''));
 console.log(`  manifest 漏写 ${undeclared.length} 个：${undeclared.join('、') || '无'}`);
 console.log(`  僵尸：三源全零 ${zeroRows.length}，形态豁免 ${exemptZ.length}，真候选 ${realZ.length}${realZ.length ? '：' + realZ.join('、') : ''}`);
 console.log(`  repoDirs：${Array.isArray(D.repoDirs) ? D.repoDirs.length + ' 个目录' : '降级 — ' + D.repoDirs.reason}`);
