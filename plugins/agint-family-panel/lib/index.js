@@ -465,6 +465,78 @@ function collectSubscriptions(ctx) {
 }
 
 /**
+ * topic → 投递聚合（2026-10-05 补；配 event-bus 的 `agint.eventBus.deliveryByTopic`）。
+ *
+ * 为什么需要这一层：事件链表一行一个 topic，「投递」列此前一律标 unknown。
+ * 根因是两条路径口径不通 —— events 表按 topic 聚合但不带 deliveries，
+ * deliveries 只在内存ring 里；而 `subscriptions()` 出的是 per-subscriber 计数，
+ * 面板拿不到「这个 topic 投递了几次」。
+ *
+ * 口径（面板措辞必须照此，否则就是把猜测当测量）：
+ *   - 只覆盖**ring 窗口**：本进程生命周期 + 最近 2000 条发布（`ring.full` /`ring.oldestOccurredAt` 可读）
+ *   - 重启清零
+ *   - `published` 是窗口内发布数，与 events 表的全历史发布数**不是同一口径**，两者不可相加
+ *
+ * Never throws:出口缺失或结构不认识时只降级这一块（state/ reason），不影响其他判据。
+ * @param {object} ctx - host context.
+ * @returns {object}
+ */
+function collectDeliveryByTopic(ctx) {
+  const bootAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+  try {
+    const bus = ctx.get('agint.eventBus');
+    if (bus === null || bus === undefined) {
+      return { state: 'unavailable', reason: 'event-bus 未挂载（面板未拿到 agint.eventBus）', bootAt };
+    }
+    const read = typeof bus.deliveryByTopic === 'function' ? bus.deliveryByTopic : null;
+    if (typeof read !== 'function') {
+      return { state: 'unavailable', reason: 'event-bus 版本过旧：无 deliveryByTopic() 出口', bootAt };
+    }
+    const raw = read.call(bus);
+    if (raw === null || raw === undefined || typeof raw !== 'object' || !Array.isArray(raw.topics)) {
+      return { state: 'unavailable', reason: 'deliveryByTopic() 返回结构未知', bootAt };
+    }
+    const num = (v) => (Number.isFinite(v) ? v : 0);
+    const topics = raw.topics.map((r) => ({
+      topic: String((r && r.topic) ?? ''),
+      published: num(r && r.published),
+      delivered: num(r && r.delivered),
+      deadLettered: num(r && r.deadLettered),
+      pending: num(r && r.pending),
+      failed: num(r && r.failed),
+      other: num(r && r.other),
+      deliveryAttempts: num(r && r.deliveryAttempts),
+      subscribers: Array.isArray(r && r.subscribers) ? r.subscribers.map(String) : [],
+      lastOccurredAt: (r && r.lastOccurredAt) ?? null,
+    }));
+    return {
+      state: 'ok',
+      bootAt,
+      generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : new Date().toISOString(),
+      ring: {
+        size: num(raw.ring && raw.ring.size),
+        capacity: num(raw.ring && raw.ring.capacity),
+        full: Boolean(raw.ring && raw.ring.full),
+        oldestOccurredAt: (raw.ring && raw.ring.oldestOccurredAt) ?? null,
+        newestOccurredAt: (raw.ring && raw.ring.newestOccurredAt) ?? null,
+      },
+      totals: raw.totals && typeof raw.totals === 'object' ? raw.totals : {},
+      topics,
+      orphanPublished: Array.isArray(raw.orphanPublished) ? raw.orphanPublished.map(String) : [],
+      orphanSubscriptions: Array.isArray(raw.orphanSubscriptions)
+        ? raw.orphanSubscriptions.map((s) => ({
+          subscriber: String((s && s.subscriber) ?? '?'),
+          mode: (s && s.mode) ?? '?',
+          topics: Array.isArray(s && s.topics) ? s.topics.map(String) : [],
+        }))
+        : [],
+    };
+  } catch (err) {
+    return { state: 'error', reason: String((err && err.message) ?? err).slice(0, 160), bootAt };
+  }
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
@@ -479,6 +551,7 @@ function buildV2Payload(ctx, config = {}) {
     : null;
   const payload = collectV2Data(resolveV2Dirs(process.env, import.meta.url, repoRoot));
   payload.subscriptions = collectSubscriptions(ctx);
+  payload.deliveryByTopic = collectDeliveryByTopic(ctx);
   payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
   return payload;
 }
@@ -577,4 +650,12 @@ function apply(ctx, config = {}) {
   });
 }
 
-export { Config, apply, inject, name, optionalInject };
+export {
+  Config,
+  apply,
+  inject,
+  name,
+  optionalInject,
+  collectSubscriptions,
+  collectDeliveryByTopic,
+};

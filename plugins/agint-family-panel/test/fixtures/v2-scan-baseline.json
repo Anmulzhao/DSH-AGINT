@@ -1,12 +1,12 @@
 {
   "generatedFrom": "repo plugins/ (DSH-AGINT)",
-  "generatedAt": "2026-10-05T13:45:00.000Z",
+  "generatedAt": "2026-10-05T13:52:00.000Z",
   "counts": {
-    "code": 189,
+    "code": 192,
     "comment": 41,
     "umbrella": 0
   },
-  "providedKeys": 97,
+  "providedKeys": 98,
   "familyDirs": 38,
-  "note": "2026-10-05 重冻（修「agint-family-panel 被误判从未接线」+「agint-mascot 被误判文档腐化」）。归因方法：`git show HEAD:plugins/agint-family-panel/lib/v2-scan.js` 导出为临时模块，与改后版对**同一份工作树**各跑一遍 scanPlugins('plugins') 对照 —— HEAD code 174 / comment 41 / umbrella 15 / provided 97；改后 code 189 / comment 41 / umbrella 0 / provided 97；重分类 15 条、新增 0、消失 0。① 裸键自身被 provide 不再降级为 umbrella：agint.eventBus（event-bus 同 provide 裸键 + 7 个子键）、agint.diagnosis、agint.population、agint.mutator、agint.selfModel、agint.qualityEvaluator 六个键的 15 处取用是真边，逐条 grep 回 ctx.provide('…') 原文核对；运行时反证 = 面板 Q4 订阅表正是从 ctx.get('agint.eventBus') 读到生产 15 条订阅。umbrella 归 0 是本仓事实（命名空间裸键全部另有 provide），规则本身保留：只 provide 子键的形态仍会命中。② comment 40→41、provided 96→97 与本改动无关，是 2026-10-04 冻结后其他会话提交带来的漂移，本次一并记账。③ 声明补边（scanPlugins 第二参 declaredKeys）不影响本基线计数：基线用单参调用，走的是旧入口形态；补边效果的验收在 q3-verdicts.test.mjs（从未接线 0 行 / 悬空声明冻结集合）。上一版基线（code 173 / comment 40 / umbrella 15 / provided 96 / familyDirs 37，2026-10-04 v0.3.0）的三段归因文字见 CHANGELOG 0.2.3 与本文件历史。计数漂移超容差时人工对账后重新冻结。"
+  "note": "2026-10-05 二次重冻（方案 B：event-bus 补 topic → 投递聚合出口）。归因方法：先 git stash push -u 冻本批改动，node -e 各跑一遍 scanPlugins('plugins') 把 before/after hits 全文导出到临时 JSON，逐条 set 差分定位新增行——不靠估。差分出两条，均为方案 B 的预期新增边：① code 191→192：agint-family-panel/lib/index.js 新增一行 ctx.get('agint.eventBus')（collectDeliveryByTopic 读 deliveryByTopic 出口），与同文件既有 line 431 的 collectSubscriptions 调用完全同类（同一服务键 agint.eventBus 裸键），按上一版 note 已确立的归因（裸键被 event-bus 同 provide ⇒ 取用是真边而非 umbrella）应记 code。② providedKeys 97→98：event-bus 新 provide 'agint.eventBus.deliveryByTopic'。comment 41 与 familyDirs 38 不变。**边距说明（本次刻意记账）**：旧基线 code 189 是 2026-10-05 13:45 同日冻结，本批动手前 before 实测已是 191，191-189=2 恰好压在 ±2 容差边界故当时仍绿；本批 +1 后越界。旧 note ② 已记过同型漂移（comment 40→41、provided 96→97 来自其他会话提交），本次同会话内漂移一并记账，不再留边缘余量。冻结值不要往上凑——差分定位到行才算数。上一版基线（code 189 / comment 41 / umbrella 0 / provided 97，2026-10-05 13:45）的完整归因见 CHANGELOG 与 git 历史。计数漂移超容差时人工对账后重新冻结。"
 }

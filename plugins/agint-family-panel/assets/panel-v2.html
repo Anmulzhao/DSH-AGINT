@@ -299,9 +299,11 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 
   <!-- ═══════════ 事件链辅助 ═══════════ -->
   <div class="card panel" id="chain">
-    <h2>辅助 · 事件链（发布数实测；投递数无查询接口，标 unknown）</h2>
-    <div class="cap">来自 <code>agint_event_bus.json/tables/events</code> 全量聚合。订阅表是模块级 Map、重启即重建（评审 3.3），
-    「投递」列一律琥珀色 unknown——不拿猜测冒充测量。</div>
+    <h2>辅助 · 事件链（发布数=全历史实测；投递数=ring 窗口实测）</h2>
+    <div class="cap">「发布」列来自 <code>agint_event_bus.json/tables/events</code> 全量聚合，跨重启有效。
+    「投递」列来自 <code>agint.eventBus.deliveryByTopic</code>，<b>只覆盖 ring 窗口</b>：本进程生命周期 + 最近 2000 条发布，
+    重启即清零（悬停单元格看窗口起点）。窗口外的 topic 标「窗口外」，<b>不写0</b>——那是没测到，不是测到没有。
+    跨重启的 per-topic 投递数要events 表落<code>deliveries</code>，尚未做。</div>
     <table>
       <thead><tr><th>topic</th><th class="num">发布（实测）</th><th>投递</th></tr></thead>
       <tbody id="tbodyChain"></tbody>
@@ -322,7 +324,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 // 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
-    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null;
+    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -587,6 +589,39 @@ if(SBA&&SBA.state==="ok"){
     note:"订阅表只在进程内且计数随宿主重启清零；需 event-bus 提供 subscriptions 出口并重启宿主后才可判。不猜。",
     amber:true});
 }
+/*发布侧孤岛（2026-10-05 新增判据）：窗口内发布过但零订阅者命中。
+   这才是「谁在跟谁说话」的直接答案—— 上一批投递数拿不到时完全看不见。
+   ⚠️ 窗口口径：ring 满载时更早的发布已被淘汰，故ring.full 时只报「已满」不报数。 */
+if(DELIVERY&&DELIVERY.state==="ok"){
+  const orph=DELIVERY.orphanPublished||[];
+  const win=DELIVERY.ring||{};
+  if(win.full){
+    ANOM.push({v:"发布侧孤岛（口径受限）",o:`ring 已满 ${win.capacity} 条`,
+      ev:`窗口起点 ${win.oldestOccurredAt?rel(win.oldestOccurredAt):"?"}；更早的发布已被 FIFO 淘汰，孤岛判定只覆盖窗口内`,
+      note:"窗口外还有没有孤岛，本判据答不了。需要 per-topic 投递数跨重启（events 表落 deliveries）才能给全量结论。不猜。",
+      amber:true});
+  }else if(orph.length){
+    const hits={};for(const r of DELIVERY.topics||[])hits[r.topic]=r.published;
+    ANOM.push({v:"发布侧孤岛",o:`${orph.length} 个 topic 窗口内发布但无人订阅`,
+      ev:orph.map(t=>`${t}（窗口内发布 ${hits[t]??0} 次）`).join("、"),
+      note:"发布侧有量、消费侧无订阅者。要么订阅在本次启动后未注册，要么这个 topic 根本是只写日志的信号位。需人工判。",
+      amber:false});
+  }else{
+    ANOM.push({v:"发布侧孤岛",o:"无",
+      ev:`窗口内 ${(DELIVERY.topics||[]).length} 个 topic 全部有订阅者命中`,
+      note:`ring 未满（${win.size}/${win.capacity}），窗口内没有「发布但无人订」的 topic。`,amber:false});
+  }
+  if((DELIVERY.orphanSubscriptions||[]).length){
+    ANOM.push({v:"孤岛订阅（重复视角）",o:`${DELIVERY.orphanSubscriptions.length} 个订阅所订主题窗口内零投递`,
+      ev:DELIVERY.orphanSubscriptions.map(s=>`${s.subscriber}(${s.topics.join("/")})`).join("、"),
+      note:"与上方「订阅 → 投递对差」同源不同向：那一条按 subscriber 判，这条按 topic 判。两者交集才是真候选。",
+      amber:false});
+  }
+}else{
+  ANOM.push({v:"发布侧孤岛",o:"无法判定",
+    ev:DELIVERY?.reason??"未接入 agint.eventBus.deliveryByTopic",
+    note:"需 event-bus 提供 deliveryByTopic 出口并重启宿主后才可判。不猜。",amber:true});
+}
 if(Array.isArray(REPO_DIRS)){
   /* 名册口径 = 顶层目录名 ∪ **插件身份表 UNITS**（v2-scan 的 codeRoots 含嵌套一层）。
      只按顶层名核会把 agint-quality-policy 这类嵌套真身报成「运行态不在仓库」——
@@ -642,10 +677,10 @@ const AGES=[
  {label:"tool_stats",state:"ok",age:toolTotal.toLocaleString()+" 行 · "+rel(OBS.tools)},
  {label:"cron",state:"ok",age:CRON.length+" 任务 · "+rel(OBS.cron)},
  {label:"eventBus 发布",state:"ok",age:BUS.total.toLocaleString()+" 条 · 死信 "+BUS.deadletter+" · "+rel(OBS.bus)},
- {label:"eventBus 投递",state:(SBA&&SBA.state==="ok")?"ok":"warn",
-  age:(SBA&&SBA.state==="ok")
-    ? `subscriptions() 出口已读：${SBA.total} 个订阅 · 零投递 ${SBA.zero}（需判 ${SBA.buckets.neverPublished.length}）· 自 ${SBA.bootAt?rel(SBA.bootAt):"?"}`
-    : `unknown · ${(SBA&&SBA.reason)||"订阅表不可得"}`},
+ {label:"eventBus 投递",state:(DELIVERY&&DELIVERY.state==="ok")?"ok":"warn",
+  age:(DELIVERY&&DELIVERY.state==="ok")
+    ? `deliveryByTopic() 已读：窗口内 ${(DELIVERY.topics||[]).length} 个 topic · 送达 ${DELIVERY.totals?DELIVERY.totals.delivered:0} · 死信 ${DELIVERY.totals?DELIVERY.totals.deadLettered:0} · 孤岛 topic ${(DELIVERY.orphanPublished||[]).length} · 窗口 ${DELIVERY.ring?DELIVERY.ring.size:0}/${DELIVERY.ring?DELIVERY.ring.capacity:"?"}${DELIVERY.ring&&DELIVERY.ring.full?"（已满）":""}`
+    : `unknown · ${(DELIVERY&&DELIVERY.reason)||"投递聚合不可得"}`},
  {label:"接线豁免表",state:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")?"ok":"warn",
   age:(WIRING_EXEMPT&&WIRING_EXEMPT.state==="ok")
     ? `${WIRING_EXEMPT.count} 条在册 · ${rel(WIRING_EXEMPT.observedAt)}（docs/wiring-exemptions.json）`
@@ -774,11 +809,35 @@ exportBtn.onclick=()=>{
 };
 
 // ── 事件链 / 伞键 ──────────────────────────────────────────────────
+/** 「投递」列渲染。DELIVERY 出口不可得时退回 unknown·无出口（琥珀），绝不拿推测填数。
+ *  口径提醒写进 title：ring 窗口内（非全历史）、重启清零。 */
+function deliveryCell(topic){
+  if(!DELIVERY||DELIVERY.state!=="ok"){
+    const why=(DELIVERY&&DELIVERY.reason)?DELIVERY.reason:"无查询出口";
+    return `<span class="tag umbrella" style="margin-left:0" title="${esc(why)}">unknown · 无出口</span>`;
+  }
+  const r=(DELIVERY.topics||[]).find(x=>x.topic===topic);
+  // 该 topic 不在 ring 窗口内 = 窗口内没发布过，不是「投递 0」。
+  if(!r) return `<span class="tag umbrella" style="margin-left:0" title="不在当前 ring 窗口内（自上次重启起最近 ${DELIVERY.ring?DELIVERY.ring.capacity:2000} 条发布）">窗口外</span>`;
+  if(r.deliveryAttempts===0) return `<span class="tag umbrella" style="margin-left:0" title="窗口内发布过，但没有任何订阅者命中">0 · 无人订阅</span>`;
+  const bits=[`${r.delivered} 送达`];
+  if(r.deadLettered) bits.push(`${r.deadLettered} 死信`);
+  if(r.pending) bits.push(`${r.pending} 待审`);
+  if(r.failed) bits.push(`${r.failed} 失败`);
+  if(r.other) bits.push(`${r.other} 其他`);
+  const who=r.subscribers.length?r.subscribers.join(", "):"";
+  const tip=`窗口内发布 ${r.published} 次 · 投递尝试 ${r.deliveryAttempts} 次 · 订阅者：${who||"?"}`
+    +`（ring 窗口：自 ${DELIVERY.ring&&DELIVERY.ring.oldestOccurredAt?DELIVERY.ring.oldestOccurredAt.slice(0,19).replace("T"," "):"?"} 起，`
+    +`${DELIVERY.ring&&DELIVERY.ring.full?`已满 ${DELIVERY.ring.capacity} 条，更早的投递记录已被淘汰`:`未满 ${DELIVERY.ring?DELIVERY.ring.size:0}/${DELIVERY.ring?DELIVERY.ring.capacity:"?"}`}）`;
+  const bad=r.deadLettered||r.failed;
+  return `<span style="color:var(--${bad?"warn":"ok"})" title="${esc(tip)}">${esc(bits.join(" · "))}</span>`;
+}
 tbodyChain.innerHTML=BUS.topics.map(([t,n])=>`<tr>
   <td class="ev" style="color:var(--fg)">${esc(t)}</td>
   <td class="num">${n.toLocaleString()}</td>
-  <td><span class="tag umbrella" style="margin-left:0">unknown · 无查询接口</span></td></tr>`).join("")
-  +`<tr><td class="name" style="color:var(--fg-3)">合计（${BUS.topics.length} 个 topic）</td><td class="num">${BUS.total.toLocaleString()}</td><td style="font-size:12px;color:var(--ok)">死信 ${BUS.deadletter}</td></tr>`;
+  <td>${deliveryCell(t)}</td></tr>`).join("")
+  +`<tr><td class="name" style="color:var(--fg-3)">合计（${BUS.topics.length} 个 topic）</td><td class="num">${BUS.total.toLocaleString()}</td><td style="font-size:12px;color:var(--ok)">死信 ${BUS.deadletter}${
+    DELIVERY&&DELIVERY.state==="ok"?`　<span style="color:var(--fg-3)">窗口内送达 ${DELIVERY.totals.delivered??0}</span>`:""}</td></tr>`;
 umbList.innerHTML=HITS.filter(h=>h[4]==="umbrella").map(h=>
   `<li><span class="ev">${esc(h[0])} / ${esc(h[1])}:${h[2]}</span> → <code>${esc(h[3])}</code>（恒 undefined，不建边）</li>`).join("");
 
@@ -826,7 +885,7 @@ foot.innerHTML=`数据说明：
 ① 依赖边与 <code>文件:行号</code> 由 host 半实时扫描部署位插件 lib 目录（L0.5 真源，mtime+30s 缓存）。伞键不建边（设计稿 §1.4）。
 ② 工具调用（30 天窗口）、cron、bus 发布、7 天曲线实时聚合自 <code>$DSH_HOME/storages/</code> 三文件；延迟指标不进面板（U2 未查清）。
 ③ 工具→插件归属按命名前缀推断（U4 未证实）；宿主内建与 <code>mcp__*</code> 单列。
-④ bus「投递」列一律 unknown：订阅表是模块级 Map，无查询接口，不拿猜测冒充测量。
+④ bus 两列口径不同：「发布」= events 表全历史（跨重启）；「投递」= ring 窗口（本进程 + 最近 2000 条，重启清零）。窗口外标「窗口外」而非 0——没测到不等于没有。
 ⑤ 仍属示意的只有一处：Q1 详情「最后改动」（待接 evolution ledger）。
 ⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。`;
 
@@ -847,6 +906,7 @@ function applyPayload(D){
   SUB_SUMMARY=D.subscriptions??null;
   SUB_AUDIT=D.subscriptionAudit??null;
   WIRING_EXEMPT=D.wiringExemptions??null;
+  DELIVERY=D.deliveryByTopic??null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }
