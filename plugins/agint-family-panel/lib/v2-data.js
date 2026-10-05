@@ -147,17 +147,25 @@ function resolveStoragesHome(pluginsDir, { maxUp = 12 } = {}) {
  *     `{state:'error',reason}`，面板显示「源降级」横幅；绝不因推导失败整页崩。
  *
  * repoPluginsDir 口径（v0.3.0，2026-10-04 修「运行态不在仓库」判据长期unknown）：
- * 三级回退，**全部来自环境变量或自身路径推导，不写死任何机器绝对路径** ——
- *  ① AGINT_HOME（cron config.repoRoot 用的就是它）
- *  ② AGINT_REPO_ROOT（patch 里 cron 那行显式读它）
+ * 四级回退，**除 config 外全部来自环境变量或自身路径推导，不写死任何机器绝对路径** ——
+ *  ⓪ config.repoRoot（cordis.patch.yml 的插件 config 段，由 apply 的第二参数传入）
+ *     排最高：本机已用同一套 HOME override 给 agint-cron / agint-evolution-driver /
+ *     agint-evolution-memory 配仓根（各机各配、不入库）。env 在**进程内 restart** 链上
+ *     不可靠——respawn 继承的是老进程启动那一刻的环境，setx 之后不重启到终端链就读不到；
+ *     config 由宿主加载时求值，没这个问题。
+ *  ① AGINT_HOME —— ⚠️ 双语义：install.sh 当源码根，插件侧当**数据根**（bundle
+ *     cordis.patch.yml 的 dreams/reviews root 就是它）。所以它**不是**配本项的正确变量，
+ *     只是历史兼容位；要配仓根请用 ⓪ 或 ②。
+ *  ② AGINT_REPO_ROOT（patch 里 cron 那行显式读它，是官方的仓根逃生口）
  *  ③ 自身路径：<repo>/plugins/agint-family-panel/lib/ → 上溯到 <repo>，
  *     仅当该候选目录下确有 plugins/ 时才认（部署位 plugins 的父目录没有 plugins/，
  *     所以部署态不会把自己误认成仓库位）。
  *
  * @param {Record<string,string|undefined>} env
  * @param {string} selfUrl - 调用方 import.meta.url
+ * @param {string|null} [configRepoRoot] - cordis 注入的 config.repoRoot（候选 ⓪）
  */
-export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url) {
+export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url, configRepoRoot = null) {
   let pluginsDir;
   if (env.DSH_HOME) {
     pluginsDir = join(env.DSH_HOME, 'profiles', 'web', 'plugins');
@@ -174,7 +182,9 @@ export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url) {
   const probedHome = env.DSH_HOME ?? resolveStoragesHome(pluginsDir);
   const dshHome = probedHome ?? resolve(pluginsDir, '..', '..', '..');
   const selfRepoGuess = selfRepoCandidate(selfUrl);
+  const cfgRoot = typeof configRepoRoot === 'string' && configRepoRoot.trim() !== '' ? configRepoRoot.trim() : null;
   const candidates = [
+    cfgRoot !== null ? { source: 'config', path: join(cfgRoot, 'plugins') } : null,
     env.AGINT_HOME ? { source: 'AGINT_HOME', path: join(env.AGINT_HOME, 'plugins') } : null,
     env.AGINT_REPO_ROOT ? { source: 'AGINT_REPO_ROOT', path: join(env.AGINT_REPO_ROOT, 'plugins') } : null,
     selfRepoGuess !== null && isRepoRoot(selfRepoGuess)

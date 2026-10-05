@@ -1,5 +1,41 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.6 — 2026-10-05
+
+### 仓库位新增候选 ⓪：cordis `config.repoRoot`
+
+**为什么**：0.2.5 让面板读 `docs/wiring-exemptions.json`，但豁免表**只存仓库位**，
+部署位没有 `docs/`。生产进程要拿到仓库位，`resolveV2Dirs` 当时只认两个环境变量
+（`AGINT_HOME` / `AGINT_REPO_ROOT`），本机都没设 ⇒ `repoDirs=unavailable`，
+零投递分层只能退化成「待人工判」。
+
+配 `AGINT_HOME` 这条路查证后**否决**：它是双语义变量。`install.sh` 当它是源码根，
+插件侧当它是**数据根**（`.agint-bundle/cordis.patch.yml:32/79` 用
+`AGINT_HOME + '/dreams'`、`+ '/reviews'` 落盘）。设成仓根会把运行态数据写进仓库工作树，
+并把现有 `~/projects/AGINT/{dreams,reviews}` 的历史孤立掉。
+
+env 这条路还有一层坑：进程内 `restart_request` 的 respawn 继承的是**老进程启动那一刻**的环境，
+`setx` 之后不重开终端链就不生效；且本机活进程实测不是 `start-dsh.cmd` 起的
+（PID 22052 = powershell + `%AppData%\npm\...\bin.js web`），写进 launcher 也覆盖不到现状。
+
+**改了什么**：`resolveV2Dirs(env, selfUrl, configRepoRoot)` 新增候选 ⓪，优先级高于
+`AGINT_HOME` / `AGINT_REPO_ROOT`，来源标记 `config`；`buildV2Payload(ctx, config)` 把
+cordis 注入的 `config.repoRoot` 传进去。这是本机已有的一套做法——`agint-cron`、
+`agint-evolution-driver`、`agint-evolution-memory` 都在 HOME 的
+`profiles/web/cordis.patch.yml` 里按插件 id 配了 `repoRoot: "D:/DSH/project源码/DSH-AGINT"`
+（机器私有值不入库，各机各配）。面板原先没吃到，只是因为代码不看 config。
+
+空值（`null` / `''` / 空白 / 非字符串）与「指到没有 `plugins/` 的目录」都不算命中：
+前者忽略、后者回落到下一候选且**不得谎标 `config`**。
+
+**测试**：`test/v2-data-v03.test.mjs` 新增 3b 段（⓪ 命中 / ⓪ 优先级 / 6 种非法值忽略 /
+落空不谎标）。面板全量 6/6 通过。
+
+**生效条件**：需要在 HOME `profiles/web/cordis.patch.yml` 追加
+`- id: agint-family-panel / config: repoRoot: ...`，并重启 dsh（config 只在加载时求值）。
+
+---
+
 ## 0.2.5 — 2026-10-05
 
 ### 零投递订阅分三档 + 名册认嵌套身份（面板改读 check-wiring 的权威口径）

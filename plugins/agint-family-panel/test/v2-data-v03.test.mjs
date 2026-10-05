@@ -373,6 +373,39 @@ assert.deepEqual(classifyPlugins(join(FIX, 'no-such-plugins')), {}, '目录不�
   assert.ok(['AGINT_HOME', 'AGINT_REPO_ROOT'].includes(f.repoPluginsSource), 'source 落在两种标签之一（当前实现错标为 AGINT_HOME）');
 }
 
+// ══ 3b. resolveV2Dirs 候选 ⓪：cordis config.repoRoot ════════════════════
+// 本机既有做法：HOME cordis.patch.yml 按插件 id 配 config.repoRoot
+// （agint-cron / agint-evolution-driver / agint-evolution-memory 三家已这么配）。
+// env 在进程内 restart 链上不可靠（respawn 继承老进程启动那一刻的环境），
+// config 由宿主加载时求值 ⇒ 面板必须优先吃它。
+{
+  const env = (o) => ({ DSH_HOME: DSH, ...o });
+  const SENTINEL = 'sentinel::unresolvable';
+
+  // ⓪ 命中：给 config 就用自己的根，且 source 标 config
+  const g = resolveV2Dirs(env({}), SENTINEL, REPO_OK);
+  assert.equal(norm(g.repoPluginsDir), norm(join(REPO_OK, 'plugins')), '⓪ config.repoRoot 命中');
+  assert.equal(g.repoPluginsSource, 'config', '⓪ source 标 config');
+
+  // ⓪ 优先级高于两个环境变量（三者都给 ⇒ config 赢）
+  const h = resolveV2Dirs(env({ AGINT_HOME: REPO_ALT, AGINT_REPO_ROOT: REPO_ALT }), SENTINEL, REPO_OK);
+  assert.equal(norm(h.repoPluginsDir), norm(join(REPO_OK, 'plugins')), 'config 优先于 AGINT_HOME/AGINT_REPO_ROOT');
+  assert.equal(h.repoPluginsSource, 'config', 'config 赢时 source 必须是 config');
+
+  // 空串/空白/非字符串 ⇒ 等于没配，回落 env（不得当成命中标 config）
+  for (const bad of [null, undefined, '', '   ', 42, {}]) {
+    const r = resolveV2Dirs(env({ AGINT_REPO_ROOT: REPO_ALT }), SENTINEL, bad);
+    assert.equal(r.repoPluginsSource, 'AGINT_REPO_ROOT', `非法 config 值 ${JSON.stringify(bad)} 必须被忽略`);
+  }
+
+  // config 指到没有 plugins/ 的目录 ⇒ 不得标 config，必须回落到下一候选
+  const partial = join(FIX, 'partial-home');
+  mkdir(partial);
+  const i = resolveV2Dirs(env({ AGINT_REPO_ROOT: REPO_ALT }), SENTINEL, partial);
+  assert.equal(norm(i.repoPluginsDir), norm(join(REPO_ALT, 'plugins')), 'config 无 plugins/ ⇒ 回落 AGINT_REPO_ROOT');
+  assert.equal(i.repoPluginsSource, 'AGINT_REPO_ROOT', 'config 落空时 source 不得谎标 config');
+}
+
 // ══ 4. readManifestConsumes：顶层优先、嵌套补位 ════════════════════════
 // ⛔ readManifestConsumes 未导出（lib/v2-data.js:217 是内部函数），
 // 只能经 collectV2Data().manifestConsumes 观测。

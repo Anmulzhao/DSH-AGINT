@@ -470,10 +470,14 @@ function collectSubscriptions(ctx) {
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
  * 在浏览器里再判一次就会把已归档的断链重报成新问题（见 v2-data classifySubscriptions）。
  * @param {object} ctx - host context.
+ * @param {object} [config] - cordis 注入的插件配置；只用到 repoRoot（仓库位根，候选 ⓪）。
  * @returns {object} payload
  */
-function buildV2Payload(ctx) {
-  const payload = collectV2Data(resolveV2Dirs());
+function buildV2Payload(ctx, config = {}) {
+  const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
+    ? config.repoRoot.trim()
+    : null;
+  const payload = collectV2Data(resolveV2Dirs(process.env, import.meta.url, repoRoot));
   payload.subscriptions = collectSubscriptions(ctx);
   payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
   return payload;
@@ -552,7 +556,7 @@ function apply(ctx, config = {}) {
           writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
           return;
         }
-        const payload = buildV2Payload(ctx);
+        const payload = buildV2Payload(ctx, config);
         writeJson(res, 200, { ...payload, enabled: true });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
@@ -564,7 +568,7 @@ function apply(ctx, config = {}) {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
     /** v2 聚合快照；与 /v2/data 路由同源同缓存（含运行态订阅表与零投递分层）。 */
-    v2Data: () => buildV2Payload(ctx),
+    v2Data: () => buildV2Payload(ctx, config),
     /** The prefix the browser half fetches (root-absolute). */
     apiPrefix: API_PREFIX,
     /** Kill-switch: off keeps the route alive but empty. */
