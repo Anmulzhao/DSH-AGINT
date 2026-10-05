@@ -32,8 +32,10 @@ import {
 /**
  * 造一个 mock ctx，收集 ctx.provide 注册的服务（v0.2.0 用）。
  * dispose 语义照旧：effect(outer) → 调 outer 拿 inner disposer。
+ * v0.9.0：`commands` 为软依赖，不传时 ctx.get('commands') 返回 null，
+ * 插件应静默降级（不注册命令、不抛错）。
  */
-function makeCtx({ agent = null, provided = {} } = {}) {
+function makeCtx({ agent = null, provided = {}, commands = null } = {}) {
   const listeners = [];
   const disposers = [];
   const services = {
@@ -43,6 +45,7 @@ function makeCtx({ agent = null, provided = {} } = {}) {
       get: () => agent,
     },
   };
+  if (commands) services.commands = commands;
   return {
     listeners,
     disposers,
@@ -1390,4 +1393,209 @@ test('v0.8.0 代码指纹接线：apply 写进 marker+status，磁盘改过后 c
     env.cleanup();
     rmSync(codeDir, { recursive: true, force: true });
   }
+});
+
+// ══════════════════════════════════════════════════════════════
+// v0.9.0 手动控制面：slash 命令 + 终止链路
+// ══════════════════════════════════════════════════════════════
+
+/** 收集 commands.register 的假服务。 */
+function makeCommands() {
+  const registry = new Map();
+  return {
+    registry,
+    service: {
+      register(def) {
+        registry.set(def.name, def);
+        return () => registry.delete(def.name);
+      },
+    },
+  };
+}
+
+/**
+ * 起一个带 commands 服务的 apply。返回一个跑完即拆的句柄。
+ * @param {object} [cfg] 传给 apply 的配置
+ */
+async function bootWithCommands(cfg = {}) {
+  const env = withTmpDshHome();
+  const { registry, service } = makeCommands();
+  const h = makeCtx({ commands: service });
+  const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  apply(h.ctx, { stateDir: '.agint-restart-smoke', notifyDebounceMs: 0, ...cfg });
+  const teardown = () => {
+    // dispose：命令反注册 + 在途终止标记清空 + 轮询定时器清掉
+    for (const d of h.disposers.splice(0)) {
+      try { if (typeof d === 'function') d(); } catch { /* ignore */ }
+    }
+    env.restore();
+    env.cleanup();
+  };
+  return { registry, env, teardown };
+}
+
+test('v0.9.0: inject 数组必须声明 commands（回归防线）', async () => {
+  // 这条断言是 2026-10-05 首次上线事故留下的：inject 只有 ['agents'] 时，
+  // cordis 照样把插件加载起来，不报任何错，但 ctx.get('commands') 返回 null，
+  // 两条命令静默不注册 —— 浏览器按钮挂上了、点了没反应，宿主日志只有一行自制提示。
+  // mock ctx 永远提供 commands，所以任何 mock 层测试都测不出这个坑；只有这里能测。
+  const { inject } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+  assert.ok(Array.isArray(inject), 'inject 必须是数组');
+  assert.ok(inject.includes('agents'), 'agents 是硬依赖（重启通知的投递目标）');
+  assert.ok(inject.includes('commands'),
+    'inject 漏了 "commands"：cordis 只把 inject 里声明过的服务接到插件 ctx 上，'
+    + 'ctx.get("commands") 返回 null，/restart-dsh 与 /stop-dsh 静默不注册');
+
+  // manifest 的 spec.cordis.inject 必须与代码一致，否则文档与实现分叉
+  const mf = JSON.parse(readFileSync(join(PLUGIN_DIR, 'manifest.json'), 'utf-8'));
+  for (const svc of inject) {
+    assert.ok(mf.spec.cordis.inject.includes(svc), `manifest.spec.cordis.inject 漏了 ${svc}`);
+  }
+});
+
+test('v0.9.0: commands 在场时注册两个命令，dispose 后反注册', async () => {
+  const h = await bootWithCommands();
+  try {
+    assert.deepEqual([...h.registry.keys()].sort(), ['restart-dsh', 'stop-dsh']);
+    const stop = h.registry.get('stop-dsh');
+    assert.ok(stop.definitionId, '命令必须带 definitionId（discovery 用）');
+    assert.ok(stop.input?.hint, '命令必须给出用法提示');
+    assert.ok(stop.description, '命令必须有一句话描述');
+  } finally {
+    h.teardown();
+  }
+  assert.equal(h.registry.size, 0, 'dispose 后命令必须从注册表消失');
+});
+
+test('v0.9.0: commands 缺席时静默降级，插件与工具面不受影响', async () => {
+  const env = withTmpDshHome();
+  try {
+    const provided = {};
+    const h = makeCtx({ provided }); // 不传 commands -> ctx.get('commands') 为 null
+    const { apply } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'index.js')).href);
+    apply(h.ctx, { stateDir: '.agint-restart-smoke', notifyDebounceMs: 0 });
+    const svc = provided['agint.restart'];
+    assert.ok(svc, 'agint.restart 服务仍须提供');
+    assert.equal(typeof svc.request, 'function', '重启能力不受影响');
+    assert.equal(typeof svc.status, 'function', '状态面不受影响');
+    for (const d of h.disposers.splice(0)) { try { if (typeof d === 'function') d(); } catch { /* ignore */ } }
+  } finally {
+    env.restore();
+    env.cleanup();
+  }
+});
+
+test('v0.9.0: /restart-dsh 走 request，冷却期把真重启挡住', async () => {
+  const h = await bootWithCommands();
+  try {
+    const restart = h.registry.get('restart-dsh');
+
+    // 1) dryrun：零副作用，且证明命令确实接到了 request（返回计划而非报错）
+    const dry = restart.handler({ rawInput: 'dryrun' });
+    assert.equal(dry.kind, 'success', 'dryrun 应成功');
+    assert.match(dry.text, /dryRun|将要发生/, `dryrun 应回计划，实际：${dry.text}`);
+
+    // 2) status：只读
+    const st = restart.handler({ rawInput: 'status' });
+    assert.equal(st.kind, 'success');
+    assert.match(st.text, /pid \d+/);
+
+    // 3) 预置一条"刚刚重启过"的历史，让冷却期生效 —— 这一步是重点：
+    //    护栏必须在"命令已经接上"的前提下生效，否则按钮就是没有护栏的裸调用
+    writeFileSync(
+      join(h.env.root, '.agint-restart-smoke', 'restart-history.json'),
+      JSON.stringify({ events: [{ at: new Date().toISOString(), requestId: 'prev0001' }] }),
+    );
+    const denied = restart.handler({ rawInput: '' });
+    assert.equal(denied.kind, 'error', '冷却期内必须拒绝，且不得谎称成功');
+    assert.match(denied.text, /冷却/, `应报冷却期，实际：${denied.text}`);
+  } finally {
+    h.teardown();
+  }
+});
+
+test('v0.9.0: /stop-dsh 参数解析与在途保护', async () => {
+  const h = await bootWithCommands();
+  try {
+    const stop = h.registry.get('stop-dsh');
+
+    // 1) status：只读
+    const st = stop.handler({ rawInput: 'status' });
+    assert.equal(st.kind, 'success');
+    assert.match(st.text, /在途终止/);
+    assert.match(st.text, /上次回执：无/, '从未终止过时必须如实说"无"，不拿 0 冒充');
+
+    // 2) 未知参数
+    const bad = stop.handler({ rawInput: 'bogus' });
+    assert.equal(bad.kind, 'error');
+    assert.match(bad.text, /未知参数/);
+
+    // 3) 越界的 delayMs（0 会被 killer 抢在回执前面）
+    const tooSmall = stop.handler({ rawInput: '0' });
+    assert.equal(tooSmall.kind, 'error');
+    assert.match(tooSmall.text, /delayMs/);
+
+    const tooBig = stop.handler({ rawInput: '999999' });
+    assert.equal(tooBig.kind, 'error');
+    assert.match(tooBig.text, /delayMs/);
+
+    // 4) 成功路径 → 在途保护 → cancel。
+    //    ⚠️ 必须在同一个同步块内 cancel：timer 一旦触发就会 detached 拉起
+    //    lib/killer.js，那是真的会杀进程树的执行者，测试里绝不能让它跑起来。
+    const ok = stop.handler({ rawInput: '' });
+    assert.equal(ok.kind, 'success', `默认参数应排期成功，实际：${ok.text}`);
+    assert.match(ok.text, /终止 DSH/);
+
+    const dup = stop.handler({ rawInput: '5000' });
+    assert.equal(dup.kind, 'error', '已有在途时必须拒绝第二次');
+    assert.match(dup.text, /在途/);
+
+    const cancelled = stop.handler({ rawInput: 'cancel' });
+    assert.equal(cancelled.kind, 'success');
+    assert.match(cancelled.text, /已取消/);
+
+    const nothing = stop.handler({ rawInput: 'cancel' });
+    assert.equal(nothing.kind, 'error', '没有在途时不得谎称取消成功');
+
+    // 5) 确认 killer 确实没被拉起
+    assert.equal(existsSync(join(h.env.root, '.agint-restart-smoke', 'stop-request.json')), false,
+      'cancel 之后不得写出 stop-request.json（写出了就说明 killer 可能已经在跑）');
+  } finally {
+    h.teardown();
+  }
+});
+
+test('v0.9.0: killer.collectTree 叶子优先，且排除 init 与无关进程', async () => {
+  const { collectTree, stillSameProcess } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'killer.js')).href);
+  const table = new Map();
+  const add = (pid, ppid, comm) => table.set(pid, {
+    pid, ppid, pgid: pid, state: 'S', comm, fingerprint: `${comm}|${ppid}|S`,
+  });
+  add(1, 0, 'init');
+  add(100, 1, 'dsh');
+  add(101, 100, 'tool-a');
+  add(102, 100, 'tool-b');
+  add(103, 101, 'grandchild');
+  add(200, 1, 'unrelated');
+
+  const order = collectTree(table, 100);
+  assert.equal(order.length, 4, '只收 100 的子树，不含 init(1) 与无关进程(200)');
+  assert.equal(order[order.length - 1], 100, '根必须最后（先收子再收父，反过来子进程就变孤儿）');
+  assert.ok(order.indexOf(103) < order.indexOf(101), '孙必须先于子');
+  assert.ok(order.indexOf(101) < order.indexOf(100), '子必须先于父');
+  assert.ok(order.indexOf(102) < order.indexOf(100), '子必须先于父');
+  assert.ok(!order.includes(1), 'init 永不触碰');
+  assert.ok(!order.includes(200), '兄弟树不进来');
+
+  assert.deepEqual(collectTree(table, 1), [], '以 init 为根时不得收任何进程');
+  assert.deepEqual(collectTree(table, process.pid, new Set([process.pid])), [], '执行者自己必须被排除');
+});
+
+test('v0.9.0: killer.stillSameProcess 指纹比对防 pid 复用误杀', async () => {
+  const { stillSameProcess } = await import(pathToFileURL(resolve(PLUGIN_DIR, 'lib', 'killer.js')).href);
+  const table = new Map([[7, { pid: 7, fingerprint: 'node|1|S' }]]);
+  assert.equal(stillSameProcess(table, 7, 'node|1|S'), true, '指纹一致才放行');
+  assert.equal(stillSameProcess(table, 7, 'bash|1|S'), false, 'pid 已被别的进程复用，必须拒绝');
+  assert.equal(stillSameProcess(table, 7, null), true, '没有指纹就不做判断');
+  assert.equal(stillSameProcess(table, 99, null), false, '进程已从表里消失');
 });
