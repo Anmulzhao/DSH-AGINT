@@ -3,7 +3,7 @@
 - 日期：2026-10-04
 - 状态：**已定案**（老板 2026-10-04 拍板 1-3 条；2026-10-05 补充第 4 条的执行方式）
 - 关联提案：`dbe682e8`（v4 架构，复用 dsh-pet）
-- 定案结果：fork 已建立为 `Anmulzhao/agint-pet`，`assets/agint/` 57 帧已入库
+- 定案结果（v5 修正）：**插件本体 = fork `Anmulzhao/agint-pet`（Apache-2.0，不写 AGINT 代码进 fork）；AGINT 状态源 = 独立插件 `DSH-AGINT/plugins/agint-mascot`（MIT，跨插件调 `ctx.pet.announce()`）；AGINT 资产不进 fork，改装在 `$DSH_HOME/pets/agint/`**（fork 内现存 `assets/agint/` 57 帧待迁出）
 
 ## 结论
 
