@@ -4,6 +4,59 @@
 
 ---
 
+## v0.9.0 — 2026-10-05 — 手动控制面：composer dock 两个按钮 + 终止链路
+
+**背景**：老板在插件管理页看到第三方插件 `@linxin666/dsh-client-ui-plugin-manager` 的「立即重启」按钮，想把同样的手动控制搬进 AGINT 体系，放在输入区原「终止 DSH」按钮（`@local/dsh-kill-switch`）的位置，并让它走 agint-restart 自己的能力。老板 2026-10-05 拍板：两个按钮都要、直接改 agint-restart 本体、停用并卸载 kill-switch、源码落 DSH-AGINT 仓库内。
+
+**改动**：
+
+- `lib/client.js`（新增，浏览器半区）：在 `conversation.composer.dock` 挂一个 slot 条目，渲染「重启 DSH」「终止 DSH」两个**两段式确认**按钮（点一次上膛、4 秒内再点才生效）。点击变成 `/restart-dsh` 与 `/stop-dsh` 两条命令的 draft，经 composer 自身的 InputActions（`setDraft` + `submit`）提交。
+- `lib/index.js`：注入改为 `ctx.get('commands')` 软依赖；注册 `/restart-dsh`（`status|cancel|dryrun`）与 `/stop-dsh`（`[<delayMs>] [term|kill|self] | status | cancel`）两条命令；新增终止派发链路（`scheduleStop` / `dispatchStop` / `fireStop`）；命令与在途标记经 `ctx.effect` 回收。
+- `lib/killer.js`（新增，从 `@local/dsh-kill-switch` 移植）：独立进程，枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKILL → 写 `stop-result.json`。group 信号（`kill(-pgid)`）与逐个信号**两层同时投递**——dsh 起的工具进程 PGID ≠ PPID，只发组信号会漏掉它们。
+- `package.json`：`exports` 加 `./client`；加 `dsh.client`（platform: web）。
+- `manifest.json`：`agint.kind` 由 `host` 改 `both`；`optionalInject` 加 `commands`；补 `_clientNote` / 更新 `_shellNote`。
+- `cordis.patch.yml`：只加注释（v0.9.0 说明 + 为什么 stop 时序常量不做配置项）。
+- `test/smoke.mjs`：新增 7 个 case（inject 声明回归防线、命令注册与反注册、mock ctx 降级、冷却期把真重启挡住、stop 参数解析与在途保护、collectTree 叶子优先、指纹比对防 pid 复用）。
+
+**刻意不做的两件事**：
+
+1. **不开 loopback HTTP 口**。第三方插件的做法是 host 半起本机网关、按钮 POST 过去、GET 读方案。同一宿主进程内已有 commands 服务，走它零新增网络暴露面，而且护栏拒绝理由（冷却 / 熔断 / 单在途）会回到会话里——fetch 拿到 202 只知道「被受理」，不知道最后成没成。
+2. **宿主不自杀**。与 kill-switch 同理：killer 做 pid 复用防护时比对「ppid 仍在原主」的指纹，宿主先死会让子进程 ppid 变 1、指纹失配而被漏杀。宿主只派发与留痕。
+
+## ⚠️ 上线第一天踩的坑：inject 漏了 commands，两条命令静默不注册
+
+**症状**：重启后 slot 检查显示 `agint-restart` 已占位（`active: true`），按钮渲染正常；老板敲 `/restart-dsh` 却作为**普通用户消息**发给了模型，没有回执。`eventBus_inspect` 查 `command/run` 主题 0 条。
+
+**排查链**（三步定位）：
+
+1. `eventBus_inspect` topic=`command/run`，`since=14:25:00Z` → `count: 0`。命令从未进入执行。
+2. 宿主日志（`%LOCALAPPDATA%\Temp\dsh-web.log`）里只有一行自制提示：`[agint-restart] commands 服务缺席：/restart-dsh 与 /stop-dsh 未注册`。
+3. `cordis_inspect_query` host / `Service.listService` 的 catalog 里**明确有** `commands` 服务，签名 `register(definition: CommandDefinition): () => void`。
+
+**根因**：`lib/index.js` 顶部的 `inject` 数组只有 `['agents']`。cordis 只把 **inject 数组里声明过的**服务接到插件的 `ctx` 上，`ctx.get(name)` 不做全服务搜索——没声明就是 `null`。宿主侧服务一直健在，缺的是本插件这一行声明。
+
+**这个坑为什么 smoke 测不出来**：mock ctx（`makeCtx`）在测试里**总是**提供 `commands`，所以所有 mock 层用例都走成功路径。只有真机加载才暴露。
+
+**修复**：
+
+1. `lib/index.js` → `const inject = ['agents', 'commands'];`，踩坑经过写进该常量上方的注释。
+2. `manifest.json` → `spec.cordis.inject` 改为 `["agents", "commands"]`，`optionalInject` 清空；description 里那句「走软依赖」改掉。
+3. `cordis.patch.yml` 注释同步改写，把症状与病因都记下来。
+4. 那行自制 log 改成指向真因：`ctx.get("commands") 为空：…若 inject 数组里漏了 "commands"，宿主不会拦，只会静默走到这里。`
+5. **加回归防线**：`test/smoke.mjs` 新增一条直接断言 `inject` 数组内容 + `manifest.spec.cordis.inject` 与代码一致——只有这条测得到，它是唯一绕过 mock ctx 的检查点。
+
+**教训**：「宿主服务在不在」要用 `Service.listService` 查，不要用自己代码里的一句 log 推断。前者是事实，后者只是症状。
+
+**同时修掉一个移植时发现的语义问题**：`killer.stillSameProcess` 原来在指纹为空时直接返回 true（放行）。改为**先查表再比指纹**——进程已从快照消失时返回 false。发信号给一个「已经不在了」的 pid，在它被系统回收复用的那一刻就是误杀。生产路径上 pid 总在同一张表里，故行为不变，但语义更安全。
+
+**为什么不算 major**：L0 治理字段（marker 文件格式 / brand 前缀 `[agint-restart]` / 通知文案）本次未动。新增的是独立的 stop-request / stop-result 两个文件，不与既有文件同名覆盖。
+
+**验证**：`node test/smoke.mjs` 47 项 46 通过 0 失败 1 跳过（跳过项是本机无嵌套 dsh-tools 的既有跳过）；`bin/plugin-check.sh --all` 本插件 11 维度全过、0 fail。
+
+**生效路径**（AGENTS.md 红线）：见仓库 `wiki/挂载-重启红线.md`。
+
+---
+
 ## v0.8.2 — 2026-09-12 — 首挂 preset：让模型面能用 restart_request / restart_status / restart_cancel
 
 **背景**：v0.8.1 插件本体已挂载（cordis.patch.yml 含 26 个 agint-* 段），`agint.restart.{request, status, cancel}` host service 在跑，但 `presets/agint/agent.cordis.yml` 没挂 `agint-restart-tools` row —— 模型面没有 `restart_request` / `restart_status` / `restart_cancel` 这三个工具，只能调 host service。

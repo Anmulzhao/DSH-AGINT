@@ -1,7 +1,7 @@
 {
   "name": "agint-restart",
-  "version": "0.8.1",
-  "description": "AGINT 插件：检测 DSH 重启后自动唤醒主 agent 并投递**纯状态**消息「DSH 已重启。」（v0.7.1；不含任何行动指令——2026-09-10 重启环复盘：指令性措辞会把状态消息变成工作指令，唤醒后的会话会把上下文里未完成的旧指令再执行一遍）。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。v0.8.0 新增代码指纹：status().codeFingerprint / codeStale 一眼确认跑的是哪版代码、要不要重启；v0.8.1 把指纹带进 restart_status 的输出面。",
+  "version": "0.9.0",
+  "description": "AGINT 插件：DSH 重启闭环 + 手动控制面。检测 DSH 重启后自动投递**纯状态**消息「DSH 已重启。」（v0.7.1；不含任何行动指令）。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。v0.8.0 新增代码指纹。v0.9.0 新增浏览器半区：composer dock 上「重启 DSH」「终止 DSH」两个两段式确认按钮，走 /restart-dsh 与 /stop-dsh 命令通道，不开 HTTP 口；终止由 lib/killer.js 独立进程执行（枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKILL）。",
   "keywords": [
     "agint",
     "dsh-plugin",
@@ -13,6 +13,10 @@
   ],
   "type": "module",
   "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
   "files": [
     "lib",
     "cordis.patch.yml"
@@ -20,6 +24,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
     }
   },
   "scripts": {

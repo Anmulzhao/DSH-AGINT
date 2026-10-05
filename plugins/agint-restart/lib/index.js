@@ -39,8 +39,26 @@ import {
 
 const name = 'agint-restart';
 
-/** 需要的注入服务：agents（列出/访问 agent）。 */
-const inject = ['agents'];
+/**
+ * 需要的注入服务。
+ *
+ * - `agents`：列出/访问 agent（重启通知的投递目标）。
+ * - `commands`：v0.9.0 手动控制面的落地通道（`/restart-dsh`、`/stop-dsh`）。
+ *
+ * ⚠️ 踩过的坑（2026-10-05 实测）：最初这里只有 `['agents']`，代码里用
+ * `ctx.get('commands')` 取服务 —— 拿到 null，于是两条命令静默没注册，
+ * 浏览器按钮挂上了、点了没反应，而宿主日志只有一行自制的「服务缺席」提示。
+ *
+ * 根因：cordis 只会把**在 inject 里声明过的**服务接到插件的 ctx 上。
+ * `ctx.get` 不做全服务搜索，只查已声明的依赖。宿主侧 `commands` 服务一直存在
+ * （`cordis_inspect_query` host/Service.listService 的 catalog 里明确有
+ * `commands` → `register(definition: CommandDefinition): () => void`），
+ * 缺的是本插件这一行声明。
+ *
+ * 所以下面 apply 里那段 `ctx.get('commands')` 的 null 判断**不是**运行时降级路径，
+ * 它只在 apply 被直接调用时才有意义（smoke 的 mock ctx、单元测试）。
+ */
+const inject = ['agents', 'commands'];
 
 const DEFAULTS = {
   enabled: true,
@@ -283,6 +301,11 @@ function apply(ctx, cfg = {}) {
   const resultPath = join(markerDir, 'restart-result.json');
   const historyPath = join(markerDir, 'restart-history.json');
   const respawnScript = fileURLToPath(new URL('./respawn.js', import.meta.url));
+  // v0.9.0：终止链路。restart 用 respawn（退出后拉起新实例），stop 用 killer
+  // （杀掉整棵进程树，不拉起）。两者共用 markerDir，回执各自一个文件，互不覆盖。
+  const killerScript = fileURLToPath(new URL('./killer.js', import.meta.url));
+  const stopRequestPath = join(markerDir, 'stop-request.json');
+  const stopResultPath = join(markerDir, 'stop-result.json');
 
   // 1. 读取上次 marker（容忍缺失/损坏）
   let marker = null;
@@ -780,6 +803,195 @@ function apply(ctx, cfg = {}) {
   // 注册服务：整包 + 与 manifest 声明一致的 detect 别名
   ctx.provide('agint.restart', { detect, status, request, cancel });
   ctx.provide('agint.restart.detect', detect);
+
+  // ── 终止（v0.9.0）─────────────────────────────────────────────
+  //
+  // 与 respawn 严格同形：宿主只**派发**与**留痕**，真正发信号的是 detached 出去的
+  // lib/killer.js。宿主不自杀是刻意的 —— killer 做 pid 复用防护时比对的是
+  // 「ppid 仍在原主」的指纹；宿主先死，子进程的 ppid 就变成 1、指纹失配、被误判成
+  // 「不是那个进程」而漏杀，漏掉的恰恰是最该收掉的那些。
+  let stopPending = null; // 同一时刻只允许一个在途终止
+
+  /** 下限：短于此则 killer 抢在命令回执前面跑，回执与页面一起消失。 */
+  const MIN_STOP_DELAY_MS = 100;
+  const MAX_STOP_DELAY_MS = 30_000;
+  const DEFAULT_STOP_DELAY_MS = 800;
+  const STOP_USAGE = '[<delayMs>] [term|kill|self] | status | cancel';
+
+  function clearStop() {
+    if (!stopPending) return null;
+    clearTimeout(stopPending.timer);
+    const was = stopPending;
+    stopPending = null;
+    return was;
+  }
+
+  /** 把终止派发给 detached 的 killer.js。只派发，宿主继续活着等它来收。 */
+  const dispatchStop = (mode, scope) => {
+    const requestId = randomUUID().slice(0, 8);
+    const payload = {
+      requestId,
+      requestedAt: new Date().toISOString(),
+      targetPid: process.pid,
+      stateDir: markerDir,
+      mode,
+      scope,
+    };
+    if (!writeJson(stopRequestPath, payload)) {
+      return { ok: false, requestId: null, message: `无法写入终止请求文件：${stopRequestPath}。未产生任何副作用，可安全重试` };
+    }
+    try {
+      const child = spawn(process.execPath, [killerScript, stopRequestPath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: process.env,
+      });
+      child.unref();
+      return { ok: true, requestId, message: `终止已派发（${requestId}，${scope} / ${mode}）` };
+    } catch (err) {
+      return { ok: false, requestId, message: `killer 启动失败：${String(err?.message ?? err)}。请求文件已写入，但没有执行者消费它，本次不会终止` };
+    }
+  };
+
+  function fireStop() {
+    const p = stopPending;
+    stopPending = null;
+    if (!p) return;
+    const r = dispatchStop(p.mode, p.scope);
+    console.log(`[agint-restart] stop dispatched ok=${r.ok} scope=${p.scope} mode=${p.mode}`);
+  }
+
+  const scheduleStop = (delayMs, mode, scope) => {
+    clearStop();
+    // +DEFAULT_STOP_DELAY_MS：让命令回执先回到浏览器，页面才断
+    const timer = setTimeout(fireStop, delayMs + DEFAULT_STOP_DELAY_MS);
+    stopPending = { at: Date.now() + delayMs + DEFAULT_STOP_DELAY_MS, timer, mode, scope, delayMs };
+    return stopPending;
+  };
+
+  // ── slash 命令面（v0.9.0）─────────────────────────────────────
+  //
+  // 浏览器半的两个按钮走 composer 的 InputActions：setDraft(COMMAND) + submit()，
+  // 于是命令经宿主自己的 adjudication 管道执行 —— 与老板手打这一行是同一条路径，
+  // 一个操作一份实现。不开 HTTP 口：这是"在自己家院里递纸条"，不是开门迎客。
+  const COMMAND_RESTART = 'restart-dsh';
+  const COMMAND_STOP = 'stop-dsh';
+
+  /** 把 request() 的契约结果翻成一句话 + 成败。deny 的 code 是穷举的。 */
+  const renderRequest = (r) => {
+    const ok = r?.code === 'scheduled' || r?.code === 'dry-run';
+    return { kind: ok ? 'success' : 'error', text: String(r?.message ?? '重启请求无回执') };
+  };
+
+  const handleRestartCommand = (raw) => {
+    const text = String(raw ?? '').trim().toLowerCase();
+    if (text === 'cancel') {
+      const c = cancel();
+      return { kind: c.cancelled ? 'success' : 'error', text: c.message };
+    }
+    if (text === 'status') {
+      const s = status();
+      return {
+        kind: 'success',
+        text: [
+          `pid ${s.pid} · 模式 ${s.mode} · 启用 ${s.enabled}`,
+          s.pending ? `在途请求 ${s.pending.requestId}` : '无在途请求',
+          `冷却剩余 ${Math.round(s.cooldownRemainingMs / 1000)}s · 熔断 ${s.burst.count}/${s.burst.max}（${s.burst.tripped ? '已触发' : '未触发'}）`,
+          `代码指纹 ${s.codeFingerprint ?? '未知'}${s.codeStale ? '（磁盘已改，进程里是旧代码）' : ''}`,
+        ].join('\n'),
+      };
+    }
+    const dryRun = text === 'dryrun' || text === 'dry-run';
+    const r = request({ confirm: true, dryRun, reason: `boss ran /${COMMAND_RESTART}` });
+    return renderRequest(r);
+  };
+
+  const handleStopCommand = (raw) => {
+    const text = String(raw ?? '').trim();
+    const head = text.toLowerCase();
+
+    if (head === 'status') {
+      const r = existsSync(stopResultPath) ? readJson(stopResultPath, null) : null;
+      const lines = [];
+      lines.push(stopPending
+        ? `在途终止：${stopPending.scope} / ${stopPending.mode}，${Math.max(0, stopPending.at - Date.now())}ms 后派发`
+        : '无在途终止请求');
+      if (r) {
+        lines.push(`上次回执：ok=${r.ok} · 目标 ${r.targetPid} · 幸存 ${(r.survivors || []).length} · ${r.finishedAt ?? '-'}`);
+        if (r.error) lines.push(`错误：${r.error}`);
+      } else {
+        lines.push('上次回执：无（stop-result.json 不存在 = 从未终止过，或回执写失败）');
+      }
+      return { kind: 'success', text: lines.join('\n') };
+    }
+    if (head === 'cancel') {
+      const was = clearStop();
+      return {
+        kind: was ? 'success' : 'error',
+        text: was ? '已取消在途终止（派发前生效）' : '没有在途终止请求可取消',
+      };
+    }
+
+    // 参数解析：[<delayMs>] [term|kill|self]
+    let delayMs = DEFAULT_STOP_DELAY_MS;
+    let mode = 'term';
+    let scope = 'tree';
+    for (const token of text.split(/\s+/).filter(Boolean)) {
+      if (/^\d+$/.test(token)) { delayMs = Number(token); continue; }
+      const t = token.toLowerCase();
+      if (t === 'term') { mode = 'term'; continue; }
+      if (t === 'kill') { mode = 'kill'; continue; }
+      if (t === 'self') { scope = 'self'; continue; }
+      return { kind: 'error', text: `未知参数 "${token}"。用法：/${COMMAND_STOP} ${STOP_USAGE}` };
+    }
+    if (!Number.isFinite(delayMs) || delayMs < MIN_STOP_DELAY_MS || delayMs > MAX_STOP_DELAY_MS) {
+      return { kind: 'error', text: `delayMs 必须在 ${MIN_STOP_DELAY_MS}–${MAX_STOP_DELAY_MS} 之间，收到 ${delayMs}。用法：/${COMMAND_STOP} ${STOP_USAGE}` };
+    }
+    if (scope === 'self') mode = 'term'; // 单进程没有"升级"可言，SIGKILL 自己只会跳过收尾
+    if (stopPending) {
+      return { kind: 'error', text: `已有在途终止请求（${stopPending.scope} / ${stopPending.mode}）。要换参数就先 /${COMMAND_STOP} cancel` };
+    }
+
+    scheduleStop(delayMs, mode, scope);
+    return {
+      kind: 'success',
+      text: `将在 ${delayMs}ms 后终止 DSH（${scope} / ${mode}），killer 派发后页面断开。反悔就再跑一次 /${COMMAND_STOP} cancel`,
+    };
+  };
+
+  // commands 走软依赖：它缺席时插件照常挂载、工具面照常可用，只是没有按钮和命令。
+  // 硬 inject 会把「没有 slash 命令的运行时」变成「整个插件起不来」。
+  const commands = ctx.get('commands');
+  if (commands && typeof commands.register === 'function') {
+    const unregister = [
+      commands.register({
+        name: COMMAND_RESTART,
+        definitionId: 'agint-restart/restart-dsh',
+        description: '重启 DSH：当前进程延迟退出，detached 的守护脚本等端口释放后拉起新实例。护栏：冷却 60s、600s 内 3 次熔断。',
+        input: { hint: '[status|cancel|dryrun]' },
+        handler: ({ rawInput }) => handleRestartCommand(rawInput),
+      }),
+      commands.register({
+        name: COMMAND_STOP,
+        definitionId: 'agint-restart/stop-dsh',
+        description: '终止 DSH：杀掉整棵进程树且不拉起新实例。与 restart-dsh 的区别是不接管端口。',
+        input: { hint: STOP_USAGE },
+        handler: ({ rawInput }) => handleStopCommand(rawInput),
+      }),
+    ];
+    ctx.effect(() => () => {
+      clearStop();
+      for (const dispose of unregister.splice(0)) {
+        try { dispose(); } catch { /* teardown must not throw */ }
+      }
+    }, 'agint-restart: commands');
+  } else {
+    // 这行只会在「本插件 inject 数组漏了 commands」时出现。cordis 本身不会报错，
+    // 所以把症状和最可能的病因都写进日志，省得下次再花一轮排查。
+    console.log('[agint-restart] ctx.get("commands") 为空：/restart-dsh 与 /stop-dsh 未注册。'
+      + '若 inject 数组里漏了 "commands"，宿主不会拦，只会静默走到这里。');
+  }
 
   // 5. 若发生重启，向主 agent 投递信息性消息
   //

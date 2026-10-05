@@ -20,6 +20,23 @@
 # v0.6.1 修正（恢复投递 = 会话接续）：resumeOnSelfRestart 默认 false→true、
 #   notifyDebounceMs 300000→60000。旧默认把"凡走插件协议的重启"都当成"不需要恢复"，
 #   恢复通知几乎永远发不出去；断环改由通知文案 + restart_request 的 burst 熔断承担。
+# v0.9.0 双半插件（both）：新增浏览器半区与终止链路。
+#   - package.json 加 exports ./client + dsh.client（platform: web），由
+#     dsh-client-modules 扫 Loader 条目的 specifier 解析出包名后挂上；
+#     lib/client.js 用 window.__ModuleLoader__.load({id:'agint-restart'}) 注册工厂。
+#   - 浏览器半在 conversation.composer.dock 挂两个两段式确认按钮（重启 / 终止），
+#     点击变成 /restart-dsh 与 /stop-dsh 两条命令的 draft。
+#   - 终止链路 lib/killer.js：与 respawn 同形，宿主只派发与留痕，发信号的是
+#     detached 出去的独立进程。
+#   - commands 服务是**硬依赖**（已进 lib/index.js 的 inject 数组）。踩坑记录：
+#     首次上线时 inject 只有 ['agents']，代码用 ctx.get('commands') 取服务拿到 null，
+#     两条命令静默未注册 —— 浏览器按钮挂上了、点了没反应，宿主日志只有一行自制提示。
+#     cordis 只把 inject 数组里声明过的服务接到插件 ctx 上，ctx.get 不做全服务搜索。
+#     宿主侧 commands 服务一直存在（host/Service.listService 的 catalog 可查，
+#     签名 register(definition) => disposer），缺的是本插件这一行声明。
+#   ⚠️ stop 链路的时序常量（MIN/MAX/DEFAULT_STOP_DELAY_MS）刻意**不做配置项**：
+#      它们是"回执必须先于 killer 跑到"这一条不变式的参数，调宽调窄都会让
+#      老板在页面上看不到结论。要改就改 lib/index.js 顶部那一处。
 #
 # ⚠️ YAML 陷阱（2026-09-10 踩过）：同一个 config 映射里 shutdownDelayMs 曾出现两次，
 #    解析器直接抛 `duplicated mapping key`。改这个文件后务必：
