@@ -223,6 +223,7 @@ function apply(ctx) {
             'input.signal.self-observation.rule-hotspot',
             'input.signal.self-observation.metric-regression',
             'input.signal.self-observation.compress-loss',
+            'input.signal.self-observation.session-integrity',
             'input.signal.adversarial.counterfactual-result',
             'input.signal.adversarial.curriculum-result',
             'input.signal.adversarial.boundary-divergence',
@@ -254,6 +255,9 @@ function apply(ctx) {
             } else if (topic === 'input.signal.self-observation.compress-loss') {
               content = `压缩护栏异常: ${p.status || ''} ${p.note || ''}`;
               confidence = 0.9;
+            } else if (topic === 'input.signal.self-observation.session-integrity') {
+              content = `会话完整性异常: ${p.note || JSON.stringify(p)}`;
+              confidence = 0.7;
             } else {
               return;
             }

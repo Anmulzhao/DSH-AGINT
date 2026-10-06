@@ -5,6 +5,11 @@
 
 ## Unreleased
 
+- **补 `input.signal.self-observation.session-integrity` 订阅**（2026-10-06）：
+  网关 `lib/schema.js` 枚举 5 个 self-observation 主题，memory 此前只订 4 个 ⇒
+  C2 sessionIntegrity 检测器（0.1.1 实装）一旦产出信号无人消费（待做清单 H3）。
+  沉淀分支写 `pattern` / confidence 0.7，与其余 self-observation 主题同构。
+  ⚠️ 运行态证据要等部署位同步 + 宿主重启后真实触发一次完整性异常才有。
 - `memory_write` 参数表补 `replacedBy`（2026-10-04）：service 层早已实现
   （`lib/index.js:142` `input.replacedBy ?? existing?.replacedBy`），
   但 `lib/tools.js` 的参数表一直没暴露 ⇒ 「本条已被 X 取代」这类关系
