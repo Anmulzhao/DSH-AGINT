@@ -129,9 +129,16 @@ assert.equal(
   'an author warning with no conflicting claim must NOT be counted as a contradiction',
 );
 assert.ok(Array.isArray(lintReport.warnings), 'suspected ⚠️ hits must surface in lint.warnings, not be silently dropped');
+for (const w of lintReport.warnings) {
+  assert.equal(typeof w.path, 'string', 'each warning must carry .path, not a bare filename string');
+  assert.equal(typeof w.line, 'number', 'each warning must carry a 1-based .line for review');
+  assert.equal(typeof w.snippet, 'string', 'each warning must carry the matched .snippet for review');
+}
+const suspected = lintReport.warnings.find((w) => w.path === 'author-warning.md');
+assert.ok(suspected, 'author-warning.md must be reported as 疑似 (suspected) in lint.warnings');
 assert.ok(
-  lintReport.warnings.some((w) => w.path === 'author-warning.md'),
-  'author-warning.md must be reported as 疑似 (suspected) in lint.warnings',
+  suspected.snippet.includes('排查禁忌'),
+  `suspected .snippet must show the ⚠️ line so a human can re-check it, got ${suspected.snippet}`,
 );
 assert.equal(
   lintReport.contradictions.some((c) => c.path === 'README.md'),

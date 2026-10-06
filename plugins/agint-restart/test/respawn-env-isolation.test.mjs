@@ -41,7 +41,24 @@ function writeRealShim(dir) {
   return shim;
 }
 
-function runOnce(dir, launchOverrides = {}) {
+/**
+ * 跑一次 respawn，返回假 dsh 探针读到的 env。
+ *
+ * @param {string} dir 本次用的临时目录
+ * @param {object} launchOverrides 覆盖 req.launch 的字段
+ * @param {object} [opts]
+ * @param {boolean} [opts.respawnInheritsInjection] 是否给 **respawn 进程本身**
+ *   注入 NODE_OPTIONS=--require=<真实 shim>。
+ *
+ * 为什么要自己注入而不是「继承当前环境」：
+ *   事故原形是「dsh 带 shim → respawn 继承 → 拉起的新 dsh 也继承」。
+ *   第一版把前置条件写成 `assert.ok(process.env.NODE_OPTIONS.includes('require'))`，
+ *   即依赖**运行环境恰好带着 shim**。那是种环境依赖型脆弱断言：它验证的是
+ *   「环境恰好有」，不是「代码保证剥离」。修 2 真的生效后（dsh 不再注入 shim）
+ *   这条前置就永久不成立，测试反而红了 —— 代码修对了、测试先挂。
+ *   改成自己造注入后：判据只依赖代码，且造的形状比碰运气更接近事故原形。
+ */
+function runOnce(dir, launchOverrides = {}, opts = {}) {
   const stateDir = path.join(dir, 'state');
   fs.mkdirSync(stateDir, { recursive: true });
   const probeFile = path.join(dir, 'probe.json');
@@ -67,7 +84,19 @@ function runOnce(dir, launchOverrides = {}) {
   };
   const reqPath = path.join(stateDir, 'restart-request.json');
   fs.writeFileSync(reqPath, JSON.stringify(req, null, 2));
-  execFileSync(process.execPath, [RESPAWN, reqPath], { stdio: 'ignore' });
+
+  // 注入用真实存在的 shim 文件：路径不存在的话 node 在 --require 阶段就
+  // ENOENT 崩掉，假 dsh 没机会写 probe，失败报的是「probe 没生成」
+  // 而不是「注入没被正确处理」—— 判据落在症状上，不是判据上。
+  const shim = path.join(dir, 'real-shim.cjs');
+  fs.writeFileSync(shim, '/* no-op shim */\n');
+  const respawnEnv = { ...process.env };
+  if (opts.respawnInheritsInjection) {
+    respawnEnv.NODE_OPTIONS = `--require=${JSON.stringify(shim)}`;
+  } else {
+    delete respawnEnv.NODE_OPTIONS;
+  }
+  execFileSync(process.execPath, [RESPAWN, reqPath], { stdio: 'ignore', env: respawnEnv });
 
   assert.ok(fs.existsSync(probeFile), '假 dsh 应已把自己的 NODE_OPTIONS 写进 probe 文件');
   return JSON.parse(fs.readFileSync(probeFile, 'utf8'));
@@ -78,14 +107,9 @@ test('默认：拉起的新进程不得继承 NODE_OPTIONS（切断 safe-delete 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agint-restart-nodeopts-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  // 先确认前置条件成立：本测试确实跑在带注入的 NODE_OPTIONS 环境下，
-  // 否则本用例是「在本来就干净的环境里断言干净」——那种绿是假的。
-  assert.ok(
-    typeof process.env.NODE_OPTIONS === 'string' && process.env.NODE_OPTIONS.includes('require'),
-    `前置条件：本进程应带 NODE_OPTIONS require 注入，实得 ${process.env.NODE_OPTIONS ?? '<unset>'}`,
-  );
-
-  const probe = runOnce(dir);
+  // 前置条件由 runOnce 自己注入构造（respawnInheritsInjection: true），
+  // 不依赖当前运行环境恰好带着 shim —— 那会让「代码修对了、测试先挂」。
+  const probe = runOnce(dir, {}, { respawnInheritsInjection: true });
   assert.equal(probe.nodeOptions, null, '新拉起的进程不得再继承 NODE_OPTIONS');
 });
 
@@ -94,7 +118,7 @@ test('escape hatch：launch.keepNodeOptions=true 时保留注入', async (t) => 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agint-restart-nodeopts-keep-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  const probe = runOnce(dir, { keepNodeOptions: true });
+  const probe = runOnce(dir, { keepNodeOptions: true }, { respawnInheritsInjection: true });
   assert.ok(
     probe.nodeOptions && probe.nodeOptions.includes('require'),
     `keepNodeOptions:true 时应原样保留，实得 ${probe.nodeOptions}`,
@@ -119,7 +143,7 @@ test('launch.env 里带 NODE_OPTIONS 时也必须剥掉（2026-10-06 22:24 回�
       HOME: process.env.HOME,
       SOME_OTHER_SNAPSHOT_KEY: 'kept',
     },
-  });
+  }, { respawnInheritsInjection: true });
   assert.equal(probe.nodeOptions, null, 'launch.env 带进来的 NODE_OPTIONS 也必须被剥掉');
 });
 

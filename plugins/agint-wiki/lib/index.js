@@ -151,15 +151,34 @@ function apply(ctx, config) {
 
       const brokenLinks = [];
       const contradictions = [];
+      const warnings = [];
       const orphans = [];
 
       // index of referenced targets for orphan detection
       const referenced = new Set();
       const LINK_RE = /\]\(([^)]+)\)|\[\[([^\]]+)\]\]/g;
 
+      /**
+       * 「条目自相矛盾」 vs 「作者警告」的分桶判据（smoke 1fc201c 钉死的规格）：
+       *   ⚠️ 行里带着**修正/冲突词汇**（更正/勘误/矛盾/推翻…）= 作者在宣布
+       *   本条目内有两条互斥的认定 → contradiction，红。
+       *   ⚠️ 行只是作者的排查告诫（如「不要用 grep 判断报错」），无任何冲突
+       *   语义 → warnings 桶，黄。它曾经被一刀切算成矛盾，造成误报。
+       * 索引页（README.md）是 meta 不是知识，两个桶都豁免。
+       */
+      const CONFLICT_WORD_RE = /(更正|勘误|矛盾|冲突|推翻|作废|不再成立|过时)/;
       for (const [rel, content] of contents) {
         if (rel === 'WIKI_SCHEMA.md') continue; // schema doc is meta, not knowledge
-        if (content.includes('⚠️')) contradictions.push(rel);
+        if (basename(rel) === 'README.md') continue; // index page is meta, exempt from ⚠️ verdicts
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (!line.includes('⚠️')) continue;
+          // 带 path/line/snippet 而不是裸文件名：裸 rel 让复核者还得自己开文件找行
+          const hit = { path: rel, line: i + 1, snippet: line.trim().slice(0, 160) };
+          if (CONFLICT_WORD_RE.test(line)) contradictions.push(hit);
+          else warnings.push(hit);
+        }
         const dir = dirname(rel);
         let m;
         LINK_RE.lastIndex = 0;
@@ -191,6 +210,7 @@ function apply(ctx, config) {
         checked: files.length,
         brokenLinks,
         contradictions,
+        warnings, // 疑似 ⚠️ 命中：进 lint 报告供人复核，不计入 healthy（疑似 ≠ 定罪）
         orphans,
         healthy: brokenLinks.length === 0 && contradictions.length === 0,
       };

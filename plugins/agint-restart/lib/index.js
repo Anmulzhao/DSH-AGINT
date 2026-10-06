@@ -25,7 +25,7 @@
  * 兼容性：本插件只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*`
  * 内部包，因此可在 DSH Desktop 打包环境（app.asar）下运行。
  */
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -215,6 +215,11 @@ function writeJson(path, doc) {
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(doc, null, 2));
+    // 0600 纵深防御（2026-10-06）：request.json 装着 launch.env 环境快照，
+    // 密钥正则只剥已知命名——漏网键至少不能落成同组/其他用户可读。
+    // 默认 umask 是 0644；且 writeFileSync 的 mode 只在**新建**时生效，
+    // 覆盖已存在的 0644 文件不会降权，所以必须显式 chmod。
+    chmodSync(path, 0o600);
     return true;
   } catch (err) {
     console.warn('[agint-restart] write failed:', path, err?.message ?? err);
@@ -222,14 +227,56 @@ function writeJson(path, doc) {
   }
 }
 
-/** 快照环境变量：剔除易变的 shell 噪声，其余原样传给新进程。 */
-function snapshotEnv() {
+/**
+ * 会被判定为「密钥」的 env 键名。窄口径是**实测选出来的**，不是拍脑袋：
+ * 2026-10-06 在本机 172 键的 launch.env 快照上跑过三档对照——
+ *   窄  PASSWORD|SECRET|TOKEN          → 命中 2，都是真密钥，误伤 0
+ *   中  +API_KEY|CREDENTIAL            → 命中 3，多出 API_KEY_HELPER_DISABLED=1（开关，剥掉无害）
+ *   宽  +AUTH|ACCESS_KEY|PRIVATE_KEY   → 命中 5，多出 **SSH_AUTH_SOCK** ——
+ *                                          那是 socket 路径不是密钥，剥掉直接断掉 SSH agent 转发
+ * 宽档那个是真误伤，所以不取。
+ */
+const SENSITIVE_ENV_KEY = /(PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL)/i;
+
+/**
+ * 已知「名字像密钥、实际不是」的键：正则日后若放宽，这些必须显式豁免，
+ * 否则会以「安全加固」的名义打断 ssh-agent / git 交互。
+ */
+const ENV_KEY_ALLOWLIST = new Set(['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'GIT_ASKPASS', 'SSH_ASKPASS']);
+
+/**
+ * 快照环境变量：剔除易变的 shell 噪声 + **剔除密钥**，其余原样传给新进程。
+ *
+ * 为什么必须剔密钥（2026-10-06 实测事故）：
+ *   快照会整个写进 $DSH_HOME/.agint-restart/restart-request.json。该文件由
+ *   writeJson 用默认 umask 写出，实测权限 0644（同组/其他用户可读），且每次重启
+ *   覆盖重写、从不清理 ⇒ WorkBuddy 注入的 CODEBUDDY_GATEWAY_PASSWORD（43 字符）
+ *   和 WORKBUDDY_PAC_RPC_TOKEN（32 字符）以**明文长期躺在磁盘上**。
+ *
+ * 为什么剔掉不会让新 dsh 起不来（这是本改动成立的前提，必须成立）：
+ *   respawn.js 本身是 dsh 用 spawn 拉起的子进程，它的 process.env 已经继承了
+ *   完整环境；pickEnv 里 base = { ...process.env } 就是那份。launch.env 只是
+ *   「万一 dsh 是被别的方式拉起」的兜底复现路径。实测 22:31 那次重启的新进程
+ *   806265 拿到了完整 PATH/HOME，走的就是 base 这条路。
+ *   边界：若有人手工独立跑 `node respawn.js req.json`（不继承 dsh 环境），
+ *   那些键会真的缺失 —— 这里选择安全优先，且该路径本就不是设计支持的用法。
+ *
+ * 剔除只记**数量**不记键名：键名本身也可能泄露部署信息，且日志会进 restart.log。
+ *
+ * @returns {object} 不含密钥的环境快照
+ */
+export function snapshotEnv() {
   const drop = new Set(['_', 'OLDPWD', 'PWD', 'SHLVL', '__CF_USER_TEXT_ENCODING']);
   const out = {};
+  let redacted = 0;
   for (const [k, v] of Object.entries(process.env)) {
     if (drop.has(k)) continue;
     if (k.startsWith('npm_config_') || k.startsWith('npm_lifecycle_')) continue;
+    if (!ENV_KEY_ALLOWLIST.has(k) && SENSITIVE_ENV_KEY.test(k)) { redacted++; continue; }
     out[k] = v;
+  }
+  if (redacted > 0) {
+    console.warn(`[agint-restart] env 快照已剔除 ${redacted} 个疑似密钥的环境变量（键名不记录）`);
   }
   return out;
 }
