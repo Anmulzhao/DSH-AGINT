@@ -488,3 +488,24 @@ if [ -f "$L0_SCRIPT" ]; then
     echo "  [WARN] node 不可用，L0 检查跳过（这条门禁在无 node 环境下形同虚设）"
   fi
 fi
+
+# ── addFailure 值域门禁（阻断） ─────────────────────────────────────────────
+# 2026-10-06 老板拍板 §6-3 接入。背景（docs/立项-失败供料通道修复-20261006.md）：
+# 全仓曾有多少个越界字面量就丢多少条静默供料（14 调用点 7 死）。evolution-memory
+# 0.6.14 已在入口归一化兜底，这条门禁防**复发**：新调用点传映射表外的值 ⇒ 阻断，
+# 逼作者把它加进 FAILURE_CATEGORY_MAP（语义决策）而不是靠兜底静默吞进 other 桶。
+AF_SCRIPT="$(dirname "$0")/check-addfailure-callers.mjs"
+if [ -f "$AF_SCRIPT" ]; then
+  echo
+  echo "─── addFailure 值域检查 ───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$AF_SCRIPT"; then
+      echo "  [PASS] addFailure 调用点值域全部在 枚举∪映射表 内"
+    else
+      echo "  [FAIL] 存在越界 category/severity 字面量（见上方明细）—— 新增语义请进 FAILURE_CATEGORY_MAP 并经老板认可，或改用既有枚举值"
+      exit 1
+    fi
+  else
+    echo "  [WARN] node 不可用，addFailure 值域检查跳过"
+  fi
+fi
