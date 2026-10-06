@@ -583,14 +583,41 @@ ensure_bundle_module_entry
 ensure_mirror_module_entry() {
   local base="$PLUGINS_DST/node_modules/@deepseek-ai" target name link
   target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules/@deepseek-ai"
-  if [ -z "$target" ] || [ ! -d "$target" ]; then
-    warn "未能定位 dsh 自带官方包（npm root -g 不可用？），跳过 mirror 解析卫兵。"
+  # npm root -g 在部分环境指向错误前缀（10-06 容器实测：dsh 实际在 /usr/lib，
+  # 悬空的 /usr/local/lib 链接即此问题产物）→ 多候选兜底，取真有 dsh-tools 的那个
+  if [ -z "$target" ] || [ ! -d "$target/dsh-tools" ]; then
+    local cand
+    for cand in "/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai" \
+                "/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai"; do
+      if [ -d "$cand/dsh-tools" ]; then target="$cand"; break; fi
+    done
+  fi
+  if [ -z "$target" ] || [ ! -d "$target/dsh-tools" ]; then
+    warn "未能定位 dsh 自带官方包（npm root -g 与常见前缀都没有），跳过 mirror 解析卫兵。"
     return 0
   fi
   if [ "$DRY_RUN" = "1" ]; then
-    log "   [DRY] mirror 解析卫兵：$base 下 dsh-tools / cordis / dsh-storage-domain → $target"
+    log "   [DRY] mirror 解析卫兵：$base → $target"
     return 0
   fi
+  # 拓扑分派（2026-10-06 教训：scope 目录可能是 symlink，逐包操作会穿透到
+  # dsh 自带树、搬走/覆盖真包 ⇒ symlink 拓扑下只允许整链级操作，禁逐包 rm/mv）
+  if [ -L "$base" ]; then
+    # 整 scope 已是链接：健康判定 = 解析后三入口都有真包 lib/index.js
+    if [ -e "$base/dsh-tools/lib/index.js" ] && [ -e "$base/cordis/lib/index.js" ] \
+       && [ -e "$base/dsh-storage-domain/lib/index.js" ]; then
+      log "   ✓ mirror 位 @deepseek-ai 整链 → 真包树（$base）"
+      return 0
+    fi
+    rm -f "$base"
+    if ln -s "$target" "$base" 2>/dev/null; then
+      log "   ✓ mirror 位 @deepseek-ai 链接已重指 → $target"
+      return 0
+    fi
+    warn "mirror 位 @deepseek-ai 重指失败（$base → $target）。"
+    return 0
+  fi
+  # 实体目录拓扑：逐包卫兵
   mkdir -p "$base"
   local rebuilt=0
   for name in dsh-tools cordis dsh-storage-domain; do
@@ -631,15 +658,22 @@ ensure_mirror_module_entry() {
       warn "mirror 位 $name 重建失败（$link → $target/$name）。preset 挂载会报 required 校验错。"
     fi
   done
-  if [ "$rebuilt" -eq 0 ]; then
-    log "   ✓ mirror 位三入口均解析到真包（dsh-tools / cordis / dsh-storage-domain）"
-  fi
   # 全量清查：mirror 位不允许任何 0.0.0-stub 存活（防同一手法再放别的包）
   local stubbed
   stubbed="$(grep -l '"0.0.0-stub"' "$base"/*/package.json 2>/dev/null || true)"
   if [ -n "$stubbed" ]; then
     warn "mirror 位仍检出 0.0.0-stub 包（不在上述三名内，未自动替换，请人工核查）："
     warn "$stubbed"
+  fi
+  # 终态判定（诚实日志：重建 0 个 ≠ 三个都就绪，必须真验存在性）
+  local ok=1 bad=""
+  for name in dsh-tools cordis dsh-storage-domain; do
+    [ -e "$base/$name/lib/index.js" ] || { ok=0; bad="$bad $name"; }
+  done
+  if [ "$ok" = 1 ]; then
+    log "   ✓ mirror 位三入口均解析到真包（dsh-tools / cordis / dsh-storage-domain）"
+  else
+    warn "mirror 位以下入口未就绪（缺 lib/index.js）：$bad —— preset 挂载会报 required 校验错。"
   fi
 }
 ensure_mirror_module_entry
