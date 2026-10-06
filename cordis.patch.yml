@@ -472,7 +472,11 @@
     #    后才用 skillGraph_set_mode('live') 切档（未跑过标定期调用会直接抛错）。
     - id: agint-skill-graph
       name: ./plugins/agint-skill-graph/lib/index.js
-      config: {}
+      # 2026-10-06 老板拍板切 live（K178 修法 B：config 为基线档位，可持久；
+      # graph_meta.mode 是只写不读的死字段，运行内 setMode 仍可临时覆盖）。
+      # 凭据：lastCalibration.promotable=true（2026-W40）+ count-only 约 3.5 周 + 元数据全齐。
+      config:
+        mode: live
 
     # agint-trajectory: P2-1 进化轨迹记录（训练数据层）v0.1.0（Sprint 18 实施，2026-09-13 挂载）。
     # 把 task / dream / eval / evolution / subagent 五类执行记为结构化轨迹，成功失败分离
@@ -488,7 +492,14 @@
     #    无 ready 标定报告直接 setRecordMode('live') 会被不变量 #5 硬门禁拒绝并抛错。
     - id: agint-trajectory
       name: ./plugins/agint-trajectory/lib/index.js
-      config: {}
+      # 2026-10-06 老板拍板（标定报告 ready:true，官方 calibrate.js 现算：
+      # 日均 21.4 / P50 737B / P95 759B / 截断率 0% < 5% ⇒ 中段摘要不启用）。
+      # 正规切 live + §7.4 重拍容量；报告存档 _P7五项推进_20261006.md §4。
+      # ⚠️ failure 大轨迹（65~224KB 级）进来后 maxBytes 须按方程重估。
+      config:
+        recordMode: live
+        maxCount: 3852      # = 90 天 × 21.4 条/天 × 安全系数 2
+        maxBytes: 2923668   # = 3852 × P95 759B
 
     # agint-compress-guard: P3-1 记忆压缩检查点机制 v0.1.0（Sprint 20 实施，2026-09-13 挂载）。
     # 立场：压缩可以发生，上下文不许消失（M4 fail-closed）。
