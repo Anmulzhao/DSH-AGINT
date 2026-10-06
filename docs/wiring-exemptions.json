@@ -164,7 +164,7 @@
       "reason": "同 C2 通道族：压缩信息丢失检测依赖 compressGuard 服务（index.js 经 inject 注入后传给 fetch）；条件未达成则不产信号。",
       "evidence": "同上 counters 读数；检测条件 plugins/agint-input-gateway/lib/channels/self-observation.js:266；compressGuard 注入 plugins/agint-input-gateway/lib/index.js:110-115",
       "since": "2026-10-05",
-      "unblockWhen": "同 tool-anomaly 条款。另注：schema.js:86-90 枚举了第 5 个 self-observation 主题 session-integrity，但无订阅方且全历史 0 条 —— 属枚举/订阅不一致，另案处理，不在本豁免面内。"
+      "unblockWhen": "同 tool-anomaly 条款。另注：schema.js:86-90 枚举了第 5 个 self-observation 主题 session-integrity，但无订阅方且全历史 0 条 —— 属枚举/订阅不一致；2026-10-06 e119523 已补 agint-memory 订阅（待铺部署位+重启后有真实消费），不在本豁免面内。"
     },
 
     {
