@@ -109,12 +109,22 @@ const DENV_OVERRIDABLE = new Set(['AGINT_HOME', 'DSH_HOME', 'DSH_WIKI_ROOT']);
  *
  * escape hatch：请求里带 keepNodeOptions:true 时保留（用于确实需要该钩子的场景）。
  * 默认剥离，因为默认不剥离的后果是**宿主起不来**。
+ *
+ * ⛔ 剥离必须发生在**展开之后**，不能只删 base：
+ *   第一版写成 `delete base.NODE_OPTIONS` 然后 `return {...base, ...launchEnv}`，
+ *   而 launch.env 是「上次启动 env 的全量快照」（本机实测 172 个键，其中就含
+ *   NODE_OPTIONS）—— 展开时 launchEnv 排在后面，把刚删掉的键**原样加了回来**。
+ *   22:24 那次重启实测：新 dsh 进程 environ 里 NODE_OPTIONS 仍在，
+ *   而部署位的单测全绿 ⇒ 「代码改了、测试也绿、行为没变」三件同时成立。
+ *   教训见 check-soundness：判据必须打在最终产物上，不能打在中间变量上。
  */
 function pickEnv(launchEnv, launch) {
   const base = { ...process.env };
   for (const key of DENV_OVERRIDABLE) delete base[key];
-  if (launch?.keepNodeOptions !== true) delete base.NODE_OPTIONS;
-  return { ...base, ...(launchEnv ?? {}) };
+  const merged = { ...base, ...(launchEnv ?? {}) };
+  // 展开后再剥，base 和 launchEnv 两边带来的都拦得住。
+  if (launch?.keepNodeOptions !== true) delete merged.NODE_OPTIONS;
+  return merged;
 }
 
 /** 强制杀进程：win32 用 taskkill /F，posix 用 SIGKILL。 */

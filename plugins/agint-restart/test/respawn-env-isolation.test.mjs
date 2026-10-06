@@ -27,6 +27,20 @@ function deadPid() {
 }
 
 /** 造一次 respawn：拉起的假 dsh 把 NODE_OPTIONS 写到 probe 文件里。 */
+/**
+ * 造一个真实存在的空 shim 文件。
+ *
+ * 不能拿不存在的路径当注入值：NODE_OPTIONS=--require="<不存在>" 会让 node 在
+ * 启动阶段直接抛 ENOENT 崩掉，假 dsh 根本没机会写 probe，测试报的是
+ * "probe 没生成" 而不是 "注入被错误地保留/剥离" —— 判据落在症状上，不是判据上。
+ * （这个坑真踩过一次：第一版 keepNodeOptions 用例用了 /fake/shim.cjs。）
+ */
+function writeRealShim(dir) {
+  const shim = path.join(dir, 'real-shim.cjs');
+  fs.writeFileSync(shim, '/* no-op shim */\n');
+  return shim;
+}
+
 function runOnce(dir, launchOverrides = {}) {
   const stateDir = path.join(dir, 'state');
   fs.mkdirSync(stateDir, { recursive: true });
@@ -85,6 +99,77 @@ test('escape hatch：launch.keepNodeOptions=true 时保留注入', async (t) => 
     probe.nodeOptions && probe.nodeOptions.includes('require'),
     `keepNodeOptions:true 时应原样保留，实得 ${probe.nodeOptions}`,
   );
+});
+
+test('launch.env 里带 NODE_OPTIONS 时也必须剥掉（2026-10-06 22:24 回归）', async (t) => {
+  if (process.platform === 'win32') return t.skip('本组测试造 posix detached 子进程形状');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agint-restart-nodeopts-launchenv-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 这条用例的存在理由：第一版修复把 delete 打在 base 上、展开放在后面，
+  // 于是 launch.env 里的 NODE_OPTIONS 原样覆盖回来 —— 单测全绿但行为没变
+  // （22:24 真机重启后新进程 environ 里 NODE_OPTIONS 仍在）。
+  // launch.env 是「上次启动 env 的全量快照」，本机实测 172 个键含 NODE_OPTIONS，
+  // 所以必须按这个真实形状造，不能只在干净的 launch.env 上测。
+  const shim = writeRealShim(dir);
+  const probe = runOnce(dir, {
+    env: {
+      NODE_OPTIONS: `--require=${JSON.stringify(shim)}`,
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      SOME_OTHER_SNAPSHOT_KEY: 'kept',
+    },
+  });
+  assert.equal(probe.nodeOptions, null, 'launch.env 带进来的 NODE_OPTIONS 也必须被剥掉');
+});
+
+test('launch.env 带注入 + keepNodeOptions=true：保留，并保留同批的其它快照键', async (t) => {
+  if (process.platform === 'win32') return t.skip('本组测试造 posix detached 子进程形状');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agint-restart-nodeopts-keep2-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const stateDir = path.join(dir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const shim = writeRealShim(dir);
+  const probeFile = path.join(dir, 'probe.json');
+  const fakeDsh = path.join(dir, 'fake-dsh.mjs');
+  fs.writeFileSync(
+    fakeDsh,
+    `import { writeFileSync } from 'node:fs';\n` +
+    `writeFileSync(${JSON.stringify(probeFile)}, JSON.stringify({\n` +
+    `  nodeOptions: process.env.NODE_OPTIONS ?? null,\n` +
+    `  other: process.env.SOME_OTHER_SNAPSHOT_KEY ?? null,\n` +
+    `}));\n`,
+  );
+  const req = {
+    requestId: 'envtest-keep2',
+    reason: 'test',
+    requestedAt: new Date().toISOString(),
+    targetPid: deadPid(),
+    stateDir,
+    launch: {
+      command: process.execPath,
+      args: [fakeDsh],
+      cwd: dir,
+      keepNodeOptions: true,
+      env: { NODE_OPTIONS: `--require=${JSON.stringify(shim)}`, SOME_OTHER_SNAPSHOT_KEY: 'kept', PATH: process.env.PATH },
+    },
+    waitExitMs: 500,
+    forceKillAfterMs: 0,
+    portFreeTimeoutMs: 300,
+    readiness: { leasePath: null, port: 0, timeoutMs: 300 },
+    logFile: path.join(dir, 'dsh.log'),
+  };
+  const reqPath = path.join(stateDir, 'restart-request.json');
+  fs.writeFileSync(reqPath, JSON.stringify(req, null, 2));
+  execFileSync(process.execPath, [RESPAWN, reqPath], { stdio: 'ignore' });
+
+  const probe = JSON.parse(fs.readFileSync(probeFile, 'utf8'));
+  assert.ok(
+    probe.nodeOptions && probe.nodeOptions.includes('real-shim.cjs'),
+    `keepNodeOptions:true 时 launch.env 里的注入应保留，实得 ${probe.nodeOptions}`,
+  );
+  assert.equal(probe.other, 'kept', 'escape hatch 只放行 NODE_OPTIONS，不牵连同批快照键');
 });
 
 test('剥离 NODE_OPTIONS 不得牵连其它 env（DSH_HOME 等仍按既有语义走 .env）', async (t) => {
