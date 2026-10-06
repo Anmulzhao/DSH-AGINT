@@ -4,6 +4,13 @@
 
 ---
 
+## 0.6.4 (2026-10-06) — recordFailurePattern 假成功修复（立项 B-2）
+
+- 旧写法 `id: evo.addFailure(...)` 未 await：`written:true` + `id=Promise`（恒 truthy）
+  ⇒ 上层 `Boolean(fp?.id)` 永真，谎报「失败模式已入库」；异步拒绝逃过 catch。
+- 改 async + await，`id` 取解析后 entry.id；4 个调用点全部补 await（含两处 REJECT 前的
+  fire-and-forget，现在真写入后才抛业务错）。82/82 测试过。
+
 ## v0.6.3 — 2026-10-05 — fixate 落记忆 notify 实装 + 删两条补不了的悬空声明
 
 **起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」

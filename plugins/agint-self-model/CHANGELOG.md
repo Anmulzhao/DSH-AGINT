@@ -1,5 +1,12 @@
 # Changelog — agint-self-model
 
+## 0.7.7 (2026-10-06) — calibration writeFailure 静默吞加可见性（立项 B-2）
+
+- `runCalibration` 的 `catch { /* ignore */ }` ⇒ warn。校准失准（miscalibration）是
+  最高价值供料事件，此前因 category=self-model 越界 + 吞异常而 100% 丢；配合
+  evolution-memory 0.6.14 归一化（self-model→correctness）开始真实产行。
+- 3/3 测试过。
+
 ## 2026-09-26 — 诊断自激环熔断（修复闭合正反馈环）
 - **修复诊断事件风暴的真因（闭合正反馈环）**：A6 订阅 `diagnosis.completed`
   → `selfUpdate()` → 内部回调 `diagnosis.report()` → report() 末尾重新

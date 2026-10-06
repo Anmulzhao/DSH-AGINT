@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-population",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "AGINT 种群管理器 v0.6.2：变异体生命周期（commit → 阶梯灰度 → 评估 → 晋升/淘汰/固化），6 维适应度 + HARM 映射 + safety<0.5 硬门控，4 表 variants/fitness_history/traffic_log/generation_log，5 端点 ingest/promote/cull/fixate/rollback + stats。Sprint 9 收口（起步 N=3，验证闭环后放宽至 N=20）。",
   "main": "lib/index.js",
   "agint": {

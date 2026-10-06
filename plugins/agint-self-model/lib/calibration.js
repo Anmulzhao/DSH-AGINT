@@ -80,7 +80,10 @@ export async function runCalibration({ store, getDomains, getPriorPredicted, wri
     try { await store.tables.calibrationLog.put(packed.id, packed); } catch { /* ignore */ }
     if (c._miscalibrated) {
       miscalibrated.push(c.domain);
-      try { await writeFailure?.(c.domain, c.error); } catch { /* ignore */ }
+      try { await writeFailure?.(c.domain, c.error); } catch (err) {
+        // 校准失准是最高价值的供料事件，写入失败必须可见（立项 B-2）
+        console.warn(`[agint-self-model] calibration writeFailure 失败（软依赖）: ${err?.message ?? err}`);
+      }
     }
   }
   // 超限 warn（不抛、不 prune）

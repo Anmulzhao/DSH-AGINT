@@ -69,13 +69,17 @@ function listActiveVariants(table) {
   return out;
 }
 
-function recordFailurePattern(ctx, payload, tags) {
+async function recordFailurePattern(ctx, payload, tags) {
   const evo = softDep(ctx, 'agint.evolution');
   if (!evo || typeof evo.addFailure !== 'function') {
     return { written: false, reason: 'agint.evolution unavailable' };
   }
   try {
-    return { written: true, id: evo.addFailure({ pattern: JSON.stringify(payload).slice(0, 200), category: 'population', severity: 'high', evidence: payload.summary || 'population lifecycle event', tags }) };
+    // addFailure 是 async：必须 await 再取 entry.id。
+    // 旧写法 `id: evo.addFailure(...)` 未 await ⇒ id 是 Promise（恒 truthy），
+    // 上层 Boolean(fp?.id) 永真 ⇒ 谎报「已写失败模式」，且异步拒绝逃过 catch（unhandled rejection）。
+    const r = await evo.addFailure({ pattern: JSON.stringify(payload).slice(0, 200), category: 'population', severity: 'high', evidence: payload.summary || 'population lifecycle event', tags });
+    return { written: true, id: r?.id ?? null };
   } catch (err) {
     return { written: false, reason: `addFailure threw: ${err.message || err}` };
   }
@@ -172,7 +176,7 @@ function apply(ctx) {
     // ── 前置校验：expectedEffect / rollbackCondition 非空
     if (!proposal || !proposal.expectedEffect || !proposal.rollbackCondition) {
       const payload = { summary: 'ingest rejected: expectedEffect/rollbackCondition missing', proposalId: proposal?.id, parent: parent_variant_id };
-      recordFailurePattern(ctx, payload, ['population-ingest-reject']);
+      await recordFailurePattern(ctx, payload, ['population-ingest-reject']);
       throw new Error('ingest: expectedEffect 与 rollbackCondition 必须非空（设计稿 §三.2）');
     }
     const expectedOk = typeof proposal.expectedEffect === 'object'
@@ -195,7 +199,7 @@ function apply(ctx) {
     // REJECT → 写 failure_pattern + 抛错
     if (decision === 'REJECT') {
       const payload = { summary: 'ingest rejected by policy', proposalId: proposal.id, reason: proposal.expectedEffect };
-      recordFailurePattern(ctx, payload, ['population-ingest-reject']);
+      await recordFailurePattern(ctx, payload, ['population-ingest-reject']);
       throw new Error(`ingest: policy REJECT for proposalId=${proposal.id}`);
     }
 
@@ -342,7 +346,7 @@ function apply(ctx) {
       variant: { id: v.variant_id, commit_id: v.commit_id, source: v.source, atomic_scope: v.atomic_scope, fitness_score: v.fitness_score },
       rollback: rollbackResult ? { ok: rollbackResult.ok, restoredHash: rollbackResult.restoredHash } : { error: rollbackError?.message || 'rollback unavailable' },
     };
-    const fp = recordFailurePattern(ctx, fpPayload, ['population-cull']);
+    const fp = await recordFailurePattern(ctx, fpPayload, ['population-cull']);
 
     return { variant: unpackVariant(updated), rollback: rollbackResult, rollbackError: rollbackError?.message || null, failurePattern: fp };
   }
@@ -420,7 +424,7 @@ function apply(ctx) {
       variant: { id: v.variant_id, commit_id: v.commit_id, source: v.source, fitness_score: v.fitness_score },
       rollback: rollbackResult ? { ok: rollbackResult.ok, restoredHash: rollbackResult.restoredHash } : { error: rollbackError?.message || 'rollback unavailable' },
     };
-    const fp = recordFailurePattern(ctx, fpPayload, ['population-rollback']);
+    const fp = await recordFailurePattern(ctx, fpPayload, ['population-rollback']);
 
     return { variant: unpackVariant(updated), rollback: rollbackResult, rollbackError: rollbackError?.message || null, failurePattern: fp };
   }

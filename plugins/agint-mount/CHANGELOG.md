@@ -1,5 +1,12 @@
 # Changelog — agint-mount
 
+## 0.7.2 (2026-10-06) — 供料失败可见性（立项 B-2）
+
+- health-probe / rollback 两处 `catch {}` 静默吞 ⇒ `catch (err) + console.warn`。
+  mount 的失败模式此前从未进 failure_pattern 且无人知（category 越界抛错被吞）；
+  配合 evolution-memory 0.6.14 归一化后，`mount`→`integration` 映射开始真实产行。
+- 28/28 测试过。
+
 ## 0.7.1 (2026-10-05) — 实装 mount → population.ingest（此前只在文档里，被面板判为悬空声明）
 
 **起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」

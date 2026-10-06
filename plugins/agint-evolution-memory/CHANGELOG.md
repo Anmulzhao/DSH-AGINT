@@ -1,5 +1,16 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.14 (2026-10-06) — addFailure 值域归一化（方案 B 收口，立项 H6）
+
+- **越界 category/severity 不再抛错**：入口按映射表归位（mount/population→integration，
+  self-model→correctness，prompt/governance/harmony→other；critical→high），未知值落
+  other/medium；原值写进新 optional 字段 `coercedFrom` 留痕 + console.warn 可见。
+  根因（`docs/立项-失败供料通道修复-20261006.md`）：全仓 14 个写入点 7 个因封闭枚举
+  抛错被调用方静默吞 ⇒ 真实失败无声丢行、diagnosis 供料饿死。
+- 不扩枚举的理由：category 值域=self-model 能力域词表 + mutator 硬编码过滤面 +
+  curriculum 模板域对齐对象，扩一词表炸三处（playbook §3.39 追加推论）。
+- 新增 `test/failure-coercion.test.mjs` 6 用例；全量 199/199。
+
 ## 0.6.13 (2026-10-04) — ⚠️ 破坏性：5 个工具的 `opts` 包装层拆平为扁平参数
 
 ### 为什么改

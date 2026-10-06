@@ -117,7 +117,10 @@ export async function executeRollback(ctx, ticketId, fromPhase, reason) {
             evolutionWritten = true;
         }
     }
-    catch { /* 软依赖失败忽略 */ }
+    catch (err) {
+        // 供料失败必须可见（立项 B-2）；evolutionWritten 保持 false，账实相符
+        console.warn(`[agint-mount] rollback addFailure 失败（软依赖，不阻断）: ${err?.message ?? err}`);
+    }
     // 5) emit 事件（点对点先到 evolution；Sprint 12 Event Bus 替换 transport）
     try {
         ctx.emitEvent?.('mount.failed', { ticketId, fromPhase, reason, actions });

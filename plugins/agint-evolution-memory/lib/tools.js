@@ -111,7 +111,8 @@ function apply(ctx) {
     name: 'evolution_addFailure',
     description:
       'Record a failure pattern into agint_evolution.failure_pattern table (cap 100). ' +
-      'ASK-gated — destructive write.',
+      'ASK-gated — destructive write. Out-of-enum category/severity are normalized ' +
+      'via the mapping table (original value recorded in coercedFrom), never rejected.',
     parameters: {
       failure: { type: 'object', required: true, additionalProperties: true,
         description: 'FailurePattern: { pattern, category?, severity?, evidence? }' },

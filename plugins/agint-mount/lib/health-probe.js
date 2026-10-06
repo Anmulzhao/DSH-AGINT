@@ -61,7 +61,10 @@ export async function recordProbeResult(ctx, ticketId, ok, reason, latencyMs, cf
                 });
             }
         }
-        catch { /* 软依赖失败忽略 */ }
+        catch (err) {
+            // 供料失败必须可见（立项 B-2）：旧 catch{} 静默吞 ⇒ mount 的失败模式从未进过 failure_pattern 也没人知道
+            console.warn(`[agint-mount] health-probe addFailure 失败（软依赖，不阻断）: ${err?.message ?? err}`);
+        }
         try {
             ctx.emitEvent?.('mount.failed', { ticketId, fromPhase: 'ACTIVATED', reason: 'probe-consecutive-failure', actions: [] });
         }

@@ -29,6 +29,10 @@ import { z } from 'zod';
 import {
   evolutionLogEntrySchema,
   failurePatternSchema,
+  FAILURE_CATEGORIES,
+  FAILURE_SEVERITIES,
+  FAILURE_CATEGORY_MAP,
+  FAILURE_SEVERITY_MAP,
   successTemplateSchema,
   contractLockEntrySchema,
   predictionOutcomeEntrySchema,
@@ -346,13 +350,35 @@ function apply(ctx, config) {
         return { ...updated, _deduped: true };
       }
     }
+    // ── 值域归一化（方案 B，2026-10-06 立项）───────────────────────────
+    // 旧行为：越界 category/severity 走 .parse 抛错，调用方多数 catch{} 静默吞
+    // ⇒ 真实失败无声丢失（7/14 写入点结构性死路）。新行为：已知值按映射表归位、
+    // 未知值落 'other'，原始值写进 coercedFrom 留痕并 console.warn 可见，
+    // 不再抛错、不再丢行。映射表语义经老板逐条认可（立项档 §4/§6）。
+    const coerced = [];
+    let cat = category;
+    if (!FAILURE_CATEGORIES.includes(cat)) {
+      const mapped = FAILURE_CATEGORY_MAP[cat];
+      cat = mapped ?? 'other';
+      coerced.push(`category:${category}→${cat}${mapped ? '' : '(未知值)'}`);
+    }
+    let sev = severity;
+    if (!FAILURE_SEVERITIES.includes(sev)) {
+      const mapped = FAILURE_SEVERITY_MAP[sev];
+      sev = mapped ?? 'medium';
+      coerced.push(`severity:${severity}→${sev}${mapped ? '' : '(未知值)'}`);
+    }
+    if (coerced.length) {
+      console.warn(`[agint-evolution-memory] addFailure 值域归一化: ${coerced.join('; ')} (pattern=${String(pattern).slice(0, 80)})`);
+    }
     const entry = failurePatternSchema.parse({
       id: randomId(),
       kind: 'failure-pattern',
       pattern,
-      category,
-      severity,
+      category: cat,
+      severity: sev,
       evidence,
+      ...(coerced.length ? { coercedFrom: coerced.join('; ') } : {}),
     });
     await t.put(entry.id, entry);
 

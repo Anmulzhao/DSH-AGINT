@@ -65,12 +65,38 @@ export const evolutionLogEntrySchema = z.object({
  * 自动写入触发器：每次 REJECT 决策由 agint-quality-policy 调 addFailure
  * （Sprint 3 接入）；周复盘时 evolve 归纳。
  */
+
+// ── addFailure 值域单一真源（方案 B，2026-10-06 立项）──────────────────────
+//
+// category 值域 = self-model 能力画像域词表 + mutator 硬编码过滤面
+// （agint-mutator/lib/index.js:1062 只认 correctness/integration）+ curriculum
+// 模板域对齐对象。扩枚举牵动三处下游 ⇒ 不扩，改在 addFailure 入口收口。
+// bin/check-addfailure-callers.mjs 以本表为判据扫全仓调用点。
+
+export const FAILURE_CATEGORIES = Object.freeze(['security', 'correctness', 'integration', 'perf', 'other']);
+export const FAILURE_SEVERITIES = Object.freeze(['low', 'medium', 'high']);
+
+/** 已知越界值 → 语义归属映射（立项档 §4 方案 B，逐条经老板认可） */
+export const FAILURE_CATEGORY_MAP = Object.freeze({
+  mount: 'integration',        // 挂载后插件未生效 = 集成故障
+  population: 'integration',   // 种群生命周期异常 = 集成
+  'self-model': 'correctness', // 校准失准 = 预测与事实不符
+  prompt: 'other',             // prompt 静态检查违规，无既有语义类
+  governance: 'other',         // 部署预算等治理约束
+  harmony: 'other',            // 假和谐检出
+});
+
+/** severity 越界值映射（mount/health-probe 历史上写 'critical'） */
+export const FAILURE_SEVERITY_MAP = Object.freeze({ critical: 'high' });
+
 export const failurePatternSchema = z.object({
   ...baseFields,
   kind: z.literal('failure-pattern'),
   pattern: z.string().min(1),       // 模式描述（短句）
-  category: z.enum(['security', 'correctness', 'integration', 'perf', 'other']).default('other'),
-  severity: z.enum(['low', 'medium', 'high']).default('medium'),
+  category: z.enum(FAILURE_CATEGORIES).default('other'),
+  severity: z.enum(FAILURE_SEVERITIES).default('medium'),
+  // v0.6.14：归一化留痕（越界原值）。optional ⇒ 旧记录照读（CountersSchema 事故教训）。
+  coercedFrom: z.string().optional(),
   occurrences: z.number().int().min(1).default(1),  // 累计出现次数
   // 自动去重：同 pattern 第二次 add 时 occurrences++ 而非新建条目
 });
