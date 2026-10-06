@@ -107,7 +107,7 @@ export function probeDomains(snapshot, { staleReverifyDays = 30, nowMs = Date.no
     if (item.verifiable) {
       verifiable.push(item);
     } else {
-      unverifiable.push({ ...item, reason: [...item.reason, 'domain 不在 4 个模板域内，无法自动判定（C1/Q5）'] });
+      unverifiable.push({ ...item, reason: [...item.reason, `domain 不在 ${TEMPLATE_DOMAINS.length} 个模板域内，无法自动判定（C1/Q5）`] });
     }
   }
 

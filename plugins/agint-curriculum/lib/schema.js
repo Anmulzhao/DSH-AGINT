@@ -53,13 +53,20 @@ export const DIFFICULTY_INDEX = Object.freeze(
   DIFFICULTY_LEVELS.reduce((m, lv, i) => { m[lv] = i; return m; }, {}),
 );
 
-// ── 模板域（§5.2 B-3：4 个域模板）─────────────────────────────────────────
+// ── 模板域（§5.2 B-3：原 4 个域模板；v0.1.3 并入生产能力画像的两域）────────
+//
+// 2026-10-06 零挑战根因（待做清单论证 §3.2）：self-model capability_map 的域
+// 全部来自 evolution failure_pattern category（实测只有 integration/correctness），
+// 与本表四域**零交集** ⇒ probe 筛出的 CANNOT 域全落 unverifiable，domains 恒空，
+// generate 从未被调用。修法=把生产真实存在、且可用既有断言器自动判定的两域并入。
 
 export const TEMPLATE_DOMAINS = Object.freeze([
   'codegen',
   'reasoning',
   'planning',
   'tool-use',
+  'integration',
+  'correctness',
 ]);
 
 // ── D4：数据来源黑名单副本（三处副本之一；curriculum 自己是来源）────────────
@@ -224,4 +231,6 @@ export const TEMPLATE_DESCRIPTIONS = Object.freeze({
   'reasoning': '推理题作答（断言：结论与预期匹配）',
   'planning': '任务拆解为步骤清单（断言：步骤数量 + 必需步骤）',
   'tool-use': '用指定工具完成任务（断言：工具命中 + 退出码）',
+  'integration': '集成方案拆解（断言：步骤数量 + 必需环节关键词；v0.1.3 并入，对应能力画像真实域）',
+  'correctness': '确定性结果作答（断言：结论与已知答案匹配；v0.1.3 并入，对应能力画像真实域）',
 });

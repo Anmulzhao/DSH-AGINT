@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { generateChallenge, hasTemplate, listTemplateDomains } from '../lib/challenge-gen.js';
 import { DIFFICULTY_LEVELS, TEMPLATE_DOMAINS, TEMPLATE_DESCRIPTIONS } from '../lib/schema.js';
 
-test('4 个域模板全覆盖（codegen / reasoning / planning / tool-use）', () => {
+test('6 个域模板全覆盖（v0.1.3 并入 integration / correctness）', () => {
   assert.deepEqual(listTemplateDomains(), TEMPLATE_DOMAINS);
   for (const d of TEMPLATE_DOMAINS) {
     assert.equal(hasTemplate(d), true, `${d} 应有模板`);

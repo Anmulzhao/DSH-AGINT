@@ -1,5 +1,34 @@
 # CHANGELOG
 
+## 0.1.3（2026-10-06 · 零挑战修法①：并入 capability_map 真实域 integration/correctness）
+
+### 修复
+
+- **模板域从 4 扩到 6**（`lib/schema.js` TEMPLATE_DOMAINS + `lib/challenge-gen.js`）。
+  根因（待做清单论证 §3.2）：self-model capability_map 的域全部来自 evolution
+  failure_pattern category，本机实测只有 `integration` / `correctness`（还有 1 个 `unknown`）；
+  而模板域写死 `codegen/reasoning/planning/tool-use` 四域 ⇒ **两集合零交集** ⇒
+  probe 命中 CANNOT 后全落 `unverifiable`，`domains` 恒空 ⇒ `generate()` 从未被调用 ⇒
+  全历史 `challenge-created` 0 条。0.1.2 的 CANNOT 修复只让两域从「不可见」变成
+  「unverifiable」，供给没恢复。本批把两真实域并入模板域，直击断点。
+- 复用既有断言器，不新建判定类型：`integration` → `step-list`（集成步骤拆解，
+  必需环节关键词）；`correctness` → `conclusion-match`（答案唯一才可自动判定，守 C1）。
+- `boundary-probe.js` unverifiable 文案里的「4 个模板域」改成动态计数，防再漂移。
+- 版本位拉齐：此前 `package.json` 报 0.1.1、`manifest.json` 报 0.1.2（F2 同型病，
+  判运行态会误判），本批统一为 0.1.3。
+
+### 测试
+
+- `test/challenge-gen.test.mjs`「6 个域模板全覆盖」；`test/smoke.mjs` 枚举断言更新为 6 域。
+- 全量 `node --test "test/*.test.mjs" test/smoke.mjs` → 63/63 通过。
+
+### 生效条件（未闭环项，如实标注）
+
+- ⚠️ 属 boot 期插件，需**部署位同步 + 宿主重启**后生效。
+- ⚠️ 重启后下一期 `curriculum-weekly`（周四 09:30）才会首次产挑战；真实供给恢复的运行态证据要等那一次。
+- 前置：capability_map 那两行仍是 CANNOT（lastVerifiedAt 若不满足 30 天复验条件则不触发）——
+  供给恢复幅度以实际 probe 读数为准，不打包票。
+
 ## 0.1.2（2026-09-29 · 激活上游：CANNOT 明确能力缺口纳入待练）
 
 ### 修复

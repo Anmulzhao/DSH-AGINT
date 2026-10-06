@@ -41,7 +41,7 @@ test('导出契约：name / inject / apply / ConfigSchema', () => {
 
 test('枚举 = Sprint14 §4.7 / §4.6 / §5.2 B-3', () => {
   assert.deepEqual([...schema.DIFFICULTY_LEVELS], ['D1', 'D2', 'D3', 'D4', 'D5']);
-  assert.deepEqual([...schema.TEMPLATE_DOMAINS], ['codegen', 'reasoning', 'planning', 'tool-use']);
+  assert.deepEqual([...schema.TEMPLATE_DOMAINS], ['codegen', 'reasoning', 'planning', 'tool-use', 'integration', 'correctness']);
   assert.deepEqual([...schema.VERDICT_RESULTS], ['pass', 'fail']);
   assert.ok(schema.CHALLENGE_STATUSES.includes('open'));
   assert.ok(schema.CHALLENGE_STATUSES.includes('passed'));

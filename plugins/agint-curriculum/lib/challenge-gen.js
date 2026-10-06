@@ -5,7 +5,8 @@
  * 每个挑战必须带**可自动判定的通过条件**（C1）；verifySpec 由 verdict.js
  * 还原为断言函数，不存函数只存规格（可序列化、可复现）。
  *
- * 4 个域模板（§5.2 B-3）：codegen / reasoning / planning / tool-use。
+ * 模板域（§5.2 B-3）：原 codegen / reasoning / planning / tool-use 四域，
+ * v0.1.3 并入 capability_map 真实存在的 integration / correctness（零挑战修法①）。
  * 难度档 D1–D5 通过模板参数调节复杂度。
  */
 
@@ -51,6 +52,31 @@ const TOOLUSE_TASKS = {
   D5: { task: '组合使用 glob + read_file 两个工具，统计项目里所有 .js 文件的总行数。', tool: 'read_file' },
 };
 
+// ── integration：把「集成多组件」拆解为步骤清单（断言：步骤数量 + 必需环节）──
+//
+// v0.1.3 并入（零挑战修法①）。域来自 self-model capability_map 的真实类别。
+// 复用既有 step-list 断言器，不新建判定类型。
+
+const INTEGRATION_TASKS = {
+  D1: { task: '把「让前端表单调用后端 API 并处理失败」拆解成集成步骤清单。', min: 3, keywords: ['请求', '错误'] },
+  D2: { task: '把「把定时任务接入事件总线并在关闭时取消订阅」拆解成集成步骤清单。', min: 4, keywords: ['订阅', '发布', '取消'] },
+  D3: { task: '把「OpenViking 检索接入 input-gateway 作数据源（软依赖降级）」拆解成集成步骤清单。', min: 5, keywords: ['检索', '信号', '降级'] },
+  D4: { task: '把「DB 与缓存双写集成（含一致性回退）」拆解成集成步骤清单。', min: 6, keywords: ['缓存', '回退', '一致'] },
+  D5: { task: '把「多服务集成的零停机版本切换」拆解成集成步骤清单。', min: 7, keywords: ['灰度', '回滚', '健康'] },
+};
+
+// ── correctness：确定性结果作答（断言：结论与已知答案匹配）──────────────────
+//
+// v0.1.3 并入。复用 conclusion-match 断言器——答案唯一才可自动判定（C1）。
+
+const CORRECTNESS_TASKS = {
+  D1: { task: '计算 17 + 26。请给出数字结论。', expected: '43' },
+  D2: { task: '数组 [3, 1, 2] 升序排列后，中间的元素是哪个？请给出结论。', expected: '2' },
+  D3: { task: 'len(set([1, 2, 2, 3])) 的结果是多少？请给出数字结论。', expected: '3' },
+  D4: { task: '字符串 "abracadabra" 中字母 a 共出现几次？请给出数字结论。', expected: '5' },
+  D5: { task: '爬 6 级台阶，每次 1 或 2 级，共有多少种走法？请给出数字结论。', expected: '13' },
+};
+
 const TEMPLATES = {
   codegen: {
     generate(level) {
@@ -89,6 +115,26 @@ const TEMPLATES = {
         prompt: t.task,
         passCriteria: `使用指定工具并提交 evidence：{ toolUsed, exitCode, output }。`,
         verifySpec: { type: 'tool-match', expected: t.tool, minLength: 0 },
+      };
+    },
+  },
+  integration: {
+    generate(level) {
+      const t = INTEGRATION_TASKS[level];
+      return {
+        prompt: t.task,
+        passCriteria: `提交 evidence：{ steps: string[] }（至少 ${t.min} 步，且含必需环节关键词）。`,
+        verifySpec: { type: 'step-list', expected: t.keywords, minLength: t.min },
+      };
+    },
+  },
+  correctness: {
+    generate(level) {
+      const t = CORRECTNESS_TASKS[level];
+      return {
+        prompt: t.task,
+        passCriteria: '给出结论并提交 evidence：{ conclusion }（必须与预期答案一致）。',
+        verifySpec: { type: 'conclusion-match', expected: t.expected, minLength: 0 },
       };
     },
   },
