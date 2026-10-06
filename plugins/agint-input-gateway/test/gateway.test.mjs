@@ -189,3 +189,19 @@ test('eventBus 不可用时软降级', () => {
 
 
 
+
+test('噪声抑制按滚动窗口复位：窗口过后同键重新放行（v0.1.4 修复）', () => {
+  let t = 1_000;
+  const { gw, published } = makeGateway({ now: () => t });
+  gw.registerChannel(mockChannel);
+  const sig = (i) => ({
+    signalId: `noise-win-${i}`, signalType: 'tool.anomaly', source: 'test',
+    payload: {}, confidence: 0.9, relevance: 0.9,
+  });
+  for (let i = 0; i < 8; i++) gw.processSignals([sig(i)], mockChannel);
+  const firstWindow = published.length;
+  assert.equal(firstWindow, DEFAULTS.noiseMaxPerSource, '首窗只放行 noiseMaxPerSource 条');
+  t += DEFAULTS.noiseWindowMs + 1000;
+  gw.processSignals([sig(99)], mockChannel);
+  assert.equal(published.length, firstWindow + 1, '窗口滚动后同键必须重新放行');
+});

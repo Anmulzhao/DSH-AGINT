@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-input-gateway",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "AGINT 多源输入网关 v0.1.0（P0）：统一接入 5 类信息 Channel（人类意图/系统自观测/外部世界/对抗挑战/跨Agent），经归一化、去重、过滤、配额、路由后发布到 eventBus。P0 交付：Gateway 核心框架（scheduler/normalizer/filter/router/quota/observability/security）+ C2 系统自观测 Channel（toolStats异常/metrics退化/规则高频命中/压缩丢失/session完整性）。复用 eventBus 做传输、cron 做调度、metrics 做可观测、rules 做安全门禁，不引入新架构层。",
   "main": "lib/index.js",
   "agint": {

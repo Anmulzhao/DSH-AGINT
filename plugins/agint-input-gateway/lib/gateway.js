@@ -246,6 +246,41 @@ export class InputGateway {
     return { ok: true, in: signals.length, ...result };
   }
 
+  /**
+   * 即投入口（H1 方案②，v0.1.4）：订阅回调在事件到达时直接把信号喂进管线，
+   * 不再经内存队列攒批 —— 攒批 + 模块级内存态正是跨重启丢信号的根因。
+   * 不占 fetchCount（即投不是 fetch）；计数与 counters 持久化与 fetchChannel 同构。
+   */
+  async ingestImmediate(channelId, signals) {
+    const channel = this._channels.get(channelId);
+    if (!channel) return { ok: false, error: 'channel not found' };
+    const state = this._channelState.get(channelId);
+    if (state && !state.enabled) return { ok: false, skipped: 'disabled' };
+
+    const list = Array.isArray(signals) ? signals : [];
+    const counters = this._counters.get(channelId) || emptyCounters(channelId);
+    let result;
+    try {
+      result = this.processSignals(list, channel);
+    } catch (e) {
+      counters.errorCount += 1;
+      this._counters.set(channelId, counters);
+      await this._persistCounters(channelId, counters);
+      this._debug(`ingest ${channelId} error: ${e?.message ?? e}`);
+      return { ok: false, error: e?.message ?? String(e) };
+    }
+    counters.signalsEmitted += result.emitted;
+    counters.signalsFiltered += result.filtered;
+    counters.signalsDeduplicated += result.deduplicated;
+    counters.securityScanned = (counters.securityScanned ?? 0) + result.securityScanned;
+    counters.securityFlagged = (counters.securityFlagged ?? 0) + result.securityFlagged;
+    counters.securityDropped = (counters.securityDropped ?? 0) + result.securityDropped;
+    this._counters.set(channelId, counters);
+    await this._persistCounters(channelId, counters);
+    this._debug(`ingest ${channelId}: in=${list.length} emitted=${result.emitted} filtered=${result.filtered}`);
+    return { ok: true, in: list.length, ...result };
+  }
+
   _channelCtx(channelId) {
     // Channel 需要的 ctx 最小集。后续按需扩展。
     return {
@@ -309,13 +344,21 @@ export class InputGateway {
       if (this._dedup.has(dedupKey)) { deduplicated++; continue; }
       this._dedup.set(dedupKey, now + DEFAULTS.dedupWindowMs);
 
-      // 5. 噪声抑制（同 source+signalType 在窗口内限流）
+      // 5. 噪声抑制（同 source+signalType 在滚动窗口内限流）。
+      //    旧实现计数从不按时间复位 ⇒ boot 内累计 5 条后同键永久封死。
       const noiseKey = `${sig.source || 'unknown'}:${sig.signalType}`;
       let noiseMap = this._noise.get(channel.id);
       if (!noiseMap) { noiseMap = new Map(); this._noise.set(channel.id, noiseMap); }
-      const noiseCount = noiseMap.get(noiseKey) || 0;
-      if (noiseCount >= DEFAULTS.noiseMaxPerSource) { filtered++; continue; }
-      noiseMap.set(noiseKey, noiseCount + 1);
+      const noiseEntry = noiseMap.get(noiseKey);
+      let noiseCount;
+      if (!noiseEntry || now - noiseEntry.windowStart > DEFAULTS.noiseWindowMs) {
+        noiseCount = 1;
+        noiseMap.set(noiseKey, { count: 1, windowStart: now });
+      } else {
+        noiseCount = noiseEntry.count + 1;
+        noiseMap.set(noiseKey, { count: noiseCount, windowStart: noiseEntry.windowStart });
+      }
+      if (noiseCount > DEFAULTS.noiseMaxPerSource) { filtered++; continue; }
 
       // 6. 配额
       if (quotaUsed >= quota) { filtered++; continue; }

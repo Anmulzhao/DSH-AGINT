@@ -8,24 +8,33 @@
  *   curriculum.challenge-verdicted → 只转发 fail
  *   curriculum.boundary-probed → 有不可验证边界时转发
  *
- * 事件在到达时放入队列，fetch() 由 Gateway 调度器定期 drain。
+ * v0.1.4（H1 方案②）：事件到达时直接喂 gateway.ingestImmediate，
+ * 不再放入模块级内存队列。旧「入队 → 定期 drain」的丢失窗口 = drain 周期 × 重启
+ * （实测 2 个主题的信号因重启永不可见）；即投把窗口缩到毫秒级，
+ * 且重启后 dedup 照常防重放。fetch() 保留为空 drain —— 通道在
+ * channel_status / fetchCount 里继续有心跳。
  */
+
+import { C4_CRON } from '../schema.js';
 
 const CHANNEL_ID = 'adversarial';
 const CHANNEL_TYPE = 'adversarial';
 
-// 事件队列（内存态，fetch 时清空）
-let _queue = [];
 let _subscribed = false;
 let _initError = null;
 // v0.3.0：diagnosis.completed 空壳事件（clusterCount=0）是否转发（默认开）
 let _forwardEmptyDiagnosis = true;
+// 即投统计（health 可见）：本 boot 收到/投出的事件条数
+let _ingested = 0;
+let _ingestFailed = 0;
 
 /**
  * 初始化事件订阅。在 Gateway 注册后由 index.js 调用。
  * @param {object} ctx — 最小 ctx（含 get/effect）
+ * @param {object} config — 插件配置
+ * @param {object} gateway — InputGateway 实例（即投走 ingestImmediate）
  */
-function initSubscriptions(ctx, config = {}) {
+function initSubscriptions(ctx, config = {}, gateway = null) {
   if (_subscribed) return;
   _forwardEmptyDiagnosis = config?.forwardEmptyDiagnosis !== false;
 
@@ -40,6 +49,24 @@ function initSubscriptions(ctx, config = {}) {
       console.warn('[agint-input-gateway] adversarial: ' + _initError);
       return;
     }
+    if (!gateway || typeof gateway.ingestImmediate !== 'function') {
+      _initError = 'gateway instance unavailable: initSubscriptions requires gateway (v0.1.4)';
+      console.warn('[agint-input-gateway] adversarial: ' + _initError);
+      return;
+    }
+
+    /** 即投一条；失败只计数不抛（订阅回调必须不阻塞总线）。 */
+    const emit = (sig) => {
+      _ingested += 1;
+      try {
+        void Promise.resolve(gateway.ingestImmediate(CHANNEL_ID, [sig])).catch((e) => {
+          _ingestFailed += 1;
+          console.warn('[agint-input-gateway] adversarial ingest failed:', e?.message ?? e);
+        });
+      } catch {
+        _ingestFailed += 1;
+      }
+    };
 
     let disposer;
     disposer = subscribe({
@@ -62,7 +89,7 @@ function initSubscriptions(ctx, config = {}) {
           if (topic === 'diagnosis.completed') {
             if ((p.clusterCount ?? 0) === 0) {
               if (!_forwardEmptyDiagnosis) return; // 显式关闭空壳转发时静默
-              _queue.push({
+              emit({
                 signalId: `counterfactual-empty-${p.reportId || Date.now()}`,
                 channelId: CHANNEL_ID,
                 channelType: CHANNEL_TYPE,
@@ -81,7 +108,7 @@ function initSubscriptions(ctx, config = {}) {
                 rawRef: `diagnosis:${p.reportId}`,
               });
             } else {
-              _queue.push({
+              emit({
                 signalId: `counterfactual-${p.reportId || Date.now()}`,
                 channelId: CHANNEL_ID,
                 channelType: CHANNEL_TYPE,
@@ -103,7 +130,7 @@ function initSubscriptions(ctx, config = {}) {
           // curriculum.challenge-verdicted: 只转发 fail
           else if (topic === 'curriculum.challenge-verdicted') {
             if (p.result !== 'fail' && p.result !== 'failed') return; // pass 不转发
-            _queue.push({
+            emit({
               signalId: `curriculum-${p.challengeId || Date.now()}`,
               channelId: CHANNEL_ID,
               channelType: CHANNEL_TYPE,
@@ -126,7 +153,7 @@ function initSubscriptions(ctx, config = {}) {
           else if (topic === 'curriculum.boundary-probed') {
             const unverifiable = p.unverifiable || [];
             if (unverifiable.length === 0) return; // 全部可验证，静默
-            _queue.push({
+            emit({
               signalId: `boundary-${Date.now()}`,
               channelId: CHANNEL_ID,
               channelType: CHANNEL_TYPE,
@@ -162,30 +189,33 @@ function initSubscriptions(ctx, config = {}) {
 export const adversarialChannel = {
   id: CHANNEL_ID,
   type: CHANNEL_TYPE,
-  cron: '0 3 * * 0', // 每周日 03:00（C2 02:00 之后，C3 04:00 之前）
+  // v0.1.4 口径统一：通道声明与调度入参同用 schema 的 C4_CRON（每日 03:30）。
+  // 旧值 `0 3 * * 0`（每周）与调度器实跑的每日不同 ⇒ _tick 用本字段算下一次，
+  // 首轮后即漂成周频（「第二套时间口径」同类病）。
+  cron: C4_CRON,
 
   /**
-   * fetch: 取出队列中累积的对抗信号。
+   * fetch: 空 drain（心跳保留）。信号已在事件到达时即投，见文件头注释。
    */
   async fetch(_ctx) {
-    const drained = _queue;
-    _queue = [];
-    return drained;
+    return [];
   },
 
   /**
-   * health: 报告订阅状态和队列积压。
+   * health: 报告订阅状态和即投统计。
    */
   async health() {
     return {
       channelId: CHANNEL_ID,
       status: _subscribed ? 'ok' : 'degraded',
       initError: _initError,
-      queuedSignals: _queue.length,
+      mode: 'immediate-emit',
+      ingestedSignals: _ingested,
+      ingestFailed: _ingestFailed,
       detectors: {
-        counterfactual: { active: true, source: 'diagnosis.completed' },
-        curriculumResult: { active: true, source: 'curriculum.challenge-verdicted' },
-        boundaryDivergence: { active: true, source: 'curriculum.boundary-probed' },
+        counterfactual: { active: _subscribed, source: 'diagnosis.completed' },
+        curriculumResult: { active: _subscribed, source: 'curriculum.challenge-verdicted' },
+        boundaryDivergence: { active: _subscribed, source: 'curriculum.boundary-probed' },
       },
     };
   },

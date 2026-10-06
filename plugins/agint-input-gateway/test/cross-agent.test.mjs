@@ -3,7 +3,7 @@
  * 真调 crossAgentChannel.fetch(ctx)：
  *   - mock agint.ovStrategy.recall（复刻真实契约 { ok, entries, digest }）
  *   - 临时 DSH_HOME（sessions 目录 + storages 状态文件）
- * 覆盖：OV diff 信号 / 会话聚类 pattern 信号 / 全不可用软降级 / 增量去重。
+ * 覆盖：OV diff 信号 / 会话聚类 pattern 信号 / 全不可用软降级 / 增量去重 / sync-proposal 提案（v0.1.4 方案 B）。
  */
 
 import test from 'node:test';
@@ -51,10 +51,10 @@ test('fetch: OV 检索 + 会话聚类 → 产出 diff 与 pattern 两个信号',
     const signals = await crossAgentChannel.fetch(ctx);
     assert.ok(Array.isArray(signals));
     assert.ok(signals.length >= 2, `expected >=2 signals, got ${signals.length}`);
-    const diff = signals.find((s) => s.signalType === 'cross.agent.diff');
-    const pattern = signals.find((s) => s.signalType === 'cross.agent.pattern');
-    assert.ok(diff, '应有 cross.agent.diff 信号');
-    assert.ok(pattern, '应有 cross.agent.pattern 信号');
+    const diff = signals.find((s) => s.signalType === 'diff');
+    const pattern = signals.find((s) => s.signalType === 'pattern');
+    assert.ok(diff, '应有 diff 信号（主题口径 v0.1.4 对齐枚举）');
+    assert.ok(pattern, '应有 pattern 信号');
     assert.equal(diff.payload.newEntryCount, 2);
     assert.equal(diff.source, 'openviking');
     assert.equal(pattern.payload.workspaces.length, 2);
@@ -75,7 +75,7 @@ test('fetch: OV 不可用 → 只产会话聚类信号（软降级不抛）', as
     const ctx = makeCtx(async () => ({ ok: false, reason: 'search-failed:500' }));
     const signals = await crossAgentChannel.fetch(ctx);
     assert.ok(signals.length === 1, `expected 1 signal, got ${signals.length}`);
-    assert.equal(signals[0].signalType, 'cross.agent.pattern');
+    assert.equal(signals[0].signalType, 'pattern');
   } finally {
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
     rmSync(root, { recursive: true, force: true });
@@ -108,10 +108,48 @@ test('fetch: 增量去重 —— 相同 OV 条目第二次不再产 diff', async
     ];
     const ctx = makeCtx(async () => ({ ok: true, entries, digest: null }));
     const first = await crossAgentChannel.fetch(ctx);
-    assert.ok(first.some((s) => s.signalType === 'cross.agent.diff'));
+    assert.ok(first.some((s) => s.signalType === 'diff'));
     // 第二次：同一 entries，无新条目 → diff 不再产出
     const second = await crossAgentChannel.fetch(ctx);
-    assert.ok(!second.some((s) => s.signalType === 'cross.agent.diff'), '重复条目不应再产 diff 信号');
+    assert.ok(!second.some((s) => s.signalType === 'diff'), '重复条目不应再产 diff 信号');
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fetch: sync-proposal 提案信号（方案 B）——新条目提案一次，旧条目不重复提案', async () => {
+  const { root, oldHome } = makeEnv();
+  process.env.DSH_HOME = root;
+  try {
+    const ctx1 = makeCtx(async () => ({
+      ok: true,
+      entries: [
+        { id: 'e-p-1', title: 'investor 域复盘经验', source: 'preset-investor' },
+        { id: 'e-p-2', title: 'ops 域异常归因模板', source: 'preset-ops' },
+      ],
+      digest: null,
+    }));
+    const first = await crossAgentChannel.fetch(ctx1);
+    const proposal = first.find((s) => s.signalType === 'sync-proposal');
+    assert.ok(proposal, '首轮应产出 sync-proposal');
+    assert.equal(proposal.payload.items.length, 2);
+    assert.equal(proposal.payload.items[0].source, 'preset-investor');
+    assert.ok(!proposal.payload.items.some((i) => !i.entryId), '每条提案都要带 entryId');
+
+    // 次轮：1 条旧 + 1 条新 → 只提案新的那条
+    const ctx2 = makeCtx(async () => ({
+      ok: true,
+      entries: [
+        { id: 'e-p-1', title: 'investor 域复盘经验', source: 'preset-investor' },
+        { id: 'e-p-3', title: '新决策', source: 'preset-ops' },
+      ],
+      digest: null,
+    }));
+    const second = await crossAgentChannel.fetch(ctx2);
+    const p2 = second.find((s) => s.signalType === 'sync-proposal');
+    assert.ok(p2, '有新条目仍应提案');
+    assert.deepEqual(p2.payload.items.map((i) => i.entryId), ['e-p-3'], '已提案条目不得重复提案');
   } finally {
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
     rmSync(root, { recursive: true, force: true });

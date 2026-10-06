@@ -1,6 +1,65 @@
 # Changelog
 
+## 0.1.4 — 2026-10-06
+
+本批做两件老板拍板的事：H1（adversarial 跨重启丢信号）方案②、C5 方案 B（sync-proposal 提案信号）。另修两处口径不一致。
+
+### H1 方案②：事件到达即投，删内存队列
+
+**根因**：adversarial 把订阅到的事件放进模块级内存 `_queue`，靠 `fetch()` 定期 drain。
+重启清空队列 ⇒ drain 周期（周/日）与重启之间的窗口，事件永不可见。
+生产实证：`diagnosis.completed` 全历史 37 条、`curriculum.boundary-probed` 5 条，
+通道 drain 跑 7 次 `signalsEmitted=0`（`~/.dsh/storages/agint_input_gateway.json`），
+2 个主题的信号因重启丢了（待做清单 H1）。
+
+**改法**（老板 2026-10-06 拍板「按顺序直接执行」，选项②优于①：上游低频，攒批无收益）：
+
+- `lib/channels/adversarial.js`：删 `_queue`；订阅回调改为在事件到达时直接调
+  `gateway.ingestImmediate(CHANNEL_ID, [sig])`。签名新增第三参 `gateway`，缺它即
+  `degraded` 且不吞事件（fail-visible，不静默）。
+- `lib/gateway.js`：新增 `ingestImmediate(channelId, signals)` —— 复用 `processSignals`
+  全管线（security → 置信 → 去重 → 噪声 → 配额 → 发布），计数即时持久化。
+  不占 `fetchCount`（即投不是 fetch）。
+- `lib/index.js:122`：`initSubscriptions(ctx, cfg)` → `initSubscriptions(ctx, cfg, gateway)`。
+- `fetch()` 保留为空 drain ⇒ 通道在 `channel_status` / `getStatus()` 仍有心跳，观测面不变。
+- 丢失窗口从「drain 周期 × 重启频率」缩到毫秒级；重启后的事件重放由 dedup 表拦（新增用例锁住）。
+
+### C5 方案 B：新增 `cross-agent.sync-proposal` 提案信号
+
+`cross-agent.js` 增第 4 个子源：把 OV 检索到的外部 preset 条目发成提案信号
+（`items[]` = entryId/title/source）。**通道仍不写 OV、不写 preset** —— 采纳动作留给
+agent/老板（自动双向同步与 P8 校准「团队能力用 dsh 官方的」冲突，本轮未做，见
+`docs/agint-input-gateway-未竟方案论证-20261006.md` §2）。
+新增状态位 `state.proposedEntryIds`（滚动 100 条）保证同一条目只提案一次。
+`KNOWN_TOPICS` 补 `input.signal.cross-agent.sync-proposal`。
+
+### 顺带修的两处口径不一致
+
+1. **adversarial cron 双口径**：通道声明 `0 3 * * 0`（周日），调度器实跑 `C4_CRON`（每日 03:30）。
+   `_tick()` 用**通道字段**算下一次时间 ⇒ 首轮 fetch 之后节奏会漂成周频。现统一取 `C4_CRON`。
+   与 playbook §3.13「第二套时间口径」同族。
+2. **cross-agent 主题名与枚举不符**：`_buildTopic` = `input.signal.<channelType>.<signalType>`，
+   旧 `signalType='cross.agent.diff'` 实发成 `...cross-agent.cross-agent-diff`，
+   与 `KNOWN_TOPICS`（订阅面/面板的参照）不符 —— 生产已实证 1 条
+   `input.signal.cross-agent.cross-agent-pattern`。改发布侧对齐枚举：signalType 去前缀
+   （`diff` / `pattern` / `sync-proposal`）。无订阅方受影响（全历史仅 1 条，且无人订 cross-agent）。
+
+### 噪声抑制隐性封死（同批修）
+
+`processSignals` 第 5 步计数从不按时间复位 ⇒ 同一 `source:signalType` 在一个 boot 内累计
+到 5 条后**永久**被过滤，与注释宣称的「1h 滚动窗口」不符。改为 `{count, windowStart}`
+滚动窗口。影响面：即投模式下更关键（事件不再攒批，长期运行的 boot 会先撞这个上限）。
+新增用例：窗口滚动后同键必须重新放行。
+
+### 测试
+
+- 新增 `test/adversarial.test.mjs` 8 用例（即投四类事件/过滤条件/dedup 重放/counters 即时落盘/cron 口径/fetch 心跳）。
+- 新增 `test/cross-agent.test.mjs` sync-proposal 用例；原 4 用例断言随 signalType 改名更新。
+- `test/gateway.test.mjs` 加噪声窗口复位用例。
+- 全量 `node --test "test/*.test.mjs" test/smoke.mjs` → 56/56 通过（改前基线 46，实测于 stash 回退态；本批 +10：adversarial 8、sync-proposal 1、噪声窗口复位 1；另有 4 条 cross-agent 断言随 signalType 改名更新）。
+
 ## 0.1.3 — 2026-10-05
+
 
 ### manifest 删 `agint.memory` 悬空声明（纯契约，无代码改动）
 

@@ -11,6 +11,8 @@
  *   c) 跨 preset 同步差异 — 结合 OV 检索结果（entries 的 source 字段）
  *      与本机 workspace 列表，输出"有哪些外部 preset 知识可同步"的
  *      只读概览（不写 OV，不写 preset —— 同步动作留给 agent 决策）。
+ *   d) 同步提案（v0.1.4，C5 方案 B「提案-采纳」）— 把可同步条目发成
+ *      cross-agent.sync-proposal 信号供采纳决策；通道本身仍不写入任何一侧。
  *
  * 约束：
  *   - R1 单缝：OV 访问只经 agint.ovStrategy（软依赖 ctx.get，调用时取）。
@@ -164,7 +166,10 @@ export const crossAgentChannel = {
       signals.push({
         signalId: `cross-agent-diff-${Date.now()}`,
         source: 'openviking',
-        signalType: 'cross.agent.diff',
+        // 主题口径修正（v0.1.4）：_buildTopic = input.signal.<channelType>.<signalType>，
+        // 旧值 'cross.agent.diff' 实发成 cross-agent.cross-agent-diff，与 KNOWN_TOPICS
+        // 枚举（订阅/面板的参照面）不一致。生产 1 条旧名样本无订阅方，改发布侧对齐枚举。
+        signalType: 'diff',
         payload: {
           newEntryCount: ovDiff.entries.length,
           topHits: ovDiff.topHits,
@@ -188,7 +193,7 @@ export const crossAgentChannel = {
       signals.push({
         signalId: `cross-agent-pattern-${Date.now()}`,
         source: 'sessions',
-        signalType: 'cross.agent.pattern',
+        signalType: 'pattern',
         payload: {
           workspaces: cluster.workspaces,
           totalSessions: cluster.totalSessions,
@@ -208,6 +213,40 @@ export const crossAgentChannel = {
       signals[0].payload.syncOverview = sync;
     }
 
+    // d) 同步提案（C5 方案 B「提案-采纳」，v0.1.4）：
+    //    通道仍不写 OV、不写 preset —— 把「可同步条目」发成信号，采纳由 agent/老板决策。
+    //    state.proposedEntryIds 保证同一条目只提案一次；dedup 表兜重启重放。
+    if (!ovDiff.skipped && Array.isArray(ovDiff.entries)) {
+      const proposed = Array.isArray(state.proposedEntryIds) ? new Set(state.proposedEntryIds) : new Set();
+      const items = [];
+      for (const e of ovDiff.entries) {
+        const id = e?.id ?? e?.uri ?? e?.hash ?? JSON.stringify(e).slice(0, 64);
+        if (!id || proposed.has(id)) continue;
+        items.push({
+          entryId: id,
+          title: typeof e?.title === 'string' ? e.title.slice(0, 200) : null,
+          source: typeof e?.source === 'string' ? e.source.slice(0, 80) : null,
+        });
+        proposed.add(id);
+      }
+      state.proposedEntryIds = [...proposed].slice(-100);
+      if (items.length > 0) {
+        signals.push({
+          signalId: `cross-agent-sync-proposal-${Date.now()}`,
+          source: 'openviking',
+          signalType: 'sync-proposal',
+          payload: {
+            items,
+            note: `${items.length} 条跨 preset 知识提案（提案-采纳：本通道只列候选，不做写入）`,
+          },
+          confidence: 0.5,
+          relevance: 0.6,
+          occurredAt: new Date().toISOString(),
+          rawRef: 'openviking://search',
+        });
+      }
+    }
+
     saveState(state);
     return signals;
   },
@@ -217,8 +256,8 @@ export const crossAgentChannel = {
     return {
       channelId: this.id,
       status: 'ok',
-      subSources: 3,
-      note: `v0.3: OV 检索(soft) + 会话聚类 + 跨 preset 只读差异；OV 可用性见 fetch 结果（health 无法取 ctx）`,
+      subSources: 4,
+      note: `v0.1.4: OV 检索(soft) + 会话聚类 + 跨 preset 只读差异 + sync-proposal 提案（仍不写入 OV/preset）；OV 可用性见 fetch 结果（health 无法取 ctx）`,
       ovAvailableAtHealth: Boolean(ov),
     };
   },

@@ -119,7 +119,7 @@ function apply(ctx, config) {
 
     // 注册 C4 Channel（对抗挑战：订阅已有事件，只转发失败/边界）
     gateway.registerChannel(adversarialChannel);
-    initSubscriptions(ctx, cfg);
+    initSubscriptions(ctx, cfg, gateway);
 
     // 注册 C5 Channel（跨 Agent：OpenViking 检索 / 会话聚类 / 跨 preset 只读差异）
     gateway.registerChannel(crossAgentChannel);

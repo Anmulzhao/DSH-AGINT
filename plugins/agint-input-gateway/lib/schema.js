@@ -94,4 +94,5 @@ export const KNOWN_TOPICS = Object.freeze([
   'input.signal.adversarial.boundary-divergence',
   'input.signal.cross-agent.diff',
   'input.signal.cross-agent.pattern',
+  'input.signal.cross-agent.sync-proposal',
 ]);
