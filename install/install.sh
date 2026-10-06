@@ -563,6 +563,87 @@ ensure_bundle_module_entry() {
 }
 ensure_bundle_module_entry
 
+# ── 1.45 mirror 位解析卫兵（2026-10-06 dsh-tools stub 事故修）────────────────
+#
+# 兼容镜像位 $PLUGINS_DST 里的 AGINT 插件仍按**裸包名** import 官方包
+# （@deepseek-ai/dsh-tools / cordis / dsh-storage-domain），解析走
+# $PLUGINS_DST/node_modules/@deepseek-ai/<pkg>。
+#
+# ⛔ 2026-10-06 容器事故（gzsx dsh-agint）：该位置曾有一份手写的 0.0.0-stub
+#   （defineTool 恒等函数 + main 指向 stub 的 index.js）→
+#   valueSchemaSpecToJsonSchema 从不执行 → required 严格校验裸奔 →
+#   agint preset 挂载必炸（25 插件 / 136 工具全灭）。
+#   官方 npm tarball 从无顶层 index.js；stub 是部署调试期手工放入的
+#   （物证：$DSH_HOME/.agint-backups/2026-10-06-dsh-tools-stub/stub-package/）。
+#
+# 本步保证：mirror 位这三个名字要么不存在、要么解析到 dsh 自带**真包**；
+# 任何 0.0.0-stub 一律替换为指向真包的链接。幂等；失败仅 warn 不阻断。
+# 与 1.1/1.2 同一坑族：safe_rsync 排除 node_modules ⇒ rsync 分支下本步产物
+# 能活过步骤 2；python 回退分支（无 rsync）会整树换入删掉 ⇒ 4.6 有 post-plugin 复跑。
+ensure_mirror_module_entry() {
+  local base="$PLUGINS_DST/node_modules/@deepseek-ai" target name link
+  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules/@deepseek-ai"
+  if [ -z "$target" ] || [ ! -d "$target" ]; then
+    warn "未能定位 dsh 自带官方包（npm root -g 不可用？），跳过 mirror 解析卫兵。"
+    return 0
+  fi
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] mirror 解析卫兵：$base 下 dsh-tools / cordis / dsh-storage-domain → $target"
+    return 0
+  fi
+  mkdir -p "$base"
+  local rebuilt=0
+  for name in dsh-tools cordis dsh-storage-domain; do
+    link="$base/$name"
+    # 已就绪判定：解析目标存在、有 lib/index.js、且不是 0.0.0-stub
+    if [ -e "$link/lib/index.js" ] && ! grep -q '"0.0.0-stub"' "$link/package.json" 2>/dev/null; then
+      continue
+    fi
+    if [ ! -d "$target/$name" ]; then
+      warn "dsh 自带包里也没有 $name，mirror 位 $name 保持原样。"
+      continue
+    fi
+    # 删除旧条目。⛔ 顺序敏感：Windows 上 junction 必须先走 cmd rmdir（只摘链
+    #   不下钻）；rm -rf 对 MSYS 里的 junction 行为不可靠，误下钻会删掉真包
+    #   （10-06 事故处理中「误删真包」的教训）。
+    if [ -L "$link" ]; then
+      rm -f "$link"
+    elif [ -d "$link" ]; then
+      if command -v cmd >/dev/null 2>&1; then
+        cmd //c "rmdir /Q \"$(cygpath -w "$link" 2>/dev/null || printf '%s' "$link")\"" >/dev/null 2>&1 || true
+      fi
+      [ -e "$link" ] && rm -rf "$link"
+    fi
+    if command -v cmd >/dev/null 2>&1; then
+      local wl wt
+      wl="$(cygpath -w "$link" 2>/dev/null || printf '%s' "$link")"
+      wt="$(cygpath -w "$target/$name" 2>/dev/null || printf '%s' "$target/$name")"
+      if cmd //c "mklink /J \"$wl\" \"$wt\"" >/dev/null 2>&1; then
+        log "   ✓ mirror 位 $name 已重建（junction → 真包）"
+        rebuilt=$((rebuilt+1))
+        continue
+      fi
+    fi
+    if ln -s "$target/$name" "$link" 2>/dev/null; then
+      log "   ✓ mirror 位 $name 已重建（symlink → 真包）"
+      rebuilt=$((rebuilt+1))
+    else
+      warn "mirror 位 $name 重建失败（$link → $target/$name）。preset 挂载会报 required 校验错。"
+    fi
+  done
+  if [ "$rebuilt" -eq 0 ]; then
+    log "   ✓ mirror 位三入口均解析到真包（dsh-tools / cordis / dsh-storage-domain）"
+  fi
+  # 全量清查：mirror 位不允许任何 0.0.0-stub 存活（防同一手法再放别的包）
+  local stubbed
+  stubbed="$(grep -l '"0.0.0-stub"' "$base"/*/package.json 2>/dev/null || true)"
+  if [ -n "$stubbed" ]; then
+    warn "mirror 位仍检出 0.0.0-stub 包（不在上述三名内，未自动替换，请人工核查）："
+    warn "$stubbed"
+  fi
+}
+ensure_mirror_module_entry
+
 # ── 1.5 zod bootstrap（必须在 plugin 同步之前）───────────────────────────────
 # 见 install/agint-zod-bootstrap.sh。
 # 顺序约束：步骤 2 用 safe_rsync --delete 把 plugins/agint-quality/node_modules/zod
@@ -969,6 +1050,14 @@ if [ "$DRY_RUN" != "1" ]; then
   fi
 else
   log "   ⊘ 跳过 zod bootstrap（dry-run）"
+fi
+
+# ── 4.6 mirror 解析卫兵复跑（与 1.45 同理：无 rsync 的机器整树换入会清掉）────
+# zod 是 1.5 主 + 4.5 兜底；mirror 三入口同理 1.45 主 + 4.6 复跑。幂等，已就绪即跳过。
+if [ "$DRY_RUN" != "1" ]; then
+  ensure_mirror_module_entry
+else
+  log "   ⊘ 跳过 mirror 解析卫兵复跑（dry-run）"
 fi
 
 # ── 4.55 zstd bootstrap（修复 agint-dream sweep ENOENT）─────────────────────

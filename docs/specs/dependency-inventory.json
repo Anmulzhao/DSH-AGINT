@@ -21,14 +21,14 @@
       "versionRange": "*",
       "providedBy": "dsh-runtime",
       "inZeroDepsAllowlist": true,
-      "note": "存储域服务。install.sh 建的 node_modules junction 从 dsh 安装目录解析。⚠️ 进程实测：仓库内是 83 字节 stub，真实现由运行时注入 ⇒ 裸跑测试不适用是设计不是缺陷（K62）。"
+      "note": "存储域服务。install.sh 三个解析入口（1.1 preset / 1.2 bundle / 1.45 mirror）把部署位 symlink/junction 到 dsh 自带真包。仓库内 2026-10-01 起也是真包（0.2.0-rc.2）。⛔ 旧注「83 字节 stub、运行时注入」已证伪：stub 是 2026-09-13 手工误放，2026-10-06 容器事故根因（preset 挂载必炸）。部署位出现 0.0.0-stub 即事故，判据见 install.sh 1.45。"
     },
     {
       "name": "@deepseek-ai/dsh-tools",
       "versionRange": "*",
       "providedBy": "dsh-runtime",
       "inZeroDepsAllowlist": true,
-      "note": "同上，83 字节 stub + 运行时注入。"
+      "note": "同 dsh-storage-domain：真包 0.2.0-rc.2，部署位经 install.sh 1.45 卫兵 symlink 到 dsh 自带包。⛔ 旧注「stub + 运行时注入」已证伪（2026-10-06 事故）。"
     },
     {
       "name": "zod",
