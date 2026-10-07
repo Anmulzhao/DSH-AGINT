@@ -1,8 +1,8 @@
 {
   "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-cron",
-  "version": "0.2.13",
-  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。v0.2.13：失败轮 lastResult 落 'error' 而非 'ok'，list() 的 lastOk 错误优先——修「写盘失败被记成成功、cron_health 报假绿」。",
+  "version": "0.2.14",
+  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。v0.2.13：失败轮 lastResult 落 'error' 而非 'ok'，list() 的 lastOk 错误优先——修「写盘失败被记成成功」。v0.2.14：health() 新增 failures 通道报上轮失败的 job，healthy 语义不变（只报不拦），cron_health 工具面一并渲染。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",

@@ -157,8 +157,17 @@ function apply(ctx) {
       },
       render: (_a, v) => {
         const h = v.health;
-        const lines = [`cron_health: ${h.healthy ? 'healthy' : h.issues.length + ' issues'}`];
+        // 2026-10-07：失败走独立 failures 通道，**不并进 healthy**（只报不拦）。
+        // 措辞必须把两者分开 —— 「healthy」+「N 个 job 上轮失败」并排出现时，
+        // 读的人必须一眼看出 healthy 说的是调度时效，不是成败。
+        const failed = Array.isArray(h.failures) ? h.failures.length : 0;
+        const parts = [h.healthy ? 'healthy' : h.issues.length + ' issues'];
+        if (failed > 0) parts.push(failed + ' 个 job 上轮失败');
+        const lines = [`cron_health: ${parts.join('，')}`];
         h.issues.forEach((i) => lines.push(`  ! ${i.id}: ${i.reason}`));
+        (h.failures ?? []).forEach((f) => {
+          lines.push(`  x ${f.id}: ${f.reason}${f.lastRunAt ? '（' + f.lastRunAt + '）' : ''}`);
+        });
         return [{ type: 'text', text: lines.join('\n') }];
       },
     },

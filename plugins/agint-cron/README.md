@@ -121,6 +121,28 @@
 > `cron_state['skill-autocreate-aggregate']`（2026-10-07 05:15 EPERM）。
 > 读存量旧记录时以 `lastError` 为准：hydrate 侧已按"有 lastError 就不恢复 lastResult"处理。
 
+### 健康视图：`health()` 的两个通道（v0.2.14 起）
+
+`health()` 返回 `{ healthy, issues, failures, jobs }`。**两个通道语义不同，不要混读**：
+
+| 字段 | 装什么 | 决定 `healthy` 吗 |
+|---|---|---|
+| `issues` | 调度时效：stale / overdue | ✅ 是（`healthy = issues.length === 0`） |
+| `failures` | 上轮运行失败：id + 错误原文 + 运行时刻 | ❌ 否（**只报不拦**，老板 2026-10-07 拍板） |
+
+```js
+const h = cron.health();
+// h.healthy === true  // 没有任何 job 逾期
+// h.failures.length   // 但可能有 job 上轮跑挂了——这个必须一起看
+```
+
+> ⛔ 失败**不**进 `issues`。`healthy = issues.length === 0` 是既有契约，把失败塞进去
+> 就等于把它改写成"不健康"，会连锁影响 agint-metrics / agint-evolve / agint-curator
+> 三处消费方。想让失败影响 `healthy` 是另一个决策，不在 v0.2.14 范围内。
+>
+> 工具面 `cron_health` 会把两者并排显示，措辞刻意分开：
+> `cron_health: healthy，1 个 job 上轮失败`。**`healthy` 说的是调度时效，不是成败。**
+
 ## 加载
 
 host 插件通过 dsh 的 user-patch 层挂载：

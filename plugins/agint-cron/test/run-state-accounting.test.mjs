@@ -2,22 +2,27 @@
  * cron 运行状态记账：失败不许落成 ok（2026-10-07 假绿事故）。
  *
  * 为什么需要测这个：生产存储 DSH_HOME/storages/agint_cron.json 的
- * cron_state['skill-autocreate-aggregate'] 同一��记录里写着
+ * cron_state['skill-autocreate-aggregate'] 同一条记录里写着
  *   lastResult = 'ok'
  *   lastError  = "EPERM: operation not permitted, rename ...agint_skill_autocreate.json"
  * 而 cron_health 报 healthy。根因：runOne 的 catch 分支只写 job.lastError，
  * 不清上一次成功留下的 job.lastResult；落盘时两个字段各写各的，
  * 读侧 list() 的 lastOk 又先判 lastResult —— 于是一轮真实失败被记成成功。
  *
- * 这里盯的是**行为**，不是字符串：把 runOne / persistJobState 从模块里
+ * 这里盯的是**行为**，不是字符串：把 runOne / persistJobState / health 从模块里
  * 源码提取出来，用 new Function 构造自包含环境后真跑一遍。
  * 断言常量或断言源码文本都证明不了本 bug —— 本 bug 就是「文本看着对，跑起来错」。
  *
- * 四条判据（每条都有正例 + 负例，防"永远有信号"的反向失明）：
+ * 第一组判据（落盘记账，每条都有正例 + 负例，防"永远有信号"的反向失明）：
  *   1. action 成功 → lastResult 有值、lastError 为 null、落盘 lastResult='ok'
  *   2. action 抛错 → lastResult 必须被清成 null（回归点，删掉这行本测试变红）
  *   3. 落盘时 lastError 优先：失败轮 lastResult 落 'error' 而非 'ok'
  *   4. list() 的 lastOk 错误优先：有 lastError 一律 false
+ *
+ * 第二组判据（health() 的 failures 通道 —— 老板 2026-10-07 拍板「只报不拦」）：
+ *   5. 上轮失败的 job 进 failures，**不进 issues** —— healthy 语义不许被改
+ *   6. 每个 job 的 status 带自己的 lastError
+ *   7. 工具面 render 必须消费 failures（接了不消费 = 新的观测侧假绿）
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,6 +88,10 @@ function extractFunction(source, header) {
 const runOneSrc = extractFunction(src, 'async function runOne(');
 const persistSrc = extractFunction(src, 'async function persistJobState(');
 const listBodySrc = extractFunction(src, 'list() {');
+// `health() {…}` 是对象方法简写，提取出来不能直接当表达式求值 —— 加 `function ` 前缀
+// 变成具名函数表达式，`return (function health(){…})` 才合法（方法简写会 SyntaxError）。
+const healthSrc = 'function ' + extractFunction(src, 'health() {');
+const toolsSrc = readFileSync(join(HERE, '..', 'lib', 'tools.js'), 'utf8');
 
 // 摘要走真实现（照抄 summary-channel.test.mjs 的提取法）——桩摘要会让
 // "成功轮摘要照常落盘" 这条判据变成自证，测不出 persistJobState 有没有接线。
@@ -211,6 +220,101 @@ describe('cron list() · lastOk 错误优先', () => {
       listBodySrc,
       /lastOk:\s*j\.lastError\s*\?\s*false\s*:/,
       'list() 的 lastOk 必须先判 lastError —— 先判 lastResult 会被残留成功值盖住',
+    );
+  });
+});
+
+/**
+ * health() 依赖闭包里的 jobs / bootTime / nextFire，三样都注入。
+ *
+ * nextFire 是可控的：它返回 `lastRunAt + offsetMs`。
+ *   offset = +3h ⇒ expected 在未来 ⇒ overdueMs = 0 ⇒ 不 stale
+ *   offset = -3h ⇒ expected 在 3 小时前 ⇒ overdueMs 远大于 windowMs*0.5 ⇒ stale
+ * jobs 上挂一个 __staleOffsetMs 就能逐 case 切换。
+ */
+const HOUR = 3_600_000;
+
+function makeHealth(jobs) {
+  return new Function('jobs', 'bootTime', 'nextFire', `return (${healthSrc});`)(
+    jobs,
+    Date.now() - 10 * HOUR,
+    (_parsed, from) => new Date(from.getTime() + (jobs.__staleOffsetMs ?? 3 * HOUR)),
+  );
+}
+
+describe('cron health() · failures 通道（只报不拦）', () => {
+  test('上轮失败的 job 进 failures，且 healthy 仍为 true', () => {
+    const jobs = [
+      { id: 'ok-job', lastRunAt: Date.now() - 2 * HOUR, lastError: null },
+      { id: 'bad-job', lastRunAt: Date.now() - 2 * HOUR, lastError: { message: 'EPERM: rename denied' } },
+    ];
+    const h = makeHealth(jobs)();
+
+    assert.equal(h.failures.length, 1, '失败 job 必须被报出来');
+    assert.equal(h.failures[0].id, 'bad-job');
+    assert.match(h.failures[0].reason, /EPERM/, '失败原因原文必须透传，不能只剩一个 flag');
+    assert.equal(
+      h.healthy, true,
+      'healthy 只看调度时效（issues），不许被失败判据改写——老板 2026-10-07 拍板「只报不拦」',
+    );
+  });
+
+  test('失败 job 不进 issues（否则 healthy 会被连带改写）', () => {
+    const jobs = [{ id: 'bad-job', lastRunAt: Date.now() - 2 * HOUR, lastError: { message: 'boom' } }];
+    const h = makeHealth(jobs)();
+
+    assert.equal(
+      h.issues.length, 0,
+      '失败不是调度问题，不许混进 issues——issues.length===0 直接决定 healthy',
+    );
+  });
+
+  test('失败与逾期同时发生：issues 装逾期、failures 装失败，healthy=false 归因于逾期', () => {
+    const jobs = [
+      { id: 'bad-and-late', lastRunAt: Date.now() - 2 * HOUR, lastError: { message: 'boom' } },
+    ];
+    // nextFire 返回「比上次运行早 3 小时」⇒ overdueMs 远超 windowMs*0.5 ⇒ stale
+    jobs.__staleOffsetMs = -3 * HOUR;
+    const h = makeHealth(jobs)();
+
+    assert.equal(h.failures.length, 1, '失败仍要报');
+    assert.equal(h.failures[0].id, 'bad-and-late');
+    assert.equal(h.issues.length, 1, '逾期照旧进 issues');
+    assert.equal(h.healthy, false, '这次不健康的原因是逾期，不是失败');
+  });
+
+  test('每个 job 的 status 带自己的 lastError（工具面不必反查）', () => {
+    const jobs = [
+      { id: 'ok-job', lastRunAt: Date.now() - 2 * HOUR, lastError: null },
+      { id: 'bad-job', lastRunAt: Date.now() - 2 * HOUR, lastError: { message: 'boom' } },
+    ];
+    const h = makeHealth(jobs)();
+
+    const byId = Object.fromEntries(h.jobs.map((j) => [j.id, j]));
+    assert.equal(byId['ok-job'].lastError, null, '成功 job 的 lastError 必须是 null 而不是 undefined');
+    assert.equal(byId['bad-job'].lastError, 'boom');
+  });
+
+  test('正例：全成功时 failures 是空数组（不是 null、不是缺字段）', () => {
+    const jobs = [{ id: 'ok-job', lastRunAt: Date.now() - 2 * HOUR, lastError: null }];
+    const h = makeHealth(jobs)();
+
+    assert.deepEqual(h.failures, [], '无失败时必须给空数组，工具面才能无条件 forEach');
+  });
+});
+
+describe('cron_health 工具面 · 必须消费 failures', () => {
+  test('render 读 failures 并渲染（接了不消费 = 新的观测侧假绿）', () => {
+    assert.match(toolsSrc, /h\.failures/, 'render 必须读 h.failures，否则 health() 加的通道在工具面看不见');
+    assert.match(toolsSrc, /h\.healthy/, 'render 必须继续显示 healthy（只报不拦口径的另一半）');
+  });
+
+  test('render 不许把 failures 并进 healthy 的措辞', () => {
+    // 「healthy」与「N 个 job 上轮失败」要并排出现，但 healthy 的取值不许被 failures 决定
+    assert.doesNotMatch(
+      toolsSrc,
+      /healthy[^\n]*\?\s*['"]healthy['"]\s*:\s*[^\n]*failures/,
+      'healthy 的三元表达式里不得出现 failures —— 那等于「失败即不健康」，越过老板拍板的口径',
     );
   });
 });

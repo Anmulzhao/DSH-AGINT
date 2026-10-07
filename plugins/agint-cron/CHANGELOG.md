@@ -2,6 +2,51 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.14] — health() 增 failures 通道：报上轮失败，但不改 healthy（2026-10-07，老板拍板口径）
+
+### 问题
+0.2.13 修好了落盘记账，但 `cron_health` 仍报 healthy。根因在读侧另一半：
+`health()`（`lib/index.js`）只查 stale / overdue，**不读 `job.lastError`** ——
+"job 跑失败了"这件事在健康视图里根本不存在。
+`healthy = issues.length === 0`，而 `issues` 只装逾期，两者不是一回事。
+
+### 口径（老板 2026-10-07 拍板：只报不拦）
+三个可能的做法，选了影响面最小的一个：
+
+| 方案 | 效果 | 代价 |
+|---|---|---|
+| 失败进 `issues` | 有失败 ⇒ `healthy=false` | 连锁 agint-metrics / agint-evolve / agint-curator 三处消费方 |
+| **新开 `failures` 数组** | **失败照报，`healthy` 语义一字未改** | **仅 `cron_health` 工具面多一行** |
+| 失败只进日志 | 改动最小 | 工具面看不见，等于没修 |
+
+**为什么不能塞进 `issues`**：`healthy = issues.length === 0` 是既有契约，塞进去就等于
+把"失败"改写成"不健康"，超出老板授权范围。
+
+### 改动
+1. `health()` 返回值加 `failures`（`{id, reason, lastRunAt}[]`），`issues` 语义保持原样。
+2. 每个 job 的 `status` 元素加 `lastError` 字段 —— 工具面不必反查 `failures`。
+3. `lib/tools.js` 的 `cron_health` render 消费 `failures`，措辞把两件事分开：
+   `cron_health: healthy，1 个 job 上轮失败` + `  x <id>: <原因>（<时间>）`。
+   不并进 healthy 的措辞——并排出现时读的人必须一眼看出 healthy 说的是**调度时效**，不是成败。
+
+### 测试
+`test/run-state-accounting.test.mjs` 增 7 条（共 13 条）。`health()` 同样是源码提取 +
+`new Function` 真跑，`nextFire` 做成可注入桩，能精确构造"逾期 / 不逾期"。
+
+**两次红绿自证**：
+1. 删掉 `failures.push` 块 → 2 条红（13 tests / 11 pass / 2 fail）
+2. 把 `const failures = issues`（模拟"塞进 issues 改写 healthy"）→ 3 条红（13 / 10 / 3）
+3. 恢复 → 13/13 绿
+
+第 2 次自证是专门加的：它证明测试真能拦住"越过只报不拦口径"的实现，
+而不是只测了个恰好为真的分支。
+
+**插件全量** `node --test` 164/164 绿（原 157 + 新增 7）。
+`plugin-check` agint-cron **0 fail / 2 warn**（与本改动前完全一致，warn 指向
+`lib/jobs.js` 与 `lib/spec-index-audit.js`，未触碰）。
+另：`health().failures` **未**出现在 plugin-check 维度 11 observability-reachability
+的高危字段清单里 —— 这是 lint 对"render 确实消费了它"的独立确认。
+
 ## [0.2.13] — 修假绿记账：job 失败不再落成 lastResult='ok'（2026-10-07，生产存储实证）
 
 ### 问题
