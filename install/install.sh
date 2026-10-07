@@ -204,7 +204,12 @@ locate_dsh_dir() {
   local c resolved
 
   # ① 环境变量显式指定（最高优先，与 check-dsh-compat 一致）
-  if [ -n "${DSH_ROOT:-}" ] && [ -f "$DSH_ROOT/package.json" ]; then
+  #    ⚠️ 显式指定**同样要验真身**（对齐 check-dsh-compat 的 findDshRoot，
+  #    它对 DSH_ROOT 也会核对 pkg.name）。否则用户指错目录时会得到一个
+  #    「存在但根本不是 dsh」的路径，后续三处入口全建到错误目标上，
+  #    症状比定位失败更隐蔽（失败有 warn，错指则静默建错链）。
+  if [ -n "${DSH_ROOT:-}" ] && [ -f "$DSH_ROOT/package.json" ] \
+     && grep -q '"@deepseek-ai/dsh"' "$DSH_ROOT/package.json" 2>/dev/null; then
     printf '%s' "$DSH_ROOT"; return 0
   fi
 
