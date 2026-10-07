@@ -70,6 +70,16 @@ export const DEFAULT_PROVIDER = 'minimax-cn';
 // （cordis.patch.yml llm-pi-ai.providers.minimax-cn.models 只剩这一条），
 // 旧值 'MiniMax-M3' 已不可路由，必须同步。
 export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
+// 2026-10-07 取证：DEFAULT_MODEL 要求的模型**强制 adaptive thinking**，
+// 而 agents.create() 的 agentOptions 不传 reasoningEffort 时子代理退化成
+// thinking 关闭 → MiniMax 返 400（
+//   "requires adaptive thinking; thinking.type=\"disabled\" ... is not allowed (2013)"）
+// → consolidation 恒落 heuristic-degraded → promoted 恒 0 →
+//   agint-ov-strategy 的 dream 投影被 `promoted <= 0` 门槛永远挡死。
+// 取值对齐 settings.yaml 的 agent-default-model.reasoningEffort（high）；
+// 合法档位见 llm-pi-ai.providers.minimax-cn.models[].reasoningEfforts
+// （off/minimal/low/medium/high），off 不可用于本模型。
+export const DEFAULT_REASONING_EFFORT = 'high';
 
 // ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，30 个空壳换来的，见项目 KNOWLEDGE.md K114）。
 // `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**：
@@ -185,6 +195,7 @@ export async function consolidate({
   day,
   provider = DEFAULT_PROVIDER,
   model = DEFAULT_MODEL,
+  reasoningEffort = DEFAULT_REASONING_EFFORT,
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   logger = null,
@@ -247,11 +258,18 @@ export async function consolidate({
       //   2026-09-27 前这里只有 {cwd, origin}，18 个 dream-consolidation-* 会话因此全部
       //   turns=0 / outTokens=0，梦境整合自 09-05 起一直在走 heuristic-degraded。
       meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
-      agentOptions: { provider, model },
+      agentOptions: { provider, model, reasoningEffort },
       signal: abortController.signal,
     });
     const prompt = buildConsolidationPrompt(gated, existing, day);
-    run = await subagents.start('spawn', {
+    // 2026-10-07：start 自身挂死也必须被超时兜住。
+    // 原来的 timeoutGuard 只在下方 `Promise.race([run.result, timeoutGuard])` 里
+    // 被 await；一旦 subagents.start() 自己不落定，根本走不到那一行 ⇒ 计时器触发后
+    // timeoutGuard 的 reject 无人接管（unhandledRejection），且本函数永不返回 ——
+    // 夜间 sweep 永久挂死、cron job 再也不结束。实测复现：
+    // unhandledRejection: 'consolidation timeout after 120ms'。
+    // startPromise 上补 catch：超时胜出后 start 仍会晚到落地，吞掉它的 rejection。
+    const startPromise = subagents.start('spawn', {
       parent: consolidationHandle.agent,
       prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
       outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
@@ -269,6 +287,8 @@ export async function consolidate({
       //    空壳状态下这条讨论毫无意义（模型根本没被调起来）。
       label: `agint-dream consolidation ${day}`,
     });
+    startPromise.catch(() => { /* 超时胜出后 start 仍会晚到落地，吞掉它的 rejection */ });
+    run = await Promise.race([startPromise, timeoutGuard]);
     // B 方案诊断：订阅 child agent 的 agent/error 事件，捕获真实失败原因。
     // 事件是 agent-scoped dispatch（@deepseek-ai/dsh-scope），必须在 child ctx 上订阅。
     const childErrors = [];
@@ -345,4 +365,69 @@ export async function consolidate({
     }
     clearTimeout(timer);
   }
+}
+
+// ── 分批整合（2026-10-07）─────────────────────────────────────────────
+// 起因（实测）：单批把 43 条候选塞给子代理，prompt 体量让 LLM 在
+// DEFAULT_TIMEOUT_MS(60s) 内跑不完 → `consolidation timeout (60000ms)`
+// → 整批落 heuristic-degraded → sweep 退回「见一条推一条」→ 当晚 76 条里
+// 33 条是重复/元标注碎片（占 43%）。**LLM 整合是质量闸门，它一超时就等于
+// 闸门敞开** —— 所以要治的是批大小，不是单纯把超时调大。
+//
+// 为什么是 all-or-nothing：sweep 的校验门要求 operations 与 gated 严格 1:1
+// （见 consolidate() 的 length mismatch 分支）。部分批次成功无法表达成合法
+// 形状，与其返回一个下游必拒的半成品，不如整批降级并如实报是哪一批出的问题。
+//
+// 为什么串行：sync 订阅配额 ≤3 是门禁边（见 wireBusSubscriptions 注释），
+// 并行 N 个 LLM 调用既抢配额也让失败归因变难。
+export const DEFAULT_BATCH_SIZE = 8;
+
+export async function consolidateBatched(opts = {}) {
+  const { gated, batchSize = DEFAULT_BATCH_SIZE, logger = null } = opts;
+  if (!Array.isArray(gated) || gated.length === 0) {
+    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'no gated candidates' };
+  }
+  const size = Math.max(1, Math.floor(batchSize) || DEFAULT_BATCH_SIZE);
+  if (gated.length <= size) {
+    // 没超批量 ⇒ 走原单批路径，行为与加批之前逐字节一致
+    return consolidate(opts);
+  }
+
+  const total = Math.ceil(gated.length / size);
+  const operations = [];
+  const reasonings = [];
+  for (let i = 0; i < total; i += 1) {
+    const slice = gated.slice(i * size, (i + 1) * size);
+    const res = await consolidate({ ...opts, gated: slice });
+    if (res?.mode !== 'llm' || !Array.isArray(res.operations)) {
+      if (logger?.info) {
+        logger.info('agint-dream.consolidation: batch degraded', {
+          batch: `${i + 1}/${total}`, size: slice.length, reason: res?.reason ?? null,
+        });
+      }
+      return {
+        ok: true,
+        mode: 'heuristic-degraded',
+        operations: null,
+        reason: `batch ${i + 1}/${total} degraded: ${res?.reason ?? 'unknown'}`,
+      };
+    }
+    if (res.operations.length !== slice.length) {
+      return {
+        ok: true,
+        mode: 'heuristic-degraded',
+        operations: null,
+        reason: `batch ${i + 1}/${total} operations length ${res.operations.length} != ${slice.length}`,
+      };
+    }
+    operations.push(...res.operations);
+    if (res.reasoning) reasonings.push(res.reasoning);
+  }
+  return {
+    ok: true,
+    mode: 'llm',
+    operations,
+    reasoning: reasonings.join(' | ').slice(0, 200) || null,
+    batches: total,
+  };
 }
