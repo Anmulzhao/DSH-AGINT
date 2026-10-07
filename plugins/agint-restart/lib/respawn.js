@@ -45,14 +45,37 @@ function log(logFile, msg) {
   } catch { /* 日志写不出去也不能让重启失败 */ }
 }
 
-/** 进程是否还活着（信号 0 = 只探测不发送）。 */
+/**
+ * 进程是否还活着（信号 0 = 只探测不发送）。
+ *
+ * 2026-10-07 修：**僵尸进程对 signal 0 仍然响应** —— pid 条目还在进程表里，
+ * `process.kill(pid, 0)` 不会抛，于是判活返回 true。可本机 PID 1 = `sleep infinity`，
+ * 从不调用 wait()，respawn 派生的 shell/node 退出后永远滞留为 Zs 僵尸。
+ * 后果实测：连续三次重启都是 `exited=false forced=true waitedMs≈45100`，
+ * 而同一份 result 里 `portFree={free:true,waitedMs:9}` —— 旧进程 9ms 就释放了
+ * 3080 端口，它**早就退出了**，白等满 30s + SIGKILL（对僵尸是空操作）+ 再等 15s。
+ *
+ * 修法：signal 0 通过后，再查一次 /proc 的状态位，Z 视为已退出。
+ * /proc 不可用（非 Linux，如 win32 分支）时退回原判定，不引入新的失败面。
+ *
+ * ⚠️ 本修复只解决「判活」，**不解决泄漏** —— 僵尸照旧产生，因为 PID 1 不 reap。
+ * 根治需给容器换真 init（tini/dumb-init），属部署层面。
+ */
 function isAlive(pid) {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // comm 字段可能含空格与右括号 ⇒ 从**最后一个** ')' 之后开始切才是 state
+    const state = stat.slice(stat.lastIndexOf(')') + 2).trim()[0];
+    if (state === 'Z') return false;
+  } catch {
+    // 进程刚退出（/proc 条目消失）或非 Linux ⇒ 退回「信号 0 通过即存活」
+  }
+  return true;
 }
 
 /** TCP 端口是否能连上（能连 = 还有人在监听）。 */
