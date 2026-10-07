@@ -1051,8 +1051,10 @@ PY
         warn "patch 声明的插件入口不存在：$entry"
         smoke_fail=$((smoke_fail+1)); continue
       fi
-      if ! node --input-type=module -e "await import('file://$full')" >/dev/null 2>&1; then
-        warn "插件 import 失败：$entry — $(node --input-type=module -e "await import('file://$full')" 2>&1 | grep -oE "(Cannot find package '[^']*'|Error \[ERR_[A-Z_]+\])" | head -1)"
+      # 2026-10-07 N9：路径改走 pathToFileURL——旧写法 'file://$full' 直接内插，
+      # 含空格/特殊字符的 DSH_HOME 会碎（winpath 换算后的路径不保证无空格）。
+      if ! node --input-type=module -e "await import((await import('node:url')).pathToFileURL(process.argv[1]).href)" "$full" >/dev/null 2>&1; then
+        warn "插件 import 失败：$entry — $(node --input-type=module -e "await import((await import('node:url')).pathToFileURL(process.argv[1]).href)" "$full" 2>&1 | grep -oE "(Cannot find package '[^']*'|Error \[ERR_[A-Z_]+\])" | head -1)"
         smoke_fail=$((smoke_fail+1))
       fi
     done < <(grep -oE '^[[:space:]]*name:[[:space:]]*\./plugins/[^ ]*\.js' "$BUNDLE_PATCH_DST" \

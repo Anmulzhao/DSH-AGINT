@@ -210,6 +210,10 @@ function apply(ctx, config) {
   }
 
   function spawnWithTimeout(argv, timeoutMs) {
+    // 2026-10-07 N9：捕获上限 1MB——异常/恶意的 smoke 进程可在 30s 内喷出
+    // GB 级 stdout 撑爆宿主内存；超限截断。截断会让 JSON 解析失败 →
+    // 'unparseable-stdout' → 本次 smoke 判失败：方向正确，截断本身就不该算通过。
+    const MAX_CAPTURE = 1024 * 1024;
     return new Promise((resolve) => {
       const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
@@ -219,8 +223,8 @@ function apply(ctx, config) {
         timedOut = true;
         child.kill('SIGKILL');
       }, timeoutMs);
-      child.stdout.on('data', (d) => { stdout += d.toString(); });
-      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.stdout.on('data', (d) => { if (stdout.length < MAX_CAPTURE) stdout += d.toString(); });
+      child.stderr.on('data', (d) => { if (stderr.length < MAX_CAPTURE) stderr += d.toString(); });
       child.on('close', (exitCode) => {
         clearTimeout(timer);
         resolve({ exitCode, stdout, stderr, timedOut });

@@ -47,6 +47,8 @@
 import {
   DIMENSION_WEIGHTS,
   SAFETY_VETO_THRESHOLD,
+  TRUST_VETO_THRESHOLD,
+  compositeScore,
 } from '../../agint-quality-eval/lib/evaluators.js';
 
 /** 默认 policyId（contract.pluginId + version 标识） */
@@ -55,8 +57,9 @@ export const DEFAULT_POLICY_ID = 'agint-quality-policy@0.4.0';
 /** 默认权重（与 contract QualityConfig.harmWeights 解耦 —— 这是综合分维度权重） */
 export const DEFAULT_DIMENSION_WEIGHTS = { ...DIMENSION_WEIGHTS };
 
-/** trust 维度的 veto 阈值（< 此值 → REJECT） */
-export const TRUST_VETO_THRESHOLD = 0.3;
+// TRUST_VETO_THRESHOLD 2026-10-07 上移到 evaluators.js（S12：阈值与唯一权威实现同文件），
+// 此处 re-export 保持既有 import 路径兼容。
+export { TRUST_VETO_THRESHOLD };
 
 /**
  * 判定 ABSTAIN 触发条件
@@ -73,39 +76,13 @@ export function shouldAbstain(results) {
 }
 
 /**
- * 计算单个 EvalResult 的综合分（0..100）
- * - 任一 veto 维度（safety/trust 默认 veto）score === null 或低于阈值 → 返回 null（caller 走 REJECT）
- * - 否则 score = 100 * sum(weight_i * score_i) / sum(weight_i for valid score_i)
- * - 返回 null 表示 veto 触发
+ * 计算单个 EvalResult 的综合分（0..100）——2026-10-07 S12 起委托 evaluators.compositeScore
+ * （唯一权威实现：safety+trust 双 veto、null 安全、缺维度保守）。
+ * 保留导出名与签名兼容既有调用方/测试；此前与 eval 侧的双实现已漂移，勿再本地展开。
+ * 返回 null 表示 veto 触发（caller 走 REJECT）。
  */
 export function computeComposite(evalResult, weights = DEFAULT_DIMENSION_WEIGHTS, vetoThresholds = { safety: SAFETY_VETO_THRESHOLD, trust: TRUST_VETO_THRESHOLD }) {
-  const dims = Array.isArray(evalResult.dimensions) ? evalResult.dimensions : [];
-  let num = 0;
-  let den = 0;
-  for (const d of dims) {
-    const s = d.score?.score;
-    if (s === null || s === undefined) continue;
-    const w = weights[d.key] ?? 0;
-    if (w === 0) continue;
-    num += w * s;
-    den += w;
-  }
-  if (den === 0) return null;
-
-  // veto 检查：safety/trust score === null 或低于阈值 → null
-  const safety = dims.find((d) => d.key === 'safety');
-  const trust = dims.find((d) => d.key === 'trust');
-  if (safety) {
-    const ss = safety.score?.score;
-    if (ss === null || ss === undefined || ss < vetoThresholds.safety) return null;
-  }
-  if (trust) {
-    const ts = trust.score?.score;
-    if (ts === null || ts === undefined || ts < vetoThresholds.trust) return null;
-  }
-
-  const score = (num / den) * 100;
-  return Math.round(score * 10) / 10;
+  return compositeScore(evalResult, weights, vetoThresholds);
 }
 
 /**
@@ -209,12 +186,17 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
   }
 
   // 1. 反和谐检测（4.2 接入；detectors 注入；缺省为 clean）
+  // 2026-10-07 S13 fail-closed：检测器抛错不再当 clean 放行——标记 detectorFailed，
+  // master 决策最高只给 PENDING_REVIEW，且异常证据强制进 triggeredBy（此前
+  // patterns 只在 false-harmony 分支才带出，检测器挂了这个事实彻底不可见）。
   let detectorVerdict = { report: 'clean', patterns: [] };
+  let detectorFailed = false;
   if (options?.detectors && typeof options.detectors.run === 'function') {
     try {
       detectorVerdict = await options.detectors.run({ results, config });
     } catch (err) {
-      detectorVerdict = { report: 'clean', patterns: [`detector-threw:${err.message}`] };
+      detectorFailed = true;
+      detectorVerdict = { report: 'clean', patterns: [`detector-threw:${err?.message ?? err}`] };
     }
   }
   if (detectorVerdict.report === 'false-harmony') {
@@ -246,11 +228,17 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
       anyVeto = true;
       const safety = r.dimensions?.find((d) => d.key === 'safety');
       const trust = r.dimensions?.find((d) => d.key === 'trust');
-      const reason = safety && (safety.score?.score === null || safety.score?.score < SAFETY_VETO_THRESHOLD)
-        ? `safety-veto:${safety.score?.score === null ? 'null' : `below-${SAFETY_VETO_THRESHOLD}`}`
-        : trust && (trust.score?.score === null || trust.score?.score < TRUST_VETO_THRESHOLD)
-          ? `trust-veto:${trust.score?.score === null ? 'null' : `below-${TRUST_VETO_THRESHOLD}`}`
-          : 'unknown-veto';
+      // 2026-10-07 N7：维度整体缺失也产出可读原因（缺维度 = 无数据 = 保守，与
+      // compositeScore 的 veto 口径一致），不再笼统落 unknown-veto。
+      const reason = !safety
+        ? 'safety-veto:dimension-missing'
+        : (safety.score?.score === null || safety.score?.score === undefined || safety.score?.score < SAFETY_VETO_THRESHOLD)
+          ? `safety-veto:${safety.score?.score == null ? 'null' : `below-${SAFETY_VETO_THRESHOLD}`}`
+          : !trust
+            ? 'trust-veto:dimension-missing'
+            : (trust.score?.score === null || trust.score?.score === undefined || trust.score?.score < TRUST_VETO_THRESHOLD)
+              ? `trust-veto:${trust.score?.score == null ? 'null' : `below-${TRUST_VETO_THRESHOLD}`}`
+              : 'unknown-veto';
       perTarget.push({
         targetId: r.targetId,
         kind: 'REJECT',
@@ -301,6 +289,14 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
     masterKind = 'PENDING_REVIEW';
   }
 
+  // S13 fail-closed：检测器异常时证据必须可见，且 AUTO_DEPLOY 封顶为 PENDING_REVIEW
+  // （真 AUTO_DEPLOY 的前提是全部检测器健康；降级不算 REJECT——检测器坏了不该
+  //  冒充「发现了反和谐」，只是不能再自动放行）。
+  if (detectorFailed) {
+    triggeredBy.push(...detectorVerdict.patterns);
+    if (masterKind === 'AUTO_DEPLOY') masterKind = 'PENDING_REVIEW';
+  }
+
   const avgScore = results.length > 0 ? Math.round((totalScore / results.length) * 10) / 10 : 0;
 
   return {
@@ -321,8 +317,8 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
 
 /**
  * Whether the policy's decision should trigger evolution.addFailure.
- * Sprint 4 决策：REJECT → 触发；其余不触发。
- * 由 policy plugin 的 index.js 调用，故保留为 named export。
+ * REJECT 与 ABSTAIN 都触发（ABSTAIN 以 medium 严重度留痕——评估链路本身
+ * 出问题是需要被复盘看见的信号）。由 policy plugin 的 index.js 调用。
  */
 export function shouldReportToEvolution(decision) {
   return decision?.kind === 'REJECT' || decision?.kind === 'ABSTAIN';

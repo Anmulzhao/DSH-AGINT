@@ -19,6 +19,13 @@ export const DEFAULT_COMMITTEE_CONFIG = {
   shadowAutoPromoteN: 10,
   rollbackTriggerPct: 0.5,
   rollbackMinSampleSize: 5,
+  // 2026-10-07 S14：history 封顶（ring 语义：超限淘汰最早插入的条目）。
+  // 此前无上限——长驻 dsh 里每次 decide 都 append，缓慢无界增长（对齐同类纪律：
+  // event-bus ring 2000 封顶、restart-history 50 封顶）。
+  // ⚠️ 持久化缺口（如实登记，勿当已解决）：本 storage 仍是**进程内存活**——
+  // 重启即失，「连续 REJECT 自动回滚」的证据随之清零（review-2026-10-07-round3.md S14）。
+  // 封顶只解决内存增长；落盘待接 storageDomain，是独立决定。
+  historyCap: 500,
 };
 
 /**
@@ -217,6 +224,7 @@ export async function appendHistory({
   policyId,
   storage,
   source = 'prod',
+  cap = DEFAULT_COMMITTEE_CONFIG.historyCap,
 } = {}) {
   if (!storage?.history) throw new Error('appendHistory: storage required');
   const ts = decision.decidedAt ?? new Date().toISOString();
@@ -237,6 +245,14 @@ export async function appendHistory({
     key = `${ts}#${Math.random().toString(36).slice(2, 8)}`;
   }
   storage.history.set(key, entry);
+  // 2026-10-07 S14：封顶裁剪。Map 保持插入序 → 首个 key 即最早条目；
+  // rollback 采样只看「最近 N 条」（queryHistory 按 ts 倒序取 limit），淘汰最早不伤判定。
+  if (Number.isInteger(cap) && cap > 0) {
+    while (storage.history.size > cap) {
+      const oldest = storage.history.keys().next().value;
+      storage.history.delete(oldest);
+    }
+  }
   return entry;
 }
 
