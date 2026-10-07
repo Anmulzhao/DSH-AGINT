@@ -355,6 +355,9 @@ safe_rsync() {
     return
   fi
   if command -v rsync >/dev/null 2>&1; then
+    # ⚠️ 排除表有**两个副本**：这里的 --exclude 与下方 python heredoc 里的
+    #    EXCLUDE_NAMES / EXCLUDE_GLOBS 必须语义等价——改这里必须同步改那边
+    #    （python 侧 ignore() 递归生效，等价于 rsync 不带锚定的目录名模式）。
     rsync -a --no-links --delete \
       --exclude='.git/' \
       --exclude='.git' \
@@ -371,7 +374,7 @@ import os, sys, shutil, fnmatch
 
 src, dst = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 
-# 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改一处要改两处）
+# 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改这里必须同步改 rsync 那份）
 EXCLUDE_NAMES  = {'.git', 'node_modules'}
 EXCLUDE_GLOBS  = ('*.bundle', '*.bak-*')
 

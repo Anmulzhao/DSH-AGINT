@@ -485,7 +485,10 @@ if [ -f "$L0_SCRIPT" ]; then
       exit 1
     fi
   else
-    echo "  [WARN] node 不可用，L0 检查跳过（这条门禁在无 node 环境下形同虚设）"
+    # 2026-10-07 改 fail-closed：这是真阻断位，无 node 的机器上跳过 = 门禁形同虚设
+    # （L0 契约被改了照样全绿 exit 0）。宁可拒跑逼环境修好，不放行假绿。
+    echo "  [FAIL] node 不可用，L0 检查无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
   fi
 fi
 
@@ -506,6 +509,8 @@ if [ -f "$AF_SCRIPT" ]; then
       exit 1
     fi
   else
-    echo "  [WARN] node 不可用，addFailure 值域检查跳过"
+    # 2026-10-07 改 fail-closed（同上 L0 段理由）：无 node = 检查跑不了 = 拒绝放行
+    echo "  [FAIL] node 不可用，addFailure 值域检查无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
   fi
 fi

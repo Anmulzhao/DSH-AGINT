@@ -67,7 +67,10 @@ function countSyncSubs() {
 /**
  * publish —— 接受完整 envelope 或 PublishInput（业务插件多走 PublishInput）
  * - 校验 → 路由 → 调用 delivery → 写 ring + logBuffered
- * - 不阻塞 async 投递；只等 sync 投递
+ * - 投递语义（2026-10-07 澄清，旧注释「不阻塞 async 投递」与实现相反）：
+ *   对所有匹配订阅者**串行 await**，含 async 订阅者的重试+退避。阻塞时长有界：
+ *   单订阅者最多 maxAttempts(≤5) × 退避(封顶 8s) ≈ 22s（默认 3×500ms ≈ 1.5s）。
+ *   T1 影子期可接受；T2 切流量前需评估是否改真 fire-and-forget。
  */
 export async function publish(ctx, input) {
     let envelope;
@@ -512,7 +515,15 @@ export async function metricsSnapshot(ctx) {
         const dl = ctx?.tables?.deadletter;
         if (dl && typeof dl.size === 'function') deadletterCount = (await dl.size()) ?? 0;
         else if (dl && typeof dl.entries === 'function') {
-            deadletterCount = [...dl.entries()].length;
+            // 2026-10-07：旧写法 [...dl.entries()] 对异步迭代器直接抛（真实表
+            // entries() 是 async iterator，spread 非同步可迭代）→ 被 catch 吞成 0。
+            // 改 for-await 计数，并加 10 万条防御性上限（有 reaper 清理后不该触顶）。
+            let n = 0;
+            for await (const _e of dl.entries()) {
+                n += 1;
+                if (n >= 100000) break;
+            }
+            deadletterCount = n;
         }
     }
     catch { /* 软降级→0 */ }

@@ -24,7 +24,7 @@
  * 新 dsh 自身的 stdout/stderr 重定向到 request.logFile（默认 %TEMP%/dsh-web.log）。
  */
 import { spawn, execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, statSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, writeSync, closeSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import net from 'node:net';
 
@@ -142,12 +142,28 @@ function forceKill(pid) {
 /** 读并校验 request.json。缺关键字段直接抛（调用方会记日志退出）。 */
 function readRequest(path) {
   const raw = JSON.parse(readFileSync(path, 'utf8'));
-  if (!raw || typeof raw.targetPid !== 'number') throw new Error('request.targetPid 缺失');
+  if (!raw || typeof raw.targetPid !== 'number' || !(raw.targetPid > 0)) {
+    // targetPid 必须 >0：process.kill(0, 0) 探测的是整个进程组，恒真，
+    // waitForExit 会把「0 永远活着」等成超时强杀（kill(0) = 对全组发信号，事故面更大）。
+    throw new Error('request.targetPid 缺失或非 >0 的 pid');
+  }
   const launch = raw.launch ?? {};
   if (typeof launch.command !== 'string' || !Array.isArray(launch.args)) {
     throw new Error('request.launch.{command,args} 缺失——无法决定怎么拉起 dsh');
   }
   return raw;
+}
+
+/**
+ * 核对取消标记：插件侧 cancel() 会往 request.json 写 cancelledAt。
+ * 必须重新读文件（不能信启动时读到的 req）——取消往往发生在 respawn 已启动之后，
+ * 而旧进程退出最长要等几十秒，这个窗口足够取消到达。
+ * 返回 true 表示已取消；调用方应记日志退出且**不写回执**（取消不算失败重启）。
+ */
+function isCancelled(reqPath, req) {
+  if (req.cancelledAt) return true;
+  const fresh = readJsonSafe(reqPath);
+  return Boolean(fresh && fresh.cancelledAt);
 }
 
 /** 等旧进程退出；超时则（可选）强杀。 */
@@ -286,12 +302,21 @@ function quoteVbsString(s) {
   return `"${String(s).replace(/"/g, '""')}"`;
 }
 
-/** cmd 参数引号：含空白或 cmd 元字符时加引号（内部 " 转义为 \"）。 */
+/**
+ * cmd 参数引号：含空白或 cmd 元字符时加引号。
+ * ⛔ 含 `"` 的参数直接拒绝而不是转义：cmd.exe 的解析器不认反斜杠转义引号
+ * （`"` 是开关引号的切换符，`\"` 里的 `\` 是字面量、`"` 照样闭合引号），
+ * 引号提前闭合后其后跟的 `&` `|` 等 cmd 元字符会被当命令分隔符执行。
+ * cmd 引号内没有安全嵌入 `"` 的办法，fail-fast 好过静默产生被劫持的命令行。
+ */
 function quoteCmdArg(a) {
   const s = String(a);
   if (s === '') return '""';
-  if (!/[\s"&^<>|]/.test(s)) return s;
-  return `"${s.replace(/"/g, '\\"')}"`;
+  if (s.includes('"')) {
+    throw new Error(`arg 含双引号，cmd 引号语义无法安全转义: ${s.slice(0, 40)}`);
+  }
+  if (!/[\s&^<>|]/.test(s)) return s;
+  return `"${s}"`;
 }
 
 /**
@@ -390,11 +415,6 @@ function readJsonSafe(p) {
   try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
 }
 
-/** 写 JSON，失败只当没有（并发写锁是尽力而为，不该因此让重启失败）。 */
-function writeJsonSafe(p, obj) {
-  try { writeFileSync(p, JSON.stringify(obj, null, 2)); return true; } catch { return false; }
-}
-
 async function main() {
   const reqPath = process.argv[2];
   if (!reqPath) {
@@ -413,6 +433,13 @@ async function main() {
   const logFile = join(stateDir, 'restart.log');
   const resultFile = join(stateDir, 'restart-result.json');
 
+  // 取消闭环（第一道）：启动即发现已取消——直接退出，不占锁、不写回执。
+  // 之前版本只靠插件侧写 cancelledAt 标记但本脚本从不读它，取消是空转。
+  if (isCancelled(reqPath, req)) {
+    log(logFile, `respawn: 请求已被取消（cancelledAt=${req.cancelledAt ?? readJsonSafe(reqPath)?.cancelledAt}），退出且不写回执`);
+    process.exit(3);
+  }
+
   // 重叠保护：同一 targetPid 已有 respawn 在跑，后来者直接让位。
   //
   // 2026-10-06 实测事故：两个请求相隔 6 秒（14:06:37 / 14:06:43）针对同一个
@@ -426,17 +453,33 @@ async function main() {
   // 后写覆盖先写。重叠者一旦写回执，好端端的回执就被失败记录顶掉了。
   // 让位者只记日志、不碰回执，回执里留下的就永远是最先认领者的真实结果。
   const lockFile = join(stateDir, 'respawn.lock');
-  const existing = readJsonSafe(lockFile);
-  if (existing && existing.pid && isAlive(existing.pid) && existing.targetPid === req.targetPid) {
-    log(logFile, `respawn: 让位——已有 respawn pid=${existing.pid} 在处理同一 targetPid=${req.targetPid}（request=${existing.requestId ?? '-'}），本进程（request=${req.requestId ?? '-'}）退出且不写回执`);
-    process.exit(3);
+  let lockFd;
+  try {
+    // 独占创建：已存在则抛 EEXIST——「检查占位」合并成一个原子动作，
+    // 消灭旧写法「先读判无锁 → 再覆盖写」之间毫秒级窗口（两 respawn 同时
+    // 读到无锁、双双通过，锁在最该起作用的场景失效）。另 writeJsonSafe 是
+    // 非原子覆盖写，并发读到截断文件时 readJsonSafe 返 null = 等于无锁。
+    lockFd = openSync(lockFile, 'wx');
+  } catch {
+    const existing = readJsonSafe(lockFile);
+    if (existing && existing.pid && isAlive(existing.pid) && existing.targetPid === req.targetPid) {
+      log(logFile, `respawn: 让位——已有 respawn pid=${existing.pid} 在处理同一 targetPid=${req.targetPid}（request=${existing.requestId ?? '-'}），本进程（request=${req.requestId ?? '-'}）退出且不写回执`);
+      process.exit(3);
+    }
+    // 锁文件存在但持有者已死 / 文件损坏 / 换了 target：强占重写。
+    log(logFile, `respawn: 旧锁无效（持有者已退出或 target 不同），强占 lock（原内容=${JSON.stringify(existing)}）`);
+    lockFd = openSync(lockFile, 'w');
   }
-  writeJsonSafe(lockFile, {
-    pid: process.pid,
-    targetPid: req.targetPid,
-    requestId: req.requestId ?? null,
-    startedAt: new Date().toISOString(),
-  });
+  try {
+    writeSync(lockFd, JSON.stringify({
+      pid: process.pid,
+      targetPid: req.targetPid,
+      requestId: req.requestId ?? null,
+      startedAt: new Date().toISOString(),
+    }));
+  } finally {
+    closeSync(lockFd);
+  }
   const releaseLock = () => {
     try {
       const cur = readJsonSafe(lockFile);
@@ -465,6 +508,12 @@ async function main() {
   result.portFree = portFree;
 
   // 3. 拉起新实例（win32 先探测隐藏启动链路是否可用，不可用则回退 detached 保底）
+  // 取消闭环（第二道）：等旧进程退出/端口释放最长几十秒，期间取消可能刚写入
+  // request.json——拉起是最后不可逆的一步，动手前必须再核一次。
+  if (isCancelled(reqPath, req)) {
+    log(logFile, `respawn: 拉起前发现请求已取消（cancelledAt=${readJsonSafe(reqPath)?.cancelledAt ?? req.cancelledAt}），放弃重启且不写回执`);
+    process.exit(3);
+  }
   try {
     const needHidden = process.platform === 'win32' && !(await canHideLaunch(stateDir));
     if (needHidden) log(logFile, 'respawn: 隐藏启动链路不可用（wscript 探测失败），回退到 detached 方式');

@@ -27,6 +27,13 @@
 #     同步改动（三处必须一致，少改一处 = 修复被静默回退）：
 #       `src/schemas.ts`（tsc 输入）+ `lib/schemas.js`（运行时产物）。
 #     ⚠️ L0 状态：未走人类多签 + 7 天影子流程，按「修契约冲突缺陷」处理，待人工复核。
+#   2026-10-07 — retry 数值上限收紧（非 FROZEN 字段变更，属约束补全）：
+#     maxAttempts 加 maximum: 5、backoffMs 加 minimum: 50 / maximum: 2000。
+#     理由：投递实现（bus.publish）对订阅者**串行 await**（含 async 重试+退避），
+#           maxAttempts 此前无上限——配 100 次即单订阅者可阻塞 publish 约 13 分钟
+#           （重试退避封顶 8s/次），且队头阻塞其后的所有订阅者。默认值 3/500 不变。
+#     同步改动（三处必须一致）：本文件 + src/schemas.ts + lib/schemas.js
+#           （delivery.ts/js 另有同值兜底 cap，防止绕过订阅校验的直连调用）。
 
 schemaVersion: 1
 
@@ -88,15 +95,20 @@ Subscription:
       description: sync 模式超时（默认 10000ms）；超时降级 PENDING_REVIEW
     retry:
       type: object
-      description: 重试退避（异步投递）
+      description: 重试退避（异步投递）；上限为 publish 阻塞时长兜底（2026-10-07）
       properties:
         maxAttempts:
           type: integer
+          minimum: 1
+          maximum: 5
           default: 3
+          description: 单订阅者单事件最大投递尝试次数；上限 5 防 publish 被长重试串行阻塞
         backoffMs:
           type: integer
+          minimum: 50
+          maximum: 2000
           default: 500
-          description: 指数退避基数（次次 ×2）；封顶 8000ms
+          description: 指数退避基数（次次 ×2）；封顶 8000ms；基数上限 2000 同为阻塞兜底
 
 # 全系统约束（设计稿 §五.边界）
 constraints:

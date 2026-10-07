@@ -268,6 +268,14 @@ export function createLedgerService({ getTable, now, warn = () => {}, bump = () 
    * ⚠️ 只改 anchorStatus / anchorSeq（以及发现异常时的 integrity），
    * 绝不改写条目内容 —— 这两个字段不参与 entryHash，所以回写不会自毁哈希
    * （v1.2 勘误 #8 的存在理由）。每条改完重算一次 entryHash 自证这点。
+   *
+   * 为什么不需要 withAppendLock（2026-10-07 审查复核，留注释免后人重推）：
+   * 与并发 appendEntry 的 table.put 可能交错，但 ① host 平面把单次 put 串行化，
+   * ② put 是 fresh get 之后的**全量重写**，写入值只由读到的 rec 决定——
+   * 最坏交错也只是「anchorStatus 用旧条目状态覆盖一次」，下轮锚定自愈；
+   * appendEntry 改的字段（content/chain）与这里改的字段（anchorStatus/anchorSeq）
+   * 交集为空，且 appendEntry 的 CAS 复核会先撞 integrity 变化。锚定频率是周级，
+   * 串行化零成本，若未来要绝对保守可直接包进 withAppendLock。
    */
   async function markAnchored({ anchorSeq, fromSeq, toSeq }) {
     if (!Number.isInteger(anchorSeq) || anchorSeq < 1) throw new Error('markAnchored: anchorSeq 必须是 >=1 的整数');

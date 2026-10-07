@@ -234,9 +234,12 @@ function writeJson(path, doc) {
  *   中  +API_KEY|CREDENTIAL            → 命中 3，多出 API_KEY_HELPER_DISABLED=1（开关，剥掉无害）
  *   宽  +AUTH|ACCESS_KEY|PRIVATE_KEY   → 命中 5，多出 **SSH_AUTH_SOCK** ——
  *                                          那是 socket 路径不是密钥，剥掉直接断掉 SSH agent 转发
- * 宽档那个是真误伤，所以不取。
+ * 宽档那个是真误伤，所以不取。中档（含 API_KEY）零真误伤：多命中的
+ * API_KEY_HELPER_DISABLED 只是个开关，剥掉无害——而 DEEPSEEK_API_KEY 这类
+ * 真 API 凭据此前会明文落进 restart-request.json（0600 只兜住同组用户，
+ * 单文件长期留存明文凭据仍是暴露面），所以 2026-10-07 起正式取中档。
  */
-const SENSITIVE_ENV_KEY = /(PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL)/i;
+const SENSITIVE_ENV_KEY = /(PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|API_KEY)/i;
 
 /**
  * 已知「名字像密钥、实际不是」的键：正则日后若放宽，这些必须显式豁免，
@@ -771,9 +774,13 @@ function apply(ctx, cfg = {}) {
     }
   };
 
-  /** 手动模式下给老板的可复制命令。 */
+  /** 手动模式下给老板的可复制命令。cwd/args 含引号时命令复制即坏，加提示防坑。 */
   function buildManualCommand(l) {
-    return `cd "${l.cwd}" && "${l.command}" ${l.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
+    const cmd = `cd "${l.cwd}" && "${l.command}" ${l.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
+    if (/"/.test(`${l.cwd ?? ''}${l.command ?? ''}${l.args.join('') ?? ''}`)) {
+      return `${cmd}\n# ⚠️ 以上命令的 cwd/args 含双引号——直接复制粘贴会坏，请手工核对引号`;
+    }
+    return cmd;
   }
 
   /** 只读状态：当前进程、冷却、熔断、上次重启结果、运行中代码指纹。 */
@@ -821,14 +828,15 @@ function apply(ctx, cfg = {}) {
     }
     const id = pending.requestId;
     pending = null;
-    // 守护脚本可能已经跑起来了；写一条 cancel 标记，respawn 侧以 request 文件为准，
-    // 这里主要通过删除请求文件 + 清空 pending 阻止后续重复请求
+    // 守护脚本可能已经跑起来了。写 cancelledAt 标记——respawn 侧在「读请求后」
+    // 和「拉起新实例前」各核一次该标记（2026-10-07 补的闭环，之前只写不读、
+    // 取消是空转）。等旧进程退出最长几十秒，取消赶在拉起前到达即可真正叫停。
     try { writeJson(requestPath, { ...readJson(requestPath, {}), cancelledAt: new Date().toISOString() }); } catch { /* ignore */ }
-    // sideEffect=true：标记清了，但守护脚本可能已经在等旧进程退出——取消不保证能叫停重启
+    // sideEffect=true：取消生效有窗口——若新实例已被拉起，取消只能阻止回执错乱，叫不回已起的进程
     return cancelResult({
       cancelled: true,
       code: 'cancelled',
-      message: '已清除在途标记；若守护脚本已启动，需人工确认是否有新实例被拉起',
+      message: '已清除在途标记；若守护脚本尚未拉起新实例会被叫停，已拉起则需人工确认',
       requestId: id,
       sideEffect: true,
     });
