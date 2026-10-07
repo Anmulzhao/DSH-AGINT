@@ -113,6 +113,14 @@
 
 每个 job 的 `lastRunAt` / `lastResult` / `lastError` 持久化到独立的 `agint_cron` storage domain（`cron_state` 表）。这样 host 进程重启后再跑 `cron_list`，能**恢复真实的 last-run 时间戳**，而不是显示 `never`。存储域打开失败时自动降级为内存-only（不阻塞调度，与旧行为一致）。
 
+> **`lastResult` 的取值语义（v0.2.13 起）**：`'ok'` = 本轮成功；`'error'` = 本轮失败，
+> 此时 `lastError` 必有非空原文；`null` = 从未成功跑过。
+> ⛔ `'ok'` 与 `lastError` 不会并存——v0.2.12 及之前会（`runOne` 的 catch 分支不清
+> `lastResult`，落盘两个字段各写各的，`list()` 的 `lastOk` 又先判 `lastResult`），
+> 后果是一轮写盘失败被记成成功、`cron_health` 报 healthy。实证记录见
+> `cron_state['skill-autocreate-aggregate']`（2026-10-07 05:15 EPERM）。
+> 读存量旧记录时以 `lastError` 为准：hydrate 侧已按"有 lastError 就不恢复 lastResult"处理。
+
 ## 加载
 
 host 插件通过 dsh 的 user-patch 层挂载：

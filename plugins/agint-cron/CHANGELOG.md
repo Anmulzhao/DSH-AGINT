@@ -2,6 +2,41 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.13] — 修假绿记账：job 失败不再落成 lastResult='ok'（2026-10-07，生产存储实证）
+
+### 问题
+`cron_health` 报 healthy，而生产存储 `agint_cron` → `cron_state['skill-autocreate-aggregate']`
+同一条记录里写着：
+```
+lastResult = "ok"
+lastError  = "EPERM: operation not permitted, rename '...agint_skill_autocreate.json'"
+```
+一轮真实写盘失败被记成成功。三处叠加：
+1. **根因** `runOne` 的 catch 分支只写 `job.lastError`，不清上一次成功留下的 `job.lastResult`。
+   于是内存里两者并存。
+2. **落盘** `persistJobState` 无条件 `lastResult: job.lastResult ? 'ok' : null`，
+   把并存的脏形状原样写成 `ok` + 错误。
+3. **读侧** `list()` 的 `lastOk` 先判 `lastResult`（`j.lastResult ? true : ...`），
+   残留的成功值盖住错误 ⇒ `cron_health` 一并报绿。
+
+### 修法（四处，全部在 `lib/index.js`）
+1. `runOne` catch 分支补 `job.lastResult = null` —— 失败即清。
+2. `persistJobState` 改为 `lastError ? 'error' : (lastResult ? 'ok' : null)`，
+   且失败轮 `lastResultSummary` 一并置 null（不留上一轮摘要）。`'error'` 是新值域，
+   schema 是 `z.string().nullable()`，旧记录仍解析得过。
+3. `list()` 的 `lastOk` 改成错误优先：`j.lastError ? false : (j.lastResult ? true : null)`。
+4. **hydrate 治存量**：`rec.lastError` 存在时不再恢复 `lastResult`。不修这条，
+   存量脏记录在重启后原样搬进内存，下一轮 `list()` 继续报假绿。
+
+### 测试
+新增 `test/run-state-accounting.test.mjs`（6 条）。用源码提取 + `new Function`
+把 `runOne` / `persistJobState` 构造出来**真跑**，断言落盘结果而不是断言源码文本 ——
+本 bug 正是"文本看着对、跑起来错"。
+
+**红绿自证**：删掉第 1 条的 `job.lastResult = null;` 后，
+「负例：action 抛错后 lastResult 不得残留上一轮的成功值」变红（6 tests / 5 pass / 1 fail）；
+恢复后 6/6 绿。插件全量 `node --test` 157/157 绿。
+
 ## [0.2.11] — 修接线缺失：services 快照表补 `agint.evolution`（2026-10-04，手工 runNow 实跑钉出）
 
 ### 问题

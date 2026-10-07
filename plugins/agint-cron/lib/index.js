@@ -138,8 +138,11 @@ function apply(ctx, config) {
       const job = jobById.get(jobId);
       if (!job) continue;
       if (rec.lastRunAt) job.lastRunAt = new Date(rec.lastRunAt).getTime();
-      if (rec.lastResult === 'ok') job.lastResult = { ok: true, restored: true };
+      // 2026-10-07：存量记录里存在 lastResult='ok' 与 lastError 并存的脏数据
+      // （失败分支不清 lastResult 的历史遗留）。hydrate 以 lastError 为准 ——
+      // 否则重启后污染原样搬进内存，下一轮 list() 继续报假绿。
       if (rec.lastError) job.lastError = { message: rec.lastError };
+      if (rec.lastResult === 'ok' && !rec.lastError) job.lastResult = { ok: true, restored: true };
       // `.nullish()` in cronStateSchema means a record written before this field
       // existed parses to `undefined` here — normalise to null for the tool face.
       if (rec.lastResultSummary !== undefined) job.lastResultSummary = rec.lastResultSummary;
@@ -263,6 +266,13 @@ function apply(ctx, config) {
       job.lastError = null;
     } catch (error) {
       job.lastError = { startedAt, message: error && error.message ? error.message : String(error) };
+      // 2026-10-07 假绿记账修复：失败必须把 lastResult 清掉。此前失败分支不清，
+      // 一次成功留下的 lastResult 会一直留着；落盘时于是 lastResult='ok' 与
+      // lastError=<本轮错误> 并存 —— list() 的 lastOk 读 lastResult 先命中，报 true，
+      // health() 一并报 healthy。实证（生产存储 DSH_HOME/storages/agint_cron.json →
+      // cron_state['skill-autocreate-aggregate']）：2026-10-07 05:15 写盘 EPERM，
+      // 同一条记录 lastResult='ok' + lastError='EPERM: ... rename ...'。
+      job.lastResult = null;
       console.error('[agint-cron] job ' + job.id + ' failed: ' + job.lastError.message);
     } finally {
       job.lastRunAt = Date.now();
@@ -345,9 +355,13 @@ function apply(ctx, config) {
   async function persistJobState(job) {
     const record = {
       lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
-      lastResult: job.lastResult ? 'ok' : null,
+      // 2026-10-07：lastError 优先。即便内存里两者意外并存，也绝不把失败落成 'ok'。
+      // 'error' 是新值域 —— schema 是 z.string().nullable()，旧记录仍解析得过；
+      // hydrate 侧只认 'ok'，所以老读取方遇 'error' 会当作「无结果」，方向安全。
+      lastResult: job.lastError ? 'error' : (job.lastResult ? 'ok' : null),
       lastError: job.lastError ? job.lastError.message : null,
-      lastResultSummary: job.lastResult ? summarizeResult(job.lastResult.result) : null,
+      // 摘要跟着 lastResult 走：失败轮不留上一轮的结果摘要。
+      lastResultSummary: job.lastError ? null : (job.lastResult ? summarizeResult(job.lastResult.result) : null),
       updatedAt: new Date().toISOString(),
     };
     const table = await stateTable();
@@ -364,7 +378,8 @@ function apply(ctx, config) {
         description: j.description,
         lastRunAt: j.lastRunAt ? new Date(j.lastRunAt).toISOString() : null,
         nextRunAt: nextFire(j.parsed, new Date(j.lastRunAt ?? bootTime))?.toISOString() ?? null,
-        lastOk: j.lastResult ? true : (j.lastError ? false : null),
+        // 2026-10-07：错误优先。有 lastError 一律报 false，不让残留的 lastResult 盖住。
+        lastOk: j.lastError ? false : (j.lastResult ? true : null),
         lastError: j.lastError ? j.lastError.message : null,
         lastResultSummary: j.lastResultSummary ?? null,
         running: j.running,
