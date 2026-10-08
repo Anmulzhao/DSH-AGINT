@@ -18,7 +18,7 @@
  * 输出：JSON-safe { ok, provider, model, cases[], authoringGuard }
  */
 
-import { judgeViaLLM } from './llm-verdict.js';
+import { judgeViaLLM, DEFAULT_PROVIDER, DEFAULT_MODEL } from './llm-verdict.js';
 import { validateLlmAuthoring } from './proposer.js';
 
 /**
@@ -115,8 +115,10 @@ export async function runVerification({ ctx, provider = '', model = '', timeoutM
   const llmCases = cases.filter((c) => c.mode === 'llm');
   return {
     ok: llmCases.length > 0,
-    provider: provider || '(default)',
-    model: model || '(default)',
+    // 报**生效值**而不是入参：入参空时实际落的是 DEFAULT_*，写 '(default)' 等于
+    // 藏起了「这轮到底用的哪个模型」——验证工具的用处就在于说清这一点。
+    provider: provider || DEFAULT_PROVIDER,
+    model: model || DEFAULT_MODEL,
     cases,
     // 分辨力自检：两个反向样本给出不同结论才算「有用」。
     // 全 true / 全 false / 全 degraded 都要如实报出来。
