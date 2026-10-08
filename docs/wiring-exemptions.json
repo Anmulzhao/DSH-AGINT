@@ -169,10 +169,10 @@
 
     {
       "topic": "input.signal.adversarial.curriculum-result",
-      "reason": "转发条件是上游 curriculum.challenge-verdicted 且 result=fail。上游发布方存在（agint-curriculum 会发），但该主题总线全历史 0 条 —— curriculum 从未判定出任何 challenge。根因不属网关接线：同文件 domains 的 agint_curriculum 条已查明 self-model 能力画像过薄，probe 命中 0 域 ⇒ 无 challenge 可判。本条是上游未通电的连带空转。",
-      "evidence": "plugins/agint-curriculum/lib/index.js:369（发布点）；plugins/agint-input-gateway/lib/channels/adversarial.js:104-122（只转发 fail）；2026-10-05 实测总线有 curriculum.boundary-probed=5 条、无 curriculum.challenge-verdicted；gateway counters adversarial: fetchCount=6 / signalsEmitted=0",
+      "reason": "【2026-10-09 裁定：按设计休眠收口，不再作为待修缺陷跟踪】转发条件是上游 curriculum.challenge-verdicted 且 result=fail。上游发布方存在（agint-curriculum/lib/index.js:369），接线正确，但该主题总线全历史 0 条 —— curriculum 从未判定出任何 challenge。断点是「挑战出队但无人执行」：cron curriculum-weekly 的 description 原文即写明「出队不自动执行」，全库 curriculum.submit 的唯一调用方是 curriculum_submit 工具，系统内亦无任何会话生成机制，故 attempts 表恒 0 行。裁定不建自动执行器的理由：(1) 与 AGENTS.md 边界「智进不是业务 agent，业务任务 ≥2 次就沉淀为 skill/自动化」相冲突；(2) 下游叠一层「只转发 fail」，即使通电多数判定也不会成为 adversarial 信号，投入产出比差；(3) 挑战是给人练手的，出队不执行本身是自洽的。⚠️ 订正记录：原描述的根因（self-model 能力画像过薄、probe 命中 0 域）在 2026-10-05 当时准确、现已过时 —— 2026-10-08 的 boundary-probe 已探出 integration 域并生成 challenge clg_20261008_064839。若日后老板改主意要通这条链，断点在上游执行器而非 self-model。详见 docs/known-limitations/curriculum-challenge-never-attempted.md。",
+      "evidence": "plugins/agint-curriculum/lib/index.js:369（发布点）；plugins/agint-input-gateway/lib/channels/adversarial.js:130-131（只转发 fail）；plugins/agint-curriculum/lib/tools.js:72（curriculum.submit 的唯一调用方是 curriculum_submit 工具）；plugins/agint-cron/lib/jobs.js:399（curriculum-weekly，description 明写「出队不自动执行」）；2026-10-09 实测：总线 curriculum.boundary-probed=3 条（09-29 domains=[] / 10-01 domains=[] / 10-08 domains=['integration']）、curriculum.challenge-verdicted=0 条；agint_curriculum 域 challenges=1 / attempts=0；gateway counters adversarial: fetchCount=5 / signalsEmitted=0。⚠️ 原 evidence 写「2026-10-05 实测 boundary-probed=5 条」与总线实读 3 条对不上（总线最早事件 2026-09-29，无轮转迹象），数字已订正为 3。",
       "since": "2026-10-05",
-      "unblockWhen": "curriculum 开始出分且出现 fail 判定（同 agint_curriculum 域的 unblockWhen：self-model 出现 UNCERTAIN 域 / miscalibrated 非空 / CAN 超 30 天未复验）"
+      "unblockWhen": "已按设计休眠收口，本条不再等待「修好」。仅当老板明确要求通这条链时才重启：需 (1) 补一个能驱动 curriculum_next → curriculum_submit 的执行器或人工流程，(2) 让 agint_curriculum.attempts 出现非 0 行，(3) 出现 result=fail 的判定才会有 adversarial 信号（只转发 fail）。届时应同时修订本条 reason 与 docs/known-limitations/curriculum-challenge-never-attempted.md 的「修复方向」节。"
     }
   ],
 
