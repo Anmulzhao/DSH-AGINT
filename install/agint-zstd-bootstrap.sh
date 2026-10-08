@@ -49,10 +49,15 @@ warn() { echo "[zstd-bootstrap] ⚠ $*" >&2; }
 die()  { echo "[zstd-bootstrap] ✗ $*" >&2; exit 1; }
 
 run() {
+  # ⛔ 2026-10-07 修坑（照抄 zod-bootstrap 2026-09-28 的同款修复）：旧实现
+  #   `eval "$@"` 会把参数做**二次解析**——反斜杠路径里的 \U \A \. 被当转义吃掉，
+  #   rm/cp 拿到毁掉的路径；且 eval 是命令注入面（参数被当 shell 代码执行）。
+  #   本脚本 run 的调用方全是简单命令（无管道/重定向/引用），`"$@"` 直接执行即可。
+  #   通配符参数（rm -rf /var/lib/apt/lists/*）在调用行就完成展开，不依赖 eval。
   if [ "$DRY_RUN" = "1" ]; then
     echo "DRY: $*"
   else
-    eval "$@"
+    "$@"
   fi
 }
 

@@ -74,6 +74,11 @@ function makeCtx({ agents = [] } = {}) {
       ctx.emit('agent/session-start', { agent });
     },
     provide: () => {},
+    // v0.9.0 起 apply() 会软依赖查找 ctx.get('commands')（缺席时插件照常挂载，
+    // 只是 /restart-dsh /stop-dsh 不注册）。本组用例不测命令面，桩一律返回
+    // undefined 走「缺席」分支 —— 但方法本身必须在：缺了它 apply 直接 TypeError
+    // （2026-10-06 起那 7 条 pending-notice 用例全红的根因就是桩没跟上 lib 演进）。
+    get: (_name) => undefined,
     cleanup() { for (const d of disposers.splice(0)) { try { d(); } catch { /* ignore */ } } },
     logs,
   };

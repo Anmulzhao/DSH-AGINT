@@ -148,9 +148,11 @@ function apply(ctx) {
       },
       render: (_a, v) => {
         const r = v.report;
-        const parts = [`wiki_lint: ${r.checked} entries, ${r.brokenLinks.length} broken links, ${r.contradictions.length} contradictions, ${r.orphans.length} orphans`];
+        const parts = [`wiki_lint: ${r.checked} entries, ${r.brokenLinks.length} broken links, ${r.contradictions.length} contradictions, ${r.warnings.length} suspected warnings, ${r.orphans.length} orphans`];
         r.brokenLinks.slice(0, 5).forEach((b) => parts.push(`  broken: ${b.from} -> ${b.target}`));
-        r.contradictions.slice(0, 5).forEach((c) => parts.push(`  ⚠️ contradiction: ${c}`));
+        // contradictions/warnings 是 {path,line,snippet} 对象（带行号供复核，勿按裸文件名渲染）
+        r.contradictions.slice(0, 5).forEach((c) => parts.push(`  ⚠️ contradiction: ${c.path}:${c.line} ${c.snippet}`));
+        r.warnings.slice(0, 5).forEach((w) => parts.push(`  ⚠️ suspected (author warning): ${w.path}:${w.line} ${w.snippet}`));
         r.orphans.slice(0, 5).forEach((o) => parts.push(`  orphan: ${o}`));
         return [{ type: 'text', text: parts.join('\n') }];
       },

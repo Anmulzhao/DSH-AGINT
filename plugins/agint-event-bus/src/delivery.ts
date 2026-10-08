@@ -5,14 +5,18 @@
  *   - at-least-once + handler 隔离：单订阅者抛错不影响其他订阅者
  *   - 失败重试 maxAttempts 次（指数退避 backoffMs × 2^n，封顶 8s）
  *   - sync：等待 handler 返回或超时（默认 10s）→ 超时降级 PENDING_REVIEW
- *   - async：fire-and-forget，handler 抛错 → 重试 → 死信
+ *   - async：串行等待、有界重试（maxAttempts≤5、backoffMs≤2000，2026-10-07
+ *     在 schemas 与本文件双层兜底）→ 耗尽后死信。
+ *     ⚠️ 真实语义澄清（2026-10-07）：bus.publish 对 async 订阅者同样 await——
+ *     并非 fire-and-forget。一个坏订阅者最多阻塞 publish 约 22s（有界），
+ *     且其后订阅者排队。真 fire-and-forget 待 T2 切流量时再定。
  *
- * 不存 setInterval / process；退避走 host 平面 ctx.wait（无则 fallback 到全局 await sleep 适配，
- * 但本实现仅用 setTimeoutPromise 一次性退避——不属于 ambient timer，是 node 内置 promise 计时器
- * 且每次启动都注册 ctx.effect disposer 以满足 PLUGIN-SPEC 维度 5 must-dispose 约束）。
+ * 不存 setInterval / process；退避用 node:timers/promises 的一次性退避
+ * （非 ambient timer），每次注册的 disposer 走 AbortSignal 真取消（2026-10-07
+ * 起从名义 noop 改为可中断），满足 PLUGIN-SPEC 维度 5 must-dispose 约束。
  *
  * 红线：
- *   - 不持有全局 timer；唯一 setTimeoutPromise 必须被 ctx.effect 注册 disposer
+ *   - 不持有全局 timer；退避 Promise 必须可被 disposer 中断
  *   - 不写 storage domain；deadletter.ts 与 observability.ts 负责落库
  */
 
@@ -50,24 +54,30 @@ function backoffDelay(attempt: number, baseMs: number): number {
   return Math.min(8000, Math.max(0, Math.floor(raw)));
 }
 
-/** 携带 ctx 注册的 disposer 的退避 */
+/** 携带 ctx 注册的 disposer 的退避（2026-10-07 起可真取消） */
 async function sleepWithDispose(
   ms: number,
   ctx: EventBusContext,
   disposers: Array<() => void>,
 ): Promise<void> {
   if (ms <= 0) return;
-  // 唯一注册的 ambient timer —— 必须挂到 ctx.effect disposer
-  const t = setTimeoutPromise(ms);
+  // 旧实现的 disposer 是字面 noop（void t）——「退避 timer 必须 dispose」只是名义
+  // 满足，ctx dispose 后退避 Promise 仍睡满全程。现在用 AbortSignal 真中断：
+  // abort 使 setTimeoutPromise 立即 reject(AbortError)，这里吞掉当「退避已结束」，
+  // 重试循环随即收尾，不再把已 dispose 的 ctx 挂在睡眠上。
+  const ac = new AbortController();
   disposers.push(() => {
-    // setTimeoutPromise 返回的 Promise 没有内置 cancel；通过循环外层 timeout handle 释放
-    // 这里通过 retain 一句 noop，让 t 自然返回后无副作用
-    try { void t; } catch { /* ignore */ }
+    try { ac.abort(); } catch { /* ignore */ }
   });
-  await t;
+  try {
+    await setTimeoutPromise(ms, undefined, { signal: ac.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return;
+    throw err;
+  }
 }
 
-/** 异步投递（fire-and-forget；handler 抛错 → 重试 → 死信） */
+/** 异步投递（串行等待、有界重试；handler 抛错 → 重试 → 死信） */
 export async function deliverAsync(
   ctx: EventBusContext,
   envelope: EventEnvelope,
@@ -75,8 +85,10 @@ export async function deliverAsync(
   disposers: Array<() => void>,
 ): Promise<DeliveryOutcome> {
   assertSyncReason(sub); // sanity：async 不强制；但若误填 sync 模式同样校验
-  const max = Math.max(1, sub.retry.maxAttempts);
-  const base = Math.max(50, sub.retry.backoffMs);
+  // 兜底 cap（2026-10-07）：schemas.ts 已限 max(5)/max(2000)，这里再夹一次——
+  // 防绕过 validateSubscription 的直连调用把 publish 拖进长阻塞。
+  const max = Math.min(5, Math.max(1, sub.retry.maxAttempts));
+  const base = Math.min(2000, Math.max(50, sub.retry.backoffMs));
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= max; attempt += 1) {
     try {

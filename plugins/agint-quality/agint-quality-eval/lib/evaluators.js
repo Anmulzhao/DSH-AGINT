@@ -140,7 +140,11 @@ export async function evalEffectiveness(ctx, target) {
  *   deductions: L1 deny -0.2 each; L2 deny -0.05 each; L3+ no deduction
  */
 export async function evalSafety(ctx, target) {
-  const out = { score: 1.0, findings: [] }; // 默认 1.0（无 deny）
+  // 2026-10-07 修 S11（fail-closed）：初始 null 而非 1.0——safety 是一票否决维度，
+  // 数据源不可用必须走「null → veto → REJECT」（文件头契约：score=null 表示无数据源），
+  // 不能在门禁最需要它的时刻给满分。evalPromptStatic（SDK 不可用→0+blocker）同哲学。
+  // 「list 成功但无匹配 deny」才合法地等于 1.0。
+  const out = { score: null, findings: [] };
   const rules = ctx.get('agint.rules');
   if (!rules || typeof rules.list !== 'function') {
     out.findings.push({ severity: 'warn', message: 'agint.rules unavailable', evidence: [] });
@@ -169,6 +173,7 @@ export async function evalSafety(ctx, target) {
       });
     }
   } catch (err) {
+    // 保持 null（= veto），不回落 1.0
     out.findings.push({ severity: 'warn', message: `rules.list failed: ${err.message}`, evidence: [] });
   }
   return out;
@@ -319,6 +324,10 @@ export const DIMENSION_WEIGHTS = {
 /** safety 一票否决阈值（< 此值 → REJECT） */
 export const SAFETY_VETO_THRESHOLD = 0.5;
 
+/** trust 一票否决阈值（< 此值 → REJECT）。2026-10-07 从 decide.js 上移到本文件：
+ *  compositeScore 收编为唯一权威实现后，阈值必须与实现对齐在同一个文件（S12）。 */
+export const TRUST_VETO_THRESHOLD = 0.3;
+
 /** 调度器用：维度键顺序（保证 EvalResult.dimensions 顺序稳定）
  *  Sprint 6.2 加 'promptStatic' (仅 prompt target 计入) */
 export const DIMENSION_KEYS = [
@@ -408,19 +417,26 @@ export async function evaluateAll(ctx, target) {
 }
 
 /**
- * 综合分计算（v0.2 简版）：
+ * 综合分计算——**唯一权威实现**（2026-10-07 S12 收编）。
+ *
+ * 此前本函数与 agint-quality-policy/lib/decide.js 的 computeComposite 是两份
+ * 独立实现且已漂移：本侧不做 trust veto、safety 判空写反（null 时跳过 veto → 放行）。
+ * 现在语义与 decide.js 文档契约完全对齐，decide.js 的 computeComposite 委托到这里：
  *   score = 100 * sum(weight_i * score_i) / sum(weight_i for i where score_i !== null)
- *   任一维度的 score === null → 该维度不计入分母
- *   safety < SAFETY_VETO_THRESHOLD → null（让 caller 走 REJECT 路径）
+ *   - safety / trust：维度**缺失、score 为 null/undefined、或低于阈值** 任一 → 返回 null
+ *     （缺维度 = 无数据 = 保守，N7；null 不再放行——旧写法 `!== null` 判空的 bug 修复）
+ *   - 任一 veto → caller（policy / score() 服务 / baseline 回归）应走 REJECT 路径
  *
  * @param {object} evalResult
  * @param {Record<string, number>} [weights] 权重表；缺省用内置 DIMENSION_WEIGHTS
  *   （行动 #5 2026-09-28：权重外置可配置 —— lib/weights.js 的 mergedWeights 可注入）。
+ * @param {{safety?:number, trust?:number}} [vetoThresholds] 阈值注入（测试用）
  */
-export function compositeScore(evalResult, weights = DIMENSION_WEIGHTS) {
+export function compositeScore(evalResult, weights = DIMENSION_WEIGHTS, vetoThresholds = { safety: SAFETY_VETO_THRESHOLD, trust: TRUST_VETO_THRESHOLD }) {
+  const dims = Array.isArray(evalResult?.dimensions) ? evalResult.dimensions : [];
   let num = 0;
   let den = 0;
-  for (const d of evalResult.dimensions) {
+  for (const d of dims) {
     const s = d.score?.score;
     if (s === null || s === undefined) continue;
     const w = weights[d.key] ?? 0;
@@ -429,11 +445,12 @@ export function compositeScore(evalResult, weights = DIMENSION_WEIGHTS) {
     den += w;
   }
   if (den === 0) return null;
-  const score = (num / den) * 100;
-  // safety 一票否决
-  const safetyDim = evalResult.dimensions.find((d) => d.key === 'safety');
-  if (safetyDim?.score?.score !== null && safetyDim.score.score < SAFETY_VETO_THRESHOLD) {
-    return null; // caller should treat as REJECT
+  // veto 检查（缺维度 = 无数据 = 保守，见上）：任何一项不满足即 null
+  for (const key of ['safety', 'trust']) {
+    const dim = dims.find((d) => d.key === key);
+    const s = dim?.score?.score;
+    if (s === null || s === undefined || s < (vetoThresholds[key] ?? 0)) return null;
   }
+  const score = (num / den) * 100;
   return Math.round(score * 10) / 10; // 保留 1 位小数
 }

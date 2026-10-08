@@ -18,7 +18,7 @@
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
 import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, deliveryHistory, disposeBus } from './bus.js';
-import { listDeadletters } from './deadletter.js';
+import { listDeadletters, sweepExpiredDeadletters } from './deadletter.js';
 import { EventEnvelopeSchema } from './schemas.js';
 import { z } from 'zod';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
@@ -131,6 +131,8 @@ function apply(ctx, _config = {}) {
                 const tblDead = handle.table('deadletter');
                 if (tblEvents && tblDead) {
                     busCtx.tables = { events: tblEvents, deadletter: tblDead };
+                    // 真实死信表刚挂上：立即清一轮（apply 时的首轮 sweep 只扫到 stub 空表）
+                    void sweepExpiredDeadletters(busCtx).catch(() => { });
                 }
                 storageHandle = handle;
                 disposers.push(() => {
@@ -145,6 +147,16 @@ function apply(ctx, _config = {}) {
             // 软降级：保留 stub（事件仅落在内存 ring + deadletter stub；不影响契约）
         },
     );
+    // ── 死信 reaper（2026-10-07 补，S8）────────────────────────────────────
+    // 「7 天保留」此前只写 ttl 字段、全仓无消费者——纸面约定，死信表无界增长。
+    // 启动清一轮 + 每 24h 一轮；ctx.effect 保证 dispose 清 timer（PLUGIN-SPEC 维度 5）。
+    const DEADLETTER_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    const sweepOnce = () => {
+        void sweepExpiredDeadletters(busCtx).catch(() => { });
+    };
+    sweepOnce();
+    const sweepTimer = setInterval(sweepOnce, DEADLETTER_SWEEP_INTERVAL_MS);
+    ctx.effect(() => clearInterval(sweepTimer));
     // ── 注册 3 Service ──
     ctx.provide('agint.eventBus.publish', (input) => publish(busCtx, input));
     ctx.provide('agint.eventBus.subscribe', (rawSub, handler) => subscribe(rawSub, handler));

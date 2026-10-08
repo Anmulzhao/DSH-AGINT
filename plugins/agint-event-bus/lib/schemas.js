@@ -30,10 +30,17 @@ export const TopicSchema = z
     .regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$/, {
     message: 'topic must match ^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){1,3}$',
 });
-/** 重试配置 */
+/**
+ * 重试配置
+ *
+ * 2026-10-07 加上限：bus.publish 对订阅者串行 await（含 async 重试+退避），
+ * maxAttempts 无上限时配 100 次即单订阅者可阻塞 publish 约 13 分钟（退避封顶
+ * 8s/次），且队头阻塞其后所有订阅者。默认 3/500 不变；同值兜底另见
+ * delivery.js 的 deliverAsync（防绕过订阅校验的直连调用）。
+ */
 export const RetryConfigSchema = z.object({
-    maxAttempts: z.number().int().min(1).default(3),
-    backoffMs: z.number().int().min(50).default(500),
+    maxAttempts: z.number().int().min(1).max(5).default(3),
+    backoffMs: z.number().int().min(50).max(2000).default(500),
 });
 /** EventEnvelope（FROZEN 顶层 8 字段） */
 export const EventEnvelopeSchema = z.object({

@@ -270,17 +270,31 @@ export function openStore(ctx) {
   if (ctx && typeof ctx.storageDomain?.open === 'function') {
     try {
       ctx.storageDomain.open(spec).then(
-        (handle) => {
+        async (handle) => {
           if (handle && typeof handle.table === 'function') {
-            store.tables = {
+            const real = {
               capabilityMap: adaptTable(handle.table('capability_map')),
               reasoningProfile: adaptTable(handle.table('reasoning_profile')),
               resourceBaseline: adaptTable(handle.table('resource_baseline')),
               calibrationLog: adaptTable(handle.table('calibration_log')),
               metricsIngest: adaptTable(handle.table('metrics_ingest')),
             };
-            store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
-            store._memory = false;
+            // 2026-10-07 补 replay（S9）：open 窗口期内落进内存表的写入，切换前
+            // 原样搬进真实表——否则静默丢失且 _memory 翻 false，调用方连
+            // 「曾经是内存态」都感知不到（smoke 测试走内存分支，永远测不出）。
+            // replay 期间无并发写者（引用替换是原子的）；失败则保持内存态并 warn。
+            try {
+              for (const [name, realTable] of Object.entries(real)) {
+                for (const [id, v] of memTables[name].entries()) {
+                  await realTable.put(id, v);
+                }
+              }
+              store.tables = real;
+              store.close = () => { try { handle.close?.(); } catch { /* ignore */ } };
+              store._memory = false;
+            } catch (err) {
+              console.warn(`[agint-self-model] 真实表 replay 失败，保持内存降级（本次会话数据不落盘）: ${err?.message ?? err}`);
+            }
           }
         },
         () => { /* 降级内存（不 fatal） */ },

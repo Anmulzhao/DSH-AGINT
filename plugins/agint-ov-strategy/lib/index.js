@@ -119,6 +119,9 @@ function apply(ctx, config) {
   let disposed = false;
   const counters = makeCounters();
   const unsubscribers = [];
+  // 2026-10-07：总线订阅的晚挂幂等位。与 wrappedRuntimes（WeakSet）同一职责 ——
+  // 声明提前到 apply 早期，避免函数声明提升带来的 TDZ。
+  let busWired = false;
 
   ctx.effect(() => () => {
     disposed = true;
@@ -136,7 +139,7 @@ function apply(ctx, config) {
   // ensureObserver 是函数声明，提升可用）。bundle 晚于本插件 apply 时由此补挂。
   const runtimeNow = () => {
     const rt = runtimeRaw();
-    if (rt) ensureObserver();
+    if (rt) ensureLateAttach();
     return rt;
   };
 
@@ -246,7 +249,7 @@ function apply(ctx, config) {
     try {
       const re = new RegExp(cfg.toolNamePattern, 'i');
       const unsub = ctx.on('tools/post-execute', async (exec, result, next) => {
-        ensureObserver();                        // 每次工具调用都是一次补挂机会
+        ensureLateAttach();                      // 每次工具调用都是一次补挂机会
         const toolName = String(exec?.name || '');
         if (re.test(toolName)) {
           counters.observedTool += 1;
@@ -377,12 +380,17 @@ function apply(ctx, config) {
   }
 
   // ── 总线自动沉淀（§4）：async 订阅（sync 配额 ≤3 属门禁边，本插件不占）──
+  // 2026-10-07 修：原来只在 apply 末尾调一次。agint-ov-strategy 与 agint-event-bus
+  // 的 apply 顺序不保证 —— bus 缺席时下面那句 `return` 静默降级，**订阅此后再也不会
+  // 建立**。实测：dream.completed（countPromoted=14）发出后，订阅者列表里没有本插件，
+  // 投影 0 触发，而 ov.recall.checked 等观测事件却在正常发布（那条走 ensureObserver 晚挂）。
+  // 对齐 R3「全软依赖，调用时取，不许缓存」：幂等 + 由 ensureLateAttach 反复补挂。
   function wireBusSubscriptions() {
-    if (!cfg.enabled) return;
+    if (busWired || disposed || !cfg.enabled) return;
     const topics = (cfg.autoTopics || []).filter(t => typeof TOPIC_SUMMARIZERS[t] === 'function');
     if (topics.length === 0) return;
     const subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
-    if (typeof subscribe !== 'function') return;    // bus 不可用：静默降级（§5）
+    if (typeof subscribe !== 'function') return;    // bus 还没来 —— 下次补挂，不再一锤子买卖
     try {
       const unsub = subscribe(
         { subscriber: name, topics, mode: 'async' },
@@ -394,14 +402,23 @@ function apply(ctx, config) {
           await remember({ ...summary, meta: { via: 'bus', topic: envelope.topic } });
         },
       );
-      if (typeof unsub === 'function') unsubscribers.push(unsub);
+      if (typeof unsub === 'function') { unsubscribers.push(unsub); busWired = true; }
     } catch {
       // 订阅失败不抛（§5 失败域隔离表第 4 行）
     }
   }
+
+  // 晚挂总闸：OV runtime 包装与总线订阅**同一条补挂路径**。
+  // 两者的依赖（bundle / event-bus）都不保证先于本插件 apply，
+  // 只补一半就会出现「观测在发、投影不发」这种半死不活的形态（2026-10-07 实测）。
+  function ensureLateAttach() {
+    wireBusSubscriptions();
+    ensureObserver();
+  }
+
   wireBusSubscriptions();
   wireToolObserver();
-  ensureObserver();   // 初始补挂一次（对齐注释契约「apply 时试一次」；bundle 晚 apply 时由 runtimeNow/工具 hook 再补）
+  ensureLateAttach();   // 初始补挂一次；bundle / bus 晚 apply 时由 runtimeNow/工具 hook 再补
 
   ctx.provide('agint.ovStrategy', { remember, recall, status });
 }

@@ -258,6 +258,18 @@ export function createLedgerAnchorService({
     function restore(previous) {
       // 只回退**本次**追加：还原到锚定前那份内容；锚定前文件不存在就把它删掉，
       // 留一个空文件会让人以为「锚点文件是空的」而不是「还没锚过」。
+      // 2026-10-07 补 index 清理（S10）：失败发生在 `git add` 之后时，那行未锚定
+      // 的锚点行已进 index——只还原工作区不够，裸 `git commit`（无 pathspec）会把
+      // 坏行以别人的提交信息卷进历史，正是本文件处处设防的「伪造证据进 git」事故。
+      // 顺序必须先 reset 出 index、再还原工作区（反过来 index 里会留下旧内容的另一份）。
+      try {
+        const reset = runGit(['reset', '-q', 'HEAD', '--', relFile]);
+        if (!reset.ok) {
+          warn(`ledger.anchor: 清理 git index 失败，${relFile} 的未锚定行可能仍被暂存，请手工检查：${reset.error}`);
+        }
+      } catch (err) {
+        warn(`ledger.anchor: 清理 git index 异常，请手工检查 ${relFile}：${errMessage(err)}`);
+      }
       try {
         if (previous) writeFileSync(anchorFile, previous, 'utf8');
         else if (existsSync(anchorFile)) unlinkSync(anchorFile);

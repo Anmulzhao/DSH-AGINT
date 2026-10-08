@@ -130,6 +130,7 @@ export function createSnapshotIngest(opts = {}) {
   const counters = {
     events: 0,
     duplicates: 0,
+    dropped: 0, // 2026-10-07 N10：超 maxBatchKeys 被截断的 key 数（此前静默丢弃，观测不可见）
     batches: 0,
     compared: 0,
     matched: 0,
@@ -250,6 +251,7 @@ export function createSnapshotIngest(opts = {}) {
       }
       current.seen.add(dedupKey);
       if (current.metrics.size < maxBatchKeys) current.metrics.set(p.key, p.value);
+      else counters.dropped += 1; // N10：超限截断留痕（stats().dropped 可观测）
       counters.events += 1;
       lastIngestAt = nowIso();
       armIdleTimer(); // v0.7.6：每来一条就重新计时；静默 settleIdleMs 后自动收批

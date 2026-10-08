@@ -23,6 +23,7 @@ import {
   DEFAULT_PROVIDER,
   DEFAULT_MODEL,
   DEFAULT_AGENT_PRESET,
+  DEFAULT_REASONING_EFFORT,
 } from '../lib/consolidation.js';
 
 // ── 纯函数：buildConsolidationPrompt ──────────────────────────────────────
@@ -386,6 +387,39 @@ test('consolidate: provider/model 参数被透传到 create', async () => {
   });
   assert.equal(calls.createArgs.agentOptions.provider, 'custom-provider');
   assert.equal(calls.createArgs.agentOptions.model, 'custom-model-v2');
+});
+
+// 2026-10-07 回归测试：这条在修复前是**红的**（agentOptions 里没有 reasoningEffort 键）。
+// 为什么必须有它：DEFAULT_MODEL=MiniMax-M3.1-Flash-Preview 强制 adaptive thinking，
+// 不传 reasoningEffort → 子代理 thinking 关闭 → provider 返 400
+// （"requires adaptive thinking; thinking.type=\"disabled\" ... is not allowed (2013)"）
+// → consolidation 恒 heuristic-degraded → promoted 恒 0 →
+//   agint-ov-strategy 的 dream 投影被 `promoted <= 0` 门槛永远挡死。
+// 旧测试只断言 provider/model 透传，两者修复前后都绿 ⇒ 抓不到这个 bug。
+test('consolidate: reasoningEffort 必须透传（不传则模型拒收）', async () => {
+  const { ctx, calls } = makeMockCtx({
+    runResult: { output: [], structured: { operations: [] }, stopReason: 'completed' },
+  });
+  // 默认档：必须等于 DEFAULT_REASONING_EFFORT，且与 DEFAULT_MODEL 配套
+  await consolidate({
+    ctx,
+    gated: [{ key: 'c1', text: '某条', type: 'lesson', score: 0.8 }],
+    existing: [],
+    day: '2026-10-07',
+  });
+  assert.equal(calls.createArgs.agentOptions.reasoningEffort, DEFAULT_REASONING_EFFORT);
+  // 显式覆盖：调用方能改档（sweep.js 目前不传，走默认）
+  const ctx2 = makeMockCtx({
+    runResult: { output: [], structured: { operations: [] }, stopReason: 'completed' },
+  });
+  await consolidate({
+    ctx: ctx2.ctx,
+    gated: [{ key: 'c1', text: '某条', type: 'lesson', score: 0.8 }],
+    existing: [],
+    day: '2026-10-07',
+    reasoningEffort: 'low',
+  });
+  assert.equal(ctx2.calls.createArgs.agentOptions.reasoningEffort, 'low');
 });
 
 test('consolidate: timeout 时 dispose 仍跑（finally）', async () => {

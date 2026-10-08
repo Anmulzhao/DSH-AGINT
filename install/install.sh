@@ -187,6 +187,78 @@ log() {
 warn() { echo "[AGINT] ⚠ $*" >&2; }
 die()  { echo "[AGINT] ✗ $*" >&2; exit 1; }
 
+# ── 定位本机的 @deepseek-ai/dsh 安装目录 ───────────────────────────────────
+#
+# ⛔ 2026-10-07 修：`npm root -g` 单入口定位在 nvm 机器上必然失效。
+#   症状：install 跑到 mirror 解析卫兵时打「未能定位 dsh 自带官方包」并
+#   **静默跳过**——本批刚加的 1.45 卫兵（防 dsh-tools stub 事故复发）
+#   在这类机器上等于没上线，防线是空的。
+#   根因：`npm root -g` 跟着 PATH 里的**第一个** npm 走。本机 PATH 优先是
+#   WorkBuddy 自带 npm ⇒ 它答 `/opt/apps/workbuddy/resources/runtime/...`，
+#   那里没有 dsh；而 dsh 实际在 nvm 前缀下。**问错了 npm，不是 dsh 没装。**
+#
+# 解法：候选化 + 逐个验明真身（读 package.json 且 name 匹配），
+#   并把「dsh 可执行文件反推」放在 npm 之前——正在跑的那个 dsh 最可信。
+#   对齐 bin/check-dsh-compat.mjs 的 dshRootCandidates()，避免两处各猜一套。
+locate_dsh_dir() {
+  local c resolved
+
+  # ① 环境变量显式指定（最高优先，与 check-dsh-compat 一致）
+  #    ⚠️ 显式指定**同样要验真身**（对齐 check-dsh-compat 的 findDshRoot，
+  #    它对 DSH_ROOT 也会核对 pkg.name）。否则用户指错目录时会得到一个
+  #    「存在但根本不是 dsh」的路径，后续三处入口全建到错误目标上，
+  #    症状比定位失败更隐蔽（失败有 warn，错指则静默建错链）。
+  if [ -n "${DSH_ROOT:-}" ] && [ -f "$DSH_ROOT/package.json" ] \
+     && grep -q '"@deepseek-ai/dsh"' "$DSH_ROOT/package.json" 2>/dev/null; then
+    printf '%s' "$DSH_ROOT"; return 0
+  fi
+
+  # ② 从 dsh 可执行文件反推：<prefix>/bin/dsh → <prefix>/lib/node_modules/@deepseek-ai/dsh
+  #    取 PATH 里所有 dsh，第一个能验明真身的即采用（认的是「在跑的那个」）
+  local dsh_bin
+  dsh_bin="$(command -v dsh 2>/dev/null || true)"
+  if [ -z "$dsh_bin" ]; then
+    # dsh 不在 PATH 时兜底扫 nvm 各版本目录（.nvm/versions/node/*/bin/dsh）
+    local nb
+    for nb in "$HOME"/.nvm/versions/node/*/bin/dsh; do
+      [ -x "$nb" ] && { dsh_bin="$nb"; break; }
+    done
+  fi
+  if [ -n "$dsh_bin" ]; then
+    # ⚠️ 不要对 shim 直接 readlink -f：npm 的 bin/dsh 是软链，解析后落到
+    #   <pkg>/lib/bin.js（真实 js 入口），比 npm 布局深两层，反推会算错。
+    #   故按 npm 固定布局 <prefix>/bin → <prefix>/lib/node_modules 走，
+    #   再拿 readlink -f 的结果补一次（应对非 npm 布局的手工软链）。
+    local prefix resolved
+    prefix="$(cd "$(dirname "$dsh_bin")/.." 2>/dev/null && pwd)"
+    for resolved in "$prefix/lib/node_modules/@deepseek-ai/dsh" \
+                   "$(cd "$(dirname "$(readlink -f "$dsh_bin" 2>/dev/null || printf '%s' "$dsh_bin")")/../.." 2>/dev/null && pwd)/lib/node_modules/@deepseek-ai/dsh"; do
+      if [ -f "$resolved/package.json" ] \
+         && grep -q '"@deepseek-ai/dsh"' "$resolved/package.json" 2>/dev/null; then
+        printf '%s' "$resolved"; return 0
+      fi
+    done
+  fi
+
+  # ③ npm root -g（跟随 PATH 首个 npm，可能答错，故放最后兜底）
+  for c in "$(npm root -g 2>/dev/null)/@deepseek-ai/dsh"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+
+  # ④ 常见硬编码前缀
+  for c in "/usr/local/lib/node_modules/@deepseek-ai/dsh" \
+           "/usr/lib/node_modules/@deepseek-ai/dsh" \
+           "$AGINT_HOME/node_modules/@deepseek-ai/dsh"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+
+  return 1
+}
+
 log "AGINT_HOME = $AGINT_HOME"
 log "DSH_HOME   = $DSH_HOME"
 log ""
@@ -355,6 +427,9 @@ safe_rsync() {
     return
   fi
   if command -v rsync >/dev/null 2>&1; then
+    # ⚠️ 排除表有**两个副本**：这里的 --exclude 与下方 python heredoc 里的
+    #    EXCLUDE_NAMES / EXCLUDE_GLOBS 必须语义等价——改这里必须同步改那边
+    #    （python 侧 ignore() 递归生效，等价于 rsync 不带锚定的目录名模式）。
     rsync -a --no-links --delete \
       --exclude='.git/' \
       --exclude='.git' \
@@ -371,7 +446,7 @@ import os, sys, shutil, fnmatch
 
 src, dst = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 
-# 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改一处要改两处）
+# 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改这里必须同步改 rsync 那份）
 EXCLUDE_NAMES  = {'.git', 'node_modules'}
 EXCLUDE_GLOBS  = ('*.bundle', '*.bak-*')
 
@@ -487,9 +562,9 @@ ensure_preset_module_entry() {
     log "   ✓ preset 解析入口已存在（$link）"
     return 0
   fi
-  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules"
+  target="$(locate_dsh_dir)/node_modules"
   if [ -z "$target" ] || [ ! -d "$target" ]; then
-    warn "未能定位 dsh 的 node_modules（npm root -g 不可用？），跳过 preset 解析入口。"
+    warn "未能定位 dsh 的 node_modules（DSH_ROOT / dsh 可执行文件 / npm root -g 均失败），跳过 preset 解析入口。"
     warn "  dsh ≥ 0.1.7 上智进 preset 会显示「加载失败」。手工补："
     warn "    mklink /J \"$link\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\""
     return 0
@@ -534,9 +609,9 @@ ensure_bundle_module_entry() {
     log "   ✓ bundle 解析入口已存在（$link）"
     return 0
   fi
-  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules/@deepseek-ai"
+  target="$(locate_dsh_dir)/node_modules/@deepseek-ai"
   if [ -z "$target" ] || [ ! -d "$target" ]; then
-    warn "未能定位 dsh 的 node_modules（npm root -g 不可用？），跳过 bundle 解析入口。"
+    warn "未能定位 dsh 的 node_modules（DSH_ROOT / dsh 可执行文件 / npm root -g 均失败），跳过 bundle 解析入口。"
     warn "  bundle 插件的官方包 import 会失败。手工补："
     warn "    mklink /J \"$BUNDLE_DST\\node_modules\\@deepseek-ai\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\\@deepseek-ai\""
     return 0
@@ -582,18 +657,13 @@ ensure_bundle_module_entry
 # 能活过步骤 2；python 回退分支（无 rsync）会整树换入删掉 ⇒ 4.6 有 post-plugin 复跑。
 ensure_mirror_module_entry() {
   local base="$PLUGINS_DST/node_modules/@deepseek-ai" target name link
-  target="$(npm root -g 2>/dev/null)/@deepseek-ai/dsh/node_modules/@deepseek-ai"
-  # npm root -g 在部分环境指向错误前缀（10-06 容器实测：dsh 实际在 /usr/lib，
-  # 悬空的 /usr/local/lib 链接即此问题产物）→ 多候选兜底，取真有 dsh-tools 的那个
+  target="$(locate_dsh_dir)/node_modules/@deepseek-ai"
+  # 定位不到就跳过（不阻断）：locate_dsh_dir 内部已做多候选 + 验明真身，
+  # 含 10-06 容器那种「npm root -g 指向错误前缀」的兜底。
   if [ -z "$target" ] || [ ! -d "$target/dsh-tools" ]; then
-    local cand
-    for cand in "/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai" \
-                "/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai"; do
-      if [ -d "$cand/dsh-tools" ]; then target="$cand"; break; fi
-    done
-  fi
-  if [ -z "$target" ] || [ ! -d "$target/dsh-tools" ]; then
-    warn "未能定位 dsh 自带官方包（npm root -g 与常见前缀都没有），跳过 mirror 解析卫兵。"
+    warn "未能定位 dsh 自带官方包（DSH_ROOT / dsh 可执行文件 / npm root -g / 常见前缀均失败），跳过 mirror 解析卫兵。"
+    warn "  ⚠️ dsh-tools stub 事故的防线在本机未生效，preset 挂载可能整体炸（症状：工具全灭）。"
+    warn "  手工补：ln -s <dsh>/node_modules/@deepseek-ai $base"
     return 0
   fi
   if [ "$DRY_RUN" = "1" ]; then
@@ -1048,8 +1118,10 @@ PY
         warn "patch 声明的插件入口不存在：$entry"
         smoke_fail=$((smoke_fail+1)); continue
       fi
-      if ! node --input-type=module -e "await import('file://$full')" >/dev/null 2>&1; then
-        warn "插件 import 失败：$entry — $(node --input-type=module -e "await import('file://$full')" 2>&1 | grep -oE "(Cannot find package '[^']*'|Error \[ERR_[A-Z_]+\])" | head -1)"
+      # 2026-10-07 N9：路径改走 pathToFileURL——旧写法 'file://$full' 直接内插，
+      # 含空格/特殊字符的 DSH_HOME 会碎（winpath 换算后的路径不保证无空格）。
+      if ! node --input-type=module -e "await import((await import('node:url')).pathToFileURL(process.argv[1]).href)" "$full" >/dev/null 2>&1; then
+        warn "插件 import 失败：$entry — $(node --input-type=module -e "await import((await import('node:url')).pathToFileURL(process.argv[1]).href)" "$full" 2>&1 | grep -oE "(Cannot find package '[^']*'|Error \[ERR_[A-Z_]+\])" | head -1)"
         smoke_fail=$((smoke_fail+1))
       fi
     done < <(grep -oE '^[[:space:]]*name:[[:space:]]*\./plugins/[^ ]*\.js' "$BUNDLE_PATCH_DST" \

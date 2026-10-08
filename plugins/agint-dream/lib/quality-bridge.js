@@ -191,12 +191,18 @@ export async function evaluatePlugin(ctx, target, opts = {}) {
         compositeScore = null;
       }
       // B 兜底：null 时区分 veto vs 数据源缺
+      // 2026-10-07 S12 配套：score() 现在做 safety+trust 双 veto（唯一权威实现
+      // evaluators.compositeScore），trust veto 的 null 也不能给中性 50——否则
+      // trust 被否决的信号在 dream boost 路径被静默洗成 50。
       if (compositeScore === null && Array.isArray(result.dimensions)) {
         const safety = result.dimensions.find((d) => d.key === 'safety');
         const safetyScore = safety?.score?.score;
-        const isVeto = safetyScore === null || safetyScore === undefined || safetyScore < 0.5;
+        const trust = result.dimensions.find((d) => d.key === 'trust');
+        const trustScore = trust?.score?.score;
+        const isVeto = safetyScore === null || safetyScore === undefined || safetyScore < 0.5
+          || trustScore === null || trustScore === undefined || trustScore < 0.3;
         if (!isVeto) {
-          compositeScore = 50; // 数据源不可用但无 veto → 中性 50（0-100 标量）
+          compositeScore = 50; // 数据源不可用且无 veto → 中性 50（0-100 标量）
         }
       }
     }

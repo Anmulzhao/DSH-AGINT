@@ -45,7 +45,7 @@ import {
   recallKey,
 } from './recall-store.js';
 import { validateAndApply, planToWriteCalls } from './validation-gate.js';
-import { consolidate } from './consolidation.js';
+import { consolidate, consolidateBatched, DEFAULT_BATCH_SIZE } from './consolidation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1019,6 +1019,10 @@ export async function runSweep({
   consolidationProvider,
   consolidationModel,
   consolidationTimeoutMs,       // 默认 60000
+  // 2026-10-07：单批送 LLM 的候选条数上限。默认 8（DEFAULT_BATCH_SIZE）。
+  // 实测 43 条单批必超 60s → 整批降级 → 当晚 76 条记忆里 33 条是重复/碎片。
+  // 不传 ⇒ 落 consolidation.js 的 DEFAULT_BATCH_SIZE。
+  consolidationBatchSize,
   // 可选：sweep 完成时 publish dream.rejected 事件（默认不 publish，保持向后兼容）
   publishReject = null,         // function: (reason, count) => Promise<void>
   // 可选：cordis host ctx — 供内部 consolidation 调用 ctx.agents / ctx.subagents
@@ -1180,7 +1184,7 @@ export async function runSweep({
   let resolvedOps = operations;
   if (resolvedOps == null && unpromotedGated.length > 0) {
     const runner = consolidation ?? (ctx
-      ? (g, e) => consolidate({
+      ? (g, e) => consolidateBatched({
           ctx,
           gated: g,
           existing: e,
@@ -1188,6 +1192,9 @@ export async function runSweep({
           provider: consolidationProvider,
           model: consolidationModel,
           timeoutMs: consolidationTimeoutMs,
+          // 2026-10-07：候选堆到 43 条时单批必超 60s 超时，闸门敞开产垃圾。
+          // 分批让每批的 prompt 体量有界；批数写进 reason，失败时能定位到第几批。
+          batchSize: consolidationBatchSize,
         })
       : null);
     if (runner) {

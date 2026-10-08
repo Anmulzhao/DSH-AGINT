@@ -4,7 +4,8 @@
  * 写入路径：
  *   - id = `${envelope.id}:${sub.id}`（避免同 envelope 多订阅者互相覆盖）
  *   - value = { envelope, sub, reason, attempts, recordedAt, ttl }
- *   - 保留策略：retentionMs 默认 604800000ms（7 天，yaml constraints）
+ *   - 保留策略：retentionMs 默认 604800000ms（7 天，yaml constraints）；
+ *     2026-10-07 起由 sweepExpiredDeadletters 真正执行（启动 + 每 24h），此前只写不删
  *
  * 不变量：
  *   - 不直接调 ambient I/O；通过 ctx.tables.deadletter（TableHandle）
@@ -78,4 +79,26 @@ export async function listDeadletters(ctx: EventBusContext): Promise<DeadLetterE
     if (value && typeof value === 'object') out.push(value as DeadLetterEntry);
   }
   return out;
+}
+
+/**
+ * 清理过期死信（2026-10-07 补 reaper，与 lib/deadletter.js 同步）。
+ * 判据 recordedAt + DEFAULT_RETENTION_MS；失败静默；返回删除条数。
+ * 由 index.ts 的 apply 注册：启动时 + 每 24h 一次。
+ */
+export async function sweepExpiredDeadletters(ctx: EventBusContext, now: number = Date.now()): Promise<number> {
+  const t = ctx?.tables?.deadletter;
+  if (!t || typeof t.entries !== 'function' || typeof (t as any).delete !== 'function') return 0;
+  let removed = 0;
+  try {
+    const expired: string[] = [];
+    for await (const [id, value] of t.entries()) {
+      const recorded = value && typeof (value as any).recordedAt === 'string' ? Date.parse((value as any).recordedAt) : NaN;
+      if (!Number.isNaN(recorded) && now - recorded >= DEFAULT_RETENTION_MS) expired.push(id);
+    }
+    for (const id of expired) {
+      try { await (t as any).delete(id); removed += 1; } catch { /* 单条失败不中断整轮 */ }
+    }
+  } catch { /* 表不可用：静默，下轮再试 */ }
+  return removed;
 }

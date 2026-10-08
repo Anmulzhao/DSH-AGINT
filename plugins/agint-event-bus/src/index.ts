@@ -18,7 +18,7 @@
  *   - sync 全局上限 3（yaml constraints）；超出即抛
  */
 import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, deliveryHistory, disposeBus } from './bus.js';
-import { listDeadletters } from './deadletter.js';
+import { listDeadletters, sweepExpiredDeadletters } from './deadletter.js';
 import type { EventEnvelope } from './envelope.js';
 import type { EventBusContext, EventLogEntry, InspectFilter, Handler, PublishResult, Subscription, Unsubscribe } from './types.js';
 
@@ -96,6 +96,17 @@ function apply(ctx: any, _config: any = {}) {
   } catch {
     // 软降级：保留 stub（事件仅落在内存 ring + deadletter stub；不影响契约）
   }
+
+  // ── 死信 reaper（2026-10-07 补，与 lib/index.js 同步）────────────────────
+  // 「7 天保留」此前只写 ttl 字段、全仓无消费者——纸面约定，死信表无界增长。
+  // 启动清一轮 + 每 24h 一轮；ctx.effect 保证 dispose 清 timer（PLUGIN-SPEC 维度 5）。
+  const DEADLETTER_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const sweepOnce = () => {
+    void sweepExpiredDeadletters(busCtx).catch(() => { });
+  };
+  sweepOnce();
+  const sweepTimer = setInterval(sweepOnce, DEADLETTER_SWEEP_INTERVAL_MS);
+  ctx.effect(() => clearInterval(sweepTimer));
 
   // ── 注册 3 Service ──
   ctx.provide('agint.eventBus.publish', (input: unknown): Promise<PublishResult> =>
