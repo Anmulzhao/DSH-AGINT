@@ -368,6 +368,18 @@
         #    必须重启 dsh 才生效；生效与否在新会话用 configApi() 读数验证。
         # schema 默认 14（schema.js observation_period_days）。
         observation_period_days: 7
+        # ── A1 脚手架黑名单追加（2026-10-08）────────────────────────────
+        # 来源：生产审计 pattern_specificity_unknown_tools（2026-09-29 ~ 10-08
+        # 共 4 条审计、去重 15 个工具）。程序化核对：与部署位内置 SCAFFOLD_TOOLS
+        # （50 项）交集 0/15，全部为读状态/列目录/排程/展示类通用控制面动作，
+        # 无领域业务工具 ⇒ 补入不会误杀。与内置黑名单取并集，不替换。
+        # ⚠️ 必须写在**仓库根**这份：install.sh 会把仓库根整份 cp -f 到
+        #    $DSH_HOME/.agint-bundle/cordis.patch.yml —— 只改部署位会被下次
+        #    安装静默冲掉（2026-10-08 部署 v0.6.1 时已实测冲掉一次）。
+        #    含 __DSH_HOME__ 占位符的模板不许反向拷回仓库（会写死本机路径）。
+        # 生效：需重启 dsh web。验证：重启后下次 05:15 聚合的审计里
+        # pattern_specificity_unknown_tools 不再出现这 15 个名字。
+        scaffold_tools_extra: ["metrics_summary", "cron_health", "present", "evolution_stats", "schedule_create", "schedule_list", "plugin_manager", "cordis_inspect_query", "curator_stats", "mutator_stats", "job_kill", "metrics_collect", "metrics_series", "rule_list", "wiki_read"]
 
     # agint-curator: P0-2 技能策展人 v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2
     # 智能策展）— 2026-09-07 挂载 v0.1.0，2026-09-08 升级 v0.2.0（schemaVersion 1→2 已迁移，
