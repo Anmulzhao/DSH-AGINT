@@ -261,7 +261,10 @@ elif [ -d "$BUNDLE_LINK" ]; then
   fi
 fi
 if [ -d "$BUNDLE_DST" ]; then
-  for item in plugins cordis.patch.yml package.json; do
+  # profile.json 是 2026-10-08 加的「安装到哪个 profile」事实文件（install.sh 3.7）。
+  # ⛔ 卸载必须删它：留着会让没 ctx 的代码路径（agint-dream 等）继续以为 AGINT 装在
+  #    那个 profile 上，而实体已经不在了 —— 一个指向已卸载目标的"事实"，比没有更糟。
+  for item in plugins cordis.patch.yml package.json profile.json; do
     if [ -e "$BUNDLE_DST/$item" ]; then
       if [ "$DRY_RUN" = "1" ]; then
         log "   ✓ 删除 (dry): $BUNDLE_DST/$item"

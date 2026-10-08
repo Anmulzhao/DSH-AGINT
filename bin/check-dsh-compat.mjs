@@ -67,6 +67,14 @@ function dshRootCandidates() {
   out.push('/usr/local/lib/node_modules/@deepseek-ai/dsh');
   out.push('/usr/lib/node_modules/@deepseek-ai/dsh');
   out.push(path.join(REPO_ROOT, 'node_modules', '@deepseek-ai', 'dsh'));
+  // AGINT 自带 dsh 运行时（2026-10-08 新增）
+  //   对齐 install/install.sh 的 locate_dsh_dir() 途径 ③：$DSH_HOME/.agint-deps/dsh-runtime。
+  //   ⛔ 必须排在下面「问 npm 自己」之前：npm root -g 跟随 PATH 首个 npm，而本机首个
+  //   npm 是托管那份（前缀在沙箱），答出来的目录里没有 dsh —— 2026-10-08 实测，
+  //   正是它造成「解析根缺失 + 零报错」的静默降级。自带这份不受 PATH / 全局环境影响。
+  const homeRoot = process.env.HOME || process.env.USERPROFILE || '';
+  const dshHome = process.env.DSH_HOME || (homeRoot ? path.join(homeRoot, '.dsh') : '');
+  if (dshHome) out.push(path.join(dshHome, '.agint-deps', 'dsh-runtime'));
   // 最后兜底：问 npm 自己
   try {
     const root = execSync('npm root -g', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();

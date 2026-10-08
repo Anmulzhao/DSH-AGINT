@@ -7,6 +7,10 @@
 # ## 交付形态（2026-09-24 起）
 #   $DSH_HOME/.agent-presets/<id>/                      ← 三条 preset 的定义文件
 #   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
+#   $DSH_HOME/.agint-deps/dsh-runtime/                  ← AGINT 自带 dsh 运行时（依赖树实体）
+#        ├── package.json       name=@deepseek-ai/dsh（验真身用）
+#        ├── lib/               dsh CLI + profile-boot
+#        └── node_modules/      @deepseek-ai/* 与第三方包（三个解析入口的真实目标）
 #   $DSH_HOME/.agint-bundle/                            ← the bundle 的实体（主载体）
 #        ├── cordis.patch.yml   挂载行（insert 行 name 相对本目录解析）
 #        ├── package.json       dsh.bundle.patch 声明
@@ -40,7 +44,12 @@
 # ## 参数
 #   --profile=<名>  目标 dsh profile 名（默认 web）。装到 desktop 就写 --profile=desktop。
 #                   目标目录必须是 $DSH_HOME/profiles/<名>/ 且已有 package.json。
-#                   作用范围：本脚本 4 处部署路径 + 传给 agint-zod-bootstrap.sh。
+#                   作用范围（2026-10-08 补全，缺任何一项都会「装完零报错但能力不全」）：
+#                     · 4 处部署路径（profile 根下的 bundle 链 / 清单 / 插件镜像 / patch）
+#                     · 传给 agint-zod-bootstrap.sh 的 MIRROR 位
+#                     · 1.3  preset 工具行 ../../profiles/<名>/plugins/… 重写（4 preset 40+ 行）
+#                     · 2.6  部署位 manifest.json 的 read:profiles/<名>/plugins 权限声明重写
+#                     · 3.7  安装事实文件 $DSH_HOME/.agint-bundle/profile.json
 #   --dry-run  只打印会改什么，不写任何文件
 #   --force    跳过 AGINT_HOME 是否为 git 仓的检查（用于 CI）
 #   --no-check 跳过 agint-security-checks.sh 前置检查（仅 dev 用）
@@ -281,14 +290,30 @@ locate_dsh_dir() {
     done
   fi
 
-  # ③ npm root -g（跟随 PATH 首个 npm，可能答错，故放最后兜底）
+  # ③ AGINT 自带 dsh 运行时（2026-10-08 新增，§2「解析根缺失」的解法）
+  #    $DSH_HOME/.agint-deps/dsh-runtime 由运维一次性铺好，版本锁死，随 $DSH_HOME 走。
+  #
+  #    ⛔ 为什么必须排在 `npm root -g` 之前：npm root -g 跟随 PATH 里的**首个** npm，
+  #    而本机 PATH 首个 npm 是托管那份（前缀在沙箱），答出来的目录里根本没有 dsh
+  #    —— 2026-10-08 实测，正是它造成「解析根缺失 + 零报错」的静默降级。
+  #    自带这份不受 PATH / npm 前缀 / 全局环境任何影响，是桌面端唯一稳定的解析根。
+  #
+  #    ⛔ 为什么不能反过来依赖「本机全局装过 dsh」：2026-10-08 卸载全局 dsh 后
+  #    留下 697 MB 残留并把三个 junction 变成悬空链接，故障当场复发。自带即免疫。
+  for c in "$DSH_HOME/.agint-deps/dsh-runtime"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+
+  # ④ npm root -g（跟随 PATH 首个 npm，可能答错，故放最后兜底）
   for c in "$(npm root -g 2>/dev/null)/@deepseek-ai/dsh"; do
     if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
       printf '%s' "$c"; return 0
     fi
   done
 
-  # ④ 常见硬编码前缀
+  # ⑤ 常见硬编码前缀
   for c in "/usr/local/lib/node_modules/@deepseek-ai/dsh" \
            "/usr/lib/node_modules/@deepseek-ai/dsh" \
            "$AGINT_HOME/node_modules/@deepseek-ai/dsh"; do
@@ -548,6 +573,41 @@ PY
   fi
 }
 
+# ── manifest 比较：忽略 profile 名差异 ──────────────────────────────────────
+#
+# 用法：manifest_same_modulo_profile <仓库 manifest> <部署位 manifest> → 退出 0 = 实质一致
+#
+# 为什么不能直接 cmp（2026-10-08）：仓库模板写 `profiles/web/plugins`（默认 profile），
+# 步骤 2.6 会把部署位改写成 `profiles/$PROFILE_NAME/plugins`。逐字节比 ⇒ 装到任何
+# 非 web profile 时本项恒红，把「正常参数化」误报成「旧版残留/漂移」。
+# 归一化只吃掉 profile 名这一段，其余任何差异（版本 / 权限 / 字段增删）照样判红 ——
+# 这是**修正比较口径**，不是放宽校验。
+manifest_same_modulo_profile() {
+  python3 - "$(winpath "$1")" "$(winpath "$2")" <<'PY'
+import re, sys
+
+PAT = re.compile(r'(profiles/)[A-Za-z0-9._-]+(/plugins)')
+
+
+def norm(path):
+    try:
+        text = open(path, encoding='utf-8').read()
+    except OSError as e:
+        print(f'[AGINT]   ! manifest 读不动（{e}）：{path}')
+        return None
+    return PAT.sub(lambda m: m.group(1) + '<PROFILE>' + m.group(2), text)
+
+
+a, b = norm(sys.argv[1]), norm(sys.argv[2])
+if a is None or b is None:
+    sys.exit(1)
+if a != b:
+    print('[AGINT]   ! manifest 在 profile 段之外存在差异')
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
 # ── 0.4 dsh 运行检测（信息性，不阻断）─────────────────────────────────────────
 # dsh 在跑时 chokidar 会锁插件目录文件，令 rmtree 失败。真正的安全网是 safe_rsync
 # 的覆盖式退化分支（见上）；本检测只负责「能认出来就提前提醒一声」，认不出也不误报。
@@ -579,6 +639,54 @@ for src in "$PRESETS_SRC"/*/; do
   if [ "$DRY_RUN" != "1" ]; then register_step "rm_dst|$dst"; fi
   log "   ✓ $name"
 done
+
+# ── 1.3 把 preset 工具行改指目标 profile ─────────────────────────────────────
+#
+# ⛔ 为什么必须有这一步（2026-10-08，装 desktop 的硬阻挡点）：
+#   presets/*/agent.cordis.yml 里 <id>/lib/tools.js 的声明行写的是相对路径
+#     name: ../../profiles/web/plugins/<plugin-id>/lib/tools.js
+#   从部署位 $DSH_HOME/.agent-presets/<id>/ 解析 ⇒ $DSH_HOME/profiles/web/plugins/…。
+#   仓库模板写死 'web'，装到 desktop 而不改 ⇒ 这些行全部指向一个不存在（或没装 AGINT）
+#   的目录 ⇒ **模型可见的工具全缺，且没有任何一行报错**（preset 加载失败不落日志）。
+#   4 个 preset 共 40+ 行，人工改必漏，所以由安装器统一重写。
+#
+# 为什么在 rsync **之后**：步骤 1 的 safe_rsync 带 --delete，会把部署位整份镜像回
+#   仓库模板（web）。这一步必须在它之后，否则当次改完、下次重装又退回 web。
+#
+# 只改 `profiles/<名>/plugins/` 这一段：preset 里另有 `profiles/web/cordis.patch.yml`
+#   这类**文档性**引用（注释里说明本机覆盖放哪），它没有 /plugins/ 段，不会被误伤。
+rewrite_preset_profile_refs() {
+  [ "$DRY_RUN" = "1" ] && {
+    log "   [DRY] 将把 presets 里的 profiles/*/plugins 改指 $PROFILE_NAME"
+    return 0
+  }
+  python3 - "$(winpath "$PRESETS_DST")" "$PROFILE_NAME" <<'PY' || warn "preset 工具行重写失败（装到非 web profile 时工具会全缺）"
+import os, re, sys, glob
+
+root, profile = sys.argv[1], sys.argv[2]
+# 只匹配 <任意前缀>profiles/<名>/plugins/ ；profile 名已在 shell 侧过白名单
+pat = re.compile(r'(profiles/)[A-Za-z0-9._-]+(/plugins/)')
+total = 0
+for path in sorted(glob.glob(os.path.join(root, '*', 'agent.cordis.yml'))):
+    try:
+        text = open(path, encoding='utf-8').read()
+    except OSError as e:
+        print(f'[AGINT]   ! 读不动 {path}: {e}')
+        continue
+    new_text, n = pat.subn(lambda m: m.group(1) + profile + m.group(2), text)
+    if n == 0:
+        print(f'[AGINT]   · {os.path.basename(os.path.dirname(path))}: 无 profiles/*/plugins 行，跳过')
+        continue
+    if new_text == text:
+        print(f'[AGINT]   ↻ {os.path.basename(os.path.dirname(path))}: 已是 {profile}，跳过')
+        continue
+    open(path, 'w', encoding='utf-8', newline='').write(new_text)
+    total += n
+    print(f'[AGINT]   ✓ {os.path.basename(os.path.dirname(path))}: {n} 行改指 profiles/{profile}/plugins')
+print(f'[AGINT]   ✓ preset 工具行合计重写 {total} 行 → profiles/{profile}/plugins')
+PY
+}
+rewrite_preset_profile_refs
 
 # ── 1.1 preset 依赖解析入口（dsh ≥ 0.1.7 必需）────────────────────────────────
 #
@@ -839,6 +947,61 @@ for src in "$PLUGINS_SRC"/agint-*/; do
   log "   ✓ $name"
 done
 
+# ── 2.6 部署位引用重写：把 profiles/web 改成目标 profile ─────────────────────
+#
+# 与 1.3 同源，但作用在**插件部署位**。当前唯一命中是 agint-family-panel 的
+# manifest.json：`permissions.fs` 里声明 `"read:profiles/web/plugins"`。
+# 该声明是 dsh 的静态权限白名单 —— 装到 desktop 后插件读的是 profiles/desktop/plugins，
+# 声明与实际路径不符 ⇒ 读被拒 ⇒ 面板源整体 state:error（**静默降级**）。
+#
+# 为什么用「扫全部部署位 manifest」而不是只改那一个文件：权限声明这类机器相关字面量
+# 以后还会出现，固定文件名会让第二处再次静默漏改。扫到 0 处时**要吵一声**（见下），
+# 「扫了 0 项」往往是正则没匹配上，不是真的没有。
+rewrite_deployed_profile_refs() {
+  local roots=("$PLUGINS_DST" "$BUNDLE_PLUGINS_DST")
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 将把部署位 manifest 里的 profiles/*/plugins 改指 $PROFILE_NAME"
+    return 0
+  fi
+  python3 - "$(winpath "$PLUGINS_DST")" "$(winpath "$BUNDLE_PLUGINS_DST")" "$PROFILE_NAME" <<'PY' || warn "部署位 manifest 权限重写失败（装到非 web profile 时相关插件会读不到数据）"
+import os, re, sys, glob, json
+
+mirror, bundle, profile = sys.argv[1], sys.argv[2], sys.argv[3]
+pat = re.compile(r'(profiles/)[A-Za-z0-9._-]+(/plugins)')
+total_files = 0
+total_hits = 0
+for root in (mirror, bundle):
+    if not os.path.isdir(root):
+        print(f'[AGINT]   ! 部署位不存在，跳过：{root}')
+        continue
+    for path in sorted(glob.glob(os.path.join(root, '*', 'manifest.json'))):
+        try:
+            text = open(path, encoding='utf-8').read()
+        except OSError as e:
+            print(f'[AGINT]   ! 读不动 {path}: {e}')
+            continue
+        new_text, n = pat.subn(lambda m: m.group(1) + profile + m.group(2), text)
+        if n == 0:
+            continue
+        # 改写前后都得是合法 JSON：宁可少改一个文件，也不要写坏一份 manifest
+        try:
+            json.loads(new_text)
+        except json.JSONDecodeError as e:
+            print(f'[AGINT]   ✗ 改后不是合法 JSON，放弃改写 {path}: {e}')
+            continue
+        open(path, 'w', encoding='utf-8', newline='').write(new_text)
+        total_files += 1
+        total_hits += n
+        print(f'[AGINT]   ✓ {os.path.basename(os.path.dirname(path))}/manifest.json：{n} 处 → profiles/{profile}/plugins')
+if total_hits == 0:
+    print('[AGINT]   · 部署位 manifest 里没有 profiles/*/plugins 声明（确认过是 0 处则可忽略；'
+          '若你预期应有，检查这里扫的路径对不对）')
+else:
+    print(f'[AGINT]   ✓ 部署位 manifest 合计重写 {total_hits} 处（{total_files} 个文件）→ profiles/{profile}/plugins')
+PY
+}
+rewrite_deployed_profile_refs
+
 # ── 3. 同步 bundle 挂载层（patch + 清单 + 解析入口）─────────────────────────
 # 2026-09-24 起 AGINT 的挂载行住在 **bundle 层**，不再写 profile 级 patch：
 # 官方口径 profile 级 patch 优先级高于 bundle 层，两边都写 = 同一批 id 重复挂载。
@@ -1053,7 +1216,43 @@ ensure_bundle_link() {
     && log "   ✓ 软链已建立（$link → $target）" \
     || warn "软链建立失败：$link → $target。dsh 会因解析不到 $BUNDLE_NAME 跳过整个 bundle。"
 }
+
+# ── 3.7 写「安装到哪个 profile」事实文件 ─────────────────────────────────────
+#
+# 产物：$DSH_HOME/.agint-bundle/profile.json  ← {"profile":"<名>","updatedAt":"<ISO>"}
+#
+# 为什么需要它（2026-10-08 实测，desktop 适配的关键一环）：
+#   dsh 的 DSH_PROFILE / DSH_PROFILE_DIR 是 **shell 调用注册表**的内置键 —— 每次 bash /
+#   pwsh 子进程执行时由 collect() 现构造，**从不写进 process.env**（asar 里
+#   `process.env[DSH_*] =` 赋值 0 命中）。插件主进程因此读不到 profile 名，只能靠
+#   ① cordis ctx 的 profileContext（权威，但只在有 ctx 的地方拿得到）
+#   ② 本文件（AGINT 自己写的安装事实，任何进程都能读）
+#   agint-dream 等**拿不到 ctx 的代码路径**靠它兜底，避免静默回落 web。
+#
+# ⛔ 放在 bundle 实体目录而不是 profile 目录：bundle 实体与 profile 无关（只注册到
+#    profile 的 node_modules），这里只有一个值 = **最近一次安装的目标 profile**。
+# ── 3.6 收尾：真正建立软链（函数定义在上面一行，调用在这里）──────────────────
 ensure_bundle_link
+
+write_profile_fact() {
+  local out="$BUNDLE_DST/profile.json"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "   [DRY] 写安装事实 $out ← {\"profile\":\"$PROFILE_NAME\"}"
+    return 0
+  fi
+  mkdir -p "$BUNDLE_DST" || { warn "创建 $BUNDLE_DST 失败，跳过安装事实写入"; return 0; }
+  python3 - "$(winpath "$out")" "$PROFILE_NAME" <<'PY' || warn "安装事实文件写入失败（无 ctx 的代码路径会回落 web）"
+import json, sys, datetime
+path, profile = sys.argv[1], sys.argv[2]
+payload = {
+    "profile": profile,
+    "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+}
+open(path, 'w', encoding='utf-8', newline='\n').write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+print(f'[AGINT]   ✓ 安装事实：profile = {profile}（{path}）')
+PY
+}
+write_profile_fact
 
 # ── 4. 装后静态校验 ─────────────────────────────────────────────────────────
 log "4/4 装后静态校验"
@@ -1106,7 +1305,13 @@ PY
   # mountOrder 校验全失明。v0.2 的 safe_rsync 是整目录同步、本应带上 manifest，
   # 但 agint-event-bus 仍出现过 host manifest 停在旧版（08-29）的情况——
   # 说明只靠"同步应该会带上"不够，装后必须显式校验。
-  # 规则：仓库有 manifest.json 的插件，host 必须存在且与仓库逐字节一致。
+  # 规则：仓库有 manifest.json 的插件，host 必须存在且与仓库一致。
+  #
+  # ⚠️ 2026-10-08：比较前先做 **profile 段归一化**。仓库模板里写 `profiles/web/plugins`
+  #   （默认 profile），而步骤 2.6 会把部署位改写成 `profiles/$PROFILE_NAME/plugins`。
+  #   直接 cmp 逐字节比 ⇒ 装到任何非 web profile 时本项**恒红**，把「正常参数化」
+  #   报成「旧版残留」。归一化后只比**除 profile 段以外**的内容：任何真实漂移
+  #   （版本、权限、字段增删）依旧会红。这是收紧比较口径，不是放宽校验。
   for plugin in "$PLUGINS_SRC"/agint-*/; do
     [ -f "$plugin/manifest.json" ] || continue
     name="$(basename "$plugin")"
@@ -1114,8 +1319,8 @@ PY
     if [ ! -f "$host_m" ]; then
       warn "plugin $name 仓库有 manifest.json 但 host 缺失（plugin-check 将失明）"
       failed=$((failed+1))
-    elif ! cmp -s "$plugin/manifest.json" "$host_m"; then
-      warn "plugin $name host manifest 与仓库不一致（疑似旧版残留）"
+    elif ! manifest_same_modulo_profile "$plugin/manifest.json" "$host_m"; then
+      warn "plugin $name host manifest 与仓库不一致（profile 段之外的内容有差异，疑似旧版残留）"
       failed=$((failed+1))
     fi
   done
