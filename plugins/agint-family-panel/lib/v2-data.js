@@ -14,6 +14,12 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { scanPlugins, codeRoots } from './v2-scan.js';
+// profile 名解析口径复用 agint-mount 的实现（单一事实源，防三处口径漂移）。
+// 跨插件相对 import 在仓库位 / bundle 位 / 兼容镜像位三种布局下都能解析：
+//   仓库位   plugins/agint-family-panel/lib → ../../agint-mount/lib/paths.js
+//   bundle 位 .agint-bundle/plugins/agint-family-panel/lib → 同上相对关系
+//   镜像位   profiles/<p>/plugins/agint-family-panel/lib → 同上
+import { resolveProfileName } from '../../agint-mount/lib/paths.js';
 
 const require = createRequire(import.meta.url);
 const PANEL_VERSION = (require('../package.json')?.version) ?? '0.0.0';
@@ -164,11 +170,16 @@ function resolveStoragesHome(pluginsDir, { maxUp = 12 } = {}) {
  * @param {Record<string,string|undefined>} env
  * @param {string} selfUrl - 调用方 import.meta.url
  * @param {string|null} [configRepoRoot] - cordis 注入的 config.repoRoot（候选 ⓪）
+ * @param {string|null} [profileName] - 生效 profile 名（2026-10-08 新增）。
+ *     由调用方从 `ctx.get('profileContext')?.name` 传入 —— 那是插件进程里唯一拿得到的
+ *     权威源（DSH_PROFILE 只喂 shell 子进程）。传 null 时 resolveProfileName 自行回落：
+ *     env.DSH_PROFILE → 探测 profiles/*\/plugins 含 agint-* 者 → 'web'。
  */
-export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url, configRepoRoot = null) {
+export function resolveV2Dirs(env = process.env, selfUrl = import.meta.url, configRepoRoot = null, profileName = null) {
   let pluginsDir;
   if (env.DSH_HOME) {
-    pluginsDir = join(env.DSH_HOME, 'profiles', 'web', 'plugins');
+    const profile = resolveProfileName({ env, dshHome: env.DSH_HOME, profile: profileName ?? undefined });
+    pluginsDir = join(env.DSH_HOME, 'profiles', profile, 'plugins');
   } else {
     // 部署位兜底：本文件就在 <pluginsDir>/agint-family-panel/lib/ 下
     const derived = selfPluginsCandidate(selfUrl);

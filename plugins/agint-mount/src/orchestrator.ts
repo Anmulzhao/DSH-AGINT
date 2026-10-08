@@ -375,7 +375,7 @@ export async function mountRequest(ctx: MountContext, input: unknown): Promise<M
 
   try {
     // ── PREPARE ─────────────────────────────────────────
-    const paths = resolvePaths({ dshHome: ctx.dshHome });
+    const paths = resolvePaths({ dshHome: ctx.dshHome, profileName: (ctx.get && ctx.get('profileContext')?.name) || undefined });
     const targetDir = join(paths.pluginsRoot, artifactName);
     await mkdir(targetDir, { recursive: true });
     await mkdir(paths.stagingRoot, { recursive: true });
@@ -612,7 +612,7 @@ export async function mountResumeOnBoot(ctx: MountContext): Promise<void> {
     if (!ok) {
       // 重启失败 → 撤 patch 行 + 标 ROLLED_BACK（不是 DISABLED，是整个事务失败）
       try {
-        const paths = resolvePaths({ dshHome: ctx.dshHome });
+        const paths = resolvePaths({ dshHome: ctx.dshHome, profileName: (ctx.get && ctx.get('profileContext')?.name) || undefined });
         await removeRow(paths.cordisPatch, t.artifactName);
       } catch { /* ignore：patch 行可能已被外部清理 */ }
       await updateTicketPhase(ctx, t.ticketId, 'ROLLED_BACK', t.contractCheck, null,

@@ -43,6 +43,9 @@ function apply(ctx, config = {}) {
         paths = resolvePaths({
             dshHome: (ctx.get && ctx.get('dshHome')) || process.env.DSH_HOME,
             profilesDir: (ctx.get && ctx.get('profilesDir')),
+            // 2026-10-08：profile 名权威源是 cordis ctx（DSH_PROFILE 只喂 shell 子进程，
+            // 插件主进程的 process.env 里通常没有）。拿不到时 resolvePaths 会自行探测。
+            profileName: (ctx.get && ctx.get('profileContext')?.name) || undefined,
             agintHome: process.env.AGINT_HOME,
         });
     }

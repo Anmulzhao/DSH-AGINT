@@ -19,8 +19,75 @@
  *   仍做防御性过滤，避免未来 BASELINE_TARGETS 变更引入自评）
  */
 
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, basename, resolve } from 'node:path';
+
+/** AGINT 安装器写入的「安装到哪个 profile」事实文件（相对 $DSH_HOME） */
+const PROFILE_FACT_REL = join('.agint-bundle', 'profile.json');
+
+/**
+ * 读安装事实：安装器把本次安装的目标 profile 名写进 $DSH_HOME/.agint-bundle/profile.json。
+ *
+ * 为什么需要它（2026-10-08 实测）：
+ *   dsh 的 DSH_PROFILE / DSH_PROFILE_DIR 是 **shell 调用注册表**的内置键，只在每次
+ *   bash / pwsh 子进程执行时现构造，**从不写进 process.env**（asar 内
+ *   `process.env[DSH_*] =` 赋值 0 命中）。插件主进程里读不到，靠它定位 profile 会
+ *   静默回落。安装事实文件是 AGINT 自己写的、不依赖 dsh 内部契约的真源。
+ *
+ * @param {string} dshHome
+ * @returns {string|null} 读不到 / 坏了返回 null（不是错误，继续回落）
+ */
+export function readInstalledProfile(dshHome) {
+  if (!dshHome) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(resolve(dshHome), PROFILE_FACT_REL), 'utf8'));
+    const name = parsed?.profile;
+    return typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  } catch {
+    return null; // 文件不存在 / 不是 JSON / 字段缺失：都不是致命错
+  }
+}
+
+/**
+ * 解析生效的 dsh profile 名。
+ *
+ * ⛔ 刻意不 import agint-mount/lib/paths.js 的 resolveProfileName：本文件 v0.2 纪律写明
+ *    「跨 plugin 边界 import 会绑死版本号」（见 DREAM_BASELINE_TARGETS 上方注释）。
+ *    所以这里内联一份**口径相同**的解析；一致性由 test/profile-name-parity.test.mjs 兜住。
+ *
+ * 优先级链（与 agint-mount/lib/paths.js 一致，唯一差别是少了目录探测层）：
+ *   ① opts.profile    —— 调用方显式给（ctx.get('profileContext').name）
+ *   ② env.DSH_PROFILE
+ *   ③ env.DSH_PROFILE_DIR 的 basename
+ *   ④ 安装事实文件 $DSH_HOME/.agint-bundle/profile.json
+ *   ⑤ 'web'
+ *
+ * 为什么不做 profiles/*\/plugins 目录探测（mount 版有）：这里只用于找 host 副本，
+ * 找不到会回落到 AGINT_HOME 仓路径（不致命）。为它付一次目录扫描不划算；
+ * 装到非 web profile 时，④ 的安装事实会命中。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.profile]
+ * @param {string} [opts.dshHome]
+ * @param {Record<string,string|undefined>} [opts.env]
+ * @returns {string}
+ */
+export function resolveDreamProfileName(opts = {}) {
+  const env = opts.env ?? process.env;
+  const nonEmpty = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+  const explicit = nonEmpty(opts.profile);
+  if (explicit) return explicit;
+  const fromEnv = nonEmpty(env.DSH_PROFILE);
+  if (fromEnv) return fromEnv;
+  const dirEnv = nonEmpty(env.DSH_PROFILE_DIR);
+  if (dirEnv) return basename(resolve(dirEnv));
+  const dshHome = opts.dshHome ?? env.DSH_HOME ?? '';
+  const installed = readInstalledProfile(dshHome);
+  if (installed) return installed;
+  return 'web';
+}
+
+
 
 // v0.2 (Sprint 13)：与 plugins/agint-quality/agint-quality-eval/lib/regression.js BASELINE_TARGETS 对齐
 // 故意硬编码而不是 import 那个常量：dream 不应依赖 quality-eval 的源码路径
@@ -68,9 +135,14 @@ export function resolveTargetPath(target, env = {}) {
   if (!target || typeof target.id !== 'string' || target.id.length === 0) return null;
   const dshHome = env.DSH_HOME || process.env.DSH_HOME || '';
   const agintHome = env.AGINT_HOME || process.env.AGINT_HOME || '';
-  // host 副本路径
+  // host 副本路径。profile 名不再写死 'web'（2026-10-08 改造，适配 desktop profile）。
   if (dshHome) {
-    const hostPath = join(dshHome, 'profiles/web/plugins', target.id);
+    const profileName = resolveDreamProfileName({
+      env,
+      dshHome,
+      profile: env.AGINT_PROFILE_NAME || undefined,
+    });
+    const hostPath = join(dshHome, 'profiles', profileName, 'plugins', target.id);
     if (existsSync(join(hostPath, 'manifest.json'))) return hostPath;
     if (existsSync(hostPath)) return hostPath;
   }

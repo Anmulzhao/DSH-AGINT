@@ -613,7 +613,13 @@ async function buildV2Payload(ctx, config = {}) {
     const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
         ? config.repoRoot.trim()
         : null;
-    const payload = collectV2Data(resolveV2Dirs(process.env, import.meta.url, repoRoot));
+    const payload = collectV2Data(resolveV2Dirs(
+        process.env,
+        import.meta.url,
+        repoRoot,
+        // 2026-10-08：profile 名权威源是 cordis ctx，不是 process.env（见 v2-data.js 注释）
+        (typeof ctx?.get === 'function' ? ctx.get('profileContext')?.name : null) ?? null,
+    ));
     payload.subscriptions = collectSubscriptions(ctx);
     payload.deliveryByTopic = collectDeliveryByTopic(ctx);
     payload.deliveryHistory = collectDeliveryHistory(ctx);

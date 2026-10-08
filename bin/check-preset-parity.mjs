@@ -251,6 +251,30 @@ function readShippedTarget() {
  * `dsh --profile <p> --dump-config`（权威、与启动方式无关）。两条都拿不到时
  * 返回 reason，由调用方**判红**，不再静默跳过。
  */
+/**
+ * 门禁要查的 live profile 名（2026-10-08）。
+ *
+ * 优先级：env.DSH_PROFILE → 安装事实文件 $DSH_HOME/.agint-bundle/profile.json → 'web'
+ *
+ * ⚠️ 不能只靠 `DSH_PROFILE || 'web'`：
+ *   ① DSH_PROFILE 是 dsh 的 **shell 调用**环境变量（只在 bash/pwsh 子进程里注入，
+ *      从不写进 process.env），从命令行手跑这个门禁时它通常不存在；
+ *   ② AGINT 装到 desktop 后，回落 'web' 会让门禁去读 **web** 的 live 基线 ——
+ *      查的是没装 AGINT 的那个 profile，判据全绿但**查错了对象**（假绿）。
+ *   安装事实文件由 install.sh 3.7 写入，是本机「AGINT 装在哪个 profile」的真源。
+ */
+function resolveLiveProfileName(home) {
+  const fromEnv = (process.env.DSH_PROFILE || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const fact = JSON.parse(fs.readFileSync(path.join(home, '.agint-bundle', 'profile.json'), 'utf8'));
+    if (typeof fact?.profile === 'string' && fact.profile.trim() !== '') return fact.profile.trim();
+  } catch {
+    /* 文件不存在 / 不是 JSON / 没这个字段：继续回落，不吵 */
+  }
+  return 'web';
+}
+
 function readLiveTarget(profile = 'web') {
   const file = path.join(dshHome, 'profiles', profile, 'cordis.yml');
   if (fs.existsSync(file)) {
@@ -478,7 +502,7 @@ if (TARGET_OVERRIDES.length > 0) {
     targets.push(shipped);
   }
   if (TARGET_FILTER !== 'shipped') {
-    const live = readLiveTarget(process.env.DSH_PROFILE || 'web');
+    const live = readLiveTarget(resolveLiveProfileName(dshHome));
     if (live?.error) {
       // 关键：拿不到基线必须判红。静默跳过 = 门禁少查一半还报绿（2026-10-01 实踩）。
       baselineFailures.push({
