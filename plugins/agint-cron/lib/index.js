@@ -190,6 +190,13 @@ function apply(ctx, config) {
     // memory-provider-health）。懒解析；agint-memory-provider 未挂载时为
     // undefined → job soft-skip 不报错（该插件稳定性标记为 experimental）。
     'agint.memoryProvider': ctx.get('agint.memoryProvider'),
+    // 多源输入网关看门狗（2026-10-09 新增 job input-gateway-watchdog）。
+    // 读 `getStatus()` 巡检四个 Channel 的采集活性。懒解析；agint-input-gateway
+    // 未挂载时为 undefined → job 返回 {skipped:true} 而非报错。
+    // ⛔ 别再漏这行：jobs.js 的 input-gateway-watchdog 读的就是这个键 ——
+    //   services 是白名单而非 ctx 全量透传（2026-10-09 加 job 时实测踩到：
+    //   只改 jobs.js 会让该 job 每天报 skipped，症状与「网关没跑」一模一样）。
+    'agint.inputGateway': ctx.get('agint.inputGateway'),
     sessionPersistence: ctx.get('sessionPersistence'),
     // Phase-3 轨道 C（spec-index-refresh）：审计要读**仓库里的** docs/specs/。
     // ⛔ 这不是宿主服务，是一个路径 —— 用 config 传，不进 ctx.get。

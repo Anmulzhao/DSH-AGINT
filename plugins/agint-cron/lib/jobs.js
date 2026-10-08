@@ -25,6 +25,7 @@
  *   oracle-daily    daily 09:00 美谕晨报
  *   oracle-monthly  每月 1 日 10:00 美谕月报
  *   diagnosis-watchdog 每 30min 诊断域看门狗（表占用率 / 频率熔断是否被咬）
+ *   input-gateway-watchdog daily 06:00 输入网关四通道采集活性看门狗（补网关自带调度器的盲区）
  *   memory-provider-health daily 08:30 记忆 provider 定期健康检查（阶段 3）
  *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
  *   evolution-reconcile Tue 08:00 闭环取数三方对账（evolution-cycle 之后；Phase -1.1）
@@ -549,6 +550,134 @@ export const defaultJobs = [
       if (criticals.length) {
         console.warn('[agint-cron:diagnosis-watchdog] ' + criticals.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
         throw new Error('diagnosis-watchdog: ' + criticals.join(' ｜ '));
+      }
+      return { alert: warnings.length > 0, ...summary };
+    },
+  },
+  {
+    // 多源输入网关看门狗（2026-10-09 新增）。
+    //
+    // 为什么必须有它：agint-input-gateway 的采集走**插件自带调度器**
+    // （gateway.js:101 startScheduler 的 setInterval），**不经过 agint-cron** ——
+    // 所以 cron 列表里根本看不到这四条采集线。2026-10-09 实测：4 个 Channel
+    // 里 3 个 lastFetch=never、4 个 signalsEmitted 全 0，而没有任何监控会报警，
+    // 外部输入整条链路静默空转了一周还没人知道。
+    //
+    // 本 job 自身的设计前提（看门狗不能是 silent-zero）：
+    //   getStatus() 返回 0 个通道 ⇒ 判 CRITICAL「探针失明」，**不能**当成
+    //   「0 问题 = 健康」。2026-09-29 agint-input-gateway 5 个检测器里 4 个恒返回 0
+    //   却报 ok=true，正是静默失明 —— 全绿比没监控更坏。
+    id: 'input-gateway-watchdog',
+    name: '输入网关看门狗',
+    // daily 06:00：在 C4(03:30) 采集之后；与相邻 05:45 / 06:15 各隔 15 分钟
+    // （满足 test/schedule-layout.test.mjs 原则② 的 `gap < 15` 判据）。
+    schedule: '0 6 * * *',
+    description: '巡检输入网关四通道采集活性：静默失效 / 反复报错 / 从未采集 / 空转零信号；探针失明即 CRITICAL（daily 06:00）',
+    action: async (services) => {
+      const gw = services['agint.inputGateway'];
+      if (!gw || typeof gw.getStatus !== 'function') {
+        return { skipped: true, reason: 'agint.inputGateway not available' };
+      }
+      const st = await gw.getStatus();
+
+      // ── 探针自检 ──
+      const channels = Array.isArray(st?.channels) ? st.channels : [];
+      if (channels.length === 0) {
+        throw new Error(
+          'input-gateway-watchdog: getStatus() 返回 0 个通道 —— 探针失明，' +
+          '不能判定为健康（网关未挂载 / 初始化失败 / 状态结构变更）'
+        );
+      }
+
+      // 各 Channel 的设计周期。源：agint-input-gateway/lib/schema.js 的
+      // C2_CRON='0 2 * * 0'、C3_CRON='0 4 * * 0'、C4_CRON='30 3 * * *'、
+      // C5_CRON='0 5 * * 0'。网关改名/改频率时这里要同步改。
+      const PERIOD_MS = {
+        'self-observation': 7 * 86400_000,
+        'external-git': 7 * 86400_000,
+        adversarial: 1 * 86400_000,
+        'cross-agent': 7 * 86400_000,
+      };
+      const STALE_FACTOR = 2.5;           // 超过 2.5 倍周期才判静默失效
+      const GRACE_MS = 6 * 3600_000;      // 再加 6h 宽限，避开刚过点的抖动
+      const ERR_BURST = 3;                 // 累计报错达此数判故障
+
+      const now = Date.now();
+      const warnings = [];
+      const criticals = [];
+      const perChannel = [];
+
+      for (const c of channels) {
+        const id = c.channelId;
+        const k = c.counters ?? {};
+        const period = PERIOD_MS[id] ?? 0;
+        // lastFetchAt 是 ISO 字符串或 null（storage.js:44 z.string().nullable()），
+        // 不是 epoch 数字 —— 用 Number() 会得到 NaN，让 A 判据永不触发。
+        const parsed = c.lastFetchAt ? Date.parse(c.lastFetchAt) : NaN;
+        const lastMs = Number.isFinite(parsed) ? parsed : 0;
+
+        const row = {
+          channelId: id,
+          type: c.channelType,
+          enabled: c.enabled !== false,
+          fetchCount: k.fetchCount ?? 0,
+          emitted: k.signalsEmitted ?? 0,
+          filtered: k.signalsFiltered ?? 0,
+          errors: k.errorCount ?? 0,
+          staleHours: lastMs ? Math.round((now - lastMs) / 3600_000) : null,
+        };
+
+        if (c.enabled === false) {
+          row.verdict = 'disabled';
+          perChannel.push(row);
+          continue;
+        }
+
+        if (lastMs && period && now - lastMs > period * STALE_FACTOR + GRACE_MS) {
+          // A. 曾经跑过，之后再没跑 —— 采集线静默失效
+          criticals.push(
+            `CRITICAL ${id} 静默失效：上次采集在 ${row.staleHours} 小时前` +
+            `（设计周期 ${period / 86400_000} 天，已超 ${STALE_FACTOR} 倍 + 6h 宽限）`
+          );
+          row.verdict = 'CRITICAL:stale';
+        } else if (Number(k.errorCount ?? 0) >= ERR_BURST) {
+          // B. 反复报错
+          criticals.push(
+            `CRITICAL ${id} 采集报错累计 ${k.errorCount} 次（最近：${c.lastError ?? '未记录'}）`
+          );
+          row.verdict = 'CRITICAL:errors';
+        } else if (Number(k.fetchCount ?? 0) === 0) {
+          // C. 从未采集。WARN 不抛：周频 Channel 刚上线属正常，抛了会污染 cron 状态
+          warnings.push(`WARN ${id} 已启用但从未采集（fetchCount=0），确认网关调度器是否在跑`);
+          row.verdict = 'WARN:neverFetched';
+        } else if (Number(k.signalsEmitted ?? 0) === 0 && Number(k.signalsFiltered ?? 0) === 0) {
+          // D. 空转：跑了 N 次，产出与过滤都是 0 ⇒ 采集器很可能整个瞎了
+          warnings.push(
+            `WARN ${id} 采集 ${k.fetchCount} 次但 signalsEmitted 与 signalsFiltered 均为 0` +
+            ' —— 空转，疑似采集器失明（对照 2026-09-29 的静默失明事故）'
+          );
+          row.verdict = 'WARN:idle';
+        } else {
+          row.verdict = 'ok';
+        }
+        perChannel.push(row);
+      }
+
+      const summary = {
+        channelCount: channels.length,
+        perChannel,
+        checkedAt: new Date(now).toISOString(),
+        warningCount: warnings.length,
+        criticalCount: criticals.length,
+      };
+      if (warnings.length) {
+        // WARN 只记不抛（与 diagnosis-watchdog 同策略，2026-10-05 老板裁定）：
+        // 纯观测任务的提示不该被调度层记成 failed，否则真正的 CRITICAL 会被淹没。
+        console.warn('[agint-cron:input-gateway-watchdog] ' + warnings.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
+      }
+      if (criticals.length) {
+        console.warn('[agint-cron:input-gateway-watchdog] ' + criticals.join(' ｜ ') + '\n  指标 ' + JSON.stringify(summary));
+        throw new Error('input-gateway-watchdog: ' + criticals.join(' ｜ '));
       }
       return { alert: warnings.length > 0, ...summary };
     },

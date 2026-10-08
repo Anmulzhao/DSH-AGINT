@@ -2,6 +2,50 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.15] — 新增 job input-gateway-watchdog：补输入网关采集活性的监控盲区（2026-10-09）
+
+### 问题
+`agint-input-gateway` 的四条采集线走**插件自带调度器**（`lib/gateway.js:101`
+`startScheduler` 的 `setInterval`），**不经过 agint-cron** —— 所以 `cron_list` 里
+根本看不到它们，也没有任何 job 在巡检它们的活性。
+
+2026-10-09 实测：`input_gateway_status` 显示 4 个 Channel 里 3 个 `lastFetch=never`、
+4 个 `signalsEmitted` 全为 0，而**没有任何监控会报警**。外部输入整条链路静默空转
+了一周，无人知晓。这与 `agint-dream` 2026-09 的静默失效是同一类问题
+（宿主把会话日志从 v3 改成 v4，`dream_status` 仍报 `validation=OK`，失效 7 天）。
+
+### 改动
+- `lib/index.js`：`services` 白名单新增 `'agint.inputGateway'`。
+  ⛔ `services` 是硬编码白名单而非 `ctx` 全量透传；漏这行 job 不会报错、只会每天
+  报 `skipped`（同 `ledger-anchor` 漏 `'agint.evolution'` 的历史坑，2026-10-03 踩过）。
+- `lib/jobs.js`：新增 `input-gateway-watchdog`，daily 06:00（在 C4 03:30 采集之后）。
+
+### 判据
+| 级别 | 触发条件 |
+|---|---|
+| **CRITICAL（抛错）** | 探针失明：`getStatus()` 返回 0 个通道 |
+| **CRITICAL（抛错）** | 静默失效：超过 2.5 × 设计周期 + 6h 宽限未采集 |
+| **CRITICAL（抛错）** | 报错累计 ≥ 3 次 |
+| WARN（只记不抛） | 已启用但 `fetchCount=0`（从未采集） |
+| WARN（只记不抛） | 采集 N 次但 `signalsEmitted` 与 `signalsFiltered` 均为 0（空转） |
+
+周期表源 `agint-input-gateway/lib/schema.js` 的 C2-C5_CRON：adversarial 日频，
+其余三条周频。
+
+### 设计要点
+- **看门狗自己不能是 silent-zero**：`getStatus()` 返回空数组时判 CRITICAL，
+  绝不按「0 问题 = 健康」处理。2026-09-29 input-gateway 5 个检测器 4 个恒返回 0
+  却报 `ok=true`，正是这个坑。
+- **WARN 只记不抛**（沿用 `diagnosis-watchdog` 2026-10-05 口径）：纯观测任务的提示
+  不该被调度层记成 `failed`，否则真正的 CRITICAL 会被淹没。
+- **格式回归防护**：`lastFetchAt` 在 schema 里是 `z.string().nullable()` 而非 epoch
+  数字（`agint-input-gateway/lib/storage.js:44`）。用 `Number()` 解析会得到 `NaN`，
+  静默失效判据永不触发而表现仍是「一切正常」—— 测试已钉死该形态。
+
+### 测试
+`test/input-gateway-watchdog.test.mjs`，15 条：探针失明、正负样本、阈值边界、
+周期差异、disabled 豁免、WARN/CRITICAL 共存、ISO 字符串回归、接线白名单。
+
 ## [0.2.14] — health() 增 failures 通道：报上轮失败，但不改 healthy（2026-10-07，老板拍板口径）
 
 ### 问题
