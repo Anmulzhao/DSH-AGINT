@@ -167,6 +167,14 @@ export function extractAtomic(summary) {
       wikiOrphanFiles: strList(wikiMeta.files),
       curatorOverlaps: 0,
       skillsBytes: num('skills.totalBytes'),
+      // confidence 维建议的数据源（2026-10-08 补）：q3Advice 的 case 'confidence'
+      // 唯一读 ctx.lowConfidenceNoEvidence，而本对象此前从未构造该字段 ⇒ rows 恒空
+      // ⇒ 该维永远返回 NO_ADVICE（指标报警但建议栏永久哑火）。
+      // 口径：metrics 的 noEvidence.ids 是「evidence 为空」的全部条目 id，不含逐条
+      // confidence（avgConfXCompliance 只给均值）。因无证据条目对 AVG(conf×compliance)
+      // 的贡献恒为 0，它是 confidence 偏低的直接成因之一，故作为可复核清单传入。
+      // 措辞必须与此口径一致——不得称「低置信且无证据」，那是数据没有的断言。
+      lowConfidenceNoEvidence: strList(noEv.ids),
     },
     // id 清单：只给审计 findings 用，不进广播正文（防 2KB 爆掉）
     auditIds: Array.isArray(noEv.ids) ? noEv.ids : null,

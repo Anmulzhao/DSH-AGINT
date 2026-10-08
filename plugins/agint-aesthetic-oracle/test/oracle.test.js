@@ -625,7 +625,7 @@ test('Day2-3 alert 通道不依赖 metrics：summary 恒抛 → alert() 仍成�
 
 // ── Day 4-5：weekly 美谕提案闭环（§5；status 锁 proposed，永不 auto-apply）──
 
-import { evaluateAesthetics } from '../lib/scoring.js';
+import { evaluateAesthetics, q3Advice, NO_ADVICE } from '../lib/scoring.js';
 import { buildWeeklyProposals } from '../lib/broadcast.js';
 
 test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），0 扣分不提，evidence 必填', () => {
@@ -633,11 +633,17 @@ test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），
   const evaluation = evaluateAesthetics(view.atomic, { adviceCtx: view.adviceCtx });
   const proposals = buildWeeklyProposals(evaluation, view.adviceCtx, { weekKey: '2026-W39', targetId: 'oracle-weekly-2026-W39' });
   // 标定数据：noise 23.16 / redundancy 20 / confidence 4.46 / bloat 0。
-  // §4 真实关：confidence 的 lowConfidenceNoEvidence 行级清单 metrics 不提供 →
-  // q3Advice 回 NO_ADVICE → 跳过；bloat 零扣分不提。故恰 2 条。
-  assert.equal(proposals.length, 2, 'noise + redundancy 各 1 条；confidence 无证据跳过、bloat 零扣分不提');
+  // 2026-10-08 接线修复：extractAtomic 的 adviceCtx 此前从未构造
+  // lowConfidenceNoEvidence（q3Advice 的 case 'confidence' 唯一数据源）⇒
+  // 该维永远回 NO_ADVICE，本测试把「跳过」固化成断言，故 confidence 建议**从未
+  // 端到端跑过**。metrics.js:165 实际已产出 noEvidence.ids（fixture 71 条），
+  // 原注释「metrics 不提供行级清单」的前提已不成立。
+  // 现接通：confidence 以「无证据」近似口径提 1 条，措辞已降级、不宣称逐条
+  // confidence（见 scoring.js case 'confidence' 的口径注释）。
+  // bloat 零扣分仍不提。故由 2 条变 3 条。
+  assert.equal(proposals.length, 3, 'noise + redundancy + confidence 各 1 条；bloat 零扣分不提');
   assert.deepEqual(proposals.map((p) => p.title.match(/噪声比|冗余度|决策确信度|臃肿度/g)?.[0]).sort(),
-    ['噪声比', '冗余度'].sort());
+    ['噪声比', '冗余度', '决策确信度'].sort());
   for (const p of proposals) {
     assert.ok(p.title.startsWith('美谕提案：'), p.title);
     assert.match(p.body, /建议：/, 'body 必含建议');
@@ -653,6 +659,27 @@ test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），
     avgConfXCompliance: 0.9, skillsBytes: 1000, skillsTotal: 2,
   }, { adviceCtx: {} });
   assert.equal(buildWeeklyProposals(healthy, {}, {}).length, 0, '阈内系统不提案');
+});
+
+// 2026-10-08 回归钉。本缺陷能活这么久，是因为 scoring.test.js 手喂 ctx 测
+// q3Advice 的**输入契约**，而没有任何测试断言 extractAtomic 的**输出**里带这个
+// 字段——生产方与消费方之间的接线无人看守（两边各自全绿）。
+test('2026-10-08 回归钉：adviceCtx.lowConfidenceNoEvidence 必须由 extractAtomic 产出，且空清单仍回 NO_ADVICE', () => {
+  // 正样本：metrics 的 noEvidence.ids 非空（fixture 71 条）→ 字段须原样透传
+  const view = extractAtomic(fixtureSummary());
+  assert.ok(Array.isArray(view.adviceCtx.lowConfidenceNoEvidence),
+    '字段必须存在且为数组——undefined 会让 q3Advice 静默短路，正是修复前的故障形态');
+  assert.equal(view.adviceCtx.lowConfidenceNoEvidence.length, 71, '应透传 metrics 的全部 ids');
+  assert.equal(q3Advice('confidence', view.adviceCtx).advice !== NO_ADVICE, true,
+    '有清单时必须给出可执行建议');
+
+  // 负样本：ids 缺席 → 空数组（不是 undefined），且**仍回 NO_ADVICE**。
+  // 这是 09-29「真实关」的底线：接通数据源不等于可以编假建议。
+  const bare = extractAtomic({ asOf: '', metrics: [] });
+  assert.ok(Array.isArray(bare.adviceCtx.lowConfidenceNoEvidence), '字段恒存在');
+  assert.equal(bare.adviceCtx.lowConfidenceNoEvidence.length, 0, '无 ids 时为空数组');
+  assert.equal(q3Advice('confidence', bare.adviceCtx).advice, NO_ADVICE,
+    '清单为空时必须回 NO_ADVICE，不得兜底编一句建议');
 });
 
 test('Day4-5 weekly 广播提 3 条提案：evolve.propose 收到、审计留痕、永不 setStatus', async () => {
@@ -674,8 +701,8 @@ test('Day4-5 weekly 广播提 3 条提案：evolve.propose 收到、审计留痕
   });
   const out = await env.svc.runBroadcast('weekly');
   assert.equal(out.ok, true);
-  assert.equal(out.proposals, 2, 'weekly 应提交 2 条提案（confidence 无行级证据跳过）');
-  assert.equal(proposed.length, 2);
+  assert.equal(out.proposals, 3, 'weekly 应提交 3 条提案（2026-10-08 confidence 接线修复后）');
+  assert.equal(proposed.length, 3, 'evolve.propose 实收 3 条（与 out.proposals 一致）');
   for (const p of proposed) {
     assert.equal(p.status, 'proposed', 'status 锁 proposed');
     assert.equal(p.source, 'agint-aesthetic-oracle');
@@ -689,7 +716,7 @@ test('Day4-5 weekly 广播提 3 条提案：evolve.propose 收到、审计留痕
   assert.match(propFinding.detail, /prop-1,prop-2/);
   // oracle.weekly 事件 payload 带 proposals 计数
   const evt = env.bus.find((e) => e.topic === 'oracle.weekly');
-  assert.equal(evt.payload.proposals, 2);
+  assert.equal(evt.payload.proposals, 3); // 2026-10-08 confidence 接线修复后由 2 变 3
   // ⭐ 永不 auto-apply：oracle 从不触碰 setStatus
   assert.equal(statusCalls.length, 0, 'oracle 不得调 setStatus（§5：只提不 commit）');
   // daily 不提提案
@@ -720,8 +747,10 @@ test('Day4-5 evolve 缺席/抛错 → weekly 广播照发（提案降级不阻�
   const out2 = await env2.svc.runBroadcast('weekly');
   assert.equal(out2.ok, true, '提案失败不得阻断广播');
   assert.equal(out2.proposals, 0);
-  assert.equal(out2.proposalsFailed, 2, '2 条提案各自失败记账（confidence 无证据跳过）');
-  assert.equal(throws, 2);
+  // 2026-10-08 confidence 接线修复：confidence 不再跳过，提交数与失败记账
+  // 同步由 2 变 3（提案失败仍不阻断广播——本用例的真正判据是 ok=true）。
+  assert.equal(out2.proposalsFailed, 3, '3 条提案各自失败记账（confidence 修复后不再跳过）');
+  assert.equal(throws, 3);
   const rows = await env2.svc.history(5);
   const weeklyRow = rows.find((r) => r.kind === 'weekly' && r.outcome === 'ok');
   assert.equal(weeklyRow.proposals, 0, '落账行反映真实提交数');

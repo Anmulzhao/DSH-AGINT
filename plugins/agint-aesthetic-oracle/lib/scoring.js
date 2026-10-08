@@ -316,11 +316,14 @@ export function q3Advice(worstKey, ctx = {}) {
     case 'confidence': {
       const rows = Array.isArray(ctx.lowConfidenceNoEvidence) ? ctx.lowConfidenceNoEvidence : [];
       if (rows.length === 0) {
-        return { advice: NO_ADVICE, evidence: 'low-confidence 无证据清单为空，无具体条目可复核' };
+        return { advice: NO_ADVICE, evidence: '无证据条目清单为空，无具体条目可复核' };
       }
-      const head = '定向复核低置信且无证据的 lesson 条目';
+      // 口径对齐（2026-10-08）：rows 来自 metrics 的 noEvidence.ids，即
+      // 「evidence 为空」的条目 id，**不含逐条 confidence**（avgConfXCompliance
+      // 只给均值）。故此处只承诺「无证据」，不得升格为「低置信且无证据」。
+      const head = '定向复核无证据的记忆条目';
       const detail = `（${rows.slice(0, 10).join(', ')}${rows.length > 10 ? ' …' : ''}）`;
-      return { advice: `${head}${detail}`, evidence: 'memory id + confidence 排序列表' };
+      return { advice: `${head}${detail}`, evidence: 'memory id 清单（evidence 为空；confidence 未逐条下发，故不宣称低置信）' };
     }
     case 'bloat': {
       const bytes = isNum(ctx.skillsBytes) ? ctx.skillsBytes : null;
