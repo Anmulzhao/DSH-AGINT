@@ -16,8 +16,17 @@
  * 调用形态（agents.create + subagents.start('spawn', {outputSchema}) + 双超时
  * 保险 + finally dispose）照抄 consolidation.js。但有三处**刻意不同**：
  *   ① dream 把 provider/model 写成常量（连配置项都没暴露），换模型那天就是
- *      静默故障。本模块默认空字符串 = **跟随宿主默认**（agentOptions 整个不传
- *      = 继承父级 provider/model）。
+ *      静默故障。本模块原本采「默认空字符串 = 跟随宿主默认」。
+ *      ⛔ 2026-10-08 **该决策已被证伪并回退**：留空不等于「继承父级」——
+ *      这个 parent 是 host plane 凭空 create 的临时 agent，本身没有
+ *      modelSelection，于是 `{{model}}` 在 persona assembly 阶段直接抛
+ *      `prompt variable "{{model}}" has no value for this assembly`
+ *      （section deployment:persona-prefix）→ turn 以 error 收场 →
+ *      `stopReason=error` → verify 两个反向样本恒降级、分辨力根本没被测到。
+ *      「不硬编码」的初衷是对的（避免换模型那天静默故障），但**留空比硬编码更糟**：
+ *      硬编码至少跑得起来，留空是连跑都跑不起来。正确形态是下方常量 +
+ *      显式传参可覆盖 —— 既可跑，又留了换模型的入口。
+ *      换模型时的静默故障风险改由「改常量即改全部调用点」+ 测试断言来兜。
  *   ② dream 的降级不印原因（只印 `heuristic-degraded`），导致「没有候选」与
  *      「429 超限」在日记上长得一模一样 → 错误归因被固化 12 天（K59）。
  *      本模块**每个 degraded 都必须带 reason**，且 reason 会进人可读产物。
@@ -352,6 +361,18 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 // ⚠️ 与 provider/model「跟随宿主默认」不同，这个**必须**给默认值 —— 不给就是空壳。
 export const DEFAULT_AGENT_PRESET = 'agint';
 
+// ── provider / model 默认值（2026-10-08 取证后新增）────────────────────────
+// 取值来源：宿主实际配置 `$DSH_HOME/profiles/web/cordis.patch.yml` 的
+// `llm-pi-ai.providers.minimax-cn.models` 与 `agent-default-model` 两段
+// （本机实测：minimax-cn / MiniMax-M3.1-Flash-Preview）。
+// ⛔ **绝对不能硬编码 'deepseek'/'deepseek-chat'** —— DSH 把 deepseek 仅作
+// fallback adapter，host 真实可用 provider 由配置决定。
+// ⚠️ 换模型时这三处必须同步改：常量本体 + 本注释的取值来源 + 测试断言。
+//   （与 agint-dream/lib/consolidation.js 的 DEFAULT_PROVIDER / DEFAULT_MODEL
+//   同源同值；测试请 import 常量而非再写一遍字面量。）
+export const DEFAULT_PROVIDER = 'minimax-cn';
+export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
+
 /**
  * 一次 LLM 调用 → verdict + authoring。**永不抛错**：任何异常都转成
  * `{ ok: true, mode: 'degraded', reason }`（与 dream 同契约——语义是增益，
@@ -361,8 +382,8 @@ export const DEFAULT_AGENT_PRESET = 'agint';
  * @param {object}   args.ctx        cordis host ctx（取 agents / subagents）
  * @param {object}   args.pattern    待判 pattern（业务字段）
  * @param {string}   args.windowText 窗口原文（不可信输入，会被分隔标记包住）
- * @param {string}   [args.provider] 空 = 跟随宿主默认（agentOptions 整个不传）
- * @param {string}   [args.model]    空 = 跟随宿主默认
+ * @param {string}   [args.provider] 空 = DEFAULT_PROVIDER（**不能真留空**，见模块头 ①）
+ * @param {string}   [args.model]    空 = DEFAULT_MODEL（同上）
  * @param {number}   [args.timeoutMs]
  * @param {AbortSignal} [args.signal] 外部中止信号（可选）
  * @returns {Promise<
@@ -379,14 +400,20 @@ export async function judgeViaLLM({
   ctx,
   pattern,
   windowText = '',
-  provider = '',
-  model = '',
+  provider = DEFAULT_PROVIDER,
+  model = DEFAULT_MODEL,
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal = null,
 } = {}) {
+  // `''` 与 `undefined` 同义：都表示「调用方没指定」⇒ 落到默认。
+  // 生产侧 `lib/index.js` 传的是 `c.llm_provider ?? ''`，而 `llm_provider` 的
+  // 配置默认值就是空串 ⇒ **只靠参数默认值（仅对 undefined 生效）会漏**，
+  // 空串会原样进 agentOptions，把 {{model}} 重新变成无值。这里统一归一。
+  const effProvider = provider || DEFAULT_PROVIDER;
+  const effModel = model || DEFAULT_MODEL;
   const startedAt = Date.now();
-  const meta = () => ({ durationMs: Date.now() - startedAt, provider, model });
+  const meta = () => ({ durationMs: Date.now() - startedAt, provider: effProvider, model: effModel });
   const degraded = (reason, diagnostic = null, attempted = false) => ({
     ok: true, mode: 'degraded', verdict: null, authoring: null, reason, diagnostic, attempted, meta: meta(),
   });
@@ -429,16 +456,16 @@ export async function judgeViaLLM({
   let run = null;
   let spawned = false;   // 是否真的发起了子 agent（决定预算算不算、审计怎么写）
   try {
-    const agentOptions = {};
-    if (provider) agentOptions.provider = provider;
-    if (model) agentOptions.model = model;
+    // provider/model 必须有值：留空 ⇒ persona assembly 的 {{model}} 无值 ⇒ 直接抛
+    // （2026-10-08 取证，见模块头 ①）。默认与空串兜底已在函数入口归一。
+    const agentOptions = { provider: effProvider, model: effModel };
 
     handle = await agents.create({
       sessionId: `autocreate-judge-${pattern?.id ?? 'pattern'}-${randomUUID()}`,
       // cwd 必须给：child session 继承的 persona 段落用 {{cwd}}，取不到会 throw
       // agentPreset 必须给：模型路由的唯一来源，缺失 ⇒ 空壳子代理（见 DEFAULT_AGENT_PRESET 注释）
       meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
-      // 空 = 整个不传 = 继承父级 provider/model（**不硬编码任何模型名**）
+      // provider/model 恒有值（入口已归一）；换模型请改 DEFAULT_PROVIDER / DEFAULT_MODEL。
       ...(Object.keys(agentOptions).length ? { agentOptions } : {}),
       signal: abortController.signal,
     });

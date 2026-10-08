@@ -155,8 +155,8 @@ function apply(ctx) {
       '一个通用脚手架），检查输出能否过 schema、模型是否真能分辨（而不是一律说 true）。' +
       '**只读**：不写候选/审计、不动每日预算。⚠️ 会真实消耗模型 token，别当烟雾测试天天跑。',
     parameters: {
-      provider: { type: 'string', description: '留空 = 跟随宿主默认模型' },
-      model: { type: 'string', description: '留空 = 跟随宿主默认模型' },
+      provider: { type: 'string', description: '留空 = 用插件默认 provider（minimax-cn）' },
+      model: { type: 'string', description: '留空 = 用插件默认模型（MiniMax-M3.1-Flash-Preview）' },
       timeoutMs: { type: 'number', description: '单次调用超时（默认 60000）' },
     },
     output: {
@@ -168,6 +168,9 @@ function apply(ctx) {
             ? `standardizable=${c.verdict.standardizable} conf=${c.verdict.confidence}`
             : `degraded: ${c.reason}`;
           lines.push(`  · ${c.id}（期望 ${c.expect}）→ ${verdict}  [${c.durationMs}ms]`);
+          // 2026-10-08：diagnostic 一直在返回体里但没渲染，导致一次 {{model}} assembly
+          // 失败只显示成 stopReason=error，排障绕了远路。降级必须能说清为什么（本模块原则②）。
+          if (c.diagnostic) lines.push(`      诊断：${c.diagnostic}`);
           if (c.verdict?.rationale) lines.push(`      理由：${c.verdict.rationale}`);
           if (c.authoring) lines.push(`      撰写：name=${c.authoring.name ?? '(缺)'}${c.authoringRejected ? ` ⛔本地校验拒绝: ${c.authoringRejected.reason}` : ' ✅'}`);
         }

@@ -28,6 +28,8 @@ import {
   DESCRIPTION_MAX,
   LIST_MAX_ITEMS,
   DEFAULT_AGENT_PRESET,
+  DEFAULT_PROVIDER,
+  DEFAULT_MODEL,
 } from '../lib/llm-verdict.js';
 
 // ── mock 装置 ────────────────────────────────────────────────────────────
@@ -176,14 +178,42 @@ test('authoring 缺失不降级（Phase A/B 本来就不用它）', async () => 
   assert.equal(out.authoring, null);
 });
 
-test('provider/model 为空 → 不传 agentOptions（继承宿主默认，不硬编码任何模型名）', async () => {
+// provider/model **绝不能留空**（2026-10-08 取证）。原断言是「provider/model 为空
+// → 不传 agentOptions，继承宿主默认」——该决策已证伪：这个 parent 是 host plane
+// 凭空 create 的临时 agent，本身没有 modelSelection，留空会让 persona assembly 抛
+// `prompt variable "{{model}}" has no value for this assembly`
+// （section deployment:persona-prefix）→ turn error → stopReason=error →
+// verify 两个反向样本恒降级、分辨力根本没被测到。
+// 下面三条分别锁住：undefined 走默认、空串走默认、显式传参可覆盖。
+test('provider/model 未传（undefined）→ 落到默认常量，不留空', async () => {
   const { ctx, created } = mockCtx({});
   await judgeViaLLM({ ctx, pattern: PATTERN });
-  assert.equal('agentOptions' in created[0], false, 'empty provider/model must not override host defaults');
+  assert.deepEqual(created[0].agentOptions, {
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+  });
+});
 
+test('provider/model 传空串 → 同样落默认（生产侧 config 默认值就是空串）', async () => {
+  const { ctx, created } = mockCtx({});
+  await judgeViaLLM({ ctx, pattern: PATTERN, provider: '', model: '' });
+  assert.equal(created[0].agentOptions.provider, DEFAULT_PROVIDER);
+  assert.equal(created[0].agentOptions.model, DEFAULT_MODEL);
+  assert.notEqual(created[0].agentOptions.model, '', '{{model}} 有值是 persona assembly 不抛的前提');
+});
+
+test('provider/model 显式传参可覆盖默认（换模型不用改源码）', async () => {
   const second = mockCtx({});
-  await judgeViaLLM({ ctx: second.ctx, pattern: PATTERN, provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' });
-  assert.deepEqual(second.created[0].agentOptions, { provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash-Preview' });
+  await judgeViaLLM({
+    ctx: second.ctx,
+    pattern: PATTERN,
+    provider: 'other-provider',
+    model: 'other-model',
+  });
+  assert.deepEqual(second.created[0].agentOptions, {
+    provider: 'other-provider',
+    model: 'other-model',
+  });
 });
 
 // ── ③④ 降级路径：永远返回、永远带 reason ──────────────────────────────────

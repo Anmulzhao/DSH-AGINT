@@ -70,8 +70,8 @@ function buildFixtures() {
  *
  * @param {object} args
  * @param {object} args.ctx
- * @param {string} [args.provider] 空 = 跟随宿主默认
- * @param {string} [args.model]    空 = 跟随宿主默认
+ * @param {string} [args.provider] 空 = DEFAULT_PROVIDER（judgeViaLLM 内部兜底，**不能真留空**）
+ * @param {string} [args.model]    空 = DEFAULT_MODEL（同上）
  * @param {number} [args.timeoutMs]
  * @returns {Promise<object>} JSON-safe
  */
@@ -115,8 +115,8 @@ export async function runVerification({ ctx, provider = '', model = '', timeoutM
   const llmCases = cases.filter((c) => c.mode === 'llm');
   return {
     ok: llmCases.length > 0,
-    provider: provider || '(host default)',
-    model: model || '(host default)',
+    provider: provider || '(default)',
+    model: model || '(default)',
     cases,
     // 分辨力自检：两个反向样本给出不同结论才算「有用」。
     // 全 true / 全 false / 全 degraded 都要如实报出来。

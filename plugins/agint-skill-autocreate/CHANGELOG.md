@@ -1,5 +1,92 @@
 # Changelog — agint-skill-autocreate
 
+## v0.6.1 (2026-10-08) — LLM 判定通路：provider/model 不得留空（stopReason=error 根因修复）
+
+**症状**：本机 `autocreate_verify_llm` 两个反向样本**全部降级**
+（`LLM stopReason=error`，耗时 2~3s，非超时），分辨力根本没被测到 —— 测的是通路本身，
+不是 prompt 判据。同宿主通路的对照组 `dream_verify_consolidation` 正常返回
+`mode=llm · schemaOk=true`，说明宿主 LLM 通道正常，差异在本插件这条支线。
+
+**根因（子会话取证，非推测）**：解压 `$DSH_HOME/sessions/--home-kylin-~684C~9762--/
+<grandchild>/session.v4.jsonl.zstd`（`zstd -dc`），失败那次的第 12 行：
+
+```
+turn/end {"reason": {"kind": "error", "error": {
+  "message": "prompt variable \"{{model}}\" has no value for this assembly (section \"deployment:persona-prefix\")"}}}
+```
+
+链条：本模块对 provider/model 采「空 = 跟随宿主默认」→ `agents.create()` 拿不到 model →
+persona 模板 assembly 时 `{{model}}` 无值 → 直接抛 → turn 以 error 收场 →
+`stopReason=error`。**「继承父级」在这里等于「什么都没有」**：这个 parent 是 host plane
+凭空 create 的临时 agent，本身没有 modelSelection（会话 `modelSelection={lastUsed:null,pending:null}` 佐证）。
+
+### Fixed
+
+- `lib/llm-verdict.js`
+  - 新增 `DEFAULT_PROVIDER` / `DEFAULT_MODEL` 常量，与
+    `agint-dream/lib/consolidation.js:67-72` 同源同值（取值来自宿主
+    `cordis.patch.yml` 的 `llm-pi-ai.providers.minimax-cn.models` 与 `agent-default-model`）。
+  - `judgeViaLLM()` 在**函数入口**归一：`''` 与 `undefined` 同义，都落默认。
+    ⚠️ 只改参数默认值是不够的——JS 默认值仅对 `undefined` 生效，而生产侧
+    `lib/index.js:608-609` 传的是 `c.llm_provider ?? ''`，配置默认值恰是空串 ⇒ 空串会原样
+    进 agentOptions，把 `{{model}}` 重新变回无值。
+  - 模块头原则①原写「dream 硬编码是短板，本模块跟随宿主默认」——**该决策已证伪并回退**。
+    「不硬编码」的初衷（换模型不静默故障）成立，但**留空比硬编码更糟**：硬编码至少跑得起来，
+    留空是连跑都跑不起来。换模型的风险改由「改常量即改全部调用点」+ 测试断言来兜。
+
+- `lib/tools.js`
+  - `autocreate_verify_llm` 的 render 补打 `c.diagnostic`。该字段一直在返回体里却没渲染，
+    一次 `{{model}}` assembly 失败因此只显示成 `stopReason=error`，排障绕了远路 ——
+    违反本模块自己的原则②「每个 degraded 都必须带 reason，且 reason 会进人可读产物」。
+  - provider/model 参数说明由「跟随宿主默认模型」改为「留空 = 用插件默认」。
+
+- `lib/verify.js`：JSDoc 与返回值标签同步（`(host default)` → `(default)`，避免再暗示继承）。
+
+### Changed
+
+- `test/llm-verdict.test.mjs`：原断言「provider/model 为空 → 不传 agentOptions」锁的正是
+  这个 bug，现拆成三条——undefined 走默认、空串走默认、显式传参可覆盖。
+  两条防退化断言（`agentOptions.model !== ''`、等于常量）把「绝不留空」钉成契约。
+
+### 破坏性变更
+
+- 无对外接口破坏。`judgeViaLLM()` / `runVerification()` 只改默认值不改签名；
+  返回值 `meta` 的 `provider` / `model` 由空串变为具体值（`lib/index.js:623-653` 的消费方
+  本来就写 `|| null`，只会从 null 变成有值）。
+- 行为变更：换模型不再「自动跟随」，需改 `DEFAULT_PROVIDER` / `DEFAULT_MODEL`
+  或在调用处显式传参。这是刻意的——自动跟随在本插件的调用形态下不可用。
+
+### 验证
+
+- 本插件 `node --test "test/*.test.mjs" test/smoke.mjs`：407 tests / 402 pass / 0 fail / 5 skipped。
+- `bin/plugin-check.sh --all`：改动前后 fail 清单 `diff` 为空（基线 6 个既存 fail：
+  1×K19 位于仓根 `test/schema-guard.test.mjs:394` + 4×manifest 缺失 + 1×package.json 缺失）。
+- `node bin/check-wiring.mjs`：PASS（查 E 双副本一致、查 H 仓库↔部署零漂移）。
+- **真模型硬验收**见下方「上线后必做」。
+
+### 一条被否证的假线索（留档防复发）
+
+初次定位时曾据 `agint-dream/lib/consolidation.js:64-82` 的 2026-10-07 注释，判定根因是
+`agentOptions` 漏传 `reasoningEffort`（thinking 关闭 → MiniMax 400/2013），并据此提交过一次
+改动（commit 7194544）。**该判断错误**：那条注释描述的是另一个症状；本症状的真实报错在
+persona assembly 阶段就抛了，压根没走到 provider。老板拍板回滚 7194544 —— 且 live
+`cordis.patch.yml` 的 provider 级 `reasoning: high` 是 2026-10-08 00:09 才加的，晚于该注释，
+那条笔记大概率已过期。
+
+> 教训：跨插件照搬注释当根因，等于照搬 bug。本模块头早有 2026-09-27 的同类告警
+> （「抄代码前先验它真的跑通过」），这次栽在同一类错误上。**降级类问题先解子会话 jsonl 看
+> `turn/end` 的真实 error 字段**，那是一手证据；相邻插件的注释是二手推测。
+
+### 上线后必做（不可跳过）
+
+`smoke` 与单测证明不了运行时路由到了新值 —— 断言常量的单测在改常量后必然自证通过。
+唯一证据是重启后**不传参**重跑 `autocreate_verify_llm`，确认两个样本 `mode` 从 `degraded`
+转为 `llm`、分辨力自检给出差异化结论（参照组：显式传
+`provider=minimax-cn / model=MiniMax-M3.1-Flash-Preview` 时已实测 ✅ 两样本
+`standardizable=true/false`、分辨力 ✅）。
+
+---
+
 ## v0.6.0 (2026-10-03) — 技能模型归属：标注来源模型 + 适用前提与跨模型风险
 
 **背景（老板拍板）**：每个模型的能力特点、风格偏好与常见盲区不同，同一套技能在不同
