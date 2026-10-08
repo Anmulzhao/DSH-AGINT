@@ -509,13 +509,22 @@ safe_rsync() {
       || die "rsync 失败: $1 → $2"
   else
     python3 - "$(winpath "$1")" "$(winpath "$2")" <<'PY' || die "python 同步失败: $1 → $2"
-import os, sys, shutil, fnmatch
+import os, sys, shutil, fnmatch, time
 
 src, dst = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 
 # 与上面 rsync 分支的 --exclude 列表保持一致（排除表有两个副本，改这里必须同步改 rsync 那份）
 EXCLUDE_NAMES  = {'.git', 'node_modules'}
 EXCLUDE_GLOBS  = ('*.bundle', '*.bak-*')
+
+# 2026-10-08：受限环境（例如带「批量删除护栏」的托管 shell，一次删 >50 个文件
+# 就整条命令失败）下用 AGINT_RSYNC_NO_DELETE=1 强制零删除。
+# ⛔ 为什么不能只靠下面的 except PermissionError：那类护栏**不是** Python 异常，
+#   它在进程外层直接让命令失败，rmtree 根本没机会抛出可被捕获的 PermissionError。
+#   故必须在「要不要删」这一步之前就决定。
+# 代价：--delete 语义丢失，dst 内 src 已删除的文件会残留。
+# 取舍与 rmtree 失败时一致 —— 「装不动」比「残留旧文件」更糟。
+NO_DELETE = os.environ.get('AGINT_RSYNC_NO_DELETE') == '1'
 
 def ignore(path, names):
     drop = set()
@@ -528,7 +537,11 @@ def ignore(path, names):
 
 tmp = dst + '.tmp'
 if os.path.exists(tmp):
-    shutil.rmtree(tmp)
+    if NO_DELETE:
+        # 不删旧 stage：换个名字避开，让它自然过期（同样是为了零删除）
+        tmp = dst + '.tmp-' + time.strftime('%Y%m%d-%H%M%S')
+    else:
+        shutil.rmtree(tmp)
 os.makedirs(tmp, exist_ok=True)  # 同 rsync 分支：中间层缺失时 os.makedirs 负责补
 shutil.copytree(src, tmp, ignore=ignore, dirs_exist_ok=True)
 
@@ -546,15 +559,39 @@ for root, dirnames, filenames in os.walk(tmp):
 #   这是「装不动」与「残留旧文件」之间的取舍，优先保证安装能完成。
 mode = 'replace'
 if os.path.exists(dst):
-    try:
-        shutil.rmtree(dst)
-    except PermissionError as e:
+    if NO_DELETE:
         mode = 'overwrite'
-        sys.stderr.write(f"WARN safe_rsync: dst 被占用（{e.__class__.__name__}），退化覆盖式同步（不删旧文件）: {dst}\n")
+        sys.stderr.write(f"WARN safe_rsync: AGINT_RSYNC_NO_DELETE=1，跳过删除，覆盖式同步（旧文件会残留）: {dst}\n")
+    else:
+        try:
+            shutil.rmtree(dst)
+        except PermissionError as e:
+            mode = 'overwrite'
+            sys.stderr.write(f"WARN safe_rsync: dst 被占用（{e.__class__.__name__}），退化覆盖式同步（不删旧文件）: {dst}\n")
 
 if mode == 'replace':
-    os.rename(tmp, dst)
-else:
+    # ⚠ Windows 上 os.rename 会偶发 PermissionError(WinError 5)：dst 刚被 rmtree 删掉，
+    #   杀软 / Windows 索引器会在这一瞬间重新持有它的句柄。
+    #   2026-10-08 实测咬过两次；此处一旦抛出，整个安装 die 并回滚（前面所有步骤白做）。
+    #   故先重试 6 次（共约 3 秒），仍失败则退化覆盖式同步 —— 与 rmtree 失败同一档降级，
+    #   优先保证安装能完成（代价：--delete 语义丢失，dst 内 src 已删的文件会残留）。
+    renamed = False
+    last_err = None
+    for _ in range(6):
+        try:
+            os.rename(tmp, dst)
+            renamed = True
+            break
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.5)
+    if not renamed:
+        sys.stderr.write(
+            f"WARN safe_rsync: rename 被占用（重试 6 次仍 {last_err.__class__.__name__}），"
+            f"退化覆盖式同步（不删旧文件）: {dst}\n")
+        mode = 'overwrite'
+
+if mode == 'overwrite':
     shutil.copytree(tmp, dst, ignore=ignore, dirs_exist_ok=True)
     # 覆盖式同样要挡软链：再扫一遍 dst，清掉跟进来的符号链接
     for root, dirnames, filenames in os.walk(dst):
@@ -565,10 +602,13 @@ else:
                     os.unlink(p)
                 except OSError:
                     pass
-    try:
-        shutil.rmtree(tmp)
-    except OSError:
-        pass
+    if NO_DELETE:
+        pass  # 零删除模式：保留 stage 目录，避免触发批量删除护栏（会自然过期）
+    else:
+        try:
+            shutil.rmtree(tmp)
+        except OSError:
+            pass
 PY
   fi
 }
@@ -706,18 +746,48 @@ rewrite_preset_profile_refs
 #
 # 失败只 warn 不阻断：dsh < 0.1.7 压根不注册 preset，缺它无影响；
 # 手工补一条 `mklink /J` 即可恢复。
+# 摘除一个「可能是 junction / symlink / 实体目录」的解析入口。
+# ⛔ Windows junction 必须先走 cmd rmdir（只摘链、不下钻）；rm -rf 对 MSYS 里的
+#   junction 行为不可靠，误下钻会删掉真包（10-06 事故教训）。
+# 返回 0 = 该路径已不存在。
+remove_module_entry() {
+  local p="$1"
+  [ -L "$p" ] || [ -e "$p" ] || return 0
+  if [ -L "$p" ]; then
+    rm -f "$p" 2>/dev/null
+  elif command -v cmd >/dev/null 2>&1; then
+    cmd //c "rmdir /Q \"$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")\"" >/dev/null 2>&1 || true
+  fi
+  [ -L "$p" ] || [ -e "$p" ] || return 0
+  rm -rf "$p" 2>/dev/null || true
+  ! [ -L "$p" ] && ! [ -e "$p" ]
+}
+
 ensure_preset_module_entry() {
   local link="$PRESETS_DST/node_modules" target
-  if [ -d "$link" ]; then
-    log "   ✓ preset 解析入口已存在（$link）"
-    return 0
-  fi
   target="$(locate_dsh_dir)/node_modules"
   if [ -z "$target" ] || [ ! -d "$target" ]; then
     warn "未能定位 dsh 的 node_modules（DSH_ROOT / dsh 可执行文件 / npm root -g 均失败），跳过 preset 解析入口。"
     warn "  dsh ≥ 0.1.7 上智进 preset 会显示「加载失败」。手工补："
     warn "    mklink /J \"$link\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\""
     return 0
+  fi
+  # ⛔ 2026-10-08 修：「入口存在」不等于「入口健康」。
+  #   悬空 junction/symlink 对 [ -d ] 返回 FALSE（看着像「不存在」），
+  #   但链接实体依然在 ⇒ mklink /J 与 ln -s 双双因「文件已存在」失败，
+  #   于是入口永远停在那个死链接上，官方包裸 import 全挂（实测 27/35 失败），
+  #   而日志只留一句「创建失败」，极易被当成偶发而放过。
+  #   故：先命中 -L/-e 判健康，不健康就摘除再重建（对齐 mirror 卫兵的严谨度）。
+  if [ -L "$link" ] || [ -e "$link" ]; then
+    if [ -d "$link" ]; then
+      log "   ✓ preset 解析入口已存在且健康（$link）"
+      return 0
+    fi
+    warn "preset 解析入口存在但目标不可达（悬空），先摘除再重建：$link"
+    if ! remove_module_entry "$link"; then
+      warn "  摘除失败，preset 解析入口保持原样（官方插件行会 never started）。"
+      return 0
+    fi
   fi
   if [ "$DRY_RUN" = "1" ]; then
     log "   [DRY] 建 preset 解析入口 $link → $target"
@@ -755,16 +825,25 @@ ensure_preset_module_entry
 # （stderr 打 `skipping profile bundle "@agint/host"`），届时按上面提示手工补链。
 ensure_bundle_module_entry() {
   local link="$BUNDLE_DST/node_modules/@deepseek-ai" target
-  if [ -d "$link" ]; then
-    log "   ✓ bundle 解析入口已存在（$link）"
-    return 0
-  fi
   target="$(locate_dsh_dir)/node_modules/@deepseek-ai"
   if [ -z "$target" ] || [ ! -d "$target" ]; then
     warn "未能定位 dsh 的 node_modules（DSH_ROOT / dsh 可执行文件 / npm root -g 均失败），跳过 bundle 解析入口。"
     warn "  bundle 插件的官方包 import 会失败。手工补："
     warn "    mklink /J \"$BUNDLE_DST\\node_modules\\@deepseek-ai\" \"<npm root -g>\\@deepseek-ai\\dsh\\node_modules\\@deepseek-ai\""
     return 0
+  fi
+  # 同 ensure_preset_module_entry：悬空入口必须摘除再重建，否则 mklink/ln 双双失败，
+  # 入口永远停在死链接上（2026-10-08 实测，bundle 插件 import 27/35 失败即此因）。
+  if [ -L "$link" ] || [ -e "$link" ]; then
+    if [ -d "$link" ]; then
+      log "   ✓ bundle 解析入口已存在且健康（$link）"
+      return 0
+    fi
+    warn "bundle 解析入口存在但目标不可达（悬空），先摘除再重建：$link"
+    if ! remove_module_entry "$link"; then
+      warn "  摘除失败，bundle 解析入口保持原样（bundle 插件官方包 import 会失败）。"
+      return 0
+    fi
   fi
   if [ "$DRY_RUN" = "1" ]; then
     log "   [DRY] 建 bundle 解析入口 $link → $target"
