@@ -2,6 +2,48 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.2.16] — 修 input-gateway-watchdog 判据：即投通道误判为「采集器失明」（2026-10-09）
+
+### 问题（门禁在校验，但校验的是错的东西）
+0.2.15 上线后 `cron_run_now` 实跑立刻报 `WARN adversarial 空转`。查生产数据：
+`fetchCount=5, signalsEmitted=0, signalsFiltered=0`。
+
+**这是误报。** `agint-input-gateway/lib/channels/adversarial.js:200` 明写它的
+`fetch()` 是「空 drain（心跳保留）」，信号走事件到达时的 `ingestImmediate`
+（v0.1.4 起不再入队）。所以 `signalsEmitted` 恒为 0 是**设计如此**，不是失明。
+
+真实的 channel health：`status:ok`、`mode:immediate-emit`、`detectors` 3 个全
+`active`、`ingestFailed:0` —— 订阅完全健康。0 摄入的真因是 `eventBus` 上
+`diagnosis.completed` 主题 0 条事件（上游未 publish，符合 AGENTS.md 记的
+「event bus 仍是 T1 影子期 publish-only，主路径直连」）。
+
+### 根因
+本 job 初版把「fetch 产出型通道」的空转判据（`signalsEmitted=0 && signalsFiltered=0`）
+套到了「即投型通道」上。即投通道的产出在 `health().ingestedSignals`，counters 对它无意义。
+
+**这类错误比没有门禁更坏**：它让人以为「这件事已经有人在管」，
+而实际输出的是一条指向假因的告警。
+
+### 改动
+判据先读 `health()` 再走 counters，两种产信号方式分开判：
+
+| 通道类型 | 判据来源 |
+|---|---|
+| `health.mode === 'immediate-emit'` | `health.ingestedSignals` / `ingestFailed` / `status` / `detectors` |
+| 其余（fetch 产出型） | `counters.*` |
+
+新增两条判据：
+- **CRITICAL** 即投通道 `status === 'degraded'` 或 `initError` 非空 ⇒ 订阅未建立
+- **WARN** `ingestFailed > 0` ⇒ 订阅在但即投失败
+
+即投通道订阅正常但 `ingestedSignals === 0` 时，告警文案指向真因
+（「查上游是否真的 publish 了订阅主题」），不再指向假因（「采集器失明」）。
+
+### 测试
+15 → 18 条。新增【核心回归】：即投通道 counters 产出为 0 时，判据**不得**走
+fetch 空转分支。修测试时另发现阈值笔误（周频 7d 阈值是 426h 不是 186h ——
+7 天 = 168 小时），已一并订正。
+
 ## [0.2.15] — 新增 job input-gateway-watchdog：补输入网关采集活性的监控盲区（2026-10-09）
 
 ### 问题

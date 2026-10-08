@@ -633,7 +633,42 @@ export const defaultJobs = [
           continue;
         }
 
-        if (lastMs && period && now - lastMs > period * STALE_FACTOR + GRACE_MS) {
+        // 通道有两种产信号的方式，判据不能混用：
+        //   ① immediate-emit（adversarial）：订阅事件，到达即投 ingestImmediate，
+        //      fetch() 是**空 drain**（agint-input-gateway/lib/channels/adversarial.js:200
+        //      明写「空 drain（心跳保留）」）⇒ counters.signalsEmitted 恒为 0 是**设计如此**。
+        //   ② fetch 产出（self-observation / external-git / cross-agent）：信号在 fetch 里产出。
+        // 拿①的 counters 去套②的空转判据，会把「上游没发事件」误报成「采集器失明」——
+        // 这正是 check-soundness 说的：一个看似在校验、实则判错依据的门禁，比没有更坏。
+        // 正确依据在 health() 里（preflight v0.5：检测器须自报活跃子源）。
+        const h = c.health ?? {};
+        const immediate = h.mode === 'immediate-emit';
+
+        if (immediate && (h.status === 'degraded' || h.initError)) {
+          // E. 订阅压根没建起来（比「没事件」更严重：收不到）
+          criticals.push(
+            `CRITICAL ${id} 事件订阅未建立：status=${h.status ?? 'unknown'}` +
+            (h.initError ? ` initError=${h.initError}` : '')
+          );
+          row.verdict = 'CRITICAL:notSubscribed';
+        } else if (Number(h.ingestFailed ?? 0) > 0) {
+          // F. 订阅正常但即投失败
+          warnings.push(`WARN ${id} 即投失败 ${h.ingestFailed} 次（订阅在，落地失败）`);
+          row.verdict = 'WARN:ingestFailed';
+        } else if (immediate) {
+          // ① 即投模式：唯一可信的产出判据是 health().ingestedSignals
+          const activeDetectors = Object.entries(h.detectors ?? {})
+            .filter(([, v]) => v?.active).length;
+          if (Number(h.ingestedSignals ?? 0) === 0) {
+            warnings.push(
+              `WARN ${id} 订阅正常（${activeDetectors} 个检测器 active）但本 boot 未收到任何事件` +
+              ' —— 查上游是否真的 publish 了订阅主题'
+            );
+            row.verdict = 'WARN:noEvent';
+          } else {
+            row.verdict = 'ok';
+          }
+        } else if (lastMs && period && now - lastMs > period * STALE_FACTOR + GRACE_MS) {
           // A. 曾经跑过，之后再没跑 —— 采集线静默失效
           criticals.push(
             `CRITICAL ${id} 静默失效：上次采集在 ${row.staleHours} 小时前` +
