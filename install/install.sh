@@ -38,6 +38,9 @@
 #   5. 装后：静态校验（YAML 解析 / package.json 存在 / preset cordis.yml 存在）
 #
 # ## 参数
+#   --profile=<名>  目标 dsh profile 名（默认 web）。装到 desktop 就写 --profile=desktop。
+#                   目标目录必须是 $DSH_HOME/profiles/<名>/ 且已有 package.json。
+#                   作用范围：本脚本 4 处部署路径 + 传给 agint-zod-bootstrap.sh。
 #   --dry-run  只打印会改什么，不写任何文件
 #   --force    跳过 AGINT_HOME 是否为 git 仓的检查（用于 CI）
 #   --no-check 跳过 agint-security-checks.sh 前置检查（仅 dev 用）
@@ -72,13 +75,22 @@ export PYTHONIOENCODING=utf-8
 DRY_RUN=0
 FORCE=0
 SKIP_CHECK=0
+# 目标 dsh profile 名。2026-10-08 参数化（原写死 web）：老板要把 AGINT 装进
+# desktop profile —— 会话实际跑在哪个 profile，bundle 就得注册在哪个 profile，
+# 否则「装完零报错但智进不可见」。
+PROFILE_NAME="${AGINT_PROFILE:-web}"
 for arg in "$@"; do
   case "$arg" in
-    --dry-run)  DRY_RUN=1 ;;
-    --force)    FORCE=1 ;;
-    --no-check) SKIP_CHECK=1 ;;
+    --dry-run)      DRY_RUN=1 ;;
+    --force)        FORCE=1 ;;
+    --no-check)     SKIP_CHECK=1 ;;
+    --profile=*)    PROFILE_NAME="${arg#--profile=}" ;;
+    --profile)
+      echo "[AGINT] ✗ --profile 需要值：写 --profile=<名>（例如 --profile=desktop）" >&2
+      exit 2
+      ;;
     -h|--help)
-      sed -n '2,30p' "$0"
+      sed -n '2,32p' "$0"
       exit 0
       ;;
     *)
@@ -87,6 +99,19 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# profile 名只允许 [A-Za-z0-9._-]：它会拼进路径，必须在任何路径拼接之前挡住
+# 空串 / `/` / `..`，否则 --profile=../../x 能写到 $DSH_HOME 树外。
+case "$PROFILE_NAME" in
+  ''|*/*|*..*|*' '*)
+    echo "[AGINT] ✗ profile 名非法: '$PROFILE_NAME'（只允许字母数字 . _ -）" >&2
+    exit 2
+    ;;
+  *[!A-Za-z0-9._-]*)
+    echo "[AGINT] ✗ profile 名非法: '$PROFILE_NAME'（只允许字母数字 . _ -）" >&2
+    exit 2
+    ;;
+esac
 
 # ── 路径 ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -145,13 +170,17 @@ PLUGINS_SRC="$AGINT_HOME/plugins"
 # ── 2026-09-24：AGINT 改以 dsh **bundle** 形态交付 ──────────────────────────
 # 挂载层 = 仓库根 cordis.patch.yml（package.json 里 dsh.bundle.patch 指向它）
 # 插件   = 仓库根 plugins/
-# 部署位 = $DSH_HOME/.agint-bundle/（实体）+ profiles/web/node_modules/@agint/host
+# 部署位 = $DSH_HOME/.agint-bundle/（实体）+ profiles/<PROFILE_NAME>/node_modules/@agint/host
 #         （symlink，且必须在 profile 的 dependencies 里声明，见文件头）
 # profile-patches/web/cordis.patch.yml 已**不再写入** profile 级 patch，
 # 仅保留为「卸载时的 id 清单源」（uninstall.sh 依赖它）。
 BUNDLE_PATCH_SRC="$AGINT_HOME/cordis.patch.yml"
 BUNDLE_MANIFEST_SRC="$AGINT_HOME/package.json"
 PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
+
+# 目标 profile 根。bundle 实体（$DSH_HOME/.agint-bundle）与 profile 无关；
+# 只有 4 条路径跟着 profile 名走。
+PROFILE_ROOT="$DSH_HOME/profiles/$PROFILE_NAME"
 
 BUNDLE_NAME="@agint/host"
 BUNDLE_DST="$DSH_HOME/.agint-bundle"
@@ -160,18 +189,30 @@ BUNDLE_PATCH_DST="$BUNDLE_DST/cordis.patch.yml"
 BUNDLE_MANIFEST_DST="$BUNDLE_DST/package.json"
 # dsh 解析 bundle 只认这一个位置（app-boot resolveBundleDir → profile 目录下的
 # node_modules/<name>）；实体放别处时，这里必须是指过去的 symlink。
-BUNDLE_LINK="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
+BUNDLE_LINK="$PROFILE_ROOT/node_modules/$BUNDLE_NAME"
 
 # profile 清单：dsh.profile.bundles 的注册位。
 # ⛔ 不注册 = bundle 目录与 patch 都在，但 dsh 根本不加载它，**零报错**（见步骤 3.5）
-PROFILE_MANIFEST="$DSH_HOME/profiles/web/package.json"
+PROFILE_MANIFEST="$PROFILE_ROOT/package.json"
 
 PRESETS_DST="$DSH_HOME/.agent-presets"
 # 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
 # quality-bridge.js）与三条 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
-PLUGINS_DST="$DSH_HOME/profiles/web/plugins"
+PLUGINS_DST="$PROFILE_ROOT/plugins"
 # 只读：用于「AGINT 挂载段残留」检测，不再由本脚本写入
-PROFILE_PATCH_DST="$DSH_HOME/profiles/web/cordis.patch.yml"
+PROFILE_PATCH_DST="$PROFILE_ROOT/cordis.patch.yml"
+
+# 目标 profile 必须已被 dsh 初始化过。否则 3.5 步只能 warn 后跳过，
+# 而「bundle 没进 dsh.profile.bundles」的表现正是「装完像没装、零报错」——
+# 在这里挡掉比让老板装完才发现好。
+if [ ! -f "$PROFILE_MANIFEST" ]; then
+  echo "[AGINT] ✗ 目标 profile 不存在或未初始化：$PROFILE_ROOT" >&2
+  echo "[AGINT]   期望文件：$PROFILE_MANIFEST" >&2
+  echo "[AGINT]   先让 dsh 用 --profile $PROFILE_NAME 启动一次（生成 profile），或用 --profile=<已存在的profile>" >&2
+  echo "[AGINT]   现有 profile：" >&2
+  ls -1 "$DSH_HOME/profiles" 2>/dev/null | sed 's/^/[AGINT]     /' >&2
+  exit 1
+fi
 
 BACKUP_DIR="$DSH_HOME/.agint-backups"
 BACKUP_KEEP=10
@@ -261,6 +302,7 @@ locate_dsh_dir() {
 
 log "AGINT_HOME = $AGINT_HOME"
 log "DSH_HOME   = $DSH_HOME"
+log "PROFILE    = $PROFILE_NAME（部署位 $PROFILE_ROOT）"
 log ""
 
 # ── 前置安全检查 ────────────────────────────────────────────────────────────
@@ -756,10 +798,10 @@ ensure_mirror_module_entry
 # 同时在 4.5 段保留一份兜底（理论上不会再跑，但万一 bootstrap 失败，
 # 后面 2/4 plugin 同步不会自愈——4.5 段的存在确保下一个 stage 还能补救）。
 if [ "$DRY_RUN" != "1" ]; then
-  if bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+  if AGINT_PROFILE="$PROFILE_NAME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
     log "   ✓ zod bootstrap OK（pre-plugin）"
   else
-    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
+    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：AGINT_PROFILE=$PROFILE_NAME bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
   fi
 else
   log "   ⊘ 跳过 zod bootstrap（dry-run）"
@@ -1149,10 +1191,10 @@ fi
 # 有人手动跑了 rsync 清掉 node_modules」之类的边角场景。
 # 见 install/agint-zod-bootstrap.sh。失败仅 warn，不阻断。
 if [ "$DRY_RUN" != "1" ]; then
-  if bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+  if AGINT_PROFILE="$PROFILE_NAME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
     log "   ✓ zod bootstrap OK（post-plugin 兜底）"
   else
-    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
+    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：AGINT_PROFILE=$PROFILE_NAME bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
   fi
 else
   log "   ⊘ 跳过 zod bootstrap（dry-run）"

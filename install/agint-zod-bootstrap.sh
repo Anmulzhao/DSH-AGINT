@@ -30,6 +30,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGINT_HOME_DEFAULT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGINT_HOME="${AGINT_HOME:-$AGINT_HOME_DEFAULT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+# 目标 profile 名（由 install.sh 传 AGINT_PROFILE；单独跑默认 web）。
+# 2026-10-08 参数化：老板要把 AGINT 装进 desktop profile，兼容位随 profile 走。
+AGINT_PROFILE="${AGINT_PROFILE:-web}"
 
 # ⛔ 2026-09-28 修坑：某些 Git Bash 环境（如本机）预先导出 **反斜杠格式** 的
 #   DSH_HOME（C:\Users\Administrator\.dsh）。bash 工具链大多容忍混合斜杠，但：
@@ -70,11 +73,17 @@ winpath() {
 # 2026-09-24 起 AGINT 以 bundle 形态交付 ⇒ zod 主位在 **bundle 包内**
 # （bundle patch 的 insert 行相对 bundle 包根解析，插件已搬去那里）。
 # 兼容位与主位同源再放一份：AGINT 自身代码与三条 preset 的 tools 行仍按
-# $DSH_HOME/profiles/web/plugins/... 定位插件。
+# $DSH_HOME/profiles/<profile>/plugins/... 定位插件。
+#
+# ⚠️ 2026-10-08：主位 DST 随 profile 名走**只是为了兼容位对齐**——本脚本早期写法
+#   把主位写成 profiles/web/node_modules/@agint/host/...（旧部署位）。现部署位实体
+#   恒在 $DSH_HOME/.agint-bundle/，那条路径只在「profile 内软链」形态下存在。
+#   为不引入新语义，DST 保持原样（仍按 profile 名拼），MIRROR 必随 profile 走。
 REL="agint-quality/node_modules/zod"
-DST="$DSH_HOME/profiles/web/node_modules/@agint/host/plugins/$REL"
+MIRROR="$DSH_HOME/profiles/$AGINT_PROFILE/plugins/$REL"
+# 主位：优先认 bundle 实体（现部署位），回退 profile 内的 @agint/host 软链路径
+DST="$DSH_HOME/.agint-bundle/plugins/$REL"
 DST_PARENT="$(dirname "$DST")"
-MIRROR="$DSH_HOME/profiles/web/plugins/$REL"
 # 2026-10-01 新增第三位：bundle 自身的依赖根（<bundle>/node_modules/zod）。
 #
 # ⛔ 为什么必须有这一位：上面那两个位置**都只解决相对路径导入**

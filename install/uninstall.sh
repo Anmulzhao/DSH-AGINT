@@ -4,12 +4,13 @@
 # 移除 install.sh 装入的内容。默认保留 .agint-backups/ 目录，可手动清理。
 #
 # ## 用法
-#   install/uninstall.sh                  # 默认：全量卸载
-#   install/uninstall.sh --dry-run        # 只打印会改什么
-#   install/uninstall.sh --list-backups   # 列所有备份
-#   install/uninstall.sh --restore        # 从备份选一个回滚（交互式）
+#   install/uninstall.sh                   # 默认：全量卸载（profile=web）
+#   install/uninstall.sh --profile=desktop # 卸载指定 profile 的部署（2026-10-08 新增）
+#   install/uninstall.sh --dry-run         # 只打印会改什么
+#   install/uninstall.sh --list-backups    # 列所有备份
+#   install/uninstall.sh --restore         # 从备份选一个回滚（交互式）
 #   install/uninstall.sh --restore=AGINT-PRESETS-20260820-200139  # 指定备份回滚
-#   install/uninstall.sh --purge-backups  # 删除所有 .agint-backups/
+#   install/uninstall.sh --purge-backups   # 删除所有 .agint-backups/
 #
 # ## 行为
 #   patch 中只删 AGINT 仓库声明的 agint-* id 段；用户在 dsh patch 里手写的
@@ -30,6 +31,9 @@ DRY_RUN=0
 LIST_BACKUPS=0
 RESTORE=""
 PURGE_BACKUPS=0
+# 目标 profile 名。2026-10-08 参数化：install.sh 已支持装进 desktop，
+# 卸载必须能对称指向同一 profile，否则「装得 clean，卸不干净」。
+PROFILE_NAME="${AGINT_PROFILE:-web}"
 for arg in "$@"; do
   case "$arg" in
     --dry-run)       DRY_RUN=1 ;;
@@ -37,6 +41,11 @@ for arg in "$@"; do
     --restore)       RESTORE="interactive" ;;
     --restore=*)     RESTORE="${arg#--restore=}" ;;
     --purge-backups) PURGE_BACKUPS=1 ;;
+    --profile=*)     PROFILE_NAME="${arg#--profile=}" ;;
+    --profile)
+      echo "[AGINT] ✗ --profile 需要值：写 --profile=<名>（例如 --profile=desktop）" >&2
+      exit 2
+      ;;
     -h|--help)
       sed -n '2,18p' "$0"
       exit 0
@@ -48,6 +57,14 @@ for arg in "$@"; do
   esac
 done
 
+# 与 install.sh 同一道闸：profile 名会拼进路径，先挡空串 / 斜杠 / ..
+case "$PROFILE_NAME" in
+  ''|*/*|*..*|*' '*|*[!A-Za-z0-9._-]*)
+    echo "[AGINT] ✗ profile 名非法: '$PROFILE_NAME'（只允许字母数字 . _ -）" >&2
+    exit 2
+    ;;
+esac
+
 AGINT_HOME="${AGINT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
@@ -57,8 +74,10 @@ if command -v realpath >/dev/null 2>&1; then
 fi
 
 PRESETS_DST="$DSH_HOME/.agent-presets"
-PLUGINS_DST="$DSH_HOME/profiles/web/plugins"
-PATCH_DST="$DSH_HOME/profiles/web/cordis.patch.yml"
+# 目标 profile 根：与 install.sh 的 PROFILE_ROOT 同一规则（2026-10-08 参数化）
+PROFILE_ROOT="$DSH_HOME/profiles/$PROFILE_NAME"
+PLUGINS_DST="$PROFILE_ROOT/plugins"
+PATCH_DST="$PROFILE_ROOT/cordis.patch.yml"
 PATCH_SRC="$AGINT_HOME/profile-patches/web/cordis.patch.yml"
 
 # 2026-09-24：bundle 形态（AGINT 的主载体）
@@ -66,8 +85,8 @@ BUNDLE_NAME="@agint/host"
 BUNDLE_DST="$DSH_HOME/.agint-bundle"
 BUNDLE_PLUGINS_DST="$BUNDLE_DST/plugins"
 # 2026-10-01 起 bundle 实体在 .agint-bundle/，node_modules 下是它的一条软链
-BUNDLE_LINK="$DSH_HOME/profiles/web/node_modules/$BUNDLE_NAME"
-PROFILE_MANIFEST="$DSH_HOME/profiles/web/package.json"
+BUNDLE_LINK="$PROFILE_ROOT/node_modules/$BUNDLE_NAME"
+PROFILE_MANIFEST="$PROFILE_ROOT/package.json"
 
 BACKUP_DIR="$DSH_HOME/.agint-backups"
 
@@ -77,6 +96,7 @@ die()  { echo "[AGINT] ✗ $*" >&2; exit 1; }
 
 log "AGINT_HOME = $AGINT_HOME"
 log "DSH_HOME   = $DSH_HOME"
+log "PROFILE    = $PROFILE_NAME（部署位 $PROFILE_ROOT）"
 log ""
 
 # ── --list-backups ─────────────────────────────────────────────────────────
