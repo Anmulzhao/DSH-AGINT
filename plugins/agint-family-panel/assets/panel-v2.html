@@ -227,6 +227,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
       </div>
     </div>
     <div class="tabs" id="tabs" role="tablist" aria-label="面板分区">
+      <button class="tab" data-t="pend" role="tab" aria-selected="false">待办</button>
       <button class="tab on" data-t="q1" role="tab" aria-selected="true">Q1 谁依赖谁</button>
       <button class="tab" data-t="q2" role="tab" aria-selected="false">Q2 谁在干活</button>
       <button class="tab" data-t="q3" role="tab" aria-selected="false">Q3 哪里在腐化</button>
@@ -241,6 +242,23 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
     <div class="stats" id="stats"></div>
     <div class="ages" id="ages"></div>
   </section>
+
+  <!-- ═══════════ 待办 ═══════════ -->
+  <div class="card panel" id="pend">
+    <h2>待办 · 现在有什么攒着等人处理</h2>
+    <div class="cap">
+      Q1/Q2/Q3 答的是结构与故障，答不到「<b>现在该我动手做什么</b>」。这节补的就是这个缺口。
+      两个口径别混：
+      <span class="tag code">待办</span>攒着等人处理，人能直接动手；
+      <span class="tag comment">供给</span>是上游攒不够，人能做的只是去产生真实量，没有「点一下就好」这个动作。
+      <b>「域不存在」显示为灰色不可用，不是 0</b>——本机没开这个插件，与这个队列确实是空的，是两件事。
+      只读出口：不自动提交、不代为审批。
+    </div>
+    <table>
+      <thead><tr><th>队列</th><th class="num">待办</th><th class="num">上游供给</th><th>条目</th></tr></thead>
+      <tbody id="tbodyPend"></tbody>
+    </table>
+  </div>
 
   <!-- ═══════════ Q1 ═══════════ -->
   <div class="card panel on" id="q1">
@@ -325,13 +343,15 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 // 数据全部来自 GET ./v2/data（host 半实时聚合，回环）。任何源降级 → 顶部琥珀横幅，不装绿。
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
-    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null;
+    PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
+    PENDING=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
   stats.innerHTML=""; ages.innerHTML="";
   tbodyQ1.innerHTML=""; tbodySvc.innerHTML=""; tbodyQ2.innerHTML=""; tbodyHost.innerHTML="";
   tbodyQ3.innerHTML=""; tbodyChain.innerHTML=""; q3chips.innerHTML=""; umbList.innerHTML="";
+  tbodyPend.innerHTML="";
   cronUnmapped.innerHTML="—";
   return;
 }
@@ -797,6 +817,44 @@ tbodyHost.innerHTML=hostTools.slice(0,14).map(t=>{
 }).join("")+`<tr><td class="name" style="color:var(--fg-3)">其余 ${hostTools.length-14} 个 + 合计</td><td class="num">${hostTotal.toLocaleString()}</td><td class="num">${hostFail}</td><td class="num">${(hostFail/hostTotal*100).toFixed(1)}%</td></tr>`;
 cronUnmapped.innerHTML=unmappedCron.map(c=>`<b>${esc(c.j)}</b>（last ${c.last?c.last.slice(5,16).replace("T"," "):"—"} · res ${esc(c.res)}）`).join("　")||"—";
 
+// ── 待办表：攒着等人处理的东西 ──────────────────────────────────────
+// ⛔ 域读不到时显示「—」而不是 0。本机没开这个插件 ≠ 这个队列是空的。
+tbodyPend.innerHTML=!PENDING
+  ? `<tr><td colspan="4" style="color:var(--fg-3)">—（未取到待办数据）</td></tr>`
+  : PENDING.map(q=>{
+      const tag=q.kind==="supply"
+        ? `<span class="tag comment" style="margin-left:0">供给</span>`
+        : `<span class="tag code" style="margin-left:0">待办</span>`;
+      let num,supply;
+      if(q.state!=="ok"){
+        num=`<span style="color:var(--fg-3)" title="${esc(q.reason||q.state)}">不可用</span>`;
+        supply="";
+      }else{
+        num=q.kind==="supply"&&q.threshold
+          ? `<span style="color:var(--fg-2)">${q.pending}</span> <span style="color:var(--fg-3)">/ 门槛 ${q.threshold}</span>`
+          : `<span${q.pending>0?"":' style="color:var(--fg-3)"'}>${q.pending}</span>`;
+        supply=q.supply===undefined?"—"
+          : `<span${q.supply>0&&q.pending===0?' style="color:var(--warn)"':""}>${q.supply}</span>`+
+            (q.supplyLabel?` <span style="color:var(--fg-3)">${esc(q.supplyLabel)}</span>`:"");
+      }
+      let cell;
+      if(q.state!=="ok"){
+        cell=`<span style="color:var(--warn)">${esc(q.reason||q.state)}</span>`;
+      }else if(q.items.length){
+        cell=q.items.map(it=>{
+          const bits=[it.title,(it.domain||it.level)?`${it.domain??""}${it.level?"·"+it.level:""}`:"",it.id].filter(Boolean);
+          return `<div style="font-size:12px">${esc(bits.join(" · "))}</div>`;
+        }).join("")+(q.note?`<div style="font-size:11px;color:var(--fg-3)">${esc(q.note)}</div>`:"");
+      }else{
+        cell=`<span style="color:var(--fg-3)">—${q.note?"　"+esc(q.note):""}</span>`;
+      }
+      return `<tr>
+        <td class="name" style="font-weight:500">${tag} ${esc(q.label)}</td>
+        <td class="num">${num}</td>
+        <td class="num">${supply}</td>
+        <td style="font-size:12px;color:var(--fg-2)">${cell}</td></tr>`;
+    }).join("");
+
 // ── Q3 表 + 判定过滤 ───────────────────────────────────────────────
 const verdicts=[...new Set(ANOM.map(a=>a.v))];
 q3chips.innerHTML=`<button class="chip on" data-v="">全部 ${ANOM.length}</button>`+
@@ -906,7 +964,7 @@ tabs.addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b) return;
   tabs.querySelectorAll(".tab").forEach(x=>{const on=x===b;
     x.classList.toggle("on",on); x.setAttribute("aria-selected",on?"true":"false");});
-  for(const id of ["q1","q2","q3","chain","umb"])
+  for(const id of ["pend","q1","q2","q3","chain","umb"])
     document.getElementById(id).classList.toggle("on",id===b.dataset.t);
 });
 /* 按钮文案改为「点击后的目标状态」，原「暗 / 明」单字分不清是现状还是动作 */
@@ -944,6 +1002,9 @@ function applyPayload(D){
   WIRING_EXEMPT=D.wiringExemptions??null;
   DELIVERY=D.deliveryByTopic??null;
   DELIVERY_H=D.deliveryHistory??null;
+  // 待办节：逐队列降级在渲染里做，不用 bad() 整块判失败——
+  // 这里是「某一个域没开」，不是「这一源挂了」，不该把整节报成数据源故障。
+  PENDING=Array.isArray(D.pending?.queues)?D.pending.queues:null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }

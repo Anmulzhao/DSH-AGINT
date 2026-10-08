@@ -318,6 +318,148 @@ function aggBus(storagesDir, now) {
 }
 
 /**
+ * 积压队列的声明表。加一行队列 = 加一条 spec，不改聚合逻辑。
+ *
+ * kind 的两个值不是分类学，是**给用户的两种不同动作**：
+ *  - `action` —— 攒着等人处理（挑战没人做、提案没人批）。人能直接动手。
+ *  - `supply` —— 上游供给不足（失败样本攒不够）。人能做的只是去产生真实失败，
+ *    没有「直接处理」这个动作；混进待办列表会诱导出「点一下就好」的错觉。
+ */
+const PENDING_SPECS = Object.freeze([
+  {
+    key: 'curriculum-challenge',
+    label: '课程挑战（出队待做）',
+    kind: 'action',
+    file: 'agint_curriculum.json',
+    table: 'challenges',
+    select: (r) => r.status === 'open',
+    item: (r) => ({ id: r.id ?? null, domain: r.domain ?? null, level: r.level ?? null, attemptCount: r.attemptCount ?? 0, createdAt: r.createdAt ?? null }),
+    note: (t) => `attempts=${Object.keys(t.attempts ?? {}).length}`,
+  },
+  {
+    key: 'skill-candidate',
+    label: '技能候选（待审）',
+    kind: 'action',
+    file: 'agint_skill_autocreate.json',
+    table: 'candidates',
+    supplyTable: 'task_patterns',
+    supplyLabel: '上游 pattern',
+    select: () => true,
+    item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
+  },
+  {
+    key: 'evolve-proposal',
+    label: '进化提案（待批）',
+    kind: 'action',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'proposed',
+    item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
+  },
+  {
+    key: 'curator-overlap',
+    label: 'curator 重叠候选',
+    kind: 'action',
+    file: 'agint_curator.json',
+    table: 'overlap_candidates',
+    select: () => true,
+    item: (r) => ({ id: r.id ?? null }),
+  },
+  {
+    key: 'failure-supply',
+    label: '失败样本供给（上游）',
+    kind: 'supply',
+    file: 'agint_evolution.json',
+    table: 'failure_pattern',
+    select: () => true,
+    item: () => ({}),
+    // COLD_START_MIN（agint-diagnosis/lib/index.js:56）：低于它 annotate 的冷启动
+    // 守门直接 throw，整条 diagnosis 链产不出东西。这不是配置，是代码里的常量。
+    threshold: 10,
+  },
+]);
+
+/**
+ * 积压待办队列：把「攒着等人处理」的几张表汇成一节。
+ *
+ * 为什么要有这节：面板原有 Q1/Q2/Q3 答的是「谁依赖谁 / 谁在干活 / 哪里在腐化」，
+ * 答的都是**结构与故障**；没有任何一处回答「**现在有什么等着人处理**」。
+ * 缺了它，队列积压只能靠翻 storages 才发现 —— 于是每一条积压都会各自
+ * 变成一份 known-limitations，而不是被看见的待办。
+ *
+ * 纪律（同本文件其余各源）：
+ *  - 一域坏只降级那一行，其余照常，绝不装绿。
+ *  - 域缺失 → state='unavailable' 且 pending=null，**不是 0**：「本机没开这个域」
+ *    与「这个域确实是空的」是两件事，只有后者才是真的没事。
+ *
+ * @param {string} storagesDir
+ * @returns {{queues: Array<object>, observedAt: string|null}}
+ */
+export function aggPending(storagesDir) {
+  const cache = new Map();
+  const readTables = (file) => {
+    if (cache.has(file)) return cache.get(file);
+    const p = join(storagesDir, file);
+    let out;
+    if (!existsSync(p)) out = { missing: true };
+    else {
+      try {
+        const t = JSON.parse(readFileSync(p, 'utf8'))?.tables;
+        out = (t && typeof t === 'object') ? { tables: t, mtime: mtimeIso(p) } : { missing: true };
+      } catch (e) {
+        out = { error: String((e && e.message) ?? e).slice(0, 200) };
+      }
+    }
+    cache.set(file, out);
+    return out;
+  };
+
+  const rowsOf = (t) => (t && typeof t === 'object' ? Object.values(t) : []);
+  const queues = [];
+  let observedAt = null;
+
+  for (const spec of PENDING_SPECS) {
+    const base = { key: spec.key, label: spec.label, kind: spec.kind, items: [] };
+    const r = readTables(spec.file);
+
+    if (r.missing) {
+      queues.push({ ...base, state: 'unavailable', reason: '域不存在', pending: null });
+      continue;
+    }
+    if (r.error) {
+      queues.push({ ...base, state: 'error', reason: r.error, pending: null });
+      continue;
+    }
+    const tbl = r.tables[spec.table];
+    if (!tbl || typeof tbl !== 'object') {
+      queues.push({ ...base, state: 'error', reason: `${spec.table} 表缺失或形态未知`, pending: null });
+      continue;
+    }
+
+    const all = rowsOf(tbl);
+    const hits = all.filter((x) => x && typeof x === 'object' && spec.select(x));
+    const q = {
+      ...base,
+      state: 'ok',
+      pending: hits.length,
+      total: all.length,
+      items: hits.slice(0, 20).map(spec.item),
+      observedAt: r.mtime,
+    };
+    if (spec.threshold !== undefined) q.threshold = spec.threshold;
+    if (spec.supplyTable) {
+      q.supply = rowsOf(r.tables[spec.supplyTable]).length;
+      q.supplyLabel = spec.supplyLabel;
+    }
+    if (spec.note) q.note = spec.note(r.tables);
+    queues.push(q);
+    observedAt = observedAt ?? r.mtime;
+  }
+
+  return { queues, observedAt };
+}
+
+/**
  * 插件身份表（**单一事实源**）：产出**代码身份**—— 一个目录当且仅当**有 lib/** 才算。
  *
  * ⛔ 为什么不按「顶层目录名」占位：quality 家族在仓库位有**门面目录**
@@ -699,6 +841,7 @@ export function collectV2Data(dirs, opts = {}) {
   try { payload.tools = aggTools(dirs.storagesDir, now); } catch (e) { payload.tools = errOf(e); }
   try { payload.cron = aggCron(dirs.storagesDir); } catch (e) { payload.cron = errOf(e); }
   try { payload.bus = aggBus(dirs.storagesDir, now); } catch (e) { payload.bus = errOf(e); }
+  try { payload.pending = aggPending(dirs.storagesDir); } catch (e) { payload.pending = errOf(e); }
   try {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;
