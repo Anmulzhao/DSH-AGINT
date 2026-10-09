@@ -525,6 +525,10 @@
     "weekly-hook-writes-eval-results-to-evolution-log": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
+    },
+    "cron-default-job-schedules-valid": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     }
   }
 }

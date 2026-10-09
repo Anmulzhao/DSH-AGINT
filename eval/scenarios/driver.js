@@ -823,6 +823,40 @@ const dispatchers = {
       const ok = JSON.stringify(ids) === JSON.stringify(exp.expectedIds.sort());
       return { ok, detail: `ids=${ids.join(',')}` };
     }
+    // ── NEW-01（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 断言三件事，全是**现有两个 cron 单元没覆盖**的：
+    //   ① 每个默认 job 的 schedule 都能被解析（不抛错）
+    //   ② nextFire 得到的时刻严格晚于 from（单调性，抓「表达式解析成过去时刻」）
+    //   ③ job id 唯一（抓重复注册 —— 重复 id 会让 stateTable 互相覆盖）
+    // 为什么值得占 Frozen 名额：新增 job 是高频改动，而「表达式写错 / id 撞车」
+    //   在现有门禁下**只有到点跑挂了才暴露**；本单元把它左移到提交时。
+    //   2026-10-09 实测事由：input-gateway-watchdog（9d600d0）新增时，
+    //   id 全等清单没同步 ⇒ 存量单元转红 —— 同一类「新增 job 未受检」问题。
+    if (exp.kind === 'default-jobs-schedules-valid') {
+      const from = new Date(input.from);
+      const bad = [];
+      const seen = new Set();
+      const dupes = [];
+      for (const j of defaultJobs) {
+        if (!j.id) { bad.push('<empty-id>'); continue; }
+        if (seen.has(j.id)) dupes.push(j.id);
+        seen.add(j.id);
+        try {
+          const parsed = parseCron(j.schedule);
+          const next = nextFire(parsed, from);
+          if (!(next instanceof Date) || Number.isNaN(next.getTime()) || next.getTime() <= from.getTime()) {
+            bad.push(`${j.id}(next<=from)`);
+          }
+        } catch (err) {
+          bad.push(`${j.id}(parse:${err.message})`);
+        }
+      }
+      const ok = defaultJobs.length > 0 && bad.length === 0 && dupes.length === 0;
+      return {
+        ok,
+        detail: `jobs=${defaultJobs.length} bad=[${bad.join(',')}] dupes=[${dupes.join(',')}]`,
+      };
+    }
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 
