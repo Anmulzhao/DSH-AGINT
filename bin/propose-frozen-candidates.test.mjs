@@ -20,7 +20,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BLIND_SPOT_UNLOCK_ORDER,
+  CORE_BLIND_SPOT_DOMAINS,
+  DEFAULT_SLOT_STRATEGY,
   FIRST_PHASE_SIZE,
+  allocateNewSlots,
   eligibleDomains,
   proposeFrozenCandidates,
   proposeNewSlots,
@@ -29,6 +33,7 @@ import {
   selectFailProbes,
 } from './propose-frozen-candidates.mjs';
 import {
+  checkTierAssignment,
   H1_EVOLUTION_FAIL_RATIO,
   H2_FROZEN_NEW_RATIO,
   H4_MIN_DOMAIN_UNITS,
@@ -319,7 +324,14 @@ test('真实 inventory.json：提案自洽、四判据全过、合计 10', () =>
 
   const p = proposeFrozenCandidates({ units, failCount: null });
   assert.equal(p.size, FIRST_PHASE_SIZE);
-  assert.equal(p.failCount, units.filter((x) => x.lastKnownStatus === 'FAIL').length);
+  // ⛔ 2026-10-09 修：这里原按「清单里所有 FAIL」比对，而本模块自 2026-10-04 起
+  //    只数**真存量 fail**（负控制预期就是 FAIL，不算缺陷）。含负控制的 5 去比
+  //    真存量 2 ⇒ 永远不等 ⇒ 用例恒红且与代码口径相反。改为与模块同源口径。
+  assert.equal(
+    p.failCount,
+    units.filter((x) => x.lastKnownStatus === 'FAIL' && x.negativeControl !== true).length,
+    'failCount 必须是**真存量 fail**（排除负控制）',
+  );
   assert.equal(p.totals.sum, 10);
   assert.equal(p.totals.complete, true);
   assert.equal(p.satisfied.all, true);
@@ -330,10 +342,23 @@ test('真实 inventory.json：提案自洽、四判据全过、合计 10', () =>
   for (const x of [...p.existing.failProbes, ...p.existing.passes]) {
     assert.ok(!blocked.has(x.domain), `${x.unitId} 所在域 ${x.domain} 被 H4 否过`);
   }
-  for (const s of p.newSlots) assert.ok(!blocked.has(s.domain));
+  // ⛔ 2026-10-09 改不变量：槽位**可以**投进被 H4 否掉的域 —— 那正是解锁盲区的
+  //   唯一办法。但要成立必须一次补齐到门槛：该域的「存量单元 + 拿到的槽位数」≥ 3。
+  //   半途投（差 2 只给 1 个）是该策略最容易犯的错：单元自己进不了 Frozen，名额白花。
+  const unitsPerDomain = {};
+  for (const x of units) unitsPerDomain[x.domain ?? 'UNKNOWN'] = (unitsPerDomain[x.domain ?? 'UNKNOWN'] ?? 0) + 1;
+  const slotsPerDomain = {};
+  for (const s of p.newSlots) slotsPerDomain[s.domain] = (slotsPerDomain[s.domain] ?? 0) + 1;
+  for (const [d, n] of Object.entries(slotsPerDomain)) {
+    if (!blocked.has(d)) continue;
+    assert.ok(
+      (unitsPerDomain[d] ?? 0) + n >= H4_MIN_DOMAIN_UNITS,
+      `域 ${d} 拿了 ${n} 个槽位但补齐后只有 ${(unitsPerDomain[d] ?? 0) + n} 个单元 < ${H4_MIN_DOMAIN_UNITS} ⇒ 名额白花`,
+    );
+  }
 
   const md = renderProposal(p);
-  assert.match(md, /合计：存量 \d+ \+ 新写 \d+ = \*\*10\*\* \/ 名额 10 ✅/);
+  assert.match(md, /合计：已入账 \d+ \+ 存量新增 \d+ \+ 新写 \d+ = \*\*10\*\* \/ 名额 10 ✅/);
 });
 
 test('真实 inventory：不存在把存量单元标成「新编写」的路径', () => {
@@ -353,4 +378,114 @@ test('只读纪律：提案过程不产生任何文件', async () => {
   execFileSync(process.execPath, [join(HERE, 'propose-frozen-candidates.mjs')], { cwd: REPO_ROOT });
   const after = readdirSync(REPO_ROOT).map((f) => `${f}:${statSync(join(REPO_ROOT, f)).mtimeMs}`).sort().join('|');
   assert.equal(after, before, '⛔ 只读脚本不许在仓库根写/改任何东西');
+});
+// ── 8. H5：已入账 Frozen 只增不减（2026-10-09 修）────────────────────────
+
+test('⛔ 不放宽⇒变红：若把全员重置成 EVOLUTION 重选（2026-10-09 前的行为），H5 必须判违例', () => {
+  const units = unitsByDomain({ quality: 10, rules: 6, diagnosis: 6, eventBus: 6, cron: 2, memory: 1 });
+  const anchored = ['rules-00', 'diagnosis-00'];
+  const p = proposeFrozenCandidates({ units, previousFrozenIds: anchored });
+  // 正确实现：已锚的必须在集合里 ⇒ H5 通过
+  assert.equal(p.satisfied.h5, true);
+  for (const id of anchored) assert.ok(p.locked.ids.includes(id));
+
+  // 复现旧行为：手动构造一个「替换集」——把已锚单元踢出 FROZEN 再喂判据层
+  // ⚠️ 判据层校验枚举封闭：labelAuthority 缺失（undefined）本身就是一条 error
+  //    ⇒ 影子单元必须补齐，否则测的是「枚举没填」而不是 H5。
+  const shadow = units.map((x) => ({ ...x, visibility: 'EVOLUTION', labelAuthority: 'UNSET' }));
+  const picked = new Set([...p.existing.passes.map((s) => s.unitId)]);
+  for (const s2 of shadow) if (picked.has(s2.unitId)) s2.visibility = 'FROZEN';
+  for (const s of p.newSlots) {
+    shadow.push({
+      unitId: `SHADOW-${s.slotId}`, domain: s.domain, visibility: 'FROZEN',
+      labelAuthority: 'GOLD', lastKnownStatus: 'PASS', negativeControl: false,
+    });
+  }
+  // 不传 previousFrozenIds 时判据层会判「全绿」—— 这正是旧脚本自检漏掉 H5 的原因
+  const blind = checkTierAssignment({ units: shadow, statusKnown: true });
+  assert.ok(
+    !blind.errors.some((e) => e.startsWith('H5')),
+    `不传 previousFrozenIds 时 H5 一条都不报（旧脚本的盲区）。实际报错：${blind.errors.join(' | ')}`,
+  );
+  // 传了就红 ⇒ 证明 H5 只在传参时才有牙齿
+  const seen = checkTierAssignment({ units: shadow, statusKnown: true, previousFrozenIds: anchored });
+  assert.equal(seen.ok, false);
+  assert.ok(seen.errors.some((e) => e.startsWith('H5')), '已锚单元被踢出时必须报 H5 违例');
+});
+
+test('已锚单元计入名额，且 H2 的分子按全集算（旧锚越多，新编要求不降）', () => {
+  const units = unitsByDomain({ quality: 10, rules: 6, diagnosis: 6, eventBus: 6, installSec: 6 });
+  const p = proposeFrozenCandidates({ units, previousFrozenIds: ['rules-00', 'diagnosis-00'] });
+  assert.equal(p.totals.locked, 2);
+  assert.equal(p.totals.newSlots, Math.ceil(H2_FROZEN_NEW_RATIO * FIRST_PHASE_SIZE), 'H2 分子按全集算，不按剩余算');
+  assert.equal(p.totals.sum, FIRST_PHASE_SIZE);
+  assert.equal(p.totals.complete, true);
+  assert.equal(p.totals.existingChosen, FIRST_PHASE_SIZE - 2 - p.totals.newSlots);
+});
+
+test('热备槽位不计入名额合计，但确实存在（抵 H2 零余量）', () => {
+  const units = unitsByDomain({ quality: 10, rules: 6, diagnosis: 6, eventBus: 6 });
+  const p = proposeFrozenCandidates({ units, previousFrozenIds: [], spareSlots: 1 });
+  assert.equal(p.spareSlots.length, 1);
+  assert.equal(p.totals.sum, FIRST_PHASE_SIZE, '热备不得把合计撑过名额');
+  assert.equal(p.totals.spare, 1);
+});
+
+// ── 9. 盲区解锁策略（blind-first）────────────────────────────────────────
+
+test('解锁必须一次补齐：名额只够 1 个而该域缺 2 ⇒ 不给它槽位（投一半白花）', () => {
+  const units = unitsByDomain({ quality: 10, rules: 6, memory: 1 });
+  const dom = eligibleDomains(units);
+  const { slots, notes } = allocateNewSlots({
+    units,
+    want: 1,
+    eligibleDomainSet: setOf(['quality', 'rules']),
+    blocked: dom.blocked,
+    coveredDomainSet: new Set(),
+    strategy: 'blind-first',
+  });
+  assert.ok(!slots.some((s) => s.domain === 'memory'), 'memory 缺 2 个，只给 1 个是白花名额');
+  assert.ok(notes.some((n) => n.includes('memory')), '跳过必须留下记录，不许静默消失');
+});
+
+test('低效率解锁域（缺 ≥2 且非核心）不得挤掉未覆盖合格域的保底名额', () => {
+  const units = unitsByDomain({ quality: 10, rules: 6, installSec: 6, memory: 1, dream: 1 });
+  const dom = eligibleDomains(units);
+  const { slots } = allocateNewSlots({
+    units,
+    want: 4,
+    eligibleDomainSet: setOf(['quality', 'rules', 'installSec']),
+    blocked: dom.blocked,
+    coveredDomainSet: setOf(['rules']),
+    strategy: 'blind-first',
+  });
+  const domains = slots.map((s) => s.domain);
+  // memory 是核心盲区 ⇒ 值得 2 名额；dream 不是 ⇒ 应让位给未覆盖的合格域
+  assert.ok(domains.includes('memory'), 'memory 属 CORE_BLIND_SPOT_DOMAINS，应优先解锁');
+  assert.ok(domains.filter((d) => d === 'memory').length === 2, '缺 2 就给 2，不给 1');
+  assert.ok(!domains.includes('dream'), 'dream 不得挤掉未覆盖合格域的名额');
+  assert.ok(domains.includes('installSec') || domains.includes('quality'), '保底名额应给未覆盖合格域');
+});
+
+test('纯 e2e 域排序沉底：名额够也不会先取它（Frozen 不吃 e2e 噪声）', () => {
+  const units = [
+    ...unitsByDomain({ quality: 10 }).map((x) => ({ ...x, kind: 'integration' })),
+    ...unitsByDomain({ mountOnly: 8 }).map((x) => ({ ...x, kind: 'e2e' })),
+    ...unitsByDomain({ rules: 6 }).map((x) => ({ ...x, kind: 'integration' })),
+  ];
+  const { slots } = allocateNewSlots({
+    units,
+    want: 2,
+    eligibleDomainSet: setOf(['quality', 'rules', 'mountOnly']),
+    blocked: [],
+    coveredDomainSet: new Set(),
+    strategy: 'blind-first',
+  });
+  assert.ok(!slots.some((s) => s.domain === 'mountOnly'), '纯 e2e 域不得优先拿槽位');
+});
+
+test('默认策略是 blind-first（槽位要能解锁盲区，不是只投已合格域）', () => {
+  assert.equal(DEFAULT_SLOT_STRATEGY, 'blind-first');
+  assert.ok(BLIND_SPOT_UNLOCK_ORDER.includes('memory'));
+  assert.ok(CORE_BLIND_SPOT_DOMAINS.includes('memory'));
 });
