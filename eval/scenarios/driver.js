@@ -130,6 +130,14 @@ export function makeRichEvalMockCtx(input) {
   const mockRules = {
     audit: () => ({ totals: { hits: 0, denies: 0, asks: 0, advisories: 0 } }),
     lint: async () => [],
+    // ⛔ 2026-10-09 补：`list` 是 safety 维度的**数据源**，缺了就不是「干净」而是「无数据」。
+    //    2026-10-07 的 S11 fail-closed 修复把 evalSafety 的初始分从 1.0 改成 null
+    //    （evaluators.js:143）—— 数据源不可用必须走「null → veto → REJECT」，
+    //    不能在门禁最需要它的时刻给满分。于是本 mock 缺 `list` 时：
+    //      safety = null ⇒ compositeScore 一票否决 ⇒ composite = null
+    //    ⇒ 三个 sandbox-gate 单元（期望 composite 非 null）由绿转红。
+    //    这是**夹具缺数据源**，不是判据错也不是期望错 ⇒ 修夹具，判据一字不改。
+    list: async () => ({ items: [] }),
   };
   const mockMetrics = {
     collect: async () => ({ count: 0, collected: [] }),
@@ -1368,13 +1376,27 @@ const dispatchers = {
         evaluator.evaluateAll = async (targets) => {
           // runBaselineSuite 只调一次 evaluateAll: 9 个 baseline target,
           // 8 ok + 1 fail → passRate = 8/9 = 0.889
+          // ⛔ 2026-10-09 补：维度必须同时给 safety **和 trust**。
+          //    compositeScore（evaluators.js:449）对 ['safety','trust'] 双双做
+          //    「缺失 / null / 低于阈值 ⇒ 返回 null」的一票否决。只造 safety 时
+          //    trust 缺失 ⇒ **9 个 target 全部 composite=null** ⇒ passRate=0
+          //    ⇒ delta=-0.95 ⇒ severity 判成 blocker，而本场景要的是 warn 档
+          //    （delta ∈ (-0.10, -0.02)）。同样是 10-07 那次 fail-closed 修复
+          //    暴露的夹具缺口：判据变严了，夹具没跟上 ⇒ 假 fail。
           return targets.map((t, i) => ({
             targetId: t.id, kind: t.kind, evaluatedAt: new Date().toISOString(), durationMs: 0,
-            dimensions: [{
-              key: 'safety', label: '安全',
-              score: { score: i === 0 ? 0 : 1 },
-              veto: i === 0, findings: [], raw: null, evidence: [], children: [],
-            }],
+            dimensions: [
+              {
+                key: 'safety', label: '安全',
+                score: { score: i === 0 ? 0 : 1 },
+                veto: i === 0, findings: [], raw: null, evidence: [], children: [],
+              },
+              {
+                key: 'trust', label: '可信',
+                score: { score: i === 0 ? 0 : 1 },
+                veto: i === 0, findings: [], raw: null, evidence: [], children: [],
+              },
+            ],
             harm: { homogeneity: 0.5, alignment: 0.5, reduction: 0.5, mutability: 0.5 },
             findings: i === 0 ? [{ severity: 'blocker', message: 'mocked fail', evidence: [] }] : [],
             evaluatorId: 'mock',

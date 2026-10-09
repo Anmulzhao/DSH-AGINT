@@ -16,7 +16,68 @@
 set -euo pipefail
 
 AGINT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DSH_GLOBAL_NM="$(npm root -g)/@deepseek-ai/dsh/node_modules"
+
+# ── 定位 dsh 真身（2026-10-09 修）──────────────────────────────────────────
+# ⛔ 原实现是 `npm root -g`，它跟随 PATH 里的**首个** npm。本机首个 npm 是
+#    托管那份（前缀在沙箱），答出来的目录里根本没有 dsh ⇒ 本脚本恒失败
+#    （"dsh runtime not found"），于是「跑 driver 前先跑 setup.sh」这条纪律
+#    在本机根本执行不了，而失败被当成「环境本来就那样」放过。
+#    候选顺序照抄 install/install.sh 的 locate_dsh_dir（2026-10-07 已修同一坑）：
+#    ① $DSH_ROOT 显式指定（验 package.json 真身）
+#    ② dsh 可执行文件反推 <prefix>/lib/node_modules/@deepseek-ai/dsh（dsh 不在
+#       PATH 时兜底扫 nvm 各版本）
+#    ③ $DSH_HOME/.agint-deps/dsh-runtime（AGINT 自带，随 DSH_HOME 走）
+#    ④ npm root -g（可能答错，放最后）
+#    ⑤ 常见硬编码前缀
+# ⛔ 每一级都必须验 package.json 里的 "@deepseek-ai/dsh" —— 不验会拿到
+#    「存在但不是 dsh」的目录，症状比定位失败更隐蔽（失败有报错，错指则静默建错链）。
+locate_dsh_dir() {
+  local c resolved dsh_bin nb prefix
+  if [ -n "${DSH_ROOT:-}" ] && [ -f "$DSH_ROOT/package.json" ] \
+     && grep -q '"@deepseek-ai/dsh"' "$DSH_ROOT/package.json" 2>/dev/null; then
+    printf '%s' "$DSH_ROOT"; return 0
+  fi
+  dsh_bin="$(command -v dsh 2>/dev/null || true)"
+  if [ -z "$dsh_bin" ]; then
+    for nb in "$HOME"/.nvm/versions/node/*/bin/dsh; do
+      [ -x "$nb" ] && { dsh_bin="$nb"; break; }
+    done
+  fi
+  if [ -n "$dsh_bin" ]; then
+    prefix="$(cd "$(dirname "$dsh_bin")/.." 2>/dev/null && pwd)"
+    for resolved in "$prefix/lib/node_modules/@deepseek-ai/dsh" \
+                   "$(cd "$(dirname "$(readlink -f "$dsh_bin" 2>/dev/null || printf '%s' "$dsh_bin")")/../.." 2>/dev/null && pwd)/lib/node_modules/@deepseek-ai/dsh"; do
+      if [ -f "$resolved/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$resolved/package.json" 2>/dev/null; then
+        printf '%s' "$resolved"; return 0
+      fi
+    done
+  fi
+  for c in "${DSH_HOME:-$HOME/.dsh}/.agint-deps/dsh-runtime"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  for c in "$(npm root -g 2>/dev/null)/@deepseek-ai/dsh"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  for c in "/usr/local/lib/node_modules/@deepseek-ai/dsh" \
+           "/usr/lib/node_modules/@deepseek-ai/dsh"; do
+    if [ -f "$c/package.json" ] && grep -q '"@deepseek-ai/dsh"' "$c/package.json" 2>/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  return 1
+}
+
+DSH_DIR="$(locate_dsh_dir || true)"
+if [ -z "$DSH_DIR" ]; then
+  echo "ERROR: 未能定位 dsh 安装目录（DSH_ROOT / dsh 可执行文件 / \$DSH_HOME 自带 / npm root -g 全落空）" >&2
+  echo "  请先安装: npm i -g @deepseek-ai/dsh，或设 DSH_ROOT=<dsh 包目录>" >&2
+  exit 1
+fi
+DSH_GLOBAL_NM="$DSH_DIR/node_modules"
 DSH_DEEP_NM="$DSH_GLOBAL_NM/@deepseek-ai"  # @deepseek-ai/* deps live one level deeper
 PLUGINS_DISCOVERED=()
 DEEPSEEK_DEPS=(dsh-storage-domain dsh-tools)
