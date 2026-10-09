@@ -11,6 +11,9 @@
  *   B. 孤儿主题  —— 有订阅方、无发布方（或反之），且生产数据为 0
  *   C. 生产对账  —— 读真实事件存储，按 topic 计数，揭穿「代码有了但从未通电」
  *
+ * 另有一查专门堵**上面三查共同的结构性盲区**：
+ *   E'. 总线零感知 —— 已挂载、提供跨插件服务，却对事件总线毫无察觉的插件
+ *
  * ⚠️ 判定边界（别过度归因）：
  *   - 生产调用点剔除 /test/ 与 eval/scenarios/ —— 测试自己调自己不算接线
  *   - 「有人喊」≠「有人应」：本脚本只证明调用点存在，不证明调用真跑到了（K64 教训）
@@ -25,9 +28,9 @@
  *
  * 退出码：0 = 无缺口 / 1 = 有缺口 / 2 = 脚本自身出错
  */
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative, sep } from 'node:path';
+import { join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -352,6 +355,95 @@ for (const [dom, info] of [...domains].sort()) {
 const deadReal = neverEnergized.filter((d) => !d.exemption);
 const deadExempt = neverEnergized.filter((d) => d.exemption);
 
+// ──────── 查 E'：总线零感知（已挂载 + 提供跨插件服务，却从不碰事件总线）────────
+// ⭐ 这一查专门堵**上面所有查法共同的结构性盲区**。
+//
+// 查 B/C 以 **topic 字符串**为索引：从订阅注册与 publish 调用点两侧收集 topic，
+// 再与生产存储对账。于是「一个该发事件、却连主题名都没声明过的插件」
+// **一行输出都不会有** —— 无论它该不该存在。
+// 2026-10-09 人工盘点据此漏掉了 5 个插件（rules / restart / quality-contract /
+// abtest / wiki），而门禁当时报的是 PASS。出处：
+// proposals/agint-eventbus-unwired-plugins-20261009.md
+//
+// 判据（三条同时成立才算缺口）：
+//   ① cordis.patch.yml 已挂载
+//   ② ctx.provide('agint.*') —— 它提供跨插件服务，别人**可以**消费它
+//   ③ lib/ 生产路径里 eventBus 引用数 = 0 —— 它对总线**毫无察觉**
+// ⇒ UNWIRED（硬缺口）。不 provide 任何 agint.* 服务的纯工具插件不适用本查。
+//
+// ⚠️ 为什么按**入口路径**解析插件目录、而不是按 `- id:` 的名字：
+//   id 与目录名不是一回事。实测 agint-quality-contract 的 id 是它，
+//   真实源码却在 plugins/agint-quality/agint-quality-contract/（v0.6.3 剥离后的残留壳
+//   plugins/agint-quality-contract/ 只剩 node_modules）。按 id 拼目录会指向空壳，
+//   把「没接线」误判成「插件不存在」—— 本查第一版就踩了，已钉死在测试里。
+const PATCH_YML = join(REPO_ROOT, 'cordis.patch.yml');
+const exempPlugin = new Map((exemp.plugins || []).map((p) => [p.plugin, p]));
+const mountedPlugins = [];
+let patchError = null;
+try {
+  const yml = readFileSync(PATCH_YML, 'utf8');
+  // 一条插件声明 = `- id: <id>` 紧跟 `name: <入口路径>`。容忍注释行与引号差异。
+  for (const m of yml.matchAll(/-\s*id:\s*['"]?([\w.-]+)['"]?[ \t]*\r?\n[ \t]*name:\s*['"]?([^\s'"]+)['"]?/g)) {
+    mountedPlugins.push({ id: m[1], entry: m[2] });
+  }
+} catch (e) {
+  patchError = e?.message || String(e);
+}
+
+/** 该插件提供的 agint.* 服务名集合（按目录前缀匹配，兼容嵌套目录） */
+function servicesOf(dirRel) {
+  const out = new Set();
+  for (const [name, sites] of provided) {
+    if (sites.some((s) => s.file === dirRel || s.file.startsWith(dirRel + sep))) out.add(name);
+  }
+  return out;
+}
+
+const busBlind = []; // UNWIRED：挂了、服务也提供，却对总线毫无察觉
+const busAware = []; // 已有 eventBus 引用的挂载插件
+const noService = []; // 不 provide agint.* 服务的纯工具插件 —— 本查不适用
+const mountMissing = []; // 挂载声明的入口在仓库里找不到
+
+for (const { id, entry } of mountedPlugins) {
+  // 入口 ./plugins/<...>/lib/index.js ⇒ 插件目录 = 上溯两级（lib → 插件根）
+  const abs = join(REPO_ROOT, entry.replace(/^\.\//, ''));
+  const dirAbs = dirname(dirname(abs));
+  const dirRel = relative(REPO_ROOT, dirAbs);
+
+  if (!existsSync(dirAbs)) {
+    mountMissing.push({ plugin: id, entry });
+    continue;
+  }
+  const services = servicesOf(dirRel);
+  if (services.size === 0) {
+    noService.push({ plugin: id });
+    continue;
+  }
+
+  // eventBus 引用数：只扫 lib/ 下的**生产路径**，与查 A/D/F 同一口径
+  let refs = 0;
+  for (const f of walk(join(dirAbs, 'lib'))) {
+    const relF = relative(REPO_ROOT, f);
+    if (!isProdPath(relF)) continue;
+    let src;
+    try {
+      src = readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const hits = stripComments(src).match(/eventBus/g);
+    if (hits) refs += hits.length;
+  }
+
+  const ex = exempPlugin.get(id) || null;
+  const row = { plugin: id, dir: dirRel, services: [...services].sort(), busRefs: refs, exemption: ex };
+  if (refs > 0) busAware.push(row);
+  else if (ex) busBlind.push({ ...row, verdict: 'EXEMPTED' });
+  else busBlind.push({ ...row, verdict: 'UNWIRED' });
+}
+const unwiredReal = busBlind.filter((p) => p.verdict === 'UNWIRED');
+const unwiredExempt = busBlind.filter((p) => p.verdict === 'EXEMPTED');
+
 // ───────── 查 F：命名空间错配（取了「没注册过的名字」= 恒 undefined） ─────────
 // ⭐⭐⭐ 本仓最隐蔽的一类断链，机制见 plugins/agint-curriculum/lib/index.js:121-124：
 //   cordis 的 service store 是**扁平的**（按确切键名查），
@@ -582,15 +674,24 @@ const fails = [
   ...topicRows
     .filter((r) => r.verdict === 'ORPHAN_TOPIC' || r.verdict === 'NO_SUBSCRIBER')
     .map((r) => ({ kind: r.verdict, name: r.topic })),
+  // 查 E'：应接入未接入的插件。判据见上方注释 —— 「已挂载 + 提供跨插件服务 + 总线零感知」。
+  ...unwiredReal.map((p) => ({ kind: 'UNWIRED', name: p.plugin })),
+  // 挂载清单读不到 ⇒ 本查处于「无法判定」状态。
+  // 静默放行会让这一查在最需要它的时候（清单坏掉）悄悄消失，故按缺口处理。
+  ...(patchError ? [{ kind: 'MOUNT_LIST_UNREADABLE', name: 'cordis.patch.yml' }] : []),
 ];
 const soft = topicRows.filter((r) => r.verdict === 'NOT_YET_FIRED');
 const exitCode =
   fails.length > 0 || (STRICT && soft.length > 0) || !dupOk || tsDrift.length > 0 || !smokeIOk ? 1 : 0;
 
 if (AS_JSON) {
-  console.log(
-    JSON.stringify(
-      {
+  // 2026-10-09 修：JSON 必须走**同步写**（fs.writeSync(fd 1)），不能用 console.log。
+  // 原因：console.log 写管道（execFileSync / node:test 捕获场景）是异步的，而下面
+  // 立即 process.exit —— 缓冲区没排空的数据被直接丢弃，下游 JSON.parse 报
+  // 「Unexpected end of input」。重定向到文件时写是同步的，所以这个 bug 只在
+  // 管道场景复现。查 E' 上线后报告变大超过管道缓冲，把雷引爆（check-wiring.test 首当其冲）。
+  writeSync(1, JSON.stringify(
+    {
         checkedAt: new Date().toISOString(),
         busStorage: BUS_STORAGE,
         prodTotal,
@@ -647,12 +748,24 @@ if (AS_JSON) {
             exemption: d.exemption,
           })),
         },
+        busBlind: {
+          patchError,
+          mounted: mountedPlugins.length,
+          unwired: unwiredReal.map((p) => ({
+            plugin: p.plugin,
+            dir: p.dir,
+            services: p.services,
+            busRefs: p.busRefs,
+          })),
+          exempted: unwiredExempt.map((p) => ({ plugin: p.plugin, reason: p.exemption?.reason ?? null })),
+          aware: busAware.map((p) => ({ plugin: p.plugin, busRefs: p.busRefs })),
+          noService: noService.map((p) => p.plugin),
+          mountMissing: mountMissing.map((p) => ({ plugin: p.plugin, entry: p.entry })),
+        },
         exitCode,
       },
-      null,
       2,
-    ),
-  );
+    ) + '\n');
   process.exit(exitCode);
 }
 
@@ -710,6 +823,27 @@ for (const d of deadReal) {
 }
 for (const d of deadExempt) {
   console.log(`  ${C.dim}EXEMPT ${d.domain} (${d.plugin}) — ${d.exemption.reason}${C.r}`);
+}
+
+console.log(`\n${C.b}── 查 E'：总线零感知（已挂载 + 提供跨插件服务，却从不碰事件总线）──${C.r}`);
+if (patchError) {
+  console.log(`  ${C.red}读不到挂载清单 cordis.patch.yml：${patchError} —— 本查无法判定，按缺口处理${C.r}`);
+} else {
+  console.log(
+    `  ${C.dim}已挂载 ${mountedPlugins.length} / 总线有感 ${busAware.length} / 零感知 ${busBlind.length}（其中豁免 ${unwiredExempt.length}）/ 无跨插件服务 ${noService.length}${C.r}`,
+  );
+  for (const p of unwiredReal) {
+    console.log(
+      `  ${C.red}UNWIRED${C.r} ${p.plugin.padEnd(26)}${C.dim}提供 ${p.services.length} 个服务但 eventBus 引用 0（${p.dir}）${C.r}`,
+    );
+    console.log(`         ${C.dim}服务：${p.services.join(', ')}${C.r}`);
+  }
+  for (const p of unwiredExempt) {
+    console.log(`  ${C.dim}EXEMPT ${p.plugin} — ${p.exemption.reason}${C.r}`);
+  }
+  if (unwiredReal.length === 0) {
+    console.log(`  ${C.grn}无缺口${C.r}：每个提供跨插件服务的挂载插件都在总线上有感知。`);
+  }
 }
 
 console.log(`\n${C.b}── 查 F：命名空间错配（取了没注册的名字 ⇒ 恒 undefined，不报错只软降级）──${C.r}`);
@@ -790,7 +924,7 @@ if (driftPlugins.size === 0) {
 }
 
 const modeSuffix = STATIC_ONLY ? '  [静态模式：查 E/H 已跳过]' : '';
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电 / ${unwiredReal.length} 插件总线零感知${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
 else console.log(`${C.dim}PASS${C.r}`);
