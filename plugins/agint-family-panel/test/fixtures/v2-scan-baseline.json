@@ -1,12 +1,18 @@
 {
-  "generatedFrom": "repo plugins/ (DSH-AGINT)",
-  "generatedAt": "2026-10-05T13:52:00.000Z",
+  "generatedFrom": "repo plugins/ (DSH-AGINT)，agint.* 家族键口径",
+  "generatedAt": "2026-10-09T01:40:00.000Z",
+  "criterion": "family-only：仅统计服务键以 agint. 开头的边；宿主键见 hostCounts，不参与断言",
   "counts": {
-    "code": 192,
-    "comment": 41,
+    "code": 171,
+    "comment": 36,
     "umbrella": 0
   },
-  "providedKeys": 98,
-  "familyDirs": 38,
-  "note": "2026-10-05 二次重冻（方案 B：event-bus 补 topic → 投递聚合出口）。归因方法：先 git stash push -u 冻本批改动，node -e 各跑一遍 scanPlugins('plugins') 把 before/after hits 全文导出到临时 JSON，逐条 set 差分定位新增行——不靠估。差分出两条，均为方案 B 的预期新增边：① code 191→192：agint-family-panel/lib/index.js 新增一行 ctx.get('agint.eventBus')（collectDeliveryByTopic 读 deliveryByTopic 出口），与同文件既有 line 431 的 collectSubscriptions 调用完全同类（同一服务键 agint.eventBus 裸键），按上一版 note 已确立的归因（裸键被 event-bus 同 provide ⇒ 取用是真边而非 umbrella）应记 code。② providedKeys 97→98：event-bus 新 provide 'agint.eventBus.deliveryByTopic'。comment 41 与 familyDirs 38 不变。**边距说明（本次刻意记账）**：旧基线 code 189 是 2026-10-05 13:45 同日冻结，本批动手前 before 实测已是 191，191-189=2 恰好压在 ±2 容差边界故当时仍绿；本批 +1 后越界。旧 note ② 已记过同型漂移（comment 40→41、provided 96→97 来自其他会话提交），本次同会话内漂移一并记账，不再留边缘余量。冻结值不要往上凑——差分定位到行才算数。上一版基线（code 189 / comment 41 / umbrella 0 / provided 97，2026-10-05 13:45）的完整归因见 CHANGELOG 与 git 历史。计数漂移超容差时人工对账后重新冻结。"
+  "hostCounts": {
+    "code": 29,
+    "comment": 11,
+    "umbrella": 0
+  },
+  "providedKeys": 99,
+  "familyDirs": 39,
+  "note": "2026-10-09 三次重冻 + 判据变更：守卫从「所有 code 边」收窄为「agint.* 家族键边」。\n\n【为什么改判据】宿主键（profileContext / commands / agents / sandbox …）由 dsh 宿主提供，\n它们的增减反映宿主演进 + 各插件顺手接一下，与本仓插件之间的依赖结构无关。\n混进守卫会让基线对「插件重构」失去敏感度。2026-10-05 冻结后 46 次提交里，\n真正新增的 9 条 code 边中 6 条是宿主键（family-panel/index.js→profileContext、\nmount/index.js→profileContext、mount/orchestrator.js→profileContext、\nrestart/index.js→commands ×3），只有 3 条是 agint.* 家族键\n（cron/index.js→agint.inputGateway、mount/orchestrator.js→agint.population.ingest、\nmount/orchestrator.js→agint.population）。\n\n【判据用前缀，不用 HOST_KEYS 清单】沿用 q3-verdicts.test.mjs L80-81 已确立的口径：\n「只按 HOST_KEYS 清单排除会随宿主加键而失真，所以直接用前缀判家族键，\nHOST_KEYS 留作双保险」。家族键前缀由本仓自己定（ctx.provide 只发布 agint.*），\n不会因宿主加键而失真。HOST_KEYS 清单现已在 panel-v2.html、q3-verdicts.test.mjs\n等处重复，不再加第四处，改用前缀。宿主键计数仍记入 hostCounts 留档，但不参与断言。\n\n【归因方法】未沿用「估」。用 git worktree 拉出基线时刻的整棵树，\n同一份当前扫描器分别扫基线树与当前树，把 hits 全文按 (插件, 文件, 服务, 分类)\n做 set 差分定位到行 —— 滤掉纯行号平移后得真正新增 12 条边、消失 0 条。\n\n【三组数字（同一个当前扫描器）】\n  基线树 10-05 12:17： 总 code 189 / 家族 code 166；总 comment 40 / 家族 comment 35\n  中点树 10-06      ： 总 code 195 / 家族 code 170（+6 / +4）\n  当前树 10-09      ： 总 code 200 / 家族 code 171（+5 / +1）\n\n【一笔被漏记的账：扫描器自身也变了】v2-scan.js 在 10-05 后 +74 行\n（扩展去认「声明表 / 多参包装器」等更多 ctx.get 形态）。\n同一扫描器扫基线树得 189/40，而基线文件当时记录的是 192/41 ——\n两者之差即扫描器行为变更所致（旧扫描器多认了 3 条 code / 1 条 comment）。\n上一版 note 把 192 归因为「方案 B 的预期新增边」，那一笔在当前扫描器口径下已不可复现；\n本版把扫描器变更单列，避免下次再把它混进代码漂移。\n\n【边距：本次刻意留余量】家族口径实测把 4 天的 code 漂移从 +11 降到 +5，\n噪声减半但**不是根治** —— 真实特性开发本来就会长出真实的家族依赖边。\n按当前提交频率（4 天 46 次），±2 容差预计约两周仍会再触发一次，\n届时仍需人工对账后重冻。这是既定工作方式（此前已重冻三次），不是缺陷。\n\n【本版其余计数】familyDirs 38→39（新增 agint-quality-contract）；\nprovidedKeys 98→99（event-bus 新 provide agint.eventBus.deliveryHistory）。\numbrella 恒 0（event-bus 同时 provide 裸键与分服务名，取用判为真边而非伞键）。\n\n【方法论留存】扫描器自身变更会让旧基线失去可比性 —— 基线量的是「旧扫描器眼中的世界」。\n下次重冻时，除代码漂移外务必单独核对扫描器是否也改过，否则两笔账会互相掩盖。\n冻结值不要往上凑 —— 差分定位到行才算数。"
 }

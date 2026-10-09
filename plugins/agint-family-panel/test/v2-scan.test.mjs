@@ -61,13 +61,43 @@ const PLUGINS = join(HOME, 'profiles', 'web', 'plugins');
 }
 
 // 基线回归（仓库位扫描，容差 ±2；漂移超限 → 人工对账后重新冻结基线）
+//
+// 2026-10-09 改判据：守卫只数**agint.* 家族键**，宿主键不再计入。
+//
+// 为什么：宿主键（profileContext / commands / agents …）由 dsh 宿主提供，
+// 它们的增减反映的是**宿主演进 + 各插件顺手接了一下**，与本仓插件之间的
+// 依赖结构无关。混进守卫会让基线对「插件重构」这件事失去敏感度——
+// 2026-10-05 冻结后 46 次提交里，真正新增的 9 条 code 边中有 6 条是宿主键。
+//
+// 判据用**前缀**而非 HOST_KEYS 清单，沿用 q3-verdicts.test.mjs 已确立的口径
+// （见该文件 L80-81：「只按 HOST_KEYS 清单排除会随宿主加键而失真，
+// 所以这里直接用前缀判家族键，HOST_KEYS 留作双保险」）。
+// 家族键的前缀是本仓自己定的（ctx.provide 只发布 agint.*），
+// 不会因宿主加键而失真；HOST_KEYS 清单已三处重复，再加第四处不如用前缀。
+//
+// 宿主键计数仍记进基线文件（hostCounts），作为**信息**留档而不参与断言：
+// 它是有用的观察量，但没有「漂移即异常」的含义。
 {
   const base = JSON.parse(readFileSync(join(here, 'fixtures', 'v2-scan-baseline.json'), 'utf8'));
   const r = scanPlugins(join(here, '..', '..'));
   const c = { code: 0, comment: 0, umbrella: 0 };
   for (const h of r.hits) c[h[4]] += 1;
+  const isFamily = (svc) => svc.startsWith('agint.');
+  const fam = { code: 0, comment: 0, umbrella: 0 };
+  const host = { code: 0, comment: 0, umbrella: 0 };
+  for (const h of r.hits) (isFamily(h[3]) ? fam : host)[h[4]] += 1;
+
   for (const k of ['code', 'comment', 'umbrella'])
-    assert.ok(Math.abs(c[k] - base.counts[k]) <= 2, `${k} 计数漂移超容差：${c[k]} vs 基线 ${base.counts[k]}，重新对账冻结`);
+    assert.ok(
+      Math.abs(fam[k] - base.counts[k]) <= 2,
+      `${k} 家族键计数漂移超容差：${fam[k]} vs 基线 ${base.counts[k]}，重新对账冻结`,
+    );
+  // 宿主键只报不拦：漂了要在提示里看得见，但不因此判红。
+  for (const k of ['code', 'comment'])
+    assert.ok(
+      Math.abs(host[k] - (base.hostCounts?.[k] ?? host[k])) <= 40,
+      `宿主键 ${k} 变化异常（${host[k]} vs 基线 ${base.hostCounts?.[k]}）：守卫口径可能跑偏`,
+    );
   assert.ok(Math.abs(Object.keys(r.provided).length - base.providedKeys) <= 2, 'provided 漂移超容差');
   assert.ok(r.familyDirs.length >= base.familyDirs, '家族目录只增不减（新插件不应让基线变小）');
 }
