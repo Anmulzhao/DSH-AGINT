@@ -50,7 +50,8 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve as pathResolve, sep } from 'node:path';
+import { isBuiltin } from 'node:module';
+import { join, dirname, resolve as pathResolve, sep } from 'node:path';
 
 import { parsePreimagePath, deriveTestFiles, planTestScope, SCOPE_RULES } from './outcome-scope.js';
 import { scorePrediction, deadZoneThreshold } from './prediction-scoring.js';
@@ -230,6 +231,141 @@ export function nodeTestRunner({ repoRoot, files, timeoutMs = DEFAULT_RUN_TIMEOU
   });
 }
 
+// ── 依赖可达性探测（护栏 3 的新判据，2026-10-09）──────────────────────────
+//
+// 旧判据是 `exists(repoRoot/node_modules)` —— 仓库级一刀切。对本仓这种
+// **零依赖插件集**（根 package.json 的 dependencies/devDependencies 都是空对象，
+// pnpm install 也装不出 node_modules）它等于永久拒测：被测脚本只 import
+// `node:` 内置与相对路径，本来就能独立跑，却被判成裸工作树
+// （2026-10-04 实测终态 NO_TEST_RUNTIME，prediction_outcomes 恒 0 行）。
+//
+// 新判据按**被测文件自己的 import 图**判定：
+//   - `node:` 前缀 / 裸内置名（fs、path…）⇒ 永远可达；
+//   - 相对 / 绝对路径 ⇒ 跟进展开（插件的 lib 就是这么被拉进来的），
+//     展开深度与文件数都有上限，防止一张大图把探测拖死；
+//   - 裸包名 ⇒ 按 Node 的**向上查找**规则验 `node_modules/<pkg>`
+//     —— 从导入者所在目录逐级往上，插件自带 node_modules 也算数
+//     （这正是本仓的真实布局：`plugins/*/node_modules/zod`）。
+// 探不到 ⇒ 照旧 NO_TEST_RUNTIME。假基线（插件 `import 'zod'` 全报
+// ERR_MODULE_NOT_FOUND ⇒ 23/123）依旧被挡在门外，只是不再误杀零依赖那一类。
+
+const DEP_MAX_DEPTH = 8;
+const DEP_MAX_FILES = 200;
+
+/**
+ * ESM 的静态导入字面量。三种写法都得认：`import x from 'a'`、
+ * `import 'a'`（副作用导入）、`export ... from 'a'`、动态 `import('a')`。
+ * 宁可多认不可漏认：漏一条裸包名就会放过一个真·假基线。
+ */
+const IMPORT_SPEC_RE = /(?:\bimport\b|\bexport\b)[^;'"]*?\bfrom\s*(['"])([^'"]+)\1|\bimport\s*\(\s*(['"])([^'"]+)\3\s*\)|\bimport\s+(['"])([^'"]+)\5/g;
+
+/**
+ * 扫之前先把注释去掉：注释里写「`import x from 'a'`」这种举例是常态
+ * （本文件的规格注释就是这么写的），不剥掉会把举例里的假包名当成真依赖，
+ * 于是又变回一刀切拒测 —— 假阳性在保守方向，但同样是误杀。
+ * `//` 前的 `[^:]` 是给 `https://` 留的活口。
+ */
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+/** 裸包名 → 包名根（`zod` ⇒ `zod`；`@deepseek-ai/dsh-tools/x` ⇒ `@deepseek-ai/dsh-tools`）。 */
+export function packageRootOf(spec) {
+  const s = String(spec).replace(/\\/g, '/');
+  if (s.startsWith('@')) {
+    const parts = s.split('/');
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : s;
+  }
+  return s.split('/')[0];
+}
+
+/** 裸包名按 Node 的向上查找规则验一次 node_modules。 */
+export function resolveBareSpecifier(spec, fromDir, exists) {
+  const pkg = packageRootOf(spec);
+  let dir = fromDir;
+  for (let i = 0; i < 64; i += 1) {
+    if (exists(join(dir, 'node_modules', pkg))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+  return false;
+}
+
+function isPathSpecifier(spec) {
+  return spec.startsWith('.') || spec.startsWith('/') || /^[A-Za-z]:[\\/]/.test(spec);
+}
+
+/**
+ * 扫一批测试文件的 import 图，回答「这些文件现在能不能真的跑起来」。
+ *
+ * @param {object}  input
+ * @param {string}  input.repoRoot
+ * @param {string[]} input.files      仓库相对的测试文件（覆盖门筛出来的那些）
+ * @param {Function} input.read       `(abs, enc) => Promise<string|Buffer>`
+ * @param {Function} input.exists     `(abs) => boolean`
+ * @returns {Promise<{ok: boolean, missing: Array, unreadable: Array, scanned: number, truncated: boolean}>}
+ *          `ok=false` 的两种情形分开回传：
+ *            - `missing`    —— 确证的外部依赖缺口（裸包名找不到 node_modules）
+ *            - `unreadable` —— 相对导入指向的文件读不出来（无法证明可运行）
+ *          两者都按「不许量」处理（保守方向），但下游能看到是哪一类。
+ */
+export async function collectTestDependencies({
+  repoRoot,
+  files,
+  read = readFile,
+  exists = existsSync,
+  maxDepth = DEP_MAX_DEPTH,
+  maxFiles = DEP_MAX_FILES,
+}) {
+  const root = pathResolve(repoRoot);
+  const rel = (abs) => {
+    const r = abs.startsWith(root + sep) ? abs.slice(root.length + 1) : abs;
+    return r.replace(/\\/g, '/');
+  };
+  const missing = [];
+  const unreadable = [];
+  const seen = new Set();
+  const queue = (files ?? []).map((f) => ({ abs: pathResolve(root, f), depth: 0 }));
+  let truncated = false;
+
+  while (queue.length > 0) {
+    const { abs, depth } = queue.shift();
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    if (seen.size > maxFiles) { truncated = true; break; }
+
+    let src;
+    try {
+      src = await read(abs, 'utf8');
+    } catch {
+      unreadable.push({ file: rel(abs), reason: 'READ_FAILED' });
+      continue;
+    }
+    if (Buffer.isBuffer(src)) src = src.toString('utf8');
+    if (typeof src !== 'string') { unreadable.push({ file: rel(abs), reason: 'NOT_TEXT' }); continue; }
+
+    IMPORT_SPEC_RE.lastIndex = 0;
+    const code = stripComments(src);
+    let m;
+    while ((m = IMPORT_SPEC_RE.exec(code)) !== null) {
+      const spec = m[2] || m[4] || m[6];
+      if (!spec) continue;
+      if (spec.startsWith('node:')) continue;
+      if (isBuiltin(spec)) continue; // 不带前缀的老式内置名（fs / path / assert…）
+      if (isPathSpecifier(spec)) {
+        if (depth + 1 <= maxDepth) queue.push({ abs: pathResolve(dirname(abs), spec), depth: depth + 1 });
+        continue; // 存在性由下一轮 read 判定，读不出来会进 unreadable
+      }
+      if (!resolveBareSpecifier(spec, dirname(abs), exists)) {
+        missing.push({ spec, file: rel(abs), package: packageRootOf(spec) });
+      }
+    }
+  }
+
+  return { ok: missing.length === 0 && unreadable.length === 0, missing, unreadable, scanned: seen.size, truncated };
+}
+
 // ── 工厂 ──────────────────────────────────────────────────────────────────
 
 /**
@@ -252,6 +388,10 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
     read = readFile,
     write = writeFile,
     exists = existsSync,
+    // 依赖探测**故意不走**测量链路的 `read` 注入位：那一位在单测里带副作用语义
+    // （模拟"第 N 次读才被改过"这类时序），探测多读几次就会把时序搅乱
+    // （F1 实测直接被读成 CONCURRENT_WRITE）。生产两者都是 readFile。
+    readDeps = readFile,
     timeoutMs = DEFAULT_RUN_TIMEOUT_MS,
   } = opts;
   // 技能门禁 runner：默认用本模块的注入位建（read/exists 与换文件用的是同一对，
@@ -411,20 +551,37 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         return fail(MEASURE_STATUS.SUPERSEDED, { reason: `同文件后续条目：${later.join(', ')}` });
       }
 
-      // 裸工作树守卫（护栏 3）
-      if (!exists(join(repoRoot, 'node_modules'))) {
-        return fail(MEASURE_STATUS.NO_TEST_RUNTIME, { reason: 'repoRoot 下没有 node_modules ⇒ 跑测试会得假基线' });
-      }
-
-      // 覆盖门（护栏 4）
+      // 覆盖门（护栏 4）—— 先算出"这次要跑哪些文件"，护栏 3 才有判定对象。
       const repoFiles = await listRepoFiles(repoRoot);
       const scope = planTestScope({ changedPath, testFiles: deriveTestFiles(repoFiles), repoFiles });
+
+      // 裸工作树守卫（护栏 3）
+      //
+      // 判据已从「仓库根有没有 node_modules」换成「本次要跑的测试文件能不能解析出
+      // 自己的依赖」（见 `collectTestDependencies` 的注释）。两处行为变化记在这里：
+      //   1. 筛不出测试时**不再**抢在覆盖门前面报 NO_TEST_RUNTIME —— 没东西可跑
+      //      是覆盖问题，报 NO_EVIDENCE 才是对的；
+      //   2. 失败载荷带上 `zeroDepRepo`，下游别再把「零依赖仓库」读成「安装缺失」。
       if (!scope.covered) {
         const status = scope.reason === 'CHANGED_PATH_NOT_FOUND' ? MEASURE_STATUS.PREIMAGE_UNPARSEABLE : MEASURE_STATUS.NO_EVIDENCE;
         return fail(status, { reason: scope.reason, rule: scope.rule, changedPath });
       }
       if (scope.files.length > MAX_TEST_FILES) {
         return fail(MEASURE_STATUS.TEST_SET_TOO_LARGE, { count: scope.files.length, rule: scope.rule });
+      }
+
+      if (scope.covered) {
+        const deps = await collectTestDependencies({ repoRoot, files: scope.files, read: readDeps, exists });
+        if (!deps.ok) {
+          return fail(MEASURE_STATUS.NO_TEST_RUNTIME, {
+            reason: deps.missing.length > 0 ? 'TEST_DEPS_MISSING' : 'TEST_DEPS_UNREADABLE',
+            missing: deps.missing.slice(0, 10),
+            unreadable: deps.unreadable.slice(0, 10),
+            scanned: deps.scanned,
+            truncated: deps.truncated,
+            zeroDepRepo: !exists(join(repoRoot, 'node_modules')),
+          });
+        }
       }
 
       // 仪器选型 + 指标门（挪到这里的那道，判据见 SKILL_GATE_ENTRY_METRICS 的注释）

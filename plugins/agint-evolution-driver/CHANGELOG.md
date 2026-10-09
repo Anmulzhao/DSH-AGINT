@@ -1,5 +1,61 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.3.1 — 2026-10-09（护栏 3 判据放宽：按被测文件的 import 图判依赖，而非仓库级一刀切）
+
+依据：进化提案 `0738af45-0233-4391-924a-b2fd1b4002d8`（2026-10-04 提出，本日核销）。
+
+### 旧判据为什么是永久误杀
+
+护栏 3 原为 `if (!exists(join(repoRoot,'node_modules'))) return fail(NO_TEST_RUNTIME)`。
+本仓是**零依赖插件集**：根 `package.json` 的 `dependencies`/`devDependencies` 均为空
+（`node -p` 实测），根与三级父目录都没有 `node_modules`，**pnpm install 也装不出来** ⇒
+护栏恒真，`prediction_outcomes` 恒 0 行。而插件的依赖在 `plugins/<name>/node_modules`
+（软链到 dsh 自带包），Node 的向上查找本来就找得到 —— 一刀切判据把「仓库根没装」
+错当成「跑不起来」。
+
+实测（2026-10-04 20:11，麒麟机）：`scanned=1 / measurable=1 / attempted=1`，终态
+`NO_TEST_RUNTIME`。被拒的 `plugins/agint-wiki/test/smoke.mjs` 只 import `node:` 内置
+与相对路径 `../lib/index.js`，本来就能独立跑。
+
+### 新判据
+
+`collectTestDependencies({ repoRoot, files, read, exists })`（本文件导出，可单测）：
+
+- `node:` 前缀 / 裸内置名（`fs`、`path`…）⇒ 永可达；
+- 相对 / 绝对路径 ⇒ **跟进展开**（深度 ≤8、文件数 ≤200，防一张大图拖死探测）；
+  读不出来的进 `unreadable` ⇒ 无法证明可运行 ⇒ 照旧拒测；
+- 裸包名 ⇒ 按 Node 的**向上查找**规则从导入者所在目录逐级验 `node_modules/<pkg>`，
+  插件自带 node_modules 也算数；探不到的进 `missing` ⇒ `NO_TEST_RUNTIME`。
+
+扫描前剥注释（`stripComments`）—— 注释里写「`import x from 'a'`」这类举例是常态，
+不剥掉会把举例里的假包名当成真依赖，假阳性又变回误杀（本文件自己的规格注释就踩到了）。
+
+### 两处行为变化
+
+1. 覆盖门先算、护栏 3 后判：筛不出测试时**不再**抢报 `NO_TEST_RUNTIME`，
+   报 `NO_EVIDENCE`（没东西可跑是覆盖问题，不是运行时问题）；
+   `TEST_SET_TOO_LARGE` 的判定顺序保持不变。
+2. 失败载荷新增 `reason`（`TEST_DEPS_MISSING` / `TEST_DEPS_UNREADABLE`）、
+   `missing` / `unreadable` 明细、`scanned`、`truncated`、`zeroDepRepo`
+   —— 下游别再把「零依赖仓库」读成「安装缺失」。
+
+依赖探测**不走**测量链路的 `read` 注入位（新增 `readDeps`，默认 `readFile`）：
+那一位在单测里带副作用语义（模拟「第 N 次读才被改过」），探测多读几次会把时序搅乱。
+
+### 防什么没丢
+
+假基线（插件 `import 'zod'` 全报 `ERR_MODULE_NOT_FOUND` ⇒ 23/123）依旧被挡在门外：
+相对导入会一路跟进到 `lib/index.js`，那里的裸包名照样验。新增 E3/E3c 两条用例钉死。
+
+### 验收
+
+- `plugins/agint-evolution-driver/test/outcome-measurer.test.mjs` 42/42 绿
+  （E3 改写 + 新增 E3b 零依赖放行 / E3c 相对导入跟进 / E3d 插件自带 node_modules）；
+- 真仓探测：`agint-wiki` / `agint-curriculum` / `agint-evolution-driver` / `agint-family-panel`
+  四个 smoke 与测试入口 `ok:true` ⇒ 护栏放行；
+- driver 全套 268 用例：267 绿，1 红为**既存**失败（`skill-gate.test.mjs` G11
+  「9 个技能 ⇒ 9 个槽」，现为 10 —— 技能数增长导致的旧断言，与本改动无关）。
+
 ## v0.3.0 — 2026-10-04（路线图 A5：driver commit 补 mutator 记账，闭环从「改得进」到「回得退」）
 
 minor 跨级（0.2.19 → 0.3.0）。功能依据：`docs/AGINT-路线图待做清单-20261003.md` A5，

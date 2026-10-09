@@ -21,6 +21,8 @@ import { join } from 'node:path';
 
 import {
   createOutcomeMeasurer,
+  collectTestDependencies,
+  packageRootOf,
   MEASURE_STATUS,
   parseTapSummary,
   computeActualDelta,
@@ -143,13 +145,13 @@ function legacyEvo() {
   return rest;
 }
 
-async function makeRepo({ withNodeModules = true, withTest = true } = {}) {
+async function makeRepo({ withNodeModules = true, withTest = true, testSource = 'export default 1;\n' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'agint-outcome-'));
   await mkdir(join(dir, 'plugins', 'agint-demo', 'lib'), { recursive: true });
   await mkdir(join(dir, '.agint-preimage'), { recursive: true });
   if (withTest) {
     await mkdir(join(dir, 'plugins', 'agint-demo', 'test'), { recursive: true });
-    await writeFile(join(dir, 'plugins', 'agint-demo', 'test', 'demo.test.mjs'), 'export default 1;\n');
+    await writeFile(join(dir, 'plugins', 'agint-demo', 'test', 'demo.test.mjs'), testSource);
   }
   if (withNodeModules) await mkdir(join(dir, 'node_modules'), { recursive: true });
   await writeFile(join(dir, CHANGED), 'export const v = "FIXED";\n');
@@ -402,15 +404,94 @@ test('E2b: preimage 名的 `__` 有损编码解出不存在的路径 ⇒ 核清�
   await rm(r.dir, { recursive: true, force: true });
 });
 
-test('E3: 裸工作树拒测（实测的 23/123 假基线就是这么来的）', async () => {
-  const bare = await makeRepo({ withNodeModules: false });
+test('E3: 裸工作树 + 测试文件引裸包名 ⇒ 拒测（实测的 23/123 假基线就是这么来的）', async () => {
+  // 零依赖仓库（根上没有 node_modules）里，测试文件 import 'zod' ⇒ 必然假基线。
+  // 这正是提案 0738af45 要保住的那半：放宽的是判据，不是放行假基线。
+  const bare = await makeRepo({ withNodeModules: false, testSource: "import { z } from 'zod';\nexport default z;\n" });
   const calls = [];
   const evo = makeEvo();
   const { measurer } = build({ dir: bare.dir, files: bare.files, evo, runner: contentDrivenRunner({ dir: bare.dir, calls }) });
   const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
   assert.equal(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
+  assert.equal(res.reason, 'TEST_DEPS_MISSING');
+  assert.equal(res.zeroDepRepo, true);
+  assert.deepEqual(res.missing.map((m) => m.package), ['zod']);
+  assert.equal(calls.length, 0);
+  assert.equal(evo.rows.size, 0);
+  await rm(bare.dir, { recursive: true, force: true });
+});
+
+test('E3b: 零依赖仓库 + 测试只引 node: 内置/相对路径 ⇒ 放行（旧判据会永久误杀）', async () => {
+  // 提案 0738af45 的实测场景：根无 node_modules，但被测脚本本来就跑得起来。
+  const bare = await makeRepo({ withNodeModules: false, testSource: "import { readFile } from 'node:fs/promises';\nimport { x } from '../lib/index.js';\nexport default readFile;\n" });
+  await writeFile(join(bare.dir, 'plugins', 'agint-demo', 'lib', 'index.js'), 'export const x = 1;\n');
+  const calls = [];
+  const evo = makeEvo();
+  const { measurer } = build({
+    dir: bare.dir,
+    files: [...bare.files, 'plugins/agint-demo/lib/index.js'],
+    evo,
+    runner: contentDrivenRunner({ dir: bare.dir, calls }),
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
+  assert.notEqual(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
+  assert.equal(calls.length, 2, '候选态 + 基线态各跑一次 —— 真的量了');
+  await rm(bare.dir, { recursive: true, force: true });
+});
+
+test('E3c: 相对导入拉进来的 lib 引裸包名 ⇒ 照样拒测（不许靠只看测试文件蒙混过关）', async () => {
+  const bare = await makeRepo({ withNodeModules: false, testSource: "import { x } from '../lib/index.js';\nexport default x;\n" });
+  await writeFile(join(bare.dir, 'plugins', 'agint-demo', 'lib', 'index.js'), "import { z } from 'zod';\nexport const x = z;\n");
+  const calls = [];
+  const evo = makeEvo();
+  const { measurer } = build({
+    dir: bare.dir,
+    files: [...bare.files, 'plugins/agint-demo/lib/index.js'],
+    evo,
+    runner: contentDrivenRunner({ dir: bare.dir, calls }),
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
+  assert.equal(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
+  assert.equal(res.reason, 'TEST_DEPS_MISSING');
   assert.equal(calls.length, 0);
   await rm(bare.dir, { recursive: true, force: true });
+});
+
+test('E3d: 插件自带 node_modules（向上查找）⇒ 放行，不必仓库根有', async () => {
+  // 本仓真实布局：plugins/<name>/node_modules/zod 软链到 dsh 自带包。
+  const bare = await makeRepo({ withNodeModules: false, testSource: "import { z } from 'zod';\nexport default z;\n" });
+  await mkdir(join(bare.dir, 'plugins', 'agint-demo', 'test', 'node_modules', 'zod'), { recursive: true });
+  const calls = [];
+  const evo = makeEvo();
+  const { measurer } = build({
+    dir: bare.dir,
+    files: bare.files,
+    evo,
+    runner: contentDrivenRunner({ dir: bare.dir, calls }),
+  });
+  const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
+  assert.notEqual(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
+  assert.equal(calls.length, 2);
+  await rm(bare.dir, { recursive: true, force: true });
+});
+
+test('E3e: 注释里的 import 举例不算依赖（剥注释，防假阳性把放行又变回误杀）', async () => {
+  // 规格注释里写「`import x from 'a'`」是常态（outcome-measurer.js 自己就这么写）。
+  // 不剥注释 ⇒ 'a' 被当成裸包名探不到 ⇒ 又是一刀切拒测。
+  const { dir } = await makeRepo({ withNodeModules: false });
+  await writeFile(join(dir, 'plugins/agint-demo', 'test', 'demo.test.mjs'),
+    "// 举例：import x from 'a';\n/* 举例：import { y } from 'b'; */\nimport { readFile } from 'node:fs/promises';\nexport default readFile;\n");
+  const deps = await collectTestDependencies({ repoRoot: dir, files: ['plugins/agint-demo/test/demo.test.mjs'] });
+  assert.equal(deps.ok, true);
+  assert.deepEqual(deps.missing, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('E3f: packageRootOf —— 作用域包取两段，普通包取首段', () => {
+  assert.equal(packageRootOf('zod'), 'zod');
+  assert.equal(packageRootOf('zod/lib/x.js'), 'zod');
+  assert.equal(packageRootOf('@deepseek-ai/dsh-tools'), '@deepseek-ai/dsh-tools');
+  assert.equal(packageRootOf('@deepseek-ai/dsh-tools/lib/y.js'), '@deepseek-ai/dsh-tools');
 });
 
 test('E4: 覆盖门 —— 筛不出测试触达被改文件 ⇒ NO_EVIDENCE 且不写行', async () => {
