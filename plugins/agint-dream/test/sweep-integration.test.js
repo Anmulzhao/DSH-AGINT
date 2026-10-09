@@ -234,3 +234,65 @@ test('sweep: diary markdown 含 P0/P2 扩展字段', async () => {
     await rm(fx.root, { recursive: true, force: true });
   }
 });
+
+// ── 2026-10-09 回归：deep-recovery 通道重复写入本轮主通道刚提升的候选 ──────
+//
+// 复现条件（对齐生产实况 agint.json 里 6 条 `deep-recovery from` 重复条目）：
+// 同一条主张跨 ≥2 天、≥3 条信号 ⇒ 主通道提升它，同时 recovery 通道的
+// signalCount>=3 && uniqueDays>=2 门槛也放行它。
+// 修前：existing 是 sweep.js:1166 的陈旧快照（不含本轮 promoted）+ recovery
+//      没有主通道 1173-1176 那道 promotedAt 过滤 ⇒ 同内容写两遍。
+// 修后：promotedKeys 过滤 + existingForRecovery 回灌 ⇒ 只写一遍。
+test('sweep: deep-recovery 不得重复写入本轮主通道刚提升的候选', async () => {
+  const fx = await makeFixture();
+  try {
+    const mem = fakeMemory();
+    const CLAIM = '以后统一把配置文件放在仓库根目录，禁止散落到各插件目录下';
+    // 跨 3 天各 1 条同主张信号 → uniqueDays=3 / signalCount=3
+    // （session 文件 mtime 决定能否被 listSessionLogs 扫到，故直接写当前）
+    for (let d = 0; d < 3; d += 1) {
+      const ws = join(fx.sessionsRoot, 'ws-day');
+      const sd = join(ws, `sess-day-${d}`);
+      await mkdir(sd, { recursive: true });
+      const ts = NOW - d * 86400_000;
+      await writeZstdSession(sd, [
+        { type: 'session', id: `sess-day-${d}`, seq: 0, time: ts },
+        { type: 'user/message', seq: 1, time: ts + 1000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: CLAIM }] } },
+      ]);
+    }
+    const result = await runSweep({
+      sessionsRoot: fx.sessionsRoot,
+      diaryRoot: fx.diaryRoot,
+      memory: mem,
+      recallPath: fx.recallPath,
+      apply: true,
+      recover: true,
+      deepRecoveryDays: 30,
+      remLookbackDays: 7,
+      nowMs: NOW,
+      minScore: 0.0,
+      minRecall: 1,
+      minUniqueSessions: 1,
+    });
+    // 判据不是「promoted 了多少」，而是「同内容有没有写两遍」——
+    // 这正是生产上漏掉的那一层（只数条数看不出重复）。
+    const byContent = new Map();
+    for (const e of mem._store.values()) {
+      const c = (e.content ?? '').trim();
+      byContent.set(c, (byContent.get(c) ?? 0) + 1);
+    }
+    const dupes = [...byContent.entries()].filter(([, n]) => n > 1);
+    assert.equal(
+      dupes.length,
+      0,
+      `deep-recovery 不应重写主通道已提升的候选，实际重复：${JSON.stringify(dupes.map(([c, n]) => [c.slice(0, 40), n]))}`,
+    );
+    // 该主张确实被提升了（否则上面的断言是空转）
+    assert.ok(
+      [...mem._store.values()].some((e) => (e.content ?? '').includes('禁止散落到各插件目录下')),
+      '该主张应至少被提升一次（否则重复断言没意义）',
+    );
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});

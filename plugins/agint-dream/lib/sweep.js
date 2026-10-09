@@ -1294,15 +1294,35 @@ export async function runSweep({
         recSignals.flatMap((s) => extractCandidates(s, nowMs, { toolErrorDiagnosticOnly })),
         { nowMs },
       );
+      // 2026-10-09 修：recovery 通道必须看得到「本轮主通道刚提升的条目」。
+      // 原实现两处漏洞叠加 ⇒ 每晚必然重写刚写的候选：
+      //   ① existing 在 sweep.js:1166 只 memory.list() 一次，主循环 promote 后不回灌；
+      //   ② recovery 没有主通道（1173-1176）那道 promotedAt 过滤。
+      // 生产证据：agint.json tables.memory 里 6 条同内容重复，evidence 带
+      // `deep-recovery from` 的就是第二次写入，跨 09-30 / 10-01 / 10-08 三晚。
+      // 两道都补：existing 补上本轮 promoted 的 entry（给 gateCandidates 做文本去重），
+      // 再用 promotedKeys 过滤（抓 similarity 低于 dedupeHigh 但 recall key 完全相同的）。
+      const promotedKeys = new Set();
+      for (const p of promoted) {
+        if (p.candidate) promotedKeys.add(p.candidate.key ?? recallKey(normalizeForCompare(p.candidate.text)));
+      }
+      const existingForRecovery = existing.concat(
+        promoted.map((p) => ({ id: p.entry?.id, type: p.entry?.type, content: p.entry?.content })),
+      );
+      const recEligible = recScored.filter((c) => {
+        if (c.signalCount < 3 || c.uniqueDays < 2) return false;
+        const k = c.key ?? recallKey(normalizeForCompare(c.text));
+        return !promotedKeys.has(k);
+      });
       const recGated = gateCandidates(
-        recScored.filter((c) => c.signalCount >= 3 && c.uniqueDays >= 2),
-        existing,
+        recEligible,
+        existingForRecovery,
         { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2, ...dedupeOpts },
       );
       // P0: recovery 也走 validation gate
       const recValidation = validateAndApply({
         gated: recGated,
-        existing,
+        existing: existingForRecovery,
         operations: null,
         maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
       });
