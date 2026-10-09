@@ -30,20 +30,68 @@ const gw = new InputGateway({
 });
 gw.registerChannel(adversarialChannel);
 
+// ── fake ctx 必须复刻 cordis 的真实语义（2026-10-09 修）────────────────────
+// 原写法有两处失明，让 `ctx.effect(() => { disposer(); })` 这个真 bug 测不出来
+// （当时全文件 108 行测试全绿，而生产上订阅从未生效）：
+//   ① `return () => {}` —— subscribe 返回的 disposer 是空函数，退订不删 handler；
+//   ② `effect: () => {}` —— effect 什么都不做，注册当场不会执行传入的函数。
+// 现在按 cordis src/fiber.ts:363-372 复刻：
+//   effect(fn) **立即执行** fn；只有 fn **返回函数**时该函数才被收集为 disposer。
+let subscriptionAlive = false;
+const effectDisposers = [];
+
 const ctx = {
   get: (key) => {
     if (key === 'agint.eventBus.subscribe') {
-      return (_opts, handler) => { capturedHandler = handler; return () => {}; };
+      return (_opts, handler) => {
+        capturedHandler = handler;
+        subscriptionAlive = true;
+        return () => { subscriptionAlive = false; capturedHandler = null; };
+      };
     }
     return null;
   },
-  effect: () => {},
+  effect: (fn) => {
+    const effect = fn(); // fiber.ts:366：立即执行 effect body
+    if (typeof effect === 'function') effectDisposers.push(effect); // :367-368
+    return () => {};
+  },
 };
 initSubscriptions(ctx, {}, gw);
 
 const flush = () => new Promise((r) => setImmediate(r));
 const fire = async (envelope) => { capturedHandler(envelope); await flush(); };
 const topicsPublished = () => published.map((e) => e.topic);
+
+/**
+ * 【核心回归】订阅必须在 initSubscriptions 之后仍然活着。
+ *
+ * 2026-10-09 修复前：ctx.effect 少一层箭头 ⇒ disposer 在注册当场被调用 ⇒
+ * 订阅建好即退。health() 却因 `_subscribed=true` 仍报 status:ok ⇒ 假绿。
+ * 运行时旁证：eventBus_deliveryByTopic 的 orphanSubscriptions 里有 4 个
+ * diagnosis.completed 订阅者，唯独没有 agint-input-gateway/adversarial。
+ */
+test('订阅在 initSubscriptions 后仍活着（effect 不得当场退订）', () => {
+  assert.equal(subscriptionAlive, true,
+    '订阅已被撤销 —— ctx.effect 的回调必须**返回** disposer，不能直接调用它');
+  assert.equal(typeof capturedHandler, 'function', 'handler 必须仍挂在订阅上');
+  assert.equal(effectDisposers.length, 1,
+    'effect 应收集到恰好 1 个 disposer（原来收集到 0 个，说明没人负责清理）');
+});
+
+test('卸载路径：effect disposer 确实能退订', () => {
+  // 修好后 disposer 被正确收集，卸载时调用才能真正退订；
+  // 修前收集到 0 个，订阅泄漏或被误撤，二者必有一错。
+  assert.equal(typeof effectDisposers[0], 'function');
+  // ⚠️ 必须存回**真 handler**：disposer 会把 capturedHandler 置 null，
+  //   若用空函数顶替，后续所有 fire() 用例都会静默不转发而红。
+  const realHandler = capturedHandler;
+  effectDisposers[0]();
+  assert.equal(subscriptionAlive, false, '卸载后订阅应被撤销');
+  // 复原，避免影响后续用例
+  subscriptionAlive = true;
+  capturedHandler = realHandler;
+});
 
 test('initSubscriptions 要求 gateway 实例：缺参时 degraded 且不吞事件', async () => {
   const health = await adversarialChannel.health();

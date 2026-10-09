@@ -1,6 +1,6 @@
 {
   "name": "agint-input-gateway",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "AGINT multi-source input gateway: normalize, filter, route and publish signals from heterogeneous channels to the event bus.",
   "type": "module",
   "main": "lib/index.js",

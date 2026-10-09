@@ -178,7 +178,17 @@ function initSubscriptions(ctx, config = {}, gateway = null) {
     _subscribed = true;
 
     if (typeof ctx.effect === 'function') {
-      ctx.effect(() => { try { disposer(); } catch {} });
+      // ⛔ 这里**必须返回** disposer，不能直接调用它。
+      //   ctx.effect(fn) 会**立即执行** fn，且只有 fn **返回函数**时该函数才被收集
+      //   为 disposer（cordis src/fiber.ts:363-372：execute 立即调用，
+      //   `typeof effect === 'function'` 才 collect）。原写法
+      //   `ctx.effect(() => { disposer(); })` 在注册当场就把订阅撤掉，且不留任何清理
+      //   —— 订阅从未生效，而 health() 因 `_subscribed=true`（上行已置位）仍报
+      //   status:ok / detectors 全 active ⇒ **假绿**。
+      //   2026-10-09 实测：eventBus_deliveryByTopic 的 orphanSubscriptions 里有 4 个
+      //   diagnosis.completed 订阅者（mutator / ov-strategy / self-model / trajectory），
+      //   唯独没有本通道。改前后的正确写法对照见 test/adversarial.test.mjs。
+      ctx.effect(() => () => { try { disposer(); } catch {} });
     }
   } catch (e) {
     _initError = e?.message ?? String(e);

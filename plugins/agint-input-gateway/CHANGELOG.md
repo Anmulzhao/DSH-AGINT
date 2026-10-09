@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.1.5 — 2026-10-09
+
+修 C4 adversarial 的事件订阅**从未生效**，且 `health()` 报假绿。
+
+### 问题
+
+`lib/channels/adversarial.js` 的订阅注册：
+
+```js
+ctx.effect(() => { try { disposer(); } catch {} });   // ❌ 少一层箭头
+```
+
+`ctx.effect(fn)` 会**立即执行** `fn`，且只有 `fn` **返回函数**时该函数才被收集
+为 disposer（cordis `src/fiber.ts:363-372`：`execute` 立即调用，
+`typeof effect === 'function'` 才 `collect`）。原写法的函数体直接调用
+`disposer()` 并返回 `undefined`，于是：
+
+1. 订阅在 `initSubscriptions` 执行的那一刻就被自己撤掉；
+2. 没有任何 disposer 被收集，卸载路径也无从清理。
+
+**运行时旁证**：`eventBus_deliveryByTopic` 的 `orphanSubscriptions` 里有 4 个
+`diagnosis.completed` 订阅者（`agint-mutator` / `agint-ov-strategy` /
+`agint-self-model` / `agint-trajectory`），唯独没有
+`agint-input-gateway/adversarial`。bus 的孤儿判据是「订阅的所有主题都无投递」，
+而它那三个主题从未 publish —— 它本该在列表里，不在即说明没进订阅表。
+
+**假绿**：`_subscribed = true` 在退订之前置位（`adversarial.js:178`），之后再无人
+改回。`health()` 因此报 `status:ok` / `initError:null` / `detectors` 三项全
+`active:true`，而实际功能整个瞎。生产数据佐证：`ingestedSignals` 为 0。
+
+**测试为何没抓到**：`test/adversarial.test.mjs` 的 fake ctx 有两处失明 ——
+`subscribe` 返回 `() => {}`（空 disposer）、`effect: () => {}`（不执行传入的
+函数）。全文件 108 行测试全绿，而订阅在生产上从未生效。
+
+### 改动
+
+- `lib/channels/adversarial.js`：改为 `ctx.effect(() => () => { try { disposer(); } catch {} })`，
+  与同插件 `lib/index.js` 的写法一致。
+- `test/adversarial.test.mjs`：fake ctx 按 `fiber.ts:363-372` 复刻 `effect` 语义，
+  `subscribe` 返回真退订 disposer；新增 2 条回归断言（订阅在初始化后仍存活 /
+  卸载路径能退订）。
+
+### 验证
+
+- 全量 58 项 fail 0；`adversarial.test.mjs` 10/10。
+- **注入 bug 后 8/10 变红**（含核心回归那条）—— 证明测试不是自证通过。
+- lint 与基线一致（K19×1 / manifest×4 / package.json×1），无新增 FAIL。
+- `check-wiring` PASS：58/58 双副本一致、248 个 lib 文件同步。
+- BOM（`efbbbf`）与文件尾换行均未被编辑工具改动 —— 该文件带 BOM，
+  编辑后逐字节核对并还原（diff 12 insert / 1 delete）。
+
+### 仍未解决
+
+订阅修好后，`diagnosis.completed` / `curriculum.challenge-verdicted` /
+`curriculum.boundary-probed` 三个主题在 eventBus 上仍无 publisher（全量 eventBus
+只有 `ov.session.flushed` / `memory.provider-activated` / `ov.recall.checked` 三个
+topic）。即「订阅通了，但上游没人发」——属 event bus 转正议题，单独排期。
+
 ## 0.1.4 — 2026-10-06
 
 本批做两件老板拍板的事：H1（adversarial 跨重启丢信号）方案②、C5 方案 B（sync-proposal 提案信号）。另修两处口径不一致。
