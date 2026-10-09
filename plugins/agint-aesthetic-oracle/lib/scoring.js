@@ -3,10 +3,14 @@
  *
  * 纯函数：输入原子值 → 输出四指标 + 美总分 + 美之三问。零 I/O、零服务访问、
  * 零 LLM——公式是确定性的，任何人拿到同样的原子值必须算出同样的分数。
+ * （唯一非本地依赖是 node:crypto 的 sha1，用于算判尺指纹 scaleHash——
+ *   纯计算、无 I/O、不引入不确定性。）
  * 公式 r2 三处修复（提案 f51d3280，老板 2026-10-09 批准）：
  *   1. bloat 扣分加上界（BLOAT_SATURATION=1.5，修复无界线性罚）
  *   2. Q1 加效应量门槛（EFFECT_EPSILON，消除日抖动判定翻转）
  *   3. Q2 改 ratio 排序（归因与维度权重解耦）
+ * 公式 r3 一处拆解（提案 51e6e24f，2026-10-09）：噪声比与冗余度的双计分子
+ *   ——重复/矛盾条目归 redundancy，noise 只留死条目（详见 deriveComposites）。
  *
  * 分层纪律（方案 C / §9.4 的对偶面）：
  *   - 原子观测归 agint-metrics（summary()/series() 的 key + meta）
@@ -21,27 +25,56 @@
  *   - §4 Q1（P1-4）：恶化≥2→丑；恶化<2 且改善≥3→美；其余→持平（全排序无洞）
  */
 
+import { createHash } from 'node:crypto';
+
 /**
- * 评分公式版本（2026-10-09 三连修复起引入）。广播 payload 透传，用于历史趋势
- * 分段解读：版本切换前后的总分不可直接比。
+ * 评分公式版本（2026-10-09 引入）。广播 payload 透传，用于历史趋势分段解读：
+ * 版本切换前后的总分不可直接比。
  *   r2：bloat 扣分加上界（min(...,1.5)，修复总分可为负的无界罚）；
  *       Q1 加效应量门槛 ε（消除日抖动导致的判定翻转）；
  *       Q2 改按 ratio（deduction/maxWeight）排序（归因与权重解耦）。
+ *   r3：噪声比与冗余度的**双计分子拆解**（提案 51e6e24f，2026-10-09）。
+ *       旧口径下同一处 wiki 矛盾 / 重复规则同时进 noise 与 redundancy 两个分子
+ *       ⇒ 总分被扣两次，且 Q2 归因时两维互相争夺「最丑」。r3 把重复/矛盾归
+ *       redundancy，noise 只留「死条目」（无入链 / 无证据）。
+ *       标定复算随之变化：noise 88/380→84/380（0.2316→0.2211）、总分 52.4→53.4。
+ *
+ * ⛔ 版本号只增不减，且**只用于公式结构变更**。阈值/权重的参数微调不 bump
+ * 版本，由 scaleHash（见下）自动分段——否则每改一次参数就要人工记一次版本，
+ * 漏记则历史趋势被误读为连续（提案 98c8e911）。
  */
-export const FORMULA_VERSION = 'r2';
+export const FORMULA_VERSION = 'r3';
 
-// ── 阈值常量（v2.3 §3 标定；改这里 = 改判尺，须走评审）────────────────────
+// ── 阈值常量（v2.3 §3；改这里 = 改判尺，须走评审）────────────────────────────
+//
+// ⚠ **本组常量至今无回测依据**（提案 a85ef850「权重真标定」，2026-10-09 核账结论）：
+//   取证方式 = 全仓 grep（`docs/**/*.md` 与全仓 `*.md` 中「标定/权重/0.30」共 30 处
+//   命中，逐条核对**全部属于 agint-quality / agint-trajectory 等别的插件的权重表**）；
+//   神谕层这 7 个常量在仓库文档、wiki、reviews/ 周报里**没有一处标定语据**。
+//   下面各条注释写的是**经验估算**——那是「拍得比随便拍好一点」，不是「测出来的」。
+//   ⛔ 别把它当标定引用。
+//   回测路线（老板 2026-10-09 拍板：先建标注采集，再标定）：先让周报固定产出
+//   「机器归因（Q2 最丑维）vs 人工认定」的对照样本，攒够 8-12 周再拟合——
+//   7 个常量拿 2 个样本去拟合是欠定的，比不拟合更危险。
 
 export const THRESHOLDS = {
-  /** 噪声比阈值（§3.1）。 */
+  /** 噪声比阈值（§3.1）。经验值，**无回测依据**（见上方裁决说明）。
+   *  口径（r3）：分子 = 已纳入度量条目中的「死条目」占比（wiki 孤岛 + 无证据记忆），
+   *  分母 = wiki + rules + memory 全量。达到该值 = 满扣 30 分。 */
   NOISE_RATIO: 0.30,
-  /** 决策确信度下限（§3.2）。 */
+  /** 决策确信度下限（§3.2）。经验值，**无回测依据**。
+   *  口径：AVG(conf × evidence_compliance)，低于该值按比例扣分，满扣 20。 */
   CONFIDENCE: 0.70,
-  /** 冃度阈值（§3.3）。 */
+  /** 冗余度阈值（§3.3）。经验值，**无回测依据**。
+   *  口径（r3）：矛盾/重复条目的唯一记账处，达到该值 = 满扣 20。 */
   REDUNDANCY: 0.05,
-  /** 臃肿度预算字节：120KB（§3.4，11 技能 × 8-12KB）。 */
+  /** 臃肿度预算字节：120KB（§3.4，11 技能 × 8-12KB）。全组常量里**唯一有可复述
+   *  来源**的一条（技能数 × 单文件经验体积），但仍非回测所得——两个因子都在漂：
+   *  2026-10-09 生产实测已变为 10 个技能 / 107541 字节（预算的 87.5%）。 */
   BLOAT_BUDGET_BYTES: 120 * 1024,
-  /** 臃肿度扣分饱和倍数：b=2.5 倍预算后不再加倍扣（r2：修复无界罚）。 */
+  /** 臃肿度扣分饱和倍数：b=2.5 倍预算后不再加倍扣（r2：修复无界罚）。
+   *  这 1.5 是 r2 当天按「不要让 bloat 以绝对优势碾压 Q2 归因」定的工程判断，
+   *  **未经回测**。 */
   BLOAT_SATURATION: 1.5,
 };
 
@@ -56,7 +89,9 @@ export const EFFECT_EPSILON = {
   bloat: 0.1,
 };
 
-/** 四维权重（§3.6 权重累减结构：避免一项满分掩盖四项差）。 */
+/** 四维权重（§3.6 权重累减结构：避免一项满分掩盖四项差）。
+ *  ⚠ noise/bloat 各 30、confidence/redundancy 各 20 —— 同样是经验分配，
+ *  **无回测依据**（这正是提案 a85ef850 的正题）。改动本表会改变 scaleHash。 */
 export const DIM_WEIGHTS = {
   noise: 30,
   confidence: 20,
@@ -65,6 +100,40 @@ export const DIM_WEIGHTS = {
 };
 
 export const DIM_KEYS = ['noise', 'confidence', 'redundancy', 'bloat'];
+
+/**
+ * 判尺指纹（提案 98c8e911，2026-10-09）：THRESHOLDS / DIM_WEIGHTS /
+ * EFFECT_EPSILON 三组常量的 sha1 前 8 位。
+ *
+ * 为什么与 formulaVersion 互补（粗/细两级）：
+ *   - formulaVersion = **公式结构**变更（分子组成、扣分形状、排序键）。
+ *     结构变了，跨版本总分不可比 ⇒ 必须人工 bump。
+ *   - scaleHash = **参数取值**变更（阈值 0.30→0.25、权重 30→25、ε 调参）。
+ *     分数仍可比（同结构），但趋势解读要看 hash 是否分段 ⇒ 应自动可测，
+ *     靠人工记版本字符串必然漏记，漏记即「历史趋势被误读为连续」。
+ *
+ * 纳入 EFFECT_EPSILON 是超出提案原文的一处收紧：提案只列 THRESHOLDS +
+ * DIM_WEIGHTS，但 ε 同样是决定 Q1 判定的判尺参数——它变了而 hash 不变，
+ * 恰好制造出这次要消灭的那种「静默漂移」。
+ *
+ * key 排序：对象字面量里调整 key 书写顺序不应改变判尺指纹（那只是代码风格
+ * 变动，不是尺子变了），故序列化前统一按 key 排序。**不要**手搓哈希实现——
+ * 用 node:crypto 的 sha1（无 I/O，不破坏本模块的纯函数属性）。
+ */
+export const SCALE_SPEC = Object.freeze({
+  thresholds: Object.freeze({ ...THRESHOLDS }),
+  weights: Object.freeze({ ...DIM_WEIGHTS }),
+  effectEpsilon: Object.freeze({ ...EFFECT_EPSILON }),
+});
+
+export const stableStringify = (o) => `{${Object.keys(o).sort()
+  .map((k) => `${JSON.stringify(k)}:${JSON.stringify(o[k])}`).join(',')}}`;
+
+/** 判尺指纹（8 位十六进制）。广播 payload 透传，供下游按指纹分段趋势。 */
+export const scaleHash = createHash('sha1')
+  .update(stableStringify(SCALE_SPEC))
+  .digest('hex')
+  .slice(0, 8);
 
 /**
  * Q3 无真实证据可依时的诚实占位（§4 真实关：建议必须绑定 lint 证据，
@@ -105,10 +174,26 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 export function deriveComposites(a = {}) {
   const na = (reason) => ({ value: null, na: true, reason });
 
-  // noise = (orphans + contradictions + duplicates + noEvidence) / (wiki+rules+memory)
+  // noise = (orphans + noEvidence) / (wiki+rules+memory)   ← r3
+  //
+  // r3 拆解（提案 51e6e24f）：旧口径分子含 wikiContradictions 与 ruleDuplicates，
+  // 而 redundancy 分子也含这两项 ⇒ 同一处病灶被扣两次分，且 Q2 归因时两维互相
+  // 争夺「最丑」（数据源层共享 2/3 的分子，两维并不独立）。
+  // r3 语义分工：**noise 只数死条目**（无入链的 wiki 孤岛、无证据的记忆），
+  // **重复/矛盾归 redundancy**（§3.3 的职责）。
+  //
+  // 分母口径（评审必问项，写在这里而不是散文里）：分母保持
+  // wiki+rules+memory 不变 = 「已纳入度量的条目总量」这个**共同基座**。
+  //   代价（已知且接受）：rulesTotal 进分母但无对应分子项（r3 起重复规则不再算
+  //   噪声），会稀释 noise 比值——这正是「拆解」要表达的意思：规则层的重复问题
+  //   归冗余度记账，不该再让噪声比替它扣一次分。
+  //   备选方案（未采纳）：分母同步去掉 rulesTotal。但那会让两个维度的分母各自
+  //   不同源，而冗余度分母本就跨 rules+wiki+skills 三域；共同基座更易解读。
+  //   ⚠ 本阈值 NOISE_RATIO 至今**无回测依据**（属提案 a85ef850 权重真标定待办），
+  //   r3 只改分子结构、不动阈值——避免在没有标定数据时连改两个数。
   let noise;
   {
-    const numParts = [a.wikiOrphans, a.wikiContradictions, a.ruleDuplicates, a.memoryNoEvidence];
+    const numParts = [a.wikiOrphans, a.memoryNoEvidence];
     const denParts = [a.wikiTotal, a.rulesTotal, a.memoryTotal];
     if (numParts.every(isNum) && denParts.every(isNum)) {
       const num = numParts.reduce((s, v) => s + v, 0);
@@ -117,7 +202,7 @@ export function deriveComposites(a = {}) {
         ? { value: round(num / den), na: false, numerator: num, denominator: den }
         : na('分母为 0（wiki/rules/memory 全空）');
     } else {
-      noise = na('原子值缺席（wiki.orphans / wiki.contradictions / rules.lintIssues / memory.total）');
+      noise = na('原子值缺席（wiki.orphans / memory.total）');
     }
   }
 
@@ -127,6 +212,8 @@ export function deriveComposites(a = {}) {
     : na('avgConfXCompliance 缺席（memory.list 不可用）');
 
   // redundancy = (duplicates + contradictions + curator_overlaps) / (rules+wiki+skills)
+  //
+  // r3 起，本维是重复/矛盾类问题的**唯一记账处**（noise 分子已移除这两项）。
   let redundancy;
   {
     const overlaps = a.curatorOverlaps ?? 0;
@@ -179,7 +266,8 @@ export function dimDeduction(key, value) {
  *   score = 100 − Σded × (100 / ΣmaxWeight_available)
  * 全维可用时 ΣmaxWeight=100，退化为原公式。
  *
- * @returns {{score: number, dims: object, availableDims: string[], naDims: string[], renormalized: boolean}}
+ * @returns {{score: number|null, dims: object, availableDims: string[], naDims: string[],
+ *            renormalized: boolean, effectiveDenominator: number}}
  */
 export function computeAestheticScore(composites) {
   let sumDed = 0;
@@ -201,11 +289,18 @@ export function computeAestheticScore(composites) {
     availableDims.push(key);
   }
   if (availableDims.length === 0) {
-    return { score: null, dims, availableDims, naDims, renormalized: false, note: '四维全部 N/A，无分可打' };
+    return {
+      score: null, dims, availableDims, naDims,
+      renormalized: false, effectiveDenominator: 0,
+      note: '四维全部 N/A，无分可打',
+    };
   }
   const renormalized = sumMaxW !== 100;
   const score = round(100 - sumDed * (100 / sumMaxW), 1);
-  return { score, dims, availableDims, naDims, renormalized };
+  // effectiveDenominator（提案 392cb761，2026-10-09）：本轮实际参与打分的权重和。
+  // 缺维时总分被重新归一到剩余维度——不把这个数吐出去，下游只能说「归一了」，
+  // 说不清「归一到多少」，读者就会把「分数变高」误读成「系统变美」。
+  return { score, dims, availableDims, naDims, renormalized, effectiveDenominator: sumMaxW };
 }
 
 // ── §4 美之三问 ─────────────────────────────────────────────────────────────

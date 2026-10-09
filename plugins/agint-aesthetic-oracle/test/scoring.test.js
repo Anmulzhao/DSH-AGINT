@@ -8,7 +8,9 @@ import assert from 'node:assert/strict';
 import {
   THRESHOLDS, DIM_KEYS, deriveComposites, computeAestheticScore,
   q1Verdict, q2Worst, q3Advice, evaluateAesthetics, NO_ADVICE,
+  FORMULA_VERSION, scaleHash, stableStringify, DIM_WEIGHTS,
 } from '../lib/scoring.js';
+import { recomputeBaseline, baselineHasNaDim, medianBy } from '../lib/broadcast.js';
 
 /** 方案 §3.6 / 附录 C 的 2026-09-27 钉死原子值（复算链见 calibration 脚本）。 */
 const PLAN_ATOMIC = {
@@ -25,15 +27,16 @@ const PLAN_ATOMIC = {
   skillsBytes: 82652,
 };
 
-test('方案标定数据复算：四指标与总分 = 52.4 ± 0.5（AC-0d 确定性部分）', () => {
+test('方案标定数据复算：四指标与总分 = 53.4 ± 0.5（AC-0d 确定性部分，公式 r3）', () => {
   const c = deriveComposites(PLAN_ATOMIC);
-  // noise = 88/380
-  assert.ok(Math.abs(c.noise.value - 88 / 380) < 1e-3, `noise=${c.noise.value}`);
-  assert.equal(c.noise.numerator, 88);
+  // r3 noise = 84/380（分子只含死条目：orphans 13 + noEvidence 71；
+  // contradictions 1 与 duplicates 3 已移给 redundancy）
+  assert.ok(Math.abs(c.noise.value - 84 / 380) < 1e-3, `noise=${c.noise.value}`);
+  assert.equal(c.noise.numerator, 84);
   assert.equal(c.noise.denominator, 380);
   // confidence = 0.544（逐条口径）
   assert.ok(Math.abs(c.confidence.value - 0.544) < 1e-6);
-  // redundancy = 4/55
+  // redundancy = 4/55（r3 起矛盾/重复只在此处记账）
   assert.ok(Math.abs(c.redundancy.value - 4 / 55) < 1e-3, `redundancy=${c.redundancy.value}`);
   // bloat = 82652/122880
   assert.ok(Math.abs(c.bloat.value - 82652 / 122880) < 1e-3, `bloat=${c.bloat.value}`);
@@ -41,9 +44,10 @@ test('方案标定数据复算：四指标与总分 = 52.4 ± 0.5（AC-0d 确定
   const s = computeAestheticScore(c);
   assert.equal(s.renormalized, false);
   assert.equal(s.availableDims.length, 4);
-  assert.ok(Math.abs(s.score - 52.4) <= 0.5, `score=${s.score}（期望 52.4±0.5）`);
-  // 逐项扣分（§3.6 表）
-  assert.ok(Math.abs(s.dims.noise.deduction - 23.1579) < 0.01, `noise ded=${s.dims.noise.deduction}`);
+  assert.ok(Math.abs(s.score - 53.4) <= 0.5, `score=${s.score}（期望 53.4±0.5）`);
+  assert.equal(s.effectiveDenominator, 100, '四维齐时有效分母 = Σ权重 = 100');
+  // 逐项扣分（§3.6 表；noise 扣分随 r3 分子收窄由 23.1579 → 22.11）
+  assert.ok(Math.abs(s.dims.noise.deduction - 22.11) < 0.01, `noise ded=${s.dims.noise.deduction}`);
   assert.ok(Math.abs(s.dims.confidence.deduction - 4.4571) < 0.01, `conf ded=${s.dims.confidence.deduction}`);
   assert.ok(Math.abs(s.dims.redundancy.deduction - 20) < 0.01, `redund ded=${s.dims.redundancy.deduction}`);
   assert.equal(s.dims.bloat.deduction, 0);
@@ -261,10 +265,182 @@ test('Q3 证据绑定：noise 无无证据记忆但 wiki 有孤儿 → 建议归
   assert.ok(noise.advice.includes('a.md'), noise.advice);
 });
 
-test('evaluateAesthetics 一站式：钉死数据 → 52.4；worst/readvice 齐备', () => {
+test('evaluateAesthetics 一站式：钉死数据 → 53.4；worst/advice 齐备', () => {
   const out = evaluateAesthetics(PLAN_ATOMIC, { adviceCtx: { memoryNoEvidenceCount: 71 } });
-  assert.ok(Math.abs(out.scored.score - 52.4) <= 0.5);
+  assert.ok(Math.abs(out.scored.score - 53.4) <= 0.5);
   assert.ok(out.worst);
   assert.ok(out.advice.advice);
   assert.ok(out.advice.evidence);
+});
+
+// ── r3 双计数拆解（提案 51e6e24f）──────────────────────────────────────────
+
+test('r3：矛盾/重复不进 noise 分子，只在 redundancy 记一次账', () => {
+  // 同一批「重复/矛盾」数据，两组只差这两个原子值
+  const base = {
+    wikiOrphans: 0, memoryNoEvidence: 0,
+    wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
+    avgConfXCompliance: 1, curatorOverlaps: 0, skillsTotal: 100, skillsBytes: 0,
+  };
+  const clean = deriveComposites({ ...base, wikiContradictions: 0, ruleDuplicates: 0 });
+  const dirty = deriveComposites({ ...base, wikiContradictions: 20, ruleDuplicates: 20 });
+
+  // 判据 1：noise 完全不受矛盾/重复影响（旧口径下这里是 40/300=0.133）
+  assert.equal(dirty.noise.value, clean.noise.value, '噪声比不得被矛盾/重复条目影响');
+  assert.equal(dirty.noise.numerator, 0);
+
+  // 判据 2：但它们仍被度量——记在冗余度上
+  assert.ok(dirty.redundancy.value > clean.redundancy.value, '矛盾/重复仍须记在冗余度');
+
+  // 判据 3（核心）：总分只被扣一次，不是两维各扣一次
+  const sClean = computeAestheticScore(clean);
+  const sDirty = computeAestheticScore(dirty);
+  const dedGap = sDirty.dims.redundancy.deduction - sClean.dims.redundancy.deduction;
+  const scoreGap = sClean.score - sDirty.score;
+  assert.ok(
+    Math.abs(scoreGap - dedGap) < 0.05,
+    `总分降幅 ${scoreGap.toFixed(2)} 应等于冗余度单独扣分 ${dedGap.toFixed(2)}（差值即旧口径的双计重复扣分）`,
+  );
+  // 判据 4（对照 r2 旧口径）：同一批数据，r2 会在 noise 上再扣一次 13.33
+  // （30 × min(40/300 / 0.30, 1)），r3 不扣 ⇒ 降幅必须严格小于 20 + 13.33。
+  const r2ExtraNoiseDeduction = DIM_WEIGHTS.noise * Math.min((40 / 300) / THRESHOLDS.NOISE_RATIO, 1);
+  assert.equal(sDirty.dims.noise.deduction, 0, 'r3 下噪声维对矛盾/重复零扣分');
+  assert.ok(
+    scoreGap < dedGap + r2ExtraNoiseDeduction,
+    `r3 降幅 ${scoreGap} 必须小于「冗余度单扣 ${dedGap} + r2 旧口径多扣的噪声 ${r2ExtraNoiseDeduction.toFixed(2)}」`,
+  );
+  // 判据 5：Q2 归因不再两维争夺「最丑」——r2 下 noise 与 redundancy 都会因
+  // 同一批矛盾/重复拿到非零扣分，归因取决于权重差；r3 下只有 redundancy 有账。
+  assert.equal(q2Worst(dirty, sDirty.dims).key, 'redundancy');
+  // 无任何扣分时 q2Worst 仍返回一个维（既有行为：它排序 ratio 不筛 0），但 ratio=0
+  // ⇒ 「最丑」不构成归因。（此断言只钉住本测试关心的量，不评价该既有行为）
+  assert.equal(q2Worst(clean, sClean.dims).ratio, 0);
+});
+
+test('r3：noise 分子只认死条目——orphans 与 noEvidence 仍进分子', () => {
+  const c = deriveComposites({
+    wikiOrphans: 10, memoryNoEvidence: 20,
+    wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
+    avgConfXCompliance: 1, skillsTotal: 100, skillsBytes: 0,
+  });
+  assert.equal(c.noise.numerator, 30, '10 孤儿 + 20 无证据 = 30');
+  assert.equal(c.noise.denominator, 300);
+  assert.ok(Math.abs(c.noise.value - 0.1) < 1e-6);
+});
+
+// ── 判尺指纹（提案 98c8e911）───────────────────────────────────────────────
+
+test('公式版本已随 r3 双计数拆解 bump（历史趋势分段依据）', () => {
+  assert.equal(FORMULA_VERSION, 'r3');
+});
+
+test('判尺指纹 scaleHash：8 位十六进制且对当前尺子钉死', () => {
+  assert.match(scaleHash, /^[0-9a-f]{8}$/, `scaleHash=${scaleHash}`);
+  // 钉死值：改动 THRESHOLDS / DIM_WEIGHTS / EFFECT_EPSILON 任一常量，本断言即红。
+  // 这是「改判尺必须显式承认」的强制点——更新此值的人应当同时更新本文件与
+  // calibration 脚本，让判尺变更在 git 里留痕，而不是悄悄发生。
+  assert.equal(scaleHash, '59e371d8', '判尺常量变了却没更新钉死指纹——改判尺须走评审并同步本行');
+});
+
+test('判尺指纹对 key 书写顺序不敏感（stableStringify 按 key 排序）', () => {
+  const a = stableStringify({ b: 2, a: 1 });
+  const b = stableStringify({ a: 1, b: 2 });
+  assert.equal(a, b, '只是代码风格变动，不该被判为「尺子变了」');
+});
+
+// ── Q1 基线重定（提案 6be656fd；老板 2026-10-09 拍板方案 D）──────────────────
+
+test('medianBy：奇偶取值正确，空数组返回 null（不返回 0）', () => {
+  assert.equal(medianBy([3, 1, 2]), 2);
+  assert.equal(medianBy([4, 1, 2, 3]), 2.5);
+  assert.equal(medianBy([]), null);
+  assert.equal(medianBy([null, undefined, NaN]), null);
+});
+
+test('重定基：近 4 周中位数补齐缺值维，并落每维样本数', () => {
+  const mk = (ts, score, composites) => ({ kind: 'daily', outcome: 'ok', ts, score, composites });
+  const rows = [
+    mk('2026-10-08T01:00:00Z', 97.8, { noise: 0.0135, confidence: 0.6694, redundancy: 0, bloat: 0.8752 }),
+    mk('2026-10-08T13:00:00Z', 97.0, { noise: 0.0106, confidence: 0.6305, redundancy: 0, bloat: 0.8752 }),
+    mk('2026-10-09T01:00:00Z', 97.6, { noise: 0.0089, confidence: 0.6467, redundancy: 0, bloat: 0.8752 }),
+    // 早期行缺 redundancy/bloat（模拟 10-07 之前的老数据）
+    mk('2026-10-05T01:00:00Z', 90.1, { noise: 0.0405, confidence: 0.6692, redundancy: null, bloat: null }),
+    mk('2026-10-02T01:00:00Z', 80.3, { noise: 0.0877, confidence: 0.6617, redundancy: null, bloat: null }),
+  ];
+  const r = recomputeBaseline(rows, { now: new Date('2026-10-09T13:30:00Z') });
+  assert.equal(r.rows, 5);
+  assert.equal(r.windowDays, 28);
+  assert.equal(r.score, 97.0, '5 个分数的中位数');
+  // 每维样本数如实不同——这是「n 必须落盘」的理由
+  assert.deepEqual(r.sampleCounts, { noise: 5, confidence: 5, redundancy: 3, bloat: 3 });
+  assert.equal(r.composites.redundancy, 0, '缺值维由有值样本补齐');
+  assert.equal(r.composites.bloat, 0.8752);
+});
+
+test('重定基：窗口是闭区间——未来行不得计入（now 取过去时刻的回归锁）', () => {
+  const mk = (ts, score) => ({ kind: 'daily', outcome: 'ok', ts, score, composites: { noise: 0.1, confidence: 0.6, redundancy: 0, bloat: 0.5 } });
+  const rows = [
+    mk('2026-09-30T01:00:00Z', 50),
+    mk('2026-10-05T01:00:00Z', 60),
+    mk('2026-10-08T01:00:00Z', 99), // 相对 now=10-06 是「未来」行
+  ];
+  // ⛔ 只卡下界时这条会返回 3 行（把未来的 99 算进去）；两端都卡才是 2 行。
+  const r = recomputeBaseline(rows, { now: new Date('2026-10-06T12:00:00Z') });
+  assert.equal(r.rows, 2, '未来行必须被窗口上界挡住');
+  assert.equal(r.score, 55);
+  // 全在窗口外 → null（调用方须保持原基线，不得写空基线）
+  assert.equal(recomputeBaseline(rows, { now: new Date('2026-08-01T00:00:00Z') }), null);
+  assert.equal(recomputeBaseline([], { now: new Date() }), null);
+});
+
+test('缺值维判据：驱动「一次性重定基」的幂等触发', () => {
+  // 生产实测形态（2026-10-06 建的基线）：后两维为 null
+  const bad = { establishedAt: '2026-10-06T11:10:36.042Z', score: 84.2429, composites: { noise: 0.0676, confidence: 0.6547, redundancy: null, bloat: null } };
+  assert.equal(baselineHasNaDim(bad), true, '缺值维 ⇒ 触发重定基');
+  // 重定后的形态 ⇒ 判据失效 ⇒ 不会反复重算（否则退化成老板否掉的「滚动」）
+  const good = { establishedAt: '2026-10-06T11:10:36.042Z', score: 90.1, composites: { noise: 0.0405, confidence: 0.6542, redundancy: 0, bloat: 0.8752 } };
+  assert.equal(baselineHasNaDim(good), false, '四维齐全 ⇒ 不再重定（幂等）');
+  // 未建立基线 ≠ 需要重定
+  assert.equal(baselineHasNaDim({ establishedAt: null, composites: {} }), false);
+  assert.equal(baselineHasNaDim(null), false);
+});
+
+test('缺值基线的结构后果：两维可用时「在变美」在算术上不可达', () => {
+  // 这是重定基的真实理由（比提案自己写的「防首周污染」更硬）：
+  // Q1 判 beautiful 需要 betterCount≥3，而只有 2 维有基线时 betterCount ≤ 2。
+  // Δ 必须超过 r2 的效应量 ε 才计数，故这里给足变化量
+  // （noise ε=0.03、confidence ε=0.07）。
+  const base = { noise: { value: 0.04, na: false }, confidence: { value: 0.6, na: false }, redundancy: { value: null, na: true }, bloat: { value: null, na: true } };
+  const cur = { noise: { value: 0.001, na: false }, confidence: { value: 0.95, na: false }, redundancy: { value: 0, na: false }, bloat: { value: 0.5, na: false } };
+  const v = q1Verdict(cur, base);
+  assert.equal(v.betterCount, 2, '只有 noise/confidence 两维能参与判定');
+  assert.equal(v.verdict, 'flat', '两维全改善也够不到 beautiful 的 ≥3 门槛');
+  assert.deepEqual(v.betterList, ['noise', 'confidence']);
+  // 对照：四维基线齐全时，同样 4 维全改善即可越过 ≥3 门槛
+  const fullBase = { ...base, redundancy: { value: 0.02, na: false }, bloat: { value: 0.9, na: false } };
+  const v2 = q1Verdict(cur, fullBase);
+  assert.equal(v2.betterCount, 4);
+  assert.equal(v2.verdict, 'beautiful', '补齐基线后「在变美」才可达——这正是重定基要修的东西');
+});
+
+test('N/A 归一化：effectiveDenominator 报出有效分母，供审计写清「归一到多少」', () => {
+  const full = computeAestheticScore(deriveComposites(PLAN_ATOMIC));
+  assert.equal(full.renormalized, false);
+  assert.equal(full.effectiveDenominator, 100);
+
+  // 抽掉 redundancy 与 bloat 两维 ⇒ 有效分母 = 30 + 20
+  const c = deriveComposites(PLAN_ATOMIC);
+  c.redundancy = { value: null, na: true, reason: 'test' };
+  c.bloat = { value: null, na: true, reason: 'test' };
+  const s = computeAestheticScore(c);
+  assert.equal(s.renormalized, true);
+  assert.deepEqual(s.naDims, ['redundancy', 'bloat']);
+  assert.equal(s.effectiveDenominator, 50, '有效分母 = 剩余维权重和（noise 30 + confidence 20）');
+  // 归一后扣分被放大到 100 分制：Σded=26.57 × (100/50)=53.13 → 46.9 分
+  // （缺维会让分数**下降**而非上升——归一化把剩余维的扣分摊到满权重上）
+  assert.ok(Math.abs(s.score - 46.9) < 0.2, `归一后 score=${s.score}`);
+
+  const none = computeAestheticScore({});
+  assert.equal(none.score, null);
+  assert.equal(none.effectiveDenominator, 0, '四维全 N/A 时有效分母为 0，不假装还有分母');
 });

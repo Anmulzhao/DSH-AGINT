@@ -260,6 +260,16 @@ function apply(ctx, config) {
 
     if (metrics && typeof metrics.summary === 'function') snapshot.metrics = await safe(() => metrics.summary());
 
+    // 神谕层归因样本（提案 a85ef850 第 3 步；老板 2026-10-09 拍板「先建标注采集，
+    // 再标定」）。7 个判尺常量至今无回测依据——要标定就得先有「机器判的最丑维
+    // ↔ 人工认定的最丑维」成对样本。神谕层是机器侧样本的天然产地（它逐轮记了
+    // score/worstKey/verdict），但此前没人把这些行读出来做对照。
+    // ⛔ 缺席即 null，不静默跳过：oracle 未挂载与「采集到 0 条」是两句话。
+    const oracle = ctx.get('agint.aestheticOracle');
+    if (oracle && typeof oracle.calibrationSamples === 'function') {
+      snapshot.oracleCalibration = await safe(() => oracle.calibrationSamples({}));
+    }
+
     if (sessionQuery && typeof sessionQuery.listSessions === 'function') {
       snapshot.sessions = await safe(async () => {
         const list = await sessionQuery.listSessions();

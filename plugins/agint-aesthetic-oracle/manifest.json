@@ -10,6 +10,11 @@
     "tier": 0,
     "stability": "experimental"
   },
+  "tests": {
+    "entry": "test/oracle.test.js",
+    "command": "node --test",
+    "expectedExit": 0
+  },
   "spec": {
     "cordis": {
       "inject": [
@@ -66,11 +71,6 @@
       "listeners": "none",
       "tools": "none",
       "shutdown": "graceful"
-    },
-    "tests": {
-      "entry": "test/oracle.test.js",
-      "command": "node --test",
-      "expectedExit": 0
     },
     "docs": {
       "readme": "README.md",

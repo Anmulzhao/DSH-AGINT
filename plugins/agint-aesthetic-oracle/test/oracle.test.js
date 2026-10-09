@@ -6,7 +6,7 @@
  * oracle——结构性断言：本层只用 metrics 排除后的 logCount key）/
  * §6.2 重试+沉默 / §6.3 kill-switch+配额回滚 / §3.6 基线 / §5 三档模板。
  *
- * 数据夹具 = 2026-09-27 生产标定值（附录 C）：预期美总分 52.4±0.5。
+ * 数据夹具 = 2026-09-27 生产标定值（附录 C）：预期美总分 53.4±0.5。
  * 跑法：`node --test`（仓库统一），不依赖 dsh 宿主——store 走内存兜底。
  */
 
@@ -25,7 +25,7 @@ const DUP = { kind: 'duplicate-pattern', ruleId: 'rule-a', with: 'rule-b' };
 /** 标定时刻：本地 04:00（metrics-collect 的采集时刻）→ ISO。fmtAsOfLocal 再转回本地。 */
 const FIXTURE_ASOF = new Date(2026, 8, 27, 4, 0, 0).toISOString();
 
-/** 2026-09-27 标定快照（summary 形态）：四维齐 → 52.4。 */
+/** 2026-09-27 标定快照（summary 形态）：四维齐 → 53.4。 */
 const fixtureSummary = () => ({
   asOf: FIXTURE_ASOF,
   count: 7,
@@ -64,11 +64,14 @@ function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } =
   const audit = [];
   const bus = [];
   let summaryCalls = 0;
+  // summary 可按次切换（env.setSummary）：基线重定测试需要「先两维、后四维」
+  // 的数据演进——metrics 的 summary 在生产里本就是逐日变的数据源。
+  let summaryFn = summary;
   const metrics = summary === null ? undefined : {
     summary: async () => {
       summaryCalls += 1;
-      if (summary instanceof Error) throw summary;
-      return typeof summary === 'function' ? summary() : summary;
+      if (summaryFn instanceof Error) throw summaryFn;
+      return typeof summaryFn === 'function' ? summaryFn() : summaryFn;
     },
   };
   const services = {
@@ -89,11 +92,14 @@ function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } =
     svc: provided['agint.aestheticOracle'],
     provided, audit, bus,
     calls: () => summaryCalls,
+    /** 按次切换 metrics.summary 的数据源（基线重定测试用）。 */
+    setSummary: (s) => { summaryFn = s; },
     dispose: () => { for (const f of effects) { try { f(); } catch { /* ignore */ } } },
   };
 }
 
 const day = (offset, h = 9) => new Date(2026, 8, 27 + offset, h, 0, 0); // 本地 2026-09-27 起算
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 // ── AC-1 / AC-2 / AC-3：daily 主链路 ────────────────────────────────────────
 
@@ -115,16 +121,19 @@ test('AC-1/2/3 daily 主链路：wall≤3s、≤5行≤2KB 首行 asOf、审计 
   assert.ok(lines[0].includes('04:00'), `首行 asOf 应为采集时刻 04:00，实得：${lines[0]}`);
 
   // 标定分数（附录 C）+ Q2/Q3 + 呼吸注脚
-  assert.equal(out.score, 52.4);
-  assert.ok(out.text.includes('总分：52.4/100'), out.text);
+  assert.equal(out.score, 53.4);
+  assert.ok(out.text.includes('总分：53.4/100'), out.text);
   assert.ok(out.text.includes('基线未建') || out.text.includes('首周起算'), out.text);
   // r2：Q2 按 ratio 排序——redundancy（4/55，扣满 20/20=1.0）为最丑，
-  // 旧口径按绝对扣分报 noise（23.16/30≈0.77），已修复。
+  // 旧口径按绝对扣分报 noise（r2 时 23.16/30≈0.77），已修复。
   assert.equal(out.worstKey, 'redundancy');
   assert.ok(out.text.includes('冗余'), out.text);
-  // r2：广播 payload 透传公式版本
+  // 广播 payload 透传公式版本（r3 = 双计数分子拆解）与判尺指纹（提案 98c8e911）：
+  // 版本管结构变更（人工 bump），指纹管参数微调（自动），两者互补不可互相替代。
   const dailyEvent = env.bus.find((e) => e.payload?.kind === 'daily');
-  assert.equal(dailyEvent?.payload?.formulaVersion, 'r2');
+  assert.equal(dailyEvent?.payload?.formulaVersion, 'r3');
+  assert.match(dailyEvent?.payload?.scaleHash ?? '', /^[0-9a-f]{8}$/,
+    `payload 必须带判尺指纹，实得 ${dailyEvent?.payload?.scaleHash}`);
   // §3.5：activity 5/173=0.029 < 0.1 → 播「进化静默期」，不再用「死寂」
   assert.ok(out.text.includes('呼吸：进化静默期（0.029）'), out.text);
   assert.ok(!out.text.includes('死寂'), '病理性措辞「死寂」已废弃');
@@ -134,8 +143,8 @@ test('AC-1/2/3 daily 主链路：wall≤3s、≤5行≤2KB 首行 asOf、审计 
   assert.equal(oracleAudit.length, 1);
   assert.match(oracleAudit[0].targetId, /^oracle-daily-\d{4}-\d{2}-\d{2}$/);
   assert.equal(oracleAudit[0].decision, 'ABSTAIN');
-  assert.equal(oracleAudit[0].scores.aestheticScore, 52.4);
-  assert.equal(oracleAudit[0].scores.noise, 0.2316);
+  assert.equal(oracleAudit[0].scores.aestheticScore, 53.4);
+  assert.equal(oracleAudit[0].scores.noise, 0.2211);
   // §4 证据落地：id 清单进审计 findings（cap 50），不进广播正文
   const idsFinding = oracleAudit[0].findings.find((f) => f.ruleId === 'oracle-no-evidence-ids');
   assert.ok(idsFinding, '审计应携带无证据 id 清单');
@@ -160,6 +169,43 @@ test('AC-4：summary 缺任意 key → 广播仍输出，权重归一', async ()
   assert.equal(out.score, 91.1);
   assert.ok(out.text.includes('N/A：noise/redundancy'), out.text);
   assert.ok(out.lines <= 5 && out.bytes <= MAX_BYTES);
+  env.dispose();
+});
+
+// ── 归一化可见化（提案 392cb761）：口径变化必须对读者出声 ────────────────────
+
+test('归一化可见化：缺维时广播正文写明「按剩余维 X/100 归一」，且不新增行（AC-2）', async () => {
+  const env = makeEnv({ summary: partialSummary });
+  const out = await env.svc.runBroadcast('daily');
+  // 读者侧：不写这句，91.1 会被当成与全维口径同尺的分数读
+  assert.ok(out.text.includes('N/A：noise/redundancy（按剩余维 50/100 归一）'), out.text);
+  // AC-2 不得因此放宽：仍是同一行、仍 ≤5 行
+  assert.ok(out.lines <= 5, `行数 ${out.lines}`);
+  assert.ok(out.bytes <= MAX_BYTES, `字节 ${out.bytes}`);
+  env.dispose();
+});
+
+test('归一化可见化：审计 findings 落 oracle-score-renormalized，含缺维名单与有效分母', async () => {
+  const env = makeEnv({ summary: partialSummary });
+  await env.svc.runBroadcast('daily');
+  const audit = env.audit.filter((e) => e.targetKind === 'oracle-daily');
+  assert.equal(audit.length, 1);
+  const f = audit[0].findings.find((x) => x.ruleId === 'oracle-score-renormalized');
+  assert.ok(f, '缺维导致的口径变化必须进审计，不能只活在渲染里');
+  assert.equal(f.severity, 'low');
+  assert.ok(f.detail.includes('noise'), f.detail);
+  assert.ok(f.detail.includes('redundancy'), f.detail);
+  assert.ok(f.detail.includes('50/100'), `审计须写明有效分母：${f.detail}`);
+  env.dispose();
+});
+
+test('全维可用时不产生归一化审计条目（不得制造噪声条目）', async () => {
+  const env = makeEnv({ summary: fixtureSummary });
+  await env.svc.runBroadcast('daily');
+  const audit = env.audit.filter((e) => e.targetKind === 'oracle-daily');
+  const f = audit[0].findings.find((x) => x.ruleId === 'oracle-score-renormalized');
+  assert.equal(f, undefined, '四维齐时不得写出归一化条目');
+  assert.ok(!env.audit[0].findings.some((x) => x.ruleId === 'oracle-score-renormalized'));
   env.dispose();
 });
 
@@ -228,8 +274,12 @@ test('daily 回归（2026-09-29 bug）：redundancy 最丑但 rule_lint 0 命中
   const env = makeEnv({ summary: todaySummary });
   const out = await env.svc.runBroadcast('daily');
   assert.equal(out.ok, true);
-  assert.equal(out.worstKey, 'redundancy', 'redundancy 扣 20 > noise 17.75 → 最丑');
-  assert.equal(out.score, 58, '与 2026-09-29 生产分一致');
+  assert.equal(out.worstKey, 'redundancy', 'redundancy 扣 20（ratio 1.0）> noise 扣 17.16（ratio 0.57）→ 最丑');
+  // r3 后本夹具总分 58.6（r2 时 58.0）：3 处 wiki 矛盾不再进 noise 分子，
+  // 噪声比 90/507=0.1775 → 87/507=0.1716，扣分 17.75 → 17.16 ⇒ 总分 +0.6。
+  // 分差恒等于被移出分子的矛盾条目数（3）÷ 分母（507）× 权重（30）≈ 0.18 的量级，
+  // 实测 0.6 与之同向（分子缩小使比值更远离阈值，满扣段内非线性放大）。
+  assert.equal(out.score, 58.6, 'r3 双计数拆解后的分数（r2 同夹具为 58.0）');
   assert.ok(out.text.includes('冗余度'), out.text);
   assert.ok(out.text.includes('3 条 wiki 矛盾'), out.text);
   assert.ok(out.text.includes('建议：解决 wiki 矛盾标记'), out.text);
@@ -342,13 +392,121 @@ test('§3.6 基线：7 天 daily 后建立基线，之后 Δ 相对基线', asyn
   }
   const st = await env.svc.getState();
   assert.ok(st.baseline.establishedAt, '第 7 条后应建立基线');
-  assert.equal(st.baseline.score, 52.4);
+  assert.equal(st.baseline.score, 53.4);
 
   // 第 8 天：Δ 相对基线（同数据 → 0.0）
   const out8 = await env.svc.runBroadcast('daily', { now: day(7) });
   assert.equal(out8.ok, true);
-  assert.ok(out8.text.includes('基线 52.4'), out8.text);
+  assert.ok(out8.text.includes('基线 53.4'), out8.text);
   assert.ok(out8.text.includes('Δ：+0.0'), out8.text);
+  env.dispose();
+});
+
+// ── 基线重定（提案 6be656fd；老板 2026-10-09 拍板方案 D：一次性，不滚动）──────
+
+test('基线重定：缺值维触发一次，第二次 daily 不再重算（幂等）', async () => {
+  // 生产形态复现：前 7 条用 partialSummary（noise/redundancy 缺值）建基
+  const env = makeEnv({ summary: partialSummary });
+  for (let i = 0; i < 7; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
+  const st0 = await env.svc.getState();
+  assert.ok(st0.baseline.establishedAt, '第 7 条后应建立基线');
+  assert.equal(st0.baseline.method, 'first-week-mean', '首批仍是首周均值口径');
+
+  // baselinePreview：只读预演，不改状态
+  const preview = await env.svc.baselinePreview({ now: day(9) });
+  assert.equal(preview.needsRebaseline, true, '基线缺 noise/redundancy 两维 ⇒ 需重定');
+  assert.ok(preview.proposal, '应给出可写入的基线形态');
+  assert.equal((await env.svc.getState()).baseline.score, st0.baseline.score, '预演不得改状态');
+
+  // 数据源切到四维齐全，再跑一天 daily ⇒ 走 maybeRebaseline 链路
+  env.setSummary(fixtureSummary);
+  await env.svc.runBroadcast('daily', { now: day(8) });
+  const after = await env.svc.getState();
+  assert.equal(after.baseline.method, 'rolling-4w-median', '四维齐后应重定基');
+  assert.ok(after.baseline.rebaselinedAt, '重定基须留时刻');
+  assert.equal(after.baseline.windowDays, 28);
+  assert.ok(isNum(after.baseline.sampleCounts?.redundancy), '每维样本数须落盘');
+  for (const k of ['noise', 'confidence', 'redundancy', 'bloat']) {
+    assert.ok(isNum(after.baseline.composites[k]), `重定后 ${k} 维必须有值`);
+  }
+
+  // 再跑一天 → 幂等：判据已失效，不再重算（否则退化成老板否掉的「滚动」）
+  const before = JSON.stringify(after.baseline);
+  await env.svc.runBroadcast('daily', { now: day(9) });
+  const again = await env.svc.getState();
+  assert.equal(JSON.stringify(again.baseline), before, '四维齐全后不得反复重定基');
+  assert.equal(env.audit.filter((e) => e.targetKind === 'oracle-rebaseline').length, 1,
+    '重定基审计恰好一条，不重复');
+  env.dispose();
+});
+
+test('基线重定：样本窗口内仍缺值时不得重定（不把 null 写成 0 冒充可用）', async () => {
+  const env = makeEnv({ summary: partialSummary });
+  for (let i = 0; i < 9; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
+  const st = await env.svc.getState();
+  assert.equal(st.baseline.method, 'first-week-mean',
+    '窗口内 redundancy/bloat 始终无值 ⇒ 重定基只会把 null 变 0，那是造假');
+  assert.equal(env.audit.filter((e) => e.targetKind === 'oracle-rebaseline').length, 0);
+  env.dispose();
+});
+
+test('基线重定：事件写审计（口径变更不可静默）', async () => {
+  const env = makeEnv({ summary: partialSummary });
+  for (let i = 0; i < 7; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
+  env.setSummary(fixtureSummary);
+  await env.svc.runBroadcast('daily', { now: day(8) });
+  const reb = env.audit.filter((e) => e.targetKind === 'oracle-rebaseline');
+  assert.equal(reb.length, 1, `重定基应恰好一条审计，实得 ${reb.length}`);
+  assert.match(reb[0].targetId, /^oracle-rebaseline-\d{4}-\d{2}-\d{2}$/);
+  const f = reb[0].findings.find((x) => x.ruleId === 'oracle-baseline-rebaselined');
+  assert.ok(f, '须有可读的 findings');
+  assert.ok(f.detail.includes('first-week-mean'), f.detail);
+  assert.ok(f.detail.includes('rolling-4w-median'), f.detail);
+  assert.ok(f.detail.includes('每维 n：'), `须落每维样本数：${f.detail}`);
+  assert.ok(f.detail.includes('Δ 不可直接比较'), '口径切换须警告 Δ 不可跨期比较');
+  env.dispose();
+});
+
+test('基线重定：无缺值维时不产生重定基审计（不得制造噪声条目）', async () => {
+  const env = makeEnv();
+  for (let i = 0; i < 9; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
+  assert.equal(env.audit.filter((e) => e.targetKind === 'oracle-rebaseline').length, 0,
+    '四维齐全的基线不应触发重定基审计');
+  env.dispose();
+});
+
+// ── 权重标定样本出口（提案 a85ef850；老板 2026-10-09「先建标注采集，再标定」）──
+
+test('calibrationSamples：产出机器侧归因样本，人工栏留 null（null ≠ 吻合）', async () => {
+  const env = makeEnv();
+  for (let i = 0; i < 3; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
+  await env.svc.runBroadcast('weekly', { now: day(4) });
+  const data = await env.svc.calibrationSamples({});
+  assert.equal(data.formulaVersion, 'r3');
+  assert.match(data.scaleHash, /^[0-9a-f]{8}$/);
+  // daily 3 条 + weekly 1 条
+  assert.equal(data.samples.length, 4);
+  assert.ok(data.baseline, '须带基线口径，供标定脚本判读样本是否跨口径');
+  for (const s of data.samples) {
+    assert.equal(s.humanVerdict, null, '未标注必须是 null——写成 false/\'\' 会被下游读成「不吻合」');
+    assert.ok(Array.isArray(data.annotationGuide) && data.annotationGuide.length > 0, '须给出标注口径说明');
+  }
+  // 机器侧归因：本夹具下 Q2 最丑恒为 redundancy
+  assert.ok(data.samples.every((s) => s.machineWorst === 'redundancy'), `实得 ${JSON.stringify(data.samples.map((s) => s.machineWorst))}`);
+  env.dispose();
+});
+
+test('calibrationSamples：时间窗过滤生效，且缺席服务时快照侧为空（不静默跳过）', async () => {
+  const env = makeEnv();
+  await env.svc.runBroadcast('daily', { now: day(0) });
+  await env.svc.runBroadcast('daily', { now: day(5) });
+  const all = await env.svc.calibrationSamples({});
+  assert.equal(all.samples.length, 2);
+  const narrow = await env.svc.calibrationSamples({ since: new Date(day(3)).toISOString(), until: new Date(day(6)).toISOString() });
+  assert.equal(narrow.samples.length, 1, 'since/until 应为闭区间过滤');
+  // 窗口外全空 → 采到 0 条（事实），与「服务缺席」（未挂载）是两回事
+  const empty = await env.svc.calibrationSamples({ since: '2030-01-01T00:00:00Z' });
+  assert.deepEqual(empty.samples, []);
   env.dispose();
 });
 
@@ -420,7 +578,7 @@ test('rollQuota：周期翻转清零（日/周/月各自独立）', () => {
 });
 
 test('fitLines：超 2KB 尾部裁行，首行（asOf）必保', () => {
-  const lines = ['📊 今日美评 2026-09-27（数据截至 04:00）', '总分：52.4/100'];
+  const lines = ['📊 今日美评 2026-09-27（数据截至 04:00）', '总分：53.4/100'];
   for (let i = 0; i < 30; i += 1) lines.push(`填充行 ${i}：${'x'.repeat(120)}`);
   const r = fitLines(lines);
   assert.equal(r.truncated, true);
@@ -481,7 +639,7 @@ function makeBridgedEnv(opts = {}) {
 
 test('Day2-3 payload 合同：四 topic 合法样本过、违约样本拒、无合同 topic 拒', () => {
   const tierPayload = (kind) => ({
-    kind, asOf: FIXTURE_ASOF, score: 52.4, verdict: 'flat',
+    kind, asOf: FIXTURE_ASOF, score: 53.4, verdict: 'flat',
     worstKey: 'noise', lines: ['a', 'b'], text: 'a\nb',
   });
   for (const [topic, kind] of [['oracle.daily', 'daily'], ['oracle.weekly', 'weekly'], ['oracle.monthly', 'monthly']]) {
@@ -497,6 +655,20 @@ test('Day2-3 payload 合同：四 topic 合法样本过、违约样本拒、无�
   assert.equal(validateTopicPayload('oracle.daily', { ...tierPayload('daily'), verdict: 'so-so' }).ok, false);
   // 无合同 topic：拒（新 topic 必须先立合同）
   assert.equal(validateTopicPayload('oracle.yearly', { any: true }).ok, false);
+  // 判尺指纹（提案 98c8e911）：合法 8 位十六进制过；形状不对必拒
+  assert.deepEqual(
+    validateTopicPayload('oracle.daily', { ...tierPayload('daily'), scaleHash: '59e371d8' }),
+    { ok: true },
+  );
+  for (const bad of ['59E371D8', '59e371d', '59e371d8ff', 'notahash', '']) {
+    assert.equal(
+      validateTopicPayload('oracle.daily', { ...tierPayload('daily'), scaleHash: bad }).ok,
+      false,
+      `非法 scaleHash 必须拒：${JSON.stringify(bad)}`,
+    );
+  }
+  // 缺席（undefined）必须放行——旧事件历史里没这个字段
+  assert.equal(validateTopicPayload('oracle.daily', { ...tierPayload('daily'), scaleHash: undefined }).ok, true);
   // 反查一致性：KIND_TOPIC ↔ TOPIC_KIND 互逆
   for (const [k, t] of Object.entries(KIND_TOPIC)) assert.equal(TOPIC_KIND[t], k);
 });
@@ -530,7 +702,7 @@ test('Day2-3 dashboard 订阅端到端：daily 广播 → cards() 收到 oracle.
   const daily = cards.find((c) => c.topic === 'oracle.daily');
   assert.ok(daily, 'oracle.daily 卡片应存在');
   assert.match(daily.envelopeId, /^evt-/);
-  assert.equal(daily.payload.score, 52.4);
+  assert.equal(daily.payload.score, 53.4);
   assert.ok(daily.occurredAt, '事件发生时刻应透出');
   assert.ok(daily.receivedAt, '订阅收到时刻应透出');
   env.dispose();
@@ -634,7 +806,7 @@ test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），
   const view = extractAtomic(fixtureSummary());
   const evaluation = evaluateAesthetics(view.atomic, { adviceCtx: view.adviceCtx });
   const proposals = buildWeeklyProposals(evaluation, view.adviceCtx, { weekKey: '2026-W39', targetId: 'oracle-weekly-2026-W39' });
-  // 标定数据：noise 23.16 / redundancy 20 / confidence 4.46 / bloat 0。
+  // 标定数据：noise 22.11 / redundancy 20 / confidence 4.46 / bloat 0。
   // 2026-10-08 接线修复：extractAtomic 的 adviceCtx 此前从未构造
   // lowConfidenceNoEvidence（q3Advice 的 case 'confidence' 唯一数据源）⇒
   // 该维永远回 NO_ADVICE，本测试把「跳过」固化成断言，故 confidence 建议**从未

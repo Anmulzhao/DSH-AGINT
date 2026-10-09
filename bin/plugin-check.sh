@@ -26,6 +26,27 @@ log_err()  { printf '%s[FAIL]%s %s\n' "$RED" "$RST" "$*"; }
 log_ok()   { printf '%s[ OK]%s %s\n' "$GRN" "$RST" "$*"; }
 
 # 检查单个插件目录
+# ── JSON 取值（用 node，不用 jq）─────────────────────────────────────────────
+# 为什么换掉 jq（2026-10-09）：jq **不是宿主保证的依赖**，本机就没装。缺 jq 时
+# 下面整块 manifest 深度校验被 `elif` 跳过，tests.entry 也退化成固定兜底值
+# test/smoke.mjs —— 也就是 33 个插件的 manifest 准入（维度 1/2/3/4/6）一直
+# 在**空转**，却仍然打印出一堆 [OK]，比没有门禁更危险（check-soundness §一）。
+# node 是 dsh 自身的运行依赖，一定存在。
+mget() { # $1=json 文件 $2=JS 表达式（变量 m 已注入）；输出值或空串
+  node -e '
+    const fs = require("fs");
+    let m; try { m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
+    try { const v = eval(process.argv[2]); if (v !== undefined && v !== null) process.stdout.write(typeof v === "object" ? JSON.stringify(v) : String(v)); } catch { /* 取不到即空 */ }
+  ' "$1" "$2" 2>/dev/null || true
+}
+mtest() { # $1=json 文件 $2=JS 布尔表达式（变量 m 已注入）；真→exit 0
+  node -e '
+    const fs = require("fs");
+    let m; try { m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+    try { process.exit(eval(process.argv[2]) ? 0 : 1); } catch { process.exit(1); }
+  ' "$1" "$2" 2>/dev/null
+}
+
 check_one() {
   local dir="$1"
   local name
@@ -69,7 +90,7 @@ check_one() {
   fi
 
   local test_entry
-  test_entry="$(jq -r '.tests.entry // empty' "$mf" 2>/dev/null || true)"
+  test_entry="$(mget "$mf" 'm.tests && m.tests.entry')"
   if [ -z "$test_entry" ]; then
     test_entry="test/smoke.mjs"  # 兜底：旧 manifest 缺 tests.entry
   fi
@@ -139,26 +160,25 @@ check_one() {
   # ── 深度校验（manifest 存在时跑）──
   # Sprint 10 #6 收口：双兼容 .spec.* 和顶层（仓内不一致，老插件用 spec 包裹，Sprint 10 新插件用顶层）
   # 见 reviews/2026-08-30-周复盘.md 与 Sprint 10 #4 收口报告
-  if [ -f "$mf" ] && command -v jq >/dev/null 2>&1; then
+  if [ -f "$mf" ]; then
     # 1. contract — 兼容 .spec.cordis.* 与顶层 cordis.*
-    # 注：jq `or` 在第一个为 false 时不返第二个，需用 if-then-else。
-    if ! jq -e 'if (.spec.cordis.inject != null and .spec.cordis.provides != null) then true elif (.cordis.inject != null and .cordis.provides != null) then true else false end' "$mf" >/dev/null 2>&1; then
+    if ! mtest "$mf" '((m.spec && m.spec.cordis && m.spec.cordis.inject != null && m.spec.cordis.provides != null) || (m.cordis && m.cordis.inject != null && m.cordis.provides != null))'; then
       log_warn "manifest 缺 cordis.inject + cordis.provides（维度 1 contract）"
       warns=$((warns + 1))
     fi
     # 2. storage — 兼容 .spec.storage.domains 与顶层 storage.domains
     # 空数组 = 0 域合法（无状态 plugin 如 sandbox / cron helper），不报 WARN。
-    if ! jq -e 'if (.spec.storage.domains | type == "array") then true elif (.storage.domains | type == "array") then true else false end' "$mf" >/dev/null 2>&1; then
+    if ! mtest "$mf" '(Array.isArray(m.spec && m.spec.storage && m.spec.storage.domains) || Array.isArray(m.storage && m.storage.domains))'; then
       log_warn "manifest 缺 storage.domains 数组（维度 2 storage）"
       warns=$((warns + 1))
     fi
     # 3. deps — 兼容 .spec.dependencies 与顶层 dependencies
-    if ! jq -e 'if (.spec.dependencies != null) then true elif (.dependencies != null) then true else false end' "$mf" >/dev/null 2>&1; then
+    if ! mtest "$mf" '((m.spec && m.spec.dependencies != null) || m.dependencies != null)'; then
       log_warn "manifest 缺 dependencies（维度 3 deps）"
       warns=$((warns + 1))
     fi
     # 4. permissions — 兼容 .spec.permissions 与顶层 permissions
-    if ! jq -e 'if (.spec.permissions != null) then true elif (.permissions != null) then true else false end' "$mf" >/dev/null 2>&1; then
+    if ! mtest "$mf" '((m.spec && m.spec.permissions != null) || m.permissions != null)'; then
       log_warn "manifest 缺 permissions（维度 4 permissions）"
       warns=$((warns + 1))
     fi
@@ -180,7 +200,7 @@ check_one() {
     # 路径 case。避免「Linux 写 Windows 跑」的跨平台路径 bug 漏到 prod
     # （参考 agint-wiki v0.4 教训 docs/lessons/v0.4-wiki-windows-path-escape.md）。
     local fs_perm
-    fs_perm="$(jq -r 'if (.spec.permissions.fs != null) then (.spec.permissions.fs | join(",")) elif (.permissions.fs != null) then (.permissions.fs | join(",")) else "" end' "$mf" 2>/dev/null || true)"
+    fs_perm="$(mget "$mf" '(Array.isArray(m.spec && m.spec.permissions && m.spec.permissions.fs) ? m.spec.permissions.fs : Array.isArray(m.permissions && m.permissions.fs) ? m.permissions.fs : []).join(",")')"
     if [ -n "$fs_perm" ]; then
       local test="$dir/$test_entry"
       if [ -f "$test" ]; then
@@ -193,8 +213,6 @@ check_one() {
         fi
       fi
     fi
-  elif [ -f "$mf" ] && ! command -v jq >/dev/null 2>&1; then
-    log_warn "未装 jq，跳过 manifest 深度校验"
   fi
 
   # ── 维度 10 (soft warning, 2026-09-09 提案 57541772): 文档-代码公式一致性 ──

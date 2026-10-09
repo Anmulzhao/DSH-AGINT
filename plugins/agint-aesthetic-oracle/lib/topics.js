@@ -39,8 +39,16 @@ const tieredShape = (kind) =>
      * 缺省 = 'template'（向后兼容 v0.3.0 已发布的事件）。
      */
     mode: z.enum(['template', 'llm', 'heuristic-degraded']).default('template'),
-    /** 评分公式版本（r2，2026-10-09）：版本切换前后总分不可直接比，分段解读。 */
+    /** 评分公式版本（r3，2026-10-09）：版本切换前后总分不可直接比，分段解读。 */
     formulaVersion: z.string().optional(),
+    /**
+     * 判尺指纹（提案 98c8e911，2026-10-09）：THRESHOLDS/DIM_WEIGHTS/
+     * EFFECT_EPSILON 的 sha1 前 8 位。与 formulaVersion 互补——版本号只管公式
+     * 结构变更（人工 bump），指纹自动捕捉阈值/权重的参数微调。
+     * **字段缺席 = 来自 r3 之前的旧发布方，无指纹可依**——消费方须按未知口径
+     * 处理，不得当成「尺子没变过」（这与「缺席=默认」是两种不同的事实）。
+     */
+    scaleHash: z.string().regex(/^[0-9a-f]{8}$/).optional(),
     /** 缓存回退标注（§6.1 series 缓存）：数据距今天数；新鲜广播不传。 */
     staleDays: z.number().int().min(0).optional(),
   });

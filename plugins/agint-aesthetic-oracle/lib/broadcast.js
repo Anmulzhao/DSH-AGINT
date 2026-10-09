@@ -272,7 +272,14 @@ export function renderReport(kind, c = {}) {
   const deltaTxt = c.baseline?.established && isNum(scored.score) && isNum(c.baseline.score)
     ? `｜Δ：${fmtDelta(scored.score - c.baseline.score)}` : '｜Δ：—';
   const naTxt = Array.isArray(scored.naDims) && scored.naDims.length
-    ? `｜N/A：${scored.naDims.join('/')}` : '';
+    // 「按剩余维归一」是评分口径变化的显式声明（提案 392cb761）：缺维时总分被
+    // 重新归一到剩余维的权重和，不写这句，读者会把这个分数当成同口径读数。
+    // 同行追加，不新增行 ⇒ AC-2（daily ≤5 行）不受影响。
+    ? `｜N/A：${scored.naDims.join('/')}`
+      + (scored.renormalized
+        ? `（按剩余维 ${isNum(scored.effectiveDenominator) ? `${scored.effectiveDenominator}/100` : '?'} 归一）`
+        : '')
+    : '';
   // §6.1 缓存回退标注（Day 2-3）：合进总分行不加行——AC-2 的 daily ≤5 行上限
   // 不因数据陈旧而放松；首行 asOf（缓存时点）本身已诚实透出数据新旧。
   const staleTxt = isNum(c.staleDays) ? `｜⚠缓存${c.staleDays}天` : '';
@@ -311,6 +318,74 @@ export function renderReport(kind, c = {}) {
     `本月三问：Q1 ${vText}`,
     ...worstLines,
   ]);
+}
+
+// ── Q1 基线重定（提案 6be656fd；老板 2026-10-09 拍板方案 D：一次性，不滚动）───
+
+/** 逐维中位数（偶数个取中间两数均值）。空数组 → null（不返回 0）。 */
+export function medianBy(arr) {
+  const xs = arr.filter(isNum).sort((a, b) => a - b);
+  if (xs.length === 0) return null;
+  const mid = xs.length >> 1;
+  return xs.length % 2 ? xs[mid] : Math.round(((xs[mid - 1] + xs[mid]) / 2) * 10000) / 10000;
+}
+
+/**
+ * 基线重算：近 `windowDays` 天内 outcome=ok 且有分数的 daily 广播的**中位数**。
+ *
+ * 中位数抗异常值——建基窗口若恰逢大迁移，均值会被那几天的极值永久污染。
+ *
+ * ⚠ 为什么**不每月自动滚动**（与提案原文的差异，已向老板说明并获确认）：
+ *   滚动基线是自我参照的——系统稳定在 X 后基线也收敛到 X，Δ→0 ⇒ Q1 长期报
+ *   「持平」。Q1 问的是「**变**美了吗」，长期锚点必须固定；滚动会把真实改善
+ *   吸收进基线。滚动在此只作为**一次性**重定基的手段，不是常态机制。
+ *
+ * ⚠ 各维样本数允许不同（生产实测 2026-10-09：noise 11 / confidence 10 /
+ *   redundancy 4 / bloat 4——后两维 10-07 才首次有值）。sampleCounts 随基线
+ *   一起落盘：n 不落盘，读者无从判断某维基线由几个样本支撑。
+ *
+ * @param {Array<object>} rows oracle_broadcasts 全量行
+ * @param {{now?: Date, windowDays?: number}} opts
+ * @returns {{score:number|null, composites:object, sampleCounts:object,
+ *            windowDays:number, rows:number}|null} 无可用样本 → null（调用方须保持原基线）
+ */
+export function recomputeBaseline(rows, { now = new Date(), windowDays = 28 } = {}) {
+  const nowMs = new Date(now).getTime();
+  const cutoff = nowMs - windowDays * 86_400_000;
+  const usable = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r?.kind === 'daily' && r?.outcome === 'ok' && isNum(r.score))
+    .filter((r) => {
+      const t = Date.parse(r.ts ?? '');
+      // 窗口是**闭区间** [now-windowDays, now]：两端都要卡。
+      // ⛔ 只卡下界会让「now 取过去时刻」把未来行算进基线（实测：now=2026-08-01
+      // 时 09-29~10-09 的 11 行全部命中，基线凭空吃到还没发生的观测）。
+      // baselinePreview({now}) 与测试都会传入非当前时刻，故上界不是可选的。
+      return Number.isFinite(t) && t >= cutoff && t <= nowMs;
+    })
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1));
+  if (usable.length === 0) return null;
+
+  const composites = {};
+  const sampleCounts = {};
+  for (const k of DIM_KEYS) {
+    const vals = usable.map((r) => r.composites?.[k]).filter(isNum);
+    composites[k] = medianBy(vals);
+    sampleCounts[k] = vals.length;
+  }
+  return {
+    score: medianBy(usable.map((r) => r.score)),
+    composites,
+    sampleCounts,
+    windowDays,
+    rows: usable.length,
+  };
+}
+
+/** baseline 里有任一维缺值 ⇒ 该基线判据不全，Q1 参与维数受限。
+ *  命中此判据是「一次性重定基」的触发条件（见 index.js maybeRebaseline）。 */
+export function baselineHasNaDim(record) {
+  if (!record?.establishedAt) return false;
+  return DIM_KEYS.some((k) => !isNum(record?.composites?.[k]));
 }
 
 // ── 落盘形态整形（index.js 消费；放本文件以便与渲染同测）────────────────────

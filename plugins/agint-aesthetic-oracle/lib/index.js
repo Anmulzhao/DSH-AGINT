@@ -36,10 +36,11 @@ import {
   openStore, loadState, randomId, nowIso,
   oracleBroadcastSchema,
 } from './storage.js';
-import { evaluateAesthetics, DIM_KEYS, NO_ADVICE, FORMULA_VERSION } from './scoring.js';
+import { evaluateAesthetics, DIM_KEYS, NO_ADVICE, FORMULA_VERSION, scaleHash } from './scoring.js';
 import {
   extractAtomic, renderReport, rollQuota, dimsFromRecord, compositesRecord,
   auditScores, auditTargetId, buildWeeklyProposals, isoWeekKey, KIND_TOPIC, QUOTA_LIMITS,
+  recomputeBaseline, baselineHasNaDim,
 } from './broadcast.js';
 import { validateTopicPayload, TOPIC_KIND } from './topics.js';
 import {
@@ -110,20 +111,28 @@ function apply(ctx, config) {
   }
 
   /** 白名单写 #1：evolution_log 审计（decision=ABSTAIN——评论员不做部署决策）。 */
-  async function auditLog({ targetId, targetKind, scores = {}, findings = [] }) {
+  async function auditLog({ targetId, targetKind, scores = {}, findings = [], tags = ['aesthetic-oracle'] }) {
     const evo = svcEvolution();
     if (!evo || typeof evo.logPhase4 !== 'function') return false;
     try {
       await evo.logPhase4({
-        targetId, targetKind, decision: 'ABSTAIN', scores, findings,
-        tags: ['aesthetic-oracle'],
+        targetId, targetKind, decision: 'ABSTAIN', scores, findings, tags,
       });
       return true;
     } catch { return false; }
   }
 
-  async function recordBroadcast(row) {
-    const rec = oracleBroadcastSchema.parse({ id: randomId(), ts: nowIso(), ...row });
+  /**
+   * 落一行广播。`logicalNow` = 本轮的**逻辑广播时刻**（runBroadcast 的 opts.now）。
+   *
+   * 为什么 ts 不再无条件取真实时钟（2026-10-09）：基线重定按 `ts` 开时间窗口，
+   * 而测试/回填会显式传 opts.now 表达「第 i 天发生的那轮广播」——若 ts 记真实
+   * 时钟，行的时刻就与它声称的那一轮广播脱节，窗口过滤会把它们全判成「未来」。
+   * 生产路径 cron 不传 opts.now（now = 真实时间），故生产语义不变。
+   */
+  async function recordBroadcast(row, logicalNow = null) {
+    const ts = logicalNow instanceof Date ? logicalNow.toISOString() : (logicalNow ?? nowIso());
+    const rec = oracleBroadcastSchema.parse({ id: randomId(), ts, ...row });
     await tables().broadcasts.put(rec.id, rec);
     return rec;
   }
@@ -194,7 +203,7 @@ function apply(ctx, config) {
       .filter((r) => r.kind === 'daily' && r.outcome === 'ok' && isNum(r.score)).length;
   }
 
-  /** §3.6 基线：前 7 条有效 daily 的均值（score + 四维，na 维不计入均值）。 */
+  /** §3.6 基线（建基）：前 7 条有效 daily 的均值（score + 四维，na 维不计入均值）。 */
   async function maybeEstablishBaseline() {
     const state = await loadState(tables().state);
     if (state.baseline.establishedAt) return state;
@@ -211,9 +220,82 @@ function apply(ctx, config) {
     for (const k of DIM_KEYS) composites[k] = avg(rows.map((r) => r.composites?.[k]));
     return saveState({
       ...state,
-      baseline: { establishedAt: nowIso(), score: avg(rows.map((r) => r.score)), composites },
+      baseline: { ...state.baseline, establishedAt: nowIso(), score: avg(rows.map((r) => r.score)), composites },
     });
   }
+
+  /**
+   * Q1 基线重定（提案 6be656fd；老板 2026-10-09 拍板**方案 D：一次性，不滚动**）。
+   *
+   * 触发条件 = **基线存在缺值维**（baselineHasNaDim）。这不是随意的：
+   *   2026-10-06 建的基线，其 redundancy/bloat 为 null（这两维 10-07 才首次有值），
+   *   而基线建立后永不更新 ⇒ Q1 永久只按 noise+confidence 两维判定。
+   *   规则要求 betterCount≥3 才判「在变美」，两维**在算术上不可能达到 3**
+   *   ⇒ 「在变美」这个档位在生产上不可达。缺值维就是这条链的病灶。
+   *
+   * 幂等：重定后基线四维齐全 ⇒ 判据不再命中 ⇒ 不会反复重算（否则每月重算就
+   *   退化成提案原文的「滚动」，那正是老板否掉的自我参照陷阱）。
+   *
+   * ⛔ **重定前先验「能不能修好」**（2026-10-09 实测发现的洞）：只判「基线有 null
+   *   维」是不够的。若窗口内该维依然无数据，重算结果仍旧是 null —— 此时若照写
+   *   不误，每轮 daily 都会重定一次并各写一条重定基审计（审计被刷爆，且基线
+   *   内容根本没变）。故：重算后仍缺值的维 ⇒ 整体放弃本次重定，保持原基线不动。
+   *   绝不把 null 写成 0 冒充「已补齐」——那是把测不到写成测到了。
+   *
+   * 留痕：重定基事件写 evolution_log（findings 带新旧对照与每维样本数）。
+   * 不静默改判据——Q1 的 Δ 口径变了，读者必须能从审计里看到。
+   */
+  async function maybeRebaseline(now = new Date()) {
+    const state = await loadState(tables().state);
+    if (!baselineHasNaDim(state.baseline)) return { changed: false, state };
+    const rows = await tables().broadcasts.values();
+    const next = recomputeBaseline(rows, { now });
+    if (!next) return { changed: false, state, reason: 'no-usable-samples' };
+
+    const before = state.baseline;
+    const missing = DIM_KEYS.filter((k) => !isNum(before?.composites?.[k]));
+    const stillMissing = missing.filter((k) => !isNum(next.composites[k]));
+    if (stillMissing.length > 0) {
+      return { changed: false, state, reason: 'window-still-incomplete', stillMissing };
+    }
+
+    const saved = await saveState({
+      ...state,
+      baseline: {
+        establishedAt: before.establishedAt,
+        score: next.score,
+        composites: next.composites,
+        method: 'rolling-4w-median',
+        rebaselinedAt: nowIso(),
+        sampleCounts: next.sampleCounts,
+        windowDays: next.windowDays,
+      },
+    });
+    await auditLog({
+      targetId: `oracle-rebaseline-${dateKeyOf(now)}`,
+      targetKind: 'oracle-rebaseline',
+      scores: isNum(next.score) ? { baselineScore: next.score } : {},
+      findings: [{
+        ruleId: 'oracle-baseline-rebaselined',
+        severity: 'medium',
+        detail: [
+          `口径 ${before.method || 'first-week-mean'} → rolling-4w-median`,
+          `缺值维补齐：${missing.join(',') || '（无）'}`,
+          `基线分 ${before.score ?? '?'} → ${next.score ?? '?'}`,
+          `样本：${next.rows} 条 daily / ${next.windowDays} 天窗口`,
+          `每维 n：${DIM_KEYS.map((k) => `${k}=${next.sampleCounts[k]}`).join(' ')}`,
+          '⚠ 重定基后 Q1 的 Δ 基准改变，切换前后的 Δ 不可直接比较（formulaVersion 同为 r3）',
+        ].join(' | '),
+      }],
+      tags: ['aesthetic-oracle', 'baseline'],
+    });
+    return { changed: true, state: saved, before, after: next };
+  }
+
+  const dateKeyOf = (d) => {
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  };
 
   /**
    * 写白名单 #3（Day 4-5，§5 weekly）：weekly 美谕提案 → agint_evolve.proposal。
@@ -274,12 +356,23 @@ function apply(ctx, config) {
     const published = await publishBus(KIND_TOPIC[kind], {
       kind, asOf: view.asOf, score: evaluation.scored.score, verdict: evaluation.verdict.verdict,
       worstKey: evaluation.worst?.key ?? null, lines: report.lines, text: report.text,
-      mode: payloadMode, formulaVersion: FORMULA_VERSION,
+      mode: payloadMode, formulaVersion: FORMULA_VERSION, scaleHash,
       ...(isNum(report.staleDays) ? { staleDays: report.staleDays } : {}),
       ...(kind === 'weekly' ? { proposals: proposalIds.length } : {}),
     });
     // id 清单进审计 findings（§4：建议必附证据；广播正文只引用条目，防 2KB 爆）
     const findings = [...extraFindings];
+    // 归一化可见化（提案 392cb761）：缺维时总分被重新归一到剩余维的权重和，
+    // 分数与全维口径**不可直接比**。此前只在广播里写「N/A：x/y」，读者会把
+    // 口径变化误读成「系统变美」——这里把 naDims 与有效分母一并落审计。
+    if (evaluation?.scored?.renormalized) {
+      const naDims = evaluation.scored.naDims ?? [];
+      findings.push({
+        ruleId: 'oracle-score-renormalized',
+        severity: 'low',
+        detail: `缺维 ${naDims.join(',')} → 总分按剩余维有效权重 ${evaluation.scored.effectiveDenominator}/100 重新归一（该分数与全维口径不可直接比较）`,
+      });
+    }
     if (Array.isArray(view.auditIds) && view.auditIds.length) {
       findings.push({
         ruleId: 'oracle-no-evidence-ids', severity: 'low',
@@ -317,14 +410,19 @@ function apply(ctx, config) {
       truncated: report.truncated, outcome: 'ok',
       detail: `${extraDetail ? `${extraDetail}; ` : ''}wall ${report.wallMs}ms`,
       proposals: proposalIds.length,
-    });
+    }, now);
     // 配额计数 + 成功清失败计数（§6.3 状态面）
     const q = rollQuota(state.quota, now);
     const counterKey = kind === 'alert' ? 'alerts' : kind;
     q[counterKey] = (q[counterKey] ?? 0) + 1;
     q.bytes = (q.bytes ?? 0) + report.bytes;
     await saveState({ ...state, quota: q, consecutiveFailures: 0 });
-    if (kind === 'daily') await maybeEstablishBaseline();
+    if (kind === 'daily') {
+      await maybeEstablishBaseline();
+      // 方案 D：一次性重定基（幂等自触发——基线齐全后判据不再命中）。
+      // 必须在 maybeEstablishBaseline 之后：本轮广播行已落表，才能进样本窗口。
+      await maybeRebaseline(now).catch(() => {});
+    }
     return {
       ok: true, kind, id: rec.id, score: evaluation.scored.score,
       verdict: evaluation.verdict.verdict, worstKey: evaluation.worst?.key ?? null,
@@ -358,7 +456,7 @@ function apply(ctx, config) {
 
     // 运行时 kill-switch（老板 oracle_pause；§6.3 第 4 行）
     if (state.paused) {
-      await recordBroadcast({ kind, outcome: 'skipped', detail: `paused: ${state.pausedReason || 'oracle_pause'}` });
+      await recordBroadcast({ kind, outcome: 'skipped', detail: `paused: ${state.pausedReason || 'oracle_pause'}` }, now);
       return { skipped: true, reason: 'paused' };
     }
 
@@ -374,7 +472,7 @@ function apply(ctx, config) {
           since: state.silenceMode.since,
         });
         if (published) stats.alertsSent += 1;
-        await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: 'silence-24h-alert', published });
+        await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: 'silence-24h-alert', published }, now);
         state = await saveState({ ...state, silenceMode: { ...state.silenceMode, alerted: true } });
       }
       await auditLog({
@@ -382,7 +480,7 @@ function apply(ctx, config) {
         targetKind: `oracle-${kind}`,
         findings: [{ ruleId: 'oracle-silence', severity: 'low', detail: state.silenceMode.reason }],
       });
-      await recordBroadcast({ kind, outcome: 'silenced', detail: state.silenceMode.reason });
+      await recordBroadcast({ kind, outcome: 'silenced', detail: state.silenceMode.reason }, now);
       return { skipped: true, reason: 'silence-mode' };
     }
 
@@ -391,7 +489,7 @@ function apply(ctx, config) {
     const counterKey = kind === 'alert' ? 'alerts' : kind;
     if ((quota[counterKey] ?? 0) >= QUOTA_LIMITS[kind]) {
       if (kind === 'alert') {
-        await recordBroadcast({ kind, outcome: 'dropped-quota', detail: 'alert 日配额已满（3）' });
+        await recordBroadcast({ kind, outcome: 'dropped-quota', detail: 'alert 日配额已满（3）' }, now);
         return { skipped: true, reason: 'quota' };
       }
       quota = { ...quota, violations: (quota.violations ?? 0) + 1 };
@@ -399,7 +497,7 @@ function apply(ctx, config) {
       await recordBroadcast({
         kind, outcome: 'dropped-quota',
         detail: `${kind} 配额 ${QUOTA_LIMITS[kind]} 已满（violation ${quota.violations}/${MAX_DAILY_VIOLATIONS}）`,
-      });
+      }, now);
       if (quota.violations >= MAX_DAILY_VIOLATIONS) {
         // §6.3：先告警后沉默（沉默会拦住后续一切出口，alert 必须抢在前面）
         const published = await publishBus(KIND_TOPIC.alert, {
@@ -407,7 +505,7 @@ function apply(ctx, config) {
           violations: quota.violations,
         });
         if (published) stats.alertsSent += 1;
-        await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: 'quota-violation-alert', published });
+        await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: 'quota-violation-alert', published }, now);
         await activateSilence(`单日配额违规 ≥${MAX_DAILY_VIOLATIONS}`);
       }
       return { skipped: true, reason: 'quota' };
@@ -472,7 +570,7 @@ function apply(ctx, config) {
         });
       }
       // 无可用缓存 → 原路径：落痕 + oracle.alert（末次重试才发，防风暴）+ 抛错
-      await recordBroadcast({ kind, outcome: 'error', detail: `summary-unavailable: ${summaryError?.message ?? summaryError}` });
+      await recordBroadcast({ kind, outcome: 'error', detail: `summary-unavailable: ${summaryError?.message ?? summaryError}` }, now);
       if (kind !== 'alert' && !opts.suppressAlert) {
         const published = await publishBus(KIND_TOPIC.alert, {
           reason: `metrics summary 不可用且无可用缓存（>7 天或首次），跳过本次 ${kind} 广播`,
@@ -624,8 +722,77 @@ function apply(ctx, config) {
       .sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, limit);
   }
 
+  /**
+   * 权重标定的**样本出口**（提案 a85ef850 第 3 步；老板 2026-10-09 拍板
+   * 「先建标注采集，再标定」）。
+   *
+   * 为什么要它：7 个判尺常量（4 阈值 + 4 权重/ε 合计）至今无回测依据。想标定
+   * 就得先有「机器判的最丑维 ↔ 人工认定的最丑维」的成对样本，而本插件是这
+   * 一侧数据的**天然产地**——它已经在 broadcasts 表里逐轮记了 score/worstKey/
+   * verdict，只是从来没有人把这些行读出来做过对照。
+   *
+   * 本方法只**产出机器侧**样本并预留人工栏（humanVerdict=null = 尚未标注）。
+   * ⚠ null 是「还没标」，不是「标了没差异」——下游必须区分这两者，否则会把
+   * 缺标注当成吻合（measure-before-quota §四：UNKNOWN 不是 0）。
+   *
+   * @param {{since?: string, until?: string}} opts ISO 时间串（闭区间）
+   */
+  async function calibrationSamples({ since, until } = {}) {
+    const s = since ? Date.parse(since) : -Infinity;
+    const u = until ? Date.parse(until) : Infinity;
+    const state = await loadState(tables().state);
+    const rows = (await tables().broadcasts.values())
+      .filter((r) => r.outcome === 'ok' && (r.kind === 'daily' || r.kind === 'weekly'))
+      .filter((r) => {
+        const t = Date.parse(r.ts ?? '');
+        return Number.isFinite(t) && t >= s && t <= u;
+      })
+      .sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    return {
+      formulaVersion: FORMULA_VERSION,
+      scaleHash,
+      baseline: {
+        method: state.baseline?.method ?? null,
+        score: state.baseline?.score ?? null,
+        rebaselinedAt: state.baseline?.rebaselinedAt ?? null,
+        sampleCounts: state.baseline?.sampleCounts ?? null,
+      },
+      samples: rows.map((r) => ({
+        ts: r.ts,
+        kind: r.kind,
+        score: r.score,
+        verdict: r.verdict,
+        // Q2 归因 = 机器侧「最丑维」。worstKey 为 '' 表示该轮无任何扣分维。
+        machineWorst: r.worstKey || null,
+        composites: r.composites ?? null,
+        humanVerdict: null, // 待老板/周报标注；null ≠ 吻合
+      })),
+      annotationGuide: [
+        'humanVerdict 允许值：noise | confidence | redundancy | bloat | none | null',
+        'null = 尚未标注（缺样本）；none = 人工认定四维均无问题',
+        '标注口径：本周期内**人工实际动手处理**的最丑维度，不是「读数上看起来最糟的」',
+      ],
+    };
+  }
+
   ctx.provide('agint.aestheticOracle', {
     runBroadcast, runScheduled, alert, pause, resume, getState, status, history, cards,
+    calibrationSamples,
+    // 方案 D 的一次性重定基，同时作为服务面暴露：幂等判据命中才动手，
+    // 老板可在任何时候显式调用确认当前基线形态（不会重复改写）。
+    rebaseline: async (opts = {}) => {
+      const r = await maybeRebaseline(opts.now ?? new Date());
+      return { changed: r.changed, reason: r.reason ?? null, baseline: r.state?.baseline ?? null };
+    },
+    baselinePreview: async (opts = {}) => {
+      const rows = await tables().broadcasts.values();
+      const state = await loadState(tables().state);
+      return {
+        current: state.baseline,
+        needsRebaseline: baselineHasNaDim(state.baseline),
+        proposal: recomputeBaseline(rows, { now: opts.now ?? new Date(), windowDays: opts.windowDays }),
+      };
+    },
   });
 
   // 首次订阅尝试（event-bus 已挂载时立即生效；未挂载由 runBroadcast 懒重试兜住）

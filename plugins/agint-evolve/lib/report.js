@@ -292,6 +292,76 @@ export function renderEvalFailAttribution(lines, e, opts = {}) {
  * @param {{date: string, snapshot: object, findings: Array, notes?: string}} input
  * @returns {string} markdown
  */
+/**
+ * 二·C 美之三问归因样本（提案 a85ef850；老板 2026-10-09 拍板「先建标注采集，再标定」）。
+ *
+ * 这一节存在的唯一理由：神谕层的 7 个判尺常量（4 阈值 + 权重/ε）**至今无回测依据**
+ * —— 代码注释里写的是经验估算，不是标定。想把它们从「拍的」变成「测的」，就得先有
+ * 成对样本：机器判的最丑维 ↔ 人工认定的最丑维。
+ *
+ * ⛔ 三态诚实（measure-before-quota §四）：
+ *   - 服务缺席 / 采集失败 → 明写「未挂载或不可用」，**不印 0 条**；
+ *   - 采到 0 条 → 印「0 条」，这是事实；
+ *   - 采到 N 条但 humanVerdict 全为 null → 印「N 条待标注」，**不是**「N 条吻合」。
+ *     null 是「还没标」，不是「标了没差异」——把它读成 0 会让下游以为对照已通过。
+ */
+export function renderOracleCalibration(lines, data) {
+  if (!data) {
+    lines.push('- 神谕层未挂载或不可用（agint.aestheticOracle 未提供 calibrationSamples）——');
+    lines.push('  本节缺席**不是**「本周无归因样本」，本周期无法为权重标定积累对照。');
+    return;
+  }
+  const samples = Array.isArray(data.samples) ? data.samples : [];
+  const meta = [
+    data.formulaVersion ? `公式 ${data.formulaVersion}` : null,
+    data.scaleHash ? `判尺指纹 ${data.scaleHash}` : null,
+    data.baseline?.method ? `基线口径 ${data.baseline.method}` : null,
+  ].filter(Boolean).join('｜');
+
+  if (samples.length === 0) {
+    lines.push('- 本周期采到 **0 条**归因样本（神谕层服务在，但窗口内无 ok 广播）。');
+    if (meta) lines.push(`  - ${meta}`);
+    lines.push('- ⚠ 0 条样本是「没数据」，不是「没有问题」——本周期对权重标定无贡献。');
+    return;
+  }
+
+  const byMachine = new Map();
+  let annotated = 0;
+  let matched = 0;
+  for (const s of samples) {
+    const key = s.machineWorst ?? '（无扣分维）';
+    if (!byMachine.has(key)) byMachine.set(key, { n: 0, humanNull: 0 });
+    const slot = byMachine.get(key);
+    slot.n += 1;
+    if (s.humanVerdict === null || s.humanVerdict === undefined) slot.humanNull += 1;
+    else {
+      annotated += 1;
+      if (s.humanVerdict === s.machineWorst) matched += 1;
+    }
+  }
+
+  lines.push(`- 本周期采到 **${samples.length} 条**机器侧归因样本${meta ? `（${meta}）` : ''}。`);
+  lines.push('');
+  lines.push('| 机器判的最丑维（Q2） | 样本数 | 其中待人工标注 |');
+  lines.push('|---|---|---|');
+  for (const [key, v] of [...byMachine.entries()].sort((a, b) => b[1].n - a[1].n)) {
+    lines.push(`| ${key} | ${v.n} | ${v.humanNull} |`);
+  }
+  lines.push('');
+  if (annotated === 0) {
+    lines.push(`> ⚠ **${samples.length}/${samples.length} 条尚未人工标注**（humanVerdict = null = 还没标，不是「标了没差异」）。`);
+    lines.push('> 权重标定的拟合样本量要求 8-12 周；在此之前**不得**改动 `scoring.js` 的 THRESHOLDS / DIM_WEIGHTS。');
+  } else {
+    const rate = Math.round((matched / annotated) * 100);
+    lines.push(`> 已标注 ${annotated}/${samples.length} 条，其中机器与人工归因一致 ${matched} 条（${rate}%）。`);
+    lines.push(`> 未标注 ${samples.length - annotated} 条——**分母是已标注数**，未标注的既不算吻合也不算不一致。`);
+  }
+  lines.push('');
+  lines.push('> 人工标注口径（回填到 oracle 的 broadcasts 行或本节下方表格的 humanVerdict 列）：');
+  lines.push('> `noise | confidence | redundancy | bloat | none | null`；`none` = 人工认定四维均无问题；');
+  lines.push('> 取「本周期**实际动手处理**的最丑维度」，不是「读数上看起来最糟的」。');
+}
+
 export function buildReport({ date, snapshot, findings, notes }) {
   const d = String(date ?? new Date().toISOString().slice(0, 10));
   const collectedAt = snapshot?.collectedAt ? String(snapshot.collectedAt) : new Date().toISOString();
@@ -322,6 +392,10 @@ export function buildReport({ date, snapshot, findings, notes }) {
   renderEvalFailAttribution(lines, snapshot?.evalFailAttribution, {
     pathUnresolved: snapshot?.evalFailAttributionUnresolved === true,
   });
+  lines.push('');
+  lines.push('## 二·C、美之三问归因样本（权重真标定的采集面）');
+  lines.push('');
+  renderOracleCalibration(lines, snapshot?.oracleCalibration);
   lines.push('');
   lines.push('## 二·A、外部信号与多源输入');
   lines.push('');

@@ -52,11 +52,29 @@ const quotaShape = z.object({
   alerts: z.number().int().min(0).default(0),
 });
 
-/** §3.6 首周基线面：前 7 条 daily 广播的均值；建立后 Δ 全部相对基线。 */
+/** §3.6 基线面（2026-10-09 起两代口径并存，见 method 字段）：
+ *  - `first-week-mean`：建基时前 7 条有效 daily 的**均值**（2026-09-27 ~ 10-06 用）。
+ *    ⚠ 已知缺陷：若建基窗口内某维数据源缺席（如 skills 文件系统不可达），该维
+ *      落 null 且**永不修复**——Q1 判定时该维直接不参与。
+ *  - `rolling-4w-median`：近 4 周有效 daily 的**中位数**（提案 6be656fd，
+ *    老板 2026-10-09 拍板方案 D「一次性重定基，不滚动」）。
+ *
+ * sampleCounts 记录每维参与中位数的**样本数 n**——各维 n 可以不同（生产实测
+ * noise 11 / confidence 10 / redundancy 4 / bloat 4，见 AGENT 汇报 2026-10-09），
+ * 把 n 落进数据是刻意的：没有 n，读者无从判断某维基线由几个样本支撑。
+ */
 const baselineShape = z.object({
   establishedAt: z.string().nullable().default(null),
   score: z.number().nullable().default(null),
   composites: z.record(z.string(), z.number().nullable()).default({}),
+  /** 建基口径（v1 存量行无此字段 = first-week-mean）。 */
+  method: z.string().default('first-week-mean'),
+  /** 重定基时刻（D 方案下一次性，之后不再自动滚动）。 */
+  rebaselinedAt: z.string().nullable().default(null),
+  /** 每维样本数（method=rolling-4w-median 时有值）。 */
+  sampleCounts: z.record(z.string(), z.number().nullable()).default({}),
+  /** 窗口天数（rolling-4w-median = 28）。 */
+  windowDays: z.number().int().nullable().default(null),
 });
 
 /** §6.1 缓存回退面：最近一次成功广播的原子值快照（Day 2-3）。

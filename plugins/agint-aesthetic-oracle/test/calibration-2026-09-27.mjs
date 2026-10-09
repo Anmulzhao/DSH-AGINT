@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { deriveComposites, computeAestheticScore } from '../lib/scoring.js';
+import { deriveComposites, computeAestheticScore, scaleHash, FORMULA_VERSION } from '../lib/scoring.js';
 
 const DSH_HOME = process.env.DSH_HOME || join(process.env.HOME || process.env.USERPROFILE || '', '.dsh');
 const STORAGES = join(DSH_HOME, 'storages');
@@ -57,13 +57,18 @@ console.log('== Part 1: 方案附录 C 钉死数据复算（AC-0d 确定性部�
 {
   const c = deriveComposites(PLAN_ATOMIC);
   const s = computeAestheticScore(c);
-  check('noise_ratio = 88/380 = 0.2316', Math.abs(c.noise.value - 0.2316) < 1e-3, `got ${c.noise.value}`);
+  // r3（提案 51e6e24f）起：noise 分子只含死条目（orphans 13 + noEvidence 71 = 84），
+  // contradictions 1 与 duplicates 3 已移给 redundancy 独占记账 ⇒ 总分 52.4 → 53.4。
+  // r2 旧值（88/380 = 0.2316、总分 52.4）保留在案，供历史趋势分段对照。
+  check('noise_ratio(r3) = 84/380 = 0.2211', Math.abs(c.noise.value - 0.2211) < 1e-3, `got ${c.noise.value}`);
   check('confidence = 0.544（逐条 Σ(conf×compliance)/N 口径）', Math.abs(c.confidence.value - 0.544) < 1e-6, `got ${c.confidence.value}`);
   check('redundancy = 4/55 = 0.0727', Math.abs(c.redundancy.value - 0.0727) < 1e-3, `got ${c.redundancy.value}`);
   check('bloat = 82652/122880 = 0.6727', Math.abs(c.bloat.value - 0.6727) < 1e-3, `got ${c.bloat.value}`);
-  check('aesthetic_score = 52.4 ± 0.5', Math.abs(s.score - 52.4) <= 0.5, `got ${s.score}`);
+  check('aesthetic_score(r3) = 53.4 ± 0.5', Math.abs(s.score - 53.4) <= 0.5, `got ${s.score}`);
   check('无 N/A 维（四维全可用）', s.naDims.length === 0);
-  console.log(`  → 总分 ${s.score}（v2.2 旧语义同日 27.1；v2.2 示例虚构 72——三个数字的差距就是三轮修订的意义）`);
+  check('effectiveDenominator = 100（全维口径）', s.effectiveDenominator === 100, `got ${s.effectiveDenominator}`);
+  console.log(`  → 总分 ${s.score}（r2 同日为 52.4；v2.2 旧语义同日 27.1；v2.2 示例虚构 72——每个数字的差距就是一轮修订的意义）`);
+  console.log(`  → 判尺指纹 scaleHash=${scaleHash}（阈值/权重微调会改变它，故改动常量须同步更新 test/scoring.test.js 的钉死值）`);
 }
 
 // ── Part 2：生产活体复算（数据在当前机器上才执行）────────────────────────────
@@ -186,8 +191,8 @@ if (!existsSync(agintPath)) {
 
 console.log('\n== 结论 ==');
 if (failed) {
-  console.log('  AC-0d FAIL：确定性复算未通过——公式实现与方案 §3 不一致，禁止上线。');
+  console.log('  AC-0d FAIL：确定性复算未通过——公式实现与 §3 附录 C 不一致，禁止上线。');
   process.exit(1);
 }
-console.log('  AC-0d PASS：公式实现与方案附录 C 一致（52.4 ± 0.5）。');
+console.log(`  AC-0d PASS：公式实现与方案附录 C 一致（${FORMULA_VERSION}：53.4 ± 0.5）。`);
 process.exit(0);
