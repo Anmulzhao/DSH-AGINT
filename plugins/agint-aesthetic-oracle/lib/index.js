@@ -36,7 +36,7 @@ import {
   openStore, loadState, randomId, nowIso,
   oracleBroadcastSchema,
 } from './storage.js';
-import { evaluateAesthetics, DIM_KEYS, NO_ADVICE } from './scoring.js';
+import { evaluateAesthetics, DIM_KEYS, NO_ADVICE, FORMULA_VERSION } from './scoring.js';
 import {
   extractAtomic, renderReport, rollQuota, dimsFromRecord, compositesRecord,
   auditScores, auditTargetId, buildWeeklyProposals, isoWeekKey, KIND_TOPIC, QUOTA_LIMITS,
@@ -274,7 +274,7 @@ function apply(ctx, config) {
     const published = await publishBus(KIND_TOPIC[kind], {
       kind, asOf: view.asOf, score: evaluation.scored.score, verdict: evaluation.verdict.verdict,
       worstKey: evaluation.worst?.key ?? null, lines: report.lines, text: report.text,
-      mode: payloadMode,
+      mode: payloadMode, formulaVersion: FORMULA_VERSION,
       ...(isNum(report.staleDays) ? { staleDays: report.staleDays } : {}),
       ...(kind === 'weekly' ? { proposals: proposalIds.length } : {}),
     });

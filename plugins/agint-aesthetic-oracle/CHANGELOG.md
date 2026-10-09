@@ -1,5 +1,32 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.5.0 — 2026-10-09
+
+评分公式 r2：三处度量学修复（提案 f51d3280，源码复审发现）。
+
+### 变更
+
+1. **bloat 扣分加上界**：`30 × min(max(0, b−1), 1.5)`，饱和于 2.5 倍预算。
+   旧公式无界线性（b=4 扣 90 → 总分 10，b=6 → 总分 −50）；bloat 是四维中
+   唯一无界罚（noise/redundancy 均 min(...,1) 饱和），技能只增不减的库里
+   臃肿度长期单调上升，无界罚迟早爆且以绝对优势碾压 Q2 归因。
+2. **Q1 效应量门槛**：`EFFECT_EPSILON`（各维阈值的 10%），|Δ| 低于门槛的
+   维视为持平不计入恶化/改善。旧公式 4 位小数非零即计数，噪声比 0.0405→
+   0.0406 算「恶化一维」，日频指标天然抖动让 Q1 在「持平/变丑」间随机翻转。
+3. **Q2 / weekly 提案排序改 ratio**：`deduction/maxWeight`（偏离度），不再按
+   绝对扣分。旧口径下 noise/bloat（权重 30）天然压过 confidence/redundancy
+   （权重 20）——归因被权重差绑架。标定数据上最丑从 noise 换成 redundancy
+   （ratio 1.0 > 0.77），weekly 提案 top3 选择同口径修正。
+4. **payload 透传 `formulaVersion`**（合同字段，optional）：版本切换前后的
+   总分不可直接比，历史趋势分段解读。
+
+### 口径影响
+
+- 总分与 Q2 归因在 r1→r2 间不连续；已发布事件无 formulaVersion 字段
+  （视同 r1）。标定复算 52.4 不受影响（该样本 bloat 未超预算扣 0）。
+- 测试 56 例全绿（新增 bloat 饱和 ×2 断言、Q1 门槛 ×3 断言、payload
+  formulaVersion 透传断言；更新 Q2 口径断言 ×2）。
+
 ## 0.4.3 — 2026-10-05
 
 可观测性补全：`mode` 与 LLM 降级 reason 进审计 findings。

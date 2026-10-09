@@ -39,6 +39,8 @@ const tieredShape = (kind) =>
      * 缺省 = 'template'（向后兼容 v0.3.0 已发布的事件）。
      */
     mode: z.enum(['template', 'llm', 'heuristic-degraded']).default('template'),
+    /** 评分公式版本（r2，2026-10-09）：版本切换前后总分不可直接比，分段解读。 */
+    formulaVersion: z.string().optional(),
     /** 缓存回退标注（§6.1 series 缓存）：数据距今天数；新鲜广播不传。 */
     staleDays: z.number().int().min(0).optional(),
   });

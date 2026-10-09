@@ -367,10 +367,11 @@ const PROPOSAL_CATEGORY = Object.freeze({
 /**
  * 从评分结果派生 weekly 提案（§5：3 条，evidence 必填）。
  *
- * 派生规则：可用维按**绝对扣分**降序（与 Q2 同口径），只取扣分 > 0 的维，
- * 最多 3 条——0 扣分（阈内）的维没有可改进项，提了也是噪声。每条经
- * q3Advice 生成（纯机械动作 + 必附证据），⭐ 只产出文本，不执行任何动作：
- * 归档/合并由老板决定后走各自插件，oracle 永不调 curator_archive。
+ * 派生规则：可用维按**偏离度 ratio**（deduction/maxWeight）降序（r2：与 Q2
+ * 同口径——旧版按绝对扣分排序，权重 30 的维天然压过权重 20 的维），只取
+ * 扣分 > 0 的维，最多 3 条——0 扣分（阈内）的维没有可改进项，提了也是噪声。
+ * 每条经 q3Advice 生成（纯机械动作 + 必附证据），⭐ 只产出文本，不执行任何
+ * 动作：归档/合并由老板决定后走各自插件，oracle 永不调 curator_archive。
  *
  * §4 真实关（2026-09-29）：q3Advice 返回 NO_ADVICE 的维直接跳过——
  * 查不到证据就不提提案（「本日无可执行建议」不是提案正文）。
@@ -382,8 +383,8 @@ export function buildWeeklyProposals(evaluation, adviceCtx = {}, meta = {}) {
   const composites = evaluation?.composites ?? {};
   const ranked = DIM_KEYS
     .filter((k) => dims[k]?.available && isNum(dims[k]?.deduction) && dims[k].deduction > 0)
-    .map((k) => ({ key: k, deduction: dims[k].deduction }))
-    .sort((a, b) => b.deduction - a.deduction);
+    .map((k) => ({ key: k, deduction: dims[k].deduction, ratio: dims[k].deduction / DIM_WEIGHTS[k] }))
+    .sort((a, b) => b.ratio - a.ratio);
   const drafts = [];
   for (const { key, deduction } of ranked) {
     if (drafts.length >= 3) break;

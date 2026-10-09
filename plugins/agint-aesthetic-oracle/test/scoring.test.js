@@ -85,6 +85,40 @@ test('bloat 超预算线性扣分且不封顶（bloat=2 → −30）', () => {
   assert.equal(s.score, 70);
 });
 
+test('r2：bloat 扣分饱和于 2.5 倍预算（b=3 → 扣 45，b=4 → 仍 45，总分不为负）', () => {
+  const mk = (mult) => deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5,
+    skillsBytes: THRESHOLDS.BLOAT_BUDGET_BYTES * mult,
+  });
+  // b=3：min(max(0,2),1.5)=1.5 → 扣 45
+  assert.equal(computeAestheticScore(mk(3)).dims.bloat.deduction, 45);
+  // b=4：min(max(0,3),1.5)=1.5 → 仍 45（饱和，不再加倍）
+  assert.equal(computeAestheticScore(mk(4)).dims.bloat.deduction, 45);
+  // 旧公式 b=4 扣 90 → 总分 10；b=6 扣 150 → 总分 -50（荒谬）。r2 后下限 = 100-45=55。
+  const s4 = computeAestheticScore(mk(4));
+  assert.equal(s4.score, 55);
+});
+
+test('r2：Q1 效应量门槛——阈下波动不计入恶化/改善', () => {
+  const mk = ({ nr }) => deriveComposites({
+    wikiOrphans: Math.round(nr * 1000), wikiContradictions: 0, ruleDuplicates: 0,
+    memoryNoEvidence: 0, wikiTotal: 1000, rulesTotal: 100, memoryTotal: 100,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsBytes: 0,
+  });
+  // 噪声比 0.040 → 0.045：Δ=0.005 < ε(noise)=0.03 → 持平（旧公式计恶化一维）
+  const v = q1Verdict(mk({ nr: 0.045 }), mk({ nr: 0.040 }));
+  assert.equal(v.worseCount, 0, `阈下波动不该计恶化，实得 worse=${v.worseCount}`);
+  // 噪声比 0.040 → 0.10：Δ=0.06 > ε → 计恶化一维（单维恶化仍判持平，但被计数）
+  const v2 = q1Verdict(mk({ nr: 0.10 }), mk({ nr: 0.040 }));
+  assert.equal(v2.worseCount, 1);
+  // 越过门槛的两维恶化 → 丑（阈值语义未变）
+  const v3 = q1Verdict(mk({ nr: 0.10 }), mk({ nr: 0.01 }));
+  assert.equal(v3.worseCount, 1);
+  assert.equal(v3.verdict, 'flat');
+});
+
 test('AC-4：任一维 N/A → 广播仍输出，扣分按权重归一（ΣmaxW=70 时放大 100/70）', () => {
   const c = deriveComposites({
     // 缺 wiki/rules/memory 全部分母 → noise N/A
@@ -167,13 +201,16 @@ test('Q1：composite 全程走一遍（noise↑ + redundancy↑ → 丑；全改
   assert.deepEqual(q1Verdict(cur1, null), { verdict: 'flat', worseCount: 0, betterCount: 0, note: '基线未建立（首周起算）' });
 });
 
-test('Q2：按绝对扣分取最丑维（与 §5 示例口径一致：23.2 > 20 → 报噪声比）', () => {
+test('Q2：按偏离度 ratio 取最丑维（r2：redundancy 满权重 1.0 > noise 0.77）', () => {
   const c = deriveComposites(PLAN_ATOMIC);
   const s = computeAestheticScore(c);
   const worst = q2Worst(c, s.dims);
-  // noise 扣 23.16 > redundancy 扣满 20 > confidence 4.46 > bloat 0
-  assert.equal(worst.key, 'noise');
-  assert.ok(Math.abs(worst.deduction - 23.1579) < 0.01);
+  // r2 口径：ratio = deduction/maxWeight。redundancy 扣满 20/20=1.0 >
+  // noise 23.16/30≈0.77 > confidence 4.46/20≈0.22 > bloat 0
+  // 旧口径按绝对扣分（23.16>20）报 noise——归因被权重差绑架，已修复。
+  assert.equal(worst.key, 'redundancy');
+  assert.ok(Math.abs(worst.ratio - 1) < 1e-6, `ratio=${worst.ratio}`);
+  assert.ok(Math.abs(worst.deduction - 20) < 0.01);
 });
 
 test('Q3：有证据时四条映射齐全，均附证据（§4 P2-10 修复：不再缺 3/4）', () => {

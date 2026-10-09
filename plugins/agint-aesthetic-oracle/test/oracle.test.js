@@ -118,11 +118,13 @@ test('AC-1/2/3 daily 主链路：wall≤3s、≤5行≤2KB 首行 asOf、审计 
   assert.equal(out.score, 52.4);
   assert.ok(out.text.includes('总分：52.4/100'), out.text);
   assert.ok(out.text.includes('基线未建') || out.text.includes('首周起算'), out.text);
-  assert.equal(out.worstKey, 'noise');
-  assert.ok(out.text.includes('噪声比'), out.text);
-  assert.ok(out.text.includes('71 条记忆无 evidence'), out.text);
-  assert.ok(out.text.includes('建议：为 71 条无 evidence 记忆补证据'), out.text);
-  assert.ok(out.text.includes('证据：'), out.text);
+  // r2：Q2 按 ratio 排序——redundancy（4/55，扣满 20/20=1.0）为最丑，
+  // 旧口径按绝对扣分报 noise（23.16/30≈0.77），已修复。
+  assert.equal(out.worstKey, 'redundancy');
+  assert.ok(out.text.includes('冗余'), out.text);
+  // r2：广播 payload 透传公式版本
+  const dailyEvent = env.bus.find((e) => e.payload?.kind === 'daily');
+  assert.equal(dailyEvent?.payload?.formulaVersion, 'r2');
   // §3.5：activity 5/173=0.029 < 0.1 → 播「进化静默期」，不再用「死寂」
   assert.ok(out.text.includes('呼吸：进化静默期（0.029）'), out.text);
   assert.ok(!out.text.includes('死寂'), '病理性措辞「死寂」已废弃');

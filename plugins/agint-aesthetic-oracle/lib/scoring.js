@@ -1,8 +1,12 @@
 /**
- * agint-aesthetic-oracle: 评分纯函数模块（v2.3 方案 §3 / §4）。
+ * agint-aesthetic-oracle: 评分纯函数模块（v2.3 方案 §3 / §4；公式 r2，2026-10-09）。
  *
  * 纯函数：输入原子值 → 输出四指标 + 美总分 + 美之三问。零 I/O、零服务访问、
  * 零 LLM——公式是确定性的，任何人拿到同样的原子值必须算出同样的分数。
+ * 公式 r2 三处修复（提案 f51d3280，老板 2026-10-09 批准）：
+ *   1. bloat 扣分加上界（BLOAT_SATURATION=1.5，修复无界线性罚）
+ *   2. Q1 加效应量门槛（EFFECT_EPSILON，消除日抖动判定翻转）
+ *   3. Q2 改 ratio 排序（归因与维度权重解耦）
  *
  * 分层纪律（方案 C / §9.4 的对偶面）：
  *   - 原子观测归 agint-metrics（summary()/series() 的 key + meta）
@@ -17,6 +21,15 @@
  *   - §4 Q1（P1-4）：恶化≥2→丑；恶化<2 且改善≥3→美；其余→持平（全排序无洞）
  */
 
+/**
+ * 评分公式版本（2026-10-09 三连修复起引入）。广播 payload 透传，用于历史趋势
+ * 分段解读：版本切换前后的总分不可直接比。
+ *   r2：bloat 扣分加上界（min(...,1.5)，修复总分可为负的无界罚）；
+ *       Q1 加效应量门槛 ε（消除日抖动导致的判定翻转）；
+ *       Q2 改按 ratio（deduction/maxWeight）排序（归因与权重解耦）。
+ */
+export const FORMULA_VERSION = 'r2';
+
 // ── 阈值常量（v2.3 §3 标定；改这里 = 改判尺，须走评审）────────────────────
 
 export const THRESHOLDS = {
@@ -24,10 +37,23 @@ export const THRESHOLDS = {
   NOISE_RATIO: 0.30,
   /** 决策确信度下限（§3.2）。 */
   CONFIDENCE: 0.70,
-  /** 冗余度阈值（§3.3）。 */
+  /** 冃度阈值（§3.3）。 */
   REDUNDANCY: 0.05,
   /** 臃肿度预算字节：120KB（§3.4，11 技能 × 8-12KB）。 */
   BLOAT_BUDGET_BYTES: 120 * 1024,
+  /** 臃肿度扣分饱和倍数：b=2.5 倍预算后不再加倍扣（r2：修复无界罚）。 */
+  BLOAT_SATURATION: 1.5,
+};
+
+/**
+ * Q1 效应量门槛（r2）：|Δ| 低于该值的维度视为持平，不计入恶化/改善。
+ * 取各维阈值的 10%——日频指标在阈值 10% 内的波动无行动意义。
+ */
+export const EFFECT_EPSILON = {
+  noise: 0.03,
+  confidence: 0.07,
+  redundancy: 0.005,
+  bloat: 0.1,
 };
 
 /** 四维权重（§3.6 权重累减结构：避免一项满分掩盖四项差）。 */
@@ -132,7 +158,9 @@ export function deriveComposites(a = {}) {
  *   noise      : 30 × min(nr / 0.30, 1)
  *   confidence : 20 × max((0.70 − c) / 0.70, 0)
  *   redundancy : 20 × min(r / 0.05, 1)
- *   bloat      : 30 × max(0, b − 1)
+ *   bloat      : 30 × min(max(0, b − 1), 1.5)（r2：饱和于 2.5 倍预算，
+ *                修复无界线性罚——旧公式 b=3 扣 60、b=4 扣 90，总分可为负
+ *                且 bloat 以绝对优势碾压 Q2 归因）
  */
 export function dimDeduction(key, value) {
   const T = THRESHOLDS;
@@ -140,7 +168,7 @@ export function dimDeduction(key, value) {
     case 'noise': return DIM_WEIGHTS.noise * Math.min(value / T.NOISE_RATIO, 1);
     case 'confidence': return DIM_WEIGHTS.confidence * Math.max((T.CONFIDENCE - value) / T.CONFIDENCE, 0);
     case 'redundancy': return DIM_WEIGHTS.redundancy * Math.min(value / T.REDUNDANCY, 1);
-    case 'bloat': return DIM_WEIGHTS.bloat * Math.max(0, value - 1);
+    case 'bloat': return DIM_WEIGHTS.bloat * Math.min(Math.max(0, value - 1), T.BLOAT_SATURATION);
     default: return null;
   }
 }
@@ -192,6 +220,10 @@ export function computeAestheticScore(composites) {
  * 恶化/改善按维定义：noise ↑ = 恶化；confidence ↓ = 恶化；redundancy ↑ = 恶化；
  * bloat ↑ = 恶化。N/A 维不参与计数。基线缺席 → 持平（附注）。
  *
+ * r2 效应量门槛：|Δ| < EFFECT_EPSILON[key] 的维度视为持平，不计入恶化/改善
+ * ——旧公式 4 位小数非零即计数，噪声比 0.0405→0.0406 就算「恶化一维」，
+ * 日频指标天然抖动会让 Q1 在「持平/变丑」间随机翻转。
+ *
  * @param {object} current composites（deriveComposites 输出）
  * @param {object|null} baseline composites（首周基线；null = 未建立）
  */
@@ -209,7 +241,8 @@ export function q1Verdict(current, baseline) {
     const b = baseline?.[key];
     if (!c || c.na || !isNum(c.value) || !b || b.na || !isNum(b.value)) continue;
     const diff = round(c.value - b.value);
-    if (diff === 0) continue;
+    const eps = EFFECT_EPSILON[key] ?? 0;
+    if (Math.abs(diff) < eps) continue; // r2：阈下波动视为持平
     const worsening = worseDims[key] === 'up' ? diff > 0 : diff < 0;
     if (worsening) { worseCount += 1; worseList.push(key); } else { betterCount += 1; betterList.push(key); }
   }
@@ -227,10 +260,11 @@ export const Q1_VERDICT_TEXT = {
 };
 
 /**
- * Q2：这件事最丑的地方在哪？（§4：取偏离阈值/基线最差者，指到指标级 + 来源）
- * 排序键 = **绝对扣分**（与 §5 示例一致：noise 扣 23.2 > redundancy 扣满 20
- * 时，示例把噪声比报为最丑——绝对分差才是"离满分最远"的直觉口径）。
- * N/A 维不参与。
+ * Q2：这件事最丑的地方在哪？（§4：指到指标级 + 来源）
+ * r2：排序键 = **偏离度 ratio**（deduction / maxWeight），不是绝对扣分。
+ * 旧口径按绝对扣分排序，noise/bloat（权重 30）天然压过 confidence/redundancy
+ * （权重 20）——归因被权重差绑架。ratio 让「最丑」= 离自己阈值最远，
+ * 与维度权重解耦。N/A 维不参与。
  */
 export function q2Worst(composites, dims) {
   let worst = null;
@@ -238,13 +272,14 @@ export function q2Worst(composites, dims) {
     const d = dims?.[key];
     const c = composites?.[key];
     if (!d?.available || !c || !isNum(c.value)) continue;
-    if (!worst || d.deduction > worst.deduction) {
+    const ratio = d.deduction / DIM_WEIGHTS[key];
+    if (!worst || ratio > worst.ratio) {
       worst = {
         key,
         value: c.value,
         deduction: d.deduction,
         maxWeight: DIM_WEIGHTS[key],
-        ratio: round(d.deduction / DIM_WEIGHTS[key]),
+        ratio: round(ratio),
       };
     }
   }
