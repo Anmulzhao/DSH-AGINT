@@ -776,10 +776,15 @@ const dispatchers = {
     const { computeMetrics } = await import(`${AGINT_URL}/plugins/agint-metrics/lib/metrics.js`);
     const input = scenario.input[0].args;
     // JSON 不能直接传函数；支持 _fn + _returns 这种"伪函数"约定。
+    // _throws（NEW-02，2026-10-09）：伪函数直接抛错，模拟不健康的源。
     const sources = {};
     for (const [k, v] of Object.entries(input.sources ?? {})) {
       if (v && typeof v === 'object' && v._fn) {
-        sources[k] = { [v._fn]: () => v._returns };
+        sources[k] = {
+          [v._fn]: v._throws
+            ? () => { throw new Error(String(v._throws)); }
+            : () => v._returns,
+        };
       } else {
         sources[k] = v;
       }
@@ -794,6 +799,32 @@ const dispatchers = {
       const want = exp.expectedKeys;
       const ok = want.every((k) => cronKeys.includes(k));
       return { ok, detail: `cron_keys=${cronKeys.join(',')}` };
+    }
+    // ── NEW-02（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 模块文档头的承诺（metrics.js:3-5）："every computation is defensive so a
+    // missing/unhealthy source skips its metrics instead of failing the run"。
+    // 现有两个单元只验了空 sources 和 cron 正常路径，这条防御性**零覆盖**——
+    // 而 metrics 是 evolve 周报的统一数据源，一个源抛错就把整轮算崩 =
+    // 所有指标一起消失，比单指标错值严重得多。断言三件事：
+    //   ① computeMetrics 整体 resolve 不 reject（能走到这里本身就是 ① 的一半）
+    //   ② 健康源（cron）的指标照常产出 —— 隔离不能误伤
+    //   ③ 不健康源（rules.audit 抛错）的指标全部缺席 —— 隔离不是吞错后乱给 0
+    // 另加输出卫生不变式：每条 record 的 key ∈ METRIC_DEFS 且 value 是有限数
+    //（push() 的 def 白名单 + NaN/null 丢弃是靠约定维持的，这里钉死）。
+    if (exp.kind === 'unhealthy-source-isolated') {
+      const { METRIC_DEFS } = await import(`${AGINT_URL}/plugins/agint-metrics/lib/metrics.js`);
+      const defined = new Set(METRIC_DEFS.map((d) => d.key));
+      const keys = records.map((r) => r.key);
+      const cronOk = (exp.expectedCronKeys ?? []).every((k) => keys.includes(k));
+      const rulesAbsent = !keys.some((k) => k.startsWith('rules.'));
+      const hygiene = records.every((r) => defined.has(r.key) && Number.isFinite(r.value));
+      const badKeys = records.filter((r) => !defined.has(r.key) || !Number.isFinite(r.value)).map((r) => r.key);
+      const ok = cronOk && rulesAbsent && hygiene;
+      return {
+        ok,
+        detail: `cron_ok=${cronOk} rules_absent=${rulesAbsent} hygiene=${hygiene}`
+          + ` keys=[${keys.join(',')}]${badKeys.length ? ` BAD=[${badKeys.join(',')}]` : ''}`,
+      };
     }
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },

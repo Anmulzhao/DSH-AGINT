@@ -529,6 +529,10 @@
     "cron-default-job-schedules-valid": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
+    },
+    "metrics-unhealthy-source-isolated": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     }
   }
 }
