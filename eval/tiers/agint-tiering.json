@@ -527,28 +527,28 @@
       "labelAuthority": "UNSET"
     },
     "cron-default-job-schedules-valid": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "metrics-unhealthy-source-isolated": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "memory-recall-counts-and-remove-idempotent": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "memory-same-id-upserts-not-duplicates": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "install-scripts-parse-clean": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     "eval-dimensions-contract": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     }
   }
 }

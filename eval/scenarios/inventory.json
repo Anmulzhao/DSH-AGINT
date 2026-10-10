@@ -1,6 +1,6 @@
 {
   "inventoryVersion": "1.0",
-  "generatedAt": "2026-10-10T14:55:21.600Z",
+  "generatedAt": "2026-10-10T15:40:22.251Z",
   "generatedBy": "bin/build-scenario-inventory.mjs",
   "driverVersion": "d22120ea008fe0d0dc4ba818ddf250cc570c16b9",
   "unitDefinition": "driver.js 全量回归中可独立判定 PASS/FAIL 的最小执行单元",
@@ -74,15 +74,15 @@
       "integration": 129
     },
     "tierCounts": {
-      "EVOLUTION": 133,
+      "EVOLUTION": 127,
       "VALIDATION": 0,
-      "FROZEN": 4
+      "FROZEN": 10
     },
     "tierSum": 137,
     "labelAuthorityCounts": {
-      "UNSET": 125,
+      "UNSET": 119,
       "SILVER": 0,
-      "GOLD": 12,
+      "GOLD": 18,
       "HELDOUT": 0
     },
     "qualityRatio": {
@@ -141,8 +141,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "classify-prompt-deficiency",
@@ -583,8 +583,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "memory-same-id-upserts-not-duplicates",
@@ -600,8 +600,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "metrics-compute-empty-sources",
@@ -651,8 +651,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "s11-01-happy-path-healthy-mount",
@@ -991,8 +991,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     },
     {
       "unitId": "sandbox-gate-passes-when-sandbox-ok",
@@ -2419,8 +2419,8 @@
         "dsh-runtime"
       ],
       "runtimeRequired": true,
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
+      "visibility": "FROZEN",
+      "labelAuthority": "GOLD"
     }
   ],
   "tierBaseline": {
@@ -2428,13 +2428,19 @@
     "tieringVersion": "1.0",
     "note": "Frozen 集的聚合 hash 与名单。入 evolution-memory 的 `benchmark_frozen_set` 表后，即可回答「这一版冻结集有没有被偷偷改过」：增删任一 Frozen 单元、或改任一 Frozen 单元的 contentHash，聚合 hash 都会变。⛔ hash 只对 {unitId, contentHash} 计算，不含 labelAuthority —— HELDOUT→GOLD 是合法降级，算进来会变成假阳性。",
     "frozenUnitIds": [
+      "cron-default-job-schedules-valid",
+      "eval-dimensions-contract",
+      "install-scripts-parse-clean",
+      "memory-recall-counts-and-remove-idempotent",
+      "memory-same-id-upserts-not-duplicates",
+      "metrics-unhealthy-source-isolated",
       "rules-allow-mv-evolution-log-rotation",
       "s12-02-evolution-evaluated-sync-edge",
       "s12-05-policy-policy-deployed-rolledback-shadow",
       "service-annotations-table-full-throws"
     ],
-    "frozenCount": 4,
-    "frozenAggregateHash": "sha256:a2a7fd9ff4174a81a67e7ba0a76f1d1383c45a9f879b9486b3d4f02d095e08ab",
+    "frozenCount": 10,
+    "frozenAggregateHash": "sha256:2ddd0119e46e9937b7c69118c3604379707833c4523c05ecd1bfb9b9c288ded0",
     "failCount": 2,
     "h1EvolutionMinFail": 2,
     "h3FrozenFailProbeCap": 0,
