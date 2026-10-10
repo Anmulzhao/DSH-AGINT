@@ -1453,6 +1453,58 @@ const dispatchers = {
       return { ok, detail: `count=${BASELINE_TARGETS.length} ids=[${ids.slice(0, 5).join(',')}...]` };
     }
 
+    // ── NEW-06（2026-10-09，Frozen 新编单元）────────────────────────────
+    // evaluateAll 的**输出结构合同**此前零覆盖：8 个维度键集合、score 取值域
+    //（0..1 或 null）、veto 派生规则（null ⇒ veto；safety < 阈值 ⇒ veto）。
+    // 这是 compositeScore 的一票否决、policy-decide、weekly regression、
+    // deploy budget 共同依赖的底层契约。2026-10-07 的 fail-closed 事件证明
+    // 这层会被静默改坏（当时 4 个下游单元红是症状，契约本体无单元钉住，
+    // 归因花了半天）。断言四件事：
+    //   ① dimensions 键序列 === DIMENSION_KEYS（evaluateAll 必须吃判据常量，
+    //      不许手搓清单 —— 手搓后新增维度必然漂移）
+    //   ② 每维 score 是 null 或有限数且落在 [0,1]（下游直接参与加权/展示）
+    //   ③ veto 派生与规则逐维一致（重算期望对比，不硬编码 mock 数据）
+    //   ④ compositeScore(result) 非 null：本 mock 下只有非 veto 维度
+    //      （effectiveness/convention/adaptability/promptStatic）为 null ——
+    //      这钉死 veto 名单 = safety+trust；往名单里加维度是判据变更，
+    //      必须让本单元变红走人工评审。
+    if (exp.kind === 'dimensions-contract') {
+      const { compositeScore, DIMENSION_KEYS, SAFETY_VETO_THRESHOLD } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
+      const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const richCtx = makeRichEvalMockCtx(input);
+      evalMod.apply(richCtx, {});
+      await new Promise((r) => setTimeout(r, 50));
+      const evaluator = richCtx.get('agint.qualityEvaluator');
+      if (!evaluator) return { ok: false, detail: 'evaluator service not registered' };
+      const result = await evaluator.evaluate(input.target);
+
+      const keys = result.dimensions.map((d) => d.key);
+      const keysOk = JSON.stringify(keys) === JSON.stringify([...DIMENSION_KEYS]);
+
+      const rangeBad = result.dimensions
+        .filter((d) => {
+          const s = d.score?.score;
+          return s !== null && !(Number.isFinite(s) && s >= 0 && s <= 1);
+        })
+        .map((d) => `${d.key}=${d.score?.score}`);
+
+      const vetoBad = result.dimensions
+        .filter((d) => {
+          const s = d.score?.score ?? null;
+          const expectVeto = s === null || (d.key === 'safety' && s < SAFETY_VETO_THRESHOLD);
+          return d.veto !== expectVeto;
+        })
+        .map((d) => `${d.key}(veto=${d.veto},score=${d.score?.score})`);
+
+      const composite = compositeScore(result);
+      const compositeOk = exp.compositeNotNull ? composite !== null : composite === null;
+
+      const ok = keysOk && rangeBad.length === 0 && vetoBad.length === 0 && compositeOk;
+      const detail = `keys_ok=${keysOk}(${keys.length}) range_bad=[${rangeBad.join(',')}]`
+        + ` veto_bad=[${vetoBad.join(',')}] composite=${composite}`;
+      return { ok, detail };
+    }
+
     // ── Sprint 3.1: sandbox gate Service 测试 ──────────────────────────
     if (exp.kind === 'sandbox-gate-passes'
       || exp.kind === 'sandbox-gate-rejects'
