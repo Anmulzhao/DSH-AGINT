@@ -694,10 +694,76 @@ const dispatchers = {
     mod.apply(ctx, {});
     const memory = ctx.get('agint.memory');
     const input = scenario.input[0].args;
+    const exp = scenario.expected[0];
     const written = await memory.write(input);
     const read = await memory.read(written.id);
     const match = read && read.content === input.content && read.type === input.type;
-    return { ok: !!match, detail: `id=${written.id} content_match=${!!match}` };
+
+    // ── 原有唯一分支：write→read 回环 ──
+    if (!exp.kind || exp.kind === 'write-read-roundtrip') {
+      return { ok: !!match, detail: `id=${written.id} content_match=${!!match}` };
+    }
+
+    // ── NEW-03（2026-10-09，Frozen 新编单元）──────────────────────────
+    // recall 是记忆「活性」的唯一计量入口：recalls 计数与 lastRecall 时间戳
+    // 是 decay 与 search 排序（effectiveConfidence）的输入。现有唯一单元只测
+    // write→read，而 **read 不得推进计数、recall 必须推进、remove 必须幂等**
+    // 这三件事零覆盖。recall 计数坏了的失败模式是静默的（记忆永远「新鲜」，
+    // decay 永不触发）；remove 不幂等的失败模式是重复删除时行为不定。
+    if (exp.kind === 'recall-counts-and-remove-idempotent') {
+      const a = await memory.write({ type: 'lesson', content: 'recall-target-entry', evidence: 'test:eval:mem:recall' });
+      const b = await memory.write({ type: 'pattern', content: 'control-entry-no-recall', evidence: 'test:eval:mem:control' });
+      const before = await memory.read(a.id);
+      const r1 = await memory.recall(a.id);
+      const r2 = await memory.recall(a.id);
+      const control = await memory.read(b.id);
+      const removed1 = await memory.remove(a.id);
+      const afterRemove = await memory.read(a.id);
+      const removed2 = await memory.remove(a.id);
+      const checks = {
+        readDoesNotBump: before.recalls === 0,
+        recallBumpsPerCall: r1.recalls === 1 && r2.recalls === 2,
+        lastRecallAdvances: r2.lastRecall >= r1.lastRecall && r1.lastRecall >= before.lastRecall,
+        controlUntouched: control.recalls === 0,
+        removeExistingTrue: removed1 === true,
+        readNullAfterRemove: afterRemove === null,
+        removeMissingFalse: removed2 === false,
+      };
+      const bad = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+      return {
+        ok: bad.length === 0,
+        detail: bad.length ? `FAIL:${bad.join(',')}` : `recalls 0→1→2, remove true→read null→false`,
+      };
+    }
+
+    // ── NEW-04（2026-10-09，Frozen 新编单元）──────────────────────────
+    // 同 id 二次写入必须是 **upsert**（更新同一条），不是新增。这是 memory
+    // 表「不膨胀」的根基：dream/沉淀通道按 id 重写候选时（生产事故 7fee880
+    // 修的就是重复写入），若 write 退化成 always-insert ⇒ 每晚翻倍。
+    // 同时钉 upsert 的继承语义：未带的字段（confidence/evidence）从 existing
+    // 继承、createdAt 冻结、updatedAt 推进 —— 丢继承 = 证据链断裂。
+    if (exp.kind === 'same-id-upserts-not-duplicates') {
+      const first = await memory.write({ id: 'stable-upsert-id', type: 'decision', content: 'v1 content', confidence: 0.8, evidence: 'evidence:v1' });
+      const second = await memory.write({ id: 'stable-upsert-id', type: 'decision', content: 'v2 content' });
+      const all = await memory.list();
+      const stats = await memory.stats();
+      const checks = {
+        noDuplicateRows: stats.total === 1 && all.length === 1,
+        sameIdKept: second.id === first.id && all[0]?.id === first.id,
+        createdAtFrozen: second.createdAt === first.createdAt,
+        updatedAtAdvances: second.updatedAt >= first.updatedAt,
+        contentUpdated: second.content === 'v2 content',
+        confidenceInherited: second.confidence === 0.8,
+        evidenceInherited: second.evidence === 'evidence:v1',
+      };
+      const bad = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+      return {
+        ok: bad.length === 0,
+        detail: bad.length ? `FAIL:${bad.join(',')}` : `total=1, createdAt frozen, inherits conf/evidence`,
+      };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 
   'agint-rules': async (scenario, ctx) => {

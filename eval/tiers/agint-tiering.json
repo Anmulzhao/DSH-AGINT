@@ -533,6 +533,14 @@
     "metrics-unhealthy-source-isolated": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
+    },
+    "memory-recall-counts-and-remove-idempotent": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
+    },
+    "memory-same-id-upserts-not-duplicates": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     }
   }
 }
