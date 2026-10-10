@@ -13,8 +13,14 @@
       {
         "kind": "grep",
         "file": "install/install.sh",
-        "mustContain": ["--no-links", "exclude='.git/", "exclude='node_modules/"],
-        "mustNotContain": ["cp -a $src $dst"]
+        "mustContain": [
+          "--no-links",
+          "exclude='.git/",
+          "exclude='node_modules/"
+        ],
+        "mustNotContain": [
+          "cp -a $src $dst"
+        ]
       }
     ]
   },
@@ -32,7 +38,12 @@
       {
         "kind": "grep",
         "file": "install/install.sh",
-        "mustContain": ["register_step", "rollback()", "PARTIAL_STEPS=()", "trap - EXIT"]
+        "mustContain": [
+          "register_step",
+          "rollback()",
+          "PARTIAL_STEPS=()",
+          "trap - EXIT"
+        ]
       }
     ]
   },
@@ -50,7 +61,10 @@
       {
         "kind": "grep",
         "file": "install/install.sh",
-        "mustContain": ["case \"${!v}\" in", "*..*"]
+        "mustContain": [
+          "case \"${!v}\" in",
+          "*..*"
+        ]
       }
     ]
   },
@@ -68,7 +82,12 @@
       {
         "kind": "grep",
         "file": "install/install.sh",
-        "mustContain": ["BACKUP_DIR=", ".agint-backups", "BACKUP_KEEP=", "prune_old_backups"]
+        "mustContain": [
+          "BACKUP_DIR=",
+          ".agint-backups",
+          "BACKUP_KEEP=",
+          "prune_old_backups"
+        ]
       }
     ]
   },
@@ -86,7 +105,12 @@
       {
         "kind": "grep",
         "file": "install/uninstall.sh",
-        "mustContain": ["--list-backups", "--restore", "--purge-backups", "LIST_BACKUPS"]
+        "mustContain": [
+          "--list-backups",
+          "--restore",
+          "--purge-backups",
+          "LIST_BACKUPS"
+        ]
       }
     ]
   },
@@ -104,6 +128,28 @@
       {
         "kind": "file-executable",
         "path": "install/agint-security-checks.sh"
+      }
+    ]
+  },
+  {
+    "scenario": "install-scripts-parse-clean",
+    "plugin": "agint-install",
+    "input": [
+      {
+        "service": "install",
+        "action": "verifyBashSyntax",
+        "_note": "NEW-05（Frozen 首期新编，2026-10-09）：本域原有 6 个单元全是 grep 标记检查，「包含标记」≠「脚本能解析」。一次坏编辑可以保留全部标记但语法已坏，而 install 是最早跑的护栏（B2 实跑是唯一能抓到它的既有手段，手动低频）。bash -n 是本域唯一可执行级断言。"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "bash-syntax",
+        "files": [
+          "install/install.sh",
+          "install/uninstall.sh",
+          "install/agint-security-checks.sh"
+        ],
+        "_note": "判据：三个安装脚本 bash -n 全部通过（语法可解析）。任一脚本报语法错即红。"
       }
     ]
   }

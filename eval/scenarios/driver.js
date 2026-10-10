@@ -998,6 +998,31 @@ const dispatchers = {
       }
     }
 
+    // ── NEW-05（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 本域原有 6 个单元全是 grep 标记检查 —— 「包含标记」≠「脚本能解析」。
+    // 一次坏编辑可以保留全部标记但语法已坏，而 install 是所有护栏里最早跑的
+    // （B2 实跑是唯一能抓到它的既有手段，但那是手动低频操作）。bash -n 是
+    // 本域唯一可执行级断言：不改状态、不依赖环境、确定性红绿。
+    if (exp.kind === 'bash-syntax') {
+      if (process.platform === 'win32') {
+        return { ok: true, detail: 'SKIP on win32 (no bash)' };
+      }
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const oks = [];
+      for (const f of exp.files) {
+        const p = `${AGINT_ROOT}/${f}`;
+        try {
+          await run('bash', ['-n', p]);
+          oks.push(`${f}:ok`);
+        } catch (e) {
+          return { ok: false, detail: `bash -n ${f}: ${String(e.stderr ?? e.message).trim().split('\n')[0]}` };
+        }
+      }
+      return { ok: true, detail: oks.join(' ') };
+    }
+
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 

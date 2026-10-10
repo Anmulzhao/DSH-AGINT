@@ -541,6 +541,10 @@
     "memory-same-id-upserts-not-duplicates": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
+    },
+    "install-scripts-parse-clean": {
+      "visibility": "EVOLUTION",
+      "labelAuthority": "UNSET"
     }
   }
 }
