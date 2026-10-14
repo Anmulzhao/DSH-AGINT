@@ -37,6 +37,7 @@ import {
 } from './evaluators.js';
 import { resolveWeights, validateWeights, DEFAULT_DIMENSION_WEIGHTS } from './weights.js';
 import { WeeklyScheduler } from './scheduler.js';
+import { enumeratePluginTargets } from './plugin-targets.js';
 import {
   BASELINE_TARGETS,
   checkRegression,
@@ -71,6 +72,30 @@ const Config = z.object({
    * 多根按 name 去重、声明顺序在前者优先）。
    */
   skillsDirs: z.array(z.string()).optional(),
+  /**
+   * 0.3.5：是否把宿主已挂载的 plugin 纳入评估目标（老板 2026-10-14 拍板方案 2：
+   * plugin + skill 都评）。
+   *
+   * 发现源是 `ctx.loader.entries()` —— 权威名册（patch 只说"要什么"，loader
+   * 才说"挂上了什么"，agint-family-panel/lib/index.js:176 的同款口径）。
+   * 默认 true：此前 weekly 只枚举技能目录里名字含 'agint' 的技能，
+   * 本机实测只枚举到 1 个（$DSH_HOME/skills 6 个目录含 agint 的 0；
+   * .agent-presets/agint/skills 10 个目录含 agint 的 1），
+   * 与老板 2026-08-20 拍板的 9 个 core plugin 口径不符。
+   *
+   * 设为 false 可回到纯技能枚举（不新增目录扫描面）。
+   */
+  includePlugins: z.boolean().default(true),
+  /** 0.3.5：plugin 命名空间过滤。默认只收 `agint-*` —— 宿主其它 plugin 不在本系统评估范围。 */
+  pluginIdPrefix: z.string().default('agint-'),
+  /**
+   * 0.3.5：单次评估的目标数上限。
+   * 默认 undefined = 不限（老板拍板"plugin + skill 都评"，不悄悄截断）。
+   * ⛔ 若设了值，截断会 console.warn 点名被丢掉的数量 —— 静默截断等于假覆盖率。
+   * 扩大评估面后目标数从 1 涨到 38（本机实测），若单次评估耗时不可接受，
+   * 在这里设上限，而不是回头去收窄枚举口径。
+   */
+  maxTargets: z.number().int().positive().optional(),
   /** 行动 #5（2026-09-28）：综合分维度权重外置（partial；缺失键回退内置默认） */
   dimensionWeights: z.object({
     trust: z.number().min(0).max(1).optional(),
@@ -210,6 +235,31 @@ function apply(ctx, config) {
    */
   async function enumerateTargets() {
     const targets = [];
+    const seen = new Set();
+
+    // ── 源 1：已挂载 plugin（0.3.5 新增，老板 2026-10-14 拍板方案 2）────────
+    // 权威名册 = ctx.loader.entries()。⚠️ 它不是数组、是迭代器 ——
+    // agint-mascot v0.1.1 踩过（用 Array.isArray 判形状会把健康宿主读成 warn），
+    // 照它的 toArray() 先例处理，不自创。
+    // 自评由 evaluate() 里的 SELF_PLUGIN_ID 拒绝兜底（递归陷阱），这里不重复判。
+    if (cfg?.includePlugins !== false) {
+      const { targets: pluginTargets, reason } = enumeratePluginTargets(
+        ctx,
+        cfg?.pluginIdPrefix ?? 'agint-',
+        SELF_PLUGIN_ID,
+      );
+      // 读不到要出声：静默返回空 = 评估池看着有数、实际漏了一整类目标
+      if (reason) {
+        console.warn(`[agint-quality-eval] plugin 目标枚举降级: ${reason}`);
+      }
+      for (const p of pluginTargets) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        targets.push(p);
+      }
+    }
+
+    // ── 源 2：技能目录（0.3.3 起的既有行为，保持不变）──────────────────────
     const dshHome = process.env.DSH_HOME || join(process.env.HOME || '', '.dsh');
     const roots = cfg?.skillsDirs?.length
       ? cfg.skillsDirs
@@ -217,7 +267,6 @@ function apply(ctx, config) {
           join(dshHome, 'skills'),                              // 用户级投放位（skill-autocreate）
           join(dshHome, '.agent-presets', 'agint', 'skills'),   // AGINT 手工位（preset 随仓库同步）
         ];
-    const seen = new Set();
     for (const root of roots) {
       for (const s of await scanSkillDir(root)) {
         if (seen.has(s.name)) continue;
@@ -226,6 +275,14 @@ function apply(ctx, config) {
           targets.push({ id: s.name, kind: 'skill', version: '0.0.0' });
         }
       }
+    }
+    if (typeof cfg?.maxTargets === 'number' && targets.length > cfg.maxTargets) {
+      // 截断必须出声：静默截断 = 假覆盖率（判据层同款纪律，§3.18）
+      console.warn(
+        `[agint-quality-eval] 目标数 ${targets.length} 超过 maxTargets=${cfg.maxTargets}，` +
+        `截断后 ${cfg.maxTargets} 个，丢弃 ${targets.length - cfg.maxTargets} 个`,
+      );
+      return targets.slice(0, cfg.maxTargets);
     }
     return targets;
   }

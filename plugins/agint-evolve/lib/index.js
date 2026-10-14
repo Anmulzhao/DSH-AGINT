@@ -183,11 +183,23 @@ function apply(ctx, config) {
   };
 
   // ---- review files: path discipline + walk (same as agint-wiki) ----
+  // Windows 路径逃逸误报修复（2026-10-14）：
+  // `resolve()` 在 win32 返回反斜杠路径（`D:\...\reviews`），而判据
+  // `abs.startsWith(root + '/')` 拼出的 `D:\...\reviews/` 与真实
+  // `D:\...\reviews\xxx.md` 永不匹配 ⇒ 所有合法相对路径都被判 escapes root。
+  // 症状（实测）：evolve_read path="2026-10-12-周复盘.md" 抛
+  //   `agint-evolve: path escapes root` ⇒ 14 份复盘报告一份都读不到。
+  // 修法与 agint-wiki v0.4 同型（plugins/agint-wiki/lib/index.js:43-51）：
+  //   比较前把两侧都归一化成正斜杠。不削弱安全 —— `../` 经 resolve() 后
+  //   会真正跳出 root，归一化后照样被拒（回归用例覆盖）。
+  const normRoot = root.replace(/\\/g, '/');
+
   const clean = (p) => {
     const trimmed = String(p ?? '').replace(/^\/+/, '');
     if (!trimmed.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
     const abs = resolve(root, trimmed);
-    if (abs !== root && !abs.startsWith(root + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
+    const normAbs = abs.replace(/\\/g, '/');
+    if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
     return { rel: trimmed, abs };
   };
 

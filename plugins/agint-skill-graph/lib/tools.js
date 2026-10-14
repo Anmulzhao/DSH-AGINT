@@ -39,6 +39,9 @@ function apply(ctx) {
           + `${v.stale ? '  [STALE>14d]' : ''}\n`
           + `  edgesByType: ${JSON.stringify(v.edgesByType ?? {})}\n`
           + `  counters: ${JSON.stringify(v.counters ?? {})}\n`
+          // 2026-10-13 诊断：edges=0 时必须能看见卡在哪一步（磁盘有行 vs 读表抛错
+          // 是两种完全不同的故障，此前在输出上无法区分）。有边时不显示，避免噪声。
+          + `${v.edges === 0 ? `\n  diag: ${v.diag ?? '(no diag)'}${v.error ? `\n  error: ${v.error}` : ''}` : ''}\n`
           + `  lastCalibration: ${v.lastCalibration ? `${v.lastCalibration.week} nodes=${v.lastCalibration.nodes} edges=${v.lastCalibration.edges} promotable=${v.lastCalibration.promotable}` : '无（尚未跑过标定期）'}`,
       }],
     },

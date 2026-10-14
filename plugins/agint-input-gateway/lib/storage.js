@@ -62,6 +62,16 @@ const ChannelStateSchema = z.object({
   lastError: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string().optional(),
+  // v0.1.6 零命中告警（2026-10-14）：连续 N 次 fetch 产出 0 条信号 ⇒ 通道可能
+  // 静默失明。判据与 dream 的 lib/health.js 同型（纯规则、不阻断、带 kill-switch）。
+  //
+  // ⛔ 全部 nullish：生产存量记录不含这些字段，必填会让 dsh-storage-domain 的
+  // open 校验失败 ⇒ 整域拒绝 ⇒ gateway 空转（2026-10-03 现场取证，见上方
+  // CountersSchema 的 security* 注释，同一个坑踩过两次）。
+  consecutiveZeroHit: z.number().int().nullish(),
+  lastNonZeroAt: z.string().nullish(),
+  zeroHitAlert: z.boolean().nullish(),
+  zeroHitAlertThreshold: z.number().int().positive().nullish(),
 });
 
 // ── defineDomain ──────────────────────────────────────────────────────────

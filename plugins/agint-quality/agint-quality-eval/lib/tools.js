@@ -20,6 +20,31 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 const name = 'agint-quality-eval-tools';
 const inject = ['tools', 'agint.qualityEvaluator'];
 
+/**
+ * 把任意值压成纯 JSON 值（Date → ISO 字符串，Error → {message}）。
+ *
+ * 为什么需要它（2026-10-14 实测）：调度器把 `at` 存成 Date 对象
+ * （lib/scheduler.js:58 `const at = new Date()`）。宿主对工具返回值做
+ * lossless-JSON 校验，Date 不是 JSON 原生类型 ⇒ 整个返回值被拒，
+ * 工具报 `invalid output: value is not lossless JSON`。
+ * 该值在 lastRun 里，只在跑过评估之后才存在 ⇒ bug 首次评估后才现形。
+ *
+ * ⛔ 只做类型归一，不改语义、不吞字段。
+ */
+function sanitizeForJson(v, depth = 0) {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (v instanceof Error) return { name: v.name, message: v.message };
+  if (typeof v !== 'object') return v;
+  if (depth > 8) return null; // 防循环/深嵌套
+  if (Array.isArray(v)) return v.map((x) => sanitizeForJson(x, depth + 1));
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    out[k] = sanitizeForJson(val, depth + 1);
+  }
+  return out;
+}
+
 function apply(ctx) {
   const evaluator = ctx['agint.qualityEvaluator'];
 
@@ -64,7 +89,12 @@ function apply(ctx) {
       const lastRun = typeof evaluator.lastRun === 'function' ? evaluator.lastRun() : null;
       return {
         nextFire: nextFire ? new Date(nextFire).toISOString() : null,
-        lastRun: lastRun ?? null,
+        // 2026-10-14 修复：lastRun 里的 `at` 是 Date 对象（scheduler.js:58 `const at = new Date()`），
+        //   Date 不是 JSON 原生类型 ⇒ 宿主 lossless-JSON 校验拒绝整个返回值，
+        //   表现为 `quality_eval_status: invalid output: value is not lossless JSON`。
+        //   未跑过评估时 lastRun=null 不触发，所以这个 bug 只在首次评估之后才现形。
+        //   修法：这里归一化成 ISO 字符串 —— 不动 scheduler 语义，只动序列化边界。
+        lastRun: sanitizeForJson(lastRun) ?? null,
         weights: evaluator.weights ?? {},
         dimensionKeys: evaluator.dimensionKeys ?? [],
       };

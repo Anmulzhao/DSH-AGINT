@@ -1,5 +1,36 @@
 # agint-evolve CHANGELOG
 
+## v0.7.3（2026-10-14 · Windows 路径逃逸误报修复）
+
+### 修复
+
+- `clean()` 的路径越界判据在 win32 恒为真 ⇒ **所有 `evolve_read` 读不到任何复盘报告**。
+  判据原为 `abs.startsWith(root + '/')`，而 `resolve()` 在 Windows 返回反斜杠路径
+  （`D:\...\reviews`），拼出的 `D:\...\reviews/` 与真实 `D:\...\reviews\xxx.md` 永不匹配。
+  修法与 `agint-wiki` v0.4 同型：比较前把两侧都归一化成正斜杠。
+- 实测症状（修复前）：`evolve_read path="2026-10-12-周复盘.md"`
+  → `Error: agint-evolve: path escapes root` ⇒ 14 份复盘报告一份都读不到。
+
+### 验证
+
+- 新增 `test/path-escape-windows.test.mjs`（8 项）：真调生产 `readReview()` /
+  `listReviews()`，含中文文件名、子目录、`../` 逃逸、多级 `../`、非 `.md`、文件不存在。
+- 红绿自证：撤掉归一化 ⇒ 4 项变红；恢复 ⇒ 8/8 绿。安全不回退（`../` 仍被拒）单独覆盖。
+- 全插件回归 54/54 PASS，`test/smoke.mjs` exit 0。
+
+### 附带发现（未修，单列）
+
+- `walk()` 在 win32 用 `relative()` 产出反斜杠分隔符，子目录报告返回
+  `sub\nested.md` 而非 `sub/nested.md`。与 `clean()` 同型但独立，不影响读取
+  （`clean()` 已归一化，回读能通），只影响输出形状。
+
+### 测试基建
+
+- 新增 `test/_stub-loader.mjs` + `test/_stub-register.mjs`：本机仓库工作树没有
+  `@deepseek-ai/dsh-storage-domain`（该包只在 dsh 运行时提供），直接 `node --test`
+  会 ERR_MODULE_NOT_FOUND。跑测试需
+  `node --import ./test/_stub-register.mjs --test test/xxx.test.mjs`。
+
 ## v0.7.2（2026-09-29 · 周报纳入外部信号章节）
 
 ### 新增

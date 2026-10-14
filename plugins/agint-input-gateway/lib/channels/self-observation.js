@@ -98,20 +98,33 @@ function detectToolAnomaly() {
     });
   }
 
-  // b) 单工具连续失败（从后往前找）
-  const streak = {};
+  // b) 单工具连续失败（窗口内同一 tool 的最长失败游程）
+  //
+  // 2026-10-14 修复：原实现在遇到第一条成功记录时 `break` —— 那测的是
+  // 「文件末尾的失败游程」，不是「窗口内的最长游程」。真实数据末尾那条
+  // 几乎总是成功的 ⇒ maxStreakCount 恒为 0 ⇒ 该判据从未生效过。
+  // 实测（agint_tool_stats.jsonl，16822 行）：最近 200 条里 pwsh 有连续
+  // 16 次 ok===false（阈值 ≥3），而修复前产出 0 条信号 —— 检测器全 active
+  // 却静默漏检，正是「看起来健康实则失明」。
+  //
+  // 正确语义：同一 tool 的**相邻**失败才算连续；中间夹一次成功即断链。
+  // 所以逐条维护「当前游程」（遇成功归零），并取历史最大值。
+  const cur = {};          // tool → 当前连续失败数
+  const best = {};         // tool → 窗口内最长连续失败数
   let maxStreakTool = null;
   let maxStreakCount = 0;
-  for (let i = recent.length - 1; i >= 0; i--) {
+  for (let i = 0; i < recent.length; i++) {
     const r = recent[i];
+    const t = r.tool;
     if (r.ok === false) {
-      streak[r.tool] = (streak[r.tool] || 0) + 1;
-      if (streak[r.tool] > maxStreakCount) {
-        maxStreakCount = streak[r.tool];
-        maxStreakTool = r.tool;
+      cur[t] = (cur[t] || 0) + 1;
+      if (cur[t] > (best[t] || 0)) best[t] = cur[t];
+      if (best[t] > maxStreakCount) {
+        maxStreakCount = best[t];
+        maxStreakTool = t;
       }
     } else {
-      break;
+      cur[t] = 0;          // 成功 ⇒ 该 tool 的游程断链
     }
   }
   if (maxStreakCount >= 3 && maxStreakTool) {
