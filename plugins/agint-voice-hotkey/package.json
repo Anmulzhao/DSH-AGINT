@@ -1,7 +1,7 @@
 {
   "name": "agint-voice-hotkey",
-  "version": "0.1.0",
-  "description": "语音交互助手 3a：OS 热键（SSE 守护进程 bin/voice-hotkey.mjs）触发录音，松手即发。浏览器半注册 conversation.input.left 席位，复用 ui-voice-input 的采集与转写链路，经 inputActions.submit() 自动提交。",
+  "version": "0.2.4",
+  "description": "语音交互助手 3a：Alt+. 热键（SSE 守护进程）触发录音；静音自动收尾；松手即发（inputActions.submit）。浏览器半经同源 api/agint-voice/events 走 host 半代理，不再直连守护进程端口。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
