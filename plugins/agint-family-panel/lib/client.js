@@ -178,13 +178,21 @@ window.__ModuleLoader__.load({
       const [view, setView] = React.useState('v2');
       const frameRef = React.useRef(null);
       const [frameH, setFrameH] = React.useState(0);
+      // 0.2.7：iframe 元素进 state 当 effect 依赖。iframe 只在 data 载入后才渲染，
+      // 首挂载时 ref 还是 null，旧 effect（依赖 [view]）直接 return，监听器永远
+      // 没挂上——这就是「只有切 v1 再切回 v2 高度才正常」的根因。回调 ref 把
+      // 元素本身交给 effect，iframe 一出现就挂 load/RO/轮询。
+      const [frameEl, setFrameEl] = React.useState(null);
+      const attachFrame = React.useCallback((node) => {
+        frameRef.current = node;
+        setFrameEl(node);
+      }, []);
 
       // 0.2.2：v2 iframe 自适应内页高度（同源直读 scrollHeight；跨域或未就绪
       // 退回视口高兜底）。外层 .agintfp-root 统一滚动，与 v1 的整页下拉一致；
       // 内页滚到底不再撞在半高窗口里。load 后 3s 轮询兜异步取数引起的高度变化。
       React.useEffect(() => {
-        if (view !== 'v2') return undefined;
-        const f = frameRef.current;
+        const f = frameEl;
         if (!f) return undefined;
         let ro = null;
         let poll = null;
@@ -205,13 +213,20 @@ window.__ModuleLoader__.load({
           sync();
           try {
             if (typeof ResizeObserver === 'function') {
+              if (ro) { try { ro.disconnect(); } catch {} }
               ro = new ResizeObserver(sync);
               if (f.contentDocument && f.contentDocument.body) ro.observe(f.contentDocument.body);
             }
           } catch { /* RO 挂不上就只靠轮询 */ }
+          if (poll) clearInterval(poll);
           poll = setInterval(sync, 3000);
         };
         f.addEventListener('load', onLoad);
+        // 防御：effect 挂上时 iframe 可能已加载完（切回 v2 复用缓存文档），
+        // load 不会再触发，这里主动补一次。
+        try {
+          if (f.contentDocument && f.contentDocument.readyState === 'complete') onLoad();
+        } catch { /* 同源读不了：等 load / sync 兜底 */ }
         sync();
         return () => {
           alive = false;
@@ -219,7 +234,7 @@ window.__ModuleLoader__.load({
           if (poll) clearInterval(poll);
           f.removeEventListener('load', onLoad);
         };
-      }, [view]);
+      }, [frameEl]);
 
       const load = React.useCallback(async () => {
         setLoading(true);
@@ -277,7 +292,7 @@ window.__ModuleLoader__.load({
         }
         if (view === 'v2') {
           return h('iframe', {
-            ref: frameRef,
+            ref: attachFrame,
             title: 'AGINT 家族 v2 面板（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定）',
             src: V2_PATH,
             scrolling: frameH > 0 ? 'no' : 'auto',

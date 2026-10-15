@@ -1,5 +1,32 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.7 — 2026-10-15
+
+### 修 v2 iframe 首挂载不自适应高度（只有切 v1 再切回才正常）
+
+**为什么**：高度自适应 effect 的依赖数组是 `[view]`，而 iframe 只在 `data` 载入完成
+后才渲染。首次进入面板时 `data === null`（显示「载入中…」），`frameRef.current` 是
+`null`，effect 直接 return——load 监听器和 ResizeObserver 都没挂上。数据到达、iframe
+渲染出来时 `view` 没变，effect 不再重跑，iframe 永远停在兜底高度
+`calc(100vh - 190px)`。切到 v1 再切回 v2 时 `data` 已在，iframe 与 view 变化同一次
+commit 渲染，effect 重跑时 ref 已就位，监听器才挂上——这就是老板看到的「切回来才正常」。
+
+**改了什么**（`lib/client.js`，浏览器半）：
+
+- iframe 元素经回调 ref 存入 state（`frameEl`），effect 依赖改为 `[frameEl]`——
+  iframe 一出现就挂 load/RO/轮询，不再依赖 view 翻转这一时机巧合。
+- effect 挂上时若 iframe 文档已 `complete`（切回 v2 复用缓存文档，load 不再触发），
+  主动补一次 `onLoad()`。
+- `onLoad` 内先清理旧 RO / 旧 interval 再重建，防浏览器缓存命中重复 load 事件时泄漏。
+
+**测试**：浏览器半是宿主 artifact，smoke 只静态检查（`test/smoke.mjs` L7 注释）；
+`node --check` 语法通过 + 面板全量 smoke 6 组通过。
+
+**生效条件**：双副本同步（mirror + bundle）后重启 dsh；浏览器半还需页面刷新重新拉取
+`lib/client.js`。
+
+---
+
 ## 0.2.6 — 2026-10-05
 
 ### 仓库位新增候选 ⓪：cordis `config.repoRoot`
