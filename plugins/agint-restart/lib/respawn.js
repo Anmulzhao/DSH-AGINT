@@ -183,12 +183,16 @@ function probeProcess(pid) {
     if (typeof pid !== 'number' || !(pid > 0)) return resolve(null);
     if (process.platform === 'win32') {
       // wmic 在新系统上已被移除，PowerShell CIM 是现役通路（同 killer.js 口径）
-      const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{Name=$p.Name;CommandLine=$p.CommandLine} | ConvertTo-Json -Compress }`;
+      const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{Name=$p.Name;CommandLine=$p.CommandLine;ParentProcessId=$p.ParentProcessId} | ConvertTo-Json -Compress }`;
       execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 10000 }, (err, stdout) => {
         if (err || !stdout || !stdout.trim()) return resolve(null);
         try {
           const o = JSON.parse(stdout.trim());
-          resolve({ name: String(o.Name ?? ''), cmdline: String(o.CommandLine ?? '') });
+          resolve({
+            name: String(o.Name ?? ''),
+            cmdline: String(o.CommandLine ?? ''),
+            ppid: Number(o.ParentProcessId) || 0,
+          });
         } catch {
           resolve(null);
         }
@@ -196,11 +200,42 @@ function probeProcess(pid) {
       return;
     }
     try {
-      resolve({ name: basename(readlinkSync(`/proc/${pid}/exe`)), cmdline: '' });
+      const exe = readlinkSync(`/proc/${pid}/exe`);
+      let ppid = 0;
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[1]) || 0;
+      } catch { /* 拿不到 ppid 时只丢祖先链，不影响映像名 */ }
+      resolve({ name: basename(exe), cmdline: '', ppid });
     } catch {
       resolve(null);
     }
   });
+}
+
+/**
+ * 从 listenerPid 往上走祖先链，看能不能走到 ancestorPid。
+ *
+ * 桌面 profile 为什么需要：respawn 拉起的是 **GUI**，而 19387 的真实监听者是 GUI
+ * 自己 fork 的 host（壳 → GUI → host 三代）。win32 的 launched.pid 是 wscript 壳，
+ * 拿它跟监听者比对永远不等，所以既有代码在这条路上只能走 `degraded`（判就绪但不验身份）。
+ * 祖先链判据把这一轮从「没验成」变成「真验过」：监听者必须挂在我拉起的那棵树底下，
+ * 否则就是别人（比如没杀干净的遗留 headless host）占着端口抢功 —— 正是本次要修的故障。
+ *
+ * 只加强、不收紧：走不通链时返回 false 由调用方**保持 degraded 语义**，
+ * 不翻成失败（壳进程可能已退出、pid 也可能被回收，那是探测能力问题，不是没起来）。
+ *
+ * @returns {Promise<boolean>} true = 确认 listener 是 ancestor 的后代
+ */
+async function isDescendantOf(listenerPid, ancestorPid, maxDepth = 8) {
+  let cur = listenerPid;
+  for (let i = 0; i < maxDepth && cur > 0; i++) {
+    if (cur === ancestorPid) return true;
+    const info = await probeProcess(cur);
+    if (!info || !info.ppid || info.ppid === cur) return false;
+    cur = info.ppid;
+  }
+  return false;
 }
 
 /**
@@ -674,7 +709,18 @@ async function main() {
         log(logFile, `respawn: 真实 dsh pid=${realPid}（壳 pid=${result.launchShellPid}）`);
       }
     }
-    log(logFile, `respawn: 就绪=${ready.ready} 信号=${ready.signal ?? '-'} waited=${ready.waitedMs}ms${ready.degraded ? ' (degraded: 未验监听者身份)' : ''}`);
+    // 桌面 profile：监听者必须是"我拉起的 GUI"树下的 host。验得过就把 degraded 摘掉；
+    // 验不过只记 unverified，不翻成失败（探测能力问题 ≠ 没起来）。
+    if (req.desktop && ready.ready && !ready.foreignListener) {
+      const listener = await findListenerPid(req.readiness?.port);
+      if (listener && result.launchShellPid) {
+        const under = await isDescendantOf(listener, result.launchShellPid);
+        result.readyVerified = under ? 'descendant-of-launched-shell' : 'unverified';
+        if (under) result.readyDegraded = false;
+        log(logFile, `respawn: 桌面链路 监听者 pid=${listener} 挂在我拉起的壳 pid=${result.launchShellPid} 树下：${under ? '是（身份已验）' : '否（保持 degraded，不翻失败）'}`);
+      }
+    }
+    log(logFile, `respawn: 就绪=${ready.ready} 信号=${ready.signal ?? '-'} waited=${ready.waitedMs}ms${result.readyDegraded ? ' (degraded: 未验监听者身份)' : ''}${result.readyVerified ? ` [${result.readyVerified}]` : ''}`);
   } else {
     result.ready = false;
     result.readySignal = null;
@@ -699,5 +745,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   });
 }
 
-// 单测钩子：拉起 env 的剥离规则、桌面 GUI 核身拒杀
-export { pickEnv, killDesktopShell, probeProcess };
+// 单测钩子：拉起 env 的剥离规则、桌面 GUI 核身拒杀、监听者祖先链
+export { pickEnv, killDesktopShell, probeProcess, isDescendantOf };

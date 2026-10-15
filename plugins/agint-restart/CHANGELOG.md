@@ -25,7 +25,15 @@
 
 **pid 复用防护**：`guiPid` 是开机时记下的父进程号，重启可能发生在几天后，那个 pid 完全可能被回收给别的程序。`killDesktopShell` 三道核身（进程还在 / 映像名 == 快照的 `guiExeName` / 命令行不含 host 入口脚本），任一不过就拒绝并记日志——宁可留下旧窗口，也不能凭一个可能已复用的 pid 乱杀老板的东西。
 
-**验证**：新增 12 例全绿；`node --test "test/*.test.mjs"` 27 pass / 0 fail / 10 skipped（skip 是既有的 win32 子进程形状限制）；`test/smoke.mjs` 46 pass / 1 fail，失败的是 `respawn.js 端到端` 一条，**未改动的部署位旧副本同样失败**（本机 win32 既有问题，非本次引入）。真机验证走 v0.9.1 重启一次桌面 app：`restart_status` 的 dryRun 应显示 `launch.args=[]` + `desktop.guiPid` 非空，重启后 19387 有新 owner、无新 crash log、`restart-result.json` `ok=true`。
+**验证**：新增 15 例全绿；`node --test "test/*.test.mjs"` 30 pass / 0 fail / 10 skipped（skip 是既有的 win32 子进程形状限制）；`test/smoke.mjs` 46 pass / 1 fail，失败的是 `respawn.js 端到端` 一条，**未改动的部署位旧副本同样失败**（本机 win32 既有问题，非本次引入）。
+
+**用真机输入验插件侧，当场抓出一个 bug**：`_verify_plugin_side_20261015.mjs` 用 CIM 取活体 host 的 CommandLine 与 ppid，喂给已部署的 `detectDesktopShell`。第一版按 `argv[1]` 认入口 ⇒ 判成 `null`（等于修复完全不上线）。真机形状是 `spawn(exe, ["--expose-internals", entry, ...])`，而 `--expose-internals` 会不会留在 `process.argv` 里取决于 Electron node 模式怎么解析前置 flag（Win32 命令行里有，argv 里不确定）。改成**扫全量 argv**，并补该形状的用例。教训：判据要用线上真实输入喂，mock 掉 argv 形状等于把要验的东西验没了。
+
+**真机重启一次（21:50，文件式驱动部署位 respawn）**：`restart.log` 同一文件里前后对照——修复前 `cmd=exe + dsh-desktop-host/lib/index.js + 5 参数`、`60000ms 内未观测到就绪信号（lease=sentinel.lease port=3080）`、**ok=false**；修复后 `cmd=exe`（裸起）、`desktopShell.killed=true`、`portFree 7ms`（真端口 19387）、`ready=true 5393ms`、`readyVerified=descendant-of-launched-shell`、**ok=true**。拉起后树：壳 13908 → cmd 27664 → GUI 20688（有 MainWindowTitle）→ host 22260（LISTENING 19387、6 条 ESTABLISHED），HTTP 401 通过。生成的 `respawn-launch.cmd` 现在只有裸 exe 一行，修复前是整串 host 参数。
+
+**新增 `readyVerified` 判据**：win32 下 `launched.pid` 是 wscript 壳，永远不等于端口监听者，既有代码在这条路上只能走 `degraded`（判就绪但不验身份）。改成从监听者往上走祖先链，走到我拉起的壳即算真验过——「占端口的不是我拉起的那个」正是本次故障形态，值得从「没验成」升级成「验过」。走不通链时**保持 degraded 不翻失败**（探测能力问题 ≠ 没起来）。
+
+**一条无害留痕**：本次是文件式驱动（外部强杀旧 host），旧 GUI 的 supervisor 看见子进程 `exited with 1` 写了一份 crash log；插件发起的正常重启是优雅退出，不走这条。判据别认错——那条内容是 `dsh desktop host exited with 1`，不是 `EADDRINUSE` / `Another DSH instance`。
 
 ---
 

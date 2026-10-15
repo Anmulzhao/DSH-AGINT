@@ -312,7 +312,7 @@ function snapshotLaunch(override, desktop) {
 /**
  * 判断"我是不是桌面 app 的 host 子进程"。
  *
- * 为什么要单独判：桌面 profile 下 host 由 Electron 主进程 fork（argv[1] 指向
+ * 为什么要单独判：桌面 profile 下 host 由 Electron 主进程 fork（入口是
  * dsh-desktop-host/lib/index.js），而 GUI 侧的 HostSupervisor.start() 只拉起
  * **一次**、子进程退出后不自动重生（lib/main.js: `if (this.child !== void 0) return`
  * + close → fail → 弹「Another DSH instance」框）。此时若照"我自己怎么起的"复现，
@@ -323,12 +323,16 @@ function snapshotLaunch(override, desktop) {
  * 所以桌面 profile 的正确复现对象是 **GUI 主进程**：先杀掉旧 GUI（否则 Electron
  * 单实例锁会把新起的 GUI 直接吞掉），再裸起 exe。
  *
+ * ⚠️ 入口位置**不能按 argv[1] 认**：GUI 是 `spawn(exe, ["--expose-internals", entry, ...])`，
+ * 而 `--expose-internals` 会不会留在 process.argv 里取决于 Electron node 模式怎么解析前置
+ * flag —— 真机 2026-10-15 21:41 实测：Win32 命令行里有它。两种形状都得认，所以扫全量 argv。
+ *
  * @returns {null|{guiCommand:string, guiPid:number|null, guiExeName:string}}
  *   非桌面 host 返回 null，走原来的自复现链路。
  */
 export function detectDesktopShell({ argv = [], execPath = '', ppid = 0 } = {}) {
-  const entry = String(argv[1] ?? '');
-  if (!/dsh-desktop-host[\\/]+lib[\\/]+index\.js$/i.test(entry)) return null;
+  const isHostEntry = (a) => /(?:^|[\\/])dsh-desktop-host[\\/]+lib[\\/]+index\.js$/i.test(String(a ?? ''));
+  if (!Array.isArray(argv) || !argv.some(isHostEntry)) return null;
   if (typeof execPath !== 'string' || execPath === '') return null;
   return {
     guiCommand: execPath,

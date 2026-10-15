@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { basename } from 'node:path';
 import { detectDesktopShell } from '../lib/index.js';
-import { pickEnv, killDesktopShell } from '../lib/respawn.js';
+import { pickEnv, killDesktopShell, isDescendantOf } from '../lib/respawn.js';
 
 const GUI_EXE = 'D:\\Programs\\DeepSeek Harness\\DeepSeek Harness.exe';
 const HOST_ENTRY = 'D:\\Programs\\DeepSeek Harness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\index.js';
@@ -50,6 +50,19 @@ test('detectDesktopShell: posix 桌面 host argv 同样认出（分隔符换成 
   assert.equal(got.guiCommand, '/opt/dsh/dsh');
   assert.equal(got.guiExeName, 'dsh');
   assert.equal(got.guiPid, 4242);
+});
+
+test('detectDesktopShell: 入口不在 argv[1]（前面插了 --expose-internals）也要认出', () => {
+  // 真机 2026-10-15 21:41 实测形状：GUI 是 spawn(exe, ["--expose-internals", entry, ...])。
+  // 第一版按 argv[1] 判定，被这条真实输入当场打回 —— 判据必须扫全量 argv。
+  const got = detectDesktopShell({
+    argv: [GUI_EXE, '--expose-internals', HOST_ENTRY, 'runtimeDir', 'projectDir'],
+    execPath: GUI_EXE,
+    ppid: 15784,
+  });
+  assert.ok(got, '带前置 flag 时不得判成"非桌面 host"，否则又回去拉 headless host');
+  assert.equal(got.guiPid, 15784);
+  assert.equal(got.guiExeName, 'DeepSeek Harness.exe');
 });
 
 test('detectDesktopShell: CLI `dsh web` 的 argv → null（走原自复现链路）', () => {
@@ -163,4 +176,31 @@ test('killDesktopShell: 映像名对得上但其实是 headless host（命令行
   } finally {
     child.kill();
   }
+});
+
+// ── 4. isDescendantOf：桌面链路的监听者身份判据 ────────────────────────
+
+test('isDescendantOf: 真父子 → true；无亲属关系 → false（不靠 mock，用真进程链）', async () => {
+  // 形状与真机一致：壳(respawn/wscript) → GUI → host(监听 19387)。
+  // 这里用 node 真起两层，验的是「往上走链能不能走到」这件事本身。
+  const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], {
+    stdio: 'ignore',
+    detached: false,
+  });
+  try {
+    assert.ok(await isDescendantOf(grandchild.pid, process.pid), '孙进程应被认在本进程树下');
+    assert.ok(await isDescendantOf(grandchild.pid, grandchild.pid), '自身即祖先时应直接命中');
+    assert.equal(
+      await isDescendantOf(process.pid, grandchild.pid),
+      false,
+      '反方向不得成立（链走不到）',
+    );
+  } finally {
+    grandchild.kill();
+  }
+});
+
+test('isDescendantOf: 不存在的 pid → false（不得抛，判据要能在探测失败时保持 degraded）', async () => {
+  assert.equal(await isDescendantOf(2147483000, process.pid), false);
+  assert.equal(await isDescendantOf(process.pid, 2147483000), false);
 });
