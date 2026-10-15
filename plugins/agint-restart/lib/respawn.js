@@ -24,8 +24,9 @@
  * 新 dsh 自身的 stdout/stderr 重定向到 request.logFile（默认 %TEMP%/dsh-web.log）。
  */
 import { spawn, execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, writeSync, closeSync, statSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, writeSync, closeSync, statSync, mkdirSync, rmSync, readlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,6 +148,10 @@ function pickEnv(launchEnv, launch) {
   const merged = { ...base, ...(launchEnv ?? {}) };
   // 展开后再剥，base 和 launchEnv 两边带来的都拦得住。
   if (launch?.keepNodeOptions !== true) delete merged.NODE_OPTIONS;
+  // 桌面 GUI 拉起必须剥掉 ELECTRON_RUN_AS_NODE：它是 host 子进程的身份标记
+  // （GUI 用 `exe + host/index.js + 该 env` 起 node 模式）。带着它裸起 exe，
+  // Electron 会进 node 模式、没有入口脚本 ⇒ 立刻退出，GUI 根本起不来。
+  if (launch?.guiLaunch === true) delete merged.ELECTRON_RUN_AS_NODE;
   return merged;
 }
 
@@ -160,6 +165,86 @@ function forceKill(pid) {
       resolve();
     }
   });
+}
+
+/**
+ * host 入口脚本，用来分辨"GUI 主进程"和"被误认成 GUI 的 headless host"。
+ * 不锚行尾：真实 host 的命令行里入口后面还跟着 runtimeDir/projectDir 等参数。
+ */
+const DESKTOP_HOST_ENTRY_RE = /dsh-desktop-host[\\/]+lib[\\/]+index\.js/i;
+
+/**
+ * 查一个 pid 现在的映像名与命令行（杀 GUI 前的核身用）。
+ *
+ * @returns {Promise<null|{name:string, cmdline:string}>} 进程不存在/查不到 → null
+ */
+function probeProcess(pid) {
+  return new Promise((resolve) => {
+    if (typeof pid !== 'number' || !(pid > 0)) return resolve(null);
+    if (process.platform === 'win32') {
+      // wmic 在新系统上已被移除，PowerShell CIM 是现役通路（同 killer.js 口径）
+      const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{Name=$p.Name;CommandLine=$p.CommandLine} | ConvertTo-Json -Compress }`;
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 10000 }, (err, stdout) => {
+        if (err || !stdout || !stdout.trim()) return resolve(null);
+        try {
+          const o = JSON.parse(stdout.trim());
+          resolve({ name: String(o.Name ?? ''), cmdline: String(o.CommandLine ?? '') });
+        } catch {
+          resolve(null);
+        }
+      });
+      return;
+    }
+    try {
+      resolve({ name: basename(readlinkSync(`/proc/${pid}/exe`)), cmdline: '' });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * 桌面 profile：杀掉旧 GUI 主进程（连子树），给新 GUI 让路。
+ *
+ * 为什么必须杀：GUI 的 HostSupervisor 只拉起 host 一次、不自动重生，旧 GUI 会停在
+ * 错误框上；而 Electron 单实例锁（requestSingleInstanceLock + second-instance →
+ * focusOwner）会把 respawn 新起的裸 exe 直接吞成"聚焦旧窗口"。两头都不动 = 重启后
+ * 谁也没起来。
+ *
+ * 为什么要有三道核身：guiPid 是**开机时**记下的父进程号，重启可能发生在几天后，
+ * 那个 pid 完全可能被回收给了别的进程。凭一个可能已复用的 pid 乱杀，代价是老板别的
+ * 程序。任一校验不过 → 不杀，只记日志（宁可留下旧窗口）。
+ */
+async function killDesktopShell(desktop, logFile) {
+  const pid = desktop?.guiPid;
+  if (!pid) {
+    log(logFile, 'respawn: 桌面请求里没有 guiPid，跳过杀 GUI（新 GUI 可能被单实例锁吞掉）');
+    return { killed: false, reason: 'no-gui-pid' };
+  }
+  const info = await probeProcess(pid);
+  if (!info) {
+    log(logFile, `respawn: GUI pid=${pid} 已不存在，无需杀`);
+    return { killed: false, reason: 'gui-gone' };
+  }
+  const want = String(desktop.guiExeName ?? '').toLowerCase();
+  if (!want || info.name.toLowerCase() !== want) {
+    log(logFile, `respawn: ⛔ pid=${pid} 映像名是 ${JSON.stringify(info.name)}，与快照的 ${JSON.stringify(desktop.guiExeName)} 不符（pid 可能已被回收），拒绝杀`);
+    return { killed: false, reason: 'name-mismatch' };
+  }
+  if (DESKTOP_HOST_ENTRY_RE.test(info.cmdline)) {
+    log(logFile, `respawn: ⛔ pid=${pid} 命令行含 host 入口，是 headless host 不是 GUI 主进程，拒绝杀`);
+    return { killed: false, reason: 'not-gui-main' };
+  }
+  await new Promise((resolve) => {
+    execFile('taskkill', ['/F', '/T', '/PID', String(pid)], () => resolve());
+  });
+  const started = Date.now();
+  while (Date.now() - started < 10000) {
+    if (!isAlive(pid)) return { killed: true, waitedMs: Date.now() - started };
+    await sleep(POLL_EXIT_MS);
+  }
+  log(logFile, `respawn: ⚠️ 已发 taskkill /T /F，但 GUI pid=${pid} 10s 后仍在（新 GUI 可能被单实例锁吞掉）`);
+  return { killed: false, reason: 'still-alive', waitedMs: Date.now() - started };
 }
 
 /** 读并校验 request.json。缺关键字段直接抛（调用方会记日志退出）。 */
@@ -526,6 +611,14 @@ async function main() {
   result.exit = exit;
   log(logFile, `respawn: 旧进程 exited=${exit.exited} forced=${exit.forced} waited=${exit.waitedMs}ms`);
 
+  // 1.5 桌面 profile：旧 host 是自己退出的，但它上面的 GUI 还活着并停在错误框上。
+  // 不先杀掉它，第 3 步裸起的 exe 会被 Electron 单实例锁吞掉（只聚焦旧窗口）。
+  if (req.desktop) {
+    const shell = await killDesktopShell(req.desktop, logFile);
+    result.desktopShell = shell;
+    log(logFile, `respawn: 桌面 GUI killed=${shell.killed}${shell.reason ? ` reason=${shell.reason}` : ''}`);
+  }
+
   // 2. 等端口释放
   const portFree = await waitPortFree(req.readiness?.port, req.portFreeTimeoutMs ?? 15000, logFile);
   result.portFree = portFree;
@@ -598,7 +691,13 @@ async function main() {
   log(logFile, `respawn: 完成 ok=${result.ok}`);
 }
 
-main().catch((err) => {
-  console.error('[agint-restart] respawn: fatal:', err);
-  process.exit(1);
-});
+// 直接执行才跑主流程；被单测 import 时只取导出的纯函数（同 killer.js 的守卫写法）
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[agint-restart] respawn: fatal:', err);
+    process.exit(1);
+  });
+}
+
+// 单测钩子：拉起 env 的剥离规则、桌面 GUI 核身拒杀
+export { pickEnv, killDesktopShell, probeProcess };

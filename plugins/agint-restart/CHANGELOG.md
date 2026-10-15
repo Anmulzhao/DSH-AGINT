@@ -4,6 +4,31 @@
 
 ---
 
+## v0.9.1 — 2026-10-15 — 桌面 profile 重启必崩：复现对象从 headless host 换成 GUI 主进程
+
+**背景**：老板两次截图同一张弹窗（2026-10-13、2026-10-15）——「The application could not start or stopped unexpectedly / Another DSH instance (such as dsh web or the desktop app) is running」。文案是误导：并没有第二个实例在跑，是 `/restart-dsh` 自己造出来的东西挡住了桌面 app。
+
+**根因链（两次实跑同形，时刻为本地）**：
+
+1. 老板跑 `/restart-dsh`。旧 host 退出后，respawn 用 `respawn-launch.vbs`（隐藏窗口）复现「我自己当初怎么起的」⇒ 起来一个**没有 GUI 的 headless host**，成功绑走 `127.0.0.1:19387`。
+2. 老板从资源管理器双击桌面 app。Electron 主进程必然自己再生一个 host 子进程 ⇒ `listen EADDRINUSE 127.0.0.1:19387` ⇒ 必需插件 `webserver` 激活失败 ⇒ `connection` 等 12 个插件缺服务挂起 ⇒ `DesktopHostFatalError` ⇒ 弹这个框。
+3. 点框里的 Restart 无效：只是 GUI 重生子 host，端口仍被那个遗留 host 占着。
+
+**为什么以前没暴露**：`dsh web`（麒麟/服务器）那条链路里，进程自己就是宿主，复现自己是对的。桌面 profile 是「GUI 拥有 host」的形状，同一段代码语义正好反了。判据取自打包进 app.asar 的宿主源码：`HostSupervisor.start()` 写明「Start this child **once**」（`if (this.child !== void 0) return`），子进程 close 只调 `fail()` 弹框，**不自动重生**——所以「让 GUI 自己把 host 拉回来」这条路不存在，必须重启 GUI 本身。
+
+**改动**：
+
+- `lib/index.js`：新增导出 `detectDesktopShell({argv, execPath, ppid})` —— 判 `argv[1]` 是否为 `dsh-desktop-host/lib/index.js`，是则返回 `{guiCommand=process.execPath, guiPid=process.ppid, guiExeName}`。`snapshotLaunch(override, desktop)` 在桌面模式下把拉起快照换成**裸起 exe**（`args: []`，带 `guiLaunch: true`）；显式配了 `config.launch` 时不接管（override 语义 = 老板说了算）。请求 payload 加 `desktop` 字段。
+- `lib/respawn.js`：① `pickEnv` 在 `guiLaunch` 时剥掉 `ELECTRON_RUN_AS_NODE`（**必须打在展开之后**：base 侧来自 respawn 自身继承的 host env，launch.env 侧是全量快照，两边都带）。带着它裸起 exe 会进 node 模式、没有入口脚本 ⇒ 立刻退出，GUI 根本起不来。② 新增 `probeProcess` / `killDesktopShell`：旧 host 退出后、等新 GUI 起来前，把旧 GUI 连子树 `taskkill /F /T` 掉——不杀它，Electron 单实例锁（`requestSingleInstanceLock` + `second-instance → focusOwner`）会把新起的 exe 直接吞成「聚焦旧窗口」，两头都不动等于谁也没重启。③ `main()` 加执行守卫（同 killer.js 写法）并导出 `pickEnv` / `killDesktopShell` / `probeProcess` 供单测。
+- `AGINT-date/profiles/desktop/cordis.patch.yml`（本机 override，不入库）：`agint-restart.readiness` 换成 `leasePath: null` + `port: 19387`。bundle 默认的 `sentinel.lease` + `3080` 是 `dsh web` 的值，桌面 profile 两条都不成立 ⇒ 自 2026-10-10 起每次重启都记 `ok=false` 而 host 其实活着（假阴），且 `waitPortFree(3080)` 空转、重启时从不等真端口释放。
+- `test/desktop-shell-respawn.test.mjs`（新增 12 例）：识别（win32/posix 路径、CLI argv 不误判、`execPath` 缺失、`ppid<=0` 落成 null）、env 剥离（两侧都剥、非 GUI 保留、不牵连 `DSH_HOME`）、拒杀护栏（无 pid / pid 已没 / 映像名不符 / 其实是 headless host），并断言被拒杀的进程**事后仍活着**（判据取事实不取日志）。
+
+**pid 复用防护**：`guiPid` 是开机时记下的父进程号，重启可能发生在几天后，那个 pid 完全可能被回收给别的程序。`killDesktopShell` 三道核身（进程还在 / 映像名 == 快照的 `guiExeName` / 命令行不含 host 入口脚本），任一不过就拒绝并记日志——宁可留下旧窗口，也不能凭一个可能已复用的 pid 乱杀老板的东西。
+
+**验证**：新增 12 例全绿；`node --test "test/*.test.mjs"` 27 pass / 0 fail / 10 skipped（skip 是既有的 win32 子进程形状限制）；`test/smoke.mjs` 46 pass / 1 fail，失败的是 `respawn.js 端到端` 一条，**未改动的部署位旧副本同样失败**（本机 win32 既有问题，非本次引入）。真机验证走 v0.9.1 重启一次桌面 app：`restart_status` 的 dryRun 应显示 `launch.args=[]` + `desktop.guiPid` 非空，重启后 19387 有新 owner、无新 crash log、`restart-result.json` `ok=true`。
+
+---
+
 ## v0.9.0 — 2026-10-05 — 手动控制面：composer dock 两个按钮 + 终止链路
 
 **背景**：老板在插件管理页看到第三方插件 `@linxin666/dsh-client-ui-plugin-manager` 的「立即重启」按钮，想把同样的手动控制搬进 AGINT 体系，放在输入区原「终止 DSH」按钮（`@local/dsh-kill-switch`）的位置，并让它走 agint-restart 自己的能力。老板 2026-10-05 拍板：两个按钮都要、直接改 agint-restart 本体、停用并卸载 kill-switch、源码落 DSH-AGINT 仓库内。
