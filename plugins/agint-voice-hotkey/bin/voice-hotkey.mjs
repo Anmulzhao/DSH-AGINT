@@ -1,5 +1,5 @@
 // voice-hotkey：OS 全局热键守护进程。
-// 组合键 Ctrl+Alt+Space：按住=说话开始，松开=说话结束。
+// 组合键 Alt+.（句点）：按住=说话开始，松开=说话结束（2026-10-15 老板定，原 Ctrl+Alt+Space 弃用）。
 // 事件通过本机 SSE（默认 http://127.0.0.1:19400/events）推给浏览器插件 agint-voice-hotkey。
 // 依赖 koffi（已在 DSH 运行态依赖中），不装第三方软件。
 
@@ -12,14 +12,13 @@ const POLL_MS = 25;
 const HEARTBEAT_MS = 10000;
 
 const require = createRequire(import.meta.url);
-// koffi 取值顺序：裸包名 → $DSH_HOME 运行态依赖 → 旧硬编码兜底。
-// 路径从 $DSH_HOME 推导，不写死机器私有绝对路径（AGENTS.md 红线）。
+// koffi 取值顺序：裸包名 → $DSH_HOME 运行态依赖。
+// 路径从 $DSH_HOME 推导，不写死机器私有绝对路径（AGENTS.md 红线：两台机器共用本仓）。
 const runtimeKoffi = process.env.DSH_HOME
   ? `${process.env.DSH_HOME.replace(/[\\/]+$/, '')}/.agint-deps/dsh-runtime/node_modules/koffi`
   : null;
-const candidates = ['koffi', runtimeKoffi].filter(Boolean);
 let koffi;
-for (const id of candidates) {
+for (const id of ['koffi', runtimeKoffi].filter(Boolean)) {
   try { koffi = require(id); break; } catch { /* try next */ }
 }
 if (!koffi) {
@@ -29,9 +28,10 @@ if (!koffi) {
 
 const user32 = koffi.load('user32.dll');
 const GetAsyncKeyState = user32.func('int16_t GetAsyncKeyState(int vKey)');
-const VK = { ctrl: 0x11, alt: 0x12, space: 0x20 };
+const VK = { ctrl: 0x11, alt: 0x12, space: 0x20, period: 0xBE }; // 0xBE = 'Period'（句点键）
 const isDown = (vk) => (GetAsyncKeyState(vk) & 0x8000) !== 0;
-const comboDown = () => isDown(VK.ctrl) && isDown(VK.alt) && isDown(VK.space);
+// Alt+. 按住说话。不查 ctrl：Alt+. 本身无系统冲突，且避免与其他 Alt 组合误触。
+const comboDown = () => isDown(VK.alt) && isDown(VK.period);
 
 const clients = new Set();
 let pressed = false;
@@ -61,7 +61,7 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true,
       port: PORT,
-      combo: 'ctrl+alt+space',
+      combo: 'alt+.',
       pressed,
       lastPressAt,
       eventCount,
@@ -87,7 +87,7 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[voice-hotkey] listening http://${HOST}:${PORT}/events combo=Ctrl+Alt+Space poll=${POLL_MS}ms`);
+  console.log(`[voice-hotkey] listening http://${HOST}:${PORT}/events combo=Alt+. poll=${POLL_MS}ms`);
 });
 server.on('error', (err) => {
   console.error('[voice-hotkey] 端口占用或监听失败：', err.message);

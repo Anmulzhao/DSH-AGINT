@@ -1,6 +1,6 @@
 {
   "name": "agint-voice-hotkey",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "语音交互助手 3a：Alt+. 热键（SSE 守护进程）触发录音；静音自动收尾；松手即发（inputActions.submit）。浏览器半经同源 api/agint-voice/events 走 host 半代理，不再直连守护进程端口。",
   "type": "module",
   "main": "lib/index.js",

@@ -2,11 +2,13 @@
  * agint-voice-hotkey: BROWSER half (push-to-talk auto-send, plan step 3a).
  *
  * Transport: the OS-level hotkey lives in a standalone loopback SSE daemon
- * (`bin/voice-hotkey.mjs`, Ctrl+Alt+Space hold). This half opens
- * `http://127.0.0.1:19400/events`; `down` starts a microphone capture,
- * `up` stops it, transcribes via the existing `ctx.remote.speech` namespace
- * (mounted by the official ui-voice-input bundle) and auto-submits through
- * `inputActions.submit()` — the very same SubmitMachine the Enter key drives.
+ * (`bin/voice-hotkey.mjs`, Alt+. hold). This half opens the SAME-ORIGIN route
+ * `api/agint-voice/events` (host half proxies it to the daemon); `down` starts
+ * a microphone capture, `up` stops it, transcribes via the existing
+ * `ctx.remote.speech` namespace (mounted by the official ui-voice-input
+ * bundle) and auto-submits through `inputActions.submit()` — the very same
+ * SubmitMachine the Enter key drives. Direct `:19400` connections are gone:
+ * cross-origin SSE tripped desktop CSP review and port hygiene.
  *
  * The capture chain (Recording / encodeWave / audioBase64) is ported verbatim
  * from `@deepseek-ai/dsh-experimental-client-ui-voice-input lib/client.js`
@@ -27,12 +29,26 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
-    const DAEMON_URL = 'http://127.0.0.1:19400/events';
+    const EVENTS_URL = 'api/agint-voice/events';
+    const PING_URL = 'api/agint-voice/ping';
     const FEEDBACK_MS = 4000;
     const USABLE_PHASES = new Set(['ready', 'standby', 'waking']);
 
+    /** Diagnostic beacon to the host half (see /api/agint-voice/status.browserPing). */
+    function beacon(phase, detail) {
+      try {
+        fetch(PING_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify(detail ? { phase, detail } : { phase }),
+          keepalive: true,
+        }).catch(() => void 0);
+      } catch { /* diagnostics must never break the plugin */ }
+    }
+
     /** Module-level claim: at most one dictation run across all mounts. */
     let activeRun = null;
+    beacon('factory-ran');
 
     class RecordingError extends Error {
       constructor(kind) {
@@ -74,6 +90,65 @@ window.__ModuleLoader__.load({
       let text = '';
       for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192));
       return btoa(text);
+    }
+
+    /**
+     * Silence auto-end (2026-10-15): RMS level monitor over the raw mic
+     * stream. Finishes the run after SILENCE_END_MS of continuous silence,
+     * but only after SILENCE_ARM_MS of total recording (protects a pause at
+     * the very start) and only once speech was detected at least once.
+     * AnalyserNode is tapped on the mic stream, NOT on the recorder —
+     * stopping them is independent.
+     */
+    const SILENCE_RMS = 0.02;
+    const SILENCE_END_MS = 1000;
+    const SILENCE_ARM_MS = 600;
+    const SILENCE_POLL_MS = 80;
+
+    class SilenceWatcher {
+      constructor(stream, onSilenceEnd) {
+        this.stream = stream;
+        this.onSilenceEnd = onSilenceEnd;
+        this.done = false;
+        this.stopped = false;
+        this.speechSeen = false;
+        this.silenceSince = 0;
+        this.context = new AudioContext();
+        this.analyser = this.context.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.context.createMediaStreamSource(stream).connect(this.analyser);
+        this.buffer = new Float32Array(this.analyser.fftSize);
+        this.startedAt = Date.now();
+        this.timer = setInterval(() => this.poll(), SILENCE_POLL_MS);
+      }
+
+      poll() {
+        if (this.stopped || this.done) return;
+        if (Date.now() - this.startedAt < SILENCE_ARM_MS) return;
+        this.analyser.getFloatTimeDomainData(this.buffer);
+        let sum = 0;
+        for (let i = 0; i < this.buffer.length; i++) sum += this.buffer[i] * this.buffer[i];
+        const rms = Math.sqrt(sum / this.buffer.length);
+        if (rms >= SILENCE_RMS) {
+          this.speechSeen = true;
+          this.silenceSince = 0;
+          return;
+        }
+        if (!this.speechSeen) return;
+        if (!this.silenceSince) this.silenceSince = Date.now();
+        else if (Date.now() - this.silenceSince >= SILENCE_END_MS) {
+          this.done = true;
+          try { this.onSilenceEnd(); } catch (error) { console.error('[agint-voice-hotkey] silence-end callback failed', error); }
+        }
+      }
+
+      stop() {
+        this.stopped = true;
+        if (this.timer) clearInterval(this.timer);
+        // Deliberately do NOT stop mic tracks here: MediaRecorder still needs
+        // them to flush the final chunk. Recording.release() owns them.
+        this.context?.close().catch(() => void 0);
+      }
     }
 
     /** Ported from the official Recording class (analyser stripped). */
@@ -219,6 +294,7 @@ window.__ModuleLoader__.load({
         current.current = null;
         if (run) {
           clearTimeout(run.timer);
+          run.silence?.stop();
           run.abort.abort();
           run.capture.dispose().catch(() => void 0);
         }
@@ -240,6 +316,7 @@ window.__ModuleLoader__.load({
         run.phase = 'transcribing';
         current.current = null;
         clearTimeout(run.timer);
+        run.silence?.stop();
         setPhase('transcribing');
         try {
           const audio = await run.capture.stop(run.maxDurationSeconds);
@@ -303,6 +380,7 @@ window.__ModuleLoader__.load({
             maxAudioBytes: value.maxAudioBytes,
             startedAt: Date.now(),
             upPending: false,
+            silence: null,
             timer: 0,
             phase: 'requesting',
           };
@@ -311,6 +389,7 @@ window.__ModuleLoader__.load({
             if (current.current !== run) return;
             current.current = null;
             if (activeRun?.claim === claim) activeRun = null;
+            run.silence?.stop();
             run.abort.abort();
             feedback(failureText(interrupted));
           });
@@ -323,6 +402,13 @@ window.__ModuleLoader__.load({
           run.phase = 'recording';
           setSeconds(0);
           setPhase('recording');
+          try {
+            run.silence = new SilenceWatcher(capture.stream, () => {
+              if (current.current === run && run.phase === 'recording') finish();
+            });
+          } catch (error) {
+            console.error('[agint-voice-hotkey] silence watcher unavailable, fallback to hold-to-talk', error);
+          }
           if (run.upPending) {
             finish();
             return;
@@ -338,9 +424,11 @@ window.__ModuleLoader__.load({
       /** SSE + Escape + session-switch teardown. */
       React.useEffect(() => {
         let source;
+        beacon('mount');
         try {
-          source = new EventSource(DAEMON_URL);
+          source = new EventSource(EVENTS_URL);
         } catch {
+          beacon('mount-sse-throw');
           feedback('无法连接热键守护进程');
           return void 0;
         }
@@ -355,6 +443,10 @@ window.__ModuleLoader__.load({
           }
           if (payload.type === 'hello') {
             setConnected(true);
+            return;
+          }
+          if (payload.type === 'upstream-error' || payload.type === 'disabled' || payload.type === 'forbidden') {
+            setConnected(false);
             return;
           }
           if (payload.type === 'down') {
@@ -408,7 +500,7 @@ window.__ModuleLoader__.load({
       if (phase === 'idle') {
         if (connected) return null;
         return h('span', {
-          title: `热键守护进程未连接：${DAEMON_URL}（先运行 node <本机部署位>/bin/voice-hotkey.mjs）`,
+          title: '热键守护进程未连接（host 半代理 api/agint-voice/events 不可达；确认插件 bin/voice-hotkey.mjs 守护进程在跑且插件 host 半已加载）',
           style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary, #999)' },
         }, '热键离线');
       }
@@ -450,7 +542,10 @@ window.__ModuleLoader__.load({
       inject: ['slots'],
       apply(ctx) {
         const slots = ctx.slots;
-        if (!slots || typeof slots.inject !== 'function') return;
+        if (!slots || typeof slots.inject !== 'function') {
+          beacon('apply-no-slots');
+          return;
+        }
         const getSpeech = () => {
           try {
             return ctx.remote?.speech;
@@ -461,15 +556,23 @@ window.__ModuleLoader__.load({
         const seat = 'conversation.input.left';
         let dispose;
         try {
+          // ⛔ list 席位 register 必须带 id（ui-slots ledger：缺 id 的条目永不成
+          // cell、静默不渲染——2026-10-15 beacon 实测 apply-ok 但 mount=0 根因）。
           dispose = slots.inject(seat, () => slots.register({
             name: seat,
+            id: 'agint-voice-hotkey',
+            order: 10,
             inject: () => ({ getSpeech }),
           }, VoiceHotkey));
+          beacon('apply-ok');
         } catch (err) {
+          beacon('apply-throw', String(err && err.message ? err.message : err));
           console.error('[agint-voice-hotkey] seat registration failed:', seat, err);
           return;
         }
-        ctx.effect(() => {
+        // ⛔ cordis 语义：effect body 立即执行、返回值才是清理。单层箭头会在
+        // 注册同一毫秒拆掉席位注入（2026-10-15 实测根因）。
+        ctx.effect(() => () => {
           if (typeof dispose === 'function') dispose();
         }, 'agint-voice-hotkey: seat');
       },
