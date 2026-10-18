@@ -23,7 +23,7 @@ function apply(ctx) {
       '挑战不会自动执行（§4.5）——agent 需真实参与，完成后用 curriculum_submit 提交。' +
       '执行时请使用返回的 sessionId（curriculum- 前缀），其调用会被 skill-autocreate/curator 隔离。',
     parameters: {
-      domain: { type: 'string', description: '按域过滤：codegen/reasoning/planning/tool-use；省略=任意' },
+      domain: { type: 'string', description: '按域过滤：codegen/reasoning/planning/tool-use/integration/correctness；省略=任意' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
@@ -56,7 +56,7 @@ function apply(ctx) {
         // 证据字段随挑战类型变化（codegen/reasoning/planning/tool-use 各不相同），
         // 只能开放。参照 output.schema 的 K19 政策。
         additionalProperties: true,
-        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning→{steps:[]}；tool-use→{toolUsed,exitCode,output}。可附带 selfAssessment（自评，仅记录）。',
+        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning/integration→{steps:[]}；tool-use→{toolUsed,exitCode,output}；correctness→{conclusion}。可附带 selfAssessment（自评，仅记录）。',
       },
     },
     output: {
@@ -93,7 +93,7 @@ function apply(ctx) {
       '列出挑战（可按状态/域过滤）。**Read-only**。',
     parameters: {
       status: { type: 'string', description: '按状态过滤：open/in_progress/passed/failed/expired；省略=全部' },
-      domain: { type: 'string', description: '按域过滤：codegen/reasoning/planning/tool-use' },
+      domain: { type: 'string', description: '按域过滤：codegen/reasoning/planning/tool-use/integration/correctness' },
       limit: { type: 'number', description: '最多返回多少条（默认 50）' },
     },
     output: {

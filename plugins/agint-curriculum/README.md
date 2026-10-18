@@ -18,20 +18,30 @@ node ../../bin/plugin-check.sh agint-curriculum  # 静态检查（Windows 用 gi
 ## 架构
 
 ```
-self-model snapshot() ──► probe（边界探测）──► generate（4域×D1-D5 模板）
-        ▲                                        │ 冷却/批量上限
+self-model snapshot() ──► probe（边界探测）──► generate（6域×D1-D5；每档题池）
+        ▲                                        │ 冷却/批量上限/生成期去重
         │                                        ▼
 self-model.update() ◄── submit（外部化判定）◄── nextChallenge（出队不自动执行）
         │                │ judge → attempts → 挑战状态 → 难度调节 → 事件
         └── 只提供证据，不改 capability 表（§4.9）
 ```
 
+### 题目池与去重（v0.1.5）
+
+`integration` 与 `correctness` 每档 3 道题（每域共 15 道）。撞重时的处置顺序：
+
+1. **先在本档换 variant** —— 同难度换题，不动档位；
+2. 本档题池用完，才沿 `DIFFICULTY_LEVELS` 向上顺延（审计里写明「未计入难度升降」）；
+3. 全档位 × 全 variant 都出过 → 如实 `skipped`，报总池量。
+
+`codegen` / `reasoning` / `planning` / `tool-use` 四域仍是每档 1 道（未扩池）。
+
 ## Service（`agint.curriculum`）
 
 | 方法 | 说明 | 挂载要求 |
 | --- | --- | --- |
 | `probe` | 边界探测：读 snapshot 筛选待练域，按缺口权重×久未验证排序 | self-model 软依赖（不可用→skipped） |
-| `generate` | 生成挑战（默认 1 个，批量 ≤5）；同域 24h 冷却；无模板域诚实留白 | storage |
+| `generate` | 生成挑战（默认 1 个，批量 ≤5）；同域 24h 冷却；**生成期去重 + 题池换 variant**（同档换题优先，池尽才顺延档位）；无模板域诚实留白 | storage |
 | `nextChallenge` | 出队最早 open 挑战置 in_progress（不自动执行 §4.5） | storage |
 | `submit` | 外部化判定 + attempts 落盘 + 难度调节 + self-model 回写 + 事件 | storage；self-model/event-bus 软依赖 |
 | `list` / `stats` / `difficulty` | 查询 | storage |
@@ -77,6 +87,7 @@ self-model.update() ◄── submit（外部化判定）◄── nextChallenge
 | --- | --- | --- |
 | stale_reverify_days | 30 | CAN 超过该天数未复验 → 进入待练 |
 | challenge_cooldown_hours | 24 | 同域生成冷却 |
+| dedup_window_days | 30 | **生成期去重窗口**（0=关闭）；窗口内同 domain+level+prompt 视为重复，撞重先同档换 variant、池尽才顺延档位 |
 | difficulty_window_days | 28 | 难度滚动窗口 |
 | difficulty_min_samples | 5 | cold-start 样本阈值 |
 | pass_floor / pass_ceiling | 0.40 / 0.70 | 完成率护栏 |

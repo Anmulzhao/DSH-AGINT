@@ -24,7 +24,7 @@
  * Sprint 14 明确不挂载 prod（观察窗 10 月底才满足）；仅仓库实现 + 测试。
  */
 
-import { ConfigSchema, RUNTIME_CONFIG_KEYS, TEMPLATE_DOMAINS } from './schema.js';
+import { ConfigSchema, RUNTIME_CONFIG_KEYS, TEMPLATE_DOMAINS, DIFFICULTY_LEVELS } from './schema.js';
 import {
   spec,
   checkLimit,
@@ -37,8 +37,8 @@ import {
   datedId,
   challengeSessionId,
 } from './storage.js';
-import { probeDomains, coolingDomains } from './boundary-probe.js';
-import { generateChallenge, hasTemplate } from './challenge-gen.js';
+import { probeDomains } from './boundary-probe.js';
+import { generateChallenge, hasTemplate, bankSize, totalBankSize } from './challenge-gen.js';
 import { judge } from './verdict.js';
 import { recordVerdict, adjustDifficulty } from './difficulty.js';
 
@@ -233,27 +233,111 @@ function apply(ctx, config) {
     ));
 
     const ct = await table('challenges');
+
+    // ── 生成期去重 + 题目池选variant（v0.1.4 / v0.1.5）──────────────────────
+    // challenge-gen 是 (domain, level, variant) 的确定性纯函数，没有去重就会
+    // 每周产出逐字相同的题面（2026-10-08 / 10-15 两批生产数据实测同题）。
+    //
+    // 窗口内同 domain+level+prompt 视为重复。撞重时的顺序是：
+    //   1. 先在本档内换 variant（同难度换题，不动档位）——v0.1.5 新增
+    //   2. 本档题池用完，才沿 DIFFICULTY_LEVELS 向上顺延
+    //   3. 全档位都出过 → 如实 skipped（题目池耗尽，等 dedup 窗口过期复验）
+    // 顺延原因写进 audit_log.reason，不伪装成「能力提升带来的升档」。
+    // dedup_window_days = 0 关闭去重；force=true 同样绕过（与冷却语义一致）。
+    const dedupWindowMs = c.dedup_window_days * 24 * 60 * 60 * 1000;
+    const dedupOn = c.dedup_window_days > 0 && args.force !== true;
+    const seenPrompts = new Map(); // `${level}|${prompt}` → 最近一条同域挑战
+    if (dedupOn) {
+      for (const [, ch] of ct.entries()) {
+        if (ch.domain !== domainName) continue;
+        const ts = Date.parse(ch.createdAt);
+        if (Number.isNaN(ts) || nowMs - ts > dedupWindowMs) continue;
+        const key = `${ch.level}|${ch.prompt}`;
+        const prev = seenPrompts.get(key);
+        if (!prev || Date.parse(prev.createdAt) < ts) seenPrompts.set(key, ch);
+      }
+    }
+
+    const nextLevelOf = (lvl) => {
+      const i = DIFFICULTY_LEVELS.indexOf(lvl);
+      return i >= 0 && i + 1 < DIFFICULTY_LEVELS.length ? DIFFICULTY_LEVELS[i + 1] : null;
+    };
+
     const created = [];
+    const duplicates = [];
+    let startLevel = df.level;
     for (let i = 0; i < count; i++) {
-      const challengeId = datedId('clg');
-      const business = generateChallenge(domainName, df.level, {
-        sessionId: challengeSessionId(challengeId),
+      let picked = null;
+      for (let lvl = startLevel; lvl; lvl = nextLevelOf(lvl)) {
+        // 本档题池逐个 variant 试；池子用完再上顺延下一档
+        const poolSize = Math.max(1, bankSize(domainName, lvl));
+        for (let v = 0; v < poolSize; v++) {
+          const challengeId = datedId('clg');
+          const business = generateChallenge(domainName, lvl, {
+            sessionId: challengeSessionId(challengeId),
+            variant: v,
+          });
+          const key = `${business.level}|${business.prompt}`;
+          const dup = dedupOn ? seenPrompts.get(key) : undefined;
+          if (!dup) { picked = { challengeId, business, key, level: lvl }; break; }
+          duplicates.push({ existingId: dup.id, level: lvl, prompt: business.prompt });
+        }
+        if (picked) break;
+      }
+      if (!picked) break; // 该域全部档位 × 全部 variant 都出过
+
+      const packed = packChallenge({
+        ...picked.business,
+        id: picked.challengeId,
+        // createdAt 跟随 nowMs（generate 的可注入时间基准），让去重窗口、
+        // 冷却与审计时间戳共用一个时钟；生产路径 nowMs 即 Date.now()。
+        createdAt: new Date(nowMs).toISOString(),
       });
-      const packed = packChallenge({ ...business, id: challengeId });
       await ct.put(packed.id, packed);
+      seenPrompts.set(picked.key, packed);
       created.push(packed);
+      // 本轮已用掉该档一个题面：下一轮从下一档起找，避免 count>1 时产重复
+      startLevel = nextLevelOf(picked.level) ?? picked.level;
     }
     const warn = checkLimit('challenges', ct.size);
     if (warn) console.warn(`[${name}] ${warn._warn}`);
 
-    await writeDifficulty({ ...df, lastGeneratedAt: nowIso() });
+    // 全部撞重（该域题面耗尽）：不写 lastGeneratedAt —— 没生成就不能假装生成过，
+    // 否则白白烧掉 24h 冷却。如实返回 skipped。
+    if (created.length === 0) {
+      return {
+        skipped: true,
+        reason: `domain "${domainName}" 在 ${c.dedup_window_days} 天内 ${df.level}-D5 全部题面（共 ${totalBankSize(domainName)} 道）均已出过（题目池耗尽；force=true 可绕过，或继续扩题库）`,
+        domain: domainName,
+        level: df.level,
+        duplicates,
+      };
+    }
+
+    // 只写 lastGeneratedAt，**不写 level**：顺延是“题面耗尽”，不是能力提升。
+    // 难度档只能由 submit 的判定证据推动（difficulty.js 的 40%-70% 护栏 + 连续序列），
+    // 让去重顺手改档等于用行为证据伪造能力结论。
+    const usedLevels = [...new Set(created.map((c) => c.level))];
+    const shifted = created.some((c) => c.level !== df.level);
+    await writeDifficulty({ ...df, lastGeneratedAt: new Date(nowMs).toISOString() });
     await audit({
       actor: 'system',
       action: 'challenge_generated',
       targetType: 'challenge',
       targetId: created.map((c) => c.id).join(','),
-      details: { domain: domainName, level: df.level, count },
-      reason: 'boundary-probe 驱动的挑战生成',
+      details: {
+        domain: domainName,
+        level: df.level,
+        challengeLevels: usedLevels,
+        bankSizeAtLevel: bankSize(domainName, df.level),
+        totalBankSize: totalBankSize(domainName),
+        count,
+        generatedCount: created.length,
+        dedupSkipped: duplicates.length,
+      },
+      reason: shifted
+        ? `同档题面用尽，顺延难度档（${df.level} → ${usedLevels.join('/')}；仅影响本次题面，未计入难度升降；boundary-probe 驱动的挑战生成）`
+        : 'boundary-probe 驱动的挑战生成',
     });
     await publishEvent('curriculum.challenge-created', {
       domain: domainName,
@@ -265,10 +349,13 @@ function apply(ctx, config) {
       skipped: false,
       domain: domainName,
       level: df.level,
+      challengeLevels: usedLevels,
+      levelShifted: shifted,
       generated: created.map((c) => ({
         id: c.id, domain: c.domain, level: c.level, status: c.status,
         prompt: c.prompt, passCriteria: c.passCriteria, sessionId: c.sessionId,
       })),
+      duplicates,
     };
   }
 
@@ -476,6 +563,7 @@ function apply(ctx, config) {
         stale_reverify_days: effectiveConfig().stale_reverify_days,
         generation_batch_limit: effectiveConfig().generation_batch_limit,
         challenge_cooldown_hours: effectiveConfig().challenge_cooldown_hours,
+        dedup_window_days: effectiveConfig().dedup_window_days,
         difficulty_window_days: effectiveConfig().difficulty_window_days,
         difficulty_min_samples: effectiveConfig().difficulty_min_samples,
         pass_floor: effectiveConfig().pass_floor,

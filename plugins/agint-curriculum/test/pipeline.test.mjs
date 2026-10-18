@@ -234,3 +234,163 @@ test('pause/resume/config 运行时开关', async () => {
   assert.equal(after.pass_ceiling, 0.8);
   assert.equal(before.pass_ceiling, 0.70);
 });
+
+// ── v0.1.4 生成期去重 / v0.1.5 题目池 ────────────────────────────────────
+//
+// 背景：challenge-gen 是 (domain, level, variant) 的确定性纯函数，2026-10-08
+// 与 2026-10-15 两批生产数据出现过逐字相同的挑战（生产存储实测）。以下用例
+// 锁住两条契约：
+//   1. 不产重复题面
+//   2. 撞重优先在同档换 variant，同档用尽才顺延难度档
+
+test('去重：同域再生成不产重复题面，先在本档换 variant（不动档位）', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0 });
+
+  const first = await svc.generate({ domain: 'codegen' });
+  assert.equal(first.generated[0].level, 'D1');
+
+  const second = await svc.generate({ domain: 'codegen' });
+  assert.equal(second.skipped, false);
+  assert.notEqual(second.generated[0].prompt, first.generated[0].prompt, '题面必须不同');
+
+  // codegen 是旧域（每档单题），撞重只能顺延；integration/correctness 才有题池
+  assert.equal(second.generated[0].level, 'D2', 'codegen 单题域撞重 → 顺延 D2');
+  assert.equal(second.levelShifted, true, '应标注为顺延');
+
+  const df = await svc.difficulty({ domain: 'codegen' });
+  assert.equal(df.level, 'D1', '去重顺延不得改写难度档');
+});
+
+test('题目池：同档内撞重优先换 variant，档位不变（integration 每档 3 道）', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0 });
+
+  const seen = [];
+  for (let i = 0; i < 3; i++) {
+    const r = await svc.generate({ domain: 'integration' });
+    assert.equal(r.skipped, false, `第 ${i + 1} 次应能生成`);
+    assert.equal(r.generated[0].level, 'D1', `第 ${i + 1} 道仍应在 D1（同档换 variant）`);
+    seen.push(r.generated[0].prompt);
+  }
+  assert.equal(new Set(seen).size, 3, '3 道题面必须互不相同');
+  assert.equal((await svc.difficulty({ domain: 'integration' })).level, 'D1', '换 variant 不改档');
+
+  // 第 4 次：D1 三道全部出过 → 才顺延 D2
+  const fourth = await svc.generate({ domain: 'integration' });
+  assert.equal(fourth.generated[0].level, 'D2');
+  assert.equal(fourth.levelShifted, true);
+});
+
+test('题目池：integration 15 道全部出过 → skipped（池耗尽），不空造挑战', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0 });
+
+  for (let i = 0; i < 15; i++) {
+    const r = await svc.generate({ domain: 'integration' });
+    assert.equal(r.skipped, false, `第 ${i + 1} 次应能生成（池共 15 道）`);
+  }
+  const sixteenth = await svc.generate({ domain: 'integration' });
+  assert.equal(sixteenth.skipped, true);
+  assert.match(sixteenth.reason, /题面/);
+
+  const st = await svc.stats();
+  assert.equal(st.challenges.total, 15, '只应有 15 条，不得重复堆叠');
+  assert.equal(st.challenges.open, 15);
+
+  // 15 道题面全部互不相同（池真正被遍历，不是重复同一道）
+  const list = await svc.list({ domain: 'integration' });
+  assert.equal(new Set(list.map((c) => c.prompt)).size, 15, '15 道题面必须互不相同');
+});
+
+test('去重：dedup_window_days=0 关闭去重 → 同题面可重复生成（旧行为可回退）', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0, dedup_window_days: 0 });
+
+  const a = await svc.generate({ domain: 'correctness' });
+  const b = await svc.generate({ domain: 'correctness' });
+  assert.equal(b.skipped, false);
+  assert.equal(b.generated[0].level, 'D1');
+  assert.equal(a.generated[0].prompt, b.generated[0].prompt, '关闭去重后允许重复题面');
+});
+
+test('去重：窗口过期后同题面允许复出（复验），窗口内则换 variant', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0, dedup_window_days: 30 });
+
+  const t0 = Date.parse('2026-10-08T00:00:00Z');
+  const first = await svc.generate({
+    domain: 'correctness', nowMs: t0, force: true,
+  });
+
+  // 窗口内（第 10 天）：D1 variant0 已出过 → 换 variant1，仍在 D1
+  const inWindow = await svc.generate({ domain: 'correctness', nowMs: t0 + 10 * 86400000 });
+  assert.equal(inWindow.generated[0].level, 'D1', '同档换 variant，不顺延');
+  assert.notEqual(inWindow.generated[0].prompt, first.generated[0].prompt);
+
+  // 窗口外（第 31 天）：第一条已过期，variant0 可复出
+  const expired = await svc.generate({ domain: 'correctness', nowMs: t0 + 31 * 86400000 });
+  assert.equal(expired.generated[0].level, 'D1', '窗口过期后 D1 题面允许复出');
+});
+
+test('去重：force=true 显式绕过（与冷却同语义）', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0 });
+  await svc.generate({ domain: 'correctness' });
+  const forced = await svc.generate({ domain: 'correctness', force: true });
+  assert.equal(forced.skipped, false);
+  assert.equal(forced.generated[0].level, 'D1', 'force 绕过去重，回到 D1');
+});
+
+// ── v0.1.5 题库自检 ──────────────────────────────────────────────────────
+
+test('题库：每个域每档都有题，integration/correctness 每档 ≥3 道', async () => {
+  const { bankSize, totalBankSize } = await import('../lib/challenge-gen.js');
+  const { DIFFICULTY_LEVELS } = await import('../lib/schema.js');
+
+  for (const domain of ['integration', 'correctness']) {
+    for (const lv of DIFFICULTY_LEVELS) {
+      assert.ok(bankSize(domain, lv) >= 3, `${domain}@${lv} 至少 3 道，实得 ${bankSize(domain, lv)}`);
+    }
+    assert.ok(totalBankSize(domain) >= 15, `${domain} 池总量应 ≥15，实得 ${totalBankSize(domain)}`);
+  }
+});
+
+test('题库：correctness 同档内答案互不相同（防变体只是换个说法）', async () => {
+  const { generateChallenge } = await import('../lib/challenge-gen.js');
+  const { DIFFICULTY_LEVELS } = await import('../lib/schema.js');
+
+  for (const lv of DIFFICULTY_LEVELS) {
+    const answers = [];
+    for (let v = 0; v < 3; v++) {
+      answers.push(generateChallenge('correctness', lv, { variant: v }).verifySpec.expected);
+    }
+    assert.equal(new Set(answers).size, 3, `${lv} 三个 variant 答案必须互异，实得 ${JSON.stringify(answers)}`);
+  }
+});
+
+test('题库：integration 同档内题面互不相同且关键词各成一组', async () => {
+  const { generateChallenge } = await import('../lib/challenge-gen.js');
+  const { DIFFICULTY_LEVELS } = await import('../lib/schema.js');
+
+  for (const lv of DIFFICULTY_LEVELS) {
+    const prompts = [];
+    const kwSets = [];
+    for (let v = 0; v < 3; v++) {
+      const c = generateChallenge('integration', lv, { variant: v });
+      prompts.push(c.prompt);
+      kwSets.push(c.verifySpec.expected.join(','));
+    }
+    assert.equal(new Set(prompts).size, 3, `${lv} 三个 variant 题面必须互异`);
+    assert.ok(kwSets.every((k) => k.length > 0), `${lv} 每道题都要有关键词`);
+  }
+});
+
+test('题库：generateChallenge 不传 variant 时输出与 v0.1.4 逐字一致（向后兼容）', async () => {
+  const { generateChallenge } = await import('../lib/challenge-gen.js');
+  const noVariant = generateChallenge('correctness', 'D1');
+  const v0 = generateChallenge('correctness', 'D1', { variant: 0 });
+  assert.deepEqual(noVariant, v0);
+  assert.equal(noVariant.prompt, '计算 17 + 26。请给出数字结论。');
+  assert.equal(noVariant.verifySpec.expected, '43');
+});
