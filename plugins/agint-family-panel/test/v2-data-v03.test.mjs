@@ -147,18 +147,33 @@ for (const [name, s] of Object.entries(PLUGIN_SPEC)) {
 }
 
 // 仓库位 / 部署位对照目录（给 isRepoRoot 与 resolveV2Dirs 的 self-path 回退）
-const REPO_OK = join(FIX, 'repo-ok');            // plugins/ + cordis.patch.yml ⇒ 仓库根
+const REPO_OK = join(FIX, 'repo-ok');            // plugins/ + cordis.patch.yml + .git ⇒ 仓库根
 const REPO_ALT = join(FIX, 'repo-alt');          // 同上，第二个合法仓库根
 const REPO_SELF = join(FIX, 'repo-self');        // 同上，自身路径回退的落点
-const DEPLOY_WEB = join(FIX, 'deploy-like', 'profiles', 'web'); // 只有 plugins/ ⇒ 不是仓库根
+const DEPLOY_WEB = join(FIX, 'deploy-like', 'profiles', 'web'); // plugins/ + patch，但**无 .git**
 const PATCH_ONLY = join(FIX, 'patch-only');      // 只有 cordis.patch.yml
-const NEITHER = join(FIX, 'neither');            // 两者都没有
+const NEITHER = join(FIX, 'neither');            // 两个标记都没有
+// 2026-10-18：部署位还有第三种形状 —— bundle / host 包。它同时有 plugins/ 与
+// cordis.patch.yml，两者都在，唯一的差别是**没有 .git**（它是镜像出来的载荷，
+// 不是 checkout）。旧的两标记判据在本机实测把 `.agint-bundle` 与
+// `.../@agint/host` 都判成仓库根，live 面板因此 repoDirsSource=self-path、
+// repoDirs 117 项（78 个 *.tmp），仓库位接线豁免表读不到。
+const BUNDLE_SHAPE = join(FIX, 'bundle-like', '.agint-bundle');
+const HOST_PKG_SHAPE = join(FIX, 'host-like', 'node_modules', '@agint', 'host');
 const DSH = join(FIX, 'v03-home');
 for (const r of [REPO_OK, REPO_ALT, REPO_SELF]) {
   mkdir(join(r, 'plugins', 'agint-family-panel', 'lib'));
   writeFileSync(join(r, 'cordis.patch.yml'), '# patch\n');
+  mkdir(join(r, '.git'));   // checkout 的标记
 }
+// 部署形状刻意也带 cordis.patch.yml：让「无 .git」成为唯一挡住它的条件，
+// 否则这条断言会因为别的理由恰好通过（假绿）。
 mkdir(join(DEPLOY_WEB, 'plugins', 'agint-family-panel', 'lib'));
+writeFileSync(join(DEPLOY_WEB, 'cordis.patch.yml'), '# patch\n');
+for (const b of [BUNDLE_SHAPE, HOST_PKG_SHAPE]) {
+  mkdir(join(b, 'plugins', 'agint-family-panel', 'lib'));
+  writeFileSync(join(b, 'cordis.patch.yml'), '# patch\n');
+}
 mkdir(PATCH_ONLY); writeFileSync(join(PATCH_ONLY, 'cordis.patch.yml'), '# patch\n');
 mkdir(NEITHER);
 mkdir(DSH);
@@ -173,19 +188,34 @@ assert.deepEqual(
 );
 
 // ══ 1. isRepoRoot ═══════════════════════════════════════════════════════
-// 标记必须同时是 plugins/ 与 cordis.patch.yml。
+// 标记必须同时是 plugins/ + cordis.patch.yml + .git（2026-10-18 加第三条）。
 {
-  assert.equal(isRepoRoot(REPO_OK), true, 'plugins/ + cordis.patch.yml ⇒ 仓库根');
+  assert.equal(isRepoRoot(REPO_OK), true, 'plugins/ + cordis.patch.yml + .git ⇒ 仓库根');
 
-  // ⛔ 回归守卫：部署位 <home>/profiles/web/plugins 的父目录 web/ 同样有
-  // plugins/。只看 plugins/ 的旧实现会把部署目录误认成仓库 —— 那正是
-  // resolveV2Dirs 自身路径回退要躲的坑（selfRepoCandidate 取的是 plugins 的
-  // 上上级）。此条红了就说明判据退化成「只看 plugins/」。
-  assert.equal(isRepoRoot(DEPLOY_WEB), false, '只有 plugins/（部署位 web/ 形状）⇒ 不是仓库根');
+  // ⛔ 回归守卫（2026-10-18）：部署位 `<...>/profiles/web` 同样有 plugins/
+  // **和** cordis.patch.yml（夹具刻意补上 patch，让「无 .git」成为唯一变量）。
+  // 旧的两标记实现会把部署目录误认成仓库 —— 那正是 resolveV2Dirs 自身路径
+  // 回退要躲的坑（selfRepoCandidate 取的是 plugins 的上上级）。
+  assert.equal(isRepoRoot(DEPLOY_WEB), false, '缺 .git（部署位 web 形状）⇒ 不是仓库根');
 
-  // 另两个方向各一条：实现若只看 cordis.patch.yml，或把两个标记都放行，一样会红。
+  // ⛔ 第二条回归守卫（同批）：bundle / host 包形状。它们是真载荷，不是 checkout。
+  // 本机实测后果：这两处被判成仓库根 ⇒ repoDirsSource=self-path、repoDirs 读进
+  // 78 个 *.tmp 残留、wiringExemptions 变 unavailable。
+  assert.equal(isRepoRoot(BUNDLE_SHAPE), false, '缺 .git（.agint-bundle 形状）⇒ 不是仓库根');
+  assert.equal(isRepoRoot(HOST_PKG_SHAPE), false, '缺 .git（@agint/host 包形状）⇒ 不是仓库根');
+
+  // 另两个方向各一条：实现若只看 cordis.patch.yml，或把标记都放行，一样会红。
   assert.equal(isRepoRoot(PATCH_ONLY), false, '只有 cordis.patch.yml ⇒ 不是仓库根');
-  assert.equal(isRepoRoot(NEITHER), false, '两个标记都没有 ⇒ 不是仓库根');
+  assert.equal(isRepoRoot(NEITHER), false, '三个标记都没有 ⇒ 不是仓库根');
+
+  // .git 也可能是**文件**（git worktree / submodule）⇒ 仍须算仓库根。
+  // 这条红就说明判据退化成 isDirectory(.git)。
+  const WT = join(FIX, 'repo-worktree');
+  mkdir(join(WT, 'plugins', 'agint-family-panel', 'lib'));
+  writeFileSync(join(WT, 'cordis.patch.yml'), '# patch\n');
+  writeFileSync(join(WT, '.git'), 'gitdir: /elsewhere/.git/worktrees/wt\n');
+  assert.equal(isRepoRoot(WT), true, '.git 是文件（worktree）⇒ 仍算仓库根');
+  assert.equal(isRepoRoot(join(WT, 'plugins')), false, 'plugins/ 子目录自己没有 patch/.git ⇒ 不是仓库根');
 
   // 目录不存在 ⇒ false 且不抛（existsSync 天然不抛，但要求是「不抛」不是「恰好不抛」）
   const missing = join(FIX, 'no-such-dir', 'deeper');

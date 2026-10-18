@@ -102,6 +102,27 @@ const BROWSER_HALF_FILES = new Set(['client.js']);
 const SKIP_DIRS = new Set(['node_modules', 'test', 'tests', 'fixtures', 'schemas', 'bin', 'examples', 'assets', 'docs', 'lib']);
 
 /**
+ * 宿主换版中转目录残留的判定：`agint-x.tmp` / `agint-x.tmp-20261018-115959`。
+ *
+ * 为什么必须排除（2026-10-18 实测）：bundle 槽里 117 个 `agint-*` 目录中有 78 个是
+ * `.tmp` 残留，其中 105 个带 `lib/` ⇒ 会被 codeRoots 当成**假插件身份**。
+ * 生产 payload 里 `agint-quality.tmp` 已经出现在 familyDirs 里就是这条漏洞的证据。
+ *
+ * 判据取「名字里含 `.tmp`」而非后缀匹配：两种残留形态（无时间戳 / 带时间戳）都要挡。
+ * 与 `.bak-` 同等待遇，但**不用同一行正则**——两者来源不同（换版 vs 备份），
+ * 将来若只想排除其中一种，改这里不用动另一处。
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isTmpLeftover(name) {
+  return name.includes('.tmp');
+}
+
+/** 导出给 v2-data 的目录过滤共用（pluginIdentities / classifyPlugins / repoDirs 三处）。
+ *  ⛔ 三处口径必须同一份实现：任一处漏排除，假身份就会从那条路径渗进名册。 */
+export { isTmpLeftover };
+
+/**
  * 单行注释掩码：mask[i]=true 表示该行第 i 个字符处于注释态。
  * state = { block, tick } 跨行携带（块注释与反引号模板串可跨行；单双引号不跨行）。
  * @param {string} line - 不含换行符的一行
@@ -171,7 +192,7 @@ export function codeRoots(plRoot) {
   try { ents = readdirSync(plRoot, { withFileTypes: true }); } catch { return out; }
   for (const e of ents) {
     if (!e.isDirectory()) continue;
-    if (SKIP_DIRS.has(e.name) || e.name.startsWith('.') || e.name.includes('.bak-')) continue;
+    if (SKIP_DIRS.has(e.name) || e.name.startsWith('.') || e.name.includes('.bak-') || isTmpLeftover(e.name)) continue;
     if (existsSync(join(plRoot, e.name, 'lib'))) out.push({ id: e.name, root: join(plRoot, e.name), top: false });
   }
   return out;
@@ -198,7 +219,7 @@ export function scanPlugins(pluginsDir, declaredKeys = null) {
   let dirs = [];
   try {
     dirs = readdirSync(pluginsDir)
-      .filter((d) => d.startsWith('agint-') && !d.includes('.bak-'))
+      .filter((d) => d.startsWith('agint-') && !d.includes('.bak-') && !isTmpLeftover(d))
       .filter((d) => { try { return statSync(join(pluginsDir, d)).isDirectory(); } catch { return false; } })
       .sort();
   } catch (err) {

@@ -91,6 +91,16 @@ const Config = z.object({
   enabled: z.boolean().default(true),
   /** Admit non-loopback callers. Off by default; the payload is not public. */
   allowNonLoopback: z.boolean().default(false),
+  /**
+   * 仓库正本绝对路径（v2 面板的仓库位根，候选 ⓪，优先级高于 AGINT_HOME / 自身路径）。
+   *
+   * 2026-10-18 补：buildV2Payload 从 L613 起一直读 config.repoRoot，但 schema 里
+   * 没有这个字段 —— cordis 按 schema 剥未知键，配了也到不了代码。实测症状：
+   * 面板落回自身路径回退，把 `.agint-bundle`（同有 plugins/ 与 cordis.patch.yml）
+   * 认成仓库根 ⇒ repoDirsSource=self-path、repoDirs 117 项、wiringExemptions
+   * unavailable。空串视同未配（buildV2Payload 已 trim 后判空）。
+   */
+  repoRoot: z.string().optional(),
 });
 
 /**

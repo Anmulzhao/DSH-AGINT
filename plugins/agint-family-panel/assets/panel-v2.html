@@ -344,7 +344,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
     PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
-    PENDING=null;
+    PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing";
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -662,15 +662,30 @@ if(Array.isArray(REPO_DIRS)){
      它就在 plugins/agint-quality/agint-quality-policy/，有 manifest+lib+159 条发布史
      （2026-10-05 实测误报，与 checks 里的 qualityEvaluator/qualityPolicy 同源）。 */
   const known=new Set([...REPO_DIRS,...FAMILY_DIRS,...UNITS]);
+  const probe=new Set(PROBE_SOURCES);
   for(const [src,n] of BUS.sources){
     if(known.has(src)) continue;
+    /* 探针先判：名单来自 host 半 payload.probeEventSources（单一事实源 v2-data.js）。
+       2026-10-18 修：此前只按 `agint-` 前缀分流，一个带 agint- 前缀的一次性人工探针
+       掉了进来 —— 它 payload.origin=manual-test、仓库 git 全历史 0 次新增该目录，
+       却被报成「插件在跑、仓库没有」。名单只在 v2-data.js 里，此处不写名字。 */
+    if(probe.has(src)){
+      ANOM.push({v:"一次性探针来源",o:src,ev:`bus 发布 ${n} 条`,
+        note:"历史人工探针，不是插件。按 v2-data.PROBE_EVENT_SOURCES 归此栏；存量事件保留不删（见 event-bus schemas.js 的探针注释）。"});
+      continue;
+    }
     if(!src.startsWith("agint-")){
       ANOM.push({v:"非插件来源",o:src,ev:`bus 发布 ${n} 条`,
-        note:"source 标签不是 agint-* 插件名，多为一次性手工验证时手填的 source（如 verify-after-fix）。家族名册不纳它，别当部署缺口处理。"});
+        note:"source 标签不是 agint-* 插件名，多为一次性手工验证时手填的 source。家族名册不纳它，别当部署缺口处理。"});
       continue;
     }
     ANOM.push({v:"运行态不在仓库",o:src,ev:`bus 发布 ${n} 条`,
-      note:"运行时有此 source，仓库与部署位的**插件身份表**（顶层 ∪ 嵌套一层）都无此身份。家族名册派生时需覆盖部署态。"});
+      note:"运行时有此 source，仓库与部署位的**插件身份表**（顶层 ∪ 嵌套一层）都无此身份。这是真缺口：先查是哪台机器/哪个 profile 发的，再核该目录是否漏部署。"});
+  }
+  if(PROBE_SOURCE_STATE==="missing"){
+    ANOM.push({v:"探针名单缺失",o:"host 半未下发 probeEventSources",
+      ev:"payload.probeEventSources 缺失或非数组",
+      note:"本页无法把探针与真缺口分开，上面若有「运行态不在仓库」行，其中可能混着探针。升级 host 半到含 PROBE_EVENT_SOURCES 的版本后重开。",amber:true});
   }
 }else{
   ANOM.push({v:"无法判定",o:"运行态不在仓库",ev:REPO_DIRS?.reason??"仓库位不可得",
@@ -1000,6 +1015,8 @@ function applyPayload(D){
   SUB_SUMMARY=D.subscriptions??null;
   SUB_AUDIT=D.subscriptionAudit??null;
   WIRING_EXEMPT=D.wiringExemptions??null;
+  PROBE_SOURCES=Array.isArray(D.probeEventSources)?D.probeEventSources:[];
+  PROBE_SOURCE_STATE=Array.isArray(D.probeEventSources)?"ok":"missing";
   DELIVERY=D.deliveryByTopic??null;
   DELIVERY_H=D.deliveryHistory??null;
   // 待办节：逐队列降级在渲染里做，不用 bad() 整块判失败——

@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { scanPlugins, codeRoots } from './v2-scan.js';
+import { scanPlugins, codeRoots, isTmpLeftover } from './v2-scan.js';
 // profile 名解析口径复用 agint-mount 的实现（单一事实源，防三处口径漂移）。
 // 跨插件相对 import 在仓库位 / bundle 位 / 兼容镜像位三种布局下都能解析：
 //   仓库位   plugins/agint-family-panel/lib → ../../agint-mount/lib/paths.js
@@ -35,8 +35,8 @@ export function clearV2Cache() { moduleCache.clear(); }
 /**
  * Is `dir` the AGINT repo root?
  *
- * Marker is deliberate and narrow: a repo root has BOTH `plugins/` and
- * `cordis.patch.yml` (every mount path in it is written relative to that file).
+ * Marker is deliberate and narrow: a repo root has ALL THREE of `plugins/`,
+ * `cordis.patch.yml`, and `.git`.
  *
  * ⛔ Why not just `plugins/`: the **deploy** layout also has
  * `<...>/profiles/web/plugins`, so `web/` would pass a `plugins/`-only test and
@@ -44,17 +44,51 @@ export function clearV2Cache() { moduleCache.clear(); }
  * deploy-vs-repo confusion this fallback exists to fix (regression caught by
  * test/v2-data.test.mjs, which runs against a fixture home shaped like deploy).
  *
+ * ⛔ Why `.git` on top of the other two (2026-10-18): the **bundle** and
+ * **host-package** deploy layouts (`<DSH_HOME>/.agint-bundle`,
+ * `<profile>/node_modules/@agint/host`) hold BOTH `plugins/` and
+ * `cordis.patch.yml` — they are the mounted entity, not a checkout. Measured on
+ * this machine: `isRepoRoot('.agint-bundle')` and
+ * `isRepoRoot('.../@agint/host')` both returned true under the two-marker rule,
+ * so the live panel reported `repoDirsSource=self-path` with 117 entries (78 of
+ * them `*.tmp` leftovers) and lost the real repo's wiring exemptions. `.git`
+ * separates "a checkout" from "a deployed copy" in one stat call.
+ *
+ * `.git` may be a **file** (git worktree / submodule), so this uses existsSync,
+ * not isDirectory.
+ *
  * @param {string} dir
  * @returns {boolean}
  */
 export function isRepoRoot(dir) {
   try {
     return statSync(join(dir, 'plugins')).isDirectory()
-      && statSync(join(dir, 'cordis.patch.yml')).isFile();
+      && statSync(join(dir, 'cordis.patch.yml')).isFile()
+      && existsSync(join(dir, '.git'));
   } catch {
     return false;
   }
 }
+
+/**
+ * 事件总线里**不是插件**的 source 名单：一次性人工探针与手工验证标签。
+ *
+ * 为什么需要这张表：面板按 `source.startsWith('agint-')` 判定「运行态不在仓库」
+ * （panel-v2.html 的名册差集）。探针为了模仿真插件曾把 source 写成
+ * `agint-evolution-memory-probe`，于是被误报成「插件在运行、仓库里没有它」。
+ * 实测：生产 `agint_event_bus.json` 里该 source 仅 1 条、payload 带
+ * `origin:'manual-test'`（2026-09-04T15:35:00Z），仓库 git 全历史 0 次新增该目录。
+ *
+ * 单一事实源是 `plugins/agint-event-bus/lib/schemas.js` 的 KNOWN_EVENT_SOURCES
+ * 末段「历史一次性探针」。此处**不 import** 那份文件：它顶层 import zod，
+ * 面板不该为一张名单拉进别人的依赖。test/v2-probe-sources.test.mjs 双向比对
+ * 两张表，任一侧漂移就变红。
+ */
+export const PROBE_EVENT_SOURCES = Object.freeze([
+  'agint-evolution-memory-probe',
+  'verify-after-fix',
+  'verify-final',
+]);
 
 /**
  * 自身路径 → 部署位 plugins 目录候选（<pluginsDir>/agint-family-panel/lib/ 上溯两级）。
@@ -483,7 +517,7 @@ export function pluginIdentities(pluginsDir) {
   let dirs = [];
   try { dirs = readdirSync(pluginsDir); } catch { return []; }
   const topDirs = dirs
-    .filter((d) => d.startsWith('agint-') && !d.includes('.bak-'))
+    .filter((d) => d.startsWith('agint-') && !d.includes('.bak-') && !isTmpLeftover(d))
     .filter((d) => { try { return statSync(join(pluginsDir, d)).isDirectory(); } catch { return false; } })
     .sort();
   const units = [];
@@ -512,7 +546,7 @@ export function topLevelPluginDirs(pluginsDir) {
   let dirs = [];
   try { dirs = readdirSync(pluginsDir); } catch { return []; }
   return dirs
-    .filter((d) => d.startsWith('agint-') && !d.includes('.bak-'))
+    .filter((d) => d.startsWith('agint-') && !d.includes('.bak-') && !isTmpLeftover(d))
     .filter((d) => { try { return statSync(join(pluginsDir, d)).isDirectory(); } catch { return false; } })
     .sort();
 }
@@ -642,6 +676,7 @@ export function classifyPlugins(pluginsDir, mounted = null) {
     const nested = u.top
       ? readdirSync(root, { withFileTypes: true })
         .filter((e) => e.isDirectory() && !SKIP_FOR_KIND.has(e.name) && !e.name.includes('.bak-')
+          && !isTmpLeftover(e.name)
           && existsSync(join(root, e.name, 'manifest.json')))
         .map((e) => e.name)
       : [];
@@ -851,6 +886,9 @@ export function collectV2Data(dirs, opts = {}) {
     try {
       payload.repoDirs = readdirSync(dirs.repoPluginsDir)
         .filter((d) => d.startsWith('agint-') && !d.includes('.bak-'))
+        // `.tmp` / `.tmp-<stamp>` 是宿主换版时的中转目录残留（实测 bundle 槽 78 个）。
+        // 它们不是插件，进名册只会让差集判据把真插件挤出去，故与 .bak- 同等待遇。
+        .filter((d) => !isTmpLeftover(d))
         .sort();
       payload.repoDirsSource = dirs.repoPluginsSource ?? 'unknown';
     } catch (e) {
@@ -862,6 +900,8 @@ export function collectV2Data(dirs, opts = {}) {
       reason: '仓库位未解析：设 AGINT_HOME 或 AGINT_REPO_ROOT 指向仓库根，或从仓库位 plugins/ 启动本面板',
     };
   }
+  // 探针 source 名单随 payload 下发：前端不硬编码第二份（漂移会被 test 抓到）。
+  payload.probeEventSources = [...PROBE_EVENT_SOURCES];
   cache.set('v2', { builtAt: now, sig, value: payload });
   return payload;
 }
