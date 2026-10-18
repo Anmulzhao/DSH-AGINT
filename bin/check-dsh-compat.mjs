@@ -83,15 +83,41 @@ function dshRootCandidates() {
   return out;
 }
 
+/**
+ * 读取一个候选目录下的 dsh 版本。
+ *
+ * ⛔ 2026-10-19 修复（P0）：「包树根」与「真正的 dsh 包」是两回事。
+ *   `$DSH_HOME/.agint-deps/dsh-runtime/package.json` 的 `name` 恰好也叫
+ *   `@deepseek-ai/dsh`，但它只是**包树的容器清单**（本机实测 0.2.0-rc.2，
+ *   mtime 停留在 10-01），而真正在跑的内核在
+ *   `<该目录>/node_modules/@deepseek-ai/dsh`（软链指向 kernel-0.2.1，实测 0.2.1-rc.2）。
+ *   旧实现命中容器清单就 `return` ⇒ 持续报「版本漂移」，且真漂移来时会被这条假警报淹没。
+ *   ⇒ 命中后必须**再往下探一层** `node_modules/@deepseek-ai/dsh`，它存在就以它为准。
+ */
+function readDshManifest(dir) {
+  const manifest = path.join(dir, 'package.json');
+  if (!fs.existsSync(manifest)) return null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    if (pkg.name !== '@deepseek-ai/dsh') return null;
+    const nested = path.join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+    if (fs.existsSync(nested)) {
+      try {
+        const inner = JSON.parse(fs.readFileSync(nested, 'utf8'));
+        if (inner.name === '@deepseek-ai/dsh' && typeof inner.version === 'string') {
+          return { dir: path.join(dir, 'node_modules', '@deepseek-ai', 'dsh'), version: inner.version };
+        }
+      } catch { /* 内层读不了就退回外层 */ }
+    }
+    return { dir, version: pkg.version };
+  } catch { /* 继续找下一个 */ }
+  return null;
+}
+
 function findDshRoot() {
   for (const dir of dshRootCandidates()) {
-    const manifest = path.join(dir, 'package.json');
-    if (fs.existsSync(manifest)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-        if (pkg.name === '@deepseek-ai/dsh') return { dir, version: pkg.version };
-      } catch { /* 继续找下一个 */ }
-    }
+    const hit = readDshManifest(dir);
+    if (hit) return hit;
   }
   return null;
 }
@@ -303,8 +329,18 @@ function checkVersionDrift(runtimeVersion, semver) {
   const rows = text.split('\n').filter((l) => /^\|\s*v?\d+\.\d+\.\d+\s*\|/.test(l.trim()));
   if (rows.length === 0) return issues;
   const cells = rows[0].split('|').map((s) => s.trim()).filter(Boolean);
-  const [agint, minimum, tested] = cells;
-  if (tested && tested !== runtimeVersion) {
+  const [agint, minimum, testedRaw] = cells;
+  // 2026-10-19：tested 列允许带括号注解（现状写作「0.2.1-rc.2（另于 0.2.0-rc.2 验证）」）。
+  // 全等字符串比较会把「注解」当成版本的一部分 ⇒ 明明一致却恒报 drift。
+  // ⛔ 假警报比没警报更坏：真漂移来时会被这条淹没。
+  // 取法：剥掉括号注解 → 取首段 → 按逗号拆成多个已验证版本，命中任一即算对上。
+  const testedCell = (testedRaw || '').replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '');
+  const testedVersions = testedCell
+    .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter((s) => /^\d/.test(s));
+  if (testedVersions.length > 0 && !testedVersions.includes(runtimeVersion)) {
+    const tested = testedCell.trim();
     issues.push({
       level: 'info',
       kind: 'version-drift',

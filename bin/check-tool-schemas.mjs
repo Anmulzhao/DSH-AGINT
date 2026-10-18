@@ -46,6 +46,21 @@ async function loadDshTools() {
     candidates.push(path.join(npmRoot, '@deepseek-ai/dsh-tools/lib/index.js'));
   }
 
+  // ── 2026-10-19 新增（P1）：AGINT 自带 dsh 运行时 ────────────────────────
+  // 本机实测：上面两个 APPDATA 位都不存在 ⇒ 裸跑必抛
+  //   "cannot locate dsh-tools. Set DSH_TOOLS_PATH ..." （exit 1）。
+  // 带 DSH_TOOLS_PATH 后是 119 schema / 0 invalid —— 说明**门禁自身不可用**，
+  // 不是 AGINT 有 schema 问题。裸跑失败会被误读成后者。
+  // 探测口径与 check-dsh-compat.mjs 的 dshRootCandidates() 途径 ③ 同源：
+  //   $DSH_HOME/.agint-deps/dsh-runtime（10-08 为「解析根缺失 + 零报错」事故而加）。
+  const homeRoot = process.env.HOME || process.env.USERPROFILE || '';
+  const dshHome = process.env.DSH_HOME || (homeRoot ? path.join(homeRoot, '.dsh') : '');
+  if (dshHome) {
+    const runtime = path.join(dshHome, '.agint-deps', 'dsh-runtime');
+    candidates.push(path.join(runtime, 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'));
+    candidates.push(path.join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'));
+  }
+
   for (const c of candidates) {
     if (fs.existsSync(c)) return await import(pathToFileURL(c).href);
   }
