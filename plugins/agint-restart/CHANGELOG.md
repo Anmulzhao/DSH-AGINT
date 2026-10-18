@@ -4,6 +4,28 @@
 
 ---
 
+## v0.9.2 — 2026-10-18 — 桌面就绪假阴：lease/端口/祖先链三源全断，改判「新 GUI 树根连续两拍驻留」
+
+**背景**：本机 web profile 退役（老板 2026-10-18 令，Windows 只用 desktop）后，桌面重启回执每笔都记 ok=false，而宿主其实活着。
+**取证（当天实拍，非推断）**：桌面机当天一笔 restart-result.json 记 launched=true / desktopShell.killed=true / ready=false / readySignal=null / ok=false / readyWaitedMs=60257；同时新 GUI 的随机监听口有 LISTEN（宿主活着）。
+**根因（三条就绪信号源逐条证伪）**：
+1. sentinel.lease —— 桌面 app 不写：桌面机实测  下没有 sentinel.lease（Test-Path 判 False）。
+2. 固定端口 —— 桌面 GUI 每次启动随机监听口：当天三次重启实测监听口各不相同（随机高位口，非固定值）；老默认 3080 与 v0.9.1 override 配的 19387 均无监听。
+3. descendant-of-launched-shell —— GUI 启动后即脱离 wscript 壳：对活 GUI 进程树逐跳走祖先链：每个 GUI 根的父链首跳都 GONE（壳已退）。
+⇒ v0.9.1 的 port override 修法因端口转随机而失效；三条全断，waitReady 只能恒判失败。
+
+**改动（lib/respawn.js，纯新增，不动 lease/端口老判据）**：
+- 新增桌面结构就绪判据：拉起前对 GUI 映像名枚举一次取树根集合（根 = 父不在同 exe 集合里的那个，GPU/renderer 子进程不算根）；拉起后等新出现、且快照里没有的 GUI 根出现。不依赖端口、不依赖 lease、不解析创建时间（locale 坑）。
+- 新根必须**连续两拍可见**才判就绪（advanceFreshRoot 状态机）：只挂 pending 不定案；换了 pid 重新计数；第二拍消失则 pending 清零、不就绪。堵住「拉起的 GUI 秒退被轮询撞见一拍 → 假绿」（2026-10-13/15 崩溃弹窗形状）。
+- 探测不可达（powershell/CIM/WQL 注入面命中）返回 null，调用方退回老判据，绝不把「探测不了」写成「没有根」（空数组只在真枚举成功且无 GUI 时返回）。
+- 就绪时 newPid 从「被吞的壳 pid」换成「真根 pid」，restart_status 报的 pid 才杀得到。
+- 快照拿不到（null）不阻塞主流程，就绪自动退回 lease/端口老判据（web profile 机器行为不变）。
+- exports 增补 guiRootPids / pickFreshGuiRoot / advanceFreshRoot / listGuiRoots 供单测。
+
+**测试**：新增 test/desktop-readiness-v092.test.mjs 16 例全绿——结构判据纯函数用例（多进程 Electron 形状 / 空集合 / CIM 字符串数字对齐）、单实例锁被吞（无新根）判不就绪、advanceFreshRoot 四例（单拍不定案 / 两拍定案 / 换根重计 / 闪现清零）、WQL 单引号注入面拒查、真机枚举正反例、走完整 respawn 的 win32 e2e 正向（常驻⇒ok=true，newPid 是真根不是壳）与负向（秒退⇒ok=false，不许把失败洗成成功）。
+**基线不变**：smoke.mjs 改动前后均 46 pass / 1 fail（该 fail 为 win32 既存的端到端 lease case，v0.9.1 已记同形）；env-snapshot-redaction 的 1 fail 补丁前即存在（stash 对比确认）；plugin-check agint-restart 本体 11 维度全过。K19 那条 --all fail 扫描老 home .dsh\\profiles\\web 全树，补丁前后同一条，与本改动无关。
+
+---
 ## v0.9.1 — 2026-10-15 — 桌面 profile 重启必崩：复现对象从 headless host 换成 GUI 主进程
 
 **背景**：老板两次截图同一张弹窗（2026-10-13、2026-10-15）——「The application could not start or stopped unexpectedly / Another DSH instance (such as dsh web or the desktop app) is running」。文案是误导：并没有第二个实例在跑，是 `/restart-dsh` 自己造出来的东西挡住了桌面 app。

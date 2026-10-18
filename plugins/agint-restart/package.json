@@ -1,6 +1,6 @@
 {
   "name": "agint-restart",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "AGINT 插件：DSH 重启闭环 + 手动控制面。检测 DSH 重启后自动投递**纯状态**消息「DSH 已重启。」（v0.7.1；不含任何行动指令）。借鉴 dsh-resume-on-restart 思路，scope 1:1。优雅关闭走 cordis dispose 钩子（避免上游 SIGTERM 二次 kill bug）。v0.8.0 新增代码指纹。v0.9.0 新增浏览器半区：composer dock 上「重启 DSH」「终止 DSH」两个两段式确认按钮，走 /restart-dsh 与 /stop-dsh 命令通道，不开 HTTP 口；终止由 lib/killer.js 独立进程执行（枚举进程树 → 叶子优先 SIGTERM → 升级 SIGKILL）。v0.9.1 修桌面 profile 的重启必崩：respawn 的复现对象从 headless host 换成 GUI 主进程（先核身杀掉旧 GUI，再裸起 exe），并从 GUI 拉起的 env 里剥掉 ELECTRON_RUN_AS_NODE。",
   "keywords": [
     "agint",
