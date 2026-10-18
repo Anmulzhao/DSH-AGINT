@@ -1,3 +1,34 @@
+## v0.6.2 (2026-10-18) — 候选终结后清 pattern 回链（否则模式永久跳过）
+
+**症状**：生产存储 `agint_skill_autocreate.json` 里 42 条 `status='candidate'`
+的 task_pattern，42 条的 `linkedCandidateId` 全部指向已终结候选
+（37 REJECTED + 5 ROLLED_BACK）。这些模式**再也不会产出新候选** ——
+候选生成守门是 `if (stored.linkedCandidateId) continue;`，回链不清就一直 continue。
+
+**根因**：只有人工 `rejectCandidate` 清回链（index.js 那段先 `status='dismissed'`
+再置 null）。自动评估拒绝（REJECTED_STATIC / REJECTED_SANDBOX）、去重拒绝、
+发布层终端拒绝（REJECTED）、回滚（ROLLED_BACK）、转 STABLE 都不清。
+人工路径写对了，机器路径全漏 —— 因为两条路径各写各的。
+
+**改法**（两层，缺一不可）：
+1. `planPatternLinkFix(pattern, candidateStatus)` 抽出唯一判据：
+   - REJECTED / REJECTED_STATIC / REJECTED_SANDBOX / ROLLED_BACK → `dismissed` + 清回链
+   - RELEASED / STABLE → `released` + **保留**回链（技能从哪来要能回溯）
+   - 其余 → 不动（还在排队/评估中的候选不能误伤）
+2. `dismissPatternOf(candidateId, status)` 在五处终态写入点调用：
+   triggerEval 的 REJECTED_STATIC / REJECTED_SANDBOX / dedup、release-manager 的
+   rejectCandidate / rollback / observe→STABLE。
+3. `reconcilePatternLinks()` 扫全表收口历史遗留；`detect()` 每次开头跑一次，
+   结果进返回值 `patternLinkReconcile`（`error` 与 `fixed:0` 分开，不装绿）。
+
+**为什么不直接改 JSON 文件**：宿主把整个 unit 读进内存、每次 put 整体重写。
+仓外脚本直写会被宿主下一次写入静默覆盖（three-state-audit §10）。故走表 API。
+
+**测试**：新增 `test/pattern-link-reconcile.test.mjs`（6 例：拒绝/回滚/在跑/未终结/
+幂等/detect 自动对账）。**红绿自证**：把 `PATTERN_DEAD_CANDIDATE.has(...)` 改成
+`false` → 6 例里 4 例立即变红（拒绝 2 例 + 幂等 + detect）。恢复后全绿。
+
+**存量**：401 个单测全过（30 个文件）。
 # Changelog — agint-skill-autocreate
 
 ## v0.6.1 (2026-10-08) — LLM 判定通路：provider/model 不得留空（stopReason=error 根因修复）

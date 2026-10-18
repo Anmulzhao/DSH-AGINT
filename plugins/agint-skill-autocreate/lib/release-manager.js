@@ -375,6 +375,9 @@ export function createReleaseManager(deps) {
   const {
     table, audit, publishEvent, cfg: effectiveConfig,
     getService, readToolStatsRecords, dshHome,
+    // 2026-10-18：候选走终态时清 pattern 回链（注入，见 lib/index.js dismissPatternOf）。
+    // 缺省 no-op —— 老调用方（测试里的最小 deps）不会因此抛错。
+    dismissPatternOf = async () => false,
   } = deps;
 
   const skillsRootOf = () => resolvePath(effectiveConfig().skills_root);
@@ -574,6 +577,8 @@ export function createReleaseManager(deps) {
       releasedAt,
       releasedVersion: published.version,
     });
+    // 模式标 released（保留回链，可回溯「技能从哪来」）。2026-10-18。
+    await dismissPatternOf(id, 'RELEASED').catch(() => {});
 
     await publishEvent('skill-autocreate.released', {
       candidateId: id, skillName, releaseId: releaseEntry.id, releasedBy: manual ? 'human' : 'auto',
@@ -625,6 +630,8 @@ export function createReleaseManager(deps) {
     await cd.put(id, {
       ...candidate, status: 'REJECTED', rejectionReason: `[${gate}] ${reason}`.slice(0, 300),
     });
+    // 清回链（2026-10-18）：不清则该模式永久跳过候选生成。失败不阻断拒绝。
+    await dismissPatternOf(id).catch(() => {});
     await publishEvent('skill-autocreate.release-rejected-low-specificity', {
       candidateId: id, skillName: candidate.skillDraft?.name, toolSequence: extra.toolSequence ?? [],
     });
@@ -690,6 +697,8 @@ export function createReleaseManager(deps) {
         status: 'ROLLED_BACK',
         rollbackReason: reason,
       });
+      // 清回链（2026-10-18）：回滚等于「这个模式不值得再提案」，不清就永久跳过。
+      await dismissPatternOf(release.candidateId, 'ROLLED_BACK').catch(() => {});
     }
     await publishEvent('skill-autocreate.rolled-back', {
       candidateId: release.candidateId, skillName: release.skillName, releaseId: release.id,
@@ -770,7 +779,12 @@ export function createReleaseManager(deps) {
         await rt.put(release.id, { ...release, status: 'STABLE', observationMetrics: metrics });
         const cd = await table('candidates');
         const candEntry = cd.entries().find(([key]) => key === release.candidateId);
-        if (candEntry) await cd.put(candEntry[0], { ...candEntry[1], status: 'STABLE' });
+        if (candEntry) {
+          await cd.put(candEntry[0], { ...candEntry[1], status: 'STABLE' });
+          // 模式标 released（保留回链）：技能在跑，模式不再是「待提案」，
+          // 但「这技能从哪个重复模式来的」要能回溯（2026-10-18）。
+          await dismissPatternOf(release.candidateId, 'STABLE').catch(() => {});
+        }
         await publishEvent('skill-autocreate.release-stable', {
           candidateId: release.candidateId, skillName: release.skillName, callsTotal: total,
         });
