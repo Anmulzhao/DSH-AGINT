@@ -352,6 +352,29 @@ function aggBus(storagesDir, now) {
 }
 
 /**
+ * 技能候选里**还在等人处理**的状态（白名单，不是排除法）。
+ *
+ * 为什么必须过滤（2026-10-18 老板令「已经审过了，就不要挂在那里了」）：
+ * 本行原来是 `select: () => true` —— 把整张 candidates 表都算待办，连终态也算。
+ * 实测生产存储（`storages/agint_skill_autocreate.json`，2026-10-18 21:5x 读）：
+ * 42 条候选 = 37 条 REJECTED + 5 条 ROLLED_BACK，**待审 0 条**，面板却报「42 待审」。
+ *
+ * 状态机口径见 `agint-skill-autocreate/lib/schema.js:39` 的 CANDIDATE_STATUSES：
+ *  - 终态，永不再需要人动手：REJECTED / REJECTED_STATIC / REJECTED_SANDBOX /
+ *    REJECTED_EVAL / ROLLED_BACK / STABLE。
+ *  - 中间态，由 cron 自己推进，人无事可做：RELEASED（等观察期滚动转 STABLE）。
+ *  - 白名单只留「停在这里就是在等人」的六个：评估待跑（PENDING_EVAL / PHASE*_PASS）
+ *    与发布待点头（QUEUED_FOR_RELEASE / BUDGET_WAIT，对应 autocreate_release 入口）。
+ *
+ * ⛔ 用白名单而不是黑名单：新增状态时默认**不进待办**，宁可漏报也不谎报积压。
+ */
+const CANDIDATE_OPEN_STATUSES = Object.freeze([
+  'PENDING_EVAL',
+  'PHASE1_PASS', 'PHASE2_PASS', 'PHASE3_PASS',
+  'QUEUED_FOR_RELEASE', 'BUDGET_WAIT',
+]);
+
+/**
  * 积压队列的声明表。加一行队列 = 加一条 spec，不改聚合逻辑。
  *
  * kind 的两个值不是分类学，是**给用户的两种不同动作**：
@@ -378,8 +401,8 @@ const PENDING_SPECS = Object.freeze([
     table: 'candidates',
     supplyTable: 'task_patterns',
     supplyLabel: '上游 pattern',
-    select: () => true,
-    item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
+    select: (r) => CANDIDATE_OPEN_STATUSES.includes(r.status),
+    item: (r) => ({ id: r.id ?? null, title: r.skillDraft?.name ?? r.title ?? null, status: r.status ?? null }),
   },
   {
     key: 'evolve-proposal',
@@ -396,8 +419,12 @@ const PENDING_SPECS = Object.freeze([
     kind: 'action',
     file: 'agint_curator.json',
     table: 'overlap_candidates',
-    select: () => true,
-    item: (r) => ({ id: r.id ?? null }),
+    // 同一类病的第二处（2026-10-18，与 skill-candidate 一起修）：这里原来也是
+    // `() => true`。overlap_candidates 的状态机是 proposed / acknowledged / resolved
+    // （agint-curator/lib/schema.js:212），后两个已经是人处理过的。
+    // 本机此刻是 0 行，所以现场没有症状——但判据写错了，一有数据就会重演「已审的还挂着」。
+    select: (r) => r.status === 'proposed',
+    item: (r) => ({ id: r.id ?? null, title: r.skillA && r.skillB ? `${r.skillA} ↔ ${r.skillB}` : (r.id ?? null) }),
   },
   {
     key: 'failure-supply',

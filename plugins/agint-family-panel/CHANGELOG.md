@@ -1,3 +1,37 @@
+## 0.2.9 — 2026-10-18
+
+### 修「技能候选（待审）」把已审判的候选也算成待办
+
+**为什么**：老板说「已经审过了，就不要挂在那里了」。面板报 42 条待审，
+生产存储里 42 条候选 = 37 条 REJECTED + 5 条 ROLLED_BACK，待审 0 条。
+
+**根因**：`PENDING_SPECS` 里 skill-candidate 的 `select` 是 `() => true` ——
+整张 candidates 表都算待办，连终态也算。同表的 evolve-proposal 有
+`status === 'proposed'` 过滤，curriculum 有 `status === 'open'` 过滤，
+只有这一行漏了。
+
+**改法**：新增 `CANDIDATE_OPEN_STATUSES` 白名单（PENDING_EVAL / PHASE1_PASS /
+PHASE2_PASS / PHASE3_PASS / QUEUED_FOR_RELEASE / BUDGET_WAIT）。
+用白名单不用黑名单：将来新增终态时默认不进待办，宁可漏报也不谎报积压。
+`item()` 标题改取 `skillDraft.name`（候选表没有顶层 title 字段，旧代码恒 null），
+并带上 status，让「停在哪一步等人」看得见。`total` 仍报整表行数，
+「审过的有多少」不隐藏。
+
+**实测（2026-10-18 21:5x，生产存储）**：
+- 改前 `skill-candidate pending=42 total=42`
+- 改后 `skill-candidate pending=0 total=42`（直接调 aggPending 与
+  `GET /api/agint-family/v2/data` 两处读数一致）
+
+**红绿自证**：测试 fixture 加 4 条终态（REJECTED / REJECTED_STATIC / ROLLED_BACK /
+STABLE / RELEASED），断言 pending 只数 QUEUED_FOR_RELEASE 那 1 条。
+旧 `() => true` 会让 pending=6，该断言必红（实测 fail 1）。
+
+**同一类病的第二处**：`curator-overlap` 队列的 `select` 也是 `() => true`。
+overlap_candidates 的状态机是 proposed / acknowledged / resolved
+（agint-curator/lib/schema.js:212），后两个是人已处理过的。
+本机此刻 0 行（生产存储实测），所以现场没有症状——但判据写错，一有数据就会重演。
+一并改成 `status === 'proposed'`，标题改取 `skillA ↔ skillB`（原来只显示 id）。
+红绿自证：只把这一行改回 `() => true` → 断言「只有 status=proposed 待处理」立即红。
 # agint-family-panel CHANGELOG
 
 ## 0.2.8 — 2026-10-18
