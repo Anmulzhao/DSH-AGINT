@@ -269,6 +269,16 @@ assert.equal(
 {
   const { makeStorages } = await import('./fixtures/make-storages.mjs');
   process.env.DSH_HOME = join(here, 'fixtures', 'v2-home');
+  // ⛔ 显式钉死 profile（2026-10-18 修）：fixture 只建了 profiles/web/，
+  // 而 resolveV2Dirs 会先问 ctx.get('profileContext').name，再回落 env.DSH_PROFILE，
+  // 最后才探测 profiles/*/plugins。宿主 / 终端里 DSH_PROFILE=desktop 时，
+  // 解析落到 profiles/desktop/plugins —— 那个目录在 fixture 里不存在 ⇒ scan.hits=0
+  // ⇒ 下面「fixture 扫描有命中」必红。
+  // 实测：同一份代码，DSH_PROFILE=desktop 红、=web 绿；git stash 掉当轮改动后
+  // 基线同样红 ⇒ 是测试对环境的隐式依赖，不是被测代码的问题。
+  // 测试结果不得取决于跑它的机器/终端，故在此显式覆盖，并在收尾还原。
+  const prevProfile = process.env.DSH_PROFILE;
+  process.env.DSH_PROFILE = 'web';
   makeStorages(process.env.DSH_HOME);
   delete process.env.AGINT_HOME;
   const v2ctx = makeCtx();
@@ -305,6 +315,9 @@ assert.equal(
   // 服务面新增 v2Data 方法
   assert.equal(typeof v2ctx._provided['agint.familyPanel'].v2Data, 'function', 'agint.familyPanel.v2Data 存在');
   delete process.env.DSH_HOME;
+  // 还原 profile：本文件后续若再加用例，不该继承这里钉的 web。
+  if (prevProfile === undefined) delete process.env.DSH_PROFILE;
+  else process.env.DSH_PROFILE = prevProfile;
 }
 
 console.log('agint-family-panel smoke: PASS (15 groups)');

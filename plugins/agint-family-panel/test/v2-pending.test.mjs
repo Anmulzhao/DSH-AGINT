@@ -10,7 +10,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { makeStorages } from './fixtures/make-storages.mjs';
+// 2026-10-18 起本文件不再 import makeStorages：它曾用来重写共享的 v2-home，
+// 那是并行测试的竞态源（见下方 collectV2Data 段的注释）。本文件现在只用
+// 自己 mkdtemp 出来的 storages，不碰任何共享路径。
 import { aggPending, collectV2Data } from '../lib/v2-data.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -110,8 +112,13 @@ assert.equal(byKey(B, 'curriculum-challenge').state, 'error', '坏域 → error 
 assert.equal(byKey(B, 'evolve-proposal').state, 'ok', '一个域坏不能连累其余行');
 
 // ── 接进 collectV2Data：不接就等于没做（面板读的是这一个快照）────────
+// ⛔ 不调 makeStorages(v2-home)（2026-10-18 修）：本用例的 storagesDir 用的是
+// 自己的 mkdtemp 目录（见上 L18 的 dir），v2-home 只是 pluginsDir 的宿主。
+// 原先这里调 makeStorages(HOME) 会**重写** v2-data.test.mjs / smoke.mjs 共用的
+// fixtures/v2-home/storages/*.json —— 三个测试并行跑时 writeFileSync 互相覆盖，
+// 偶发读到半截文件。12 轮压测复现 1 次（v2-data.test.mjs 红、单独跑绿）。
+// 判据：只写自己独占的路径。要 storages 就在 mkdtemp 里造。
 const HOME = join(here, 'fixtures', 'v2-home');
-makeStorages(HOME);
 const R = collectV2Data(
   { pluginsDir: join(HOME, 'profiles', 'web', 'plugins'), storagesDir: dir, repoPluginsDir: null, repoPluginsSource: 'unresolved' },
   { cache: new Map() },

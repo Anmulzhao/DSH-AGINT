@@ -1,5 +1,36 @@
 # agint-family-panel CHANGELOG
 
+## 0.2.8 — 2026-10-18
+
+### 修三处同源的形状误判（判据用形状代替语义）
+
+**为什么**：老板看到面板报「运行态不在仓库 · agint-evolution-memory-probe · bus 发布 1 条」。
+逐条取证后发现三处误报，根因同一个 —— 判据拿形状当语义。
+
+**1. 探针 source 被当成插件**
+生产 bus（41754 行）里该 source 仅 1 条，payload.origin=manual-test
+（2026-09-04T15:35:00Z）；仓库 git 全历史 0 次新增该目录；三处部署根各 39 个身份、
+hasProbe=false。旧判据只按 source.startsWith('agint-') 分流，带前缀的探针掉了进来。
+→ 新增 PROBE_EVENT_SOURCES（含 erify-after-fix / erify-final），随
+payload.probeEventSources 下发；前端不硬编码第二份，test 与 event-bus
+schemas.js 的 KNOWN_EVENT_SOURCES 探针段**双向比对**，任一侧漂移即红。
+
+**2. isRepoRoot 把部署位认成仓库**
+.agint-bundle 与 @agint/host 同时有 plugins/ 与 cordis.patch.yml，旧两标记判据
+判 true ⇒ epoDirsSource=self-path、epoDirs 117 项（78 个 *.tmp）、
+wiringExemptions=unavailable。→ 加 .git（用 existsSync，兼容 worktree 的 .git 文件）。
+
+**3. *.tmp 换版残留被当成插件身份**
+bundle 槽 117 个 gint-* 目录里 78 个是 .tmp 残留，105 个带 lib/，
+gint-quality.tmp 已出现在 live amilyDirs 里。
+→ 2-scan.isTmpLeftover 导出，2-data 四处过滤口径统一。
+
+**4. 附带：Config schema 缺 epoRoot**
+lib/index.js:613 从 v0.3 起一直读 config.repoRoot，但 cordis 按 schema 剥未知键
+⇒ 配了也到不了代码。这是第 2 条只改 patch 不生效的真正原因。
+
+**红绿自证**：三条判据各自回退后测试立即变红（均 pass 0 / fail 1）。
+**验收**：27 单测 + smoke 15 组全绿，连跑 12 轮无 flake；live 运行态不在仓库 1 → 0 行。
 ## 0.2.7 — 2026-10-15
 
 ### 修 v2 iframe 首挂载不自适应高度（只有切 v1 再切回才正常）
