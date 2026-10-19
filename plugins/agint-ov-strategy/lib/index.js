@@ -181,6 +181,20 @@ function apply(ctx, config) {
     if (!args || typeof args !== 'object') return [];
     try { return Object.keys(args).slice(0, 8); } catch { return []; }
   };
+  // C3（2026-10-19，路线图 2.1 检索质量半侧）：从召回结果里提取命中的记忆 URI。
+  // 为什么是 URI 不是 id：OV 的记忆身份就是 `viking://…` 路径（recall-core.mjs:17-18
+  // 的检索桶、profile-inject.mjs:381 的 profileUri 都是它），runtime 不另发数字 id。
+  // ⛔ 只提 URI 路径（身份），正文一个字符都不带 —— 与 argKeys 同一红线。
+  // 上限 8 条：召回块设计上一屏读完（quota 封顶），8 是防御性上限，防畸形结果撑爆事件。
+  const RECALL_URI_RE = /viking:\/\/[A-Za-z0-9\-_.~\/%@]+/g;
+  const recallHitUris = (result) => {
+    if (!result) return [];
+    try {
+      const text = typeof result === 'string' ? result : JSON.stringify(result);
+      const m = text.match(RECALL_URI_RE);
+      return m ? [...new Set(m)].slice(0, 8) : [];
+    } catch { return []; }
+  };
 
   function wrapMethod(obj, key, after) {
     const orig = obj?.[key];
@@ -223,6 +237,10 @@ function apply(ctx, config) {
         querySize: lastMessageSize(args[1]),
         blockSize: err ? 0 : jsonSize(result),
         error: err ? String(err?.message || err) : null,
+        // C3（2026-10-19，路线图 2.1）：命中记忆的身份 = 召回块里的 viking:// URI。
+        // 上游 recall-core.mjs:396 每条 hit 都渲染 item.uri ⇒ 从 result 文本提取即可。
+        // 有了它「注入了」才能 join 到「注入了哪几条」；空数组 = 查了但 0 命中（如实）。
+        hitUris: err ? [] : recallHitUris(result),
       });
     });
     wrapState.profileMessage = wrapMethod(rt, 'profileMessage', (args, result, err) => {

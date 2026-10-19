@@ -206,3 +206,55 @@ test('A6: 观测计数器照常累加', async () => {
   await flush();
   assert.equal(svc.status().counters.observedRecall, 2);
 });
+
+// ── ⑤ C3（2026-10-19）：hitUris —— 召回身份可 join ──────────────────────
+// 路线图 2.1「检索质量半侧」此前只有 {injected, blockSize}：知道"注入了"，
+// 不知道"注入了哪几条记忆" ⇒ 无法把结果回填到具体记忆条目。
+// 上游形状（recall-core.mjs:396）：每条 hit 渲染 `- [kind score%] viking://…`。
+
+test('C3: 命中时载荷带 hitUris（真实渲染形状的 viking:// URI）', async () => {
+  const rendered = [
+    '- [memory 82%] viking://user/anmul/memories/preferences/login-port.md',
+    '- [memory 82%] 登录 NAS 用 2222 端口',
+    '- [skill 40%] viking://agent/skills/github-push/SKILL.md',
+  ].join('\n');
+  const r = await recallOnce({ id: 's1' }, [{ content: 'q' }], { form: 'recall', content: rendered });
+  assert.deepEqual(r.last.payload.hitUris, [
+    'viking://user/anmul/memories/preferences/login-port.md',
+    'viking://agent/skills/github-push/SKILL.md',
+  ]);
+});
+
+test('C3: 未注入（result=null）⇒ hitUris=[] 而不是缺字段（0 命中是事实，要可聚合）', async () => {
+  const r = await recallOnce({ id: 's-miss' }, [{ content: 'q' }], null);
+  assert.deepEqual(r.last.payload.hitUris, []);
+});
+
+test('C3: 出错 ⇒ hitUris=[]（错误路径不猜身份）', async () => {
+  const rt = makeMockRuntime();
+  rt.recallMessage = async () => { throw new Error('viking down'); };
+  const bus = makeMockBus();
+  const { ctx } = makeMockCtx({ runtime: rt, services: bus.services });
+  loadPlugin(ctx);
+  await assert.rejects(() => rt.recallMessage({ id: 's-e' }, [{ content: 'q' }]));
+  await flush();
+  const ev = bus.published.filter((e) => e.topic === 'ov.recall.checked')[0];
+  assert.deepEqual(ev.payload.hitUris, []);
+});
+
+test('C3: 去重 + 上限 8（畸形结果不得撑爆事件载荷）', async () => {
+  const many = [];
+  for (let i = 0; i < 12; i++) many.push(`- [memory 50%] viking://u/x${i % 6}`);
+  const r = await recallOnce({ id: 's1' }, [{ content: 'q' }], { form: 'recall', content: many.join('\n') });
+  assert.equal(r.last.payload.hitUris.length, 6, '12 行但只有 6 个不同 URI ⇒ 去重生效');
+  const r2 = await recallOnce({ id: 's2' }, [{ content: 'q' }], { form: 'recall', content: Array.from({ length: 20 }, (_, i) => `- [m] viking://u/${i}`).join('\n') });
+  assert.equal(r2.last.payload.hitUris.length, 8, '20 个不同 URI ⇒ 截到上限 8');
+});
+
+test('C3: 正文不外泄 —— hitUris 只含 URI，不含 hit 文本内容', async () => {
+  const rendered = '- [memory 82%] viking://u/p.md\n- [memory 82%] 密码是 hunter2';
+  const r = await recallOnce({ id: 's1' }, [{ content: 'q' }], { form: 'recall', content: rendered });
+  const joined = r.last.payload.hitUris.join('|');
+  assert.ok(!joined.includes('hunter2'), 'URI 列表里不得混进正文');
+  assert.deepEqual(r.last.payload.hitUris, ['viking://u/p.md']);
+});
