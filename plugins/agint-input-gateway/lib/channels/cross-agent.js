@@ -50,12 +50,18 @@ function saveState(state) {
   } catch { /* 软降级 */ }
 }
 
-// ── 会话文件命名（v3/v4 双格式并存时都收，jsonl 兜底）───────────────────
-const SESSION_FILE_NAMES = Object.freeze([
-  'session.v4.jsonl.zstd',
-  'session.v3.jsonl.zstd',
-  'session.jsonl.zstd',
-]);
+// ── 会话文件命名（F5 收口 2026-10-19）：名字表与兜底逻辑的唯一真相源在 agint-session-source ──
+// 本文件原持的三名字表已删；self-observation.js 那份本地兜底仍在（未迁，见该文件）。
+import { findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
+
+/** 近 N 天内有会话日志的目录判据。名字表与后缀兜底统一走 session-source（F5）。 */
+function sessionLogRecentWithin(dirPath, cutoff) {
+  try {
+    const p = findSessionLogFile(dirPath, { statSync, readdirSync });
+    if (!p) return false;
+    return statSync(p).mtimeMs > cutoff;
+  } catch { return false; }
+}
 
 /** 扫描 sessions root，返回近 recentDays 天有会话的 workspace 统计 */
 function scanWorkspaces(recentDays = 7) {
@@ -72,13 +78,7 @@ function scanWorkspaces(recentDays = 7) {
     let recentSessions = 0;
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
-      const dirPath = join(wsDir, d.name);
-      for (const fname of SESSION_FILE_NAMES) {
-        const p = join(dirPath, fname);
-        try {
-          if (statSync(p).mtimeMs > cutoff) { recentSessions += 1; break; }
-        } catch { /* 该格式不存在 */ }
-      }
+      if (sessionLogRecentWithin(join(wsDir, d.name), cutoff)) recentSessions += 1;
     }
     if (recentSessions > 0) out.push({ workspace: ws.name, recentSessions });
   }

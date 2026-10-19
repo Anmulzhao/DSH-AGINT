@@ -30,8 +30,42 @@
  * 本模块**不自己吞掉**降级：不传 onFallback 就抛错 —— 防止又造一个静默降级点。
  */
 
+import { join } from 'node:path';
+
 /** 上游 sessionQuery 服务的能力面（只列 AGINT 实际要用的）。 */
 const UPSTREAM_METHODS = ['listSessions', 'searchSessions', 'searchEvents', 'readSession'];
+
+/**
+ * 会话日志文件名的唯一真相源（F5 收口，2026-10-19）。
+ *
+ * 背景：input-gateway 的 cross-agent.js 与 self-observation.js 曾**各持一份**
+ * 候选名表（且无后缀兜底）—— 宿主 09-22 改 v4 命名那次的同类断供风险。
+ * 现在两份本地副本都删了，统一走 `findSessionLogFile`：
+ *   1. 先精确匹配候选名（版本秩 v4 > v3 > 无版本，同 dream/sweep.js:125 先例）；
+ *   2. 候选名全不匹配再按 `.jsonl.zstd` 后缀兜底 —— 宿主下次改名（v5/v6）
+ *      发现层不归零，最多是排序退化，不会静默失明。
+ *  fs 函数注入（statSync/readdirSync 由调用方给）⇒ 本模块零 node:fs 依赖，
+ *  测试可用内存夹具直调生产函数（不 mock 逻辑本身）。
+ * 返回命中文件的绝对路径；目录内无会话日志返回 null。mtime 判断留给调用方。
+ */
+export const SESSION_LOG_NAMES_BY_RANK = Object.freeze([
+  'session.v4.jsonl.zstd',
+  'session.v3.jsonl.zstd',
+  'session.jsonl.zstd',
+]);
+export const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+
+export function findSessionLogFile(dirPath, { statSync, readdirSync }) {
+  for (const name of SESSION_LOG_NAMES_BY_RANK) {
+    const p = join(dirPath, name);
+    try { statSync(p); return p; } catch { /* 试下一个 */ }
+  }
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    const e = entries.find((x) => x.isFile() && x.name.endsWith(SESSION_LOG_SUFFIX));
+    return e ? join(dirPath, e.name) : null;
+  } catch { return null; }
+}
 
 /**
  * 探测上游 sessionQuery 服务。

@@ -5,7 +5,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionSource, probeUpstream } from '../lib/index.mjs';
+import { createSessionSource, probeUpstream, findSessionLogFile, SESSION_LOG_NAMES_BY_RANK, SESSION_LOG_SUFFIX } from '../lib/index.mjs';
+import { join } from 'node:path';
 
 /** 造一个像样的 ctx.get。 */
 function ctxWith(svc) {
@@ -132,4 +133,70 @@ test('上游拿不到 path ⇒ 留 null，不编造路径', async () => {
   });
   const got = await src.listRecent();
   assert.equal(got[0].path, null, '拿不到就留 null —— 编造路径比没有更坏');
+});
+
+// ── F5 收口：会话日志文件名发现（唯一真相源）────────────────────────────
+// 背景：input-gateway 曾有两份硬编码三名字表且无后缀兜底。
+// 判据：直调生产 findSessionLogFile，fs 用内存夹具（不 mock 逻辑本身）。
+/** 造一个内存文件系统夹具：files = { '文件名': mtime }。 */
+function memFs(files) {
+  const entries = Object.keys(files).map((name) => ({
+    name,
+    isFile: () => true,
+    isDirectory: () => false,
+  }));
+  return {
+    statSync: (p) => {
+      const name = String(p).split(/[\\/]/).pop();
+      if (!(name in files)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+      return { mtimeMs: files[name] };
+    },
+    readdirSync: () => entries,
+  };
+}
+
+test('F5：候选名命中 ⇒ 返回该文件（版本秩 v4 优先）', () => {
+  const fs = memFs({ 'session.v4.jsonl.zstd': 1, 'session.v3.jsonl.zstd': 1 });
+  const p = findSessionLogFile('/d/sid', fs);
+  // ⚠ 期望值用 join 算：join 在 Windows 上会转反斜杠，写死正斜杠会假红。
+  assert.equal(p, join('/d/sid', 'session.v4.jsonl.zstd'), 'v4 优先于 v3');
+});
+
+test('F5：只有 v3 ⇒ 命中 v3（版本秩不挑）', () => {
+  const fs = memFs({ 'session.v3.jsonl.zstd': 1 });
+  assert.equal(findSessionLogFile('/d/sid', fs), join('/d/sid', 'session.v3.jsonl.zstd'));
+});
+
+test('F5：⛔ 宿主改名（v9）仍须命中 —— 后缀兜底不得失效', () => {
+  const fs = memFs({ 'session.v9.jsonl.zstd': 1 });
+  const p = findSessionLogFile('/d/sid', fs);
+  assert.equal(p, join('/d/sid', 'session.v9.jsonl.zstd'), '未知名但后缀匹配必须命中（不得归零）');
+});
+
+test('F5：目录内无任何会话日志 ⇒ 返回 null（不是 undefined、不报错）', () => {
+  const fs = memFs({ 'other.txt': 1 });
+  assert.equal(findSessionLogFile('/d/sid', fs), null);
+});
+
+test('F5：readdir 抛错（目录读不了）⇒ 返回 null，不炸', () => {
+  const fs = {
+    statSync: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+    readdirSync: () => { throw new Error('EACCES'); },
+  };
+  assert.equal(findSessionLogFile('/d/sid', fs), null);
+});
+
+test('F5：后缀匹配但不是文件（目录同名）⇒ 不算命中', () => {
+  const fs = {
+    statSync: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+    readdirSync: () => [{ name: 'x.jsonl.zstd', isFile: () => false, isDirectory: () => true }],
+  };
+  assert.equal(findSessionLogFile('/d/sid', fs), null, '目录不该被当成会话日志文件');
+});
+
+test('F5：名字表与后缀常量是导出的唯一真相源（供跨插件引用核对）', () => {
+  assert.deepEqual(SESSION_LOG_NAMES_BY_RANK, [
+    'session.v4.jsonl.zstd', 'session.v3.jsonl.zstd', 'session.jsonl.zstd',
+  ]);
+  assert.equal(SESSION_LOG_SUFFIX, '.jsonl.zstd');
 });

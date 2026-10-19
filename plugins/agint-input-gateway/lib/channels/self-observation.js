@@ -21,7 +21,7 @@ import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
 // 引 `../../agint-session-extract/index.js` 同形）。
 // ⛔ 不用裸包名 'agint-session-source'：全仓 grep 命中 **0 行** 这种写法，
 //    插件间依赖在部署位不是 npm 包树，裸包名解析不到。
-import { createSessionSource } from '../../../agint-session-source/lib/index.mjs';
+import { createSessionSource, findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -323,13 +323,10 @@ function resolveZstdBin() {
  *
  * 新形状：上游 `sessionQuery` 服务可用 ⇒ 走它；不可用 ⇒ 回落下面的本地发现层，
  * **且回落必须出声**（onFallback）。静默 skip 是这个项目最坏的一类失败。
+ *
+ * 2026-10-19（F5 收口二步）：本文件与 cross-agent.js 的两份名字表**都删了**，
+ * 统一用 session-source 的 `findSessionLogFile`（候选名优先 + 后缀兜底）。
  */
-const SESSION_FILE_NAMES = Object.freeze([
-  'session.v4.jsonl.zstd',
-  'session.v3.jsonl.zstd',
-  'session.jsonl.zstd',
-]);
-const SESSION_LOG_SUFFIX = '.jsonl.zstd';
 
 /** 回落发现层：候选名优先，其次按后缀兜底（不再因宿主改名而静默归零）。 */
 function listRecentSessionsFallback(maxCount = 8) {
@@ -345,19 +342,8 @@ function listRecentSessionsFallback(maxCount = 8) {
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
       const dirPath = join(wsDir, d.name);
-      let hit = null;
-      for (const fname of SESSION_FILE_NAMES) {
-        try { statSync(join(dirPath, fname)); hit = join(dirPath, fname); break; }
-        catch { /* 该格式不存在 */ }
-      }
-      if (!hit) {
-        // 后缀兜底：候选名全不匹配时按 .jsonl.zstd 找，宿主再改名也不会归零
-        try {
-          const entries = readdirSync(dirPath, { withFileTypes: true });
-          const e = entries.find((x) => x.isFile() && x.name.endsWith(SESSION_LOG_SUFFIX));
-          if (e) hit = join(dirPath, e.name);
-        } catch { /* 目录读不了就跳过 */ }
-      }
+      // 候选名 + 后缀兜底都在 session-source（唯一真相源）
+      const hit = findSessionLogFile(dirPath, { statSync, readdirSync });
       if (!hit) continue;
       // 形状契约（2026-10-19）：回落层必须与适配器出口同形 { dir, path, mtimeMs }。
       // 上一版这里写 sessionId: d.name，而 listRecentSessions 出口 mapper 读 r.dir ⇒
