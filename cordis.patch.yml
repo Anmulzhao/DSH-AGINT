@@ -88,10 +88,41 @@
     #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
     #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
     #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
+    #
+    # 2026-10-19 修（实测）：`$HOME/projects/DSH/DSH-AGINT` 在**本机不存在**
+    #   （Test-Path → False；$HOME=C:\Users\Administrator 下只有 projects\AGINT），
+    #   而 AGINT_REPO_ROOT 也没设 ⇒ 三处 repoRoot 全部解析到一个不存在的路径。
+    #   后果：ledger-anchor 每晚 ENOENT（写 docs/evolution-ledger-anchor.md.tmp-*）、
+    #   frozen-anchor 每晚「清单读不到 eval/scenarios/inventory.json」。
+    #   真仓根是 D:\DSH\project源码\DSH-AGINT —— 但它是**机器私有绝对路径**，
+    #   按 AGENTS.md:16 红线不得写进库文件（两台机器共用本仓）。
+    #   解法：在**宿主启动 cwd**（本机 = D:\DSH\AGINT-date\profiles\desktop）放
+    #   `.env` 写 AGINT_REPO_ROOT=...，由 dsh-app-boot 的 loadLayeredEnv()
+    #   （lib/index.js:3736-3744）在启动时灌进 process.env。
+    #   取证：readEnvLayer 读 cwd 的 .env（project 层）+ home 的 .env（user 层），
+    #   只补 `process.env[name] === undefined` 的键 ⇒ 已继承的进程环境优先。
+    #   本机已落地该文件（见 D:\DSH\AGINT-date\profiles\desktop\.env）。
+    #   ⛔ 不要改成塞绝对路径进本文件 —— 那是机器私有事实入库，另一台机会读到错值。
     - id: agint-cron
       name: ./plugins/agint-cron/lib/index.js
       config:
         repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+        # （≤10000 字节 且 ≤5000 字符）+ 宿主 12000 预算，超限/逼近则写告警报告。
+        # ⛔ 老板 2026-10-18 拍板：**只告警，不自动改** —— 压缩顺序是给人执行的
+        #   判据，AI 自己决定删哪一段可能删掉刚写进去的约定。
+        # file / reportDir 同样是机器私有绝对路径 ⇒ 走 `!!js` 读环境变量（同上理）。
+        #   AGINT_AGENTS_MD     被核文件（工作区 AGENTS.md）
+        #   AGINT_DOCS_DIR      告警报告落盘目录（业务交付物一律落 docs/）
+        # 未配 ⇒ job **抛错**（不是 soft-skip）：静默 skip 会让哨兵看起来在跑，
+        #   实际一次都没核过（K134：能力不可用 vs 实现有 bug 要能分开）。
+        agentsSizeGuard: !!js ({
+          file: process.env.AGINT_AGENTS_MD || 'D:/DSH/AGENTS.md',
+          reportDir: process.env.AGINT_DOCS_DIR || 'D:/DSH/docs',
+          localFile: process.env.AGINT_AGENTS_LOCAL_MD || 'D:/DSH/AGENTS.local.md',
+          maxBytes: 10000,
+          maxChars: 5000,
+          hostBudgetBytes: 12000,
+        })
 
     # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
     # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
@@ -199,9 +230,9 @@
     #   ⇒ 只把文件铺到 .agent-presets/ 而不声明 = 预设永远不出现在列表里。
     #
     # 为什么用 cordis:include 而不是把 plugins 内联进来：
-    #   1) 声明行的 baseUrl = 本 patch 所在目录（~/.dsh/profiles/web/），而
+    #   1) 声明行的 baseUrl = 本 patch 所在目录（~/.dsh/profiles/desktop/），而
     #      agent.cordis.yml 里的相对路径是按 preset 目录写的
-    #      （../../profiles/web/plugins/agint-*/lib/tools.js、new URL('skills/', baseUrl)）。
+    #      （../../profiles/desktop/plugins/agint-*/lib/tools.js、new URL('skills/', baseUrl)）。
     #      直接内联会让这些路径全部指错位置。
     #   2) cordis:include 读文件后会把子条目的 baseUrl 设为该文件所在目录
     #      （cordis-plugin-include: ctx.baseUrl = new URL('.', pathToFileURL(filename))），
@@ -214,7 +245,7 @@
     #    按 `new URL(config.path, ctx.baseUrl)` 解析（cordis-plugin-include:123）。
     #
     #    ⛔⛔ 但 ctx.baseUrl 的定义变了：
-    #      · dsh 0.1.7-rc.1（本段原结论）：baseUrl = **profile 根** = profiles/web/
+    #      · dsh 0.1.7-rc.1（本段原结论）：baseUrl = **profile 根** = profiles/desktop/
     #      · dsh 0.2.0-rc.2（现测）：baseUrl = **本层配置文件所在目录**，
     #        即 `ctx.baseUrl = dirname(<本层 config>) + '/'`（dsh-app-boot:4070）
     #        ⇒ 本文件是 bundle 层，preset 声明行按 $DSH_HOME/.agint-bundle/ 解析。
@@ -252,7 +283,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: __DSH_HOME__/.agent-presets/agint/agent.cordis.yml
+              path: file://D:/DSH/AGINT-date/.agent-presets/agint/agent.cordis.yml
 
     - id: agint-blockchain-preset
       name: '@deepseek-ai/dsh-agent-preset'
@@ -264,7 +295,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: __DSH_HOME__/.agent-presets/agint-blockchain/agent.cordis.yml
+              path: file://D:/DSH/AGINT-date/.agent-presets/agint-blockchain/agent.cordis.yml
 
     - id: agint-investor-preset
       name: '@deepseek-ai/dsh-agent-preset'
@@ -276,12 +307,12 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: __DSH_HOME__/.agent-presets/agint-investor/agent.cordis.yml
+              path: file://D:/DSH/AGINT-date/.agent-presets/agint-investor/agent.cordis.yml
 
     # agint-ops: 新能源生产运维办公助理（2026-09-30 新增）。
     # 与上面三条同机制：cordis:include 复用 .agent-presets/agint-ops/agent.cordis.yml，
     # 单一事实源仍在 presets 目录，本 patch 只放声明。
-    # ⚠️ path 是字面量，按 profile 根（profiles/web/）解析，故 2 级 .. 再进 .agent-presets/。
+    # ⚠️ path 是字面量，按 profile 根（profiles/desktop/）解析，故 2 级 .. 再进 .agent-presets/。
     - id: agint-ops-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -292,7 +323,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: __DSH_HOME__/.agent-presets/agint-ops/agent.cordis.yml
+              path: file://D:/DSH/AGINT-date/.agent-presets/agint-ops/agent.cordis.yml
 
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
@@ -444,6 +475,10 @@
       # 的正确分支（config schema 在 :58 声明 repoRoot: z.string().optional()），
       # 只是**没人给这个块填值** —— 之前 2ecb16d 填的是 agint-cron 块，治的是 job 读文件，
       # 不是这条写路径。形状沿用同仓 `!!js` 惯例（与 cron / evolution-driver 两块一致）。
+      #
+      # 2026-10-19：与 agint-cron 块同因 —— `$HOME/projects/DSH/DSH-AGINT` 本机
+      #   不存在（实测 Test-Path=False），ledger-anchor 的 ENOENT 即该写路径所致。
+      #   修法同 cron 块：走 AGINT_REPO_ROOT（.env 落地），不在本文件塞绝对路径。
       config:
         repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
 
@@ -635,8 +670,13 @@
     # kill-switch：config enabled:false ⇒ 路由仍应答 {enabled:false}，面板显示
     # 「已关闭」而非「未挂载」；allowNonLoopback 默认 false（只放行回环）。
     # Service：agint.familyPanel（status / apiPrefix / setEnabled / isEnabled）。
+    # repoRoot（2026-10-18 补）：仓库正本绝对路径，v2 面板据此读 docs/wiring-exemptions.json。
+    # 不加它时面板的自身路径回退会把自己认成仓库（`.agint-bundle` 同时有 plugins/ 与
+    # cordis.patch.yml），实测 repoDirsSource=self-path、117 项（78 个 *.tmp 残留）、
+    # wiringExemptions=unavailable。机器私有值 ⇒ 不入库，各机各配。
     - id: agint-family-panel
       name: ./plugins/agint-family-panel/lib/index.js
       config:
         enabled: true
         allowNonLoopback: false
+        repoRoot: "D:/DSH/project源码/DSH-AGINT"
