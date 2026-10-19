@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "长/短期记忆读写 + L1-L4 四级衰减扫描。独占 agint storage domain。",
   "main": "lib/index.js",
   "agint": {
@@ -24,7 +24,8 @@
         "memory_write",
         "memory_read",
         "memory_stats",
-        "memory_forget_scan"
+        "memory_forget_scan",
+        "memory_remove"
       ]
     },
     "storage": {

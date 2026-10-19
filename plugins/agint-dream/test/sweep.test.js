@@ -9,6 +9,7 @@ import {
   collectSessionSignals,
   extractCandidates,
   classifyToolError,
+  promotionBlockReason,
   aggregateToolErrorStats,
   scoreCandidates,
   gateCandidates,
@@ -76,12 +77,12 @@ test('extractCandidates: 引用块与 (id=...) 前缀文本被拦下，不进候
   assert.ok(cands.some((c) => /SHA256 哈希判定/.test(c.text)), '正常主张必须保留');
 });
 
-// ── 2026-09-28：工具错误信号诊断化过滤（噪音治理） ───────────────────────────
+// ── 2026-09-28 建立 · 2026-10-19 收紧：工具错误信号「因果句式」过滤 ───────────
 //
-// fixture 全部取自 09-28 真实观测：这些条目以 score=0.00 进 recall store 并被
-// promoted 进长期记忆，污染 367 条记忆的信噪比。前 5 条是噪音形态，
-// 最后 1 条是真正带根因的（rule_list schema mismatch）—— 必须留下。
+// fixture 全部取自真实观测。
 
+// 09-28：噪音形态（输出残骸）。这些条目以 score=0.00 进 recall store 并被
+// promoted 进长期记忆，污染记忆信噪比 —— 形态即噪音，一律拦下。
 const TOOL_ERROR_NOISE_FIXTURES = [
   '(no output) [exit code: 1]',
   '<!-- source:workbuddy | synced_from: ~/.workbuddy/ME',
@@ -91,8 +92,27 @@ const TOOL_ERROR_NOISE_FIXTURES = [
   '',
 ];
 
-const TOOL_ERROR_DIAGNOSTIC_FIXTURE =
+// 2026-10-19 事故样本：这 3 条在旧判据下过了闸，并以原文进了长期记忆。
+// 旧判据是「出现任一诊断关键词即放行」—— 它们分别命中 invalid / expected / schema。
+// ② 的原文头部是 GBK 乱码，这里用占位符代替（乱码部分不含判据关键词，
+// 命中它的是 ASCII 段的 TerminatorExpectedAtEndOfString）。
+const TOOL_ERROR_1019_RESIDUE = [
+  'Error: invalid arguments: missing required property "file_path"; missing required property "old_string"; missing required property "new_string"',
+  '[stderr] <GBK mojibake> + CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException + FullyQualifiedErrorId : TerminatorExpectedAtEndOfString [exit code: 1]',
+  '· DimensionScoreSchema · DreamPhaseSchema · EvalResultSchema · EvalTargetSchema · HARMSchema · QualityEvaluatorIface · QualityLifecycleIface · QualityPolicyIface · QualityReporterIface [PASS] L0 FROZEN 契约未变更 ─── a',
+];
+
+// 2026-10-19 行为变更：旧判据放行的 schema 类报错，现在必须拦下。
+// 它说的是「现在是什么样」（参数不匹配），不是「应该怎样」—— 不是可迁移的主张。
+// 真要沉淀，由人 / LLM 写成主张再 memory_write。
+const TOOL_ERROR_STATE_ONLY_FIXTURE =
   'Error: tool "rule_list" returned invalid output: "value.rules[0].claim" is not a declared property (additionalProperties: false)';
+
+// 带因果句式的报错 —— 说清了「为什么 / 应该怎样」，配当教训，必须放行。
+const TOOL_ERROR_CAUSAL_FIXTURES = [
+  'Error: spawn ENOENT because the working directory does not exist; you must create it before running',
+  '错误：DSH_HOME 指向已删除的 web profile，必须改回 AGINT-date，否则会话日志读不到',
+];
 
 test('classifyToolError: 噪音形态一律拦下（09-28 真实样本）', () => {
   for (const fx of TOOL_ERROR_NOISE_FIXTURES) {
@@ -101,10 +121,26 @@ test('classifyToolError: 噪音形态一律拦下（09-28 真实样本）', () =
   }
 });
 
-test('classifyToolError: 带根因线索的报错必须放行', () => {
-  const v = classifyToolError(TOOL_ERROR_DIAGNOSTIC_FIXTURE);
-  assert.equal(v.keep, true, `不该拦: ${v.reason}`);
-  assert.equal(v.reason, 'diagnostic');
+test('classifyToolError: 10-19 夜里进了长期记忆的 3 条残骸必须被拦下', () => {
+  for (const fx of TOOL_ERROR_1019_RESIDUE) {
+    const v = classifyToolError(fx);
+    assert.equal(v.keep, false, `必须拦下: ${JSON.stringify(fx)} → ${v.reason}`);
+    assert.equal(v.reason, 'no-causal-clause');
+  }
+});
+
+test('classifyToolError: 状态类报错（schema 不匹配）不再放行（2026-10-19 行为变更）', () => {
+  const v = classifyToolError(TOOL_ERROR_STATE_ONLY_FIXTURE);
+  assert.equal(v.keep, false, '参数不匹配是工具机制，不是可迁移的主张');
+  assert.equal(v.reason, 'no-causal-clause');
+});
+
+test('classifyToolError: 带因果句式的报错必须放行（2026-10-19 判据）', () => {
+  for (const fx of TOOL_ERROR_CAUSAL_FIXTURES) {
+    const v = classifyToolError(fx);
+    assert.equal(v.keep, true, `不该拦: ${JSON.stringify(fx)} → ${v.reason}`);
+    assert.equal(v.reason, 'causal-clause');
+  }
 });
 
 test('classifyToolError: kill-switch 关闭时完全回退旧行为', () => {
@@ -115,20 +151,23 @@ test('classifyToolError: kill-switch 关闭时完全回退旧行为', () => {
   }
 });
 
-test('extractCandidates: 工具错误噪音不再进候选（09-28 回归）', () => {
+test('extractCandidates: 工具错误噪音不再进候选（09-28 回归 + 10-19 收紧）', () => {
   const session = {
     sessionKey: 's1',
     userTexts: [],
     errors: [
       ...TOOL_ERROR_NOISE_FIXTURES.map((text) => ({ text, time: NOW })),
-      { text: TOOL_ERROR_DIAGNOSTIC_FIXTURE, time: NOW },
+      ...TOOL_ERROR_1019_RESIDUE.map((text) => ({ text, time: NOW })),
+      { text: TOOL_ERROR_STATE_ONLY_FIXTURE, time: NOW },
+      ...TOOL_ERROR_CAUSAL_FIXTURES.map((text) => ({ text, time: NOW })),
     ],
   };
   const cands = extractCandidates(session, NOW);
   const errorCands = cands.filter((c) => c.text.startsWith('工具执行报错'));
-  assert.equal(errorCands.length, 1, `只应剩 1 条诊断型，实际 ${errorCands.length}：${JSON.stringify(errorCands.map((c) => c.text))}`);
-  assert.match(errorCands[0].text, /rule_list/);
-  assert.ok(cands.every((c) => !/no output/i.test(c.text)), '(no output) 不得成为候选');
+  assert.equal(errorCands.length, TOOL_ERROR_CAUSAL_FIXTURES.length,
+    `只应剩 ${TOOL_ERROR_CAUSAL_FIXTURES.length} 条因果型，实际 ${errorCands.length}：${JSON.stringify(errorCands.map((c) => c.text))}`);
+  assert.ok(errorCands.every((c) => c.rawToolError === true), '工具错误候选必须带 rawToolError 标记（提升边界闸据此判断）');
+  assert.match(errorCands[0].text, /because|必须/);
 });
 
 test('extractCandidates: toolErrorStats 是非枚举属性，数组语义不受影响', () => {
@@ -152,7 +191,7 @@ test('aggregateToolErrorStats: 跨会话聚合（flatMap 会丢非枚举属性�
   const mk = (n) => {
     const c = [];
     Object.defineProperty(c, 'toolErrorStats', {
-      value: { enabled: true, total: n, kept: 0, dropped: n, byReason: { 'no-diagnostic-signal': n } },
+      value: { enabled: true, total: n, kept: 0, dropped: n, byReason: { 'no-causal-clause': n } },
       enumerable: false,
     });
     return c;
@@ -160,7 +199,7 @@ test('aggregateToolErrorStats: 跨会话聚合（flatMap 会丢非枚举属性�
   const agg = aggregateToolErrorStats([mk(3), mk(4)]);
   assert.equal(agg.total, 7);
   assert.equal(agg.dropped, 7);
-  assert.equal(agg.byReason['no-diagnostic-signal'], 7);
+  assert.equal(agg.byReason['no-causal-clause'], 7);
 });
 
 test('renderDiary: 过滤统计必须可见（不可见的治理 = 又一个盲区）', () => {
@@ -172,10 +211,10 @@ test('renderDiary: 过滤统计必须可见（不可见的治理 = 又一个盲�
     gated: [],
     promoted: [],
     durationMs: 1000,
-    toolErrorStats: { enabled: true, total: 2, kept: 0, dropped: 2, byReason: { 'no-diagnostic-signal': 2 } },
+    toolErrorStats: { enabled: true, total: 2, kept: 0, dropped: 2, byReason: { 'no-causal-clause': 2 } },
   });
-  assert.match(diary, /工具错误诊断过滤：留 0 \/ 拦 2/);
-  assert.match(diary, /no-diagnostic-signal×2/);
+  assert.match(diary, /工具错误因果过滤：留 0 \/ 拦 2/);
+  assert.match(diary, /no-causal-clause×2/);
 });
 
 test('renderDiary: 过滤统计缺席时不得凭空捏造一行', () => {
@@ -183,7 +222,7 @@ test('renderDiary: 过滤统计缺席时不得凭空捏造一行', () => {
     day: '2026-09-28', signals: [], memWrites: [], candidates: [],
     gated: [], promoted: [], durationMs: 1000,
   });
-  assert.ok(!/工具错误诊断过滤/.test(diary));
+  assert.ok(!/工具错误因果过滤/.test(diary));
 });
 
 test('renderDiary: 预览件自带声明（apply=false），不冒充真实夜间记录', () => {
@@ -651,4 +690,108 @@ test('renderDiary: consolidationMode=not-attempted 显示 ➖ 未触发（区别
   });
   assert.match(md, /P1 LLM consolidation: ➖ 未触发（0 gated candidates/);
   assert.doesNotMatch(md, /heuristic-degraded/);
+});
+
+// ── 2026-10-19：提升边界闸（promotionBlockReason）─────────────────────────────
+//
+// 两道闸，职责不同：
+//   1. 抽取闸 classifyToolError：作用在**原始 stderr** 上（这条报错是不是主张）。
+//   2. 边界闸 promotionBlockReason：作用在**将要写进本体的文本**上。
+// 抽取闸放行、边界闸拦截的真实场景：候选文本被截断到 maxCandidateChars(220)，
+// 因果句式落在截断点之后 —— 写进本体的就只剩残骸。
+
+test('promotionBlockReason: 工具错误残骸被拦，含因果句式的放行', () => {
+  const residue = promotionBlockReason({
+    rawToolError: true,
+    text: '工具执行报错：Error: invalid arguments: missing required property "file_path"',
+  });
+  assert.equal(residue, 'no-causal-clause-in-stored-text');
+
+  const causal = promotionBlockReason({
+    rawToolError: true,
+    text: '工具执行报错：错误：DSH_HOME 指向已删除的 web profile，必须改回 AGINT-date',
+  });
+  assert.equal(causal, null);
+});
+
+test('promotionBlockReason: 非工具错误候选不受这道闸约束（用户原话是主张）', () => {
+  assert.equal(promotionBlockReason({ text: '以后用 vger 称呼我' }), null);
+  assert.equal(promotionBlockReason(null), null);
+});
+
+test('promotionBlockReason: kill-switch 关闭时两道闸一起让路（完全回退旧行为）', () => {
+  const residue = {
+    rawToolError: true,
+    text: '工具执行报错：Error: invalid arguments: missing required property "file_path"',
+  };
+  assert.equal(promotionBlockReason(residue, { toolErrorDiagnosticOnly: false }), null);
+});
+
+// 端到端：残骸不得进长期记忆；带因果句式的必须进。
+// 两条互为红绿自证 —— 拆掉边界闸，第 1 条会红；把闸改成拦一切，第 2 条会红。
+test('runSweep: 提升边界闸 —— 残骸不进记忆，因果句式的照进（2026-10-19）', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  // zstd 缺失 ⇒ 明确跳过（不静默跳过：静默跳过 = 假防线）
+  let zstdOk = true;
+  try { spawnSync('zstd', ['--version'], { stdio: 'ignore' }); zstdOk = true; } catch { zstdOk = false; }
+  if (!zstdOk || spawnSync('zstd', ['--version'], { stdio: 'ignore' }).status !== 0) {
+    t.skip('zstd CLI 不在本机 PATH —— 会话日志读不了，这道闸测不了');
+    return;
+  }
+
+  // 因果句式落在截断点（候选文本 220 字符）之后：抽取闸放行，边界闸拦截。
+  const residueText = `Error: failed to start service ${'A'.repeat(215)} because the config file was never copied`;
+  const causalText = 'Error: failed because the config file was never copied';
+
+  async function runWith(text, tag) {
+    const base = await mkdtemp(join(tmpdir(), `dream-gate-${tag}-`));
+    const sessions = join(base, 'sessions');
+    const diary = join(base, 'diary');
+    await mkdir(sessions, { recursive: true });
+    await mkdir(diary, { recursive: true });
+    // 3 个会话 × 同一条报错 ⇒ signalCount=3 / uniqueSessions=3 ⇒ 过闸
+    for (let i = 0; i < 3; i += 1) {
+      const dir = join(sessions, 'ws', `${tag}-${i}`);
+      await mkdir(dir, { recursive: true });
+      const lines = [
+        JSON.stringify({ type: 'session', id: `${tag}-${i}` }),
+        JSON.stringify({
+          type: 'tool/result', seq: 2, time: NOW,
+          data: { message: { content: [{ type: 'text', text }] } },
+        }),
+      ].join('\n');
+      const buf = spawnSync('zstd', ['-q', '-c'], { input: lines, maxBuffer: 1 << 24 });
+      if (buf.status !== 0) throw new Error(`zstd 压缩失败: ${buf.stderr?.toString() ?? ''}`);
+      await writeFile(join(dir, 'session.v3.jsonl.zstd'), buf.stdout);
+    }
+    const calls = [];
+    const memoryStub = {
+      async list() { return []; },
+      async write(entry) { calls.push(entry); return { id: 'm' + calls.length, ...entry }; },
+    };
+    const result = await runSweep({
+      sessionsRoot: sessions, diaryRoot: diary, recallPath: join(base, 'recall.jsonl'),
+      memory: memoryStub, nowMs: NOW, apply: true, qualityEval: false, evolution: false,
+      recover: false, zeroHitAlert: false, minScore: 0.1,
+    });
+    await rm(base, { recursive: true, force: true });
+    return { result, calls };
+  }
+
+  const residue = await runWith(residueText, 'residue');
+  assert.ok(residue.result.counts.gated >= 1,
+    `残骸必须先过抽取闸（gated>0），否则这道测试没测到东西：${JSON.stringify(residue.result.counts)}`);
+  assert.equal(residue.result.counts.skippedRawToolError, 1, '残骸必须在提升边界被拦下');
+  assert.equal(residue.calls.length, 0, '残骸不得写进长期记忆');
+  assert.equal(residue.result.counts.promoted, 0);
+
+  const causal = await runWith(causalText, 'causal');
+  assert.ok(causal.result.counts.gated >= 1, '因果句式必须过抽取闸');
+  assert.equal(causal.result.counts.skippedRawToolError, 0, '因果句式不得被边界闸拦下');
+  assert.equal(causal.calls.length, 1, '因果句式必须写进长期记忆');
+  assert.match(causal.calls[0].content, /because/);
 });

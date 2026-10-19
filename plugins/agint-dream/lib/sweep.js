@@ -109,6 +109,12 @@ export const DEFAULTS = {
   // 仍被 recall store 收走并 promoted 进长期记忆，稀释 367 条记忆的信噪比。
   // 判据（见 classifyToolError）：原始 stderr 不是主张，**只有说清「为什么 /
   // 应该怎样」的报错才配当教训**。默认开；kill-switch 设 false 即完全回退旧行为。
+  //
+  // 2026-10-19 收紧：判据从「出现任一诊断关键词」改为「必须出现因果句式」。
+  // 旧关键词（schema / invalid / expected / enoent…）在真实 stderr 里几乎必然
+  // 出现 —— 10-19 夜里 3 条过门候选全是原始残骸（invalid arguments /
+  // GBK 乱码 ParserError / schema 名列表），并以原文进了长期记忆。
+  // 状态描述（现在是什么样）不是主张；只有「为什么 / 应该怎样」才配当教训。
   toolErrorDiagnosticOnly: true,
 };
 
@@ -347,27 +353,32 @@ const TOOL_ERROR_NOISE_SHAPE_RE = new RegExp([
 ].map((r) => `(?:${r.source})`).join('|'), 'i');
 
 /**
- * 诊断**信号** —— 文本里出现了「为什么 / 应该怎样」的线索。
- * 命中即认为这条报错**可迁移**（换个场景仍成立），配当教训。
- * 覆盖 schema 类（rule_list 的 additionalProperties 报错属这类，值得留）、
- * 根因类（because / 因为 / 实际是）、祈使类（必须 / should be）。
+ * 因果**句式** —— 文本里说出了「为什么 / 应该怎样」。
+ *
+ * 2026-10-19 收紧。旧判据是「出现任一诊断关键词即放行」，而那批关键词
+ * （schema / invalid / expected / enoent / eacces…）在真实 stderr 里几乎必然
+ * 出现 —— 于是 10-19 夜里的 3 条过门候选全是原始残骸：
+ *   ① Error: invalid arguments: missing required property "file_path" …（命中 invalid）
+ *   ② [stderr] …TerminatorExpectedAtEndOfString [exit code: 1]（命中 Expected）
+ *   ③ · DimensionScoreSchema · DreamPhaseSchema … [PASS] L0 FROZEN 契约未变更（命中 schema）
+ * 三条都以原文进了长期记忆。
+ *
+ * **状态描述不是主张**：schema 不匹配、参数缺失、端口占用说的是「现在是什么样」，
+ * 不是「以后该怎么做」。新判据只认两种句式：
+ *   - 因果连接：说清了「为什么」（因为 / 由于 / 根因 / because / due to …）
+ *   - 祈使语气：说清了「应该怎样」（必须 / 应该 / 改成 / must / should / instead of …）
+ * 两者都没有 ⇒ 拦下。
+ *
+ * 代价（明说）：「EACCES: permission denied」这类纯 syscall 报错不再进池。
+ * 它是工具机制；要沉淀就由人 / LLM 写成主张再 memory_write。
  */
-const TOOL_ERROR_DIAGNOSTIC_RE = new RegExp([
-  /schema/i,
-  /not a declared property|additionalproperties/i,
-  /validation|validate\b|invalid\b/i,
-  /mismatch|不一致|不匹配|对不上/,
-  /expected|应为|预期|应该是|而不是/,
-  /实际(?:是|为|值|上)/,
-  /cannot read propert|cannot access|cannot find module|module_not_found/i,
-  /cannot connect to|cannot resolve host/i,
-  /enoent|eacces|eperm|eaddrinuse|econnrefused|eaconnreset/i,
-  /address already in use|too many open files/i,
-  /path escapes|outside root|越界|逃逸/,
-  /因为|由于|原因是|根因/,
-  /缺少|缺失|漏了|漏掉|没带/,
-  /必须|应该|应当|切记|务必|记得/,
-  /instead of|should be|rather than/i,
+const TOOL_ERROR_CAUSAL_RE = new RegExp([
+  // 因果连接：说清了「为什么」
+  /因为|由于|原因是|根因(?:是|在于)?|其实是|实际(?:是|为)|因此|所以|才会|导致/,
+  /because|due to|root cause|therefore|so that/i,
+  // 祈使语气：说清了「应该怎样」
+  /必须|应该|应当|务必|切记|记得|不要|别再|改成|改用|应改为|才能|需要先/,
+  /must(?: not)?\b|should(?: not|'t)?\b|instead of|rather than|\bnever\b|\balways\b|need to/i,
 ].map((r) => `(?:${r.source})`).join('|'), 'i');
 
 /**
@@ -377,13 +388,13 @@ const TOOL_ERROR_DIAGNOSTIC_RE = new RegExp([
  *   - **错杀**（漏一条教训）：这条根因下次靠人 / 我手工 memory_write 补。
  *   - **误放**（灌原始 stderr）：永久污染长期记忆，且这类候选 score 恒为 0.00，
  *     稀释所有真信号的召回 —— 09-28 实测的 23 条错误信号就是这么烂进来的。
- *   → 因此默认**拒绝**：无诊断信号 = 拦下。
+ *   → 因此默认**拒绝**：无因果句式 = 拦下。
  *
  * 开关 `opts.toolErrorDiagnosticOnly=false` 时完全回退旧行为（全部放行）。
  *
  * @returns {{ keep: boolean, reason: string }} reason：
- *   'diagnostic'（放行）｜'filter-disabled'（开关关）｜'empty'｜
- *   'noise-shape'（噪音形态）｜'no-diagnostic-signal'（无诊断线索）
+ *   'causal-clause'（放行）｜'filter-disabled'（开关关）｜'empty'｜
+ *   'noise-shape'（噪音形态）｜'no-causal-clause'（无因果句式）
  */
 export function classifyToolError(text, opts = {}) {
   const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
@@ -392,8 +403,31 @@ export function classifyToolError(text, opts = {}) {
   if (!line) return { keep: false, reason: 'empty' };
   const core = line.replace(EXIT_CODE_SUFFIX_RE, '').trim() || line;
   if (TOOL_ERROR_NOISE_SHAPE_RE.test(core)) return { keep: false, reason: 'noise-shape' };
-  if (!TOOL_ERROR_DIAGNOSTIC_RE.test(core)) return { keep: false, reason: 'no-diagnostic-signal' };
-  return { keep: true, reason: 'diagnostic' };
+  if (!TOOL_ERROR_CAUSAL_RE.test(core)) return { keep: false, reason: 'no-causal-clause' };
+  return { keep: true, reason: 'causal-clause' };
+}
+
+/**
+ * 提升边界闸（2026-10-19）。
+ *
+ * 抽取层的判据作用在**原始 stderr** 上，而写进长期记忆的是截断到
+ * `maxCandidateChars` 之后的文本。截断可能把因果句式切掉 —— 于是「过了抽取闸
+ * 的残骸」仍可能以残骸形态进本体（10-19 的 3 条就是这么进的）。
+ *
+ * 这道闸独立于 classifyToolError：它检查的是**将要写入本体的那串文本**。
+ * 只对工具错误来源的候选生效 —— 用户原话天然是主张，用因果句式去卡它会误杀。
+ *
+ * kill-switch：`toolErrorDiagnosticOnly=false` 时两道闸一起让路（完全回退旧行为）。
+ *
+ * @returns {string|null} 拦截原因；null = 放行
+ */
+export function promotionBlockReason(candidate, opts = {}) {
+  const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
+  if (!diagnosticOnly) return null;
+  if (!candidate?.rawToolError) return null;
+  const stored = String(candidate.text ?? '');
+  if (TOOL_ERROR_CAUSAL_RE.test(stored)) return null;
+  return 'no-causal-clause-in-stored-text';
 }
 
 /** 单个 extractCandidates 结果上的过滤统计（由 extractCandidates 挂载）。 */
@@ -482,6 +516,9 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
       sessionKey: session.sessionKey,
       time: time || nowMs,
       signals: [text],
+      // 2026-10-19：标记来源。提升边界闸（promotionBlockReason）据此判断
+      // 「这条候选是不是原始 stderr 残骸」—— 它不来自用户原话。
+      rawToolError: true,
     });
   }
   // 非枚举：保持数组语义（`deepEqual(candidates, [...])` / `.length` 不变），
@@ -820,10 +857,10 @@ function fmtDay(ms) {
 /**
  * Render the dream diary markdown for one sweep.
  * stages: { day, signals, memWrites, candidates, gated, promoted, recovered,
- *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
- *           validationReason?, recallWrite?, pruneResult? }.
+ *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
+ *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -847,7 +884,7 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (toolErrorStats && toolErrorStats.total > 0) {
     const reasons = Object.entries(toolErrorStats.byReason ?? {})
       .map(([k, v]) => `${k}×${v}`).join(' · ');
-    lines.push(`- 工具错误诊断过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
+    lines.push(`- 工具错误因果过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
       + `${reasons ? `（${reasons}）` : ''}${toolErrorStats.enabled ? '' : ' · 过滤已关闭(kill-switch)'}`);
   }
   lines.push('');
@@ -866,6 +903,10 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push('');
   lines.push(`- 门槛通过候选：${gated.length} 条`);
   if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
+  // 2026-10-19：提升边界闸的拦截数必须可见 —— 拦下来的东西不能是黑洞。
+  if (skippedRawToolError > 0) {
+    lines.push(`- 提升边界闸拦截：${skippedRawToolError} 条工具错误残骸（写进本体的文本不含因果句式）`);
+  }
   // 2026-09-21（方案 B）：去重分档统计。此前页面只显示「门槛通过候选：0 条」，
   // 无法区分「本来就没候选」和「候选全被 existing 去重吃掉」—— 这正是闭包
   // 藏了这么久的原因。
@@ -1253,11 +1294,19 @@ export async function runSweep({
   }
 
   const promoted = [];
+  let skippedRawToolError = 0;
   if (apply && memory && validationFinal.ok) {
     const writeCalls = planToWriteCalls(validationFinal.plan);
     for (let i = 0; i < writeCalls.length; i += 1) {
       const wc = writeCalls[i];
       const candidate = unpromotedGated[i];
+      // 2026-10-19 提升边界闸：工具错误来源的候选，写进本体的文本必须自带因果句式。
+      // 抽取层的判据作用在原始 stderr 上；这里判的是「实际写进本体的那串文本」。
+      const blocked = promotionBlockReason(candidate, { toolErrorDiagnosticOnly });
+      if (blocked) {
+        skippedRawToolError += 1;
+        continue;
+      }
       try {
         const saved = await wc.write(
           memory,
@@ -1311,6 +1360,12 @@ export async function runSweep({
         for (let i = 0; i < recWriteCalls.length; i += 1) {
           const wc = recWriteCalls[i];
           const candidate = recGated[i];
+          // 2026-10-19：recovery 通道走同一条提升边界闸（它同样不经过 LLM 挑选）。
+          const blocked = promotionBlockReason(candidate, { toolErrorDiagnosticOnly });
+          if (blocked) {
+            skippedRawToolError += 1;
+            continue;
+          }
           try {
             const saved = await wc.write(
               memory,
@@ -1356,6 +1411,8 @@ export async function runSweep({
     windows: { light: lightDays, rem: remDays, deep: deepRecoveryDays ?? DEFAULTS.deepRecoveryDays },
     // P0/P2 扩展字段（renderDiary 内部可选展示）
     skippedPromoted,
+    // 2026-10-19：提升边界闸拦截数
+    skippedRawToolError,
     validationOk: validationFinal.ok,
     validationReason: validationFinal.reason,
     recallWrite: recallWriteResult,
@@ -1404,6 +1461,8 @@ export async function runSweep({
       candidates: scored.length,
       gated: gated.length,
       skippedPromoted,
+      // 2026-10-19：提升边界闸拦下的工具错误残骸数（0 = 没有残骸想进本体）
+      skippedRawToolError,
       // 2026-09-21（方案 B）：去重分档统计 —— { enabled, dropped, suspicious, checked, maxSimilarity }
       dedupeStats,
       validationOk: validationFinal.ok,

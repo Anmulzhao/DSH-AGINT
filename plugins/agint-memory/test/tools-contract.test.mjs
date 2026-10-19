@@ -26,15 +26,43 @@ function registerAll() {
 }
 
 const EXPECTED_TOOLS = [
-  'memory_search', 'memory_write', 'memory_read', 'memory_stats', 'memory_forget_scan',
+  'memory_search', 'memory_write', 'memory_read', 'memory_stats', 'memory_forget_scan', 'memory_remove',
 ];
 
-test('apply() 在 fake ctx 上注册全部 5 个工具且不抛', () => {
+test('apply() 在 fake ctx 上注册全部 6 个工具且不抛', () => {
   const tools = registerAll();
   assert.equal(tools.length, EXPECTED_TOOLS.length);
   for (const n of EXPECTED_TOOLS) {
     assert.ok(tools.some(t => t.name === n), `缺少工具 ${n}`);
   }
+});
+
+// 2026-10-19：记忆只能写不能删 —— service 有 remove(id)，工具面没暴露。
+// 后果是「原始报错残骸进了长期记忆就出不去」。
+test('memory_remove：id 与 reason 必填，execute 走 service.remove 并回传被删内容', async () => {
+  const registered = [];
+  const removedIds = [];
+  const ctx = {
+    'agint.memory': {
+      async read(id) { return { id, content: '工具执行报错：Error: invalid arguments …', type: 'lesson' }; },
+      async remove(id) { removedIds.push(id); return true; },
+    },
+    tools: { register(def) { registered.push(def); } },
+  };
+  const { apply } = await import('../lib/tools.js');
+  apply(ctx);
+  const t = registered.find(x => x.name === 'memory_remove');
+  assert.ok(t, '未注册 memory_remove');
+  assert.ok(t.parameters.required.includes('id'), 'id 必须必填');
+  assert.ok(t.parameters.required.includes('reason'), 'reason 必须必填（删除要留痕）');
+  assert.ok(t.output.schema.properties.content, 'output schema 未声明 content（被删内容要回传）');
+
+  const out = await t.execute({ id: 'abc123', reason: '原始报错残骸，不是教训' });
+  assert.deepEqual(removedIds, ['abc123'], '必须走 service.remove(id)');
+  assert.equal(out.removed, true);
+  assert.equal(out.id, 'abc123');
+  assert.match(out.content, /invalid arguments/, '被删内容必须回传，便于复查');
+  assert.match(out.reason, /残骸/);
 });
 
 test('memory_write 参数表暴露 replacedBy（本次改动的核心断言）', () => {

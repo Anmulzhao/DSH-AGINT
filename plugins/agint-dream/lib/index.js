@@ -285,6 +285,9 @@ function apply(ctx, config) {
         counts: last?.counts ?? {
           sessions: 0, userMessages: 0, memWrites: 0, toolErrors: 0,
           candidates: 0, gated: 0, skippedPromoted: 0, validationOk: true,
+          // 2026-10-19：提升边界闸兜底（形状必须与 sweep result.counts 一致，
+          // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
+          skippedRawToolError: 0,
           validationReason: null, recovered: 0, promoted: 0,
           recallAppended: 0, recallPruned: 0,
           // P1 LLM consolidation mode 兜底（与 lib/sweep.js result.counts 对齐）

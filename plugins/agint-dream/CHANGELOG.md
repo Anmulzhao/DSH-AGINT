@@ -5,6 +5,54 @@
 
 ---
 
+## v0.5.0 — 工具错误判据收紧为「因果句式」+ 提升边界闸（2026-10-19）
+
+**根因**：v0.4.0 的判据是「出现任一诊断关键词即放行」，而那批关键词
+（`schema` / `invalid` / `expected` / `enoent` / `eacces`…）在真实 stderr 里
+几乎必然出现 —— 判据等于没判。
+
+**取证**（2026-10-19 03:00 夜班 sweep 日记 `dreams/2026-10-19.md`）：647 条工具
+错误信号里 107 条过了闸，其中 3 条以**原文**进了长期记忆：
+
+```
+lesson/L1  工具执行报错：Error: invalid arguments: missing required property "file_path" …      ← 命中 invalid
+lesson/L1  工具执行报错：[stderr] <GBK 乱码> … TerminatorExpectedAtEndOfString [exit code: 1] ← 命中 Expected
+lesson/L1  工具执行报错：· DimensionScoreSchema · DreamPhaseSchema … [PASS] L0 FROZEN 契约未变更 ← 命中 schema
+```
+
+三条都不是教训，是工具机制的残骸。当晚 P1 LLM consolidation 处于
+`heuristic-degraded`（subagents service unavailable），validation gate 走
+「全部 added」退化路径 ⇒ 没有任何一层在挑拣，残骸直接落库。
+
+**修复**（两道闸，职责不同）：
+
+1. **抽取闸**（`classifyToolError`）：判据从「关键词」改为「**因果句式**」——
+   文本必须出现因果连接（因为/由于/根因/because/due to…）或祈使语气
+   （必须/应该/改成/must/should/instead of…）。两者都没有 ⇒ 拦下。
+   - **行为变更**：旧判据放行的 schema 类报错（`rule_list` 的 additionalProperties
+     不匹配）现在被拦下。它说的是「现在是什么样」，不是「应该怎样」。
+   - **代价（明说）**：`EACCES: permission denied` 这类纯 syscall 报错不再进池。
+     它是工具机制；要沉淀就由人 / LLM 写成主张再 `memory_write`。
+2. **提升边界闸**（`promotionBlockReason`，新导出）：候选文本会被截断到
+   `maxCandidateChars=220`，因果句式可能落在截断点之后 —— 于是「过了抽取闸的
+   残骸」仍可能以残骸形态进本体。这道闸判的是**实际写进本体的那串文本**。
+   只对工具错误来源的候选生效（用户原话天然是主张，用因果句式卡它会误杀）。
+   拦截数进日记「提升边界闸拦截」行与 `counts.skippedRawToolError`（可见，不做黑洞）。
+
+**kill-switch**：`toolErrorDiagnosticOnly=false` 时**两道闸一起让路** ——
+完全回退 v0.4.0 之前的行为（全部放行），不留半死的开关。
+
+**测试**：`test/sweep.test.js` 新增 7 条（3 条真实残骸必须拦下 / schema 类行为
+变更 / 因果句式必须放行 / 边界闸单元 / 非工具错误不受约束 / kill-switch 让路 /
+**端到端**：残骸不进长期记忆、因果句式照进 —— 后两条互为红绿自证）。
+全量实测 **125 通过 / 0 失败**（含插件其余 7 个测试文件）。
+
+**已知未修**：P1 LLM consolidation 仍落 `heuristic-degraded`（宿主
+`subagents` service 取不到）。本次只保证「没有 LLM 挑拣时，残骸也进不去」；
+LLM 通路本身是另一件事。
+
+---
+
 ## v0.4.1 — dry-run 预览真正只读：不再覆盖当天日记、不再写 recall store（2026-09-28）
 
 **根因**：`runSweep` 有两处副作用被 `apply` 漏掉了。

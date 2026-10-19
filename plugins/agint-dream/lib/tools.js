@@ -129,6 +129,10 @@ function apply(ctx) {
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-10-19：提升边界闸拦下的工具错误残骸数。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（K164 第四次同形状事故：toolErrorFilter /
+              // evolutionTemplates / dedupeStats 都栽在这条上）。
+              skippedRawToolError: { required: true, type: 'number' },
               // 2026-10-05 补：分级去重统计。K164 第四次咬人 —— status() 返回
               // `counts: last?.counts ?? {兜底}`，跑过 sweep 时 last.counts 带 dedupeStats
               // （sweep.js:1401），但本 schema 漏声明 → additionalProperties:false 撞上
@@ -257,6 +261,10 @@ function apply(ctx) {
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-10-19：提升边界闸拦下的工具错误残骸数。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（K164 第四次同形状事故：toolErrorFilter /
+              // evolutionTemplates / dedupeStats 都栽在这条上）。
+              skippedRawToolError: { required: true, type: 'number' },
               // 2026-09-21（方案 B）：分级去重统计。2026-09-27（提案 0f91c868 问题1）补进
               // schema —— sweep.js result.counts 一直带着它，此前 additionalProperties:false
               // 撞上实际返回 → dream_run_now 整体校验失败。

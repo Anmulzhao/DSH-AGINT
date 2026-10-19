@@ -159,6 +159,50 @@ function apply(ctx) {
   }));
 
   ctx.tools.register(defineTool({
+    name: 'memory_remove',
+    description:
+      '删除一条长期记忆条目（不可撤销）。只在条目确认为噪音 / 错误 / 已被取代时使用。' +
+      '删前先用 memory_read 确认内容 —— 删掉的东西不会回来。必须给出 id 与理由；' +
+      '返回里带被删内容，便于事后复查。',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Entry id (from memory_search / memory_read).' },
+      reason: { type: 'string', required: true, description: '删除理由（写进返回值，便于审计）。' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        // required 已迁移至各属性（value schema DSL: 属性上的布尔 required: true）
+        properties: {
+          removed: { required: true, type: 'boolean' },
+          id: { required: true, type: 'string' },
+          reason: { required: true, type: 'string' },
+          content: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          type: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+        },
+      },
+      render: (_a, v) => [
+        {
+          type: 'text',
+          text: `memory_remove: ${v.removed ? '已删除' : '未找到'} ${v.id}`
+            + `${v.content ? ` · ${v.content.slice(0, 160)}` : ''} · 理由：${v.reason}`,
+        },
+      ],
+    },
+    async execute(args) {
+      // 先读后删：返回被删内容，让删除这件事在会话记录里留痕（可复查）。
+      const before = await memory.read(args.id);
+      const removed = await memory.remove(args.id);
+      return {
+        removed: Boolean(removed),
+        id: args.id,
+        reason: args.reason,
+        content: before?.content ?? null,
+        type: before?.type ?? null,
+      };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
     name: 'memory_forget_scan',
     description:
       'Run the L1-L4 forgetting scan. Dry-run by default (reports planned actions only). ' +
