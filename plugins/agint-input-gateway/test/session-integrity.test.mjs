@@ -96,7 +96,31 @@ test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全
   }
 });
 
-test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存在者', () => {
+// 2026-10-19 新增：宿主改名兜底。
+// 背景：这里原先硬编码 v4/v3/无版本三个名字且**无后缀兜底**，宿主下次改名（v5）
+// 会再瞎一次 —— 09-22 改 v4 时同类事故让 autocreate 供料断了 12 天（M1 断链）。
+// 判据：造一个**三个候选名都不叫**的新格式，必须仍能发现（靠 .jsonl.zstd 后缀）。
+test('⛔ 宿主再次改名（v5）不得归零 —— 后缀兜底必须生效', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sessv5-'));
+  try {
+    const sessRoot = join(root, 'sessions');
+    mkdirSync(join(sessRoot, 'ws-a', 'sid-v5'), { recursive: true });
+    // 故意不叫 session.v4/v3/session.jsonl —— 模拟宿主下次改名
+    writeFileSync(join(sessRoot, 'ws-a', 'sid-v5', 'session.v9.jsonl.zstd'), 'x');
+    process.env.DSH_HOME = root;
+    const logs = await listRecentSessions(8);
+    assert.equal(logs.length, 1, '未知名但后缀匹配，必须被发现（不得归零）');
+    assert.ok(logs[0].path.endsWith('session.v9.jsonl.zstd'));
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 2026-10-19：listRecentSessions 改异步（要走 agint-session-source 的上游探测），
+// 调用方必须 await。不 await 会拿到 Promise 而不是数组 —— 这类错误静默且难查。
+test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存在者', async () => {
   const oldHome = process.env.DSH_HOME;
   const root = mkdtempSync(join(tmpdir(), 'agint-sesslist-'));
   try {
@@ -108,7 +132,7 @@ test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存�
     writeFileSync(join(sessRoot, 'ws-a', 'sid-1', 'session.jsonl.zstd'), 'x');
     writeFileSync(join(sessRoot, 'ws-a', 'sid-2', 'session.v3.jsonl.zstd'), 'x');
     process.env.DSH_HOME = root;
-    const logs = listRecentSessions(8);
+    const logs = await listRecentSessions(8);
     assert.equal(logs.length, 2);
     const ids = logs.map((l) => l.sessionId).sort();
     assert.deepEqual(ids, ['sid-1', 'sid-2']);

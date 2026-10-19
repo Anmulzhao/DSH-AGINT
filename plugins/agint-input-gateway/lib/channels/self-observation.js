@@ -17,6 +17,11 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
+// 跨插件引用走相对路径（与 `agint-skill-autocreate/lib/semantic-window.js:24`
+// 引 `../../agint-session-extract/index.js` 同形）。
+// ⛔ 不用裸包名 'agint-session-source'：全仓 grep 命中 **0 行** 这种写法，
+//    插件间依赖在部署位不是 npm 包树，裸包名解析不到。
+import { createSessionSource } from '../../../agint-session-source/lib/index.mjs';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -309,17 +314,25 @@ function resolveZstdBin() {
   return 'zstd';
 }
 
+/**
+ * 会话日志发现：2026-10-19 起走 `agint-session-source` 统一入口。
+ *
+ * 原状是本文件**硬编码三个名字**（v4/v3/无版本）且**无后缀兜底**，
+ * `cross-agent.js` 还持着第二份一模一样的副本。宿主下次改名（v5）这里会再瞎一次 ——
+ * 09-22 改 v4 时同类事故让 autocreate 供料断了 12 天（M1 断链）。
+ *
+ * 新形状：上游 `sessionQuery` 服务可用 ⇒ 走它；不可用 ⇒ 回落下面的本地发现层，
+ * **且回落必须出声**（onFallback）。静默 skip 是这个项目最坏的一类失败。
+ */
 const SESSION_FILE_NAMES = Object.freeze([
   'session.v4.jsonl.zstd',
   'session.v3.jsonl.zstd',
   'session.jsonl.zstd',
 ]);
+const SESSION_LOG_SUFFIX = '.jsonl.zstd';
 
-/**
- * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
- * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
- */
-export function listRecentSessions(maxCount = 8) {
+/** 回落发现层：候选名优先，其次按后缀兜底（不再因宿主改名而静默归零）。 */
+function listRecentSessionsFallback(maxCount = 8) {
   const root = join(dshHome(), 'sessions');
   let workspaces;
   try { workspaces = readdirSync(root, { withFileTypes: true }); } catch { return []; }
@@ -332,18 +345,65 @@ export function listRecentSessions(maxCount = 8) {
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
       const dirPath = join(wsDir, d.name);
+      let hit = null;
       for (const fname of SESSION_FILE_NAMES) {
-        const p = join(dirPath, fname);
-        try {
-          const st = statSync(p);
-          found.push({ path: p, sessionId: d.name, mtimeMs: st.mtimeMs });
-          break;
-        } catch { /* 该格式不存在 */ }
+        try { statSync(join(dirPath, fname)); hit = join(dirPath, fname); break; }
+        catch { /* 该格式不存在 */ }
       }
+      if (!hit) {
+        // 后缀兜底：候选名全不匹配时按 .jsonl.zstd 找，宿主再改名也不会归零
+        try {
+          const entries = readdirSync(dirPath, { withFileTypes: true });
+          const e = entries.find((x) => x.isFile() && x.name.endsWith(SESSION_LOG_SUFFIX));
+          if (e) hit = join(dirPath, e.name);
+        } catch { /* 目录读不了就跳过 */ }
+      }
+      if (!hit) continue;
+      // 形状契约（2026-10-19）：回落层必须与适配器出口同形 { dir, path, mtimeMs }。
+      // 上一版这里写 sessionId: d.name，而 listRecentSessions 出口 mapper 读 r.dir ⇒
+      // 回落时 sessionId 全变 undefined（被 session-integrity 测试抓出：
+      // actual [undefined, undefined] vs expected [sid-1, sid-2]）。
+      try { found.push({ dir: d.name, path: hit, mtimeMs: statSync(hit).mtimeMs }); }
+      catch { /* stat 失败跳过 */ }
     }
   }
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return found.slice(0, maxCount);
+}
+
+/**
+ * 拿一个会话源。ctx 由调用方注入（channel 拿不到 ctx ⇒ 传 null 走回落）。
+ * ⛔ 回落的出声回调必需：没它就抛错，不静默降级。
+ */
+export function createSessionSourceForSelfObservation({ ctx = null, onFallback }) {
+  return createSessionSource({
+    ctx,
+    fallback: ({ maxCount = 8 } = {}) => listRecentSessionsFallback(maxCount),
+    onFallback,
+    source: 'input-gateway/self-observation',
+  });
+}
+
+/**
+ * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
+ * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
+ *
+ * 2026-10-19 改：走 `agint-session-source`（上游优先 + 回落出声）。
+ * 既有调用方不用改签名；ctx 缺省时走回落并出声。
+ */
+export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback = null } = {}) {
+  const src = createSessionSourceForSelfObservation({
+    ctx,
+    // 没给 onFallback 时用一个默认出声实现：降级必须留痕，不能静默
+    onFallback: onFallback ?? ((reason) => {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
+      }
+    }),
+  });
+  const rows = await src.listRecent({ maxCount });
+  // 对齐既有形状：{ path, sessionId, mtimeMs }
+  return rows.map((r) => ({ path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs }));
 }
 
 /**
@@ -423,9 +483,10 @@ export function inspectSessionFile(file) {
  * 数据源：~/.dsh/sessions/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
  * 最近 8 个会话（mtime 排序）。zstd 不可用时整体软降级返回 []（不误报"全会话损坏"）。
  */
-function detectSessionIntegrity() {
+async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
   if (!existsSync(resolveZstdBin())) return [];     // zstd 缺失 → 软降级
-  const files = listRecentSessions(8);
+  // 2026-10-19：listRecentSessions 改为异步（要走上游服务探测），调用方必须 await。
+  const files = await listRecentSessions(8, { ctx, onFallback });
   if (files.length === 0) return [];
 
   const issues = [];
@@ -482,7 +543,8 @@ export const selfObservationChannel = {
       ...detectMetricRegression(),
       ...detectRuleHotspot(),
       ...detectCompressLoss(ctx || {}),
-      ...detectSessionIntegrity(),
+      // ctx 透传给会话源：上游 sessionQuery 可用就走它，不可用回落并出声
+      ...(await detectSessionIntegrity({ ctx: ctx || null })),
     ];
     return signals;
   },
