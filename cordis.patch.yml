@@ -115,14 +115,12 @@
         #   AGINT_DOCS_DIR      告警报告落盘目录（业务交付物一律落 docs/）
         # 未配 ⇒ job **抛错**（不是 soft-skip）：静默 skip 会让哨兵看起来在跑，
         #   实际一次都没核过（K134：能力不可用 vs 实现有 bug 要能分开）。
-        agentsSizeGuard: !!js ({
-          file: process.env.AGINT_AGENTS_MD || 'D:/DSH/AGENTS.md',
-          reportDir: process.env.AGINT_DOCS_DIR || 'D:/DSH/docs',
-          localFile: process.env.AGINT_AGENTS_LOCAL_MD || 'D:/DSH/AGENTS.local.md',
-          maxBytes: 10000,
-          maxChars: 5000,
-          hostBudgetBytes: 12000,
-        })
+        # ⛔ 2026-10-20 定稿修法：`!!js` 只能写成**单行标量**。下面两种写法都会让
+        #   整份 bundle patch 解析失败 ⇒ dsh 静默跳过整个 @agint/host ⇒ 智进消失：
+        #   ① 多行块集合 `!!js ({ ... })` —— js-yaml 报 bad indentation of a mapping entry；
+        #   ② 反引号模板字面量 —— 报 cannot resolve a node with js tag。
+        #   验法：用 js-yaml 的 JSON_SCHEMA.extend(JsExpr) 按 dsh 原样 load 本文件。
+        agentsSizeGuard: !!js "({file: process.env.AGINT_AGENTS_MD || 'D:/DSH/AGENTS.md', reportDir: process.env.AGINT_DOCS_DIR || 'D:/DSH/docs', localFile: process.env.AGINT_AGENTS_LOCAL_MD || 'D:/DSH/AGENTS.local.md', maxBytes: 10000, maxChars: 5000, hostBudgetBytes: 12000})"
 
     # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
     # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
@@ -142,6 +140,13 @@
       name: ./plugins/agint-evolve/lib/index.js
       config:
         root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+        # A4：eval 存量 FAIL 归因产物。部署位（.agint-bundle / profiles/desktop）
+        #   祖先里没有 eval/ ⇒ 自动探测必然失败，必须显式给绝对路径。
+        #   路径走环境变量（机器私有事实不入库）：AGINT_REPO_ROOT 已在
+        #   profiles/desktop/.env 配置（2026-10-19 建立）。
+        #   ⛔ 只能写成 !!js 标量；反引号模板字面量让整份 patch 解析失败（2026-10-20 根因）。
+        #   （`!!js` 后加反引号会把字符串变成 " … " 拼接，js-yaml 认不出 js 标签。）
+        evalAttributionPath: !!js "(process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT')) + '/eval/attribution/fail-attribution.json'"
 
     # agint-tool-stats: tool usage profile. Listens on tools/result events,
     # appends to ~/.dsh/storages/agint_tool_stats.jsonl.

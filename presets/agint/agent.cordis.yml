@@ -64,6 +64,14 @@
   config:
     maxBytes: 65536
 
+# ── 与内置 cordis / standard preset 对齐：时间上下文（2026-10-18 补齐）──────
+# 取证：dsh-web-app/presets/cordis.patch.yml 第 24-25 行、standard.patch.yml 同名行
+# 均挂载本插件；AGINT 此前 0 命中。
+# 2026-10-20 补记：这一行此前只加在**部署位**，仓库副本漏了 ⇒ 双副本漂移
+# （check-preset-parity 报 copy-drift：从仓库重装会把它抹掉）。本次补齐。
+- id: time-context
+  name: '@deepseek-ai/dsh-time-context'
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
@@ -592,3 +600,15 @@
 # standard / ptc preset 同构的一行。
 - id: present
   name: '@deepseek-ai/dsh-tool-present'
+
+# ── 与内置 cordis / standard preset 对齐：定时提醒 + 插件市场（2026-10-18 补齐）
+# 取证：dsh-web-app/presets/cordis.patch.yml 与 standard.patch.yml 均含这两行；
+# AGINT 此前 0 命中。plugin_market 与上面的 plugin_manager 是两回事：
+# plugin_manager 管 profile 的包装卸，plugin_market 管市场检索与安装计划校验。
+# 2026-10-20 补记：这两行此前只加在**部署位**，仓库副本漏了 ⇒ 双副本漂移。本次补齐。
+- id: tool-schedule
+  name: '@deepseek-ai/dsh-tool-schedule'
+
+- id: tool-plugin-market
+  name: '@deepseek-ai/dsh-plugin-market/tools'
+  disabled: !!js "!ctx.get('profileContext')"

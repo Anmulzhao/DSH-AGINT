@@ -532,3 +532,26 @@ if [ -f "$AF_SCRIPT" ]; then
     exit 1
   fi
 fi
+
+# ── patch YAML 预检门禁（阻断） ────────────────────────────────────────────
+# 2026-10-20 事故接入：cordis.patch.yml 里两行 `!!js` 写成 js-yaml 不认的形态
+# （反引号模板 / 多行块集合）⇒ 整份 bundle patch 解析失败 ⇒ dsh 打了
+# `skipping profile bundle "@agint/host"` 就照常启动，智进 preset 与全部 agint-*
+# 服务一起消失，界面上没有任何报错。哈希一致、语法检查都发现不了它，
+# 只有「用 dsh 同款 schema 真解析一遍」能发现 ⇒ 设为阻断位。
+PY_SCRIPT="$(dirname "$0")/check-patch-yaml.mjs"
+if [ -f "$PY_SCRIPT" ]; then
+  echo
+  echo "─── patch YAML 预检（与 dsh 同 schema）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$PY_SCRIPT"; then
+      echo "  [PASS] 所有 patch 文件可解析"
+    else
+      echo "  [FAIL] patch 文件解析失败 —— dsh 会静默跳过整个 bundle（插件与 preset 一起消失）"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，patch YAML 预检无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
