@@ -27,6 +27,12 @@
       "reason": "不是服务名，是 cron 配置项 repoRoot 在 services() 里的传递键。spec-index-refresh 要读仓库里的 docs/specs/，那是磁盘路径不是宿主服务 —— 宿主没有这个服务可 get。",
       "evidence": "plugins/agint-cron/lib/index.js（services() 映射，值取自 config.repoRoot 而非 ctx.get）",
       "since": "2026-10-03"
+    },
+    {
+      "name": "agint.agentsSizeGuard",
+      "reason": "不是服务名，是 cron 配置项 agentsSizeGuard 在 services() 里的传递键，与 agint.repoRoot 同构。agents-size-guard job 要读的是工作区 AGENTS.md 与 docs/ 报告目录，都是磁盘路径不是宿主服务 —— 宿主没有这个服务可 get。",
+      "evidence": "plugins/agint-cron/lib/index.js（services() 映射，值取自 config.agentsSizeGuard 而非 ctx.get）；job 定义 plugins/agint-cron/lib/jobs.js id=agents-size-guard",
+      "since": "2026-10-18"
     }
   ],
 

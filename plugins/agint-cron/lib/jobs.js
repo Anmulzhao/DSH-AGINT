@@ -988,6 +988,43 @@ export const defaultJobs = [
       };
     },
   },
+  {
+    // 工作区指令体积哨兵（2026-10-18 老板诉求）：每天核一次 AGENTS.md 双限。
+    //
+    // 背景：AGENTS.md 每轮注入上下文，体积 = 每轮固定开销。它自己写死了双限
+    // （≤10000 字节 且 ≤5000 字符），但没人每天去核。超限只有两种发现方式：人碰巧
+    // 看一眼，或宿主 12000 预算把整份**丢弃**（丢弃时不压缩，只报一句 Workspace
+    // instruction budget）。本 job 把「核」自动化。
+    //
+    // ⛔ 老板 2026-10-18 拍板：只告警，不自动改。压缩顺序（删重复 → 删过期 →
+    //   长段挪 docs/）是给人执行的判据，不是给无人值守脚本执行的 —— AI 自己决定
+    //   删哪一段，可能删掉老板刚写进去的约定，而它自己不会觉得有问题。
+    //
+    // 排期 daily 06:45：① 全窗口唯一空闲的 :45（04:45 prompt-static-check、
+    //   05:45 skill-autocreate-release 已占）；② 距 06:15 observe 与 08:30
+    //   memory-provider-health 各 ≥30 分钟；③ 不占周一上午链路。
+    //   纯 IO + 字符串统计，非 LLM 密集型 ⇒ 不进 HEAVY 集合。
+    //
+    // config 来自 patch.yml 的 agint-cron.config.agentsSizeGuard（形状同 repoRoot）；
+    // 未配时抛错（K134：能力不可用 vs 实现有 bug 要能分开）—— 静默 skip 会让这个
+    // 哨兵看起来在跑，实际一次都没核过。
+    id: 'agents-size-guard',
+    name: '工作区指令体积哨兵',
+    schedule: '45 6 * * *', // daily 06:45
+    description: '核 AGENTS.md 双限（10000 字节 / 5000 字符）+ 宿主 12000 预算；超限或逼近则写告警报告到 docs/（只告警不自动改）',
+    action: async (services) => {
+      const cfg = services['agint.agentsSizeGuard'];
+      if (!cfg || !cfg.file) {
+        throw new Error(
+          'agents-size-guard: 未配置 agint-cron.config.agentsSizeGuard.file —— ' +
+            '在 profile 的 cordis.patch.yml 里给 agint-cron 加 config.agentsSizeGuard{file,reportDir}',
+        );
+      }
+      const { runAgentsSizeGuard, summarizeGuard } = await import('./agents-size-guard.js');
+      const r = await runAgentsSizeGuard(cfg);
+      return { summary: summarizeGuard(r), level: r.level, bytes: r.bytes, chars: r.chars, wroteReport: r.wroteReport };
+    },
+  },
 ];
 
 /** Validate and parse job schedules into parsed cron objects. */
