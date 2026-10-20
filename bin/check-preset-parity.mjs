@@ -228,11 +228,30 @@ function readShippedStyle(file) {
   return readRows(file);
 }
 
+/**
+ * shipped 基线：上游 dsh 自带的 cordis preset。
+ *
+ * ⚠️ 2026-10-20 修：此前只探一条路径
+ *   `<dsh>/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml`
+ * 但 npm 平铺布局下 **dsh-web-app 是 dsh 的兄弟**，不在 dsh 包内：
+ *   `<node_modules>/@deepseek-ai/dsh/`
+ *   `<node_modules>/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml`  ← 实际在这
+ * 本机实测（dsh 装在 `.agint-deps/dsh-runtime/node_modules/@deepseek-ai/dsh`）：
+ *   旧路径不存在 ⇒ 门禁报「读不到 shipped 基线」⇒ exit 2，门禁彻底用不了。
+ * 现在两种布局都探，命中即用。
+ */
 function readShippedTarget() {
-  const file = path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml');
-  if (!fs.existsSync(file)) return null;
-  const rows = readShippedStyle(file);
-  return rows.length === 0 ? null : { label: 'shipped', file, rows };
+  const candidates = [
+    path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+    path.join(path.dirname(dsh.dir), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+    path.join(path.dirname(path.dirname(dsh.dir)), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+  ];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    const rows = readShippedStyle(file);
+    if (rows.length > 0) return { label: 'shipped', file, rows };
+  }
+  return null;
 }
 
 /**
@@ -517,10 +536,15 @@ if (TARGET_OVERRIDES.length > 0) {
     const shipped = readShippedTarget();
     if (!shipped) {
       // 附上已探测的位置，别只丢一句「找不到」让人无从下手
-      const tried = path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml');
-      const hint = fs.existsSync(tried)
-        ? `${tried} 存在但里面没有 preset-cordis 行（该文件可能被换版）`
-        : `${tried} 不存在（dsh 安装于 ${dsh.dir}；可用 DSH_ROOT 覆盖）`;
+      const tried = [
+        path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+        path.join(path.dirname(dsh.dir), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+        path.join(path.dirname(path.dirname(dsh.dir)), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+      ];
+      const hit = tried.find((f) => fs.existsSync(f));
+      const hint = hit
+        ? `${hit} 存在但里面没有 preset-cordis 行（该文件可能被换版）`
+        : `${tried.join(' | ')} 均不存在（dsh 安装于 ${dsh.dir}；可用 DSH_ROOT 覆盖）`;
       console.error(`读不到 shipped cordis preset 基线。已探测：${hint}`);
       process.exit(2);
     }
