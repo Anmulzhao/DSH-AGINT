@@ -1,5 +1,26 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.15 (2026-10-21) — queryFailures 真正支持 opts.days
+
+- **`days` 此前被完全忽略**。取证（修复前源码 `lib/index.js:577-589`）：
+  过滤条件只有 `opts.category` / `opts.severity` / `opts.query` 三项，
+  **没有时间分支**；`opts.days` 传进来也不读。
+- **后果**：`agint-self-model` 传的是 `queryFailures({ days: windowDays })`
+  （`agint-self-model/lib/index.js:85` 与 `:155`），`windowDays=7` 形同虚设。
+  生产 8 行 `failure_pattern` 里最老的 45 天前（`occurrences` 累计到 125）永远参与聚合
+  ⇒ `integration` / `correctness` 两域被永久锁在 `CANNOT`，curriculum 6 次 pass 也翻不动。
+- **修法**：加 `days` 分支，判据用 `updatedAt`（`addFailure` 去重命中时会刷新它，
+  实测 8/8 行都有该字段）。
+- **向后兼容（关键）**：未传 `days` 时**完全保持原行为**（返回全表，仅受 `limit` 约束）。
+  取证：全仓 `queryFailures(` 调用点 11 处（`plugins/**/lib`），其中传 `days` 的只有
+  self-model 那 2 处；其余 9 处一律 `{limit:1000}` / `{query}` / `{category}`，
+  它们需要整表，加时间窗会静默改变 diagnosis cold-start 的判定面。
+- **边界**：时间戳缺失或非法时**保留该行**（宁多不少，不因一个坏时间戳藏起真实失败）；
+  `days` 为 0 / 负数 / NaN 时视为未传。
+- 新增 `test/query-failures-days.test.mjs` 7 用例（真起插件、真调 service，不复刻过滤逻辑）；
+  红绿自证已做（撤掉 days 分支 ⇒ 4 条精确变红，还原后 7/7 绿）。
+  evolution-memory 全量 206/206 过。
+
 ## 0.6.14 (2026-10-06) — addFailure 值域归一化（方案 B 收口，立项 H6）
 
 - **越界 category/severity 不再抛错**：入口按映射表归位（mount/population→integration，

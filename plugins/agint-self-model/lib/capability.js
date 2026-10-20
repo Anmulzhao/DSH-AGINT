@@ -71,13 +71,24 @@ export function buildCapabilityEntry({ domain, capability, evidence, now }) {
 
 /**
  * 把聚合好的 domains 写入 capability_map（upsert by `${domain}:${capability}`）。
+ *
  * @param {object} store openStore 返回值
  * @param {Array<{domain:string, capability:string, evidence:object}>} aggregated
- * @param {{now?:string}} [opts]
+ * @param {{now?:string, knownDomains?:string[]}} [opts]
  * @returns {Promise<string[]>} 状态发生变化的域（changedDomains，用于 A11）
+ *
+ * `knownDomains`（2026-10-21 补）—— 为什么需要它：
+ *   本函数是 **upsert**：只遍历 `aggregated` 里出现的域。当某个域本轮没有证据
+ *   （典型：7 天窗口把某域的历史失败全滤掉了），该域**不会进入循环**，于是
+ *   表里那份旧记录原样保留 —— 45 天前的 `CANNOT` 继续冒充「现在的我」。
+ *   这是静默冻结（silent freeze），比报 UNCERTAIN 更坏：读数看着有值，其实是陈旧值。
+ *   传入 knownDomains 后，本轮缺席的域会被显式写成 UNCERTAIN（`classifyStatus`
+ *   对 samples=0 的既有判定），语义诚实：没有近期证据 = 不确定。
+ * ⛔ 不传 knownDomains 时**完全保持旧行为**（向后兼容；既有调用方与测试不受影响）。
  */
 export async function recomputeCapabilities(store, aggregated, opts = {}) {
   const { capabilityMap } = store.tables;
+  const knownDomains = Array.isArray(opts.knownDomains) ? opts.knownDomains : null;
   // 读旧状态用于 diff（changedDomains 判定）
   const prevById = new Map();
   for (const [, rec] of capabilityMap.entries()) {
@@ -94,6 +105,26 @@ export async function recomputeCapabilities(store, aggregated, opts = {}) {
     const prev = prevById.get(id);
     if (prev === undefined || prev !== entry.status) {
       if (!changedDomains.includes(entry.domain)) changedDomains.push(entry.domain);
+    }
+  }
+  // 本轮缺席的已知域 → 显式 UNCERTAIN（防静默冻结）
+  if (knownDomains !== null) {
+    for (const domain of knownDomains) {
+      if (!domain || typeof domain !== 'string') continue;
+      const id = `${domain}:${domain}`;
+      if (seen.has(id)) continue;
+      // samples=0 ⇒ classifyStatus 恒 UNCERTAIN；evidenceRefs 清空（旧证据已过期）
+      const entry = buildCapabilityEntry({
+        domain,
+        capability: domain,
+        evidence: { recentSuccess: 0, recentFailure: 0, evidenceRefs: [] },
+        now: opts.now,
+      });
+      await capabilityMap.put(id, packCapability(entry));
+      const prev = prevById.get(id);
+      if (prev !== undefined && prev !== entry.status) {
+        if (!changedDomains.includes(domain)) changedDomains.push(domain);
+      }
     }
   }
   // 超限 warn（不抛、不 prune）
