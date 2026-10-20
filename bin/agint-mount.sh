@@ -25,8 +25,13 @@ SAFE_UPDATE="$SCRIPT_DIR/safe-update.sh"
 
 AGINT_HOME="${AGINT_HOME:-$HOME/projects/AGINT}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-CORDIS_PATCH="$DSH_HOME/profiles/web/cordis.patch.yml"
-PLUGINS_DIR="$DSH_HOME/profiles/web/plugins"
+# 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+# ⚠️ 2026-10-21 修：此前写死 web。web profile 已于 2026-10-18 退役（老板令），
+# 2026-10-20 确认 profiles/web 目录已删 ⇒ 写死 web = 指向不存在的目录。
+DSH_PROFILE_NAME="$(sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_HOME/.agint-bundle/profile.json" 2>/dev/null | head -1)"
+[ -n "$DSH_PROFILE_NAME" ] || DSH_PROFILE_NAME="desktop"
+CORDIS_PATCH="$DSH_HOME/profiles/$DSH_PROFILE_NAME/cordis.patch.yml"
+PLUGINS_DIR="$DSH_HOME/profiles/$DSH_PROFILE_NAME/plugins"
 STORAGE_DIR="$DSH_HOME/storages"
 SENTINEL_LEASE="$DSH_HOME/sentinel.lease"
 BACKUP_ROOT="$DSH_HOME/.agint-backups"

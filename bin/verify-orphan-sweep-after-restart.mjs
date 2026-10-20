@@ -18,6 +18,7 @@
  *    不想写就加 --no-write，只跑 [1][2]。
  */
 import { readdir, mkdir, writeFile, rm, stat, utimes } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -26,7 +27,19 @@ const DSH_HOME = process.env.DSH_HOME || join(process.env.USERPROFILE || 'C:/Use
 // schema 默认值一致）：旧的 `.agent-presets/agint/skills` 属 install.sh 镜像管理范围，
 // 重装会把自动生成的技能整片清掉。`AGINT_SKILLS_ROOT` 可覆盖（隔离测试用临时目录）。
 const SKILLS_ROOT = process.env.AGINT_SKILLS_ROOT || join(DSH_HOME, 'skills');
-const PLUGIN_DIR = join(DSH_HOME, 'profiles/web/plugins/agint-skill-autocreate');
+// 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+// ⚠️ 2026-10-21 修：此前写死 web。web profile 已于 2026-10-18 退役（老板令），
+// 2026-10-20 确认 profiles/web 目录已删 ⇒ 写死 web = 指向不存在的目录。
+function resolveProfileName(home) {
+  try {
+    const fact = JSON.parse(readFileSync(join(home, '.agint-bundle', 'profile.json'), 'utf8'));
+    if (typeof fact?.profile === 'string' && fact.profile.trim() !== '') return fact.profile.trim();
+  } catch {
+    /* 文件不存在 / 不是 JSON / 没这个字段：继续回落，不吵 */
+  }
+  return 'desktop';
+}
+const PLUGIN_DIR = join(DSH_HOME, 'profiles', resolveProfileName(DSH_HOME), 'plugins/agint-skill-autocreate');
 const HOST_INDEX = join(PLUGIN_DIR, 'lib/index.js');
 const HOST_RM = join(PLUGIN_DIR, 'lib/release-manager.js');
 const AC_STORE = join(DSH_HOME, 'storages/agint_skill_autocreate.json');

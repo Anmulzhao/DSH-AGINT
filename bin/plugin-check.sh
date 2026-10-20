@@ -6,7 +6,16 @@
 
 set -uo pipefail
 
-PLUGINS_ROOT="${DSH_PLUGINS_ROOT:-$HOME/.dsh/profiles/web/plugins}"
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+# 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+# ⚠️ 2026-10-21 修：此前写死 `$HOME/.dsh/profiles/web/plugins`。两个错：
+#   ① 本机 DSH_HOME 是 `D:\DSH\AGINT-date`（不是 `~/.dsh`）；
+#   ② web profile 已于 2026-10-18 退役（老板令），2026-10-20 确认目录已删。
+#   写错的后果**很隐蔽**：目录不存在 ⇒ 落到仓内兜底（扫仓库 plugins/）⇒ 门禁
+#   检的是仓库副本而不是宿主运行副本，**照样报绿**（查错了对象 = 假绿）。
+DSH_PROFILE_NAME="$(sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_HOME/.agint-bundle/profile.json" 2>/dev/null | head -1)"
+[ -n "$DSH_PROFILE_NAME" ] || DSH_PROFILE_NAME="desktop"
+PLUGINS_ROOT="${DSH_PLUGINS_ROOT:-$DSH_HOME/profiles/$DSH_PROFILE_NAME/plugins}"
 # 仓内兜底：如果运行时副本不存在，从 bin/.. 找 plugins/（CI / 本地 lint 友好）
 if [ ! -d "$PLUGINS_ROOT" ]; then
   _repo_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
@@ -456,7 +465,7 @@ case "${1:-}" in
 Usage: plugin-check.sh [--all | <plugin-dir>...]
 
 ENV:
-  DSH_PLUGINS_ROOT   default \$HOME/.dsh/profiles/web/plugins
+  DSH_PLUGINS_ROOT   default \$DSH_HOME/profiles/<本机 profile>/plugins（读 .agint-bundle/profile.json）
   K19_SCAN_ROOT      K19 schema 护栏的扫描根（默认随 DSH_PLUGINS_ROOT）
 
 Lint 模式：失败/警告都不阻断，只列缺失项。
