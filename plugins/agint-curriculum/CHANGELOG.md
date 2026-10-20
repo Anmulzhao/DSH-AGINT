@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 0.1.6（2026-10-21 · 新增只读出口 listAttempts，供 self-model pull 成绩）
+
+### 变更
+
+- **新增 Service 方法 `listAttempts({domain?, result?, limit?})`**，挂在
+  `agint.curriculum` 上（`lib/index.js`，在 `list` 之后）。
+- **为什么需要它**：`capability_map` 的能力判定要知道「近期练过什么、结果如何」。
+  此前 self-model 只能被动等本插件调 `selfModel.update({evidence})` 推过来，
+  而 evidence **不落库** ⇒ 任何其他触发器（如 `dream.completed`）一跑，就把该域
+  重算成 `UNCERTAIN`，能力读数随「哪个触发器最后跑」来回振荡。
+  有了这个出口，self-model 每次聚合自己来读，稳定且与触发者无关。
+- ⛔ **只读**：不写 attempts、不改 difficulty、不触发判定。判定权仍在本插件
+  （`verdict.js` 的 §4.9「只提供证据，由 self-model 决定是否更新 capability」未变）。
+- ⚠️ **为什么不是复用 `list()`**：`list()` 读的是 **challenges** 表
+  （`lib/index.js:513-521`），那上面没有 `result` 字段；拿它当成绩会全部落成
+  fail（`result === undefined`）。`listAttempts` 才是 attempts 明细。
+  回归钉：`agint-self-model/test/curriculum-pull.test.mjs` 的
+  「protect：不提供 list 时也要能工作」用例会在实现误用 `list()` 时变红。
+
+### 测试
+
+- curriculum 全量 74/74 过（本插件内无新增用例，新接口的回归钉在对侧
+  `agint-self-model/test/curriculum-pull.test.mjs` 5 用例）。
+
 ## 0.1.5（2026-10-18 · 扩题库：integration / correctness 每档 3 道）
 
 ### 变更

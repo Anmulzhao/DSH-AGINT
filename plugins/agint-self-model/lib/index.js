@@ -93,6 +93,34 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
   }
   catch { templates = []; }
 
+  // ── curriculum 成绩（2026-10-21 补，pull 形态）─────────────────────────────
+  // 为什么不靠 push：第一版（0.7.8）是「调用方传 evidence 进来」，但 evidence 是
+  // 一次性入参、**不落库**。于是出现振荡：T1 curriculum 推 3 条 pass ⇒ integration=CAN；
+  // T2 dream 触发 update（不传 evidence）⇒ 聚合只剩 failures/templates ⇒ 同一域被
+  // 重算成 UNCERTAIN。能力读数会随「哪个触发器最后跑」来回拉，那不可用。
+  // ⇒ 改成 pull：每次聚合都去 curriculum 拿近期成绩，稳定、与触发者无关。
+  //
+  // 软降级：curriculum 服务不可用（未挂载 / 未 provide / 读失败）时按 0 处理，
+  // 不抛 —— 与上面 queryFailures / queryTemplates 的 catch 同口径。
+  let curriculumAttempts = [];
+  try {
+    const cu = deps.get('agint.curriculum');
+    // ⛔ 必须用 listAttempts 而不是 list()：list() 返回的是 **challenges** 表
+    //    （plugins/agint-curriculum/lib/index.js:513-521 实证），那上面没有 result 字段，
+    //    拿它当成绩会全部落成 fail（result===undefined）。listAttempts 才是 attempts 明细。
+    if (cu && typeof cu.listAttempts === 'function') {
+      const rows = await cu.listAttempts({ limit: 200 });
+      curriculumAttempts = Array.isArray(rows) ? rows : [];
+    }
+  }
+  catch { curriculumAttempts = []; }
+  // 只认窗口内的 attempt；实测生产 6 条的完成时刻字段均为 verifiedAt
+  const attemptCutoff = Date.now() - windowDays * 86_400_000;
+  const recentAttempts = curriculumAttempts.filter((a) => {
+    const ts = Date.parse(a?.verifiedAt ?? a?.createdAt ?? '');
+    return Number.isNaN(ts) || ts >= attemptCutoff;
+  });
+
   // 全局非环境根因占比（diagnosis 根因分布代理；ENVIRONMENT_SHIFT 视为环境噪音）
   //
   // 自激环熔断（2026-09-26）：来源为 diagnosis.completed 时**不得**回调
@@ -129,6 +157,16 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
   for (const f of (Array.isArray(failures) ? failures : [])) push(f?.category ?? 'unknown', 'fail', f?.pattern);
   for (const t of (Array.isArray(templates) ? templates : [])) push(t?.category ?? 'unknown', 'ok', t?.pattern);
 
+  // curriculum 成绩并入（pull 源，与触发者无关）
+  // 判据：result==='pass' 记 ok，其余记 fail。域缺省落 unknown（与上面两源同口径）。
+  for (const a of recentAttempts) {
+    push(
+      typeof a?.domain === 'string' && a.domain.length > 0 ? a.domain : 'unknown',
+      a?.result === 'pass' ? 'ok' : 'fail',
+      a?.challengeId ?? a?.id ?? 'curriculum.attempt',
+    );
+  }
+
   // ── 调用方当场提供的证据（2026-10-21 补）─────────────────────────────────
   // 为什么必须有这一段：`selfUpdate` 的形参里一直有 `evidence`，但**从未传给本函数**
   // （:232 那行只传了 windowDays / fromDiagnosisEvent / diagnosisDistribution）。
@@ -136,15 +174,21 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
   // 回写成绩，6 条全 pass、两域难度都升到 D2 —— 而 capability_map 里那两域**纹丝不动**，
   // 因为聚合的证据只来自 failure_pattern / success_template 两张库存表。
   //
-  // 判据：result==='pass' 记 ok，其余记 fail。域缺省时不猜（落 unknown，
-  // 与上面两个来源的 `?? 'unknown'` 同口径）。
+  // ⚠️ 这是**补充源**，不是主源：evidence 不落库、只对当次调用有效。
+  //    主源是上面的 curriculum pull（稳定）。这里保留是为了让「调用方刚提交的成绩
+  //    立刻反映」，避免它的效果要等到下一次读表才出现（同一次 update 内即时可见）。
+  //    两条路径都计入会重复计数 —— 所以只在 pull 没覆盖到该 challengeId 时才补。
   if (evidence && typeof evidence === 'object') {
-    const kind = evidence.result === 'pass' ? 'ok' : 'fail';
-    push(
-      typeof evidence.domain === 'string' && evidence.domain.length > 0 ? evidence.domain : 'unknown',
-      kind,
-      evidence.challengeId ?? evidence.source ?? 'self-model.update',
+    const already = recentAttempts.some(
+      (a) => evidence.challengeId && (a?.challengeId === evidence.challengeId || a?.id === evidence.challengeId),
     );
+    if (!already) {
+      push(
+        typeof evidence.domain === 'string' && evidence.domain.length > 0 ? evidence.domain : 'unknown',
+        evidence.result === 'pass' ? 'ok' : 'fail',
+        evidence.challengeId ?? evidence.source ?? 'self-model.update',
+      );
+    }
   }
 
   const aggregated = [];

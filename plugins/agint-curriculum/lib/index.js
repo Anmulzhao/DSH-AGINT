@@ -520,6 +520,23 @@ function apply(ctx, config) {
     return list;
   }
 
+  // ── Service: listAttempts（2026-10-21 补，供 self-model pull 近期成绩）──
+  // 为什么需要这个只读出口：capability_map 的能力判定要看到「近期练过什么、结果如何」。
+  // 此前 self-model 只能被动等 curriculum 调 update({evidence}) 推过来，而 evidence
+  // 不落库 ⇒ 别的触发器（如 dream）一跑就把该域重算成 UNCERTAIN，读数振荡。
+  // 有了这个出口，self-model 每次聚合都自己来读，稳定且与触发者无关。
+  // ⛔ 只读：不写 attempts、不改 difficulty、不触发判定（判定权仍在本插件）。
+  async function listAttempts(filter = {}) {
+    const t = await table('attempts');
+    let rows = [...t.entries()].map(([, v]) => v);
+    if (filter.domain) rows = rows.filter((a) => a.domain === filter.domain);
+    if (filter.result) rows = rows.filter((a) => a.result === filter.result);
+    // 按完成时刻升序（与 list() 的 createdAt 口径一致）
+    rows.sort((a, b) => String(a.verifiedAt ?? '').localeCompare(String(b.verifiedAt ?? '')));
+    if (Number.isInteger(filter.limit) && filter.limit > 0) rows = rows.slice(-filter.limit);
+    return rows;
+  }
+
   // ── Service: stats ─────────────────────────────────────────────────────
   async function stats() {
     const [ct, at, dt, al] = await Promise.all([
@@ -613,6 +630,7 @@ function apply(ctx, config) {
     nextChallenge,
     submit,
     list,
+    listAttempts,
     stats,
     difficulty,
     pause,
