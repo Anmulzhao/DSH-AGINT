@@ -429,32 +429,42 @@ k19_guard() {
   local to_win='printf %s'
   command -v cygpath >/dev/null 2>&1 && to_win='cygpath -w'
 
-  local guard_msys="$repo_root/test/schema-guard.test.mjs"
-  if [ ! -f "$guard_msys" ]; then
-    log_warn "未找到 test/schema-guard.test.mjs，跳过 K19 护栏"
-    return 0
-  fi
   if ! command -v node >/dev/null 2>&1; then
-    log_warn "未装 node，跳过 K19 护栏"
+    log_warn "未装 node，跳过 schema 护栏"
     return 0
   fi
-  local guard
-  guard="$($to_win "$guard_msys" 2>/dev/null)" || guard="$guard_msys"
 
   local scan_root="$PLUGINS_ROOT"
   if command -v cygpath >/dev/null 2>&1; then
     scan_root="$(cygpath -w "$PLUGINS_ROOT" 2>/dev/null || printf '%s' "$PLUGINS_ROOT")"
   fi
 
-  echo
-  echo "─── K19 schema 护栏（扫描 $scan_root）───"
-  if out="$(K19_SCAN_ROOT="$scan_root" node --test "$guard" 2>&1)"; then
-    log_ok "所有 object schema 均已显式声明 additionalProperties"
-  else
-    log_err "K19 违例：存在未声明 additionalProperties 的 object schema（会导致 preset 挂载失败）"
-    printf '%s\n' "$out" | grep -E ':[0-9]+[[:space:]]*$' | sed 's/^/    /' | head -20
-    printf '%s\n' "$out" | sed -n '/未声明 additionalProperties 的 object schema/,/^$/p' | sed 's/^/    /' | head -30
-  fi
+  # 两个护栏都跑：
+  #   ① test/schema-guard.test.mjs       —— K19（additionalProperties）/ K20（required:false）
+  #   ② test/tool-output-schema.test.mjs —— 工具 output.schema 的**语义**护栏：
+  #      直接用宿主在跑的那份 dsh-tools 真编译一遍（编译不过就抛）。
+  #      2026-10-21 起接替 K21 —— K21 按正则扫源码，前提写错，造出 331 处假警报。
+  local guard guard_win
+  for guard in "$repo_root/test/schema-guard.test.mjs" "$repo_root/test/tool-output-schema.test.mjs"; do
+    if [ ! -f "$guard" ]; then
+      log_warn "未找到 $guard，跳过该护栏"
+      continue
+    fi
+    guard_win="$($to_win "$guard" 2>/dev/null)" || guard_win="$guard"
+    echo
+    echo "─── schema 护栏：$(basename "$guard")（扫描 $scan_root）───"
+    if out="$(K19_SCAN_ROOT="$scan_root" node --test "$guard_win" 2>&1)"; then
+      log_ok "$(basename "$guard") 全过"
+    else
+      # 2026-10-21 修：原来这里硬写「K19 违例：未声明 additionalProperties」，
+      # 实际失败的可能是 K20 / K21 任何一条 => 报错文案与真实判据对不上，
+      # 排查时会被文案带偏（K21 那次就带偏了一轮：文案说 K19，真因是 K21）。
+      # 现在把 node --test 实际报出的失败用例名与断言原样透出。
+      log_err "$(basename "$guard") 有用例失败 —— 下面是 node --test 的原始输出"
+      printf '%s\n' "$out" | sed -n '/failing tests:/,$p' | sed 's/^/    /' | head -40
+      printf '%s\n' "$out" | grep -E '^(✔|✖|ℹ (tests|pass|fail))' | sed 's/^/    /' | head -40
+    fi
+  done
   return 0
 }
 

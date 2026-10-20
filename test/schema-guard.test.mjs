@@ -269,187 +269,55 @@ test('K19 护栏自检：扫描器能识别正确/错误两种写法', () => {
   assert.equal(findObjectSchemasMissingAdditionalProps(inComment).length, 0, '注释内不应误报');
 });
 
-// ---------- K21：`output.schema` 里 required 必须是 raw JSON Schema 形态 ----------
+// ---------- K21（2026-10-21 撤除）----------------------
 //
-// 背景：DSH tool loader 对 `output.schema` 走 `assertSupportedJsonSchema()` 直通校验，
-// 不经过 `valueSchemaSpecToJsonSchema()` 编译器。所以：
-//   - `properties.{x}.required: true` 写法**无效**（subset 要求 `required` 挂在父对象
-//     作为字符串数组）；
-//   - `required: true` 与 `oneOf` 同级也被禁止（`json-schema.js:144` 的
-//     `ONE_OF_SIBLING_KEYWORDS`）。
-// 之前这俩错导致「无法切换到『智进』」loader 报错 4 工具（2026-09-20 第一轮）→
-// 修完后**同一错**又在 3 个工具复发（第二/三轮）—— 同型 bug 不会自动收敛，必须靠
-// 本护栏拦在 PR 之前。
+// **K21 是基于错误前提的护栏，已撤除。** 它的前提写在原注释里：
+//   「DSH loader 对 output.schema 走 assertSupportedJsonSchema() 直通校验，
+//     不经过 valueSchemaSpecToJsonSchema() 编译器 —— 所以 raw 形态是硬要求。」
 //
-// K21 只扫 `output:` 块（与 K20 的 `parameters:` 互补）；`parameters:` 仍可合法用
-// `required: true` 散在 properties 上（那里会被 `parameterSchemaSpecToJsonSchema`
-// 编译器收集到父级 required:[…]，DSH 子集校验在编译后才发生）。
+// **这个前提是错的。** dsh 0.2.1-rc.2 源码级证据
+// （app.asar → dsh-tools/lib/types/json-schema.js）：
 //
-// 放宽：`parameters:` 块里若也带 raw `required:[…]` 数组形态，K21 不报错（允许共存）。
-
-/**
- * Find every `output: { schema: { ... } }` block in the file, then for each
- * property under `properties:` whose value is an object literal that contains
- * both `required: true` AND (a non-'object' `type` OR a sibling `oneOf`),
- * record (line, reason).
- *
- * Implementation note: we run two scans — one on the **masked** source (so
- * strings/comments don't leak false positives into brace counting), and one
- * on the **raw** source for the inner property-entry extraction (so we can
- * still see string contents like 'string'). Masking collapses string
- * contents to spaces, which would defeat the `type: 'string'` match — but
- * masking is only needed for brace balance, which we do first. Once we have
- * a property entry's start/end offsets in the raw source, we don't care
- * about brace-balance anymore.
- */
-function findBadOutputRequired(src) {
-  const masked = maskLiterals(src);
-  const hits = [];
-
-  let i = 0;
-  while (true) {
-    const outIdx = masked.indexOf('output:', i);
-    if (outIdx === -1) break;
-    // Find matching closing brace of the output object in the masked source.
-    let j = masked.indexOf('{', outIdx + 'output:'.length);
-    if (j === -1) break;
-    let depth = 0;
-    let end = -1;
-    while (j < masked.length) {
-      const c = masked[j];
-      if (c === '{') depth += 1;
-      else if (c === '}') {
-        depth -= 1;
-        if (depth === 0) { end = j + 1; break; }
-      }
-      j += 1;
-    }
-    if (end === -1) break;
-    // Slice the **raw** source using the masked offsets (preserves brace
-    // counts since masking is length-preserving).
-    const block = src.slice(outIdx, end);
-
-    // Inside the output block, find `properties: { ... }`.
-    const propIdx = block.indexOf('properties:');
-    if (propIdx === -1) { i = end; continue; }
-    let k = propIdx + 'properties:'.length;
-    // Skip whitespace, then expect '{'.
-    while (k < block.length && (block[k] === ' ' || block[k] === '\n' || block[k] === '\t' || block[k] === '\r')) k += 1;
-    if (k >= block.length || block[k] !== '{') { i = end; continue; }
-    const propStart = k + 1;
-    let pDepth = 1;
-    let p = propStart;
-    while (p < block.length && pDepth > 0) {
-      const cc = block[p];
-      if (cc === '{') pDepth += 1;
-      else if (cc === '}') {
-        pDepth -= 1;
-        if (pDepth === 0) break;
-      }
-      p += 1;
-    }
-    const propBody = block.slice(propStart, p);
-
-    // Each property entry: identifier (or quoted string) + ':' + value object.
-    // For our purposes we only care about values that start with '{', so we
-    // anchor on the literal `{` after the colon.
-    const entryRe = /(\s*)([A-Za-z_$][A-Za-z0-9_$]*|\'[^\']*\'|\"[^\"]*\")\s*:\s*\{/g;
-    let em;
-    while ((em = entryRe.exec(propBody)) !== null) {
-      const entryStart = em.index + em[0].length - 1; // position of '{'
-      let d = 1;
-      let q = entryStart + 1;
-      while (q < propBody.length && d > 0) {
-        const cc = propBody[q];
-        if (cc === '{') d += 1;
-        else if (cc === '}') {
-          d -= 1;
-          if (d === 0) { q += 1; break; }
-        }
-        q += 1;
-      }
-      const entryObj = propBody.slice(entryStart, q);
-      if (!/\brequired\s*:\s*true\b/.test(entryObj)) continue;
-      // Has `required: true`. Now check the violations.
-      const hasOneOf = /\boneOf\s*:/.test(entryObj);
-      // type match tolerates single/double quotes and spaces around the value
-      const typeMatch = entryObj.match(/\btype\s*:\s*['"]?\s*([A-Za-z]+)\s*['"]?/);
-      const t = typeMatch ? typeMatch[1] : null;
-      const isNonObject = t !== null && t !== 'object';
-      let reason = null;
-      if (hasOneOf) reason = 'required 与 oneOf 同级（subset 禁止）';
-      else if (isNonObject) reason = `required 写在 type:"${t}" 上（subset 仅允许 type:"object"）`;
-      if (reason) {
-        // Line number: count newlines in the raw source up to this entry.
-        const approxPos = outIdx + propStart + em.index;
-        const line = src.slice(0, approxPos).split('\n').length;
-        hits.push({ line, key: em[2].replace(/^['"]|['"]$/g, ''), reason });
-      }
-    }
-    i = end;
-  }
-  return hits;
-}
-
-test('K21 护栏：output.schema 里 required 必须是父级数组形态（不允许散在 properties.X 上）', () => {
-  const targets = collectTargets().filter((p) => p.endsWith(`${sep}tools.js`));
-  assert.ok(targets.length > 0, '没扫到任何 lib/tools.js，发现逻辑可能坏了');
-
-  const report = [];
-  for (const file of targets) {
-    const src = readFileSync(file, 'utf8');
-    for (const hit of findBadOutputRequired(src)) {
-      report.push(`${relative(REPO_ROOT, file)}:${hit.line} ${hit.key} — ${hit.reason}`);
-    }
-  }
-
-  assert.deepEqual(
-    report,
-    [],
-    `\n发现 ${report.length} 处 output.schema 内 required 错位：\n\n  ` + report.join('\n  ') +
-      '\n\n修复：把 properties.X 里的 `required: true` 删掉，统一挂到父对象的 `required: [\'X\']` 数组上。' +
-      '\n`required` 与 `oneOf` 不能同级；必须 raw JSON Schema 形态。' +
-      '\n\n原因：DSH loader 对 output.schema 走 `assertSupportedJsonSchema()` 直通，' +
-      '\n不经过 `parameterSchemaSpecToJsonSchema` 编译器——所以 raw 形态是硬要求。' +
-      '\n参考教训：AGINT-data/dreams/2026-09-20-智进加载失败-schema-required.md\n',
-  );
-});
-
-test('K21 护栏自检：扫描器能识别正确/错误两种写法', () => {
-  // Bad: required on scalar type
-  const badScalar = "output: { schema: { type: 'object', properties: { x: { type: 'string', required: true } } } }";
-  // Bad: required beside oneOf
-  const badOneOf = "output: { schema: { properties: { x: { oneOf: [{type:'string'}], required: true } } } }";
-  // Bad: required on array
-  const badArray = "output: { schema: { properties: { x: { type: 'array', required: true } } } }";
-  // Good: required lifted to parent object (DSH raw form)
-  const goodParent = "output: { schema: { type: 'object', required: ['x'], properties: { x: { type: 'string' } } } }";
-  // Good: object-typed property with required:true (K20-friendly in some paths,
-  // but in output we still want it lifted; this test fixture is intentionally
-  // a tricky one — kept here to verify the scanner distinguishes object vs
-  // scalar). The scanner should flag it ONLY if type is non-object. Mark as
-  // out-of-spec-on-purpose test input.
-  const goodObject = "output: { schema: { type: 'object', properties: { x: { type: 'object', required: true, additionalProperties: false } } } }";
-  // Good: parameters still uses author DSL (K20 valid, K21 does not scan)
-  const goodParams = "parameters: { x: { type: 'string', required: true } }";
-  // Good: in a comment
-  const inComment = "// output: { properties: { x: { type: 'string', required: true } } }\nconst x = 1;";
-  // Good: in a string
-  const inString = "const s = 'output: properties: { x: required: true }';";
-
-  const badScalarHits = findBadOutputRequired(badScalar);
-  assert.equal(badScalarHits.length, 1, '标量上 required:true 应被抓到');
-  assert.equal(badScalarHits[0].key, 'x');
-
-  const badOneOfHits = findBadOutputRequired(badOneOf);
-  assert.equal(badOneOfHits.length, 1, 'oneOf+required 同级应被抓到');
-
-  const badArrayHits = findBadOutputRequired(badArray);
-  assert.equal(badArrayHits.length, 1, 'array 上 required:true 应被抓到');
-
-  assert.equal(findBadOutputRequired(goodParent).length, 0, '父级 required:[…] 形态应通过');
-  assert.equal(findBadOutputRequired(goodObject).length, 0, 'type:"object" 上的 required:true 应通过（K21 只抓非 object）');
-  assert.equal(findBadOutputRequired(goodParams).length, 0, 'parameters: 块不在 K21 扫描范围');
-  assert.equal(findBadOutputRequired(inComment).length, 0, '注释内不应误报');
-  assert.equal(findBadOutputRequired(inString).length, 0, '字符串内不应误报');
-});
+//   function defineTool(options) {
+//     const parameters = parameterSchemaSpecToJsonSchema(options.parameters);
+//     const outputSchema = valueSchemaSpecToJsonSchema(options.output.schema);  // ← 编译器在前
+//     ...
+//   }
+//   function valueSchemaSpecToJsonSchema(spec) {
+//     const schema = compileValueSchema(spec, "schema");
+//     assertSupportedJsonSchema(schema);                                       // ← 断言在后
+//     return schema;
+//   }
+//
+// 编译器的 `allowRequired` 决定哪里能写 `required`：
+//   - `allowRequired: true`  → `properties.X` 这一层（**作者侧 DSL**：`required: true`）
+//   - `allowRequired: false` → output.schema 的根、`array` 的 `items`、`oneOf` 的分支
+//
+// 也就是说：**作者侧写 `properties.X.required: true` 是对的** —— 编译器把它收成
+// 父对象的 `required: ["X"]`；反过来在根层写 `required: [...]` 才是 author error。
+//
+// 实测（2026-10-21）：把 10 个插件文件（agint-cron / agint-dream / agint-evolve /
+// agint-mascot / agint-memory / agint-metrics / agint-quality-eval / agint-rules /
+// agint-search-tools / agint-wiki）用**宿主真正在跑的 dsh-tools 0.2.1-rc.2**
+// 跑一遍 defineTool，27/27 全部编译通过，0 抛错。
+// 编译产物实测（cron_list）：
+//   作者侧 `jobs: { required: true, type: 'array', items: {…} }`
+//   → 产物 `properties.jobs` 无 required，父对象 `required: ["jobs"]`；
+//     `items` 那一层 `required: ["id","name","schedule","description","running"]`；
+//     `oneOf` 属性（lastRunAt / nextRunAt / lastOk / lastError / lastResultSummary）
+//     全部没有 required 同级。
+//
+// 结论：**K21 报的 331 处全是误报，代码是对的。** 它按正则扫源码里的
+// `required: true`，而那正是**唯一正确**的作者侧写法。
+//
+// **接替者**：`test/tool-output-schema.test.mjs` —— 直接用宿主在跑的那份
+// dsh-tools 真编译一遍每个插件的 output.schema（编译不过就抛），并独立断言
+// 编译产物的形状。它还带防空转自测：作者侧真写错时必须抛错。
+//
+// 旧护栏留下的**真**教训（保留在此，别再丢）：
+//   ① 作者侧 `required` 只能是 `true`；写数组会报「required must be true when present」。
+//   ② 根层 / `items` / `oneOf` 分支不能带 `required`。
+//   ③ `oneOf` 与 `type` 不能同时声明。
+//   ④ object 型 schema 必须显式写 `additionalProperties: true|false`。
+//   ⑤ 判据要取自 dsh 自己的实现（编译器 + 断言），不要用正则复述规则 ——
+//      复述错了就会造出 331 处假警报，然后有人去「修」本来正确的代码。

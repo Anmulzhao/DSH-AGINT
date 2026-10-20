@@ -884,6 +884,17 @@ ensure_bundle_module_entry
 # 任何 0.0.0-stub 一律替换为指向真包的链接。幂等；失败仅 warn 不阻断。
 # 与 1.1/1.2 同一坑族：safe_rsync 排除 node_modules ⇒ rsync 分支下本步产物
 # 能活过步骤 2；python 回退分支（无 rsync）会整树换入删掉 ⇒ 4.6 有 post-plugin 复跑。
+# 从 mirror 位真 import 一次 dsh-tools：能不能 import 才是「依赖树完整」的判据。
+# 没有 node ⇒ 跳过自检（不阻断）：没有 node 时装出来的包也用不了，但别在这里卡死。
+# 2026-10-21：这是「三包名单不够」那次的判据来源 —— dsh-tools 自己 import 失败，
+#   它的每个使用者（preset 的 25 个工具行）也都失败。
+mirror_dsh_tools_importable() {
+  local base="$1"
+  command -v node >/dev/null 2>&1 || return 0
+  [ -e "$base/dsh-tools/lib/index.js" ] || return 1
+  node --input-type=module -e "import { pathToFileURL } from 'node:url'; import(pathToFileURL(process.argv[1]).href).then(() => process.exit(0)).catch(() => process.exit(1));" "$base/dsh-tools/lib/index.js" >/dev/null 2>&1
+}
+
 ensure_mirror_module_entry() {
   local base="$PLUGINS_DST/node_modules/@deepseek-ai" target name link
   target="$(locate_dsh_dir)/node_modules/@deepseek-ai"
@@ -973,6 +984,44 @@ ensure_mirror_module_entry() {
     log "   ✓ mirror 位三入口均解析到真包（dsh-tools / cordis / dsh-storage-domain）"
   else
     warn "mirror 位以下入口未就绪（缺 lib/index.js）：$bad —— preset 挂载会报 required 校验错。"
+  fi
+
+  # ⛔ 2026-10-21 补：上面的「三包名单」是**下限**，不是充分条件。
+  #
+  # 实测事故：本机 mirror 位只有那三个包，而 dsh-tools@0.2.1-rc.2 的 lib/index.js
+  #   还裸 import `@deepseek-ai/dsh-scope`（**它自己的 package.json 里都没声明
+  #   这个依赖**）⇒ dsh-tools 自己 import 就失败 ⇒ mirror 位的 **25 个工具行
+  #   import 全炸**（ERR_MODULE_NOT_FOUND）⇒ 智进 preset 挂得上、但一个 agint
+  #   工具都没有，**界面没有任何报错**。
+  #   症状与 10-06 的 dsh-tools stub 事故同族（工具全灭、界面不报错），
+  #   差别只在根因（那次是 stub，这次是依赖树不全）。
+  #
+  # 修法：判据从「名单里有这三个」改成「**dsh-tools 能不能 import**」。
+  # 不过就把整个 scope 换成指向 dsh 官方 scope 的**整链链接**（与 bundle 位同形），
+  # 一次性给全 306 个官方包，后续 dsh 升级新增依赖也不会再缺。
+  if [ "$DRY_RUN" != "1" ] && [ "$ok" = 1 ]; then
+    if ! mirror_dsh_tools_importable "$base"; then
+      warn "  mirror 位 dsh-tools 自身依赖解析不到（三包名单不够）→ 改用整链链接"
+      # 摘 scope 目录。⛔ 只摘这一层，且先摘内部 junction，
+      #   绝不让 rm -rf 穿透到 dsh 官方树（10-06 / 10-18 两次事故的教训）。
+      if [ -L "$base" ]; then
+        rm -f "$base"
+      else
+        find "$base" -maxdepth 2 -type l -exec rm -f {} \; 2>/dev/null || true
+        rm -rf "$base"
+      fi
+      mkdir -p "$(dirname "$base")"
+      local wl wt
+      wl="$(cygpath -w "$base" 2>/dev/null || printf '%s' "$base")"
+      wt="$(cygpath -w "$target" 2>/dev/null || printf '%s' "$target")"
+      if cmd //c "mklink /J \"$wl\" \"$wt\"" >/dev/null 2>&1; then
+        log "   ✓ mirror 位 @deepseek-ai 整链 → $target（306 个官方包，依赖树完整）"
+      elif ln -s "$target" "$base" 2>/dev/null; then
+        log "   ✓ mirror 位 @deepseek-ai 整链（symlink）→ $target"
+      else
+        warn "mirror 位整链重建失败（$base → $target）—— preset 工具行可能 import 失败。"
+      fi
+    fi
   fi
 }
 ensure_mirror_module_entry
