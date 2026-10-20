@@ -20,9 +20,11 @@ import { fileURLToPath } from 'node:url';
 
 import {
   FAIL_CATEGORIES,
+  NON_DENOMINATOR_CATEGORIES,
   DEFAULT_COVERAGE_MIN,
   attributeAll,
   attributeDefaultJobs,
+  attributeNegativeControl,
   attributePolicyDecision,
   attributeStatsLimits,
   attributeThrowsOnTableFull,
@@ -42,25 +44,37 @@ const INVENTORY = join(REPO_ROOT, 'eval', 'scenarios', 'inventory.json');
 
 // ── 1. 根因类是封闭集 ────────────────────────────────────────────────
 
-test('根因类恰好 4 个且不含占位值', () => {
-  assert.deepEqual([...FAIL_CATEGORIES], ['ASSERT_DRIFT', 'HARNESS_GAP', 'REAL_DEFECT', 'NOT_ATTRIBUTED']);
+test('根因类恰好 5 个且不含占位值（2026-10-20 加入 EXPECTED_RED）', () => {
+  assert.deepEqual(
+    [...FAIL_CATEGORIES],
+    ['ASSERT_DRIFT', 'HARNESS_GAP', 'REAL_DEFECT', 'EXPECTED_RED', 'NOT_ATTRIBUTED'],
+  );
   for (const c of FAIL_CATEGORIES) {
     assert.equal(typeof c, 'string');
     assert.doesNotMatch(c, /unknown|todo|fixme|xxx/i, `⛔ 根因类 ${c} 像占位值`);
   }
 });
 
-test('放宽⇒变红：把根因类集合扩到 6 个（含 UNKNOWN / TODO），单测必须变红', () => {
+test('⛔ 只有 EXPECTED_RED 被排除出覆盖率分母（多排除一个 = 分母被稀释）', () => {
+  assert.deepEqual([...NON_DENOMINATOR_CATEGORIES], ['EXPECTED_RED']);
+  // 反向：NOT_ATTRIBUTED 是归因**失败**，必须在分母里（否则覆盖率永远 100%）
+  assert.ok(!NON_DENOMINATOR_CATEGORIES.includes('NOT_ATTRIBUTED'));
+  assert.ok(!NON_DENOMINATOR_CATEGORIES.includes('ASSERT_DRIFT'));
+  assert.ok(!NON_DENOMINATOR_CATEGORIES.includes('REAL_DEFECT'));
+  assert.ok(!NON_DENOMINATOR_CATEGORIES.includes('HARNESS_GAP'));
+});
+
+test('放宽⇒变红：把根因类集合扩到 7 个（含 UNKNOWN / TODO），单测必须变红', () => {
   const widened = [...FAIL_CATEGORIES, 'UNKNOWN', 'TODO'];
-  assert.equal(widened.length, 6);
+  assert.equal(widened.length, 7);
   assert.notDeepEqual([...widened], [...FAIL_CATEGORIES]);
-  // 收紧：真正生效的判据是「集合长度恰为 4 且名字固定」
-  assert.equal(FAIL_CATEGORIES.length, 4);
+  // 收紧：真正生效的判据是「集合长度恰为 5 且名字固定」
+  assert.equal(FAIL_CATEGORIES.length, 5);
 });
 
 test('⛔ 未登记的 unitId 不得走兜底猜测', () => {
   assert.equal(probeFor('some-brand-new-unit'), null);
-  // 已登记的 6 条必须都有探针 —— 这本身也是门禁：漏一个会让它悄悄变成 NOT_ATTRIBUTED
+  // 已登记的 9 条必须都有探针 —— 这本身也是门禁：漏一个会让它悄悄变成 NOT_ATTRIBUTED
   const registered = [
     'cron-default-jobs-registered',
     'sprint6-cron-job-prompt-static-check-registered',
@@ -68,9 +82,49 @@ test('⛔ 未登记的 unitId 不得走兜底猜测', () => {
     'stats-reports-counts-and-limits',
     'policy-decide-clean-results-pending-or-deploy',
     's12-05-policy-policy-deployed-rolledback-shadow',
+    'rules-ask-hit-but-deny-also-matches',
+    'rules-tier-negctl-no-deny-but-expect-deny',
+    'rules-advisory-negctl-also-blocked',
   ];
   for (const id of registered) {
     assert.notEqual(probeFor(id), null, `${id} 必须登记探针`);
+  }
+});
+
+test('⛔ 负控制探针遇到未标 negativeControl 的场景 ⇒ NOT_ATTRIBUTED，不猜', () => {
+  const r = attributeNegativeControl({ scenario: 'x', _purpose: '必须判红' }, 'FAIL');
+  assert.equal(r.category, 'NOT_ATTRIBUTED');
+});
+
+test('⛔ 负控制探针：FAIL + 有 _purpose ⇒ EXPECTED_RED', () => {
+  const r = attributeNegativeControl(
+    { scenario: 'x', negativeControl: true, _purpose: '故意构造 ⇒ 判据必须红', expected: [{ kind: 'ask-hit' }] },
+    'FAIL',
+  );
+  assert.equal(r.category, 'EXPECTED_RED');
+  assert.ok(r.evidence.some((e) => e.includes('negativeControl=true')));
+});
+
+test('⛔ 负控制探针：缺 _purpose ⇒ NOT_ATTRIBUTED（无从判断它为什么该红）', () => {
+  const r = attributeNegativeControl(
+    { scenario: 'x', negativeControl: true, _purpose: '', expected: [{ kind: 'ask-hit' }] },
+    'FAIL',
+  );
+  assert.equal(r.category, 'NOT_ATTRIBUTED');
+});
+
+test('⛔⛔ 负控制变绿（lastKnownStatus=PASS）必须报 REAL_DEFECT，不许当「修好了」', () => {
+  const r = attributeNegativeControl(
+    { scenario: 'x', negativeControl: true, _purpose: '必须判红', expected: [{ kind: 'ask-hit' }] },
+    'PASS',
+  );
+  assert.equal(r.category, 'REAL_DEFECT');
+});
+
+test('⛔ 负控状态未知（null / UNKNOWN）⇒ NOT_ATTRIBUTED', () => {
+  for (const s of [null, undefined, 'UNKNOWN']) {
+    const r = attributeNegativeControl({ scenario: 'x', negativeControl: true, _purpose: '必须判红' }, s);
+    assert.equal(r.category, 'NOT_ATTRIBUTED', `status=${s}`);
   }
 });
 
@@ -272,12 +326,19 @@ test('umbrellaKey 探针：场景不含该断言 ⇒ NOT_ATTRIBUTED', () => {
 test('真实 inventory：6 个 FAIL 全部归因到类，覆盖率 100% ≥ 80%', async () => {
   const inv = JSON.parse(readFileSync(INVENTORY, 'utf8'));
   const fails = inv.units.filter((u) => u.lastKnownStatus === 'FAIL');
+  // ⛔ 2026-10-20：coverage 分母排除负控制 ⇒ attributed 是**分母内**的计数，
+  //   不能拿它跟含负控制的 fails.length 比。分母口径见 denominator 字段。
+  const expectedRed = fails.filter((u) => u.negativeControl === true).length;
   const a = await attributeAll({ units: inv.units });
   assert.equal(a.total, fails.length);
-  assert.equal(a.attributed, a.total);
+  assert.equal(a.expectedRed, expectedRed, '负控制计数必须等于清单里的 negativeControl 数');
+  assert.equal(a.denominator, fails.length - expectedRed, '分母 = 真 fail 数（已排除负控制）');
+  assert.equal(a.attributed, a.denominator);
   assert.equal(a.coverage, 1);
   assert.equal(a.coverageOk, true);
   assert.equal(a.results.filter((r) => r.category === 'NOT_ATTRIBUTED').length, 0);
+  // 负控制一条都不能混进 NOT_ATTRIBUTED（那会把分母重新污染）
+  assert.equal(a.results.filter((r) => r.category === 'EXPECTED_RED').length, expectedRed);
 });
 
 test('真实 inventory：0 条 REAL_DEFECT（6 个 fail 全在评估侧）', async () => {
@@ -312,7 +373,29 @@ test('0 个 FAIL 时 coverage 必须是 null 而不是 1（不把「没查」印
   assert.equal(a.coverage, null);
   assert.equal(a.coverageOk, false);
   const md = renderAttribution(a);
-  assert.match(md, /0 个 FAIL/, '⛔ 0 个 FAIL 要显式声明「无内容可归因」');
+  assert.match(md, /分母为 \*\*0\*\*/, '⛔ 0 个 FAIL 要显式声明「无内容可归因」');
+});
+
+test('⛔ 全是负控制 ⇒ 分母 0 ⇒ coverage 必须 null，不许印 100%', async () => {
+  const units = [
+    { unitId: 'rules-ask-hit-but-deny-also-matches', lastKnownStatus: 'FAIL', negativeControl: true,
+      sourceFile: 'eval/scenarios/agint-rules-ask-advisory.scenario.json' },
+  ];
+  const a = await attributeAll({ units });
+  assert.equal(a.total, 1);
+  assert.equal(a.expectedRed, 1);
+  assert.equal(a.denominator, 0);
+  assert.equal(a.coverage, null, '⛔ 分母为 0 = 没东西可归因，不是「全归因成功」');
+  assert.equal(a.coverageOk, false);
+});
+
+test('⛔ 分母口径变更必须在渲染里显式声明（防止「数字突然变好」被误读）', async () => {
+  const inv = JSON.parse(readFileSync(INVENTORY, 'utf8'));
+  const a = await attributeAll({ units: inv.units });
+  assert.ok(a.expectedRed > 0, '本机清单应有负控制；若为 0 说明清单变了，本断言需复核');
+  const md = renderAttribution(a);
+  assert.match(md, /口径说明/, '⛔ 有负控制时渲染必须印口径说明');
+  assert.match(md, /不是归因能力提升/, '⛔ 必须明写「不是因为能力提升」');
 });
 
 // ── 8. 渲染纪律 ─────────────────────────────────────────────────────

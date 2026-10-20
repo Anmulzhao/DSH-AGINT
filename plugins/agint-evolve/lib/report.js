@@ -254,7 +254,14 @@ export function renderEvalFailAttribution(lines, e, opts = {}) {
   const attributed = e.attributed ?? 0;
   const cov = typeof e.coverage === 'number' ? `${(e.coverage * 100).toFixed(1)}%` : 'N/A';
   const covMin = typeof e.coverageMin === 'number' ? `${(e.coverageMin * 100).toFixed(0)}%` : '未设阈值';
-  lines.push(`- FAIL **${total}** 条，已归因 **${attributed}** 条，覆盖率 **${cov}**（阈值 ${covMin}）`);
+  // 2026-10-20：覆盖率分母已排除负控制。必须显式印出来，
+  // 否则读者看到 total 与 attributed 对不上会以为算错了，或以为数字突然变好。
+  const denominator = typeof e.denominator === 'number' ? e.denominator : total;
+  const expectedRed = typeof e.expectedRed === 'number' ? e.expectedRed : null;
+  lines.push(`- FAIL **${total}** 条，已归因 **${attributed}** 条，覆盖率 **${cov}**（阈值 ${covMin}）`
+    + (expectedRed === null || expectedRed === 0
+      ? ''
+      : `　·　分母 **${denominator}** 条（已排除负控制 ${expectedRed} 条）`));
 
   if (total === 0) {
     lines.push('  - driver 本轮 0 个 FAIL ⇒ **无内容可归因**。这与「没跑」不同，driver 口径见 §一。');
@@ -272,8 +279,13 @@ export function renderEvalFailAttribution(lines, e, opts = {}) {
   lines.push(`| ASSERT_DRIFT（断言漂移） | ${cat.ASSERT_DRIFT ?? 0} | 改场景期望 |`);
   lines.push(`| HARNESS_GAP（评估基建缺口） | ${cat.HARNESS_GAP ?? 0} | 改 driver mock/派发 |`);
   lines.push(`| REAL_DEFECT（真产品缺陷） | ${cat.REAL_DEFECT ?? 0} | 改产品代码 + 过门禁 |`);
+  lines.push(`| EXPECTED_RED（负控制，FAIL 是正确状态） | ${cat.EXPECTED_RED ?? 0} | ⛔ 不要修；变绿才是问题 |`);
   lines.push(`| NOT_ATTRIBUTED（未归因） | ${cat.NOT_ATTRIBUTED ?? 0} | 人工取证 |`);
   lines.push('');
+  if ((cat.EXPECTED_RED ?? 0) > 0) {
+    lines.push(`> ℹ️ **${cat.EXPECTED_RED} 条负控制** —— 故意构造为变红的夹具，其 FAIL 证明 ask/advisory 的 deny 守门有效。`
+      + '它们**不计入覆盖率分母**（2026-10-20 口径）。⛔ 与旧报告对比时会看到覆盖率变大，那是口径变化。');
+  }
   if ((cat.NOT_ATTRIBUTED ?? 0) > 0) {
     lines.push(`> ⚠️ **${cat.NOT_ATTRIBUTED} 条未归因** —— 归因盲区。错类会把修法引到反方向（改场景 vs 改代码），不许猜。`);
   }

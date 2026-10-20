@@ -3,74 +3,23 @@
     "tool": "bin/attribute-eval-fails.mjs",
     "command": "node bin/attribute-eval-fails.mjs --json > eval/attribution/fail-attribution.json",
     "doNotHandEdit": true,
-    "why": "生成物，勿手改。入库是部署位 evolve-review 周报的数据源 + check-wiring 的校验对象。"
+    "why": "生成物，勿手改。入库是部署位 evolve-review 周报的数据源 + check-wiring 的校验对象。",
+    "coverageDenominator": "排除负控制（EXPECTED_RED）；2026-10-20 起生效"
   },
-  "generatedAt": "2026-10-03T15:10:32.764Z",
-  "total": 6,
-  "attributed": 6,
+  "generatedAt": "2026-10-19T18:11:10.747Z",
+  "total": 5,
+  "attributed": 2,
   "coverage": 1,
   "coverageMin": 0.8,
   "coverageOk": true,
+  "expectedRed": 3,
+  "denominator": 2,
   "byCategory": {
-    "ASSERT_DRIFT": 5,
-    "HARNESS_GAP": 1
+    "ASSERT_DRIFT": 2,
+    "EXPECTED_RED": 3
   },
   "realDefects": 0,
   "results": [
-    {
-      "unitId": "cron-default-jobs-registered",
-      "domain": "cron",
-      "plugin": "agint-cron",
-      "sourceFile": "eval/scenarios/agint-cron.scenario.json",
-      "probe": "defaultJobs",
-      "category": "ASSERT_DRIFT",
-      "reason": "场景漏列了 14 个新增默认 job（真实集合 ⊇ 场景集合）⇒ 断言比实现旧",
-      "evidence": [
-        "场景 expectedIds（10 个）：baseline-regression-suite,curator-weekly,evolve-review,memory-decay,metrics-collect,night-dream,prompt-static-check,skill-autocreate-aggregate,tool-stats-backfill,wiki-lint",
-        "jobs.js 真值（24 个）：baseline-regression-suite,curator-weekly,curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,evolve-review,ledger-anchor,memory-decay,memory-provider-health,metrics-collect,night-dream,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,prompt-static-check,skill-autocreate-aggregate,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh,tool-stats-backfill,wiki-lint",
-        "真实有、场景无：curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,ledger-anchor,memory-provider-health,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh",
-        "场景有、真实无：（无）",
-        "driver 断言方式：JSON.stringify(ids) === JSON.stringify(expectedIds.sort()) ⇒ 严格逐项相等，多一个即 fail"
-      ],
-      "fix": "改场景：把 expectedIds 补齐到与 jobs.js 一致。⛔ 不要改 driver 的相等判据 —— 放宽后新增 job 就再也不会被发现。"
-    },
-    {
-      "unitId": "service-annotations-table-full-throws",
-      "domain": "diagnosis",
-      "plugin": "agint-diagnosis",
-      "sourceFile": "eval/scenarios/agint-diagnosis.scenario.json",
-      "probe": "tableFull",
-      "category": "HARNESS_GAP",
-      "reason": "driver 的 fake table 只提供 entries()，没有 size；而插件的守门读的是 t.size ⇒ undefined >= cap 恒 false ⇒ 守门永不触发 ⇒ 场景永远看不到抛错",
-      "evidence": [
-        "场景想造满：annotationsCount=200（cap=200）、failurePatternCount=20",
-        "守门顺序：表满(annotations>=cap) → 无后续守门（failurePatternCount=20 ≥ 10，cold-start 不拦）",
-        "插件读法：plugins/agint-diagnosis/lib/index.js:233 `if (t.size >= LIMITS.ANNOTATIONS) throw ...`",
-        "真实 Table 接口：@deepseek-ai/dsh-storage-domain/lib/index.js:253 `get size() { return this.records.size }`",
-        "driver fake table：有 entries=true、有 size=false",
-        "driver detail（实跑）：`未抛错，反而返回 rootCause=TOOL_GAP` ⇒ 守门确实没触发"
-      ],
-      "fix": "给 driver 的 makeFakeCtx 的 table 加上 `size: entries.length`（⛔ 不改插件的守门逻辑 —— 用 undefined 比较来「通过」是假防线）。⚠️ 这是 K141 同款：部署位测试红了先判调用前提。"
-    },
-    {
-      "unitId": "s12-05-policy-policy-deployed-rolledback-shadow",
-      "domain": "event-bus",
-      "plugin": "agint-event-bus",
-      "sourceFile": "eval/scenarios/agint-event-bus-s12-05-policy.scenario.json",
-      "probe": "umbrellaKey",
-      "category": "ASSERT_DRIFT",
-      "reason": "断言的**测量方式**基于一个已被推翻的前提：「伞键上不该有 publish」。event-bus 后来主动补了 `ctx.provide('agint.eventBus', {...publish...})`（纯加法，让消费方免写回退链）⇒ 伞键有 publish 是**当前设计的正确行为**，而场景仍把它当成缺陷。真正该守的是「policy 走的是单 service 接口」",
-      "evidence": [
-        "场景 assertion 原文：`publishDoesNotUseUmbrellaKey = umbrellaKeyCalled === false`",
-        "场景测量代码：先 `ctx.get('agint.eventBus')`，再判 `.publish` 是否函数 ⇒ 测的是「伞键存不存在」",
-        "event-bus 现状：plugins/agint-event-bus/lib/index.js:167 `ctx.provide('agint.eventBus', { publish, subscribe, inspect, ... })`",
-        "实时核对：hasUmbrellaProvide=true umbrellaProvidesPublish=true",
-        "policy 侧实际写法（对）：policyEvents.js:108 `ctx.get('agint.eventBus.publish')` —— 单 service 接口，符合设计",
-        "driver detail（实跑）：12 项断言里 11 项 true，只有 `publishDoesNotUseUmbrellaKey:false` 红",
-        "⇒ 其余 11 项都过，说明被测行为是对的，错的只是这一项的测量方式"
-      ],
-      "fix": "改 branch 的测量方式：不再问「伞键有没有 publish」，改为**替换 publish 单 service 接口**（ctx.get 劫持成返回计数函数），再断言调用计数 === 0。⛔ 不要删掉这项断言 —— 「policy 不走伞键」这条设计约定仍要守，只是测法要换。"
-    },
     {
       "unitId": "stats-reports-counts-and-limits",
       "domain": "evolution-memory",
@@ -108,21 +57,55 @@
       "fix": "改场景的 decision/scoreAtLeast；⛔ 不要改阈值来迁就场景 —— 阈值是老板 2026-09-17 拍板的。"
     },
     {
-      "unitId": "sprint6-cron-job-prompt-static-check-registered",
-      "domain": "pipeline",
-      "plugin": "agint-cron",
-      "sourceFile": "eval/scenarios/agint-sprint6-pipeline.scenario.json",
-      "probe": "defaultJobs",
-      "category": "ASSERT_DRIFT",
-      "reason": "场景漏列了 14 个新增默认 job（真实集合 ⊇ 场景集合）⇒ 断言比实现旧",
+      "unitId": "rules-ask-hit-but-deny-also-matches",
+      "domain": "rules",
+      "plugin": "agint-rules",
+      "sourceFile": "eval/scenarios/agint-rules-ask-advisory.scenario.json",
+      "probe": "negativeControl",
+      "category": "EXPECTED_RED",
+      "reason": "负控制：场景被故意构造为让判据变红，当前 FAIL 是**正确状态**；不计入覆盖率分母",
       "evidence": [
-        "场景 expectedIds（10 个）：baseline-regression-suite,curator-weekly,evolve-review,memory-decay,metrics-collect,night-dream,prompt-static-check,skill-autocreate-aggregate,tool-stats-backfill,wiki-lint",
-        "jobs.js 真值（24 个）：baseline-regression-suite,curator-weekly,curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,evolve-review,ledger-anchor,memory-decay,memory-provider-health,metrics-collect,night-dream,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,prompt-static-check,skill-autocreate-aggregate,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh,tool-stats-backfill,wiki-lint",
-        "真实有、场景无：curriculum-weekly,diagnosis-watchdog,evolution-cycle,evolution-reconcile,ledger-anchor,memory-provider-health,oracle-daily,oracle-monthly,oracle-weekly,outcome-measure,skill-autocreate-observe,skill-autocreate-release,skill-graph-weekly,spec-index-refresh",
-        "场景有、真实无：（无）",
-        "driver 断言方式：JSON.stringify(ids) === JSON.stringify(expectedIds.sort()) ⇒ 严格逐项相等，多一个即 fail"
+        "场景标 negativeControl=true（rules-ask-hit-but-deny-also-matches）",
+        "_purpose 节选：⭐ negative control：这条命令**同时**命中 ask(git push --force main) 与 deny(rm -rf /)。若ask-hit 判据没有 deny 守门，本条会误判 PASS —— 那就证明守门是空…",
+        "expected.kind=ask-hit · inventory.lastKnownStatus=FAIL",
+        "判据链：ask-hit / advisory-hit / tier-precedence 的「deny 守门」被这条夹具反证有效",
+        "⛔ 这不是缺陷，不要「修」它 —— 它变绿才是缺陷"
       ],
-      "fix": "改场景：把 expectedIds 补齐到与 jobs.js 一致。⛔ 不要改 driver 的相等判据 —— 放宽后新增 job 就再也不会被发现。"
+      "fix": "无需修复。若本单元转为 PASS ⇒ 判据失去牙齿，届时会报 REAL_DEFECT。"
+    },
+    {
+      "unitId": "rules-tier-negctl-no-deny-but-expect-deny",
+      "domain": "rules",
+      "plugin": "agint-rules",
+      "sourceFile": "eval/scenarios/agint-rules-ask-advisory.scenario.json",
+      "probe": "negativeControl",
+      "category": "EXPECTED_RED",
+      "reason": "负控制：场景被故意构造为让判据变红，当前 FAIL 是**正确状态**；不计入覆盖率分母",
+      "evidence": [
+        "场景标 negativeControl=true（rules-tier-negctl-no-deny-but-expect-deny）",
+        "_purpose 节选：⭐ negative control #2：命令**只**命中 ask（git push --force main），但expected 写 deny-wins。若deny-wins 判据没有真在数 deny 档，本条会误判 PASS ⇒ …",
+        "expected.kind=tier-precedence · inventory.lastKnownStatus=FAIL",
+        "判据链：ask-hit / advisory-hit / tier-precedence 的「deny 守门」被这条夹具反证有效",
+        "⛔ 这不是缺陷，不要「修」它 —— 它变绿才是缺陷"
+      ],
+      "fix": "无需修复。若本单元转为 PASS ⇒ 判据失去牙齿，届时会报 REAL_DEFECT。"
+    },
+    {
+      "unitId": "rules-advisory-negctl-also-blocked",
+      "domain": "rules",
+      "plugin": "agint-rules",
+      "sourceFile": "eval/scenarios/agint-rules-ask-advisory.scenario.json",
+      "probe": "negativeControl",
+      "category": "EXPECTED_RED",
+      "reason": "负控制：场景被故意构造为让判据变红，当前 FAIL 是**正确状态**；不计入覆盖率分母",
+      "evidence": [
+        "场景标 negativeControl=true（rules-advisory-negctl-also-blocked）",
+        "_purpose 节选：⭐ negative control #3：命令同时命中 advisory(npm publish) + deny(rm -rf /)，走advisory-hit 判据。若「advisory 不阻断」守门是空壳，本条会误判 PASS。期望：…",
+        "expected.kind=advisory-hit · inventory.lastKnownStatus=FAIL",
+        "判据链：ask-hit / advisory-hit / tier-precedence 的「deny 守门」被这条夹具反证有效",
+        "⛔ 这不是缺陷，不要「修」它 —— 它变绿才是缺陷"
+      ],
+      "fix": "无需修复。若本单元转为 PASS ⇒ 判据失去牙齿，届时会报 REAL_DEFECT。"
     }
   ]
 }

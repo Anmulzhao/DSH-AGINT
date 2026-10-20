@@ -317,11 +317,16 @@ function apply(ctx, config) {
         try {
           const parsed = JSON.parse(raw);
           // 只取白名单字段：周报是给人读的，不该被产物文件里的额外键带偏。
+          // 2026-10-20：expectedRed / denominator 一并搬运 ——
+          //   覆盖率分母已排除负控制，周报必须能印出分母口径，
+          //   否则 total 与 attributed 对不上，读者会以为算错或以为数字突变。
           snapshot.evalFailAttribution = {
             total: Number(parsed.total) || 0,
             attributed: Number(parsed.attributed) || 0,
             coverage: typeof parsed.coverage === 'number' ? parsed.coverage : null,
             coverageMin: typeof parsed.coverageMin === 'number' ? parsed.coverageMin : null,
+            expectedRed: typeof parsed.expectedRed === 'number' ? parsed.expectedRed : null,
+            denominator: typeof parsed.denominator === 'number' ? parsed.denominator : null,
             byCategory: parsed.byCategory && typeof parsed.byCategory === 'object' ? parsed.byCategory : {},
             realDefects: Number(parsed.realDefects) || 0,
             generatedAt: typeof parsed.generatedAt === 'string' ? parsed.generatedAt : null,
