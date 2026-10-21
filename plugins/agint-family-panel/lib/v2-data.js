@@ -520,6 +520,254 @@ export function aggPending(storagesDir) {
   return { queues, observedAt };
 }
 
+// ═══ 神谕层（agint-aesthetic-oracle）═══════════════════════════════════════
+
+/**
+ * 神谕层输出的归一化（纯函数）：宿主半取数与单测共用一份口径。
+ *
+ * 为什么需要归一化而不是直接透传：oracle 的三个出口形状各不相同 ——
+ *  `cards()` 给 {topic, envelopeId, occurredAt, receivedAt, payload}，
+ *  `history()` 给广播行（id/kind/ts/score/verdict/worstKey/outcome…），
+ *  `getState()` 给单行状态（paused/silenceMode/quota/baseline/lastGood）。
+ * 面板要在一页里并列展示这三者，就必须先摊平成同一个口径；否则前端各自
+ * 猜字段名，是「三处口径漂移」那一族坑（本插件 v0.2.x 已因同源问题返工三次）。
+ *
+ * 纪律（与本文件其余各源一致）：
+ *  - 三段（卡片 / 广播史 / 状态行）各自可缺，缺的那段给 null 或空数组，
+ *    绝不用 0 或「无」冒充「确实没有」。整段全缺才 state='unavailable'。
+ *  - Δ vs 基线**只在口径可比时给数**。生产 state 行的 baseline 没有
+ *    formulaVersion 字段（建基于 2026-10-04，评分公式 r3 于 2026-10-09 落地），
+ *    所以跨版本 Δ 不可直接比 —— 此时 delta 照算但 comparable=false，
+ *    并附 reason。这是「不藏风险」，不是多此一举。
+ *
+ * @param {{cards?: Array, broadcasts?: Array, state?: object|null, runtime?: object|null,
+ *          source?: string, notes?: string[], observedAt?: string|null, limit?: number}} raw
+ * @returns {object} payload.oracle
+ */
+export function normalizeOracle(raw = {}) {
+  const limit = Number.isInteger(raw.limit) && raw.limit > 0 ? raw.limit : 20;
+  const notes = Array.isArray(raw.notes) ? raw.notes.filter(Boolean).map((s) => String(s).slice(0, 240)) : [];
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const str = (v) => (typeof v === 'string' && v !== '' ? v : null);
+
+  /** 卡片 payload → 展示口径。payload 是 unknown 形，逐字段挑，不整块透传。 */
+  const pickCard = (c) => {
+    const p = c && typeof c.payload === 'object' && c.payload !== null ? c.payload : {};
+    return {
+      topic: str(c && c.topic) ?? '',
+      envelopeId: str(c && c.envelopeId),
+      occurredAt: str(c && c.occurredAt),
+      receivedAt: str(c && c.receivedAt),
+      kind: str(p.kind),
+      asOf: str(p.asOf),
+      score: num(p.score),
+      verdict: str(p.verdict),
+      worstKey: str(p.worstKey),
+      lines: Array.isArray(p.lines) ? p.lines.map(String).slice(0, 12) : [],
+      text: str(p.text),
+      mode: str(p.mode),
+      formulaVersion: str(p.formulaVersion),
+      scaleHash: str(p.scaleHash),
+      staleDays: num(p.staleDays),
+      // oracle.alert 的双形态：内部告警带 reason/error，程序化警报带 text
+      alertReason: str(p.reason),
+      alertError: str(p.error),
+    };
+  };
+
+  /** 同一 topic 只留最新一张（cards 表按 topic 存一行，服务面理论上也是；双保险）。 */
+  const byTopic = new Map();
+  for (const c of Array.isArray(raw.cards) ? raw.cards : []) {
+    const card = pickCard(c);
+    if (!card.topic) continue;
+    const prev = byTopic.get(card.topic);
+    if (!prev || String(card.occurredAt ?? '') > String(prev.occurredAt ?? '')) byTopic.set(card.topic, card);
+  }
+  const cards = [...byTopic.values()].sort((a, b) => a.topic.localeCompare(b.topic));
+
+  const stateRow = raw.state && typeof raw.state === 'object' ? raw.state : null;
+  const baseline = stateRow && typeof stateRow.baseline === 'object' && stateRow.baseline !== null ? stateRow.baseline : null;
+  const baseScore = baseline ? num(baseline.score) : null;
+  const baseFormula = baseline ? str(baseline.formulaVersion) : null;
+
+  /**
+   * 口径可比性判据（单一事实源，前端只读这个标志，不自己算）。
+   *  ⛔ 不可比时说不可比，不把跨版本差值当趋势。
+   *  ⛔ baseline 缺 formulaVersion（生产现状）= 未知口径 ⇒ 不可比，不能当成「一致」。
+   */
+  const comparableOf = (formulaVersion) => {
+    if (baseScore === null) return { comparable: false, reason: '基线未建立（state.baseline.score 为空）' };
+    if (baseFormula === null) {
+      return { comparable: false, reason: '基线无 formulaVersion（建基于评分公式换版之前），Δ 跨口径，不可当趋势读' };
+    }
+    /** 本轮无标记也要判不可比：广播行 schema 里没有 formulaVersion 字段，
+     *  缺席 ≠ 一致。把它当成一致就是「拿未知当已知」。 */
+    if (!formulaVersion) {
+      return { comparable: false, reason: '本轮无 formulaVersion 标记（旧发布方或广播行 schema 不含该字段），口径未知' };
+    }
+    if (formulaVersion !== baseFormula) {
+      return { comparable: false, reason: `基线口径 ${baseFormula} ≠ 本轮 ${formulaVersion}，不可直接比` };
+    }
+    return { comparable: true, reason: null };
+  };
+
+  const pickBroadcast = (r) => {
+    const score = num(r && r.score);
+    const cmp = comparableOf(str(r && r.formulaVersion));
+    return {
+      id: str(r && r.id),
+      kind: str(r && r.kind),
+      ts: str(r && r.ts),
+      asOf: str(r && r.asOf),
+      score,
+      verdict: str(r && r.verdict),
+      worstKey: str(r && r.worstKey),
+      lines: num(r && r.lines),
+      bytes: num(r && r.bytes),
+      published: r ? r.published === true : false,
+      outcome: str(r && r.outcome) ?? 'unknown',
+      detail: str(r && r.detail),
+      proposals: num(r && r.proposals),
+      formulaVersion: str(r && r.formulaVersion),
+      delta: score !== null && baseScore !== null ? Math.round((score - baseScore) * 10) / 10 : null,
+      deltaComparable: cmp.comparable,
+      deltaReason: cmp.reason,
+    };
+  };
+  const history = (Array.isArray(raw.broadcasts) ? raw.broadcasts : [])
+    .map(pickBroadcast)
+    .sort((a, b) => String(b.ts ?? '').localeCompare(String(a.ts ?? '')))
+    .slice(0, limit);
+
+  /** 判词 = 最新一张 daily；没有 daily 才退到 weekly → monthly → alert。 */
+  const latest = cards.find((c) => c.topic === 'oracle.daily')
+    ?? cards.find((c) => c.topic === 'oracle.weekly')
+    ?? cards.find((c) => c.topic === 'oracle.monthly')
+    ?? cards.find((c) => c.topic === 'oracle.alert')
+    ?? null;
+  const latestCmp = comparableOf(latest ? latest.formulaVersion : null);
+  const latestDelta = latest && latest.score !== null && baseScore !== null
+    ? Math.round((latest.score - baseScore) * 10) / 10
+    : null;
+
+  const out = {
+    state: 'ok',
+    source: str(raw.source) ?? 'unknown',
+    notes,
+    observedAt: str(raw.observedAt),
+    cards,
+    latest: latest === null ? null : { ...latest, delta: latestDelta, deltaComparable: latestCmp.comparable, deltaReason: latestCmp.reason },
+    history,
+    runtime: raw.runtime && typeof raw.runtime === 'object' ? {
+      enabled: raw.runtime.enabled !== false,
+      envOff: raw.runtime.envOff === true,
+      memoryStore: raw.runtime.memoryStore === true,
+      disposed: raw.runtime.disposed === true,
+      metricsAvailable: raw.runtime.metricsAvailable === true,
+      evolutionAvailable: raw.runtime.evolutionAvailable === true,
+      busAvailable: raw.runtime.busAvailable === true,
+    } : null,
+    stateRow: stateRow === null ? null : {
+      paused: stateRow.paused === true,
+      pausedReason: str(stateRow.pausedReason),
+      pausedAt: str(stateRow.pausedAt),
+      silenceActive: !!(stateRow.silenceMode && stateRow.silenceMode.active),
+      silenceSince: str(stateRow.silenceMode && stateRow.silenceMode.since),
+      silenceReason: str(stateRow.silenceMode && stateRow.silenceMode.reason),
+      consecutiveFailures: num(stateRow.consecutiveFailures) ?? 0,
+      updatedAt: str(stateRow.updatedAt),
+      baseline: baseline === null ? null : {
+        establishedAt: str(baseline.establishedAt),
+        score: baseScore,
+        composites: baseline.composites && typeof baseline.composites === 'object' ? baseline.composites : {},
+        method: str(baseline.method),
+        rebaselinedAt: str(baseline.rebaselinedAt),
+        sampleCounts: baseline.sampleCounts && typeof baseline.sampleCounts === 'object' ? baseline.sampleCounts : {},
+        windowDays: num(baseline.windowDays),
+        formulaVersion: baseFormula,
+      },
+      lastGood: stateRow.lastGood && typeof stateRow.lastGood === 'object' ? {
+        asOf: str(stateRow.lastGood.asOf),
+        savedAt: str(stateRow.lastGood.savedAt),
+      } : null,
+      quota: stateRow.quota && typeof stateRow.quota === 'object' ? {
+        date: str(stateRow.quota.date),
+        daily: num(stateRow.quota.daily) ?? 0,
+        weekly: num(stateRow.quota.weekly) ?? 0,
+        monthly: num(stateRow.quota.monthly) ?? 0,
+        bytes: num(stateRow.quota.bytes) ?? 0,
+        violations: num(stateRow.quota.violations) ?? 0,
+        alerts: num(stateRow.quota.alerts) ?? 0,
+      } : null,
+    },
+    /** 历史行里可比的占比：一眼看出「Δ 那一列有多少行是能读的」。 */
+    historyComparable: history.filter((r) => r.deltaComparable).length,
+  };
+  if (cards.length === 0 && history.length === 0 && out.stateRow === null) {
+    out.state = 'unavailable';
+    out.reason = notes.length ? notes.join('；') : '神谕层三段（卡片 / 广播史 / 状态行）全缺';
+  }
+  return out;
+}
+
+/**
+ * 落盘口径的**原始三段**（不归一）：给需要跨源合并的调用方用。
+ *
+ * 为什么要拆开：宿主半要把「服务面」与「落盘」两路合并后再归一一次
+ * （cards 可能服务面为空而文件里有 —— 订阅未回写的常见形态），
+ * 若只能拿到归一结果，合并就得在已摊平的字段上逆向重建，等于二次口径漂移。
+ *
+ * @param {string} storagesDir
+ * @returns {{ok: boolean, reason?: string, cards?: Array, broadcasts?: Array, state?: object|null, observedAt?: string|null}}
+ */
+export function readOracleFile(storagesDir) {
+  const file = join(storagesDir, 'agint_aesthetic_oracle.json');
+  if (!existsSync(file)) {
+    return { ok: false, reason: '神谕层存储域不存在（agint_aesthetic_oracle.json 不在 storages/）', observedAt: null };
+  }
+  let body;
+  try { body = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
+    return { ok: false, reason: `存储域解析失败：${String((e && e.message) ?? e).slice(0, 160)}`, observedAt: null };
+  }
+  const t = body && typeof body.tables === 'object' && body.tables !== null ? body.tables : null;
+  if (t === null) return { ok: false, reason: 'tables 缺失或形态未知', observedAt: null };
+  const vals = (tbl) => (tbl && typeof tbl === 'object' ? Object.values(tbl) : []);
+  return {
+    ok: true,
+    cards: vals(t.oracle_cards),
+    broadcasts: vals(t.oracle_broadcasts),
+    state: t.oracle_state && typeof t.oracle_state === 'object' ? (t.oracle_state.latest ?? null) : null,
+    observedAt: mtimeIso(file),
+  };
+}
+
+/**
+ * 落盘口径的神谕层聚合：读 `storages/agint_aesthetic_oracle.json` 三表并归一。
+ *
+ * 为什么读文件而不是只读服务面：面板其余各源都是落盘口径，且服务面依赖
+ * 宿主进程内的 event-bus 订阅（cards 只有订阅活着才回写）。两条路都留：
+ *  - 服务面（lib/index.js collectOracle）优先 —— 带运行态开关（envOff / busAvailable）
+ *  - 落盘（本函数）兜底 —— 订阅没回写时卡片仍在文件里，不至于整页空白
+ * 合并规则在 collectOracle，本函数只负责「把文件读成归一输出」。
+ *
+ * @param {string} storagesDir
+ * @returns {object} normalizeOracle 的输出（失败为 {state:'error'|'unavailable'}）
+ */
+export function aggOracle(storagesDir) {
+  const raw = readOracleFile(storagesDir);
+  if (!raw.ok) {
+    return { state: existsSync(join(storagesDir, 'agint_aesthetic_oracle.json')) ? 'error' : 'unavailable', source: 'storages', reason: raw.reason, notes: [], observedAt: null };
+  }
+  return normalizeOracle({
+    cards: raw.cards,
+    broadcasts: raw.broadcasts,
+    state: raw.state,
+    runtime: null,
+    source: 'storages',
+    observedAt: raw.observedAt,
+  });
+}
+
 /**
  * 插件身份表（**单一事实源**）：产出**代码身份**—— 一个目录当且仅当**有 lib/** 才算。
  *
@@ -762,10 +1010,12 @@ export function classifyPluginsWithMount(pluginsDir) {
 /** 形态分类里不当「子插件」的目录名。 */
 const SKIP_FOR_KIND = new Set(['node_modules', 'test', 'tests', 'fixtures', 'schemas', 'bin', 'examples', 'assets', 'docs', 'lib']);
 
-/** mtime 签名：三个 storages 文件 + 各插件 lib 目录 mtime。 */
+/** mtime 签名：三个 storages 文件 + 神谕层存储域 + 各插件 lib 目录 mtime。
+ *  ⛔ 神谕层文件必须进签名：它不在原三源之列，漏了就只能靠 30s TTL 兜，
+ *     09:00 广播刚落地时面板会显示上一轮判词（看起来像「神谕没跑」）。 */
 function signature(dirs) {
   const sig = [];
-  for (const f of ['agint_tool_stats.jsonl', 'agint_cron.json', 'agint_event_bus.json']) {
+  for (const f of ['agint_tool_stats.jsonl', 'agint_cron.json', 'agint_event_bus.json', 'agint_aesthetic_oracle.json']) {
     sig.push(mtimeIso(join(dirs.storagesDir, f)));
   }
   try {
@@ -904,6 +1154,9 @@ export function collectV2Data(dirs, opts = {}) {
   try { payload.cron = aggCron(dirs.storagesDir); } catch (e) { payload.cron = errOf(e); }
   try { payload.bus = aggBus(dirs.storagesDir, now); } catch (e) { payload.bus = errOf(e); }
   try { payload.pending = aggPending(dirs.storagesDir); } catch (e) { payload.pending = errOf(e); }
+  // 神谕层：落盘口径先兜底（文件在就有数）。服务面在 lib/index.js 的
+  // collectOracle 里覆盖，因为只有宿主进程内拿得到运行态开关与内存订阅回写。
+  try { payload.oracle = aggOracle(dirs.storagesDir); } catch (e) { payload.oracle = errOf(e); }
   try {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;

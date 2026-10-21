@@ -185,6 +185,25 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
   background:var(--data-bar);pointer-events:none;}
 .barcell span{position:relative;}
 
+/* ═══ SECTION: oracle — 神谕层判词（结论面：先看它，再看证据） ═══ */
+.verdict{border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg-l2);
+  padding:var(--s4);margin-bottom:var(--s4);}
+.vhead{display:flex;align-items:baseline;gap:var(--s3);flex-wrap:wrap;margin-bottom:var(--s2);}
+.vscore{font-size:32px;font-weight:var(--fw-semi);line-height:1;}
+.vmeta{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.75;}
+.vlines{margin:var(--s2) 0 0;padding-left:var(--s5);font-size:var(--fs-sm);
+  color:var(--fg-2);line-height:1.9;}
+.ocards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:var(--s3);margin-bottom:var(--s4);}
+.ocard{border:1px solid var(--border);border-radius:var(--r-md);padding:var(--s3);
+  background:var(--bg-l2);min-width:0;}
+.ocard .t{font-size:var(--fs-xs);color:var(--fg-3);letter-spacing:.03em;}
+.ocard .s{font-size:var(--fs-lg);font-weight:var(--fw-semi);margin:2px 0;line-height:1.3;}
+.ocard .m{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.7;}
+.notes{font-size:var(--fs-xs);color:var(--warn);line-height:1.85;margin:0 0 var(--s3);
+  padding-left:var(--s3);border-left:2px solid rgba(201,162,74,.42);}
+.notes div{margin:2px 0;}
+
 /* ═══ SECTION: misc ═══ */
 .umb-list{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.9;
   margin:0;padding-left:var(--s5);}
@@ -228,6 +247,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
     </div>
     <div class="tabs" id="tabs" role="tablist" aria-label="面板分区">
       <button class="tab" data-t="pend" role="tab" aria-selected="false">待办</button>
+      <button class="tab" data-t="oracle" role="tab" aria-selected="false">神谕 · 美之判词</button>
       <button class="tab on" data-t="q1" role="tab" aria-selected="true">Q1 谁依赖谁</button>
       <button class="tab" data-t="q2" role="tab" aria-selected="false">Q2 谁在干活</button>
       <button class="tab" data-t="q3" role="tab" aria-selected="false">Q3 哪里在腐化</button>
@@ -258,6 +278,35 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
       <thead><tr><th>队列</th><th class="num">待办</th><th class="num">上游供给</th><th>条目</th></tr></thead>
       <tbody id="tbodyPend"></tbody>
     </table>
+  </div>
+
+  <!-- ═══════════ 神谕层（结论面，紧跟待办） ═══════════ -->
+  <div class="card panel" id="oracle">
+    <h2>神谕 · 美之判词 <span class="real">只转录，不重算</span></h2>
+    <div class="cap">
+      神谕层（<code>agint-aesthetic-oracle</code>）不产出新指标：它读 <code>agint.metrics.summary()</code> 的仪表，
+      用确定性公式打一个美总分，再按日程开口（daily 09:00 / weekly 周一 08:00 / monthly 1 日 10:00）。
+      本页只转录它落下的东西：<b>判词</b>（最新卡片全文）、<b>三档评分</b>、<b>广播史</b>，外加状态面。
+      <span class="tag umbrella">口径不可比</span> 基线建于评分公式换版之前，跨口径的 Δ 不能当趋势读 —— 这类行照样显示数值，但带警示。
+      本页不改神谕，也不代它下判断。
+    </div>
+    <div class="notes" id="oracleNotes"></div>
+    <div id="oracleTop"></div>
+    <div class="ocards" id="oracleCards"></div>
+    <div class="subtable">
+      <h3>状态面（kill-switch / 沉默 / 基线 / 配额）</h3>
+      <div id="oracleState"></div>
+    </div>
+    <div class="subtable">
+      <h3>广播史（最近 20 条 · 失败、被拦、被静默的行也在这里）</h3>
+      <table>
+        <thead><tr>
+          <th>时间</th><th>档</th><th class="num">美总分</th><th class="num">Δ 基线</th>
+          <th>判定</th><th>最丑维</th><th>结果</th><th class="num">行 / 字节</th><th class="num">提案</th><th>说明</th>
+        </tr></thead>
+        <tbody id="tbodyOracle"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ═══════════ Q1 ═══════════ -->
@@ -344,7 +393,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
     PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
-    PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing";
+    PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -352,6 +401,8 @@ if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
   tbodyQ1.innerHTML=""; tbodySvc.innerHTML=""; tbodyQ2.innerHTML=""; tbodyHost.innerHTML="";
   tbodyQ3.innerHTML=""; tbodyChain.innerHTML=""; q3chips.innerHTML=""; umbList.innerHTML="";
   tbodyPend.innerHTML="";
+  oracleNotes.innerHTML=""; oracleTop.innerHTML=""; oracleCards.innerHTML="";
+  oracleState.innerHTML=""; tbodyOracle.innerHTML="";
   cronUnmapped.innerHTML="—";
   return;
 }
@@ -372,6 +423,13 @@ function providerOf(service){
 /** 展示用 provider 名：宿主键显式标「dsh 宿主」，不伪装成本仓插件。 */
 const providerLabel=svc=>PROVIDED[svc]??(isHostKey(svc)?"dsh 宿主":"（未见 provide）");
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const escAttr=s=>esc(s).replace(/"/g,"&quot;");
+/* 神谕层的标签映射放在这里（render 开头），不用放在下面的分区代码里：
+   顶部统计条与数据新鲜度条都在分区代码之前求值，const 放后面会撞暂时性死区。 */
+const MODE_LABEL={template:"模板",llm:"LLM 增强","heuristic-degraded":"LLM 降级回模板"};
+const O_ORDER=["oracle.daily","oracle.weekly","oracle.monthly","oracle.alert"];
+const verdictLabel=v=>v==="beautiful"?"美":v==="ugly"?"丑":v==="flat"?"持平":"—";
+const verdictColor=v=>v==="beautiful"?"var(--ok)":v==="ugly"?"var(--err)":v==="flat"?"var(--warn)":"var(--fg-3)";
 const fmtDate=ms=>ms?new Date(ms).toISOString().slice(5,16).replace("T"," "):"—";
 function rel(iso){
   if(!iso) return "—";
@@ -720,6 +778,9 @@ ANOM.push({v:"僵尸候选",o:realZ.length?realZ.map(r=>r.pl).slice(0,8).join("�
 
 // ── 龄期条 ─────────────────────────────────────────────────────────
 const toolTotal=TOOLS.reduce((s,t)=>s+t.n,0);
+/** 神谕层两处共用（龄期条 + 顶部统计）：只在 state==='ok' 时算「有数」。 */
+const OS=(ORACLE&&ORACLE.state==="ok")?ORACLE:null;
+const OL=OS?OS.latest:null;
 const AGES=[
  {label:"代码扫描",state:"ok",age:OBS.scan?("命中 "+HITS.length+" 处 · "+rel(OBS.scan)):"unknown · 扫描源降级"},
  {label:"manifest",state:"ok",age:Object.keys(MANIFEST_CONSUMES).length+"/"+FAMILY_DIRS.length+" 声明 consumes"},
@@ -737,6 +798,12 @@ const AGES=[
     ? `${WIRING_EXEMPT.count} 条在册 · ${rel(WIRING_EXEMPT.observedAt)}（docs/wiring-exemptions.json）`
     : `不可用 · ${(WIRING_EXEMPT&&WIRING_EXEMPT.reason)||"仓库位未解析"}`},
  {label:"工具归属",state:"warn",age:"前缀推断 · U4 未证实"},
+ /* 神谕层：判词的新鲜度就是它的可用性。缓存回退（staleDays）与 LLM 降级
+    （heuristic-degraded）都写在这里 —— 光看分数看不出「这句判词是不是旧数据」。 */
+ {label:"神谕层",state:OS?((OS.stateRow&&(OS.stateRow.paused||OS.stateRow.silenceActive))?"warn":"ok"):"warn",
+  age:OL
+    ? `判词 ${rel(OL.occurredAt)} · ${MODE_LABEL[OL.mode]||OL.mode||"?"} · 广播史 ${(OS.history||[]).length} 条 · 来源 ${OS.source}`
+    : `unknown · ${ORACLE?(ORACLE.reason||ORACLE.state):"宿主半未提供 oracle 段（lib 改动需重启宿主）"}`},
 ];
 ages.innerHTML=AGES.map(a=>`<span class="age"><span class="dot ${a.state}"></span>${a.label} · ${a.age}</span>`).join("");
 
@@ -747,6 +814,11 @@ const STATS=[
  {k:"伞键不可达",v:sumUmbrella,n:"不建边",c:"var(--warn)"},
  {k:"30 天工具调用",v:toolTotal.toLocaleString(),n:`宿主内建占 ${Math.round(hostTotal/toolTotal*100)}%`},
  {k:"L2 异常",v:ANOM.length,n:"Q3 · 每条带证据",c:"var(--warn)"},
+ /* 神谕层的结论提前到顶部：面板其余数字都是证据，只有这个数是「判断」。
+    判词取不到时显示「—」并说明原因，不填 0（0 分和没数完全不同）。 */
+ {k:"美总分（神谕）",v:OL?(OL.score===null?"—":OL.score):"—",
+  n:OL?`${verdictLabel(OL.verdict)} · 最丑 ${OL.worstKey||"—"}${OL.deltaComparable?"":" · Δ 不可比"}`:"未取到判词",
+  c:OL?verdictColor(OL.verdict):"var(--fg-3)"},
 ];
 stats.innerHTML=STATS.map(s=>`<div class="stat"><div class="k">${s.k}</div><div class="v" style="${s.c?`color:${s.c}`:""}">${s.v}</div><div class="k">${s.n}</div></div>`).join("");
 
@@ -870,6 +942,133 @@ tbodyPend.innerHTML=!PENDING
         <td style="font-size:12px;color:var(--fg-2)">${cell}</td></tr>`;
     }).join("");
 
+// ── 神谕层：判词 / 三档 / 状态面 / 广播史 ────────────────────────────
+/* 本节只转录 agint-aesthetic-oracle 自己落下的三个出口（cards / history / state），
+   不重算分数、不改判定、不代它下结论。三条口径纪律：
+   ① 「取不到」与「神谕没开口」是两件事。payload 缺 oracle 段 = 宿主半是旧版
+      （lib 改动要重启宿主才加载，页面 HTML 改动即时生效）；卡片为空 = 神谕确实没开口
+      或 dashboard 订阅没回写。两种文案分开写，不合并成一句「无数据」。
+   ② Δ 只在口径可比时才当趋势。基线建于评分公式换版之前时，照算但带 ⚠ 与原因，
+      不把跨版本差值画成趋势（这正是「拿未知当已知」那一族坑）。
+   ③ 失败行也进广播史。skipped / silenced / error 的广播同样是神谕的产出。 */
+function oracleMissing(msg){
+  oracleNotes.innerHTML="";
+  oracleTop.innerHTML=`<div class="kv" style="color:var(--warn);border-left:2px solid rgba(201,162,74,.42);padding-left:var(--s3)">${esc(msg)}</div>`;
+  oracleCards.innerHTML=""; oracleState.innerHTML=""; tbodyOracle.innerHTML="";
+}
+function renderOracle(){
+  const O=ORACLE;
+  if(!O){
+    oracleMissing("载荷里没有 oracle 段 —— 宿主半（lib/index.js、lib/v2-data.js）还是旧版。"
+      +"页面 HTML 改动即时生效，但取数逻辑要重启宿主才会加载。重启 dsh 后再看这一节。");
+    return;
+  }
+  if(O.state!=="ok"){
+    oracleMissing("神谕层数据不可用："+(O.reason||O.state)
+      +(O.serviceReason?"（服务面："+O.serviceReason+"）":""));
+    return;
+  }
+  const notes=Array.isArray(O.notes)?O.notes:[];
+  oracleNotes.innerHTML=notes.length?notes.map(n=>`<div>· ${esc(n)}</div>`).join(""):"";
+  const B=O.stateRow&&O.stateRow.baseline?O.stateRow.baseline:null;
+  const L=O.latest;
+
+  // 判词：最新一张卡片的全文
+  if(!L){
+    oracleTop.innerHTML='<div class="kv" style="color:var(--fg-3)">还没有判词卡片：神谕层尚未开口，或 dashboard 订阅未回写且落盘也没有卡片。两种原因本页分不出，看下方状态面的 eventBus 可用性。</div>';
+  }else{
+    const bits=[esc(L.topic)];
+    if(L.asOf) bits.push("数据截至 "+esc(L.asOf.slice(0,16).replace("T"," ")));
+    bits.push("开口于 "+rel(L.occurredAt));
+    if(L.mode) bits.push("模式 "+esc(MODE_LABEL[L.mode]||L.mode));
+    if(L.formulaVersion) bits.push("公式 "+esc(L.formulaVersion));
+    if(L.scaleHash) bits.push("判尺 "+esc(L.scaleHash));
+    const deltaHtml=L.delta===null?"":
+      `<div class="vmeta">相对基线 ${B&&B.score!==null?B.score:"?"} → <b>${L.score}</b>：<b style="color:${L.delta>=0?"var(--ok)":"var(--err)"}">${L.delta>0?"+":""}${L.delta}</b>`
+      +(L.deltaComparable?"":`　<span class="tag umbrella" style="margin-left:0">口径不可比</span>${L.deltaReason?" "+esc(L.deltaReason):""}`)+"</div>";
+    oracleTop.innerHTML=`<div class="verdict">
+      <div class="vhead">
+        <span class="vscore" style="color:${verdictColor(L.verdict)}">${L.score===null?"—":L.score}</span>
+        <span class="tag ${L.verdict==="ugly"?"comment":L.verdict==="beautiful"?"code":"umbrella"}" style="margin-left:0">${esc(verdictLabel(L.verdict))}</span>
+        ${L.worstKey?`<span class="vmeta">最丑维 <b style="color:var(--fg)">${esc(L.worstKey)}</b></span>`:""}
+        ${L.staleDays?`<span class="tag umbrella" style="margin-left:0">缓存回退 ${L.staleDays} 天</span>`:""}
+      </div>
+      <div class="vmeta">${bits.join(" · ")}</div>
+      ${deltaHtml}
+      ${L.lines.length?`<ul class="vlines">${L.lines.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`
+        :(L.text?`<div class="kv" style="margin-top:var(--s2)">${esc(L.text)}</div>`:"")}
+      ${(L.alertReason||L.alertError)?`<div class="kv" style="color:var(--warn)">告警：${esc(L.alertReason||L.alertError)}</div>`:""}
+    </div>`;
+  }
+
+  // 三档评分（daily / weekly / monthly / alert 各一格）
+  const byT=new Map((O.cards||[]).map(c=>[c.topic,c]));
+  oracleCards.innerHTML=O_ORDER.map(t=>{
+    const c=byT.get(t);
+    if(!c) return `<div class="ocard"><div class="t">${esc(t)}</div><div class="s" style="color:var(--fg-3)">—</div><div class="m">未见卡片（该档从未开口 / 订阅未回写 / 落盘无记录）</div></div>`;
+    const d=c.delta===null?"":" · Δ "+(c.delta>0?"+":"")+c.delta+(c.deltaComparable?"":"（不可比）");
+    return `<div class="ocard">
+      <div class="t">${esc(t)}</div>
+      <div class="s" style="color:${verdictColor(c.verdict)}">${c.score===null?"—":c.score} <span style="font-size:var(--fs-xs);color:var(--fg-3)">${esc(verdictLabel(c.verdict))}</span></div>
+      <div class="m">${c.worstKey?"最丑 "+esc(c.worstKey):"无扣分维"} · ${rel(c.occurredAt)}<br>
+      ${esc(MODE_LABEL[c.mode]||c.mode||"?")} · 数据截至 ${esc((c.asOf||"?").slice(5,16).replace("T"," "))}${esc(d)}<br>
+      ${c.formulaVersion?"公式 "+esc(c.formulaVersion):"公式未标注"}${c.staleDays?" · 缓存 "+c.staleDays+" 天":""}</div>
+    </div>`;
+  }).join("");
+
+  // 状态面
+  const S=O.stateRow, R=O.runtime;
+  const row=(k,v)=>`<div class="kv"><b>${k}</b>　${v}</div>`;
+  const st=[];
+  if(S){
+    st.push(row("kill-switch", S.paused?`<span style="color:var(--warn)">已暂停</span>${S.pausedReason?"（"+esc(S.pausedReason)+"）":""}`:"未暂停"));
+    st.push(row("沉默模式", S.silenceActive?`<span style="color:var(--warn)">静默中</span>（${esc(S.silenceReason||"?")} · since ${esc((S.silenceSince||"?").slice(0,16).replace("T"," "))}）`:"未触发"));
+    st.push(row("连续失败", S.consecutiveFailures+" 次（重试后 ≥3 进沉默）"));
+    st.push(row("基线", B&&B.score!==null
+      ? `${B.score} · ${esc(B.method||"?")} · 建于 ${esc((B.establishedAt||"?").slice(0,10))}`
+        +(B.rebaselinedAt?" · 重定基 "+esc(B.rebaselinedAt.slice(0,10)):"")
+        +(Object.keys(B.sampleCounts||{}).length?" · 样本数 "+esc(Object.entries(B.sampleCounts).map(([k,v])=>k+"="+v).join(" ")):"")
+        +(B.formulaVersion?" · 公式 "+esc(B.formulaVersion):' · <span style="color:var(--warn)">公式口径未标注 → 上方的 Δ 一律不可比</span>')
+      : '<span style="color:var(--fg-3)">未建立</span>'));
+    st.push(row("lastGood 缓存", S.lastGood&&S.lastGood.asOf?`数据 ${esc(S.lastGood.asOf.slice(0,16).replace("T"," "))} · 存于 ${rel(S.lastGood.savedAt)}`:'<span style="color:var(--fg-3)">无</span>'));
+    if(S.quota) st.push(row("配额", `今日 ${S.quota.daily} · 本周 ${S.quota.weekly} · 本月 ${S.quota.monthly} · 累计 ${S.quota.bytes} 字节 · 违规 ${S.quota.violations} · 告警 ${S.quota.alerts}`));
+    if(S.updatedAt) st.push(row("状态行更新", rel(S.updatedAt)));
+  }else{
+    st.push('<div class="kv" style="color:var(--fg-3)">状态行未取到（服务面 getState() 与落盘都空）</div>');
+  }
+  if(R){
+    const on=b=>b?'<span style="color:var(--ok)">可用</span>':'<span style="color:var(--warn)">不可用</span>';
+    st.push(row("运行态", `enabled ${R.enabled?"是":"否"} · env 关闭 ${R.envOff?"是":"否"} · metrics ${on(R.metricsAvailable)} · evolve ${on(R.evolutionAvailable)} · eventBus ${on(R.busAvailable)}`
+      +(R.memoryStore?' · <span style="color:var(--warn)">存储降级为内存（重启即丢）</span>':"")));
+  }else{
+    st.push(row("运行态", '<span style="color:var(--fg-3)">未知 —— 服务面无 status() 出口或未挂载，不猜</span>'));
+  }
+  st.push(row("数据来源", esc(O.source)
+    +(O.serviceAvailable===false?" · 服务面不可用（"+esc(O.serviceReason||"?")+"）":"")
+    +(O.observedAt?" · 落盘 mtime "+rel(O.observedAt):"")));
+  oracleState.innerHTML=st.join("");
+
+  // 广播史
+  const H=(O.history||[]);
+  tbodyOracle.innerHTML=H.length?H.map(r=>{
+    const oc=r.outcome==="ok"?"var(--ok)":r.outcome==="unknown"?"var(--fg-3)":"var(--warn)";
+    const d=r.delta===null?'<span class="zero">—</span>'
+      :`<span title="${escAttr(r.deltaReason||(r.deltaComparable?"口径可比":"口径不可比"))}">${r.delta>0?"+":""}${r.delta}${r.deltaComparable?"":" ⚠"}</span>`;
+    return `<tr>
+      <td class="ev" style="color:var(--fg-2)">${esc((r.ts||"").slice(5,16).replace("T"," "))}</td>
+      <td>${esc(r.kind||"?")}</td>
+      <td class="num">${r.score===null?"—":r.score}</td>
+      <td class="num"${r.deltaComparable?"":' style="color:var(--warn)"'}>${d}</td>
+      <td style="color:${verdictColor(r.verdict)}">${esc(verdictLabel(r.verdict))}</td>
+      <td class="ev">${esc(r.worstKey||"—")}</td>
+      <td style="color:${oc}">${esc(r.outcome)}${r.published?"":" · 未发布"}</td>
+      <td class="num">${r.lines===null?"—":r.lines} / ${r.bytes===null?"—":r.bytes}</td>
+      <td class="num">${r.proposals?r.proposals:'<span class="zero">—</span>'}</td>
+      <td style="font-size:12px;color:var(--fg-3)">${esc(r.detail||"")}</td></tr>`;
+  }).join(""):'<tr><td colspan="10" style="color:var(--fg-3)">无广播史（该域从未写入，或存储域/服务面都读不到）</td></tr>';
+}
+renderOracle();
+
 // ── Q3 表 + 判定过滤 ───────────────────────────────────────────────
 const verdicts=[...new Set(ANOM.map(a=>a.v))];
 q3chips.innerHTML=`<button class="chip on" data-v="">全部 ${ANOM.length}</button>`+
@@ -979,7 +1178,7 @@ tabs.addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b) return;
   tabs.querySelectorAll(".tab").forEach(x=>{const on=x===b;
     x.classList.toggle("on",on); x.setAttribute("aria-selected",on?"true":"false");});
-  for(const id of ["pend","q1","q2","q3","chain","umb"])
+  for(const id of ["pend","oracle","q1","q2","q3","chain","umb"])
     document.getElementById(id).classList.toggle("on",id===b.dataset.t);
 });
 /* 按钮文案改为「点击后的目标状态」，原「暗 / 明」单字分不清是现状还是动作 */
@@ -996,7 +1195,8 @@ foot.innerHTML=`数据说明：
 ③ 工具→插件归属按命名前缀推断（U4 未证实）；宿主内建与 <code>mcp__*</code> 单列。
 ④ bus 两列都读 <code>tables/events</code>，跨重启有效。「投递」依赖 2026-10-05 起落盘的 <code>deliveries</code> 字段：存量行显示 <code>unknown · 存量行</code>、部分行有数据的加 <code>≥</code>（下界）——都不写 0。读不到全历史口径时退回 ring 窗口口径并标「窗口外」。
 ⑤ 仍属示意的只有一处：Q1 详情「最后改动」（待接 evolution ledger）。
-⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。`;
+⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。
+⑦ 「神谕」一节转录 <code>$DSH_HOME/storages/agint_aesthetic_oracle.json</code> 的三张表（state / broadcasts / cards）加上进程内服务面（<code>agint.aestheticOracle</code>）。卡片只有 dashboard 订阅回写后才有；服务面 <code>cards()</code> 为空时回落落盘并在黄条里说明原因。Δ 基线一律标口径可比性 —— 基线没有 <code>formulaVersion</code> 时（生产现状）不当趋势读。`;
 
 // ── 数据装载 ──────────────────────────────────────────────
 function applyPayload(D){
@@ -1022,6 +1222,9 @@ function applyPayload(D){
   // 待办节：逐队列降级在渲染里做，不用 bad() 整块判失败——
   // 这里是「某一个域没开」，不是「这一源挂了」，不该把整节报成数据源故障。
   PENDING=Array.isArray(D.pending?.queues)?D.pending.queues:null;
+  // 神谕层：整段是可选产物（宿主半旧版没有这个键）。缺键 = 取不到 ≠ 神谕没开口，
+  // 渲染区分开写（见 renderOracle）。⛔ 不要在这里补一个空默认对象冒充「有数据」。
+  ORACLE=(D.oracle&&typeof D.oracle==="object")?D.oracle:null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }

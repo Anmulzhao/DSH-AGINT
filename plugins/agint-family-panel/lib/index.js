@@ -32,7 +32,7 @@ import { createRequire } from 'node:module';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectV2Data, resolveV2Dirs, classifySubscriptions } from './v2-data.js';
+import { collectV2Data, resolveV2Dirs, classifySubscriptions, normalizeOracle, readOracleFile } from './v2-data.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
@@ -611,6 +611,112 @@ async function collectDeliveryHistory(ctx) {
 }
 
 /**
+ * 神谕层（agint-aesthetic-oracle）的取数与按段合并（2026-10-22）。
+ *
+ * 为什么要服务面 + 落盘两路：神谕层的三个出口权威性不同。
+ *  - `status()` 是**唯一**带运行态开关的出口（enabled / envOff / memoryStore /
+ *    metricsAvailable / busAvailable）。这些事实只活在进程内，落盘文件里没有。
+ *  - `cards()` 读的是 `oracle_cards` 表，但**只有 dashboard 订阅回写过才有行**。
+ *    event-bus 未挂载 / 订阅被拒 → cards() 返回空数组，而落盘里上一轮的卡片还在。
+ *    只读服务面就会把「订阅掉了」显示成「神谕从没开过口」——两件事。
+ *  - `history()` 与 `getState()` 是纯表读，与落盘同源，正常情况一致。
+ *
+ * 合并口径：逐段取服务面，某段为空则用落盘同段补齐，并在 `notes` 里写明
+ * **为什么补**。补齐不是装绿：notes 会原样渲染到面板上。
+ *
+ * Never throws：服务面全挂时回落落盘；两者都空才 unavailable，理由留在 reason/notes。
+ *
+ * @param {object} ctx - host context（可能没有 agint.aestheticOracle）。
+ * @param {string} storagesDir - $DSH_HOME/storages
+ * @returns {Promise<object>} payload.oracle
+ */
+async function collectOracle(ctx, storagesDir) {
+  const notes = [];
+  const file = readOracleFile(storagesDir);
+  const fileOk = file.ok === true;
+  if (!fileOk && file.reason) notes.push(`落盘口径不可用：${file.reason}`);
+
+  let svc = null;
+  let svcReason = null;
+  try {
+    svc = ctx.get('agint.aestheticOracle');
+  } catch (err) {
+    svcReason = `服务未注入：${String((err && err.message) ?? err).slice(0, 120)}`;
+  }
+  if (svcReason === null && (svc === null || svc === undefined)) {
+    svcReason = '神谕层未挂载（agint.aestheticOracle 不可得）';
+  }
+
+  let svcCards = [];
+  let svcHistory = [];
+  let svcState = null;
+  let runtime = null;
+
+  if (svcReason === null) {
+    const call = async (method, ...args) => {
+      if (typeof svc[method] !== 'function') { notes.push(`服务面无 ${method}() 出口`); return null; }
+      try { return await svc[method](...args); } catch (err) {
+        notes.push(`${method}() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+        return null;
+      }
+    };
+    const c = await call('cards');
+    if (Array.isArray(c)) svcCards = c;
+    const h = await call('history', 24);
+    if (Array.isArray(h)) svcHistory = h;
+    const st = await call('getState');
+    if (st !== null && typeof st === 'object') svcState = st;
+    if (typeof svc.status === 'function') {
+      try { runtime = svc.status(); } catch (err) {
+        notes.push(`status() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+      }
+    } else {
+      notes.push('服务面无 status() 出口（运行态开关未知，不猜）');
+    }
+  } else {
+    notes.push(svcReason);
+  }
+
+  // 按段合并（服务面优先，落盘补齐）
+  let cards = svcCards;
+  if (cards.length === 0 && fileOk && Array.isArray(file.cards) && file.cards.length > 0) {
+    cards = file.cards;
+    notes.push(svcReason === null
+      ? '卡片取自落盘：服务面 cards() 为空（dashboard 订阅未回写，常见于 event-bus 未挂载或订阅被拒）'
+      : '卡片取自落盘：服务面不可得');
+  }
+  let broadcasts = svcHistory;
+  if (broadcasts.length === 0 && fileOk && Array.isArray(file.broadcasts) && file.broadcasts.length > 0) {
+    broadcasts = file.broadcasts;
+    notes.push('广播史取自落盘：服务面 history() 为空或不可得');
+  }
+  const stateRow = svcState !== null ? svcState : (fileOk ? (file.state ?? null) : null);
+  if (svcState === null && stateRow !== null) notes.push('状态行取自落盘：服务面 getState() 为空或不可得');
+
+  /** source 记录的是**数据实际来自哪里**，不是「服务面在不在」。
+   *  ⛔ 服务面存在但三个出口全缺（旧版 oracle）时数据 100% 来自落盘，
+   *     此时写 'service+storages' 会让人以为服务面供了数。 */
+  const svcGaveCards = cards === svcCards && svcCards.length > 0;
+  const svcGaveHistory = broadcasts === svcHistory && svcHistory.length > 0;
+  const svcGaveState = svcState !== null;
+  const anyFromService = svcGaveCards || svcGaveHistory || svcGaveState;
+  const allFromService = svcGaveCards && svcGaveHistory && svcGaveState;
+  const out = normalizeOracle({
+    cards,
+    broadcasts,
+    state: stateRow,
+    runtime,
+    source: allFromService ? 'service' : (anyFromService ? 'service+storages' : 'storages'),
+    notes,
+    observedAt: fileOk ? file.observedAt : null,
+    limit: 20,
+  });
+  out.serviceAvailable = svcReason === null;
+  out.serviceReason = svcReason;
+  return out;
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
@@ -623,17 +729,21 @@ async function buildV2Payload(ctx, config = {}) {
     const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
         ? config.repoRoot.trim()
         : null;
-    const payload = collectV2Data(resolveV2Dirs(
+    const dirs = resolveV2Dirs(
         process.env,
         import.meta.url,
         repoRoot,
         // 2026-10-08：profile 名权威源是 cordis ctx，不是 process.env（见 v2-data.js 注释）
         (typeof ctx?.get === 'function' ? ctx.get('profileContext')?.name : null) ?? null,
-    ));
+    );
+    const payload = collectV2Data(dirs);
     payload.subscriptions = collectSubscriptions(ctx);
     payload.deliveryByTopic = collectDeliveryByTopic(ctx);
     payload.deliveryHistory = collectDeliveryHistory(ctx);
     payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
+    // 神谕层：collectV2Data 里已给落盘口径（payload.oracle），这里用服务面覆盖/补齐。
+    // ⛔ 必须 await：cards()/history()/getState() 都是异步表读。
+    payload.oracle = await collectOracle(ctx, dirs.storagesDir);
     return payload;
 }
 
@@ -744,4 +854,5 @@ export {
   collectSubscriptions,
   collectDeliveryByTopic,
   collectDeliveryHistory,
+  collectOracle,
 };
