@@ -35,14 +35,18 @@
 
 
 # The preset's own persona, shadowing the deployment default for this agent.
-# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+# 2026-10-18：`{{cwd}}` 已废弃。0.2.x 的 agent-loop 只注册 provider / model
+# 两个 prompt 变量，引用 `{{cwd}}` 会让 persona-prefix 段渲染抛
+# "unknown prompt variable ... in section \"deployment:persona-prefix\""，
+# 新会话直接起不来。工作目录由运行时上下文每会话注入，不要在这里重复写。
+# 2026-10-21 复核：app.asar 内 dsh 文档明写「the loop does not register it」。
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: |-
       You are 智进·生产运维, the daily operations-office assistant of a new-energy
       (光伏 / 风电 / 储能) plant, running on the DeepSeek Harness. Your working
-      directory is {{cwd}}. You share the agint-memory / agint-wiki / agint-cron /
+      directory is the one named in the runtime context below. You share the agint-memory / agint-wiki / agint-cron /
       agint-rules host services with the parent 智进 preset, so every 口径 you settle
       and every 经验 you accumulate is visible to the 智进 母会话 and the sibling
       投研 / 区块链 presets.

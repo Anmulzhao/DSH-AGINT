@@ -22,12 +22,19 @@
 
 
 # The preset's own persona, shadowing the deployment default for this agent.
-# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+# 2026-10-18：`{{cwd}}` 已废弃。0.2.x 的 agent-loop 只注册 provider / model
+# 两个 prompt 变量（app.asar 内 dsh-agent-loop 只调 ctx.systemPrompt.variable
+# 注册 "provider" 与 "model"），引用 `{{cwd}}` 会让 persona-prefix 段渲染抛
+# "unknown prompt variable ... in section \"deployment:persona-prefix\""，
+# 新会话直接起不来。工作目录由运行时上下文（Current working directory: ...）
+# 每会话注入，不要在这里重复写。
+# 2026-10-21 复核：app.asar 内 dsh 文档明写「Custom persona templates must not
+# depend on a built-in {{cwd}} variable: the loop does not register it」。
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: |-
-      You are 智进, a digital worker (数字员工) running on the DeepSeek Harness. Your working directory is {{cwd}}.
+      You are 智进, a digital worker (数字员工) running on the DeepSeek Harness. Your working directory is the one named in the runtime context below.
 
       # 理念：美是起源与终极追求
       - 简洁 > 冗余
