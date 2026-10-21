@@ -16,6 +16,25 @@
  *           jsonlPath: .../agint_tool_stats.jsonl
  */
 
+/**
+ * 懒取上游服务的小工具（导出以便单测）。
+ *
+ * ⛔ 为什么不能 `const svc = ctx.get(key)` 在 apply 时取一次：
+ *   插件 apply 与上游服务注册**没有顺序保证** —— 取早了就恒为 null，
+ *   表现是"字段落了、值恒空"，看起来接上了其实没接（2026-10-21 运行态取证：
+ *   重启后 20 条记录的 deltaTokens 全 null、tokenSource 19/20 为 null）。
+ *   每次使用时重新取，才能覆盖"上游晚于本插件注册"的情况。
+ *
+ * @param {object} ctx  cordis context
+ * @param {string} key  服务键
+ * @returns {() => (object|null)}
+ */
+export function lazyService(ctx, key) {
+  return () => {
+    try { return (ctx.get && ctx.get(key)) || null; } catch { return null; }
+  };
+}
+
 import { resolve as resolvePath } from 'node:path';
 import { appendFile, readFile, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -73,14 +92,25 @@ function apply(ctx, config) {
   //   ② 上游缺席 ⇒ 该字段 null（不填 0）。0 会被下游当成「测得零」，
   //      而 null 是「没测」—— 两者在 D-QAF 里含义完全不同。
   //   ③ 测量失败不阻断工具统计本身（catch 后置 null）。
-  const tokenMeter = (ctx.get && ctx.get('tokenMeter')) || null;
+  // ⚠️ 2026-10-21 修（运行态取证）：上游服务**不能在 apply 时取一次**。
+  //
+  // 现象（重启后实测）：tool-stats 落盘的 20 条记录里 deltaTokens 恒 null、
+  // tokenSource 19 条 null（仅 1 条 'tokenMeter'）⇒ "接上了 tokenMeter" 是假话。
+  // 根因：`ctx.get('tokenMeter')` 在**插件 apply 时**求值，而 tokenMeter 服务
+  // 可能在本插件之后才注册 ⇒ 快照恒 null。
+  //   （宿主实测：`cordis_inspect_query{provider:Service, service:'tokenMeter'}`
+  //     返回完整契约 ⇒ 服务确实在，只是取早了。）
+  //
+  // 修法：每次测量时**重新取**。不声明 inject 硬依赖，保持软依赖。
+  const getTokenMeter = lazyService(ctx, 'tokenMeter');
 
   /** 取会话当前累计 token；拿不到返回 null（绝不返回 0 冒充）。 */
   function readTotalTokens(session, requestHeader) {
-    if (!tokenMeter || typeof tokenMeter.measure !== 'function') return null;
+    const tm = getTokenMeter();
+    if (!tm || typeof tm.measure !== 'function') return null;
     if (!session) return null;
     try {
-      const m = tokenMeter.measure(session, requestHeader);
+      const m = tm.measure(session, requestHeader);
       const v = m?.totalTokens;
       return typeof v === 'number' && Number.isFinite(v) ? v : null;
     } catch {
@@ -137,7 +167,9 @@ function apply(ctx, config) {
     // 下一次调用的基线 = 本次的终点
     tokensBeforeCall = tokensAfter;
     // 供下游区分「读不到 tokenMeter」与「这次恰好增量为 0」
-    const tokenSource = tokenMeter ? 'tokenMeter' : null;
+    // ⚠️ 这里必须在**每次**记录时重新判定上游在不在 —— 不能用 apply 时的快照
+    //   （那条快照恒为 null，会让 tokenSource 永远说"上游缺席"）。
+    const tokenSource = getTokenMeter() ? 'tokenMeter' : null;
 
     writeQueue = writeQueue
       .then(() => persist(exec, result, currentSessionId, jsonlPath, { deltaTokens, tokenSource }))

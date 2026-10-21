@@ -40,6 +40,50 @@ test('上游不存在 / ctx 异常 ⇒ 判不可用，不抛', () => {
 });
 
 // ── 走哪条路 ────────────────────────────────────────────────────────────────
+
+// ⛔ 2026-10-21 运行态取证后补的回归测试：
+//
+// 现象：重启后 AGINT 的会话读取**全部**悄悄走本地回落，"接上了 sessionQuery"是假话。
+// 根因：`ctx.get('sessionQuery')` 在 createSessionSource()（= 插件 apply 时）求值，
+// 而上游 sessionQuery 服务可能在本插件之后才注册 ⇒ 快照恒 null。
+//
+// 判据：建源时上游**不在**，之后上游**出现** ⇒ 必须能走上游。
+// 阴性对照：建源时上游**在**，之后消失 ⇒ 必须回落（不许拿建源时的快照硬撑）。
+test('⛔ 上游晚于建源注册 ⇒ 之后仍能走上游（不能拿 apply 时的快照）', async () => {
+  let svc = undefined;                       // 建源时上游还没注册
+  const ctx = { get: (k) => (k === 'sessionQuery' ? svc : undefined) };
+  const src = createSessionSource({
+    ctx,
+    fallback: async () => { throw new Error('不该回落：上游已就位'); },
+    onFallback: () => {},
+    readLocal: async () => '',
+  });
+  assert.equal(src.upstreamAvailable, false, '建源时上游确实不在');
+
+  svc = FULL_UPSTREAM;                       // 上游随后注册
+  assert.equal(src.upstreamAvailable, true, '上游出现后必须能探到（懒取，不是快照）');
+  assert.equal(src.mode, 'upstream');
+  const got = await src.listRecent({ lookbackDays: 9999 });
+  assert.deepEqual(got, [], '应走上游（上游 listSessions 返回空数组）');
+});
+
+test('⛔ 上游在建源后消失 ⇒ 回落（不许拿旧快照硬撑）', async () => {
+  let svc = FULL_UPSTREAM;
+  const ctx = { get: (k) => (k === 'sessionQuery' ? svc : undefined) };
+  let fell = 0;
+  const src = createSessionSource({
+    ctx,
+    fallback: async () => { fell += 1; return [{ dir: 'fb', path: '/tmp/fb', mtimeMs: 1 }]; },
+    onFallback: () => {},
+    readLocal: async () => '',
+  });
+  assert.equal(src.upstreamAvailable, true);
+  svc = undefined;                            // 上游没了
+  assert.equal(src.upstreamAvailable, false, '上游消失后必须探到（不能是建源时的快照）');
+  await src.listRecent({});
+  assert.equal(fell, 1, '必须回落');
+});
+
 test('上游可用 ⇒ mode=upstream，且**不**回落', async () => {
   let fell = 0;
   const src = createSessionSource({

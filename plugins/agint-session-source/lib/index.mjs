@@ -94,14 +94,25 @@ export function createSessionSource({ ctx = null, fallback, onFallback, source =
   if (typeof fallback !== 'function') {
     throw new Error('createSessionSource: fallback 必须是函数（不允许没有回落通道的会话源）');
   }
-  const upstream = probeUpstream(ctx);
+  // ⚠️ 2026-10-21 修（运行态取证）：上游服务**不能在建源时取一次**。
+  //
+  // 现象（重启后实测）：session-source 的 `upstream` 恒为 null ⇒ 所有调用点
+  // 悄悄走本地回落，"接上了 sessionQuery" 变成假话。
+  // 根因：`ctx.get('sessionQuery')` 在**插件 apply 时**求值，而上游 sessionQuery
+  // 插件可能在本插件之后才注册服务 ⇒ 快照恒 null。
+  //   （宿主实测：`cordis_inspect_query{provider:Service, service:'sessionQuery'}`
+  //     返回完整契约 ⇒ 服务确实在，只是取早了。）
+  //
+  // 修法：每次使用时**重新探测**。不声明 inject 硬依赖，保持软依赖。
+  const getUpstream = () => probeUpstream(ctx);
 
   return {
     /** 本源实际走哪条路。给调用方 / 探针用，别拿它当开关。 */
-    mode: upstream ? 'upstream' : 'fallback',
-    upstreamAvailable: Boolean(upstream),
+    get mode() { return getUpstream() ? 'upstream' : 'fallback'; },
+    get upstreamAvailable() { return Boolean(getUpstream()); },
 
     async listRecent(opts = {}) {
+      const upstream = getUpstream();
       if (upstream) {
         try {
           return await listViaUpstream(upstream, opts);
@@ -129,6 +140,7 @@ export function createSessionSource({ ctx = null, fallback, onFallback, source =
      */
     async readEvents(record) {
       if (!record) throw new Error('session-source.readEvents: record 必需');
+      const upstream = getUpstream();
 
       // ① 上游优先：record 带上游标记且有 sessionId 才走
       if (upstream && record.upstream && record.dir) {

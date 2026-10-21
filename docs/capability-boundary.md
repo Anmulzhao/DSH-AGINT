@@ -197,6 +197,39 @@
 - 判据：同一表达式、同一基准时刻，上游引擎与自研实现必须给出**同一时刻**（`test/host-cron-engine.test.mjs`，
   6 表达式 × 4 基准 = 24 组对照）。不靠"抄一遍逻辑"自证。
 
+### F8 · `ctx.get()` 的**取用时机**决定接线成败（apply 时取快照 = 假接）
+
+- 现象（2026-10-21 重启后运行态取证）：D1 与 D2 **代码态都做完了，运行态一个都没接上**。
+  - D2 取证：`agint_tool_stats.jsonl` 全量 23035 行里含 `"deltaTokens"` 字段的 **20 条**，
+    其中 `"deltaTokens": 数字` 命中 **0 条**（20/20 为 null）；`"tokenSource":"tokenMeter"` **1 条**、
+    `"tokenSource":null` **19 条**。
+  - D1 取证：session-source 的上游句柄恒 null ⇒ 4 处调用点走本地回落。
+- 根因：`ctx.get(key)` 在**插件 apply 时**求值就存成常量，而**插件 apply 与上游服务注册没有顺序保证**
+  —— 取早了就恒为 null。这是"字段落了、值恒空"型假接：代码看起来接了，数据说没接。
+- 反证（上游服务确实在）：`cordis_inspect_query{platform:host, provider:Service}`
+  查 `tokenMeter` 与 `sessionQuery` 都返回完整契约 ⇒ 服务在，只是取早了。
+- 修法：**每次使用时重新取**（懒取），不声明 `inject` 硬依赖（保持软依赖）。
+  - `plugins/agint-tool-stats/lib/index.js` —— 新增导出 `lazyService(ctx, key)`，apply 内改用它。
+  - `plugins/agint-session-source/lib/index.mjs` —— `createSessionSource` 内改用 `getUpstream()`，
+    `mode` / `upstreamAvailable` 改成 getter（动态）。
+- 判据（负向对照齐全）：
+  - `test/lazy-service.test.mjs`（5 条）：上游晚注册 ⇒ 之后能取到；上游消失 ⇒ 取到 null；
+    ctx 异常不炸；只取指定键。
+  - `test/session-source.test.mjs` 新增 2 条：上游晚于建源注册 ⇒ 之后走上游；
+    上游在建源后消失 ⇒ 回落（不许拿旧快照硬撑）。
+- ⛔ **同类模式（既有，非本轮引入）尚未处置** —— 同一根因，待下一轮（grep `ctx.get\(['"][a-zA-Z]+['"]\)`
+  在 `plugins/**/lib/*.js` 命中 44 处，下列 8 处为 apply 时取服务的同型）：
+  | 位置 | 取法 |
+  |---|---|
+  | `plugins/agint-evolve/lib/index.js:248` | `const sessionQuery = ctx.get('sessionQuery')` |
+  | `plugins/agint-restart/lib/index.js:1072` | `const commands = ctx.get('commands')`（已有 null 告警） |
+  | `plugins/agint-dream/lib/consolidation.js:218-219` | `ctx.get('agents')` / `ctx.get('subagents')` |
+  | `plugins/agint-skill-autocreate/lib/llm-verdict.js:423-424` | `ctx.get('agents')` / `ctx.get('subagents')` |
+  | `plugins/agint-skill-autocreate/lib/tool-addition.js:121` | `ctx.get('agents')` |
+  | `plugins/agint-quality-sandbox/lib/index.js:82,274,327` | `ctx.get('sandbox')` |
+  | `plugins/agint-ov-strategy/lib/index.js:136` | `ctx.get('openvikingMemory')` |
+  | `plugins/agint-cron/lib/index.js:232` | `ctx.get('sessionPersistence')` |
+
 ---
 
 ## 5. 待裁决项（需要人拍板）
