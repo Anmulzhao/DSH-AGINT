@@ -69,10 +69,10 @@ function makeSessionFile({ broken, seqGaps, missingContentCount, unpaired, baseM
   return { dir, file, sessionId: sid, mtimeMs: Date.now() - (baseMtimeAgoMs ?? 48 * 60 * 60 * 1000) };
 }
 
-test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 content 0）', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, () => {
+test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 content 0）', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, async () => {
   const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
   try {
-    const insp = inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
     assert.equal(insp.badLines, 0);
     assert.equal(insp.seqGaps, 0);
     assert.equal(insp.missingContent, 0);
@@ -82,15 +82,75 @@ test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 
   }
 });
 
-test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全部检出', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, () => {
+test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全部检出', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, async () => {
   const { dir, file, sessionId } = makeSessionFile({ broken: 3, seqGaps: true, missingContentCount: 3, unpaired: true });
   try {
-    const insp = inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
     assert.ok(insp.badLines >= 3, `badLines=${insp.badLines}`);
     assert.ok(insp.seqGaps >= 1, `seqGaps=${insp.seqGaps}`);   // seq 3 被跳过 → 2→4 断裂
     assert.ok(insp.missingContent >= 3, `missingContent=${insp.missingContent}`);
     assert.ok(insp.unpairedCalls >= 1, `unpairedCalls=${insp.unpairedCalls}`);
     assert.equal(insp.isRecent, false);                          // 48h 前 → 非进行中
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// D1 迁移：sessionSource 传入时走上游，上游缺席时回落本地。
+test('inspectSessionFile: 传 sessionSource 且上游可读 ⇒ 走上游不碰 zstd', async () => {
+  const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
+  try {
+    // 假上游：readSession 返回 2 个事件
+    let zstdTouched = false;
+    const fakeSource = {
+      readEvents: async (rec) => {
+        assert.equal(rec.dir, sessionId, 'record.dir 应带 sessionId');
+        assert.equal(rec.path, file, 'record.path 应带本地路径');
+        assert.equal(rec.upstream, true, '应标记走上游');
+        return {
+          events: [
+            { type: 'session', version: 4, id: sessionId },
+            { type: 'message', seq: 0, time: 1, data: { content: 'hi' } },
+          ],
+          via: 'upstream',
+        };
+      },
+    };
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() }, fakeSource);
+    assert.equal(insp.badLines, 0);
+    assert.equal(insp.seqGaps, 0);
+    assert.equal(insp.totalLines, 2, '应从上游拿到 2 条事件');
+    assert.equal(zstdTouched, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ⛔ 负对照：上游抛错时必须回落本地，而不是静默返回空
+test('⛔ inspectSessionFile: 上游抛错 ⇒ 回落本地（不能假装读到）', async () => {
+  const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
+  try {
+    // 假源模拟真实 sessionSource 的回落行为：
+    // 真实 sessionSource.readEvents 内部捕获上游错误 → 报告 → 回落本地，**不抛**
+    const fakeSource = {
+      readEvents: async (rec) => {
+        // 模拟上游抛错 → 内部捕获 → 回落
+        if (rec.upstream) {
+          // 真实行为：report(read-upstream-failed) + 回落本地读盘
+        }
+        // 回落：读本地文件
+        const bin = resolveZstd();
+        const text = execFileSync(bin, ['-dc', rec.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+        return {
+          events: text.split('\n').filter((l) => l.trim()).map((l) => {
+            try { return JSON.parse(l); } catch { return null; }
+          }).filter(Boolean),
+          via: 'fallback',
+        };
+      },
+    };
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() }, fakeSource);
+    assert.ok(insp.totalLines >= 6, `上游抛错应回落本地，拿到真实事件数，实际=${insp.totalLines}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

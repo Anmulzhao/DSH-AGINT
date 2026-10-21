@@ -90,7 +90,7 @@ export function probeUpstream(ctx) {
  *                                      ⛔ 不传则回落到抛错 —— 不允许静默降级。
  * @param {string}  [opts.source]        标识调用方（如 'dream' / 'input-gateway'），便于定位
  */
-export function createSessionSource({ ctx = null, fallback, onFallback, source = 'unknown' }) {
+export function createSessionSource({ ctx = null, fallback, onFallback, source = 'unknown', readLocal = null }) {
   if (typeof fallback !== 'function') {
     throw new Error('createSessionSource: fallback 必须是函数（不允许没有回落通道的会话源）');
   }
@@ -114,6 +114,51 @@ export function createSessionSource({ ctx = null, fallback, onFallback, source =
       }
       return await fallback(opts);
     },
+
+    /**
+     * 读一个会话的**完整事件流**。
+     *
+     * 这是 D1 的核心：截止 2026-10-21，AGINT 只是"列举"走上了游（而且因为上游
+     * 不给磁盘路径，那条路实际走不通），"读内容"仍然全是本地 zstd 解压。
+     * 上游 `sessionQuery.readSession(id)` 直接给重放校验过的事件流 ⇒ 不需要磁盘路径。
+     *
+     * @param {object} record  listRecent() 返回的一项（上游项靠 dir=sessionId，
+     *                         回落项靠 path）
+     * @returns {Promise<{events: object[], via: 'upstream'|'fallback'}>}
+     *          ⛔ 拿不到就抛，不返回空数组 —— 空数组会被下游当成"这个会话没内容"。
+     */
+    async readEvents(record) {
+      if (!record) throw new Error('session-source.readEvents: record 必需');
+
+      // ① 上游优先：record 带上游标记且有 sessionId 才走
+      if (upstream && record.upstream && record.dir) {
+        try {
+          const snap = await upstream.readSession(record.dir);
+          const events = Array.isArray(snap?.events) ? snap.events : null;
+          if (events === null) {
+            throw new Error('readSession 未返回 events 数组');
+          }
+          return { events, via: 'upstream' };
+        } catch (err) {
+          // 上游读失败 ⇒ 回落，但出声（这是"接线有洞"信号，不是正常路径）
+          report(`read-upstream-failed(${record.dir}): ${err && err.message ? err.message : String(err)}`);
+        }
+      } else if (!upstream) {
+        report('read-upstream-absent: ctx.get(sessionQuery) 不可用');
+      }
+
+      // ② 回落：本地读盘
+      if (!record.path) {
+        // 上游只给元数据（path 恒 null）而读又失败 ⇒ 没有可回落的东西。
+        // ⛔ 这里必须抛：静默返回 [] 会让"读不到"看起来像"没内容"。
+        throw new Error(
+          `session-source.readEvents: 无可用内容源（upstream=${
+            upstream ? 'yes' : 'no'
+          }, dir=${record.dir ?? 'null'}, path=${record.path ?? 'null'}）`,
+        );
+      }
+      return { events: await readEventsFromDisk(readLocal, record.path), via: 'fallback' };
+    },
   };
 
   function report(reason) {
@@ -124,8 +169,54 @@ export function createSessionSource({ ctx = null, fallback, onFallback, source =
 }
 
 /**
+ * 回落层：从磁盘读一个会话日志的事件流。
+ *
+ * ⛔ 本模块**不直接** import zstd / node:fs —— 保持零 IO 依赖，测试可用内存夹具
+ * 直调生产逻辑。真正解压由调用方注入的 `readLocal(path)` 完成
+ * （见 `createSessionSource({ readLocal })`）。
+ *
+ * 为什么单列成函数而不是塞进 readEvents 里：D1 迁移完成后，这条路径会从
+ * "主路径"退化成"上游不可用时的救急通道"。它必须留在同一处、可被单独测试，
+ * 否则上游一坏就没人知道它还能不能用。
+ */
+async function readEventsFromDisk(readLocal, path) {
+  if (typeof readLocal !== 'function') {
+    throw new Error(
+      'session-source: 需要注入 readLocal(path) 才能走回落读盘 ' +
+        '（本模块不持有 zstd 实现，避免再把上游格式知识摊到第二处）',
+    );
+  }
+  const text = await readLocal(path);
+  // 与 agint-session-extract.parseSession 同语义：坏行跳过、不抛。
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { out.push(JSON.parse(t)); } catch { /* skip malformed line */ }
+  }
+  return out;
+}
+/**
  * 走上游拿最近会话，输出**与回落层同形** `{ dir, path, mtimeMs }`。
  * 形状对齐是硬要求：迁一个调用点时不该牵动下游。
+ *
+ * ⛔ 2026-10-21 订正 —— 上游记录的真实形状与"时间"语义：
+ *
+ *   `listSessions()` 返回 `SessionRecord{ header, live, persisted, formatStatus? }`，
+ *   时间戳只在 `record.header.createdAt`（**创建时刻**）。上游**没有"最后活跃时间"**
+ *   这个字段：它自己的排序函数 `compareSessions` 就是
+ *   `b.header.createdAt - a.header.createdAt || id.localeCompare(...)`
+ *   （dsh-session-query/lib/index.js:compareSessions）。
+ *
+ *   此前本函数读 `r.updatedAt ?? r.lastEventAt ?? r.createdAt` —— 前两个在上游
+ *   记录里都不存在，于是恒落空；`r.createdAt` 也是 undefined（它在 header 里）。
+ *   ⇒ `mtimeMs` 恒 0 ⇒ 排序全等、时间窗过滤恒假（`mtimeMs && mtimeMs < cutoff`）。
+ *   这是"看着接上了其实没接"的又一例。
+ *
+ *   ⚠️ 语义差异必须显式交代，不能拿创建时间冒充活跃时间：
+ *   `mtimeMs` 取自 `header.createdAt` = **会话创建时刻**，不是最后写入时刻。
+ *   对"最近 N 天活跃"这类判据，上游给不了答案 ⇒ 返回记录带
+ *   `mtimeBasis: 'createdAt'`，调用方必须据此决定能不能用它做时间窗。
  */
 async function listViaUpstream(svc, { lookbackDays = 2, maxSessions, maxCount } = {}) {
   // 参数名两个都认：调用点惯用 maxCount（input-gateway），语义同 maxSessions
@@ -134,18 +225,24 @@ async function listViaUpstream(svc, { lookbackDays = 2, maxSessions, maxCount } 
   const cutoff = Date.now() - lookbackDays * 86400000;
   const out = [];
   for (const r of records ?? []) {
-    const id = r.id ?? r.sessionId;
+    const id = r.header?.id ?? r.id ?? r.sessionId;
     if (!id) continue;
-    // 上游给的是记录，不是路径。要路径得再问一次 —— 但它未必给磁盘路径，
-    // 所以这里**不强求 path**：拿不到就留 null，由调用方按自己的读法处理。
-    let mtimeMs = 0;
-    const t = r.updatedAt ?? r.lastEventAt ?? r.createdAt;
-    if (t) {
-      const ms = typeof t === 'number' ? t : Date.parse(t);
-      if (Number.isFinite(ms)) mtimeMs = ms;
-    }
+    // 上游给的是记录，不是路径（SessionRecord 里没有磁盘路径这个概念）。
+    // 内容要靠 readEvents() → readSession(id) 拿。
+    // 时间取 header.createdAt —— 这是上游唯一提供的时间，且它是**创建**时刻。
+    const rawCreated = r.header?.createdAt ?? r.createdAt;
+    const ms = typeof rawCreated === 'number' ? rawCreated : Date.parse(rawCreated);
+    const mtimeMs = Number.isFinite(ms) ? ms : 0;
     if (mtimeMs && mtimeMs < cutoff) continue;
-    out.push({ dir: id, path: r.path ?? null, mtimeMs, upstream: true });
+    out.push({
+      dir: id,
+      path: r.path ?? null,
+      mtimeMs,
+      upstream: true,
+      // 明确标注时间基准：调用方若需要"最后活跃"不能直接用它
+      mtimeBasis: 'createdAt',
+      live: r.live === true,
+    });
   }
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return out.slice(0, limit);

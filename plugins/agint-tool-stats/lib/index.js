@@ -26,7 +26,9 @@ import {
   listSessionLogs,
   loadSession,
   extractToolCalls,
+  decompressSession,
 } from '../../agint-session-extract/index.js';
+import { createSessionSource } from '../../agint-session-source/lib/index.mjs';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import {
   stableStringify,
@@ -144,6 +146,22 @@ function apply(ctx, config) {
       });
   });
 
+  // ── D1 迁移：会话内容读优先走上游 sessionQuery ──────────────────────────
+  // 2026-10-21：backfill 原先 `loadSession(log.path)` 走本地 zstd 解压。
+  // 上游 `sessionQuery.readSession(id)` 直接给重放校验过的事件流 ⇒ 不碰磁盘。
+  // 上游缺席时回落本地（经 session-source 注入的 readLocal = decompressSession）。
+  //
+  // ⚠️ onFallback 必须传 —— session-source 的纪律是"回落要出声"。
+  //   这里传的是工具（backfill），没有现成的审计出口，所以出声到 console。
+  //   这不是静默降级：上游缺席时 backfill 仍在本地读，只是留了痕迹。
+  const sessionSource = createSessionSource({
+    ctx,
+    fallback: async () => [],
+    onFallback: (reason) => console.warn(`[agint-tool-stats] ${reason}`),
+    source: 'tool-stats/backfill',
+    readLocal: (path) => decompressSession(path),
+  });
+
   // ── 读取：暴露 agint.toolStats Service ──
   const toolStats = {
     async summary(args = {}) {
@@ -176,7 +194,8 @@ function apply(ctx, config) {
     /** 用 session log 给 JSONL 补 callTs/latencyMs/turn/step/sessionId。幂等。 */
     async backfill(args = {}) {
       const root = args.sessionsRoot ? resolvePath(args.sessionsRoot) : sessionsRoot;
-      return backfill(root, jsonlPath);
+      // D1：优先用本 apply 里创建的 sessionSource（上游优先）
+      return backfill(root, jsonlPath, sessionSource);
     },
   };
 
@@ -294,7 +313,11 @@ async function readAllRecords(jsonlPath) {
 }
 
 // ── 回填：用 session log 给 JSONL 补 callTs / latencyMs / turn / step / sessionId ──
-async function backfill(sessionsRoot, jsonlPath) {
+//
+// D1 迁移（2026-10-21）：原先 `loadSession(log.path)` 走本地 zstd 解压。
+// 上游 `sessionQuery.readSession(id)` 直接给重放校验过的事件流 ⇒ 不碰磁盘。
+// 上游缺席时回落本地（经 session-source 注入的 readLocal）。
+async function backfill(sessionsRoot, jsonlPath, sessionSource = null) {
   const records = await readAllRecords(jsonlPath);
   if (records.length === 0) return { records: 0, updated: 0, unmatched: 0, sessions: 0 };
 
@@ -303,7 +326,15 @@ async function backfill(sessionsRoot, jsonlPath) {
   const logs = await listSessionLogs(sessionsRoot);
   for (const log of logs) {
     let events;
-    try { events = await loadSession(log.path); } catch { continue; }
+    // 优先走 sessionSource.readEvents（上游优先）；没有则回落 loadSession
+    if (sessionSource) {
+      const read = await sessionSource.readEvents({
+        dir: log.sessionId, path: log.path, upstream: true,
+      });
+      events = read.events;
+    } else {
+      try { events = await loadSession(log.path); } catch { continue; }
+    }
     for (const rec of extractToolCalls(events, { sessionId: log.sessionId })) {
       const cid = rec.callId;
       if (!cid || callIdx.has(cid)) continue;

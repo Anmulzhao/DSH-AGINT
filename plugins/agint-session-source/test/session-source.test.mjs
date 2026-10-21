@@ -102,12 +102,16 @@ test('⛔ 没给 fallback ⇒ 构造即抛（不允许没有回落通道的会�
 });
 
 // ── 形状对齐：上游结果与回落同形 ─────────────────────────────────────────────
+// ⛔ 2026-10-21：夹具改成**上游真实形状** `SessionRecord{header:{id,createdAt},live,persisted}`。
+// 原先这里写 `{ id, updatedAt, path }` —— 那是本模块**以为**的上游形状，
+// 上游根本没有该形状 ⇒ 旧夹具测的是臆想，测不出"时间窗恒不过滤"这个真 bug。
 test('上游结果形状与回落层一致（dir / path / mtimeMs）', async () => {
+  const now = Date.now();
   const svc = {
     ...FULL_UPSTREAM,
     listSessions: async () => [
-      { id: 'a', updatedAt: '2026-10-19T00:00:00Z', path: '/x/a.jsonl.zstd' },
-      { id: 'b', updatedAt: '2026-10-01T00:00:00Z', path: null }, // 超窗，应被滤掉
+      { header: { id: 'a', createdAt: now - 3600_000 }, live: false, persisted: true },
+      { header: { id: 'b', createdAt: now - 30 * 86400_000 }, live: false, persisted: true }, // 超窗
     ],
   };
   const src = createSessionSource({
@@ -117,22 +121,96 @@ test('上游结果形状与回落层一致（dir / path / mtimeMs）', async () 
     source: 't',
   });
   const got = await src.listRecent({ lookbackDays: 2, maxSessions: 10 });
-  assert.equal(got.length, 1, '窗口外的应被滤掉');
-  assert.deepEqual(Object.keys(got[0]).sort(), ['dir', 'mtimeMs', 'path', 'upstream']);
+  assert.equal(got.length, 1, '窗口外的应被滤掉（旧夹具因 mtimeMs 恒 0 而恒不过滤 ⇒ 会拿到 2 条）');
   assert.equal(got[0].dir, 'a');
-  assert.ok(got[0].mtimeMs > 0, 'mtimeMs 必须是可比较的数字');
+  assert.ok(got[0].mtimeMs > 0, 'mtimeMs 必须是可比较的数字（取自 header.createdAt）');
+  assert.equal(got[0].mtimeBasis, 'createdAt', '必须显式标注时间基准，不能拿创建时间冒充活跃时间');
+});
+
+test('⛔ 上游没给最后活跃时间 ⇒ mtimeBasis 标明 createdAt（不许静默当 updatedAt 用）', async () => {
+  const now = Date.now();
+  const svc = {
+    ...FULL_UPSTREAM,
+    listSessions: async () => [
+      { header: { id: 'x', createdAt: now }, live: true, persisted: true },
+    ],
+  };
+  const src = createSessionSource({
+    ctx: ctxWith(svc), fallback: okFallback, onFallback: () => {}, source: 't',
+  });
+  const got = await src.listRecent();
+  assert.equal(got[0].mtimeBasis, 'createdAt');
+  assert.equal(got[0].live, true, 'live 标记要透传');
 });
 
 test('上游拿不到 path ⇒ 留 null，不编造路径', async () => {
+  const now = Date.now();
   const svc = {
     ...FULL_UPSTREAM,
-    listSessions: async () => [{ id: 'a', updatedAt: Date.now() }],
+    listSessions: async () => [{ header: { id: 'a', createdAt: now }, live: false, persisted: true }],
   };
   const src = createSessionSource({
     ctx: ctxWith(svc), fallback: okFallback, onFallback: () => {}, source: 't',
   });
   const got = await src.listRecent();
   assert.equal(got[0].path, null, '拿不到就留 null —— 编造路径比没有更坏');
+});
+
+// ── D1：readEvents（内容走上游，回落须出声）────────────────────────────────
+test('readEvents：上游在 ⇒ 走上游 readSession，不碰磁盘', async () => {
+  let readLocalCalled = 0;
+  const snap = { session: { id: 's1' }, inheritedEventCount: 0, events: [{ seq: 1, type: 'x' }] };
+  const svc = { ...FULL_UPSTREAM, readSession: async (id) => (id === 's1' ? snap : (() => { throw new Error('no'); })()) };
+  const src = createSessionSource({
+    ctx: ctxWith(svc),
+    fallback: okFallback,
+    onFallback: () => {},
+    readLocal: async () => { readLocalCalled += 1; return ''; },
+    source: 't',
+  });
+  const got = await src.readEvents({ dir: 's1', path: '/tmp/a', upstream: true });
+  assert.equal(got.via, 'upstream');
+  assert.equal(got.events.length, 1);
+  assert.equal(readLocalCalled, 0, '上游成功时绝不能碰磁盘');
+});
+
+test('readEvents：上游抛错 ⇒ 回落读盘**且出声**', async () => {
+  const heard = [];
+  const svc = { ...FULL_UPSTREAM, readSession: async () => { throw new Error('corrupt'); } };
+  const src = createSessionSource({
+    ctx: ctxWith(svc),
+    fallback: okFallback,
+    onFallback: (r) => heard.push(r),
+    readLocal: async () => '{"seq":1,"type":"a"}\n{"seq":2,"type":"b"}\n',
+    source: 'dream',
+  });
+  const got = await src.readEvents({ dir: 's1', path: '/tmp/a', upstream: true });
+  assert.equal(got.via, 'fallback');
+  assert.equal(got.events.length, 2, '坏行/空行跳过，好行要留下');
+  assert.ok(heard.some((h) => /read-upstream-failed/.test(h)), '上游读失败必须出声');
+  assert.ok(heard.some((h) => /\[session-source\/dream\]/.test(h)));
+});
+
+test('⛔ readEvents：上游只给元数据、读又失败、没有 path ⇒ 必须抛，不许返回空数组', async () => {
+  const svc = { ...FULL_UPSTREAM, readSession: async () => { throw new Error('nope'); } };
+  const src = createSessionSource({
+    ctx: ctxWith(svc), fallback: okFallback, onFallback: () => {}, source: 't',
+  });
+  await assert.rejects(
+    () => src.readEvents({ dir: 's1', path: null, upstream: true }),
+    /无可用内容源/,
+    '静默返回 [] 会让"读不到"看起来像"这个会话没内容"',
+  );
+});
+
+test('readEvents：没注入 readLocal 就回落 ⇒ 明确报错（不许假装读到）', async () => {
+  const src = createSessionSource({
+    ctx: ctxWith(undefined), fallback: okFallback, onFallback: () => {}, source: 't',
+  });
+  await assert.rejects(
+    () => src.readEvents({ dir: 's1', path: '/tmp/a' }),
+    /需要注入 readLocal/,
+  );
 });
 
 // ── F5 收口：会话日志文件名发现（唯一真相源）────────────────────────────

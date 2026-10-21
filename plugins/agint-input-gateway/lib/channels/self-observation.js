@@ -403,32 +403,60 @@ export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback 
  *   - 缺 content：有 content/message 字段但内容为空的事件
  *   - 未配对 call：tool/call 的 callId 无对应 tool/result
  * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
+ *
+ * D1 迁移（2026-10-21）：`sessionSource` 传入时，读内容优先走上游
+ * `sessionQuery.readSession(sessionId)`；上游缺席时回落本地 zstd 解压。
+ * 上游读失败时返回 `{ decompressError }` —— 与原来 zstd 失败同语义。
  */
-export function inspectSessionFile(file) {
-  const bin = resolveZstdBin();
-  let text;
-  try {
-    text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  } catch (e) {
-    return { decompressError: String(e?.message || e).slice(0, 200) };
+export async function inspectSessionFile(file, sessionSource = null) {
+  let events;
+  let decompressError = null;
+  let badLinesSeen = null;   // zstd 路径读入时累计的坏行数
+
+  if (sessionSource) {
+    try {
+      const read = await sessionSource.readEvents({
+        dir: file.sessionId ?? null, path: file.path, upstream: true,
+      });
+      events = read.events;
+    } catch (e) {
+      decompressError = String(e?.message || e).slice(0, 200);
+    }
+  } else {
+    const bin = resolveZstdBin();
+    try {
+      const text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      // ⛔ 不能 .filter(Boolean) 丢坏行 —— 那等于把"坏行计数"这个检测项废掉。
+      // 旧代码是在循环里 try/catch 计数。这里必须保留坏行数。
+      const lines = text.split('\n').filter((l) => l.trim());
+      const parsed = [];
+      let zstdBadLines = 0;
+      for (const line of lines) {
+        try { parsed.push(JSON.parse(line)); } catch { zstdBadLines += 1; }
+      }
+      events = parsed;
+      badLinesSeen = zstdBadLines;
+    } catch (e) {
+      return { decompressError: String(e?.message || e).slice(0, 200) };
+    }
   }
-  const lines = text.split('\n').filter((l) => l.trim());
-  let badLines = 0;
+
+  if (decompressError) return { decompressError };
+
+  let badLines = badLinesSeen ?? 0;
   let prevSeq = null;
   let seqGaps = 0;
   let missingContent = 0;
   const callIds = new Set();
   const resultIds = new Set();
 
-  for (const line of lines) {
-    let ev;
-    try { ev = JSON.parse(line); } catch { badLines += 1; continue; }
-    const seq = ev.seq;
+  for (const ev of events) {
+    const seq = ev?.seq;
     if (typeof seq === 'number') {
       if (prevSeq !== null && seq !== prevSeq + 1) seqGaps += 1;
       prevSeq = seq;
     }
-    const data = ev.data;
+    const data = ev?.data;
     if (data && typeof data === 'object') {
       const hasContentField = data.content !== undefined || data.message !== undefined;
       if (hasContentField) {
@@ -439,11 +467,11 @@ export function inspectSessionFile(file) {
         if (empty) missingContent += 1;
       }
     }
-    if (ev.type === 'tool/call') {
+    if (ev?.type === 'tool/call') {
       const callId = data?.callId;
       if (callId) callIds.add(callId);
     }
-    if (ev.type === 'tool/result') {
+    if (ev?.type === 'tool/result') {
       const tcId = data?.message?.content?.[0]?.toolCallId;
       if (tcId) resultIds.add(tcId);
     }
@@ -454,9 +482,9 @@ export function inspectSessionFile(file) {
   return {
     sessionId: file.sessionId,
     path: file.path,
-    totalLines: lines.length,
+    totalLines: events.length,
     badLines,
-    badLineRate: lines.length ? badLines / lines.length : 0,
+    badLineRate: events.length ? badLines / events.length : 0,
     seqGaps,
     missingContent,
     unpairedCalls,
@@ -476,8 +504,13 @@ async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
   if (files.length === 0) return [];
 
   const issues = [];
+  // D1：创建 sessionSource 传给 inspectSessionFile（上游优先读内容）
+  const sessionSource = ctx ? createSessionSourceForSelfObservation({
+    ctx,
+    onFallback: (reason) => { /* listRecentSessions 的回落已在上面出声，这里只用于读 */ },
+  }) : null;
   for (const f of files) {
-    const insp = inspectSessionFile(f);
+    const insp = await inspectSessionFile(f, sessionSource);
     if (insp.decompressError) {
       issues.push({ sessionId: f.sessionId, flags: ['undecompressible'], totalLines: 0, badLines: 0, badLineRate: 0, seqGaps: 0, missingContent: 0, unpairedCalls: 0, path: f.path });
       continue;

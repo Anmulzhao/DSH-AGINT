@@ -46,6 +46,8 @@ import {
 } from './recall-store.js';
 import { validateAndApply, planToWriteCalls } from './validation-gate.js';
 import { consolidate, consolidateBatched, DEFAULT_BATCH_SIZE } from './consolidation.js';
+// D1 迁移（2026-10-21）：会话内容读统一走 session-source（上游优先 + 回落出声）
+import { createSessionSource } from '../../agint-session-source/lib/index.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -194,7 +196,22 @@ export function isZstdAvailable() {
 }
 let zstdMissingWarned = false;
 
-export async function readSessionLog(logPath) {
+export async function readSessionLog(log, sessionSource = null) {
+  // D1 迁移（2026-10-21）：log 参数改为对象 { path, sessionId }（兼容旧的纯路径字符串）。
+  // 传入 sessionSource ⇒ 读内容优先走上游 sessionQuery.readSession(sessionId)。
+  // 上游缺席时回落本地 zstd 解压。
+  //
+  // ⛔ 为什么要 sessionId：上游 readSession(id) 需要 id，光有磁盘路径不够。
+  //   2026-10-19 那次"接上游"失败的根因之一就是没把 sessionId 传下去。
+  const logPath = typeof log === 'string' ? log : log?.path;
+  const logSessionId = typeof log === 'object' ? log?.sessionId ?? null : null;
+
+  if (sessionSource) {
+    const read = await sessionSource.readEvents({
+      dir: logSessionId, path: logPath, upstream: true,
+    });
+    return read.events;
+  }
   if (!isZstdAvailable()) {
     if (!zstdMissingWarned) {
       // Warn once per sweep; the diary will record this as the root cause
@@ -1096,12 +1113,24 @@ export async function runSweep({
   const cap = maxSessions ?? DEFAULTS.maxSessions;
   const rPath = recallPath ?? defaultRecallPath();
 
+  // ── D1 迁移：会话内容读优先走上游 sessionQuery ───────────────────────────
+  // 2026-10-21：原先 `readSessionLog(log.path)` 走本地 zstd 解压。
+  // 上游 `sessionQuery.readSession(id)` 直接给重放校验过的事件流 ⇒ 不碰磁盘。
+  // 上游缺席时回落本地（session-source 注入的 readLocal = 这里复用 readSessionLog 的 zstd 路径）。
+  const sessionSource = ctx ? createSessionSource({
+    ctx,
+    fallback: async () => [],
+    onFallback: (reason) => errors.push(`session-source: ${reason}`),
+    source: 'dream/sweep',
+    readLocal: (path) => readSessionLog(path),
+  }) : null;
+
   // ── Light: candidate extraction window (2d) ─────────────────────────────
   const lightLogs = await listSessionLogs(sessionsRoot, lightDays, cap);
   const signals = [];
   for (const log of lightLogs) {
     try {
-      signals.push(collectSessionSignals(await readSessionLog(log.path)));
+      signals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
     } catch (err) {
       errors.push(`${log.dir}: ${err.message}`);
     }
@@ -1176,7 +1205,7 @@ export async function runSweep({
     const remSignals = [];
     for (const log of remLogs) {
       try {
-        remSignals.push(collectSessionSignals(await readSessionLog(log.path)));
+        remSignals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
       } catch (err) {
         errors.push(`${log.dir}(rem): ${err.message}`);
       }
@@ -1343,7 +1372,7 @@ export async function runSweep({
       const recSignals = [];
       for (const log of recLogs) {
         try {
-          recSignals.push(collectSessionSignals(await readSessionLog(log.path)));
+          recSignals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
         } catch (err) {
           errors.push(`${log.dir}(recover): ${err.message}`);
         }
