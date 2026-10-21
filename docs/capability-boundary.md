@@ -47,6 +47,7 @@
 | agint-rules | 0.2.1 | E | 工具流水线规则门禁（约束） |
 | agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
 | agint-evolve | 0.1.0 | E | 周复盘 + 提案跟踪 |
+| agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
 | agint-quality-eval | 0.2.0 | E | D-QAF 评估引擎 |
 | agint-quality-policy | — | E | 策略与门禁决策 |
@@ -165,6 +166,17 @@
 - 修法：本文件（`docs/capability-boundary.md`）即该锚点的机器可读部分；
   哲学全文另立一份入库文档，并修正 `AGENTS.md` 的指向。
 
+### F6 · AGINT 取了宿主没有的服务键
+
+- 现象：`plugins/agint-mount/lib/index.js:44` 用 `ctx.get('dshHome')` 取宿主 home。
+- 取证：dsh 0.2.1-rc.2 的服务清单共 98 键（权威来源 `dsh-tool-cordis/lib/types/api-catalog.js`
+  的 `SERVICE_API`，并用运行中宿主 `cordis_inspect_query{platform:host, provider:Service}` 实跑对账），
+  **其中没有 `dshHome`**。
+- 实际行为：因为有 `|| process.env.DSH_HOME` 兜底，**不报错**、功能正常 —— 但取法是错的：
+  宿主若改了 home 解析方式，AGINT 仍按旧假设走。
+- 修法：统一走 `process.env.DSH_HOME`（AGINT 其它插件已是此做法），去掉 `ctx.get('dshHome')` 这个
+  不存在的键。
+
 ---
 
 ## 5. 待裁决项（需要人拍板）
@@ -176,12 +188,44 @@
 | D3 | `agint-voice-hotkey` | A 归档，改用 dsh 语音输入 · B 保留自建 · C 保留但登记为与宿主重复 | **A**（少一个真相源） |
 | D4 | `agint-mascot` / `agint-search-tools` 未挂载 | A 挂载 · B 归档 · C 保持未挂载并登记 | 待查是否有真实消费方后再定 |
 | D5 | `agint-cron` 自写 5 字段 cron 解析 | A 复用 dsh 调度原语 · B 保留（解析器已稳定） | B（先记为宿主层偏好，不急改） |
+| D6 | `agint-mount` 取 `ctx.get('dshHome')`（F6） | A 改走 `process.env.DSH_HOME` · B 保留 | **A**（改动 1 行，无行为变化） |
 
 ---
 
-## 6. 不确定项
+## 6. dsh 0.2.1 破坏性变更对 AGINT 的影响（逐条核验）
+
+依据：上游 release `dsh-v0.2.1-rc.2`（rc.1 自述覆盖「since v0.2.0-rc.2」，
+compare API 显示 1925 提交 / 300 文件）。本机包树内**没有**变更说明文件
+（`dsh-runtime` 全树搜 CHANGELOG/RELEASE/MIGRATION 命中 46 个候选，`@deepseek-ai/dsh-*` 名下
+11 个全是类型声明与 devtools 资源，**无一是发布说明**）⇒ 变更说明只能取自上游。
+
+| 上游破坏性变更 | AGINT 是否命中 | 取证 |
+|---|---|---|
+| 移除运行时 invariant 插件及各包 `./invariant` 导出 | **未命中** | grep `invariant` 全 `plugins/` 仅 2 处，均与 dsh 无关（`agint-tool-stats` 测试名 "key order invariant"；`agint-quality-sdk` 自己的 prompt `manifest.kind`） |
+| 移除工具展示 `both` 混合模式（只留 native/ptc） | **未命中** | AGINT 侧 `both` 仅出现在 `agint-quality-sdk` 的 prompt manifest 语境；AGINT 插件 manifest 声明的是 `host`/`both`（client 半区），与 dsh 的工具展示模式不是同一物 |
+| 移除 `agent-instructions` 逐行 `dshHome` 配置 | **未命中** | AGINT 的 `agent-instructions` 行只配 `maxBytes`（preset 侧），未用逐行 dshHome |
+| 子代理工具立即返回 child ID（自定义 SDK 需支持 `session`/`wait`） | **需关注，未验证** | AGINT 走**服务面** `ctx.agents.create` + `ctx.subagents.start`（`agint-dream/lib/consolidation.js:252`、`agint-skill-autocreate/lib/llm-verdict.js:463`、`agint-evolution-driver/lib/index.js:1734`），不是 dsh 的 subagent **工具** ⇒ 工具面变更不直接命中；服务面是否同步变更**未验证** |
+| Agent Team 改直投 Inbox，移除 outbox / 重试 / 去重（配置字段需迁移） | **未命中** | grep `outbox` 全 `plugins/` 命中 0 |
+| Python PTC 需提供 `sandbox` + `sandboxPolicy` 服务 | **未命中** | AGINT 无 Python PTC 集成 |
+
+**新增能力里与 AGINT 直接相关的**：
+
+| 上游新增 | 与 AGINT 的关系 | 裁决 |
+|---|---|---|
+| `ctx.worktrees`（Git Worktrees 插件） | 可给 mutation 验证提供隔离工作区 | 机会项，非适配项（AGINT 今天无裸 worktree 可替换） |
+| `DSH_AGENTS_HOME` 全局 AGENTS.md | 影响 AGINT 的工作区指令注入路径 | **待评估**：AGINT 靠工作区 `AGENTS.md` 注入，若上游支持全局 AGENTS.md，注入策略要重定 |
+| pi-ai 路由支持会话内系统提示词更新 + 工具动态增删 | 与 preset 工具行有关 | 需评估是否与 AGINT 的 preset 自改机制冲突 |
+| `ctx.ssh`（SSH helper 运行时） | 本机未装 | 机会项：AGINT 的 `gszx-login` 技能将来可走宿主通道 |
+| `working_directory` 工具 + SDK 工作目录读写 | 与 AGINT 的 `repoRoot` 硬判据相关 | 需核对是否会引入第二套工作目录真相源 |
+
+---
+
+## 7. 不确定项
 
 1. dsh `sessionQuery` 在**部署位**（bundle 层）能否拿到 —— 只验过 host 层有该服务。
-2. dsh 0.2.1 是否还有破坏性变更未被 `check-dsh-compat` 覆盖 —— 该门禁只查包名解析与 peer 版本，不查 API 面变更。
+2. dsh 0.2.1 是否还有破坏性变更未被覆盖 —— 本轮核的是上游 release 明列的 14 条，
+   `check-dsh-compat` 门禁本身**不查 API 面变更**（只查包名解析与 peer 版本）。
 3. `agint-mascot` / `agint-voice-hotkey` / `agint-search-tools` 未挂载的原因（刻意 vs 遗漏）—— 仓内无记录。
 4. `app.asar` 内是否还有 AGINT 引用但 CLI 包树里没有的其它包 —— 本轮只核了 `dsh-desktop-host` 一个。
+5. 「子代理立即返回 child ID」这条是否也改了 `ctx.agents.create` 的**服务面**契约 —— 未验证。
+6. dsh 的 `ctx.ssh` 服务在本机不可用（实现包不在这 306 个包里），本机是否需要它 —— 未评估。

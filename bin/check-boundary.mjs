@@ -150,7 +150,7 @@ const HOST_CAPABILITY_RULES = [
   {
     id: 'token-metering-selfbuild',
     // 自建 token 计量：dsh 0.2.1 已有 ctx.tokenMeter（确定性、不调模型）。
-    re: /\b(promptTokens|completionTokens|totalTokenCount|tokenCost)\b/g,
+    re: /\b(tokenCost|avgTokenCost|promptTokens|completionTokens|totalTokenCount)\b/g,
     why: 'token 计量属宿主层（ctx.tokenMeter），AGINT 只该消费',
   },
 ];
@@ -232,6 +232,51 @@ function topLevelPlugins() {
   return out.sort();
 }
 
+/**
+ * 扫一个文件的边界违规。纯函数，可被单测直接调用。
+ * @param {string} src 源码
+ * @param {string} rel 仓库相对路径（用于报告）
+ */
+export function findViolations(src, rel) {
+  const findings = [];
+  const srcLines = src.split('\n');
+  const mask = codeLineMask(src);
+
+  // B1 机器私有路径：路径必须落在**字符串字面量内**且所在行是代码行
+  for (let li = 0; li < srcLines.length; li += 1) {
+    if (!mask[li]) continue;
+    for (const lit of extractStringLiterals(srcLines[li])) {
+      for (const m of lit.matchAll(RE_ABS_PATH)) {
+        findings.push({
+          category: 'machine-private-path',
+          file: rel,
+          line: li + 1,
+          evidence: m[0].trim(),
+          why: '机器私有绝对路径不得进库（AGENTS.md 红线）；本机值进 AGENTS.local.md',
+        });
+      }
+    }
+  }
+
+  // B2 宿主层能力自建：只看代码行（注释里的举例不算）
+  for (let li = 0; li < srcLines.length; li += 1) {
+    if (!mask[li]) continue;
+    const line = srcLines[li];
+    for (const rule of HOST_CAPABILITY_RULES) {
+      for (const m of line.matchAll(rule.re)) {
+        findings.push({
+          category: rule.id,
+          file: rel,
+          line: li + 1,
+          evidence: m[0].trim(),
+          why: rule.why,
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 function main() {
   const files = scanTargets();
@@ -245,41 +290,7 @@ function main() {
       continue;
     }
     const rel = relative(REPO_ROOT, abs).split(sep).join('/');
-    const srcLines = src.split('\n');
-    const mask = codeLineMask(src);
-
-    // B1 机器私有路径：路径必须落在**字符串字面量内**且所在行是代码行
-    for (let li = 0; li < srcLines.length; li += 1) {
-      if (!mask[li]) continue;
-      for (const lit of extractStringLiterals(srcLines[li])) {
-        for (const m of lit.matchAll(RE_ABS_PATH)) {
-          findings.push({
-            category: 'machine-private-path',
-            file: rel,
-            line: li + 1,
-            evidence: m[0].trim(),
-            why: '机器私有绝对路径不得进库（AGENTS.md 红线）；本机值进 AGENTS.local.md',
-          });
-        }
-      }
-    }
-
-    // B2 宿主层能力自建：只看代码行（注释里的举例不算）
-    for (let li = 0; li < srcLines.length; li += 1) {
-      if (!mask[li]) continue;
-      const line = srcLines[li];
-      for (const rule of HOST_CAPABILITY_RULES) {
-        for (const m of line.matchAll(rule.re)) {
-          findings.push({
-            category: rule.id,
-            file: rel,
-            line: li + 1,
-            evidence: m[0].trim(),
-            why: rule.why,
-          });
-        }
-      }
-    }
+    findings.push(...findViolations(src, rel));
   }
 
   // 去重：同一文件同一类别同一行只报一次
