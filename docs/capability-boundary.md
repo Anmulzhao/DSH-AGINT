@@ -183,7 +183,7 @@
 
 | # | 事项 | 选项 | 建议 |
 |---|---|---|---|
-| D1 | `agint-session-extract` / `agint-session-source` | A 改为消费 `ctx.sessionQuery`（F2 修法）· B 保留本地读盘并登记为「宿主格式变更风险点」 | **A**（消除「宿主改名即瞎」的复发面） |
+| D1 | `agint-session-extract` / `agint-session-source` | A 改为消费 `ctx.sessionQuery`（F2 修法）· B 保留本地读盘并登记为「宿主格式变更风险点」 | **✅ 已完成**（commit `78da995`，2026-10-21）：4 处调用点全部迁移，session-source 新增 `readEvents()` 上游优先 + 回落出声 |
 | D2 | token 计量（F3） | A 接 `ctx.tokenMeter` 补 `avgTokenCost` 与有效进化增量的 token 项 · B 不做 | **A**（度量缺口，AGINT 核心职责） |
 | D3 | `agint-voice-hotkey` | A 归档，改用 dsh 语音输入 · B 保留自建 · C 保留但登记为与宿主重复 | **A**（少一个真相源） |
 | D4 | `agint-mascot` / `agint-search-tools` 未挂载 | A 挂载 · B 归档 · C 保持未挂载并登记 | 待查是否有真实消费方后再定 |
