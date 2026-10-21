@@ -291,18 +291,64 @@
     ① `DSH_HOST_APP_ASAR` 环境变量 ② `AGENTS.local.md` 的 `hostAppAsar:` 键
     （该文件已 gitignore；块外内容不被自动生成脚本覆盖）③ 常见安装位扫描。
   - `bin/plugin-check.sh` 新增阻断位「dsh 兼容门禁（宿主版本对照）」。
-- 判据（红绿自证，`test/host-version.test.mjs` 6/6 绿）：
+- 判据（红绿自证，`test/host-version.test.mjs` **9/9** 绿）：
   - ⛔ 宿主版本与判据不一致 ⇒ critical（消息带双方版本号）
   - 宿主版本一致 ⇒ 不报
   - ⛔ 宿主查不到 ⇒ INFO 且措辞含「没查」、**不含**"版本一致/已核对"
   - ⛔ 宿主路径存在但读不出版本 ⇒ INFO（同样说"没查"）
+  - ⛔ **两条版本轨道不同时 ⇒ 必须按 dsh 运行时版本判**（见下）
+  - `resolveHostDshVersion` 来源优先级（dsh 包 > desktop-runtime.json > 根 package.json，
+    兜底来源必须标注「⚠️ 桌面应用版本，非 dsh 运行时版本」）
+  - `listAsarFiles`：列出归档内全部文件路径（宿主真实形状是嵌套路径）
   - `findHostAppAsar`：env 优先；env 指向不存在 ⇒ 回落 `AGENTS.local.md` 键
   - 端到端阴性对照：造一个版本 `9.9.9` 的假 asar ⇒ `check-dsh-compat` exit **1**、
     `plugin-check` 打出 `[FAIL]`；恢复后 exit 0。
-- ⚠️ 两台机器的差异：Linux 机器没有 `app.asar` ⇒ 该项只报 INFO「没查」，**不阻断**
-  （查不到不是"不一致"，不能把别的机器堵死）。
+- ⚠️ **宿主有两条版本轨道**（2026-10-22 补测）：asar 根 `package.json` 是**桌面应用**
+  （`@deepseek-ai/dsh-desktop`）的版本；dsh **运行时**版本在
+  `dsh/node_modules/@deepseek-ai/dsh/package.json`。本机两者恰好都是 `0.2.1-rc.2`
+  ⇒ 用错来源也不会红，但上游**只升运行时不升应用版号**时就会**假绿**。
+  ⇒ 判据改为按优先级取真正的运行时版本：
+  ① `dsh/node_modules/@deepseek-ai/dsh/package.json`
+  ② `dsh/desktop-runtime.json` 的 `release.version`
+  ③ asar 根 `package.json`（兜底，且在消息里标注它不是 dsh 运行时版本）。
+  判据：`test/host-version.test.mjs` 有一条 ⛔ 负向对照专测这条（应用版本同号、
+  运行时版本不同号 ⇒ 必须报 critical；用错来源这条测试会红）。
 - ⛔ **仍待处置**：`AGINT 插件运行时实际解析的是 A 还是 B`（两者版本当前相同 ⇒ 无实际差异），
   以及 B' 那份陈旧容器清单（不影响运行，但元数据不可信）。
+- ⚠️ 两台机器的差异：Linux 机器没有 `app.asar` ⇒ 该项只报 INFO「没查」，**不阻断**
+  （查不到不是"不一致"，不能把别的机器堵死）。
+
+### F11 · 宿主 asar 与 AGINT 判据树的能力面对账（2026-10-22）
+
+- 背景：契约 §7 不确定项 #4「`app.asar` 内是否还有 AGINT 引用、但 CLI 包树里没有的其它包」
+  一直只核了 `dsh-desktop-host` 一个 ⇒ 现用 `bin/asar-read.mjs`（含 `listAsarFiles`）做完整体对账。
+- **宿主真实结构**（实测自 `D:\Programs\DeepSeek Harness\resources\app.asar`）：
+  - 宿主**没有**把 dsh 源码平铺在 asar 里。`dsh/` 下只有 **2 个文件**：
+    `dsh/package.json` 与 `dsh/desktop-runtime.json`。
+  - 真正运行时的 dsh 在 **`asar:dsh/node_modules/@deepseek-ai/dsh`**（**打包产物**，
+    文件名带 hash，如 `lib/dump-config-CWs_HdOc.js`）。
+  - `dsh/desktop-runtime.json` 记录 `release.version=0.2.1-rc.2`、`hostProtocolVersion=4`、
+    `nodeVersion=24.21.0`、`sharedPackages`（**304** 条，逐包列 name/version/path）。
+- **对账结果**：
+  | 项 | 数量 |
+  |---|---|
+  | 宿主打包产物内 `@deepseek-ai` 包 | 306 |
+  | AGINT 判据树（仓内 `node_modules/@deepseek-ai`） | 306 |
+  | **宿主有、判据树没有** | **1**：`@deepseek-ai/dsh-desktop-host` |
+  | **判据树有、宿主没有** | **1**：`@deepseek-ai/dsh-client-ui-slots`（宿主 asar 内命中 **0**） |
+- 解读（两个不对称各有性质，别混为一谈）：
+  - `dsh-desktop-host`：**宿主确实有**（`asar:dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js`，
+    version `0.2.1-rc.2`）。AGINT 侧唯一的引用在
+    `plugins/agint-restart/test/desktop-shell-respawn.test.mjs`（argv 路径**字符串**，非 import）
+    ⇒ `check-dsh-compat` 报的 `dangling-package` 是**误报**（扫的是测试里的路径字面量）。
+    附带确认：测试里写的宿主入口 `app.asar\dsh\node_modules\@deepseek-ai\dsh-desktop-host\lib\index.js`
+    与宿主实际结构**一致** ✓。
+  - `dsh-client-ui-slots`：判据树有、宿主没有 ⇒ 判据树比宿主**多**一个包。
+    可能是判据树来自不同的分发通道（CLI 包 vs 桌面打包），**未验证**。
+- ⚠️ 由此可知：**宿主与判据树各 306 个包、只有 1 个不对称** ⇒
+  「AGINT 引用了宿主没有的包」这类风险面，比原先设想的小得多。
+  但**版本**层面的风险仍在（同名包不同版本 ⇒ 上游 breaking change 会打中），
+  这正是 F10 宿主版本对照要守的。
 
 ---
 

@@ -140,6 +140,40 @@ export function findHostAppAsar({ env = process.env, repoRoot = null } = {}) {
 }
 
 /**
+ * 列出 app.asar 里的全部文件路径。
+ *
+ * 用途：宿主（Electron app.asar）里有哪些包 / 文件，是 CLI 包树（`npm root -g` 或
+ * `.agint-deps/dsh-runtime`）里没有的 —— 这一栏决定 AGINT 的「dsh 能力面基线」是否完整。
+ *
+ * @param {string} asarPath app.asar 路径
+ * @returns {string[]} 归档内相对路径（目录本身不列出）
+ */
+export function listAsarFiles(asarPath) {
+  let fd = null;
+  try {
+    fd = openSync(asarPath, 'r');
+    const head = Buffer.alloc(16);
+    if (readSync(fd, head, 0, 16, 0) < 16) return [];
+    const headerPickleSize = head.readUInt32LE(4);
+    const headerJsonSize = head.readUInt32LE(12);
+    if (!headerPickleSize || !headerJsonSize) return [];
+    const jsonBuf = Buffer.alloc(headerJsonSize);
+    if (readSync(fd, jsonBuf, 0, headerJsonSize, 16) < headerJsonSize) return [];
+    let header;
+    try {
+      header = JSON.parse(jsonBuf.toString('utf8'));
+    } catch {
+      return [];
+    }
+    return [...flatten(header?.files).keys()].sort();
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* teardown must not throw */ } }
+  }
+}
+
+/**
  * 读 app.asar 里的 package.json，取 { name, version }。
  *
  * @param {string} asarPath  app.asar 路径

@@ -15,8 +15,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { checkHostVersion, findHostAppAsar } from '../bin/host-version.mjs';
-import { readAsarPackage } from '../bin/asar-read.mjs';
+import { checkHostVersion, findHostAppAsar, resolveHostDshVersion } from '../bin/host-version.mjs';
+import { readAsarPackage, listAsarFiles } from '../bin/asar-read.mjs';
 
 /**
  * 造一个最小 asar：只有 package.json 一个文件。
@@ -41,6 +41,32 @@ function makeAsar(dir, pkg) {
   return file;
 }
 
+/**
+ * 造一个含**多层文件**的 asar（宿主真实形状：`dsh/node_modules/...` 在归档内）。
+ * @param {object} spec { 'path/to/file': 文件文本 }
+ */
+function makeAsarTree(dir, spec) {
+  const entries = {};
+  const blobs = [];
+  let off = 0;
+  for (const [p, text] of Object.entries(spec)) {
+    const buf = Buffer.from(text, 'utf8');
+    entries[p] = { size: buf.length, offset: String(off) };
+    blobs.push(buf);
+    off += buf.length;
+  }
+  const headerJson = Buffer.from(JSON.stringify({ files: entries }), 'utf8');
+  const headerPickleSize = 8 + headerJson.length;
+  const head = Buffer.alloc(16);
+  head.writeUInt32LE(4, 0);
+  head.writeUInt32LE(headerPickleSize, 4);
+  head.writeUInt32LE(headerPickleSize - 4, 8);
+  head.writeUInt32LE(headerJson.length, 12);
+  const file = join(dir, 'app.asar');
+  writeFileSync(file, Buffer.concat([head, headerJson, ...blobs]));
+  return file;
+}
+
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'agint-hostver-'));
 }
@@ -48,7 +74,10 @@ function tmp() {
 test('⛔ 宿主版本与判据不一致 ⇒ critical（抓住假绿）', () => {
   const dir = tmp();
   try {
-    const asar = makeAsar(dir, { name: '@deepseek-ai/dsh-desktop', version: '9.9.9' });
+    const asar = makeAsarTree(dir, {
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '0.2.1-rc.2' }),
+      'dsh/node_modules/@deepseek-ai/dsh/package.json': JSON.stringify({ name: '@deepseek-ai/dsh', version: '9.9.9' }),
+    });
     const issues = checkHostVersion('0.2.1-rc.2', { env: { DSH_HOST_APP_ASAR: asar } });
     assert.equal(issues.length, 1, '不一致时必须报一条');
     assert.equal(issues[0].level, 'critical', '不一致必须 critical（门禁要红）');
@@ -63,9 +92,86 @@ test('⛔ 宿主版本与判据不一致 ⇒ critical（抓住假绿）', () => 
 test('宿主版本与判据一致 ⇒ 不报（不制造噪音）', () => {
   const dir = tmp();
   try {
-    const asar = makeAsar(dir, { name: '@deepseek-ai/dsh-desktop', version: '0.2.1-rc.2' });
+    const asar = makeAsarTree(dir, {
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '0.2.1-rc.2' }),
+      'dsh/node_modules/@deepseek-ai/dsh/package.json': JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.2' }),
+    });
     const issues = checkHostVersion('0.2.1-rc.2', { env: { DSH_HOST_APP_ASAR: asar } });
     assert.deepEqual(issues, [], '一致时不该报');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ⛔ 关键负向对照：**两条版本轨道**。
+ * 宿主 asar 根 package.json 是**桌面应用**版本，dsh 运行时版本在
+ * `dsh/node_modules/@deepseek-ai/dsh/package.json`。
+ * 上游只升运行时不升应用版号时，用错来源 ⇒ 假绿（本测试会红）。
+ */
+test('⛔ 两条版本轨道不同时 ⇒ 必须按 dsh 运行时版本判（用应用版本会假绿）', () => {
+  const dir = tmp();
+  try {
+    const asar = makeAsarTree(dir, {
+      // 桌面应用版本：与判据**同号**（这正是它有欺骗性的地方）
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '0.2.1-rc.2' }),
+      // dsh 运行时版本：**不同号** ⇒ 宿主已升、AGINT 判据没升
+      'dsh/node_modules/@deepseek-ai/dsh/package.json': JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.2' }),
+    });
+    const issues = checkHostVersion('0.2.1-rc.2', { env: { DSH_HOST_APP_ASAR: asar } });
+    assert.equal(issues.length, 1, '必须报一条（用应用版本比就会漏报）');
+    assert.equal(issues[0].level, 'critical');
+    assert.match(issues[0].message, /0\.2\.2/, '消息里要带 dsh 运行时版本');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveHostDshVersion: 来源优先级 = dsh 包 > desktop-runtime.json > 根 package.json', () => {
+  const dir = tmp();
+  try {
+    // ① dsh 包优先
+    const a1 = makeAsarTree(dir, {
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '9.9.9' }),
+      'dsh/desktop-runtime.json': JSON.stringify({ release: { version: '8.8.8' } }),
+      'dsh/node_modules/@deepseek-ai/dsh/package.json': JSON.stringify({ name: '@deepseek-ai/dsh', version: '7.7.7' }),
+    });
+    const r1 = resolveHostDshVersion(a1);
+    assert.equal(r1.version, '7.7.7', 'dsh 包版本优先');
+    assert.match(r1.source, /dsh\/node_modules/);
+
+    // ② 没有 dsh 包 ⇒ 用 desktop-runtime.json
+    const a2 = makeAsarTree(dir, {
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '9.9.9' }),
+      'dsh/desktop-runtime.json': JSON.stringify({ release: { version: '8.8.8' } }),
+    });
+    const r2 = resolveHostDshVersion(a2);
+    assert.equal(r2.version, '8.8.8');
+    assert.match(r2.source, /desktop-runtime/);
+
+    // ③ 只剩根 package.json ⇒ 兜底且**标注语义不同**
+    const a3 = makeAsarTree(dir, {
+      'package.json': JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '9.9.9' }),
+    });
+    const r3 = resolveHostDshVersion(a3);
+    assert.equal(r3.version, '9.9.9');
+    assert.match(r3.source, /桌面应用版本/, '兜底来源必须标注它不是 dsh 运行时版本');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('listAsarFiles: 列出归档内全部文件路径（宿主真实形状是嵌套路径）', () => {
+  const dir = tmp();
+  try {
+    const asar = makeAsarTree(dir, {
+      'package.json': '{}',
+      'dsh/node_modules/@deepseek-ai/dsh/package.json': '{}',
+    });
+    const files = listAsarFiles(asar);
+    assert.ok(files.includes('package.json'));
+    assert.ok(files.includes('dsh/node_modules/@deepseek-ai/dsh/package.json'));
+    assert.equal(files.length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
