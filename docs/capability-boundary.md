@@ -217,18 +217,22 @@
     ctx 异常不炸；只取指定键。
   - `test/session-source.test.mjs` 新增 2 条：上游晚于建源注册 ⇒ 之后走上游；
     上游在建源后消失 ⇒ 回落（不许拿旧快照硬撑）。
-- ⛔ **同类模式（既有，非本轮引入）尚未处置** —— 同一根因，待下一轮（grep `ctx.get\(['"][a-zA-Z]+['"]\)`
-  在 `plugins/**/lib/*.js` 命中 44 处，下列 8 处为 apply 时取服务的同型）：
-  | 位置 | 取法 |
-  |---|---|
-  | `plugins/agint-evolve/lib/index.js:248` | `const sessionQuery = ctx.get('sessionQuery')` |
-  | `plugins/agint-restart/lib/index.js:1072` | `const commands = ctx.get('commands')`（已有 null 告警） |
-  | `plugins/agint-dream/lib/consolidation.js:218-219` | `ctx.get('agents')` / `ctx.get('subagents')` |
-  | `plugins/agint-skill-autocreate/lib/llm-verdict.js:423-424` | `ctx.get('agents')` / `ctx.get('subagents')` |
-  | `plugins/agint-skill-autocreate/lib/tool-addition.js:121` | `ctx.get('agents')` |
-  | `plugins/agint-quality-sandbox/lib/index.js:82,274,327` | `ctx.get('sandbox')` |
-  | `plugins/agint-ov-strategy/lib/index.js:136` | `ctx.get('openvikingMemory')` |
-  | `plugins/agint-cron/lib/index.js:232` | `ctx.get('sessionPersistence')` |
+- ✅ **同类模式已逐处核实（2026-10-21 老板令「处理同类模式」）—— 结论：8 处全是假警报，本轮不改代码。**
+  核实方法：grep `ctx.get\(['"][a-zA-Z]+['"]\)` 在 `plugins/**/lib/*.js` 命中 44 处，
+  再**逐处读上下文**判定取用时机（grep 命中 ≠ 问题）：
+  | 位置 | 实际取用时机 | 判定 |
+  |---|---|---|
+  | `agint-evolve/lib/index.js:247` | 在 `dataSnapshot()` **函数体内** | 运行时取 ✓ |
+  | `agint-dream/lib/consolidation.js:217-218` | 在 `consolidate()` **函数体内** | 运行时取 ✓ |
+  | `agint-skill-autocreate/lib/llm-verdict.js:422-423` | **函数体内** | 运行时取 ✓ |
+  | `agint-skill-autocreate/lib/tool-addition.js:120` | **函数体内** | 运行时取 ✓ |
+  | `agint-quality-sandbox/lib/index.js:81,274,327` | 在 `runInMode()` **函数体内** | 运行时取 ✓ |
+  | `agint-ov-strategy/lib/index.js:135` | 已是 `runtimeRaw = () => ctx.get(...)` **懒取**（注释明写"调用时取，绝不缓存"） | 正确范式 ✓ |
+  | `agint-cron/lib/index.js:191-232` | `const services = () => ({...})` **工厂函数**，`job.action(services())` 在 **tick 时**调用 | 每 tick 重新求值 ✓ |
+  | `agint-restart/lib/index.js:1072` | `const inject = ['agents', 'commands']`（第 61 行）—— 'commands' 是 **inject 硬依赖声明**，cordis 等它就绪才 apply | apply 时必然拿得到 ✓ |
+  ⇒ **一处都不需要改**。若误改（尤其把 agint-restart 的 inject 硬依赖改成"懒取"）反而会引入真 bug：
+  inject 声明是"apply 前保证就绪"，懒取是"运行时才取"，两者语义不同、不可互换。
+- ⛔ **仍待处置**：`.agint-deps/dsh-runtime` 假绿来源（兼容门禁对着副本而非宿主）—— 与本项无关，另案。
 
 ### F9 · 上游事件流 ≠ 宿主侧原始日志（`readLocal` 契约踩坑）
 
