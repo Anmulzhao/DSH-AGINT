@@ -17,7 +17,7 @@
  */
 
 import { z } from 'zod';
-import { nextFire, isDue } from './cron.js';
+import { nextFire, isDue, getHostCronEngine } from './cron.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { createHostBridge } from './host-schedule.js';
@@ -145,6 +145,19 @@ function apply(ctx, config) {
     '[agint-cron] host-schedule bridge ' + JSON.stringify(hostSchedule.status()) +
     '（宿主 dsh-schedule 懒加载；cron_list 可查 hostSchedule 面）',
   );
+
+  // D5 迁移（2026-10-21）：预热宿主 cron 规则引擎。
+  // 引擎装好后，nextFire/lastFire 这两个**同步**调用点就走上游 dsh-schedule
+  // （Temporal 日历 + IANA 时区），不再用自研的分钟粒度暴力扫描。
+  // 预热是异步的：第一轮 tick 之前没装上也不影响 —— cron.js 会自动回落自研实现。
+  void Promise.resolve(hostSchedule.ensureHost?.())
+    .then(() => {
+      const eng = getHostCronEngine();
+      console.info(
+        '[agint-cron] host cron engine ' + (eng ? 'ready（时刻计算走上游 dsh-schedule）' : 'unavailable（回落自研实现）'),
+      );
+    })
+    .catch(() => { /* 宿主模块缺席 ⇒ 保持自研回落，不阻断 */ });
 
   // Hydrate persisted lastRunAt/lastResult/lastError per job so a rebooted
   // host does not report every job as never-run. The domain opens async, so we

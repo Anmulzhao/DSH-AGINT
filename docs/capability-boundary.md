@@ -177,6 +177,26 @@
 - 修法：统一走 `process.env.DSH_HOME`（AGINT 其它插件已是此做法），去掉 `ctx.get('dshHome')` 这个
   不存在的键。
 
+### F7 · 宿主 `ctx.schedule` 的投递语义 ≠ 智进 cron 的无人值守语义
+
+- 现象：老板 2026-10-21 拍板「D5 复用 dsh ctx.schedule」。
+- 取证（上游 `dsh-schedule` README + `lib/index.js`）：
+  - `ScheduleService.create(sessionId, request, signal)` —— **必须绑定一个 sessionId**；
+    投递语义是「往**原会话**注入 follow-up 消息」。
+  - 投递要等 Session 承认 `session/flush` 才提交；`catalog/list/history` 全部按 sessionId 过滤。
+  - 纯函数侧另有：`canonicalizeCronExpression`（表达式归一化 + 方言校验）、
+    `createCronScheduleRecord`（内部算 `scheduledAt` = 严格晚于 now 的下一次）、
+    `resolveCronOccurrence`（给 `occurrenceAt` = ≤ 决策时刻的最近一次，与 `nextScheduledAt`）。
+- 冲突：智进 cron 的 27 个 job 是 **host 平面无人值守的 action 直调**，没有可绑定的 Session，
+  也不该变成 agent 消息。强行 `create()` 是**行为变更**（无人值守 job 变会话消息），不是复用。
+- 落地（D5 实际做法）：**规则与时刻计算交给上游，执行器留在智进**。
+  - 上游负责：表达式方言校验 + 下一次/上一次时刻计算（Temporal 日历 + IANA 时区 + DST 正确；
+    智进自研版是分钟粒度暴力扫描，上限 1 年 ⇒ 最坏 52 万次 Date 构造）。
+  - 智进保留：`isDue()` 的补跑/幂等策略（进化层语义）、job 表、lastRunAt 记账、tick 执行器。
+  - 上游缺席 ⇒ 回落智进自研实现（软依赖，行为与迁移前一致）。
+- 判据：同一表达式、同一基准时刻，上游引擎与自研实现必须给出**同一时刻**（`test/host-cron-engine.test.mjs`，
+  6 表达式 × 4 基准 = 24 组对照）。不靠"抄一遍逻辑"自证。
+
 ---
 
 ## 5. 待裁决项（需要人拍板）
@@ -186,8 +206,8 @@
 | D1 | `agint-session-extract` / `agint-session-source` | A 改为消费 `ctx.sessionQuery`（F2 修法）· B 保留本地读盘并登记为「宿主格式变更风险点」 | **✅ 已完成**（commit `78da995`，2026-10-21）：4 处调用点全部迁移，session-source 新增 `readEvents()` 上游优先 + 回落出声 |
 | D2 | token 计量（F3） | A 接 `ctx.tokenMeter` 补 `avgTokenCost` 与有效进化增量的 token 项 · B 不做 | **A**（度量缺口，AGINT 核心职责） |
 | D3 | `agint-voice-hotkey` | A 归档，改用 dsh 语音输入 · B 保留自建 · C 保留但登记为与宿主重复 | **A**（少一个真相源） |
-| D4 | `agint-mascot` / `agint-search-tools` 未挂载 | A 挂载 · B 归档 · C 保持未挂载并登记 | 待查是否有真实消费方后再定 |
-| D5 | `agint-cron` 自写 5 字段 cron 解析 | A 复用 dsh 调度原语 · B 保留（解析器已稳定） | B（先记为宿主层偏好，不急改） |
+| D4 | `agint-mascot` / `agint-search-tools` 未挂载 | A 挂载 · B 归档 · C 保持未挂载并登记 | **C**（老板 2026-10-21 拍板「保持」）⇒ 状态不变，仅登记 |
+| D5 | `agint-cron` 自写 5 字段 cron 解析 | A 复用 dsh 调度原语 · B 保留（解析器已稳定） | **A**（老板 2026-10-21 拍板「复用 dsh ctx.schedule」）⇒ **✅ 已完成**：时刻计算改走上游 `dsh-schedule` 规则引擎（`canonicalizeCronExpression` + `createCronScheduleRecord` + `resolveCronOccurrence`），自研实现降为回落层 |
 | D6 | `agint-mount` 取 `ctx.get('dshHome')`（F6） | A 改走 `process.env.DSH_HOME` · B 保留 | **A**（改动 1 行，无行为变化） |
 
 ---
