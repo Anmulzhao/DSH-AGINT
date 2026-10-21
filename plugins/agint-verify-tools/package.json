@@ -1,0 +1,11 @@
+{
+  "name": "agint-verify-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "host 平面：把 AGINT 的验证入口（cron / self-model）注册为全局工具，任何 preset 会话可用。",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  }
+}

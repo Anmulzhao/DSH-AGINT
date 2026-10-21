@@ -154,6 +154,26 @@
       name: ./plugins/agint-tool-stats/lib/index.js
       config: {}
 
+    # ── agint-verify-tools（2026-10-21 新增）────────────────────────────────
+    # 为什么放在 host 平面：AGINT 的 cron / self-model 工具原本只在 agint preset
+    # 的 25 个工具行里。会话实际可能跑在别的 preset（本机实测被切到过 cordis）
+    # ⇒ 那些工具一个都不出现 ⇒ 验证一次修复必须等一个 cron 周期。
+    #
+    # 曾经用「整段覆盖 preset-cordis 的 config.plugins」绕过，但那个解法有两个硬伤：
+    #   ① 覆盖是整体替换（dsh-app-boot applyPatches: `target[key] = value`，不深合并）
+    #      ⇒ 官方升级 cordis preset 后，新增插件被冻结的快照挡住，不再出现；
+    #   ② 官方若改名/删除某个插件，快照仍引用旧名 ⇒ 该 preset 可能整体起不来。
+    #
+    # 改用正确机制：host 平面 ctx.tools.register ⇒ 进 global 层 ⇒ 每个 preset 可见。
+    # 依据 @deepseek-ai/dsh-scope/lib/index.js:189-195
+    #   （`if (scope === void 0) layer = this.global;`，host ctx 无 scope）。
+    # 先例：同层的 agint-tool-stats 用同一手法注册 tool_stats_summary。
+    # ⛔ 本插件只**转调** host 服务，不复制 agint-cron / agint-self-model 的 schema
+    #    （复制会造第二份定义，两边一漂就出「工具描述与实现不符」）。
+    - id: agint-verify-tools
+      name: ./plugins/agint-verify-tools/lib/index.js
+      config: {}
+
     # agint-quality-contract: D-QAF evaluation framework Seam layer (FROZEN).
     # Defines schemas + interfaces; siblings (eval/sandbox/policy/report) plug
     # in. L0-frozen field guard via validatePatch.
