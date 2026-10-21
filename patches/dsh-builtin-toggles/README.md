@@ -1,3 +1,24 @@
+# ⛔ 已退役（2026-10-21）—— 不要运行 apply.sh
+
+**退役理由（三条，任一成立即不应使用）**
+
+1. **越界**：本补丁直接改写 `node_modules` 里上游插件的源码（`lib/index.js` 单行替换）。
+   AGINT 的定位是 dsh 之上的组件，不是 fork；改上游源码属越界，已写入
+   `docs/capability-boundary.md` §2（H-越界）与边界门禁的判定范围。
+2. **目标已不存在**：脚本写死 `profiles/web/node_modules/dsh-builtin-toggles/`，
+   而 web profile 已于 2026-10-18 删除（老板令）。实测
+   `profiles/web` 与 `profiles/desktop` 两处目标**都不存在** ⇒ 脚本必在
+   `[ -f "$TARGET" ]` 处 exit 1，当前处于失效状态。
+3. **静默丢失**：任何 `pnpm/npm install` 或插件更新都会覆盖被改的文件，
+   补丁需要「每次重跑」—— 这是把一次性 hack 当成维护流程。
+
+**若该功能仍需要**：向上游提 issue/PR，让 `dsh-builtin-toggles` 把「无关 entry 漂移」
+的连坐判定改为可配置；或改用 dsh 的 `cordis.patch.yml` 配置面。
+不要回到改源码这条路。
+
+以下为原始说明（保留供追溯）：
+
+---
 # patch: dsh-builtin-toggles — 忽略无关的版本漂移
 
 ## 为什么

@@ -11,17 +11,10 @@
       "foundAt": "2026-10-21"
     },
     {
-      "id": "B-003",
-      "category": "session-log-name-table",
-      "file": "plugins/agint-dream/lib/sweep.js",
-      "reason": "dream 的 sweep 另持一份候选名（未走 session-source 唯一真相源）。F5 收口未覆盖到 dream。收敛方向：与 B-001 合并为单一入口。",
-      "foundAt": "2026-10-21"
-    },
-    {
       "id": "B-004",
       "category": "zstd-self-decompress",
       "file": "plugins/agint-dream/lib/sweep.js",
-      "reason": "dream 自拉 zstd 二进制解压会话日志。宿主层应给已解码内容（ctx.sessionQuery.readSession）。收敛方向随 B-003 一并处理。",
+      "reason": "dream 自拉 zstd 二进制解压会话日志。宿主层应给已解码内容（ctx.sessionQuery.readSession）。收敛方向随 B-005 一并处理。",
       "foundAt": "2026-10-21"
     },
     {

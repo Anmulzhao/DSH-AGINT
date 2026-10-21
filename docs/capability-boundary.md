@@ -220,7 +220,43 @@ compare API 显示 1925 提交 / 300 文件）。本机包树内**没有**变更
 
 ---
 
-## 7. 不确定项
+## 8. 专项盘点结果（2026-10-21，全量逐文件扫）
+
+一次覆盖 `plugins/` + `presets/` + `install/` + `bin/` + `patches/` 的专项扫描，
+四类共命中 **34 条**（含 1 条正例）。完整明细见工作区
+`docs/AGINT-能力边界契约与dsh衔接-20261021.md` 附录；此处只留**裁决结论与已修项**。
+
+### 8.1 已修（本轮动码）
+
+| 项 | 原状 | 修法 | 验证 |
+|---|---|---|---|
+| `agint-dream/lib/sweep.js` 名字表缺 v4 | 只有 `v3` / 无版本；宿主 09-22 起用 v4 ⇒ 候选名恒落空、走后缀兜底；v3/v4 并存时取哪个取决于 readdir 顺序 | 改为 import `agint-session-source` 唯一真相源（v4>v3>无版本） | dream **151/151** 测试绿 |
+| 仓内 4 个 preset 共 46 处 `../../profiles/web/` | 指向 2026-10-18 已删除的 web profile（部署位早已是 desktop，仓内没跟上）⇒ 若某次 install 跳过重写，25 个工具行指向空目录 = K21 症状（挂得上、一个工具都没有、不报错） | 全改 `profiles/desktop`；另 3 处注释/persona 文本里的 `~/.dsh/profiles/web` 一并订正 | `check-patch-yaml` **11/11** 可解析 |
+| `patches/dsh-builtin-toggles/apply.sh` | **改写上游 `node_modules` 里的插件源码**（`lib/index.js` 单行替换）。目标路径写死 `profiles/web` ⇒ web 删除后脚本必 exit 1；`profiles/desktop` 侧也无此插件（实测两处都不存在） | 加退役声明（三条理由），`apply.sh` 暂留待老板决定是否删除 | 未运行（脚本已失效） |
+| `bin/plugin-check.sh` | 无边界门禁 | 接入 `check-boundary.mjs` 阻断位 | plugin-check 实跑 exit 0 |
+
+### 8.2 未修但已裁决（需老板拍板，见 §5）
+
+| 类 | 条数 | 最重的项 |
+|---|---|---|
+| 硬编码上游私有格式 | 11 | 会话文件名表另有 2 份副本（dream 已修，`session-extract` 仍持正则）；provider/model 硬编码 4 份（上游已有 `agentDefaultModel.currentSelection()`）；至少 10 处手搓 `DSH_HOME \|\| homedir()/.dsh`（上游有 `dsh-home-paths`） |
+| 重复造轮子 | 7 | 会话发现 4 处自建 vs `sessionQuery`；技能枚举 3 处 vs `skills.list()`；插件挂载/清单 vs `pluginManager`/`pluginInventory`；手搓 UserMessage vs `dsh-llm.createUserMessage` |
+| 越界侵入框架层 | 7 | 改写上游源码（已退役）；自带并锁死一份 dsh 运行时（门禁对着副本不是宿主）；直接写 dsh 的 `cordis.patch.yml`；沙箱缺席时默认在宿主进程内跑被测代码（`allowInProcessFallback` 默认 `true`） |
+| 软依赖静默降级 | 9（含 1 正例） | `agint-quality-policy` 明确注释「memory 不可用 → 静默跳过」；`agint-search-tools` 依赖缺失 ⇒ 工具根本不注册、无日志；`agint-evolve` 同文件两套缺席标准（memory 缺席则键消失，oracle 缺席则 null） |
+
+### 8.3 两条需要单独记住的判断
+
+1. **`agint-mount/src/paths.ts` 头注释说「不使用 dsh 新增的 dsh.profilesDir Service」是正确的**
+   —— 实测 306 个包里 `super(ctx,"profilesDir")` 命中 **0**，上游确实没有暴露该服务。
+   文件头的理由应保留，避免后人再找一遍。
+2. **「自带一份 dsh 运行时」是本仓最大的假绿来源**：`$DSH_HOME/.agint-deps/dsh-runtime`
+   被排在 `npm root -g` 之前当解析根，而它内部版本三方不一致
+   （容器清单 `0.2.0-rc.2` / 其 `node_modules` 内 `0.2.1-rc.2` / 真实宿主 `0.2.1-rc.2`）。
+   兼容门禁对着的是这份副本，不是宿主本体 ⇒ 宿主升级而副本不动时，门禁对真实宿主失明。
+
+---
+
+## 9. 不确定项
 
 1. dsh `sessionQuery` 在**部署位**（bundle 层）能否拿到 —— 只验过 host 层有该服务。
 2. dsh 0.2.1 是否还有破坏性变更未被覆盖 —— 本轮核的是上游 release 明列的 14 条，
@@ -229,3 +265,5 @@ compare API 显示 1925 提交 / 300 文件）。本机包树内**没有**变更
 4. `app.asar` 内是否还有 AGINT 引用但 CLI 包树里没有的其它包 —— 本轮只核了 `dsh-desktop-host` 一个。
 5. 「子代理立即返回 child ID」这条是否也改了 `ctx.agents.create` 的**服务面**契约 —— 未验证。
 6. dsh 的 `ctx.ssh` 服务在本机不可用（实现包不在这 306 个包里），本机是否需要它 —— 未评估。
+7. 上游服务清单两份来源数目不一致（`api-catalog.js` 的 `SERVICE_API` 98 条 / 扫 `super(ctx,"...")` 得 92 个）——
+   差集未逐条核对，可能含基类继承与非 Cordis Service。
