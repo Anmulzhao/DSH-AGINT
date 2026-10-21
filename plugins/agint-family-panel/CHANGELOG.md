@@ -1,3 +1,61 @@
+## 0.3.0 — 2026-10-22
+
+### 新增「神谕 · 美之判词」分区：把 agint-aesthetic-oracle 的输出搬进面板
+
+**为什么**：神谕层每天 09:00 打分开口，但产出只落在广播事件与它自己的存储域里。
+老板要看「系统现在美不美」，得在面板外面翻存储。面板原有六节答的是
+「谁依赖谁 / 谁在干活 / 哪里在腐化 / 有什么等着人处理」，没有一处回答
+「**它自己怎么判**」。
+
+**放哪儿（决定与理由）**：新增 tab「神谕 · 美之判词」，排在**待办之后、Q1 之前**。
+待办与神谕都是结论面 —— 一个说「你要动手什么」，一个说「系统现在如何」；
+Q1/Q2/Q3 是证据面。结论先看，证据在后。默认分区仍是 Q1，不改既有使用习惯。
+
+**放什么**（四块，全部只读转录，不重算、不改判定）：
+
+| 块 | 内容 |
+|---|---|
+| 判词 | 最新一张卡片的全文（判词行/整段文本）+ 美总分 + 判定 + 最丑维 + 数据 asOf + 开口时间 + 输出模式 + 公式版本 + 判尺指纹 + 缓存回退天数 |
+| 三档评分 | daily / weekly / monthly / alert 各一格（分数、判定、最丑维、模式、公式版本） |
+| 状态面 | kill-switch、沉默模式、连续失败、基线（method / 建基日 / 重标日 / 各维样本数）、lastGood、配额、运行态开关 |
+| 广播史 | 最近 20 条 · 失败、被拦、被静默的行不隐藏，带 Δ 基线 |
+
+**数据从哪来（两路，服务面优先）**：
+
+- 服务面 `agint.aestheticOracle`：`cards()` / `history(24)` / `getState()` / `status()`。
+  ⛔ 只有 `status()` 带运行态开关（envOff / memoryStore / metricsAvailable /
+  evolutionAvailable / busAvailable），这些事实不在落盘文件里，所以不能只读文件。
+- 落盘 `storages/agint_aesthetic_oracle.json` 三表：`cards()` 为空时用它的卡片补齐。
+  订阅没回写是常见形态（event-bus 未挂载 / 订阅被拒）；只读服务面会把
+  「订阅掉了」显示成「神谕从没开过口」—— 两件事，必须分开读。
+- 补齐原因逐条写进 `notes`，面板用黄条原样显示。**不静默补**。
+- `source` 字段记录数据**实际来源**（service / service+storages / storages），
+  不是「服务面在不在」：服务面存在但三个出口全缺（旧版 oracle）时数据 100% 来自落盘。
+
+**Δ 口径（本次最要紧的一条）**：生产 `baseline` 建于 2026-10-04（first-week-mean），
+评分公式 r3 于 2026-10-09 落地，而 `oracleStateSchema.baseline` **没有
+`formulaVersion` 字段** ⇒ 跨口径。Δ 照算，但一律 `deltaComparable=false` + 原因，
+面板对不可比的行加 ⚠ 与黄字。
+⛔ 不把「缺标记」当「同版本」。两道防线：`!formulaVersion` 早返回 +
+`formulaVersion !== baseFormula` 宽比较（缺标记走 `!==` 也判不等）。
+
+**实测（2026-10-22 读 `AGINT-date/storages/agint_aesthetic_oracle.json`）**：
+35 条广播 / 3 张卡片（daily 66.9 · weekly 62.4 · monthly 93.1，无 alert 卡片）；
+baseline 75.4143（first-week-mean，无 formulaVersion）；Δ = −8.5，判**不可比**。
+
+**红绿自证**：
+
+- 新增 `test/v2-oracle.test.mjs`（6 组断言：生产形状 / Δ 口径 / 同 topic 取最新 /
+  缺段不装绿 / 落盘三形态 / collectOracle 四种降级）。
+- 变异 1：删掉 `collectOracle` 的「cards 空则回落落盘」→ 红（actual 0 / expected 3）。
+- 变异 2：撤掉 Δ 的两道口径防线（缺标记当同版本）→ 红（actual 3 / expected 0）。
+- 既有 11 个测试文件全绿。`v2-data.test.mjs` 在 managed node 22.22.2-6 下
+  exit 127 零输出、系统 node 24.20.0 下 PASS —— **stash 验过基线同样现象**，
+  属环境差异，不是本批引入。
+
+**版本**：manifest 0.2.7 → 0.3.0、package 0.2.9 → 0.3.0。
+（两处此前不一致，verify-manifests 一直报 VERSION_DRIFT；发版必须同时改，顺手消掉该 WARN。）
+
 ## 0.2.9 — 2026-10-18
 
 ### 修「技能候选（待审）」把已审判的候选也算成待办

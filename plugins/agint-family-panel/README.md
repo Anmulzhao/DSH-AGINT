@@ -2,7 +2,7 @@
 
 AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGINT 插件家族：分组、行状态、通电信号。
 
-- 版本：v0.2.0（2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
+- 版本：v0.3.0（2026-10-22 新增「神谕 · 美之判词」分区；v0.2.0 于 2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
 - 形态：双半插件（host 半 + 浏览器半）
 - 席位：侧栏 `sidebar.panellist` 入口行 + root 作用域 `main` keyed slot 面板页
 
@@ -13,7 +13,8 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 | host | `lib/index.js` | 开三条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）；不碰 DOM |
 | host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类 + manifest 声明补边）+ storages 三源聚合 + 声明消费契约（`consumes` ∪ `optionalInject`，同时作补边白名单）；每源独立降级，不装绿 |
 | browser | `lib/client.js` | 注册到宿主自带席位；停靠面板**默认内嵌 v2 视图**（iframe 走文档相对 `api/agint-family/v2`），一键可切 v1 名册（分组/行状态/信号），另有「新标签页打开」逃生口；不接管任何宿主 DOM |
-| asset | `assets/panel-v2.html` | v2 整页前端（Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
+| asset | `assets/panel-v2.html` | v2 整页前端（待办 / 神谕判词 / Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
+| host | `lib/index.js` 的 `collectOracle` | 神谕层取数：服务面（`cards`/`history`/`getState`/`status`）优先，空段用落盘补齐，补齐原因写 `notes` |
 
 它**不是**独立窗口、**不是** iframe、也不是第三方侧栏里的一个 tab：
 
@@ -56,6 +57,7 @@ slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ ctx }) }, FamilyP
 | `agint.cron.list()` | 任务数 + 从未跑过的数量 | `unavailable` + reason |
 | `agint.metrics.summary()` | 指标条数 + meta 是否就位 | `unavailable` + reason |
 | `agint.selfModel.stats()` | 首个数值字段 | `unavailable` + reason |
+| `agint.aestheticOracle` / `storages/agint_aesthetic_oracle.json` | 神谕层判词、三档评分、广播史、状态面（服务面优先，卡片空时回落落盘） | `unavailable`/`error` + reason；运行态开关标 unknown |
 
 三条硬规矩：
 
@@ -70,7 +72,41 @@ slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ ctx }) }, FamilyP
    （2026-10-01），判据一放宽就会把绝大多数 host 行卷进面板。当前外部名单只有
    `dsh-kill-switch`（终止开关，见下）。
 
+## 神谕层分区（0.3.0）
+
+侧栏面板的分区条多了「神谕 · 美之判词」，位置在**待办之后、Q1 之前**。
+
+**为什么放这儿**：待办与神谕都是**结论面**（「你要动手什么」/「系统现在如何」），
+Q1/Q2/Q3 是证据面。结论先看，证据在后。默认分区仍是 Q1，不改既有习惯。
+
+**它转录什么**（只读，不重算分数、不改判定）：
+
+| 块 | 来源 |
+|---|---|
+| 判词（最新卡片全文） | `oracle_cards` 的 `oracle.daily`；无 daily 退 weekly → monthly → alert |
+| 三档评分 | `oracle_cards` 四个 topic 各一格 |
+| 状态面 | `oracle_state.latest` + 服务面 `status()` |
+| 广播史（最近 20 条） | `oracle_broadcasts`，失败与被静默的行不隐藏 |
+
+**两路取数**：服务面 `agint.aestheticOracle`（`cards` / `history` / `getState` /
+`status`）优先，落盘 `storages/agint_aesthetic_oracle.json` 兜底。
+`cards()` 为空时用落盘卡片补齐，原因写进面板黄条 —— 订阅没回写是常见形态
+（event-bus 未挂载 / 订阅被拒），只读服务面会把「订阅掉了」显示成「神谕从没开过口」。
+
+**Δ 基线的红线**：生产 `baseline` 建于 2026-10-04，评分公式 r3 于 2026-10-09 落地，
+而 `oracleStateSchema.baseline` 没有 `formulaVersion` 字段 ⇒ 跨口径。
+Δ 照算，但一律标「不可比」+ 原因。⛔ 不把「缺标记」当「同版本」。
+
+**已知限制**：
+
+- 判词正文只存在 `oracle_cards` 的最新一张里。`oracle_broadcasts` 只存
+  score / verdict / worstKey，**不存判词文本** ⇒ 回看某一轮的原话做不到。
+  要保留全文得改 oracle 侧存储，不在本插件职责内。
+- 提案只显示计数（`proposals`）。内容与流转走 `agint.evolve.listProposals`，
+  面板不复制那套状态机。
+
 ## 家族外部成员：终止开关
+
 
 终止开关（`bundles/dsh-kill-switch`，包名 `@local/dsh-kill-switch`）是**独立 DSH
 bundle**，按 bundle 规范不落在 `plugins/agint-*` 命名空间下，但它是家族的一等公民，
