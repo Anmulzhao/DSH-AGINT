@@ -49,35 +49,42 @@
       "id": "B-009",
       "category": "token-metering-selfbuild",
       "file": "plugins/agint-curator/lib/aggregator.js",
-      "reason": "avgTokenCost 恒 null（tool-stats 无 token 计量）。dsh 0.2.1 已有 ctx.tokenMeter。收敛方向：接上游 token 计量后让该字段有值，见 capability-boundary.md §4 F3 / §5 D2。",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
       "foundAt": "2026-10-21"
     },
     {
       "id": "B-010",
       "category": "token-metering-selfbuild",
       "file": "plugins/agint-curator/lib/index.js",
-      "reason": "同 B-009。",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
       "foundAt": "2026-10-21"
     },
     {
       "id": "B-011",
       "category": "token-metering-selfbuild",
       "file": "plugins/agint-curator/lib/schema.js",
-      "reason": "同 B-009。",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
       "foundAt": "2026-10-21"
     },
     {
       "id": "B-012",
       "category": "token-metering-selfbuild",
       "file": "plugins/agint-skill-autocreate/lib/schema.js",
-      "reason": "同 B-009（技能经济性度量缺口）。",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
       "foundAt": "2026-10-21"
     },
     {
       "id": "B-013",
       "category": "token-metering-selfbuild",
       "file": "plugins/agint-skill-autocreate/lib/detector.js",
-      "reason": "同 B-012。",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-014",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-skill-autocreate/lib/aggregator.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator/skill-autocreate 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
       "foundAt": "2026-10-21"
     }
   ]

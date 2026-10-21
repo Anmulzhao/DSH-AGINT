@@ -7,7 +7,8 @@
  *   1. 存在性 + 幂等（已 archived → skipped，不报错）
  *   2. 保护校验（pinned / protected / 非本地管理来源）
  *   3. 预算校验（本周归档数 < weekly_archive_budget，超限 → budget_wait 跳过）
- *   4. 移动目录到 skills/.archive/<name>/（目标已存在则加时间戳后缀，绝不覆盖）
+ *   4. 移动目录到「该技能所属根」的 .archive/<name>/（2026-10-21：按账本里的
+ *      rootDir 定位 —— 多根部署下不同技能在不同根；目标已存在则加时间戳后缀，绝不覆盖）
  *   5. 更新 skill_states（状态 + archivedAt + archiveReason + stateHistory）
  *   6. 写 curation_actions + audit_log + 发事件
  *
@@ -16,10 +17,10 @@
  *   - 状态落盘失败 → 目录移回原位（回滚），记 failed
  */
 
-import { rename, mkdir, stat } from 'node:fs/promises';
+import { rename, mkdir, stat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { packSkillState, packCurationAction, isoWeek } from './storage.js';
-import { MANAGED_SOURCES } from './schema.js';
+import { MANAGED_SOURCES, normalizeSkillRoots } from './schema.js';
 
 /**
  * @param {Object} deps
@@ -77,23 +78,63 @@ export function createExecutor({ getTable, audit, publishEvent, effectiveConfig 
     try { await stat(p); return true; } catch { return false; }
   }
 
+  /**
+   * 技能所属的物理根（2026-10-21）。
+   * 1. 账本里的 rootDir —— 扫描时写下的真实根，权威；
+   * 2. 存量记录（2026-10-21 之前入库）没有该字段 → 在所有根里找一遍这个技能目录；
+   * 3. 都没找到 → 回退第一根（此时 moveToArchive 判「目录不存在」，只改账不移动）。
+   * **不跨根搬**：归档与恢复都在同一个根内完成。
+   */
+  async function resolveSkillRoot(skill, cfg) {
+    const roots = normalizeSkillRoots(cfg.skills_dir);
+    if (typeof skill?.rootDir === 'string' && skill.rootDir.trim()) return skill.rootDir;
+    const dirName = skillDirName(skill);
+    if (dirName) {
+      for (const root of roots) {
+        if (await exists(join(root, dirName))) return root;
+      }
+    }
+    return roots[0] ?? null;
+  }
+
+  /** 物理目录名：目录名优先（可能 ≠ frontmatter name），退回技能名。 */
+  function skillDirName(skill) {
+    return skill?.dirName ?? skill?.skillName;
+  }
+
   async function moveToArchive(skill, cfg) {
-    const src = join(cfg.skills_dir, skill.dirName ?? skill.skillName);
+    const root = await resolveSkillRoot(skill, cfg);
+    if (!root) return { moved: false, path: null, reason: 'no skill root available' };
+    const dirName = skillDirName(skill);
+    const src = join(root, dirName);
     if (!(await exists(src))) return { moved: false, path: null, reason: 'skill directory not found' };
-    const archiveRoot = join(cfg.skills_dir, cfg.archive_dir_name);
+    const archiveRoot = join(root, cfg.archive_dir_name);
     await mkdir(archiveRoot, { recursive: true });
-    let target = join(archiveRoot, skill.dirName ?? skill.skillName);
+    let target = join(archiveRoot, dirName);
     if (await exists(target)) target = `${target}-${Date.now()}`;
     await rename(src, target);
     return { moved: true, path: target, reason: null };
   }
 
   async function moveBackFromArchive(skill, cfg) {
-    const archiveRoot = join(cfg.skills_dir, cfg.archive_dir_name);
-    const src = join(archiveRoot, skill.dirName ?? skill.skillName);
-    if (!(await exists(src))) return { moved: false, path: null, reason: 'archived directory not found' };
-    const target = join(cfg.skills_dir, skill.dirName ?? skill.skillName);
+    const root = await resolveSkillRoot(skill, cfg);
+    if (!root) return { moved: false, path: null, reason: 'no skill root available' };
+    const dirName = skillDirName(skill);
+    const target = join(root, dirName);
     if (await exists(target)) return { moved: false, path: null, reason: 'target directory already exists' };
+    const archiveRoot = join(root, cfg.archive_dir_name);
+    let src = join(archiveRoot, dirName);
+    if (!(await exists(src))) {
+      // 归档时若目标已存在会加时间戳后缀（见 moveToArchive）→ 恢复时按前缀找回。
+      // 否则「归档成功但恢复找不到目录」＝ 归档实际不可逆。
+      const hit = (await readdir(archiveRoot, { withFileTypes: true }).catch(() => []))
+        .filter((e) => e.isDirectory() && e.name.startsWith(`${dirName}-`))
+        .map((e) => e.name)
+        .sort()
+        .pop();
+      if (hit) src = join(archiveRoot, hit);
+    }
+    if (!(await exists(src))) return { moved: false, path: null, reason: 'archived directory not found' };
     await rename(src, target);
     return { moved: true, path: target, reason: null };
   }

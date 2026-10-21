@@ -1,5 +1,50 @@
 # agint-curator 变更日志
 
+## v0.2.2 (2026-10-21) — 修「多根只改了扫描侧」：归档/恢复按技能所属根定位
+
+> 起因：v0.2.1 把 `skills_dir` 改成目录列表，**只改了扫描侧**。归档侧
+> `executor.js` 仍是 `join(cfg.skills_dir, ...)` —— 数组进 `path.join` 抛
+> `ERR_INVALID_ARG_TYPE`（实测），**归档能力静默失效**：目录不动、状态不落
+> （`putSkill` 在移动之后才执行），只留一条 `archive_failed` 审计。
+> fail-safe，不危险；但「策展能自动归档」这个能力从来没生效过。
+
+**① 账本记物理位置**
+
+`skill_states` 新增两个字段：`rootDir`（技能属于哪个扫描根）、`dirName`
+（物理目录名，可能 ≠ frontmatter 的 `name`）。扫描时写入，归档时使用。
+两字段可选且有默认值（null）⇒ 新旧记录双向兼容。
+
+**② 归档/恢复按技能所属根算路径**
+
+`executor.js` 新增 `resolveSkillRoot()`：
+1. 账本里的 `rootDir`（扫描时写下的真实根，权威）；
+2. 存量记录没有该字段 → **在所有根里找一遍**这个技能目录；
+3. 都没找到 → 回退第一根（此时判「目录不存在」，只改账不移动）。
+
+**不跨根搬**：归档与恢复都在同一个根内完成（`<root>/.archive/<name>/`）。
+`skills_dir` 的归一化（字符串 / 数组）抽成 `normalizeSkillRoots()`，扫描侧与
+归档侧共用同一份 —— 这次根因正是两边各写一遍、只改了一边。
+
+**③ 恢复支持时间戳后缀**
+
+归档时若目标已存在会加时间戳后缀（`name-<ts>`），旧恢复逻辑只找精确名
+⇒「归档成功但恢复找不到目录」＝ 归档实际不可逆。现在按前缀找回。
+
+**④ 顺带修一个一直没跑起来过的测试**
+
+`test/const-consistency.test.mjs` 用 `new URL(...).pathname` 取仓库根，
+而 `.pathname` 对中文路径返回**百分号编码**（`project%E6%BA%90%E7%A0%81`），
+代码只剥了前导斜杠、没解码 ⇒ 在中文目录下 `readdirSync` 直接 ENOENT，
+这个测试**没有真正执行过**。加 `decodeURIComponent` 后恢复。
+
+**存储域版本保持 2**：`rootDir`/`dirName` 可选 + 有默认值，双向兼容；
+bump 需声明 `compatibleVersions`，否则回滚插件时旧代码读 v3 medium 会
+`version-mismatch` → 域打不开 → 插件挂不上。风险大于收益。
+
+**测试**：新增 `test/multi-root-archive.test.mjs`（T0 根因回归 / T1 多根归档 /
+T2 恢复 / T3 目录名≠name / T4 单根回归 / T5 存量记录兼容）。
+本插件测试套件 97 项全通过。
+
 ## v0.2.1 (2026-10-01) — 多根扫描 + 孤儿清扫 + lastRunAt 落盘（策展「账实不符」三修）
 
 > 起因：本机 `curator_status` 恒显 `lastRun=never`、preset 自带的 7 个手工技能**在账上

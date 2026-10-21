@@ -59,6 +59,38 @@ function apply(ctx, config) {
   let currentSessionId = null;
   let writeQueue = Promise.resolve();
 
+  // ── token 计量（2026-10-21 接上游 ctx.tokenMeter，见 capability-boundary.md §4 F3）──
+  //
+  // 为什么在这里接：D-QAF Phase 3 的「有效进化增量 = Δ(任务完成率) / Δ(Token消耗 +
+  // 步数 + 时间)」里，token 项此前**恒缺** —— 全仓 grep token 只有 13 行「恒 null」
+  // 占位注释。dsh 0.2.1 已提供确定性计量（replay-aware，不调模型），AGINT 只该消费。
+  //
+  // 口径（必须写清楚，否则这个数字会变成新的假读数）：
+  //   ① 这是**一次工具调用前后**会话累计 token 的差值，不是这次调用本身的计费额。
+  //      会话级的模型回复、压缩、重放都可能改变累计值。
+  //   ② 上游缺席 ⇒ 该字段 null（不填 0）。0 会被下游当成「测得零」，
+  //      而 null 是「没测」—— 两者在 D-QAF 里含义完全不同。
+  //   ③ 测量失败不阻断工具统计本身（catch 后置 null）。
+  const tokenMeter = (ctx.get && ctx.get('tokenMeter')) || null;
+
+  /** 取会话当前累计 token；拿不到返回 null（绝不返回 0 冒充）。 */
+  function readTotalTokens(session, requestHeader) {
+    if (!tokenMeter || typeof tokenMeter.measure !== 'function') return null;
+    if (!session) return null;
+    try {
+      const m = tokenMeter.measure(session, requestHeader);
+      const v = m?.totalTokens;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 当前活跃 session 对象（session/created 时留一份引用，measure 要的是 Session 而非 id）。 */
+  let currentSession = null;
+  /** 每次工具调用开始前的累计值，供 tools/result 时算 delta。 */
+  let tokensBeforeCall = null;
+
   // ── Throttle：tool_stats_summary 一小时最多 N 次，防失控 ──
   // 内部计数器：按 1 小时桶滚动清零。
   const THROTTLE_PER_HOUR = 5;
@@ -81,16 +113,32 @@ function apply(ctx, config) {
   }
 
   // ── 维护当前 session id（监听 session/created 拿 id） ──
+  // 2026-10-21：同时留一份 session 对象引用 —— tokenMeter.measure() 要的是 Session
+  // 实例而不是 id，只存 id 会让 token 计量恒 null（那是"看起来接上了其实没接"）。
   ctx.on('session/created', (session) => {
     currentSessionId = session?.id ?? session?.sessionId ?? null;
+    currentSession = session ?? null;
+    tokensBeforeCall = readTotalTokens(currentSession);
   });
 
   // ── 核心：监听 tools/result（emit 模式，只追加写） ──
   // 签名：'(exec: ToolExecution, result: ToolExecutionResult) => undefined'
   // emit 模式无 next()，不能修改结果。Listener failures are contained.
   ctx.on('tools/result', (exec, result) => {
+    // token 增量：调用后测一次，减去调用前那次。两次都拿到了才有意义；
+    // 任一为 null 就写 null（"没测"），不写 0（那是"测得零"，会被下游当成真值）。
+    const tokensAfter = readTotalTokens(currentSession);
+    const deltaTokens =
+      tokensBeforeCall !== null && tokensAfter !== null
+        ? tokensAfter - tokensBeforeCall
+        : null;
+    // 下一次调用的基线 = 本次的终点
+    tokensBeforeCall = tokensAfter;
+    // 供下游区分「读不到 tokenMeter」与「这次恰好增量为 0」
+    const tokenSource = tokenMeter ? 'tokenMeter' : null;
+
     writeQueue = writeQueue
-      .then(() => persist(exec, result, currentSessionId, jsonlPath))
+      .then(() => persist(exec, result, currentSessionId, jsonlPath, { deltaTokens, tokenSource }))
       .catch((err) => {
         console.error('agint-tool-stats: persist failed', err.message);
       });
@@ -171,7 +219,7 @@ function apply(ctx, config) {
   }));
 }
 
-async function persist(exec, result, sessionId, jsonlPath) {
+async function persist(exec, result, sessionId, jsonlPath, tokenInfo = {}) {
   // emit 事件传过来的是展开对象（exec.name / exec.arguments），
   // 不是 Session Log 里那种嵌套的 {data: {...}} 结构。
   // 两种形态都兼容：直接属性优先，回退到 .data.xxx。
@@ -210,6 +258,12 @@ async function persist(exec, result, sessionId, jsonlPath) {
     argFingerprint,
     argsHash,
     parentIdx,
+    // ── token 计量（2026-10-21，消费上游 ctx.tokenMeter）──
+    // deltaTokens: 本次调用前后会话累计 token 的差值。null = 没测到（不是 0）。
+    // tokenSource: 'tokenMeter' = 上游在位；null = 上游缺席，全部记 null。
+    // ⚠️ 口径：这是"调用前后的累计差"，含该轮模型回复，不等于本次工具调用本身的计费额。
+    deltaTokens: tokenInfo.deltaTokens ?? null,
+    tokenSource: tokenInfo.tokenSource ?? null,
     args,
   };
   await appendFile(jsonlPath, JSON.stringify(record) + '\n', 'utf8');

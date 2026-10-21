@@ -22,7 +22,7 @@
 
 import { readFile, stat } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
-import { ConfigSchema, RUNTIME_CONFIG_KEYS, isSelfProtecting } from './schema.js';
+import { ConfigSchema, RUNTIME_CONFIG_KEYS, isSelfProtecting, normalizeSkillRoots } from './schema.js';
 import {
   spec,
   checkLimit,
@@ -213,8 +213,7 @@ function apply(ctx, config) {
    * 必须是可取证的事实，不能靠读配置猜。
    */
   async function scanSkillRoots() {
-    const declared = effectiveConfig().skills_dir;
-    const list = Array.isArray(declared) ? declared : [declared];
+    const list = normalizeSkillRoots(effectiveConfig().skills_dir);
     const dirs = [];
     const seen = new Set();
     const skills = [];
@@ -286,6 +285,11 @@ function apply(ctx, config) {
         archivedAt: ex?.archivedAt ?? null,
         archiveReason: ex?.archiveReason ?? null,
         curationNotes: ex?.curationNotes ?? '',
+        // 物理位置（2026-10-21）：归档/恢复按它定位目录。扫描结果 s 是权威
+        // ——它知道自己从哪个根读出来；2026-10-21 之前的存量记录没有这两个
+        // 字段，由 s 补齐（补齐前若发生归档 → 回退 skills_dir 第一根）。
+        rootDir: s.rootDir ?? ex?.rootDir ?? null,
+        dirName: s.dirName ?? ex?.dirName ?? null,
       };
       const packed = packSkillState(business, ex);
       // createdAt 用技能创建时间（SKILL.md birthtime），不是首次入库时间

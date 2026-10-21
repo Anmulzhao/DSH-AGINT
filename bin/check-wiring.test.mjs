@@ -147,7 +147,12 @@ describe('豁免机制', () => {
     // 属机器私有路径，而仓库规则要求这类事实不进库文件），仓库保留可移植写法。
     // 这条漂移在查 H 修好布局探测之前是**看不见的**（web profile 已退役 ⇒ 查 H 恒空）。
     // 处置：等老板定文案方向。在此之前只允许这一条，多一条即红。
-    const KNOWN_DEPLOY_DRIFT = ['agint-voice-hotkey/lib/client.js'];
+    // 2026-10-21：原 KNOWN_DEPLOY_DRIFT 豁免已撤销。它针对 agint-voice-hotkey 的
+    // 部署位手工改动（文案指向本机 D:/DSH/bin/voice-hotkey.mjs = 机器私有路径）；
+    // 该插件已于 2026-10-21 归档到 archived-plugins/（与 dsh 语音输入重复 + 从未挂载
+    // + 带机器私有事实，理由见 archived-plugins/README.md）⇒ 豁免一并删除。
+    // 现在**任何**仓库领先部署位的文件都算红，没有例外。
+    const KNOWN_DEPLOY_DRIFT = [];
     const unexpected = report.drift.repoNewer.filter(
       (d) => !KNOWN_DEPLOY_DRIFT.some((k) => d.endsWith(k)),
     );

@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-curator",
-  "version": "0.2.0",
-  "description": "P0-2 技能策展人 v0.2.0（Sprint 15 阶段 2 智能策展）：在阶段 1 基础策展上叠加三维度重叠检测（描述≥0.85/工具≥0.7/触发≥0.6，≥2 维达标→候选对+推荐动作）、质量评估（成功率周快照趋势 + 跨域 evolution-log 的 phase3-provisional 评估历史，任一缺失降级不编造）、质量加速规则（规则1 加速 stale / 规则2 加速 archive 60 天 / 规则3 质量保护 review / 规则4 新技能保护期）、质量下降标记状态 quality_declining。存储域 agint_curator schemaVersion 2（增 overlap_candidates 表 + skill_states.quality 字段）。报告新增重叠/质量下降/影响章节。不做 consolidate/prune（Sprint 16，显式抛未实现）。",
+  "version": "0.2.2",
+  "description": "P0-2 技能策展人 v0.2.2：在 v0.2.0 基础策展（周聚合使用数据 → 状态机检测陈旧 → 保护 → 归档可恢复）+ v0.2.1 多根扫描/孤儿清扫/lastRunAt 落盘之上，修「多根只改了扫描侧」的漏项 —— 归档/恢复的路径计算改为按技能所属根定位（账本新增 rootDir/dirName 字段，扫描时写、归档时用），多根部署下不再因 path.join(数组) 抛错而静默失效。存储域 agint_curator schemaVersion 保持 2（两个新字段可选且有默认值，双向兼容；bump 需 compatibleVersions 且会让回滚路径 version-mismatch）。不做 consolidate/prune（Sprint 16，显式抛未实现）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
