@@ -597,3 +597,30 @@ if [ -f "$BND_SCRIPT" ]; then
     exit 1
   fi
 fi
+
+# ── dsh 兼容门禁（阻断）：宿主版本必须等于门禁判据版本 ──────────────────────
+# 2026-10-21 接入：本仓有三份 dsh —— 真实宿主（Electron 的 resources/app.asar）、
+# 解析根（$DSH_HOME/.agint-deps/dsh-runtime，插件实际 import 的那份）、
+# 门禁判据（仓内 node_modules）。宿主升级而另两份不动时，门禁对着旧副本说
+# "兼容" ⇒ **假绿**：门禁说没事，实际 AGINT 的插件跑在旧 dsh 上。
+#
+# 本门禁把「真实宿主版本」拉进判据：宿主版本 ≠ 判据版本 ⇒ 红灯。
+#
+# ⚠️ 宿主查不到时（Linux 机器没有 app.asar / 未配 DSH_HOST_APP_ASAR）⇒
+#   只报 INFO「没查」，**不阻断** —— 查不到不是"不一致"，不能把别的机器堵死。
+DSH_COMPAT_SCRIPT="$(dirname "$0")/check-dsh-compat.mjs"
+if [ -f "$DSH_COMPAT_SCRIPT" ]; then
+  echo
+  echo "─── dsh 兼容门禁（宿主版本对照）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$DSH_COMPAT_SCRIPT"; then
+      echo "  [PASS] dsh 兼容检查通过（含宿主版本对照）"
+    else
+      echo "  [FAIL] dsh 兼容检查不通过 —— 宿主版本与门禁判据不一致或存在悬挂包名"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，dsh 兼容门禁无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi

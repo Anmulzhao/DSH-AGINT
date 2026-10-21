@@ -44,6 +44,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// 宿主版本对照 —— 消「门禁对着 dsh 副本、对真实宿主失明」的假绿
+import { checkHostVersion } from './host-version.mjs';
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -407,6 +409,10 @@ function checkRenames(refs, installed) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 2.5 宿主版本对照（消「假绿」）
+ * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
  * 3. 主流程
  * ------------------------------------------------------------------ */
 
@@ -428,6 +434,8 @@ const issues = [
   ...checkPeerCompatibility(semver, dsh.version, installed),
   ...checkVersionDrift(dsh.version, semver),
   ...checkRenames(refs, installed),
+  // 宿主版本对照：门禁判据必须等于真实宿主版本，否则结论对宿主无效（假绿）
+  ...checkHostVersion(dsh.version),
 ];
 
 const critical = issues.filter((i) => i.level === 'critical');

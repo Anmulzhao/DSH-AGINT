@@ -266,6 +266,44 @@
 - **结论（写给下一个人）**：迁到上游前先问一句「我要的是**逻辑会话**还是**原始字节**」。
   前者可走上游，后者只能走本地 —— 这不是实现偷懒，是两种数据形态的差别。
 
+### F10 · 本机有三份 dsh，兼容门禁曾只对其中一份判 ⇒ 假绿（已收口）
+
+- 现象（2026-10-21 取证）：本机同时存在三份 dsh，三方角色完全不同：
+  | # | 位置 | 角色 | 版本（2026-10-21 实测） |
+  |---|---|---|---|
+  | **C** | `D:\Programs\DeepSeek Harness\resources\app.asar` | **真实宿主**（Electron 桌面版内核，把 dsh 打进 `@deepseek-ai/dsh-desktop-runtime`） | 0.2.1-rc.2 |
+  | **B** | `$DSH_HOME/.agint-deps/dsh-runtime` | **解析根**（AGINT 插件 import 的那份，install.sh 途径③，版本锁死） | 内层 0.2.1-rc.2 |
+  | **A** | 仓内 `node_modules/@deepseek-ai/dsh` | **门禁判据**（`check-dsh-compat` 解析到的） | 0.2.1-rc.2 |
+  ⚠️ 另有一处自相矛盾：`.agint-deps/dsh-runtime/package.json` 写 `0.2.0-rc.2`，
+  而其内层 `node_modules/@deepseek-ai/dsh` 是 `0.2.1-rc.2`。install.sh 只 `grep` 包**名**
+  （不看版本）⇒ 不影响运行，但元数据不可信。
+- 假绿形状：**宿主 C 升级，而 A / B 不动** ⇒ 门禁对着旧副本说「兼容」
+  ⇒ 门禁说没事，实际 AGINT 的插件跑在旧 dsh 上、宿主已换版本。
+- 修法（2026-10-21 已落地）：
+  - 新增 `bin/asar-read.mjs` —— 最小 asar 读取器（格式实测自本机 app.asar 头：
+    `[0..3]=4`、`[4..7]=headerPickleSize`、`[8..11]=headerPickleSize-4`、
+    `[12..15]=headerJsonSize`、`[16..]=JSON`、内容起点 `= 8 + headerPickleSize`）。
+    只读，**不动 dsh 安装目录**。
+  - 新增 `bin/host-version.mjs` —— `checkHostVersion(judgedVersion)`：
+    宿主版本 == 判据版本 ⇒ 不报；**不一致 ⇒ critical**（门禁红）；
+    **宿主查不到 ⇒ INFO 且措辞明说「没查」**（绝不报成"一致"）。
+  - `bin/check-dsh-compat.mjs` 接入该检查；宿主路径来源（机器私有，按红线不入库）：
+    ① `DSH_HOST_APP_ASAR` 环境变量 ② `AGENTS.local.md` 的 `hostAppAsar:` 键
+    （该文件已 gitignore；块外内容不被自动生成脚本覆盖）③ 常见安装位扫描。
+  - `bin/plugin-check.sh` 新增阻断位「dsh 兼容门禁（宿主版本对照）」。
+- 判据（红绿自证，`test/host-version.test.mjs` 6/6 绿）：
+  - ⛔ 宿主版本与判据不一致 ⇒ critical（消息带双方版本号）
+  - 宿主版本一致 ⇒ 不报
+  - ⛔ 宿主查不到 ⇒ INFO 且措辞含「没查」、**不含**"版本一致/已核对"
+  - ⛔ 宿主路径存在但读不出版本 ⇒ INFO（同样说"没查"）
+  - `findHostAppAsar`：env 优先；env 指向不存在 ⇒ 回落 `AGENTS.local.md` 键
+  - 端到端阴性对照：造一个版本 `9.9.9` 的假 asar ⇒ `check-dsh-compat` exit **1**、
+    `plugin-check` 打出 `[FAIL]`；恢复后 exit 0。
+- ⚠️ 两台机器的差异：Linux 机器没有 `app.asar` ⇒ 该项只报 INFO「没查」，**不阻断**
+  （查不到不是"不一致"，不能把别的机器堵死）。
+- ⛔ **仍待处置**：`AGINT 插件运行时实际解析的是 A 还是 B`（两者版本当前相同 ⇒ 无实际差异），
+  以及 B' 那份陈旧容器清单（不影响运行，但元数据不可信）。
+
 ---
 
 ## 5. 待裁决项（需要人拍板）
