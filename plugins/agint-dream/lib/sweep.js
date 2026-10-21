@@ -196,22 +196,21 @@ export function isZstdAvailable() {
 }
 let zstdMissingWarned = false;
 
-export async function readSessionLog(log, sessionSource = null) {
-  // D1 迁移（2026-10-21）：log 参数改为对象 { path, sessionId }（兼容旧的纯路径字符串）。
-  // 传入 sessionSource ⇒ 读内容优先走上游 sessionQuery.readSession(sessionId)。
-  // 上游缺席时回落本地 zstd 解压。
-  //
-  // ⛔ 为什么要 sessionId：上游 readSession(id) 需要 id，光有磁盘路径不够。
-  //   2026-10-19 那次"接上游"失败的根因之一就是没把 sessionId 传下去。
-  const logPath = typeof log === 'string' ? log : log?.path;
-  const logSessionId = typeof log === 'object' ? log?.sessionId ?? null : null;
-
-  if (sessionSource) {
-    const read = await sessionSource.readEvents({
-      dir: logSessionId, path: logPath, upstream: true,
-    });
-    return read.events;
-  }
+/**
+ * 只解压、不解析：返回会话日志的**原始文本**。
+ *
+ * ⛔ 2026-10-21 修（运行态取证）：这层必须与"解析"分开。
+ *   起因：session-source 的 `readLocal` 契约是「返回文本」，而 dream 之前把
+ *   `readSessionLog`（返回**已解析事件数组**）当 readLocal 注入 ⇒
+ *   `readEventsFromDisk` 里 `String(text).split('\n')` 把数组 toString 成逗号串
+ *   ⇒ `JSON.parse` 全部失败 ⇒ **拿到 0 个事件**。
+ *   症状：dream 扫到 60 个会话，用户消息信号 / memWrites / 工具错误**全部归零**
+ *   （迁移前同窗口分别是 105 / 20 / 565）⇒ 进化闭环的输入瞎了。
+ *
+ * @param {string} logPath 会话日志路径
+ * @returns {Promise<string>} 解压后的文本
+ */
+export async function readSessionLogText(logPath) {
   if (!isZstdAvailable()) {
     if (!zstdMissingWarned) {
       // Warn once per sweep; the diary will record this as the root cause
@@ -227,7 +226,29 @@ export async function readSessionLog(log, sessionSource = null) {
   }).catch((err) => {
     throw new Error(`zstd -dc ${basename(logPath)} failed: ${err.message}`);
   });
-  return stdout.split('\n').filter((l) => l.trim()).map((l) => {
+  return stdout;
+}
+
+export async function readSessionLog(log, sessionSource = null) {
+  // D1 迁移（2026-10-21）：log 参数改为对象 { path, sessionId }（兼容旧的纯路径字符串）。
+  // 传入 sessionSource ⇒ 读内容优先走上游 sessionQuery.readSession(sessionId)。
+  // 上游缺席时回落本地 zstd 解压。
+  //
+  // ⛔ 为什么要 sessionId：上游 readSession(id) 需要 id，光有磁盘路径不够。
+  //   2026-10-19 那次"接上游"失败的根因之一就是没把 sessionId 传下去。
+  const logPath = typeof log === 'string' ? log : log?.path;
+  // 本地目录名就是 session id（sessions/<ws>/<session-id>/）；listSessionLogs 给的
+  // 字段名是 `dir`（不是 `sessionId`）—— 传错会让上游分支永远不触发。
+  const logSessionId = typeof log === 'object' ? (log.sessionId ?? log.dir ?? null) : null;
+
+  if (sessionSource) {
+    const read = await sessionSource.readEvents({
+      dir: logSessionId, path: logPath, upstream: true,
+    });
+    return read.events;
+  }
+  const text = await readSessionLogText(logPath);
+  return text.split('\n').filter((l) => l.trim()).map((l) => {
     try { return JSON.parse(l); } catch { return null; }
   }).filter(Boolean);
 }
@@ -1122,7 +1143,10 @@ export async function runSweep({
     fallback: async () => [],
     onFallback: (reason) => errors.push(`session-source: ${reason}`),
     source: 'dream/sweep',
-    readLocal: (path) => readSessionLog(path),
+    // ⛔ readLocal 的契约是「返回**文本**」，不是返回已解析的事件数组。
+    //   传错类型会让 readEventsFromDisk 拿到数组 → toString → JSON.parse 全失败
+    //   → 事件数 0（2026-10-21 运行态事故，见 readSessionLogText 的注释）。
+    readLocal: (path) => readSessionLogText(path),
   }) : null;
 
   // ── Light: candidate extraction window (2d) ─────────────────────────────

@@ -230,6 +230,38 @@
   | `plugins/agint-ov-strategy/lib/index.js:136` | `ctx.get('openvikingMemory')` |
   | `plugins/agint-cron/lib/index.js:232` | `ctx.get('sessionPersistence')` |
 
+### F9 · 上游事件流 ≠ 宿主侧原始日志（`readLocal` 契约踩坑）
+
+- 现象（2026-10-21 第二次重启后运行态取证）：dream 扫到 **60 个会话**，但
+  **用户消息信号 0 / memWrites 0 / 工具错误信号 0**；迁移前同窗口
+  （`dreams/2026-10-21.md`，Light 2d）是 **31 会话 / 105 / 20 / 565**
+  ⇒ 会话数涨了、内容全空 = 进化闭环的输入瞎了。
+- 根因一（`readLocal` 契约）：session-source 的 `readLocal` 契约是「返回**文本**」，
+  而 dream 注入的是 `readSessionLog(path)` —— 它返回**已解析的事件数组**。
+  ⇒ `readEventsFromDisk` 里 `String(text).split('\n')` 把数组 toString 成逗号串
+  ⇒ `JSON.parse` 全部失败 ⇒ **0 个事件**。
+  修法：拆出 `readSessionLogText(path)`（只解压返文本），`readLocal` 注入它。
+  取证（本地实测，真实会话日志）：旧路径 3378 事件 / 17 userTexts / 5 memWrites；
+  新路径（session-source 回落）**同数**。
+- 根因二（字段名）：dream 的 `listSessionLogs` 返回的字段是 `dir`（不是 `sessionId`）
+  ⇒ 上游 `readSession(record.dir)` 从未拿到 id。修法：`log.sessionId ?? log.dir`。
+- 根因三（**边界判断错了**）：**self-observation 整条链接上上游反而瞎了**。
+  - 它的检测对象是**原始日志**的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call）；
+    上游 `readSession` 给的是**重放校验后**的事件流 ⇒ 缺陷已被抹平 ⇒ 检测能力归零。
+  - 上游 `listSessions` 的记录**不含磁盘路径** ⇒ 下游 `path` 是空串
+    ⇒ 解压必然失败 ⇒ 全部会话被判 `undecompressible`。
+  ⇒ **回退**：self-observation 的列举与内容**都按设计走本地**
+    （`listRecentSessionsFallback` + 本地 zstd 解压），并保留
+    `findSessionLogFile` 的候选名 + 后缀兜底以抗宿主改名。
+  - 代价：仍是 B-008 登记的「宿主层能力自建」，本轮**不**消除 ——
+    完整性检查需要原始字节，上游目前不提供该形态。
+- 判据：
+  - `test/session-integrity.test.mjs` 两条 ⛔ 断言：`inspectSessionFile` 签名**不含**
+    `sessionSource`；`listRecentSessions` 必须给出**非空本地路径**。
+  - dream 151/151、input-gateway 6/6 绿。
+- **结论（写给下一个人）**：迁到上游前先问一句「我要的是**逻辑会话**还是**原始字节**」。
+  前者可走上游，后者只能走本地 —— 这不是实现偷懒，是两种数据形态的差别。
+
 ---
 
 ## 5. 待裁决项（需要人拍板）

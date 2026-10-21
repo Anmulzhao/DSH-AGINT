@@ -378,18 +378,31 @@ export function createSessionSourceForSelfObservation({ ctx = null, onFallback }
  * 既有调用方不用改签名；ctx 缺省时走回落并出声。
  */
 export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback = null } = {}) {
-  const src = createSessionSourceForSelfObservation({
-    ctx,
-    // 没给 onFallback 时用一个默认出声实现：降级必须留痕，不能静默
-    onFallback: onFallback ?? ((reason) => {
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
-      }
-    }),
+  // ⚠️ 2026-10-21 回退（运行态取证）——本通道**按设计走本地原始日志**，不走上游。
+  //
+  // 为什么必须回退（D1 迁移把这条链接上上游后，它反而瞎了）：
+  //   ① **检测对象不同**：完整性检查查的是磁盘上的**原始日志**（坏行 / seq 断裂 /
+  //      缺 content / 未配对 call）。上游 `readSession` 给的是**重放校验后**的
+  //      事件流 —— 缺陷在校验阶段就被抹平 ⇒ 拿它做完整性检查，检测能力直接归零。
+  //   ② **上游不给磁盘路径**：`listSessions` 的记录没有 path ⇒ 下游拿到的
+  //      `path` 是空串 ⇒ 解压必然失败 ⇒ 全部会话被判为 undecompressible。
+  //
+  // 宿主若再改会话日志命名，本通道靠 `findSessionLogFile` 的候选名 + 后缀兜底兜住
+  // （2026-09-22 改名致 12 天断供的教训）。
+  //
+  // 代价要说清：这仍是 B-008 登记的「宿主层能力自建」（自拉 zstd 解压），
+  // 本轮**不**消除 —— 完整性检查需要原始字节，上游目前不提供该形态。
+  void ctx;
+  const notify = onFallback ?? ((reason) => {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
+    }
   });
-  const rows = await src.listRecent({ maxCount });
+  notify('local-by-design: session 完整性检查必须读原始日志（上游是重放校验后的产物，且不含磁盘路径）');
   // 对齐既有形状：{ path, sessionId, mtimeMs }
-  return rows.map((r) => ({ path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs }));
+  return listRecentSessionsFallback(maxCount).map((r) => ({
+    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs,
+  }));
 }
 
 /**
@@ -404,25 +417,19 @@ export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback 
  *   - 未配对 call：tool/call 的 callId 无对应 tool/result
  * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
  *
- * D1 迁移（2026-10-21）：`sessionSource` 传入时，读内容优先走上游
- * `sessionQuery.readSession(sessionId)`；上游缺席时回落本地 zstd 解压。
- * 上游读失败时返回 `{ decompressError }` —— 与原来 zstd 失败同语义。
+ * ⚠️ 2026-10-21 回退（运行态取证）：**只读本地原始日志**，不走上游。
+ *   ① 完整性检查查的就是原始日志的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call）；
+ *      上游 `readSession` 给的是**重放校验后**的事件流 ⇒ 缺陷已被抹平，
+ *      拿它检查等于拿干净数据找脏东西 —— 检测能力直接归零。
+ *   ② 上游记录不含磁盘路径，本函数却必须拿到日志文件才能解压。
+ *   ⇒ 本函数签名不再接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
  */
-export async function inspectSessionFile(file, sessionSource = null) {
+export async function inspectSessionFile(file) {
   let events;
   let decompressError = null;
   let badLinesSeen = null;   // zstd 路径读入时累计的坏行数
 
-  if (sessionSource) {
-    try {
-      const read = await sessionSource.readEvents({
-        dir: file.sessionId ?? null, path: file.path, upstream: true,
-      });
-      events = read.events;
-    } catch (e) {
-      decompressError = String(e?.message || e).slice(0, 200);
-    }
-  } else {
+  {
     const bin = resolveZstdBin();
     try {
       const text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -504,13 +511,8 @@ async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
   if (files.length === 0) return [];
 
   const issues = [];
-  // D1：创建 sessionSource 传给 inspectSessionFile（上游优先读内容）
-  const sessionSource = ctx ? createSessionSourceForSelfObservation({
-    ctx,
-    onFallback: (reason) => { /* listRecentSessions 的回落已在上面出声，这里只用于读 */ },
-  }) : null;
   for (const f of files) {
-    const insp = await inspectSessionFile(f, sessionSource);
+    const insp = await inspectSessionFile(f);
     if (insp.decompressError) {
       issues.push({ sessionId: f.sessionId, flags: ['undecompressible'], totalLines: 0, badLines: 0, badLineRate: 0, seqGaps: 0, missingContent: 0, unpairedCalls: 0, path: f.path });
       continue;

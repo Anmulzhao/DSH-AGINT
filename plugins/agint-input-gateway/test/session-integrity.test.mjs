@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { inspectSessionFile, listRecentSessions } from '../lib/channels/self-observation.js';
@@ -96,63 +96,34 @@ test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全
   }
 });
 
-// D1 迁移：sessionSource 传入时走上游，上游缺席时回落本地。
-test('inspectSessionFile: 传 sessionSource 且上游可读 ⇒ 走上游不碰 zstd', async () => {
-  const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
-  try {
-    // 假上游：readSession 返回 2 个事件
-    let zstdTouched = false;
-    const fakeSource = {
-      readEvents: async (rec) => {
-        assert.equal(rec.dir, sessionId, 'record.dir 应带 sessionId');
-        assert.equal(rec.path, file, 'record.path 应带本地路径');
-        assert.equal(rec.upstream, true, '应标记走上游');
-        return {
-          events: [
-            { type: 'session', version: 4, id: sessionId },
-            { type: 'message', seq: 0, time: 1, data: { content: 'hi' } },
-          ],
-          via: 'upstream',
-        };
-      },
-    };
-    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() }, fakeSource);
-    assert.equal(insp.badLines, 0);
-    assert.equal(insp.seqGaps, 0);
-    assert.equal(insp.totalLines, 2, '应从上游拿到 2 条事件');
-    assert.equal(zstdTouched, false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+// ⛔ 2026-10-21 回退（运行态取证）：本通道**只读本地原始日志**，不走上游。
+// 判据：inspectSessionFile 不接受 sessionSource（签名里没有这个参数），
+// 且 listRecentSessions 必须给出**可解压的本地路径**（上游记录不含 path）。
+test('⛔ inspectSessionFile: 不接受上游（签名无 sessionSource ⇒ 只能读原始日志）', () => {
+  const src = readFileSync(new URL('../lib/channels/self-observation.js', import.meta.url), 'utf8');
+  const sig = /export async function inspectSessionFile\(([^)]*)\)/.exec(src);
+  assert.ok(sig, '必须能定位到 inspectSessionFile 的签名');
+  assert.ok(
+    !/sessionSource/.test(sig[1]),
+    `inspectSessionFile 的签名不该再收 sessionSource（实际：${sig[1].trim()}）`,
+  );
 });
 
-// ⛔ 负对照：上游抛错时必须回落本地，而不是静默返回空
-test('⛔ inspectSessionFile: 上游抛错 ⇒ 回落本地（不能假装读到）', async () => {
-  const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
+test('⛔ listRecentSessions: 必须给可解压的本地路径（上游记录无 path ⇒ 会全判 undecompressible）', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sesspath-'));
   try {
-    // 假源模拟真实 sessionSource 的回落行为：
-    // 真实 sessionSource.readEvents 内部捕获上游错误 → 报告 → 回落本地，**不抛**
-    const fakeSource = {
-      readEvents: async (rec) => {
-        // 模拟上游抛错 → 内部捕获 → 回落
-        if (rec.upstream) {
-          // 真实行为：report(read-upstream-failed) + 回落本地读盘
-        }
-        // 回落：读本地文件
-        const bin = resolveZstd();
-        const text = execFileSync(bin, ['-dc', rec.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-        return {
-          events: text.split('\n').filter((l) => l.trim()).map((l) => {
-            try { return JSON.parse(l); } catch { return null; }
-          }).filter(Boolean),
-          via: 'fallback',
-        };
-      },
-    };
-    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() }, fakeSource);
-    assert.ok(insp.totalLines >= 6, `上游抛错应回落本地，拿到真实事件数，实际=${insp.totalLines}`);
+    const sessRoot = join(root, 'sessions');
+    mkdirSync(join(sessRoot, 'ws-a', 'sid-p'), { recursive: true });
+    writeFileSync(join(sessRoot, 'ws-a', 'sid-p', 'session.v4.jsonl.zstd'), 'x');
+    process.env.DSH_HOME = root;
+    const logs = await listRecentSessions(8);
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].path && logs[0].path.length > 0, `path 不能是空串（实际：${JSON.stringify(logs[0].path)}）`);
+    assert.equal(logs[0].sessionId, 'sid-p');
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
