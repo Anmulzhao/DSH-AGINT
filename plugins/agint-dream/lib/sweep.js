@@ -128,8 +128,17 @@ const clamp = (v) => Math.max(0, Math.min(1, v));
 // 原先的精确名匹配让 Light 通道静默失效 7 天（2 天窗口内扫到 0 个会话，
 // 而 dream_status 仍报 validation=OK）。改为候选名优先 + 后缀兜底，
 // 使宿主再次改名时不会静默失效。
-const SESSION_LOG_NAMES = ['session.v3.jsonl.zstd', 'session.jsonl.zstd'];
-const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+//
+// ⛔ 2026-10-21 修：本表原先只有 v3，**缺 v4**。宿主 2026-09-22 起已用 v4，
+// 于是「先试候选名」这一步恒落空，一路走后缀兜底 —— 能发现文件，但同目录并存
+// v3/v4 时取哪个变成 readdir 顺序偶然，light/rem/deep 三通道可能读旧格式。
+// 这跟 09-22 那次 12 天断供是同一类错：名字表比宿主落后。
+// 现在名字表与后缀常量的**唯一真相源**是 agint-session-source（全仓一处），
+// 本地不再持有副本 —— 宿主下次改 v5 只需要改那一个文件。
+import {
+  SESSION_LOG_NAMES_BY_RANK as SESSION_LOG_NAMES,
+  SESSION_LOG_SUFFIX,
+} from '../../agint-session-source/lib/index.mjs';
 
 /** 定位会话目录下的日志文件：候选名优先，其次按 .jsonl.zstd 后缀兜底。 */
 export async function resolveSessionLogPath(wsDir, sessionDirName) {

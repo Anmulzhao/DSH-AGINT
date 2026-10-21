@@ -574,3 +574,26 @@ if [ -f "$PY_SCRIPT" ]; then
     exit 1
   fi
 fi
+
+# ── 能力边界门禁（阻断） ────────────────────────────────────────────────────
+# 2026-10-21 接入：docs/capability-boundary.md 把「这件事该 dsh 做还是 AGINT 做」
+# 写成了契约，但契约停在文档里就只是会被人忘记的话。本门禁把它可机械判定的
+# 三条变成红灯：机器私有绝对路径入库 / 宿主层能力自建 / 新插件未在归属表里裁决。
+# 基线对账：存量欠账记在 docs/boundary-baseline.json（只报 INFO，不阻断），
+# 新增越界 exit 1 —— 一上来就全红的门禁会被立刻绕过，所以存量显式记账。
+BND_SCRIPT="$(dirname "$0")/check-boundary.mjs"
+if [ -f "$BND_SCRIPT" ]; then
+  echo
+  echo "─── 能力边界门禁（宿主层/进化层/载体层）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$BND_SCRIPT"; then
+      echo "  [PASS] 无新增越界"
+    else
+      echo "  [FAIL] 新增能力边界越界 —— 改用 dsh 上游能力，或在 docs/boundary-baseline.json 登记理由"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，能力边界门禁无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
