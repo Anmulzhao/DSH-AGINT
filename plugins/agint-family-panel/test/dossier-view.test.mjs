@@ -9,6 +9,9 @@
  *  2. 基础设施插件入边有 26 个，全展开会把一页拉成三页 → 前 8 条 + 折叠。
  *  3. 「仅注释」与「伞键」两条命中曾被塞进「提供方」列，语义错位。
  *  4. 无 manifest 的插件必须显式说「契约不可得」，不能给空数组冒充「什么都不依赖」。
+ *  5. 「这一行在注释里」曾被直接当成文档腐化 —— 2026-10-22 实测 agint-mutator 两条
+ *     解释伞键历史的注释（lib/index.js:1122 / 1189）被报成腐化候选，而它 1193 行
+ *     provide、driver:557 行 dep 取用。腐化判据必须同时看「无提供方 + 无代码取用」。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -132,6 +135,39 @@ test('首句截断到第一个句号，不把第二句拖进来', () => {
 test('7 天曲线：全 0 返回 null（不画一条假线）', () => {
   assert.equal(T.sparkline([0, 0, 0, 0, 0, 0, 0], 10), null);
   assert.notEqual(T.sparkline([0, 1, 0, 0, 0, 0, 0], 10), null);
+});
+
+test('注释命中：服务有提供方 → 不是腐化，只提示「已有依据」', () => {
+  const text = render('agint-normal', makePayload());
+  assert.ok(text.includes('1 处注释提及已有依据'), `应报有依据：${text.slice(text.indexOf('债 ·'))}`);
+  assert.ok(!text.includes('文档腐化候选'), 'agint.a 有提供方（agint-normal 自己 provide），不能算腐化候选');
+});
+
+test('注释命中：服务被别的插件 code 取用但无提供方 → 仍不算腐化', () => {
+  const extra = [
+    ['agint-other', 'lib/index.js', 9, 'agint.noProviderButUsed', 'code'],
+    ['agint-normal', 'lib/index.js', 7, 'agint.noProviderButUsed', 'comment'],
+  ];
+  const index = T.buildDossierIndex(makePayload(extra));
+  assert.equal(index.isCommentRot('agint.noProviderButUsed'), false, '有 code 态取用就不是「只出现在注释里」');
+  const text = render('agint-normal', makePayload(extra));
+  assert.ok(!text.includes('agint.noProviderButUsed@lib/index.js:7'), '该行只能作为「仅注释」证据行，不能进腐化候选清单');
+});
+
+test('注释命中：无提供方、无代码取用、非宿主服务 → 真腐化候选必须报', () => {
+  const extra = [['agint-normal', 'lib/index.js', 6, 'agint.ghost', 'comment']];
+  const index = T.buildDossierIndex(makePayload(extra));
+  assert.equal(index.isCommentRot('agint.ghost'), true, '三条件全满足才判腐化');
+  const text = render('agint-normal', makePayload(extra));
+  assert.ok(text.includes('文档腐化候选'), '真阳性不能丢');
+  assert.ok(text.includes('agint.ghost@lib/index.js:6'));
+});
+
+test('宿主服务键的注释命中不算腐化（本仓不可能 provide 它们）', () => {
+  const extra = [['agint-normal', 'lib/index.js', 8, 'layout', 'comment']];
+  const index = T.buildDossierIndex(makePayload(extra));
+  assert.equal(index.isHostService('layout'), true);
+  assert.equal(index.isCommentRot('layout'), false);
 });
 
 test('整页视图仍能找到服务表头（结构没被打散）', () => {
