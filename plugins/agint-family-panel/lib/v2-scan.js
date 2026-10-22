@@ -3,7 +3,7 @@
  *
  * 规则（v0.3.0，2026-10-04 修「面板 6 条误报」；2026-10-05 再修两条：
  * 裸键自身被 provide 不再降级为 umbrella、加声明补边 —— 均见下）。
- *  - 命中 ctx.get('…') / ctx.provide('…')，**可选链写法同样命中**
+ *  - 命中 ctx.get('…') / ctx.provide('…') / ctx.getService('…')，**可选链写法同样命中**
  *    （ctx?.get?.('…') / ctx?.get('…')，evolution-driver lib/index.js:1639 形态）。
  *  - **不再只认 `agint.` 前缀**：cordis 服务键分两类，本仓都真实存在 ——
  *    ① 家族服务 `agint.*`（本仓 provide，可判有无提供方）；
@@ -13,6 +13,13 @@
  *    （evolution-driver 6 处 / mutator softDepOrReturn）。包装函数名先识别，
  *    随后 `dep('agint.evolve')` 按 **code 边**计，否则整插件会被误判「从未接线」。
  *  - 注释态命中 → kind=comment（文档腐化候选，不建边）。
+ *  - **getService 也是取服务**（2026-10-22 补）：agint-mount 全插件 15 处调用走
+ *    `ctx.getService?.('…')`（orchestrator / health-probe / rollback）。旧正则只认
+ *    get/provide，把这些真调用全部漏掉 ⇒ orchestrator.js:311 的
+ *    agint.l0IsolationCheck 被误判成「只在注释里出现」的文档腐化。
+ *    代价照实记：补认后 agint-mount 有两条 code 边没有提供方
+ *    （agint.probeFn ×2 处、agint.l0IsolationCheck ×1 处，调用点同行都带 ?? 兜底），
+ *    这是**真实事实**，不是新噪音 —— 详见 bin/check-wiring.mjs:369 同源判据。
  *  - code 态 provide → 进 provided 表（不进 hits）。
  *  - code 态 get：键**自身被 provide** → kind=code；否则 provided 里存在该键的
  *    严格子键（K. 前缀）→ kind=umbrella（cordis 服务存储扁平，裸命名空间键恒
@@ -37,6 +44,9 @@
  *  - 注释解析不处理模板串 ${} 嵌套与正则字面量；对 ctx.get 形态影响面≈0。
  *  - 间接形态只认「同文件内、包装函数体直接含 ctx.get(」这一种；跨文件再包装
  *    （如 X = (n) => dep(n)）不识别，会漏边（漏边只影响覆盖率数字，不装绿）。
+ *    ⚠️ 包装识别同样只认 ctx.get(，**不认 ctx.getService(**。2026-10-22 实测全仓
+ *    没有「包装体用 getService」的实例（15 处全是直呼），所以现在不加；真出现时
+ *    要连 DEP_DEF_ARROW / DEP_DEF_FN 一起改，别只改 KEY_RE。
  *    2026-10-05 的声明补边能兜住其中「键以字面量出现在同文件」的部分；键完全
  *    来自变量（且该变量不是字面量）仍漏。
  *  - 声明补边的口径 = manifest 声明（consumes ∪ optionalInject，由调用方传入）。
@@ -52,9 +62,11 @@
 import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-/** 直呼形态：ctx 对象的 get/provide 取服务（键为任意服务名字面量）；可选链写法同样命中。
- *  注释里刻意不写可被本正则命中的样例 —— 扫描器会扫到自己（见下方「自指」）。 */
-const KEY_RE = /ctx\s*\??\.\s*(get|provide)\s*(?:\?\.)?\s*\(\s*(['"`])([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z0-9_$]+)*)\2\s*[,)]/g;
+/** 直呼形态：ctx 对象上三个取服务方法（get / provide / getService，键为任意服务名
+ *  字面量）；可选链写法同样命中。`getService` 必须写在 alternation 前面 —— 最长优先，
+ *  不依赖回溯也能正确切开 `get` 与 `getService`。
+ *  注释里刻意不写可被本正则命中的样例（用省略号占位）—— 扫描器会扫到自己（见下方「自指」）。 */
+const KEY_RE = /ctx\s*\??\.\s*(getService|get|provide)\s*(?:\?\.)?\s*\(\s*(['"`])([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z0-9_$]+)*)\2\s*[,)]/g;
 /**
  * 间接取服务：薄包装的**定义**（不是任意含 ctx.get 的函数）。
  *

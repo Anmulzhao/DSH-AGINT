@@ -129,8 +129,21 @@ const realZ = zeroRows.filter((p) => !EXEMPT[D.pluginKinds[p]?.kind]);
 assert.equal(D.scan.provided['agint.qualityEvaluator'], 'agint-quality-eval', 'qualityEvaluator 提供方未认出（嵌套扫描失效？）');
 assert.equal(D.scan.provided['agint.qualityPolicy'], 'agint-quality-policy', 'qualityPolicy 提供方未认出');
 
-// ② 无提供方必须为空（家族键全部有提供方）
-assert.deepEqual(Object.keys(npBySvc), [], `仍有家族键无提供方：${Object.keys(npBySvc).join(',')}`);
+// ② 无提供方：除「有兜底的可选注入」外必须为空。
+//    2026-10-22 扫描器补认 ctx.getService 形态后新暴露两条 —— 它们不是缺陷，是
+//    agint-mount 的可选注入（调用点同行带 ?? 兜底）：
+//      agint.probeFn           orchestrator.js:449 / :604  ?? probeStaging
+//      agint.l0IsolationCheck  orchestrator.js:311          ?? DEFAULT_L0_HOOK
+//    判据与 bin/check-wiring.mjs:369「有兜底的可选注入」同源。
+//    ⚠️ 修 getService 识别之前，l0IsolationCheck 还被误判成「只在注释里出现」的
+//       文档腐化 —— 那时它连 code 边都没有，自然进不了这张表。
+const OPTIONAL_INJECTION = new Set(['agint.probeFn', 'agint.l0IsolationCheck']);
+const npUnexpected = Object.keys(npBySvc).filter((s) => !OPTIONAL_INJECTION.has(s));
+assert.deepEqual(npUnexpected, [], `仍有家族键无提供方：${npUnexpected.join(',')}`);
+// 反向钉子：这两条必须**仍在册**。掉了说明 getService 形态又漏认了（误报会复活）。
+assert.deepEqual(Object.keys(npBySvc).filter((s) => OPTIONAL_INJECTION.has(s)).sort(),
+  [...OPTIONAL_INJECTION].sort(),
+  `已知可选注入应各有一处无提供方 code 边，实际 ${Object.keys(npBySvc).join(',')}`);
 
 // ③ 文档腐化 = 已知悬空声明集合。**2026-10-05 清空**：并 optionalInject 口径后暴露的
 //    五个插件七条悬空声明已全部处理完 —— 三条改判删声明（agint-event-bus 0.7.3 /
