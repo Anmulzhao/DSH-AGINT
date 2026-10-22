@@ -1,3 +1,38 @@
+## 未发版 · 2026-10-23 — 发布链路收口 C1 / C2 / C4（提案 2f7c834c）
+
+三条一起收口，C3（零调用直接回滚）与 C5（人工确认窗开关）此前已落地，不在本次范围。
+
+**C1 失败残留移出 skills_root**
+- 症状：发布失败时只把 tmp **就地改名**成 `.NAME.tmp-<ts>.failed-<ts>`，
+  而宿主 dsh-skill-filesystem 的 `isPotentialSkillPath` 只跳过 `.system`，
+  于是它被**当成技能发现**加载进 context（2026-09-17 pwsh-pwsh-pwsh-pwsh 实例）。
+- 改：`publishToSkillsRoot` 的 catch 改为移到 `<archiveRoot>/.failed/`。
+  `sweepSkillOrphans` 的 TTL 清理降为**事后兜底**（它要等 1 小时，且没跑就永久留着）。
+- ⛔ 首版踩的坑：`quarantineTmp` 写在模块顶层直接调 `effectiveConfig()` →
+  ReferenceError（那函数在 createReleaseManager 工厂闭包里）。改为由调用方
+  注入 `quarantineRoot` 参数。移不动（跨盘 EPERM）时回落就地改名，宁可留着被 TTL 收。
+
+**C2 证据级别门（evidence-gate）**
+- 症状：`checkGates` 不检查证据级别，两个 auto 发布的技能都是 E0
+  （phase2 未 pass：无 scripts、沙箱门 skipped）—— 进目录后 0 调用是设计出来的。
+- 改：`evidenceLevel === 'E0' && !manual` → 拦（gate='evidence'）。
+  manual=true 仍可放行。位置在 policy 门之前（E0 没必要再花一次 policy 调用）。
+- kill-switch：`evidence_gate_enabled`（默认**开**）。
+
+**C4 回滚登记知识归属**
+- `archiveSkillDir` 与 release 记录加 `absorbedInto`（可空）。
+- 语义：**空 = 尚未登记**，是待办，不是「没有」。回滚 ≠ 知识作废，
+  不登记归属等于半年后没人知道它解决过什么。
+- 工具层 `autocreate_rollback` 新增可选参数 `absorbedInto`。
+
+**验证**：新测试 `test/release-publish-guard.test.mjs` 11 条全绿
+（含 C2 kill-switch、C1 端到端、C4 空值三条 negative control）。
+存量测试修正：release.test.mjs / release-specificity-gate.test.mjs 的候选
+fixture 从 E0 改为 E1 —— 它们测的是下游行为，恒 E0 会被新门先拦下。
+skill-autocreate 全量 411 PASS / 0 FAIL。
+
+---
+
 ## v0.6.2 (2026-10-18) — 候选终结后清 pattern 回链（否则模式永久跳过）
 
 **症状**：生产存储 `agint_skill_autocreate.json` 里 42 条 `status='candidate'`

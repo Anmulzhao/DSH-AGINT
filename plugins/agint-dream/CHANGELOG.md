@@ -5,6 +5,37 @@
 
 ---
 
+## 未发版 · 2026-10-23 — 信号源过滤：挡住被标成 kind='user' 的 subagent prompt（提案 0f6c69bc）
+
+**症状**：Light 通道提炼的候选里混入大量非人类消息。top 12 候选里至少 8 条
+其实是主 agent 发给 subagent 的 prompt 文本，被当成「用户偏好/教训」。
+这是调松 dream 阈值之前的阻塞项 —— 门槛一松，噪声直接写进长期记忆。
+
+**根因**：宿主把 subagent prompt 也记成 kind='user'。老的
+`if (kind && kind !== 'user') continue` 挡得住 plugin / skill-catalog 注入，
+**挡不住它**。
+
+**判据（先验证再写代码）**：实测 60 个会话，kind='user' 记录 163 条 ——
+source 带 rpcId/clientTimeZone 的 155 条全是真人；只有 kind 的 8 条全是
+subagent prompt。**文本特征判据不可用**：155 条真人里有 4 条命中「你是/你现在」
+开头（误杀的是真人问句，误杀率 2.6%）。故只用 source keys，不用文本特征。
+
+**改动**：
+- 新 `classifyUserSource(rec)`：两人类标记任一存在 → human；只有 kind →
+  subagent-prompt；其它 kind → other-kind（丢弃）；source 整体缺失 →
+  unknown-source（**保守收**，防老格式会话整轮归零 = 4734bc97 的静默失效同型错）
+- `collectSessionSignals` 按分类过滤并计数，返回 `sourceFilter`
+- 新 `aggregateSourceFilterStats(signals)`：跨会话汇总，含 `judgeFailed` 判据失效标记
+- 判据失效时 `console.warn` + 进 errors（宿主日志可 grep）+ 日记出一行
+- `counts.sourceFilter` 扁平形状进 dream_status / dream_run_now 的 output schema
+  （`additionalProperties:false` 漏声明 = 整个工具不可用，K164 已咬过四次）
+
+**验证**：新测试 `test/user-source-filter.test.mjs` 15 条全绿（含 3 条 negative
+control）；stale 为 0 的存量测试全部保持绿（48/0、5/0、12/0、3/0）。
+部署位同测同绿。
+
+---
+
 ## v0.5.0 — 工具错误判据收紧为「因果句式」+ 提升边界闸（2026-10-19）
 
 **根因**：v0.4.0 的判据是「出现任一诊断关键词即放行」，而那批关键词
