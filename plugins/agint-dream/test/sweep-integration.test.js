@@ -45,17 +45,17 @@ async function makeFixture() {
   // s1: 老板是创造者（3 条同类信号）
   const s1Records = [
     { type: 'session', id: 's1', seq: 0, time: NOW - 60000 },
-    { type: 'user/message', seq: 1, time: NOW - 50000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '老板，以后统一把 AGINT 老板看作创造者，反馈优先级最高' }] } },
-    { type: 'user/message', seq: 2, time: NOW - 40000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '老板是创造者，反馈优先级高' }] } },
-    { type: 'user/message', seq: 3, time: NOW - 30000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '老板就是创造者' }] } },
+    { type: 'user/message', seq: 1, time: NOW - 50000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '老板，以后统一把 AGINT 老板看作创造者，反馈优先级最高' }] } },
+    { type: 'user/message', seq: 2, time: NOW - 40000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '老板是创造者，反馈优先级高' }] } },
+    { type: 'user/message', seq: 3, time: NOW - 30000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '老板就是创造者' }] } },
   ];
   await writeZstdSession(s1, s1Records);
   // s2: 禁止 rm -rf（不同主题）
   const s2Records = [
     { type: 'session', id: 's2', seq: 0, time: NOW - 60000 },
-    { type: 'user/message', seq: 1, time: NOW - 50000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '禁止在生产环境直接 rm -rf 文件' }] } },
-    { type: 'user/message', seq: 2, time: NOW - 40000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '禁止在生产环境直接 rm -rf 文件，必须用 trash' }] } },
-    { type: 'user/message', seq: 3, time: NOW - 30000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '生产环境禁止 rm -rf' }] } },
+    { type: 'user/message', seq: 1, time: NOW - 50000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '禁止在生产环境直接 rm -rf 文件' }] } },
+    { type: 'user/message', seq: 2, time: NOW - 40000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '禁止在生产环境直接 rm -rf 文件，必须用 trash' }] } },
+    { type: 'user/message', seq: 3, time: NOW - 30000, data: { source: { kind: 'user', rpcId: 'rpc-fixture', clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: '生产环境禁止 rm -rf' }] } },
   ];
   await writeZstdSession(s2, s2Records);
   return { root, sessionsRoot, diaryRoot, recallPath };

@@ -59,7 +59,11 @@ function skillDraft(name = 'batch-frontmatter') {
     scripts: [],
   };
 }
-function makeCandidate(name) {
+function makeCandidate(name, evidenceLevel = 'E1') {
+  // 2026-10-23（提案 2f7c834c C2）：默认证据级别 E1。
+  // 本文件的测试关注点是「门 4 预算 / 观察期 / 回滚」等**下游**行为，
+  // 若候选恒为 E0，会被新加的证据门先拦下，测不到它们真正要测的东西。
+  // 要测证据门本身，显式传 'E0'（见 release-evidence-gate.test.mjs）。
   return packCandidate({
     sourcePatternId: 'tp_test_001',
     source: 'auto',
@@ -67,7 +71,7 @@ function makeCandidate(name) {
     skillDraft: skillDraft(name),
     estimatedBenefit: { successRateImprovement: 0.2, timeSavingsPct: 0.3, tokenSavingsPct: 0.2, harmIncrementEstimate: 0.05 },
     status: 'QUEUED_FOR_RELEASE',
-    evalResults: { phase1: { status: 'pass' }, phase3: { rankingScore: 0.62, evidenceLevel: 'E0', provisional: true } },
+    evalResults: { phase1: { status: 'pass' }, phase3: { rankingScore: 0.62, evidenceLevel, provisional: true } },
     rejectionReason: null,
     releasedAt: null,
     releasedVersion: null,
