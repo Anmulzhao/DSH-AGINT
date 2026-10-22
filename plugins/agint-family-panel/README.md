@@ -2,7 +2,7 @@
 
 AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGINT 插件家族：分组、行状态、通电信号。
 
-- 版本：v0.3.0（2026-10-22 新增「神谕 · 美之判词」分区；v0.2.0 于 2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
+- 版本：v0.4.0（2026-10-22 新增「单插件档案页」下钻；v0.3.0 同日晚新增「神谕 · 美之判词」分区；v0.2.0 于 2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
 - 形态：双半插件（host 半 + 浏览器半）
 - 席位：侧栏 `sidebar.panellist` 入口行 + root 作用域 `main` keyed slot 面板页
 
@@ -12,7 +12,9 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 |---|---|---|
 | host | `lib/index.js` | 开三条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）；不碰 DOM |
 | host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类 + manifest 声明补边）+ storages 三源聚合 + 声明消费契约（`consumes` ∪ `optionalInject`，同时作补边白名单）；每源独立降级，不装绿 |
-| browser | `lib/client.js` | 注册到宿主自带席位；停靠面板**默认内嵌 v2 视图**（iframe 走文档相对 `api/agint-family/v2`），一键可切 v1 名册（分组/行状态/信号），另有「新标签页打开」逃生口；不接管任何宿主 DOM |
+| host | `lib/v2-dossier.js` | **单插件档案数据层**（v0.4.0）：汇拢一个 id 的**全部物理位置**，读 manifest 契约 / package 身份 / CHANGELOG 变更史 / 代码体量，产出可核对的 `drift`（版本分裂、契约与代码分家、声明了没自述） |
+| host | `lib/v2-owners.js` | **归因表单一事实源**（工具名前缀 / cron id / 宿主键），随 `payload.owners` 下发；整页视图与档案页都从这里取，不再各写一份常量 |
+| browser | `lib/client.js` | 注册到宿主自带席位；停靠面板**默认内嵌 v2 视图**（iframe 走文档相对 `api/agint-family/v2`），一键可切名册视图（按钮文案「切换到家族名册」；分组/行状态/信号）；**名册每行可点 → 该插件的档案页**；不接管任何宿主 DOM |
 | asset | `assets/panel-v2.html` | v2 整页前端（待办 / 神谕判词 / Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
 | host | `lib/index.js` 的 `collectOracle` | 神谕层取数：服务面（`cards`/`history`/`getState`/`status`）优先，空段用落盘补齐，补齐原因写 `notes` |
 
@@ -105,6 +107,46 @@ Q1/Q2/Q3 是证据面。结论先看，证据在后。默认分区仍是 Q1，�
 - 提案只显示计数（`proposals`）。内容与流转走 `agint.evolve.listProposals`，
   面板不复制那套状态机。
 
+## 插件档案页（v0.4.0）
+
+**入口**：停靠面板切到 v1 名册 → 点任意插件行。档案是名册的**下钻层级**，不是第三个
+并列视图：`← 名册` 返回，页尾有上/下邻居。
+
+**为什么做在名册而不是整页视图**：名册就是「家族有哪些插件」的列表，点行打开这一行的
+档案是最短路径；整页视图答的是横向对比（Q1/Q2/Q3），不承载单实体。
+
+**六段，顺序 = 从身份到判断**：
+
+| 段 | 答什么 | 数据来源 |
+|---|---|---|
+| 它自己说它是什么 | 首句职责 + 完整自述（折叠） | manifest / package 的 `description` |
+| 分量 | 代码行数 / 提供服务数 / 取用服务数 / 被依赖插件数 | `v2-dossier` 代码体量 + `scan` 边 |
+| 契约 | `provides` 逐条 + `serviceDocs` 原文；inject / optionalInject / consumes / events / tools / 存储域 / 权限 / 生命周期 / 测试入口 | `manifest.json` |
+| 接线 | 取用（服务 / 提供方 / `文件:行号`）+ 依赖它的插件（前 8，余下折叠）+ 声明与代码的对差 | `scan.hits` |
+| 产出 | 30 天工具调用与失败率、bus 发布、cron 任务、7 天曲线、最近活动 | storages 三源 |
+| 债 | 结构差异（版本分裂 / 契约与代码分家 / 无 manifest…）+ 注释命中 + 无提供方 | `v2-dossier` 的 `drift` + `scan` 分类 |
+| 变更史 · 位置 | CHANGELOG 最近 6 版；同一 id 多物理位置时列主/次 | `CHANGELOG.md` / 目录扫描 |
+
+**三条判据纪律**：
+
+1. **取不到就说取不到。** 无 manifest → 契约段写「不可得」并说明只剩身份与代码；
+   无版本 → 显示「版本未读到」，不填 `0.0.0`；无产出 → 说「30 天无可归因产出」并
+   给出三种可能（只提供服务 / 事件触发 / 归属表未覆盖），不写 0 了事。
+2. **一个 id 可能有多个物理位置。** 实测 `plugins/agint-quality-eval`（0.3.3，**无 lib**）
+   与 `plugins/agint-quality/agint-quality-eval`（0.3.5，**有 lib**）并存。档案取
+   **有代码那份**作主位置，manifest 可从另一位置汇拢并注明 `contractSource`，
+   两处版本不同报 `dup-stale`。⛔ 不替人决定哪份是「对的」——那是挂载行的权限。
+3. **只收可核对的差异。** 版本号不等、文件缺失、契约与代码分家、声明了没自述 ——
+   这些能跑命令复核。判断「写得好不好」是神谕层的活，档案不做。
+
+**性能取舍**：档案复用 `/v2/data`（单次 ~180KB，60s 进程内缓存），**不另开路由**。
+另开要么重算一遍（两套口径必然漂），要么做切片（筛选条件又是一套口径）。
+代价是首点一次的网络往返，本地回环可忽略。
+
+**测试**：`test/v2-dossier.test.mjs`（数据层 11 条）+ `test/dossier-view.test.mjs`
+（渲染 13 条）。后者用 `createElement` 替身加载浏览器半，断言「少哪一节、字段读错、
+把取不到画成 0」—— 这三类错误在真宿主里要重启才能发现，在这里一条断言就能钉住。
+
 ## 家族外部成员：终止开关
 
 
@@ -136,6 +178,8 @@ dsh 自己的 plugin-inventory UI 也要剥掉它才显示），按 id 前缀写
 
 ```sh
 node plugins/agint-family-panel/test/smoke.mjs   # 14 组断言（含降级、kill-switch、外部家族成员正负样本）
+node --test plugins/agint-family-panel/test/v2-dossier.test.mjs    # 档案数据层（11 条）
+node --test plugins/agint-family-panel/test/dossier-view.test.mjs  # 档案页渲染（13 条）
 dsh --profile web --dump-config | grep -A4 agint-family-panel
 ```
 

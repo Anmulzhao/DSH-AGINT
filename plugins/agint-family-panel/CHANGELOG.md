@@ -1,3 +1,75 @@
+## 0.4.0 — 2026-10-22
+
+### 新增「单插件档案页」：在 v1 名册点行 → 进这一个插件的档案
+
+**为什么**：名册只回答「家族有哪些插件、它们通不通电」。老板要问的是
+「这个插件到底是什么、凭什么存在、现在欠什么债」，得去翻 manifest、CHANGELOG、
+源码、storages 四个地方。四处拼一遍才知道的事，应该点一下就看见。
+
+**放哪儿（决定与理由）**：放在**停靠面板的 v1 名册**里，点任意插件行进入。
+档案是名册的下钻层级，不是第三个并列视图 —— `← 名册` 返回，页尾给上/下邻居。
+没有做进 v2 整页：整页答的是横向对比（Q1 谁依赖谁 / Q2 谁在干活 / Q3 哪里在腐化），
+不承载单实体；名册本来就是「插件列表」，点行打开这一行是最短路径。
+
+**档案分六段，顺序 = 从身份到判断**：
+
+| 段 | 内容 |
+|---|---|
+| 它自己说它是什么 | 首句职责 + 完整自述（折叠，不截断信息） |
+| 分量 | 代码行数/文件数、提供服务数、取用服务数、被依赖插件数 |
+| 契约 | `provides` 逐条 + `serviceDocs` 原文；inject / optionalInject / consumes / events / tools / 存储域 / 权限 / 生命周期 / 测试入口 |
+| 接线 | 取用（服务 · 提供方 · `文件:行号`）+ 依赖它的插件（前 8，余下折叠）+ 声明与代码的对差 |
+| 产出 | 30 天工具调用与失败率、bus 发布、cron 任务、7 天曲线、最近活动 |
+| 债 | 结构差异（版本分裂 / 契约与代码分家 / 无 manifest / 无服务自述…）+ 注释命中 + 无提供方 |
+| 变更史 · 位置 | CHANGELOG 最近 6 版；同一 id 多个物理位置时列主/次 |
+
+**数据从哪来（不新开路由）**：复用 `/v2/data`（单次 ~180KB，60s 进程内缓存）。
+⛔ 新开 `/dossier?id=` 会带来两条坏路：重算一遍 = 两套口径，做切片 = 筛选条件又是
+一套口径。整页视图已在用这份 payload，所以口径只有一个。首点一次往返，回环可忽略。
+
+**三层结构事实（本轮实测，不是假设）**：
+
+- 一个插件 id 可能有**两个物理位置**：`plugins/agint-quality-eval`（manifest 0.3.3，
+  **没有 lib/**）与 `plugins/agint-quality/agint-quality-eval`（0.3.5，**有 lib/**）。
+  只取一个位置就会说谎（0 行代码 / 契约丢失）。档案改为**汇拢**：主位置取有代码那份，
+  manifest 从任一位置取并写 `contractSource`，两处版本不同进 `drift.dup-stale`。
+  实测命中 2 例（quality-eval、quality-sandbox），另有 1 例 `split-location`
+  （quality-report：契约在顶层壳、代码在嵌套目录）。
+- 仓库里 `manifest.version ≠ package.json.version` 的有 **13 个插件**（cron / dream /
+  event-bus / evolve / mutator / quality-eval 等）。档案把它作为 `drift.version-split`
+  报出来，并明说「谁生效取决于读取方」，不判谁对。
+- `permissions.shell: []` 是**空数组**（`Boolean([]) === true`）。旧写法判真会把每个
+  插件都标成「能起子进程」。已按「有没有内容」判，并有 negative control 测试。
+
+**顺带收拾的两处口径（不是新功能）**：
+
+- 归因表（工具名前缀 / cron id / 宿主键）从 `assets/panel-v2.html` 硬编码里抽出，落到
+  `lib/v2-owners.js`，随 `payload.owners` 下发。理由：档案页住在 `lib/client.js`，
+  两个前端各抄一份必然漂移（同一 cron 任务在两处归到不同插件，没人知道哪份对）。
+  本仓已有先例（`probeEventSources` 同样下发）。缺 `owners` 段 = host 半是旧版，
+  整页视图会在黄条里报出来，**不静默变成「无归因」**。
+- `profileContext` 补进宿主键名单。本仓用 `ctx.get('profileContext')` 取当前 profile 名，
+  宿主注入、无 `provide` 行，此前被算成「无提供方」，让每个读它的插件多背一条假债。
+
+**只读边界（与 0.3.0 一致）**：档案页不写任何东西，不改 manifest、不提交 evolve 提案、
+不代为审批。它是「看书」，不是「改书」。
+
+**测试**：
+
+- `test/v2-dossier.test.mjs` 11 条：三级身份降级、壳/真身汇拢、版本分裂、CHANGELOG
+  三种标题写法、代码体量不把 `test/` 算进去、`pluginsDir` 不可解析时的整层降级。
+- `test/dossier-view.test.mjs` 13 条：六段齐全、空数组 shell 判否、无 manifest 说
+  「不可得」、入边 13 个时前 8 + 折叠且数量写全、注释/伞键不冒充提供方、声明与代码对差、
+  无档案 id 与取数失败的分支文案、7 天曲线全 0 返回 null。
+- 后者用 `createElement` 替身加载浏览器半（`test/helpers/browser-half.mjs`），因为
+  「少一节 / 字段读错 / 把取不到画成 0」这三类错误在真宿主里要重启才能发现。
+
+**已知环境债（与本次改动无关，另行报告）**：`test/v2-data.test.mjs` 在工作区路径
+（`D:\DSH\project源码\...`，含中文）下跑 `node --test` 会让进程静默退出（exit 127），
+崩在文件开头的 `cpSync`。同一文件在纯 ASCII 路径的 git worktree 里通过 ⇒ 判定为
+「Node `cpSync` + 中文源路径」的环境问题，不是代码缺陷。A/B 对比（同路径、同 fixture）
+显示本次改动前后**失败的用例完全相同**（`v2-delivery-by-topic` / `v2-oracle` 两条存量债）。
+
 ## 0.3.0 — 2026-10-22
 
 ### 新增「神谕 · 美之判词」分区：把 agint-aesthetic-oracle 的输出搬进面板
@@ -109,7 +181,9 @@ schemas.js 的 KNOWN_EVENT_SOURCES 探针段**双向比对**，任一侧漂移�
 
 **2. isRepoRoot 把部署位认成仓库**
 .agint-bundle 与 @agint/host 同时有 plugins/ 与 cordis.patch.yml，旧两标记判据
-判 true ⇒ epoDirsSource=self-path、epoDirs 117 项（78 个 *.tmp）、
+判 true ⇒ 
+epoDirsSource=self-path、
+epoDirs 117 项（78 个 *.tmp）、
 wiringExemptions=unavailable。→ 加 .git（用 existsSync，兼容 worktree 的 .git 文件）。
 
 **3. *.tmp 换版残留被当成插件身份**
@@ -117,7 +191,8 @@ bundle 槽 117 个 gint-* 目录里 78 个是 .tmp 残留，105 个带 lib/，
 gint-quality.tmp 已出现在 live amilyDirs 里。
 → 2-scan.isTmpLeftover 导出，2-data 四处过滤口径统一。
 
-**4. 附带：Config schema 缺 epoRoot**
+**4. 附带：Config schema 缺 
+epoRoot**
 lib/index.js:613 从 v0.3 起一直读 config.repoRoot，但 cordis 按 schema 剥未知键
 ⇒ 配了也到不了代码。这是第 2 条只改 patch 不生效的真正原因。
 

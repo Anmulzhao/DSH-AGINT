@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AGINT 家族面板 v2</title>
+<title>AGINT 家族面板</title>
 <style>
 /* ═══ SECTION: tokens — 设计令牌（字号 5 档 / 字重 3 档 / 圆角 2 档 / 间距 4px 网格） ═══ */
 :root{
@@ -237,7 +237,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
   <!-- SECTION: topbar — sticky 区只留标题 / 检索 / 分区导航 -->
   <header class="topbar">
     <div class="bar">
-      <h1>AGINT 家族 · 面板 v2 <span class="demo-badge">v2 生产 · 只读</span></h1>
+      <h1>AGINT 家族面板 <span class="demo-badge">生产 · 只读</span></h1>
       <div class="btns">
         <input class="search" id="q" type="search" placeholder="过滤插件 / 服务 / 任务…" aria-label="过滤" data-primary-action>
         <button class="btn" id="themeBtn" title="切换明暗主题">切换亮色</button>
@@ -393,7 +393,10 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sources:[],range:[null,null]},
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
     PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
-    PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null;
+    PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null,
+    /* 归因表（工具前缀 / cron / 宿主键）由 host 半随 payload 下发（v0.4.0）。
+       ⛔ 这里不再放硬编码副本：档案页（停靠面板）与本页各抄一份必然漂移。 */
+    OWNERS=null;
 
 function render(){
 if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
@@ -411,8 +414,7 @@ if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
  *  证据：这些键在本仓 34 个插件里被 ctx.get 消费，但全仓无对应 ctx.provide。
  *  ⛔ providerOf 刻意**不**把宿主键折成某个假 provider：那会让 inEdges 把宿主
  *    当成一个插件，Q1「被谁消费」列出现不存在的行。宿主键在展示层单独处理。 */
-const HOST_KEYS=new Set(["agents","subagents","skills","sandbox","approval","openvikingMemory",
-  "dshHome","profilesDir","sessionQuery","sessionPersistence","agentDefaultModel","goals","layout"]);
+const HOST_KEYS=new Set(Array.isArray(OWNERS&&OWNERS.hostKeys)?OWNERS.hostKeys:[]);
 const isHostKey=svc=>!svc.startsWith("agint.")&&HOST_KEYS.has(svc);
 function providerOf(service){
   if(PROVIDED[service]) return PROVIDED[service];
@@ -491,28 +493,12 @@ for(const [pl,g] of Object.entries(byPlugin))
 const svcRows=[...svcView.values()].sort((a,b)=>b.consumers.size-a.consumers.size||a.svc.localeCompare(b.svc));
 
 // ── Q2 归属 ────────────────────────────────────────────────────────
-const TOOL_OWNER=[
- ["memory_provider_","agint-memory-provider"],["memory_","agint-memory"],["wiki_","agint-wiki"],
- ["rule_","agint-rules"],["cron_","agint-cron"],["job_","agint-cron"],["dream_","agint-dream"],
- ["evolve_","agint-evolve"],["metrics_","agint-metrics"],["eventBus_","agint-event-bus"],
- ["curator_","agint-curator"],["autocreate_","agint-skill-autocreate"],["selfModel_","agint-self-model"],
- ["skillGraph_","agint-skill-graph"],["mutator_","agint-mutator"],["population_","agint-population"],
- ["mount_","agint-mount"],["abtest_","agint-abtest"],["diagnosis_","agint-diagnosis"],["diagnose_","agint-diagnosis"],
- ["input_gateway_","agint-input-gateway"],["curriculum_","agint-curriculum"],["quality_eval_","agint-quality-eval"],
- ["tool_stats_","agint-tool-stats"],["agint_search","agint-search"],["compress_guard_","agint-compress-guard"],
- ["restart_","agint-restart"],["evolution_ledger","agint-evolution-driver"],["evolution_","agint-evolution-memory"],
- ["recall_store","agint-ov-strategy"],
-];
+/* 归因表来自 payload.owners（host 半 lib/v2-owners.js 是唯一事实源）。
+   ⛔ 不放本地副本：缺表时 Q2 会全空，那是「host 半是旧版」的信号，不是「没有工具调用」。
+   缺表已经在 applyPayload 里进 SRC_ERRORS 并在顶部琥珀条报出来。 */
+const TOOL_OWNER=Array.isArray(OWNERS&&OWNERS.tool)?OWNERS.tool:[];
 const ownerOf=t=>{for(const [p,o] of TOOL_OWNER) if(t.startsWith(p)) return o; return null;};
-const CRON_OWNER={
- "prompt-static-check":"agint-quality-static","metrics-collect":"agint-metrics","tool-stats-backfill":"agint-tool-stats",
- "night-dream":"agint-dream","wiki-lint":"agint-wiki","evolve-review":"agint-evolve","memory-decay":"agint-memory",
- "skill-autocreate-aggregate":"agint-skill-autocreate","skill-autocreate-release":"agint-skill-autocreate","skill-autocreate-observe":"agint-skill-autocreate",
- "skill-graph-weekly":"agint-skill-graph","curriculum-weekly":"agint-curriculum","curator-weekly":"agint-curator",
- "diagnosis-watchdog":"agint-diagnosis","evolution-cycle":"agint-evolution-driver","oracle-daily":"agint-aesthetic-oracle",
- "oracle-weekly":"agint-aesthetic-oracle","oracle-monthly":"agint-aesthetic-oracle","memory-provider-health":"agint-memory-provider",
- "evolution-reconcile":"agint-evolution-driver","outcome-measure":"agint-evolution-driver",
-};
+const CRON_OWNER=(OWNERS&&OWNERS.cron&&typeof OWNERS.cron==="object")?OWNERS.cron:{};
 const busSrc=Object.fromEntries(BUS.sources);
 const q2={};
 for(const t of TOOLS){
@@ -1088,7 +1074,7 @@ q3chips.addEventListener("click",e=>{
 });
 exportBtn.onclick=()=>{
   const md=["# AGINT 家族面板 Q3 异常清单（evolve 提案草稿）","",
-    "> 由面板 v2 导出。只读出口：不自动提交 evolve.propose，需老板确认后手动提交。",
+    "> 由 AGINT 家族面板导出。只读出口：不自动提交 evolve.propose，需老板确认后手动提交。",
     `> 导出时间：${new Date().toISOString()}　数据时点：${(BUS.range&&BUS.range[1]||new Date().toISOString()).slice(0,10)}`,"",
     ...ANOM.map((a,i)=>`${i+1}. **${a.v}** — ${a.o}\n   - 证据：${a.ev}\n   - 说明：${a.note}`)].join("\n");
   const b=new Blob([md],{type:"text/markdown"});
@@ -1222,6 +1208,9 @@ function applyPayload(D){
   // 待办节：逐队列降级在渲染里做，不用 bad() 整块判失败——
   // 这里是「某一个域没开」，不是「这一源挂了」，不该把整节报成数据源故障。
   PENDING=Array.isArray(D.pending?.queues)?D.pending.queues:null;
+  /* 归因表：缺段 = host 半是旧版（lib 改动要重启宿主才加载）。不装成「无归因」。 */
+  OWNERS=(D.owners&&typeof D.owners==="object")?D.owners:null;
+  if(!OWNERS) SRC_ERRORS.push("归因表缺失：/v2/data 无 owners 段（host 半是旧版，需重启 dsh）——Q2 归属列会全空");
   // 神谕层：整段是可选产物（宿主半旧版没有这个键）。缺键 = 取不到 ≠ 神谕没开口，
   // 渲染区分开写（见 renderOracle）。⛔ 不要在这里补一个空默认对象冒充「有数据」。
   ORACLE=(D.oracle&&typeof D.oracle==="object")?D.oracle:null;
