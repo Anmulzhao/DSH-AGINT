@@ -501,6 +501,10 @@ const runSmokePublished = (args) => withPublish(() => runSmoke(args), {...});  /
 
 > 倾向：**先做 B 的判定**——`publishMountRequest` / `evolve.propose` 直连既然够用，
 > 多一条影子路径属于未兑现的复杂度。但需老板拍板，因为 A 可能是 P7.5 的既定目标。
+>
+> ✅ **【2026-10-23 已拍板：走 B】** 范围限于 `publishMountRequest` 两个服务 +
+> `mount.*` 计数订阅（`evolve.propose` 与 `publishProposed` **不在**清理范围，它们有真实流量）。
+> 已执行并同步部署位。⚠️ 这是**推翻** 2026-09-20 的方案 A 决议，不是顺延。
 
 ## 附：措辞债清理记录（2026-09-20）
 
@@ -555,9 +559,22 @@ grep 生产目录（剔除 `test/` 与 `eval/scenarios/`）确认调用点非空
 | A3 | `sandbox.passed/failed` 无发布方 | runVerify/runExplore 每个出口发事件 | `agint-quality-sandbox/lib/index.js` | `test/shadow-publish.test.mjs` 4/4 |
 | A4 | `hmr.settled` 无发布方 | settle 成功后发事件 | `agint-mount/lib/orchestrator.js` | `test/bus-resolve.test.mjs` 6/6 |
 
+> ⛔ **【2026-10-23 已撤销 A2】** 老板重拍为**方案 B（砍）**，`mountCounters.js` 与其单测
+> 已删除 ⇒ `mount.*` 六 topic 回到 **「有发布方、零订阅方」**（发布方是
+> `agint-mount/lib/orchestrator.js` 的 `mountEventBusPublish`，有 10 处真实调用点，
+> 生产 0 条的原因是**挂载从未发生**，不是没接线 —— 它保留不动）。
+> `docs/wiring-exemptions.json` 里 mount.* 六条豁免**保留**（防门禁判 ORPHAN_TOPIC），
+> 理由已改写为「有意不补订阅方」。详见路线图「T2 空壳清理（方案 B）」。
+
 ### 6.2 判定为「不接」并说明理由（1 处）
 
 **`agint.population.publishMountRequest` / `agint.mutator.publishMountRequest` 不接调用点。**
+
+> ⛔ **【2026-10-23 已删除，本节降为历史记录】** 方案 B 执行后这两个服务已从代码移除
+> （mutator / population 的 `lib/index.js` 函数体、`ctx.provide` 全名键、umbrella 键一并删）。
+> 连带处理：`bin/verify-umbrella.mjs` 的 `anyOf` 去掉该键；`eval/scenarios/driver.js` 的
+> `mountRequestedViaBusBranch` 分支与 `agint-event-bus-s12-04.scenario.json` 场景**随能力一并删除**
+> （⛔ 不算 fail 减少）。下面三条理由保留，作为「当初为什么不接」的决策依据。
 
 理由不是"没时间"，而是**接上会制造错误数据**：
 

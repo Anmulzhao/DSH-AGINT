@@ -55,7 +55,7 @@ const EXPECT = {
     { consumes: ['agint.eventBus.publish', 'agint.eventBus.subscribe'] },
   ],
   'agint-population': [
-    { key: 'agint.population', anyOf: ['publishProposed', 'checkLimit', 'publishMountRequest'] },
+    { key: 'agint.population', anyOf: ['publishProposed', 'checkLimit'] },
     { consumes: ['agint.mutator'] },
   ],
   'agint-diagnosis': [{ key: 'agint.diagnosis', anyOf: ['annotate', 'cluster', 'report', 'schemas'] }],

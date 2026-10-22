@@ -1070,51 +1070,6 @@ function apply(ctx) {
     catch (e) { return degrade(source, reason, `propose 抛错: ${e.message || e}`); }
   }
 
-  // ── Service: publishMountRequest（Sprint 12 A4：消费方 publish mount.requested） ──
-  // 目的：mutator 作为 mount 消费方上游，把"请求挂载"动作通过 bus 影子发布。
-  // 红线（AGENTS.md / 设计稿 §A4）：**直连路径完整保留** —— bus 不可用时静默降级。
-  // payload schema：plugins/agint-mount/schemas/mount-requested.schema.yaml v1
-  // ⚠️ 2026-09-20 接线判定：**保持无生产调用点 —— 这不是漏接线，是刻意不接。**
-  //   1. mount.requested 的发布方是 agint-mount 自己（orchestrator.js:190，挂载流程起点即发）。
-  //      本服务若也发，同一件事在总线上出现两条，订阅方无法区分来源。
-  //   2. 本服务的语义前提是「mutator 会主动发起挂载请求」，但 mutator 当前不发起
-  //      （本文件除注册处外无 mount 相关调用），强行接调用点 = 造流量。
-  //   3. 正解：将来真需要请求挂载时，调 agint.mount.request，由 mount 统一发事件。
-  //   详见 docs/known-limitations/event-bus-shadow-publish-gap.md §6.2
-  async function publishMountRequest(artifact) {
-    if (!artifact || typeof artifact !== 'object') {
-      return { published: false, reason: 'invalid-artifact' };
-    }
-    const ticketId = artifact.ticketId || ('t-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36));
-    const proposalId = artifact.proposalId || artifact.id || 'unknown';
-    const decision = artifact.decision || 'AUTO_DEPLOY';
-    const publish = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
-    if (typeof publish !== 'function') {
-      return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
-    }
-    const payload = { ticketId, proposalId, decision };
-    try {
-      const env = {
-        topic: 'mount.requested',
-        version: 1,
-        source: 'agint-mutator',
-        correlationId: ticketId,
-        payload,
-      };
-      const result = await publish(env);
-      return {
-        published: true,
-        envelopeId: result?.envelopeId,
-        deliveredTo: result?.deliveredTo ?? 0,
-        deadLettered: result?.deadLettered ?? 0,
-        ticketId,
-        proposalId,
-      };
-    } catch (err) {
-      return { published: false, reason: `publish-threw:${err?.message || err}`, directPathUnaffected: true };
-    }
-  }
-
   ctx.provide('agint.mutator.propose', propose);
   ctx.provide('agint.mutator.validate', validate);
   ctx.provide('agint.mutator.commit', commit);
@@ -1131,7 +1086,6 @@ function apply(ctx) {
   ctx.provide('agint.mutator.logMetric', logMetric); // #4 commit/rollback 调用入口
   ctx.provide('agint.mutator.checkLimit', checkLimit);
   ctx.provide('agint.mutator.limits', LIMITS);
-  ctx.provide('agint.mutator.publishMountRequest', publishMountRequest); // Sprint 12 A4: 消费方 publish mount.requested
 
   // ── Sprint 12 / A6 — T1 影子期：subscribe diagnosis.completed ────────────────
   // 目的：观测 agint-diagnosis.report() 完成（影子期；写观测行 + 计数器，不进 mutator 主决策）。
@@ -1203,7 +1157,6 @@ function apply(ctx) {
     logMetric,
     checkLimit,
     limits: LIMITS,
-    publishMountRequest,
     io: {
       packProposal, packCommit, packFinding, packMetricsLog,
       unpackProposal, unpackCommit, unpackFinding, unpackMetricsLog,

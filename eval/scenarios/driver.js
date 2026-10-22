@@ -303,80 +303,6 @@ async function shadowPublishEvolutionProposedBranch(input, ctx) {
   return { ok: allOk, detail: JSON.stringify({ checks, publishResult, published_count: mocks.eventBusCalls.published, subscribers_count: (mocks.eventBusCalls.subscribers.get('evolution.proposed') ?? []).length }) };
 }
 
-// ── Sprint 12 A4：mount.requested 由消费方 publish 到 bus，agint-mount 订阅分支 ──
-async function mountRequestedViaBusBranch(input, ctx) {
-  // ── 1. 重置 bus 模块级状态，避免 s12-01/02 残留订阅影响 s12-04 ──
-  try {
-    const busMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/bus.js`);
-    busMod.disposeBus();
-  } catch { /* ignore */ }
-
-  // ── 2. 加载真 agint-event-bus（提供 3 service）──
-  const eventBusMod = await import(`${AGINT_URL}/plugins/agint-event-bus/lib/index.js`);
-  eventBusMod.apply(ctx, {});
-
-  // ── 2b. 暴露 umbrella key 'agint.eventBus' 给 mutator/population 的 publishMountRequest 用 ──
-  // 真 event-bus plugin 只注册 .publish/.subscribe/.inspect 三个 service；
-  // mutator/population 的 publishMountRequest 走 ctx.get('agint.eventBus').publish。
-  // dispatcher 这里桥接一下，让 publishMountRequest 找到 bus。
-  const publishSvc = ctx.get('agint.eventBus.publish');
-  ctx.provide('agint.eventBus', {
-    publish: publishSvc,
-    _bridgeFromRealEventBusPlugin: true,
-  });
-
-  // ── 3. 加载真 agint-mutator + agint-population（提供 publishMountRequest）──
-  const mutatorMod = await import(`${AGINT_URL}/plugins/agint-mutator/lib/index.js`);
-  mutatorMod.apply(ctx, {});
-  const populationMod = await import(`${AGINT_URL}/plugins/agint-population/lib/index.js`);
-  populationMod.apply(ctx, {});
-
-  // ── 4. 注册 agint-mount 订阅者（async + topic=mount.requested）──
-  const subscribe = ctx.get('agint.eventBus.subscribe');
-  const inspect = ctx.get('agint.eventBus.inspect');
-  let mountSubscriberHandlerCalls = 0;
-  const receivedEnvelopes = [];
-  subscribe(
-    { subscriber: 'agint-mount', topics: ['mount.requested'], mode: 'async' },
-    async (envelope) => {
-      mountSubscriberHandlerCalls++;
-      receivedEnvelopes.push(envelope);
-    },
-  );
-
-  // ── 5. 调 mutator.publishMountRequest → 应 publish 到 bus + handler 触发 ──
-  const mutatorPublishMountRequest = ctx.get('agint.mutator.publishMountRequest');
-  const populationPublishMountRequest = ctx.get('agint.population.publishMountRequest');
-  if (typeof mutatorPublishMountRequest !== 'function') {
-    return { ok: false, detail: 'agint.mutator.publishMountRequest not registered' };
-  }
-  if (typeof populationPublishMountRequest !== 'function') {
-    return { ok: false, detail: 'agint.population.publishMountRequest not registered' };
-  }
-
-  const mutatorResult = await mutatorPublishMountRequest(input.artifactA);
-  const populationResult = await populationPublishMountRequest(input.artifactB);
-
-  // ── 6. 等 microtask 让 handler fire-and-forget 入栈 ──
-  await new Promise((r) => setTimeout(r, 50));
-
-  // ── 7. 校验 inspect 日志（EventLogEntry 用 payloadPreview，不是 payload）──
-  const allEnvelopes = inspect({ topic: 'mount.requested' });
-  const mountRequestedEnvelopes = allEnvelopes;
-  const checks = {
-    mutatorPublishReturnsPublished: mutatorResult?.published === true,
-    populationPublishReturnsPublished: populationResult?.published === true,
-    eventBusMountRequestedEnvelopes: mountRequestedEnvelopes.length >= 2,
-    deliveredToMountSubscriber: mountSubscriberHandlerCalls >= 2,
-    payloadSchemaFieldsPresent: mountRequestedEnvelopes.length >= 2 && mountRequestedEnvelopes.every((e) =>
-      e?.payloadPreview?.ticketId && e?.payloadPreview?.proposalId && e?.payloadPreview?.decision),
-    sourcePluginsCorrect: mountRequestedEnvelopes.some((e) => e?.source === 'agint-mutator')
-      && mountRequestedEnvelopes.some((e) => e?.source === 'agint-population'),
-  };
-  const ok = Object.values(checks).every(Boolean);
-  return { ok, detail: JSON.stringify({ checks, mutatorResult, populationResult, mountRequestedEnvelopesCount: mountRequestedEnvelopes.length, mountSubscriberHandlerCalls, sources: mountRequestedEnvelopes.map((e) => e?.source) }) };
-}
-
 // ── Sprint 12 A4：mount.succeeded 由 agint-mount publish，population + evo-memory 订阅 ──
 async function mountSucceededViaBusBranch(input, ctx) {
   try {
@@ -1851,10 +1777,9 @@ const dispatchers = {
       return shadowPublishEvolutionProposedBranch(input, ctx);
     }
 
-    // ── Sprint 12 A4：mount.requested via bus ─────────────────────
-    if (input._scenario_kind === 'event-bus-mount-requested-shadow') {
-      return mountRequestedViaBusBranch(input, ctx);
-    }
+    // ⛔ s12-04（mount.requested via bus）分支已于 2026-10-23 随方案 B 一并移除：
+    //    它测的 agint.mutator/agint.population 的 publishMountRequest 是零调用点空壳服务。
+    //    场景与断言同步删除，不是 fail —— 见 docs/wiring-exemptions.json 与路线图「T2 空壳清理」。
 
     // ── Sprint 12 A4：mount.succeeded via bus ────────────────────
     if (input._scenario_kind === 'event-bus-mount-succeeded-shadow') {
