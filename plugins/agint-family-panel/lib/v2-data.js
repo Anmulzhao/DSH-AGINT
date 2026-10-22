@@ -14,6 +14,12 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { scanPlugins, codeRoots, isTmpLeftover } from './v2-scan.js';
+// 档案层（v0.4.0）：读插件自己写下的东西（manifest 契约 / package / CHANGELOG / 代码体量）。
+// 与聚合层分开的理由见 v2-dossier.js 头注释：运行时事实与「插件自述」的失败模式不同。
+import { collectDossiers } from './v2-dossier.js';
+// 归因表（工具前缀 / cron / 宿主键）的单一事实源，随 payload 下发（v0.4.0）。
+// 抽出来的理由见 v2-owners.js 头注释：档案页与整页视图各抄一份必然漂移。
+import { ownersPayload } from './v2-owners.js';
 // profile 名解析口径复用 agint-mount 的实现（单一事实源，防三处口径漂移）。
 // 跨插件相对 import 在仓库位 / bundle 位 / 兼容镜像位三种布局下都能解析：
 //   仓库位   plugins/agint-family-panel/lib → ../../agint-mount/lib/paths.js
@@ -1161,7 +1167,20 @@ export function collectV2Data(dirs, opts = {}) {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;
     payload.mountState = { source: classified.mountSource, mountedCount: classified.mounted === null ? null : classified.mounted.size };
-  } catch { payload.pluginKinds = {}; payload.mountState = { source: 'error', mountedCount: null }; }
+    /**
+     * 档案层（v0.4.0）。单独 try：档案读失败不能打掉 pluginKinds —— 形态列还有用。
+     * 挂载态用 classified.mounted（patch 里可见的行），与 pluginKinds 同一口径。
+     */
+    try {
+      payload.dossiers = collectDossiers(dirs, { kinds: classified.kinds, mounted: classified.mounted });
+    } catch (e) {
+      payload.dossiers = { state: 'error', byId: {}, order: [], reason: String((e && e.message) ?? e).slice(0, 200) };
+    }
+  } catch {
+    payload.pluginKinds = {};
+    payload.mountState = { source: 'error', mountedCount: null };
+    payload.dossiers = { state: 'error', byId: {}, order: [], reason: '形态分类失败，档案未采集' };
+  }
   if (dirs.repoPluginsDir) {
     try {
       payload.repoDirs = readdirSync(dirs.repoPluginsDir)
@@ -1182,6 +1201,11 @@ export function collectV2Data(dirs, opts = {}) {
   }
   // 探针 source 名单随 payload 下发：前端不硬编码第二份（漂移会被 test 抓到）。
   payload.probeEventSources = [...PROBE_EVENT_SOURCES];
+  /**
+   * 归因表随 payload 下发（v0.4.0）。前端两个消费方（整页视图 + 停靠面板的档案页）
+   * 都从这里取，不再各写一份常量表。⛔ 不要在前端留「兜底副本」——那等于留两份。
+   */
+  try { payload.owners = ownersPayload(); } catch { payload.owners = null; }
   cache.set('v2', { builtAt: now, sig, value: payload });
   return payload;
 }
