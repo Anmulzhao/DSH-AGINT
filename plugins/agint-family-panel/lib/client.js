@@ -239,6 +239,25 @@ window.__ModuleLoader__.load({
         m.get(pl).push({ svc, file, line });
       }
 
+      /**
+       * 文档腐化候选的判据（对齐设计稿 §1.2「命中只出现在 JSDoc / 注释里 → 文档腐化」）。
+       *
+       * 「这一行在注释里」**不足以**判腐化。真判据要同时满足三条：
+       *   ① 该服务在全仓无提供方（provided 表，含父命名空间前缀匹配）；
+       *   ② 全仓无任何 code 态取用（不是只有注释提过）；
+       *   ③ 不是 dsh 宿主服务（宿主键本仓不可能 provide）。
+       *
+       * 为什么必须加这道闸：2026-10-22 实测 agint-mutator 被报「2 处服务名只出现在
+       * 注释里（文档腐化候选）」，证据是它自己 lib/index.js:1122 / 1189 两条解释伞键
+       * 历史的注释。但同一文件 1193 行 `ctx.provide('agint.mutator', …)`，
+       * agint-evolution-driver lib/index.js:557 `dep('agint.mutator')` 是 code 态取用
+       * —— 服务有提供方、有消费方，只是这两行恰好在注释里。全仓 52 条注释命中里
+       * 47 条属于这类「有依据」，按旧口径会全部算成腐化候选。
+       */
+      const codeKeys = new Set();
+      for (const [, rec] of out) for (const k of rec.code.keys()) codeKeys.add(k);
+      const isCommentRot = (svc) => !providerOf(svc) && !codeKeys.has(svc) && !isHostService(svc);
+
       // 产出：工具 / cron / bus / 7 天
       const tools = Array.isArray(P.tools?.rows) ? P.tools.rows : [];
       const cron = Array.isArray(P.cron?.jobs) ? P.cron.jobs : [];
@@ -320,7 +339,7 @@ window.__ModuleLoader__.load({
       }
       for (const id of order) activityOf(id).maxDaily = maxDaily;
 
-      return { byId, order, out, into, activityOf, declaredGap, providerOf, isHostService, ownerOfTool, maxDaily, raw: P };
+      return { byId, order, out, into, activityOf, declaredGap, providerOf, isHostService, ownerOfTool, maxDaily, raw: P, isCommentRot };
     }
 
     /** Component-local CSS: tokens only, so both themes follow the host. */
@@ -795,10 +814,20 @@ window.__ModuleLoader__.load({
           h('span', null, item.text),
         ));
       }
-      if (outRec.comment.length) {
+      // 注释命中分两桶：真·腐化候选（无提供方、无代码取用、非宿主服务）与有依据的提及。
+      // 有依据的那些不是债，只在该服务的「接线」表里以「—（仅注释）」列出行证据。
+      const rottedComment = outRec.comment.filter((c) => index.isCommentRot(c.svc));
+      const backedComment = outRec.comment.length - rottedComment.length;
+      if (rottedComment.length) {
         debtItems.push(h('li', { key: 'comment-hits' },
           h('span', { className: 'agintfp-lv', style: { color: DEBT_LEVEL.info.color } }, '提示'),
-          h('span', null, `${outRec.comment.length} 处服务名只出现在注释里（文档腐化候选）：${outRec.comment.map((c) => `${c.svc}@${c.file}:${c.line}`).join('、')}`),
+          h('span', null, `${rottedComment.length} 处服务名只在注释里出现，且全仓无提供方、无代码取用（文档腐化候选）：${rottedComment.map((c) => `${c.svc}@${c.file}:${c.line}`).join('、')}`),
+        ));
+      }
+      if (backedComment > 0) {
+        debtItems.push(h('li', { key: 'comment-hits-backed' },
+          h('span', { className: 'agintfp-lv', style: { color: DEBT_LEVEL.info.color } }, '提示'),
+          h('span', null, `${backedComment} 处注释提及已有依据（该服务有提供方或有代码取用），不计入腐化候选。`),
         ));
       }
       if (outRec.umbrella.length) {
