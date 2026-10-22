@@ -40,7 +40,7 @@ import { evaluateAesthetics, DIM_KEYS, NO_ADVICE, FORMULA_VERSION, scaleHash } f
 import {
   extractAtomic, renderReport, rollQuota, dimsFromRecord, compositesRecord,
   auditScores, auditTargetId, buildWeeklyProposals, isoWeekKey, KIND_TOPIC, QUOTA_LIMITS,
-  recomputeBaseline, baselineHasNaDim,
+  recomputeBaseline, baselineHasNaDim, findDuplicateProposal, PROPOSAL_DEDUP_WINDOW_DAYS,
 } from './broadcast.js';
 import { validateTopicPayload, TOPIC_KIND } from './topics.js';
 import {
@@ -58,6 +58,10 @@ const SILENCE_ALERT_AFTER_MS = 24 * 60 * 60 * 1000; // §6.2：沉默 24h → al
 const RETRY_DELAYS_MS = [0, 1000, 4000, 16000];     // §6.2：首次 + 3 重试（指数退避）
 const MAX_CONSECUTIVE_FAILURES = 3;                 // §6.3：连续 3 次 → 沉默
 const MAX_DAILY_VIOLATIONS = 3;                     // §6.3：配额违规 ≥3 → 沉默 + 告警
+// r4（2026-10-23）：LLM 增强档连续 N 次未走 LLM → 发一次 oracle.alert。
+// 取 3 与 §6.2 的连续失败阈值对齐：同一个系统，同一种「连续 3 次不对劲就开口」。
+// 不与调度失败共用计数——降级不抛错，cron 的 lastError 永远为空，必须单独记账。
+const LLM_DEGRADE_ALERT_AFTER = 3;
 const CACHE_MAX_AGE_MS = 7 * 86_400_000;            // §6.1：缓存回退最多信 7 天
 
 const DEFAULT_CONFIG = Object.freeze({ enabled: true, silenceAlertAfterMs: SILENCE_ALERT_AFTER_MS });
@@ -298,21 +302,74 @@ function apply(ctx, config) {
   };
 
   /**
+   * 读本插件自己的提案史（r4，2026-10-23）。**纯只读**，不新增任何写路径。
+   *
+   * 返回 null = 读不到（服务缺席或抛错）；返回 [] = 读到了，确实没有提案。
+   * ⛔ 两者必须区分：把「读不到」写成「0 条」，就是项目铁律里的
+   *   「UNKNOWN 不是 0」——会让闭环行显示「累计 0 条，全部已处理」这种假绿。
+   */
+  async function readOwnProposals() {
+    const evo = svcEvolve();
+    if (!evo || typeof evo.listProposals !== 'function') return null;
+    try {
+      const all = await evo.listProposals();
+      if (!Array.isArray(all)) return null;
+      return all.filter((p) => p?.source === name);
+    } catch { return null; }
+  }
+
+  /**
+   * weekly 闭环统计（r4）：老板提案积压一眼可见。
+   *
+   * `handled` = 状态不是 proposed 的都算「已处理」——包括 wontfix 与 rejected。
+   * 这个口径是刻意的：判定「有没有人看过」不关心结论，只关心有没有人处理。
+   * 若只看 applied，wontfix 会被算成「没人理」，那是另一种失真。
+   */
+  async function weeklyLoopStat() {
+    const own = await readOwnProposals();
+    if (own === null) return { available: false };
+    const proposed = own.filter((p) => p?.status === 'proposed').length;
+    return {
+      available: true,
+      total: own.length,
+      proposed,
+      handled: own.length - proposed,
+    };
+  }
+
+  /**
    * 写白名单 #3（Day 4-5，§5 weekly）：weekly 美谕提案 → agint_evolve.proposal。
-   * 提案 = 可用维按绝对扣分 top3（0 扣分不提），每条经 q3Advice 生成（纯机械
-   * 动作 + 必附证据）。⭐ 只写文本不执行：永不调 curator_archive / setStatus；
-   * evolve 侧 status 硬锁 proposed。失败降级不阻断广播（§6.1 原则）。
+   * 提案 = 可用维按偏离度 top3（扣分 ≥ MIN_PROPOSAL_DEDUCTION，阈内不提），
+   * 每条经 q3Advice 生成（纯机械动作 + 必附证据）。⭐ 只写文本不执行：永不调
+   * curator_archive / setStatus；evolve 侧 status 硬锁 proposed。
+   * 失败降级不阻断广播（§6.1 原则）。
+   *
+   * r4 去重：同维度在 28 天内已有 status=proposed 的提案 ⇒ 不再开新单，
+   * 改在审计 findings 里记「第 N 次复现 + 原提案 id」。理由见 findDuplicateProposal。
    */
   async function submitWeeklyProposals({ evaluation, adviceCtx, now, targetId, l2DeepDiveResult = null, llmModeVal = 'off' }) {
     const evo = svcEvolve();
-    if (!evo || typeof evo.propose !== 'function') return { ids: [], failed: 0, degraded: true };
+    if (!evo || typeof evo.propose !== 'function') return { ids: [], failed: 0, degraded: true, suppressed: [] };
     const drafts = buildWeeklyProposals(evaluation, adviceCtx ?? {}, { weekKey: isoWeekKey(now), targetId });
+    // 去重输入：读不到（null）时**不去重**——宁可多提一条，也不能因为读失败
+    // 而把真问题当成重复悄悄吞掉。
+    const existing = await readOwnProposals();
+    const suppressed = [];
+    const fresh = [];
+    for (const d of drafts) {
+      const dup = existing === null
+        ? null
+        : findDuplicateProposal(d.key, existing, { now, windowDays: PROPOSAL_DEDUP_WINDOW_DAYS });
+      if (dup) suppressed.push({ key: d.key, existingId: dup.id, existingAt: dup.createdAt });
+      else fresh.push(d);
+    }
     const ids = [];
     let failed = 0;
     let l3AnyLlm = false;
     const l3Degradations = [];
-    for (const d of drafts) {
+    for (const d of fresh) {
       // L3（§8.1.4）：weekly 提案正文润色。失败降级回模板 body，不阻断。
+      // 放在去重之后：被抑制的维不该花一次 LLM 调用。
       let finalBody = d.body;
       if (canL3(llmModeVal)) {
         const l3 = await l3PolishProposal(ctx, { title: d.title, templateBody: d.body, deepDive: l2DeepDiveResult ?? {} });
@@ -322,12 +379,14 @@ function apply(ctx, config) {
       try {
         const rec = await evo.propose({
           title: d.title, body: finalBody, category: d.category,
-          source: name, note: `${targetId}（美的神谕层 weekly；evidence 见正文）`,
+          source: name,
+          // r4：note 带 worst=<key>，下一轮去重可精确匹配（不依赖 title 文案）
+          note: `${targetId}（美的神谕层 weekly / ${d.note ?? ''}；evidence 见正文）`,
         });
         if (rec?.id) ids.push(rec.id); else failed += 1;
       } catch { failed += 1; }
     }
-    return { ids, failed, l3AnyLlm, l3Degradations };
+    return { ids, failed, l3AnyLlm, l3Degradations, suppressed };
   }
 
   /**
@@ -339,6 +398,7 @@ function apply(ctx, config) {
     let proposalIds = [];
     let proposalsFailed = 0;
     let l3Degradations = [];
+    let suppressedProposals = [];
     if (kind === 'weekly') {
       const submitted = await submitWeeklyProposals({
         evaluation, adviceCtx: view.adviceCtx, now, targetId: auditTargetId('weekly', now),
@@ -347,6 +407,7 @@ function apply(ctx, config) {
       proposalIds = submitted.ids;
       proposalsFailed = submitted.failed;
       l3Degradations = submitted.l3Degradations ?? [];
+      suppressedProposals = submitted.suppressed ?? [];
     }
     // §8.1.6：mode 字段——本轮广播实际用了什么输出路径
     //   template           = kill-switch off / 无 LLM 增强
@@ -360,8 +421,51 @@ function apply(ctx, config) {
       ...(isNum(report.staleDays) ? { staleDays: report.staleDays } : {}),
       ...(kind === 'weekly' ? { proposals: proposalIds.length } : {}),
     });
+    // ── r4：LLM 增强档熔断告警（2026-10-23）────────────────────────────────
+    // 降级不是失败（§6.1：不阻断广播），但**连续降级等于 LLM 档已死**。
+    // 生产实测 2026-10-19~10-22 连续 5 次 mode=heuristic-degraded
+    // （L1:subagents unavailable）：AC-21（mode='llm' ≥80%）实测 47%、
+    // 最近 5 次为 0，唯一痕迹是一条 severity=low 的审计 finding。老板不知道。
+    // 与 §6.2「连续 3 次调度失败 → 沉默 + 告警」同构，只是失败类型不同：
+    // 降级不抛错 ⇒ cron 的 lastError 恒空 ⇒ 没有任何通道会响。
+    const prevHealth = state.llmHealth ?? { consecutiveNonLlm: 0, alerted: false, lastMode: null };
+    let llmHealth = { ...prevHealth, lastMode: payloadMode };
+    if (kind !== 'alert') {
+      if (llmModeVal === 'off' || payloadMode === 'llm') {
+        // 显式关闭是老板的选择，不是故障 ⇒ 不计数。否则切回 all 后第一次
+        // 降级就会因历史计数已满 3 而立刻误报。
+        llmHealth = { consecutiveNonLlm: 0, alerted: false, lastMode: payloadMode };
+      } else {
+        const degradedCount = (prevHealth.consecutiveNonLlm ?? 0) + 1;
+        llmHealth = { ...llmHealth, consecutiveNonLlm: degradedCount };
+        if (degradedCount >= LLM_DEGRADE_ALERT_AFTER && !prevHealth.alerted) {
+          const degradeAlerted = await publishBus(KIND_TOPIC.alert, {
+            reason: `LLM 增强档连续 ${degradedCount} 次降级（末次 mode=${payloadMode}）——检查 agents/subagents 服务与模型路由`,
+            consecutive: degradedCount,
+            lastMode: payloadMode,
+          });
+          if (degradeAlerted) stats.alertsSent += 1;
+          await recordBroadcast({
+            kind: 'alert', outcome: 'ok',
+            detail: `llm-degraded-${degradedCount}x`, published: degradeAlerted,
+          }, now);
+          llmHealth.alerted = true;
+        }
+      }
+    }
     // id 清单进审计 findings（§4：建议必附证据；广播正文只引用条目，防 2KB 爆）
     const findings = [...extraFindings];
+    // 连续降级可见化：单次降级仍是 low（正常降级路径，不吓人）；
+    // 越过阈值升 medium —— 与是否已发告警无关，审计要能独立看出状态。
+    if (kind !== 'alert' && llmHealth.consecutiveNonLlm > 0) {
+      const crossing = llmHealth.consecutiveNonLlm >= LLM_DEGRADE_ALERT_AFTER;
+      findings.push({
+        ruleId: 'oracle-llm-degraded',
+        severity: crossing ? 'medium' : 'low',
+        detail: `LLM 增强档连续 ${llmHealth.consecutiveNonLlm} 次未走 LLM（末次 mode=${payloadMode}）`
+          + (crossing ? '——已发 oracle.alert（同连续期内不重复）' : ''),
+      });
+    }
     // 归一化可见化（提案 392cb761）：缺维时总分被重新归一到剩余维的权重和，
     // 分数与全维口径**不可直接比**。此前只在广播里写「N/A：x/y」，读者会把
     // 口径变化误读成「系统变美」——这里把 naDims 与有效分母一并落审计。
@@ -383,6 +487,16 @@ function apply(ctx, config) {
       findings.push({
         ruleId: 'oracle-proposals', severity: 'low',
         detail: `agint_evolve proposal id：${proposalIds.join(',')}（status=proposed，永不 auto-apply）`,
+      });
+    }
+    // r4 去重现形：被抑制的维必须留痕。不写这条，读者会以为「本周该维没问题」，
+    // 而真相是「本周该维有问题，且问题上次已经提过、还没处理」——两种结论
+    // 完全相反。
+    if (suppressedProposals.length) {
+      findings.push({
+        ruleId: 'oracle-proposal-suppressed', severity: 'low',
+        detail: `同维提案 ${PROPOSAL_DEDUP_WINDOW_DAYS} 天内已存在（status=proposed），本轮不再开新单：`
+          + suppressedProposals.map((s) => `${s.key}(原 ${s.existingId})`).join(', '),
       });
     }
     // §8.1.6 可观测性（v0.4.3）：本轮实际走了哪条输出路径 + LLM 降级原因。
@@ -410,13 +524,15 @@ function apply(ctx, config) {
       truncated: report.truncated, outcome: 'ok',
       detail: `${extraDetail ? `${extraDetail}; ` : ''}wall ${report.wallMs}ms`,
       proposals: proposalIds.length,
+      // r4：mode 落本表（AC-21 的原文就要求本表有这一列，此前只有 payload 有）
+      mode: payloadMode,
     }, now);
     // 配额计数 + 成功清失败计数（§6.3 状态面）
     const q = rollQuota(state.quota, now);
     const counterKey = kind === 'alert' ? 'alerts' : kind;
     q[counterKey] = (q[counterKey] ?? 0) + 1;
     q.bytes = (q.bytes ?? 0) + report.bytes;
-    await saveState({ ...state, quota: q, consecutiveFailures: 0 });
+    await saveState({ ...state, quota: q, consecutiveFailures: 0, llmHealth });
     if (kind === 'daily') {
       await maybeEstablishBaseline();
       // 方案 D：一次性重定基（幂等自触发——基线齐全后判据不再命中）。
@@ -522,6 +638,9 @@ function apply(ctx, config) {
     }
 
     // ── 分支 b/c：daily / weekly / monthly（主路径 + 缓存回退）───────────────
+    // r4 weekly 闭环行：读本插件提案积压（只读）。缓存回退路径也要用，
+    // 故在主链路之前算一次；非 weekly 档不算（省一次服务调用）。
+    const loopStat = kind === 'weekly' ? await weeklyLoopStat() : null;
     const metrics = svcMetrics();
     let summary = null;
     let summaryError = null;
@@ -552,11 +671,16 @@ function apply(ctx, config) {
           ? (await countDailyScored()) + 1 : null;
         const baselineDims = state.baseline.establishedAt
           ? dimsFromRecord(state.baseline.composites) : null;
-        const evaluation = evaluateAesthetics(view.atomic, { baseline: baselineDims, adviceCtx: view.adviceCtx });
+        const evaluation = evaluateAesthetics(view.atomic, {
+          baseline: baselineDims, adviceCtx: view.adviceCtx,
+          // r4 Q1 总分门：票数说「在变美」但总分低于基线时降级为「持平」。
+          // 基线未建立时传 null，门自动不生效（此时 Q1 本就返回 flat）。
+          baselineScore: state.baseline.establishedAt ? state.baseline.score : null,
+        });
         const report = renderReport(kind, {
           now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
           baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-          dayIndex, staleDays, reason: opts.reason, detail: opts.detail,
+          dayIndex, staleDays, reason: opts.reason, detail: opts.detail, loop: loopStat,
         });
         report.wallMs = Date.now() - t0;
         report.staleDays = staleDays; // finalizeBroadcast 靠它把 staleDays 写进 payload 与返回值
@@ -587,12 +711,17 @@ function apply(ctx, config) {
       ? (await countDailyScored()) + 1 : null;
     const baselineDims = state.baseline.establishedAt
       ? dimsFromRecord(state.baseline.composites) : null;
-    const evaluation = evaluateAesthetics(view.atomic, { baseline: baselineDims, adviceCtx: view.adviceCtx });
+    const evaluation = evaluateAesthetics(view.atomic, {
+      baseline: baselineDims, adviceCtx: view.adviceCtx,
+      // r4 Q1 总分门：票数说「在变美」但总分低于基线时降级为「持平」。
+      // 基线未建立时传 null，门自动不生效（此时 Q1 本就返回 flat）。
+      baselineScore: state.baseline.establishedAt ? state.baseline.score : null,
+    });
 
     const report = renderReport(kind, {
       now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
       baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-      dayIndex, reason: opts.reason, detail: opts.detail,
+      dayIndex, reason: opts.reason, detail: opts.detail, loop: loopStat,
     });
 
     // ── §8.1 LLM 增强档（v2.4；只作用于输出层，不碰评分链路）────────────────

@@ -38,12 +38,21 @@ import { createHash } from 'node:crypto';
  *       ⇒ 总分被扣两次，且 Q2 归因时两维互相争夺「最丑」。r3 把重复/矛盾归
  *       redundancy，noise 只留「死条目」（无入链 / 无证据）。
  *       标定复算随之变化：noise 88/380→84/380（0.2316→0.2211）、总分 52.4→53.4。
+ *   r4：bloat 从**固定总量预算**改为**单技能体积预算**（2026-10-23，判尺规模
+ *       不变性修复）。旧口径 b = Σbytes / 120KB，而 120KB 是按「11 技能 ×
+ *       10.9KB」定的固定总量；技能数增长到 20 后预算不跟涨 ⇒ 指标实际测的是
+ *       「技能数量」而非「体积失控」。生产实测 2026-10-22：221853 B / 20 =
+ *       10.83KB，落在方案 §3.4 自定的 8–12KB 合理区间内，但旧口径 b=1.805、
+ *       扣 24.15 分（满分 30）——纯口径假扣，总分被压低 24 分。
+ *       r4 定 b = (Σbytes / skillsTotal) / 11170，11170 = 122880/11 保留原标定
+ *       基准 ⇒ 09-27 标定样本（11 技能 / 82652 B）复算值 0.6727 完全不变，
+ *       历史标定钉仍成立；只有「技能数变了」的时期读数被纠正。
  *
  * ⛔ 版本号只增不减，且**只用于公式结构变更**。阈值/权重的参数微调不 bump
  * 版本，由 scaleHash（见下）自动分段——否则每改一次参数就要人工记一次版本，
  * 漏记则历史趋势被误读为连续（提案 98c8e911）。
  */
-export const FORMULA_VERSION = 'r3';
+export const FORMULA_VERSION = 'r4';
 
 // ── 阈值常量（v2.3 §3；改这里 = 改判尺，须走评审）────────────────────────────
 //
@@ -68,10 +77,18 @@ export const THRESHOLDS = {
   /** 冗余度阈值（§3.3）。经验值，**无回测依据**。
    *  口径（r3）：矛盾/重复条目的唯一记账处，达到该值 = 满扣 20。 */
   REDUNDANCY: 0.05,
-  /** 臃肿度预算字节：120KB（§3.4，11 技能 × 8-12KB）。全组常量里**唯一有可复述
-   *  来源**的一条（技能数 × 单文件经验体积），但仍非回测所得——两个因子都在漂：
-   *  2026-10-09 生产实测已变为 10 个技能 / 107541 字节（预算的 87.5%）。 */
-  BLOAT_BUDGET_BYTES: 120 * 1024,
+  /** 单技能体积预算字节（r4）：11170 = 122880 / 11。
+   *  来源：原 BLOAT_BUDGET_BYTES（120KB）是按「11 技能 × 10.9KB」定的固定总量。
+   *  r4 把它还原成**每技能**预算，让预算总额随 skillsTotal 走。
+   *  ⚠ 保留 122880/11 这个基准，是为了让 09-27 标定样本复算值不变（0.6727）。
+   *  代价：单技能 10.9KB 本身仍是「技能数 × 单文件经验体积」的乘积估算，
+   *  **非回测所得**（属提案 a85ef850 待办）。 */
+  BLOAT_BUDGET_PER_SKILL_BYTES: 11170,
+  /** 绝对上界兜底（r4）：Σbytes 超过该值即按超出比例追加进 b。
+   *  为什么需要：per-skill 判定对「一万个 1KB 技能」失效——每个都不超体积，
+   *  但总量爆炸。600KB ≈ 54 个正常技能的体量，正常增长不会触发。
+   *  这一条是**防绕过**，不是主判据。 */
+  BLOAT_ABS_CEILING_BYTES: 600 * 1024,
   /** 臃肿度扣分饱和倍数：b=2.5 倍预算后不再加倍扣（r2：修复无界罚）。
    *  这 1.5 是 r2 当天按「不要让 bloat 以绝对优势碾压 Q2 归因」定的工程判断，
    *  **未经回测**。 */
@@ -100,6 +117,28 @@ export const DIM_WEIGHTS = {
 };
 
 export const DIM_KEYS = ['noise', 'confidence', 'redundancy', 'bloat'];
+
+/**
+ * Q1 总分门（r4，2026-10-23）：票数判定说「在变美」，但总分实际比基线低超过该值
+ * ⇒ 降级为「持平」，并在 note 里写明抵消幅度。
+ *
+ * 为什么需要：Q1 是**票数制**，只看恶化/改善的维数，不看幅度。生产实测
+ * 2026-10-11~10-22 共 12 次 daily，verdict 全部「在变美」，同期总分 93.1→66.9
+ * （−26.2）。机制是 3 维微改善 + 1 维暴跌 24 分 → 票数 3:1 → 判美。
+ * 一个 45% 时间都在说「在变美」的判官，它的意见不构成信息。
+ *
+ * ⛔ 为什么**不改加权**（如 score × 票数）：加权会让 Q1 变成总分的函数，
+ *   Q1 就失去独立信息。Q1 的价值是「多维方向的**一致性**检查」，
+ *   不是总分的复读。总分门只处理「方向一致但量级相反」这一种矛盾。
+ *
+ * ⚠ −10 是工程判断，**非回测所得**：满分 100 的 10% ＝ 超过单维最大权重
+ *   （30）的三分之一被一维吃掉。属提案 a85ef850 待标定范围。
+ *
+ * ⛔ 本常量**不进 SCALE_SPEC / scaleHash**：它不改变任何分数，只改变判决。
+ *   分数仍可比，历史趋势不受影响；把它塞进判尺指纹会让「判决逻辑调整」
+ *   被误读成「尺子换了」。
+ */
+export const Q1_SCORE_GATE_DELTA = -10;
 
 /**
  * 判尺指纹（提案 98c8e911，2026-10-09）：THRESHOLDS / DIM_WEIGHTS /
@@ -167,7 +206,8 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
  * @param {number} [a.avgConfXCompliance] Σ(conf×[evidence非空])/N（metrics meta 增补）
  * @param {number} [a.curatorOverlaps] curator 判定的技能重叠对数（可缺省 0；
  *   Day 0 未入 metrics 原子表，当前实测恒 0，接入路径 = metrics-ext 后续增 key）
- * @param {number} [a.skillsTotal] SKILL.md 个数（冗余度分母）
+ * @param {number} [a.skillsTotal] SKILL.md 个数（冗余度分母；r4 起同时是臃肿度的
+ *   单技能体积分母——缺席则 bloat 判 N/A，不退回总量口径）
  * @param {number} [a.skillsBytes] Σ SKILL.md 字节（臃肿度分子）
  * @returns {{noise: object, confidence: object, redundancy: object, bloat: object}}
  */
@@ -230,10 +270,45 @@ export function deriveComposites(a = {}) {
     }
   }
 
-  // bloat = Σbytes / 120KB（不 clamp：超预算线性扣分）
-  const bloat = isNum(a.skillsBytes)
-    ? { value: round(a.skillsBytes / THRESHOLDS.BLOAT_BUDGET_BYTES), na: false, bytes: a.skillsBytes, budget: THRESHOLDS.BLOAT_BUDGET_BYTES }
-    : na('skillsBytes 缺席（skills 文件系统不可达）');
+  // bloat = 单技能平均体积 / 单技能预算（r4）
+  //
+  // ⛔ r3 及以前是 b = Σbytes / 120KB。120KB 是「11 技能 × 10.9KB」的固定总量，
+  //    技能数增长后预算不跟涨 ⇒ 指标测的是「技能数量」而不是「体积失控」。
+  //    生产证据（2026-10-22）：221853 B / 20 技能 = 10.83KB，落在方案自定的
+  //    8–12KB 合理区间，旧口径却给 b=1.805、扣 24.15 分（满分 30）。
+  //
+  // r4 口径：b = (Σbytes / skillsTotal) / BLOAT_BUDGET_PER_SKILL_BYTES。
+  //   判据含义从「总量超没超一个固定数」变成「单个技能平均写多大」。
+  //   缺 skillsTotal 时**不退回总量口径**——那会让同名字段在不同轮次含义不同，
+  //   是更隐蔽的口径漂移。直接 N/A 走权重归一（AC-4），让缺数据可见。
+  let bloat;
+  {
+    const bytes = a.skillsBytes;
+    const count = a.skillsTotal;
+    if (!isNum(bytes)) {
+      bloat = na('skillsBytes 缺席（skills 文件系统不可达）');
+    } else if (!isNum(count) || count <= 0) {
+      bloat = na('skillsTotal 缺席或为 0（单技能体积口径无分母，不退回总量口径）');
+    } else {
+      const perSkill = (bytes / count) / THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES;
+      // 绝对上界兜底：per-skill 对「一万个 1KB 技能」失效，超界按比例追加。
+      const overCeiling = bytes > THRESHOLDS.BLOAT_ABS_CEILING_BYTES
+        ? 1 + (bytes - THRESHOLDS.BLOAT_ABS_CEILING_BYTES) / THRESHOLDS.BLOAT_ABS_CEILING_BYTES
+        : 0;
+      bloat = {
+        value: round(Math.max(perSkill, overCeiling)),
+        na: false,
+        bytes,
+        skillsTotal: count,
+        perSkillBytes: Math.round(bytes / count),
+        perSkillBudget: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES,
+        budget: Math.round(count * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES),
+        // 判定被哪一路驱动：volume（单技能体积）/ ceiling（绝对上界）。
+        // 广播与审计靠它区分「技能写太胖」与「技能太多」——两者处理动作不同。
+        drivenBy: overCeiling > perSkill ? 'ceiling' : 'volume',
+      };
+    }
+  }
 
   return { noise, confidence, redundancy, bloat };
 }
@@ -321,8 +396,10 @@ export function computeAestheticScore(composites) {
  *
  * @param {object} current composites（deriveComposites 输出）
  * @param {object|null} baseline composites（首周基线；null = 未建立）
+ * @param {{currentScore?: number, baselineScore?: number}} [opts]
+ *   r4：总分门所需的两端总分。缺席则只按票数判定（向后兼容旧调用方）。
  */
-export function q1Verdict(current, baseline) {
+export function q1Verdict(current, baseline, opts = {}) {
   if (!baseline) {
     return { verdict: 'flat', worseCount: 0, betterCount: 0, note: '基线未建立（首周起算）' };
   }
@@ -342,10 +419,23 @@ export function q1Verdict(current, baseline) {
     if (worsening) { worseCount += 1; worseList.push(key); } else { betterCount += 1; betterList.push(key); }
   }
   let verdict;
+  let note = null;
   if (worseCount >= 2) verdict = 'ugly';
   else if (worseCount < 2 && betterCount >= 3) verdict = 'beautiful';
   else verdict = 'flat';
-  return { verdict, worseCount, betterCount, worseList, betterList, note: null };
+  // ── r4 总分门：方向一致但量级相反 ⇒ 不说「在变美」 ──────────────────────
+  // 只拦 beautiful。ugly 不需要拦（它已经在报忧）。flat 不需要拦。
+  const curScore = opts.currentScore;
+  const baseScore = opts.baselineScore;
+  if (verdict === 'beautiful' && isNum(curScore) && isNum(baseScore)) {
+    const delta = round(curScore - baseScore, 1);
+    if (delta <= Q1_SCORE_GATE_DELTA) {
+      verdict = 'flat';
+      note = `${betterCount} 维改善、${worseCount} 维恶化（${worseList.join('/')}），`
+        + `但总分低于基线 ${Math.abs(delta)} 分——方向一致、量级相反，不判「在变美」`;
+    }
+  }
+  return { verdict, worseCount, betterCount, worseList, betterList, note };
 }
 
 export const Q1_VERDICT_TEXT = {
@@ -457,11 +547,33 @@ export function q3Advice(worstKey, ctx = {}) {
     }
     case 'bloat': {
       const bytes = isNum(ctx.skillsBytes) ? ctx.skillsBytes : null;
-      if (bytes === null || bytes <= THRESHOLDS.BLOAT_BUDGET_BYTES) {
-        return { advice: NO_ADVICE, evidence: `skillsBytes 实测 ${bytes ?? '?'} / 预算 ${THRESHOLDS.BLOAT_BUDGET_BYTES}，未超限` };
+      const count = isNum(ctx.skillsTotal) && ctx.skillsTotal > 0 ? ctx.skillsTotal : null;
+      // r4：预算随技能数走 ⇒ 没有 skillsTotal 就算不出预算，也就无从判定超限。
+      // 此时返回 NO_ADVICE 而不是拿一个固定数硬判（那正是 r3 的病根）。
+      if (bytes === null || count === null) {
+        return {
+          advice: NO_ADVICE,
+          evidence: `skillsBytes=${bytes ?? '?'} / skillsTotal=${count ?? '?'}，单技能体积口径无法判定`,
+        };
+      }
+      const budget = Math.round(count * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES);
+      const perSkillKb = ((bytes / count) / 1024).toFixed(1);
+      const budgetKb = (THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES / 1024).toFixed(1);
+      if (bytes <= budget) {
+        return {
+          advice: NO_ADVICE,
+          evidence: `${count} 个技能共 ${bytes} 字节（均 ${perSkillKb}KB / 预算 ${budgetKb}KB），总量未超 ${budget} 字节`,
+        };
+      }
+      // 绝对上界驱动时，问题在「技能太多」不在「单个太大」——动作不同，必须分开说。
+      if (bytes > THRESHOLDS.BLOAT_ABS_CEILING_BYTES) {
+        return {
+          advice: `技能总量超绝对上界（${bytes} > ${THRESHOLDS.BLOAT_ABS_CEILING_BYTES} 字节，${count} 个）：归档 curator 判定陈旧/重叠技能`,
+          evidence: 'curator overlaps / 陈旧检测输出（绝对上界判据，非单技能体积判据）',
+        };
       }
       return {
-        advice: `归档 curator 判定陈旧/重叠的技能（当前 ${bytes} 字节 / 预算 ${THRESHOLDS.BLOAT_BUDGET_BYTES}）`,
+        advice: `归档 curator 判定陈旧/重叠的技能（${count} 个技能共 ${bytes} 字节，均 ${perSkillKb}KB 超预算 ${budgetKb}KB）`,
         evidence: 'curator overlaps / 陈旧检测输出',
       };
     }
@@ -473,11 +585,18 @@ export function q3Advice(worstKey, ctx = {}) {
 /**
  * 一步到位：原子值 → 完整美评结构（派生 + 总分 + 三问）。
  * 供 broadcast.js 与标定脚本共用——保证「测的就是跑的」。
+ *
+ * @param {object} atomic 原子值
+ * @param {{baseline?: object|null, adviceCtx?: object, baselineScore?: number|null}} [opts]
+ *   baselineScore 供 Q1 总分门（r4）使用；缺席则该门不生效（只按票数判）。
  */
-export function evaluateAesthetics(atomic, { baseline = null, adviceCtx = {} } = {}) {
+export function evaluateAesthetics(atomic, { baseline = null, adviceCtx = {}, baselineScore = null } = {}) {
   const composites = deriveComposites(atomic);
   const scored = computeAestheticScore(composites);
-  const verdict = q1Verdict(composites, baseline);
+  const verdict = q1Verdict(composites, baseline, {
+    currentScore: scored.score,
+    baselineScore,
+  });
   const worst = scored.score !== null ? q2Worst(composites, scored.dims) : null;
   const advice = worst ? q3Advice(worst.key, adviceCtx) : { advice: null, evidence: null };
   return { composites, scored, verdict, worst, advice };

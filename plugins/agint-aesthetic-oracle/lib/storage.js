@@ -89,6 +89,24 @@ const lastGoodShape = z.object({
   savedAt: z.string().default(''),
 });
 
+/** LLM 增强档健康面（r4，2026-10-23）：连续非 llm 广播计数 + 已告警标记。
+ *
+ * 为什么需要：`mode` 字段（v0.4.3）解决了「看得出」，没解决「有人看」。
+ * 生产实测 2026-10-19~10-22 连续 5 次 `mode=heuristic-degraded`
+ * （`L1:subagents unavailable`），AC-21（`mode='llm'` 占比 ≥80%）实测 47%、
+ * 最近 5 次为 0，而唯一痕迹是一条 `severity=low` 的审计 finding。
+ * 降级不抛错 ⇒ cron 的 `lastError` 永远为空 ⇒ 没有任何通道会响。
+ *
+ * `alerted` 是**防重**标记：同一次降级连续期内只发一次 `oracle.alert`，
+ * 恢复 `llm` 时清零。这与 §6.2「连续 3 次失败 → 沉默 + 告警一次」同构。
+ */
+const llmHealthShape = z.object({
+  consecutiveNonLlm: z.number().int().min(0).default(0),
+  alerted: z.boolean().default(false),
+  /** 最近一次广播实际走的输出路径（template / llm / heuristic-degraded）。 */
+  lastMode: z.string().nullable().default(null),
+});
+
 /** GUI dashboard 卡片行（Day 2-3）：oracle 订阅 oracle.* 4 topic，每 topic
  *  一行（key=topic）。UI 壳（dsh web）不可注入，卡片状态面 + cards() 查询是
  *  AGINT 侧的落地。独立成表、不进 state.latest——广播主链与订阅回写在同一
@@ -119,6 +137,8 @@ const oracleStateSchema = z.object({
   baseline: baselineShape.default(() => baselineShape.parse({})),
   /** §6.1 缓存回退面（Day 2-3）：最近一次成功广播的原子值快照，最多信 7 天 */
   lastGood: lastGoodShape.default(() => lastGoodShape.parse({})),
+  /** r4：LLM 增强档健康面（连续降级计数 + 防重告警标记） */
+  llmHealth: llmHealthShape.default(() => llmHealthShape.parse({})),
   updatedAt: z.string(),
 });
 
@@ -143,6 +163,14 @@ const oracleBroadcastSchema = z.object({
   detail: z.string().default(''),
   /** weekly 提案数（Day 4-5；本次广播成功提交到 agint_evolve.proposal 的条数） */
   proposals: z.number().int().min(0).default(0),
+  /** 本轮实际走的输出路径：template / llm / heuristic-degraded（空 = 未广播行）。
+   *
+   * ⛔ 为什么必须落到本表（r4）：AC-21 的原文是「生产存储 oracle_broadcasts 中
+   * `mode='llm'` 占比 ≥80%」。此前 mode 只进事件 payload 与审计 findings，
+   * **本表没有这一列** ⇒ 按 AC 原文去查，查不到任何数据，验收形同虚设。
+   * 现在它同时也喂 LLM 降级熔断（见 llmHealthShape）。
+   */
+  mode: z.string().default(''),
 });
 
 const spec = defineDomain({

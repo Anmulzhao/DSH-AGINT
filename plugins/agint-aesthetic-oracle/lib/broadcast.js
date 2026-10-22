@@ -12,7 +12,7 @@
  *     各自独立窗口）+ oracle.alert 独立日配额（防告警风暴）。
  */
 
-import { DIM_KEYS, DIM_WEIGHTS, q3Advice, NO_ADVICE } from './scoring.js';
+import { DIM_KEYS, DIM_WEIGHTS, THRESHOLDS, q3Advice, NO_ADVICE } from './scoring.js';
 
 // ── 常量 ───────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,9 @@ const THRESHOLD_TEXT = Object.freeze({
   noise: '阈 30%',
   confidence: '阈 0.70',
   redundancy: '阈 5%',
-  bloat: '预算 120KB',
+  // r4：预算不再是一个固定总量，而是「每技能 10.9KB」。这里只给基准，
+  // 实际预算 = skillsTotal × 10.9KB，由 describeWorst 按当轮技能数展开。
+  bloat: '单技能预算 10.9KB',
 });
 
 // ── 时间 / 周期 key（全部本地时区——cron 按本地时刻触发）────────────────────
@@ -167,6 +169,10 @@ export function extractAtomic(summary) {
       wikiOrphanFiles: strList(wikiMeta.files),
       curatorOverlaps: 0,
       skillsBytes: num('skills.totalBytes'),
+      // r4：bloat 改为单技能体积口径 ⇒ q3Advice 需要技能数才能算预算。
+      // 不传这一项，bloat 最丑时建议栏会永久哑火（与 2026-10-08 那次
+      // lowConfidenceNoEvidence 恒空是同一类缺陷）。
+      skillsTotal: isNum(skillsMeta.fileCount) ? skillsMeta.fileCount : null,
       // confidence 维建议的数据源（2026-10-08 补）：q3Advice 的 case 'confidence'
       // 唯一读 ctx.lowConfidenceNoEvidence，而本对象此前从未构造该字段 ⇒ rows 恒空
       // ⇒ 该维永远返回 NO_ADVICE（指标报警但建议栏永久哑火）。
@@ -215,8 +221,19 @@ function describeWorst(key, value, atomic) {
     case 'redundancy':
       return `${pct(value)}（${THRESHOLD_TEXT.redundancy}）——`
         + `${n(atomic.ruleDuplicates)} 条重复规则、${n(atomic.wikiContradictions)} 条 wiki 矛盾`;
-    case 'bloat':
-      return `${pct(value)} 预算（${THRESHOLD_TEXT.bloat}）——SKILL.md 共 ${Math.round((atomic.skillsBytes ?? 0) / 1024)}KB`;
+    case 'bloat': {
+      // r4：必须把「多少个技能 × 多少 KB = 预算多少 KB」一次说清。
+      // 只写「超预算」在技能数变化时无法解读——这正是 r3 的病灶
+      // （221853 B / 20 技能 = 10.83KB 正常，却被固定 120KB 判成超标 80%）。
+      const kb = Math.round((atomic.skillsBytes ?? 0) / 1024);
+      const n = atomic.skillsTotal;
+      if (!isNum(n) || n <= 0) {
+        return `${pct(value)}（${THRESHOLD_TEXT.bloat}）——SKILL.md 共 ${kb}KB（技能数未知，预算无法展开）`;
+      }
+      const per = THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES / 1024;
+      const budgetKb = Math.round((n * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES) / 1024);
+      return `${pct(value)} 单技能体积（${n} 个技能 × ${per.toFixed(1)}KB = 预算 ${budgetKb}KB）——SKILL.md 共 ${kb}KB`;
+    }
     default:
       return `${value}`;
   }
@@ -302,9 +319,16 @@ export function renderReport(kind, c = {}) {
     const v = verdict.verdict ?? 'flat';
     const vText = { beautiful: '在变美', ugly: '在变丑', flat: '持平' }[v] ?? v;
     const q1 = `（恶化 ${verdict.worseCount ?? 0}／改善 ${verdict.betterCount ?? 0}${verdict.note ? `；${verdict.note}` : ''}）`;
+    // r4 闭环行：这是神谕层唯一能证明「开口有回音」的一行。
+    // 生产实测 2026-10-22：累计 9 条提案、已处理 0 条、挂起 9 条。
+    // listProposals 不可用时**不写这行**（UNKNOWN 不是 0），宁缺不假。
+    const loopLine = c.loop?.available
+      ? `闭环：美谕提案累计 ${c.loop.total} 条｜已处理 ${c.loop.handled}｜挂起 ${c.loop.proposed}`
+      : null;
     return fitLines([
       `📈 本周美谕 ${weekRangeText(c.now ?? new Date())}（数据截至 ${asOfText}）`,
       scoreLine,
+      ...(loopLine ? [loopLine] : []),
       `本周三问：Q1 ${vText}${q1}`,
       ...worstLines,
     ]);
@@ -431,6 +455,22 @@ export function auditTargetId(kind, now = new Date(), seq = null) {
 
 // ── weekly 美谕提案（§5 weekly 部分 / Day 4-5）──────────────────────────────
 
+/**
+ * 提案的最小扣分门槛（r4，2026-10-23）。
+ *
+ * 为什么需要：旧口径 `deduction > 0` 就提，生产出过「美谕提案：噪声比 扣 0.3 分」
+ * （2026-10-12）。0.3 分的提案不是提案，是噪音——它占据 evolve 的 proposed 积压，
+ * 而积压本身又没有任何指标在测量。
+ *
+ * 2.0 分的含义：满分 100 里 2 分 = 单维最大权重（30）的 6.7%。低于这个量级的
+ * 改善动作（补 1 条 evidence、归档 1 个 wiki 孤儿）已经在 daily 广播的 Q3 里
+ * 说过一遍，不需要再开一张提案单。⚠ 工程判断，非回测所得。
+ */
+export const MIN_PROPOSAL_DEDUCTION = 2.0;
+
+/** 提案去重窗口（天）：同维度同周期内的复现不再开新单，改为在审计里记次数。 */
+export const PROPOSAL_DEDUP_WINDOW_DAYS = 28;
+
 /** 提案 category 映射（evolve 枚举：rule/skill/doc/preset/service/plugin/other）。 */
 const PROPOSAL_CATEGORY = Object.freeze({
   noise: 'doc',        // 补 evidence / 归档 orphans → 记忆与 wiki 内容
@@ -444,20 +484,25 @@ const PROPOSAL_CATEGORY = Object.freeze({
  *
  * 派生规则：可用维按**偏离度 ratio**（deduction/maxWeight）降序（r2：与 Q2
  * 同口径——旧版按绝对扣分排序，权重 30 的维天然压过权重 20 的维），只取
- * 扣分 > 0 的维，最多 3 条——0 扣分（阈内）的维没有可改进项，提了也是噪声。
+ * 扣分 ≥ `meta.minDeduction` 的维（r4 默认 MIN_PROPOSAL_DEDUCTION=2.0），
+ * 最多 3 条——阈内或分量级不足的维没有可改进项，提了也是噪声。
  * 每条经 q3Advice 生成（纯机械动作 + 必附证据），⭐ 只产出文本，不执行任何
  * 动作：归档/合并由老板决定后走各自插件，oracle 永不调 curator_archive。
  *
  * §4 真实关（2026-09-29）：q3Advice 返回 NO_ADVICE 的维直接跳过——
  * 查不到证据就不提提案（「本日无可执行建议」不是提案正文）。
  *
- * @returns {Array<{title, body, category, note}>}
+ * r4：每条草稿带 `key`（维度名）。去重要按维判定，靠 title 里的中文名反查
+ * 太脆（改一个字就漏），故由派生侧直接给出结构化标识。
+ *
+ * @returns {Array<{key, title, body, category, note}>}
  */
 export function buildWeeklyProposals(evaluation, adviceCtx = {}, meta = {}) {
   const dims = evaluation?.scored?.dims ?? {};
   const composites = evaluation?.composites ?? {};
+  const minDeduction = isNum(meta.minDeduction) ? meta.minDeduction : MIN_PROPOSAL_DEDUCTION;
   const ranked = DIM_KEYS
-    .filter((k) => dims[k]?.available && isNum(dims[k]?.deduction) && dims[k].deduction > 0)
+    .filter((k) => dims[k]?.available && isNum(dims[k]?.deduction) && dims[k].deduction >= minDeduction)
     .map((k) => ({ key: k, deduction: dims[k].deduction, ratio: dims[k].deduction / DIM_WEIGHTS[k] }))
     .sort((a, b) => b.ratio - a.ratio);
   const drafts = [];
@@ -476,7 +521,54 @@ export function buildWeeklyProposals(evaluation, adviceCtx = {}, meta = {}) {
       meta.targetId ? `审计：${meta.targetId}（id 清单等详情见审计 findings）` : null,
       '性质：纯机械动作提案（status 锁 proposed，永不 auto-apply；执行与否由老板定）',
     ].filter(Boolean).join('\n');
-    drafts.push({ title, body, category: PROPOSAL_CATEGORY[key] ?? 'other' });
+    drafts.push({
+      key,
+      title,
+      body,
+      category: PROPOSAL_CATEGORY[key] ?? 'other',
+      // r4：把维度写进 note，让下一轮去重能精确匹配（历史 9 条没有这个标记，
+      // findDuplicateProposal 会退回按 title 里的维度中文名匹配）。
+      note: `worst=${key}`,
+    });
   }
   return drafts;
+}
+
+/**
+ * 提案去重（r4，2026-10-23）：同维度在 `windowDays` 内已有同源提案 ⇒ 命中。
+ *
+ * 为什么需要：生产实测「臃肿度」在 2026-10-12（扣 23.8）与 10-19（扣 28.4）
+ * 提了两次同质提案。同一个问题提两遍，等于第一遍没被看见——而去重的目的
+ * 不是少干活，是让「问题已提出、尚未处理」这个事实保持可见。
+ *
+ * 匹配顺序（从稳到脆）：
+ *   1. note 含 `worst=<key>` —— r4 之后的提案，结构化，不受文案改动影响
+ *   2. title 含该维中文名 —— 覆盖 r4 之前的历史提案
+ *
+ * ⛔ 只匹配 status='proposed'：已被 wontfix / rejected 的提案，同维再出问题
+ *   应当重开（老板说过「这个不做」，不等于「这个问题消失了」）。
+ *
+ * @param {string} key 维度名（noise/confidence/redundancy/bloat）
+ * @param {Array<object>} existing 本插件已提交的提案（source===name）
+ * @param {{now?: Date, windowDays?: number}} [opts]
+ * @returns {{id:string, createdAt:string, status:string}|null}
+ */
+export function findDuplicateProposal(key, existing, opts = {}) {
+  const nowMs = new Date(opts.now ?? new Date()).getTime();
+  const windowDays = isNum(opts.windowDays) ? opts.windowDays : PROPOSAL_DEDUP_WINDOW_DAYS;
+  const cutoff = nowMs - windowDays * 86_400_000;
+  const label = WORST_LABELS[key];
+  if (!label) return null;
+  const hits = (Array.isArray(existing) ? existing : [])
+    .filter((p) => p?.status === 'proposed')
+    .filter((p) => {
+      const t = Date.parse(p.createdAt ?? '');
+      // 无 createdAt 的存量行按「在窗口内」处理：宁可重复抑制，不可漏抑制
+      return !Number.isFinite(t) || (t >= cutoff && t <= nowMs);
+    })
+    .filter((p) => String(p.note ?? '').includes(`worst=${key}`) || String(p.title ?? '').includes(label))
+    .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+  if (hits.length === 0) return null;
+  const h = hits[0];
+  return { id: h.id, createdAt: h.createdAt ?? '', status: h.status };
 }
