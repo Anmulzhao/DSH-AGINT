@@ -478,6 +478,15 @@ rowsQ1.sort((a,b)=>b.codeN-a.codeN||a.pl.localeCompare(b.pl));
 const sumCode=rowsQ1.reduce((s,r)=>s+r.codeN,0);
 const sumComment=HITS.filter(h=>h[4]==="comment").length;
 const sumUmbrella=HITS.filter(h=>h[4]==="umbrella").length;
+/* 「仅注释命中」≠「文档腐化候选」（2026-10-22，与档案页 lib/client.js 的 isCommentRot
+   同一判据）。一条命中落在注释里，只说明**那一行**在注释里；要判「这个服务只出现在
+   注释里」，还得同时满足三条：全仓无提供方、全仓无 code 态取用、且不是 dsh 宿主键。
+   缺任何一条都不是腐化 —— 那只是注释里提过一个有依据的服务。
+   实测：修此判据前全仓 52 条注释命中里有 50 条属于后者（agint.mutator 的伞键注释、
+   mount 的 hmr 注释、tool-stats 的 tokenMeter 注释都曾因此被误报）。 */
+const CODE_KEYS_ALL=new Set(HITS.filter(h=>h[4]==="code").map(h=>h[3]));
+const rottedComment=HITS.filter(h=>h[4]==="comment"
+  &&!providerOf(h[3])&&!CODE_KEYS_ALL.has(h[3])&&!isHostKey(h[3])).length;
 const noProviderEv=[];
 for(const [pl,g] of Object.entries(byPlugin))
   for(const [svc,evs] of g.code)
@@ -796,7 +805,7 @@ ages.innerHTML=AGES.map(a=>`<span class="age"><span class="dot ${a.state}"></spa
 // ── 顶部 5 个数字 ──────────────────────────────────────────────────
 const STATS=[
  {k:"依赖边（代码）",v:sumCode,n:`${rowsQ1.filter(r=>r.codeN>0).length} 个消费插件`},
- {k:"仅注释命中",v:sumComment,n:"文档腐化候选",c:"var(--err)"},
+ {k:"仅注释命中",v:sumComment,n:rottedComment?`其中 ${rottedComment} 条无提供方且无代码取用（腐化候选）`:"全部有提供方或代码取用依据",c:rottedComment?"var(--err)":undefined},
  {k:"伞键不可达",v:sumUmbrella,n:"不建边",c:"var(--warn)"},
  {k:"30 天工具调用",v:toolTotal.toLocaleString(),n:`宿主内建占 ${Math.round(hostTotal/toolTotal*100)}%`},
  {k:"L2 异常",v:ANOM.length,n:"Q3 · 每条带证据",c:"var(--warn)"},
