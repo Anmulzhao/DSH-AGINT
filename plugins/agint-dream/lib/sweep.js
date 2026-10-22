@@ -264,6 +264,38 @@ function extractText(record) {
 }
 
 /**
+ * 判定一条 user/message 记录是不是真人说的话。
+ *
+ * 背景（提案 0f6c69bc，2026-10-23 实测）：宿主把主 agent 发给 subagent 的
+ * prompt **也记成 kind='user'**。老的 `kind !== 'user'` 过滤挡得住
+ * skill-catalog / agent-instructions 注入，**挡不住它**。这些 prompt 被 dream
+ * 当成"用户偏好/教训"提进候选，一旦门槛调松就会写进长期记忆。
+ *
+ * 判据（实测 60 个会话，kind='user' 记录 163 条）：
+ *   - source 带 rpcId / clientTimeZone：155 条 → 全部真人
+ *   - source 只有 kind：                8 条 → 全部 subagent prompt
+ * 两个标记**任一存在**即判 human —— 只用其中一个会漏掉宿主只给另一个的情况。
+ *
+ * ⛔ 不要用文本特征（"你是"/"只读"等）做判据：155 条真人里有 4 条命中这类
+ * 特征词（"你现在是什么模型、推理等级是什么"），误杀的是真人问句。
+ * 误杀率 2.6%，且误杀对象恰好是最该保留的那类消息。
+ *
+ * @returns {'human'|'subagent-prompt'|'other-kind'}
+ */
+export function classifyUserSource(rec) {
+  const src = rec?.data?.source ?? null;
+  // 老格式（v3 及更早）的 user/message 没有 source 字段。**保守收**：
+  // 把它判成 subagent prompt 会让老会话的 Light 通道整轮归零 —— 那正是
+  // 提案 4734bc97 修掉的「静默失效 7 天」同型错。无法判定时不拦。
+  if (!src || typeof src !== 'object') return 'unknown-source';
+  const kind = src?.kind ?? null;
+  if (kind && kind !== 'user') return 'other-kind';
+  const markers = [src?.rpcId, src?.clientTimeZone]
+    .filter((v) => typeof v === 'string' && v.trim() !== '').length;
+  return markers > 0 ? 'human' : 'subagent-prompt';
+}
+
+/**
  * Collect per-session signals from one parsed log.
  * Returns { sessionKey, title, time, userTexts, memWrites, errors, toolCalls }.
  */
@@ -273,15 +305,23 @@ export function collectSessionSignals(records) {
   const memWrites = [];
   const errors = [];
   const times = [];
+  let humanKept = 0;
+  let subagentDropped = 0;
+  let unknownKept = 0;
   for (const rec of records) {
     const t = rec?.time ?? rec?.seq ?? 0;
     if (rec?.type === 'user/message') {
       // Only real human utterances are signals. DSH injects skill-catalog /
-      // system-reminder blocks as user/message events with other source kinds.
-      const kind = rec.data?.source?.kind;
-      if (kind && kind !== 'user') continue;
+      // system-reminder blocks as user/message events with other source kinds,
+      // and records subagent prompts with kind='user' but no rpcId/clientTimeZone.
+      const cls = classifyUserSource(rec);
+      if (cls === 'other-kind') continue;
+      if (cls === 'subagent-prompt') { subagentDropped += 1; continue; }
       const text = extractText(rec.data).trim();
-      if (text) userTexts.push({ text, time: t });
+      if (text) {
+        userTexts.push({ text, time: t });
+        if (cls === 'human') humanKept += 1; else unknownKept += 1;
+      }
     } else if (rec?.type === 'tool/call' && rec.data?.name === 'memory_write') {
       let args = {};
       try { args = JSON.parse(rec.data.arguments ?? '{}'); } catch { /* ignore */ }
@@ -295,6 +335,7 @@ export function collectSessionSignals(records) {
     }
     if (t) times.push(t);
   }
+  const userKindTotal = humanKept + subagentDropped;
   return {
     sessionKey,
     userTexts,
@@ -302,7 +343,47 @@ export function collectSessionSignals(records) {
     errors,
     startTime: times.length ? Math.min(...times) : 0,
     endTime: times.length ? Math.max(...times) : 0,
+    sourceFilter: {
+      userKindTotal,
+      humanKept,
+      unknownKept,
+      subagentDropped,
+      // 判据失效护栏：整轮 kind='user' 的记录一条都不带人类标记 ⇒
+      // 宿主多半改了记录方式。标记出来，让零命中告警有东西可报（K54/K116）。
+      degraded: userKindTotal > 0 && humanKept === 0,
+    },
   };
+}
+
+/**
+ * 聚合一轮 sweep 里所有会话的信号源过滤统计（提案 0f6c69bc）。
+ *
+ * 存在的理由：只拦不报 = 下一次又是「静默失效」。拦了多少 subagent prompt、
+ * 判据有没有失效，这两个数必须进 diary / dream_status / 宿主日志（K116）。
+ *
+ * @returns {{humanKept:number, unknownKept:number, subagentDropped:number,
+ *            userKindTotal:number, degradedSessions:number, judgeFailed:boolean}}
+ */
+export function aggregateSourceFilterStats(signals) {
+  const acc = {
+    humanKept: 0,
+    unknownKept: 0,
+    subagentDropped: 0,
+    degradedSessions: 0,
+  };
+  for (const s of signals ?? []) {
+    const f = s?.sourceFilter;
+    if (!f) continue;
+    acc.humanKept += f.humanKept ?? 0;
+    acc.unknownKept += f.unknownKept ?? 0;
+    acc.subagentDropped += f.subagentDropped ?? 0;
+    if (f.degraded) acc.degradedSessions += 1;
+  }
+  acc.userKindTotal = acc.humanKept + acc.subagentDropped;
+  // 判据失效：有 kind='user' 的消息，却一条人类消息都没收到，也没有老格式兜底。
+  // 说明宿主改了记录方式（比如不再写 rpcId）⇒ 过滤器正在误杀真人消息。
+  acc.judgeFailed = acc.degradedSessions > 0 && acc.humanKept === 0 && acc.unknownKept === 0;
+  return acc;
 }
 
 // ── REM: candidate extraction (heuristic, deterministic) ───────────────────
@@ -907,7 +988,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
  *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -933,6 +1014,14 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
       .map(([k, v]) => `${k}×${v}`).join(' · ');
     lines.push(`- 工具错误因果过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
       + `${reasons ? `（${reasons}）` : ''}${toolErrorStats.enabled ? '' : ' · 过滤已关闭(kill-switch)'}`);
+  }
+  // 2026-10-23（提案 0f6c69bc）：信号源过滤必须**可见**。
+  // 挡住 subagent prompt 是本次目标，但判据一旦失效（宿主改了记录方式），
+  // 症状是「一条用户消息都收不到」—— 与 Light 静默失效 7 天同型，必须出声。
+  if (sourceFilterStats && (sourceFilterStats.subagentDropped > 0 || sourceFilterStats.judgeFailed)) {
+    const f = sourceFilterStats;
+    lines.push(`- 信号源过滤：真人 ${f.humanKept} 条 · 老格式 ${f.unknownKept} 条 · 拦 subagent prompt ${f.subagentDropped} 条`
+      + (f.judgeFailed ? ' · ⚠️ **判据可能失效**（无人类标记消息，需复核 source 记录方式）' : ''));
   }
   lines.push('');
   if (memWrites.length > 0) {
@@ -1176,6 +1265,15 @@ export async function runSweep({
   if (health.status === 'degraded') {
     // 打日志：dream_status 之外还得能在宿主日志里 grep 到（可观测 > 静默）
     console.warn(`[agint-dream] ${health.reason}`);
+  }
+
+  // ── 信号源过滤统计（2026-10-23 / 提案 0f6c69bc）───────────────────────
+  // 拦了 subagent prompt 多少条、判据有没有失效，两个都要出声。
+  const sourceFilterStats = aggregateSourceFilterStats(signals);
+  if (sourceFilterStats.judgeFailed) {
+    const reason = `source-filter 判据失效：${sourceFilterStats.degradedSessions} 个会话里 kind='user' 的消息全部没有 rpcId/clientTimeZone，过滤器正在误收或误杀，需复核 source 判据`;
+    console.warn(`[agint-dream] ${reason}`);
+    errors.push(reason);
   }
 
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
@@ -1493,6 +1591,8 @@ export async function runSweep({
     dedupeStats,
     // 2026-09-28：工具错误诊断过滤统计
     toolErrorStats,
+    // 2026-10-23（提案 0f6c69bc）：信号源过滤统计
+    sourceFilterStats,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   // 2026-09-28：dry-run 写 `<day>.preview.md`，不碰 `<day>.md`。
@@ -1519,6 +1619,15 @@ export async function runSweep({
         total: toolErrorStats.total,
         kept: toolErrorStats.kept,
         dropped: toolErrorStats.dropped,
+      },
+      // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。形状扁平（与 toolErrorFilter 同款），
+      // 因为 tools.js 的 output schema 是 additionalProperties:false，
+      // 漏声明会让 dream_status / dream_run_now 整体不可用（K164 同形状事故）。
+      sourceFilter: {
+        humanKept: sourceFilterStats.humanKept,
+        unknownKept: sourceFilterStats.unknownKept,
+        subagentDropped: sourceFilterStats.subagentDropped,
+        judgeFailed: sourceFilterStats.judgeFailed,
       },
       candidates: scored.length,
       gated: gated.length,

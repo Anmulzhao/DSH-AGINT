@@ -289,6 +289,12 @@ export const ConfigSchema = z.object({
   // ── Sprint 16 发布层（设计稿 §5；2026-09-09 老板拍板 3 项）──────────────
   // 门 1 总开关（独立于 auto_create_enabled）
   release_enabled: z.boolean().default(true),
+  // 2026-10-23（提案 2f7c834c C2）：证据级别门。
+  // E0 = 候选没有可执行证据（phase2 未 pass，如无 scripts、沙箱门 skipped）。
+  // 自动发布的 E0 技能必然是空壳 ⇒ 一律卡住等人工点头（manual=true 仍可放行）。
+  // 默认**开**（K51：新能力出厂即开）。关掉它的唯一正当理由是
+  // 「明确接受没有证据的技能也自动发布」，不是因为它挡了发布量。
+  evidence_gate_enabled: z.boolean().default(true),
   // 门 3 policy 门放行语义（2026-09-13 B 修复）：
   //   'veto'  （默认）只拦 REJECT/ABSTAIN，放行 AUTO_DEPLOY / PENDING_REVIEW ——
   //            即「保留 policy 门拦错、放行其余进观察期」（K42 原则）。新候选 D-QAF

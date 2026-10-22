@@ -296,6 +296,9 @@ function apply(ctx, config) {
           qualityEval: { status: 'unavailable', compositeMean: null, harmMean: null, targetCount: 0, okCount: 0 },
           // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要兜底
           evolutionTemplates: { status: 'unavailable', count: 0, topConfidence: null, boost: 0 },
+          // 2026-10-23（提案 0f6c69bc）：信号源过滤兜底（形状必须与 sweep result.counts 一致，
+          // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
+          sourceFilter: { humanKept: 0, unknownKept: 0, subagentDropped: 0, judgeFailed: false },
           // 2026-09-28：工具错误诊断过滤兜底（形状必须与 sweep result.counts 一致，
           // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
           toolErrorFilter: { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0 },

@@ -126,6 +126,18 @@ function apply(ctx) {
                   dropped: { required: true, type: 'number' },
                 },
               },
+              // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
+              // 形状扁平 + 四属性全 required —— additionalProperties:false
+              // 漏声明 = 整个工具不可用（K164 同形状事故已咬过四次）。
+              sourceFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  humanKept: { required: true, type: 'number' },
+                  unknownKept: { required: true, type: 'number' },
+                  subagentDropped: { required: true, type: 'number' },
+                  judgeFailed: { required: true, type: 'boolean' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
@@ -256,6 +268,18 @@ function apply(ctx) {
                   total: { required: true, type: 'number' },
                   kept: { required: true, type: 'number' },
                   dropped: { required: true, type: 'number' },
+                },
+              },
+              // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
+              // 形状扁平 + 四属性全 required —— additionalProperties:false
+              // 漏声明 = 整个工具不可用（K164 同形状事故已咬过四次）。
+              sourceFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  humanKept: { required: true, type: 'number' },
+                  unknownKept: { required: true, type: 'number' },
+                  subagentDropped: { required: true, type: 'number' },
+                  judgeFailed: { required: true, type: 'boolean' },
                 },
               },
               candidates: { required: true, type: 'number' },
