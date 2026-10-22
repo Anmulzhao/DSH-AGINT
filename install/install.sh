@@ -1247,17 +1247,63 @@ cp -f "$BUNDLE_MANIFEST_SRC" "$BUNDLE_MANIFEST_DST" || die "bundle package.json 
 # ⛔ 必须链在包内，且 safe_rsync 排除 node_modules，否则下次 sync 被 --delete 删掉。
 ensure_bundle_module_entry
 
-# 残留检测：profile 级 patch 若还留着 agint-* 挂载段 → 会与 bundle 层重复挂载。
+# 残留检测：profile 级 patch 若还留着 agint-* **挂载段** → 会与 bundle 层重复挂载。
 # 直接失败，不"打包带过"。
+#
+# ⚠️ 2026-10-23 修误报（旧版把本机 override 也当挂载段，本机部署被硬挡了 19 天）：
+#    旧判据是「出现 `- id: agint-*` 就算」，但 profile 级 patch 里合法存在的是
+#    **config-only 按 id 深合并**的本机 override（repoRoot / recordMode /
+#    observation_period_days 等，各机各配、不入库）。它们不带 name/path/main，
+#    cordis 找不到插件实体 ⇒ 不产生第二个实例，不是双重挂载。
+#    证据有两条：① 本脚本自己的成功提示语写的是「只剩本机本地覆盖」——
+#       「只剩」意味着 override 本该留下，旧正则却把它当残留；② profile patch 内
+#       agint-skill-autocreate 段注释写明「config-only 按 id 深合并（先例：
+#       agint-trajectory / agint-cron）」。
+#    新判据：段内出现 name / path / main / entry / plugin 之一才算真挂载段。
+#     sibling 键缩进 = id 行前导空白 + 2（`- ` 两字符），据此排除 config: 底下的同名嵌套键。
 if [ -f "$PROFILE_PATCH_DST" ]; then
-  python3 - "$(winpath "$PROFILE_PATCH_DST")" <<'PY' || die "profile 级 patch 仍含 AGINT 挂载段（会上双重挂载）。删掉该段后重跑；备份在 .agint-backups/"
+  python3 - "$(winpath "$PROFILE_PATCH_DST")" <<'PY' || die "profile 级 patch 仍含 AGINT 挂载段（会上双重挂载）。挂载段 = 带 name/path/main 入口键的段；config-only 的本机 override 不拦。备份在 .agint-backups/"
 import re, sys
 text = open(sys.argv[1], encoding='utf-8').read()
-hits = re.findall(r'^\s*- id:\s+(agint-[a-z0-9-]+)\s*$', text, re.M)
+SEG = re.compile(r'^(\s*)-\s+id:\s+(agint-[a-z0-9-]+)\s*(?:#.*)?$')
+MOUNT_KEYS = ('name', 'path', 'main', 'entry', 'plugin')
+
+def indent_of(ln):
+    return len(ln) - len(ln.lstrip(' '))
+
+hits, overrides = [], []
+cur_id, key_indent, cur_mount = None, None, False
+
+def close():
+    global cur_id, cur_mount
+    if cur_id is None:
+        return
+    (hits if cur_mount else overrides).append(cur_id)
+    cur_id, cur_mount = None, False
+
+for ln in text.split('\n'):
+    m = SEG.match(ln)
+    if m:
+        close()
+        cur_id, key_indent, cur_mount = m.group(2), len(m.group(1)) + 2, False
+        continue
+    if cur_id is None or ln.strip() == '':
+        continue
+    ind = indent_of(ln)
+    if ind <= key_indent - 2:          # 回到段级或更外层 ⇒ 本段结束
+        close()
+        continue
+    if ind == key_indent and ln.strip().split(':', 1)[0] in MOUNT_KEYS:
+        cur_mount = True
+close()
+
 if hits:
-    print(f"[AGINT]   ✗ profile 级 patch 残留 {len(hits)} 个 agint-* 挂载段（如 {', '.join(hits[:5])} ...）")
+    print(f"[AGINT]   ✗ profile 级 patch 残留 {len(hits)} 个 AGINT 挂载段（如 {', '.join(hits[:5])} ...）")
     sys.exit(1)
-print("[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（只剩本机本地覆盖）")
+if overrides:
+    print(f"[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（{len(overrides)} 个 config-only 本机 override 按 id 深合并，放行：{', '.join(overrides)}）")
+else:
+    print("[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（只剩本机本地覆盖）")
 PY
 fi
 
