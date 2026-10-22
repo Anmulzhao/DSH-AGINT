@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-quality-static",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "插件代码级静态检查独立 Cordis 插件（5 族：dependency-audit / storage-boundary / env-access / contract-reference / l0-isolation）。Sprint 10 #4 + Sprint 11 #B l0-isolation 收口。",
   "main": "lib/index.js",
 
