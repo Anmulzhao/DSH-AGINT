@@ -56,12 +56,25 @@ export const CRON_OWNER = Object.freeze({
  * `profileContext`（2026-10-22 补）：本仓 `lib/index.js` 用
  * `ctx.get('profileContext')?.name` 取当前 profile 名，宿主注入，无 provide 行。
  * 它此前被算成「无提供方」候选，让每个读它的插件多背一条假债。
+ *
+ * `tokenMeter`（2026-10-22 补）：dsh 上游 token 计量服务。证据三处 ——
+ *   docs/capability-boundary.md:151「上游已有 ctx.tokenMeter（dsh-token-meter v0.2.1-rc.2）」；
+ *   bin/check-boundary.mjs:152「dsh 0.2.1 已有 ctx.tokenMeter」；
+ *   agint-tool-stats/lib/index.js:105 已实装消费（lazyService(ctx, 'tokenMeter')）。
+ * 缺它时 tool-stats 那条注释命中被误判成「只在注释里出现」的文档腐化。
+ *
+ * `core.hmr`（2026-10-22 补）：agint-mount/lib/orchestrator.js:198 起按
+ * `core.hmr` / `host.hmr` / `agint.hmr` 顺序查宿主的 HMR settle 服务，任一不存在
+ * 就走 bus / timeout 兜底。这三个都是**宿主命名空间**的键（core.* / host.*），
+ * 本仓结构上不可能 provide。只补 core.hmr 是因为另两个当前不出现在可匹配的
+ * 字面量位（host.hmr 在同一行注释里但无 ctx 前缀；agint.hmr 在 227 行的变量
+ * 循环里）—— 将来它们以可匹配形态出现时，按同一条理由补进来。
  * @type {ReadonlySet<string>}
  */
 export const HOST_KEYS = Object.freeze(new Set([
   'agents', 'subagents', 'skills', 'sandbox', 'approval', 'openvikingMemory',
   'dshHome', 'profilesDir', 'sessionQuery', 'sessionPersistence', 'agentDefaultModel', 'goals', 'layout',
-  'profileContext',
+  'profileContext', 'tokenMeter', 'core.hmr',
 ]));
 
 /** 工具名 → 归属插件（前缀推断；未命中返回 null）。 */

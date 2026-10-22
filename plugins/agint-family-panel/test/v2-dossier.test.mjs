@@ -11,8 +11,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectDossiers, parseChangelog, codeStat } from '../lib/v2-dossier.js';
-import { ownersPayload, providerOfService, isHostKey, ownerOfTool } from '../lib/v2-owners.js';
+import { ownersPayload, providerOfService, isHostKey, ownerOfTool, HOST_KEYS } from '../lib/v2-owners.js';
+import { scanPlugins } from '../lib/v2-scan.js';
 import { makeDossierFixture } from './fixtures/dossier/make-fixture.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const dirs = { pluginsDir: makeDossierFixture(), repoPluginsDir: null };
 const out = collectDossiers(dirs, { kinds: {}, mounted: new Set(['agint-normal']) });
@@ -113,12 +118,26 @@ test('归因表：payload 形态完整，前缀优先匹配，宿主键判据只
   assert.ok(Array.isArray(payload.tool) && payload.tool.length > 10);
   assert.equal(payload.cron['oracle-daily'], 'agint-aesthetic-oracle');
   assert.ok(payload.hostKeys.includes('profileContext'), 'profileContext 是宿主键（无 provide 行）');
+  assert.ok(payload.hostKeys.includes('tokenMeter'), 'tokenMeter 是宿主键（dsh-token-meter，2026-10-22 补）');
+  assert.ok(payload.hostKeys.includes('core.hmr'), 'core.hmr 是宿主键（mount 查宿主 HMR，2026-10-22 补）');
   // 长前缀必须先命中
   assert.equal(ownerOfTool('memory_provider_health'), 'agint-memory-provider');
   assert.equal(ownerOfTool('evolution_ledger_x'), 'agint-evolution-driver');
   assert.equal(ownerOfTool('nope_'), null);
   assert.equal(isHostKey('profileContext'), true);
+  assert.equal(isHostKey('tokenMeter'), true);
+  assert.equal(isHostKey('core.hmr'), true);
   assert.equal(isHostKey('agint.cron'), false, 'agint.* 永远不是宿主键');
+});
+
+// HOST_KEYS 的安全不变量：清单里每个键，本仓任何插件都**不得** provide。
+// 为什么必须钉：这个清单是「无提供方」判据的豁免名单。哪天本仓真 provide 了其中一个，
+// 豁免就会把一条真实的提供方关系藏起来 ⇒ 面板少画一条入边，且不报错。
+// 判据用 v2-scan 的 provided 表（同一棵仓库树、同一个扫描器），不另写正则。
+test('HOST_KEYS 不变量：清单内任一键都不得被本仓 provide', () => {
+  const provided = scanPlugins(join(here, '..', '..', '..')).provided;
+  const clashes = [...HOST_KEYS].filter((k) => k in provided);
+  assert.deepEqual(clashes, [], `这些宿主键被本仓 provide 了，必须从 HOST_KEYS 移出：${clashes.join(',')}`);
 });
 
 test('providerOfService 只在确有父键 provide 时回退', () => {
