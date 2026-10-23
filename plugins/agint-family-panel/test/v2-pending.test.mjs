@@ -60,6 +60,7 @@ domain('agint_evolve.json', {
     b: { id: 'b', title: '提案乙', status: 'proposed' },
     c: { id: 'c', title: '提案丙', status: 'proposed' },
     d: { id: 'd', title: '提案丁', status: 'applied' },
+    e: { id: 'e', title: '提案戊', status: 'approved' },
   },
 });
 
@@ -98,9 +99,17 @@ assert.equal(skill.supply, 3, '同时报出上游 pattern 数：供给有而产�
 
 const evo = byKey(P, 'evolve-proposal');
 assert.equal(evo.state, 'ok');
-assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied 不算');
-assert.equal(evo.total, 4);
+assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied / approved 不算');
+assert.equal(evo.total, 5);
 assert.equal(evo.items[0].title, '提案甲');
+
+// 2026-10-23：approved 是「人工已批准、尚未执行」。它必须自己占一行待办 ——
+// 否则批准 = 从待办里消失，决定做完了却没人去做。
+const approvedQ = byKey(P, 'evolve-approved');
+assert.equal(approvedQ.state, 'ok');
+assert.equal(approvedQ.kind, 'action', '工作单是人能直接动手的，不是「供给不足」');
+assert.equal(approvedQ.pending, 1, '只算 status=approved');
+assert.equal(approvedQ.items[0].title, '提案戊');
 
 const cur = byKey(P, 'curator-overlap');
 assert.equal(cur.state, 'ok');
@@ -145,7 +154,7 @@ const R = collectV2Data(
   { cache: new Map() },
 );
 assert.ok(R.pending, 'collectV2Data 必须暴露 payload.pending —— 面板只读这一个快照');
-assert.equal(R.pending.queues.length, 5, '五条声明表全在');
+assert.equal(R.pending.queues.length, 6, '六条声明表全在（2026-10-23 加「已批准待执行」）');
 assert.equal(byKey(R.pending, 'curriculum-challenge').pending, 1, '经 collectV2Data 聚合后与直调一致');
 
 console.log('v2-pending: ok');

@@ -106,7 +106,11 @@ assert.match(clientSrc, /h\('iframe'/, 'v2 视图走 iframe 内嵌');
 assert.match(clientSrc, /contentDocument/, '0.2.2 iframe 自适应内页高度（同源直读）');
 assert.match(clientSrc, /ResizeObserver/, '高度跟随内页变化（ResizeObserver + 轮询兜底）');
 assert.match(clientSrc, /window\.open\(V2_PATH/, '新标签页打开按钮指向 V2_PATH');
-assert.match(clientSrc, /切换到 v1 名册/, 'v1/v2 视图切换按钮就位');
+// 2026-10-23：断言跟着 client.js 的实际文案走（见 client.js:1220
+// `view === 'v2' ? '切换到家族名册' : '切换到家族面板'`）。旧断言写的是
+// 「切换到 v1 名册」，那是改文案前的字样 —— HEAD 版本就已经对不上，
+// 属存量债；本轮改提案台时撞到，顺手对齐（未改动被测行为）。
+assert.match(clientSrc, /切换到家族名册/, 'v1/v2 视图切换按钮就位');
 // syntax check in a child process (the artifact references window)
 execFileSync(process.execPath, ['--check', join(root, 'lib/client.js')], { stdio: 'pipe' });
 
