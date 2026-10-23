@@ -1,5 +1,40 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.6.1 — 2026-10-23
+
+**Fix — Q3 建议里的 wiki 矛盾清单渲染成 `[object Object]`**。
+
+### 背景：数据形状变了，消费者没跟上
+
+`agint-wiki` v0.2.0 起 `lint()` 返回的 `contradictions` 元素是
+`{path, line, snippet}` **对象**（复核者要能直接跳到行）。
+生产存储 `agint_metrics.json` 实测：该形状自 **2026-10-13** 起就已写入
+`wiki.contradictions` 的 `meta.files`（此前是裸文件名字符串）。
+
+而 `lib/broadcast.js` 的 `strList` 仍按老形状 `String(x)` ⇒
+`wikiContradictionFiles` 变成 `["[object Object]"]`。
+生产存储 `agint_aesthetic_oracle.json` 实证：审计里落的就是这个字面量。
+
+后果：**建议不可复核**。Q3 说的是「解决 wiki 矛盾标记（1 处：[object Object]）」，
+复核者看不出是哪条文件，§4 真实关破口。
+
+### 变更
+
+1. `lib/broadcast.js`：新增 `contradList`，把 `{path, line, snippet}` 渲染成
+   `path:line`（行号是整数才带 `:line`）；旧形状（裸字符串）原样透传，**双形状都吃**。
+   只改 `wikiContradictionFiles` 一路——`wikiOrphanFiles` 与 `lowConfidenceNoEvidence`
+   本来就是字符串数组，不动。
+
+### 测试
+
+`node --test` 95 例全绿（新增 1 例：对象形状渲染成 `path:line` 且断言输出不含
+`[object Object]`，同时验旧形状仍透传）。
+
+### 口径影响
+
+不改任何评分公式与阈值。`FORMULA_VERSION` 仍为 `r4`（公式结构未变），
+`scaleHash` 不变，历史趋势可直接比。
+
 ## 0.6.0 — 2026-10-23
 
 判尺规模不变性 + 闭环修复（公式 r4）。四项，全部由 2026-10-22 生产数据取证驱动。

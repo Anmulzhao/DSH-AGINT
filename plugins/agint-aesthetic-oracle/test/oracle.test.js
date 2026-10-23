@@ -270,6 +270,34 @@ test('Q3 证据绑定：extractAtomic 把 wiki 矛盾/孤儿清单透传进 advi
   assert.equal(view.adviceCtx.curatorOverlaps, 0);
 });
 
+test('Q3 证据绑定：wiki 矛盾明细是对象时渲染成 path:line，不得出 [object Object]', () => {
+  // 2026-10-23 回归：agint-wiki v0.2.0 起 lint 返回 {path,line,snippet} 对象，
+  // 生产 meta 实测自 2026-10-13 起就是该形状。旧代码 String(x) ⇒ 建议里
+  // 出现 "[object Object]"，复核者看不出是哪条文件（§4 真实关破口）。
+  const view = extractAtomic({
+    asOf: FIXTURE_ASOF,
+    metrics: [{
+      key: 'wiki.contradictions',
+      value: 1,
+      meta: JSON.stringify({
+        files: [{ path: '生产运维/两票-装设接地线操作票口径.md', line: 79, snippet: '| 操作票保存期 | …' }],
+      }),
+    }],
+  });
+  assert.deepEqual(view.adviceCtx.wikiContradictionFiles,
+    ['生产运维/两票-装设接地线操作票口径.md:79']);
+  assert.ok(
+    !JSON.stringify(view.adviceCtx.wikiContradictionFiles).includes('[object Object]'),
+    '矛盾清单不得出现 [object Object]',
+  );
+  // 旧形状（裸文件名字符串）仍原样透传 —— 双形状都吃，不破坏既有夹具。
+  const legacy = extractAtomic({
+    asOf: FIXTURE_ASOF,
+    metrics: [{ key: 'wiki.contradictions', value: 1, meta: JSON.stringify({ files: ['a.md'] }) }],
+  });
+  assert.deepEqual(legacy.adviceCtx.wikiContradictionFiles, ['a.md']);
+});
+
 test('daily 回归（2026-09-29 bug）：redundancy 最丑但 rule_lint 0 命中 → 建议指 wiki 矛盾', async () => {
   const env = makeEnv({ summary: todaySummary });
   const out = await env.svc.runBroadcast('daily');

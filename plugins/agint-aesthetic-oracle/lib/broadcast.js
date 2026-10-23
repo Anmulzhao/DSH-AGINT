@@ -135,6 +135,19 @@ export function extractAtomic(summary) {
   // Q3 证据绑定的真实清单（§4 真实关）：wiki_lint 的 contradictions/orphans 明细
   // 原样透传（metrics 侧已整形成数组；防御形态归一化成 String）。
   const strList = (v) => (Array.isArray(v) ? v.map((x) => String(x)) : []);
+  // ⚠️ contradictions 的元素**形状变了**：agint-wiki v0.2.0 起 lint 返回
+  // {path, line, snippet} 对象（2026-10-13 生产 meta 实测确认），不再是裸文件名。
+  // strList 那样 String(x) 会得到 "[object Object]" ⇒ 建议里看不到是哪条文件，
+  // 建议就不可复核（§4 真实关破口）。这里渲染成 "path:line"，人能直接定位。
+  // 旧形状（裸字符串）仍原样透传，双形状都吃。
+  const contradList = (v) => (Array.isArray(v) ? v.map((x) => {
+    if (x && typeof x === 'object') {
+      const p = typeof x.path === 'string' ? x.path : '';
+      const l = Number.isInteger(x.line) ? `:${x.line}` : '';
+      return p ? `${p}${l}` : String(x);
+    }
+    return String(x);
+  }) : []);
 
   const noEv = memoryMeta.noEvidence ?? {};
   const log7 = num('evolution.logCount7d');
@@ -164,7 +177,7 @@ export function extractAtomic(summary) {
     adviceCtx: {
       memoryNoEvidenceCount: isNum(noEv.count) ? noEv.count : null,
       ruleLintIssues: lintIssues,
-      wikiContradictionFiles: strList(contradMeta.files),
+      wikiContradictionFiles: contradList(contradMeta.files),
       wikiContradictionCount: num('wiki.contradictions'),
       wikiOrphanFiles: strList(wikiMeta.files),
       curatorOverlaps: 0,
