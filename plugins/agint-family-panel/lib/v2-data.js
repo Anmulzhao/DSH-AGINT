@@ -420,6 +420,20 @@ const PENDING_SPECS = Object.freeze([
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
   },
   {
+    // 2026-10-23：agint-evolve v0.8.0 补了 `approved`（人工批准、尚未执行）。
+    // 没有这一行时，批准 = 从待办里消失 —— 决定做完了却没人去做，比不批更糟。
+    // 这一行把「已批准」变成看得见的工作单。⚠️ 只统计，不自动执行：
+    // 落地仍要人（或会话里的 AI）真的动手，落地后标 applied。
+    key: 'evolve-approved',
+    label: '已批准待执行（工作单）',
+    kind: 'action',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved',
+    item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
+    note: () => '人工已批准，代码/文档尚未改；落地后标 applied',
+  },
+  {
     key: 'curator-overlap',
     label: 'curator 重叠候选',
     kind: 'action',

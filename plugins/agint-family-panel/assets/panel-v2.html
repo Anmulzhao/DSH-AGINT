@@ -7,17 +7,17 @@
 <style>
 /* ═══ SECTION: tokens — 设计令牌（字号 5 档 / 字重 3 档 / 圆角 2 档 / 间距 4px 网格） ═══ */
 :root{
-  color-scheme:dark;
+  color-scheme:light;
   /* 中性层：偏冷 zinc，不用纯黑纯白 */
-  --bg:#101215; --bg-l1:#171a1e; --bg-l2:#1e2228; --bg-l3:#272c34;
-  --border:rgba(255,255,255,.07); --border-strong:rgba(255,255,255,.14);
-  --fg:#e8eaee; --fg-2:#a8afba; --fg-3:#767d89;
+  --bg:#f7f8f9; --bg-l1:#ffffff; --bg-l2:#f0f2f4; --bg-l3:#e5e8ec;
+  --border:rgba(16,20,26,.08); --border-strong:rgba(16,20,26,.16);
+  --fg:#191c20; --fg-2:#4a515b; --fg-3:#6d7480;
   /* 语义色：降饱和，只着色文字与色点，不铺背景 */
-  --ok:#4aa877; --err:#d9706f; --warn:#c9a24a;
+  --ok:#2c7a52; --err:#b04a49; --warn:#8a6a1e;
   /* 交互色：选中 / 焦点 / 链接（与数据色分离） */
-  --accent:#7ba3d9; --accent-soft:rgba(123,163,217,.13);
+  --accent:#3f6ca8; --accent-soft:rgba(63,108,168,.10);
   /* 数据色：仅图表使用 */
-  --data-1:#7ba3d9; --data-bar:rgba(123,163,217,.34);
+  --data-1:#3f6ca8; --data-bar:rgba(63,108,168,.26);
   /* 字号：5 档，中文最小 12px，11px 只给等宽 ASCII */
   --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px; --fs-lg:19px;
   /* 字重：3 档（原 650 为非法值，已去除） */
@@ -29,15 +29,15 @@
   --mono:ui-monospace,"SFMono-Regular","Cascadia Mono",Consolas,"Liberation Mono",monospace;
   --dur:140ms; --ease:cubic-bezier(.4,0,.2,1);
 }
-/* SECTION: tokens-light */
-:root[data-theme="light"]{
-  color-scheme:light;
-  --bg:#f7f8f9; --bg-l1:#ffffff; --bg-l2:#f0f2f4; --bg-l3:#e5e8ec;
-  --border:rgba(16,20,26,.08); --border-strong:rgba(16,20,26,.16);
-  --fg:#191c20; --fg-2:#4a515b; --fg-3:#6d7480;
-  --ok:#2c7a52; --err:#b04a49; --warn:#8a6a1e;
-  --accent:#3f6ca8; --accent-soft:rgba(63,108,168,.10);
-  --data-1:#3f6ca8; --data-bar:rgba(63,108,168,.26);
+/* SECTION: tokens-dark — 默认亮色；用户按按钮后显式切到暗色 */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#101215; --bg-l1:#171a1e; --bg-l2:#1e2228; --bg-l3:#272c34;
+  --border:rgba(255,255,255,.07); --border-strong:rgba(255,255,255,.14);
+  --fg:#e8eaee; --fg-2:#a8afba; --fg-3:#767d89;
+  --ok:#4aa877; --err:#d9706f; --warn:#c9a24a;
+  --accent:#7ba3d9; --accent-soft:rgba(123,163,217,.13);
+  --data-1:#7ba3d9; --data-bar:rgba(123,163,217,.34);
 }
 
 /* ═══ SECTION: base ═══ */
@@ -204,6 +204,105 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
   padding-left:var(--s3);border-left:2px solid rgba(201,162,74,.42);}
 .notes div{margin:2px 0;}
 
+/* ═══ SECTION: proposal board（0.5.0）═══
+   设计取向：这一节是唯一能动手的地方，所以只用两种强调 ——
+   队列深度（数字）与可疑线索（色点）。审批按钮不做成彩色块，避免误点。 */
+.wbadge{font-size:var(--fs-xs);font-weight:var(--fw-med);padding:2px var(--s2);
+  border-radius:var(--r-sm);background:var(--accent-soft);color:var(--accent);letter-spacing:.02em;}
+.tabn{margin-left:6px;font-size:10px;line-height:1;padding:1px 4px;border-radius:var(--r-pill);
+  background:var(--bg-l3);color:var(--fg-2);font-variant-numeric:tabular-nums;vertical-align:1px;}
+.tab.on .tabn{background:var(--accent-soft);color:var(--accent);}
+.pstats{display:flex;flex-wrap:wrap;gap:var(--s3) var(--s5);margin:0 0 var(--s2);}
+.pstat{border-left:2px solid var(--border-strong);padding:0 0 0 var(--s3);}
+.pstat .k{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.5;}
+.pstat .v{font-size:var(--fs-md);font-weight:var(--fw-semi);line-height:1.35;}
+.pstat.q .v{font-size:var(--fs-lg);}
+.rotbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--bg-l3);
+  margin:0 0 var(--s4);max-width:520px;}
+.rotbar i{display:block;height:100%;}
+.rotbar i.a{background:var(--ok);opacity:.5}
+.rotbar i.b{background:var(--data-1);opacity:.42}
+.rotbar i.c{background:var(--warn);opacity:.6}
+.rotleg{font-size:var(--fs-xs);color:var(--fg-3);margin:-8px 0 var(--s4);max-width:520px;line-height:1.7;}
+.pfilters{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;margin:var(--s3) 0 var(--s3);}
+.pfilters .search{width:180px;}
+.pfilterbar{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;
+  padding-top:var(--s3);border-top:1px solid var(--border);}
+.pfilterbar .lab{font-size:var(--fs-xs);color:var(--fg-3);}
+.stt{font-size:var(--fs-xs);color:var(--fg-3);white-space:nowrap;display:inline-flex;align-items:center;gap:5px;}
+.stt::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;flex:none;}
+.stt.proposed{color:var(--warn)} .stt.approved{color:var(--accent)}
+.stt.applied{color:var(--ok)} .stt.rejected{color:var(--err)} .stt.wontfix{color:var(--fg-3)}
+.cat{font-family:var(--mono);font-size:var(--fs-xs);color:var(--fg-3);
+  border:1px solid var(--border);border-radius:var(--r-sm);padding:0 5px;white-space:nowrap;}
+.dotmeter{display:inline-flex;gap:2px;align-items:center;}
+.dotmeter i{width:5px;height:5px;border-radius:50%;background:var(--border-strong);}
+.dotmeter i.on{background:var(--fg-2);}
+.ptable td.tcell{max-width:430px;min-width:240px;}
+.ptable .t{color:var(--fg);line-height:1.55;}
+.ptable .sub2{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.7;}
+tr.prow{cursor:pointer;}
+tr.prow:hover{background:var(--bg-l2);}
+tr.prow:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+tr.pdetail{display:none;}
+tr.pdetail.open{display:table-row;}
+tr.pdetail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong);padding:var(--s4);}
+.pgrid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(0,1fr);gap:var(--s5);}
+@media(max-width:1024px){.pgrid{grid-template-columns:1fr;}}
+.psec{margin:0 0 var(--s4);}
+.psec h4{font-size:var(--fs-xs);color:var(--fg-3);letter-spacing:.04em;margin:0 0 var(--s2);
+  font-weight:var(--fw-med);}
+.psec .bodytxt{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.85;word-break:break-word;}
+.psec .bodytxt ul{margin:var(--s1) 0;padding-left:var(--s5);}
+.psec .bodytxt li{margin:2px 0;}
+.psec .bodytxt b{color:var(--fg);font-weight:var(--fw-med);}
+.psec .bodytxt blockquote{margin:var(--s2) 0;padding-left:var(--s3);
+  border-left:2px solid var(--border-strong);color:var(--fg-3);}
+.psec.missing .bodytxt{color:var(--fg-3);}
+.psec .fromraw{font-size:var(--fs-xs);color:var(--warn);margin-bottom:var(--s1);}
+.evbox{border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg-l1);
+  padding:var(--s3);margin-bottom:var(--s3);}
+.evbox h4{font-size:var(--fs-xs);color:var(--fg-3);margin:0 0 var(--s2);font-weight:var(--fw-med);letter-spacing:.04em;}
+.evline{font-size:var(--fs-xs);font-family:var(--mono);color:var(--fg-3);
+  line-height:1.9;word-break:break-all;display:flex;gap:6px;}
+.evline .mk{flex:none;width:12px;text-align:center;}
+.evline .mk.y{color:var(--ok)} .evline .mk.n{color:var(--err)} .evline .mk.q{color:var(--fg-3)}
+.evline .mk.g{color:var(--warn)}
+.evhint{font-size:var(--fs-xs);line-height:1.7;margin-top:var(--s2);
+  padding-left:var(--s2);border-left:2px solid var(--border-strong);color:var(--fg-3);}
+.evhint.stale{color:var(--err);border-left-color:rgba(176,74,73,.5);}
+.evhint.maybe-done{color:var(--warn);border-left-color:rgba(201,162,74,.5);}
+.evd{font-size:var(--fs-xs);display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+.evd::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;opacity:.9;}
+.evd.stale{color:var(--err)} .evd.maybe-done{color:var(--warn)}
+.evd.neutral{color:var(--fg-2)} .evd.unknown{color:var(--fg-3)}
+.decide{margin-top:var(--s3);padding-top:var(--s3);border-top:1px solid var(--border);}
+.decide .dlab{font-size:var(--fs-xs);color:var(--fg-3);margin-bottom:var(--s2);}
+.decide textarea{width:100%;min-height:54px;resize:vertical;font:inherit;font-size:var(--fs-sm);
+  line-height:1.6;padding:var(--s2);border-radius:var(--r-md);
+  border:1px solid var(--border-strong);background:var(--bg-l1);color:var(--fg);}
+.decide textarea::placeholder{color:var(--fg-3);}
+.decide .dbtns{display:flex;gap:var(--s2);margin-top:var(--s2);flex-wrap:wrap;align-items:center;}
+.btn.ok{border-color:rgba(74,168,119,.42);color:var(--ok);background:transparent;}
+.btn.ok:hover{background:rgba(74,168,119,.10);color:var(--ok);}
+.btn.err{border-color:rgba(176,74,73,.38);color:var(--err);background:transparent;}
+.btn.err:hover{background:rgba(176,74,73,.09);color:var(--err);}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--fg-3);}
+.btn.ghost:hover{background:var(--bg-l2);color:var(--fg-2);}
+.btn[disabled]{opacity:.45;cursor:not-allowed;}
+.confirm{margin-top:var(--s2);padding:var(--s3);border-radius:var(--r-md);
+  border:1px solid var(--border-strong);background:var(--bg-l1);}
+.confirm .q{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.7;margin-bottom:var(--s2);}
+.confirm .q b{color:var(--fg);font-weight:var(--fw-med);}
+.dlast{font-size:var(--fs-xs);color:var(--fg-3);line-height:1.7;margin-top:var(--s2);
+  padding-left:var(--s2);border-left:2px solid var(--border);white-space:pre-wrap;word-break:break-word;}
+.toast{position:fixed;right:var(--s5);bottom:var(--s5);z-index:40;max-width:min(440px,90vw);
+  padding:var(--s3) var(--s4);border-radius:var(--r-md);background:var(--bg-l1);
+  border:1px solid var(--border-strong);box-shadow:0 8px 28px rgba(0,0,0,.16);
+  font-size:var(--fs-sm);color:var(--fg-2);line-height:1.7;}
+.toast.err{border-color:rgba(176,74,73,.5);color:var(--err);}
+.toast b{color:var(--fg);font-weight:var(--fw-med);}
+
 /* ═══ SECTION: misc ═══ */
 .umb-list{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.9;
   margin:0;padding-left:var(--s5);}
@@ -237,16 +336,17 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
   <!-- SECTION: topbar — sticky 区只留标题 / 检索 / 分区导航 -->
   <header class="topbar">
     <div class="bar">
-      <h1>AGINT 家族面板 <span class="demo-badge">生产 · 只读</span></h1>
+      <h1>AGINT 家族面板 <span class="demo-badge">生产数据</span><span class="wbadge" title="整页只有提案台有写入口：批准 / 拒绝 / wontfix，经 agint.evolve.setStatus 落库">提案台可写</span></h1>
       <div class="btns">
         <input class="search" id="q" type="search" placeholder="过滤插件 / 服务 / 任务…" aria-label="过滤" data-primary-action>
-        <button class="btn" id="themeBtn" title="切换明暗主题">切换亮色</button>
+        <button class="btn" id="themeBtn" title="切换明暗主题">切换暗色</button>
         <button class="btn" id="expandAll" data-primary-action>全部展开</button>
         <button class="btn" id="refreshBtn">刷新</button>
       </div>
     </div>
     <div class="tabs" id="tabs" role="tablist" aria-label="面板分区">
       <button class="tab" data-t="pend" role="tab" aria-selected="false">待办</button>
+      <button class="tab" data-t="prop" role="tab" aria-selected="false">提案台<span class="tabn" id="propBadge">—</span></button>
       <button class="tab" data-t="oracle" role="tab" aria-selected="false">神谕 · 美之判词</button>
       <button class="tab on" data-t="q1" role="tab" aria-selected="true">Q1 谁依赖谁</button>
       <button class="tab" data-t="q2" role="tab" aria-selected="false">Q2 谁在干活</button>
@@ -258,7 +358,7 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 
   <!-- SECTION: overview — 口径说明 / 关键数字 / 数据新鲜度，不占 sticky 高度 -->
   <section class="overview">
-    <p class="sub">边 = 源码 <code>ctx.get('agint.*')</code>（真源）。产出 = 系统已在写的存储。不画力导向图。伞键不建边。只读。</p>
+    <p class="sub">边 = 源码 <code>ctx.get('agint.*')</code>（真源）。产出 = 系统已在写的存储。不画力导向图。伞键不建边。除提案台的人工审批外，全页只读。</p>
     <div class="stats" id="stats"></div>
     <div class="ages" id="ages"></div>
   </section>
@@ -277,6 +377,38 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
     <table>
       <thead><tr><th>队列</th><th class="num">待办</th><th class="num">上游供给</th><th>条目</th></tr></thead>
       <tbody id="tbodyPend"></tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════ 提案台（全页唯一写入口） ═══════════ -->
+  <div class="card panel" id="prop">
+    <h2>提案台 · 人工审批 <span class="real">唯一写通道</span></h2>
+    <div class="cap">
+      数据 = <code>agint.evolve.listProposals()</code>（服务面）或 <code>agint_evolve.json / tables.proposal</code>（兜底），一域坏只降级这一节。
+      <b>批准不等于已落地</b>：批准写 <code>approved</code>（已批准待执行），落地才写 <code>applied</code>。
+      两件事混记，这张表就会说假话 —— 2026-10-23 抽查 20 条 proposed，10 条与代码事实不符。
+      <b>证据栏只报可核对的事实</b>：正文引用的路径在不在、符号在不在引用文件里命中。
+      它给线索，不下判定 —— 标了「疑似已落地」也要人看一眼再决定。
+      拒绝与 wontfix <b>必须写理由</b>，理由进 note，三个月后还查得到。
+    </div>
+    <div class="notes" id="propNotes"></div>
+    <div class="pstats" id="propStats"></div>
+    <div class="rotbar" id="propRot" aria-hidden="true"></div>
+    <div class="rotleg" id="propRotLeg"></div>
+    <div class="tabs" id="propStatus" role="tablist" aria-label="提案状态"></div>
+    <div class="chips" id="propCats"></div>
+    <div class="pfilterbar">
+      <input class="search" id="propQ" type="search" placeholder="过滤标题 / 正文 / 来源…" aria-label="过滤提案">
+      <span class="lab">排序</span>
+      <button class="btn sm" id="propSort">最老优先</button>
+      <button class="btn sm" id="propStale" aria-pressed="false">只看 30 天以上</button>
+      <span class="lab" id="propCount"></span>
+    </div>
+    <table class="ptable">
+      <thead><tr>
+        <th>提案</th><th>分类</th><th class="num">年龄</th><th>正文分节</th><th>证据</th><th>来源</th>
+      </tr></thead>
+      <tbody id="propRows"></tbody>
     </table>
   </div>
 
@@ -394,6 +526,9 @@ let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sou
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
     PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
     PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null,
+    /* 提案台（0.5.0）。PROP = host 半下发的 proposals 段；PSTATE = 纯前端视图状态，
+       不进 URL、不落盘 —— 刷新回到「待批 + 最老优先」，这是每次开工最该看的那一屏。 */
+    PROP=null,PSTATE={status:"proposed",cat:"",q:"",sort:"oldest",staleOnly:false,open:new Set(),drafts:{},pending:null},
     /* 归因表（工具前缀 / cron / 宿主键）由 host 半随 payload 下发（v0.4.0）。
        ⛔ 这里不再放硬编码副本：档案页（停靠面板）与本页各抄一份必然漂移。 */
     OWNERS=null;
@@ -406,6 +541,8 @@ if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
   tbodyPend.innerHTML="";
   oracleNotes.innerHTML=""; oracleTop.innerHTML=""; oracleCards.innerHTML="";
   oracleState.innerHTML=""; tbodyOracle.innerHTML="";
+  propStats.innerHTML=""; propRows.innerHTML=""; propNotes.innerHTML="";
+  propStatus.innerHTML=""; propCats.innerHTML=""; propRot.innerHTML=""; propRotLeg.textContent="";
   cronUnmapped.innerHTML="—";
   return;
 }
@@ -934,7 +1071,10 @@ tbodyPend.innerHTML=!PENDING
         <td class="name" style="font-weight:500">${tag} ${esc(q.label)}</td>
         <td class="num">${num}</td>
         <td class="num">${supply}</td>
-        <td style="font-size:12px;color:var(--fg-2)">${cell}</td></tr>`;
+        <td style="font-size:12px;color:var(--fg-2)">${cell}${
+          q.key==="evolve-proposal"&&q.state==="ok"&&q.pending>0
+            ? `<div style="margin-top:6px"><button class="btn sm" data-goto="prop">去提案台审批 ${q.pending} 条 →</button></div>`
+            : ""}</td></tr>`;
     }).join("");
 
 // ── 神谕层：判词 / 三档 / 状态面 / 广播史 ────────────────────────────
@@ -1145,6 +1285,228 @@ umbList.innerHTML=HITS.filter(h=>h[4]==="umbrella").map(h=>
   `<li><span class="ev">${esc(h[0])} / ${esc(h[1])}:${h[2]}</span> → <code>${esc(h[3])}</code>（恒 undefined，不建边）</li>`).join("");
 
 q.dispatchEvent(new Event("input")); // 重渲染后恢复过滤态
+renderProposals();                   // 提案台自成一节，不参与上面的过滤链
+}
+
+// ── 提案台（0.5.0）────────────────────────────────────────
+/* esc / escAttr 是 render() 里的局部 const，本节声明在它外面，取不到。
+   这里放一份同实现的副本（只加 > 不管，与上面一致）。 */
+const pesc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const pescAttr=s=>pesc(s).replace(/"/g,"&quot;");
+/* 这一节的设计前提：待批队列已经堆到 50+ 条、最老的 40 多天，所以第一屏要回答
+   「积压多深」，第二屏要回答「这条值不值得我现在处理」，最后才给按钮。
+   ⛔ 三条不打折：
+     1) 批准写 approved，不写 applied —— 决定与事实分开记。
+     2) 证据栏只列可核对的事实（路径在不在、符号命不命中），措辞一律「线索」。
+     3) 拒绝 / wontfix 必填理由：服务端也拦（4xx），不只靠前端。 */
+const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地",rejected:"已拒绝",wontfix:"wontfix"};
+const PORDER=["proposed","approved","applied","rejected","wontfix"];
+const PSEC=[["problem","目的 · 解决什么问题"],["plan","方案 · 打算怎么改"],
+            ["benefit","价值 · 对 AGINT 的意义"],["risk","风险与边界"],["links","关联"]];
+const PLEVEL={stale:"引用路径全不存在",["maybe-done"]:"疑似已落地",neutral:"路径在、符号未命中",unknown:"无可核对线索"};
+
+/** 极简 markdown → HTML。只认标题/列表/引用/粗体/行内代码。
+ *  ⛔ 先 esc 再替换，否则正文里的 markdown 能注入标签。不认链接（不做 href 拼装）。 */
+function mdToHtml(t){
+  const inline=s=>pesc(s).replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>");
+  let out="",inList=false;
+  for(const raw of String(t).split(/\r?\n/)){
+    const line=raw.replace(/\s+$/,"");
+    const li=/^\s*[-*]\s+(.*)$/.exec(line)||/^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if(li){ if(!inList){out+="<ul>";inList=true;} out+="<li>"+inline(li[1])+"</li>"; continue; }
+    if(inList){out+="</ul>";inList=false;}
+    const h=/^\s*#{1,6}\s+(.*)$/.exec(line);
+    if(h){ out+=`<div style="color:var(--fg);font-weight:500;margin:6px 0 2px">${inline(h[1])}</div>`; continue; }
+    const bq=/^\s*>\s?(.*)$/.exec(line);
+    if(bq){ out+="<blockquote>"+inline(bq[1])+"</blockquote>"; continue; }
+    if(line.trim()==="") continue;
+    out+=`<p style="margin:0 0 6px">${inline(line)}</p>`;
+  }
+  if(inList) out+="</ul>";
+  return out;
+}
+const ageTxt=d=>d==null?"—":(d+"d");
+const pFiltered=()=>{
+  const q=PSTATE.q.trim().toLowerCase();
+  return (PROP.items||[]).filter(it=>{
+    if(PSTATE.status!=="all"&&it.status!==PSTATE.status) return false;
+    if(PSTATE.cat&&it.category!==PSTATE.cat) return false;
+    if(PSTATE.staleOnly&&!(it.ageDays!=null&&it.ageDays>30)) return false;
+    if(q&&!(it.title+" "+it.body+" "+it.source).toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b)=>{
+    if(PSTATE.sort==="newest") return String(b.createdAt||"").localeCompare(String(a.createdAt||""));
+    if(PSTATE.sort==="category") return a.category.localeCompare(b.category)||String(a.createdAt||"").localeCompare(String(b.createdAt||""));
+    return String(a.createdAt||"").localeCompare(String(b.createdAt||""));
+  });
+};
+
+function propDetail(it){
+  const ev=it.evidence||{}; const sm=ev.summary||{}; const hint=ev.hint||{level:"unknown",text:"—"};
+  const secs=PSEC.map(([k,label])=>{
+    const v=it.sections?it.sections[k]:null;
+    return `<div class="psec${v?"":" missing"}"><h4>${label}</h4><div class="bodytxt">${v?mdToHtml(v):"<span>正文没有这一节</span>"}</div></div>`;
+  }).join("");
+  const paths=(ev.paths||[]).map(p=>{
+    const mk=p.exists===true?"y":p.exists===false?"n":"q";
+    const sym=p.exists===true?"✓":p.exists===false?"✗":"?";
+    const tail=p.unverifiable?`　（${pesc(p.unverifiable)}）`:(p.exists===true&&p.mtime?`　<span style="color:var(--fg-3)">改于 ${p.mtime.slice(0,10)}</span>`:"");
+    return `<div class="evline"><span class="mk ${mk}">${sym}</span><span>${pesc(p.rel||p.raw)}${p.line?":"+p.line:""}${tail}</span></div>`;
+  }).join("");
+  const syms=(ev.symbols||[]).map(s=>{
+    const mk=s.found===true?(s.generic?"g":"y"):s.found===false?"n":"q";
+    const mark=s.found===true?(s.generic?"通":"✓"):s.found===false?"✗":"?";
+    const tail=s.generic?"　（多处同名，不计入命中）":(s.where?`　@ ${pesc(s.where)}`:"");
+    return `<div class="evline"><span class="mk ${mk}">${mark}</span><span>${pesc(s.name)}${tail}</span></div>`;
+  }).join("");
+  const st=it.status;
+  const acts=st==="proposed"
+    ? [["approved","批准执行","ok"],["rejected","拒绝","err"],["wontfix","暂不处理",""]]
+    : st==="approved"
+      ? [["applied","标记已落地","ok"],["proposed","撤销批准","ghost"]]
+      : [["proposed","重新打开","ghost"]];
+  const pend=PSTATE.pending&&PSTATE.pending.id===it.id?PSTATE.pending:null;
+  const draft=PSTATE.drafts[it.id]||"";
+  const confirmBar=pend?`<div class="confirm">
+      <div class="q">确认把 <b>${pesc(it.title)}</b> 标为 <b>${PLABEL[pend.status]||pend.status}</b>？<br>
+      ${pend.note?`理由：${pesc(pend.note)}`:"未填理由（批准可以不填）。"}</div>
+      <div class="dbtns">
+        <button class="btn ok" data-pact="confirm" data-id="${pescAttr(it.id)}">确认写入</button>
+        <button class="btn ghost" data-pact="cancel" data-id="${pescAttr(it.id)}">取消</button>
+      </div></div>`:"";
+  const decide=`<div class="decide">
+      <div class="dlab">人工审批 · 写入 evolve 提案状态${PROP.source==="storage"?"（服务面缺席，写入仍走 setStatus，失败会明确报错）":""}</div>
+      <textarea data-note="${pescAttr(it.id)}" aria-label="审批理由" placeholder="${st==="proposed"?"批准可不填理由；拒绝 / wontfix 必填":"标记已落地必填证据（改了哪些文件）；改判理由选填"}">${pesc(draft)}</textarea>
+      ${pend?confirmBar:`<div class="dbtns">${acts.map(([s,l,cls])=>
+        `<button class="btn ${cls}" data-pact="ask" data-id="${pescAttr(it.id)}" data-status="${s}">${l}</button>`).join("")}</div>`}
+      ${it.note?`<div class="dlast">上次记录：${pesc(it.note)}</div>`:""}
+      ${st==="approved"?'<div class="dlab" style="margin:6px 0 0">标记已落地要写证据：改了哪些文件、哪一行</div>':""}
+    </div>`;
+  return `<tr class="pdetail${PSTATE.open.has(it.id)?" open":""}" id="pd-${pescAttr(it.id)}"><td colspan="6">
+    <div class="pgrid">
+      <div>
+        ${secs}
+        ${it.sectionMatched===0?`<div class="psec"><h4>正文原文（未分节）</h4><div class="bodytxt">${mdToHtml(it.body)}</div></div>`:""}
+        <div class="psec"><h4>元信息</h4><div class="bodytxt">
+          id <code>${pesc(it.id)}</code> · 创建 ${pesc((it.createdAt||"—").slice(0,19).replace("T"," "))}
+          · 更新 ${pesc((it.updatedAt||"—").slice(0,19).replace("T"," "))}
+          · ${it.bodyChars} 字${it.bodyTruncated?"（正文过长，已截断）":""}
+          <br>来源 ${pesc(it.source||"—")}${it.sameSourceCount>1?`　（同一来源共 ${it.sameSourceCount} 条）`:""}
+        </div></div>
+      </div>
+      <div>
+        <div class="evbox"><h4>证据 · 只报事实，不下判定</h4>
+          <div class="kv" style="font-size:12px">路径 ${sm.pathExists??"—"}/${sm.pathChecked??0} 现存${sm.unverifiable?`　${sm.unverifiable} 条不可核`:""}　·　符号 ${sm.symFound??"—"}/${sm.symTotal??0} 命中</div>
+          ${paths||'<div class="evline"><span class="mk q">·</span><span>正文没有引用路径</span></div>'}
+          ${syms?`<div style="height:6px"></div>${syms}`:""}
+          <div class="evhint ${pescAttr(hint.level)}">${pesc(hint.text)}</div>
+        </div>
+        ${decide}
+      </div>
+    </div></td></tr>`;
+}
+
+function propRow(it){
+  const open=PSTATE.open.has(it.id);
+  const ev=it.evidence||{}; const sm=ev.summary||{}; const hint=ev.hint||{level:"unknown"};
+  const meter=[0,1,2,3,4].map(i=>`<i class="${i<(it.sectionMatched||0)?"on":""}"></i>`).join("");
+  return `<tr class="prow" tabindex="0" data-id="${pescAttr(it.id)}" aria-expanded="${open}">
+    <td class="tcell"><div class="t">${pesc(it.title)}</div>
+      <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(PLABEL[it.status]||it.status)}</span>
+      <span style="margin-left:8px;font-family:var(--mono)">${pesc(it.id.slice(0,8))}</span></div></td>
+    <td><span class="cat">${pesc(it.category)}</span></td>
+    <td class="num ${it.ageDays>30?"fail-mid":""}">${ageTxt(it.ageDays)}</td>
+    <td><span class="dotmeter">${meter}</span> <span style="font-size:12px;color:var(--fg-3)">${it.sectionMatched||0}/5</span></td>
+    <td><span class="evd ${pescAttr(hint.level)}">${pesc(PLEVEL[hint.level]||hint.level)}</span>
+      <div class="sub2">路径 ${sm.pathExists??"—"}/${sm.pathChecked??0} · 符号 ${sm.symFound??"—"}</div></td>
+    <td class="sub2" style="max-width:190px;word-break:break-all">${pesc(it.source||"—")}</td></tr>${propDetail(it)}`;
+}
+
+function renderProposals(){
+  const badge=document.getElementById("propBadge");
+  if(!PROP||PROP.state!=="ok"){
+    const why=PROP?(PROP.reason||PROP.state):"host 半是旧版：/v2/data 无 proposals 段（需重启 dsh）";
+    propNotes.innerHTML="<div>提案数据不可用：刚刚取不到，不是「没有提案」。"+pesc(why)+"</div>";
+    propStats.innerHTML=""; propRot.innerHTML=""; propRotLeg.textContent="";
+    propStatus.innerHTML=""; propCats.innerHTML=""; propRows.innerHTML=""; propCount.textContent="";
+    if(badge) badge.textContent="—";
+    return;
+  }
+  const items=PROP.items||[]; const c=PROP.counts||{}; const st=c.byStatus||{}; const ag=c.aging||{};
+  if(badge) badge.textContent=String(items.filter(i=>i.status==="proposed").length);
+  // 黄条：只在真有口径差时说，不铺套话。
+  const notes=[];
+  if(PROP.source==="storage") notes.push("服务面 agint.evolve 不可用，本表读自落盘文件 —— 可能与进程内最新写入差一拍；写入仍走 setStatus。");
+  if(PROP.source==="service"&&PROP.storage) notes.push("数据来自 agint.evolve.listProposals()（进程内权威读）；存储面仅作旁证。");
+  const noSec=items.filter(i=>i.status==="proposed"&&i.sectionMatched===0).length;
+  if(noSec>0) notes.push(`待批里有 ${noSec} 条正文没有分节（既无「现状问题」也无「改动方案」）—— 这类提案基本无法评审，建议直接拒绝或 wontfix 并写明理由。`);
+  propNotes.innerHTML=notes.map(n=>`<div>${pesc(n)}</div>`).join("");
+
+  propStats.innerHTML=[
+    {k:"待批",v:st.proposed??0,q:1},{k:"已批准待执行",v:st.approved??0},
+    {k:"已落地",v:st.applied??0},{k:"已拒绝",v:st.rejected??0},{k:"wontfix",v:st.wontfix??0},
+    {k:"最老一条",v:ageTxt(ag.oldestDays)},{k:"年龄中位",v:ageTxt(ag.medianDays)},
+    {k:"30 天以上",v:ag.buckets?ag.buckets.gt30:0},
+  ].map(s=>`<div class="pstat${s.q?" q":""}"><div class="k">${s.k}</div><div class="v">${s.v}</div></div>`).join("");
+
+  const qn=c.queueCount??0; const b=ag.buckets||{le7:0,d8to30:0,gt30:0};
+  const pct=n=>qn===0?0:Math.round(n/qn*100);
+  propRot.innerHTML=qn===0?"":`<i class="a" style="width:${pct(b.le7)}%"></i><i class="b" style="width:${pct(b.d8to30)}%"></i><i class="c" style="width:${pct(b.gt30)}%"></i>`;
+  propRotLeg.textContent=qn===0?"当前没有待批提案。"
+    :`待批 ${qn} 条 · 7 天内 ${b.le7}（绿）· 8–30 天 ${b.d8to30}（蓝）· 30 天以上 ${b.gt30}（琥珀，越宽越说明队列在烂）`;
+
+  // 状态页签：计数一律来自全量，不受当前筛选影响。
+  const tabs=[["proposed",st.proposed??0],["approved",st.approved??0],["applied",st.applied??0],
+              ["rejected",st.rejected??0],["wontfix",st.wontfix??0],["all",c.total??0]];
+  propStatus.innerHTML=tabs.map(([k,n])=>
+    `<button class="tab${PSTATE.status===k?" on":""}" data-pst="${k}" role="tab" aria-selected="${PSTATE.status===k}">${PLABEL[k]||"全部"}<span class="tabn">${n}</span></button>`).join("");
+
+  // 分类 chip：只反映「当前状态页签下」的分布，避免点了分类结果一片空。
+  const scope=items.filter(i=>PSTATE.status==="all"||i.status===PSTATE.status);
+  const catCount=new Map();
+  for(const it of scope) catCount.set(it.category,(catCount.get(it.category)||0)+1);
+  const cats=[...catCount.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
+  propCats.innerHTML=cats.map(([k,n])=>
+    `<button class="chip${PSTATE.cat===k?" on":""}" data-pcat="${pescAttr(k)}">${pesc(k)} ${n}</button>`).join("");
+
+  const list=pFiltered();
+  propCount.textContent=`显示 ${list.length} / ${items.length} 条`;
+  propRows.innerHTML=list.length===0
+    ? `<tr><td colspan="6" style="color:var(--fg-3);padding:var(--s4)">当前筛选下没有提案。放宽条件或清空搜索。</td></tr>`
+    : list.map(propRow).join("");
+}
+
+/** 一次写入的完整流程：确认条 → POST → 重取权威数据。
+ *  ⛔ 写完必须重取，不能就地改本地状态：那样面板会显示「我以为的结果」。 */
+async function submitDecision(pend){
+  const btn=propRows.querySelector(`[data-pact="confirm"][data-id="${pend.id}"]`);
+  if(btn){ btn.disabled=true; btn.textContent="写入中…"; }
+  try{
+    const r=await fetch(new URL("proposal/decision",location.href),{
+      method:"POST",
+      headers:{"content-type":"application/json","x-agint-panel":"1"},
+      body:JSON.stringify({id:pend.id,status:pend.status,note:pend.note||""}),
+    });
+    let D=null; try{ D=await r.json(); }catch{ D=null; }
+    if(!r.ok||!D||D.ok!==true) throw new Error((D&&D.error)||("HTTP "+r.status));
+    const p=D.proposal||{};
+    PSTATE.pending=null; PSTATE.drafts[pend.id]="";
+    toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${PLABEL[p.status]||p.status}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}`);
+    await load();
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent="确认写入"; }
+    toast("写入失败："+pesc(e.message)+" —— 状态未变，可以重试。","err");
+  }
+}
+
+let toastTimer=null;
+function toast(html,kind){
+  let el=document.getElementById("pToast");
+  if(!el){ el=document.createElement("div"); el.id="pToast"; document.body.appendChild(el); }
+  el.className="toast"+(kind==="err"?" err":"");
+  el.innerHTML=html;
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>{ el.remove(); },kind==="err"?12000:6000);
 }
 
 // ── 交互：展开 / 键盘 / 搜索 / 主题 ─
@@ -1173,14 +1535,82 @@ tabs.addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b) return;
   tabs.querySelectorAll(".tab").forEach(x=>{const on=x===b;
     x.classList.toggle("on",on); x.setAttribute("aria-selected",on?"true":"false");});
-  for(const id of ["pend","oracle","q1","q2","q3","chain","umb"])
+  for(const id of ["pend","prop","oracle","q1","q2","q3","chain","umb"])
     document.getElementById(id).classList.toggle("on",id===b.dataset.t);
 });
+/* 「去提案台审批」这类跨区跳转：按钮上写 data-goto=<分区 id>，走同一条切换逻辑。 */
+document.addEventListener("click",e=>{
+  const g=e.target.closest("[data-goto]"); if(!g) return;
+  const t=tabs.querySelector(`.tab[data-t="${g.dataset.goto}"]`);
+  if(t) t.click();
+});
+
+/* ── 提案台交互 ───────────────────────────────��──────────
+   ⛔ 点行只展开，不写；写必须走「按钮 → 确认条 → POST」三步。
+      审批是不可逆动作（note 会被覆盖、状态会变），一次误点就是一次假记录。 */
+propStatus.addEventListener("click",e=>{
+  const b=e.target.closest("[data-pst]"); if(!b) return;
+  PSTATE.status=b.dataset.pst; PSTATE.pending=null; renderProposals();
+});
+propCats.addEventListener("click",e=>{
+  const b=e.target.closest("[data-pcat]"); if(!b) return;
+  PSTATE.cat=PSTATE.cat===b.dataset.pcat?"":b.dataset.pcat; PSTATE.pending=null; renderProposals();
+});
+propQ.addEventListener("input",()=>{ PSTATE.q=propQ.value; renderProposals(); });
+propSort.addEventListener("click",()=>{
+  PSTATE.sort=PSTATE.sort==="oldest"?"newest":PSTATE.sort==="newest"?"category":"oldest";
+  propSort.textContent={oldest:"最老优先",newest:"最新优先",category:"按分类"}[PSTATE.sort];
+  renderProposals();
+});
+propStale.addEventListener("click",()=>{
+  PSTATE.staleOnly=!PSTATE.staleOnly;
+  propStale.classList.toggle("on",PSTATE.staleOnly);
+  propStale.setAttribute("aria-pressed",String(PSTATE.staleOnly));
+  renderProposals();
+});
+/* 理由草稿：存进内存，不存 localStorage —— 审批理由不该在浏览器里留痕。 */
+propRows.addEventListener("input",e=>{
+  const ta=e.target.closest("textarea[data-note]"); if(!ta) return;
+  PSTATE.drafts[ta.dataset.note]=ta.value;
+});
+propRows.addEventListener("click",async e=>{
+  const btn=e.target.closest("[data-pact]");
+  if(btn){
+    const {pact,id}=btn.dataset;
+    if(pact==="cancel"){ PSTATE.pending=null; renderProposals(); return; }
+    if(pact==="ask"){
+      const status=btn.dataset.status;
+      const note=(PSTATE.drafts[id]||"").trim();
+      if((status==="rejected"||status==="wontfix"||status==="applied")&&note.length<2){
+        toast(status==="applied"
+          ? "标记已落地必须写证据（改了哪些文件）—— 全表 applied 行的 note 都是证据"
+          : "拒绝与 wontfix 必须写理由（至少 2 个字）—— 三个月后没人知道当时为什么","err");
+        const ta=propRows.querySelector(`textarea[data-note="${id}"]`); if(ta) ta.focus();
+        return;
+      }
+      PSTATE.pending={id,status,note}; renderProposals(); return;
+    }
+    if(pact==="confirm"){ await submitDecision({...PSTATE.pending}); return; }
+    return;
+  }
+  const row=e.target.closest("tr.prow");
+  if(row){ toggleProposal(row.dataset.id); }
+});
+propRows.addEventListener("keydown",e=>{
+  if(e.key!=="Enter"&&e.key!==" ") return;
+  const row=e.target.closest?.("tr.prow"); if(!row) return;
+  e.preventDefault(); toggleProposal(row.dataset.id);
+});
+function toggleProposal(id){
+  if(PSTATE.open.has(id)) PSTATE.open.delete(id); else PSTATE.open.add(id);
+  renderProposals();
+}
 /* 按钮文案改为「点击后的目标状态」，原「暗 / 明」单字分不清是现状还是动作 */
+/* 默认亮色（:root），故首屏按钮目标是「切换暗色」 */
 themeBtn.onclick=()=>{
-  const light=document.documentElement.dataset.theme!=="light";
-  document.documentElement.dataset.theme=light?"light":"";
-  themeBtn.textContent=light?"切换暗色":"切换亮色";
+  const dark=document.documentElement.dataset.theme!=="dark";
+  document.documentElement.dataset.theme=dark?"dark":"";
+  themeBtn.textContent=dark?"切换亮色":"切换暗色";
 };
 
 // ── 脚注 ───────────────────────────────────────────────────────────
@@ -1191,7 +1621,8 @@ foot.innerHTML=`数据说明：
 ④ bus 两列都读 <code>tables/events</code>，跨重启有效。「投递」依赖 2026-10-05 起落盘的 <code>deliveries</code> 字段：存量行显示 <code>unknown · 存量行</code>、部分行有数据的加 <code>≥</code>（下界）——都不写 0。读不到全历史口径时退回 ring 窗口口径并标「窗口外」。
 ⑤ 仍属示意的只有一处：Q1 详情「最后改动」（待接 evolution ledger）。
 ⑥ Q3 导出是只读草稿，不自动喂 evolve.propose。
-⑦ 「神谕」一节转录 <code>$DSH_HOME/storages/agint_aesthetic_oracle.json</code> 的三张表（state / broadcasts / cards）加上进程内服务面（<code>agint.aestheticOracle</code>）。卡片只有 dashboard 订阅回写后才有；服务面 <code>cards()</code> 为空时回落落盘并在黄条里说明原因。Δ 基线一律标口径可比性 —— 基线没有 <code>formulaVersion</code> 时（生产现状）不当趋势读。`;
+⑦ 「神谕」一节转录 <code>$DSH_HOME/storages/agint_aesthetic_oracle.json</code> 的三张表（state / broadcasts / cards）加上进程内服务面（<code>agint.aestheticOracle</code>）。卡片只有 dashboard 订阅回写后才有；服务面 <code>cards()</code> 为空时回落落盘并在黄条里说明原因。Δ 基线一律标口径可比性 —— 基线没有 <code>formulaVersion</code> 时（生产现状）不当趋势读。
+⑧ <b>提案台是整页唯一的写入口</b>：<code>POST /api/agint-family/proposal/decision</code>，只放行回环 + 自定义头 + 同源页面，body 上限 4KB，状态白名单五档，写入经 <code>agint.evolve.setStatus()</code>，不碰存储文件。批准写 <code>approved</code>（已批准待执行），落地才写 <code>applied</code>。拒绝与 wontfix 服务端强制要求理由。证据栏的路径/符号核对只读仓库源码，命中只算线索，不是判定。`;
 
 // ── 数据装载 ──────────────────────────────────────────────
 function applyPayload(D){
@@ -1223,6 +1654,9 @@ function applyPayload(D){
   // 神谕层：整段是可选产物（宿主半旧版没有这个键）。缺键 = 取不到 ≠ 神谕没开口，
   // 渲染区分开写（见 renderOracle）。⛔ 不要在这里补一个空默认对象冒充「有数据」。
   ORACLE=(D.oracle&&typeof D.oracle==="object")?D.oracle:null;
+  /* 提案台：整段也是可选产物（host 半旧版没有这个键）。
+     ⛔ 缺键 =「取不到」，不是「没有提案」—— 渲染区分开写（见 renderProposals）。 */
+  PROP=(D.proposals&&typeof D.proposals==="object")?D.proposals:null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }
