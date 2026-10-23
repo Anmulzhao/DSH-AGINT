@@ -32,12 +32,22 @@
 ## 提案生命周期
 
 ```
-proposed ──evaluate──▶ applied   （已落地）
-                  ──▶ rejected  （评估后不做）
-                  ──▶ wontfix   （暂不处理）
+proposed ──批准（人工）──▶ approved  （已批准待执行）
+         ──执行后──▶ applied        （已落地）
+         ──评估后不做──▶ rejected   （拒绝执行）
+         ──暂不处理──▶ wontfix      （wontfix）
 ```
 
-`evolve_set_status id applied "已在 X 落地"` 是闭环的最后一步。
+`approved` 与 `applied` 不是同一件事。
+
+- `approved` 是**决定**：有人看过，同意做，还没做。note 写批准理由。
+- `applied` 是**事实**：代码或文档已经改了。note 写落地证据（改了哪些文件）。
+
+⛔ 不要把「批准」记成 `applied`。那样 proposal 表会说假话。
+2026-10-23 之前没有这一档，53 条 proposed 只进不出，就是这个缺口。
+
+`evolve_set_status id applied "已在 X 落地"` 仍是闭环的最后一步。
+人工改判可以回到 `proposed`（家族面板的「撤销」走同一出口）。
 
 ## 模型接口
 

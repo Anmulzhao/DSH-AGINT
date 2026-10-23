@@ -1,5 +1,33 @@
 # agint-evolve CHANGELOG
 
+## v0.8.0（2026-10-23 · 提案状态机补 `approved`：人工批准与落地分开记）
+
+### 新增
+
+- `proposalSchema.status` 增加 `approved`（已批准待执行）。五档：
+  `proposed / approved / applied / rejected / wontfix`。
+- `PROPOSAL_STATUSES` 与 `evolve_proposals` / `evolve_set_status` 的枚举同步。
+
+### 为什么
+
+- 原状态机只有「落地」「拒绝」「暂不处理」三个出口，**没有「人工同意做」这一档**。
+  结果是：人工审批无处落笔 —— 要么把「点头」记成 `applied`（表说假话），
+  要么什么都不记（53 条 proposed 只进不出，实测 2026-10-23）。
+- `approved` 是**决定**，`applied` 是**事实**。两者混记会让「真做完」与
+  「只是同意」无法区分，提案表从此不可信。
+
+### 兼容
+
+- **只增不改**：历史行的四个旧值全部仍合法，存储 domain 版本保持 `2`
+  （无数据形状变化，不做迁移）。
+- ⚠️ 部署注意：`approved` 行由旧版代码读取时会被 zod 拒绝，整个 `agint_evolve`
+  域会 open 失败。**新代码必须先于新数据部署**。家族面板的写路由与 evolve 同进程，
+  部署同步后重启即一致。
+
+### 验证
+
+- `node test/smoke.mjs`；`node --test test/path-escape-windows.test.mjs`。
+
 ## v0.7.3（2026-10-14 · Windows 路径逃逸误报修复）
 
 ### 修复

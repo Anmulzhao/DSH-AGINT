@@ -429,7 +429,8 @@ export function buildReport({ date, snapshot, findings, notes }) {
   lines.push('## 三、改进提案');
   lines.push('');
   lines.push('> 用 evolve_propose 在此追加提案（category: rule / skill / doc / preset / service / plugin / other），' +
-    '状态用 evolve_set_status 跟踪（proposed → applied / rejected）。');
+    '状态用 evolve_set_status 跟踪（proposed → approved / rejected / wontfix → applied）。' +
+    '注意 approved 与 applied 分工：approved = 人工批准等执行，applied = 已落地。');
   lines.push('');
   if (notes && String(notes).trim() !== '') {
     lines.push('## 四、备注');

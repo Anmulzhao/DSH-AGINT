@@ -77,12 +77,25 @@ export function repoRootFromHere() {
   return null;
 }
 
+// 提案状态五档（2026-10-23 加 `approved`）。
+//
+// ⛔ 为什么不复用 `applied` 表示「老板批准了」：`applied` 的语义是**已落地**，
+//    note 里写的是落地证据（改了什么文件）。把「同意做」写成 `applied` 会让
+//    proposal 表说假话 —— 而未落地的提案占着 applied，事后无法区分「真做完」
+//    与「只是点了头」。`approved` 补的是「人工批准、尚未执行」这一档，
+//    它让待批队列第一次有出口：proposed → approved → applied。
+//
+// 状态流转（只增不改，历史行全部仍合法）：
+//   proposed ──批准──▶ approved ──落地──▶ applied
+//        └──拒绝──▶ rejected
+//        └──暂不处理──▶ wontfix
+//   人工改判允许回 proposed（家族面板提供「撤销」，走 setStatus 同一出口）。
 const proposalSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   body: z.string().min(1),
   category: z.enum(['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other']).default('other'),
-  status: z.enum(['proposed', 'applied', 'rejected', 'wontfix']).default('proposed'),
+  status: z.enum(['proposed', 'approved', 'applied', 'rejected', 'wontfix']).default('proposed'),
   source: z.string().default(''),
   note: z.string().default(''),
   createdAt: z.string().default(() => new Date().toISOString()),
@@ -112,7 +125,7 @@ const spec = defineDomain({
   },
 });
 
-const PROPOSAL_STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
+const PROPOSAL_STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
 const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
 
 function apply(ctx, config) {
