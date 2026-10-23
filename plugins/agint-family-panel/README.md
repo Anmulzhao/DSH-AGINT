@@ -2,7 +2,7 @@
 
 AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGINT 插件家族：分组、行状态、通电信号。
 
-- 版本：v0.4.0（2026-10-22 新增「单插件档案页」下钻；v0.3.0 同日晚新增「神谕 · 美之判词」分区；v0.2.0 于 2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
+- 版本：v0.5.0（2026-10-23 新增「提案台 · 人工审批」，全插件第一个也是唯一一个写通道；v0.4.0 新增「单插件档案页」下钻；v0.3.0 新增「神谕 · 美之判词」分区；v0.2.0 于 2026-10-04 v2 整页上线；v0.1.0 于 2026-09-29 首次挂载）
 - 形态：双半插件（host 半 + 浏览器半）
 - 席位：侧栏 `sidebar.panellist` 入口行 + root 作用域 `main` keyed slot 面板页
 
@@ -17,6 +17,8 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 | browser | `lib/client.js` | 注册到宿主自带席位；停靠面板**默认内嵌 v2 视图**（iframe 走文档相对 `api/agint-family/v2`），一键可切名册视图（按钮文案「切换到家族名册」；分组/行状态/信号）；**名册每行可点 → 该插件的档案页**；不接管任何宿主 DOM |
 | asset | `assets/panel-v2.html` | v2 整页前端（待办 / 神谕判词 / Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定 / 事件链 / 伞键清单），fetch `/v2/data` 渲染 |
 | host | `lib/index.js` 的 `collectOracle` | 神谕层取数：服务面（`cards`/`history`/`getState`/`status`）优先，空段用落盘补齐，补齐原因写 `notes` |
+| host | `lib/v2-proposals.js` | **提案台数据层**（v0.5.0）：服务面 `agint.evolve.listProposals()` 优先、`agint_evolve.json` 兜底；正文分节解析 + 引用路径/符号提取 + 存在性核对；队列年龄与分类/来源聚合 |
+| host | `lib/index.js` 的 `POST /api/agint-family/proposal/decision` | **全插件唯一写入口**：批准 / 拒绝 / wontfix / 改判，转发 `agint.evolve.setStatus()`，不碰存储文件 |
 
 它**不是**独立窗口、**不是** iframe、也不是第三方侧栏里的一个 tab：
 
@@ -105,7 +107,116 @@ Q1/Q2/Q3 是证据面。结论先看，证据在后。默认分区仍是 Q1，�
   score / verdict / worstKey，**不存判词文本** ⇒ 回看某一轮的原话做不到。
   要保留全文得改 oracle 侧存储，不在本插件职责内。
 - 提案只显示计数（`proposals`）。内容与流转走 `agint.evolve.listProposals`，
-  面板不复制那套状态机。
+  面板不复制那套状态机。（v0.5.0 起内容在「提案台」一节展开，见下；状态机仍归
+  `agint-evolve`，面板只转发 `setStatus`。）
+
+## 提案台 · 人工审批（v0.5.0）
+
+**位置**：分区条第二格，紧跟「待办」。两格都是**队列面**（现在有什么等着人处理），
+先看积压、再动手，证据面（Q1/Q2/Q3）在其后。
+
+### 为什么做这一节
+
+2026-10-23 实测三件事，都指向同一个缺口：
+
+1. **队列只进不出**：`proposal` 表 95 行里 53 行挂 `proposed`，最老的 43 天。
+   唯一的状态出口是手动工具 `evolve_set_status`，而 `evolution-cycle` 从不下调
+   （driver 全库无 `setStatus`）⇒ 提案攒着，没人有地方落笔。
+2. **表在说假话**：抽查 20 条 `proposed`，**10 条与代码事实不符**（早已落地）。
+   拿这张表排优先级，等于把做完的事再排一次队。
+3. **状态机缺一档**：原四档 `proposed / applied / rejected / wontfix` 里，
+   `applied` 的语义是**已落地**。人工批准无处表达 —— 写成 `applied` 就是把
+   「点头」记成「做完」。故 `agint-evolve` v0.8.0 补 `approved`（已批准待执行）。
+
+### 批准之后去哪儿了
+
+`approved` 不是终点。**待办**一节因此多了一行「已批准待执行（工作单）」
+（`PENDING_SPECS` 的 `evolve-approved`，kind=`action`）：
+批准过的提案从「待批」挪进这一行，落地后标 `applied` 才算消失。
+
+⛔ 没有这一行时，批准 = 从待办里消失 —— 决定做完了却没人去做，比不批更糟。
+⚠️ 这一行只统计，不自动执行：落地仍要人（或会话里的 AI）真的动手。
+
+### 一屏回答三件事
+
+| 屏 | 答什么 | 依据 |
+|---|---|---|
+| 统计条 + 队列年龄条 | 积压多深、老到什么程度 | `counts.aging`（待批口径，7 天 / 8–30 天 / 30 天以上三段） |
+| 列表行 | 这条值不值得现在处理 | 状态、分类、年龄、**正文分节 3/5**、证据线索、来源 |
+| 展开行 | 它的目的、方案、价值、风险、关联 | 正文五节原文 + 元信息 + 证据栏 + 决策区 |
+
+**正文分节为什么进列表**：正文是 markdown，不是结构化字段。95 条里 49 条有「改动方案」、
+61 条有「预期收益」，但仍有相当一部分一条小节都没有。**没分节的提案基本无法评审**，
+列表里直接给「0/5」，让人一眼跳过而不是点开才发现。
+
+### 证据栏：只报事实，不下判定
+
+对每条提案，从正文里抽两类**可核对**的东西：
+
+| 抽什么 | 怎么抽 | 怎么核对 |
+|---|---|---|
+| 路径 | `plugins/x/lib/index.js`、`README.md:85`、`D:\...\AGENTS.md` | 归一化到仓库相对路径（认 `DSH-AGINT/` 之后的锚），`statSync` 判存在 + 给 mtime |
+| 符号 | 反引号里的标识符（要求带 `_` / 驼峰 / 长度 ≥ 10） | 在**引用到的那些文件**里 `indexOf` |
+
+三档线索，措辞一律「可能」：
+
+- `stale`：引用的路径**全部不存在** ⇒ 描述的文件布局已过期。
+- `maybe-done`：符号在引用文件里**命中** ⇒ 可能已落地，需人确认。
+- `neutral` / `unknown`：路径在但符号未命中 / 没有可核对的东西。
+
+⛔ 刻意不做的三件：
+
+1. **不判「已落地」**。符号命中可能是同名残留，也可能在别处定义。判定是人给的。
+2. **不把「没法核对」写成「不存在」**。wiki 仓路径（`AGINT.wiki/*`）是另一个 git 仓，
+   标 `exists:null` + 原因；写成 `false` 就是把「我没看」说成「它不在」。
+3. **不收通用符号**。`status` / `note` / `VERSION` / 全仓同名 ≥2 处的标识符一律不计，
+   命中率 100% 的线索等于没有线索。实测因此把 95 条里 18 条「疑似已落地」降到更可信的一批。
+
+### 写通道（全插件唯一）
+
+```http
+POST /api/agint-family/proposal/decision
+content-type: application/json
+x-agint-panel: 1
+
+{ "id": "<proposal id>", "status": "approved|rejected|wontfix|applied|proposed", "note": "理由" }
+```
+
+四道门，缺一不可：
+
+| 门 | 判据 | 不过时 |
+|---|---|---|
+| 回环 | `socket.remoteAddress` ∈ {127.0.0.1, ::1, ::ffff:127.0.0.1} | 403 `loopback-only` |
+| 自定义头 + 同源 | `x-agint-panel: 1`；`Origin` 若存在必须与 `Host` 一致 | 403 |
+| 类型与体积 | `content-type: application/json`；body ≤ 4KB | 415 / 413 |
+| 状态白名单 | 五档枚举；`rejected` / `wontfix` **必须带理由**，`applied` **必须带落地证据**（≥2 字） | 400 |
+
+过了门才碰服务：`ctx.get('agint.evolve').setStatus(id, status, note)`。
+**面板从不直接写 `agint_evolve.json`** —— 原子写、版本号、后续迁移都归存储域管。
+
+三条数据纪律：
+
+1. **`note` 是账本，不是便签**。`applied` 行的 note 是落地证据，改判时**追加**不覆盖
+   （`｜ 原记录：…`）；上一版已是面板记录时替换而非叠加，避免连续改判把 note 撑爆。
+2. **幂等**。目标态与现状相同 → `changed:false`，不落库、不刷 `updatedAt`。
+3. **写完重取**。前端不做本地乐观更新 —— 就地改状态会让面板显示「我以为的结果」。
+
+### 服务缺席时
+
+`agint.evolve` 是 `optionalInject`。未挂载 / 版本过旧时，读走 `agint_evolve.json` 兜底，
+写路由返回 **503 + 原因**，面板据此提示「写不了」，而不是让人点了没反应。
+
+### 测试
+
+```sh
+node --test plugins/agint-family-panel/test/v2-proposals.test.mjs   # 数据层 17 条
+node --test plugins/agint-family-panel/test/proposal-board.test.mjs # 渲染与审批流 10 条（vm + 迷你 DOM）
+node --test plugins/agint-family-panel/test/decision-route.test.mjs # 写路由 13 条（四道门 + 三条纪律）
+```
+
+`proposal-board.test.mjs` 用 `node:vm` 跑页面脚本、用桩元素接 `addEventListener`，
+断言的是**事件处理逻辑**（谁能写、写成什么、失败说什么），不是浏览器排版。
+`decision-route.test.mjs` 的 ctx 替身沿用 `smoke.mjs` 的严格代理：未声明属性一律抛错。
 
 ## 插件档案页（v0.4.0）
 
