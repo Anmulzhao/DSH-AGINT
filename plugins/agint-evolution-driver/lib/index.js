@@ -55,6 +55,7 @@ import { createOutcomeMeasurer, DEFAULT_OUTCOME_LIMIT } from './outcome-measurer
 import { createContractAuditor } from './contract-audit.js';
 import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
+import { requestSynthMount } from './deploy-bridge.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -1312,6 +1313,9 @@ export function apply(ctx, config = {}) {
     runOnce, status, construct, checkEntities, driveAsGoal, goalBridgeStatus, buildGoalObjective,
     // Phase 1.1 支点 1b：给 cron `outcome-measure` 的测量入口
     measureOutcomes,
+    // A 段「通电不上膛」：合成产物 ⇒ mount 的部署桥。
+    // ⛔ 恒 PENDING_REVIEW，不自动 ACTIVATE（4 态里有 RESTART_REQUESTED，触碰重启红线）。
+    requestSynthMount: (input) => requestSynthMount({ ctx, ...input }),
   });
 
   ctx.effect(() => () => {
