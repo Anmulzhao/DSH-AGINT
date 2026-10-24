@@ -47,7 +47,7 @@ const PromptMutationPayloadSchema = z.object({
   newText: z.string().min(1).max(102400, 'newText ≤100KB'),
   diffStrategy: DiffStrategySchema,
 });
-const ToolSynthesisPayloadSchema = z.object({
+export const ToolSynthesisPayloadSchema = z.object({
   toolName: z.string().regex(/^[a-z][a-z0-9-]{2,30}$/, 'toolName 必须匹配 ^[a-z][a-z0-9-]{2,30}$'),
   signature: z.string().min(1), // JSON Schema 字符串形态（参考 agint-quality-sdk PromptManifestSchema 思路）
   stubs: z.array(z.string().min(1).max(10240, 'stubs 单项 ≤10KB')).min(1, 'stubs ≥1'),
