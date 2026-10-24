@@ -4,6 +4,44 @@
 
 ---
 
+## 0.6.9 (2026-10-25) — TOOL_SYNTHESIS 合成器：骨架 + stubs（闭环 B 段第一块）
+
+**背景**：TOOL_SYNTHESIS 是「契约有、生产者无」的第三条断点。
+mutator 的 kind 枚举、PROPOSERS 路由（`TOOL_GAP` → TOOL_SYNTHESIS）、
+下游消费者（quality-static / quality-sandbox / mount / population）全部就位，
+唯独缺「把 TOOL_SYNTHESIS payload 变成完整 Cordis 插件包」的那一环。
+⇒ 生产里 11 条变异候选全是 `PROMPT_MUTATION`，**TOOL_SYNTHESIS 历史 0 条**。
+
+**老板拍板（2026-10-25）**：移除原 ADR-11-2 的两条约束
+——「必须模板生成」「禁止自由生成任意代码」。方法体来自 payload 的 stubs，
+生成方式不受限。
+
+**新增**
+1. `lib/synth.js` — `synthPluginPackage({ payload, fs, templatesDir })`。
+   纯函数 + 可注入 fs，**不落盘**，返回 5 文件清单（落盘是调用方的事）。
+   输入先过 `ToolSynthesisPayloadSchema`（为复用契约，该 schema 由 const 改为 export）。
+2. `templates/plugin-synth/` — 产物骨架 5 件（manifest / package / cordis.patch /
+   src/index / README）。骨架固定的部分：import、name、inject、存储域定义、
+   apply 收尾、provide 收尾。
+
+**保留的（骨架契约，非内容审查）**
+1. 命名派生：插件 id `agint-synth-*` / 服务键 `agint.synth.*` / 存储域 `agint_synth_*`。
+2. 保留词拒绝（quality / mount / mutator / synth / meta 等 22 个），避免撞 L0 FROZEN 签名空间。
+3. ⛔ **方法体内容不审查**。stubs 原样拼进 service 对象。
+   内容引入的 import / 域名 / 权限由**下游 quality-static 与 quality-sandbox 真拦**。
+   ⇒ **前置约束移除后，它们是唯一防线。**
+
+**实测**：`test/synth.test.mjs` 11/11。变异自证两条：
+删骨架 provide 收尾 → 10 pass / 1 fail；把 METHODS 置空 → 10 pass / 1 fail；还原后 11/11。
+mutator 全量 10 个测试文件 141 pass / 0 fail。
+
+**未做（下一块）**：mutator 的 `PROPOSERS.TOOL_SYNTHESIS` 尚未接本合成器；
+产物的 l0-isolation 回环验证未接；落盘与 mount 接入未做。
+
+**踩坑**：JSDoc 注释里写出块注释结束序列的字面量会**提前闭合注释**，
+语法错会漂到几十行之外（本文件为此改过一次措辞）。详见 K199。
+
+
 ## 0.6.7 (2026-09-29) — diffStrategy 从死字段到真消费（接线，零 FROZEN 变更）
 
 ### 修复（契约 bug：声明与消费脱节）
