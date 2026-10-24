@@ -374,6 +374,6 @@ fi
 
 log ""
 log "✅ 卸载完成"
-log "下一步：重启 dsh web"
+log "下一步：重启 profile '$PROFILE_NAME' 对应的 dsh 客户端（web: dsh web；desktop: 重开桌面版）"
 log ""
 log "提示：备份还在 $BACKUP_DIR，用 --list-backups 查看，--restore 回滚"

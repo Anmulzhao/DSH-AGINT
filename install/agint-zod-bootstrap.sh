@@ -16,7 +16,8 @@
 #   找不到本地源 → 仅 warn，不强制联网（尊重 install 的安全左移哲学）。
 #
 # ## 用法
-#   install/agint-zod-bootstrap.sh                 # 跑一次（DSH_HOME 默认 $HOME/.dsh）
+#   install/agint-zod-bootstrap.sh                 # 跑一次（DSH_HOME 默认 $HOME/.dsh，profile 默认 web）
+#   AGINT_PROFILE=desktop install/agint-zod-bootstrap.sh  # 指定目标 profile
 #   DSH_HOME=... install/agint-zod-bootstrap.sh    # 指定 dsh 根
 #   install/agint-zod-bootstrap.sh --dry-run       # 只打印，不写
 #   install/agint-zod-bootstrap.sh --uninstall     # 删 node_modules/zod
@@ -72,16 +73,15 @@ winpath() {
 
 # 2026-09-24 起 AGINT 以 bundle 形态交付 ⇒ zod 主位在 **bundle 包内**
 # （bundle patch 的 insert 行相对 bundle 包根解析，插件已搬去那里）。
-# 兼容位与主位同源再放一份：AGINT 自身代码与三条 preset 的 tools 行仍按
+# 兼容位与主位同源再放一份：AGINT 自身代码与 4 套 preset 的 tools 行仍按
 # $DSH_HOME/profiles/<profile>/plugins/... 定位插件。
 #
-# ⚠️ 2026-10-08：主位 DST 随 profile 名走**只是为了兼容位对齐**——本脚本早期写法
-#   把主位写成 profiles/web/node_modules/@agint/host/...（旧部署位）。现部署位实体
-#   恒在 $DSH_HOME/.agint-bundle/，那条路径只在「profile 内软链」形态下存在。
-#   为不引入新语义，DST 保持原样（仍按 profile 名拼），MIRROR 必随 profile 走。
+# ⚠️ 2026-10-08：主位恒在 bundle 实体（$DSH_HOME/.agint-bundle/），不随 profile 变；
+#   兼容位（MIRROR）随 AGINT_PROFILE 走。旧部署位
+#   profiles/<profile>/node_modules/@agint/host/ 已退役。
 REL="agint-quality/node_modules/zod"
 MIRROR="$DSH_HOME/profiles/$AGINT_PROFILE/plugins/$REL"
-# 主位：优先认 bundle 实体（现部署位），回退 profile 内的 @agint/host 软链路径
+# 主位：bundle 实体内的插件树（现部署位）
 DST="$DSH_HOME/.agint-bundle/plugins/$REL"
 DST_PARENT="$(dirname "$DST")"
 # 2026-10-01 新增第三位：bundle 自身的依赖根（<bundle>/node_modules/zod）。
@@ -108,7 +108,7 @@ for arg in "$@"; do
     --dry-run)   DRY_RUN=1 ;;
     --uninstall) UNINSTALL=1 ;;
     -h|--help)
-      sed -n '2,28p' "$0"; exit 0 ;;
+      sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "[zod-bootstrap] unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -155,7 +155,7 @@ fi
 #   1) $DSH_HOME/profiles/node_modules/zod      ← 首选：dsh 全局软链的目标
 #      （profiles/node_modules 是 web/headless 共用的依赖池，多数 AGINT
 #        部署里 dsh 安装时已经把它链到 /usr/lib/.../@deepseek-ai/dsh/node_modules/zod）
-#   2) $DSH_HOME/profiles/web/node_modules/zod  ← 次选
+#   2) $DSH_HOME/profiles/<profile>/node_modules/zod  ← 次选（随 AGINT_PROFILE）
 #   3) claude-projects/openclaw（本机已知稳定 zod 4.x）
 #   4) ~/projects 下任何含 zod 4+ 的 node_modules
 #   5) ~/文档 / ~/下载 下的 zod 4+
@@ -170,7 +170,7 @@ fi
 find_local_zod() {
   local roots=(
     "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/zod"
-    "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/zod"
+    "${DSH_HOME:-$HOME/.dsh}/profiles/$AGINT_PROFILE/node_modules/zod"
     "$HOME/文档/claude-projects/openclaw/node_modules/zod"
     "$HOME/projects/Metaversefans/metaverse-fans-web/node_modules/zod"
   )
@@ -214,12 +214,15 @@ if [ -z "$SRC" ]; then
 
 修复方式（任选一）：
   1. AGINT_HOME 之外的任意项目跑一次 npm install zod@^4，bootstrap 下次会自动复用
-  2. 手动放置（主位 = bundle 包内；兼容位同步放一份）：
-       mkdir -p ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules
-       cd /tmp && npm pack zod@^4
-       tar -xzf zod-*.tgz -C ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/
-       mv ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/package \
-          ~/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-quality/node_modules/zod
+  2. 手动放置（三处都要，缺一处启动仍报错）：
+       cd /tmp && npm pack zod@^4 && tar -xzf zod-*.tgz && mv package zod
+       DSH_HOME=${DSH_HOME:-$HOME/.dsh}; P=${AGINT_PROFILE:-web}
+       mkdir -p "$DSH_HOME/.agint-bundle/plugins/agint-quality/node_modules" \
+                "$DSH_HOME/.agint-bundle/node_modules" \
+                "$DSH_HOME/profiles/$P/plugins/agint-quality/node_modules"
+       cp -r zod "$DSH_HOME/.agint-bundle/plugins/agint-quality/node_modules/"
+       cp -r zod "$DSH_HOME/.agint-bundle/node_modules/"
+       cp -r zod "$DSH_HOME/profiles/$P/plugins/agint-quality/node_modules/"
 
 为何不自动 npm install：dsh plugin 目录的 package.json 是 sparse
 （只有 peerDependencies，无 dependencies），npm 10 在这种场景下

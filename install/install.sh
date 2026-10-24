@@ -2,10 +2,10 @@
 # AGINT 安装脚本（v0.2 — 安全左移版）
 #
 # 把 AGINT 仓库内容铺到 $DSH_HOME，对应 preset / bundle-plugin / bundle-patch
-# 三个注入点（外加一处兼容镜像位）。
+# 三个注入点（外加一处兼容镜像位）。目标 profile 由 --profile 指定，默认 web。
 #
 # ## 交付形态（2026-09-24 起）
-#   $DSH_HOME/.agent-presets/<id>/                      ← 三条 preset 的定义文件
+#   $DSH_HOME/.agent-presets/<id>/                      ← 4 套 preset 的定义文件
 #   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
 #   $DSH_HOME/.agint-deps/dsh-runtime/                  ← AGINT 自带 dsh 运行时（依赖树实体）
 #        ├── package.json       name=@deepseek-ai/dsh（验真身用）
@@ -16,9 +16,9 @@
 #        ├── package.json       dsh.bundle.patch 声明
 #        ├── plugins/           agint-* 插件
 #        └── node_modules/@deepseek-ai  官方包解析入口
-#   $DSH_HOME/profiles/web/node_modules/@agint/host     ← 指向上面那个目录的 symlink
-#   $DSH_HOME/profiles/web/plugins/                     ← 兼容镜像位（AGINT 自身代码按此路径找插件）
-#   $DSH_HOME/profiles/web/cordis.patch.yml             ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
+#   $DSH_HOME/profiles/<profile>/node_modules/@agint/host  ← 指向上面那个目录的 symlink
+#   $DSH_HOME/profiles/<profile>/plugins/                  ← 兼容镜像位（AGINT 自身代码按此路径找插件）
+#   $DSH_HOME/profiles/<profile>/cordis.patch.yml          ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
 #
 # ⛔ 为什么 bundle 实体不在 node_modules 里（2026-10-01 修，AGINT 自毁坑）：
 #   dsh 的 plugin_manager 每次 install_bundle / remove_bundle 都会在 profile 目录
@@ -99,7 +99,7 @@ for arg in "$@"; do
       exit 2
       ;;
     -h|--help)
-      sed -n '2,32p' "$0"
+      sed -n '2,66p' "$0"
       exit 0
       ;;
     *)
@@ -206,7 +206,7 @@ PROFILE_MANIFEST="$PROFILE_ROOT/package.json"
 
 PRESETS_DST="$DSH_HOME/.agent-presets"
 # 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
-# quality-bridge.js）与三条 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
+# quality-bridge.js）与 4 套 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
 PLUGINS_DST="$PROFILE_ROOT/plugins"
 # 只读：用于「AGINT 挂载段残留」检测，不再由本脚本写入
 PROFILE_PATCH_DST="$PROFILE_ROOT/cordis.patch.yml"
@@ -345,7 +345,7 @@ fi
 [ -f "$BUNDLE_PATCH_SRC" ]    || die "bundle patch 源缺失: $BUNDLE_PATCH_SRC"
 [ -f "$BUNDLE_MANIFEST_SRC" ] || die "bundle 清单源缺失: $BUNDLE_MANIFEST_SRC"
 [ -f "$PATCH_SRC" ]   || die "patch 源缺失（卸载 id 清单仍依赖它）: $PATCH_SRC"
-[ -d "$DSH_HOME" ]    || die "$DSH_HOME 不存在，请先跑 'dsh web' 初始化 dsh"
+[ -d "$DSH_HOME" ]    || die "$DSH_HOME 不存在，请先初始化 dsh（web 跑一次 'dsh web'；desktop 启动一次桌面版）"
 
 if [ "$FORCE" != "1" ] && [ ! -d "$AGINT_HOME/.git" ]; then
   die "AGINT_HOME 不是 git 仓库（$AGINT_HOME），加 --force 跳过"
@@ -1061,7 +1061,7 @@ done
 #   · bundle patch 的 insert 行按「本 patch 文件所在目录」解析（app-boot
 #     anchorInsertedPluginNames）⇒ 插件必须在 <bundle>/plugins/ 下；
 #   · 而 AGINT 自身代码按老路径定位插件（agint-dream/lib/quality-bridge.js 用
-#     $DSH_HOME/profiles/web/plugins/<id>），三条 preset 的 tools 行同理 ⇒ 保留兼容位。
+#     $DSH_HOME/profiles/<profile>/plugins/<id>），4 套 preset 的 tools 行同理 ⇒ 保留兼容位。
 #   两处同源、同一次 sync，天然一致，不引入漂移。
 log "2.5/4 镜像到 bundle → $BUNDLE_PLUGINS_DST"
 # ⛔ 必须建到 plugins 这一层：rsync 3.1.3 只建 dst 的最后一级，中间目录缺失就
@@ -1360,7 +1360,7 @@ PY
 fi
 
 # ── 3.6 materialize node_modules/@agint/host 软链 ────────────────────────────
-# dsh 解析 bundle 的唯一位置是 profiles/web/node_modules/<name>，实体在
+# dsh 解析 bundle 的唯一位置是 profiles/<profile>/node_modules/<name>，实体在
 # $DSH_HOME/.agint-bundle/ ⇒ 这里必须有一条指过去的链接。3.5 已把
 # "link:<实体目录>" 写进 dependencies，pnpm 下次跑会认领这条链接；本步只保证
 # 「装完当下 dsh 就能看见 bundle」，不依赖 pnpm 被调用过。
@@ -1650,8 +1650,12 @@ log ""
 log "✅ 安装完成"
 log ""
 log "下一步："
-log "  1. 重启 dsh web（bundle 层与 profile 层都不热更新）："
-log "       dsh web"
+log "  1. 重启目标 profile：$PROFILE_NAME（bundle 层与 profile 层都不热更新）："
+if [ "$PROFILE_NAME" = "web" ]; then
+  log "       dsh web"
+else
+  log "       退出并重开使用 profile '$PROFILE_NAME' 的 dsh 客户端（desktop 即桌面版）"
+fi
 log "  2. 验证 bundle 真的被认（三步都要看）："
 log "       ① profile 清单里有它：grep '@agint/host' $PROFILE_MANIFEST"
 log "       ② 软链在位：ls -l $BUNDLE_LINK"

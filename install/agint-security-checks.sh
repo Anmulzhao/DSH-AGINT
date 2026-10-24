@@ -100,7 +100,7 @@ check_dsh_home() {
   if [ -d "$DSH_HOME" ]; then
     report_pass "DSH_HOME 存在: $DSH_HOME"
   else
-    report_warn "DSH_HOME 不存在: $DSH_HOME（install 会引导你先跑 dsh web 一次）"
+    report_warn "DSH_HOME 不存在: $DSH_HOME（install 会引导你先初始化 dsh：web 跑一次 dsh web，desktop 启动一次桌面版）"
   fi
 
   if is_abs_path "$DSH_HOME"; then
