@@ -4,7 +4,7 @@
  * 设计见 AGINT/计划-agint-dream升级三方向.md P1 段 + cordis-plugin-development skill
  * "Register dynamic model Tool" 节。
  *
- * 目的：在 host plane 真实跑一次 minimal ctx.agents.create() + ctx.subagents.start('spawn',
+ * 目的：在 host plane 真实跑一次 minimal ctx.agents.create() + ctx.subagents.startActivation(
  * {outputSchema})，验证 DSH 自带 subagent runtime 通路真的可用。这是子任务 1.1
  * "写一个独立验证脚本"的内嵌实现 —— 不依赖挂 cordis dynamic plugin（AGINT preset
  * 未挂载 cordis_* 工具），改用 host plugin 永久 service method + model tool。
@@ -62,14 +62,13 @@ function buildMinimalFixtures() {
 
 /**
  * 跑一次 minimal consolidation。返回 JSON-safe 结果 —— 模型 tool 输出。
- * 永远不抛错；任何 host 端问题都进 mode='heuristic-degraded' + reason。
+ * 永远不抛错；任何 host 端问题都进 mode='failed' + reason（无降级）。
  */
 export async function runVerification({
   ctx,
-  // 默认值跟 host 注册模型对齐（2026-09-28 实测 cordis.patch.yml：
-  // minimax-cn 只注册 MiniMax-M3.1-Flash-Preview，旧 MiniMax-M3 已不可路由）
+  // 默认值跟 host 注册模型对齐（2026-10-25：minimax-cn 注册 MiniMax-M3.1-Flash）
   provider = 'minimax-cn',
-  model = 'MiniMax-M3.1-Flash-Preview',
+  model = 'MiniMax-M3.1-Flash',
   timeoutMs = 60_000,
   day = `verify-${new Date().toISOString().slice(0, 10)}`,
 } = {}) {
@@ -86,13 +85,14 @@ export async function runVerification({
   // 截断 operations 到 5 条避免输出过大
   const ops = Array.isArray(result.operations) ? result.operations.slice(0, 5) : null;
   return {
-    mode: result.mode ?? 'heuristic-degraded',
+    mode: result.mode ?? 'failed',
     operations: ops,
     operationsLength: Array.isArray(result.operations) ? result.operations.length : null,
     gatedLength: gated.length,
     reason: result.reason ?? null,
     diagnostic: result.diagnostic ?? null,
-    childErrors: Array.isArray(result.childErrors) ? result.childErrors.slice(0, 3) : null,
+    // startActivation 拿不到 child localAgent 事件；诊断改由 result.diagnostic 承担
+    childErrors: null,
     provider,
     model,
     day,

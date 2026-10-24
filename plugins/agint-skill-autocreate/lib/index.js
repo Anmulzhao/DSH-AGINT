@@ -484,7 +484,7 @@ function apply(ctx, config) {
       mode: judgeMode,
       authoringMode,
       called: 0,            // 真正发起过的调用（= llm_judge_called 条数）
-      degraded: 0,          // 调用失败/产出不可用
+      failed: 0,            // 调用失败/产出不可用（primary 档：该 pattern 判 null）
       shadowSamples: 0,     // shadow 分歧样本
       budgetExhausted: 0,
       hardVetoSkipped: 0,   // 被 5 条硬否决预筛挡下、**没花预算**的 pattern 数
@@ -678,6 +678,8 @@ function apply(ctx, config) {
       // 模式上」）。预筛判据与判定的硬否决**同源**（`hardVetoOf` 与 `hardVeto`
       // 共用一份表），不是另写一遍——否则两边迟早漂移成「白花一次调用」。
       let llmOutcome = null;
+      // primary 档：LLM 拿不到有效判定时，结论必须判 null（需人工），⛔ 不回落轨道 B
+      let llmFailedReason = null;
       const hardVeto = judgeMode === 'off' ? null : hardVetoOf(stored, {
         minSteps: c.standardizable_min_steps,
         minDistinctTools: c.standardizable_min_distinct_tools,
@@ -691,15 +693,18 @@ function apply(ctx, config) {
         const grant = await llmBudget.take();
         if (!grant.ok) {
           llmStats.budgetExhausted++;
+          const snap = await llmBudget.snapshot();
+          if (judgeMode === 'primary') {
+            llmFailedReason = `LLM daily budget exhausted (${snap.used}/${snap.limit})`;
+          }
           if (grant.firstRejection) {
-            const snap = await llmBudget.snapshot();
             await audit({
               actor: 'system',
               action: 'llm_budget_exhausted',
               targetType: 'task_pattern',
               targetId: '*',
               details: { used: snap.used, budget: snap.limit, day: snap.day },
-              reason: `LLM 每日预算耗尽（${snap.used}/${snap.limit}），本轮后续 pattern 全部回落轨道 B`,
+              reason: `LLM 每日预算耗尽（${snap.used}/${snap.limit}），primary 档本轮后续 pattern 不再产出候选`,
             });
           }
         } else {
@@ -736,16 +741,16 @@ function apply(ctx, config) {
               },
             });
           }
-          if (llmOutcome.mode === 'degraded') {
-            llmStats.degraded++;
+          if (llmOutcome.mode === 'failed' || llmOutcome.ok !== true) {
+            llmStats.failed++;
+            if (judgeMode === 'primary') llmFailedReason = llmOutcome.reason ?? 'llm failed';
             await audit({
               actor: 'system',
-              action: 'llm_judge_degraded',
+              action: 'llm_judge_failed',
               targetType: 'task_pattern',
               targetId: stored.id,
-              // ★ reason 必填（K59 教训）：dream 的降级路径只印「degraded」不印原因，
-              //   「没有候选」与「429 超限」在日记上长得一样 → 错误归因被固化 12 天。
-              //   这里 reason 进 audit + detect 返回值的聚合计数，人可直接读。
+              // ★ reason 必填（K59 教训）：「没有候选」与「429 超限」在日记上
+              //   长得一样，错误归因会被固化。reason 进 audit + 聚合计数，人可直接读。
               details: {
                 reason: llmOutcome.reason,
                 diagnostic: llmOutcome.diagnostic ?? null,
@@ -774,7 +779,7 @@ function apply(ctx, config) {
         // ── 轨道 C（2026-09-18）：LLM 判定结果 + 灰度档 ──
         llmVerdict: llmOutcome?.verdict ?? null,
         llmShadow: judgeMode === 'shadow',
-        llmDegraded: llmOutcome?.mode === 'degraded' ? llmOutcome.reason : null,
+        llmFailed: llmFailedReason,
       });
 
       // shadow 档：**不改结论**，只把分歧样本落盘 —— Phase A 校准 prompt 与

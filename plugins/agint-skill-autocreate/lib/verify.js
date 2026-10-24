@@ -91,7 +91,7 @@ export async function runVerification({ ctx, provider = '', model = '', timeoutM
       });
     } catch (e) {
       // judgeViaLLM 契约上不抛，但验证脚本更不能因为一次异常整批中断
-      out = { ok: true, mode: 'degraded', verdict: null, authoring: null, reason: `unexpected:${e?.message ?? e}`, attempted: false };
+      out = { ok: false, mode: 'failed', verdict: null, authoring: null, reason: `unexpected:${e?.message ?? e}`, attempted: false };
     }
 
     // 撰写产出再过一遍**生产用的同一道本地校验** —— 验证脚本不能只信
@@ -121,10 +121,10 @@ export async function runVerification({ ctx, provider = '', model = '', timeoutM
     model: model || DEFAULT_MODEL,
     cases,
     // 分辨力自检：两个反向样本给出不同结论才算「有用」。
-    // 全 true / 全 false / 全 degraded 都要如实报出来。
+    // 全 true / 全 false / 全 failed 都要如实报出来。
     discriminated: llmCases.length === 2
       && llmCases[0].verdict?.standardizable === true
       && llmCases[1].verdict?.standardizable === false,
-    degraded: cases.filter((c) => c.mode !== 'llm').map((c) => ({ id: c.id, reason: c.reason })),
+    failed: cases.filter((c) => c.mode !== 'llm').map((c) => ({ id: c.id, reason: c.reason })),
   };
 }

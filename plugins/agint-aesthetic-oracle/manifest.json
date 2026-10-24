@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-aesthetic-oracle",
-  "version": "0.6.1",
-  "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只消费 summary() 读仪表，评分纯函数 + 美之三问下判断，三档 cron 广播按节奏开口。v0.4.0 新增 §8.1 LLM 增强档（L1 措辞/L2 深挖/L3 提案润色），评分链路永久零 LLM；kill-switch AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2/all（默认 all）；降级不阻断广播。v0.4.1 §4 真实关：Q3 建议必须绑定真实 lint 证据（wiki 矛盾/孤儿清单透传），查不到就输出「本日无可执行建议」，不编造建议。v0.4.2 L1 措辞增强超时 10s→60s：daily 实测 wall 10.78s/11.09s 连续越线降级，与 L2/L3 及 dream 的 60s 对齐。v0.4.3 可观测性：审计 findings 新增 oracle-llm-mode（记 mode 与 L1/L2/L3 降级 reason）。v0.5.0 评分公式 r2：bloat 扣分加上界（饱和 2.5 倍预算，修复总分可为负的无界罚）、Q1 效应量门槛（消除日抖动判定翻转）、Q2/weekly 提案排序改偏离度 ratio（归因与权重解耦）、payload 透传 formulaVersion。 v0.6.0 判尺规模不变性与闭环修复（公式 r4）：① bloat 从固定 120KB 总量预算改为单技能体积预算（11170 B/技能，绝对上界 600KB 兜底）——技能数增长不再虚增臃肿度（生产实测 20 技能均 10.8KB 被判超标 80%、假扣 24 分）；② Q1 加总分门（票数判「在变美」但总分低于基线 ≥10 分 → 降为持平）；③ LLM 连续 3 次降级发oracle.alert（`mode` 落 oracle_broadcasts 表，AC-21 可实证）；④ weekly 提案最小扣分门槛 2.0、同维 28 天去重、广播加「提案累计/已处理/挂起」闭环行。v0.6.1 Q3 建议渲染修复：wiki 矛盾明细改为 {path,line,snippet} 对象后未同步消费者，导致建议里渲染成 [object Object]、不可复核；现在渲染成 path:line（旧形状仍透传）。",
+  "version": "0.7.0",
+  "description": "美的神谕层：agint-metrics 之上的薄评论员（方案 C）。只消费 summary() 读仪表，评分纯函数 + 美之三问下判断，三档 cron 广播按节奏开口。v0.4.0 新增 §8.1 LLM 增强档（L1 措辞/L2 深挖/L3 提案润色），评分链路永久零 LLM。v0.4.1 §4 真实关：Q3 建议必须绑定真实 lint 证据（wiki 矛盾/孤儿清单透传），查不到就输出「本日无可执行建议」，不编造建议。v0.4.2 L1 措辞增强超时 10s→60s：daily 实测 wall 10.78s/11.09s 连续越线降级，与 L2/L3 及 dream 的 60s 对齐。v0.4.3 可观测性：审计 findings 新增 oracle-llm-mode（记 mode 与 L1/L2/L3 降级 reason）。v0.5.0 评分公式 r2：bloat 扣分加上界（饱和 2.5 倍预算，修复总分可为负的无界罚）、Q1 效应量门槛（消除日抖动判定翻转）、Q2/weekly 提案排序改偏离度 ratio（归因与权重解耦）、payload 透传 formulaVersion。 v0.6.0 判尺规模不变性与闭环修复（公式 r4）：① bloat 从固定 120KB 总量预算改为单技能体积预算（11170 B/技能，绝对上界 600KB 兜底）——技能数增长不再虚增臃肿度（生产实测 20 技能均 10.8KB 被判超标 80%、假扣 24 分）；② Q1 加总分门（票数判「在变美」但总分低于基线 ≥10 分 → 降为持平）；③ LLM 连续 3 次降级发oracle.alert（`mode` 落 oracle_broadcasts 表，AC-21 可实证；该熔断机制已在 v0.7.0 随降级路径一起移除）；④ weekly 提案最小扣分门槛 2.0、同维 28 天去重、广播加「提案累计/已处理/挂起」闭环行。v0.6.1 Q3 建议渲染修复：wiki 矛盾明细改为 {path,line,snippet} 对象后未同步消费者，导致建议里渲染成 [object Object]、不可复核；现在渲染成 path:line（旧形状仍透传）。v0.7.0 神谕层无 LLM 降级：修复宿主 subagents.start→startActivation 契约漂移（此前 L1/L2/L3 恒失败并谎报 unavailable）；删除 kill-switch 分档与 heuristic-degraded 回退，LLM 失败即中止本轮广播（落 outcome=error + oracle.alert + 调度重试）；weekly 先完成全部 L3 再写提案，杜绝半成品落盘。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -24,6 +24,8 @@
         "agint.aestheticOracle"
       ],
       "consumes": [
+        "agents",
+        "subagents",
         "agint.metrics",
         "agint.evolution",
         "agint.eventBus.publish",
@@ -59,8 +61,7 @@
     "mountOrder": 62,
     "permissions": {
       "env": [
-        "AGINT_AESTHETIC_ORACLE",
-        "AGINT_AESTHETIC_ORACLE_LLM"
+        "AGINT_AESTHETIC_ORACLE"
       ],
       "fs": [],
       "network": [],

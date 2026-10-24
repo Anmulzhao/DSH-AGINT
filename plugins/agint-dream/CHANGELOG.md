@@ -5,6 +5,29 @@
 
 ---
 
+## v0.6.0 — 2026-10-25 — LLM consolidation 无降级 + 接 startActivation
+
+**背景**：宿主 `subagents` 服务只有 `startActivation`，没有 `start`。旧代码的
+`typeof subagents.start !== 'function'` 恒真 ⇒ consolidation 25 天全程失败并谎报
+「subagents unavailable」。同时旧策略把失败降级成「见一条推一条」，等于质量闸门敞开。
+
+**变更**
+1. `lib/consolidation.js` 改调 `subagents.startActivation({ provider, label, request,
+   signal, delivery:'caller' })`；旧宿主保留 `start` 兼容分支。`request` 带
+   `parent` / `prompt` / `agentPreset` / `agentOptions` / `outputSchema`。
+2. **无降级**：服务缺失、方法缺失、provider 未注册、超时、stopReason 非 completed、
+   structured 非法、长度不对齐、create/start/result 抛错 → 一律
+   `{ ok:false, mode:'failed', operations:null, reason }`；0 条候选 →
+   `{ ok:true, mode:'not-attempted' }`（内容闸门）。
+3. `lib/sweep.js`：consolidation 失败 ⇒ **本轮不提升任何候选**，
+   `validationFinal.ok=false`，错误进 `errors`；diary 显示 `❌ failed`。
+4. 超时双保险覆盖 create/start/result；晚到的 handle/activation 也会 dispose。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`（-Preview 不可路由）；`reasoningEffort`
+   继续强制透传（缺档位会 400）。
+6. `dream_verify_consolidation` 的 `mode` 现在只会是 `llm` / `not-attempted` / `failed`。
+
+**测试**：`node --test` 167 例全绿（含 consolidation 28 例 + 全量 sweep）。
+
 ## 未发版 · 2026-10-23 — 信号源过滤：挡住被标成 kind='user' 的 subagent prompt（提案 0f6c69bc）
 
 **症状**：Light 通道提炼的候选里混入大量非人类消息。top 12 候选里至少 8 条

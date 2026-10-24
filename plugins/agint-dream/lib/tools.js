@@ -169,7 +169,7 @@ function apply(ctx) {
               promoted: { required: true, type: 'number' },
               recallAppended: { required: true, type: 'number' },
               recallPruned: { required: true, type: 'number' },
-              // P1 LLM consolidation mode（llm / heuristic-degraded）—— 与 lib/sweep.js result.counts 对齐
+              // P1 LLM consolidation mode（llm / not-attempted / failed）—— 与 lib/sweep.js result.counts 对齐
               // Sprint 13 / 2026-09-05 漏同步，导致 dream_status host 实测 schema 校验失败
               consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
@@ -310,7 +310,7 @@ function apply(ctx) {
               promoted: { required: true, type: 'number' },
               recallAppended: { required: true, type: 'number' },
               recallPruned: { required: true, type: 'number' },
-              // P1 LLM consolidation mode（llm / heuristic-degraded）
+              // P1 LLM consolidation mode（llm / not-attempted / failed）
               consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
@@ -507,7 +507,7 @@ function apply(ctx) {
   }));
 
   // P1 (Sprint 14 / 2026-09-05)：LLM consolidation 独立验证工具。
-  // 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+  // 在 host plane 真调 ctx.agents.create() + ctx.subagents.startActivation(...)，
   // 不依赖 sweep 主体，不写 agint.memory。消耗 1 次 LLM call —— 验证 host 端 DSH
   // subagent runtime 通路是否真可用（设计文档第一步）。
   ctx.tools.register(defineTool({
@@ -515,7 +515,7 @@ function apply(ctx) {
     description: 'P1 验证工具：跑一次 minimal LLM consolidation。消耗 1 次 LLM call，验证 DSH host 端 ctx.agents / ctx.subagents 通路是否真可用。不写 agint.memory，仅返回 schema-validated structured result。',
     parameters: {
       provider: { type: 'string', description: 'LLM provider（默认 settings.yaml agent-default-model：minimax-cn）' },
-      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash-Preview）' },
+      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash）' },
       timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
     },
     output: {

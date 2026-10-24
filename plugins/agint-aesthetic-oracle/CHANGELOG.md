@@ -1,5 +1,67 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.7.0 — 2026-10-25
+
+**神谕层不准 LLM 降级：修好宿主契约，删掉所有非 LLM 回退。**
+
+### 背景：LLM 通路不是「偶尔降级」，是 25 天全程恒失败
+
+`docs/神谕层-LLM通路根因-20261023.md` 已取证：现宿主 `subagents` 服务只有
+`startActivation`，**没有 `start`**。本插件（以及 dream / driver / autocreate）
+按旧范式检查 `typeof subagents.start !== 'function'` ⇒ 恒返回
+`subagents unavailable`（文案是假的：服务在，缺的是方法）。生产
+`oracle_broadcasts` 连续 `mode=heuristic-degraded`，LLM 档实际 0%。
+
+旧策略「失败降级回模板、广播照发」把签名漂移伪装成正常运行。老板 2026-10-25
+拍板：**不准降级，都要用 LLM**。
+
+### 变更
+
+1. **宿主契约修复**（`lib/llm-enhance.js`）
+   - 优先 `subagents.startActivation({ provider:'spawn', label, request:{ parent,
+     prompt, agentPreset, agentOptions, outputSchema }, signal, delivery:'caller' })`。
+   - 旧宿主只有 `start()` 时保留兼容分支。
+   - 报错分开：`agents service missing` / `subagents service missing` /
+     `subagents method missing (startActivation=…, start=…)` / `spawn provider not registered`。
+   - `agentOptions` 补 `reasoningEffort`（MiniMax-M3.1-Flash 缺档位会 400）；
+     兜底模型更新为当前已注册的 `MiniMax-M3.1-Flash`。
+   - 超时双保险：`AbortController` + `Promise.race`；超时必 `dispose`。
+2. **删除降级路径**
+   - `l1EnhanceAdvice` / `l2DeepDive` / `l3PolishProposal` 失败一律抛
+     `OracleLlmError`（code=`ORACLE_LLM_UNAVAILABLE`），不再返回
+     `{ mode:'heuristic-degraded' }`，也不拿模板文本顶替。
+   - 删除 `AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2` 分档开关；只剩整插件
+     kill-switch（config `enabled:false` / env `AGINT_AESTHETIC_ORACLE=off`）。
+   - 删除 `state.llmHealth` 与「连续降级 3 次告警」熔断（降级已不存在）。
+   - 结构化输出字段为空（advice/evidence/narrative/pattern/body）也算失败。
+3. **失败语义**
+   - LLM 失败中止本轮广播：落 `oracle_broadcasts.outcome=error`
+     （`detail=llm-unavailable: …`）+ 发 `oracle.alert`（调度重试期只在末次发）
+     + 抛错交 `runScheduled` 重试/记连续失败。
+   - 不发布 `oracle.daily/weekly/monthly`，不写 `mode=heuristic-degraded` 成功行。
+4. **weekly 提案原子性**
+   - 先完成全部 L3 润色，再逐条 `evolve.propose()`。任一 L3 失败 ⇒ 零提案落盘，
+     避免「第一条已写、第二条失败」在重试时被当成历史提案去重。
+5. **stale 缓存也走 LLM**
+   - metrics 挂掉时的 `lastGood` 缓存广播只换数据源，不换输出层；判词仍由 L1/L2/L3 生成。
+6. **可观测字段**
+   - `mode` 只剩 `template`（本轮无 LLM 输出）/ `llm`（至少一级成功）。
+     `heuristic-degraded` 从 `topics.js` 枚举移除；历史事件与历史行不受影响。
+
+### 测试
+
+`node --test` **99 例全绿**。新增：`startActivation` 契约、旧 `start` 兼容、
+三种病因文案、超时必返回 + dispose、结构化输出缺失、L1/L2/L3 失败抛错、
+LLM 失败落 error 痕 + 告警、`runScheduled` 重试告警、weekly L3 失败零提案。
+删除：kill-switch 分档、连续降级熔断。
+
+### 口径影响
+
+- 评分公式、阈值、`FORMULA_VERSION=r4`、`scaleHash` 均不变。
+- AC-21（`mode='llm'` 占比）今后只在成功广播行上统计；LLM 失败的轮次以
+  `outcome=error` 单列，不再稀释成「降级成功」。
+- 兼容性：老事件里的 `heuristic-degraded` 仍能被面板显示；新事件合同拒收该值。
+
 ## 0.6.1 — 2026-10-23
 
 **Fix — Q3 建议里的 wiki 矛盾清单渲染成 `[object Object]`**。

@@ -33,12 +33,13 @@ const tieredShape = (kind) =>
     text: z.string(),
     /**
      * 输出模式（§8.1.6，v2.4 新增可观测字段）：
-     *   'template'           — v2.3 模板化输出（kill-switch=off 或 LLM 未启用）
-     *   'llm'                — LLM 增强档生效（L1 措辞 / L2 深挖 / L3 润色至少一级成功）
-     *   'heuristic-degraded' — LLM 调用失败降级回模板（§6.1 不阻断广播）
+     *   'template' — 本轮没有需要 LLM 的输出（内容闸门全部命中）
+     *   'llm'      — LLM 输出层生效（L1 措辞 / L2 深挖 / L3 润色至少一级成功）
+     * 2026-10-25 无降级政策：LLM 失败会中止本轮广播（落 outcome=error + 告警），
+     * 因此不再发布 'heuristic-degraded'。
      * 缺省 = 'template'（向后兼容 v0.3.0 已发布的事件）。
      */
-    mode: z.enum(['template', 'llm', 'heuristic-degraded']).default('template'),
+    mode: z.enum(['template', 'llm']).default('template'),
     /** 评分公式版本（r3，2026-10-09）：版本切换前后总分不可直接比，分段解读。 */
     formulaVersion: z.string().optional(),
     /**

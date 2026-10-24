@@ -1,3 +1,24 @@
+## v0.7.0 — 2026-10-25 — LLM 判定无降级 + 接 startActivation
+
+**背景**：宿主只有 `subagents.startActivation`；旧代码检查 `start` ⇒ LLM 判定
+25 天全程失败。旧策略在失败时回落轨道 B，并可能凭规则分直接产出候选。
+
+**变更**
+1. `lib/llm-verdict.js` 改调 `startActivation({ provider, label, request, signal,
+   delivery:'caller' })`；旧宿主保留 `start` 兼容分支。`request` 带 `parent` /
+   `prompt` / `agentPreset` / `agentOptions` / `outputSchema`；补 `reasoningEffort`。
+2. **无降级**：`judgeViaLLM` 失败返回 `{ ok:false, mode:'failed', reason }`；
+   `standardizable.js` 新增 `llmFailed` 分支：**直接判 null（需人工）**，⛔ 不回落轨道 B。
+   `judgeMode=off/shadow` 仍按配置使用轨道 B（显式配置，不是降级）。
+3. primary 档预算耗尽也走 `llmFailed`，不再凭规则分产出候选；审计 action 改为
+   `llm_judge_failed`，统计字段 `llm.degraded` → `llm.failed`。
+4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
+   服务/方法/provider 三种病因分开报。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+
+**测试**：`node --test` 425 例（419 pass / 6 skip）全绿；新增 startActivation 契约、
+provider/model/reasoningEffort 透传、`llmFailed → null` 与阴影档回归。
+
 ## 未发版 · 2026-10-23 — 发布链路收口 C1 / C2 / C4（提案 2f7c834c）
 
 三条一起收口，C3（零调用直接回滚）与 C5（人工确认窗开关）此前已落地，不在本次范围。

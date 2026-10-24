@@ -300,7 +300,7 @@ test('T10: validate 不通过 → 不 ingest，发 rejected 事件', async () =>
   assert.equal(events[0].topic, 'evolution.mutation.rejected');
 });
 
-test('T11: LLM 判定不适用 / LLM 不可用 → 跳过且不写任何东西', async () => {
+test('T11: LLM 判定不适用 → 跳过；LLM 不可用 → 中止并抛错（无降级）', async () => {
   const mut = fakeMutator();
   const ctx = makeCtx({
     'agint.evolve': fakeEvolve([{ id: 'c1', title: 'plugin-preflight 太虚了', status: 'proposed', createdAt: '2026-09-01', body: '' }]),
@@ -310,10 +310,22 @@ test('T11: LLM 判定不适用 / LLM 不可用 → 跳过且不写任何东西',
   apply(ctx);
   const base = { env: {}, inject: { skillNames: ['plugin-preflight'], fs: { readSkill: async () => SKILL_TEXT } } };
   const a = await ctx.provided['agint.evolutionDriver'].runOnce({ ...base, inject: { ...base.inject, llm: async () => ({ ok: true, value: { applicable: false, rationale: '需要新建文件' } }) } });
-  const b = await ctx.provided['agint.evolutionDriver'].runOnce({ ...base, inject: { ...base.inject, llm: async () => ({ ok: false, reason: 'agents unavailable' }) } });
   assert.equal(a.skipped, true);
-  assert.equal(b.skipped, true);
-  assert.equal(mut.calls.propose.length, 0);
+
+  // 失败用新 ctx：同一 ctx 的 state.seen 已吃掉 c1，第二轮会直接跳过而不调 LLM
+  const mut2 = fakeMutator();
+  const ctx2 = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: 'plugin-preflight 太虚了', status: 'proposed', createdAt: '2026-09-01', body: '' }]),
+    'agint.mutator': mut2,
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx2);
+  await assert.rejects(
+    ctx2.provided['agint.evolutionDriver'].runOnce({ ...base, inject: { ...base.inject, llm: async () => ({ ok: false, reason: 'agents service missing' }) } }),
+    /llm unavailable: agents service missing/,
+  );
+  assert.equal(mut.calls.propose.length, 0, 'LLM 失败不得写任何变异');
+  assert.equal(mut2.calls.propose.length, 0);
 });
 
 test('T12: 定位不到目标技能 → 换候选，不硬凑（无候选则 skipped）', async () => {
@@ -419,8 +431,8 @@ test('T16: publish 必须按单参数契约调用（三参数会被 bus 静默�
 
 // ── T17/T18：子代理 spawn 契约（2026-09-27 用 30 个空壳会话换来的两条硬约束）──
 
-/** 假 agents/subagents，记录 create 的参数与 start 的返回 */
-function fakeRuntime({ result = { stopReason: 'completed', structured: { applicable: false } } } = {}) {
+/** 假 agents/subagents：默认走新宿主 startActivation；legacy=true 只提供旧 start。 */
+function fakeRuntime({ result = { stopReason: 'completed', structured: { applicable: false } }, legacy = false } = {}) {
   const created = [];
   const started = [];
   const agents = {
@@ -431,15 +443,24 @@ function fakeRuntime({ result = { stopReason: 'completed', structured: { applica
   };
   const subagents = {
     getProvider: (name) => (name === 'spawn' ? { name } : undefined),
-    start: async (name, request) => {
-      started.push({ name, request });
-      return { result: Promise.resolve(result), dispose: async () => {} };
-    },
+    ...(legacy
+      ? {
+        start: async (name, request) => {
+          started.push({ name, request });
+          return { result: Promise.resolve(result), dispose: async () => {} };
+        },
+      }
+      : {
+        startActivation: async (spec) => {
+          started.push(spec);
+          return { childId: 'fake-child', result: Promise.resolve(result), dispose: async () => {} };
+        },
+      }),
   };
   return { agents, subagents, created, started };
 }
 
-test('T17: agents.create 必须带 meta.agentPreset —— 缺了 child 就没有模型路由', async () => {
+test('T17: agents.create 必须带 meta.agentPreset；startActivation request 也必须带 preset', async () => {
   const rt = fakeRuntime();
   const ctx = makeCtx({ agents: rt.agents, subagents: rt.subagents });
   await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
@@ -452,6 +473,24 @@ test('T17: agents.create 必须带 meta.agentPreset —— 缺了 child 就没�
     DEFAULT_AGENT_PRESET,
     'meta.agentPreset 缺失 ⇒ child 的 agentPreset=null ⇒ modelSelection=null ⇒ 会话建得出但跑不动（30 个空壳的血债）',
   );
+  // 新宿主契约：provider / label / delivery / request 四件套
+  const spec = rt.started[0];
+  assert.equal(spec.provider, 'spawn');
+  assert.equal(spec.delivery, 'caller');
+  assert.equal(spec.request.parent.id, 'fake-parent');
+  assert.equal(spec.request.agentPreset, DEFAULT_AGENT_PRESET, 'request.agentPreset 是新契约的必填项');
+  assert.deepEqual(spec.request.agentOptions, rt.created[0].agentOptions);
+  assert.ok(spec.request.outputSchema, 'outputSchema 必须进 request');
+});
+
+test('T17b: 旧宿主只有 start() 时走兼容分支', async () => {
+  const rt = fakeRuntime({ legacy: true });
+  const ctx = makeCtx({ agents: rt.agents, subagents: rt.subagents });
+  const out = await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
+  assert.equal(out.ok, true);
+  assert.equal(rt.started[0].name, 'spawn');
+  assert.equal(rt.started[0].request.label, 'agint-evolution-driver mutation');
+  assert.equal(rt.started[0].request.parent.id, 'fake-parent');
 });
 
 test('T18: 结果读 structured，不是 output —— 缺 structured 必须报出来而不是静默', async () => {
@@ -484,6 +523,7 @@ test('T19a: agentOptions 必须带 provider/model —— 只给 agentPreset 仍�
   assert.ok(opts, 'agentOptions 必传（缺 ⇒ child modelSelection=null ⇒ 空壳）');
   assert.ok(opts.provider, 'provider 必传');
   assert.ok(opts.model, 'model 必传');
+  assert.ok(opts.reasoningEffort, 'reasoningEffort 必传（MiniMax 缺档位会 400）');
 });
 
 test('T19b: provider/model 优先取自宿主服务 agentDefaultModel（不硬编码模型名）', async () => {
@@ -491,12 +531,13 @@ test('T19b: provider/model 优先取自宿主服务 agentDefaultModel（不硬�
   const ctx = makeCtx({
     agents: rt.agents,
     subagents: rt.subagents,
-    agentDefaultModel: { currentSelection: () => ({ provider: 'host-provider', model: 'Host-Model' }) },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'host-provider', model: 'Host-Model', reasoningEffort: 'xhigh' }) },
   });
   await spawnLlm(ctx, { system: 's', user: 'u', schema: { type: 'object' } });
   const opts = rt.created[0].agentOptions;
   assert.equal(opts.provider, 'host-provider', '应用宿主默认 provider');
   assert.equal(opts.model, 'Host-Model', '应用宿主默认 model');
+  assert.equal(opts.reasoningEffort, 'xhigh', '应用宿主默认推理档');
 });
 
 test('T19c: 显式入参覆盖宿主默认；宿主服务缺失时兜底到常量（不静默空壳）', async () => {

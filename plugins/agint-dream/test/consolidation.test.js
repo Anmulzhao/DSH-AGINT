@@ -3,13 +3,13 @@
  * Run with: node --test packages/agint-dream/test/consolidation.test.js
  *
  * 设计见 AGINT/计划-agint-dream升级三方向.md P1 段。
- * 关键不变量：
- *   1. ctx 不可用 / 服务不可用 → mode='heuristic-degraded' + reason 解释
- *   2. gated 为空 → mode='heuristic-degraded' + operations=null
+ * 关键不变量（2026-10-25 无降级）：
+ *   1. ctx 不可用 / 服务不可用 → ok:false + mode='failed' + reason 解释
+ *   2. gated 为空 → ok:true + mode='not-attempted' + operations=null（内容闸门）
  *   3. subagent 拿到 structured output 后 → mode='llm' + operations 对齐 gated.length
- *   4. subagent stopReason !== 'completed' → mode='heuristic-degraded'
- *   5. structured.operations.length !== gated.length → mode='heuristic-degraded'
- *   6. 不抛异常 —— 所有错误必须 degrade（sweep 不能因为 consolidation 失败而崩溃）
+ *   4. subagent stopReason !== 'completed' → ok:false + mode='failed'
+ *   5. structured.operations.length !== gated.length → ok:false + mode='failed'
+ *   6. 不抛异常 —— 失败用 ok:false 表达，sweep 据此跳过提升（⛔ 不回退启发式）
  *   7. buildConsolidationPrompt 是纯函数，输出包含所有 gated 候选 + existing 内容
  *   8. CONSOLIDATION_OUTPUT_SCHEMA 满足 DSH assertObjectJsonSchema 的子集
  */
@@ -110,7 +110,7 @@ test('CONSOLIDATION_OUTPUT_SCHEMA: 是 object-root，且 operations 是 array of
 
 // ── 退化路径 ─────────────────────────────────────────────────────────────
 
-test('consolidate: gated 为空 → degraded, operations=null', async () => {
+test('consolidate: gated 为空 → not-attempted（内容闸门，不是失败）', async () => {
   const result = await consolidate({
     ctx: { get: () => ({}) },
     gated: [],
@@ -118,43 +118,43 @@ test('consolidate: gated 为空 → degraded, operations=null', async () => {
     day: '2026-09-05',
   });
   assert.equal(result.ok, true);
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.mode, 'not-attempted');
   assert.equal(result.operations, null);
   assert.match(result.reason, /no gated/);
 });
 
-test('consolidate: ctx 不可用 → degraded, operations=null, reason 解释', async () => {
+test('consolidate: ctx 不可用 → failed, operations=null, reason 解释', async () => {
   const result = await consolidate({
     ctx: null,
     gated: [{ key: 'c1', text: '某条候选', type: 'lesson', score: 0.8 }],
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /ctx unavailable/);
 });
 
-test('consolidate: ctx.get("agents") 返回 null → degraded, reason 解释', async () => {
-  const ctx = { get: (name) => name === 'subagents' ? { start: () => {} } : null };
+test('consolidate: ctx.get("agents") 返回 null → failed, reason 解释', async () => {
+  const ctx = { get: (name) => name === 'subagents' ? { startActivation: () => {} } : null };
   const result = await consolidate({
     ctx,
     gated: [{ key: 'c1', text: '某条候选', type: 'lesson', score: 0.8 }],
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /agents service unavailable/);
 });
 
-test('consolidate: spawn provider 未注册 → degraded, reason 解释', async () => {
+test('consolidate: spawn provider 未注册 → failed, reason 解释', async () => {
   const ctx = {
     get: (name) => {
       if (name === 'agents') return { create: () => {} };
-      if (name === 'subagents') return { start: () => {}, getProvider: () => null };
+      if (name === 'subagents') return { startActivation: () => {}, getProvider: () => null };
       return null;
     },
   };
@@ -164,15 +164,15 @@ test('consolidate: spawn provider 未注册 → degraded, reason 解释', async 
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /spawn provider not registered/);
 });
 
 // ── 成功路径（用 mock subagent 注入） ────────────────────────────────────
 
-function makeMockCtx({ runResult, throwOnCreate = false, throwOnStart = false }) {
+function makeMockCtx({ runResult, throwOnCreate = false, throwOnStart = false, legacy = false }) {
   const calls = { createArgs: null, startArgs: null, disposed: [] };
   const handle = {
     agent: { id: 'mock-parent' },
@@ -186,16 +186,27 @@ function makeMockCtx({ runResult, throwOnCreate = false, throwOnStart = false })
     },
   };
   const run = {
+    childId: 'mock-child',
     result: Promise.resolve(runResult),
-    dispose: async () => { calls.disposed.push('run'); },
+    dispose: async () => { calls.disposed.push('activation'); },
   };
   const subagents = {
     getProvider: (name) => name === 'spawn' ? { name: 'spawn' } : null,
-    start: async (name, req) => {
-      calls.startArgs = { name, ...req };
-      if (throwOnStart) throw new Error('mock start failed');
-      return run;
-    },
+    ...(legacy
+      ? {
+        start: async (name, req) => {
+          calls.startArgs = { provider: name, request: req, legacy: true };
+          if (throwOnStart) throw new Error('mock start failed');
+          return run;
+        },
+      }
+      : {
+        startActivation: async (spec) => {
+          calls.startArgs = spec;
+          if (throwOnStart) throw new Error('mock start failed');
+          return run;
+        },
+      }),
   };
   return {
     ctx: { get: (n) => n === 'agents' ? agents : n === 'subagents' ? subagents : null },
@@ -248,15 +259,17 @@ test('consolidate: subagent 返回 llm structured → mode=llm, operations 对�
     assert.equal(k2.createArgs.agentOptions.provider, 'explicit-provider');
     assert.equal(k2.createArgs.agentOptions.model, 'explicit-model');
   }
-  assert.equal(calls.startArgs.name, 'spawn');
-  assert.equal(calls.startArgs.parent.id, 'mock-parent');
-  assert.ok(calls.startArgs.outputSchema, 'outputSchema must be passed');
-  // run + handle disposed in finally
-  assert.ok(calls.disposed.includes('run'));
+  assert.equal(calls.startArgs.provider, 'spawn');
+  assert.equal(calls.startArgs.delivery, 'caller');
+  assert.equal(calls.startArgs.request.parent.id, 'mock-parent');
+  assert.equal(calls.startArgs.request.agentPreset, DEFAULT_AGENT_PRESET);
+  assert.ok(calls.startArgs.request.outputSchema, 'outputSchema must be passed in request');
+  // activation + handle disposed in finally
+  assert.ok(calls.disposed.includes('activation'));
   assert.ok(calls.disposed.includes('handle'));
 });
 
-test('consolidate: stopReason !== completed → degraded, operations=null', async () => {
+test('consolidate: stopReason !== completed → failed, operations=null', async () => {
   const { ctx } = makeMockCtx({
     runResult: { output: [], structured: { operations: [] }, stopReason: 'error', diagnostic: 'LLM timeout' },
   });
@@ -266,12 +279,13 @@ test('consolidate: stopReason !== completed → degraded, operations=null', asyn
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /stopReason=error/);
 });
 
-test('consolidate: structured.operations 长度不对齐 → degraded', async () => {
+test('consolidate: structured.operations 长度不对齐 → failed', async () => {
   const { ctx } = makeMockCtx({
     runResult: {
       output: [],
@@ -288,12 +302,13 @@ test('consolidate: structured.operations 长度不对齐 → degraded', async ()
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /operations length mismatch/);
 });
 
-test('consolidate: structured 缺失 → degraded', async () => {
+test('consolidate: structured 缺失 → failed', async () => {
   const { ctx } = makeMockCtx({
     runResult: { output: [], stopReason: 'completed' }, // 没有 structured
   });
@@ -303,14 +318,15 @@ test('consolidate: structured 缺失 → degraded', async () => {
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.match(result.reason, /structured output invalid/);
 });
 
 // ── 子代理空壳根因回归（2026-09-27，K114）──────────────────────────────────
 // 病灶：agents.create() 未传 meta.agentPreset ⇒ child 会话 agentPreset=null、
 // modelSelection=null、turn 空、surfaceTokens=0 —— 不报错，但一步都跑不动，
-// 静默落回 heuristic-degraded。18 个 dream-consolidation-* 会话全是这么死的。
+// 静默落回 heuristic-degraded（该回退已于 2026-10-25 删除）。18 个 dream-consolidation-* 会话全是这么死的。
 // 这两条断言是唯一能挡住它复发的防线：mock 层不会替我们发现"会话建了但没跑"。
 test('consolidate: agents.create 必带 meta.agentPreset（缺省 = DEFAULT_AGENT_PRESET）', async () => {
   const { ctx, calls } = makeMockCtx({
@@ -349,7 +365,7 @@ test('consolidate: agentPreset 显式传参可覆盖默认（换 profile 不用�
   assert.equal(calls.createArgs.meta.agentPreset, 'agint-investor');
 });
 
-test('consolidate: agents.create 抛错 → degraded, 不向外抛', async () => {
+test('consolidate: agents.create 抛错 → failed, 不向外抛', async () => {
   const { ctx } = makeMockCtx({ throwOnCreate: true });
   const result = await consolidate({
     ctx,
@@ -357,11 +373,12 @@ test('consolidate: agents.create 抛错 → degraded, 不向外抛', async () =>
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.match(result.reason, /mock create failed/);
 });
 
-test('consolidate: subagents.start 抛错 → degraded, 不向外抛', async () => {
+test('consolidate: subagents.start 抛错 → failed, 不向外抛', async () => {
   const { ctx } = makeMockCtx({ throwOnStart: true });
   const result = await consolidate({
     ctx,
@@ -369,7 +386,8 @@ test('consolidate: subagents.start 抛错 → degraded, 不向外抛', async () 
     existing: [],
     day: '2026-09-05',
   });
-  assert.equal(result.mode, 'heuristic-degraded');
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.match(result.reason, /mock start failed/);
 });
 
@@ -393,7 +411,7 @@ test('consolidate: provider/model 参数被透传到 create', async () => {
 // 为什么必须有它：DEFAULT_MODEL=MiniMax-M3.1-Flash-Preview 强制 adaptive thinking，
 // 不传 reasoningEffort → 子代理 thinking 关闭 → provider 返 400
 // （"requires adaptive thinking; thinking.type=\"disabled\" ... is not allowed (2013)"）
-// → consolidation 恒 heuristic-degraded → promoted 恒 0 →
+// → consolidation 恒失败 → promoted 恒 0 →
 //   agint-ov-strategy 的 dream 投影被 `promoted <= 0` 门槛永远挡死。
 // 旧测试只断言 provider/model 透传，两者修复前后都绿 ⇒ 抓不到这个 bug。
 test('consolidate: reasoningEffort 必须透传（不传则模型拒收）', async () => {
@@ -459,8 +477,9 @@ test('consolidate: timeout 时 dispose 仍跑（finally）', async () => {
     timeoutMs: 50,
   });
   // 50ms timeout → result never resolved → 走 timeout 路径
-  // 这里我们只验证：consolidate 不挂死、不抛错、最终返回 degraded
-  assert.equal(result.mode, 'heuristic-degraded');
+  // 这里我们只验证：consolidate 不挂死、不抛错、最终返回 failed
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'failed');
   assert.equal(result.operations, null);
   assert.match(result.reason, /consolidation timeout \(50ms\)/, '超时原因必须可读（进梦境日记）');
   assert.equal(aborted, true, 'handle.dispose must run in finally');

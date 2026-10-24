@@ -162,11 +162,11 @@ function apply(ctx) {
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => {
-        const lines = [`autocreate_verify_llm: ${v.ok ? '✅ 通路可用' : '⛔ 全部降级'}（${v.provider} / ${v.model}）`];
+        const lines = [`autocreate_verify_llm: ${v.ok ? '✅ 通路可用' : '⛔ 全部失败'}（${v.provider} / ${v.model}）`];
         for (const c of v.cases ?? []) {
           const verdict = c.verdict
             ? `standardizable=${c.verdict.standardizable} conf=${c.verdict.confidence}`
-            : `degraded: ${c.reason}`;
+            : `failed: ${c.reason}`;
           lines.push(`  · ${c.id}（期望 ${c.expect}）→ ${verdict}  [${c.durationMs}ms]`);
           // 2026-10-08：diagnostic 一直在返回体里但没渲染，导致一次 {{model}} assembly
           // 失败只显示成 stopReason=error，排障绕了远路。降级必须能说清为什么（本模块原则②）。

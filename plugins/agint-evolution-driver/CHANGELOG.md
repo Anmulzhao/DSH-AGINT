@@ -1,5 +1,24 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.4.0 — 2026-10-25 — LLM 构造无降级 + 接 startActivation
+
+**背景**：宿主只有 `subagents.startActivation`，旧代码检查 `subagents.start` ⇒
+LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
+
+**变更**
+1. `spawnLlm` 改调 `startActivation({ provider, label, request, signal, delivery:'caller' })`；
+   旧宿主保留 `start` 兼容分支。`request` 带 `parent` / `prompt` / `agentPreset` /
+   `agentOptions` / `outputSchema`；`agentOptions` 补 `reasoningEffort`。
+2. **无降级**：`construct` 遇 LLM 通路失败返回 `{ llmFailure:true, reason }`；
+   `runOnce` 立即发 `evolution.cycle.summary`（exitReason=`llm-unavailable`）并抛错，
+   cron 的 `lastError` 可见。⛔ 不再计入 `degraded` 后继续下一条。
+3. `not applicable` / 幻觉 `oldText` / 实体门命中仍是内容级拒绝，不触发整轮中止。
+4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
+   服务/方法/provider 三种病因分开报。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+
+**测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
+
 ## v0.3.1 — 2026-10-09（护栏 3 判据放宽：按被测文件的 import 图判依赖，而非仓库级一刀切）
 
 依据：进化提案 `0738af45-0233-4391-924a-b2fd1b4002d8`（2026-10-04 提出，本日核销）。

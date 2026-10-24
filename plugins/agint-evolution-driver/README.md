@@ -48,6 +48,7 @@ commit 会真改文件，而**改部署位没有意义**——`install.sh` 下�
 ## 三条红线
 
 1. **不自己编变异内容**：一律来自 LLM 结构化输出，且 `oldText` 必须是原文的真实子串；找不到就丢弃本次。
+2. **LLM 不可用即中止本轮**（2026-10-25 无降级）：`construct` 返回 `llmFailure` ⇒ `runOnce` 发 `evolution.cycle.summary` 并抛错，cron 的 `lastError` 可见；不会再以 `degraded` 计数悄悄跳过。
 2. **全软依赖**：`inject=[]`，bundle apply 顺序不保证 ⇒ runtime 一律**调用时** `ctx.get`，不在 `apply()` 里缓存。
 3. **观测失败不影响主流程**：事件总线挂了照样 propose/ingest。
 

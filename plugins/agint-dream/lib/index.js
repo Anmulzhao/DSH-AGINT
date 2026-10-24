@@ -322,7 +322,7 @@ function apply(ctx, config) {
 
     /**
      * P1: 跑一次 minimal LLM consolidation 验证。
-     * 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+     * 在 host plane 真调 ctx.agents.create() + ctx.subagents.startActivation(...)，
      * 不依赖 sweep 主体，不写 agint.memory（仅返回 schema-validated structured result）。
      * 验证 host 端 DSH subagent runtime 通路是否真可用 —— 设计文档第一步。
      *

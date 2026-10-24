@@ -988,7 +988,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
  *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -1056,14 +1056,14 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (!validationOk) {
     lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
   }
-  // P1: consolidation mode (llm / not-attempted / heuristic-degraded)
+  // P1: consolidation mode (llm / not-attempted / failed)
   if (consolidationMode === 'llm') {
     lines.push(`- **P1 LLM consolidation**: ✅ LLM 决策 add/merge/supersede${consolidationReason ? `（${consolidationReason}）` : ''}`);
   } else if (consolidationMode === 'not-attempted') {
     // 2026-09-18 C 项：区别「没触发」（门槛没放行 / ctx 缺失）和「触发了但 LLM 失败」
     lines.push(`- P1 LLM consolidation: ➖ 未触发${consolidationReason ? `（${consolidationReason}）` : ''}`);
   } else {
-    lines.push(`- P1 LLM consolidation: ⚠️ heuristic-degraded${consolidationReason ? `（${consolidationReason}）` : ''}`);
+    lines.push(`- P1 LLM consolidation: ❌ failed（本轮不提升任何候选，无启发式回退）${consolidationReason ? `：${consolidationReason}` : ''}`);
   }
   lines.push(`- 提升写入记忆：${promoted.length} 条`);
   if (recallWrite) {
@@ -1379,9 +1379,10 @@ export async function runSweep({
 
   // P1: LLM consolidation —— 决定 add/merge/supersede。
   // 优先级：显式传入 operations > 显式传入 consolidation runner > sweep 内部默认调 consolidate(ctx)
-  // 失败/超时/degraded → operations 退化为 null，validation 走 added 路径，diary 标 consolidationMode
-  let consolidationMode = 'heuristic-degraded';
-  let consolidationReason = null;
+  // 2026-10-25 无降级：LLM 失败不再退回「见一条推一条」。失败即跳过本轮提升并留痕。
+  let consolidationMode = Array.isArray(operations) ? 'llm' : 'not-attempted';
+  let consolidationReason = Array.isArray(operations) ? 'explicit operations' : null;
+  let consolidationFailed = false;
   let resolvedOps = operations;
   if (resolvedOps == null && unpromotedGated.length > 0) {
     const runner = consolidation ?? (ctx
@@ -1401,42 +1402,51 @@ export async function runSweep({
     if (runner) {
       try {
         const result = await runner(unpromotedGated, existing);
-        consolidationMode = result?.mode ?? 'heuristic-degraded';
+        consolidationMode = result?.mode ?? 'failed';
         consolidationReason = result?.reason ?? null;
         resolvedOps = result?.operations ?? null;
-        if (consolidationMode === 'llm' && !Array.isArray(resolvedOps)) {
-          // LLM declared success but ops missing — fallback to degraded
-          consolidationMode = 'heuristic-degraded';
-          consolidationReason = 'LLM result missing operations array';
+        if (result?.ok === false || consolidationMode !== 'llm' || !Array.isArray(resolvedOps)) {
+          consolidationMode = 'failed';
+          consolidationReason = result?.reason ?? 'LLM result missing operations array';
           resolvedOps = null;
+          consolidationFailed = true;
+          errors.push(`consolidation failed: ${consolidationReason}`);
         }
       } catch (err) {
-        consolidationMode = 'heuristic-degraded';
+        consolidationMode = 'failed';
         consolidationReason = `runner threw: ${err?.message ?? String(err)}`;
         resolvedOps = null;
+        consolidationFailed = true;
         errors.push(`consolidation runner failed: ${consolidationReason}`);
       }
     } else {
-      // 2026-09-18 C 项：诚实标注「没触发」——ctx 缺失时 runner 为 null，
-      // 这不是 LLM 失败，不该标 heuristic-degraded 误导人。
-      consolidationMode = 'not-attempted';
+      // 有候选但拿不到 LLM 通路 = 失败；不再用「not-attempted」掩盖。
+      consolidationMode = 'failed';
       consolidationReason = 'no consolidation runner (ctx unavailable)';
+      consolidationFailed = true;
+      errors.push(`consolidation failed: ${consolidationReason}`);
     }
   } else if (resolvedOps == null) {
-    // 2026-09-18 C 项：0 过门候选 → LLM 根本没被调用。此前这里显示
-    // 'heuristic-degraded'，看起来像 LLM 失败，实际是没触发 —— 09-08 至
-    // 09-18 每晚日记都因此误读。'not-attempted' = 「门槛没放行任何候选」。
+    // 0 过门候选 → LLM 根本没被调用。'not-attempted' = 「门槛没放行任何候选」。
     consolidationMode = 'not-attempted';
     consolidationReason = '0 gated candidates — LLM 未触发';
   }
 
-  // P0: 把 unpromotedGated 送进 validation gate；resolvedOps=null 时走 added 退化路径
-  const validationFinal = validateAndApply({
-    gated: unpromotedGated,
-    existing,
-    operations: resolvedOps,
-    maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
-  });
+  // P0: LLM consolidation 失败 ⇒ 本轮不提升任何候选（无启发式回退）。
+  // 候选留在原地，下一次 sweep 会重新尝试；错误已进 errors / diary。
+  const validationFinal = consolidationFailed
+    ? {
+      ok: false,
+      reason: `LLM consolidation failed: ${consolidationReason}`,
+      stats: {},
+      plan: [],
+    }
+    : validateAndApply({
+      gated: unpromotedGated,
+      existing,
+      operations: resolvedOps,
+      maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+    });
 
   // P0 reject 事件（如有 publishReject 钩子）
   if (!validationFinal.ok && typeof publishReject === 'function') {
@@ -1577,7 +1587,7 @@ export async function runSweep({
     validationReason: validationFinal.reason,
     recallWrite: recallWriteResult,
     pruneResult,
-    // P1 LLM consolidation 模式（llm / heuristic-degraded）
+    // P1 LLM consolidation 模式（llm / not-attempted / failed）
     consolidationMode,
     consolidationReason,
     // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段 qualityEvaluator 评估摘要

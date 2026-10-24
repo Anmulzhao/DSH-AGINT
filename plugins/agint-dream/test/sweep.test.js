@@ -667,16 +667,16 @@ test('renderDiary: consolidationMode=llm 显示 ✅', async () => {
   assert.match(md, /\*\*P1 LLM consolidation\*\*: ✅ LLM 决策 add\/merge\/supersede（merged 2 entries）/);
 });
 
-test('renderDiary: consolidationMode=heuristic-degraded 显示 ⚠️', async () => {
+test('renderDiary: consolidationMode=failed 显示 ❌ 且写明不提升', async () => {
   const { renderDiary } = await import('../lib/sweep.js');
   const md = renderDiary({
     day: '2026-09-05',
     signals: [], memWrites: [], candidates: [], gated: [], promoted: [],
     errors: [], durationMs: 100,
-    consolidationMode: 'heuristic-degraded',
+    consolidationMode: 'failed',
     consolidationReason: 'agents service unavailable',
   });
-  assert.match(md, /P1 LLM consolidation: ⚠️ heuristic-degraded（agents service unavailable）/);
+  assert.match(md, /P1 LLM consolidation: ❌ failed（本轮不提升任何候选，无启发式回退）：agents service unavailable/);
 });
 
 test('renderDiary: consolidationMode=not-attempted 显示 ➖ 未触发（区别于 LLM 失败）', async () => {
@@ -689,7 +689,7 @@ test('renderDiary: consolidationMode=not-attempted 显示 ➖ 未触发（区别
     consolidationReason: '0 gated candidates — LLM 未触发',
   });
   assert.match(md, /P1 LLM consolidation: ➖ 未触发（0 gated candidates/);
-  assert.doesNotMatch(md, /heuristic-degraded/);
+  assert.doesNotMatch(md, /❌ failed/);
 });
 
 // ── 2026-10-19：提升边界闸（promotionBlockReason）─────────────────────────────
@@ -777,6 +777,15 @@ test('runSweep: 提升边界闸 —— 残骸不进记忆，因果句式的照�
       sessionsRoot: sessions, diaryRoot: diary, recallPath: join(base, 'recall.jsonl'),
       memory: memoryStub, nowMs: NOW, apply: true, qualityEval: false, evolution: false,
       recover: false, zeroHitAlert: false, minScore: 0.1,
+      // 无降级后 ctx 不可用会让 consolidation 失败、整轮零提升；本用例只测边界闸，
+      // 故显式注入 LLM 成功结果（等价于 host plane 调通）。
+      consolidation: async (gated) => ({
+        ok: true,
+        mode: 'llm',
+        operations: gated.map((c) => ({
+          candidateKey: c.key ?? c.candidateKey, action: 'added', priorEntries: [],
+        })),
+      }),
     });
     await rm(base, { recursive: true, force: true });
     return { result, calls };

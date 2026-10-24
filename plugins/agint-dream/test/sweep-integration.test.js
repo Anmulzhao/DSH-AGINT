@@ -75,7 +75,7 @@ function fakeMemory(initial = []) {
   };
 }
 
-test('sweep: P0 validation gate 走 added 退化路径（无 operations）', async () => {
+test('sweep: LLM operations 齐备时 validation gate 正常放行', async () => {
   const fx = await makeFixture();
   try {
     const mem = fakeMemory();
@@ -92,8 +92,13 @@ test('sweep: P0 validation gate 走 added 退化路径（无 operations）', asy
       minRecall: 1,
       minUniqueSessions: 1,
       publishReject: async (info) => { rejectEvents.push(info); },
+      // 无降级后没有 ctx 就不再走启发式；本用例显式注入 LLM 成功结果。
+      consolidation: async (gated) => ({
+        ok: true,
+        mode: 'llm',
+        operations: gated.map((c) => ({ candidateKey: c.key, action: 'added', priorEntries: [] })),
+      }),
     });
-    // P0 validation gate 走 added 退化路径
     assert.equal(result.counts.validationOk, true);
     assert.equal(rejectEvents.length, 0);
     // P2 recall store 写入

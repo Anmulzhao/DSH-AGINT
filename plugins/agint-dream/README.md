@@ -6,7 +6,7 @@ AGINT 梦境服务：夜间（cron `0 3 * * *`）离线整合会话历史，提�
 
 - **`lib/index.js`** — Host 服务 `agint.dream`。单实例，独占 `agint_dream` storage domain。
 - **`lib/sweep.js`** — 核心：扫 sessions → 信号采集 → 候选提取 → 评分 → 提升。
-- **`lib/consolidation.js`** — P1 LLM consolidation（可选走启发式降级）。
+- **`lib/consolidation.js`** — P1 LLM consolidation（**无降级**：失败即跳过本轮提升，不退回启发式）。
 - **`lib/recall-store.js`** — P2 短期 recall store，跨日累积 + 剪枝。
 - **`lib/validation-gate.js`** — 候选过门控前的 schema 校验。
 - **`lib/quality-bridge.js`** — v0.2 REM 阶段调 qualityEvaluator。
@@ -41,7 +41,7 @@ dream_run_now --dry-run                        # 看 sessions > 0
 | 现象 | 排查 |
 |---|---|
 | `dream_diary` 全是 `zstd -dc ... ENOENT` | 跑 `bash install/agint-zstd-bootstrap.sh` |
-| `consolidation=heuristic-degraded` | P1 LLM consolidation 失败，回退启发式；不阻断 sweep，但质量降级 |
+| `consolidation=failed` | P1 LLM consolidation 失败：本轮不提升任何候选（无启发式回退），错误进 diary/errors |
 | `sessions=0` 且 `userMsgs=0` | 扫描窗口（默认 2d）内没新会话；非 bug |
 | `candidates=0` 但 `userMsgs>0` | 候选没跨过 `minScore=0.75 / minRecall=3 / minUniqueSessions=2` 门控；属正常 |
 | `toolErrorFilter 拦=` 数量骤增 | 正常：v0.4.0 起工具 stderr 原文不再直接进候选池，v0.5.0 起判据收紧为「因果句式」。日记「工具错误因果过滤」行看分档（`noise-shape` / `no-causal-clause`） |
