@@ -728,8 +728,9 @@ export const defaultJobs = [
     // ⛔ 不可取 04:00 —— 那是 metrics-collect（daily 04:00）的固定位；
     //    提案原稿写的 `0 4 * * 3` 正是踩了这个坑（新引入一处同分钟撞车）。
     //
-    // ⛔ 这个 job 不产生代码改动：driver 第一阶段的 commit 是默认关的
-    // （AGINT_EVOLUTION_DRIVER_COMMIT=on 才开）。它只做「提案 → 变异候选 → 入种群」。
+    // ⚠️ 本 job 会真改仓库文件：driver 的 commit **默认开**（`AGINT_EVOLUTION_DRIVER_COMMIT=off` 才关；
+    // 仓库根解析不到时本轮不落盘）。写入一律带 `.agint-preimage/` 备份，可回滚。
+    // 它只做「提案 → 变异候选 → 入种群」，不做插件部署上线（那是 agint-mount 的腿）。
     // 服务未挂载时 soft-skip（与其它 job 同策略）—— driver 是软依赖插件，
     // 没挂它不代表 cron 出错。
     id: 'evolution-cycle',

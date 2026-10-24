@@ -19,6 +19,21 @@ LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
 
 **测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
 
+## v0.4.0+doc1 — 2026-10-25 — 文档订正：commit 开关口径以代码为准
+
+**背景**：`isCommitEnabled`（`lib/index.js`）判的是「值 ≠ `off`」⇒ **代码里默认开**。
+README 开关表、`jobs.js:732` 注释、本文件 v0.2.10 行三处都写「默认关」，三方口径打架。
+
+**订正**（老板 2026-10-25 拍板：**以代码为准**）
+1. README 开关表改为「默认开，显式 `off` 才关」。
+2. README「第一阶段不 commit」一节改写为「两道闸」：总闸默认开，
+   **真正挡住写入的是第二道 `resolveRepoRoot` 解析到 `null`**。
+3. `plugins/agint-cron/lib/jobs.js` 的 evolution-cycle 注释同步改口径。
+4. ⛔ **不改写历史条目**：本文件 v0.2.10 行与 `proposals/agint-evolution-driver.md`
+   保留原文（那是当时的决定），订正只以新增条目形式追加。
+
+**未改代码**：行为零变化，本次纯文档。
+
 ## v0.3.1 — 2026-10-09（护栏 3 判据放宽：按被测文件的 import 图判依赖，而非仓库级一刀切）
 
 依据：进化提案 `0738af45-0233-4391-924a-b2fd1b4002d8`（2026-10-04 提出，本日核销）。

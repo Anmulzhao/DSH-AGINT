@@ -35,15 +35,20 @@ agint.evolve 的 proposed 提案（真实、人工审核过）
 | 变量 | 默认 | 含义 |
 |---|---|---|
 | `AGINT_EVOLUTION_DRIVER=off` | 开 | 总闸。出厂即开 |
-| `AGINT_EVOLUTION_DRIVER_COMMIT=on` | **关** | 是否允许 commit（真改文件）。**默认关，理由见下** |
+| `AGINT_EVOLUTION_DRIVER_COMMIT=off` | **开** | 总闸。`isCommitEnabled` 判「值 ≠ `off`」⇒ **默认开**（2026-10-25 老板拍板：以代码为准）。旧文档写「默认关」是错的 |
 
-## ⛔ 第一阶段不 commit
+## ⛔ commit 的两道闸（2026-10-25 订正：默认开，不是默认关）
 
-commit 会真改文件，而**改部署位没有意义**——`install.sh` 下次镜像会把改动覆盖掉。
-要 commit 就必须落到**仓库正本**，而「宿主进程怎么可靠地拿到仓库路径」目前没有干净答案
-（hardcode 路径不可移植；`process.cwd()` 取决于 dsh 从哪启动）。
+**第一道：总闸默认开。** `isCommitEnabled(env)` 判的是「值 ≠ `off`」。
+⇒ 不给这个变量就等于可写。旧文档写「默认关」是错的。
 
-在它被解决前，commit 保持显式开启。这不是保守拖延，是**不确定就别动手**。
+**第二道：仓库根解析（`resolveRepoRoot`）才是真正挡住写入的那道。**
+优先级 = env `AGINT_EVOLUTION_DRIVER_REPO_ROOT` > patch config `repoRoot` > `null`。
+解析到 `null` ⇒ 本轮**不落盘**（候选与事件照常留），工作区不受影响。
+
+为什么要落**仓库正本**而不是落部署位：`install.sh` 下次镜像会把部署位的改动直接覆盖掉，
+写在部署位是白写。宿主进程拿仓库路径没有干净答案（hardcode 不可移植、
+`process.cwd()` 取决于 dsh 从哪启动），所以交给配置显式给。
 
 ## 三条红线
 
