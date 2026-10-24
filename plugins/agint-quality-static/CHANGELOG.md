@@ -1,5 +1,35 @@
 # Changelog — agint-quality-static
 
+## 0.8.2 (2026-10-25) — l0-isolation 读错 manifest 层级（修假绿）
+
+### Fixed（B3 真跑才暴露，两处）
+
+1. **三条子检查读错层级**：读 `manifest.cordis.provides` 与
+   `manifest.storage.domains`（顶层），而 AGINT 全仓插件用
+   `spec.cordis` / `spec.storage`（PLUGIN-SPEC 标准）。
+
+   实测后果：**连 Sprint 11 自己的合规 fixture `fixtures/mount/echo-tool`
+   走真门禁都是 1 blocker + 1 warn** ⇒ 历史 6/6 通过是**假绿**
+   （那些测试直接构造 manifest 对象入参，没走文件）。
+
+   修法：新增 `readManifestSection(manifest, section)`，优先 `spec.<段>`、
+   回退顶层。产物因此可保持单一事实源，不为过门禁而在两处各写一份。
+
+2. 同上读取也用于 `looksLikeSynthArtifact`，一并改。
+
+### 未修（本轮发现，报老板）
+
+- ⛔ `agint-mount` 的 `DEFAULT_L0_HOOK` 恒返回全 true（源码注释：
+  「TODO 等 codex-B 注入」）⇒ mount 侧若没人注入 `agint.l0IsolationCheck`，
+  L0 检查形同虚设。本次不在本插件内改。
+
+### Tests
+
+- 本插件全量 6 个测试文件 **69 pass / 0 fail**（未破坏既有）
+- 跨插件回环（mutator 侧 `test/synth-l0-loop.test.mjs`）：合规产物 0 blocker，
+  三条子检查各自的负控都能真拦（域名撞 `agint_meta` / 服务键撞
+  `agint.quality.*` / stubs 里 require 非白名单 `agint-*`）
+
 ## 0.8.1 (2026-09-29) — 白名单假地址清除 + JSDoc 注释炸弹修复
 
 ### Fixed

@@ -4,6 +4,19 @@
 
 ---
 
+## 0.6.10 (2026-10-25) — B2 收尾：合成器补进伞键
+
+`agint.mutator.synthPackage` / `agint.mutator.synthForProposal` 此前只 provide 了
+全名子键，**没进伞键** `agint.mutator`。cordis 的 service store 是扁平的，
+⇒ 任何按命名空间取的人 `ctx.get('agint.mutator').synthForProposal` 恒 undefined
+**且不报错**（K83 同款静默断链）。
+
+- 两个方法补进伞键；`synthPackage` 提为单一实现，全名键与伞键共用一份。
+- 纯加法，全名子键一个不动。
+
+实测：mutator 全量 10 个测试文件 **151 pass / 0 fail**。
+
+
 ## 0.6.9 (2026-10-25) — TOOL_SYNTHESIS 合成器：骨架 + stubs（闭环 B 段第一块）
 
 **背景**：TOOL_SYNTHESIS 是「契约有、生产者无」的第三条断点。

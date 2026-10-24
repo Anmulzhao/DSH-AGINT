@@ -200,6 +200,14 @@ async function _proposeToolSynthesis(input, evolution) {
   return _extractPayload(s, input);
 }
 
+/**
+ * B2：TOOL_SYNTHESIS 合成入口（单一实现，全名键与伞键共用）。
+ * 直接吃 { payload }，产出完整插件包文件清单。不落盘。
+ */
+function synthPackage(input) {
+  return synthPluginPackage({ payload: input && input.payload });
+}
+
 function placeholder(fnName, subTask, info) {
   return () => {
     throw new Error(`not implemented: ${fnName} (${subTask}); ${info}`);
@@ -1084,7 +1092,7 @@ function apply(ctx) {
   // B2：TOOL_SYNTHESIS ⇒ 合成器接线点。两个入口职责分开：
   //   synthPackage    直接吃 payload（供 driver / 薄壳在拿到设计时调用）
   //   synthForProposal 吃一条 TOOL_SYNTHESIS proposal（供下游按 proposal 合成）
-  ctx.provide('agint.mutator.synthPackage', (input) => synthPluginPackage({ payload: input && input.payload }));
+  ctx.provide('agint.mutator.synthPackage', synthPackage);
   ctx.provide('agint.mutator.synthForProposal', synthForProposal);
   ctx.provide('agint.mutator.dreamRandom', dreamRandom);
   ctx.provide('agint.mutator.evolutionReversed', evolutionReversed);
@@ -1159,6 +1167,11 @@ function apply(ctx) {
     attributionDriven,
     dreamRandom,
     evolutionReversed,
+    // B2：合成器进伞键。cordis 的 service store 是扁平的，只 provide 全名子键
+    // 会让 ctx.get('agint.mutator').synthForProposal 恒 undefined 且不报错
+    // （K83 同款静默断链）。纯加法，全名子键一个不动。
+    synthPackage,
+    synthForProposal,
     stats,
     logMetric,
     checkLimit,

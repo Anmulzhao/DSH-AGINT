@@ -19,6 +19,41 @@ LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
 
 **测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
 
+## v0.4.1 — 2026-10-25 — A 段：合成产物 ⇒ mount 部署桥（**通电不上膛**）
+
+**背景**：`agint.mount.request` 此前**全仓 0 个生产调用方**
+（`check-wiring` 查 A：只有它自己 provide 行的 MENTION）。
+⇒ 部署腿是建成但没接过线的：三条子检查、4 态状态机、回滚能力全在，没人调它。
+
+**新增**：`lib/deploy-bridge.js` — `requestSynthMount({ ctx, proposal, io, stagingRoot })`
+1. 调 `agint.mutator.synthForProposal` 合成产物（只吃 TOOL_SYNTHESIS）
+2. 落盘到 staging（为「人批准后的 ACTIVATE」备好产物）
+3. 递交 `agint.mount.request`，**verdict 硬编码 PENDING_REVIEW**
+
+**⛔ 为什么恒 PENDING_REVIEW（改这行前先读）**
+mount 的 4 态状态机里有 **RESTART_REQUESTED**：
+PREPARED → INSTALLED → RESTART_REQUESTED → ACTIVATED。
+自动走到 ACTIVATE = 系统自己往宿主装插件并可能触发重启请求，
+直接撞项目铁律「常驻 dsh 只能老板双击启动」「永不触发 restart-request.json」。
+
+`mountRequest` 入口第一行 `isPendingReview(verdict)` 命中即**只写一条
+PENDING_REVIEW ticket 就 return**，绝不进三段式。
+⇒ 腿通电（ticket 建、mount.requested 事件发、门禁看得见），
+**没有人批准就永远不上膛**。
+
+**暴露**：`agint.evolutionDriver.requestSynthMount`。
+**测试**：`test/deploy-bridge.test.mjs` 9/9。
+变异自证：把 PENDING_REVIEW 改成 AUTO_DEPLOY ⇒ 2 条立刻变红，还原 9/9。
+
+**未做（A 的最后一公里）**
+1. **cron 触发者未加**：本桥有 service 但无自动调用者。
+2. **候选源缺失**：mutator 没有「列出 TOOL_SYNTHESIS 候选」的接口。
+3. ⛔ **第四层断点（本轮查证）**：`attributionDriven` 靠 `rootCause=TOOL_GAP`
+   才路由到 TOOL_SYNTHESIS，而 `agint_diagnosis` 生产存储 **0 行**
+   ⇒ TOOL_GAP 从未被判定 ⇒ TOOL_SYNTHESIS 候选历史 0 条。
+   **不解决这一层，A 通电也是空转**（扫不到候选）。
+
+
 ## v0.4.0+doc1 — 2026-10-25 — 文档订正：commit 开关口径以代码为准
 
 **背景**：`isCommitEnabled`（`lib/index.js`）判的是「值 ≠ `off`」⇒ **代码里默认开**。
