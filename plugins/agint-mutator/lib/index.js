@@ -32,6 +32,7 @@ import * as nodeFs from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
 import { withMutex } from './rollback-mutex.js';
 import { runRollbackTransaction } from './rollback.js';
+import { synthPluginPackage, synthForProposal } from './synth.js';
 import {
   MutationProposalSchema, MutationPayloadSchema, MutationKindSchema, MUTATION_KINDS,
   AtomicScopeSchema, ATOMIC_SCOPES, MutationSourceSchema, MUTATION_SOURCES,
@@ -1080,6 +1081,11 @@ function apply(ctx) {
   ctx.provide('agint.mutator.recordExternalCommit', recordExternalCommit);
   ctx.provide('agint.mutator.rollback', rollback);
   ctx.provide('agint.mutator.attributionDriven', attributionDriven);
+  // B2：TOOL_SYNTHESIS ⇒ 合成器接线点。两个入口职责分开：
+  //   synthPackage    直接吃 payload（供 driver / 薄壳在拿到设计时调用）
+  //   synthForProposal 吃一条 TOOL_SYNTHESIS proposal（供下游按 proposal 合成）
+  ctx.provide('agint.mutator.synthPackage', (input) => synthPluginPackage({ payload: input && input.payload }));
+  ctx.provide('agint.mutator.synthForProposal', synthForProposal);
   ctx.provide('agint.mutator.dreamRandom', dreamRandom);
   ctx.provide('agint.mutator.evolutionReversed', evolutionReversed);
   ctx.provide('agint.mutator.stats', stats);

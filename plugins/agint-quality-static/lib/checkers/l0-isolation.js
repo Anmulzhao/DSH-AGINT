@@ -114,6 +114,24 @@ export async function checkL0Isolation({ pluginDir, profile }) {
  *
  * @returns {Array<Finding>}
  */
+/**
+ * 读 manifest 的 cordis / storage 段，兼容两种层级：
+ *   ① AGINT 全仓插件形态  manifest.spec.<段>（PLUGIN-SPEC 标准，唯一事实源）
+ *   ② 早期 / 裸形态       manifest.<段>
+ *
+ * 为什么必须支持 ①：Sprint 11 的 l0-isolation 只认 ②，于是对任何 AGINT 形态的
+ * manifest 都读不到 ⇒ domainIsolation 恒报 blocker、signatureCompatibility 恒 warn。
+ *
+ * 实测（2026-10-25）：连 Sprint 11 自己的合规 fixture fixtures/mount/echo-tool
+ * 走真门禁也是 **1 blocker + 1 warn** ⇒ 历史 6/6 通过是**假绿**
+ * （测试直接构造 manifest 对象入参，没走文件）。
+ *
+ * 优先 ① 的理由：产物 manifest 保持单一事实源，不为过门禁而在两处各写一份。
+ */
+function readManifestSection(manifest, section) {
+  return manifest?.spec?.[section] ?? manifest?.[section];
+}
+
 export function checkSignatureCompatibility({ manifest, profile, manifestPath }) {
   const findings = [];
   if (!manifest) {
@@ -125,7 +143,7 @@ export function checkSignatureCompatibility({ manifest, profile, manifestPath })
     return findings;
   }
   const frozen = profile.frozenSignatures ?? {};
-  const provides = manifest?.cordis?.provides;
+  const provides = readManifestSection(manifest, 'cordis')?.provides;
   if (!Array.isArray(provides)) {
     // 没 provides 字段 = 产物压根没声明 Service；但仍是产物自检问题
     // 这里不直接拒绝（mount 编排会自己查）；仅记录 warn
@@ -206,7 +224,7 @@ export function checkSignatureCompatibility({ manifest, profile, manifestPath })
 export function checkDomainIsolation({ manifest, profile, manifestPath }) {
   const findings = [];
   if (!manifest) return findings; // 已在 signature check 报告过
-  const domains = manifest?.storage?.domains;
+  const domains = readManifestSection(manifest, 'storage')?.domains;
   if (!Array.isArray(domains) || domains.length === 0) {
     findings.push({
       family: FAMILY, severity: 'blocker',
@@ -332,7 +350,7 @@ function looksLikeSynthArtifact(manifest, profile) {
   if (!manifest) return false;
   const name = typeof manifest.name === 'string' ? manifest.name : '';
   if (name.startsWith('agint-synth-') || name.endsWith('-synth')) return true;
-  const domains = manifest?.storage?.domains;
+  const domains = readManifestSection(manifest, 'storage')?.domains;
   const pattern = profile.allowedSynthDomains?.pattern ?? /^agint_synth_[a-z0-9_]+$/;
   if (Array.isArray(domains) && domains.some(d => typeof d === 'string' && pattern.test(d))) {
     return true;

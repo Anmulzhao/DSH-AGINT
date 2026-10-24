@@ -3,10 +3,10 @@
   "version": "{{VERSION}}",
   "private": true,
   "description": "AGINT TOOL_SYNTHESIS 合成产物（模板生成，禁止手改逻辑体）",
-  "main": "src/index.js",
+  "main": "lib/index.js",
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./lib/index.js"
   },
   "agint": {
     "synth": true,

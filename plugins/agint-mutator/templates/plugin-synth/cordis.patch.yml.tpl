@@ -9,5 +9,5 @@
 
 insert:
   - id: {{PLUGIN_ID}}
-    name: ./src/index.js
+    name: ./lib/index.js
     config: {}

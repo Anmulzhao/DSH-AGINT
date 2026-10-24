@@ -26,7 +26,9 @@
         "agint.mutator.rollback",
         "agint.mutator.attributionDriven",
         "agint.mutator.dreamRandom",
-        "agint.mutator.evolutionReversed"
+        "agint.mutator.evolutionReversed",
+        "agint.mutator.synthPackage",
+        "agint.mutator.synthForProposal"
       ],
       "consumes": [
         "agint.dream",
@@ -75,7 +77,9 @@
         "agint.mutator.rollback": "按 rollbackCondition 退回到 preimageHash（哈希链校验）",
         "agint.mutator.attributionDriven": "归因定向变异来源：调 agint.diagnosis.annotate 拿 rootCause，路由到对应 kind 构造 proposal（缺/UNCERTAIN/抛错 → 降级 root-cause-uncertain）",
         "agint.mutator.dreamRandom": "梦境随机变异来源：种子化从 MUTATION_KINDS 抽 1-3 个 kind 各造 1 个 proposal（agint.dream 不可用 → 降级 dream-unavailable）",
-        "agint.mutator.evolutionReversed": "进化记忆反向变异来源：failure_pattern 表命中 category ∈ {correctness, integration} → 逆向构造 payload（缺服务 / 0 匹配 → 降级 no-pattern-match）"
+        "agint.mutator.evolutionReversed": "进化记忆反向变异来源：failure_pattern 表命中 category ∈ {correctness, integration} → 逆向构造 payload（缺服务 / 0 匹配 → 降级 no-pattern-match）",
+        "agint.mutator.synthPackage": "TOOL_SYNTHESIS 合成入口：吃 { payload } 直接产出完整插件包文件清单（骨架 + stubs，不落盘）",
+        "agint.mutator.synthForProposal": "TOOL_SYNTHESIS 合成入口：吃一条 kind=TOOL_SYNTHESIS 的 proposal，只读 FROZEN proposal 取 payload 产出插件包（其它 kind 一律拒绝）"
       }
     },
     "changelog": "CHANGELOG.md",

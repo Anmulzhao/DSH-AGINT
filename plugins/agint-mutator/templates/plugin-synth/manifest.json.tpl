@@ -2,7 +2,7 @@
   "name": "{{PLUGIN_ID}}",
   "version": "{{VERSION}}",
   "description": "AGINT 合成产物（TOOL_SYNTHESIS，骨架 + stubs）。意图：{{INTENT_JSON}}。命名契约：Service 形态（schemas + version + 提供单一 agint.* 入口）；存储域 {{DOMAIN}}；零 agint.* host service 依赖。",
-  "main": "src/index.js",
+  "main": "lib/index.js",
   "agint": {
     "kind": "host",
     "owner": "agint-synth",

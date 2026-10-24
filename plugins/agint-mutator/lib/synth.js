@@ -44,7 +44,11 @@ const TEMPLATE_FILES = Object.freeze([
   { tpl: 'manifest.json.tpl', out: 'manifest.json' },
   { tpl: 'package.json.tpl', out: 'package.json' },
   { tpl: 'cordis.patch.yml.tpl', out: 'cordis.patch.yml' },
-  { tpl: 'src/index.js.tpl', out: 'src/index.js' },
+  // ⛔ 产物源码必须在 lib/ 下：agint-quality-static 的 collectSourceFiles 只扫
+  //    pluginDir/lib/** 与根 index.js。放 src/ 会让 dependencyWhitelist 子检查
+  //    扫到 0 个文件 ⇒ 该子检查对产物形同虚设（实测 2026-10-25）。
+  //    AGINT 全仓插件也都是 lib/index.js，产物形态跟全仓保持一致。
+  { tpl: 'lib/index.js.tpl', out: 'lib/index.js' },
   { tpl: 'README.md.tpl', out: 'README.md' },
 ]);
 
@@ -99,6 +103,28 @@ export function renderTemplate(text, vars) {
 
 function fail(code, reason) {
   return { ok: false, code, reason };
+}
+
+/**
+ * 从一条 TOOL_SYNTHESIS proposal 合成插件包。
+ *
+ * 这是「PROPOSERS.TOOL_SYNTHESIS ⇒ 合成器」的接线点（B2）。
+ * 只吃 kind === 'TOOL_SYNTHESIS' 的 proposal，其它 kind 一律拒
+ * —— 避免把 PROMPT_MUTATION 的 payload 喂进合成器产出垃圾。
+ *
+ * ⛔ 不修改也不扩展 FROZEN MutationProposalSchema：proposal 只被读取。
+ *
+ * @param {object} proposal  FROZEN MutationProposal 行
+ * @returns 同 synthPluginPackage
+ */
+export function synthForProposal(proposal) {
+  if (!proposal || typeof proposal !== 'object') {
+    return fail('NO_PROPOSAL', 'proposal 缺失');
+  }
+  if (proposal.kind !== 'TOOL_SYNTHESIS') {
+    return fail('NOT_TOOL_SYNTHESIS', `kind='${proposal.kind}' 不是 TOOL_SYNTHESIS，合成器不吃它`);
+  }
+  return synthPluginPackage({ payload: proposal.payload });
 }
 
 /**

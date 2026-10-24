@@ -8,7 +8,7 @@
 合成为**完整 Cordis 插件包**，再送进
 `quality-static(l0-isolation) → quality-sandbox(SMOKE) → mount` 三段式。
 
-⛔ **stubs 会拼进 `src/index.js` 作为方法体**（2026-10-25 起，不再限制代码生成方式）。
+⛔ **stubs 会拼进 `lib/index.js` 作为方法体**（2026-10-25 起，不再限制代码生成方式）。
 内容引入的 import / 存储域 / 权限能否过关，**由下游 quality-static 与 quality-sandbox 真拦**。
 
 ## 意图（Intent）
@@ -23,7 +23,7 @@
 
 ## 原始 stubs（产物方法体来源）
 
-stubs 会被拼进 `src/index.js` 的 service 对象作为方法体。
+stubs 会被拼进 `lib/index.js` 的 service 对象作为方法体。
 
 {{STUBS}}
 
