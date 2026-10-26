@@ -114,6 +114,35 @@ async function main() {
   const list = await evo.listProposals();
   assert.equal(list.length, 1);
 
+  // 9b. 2026-10-27：approved 可以带 blocker（批准的是方向，不是「现在能动手」）
+  assert.equal(list[0].blocker, '', '新建提案 blocker 归一为空串，不是 undefined');
+  assert.equal(list[0].unblockCondition, '');
+  const blocked = await evo.setStatus(p.id, 'approved', '批方向', {
+    blocker: '等 8-12 周人工标注样本', unblockCondition: '样本 ≥8 周且人工标注覆盖',
+  });
+  assert.equal(blocked.status, 'approved');
+  assert.equal(blocked.blocker, '等 8-12 周人工标注样本');
+  assert.equal(blocked.unblockCondition, '样本 ≥8 周且人工标注覆盖');
+  assert.equal((await evo.listProposals({ blocked: true })).length, 1, 'blocked=true 只挑阻塞的');
+  assert.equal((await evo.listProposals({ blocked: false })).length, 0);
+
+  // 9c. 不传 blocker = 冻结原值（改状态不能把上次写的阻塞原因洗掉）
+  const kept = await evo.setStatus(p.id, 'approved', '只改理由');
+  assert.equal(kept.blocker, '等 8-12 周人工标注样本', '⛔ 不传 blocker 必须保持原值，不许静默清空');
+
+  // 9d. 落地即解除阻塞，但原原因要转写进 note（不静默丢证据）
+  const applied = await evo.setStatus(p.id, 'applied', '已在 X 落地');
+  assert.equal(applied.blocker, '', 'applied 同时挂 blocker 是自相矛盾');
+  assert.equal(applied.unblockCondition, '');
+  assert.match(applied.note, /解除阻塞（原：等 8-12 周人工标注样本）/, '原阻塞原因转写进 note');
+
+  // 9e. 历史行（加字段前写入，没有这两个键）读出来必须归一成空串
+  const raw = ctx._tables.get('proposal');
+  raw.set('legacy', { id: 'legacy', title: '老行', body: 'b', category: 'other', status: 'approved', source: '', note: '', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+  const legacy = await evo.getProposal('legacy');
+  assert.equal(legacy.blocker, '', '⛔ 字段缺席 ≠ 阻塞原因未知，一律归一为空串');
+  assert.equal(legacy.unblockCondition, '');
+
   // 10. storage domain 已注册 baseline_history + proposal 两张表
   assert.ok(ctx._tables.has('baseline_history'), 'baseline_history 表存在');
   assert.ok(ctx._tables.has('proposal'), 'proposal 表存在');

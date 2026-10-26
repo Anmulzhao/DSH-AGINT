@@ -388,6 +388,16 @@ const CANDIDATE_OPEN_STATUSES = Object.freeze([
  *  - `supply` —— 上游供给不足（失败样本攒不够）。人能做的只是去产生真实失败，
  *    没有「直接处理」这个动作；混进待办列表会诱导出「点一下就好」的错觉。
  */
+/**
+ * 提案行有没有标阻塞。
+ *
+ * 判据的单一事实源在 agint-evolve（`proposalBlocked()`），但两个插件之间没有
+ * import 关系（面板只读存储文件），所以这里保留一份等价实现。等价性由测试钉住
+ * （v2-pending.test.mjs 的 blocker 用例 + agint-evolve smoke）。
+ * ⛔ 字段缺席（加字段前的历史行）与空串都算「没卡住」—— 缺字段不等于原因未知。
+ */
+const hasBlocker = (r) => typeof r?.blocker === 'string' && r.blocker.trim() !== '';
+
 const PENDING_SPECS = Object.freeze([
   {
     key: 'curriculum-challenge',
@@ -424,14 +434,40 @@ const PENDING_SPECS = Object.freeze([
     // 没有这一行时，批准 = 从待办里消失 —— 决定做完了却没人去做，比不批更糟。
     // 这一行把「已批准」变成看得见的工作单。⚠️ 只统计，不自动执行：
     // 落地仍要人（或会话里的 AI）真的动手，落地后标 applied。
+    //
+    // 2026-10-27 收窄：只收**没有 blocker** 的。批准的是方向、前置没到位的那批
+    // （a85ef850 就是：批了"权重真标定"，但周报冻结权重常量等 8-12 周样本）
+    // 归到下面那一行 —— 它们是「等人动手」吗？不是，是「等条件」。混在一起
+    // 就是拿工作单催人去撞自家门禁。
     key: 'evolve-approved',
     label: '已批准待执行（工作单）',
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    select: (r) => r.status === 'approved',
+    select: (r) => r.status === 'approved' && !hasBlocker(r),
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
     note: () => '人工已批准，代码/文档尚未改；落地后标 applied',
+  },
+  {
+    // 2026-10-27 新增：「批准了但动不了手」这一档。
+    //
+    // kind='supply' 不是偷懒复用：按本文件顶上的判据，`action` = 人能直接动手，
+    // `supply` = 人能做的只是等上游/条件成熟。阻塞中的提案此刻唯一能做的事就是
+    // 等（等样本攒够、等依赖落地），放进 action 表会诱导「点一下就好」的错觉。
+    // 但不许隐藏：卡在哪、等什么必须一眼看得见，否则又退回「批了就没下文」。
+    key: 'evolve-approved-blocked',
+    label: '已批准·阻塞中（等前置）',
+    kind: 'supply',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved' && hasBlocker(r),
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      blocker: r.blocker ?? '',
+      unblockCondition: r.unblockCondition ?? '',
+    }),
+    note: () => '批准的是方向，不是「现在动手」；解锁条件满足后清 blocker 回到工作单',
   },
   {
     key: 'curator-overlap',

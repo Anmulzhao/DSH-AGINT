@@ -982,8 +982,20 @@ function apply(ctx, config = {}) {
         const id = typeof input?.id === 'string' ? input.id.trim() : '';
         const status = typeof input?.status === 'string' ? input.status.trim() : '';
         const reason = typeof input?.note === 'string' ? input.note.trim() : '';
+        // 2026-10-27：批准时可选带上「为什么还不能动手」。省略（undefined）= 不动原值；
+        // 传空串 = 明确解除阻塞。两种语义必须能区分，所以这里不做 `?? ''` 兜底。
+        const blocker = typeof input?.blocker === 'string' ? input.blocker.trim() : undefined;
+        const unblockCondition = typeof input?.unblockCondition === 'string' ? input.unblockCondition.trim() : undefined;
         if (id === '') {
           writeJson(res, 400, { ok: false, error: '缺 id' });
+          return;
+        }
+        if (blocker !== undefined && blocker.length > 200) {
+          writeJson(res, 400, { ok: false, error: '阻塞原因上限 200 字' });
+          return;
+        }
+        if (unblockCondition !== undefined && unblockCondition.length > 200) {
+          writeJson(res, 400, { ok: false, error: '解锁条件上限 200 字' });
           return;
         }
         if (!DECISION_STATUSES.has(status)) {
@@ -1014,14 +1026,22 @@ function apply(ctx, config = {}) {
           writeJson(res, 404, { ok: false, error: `未找到提案 ${id}` });
           return;
         }
-        if (prev.status === status) {
+        // 2026-10-27：状态没变但阻塞信息变了，也是一次真实变更 —— 否则「给已批准的
+        // 提案补一句为什么不能动手」这种写会被幂等短路掉，永远存不进去。
+        const blockerChanged = blocker !== undefined && blocker !== (prev.blocker ?? '');
+        const unblockChanged = unblockCondition !== undefined && unblockCondition !== (prev.unblockCondition ?? '');
+        if (prev.status === status && !blockerChanged && !unblockChanged) {
           // 幂等：目标态与现状相同就不写，避免 updatedAt 被无意义地刷。
           writeJson(res, 200, { ok: true, changed: false, previousStatus: prev.status, proposal: prev, at: new Date().toISOString() });
           return;
         }
         const at = new Date().toISOString();
-        const note = composeDecisionNote({ status, reason, prevNote: prev.note, at });
-        const rec = await evolve.setStatus(id, status, note);
+        // 只改阻塞信息（状态不变）时不拼「批准/拒绝」抬头 —— 那会把一条注释伪装成
+        // 一次决定，而 decisions 的 note 抬头是给「谁在什么时候判了什么」留证的。
+        const note = prev.status === status
+          ? String(prev.note ?? '')
+          : composeDecisionNote({ status, reason, prevNote: prev.note, at });
+        const rec = await evolve.setStatus(id, status, note, { blocker, unblockCondition });
         if (rec === null || rec === undefined) {
           writeJson(res, 500, { ok: false, error: 'setStatus() 返回空 —— 写入未生效' });
           return;

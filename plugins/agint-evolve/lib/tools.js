@@ -138,6 +138,7 @@ function apply(ctx) {
     parameters: {
       status: { type: 'string', enum: STATUSES, description: '按状态过滤（proposed 待批 / approved 已批准待执行 / applied 已落地 / rejected 拒绝 / wontfix 暂不处理）' },
       category: { type: 'string', enum: CATEGORIES, description: '按类别过滤' },
+      blocked: { type: 'boolean', description: '只看「批准了但前置没到位」的（true）／排除它们（false）。省略=不过滤' },
     },
     output: {
       // listProposals returns full proposalSchema records; previous items
@@ -161,6 +162,8 @@ function apply(ctx) {
                 status: { required: true, type: 'string' },
                 source: { required: true, type: 'string' },
                 note: { required: true, type: 'string' },
+                blocker: { required: true, type: 'string' },
+                unblockCondition: { required: true, type: 'string' },
                 createdAt: { required: true, type: 'string' },
                 updatedAt: { required: true, type: 'string' },
               },
@@ -169,22 +172,24 @@ function apply(ctx) {
         },
       },
       render: (_a, v) => [
-        { type: 'text', text: `evolve_proposals: ${v.total} 条提案\n${v.proposals.map((p) => `  [${p.status}] (${p.category}) ${p.title} — id=${p.id}`).join('\n')}` },
+        { type: 'text', text: `evolve_proposals: ${v.total} 条提案\n${v.proposals.map((p) => `  [${p.status}${p.status === 'approved' && p.blocker ? '·阻塞' : ''}] (${p.category}) ${p.title} — id=${p.id}${p.status === 'approved' && p.blocker ? `\n      ⛔ 卡在：${p.blocker}${p.unblockCondition ? `\n      ⏳ 解锁：${p.unblockCondition}` : ''}` : ''}`).join('\n')}` },
       ],
     },
     async execute(args) {
-      const proposals = await evolve.listProposals({ status: args.status, category: args.category });
+      const proposals = await evolve.listProposals({ status: args.status, category: args.category, blocked: args.blocked });
       return { total: proposals.length, proposals };
     },
   }));
 
   ctx.tools.register(defineTool({
     name: 'evolve_set_status',
-    description: '更新一条改进提案的状态：人工批准等执行 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。',
+    description: '更新一条改进提案的状态：人工批准等执行 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。批准的是**方向**、前置没到位时，同时传 blocker / unblockCondition，这条才不会在待办里被当成可催办的工作单。',
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },
       note: { type: 'string', description: '变更说明（如"已在 X 落地"）' },
+      blocker: { type: 'string', description: '阻塞原因：为什么批准了还不能动手（传空字符串=解除阻塞）。省略=保持原值不动' },
+      unblockCondition: { type: 'string', description: '解锁条件：等什么满足才算能动手（传空字符串=清除）。省略=保持原值不动' },
     },
     output: {
       // setStatus returns the full proposalSchema record (9 fields). Previous
@@ -203,19 +208,29 @@ function apply(ctx) {
           status: { required: true, type: 'string' },
           source: { required: true, type: 'string' },
           note: { required: true, type: 'string' },
+          blocker: { required: true, type: 'string' },
+          unblockCondition: { required: true, type: 'string' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
         },
       },
-      render: (_a, v) => [{ type: 'text', text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）` }],
+      render: (_a, v) => [{
+        type: 'text',
+        text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）`
+          + (v.status === 'approved' && v.blocker ? `\n  ⛔ 已标阻塞：${v.blocker}${v.unblockCondition ? `\n  ⏳ 解锁条件：${v.unblockCondition}` : ''}\n  ⇒ 家族面板待办里它会进「已批准·阻塞中」，不再计为可催办工作单。` : ''),
+      }],
     },
     async execute(args) {
-      const rec = await evolve.setStatus(args.id, args.status, args.note);
+      const opts = {};
+      if (typeof args.blocker === 'string') opts.blocker = args.blocker;
+      if (typeof args.unblockCondition === 'string') opts.unblockCondition = args.unblockCondition;
+      const rec = await evolve.setStatus(args.id, args.status, args.note, opts);
       if (!rec) throw new Error(`evolve_set_status: 未找到提案 ${args.id}`);
       return {
         id: rec.id, title: rec.title, body: rec.body,
         category: rec.category, status: rec.status,
         source: rec.source, note: rec.note,
+        blocker: rec.blocker ?? '', unblockCondition: rec.unblockCondition ?? '',
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
       };
     },

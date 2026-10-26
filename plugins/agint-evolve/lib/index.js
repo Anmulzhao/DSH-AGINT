@@ -98,8 +98,20 @@ const proposalSchema = z.object({
   status: z.enum(['proposed', 'approved', 'applied', 'rejected', 'wontfix']).default('proposed'),
   source: z.string().default(''),
   note: z.string().default(''),
-  createdAt: z.string().default(() => new Date().toISOString()),
-  updatedAt: z.string().default(() => new Date().toISOString()),
+  // 2026-10-27：`approved` 只说了「同意做」，没说「现在能做」。
+  //
+  // 实测反例（提案 a85ef850）：老板 2026-10-26 批准"权重真标定"，可这条的
+  // 前置是「攒够 8-12 周人工标注样本」，当周周报明确 31/31 未标注且**冻结**
+  // 权重常量。于是它在待办里挂成一张「工作单」，催人去动手 —— 而真动手就
+  // 违反自家门禁。这一档缺的不是状态，是「为什么还不能做」的表达位。
+  //
+  //   blocker           —— 阻塞原因（卡在什么上）
+  //   unblockCondition  —— 解锁条件（等什么满足才算能动手）
+  //
+  // 空串 = 没卡住。历史行没有这两个字段 ⇒ 读到 undefined，一律按空串归一
+  // （normalize()），绝不把「字段缺席」读成「阻塞原因未知」。
+  blocker: z.string().default(''),
+  unblockCondition: z.string().default(''),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -127,6 +139,41 @@ const spec = defineDomain({
 
 const PROPOSAL_STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
 const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
+
+/**
+ * 提案行归一：补齐 2026-10-27 新增的阻塞字段（blocker / unblockCondition）。
+ *
+ * 为什么必须有这一层：存储层按原样返回行，**不会**重新过 schema；加字段前写入的
+ * 历史行没有这两个键。若不归一，每个读出口（tools / 家族面板 / 周报）都要各自
+ * `?? ''`，早晚有一处忘 —— 而忘掉的表现是「阻塞原因丢了」，不是报错。
+ *
+ * ⛔ 字段缺席（undefined）与空串在**展示口径**上等价（都=没卡住），但语义不同：
+ *    前者是「这行写在加字段之前」，后者是「明确判过没卡住」。这个等价只在这里做，
+ *    别处不许再自行猜测。
+ */
+export function normalizeProposal(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  return {
+    ...rec,
+    blocker: typeof rec.blocker === 'string' ? rec.blocker : '',
+    unblockCondition: typeof rec.unblockCondition === 'string' ? rec.unblockCondition : '',
+  };
+}
+
+/**
+ * 一条提案此刻是不是「批准了但动不了手」。
+ *
+ * 判据只有一处（本函数），面板/工具都读它 —— 判据散成两份就会出现
+ * 「待办说卡住、提案台说可催办」的自相矛盾。
+ * ⛔ 只看 status==='approved'：proposed 挂 blocker 没意义（还没批），
+ *    applied 挂 blocker 自相矛盾（事实已发生，去 setStatus 时会被一并清掉）。
+ */
+export function proposalBlocked(rec) {
+  if (!rec || rec.status !== 'approved') return false;
+  const b = normalizeProposal(rec).blocker.trim();
+  return b !== '';
+}
+
 
 function apply(ctx, config) {
   const root = resolve(config.root);
@@ -469,7 +516,11 @@ function apply(ctx, config) {
       for (const [id, rec] of t.entries()) {
         if (filter.status && rec.status !== filter.status) continue;
         if (filter.category && rec.category !== filter.category) continue;
-        out.push({ id, ...rec });
+        // 2026-10-27：blocked 过滤 —— 回答「批准了但还没法动手的有哪些」，
+        // 不靠调用方自己从 blocker 字符串反推。
+        if (filter.blocked === true && !proposalBlocked(rec)) continue;
+        if (filter.blocked === false && proposalBlocked(rec)) continue;
+        out.push(normalizeProposal({ id, ...rec }));
       }
       out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       return out;
@@ -478,15 +529,34 @@ function apply(ctx, config) {
     async getProposal(id) {
       const t = await table();
       const rec = t.get(id);
-      return rec ? { ...rec } : null;
+      return rec ? normalizeProposal({ ...rec }) : null;
     },
 
-    async setStatus(id, status, note = '') {
+    /**
+     * setStatus(id, status, note, opts)
+     *
+     * opts.blocker / opts.unblockCondition：只在**显式传字符串**时才改。
+     * 不传 = 冻结现状 —— 否则每次改状态都会把上次写的阻塞原因洗成空，
+     * 正是「状态变了但理由静默消失」那一族坑。
+     * 传 '' = 明确清除（解锁后回到工作单）。
+     */
+    async setStatus(id, status, note = '', opts = {}) {
       const t = await table();
       const rec = t.get(id);
       if (!rec) return null;
       if (!PROPOSAL_STATUSES.includes(status)) throw new Error(`agint-evolve: invalid status "${status}"`);
-      const updated = { ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() };
+      const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
+      const o = opts && typeof opts === 'object' ? opts : {};
+      if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
+      if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
+      // 落地即解除阻塞。applied 是事实（代码已经改了），再挂着 blocker 会让
+      // 行内自相矛盾；但**不许静默丢**——原阻塞原因转写进 note，留审计痕迹。
+      if (status === 'applied' && updated.blocker !== '') {
+        const was = updated.blocker;
+        updated.note = `${updated.note}${updated.note ? ' ｜ ' : ''}解除阻塞（原：${was}）`;
+        updated.blocker = '';
+        if (typeof o.unblockCondition !== 'string') updated.unblockCondition = '';
+      }
       await t.put(id, updated);
       return { ...updated };
     },

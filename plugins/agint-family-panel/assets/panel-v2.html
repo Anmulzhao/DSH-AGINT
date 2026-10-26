@@ -1062,7 +1062,13 @@ tbodyPend.innerHTML=!PENDING
       }else if(q.items.length){
         cell=q.items.map(it=>{
           const bits=[it.title,(it.domain||it.level)?`${it.domain??""}${it.level?"·"+it.level:""}`:"",it.id].filter(Boolean);
-          return `<div style="font-size:12px">${esc(bits.join(" · "))}</div>`;
+          // 2026-10-27：阻塞原因与解锁条件必须印在条目上。只写「已批准」而不写
+          // 「卡在哪」，等于把「批准了没下文」换成「批准了但还是没下文」。
+          const blk=it.blocker
+            ? `<div style="font-size:11px;color:var(--warn);margin-left:8px">⛔ 卡在：${esc(it.blocker)}</div>`
+              +(it.unblockCondition?`<div style="font-size:11px;color:var(--fg-3);margin-left:8px">⏳ 解锁：${esc(it.unblockCondition)}</div>`:"")
+            : "";
+          return `<div style="font-size:12px">${esc(bits.join(" · "))}${blk}</div>`;
         }).join("")+(q.note?`<div style="font-size:11px;color:var(--fg-3)">${esc(q.note)}</div>`:"");
       }else{
         cell=`<span style="color:var(--fg-3)">—${q.note?"　"+esc(q.note):""}</span>`;

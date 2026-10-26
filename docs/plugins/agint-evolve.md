@@ -46,6 +46,27 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 ⛔ 不要把「批准」记成 `applied`。那样 proposal 表会说假话。
 2026-10-23 之前没有这一档，53 条 proposed 只进不出，就是这个缺口。
 
+### `approved` 还分两种（2026-10-27 起）：能动手 / 等前置
+
+`approved` 只说了「同意做」，没说「现在能做」。批准的是**方向**、前置却没到位的，
+必须标出来，否则它会在待办里挂成一张催办工作单 —— 而真去动手会撞自家门禁
+（实测反例：`a85ef850` 权重真标定，批了，但周报冻结权重常量、等 8-12 周标注样本）。
+
+| 字段 | 含义 |
+|---|---|
+| `blocker` | 卡在什么上（空串 = 没卡住） |
+| `unblockCondition` | 等什么满足才算能动手 |
+
+- 家族面板待办里，带了 `blocker` 的 approved **不进**「已批准待执行（工作单）」，
+  而进「已批准·阻塞中（等前置）」（`kind: supply` —— 人能做的只有等），
+  并把原因和条件原样印在条目上。
+- 解锁后清掉 blocker（传空串）即回到工作单；落地标 `applied` 时若仍挂着 blocker，
+  原原因会转写进 `note`（`解除阻塞（原：…）`），不静默丢。
+- 判据只有一处：`proposalBlocked()`。面板因跨插件不 import，保留一份等价实现，
+  由两端测试钉住。
+- 工具：`evolve_set_status <id> approved "<理由>" --blocker "<原因>" --unblockCondition "<条件>"`；
+  `evolve_proposals blocked=true` 只看阻塞中的。
+
 `evolve_set_status id applied "已在 X 落地"` 仍是闭环的最后一步。
 人工改判可以回到 `proposed`（家族面板的「撤销」走同一出口）。
 
@@ -54,8 +75,8 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 - `evolve_review [--date YYYY-MM-DD] [--notes "..."]` 立即跑一次（dry-run 默认写文件）
 - `evolve_read [path]` 读报告全文
 - `evolve_propose [title] [body]` 提一条（category: rule/skill/doc/preset/service/plugin/other；`plugin` = 整 cordis 模块级改动，`service` = 模块内单 host 服务改动）
-- `evolve_proposals [status] [category]` 看清单
-- `evolve_set_status id status [note]` 更新状态
+- `evolve_proposals [status] [category] [blocked]` 看清单（`blocked=true` 只看阻塞中的）
+- `evolve_set_status id status [note] [blocker] [unblockCondition]` 更新状态
 
 ## 路由规范（教训/方法/知识/改进）
 

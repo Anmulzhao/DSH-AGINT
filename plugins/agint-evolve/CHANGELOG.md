@@ -1,5 +1,28 @@
 # agint-evolve CHANGELOG
 
+## v0.9.0（2026-10-27 · `approved` 补 `blocker` / `unblockCondition`：批准 ≠ 现在能做）
+
+### 新增
+
+- `proposalSchema` 增两个可选字段：`blocker`（卡在什么上）、`unblockCondition`（等什么满足）。
+- 导出 `normalizeProposal()` / `proposalBlocked()`：判据单一事实源，读出口统一归一。
+  ⛔ 字段缺席（加字段前的历史行）与空串在展示口径上等价，但这个等价只在归一函数里做一次。
+- `listProposals({ blocked })`：`true` 只挑「批准了但动不了手」的，`false` 反之。
+- `setStatus(id, status, note, { blocker, unblockCondition })`：显式传字符串才改，
+  不传=冻结原值（否则改状态会把上次写的阻塞原因静默洗掉）；传 `''`=解除。
+- `evolve_proposals` 输出补两字段 + `blocked` 过滤；`evolve_set_status` 补两参数。
+
+### 为什么
+
+- 实测反例：提案 `a85ef850`（权重真标定）2026-10-26 被人工批准，可它自己的 note 写着
+  「第 3 步客观不可行」，当周周报又明确 **31/31 样本未标注、8-12 周内冻结权重常量**。
+  于是它在家族面板待办里挂成一张「已批准待执行（工作单）」，催人去动手 ——
+  而真动手就撞自家门禁。缺的不是状态档，是「为什么还不能做」的表达位。
+
+### 行为变更
+
+- `applied` 时若仍挂着 `blocker`，**不静默清空**：原阻塞原因转写进 `note`（`解除阻塞（原：…）`）。
+
 ## v0.8.0（2026-10-23 · 提案状态机补 `approved`：人工批准与落地分开记）
 
 ### 新增
