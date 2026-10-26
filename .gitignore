@@ -63,6 +63,11 @@ DSH自进化系统整体优化改进方案.md
 # 仓库级事实留在 AGENTS.md 的「仓库实况」块，那里只从仓库读，两台机器产出必然相同。
 AGENTS.local.md
 
+# cron job `agents-size-guard` 的每日体积告警日报（每日 06:45 生成一份）
+# 为什么不入库：与 AGENTS.local.md 同理 —— 里面写着本机 AGENTS.local.md 的绝对路径，
+# 且按天累积。仓库要留的是「限值是多少」（AGENTS.md 里写），不是「某台机器哪天超了」。
+docs/AGENTS-体积告警-*.md
+
 # 本地工具缓存（workbuddy 的运行时数据，不进版本库）
 .workbuddy/
 
