@@ -29,7 +29,7 @@
     - id: agint-dream
       name: ./plugins/agint-dream/lib/index.js
       config:
-        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
+        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
         sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
         lookbackDays: 2
 
@@ -37,7 +37,7 @@
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
-        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
+        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
 
     # dsh-schedule: 宿主原生调度（0.1.7-rc.2，行动 #2a 2026-09-28 挂载）。
     # agint-cron 的宿主调度桥（plugins/agint-cron/lib/host-schedule.js）依赖它做
@@ -88,6 +88,9 @@
     #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
     #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
     #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
+    #   ⇒ 2026-10-26 新增 `AGINT_DATA_HOME`（数据根专用，优先级高于 AGINT_HOME）：
+    #     要把 dreams/wiki/reviews 挪位置就 export 它，**别 export AGINT_HOME** ——
+    #     那会把 install.sh 的源码根一起带偏。
     #
     # 2026-10-19 修（实测）：`$HOME/projects/DSH/DSH-AGINT` 在**本机不存在**
     #   （Test-Path → False；$HOME=C:\Users\Administrator 下只有 projects\AGINT），
@@ -139,7 +142,7 @@
     - id: agint-evolve
       name: ./plugins/agint-evolve/lib/index.js
       config:
-        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
         # A4：eval 存量 FAIL 归因产物。部署位（.agint-bundle / profiles/desktop）
         #   祖先里没有 eval/ ⇒ 自动探测必然失败，必须显式给绝对路径。
         #   路径走环境变量（机器私有事实不入库）：AGINT_REPO_ROOT 已在
