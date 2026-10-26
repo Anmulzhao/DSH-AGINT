@@ -1,5 +1,29 @@
 # Changelog — agint-quality-policy
 
+## 0.9.0 (2026-10-26) — D-QAF §5.3 效率护栏：无效进化不许自动部署
+
+### Added
+
+- `decide()` 现在会把 `agint.qualityEvaluator.effectiveDelta()` 的结果塞进
+  `options.effectiveDelta`（软依赖：eval 未挂载 ⇒ 不传，决策照常，只是证据里不会出现
+  `effective-delta-*` 标记 —— 复盘点一眼能看出护栏没跑）。
+- `decidePolicy` 新增效率护栏（**不改 DecisionSchema**，只加 `triggeredBy` 证据）：
+  - `verdict='ineffective'` ⇒ master `AUTO_DEPLOY` **封顶为 PENDING_REVIEW**
+    （= 拒绝自动部署；人工仍可否决/批准）
+  - `verdict='unknown'` ⇒ 不阻断，但写 `effective-delta-unmeasured:<reason>`
+    （「护栏未生效」必须可见，不许「没报错 = 通过」）
+  - `verdict='effective'` ⇒ 不干预，写 `effective-delta-effective:<reason>`
+  - 未传 ⇒ 完全无副作用（存量调用零影响）
+- 测试 `test/effective-delta-veto.test.mjs`（5 条，含 2 条阴性对照：effective 不降级 /
+  ineffective 不得把 REJECT 弄松）。
+
+### 为什么（背景）
+
+宪法 §5.3 要求「有效进化增量 ≤ 0 ⇒ 拒绝部署」，但这条一直没能执行 ——
+判定端缺 token 项（capability-boundary.md §4 F3），决策端也没有消费点。
+agint-quality-eval 0.4.0 补上判定后，本版补上**消费点**：
+判定对了没人拦，等于没这条约束。
+
 ## 0.8.0 (2026-09-01) — Sprint 12 / A5 policy.deployed / policy.rolledback 事件化（T1 影子期）
 ## 0.8.1 (2026-09-28) — 行动 #4 人工兜底对齐 + #5 决策 provider 化
 

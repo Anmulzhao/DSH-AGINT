@@ -49,8 +49,8 @@
 | agint-evolve | 0.1.0 | E | 周复盘 + 提案跟踪 |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
-| agint-quality-eval | 0.2.0 | E | D-QAF 评估引擎 |
-| agint-quality-policy | — | E | 策略与门禁决策 |
+| agint-quality-eval | 0.4.0 | E | D-QAF 评估引擎 |
+| agint-quality-policy | 0.9.0 | E | 策略与门禁决策 |
 | agint-quality-report | 0.4.0 | E | Phase 4 报告 |
 | agint-quality-sandbox | 0.7.2 | E | Phase 2 动态沙箱 |
 | agint-quality-sdk | 0.5.0 | E | Prompt Manifest / 模板引擎 |
@@ -72,7 +72,7 @@
 | agint-ov-strategy | 0.1.0 | E | 经验沉淀与策略召回 |
 | agint-input-gateway | 0.1.5 | E | 多源信号进料 |
 | agint-search-tools | 0.1.0 | E | 记忆/知识跨域检索 |
-| agint-tool-stats | 0.1.0 | E | 工具统计（**为评估供料**） |
+| agint-tool-stats | 0.2.0 | E | 工具统计（**为评估供料**） |
 | agint-verify-tools | 0.1.0 | E | 验证入口全局化 |
 | agint-compress-guard | 0.1.0 | E | 压缩前洞察提取 + 恢复通道（保护进化信号） |
 | **agint-session-extract** | 0.1.0 | **H-越界** | 自建 zstd 解压 + jsonl 解析 + 会话文件发现 ⇒ 应消费 dsh `sessionQuery` |
@@ -106,7 +106,7 @@
 
 | dsh 能力 | 入口 | AGINT 现状 |
 |---|---|---|
-| token 计量 | `ctx.tokenMeter.measure(session)` / `estimateMessage(msg)`（`dsh-token-meter`） | **未接**。全仓无 token 计量（见 §4-F3） |
+| token 计量 | `ctx.tokenMeter.measure(session)` / `estimateMessage(msg)`（`dsh-token-meter`） | **已接**（2026-10-26，D2 收口）：`agint-tool-stats` 落 `deltaTokens`/`tokenSource`，`avgTokenCost` 有真值，D-QAF 有效进化增量的 token 项可算。精度口径与残余限制见 §4 F3 + `docs/known-limitations/token-cost-not-billing-grade.md` |
 | 会话查询 | `ctx.sessionQuery.listSessions/readSession/observeSession/searchSessions/searchEvents`（`dsh-session-query` + `dsh-session-query-sqlite`） | **半接**（见 §4-F2） |
 | 协作队伍 | `dsh-experimental-agent-team` + `tool-agent-team` + `client-ui-agent-team` | 未接（AGINT 另有 `docs/agent-collaboration.md` 规约） |
 | 工作树隔离 | `dsh-experimental-worktree` + `tool-worktree` | 未接（10-19 已论证：AGINT 无裸 worktree 可替换） |
@@ -150,6 +150,22 @@
   - `agint-curator` / `agint-skill-autocreate` 的 `avgTokenCost` 恒 null ⇒ 技能经济性不可度量。
 - 上游已有：`ctx.tokenMeter`（replay-aware、确定性、不调模型；`dsh-token-meter` v0.2.1-rc.2）。
 - 归属：度量缺口（进化层），上游已给测量原语（宿主层）⇒ **接上游，不自建**。
+- ✅ **已收口（2026-10-26，D2 方案 A）**。三段落点，缺一段都算没接上：
+  1. **测量侧**：`agint-tool-stats` 0.2.0 落 `deltaTokens`（工具调用前后会话累计 token 之差）
+     与 `tokenSource`；取服务必须**懒取**（`lazyService`，F8 的教训）——
+     修好后生产实测 412/4746 行带数值、累计 437,957 tokens、`tokenSource='tokenMeter'` 412 行。
+  2. **聚合侧**：`agint-curator` / `agint-skill-autocreate` 的 `avgTokenCost` 不再是恒 null
+     （真实数据跑出 **1068**，含 0 值样本），`null`（没测）与 `0`（测得零）严格分开。
+  3. **判定侧**：`agint-quality-eval` 0.4.0 新增 `effectiveDelta`（纯函数 `lib/effectiveDelta.js`）
+     —— 用 `agint-tool-stats.resourceWindow()` 的相邻两窗算
+     Δ完成率 / Δ(token+步数+耗时)，fail-closed：token 覆盖率 < 0.5 ⇒ `unknown`，
+     **不回退成「步数+耗时」冒充完整分母**；`agint-quality-policy` 0.9.0 把它接进决策
+     （`ineffective` ⇒ AUTO_DEPLOY 封顶 PENDING_REVIEW，即宪法 §5.3 的「拒绝部署」）。
+  4. **残余限制（不是返工项，是已知边界）**：`deltaTokens` 是**压力差估计**而非
+     billing 级计费，且「同一 turn 内只有首次调用拿得到非零差值」⇒ 逐次均值会被 0 稀释，
+     技能经济性要用**任务级求和**。精确值上游已有（`@deepseek-ai/dsh-token-meter/client`
+     的 `deriveTurnTokenUsage(events)`，provider 上报 usage、可回溯历史），
+     勘察结论与升级路径见 `docs/known-limitations/token-cost-not-billing-grade.md`。
 
 ### F4 · 机器私有路径写进库文件
 
@@ -357,11 +373,11 @@
 | # | 事项 | 选项 | 建议 |
 |---|---|---|---|
 | D1 | `agint-session-extract` / `agint-session-source` | A 改为消费 `ctx.sessionQuery`（F2 修法）· B 保留本地读盘并登记为「宿主格式变更风险点」 | **✅ 已完成**（commit `78da995`，2026-10-21）：4 处调用点全部迁移，session-source 新增 `readEvents()` 上游优先 + 回落出声 |
-| D2 | token 计量（F3） | A 接 `ctx.tokenMeter` 补 `avgTokenCost` 与有效进化增量的 token 项 · B 不做 | **A**（度量缺口，AGINT 核心职责） |
+| D2 | token 计量（F3） | A 接 `ctx.tokenMeter` 补 `avgTokenCost` 与有效进化增量的 token 项 · B 不做 | **A**（度量缺口，AGINT 核心职责）⇒ **✅ 已完成**（2026-10-26）：① `agint-tool-stats` 0.2.0 新增 `resourceWindow()` + `lib/resource-window.js`（口径：任务=(sessionId,turn)、完成=组内全 ok、token 只累加测得值并给覆盖率）；② `agint-quality-eval` 0.4.0 新增 `lib/effectiveDelta.js` + `effectiveDelta()` + Phase 3 接入（fail-closed：token 覆盖率 <0.5 ⇒ `unknown`，不回退半步）；③ `agint-quality-policy` 0.9.0 消费它：`ineffective` ⇒ AUTO_DEPLOY 封顶 PENDING_REVIEW（宪法 §5.3 首次真正生效）。生产取证：412/4746 行带 token 值、累计 437,957 tokens、`avgTokenCost`=1068（非 null）。测试 30 条（tool-stats 9 + eval 16 + policy 5），其中 ⛔ 阴性对照 13 处（口径放宽/门槛调松即变红）。**残余**：口径是压力差非 billing 级计费 ⇒ `docs/known-limitations/token-cost-not-billing-grade.md` |
 | D3 | `agint-voice-hotkey` | A 归档，改用 dsh 语音输入 · B 保留自建 · C 保留但登记为与宿主重复 | **A**（少一个真相源） |
 | D4 | `agint-mascot` / `agint-search-tools` 未挂载 | A 挂载 · B 归档 · C 保持未挂载并登记 | **C**（老板 2026-10-21 拍板「保持」）⇒ 状态不变，仅登记 |
 | D5 | `agint-cron` 自写 5 字段 cron 解析 | A 复用 dsh 调度原语 · B 保留（解析器已稳定） | **A**（老板 2026-10-21 拍板「复用 dsh ctx.schedule」）⇒ **✅ 已完成**：时刻计算改走上游 `dsh-schedule` 规则引擎（`canonicalizeCronExpression` + `createCronScheduleRecord` + `resolveCronOccurrence`），自研实现降为回落层 |
-| D6 | `agint-mount` 取 `ctx.get('dshHome')`（F6） | A 改走 `process.env.DSH_HOME` · B 保留 | **A**（改动 1 行，无行为变化） |
+| D6 | `agint-mount` 取 `ctx.get('dshHome')`（F6） | A 改走 `process.env.DSH_HOME` · B 保留 | **A**（改动 1 行，无行为变化）⇒ **✅ 已完成**（代码 2026-10-21；门禁 2026-10-26）：`lib/index.js` 与 `src/index.ts` 均已改为 `process.env.DSH_HOME`（profile 名仍走真实存在的 `profileContext`），注释留证说明为什么那两个键不存在；并新增边界门禁规则 `host-service-key-selfinvent`（`bin/check-boundary.mjs`）—— 谁把 `ctx.get('dshHome'\|'profilesDir')` 写回来就 exit 1（阴性对照实测：注入旧写法 ⇒ 红，还原 ⇒ 绿） |
 
 ---
 

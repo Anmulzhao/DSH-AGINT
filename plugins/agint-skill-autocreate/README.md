@@ -132,7 +132,7 @@ verified-on-note: 经验仅在下列模型上被观察到；其他模型按「�
 
 ## 已知边界（如实标注）
 
-- **token 成本恒 null**：tool-stats 不记录 token，`avgTokenCost` 字段保留待其增补。
+- **token 成本是压力差估计**：`avgTokenCost` 来自 tool-stats 的 `deltaTokens`（工具调用前后会话累计 token 之差，含该轮模型回复），**不是** billing 级计费；`null`=没测到、`0`=测得零。口径与升级路径见 `docs/known-limitations/token-cost-not-billing-grade.md`。
 - **sessionId/turn 缺失的记录**不参与检测（宁可漏检，不可错检）。
 - **v3 会话与 tool-stats 源取不到模型**：模型字段只写在 v4 会话的 assistant 消息里 ⇒
   这两类来源的技能 `model-scope: unknown`。这是**诚实缺失**，正文会明说「无法确定」。

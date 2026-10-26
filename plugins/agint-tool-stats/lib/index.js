@@ -59,6 +59,11 @@ import {
   timeseries,
   repeatPatterns,
 } from './aggregate.js';
+// 资源窗口聚合（2026-10-26，D2）：给 D-QAF「有效进化增量」供料。
+// 口径只在 resource-window.js 定义一次；本插件只负责读盘 + 传窗口。
+import { summarizeResourceWindow } from './resource-window.js';
+
+const DAY_MS = 86400000;
 
 const name = 'agint-tool-stats';
 // tools 必须在 inject 里：要注册 model-visible 工具。
@@ -222,6 +227,33 @@ function apply(ctx, config) {
         minRepeats: args.minRepeats ?? 3,
         maxResults: args.maxResults ?? 10,
       });
+    },
+    /**
+     * 窗口资源读数（2026-10-26，D2/F3 收口）—— 给 agint-quality-eval 的
+     * 「有效进化增量 = Δ完成率 / Δ(token + 步数 + 时间)」供料。
+     *
+     * 为什么由 tool-stats 出这个方法而不是让 eval 自己读 JSONL：
+     *   JSONL 的字段与口径是**本插件的契约**（deltaTokens / token 覆盖 / 任务分组）。
+     *   让下游自己解析文件 = 同一口径出现两份实现，漂了没人知道。
+     *
+     * 窗口语义：`[now - (offsetDays + days), now - offsetDays)`（左闭右开）。
+     *   - 近 7 天      → { days: 7, offsetDays: 0 }
+     *   - 上一个 7 天  → { days: 7, offsetDays: 7 }
+     *
+     * @param {{days?: number, offsetDays?: number, nowMs?: number}} [args]
+     */
+    async resourceWindow(args = {}) {
+      const records = await readAllRecords(jsonlPath);
+      const nowMs = Number.isFinite(args.nowMs) ? args.nowMs : Date.now();
+      const days = Number.isFinite(args.days) && args.days > 0 ? args.days : 7;
+      const offsetDays = Number.isFinite(args.offsetDays) && args.offsetDays >= 0 ? args.offsetDays : 0;
+      const untilMs = nowMs - offsetDays * DAY_MS;
+      const sinceMs = untilMs - days * DAY_MS;
+      return {
+        ...summarizeResourceWindow(records, { sinceMs, untilMs }),
+        days,
+        offsetDays,
+      };
     },
     /** 用 session log 给 JSONL 补 callTs/latencyMs/turn/step/sessionId。幂等。 */
     async backfill(args = {}) {

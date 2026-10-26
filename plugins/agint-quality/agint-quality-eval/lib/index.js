@@ -54,6 +54,11 @@ import {
   DEFAULT_DEPLOY_BUDGET,
   DEFAULT_WINDOW_DAYS,
 } from './deployBudget.js';
+import {
+  computeEffectiveDelta,
+  formatEffectiveDeltaLine,
+  MIN_TOKEN_COVERAGE,
+} from './effectiveDelta.js';
 
 const name = 'agint-quality-eval';
 // 0.3.3：运行时 inject 只列真实存在的 cordis 服务（timer=平台、agint.evolution=evolution-memory、
@@ -313,6 +318,8 @@ function apply(ctx, config) {
   }
 
   // ── Service: agint.qualityEvaluator ──
+  // 有效进化增量结果缓存（60s TTL）：决策路径会按 target 连调，每次都读两遍 JSONL 太浪费。
+  let effectiveDeltaCache = null;
   const evaluator = {
     /** 评估单个 target */
     async evaluate(targetInput) {
@@ -531,6 +538,44 @@ function apply(ctx, config) {
       const result = checkStagnation({ scores, k, threshold });
       return { ...result, sampleSize: scores.length, scores };
     },
+
+    // ── D-QAF §5.3 有效进化增量（2026-10-26，D2 收口） ─────────────────
+
+    /**
+     * 有效进化增量 = Δ(任务完成率) / Δ(token + 步数 + 耗时)（evolution-framework.md §5.2）。
+     *
+     * 数据源：`agint.toolStats.resourceWindow()` 的**相邻两窗**读数
+     *   - 当期：最近 windowDays 天（offsetDays = 0）
+     *   - 基线：再往前 windowDays 天（offsetDays = windowDays）
+     * 判定交给纯函数 `computeEffectiveDelta`（fail-closed：token 覆盖率不足 ⇒ verdict='unknown'，
+     * 绝不把分母退化成「步数 + 耗时」冒充完整读数）。
+     *
+     * 调用方（quality-policy 的 decide）会把结果塞进 options.effectiveDelta，
+     * 使「≤ 0 ⇒ 拒绝自动部署」这条宪法约束第一次真正生效。
+     *
+     * @param {{windowDays?: number, minTokenCoverage?: number, nowMs?: number, origin?: string}} [args]
+     */
+    async effectiveDelta({ windowDays = DEFAULT_WINDOW_DAYS, minTokenCoverage = MIN_TOKEN_COVERAGE, nowMs, origin = 'manual' } = {}) {
+      const ts = (typeof ctx.get === 'function') ? ctx.get('agint.toolStats') : null;
+      if (!ts || typeof ts.resourceWindow !== 'function') {
+        const base = { value: null, verdict: 'unknown', reason: 'tool-stats-unavailable', shouldBlockDeploy: false };
+        return { ...base, origin, line: formatEffectiveDeltaLine(base) };
+      }
+      // 决策路径会按 target 连续调用（每次都读两遍 5MB JSONL）⇒ 60s TTL 缓存。
+      // 这是**周级**指标，60 秒内的抖动没有意义；缓存键含窗口与门槛，origin 只影响标注。
+      const clock = Number.isFinite(nowMs) ? nowMs : Date.now();
+      const cacheKey = `${windowDays}|${minTokenCoverage}`;
+      const now = Date.now();
+      if (effectiveDeltaCache && effectiveDeltaCache.key === cacheKey && now - effectiveDeltaCache.at < 60_000) {
+        return { ...effectiveDeltaCache.result, origin, line: formatEffectiveDeltaLine(effectiveDeltaCache.result) };
+      }
+      // 两窗必须同口径、同天数、同一基准时刻错开 —— 否则「增量」比较的是两段不等长的时间
+      const current = await ts.resourceWindow({ days: windowDays, offsetDays: 0, nowMs: clock });
+      const baseline = await ts.resourceWindow({ days: windowDays, offsetDays: windowDays, nowMs: clock });
+      const result = computeEffectiveDelta({ baseline, current, minTokenCoverage, origin: 'cached' });
+      effectiveDeltaCache = { key: cacheKey, at: now, result };
+      return { ...result, origin, windowDays, line: formatEffectiveDeltaLine(result) };
+    },
   };
 
   ctx.provide('agint.qualityEvaluator', evaluator);
@@ -690,6 +735,23 @@ function apply(ctx, config) {
         console.error(`[agint-quality-eval] checkStagnation failed: ${err.message}`);
       }
 
+      // ── D-QAF §5.3 有效进化增量（2026-10-26，D2 收口）─────────────
+      // 公式的分母此前只算得出「步数 + 时间」（token 项恒缺，见 F3）。
+      // 现在 token 项接上后的三种结局都必须**出声**：
+      //   effective / ineffective / unknown（token 覆盖率不足，护栏未生效）。
+      let effectiveDelta = null;
+      try {
+        effectiveDelta = await evaluator.effectiveDelta({ origin: 'weekly' });
+        if (effectiveDelta.verdict === 'ineffective') {
+          console.warn(`[agint-quality-eval] 无效进化：${effectiveDelta.line}`);
+        } else if (effectiveDelta.verdict === 'unknown') {
+          console.warn(`[agint-quality-eval] 有效进化增量测不出来（护栏未生效）：${effectiveDelta.line}`);
+        }
+      } catch (err) {
+        console.error(`[agint-quality-eval] effectiveDelta failed: ${err?.message ?? err}`);
+        effectiveDelta = { verdict: 'unknown', reason: 'compute-failed', value: null, line: `- 有效进化增量：计算失败（${err?.message ?? err}）` };
+      }
+
       // ── Sprint 13 §3.3 weekly hook 部署预算护栏（weeklyTask 末尾）────────
       // 统计滚动 7 天 AUTO_DEPLOY 次数；超预算 → 后续 proposal 强制 PENDING_REVIEW
       // + 写 audit + 周复盘告警一行（reviewLine 由周复盘模板直接消费）。
@@ -715,13 +777,15 @@ function apply(ctx, config) {
         console.warn(`[agint-quality-eval] self-model weekly update skipped: ${err?.message ?? err}`);
       }
 
-      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}, deployBudget ${deployBudget?.used ?? '?'}/${DEFAULT_DEPLOY_GUARD.budget}${deployBudget?.exceeded ? ' EXCEEDED' : ''}`);
+      console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}, effectiveDelta ${effectiveDelta?.verdict ?? '?'}, deployBudget ${deployBudget?.used ?? '?'}/${DEFAULT_DEPLOY_GUARD.budget}${deployBudget?.exceeded ? ' EXCEEDED' : ''}`);
       return {
         evaluated: results.length,
         persisted,
         loggedToEvo,
         baseline: baselineReport?.regression ?? null,
         stagnation: { isStagnated: stagnationReport?.isStagnated, reason: stagnationReport?.reason },
+        // D-QAF §5.3：有效进化增量（verdict ∈ effective/ineffective/unknown + 一行可读文本）
+        effectiveDelta,
         deployBudget,
       };
     }

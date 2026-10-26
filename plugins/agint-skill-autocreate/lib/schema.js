@@ -107,7 +107,7 @@ export const TaskPatternSchema = z.object({
   firstSeenAt: z.string(),
   lastSeenAt: z.string(),
   avgDurationMs: z.number().nullable().default(null),
-  avgTokenCost: z.number().nullable().default(null), // tool-stats 暂无 token 数据，恒 null
+  avgTokenCost: z.number().nullable().default(null), // null=没测到（≠ 0 测得零）；来源 tool-stats.deltaTokens，见 known-limitations/token-cost-not-billing-grade.md
   successRate: z.number().min(0).max(1),
 
   status: z.enum(PATTERN_STATUSES).default('active'),
