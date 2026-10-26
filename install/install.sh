@@ -5,7 +5,9 @@
 # 三个注入点（外加一处兼容镜像位）。目标 profile 由 --profile 指定，默认 web。
 #
 # ## 交付形态（2026-09-24 起）
-#   $DSH_HOME/.agent-presets/<id>/                      ← 4 套 preset 的定义文件
+#   $DSH_HOME/.agent-presets/<id>/                      ← agint preset 的定义文件
+#        （三个子 preset agint-blockchain / agint-investor / agint-ops 已于 2026-10-26
+#          拆到独立私有仓 agint-presets，本安装器不再产出，也不碰它们）
 #   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
 #   $DSH_HOME/.agint-deps/dsh-runtime/                  ← AGINT 自带 dsh 运行时（依赖树实体）
 #        ├── package.json       name=@deepseek-ai/dsh（验真身用）
@@ -47,7 +49,7 @@
 #                   作用范围（2026-10-08 补全，缺任何一项都会「装完零报错但能力不全」）：
 #                     · 4 处部署路径（profile 根下的 bundle 链 / 清单 / 插件镜像 / patch）
 #                     · 传给 agint-zod-bootstrap.sh 的 MIRROR 位
-#                     · 1.3  preset 工具行 ../../profiles/<名>/plugins/… 重写（4 preset 40+ 行）
+#                     · 1.3  preset 工具行 ../../profiles/<名>/plugins/… 重写（agint 单套）
 #                     · 2.6  部署位 manifest.json 的 read:profiles/<名>/plugins 权限声明重写
 #                     · 3.7  安装事实文件 $DSH_HOME/.agint-bundle/profile.json
 #   --dry-run  只打印会改什么，不写任何文件
@@ -206,7 +208,8 @@ PROFILE_MANIFEST="$PROFILE_ROOT/package.json"
 
 PRESETS_DST="$DSH_HOME/.agent-presets"
 # 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
-# quality-bridge.js）与 4 套 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
+# quality-bridge.js）与 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
+# 2026-10-26：子 preset 拆到 agint-presets 独立仓，它们的 tools 行仍指向这里。
 PLUGINS_DST="$PROFILE_ROOT/plugins"
 # 只读：用于「AGINT 挂载段残留」检测，不再由本脚本写入
 PROFILE_PATCH_DST="$PROFILE_ROOT/cordis.patch.yml"
@@ -689,6 +692,9 @@ done
 #   仓库模板写死 'web'，装到 desktop 而不改 ⇒ 这些行全部指向一个不存在（或没装 AGINT）
 #   的目录 ⇒ **模型可见的工具全缺，且没有任何一行报错**（preset 加载失败不落日志）。
 #   4 个 preset 共 40+ 行，人工改必漏，所以由安装器统一重写。
+#   2026-10-26 起本仓只产出 agint 一套（13 行），子 preset 迁到 agint-presets
+#   独立仓，由那边的安装器改自己的 —— 各仓管各自的部署位，本安装器不再越界
+#   去改别的仓库铺进来的 preset。
 #
 # 为什么在 rsync **之后**：步骤 1 的 safe_rsync 带 --delete，会把部署位整份镜像回
 #   仓库模板（web）。这一步必须在它之后，否则当次改完、下次重装又退回 web。
@@ -707,7 +713,7 @@ root, profile = sys.argv[1], sys.argv[2]
 # 只匹配 <任意前缀>profiles/<名>/plugins/ ；profile 名已在 shell 侧过白名单
 pat = re.compile(r'(profiles/)[A-Za-z0-9._-]+(/plugins/)')
 total = 0
-for path in sorted(glob.glob(os.path.join(root, '*', 'agent.cordis.yml'))):
+for path in sorted(glob.glob(os.path.join(root, 'agint', 'agent.cordis.yml'))):
     try:
         text = open(path, encoding='utf-8').read()
     except OSError as e:
@@ -1061,7 +1067,7 @@ done
 #   · bundle patch 的 insert 行按「本 patch 文件所在目录」解析（app-boot
 #     anchorInsertedPluginNames）⇒ 插件必须在 <bundle>/plugins/ 下；
 #   · 而 AGINT 自身代码按老路径定位插件（agint-dream/lib/quality-bridge.js 用
-#     $DSH_HOME/profiles/<profile>/plugins/<id>），4 套 preset 的 tools 行同理 ⇒ 保留兼容位。
+#     $DSH_HOME/profiles/<profile>/plugins/<id>），各 preset 的 tools 行同理 ⇒ 保留兼容位。
 #   两处同源、同一次 sync，天然一致，不引入漂移。
 log "2.5/4 镜像到 bundle → $BUNDLE_PLUGINS_DST"
 # ⛔ 必须建到 plugins 这一层：rsync 3.1.3 只建 dst 的最后一级，中间目录缺失就
@@ -1179,6 +1185,8 @@ cp -f "$BUNDLE_PATCH_SRC"    "$BUNDLE_PATCH_DST"    || die "bundle patch 复制�
 #       （文件系统根，不存在）⇒ `agent-preset/invalid: … config file not found`
 #       ⇒ agint / agint-blockchain / agint-investor / agint-ops 四个 preset
 #         永远不注册，UI 里只剩 standard/ptc/minimal/cordis。
+#         （2026-10-26 注：当时是四个。后三个已迁出到 agint-presets 独立仓，
+#          本仓现在只有 agint 一条声明，成因与修法不变。）
 #     为什么用占位符而不是直接写绝对路径：
 #       ① include 的 path 禁止 `!!js`（app-boot:3041
 #          "include path must be literal; config expressions are not evaluated"）；
@@ -1499,9 +1507,11 @@ PY
     fi
   done
 
-  # 4c. 每个 active preset 含 agent.cordis.yml
-  # 同 4b：排除 .bak-* 备份
-  for preset in "$PRESETS_DST"/agint-*; do
+  # 4c. 本仓产出的 preset 含 agent.cordis.yml
+  # 2026-10-26：只查 agint。子 preset（agint-blockchain / agint-investor /
+  # agint-ops）已迁到 agint-presets 独立仓，完整性归那边的安装器校验 ——
+  # 这里若沿用 agint-* 通配，会把别人铺进来的目录一起判成自己的，越界。
+  for preset in "$PRESETS_DST"/agint; do
     [ -d "$preset" ] || continue
     name="$(basename "$preset")"
     # 跳过 .bak-* 历史备份

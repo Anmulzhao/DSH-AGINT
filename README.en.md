@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 > A **self-evolving agent framework** built on DeepSeek Harness (`dsh`).
 
-**v0.13.0** · 40 Cordis plugins (36 mount declarations) · 4 presets · 25 preset tool rows · 27 cron jobs. For live numbers, see the LOCAL-STATE block at the end of [`AGENTS.md`](./AGENTS.md).
+**v0.13.0** · 40 Cordis plugins (36 mount declarations) · 1 preset · 25 preset tool rows · 27 cron jobs. For live numbers, see the LOCAL-STATE block at the end of [`AGENTS.md`](./AGENTS.md).
 
 - **Philosophy**: beauty = simple + true + dependable + proactive + safe. When two of these conflict, the earlier one wins. Full text: Wiki [PHILOSOPHY](https://github.com/Anmulzhao/DSH-AGINT/wiki/PHILOSOPHY).
 - **Position**: `dsh` is the upstream runtime. AGINT is a specification plus a component set on top of it. It is not a fork. AGINT is not an AGI implementation. It is the engineering skeleton that leads toward AGI: memory, reflection, constraints, metrics, evaluation. Every new feature must pass D-QAF evaluation.
@@ -19,7 +19,7 @@ English | [中文](README.md)
 | Layer | Content | Location |
 |---|---|---|
 | **bundle** | The whole: the `dsh` bundle package `@agint/host` (all plugins plus mount patches) | `package.json` + `cordis.patch.yml` |
-| **preset** | The Zhinjin (智进) persona, its tool set, and its skills; 4 presets: `agint` (main line), `agint-blockchain`, `agint-investor`, `agint-ops` | `presets/agint*/` |
+| **preset** | The Zhinjin (智进) persona, its tool set, and its skills; 1 preset: `agint` (main line) | `presets/agint/` |
 | **plugin** | 40 Cordis plugins (36 mount declarations) in 8 groups (memory / scheduling / reflection / quality / closed loop / execution / observation / perception). List: [`docs/plugins/`](./docs/plugins/) | `plugins/agint-*/` |
 | **data** | Memory / rules / metrics / dreams / reviews | Runtime data. It does not enter the repository. |
 

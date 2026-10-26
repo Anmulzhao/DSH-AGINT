@@ -150,11 +150,13 @@ test('R2 覆盖门：SKILL.md 且同路有 .cases.json ⇒ 覆盖，files = [SKI
   assert.equal(r.rule, 'SKILL_GATE');
   assert.deepEqual(r.files, [skill, caseFile], '标签文件也算触达面 —— 它是这次判定的输入之一');
   // 别的 preset 的技能不串槽：preset 名从路径里取
+  // （用中性的 agint-other 而不是真实存在的子 preset 名 —— 三个子 preset 已迁到
+  //   独立仓 agint-presets，本仓不该再把它们的名字当测试夹具，否则拆仓时要跟着改。）
   const other = planTestScope({
-    changedPath: 'presets/agint-ops/skills/plugin-preflight/SKILL.md',
-    testFiles: [], repoFiles: ['presets/agint-ops/skills/plugin-preflight/SKILL.md', caseFile],
+    changedPath: 'presets/agint-other/skills/plugin-preflight/SKILL.md',
+    testFiles: [], repoFiles: ['presets/agint-other/skills/plugin-preflight/SKILL.md', caseFile],
   });
-  assert.equal(other.covered, false, '⛔ 拿 agint 的标签去判 agint-ops 的技能 = 假归属');
+  assert.equal(other.covered, false, '⛔ 拿 agint 的标签去判 agint-other 的技能 = 假归属');
   assert.equal(other.rule, 'SKILL_GATE_NO_CASE_FILE');
 });
 

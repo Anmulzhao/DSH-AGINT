@@ -173,8 +173,8 @@ test('agentPreset 显式传参可覆盖默认（换 profile 不用改源码）',
   const { ctx, created } = mockCtx({
     result: Promise.resolve({ stopReason: 'completed', structured: { standardizable: true, confidence: 0.8, rationale: 'ok' } }),
   });
-  await judgeViaLLM({ ctx, pattern: PATTERN, agentPreset: 'agint-investor' });
-  assert.equal(created[0].meta.agentPreset, 'agint-investor');
+  await judgeViaLLM({ ctx, pattern: PATTERN, agentPreset: 'agint-other' });
+  assert.equal(created[0].meta.agentPreset, 'agint-other');
 });
 
 test('authoring 缺失不降级（Phase A/B 本来就不用它）', async () => {

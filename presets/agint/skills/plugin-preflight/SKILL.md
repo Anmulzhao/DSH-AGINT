@@ -170,7 +170,7 @@ node plugins/agint-<name>/test/smoke.mjs
 
 **技能自身的副本同样要同步**：`presets/<preset>/skills/<name>/SKILL.md` 是真源，
 部署位是 `~/.dsh/.agent-presets/<preset>/skills/<name>/SKILL.md`——只改部署位会被下次同步静默回退。
-子 preset（agint-blockchain / agint-investor）里的同名技能是**指针桩**，明写「以母 preset 为准」，不必重复维护。
+子 preset（agint-blockchain / agint-investor，2026-10-26 起在独立仓 agint-presets）里的同名技能是**指针桩**，明写「以母 preset 为准」，不必重复维护。
 
 ### 第 5 步：走完整挂载 / 上线流程
 

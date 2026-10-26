@@ -287,6 +287,10 @@
     #    （当前不可用）」。别的 AGINT 服务（memory/cron/wiki…）在 bundle 层照常加载，
     #    进一步掩盖「preset 没注册」这一事实。
     #
+    #    （2026-10-26 注：上面记的是当时的实况。后三个 preset 已迁出到独立仓库
+    #      agint-presets，本仓此处只剩 agint 一条声明，但那段事故的成因与修法
+    #      对任何 bundle 层的 preset 声明同样适用。）
+    #
     #    ⇒ 改用 `__DSH_HOME__` 占位符，install.sh 复制后展开成 `file://$DSH_HOME`
     #      （install.sh 3a-bis 段）。占位符而非写死绝对路径的原因：
     #      ① path 禁 `!!js`，没法在加载时求值；
@@ -297,7 +301,7 @@
     #    根解析」，据此写下 `../../` 路径。0.1.7 上成立，0.2.0 上不成立。依据当时读到的
     #    `anchorInsertedPluginNames()`（app-boot:3537）——该函数只锚定 **insert 行的
     #    name:**，确实不碰 config.path；但 0.2.0 的 baseUrl 已不是 profile 根。
-    # 回滚：删掉下面三段并重启 dsh；.agent-presets/ 与插件都无需动。
+    # 回滚：删掉下面这段并重启 dsh；.agent-presets/ 与插件都无需动。
     #
     # 旧版 preset.yml 里已有 name/description，但 0.1.7 不再读该文件 → 名称说明
     # 以本声明为准（preset.yml 保留作参考）。
@@ -312,46 +316,6 @@
             name: 'cordis:include'
             config:
               path: __DSH_HOME__/.agent-presets/agint/agent.cordis.yml
-
-    - id: agint-blockchain-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-blockchain
-        name: 智进·区块链
-        description: 智进子 preset · 区块链/Web3 领域工程师 + 领域知识专家。共享母 preset 的全部 agint-* 服务（含 rules 门禁与 cron 自调）与 tool-cordis 自修改能力，能力范围聚焦：区块链与 Web3 领域编程（Solidity / Rust 合约、EVM/Solana/Cosmos 应用链、合约与链下代码）、调试（合约 revert 分析、RPC 节点排查、Gas 优化、合约漏洞模式识别）、领域知识（EVM 合约模式库、DeFi 机制、链交互工具链、钱包/签名安全）。任务路由：由智进会话按「涉及区块链/Web3 编程、调试、合约安全、链上数据分析→区块链子会话」模式分派；其他通用代码任务走母 preset。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: __DSH_HOME__/.agent-presets/agint-blockchain/agent.cordis.yml
-
-    - id: agint-investor-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-investor
-        name: 智进·投研
-        description: 智进子 preset · 投研分析师角色。共享母 preset 的 agint-memory / agint-wiki / agint-cron 服务，但禁用自修改工具（tool-cordis）和规则门禁写入工具（agint-rules-tools），只读、查、思、写笔记；不直接改生产代码。任务路由：由智进会话按「涉及研究/分析/查询→投研子会话」模式分派。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: __DSH_HOME__/.agent-presets/agint-investor/agent.cordis.yml
-
-    # agint-ops: 新能源生产运维办公助理（2026-09-30 新增）。
-    # 与上面三条同机制：cordis:include 复用 .agent-presets/agint-ops/agent.cordis.yml，
-    # 单一事实源仍在 presets 目录，本 patch 只放声明。
-    # ⚠️ path 是字面量，按 profile 根（profiles/desktop/）解析，故 2 级 .. 再进 .agent-presets/。
-    - id: agint-ops-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-ops
-        name: 智进·生产运维
-        description: 智进子 preset · 新能源（光伏/风电/储能）电站生产运维部门的日常办公助理。主业三块：文档（日报/周报/月报、异常与事故报告、交接班、SOP、台账、会议纪要）、数据分析（发电量/系统效率/设备可利用率/损失电量/故障趋势）、日常事务（派工与工单跟踪、巡检安排、整改闭环、经验沉淀）。共享母 preset 的 agint-memory / agint-wiki / agint-cron / agint-rules 服务，带 5 个领域技能（KPI 口径、文档写作规范、异常归因、数据分析执行规范、日常工作流）。禁用自修改工具（tool-cordis）与自进化实验工具（dream/curator/abtest/population 等）；tool-web 开 fetch 以便查标准与厂家资料，persona 内置「外部内容不可信」规则。任务路由：由智进会话按「生产运维文档/数据分析/日常事务→生产运维子会话」模式分派；DSH 系统自身问题与代码部署走母 preset。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: __DSH_HOME__/.agent-presets/agint-ops/agent.cordis.yml
 
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).

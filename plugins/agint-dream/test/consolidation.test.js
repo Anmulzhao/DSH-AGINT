@@ -360,9 +360,9 @@ test('consolidate: agentPreset 显式传参可覆盖默认（换 profile 不用�
     gated: [{ key: 'c1', text: '禁止 rm -rf', type: 'lesson', score: 0.85 }],
     existing: [],
     day: '2026-09-27',
-    agentPreset: 'agint-investor',
+    agentPreset: 'agint-other',
   });
-  assert.equal(calls.createArgs.meta.agentPreset, 'agint-investor');
+  assert.equal(calls.createArgs.meta.agentPreset, 'agint-other');
 });
 
 test('consolidate: agents.create 抛错 → failed, 不向外抛', async () => {
