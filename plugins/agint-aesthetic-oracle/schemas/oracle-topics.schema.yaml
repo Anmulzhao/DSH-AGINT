@@ -25,6 +25,7 @@ oracle.daily:
     worstKey: { type: [string, 'null'], description: 最丑维度 key（noise/confidence/redundancy/bloat）；无则 null }
     lines:   { type: array, items: { type: string }, description: 广播行（与 text 一致） }
     text:    { type: string, description: 广播全文（≤2KB） }
+    mode:    { enum: [template, llm], optional: true, description: 输出模式：template=本轮无 LLM 输出；llm=L1/L2/L3 至少一级成功。2026-10-25 起 LLM 失败中止广播，不再发布 heuristic-degraded }
     staleDays: { type: integer, minimum: 0, optional: true, description: §6.1 缓存回退标注（数据距今天数）；新鲜广播不传 }
 
 oracle.weekly:
@@ -40,7 +41,7 @@ oracle.monthly:
     kind: { const: monthly }
 
 oracle.alert:
-  description: 警报（沉默 24h / 配额违规 / summary 不可用 / 程序化 alert()）。双形态合同：
+  description: 警报（沉默 24h / 配额违规 / summary 不可用 / LLM 输出层失败 / 程序化 alert()）。双形态合同：
     内部告警形（reason 必含其一）与警报广播形（text 必含其一）；reason/text 至少其一非空。
   required: []   # 双形态联合约束由 refine 表达：reason 或 text 至少其一非空
   properties:

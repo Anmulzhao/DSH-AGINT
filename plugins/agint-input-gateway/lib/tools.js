@@ -1,4 +1,4 @@
-﻿/**
+/**
  * agint-input-gateway: preset-scoped tools。
  *
  * 只读（裸调）：input_gateway_status / input_gateway_channel_status
@@ -39,7 +39,11 @@ function apply(ctx) {
             + ` emitted=${ch.counters?.signalsEmitted ?? 0} filtered=${ch.counters?.signalsFiltered ?? 0}`
             + ` scanned=${ch.counters?.securityScanned ?? 0} flagged=${ch.counters?.securityFlagged ?? 0}`
             + ` errors=${ch.counters?.errorCount ?? 0}`
-            + (ch.lastError ? ` error="${ch.lastError}"` : ''),
+            + (ch.lastError ? ` error="${ch.lastError}"` : '')
+            // 零命中告警（2026-10-14）：不渲染就成了「算出来但看不见」的假绿
+            + (ch.zeroHit?.status === 'degraded'
+              ? ` ⚠️零命中${ch.zeroHit.consecutiveZeroHit}/${ch.zeroHit.threshold}次`
+              : ''),
           );
         }
         return [{ type: 'text', text: lines.join('\n') }];
@@ -68,7 +72,13 @@ function apply(ctx) {
           + (v.lastError ? `\n  lastError: ${v.lastError}` : '')
           // Channel 自报健康（如 adversarial 的 initError / status）。
           // gateway.getChannelStatus 已挂在返回值上，不渲染 = 假绿：算出来了但看不见。
-          + (v.health ? `\n  health: ${JSON.stringify(v.health)}` : ''),
+          + (v.health ? `\n  health: ${JSON.stringify(v.health)}` : '')
+          // 零命中告警（2026-10-14）：degraded 时必须显式打出来并给排查方向
+          + (v.zeroHit
+            ? `\n  zeroHit: ${v.zeroHit.status} · 连续零命中 ${v.zeroHit.consecutiveZeroHit}/${v.zeroHit.threshold}`
+              + ` · 最后有信号: ${v.zeroHit.lastNonZeroAt ?? '从未'}`
+              + (v.zeroHit.status === 'degraded' ? `\n  ⚠️ ${v.zeroHit.reason}` : '')
+            : ''),
       }],
     },
     async execute(args) {

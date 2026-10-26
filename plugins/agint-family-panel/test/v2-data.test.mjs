@@ -5,11 +5,25 @@
 import assert from 'node:assert/strict';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, cpSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { makeStorages } from './fixtures/make-storages.mjs';
 import { resolveV2Dirs, collectV2Data, clearV2Cache } from '../lib/v2-data.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const HOME = join(here, 'fixtures', 'v2-home');
+/**
+ * ⛔ 独占 home（2026-10-18 修竞态）：原先把 storages 写进共享的
+ * fixtures/v2-home/ —— smoke.mjs 也往那儿写（它 makeStorages 同一个目录）。
+ * `node --test` 按文件并行，两个进程同时 writeFileSync 同一批 JSON，
+ * 偶发读到半截文件。实测 12 轮压测复现 1 次（本文件红、单独跑绿）。
+ *
+ * 现在：plugins 骨架从共享 fixture **只读复制**一份到本进程独占的 mkdtemp，
+ * storages 也建在这里。本文件不再写任何共享路径 ⇒ 并行安全。
+ * 复制而非软链：Windows 上 junction 有穿透删除的风险（见 AGENTS.md 事故留痕）。
+ */
+const SHARED = join(here, 'fixtures', 'v2-home');
+const HOME = mkdtempSync(join(tmpdir(), 'panel-v2-data-'));
+cpSync(join(SHARED, 'profiles'), join(HOME, 'profiles'), { recursive: true });
 makeStorages(HOME);
 const DIRS = {
   pluginsDir: join(HOME, 'profiles', 'web', 'plugins'),

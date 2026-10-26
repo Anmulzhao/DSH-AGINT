@@ -37,12 +37,20 @@ function apply(ctx, config = {}) {
             catch { /* 单个 dispose 失败不影响其它 */ }
         }
     });
-    // ── 解析路径（dshHome 来自 ctx 或 process.env） ──
+    // ── 解析路径 ──
+    // 2026-10-21 边界修正（见 docs/capability-boundary.md §4 F6）：
+    //   原先写 `ctx.get('dshHome')` 与 `ctx.get('profilesDir')` —— 这两个键
+    //   **在 dsh 的服务面上不存在**（实测：全 306 个包 grep
+    //   `super(ctx,"dshHome"|"profilesDir")` 命中 0；运行中宿主 listService 也没有）。
+    //   因为都有 env / 探测兜底，所以一直不报错 —— 但取法是错的：一旦兜底失效，
+    //   这里会静默拿到 undefined，路径解析退化到"猜"。
+    //   正确来源：DSH_HOME 走 process.env（agint 其它插件同做法）；
+    //   profile 名走 ctx.get('profileContext')?.name —— 那个服务**是真的**
+    //   （dsh-shell-env/lib/index.js:90 就是这么取的，dsh 的 profile 启动器也注册它）。
     let paths;
     try {
         paths = resolvePaths({
-            dshHome: (ctx.get && ctx.get('dshHome')) || process.env.DSH_HOME,
-            profilesDir: (ctx.get && ctx.get('profilesDir')),
+            dshHome: process.env.DSH_HOME,
             // 2026-10-08：profile 名权威源是 cordis ctx（DSH_PROFILE 只喂 shell 子进程，
             // 插件主进程的 process.env 里通常没有）。拿不到时 resolvePaths 会自行探测。
             profileName: (ctx.get && ctx.get('profileContext')?.name) || undefined,

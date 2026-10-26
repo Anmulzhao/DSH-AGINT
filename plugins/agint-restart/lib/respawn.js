@@ -24,8 +24,9 @@
  * 新 dsh 自身的 stdout/stderr 重定向到 request.logFile（默认 %TEMP%/dsh-web.log）。
  */
 import { spawn, execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, writeSync, closeSync, statSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, openSync, writeSync, closeSync, statSync, mkdirSync, rmSync, readlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,6 +36,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const POLL_EXIT_MS = 200;   // 等旧进程退出
 const POLL_PORT_MS = 200;   // 等端口释放
 const POLL_READY_MS = 250;  // 等新实例就绪（探测本身很轻：stat 文件 + TCP connect）
+const POLL_DESKTOP_MS = 1000; // 桌面 GUI 根检测（每轮一次 PowerShell CIM，开销大，轮询放慢）
 
 /** 追加一行人类可读日志（失败不影响主流程）。 */
 function log(logFile, msg) {
@@ -147,6 +149,10 @@ function pickEnv(launchEnv, launch) {
   const merged = { ...base, ...(launchEnv ?? {}) };
   // 展开后再剥，base 和 launchEnv 两边带来的都拦得住。
   if (launch?.keepNodeOptions !== true) delete merged.NODE_OPTIONS;
+  // 桌面 GUI 拉起必须剥掉 ELECTRON_RUN_AS_NODE：它是 host 子进程的身份标记
+  // （GUI 用 `exe + host/index.js + 该 env` 起 node 模式）。带着它裸起 exe，
+  // Electron 会进 node 模式、没有入口脚本 ⇒ 立刻退出，GUI 根本起不来。
+  if (launch?.guiLaunch === true) delete merged.ELECTRON_RUN_AS_NODE;
   return merged;
 }
 
@@ -160,6 +166,203 @@ function forceKill(pid) {
       resolve();
     }
   });
+}
+
+/**
+ * host 入口脚本，用来分辨"GUI 主进程"和"被误认成 GUI 的 headless host"。
+ * 不锚行尾：真实 host 的命令行里入口后面还跟着 runtimeDir/projectDir 等参数。
+ */
+const DESKTOP_HOST_ENTRY_RE = /dsh-desktop-host[\\/]+lib[\\/]+index\.js/i;
+
+/**
+ * 查一个 pid 现在的映像名与命令行（杀 GUI 前的核身用）。
+ *
+ * @returns {Promise<null|{name:string, cmdline:string}>} 进程不存在/查不到 → null
+ */
+function probeProcess(pid) {
+  return new Promise((resolve) => {
+    if (typeof pid !== 'number' || !(pid > 0)) return resolve(null);
+    if (process.platform === 'win32') {
+      // wmic 在新系统上已被移除，PowerShell CIM 是现役通路（同 killer.js 口径）
+      const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{Name=$p.Name;CommandLine=$p.CommandLine;ParentProcessId=$p.ParentProcessId} | ConvertTo-Json -Compress }`;
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 10000 }, (err, stdout) => {
+        if (err || !stdout || !stdout.trim()) return resolve(null);
+        try {
+          const o = JSON.parse(stdout.trim());
+          resolve({
+            name: String(o.Name ?? ''),
+            cmdline: String(o.CommandLine ?? ''),
+            ppid: Number(o.ParentProcessId) || 0,
+          });
+        } catch {
+          resolve(null);
+        }
+      });
+      return;
+    }
+    try {
+      const exe = readlinkSync(`/proc/${pid}/exe`);
+      let ppid = 0;
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[1]) || 0;
+      } catch { /* 拿不到 ppid 时只丢祖先链，不影响映像名 */ }
+      resolve({ name: basename(exe), cmdline: '', ppid });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * 从 listenerPid 往上走祖先链，看能不能走到 ancestorPid。
+ *
+ * 桌面 profile 为什么需要：respawn 拉起的是 **GUI**，而 19387 的真实监听者是 GUI
+ * 自己 fork 的 host（壳 → GUI → host 三代）。win32 的 launched.pid 是 wscript 壳，
+ * 拿它跟监听者比对永远不等，所以既有代码在这条路上只能走 `degraded`（判就绪但不验身份）。
+ * 祖先链判据把这一轮从「没验成」变成「真验过」：监听者必须挂在我拉起的那棵树底下，
+ * 否则就是别人（比如没杀干净的遗留 headless host）占着端口抢功 —— 正是本次要修的故障。
+ *
+ * 只加强、不收紧：走不通链时返回 false 由调用方**保持 degraded 语义**，
+ * 不翻成失败（壳进程可能已退出、pid 也可能被回收，那是探测能力问题，不是没起来）。
+ *
+ * @returns {Promise<boolean>} true = 确认 listener 是 ancestor 的后代
+ */
+async function isDescendantOf(listenerPid, ancestorPid, maxDepth = 8) {
+  let cur = listenerPid;
+  for (let i = 0; i < maxDepth && cur > 0; i++) {
+    if (cur === ancestorPid) return true;
+    const info = await probeProcess(cur);
+    if (!info || !info.ppid || info.ppid === cur) return false;
+    cur = info.ppid;
+  }
+  return false;
+}
+
+/**
+ * v0.9.2 —— 桌面就绪判据三连：GUI 树根快照 → 新根出现 → 判就绪。
+ *
+ * 为什么老判据全断（2026-10-18 12:34 重启回执 + 进程树实测）：
+ *   - sentinel.lease：桌面 app 根本不写；
+ *   - 固定端口：web profile 退役后 3080 是死的；v0.9.1 配的 19387 也死了 ——
+ *     桌面 GUI 每次启动随机监听口（同日三次重启实测各不相同）；
+ *   - descendant-of-launched-shell：GUI 启动后即脱离壳（实测新 GUI 的父进程
+ *     首跳查询即 GONE），祖先链在该环境走不通。
+ *   ⇒ 本机每次桌面重启都记 ready=false/ok=false，而宿主其实活着。假阴。
+ *
+ * 新判据落在唯一稳的结构事实：**进程表里多出一个"拉起前不存在"的 GUI 树根**。
+ * 子进程（GPU/renderer）不算根——它们的父还在 GUI 集合里；主进程浮在树顶
+ * （父进程已退）。单实例锁被吞（新 exe 只聚焦旧窗口）不会产生新根 ⇒ 判
+ * false，正是要拦的故障形状。纯结构，不碰端口与时间解析（locale 坑）。
+ */
+function guiRootPids(list) {
+  const seen = new Set(list.map((x) => Number(x.pid)));
+  return list.filter((x) => !seen.has(Number(x.ppid))).map((x) => Number(x.pid));
+}
+
+/** 新根 = 拉起后树根集合里、快照里没有的那个。没有则 null（不猜）。 */
+function pickFreshGuiRoot(beforeRoots, afterRoots) {
+  const fresh = afterRoots.filter((p) => !beforeRoots.has(p));
+  return fresh.length ? fresh[0] : null;
+}
+
+/**
+ * 状态机：新根必须**连续两拍可见**才算驻留。
+ * 为什么不能单拍定案：2026-10-13/15 的崩溃弹窗形状 = 新 GUI 秒退；若轮询
+ * 恰好撞见它活着的那一拍就判就绪，新判据反而比"端口可连"更松（假绿）。
+ * 返回 { ready, pending }：pending 变化即重置（换了个新根也要重新验存活）。
+ */
+function advanceFreshRoot(pending, fresh) {
+  if (fresh === null) return { ready: false, pending: null };
+  if (pending !== null && pending === fresh) return { ready: true, pending: fresh };
+  return { ready: false, pending: fresh };
+}
+
+/**
+ * 枚举当前 GUI 进程并返回树根 pid。
+ * null = 探测不可达（非 win32 / exeName 非法 / WQL 单引号注入面 / powershell 失败）——
+ * 调用方据此退回老判据或如实报失败，绝不把"探测不了"写成"没有根"（空数组只在
+ * 真的枚举成功且无 GUI 时返回）。
+ */
+function listGuiRoots(exeName) {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve(null);
+    if (typeof exeName !== 'string' || exeName === '' || exeName.includes("'")) return resolve(null);
+    const ps = `$r = @(Get-CimInstance Win32_Process -Filter "Name='${exeName}'" | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId } }); ConvertTo-Json -Compress -InputObject $r`;
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 10000 }, (err, stdout) => {
+      if (err || !stdout || !stdout.trim()) return resolve(null);
+      let arr;
+      try { arr = JSON.parse(stdout.trim()); } catch { return resolve(null); }
+      if (arr == null) return resolve([]);            // 枚举成功且真没 GUI = 事实
+      if (!Array.isArray(arr)) arr = [arr];           // ConvertTo-Json 单对象退化为非数组形状
+      resolve(guiRootPids(arr));
+    });
+  });
+}
+
+/** 桌面就绪：等"拉起前不存在的新 GUI 树根"出现。中途枚举失效判失败（不猜成功）。 */
+async function waitDesktopGuiReady(exeName, beforeRoots, timeoutMs, logFile) {
+  const started = Date.now();
+  let pending = null;
+  for (;;) {
+    const roots = await listGuiRoots(exeName);
+    if (roots === null) {
+      log(logFile, 'respawn: 桌面枚举中途失效（powershell/CIM 不可达），如实判不就绪');
+      return { ready: false, pid: null, waitedMs: Date.now() - started };
+    }
+    const step = advanceFreshRoot(pending, pickFreshGuiRoot(beforeRoots, roots));
+    pending = step.pending;
+    if (step.ready) return { ready: true, pid: pending, waitedMs: Date.now() - started };
+    if (Date.now() - started >= timeoutMs) return { ready: false, pid: null, waitedMs: Date.now() - started };
+    await sleep(POLL_DESKTOP_MS);
+  }
+}
+
+
+/**
+
+/**
+ * 桌面 profile：杀掉旧 GUI 主进程（连子树），给新 GUI 让路。
+ *
+ * 为什么必须杀：GUI 的 HostSupervisor 只拉起 host 一次、不自动重生，旧 GUI 会停在
+ * 错误框上；而 Electron 单实例锁（requestSingleInstanceLock + second-instance →
+ * focusOwner）会把 respawn 新起的裸 exe 直接吞成"聚焦旧窗口"。两头都不动 = 重启后
+ * 谁也没起来。
+ *
+ * 为什么要有三道核身：guiPid 是**开机时**记下的父进程号，重启可能发生在几天后，
+ * 那个 pid 完全可能被回收给了别的进程。凭一个可能已复用的 pid 乱杀，代价是老板别的
+ * 程序。任一校验不过 → 不杀，只记日志（宁可留下旧窗口）。
+ */
+async function killDesktopShell(desktop, logFile) {
+  const pid = desktop?.guiPid;
+  if (!pid) {
+    log(logFile, 'respawn: 桌面请求里没有 guiPid，跳过杀 GUI（新 GUI 可能被单实例锁吞掉）');
+    return { killed: false, reason: 'no-gui-pid' };
+  }
+  const info = await probeProcess(pid);
+  if (!info) {
+    log(logFile, `respawn: GUI pid=${pid} 已不存在，无需杀`);
+    return { killed: false, reason: 'gui-gone' };
+  }
+  const want = String(desktop.guiExeName ?? '').toLowerCase();
+  if (!want || info.name.toLowerCase() !== want) {
+    log(logFile, `respawn: ⛔ pid=${pid} 映像名是 ${JSON.stringify(info.name)}，与快照的 ${JSON.stringify(desktop.guiExeName)} 不符（pid 可能已被回收），拒绝杀`);
+    return { killed: false, reason: 'name-mismatch' };
+  }
+  if (DESKTOP_HOST_ENTRY_RE.test(info.cmdline)) {
+    log(logFile, `respawn: ⛔ pid=${pid} 命令行含 host 入口，是 headless host 不是 GUI 主进程，拒绝杀`);
+    return { killed: false, reason: 'not-gui-main' };
+  }
+  await new Promise((resolve) => {
+    execFile('taskkill', ['/F', '/T', '/PID', String(pid)], () => resolve());
+  });
+  const started = Date.now();
+  while (Date.now() - started < 10000) {
+    if (!isAlive(pid)) return { killed: true, waitedMs: Date.now() - started };
+    await sleep(POLL_EXIT_MS);
+  }
+  log(logFile, `respawn: ⚠️ 已发 taskkill /T /F，但 GUI pid=${pid} 10s 后仍在（新 GUI 可能被单实例锁吞掉）`);
+  return { killed: false, reason: 'still-alive', waitedMs: Date.now() - started };
 }
 
 /** 读并校验 request.json。缺关键字段直接抛（调用方会记日志退出）。 */
@@ -526,6 +729,26 @@ async function main() {
   result.exit = exit;
   log(logFile, `respawn: 旧进程 exited=${exit.exited} forced=${exit.forced} waited=${exit.waitedMs}ms`);
 
+  // 1.5 桌面 profile：旧 host 是自己退出的，但它上面的 GUI 还活着并停在错误框上。
+  // 不先杀掉它，第 3 步裸起的 exe 会被 Electron 单实例锁吞掉（只聚焦旧窗口）。
+  if (req.desktop) {
+    const shell = await killDesktopShell(req.desktop, logFile);
+    result.desktopShell = shell;
+    log(logFile, `respawn: 桌面 GUI killed=${shell.killed}${shell.reason ? ` reason=${shell.reason}` : ''}`);
+  }
+
+  // 1.6 v0.9.2：桌面链路在旧 GUI 清理后、新实例拉起前，给 GUI 树根拍快照。拿不到（null）不阻塞主流程，就绪自动退回老的 lease/端口判据。
+  let guiBefore = null;
+  if (req.desktop && req.desktop.guiExeName) {
+    const roots0 = await listGuiRoots(req.desktop.guiExeName);
+    if (roots0 !== null) {
+      guiBefore = new Set(roots0);
+      log(logFile, `respawn: 桌面 GUI 根快照 ${guiBefore.size} 个${guiBefore.size ? `（${[...guiBefore].join(', ')}）` : '（旧树已清干净）'}`);
+    } else {
+      log(logFile, 'respawn: 桌面 GUI 根快照失败（powershell/WQL 不可达），就绪退回 lease/端口老判据');
+    }
+  }
+
   // 2. 等端口释放
   const portFree = await waitPortFree(req.readiness?.port, req.portFreeTimeoutMs ?? 15000, logFile);
   result.portFree = portFree;
@@ -556,6 +779,25 @@ async function main() {
 
   // 4. 等就绪
   if (result.launched) {
+    if (guiBefore !== null && req.desktop && req.desktop.guiExeName) {
+      // v0.9.2：桌面结构判据接管（取证见 waitDesktopGuiReady 注释头）。
+      const gw = await waitDesktopGuiReady(
+        req.desktop.guiExeName, guiBefore,
+        (req.readiness && req.readiness.timeoutMs) || 60000, logFile,
+      );
+      result.expectListenerPid = null;
+      result.ready = gw.ready;
+      result.readySignal = gw.ready ? 'desktop-gui-root' : null;
+      result.readyWaitedMs = gw.waitedMs;
+      result.listenerPid = gw.pid;
+      result.readyDegraded = false;
+      result.foreignListenerPid = null;
+      result.readyVerified = gw.ready ? 'new-gui-root' : null;
+      if (gw.ready) result.newPid = gw.pid;
+      log(logFile, gw.ready
+        ? `respawn: 桌面就绪 新 GUI 根 pid=${gw.pid} waited=${gw.waitedMs}ms（拉起前快照 ${guiBefore.size} 根）`  // newPid 换成真根：老值是被吞掉的壳 pid，按它杀会杀不到
+        : `respawn: 桌面未就绪 ${(req.readiness && req.readiness.timeoutMs) || 60000}ms 内未出现新 GUI 根（exe=${req.desktop.guiExeName}）`);
+    } else {
     // posix 的 detached 模式下 launched.pid **就是** dsh 本身（spawn 的直接子进程），
     // 所以可以拿它当期望监听者；win32 的 launched.pid 是 wscript 壳，dsh 是壳的孙子，
     // 拿壳 pid 去比对会永远判失败 —— 那种情况下传 null，走 degraded 路径。
@@ -581,7 +823,19 @@ async function main() {
         log(logFile, `respawn: 真实 dsh pid=${realPid}（壳 pid=${result.launchShellPid}）`);
       }
     }
-    log(logFile, `respawn: 就绪=${ready.ready} 信号=${ready.signal ?? '-'} waited=${ready.waitedMs}ms${ready.degraded ? ' (degraded: 未验监听者身份)' : ''}`);
+    // 桌面 profile：监听者必须是"我拉起的 GUI"树下的 host。验得过就把 degraded 摘掉；
+    // 验不过只记 unverified，不翻成失败（探测能力问题 ≠ 没起来）。
+    if (req.desktop && ready.ready && !ready.foreignListener) {
+      const listener = await findListenerPid(req.readiness?.port);
+      if (listener && result.launchShellPid) {
+        const under = await isDescendantOf(listener, result.launchShellPid);
+        result.readyVerified = under ? 'descendant-of-launched-shell' : 'unverified';
+        if (under) result.readyDegraded = false;
+        log(logFile, `respawn: 桌面链路 监听者 pid=${listener} 挂在我拉起的壳 pid=${result.launchShellPid} 树下：${under ? '是（身份已验）' : '否（保持 degraded，不翻失败）'}`);
+      }
+    }
+    log(logFile, `respawn: 就绪=${ready.ready} 信号=${ready.signal ?? '-'} waited=${ready.waitedMs}ms${result.readyDegraded ? ' (degraded: 未验监听者身份)' : ''}${result.readyVerified ? ` [${result.readyVerified}]` : ''}`);
+    }
   } else {
     result.ready = false;
     result.readySignal = null;
@@ -598,7 +852,13 @@ async function main() {
   log(logFile, `respawn: 完成 ok=${result.ok}`);
 }
 
-main().catch((err) => {
-  console.error('[agint-restart] respawn: fatal:', err);
-  process.exit(1);
-});
+// 直接执行才跑主流程；被单测 import 时只取导出的纯函数（同 killer.js 的守卫写法）
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[agint-restart] respawn: fatal:', err);
+    process.exit(1);
+  });
+}
+
+// 单测钩子：拉起 env 的剥离规则、桌面 GUI 核身拒杀、监听者祖先链
+export { pickEnv, killDesktopShell, probeProcess, isDescendantOf, guiRootPids, pickFreshGuiRoot, advanceFreshRoot, listGuiRoots };

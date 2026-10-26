@@ -253,7 +253,7 @@ export async function renameWithRetry(src, dest, opts = {}) {
  * 原子发布：staging 物料 → skillsRoot/<skillName>（先写 tmp 再整目录 rename）。
  * @returns {{ dir: string, version: string }}
  */
-export async function publishToSkillsRoot({ candidate, skillsRoot, version = '1', releasedBy = 'auto' }) {
+export async function publishToSkillsRoot({ candidate, skillsRoot, quarantineRoot = null, version = '1', releasedBy = 'auto' }) {
   const draft = candidate.skillDraft;
   const skillName = draft?.name ?? '';
   if (!skillName || skillName.includes('/') || skillName.includes('\\') || skillName.startsWith('.')) {
@@ -291,20 +291,70 @@ export async function publishToSkillsRoot({ candidate, skillsRoot, version = '1'
     }
     await renameWithRetry(tmp, target);   // 同盘 rename 原子；watcher 只会看到完整目录
   } catch (e) {
-    await rename(tmp, `${tmp}.failed-${Date.now()}`).catch(() => {});
+    // C1（2026-10-23 / 提案 2f7c834c）：失败残留**移出 skills_root**，不再就地改名。
+    // quarantineRoot 由调用方注入（工厂内才有 effectiveConfig，本函数在模块顶层）。
+    const q = quarantineRoot ? await quarantineTmp(tmp, quarantineRoot) : { moved: false, reason: '未配置 quarantineRoot' };
+    if (!q.moved) {
+      // 移不走（跨盘 / EPERM）才回落就地改名，留给 sweepSkillOrphans 的 TTL 清理。
+      // 宁可留在原地被 TTL 收，也不能丢掉目录让知识消失。
+      console.warn(`[agint-skill-autocreate] 发布失败残留未能移出 skills_root（${q.reason}），交给 TTL 清理兜底`);
+      await rename(tmp, `${tmp}.failed-${Date.now()}`).catch(() => {});
+    }
     throw e;
   }
   return { dir: target, version };
 }
 
-/** 回滚归档：skillsRoot/<name> → archiveRoot/<name>-<ts>（只归档不删除） */
-export async function archiveSkillDir({ skillName, skillsRoot, archiveRoot }) {
+/**
+ * 把发布失败的 tmp 目录移出 skills_root（2026-10-23 / 提案 2f7c834c C1）。
+ *
+ * 为什么必须**移走**而不是就地改名：宿主 dsh-skill-filesystem 的
+ * isPotentialSkillPath 只跳过 `.system`，`<root>/<seg0>/SKILL.md` 一律当技能。
+ * 于是 `.NAME.tmp-<ts>.failed-<ts>` 留在 skills_root 下就会被**当成技能发现**，
+ * 加载进 context（2026-09-17 pwsh-pwsh-pwsh-pwsh 就是这样混进技能目录的）。
+ *
+ * sweepSkillOrphans 的 TTL 清理是事后兜底：它要等 1 小时，且清理任务没跑就永久留着。
+ * 这里做的是源头治理 —— skills_root 下从头到尾不出现 .failed-*。
+ *
+ * ⛔ quarantineRoot **必须由调用方传入**：本模块顶层拿不到 effectiveConfig
+ * （那是在 createReleaseManager 工厂闭包里），2026-10-23 首版直接调它导致
+ * ReferenceError，把发布失败又变成了一次新的失败。
+ *
+ * @returns {Promise<{moved: boolean, dest?: string, reason?: string}>}
+ */
+async function quarantineTmp(tmp, quarantineRoot) {
+  const baseName = String(tmp).split(/[\\/]/).pop();
+  if (!quarantineRoot) return { moved: false, reason: '配置缺 rollback_archive_dir' };
+  const destDir = join(resolvePath(quarantineRoot), '.failed');
+  const dest = join(destDir, `${baseName}.failed-${Date.now()}`);
+  try {
+    await mkdir(destDir, { recursive: true });
+    await renameWithRetry(tmp, dest);   // 跨盘 rename 在 Windows 上会 EPERM
+    return { moved: true, dest };
+  } catch (e) {
+    return { moved: false, reason: `rename 失败（${e?.code ?? e?.message ?? 'unknown'}）` };
+  }
+}
+
+/**
+ * 回滚归档：skillsRoot/<name> → archiveRoot/<name>-<ts>（只归档不删除）
+ *
+ * C4（2026-10-23 / 提案 2f7c834c）：归档时必须登记**知识被谁吸收了**。
+ * 回滚 ≠ 知识作废 —— 它多数是被某个已有技能吸收了。不登记这条归属，
+ * 半年后没人知道这个技能当时解决过什么、为什么删，等于静默丢知识。
+ * `absorbedInto` 可空：**空 = 尚未登记**，是待办，不是"没有"。
+ *
+ * @param {{skillName:string, skillsRoot:string, archiveRoot:string,
+ *          absorbedInto?: string|null}} opts
+ * @returns {Promise<{archived:boolean, dest?:string, reason?:string, absorbedInto:string|null}>}
+ */
+export async function archiveSkillDir({ skillName, skillsRoot, archiveRoot, absorbedInto = null }) {
   const src = join(skillsRoot, skillName);
-  if (!(await pathExists(src))) return { archived: false, reason: 'dir-already-gone' };
+  if (!(await pathExists(src))) return { archived: false, reason: 'dir-already-gone', absorbedInto: absorbedInto ?? null };
   await mkdir(archiveRoot, { recursive: true });
   const dest = join(archiveRoot, `${skillName}-${Date.now()}`);
   await renameWithRetry(src, dest);   // 同为整目录 rename，同风险（skills_root 侧）
-  return { archived: true, dest };
+  return { archived: true, dest, absorbedInto: absorbedInto ?? null };
 }
 
 // ── 孤儿清理（2026-09-21 新增）────────────────────────────────────────────
@@ -375,6 +425,9 @@ export function createReleaseManager(deps) {
   const {
     table, audit, publishEvent, cfg: effectiveConfig,
     getService, readToolStatsRecords, dshHome,
+    // 2026-10-18：候选走终态时清 pattern 回链（注入，见 lib/index.js dismissPatternOf）。
+    // 缺省 no-op —— 老调用方（测试里的最小 deps）不会因此抛错。
+    dismissPatternOf = async () => false,
   } = deps;
 
   const skillsRootOf = () => resolvePath(effectiveConfig().skills_root);
@@ -391,6 +444,22 @@ export function createReleaseManager(deps) {
         ok: false, gate: 'human-approval',
         reason: `人工确认窗生效（until ${c.require_human_approval_until}），需 autocreate_release 手动点头发`,
       };
+    }
+    // 门 3a：证据级别门（2026-10-23 / 提案 2f7c834c C2）
+    // E0 = 没有可执行证据（phase2 未 pass：无 scripts、沙箱门 skipped 等）。
+    // 实测两个 auto 发布的技能都是 E0 —— 它们进目录后 0 调用，不是被埋没，
+    // 是根本没有可执行内容。E0 一律不放行，等人工点头。
+    // 放在 policy 门之前：E0 的候选没必要再花一次 policy 调用。
+    // kill-switch：evidence_gate_enabled（默认开）。manual=true 绕过。
+    if (!manual && c.evidence_gate_enabled !== false) {
+      const level = candidate?.evalResults?.phase3?.evidenceLevel ?? null;
+      if (level === 'E0') {
+        return {
+          ok: false,
+          gate: 'evidence',
+          reason: '证据级别 E0（phase2 未 pass，无可执行证据），自动发布不放行，需 autocreate_release 人工确认',
+        };
+      }
     }
     // 门 3：policy 门（manual 也不绕——绕预算可以，绕质量门不行）
     const policy = getService('agint.qualityPolicy');
@@ -537,7 +606,7 @@ export function createReleaseManager(deps) {
     // 落盘 + 落账（candidate 状态先置 RELEASED 再落盘？——先落盘，失败则候选保持原状态）
     let published;
     try {
-      published = await publishToSkillsRoot({ candidate, skillsRoot: skillsRootOf(), releasedBy: manual ? 'human' : 'auto' });
+      published = await publishToSkillsRoot({ candidate, skillsRoot: skillsRootOf(), quarantineRoot: archiveRootOf(), releasedBy: manual ? 'human' : 'auto' });
     } catch (e) {
       await audit({
         actor, action: 'release_publish_failed', targetType: 'candidate', targetId: id,
@@ -574,6 +643,8 @@ export function createReleaseManager(deps) {
       releasedAt,
       releasedVersion: published.version,
     });
+    // 模式标 released（保留回链，可回溯「技能从哪来」）。2026-10-18。
+    await dismissPatternOf(id, 'RELEASED').catch(() => {});
 
     await publishEvent('skill-autocreate.released', {
       candidateId: id, skillName, releaseId: releaseEntry.id, releasedBy: manual ? 'human' : 'auto',
@@ -625,6 +696,8 @@ export function createReleaseManager(deps) {
     await cd.put(id, {
       ...candidate, status: 'REJECTED', rejectionReason: `[${gate}] ${reason}`.slice(0, 300),
     });
+    // 清回链（2026-10-18）：不清则该模式永久跳过候选生成。失败不阻断拒绝。
+    await dismissPatternOf(id).catch(() => {});
     await publishEvent('skill-autocreate.release-rejected-low-specificity', {
       candidateId: id, skillName: candidate.skillDraft?.name, toolSequence: extra.toolSequence ?? [],
     });
@@ -675,6 +748,8 @@ export function createReleaseManager(deps) {
 
     const arch = await archiveSkillDir({
       skillName: release.skillName, skillsRoot: skillsRootOf(), archiveRoot: archiveRootOf(),
+      // C4：回滚时人工可声明"这个技能的知识并进了谁"。可空。
+      absorbedInto: input.absorbedInto ?? null,
     });
     const rolledAt = nowIso();
     await rt.put(release.id, {
@@ -682,7 +757,14 @@ export function createReleaseManager(deps) {
       status: 'ROLLED_BACK',
       rollbackAt: rolledAt,
       rollbackReason: reason,
-      observationMetrics: { ...(release.observationMetrics ?? {}), archivedTo: arch.dest ?? null, dirAlreadyGone: !arch.archived },
+      // C4（2026-10-23）：顶层也存一份，便于按"知识归属"检索，不用翻 metrics。
+      absorbedInto: arch.absorbedInto ?? null,
+      observationMetrics: {
+        ...(release.observationMetrics ?? {}),
+        archivedTo: arch.dest ?? null,
+        dirAlreadyGone: !arch.archived,
+        absorbedInto: arch.absorbedInto ?? null,
+      },
     });
     if (candEntry) {
       await cd.put(candEntry[0], {
@@ -690,6 +772,8 @@ export function createReleaseManager(deps) {
         status: 'ROLLED_BACK',
         rollbackReason: reason,
       });
+      // 清回链（2026-10-18）：回滚等于「这个模式不值得再提案」，不清就永久跳过。
+      await dismissPatternOf(release.candidateId, 'ROLLED_BACK').catch(() => {});
     }
     await publishEvent('skill-autocreate.rolled-back', {
       candidateId: release.candidateId, skillName: release.skillName, releaseId: release.id,
@@ -770,7 +854,12 @@ export function createReleaseManager(deps) {
         await rt.put(release.id, { ...release, status: 'STABLE', observationMetrics: metrics });
         const cd = await table('candidates');
         const candEntry = cd.entries().find(([key]) => key === release.candidateId);
-        if (candEntry) await cd.put(candEntry[0], { ...candEntry[1], status: 'STABLE' });
+        if (candEntry) {
+          await cd.put(candEntry[0], { ...candEntry[1], status: 'STABLE' });
+          // 模式标 released（保留回链）：技能在跑，模式不再是「待提案」，
+          // 但「这技能从哪个重复模式来的」要能回溯（2026-10-18）。
+          await dismissPatternOf(release.candidateId, 'STABLE').catch(() => {});
+        }
         await publishEvent('skill-autocreate.release-stable', {
           candidateId: release.candidateId, skillName: release.skillName, callsTotal: total,
         });
@@ -815,7 +904,7 @@ export function createReleaseManager(deps) {
   return {
     releaseCandidate, releaseQueue, rollback, observe, listReleases,
     // 暴露纯函数与 helper 供测试/工具复用
-    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput, renameWithRetry, sweepSkillOrphans, isOrphanTmpDir },
+    _internals: { checkGates, checkCooldown, weekKey, humanApprovalActive, judgeObservation, matchSkillCall, callsByDay, skillsRootOf, archiveRootOf, buildPolicyInput, renameWithRetry, sweepSkillOrphans, isOrphanTmpDir, quarantineTmp },
   };
 }
 

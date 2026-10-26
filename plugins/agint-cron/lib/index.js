@@ -17,7 +17,7 @@
  */
 
 import { z } from 'zod';
-import { nextFire, isDue } from './cron.js';
+import { nextFire, isDue, getHostCronEngine } from './cron.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { createHostBridge } from './host-schedule.js';
@@ -36,6 +36,25 @@ const Config = z
      *   没配就 soft-skip，理由写进 lastResultSummary。
      */
     repoRoot: z.string().min(1).nullish(),
+    /**
+     * 工作区指令体积哨兵（agents-size-guard job，daily 06:45）的配置。
+     *
+     * ⛔ 必须在这里显式声明：cordis 用 zod 解析行 config，**默认剥离未声明的键**
+     *   （zod object 默认 strip）。2026-10-19 实测：只改 patch.yml 与 jobs.js、
+     *   漏改本 schema ⇒ config 里根本不出现 agentsSizeGuard ⇒ job 抛
+     *   "未配置 ... file"，而磁盘上的 patch.yml 明明写好了。症状与「配了没生效」
+     *   一模一样，排查时极易误判为 YAML 或 !!js 求值问题。
+     */
+    agentsSizeGuard: z
+      .object({
+        file: z.string().min(1),
+        reportDir: z.string().min(1),
+        localFile: z.string().min(1).nullish(),
+        maxBytes: z.number().int().positive().nullish(),
+        maxChars: z.number().int().positive().nullish(),
+        hostBudgetBytes: z.number().int().positive().nullish(),
+      })
+      .nullish(),
   })
   .optional();
 
@@ -127,6 +146,19 @@ function apply(ctx, config) {
     '（宿主 dsh-schedule 懒加载；cron_list 可查 hostSchedule 面）',
   );
 
+  // D5 迁移（2026-10-21）：预热宿主 cron 规则引擎。
+  // 引擎装好后，nextFire/lastFire 这两个**同步**调用点就走上游 dsh-schedule
+  // （Temporal 日历 + IANA 时区），不再用自研的分钟粒度暴力扫描。
+  // 预热是异步的：第一轮 tick 之前没装上也不影响 —— cron.js 会自动回落自研实现。
+  void Promise.resolve(hostSchedule.ensureHost?.())
+    .then(() => {
+      const eng = getHostCronEngine();
+      console.info(
+        '[agint-cron] host cron engine ' + (eng ? 'ready（时刻计算走上游 dsh-schedule）' : 'unavailable（回落自研实现）'),
+      );
+    })
+    .catch(() => { /* 宿主模块缺席 ⇒ 保持自研回落，不阻断 */ });
+
   // Hydrate persisted lastRunAt/lastResult/lastError per job so a rebooted
   // host does not report every job as never-run. The domain opens async, so we
   // update the job objects in place once ready; jobs start null (previous
@@ -203,6 +235,12 @@ function apply(ctx, config) {
     //   默认为空 ⇒ job 走 REPO_ROOT_UNKNOWN soft-skip，而不是去猜一个目录
     //   （猜错 =  audits 另一份仓库的索引，报出一堆假的漂移，比不跑更坏）。
     'agint.repoRoot': config?.repoRoot ?? null,
+    // 工作区指令体积哨兵（2026-10-18 新增 job agents-size-guard）。同样是 config
+    // 而非宿主服务：被核文件与报告目录是**机器私有绝对路径**，不进 ctx.get。
+    // ⛔ 别漏这行 —— 与 input-gateway-watchdog 同一个洞（2026-10-09 实测）：
+    //   services 是白名单而非 ctx 全量透传，只改 jobs.js 会让该 job 每天抛
+    //   "未配置 agint-cron.config.agentsSizeGuard.file"，症状与「哨兵没跑」一样。
+    'agint.agentsSizeGuard': config?.agentsSizeGuard ?? null,
   });
 
   // Jobs in one tick run to completion, in declaration order. Previously each
@@ -264,11 +302,47 @@ function apply(ctx, config) {
     }
   }
 
+  // 2026-10-19：宿主 storage 的 atomic write 在 Windows 上会撞 EPERM。
+  // 取证：dsh-storage-json/lib/index.js:25-40 是「写 .<uuid>.tmp → rename 覆盖目标」；
+  // rename 撞上同一文件的另一个读者/写者即 EPERM（Windows 不允许替换被打开的文件）。
+  // 实测（本机 storages 目录，复刻宿主同一套 writeAtomic）：
+  //   · 单进程串行 60/60 成功 ⇒ 不是权限问题，是竞态；
+  //   · 单进程内 8 并发 × 10 轮：54/80 成功、26/80 EPERM；
+  //   · 8 worker_threads × 40：247/320 成功、73/320 EPERM。
+  // 生产实证：curator-weekly 2026-10-18 23:00 EPERM，2026-10-19 手工重跑即 OK。
+  //
+  // 只对**这一类**瞬时错误重试：EPERM/EBUSY/EACCES 且发生在 rename/写盘语境。
+  // 其余错误原样抛出 —— 用「重试」掩盖真错误 = 把故障换成静默失真。
+  const RETRYABLE_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+  const RETRY_MAX = 3;      // 首次 + 2 次重试
+  const RETRY_BASE_MS = 150;
+
+  function isTransientWriteError(error) {
+    const code = error?.code;
+    if (typeof code !== 'string' || !RETRYABLE_CODES.has(code)) return false;
+    // 只认写盘语境：rename 覆盖 / 打开 tmp / 写文件。只读失败不该重试。
+    const msg = String(error?.message ?? '');
+    return /rename|write|open|unlink|rm\b/i.test(msg);
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function runOne(job) {
     job.running = true;
     const startedAt = new Date().toISOString();
     try {
-      const result = await job.action(services());
+      let result = null;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          result = await job.action(services());
+          break;
+        } catch (error) {
+          if (attempt >= RETRY_MAX || !isTransientWriteError(error)) throw error;
+          const waitMs = RETRY_BASE_MS * 2 ** (attempt - 1);
+          console.warn(`[agint-cron] ${job.id} 写盘瞬时错误 ${error.code}，${waitMs}ms 后重试（${attempt}/${RETRY_MAX - 1}）`);
+          await sleep(waitMs);
+        }
+      }
       job.lastResult = { ok: true, startedAt, result };
       job.lastError = null;
     } catch (error) {

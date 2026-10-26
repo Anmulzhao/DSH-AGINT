@@ -56,9 +56,49 @@ const partialSummary = () => ({
   ],
 });
 
+/** 假 LLM 的结构化输出：回显模板文本，保证既有断言不被措辞变化打断。 */
+function fakeLlmStructured(schema, promptText) {
+  const required = schema?.required ?? [];
+  if (required.includes('advice')) {
+    const advice = /机械建议：([\s\S]*?)\n证据：/.exec(promptText)?.[1]?.trim() ?? 'LLM 建议';
+    const evidence = /证据：([\s\S]*?)\n\n/.exec(promptText)?.[1]?.trim() ?? 'LLM 证据';
+    return { advice, evidence };
+  }
+  if (required.includes('narrative')) return { narrative: 'LLM 行级深挖', pattern: 'llm-pattern' };
+  if (required.includes('body')) {
+    const body = /模板 body：\n([\s\S]*?)\n(?:行级深挖：|问题模式：|请润色)/.exec(promptText)?.[1]?.trim()
+      ?? 'LLM 提案正文';
+    return { body };
+  }
+  return {};
+}
+
+/** 默认 LLM 通路：所有广播都走它。测试要模拟失败时用 extraServices 覆盖 agents/subagents。 */
+function fakeLlmServices() {
+  const calls = [];
+  const agents = {
+    create: async () => ({ agent: { id: `parent-${calls.length + 1}` }, dispose: async () => {} }),
+  };
+  const subagents = {
+    getProvider: () => ({ name: 'spawn' }),
+    startActivation: async (spec) => {
+      calls.push(spec);
+      const promptText = spec.request.prompt.map((b) => b?.text ?? '').join('\n');
+      const structured = fakeLlmStructured(spec.request.outputSchema, promptText);
+      return {
+        childId: `child-${calls.length}`,
+        result: Promise.resolve({ stopReason: 'completed', structured }),
+        dispose: async () => {},
+      };
+    },
+  };
+  return { agents, subagents, calls };
+}
+
 /**
  * 造一个挂好假服务的 ctx 并跑 apply。
  * summary 传 Error 实例 = summary 恒抛；传 null = metrics 服务缺席。
+ * 默认挂假 LLM（成功）；要测失败传 extraServices: { agents: null }。
  */
 function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } = {}) {
   const audit = [];
@@ -74,10 +114,14 @@ function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } =
       return typeof summaryFn === 'function' ? summaryFn() : summaryFn;
     },
   };
+  const llm = fakeLlmServices();
   const services = {
     'agint.metrics': metrics,
     'agint.evolution': { logPhase4: async (e) => { audit.push(e); return { ...e }; } },
     'agint.eventBus.publish': async (envelope) => { bus.push(envelope); return true; },
+    agents: llm.agents,
+    subagents: llm.subagents,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'test', model: 'test', reasoningEffort: 'high' }) },
     ...extraServices,
   };
   const provided = {};
@@ -91,6 +135,7 @@ function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } =
   return {
     svc: provided['agint.aestheticOracle'],
     provided, audit, bus,
+    llmCalls: llm.calls,
     calls: () => summaryCalls,
     /** 按次切换 metrics.summary 的数据源（基线重定测试用）。 */
     setSummary: (s) => { summaryFn = s; },
@@ -131,7 +176,7 @@ test('AC-1/2/3 daily 主链路：wall≤3s、≤5行≤2KB 首行 asOf、审计 
   // 广播 payload 透传公式版本（r3 = 双计数分子拆解）与判尺指纹（提案 98c8e911）：
   // 版本管结构变更（人工 bump），指纹管参数微调（自动），两者互补不可互相替代。
   const dailyEvent = env.bus.find((e) => e.payload?.kind === 'daily');
-  assert.equal(dailyEvent?.payload?.formulaVersion, 'r3');
+  assert.equal(dailyEvent?.payload?.formulaVersion, 'r4');
   assert.match(dailyEvent?.payload?.scaleHash ?? '', /^[0-9a-f]{8}$/,
     `payload 必须带判尺指纹，实得 ${dailyEvent?.payload?.scaleHash}`);
   // §3.5：activity 5/173=0.029 < 0.1 → 播「进化静默期」，不再用「死寂」
@@ -268,6 +313,34 @@ test('Q3 证据绑定：extractAtomic 把 wiki 矛盾/孤儿清单透传进 advi
   assert.ok(view.adviceCtx.wikiOrphanFiles.includes('DSH-subagent集成坑.md'));
   assert.deepEqual(view.adviceCtx.ruleLintIssues, []);
   assert.equal(view.adviceCtx.curatorOverlaps, 0);
+});
+
+test('Q3 证据绑定：wiki 矛盾明细是对象时渲染成 path:line，不得出 [object Object]', () => {
+  // 2026-10-23 回归：agint-wiki v0.2.0 起 lint 返回 {path,line,snippet} 对象，
+  // 生产 meta 实测自 2026-10-13 起就是该形状。旧代码 String(x) ⇒ 建议里
+  // 出现 "[object Object]"，复核者看不出是哪条文件（§4 真实关破口）。
+  const view = extractAtomic({
+    asOf: FIXTURE_ASOF,
+    metrics: [{
+      key: 'wiki.contradictions',
+      value: 1,
+      meta: JSON.stringify({
+        files: [{ path: '生产运维/两票-装设接地线操作票口径.md', line: 79, snippet: '| 操作票保存期 | …' }],
+      }),
+    }],
+  });
+  assert.deepEqual(view.adviceCtx.wikiContradictionFiles,
+    ['生产运维/两票-装设接地线操作票口径.md:79']);
+  assert.ok(
+    !JSON.stringify(view.adviceCtx.wikiContradictionFiles).includes('[object Object]'),
+    '矛盾清单不得出现 [object Object]',
+  );
+  // 旧形状（裸文件名字符串）仍原样透传 —— 双形状都吃，不破坏既有夹具。
+  const legacy = extractAtomic({
+    asOf: FIXTURE_ASOF,
+    metrics: [{ key: 'wiki.contradictions', value: 1, meta: JSON.stringify({ files: ['a.md'] }) }],
+  });
+  assert.deepEqual(legacy.adviceCtx.wikiContradictionFiles, ['a.md']);
 });
 
 test('daily 回归（2026-09-29 bug）：redundancy 最丑但 rule_lint 0 命中 → 建议指 wiki 矛盾', async () => {
@@ -482,7 +555,7 @@ test('calibrationSamples：产出机器侧归因样本，人工栏留 null（nul
   for (let i = 0; i < 3; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
   await env.svc.runBroadcast('weekly', { now: day(4) });
   const data = await env.svc.calibrationSamples({});
-  assert.equal(data.formulaVersion, 'r3');
+  assert.equal(data.formulaVersion, 'r4');
   assert.match(data.scaleHash, /^[0-9a-f]{8}$/);
   // daily 3 条 + weekly 1 条
   assert.equal(data.samples.length, 4);
@@ -685,7 +758,225 @@ test('Day2-3 出口 payload 与合同对齐：三档+alert 的真实 publish 必
     const check = validateTopicPayload(evt.topic, evt.payload);
     assert.deepEqual(check, { ok: true }, `${evt.topic} 出口 payload 违约：${check.ok ? '' : check.issues}`);
   }
-  assert.equal(env.bus.length, 4);
+  // 4 条出口必在：三档广播 + 程序化告警。上面的循环已逐一校验合同。
+  const topics = env.bus.map((e) => e.topic);
+  for (const t of ['oracle.daily', 'oracle.weekly', 'oracle.monthly', 'oracle.alert']) {
+    assert.ok(topics.includes(t), `缺出口 ${t}`);
+  }
+  assert.ok(env.bus.length >= 4, `出口数 ${env.bus.length} 少于四档`);
+  env.dispose();
+});
+
+test('无降级：LLM 不可用 → runBroadcast 抛错、落 error 痕、发一次告警', async () => {
+  const env = makeEnv({ extraServices: { agents: null } });
+  await assert.rejects(
+    env.svc.runBroadcast('daily', { now: day(0) }),
+    /L1: agents service missing/,
+  );
+  const hist = await env.svc.history(10);
+  const errRow = hist.find((r) => r.kind === 'daily' && r.outcome === 'error');
+  assert.ok(errRow, '必须落 outcome=error 痕');
+  assert.match(errRow.detail, /llm-unavailable: L1: agents service missing/);
+  assert.equal(
+    hist.find((r) => r.kind === 'daily' && r.outcome === 'ok'),
+    undefined,
+    '不得发布模板降级广播',
+  );
+  const alerts = env.bus.filter((e) => e.topic === 'oracle.alert');
+  assert.equal(alerts.length, 1, '必须发一次 oracle.alert');
+  assert.match(alerts[0].payload.reason, /LLM 不可用/);
+  assert.equal(env.bus.filter((e) => e.topic === 'oracle.daily').length, 0, '失败轮不得发布 oracle.daily');
+  env.dispose();
+});
+
+test('无降级：runScheduled 每次重试都落 error 痕，末次才告警', async () => {
+  const env = makeEnv({ extraServices: { agents: null } });
+  await assert.rejects(
+    env.svc.runScheduled('daily', { retryDelays: [0, 0, 0] }),
+    /L1: agents service missing/,
+  );
+  const rows = await env.svc.history(20);
+  assert.equal(rows.filter((r) => r.kind === 'daily' && r.outcome === 'error').length, 3, '3 次尝试各落一条 error');
+  assert.equal(env.bus.filter((e) => e.topic === 'oracle.alert').length, 1, '中间重试 suppressAlert，只在末次告警');
+  assert.equal((await env.svc.getState()).consecutiveFailures, 1, '一次调度失败记 1');
+  env.dispose();
+});
+
+test('无降级：oracle_broadcasts 成功行只记 mode=llm（AC-21 可查）', async () => {
+  const env = makeEnv();
+  await env.svc.runBroadcast('daily', { now: day(0) });
+  const hist = await env.svc.history(5);
+  assert.equal(hist[0].mode, 'llm');
+  assert.ok(env.llmCalls.length > 0, '必须真走 LLM');
+  env.dispose();
+});
+
+test('无降级：weekly L3 失败 → 整轮抛错，零提案落盘（先润色后写库）', async () => {
+  const llm = fakeLlmServices();
+  const subagents = {
+    getProvider: () => ({ name: 'spawn' }),
+    startActivation: async (spec) => {
+      const required = spec.request.outputSchema?.required ?? [];
+      if (required.includes('body')) {
+        return {
+          childId: 'l3-fail',
+          result: Promise.resolve({ stopReason: 'error', diagnostic: 'l3 down' }),
+          dispose: async () => {},
+        };
+      }
+      return llm.subagents.startActivation(spec);
+    },
+  };
+  const proposed = [];
+  const env = makeEnv({
+    extraServices: {
+      subagents,
+      'agint.evolve': {
+        propose: async (input) => { proposed.push(input); return { id: `p-${proposed.length}` }; },
+      },
+    },
+  });
+  await assert.rejects(
+    env.svc.runBroadcast('weekly', { now: day(0) }),
+    /L3: stopReason=error \(l3 down\)/,
+  );
+  assert.equal(proposed.length, 0, 'L3 失败前不得写任何提案');
+  const hist = await env.svc.history(10);
+  assert.ok(hist.some((r) => r.kind === 'weekly' && r.outcome === 'error'), '必须落 error 痕');
+  env.dispose();
+});
+
+// ── r4：提案闭环（门槛 / 去重 / 采纳率）────────────────────────────────────
+
+/** 提案服务 mock：只实现 oracle 用到的三个方法（propose / listProposals / setStatus）。 */
+function makeEvolve(seed = []) {
+  const rows = [...seed];
+  return {
+    rows,
+    propose: async (input) => {
+      const rec = {
+        id: `new-${rows.length + 1}`, status: 'proposed',
+        createdAt: new Date(2026, 8, 27, 9, 0, 0).toISOString(), ...input,
+      };
+      rows.push(rec);
+      return rec;
+    },
+    listProposals: async (f = {}) => rows.filter((p) => !f.status || p.status === f.status),
+    setStatus: async (id, status) => {
+      const p = rows.find((x) => x.id === id);
+      if (p) p.status = status;
+      return p;
+    },
+  };
+}
+
+const DAY_MS = 86_400_000;
+
+test('r4 提案门槛：扣分 < 2.0 的维不开单，>= 2.0 的维开单', async () => {
+  const { buildWeeklyProposals } = await import('../lib/broadcast.js');
+  const ev = {
+    scored: {
+      dims: {
+        noise: { available: true, deduction: 0.3, maxWeight: 30 },
+        confidence: { available: true, deduction: 2.1, maxWeight: 20 },
+        redundancy: { available: true, deduction: 0, maxWeight: 20 },
+        bloat: { available: true, deduction: 0, maxWeight: 30 },
+      },
+    },
+    composites: {
+      noise: { value: 0.003 }, confidence: { value: 0.65 },
+      redundancy: { value: 0 }, bloat: { value: 0.9 },
+    },
+  };
+  const ctx = { memoryNoEvidenceCount: 5, lowConfidenceNoEvidence: ['mem-1'] };
+  const drafts = buildWeeklyProposals(ev, ctx, { weekKey: '2026-W43' });
+  assert.equal(drafts.length, 1, '只有 confidence（2.1 分）够门槛');
+  assert.equal(drafts[0].key, 'confidence');
+  assert.ok(drafts[0].title.includes('决策确信度 扣 2.1 分'), drafts[0].title);
+});
+
+test('r4 去重：同维 28 天内已有 proposed 提案 → 命中；wontfix 与过期不拦', async () => {
+  const { findDuplicateProposal } = await import('../lib/broadcast.js');
+  const now = new Date(2026, 9, 22, 9, 0, 0);
+  const mk = (over) => ({
+    id: 'x', status: 'proposed', category: 'skill',
+    createdAt: new Date(now.getTime() - 3 * DAY_MS).toISOString(),
+    title: '美谕提案：臃肿度 扣 23.8 分', note: '', source: 'agint-aesthetic-oracle', ...over,
+  });
+
+  // 1) title 匹配（覆盖 r4 之前的历史提案，它们 note 里没有 worst=）
+  assert.equal(findDuplicateProposal('bloat', [mk()], { now }).id, 'x');
+  // 2) note 结构化匹配
+  const noteHit = mk({ title: '无关标题', note: 'x / worst=bloat' });
+  assert.equal(findDuplicateProposal('bloat', [noteHit], { now }).id, 'x');
+  // 3) 不同维不误伤
+  assert.equal(findDuplicateProposal('noise', [mk()], { now }), null);
+  // 4) wontfix 不拦——「说过不做」不等于「问题消失了」，应重开
+  assert.equal(findDuplicateProposal('bloat', [mk({ status: 'wontfix' })], { now }), null);
+  // 5) 超窗口不拦
+  const old = mk({ createdAt: new Date(now.getTime() - 31 * DAY_MS).toISOString() });
+  assert.equal(findDuplicateProposal('bloat', [old], { now }), null);
+});
+
+test('r4 去重端到端：不同维的历史提案不误抑制', async () => {
+  const evolve = makeEvolve([{
+    id: 'old-bloat', status: 'proposed', category: 'skill', source: 'agint-aesthetic-oracle',
+    createdAt: new Date(2026, 8, 20, 9, 0, 0).toISOString(),
+    title: '美谕提案：臃肿度 扣 10.0 分', note: '',
+  }]);
+  const env = makeEnv({ extraServices: { 'agint.evolve': evolve } });
+  const out = await env.svc.runBroadcast('weekly', { now: new Date(2026, 8, 27, 9, 0, 0) });
+  assert.equal(out.ok, true);
+  // 夹具四维扣分 noise 22.11 / confidence 4.46 / redundancy 20 / bloat 0
+  // ⇒ 提 3 条；bloat 扣 0 本就不提，历史 bloat 提案不该误抑制其他维
+  assert.equal(out.proposals, 3);
+  const suppressed = env.audit
+    .flatMap((a) => a.findings ?? [])
+    .filter((f) => f.ruleId === 'oracle-proposal-suppressed');
+  assert.equal(suppressed.length, 0, '不同维的历史提案不得抑制本轮');
+  env.dispose();
+});
+
+test('r4 去重端到端：同维已 proposed → 本轮少提一条并留痕', async () => {
+  const evolve = makeEvolve([{
+    id: 'old-noise', status: 'proposed', category: 'doc', source: 'agint-aesthetic-oracle',
+    createdAt: new Date(2026, 8, 20, 9, 0, 0).toISOString(),
+    title: '美谕提案：噪声比 扣 21.9 分', note: '',
+  }]);
+  const env = makeEnv({ extraServices: { 'agint.evolve': evolve } });
+  const out = await env.svc.runBroadcast('weekly', { now: new Date(2026, 8, 27, 9, 0, 0) });
+  assert.equal(out.ok, true);
+  assert.equal(out.proposals, 2, 'noise 被抑制后只剩 confidence + redundancy');
+  const findings = env.audit.flatMap((a) => a.findings ?? []);
+  const sup = findings.find((f) => f.ruleId === 'oracle-proposal-suppressed');
+  assert.ok(sup, '必须留下抑制痕迹');
+  assert.ok(sup.detail.includes('noise(原 old-noise)'), sup.detail);
+  env.dispose();
+});
+
+test('r4 闭环行：weekly 广播报出提案累计/已处理/挂起', async () => {
+  const evolve = makeEvolve([
+    { id: 'a', status: 'applied', category: 'doc', source: 'agint-aesthetic-oracle', createdAt: '2026-09-10T00:00:00.000Z', title: 'x', note: '' },
+    { id: 'b', status: 'proposed', category: 'doc', source: 'agint-aesthetic-oracle', createdAt: '2026-09-12T00:00:00.000Z', title: 'y', note: '' },
+    { id: 'c', status: 'proposed', category: 'rule', source: 'agint-aesthetic-oracle', createdAt: '2026-09-15T00:00:00.000Z', title: 'z', note: '' },
+    // 别的插件来源的提案不得进统计
+    { id: 'd', status: 'proposed', category: 'doc', source: 'other-plugin', createdAt: '2026-09-15T00:00:00.000Z', title: 'w', note: '' },
+  ]);
+  const env = makeEnv({ extraServices: { 'agint.evolve': evolve } });
+  const out = await env.svc.runBroadcast('weekly', { now: new Date(2026, 8, 27, 9, 0, 0) });
+  assert.equal(out.ok, true);
+  assert.ok(
+    out.text.includes('闭环：美谕提案累计 3 条｜已处理 1｜挂起 2'),
+    out.text,
+  );
+  env.dispose();
+});
+
+test('r4 闭环行：listProposals 不可用时不写该行（UNKNOWN 不是 0）', async () => {
+  const env = makeEnv(); // 无 agint.evolve
+  const out = await env.svc.runBroadcast('weekly', { now: new Date(2026, 8, 27, 9, 0, 0) });
+  assert.equal(out.ok, true);
+  assert.equal(out.text.includes('闭环：'), false, '读不到提案时宁缺不假');
   env.dispose();
 });
 
@@ -931,12 +1222,12 @@ test('Day4-5 evolve 缺席/抛错 → weekly 广播照发（提案降级不阻�
   env2.dispose();
 });
 
-// ── §8.1.6 可观测性（v0.4.3）：mode 与 LLM 降级 reason 进审计 findings ──────
-// 2026-10-05 排障缺口回归钉：此前 mode 只进事件 payload、降级 reason 只活在
-// 内存里，evolution_log 查不到，只能靠广播墙钟反推走没走 LLM。
+// ── §8.1.6 可观测性（v0.4.3）：mode 进审计 findings ─────────────────────────
+// 2026-10-05 排障缺口回归钉：此前 mode 只进事件 payload，evolution_log 查不到，
+// 只能靠广播墙钟反推走没走 LLM。2026-10-25 无降级后只剩 llm / template 两种。
 
-test('审计带 oracle-llm-mode：LLM 通路不可用时记 mode + 降级 reason', async () => {
-  const env = makeEnv();   // ctx 无 agents/subagents 服务 → L1 立即降级（不真调 LLM）
+test('审计带 oracle-llm-mode：LLM 成功时记 mode=llm', async () => {
+  const env = makeEnv();
   const out = await env.svc.runBroadcast('daily');
   assert.equal(out.ok, true);
 
@@ -944,24 +1235,6 @@ test('审计带 oracle-llm-mode：LLM 通路不可用时记 mode + 降级 reason
   assert.equal(audit.length, 1);
   const finding = audit[0].findings.find((f) => f.ruleId === 'oracle-llm-mode');
   assert.ok(finding, '审计必须带 oracle-llm-mode finding');
-  assert.ok(finding.detail.includes('mode=heuristic-degraded'), finding.detail);
-  assert.ok(finding.detail.includes('L1:agents unavailable'), finding.detail);
+  assert.equal(finding.detail, 'mode=llm');
   env.dispose();
-});
-
-test('审计带 oracle-llm-mode：kill-switch off 时记 mode=template 且不带降级段', async () => {
-  const prev = process.env.AGINT_AESTHETIC_ORACLE_LLM;
-  process.env.AGINT_AESTHETIC_ORACLE_LLM = 'off';
-  try {
-    const env = makeEnv();
-    await env.svc.runBroadcast('daily');
-    const audit = env.audit.filter((e) => e.targetKind === 'oracle-daily');
-    const finding = audit[0].findings.find((f) => f.ruleId === 'oracle-llm-mode');
-    assert.ok(finding, '审计必须带 oracle-llm-mode finding');
-    assert.equal(finding.detail, 'mode=template');
-    env.dispose();
-  } finally {
-    if (prev === undefined) delete process.env.AGINT_AESTHETIC_ORACLE_LLM;
-    else process.env.AGINT_AESTHETIC_ORACLE_LLM = prev;
-  }
 });

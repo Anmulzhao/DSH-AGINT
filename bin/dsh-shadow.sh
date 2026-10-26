@@ -41,6 +41,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGINT_REPO="${AGINT_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DSH_HOST="${DSH_HOST:-/dsh}"
 PLUGINS_SRC="$AGINT_REPO/plugins"
+# host 侧「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+# ⚠️ 2026-10-21 修：此前写死 web。web profile 已于 2026-10-18 退役（老板令），
+# 2026-10-20 确认 profiles/web 目录已删 ⇒ 写死 web = 影子同步不到 host 的
+# profile 级 patch ⇒ 影子起得起来但**一个 agint 插件都不挂**。
+DSH_HOST_PROFILE_NAME="$(sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_HOST/.agint-bundle/profile.json" 2>/dev/null | head -1)"
+[ -n "$DSH_HOST_PROFILE_NAME" ] || DSH_HOST_PROFILE_NAME="desktop"
 
 PORT="${PORT:-3081}"
 # 用稳定路径（不带 ts），方便后续 down/status 找到；reset 时再带 ts 备份
@@ -77,7 +83,7 @@ check_prereqs() {
   [ -d "$AGINT_REPO" ] || fail "AGINT_REPO 不存在：$AGINT_REPO"
   [ -d "$PLUGINS_SRC" ] || fail "plugins 目录不存在：$PLUGINS_SRC"
   # host DSH_HOME 探测：必须能读到 cordis.yml 才算 host 健康
-  if [ ! -f "$DSH_HOST/profiles/web/cordis.yml" ]; then
+  if [ ! -f "$DSH_HOST/profiles/$DSH_HOST_PROFILE_NAME/cordis.yml" ]; then
     warn "host DSH_HOME ($DSH_HOST) 缺 cordis.yml —— 影子仍可起，但参考 host 配置时可能 404"
   fi
   # host 3080 占着 → 提醒但不阻止（影子 3081 不会冲突）
@@ -206,7 +212,7 @@ EOF
 # 影子必须挂跟 host 同一份 cordis.patch.yml（不然 plugin 不加载）
 # 选用「拷 + 标记」而非软链：避免影子误改 patch 时影响 host
 sync_cordis_patch() {
-  local host_patch="$DSH_HOST/profiles/web/cordis.patch.yml"
+  local host_patch="$DSH_HOST/profiles/$DSH_HOST_PROFILE_NAME/cordis.patch.yml"
   local shadow_patch="$SHADOW_PROFILE_DIR/cordis.patch.yml"
 
   if [ ! -f "$host_patch" ]; then

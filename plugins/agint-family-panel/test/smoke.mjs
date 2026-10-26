@@ -106,7 +106,11 @@ assert.match(clientSrc, /h\('iframe'/, 'v2 视图走 iframe 内嵌');
 assert.match(clientSrc, /contentDocument/, '0.2.2 iframe 自适应内页高度（同源直读）');
 assert.match(clientSrc, /ResizeObserver/, '高度跟随内页变化（ResizeObserver + 轮询兜底）');
 assert.match(clientSrc, /window\.open\(V2_PATH/, '新标签页打开按钮指向 V2_PATH');
-assert.match(clientSrc, /切换到 v1 名册/, 'v1/v2 视图切换按钮就位');
+// 2026-10-23：断言跟着 client.js 的实际文案走（见 client.js:1220
+// `view === 'v2' ? '切换到家族名册' : '切换到家族面板'`）。旧断言写的是
+// 「切换到 v1 名册」，那是改文案前的字样 —— HEAD 版本就已经对不上，
+// 属存量债；本轮改提案台时撞到，顺手对齐（未改动被测行为）。
+assert.match(clientSrc, /切换到家族名册/, 'v1/v2 视图切换按钮就位');
 // syntax check in a child process (the artifact references window)
 execFileSync(process.execPath, ['--check', join(root, 'lib/client.js')], { stdio: 'pipe' });
 
@@ -269,6 +273,16 @@ assert.equal(
 {
   const { makeStorages } = await import('./fixtures/make-storages.mjs');
   process.env.DSH_HOME = join(here, 'fixtures', 'v2-home');
+  // ⛔ 显式钉死 profile（2026-10-18 修）：fixture 只建了 profiles/web/，
+  // 而 resolveV2Dirs 会先问 ctx.get('profileContext').name，再回落 env.DSH_PROFILE，
+  // 最后才探测 profiles/*/plugins。宿主 / 终端里 DSH_PROFILE=desktop 时，
+  // 解析落到 profiles/desktop/plugins —— 那个目录在 fixture 里不存在 ⇒ scan.hits=0
+  // ⇒ 下面「fixture 扫描有命中」必红。
+  // 实测：同一份代码，DSH_PROFILE=desktop 红、=web 绿；git stash 掉当轮改动后
+  // 基线同样红 ⇒ 是测试对环境的隐式依赖，不是被测代码的问题。
+  // 测试结果不得取决于跑它的机器/终端，故在此显式覆盖，并在收尾还原。
+  const prevProfile = process.env.DSH_PROFILE;
+  process.env.DSH_PROFILE = 'web';
   makeStorages(process.env.DSH_HOME);
   delete process.env.AGINT_HOME;
   const v2ctx = makeCtx();
@@ -305,6 +319,9 @@ assert.equal(
   // 服务面新增 v2Data 方法
   assert.equal(typeof v2ctx._provided['agint.familyPanel'].v2Data, 'function', 'agint.familyPanel.v2Data 存在');
   delete process.env.DSH_HOME;
+  // 还原 profile：本文件后续若再加用例，不该继承这里钉的 web。
+  if (prevProfile === undefined) delete process.env.DSH_PROFILE;
+  else process.env.DSH_PROFILE = prevProfile;
 }
 
 console.log('agint-family-panel smoke: PASS (15 groups)');

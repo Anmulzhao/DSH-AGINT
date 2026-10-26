@@ -69,7 +69,10 @@ function candidateWithTools(name, tools, status = 'QUEUED_FOR_RELEASE') {
       successRateImprovement: 0.2, timeSavingsPct: 0.3, tokenSavingsPct: 0.2, harmIncrementEstimate: 0.05,
     },
     status,
-    evalResults: { phase1: { status: 'pass' }, phase3: { rankingScore: 0.62, evidenceLevel: 'E0', provisional: true } },
+    // 2026-10-23（提案 2f7c834c C2）：证据级别改为 E1。
+    // 本文件测的是**特异性门**（纯脚手架序列），候选若为 E0 会先被新加的证据门
+    // 拦下，根本走不到特异性判定。证据门本身由 release-publish-guard.test.mjs 覆盖。
+    evalResults: { phase1: { status: 'pass' }, phase3: { rankingScore: 0.62, evidenceLevel: 'E1', provisional: true } },
     rejectionReason: null,
     releasedAt: null,
     releasedVersion: null,

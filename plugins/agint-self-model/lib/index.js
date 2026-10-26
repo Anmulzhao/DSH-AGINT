@@ -76,7 +76,7 @@ function buildDeps(ctx) {
 
 // ── 聚合：能力图谱证据（从 evolution + diagnosis 按 domain 聚合）──────────────
 
-async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosisEvent = false, diagnosisDistribution = null } = {}) {
+async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosisEvent = false, diagnosisDistribution = null, evidence = null } = {}) {
   let failures = [];
   let templates = [];
   const evo = deps.get('agint.evolution');
@@ -92,6 +92,34 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
     }
   }
   catch { templates = []; }
+
+  // ── curriculum 成绩（2026-10-21 补，pull 形态）─────────────────────────────
+  // 为什么不靠 push：第一版（0.7.8）是「调用方传 evidence 进来」，但 evidence 是
+  // 一次性入参、**不落库**。于是出现振荡：T1 curriculum 推 3 条 pass ⇒ integration=CAN；
+  // T2 dream 触发 update（不传 evidence）⇒ 聚合只剩 failures/templates ⇒ 同一域被
+  // 重算成 UNCERTAIN。能力读数会随「哪个触发器最后跑」来回拉，那不可用。
+  // ⇒ 改成 pull：每次聚合都去 curriculum 拿近期成绩，稳定、与触发者无关。
+  //
+  // 软降级：curriculum 服务不可用（未挂载 / 未 provide / 读失败）时按 0 处理，
+  // 不抛 —— 与上面 queryFailures / queryTemplates 的 catch 同口径。
+  let curriculumAttempts = [];
+  try {
+    const cu = deps.get('agint.curriculum');
+    // ⛔ 必须用 listAttempts 而不是 list()：list() 返回的是 **challenges** 表
+    //    （plugins/agint-curriculum/lib/index.js:513-521 实证），那上面没有 result 字段，
+    //    拿它当成绩会全部落成 fail（result===undefined）。listAttempts 才是 attempts 明细。
+    if (cu && typeof cu.listAttempts === 'function') {
+      const rows = await cu.listAttempts({ limit: 200 });
+      curriculumAttempts = Array.isArray(rows) ? rows : [];
+    }
+  }
+  catch { curriculumAttempts = []; }
+  // 只认窗口内的 attempt；实测生产 6 条的完成时刻字段均为 verifiedAt
+  const attemptCutoff = Date.now() - windowDays * 86_400_000;
+  const recentAttempts = curriculumAttempts.filter((a) => {
+    const ts = Date.parse(a?.verifiedAt ?? a?.createdAt ?? '');
+    return Number.isNaN(ts) || ts >= attemptCutoff;
+  });
 
   // 全局非环境根因占比（diagnosis 根因分布代理；ENVIRONMENT_SHIFT 视为环境噪音）
   //
@@ -128,6 +156,40 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
   };
   for (const f of (Array.isArray(failures) ? failures : [])) push(f?.category ?? 'unknown', 'fail', f?.pattern);
   for (const t of (Array.isArray(templates) ? templates : [])) push(t?.category ?? 'unknown', 'ok', t?.pattern);
+
+  // curriculum 成绩并入（pull 源，与触发者无关）
+  // 判据：result==='pass' 记 ok，其余记 fail。域缺省落 unknown（与上面两源同口径）。
+  for (const a of recentAttempts) {
+    push(
+      typeof a?.domain === 'string' && a.domain.length > 0 ? a.domain : 'unknown',
+      a?.result === 'pass' ? 'ok' : 'fail',
+      a?.challengeId ?? a?.id ?? 'curriculum.attempt',
+    );
+  }
+
+  // ── 调用方当场提供的证据（2026-10-21 补）─────────────────────────────────
+  // 为什么必须有这一段：`selfUpdate` 的形参里一直有 `evidence`，但**从未传给本函数**
+  // （:232 那行只传了 windowDays / fromDiagnosisEvent / diagnosisDistribution）。
+  // 结果：agint-curriculum 每次判定后都调 `selfModel.update({evidence:{domain,result,...}})`
+  // 回写成绩，6 条全 pass、两域难度都升到 D2 —— 而 capability_map 里那两域**纹丝不动**，
+  // 因为聚合的证据只来自 failure_pattern / success_template 两张库存表。
+  //
+  // ⚠️ 这是**补充源**，不是主源：evidence 不落库、只对当次调用有效。
+  //    主源是上面的 curriculum pull（稳定）。这里保留是为了让「调用方刚提交的成绩
+  //    立刻反映」，避免它的效果要等到下一次读表才出现（同一次 update 内即时可见）。
+  //    两条路径都计入会重复计数 —— 所以只在 pull 没覆盖到该 challengeId 时才补。
+  if (evidence && typeof evidence === 'object') {
+    const already = recentAttempts.some(
+      (a) => evidence.challengeId && (a?.challengeId === evidence.challengeId || a?.id === evidence.challengeId),
+    );
+    if (!already) {
+      push(
+        typeof evidence.domain === 'string' && evidence.domain.length > 0 ? evidence.domain : 'unknown',
+        evidence.result === 'pass' ? 'ok' : 'fail',
+        evidence.challengeId ?? evidence.source ?? 'self-model.update',
+      );
+    }
+  }
 
   const aggregated = [];
   for (const [domain, info] of byDomain) {
@@ -229,8 +291,19 @@ async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest, 
   if (fromDiagnosisEvent && typeof onGuardTrip === 'function') {
     try { onGuardTrip(); } catch { /* ignore */ }
   }
-  const aggregated = await aggregateCapabilityEvidence(deps, { windowDays: 7, fromDiagnosisEvent, diagnosisDistribution });
-  const updatedDomains = await recomputeCapabilities(store, aggregated, { now });
+  const aggregated = await aggregateCapabilityEvidence(deps, {
+    windowDays: 7, fromDiagnosisEvent, diagnosisDistribution, evidence,
+  });
+  // ⛔ knownDomains 的用途（2026-10-21 补）：7 天窗口会把全部历史失败滤掉，
+  //    此时 integration/correctness 不会出现在 aggregated 里。而 recomputeCapabilities
+  //    是 upsert —— 不出现的域**不会被更新**，旧读数（可能是 45 天前的 CANNOT）就留在表里
+  //    冒充现状。传已知域清单让它把「本轮无证据」显式降为 UNCERTAIN。
+  //    已知域取两处并集：本轮聚合结果 + 表里已有的域（这样才能覆盖「本轮消失」的情况）。
+  const knownDomains = [...new Set([
+    ...aggregated.map((a) => a.domain),
+    ...Array.from(store.tables.capabilityMap.entries()).map(([, rec]) => rec?.domain).filter(Boolean),
+  ])];
+  const updatedDomains = await recomputeCapabilities(store, aggregated, { now, knownDomains });
   await recomputeObservation(store, deps, { now, metricsIngest, fromDiagnosisEvent, diagnosisDistribution });
 
   // weekly 触发器走全量校准主路径（设计稿 §4.5）

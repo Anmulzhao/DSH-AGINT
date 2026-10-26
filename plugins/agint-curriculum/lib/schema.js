@@ -187,6 +187,11 @@ export const ConfigSchema = z.object({
   generation_batch_limit: z.number().int().min(1).default(5), // 单轮生成上限
   challenge_cooldown_hours: z.number().int().min(0).default(24), // 同域 24h 冷却
 
+  // 生成期去重（v0.1.4）：challenge-gen 是 (domain, level) 确定性纯函数，
+  // 没有本窗口就会每周产出逐字相同的题面。窗口内同 domain+level+prompt 不重复
+  // 生成；过期允许复出（复验）。与 stale_reverify_days 语义不同，各自独立。
+  dedup_window_days: z.number().int().min(0).default(30),        // 0 = 关闭去重
+
   // difficulty-ctl（§4.6）
   difficulty_window_days: z.number().int().min(1).default(28),
   difficulty_min_samples: z.number().int().min(1).default(5),   // 样本 < 5 不调档
@@ -215,6 +220,7 @@ export const DEFAULT_CONFIG = Object.freeze(ConfigSchema.parse({}));
 export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'generation_batch_limit',
   'challenge_cooldown_hours',
+  'dedup_window_days',
   'difficulty_window_days',
   'difficulty_min_samples',
   'pass_floor',

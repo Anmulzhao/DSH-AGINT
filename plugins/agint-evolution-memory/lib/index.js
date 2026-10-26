@@ -573,14 +573,36 @@ function apply(ctx, config) {
 
   // ── 读取 helpers ────────────────────────────────────────────────────────
 
-  /** Query failure patterns. opts: { query?, category?, severity?, limit? } */
+  /**
+   * Query failure patterns.
+   *
+   * opts: { query?, category?, severity?, limit?, days? }
+   *
+   * `days`（2026-10-21 补）：只返回「近期活跃」的失败模式。
+   * 为什么必须有它 —— 此前 self-model 传 `{days: windowDays}` 但本函数**根本不读**，
+   * 「近期」这个词在能力画像链路里从未生效：8 条 failure_pattern 里最老的 45 天前
+   * （occ 累计到 125）永远参与聚合 ⇒ integration/correctness 两域被永久锁在 CANNOT。
+   * 判据用 `updatedAt`（每次 addFailure 去重命中都会刷新它，实测 8/8 行都有）。
+   *
+   * ⛔ 未传 `days` 时**完全保持原行为**（返回全表，仅受 limit 约束）——
+   *    diagnosis / mutator 那 7 个调用方一律传 `{limit:1000}` 或 `{query}`，
+   *    它们需要整表。给它们加时间窗会静默改变 cold-start 门槛的判定面。
+   * ⛔ 时间戳缺失/非法时**保留该行**（宁多不少）：宁可多算一条旧失败，
+   *    也不要因为一个坏时间戳就把真实失败藏起来。
+   */
   async function queryFailures(opts = {}) {
     const t = await t_fail();
     const out = [];
+    const nowMs = Date.now();
+    const windowMs = Number.isFinite(opts.days) && opts.days > 0 ? opts.days * 86_400_000 : null;
     for (const [id, rec] of t.entries()) {
       if (opts.category && rec.category !== opts.category) continue;
       if (opts.severity && rec.severity !== opts.severity) continue;
       if (opts.query && !matchesQuery(`${rec.pattern} ${rec.evidence ?? ''}`, opts.query)) continue;
+      if (windowMs !== null) {
+        const ts = Date.parse(rec.updatedAt ?? rec.createdAt ?? '');
+        if (!Number.isNaN(ts) && nowMs - ts > windowMs) continue;
+      }
       out.push({ id, ...rec });
     }
     out.sort((a, b) => (b.occurrences ?? 1) - (a.occurrences ?? 1) || b.updatedAt.localeCompare(a.updatedAt));

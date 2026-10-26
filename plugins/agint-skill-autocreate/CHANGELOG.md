@@ -1,3 +1,90 @@
+## v0.7.0 — 2026-10-25 — LLM 判定无降级 + 接 startActivation
+
+**背景**：宿主只有 `subagents.startActivation`；旧代码检查 `start` ⇒ LLM 判定
+25 天全程失败。旧策略在失败时回落轨道 B，并可能凭规则分直接产出候选。
+
+**变更**
+1. `lib/llm-verdict.js` 改调 `startActivation({ provider, label, request, signal,
+   delivery:'caller' })`；旧宿主保留 `start` 兼容分支。`request` 带 `parent` /
+   `prompt` / `agentPreset` / `agentOptions` / `outputSchema`；补 `reasoningEffort`。
+2. **无降级**：`judgeViaLLM` 失败返回 `{ ok:false, mode:'failed', reason }`；
+   `standardizable.js` 新增 `llmFailed` 分支：**直接判 null（需人工）**，⛔ 不回落轨道 B。
+   `judgeMode=off/shadow` 仍按配置使用轨道 B（显式配置，不是降级）。
+3. primary 档预算耗尽也走 `llmFailed`，不再凭规则分产出候选；审计 action 改为
+   `llm_judge_failed`，统计字段 `llm.degraded` → `llm.failed`。
+4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
+   服务/方法/provider 三种病因分开报。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+
+**测试**：`node --test` 425 例（419 pass / 6 skip）全绿；新增 startActivation 契约、
+provider/model/reasoningEffort 透传、`llmFailed → null` 与阴影档回归。
+
+## 未发版 · 2026-10-23 — 发布链路收口 C1 / C2 / C4（提案 2f7c834c）
+
+三条一起收口，C3（零调用直接回滚）与 C5（人工确认窗开关）此前已落地，不在本次范围。
+
+**C1 失败残留移出 skills_root**
+- 症状：发布失败时只把 tmp **就地改名**成 `.NAME.tmp-<ts>.failed-<ts>`，
+  而宿主 dsh-skill-filesystem 的 `isPotentialSkillPath` 只跳过 `.system`，
+  于是它被**当成技能发现**加载进 context（2026-09-17 pwsh-pwsh-pwsh-pwsh 实例）。
+- 改：`publishToSkillsRoot` 的 catch 改为移到 `<archiveRoot>/.failed/`。
+  `sweepSkillOrphans` 的 TTL 清理降为**事后兜底**（它要等 1 小时，且没跑就永久留着）。
+- ⛔ 首版踩的坑：`quarantineTmp` 写在模块顶层直接调 `effectiveConfig()` →
+  ReferenceError（那函数在 createReleaseManager 工厂闭包里）。改为由调用方
+  注入 `quarantineRoot` 参数。移不动（跨盘 EPERM）时回落就地改名，宁可留着被 TTL 收。
+
+**C2 证据级别门（evidence-gate）**
+- 症状：`checkGates` 不检查证据级别，两个 auto 发布的技能都是 E0
+  （phase2 未 pass：无 scripts、沙箱门 skipped）—— 进目录后 0 调用是设计出来的。
+- 改：`evidenceLevel === 'E0' && !manual` → 拦（gate='evidence'）。
+  manual=true 仍可放行。位置在 policy 门之前（E0 没必要再花一次 policy 调用）。
+- kill-switch：`evidence_gate_enabled`（默认**开**）。
+
+**C4 回滚登记知识归属**
+- `archiveSkillDir` 与 release 记录加 `absorbedInto`（可空）。
+- 语义：**空 = 尚未登记**，是待办，不是「没有」。回滚 ≠ 知识作废，
+  不登记归属等于半年后没人知道它解决过什么。
+- 工具层 `autocreate_rollback` 新增可选参数 `absorbedInto`。
+
+**验证**：新测试 `test/release-publish-guard.test.mjs` 11 条全绿
+（含 C2 kill-switch、C1 端到端、C4 空值三条 negative control）。
+存量测试修正：release.test.mjs / release-specificity-gate.test.mjs 的候选
+fixture 从 E0 改为 E1 —— 它们测的是下游行为，恒 E0 会被新门先拦下。
+skill-autocreate 全量 411 PASS / 0 FAIL。
+
+---
+
+## v0.6.2 (2026-10-18) — 候选终结后清 pattern 回链（否则模式永久跳过）
+
+**症状**：生产存储 `agint_skill_autocreate.json` 里 42 条 `status='candidate'`
+的 task_pattern，42 条的 `linkedCandidateId` 全部指向已终结候选
+（37 REJECTED + 5 ROLLED_BACK）。这些模式**再也不会产出新候选** ——
+候选生成守门是 `if (stored.linkedCandidateId) continue;`，回链不清就一直 continue。
+
+**根因**：只有人工 `rejectCandidate` 清回链（index.js 那段先 `status='dismissed'`
+再置 null）。自动评估拒绝（REJECTED_STATIC / REJECTED_SANDBOX）、去重拒绝、
+发布层终端拒绝（REJECTED）、回滚（ROLLED_BACK）、转 STABLE 都不清。
+人工路径写对了，机器路径全漏 —— 因为两条路径各写各的。
+
+**改法**（两层，缺一不可）：
+1. `planPatternLinkFix(pattern, candidateStatus)` 抽出唯一判据：
+   - REJECTED / REJECTED_STATIC / REJECTED_SANDBOX / ROLLED_BACK → `dismissed` + 清回链
+   - RELEASED / STABLE → `released` + **保留**回链（技能从哪来要能回溯）
+   - 其余 → 不动（还在排队/评估中的候选不能误伤）
+2. `dismissPatternOf(candidateId, status)` 在五处终态写入点调用：
+   triggerEval 的 REJECTED_STATIC / REJECTED_SANDBOX / dedup、release-manager 的
+   rejectCandidate / rollback / observe→STABLE。
+3. `reconcilePatternLinks()` 扫全表收口历史遗留；`detect()` 每次开头跑一次，
+   结果进返回值 `patternLinkReconcile`（`error` 与 `fixed:0` 分开，不装绿）。
+
+**为什么不直接改 JSON 文件**：宿主把整个 unit 读进内存、每次 put 整体重写。
+仓外脚本直写会被宿主下一次写入静默覆盖（three-state-audit §10）。故走表 API。
+
+**测试**：新增 `test/pattern-link-reconcile.test.mjs`（6 例：拒绝/回滚/在跑/未终结/
+幂等/detect 自动对账）。**红绿自证**：把 `PATTERN_DEAD_CANDIDATE.has(...)` 改成
+`false` → 6 例里 4 例立即变红（拒绝 2 例 + 幂等 + detect）。恢复后全绿。
+
+**存量**：401 个单测全过（30 个文件）。
 # Changelog — agint-skill-autocreate
 
 ## v0.6.1 (2026-10-08) — LLM 判定通路：provider/model 不得留空（stopReason=error 根因修复）

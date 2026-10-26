@@ -23,7 +23,27 @@
  *   ASSERT_DRIFT         断言漂移 —— 被测行为变了，场景期望没跟着改（代码是对的，场景过期）
  *   HARNESS_GAP          评估基建缺口 —— driver 的 mock/派发与真实接口不一致（代码是对的，driver 过期）
  *   REAL_DEFECT          真产品缺陷 —— 被测代码本身不满足场景声明的契约
+ *   EXPECTED_RED         负控制 —— 场景被**故意**构造为让判据变红；它的 FAIL 是正确状态
  *   NOT_ATTRIBUTED       未能归因 —— 证据不足，宁可留空不猜
+ *
+ * ## ⛔ EXPECTED_RED 不进覆盖率分母（2026-10-20 口径修正）
+ *
+ *   负控制（`negativeControl: true`）是「故意让判据变红」的夹具，它们在
+ *   inventory 里 `lastKnownStatus=FAIL` **就是正确状态**（见 inventory.json
+ *   `negativeControls.note`）。把它们算进分母会让覆盖率失真：
+ *   本机 5 条 FAIL 里 3 条是负控制 ⇒ 旧口径 coverage=0.4（看起来归因很差），
+ *   真实口径 coverage=1.0（2/2 条真 fail 全部归因成功）。
+ *
+ *   ⚠️ 这与 `bin/lib/scenario-tier.mjs` / `bin/propose-frozen-candidates.mjs`
+ *   里 `isRealFail = FAIL && !negativeControl` 的**既有口径一致** ——
+ *   2026-10-04 已从 failCount 剔除负控制，本处只是把同一口径补到 coverage 上。
+ *   不是新发明，是补齐遗漏。
+ *
+ *   ⚠️ 口径变更会造成「数字突然变好」的错觉。故 expectedRed 单独计数并
+ *   写进输出与 evidence，任何对比旧数字的人都能看出分母变了。
+ *
+ *   ⚠️ 负控制**变绿**（从 FAIL 转 PASS）= 该判据失去牙齿 = 真缺陷，
+ *   报 REAL_DEFECT，绝不当成「修好了」。
  *
  * ⛔ 猜一个类比归因错更坏：错类会让修法选错（改场景 vs 改代码），
  *   而错修法会让下一个人以为已经修好了。
@@ -48,8 +68,17 @@ export const FAIL_CATEGORIES = Object.freeze([
   'ASSERT_DRIFT',   // 断言漂移：代码演进了，场景期望没跟上
   'HARNESS_GAP',    // 评估基建缺口：driver mock/派发与真实接口不一致
   'REAL_DEFECT',    // 真产品缺陷：被测代码不满足场景声明的契约
+  'EXPECTED_RED',   // 负控制：FAIL 是正确状态，不计入覆盖率分母
   'NOT_ATTRIBUTED', // 未归因：证据不足
 ]);
+
+/**
+ * 不计入覆盖率分母的类。
+ * ⛔ 只有 EXPECTED_RED —— 它归因**成功**了（我们确认了它该红），
+ *   只是它不该被算成「需要修的真 fail」。
+ */
+export const NON_DENOMINATOR_CATEGORIES = Object.freeze(['EXPECTED_RED']);
+
 
 /** A4 判据：覆盖率 ≥ 80%。低于就退出码 1。 */
 export const DEFAULT_COVERAGE_MIN = 0.8;
@@ -390,6 +419,73 @@ function notAttributed(reason, extra = {}) {
   return { category: 'NOT_ATTRIBUTED', reason, evidence: [reason, ...Object.values(extra).map((v) => JSON.stringify(v))], fix: '需要人工取证。', ...extra };
 }
 
+/**
+ * 探针 6：负控制（2026-10-20 新增）。
+ *
+ * 负控制 = 故意构造 inputs 让判据变红的夹具。它的 FAIL 是**正确状态**：
+ * 红了说明 ask/advisory 的 deny 守门真在起作用。若它变绿，说明守门成了空壳。
+ *
+ * 判据（三条同时成立才算 EXPECTED_RED）：
+ *   ① 场景显式标 `negativeControl: true`
+ *   ② 场景带 `_purpose` 说明它为什么该红（没有说明 = 无从判断，NOT_ATTRIBUTED）
+ *   ③ inventory 里该单元 `lastKnownStatus === 'FAIL'`（即当前确实是红的）
+ *
+ * ⛔ 不实跑 driver：本探针只做**静态一致性**判定。真跑一次是 daily 回归的事，
+ *   把 driver 塞进归因器会让归因依赖 dsh 运行时，部署位上必然缺包。
+ *   「实跑是否还是红」由 driver 自己报，本探针只回答「这个红是不是设计如此」。
+ *
+ * ⛔ 变绿 ⇒ REAL_DEFECT：负控制转 PASS 不是「修好了」，是**被判的对象失去了牙齿**。
+ */
+export function attributeNegativeControl(unit, inventoryStatus) {
+  if (!unit || typeof unit !== 'object') {
+    return notAttributed('场景对象读不到');
+  }
+  if (unit.negativeControl !== true) {
+    // 探针表登记了、但场景没标 negativeControl ⇒ 场景改了没同步探针表，不猜
+    return notAttributed('探针表按负控制登记，但场景未标 negativeControl:true ⇒ 场景或用例表已改动，需人工核');
+  }
+  const purpose = typeof unit._purpose === 'string' ? unit._purpose.trim() : '';
+  if (purpose === '') {
+    return notAttributed('负控制缺 _purpose：无法确认它「为什么该红」，不猜');
+  }
+  const expectRaw = unit.expected?.[0];
+  const expectKind = expectRaw?.kind ?? expectRaw?.expect ?? null;
+  const purposeSaysShouldBeRed = /必须判红|期望：判据\*\*红\*\*|必须.*红/.test(purpose);
+
+  if (inventoryStatus === 'FAIL') {
+    return {
+      category: 'EXPECTED_RED',
+      reason: '负控制：场景被故意构造为让判据变红，当前 FAIL 是**正确状态**；不计入覆盖率分母',
+      evidence: [
+        `场景标 negativeControl=true（${unit.scenario}）`,
+        `_purpose 节选：${purpose.slice(0, 120)}${purpose.length > 120 ? '…' : ''}`,
+        `expected.kind=${expectKind} · inventory.lastKnownStatus=${inventoryStatus}`,
+        '判据链：ask-hit / advisory-hit / tier-precedence 的「deny 守门」被这条夹具反证有效',
+        '⛔ 这不是缺陷，不要「修」它 —— 它变绿才是缺陷',
+      ],
+      fix: '无需修复。若本单元转为 PASS ⇒ 判据失去牙齿，届时会报 REAL_DEFECT。',
+    };
+  }
+
+  if (inventoryStatus === 'PASS') {
+    return {
+      category: 'REAL_DEFECT',
+      reason: '⛔ 负控制变绿：本该变红的夹具现在通过了 ⇒ ask/advisory 的 deny 守门失去牙齿（判据成空壳）',
+      evidence: [
+        `场景标 negativeControl=true（${unit.scenario}）`,
+        `_purpose 声明它必须红：${purposeSaysShouldBeRed ? '是' : '（未见明确字样，需复核）'}`,
+        `inventory.lastKnownStatus=${inventoryStatus}（期望 FAIL）`,
+        '⛔ 把负控制「修绿」是本系统最危险的假进度：它让守门看起来在工作',
+      ],
+      fix: '查 driver 对应判据（ask-hit / advisory-hit / tier-precedence）：'
+        + '是不是把 deny 守门删了、或断言方向写反了。⛔ 不要改场景让它继续红 —— 要查判据为什么不再报警。',
+    };
+  }
+
+  return notAttributed(`负控制的 inventory.lastKnownStatus=${inventoryStatus ?? 'null'}，既非 FAIL 也非 PASS，无法判断守门是否有效`);
+}
+
+
 // ── 探针路由 ───────────────────────────────────────────────────────────
 
 /**
@@ -405,6 +501,11 @@ export function probeFor(unitId) {
     ['stats-reports-counts-and-limits', 'statsLimits'],
     ['policy-decide-clean-results-pending-or-deploy', 'policyDecision'],
     ['s12-05-policy-policy-deployed-rolledback-shadow', 'umbrellaKey'],
+    // 2026-10-20：负控制 3 条。此前未登记 ⇒ 全部落进 NOT_ATTRIBUTED，
+    //   把 coverage 从真实 1.0 拉低到 0.4（分母混进了「本来就该红」的单元）。
+    ['rules-ask-hit-but-deny-also-matches', 'negativeControl'],
+    ['rules-tier-negctl-no-deny-but-expect-deny', 'negativeControl'],
+    ['rules-advisory-negctl-also-blocked', 'negativeControl'],
   ];
   return table.find(([id]) => id === unitId)?.[1] ?? null;
 }
@@ -446,6 +547,8 @@ export async function attributeAll({ units, live = null, coverageMin = DEFAULT_C
             attribution = attributeThrowsOnTableFull(unit, L.diagLimits, L.fakeTable); break;
           case 'umbrellaKey':
             attribution = attributeUmbrellaKeyProbe(unit, L.umbrella); break;
+          case 'negativeControl':
+            attribution = attributeNegativeControl(unit, u.lastKnownStatus ?? null); break;
           default:
             attribution = notAttributed(`未知探针类型 ${kind}`);
         }
@@ -464,7 +567,18 @@ export async function attributeAll({ units, live = null, coverageMin = DEFAULT_C
   }
 
   const attributed = results.filter((r) => r.category !== 'NOT_ATTRIBUTED');
-  const coverage = results.length === 0 ? null : attributed.length / results.length;
+  // ⛔ 2026-10-20 口径修正：覆盖率分母**排除负控制**（EXPECTED_RED）。
+  //   负控制是「故意让判据变红」的夹具，它的 FAIL 是正确状态 —— 把它算进分母，
+  //   等于把「本来就该红的东西」记成「归因失败」。本机实例：5 条 FAIL 里 3 条负控制，
+  //   旧口径 coverage=0.4（失真），新口径 coverage=1.0（真实）。
+  //   与 bin/lib/scenario-tier.mjs / propose-frozen-candidates.mjs 的
+  //   `isRealFail = FAIL && !negativeControl` 口径一致（2026-10-04 已修 failCount）。
+  //   ⚠️ expectedRed 单独计数，让「分母变了」可观测 —— 否则数字突然变好会被误读成改善。
+  const denominator = results.filter((r) => !NON_DENOMINATOR_CATEGORIES.includes(r.category));
+  const expectedRed = results.filter((r) => r.category === 'EXPECTED_RED').length;
+  const attributedInDenominator = denominator.filter((r) => r.category !== 'NOT_ATTRIBUTED');
+  // ⛔ 分母为 0（全部是负控制）⇒ null，不印 100% —— 「没东西可归因」≠「全归因成功」
+  const coverage = denominator.length === 0 ? null : attributedInDenominator.length / denominator.length;
   const byCategory = {};
   for (const r of results) byCategory[r.category] = (byCategory[r.category] ?? 0) + 1;
   return {
@@ -475,13 +589,19 @@ export async function attributeAll({ units, live = null, coverageMin = DEFAULT_C
       command: 'node bin/attribute-eval-fails.mjs --json > eval/attribution/fail-attribution.json',
       doNotHandEdit: true,
       why: '生成物，勿手改。入库是部署位 evolve-review 周报的数据源 + check-wiring 的校验对象。',
+      coverageDenominator: '排除负控制（EXPECTED_RED）；2026-10-20 起生效',
     },
     generatedAt: new Date().toISOString(),
     total: results.length,
-    attributed: attributed.length,
+    // ⛔ attributed / coverage 都用**分母内**的计数：这样 attributed/total 的自述
+    //   在周报里不会出现「2/5 = 100%」这种自相矛盾的写法。
+    attributed: attributedInDenominator.length,
     coverage,
     coverageMin,
     coverageOk: coverage !== null && coverage >= coverageMin,
+    // 负控制单独计数（对齐 scenario-tier.mjs 的 negativeControlCount 做法）
+    expectedRed,
+    denominator: denominator.length,
     byCategory,
     realDefects: results.filter((r) => r.category === 'REAL_DEFECT').length,
     results,
@@ -494,12 +614,20 @@ export function renderAttribution(a) {
   const L = [];
   L.push(`# eval 存量 FAIL 归因（${a.generatedAt.slice(0, 10)}）`);
   L.push('');
-  L.push(`> 生成器：\`bin/attribute-eval-fails.mjs\`（只读）· FAIL ${a.total} 条 · 已归因 ${a.attributed} 条`);
+  L.push(`> 生成器：\`bin/attribute-eval-fails.mjs\`（只读）· FAIL ${a.total} 条`
+    + `（其中负控制 ${a.expectedRed ?? 0} 条不计入分母）· 分母 ${a.denominator ?? a.total} 条 · 已归因 ${a.attributed} 条`);
   L.push('');
   L.push(a.coverage === null
-    ? '> ⚠️ 当前 driver 口径下 **0 个 FAIL** —— 本报告无内容可归因。「全绿」与「没查」长得一样，此处显式声明。'
-    : `> 覆盖率 **${(a.coverage * 100).toFixed(1)}%**（${a.attributed}/${a.total}）· 阈值 ${(a.coverageMin * 100).toFixed(0)}% · ${a.coverageOk ? '✅ 达标' : '❌ 未达标'}`);
+    ? '> ⚠️ 分母为 **0**（无可归因的真 fail）—— 本报告无内容可归因。「全绿」与「没查」长得一样，此处显式声明。'
+    : `> 覆盖率 **${(a.coverage * 100).toFixed(1)}%**（${a.attributed}/${a.denominator ?? a.total}）`
+      + ` · 阈值 ${(a.coverageMin * 100).toFixed(0)}% · ${a.coverageOk ? '✅ 达标' : '❌ 未达标'}`);
   L.push('');
+  if ((a.expectedRed ?? 0) > 0) {
+    L.push(`> ⚠️ **口径说明**：分母已排除 ${a.expectedRed} 条负控制（\`EXPECTED_RED\`）。`
+      + '负控制是故意构造为变红的夹具，其 FAIL 是正确状态。'
+      + '⛔ 与 2026-10-20 之前的报告对比时会看到数字变大 —— 那是口径变化，不是归因能力提升。');
+    L.push('');
+  }
   L.push('> ⛔ 每条归因都附**可复算证据**（权威模块的实时读数 vs 场景断言值），不是「看起来像」。');
   L.push('> ⛔ 证据不足时诚实标 `NOT_ATTRIBUTED`，不猜 —— 错类会把修法引到反方向。');
   L.push('');
@@ -512,6 +640,7 @@ export function renderAttribution(a) {
     ASSERT_DRIFT: ['被测行为演进（或断言的前提被推翻），场景期望没跟上', '改场景期望'],
     HARNESS_GAP: ['driver 的 mock / 派发与真实接口不一致', '改 driver 基建'],
     REAL_DEFECT: ['被测代码不满足场景声明的契约', '改产品代码'],
+    EXPECTED_RED: ['负控制，FAIL 是正确状态（证明守门有效）', '⛔ 不要修；变绿才是问题'],
     NOT_ATTRIBUTED: ['证据不足，不猜', '人工取证'],
   };
   for (const cat of FAIL_CATEGORIES) {
@@ -577,7 +706,9 @@ async function main() {
   else if (opts.out) {
     writeFileSync(opts.out, renderAttribution(a), 'utf8');
     process.stdout.write(`[attribute-eval-fails] 📄 归因报告已写出：${opts.out}\n`);
-    process.stdout.write(`  归因 ${a.attributed}/${a.total} 条 · 覆盖率 ${a.coverage === null ? 'N/A' : `${(a.coverage * 100).toFixed(1)}%`}\n`);
+    process.stdout.write(`  归因 ${a.attributed}/${a.denominator ?? a.total} 条`
+      + `（负控制 ${a.expectedRed ?? 0} 条已排除）`
+      + ` · 覆盖率 ${a.coverage === null ? 'N/A' : `${(a.coverage * 100).toFixed(1)}%`}\n`);
   } else process.stdout.write(renderAttribution(a));
 
   process.exit(a.coverageOk ? 0 : 1);

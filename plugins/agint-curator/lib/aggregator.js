@@ -95,6 +95,7 @@ export async function scanSkills(skillsDir) {
         tools: Array.isArray(fm.tools) ? fm.tools : [],
         dirName: ent.name,
         path: skillPath,
+        rootDir: skillsDir,   // 物理根（2026-10-21）：归档/恢复按它定位目录
         createdAt: new Date(
           Number.isFinite(st.birthtimeMs) && st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs,
         ).toISOString(),
@@ -140,6 +141,11 @@ export function groupTaskCalls(records) {
       totalCount: recs.length,
       latencySumMs: recs.reduce((s, r) => s + (typeof r.latencyMs === 'number' ? r.latencyMs : 0), 0),
       latencySampleCount: recs.filter((r) => typeof r.latencyMs === 'number').length,
+      // token 成本（2026-10-21 起 tool-stats 落 deltaTokens，来源 ctx.tokenMeter）。
+      // ⚠️ 只累加**测到**的记录：null（没测）与 0（测得零）必须分开，
+      //    否则缺席会被平均成 0，技能经济性又是假读数。
+      tokenSum: recs.reduce((s, r) => s + (typeof r.deltaTokens === 'number' ? r.deltaTokens : 0), 0),
+      tokenSampleCount: recs.filter((r) => typeof r.deltaTokens === 'number').length,
       skillTags: recs.map((r) => (typeof r.skill === 'string' ? r.skill : null)).filter(Boolean),
     });
   }
@@ -178,6 +184,8 @@ export function aggregateUsage(tasks, skills, opts = {}) {
   let totalSum = 0;
   let latencySum = 0;
   let latencyCount = 0;
+  let tokenSum = 0;
+  let tokenCount = 0;
 
   for (const task of tasks) {
     const hits = new Set();
@@ -211,17 +219,21 @@ export function aggregateUsage(tasks, skills, opts = {}) {
     totalSum += task.totalCount;
     latencySum += task.latencySumMs;
     latencyCount += task.latencySampleCount;
+    tokenSum += task.tokenSum ?? 0;
+    tokenCount += task.tokenSampleCount ?? 0;
   }
 
   // 全局成功率/耗时（阶段 1 不做技能级细分：样本太小，细分反而失真）
   const globalSuccessRate = totalSum ? +(okSum / totalSum).toFixed(4) : null;
   const globalAvgLatency = latencyCount ? Math.round(latencySum / latencyCount) : null;
+  // token 均值：**没有任何一条测到**时返回 null（不是 0）。0 会被读成"测得零成本"。
+  const globalAvgTokens = tokenCount ? Math.round(tokenSum / tokenCount) : null;
   for (const name of Object.keys(usage)) {
     const u = usage[name];
     if (u.useCount > 0) {
       u.successRate = globalSuccessRate;
       u.avgDurationMs = globalAvgLatency;
-      u.avgTokenCost = null; // tool-stats 无 token 计量，恒 null（如实标注）
+      u.avgTokenCost = globalAvgTokens;
     }
   }
 

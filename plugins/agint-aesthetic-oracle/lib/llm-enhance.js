@@ -1,5 +1,5 @@
 /**
- * lib/llm-enhance.js — agint-aesthetic-oracle §8.1 LLM 增强档（v2.4 方案）。
+ * lib/llm-enhance.js — agint-aesthetic-oracle §8.1 LLM 增强档（v3 无降级）。
  *
  * ⛔ 红线（§9.5）：本模块只作用于「评论员输出层」——措辞 / 深挖 / 提案正文。
  *   凡是进入 METRIC_DEFS 或写入指标存储的，不准有 LLM。aesthetic_score 与四个
@@ -13,28 +13,34 @@
  *   L3 — weekly 提案正文生成：撰写 evidence 摘要与提案 body。
  *        不改 status（锁 proposed），不直接改代码。
  *
- * 工程纪律（§8.1.5，照抄本仓库两个已验证范式）：
- *   - spawnLlm 范式来自 agint-evolution-driver/lib/index.js
- *     ⭐ meta.agentPreset 不能省（30 个空壳会话换来的教训）
- *     ⭐ agentOptions:{provider,model} 不能省（模型路由本身）
- *     ⭐ 结果在 result.structured，不在 result.output
- *   - 超时双保险：AbortController + setTimeout
- *   - 降级绝不 throw：所有失败路径返回 { ok:true, mode:'heuristic-degraded', reason }
- *   - 模型选择：调用方显式 > agentDefaultModel.currentSelection() > 兜底常量（K99 不硬编码）
+ * ⭐ 无降级政策（2026-10-25 老板令）：
+ *   - 输出层一律走 LLM。L1/L2/L3 任一失败 = 本次广播失败，**不回落模板**。
+ *   - 失败抛 OracleLlmError，由 index.js 落 error 痕 + 发 oracle.alert + 调度重试。
+ *   - 没有 off/l1/l1l2 分档开关；整插件 kill-switch 仍是 AGINT_AESTHETIC_ORACLE=off。
+ *   - 内容闸门（NO_ADVICE / 无 auditIds / 无新提案）不是降级：没有内容就不调用，
+ *     也不让模型编造。
  *
- * kill-switch（§8.1.7，env AGINT_AESTHETIC_ORACLE_LLM）：
- *   off    → 整体回落 v2.3 模板化输出（三级同时关）
- *   l1     → 只开 L1（最小降级位）
- *   l1l2   → 开 L1+L2（关 L3 提案生成）
- *   all    → 三级全开（⭐ 默认，老板 2026-09-27 拍板拉满）
+ * 宿主契约（2026-10-23 根因，2026-10-25 修复）：
+ *   现宿主只有 `subagents.startActivation({ provider, label, request, signal, delivery })`，
+ *   **没有 `subagents.start`**。旧代码用 `start` 导致四个插件的 LLM 通路全部恒失败，
+ *   并谎报 "subagents unavailable"。本模块按新契约调用；旧宿主保留 start 分支。
+ *
+ * 工程纪律：
+ *   - meta.agentPreset 不能省（30 个空壳会话换来的教训）
+ *   - agentOptions:{provider,model,reasoningEffort} 不能省（MiniMax 缺 reasoningEffort 会 400）
+ *   - 结果在 result.structured，不在 result.output
+ *   - 超时双保险：AbortController + Promise.race（provider 不认 signal 时也能返回）
+ *   - 模型选择：agentDefaultModel.currentSelection() > 兜底常量（K99 不硬编码）
  */
 
 import { randomUUID } from 'node:crypto';
 
 // ── 模型兜底常量（K99：仅在 agentDefaultModel 服务不可用时使用；不硬编码是原则） ──
 const DEFAULT_LLM_PROVIDER = 'minimax-cn';
-// 2026-09-28：host 已把 minimax-cn 注册模型换成 MiniMax-M3.1-Flash-Preview。
-const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash-Preview';
+// 2026-10-25：host 注册模型已是 MiniMax-M3.1-Flash；旧值 -Preview 不可路由。
+const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash';
+// MiniMax-M3.1-Flash 强制 adaptive thinking；不传档位会退化成 thinking disabled → 400。
+const DEFAULT_REASONING_EFFORT = 'high';
 const DEFAULT_AGENT_PRESET = 'agint';
 
 // ── 超时（§8.1.6；对齐 dream 的 DEFAULT_TIMEOUT_MS = 60_000） ──
@@ -42,27 +48,18 @@ export const L1_TIMEOUT_MS = 60_000;   // L1 措辞增强：2026-10-05 由 10_00
 export const L2_TIMEOUT_MS = 60_000;   // weekly L2 深挖
 export const L3_TIMEOUT_MS = 60_000;   // weekly L3 提案润色
 
-// ── kill-switch 解析 ──────────────────────────────────────────────────────────
-
-/**
- * 解析 AGINT_AESTHETIC_ORACLE_LLM env。
- * @param {Record<string,string|undefined>} [env=process.env]
- * @returns {'off'|'l1'|'l1l2'|'all'} 缺省 = 'all'（默认拉满）
- */
-export function llmMode(env = process.env) {
-  const v = String(env?.AGINT_AESTHETIC_ORACLE_LLM ?? '').trim().toLowerCase();
-  if (v === 'off') return 'off';
-  if (v === 'l1') return 'l1';
-  if (v === 'l1l2') return 'l1l2';
-  // 空 / 'all' / 任何其他值 → 默认全开
-  return 'all';
+/** LLM 通路不可用（服务/方法/provider/调用/超时/结构化输出失败）。
+ *  index.js 用 code 识别它，落 error 痕、发告警、交调度重试；**绝不降级**。 */
+export class OracleLlmError extends Error {
+  constructor(message, { stage = null, cause } = {}) {
+    super(stage ? `${stage}: ${message}` : message, { cause });
+    this.name = 'OracleLlmError';
+    this.code = 'ORACLE_LLM_UNAVAILABLE';
+    this.stage = stage;
+  }
 }
 
-export const canL1 = (mode) => mode === 'l1' || mode === 'l1l2' || mode === 'all';
-export const canL2 = (mode) => mode === 'l1l2' || mode === 'all';
-export const canL3 = (mode) => mode === 'all';
-
-// ── spawnLlm 封装（照抄 evolution-driver 范式） ─────────────────────────────
+// ── spawnLlm 封装（新宿主 startActivation 契约） ───────────────────────────
 
 /**
  * 调一次 LLM，拿结构化输出。
@@ -71,63 +68,131 @@ export const canL3 = (mode) => mode === 'all';
  * @param {object} args
  * @param {string} args.system 系统提示
  * @param {string} args.user   用户提示
- * @param {object} args.schema JSON Schema（subagents.start outputSchema 方言）
+ * @param {object} args.schema JSON Schema（subagent outputSchema 方言）
  * @param {number} args.timeoutMs 超时毫秒
  * @param {string} [args.label] 日志标签
- * @returns {Promise<{ok:true,value:any}|{ok:false,reason:string,degraded?:boolean}>}
- *   ⭐ 失败不 throw，统一返回 {ok:false}；调用方负责降级。
+ * @returns {Promise<{ok:true,value:any}|{ok:false,reason:string}>}
+ *   失败不 throw；调用方（L1/L2/L3）负责抛 OracleLlmError。
  */
 export async function spawnOracleLlm(ctx, { system, user, schema, timeoutMs, label = 'oracle-llm' }) {
   const agents = ctx?.get?.('agents');
   const subagents = ctx?.get?.('subagents');
-  if (!agents || typeof agents.create !== 'function') return { ok: false, reason: 'agents unavailable' };
-  if (!subagents || typeof subagents.start !== 'function') return { ok: false, reason: 'subagents unavailable' };
-  if (typeof subagents.getProvider === 'function' && !subagents.getProvider('spawn')) {
-    return { ok: false, reason: 'spawn provider not registered' };
+  if (!agents || typeof agents.create !== 'function') {
+    return { ok: false, reason: 'agents service missing (create() not callable)' };
+  }
+  if (!subagents) {
+    return { ok: false, reason: 'subagents service missing' };
+  }
+  const hasActivation = typeof subagents.startActivation === 'function';
+  const hasLegacyStart = typeof subagents.start === 'function';
+  if (!hasActivation && !hasLegacyStart) {
+    return {
+      ok: false,
+      reason: `subagents method missing (startActivation=${hasActivation}, start=${hasLegacyStart})`,
+    };
+  }
+  if (typeof subagents.getProvider === 'function') {
+    let provider = null;
+    try {
+      provider = subagents.getProvider('spawn');
+    } catch (error) {
+      return { ok: false, reason: `getProvider('spawn') failed: ${error?.message ?? String(error)}` };
+    }
+    if (!provider) return { ok: false, reason: 'spawn provider not registered' };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('oracle-llm-timeout'), timeoutMs);
-  let handle = null;
-  let run = null;
+  // 模型路由优先级：agentDefaultModel.currentSelection() > 兜底常量
+  let selection = null;
   try {
-    // 模型路由优先级：调用方显式 > agentDefaultModel.currentSelection() > 兜底常量
-    const selection = typeof ctx?.get === 'function'
+    selection = typeof ctx?.get === 'function'
       ? ctx.get('agentDefaultModel')?.currentSelection?.() ?? null
       : null;
-    const resolvedProvider = selection?.provider ?? DEFAULT_LLM_PROVIDER;
-    const resolvedModel = selection?.model ?? DEFAULT_LLM_MODEL;
+  } catch { selection = null; }
+  const agentOptions = {
+    provider: selection?.provider ?? DEFAULT_LLM_PROVIDER,
+    model: selection?.model ?? DEFAULT_LLM_MODEL,
+    reasoningEffort: selection?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+  };
 
-    handle = await agents.create({
+  const controller = new AbortController();
+  let rejectOnTimeout = null;
+  const timeoutGuard = new Promise((_, reject) => { rejectOnTimeout = reject; });
+  const timer = setTimeout(() => {
+    controller.abort('oracle-llm-timeout');
+    rejectOnTimeout?.(new Error(`timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  let handle = null;
+  let activation = null;
+  let cancelled = false;
+  const disposeLate = (resource) => {
+    try { Promise.resolve(resource?.dispose?.()).catch(() => { /* ignore */ }); } catch { /* ignore */ }
+  };
+  try {
+    const createPromise = agents.create({
       sessionId: `oracle-llm-${randomUUID()}`,
       // ⭐ agentPreset 不能省（空壳会话血债）
       meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: DEFAULT_AGENT_PRESET },
-      // ⭐ agentOptions 是 provider/model 的载体
-      agentOptions: { provider: resolvedProvider, model: resolvedModel },
+      // ⭐ agentOptions 是 provider/model/reasoningEffort 的载体
+      agentOptions,
       signal: controller.signal,
+    }).then((h) => {
+      // 超时胜出后 create 仍可能晚到落地 → 由这里补 dispose，避免会话泄漏
+      if (cancelled) disposeLate(h);
+      return h;
     });
-    run = await subagents.start('spawn', {
-      parent: handle.agent,
-      prompt: [{ type: 'text', text: `${system}\n\n${user}` }],
-      outputSchema: schema,
-      signal: controller.signal,
-      label,
+    handle = await Promise.race([createPromise, timeoutGuard]);
+    const prompt = [{ type: 'text', text: `${system}\n\n${user}` }];
+    const startPromise = (hasActivation
+      ? Promise.resolve().then(() => subagents.startActivation({
+        provider: 'spawn',
+        label,
+        request: {
+          parent: handle.agent,
+          prompt,
+          // 子级独立 preset：与 parent 相同，但显式传给 request（新契约）
+          agentPreset: DEFAULT_AGENT_PRESET,
+          agentOptions,
+          outputSchema: schema,
+        },
+        signal: controller.signal,
+        // caller：只回结果，不向父 agent 发完成通知（后台广播不该污染会话）
+        delivery: 'caller',
+      }))
+      : Promise.resolve().then(() => subagents.start('spawn', {
+        parent: handle.agent,
+        prompt,
+        outputSchema: schema,
+        signal: controller.signal,
+        label,
+      }))).then((act) => {
+      // 同上：超时胜出后 activation 晚到落地也要 dispose
+      if (cancelled) disposeLate(act);
+      return act;
     });
-    const result = await run.result;
+    // 超时胜出后 start 仍可能晚到 reject；吞掉它，避免 unhandledRejection。
+    startPromise.catch(() => { /* handled by race */ });
+    activation = await Promise.race([startPromise, timeoutGuard]);
+    const result = await Promise.race([activation.result, timeoutGuard]);
     if (result?.stopReason !== 'completed') {
-      return { ok: false, reason: `stopReason=${result?.stopReason ?? 'unknown'}` };
+      const diagnostic = result?.diagnostic ? ` (${result.diagnostic})` : '';
+      return { ok: false, reason: `stopReason=${result?.stopReason ?? 'unknown'}${diagnostic}` };
     }
     // ⭐ 结果在 structured，不在 output
     const structured = result?.structured;
     if (structured === undefined || structured === null) {
-      return { ok: false, reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`, degraded: true };
+      return {
+        ok: false,
+        reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`,
+      };
     }
     return { ok: true, value: structured };
   } catch (error) {
     return { ok: false, reason: `llm error: ${error?.message ?? String(error)}` };
   } finally {
+    cancelled = true;
     clearTimeout(timer);
-    try { await run?.dispose?.(); } catch { /* ignore */ }
+    try { await activation?.dispose?.(); } catch { /* ignore */ }
     try { await handle?.dispose?.(); } catch { /* ignore */ }
   }
 }
@@ -161,6 +226,7 @@ const L1_SYSTEM = `你是美的神谕层的评论员。你拿到一段确定性�
 
 /**
  * L1：把 q3Advice 的机械建议渲染成人话。
+ * 失败抛 OracleLlmError（无降级）。
  *
  * @param {object} ctx
  * @param {object} args
@@ -169,12 +235,11 @@ const L1_SYSTEM = `你是美的神谕层的评论员。你拿到一段确定性�
  * @param {string} args.worstKey  worst.key（noise/confidence/redundancy/bloat）
  * @param {number} args.value     worst.value（数值）
  * @param {object} [args.extra={}] 额外上下文（metric 中文名等）
- * @returns {Promise<{mode:'llm'|'heuristic-degraded', advice:string, evidence:string, reason?:string}>}
- *   永远返回模板文本的 fallback；失败不 throw。
+ * @returns {Promise<{mode:'llm'|'skipped', advice:string, evidence:string, reason?:string}>}
+ *   没有可润色内容时返回 skipped；LLM 失败抛错。
  */
 export async function l1EnhanceAdvice(ctx, { templateAdvice, templateEvidence, worstKey, value, extra = {} }) {
-  const fallback = { mode: 'heuristic-degraded', advice: templateAdvice, evidence: templateEvidence };
-  if (!templateAdvice) return fallback;
+  if (!templateAdvice) return { mode: 'skipped', advice: '', evidence: '', reason: 'no advice to enhance' };
   const user = [
     `最丑维度：${worstKey}（当前值 ${value}）`,
     `机械建议：${templateAdvice}`,
@@ -189,11 +254,12 @@ export async function l1EnhanceAdvice(ctx, { templateAdvice, templateEvidence, w
     timeoutMs: L1_TIMEOUT_MS,
     label: 'oracle-l1-advice',
   });
-  if (!r.ok) return { ...fallback, reason: r.reason };
-  const v = r.value ?? {};
-  // AC-18 数字逐字节断言（轻量版：LLM 输出非空即采纳；严格正则断言在单测里做）
-  const advice = typeof v.advice === 'string' && v.advice.trim() ? v.advice.trim() : templateAdvice;
-  const evidence = typeof v.evidence === 'string' && v.evidence.trim() ? v.evidence.trim() : templateEvidence;
+  if (!r.ok) throw new OracleLlmError(r.reason, { stage: 'L1' });
+  const advice = typeof r.value?.advice === 'string' ? r.value.advice.trim() : '';
+  const evidence = typeof r.value?.evidence === 'string' ? r.value.evidence.trim() : '';
+  if (!advice || !evidence) {
+    throw new OracleLlmError('structured output has empty advice/evidence', { stage: 'L1' });
+  }
   return { mode: 'llm', advice, evidence };
 }
 
@@ -225,6 +291,7 @@ const L2_SYSTEM = `你是美的神谕层的行级调研员。你拿到最丑指�
 
 /**
  * L2：weekly 深挖——对最丑指标的 id 集合做行级归因。
+ * 没有 auditIds 时返回 skipped（内容闸门，不是降级）；LLM 失败抛错。
  *
  * ⛔ §8.1.3.1 输入契约：entry.content 全文永不进入 prompt。
  *   只送 id + 类型 + 计数 + 截断摘要（excerpt ≤80 字符）。
@@ -236,19 +303,13 @@ const L2_SYSTEM = `你是美的神谕层的行级调研员。你拿到最丑指�
  * @param {number} args.threshold
  * @param {string[]} [args.auditIds=[]] 最丑集合的 id 清单（来自 view.auditIds）
  * @param {object} [args.adviceCtx={}] extractAtomic 返回的 adviceCtx
- * @returns {Promise<{mode:'llm'|'heuristic-degraded', narrative:string, pattern:string, reason?:string}>}
+ * @returns {Promise<{mode:'llm'|'skipped', narrative:string, pattern:string, reason?:string}>}
  */
 export async function l2DeepDive(ctx, { worstKey, value, threshold, auditIds = [], adviceCtx = {} }) {
-  const fallback = {
-    mode: 'heuristic-degraded',
-    narrative: `最丑指标 = ${worstKey}（${value}，阈 ${threshold}），行级深挖未启用或降级`,
-    pattern: worstKey,
-  };
-  // 没有 id 清单就没东西可挖
+  // 没有 id 清单就没东西可挖——不调用 LLM，也不编造
   if (!Array.isArray(auditIds) || auditIds.length === 0) {
-    return { ...fallback, reason: 'no auditIds to deep-dive' };
+    return { mode: 'skipped', narrative: '', pattern: '', reason: 'no auditIds to deep-dive' };
   }
-  const samples = auditIds.slice(0, 10).map((id) => ({ id: String(id).slice(0, 40) }));
   const counts = {
     total: auditIds.length,
     firstFew: auditIds.slice(0, 5),
@@ -270,10 +331,12 @@ export async function l2DeepDive(ctx, { worstKey, value, threshold, auditIds = [
     timeoutMs: L2_TIMEOUT_MS,
     label: 'oracle-l2-deepdive',
   });
-  if (!r.ok) return { ...fallback, reason: r.reason };
-  const v = r.value ?? {};
-  const narrative = typeof v.narrative === 'string' && v.narrative.trim() ? v.narrative.trim() : fallback.narrative;
-  const pattern = typeof v.pattern === 'string' && v.pattern.trim() ? v.pattern.trim() : worstKey;
+  if (!r.ok) throw new OracleLlmError(r.reason, { stage: 'L2' });
+  const narrative = typeof r.value?.narrative === 'string' ? r.value.narrative.trim() : '';
+  const pattern = typeof r.value?.pattern === 'string' ? r.value.pattern.trim() : '';
+  if (!narrative || !pattern) {
+    throw new OracleLlmError('structured output has empty narrative/pattern', { stage: 'L2' });
+  }
   return { mode: 'llm', narrative, pattern };
 }
 
@@ -301,17 +364,17 @@ const L3_SYSTEM = `你是美的神谕层的提案撰稿人。你拿到一条确�
 
 /**
  * L3：weekly 提案正文润色。
+ * 模板正文缺失是内部不变量错误（不能写空提案）；LLM 失败同样抛错。
  *
  * @param {object} ctx
  * @param {object} args
  * @param {string} args.title        模板提案 title
  * @param {string} args.templateBody 模板提案 body
  * @param {object} [args.deepDive={}] L2 深挖结果（{narrative, pattern}）
- * @returns {Promise<{mode:'llm'|'heuristic-degraded', body:string, reason?:string}>}
+ * @returns {Promise<{mode:'llm', body:string}>}
  */
 export async function l3PolishProposal(ctx, { title, templateBody, deepDive = {} }) {
-  const fallback = { mode: 'heuristic-degraded', body: templateBody };
-  if (!templateBody) return fallback;
+  if (!templateBody) throw new OracleLlmError('template body missing', { stage: 'L3' });
   const user = [
     `提案 title：${title}`,
     `模板 body：\n${templateBody}`,
@@ -328,8 +391,8 @@ export async function l3PolishProposal(ctx, { title, templateBody, deepDive = {}
     timeoutMs: L3_TIMEOUT_MS,
     label: 'oracle-l3-proposal',
   });
-  if (!r.ok) return { ...fallback, reason: r.reason };
-  const v = r.value ?? {};
-  const body = typeof v.body === 'string' && v.body.trim() ? v.body.trim() : templateBody;
+  if (!r.ok) throw new OracleLlmError(r.reason, { stage: 'L3' });
+  const body = typeof r.value?.body === 'string' ? r.value.body.trim() : '';
+  if (!body) throw new OracleLlmError('structured output has empty body', { stage: 'L3' });
   return { mode: 'llm', body };
 }

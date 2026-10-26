@@ -142,15 +142,29 @@ describe('豁免机制', () => {
     assert.deepEqual(report.tsDrift ?? [], [], 'lib 与 src 的 provide 键集合不一致 —— 下次 build 会丢服务');
   });
 
-  test('查 H：仓库改动已全部上线（部署位不应停留在旧 hash）', () => {
+  test('查 H：仓库改动已全部上线（除已登记的部署位漂移）', () => {
     assert.ok(
       Array.isArray(report.drift.repoNewer),
       'JSON 里缺少 drift.repoNewer —— 查 H 没导出结果',
     );
+    // 2026-10-19 起：部署位有一处**已知的**与仓库不一致 —— agint-voice-hotkey 的
+    // 提示文案。部署副本在 10-15 被手工改过（文案指向本机 D:/DSH/bin/voice-hotkey.mjs，
+    // 属机器私有路径，而仓库规则要求这类事实不进库文件），仓库保留可移植写法。
+    // 这条漂移在查 H 修好布局探测之前是**看不见的**（web profile 已退役 ⇒ 查 H 恒空）。
+    // 处置：等老板定文案方向。在此之前只允许这一条，多一条即红。
+    // 2026-10-21：原 KNOWN_DEPLOY_DRIFT 豁免已撤销。它针对 agint-voice-hotkey 的
+    // 部署位手工改动（文案指向本机 D:/DSH/bin/voice-hotkey.mjs = 机器私有路径）；
+    // 该插件已于 2026-10-21 归档到 archived-plugins/（与 dsh 语音输入重复 + 从未挂载
+    // + 带机器私有事实，理由见 archived-plugins/README.md）⇒ 豁免一并删除。
+    // 现在**任何**仓库领先部署位的文件都算红，没有例外。
+    const KNOWN_DEPLOY_DRIFT = [];
+    const unexpected = report.drift.repoNewer.filter(
+      (d) => !KNOWN_DEPLOY_DRIFT.some((k) => d.endsWith(k)),
+    );
     assert.deepEqual(
-      report.drift.repoNewer,
+      unexpected,
       [],
-      `这些文件改了仓库还没部署到宿主：\n${report.drift.repoNewer.join('\n')}`,
+      `这些文件改了仓库还没部署到宿主：\n${unexpected.join('\n')}`,
     );
   });
 
@@ -169,8 +183,21 @@ describe('豁免机制', () => {
     );
   });
 
-  test('双副本没有走偏（bundle 位 vs 兼容镜像位逐字节一致）', () => {
-    assert.ok(report.dualCopy.checked > 0, '未检出双副本布局 —— install.sh 的镜像位可能已不再同步');
+  test('查 E/H 真的查了：部署位探测到 ≥2 个副本（防止又被静默跳过）', () => {
+    // 2026-10-19 事故：查 E/H 写死 profiles/web，web profile 退役删除后
+    // existsSync 守卫直接短路 ⇒ 查 E/H 恒空 ⇒ 门禁报「一致」假绿，
+    // 而门禁自己的自测也是红的。判据：部署位必须探测到 ≥2 个根。
+    assert.ok(
+      Array.isArray(report.dualCopy.roots) && report.dualCopy.roots.length >= 2,
+      `只检出 ${report.dualCopy?.roots?.length ?? 0} 个部署位（${report.dualCopy?.roots?.join(', ') || '无'}）—— 查 E 又被静默跳过了`,
+    );
+    assert.notEqual(report.dualCopy.noLayout, true, '查 E 自认「没查」—— 不得报一致');
+    assert.notEqual(report.drift.noLayout, true, '查 H 自认「没查」—— 不得报已同步');
+    assert.ok(report.dualCopy.checked > 0, '查 E 一个文件都没比');
+  });
+
+  test('双副本没有走偏（各部署位逐字节一致）', () => {
+    assert.ok(report.dualCopy.checked > 0, '未检出多副本布局 —— 镜像位可能已不再同步');
     assert.equal(report.dualCopy.divergent.length, 0, `副本已分叉：${report.dualCopy.divergent.join(', ')}`);
     assert.equal(report.dualCopy.mirrorMissing.length, 0, `镜像位缺失：${report.dualCopy.mirrorMissing.join(', ')}`);
   });
@@ -285,7 +312,7 @@ describe('--static-only 静态模式', () => {
 
   test('跳过查 E 与查 H，并且**显式说出**跳过了（不是静默不查）', () => {
     const out = run(['--static-only']);
-    assert.match(out, /查 E：双副本一致性/);
+    assert.match(out, /查 E：多副本一致性/);
     assert.match(out, /查 H：仓库 ↔ 部署位漂移/);
     assert.match(out, /⊘ 跳过（--static-only）/, '跳过状态必须在输出里可见，否则与假绿无法区分');
     // 出现两次：E 一次、H 一次

@@ -13,7 +13,7 @@
  * 这样它才能被 mock ctx 隔离测试（不调真模型）。
  *
  * ── 与 dream/consolidation.js 的关系：形态照抄，短板不照抄 ───────────────
- * 调用形态（agents.create + subagents.start('spawn', {outputSchema}) + 双超时
+ * 调用形态（agents.create + subagents.startActivation({request,outputSchema}) + 双超时
  * 保险 + finally dispose）照抄 consolidation.js。但有三处**刻意不同**：
  *   ① dream 把 provider/model 写成常量（连配置项都没暴露），换模型那天就是
  *      静默故障。本模块原本采「默认空字符串 = 跟随宿主默认」。
@@ -27,7 +27,7 @@
  *      硬编码至少跑得起来，留空是连跑都跑不起来。正确形态是下方常量 +
  *      显式传参可覆盖 —— 既可跑，又留了换模型的入口。
  *      换模型时的静默故障风险改由「改常量即改全部调用点」+ 测试断言来兜。
- *   ② dream 的降级不印原因（只印 `heuristic-degraded`），导致「没有候选」与
+ *   ② dream 的早期版本不印失败原因（只印 heuristic-degraded），导致「没有候选」与
  *      「429 超限」在日记上长得一模一样 → 错误归因被固化 12 天（K59）。
  *      本模块**每个 degraded 都必须带 reason**，且 reason 会进人可读产物。
  *
@@ -371,12 +371,15 @@ export const DEFAULT_AGENT_PRESET = 'agint';
 //   （与 agint-dream/lib/consolidation.js 的 DEFAULT_PROVIDER / DEFAULT_MODEL
 //   同源同值；测试请 import 常量而非再写一遍字面量。）
 export const DEFAULT_PROVIDER = 'minimax-cn';
-export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
+// 2026-10-25：host 注册模型已是 MiniMax-M3.1-Flash（-Preview 不可路由）。
+export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
+// MiniMax-M3.1-Flash 强制 adaptive thinking；不传档位会 400。
+export const DEFAULT_REASONING_EFFORT = 'high';
 
 /**
  * 一次 LLM 调用 → verdict + authoring。**永不抛错**：任何异常都转成
- * `{ ok: true, mode: 'degraded', reason }`（与 dream 同契约——语义是增益，
- * 不是依赖）。
+ * `{ ok: false, mode: 'failed', reason }`。2026-10-25 无降级：
+ * 失败不再回落轨道 B，由调用方按「不可标准化/需人工」处理并留痕。
  *
  * @param {object}   args
  * @param {object}   args.ctx        cordis host ctx（取 agents / subagents）
@@ -384,12 +387,13 @@ export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
  * @param {string}   args.windowText 窗口原文（不可信输入，会被分隔标记包住）
  * @param {string}   [args.provider] 空 = DEFAULT_PROVIDER（**不能真留空**，见模块头 ①）
  * @param {string}   [args.model]    空 = DEFAULT_MODEL（同上）
+ * @param {string}   [args.reasoningEffort] 空 = DEFAULT_REASONING_EFFORT
  * @param {number}   [args.timeoutMs]
  * @param {AbortSignal} [args.signal] 外部中止信号（可选）
  * @returns {Promise<
- *   { ok: true, mode: 'llm',      verdict: object, authoring: object|null,
+ *   { ok: true, mode: 'llm',    verdict: object, authoring: object|null,
  *     attempted: true, meta: { durationMs, provider, model } }
- * | { ok: true, mode: 'degraded', verdict: null, authoring: null,
+ * | { ok: false, mode: 'failed', verdict: null, authoring: null,
  *     reason: string, diagnostic?: string|null,
  *     attempted: boolean,   // 是否真的发起了调用（= 是否可能花了钱）。
  *                           // 调用方据此决定要不要把这一格每日预算算掉。
@@ -402,6 +406,7 @@ export async function judgeViaLLM({
   windowText = '',
   provider = DEFAULT_PROVIDER,
   model = DEFAULT_MODEL,
+  reasoningEffort = DEFAULT_REASONING_EFFORT,
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal = null,
@@ -412,33 +417,45 @@ export async function judgeViaLLM({
   // 空串会原样进 agentOptions，把 {{model}} 重新变成无值。这里统一归一。
   const effProvider = provider || DEFAULT_PROVIDER;
   const effModel = model || DEFAULT_MODEL;
+  const effReasoningEffort = reasoningEffort || DEFAULT_REASONING_EFFORT;
   const startedAt = Date.now();
   const meta = () => ({ durationMs: Date.now() - startedAt, provider: effProvider, model: effModel });
-  const degraded = (reason, diagnostic = null, attempted = false) => ({
-    ok: true, mode: 'degraded', verdict: null, authoring: null, reason, diagnostic, attempted, meta: meta(),
+  const failed = (reason, diagnostic = null, attempted = false) => ({
+    ok: false, mode: 'failed', verdict: null, authoring: null, reason, diagnostic, attempted, meta: meta(),
   });
 
   // 0. 边界保护
-  if (!ctx || typeof ctx.get !== 'function') return degraded('ctx unavailable');
+  if (!ctx || typeof ctx.get !== 'function') return failed('ctx unavailable');
   const agents = ctx.get('agents');
   const subagents = ctx.get('subagents');
-  if (!agents || typeof agents.create !== 'function') return degraded('agents service unavailable');
-  if (!subagents || typeof subagents.start !== 'function') return degraded('subagents service unavailable');
-  if (typeof subagents.getProvider === 'function' && !subagents.getProvider('spawn')) {
-    return degraded('spawn provider not registered');
+  if (!agents || typeof agents.create !== 'function') return failed('agents service unavailable');
+  if (!subagents) return failed('subagents service unavailable');
+  const hasActivation = typeof subagents.startActivation === 'function';
+  const hasLegacyStart = typeof subagents.start === 'function';
+  if (!hasActivation && !hasLegacyStart) {
+    return failed(`subagents method missing (startActivation=${hasActivation}, start=${hasLegacyStart})`);
+  }
+  if (typeof subagents.getProvider === 'function') {
+    let providerEntry = null;
+    try {
+      providerEntry = subagents.getProvider('spawn');
+    } catch (error) {
+      return failed(`getProvider('spawn') failed: ${error?.message ?? String(error)}`);
+    }
+    if (!providerEntry) return failed('spawn provider not registered');
   }
 
   // 1. 自检：产出 schema 必须留在宿主受限子集内（越界会在 spawn 之前抛）
   const schemaViolations = findUnsupportedSchemaKeywords(JUDGE_OUTPUT_SCHEMA);
   if (schemaViolations.length) {
-    return degraded(`output schema outside host subset: ${schemaViolations.join(', ')}`);
+    return failed(`output schema outside host subset: ${schemaViolations.join(', ')}`);
   }
 
-  if (signal?.aborted) return degraded('aborted before start');
+  if (signal?.aborted) return failed('aborted before start');
 
   // 2. 超时双保险（照抄 dream）：① abort 让子 agent 自行收敛；
   //    ② timeoutGuard 让本函数无论如何都能返回 —— 缺 ② 时若 provider 不认
-  //    signal（卡住的 HTTP/适配器），`await run.result` 会**永久 pending**，
+  //    signal（卡住的 HTTP/适配器），`await result` 会**永久 pending**，
   //    夜间 sweep 随之挂死（K49，dream 侧真踩过）。
   const abortController = new AbortController();
   const onExternalAbort = () => abortController.abort('llm-verdict-external-abort');
@@ -453,60 +470,72 @@ export async function judgeViaLLM({
   }, timeoutMs);
 
   let handle = null;
-  let run = null;
+  let activation = null;
   let spawned = false;   // 是否真的发起了子 agent（决定预算算不算、审计怎么写）
+  let cancelled = false;
+  const disposeLate = (resource) => {
+    try { Promise.resolve(resource?.dispose?.()).catch(() => { /* ignore */ }); } catch { /* ignore */ }
+  };
   try {
-    // provider/model 必须有值：留空 ⇒ persona assembly 的 {{model}} 无值 ⇒ 直接抛
+    // provider/model/reasoningEffort 必须有值：留空 ⇒ persona assembly 的 {{model}} 无值 ⇒ 直接抛
     // （2026-10-08 取证，见模块头 ①）。默认与空串兜底已在函数入口归一。
-    const agentOptions = { provider: effProvider, model: effModel };
+    const agentOptions = {
+      provider: effProvider,
+      model: effModel,
+      reasoningEffort: effReasoningEffort,
+    };
+    const resolvedPreset = agentPreset || DEFAULT_AGENT_PRESET;
 
-    handle = await agents.create({
+    const createPromise = agents.create({
       sessionId: `autocreate-judge-${pattern?.id ?? 'pattern'}-${randomUUID()}`,
       // cwd 必须给：child session 继承的 persona 段落用 {{cwd}}，取不到会 throw
       // agentPreset 必须给：模型路由的唯一来源，缺失 ⇒ 空壳子代理（见 DEFAULT_AGENT_PRESET 注释）
-      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
-      // provider/model 恒有值（入口已归一）；换模型请改 DEFAULT_PROVIDER / DEFAULT_MODEL。
-      ...(Object.keys(agentOptions).length ? { agentOptions } : {}),
+      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: resolvedPreset },
+      agentOptions,
       signal: abortController.signal,
+    }).then((h) => {
+      if (cancelled) disposeLate(h);
+      return h;
     });
+    handle = await Promise.race([createPromise, timeoutGuard]);
 
-    run = await subagents.start('spawn', {
-      parent: handle.agent,
-      prompt: [{
-        type: 'text',
-        text: `${JUDGE_SYSTEM_PROMPT}\n\n${buildJudgePrompt(pattern, windowText)}`,
-      }],
-      outputSchema: JUDGE_OUTPUT_SCHEMA,
-      signal: abortController.signal,
-      // toolFilter 不传：child 不 join preset（parent 是 host plane 临时 agent，
-      // ctx 上无 agentPresets）→ 无工具 → provider 自动注册唯一 structured_output，
-      // 模型只能调它结束回合。比 toolFilter 干净。
-      label: `agint-autocreate llm-judge ${pattern?.id ?? ''}`,
+    const prompt = [{
+      type: 'text',
+      text: `${JUDGE_SYSTEM_PROMPT}\n\n${buildJudgePrompt(pattern, windowText)}`,
+    }];
+    const startPromise = (hasActivation
+      ? Promise.resolve().then(() => subagents.startActivation({
+        provider: 'spawn',
+        label: `agint-autocreate llm-judge ${pattern?.id ?? ''}`,
+        request: {
+          parent: handle.agent,
+          prompt,
+          agentPreset: resolvedPreset,
+          agentOptions,
+          outputSchema: JUDGE_OUTPUT_SCHEMA,
+        },
+        signal: abortController.signal,
+        delivery: 'caller',
+      }))
+      : Promise.resolve().then(() => subagents.start('spawn', {
+        parent: handle.agent,
+        prompt,
+        outputSchema: JUDGE_OUTPUT_SCHEMA,
+        signal: abortController.signal,
+        label: `agint-autocreate llm-judge ${pattern?.id ?? ''}`,
+      }))).then((act) => {
+      if (cancelled) disposeLate(act);
+      return act;
     });
+    startPromise.catch(() => { /* handled by race */ });
+    activation = await Promise.race([startPromise, timeoutGuard]);
     spawned = true;
 
-    // 诊断留证（K59：降级必须能说清为什么）。订阅 child agent/error。
-    const childErrors = [];
-    if (run.localAgent?.ctx?.on) {
-      try {
-        run.localAgent.ctx.on('agent/error', (payload) => {
-          const err = payload?.error;
-          childErrors.push(err instanceof Error ? `${err.name}: ${err.message}` : String(err).slice(0, 300));
-        });
-      } catch { /* 订阅失败不阻断 */ }
-    }
-    const diagOf = (extra = null) => {
-      const parts = [];
-      if (extra) parts.push(extra);
-      if (childErrors.length) parts.push(childErrors.slice(0, 3).join(' | '));
-      return parts.length ? parts.join(' || ').slice(0, 800) : null;
-    };
-
-    const result = await Promise.race([run.result, timeoutGuard]);
+    const result = await Promise.race([activation.result, timeoutGuard]);
     if (result?.stopReason !== 'completed') {
-      return degraded(
+      return failed(
         `LLM stopReason=${result?.stopReason ?? 'unknown'}`,
-        diagOf(result?.diagnostic ? String(result.diagnostic).slice(0, 300) : null),
+        result?.diagnostic ? String(result.diagnostic).slice(0, 300) : null,
         true,
       );
     }
@@ -514,10 +543,10 @@ export async function judgeViaLLM({
     const structured = result.structured;
     const verdict = normalizeVerdict(structured);
     if (!verdict) {
-      return degraded('structured output invalid (verdict missing or ill-typed)',
+      return failed('structured output invalid (verdict missing or ill-typed)',
         structured ? JSON.stringify(structured).slice(0, 300) : null, true);
     }
-    // authoring 缺失是合法的（Phase A/B 用不到它）——不因此降级。
+    // authoring 缺失是合法的（Phase A/B 用不到它）——不因此判失败。
     const authoring = normalizeAuthoring(structured);
     return { ok: true, mode: 'llm', verdict, authoring, attempted: true, meta: meta() };
   } catch (err) {
@@ -525,11 +554,12 @@ export async function judgeViaLLM({
     const reason = timedOut
       ? `llm verdict timeout (${timeoutMs}ms)`
       : `llm verdict error: ${err?.message ?? String(err)}`;
-    return degraded(reason, null, spawned);
+    return failed(reason, null, spawned);
   } finally {
-    // 防泄漏 child session（顺序照抄 dream：先 run 后 handle）
-    if (run && typeof run.dispose === 'function') {
-      try { await run.dispose(); } catch { /* swallow — already settled */ }
+    cancelled = true;
+    // 防泄漏 child session（顺序照抄 dream：先 activation 后 handle）
+    if (activation && typeof activation.dispose === 'function') {
+      try { await activation.dispose(); } catch { /* swallow — already settled */ }
     }
     if (handle && typeof handle.dispose === 'function') {
       try { await handle.dispose(); } catch { /* swallow */ }

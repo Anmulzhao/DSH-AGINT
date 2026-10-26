@@ -1,5 +1,172 @@
 # Changelog — agint-aesthetic-oracle
 
+## 0.7.0 — 2026-10-25
+
+**神谕层不准 LLM 降级：修好宿主契约，删掉所有非 LLM 回退。**
+
+### 背景：LLM 通路不是「偶尔降级」，是 25 天全程恒失败
+
+`docs/神谕层-LLM通路根因-20261023.md` 已取证：现宿主 `subagents` 服务只有
+`startActivation`，**没有 `start`**。本插件（以及 dream / driver / autocreate）
+按旧范式检查 `typeof subagents.start !== 'function'` ⇒ 恒返回
+`subagents unavailable`（文案是假的：服务在，缺的是方法）。生产
+`oracle_broadcasts` 连续 `mode=heuristic-degraded`，LLM 档实际 0%。
+
+旧策略「失败降级回模板、广播照发」把签名漂移伪装成正常运行。老板 2026-10-25
+拍板：**不准降级，都要用 LLM**。
+
+### 变更
+
+1. **宿主契约修复**（`lib/llm-enhance.js`）
+   - 优先 `subagents.startActivation({ provider:'spawn', label, request:{ parent,
+     prompt, agentPreset, agentOptions, outputSchema }, signal, delivery:'caller' })`。
+   - 旧宿主只有 `start()` 时保留兼容分支。
+   - 报错分开：`agents service missing` / `subagents service missing` /
+     `subagents method missing (startActivation=…, start=…)` / `spawn provider not registered`。
+   - `agentOptions` 补 `reasoningEffort`（MiniMax-M3.1-Flash 缺档位会 400）；
+     兜底模型更新为当前已注册的 `MiniMax-M3.1-Flash`。
+   - 超时双保险：`AbortController` + `Promise.race`；超时必 `dispose`。
+2. **删除降级路径**
+   - `l1EnhanceAdvice` / `l2DeepDive` / `l3PolishProposal` 失败一律抛
+     `OracleLlmError`（code=`ORACLE_LLM_UNAVAILABLE`），不再返回
+     `{ mode:'heuristic-degraded' }`，也不拿模板文本顶替。
+   - 删除 `AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2` 分档开关；只剩整插件
+     kill-switch（config `enabled:false` / env `AGINT_AESTHETIC_ORACLE=off`）。
+   - 删除 `state.llmHealth` 与「连续降级 3 次告警」熔断（降级已不存在）。
+   - 结构化输出字段为空（advice/evidence/narrative/pattern/body）也算失败。
+3. **失败语义**
+   - LLM 失败中止本轮广播：落 `oracle_broadcasts.outcome=error`
+     （`detail=llm-unavailable: …`）+ 发 `oracle.alert`（调度重试期只在末次发）
+     + 抛错交 `runScheduled` 重试/记连续失败。
+   - 不发布 `oracle.daily/weekly/monthly`，不写 `mode=heuristic-degraded` 成功行。
+4. **weekly 提案原子性**
+   - 先完成全部 L3 润色，再逐条 `evolve.propose()`。任一 L3 失败 ⇒ 零提案落盘，
+     避免「第一条已写、第二条失败」在重试时被当成历史提案去重。
+5. **stale 缓存也走 LLM**
+   - metrics 挂掉时的 `lastGood` 缓存广播只换数据源，不换输出层；判词仍由 L1/L2/L3 生成。
+6. **可观测字段**
+   - `mode` 只剩 `template`（本轮无 LLM 输出）/ `llm`（至少一级成功）。
+     `heuristic-degraded` 从 `topics.js` 枚举移除；历史事件与历史行不受影响。
+
+### 测试
+
+`node --test` **99 例全绿**。新增：`startActivation` 契约、旧 `start` 兼容、
+三种病因文案、超时必返回 + dispose、结构化输出缺失、L1/L2/L3 失败抛错、
+LLM 失败落 error 痕 + 告警、`runScheduled` 重试告警、weekly L3 失败零提案。
+删除：kill-switch 分档、连续降级熔断。
+
+### 口径影响
+
+- 评分公式、阈值、`FORMULA_VERSION=r4`、`scaleHash` 均不变。
+- AC-21（`mode='llm'` 占比）今后只在成功广播行上统计；LLM 失败的轮次以
+  `outcome=error` 单列，不再稀释成「降级成功」。
+- 兼容性：老事件里的 `heuristic-degraded` 仍能被面板显示；新事件合同拒收该值。
+
+## 0.6.1 — 2026-10-23
+
+**Fix — Q3 建议里的 wiki 矛盾清单渲染成 `[object Object]`**。
+
+### 背景：数据形状变了，消费者没跟上
+
+`agint-wiki` v0.2.0 起 `lint()` 返回的 `contradictions` 元素是
+`{path, line, snippet}` **对象**（复核者要能直接跳到行）。
+生产存储 `agint_metrics.json` 实测：该形状自 **2026-10-13** 起就已写入
+`wiki.contradictions` 的 `meta.files`（此前是裸文件名字符串）。
+
+而 `lib/broadcast.js` 的 `strList` 仍按老形状 `String(x)` ⇒
+`wikiContradictionFiles` 变成 `["[object Object]"]`。
+生产存储 `agint_aesthetic_oracle.json` 实证：审计里落的就是这个字面量。
+
+后果：**建议不可复核**。Q3 说的是「解决 wiki 矛盾标记（1 处：[object Object]）」，
+复核者看不出是哪条文件，§4 真实关破口。
+
+### 变更
+
+1. `lib/broadcast.js`：新增 `contradList`，把 `{path, line, snippet}` 渲染成
+   `path:line`（行号是整数才带 `:line`）；旧形状（裸字符串）原样透传，**双形状都吃**。
+   只改 `wikiContradictionFiles` 一路——`wikiOrphanFiles` 与 `lowConfidenceNoEvidence`
+   本来就是字符串数组，不动。
+
+### 测试
+
+`node --test` 95 例全绿（新增 1 例：对象形状渲染成 `path:line` 且断言输出不含
+`[object Object]`，同时验旧形状仍透传）。
+
+### 口径影响
+
+不改任何评分公式与阈值。`FORMULA_VERSION` 仍为 `r4`（公式结构未变），
+`scaleHash` 不变，历史趋势可直接比。
+
+## 0.6.0 — 2026-10-23
+
+判尺规模不变性 + 闭环修复（公式 r4）。四项，全部由 2026-10-22 生产数据取证驱动。
+
+### 背景：读数本身失准了
+
+生产快照 `state.lastGood.atomic`（10-22）：
+
+| 量 | 值 |
+|---|---|
+| skillsBytes | 221853 B |
+| skillsTotal | 20 |
+| 单技能平均 | **10.83 KB**（方案 §3.4 自定合理区间 8–12 KB 内） |
+| 旧口径 bloat | **1.805**（221853 / 122880） |
+| 扣分 | **24.15**（满分 30） |
+| 总分 | 66.9 |
+
+技能数量从 11 涨到 20，而预算 `BLOAT_BUDGET_BYTES = 120KB` 是「11 技能 × 10.9KB」
+定死的。指标名是「臃肿度」，实际测的是「规模」。⇒ 24 分是口径假扣。
+
+同期 Q1 连续 12 次报「在变美」（总分 93.1→66.9，−26.2），
+以及 LLM 增强档自 10-19 起连续 5 次静默降级（`L1:subagents unavailable`）无人知晓。
+
+### 变更
+
+1. **bloat 改单技能体积预算**（`scoring.js`）
+   `b = (Σbytes / skillsTotal) / BLOAT_BUDGET_PER_SKILL_BYTES`，其中
+   `BLOAT_BUDGET_PER_SKILL_BYTES = 11170 = 122880 / 11`。
+   保留原标定基准 ⇒ 09-27 标定样本（11 技能 / 82652 B）复算值 0.6727 完全不变，
+   `53.4 ± 0.5` 钉仍成立；只有「技能数变了」的时期读数被纠正。
+   新增 `BLOAT_ABS_CEILING_BYTES = 600KB` 兜底：per-skill 对「一万个 1KB 技能」
+   失效（每个都不超体积但总量爆炸），超界按比例追加进 b。
+   `skillsTotal` 缺席 ⇒ bloat 判 N/A 走权重归一，**不退回总量口径**
+   （否则同名字段在不同轮次含义不同，是更隐蔽的口径漂移）。
+2. **Q1 总分门**（`scoring.js` `Q1_SCORE_GATE_DELTA = -10`）
+   票数判定为 `beautiful` 但总分低于基线 ≥10 分时降为 `flat`，note 写明
+   「N 维改善、M 维恶化，但总分低于基线 X 分」。只拦 beautiful。
+   **不进 scaleHash**：它不改变任何分数，只改变判决，分数仍可比。
+3. **LLM 降级熔断告警**（`index.js` / `storage.js`）
+   `state.llmHealth` 记 `consecutiveNonLlm`；连续 3 次非 `llm` 且 env 未显式
+   `off` ⇒ 发一次 `oracle.alert`，`alerted` 防重，恢复即清零。
+   单次降级仍记 `severity=low`，越阈值升 `medium`。
+   `AGINT_AESTHETIC_ORACLE_LLM=off` 不计入（那是老板的选择，不是故障）。
+4. **`mode` 落 `oracle_broadcasts` 表**（`storage.js`）
+   AC-21 的原文要求「生产存储 `oracle_broadcasts` 中 `mode='llm'` 占比 ≥80%」，
+   而此表此前**没有这一列**，按原文去查查不到任何数据。
+5. **weekly 提案闭环**（`broadcast.js` / `index.js`）
+   - 最小扣分门槛 `MIN_PROPOSAL_DEDUCTION = 2.0`（旧口径 `deduction > 0` 就提，
+     产出过「噪声比 扣 0.3 分」的提案）
+   - 去重 `findDuplicateProposal`：同维 28 天内已有 `status=proposed` 不再开单，
+     审计留 `oracle-proposal-suppressed` 痕迹（含原提案 id）。
+     匹配优先 `note` 里的 `worst=<key>`，退回 `title` 维度中文名（覆盖历史 9 条）。
+     只匹配 `proposed`——`wontfix` 不等于「问题消失了」，应重开。
+   - 广播新增一行「闭环：美谕提案累计 N 条｜已处理 M｜挂起 K」。
+     `listProposals` 不可用时**不写这行**（UNKNOWN 不是 0）。
+
+### 口径影响
+
+- bloat 与总分在 r3→r4 间**不可直接比较**。用 10-22 原子值复算：
+  扣分 33.08 → 8.93，总分 **66.9 → 91.1**；worst 从 `bloat` 变 `redundancy`。
+- 活体复算（含 10-23 新技能）：`skillsBytes=243428 / 20 = 11.89KB`，bloat **1.0897**，
+  总分 **88.4** —— 新口径恢复了分辨力：从「虚高 1.8」变成「微超 1.09」。
+- `scaleHash` 由 `59e371d8` → `f4f5c879`（THRESHOLDS 键集变化）。
+
+### 测试
+
+88 → 94 例全绿。新增 13 例：r4 生产复算、规模不变性、skillsTotal 缺席 N/A、
+绝对上界兜底、Q1 总分门 ×4（含不误伤 / 向后兼容 / 只拦 beautiful）、
+熔断 ×3（含 off 不计数 / 防重）、`mode` 落表、提案门槛 / 去重 ×3 / 闭环行 ×2。
+
 ## 0.5.0 — 2026-10-09
 
 评分公式 r2：三处度量学修复（提案 f51d3280，源码复审发现）。

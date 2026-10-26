@@ -28,6 +28,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+// F5 收口（2026-10-19）：会话文件名表与后缀常量的唯一真相源在 agint-session-source。
+// 相对路径引用（与 semantic-window.js:24 引 agint-session-extract 同形）——
+// 插件间在部署位不是 npm 包树，裸包名解析不到。
+import {
+  SESSION_LOG_NAMES_BY_RANK,
+  SESSION_LOG_SUFFIX as SHARED_SESSION_LOG_SUFFIX,
+} from '../agint-session-source/lib/index.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -53,19 +60,19 @@ export function resolveZstdBin() {
  *
  * 2026-09-22 15:52 宿主把会话日志改名为 `session.v4.jsonl.zstd`。本表当时只有
  * v3 与无版本名 ⇒ 09-22 之后的 260 个会话目录全部不可见，autocreate 供料归零
- * 12 天（读不到文件时返回 [] 不抛，所以没人看见）。同源先例：
- * `agint-input-gateway/lib/channels/{cross-agent,self-observation}.js` 已按这三名查。
+ * 12 天（读不到文件时返回 [] 不抛，所以没人看见）。
  * ⚠️ 宿主再改版本号时本表还会落后 ⇒ `listSessionLogs` 另带 `.jsonl.zstd` 后缀
  * 兜底：认不出的版本名也要发现，并且**读不到要出声**。
+ *
+ * 2026-10-19（F5 收口三步）：本表与后缀常量**不再本地持有**，改从
+ * `agint-session-source` 导入 —— 它是全仓唯一的会话文件名真相源。
+ * 公共 API 形状不变（仍导出同名常量），既有消费方与本文件自带的
+ * `session-log-v4.test.mjs:214` 断言（逐项比对表内容）都不受影响。
  */
-export const SESSION_FILE_NAMES = Object.freeze([
-  'session.v4.jsonl.zstd',
-  'session.v3.jsonl.zstd',
-  'session.jsonl.zstd',
-]);
+export const SESSION_FILE_NAMES = SESSION_LOG_NAMES_BY_RANK;
 
 /** 会话日志统一后缀，用于兜底发现未知版本名。 */
-export const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+export const SESSION_LOG_SUFFIX = SHARED_SESSION_LOG_SUFFIX;
 
 /**
  * 版本排序键（越大越新）：`session.v4…` → 4，`session.v12…` → 12，无版本名 → 0。

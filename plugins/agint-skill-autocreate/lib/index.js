@@ -180,11 +180,112 @@ function apply(ctx, config) {
     return readToolStatsShared(effectiveConfig().jsonlPath);
   }
 
+  // ── pattern 回链对账（2026-10-18）───────────────────────────────────────
+  //
+  // 病：候选走到终态时没人清回链。候选生成守门是
+  // `if (stored.linkedCandidateId) continue;`（见本文件候选生成段），而**只有
+  // 人工 rejectCandidate 会清**。自动评估拒绝（REJECTED_STATIC / REJECTED_SANDBOX）
+  // 与回滚（ROLLED_BACK）都不清 ⇒ 该模式永久跳过，再也不会产出候选。
+  //
+  // 实测（2026-10-18 21:5x，生产存储 agint_skill_autocreate.json）：
+  // task_patterns 552 条里 42 条 status='candidate'，42 条的 linkedCandidateId
+  // 全部指向已终结候选（37 REJECTED + 5 ROLLED_BACK），命中率 42/42。
+  //
+  // 修法两层，缺一不可：
+  //   ① 终态分支即时清 → `dismissPatternOf(candidateId)`，在 triggerEval 的
+  //      REJECTED_STATIC / REJECTED_SANDBOX 与发布层 REJECTED / 回滚处调用。
+  //   ② detect() 开头对账一次 → `reconcilePatternLinks()`，把历史遗留一并收口。
+  // 两者都走 storage 表 API（宿主内存 + 整体重写），不直写 JSON 文件
+  // （three-state-audit §10：独立进程直写生产存储会被宿主下次写入覆盖）。
+
+  /** 候选终态里「这个模式不该再被提案」的：拒绝与回滚 */
+  const PATTERN_DEAD_CANDIDATE = new Set([
+    'REJECTED', 'REJECTED_STATIC', 'REJECTED_SANDBOX', 'ROLLED_BACK',
+  ]);
+  /** 候选已变成在跑技能：模式记 'released'，保留回链（可回溯「这技能从哪来」） */
+  const PATTERN_SHIPPED_CANDIDATE = new Set(['RELEASED', 'STABLE']);
+
+  /**
+   * 纯判定：给一个 pattern + 它回链的候选状态，返回该 pattern 应有的
+   * { status, linkedCandidateId }；不需要改动时返回 null。
+   */
+  function planPatternLinkFix(pattern, candidateStatus) {
+    if (PATTERN_DEAD_CANDIDATE.has(candidateStatus)) {
+      return { status: 'dismissed', linkedCandidateId: null };
+    }
+    if (PATTERN_SHIPPED_CANDIDATE.has(candidateStatus)) {
+      return { status: 'released', linkedCandidateId: pattern.linkedCandidateId ?? null };
+    }
+    return null;
+  }
+
+  /**
+   * 单点清理：候选 X 走入终态后，把它回链的 pattern 一并收口。
+   * 找不到回链 = 无事可做（人工 reject 已清过的路径会走到这里）。
+   * 判定与对账共用 planPatternLinkFix，两处口径不会分叉。
+   */
+  async function dismissPatternOf(candidateId, candidateStatus = 'REJECTED_STATIC') {
+    if (!candidateId) return false;
+    const tp = await table('task_patterns');
+    const hit = tp.entries().find(([, v]) => v.linkedCandidateId === candidateId);
+    if (!hit) return false;
+    const fix = planPatternLinkFix(hit[1], candidateStatus);
+    if (!fix) return false;
+    await tp.put(hit[0], packTaskPattern({ ...hit[1], ...fix }, hit[1]));
+    return true;
+  }
+
+  /**
+   * 对账：扫全表，把「回链指向终态候选」的 pattern 一次性收口。
+   * detect() 每次开头跑一次（552 pattern + ≤200 candidate，可忽略成本）。
+   */
+  async function reconcilePatternLinks() {
+    const tp = await table('task_patterns');
+    const cd = await table('candidates');
+    const statusOf = new Map(cd.entries().map(([k, v]) => [k, v.status]));
+    const fixed = [];
+    for (const [key, pattern] of tp.entries()) {
+      if (!pattern.linkedCandidateId) continue;
+      const candStatus = statusOf.get(pattern.linkedCandidateId);
+      if (!candStatus) continue;                 // 候选已被清理：保留原状，不猜
+      const fix = planPatternLinkFix(pattern, candStatus);
+      if (!fix) continue;
+      if (pattern.status === fix.status && pattern.linkedCandidateId === fix.linkedCandidateId) continue;
+      await tp.put(key, packTaskPattern({ ...pattern, ...fix }, pattern));
+      fixed.push({
+        patternId: key, from: pattern.status, to: fix.status,
+        candidateId: pattern.linkedCandidateId, candidateStatus: candStatus,
+      });
+    }
+    if (fixed.length) {
+      await audit({
+        actor: 'system',
+        action: 'pattern_links_reconciled',
+        targetType: 'task_pattern',
+        targetId: '*',
+        details: { count: fixed.length, samples: fixed.slice(0, 20) },
+        reason: '回链指向已终结候选 ⇒ 模式永久跳过候选生成（守门见 detect 候选生成段），此处收口',
+      });
+    }
+    return { scanned: tp.size, fixed: fixed.length, items: fixed };
+  }
+
   // ── 核心流程：检测 → 候选生成（§3.1 [2]-[5]）──────────────────────────
   async function detect(args = {}) {
     const c = effectiveConfig();
     if (args.force !== true && paused) {
       return { skipped: true, reason: 'paused (autocreate_pause)' };
+    }
+
+    // 回链对账（2026-10-18）：历史遗留的「回链指向终态候选」模式一并收口，
+    // 否则它们会在下面的 `if (stored.linkedCandidateId) continue;` 处被永久跳过。
+    // 对账失败不阻断检测（一域坏只降级那一件事），但要留可见的错误计数。
+    let linkReconcile = { scanned: 0, fixed: 0, items: [] };
+    try {
+      linkReconcile = await reconcilePatternLinks();
+    } catch (e) {
+      linkReconcile = { scanned: 0, fixed: 0, items: [], error: String(e?.message ?? e) };
+      console.warn(`[${name}] pattern 回链对账失败（已忽略）: ${e?.message ?? e}`);
     }
 
     const windowHours = args.windowHours ?? c.aggregate_window_hours;
@@ -383,7 +484,7 @@ function apply(ctx, config) {
       mode: judgeMode,
       authoringMode,
       called: 0,            // 真正发起过的调用（= llm_judge_called 条数）
-      degraded: 0,          // 调用失败/产出不可用
+      failed: 0,            // 调用失败/产出不可用（primary 档：该 pattern 判 null）
       shadowSamples: 0,     // shadow 分歧样本
       budgetExhausted: 0,
       hardVetoSkipped: 0,   // 被 5 条硬否决预筛挡下、**没花预算**的 pattern 数
@@ -577,6 +678,8 @@ function apply(ctx, config) {
       // 模式上」）。预筛判据与判定的硬否决**同源**（`hardVetoOf` 与 `hardVeto`
       // 共用一份表），不是另写一遍——否则两边迟早漂移成「白花一次调用」。
       let llmOutcome = null;
+      // primary 档：LLM 拿不到有效判定时，结论必须判 null（需人工），⛔ 不回落轨道 B
+      let llmFailedReason = null;
       const hardVeto = judgeMode === 'off' ? null : hardVetoOf(stored, {
         minSteps: c.standardizable_min_steps,
         minDistinctTools: c.standardizable_min_distinct_tools,
@@ -590,15 +693,18 @@ function apply(ctx, config) {
         const grant = await llmBudget.take();
         if (!grant.ok) {
           llmStats.budgetExhausted++;
+          const snap = await llmBudget.snapshot();
+          if (judgeMode === 'primary') {
+            llmFailedReason = `LLM daily budget exhausted (${snap.used}/${snap.limit})`;
+          }
           if (grant.firstRejection) {
-            const snap = await llmBudget.snapshot();
             await audit({
               actor: 'system',
               action: 'llm_budget_exhausted',
               targetType: 'task_pattern',
               targetId: '*',
               details: { used: snap.used, budget: snap.limit, day: snap.day },
-              reason: `LLM 每日预算耗尽（${snap.used}/${snap.limit}），本轮后续 pattern 全部回落轨道 B`,
+              reason: `LLM 每日预算耗尽（${snap.used}/${snap.limit}），primary 档本轮后续 pattern 不再产出候选`,
             });
           }
         } else {
@@ -635,16 +741,16 @@ function apply(ctx, config) {
               },
             });
           }
-          if (llmOutcome.mode === 'degraded') {
-            llmStats.degraded++;
+          if (llmOutcome.mode === 'failed' || llmOutcome.ok !== true) {
+            llmStats.failed++;
+            if (judgeMode === 'primary') llmFailedReason = llmOutcome.reason ?? 'llm failed';
             await audit({
               actor: 'system',
-              action: 'llm_judge_degraded',
+              action: 'llm_judge_failed',
               targetType: 'task_pattern',
               targetId: stored.id,
-              // ★ reason 必填（K59 教训）：dream 的降级路径只印「degraded」不印原因，
-              //   「没有候选」与「429 超限」在日记上长得一样 → 错误归因被固化 12 天。
-              //   这里 reason 进 audit + detect 返回值的聚合计数，人可直接读。
+              // ★ reason 必填（K59 教训）：「没有候选」与「429 超限」在日记上
+              //   长得一样，错误归因会被固化。reason 进 audit + 聚合计数，人可直接读。
               details: {
                 reason: llmOutcome.reason,
                 diagnostic: llmOutcome.diagnostic ?? null,
@@ -673,7 +779,7 @@ function apply(ctx, config) {
         // ── 轨道 C（2026-09-18）：LLM 判定结果 + 灰度档 ──
         llmVerdict: llmOutcome?.verdict ?? null,
         llmShadow: judgeMode === 'shadow',
-        llmDegraded: llmOutcome?.mode === 'degraded' ? llmOutcome.reason : null,
+        llmFailed: llmFailedReason,
       });
 
       // shadow 档：**不改结论**，只把分歧样本落盘 —— Phase A 校准 prompt 与
@@ -855,6 +961,8 @@ function apply(ctx, config) {
       },
       candidatesCreated,
       candidateIds,
+      // 回链对账结果（2026-10-18）：固定 0 与「这次真没必要修」要能分开看
+      patternLinkReconcile: { scanned: linkReconcile.scanned, fixed: linkReconcile.fixed, error: linkReconcile.error ?? null },
       // ── LLM 接入（2026-09-18）：可观测性必须够到「今天花了多少 / 挂在哪」──
       // 静默失败是本行的头号杀手（K59 刚踩过），所以调用数、降级数、分歧样本数、
       // 被硬否决挡下的数、当日预算用量全部进返回值（人可读产物，不只在日志里）。
@@ -887,6 +995,9 @@ function apply(ctx, config) {
     getService: (key) => (typeof ctx.get === 'function' ? ctx.get(key) : null),
     readToolStatsRecords,
     dshHome: process.env.DSH_HOME || (process.env.HOME + '/.dsh'),
+    // 拒绝/回滚时清 pattern 回链（2026-10-18）。发布层不认识模式表，
+    // 把动作从调用方注入，避免 release-manager 再抄一份回链判据。
+    dismissPatternOf,
   });
 
   // ── Service 出口（设计稿 §5.1）─────────────────────────────────────────
@@ -1016,6 +1127,7 @@ function apply(ctx, config) {
       const reason = `去重：与现有技能 "${dup.matchedName}" 相似度 ${dup.similarity.toFixed(2)} ≥ ${c.dedup_similarity_threshold}`;
       const updated = { ...candidate, status: 'REJECTED_STATIC', rejectionReason: reason };
       await cd.put(id, updated);
+      await dismissPatternOf(id).catch((e) => console.warn(`[${name}] 清回链失败 ${id}: ${e?.message ?? e}`));
       await publishEvent('skill-autocreate.phase1-rejected', {
         candidateId: id, phase: 1, reason: 'dedup',
         detail: reason, matchedName: dup.matchedName, similarity: dup.similarity,
@@ -1067,6 +1179,8 @@ function apply(ctx, config) {
     if (result.finalStatus === 'REJECTED_STATIC') {
       const updated = { ...base, status: 'REJECTED_STATIC', rejectionReason: reasonFor(result.blockers?.[0]) };
       await cd.put(id, updated);
+      // 清回链（2026-10-18）：不清则该模式永久跳过候选生成。失败不阻断状态机。
+      await dismissPatternOf(id).catch((e) => console.warn(`[${name}] 清回链失败 ${id}: ${e?.message ?? e}`));
       await publishEvent('skill-autocreate.phase1-rejected', {
         candidateId: id, phase: 1, reason: 'static-blocker',
         detail: updated.rejectionReason, families: result.evalResults.phase1?.families ?? [],
@@ -1090,6 +1204,7 @@ function apply(ctx, config) {
     if (result.finalStatus === 'REJECTED_SANDBOX') {
       const updated = { ...base, status: 'REJECTED_SANDBOX', rejectionReason: (result.evalResults.phase2?.detail ?? '').slice(0, 300) };
       await cd.put(id, updated);
+      await dismissPatternOf(id).catch((e) => console.warn(`[${name}] 清回链失败 ${id}: ${e?.message ?? e}`));
       await publishEvent('skill-autocreate.phase2-rejected', {
         candidateId: id, phase: 2, reason: 'sandbox-failed',
         detail: updated.rejectionReason, exitCode: result.evalResults.phase2?.exitCode,
@@ -1363,6 +1478,9 @@ function apply(ctx, config) {
     listReleases,
     stats,
     verifyLlmJudge,
+    // 回链对账（2026-10-18）：detect() 每次开头也会跑一次；这里暴露给工具/测试，
+    // 让「历史遗留一次收口」不必等下一次日聚合。
+    reconcilePatternLinks,
     pause,
     resume,
     config: configApi,

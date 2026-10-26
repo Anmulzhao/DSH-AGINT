@@ -38,8 +38,10 @@ test('方案标定数据复算：四指标与总分 = 53.4 ± 0.5（AC-0d 确定
   assert.ok(Math.abs(c.confidence.value - 0.544) < 1e-6);
   // redundancy = 4/55（r3 起矛盾/重复只在此处记账）
   assert.ok(Math.abs(c.redundancy.value - 4 / 55) < 1e-3, `redundancy=${c.redundancy.value}`);
-  // bloat = 82652/122880
+  // bloat（r4）= (82652/11) / 11170 —— 11170 = 122880/11，故值与 r3 档完全一致
   assert.ok(Math.abs(c.bloat.value - 82652 / 122880) < 1e-3, `bloat=${c.bloat.value}`);
+  assert.equal(c.bloat.drivenBy, 'volume');
+  assert.equal(c.bloat.skillsTotal, 11);
 
   const s = computeAestheticScore(c);
   assert.equal(s.renormalized, false);
@@ -82,7 +84,7 @@ test('bloat 超预算线性扣分且不封顶（bloat=2 → −30）', () => {
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5,
-    skillsBytes: THRESHOLDS.BLOAT_BUDGET_BYTES * 2,
+    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2,
   });
   const s = computeAestheticScore(c);
   assert.equal(s.dims.bloat.deduction, 30);
@@ -94,7 +96,7 @@ test('r2：bloat 扣分饱和于 2.5 倍预算（b=3 → 扣 45，b=4 → 仍 45
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5,
-    skillsBytes: THRESHOLDS.BLOAT_BUDGET_BYTES * mult,
+    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * mult,
   });
   // b=3：min(max(0,2),1.5)=1.5 → 扣 45
   assert.equal(computeAestheticScore(mk(3)).dims.bloat.deduction, 45);
@@ -103,6 +105,71 @@ test('r2：bloat 扣分饱和于 2.5 倍预算（b=3 → 扣 45，b=4 → 仍 45
   // 旧公式 b=4 扣 90 → 总分 10；b=6 扣 150 → 总分 -50（荒谬）。r2 后下限 = 100-45=55。
   const s4 = computeAestheticScore(mk(4));
   assert.equal(s4.score, 55);
+});
+
+test('r4：生产复算（2026-10-22 真实原子值）—— 单技能 10.83KB 落在合理区间，bloat 扣 0，总分 91.1', () => {
+  // 数据源：AGINT-date/storages/agint_aesthetic_oracle.json → state.lastGood.atomic
+  // r3 口径下同一组数据 b=1.805、扣 24.15、总分 66.9 —— 24 分是口径假扣。
+  const c = deriveComposites({
+    wikiOrphans: 5, wikiContradictions: 1, ruleDuplicates: 0, memoryNoEvidence: 1,
+    wikiTotal: 10, rulesTotal: 29, memoryTotal: 851,
+    avgConfXCompliance: 0.6484, curatorOverlaps: 0,
+    skillsTotal: 20, skillsBytes: 221853,
+  });
+  // 单技能 11092.65 B / 11170 B = 0.9931 < 1 → 不超预算
+  assert.equal(c.bloat.value, 0.9931);
+  assert.equal(c.bloat.drivenBy, 'volume');
+  assert.equal(c.bloat.budget, 20 * 11170);
+
+  const s = computeAestheticScore(c);
+  assert.equal(s.dims.bloat.deduction, 0, '单技能体积正常时 bloat 不得扣分');
+  assert.ok(Math.abs(s.dims.noise.deduction - 0.67) < 0.01);
+  assert.ok(Math.abs(s.dims.confidence.deduction - 1.47) < 0.01);
+  assert.ok(Math.abs(s.dims.redundancy.deduction - 6.76) < 0.01);
+  assert.equal(s.score, 91.1);
+});
+
+test('r4：规模不变性——单技能体积相同、技能数翻倍，b 不变（r3 会从 0.909 涨到 1.818）', () => {
+  const mk = (n) => deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0,
+    skillsTotal: n, skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * n,
+  });
+  const small = mk(10);
+  const big = mk(20);
+  assert.equal(small.bloat.value, 1);
+  assert.equal(big.bloat.value, 1, '技能数增长不得改变单技能体积判定');
+  assert.equal(small.bloat.budget * 2, big.bloat.budget, '预算总额随技能数线性增长');
+});
+
+test('r4：skillsTotal 缺席 → bloat N/A 且权重归一，不退回总量口径', () => {
+  const c = deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 0.70, curatorOverlaps: 0,
+    skillsBytes: 221853, // 有字节数但无技能数
+  });
+  assert.equal(c.bloat.na, true);
+  assert.match(c.bloat.reason, /skillsTotal/);
+  const s = computeAestheticScore(c);
+  // skillsTotal 同时是 redundancy 的分母 ⇒ 缺它时两维一起 N/A（这是正确后果，不是缺陷）
+  assert.deepEqual(s.naDims, ['redundancy', 'bloat']);
+  assert.equal(s.effectiveDenominator, 50, 'redundancy 20 + bloat 30 退出分母');
+  assert.equal(s.renormalized, true);
+});
+
+test('r4：绝对上界兜底——一万个 1KB 技能绕过 per-skill 判定时仍被扣分', () => {
+  const c = deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0,
+    skillsTotal: 10000, skillsBytes: 10 * 1024 * 1024, // 均 1KB，per-skill 只有 0.09
+  });
+  assert.equal(c.bloat.drivenBy, 'ceiling', '判定必须由绝对上界驱动');
+  assert.ok(c.bloat.value > 10, `b=${c.bloat.value} 应远超 1`);
+  // 饱和于 1.5 ⇒ 扣 45（30 × 1.5）
+  assert.equal(computeAestheticScore(c).dims.bloat.deduction, 45);
 });
 
 test('r2：Q1 效应量门槛——阈下波动不计入恶化/改善', () => {
@@ -121,6 +188,59 @@ test('r2：Q1 效应量门槛——阈下波动不计入恶化/改善', () => {
   const v3 = q1Verdict(mk({ nr: 0.10 }), mk({ nr: 0.01 }));
   assert.equal(v3.worseCount, 1);
   assert.equal(v3.verdict, 'flat');
+});
+
+test('r4 Q1 总分门：三维改善 + 一维暴跌 24 分 → 降为持平，note 写明抵消幅度', () => {
+  // 生产原型（2026-10-11~10-22）：noise/confidence/redundancy 均改善，bloat 恶化 24 分。
+  // r4 前票数 3:1 → 连续 12 次报「在变美」，同期总分 −26.2。
+  const base = {
+    noise: { value: 0.10, na: false },
+    confidence: { value: 0.60, na: false },
+    redundancy: { value: 0.03, na: false },
+    bloat: { value: 0.70, na: false },
+  };
+  const cur = {
+    noise: { value: 0.05, na: false },      // 改善（ε 0.03）
+    confidence: { value: 0.68, na: false }, // 改善（ε 0.07）
+    redundancy: { value: 0.02, na: false }, // 改善（ε 0.005）
+    bloat: { value: 1.50, na: false },      // 恶化（ε 0.1）
+  };
+  const v = q1Verdict(cur, base, { currentScore: 70, baselineScore: 82 });
+  assert.equal(v.betterCount, 3);
+  assert.equal(v.worseCount, 1);
+  assert.equal(v.verdict, 'flat', '总分低于基线 12 分时不得再判「在变美」');
+  assert.match(v.note, /低于基线 12 分/);
+  assert.match(v.note, /bloat/);
+});
+
+test('r4 Q1 总分门：总分跌幅在门槛内仍判「在变美」（不误伤）', () => {
+  const base = { noise: { value: 0.10, na: false }, confidence: { value: 0.60, na: false },
+    redundancy: { value: 0.03, na: false }, bloat: { value: 0.70, na: false } };
+  const cur = { noise: { value: 0.05, na: false }, confidence: { value: 0.68, na: false },
+    redundancy: { value: 0.02, na: false }, bloat: { value: 0.85, na: false } };
+  // −5 分未越过 −10 门
+  const v = q1Verdict(cur, base, { currentScore: 82, baselineScore: 87 });
+  assert.equal(v.verdict, 'beautiful');
+  assert.equal(v.note, null);
+});
+
+test('r4 Q1 总分门：opts 缺席时行为与 r3 完全一致（旧调用方向后兼容）', () => {
+  const base = { noise: { value: 0.10, na: false }, confidence: { value: 0.60, na: false },
+    redundancy: { value: 0.03, na: false }, bloat: { value: 0.70, na: false } };
+  const cur = { noise: { value: 0.05, na: false }, confidence: { value: 0.68, na: false },
+    redundancy: { value: 0.02, na: false }, bloat: { value: 1.50, na: false } };
+  assert.equal(q1Verdict(cur, base).verdict, 'beautiful', '未传分数时只按票数判（兼容）');
+});
+
+test('r4 Q1 总分门：只拦 beautiful，ugly 与 flat 不受影响', () => {
+  const base = { noise: { value: 0.10, na: false }, confidence: { value: 0.60, na: false },
+    redundancy: { value: 0.03, na: false }, bloat: { value: 0.70, na: false } };
+  // 两维恶化 → ugly，即使总分也跌，仍报 ugly
+  const cur = { noise: { value: 0.20, na: false }, confidence: { value: 0.50, na: false },
+    redundancy: { value: 0.04, na: false }, bloat: { value: 1.20, na: false } };
+  const v = q1Verdict(cur, base, { currentScore: 60, baselineScore: 90 });
+  assert.equal(v.verdict, 'ugly');
+  assert.equal(v.note, null);
 });
 
 test('AC-4：任一维 N/A → 广播仍输出，扣分按权重归一（ΣmaxW=70 时放大 100/70）', () => {
@@ -184,7 +304,7 @@ test('Q1：composite 全程走一遍（noise↑ + redundancy↑ → 丑；全改
       wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
       avgConfXCompliance: conf, curatorOverlaps: 0, skillsTotal: 100,
       ruleDuplicates2: 0,
-      skillsBytes: Math.round(bl * THRESHOLDS.BLOAT_BUDGET_BYTES),
+      skillsBytes: Math.round(bl * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 100),
       // redundancy 用 ruleDuplicates + wikiContradictions 构造
     });
     // 覆盖 redundancy：直接改值（保持纯函数可测）
@@ -222,7 +342,7 @@ test('Q3：有证据时四条映射齐全，均附证据（§4 P2-10 修复：�
     noise: { memoryNoEvidenceCount: 71, memoryNoEvidenceIds: ['a', 'b'] },
     confidence: { lowConfidenceNoEvidence: ['lesson-a', 'lesson-b'] },
     redundancy: { ruleLintIssues: [{ ruleId: 'R1', kind: 'duplicate-pattern', with: 'R2' }] },
-    bloat: { skillsBytes: THRESHOLDS.BLOAT_BUDGET_BYTES * 2 },
+    bloat: { skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2, skillsTotal: 5 },
   };
   for (const key of DIM_KEYS) {
     const a = q3Advice(key, ctxByKey[key]);
@@ -330,8 +450,8 @@ test('r3：noise 分子只认死条目——orphans 与 noEvidence 仍进分子'
 
 // ── 判尺指纹（提案 98c8e911）───────────────────────────────────────────────
 
-test('公式版本已随 r3 双计数拆解 bump（历史趋势分段依据）', () => {
-  assert.equal(FORMULA_VERSION, 'r3');
+test('公式版本已随 r4 单技能体积口径 bump（历史趋势分段依据）', () => {
+  assert.equal(FORMULA_VERSION, 'r4');
 });
 
 test('判尺指纹 scaleHash：8 位十六进制且对当前尺子钉死', () => {
@@ -339,7 +459,7 @@ test('判尺指纹 scaleHash：8 位十六进制且对当前尺子钉死', () =>
   // 钉死值：改动 THRESHOLDS / DIM_WEIGHTS / EFFECT_EPSILON 任一常量，本断言即红。
   // 这是「改判尺必须显式承认」的强制点——更新此值的人应当同时更新本文件与
   // calibration 脚本，让判尺变更在 git 里留痕，而不是悄悄发生。
-  assert.equal(scaleHash, '59e371d8', '判尺常量变了却没更新钉死指纹——改判尺须走评审并同步本行');
+  assert.equal(scaleHash, 'f4f5c879', '判尺常量变了却没更新钉死指纹——改判尺须走评审并同步本行');
 });
 
 test('判尺指纹对 key 书写顺序不敏感（stableStringify 按 key 排序）', () => {

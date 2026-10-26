@@ -103,9 +103,10 @@ export const DEFAULT_AGENT_PRESET = 'agint';
 // 值与 dream 的 DEFAULT_PROVIDER/MODEL 同源（本机 ~/.dsh 实测 minimax-cn / MiniMax-M3），
 // ⛔ deepseek 在本机只是 fallback adapter，别写它（K99）。
 const DEFAULT_LLM_PROVIDER = 'minimax-cn';
-// 2026-09-28：host 已把 minimax-cn 注册模型换成 MiniMax-M3.1-Flash-Preview
-// （cordis.patch.yml llm-pi-ai.providers.minimax-cn.models 只剩这一条）。
-const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash-Preview';
+// 2026-10-25：host 注册模型已是 MiniMax-M3.1-Flash（-Preview 不可路由）。
+const DEFAULT_LLM_MODEL = 'MiniMax-M3.1-Flash';
+// MiniMax-M3.1-Flash 强制 adaptive thinking；不传档位会 400。
+const DEFAULT_REASONING_EFFORT = 'high';
 
 /** 结构化输出契约（subagents.start 方言：required 挂在父对象数组上，K70） */
 export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
@@ -478,7 +479,8 @@ export function apply(ctx, config = {}) {
       timeoutMs,
     });
     if (!out || out.ok !== true) {
-      return { ok: false, reason: out?.reason ?? 'llm unavailable', degraded: true };
+      // LLM 通路失败 = 硬失败，由 runOnce 中止本轮并抛错；⛔ 不再静默计入 degraded。
+      return { ok: false, llmFailure: true, reason: out?.reason ?? 'llm unavailable' };
     }
     const v = out.value ?? {};
     if (v.applicable !== true) {
@@ -593,12 +595,23 @@ export function apply(ctx, config = {}) {
       return { skipped: true, reason: state.lastError };
     }
 
-    // 可用技能清单：注入优先；否则按插件自身位置列出 bundle 内 preset skills
+    // 可用技能清单：注入优先；否则按多候选根解析（repoRoot → DSH_HOME → 包内相对）。
+    // 2026-10-13：解析失败不再静默返回 []。原因是「路径算错」与「真没有技能」
+    // 在 summary 上必须可区分 —— 此前 availableSkills 恒 0 且无任何原因，
+    // 让「闭环没产出」与「技能清单读不到」看起来一模一样。
     let available = Array.isArray(inj.skillNames) ? inj.skillNames : null;
+    // skills 根解析留痕（供 summary 用；注入 skillNames 时也记一份，便于核对）
+    let skillsRootInfo = { base: null, attempts: [] };
     if (!available) {
       try {
-        available = await listSkillNames({ roots: inj.skillRoots });
-      } catch {
+        // repoRoot 此时尚未解析（在下方 612 行），先用同样的口径算一遍拿给 skills 用
+        const skillsRepoRoot = resolveRepoRoot(opts.env ?? process.env, { repoRoot: cfgRepoRoot });
+        skillsRootInfo = await resolveSkillRoot(skillsRepoRoot);
+        available = await listSkillNames({ roots: inj.skillRoots, repoRoot: skillsRepoRoot });
+      } catch (error) {
+        warn('skill names unavailable; evolution-cycle will have no target', {
+          error: error?.message ?? String(error),
+        });
         available = [];
       }
     }
@@ -661,7 +674,7 @@ export function apply(ctx, config = {}) {
       try {
         fileText =
           target.type === 'skill'
-            ? await readSkillText({ skillName: targetId, fs, roots: inj.skillRoots })
+            ? await readSkillText({ skillName: targetId, fs, roots: inj.skillRoots, repoRoot })
             : await readRepoText({ repoRoot, relPath: targetId, fs: inj.fs });
       } catch (error) {
         fileText = null;
@@ -677,6 +690,22 @@ export function apply(ctx, config = {}) {
       }
 
       const built = await construct({ candidate, targetId, fileText, llm: inj.llm ?? null, entityGate });
+      if (built.llmFailure) {
+        // 无降级：LLM 通路失败就不再往下试（继续试只会重复失败且可能重复计费）。
+        // 发 summary + 抛错，让 cron 的 lastError 亮起来。
+        state.lastError = `llm unavailable: ${built.reason ?? 'unknown'}`;
+        failures.push(`${candidate.id}: ${state.lastError}`);
+        await emitSummary('llm-unavailable', {
+          poolSize: pool.length,
+          availableSkills: Array.isArray(available) ? available.length : 0,
+          repoFiles: repoFiles.length,
+          repoRoot: repoRoot ?? null,
+          failures: failures.slice(0, 30),
+          failuresTotal: failures.length,
+          lastError: state.lastError,
+        });
+        throw new Error(`evolution-driver aborted: ${state.lastError}`);
+      }
       if (built.ok !== true) {
         if (built.degraded) state.degraded += 1;
         warn('candidate skipped: construct failed', {
@@ -1187,6 +1216,10 @@ export function apply(ctx, config = {}) {
       availableSkills: Array.isArray(available) ? available.length : 0,
       repoFiles: repoFiles.length,
       repoRoot: repoRoot ?? null,
+      // 2026-10-13：skills 根的解析留痕。availableSkills=0 时必须能回答
+      // 「是真没有技能，还是路径算错」——此前这里只有一个 0。
+      skillsRoot: skillsRootInfo.base ?? null,
+      skillsRootAttempts: skillsRootInfo.attempts,
       seen: state.seen.size,
       degraded: state.degraded,
       lastError: state.lastError,
@@ -1288,25 +1321,77 @@ export function apply(ctx, config = {}) {
 
 // ── 副作用：读技能文件 + 起子 agent（与纯逻辑分离，便于注入测试）─────────
 
-async function readSkillText({ skillName, fs, roots }) {
+/**
+ * 解析 preset skills 根目录（2026-10-13 修）。
+ *
+ * 原实现：`new URL('../../../presets/agint/skills/', import.meta.url)`。
+ * 部署位 `plugins/agint-evolution-driver/lib/index.js` 上三级 = `.agint-bundle/`，
+ * 而 `.agint-bundle/presets/` **整个目录不存在** ⇒ readdir 抛 ENOENT ⇒
+ * 被 runOnce 的 catch 吞成 `[]` ⇒ `availableSkills=0` ⇒
+ * evolution-cycle 恒 skipped 'no actionable candidate'。
+ * （实测：`.agint-bundle/presets/agint/skills` MISSING；真实 skills 在
+ *   `D:\DSH\project源码\DSH-AGINT\presets\agint\skills` 与
+ *   `D:\DSH\AGINT-date\.agent-presets\agint\skills`，各 10 个目录。）
+ *
+ * 候选根按序尝试，返回第一个存在的；全不存在时返回 null + 尝试过的清单
+ * —— 调用方必须把 attempts 带进 summary，不许再静默返回空数组。
+ *
+ * @param {string} [repoRoot]  已解析的仓库根（含 presets/agint/skills）
+ * @returns {{ base: string|null, attempts: string[] }}
+ */
+async function resolveSkillRoot(repoRoot) {
+  const attempts = [];
+  const { access } = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+  const { join } = await import('node:path');
+
+  const candidates = [];
+  // ① 仓库正本（最可靠：与 repoRoot 同源，随 repoRoot override 一起配）
+  if (repoRoot) candidates.push(join(repoRoot, 'presets', 'agint', 'skills'));
+  // ② DSH_HOME 下的 preset 部署位（$DSH_HOME/.agent-presets/agint/skills）
+  if (process.env.DSH_HOME) {
+    candidates.push(join(process.env.DSH_HOME, '.agent-presets', 'agint', 'skills'));
+  }
+  // ③ 原实现：相对插件自身位置（麒麟机 / 其他布局下可能成立）
+  try {
+    candidates.push(fileURLToPath(new URL('../../../presets/agint/skills/', import.meta.url)));
+  } catch { /* URL 解析失败就跳过这一个候选 */ }
+
+  for (const c of candidates) {
+    attempts.push(c);
+    try {
+      await access(c);
+      return { base: c, attempts };
+    } catch { /* 不存在，试下一个 */ }
+  }
+  return { base: null, attempts };
+}
+
+async function readSkillText({ skillName, fs, roots, repoRoot }) {
   const read = fs?.readSkill;
   if (typeof read === 'function') return await read(skillName);
   const list = roots ?? null;
   if (typeof list === 'function') return await list(skillName);
-  // 默认：按插件自身位置定位 bundle 内的 presets（K83：包内相对路径锚包根）
+  // 默认：多候选根解析（2026-10-13 修，原为单一硬编码相对路径）
   const { readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
-  const { fileURLToPath } = await import('node:url');
-  const base = fileURLToPath(new URL('../../../presets/agint/skills/', import.meta.url));
+  const { base, attempts } = await resolveSkillRoot(repoRoot);
+  if (!base) {
+    throw new Error(`readSkillText: preset skills 根不存在（试过 ${attempts.length} 个：${attempts.join(' | ')}）`);
+  }
   return await readFile(join(base, String(skillName), 'SKILL.md'), 'utf8');
 }
 
-/** 列出 bundle 内 preset skills 的目录名（默认发现路径，生产靠它拿到可用技能清单）。 */
-async function listSkillNames({ roots } = {}) {
+/** 列出 preset skills 的目录名（默认发现路径，生产靠它拿到可用技能清单）。 */
+async function listSkillNames({ roots, repoRoot } = {}) {
   if (typeof roots === 'function') return await roots();
   const { readdir } = await import('node:fs/promises');
-  const { fileURLToPath } = await import('node:url');
-  const base = fileURLToPath(new URL('../../../presets/agint/skills/', import.meta.url));
+  const { base, attempts } = await resolveSkillRoot(repoRoot);
+  if (!base) {
+    // 2026-10-13：不再静默返回 []。「真的没有技能」与「路径算错」在输出上
+    // 必须可区分 —— 前者是正常空态，后者是配置故障。
+    throw new Error(`listSkillNames: preset skills 根不存在（试过 ${attempts.length} 个：${attempts.join(' | ')}）`);
+  }
   const entries = await readdir(base, { withFileTypes: true });
   return entries.filter((e) => e.isDirectory() && !String(e.name).startsWith('.')).map((e) => e.name);
 }
@@ -1635,81 +1720,123 @@ export async function spawnLlm(ctx, {
   preset = DEFAULT_AGENT_PRESET,
   provider = null,
   model = null,
+  reasoningEffort = null,
 }) {
   const agents = ctx?.get?.('agents');
   const subagents = ctx?.get?.('subagents');
-  if (!agents || typeof agents.create !== 'function') return { ok: false, reason: 'agents unavailable' };
-  if (!subagents || typeof subagents.start !== 'function') return { ok: false, reason: 'subagents unavailable' };
+  if (!agents || typeof agents.create !== 'function') {
+    return { ok: false, reason: 'agents service missing (create() not callable)' };
+  }
+  if (!subagents) return { ok: false, reason: 'subagents service missing' };
+  const hasActivation = typeof subagents.startActivation === 'function';
+  const hasLegacyStart = typeof subagents.start === 'function';
+  if (!hasActivation && !hasLegacyStart) {
+    return {
+      ok: false,
+      reason: `subagents method missing (startActivation=${hasActivation}, start=${hasLegacyStart})`,
+    };
+  }
   // 前置自检：provider 没注册就别建会话了 —— 否则每次跑都在磁盘上多一个空壳会话。
-  if (typeof subagents.getProvider === 'function' && !subagents.getProvider('spawn')) {
-    return { ok: false, reason: 'spawn provider not registered' };
+  if (typeof subagents.getProvider === 'function') {
+    let providerEntry = null;
+    try {
+      providerEntry = subagents.getProvider('spawn');
+    } catch (error) {
+      return { ok: false, reason: `getProvider('spawn') failed: ${error?.message ?? String(error)}` };
+    }
+    if (!providerEntry) return { ok: false, reason: 'spawn provider not registered' };
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('evolution-driver-timeout'), timeoutMs);
+  let rejectOnTimeout = null;
+  const timeoutGuard = new Promise((_, reject) => { rejectOnTimeout = reject; });
+  const timer = setTimeout(() => {
+    controller.abort('evolution-driver-timeout');
+    rejectOnTimeout?.(new Error(`timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
   let handle = null;
-  let run = null;
+  let activation = null;
+  let cancelled = false;
+  const disposeLate = (resource) => {
+    try { Promise.resolve(resource?.dispose?.()).catch(() => { /* ignore */ }); } catch { /* ignore */ }
+  };
   try {
     // ⭐⭐ 第二个根因（2026-09-27 二次取证）：只给 meta.agentPreset **还不够**。
-    //   实测对照：dream 的 child 跑通（modelSelection=minimax-cn/MiniMax-M3、outTok=409），
-    //   driver 的 child 空壳（modelSelection=null、surfaceTokens=0、outTok=0），
-    //   两边 parent 字段完全一致 —— 唯一差异是 dream 额外传了 agentOptions:{provider, model}。
-    //   即：preset 管 persona/工具，**provider+model 才是模型路由本身**；不传 ⇒ 无路由 ⇒ 空壳。
+    //   即：preset 管 persona/工具，**provider+model+reasoningEffort 才是模型路由本身**。
     //   来源优先级：显式入参 > 宿主服务 agentDefaultModel.currentSelection() > 兜底常量。
-    //   走宿主服务是为了**不硬编码模型名**（K99：配错比不配更糟，模型名会随部署漂移）。
-    const selection = typeof ctx?.get === 'function'
-      ? ctx.get('agentDefaultModel')?.currentSelection?.() ?? null
-      : null;
-    const resolvedProvider = provider ?? selection?.provider ?? DEFAULT_LLM_PROVIDER;
-    const resolvedModel = model ?? selection?.model ?? DEFAULT_LLM_MODEL;
-    const agentOptions = { provider: resolvedProvider, model: resolvedModel };
+    let selection = null;
+    try {
+      selection = typeof ctx?.get === 'function'
+        ? ctx.get('agentDefaultModel')?.currentSelection?.() ?? null
+        : null;
+    } catch { selection = null; }
+    const agentOptions = {
+      provider: provider ?? selection?.provider ?? DEFAULT_LLM_PROVIDER,
+      model: model ?? selection?.model ?? DEFAULT_LLM_MODEL,
+      reasoningEffort: reasoningEffort ?? selection?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+    };
+    const resolvedPreset = preset || DEFAULT_AGENT_PRESET;
 
-    handle = await agents.create({
+    const createPromise = agents.create({
       sessionId: `evolution-driver-${randomUUID()}`,
       // ⭐ agentPreset 不能省：省了 ⇒ child 无模型路由 ⇒ 建得出会话、跑不动一步（30 个空壳的血债）
-      meta: { cwd: process.cwd(), origin: 'subagent', ...(preset ? { agentPreset: preset } : {}) },
-      // ⭐ agentOptions 同样不能省：它是 provider/model 的载体（第二个空壳根因）
+      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: resolvedPreset },
+      // ⭐ agentOptions 同样不能省：它是 provider/model/reasoningEffort 的载体
       agentOptions,
       signal: controller.signal,
+    }).then((h) => {
+      if (cancelled) disposeLate(h);
+      return h;
     });
-    run = await subagents.start('spawn', {
-      parent: handle.agent,
-      prompt: [{ type: 'text', text: `${system}\n\n${user}` }],
-      outputSchema: schema,
-      signal: controller.signal,
-      label: 'agint-evolution-driver mutation',
+    handle = await Promise.race([createPromise, timeoutGuard]);
+    const prompt = [{ type: 'text', text: `${system}\n\n${user}` }];
+    const startPromise = (hasActivation
+      ? Promise.resolve().then(() => subagents.startActivation({
+        provider: 'spawn',
+        label: 'agint-evolution-driver mutation',
+        request: {
+          parent: handle.agent,
+          prompt,
+          agentPreset: resolvedPreset,
+          agentOptions,
+          outputSchema: schema,
+        },
+        signal: controller.signal,
+        // caller：后台进化循环不回写父会话
+        delivery: 'caller',
+      }))
+      : Promise.resolve().then(() => subagents.start('spawn', {
+        parent: handle.agent,
+        prompt,
+        outputSchema: schema,
+        signal: controller.signal,
+        label: 'agint-evolution-driver mutation',
+      }))).then((act) => {
+      if (cancelled) disposeLate(act);
+      return act;
     });
-    const result = await run.result;
+    startPromise.catch(() => { /* handled by race */ });
+    activation = await Promise.race([startPromise, timeoutGuard]);
+    const result = await Promise.race([activation.result, timeoutGuard]);
     if (result?.stopReason !== 'completed') {
       return { ok: false, reason: `stopReason=${result?.stopReason ?? 'unknown'}` };
     }
     // ⭐ 结果在 `structured`，不在 `output`（第二处血泪 bug）。
-    //    readResult() 的契约：带 outputSchema 时，结构化产出挂在 result.structured；
-    //    result.output 只是 assistant 的最终文本。读 output ⇒ applicable 恒 undefined
-    //    ⇒ 每条都被判「不适用」⇒ 又是一种零产出，且同样不报错。
     const structured = result?.structured;
     if (structured === undefined || structured === null) {
       return {
         ok: false,
         reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`,
-        degraded: true,
       };
     }
     return { ok: true, value: structured };
   } catch (error) {
     return { ok: false, reason: `llm error: ${error?.message ?? String(error)}` };
   } finally {
+    cancelled = true;
     clearTimeout(timer);
-    try {
-      await run?.dispose?.();
-    } catch {
-      /* dispose 失败不阻断 */
-    }
-    try {
-      await handle?.dispose?.();
-    } catch {
-      /* 同上 */
-    }
+    try { await activation?.dispose?.(); } catch { /* dispose 失败不阻断 */ }
+    try { await handle?.dispose?.(); } catch { /* 同上 */ }
   }
 }
 

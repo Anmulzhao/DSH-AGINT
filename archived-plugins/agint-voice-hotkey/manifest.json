@@ -1,0 +1,54 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-voice-hotkey",
+  "version": "0.2.5",
+  "description": "语音交互助手 3a：OS 全局热键（配套 SSE 守护进程 bin/voice-hotkey.mjs，组合键 Alt+.）触发录音；静音自动收尾；松手后经 SenseVoice 转写并自动提交（inputActions.submit）。浏览器半经同源 api/agint-voice/events 走 host 半代理，不再直连守护进程端口。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "dual",
+    "owner": "anmul",
+    "tier": 2,
+    "stability": "alpha"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "optionalInject": [],
+      "consumes": [],
+      "provides": [
+        "agint.voiceHotkey"
+      ],
+      "events": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "permissions": {
+      "env": [],
+      "fs": [],
+      "network": [
+        "loopback:read"
+      ],
+      "shell": []
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md"
+    },
+    "compatSince": "0.1.0"
+  }
+}

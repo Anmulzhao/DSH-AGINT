@@ -11,7 +11,10 @@ import { join } from 'node:path';
 
 import * as curatorSchema from '../lib/schema.js';
 
-const PLUGINS_ROOT = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+// ⚠️ 2026-10-21 修：`.pathname` 对中文路径返回**百分号编码**（project%E6%BA%90%E7%A0%81），
+// 原代码只剥了前导斜杠、没解码 ⇒ 仓在含中文的目录下时 readdirSync 直接 ENOENT，
+// 这个测试从来没跑起来过（失败被当成"环境问题"忽略）。decodeURIComponent 补上。
+const PLUGINS_ROOT = decodeURIComponent(new URL('../../', import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1');
 
 function findSchemaFiles() {
   const out = [];

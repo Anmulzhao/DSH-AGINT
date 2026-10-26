@@ -228,11 +228,30 @@ function readShippedStyle(file) {
   return readRows(file);
 }
 
+/**
+ * shipped 基线：上游 dsh 自带的 cordis preset。
+ *
+ * ⚠️ 2026-10-20 修：此前只探一条路径
+ *   `<dsh>/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml`
+ * 但 npm 平铺布局下 **dsh-web-app 是 dsh 的兄弟**，不在 dsh 包内：
+ *   `<node_modules>/@deepseek-ai/dsh/`
+ *   `<node_modules>/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml`  ← 实际在这
+ * 本机实测（dsh 装在 `.agint-deps/dsh-runtime/node_modules/@deepseek-ai/dsh`）：
+ *   旧路径不存在 ⇒ 门禁报「读不到 shipped 基线」⇒ exit 2，门禁彻底用不了。
+ * 现在两种布局都探，命中即用。
+ */
 function readShippedTarget() {
-  const file = path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml');
-  if (!fs.existsSync(file)) return null;
-  const rows = readShippedStyle(file);
-  return rows.length === 0 ? null : { label: 'shipped', file, rows };
+  const candidates = [
+    path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+    path.join(path.dirname(dsh.dir), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+    path.join(path.dirname(path.dirname(dsh.dir)), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+  ];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    const rows = readShippedStyle(file);
+    if (rows.length > 0) return { label: 'shipped', file, rows };
+  }
+  return null;
 }
 
 /**
@@ -289,15 +308,40 @@ function readLiveTarget(profile = 'web') {
   }
 
   // 回退：向 dsh 要权威组合。慢（要起一次进程）但与启动方式无关。
+  //
+  // ⚠️ Windows 上两处坑（2026-10-20 实测）：
+  //   ① `dsh` 在 Windows 上是 `dsh.cmd`（批处理），`execFileSync` 不带 shell 时
+  //      直接 ENOENT —— 不是「dsh 没装」。
+  //   ② dsh 的报错走 **stderr**（`error: profile "desktop" is managed exclusively by
+  //      the Electron application`），stdio 忽略 stderr 就只能看到「输出里没有
+  //      preset-cordis 行」，把真实原因丢了。
+  // 两条都修：win32 走 shell，stderr 一起收。
   let out;
+  let err = '';
   try {
     out = execFileSync('dsh', ['--profile', profile, '--dump-config'], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
       timeout: 120000,
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (e) {
+    err = `${e.stderr ?? ''}${e.stdout ?? ''}`.trim();
+    if (/managed exclusively by the Electron application/i.test(err)) {
+      return {
+        error: `dsh 拒绝 dump-config：profile "${profile}" 由 Electron 应用独占管理`,
+        reason: 'electron-managed-profile',
+        detail: err.split('\n')[0],
+      };
+    }
+    if (e.code === 'ENOENT') {
+      return {
+        error: `找不到可执行的 dsh（${e.message.split('\n')[0]}）`,
+        reason: 'dsh-not-executable',
+        detail: '',
+      };
+    }
     return { error: `dsh --profile ${profile} --dump-config 执行失败：${e.message.split('\n')[0]}` };
   }
   const rows = pickPresetCordis(out);
@@ -492,10 +536,15 @@ if (TARGET_OVERRIDES.length > 0) {
     const shipped = readShippedTarget();
     if (!shipped) {
       // 附上已探测的位置，别只丢一句「找不到」让人无从下手
-      const tried = path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml');
-      const hint = fs.existsSync(tried)
-        ? `${tried} 存在但里面没有 preset-cordis 行（该文件可能被换版）`
-        : `${tried} 不存在（dsh 安装于 ${dsh.dir}；可用 DSH_ROOT 覆盖）`;
+      const tried = [
+        path.join(dsh.dir, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+        path.join(path.dirname(dsh.dir), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+        path.join(path.dirname(path.dirname(dsh.dir)), 'dsh-web-app', 'presets', 'cordis.patch.yml'),
+      ];
+      const hit = tried.find((f) => fs.existsSync(f));
+      const hint = hit
+        ? `${hit} 存在但里面没有 preset-cordis 行（该文件可能被换版）`
+        : `${tried.join(' | ')} 均不存在（dsh 安装于 ${dsh.dir}；可用 DSH_ROOT 覆盖）`;
       console.error(`读不到 shipped cordis preset 基线。已探测：${hint}`);
       process.exit(2);
     }
@@ -505,14 +554,26 @@ if (TARGET_OVERRIDES.length > 0) {
     const live = readLiveTarget(resolveLiveProfileName(dshHome));
     if (live?.error) {
       // 关键：拿不到基线必须判红。静默跳过 = 门禁少查一半还报绿（2026-10-01 实踩）。
+      //
+      // ⚠️ 2026-10-20：按真实原因分诊，别再一律说「确认 dsh 可执行」——
+      // 本机 dsh 可执行，是 **profile 由 Electron 独占**（2026-10-18 老板令：Windows
+      // 只跑 desktop），dsh 拒绝被别的进程 dump-config。这类机器上 live 基线
+      // **按设计拿不到**，只能查 shipped 基线 ⇒ 给出准确处置，不伪装成可修的故障。
+      const electronManaged = live.reason === 'electron-managed-profile';
       baselineFailures.push({
         level: 'critical',
         kind: 'baseline-unavailable',
         row: 'preset-cordis',
         copy: 'live',
         targets: [],
-        message: `取不到 live 基线，本次没查它：${live.error}`,
-        remedy: '确认 dsh 可执行且 `dsh --profile <p> --dump-config` 能出组合；或用 --target=shipped 只查 shipped 基线',
+        message: electronManaged
+          ? `取不到 live 基线：${live.error}（${live.detail || ''}）`
+          : `取不到 live 基线，本次没查它：${live.error}`,
+        remedy: electronManaged
+          ? '本机 profile 由 Electron 独占，dsh 拒绝被外部 dump-config ⇒ live 基线按设计不可得。'
+            + '改用 `--target=shipped` 查上游能力基线（等价：shipped 视图已覆盖「能力行缺失 / 双副本漂移」两类）；'
+            + '要查运行期真实组合，走 `cordis_inspect_list` + `Config.listConfigs`（需在宿主内执行）'
+          : '确认 dsh 可执行且 `dsh --profile <p> --dump-config` 能出组合；或用 --target=shipped 只查 shipped 基线',
       });
     } else if (live) {
       targets.push(live);

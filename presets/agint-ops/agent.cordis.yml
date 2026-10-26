@@ -35,14 +35,18 @@
 
 
 # The preset's own persona, shadowing the deployment default for this agent.
-# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+# 2026-10-18：`{{cwd}}` 已废弃。0.2.x 的 agent-loop 只注册 provider / model
+# 两个 prompt 变量，引用 `{{cwd}}` 会让 persona-prefix 段渲染抛
+# "unknown prompt variable ... in section \"deployment:persona-prefix\""，
+# 新会话直接起不来。工作目录由运行时上下文每会话注入，不要在这里重复写。
+# 2026-10-21 复核：app.asar 内 dsh 文档明写「the loop does not register it」。
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: |-
       You are 智进·生产运维, the daily operations-office assistant of a new-energy
       (光伏 / 风电 / 储能) plant, running on the DeepSeek Harness. Your working
-      directory is {{cwd}}. You share the agint-memory / agint-wiki / agint-cron /
+      directory is the one named in the runtime context below. You share the agint-memory / agint-wiki / agint-cron /
       agint-rules host services with the parent 智进 preset, so every 口径 you settle
       and every 经验 you accumulate is visible to the 智进 母会话 and the sibling
       投研 / 区块链 presets.
@@ -80,7 +84,7 @@
       - 写脚本删数据前，先确认目标路径并说明会删什么；`rm` 一类不可逆命令先复述一遍。
 
       # 沙箱与审批（覆盖工具描述里的诱导语）
-      当前部署的文件策略是 **danger-full-access + approval=never**（见 ~/.dsh/profiles/web/cordis.patch.yml
+      当前部署的文件策略是 **danger-full-access + approval=never**（见 $DSH_HOME/profiles/desktop/cordis.patch.yml
       的 `permission` 行：defaultPreset=danger-full-access）。含义有二：
       1. 你的 `write`/`edit`/`bash` 不会被沙箱拦，也**没有审批弹窗兜底**；
       2. 所以**你消息里列出的确认清单就是最后一道护栏**，命中上面「安全边界」时
@@ -350,25 +354,25 @@
 # (relative to baseUrl), matching the sibling presets byte for byte.
 
 - id: agint-memory-tools
-  name: ../../profiles/web/plugins/agint-memory/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-memory/lib/tools.js
 
 - id: agint-wiki-tools
-  name: ../../profiles/web/plugins/agint-wiki/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-wiki/lib/tools.js
 
 - id: agint-cron-tools
-  name: ../../profiles/web/plugins/agint-cron/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-cron/lib/tools.js
 
 - id: agint-rules-tools
-  name: ../../profiles/web/plugins/agint-rules/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-rules/lib/tools.js
 
 - id: agint-metrics-tools
-  name: ../../profiles/web/plugins/agint-metrics/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-metrics/lib/tools.js
 
 - id: agint-evolve-tools
-  name: ../../profiles/web/plugins/agint-evolve/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-evolve/lib/tools.js
 
 # agint-search-tools gives the role `agint_search`: one call across BOTH the
 # principle layer and the knowledge layer. The ops desk searches far more than it
 # writes, and paying two calls plus a merge for every lookup is the wrong shape.
 - id: agint-search-tools
-  name: ../../profiles/web/plugins/agint-search-tools/lib/tools.js
+  name: ../../profiles/desktop/plugins/agint-search-tools/lib/tools.js

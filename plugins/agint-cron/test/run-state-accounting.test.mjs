@@ -103,16 +103,50 @@ const summarizeResult = new Function(
 
 const silentConsole = { error() {}, log() {}, info() {}, warn() {} };
 
+/**
+ * runOne 的重试链路依赖（2026-10-21 补）。
+ *
+ * 背景：提交 f8882e1 给 runOne 加了「写盘 EPERM 瞬时重试」，函数体里新增引用
+ *   RETRY_MAX / RETRY_BASE_MS / isTransientWriteError / sleep
+ * 而 isTransientWriteError 又引用 RETRYABLE_CODES。
+ * `new Function` 的作用域是**全局**（拿不到模块级 const/function），注入清单没同步
+ * ⇒ 负例跑到 line 340 的 `attempt >= RETRY_MAX` 就抛 ReferenceError，
+ *   原始错误 'EPERM: rename denied' 被掩盖 ⇒ 断言报「lastError 消息不对」，
+ *   看起来像记账 bug，实际是**测试自己没跟上实现**。
+ *
+ * ⛔ 这条不能靠"把断言改松"绕过：负例要验的正是「原始错误原样落到 lastError」。
+ *   修法是把依赖显式注入，值从源码读出（不硬编码，避免实现改值后测试静默漂移）。
+ */
+const retryMax = Number(/const RETRY_MAX = (\d+);/.exec(src)?.[1] ?? 3);
+const retryBaseMs = Number(/const RETRY_BASE_MS = (\d+);/.exec(src)?.[1] ?? 150);
+const retryableCodes = new Set(
+  // 源码里是单引号字面量（['EPERM', 'EBUSY', 'EACCES']），JSON.parse 不吃单引号 ⇒ 正则取
+  [...(/const RETRYABLE_CODES = new Set\(\[([^\]]*)\]\);/.exec(src)?.[1] ?? '')
+    .matchAll(/'([^']+)'/g)].map((m) => m[1]),
+);
+const isTransientWriteError = new Function(
+  'RETRYABLE_CODES', `return (${extractFunction(src, 'function isTransientWriteError(')});`,
+)(retryableCodes);
+
 /** 造一个能真跑起来的 runOne：services / persistJobState / console 都是注入的。 */
 function makeRunOne({ onPersist } = {}) {
   const persistJobState = new Function('stateTable', 'summarizeResult', `return (${persistSrc});`)(
     async () => ({ put: async () => {} }),
     summarizeResult,
   );
-  return new Function('services', 'persistJobState', 'console', `return (${runOneSrc});`)(
+  return new Function(
+    'services', 'persistJobState', 'console',
+    'RETRY_MAX', 'RETRY_BASE_MS', 'isTransientWriteError', 'sleep',
+    `return (${runOneSrc});`,
+  )(
     () => ({}),
     onPersist || persistJobState,
     silentConsole,
+    retryMax,
+    retryBaseMs,
+    isTransientWriteError,
+    // 测试里不等真实退避时间（否则每次负例多花 450ms），但保留"确实是异步等待"的语义
+    (ms) => new Promise((r) => setTimeout(r, 0, ms)),
   );
 }
 

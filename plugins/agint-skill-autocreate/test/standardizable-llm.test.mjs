@@ -3,9 +3,9 @@
 // 这个文件锁的是**合成顺序与优先级**，不是 LLM 本身：
 //   ① 硬否决**优先于** LLM（LLM 说 true 也拦得住）
 //   ② shadow 档**不改变任何结论**，只把分歧写进 signals.llmShadow
-//   ③ LLM 缺失/非法 → 回落轨道 B，行为与引入本特性之前**逐字一致**
+//   ③ judgeMode=off/shadow 或未给 LLM 判定 → 轨道 B；primary 档 llmFailed → null
 //   ④ primary 档采用 LLM 判定，但 minConfidence 是**同一把尺**（LLM 无特权）
-//   ⑤ 降级（llmDegraded）→ 结论跟随轨道 B，但 reason 标 llm_degraded 留痕
+//   ⑤ LLM 失败（llmFailed）→ 直接判 null（需人工），⛔ 不回落轨道 B（2026-10-25）
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -120,7 +120,7 @@ test('shadow：一致时 agree=true（正样本，防「永远 agree=false」的
 test('不传 llmVerdict 与传 null 的结果与引入本特性前完全一致', () => {
   const p = pattern();
   const plain = judgeStandardizable(p);
-  const withNull = judgeStandardizable(p, { llmVerdict: null, llmShadow: false, llmDegraded: null });
+  const withNull = judgeStandardizable(p, { llmVerdict: null, llmShadow: false, llmFailed: null });
   assert.deepEqual(withNull, plain);
   assert.equal(plain.signals.llmShadow, undefined);
 });
@@ -183,31 +183,38 @@ test('primary：阈值对两侧同尺 —— 同一个分数在两条轨道上�
   assert.equal(judgeStandardizable(pattern(), { llmVerdict: llmV(true, strongScore) }).standardizable, true);
 });
 
-// ── ⑤ 降级留痕（K59）────────────────────────────────────────────────────
+// ── ⑤ LLM 失败 = 需人工（无降级，K59）───────────────────────────────────
 
-test('llmDegraded：结论跟随轨道 B，但 reason 标 llm_degraded 且原结论码留在 signals.ruleReason', () => {
-  const pass = judgeStandardizable(pattern(), { llmDegraded: 'llm verdict timeout (60000ms)' });
-  assert.equal(pass.standardizable, true, '降级不得改变轨道 B 的结论');
-  assert.equal(pass.reason, VERDICT_REASONS.LLM_DEGRADED);
-  assert.equal(pass.route, 'heuristic');
-  assert.equal(pass.signals.ruleReason, VERDICT_REASONS.OK_HEURISTIC);
-  assert.equal(pass.signals.llmDegraded, true);
-  assert.equal(pass.signals.llmDegradedReason, 'llm verdict timeout (60000ms)');
+test('llmFailed：直接判 null（需人工），⛔ 不回落轨道 B', () => {
+  const failed = judgeStandardizable(pattern(), { llmFailed: 'llm verdict timeout (60000ms)' });
+  assert.equal(failed.standardizable, null, 'LLM 失败不得让轨道 B 给出 true');
+  assert.equal(failed.confidence, 0);
+  assert.equal(failed.reason, VERDICT_REASONS.LLM_FAILED);
+  assert.equal(failed.route, 'llm');
+  assert.equal(failed.signals.llmFailed, true);
+  assert.equal(failed.signals.llmFailedReason, 'llm verdict timeout (60000ms)');
 
-  // 用 WEAK_PATTERN（规则分 0.40，稳定落在「需人工」档），而不是临时造一个
-  // 刚好卡在阈值线上的 fixture —— 后者只要打分公式微调就会翻转，测试会假绿。
-  const uncertain = judgeStandardizable(WEAK_PATTERN, { llmDegraded: 'agents service unavailable' });
-  assert.equal(uncertain.standardizable, null);
-  assert.equal(uncertain.reason, VERDICT_REASONS.LLM_DEGRADED);
-  assert.equal(uncertain.signals.ruleReason, VERDICT_REASONS.LOW_CONFIDENCE);
+  const weak = judgeStandardizable(WEAK_PATTERN, { llmFailed: 'agents service unavailable' });
+  assert.equal(weak.standardizable, null);
+  assert.equal(weak.reason, VERDICT_REASONS.LLM_FAILED);
+  assert.equal(weak.route, 'llm');
 });
 
-test('降级与 shadow 可同时生效：shadow 仍不改结论（不会因为降级就绕过 shadow 语义）', () => {
+test('shadow 档 LLM 成功时仍不改结论（灰度语义不变）', () => {
   const r = judgeStandardizable(pattern(), {
     llmVerdict: llmV(false, 0.9, 'x'),
     llmShadow: true,
-    llmDegraded: null,
+    llmFailed: null,
   });
   assert.equal(r.reason, VERDICT_REASONS.OK_HEURISTIC);
   assert.equal(r.signals.llmShadow.agree, false);
+});
+
+test('llmFailed 优先于意外传入的 llmVerdict（防御性：失败不得被半截结果救回）', () => {
+  const r = judgeStandardizable(pattern(), {
+    llmVerdict: llmV(true, 0.99, 'stale'),
+    llmFailed: 'llm verdict timeout',
+  });
+  assert.equal(r.standardizable, null);
+  assert.equal(r.reason, VERDICT_REASONS.LLM_FAILED);
 });

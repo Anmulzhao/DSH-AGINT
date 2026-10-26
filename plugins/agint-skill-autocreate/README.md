@@ -76,7 +76,7 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 - **LLM 只在过了 5 条硬否决的 pattern 上调用**——那五条是结构性事实，让 LLM 重判等于白付一次调用。
 - **本地校验兜底**：LLM 撰写的 name/description 过宿主 SKILL_NAME 正则 + 工具链名判据 + 自我指涉检查，任一不过整条丢弃（audit `llm_authoring_rejected`）。
 - **回落路径同设防（v0.5.3 起）**：LLM 没写的字段落回模板/工具序列时同样过门——名字判「是否工具名拼接」（`proposer.isToolAssembledName`，来源判据）、描述判「是否工具链复述」（`authoring.isToolChainDescription`），命中整条不生成。即 **LLM 不可用 ⇒ 候选诚实归零**，不再产出 `pwsh-pwsh-pwsh-pwsh` 式不可发现技能。发布侧还有一道独立的名字门（`name-gate.js`，`skill_name_gate_enabled`）兜底。
-- **审计**：`llm_judge_called` / `llm_judge_degraded`（必带 reason）/ `llm_judge_shadow`（含 agree 分歧样本）/ `llm_budget_exhausted` / `llm_authoring_rejected`。
+- **审计**：`llm_judge_called` / `llm_judge_failed`（必带 reason）/ `llm_judge_shadow`（含 agree 分歧样本）/ `llm_budget_exhausted` / `llm_authoring_rejected`。
 - **schema 约束下移**：宿主 enforced JSON Schema 子集不支持 `pattern`/`maxLength`/`minimum`（不支持会在子 agent 创建前抛错），相关约束全部在 `lib/llm-verdict.js` 本地校验执行。
 
 ## 技能模型归属（v0.6.0 起出厂即开）
@@ -136,7 +136,7 @@ verified-on-note: 经验仅在下列模型上被观察到；其他模型按「�
 - **sessionId/turn 缺失的记录**不参与检测（宁可漏检，不可错检）。
 - **v3 会话与 tool-stats 源取不到模型**：模型字段只写在 v4 会话的 assistant 消息里 ⇒
   这两类来源的技能 `model-scope: unknown`。这是**诚实缺失**，正文会明说「无法确定」。
-- **可标准化判断**：LLM 轨道 C（primary）为主、轨道 B 启发式兜底（true/false/null 三态，null=需人工）；LLM 降级时自动回落轨道 B，详见上文 LLM 配置一节。
+- **可标准化判断**：LLM 轨道 C（primary）为主（true/false/null 三态，null=需人工）；**primary 档 LLM 失败或预算耗尽时直接判 null，不回落轨道 B**（2026-10-25 无降级）。`judgeMode=off/shadow` 仍按配置使用轨道 B（那是显式配置，不是降级）。
 - **参数签名 v1**：顶层 key + 粗类型 + 扩展名；扩展名不同视为不同模式（有意为之——批量 .md 和 .js 是不同任务）。
 - **预估收益是启发式**：公式集中在 `lib/proposer.js`，Sprint 15/16 实测后校准。
 - **paused / 运行时 config 是内存态**：重启还原为 cordis 配置默认值（设计稿未要求持久化，刻意保持简单）。

@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { inspectSessionFile, listRecentSessions } from '../lib/channels/self-observation.js';
@@ -69,10 +69,10 @@ function makeSessionFile({ broken, seqGaps, missingContentCount, unpaired, baseM
   return { dir, file, sessionId: sid, mtimeMs: Date.now() - (baseMtimeAgoMs ?? 48 * 60 * 60 * 1000) };
 }
 
-test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 content 0）', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, () => {
+test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 content 0）', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, async () => {
   const { dir, file, sessionId } = makeSessionFile({ broken: 0, seqGaps: false, missingContentCount: 0, unpaired: false });
   try {
-    const insp = inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
     assert.equal(insp.badLines, 0);
     assert.equal(insp.seqGaps, 0);
     assert.equal(insp.missingContent, 0);
@@ -82,10 +82,10 @@ test('inspectSessionFile: 正常会话无异常（坏行 0 / seq 断裂 0 / 缺 
   }
 });
 
-test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全部检出', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, () => {
+test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全部检出', { skip: !existsSync(resolveZstd()) ? 'zstd unavailable' : false }, async () => {
   const { dir, file, sessionId } = makeSessionFile({ broken: 3, seqGaps: true, missingContentCount: 3, unpaired: true });
   try {
-    const insp = inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
+    const insp = await inspectSessionFile({ path: file, sessionId, mtimeMs: Date.now() - 48 * 60 * 60 * 1000 });
     assert.ok(insp.badLines >= 3, `badLines=${insp.badLines}`);
     assert.ok(insp.seqGaps >= 1, `seqGaps=${insp.seqGaps}`);   // seq 3 被跳过 → 2→4 断裂
     assert.ok(insp.missingContent >= 3, `missingContent=${insp.missingContent}`);
@@ -96,7 +96,62 @@ test('inspectSessionFile: 坏行 + seq 断裂 + 缺 content + 未配对 call 全
   }
 });
 
-test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存在者', () => {
+// ⛔ 2026-10-21 回退（运行态取证）：本通道**只读本地原始日志**，不走上游。
+// 判据：inspectSessionFile 不接受 sessionSource（签名里没有这个参数），
+// 且 listRecentSessions 必须给出**可解压的本地路径**（上游记录不含 path）。
+test('⛔ inspectSessionFile: 不接受上游（签名无 sessionSource ⇒ 只能读原始日志）', () => {
+  const src = readFileSync(new URL('../lib/channels/self-observation.js', import.meta.url), 'utf8');
+  const sig = /export async function inspectSessionFile\(([^)]*)\)/.exec(src);
+  assert.ok(sig, '必须能定位到 inspectSessionFile 的签名');
+  assert.ok(
+    !/sessionSource/.test(sig[1]),
+    `inspectSessionFile 的签名不该再收 sessionSource（实际：${sig[1].trim()}）`,
+  );
+});
+
+test('⛔ listRecentSessions: 必须给可解压的本地路径（上游记录无 path ⇒ 会全判 undecompressible）', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sesspath-'));
+  try {
+    const sessRoot = join(root, 'sessions');
+    mkdirSync(join(sessRoot, 'ws-a', 'sid-p'), { recursive: true });
+    writeFileSync(join(sessRoot, 'ws-a', 'sid-p', 'session.v4.jsonl.zstd'), 'x');
+    process.env.DSH_HOME = root;
+    const logs = await listRecentSessions(8);
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].path && logs[0].path.length > 0, `path 不能是空串（实际：${JSON.stringify(logs[0].path)}）`);
+    assert.equal(logs[0].sessionId, 'sid-p');
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 2026-10-19 新增：宿主改名兜底。
+// 背景：这里原先硬编码 v4/v3/无版本三个名字且**无后缀兜底**，宿主下次改名（v5）
+// 会再瞎一次 —— 09-22 改 v4 时同类事故让 autocreate 供料断了 12 天（M1 断链）。
+// 判据：造一个**三个候选名都不叫**的新格式，必须仍能发现（靠 .jsonl.zstd 后缀）。
+test('⛔ 宿主再次改名（v5）不得归零 —— 后缀兜底必须生效', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sessv5-'));
+  try {
+    const sessRoot = join(root, 'sessions');
+    mkdirSync(join(sessRoot, 'ws-a', 'sid-v5'), { recursive: true });
+    // 故意不叫 session.v4/v3/session.jsonl —— 模拟宿主下次改名
+    writeFileSync(join(sessRoot, 'ws-a', 'sid-v5', 'session.v9.jsonl.zstd'), 'x');
+    process.env.DSH_HOME = root;
+    const logs = await listRecentSessions(8);
+    assert.equal(logs.length, 1, '未知名但后缀匹配，必须被发现（不得归零）');
+    assert.ok(logs[0].path.endsWith('session.v9.jsonl.zstd'));
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 2026-10-19：listRecentSessions 改异步（要走 agint-session-source 的上游探测），
+// 调用方必须 await。不 await 会拿到 Promise 而不是数组 —— 这类错误静默且难查。
+test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存在者', async () => {
   const oldHome = process.env.DSH_HOME;
   const root = mkdtempSync(join(tmpdir(), 'agint-sesslist-'));
   try {
@@ -108,7 +163,7 @@ test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存�
     writeFileSync(join(sessRoot, 'ws-a', 'sid-1', 'session.jsonl.zstd'), 'x');
     writeFileSync(join(sessRoot, 'ws-a', 'sid-2', 'session.v3.jsonl.zstd'), 'x');
     process.env.DSH_HOME = root;
-    const logs = listRecentSessions(8);
+    const logs = await listRecentSessions(8);
     assert.equal(logs.length, 2);
     const ids = logs.map((l) => l.sessionId).sort();
     assert.deepEqual(ids, ['sid-1', 'sid-2']);

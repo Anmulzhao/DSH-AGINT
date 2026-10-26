@@ -57,6 +57,9 @@
   fetch 拿到 202 只知道「被受理」，不知道最后成没成
 - 🪇 **按钮不谎称成功（v0.9.0）**：`inputActions.submit()` 无返回值，按钮拿不到命令回执。
   所以它只显示「已提交」，真实结论看会话里的命令回执
+- 🖥️ **桌面 profile 复现 GUI（v0.9.1）**：桌面 app 下 host 是 Electron 的子进程且死后不自动重生，
+  所以 respawn 复现的是**裸起的 GUI exe**，并先核身杀掉旧 GUI 再拉起（否则新 exe 被 Electron
+  单实例锁吞成「聚焦旧窗口」）。详见「桌面 profile（v0.9.1）」一节
 
 ## 与上游 dsh-resume-on-restart 的差异
 
@@ -124,6 +127,28 @@ detached spawn lib/respawn.js
 ```
 
 `respawn.js` 是 detached + unref 的独立进程，父进程（dsh）死后变孤儿继续跑，不受影响。它只用 node 内置模块；**POSIX 上不经 shell**（纯 detached spawn）。
+
+### 桌面 profile（v0.9.1）：复现对象是 GUI，不是 host
+
+上面那张图默认「进程自己就是宿主」（`dsh web`）。桌面 app 不是这个形状：host 是 Electron
+GUI 的**子进程**，且 GUI 的 `HostSupervisor.start()` 只拉起它一次、死后不自动重生。于是
+照「我自己怎么起的」复现 = 拉起一个没有界面的 headless host 抢走 `127.0.0.1:19387`，
+GUI 自己那个 host 必然 `EADDRINUSE` ⇒ 必需插件 `webserver` 激活失败 ⇒ 弹
+「Another DSH instance is running」（2026-10-13 / 10-15 两次实跑事故）。
+
+所以桌面 profile 下 `detectDesktopShell` 一旦认出 `argv[1]` 是 `dsh-desktop-host/lib/index.js`：
+
+1. 拉起快照换成**裸起 GUI exe**（`args: []`），由 Electron 自己再去 fork 新 host。
+2. env 里剥掉 `ELECTRON_RUN_AS_NODE`——它是 host 子进程的身份标记，带着它裸起 exe 会进
+   node 模式、没有入口脚本，立刻退出。
+3. 旧 host 退出后先杀掉旧 GUI（`taskkill /F /T`）。不杀它，Electron 单实例锁会把新 exe
+   吞成「聚焦旧窗口」。杀前三道核身：进程还在 / 映像名与快照一致 / 命令行不含 host 入口
+   脚本——`guiPid` 是开机时记的，几天后可能已被回收给别的程序，任一不过就拒绝。
+4. 就绪判据走 profile override（`readiness.port: 19387`、`leasePath: null`）。bundle 默认的
+   `3080` + `sentinel.lease` 是 `dsh web` 的值，桌面 profile 两条都不成立，会把成功的重启
+   记成 `ok=false`。
+
+显式配了 `config.launch` 时本链路**不接管**（override 语义 = 人说了算）。
 
 ### 坑（v0.6.0 修）：新 dsh 必须有一个控制台，否则每调一次工具弹一次黑框
 

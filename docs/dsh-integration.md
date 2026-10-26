@@ -168,6 +168,27 @@ preset 里的裸包名（`@deepseek-ai/dsh-persona` / `dsh-tool-fs` …）都从
 经 `node_modules/@agint/host` 软链同样可达）。
 ⛔ 两处都不能被同步删掉：preset 子目录会被 `rsync --delete` 镜像清空，bundle 同步必须 `--exclude=node_modules`。
 
+### ⛔ `!!js` 只能写成标量（2026-10-20 事故，一天之内的两个独立坑）
+
+dsh 解析 patch 用的是 `yaml.load(content, { schema: JSON_SCHEMA.extend(JsExpr) })`，
+`JsExpr` 声明 `kind: 'scalar'` —— **`!!js` 标签只接受标量**。下面两种写法都会让
+**整份** `cordis.patch.yml` 解析失败：
+
+| 写法 | js-yaml 报错 |
+|---|---|
+| 多行块集合：`!!js ({` + 换行缩进 + `})` | `bad indentation of a mapping entry (119:15)` |
+| 反引号模板字面量：``!!js ` expr ` `` | `cannot resolve a node with !<tag:yaml.org,2002:js> explicit tag (151:35)` |
+
+**后果的严重程度与报错位置不成比例**：dsh 只打一行 `skipping profile bundle "@agint/host"`，
+然后照常启动。bundle 内 41 条插件行 + 4 条 preset 声明一起消失，界面上只表现为
+「智进没了」，没有任何报错上浮。哈希一致、`node --check`、普通 YAML 解析都能过。
+
+允许的写法只有三种：裸标量、带引号的单行标量、块标量（`|` / `>` 开头）。
+
+门禁：`node bin/check-patch-yaml.mjs`（已接入 `bin/plugin-check.sh` 末尾阻断位，
+自测 `node --test bin/check-patch-yaml.test.mjs`）。它用**与 dsh 同一个 js-yaml、
+同一个 schema、同一个 `kind:'scalar'`** 真解析仓库 / bundle / 各 profile 的 patch 文件。
+
 ### 排障三板斧
 
 1. `dsh --profile web --dump-config` —— 官方工具，不挂载、零风险。正确结果：exit 0、无 stderr、三条 preset 声明都在。

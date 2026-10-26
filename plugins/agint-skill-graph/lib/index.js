@@ -412,7 +412,7 @@ function apply(ctx, config) {
       let edgesRemoved = 0;
       if (mode === 'live') {
         const usageTable = await table('usage_stats');
-        const existingUsage = new Map(usageTable.entries().map(([, v]) => [v.skillName, v]));
+        const existingUsage = new Map([...usageTable.entries()].map(([, v]) => [v.skillName, v]));
         for (const n of nodes) {
           const u = usageMap.get(n.skillName);
           const ex = existingUsage.get(n.skillName);
@@ -535,11 +535,49 @@ function apply(ctx, config) {
   // ── 读路径（FROZEN Service）────────────────────────────────────────────
 
   async function loadGraph() {
-    const usageTable = await table('usage_stats');
-    const edgeTable = await table('skill_edges');
-    const usageList = usageTable.entries().map(([, v]) => v);
-    const edges = edgeTable.entries().map(([, v]) => v);
-    return { usageList, edges };
+    // 2026-10-13 修复：dsh-storage-domain 的 table.entries() 返回
+    // `[...records.entries()][Symbol.iterator]()` —— 一个**迭代器**。
+    // Node v24 的 ES2025 Iterator Helpers 让它**有** `.map()`，但 `.map()`
+    // 返回的仍是迭代器而非数组 ⇒ `usageList.length` / `edges.length` 全是
+    // `undefined` ⇒ getCoverageImpl 的 `usageList.length > 0` 判 false、
+    // `edges.length` 报 0，而磁盘上 skill_edges 明明有 40 行。
+    // （探针实录：usageSize=26 | edgeSize=40 | usageList=undefined | edges=undefined）
+    // 修法：`[...t.entries()]` 先展开为数组再 map —— 数组才有 .length / .filter。
+    //
+    // 保留探针：它把「磁盘有行但读不到」与「读表抛错」在输出上分开，
+    // 这类静默降级下次仍需能一眼定位。确认稳定后可删 probe 相关代码。
+    const probe = { steps: [], err: null };
+    const step = (k, v) => { probe.steps.push(`${k}=${v}`); };
+    let usageTable = null;
+    let edgeTable = null;
+    try {
+      usageTable = await table('usage_stats');
+      step('usageTable', usageTable ? 'ok' : 'null');
+    } catch (e) {
+      probe.err = `table(usage_stats): ${e?.message ?? String(e)}`;
+      throw Object.assign(e ?? new Error(probe.err), { _probe: probe });
+    }
+    try {
+      edgeTable = await table('skill_edges');
+      step('edgeTable', edgeTable ? 'ok' : 'null');
+    } catch (e) {
+      probe.err = `table(skill_edges): ${e?.message ?? String(e)}`;
+      throw Object.assign(e ?? new Error(probe.err), { _probe: probe });
+    }
+    let usageList = [];
+    let edges = [];
+    try {
+      step('usageSize', usageTable.size);
+      step('edgeSize', edgeTable.size);
+      usageList = [...usageTable.entries()].map(([, v]) => v);
+      step('usageList', Array.isArray(usageList) ? usageList.length : 'NOT_ARRAY');
+      edges = [...edgeTable.entries()].map(([, v]) => v);
+      step('edges', Array.isArray(edges) ? edges.length : 'NOT_ARRAY');
+    } catch (e) {
+      probe.err = `entries/map: ${e?.message ?? String(e)}`;
+      throw Object.assign(e ?? new Error(probe.err), { _probe: probe });
+    }
+    return { usageList, edges, probe };
   }
 
   /** 无正式数据时用内存节点 + 标定期缓冲画像（保证"空图也响，但不合成数据"） */
@@ -547,7 +585,7 @@ function apply(ctx, config) {
     const g = await loadGraph();
     if (g.edges.length || g.usageList.length) return g;
     const nodes = await ensureNodes();
-    return { usageList: nodes.map((n) => ({ skillName: n.skillName, calls: 0, lastUsedAt: null, successRate: null })), edges: [...heldEdges.values()] };
+    return { usageList: nodes.map((n) => ({ skillName: n.skillName, calls: 0, lastUsedAt: null, successRate: null })), edges: [...heldEdges.values()], probe: g.probe };
   }
 
   async function ensureNodesForQuery() {
@@ -611,7 +649,7 @@ function apply(ctx, config) {
 
   async function getCoverageImpl() {
     try {
-      const { usageList, edges } = await loadGraphWithFallback();
+      const { usageList, edges, probe } = await loadGraphWithFallback();
       const nodes = await ensureNodesForQuery();
       const meta = await readMeta();
       const effectiveNodes = usageList.length > 0 ? usageList : nodes;
@@ -627,6 +665,8 @@ function apply(ctx, config) {
         coverage,
         health,                                   // EMPTY / SPARSE / OK —— 空图必须显式
         mode: currentMode(),
+        // 2026-10-13 诊断探针（只读）：读路径每一步的真实结果。确认根因后可删。
+        diag: probe.steps.join(' | '),
         signature: {
           // §12.5 开放问题 6：全收节点是有意选择，故暴露两个分母
           nodesWithEdges: coverage.nodesWithEdges,
@@ -643,10 +683,15 @@ function apply(ctx, config) {
         provisionalNodes: (meta.provisionalNodes ?? []).length,
       };
     } catch (err) {
+      // 2026-10-13：catch 必须能说清卡在哪一步。此前这里只回 error 字符串，
+      // 而 loadGraph 内部没有探针 ⇒ 「edges=0」与「读表抛错」在输出上无法区分。
+      const p = err?._probe;
       return {
         nodes: 0, edges: 0, edgesByType: {}, health: 'EMPTY', mode: currentMode(),
         coverage: { nodes: 0, nodesWithEdges: 0, nodesWithUsage: 0, ratio: 0, usageRatio: 0 },
-        stale: true, counters: {}, error: String(err?.message ?? err),
+        stale: true, counters: {},
+        error: String(err?.message ?? err),
+        diag: p ? (p.err ? `ERR@${p.err}` : '') + (p.steps?.length ? ` steps=${p.steps.join(' | ')}` : '') : 'no-probe',
       };
     }
   }

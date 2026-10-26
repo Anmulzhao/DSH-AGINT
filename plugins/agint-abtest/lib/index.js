@@ -133,8 +133,11 @@ function apply(ctx, config) {
     const testEntry = tT.entries().find((e) => e.id === testId);
     if (!testEntry) throw new Error(`report: testId='${testId}' 在 abtests 表里查不到`);
     const tS = await t_samples();
-    const samplesA = tS.entries().filter((s) => s.testId === testId && s.variant === 'A').map((s) => s.score);
-    const samplesB = tS.entries().filter((s) => s.testId === testId && s.variant === 'B').map((s) => s.score);
+    // 2026-10-13：table.entries() 返回迭代器；Node 的 Iterator Helpers 让迭代器
+    // **有** .filter/.map，但返回的仍是迭代器而非数组 ⇒ .length 全 undefined。
+    // 必须先 [...entries()] 展开成数组。（实测：it.map(...) → isArray=false）
+    const samplesA = [...tS.entries()].filter((s) => s.testId === testId && s.variant === 'A').map((s) => s.score);
+    const samplesB = [...tS.entries()].filter((s) => s.testId === testId && s.variant === 'B').map((s) => s.score);
     const decision = decideWinner({
       samplesA, samplesB,
       threshold: testEntry.significanceThreshold,
@@ -154,7 +157,7 @@ function apply(ctx, config) {
   // ── Service: listTests ────────────────────────────────────────────
   async function listTests() {
     const t = await t_tests();
-    const tests = t.entries().map((e) => ({
+    const tests = [...t.entries()].map((e) => ({
       testId: e.id, status: e.status, variantA: e.variantA, variantB: e.variantB, createdAt: e.createdAt,
     }));
     return { tests };

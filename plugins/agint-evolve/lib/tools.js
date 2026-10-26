@@ -15,7 +15,9 @@ const name = 'agint-evolve-tools';
 const inject = ['tools', 'agint.evolve'];
 
 const CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
-const STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
+// approved（2026-10-23）：人工批准、尚未执行。与 applied 分开，避免「点了头」
+// 被记成「已落地」。缺这一档时人工审批无处落笔 —— 51 条 proposed 只进不出。
+const STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
 
 // K21: raw JSON Schema form. `required` is array on parent object, not on
 // each property.
@@ -134,7 +136,7 @@ function apply(ctx) {
     name: 'evolve_proposals',
     description: '列出改进提案（可按状态/类别过滤）。复盘前先看历史提案是否已落地，避免重复提案。',
     parameters: {
-      status: { type: 'string', enum: STATUSES, description: '按状态过滤（proposed/applied/rejected/wontfix）' },
+      status: { type: 'string', enum: STATUSES, description: '按状态过滤（proposed 待批 / approved 已批准待执行 / applied 已落地 / rejected 拒绝 / wontfix 暂不处理）' },
       category: { type: 'string', enum: CATEGORIES, description: '按类别过滤' },
     },
     output: {
@@ -178,7 +180,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'evolve_set_status',
-    description: '更新一条改进提案的状态：落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。',
+    description: '更新一条改进提案的状态：人工批准等执行 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。',
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },

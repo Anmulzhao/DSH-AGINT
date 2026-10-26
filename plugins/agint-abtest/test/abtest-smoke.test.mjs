@@ -14,11 +14,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_PATH = resolve(__dirname, '../lib/index.js');
+// Windows 下必须转成 file:// URL 才能 import()：裸绝对路径
+// 'D:\DSH\...\lib\index.js' 会被 ESM loader 当成协议 'd:' 抛
+// ERR_UNSUPPORTED_ESM_URL_SCHEME（2026-10-13 实测：本文件 8 个用例因此全挂）。
+const PLUGIN_PATH = pathToFileURL(resolve(__dirname, '../lib/index.js')).href;
 
 function makeMockCtx() {
   const effects = [];

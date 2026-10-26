@@ -1,0 +1,91 @@
+{
+  "$comment": "能力边界门禁的已知欠账基线。每条必须带 reason。命中项不在此表 ⇒ 门禁 exit 1（新增越界）。条目失效（代码里已消失）只报 INFO，不阻断 —— 目的是让门禁能立刻上线，同时把存量收敛期显式记账。",
+  "version": 1,
+  "updatedAt": "2026-10-21",
+  "items": [
+    {
+      "id": "B-001",
+      "category": "session-log-name-table",
+      "file": "plugins/agint-session-source/lib/index.mjs",
+      "reason": "会话日志候选名表（v4>v3>无版本 + .jsonl.zstd 后缀兜底）。宿主层应给路径/内容（ctx.sessionQuery），AGINT 不该持名字表 —— 2026-09-22 宿主改名致 12 天断供即由此而来。修法与待决项见 docs/capability-boundary.md §4 F2 / §5 D1。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-004",
+      "category": "zstd-self-decompress",
+      "file": "plugins/agint-dream/lib/sweep.js",
+      "reason": "dream 自拉 zstd 二进制解压会话日志。宿主层应给已解码内容（ctx.sessionQuery.readSession）。收敛方向随 B-005 一并处理。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-005",
+      "category": "zstd-self-decompress",
+      "file": "plugins/agint-session-extract/index.js",
+      "reason": "会话提取器自解 zstd + 自解析 jsonl。宿主层能力（dsh-session-format / dsh-session-persistence 已有）。应改为读上游已解码事件流，AGINT 只保留「抽进化语义」这一层。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-006",
+      "category": "machine-private-path",
+      "file": "plugins/agint-session-extract/index.js",
+      "reason": "zstd 解析器的本机路径回落候选写进库文件。违反 AGENTS.md「机器私有事实不入库」红线。修法：只读 ZSTD_BIN 环境变量，库内不写盘符。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-007",
+      "category": "machine-private-path",
+      "file": "plugins/agint-input-gateway/lib/channels/self-observation.js",
+      "reason": "同 B-006：zstd 回落路径硬编码本机盘符。修法：只读环境变量。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-008",
+      "category": "zstd-self-decompress",
+      "file": "plugins/agint-input-gateway/lib/channels/self-observation.js",
+      "reason": "self-observation 用 zstd -dc 读会话日志做完整性检查。宿主层应给已解码内容。收敛方向随 B-005 一并处理。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-009",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-curator/lib/aggregator.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-010",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-curator/lib/index.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-011",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-curator/lib/schema.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-012",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-skill-autocreate/lib/schema.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-013",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-skill-autocreate/lib/detector.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    },
+    {
+      "id": "B-014",
+      "category": "token-metering-selfbuild",
+      "file": "plugins/agint-skill-autocreate/lib/aggregator.js",
+      "reason": "字段保留（FROZEN schema 不动），2026-10-21 已接上游 ctx.tokenMeter 取真值：agint-tool-stats 落 deltaTokens/tokenSource，agint-curator/skill-autocreate 聚合成 avgTokenCost。剩余欠账 = 只在工具调用前后测累计差，非调用级精确计费（含该轮模型回复）。见 capability-boundary.md §4 F3 / §5 D2。",
+      "foundAt": "2026-10-21"
+    }
+  ]
+}

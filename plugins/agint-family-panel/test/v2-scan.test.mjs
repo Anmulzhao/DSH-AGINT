@@ -40,17 +40,28 @@ const PLUGINS = join(HOME, 'profiles', 'web', 'plugins');
   assert.equal(r.provided['agint.beta.svc'], 'agint-beta');
   assert.ok(!('agint.beta' in r.provided), '裸键未被 provide');
   const at = (pl, key) => r.hits.filter((h) => h[0] === pl && h[3] === key);
-  assert.equal(at('agint-alpha', 'agint.beta.svc').filter((h) => h[4] === 'code').length, 1);
+  assert.equal(at('agint-alpha', 'agint.beta.svc').filter((h) => h[4] === 'code').length, 2, 'L3 get + getService?. 两条 code');
   assert.equal(at('agint-alpha', 'agint.beta').filter((h) => h[4] === 'umbrella').length, 1);
   assert.equal(at('agint-alpha', 'agint.alpha').filter((h) => h[4] === 'code').length, 1);
   assert.equal(r.hits.filter((h) => h[4] === 'comment').length, 2, 'alpha L4 + beta index L3');
   assert.equal(at('agint-beta', 'agint.alpha').filter((h) => h[4] === 'code').length, 1, 'extra.js 多层 glob 命中');
-  assert.equal(r.hits.length, 3 + 2 + 1, 'code 3 + comment 2 + umbrella 1');
+  assert.equal(r.hits.length, 4 + 2 + 1, 'code 4（含 1 条 getService）+ comment 2 + umbrella 1');
   for (const h of r.hits) {
     assert.match(h[1], /^lib\//, 'relFile 用 / 分隔且相对插件根');
     assert.ok(!h[1].includes('\\'));
   }
   assert.deepEqual(r.errors, []);
+}
+
+// getService 形态：可选链 + 非 get/provide 的方法名也要算 code 边
+{
+  const r = scanPlugins(PLUGINS);
+  const hit = r.hits.find((h) => h[1] === 'lib/index.js' && h[3] === 'agint.beta.svc' && h[2] === 8);
+  assert.ok(hit, 'getService?. 调用必须被扫到');
+  assert.equal(hit[4], 'code', 'agint.beta.svc 有提供方 ⇒ code，不是 comment 也不是 umbrella');
+  // 反证：把同一行挪进注释就只算 comment（掩码仍然优先于形态）
+  const masked = commentMask("  // const probe = ctx.getService?.('agint.beta.svc');", { block: false, tick: false });
+  assert.equal(masked.mask[2], true, '行首 // 之后整行注释态');
 }
 
 // 目录不存在 → 降级不抛

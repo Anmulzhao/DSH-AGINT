@@ -334,10 +334,6 @@
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"
     },
-    "s12-04-mount-requested-via-event-bus": {
-      "visibility": "EVOLUTION",
-      "labelAuthority": "UNSET"
-    },
     "s12-05-mount-succeeded-population-and-evolution-memory-observe": {
       "visibility": "EVOLUTION",
       "labelAuthority": "UNSET"

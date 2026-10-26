@@ -1,5 +1,98 @@
 # Changelog — agint-quality-eval
 
+## 0.3.5 (2026-10-14) — 评估池纳入已挂载 plugin（老板拍板方案 2）
+
+### Added
+
+- **weekly 评估池从「只扫技能目录」扩到「已挂载 plugin + 技能」**。
+- 新文件 `lib/plugin-targets.js`：从 `ctx.loader.entries()` 枚举 plugin 目标。
+  选 loader 名册而不扫目录的理由：patch 只说"要什么"，**loader 才说明挂上了什么**
+  （`agint-family-panel/lib/index.js:176` 同款口径）；且部署位有三个副本，
+  扫目录无法判断哪个是活的。
+- 新配置位：
+  - `includePlugins`（默认 `true`）—— 设 false 回到纯技能枚举；
+  - `pluginIdPrefix`（默认 `'agint-'`）—— 宿主其它 plugin 不在本系统评估范围；
+  - `maxTargets`（默认不限）—— 若单次耗时不可接受，在这里设上限，
+    **而不是回头收窄枚举口径**；截断会 `console.warn` 点名丢弃数（静默截断 = 假覆盖率）。
+
+### 修复的问题（实测）
+
+此前 weekly 只枚举技能目录里名字含 `agint` 的技能：
+
+| 技能根 | 总目录 | 含 agint |
+|---|---|---|
+| `$DSH_HOME/skills` | 6 | 0 |
+| `$DSH_HOME/.agent-presets/agint/skills` | 10 | 1 |
+
+⇒ 枚举到 **1 个**，`quality_eval_run_now` 返回 `evaluated=1`，
+与老板 2026-08-20 拍板的 9 个 core plugin 口径不符。
+
+修后用本机真实挂载名单（38 个 agint-* plugin）实测：枚举到 **37 个**
+（排除自评），加技能源共 38 个目标。
+
+### 设计取舍
+
+- `entries()` 是**迭代器不是数组** —— 照 `agint-mascot/lib/index.js:123` 的
+  `toArray()` 先例处理（v0.1.1 踩过：用 `Array.isArray` 会把健康宿主读成 warn）。
+- id 取 `entry.options.id`，fallback `entry.id`（family-panel 同款取值顺序）。
+- 显式 `disabled` 的不评估（它没在跑）。
+- 自评在**枚举层**就剔除（不只靠 `evaluate()` 的 `SELF_PLUGIN_ID` 拒绝兜底）
+  —— 否则会多出一条"拒绝自评"的失败记录。
+- 读不到一律返回空数组 + `reason`，并 `console.warn`：
+  空名册（`reason=null`）与读不到（`reason=loader-*`）必须可区分。
+
+### 验证
+
+- 新增 `test/plugin-targets.test.mjs`（11 项），用真实 loader 形状
+  （迭代器 + `options.id`）造 mock，覆盖：迭代器非数组 / id fallback /
+  命名空间过滤 / disabled / 自评排除 / 去重 / 三种降级 reason / 空名册。
+- 红绿自证：撤掉命名空间过滤 ⇒ 变红；恢复 ⇒ 11/11 绿。
+- 全插件回归 41/41 PASS，`test/smoke.mjs` exit 0。
+
+## 0.3.4 (2026-10-14) — quality_eval_status 首次评估后报 invalid output
+
+### Fixed
+
+- **`quality_eval_status` 在跑过评估之后稳定报错**
+  `invalid output: value is not lossless JSON`。
+  根因：`lib/scheduler.js:58` 把 `at` 存成 **Date 对象**
+  （`this.lastRun = { at, result, error }`），Date 不是 JSON 原生类型，
+  宿主对工具返回值做 lossless-JSON 校验 ⇒ 拒绝整个返回值。
+  **`lastRun` 未跑过时是 `null`，所以这个 bug 只在首次评估之后才现形** ——
+  这正是它从落地起一直没被发现的原因（评估从未跑过）。
+- 修法：在 `tools.js` 的序列化边界加 `sanitizeForJson()`
+  （Date → ISO 字符串，Error → `{name, message}`，深递归带 depth 上限）。
+  ⛔ 不动 scheduler 语义，只动序列化边界。
+
+### 实测时间线（2026-10-14）
+
+| 步骤 | 结果 |
+|---|---|
+| 触发前 `quality_eval_status` | 正常（`lastRun: <never>`） |
+| `quality_eval_run_now` | `triggered` · `evaluated=1 persisted=1 loggedToEvo=0` |
+| 触发后 `quality_eval_status` | `invalid output: value is not lossless JSON` |
+
+### 验证
+
+- 新增 `test/json-sanitize.test.mjs`（5 项）：用真实 scheduler 产出的
+  lastRun 形状（`{at: Date, result, error}`）喂给真实 `execute()`，
+  断言返回值是纯 JSON（自实现 `isLosslessJson` 判定，含 NaN/Infinity 检查）。
+- 红绿自证：撤掉 `sanitizeForJson` ⇒ 变红；恢复 ⇒ 5/5 绿。
+- 全插件回归 30/30 PASS，`test/smoke.mjs` exit 0。
+
+### 附带发现（未修，需老板拍板）
+
+**weekly 评估实际只跑了 1 个目标，与「9 个 core plugin」的拍板口径不符。**
+- 老板 2026-08-20 拍板的 9 个 plugin 在 `lib/regression.js:33-43`
+  的 `BASELINE_TARGETS`，只被 `runBaselineSuite()` 使用。
+- weekly 路径走的是 `enumerateTargets()`（`lib/index.js:211`），
+  它只扫**技能目录**、且只收**名字含 `agint` 的技能**。
+  本机实测：`$DSH_HOME/skills` 6 个目录含 agint 的 0 个；
+  `$DSH_HOME/.agent-presets/agint/skills` 10 个目录含 agint 的 1 个
+  （`agint-install-bootstrap-rescue`）⇒ 枚举到 **1 个**目标。
+- 这与 `evaluated=1` 的返回一致，也与 `dream_status` 显示的
+  「计划评估 9 个 plugin」不一致 —— 后者读的是另一条路径。
+
 ## 0.3.3 (2026-10-01) — 注入声明与运行时对齐：评估池取数改目录扫描
 
 ### Fixed

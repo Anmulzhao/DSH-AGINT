@@ -46,6 +46,8 @@ import {
 } from './recall-store.js';
 import { validateAndApply, planToWriteCalls } from './validation-gate.js';
 import { consolidate, consolidateBatched, DEFAULT_BATCH_SIZE } from './consolidation.js';
+// D1 迁移（2026-10-21）：会话内容读统一走 session-source（上游优先 + 回落出声）
+import { createSessionSource } from '../../agint-session-source/lib/index.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -109,6 +111,12 @@ export const DEFAULTS = {
   // 仍被 recall store 收走并 promoted 进长期记忆，稀释 367 条记忆的信噪比。
   // 判据（见 classifyToolError）：原始 stderr 不是主张，**只有说清「为什么 /
   // 应该怎样」的报错才配当教训**。默认开；kill-switch 设 false 即完全回退旧行为。
+  //
+  // 2026-10-19 收紧：判据从「出现任一诊断关键词」改为「必须出现因果句式」。
+  // 旧关键词（schema / invalid / expected / enoent…）在真实 stderr 里几乎必然
+  // 出现 —— 10-19 夜里 3 条过门候选全是原始残骸（invalid arguments /
+  // GBK 乱码 ParserError / schema 名列表），并以原文进了长期记忆。
+  // 状态描述（现在是什么样）不是主张；只有「为什么 / 应该怎样」才配当教训。
   toolErrorDiagnosticOnly: true,
 };
 
@@ -122,8 +130,17 @@ const clamp = (v) => Math.max(0, Math.min(1, v));
 // 原先的精确名匹配让 Light 通道静默失效 7 天（2 天窗口内扫到 0 个会话，
 // 而 dream_status 仍报 validation=OK）。改为候选名优先 + 后缀兜底，
 // 使宿主再次改名时不会静默失效。
-const SESSION_LOG_NAMES = ['session.v3.jsonl.zstd', 'session.jsonl.zstd'];
-const SESSION_LOG_SUFFIX = '.jsonl.zstd';
+//
+// ⛔ 2026-10-21 修：本表原先只有 v3，**缺 v4**。宿主 2026-09-22 起已用 v4，
+// 于是「先试候选名」这一步恒落空，一路走后缀兜底 —— 能发现文件，但同目录并存
+// v3/v4 时取哪个变成 readdir 顺序偶然，light/rem/deep 三通道可能读旧格式。
+// 这跟 09-22 那次 12 天断供是同一类错：名字表比宿主落后。
+// 现在名字表与后缀常量的**唯一真相源**是 agint-session-source（全仓一处），
+// 本地不再持有副本 —— 宿主下次改 v5 只需要改那一个文件。
+import {
+  SESSION_LOG_NAMES_BY_RANK as SESSION_LOG_NAMES,
+  SESSION_LOG_SUFFIX,
+} from '../../agint-session-source/lib/index.mjs';
 
 /** 定位会话目录下的日志文件：候选名优先，其次按 .jsonl.zstd 后缀兜底。 */
 export async function resolveSessionLogPath(wsDir, sessionDirName) {
@@ -179,7 +196,21 @@ export function isZstdAvailable() {
 }
 let zstdMissingWarned = false;
 
-export async function readSessionLog(logPath) {
+/**
+ * 只解压、不解析：返回会话日志的**原始文本**。
+ *
+ * ⛔ 2026-10-21 修（运行态取证）：这层必须与"解析"分开。
+ *   起因：session-source 的 `readLocal` 契约是「返回文本」，而 dream 之前把
+ *   `readSessionLog`（返回**已解析事件数组**）当 readLocal 注入 ⇒
+ *   `readEventsFromDisk` 里 `String(text).split('\n')` 把数组 toString 成逗号串
+ *   ⇒ `JSON.parse` 全部失败 ⇒ **拿到 0 个事件**。
+ *   症状：dream 扫到 60 个会话，用户消息信号 / memWrites / 工具错误**全部归零**
+ *   （迁移前同窗口分别是 105 / 20 / 565）⇒ 进化闭环的输入瞎了。
+ *
+ * @param {string} logPath 会话日志路径
+ * @returns {Promise<string>} 解压后的文本
+ */
+export async function readSessionLogText(logPath) {
   if (!isZstdAvailable()) {
     if (!zstdMissingWarned) {
       // Warn once per sweep; the diary will record this as the root cause
@@ -195,7 +226,29 @@ export async function readSessionLog(logPath) {
   }).catch((err) => {
     throw new Error(`zstd -dc ${basename(logPath)} failed: ${err.message}`);
   });
-  return stdout.split('\n').filter((l) => l.trim()).map((l) => {
+  return stdout;
+}
+
+export async function readSessionLog(log, sessionSource = null) {
+  // D1 迁移（2026-10-21）：log 参数改为对象 { path, sessionId }（兼容旧的纯路径字符串）。
+  // 传入 sessionSource ⇒ 读内容优先走上游 sessionQuery.readSession(sessionId)。
+  // 上游缺席时回落本地 zstd 解压。
+  //
+  // ⛔ 为什么要 sessionId：上游 readSession(id) 需要 id，光有磁盘路径不够。
+  //   2026-10-19 那次"接上游"失败的根因之一就是没把 sessionId 传下去。
+  const logPath = typeof log === 'string' ? log : log?.path;
+  // 本地目录名就是 session id（sessions/<ws>/<session-id>/）；listSessionLogs 给的
+  // 字段名是 `dir`（不是 `sessionId`）—— 传错会让上游分支永远不触发。
+  const logSessionId = typeof log === 'object' ? (log.sessionId ?? log.dir ?? null) : null;
+
+  if (sessionSource) {
+    const read = await sessionSource.readEvents({
+      dir: logSessionId, path: logPath, upstream: true,
+    });
+    return read.events;
+  }
+  const text = await readSessionLogText(logPath);
+  return text.split('\n').filter((l) => l.trim()).map((l) => {
     try { return JSON.parse(l); } catch { return null; }
   }).filter(Boolean);
 }
@@ -211,6 +264,38 @@ function extractText(record) {
 }
 
 /**
+ * 判定一条 user/message 记录是不是真人说的话。
+ *
+ * 背景（提案 0f6c69bc，2026-10-23 实测）：宿主把主 agent 发给 subagent 的
+ * prompt **也记成 kind='user'**。老的 `kind !== 'user'` 过滤挡得住
+ * skill-catalog / agent-instructions 注入，**挡不住它**。这些 prompt 被 dream
+ * 当成"用户偏好/教训"提进候选，一旦门槛调松就会写进长期记忆。
+ *
+ * 判据（实测 60 个会话，kind='user' 记录 163 条）：
+ *   - source 带 rpcId / clientTimeZone：155 条 → 全部真人
+ *   - source 只有 kind：                8 条 → 全部 subagent prompt
+ * 两个标记**任一存在**即判 human —— 只用其中一个会漏掉宿主只给另一个的情况。
+ *
+ * ⛔ 不要用文本特征（"你是"/"只读"等）做判据：155 条真人里有 4 条命中这类
+ * 特征词（"你现在是什么模型、推理等级是什么"），误杀的是真人问句。
+ * 误杀率 2.6%，且误杀对象恰好是最该保留的那类消息。
+ *
+ * @returns {'human'|'subagent-prompt'|'other-kind'}
+ */
+export function classifyUserSource(rec) {
+  const src = rec?.data?.source ?? null;
+  // 老格式（v3 及更早）的 user/message 没有 source 字段。**保守收**：
+  // 把它判成 subagent prompt 会让老会话的 Light 通道整轮归零 —— 那正是
+  // 提案 4734bc97 修掉的「静默失效 7 天」同型错。无法判定时不拦。
+  if (!src || typeof src !== 'object') return 'unknown-source';
+  const kind = src?.kind ?? null;
+  if (kind && kind !== 'user') return 'other-kind';
+  const markers = [src?.rpcId, src?.clientTimeZone]
+    .filter((v) => typeof v === 'string' && v.trim() !== '').length;
+  return markers > 0 ? 'human' : 'subagent-prompt';
+}
+
+/**
  * Collect per-session signals from one parsed log.
  * Returns { sessionKey, title, time, userTexts, memWrites, errors, toolCalls }.
  */
@@ -220,15 +305,23 @@ export function collectSessionSignals(records) {
   const memWrites = [];
   const errors = [];
   const times = [];
+  let humanKept = 0;
+  let subagentDropped = 0;
+  let unknownKept = 0;
   for (const rec of records) {
     const t = rec?.time ?? rec?.seq ?? 0;
     if (rec?.type === 'user/message') {
       // Only real human utterances are signals. DSH injects skill-catalog /
-      // system-reminder blocks as user/message events with other source kinds.
-      const kind = rec.data?.source?.kind;
-      if (kind && kind !== 'user') continue;
+      // system-reminder blocks as user/message events with other source kinds,
+      // and records subagent prompts with kind='user' but no rpcId/clientTimeZone.
+      const cls = classifyUserSource(rec);
+      if (cls === 'other-kind') continue;
+      if (cls === 'subagent-prompt') { subagentDropped += 1; continue; }
       const text = extractText(rec.data).trim();
-      if (text) userTexts.push({ text, time: t });
+      if (text) {
+        userTexts.push({ text, time: t });
+        if (cls === 'human') humanKept += 1; else unknownKept += 1;
+      }
     } else if (rec?.type === 'tool/call' && rec.data?.name === 'memory_write') {
       let args = {};
       try { args = JSON.parse(rec.data.arguments ?? '{}'); } catch { /* ignore */ }
@@ -242,6 +335,7 @@ export function collectSessionSignals(records) {
     }
     if (t) times.push(t);
   }
+  const userKindTotal = humanKept + subagentDropped;
   return {
     sessionKey,
     userTexts,
@@ -249,7 +343,47 @@ export function collectSessionSignals(records) {
     errors,
     startTime: times.length ? Math.min(...times) : 0,
     endTime: times.length ? Math.max(...times) : 0,
+    sourceFilter: {
+      userKindTotal,
+      humanKept,
+      unknownKept,
+      subagentDropped,
+      // 判据失效护栏：整轮 kind='user' 的记录一条都不带人类标记 ⇒
+      // 宿主多半改了记录方式。标记出来，让零命中告警有东西可报（K54/K116）。
+      degraded: userKindTotal > 0 && humanKept === 0,
+    },
   };
+}
+
+/**
+ * 聚合一轮 sweep 里所有会话的信号源过滤统计（提案 0f6c69bc）。
+ *
+ * 存在的理由：只拦不报 = 下一次又是「静默失效」。拦了多少 subagent prompt、
+ * 判据有没有失效，这两个数必须进 diary / dream_status / 宿主日志（K116）。
+ *
+ * @returns {{humanKept:number, unknownKept:number, subagentDropped:number,
+ *            userKindTotal:number, degradedSessions:number, judgeFailed:boolean}}
+ */
+export function aggregateSourceFilterStats(signals) {
+  const acc = {
+    humanKept: 0,
+    unknownKept: 0,
+    subagentDropped: 0,
+    degradedSessions: 0,
+  };
+  for (const s of signals ?? []) {
+    const f = s?.sourceFilter;
+    if (!f) continue;
+    acc.humanKept += f.humanKept ?? 0;
+    acc.unknownKept += f.unknownKept ?? 0;
+    acc.subagentDropped += f.subagentDropped ?? 0;
+    if (f.degraded) acc.degradedSessions += 1;
+  }
+  acc.userKindTotal = acc.humanKept + acc.subagentDropped;
+  // 判据失效：有 kind='user' 的消息，却一条人类消息都没收到，也没有老格式兜底。
+  // 说明宿主改了记录方式（比如不再写 rpcId）⇒ 过滤器正在误杀真人消息。
+  acc.judgeFailed = acc.degradedSessions > 0 && acc.humanKept === 0 && acc.unknownKept === 0;
+  return acc;
 }
 
 // ── REM: candidate extraction (heuristic, deterministic) ───────────────────
@@ -347,27 +481,32 @@ const TOOL_ERROR_NOISE_SHAPE_RE = new RegExp([
 ].map((r) => `(?:${r.source})`).join('|'), 'i');
 
 /**
- * 诊断**信号** —— 文本里出现了「为什么 / 应该怎样」的线索。
- * 命中即认为这条报错**可迁移**（换个场景仍成立），配当教训。
- * 覆盖 schema 类（rule_list 的 additionalProperties 报错属这类，值得留）、
- * 根因类（because / 因为 / 实际是）、祈使类（必须 / should be）。
+ * 因果**句式** —— 文本里说出了「为什么 / 应该怎样」。
+ *
+ * 2026-10-19 收紧。旧判据是「出现任一诊断关键词即放行」，而那批关键词
+ * （schema / invalid / expected / enoent / eacces…）在真实 stderr 里几乎必然
+ * 出现 —— 于是 10-19 夜里的 3 条过门候选全是原始残骸：
+ *   ① Error: invalid arguments: missing required property "file_path" …（命中 invalid）
+ *   ② [stderr] …TerminatorExpectedAtEndOfString [exit code: 1]（命中 Expected）
+ *   ③ · DimensionScoreSchema · DreamPhaseSchema … [PASS] L0 FROZEN 契约未变更（命中 schema）
+ * 三条都以原文进了长期记忆。
+ *
+ * **状态描述不是主张**：schema 不匹配、参数缺失、端口占用说的是「现在是什么样」，
+ * 不是「以后该怎么做」。新判据只认两种句式：
+ *   - 因果连接：说清了「为什么」（因为 / 由于 / 根因 / because / due to …）
+ *   - 祈使语气：说清了「应该怎样」（必须 / 应该 / 改成 / must / should / instead of …）
+ * 两者都没有 ⇒ 拦下。
+ *
+ * 代价（明说）：「EACCES: permission denied」这类纯 syscall 报错不再进池。
+ * 它是工具机制；要沉淀就由人 / LLM 写成主张再 memory_write。
  */
-const TOOL_ERROR_DIAGNOSTIC_RE = new RegExp([
-  /schema/i,
-  /not a declared property|additionalproperties/i,
-  /validation|validate\b|invalid\b/i,
-  /mismatch|不一致|不匹配|对不上/,
-  /expected|应为|预期|应该是|而不是/,
-  /实际(?:是|为|值|上)/,
-  /cannot read propert|cannot access|cannot find module|module_not_found/i,
-  /cannot connect to|cannot resolve host/i,
-  /enoent|eacces|eperm|eaddrinuse|econnrefused|eaconnreset/i,
-  /address already in use|too many open files/i,
-  /path escapes|outside root|越界|逃逸/,
-  /因为|由于|原因是|根因/,
-  /缺少|缺失|漏了|漏掉|没带/,
-  /必须|应该|应当|切记|务必|记得/,
-  /instead of|should be|rather than/i,
+const TOOL_ERROR_CAUSAL_RE = new RegExp([
+  // 因果连接：说清了「为什么」
+  /因为|由于|原因是|根因(?:是|在于)?|其实是|实际(?:是|为)|因此|所以|才会|导致/,
+  /because|due to|root cause|therefore|so that/i,
+  // 祈使语气：说清了「应该怎样」
+  /必须|应该|应当|务必|切记|记得|不要|别再|改成|改用|应改为|才能|需要先/,
+  /must(?: not)?\b|should(?: not|'t)?\b|instead of|rather than|\bnever\b|\balways\b|need to/i,
 ].map((r) => `(?:${r.source})`).join('|'), 'i');
 
 /**
@@ -377,13 +516,13 @@ const TOOL_ERROR_DIAGNOSTIC_RE = new RegExp([
  *   - **错杀**（漏一条教训）：这条根因下次靠人 / 我手工 memory_write 补。
  *   - **误放**（灌原始 stderr）：永久污染长期记忆，且这类候选 score 恒为 0.00，
  *     稀释所有真信号的召回 —— 09-28 实测的 23 条错误信号就是这么烂进来的。
- *   → 因此默认**拒绝**：无诊断信号 = 拦下。
+ *   → 因此默认**拒绝**：无因果句式 = 拦下。
  *
  * 开关 `opts.toolErrorDiagnosticOnly=false` 时完全回退旧行为（全部放行）。
  *
  * @returns {{ keep: boolean, reason: string }} reason：
- *   'diagnostic'（放行）｜'filter-disabled'（开关关）｜'empty'｜
- *   'noise-shape'（噪音形态）｜'no-diagnostic-signal'（无诊断线索）
+ *   'causal-clause'（放行）｜'filter-disabled'（开关关）｜'empty'｜
+ *   'noise-shape'（噪音形态）｜'no-causal-clause'（无因果句式）
  */
 export function classifyToolError(text, opts = {}) {
   const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
@@ -392,8 +531,31 @@ export function classifyToolError(text, opts = {}) {
   if (!line) return { keep: false, reason: 'empty' };
   const core = line.replace(EXIT_CODE_SUFFIX_RE, '').trim() || line;
   if (TOOL_ERROR_NOISE_SHAPE_RE.test(core)) return { keep: false, reason: 'noise-shape' };
-  if (!TOOL_ERROR_DIAGNOSTIC_RE.test(core)) return { keep: false, reason: 'no-diagnostic-signal' };
-  return { keep: true, reason: 'diagnostic' };
+  if (!TOOL_ERROR_CAUSAL_RE.test(core)) return { keep: false, reason: 'no-causal-clause' };
+  return { keep: true, reason: 'causal-clause' };
+}
+
+/**
+ * 提升边界闸（2026-10-19）。
+ *
+ * 抽取层的判据作用在**原始 stderr** 上，而写进长期记忆的是截断到
+ * `maxCandidateChars` 之后的文本。截断可能把因果句式切掉 —— 于是「过了抽取闸
+ * 的残骸」仍可能以残骸形态进本体（10-19 的 3 条就是这么进的）。
+ *
+ * 这道闸独立于 classifyToolError：它检查的是**将要写入本体的那串文本**。
+ * 只对工具错误来源的候选生效 —— 用户原话天然是主张，用因果句式去卡它会误杀。
+ *
+ * kill-switch：`toolErrorDiagnosticOnly=false` 时两道闸一起让路（完全回退旧行为）。
+ *
+ * @returns {string|null} 拦截原因；null = 放行
+ */
+export function promotionBlockReason(candidate, opts = {}) {
+  const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
+  if (!diagnosticOnly) return null;
+  if (!candidate?.rawToolError) return null;
+  const stored = String(candidate.text ?? '');
+  if (TOOL_ERROR_CAUSAL_RE.test(stored)) return null;
+  return 'no-causal-clause-in-stored-text';
 }
 
 /** 单个 extractCandidates 结果上的过滤统计（由 extractCandidates 挂载）。 */
@@ -482,6 +644,9 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
       sessionKey: session.sessionKey,
       time: time || nowMs,
       signals: [text],
+      // 2026-10-19：标记来源。提升边界闸（promotionBlockReason）据此判断
+      // 「这条候选是不是原始 stderr 残骸」—— 它不来自用户原话。
+      rawToolError: true,
     });
   }
   // 非枚举：保持数组语义（`deepEqual(candidates, [...])` / `.length` 不变），
@@ -820,10 +985,10 @@ function fmtDay(ms) {
 /**
  * Render the dream diary markdown for one sweep.
  * stages: { day, signals, memWrites, candidates, gated, promoted, recovered,
- *           errors, durationMs, windows?, skippedPromoted?, validationOk?,
- *           validationReason?, recallWrite?, pruneResult? }.
+ *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
+ *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'heuristic-degraded', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -847,8 +1012,16 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (toolErrorStats && toolErrorStats.total > 0) {
     const reasons = Object.entries(toolErrorStats.byReason ?? {})
       .map(([k, v]) => `${k}×${v}`).join(' · ');
-    lines.push(`- 工具错误诊断过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
+    lines.push(`- 工具错误因果过滤：留 ${toolErrorStats.kept} / 拦 ${toolErrorStats.dropped}`
       + `${reasons ? `（${reasons}）` : ''}${toolErrorStats.enabled ? '' : ' · 过滤已关闭(kill-switch)'}`);
+  }
+  // 2026-10-23（提案 0f6c69bc）：信号源过滤必须**可见**。
+  // 挡住 subagent prompt 是本次目标，但判据一旦失效（宿主改了记录方式），
+  // 症状是「一条用户消息都收不到」—— 与 Light 静默失效 7 天同型，必须出声。
+  if (sourceFilterStats && (sourceFilterStats.subagentDropped > 0 || sourceFilterStats.judgeFailed)) {
+    const f = sourceFilterStats;
+    lines.push(`- 信号源过滤：真人 ${f.humanKept} 条 · 老格式 ${f.unknownKept} 条 · 拦 subagent prompt ${f.subagentDropped} 条`
+      + (f.judgeFailed ? ' · ⚠️ **判据可能失效**（无人类标记消息，需复核 source 记录方式）' : ''));
   }
   lines.push('');
   if (memWrites.length > 0) {
@@ -866,6 +1039,10 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push('');
   lines.push(`- 门槛通过候选：${gated.length} 条`);
   if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
+  // 2026-10-19：提升边界闸的拦截数必须可见 —— 拦下来的东西不能是黑洞。
+  if (skippedRawToolError > 0) {
+    lines.push(`- 提升边界闸拦截：${skippedRawToolError} 条工具错误残骸（写进本体的文本不含因果句式）`);
+  }
   // 2026-09-21（方案 B）：去重分档统计。此前页面只显示「门槛通过候选：0 条」，
   // 无法区分「本来就没候选」和「候选全被 existing 去重吃掉」—— 这正是闭包
   // 藏了这么久的原因。
@@ -879,14 +1056,14 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   if (!validationOk) {
     lines.push(`- **P0 validation gate REJECTED**: ${validationReason || 'unknown'}`);
   }
-  // P1: consolidation mode (llm / not-attempted / heuristic-degraded)
+  // P1: consolidation mode (llm / not-attempted / failed)
   if (consolidationMode === 'llm') {
     lines.push(`- **P1 LLM consolidation**: ✅ LLM 决策 add/merge/supersede${consolidationReason ? `（${consolidationReason}）` : ''}`);
   } else if (consolidationMode === 'not-attempted') {
     // 2026-09-18 C 项：区别「没触发」（门槛没放行 / ctx 缺失）和「触发了但 LLM 失败」
     lines.push(`- P1 LLM consolidation: ➖ 未触发${consolidationReason ? `（${consolidationReason}）` : ''}`);
   } else {
-    lines.push(`- P1 LLM consolidation: ⚠️ heuristic-degraded${consolidationReason ? `（${consolidationReason}）` : ''}`);
+    lines.push(`- P1 LLM consolidation: ❌ failed（本轮不提升任何候选，无启发式回退）${consolidationReason ? `：${consolidationReason}` : ''}`);
   }
   lines.push(`- 提升写入记忆：${promoted.length} 条`);
   if (recallWrite) {
@@ -1046,12 +1223,27 @@ export async function runSweep({
   const cap = maxSessions ?? DEFAULTS.maxSessions;
   const rPath = recallPath ?? defaultRecallPath();
 
+  // ── D1 迁移：会话内容读优先走上游 sessionQuery ───────────────────────────
+  // 2026-10-21：原先 `readSessionLog(log.path)` 走本地 zstd 解压。
+  // 上游 `sessionQuery.readSession(id)` 直接给重放校验过的事件流 ⇒ 不碰磁盘。
+  // 上游缺席时回落本地（session-source 注入的 readLocal = 这里复用 readSessionLog 的 zstd 路径）。
+  const sessionSource = ctx ? createSessionSource({
+    ctx,
+    fallback: async () => [],
+    onFallback: (reason) => errors.push(`session-source: ${reason}`),
+    source: 'dream/sweep',
+    // ⛔ readLocal 的契约是「返回**文本**」，不是返回已解析的事件数组。
+    //   传错类型会让 readEventsFromDisk 拿到数组 → toString → JSON.parse 全失败
+    //   → 事件数 0（2026-10-21 运行态事故，见 readSessionLogText 的注释）。
+    readLocal: (path) => readSessionLogText(path),
+  }) : null;
+
   // ── Light: candidate extraction window (2d) ─────────────────────────────
   const lightLogs = await listSessionLogs(sessionsRoot, lightDays, cap);
   const signals = [];
   for (const log of lightLogs) {
     try {
-      signals.push(collectSessionSignals(await readSessionLog(log.path)));
+      signals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
     } catch (err) {
       errors.push(`${log.dir}: ${err.message}`);
     }
@@ -1073,6 +1265,15 @@ export async function runSweep({
   if (health.status === 'degraded') {
     // 打日志：dream_status 之外还得能在宿主日志里 grep 到（可观测 > 静默）
     console.warn(`[agint-dream] ${health.reason}`);
+  }
+
+  // ── 信号源过滤统计（2026-10-23 / 提案 0f6c69bc）───────────────────────
+  // 拦了 subagent prompt 多少条、判据有没有失效，两个都要出声。
+  const sourceFilterStats = aggregateSourceFilterStats(signals);
+  if (sourceFilterStats.judgeFailed) {
+    const reason = `source-filter 判据失效：${sourceFilterStats.degradedSessions} 个会话里 kind='user' 的消息全部没有 rpcId/clientTimeZone，过滤器正在误收或误杀，需复核 source 判据`;
+    console.warn(`[agint-dream] ${reason}`);
+    errors.push(reason);
   }
 
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
@@ -1126,7 +1327,7 @@ export async function runSweep({
     const remSignals = [];
     for (const log of remLogs) {
       try {
-        remSignals.push(collectSessionSignals(await readSessionLog(log.path)));
+        remSignals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
       } catch (err) {
         errors.push(`${log.dir}(rem): ${err.message}`);
       }
@@ -1178,9 +1379,10 @@ export async function runSweep({
 
   // P1: LLM consolidation —— 决定 add/merge/supersede。
   // 优先级：显式传入 operations > 显式传入 consolidation runner > sweep 内部默认调 consolidate(ctx)
-  // 失败/超时/degraded → operations 退化为 null，validation 走 added 路径，diary 标 consolidationMode
-  let consolidationMode = 'heuristic-degraded';
-  let consolidationReason = null;
+  // 2026-10-25 无降级：LLM 失败不再退回「见一条推一条」。失败即跳过本轮提升并留痕。
+  let consolidationMode = Array.isArray(operations) ? 'llm' : 'not-attempted';
+  let consolidationReason = Array.isArray(operations) ? 'explicit operations' : null;
+  let consolidationFailed = false;
   let resolvedOps = operations;
   if (resolvedOps == null && unpromotedGated.length > 0) {
     const runner = consolidation ?? (ctx
@@ -1200,42 +1402,51 @@ export async function runSweep({
     if (runner) {
       try {
         const result = await runner(unpromotedGated, existing);
-        consolidationMode = result?.mode ?? 'heuristic-degraded';
+        consolidationMode = result?.mode ?? 'failed';
         consolidationReason = result?.reason ?? null;
         resolvedOps = result?.operations ?? null;
-        if (consolidationMode === 'llm' && !Array.isArray(resolvedOps)) {
-          // LLM declared success but ops missing — fallback to degraded
-          consolidationMode = 'heuristic-degraded';
-          consolidationReason = 'LLM result missing operations array';
+        if (result?.ok === false || consolidationMode !== 'llm' || !Array.isArray(resolvedOps)) {
+          consolidationMode = 'failed';
+          consolidationReason = result?.reason ?? 'LLM result missing operations array';
           resolvedOps = null;
+          consolidationFailed = true;
+          errors.push(`consolidation failed: ${consolidationReason}`);
         }
       } catch (err) {
-        consolidationMode = 'heuristic-degraded';
+        consolidationMode = 'failed';
         consolidationReason = `runner threw: ${err?.message ?? String(err)}`;
         resolvedOps = null;
+        consolidationFailed = true;
         errors.push(`consolidation runner failed: ${consolidationReason}`);
       }
     } else {
-      // 2026-09-18 C 项：诚实标注「没触发」——ctx 缺失时 runner 为 null，
-      // 这不是 LLM 失败，不该标 heuristic-degraded 误导人。
-      consolidationMode = 'not-attempted';
+      // 有候选但拿不到 LLM 通路 = 失败；不再用「not-attempted」掩盖。
+      consolidationMode = 'failed';
       consolidationReason = 'no consolidation runner (ctx unavailable)';
+      consolidationFailed = true;
+      errors.push(`consolidation failed: ${consolidationReason}`);
     }
   } else if (resolvedOps == null) {
-    // 2026-09-18 C 项：0 过门候选 → LLM 根本没被调用。此前这里显示
-    // 'heuristic-degraded'，看起来像 LLM 失败，实际是没触发 —— 09-08 至
-    // 09-18 每晚日记都因此误读。'not-attempted' = 「门槛没放行任何候选」。
+    // 0 过门候选 → LLM 根本没被调用。'not-attempted' = 「门槛没放行任何候选」。
     consolidationMode = 'not-attempted';
     consolidationReason = '0 gated candidates — LLM 未触发';
   }
 
-  // P0: 把 unpromotedGated 送进 validation gate；resolvedOps=null 时走 added 退化路径
-  const validationFinal = validateAndApply({
-    gated: unpromotedGated,
-    existing,
-    operations: resolvedOps,
-    maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
-  });
+  // P0: LLM consolidation 失败 ⇒ 本轮不提升任何候选（无启发式回退）。
+  // 候选留在原地，下一次 sweep 会重新尝试；错误已进 errors / diary。
+  const validationFinal = consolidationFailed
+    ? {
+      ok: false,
+      reason: `LLM consolidation failed: ${consolidationReason}`,
+      stats: {},
+      plan: [],
+    }
+    : validateAndApply({
+      gated: unpromotedGated,
+      existing,
+      operations: resolvedOps,
+      maxPriorEntryLossFraction: maxPriorEntryLossFraction ?? 0.25,
+    });
 
   // P0 reject 事件（如有 publishReject 钩子）
   if (!validationFinal.ok && typeof publishReject === 'function') {
@@ -1253,11 +1464,19 @@ export async function runSweep({
   }
 
   const promoted = [];
+  let skippedRawToolError = 0;
   if (apply && memory && validationFinal.ok) {
     const writeCalls = planToWriteCalls(validationFinal.plan);
     for (let i = 0; i < writeCalls.length; i += 1) {
       const wc = writeCalls[i];
       const candidate = unpromotedGated[i];
+      // 2026-10-19 提升边界闸：工具错误来源的候选，写进本体的文本必须自带因果句式。
+      // 抽取层的判据作用在原始 stderr 上；这里判的是「实际写进本体的那串文本」。
+      const blocked = promotionBlockReason(candidate, { toolErrorDiagnosticOnly });
+      if (blocked) {
+        skippedRawToolError += 1;
+        continue;
+      }
       try {
         const saved = await wc.write(
           memory,
@@ -1285,7 +1504,7 @@ export async function runSweep({
       const recSignals = [];
       for (const log of recLogs) {
         try {
-          recSignals.push(collectSessionSignals(await readSessionLog(log.path)));
+          recSignals.push(collectSessionSignals(await readSessionLog(log, sessionSource)));
         } catch (err) {
           errors.push(`${log.dir}(recover): ${err.message}`);
         }
@@ -1331,6 +1550,12 @@ export async function runSweep({
         for (let i = 0; i < recWriteCalls.length; i += 1) {
           const wc = recWriteCalls[i];
           const candidate = recGated[i];
+          // 2026-10-19：recovery 通道走同一条提升边界闸（它同样不经过 LLM 挑选）。
+          const blocked = promotionBlockReason(candidate, { toolErrorDiagnosticOnly });
+          if (blocked) {
+            skippedRawToolError += 1;
+            continue;
+          }
           try {
             const saved = await wc.write(
               memory,
@@ -1376,11 +1601,13 @@ export async function runSweep({
     windows: { light: lightDays, rem: remDays, deep: deepRecoveryDays ?? DEFAULTS.deepRecoveryDays },
     // P0/P2 扩展字段（renderDiary 内部可选展示）
     skippedPromoted,
+    // 2026-10-19：提升边界闸拦截数
+    skippedRawToolError,
     validationOk: validationFinal.ok,
     validationReason: validationFinal.reason,
     recallWrite: recallWriteResult,
     pruneResult,
-    // P1 LLM consolidation 模式（llm / heuristic-degraded）
+    // P1 LLM consolidation 模式（llm / not-attempted / failed）
     consolidationMode,
     consolidationReason,
     // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段 qualityEvaluator 评估摘要
@@ -1394,6 +1621,8 @@ export async function runSweep({
     dedupeStats,
     // 2026-09-28：工具错误诊断过滤统计
     toolErrorStats,
+    // 2026-10-23（提案 0f6c69bc）：信号源过滤统计
+    sourceFilterStats,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   // 2026-09-28：dry-run 写 `<day>.preview.md`，不碰 `<day>.md`。
@@ -1421,9 +1650,20 @@ export async function runSweep({
         kept: toolErrorStats.kept,
         dropped: toolErrorStats.dropped,
       },
+      // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。形状扁平（与 toolErrorFilter 同款），
+      // 因为 tools.js 的 output schema 是 additionalProperties:false，
+      // 漏声明会让 dream_status / dream_run_now 整体不可用（K164 同形状事故）。
+      sourceFilter: {
+        humanKept: sourceFilterStats.humanKept,
+        unknownKept: sourceFilterStats.unknownKept,
+        subagentDropped: sourceFilterStats.subagentDropped,
+        judgeFailed: sourceFilterStats.judgeFailed,
+      },
       candidates: scored.length,
       gated: gated.length,
       skippedPromoted,
+      // 2026-10-19：提升边界闸拦下的工具错误残骸数（0 = 没有残骸想进本体）
+      skippedRawToolError,
       // 2026-09-21（方案 B）：去重分档统计 —— { enabled, dropped, suspicious, checked, maxSimilarity }
       dedupeStats,
       validationOk: validationFinal.ok,

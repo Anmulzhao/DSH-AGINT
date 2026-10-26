@@ -28,7 +28,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { buildNotice, detectRestart, shouldNotify } from './detect.js';
@@ -285,9 +285,20 @@ export function snapshotEnv() {
 }
 
 /** 推断"我当初是怎么被启动的"，供 respawn 复现。 */
-function snapshotLaunch(override) {
+function snapshotLaunch(override, desktop) {
   if (override && typeof override.command === 'string' && Array.isArray(override.args)) {
     return { ...override, cwd: override.cwd || process.cwd(), env: override.env ?? snapshotEnv() };
+  }
+  if (desktop) {
+    // 桌面 profile：复现"GUI 主进程"而不是复现我自己（headless host）。
+    // 裸起 exe（args 空）= Electron 正常启动 → 它自己去 fork 一个新 host。
+    return {
+      command: desktop.guiCommand,
+      args: [],
+      cwd: process.cwd(),
+      env: snapshotEnv(),
+      guiLaunch: true,
+    };
   }
   return {
     command: process.execPath,
@@ -295,6 +306,38 @@ function snapshotLaunch(override) {
     args: process.argv.slice(1),
     cwd: process.cwd(),
     env: snapshotEnv(),
+  };
+}
+
+/**
+ * 判断"我是不是桌面 app 的 host 子进程"。
+ *
+ * 为什么要单独判：桌面 profile 下 host 由 Electron 主进程 fork（入口是
+ * dsh-desktop-host/lib/index.js），而 GUI 侧的 HostSupervisor.start() 只拉起
+ * **一次**、子进程退出后不自动重生（lib/main.js: `if (this.child !== void 0) return`
+ * + close → fail → 弹「Another DSH instance」框）。此时若照"我自己怎么起的"复现，
+ * respawn 会拉起一个没有界面的 headless host 抢走 19387，GUI 后续自己那个 host
+ * 必然 EADDRINUSE ⇒ webserver(required) 失败 ⇒ 整个启动 fatal。
+ * （2026-10-13 / 2026-10-15 两次弹窗事故都是这条链。）
+ *
+ * 所以桌面 profile 的正确复现对象是 **GUI 主进程**：先杀掉旧 GUI（否则 Electron
+ * 单实例锁会把新起的 GUI 直接吞掉），再裸起 exe。
+ *
+ * ⚠️ 入口位置**不能按 argv[1] 认**：GUI 是 `spawn(exe, ["--expose-internals", entry, ...])`，
+ * 而 `--expose-internals` 会不会留在 process.argv 里取决于 Electron node 模式怎么解析前置
+ * flag —— 真机 2026-10-15 21:41 实测：Win32 命令行里有它。两种形状都得认，所以扫全量 argv。
+ *
+ * @returns {null|{guiCommand:string, guiPid:number|null, guiExeName:string}}
+ *   非桌面 host 返回 null，走原来的自复现链路。
+ */
+export function detectDesktopShell({ argv = [], execPath = '', ppid = 0 } = {}) {
+  const isHostEntry = (a) => /(?:^|[\\/])dsh-desktop-host[\\/]+lib[\\/]+index\.js$/i.test(String(a ?? ''));
+  if (!Array.isArray(argv) || !argv.some(isHostEntry)) return null;
+  if (typeof execPath !== 'string' || execPath === '') return null;
+  return {
+    guiCommand: execPath,
+    guiPid: Number(ppid) > 0 ? Number(ppid) : null,
+    guiExeName: basename(execPath),
   };
 }
 
@@ -378,7 +421,13 @@ function apply(ctx, cfg = {}) {
 
   // 拉起快照：必须在插件 apply 时抓，此时 cwd/argv/env 还是启动时刻的样子
   // v0.5.0：归一化，去掉"每次重启自动弹一次浏览器"
-  const launch = normalizeLaunch(snapshotLaunch(config.launch), config);
+  // v0.9.1：桌面 profile 下复现对象换成 GUI 主进程（显式 config.launch 覆盖时不接管）
+  const desktop = config.launch ? null : detectDesktopShell({
+    argv: process.argv,
+    execPath: process.execPath,
+    ppid: process.ppid,
+  });
+  const launch = normalizeLaunch(snapshotLaunch(config.launch, desktop), config);
   // v0.5.0：判断本次启动是否由插件自己的重启请求导致（用于切断重启环）
   const selfRestart = detectSelfRestart(marker, requestPath);
 
@@ -785,6 +834,9 @@ function apply(ctx, cfg = {}) {
       targetPid: process.pid,
       stateDir: markerDir,
       launch,
+      // v0.9.1：桌面壳信息。respawn 据此在旧 host 退出后连带杀掉旧 GUI 进程树，
+      // 否则新 GUI 会被 Electron 单实例锁吞掉（second-instance → 只是聚焦旧窗口）。
+      desktop: desktop ?? null,
       waitExitMs: config.waitExitMs,
       forceKillAfterMs: config.forceKillAfterMs,
       portFreeTimeoutMs: config.portFreeTimeoutMs,

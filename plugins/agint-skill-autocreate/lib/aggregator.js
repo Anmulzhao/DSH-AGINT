@@ -122,6 +122,7 @@ function aggregateBySessionTurn(records) {
     }
     const oks = recs.filter((r) => r.ok === true).length;
     const withLatency = recs.filter((r) => typeof r.latencyMs === 'number');
+    const withTokens = recs.filter((r) => typeof r.deltaTokens === 'number');
     const first = recs[0];
     const last = recs[recs.length - 1];
     tasks.push({
@@ -138,6 +139,9 @@ function aggregateBySessionTurn(records) {
       startedAt: first.ts ?? null,
       endedAt: last.ts ?? null,
       durationMs: withLatency.length ? withLatency.reduce((s, r) => s + r.latencyMs, 0) : null,
+      // token 成本（2026-10-21 起 tool-stats 落 deltaTokens，来源上游 ctx.tokenMeter）。
+      // ⚠️ 与 durationMs 同形：只累加**测到**的记录。全都没测到 ⇒ null（不是 0）。
+      tokenCost: withTokens.length ? withTokens.reduce((s, r) => s + r.deltaTokens, 0) : null,
       toolCount: recs.length,
       toolSequence,
       paramSignature,
@@ -207,6 +211,7 @@ export function aggregateTasksCrossSession(records, options = {}) {
     }
     const oks = recs.filter(r => r.ok === true).length;
     const withLatency = recs.filter(r => typeof r.latencyMs === 'number');
+    const withTokens = recs.filter(r => typeof r.deltaTokens === 'number');
     const first = recs[0];
     const last = recs[recs.length - 1];
 
@@ -229,6 +234,8 @@ export function aggregateTasksCrossSession(records, options = {}) {
       firstSeenAt: first.ts != null ? new Date(first.ts).toISOString() : null,
       lastSeenAt: last.ts != null ? new Date(last.ts).toISOString() : null,
       durationMs: withLatency.length ? withLatency.reduce((s, r) => s + r.latencyMs, 0) : null,
+      // token 成本（同形：只累加测到的；全没测到 ⇒ null，不是 0）
+      tokenCost: withTokens.length ? withTokens.reduce((s, r) => s + r.deltaTokens, 0) : null,
       toolCount: recs.length,
       toolSequence,
       paramSignature,

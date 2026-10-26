@@ -38,12 +38,16 @@ function apply(ctx: any, config: any = {}) {
     }
   });
 
-  // ── 解析路径（dshHome 来自 ctx 或 process.env） ──
+  // ── 解析路径 ──
+  // 2026-10-21 边界修正（见 docs/capability-boundary.md §4 F6）：
+  //   `dshHome` / `profilesDir` 这两个键在 dsh 服务面上**不存在**
+  //   （全 306 个包 grep `super(ctx,"dshHome"|"profilesDir")` 命中 0）。
+  //   原先 `ctx.get('dshHome') || process.env.DSH_HOME` 有 env 兜底所以不报错，
+  //   但取法是错的。DSH_HOME 走 env；profile 名走真实存在的 profileContext。
   let paths;
   try {
     paths = resolvePaths({
-      dshHome: (ctx.get && ctx.get('dshHome')) || process.env.DSH_HOME,
-      profilesDir: (ctx.get && ctx.get('profilesDir')),
+      dshHome: process.env.DSH_HOME,
       // 2026-10-08：profile 名权威源是 cordis ctx（DSH_PROFILE 只喂 shell 子进程，
       // 插件主进程的 process.env 里通常没有）。拿不到时 resolvePaths 会自行探测。
       profileName: (ctx.get && ctx.get('profileContext')?.name) || undefined,

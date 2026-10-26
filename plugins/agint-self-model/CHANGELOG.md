@@ -1,5 +1,73 @@
 # Changelog — agint-self-model
 
+## 0.7.9 (2026-10-21) — 0.7.8 的 evidence 改成 pull（修读数振荡）
+
+**0.7.8 的缺陷**：它把 `evidence` 从 `selfUpdate` 传进聚合，解决了「成绩不进画像」，
+但 `evidence` 是**一次性入参、不落库**。于是：
+
+```
+T1  curriculum 推 3 条 pass  ⇒ integration = CAN
+T2  dream 触发 update（不传 evidence）⇒ 同一域重算成 UNCERTAIN
+```
+
+能力读数随「哪个触发器最后跑」来回拉，不可用。实测取证
+（`_probe_evidence_transient_20261021.mjs`）：T1→CAN、T2→UNCERTAIN 已复现。
+
+**修法：改成 pull。** 每次聚合主动读 curriculum 的成绩明细：
+
+- `aggregateCapabilityEvidence` 新增 pull 源：`deps.get('agint.curriculum').listAttempts({limit:200})`，
+  按 `verifiedAt` 过滤到 `windowDays` 内，`result==='pass'` 记 ok、其余记 fail。
+- ⛔ **必须用 `listAttempts` 不是 `list()`**：`list()` 读的是 challenges 表
+  （`agint-curriculum/lib/index.js:513-521` 实证），没有 `result` 字段，拿它当成绩
+  会全部落成 fail。配套给 curriculum 加了只读出口（0.1.6）。
+- `evidence` 保留为**补充源**，但加了去重：若 pull 结果里已有同 `challengeId`，
+  不再重复计入（避免同一次成绩被算两次，把 ok 从 3 抬到 4 而误判）。
+- 软降级：curriculum 服务不可用时按 0 处理，不抛（与 queryFailures/queryTemplates 同口径）。
+
+**为什么不用「把 evidence 落库」**：那要新建一张表 + upsert + 清理策略，改动更大；
+而 curriculum 的 attempts 本来就是落库的权威记录，读它没有第二份真相。
+
+**测试**：新增 `test/curriculum-pull.test.mjs` 5 用例 ——
+① pull 让 3 条 pass 判成 CAN；② **两次连续 update 结果必须一致**（核心，防振荡）；
+③ windowDays 外的 attempt 不计入；④ curriculum 缺失时软降级；⑤ 只用 listAttempts 也能工作
+（防止实现偷偷改用 list）。红绿自证已做（撤掉 pull 并入 ⇒ 2 条精确变红，还原后 5/5 绿）。
+self-model 全量 15/15、curriculum 74/74 过。
+
+## 0.7.8 (2026-10-21) — evidence 真正进能力画像 + 域消失不再静默冻结
+
+修三层叠加断点（取证：`docs/AGINT-可推进项实测-20261021.md` §1、
+`_evidence断点-三层取证-20261021.md`、`_evidence断点-调用方核实与修法清单-20261021.md`）。
+
+**症状**：`agint-curriculum` 6 条挑战全 `pass`、integration/correctness 两域难度都升到 D2，
+而 `capability_map` 里那两域**纹丝不动**停在 `CANNOT`。系统看着在学，能力画像没长进。
+
+1. **evidence 从未进入聚合**（修复前 `:250`）：`selfUpdate` 形参里有 `evidence`，
+   调 `aggregateCapabilityEvidence` 时**没传**。
+   取证（修复前跑 `grep -n "evidence" plugins/agint-self-model/lib/index.js`，13 处命中）：
+   `:217` 形参声明、`:222`/`:246` 注释提及、`:232` 调用行**不含 evidence** ——
+   三个形参位之外，聚合函数的入参列表里没有它。
+   curriculum 每次判定后都调 `selfModel.update({evidence:{domain,result}})`
+   回写成绩（`agint-curriculum/lib/index.js:473-485`），全部落空；聚合只读
+   `failure_pattern` / `success_template` 两张库存表。
+   ⇒ 修法：把 `evidence` 传进去，`result==='pass'` 记 ok、其余记 fail。
+   （修复后同一 grep 为 17 处，新增的 5 处即消费点。）
+2. **域消失时静默冻结**（`capability.js`）：`recomputeCapabilities` 是 upsert，
+   只遍历 `aggregated` 里出现的域。7 天窗口把某域历史失败全滤掉后，该域不进循环 ⇒
+   表里旧记录原样保留，45 天前的 `CANNOT` 继续冒充现状。这比报 UNCERTAIN 更坏：
+   读数看着有值，其实是陈旧值。
+   ⇒ 修法：新增可选 `knownDomains`，本轮缺席的已知域显式写 `UNCERTAIN`（samples=0）。
+   不传时行为完全不变（向后兼容）。
+3. **配套**：`agint-evolution-memory` 0.6.15 让 `queryFailures` 真正支持 `opts.days`
+   （此前 self-model 传了但被忽略 ⇒ 「近期」这个词在整条链路里从未生效）。
+
+**真数据干跑**（生产 8 行 failure_pattern + 6 条 curriculum evidence，window=7d）：
+`integration ok=3 fail=0 => CAN`、`correctness ok=3 fail=0 => CAN`（修前两域均 CANNOT）。
+
+**测试**：新增 `test/evidence-reaches-capability.test.mjs` 6 用例；红绿自证已做
+（撤掉 knownDomains 分支 ⇒ 断点3 核心用例精确变红，还原后 6/6 绿）。
+self-model 全量 10/10、evolution-memory 206/206、diagnosis 83/83、mutator 130/130、
+curriculum 74/74 全过。
+
 ## 0.7.7 (2026-10-06) — calibration writeFailure 静默吞加可见性（立项 B-2）
 
 - `runCalibration` 的 `catch { /* ignore */ }` ⇒ warn。校准失准（miscalibration）是

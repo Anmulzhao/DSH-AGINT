@@ -63,7 +63,11 @@ console.log('== Part 1: 方案附录 C 钉死数据复算（AC-0d 确定性部�
   check('noise_ratio(r3) = 84/380 = 0.2211', Math.abs(c.noise.value - 0.2211) < 1e-3, `got ${c.noise.value}`);
   check('confidence = 0.544（逐条 Σ(conf×compliance)/N 口径）', Math.abs(c.confidence.value - 0.544) < 1e-6, `got ${c.confidence.value}`);
   check('redundancy = 4/55 = 0.0727', Math.abs(c.redundancy.value - 0.0727) < 1e-3, `got ${c.redundancy.value}`);
-  check('bloat = 82652/122880 = 0.6727', Math.abs(c.bloat.value - 0.6727) < 1e-3, `got ${c.bloat.value}`);
+  // r4（2026-10-23）起 bloat 改单技能体积口径：(82652/11) / 11170。
+  // 11170 = 122880/11 保留原基准 ⇒ 本样本数值与 r3 完全相同（0.6727）。
+  // 差别只出现在「技能数≠11」的时期：那里 r3 会随技能数虚增，r4 不会。
+  check('bloat(r4) = (82652/11)/11170 = 0.6727', Math.abs(c.bloat.value - 0.6727) < 1e-3, `got ${c.bloat.value}`);
+  check('bloat 判定驱动 = volume（非绝对上界）', c.bloat.drivenBy === 'volume', `got ${c.bloat.drivenBy}`);
   check('aesthetic_score(r3) = 53.4 ± 0.5', Math.abs(s.score - 53.4) <= 0.5, `got ${s.score}`);
   check('无 N/A 维（四维全可用）', s.naDims.length === 0);
   check('effectiveDenominator = 100（全维口径）', s.effectiveDenominator === 100, `got ${s.effectiveDenominator}`);

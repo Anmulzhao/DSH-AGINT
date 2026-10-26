@@ -162,11 +162,11 @@ function apply(ctx) {
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => {
-        const lines = [`autocreate_verify_llm: ${v.ok ? '✅ 通路可用' : '⛔ 全部降级'}（${v.provider} / ${v.model}）`];
+        const lines = [`autocreate_verify_llm: ${v.ok ? '✅ 通路可用' : '⛔ 全部失败'}（${v.provider} / ${v.model}）`];
         for (const c of v.cases ?? []) {
           const verdict = c.verdict
             ? `standardizable=${c.verdict.standardizable} conf=${c.verdict.confidence}`
-            : `degraded: ${c.reason}`;
+            : `failed: ${c.reason}`;
           lines.push(`  · ${c.id}（期望 ${c.expect}）→ ${verdict}  [${c.durationMs}ms]`);
           // 2026-10-08：diagnostic 一直在返回体里但没渲染，导致一次 {{model}} assembly
           // 失败只显示成 stopReason=error，排障绕了远路。降级必须能说清为什么（本模块原则②）。
@@ -221,6 +221,10 @@ function apply(ctx) {
       skillName: { type: 'string', description: '技能名（与 id 二选一）' },
       id: { type: 'string', description: '候选 id（与 skillName 二选一）' },
       reason: { type: 'string', description: '回滚原因（必填，写入审计与 release 记录）' },
+      // 2026-10-23（提案 2f7c834c C4）：知识被哪个已有技能吸收了。
+      // 回滚 ≠ 知识作废。不登记归属，半年后没人知道它当时解决过什么。
+      // 可空：空 = 尚未登记，是待办。
+      absorbedInto: { type: 'string', description: '该技能的知识并入了哪个已有技能（可空；空 = 尚未登记归属）' },
       actor: { type: 'string', description: '操作人标识（默认 human）' },
     },
     output: {

@@ -1,4 +1,278 @@
+## 0.5.0 — 2026-10-23
+
+### 新增「提案台 · 人工审批」：全插件第一个也是唯一一个写通道
+
+**为什么**：2026-10-23 实测三件事指向同一个缺口 ——
+
+1. **队列只进不出**：`agint_evolve.json / tables.proposal` 95 行里 53 行挂 `proposed`，
+   最老 43 天。唯一出口是手动工具 `evolve_set_status`，而 `evolution-cycle` 从不下调
+   （driver 全库无 `setStatus`）⇒ 提案攒着，没人有地方落笔。
+2. **表在说假话**：抽查 20 条 `proposed`，**10 条与代码事实不符**（早已落地）。
+   拿这张表排优先级 = 把做完的事再排一次队。
+3. **状态机缺一档**：四档里 `applied` 的语义是**已落地**，「人工批准」无处表达。
+   配套 `agint-evolve` **v0.8.0** 新增 `approved`（已批准待执行）。
+
+**做了三块**：
+
+| 块 | 内容 |
+|---|---|
+| 队列视图 | 状态统计（待批/已批准/已落地/拒绝/wontfix）+ 年龄三段条（7 天 / 8–30 天 / 30 天以上）+ 状态页签 + 分类 chip + 搜索 + 排序 + 「只看 30 天以上」 |
+| 单个提案 | 正文五节取证（目的·问题 / 方案 / 价值·收益 / 风险边界 / 关联）+ 元信息 + **证据栏** + 决策区 |
+| 审批 | 批准 / 拒绝 / wontfix / 标记已落地 / 撤销改判；三步走：按钮 → 确认条 → POST |
+
+配套：**待办**一节新增「已批准待执行（工作单）」队列（`PENDING_SPECS.evolve-approved`）。
+批准过的提案从「待批」挪进这一行，落地标 `applied` 才消失 —— 否则批准 = 从待办里消失。
+
+**证据栏（这一节的核心判据）**：从正文抽**路径**与**符号**两类可核对的东西，
+核对目标文件是否存在、符号是否在引用文件里命中。三档线索（`stale` / `maybe-done` /
+`neutral`）措辞一律「可能」。⛔ 不判「已落地」；⛔ 不把「没法核对」写成「不存在」
+（wiki 仓路径标 `exists:null`）；⛔ 不收通用符号（全仓同名 ≥2 处不计，命中率 100% 的线索等于没有）。
+
+**写通道**：`POST /api/agint-family/proposal/decision`，四道门（回环 / 自定义头 + 同源 /
+JSON + 4KB / 状态白名单），`rejected` 与 `wontfix` 服务端强制要求理由；`applied` 强制要求**落地证据**
+（改了哪些文件）—— 全表 applied 行的 note 本来就是证据，允许空证据等于亲手毁掉那张表。
+写入只经 `agint.evolve.setStatus()`，**不直接改存储文件**。
+
+**三条数据纪律**：`note` 是账本（改判时追加原记录，不覆盖）；幂等（目标态=现状 →
+`changed:false`，不刷 `updatedAt`）；写完重取（前端不做乐观更新）。
+
+**顺带**：`smoke.mjs` 第 109 行的视图切换按钮断言写的是改文案前的
+「切换到 v1 名册」，HEAD 版本就已对不上（存量债，非本轮引入），本次对齐到
+`client.js:1220` 的实际文案。
+
+**测试**：`test/v2-proposals.test.mjs`（17）、`test/proposal-board.test.mjs`（10，
+`node:vm` + 迷你 DOM）、`test/decision-route.test.mjs`（13，四道门 + 三条纪律）。
+`node plugins/agint-family-panel/test/smoke.mjs` 15 组 PASS。
+
+**部署注意**：`agint-evolve` 的 `approved` 行由旧版代码读取会被 zod 拒绝 ⇒
+**新代码必须先于新数据部署**，两个插件一起换、一起重启。
+
+## 0.4.0 — 2026-10-22
+
+### 新增「单插件档案页」：在 v1 名册点行 → 进这一个插件的档案
+
+**为什么**：名册只回答「家族有哪些插件、它们通不通电」。老板要问的是
+「这个插件到底是什么、凭什么存在、现在欠什么债」，得去翻 manifest、CHANGELOG、
+源码、storages 四个地方。四处拼一遍才知道的事，应该点一下就看见。
+
+**放哪儿（决定与理由）**：放在**停靠面板的 v1 名册**里，点任意插件行进入。
+档案是名册的下钻层级，不是第三个并列视图 —— `← 名册` 返回，页尾给上/下邻居。
+没有做进 v2 整页：整页答的是横向对比（Q1 谁依赖谁 / Q2 谁在干活 / Q3 哪里在腐化），
+不承载单实体；名册本来就是「插件列表」，点行打开这一行是最短路径。
+
+**档案分六段，顺序 = 从身份到判断**：
+
+| 段 | 内容 |
+|---|---|
+| 它自己说它是什么 | 首句职责 + 完整自述（折叠，不截断信息） |
+| 分量 | 代码行数/文件数、提供服务数、取用服务数、被依赖插件数 |
+| 契约 | `provides` 逐条 + `serviceDocs` 原文；inject / optionalInject / consumes / events / tools / 存储域 / 权限 / 生命周期 / 测试入口 |
+| 接线 | 取用（服务 · 提供方 · `文件:行号`）+ 依赖它的插件（前 8，余下折叠）+ 声明与代码的对差 |
+| 产出 | 30 天工具调用与失败率、bus 发布、cron 任务、7 天曲线、最近活动 |
+| 债 | 结构差异（版本分裂 / 契约与代码分家 / 无 manifest / 无服务自述…）+ 注释命中 + 无提供方 |
+| 变更史 · 位置 | CHANGELOG 最近 6 版；同一 id 多个物理位置时列主/次 |
+
+**数据从哪来（不新开路由）**：复用 `/v2/data`（单次 ~180KB，60s 进程内缓存）。
+⛔ 新开 `/dossier?id=` 会带来两条坏路：重算一遍 = 两套口径，做切片 = 筛选条件又是
+一套口径。整页视图已在用这份 payload，所以口径只有一个。首点一次往返，回环可忽略。
+
+**三层结构事实（本轮实测，不是假设）**：
+
+- 一个插件 id 可能有**两个物理位置**：`plugins/agint-quality-eval`（manifest 0.3.3，
+  **没有 lib/**）与 `plugins/agint-quality/agint-quality-eval`（0.3.5，**有 lib/**）。
+  只取一个位置就会说谎（0 行代码 / 契约丢失）。档案改为**汇拢**：主位置取有代码那份，
+  manifest 从任一位置取并写 `contractSource`，两处版本不同进 `drift.dup-stale`。
+  实测命中 2 例（quality-eval、quality-sandbox），另有 1 例 `split-location`
+  （quality-report：契约在顶层壳、代码在嵌套目录）。
+- 仓库里 `manifest.version ≠ package.json.version` 的有 **13 个插件**（cron / dream /
+  event-bus / evolve / mutator / quality-eval 等）。档案把它作为 `drift.version-split`
+  报出来，并明说「谁生效取决于读取方」，不判谁对。
+- `permissions.shell: []` 是**空数组**（`Boolean([]) === true`）。旧写法判真会把每个
+  插件都标成「能起子进程」。已按「有没有内容」判，并有 negative control 测试。
+
+**顺带收拾的两处口径（不是新功能）**：
+
+- 归因表（工具名前缀 / cron id / 宿主键）从 `assets/panel-v2.html` 硬编码里抽出，落到
+  `lib/v2-owners.js`，随 `payload.owners` 下发。理由：档案页住在 `lib/client.js`，
+  两个前端各抄一份必然漂移（同一 cron 任务在两处归到不同插件，没人知道哪份对）。
+  本仓已有先例（`probeEventSources` 同样下发）。缺 `owners` 段 = host 半是旧版，
+  整页视图会在黄条里报出来，**不静默变成「无归因」**。
+- `profileContext` 补进宿主键名单。本仓用 `ctx.get('profileContext')` 取当前 profile 名，
+  宿主注入、无 `provide` 行，此前被算成「无提供方」，让每个读它的插件多背一条假债。
+
+**只读边界（与 0.3.0 一致）**：档案页不写任何东西，不改 manifest、不提交 evolve 提案、
+不代为审批。它是「看书」，不是「改书」。
+
+**测试**：
+
+- `test/v2-dossier.test.mjs` 11 条：三级身份降级、壳/真身汇拢、版本分裂、CHANGELOG
+  三种标题写法、代码体量不把 `test/` 算进去、`pluginsDir` 不可解析时的整层降级。
+- `test/dossier-view.test.mjs` 13 条：六段齐全、空数组 shell 判否、无 manifest 说
+  「不可得」、入边 13 个时前 8 + 折叠且数量写全、注释/伞键不冒充提供方、声明与代码对差、
+  无档案 id 与取数失败的分支文案、7 天曲线全 0 返回 null。
+- 后者用 `createElement` 替身加载浏览器半（`test/helpers/browser-half.mjs`），因为
+  「少一节 / 字段读错 / 把取不到画成 0」这三类错误在真宿主里要重启才能发现。
+
+**已知环境债（与本次改动无关，另行报告）**：`test/v2-data.test.mjs` 在工作区路径
+（`D:\DSH\project源码\...`，含中文）下跑 `node --test` 会让进程静默退出（exit 127），
+崩在文件开头的 `cpSync`。同一文件在纯 ASCII 路径的 git worktree 里通过 ⇒ 判定为
+「Node `cpSync` + 中文源路径」的环境问题，不是代码缺陷。A/B 对比（同路径、同 fixture）
+显示本次改动前后**失败的用例完全相同**（`v2-delivery-by-topic` / `v2-oracle` 两条存量债）。
+
+## 0.3.0 — 2026-10-22
+
+### 新增「神谕 · 美之判词」分区：把 agint-aesthetic-oracle 的输出搬进面板
+
+**为什么**：神谕层每天 09:00 打分开口，但产出只落在广播事件与它自己的存储域里。
+老板要看「系统现在美不美」，得在面板外面翻存储。面板原有六节答的是
+「谁依赖谁 / 谁在干活 / 哪里在腐化 / 有什么等着人处理」，没有一处回答
+「**它自己怎么判**」。
+
+**放哪儿（决定与理由）**：新增 tab「神谕 · 美之判词」，排在**待办之后、Q1 之前**。
+待办与神谕都是结论面 —— 一个说「你要动手什么」，一个说「系统现在如何」；
+Q1/Q2/Q3 是证据面。结论先看，证据在后。默认分区仍是 Q1，不改既有使用习惯。
+
+**放什么**（四块，全部只读转录，不重算、不改判定）：
+
+| 块 | 内容 |
+|---|---|
+| 判词 | 最新一张卡片的全文（判词行/整段文本）+ 美总分 + 判定 + 最丑维 + 数据 asOf + 开口时间 + 输出模式 + 公式版本 + 判尺指纹 + 缓存回退天数 |
+| 三档评分 | daily / weekly / monthly / alert 各一格（分数、判定、最丑维、模式、公式版本） |
+| 状态面 | kill-switch、沉默模式、连续失败、基线（method / 建基日 / 重标日 / 各维样本数）、lastGood、配额、运行态开关 |
+| 广播史 | 最近 20 条 · 失败、被拦、被静默的行不隐藏，带 Δ 基线 |
+
+**数据从哪来（两路，服务面优先）**：
+
+- 服务面 `agint.aestheticOracle`：`cards()` / `history(24)` / `getState()` / `status()`。
+  ⛔ 只有 `status()` 带运行态开关（envOff / memoryStore / metricsAvailable /
+  evolutionAvailable / busAvailable），这些事实不在落盘文件里，所以不能只读文件。
+- 落盘 `storages/agint_aesthetic_oracle.json` 三表：`cards()` 为空时用它的卡片补齐。
+  订阅没回写是常见形态（event-bus 未挂载 / 订阅被拒）；只读服务面会把
+  「订阅掉了」显示成「神谕从没开过口」—— 两件事，必须分开读。
+- 补齐原因逐条写进 `notes`，面板用黄条原样显示。**不静默补**。
+- `source` 字段记录数据**实际来源**（service / service+storages / storages），
+  不是「服务面在不在」：服务面存在但三个出口全缺（旧版 oracle）时数据 100% 来自落盘。
+
+**Δ 口径（本次最要紧的一条）**：生产 `baseline` 建于 2026-10-04（first-week-mean），
+评分公式 r3 于 2026-10-09 落地，而 `oracleStateSchema.baseline` **没有
+`formulaVersion` 字段** ⇒ 跨口径。Δ 照算，但一律 `deltaComparable=false` + 原因，
+面板对不可比的行加 ⚠ 与黄字。
+⛔ 不把「缺标记」当「同版本」。两道防线：`!formulaVersion` 早返回 +
+`formulaVersion !== baseFormula` 宽比较（缺标记走 `!==` 也判不等）。
+
+**实测（2026-10-22 读 `AGINT-date/storages/agint_aesthetic_oracle.json`）**：
+35 条广播 / 3 张卡片（daily 66.9 · weekly 62.4 · monthly 93.1，无 alert 卡片）；
+baseline 75.4143（first-week-mean，无 formulaVersion）；Δ = −8.5，判**不可比**。
+
+**红绿自证**：
+
+- 新增 `test/v2-oracle.test.mjs`（6 组断言：生产形状 / Δ 口径 / 同 topic 取最新 /
+  缺段不装绿 / 落盘三形态 / collectOracle 四种降级）。
+- 变异 1：删掉 `collectOracle` 的「cards 空则回落落盘」→ 红（actual 0 / expected 3）。
+- 变异 2：撤掉 Δ 的两道口径防线（缺标记当同版本）→ 红（actual 3 / expected 0）。
+- 既有 11 个测试文件全绿。`v2-data.test.mjs` 在 managed node 22.22.2-6 下
+  exit 127 零输出、系统 node 24.20.0 下 PASS —— **stash 验过基线同样现象**，
+  属环境差异，不是本批引入。
+
+**版本**：manifest 0.2.7 → 0.3.0、package 0.2.9 → 0.3.0。
+（两处此前不一致，verify-manifests 一直报 VERSION_DRIFT；发版必须同时改，顺手消掉该 WARN。）
+
+## 0.2.9 — 2026-10-18
+
+### 修「技能候选（待审）」把已审判的候选也算成待办
+
+**为什么**：老板说「已经审过了，就不要挂在那里了」。面板报 42 条待审，
+生产存储里 42 条候选 = 37 条 REJECTED + 5 条 ROLLED_BACK，待审 0 条。
+
+**根因**：`PENDING_SPECS` 里 skill-candidate 的 `select` 是 `() => true` ——
+整张 candidates 表都算待办，连终态也算。同表的 evolve-proposal 有
+`status === 'proposed'` 过滤，curriculum 有 `status === 'open'` 过滤，
+只有这一行漏了。
+
+**改法**：新增 `CANDIDATE_OPEN_STATUSES` 白名单（PENDING_EVAL / PHASE1_PASS /
+PHASE2_PASS / PHASE3_PASS / QUEUED_FOR_RELEASE / BUDGET_WAIT）。
+用白名单不用黑名单：将来新增终态时默认不进待办，宁可漏报也不谎报积压。
+`item()` 标题改取 `skillDraft.name`（候选表没有顶层 title 字段，旧代码恒 null），
+并带上 status，让「停在哪一步等人」看得见。`total` 仍报整表行数，
+「审过的有多少」不隐藏。
+
+**实测（2026-10-18 21:5x，生产存储）**：
+- 改前 `skill-candidate pending=42 total=42`
+- 改后 `skill-candidate pending=0 total=42`（直接调 aggPending 与
+  `GET /api/agint-family/v2/data` 两处读数一致）
+
+**红绿自证**：测试 fixture 加 4 条终态（REJECTED / REJECTED_STATIC / ROLLED_BACK /
+STABLE / RELEASED），断言 pending 只数 QUEUED_FOR_RELEASE 那 1 条。
+旧 `() => true` 会让 pending=6，该断言必红（实测 fail 1）。
+
+**同一类病的第二处**：`curator-overlap` 队列的 `select` 也是 `() => true`。
+overlap_candidates 的状态机是 proposed / acknowledged / resolved
+（agint-curator/lib/schema.js:212），后两个是人已处理过的。
+本机此刻 0 行（生产存储实测），所以现场没有症状——但判据写错，一有数据就会重演。
+一并改成 `status === 'proposed'`，标题改取 `skillA ↔ skillB`（原来只显示 id）。
+红绿自证：只把这一行改回 `() => true` → 断言「只有 status=proposed 待处理」立即红。
 # agint-family-panel CHANGELOG
+
+## 0.2.8 — 2026-10-18
+
+### 修三处同源的形状误判（判据用形状代替语义）
+
+**为什么**：老板看到面板报「运行态不在仓库 · agint-evolution-memory-probe · bus 发布 1 条」。
+逐条取证后发现三处误报，根因同一个 —— 判据拿形状当语义。
+
+**1. 探针 source 被当成插件**
+生产 bus（41754 行）里该 source 仅 1 条，payload.origin=manual-test
+（2026-09-04T15:35:00Z）；仓库 git 全历史 0 次新增该目录；三处部署根各 39 个身份、
+hasProbe=false。旧判据只按 source.startsWith('agint-') 分流，带前缀的探针掉了进来。
+→ 新增 PROBE_EVENT_SOURCES（含 erify-after-fix / erify-final），随
+payload.probeEventSources 下发；前端不硬编码第二份，test 与 event-bus
+schemas.js 的 KNOWN_EVENT_SOURCES 探针段**双向比对**，任一侧漂移即红。
+
+**2. isRepoRoot 把部署位认成仓库**
+.agint-bundle 与 @agint/host 同时有 plugins/ 与 cordis.patch.yml，旧两标记判据
+判 true ⇒ 
+epoDirsSource=self-path、
+epoDirs 117 项（78 个 *.tmp）、
+wiringExemptions=unavailable。→ 加 .git（用 existsSync，兼容 worktree 的 .git 文件）。
+
+**3. *.tmp 换版残留被当成插件身份**
+bundle 槽 117 个 gint-* 目录里 78 个是 .tmp 残留，105 个带 lib/，
+gint-quality.tmp 已出现在 live amilyDirs 里。
+→ 2-scan.isTmpLeftover 导出，2-data 四处过滤口径统一。
+
+**4. 附带：Config schema 缺 
+epoRoot**
+lib/index.js:613 从 v0.3 起一直读 config.repoRoot，但 cordis 按 schema 剥未知键
+⇒ 配了也到不了代码。这是第 2 条只改 patch 不生效的真正原因。
+
+**红绿自证**：三条判据各自回退后测试立即变红（均 pass 0 / fail 1）。
+**验收**：27 单测 + smoke 15 组全绿，连跑 12 轮无 flake；live 运行态不在仓库 1 → 0 行。
+## 0.2.7 — 2026-10-15
+
+### 修 v2 iframe 首挂载不自适应高度（只有切 v1 再切回才正常）
+
+**为什么**：高度自适应 effect 的依赖数组是 `[view]`，而 iframe 只在 `data` 载入完成
+后才渲染。首次进入面板时 `data === null`（显示「载入中…」），`frameRef.current` 是
+`null`，effect 直接 return——load 监听器和 ResizeObserver 都没挂上。数据到达、iframe
+渲染出来时 `view` 没变，effect 不再重跑，iframe 永远停在兜底高度
+`calc(100vh - 190px)`。切到 v1 再切回 v2 时 `data` 已在，iframe 与 view 变化同一次
+commit 渲染，effect 重跑时 ref 已就位，监听器才挂上——这就是老板看到的「切回来才正常」。
+
+**改了什么**（`lib/client.js`，浏览器半）：
+
+- iframe 元素经回调 ref 存入 state（`frameEl`），effect 依赖改为 `[frameEl]`——
+  iframe 一出现就挂 load/RO/轮询，不再依赖 view 翻转这一时机巧合。
+- effect 挂上时若 iframe 文档已 `complete`（切回 v2 复用缓存文档，load 不再触发），
+  主动补一次 `onLoad()`。
+- `onLoad` 内先清理旧 RO / 旧 interval 再重建，防浏览器缓存命中重复 load 事件时泄漏。
+
+**测试**：浏览器半是宿主 artifact，smoke 只静态检查（`test/smoke.mjs` L7 注释）；
+`node --check` 语法通过 + 面板全量 smoke 6 组通过。
+
+**生效条件**：双副本同步（mirror + bundle）后重启 dsh；浏览器半还需页面刷新重新拉取
+`lib/client.js`。
+
+---
 
 ## 0.2.6 — 2026-10-05
 

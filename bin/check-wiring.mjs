@@ -514,48 +514,79 @@ const tsDrift = [];
   }
 }
 
-// ───────────── 查 E：双副本一致性（bundle 位 vs 兼容镜像位） ─────────────
-// 背景：bundle 化后插件有两份落盘 ——
-//   bundle 位  $DSH_HOME/profiles/web/node_modules/@agint/host/plugins/
-//   镜像位     $DSH_HOME/profiles/web/plugins/
-// preset 的 tools 行仍指向镜像位（相对路径 ../../profiles/web/plugins/...），
-// 服务插件则走 bundle 位。install.sh 双目标同步，所以正常情况两份逐字节相同。
-// ⚠️ 一旦走偏（只同步了一处 / 手工改了一处），preset 加载的 tools.js 与
-//    bundle 里的服务插件就是两个模块实例，模块级状态不共享 —— 且不会报错。
-const PROFILE_DIR = join(STORAGE_DIR, '..', 'profiles', 'web');
-const BUNDLE_PLUGINS = join(PROFILE_DIR, 'node_modules', '@agint', 'host', 'plugins');
-const MIRROR_PLUGINS = join(PROFILE_DIR, 'plugins');
+// ───────────── 查 E：多副本一致性（各部署位逐字节一致） ─────────────
+// 背景：插件在本机有多份物理拷贝 —— bundle 位 + 每个 profile 的镜像位。
+// preset 的 tools 行指向镜像位，服务插件走 bundle 位 → 走偏（只同步一处）时
+// preset 加载的 tools.js 与 bundle 里的服务插件是两个模块实例，模块级状态
+// 不共享，且不会报错。
+//
+// ⚠️ 2026-10-19 修：此前这里写死 `profiles/web`。web profile 已于 2026-10-18
+// 退役删除 ⇒ existsSync 守卫直接短路 ⇒ 查 E/H 恒空 ⇒ 门禁报「一致」假绿，
+// 而门禁自己的自测（bin/check-wiring.test.mjs）从那天起一直是红的。
+// 现在按**实际布局探测**：bundle 位（.agint-bundle + 各 profile 的
+// node_modules/@agint/host）+ 各 profile 的镜像位，全部纳入比对。
+// 探测不到部署位时必须显式说「没查」，不能报「一致」。
+function deploymentRoots() {
+  const home = join(STORAGE_DIR, '..'); // $DSH_HOME
+  const roots = [];
+  const add = (p, label) => { if (existsSync(p)) roots.push({ label, path: p }); };
+  add(join(home, '.agint-bundle', 'plugins'), 'bundle:.agint-bundle');
+  const profilesDir = join(home, 'profiles');
+  if (existsSync(profilesDir)) {
+    for (const d of readdirSync(profilesDir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      add(join(profilesDir, d.name, 'node_modules', '@agint', 'host', 'plugins'), `bundle:profiles/${d.name}`);
+      add(join(profilesDir, d.name, 'plugins'), `mirror:profiles/${d.name}`);
+    }
+  }
+  return roots;
+}
+const DEPLOY_ROOTS = deploymentRoots();
 
 function sha(s) {
   return createHash('sha1').update(s).digest('hex').slice(0, 12);
 }
 
-const dup = { checked: 0, identical: 0, divergent: [], mirrorMissing: [], presetRefs: 0 };
+const dup = {
+  checked: 0,
+  identical: 0,
+  divergent: [],
+  mirrorMissing: [],
+  presetRefs: 0,
+  roots: DEPLOY_ROOTS.map((r) => r.label),
+};
 if (STATIC_ONLY) {
   dup.skipped = true;
   dup.skipReason = '依赖部署位（bundle 位 + 镜像位），静态模式不查';
-} else if (existsSync(BUNDLE_PLUGINS) && existsSync(MIRROR_PLUGINS)) {
-  for (const dir of readdirSync(BUNDLE_PLUGINS, { withFileTypes: true })) {
-    if (!dir.isDirectory()) continue;
-    for (const sub of ['lib/tools.js', 'lib/index.js']) {
-      const bPath = join(BUNDLE_PLUGINS, dir.name, sub);
-      const mPath = join(MIRROR_PLUGINS, dir.name, sub);
-      if (!existsSync(bPath)) continue;
-      dup.checked++;
-      if (!existsSync(mPath)) {
-        dup.mirrorMissing.push(`${dir.name}/${sub}`);
-        continue;
+} else if (DEPLOY_ROOTS.length < 2) {
+  // 只有一个部署位 ⇒ 无「双副本」可比。这不是「一致」，是没得比。
+  dup.noLayout = true;
+  dup.skipReason = `只检出 ${DEPLOY_ROOTS.length} 个部署位（${DEPLOY_ROOTS.map((r) => r.label).join(', ') || '无'}）—— 无副本可比，查 E 没查过`;
+} else {
+  const ref = DEPLOY_ROOTS[0];
+  for (const other of DEPLOY_ROOTS.slice(1)) {
+    for (const dir of readdirSync(ref.path, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      for (const sub of ['lib/tools.js', 'lib/index.js']) {
+        const bPath = join(ref.path, dir.name, sub);
+        const mPath = join(other.path, dir.name, sub);
+        if (!existsSync(bPath)) continue;
+        dup.checked++;
+        if (!existsSync(mPath)) {
+          dup.mirrorMissing.push(`${other.label}:${dir.name}/${sub}`);
+          continue;
+        }
+        let a;
+        let b;
+        try {
+          a = readFileSync(bPath);
+          b = readFileSync(mPath);
+        } catch {
+          continue;
+        }
+        if (sha(a) === sha(b)) dup.identical++;
+        else dup.divergent.push(`${other.label}:${dir.name}/${sub}`);
       }
-      let a;
-      let b;
-      try {
-        a = readFileSync(bPath);
-        b = readFileSync(mPath);
-      } catch {
-        continue;
-      }
-      if (sha(a) === sha(b)) dup.identical++;
-      else dup.divergent.push(`${dir.name}/${sub}`);
     }
   }
   // preset 实际引用了多少条镜像位路径（= 双实例风险面的大小）
@@ -599,32 +630,45 @@ function listLibFiles(root) {
   return out;
 }
 
-const drift = { checked: 0, repoNewer: [], hostNewer: [], repoOnly: [], hostOnly: [] };
+const drift = {
+  checked: 0,
+  repoNewer: [],
+  hostNewer: [],
+  repoOnly: [],
+  hostOnly: [],
+  roots: DEPLOY_ROOTS.map((r) => r.label),
+};
 if (STATIC_ONLY) {
   drift.skipped = true;
   drift.skipReason = '对比仓库与部署位，静态模式不查';
-} else if (existsSync(BUNDLE_PLUGINS) && existsSync(REPO_PLUGINS)) {
+} else if (DEPLOY_ROOTS.length === 0 || !existsSync(REPO_PLUGINS)) {
+  drift.noLayout = true;
+  drift.skipReason = '部署位或仓库路径探测不到 —— 查 H 没查过，不是「已同步」';
+} else {
   const repoFiles = new Set(listLibFiles(REPO_PLUGINS));
-  const hostFiles = new Set(listLibFiles(BUNDLE_PLUGINS));
-  for (const rel of repoFiles) {
-    drift.checked++;
-    const rp = join(REPO_PLUGINS, rel);
-    const hp = join(BUNDLE_PLUGINS, rel);
-    if (!hostFiles.has(rel)) {
-      drift.repoOnly.push(rel);
-      continue;
+  // 每个部署位都比一遍：漏同步的那一份正是查 H 要抓的
+  for (const root of DEPLOY_ROOTS) {
+    const hostFiles = new Set(listLibFiles(root.path));
+    for (const rel of repoFiles) {
+      drift.checked++;
+      const rp = join(REPO_PLUGINS, rel);
+      const hp = join(root.path, rel);
+      if (!hostFiles.has(rel)) {
+        drift.repoOnly.push(`${root.label}:${rel}`);
+        continue;
+      }
+      try {
+        const a = readFileSync(rp);
+        const b = readFileSync(hp);
+        if (sha(a) !== sha(b)) drift.repoNewer.push(`${root.label}:${rel}`);
+      } catch {
+        /* ignore */
+      }
     }
-    try {
-      const a = readFileSync(rp);
-      const b = readFileSync(hp);
-      if (sha(a) !== sha(b)) drift.repoNewer.push(rel);
-    } catch {
-      /* ignore */
+    // 反方向：部署位有、仓库没有 —— 更危险，说明宿主被本地改过而仓库不知情
+    for (const rel of hostFiles) {
+      if (!repoFiles.has(rel)) drift.hostOnly.push(`${root.label}:${rel}`);
     }
-  }
-  // 反方向：部署位有、仓库没有 —— 更危险，说明宿主被本地改过而仓库不知情
-  for (const rel of hostFiles) {
-    if (!repoFiles.has(rel)) drift.hostOnly.push(rel);
   }
 }
 const driftOk = drift.repoNewer.length === 0 && drift.hostOnly.length === 0;
@@ -639,7 +683,9 @@ const driftOk = drift.repoNewer.length === 0 && drift.hostOnly.length === 0;
 //   （cwd=REPO_ROOT，满足「须 cwd=仓库根」的 smoke 前提）。
 const driftPlugins = new Set();
 for (const d of [...dup.divergent, ...drift.repoNewer, ...drift.hostOnly, ...drift.repoOnly]) {
-  const m = /^([a-z0-9-]+)\//.exec(d);
+  // 条目形如 `bundle:profiles/desktop:agint-x/lib/y.js` —— 标签本身含冒号，
+  // 所以插件名不能靠「冒号前的那段」取，要认 `/<plugin>/lib/` 这个结构。
+  const m = /(?:^|:)([a-z0-9-]+)\/lib\//.exec(d);
   if (m) driftPlugins.add(m[1]);
 }
 const smokeI = { checked: 0, pass: [], fail: [], skipped: driftPlugins.size === 0 };
@@ -722,10 +768,17 @@ if (AS_JSON) {
           callers: m.calls.map((c) => `${c.file}:${c.line}(${c.via})`),
         })),
         tsDrift,
-        dualCopy: dup,
+        dualCopy: {
+          ...dup,
+          skipped: !!dup.skipped,
+          skipReason: dup.skipReason ?? null,
+          noLayout: !!dup.noLayout,
+        },
         drift: {
           skipped: !!drift.skipped,
           skipReason: drift.skipReason ?? null,
+          noLayout: !!drift.noLayout,
+          roots: drift.roots,
           checked: drift.checked,
           repoNewer: drift.repoNewer,
           repoOnly: drift.repoOnly,
@@ -867,11 +920,16 @@ if (tsDrift.length === 0) {
   }
 }
 
-console.log(`\n${C.b}── 查 E：双副本一致性（bundle 位 vs 兼容镜像位）──${C.r}`);
+console.log(`\n${C.b}── 查 E：多副本一致性（各部署位逐字节一致）──${C.r}`);
+if (dup.roots.length) {
+  console.log(`  ${C.dim}检出部署位 ${dup.roots.length} 个：${dup.roots.join(' · ')}${C.r}`);
+}
 if (dup.skipped) {
   console.log(`  ${C.dim}⊘ 跳过（--static-only）：${dup.skipReason}${C.r}`);
+} else if (dup.noLayout) {
+  console.log(`  ${C.yel}⊘ 没查：${dup.skipReason}${C.r}`);
 } else if (!dup.checked) {
-  console.log(`  ${C.dim}跳过：未检出双副本布局（非 bundle 部署）${C.r}`);
+  console.log(`  ${C.yel}⊘ 没查：部署位里没有可比对的 lib 文件${C.r}`);
 } else {
   console.log(
     `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${C.dim}preset 引用镜像位 ${dup.presetRefs} 条${C.r}`,
@@ -883,8 +941,10 @@ if (dup.skipped) {
 console.log(`\n${C.b}── 查 H：仓库 ↔ 部署位漂移 ──${C.r}`);
 if (drift.skipped) {
   console.log(`  ${C.dim}⊘ 跳过（--static-only）：${drift.skipReason}${C.r}`);
+} else if (drift.noLayout) {
+  console.log(`  ${C.yel}⊘ 没查：${drift.skipReason}${C.r}`);
 } else if (!drift.checked) {
-  console.log(`  ${C.dim}跳过：未检出 bundle 部署布局${C.r}`);
+  console.log(`  ${C.yel}⊘ 没查：仓库或部署位里没有可比对的 lib 文件${C.r}`);
 } else {
   console.log(
     `  ${C.dim}比对 ${drift.checked} 个 lib 文件${C.r}  ` +
@@ -925,7 +985,13 @@ if (driftPlugins.size === 0) {
 
 const modeSuffix = STATIC_ONLY ? '  [静态模式：查 E/H 已跳过]' : '';
 console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电 / ${unwiredReal.length} 插件总线零感知${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
+// 2026-10-19 修：末行的 PASS/FAIL 必须与退出码一致。此前 smoke 未过 / 双副本走偏 /
+// TS 漂移会让退出码 = 1，而末行照样打 PASS —— 读末行的人会以为门禁放行了。
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);
 else if (STRICT && soft.length) console.log(`${C.red}FAIL(strict)${C.r} — 存在从未触发的主题`);
+else if (!smokeIOk) console.log(`${C.red}FAIL${C.r} — 漂移插件 smoke 未过`);
+else if (!dupOk) console.log(`${C.red}FAIL${C.r} — 双副本已走偏`);
+else if (tsDrift.length > 0) console.log(`${C.red}FAIL${C.r} — TS 源/产物漂移`);
+else if (!driftOk) console.log(`${C.yel}PASS${C.r} — 门禁放行，但有 ${drift.repoNewer.length} 项待上线改动（未上线）`);
 else console.log(`${C.dim}PASS${C.r}`);
 process.exit(exitCode);

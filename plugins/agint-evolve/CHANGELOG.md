@@ -1,5 +1,64 @@
 # agint-evolve CHANGELOG
 
+## v0.8.0（2026-10-23 · 提案状态机补 `approved`：人工批准与落地分开记）
+
+### 新增
+
+- `proposalSchema.status` 增加 `approved`（已批准待执行）。五档：
+  `proposed / approved / applied / rejected / wontfix`。
+- `PROPOSAL_STATUSES` 与 `evolve_proposals` / `evolve_set_status` 的枚举同步。
+
+### 为什么
+
+- 原状态机只有「落地」「拒绝」「暂不处理」三个出口，**没有「人工同意做」这一档**。
+  结果是：人工审批无处落笔 —— 要么把「点头」记成 `applied`（表说假话），
+  要么什么都不记（53 条 proposed 只进不出，实测 2026-10-23）。
+- `approved` 是**决定**，`applied` 是**事实**。两者混记会让「真做完」与
+  「只是同意」无法区分，提案表从此不可信。
+
+### 兼容
+
+- **只增不改**：历史行的四个旧值全部仍合法，存储 domain 版本保持 `2`
+  （无数据形状变化，不做迁移）。
+- ⚠️ 部署注意：`approved` 行由旧版代码读取时会被 zod 拒绝，整个 `agint_evolve`
+  域会 open 失败。**新代码必须先于新数据部署**。家族面板的写路由与 evolve 同进程，
+  部署同步后重启即一致。
+
+### 验证
+
+- `node test/smoke.mjs`；`node --test test/path-escape-windows.test.mjs`。
+
+## v0.7.3（2026-10-14 · Windows 路径逃逸误报修复）
+
+### 修复
+
+- `clean()` 的路径越界判据在 win32 恒为真 ⇒ **所有 `evolve_read` 读不到任何复盘报告**。
+  判据原为 `abs.startsWith(root + '/')`，而 `resolve()` 在 Windows 返回反斜杠路径
+  （`D:\...\reviews`），拼出的 `D:\...\reviews/` 与真实 `D:\...\reviews\xxx.md` 永不匹配。
+  修法与 `agint-wiki` v0.4 同型：比较前把两侧都归一化成正斜杠。
+- 实测症状（修复前）：`evolve_read path="2026-10-12-周复盘.md"`
+  → `Error: agint-evolve: path escapes root` ⇒ 14 份复盘报告一份都读不到。
+
+### 验证
+
+- 新增 `test/path-escape-windows.test.mjs`（8 项）：真调生产 `readReview()` /
+  `listReviews()`，含中文文件名、子目录、`../` 逃逸、多级 `../`、非 `.md`、文件不存在。
+- 红绿自证：撤掉归一化 ⇒ 4 项变红；恢复 ⇒ 8/8 绿。安全不回退（`../` 仍被拒）单独覆盖。
+- 全插件回归 54/54 PASS，`test/smoke.mjs` exit 0。
+
+### 附带发现（未修，单列）
+
+- `walk()` 在 win32 用 `relative()` 产出反斜杠分隔符，子目录报告返回
+  `sub\nested.md` 而非 `sub/nested.md`。与 `clean()` 同型但独立，不影响读取
+  （`clean()` 已归一化，回读能通），只影响输出形状。
+
+### 测试基建
+
+- 新增 `test/_stub-loader.mjs` + `test/_stub-register.mjs`：本机仓库工作树没有
+  `@deepseek-ai/dsh-storage-domain`（该包只在 dsh 运行时提供），直接 `node --test`
+  会 ERR_MODULE_NOT_FOUND。跑测试需
+  `node --import ./test/_stub-register.mjs --test test/xxx.test.mjs`。
+
 ## v0.7.2（2026-09-29 · 周报纳入外部信号章节）
 
 ### 新增

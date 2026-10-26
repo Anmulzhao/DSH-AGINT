@@ -6,7 +6,16 @@
 
 set -uo pipefail
 
-PLUGINS_ROOT="${DSH_PLUGINS_ROOT:-$HOME/.dsh/profiles/web/plugins}"
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+# 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+# ⚠️ 2026-10-21 修：此前写死 `$HOME/.dsh/profiles/web/plugins`。两个错：
+#   ① 本机 DSH_HOME 是 `D:\DSH\AGINT-date`（不是 `~/.dsh`）；
+#   ② web profile 已于 2026-10-18 退役（老板令），2026-10-20 确认目录已删。
+#   写错的后果**很隐蔽**：目录不存在 ⇒ 落到仓内兜底（扫仓库 plugins/）⇒ 门禁
+#   检的是仓库副本而不是宿主运行副本，**照样报绿**（查错了对象 = 假绿）。
+DSH_PROFILE_NAME="$(sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_HOME/.agint-bundle/profile.json" 2>/dev/null | head -1)"
+[ -n "$DSH_PROFILE_NAME" ] || DSH_PROFILE_NAME="desktop"
+PLUGINS_ROOT="${DSH_PLUGINS_ROOT:-$DSH_HOME/profiles/$DSH_PROFILE_NAME/plugins}"
 # 仓内兜底：如果运行时副本不存在，从 bin/.. 找 plugins/（CI / 本地 lint 友好）
 if [ ! -d "$PLUGINS_ROOT" ]; then
   _repo_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
@@ -420,32 +429,42 @@ k19_guard() {
   local to_win='printf %s'
   command -v cygpath >/dev/null 2>&1 && to_win='cygpath -w'
 
-  local guard_msys="$repo_root/test/schema-guard.test.mjs"
-  if [ ! -f "$guard_msys" ]; then
-    log_warn "未找到 test/schema-guard.test.mjs，跳过 K19 护栏"
-    return 0
-  fi
   if ! command -v node >/dev/null 2>&1; then
-    log_warn "未装 node，跳过 K19 护栏"
+    log_warn "未装 node，跳过 schema 护栏"
     return 0
   fi
-  local guard
-  guard="$($to_win "$guard_msys" 2>/dev/null)" || guard="$guard_msys"
 
   local scan_root="$PLUGINS_ROOT"
   if command -v cygpath >/dev/null 2>&1; then
     scan_root="$(cygpath -w "$PLUGINS_ROOT" 2>/dev/null || printf '%s' "$PLUGINS_ROOT")"
   fi
 
-  echo
-  echo "─── K19 schema 护栏（扫描 $scan_root）───"
-  if out="$(K19_SCAN_ROOT="$scan_root" node --test "$guard" 2>&1)"; then
-    log_ok "所有 object schema 均已显式声明 additionalProperties"
-  else
-    log_err "K19 违例：存在未声明 additionalProperties 的 object schema（会导致 preset 挂载失败）"
-    printf '%s\n' "$out" | grep -E ':[0-9]+[[:space:]]*$' | sed 's/^/    /' | head -20
-    printf '%s\n' "$out" | sed -n '/未声明 additionalProperties 的 object schema/,/^$/p' | sed 's/^/    /' | head -30
-  fi
+  # 两个护栏都跑：
+  #   ① test/schema-guard.test.mjs       —— K19（additionalProperties）/ K20（required:false）
+  #   ② test/tool-output-schema.test.mjs —— 工具 output.schema 的**语义**护栏：
+  #      直接用宿主在跑的那份 dsh-tools 真编译一遍（编译不过就抛）。
+  #      2026-10-21 起接替 K21 —— K21 按正则扫源码，前提写错，造出 331 处假警报。
+  local guard guard_win
+  for guard in "$repo_root/test/schema-guard.test.mjs" "$repo_root/test/tool-output-schema.test.mjs"; do
+    if [ ! -f "$guard" ]; then
+      log_warn "未找到 $guard，跳过该护栏"
+      continue
+    fi
+    guard_win="$($to_win "$guard" 2>/dev/null)" || guard_win="$guard"
+    echo
+    echo "─── schema 护栏：$(basename "$guard")（扫描 $scan_root）───"
+    if out="$(K19_SCAN_ROOT="$scan_root" node --test "$guard_win" 2>&1)"; then
+      log_ok "$(basename "$guard") 全过"
+    else
+      # 2026-10-21 修：原来这里硬写「K19 违例：未声明 additionalProperties」，
+      # 实际失败的可能是 K20 / K21 任何一条 => 报错文案与真实判据对不上，
+      # 排查时会被文案带偏（K21 那次就带偏了一轮：文案说 K19，真因是 K21）。
+      # 现在把 node --test 实际报出的失败用例名与断言原样透出。
+      log_err "$(basename "$guard") 有用例失败 —— 下面是 node --test 的原始输出"
+      printf '%s\n' "$out" | sed -n '/failing tests:/,$p' | sed 's/^/    /' | head -40
+      printf '%s\n' "$out" | grep -E '^(✔|✖|ℹ (tests|pass|fail))' | sed 's/^/    /' | head -40
+    fi
+  done
   return 0
 }
 
@@ -456,7 +475,7 @@ case "${1:-}" in
 Usage: plugin-check.sh [--all | <plugin-dir>...]
 
 ENV:
-  DSH_PLUGINS_ROOT   default \$HOME/.dsh/profiles/web/plugins
+  DSH_PLUGINS_ROOT   default \$DSH_HOME/profiles/<本机 profile>/plugins（读 .agint-bundle/profile.json）
   K19_SCAN_ROOT      K19 schema 护栏的扫描根（默认随 DSH_PLUGINS_ROOT）
 
 Lint 模式：失败/警告都不阻断，只列缺失项。
@@ -529,6 +548,79 @@ if [ -f "$AF_SCRIPT" ]; then
   else
     # 2026-10-07 改 fail-closed（同上 L0 段理由）：无 node = 检查跑不了 = 拒绝放行
     echo "  [FAIL] node 不可用，addFailure 值域检查无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
+
+# ── patch YAML 预检门禁（阻断） ────────────────────────────────────────────
+# 2026-10-20 事故接入：cordis.patch.yml 里两行 `!!js` 写成 js-yaml 不认的形态
+# （反引号模板 / 多行块集合）⇒ 整份 bundle patch 解析失败 ⇒ dsh 打了
+# `skipping profile bundle "@agint/host"` 就照常启动，智进 preset 与全部 agint-*
+# 服务一起消失，界面上没有任何报错。哈希一致、语法检查都发现不了它，
+# 只有「用 dsh 同款 schema 真解析一遍」能发现 ⇒ 设为阻断位。
+PY_SCRIPT="$(dirname "$0")/check-patch-yaml.mjs"
+if [ -f "$PY_SCRIPT" ]; then
+  echo
+  echo "─── patch YAML 预检（与 dsh 同 schema）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$PY_SCRIPT"; then
+      echo "  [PASS] 所有 patch 文件可解析"
+    else
+      echo "  [FAIL] patch 文件解析失败 —— dsh 会静默跳过整个 bundle（插件与 preset 一起消失）"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，patch YAML 预检无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
+
+# ── 能力边界门禁（阻断） ────────────────────────────────────────────────────
+# 2026-10-21 接入：docs/capability-boundary.md 把「这件事该 dsh 做还是 AGINT 做」
+# 写成了契约，但契约停在文档里就只是会被人忘记的话。本门禁把它可机械判定的
+# 三条变成红灯：机器私有绝对路径入库 / 宿主层能力自建 / 新插件未在归属表里裁决。
+# 基线对账：存量欠账记在 docs/boundary-baseline.json（只报 INFO，不阻断），
+# 新增越界 exit 1 —— 一上来就全红的门禁会被立刻绕过，所以存量显式记账。
+BND_SCRIPT="$(dirname "$0")/check-boundary.mjs"
+if [ -f "$BND_SCRIPT" ]; then
+  echo
+  echo "─── 能力边界门禁（宿主层/进化层/载体层）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$BND_SCRIPT"; then
+      echo "  [PASS] 无新增越界"
+    else
+      echo "  [FAIL] 新增能力边界越界 —— 改用 dsh 上游能力，或在 docs/boundary-baseline.json 登记理由"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，能力边界门禁无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
+
+# ── dsh 兼容门禁（阻断）：宿主版本必须等于门禁判据版本 ──────────────────────
+# 2026-10-21 接入：本仓有三份 dsh —— 真实宿主（Electron 的 resources/app.asar）、
+# 解析根（$DSH_HOME/.agint-deps/dsh-runtime，插件实际 import 的那份）、
+# 门禁判据（仓内 node_modules）。宿主升级而另两份不动时，门禁对着旧副本说
+# "兼容" ⇒ **假绿**：门禁说没事，实际 AGINT 的插件跑在旧 dsh 上。
+#
+# 本门禁把「真实宿主版本」拉进判据：宿主版本 ≠ 判据版本 ⇒ 红灯。
+#
+# ⚠️ 宿主查不到时（Linux 机器没有 app.asar / 未配 DSH_HOST_APP_ASAR）⇒
+#   只报 INFO「没查」，**不阻断** —— 查不到不是"不一致"，不能把别的机器堵死。
+DSH_COMPAT_SCRIPT="$(dirname "$0")/check-dsh-compat.mjs"
+if [ -f "$DSH_COMPAT_SCRIPT" ]; then
+  echo
+  echo "─── dsh 兼容门禁（宿主版本对照）───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$DSH_COMPAT_SCRIPT"; then
+      echo "  [PASS] dsh 兼容检查通过（含宿主版本对照）"
+    else
+      echo "  [FAIL] dsh 兼容检查不通过 —— 宿主版本与门禁判据不一致或存在悬挂包名"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，dsh 兼容门禁无法执行 —— 拒绝放行（fail-closed）"
     exit 1
   fi
 fi

@@ -6,13 +6,12 @@
  * (line 402-490)。
  *
  * 关键决策：
- * - 用 DSH 自带 subagent runtime（ctx.agents.create + ctx.subagents.start）
- *   而不是新建插件：2026-09-05 老板纠正发现 DSH 本身即 subagent runtime。
+ * - 用 DSH 自带 subagent runtime（ctx.agents.create + ctx.subagents.startActivation，
+ *   旧宿主保留 start 兼容分支）：2026-09-05 老板纠正发现 DSH 本身即 subagent runtime。
  * - outputSchema 由 DSH provider 自动 schema-validation，省掉 openclaw 的
  *   parseConsolidationPlan。
- * - toolFilter: {restrict: [...]} 禁止子 agent 用任何工具，只让模型做决策。
- * - 失败/超时/schema validation fail → 返回 null（不抛），让 sweep 走
- *   启发式 added 退化路径，sweep 标 consolidationMode: 'heuristic-degraded'。
+ * - 失败/超时/schema validation fail → ok:false + mode:'failed'（不抛），
+ *   sweep **跳过本轮提升**（2026-10-25 无降级：⛔ 不退回启发式 added）。
  *
  * 入参：{ ctx, gated, existing, day, opts? }
  *   ctx - cordis host ctx（apply 第二参），用于 ctx.get('agents' / 'subagents')
@@ -22,9 +21,9 @@
  *   opts.provider, opts.model, opts.timeoutMs - LLM route + 超时
  *
  * 出参：
- *   { ok: true, mode: 'llm', operations: [...] }
- *   { ok: true, mode: 'heuristic-degraded', operations: null, reason: '...' }
- *   { ok: false, reason: '...' }    // 任何 hard failure（不会发生，目前都走 degraded）
+ *   { ok: true,  mode: 'llm',           operations: [...] }
+ *   { ok: true,  mode: 'not-attempted', operations: null, reason: 'no gated candidates' }
+ *   { ok: false, mode: 'failed',        operations: null, reason: '...' }
  */
 
 import { randomUUID } from 'node:crypto';
@@ -66,15 +65,13 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 // **绝对不能硬编码 'deepseek'/'deepseek-chat'**——DSH 把 deepseek 仅作 fallback
 // adapter，host 真实可用 provider 由 settings.yaml 决定。
 export const DEFAULT_PROVIDER = 'minimax-cn';
-// 2026-09-28：host 已把 minimax-cn 的注册模型换成 MiniMax-M3.1-Flash-Preview
-// （cordis.patch.yml llm-pi-ai.providers.minimax-cn.models 只剩这一条），
-// 旧值 'MiniMax-M3' 已不可路由，必须同步。
-export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash-Preview';
+// 2026-10-25：host 注册模型已是 MiniMax-M3.1-Flash（-Preview 不可路由）。
+export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
 // 2026-10-07 取证：DEFAULT_MODEL 要求的模型**强制 adaptive thinking**，
 // 而 agents.create() 的 agentOptions 不传 reasoningEffort 时子代理退化成
 // thinking 关闭 → MiniMax 返 400（
 //   "requires adaptive thinking; thinking.type=\"disabled\" ... is not allowed (2013)"）
-// → consolidation 恒落 heuristic-degraded → promoted 恒 0 →
+// → consolidation 恒失败 → promoted 恒 0 →
 //   agint-ov-strategy 的 dream 投影被 `promoted <= 0` 门槛永远挡死。
 // 取值对齐 settings.yaml 的 agent-default-model.reasoningEffort（high）；
 // 合法档位见 llm-pi-ai.providers.minimax-cn.models[].reasoningEfforts
@@ -85,7 +82,7 @@ export const DEFAULT_REASONING_EFFORT = 'high';
 // `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**：
 // 不传 → child 会话 `agentPreset=null`、`modelSelection=null`、turn 的 prompt/response 全空、
 // surfaceTokens=0 —— 会话照建、label 照写、**全程不报错**，但一步都跑不动，
-// 最终静默落回 heuristic-degraded。类型上它是可选的，对 host plane 凭空 create 的
+// 最终静默落回失败（旧版为 heuristic-degraded，该回退已删除）。类型上它是可选的，对 host plane 凭空 create 的
 // 临时 parent 却等于必填。
 // ⛔ 别指望用 `agentOptions` 补：它只有 {provider, model, reasoningEffort, maxTokens}，没有 preset。
 export const DEFAULT_AGENT_PRESET = 'agint';
@@ -184,9 +181,11 @@ export function buildConsolidationPrompt(gated, existing, day) {
 
 /**
  * Run LLM consolidation. Returns:
- *   { ok: true, mode: 'llm', operations }
- *   { ok: true, mode: 'heuristic-degraded', operations: null, reason }
- * Never throws — all errors are caught and turned into a degraded result.
+ *   { ok: true,  mode: 'llm',          operations }
+ *   { ok: true,  mode: 'not-attempted', operations: null, reason }   // 0 条候选，内容闸门
+ *   { ok: false, mode: 'failed',       operations: null, reason, diagnostic? }
+ * 2026-10-25 无降级：LLM 失败不再返回 heuristic-degraded；sweep 必须跳过本轮提升。
+ * Never throws — 失败用 ok:false 表达，避免夜间 sweep 因单个 LLM 故障直接崩溃。
  */
 export async function consolidate({
   ctx,
@@ -206,29 +205,47 @@ export async function consolidate({
     }
   };
 
-  // 0. 边界保护
+  // 0. 边界保护：0 条候选 = 内容闸门（LLM 没触发），不是失败
   if (!Array.isArray(gated) || gated.length === 0) {
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'no gated candidates' };
+    return { ok: true, mode: 'not-attempted', operations: null, reason: 'no gated candidates' };
   }
   if (!ctx || typeof ctx.get !== 'function') {
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'ctx unavailable' };
+    return { ok: false, mode: 'failed', operations: null, reason: 'ctx unavailable' };
   }
 
-  // 1. 服务可解析性检查
+  // 1. 服务可解析性检查（失败即 failed，不再回退启发式）
   const agents = ctx.get('agents');
   const subagents = ctx.get('subagents');
   if (!agents || typeof agents.create !== 'function') {
-    log('agents service unavailable, degraded to heuristic');
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'agents service unavailable' };
+    log('agents service unavailable');
+    return { ok: false, mode: 'failed', operations: null, reason: 'agents service unavailable' };
   }
-  if (!subagents || typeof subagents.start !== 'function') {
-    log('subagents service unavailable, degraded to heuristic');
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'subagents service unavailable' };
+  if (!subagents) {
+    log('subagents service unavailable');
+    return { ok: false, mode: 'failed', operations: null, reason: 'subagents service unavailable' };
   }
-  const providerExists = typeof subagents.getProvider === 'function' ? subagents.getProvider('spawn') : null;
-  if (!providerExists) {
-    log('spawn subagent provider not registered, degraded to heuristic');
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'spawn provider not registered' };
+  const hasActivation = typeof subagents.startActivation === 'function';
+  const hasLegacyStart = typeof subagents.start === 'function';
+  if (!hasActivation && !hasLegacyStart) {
+    log('subagents method missing');
+    return {
+      ok: false,
+      mode: 'failed',
+      operations: null,
+      reason: `subagents method missing (startActivation=${hasActivation}, start=${hasLegacyStart})`,
+    };
+  }
+  let providerExists = null;
+  if (typeof subagents.getProvider === 'function') {
+    try {
+      providerExists = subagents.getProvider('spawn');
+    } catch (error) {
+      return { ok: false, mode: 'failed', operations: null, reason: `getProvider('spawn') failed: ${error?.message ?? error}` };
+    }
+    if (!providerExists) {
+      log('spawn subagent provider not registered');
+      return { ok: false, mode: 'failed', operations: null, reason: 'spawn provider not registered' };
+    }
   }
 
   // 2. 建临时 parent agent（路径 Y — host plane 无现成 agent）
@@ -247,96 +264,79 @@ export async function consolidate({
     rejectOnTimeout?.(new Error(`consolidation timeout after ${timeoutMs}ms`));
   }, timeoutMs);
   let consolidationHandle = null;
-  let run = null;
+  let activation = null;
+  let cancelled = false;
+  const disposeLate = (resource) => {
+    try { Promise.resolve(resource?.dispose?.()).catch(() => { /* ignore */ }); } catch { /* ignore */ }
+  };
   try {
-    consolidationHandle = await agents.create({
+    const createPromise = agents.create({
       sessionId: `dream-consolidation-${day}-${randomUUID()}`,
       // 给临时 agent 一个 cwd —— 否则 child session inherit 的 deployment
       // persona section 用 {{cwd}} 找不到值会 throw，agent 启动后第一轮 turn
       // 就 error（2026-09-05 实测）。
       // ⭐ agentPreset：模型路由的唯一来源。缺失 ⇒ child 是空壳（见 DEFAULT_AGENT_PRESET 注释）。
-      //   2026-09-27 前这里只有 {cwd, origin}，18 个 dream-consolidation-* 会话因此全部
-      //   turns=0 / outTokens=0，梦境整合自 09-05 起一直在走 heuristic-degraded。
       meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
       agentOptions: { provider, model, reasoningEffort },
       signal: abortController.signal,
+    }).then((h) => {
+      if (cancelled) disposeLate(h);
+      return h;
     });
+    consolidationHandle = await Promise.race([createPromise, timeoutGuard]);
     const prompt = buildConsolidationPrompt(gated, existing, day);
     // 2026-10-07：start 自身挂死也必须被超时兜住。
-    // 原来的 timeoutGuard 只在下方 `Promise.race([run.result, timeoutGuard])` 里
-    // 被 await；一旦 subagents.start() 自己不落定，根本走不到那一行 ⇒ 计时器触发后
-    // timeoutGuard 的 reject 无人接管（unhandledRejection），且本函数永不返回 ——
-    // 夜间 sweep 永久挂死、cron job 再也不结束。实测复现：
-    // unhandledRejection: 'consolidation timeout after 120ms'。
-    // startPromise 上补 catch：超时胜出后 start 仍会晚到落地，吞掉它的 rejection。
-    const startPromise = subagents.start('spawn', {
-      parent: consolidationHandle.agent,
-      prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
-      outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
-      signal: abortController.signal,
-      // toolFilter: 不传。
-      // child 通过 applyChildComposition join parent preset —— 但 parent 是 host
-      // plane 临时 agent，ctx 上无 agentPresets 服务，所以 child 不会 join preset，
-      // 默认工具集为空；provider 在 child scope 自动注册唯一的 structured_output
-      // 工具，模型只能调它结束回合。这是 DSH 比 openclaw 干净的地方 —— openclaw
-      // 要靠 toolFilter: {deny: ['*']} 强制禁止工具，但 * 不是 known global tool
-      // 名会抛错；DSH 利用 child scope 的"无 join 即无工具"自然实现隔离。
-      // ⚠️ 2026-09-27 待验证：上面补了 meta.agentPreset 之后，child 是否会因此
-      //    join 到 preset 的工具集（不再是空工具集）尚未实证。若观察到子会话出现
-      //    预期外的工具调用，在此显式加 toolFilter 限制即可 —— 但**先修 preset**，
-      //    空壳状态下这条讨论毫无意义（模型根本没被调起来）。
-      label: `agint-dream consolidation ${day}`,
+    // 2026-10-25：新宿主只有 startActivation；旧 start 保留兼容分支。
+    const startPromise = (hasActivation
+      ? Promise.resolve().then(() => subagents.startActivation({
+        provider: 'spawn',
+        label: `agint-dream consolidation ${day}`,
+        request: {
+          parent: consolidationHandle.agent,
+          prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
+          agentPreset,
+          agentOptions: { provider, model, reasoningEffort },
+          outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
+        },
+        signal: abortController.signal,
+        delivery: 'caller',
+      }))
+      : Promise.resolve().then(() => subagents.start('spawn', {
+        parent: consolidationHandle.agent,
+        prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
+        outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
+        signal: abortController.signal,
+        label: `agint-dream consolidation ${day}`,
+      }))).then((act) => {
+      if (cancelled) disposeLate(act);
+      return act;
     });
     startPromise.catch(() => { /* 超时胜出后 start 仍会晚到落地，吞掉它的 rejection */ });
-    run = await Promise.race([startPromise, timeoutGuard]);
-    // B 方案诊断：订阅 child agent 的 agent/error 事件，捕获真实失败原因。
-    // 事件是 agent-scoped dispatch（@deepseek-ai/dsh-scope），必须在 child ctx 上订阅。
-    const childErrors = [];
-    if (run.localAgent?.ctx?.on) {
-      try {
-        run.localAgent.ctx.on('agent/error', (payload) => {
-          const err = payload?.error;
-          const errStr = err instanceof Error
-            ? `${err.name}: ${err.message}${err.stack ? '\n' + err.stack.split('\n').slice(0, 8).join('\n') : ''}`
-            : JSON.stringify(err).slice(0, 500);
-          childErrors.push({ turn: payload?.turn, step: payload?.step, error: errStr });
-        });
-      } catch (e) { /* 订阅失败不阻断主流程 */ }
-    }
-    const result = await Promise.race([run.result, timeoutGuard]);
+    activation = await Promise.race([startPromise, timeoutGuard]);
+    const result = await Promise.race([activation.result, timeoutGuard]);
     if (result.stopReason !== 'completed') {
-      // 把 stopReason + output + agent/error 收集的 error 全带回
       const out = Array.isArray(result.output) ? result.output : [];
       const outStr = JSON.stringify(out).slice(0, 500);
-      const childErrStr = childErrors.length > 0
-        ? childErrors.map((e) => `[turn=${e.turn} step=${e.step}] ${e.error}`).join(' | ').slice(0, 1500)
-        : null;
-      const diag = (result.diagnostic ?? outStr ?? null) || childErrStr || null;
+      const diag = result.diagnostic ?? outStr ?? null;
       log(`LLM did not complete: stopReason=${result.stopReason} diag=${diag?.slice(0, 300) ?? '(none)'}`);
       return {
-        ok: true,
-        mode: 'heuristic-degraded',
+        ok: false,
+        mode: 'failed',
         operations: null,
         reason: `LLM stopReason=${result.stopReason}`,
         diagnostic: diag,
-        childErrors: childErrors.length > 0 ? childErrors : null,
       };
     }
     const structured = result.structured;
     if (!structured || !Array.isArray(structured.operations)) {
       log('structured output missing or invalid', { structured });
-      return {
-        ok: true,
-        mode: 'heuristic-degraded',
-        operations: null,
-        reason: 'structured output invalid',
-      };
+      return { ok: false, mode: 'failed', operations: null, reason: 'structured output invalid' };
     }
     if (structured.operations.length !== gated.length) {
       log(`operations length ${structured.operations.length} != gated ${gated.length}`);
       return {
-        ok: true,
-        mode: 'heuristic-degraded',
+        ok: false,
+        mode: 'failed',
         operations: null,
         reason: `operations length mismatch (${structured.operations.length} vs ${gated.length})`,
       };
@@ -350,15 +350,11 @@ export async function consolidate({
       ? `consolidation timeout (${timeoutMs}ms)`
       : `consolidation error: ${err?.message ?? String(err)}`;
     log(`consolidation failed: ${reason}`);
-    return {
-      ok: true,
-      mode: 'heuristic-degraded',
-      operations: null,
-      reason,
-    };
+    return { ok: false, mode: 'failed', operations: null, reason };
   } finally {
-    if (run && typeof run.dispose === 'function') {
-      try { await run.dispose(); } catch { /* swallow — already settled */ }
+    cancelled = true;
+    if (activation && typeof activation.dispose === 'function') {
+      try { await activation.dispose(); } catch { /* swallow — already settled */ }
     }
     if (consolidationHandle && typeof consolidationHandle.dispose === 'function') {
       try { await consolidationHandle.dispose(); } catch { /* swallow */ }
@@ -385,7 +381,7 @@ export const DEFAULT_BATCH_SIZE = 8;
 export async function consolidateBatched(opts = {}) {
   const { gated, batchSize = DEFAULT_BATCH_SIZE, logger = null } = opts;
   if (!Array.isArray(gated) || gated.length === 0) {
-    return { ok: true, mode: 'heuristic-degraded', operations: null, reason: 'no gated candidates' };
+    return { ok: true, mode: 'not-attempted', operations: null, reason: 'no gated candidates' };
   }
   const size = Math.max(1, Math.floor(batchSize) || DEFAULT_BATCH_SIZE);
   if (gated.length <= size) {
@@ -399,23 +395,24 @@ export async function consolidateBatched(opts = {}) {
   for (let i = 0; i < total; i += 1) {
     const slice = gated.slice(i * size, (i + 1) * size);
     const res = await consolidate({ ...opts, gated: slice });
-    if (res?.mode !== 'llm' || !Array.isArray(res.operations)) {
+    if (res?.ok !== true || res?.mode !== 'llm' || !Array.isArray(res.operations)) {
       if (logger?.info) {
-        logger.info('agint-dream.consolidation: batch degraded', {
+        logger.info('agint-dream.consolidation: batch failed', {
           batch: `${i + 1}/${total}`, size: slice.length, reason: res?.reason ?? null,
         });
       }
       return {
-        ok: true,
-        mode: 'heuristic-degraded',
+        ok: false,
+        mode: 'failed',
         operations: null,
-        reason: `batch ${i + 1}/${total} degraded: ${res?.reason ?? 'unknown'}`,
+        reason: `batch ${i + 1}/${total} failed: ${res?.reason ?? 'unknown'}`,
+        diagnostics: res?.diagnostic ? [res.diagnostic] : undefined,
       };
     }
     if (res.operations.length !== slice.length) {
       return {
-        ok: true,
-        mode: 'heuristic-degraded',
+        ok: false,
+        mode: 'failed',
         operations: null,
         reason: `batch ${i + 1}/${total} operations length ${res.operations.length} != ${slice.length}`,
       };

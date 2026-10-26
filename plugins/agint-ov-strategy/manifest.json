@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-ov-strategy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AGINT × OpenViking 策略层（单缝原则）：全仓唯一消费官方 openvikingMemory runtime 的插件。经验沉淀写入（dream/diagnosis 产物 write-through 投影进 OV，经官方 enqueueWrite/enqueuePending/dispose 全链，不重建传输）+ 按域过滤（scope 白名单 + 长度过滤 + bus 订阅自动沉淀）+ 策略侧召回（软失败契约）。不持有 storageDomain（正本与投影规则），全程软失败可脱 OV 运转。",
   "main": "lib/index.js",
   "agint": {

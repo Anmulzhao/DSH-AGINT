@@ -6,8 +6,8 @@
 // 本文件锁死六件事：
 //   ① 产出 schema 必须留在**宿主受限 JSON Schema 子集**内（越界会在 spawn 前抛）
 //   ② 正常返回：verdict + authoring 各自清洗、越界值被本地拦下
-//   ③ 降级路径（服务不可用 / 超时 / stopReason / 输出非法）永远返回、永不抛
-//   ④ 每个 degraded 都带 reason（K59：降级必须能说清为什么）
+//   ③ 失败路径（服务不可用 / 超时 / stopReason / 输出非法）返回 ok:false，永不抛
+//   ④ 每个 failed 都带 reason（K59：失败必须能说清为什么）
 //   ⑤ dispose 一定被调用（不泄漏 child session）
 //   ⑥ prompt 注入防护：窗口文本必须落在分隔标记内
 
@@ -30,6 +30,7 @@ import {
   DEFAULT_AGENT_PRESET,
   DEFAULT_PROVIDER,
   DEFAULT_MODEL,
+  DEFAULT_REASONING_EFFORT,
 } from '../lib/llm-verdict.js';
 
 // ── mock 装置 ────────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ import {
 function mockCtx({ result = null, startImpl = null, agentsImpl = null, subagentsImpl = null } = {}) {
   const created = [];
   const started = [];
-  const disposed = { run: 0, handle: 0 };
+  const disposed = { activation: 0, handle: 0 };
   const agents = {
     create: async (opts) => {
       created.push(opts);
@@ -47,13 +48,13 @@ function mockCtx({ result = null, startImpl = null, agentsImpl = null, subagents
   };
   const subagents = {
     getProvider: () => ({ name: 'spawn' }),
-    start: async (kind, opts) => {
-      started.push({ kind, opts });
-      if (subagentsImpl) return subagentsImpl(kind, opts);
+    startActivation: async (spec) => {
+      started.push(spec);
+      if (subagentsImpl) return subagentsImpl(spec);
       return {
+        childId: 'mock-child',
         result: result ?? Promise.resolve({ stopReason: 'completed', structured: { standardizable: true, confidence: 0.8, rationale: 'ok' } }),
-        dispose: async () => { disposed.run++; },
-        localAgent: { ctx: { on: () => {} } },
+        dispose: async () => { disposed.activation++; },
       };
     },
   };
@@ -139,16 +140,23 @@ test('正常返回：verdict + authoring 都清洗后返回', async () => {
   assert.ok(Number.isFinite(out.meta.durationMs));
   // 调用形态：spawn + outputSchema 透传
   assert.equal(started.length, 1);
-  assert.equal(started[0].kind, 'spawn');
-  assert.equal(started[0].opts.outputSchema, JUDGE_OUTPUT_SCHEMA);
+  assert.equal(started[0].provider, 'spawn');
+  assert.equal(started[0].delivery, 'caller');
+  assert.equal(started[0].request.agentPreset, DEFAULT_AGENT_PRESET);
+  assert.equal(started[0].request.outputSchema, JUDGE_OUTPUT_SCHEMA);
+  assert.deepEqual(started[0].request.agentOptions, {
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
+  });
   // 资源释放
-  assert.equal(disposed.run, 1);
+  assert.equal(disposed.activation, 1);
   assert.equal(disposed.handle, 1);
 });
 
 // ── 子代理空壳根因回归（2026-09-27，K114）──────────────────────────────────
 // agents.create() 未传 meta.agentPreset ⇒ child 无模型路由 ⇒ 会话建了但一步不跑，
-// 全程不报错、静默落回 degraded。dream 的 18 个 dream-consolidation-* 会话、
+// 全程不报错、静默落回失败。dream 的 18 个 dream-consolidation-* 会话、
 // evolution-driver 的 12 个会话全这么死的。mock 层发现不了它 —— 只有这条断言能挡复发。
 test('agents.create 必带 meta.agentPreset（缺了就是空壳子代理）', async () => {
   const { ctx, created } = mockCtx({
@@ -191,6 +199,7 @@ test('provider/model 未传（undefined）→ 落到默认常量，不留空', a
   assert.deepEqual(created[0].agentOptions, {
     provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
   });
 });
 
@@ -213,14 +222,16 @@ test('provider/model 显式传参可覆盖默认（换模型不用改源码）',
   assert.deepEqual(second.created[0].agentOptions, {
     provider: 'other-provider',
     model: 'other-model',
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
   });
 });
 
-// ── ③④ 降级路径：永远返回、永远带 reason ──────────────────────────────────
+// ── ③④ 失败路径：永远返回、永远带 reason ──────────────────────────────────
 
 test('ctx 不可用 / agents 缺失 / subagents 缺失 / spawn provider 未注册 → 各自明确 reason', async () => {
   const noCtx = await judgeViaLLM({ ctx: null, pattern: PATTERN });
-  assert.equal(noCtx.mode, 'degraded');
+  assert.equal(noCtx.ok, false);
+  assert.equal(noCtx.mode, 'failed');
   assert.equal(noCtx.reason, 'ctx unavailable');
   assert.equal(noCtx.attempted, false);
 
@@ -244,42 +255,44 @@ test('ctx 不可用 / agents 缺失 / subagents 缺失 / spawn provider 未注�
   assert.equal(noProvider.reason, 'spawn provider not registered');
 });
 
-test('超时：Promise.race 兜住永不 settle 的 run.result，且 dispose 仍被调用', async () => {
-  // K49 的教训：provider 不认 signal 时 `await run.result` 会永久挂死
+test('超时：Promise.race 兜住永不 settle 的 activation.result，且 dispose 仍被调用', async () => {
+  // K49 的教训：provider 不认 signal 时 `await activation.result` 会永久挂死
   const { ctx, disposed } = mockCtx({ result: new Promise(() => {}) });
   const out = await judgeViaLLM({ ctx, pattern: PATTERN, timeoutMs: 60 });
 
-  assert.equal(out.mode, 'degraded');
+  assert.equal(out.ok, false);
+  assert.equal(out.mode, 'failed');
   assert.match(out.reason, /timeout/);
   assert.match(out.reason, /60ms/);
   assert.equal(out.attempted, true, '已发起过调用 → 应计入预算');
-  assert.equal(disposed.run, 1);
+  assert.equal(disposed.activation, 1);
   assert.equal(disposed.handle, 1);
 });
 
-test('stopReason 非 completed → 降级并带 stopReason', async () => {
+test('stopReason 非 completed → failed 并带 stopReason', async () => {
   const { ctx } = mockCtx({
     result: Promise.resolve({ stopReason: 'max_steps', structured: null }),
   });
   const out = await judgeViaLLM({ ctx, pattern: PATTERN });
-  assert.equal(out.mode, 'degraded');
+  assert.equal(out.ok, false);
+  assert.equal(out.mode, 'failed');
   assert.match(out.reason, /stopReason=max_steps/);
 });
 
-test('structured 非法（缺字段 / 类型错）→ 降级，不退化成半截结果', async () => {
+test('structured 非法（缺字段 / 类型错）→ failed，不退化成半截结果', async () => {
   for (const bad of [null, {}, { standardizable: 'yes', confidence: 0.5 }, { standardizable: true, confidence: 'high' }]) {
     const { ctx } = mockCtx({ result: Promise.resolve({ stopReason: 'completed', structured: bad }) });
     const out = await judgeViaLLM({ ctx, pattern: PATTERN });
-    assert.equal(out.mode, 'degraded', `should degrade for ${JSON.stringify(bad)}`);
+    assert.equal(out.mode, 'failed', `should fail for ${JSON.stringify(bad)}`);
     assert.match(out.reason, /structured output invalid/);
     assert.equal(out.verdict, null);
   }
 });
 
-test('start 抛错 → 降级，不向上抛（永不抛契约）', async () => {
+test('startActivation 抛错 → failed，不向上抛（永不抛契约）', async () => {
   const { ctx } = mockCtx({ subagentsImpl: async () => { throw new Error('boom'); } });
   const out = await judgeViaLLM({ ctx, pattern: PATTERN });
-  assert.equal(out.mode, 'degraded');
+  assert.equal(out.mode, 'failed');
   assert.match(out.reason, /boom/);
 });
 
@@ -288,7 +301,7 @@ test('外部 signal 已中止 → 不发起调用且不占预算', async () => {
   const ac = new AbortController();
   ac.abort();
   const out = await judgeViaLLM({ ctx, pattern: PATTERN, signal: ac.signal });
-  assert.equal(out.mode, 'degraded');
+  assert.equal(out.mode, 'failed');
   assert.equal(out.reason, 'aborted before start');
   assert.equal(out.attempted, false);
   assert.equal(started.length, 0);

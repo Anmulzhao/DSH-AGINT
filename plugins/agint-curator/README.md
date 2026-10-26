@@ -116,10 +116,14 @@ protected_skills: [plan, memory-discipline, causal-reasoning]
 auto_curation_enabled: true       # 总开关（false = 只检测不执行）
 dry_run_default: false
 move_directory_on_archive: true   # false = 只落状态不移动目录
-skills_dir: <DSH_HOME>/skills            # 用户级技能根。
-                                         # 2026-09-23 改投：原 .agent-presets/agint/skills 属
-                                         # install.sh 镜像管理范围，重装会清掉自动生成的技能。
-                                         # 必须与 agint-skill-autocreate.skills_root 同指一处。
+skills_dir: [<DSH_HOME>/skills,                          # 用户级技能根（autocreate 投放位）。
+             <DSH_HOME>/.agent-presets/agint/skills]     # preset 手工维护位。
+                                          # 2026-09-23 改投：原 .agent-presets/agint/skills 属
+                                          # install.sh 镜像管理范围，重装会清掉自动生成的技能。
+                                          # 必须与 agint-skill-autocreate.skills_root 同指一处。
+                                          # 2026-10-01 起支持目录列表（多根合并、按 name 去重）。
+                                          # 2026-10-21 起：归档/恢复按账本里的 rootDir 定位到
+                                          # 技能自己那个根，不再假设 skills_dir 是单根。
 archive_dir_name: .archive
 weekly_cron: '0 2 * * 0'
 # Sprint 15 质量评估 / 重叠检测

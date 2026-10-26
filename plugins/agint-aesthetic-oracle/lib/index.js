@@ -38,14 +38,13 @@ import {
 } from './storage.js';
 import { evaluateAesthetics, DIM_KEYS, NO_ADVICE, FORMULA_VERSION, scaleHash } from './scoring.js';
 import {
-  extractAtomic, renderReport, rollQuota, dimsFromRecord, compositesRecord,
+  extractAtomic, renderReport, fitLines, rollQuota, dimsFromRecord, compositesRecord,
   auditScores, auditTargetId, buildWeeklyProposals, isoWeekKey, KIND_TOPIC, QUOTA_LIMITS,
-  recomputeBaseline, baselineHasNaDim,
+  recomputeBaseline, baselineHasNaDim, findDuplicateProposal, PROPOSAL_DEDUP_WINDOW_DAYS,
 } from './broadcast.js';
 import { validateTopicPayload, TOPIC_KIND } from './topics.js';
 import {
-  llmMode as parseLlmMode, canL1, canL2, canL3,
-  l1EnhanceAdvice, l2DeepDive, l3PolishProposal,
+  OracleLlmError, l1EnhanceAdvice, l2DeepDive, l3PolishProposal,
 } from './llm-enhance.js';
 
 const name = 'agint-aesthetic-oracle';
@@ -298,60 +297,187 @@ function apply(ctx, config) {
   };
 
   /**
-   * 写白名单 #3（Day 4-5，§5 weekly）：weekly 美谕提案 → agint_evolve.proposal。
-   * 提案 = 可用维按绝对扣分 top3（0 扣分不提），每条经 q3Advice 生成（纯机械
-   * 动作 + 必附证据）。⭐ 只写文本不执行：永不调 curator_archive / setStatus；
-   * evolve 侧 status 硬锁 proposed。失败降级不阻断广播（§6.1 原则）。
+   * 读本插件自己的提案史（r4，2026-10-23）。**纯只读**，不新增任何写路径。
+   *
+   * 返回 null = 读不到（服务缺席或抛错）；返回 [] = 读到了，确实没有提案。
+   * ⛔ 两者必须区分：把「读不到」写成「0 条」，就是项目铁律里的
+   *   「UNKNOWN 不是 0」——会让闭环行显示「累计 0 条，全部已处理」这种假绿。
    */
-  async function submitWeeklyProposals({ evaluation, adviceCtx, now, targetId, l2DeepDiveResult = null, llmModeVal = 'off' }) {
+  async function readOwnProposals() {
     const evo = svcEvolve();
-    if (!evo || typeof evo.propose !== 'function') return { ids: [], failed: 0, degraded: true };
+    if (!evo || typeof evo.listProposals !== 'function') return null;
+    try {
+      const all = await evo.listProposals();
+      if (!Array.isArray(all)) return null;
+      return all.filter((p) => p?.source === name);
+    } catch { return null; }
+  }
+
+  /**
+   * weekly 闭环统计（r4）：老板提案积压一眼可见。
+   *
+   * `handled` = 状态不是 proposed 的都算「已处理」——包括 wontfix 与 rejected。
+   * 这个口径是刻意的：判定「有没有人看过」不关心结论，只关心有没有人处理。
+   * 若只看 applied，wontfix 会被算成「没人理」，那是另一种失真。
+   */
+  async function weeklyLoopStat() {
+    const own = await readOwnProposals();
+    if (own === null) return { available: false };
+    const proposed = own.filter((p) => p?.status === 'proposed').length;
+    return {
+      available: true,
+      total: own.length,
+      proposed,
+      handled: own.length - proposed,
+    };
+  }
+
+  /**
+   * 写白名单 #3（Day 4-5，§5 weekly）：weekly 美谕提案 → agint_evolve.proposal。
+   * 提案 = 可用维按偏离度 top3（扣分 ≥ MIN_PROPOSAL_DEDUCTION，阈内不提），
+   * 每条经 q3Advice 生成（纯机械动作 + 必附证据）。⭐ 只写文本不执行：永不调
+   * curator_archive / setStatus；evolve 侧 status 硬锁 proposed。
+   * 提案写入失败只记账不阻断；**L3 失败则整轮失败**（无降级），且所有 L3
+   * 调用先完成再写库——避免「第一条已落盘、第二条 L3 失败」留下模板正文。
+   *
+   * r4 去重：同维度在 28 天内已有 status=proposed 的提案 ⇒ 不再开新单，
+   * 改在审计 findings 里记「第 N 次复现 + 原提案 id」。理由见 findDuplicateProposal。
+   */
+  async function submitWeeklyProposals({ evaluation, adviceCtx, now, targetId, l2DeepDiveResult = null }) {
+    const evo = svcEvolve();
+    if (!evo || typeof evo.propose !== 'function') return { ids: [], failed: 0, l3AnyLlm: false, suppressed: [] };
     const drafts = buildWeeklyProposals(evaluation, adviceCtx ?? {}, { weekKey: isoWeekKey(now), targetId });
+    // 去重输入：读不到（null）时**不去重**——宁可多提一条，也不能因为读失败
+    // 而把真问题当成重复悄悄吞掉。
+    const existing = await readOwnProposals();
+    const suppressed = [];
+    const fresh = [];
+    for (const d of drafts) {
+      const dup = existing === null
+        ? null
+        : findDuplicateProposal(d.key, existing, { now, windowDays: PROPOSAL_DEDUP_WINDOW_DAYS });
+      if (dup) suppressed.push({ key: d.key, existingId: dup.id, existingAt: dup.createdAt });
+      else fresh.push(d);
+    }
+    // L3（§8.1.4）：先把所有新提案的正文润色完，再写库。任一失败抛错 ⇒
+    // 本轮广播失败、零提案落盘，调度重试时不会把半成品当成「已存在」去重。
+    const polished = [];
+    for (const d of fresh) {
+      const l3 = await l3PolishProposal(ctx, {
+        title: d.title, templateBody: d.body, deepDive: l2DeepDiveResult ?? {},
+      });
+      polished.push({ draft: d, body: l3.body });
+    }
     const ids = [];
     let failed = 0;
-    let l3AnyLlm = false;
-    const l3Degradations = [];
-    for (const d of drafts) {
-      // L3（§8.1.4）：weekly 提案正文润色。失败降级回模板 body，不阻断。
-      let finalBody = d.body;
-      if (canL3(llmModeVal)) {
-        const l3 = await l3PolishProposal(ctx, { title: d.title, templateBody: d.body, deepDive: l2DeepDiveResult ?? {} });
-        if (l3.mode === 'llm') { finalBody = l3.body; l3AnyLlm = true; }
-        else l3Degradations.push({ level: 'L3', reason: l3.reason ?? 'unknown' });
-      }
+    for (const { draft: d, body } of polished) {
       try {
         const rec = await evo.propose({
-          title: d.title, body: finalBody, category: d.category,
-          source: name, note: `${targetId}（美的神谕层 weekly；evidence 见正文）`,
+          title: d.title, body, category: d.category,
+          source: name,
+          // r4：note 带 worst=<key>，下一轮去重可精确匹配（不依赖 title 文案）
+          note: `${targetId}（美的神谕层 weekly / ${d.note ?? ''}；evidence 见正文）`,
         });
         if (rec?.id) ids.push(rec.id); else failed += 1;
       } catch { failed += 1; }
     }
-    return { ids, failed, l3AnyLlm, l3Degradations };
+    return { ids, failed, l3AnyLlm: polished.length > 0, suppressed };
+  }
+
+  /**
+   * LLM 输出层（L1/L2）。失败抛 OracleLlmError，由 withLlmFailureTrace 落痕告警。
+   * 内容闸门：NO_ADVICE 不润色、无 auditIds 不深挖——没有内容就不让模型编。
+   */
+  async function enhanceReport({ kind, report, evaluation, view }) {
+    let used = false;
+    if (evaluation.worst && evaluation.advice?.advice && evaluation.advice.advice !== NO_ADVICE) {
+      const l1 = await l1EnhanceAdvice(ctx, {
+        templateAdvice: evaluation.advice.advice,
+        templateEvidence: evaluation.advice.evidence ?? '',
+        worstKey: evaluation.worst.key,
+        value: evaluation.worst.value,
+      });
+      report.lines = report.lines.map((line) => {
+        if (line.startsWith('建议：')) return `建议：${l1.advice}`;
+        if (line.startsWith('证据：')) return `证据：${l1.evidence}`;
+        return line;
+      });
+      // LLM 措辞也受 2KB 广播预算约束：超限按既有规则从尾部截断并标 truncated。
+      const fitted = fitLines(report.lines);
+      report.lines = fitted.lines;
+      report.text = fitted.text;
+      report.bytes = fitted.bytes;
+      report.truncated = fitted.truncated || report.truncated;
+      used = true;
+    }
+    let l2DeepDiveResult = null;
+    if (kind === 'weekly' && evaluation.worst) {
+      l2DeepDiveResult = await l2DeepDive(ctx, {
+        worstKey: evaluation.worst.key,
+        value: evaluation.worst.value,
+        threshold: evaluation.composites?.[evaluation.worst.key]?.value,
+        auditIds: view.auditIds ?? [],
+        adviceCtx: view.adviceCtx ?? {},
+      });
+      if (l2DeepDiveResult.mode === 'llm') used = true;
+    }
+    if (used) report.mode = 'llm';
+    return { l2DeepDiveResult, used };
+  }
+
+  /**
+   * LLM 失败是硬失败：落 error 痕 + 告警（末次重试才发），然后抛出交调度重试。
+   * 不再有「降级回模板照发」路径。
+   */
+  async function withLlmFailureTrace(kind, now, opts, fn) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error?.code !== 'ORACLE_LLM_UNAVAILABLE') throw error;
+      // 落痕失败不得掩盖真正的 LLM 错误（否则 cron 的 lastError 会被存储错误带偏）
+      try {
+        await recordBroadcast({ kind, outcome: 'error', detail: `llm-unavailable: ${error.message}` }, now);
+      } catch { /* ignore */ }
+      if (kind !== 'alert' && !opts.suppressAlert) {
+        const published = await publishBus(KIND_TOPIC.alert, {
+          reason: `神谕层 LLM 不可用，本次 ${kind} 广播已中止：${error.message}`,
+        });
+        if (published) stats.alertsSent += 1;
+        try {
+          await recordBroadcast({
+            kind: 'alert', outcome: 'ok', detail: 'llm-unavailable-alert', published,
+          }, now);
+        } catch { /* ignore */ }
+      }
+      throw error;
+    }
   }
 
   /**
    * 共享出口（Day 2-3 抽取）：事件 → 审计 → 自表落账 → 配额记账。
-   * 主路径与缓存回退路径共用；任何一路失败都只降级不阻断。
+   * 主路径与缓存回退路径共用。LLM 失败抛 OracleLlmError（无降级）；
+   * 其余来源失败仍按 §6.1 只降级不阻断。
    */
-  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', llmModeVal = 'off', l2DeepDiveResult = null, llmDiag = [] }) {
+  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', l2DeepDiveResult = null }) {
     // Day 4-5：weekly 提案先行——提案 id 要进审计 findings（evidence 可追溯）
     let proposalIds = [];
     let proposalsFailed = 0;
-    let l3Degradations = [];
+    let suppressedProposals = [];
     if (kind === 'weekly') {
       const submitted = await submitWeeklyProposals({
         evaluation, adviceCtx: view.adviceCtx, now, targetId: auditTargetId('weekly', now),
-        l2DeepDiveResult, llmModeVal,
+        l2DeepDiveResult,
       });
       proposalIds = submitted.ids;
       proposalsFailed = submitted.failed;
-      l3Degradations = submitted.l3Degradations ?? [];
+      suppressedProposals = submitted.suppressed ?? [];
+      // L3 也是 LLM 输出层：即使本轮 L1/L2 没触发，只要有提案润色过就记 llm。
+      if (submitted.l3AnyLlm) report.mode = 'llm';
     }
     // §8.1.6：mode 字段——本轮广播实际用了什么输出路径
-    //   template           = kill-switch off / 无 LLM 增强
-    //   llm                = L1/L2/L3 至少一级成功
-    //   heuristic-degraded = LLM 启用但全部降级
+    //   template = 本轮没有需要 LLM 的输出（内容闸门全部命中）
+    //   llm      = L1/L2/L3 至少一级成功
+    // 不存在 heuristic-degraded：LLM 失败会中止本轮广播，不发布假判词。
     const payloadMode = report.mode ?? 'template';
     const published = await publishBus(KIND_TOPIC[kind], {
       kind, asOf: view.asOf, score: evaluation.scored.score, verdict: evaluation.verdict.verdict,
@@ -385,17 +511,21 @@ function apply(ctx, config) {
         detail: `agint_evolve proposal id：${proposalIds.join(',')}（status=proposed，永不 auto-apply）`,
       });
     }
-    // §8.1.6 可观测性（v0.4.3）：本轮实际走了哪条输出路径 + LLM 降级原因。
-    // 此前 mode 只进事件 payload、降级 reason 只活在内存里 —— 2026-10-05 排障时
-    // evolution_log 查不到 mode，只能靠墙钟反推（见 CHANGELOG 0.4.2 根因段）。
-    const degradationNotes = [...new Set(
-      [...llmDiag, ...l3Degradations].map((d) => `${d.level ?? '?'}:${d.reason ?? 'unknown'}`),
-    )];
+    // r4 去重现形：被抑制的维必须留痕。不写这条，读者会以为「本周该维没问题」，
+    // 而真相是「本周该维有问题，且问题上次已经提过、还没处理」——两种结论
+    // 完全相反。
+    if (suppressedProposals.length) {
+      findings.push({
+        ruleId: 'oracle-proposal-suppressed', severity: 'low',
+        detail: `同维提案 ${PROPOSAL_DEDUP_WINDOW_DAYS} 天内已存在（status=proposed），本轮不再开新单：`
+          + suppressedProposals.map((s) => `${s.key}(原 ${s.existingId})`).join(', '),
+      });
+    }
+    // §8.1.6 可观测性（v0.4.3）：本轮实际走了哪条输出路径。
+    // 无降级政策后只剩 template / llm 两种；失败轮不发布，另落 outcome=error 痕。
     findings.push({
       ruleId: 'oracle-llm-mode', severity: 'low',
-      detail: degradationNotes.length
-        ? `mode=${payloadMode} | 降级 ${degradationNotes.join('; ')}`
-        : `mode=${payloadMode}`,
+      detail: `mode=${payloadMode}`,
     });
     const auditLogged = await auditLog({
       targetId: auditTargetId(kind, now, kind === 'alert' ? (quota.alerts ?? 0) + 1 : null),
@@ -410,6 +540,8 @@ function apply(ctx, config) {
       truncated: report.truncated, outcome: 'ok',
       detail: `${extraDetail ? `${extraDetail}; ` : ''}wall ${report.wallMs}ms`,
       proposals: proposalIds.length,
+      // r4：mode 落本表（AC-21 的原文就要求本表有这一列，此前只有 payload 有）
+      mode: payloadMode,
     }, now);
     // 配额计数 + 成功清失败计数（§6.3 状态面）
     const q = rollQuota(state.quota, now);
@@ -522,6 +654,9 @@ function apply(ctx, config) {
     }
 
     // ── 分支 b/c：daily / weekly / monthly（主路径 + 缓存回退）───────────────
+    // r4 weekly 闭环行：读本插件提案积压（只读）。缓存回退路径也要用，
+    // 故在主链路之前算一次；非 weekly 档不算（省一次服务调用）。
+    const loopStat = kind === 'weekly' ? await weeklyLoopStat() : null;
     const metrics = svcMetrics();
     let summary = null;
     let summaryError = null;
@@ -552,21 +687,30 @@ function apply(ctx, config) {
           ? (await countDailyScored()) + 1 : null;
         const baselineDims = state.baseline.establishedAt
           ? dimsFromRecord(state.baseline.composites) : null;
-        const evaluation = evaluateAesthetics(view.atomic, { baseline: baselineDims, adviceCtx: view.adviceCtx });
+        const evaluation = evaluateAesthetics(view.atomic, {
+          baseline: baselineDims, adviceCtx: view.adviceCtx,
+          // r4 Q1 总分门：票数说「在变美」但总分低于基线时降级为「持平」。
+          // 基线未建立时传 null，门自动不生效（此时 Q1 本就返回 flat）。
+          baselineScore: state.baseline.establishedAt ? state.baseline.score : null,
+        });
         const report = renderReport(kind, {
           now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
           baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-          dayIndex, staleDays, reason: opts.reason, detail: opts.detail,
+          dayIndex, staleDays, reason: opts.reason, detail: opts.detail, loop: loopStat,
         });
-        report.wallMs = Date.now() - t0;
         report.staleDays = staleDays; // finalizeBroadcast 靠它把 staleDays 写进 payload 与返回值
-        return finalizeBroadcast({
-          kind, state, quota, now, view, evaluation, report, dayIndex,
-          extraFindings: [{
-            ruleId: 'oracle-stale-cache', severity: 'low',
-            detail: `metrics summary 不可用（${String(summaryError?.message ?? summaryError)}），改用 ${Math.floor(cachedAge / 3_600_000)}h 前缓存广播`,
-          }],
-          extraDetail: `stale-cache-${staleDays}d`,
+        // 缓存回退只换数据源，不换输出层：判词仍必须走 LLM（无降级）。
+        return withLlmFailureTrace(kind, now, opts, async () => {
+          const { l2DeepDiveResult } = await enhanceReport({ kind, report, evaluation, view });
+          report.wallMs = Date.now() - t0;
+          return finalizeBroadcast({
+            kind, state, quota, now, view, evaluation, report, dayIndex, l2DeepDiveResult,
+            extraFindings: [{
+              ruleId: 'oracle-stale-cache', severity: 'low',
+              detail: `metrics summary 不可用（${String(summaryError?.message ?? summaryError)}），改用 ${Math.floor(cachedAge / 3_600_000)}h 前缓存广播`,
+            }],
+            extraDetail: `stale-cache-${staleDays}d`,
+          });
         });
       }
       // 无可用缓存 → 原路径：落痕 + oracle.alert（末次重试才发，防风暴）+ 抛错
@@ -587,59 +731,28 @@ function apply(ctx, config) {
       ? (await countDailyScored()) + 1 : null;
     const baselineDims = state.baseline.establishedAt
       ? dimsFromRecord(state.baseline.composites) : null;
-    const evaluation = evaluateAesthetics(view.atomic, { baseline: baselineDims, adviceCtx: view.adviceCtx });
+    const evaluation = evaluateAesthetics(view.atomic, {
+      baseline: baselineDims, adviceCtx: view.adviceCtx,
+      // r4 Q1 总分门：票数说「在变美」但总分低于基线时降级为「持平」。
+      // 基线未建立时传 null，门自动不生效（此时 Q1 本就返回 flat）。
+      baselineScore: state.baseline.establishedAt ? state.baseline.score : null,
+    });
 
     const report = renderReport(kind, {
       now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
       baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-      dayIndex, reason: opts.reason, detail: opts.detail,
+      dayIndex, reason: opts.reason, detail: opts.detail, loop: loopStat,
     });
 
-    // ── §8.1 LLM 增强档（v2.4；只作用于输出层，不碰评分链路）────────────────
-    // kill-switch: AGINT_AESTHETIC_ORACLE_LLM=off/l1/l1l2/all（默认 all）
-    const llmModeVal = parseLlmMode(process.env);
-    let l2DeepDiveResult = null;
-    const llmDiag = [];   // §8.1.6（v0.4.3）：LLM 降级原因，进审计 findings
-    if (llmModeVal !== 'off' && kind !== 'alert') {
-      // L1：Q3 措辞增强（daily/weekly/monthly 同步 60s 超时；失败降级不阻断）
-      // §4 真实关：advice 为 NO_ADVICE（「本日无可执行建议」）时跳过 LLM——
-      // 不能让模型把「没有建议」润色成一条编造的建议。
-      if (canL1(llmModeVal) && evaluation.worst && evaluation.advice?.advice && evaluation.advice.advice !== NO_ADVICE) {
-        const l1 = await l1EnhanceAdvice(ctx, {
-          templateAdvice: evaluation.advice.advice,
-          templateEvidence: evaluation.advice.evidence ?? '',
-          worstKey: evaluation.worst.key,
-          value: evaluation.worst.value,
-        });
-        if (l1.mode === 'llm') {
-          report.lines = report.lines.map((line) => {
-            if (line.startsWith('建议：')) return `建议：${l1.advice}`;
-            if (line.startsWith('证据：')) return `证据：${l1.evidence}`;
-            return line;
-          });
-          report.text = report.lines.join('\n');
-          report.mode = 'llm';
-        } else {
-          report.mode = 'heuristic-degraded';
-          llmDiag.push({ level: 'L1', reason: l1.reason ?? 'unknown' });
-        }
-      }
-      // L2：weekly 行级深挖（失败降级，结果供 L3 消费）
-      if (kind === 'weekly' && canL2(llmModeVal) && evaluation.worst) {
-        l2DeepDiveResult = await l2DeepDive(ctx, {
-          worstKey: evaluation.worst.key,
-          value: evaluation.worst.value,
-          threshold: evaluation.composites?.[evaluation.worst.key]?.value,
-          auditIds: view.auditIds ?? [],
-          adviceCtx: view.adviceCtx ?? {},
-        });
-        if (l2DeepDiveResult.mode === 'llm') report.mode = 'llm';
-        else llmDiag.push({ level: 'L2', reason: l2DeepDiveResult.reason ?? 'unknown' });
-      }
-    }
-
-    report.wallMs = Date.now() - t0;
-    const out = await finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, llmModeVal, l2DeepDiveResult, llmDiag });
+    // ── §8.1 LLM 输出层（无降级；只作用于输出层，不碰评分链路）──────────────
+    // L1/L2 失败抛 OracleLlmError → 落 error 痕 + 告警 + 调度重试；不发布模板。
+    const out = await withLlmFailureTrace(kind, now, opts, async () => {
+      const { l2DeepDiveResult } = await enhanceReport({ kind, report, evaluation, view });
+      report.wallMs = Date.now() - t0;
+      return finalizeBroadcast({
+        kind, state, quota, now, view, evaluation, report, dayIndex, l2DeepDiveResult,
+      });
+    });
 
     // 成功后写 lastGood 缓存（§6.1 回退面；缓存的是本轮真实采集，供下次 metrics 挂掉时用）
     const latest = await loadState(tables().state);

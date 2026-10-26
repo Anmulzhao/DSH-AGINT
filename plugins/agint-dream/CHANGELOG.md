@@ -5,6 +5,108 @@
 
 ---
 
+## v0.6.0 — 2026-10-25 — LLM consolidation 无降级 + 接 startActivation
+
+**背景**：宿主 `subagents` 服务只有 `startActivation`，没有 `start`。旧代码的
+`typeof subagents.start !== 'function'` 恒真 ⇒ consolidation 25 天全程失败并谎报
+「subagents unavailable」。同时旧策略把失败降级成「见一条推一条」，等于质量闸门敞开。
+
+**变更**
+1. `lib/consolidation.js` 改调 `subagents.startActivation({ provider, label, request,
+   signal, delivery:'caller' })`；旧宿主保留 `start` 兼容分支。`request` 带
+   `parent` / `prompt` / `agentPreset` / `agentOptions` / `outputSchema`。
+2. **无降级**：服务缺失、方法缺失、provider 未注册、超时、stopReason 非 completed、
+   structured 非法、长度不对齐、create/start/result 抛错 → 一律
+   `{ ok:false, mode:'failed', operations:null, reason }`；0 条候选 →
+   `{ ok:true, mode:'not-attempted' }`（内容闸门）。
+3. `lib/sweep.js`：consolidation 失败 ⇒ **本轮不提升任何候选**，
+   `validationFinal.ok=false`，错误进 `errors`；diary 显示 `❌ failed`。
+4. 超时双保险覆盖 create/start/result；晚到的 handle/activation 也会 dispose。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`（-Preview 不可路由）；`reasoningEffort`
+   继续强制透传（缺档位会 400）。
+6. `dream_verify_consolidation` 的 `mode` 现在只会是 `llm` / `not-attempted` / `failed`。
+
+**测试**：`node --test` 167 例全绿（含 consolidation 28 例 + 全量 sweep）。
+
+## 未发版 · 2026-10-23 — 信号源过滤：挡住被标成 kind='user' 的 subagent prompt（提案 0f6c69bc）
+
+**症状**：Light 通道提炼的候选里混入大量非人类消息。top 12 候选里至少 8 条
+其实是主 agent 发给 subagent 的 prompt 文本，被当成「用户偏好/教训」。
+这是调松 dream 阈值之前的阻塞项 —— 门槛一松，噪声直接写进长期记忆。
+
+**根因**：宿主把 subagent prompt 也记成 kind='user'。老的
+`if (kind && kind !== 'user') continue` 挡得住 plugin / skill-catalog 注入，
+**挡不住它**。
+
+**判据（先验证再写代码）**：实测 60 个会话，kind='user' 记录 163 条 ——
+source 带 rpcId/clientTimeZone 的 155 条全是真人；只有 kind 的 8 条全是
+subagent prompt。**文本特征判据不可用**：155 条真人里有 4 条命中「你是/你现在」
+开头（误杀的是真人问句，误杀率 2.6%）。故只用 source keys，不用文本特征。
+
+**改动**：
+- 新 `classifyUserSource(rec)`：两人类标记任一存在 → human；只有 kind →
+  subagent-prompt；其它 kind → other-kind（丢弃）；source 整体缺失 →
+  unknown-source（**保守收**，防老格式会话整轮归零 = 4734bc97 的静默失效同型错）
+- `collectSessionSignals` 按分类过滤并计数，返回 `sourceFilter`
+- 新 `aggregateSourceFilterStats(signals)`：跨会话汇总，含 `judgeFailed` 判据失效标记
+- 判据失效时 `console.warn` + 进 errors（宿主日志可 grep）+ 日记出一行
+- `counts.sourceFilter` 扁平形状进 dream_status / dream_run_now 的 output schema
+  （`additionalProperties:false` 漏声明 = 整个工具不可用，K164 已咬过四次）
+
+**验证**：新测试 `test/user-source-filter.test.mjs` 15 条全绿（含 3 条 negative
+control）；stale 为 0 的存量测试全部保持绿（48/0、5/0、12/0、3/0）。
+部署位同测同绿。
+
+---
+
+## v0.5.0 — 工具错误判据收紧为「因果句式」+ 提升边界闸（2026-10-19）
+
+**根因**：v0.4.0 的判据是「出现任一诊断关键词即放行」，而那批关键词
+（`schema` / `invalid` / `expected` / `enoent` / `eacces`…）在真实 stderr 里
+几乎必然出现 —— 判据等于没判。
+
+**取证**（2026-10-19 03:00 夜班 sweep 日记 `dreams/2026-10-19.md`）：647 条工具
+错误信号里 107 条过了闸，其中 3 条以**原文**进了长期记忆：
+
+```
+lesson/L1  工具执行报错：Error: invalid arguments: missing required property "file_path" …      ← 命中 invalid
+lesson/L1  工具执行报错：[stderr] <GBK 乱码> … TerminatorExpectedAtEndOfString [exit code: 1] ← 命中 Expected
+lesson/L1  工具执行报错：· DimensionScoreSchema · DreamPhaseSchema … [PASS] L0 FROZEN 契约未变更 ← 命中 schema
+```
+
+三条都不是教训，是工具机制的残骸。当晚 P1 LLM consolidation 处于
+`heuristic-degraded`（subagents service unavailable），validation gate 走
+「全部 added」退化路径 ⇒ 没有任何一层在挑拣，残骸直接落库。
+
+**修复**（两道闸，职责不同）：
+
+1. **抽取闸**（`classifyToolError`）：判据从「关键词」改为「**因果句式**」——
+   文本必须出现因果连接（因为/由于/根因/because/due to…）或祈使语气
+   （必须/应该/改成/must/should/instead of…）。两者都没有 ⇒ 拦下。
+   - **行为变更**：旧判据放行的 schema 类报错（`rule_list` 的 additionalProperties
+     不匹配）现在被拦下。它说的是「现在是什么样」，不是「应该怎样」。
+   - **代价（明说）**：`EACCES: permission denied` 这类纯 syscall 报错不再进池。
+     它是工具机制；要沉淀就由人 / LLM 写成主张再 `memory_write`。
+2. **提升边界闸**（`promotionBlockReason`，新导出）：候选文本会被截断到
+   `maxCandidateChars=220`，因果句式可能落在截断点之后 —— 于是「过了抽取闸的
+   残骸」仍可能以残骸形态进本体。这道闸判的是**实际写进本体的那串文本**。
+   只对工具错误来源的候选生效（用户原话天然是主张，用因果句式卡它会误杀）。
+   拦截数进日记「提升边界闸拦截」行与 `counts.skippedRawToolError`（可见，不做黑洞）。
+
+**kill-switch**：`toolErrorDiagnosticOnly=false` 时**两道闸一起让路** ——
+完全回退 v0.4.0 之前的行为（全部放行），不留半死的开关。
+
+**测试**：`test/sweep.test.js` 新增 7 条（3 条真实残骸必须拦下 / schema 类行为
+变更 / 因果句式必须放行 / 边界闸单元 / 非工具错误不受约束 / kill-switch 让路 /
+**端到端**：残骸不进长期记忆、因果句式照进 —— 后两条互为红绿自证）。
+全量实测 **125 通过 / 0 失败**（含插件其余 7 个测试文件）。
+
+**已知未修**：P1 LLM consolidation 仍落 `heuristic-degraded`（宿主
+`subagents` service 取不到）。本次只保证「没有 LLM 挑拣时，残骸也进不去」；
+LLM 通路本身是另一件事。
+
+---
+
 ## v0.4.1 — dry-run 预览真正只读：不再覆盖当天日记、不再写 recall store（2026-09-28）
 
 **根因**：`runSweep` 有两处副作用被 `apply` 漏掉了。

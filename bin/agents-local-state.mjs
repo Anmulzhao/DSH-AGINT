@@ -38,9 +38,28 @@ const AGENTS_MD = join(REPO_ROOT, 'AGENTS.md');
 // 本机私有块：不入库（.gitignore），两台机器各持一份
 const AGENTS_LOCAL = join(REPO_ROOT, 'AGENTS.local.md');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
-const HOST_PLUGINS_DIR = join(DSH_HOME, 'profiles', 'web', 'plugins');
+/**
+ * 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件
+ * `$DSH_HOME/.agint-bundle/profile.json`。
+ *
+ * ⚠️ 2026-10-20 修：此前这里写死 'web'。本机 2026-10-18 起只跑 desktop
+ * （web profile 已退役，老板令），写死 web ⇒ 永远报「未探测到 host 插件目录 /
+ * 挂载 0 个 / agint 段 0 个」——**假事实进本机实况块**。
+ * 与 `bin/check-wiring.mjs`（2026-10-19 同款修）保持一致。
+ */
+function resolveHostProfileName() {
+  try {
+    const fact = JSON.parse(readFileSync(join(DSH_HOME, '.agint-bundle', 'profile.json'), 'utf8'));
+    if (typeof fact?.profile === 'string' && fact.profile.trim() !== '') return fact.profile.trim();
+  } catch {
+    /* 文件不存在 / 不是 JSON / 没这个字段：继续回落，不吵 */
+  }
+  return 'web';
+}
+const HOST_PROFILE = resolveHostProfileName();
+const HOST_PLUGINS_DIR = join(DSH_HOME, 'profiles', HOST_PROFILE, 'plugins');
 const HOST_PRESET_DIR = join(DSH_HOME, '.agent-presets', 'agint');
-const HOST_PATCH_YML = join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml');
+const HOST_PATCH_YML = join(DSH_HOME, 'profiles', HOST_PROFILE, 'plugins', 'cordis.patch.yml');
 const HOST_CRON_JSON = join(DSH_HOME, 'storages', 'agint_cron.json');
 const REPO_PLUGINS_DIR = join(REPO_ROOT, 'plugins');
 // 仓库级事实只从仓库读 —— 这是两台机器产出相同字节的关键，绝不能回退到 host 部署位
@@ -117,6 +136,12 @@ function probe() {
   const presetSkills = listDirs(REPO_PRESET_SKILLS);
 
   // host patch agint 段
+  //
+  // ⚠️ 2026-10-20 修：此前读 `profiles/<p>/cordis.patch.yml`（profile 级 patch）。
+  // profile 级那一份**按设计没有** AGINT 段（AGINT 段在 bundle 层，见
+  // `docs/dsh-integration.md`），所以本行恒报「0 个」——不是没装，是读错了文件。
+  // 真正带 AGINT 段的是 bundle 真身与其镜像位：`.agint-bundle/cordis.patch.yml`
+  // 与 `profiles/<p>/plugins/cordis.patch.yml`。这里读镜像位。
   let patchSegs = [];
   try {
     const patch = readFileSync(HOST_PATCH_YML, 'utf8');
@@ -180,7 +205,7 @@ function renderLocal(p) {
     .join('、');
 
   const syncLine = p.host.size === 0
-    ? '⚠️ 未探测到 host 插件目录（DSH_HOME 无 profiles/web/plugins？）'
+    ? `⚠️ 未探测到 host 插件目录（DSH_HOME 无 profiles/${HOST_PROFILE}/plugins？）`
     : p.drift.length === 0 && p.hostOnly.length === 0 && p.repoOnly.length === 0
       ? `${p.host.size}/${p.repo.size} 个插件 lib/index.js 哈希一致，无漂移 ✅`
       : `⚠️ lib/index.js 哈希漂移：${p.drift.join('、') || '无'}`
@@ -216,7 +241,7 @@ function renderLocal(p) {
     `- **仓库根**：\`${REPO_ROOT}\``,
     `- **仓库 ↔ host 同步**：${syncLine}`,
     `- **host 挂载插件**（${p.host.size} 个）：${hostList}`,
-    `- **cordis.patch.yml agint 段**（host web profile，${p.patchSegs.length} 个）：${p.patchSegs.join('、') || '无'}`,
+    `- **cordis.patch.yml agint 段**（host ${HOST_PROFILE} profile，${p.patchSegs.length} 个）：${p.patchSegs.join('、') || '无'}`,
     `- **cron 实况**（${p.cronJobs.length} 个 job，按最近 tick 排序）：${cronLine}`,
     '',
     END,

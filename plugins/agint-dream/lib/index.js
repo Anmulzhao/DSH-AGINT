@@ -285,6 +285,9 @@ function apply(ctx, config) {
         counts: last?.counts ?? {
           sessions: 0, userMessages: 0, memWrites: 0, toolErrors: 0,
           candidates: 0, gated: 0, skippedPromoted: 0, validationOk: true,
+          // 2026-10-19：提升边界闸兜底（形状必须与 sweep result.counts 一致，
+          // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
+          skippedRawToolError: 0,
           validationReason: null, recovered: 0, promoted: 0,
           recallAppended: 0, recallPruned: 0,
           // P1 LLM consolidation mode 兜底（与 lib/sweep.js result.counts 对齐）
@@ -293,6 +296,9 @@ function apply(ctx, config) {
           qualityEval: { status: 'unavailable', compositeMean: null, harmMean: null, targetCount: 0, okCount: 0 },
           // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要兜底
           evolutionTemplates: { status: 'unavailable', count: 0, topConfidence: null, boost: 0 },
+          // 2026-10-23（提案 0f6c69bc）：信号源过滤兜底（形状必须与 sweep result.counts 一致，
+          // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
+          sourceFilter: { humanKept: 0, unknownKept: 0, subagentDropped: 0, judgeFailed: false },
           // 2026-09-28：工具错误诊断过滤兜底（形状必须与 sweep result.counts 一致，
           // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
           toolErrorFilter: { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0 },
@@ -316,7 +322,7 @@ function apply(ctx, config) {
 
     /**
      * P1: 跑一次 minimal LLM consolidation 验证。
-     * 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+     * 在 host plane 真调 ctx.agents.create() + ctx.subagents.startActivation(...)，
      * 不依赖 sweep 主体，不写 agint.memory（仅返回 schema-validated structured result）。
      * 验证 host 端 DSH subagent runtime 通路是否真可用 —— 设计文档第一步。
      *

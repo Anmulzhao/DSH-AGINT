@@ -178,6 +178,13 @@ export const SkillStateSchema = z.object({
   archivedAt: z.string().nullable().default(null),
   archiveReason: z.string().nullable().default(null),
   curationNotes: z.string().default(''),
+
+  // 物理位置（2026-10-21）：技能属于哪个扫描根 + 物理目录名。
+  // 归档/恢复按这两个字段定位目录 —— 目录名可能 ≠ frontmatter name，
+  // 且多根部署下不同技能在不同根，不能拿 skills_dir 猜。
+  // 存量记录没有这两个字段（2026-10-21 之前）→ 回退到 skills_dir 第一根。
+  rootDir: z.string().nullable().default(null),
+  dirName: z.string().nullable().default(null),
 });
 
 export const CurationActionSchema = z.object({
@@ -273,6 +280,23 @@ export const AuditLogSchema = z.object({
 
 const defaultDshHome = () => (process.env.DSH_HOME || `${process.env.HOME ?? ''}/.dsh`);
 
+/**
+ * skills_dir 归一化：字符串 → 单元素数组；数组 → 去空值、去重复。
+ * 扫描侧（index.js scanSkillRoots）与归档侧（executor moveToArchive /
+ * moveBackFromArchive）共用同一份 —— 2026-10-21 的根因正是两边各写一遍：
+ * 扫描侧改成了多根，归档侧仍 `join(cfg.skills_dir, ...)`，数组进 path.join
+ * 抛 ERR_INVALID_ARG_TYPE，归档能力静默失效（fail-safe：不动目录、不落状态）。
+ */
+export function normalizeSkillRoots(skillsDir) {
+  const list = Array.isArray(skillsDir) ? skillsDir : [skillsDir];
+  const out = [];
+  for (const v of list) {
+    if (typeof v !== 'string' || !v.trim()) continue;
+    if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
 export const ConfigSchema = z.object({
   // 状态转换阈值
   stale_after_days: z.number().int().min(1).default(30),
@@ -323,7 +347,13 @@ export const ConfigSchema = z.object({
   // 2026-10-01 增补：用户级根只装 autocreate 投放的技能，AGINT 手工维护的技能仍在
   // preset 目录里 → 单根扫描让后者整批在账外（实测 preset 的 7 个技能 0 条账，
   // 账上 12 条里 5 条是已回滚的自动技能）。故接受目录列表：多根合并、按 name 去重。
-  skills_dir: z.union([z.string(), z.array(z.string())]).default(() => `${defaultDshHome()}/skills`),
+  // 2026-10-21 增补：默认值也跟着改成双根 —— 部署位（cordis.patch.yml）显式配了
+  // 两个根，仓库默认值只给一个根会让「仓库单跑」与「部署位」行为不一致
+  //（账实不符的另一种形态：仓库以为只有一个根，实际有两个）。
+  skills_dir: z.union([z.string(), z.array(z.string())]).default(() => [
+    `${defaultDshHome()}/skills`,
+    `${defaultDshHome()}/.agent-presets/agint/skills`,
+  ]),
   // 账本里有、任何扫描根里都没有的技能 → 标记 archived（只改账，不移动目录、不删记录）。
   // 2026-10-01 前没有这条通道，被回滚的自动技能会以 active 永久留在账上充当分母。
   orphan_sweep_enabled: z.boolean().default(true),

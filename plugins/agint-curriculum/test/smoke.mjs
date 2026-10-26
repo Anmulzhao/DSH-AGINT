@@ -28,6 +28,7 @@ test('导出契约：name / inject / apply / ConfigSchema', () => {
   assert.equal(c.stale_reverify_days, 30);
   assert.equal(c.generation_batch_limit, 5);
   assert.equal(c.challenge_cooldown_hours, 24);
+  assert.equal(c.dedup_window_days, 30);            // v0.1.4 生成期去重窗口
   assert.equal(c.difficulty_window_days, 28);
   assert.equal(c.difficulty_min_samples, 5);
   assert.equal(c.pass_floor, 0.40);

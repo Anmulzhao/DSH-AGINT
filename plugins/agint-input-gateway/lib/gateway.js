@@ -1,4 +1,4 @@
-﻿/**
+/**
  * agint-input-gateway — Gateway 核心逻辑。
  *
  * 职责：注册 Channel → 定时/手动 fetch → 过滤去重配额 → 归一化 → 路由发布到 eventBus。
@@ -22,6 +22,7 @@ import {
   emptyCounters, packCounters, emptyChannelState, packDedup,
 } from './storage.js';
 import { checkSignal, getSecurityRules } from './security.js';
+import { readZeroHitState, updateZeroHitState, evaluateZeroHit } from './zero-hit.js';
 
 // security 门禁检查范围：外部来源信号（外部世界 / 对抗 / 跨 Agent）。
 // 内部通道（self-observation）与 human 不检 —— 它们不是"外部信号"。
@@ -228,6 +229,27 @@ export class InputGateway {
 
     // 处理信号（过滤/去重/配额/路由/发布）
     const result = this.processSignals(signals, channel);
+
+    // ── 零命中告警（2026-10-14）──────────────────────────────────────────
+    // 判据是「本次有没有真的产出信号」，不是「有没有跑」：fetch 成功但 emitted=0
+    // 正是静默失明的形状（self-observation 的 streak 判据恒不触发就是这么隐身的）。
+    // ⛔ 不阻断 fetch：只更新计数 + 落盘 + warn。告警链自己搞挂被告警对象是自伤。
+    try {
+      const prev = readZeroHitState(state);
+      const next = updateZeroHitState(prev, { emitted: result.emitted });
+      state.consecutiveZeroHit = next.consecutiveZeroHit;
+      state.lastNonZeroAt = next.lastNonZeroAt;
+      const z = evaluateZeroHit(next, {
+        threshold: state.zeroHitAlertThreshold ?? undefined,
+        enabled: state.zeroHitAlert !== false,
+      });
+      if (z.status === 'degraded') {
+        // 打日志：工具输出之外还得能在宿主日志里 grep 到（可观测 > 静默）
+        console.warn(`[agint-input-gateway] channel ${channelId}: ${z.reason}`);
+      }
+    } catch {
+      // fail-open：告警链路不得影响 fetch 结果
+    }
 
     counters.signalsEmitted += result.emitted;
     counters.signalsFiltered += result.filtered;
@@ -476,6 +498,12 @@ export class InputGateway {
     if (ch && typeof ch.health === 'function') {
       try { result.health = await ch.health(); } catch {}
     }
+    // 附加零命中判定（2026-10-14）。⚠️ 不渲染 = 假绿：算出来了但看不见
+    // （Playbook §3.19 同型）。tools.js 的两个 render 都必须把它打出来。
+    result.zeroHit = evaluateZeroHit(readZeroHitState(state), {
+      threshold: state.zeroHitAlertThreshold ?? undefined,
+      enabled: state.zeroHitAlert !== false,
+    });
     return result;
   }
 

@@ -84,15 +84,40 @@ test('coverage 为 null（无 total 可算）⇒ 印 N/A 而不是 0%', () => {
   assert.match(lines.join('\n'), /覆盖率 \*\*N\/A\*\*/);
 });
 
-// ── 3. 四类都在表里，计数为 0 也要印 ────────────────────────────────
+// ── 3. 五类都在表里，计数为 0 也要印 ────────────────────────────────
 
-test('四类都要出现在表里，哪怕计数为 0（否则「0 条 REAL_DEFECT」会被漏读）', () => {
+test('五类都要出现在表里，哪怕计数为 0（否则「0 条 REAL_DEFECT」会被漏读）', () => {
   const lines = [];
   renderEvalFailAttribution(lines, attribution);
   const text = lines.join('\n');
-  for (const c of ['ASSERT_DRIFT', 'HARNESS_GAP', 'REAL_DEFECT', 'NOT_ATTRIBUTED']) {
+  for (const c of ['ASSERT_DRIFT', 'HARNESS_GAP', 'REAL_DEFECT', 'EXPECTED_RED', 'NOT_ATTRIBUTED']) {
     assert.match(text, new RegExp(c));
   }
+});
+
+test('⛔ EXPECTED_RED 有计数时必须印出「不计入分母」的口径说明', () => {
+  const lines = [];
+  renderEvalFailAttribution(lines, {
+    ...attribution,
+    total: 5,
+    attributed: 2,
+    denominator: 2,
+    expectedRed: 3,
+    coverage: 1,
+    byCategory: { ASSERT_DRIFT: 2, HARNESS_GAP: 0, REAL_DEFECT: 0, EXPECTED_RED: 3, NOT_ATTRIBUTED: 0 },
+  });
+  const text = lines.join('\n');
+  assert.match(text, /已排除负控制 3 条/, '⛔ 分母口径必须可见');
+  assert.match(text, /口径变化/, '⛔ 必须提醒与旧报告对比会看到数字变大');
+});
+
+test('⛔ expectedRed=0 时不印口径说明（避免噪音，但没有就说不该有）', () => {
+  const lines = [];
+  renderEvalFailAttribution(lines, { ...attribution, expectedRed: 0, denominator: 6 });
+  const text = lines.join('\n');
+  assert.doesNotMatch(text, /已排除负控制/);
+  // 但 EXPECTED_RED 那一行仍在表里，计数 0
+  assert.match(text, /EXPECTED_RED.*\| 0/);
 });
 
 test('0 条 REAL_DEFECT 时明写「无」的方向（不静默）', () => {

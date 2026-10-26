@@ -77,12 +77,25 @@ export function repoRootFromHere() {
   return null;
 }
 
+// 提案状态五档（2026-10-23 加 `approved`）。
+//
+// ⛔ 为什么不复用 `applied` 表示「老板批准了」：`applied` 的语义是**已落地**，
+//    note 里写的是落地证据（改了什么文件）。把「同意做」写成 `applied` 会让
+//    proposal 表说假话 —— 而未落地的提案占着 applied，事后无法区分「真做完」
+//    与「只是点了头」。`approved` 补的是「人工批准、尚未执行」这一档，
+//    它让待批队列第一次有出口：proposed → approved → applied。
+//
+// 状态流转（只增不改，历史行全部仍合法）：
+//   proposed ──批准──▶ approved ──落地──▶ applied
+//        └──拒绝──▶ rejected
+//        └──暂不处理──▶ wontfix
+//   人工改判允许回 proposed（家族面板提供「撤销」，走 setStatus 同一出口）。
 const proposalSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   body: z.string().min(1),
   category: z.enum(['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other']).default('other'),
-  status: z.enum(['proposed', 'applied', 'rejected', 'wontfix']).default('proposed'),
+  status: z.enum(['proposed', 'approved', 'applied', 'rejected', 'wontfix']).default('proposed'),
   source: z.string().default(''),
   note: z.string().default(''),
   createdAt: z.string().default(() => new Date().toISOString()),
@@ -112,7 +125,7 @@ const spec = defineDomain({
   },
 });
 
-const PROPOSAL_STATUSES = ['proposed', 'applied', 'rejected', 'wontfix'];
+const PROPOSAL_STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
 const PROPOSAL_CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'other'];
 
 function apply(ctx, config) {
@@ -183,11 +196,23 @@ function apply(ctx, config) {
   };
 
   // ---- review files: path discipline + walk (same as agint-wiki) ----
+  // Windows 路径逃逸误报修复（2026-10-14）：
+  // `resolve()` 在 win32 返回反斜杠路径（`D:\...\reviews`），而判据
+  // `abs.startsWith(root + '/')` 拼出的 `D:\...\reviews/` 与真实
+  // `D:\...\reviews\xxx.md` 永不匹配 ⇒ 所有合法相对路径都被判 escapes root。
+  // 症状（实测）：evolve_read path="2026-10-12-周复盘.md" 抛
+  //   `agint-evolve: path escapes root` ⇒ 14 份复盘报告一份都读不到。
+  // 修法与 agint-wiki v0.4 同型（plugins/agint-wiki/lib/index.js:43-51）：
+  //   比较前把两侧都归一化成正斜杠。不削弱安全 —— `../` 经 resolve() 后
+  //   会真正跳出 root，归一化后照样被拒（回归用例覆盖）。
+  const normRoot = root.replace(/\\/g, '/');
+
   const clean = (p) => {
     const trimmed = String(p ?? '').replace(/^\/+/, '');
     if (!trimmed.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
     const abs = resolve(root, trimmed);
-    if (abs !== root && !abs.startsWith(root + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
+    const normAbs = abs.replace(/\\/g, '/');
+    if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
     return { rel: trimmed, abs };
   };
 
@@ -305,11 +330,16 @@ function apply(ctx, config) {
         try {
           const parsed = JSON.parse(raw);
           // 只取白名单字段：周报是给人读的，不该被产物文件里的额外键带偏。
+          // 2026-10-20：expectedRed / denominator 一并搬运 ——
+          //   覆盖率分母已排除负控制，周报必须能印出分母口径，
+          //   否则 total 与 attributed 对不上，读者会以为算错或以为数字突变。
           snapshot.evalFailAttribution = {
             total: Number(parsed.total) || 0,
             attributed: Number(parsed.attributed) || 0,
             coverage: typeof parsed.coverage === 'number' ? parsed.coverage : null,
             coverageMin: typeof parsed.coverageMin === 'number' ? parsed.coverageMin : null,
+            expectedRed: typeof parsed.expectedRed === 'number' ? parsed.expectedRed : null,
+            denominator: typeof parsed.denominator === 'number' ? parsed.denominator : null,
             byCategory: parsed.byCategory && typeof parsed.byCategory === 'object' ? parsed.byCategory : {},
             realDefects: Number(parsed.realDefects) || 0,
             generatedAt: typeof parsed.generatedAt === 'string' ? parsed.generatedAt : null,

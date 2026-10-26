@@ -17,6 +17,11 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
+// 跨插件引用走相对路径（与 `agint-skill-autocreate/lib/semantic-window.js:24`
+// 引 `../../agint-session-extract/index.js` 同形）。
+// ⛔ 不用裸包名 'agint-session-source'：全仓 grep 命中 **0 行** 这种写法，
+//    插件间依赖在部署位不是 npm 包树，裸包名解析不到。
+import { createSessionSource, findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -98,20 +103,33 @@ function detectToolAnomaly() {
     });
   }
 
-  // b) 单工具连续失败（从后往前找）
-  const streak = {};
+  // b) 单工具连续失败（窗口内同一 tool 的最长失败游程）
+  //
+  // 2026-10-14 修复：原实现在遇到第一条成功记录时 `break` —— 那测的是
+  // 「文件末尾的失败游程」，不是「窗口内的最长游程」。真实数据末尾那条
+  // 几乎总是成功的 ⇒ maxStreakCount 恒为 0 ⇒ 该判据从未生效过。
+  // 实测（agint_tool_stats.jsonl，16822 行）：最近 200 条里 pwsh 有连续
+  // 16 次 ok===false（阈值 ≥3），而修复前产出 0 条信号 —— 检测器全 active
+  // 却静默漏检，正是「看起来健康实则失明」。
+  //
+  // 正确语义：同一 tool 的**相邻**失败才算连续；中间夹一次成功即断链。
+  // 所以逐条维护「当前游程」（遇成功归零），并取历史最大值。
+  const cur = {};          // tool → 当前连续失败数
+  const best = {};         // tool → 窗口内最长连续失败数
   let maxStreakTool = null;
   let maxStreakCount = 0;
-  for (let i = recent.length - 1; i >= 0; i--) {
+  for (let i = 0; i < recent.length; i++) {
     const r = recent[i];
+    const t = r.tool;
     if (r.ok === false) {
-      streak[r.tool] = (streak[r.tool] || 0) + 1;
-      if (streak[r.tool] > maxStreakCount) {
-        maxStreakCount = streak[r.tool];
-        maxStreakTool = r.tool;
+      cur[t] = (cur[t] || 0) + 1;
+      if (cur[t] > (best[t] || 0)) best[t] = cur[t];
+      if (best[t] > maxStreakCount) {
+        maxStreakCount = best[t];
+        maxStreakTool = t;
       }
     } else {
-      break;
+      cur[t] = 0;          // 成功 ⇒ 该 tool 的游程断链
     }
   }
   if (maxStreakCount >= 3 && maxStreakTool) {
@@ -296,17 +314,22 @@ function resolveZstdBin() {
   return 'zstd';
 }
 
-const SESSION_FILE_NAMES = Object.freeze([
-  'session.v4.jsonl.zstd',
-  'session.v3.jsonl.zstd',
-  'session.jsonl.zstd',
-]);
-
 /**
- * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
- * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
+ * 会话日志发现：2026-10-19 起走 `agint-session-source` 统一入口。
+ *
+ * 原状是本文件**硬编码三个名字**（v4/v3/无版本）且**无后缀兜底**，
+ * `cross-agent.js` 还持着第二份一模一样的副本。宿主下次改名（v5）这里会再瞎一次 ——
+ * 09-22 改 v4 时同类事故让 autocreate 供料断了 12 天（M1 断链）。
+ *
+ * 新形状：上游 `sessionQuery` 服务可用 ⇒ 走它；不可用 ⇒ 回落下面的本地发现层，
+ * **且回落必须出声**（onFallback）。静默 skip 是这个项目最坏的一类失败。
+ *
+ * 2026-10-19（F5 收口二步）：本文件与 cross-agent.js 的两份名字表**都删了**，
+ * 统一用 session-source 的 `findSessionLogFile`（候选名优先 + 后缀兜底）。
  */
-export function listRecentSessions(maxCount = 8) {
+
+/** 回落发现层：候选名优先，其次按后缀兜底（不再因宿主改名而静默归零）。 */
+function listRecentSessionsFallback(maxCount = 8) {
   const root = join(dshHome(), 'sessions');
   let workspaces;
   try { workspaces = readdirSync(root, { withFileTypes: true }); } catch { return []; }
@@ -319,18 +342,67 @@ export function listRecentSessions(maxCount = 8) {
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
       const dirPath = join(wsDir, d.name);
-      for (const fname of SESSION_FILE_NAMES) {
-        const p = join(dirPath, fname);
-        try {
-          const st = statSync(p);
-          found.push({ path: p, sessionId: d.name, mtimeMs: st.mtimeMs });
-          break;
-        } catch { /* 该格式不存在 */ }
-      }
+      // 候选名 + 后缀兜底都在 session-source（唯一真相源）
+      const hit = findSessionLogFile(dirPath, { statSync, readdirSync });
+      if (!hit) continue;
+      // 形状契约（2026-10-19）：回落层必须与适配器出口同形 { dir, path, mtimeMs }。
+      // 上一版这里写 sessionId: d.name，而 listRecentSessions 出口 mapper 读 r.dir ⇒
+      // 回落时 sessionId 全变 undefined（被 session-integrity 测试抓出：
+      // actual [undefined, undefined] vs expected [sid-1, sid-2]）。
+      try { found.push({ dir: d.name, path: hit, mtimeMs: statSync(hit).mtimeMs }); }
+      catch { /* stat 失败跳过 */ }
     }
   }
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return found.slice(0, maxCount);
+}
+
+/**
+ * 拿一个会话源。ctx 由调用方注入（channel 拿不到 ctx ⇒ 传 null 走回落）。
+ * ⛔ 回落的出声回调必需：没它就抛错，不静默降级。
+ */
+export function createSessionSourceForSelfObservation({ ctx = null, onFallback }) {
+  return createSessionSource({
+    ctx,
+    fallback: ({ maxCount = 8 } = {}) => listRecentSessionsFallback(maxCount),
+    onFallback,
+    source: 'input-gateway/self-observation',
+  });
+}
+
+/**
+ * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
+ * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
+ *
+ * 2026-10-19 改：走 `agint-session-source`（上游优先 + 回落出声）。
+ * 既有调用方不用改签名；ctx 缺省时走回落并出声。
+ */
+export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback = null } = {}) {
+  // ⚠️ 2026-10-21 回退（运行态取证）——本通道**按设计走本地原始日志**，不走上游。
+  //
+  // 为什么必须回退（D1 迁移把这条链接上上游后，它反而瞎了）：
+  //   ① **检测对象不同**：完整性检查查的是磁盘上的**原始日志**（坏行 / seq 断裂 /
+  //      缺 content / 未配对 call）。上游 `readSession` 给的是**重放校验后**的
+  //      事件流 —— 缺陷在校验阶段就被抹平 ⇒ 拿它做完整性检查，检测能力直接归零。
+  //   ② **上游不给磁盘路径**：`listSessions` 的记录没有 path ⇒ 下游拿到的
+  //      `path` 是空串 ⇒ 解压必然失败 ⇒ 全部会话被判为 undecompressible。
+  //
+  // 宿主若再改会话日志命名，本通道靠 `findSessionLogFile` 的候选名 + 后缀兜底兜住
+  // （2026-09-22 改名致 12 天断供的教训）。
+  //
+  // 代价要说清：这仍是 B-008 登记的「宿主层能力自建」（自拉 zstd 解压），
+  // 本轮**不**消除 —— 完整性检查需要原始字节，上游目前不提供该形态。
+  void ctx;
+  const notify = onFallback ?? ((reason) => {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
+    }
+  });
+  notify('local-by-design: session 完整性检查必须读原始日志（上游是重放校验后的产物，且不含磁盘路径）');
+  // 对齐既有形状：{ path, sessionId, mtimeMs }
+  return listRecentSessionsFallback(maxCount).map((r) => ({
+    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs,
+  }));
 }
 
 /**
@@ -344,32 +416,54 @@ export function listRecentSessions(maxCount = 8) {
  *   - 缺 content：有 content/message 字段但内容为空的事件
  *   - 未配对 call：tool/call 的 callId 无对应 tool/result
  * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
+ *
+ * ⚠️ 2026-10-21 回退（运行态取证）：**只读本地原始日志**，不走上游。
+ *   ① 完整性检查查的就是原始日志的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call）；
+ *      上游 `readSession` 给的是**重放校验后**的事件流 ⇒ 缺陷已被抹平，
+ *      拿它检查等于拿干净数据找脏东西 —— 检测能力直接归零。
+ *   ② 上游记录不含磁盘路径，本函数却必须拿到日志文件才能解压。
+ *   ⇒ 本函数签名不再接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
  */
-export function inspectSessionFile(file) {
-  const bin = resolveZstdBin();
-  let text;
-  try {
-    text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  } catch (e) {
-    return { decompressError: String(e?.message || e).slice(0, 200) };
+export async function inspectSessionFile(file) {
+  let events;
+  let decompressError = null;
+  let badLinesSeen = null;   // zstd 路径读入时累计的坏行数
+
+  {
+    const bin = resolveZstdBin();
+    try {
+      const text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      // ⛔ 不能 .filter(Boolean) 丢坏行 —— 那等于把"坏行计数"这个检测项废掉。
+      // 旧代码是在循环里 try/catch 计数。这里必须保留坏行数。
+      const lines = text.split('\n').filter((l) => l.trim());
+      const parsed = [];
+      let zstdBadLines = 0;
+      for (const line of lines) {
+        try { parsed.push(JSON.parse(line)); } catch { zstdBadLines += 1; }
+      }
+      events = parsed;
+      badLinesSeen = zstdBadLines;
+    } catch (e) {
+      return { decompressError: String(e?.message || e).slice(0, 200) };
+    }
   }
-  const lines = text.split('\n').filter((l) => l.trim());
-  let badLines = 0;
+
+  if (decompressError) return { decompressError };
+
+  let badLines = badLinesSeen ?? 0;
   let prevSeq = null;
   let seqGaps = 0;
   let missingContent = 0;
   const callIds = new Set();
   const resultIds = new Set();
 
-  for (const line of lines) {
-    let ev;
-    try { ev = JSON.parse(line); } catch { badLines += 1; continue; }
-    const seq = ev.seq;
+  for (const ev of events) {
+    const seq = ev?.seq;
     if (typeof seq === 'number') {
       if (prevSeq !== null && seq !== prevSeq + 1) seqGaps += 1;
       prevSeq = seq;
     }
-    const data = ev.data;
+    const data = ev?.data;
     if (data && typeof data === 'object') {
       const hasContentField = data.content !== undefined || data.message !== undefined;
       if (hasContentField) {
@@ -380,11 +474,11 @@ export function inspectSessionFile(file) {
         if (empty) missingContent += 1;
       }
     }
-    if (ev.type === 'tool/call') {
+    if (ev?.type === 'tool/call') {
       const callId = data?.callId;
       if (callId) callIds.add(callId);
     }
-    if (ev.type === 'tool/result') {
+    if (ev?.type === 'tool/result') {
       const tcId = data?.message?.content?.[0]?.toolCallId;
       if (tcId) resultIds.add(tcId);
     }
@@ -395,9 +489,9 @@ export function inspectSessionFile(file) {
   return {
     sessionId: file.sessionId,
     path: file.path,
-    totalLines: lines.length,
+    totalLines: events.length,
     badLines,
-    badLineRate: lines.length ? badLines / lines.length : 0,
+    badLineRate: events.length ? badLines / events.length : 0,
     seqGaps,
     missingContent,
     unpairedCalls,
@@ -410,14 +504,15 @@ export function inspectSessionFile(file) {
  * 数据源：~/.dsh/sessions/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
  * 最近 8 个会话（mtime 排序）。zstd 不可用时整体软降级返回 []（不误报"全会话损坏"）。
  */
-function detectSessionIntegrity() {
+async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
   if (!existsSync(resolveZstdBin())) return [];     // zstd 缺失 → 软降级
-  const files = listRecentSessions(8);
+  // 2026-10-19：listRecentSessions 改为异步（要走上游服务探测），调用方必须 await。
+  const files = await listRecentSessions(8, { ctx, onFallback });
   if (files.length === 0) return [];
 
   const issues = [];
   for (const f of files) {
-    const insp = inspectSessionFile(f);
+    const insp = await inspectSessionFile(f);
     if (insp.decompressError) {
       issues.push({ sessionId: f.sessionId, flags: ['undecompressible'], totalLines: 0, badLines: 0, badLineRate: 0, seqGaps: 0, missingContent: 0, unpairedCalls: 0, path: f.path });
       continue;
@@ -469,7 +564,8 @@ export const selfObservationChannel = {
       ...detectMetricRegression(),
       ...detectRuleHotspot(),
       ...detectCompressLoss(ctx || {}),
-      ...detectSessionIntegrity(),
+      // ctx 透传给会话源：上游 sessionQuery 可用就走它，不可用回落并出声
+      ...(await detectSessionIntegrity({ ctx: ctx || null })),
     ];
     return signals;
   },

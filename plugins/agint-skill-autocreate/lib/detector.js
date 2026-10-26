@@ -279,7 +279,8 @@ export function detectPatterns(taskInstances, opts = {}) {
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
         avgDurationMs: task.durationMs ?? null,
-        avgTokenCost: null,
+        // 2026-10-21：接上游 token 计量（task.tokenCost 由 aggregator 从 tool-stats 的 deltaTokens 累加而来）
+        avgTokenCost: task.tokenCost ?? null,
         successRate: task.successRate,
         status: 'active',
         standardizable: null,
@@ -299,7 +300,11 @@ export function detectPatterns(taskInstances, opts = {}) {
       p.modelScope = mergeModelScope(p.modelScope, task.modelScope ?? null);
       p.avgDurationMs = p.avgDurationMs == null && task.durationMs == null
         ? null
-        : Math.round(((p.avgDurationMs ?? 0) * p.occurrenceCount + (task.durationMs ?? 0)) / (p.occurrenceCount + 1));
+        : Math.round(((p.avgDurationMs ?? 0) * p.occurrenceCount + (task.durationMs ?? 0)) / (p.occurrenceCount + 1));      // token 成本滚动均值（同 avgDurationMs 口径：任一侧为 null 才算 null，
+      // 不把"没测到"混进平均值 —— 否则缺席会被平均成 0）
+      p.avgTokenCost = p.avgTokenCost == null && task.tokenCost == null
+        ? null
+        : Math.round(((p.avgTokenCost ?? 0) * p.occurrenceCount + (task.tokenCost ?? 0)) / (p.occurrenceCount + 1));
       p.successRate = Number.isFinite(task.successRate)
         ? +(((p.successRate * p.occurrenceCount + task.successRate) / (p.occurrenceCount + 1))).toFixed(4)
         : p.successRate;

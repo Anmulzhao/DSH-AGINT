@@ -1,5 +1,18 @@
 # CHANGELOG — agint-ov-strategy
 
+## 0.1.1（2026-10-19）
+
+C3（路线图 2.1 检索质量半侧）：`ov.recall.checked` 载荷补 `hitUris`。
+
+- 为什么：此前载荷只有 `{injected, querySize, blockSize, error, sessionId}` ——
+  知道"注入了"，不知道"注入了哪几条记忆"，结果无法回填到具体记忆条目（outcome 半侧）。
+- 形状：从召回结果文本提取 `viking://…` URI（上游 `recall-core.mjs:396` 每条 hit
+  渲染 `- [kind score%] ${item.uri}` ⇒ 身份就在文本里，不另找通道）。去重 + 上限 8。
+- 红线照旧：只提 URI 路径，正文一字符不带（与 `argKeys` 同纪律）；错误路径 `[]`；
+  纯加法，既有字段一字不动。
+- 测试：`a6-recall-sessionid.test.mjs` +5 条 C3 用例（命中/未命中/出错/去重截断/正文不外泄），
+  全插件 18/18 绿；红绿自证：hitUris 恒空 ⇒ 红、去重截断撤掉 ⇒ 红。
+
 ## 0.1.0（2026-09-27）
 
 首个版本。设计稿：`proposals/agint-ov-strategy.md`（架构定性 2026-09-27 老板拍板：

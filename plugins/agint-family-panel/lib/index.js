@@ -32,7 +32,8 @@ import { createRequire } from 'node:module';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectV2Data, resolveV2Dirs, classifySubscriptions } from './v2-data.js';
+import { collectV2Data, resolveV2Dirs, classifySubscriptions, normalizeOracle, readOracleFile } from './v2-data.js';
+import { collectProposals } from './v2-proposals.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
@@ -47,7 +48,7 @@ const inject = ['webServer'];
  * ⛔ 不进 inject：event-bus 未挂载 / 旧版本（无该服务）时面板必须照常出数，
  *   只把该判据降级为 unknown（见 collectSubscriptions 的 catch）。
  */
-const optionalInject = ['agint.eventBus'];
+const optionalInject = ['agint.eventBus', 'agint.evolve'];
 
 const require = createRequire(import.meta.url);
 /** 版本号读 package.json（v0.1.1 修复：此前硬编码字面量，永远自报 0.1.0）。 */
@@ -67,6 +68,27 @@ const STATUS_PATH = `${API_PREFIX}/status`;
 /** v2 整页与其实时数据端点（0.2.0）。 */
 const V2_PAGE_PATH = `${API_PREFIX}/v2`;
 const V2_DATA_PATH = `${API_PREFIX}/v2/data`;
+/**
+ * 提案审批写入口（0.5.0，2026-10-23）。
+ *
+ * ⛔ 全插件唯一的写通道。它以 `agint.evolve.setStatus()` 为唯一出口，
+ *    **不直接改 `agint_evolve.json`** —— 存储域的原子写、版本号、后续
+ *    迁移都归 domain 管；面板绕过它写文件，等于在别人家的账本上手抄。
+ */
+const DECISION_PATH = `${API_PREFIX}/proposal/decision`;
+/** 面板能写的状态。`proposed` 用于「撤销改判」，其余四档是人工决定。 */
+const DECISION_STATUSES = new Set(['approved', 'applied', 'rejected', 'wontfix', 'proposed']);
+/**
+ * 必须写理由的三档。
+ *
+ * `rejected` / `wontfix` 不写理由，三个月后没人知道当时为什么；
+ * `applied` 更硬 —— 全表 applied 行的 note 都是**落地证据**（改了哪些文件）。
+ * 允许「点了标记已落地但不写证据」，等于亲手把那张表变成不可信。
+ */
+const REASON_REQUIRED = new Set(['rejected', 'wontfix', 'applied']);
+const DECISION_BODY_MAX = 4096;
+const DECISION_NOTE_MAX = 1000;
+const PANEL_NOTE_MARK = '人工审批（家族面板）';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const V2_HTML_PATH = resolve(HERE, '..', 'assets', 'panel-v2.html');
 
@@ -91,6 +113,16 @@ const Config = z.object({
   enabled: z.boolean().default(true),
   /** Admit non-loopback callers. Off by default; the payload is not public. */
   allowNonLoopback: z.boolean().default(false),
+  /**
+   * 仓库正本绝对路径（v2 面板的仓库位根，候选 ⓪，优先级高于 AGINT_HOME / 自身路径）。
+   *
+   * 2026-10-18 补：buildV2Payload 从 L613 起一直读 config.repoRoot，但 schema 里
+   * 没有这个字段 —— cordis 按 schema 剥未知键，配了也到不了代码。实测症状：
+   * 面板落回自身路径回退，把 `.agint-bundle`（同有 plugins/ 与 cordis.patch.yml）
+   * 认成仓库根 ⇒ repoDirsSource=self-path、repoDirs 117 项、wiringExemptions
+   * unavailable。空串视同未配（buildV2Payload 已 trim 后判空）。
+   */
+  repoRoot: z.string().optional(),
 });
 
 /**
@@ -409,6 +441,70 @@ function writeJson(res, status, payload) {
 }
 
 /**
+ * 读请求体，硬上限 DECISION_BODY_MAX。
+ *
+ * 超限直接销毁连接并返回 null —— 面板只发几十字节的 JSON，4KB 足够；
+ * 没有上限的 body 读取就是一个本地面板给局域网/恶意页面开的洞。
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} max
+ * @returns {Promise<string|null>}
+ */
+function readBody(req, max) {
+  return new Promise((resolvePromise) => {
+    let size = 0;
+    const chunks = [];
+    let done = false;
+    const finish = (value) => { if (!done) { done = true; resolvePromise(value); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) { req.destroy(); finish(null); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => finish(null));
+  });
+}
+
+/**
+ * 同源校验：浏览器带来的 Origin 必须与本次请求的 Host 一致。
+ *
+ * 为什么需要它：路由只放行回环，但**回环上任何网页都能发 POST**。
+ * 加自定义头 `x-agint-panel` 已经能让跨站请求走预检（该服务不答 CORS 预检），
+ * Origin 校验是第二道锁 —— 两道都过才算同源页面。
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {boolean}
+ */
+function isSameOrigin(req) {
+  const origin = req.headers?.origin;
+  if (origin === undefined || origin === '') return true; // 非浏览器（curl）无 Origin
+  try {
+    return new URL(origin).host === String(req.headers?.host ?? '');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 拼审批记录。
+ *
+ * 为什么不是简单覆盖：`note` 在 applied 行里是**落地证据**，在 proposed 行里可能是
+ * 上游留下的说明。人工决定要能追溯，但不能把别人的证据冲掉。
+ * 上一版已是面板写的记录时不再叠加（连续改判会让 note 无限膨胀）。
+ *
+ * @param {{status:string, reason:string, prevNote:string, at:string}} input
+ * @returns {string}
+ */
+function composeDecisionNote({ status, reason, prevNote, at }) {
+  const head = `${PANEL_NOTE_MARK} · ${at} · ${status}${reason === '' ? '' : ` · ${reason}`}`;
+  const keep = String(prevNote ?? '').trim();
+  const preserved = keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ` ｜ 原记录：${keep}`;
+  const text = `${head}${preserved}`;
+  return text.length > DECISION_NOTE_MAX ? `${text.slice(0, DECISION_NOTE_MAX)}…` : text;
+}
+
+/**
  * Read the event-bus subscription table through its read-only outlet.
  *
  * Why in-process: the subscription table is a module-level `Map` in event-bus and
@@ -601,6 +697,112 @@ async function collectDeliveryHistory(ctx) {
 }
 
 /**
+ * 神谕层（agint-aesthetic-oracle）的取数与按段合并（2026-10-22）。
+ *
+ * 为什么要服务面 + 落盘两路：神谕层的三个出口权威性不同。
+ *  - `status()` 是**唯一**带运行态开关的出口（enabled / envOff / memoryStore /
+ *    metricsAvailable / busAvailable）。这些事实只活在进程内，落盘文件里没有。
+ *  - `cards()` 读的是 `oracle_cards` 表，但**只有 dashboard 订阅回写过才有行**。
+ *    event-bus 未挂载 / 订阅被拒 → cards() 返回空数组，而落盘里上一轮的卡片还在。
+ *    只读服务面就会把「订阅掉了」显示成「神谕从没开过口」——两件事。
+ *  - `history()` 与 `getState()` 是纯表读，与落盘同源，正常情况一致。
+ *
+ * 合并口径：逐段取服务面，某段为空则用落盘同段补齐，并在 `notes` 里写明
+ * **为什么补**。补齐不是装绿：notes 会原样渲染到面板上。
+ *
+ * Never throws：服务面全挂时回落落盘；两者都空才 unavailable，理由留在 reason/notes。
+ *
+ * @param {object} ctx - host context（可能没有 agint.aestheticOracle）。
+ * @param {string} storagesDir - $DSH_HOME/storages
+ * @returns {Promise<object>} payload.oracle
+ */
+async function collectOracle(ctx, storagesDir) {
+  const notes = [];
+  const file = readOracleFile(storagesDir);
+  const fileOk = file.ok === true;
+  if (!fileOk && file.reason) notes.push(`落盘口径不可用：${file.reason}`);
+
+  let svc = null;
+  let svcReason = null;
+  try {
+    svc = ctx.get('agint.aestheticOracle');
+  } catch (err) {
+    svcReason = `服务未注入：${String((err && err.message) ?? err).slice(0, 120)}`;
+  }
+  if (svcReason === null && (svc === null || svc === undefined)) {
+    svcReason = '神谕层未挂载（agint.aestheticOracle 不可得）';
+  }
+
+  let svcCards = [];
+  let svcHistory = [];
+  let svcState = null;
+  let runtime = null;
+
+  if (svcReason === null) {
+    const call = async (method, ...args) => {
+      if (typeof svc[method] !== 'function') { notes.push(`服务面无 ${method}() 出口`); return null; }
+      try { return await svc[method](...args); } catch (err) {
+        notes.push(`${method}() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+        return null;
+      }
+    };
+    const c = await call('cards');
+    if (Array.isArray(c)) svcCards = c;
+    const h = await call('history', 24);
+    if (Array.isArray(h)) svcHistory = h;
+    const st = await call('getState');
+    if (st !== null && typeof st === 'object') svcState = st;
+    if (typeof svc.status === 'function') {
+      try { runtime = svc.status(); } catch (err) {
+        notes.push(`status() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+      }
+    } else {
+      notes.push('服务面无 status() 出口（运行态开关未知，不猜）');
+    }
+  } else {
+    notes.push(svcReason);
+  }
+
+  // 按段合并（服务面优先，落盘补齐）
+  let cards = svcCards;
+  if (cards.length === 0 && fileOk && Array.isArray(file.cards) && file.cards.length > 0) {
+    cards = file.cards;
+    notes.push(svcReason === null
+      ? '卡片取自落盘：服务面 cards() 为空（dashboard 订阅未回写，常见于 event-bus 未挂载或订阅被拒）'
+      : '卡片取自落盘：服务面不可得');
+  }
+  let broadcasts = svcHistory;
+  if (broadcasts.length === 0 && fileOk && Array.isArray(file.broadcasts) && file.broadcasts.length > 0) {
+    broadcasts = file.broadcasts;
+    notes.push('广播史取自落盘：服务面 history() 为空或不可得');
+  }
+  const stateRow = svcState !== null ? svcState : (fileOk ? (file.state ?? null) : null);
+  if (svcState === null && stateRow !== null) notes.push('状态行取自落盘：服务面 getState() 为空或不可得');
+
+  /** source 记录的是**数据实际来自哪里**，不是「服务面在不在」。
+   *  ⛔ 服务面存在但三个出口全缺（旧版 oracle）时数据 100% 来自落盘，
+   *     此时写 'service+storages' 会让人以为服务面供了数。 */
+  const svcGaveCards = cards === svcCards && svcCards.length > 0;
+  const svcGaveHistory = broadcasts === svcHistory && svcHistory.length > 0;
+  const svcGaveState = svcState !== null;
+  const anyFromService = svcGaveCards || svcGaveHistory || svcGaveState;
+  const allFromService = svcGaveCards && svcGaveHistory && svcGaveState;
+  const out = normalizeOracle({
+    cards,
+    broadcasts,
+    state: stateRow,
+    runtime,
+    source: allFromService ? 'service' : (anyFromService ? 'service+storages' : 'storages'),
+    notes,
+    observedAt: fileOk ? file.observedAt : null,
+    limit: 20,
+  });
+  out.serviceAvailable = svcReason === null;
+  out.serviceReason = svcReason;
+  return out;
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
@@ -613,17 +815,23 @@ async function buildV2Payload(ctx, config = {}) {
     const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
         ? config.repoRoot.trim()
         : null;
-    const payload = collectV2Data(resolveV2Dirs(
+    const dirs = resolveV2Dirs(
         process.env,
         import.meta.url,
         repoRoot,
         // 2026-10-08：profile 名权威源是 cordis ctx，不是 process.env（见 v2-data.js 注释）
         (typeof ctx?.get === 'function' ? ctx.get('profileContext')?.name : null) ?? null,
-    ));
+    );
+    const payload = collectV2Data(dirs);
     payload.subscriptions = collectSubscriptions(ctx);
     payload.deliveryByTopic = collectDeliveryByTopic(ctx);
     payload.deliveryHistory = collectDeliveryHistory(ctx);
     payload.subscriptionAudit = classifySubscriptions(payload.subscriptions, payload.bus, payload.wiringExemptions);
+    // 神谕层：collectV2Data 里已给落盘口径（payload.oracle），这里用服务面覆盖/补齐。
+    // ⛔ 必须 await：cards()/history()/getState() 都是异步表读。
+    payload.oracle = await collectOracle(ctx, dirs.storagesDir);
+    // 提案台（0.5.0）：服务面优先、存储面兜底。同样必须 await。
+    payload.proposals = await collectProposals(ctx, dirs);
     return payload;
 }
 
@@ -708,6 +916,109 @@ function apply(ctx, config = {}) {
     },
   });
 
+  /**
+   * 提案审批。这是本插件唯一的写路由（0.5.0）。
+   *
+   * 四道门，缺一不可：回环 → 自定义头 + 同源 → JSON + 体积上限 → 状态白名单。
+   * 过了门才碰服务。服务缺席时返回 503 并给出原因 —— 面板据此把按钮置灰，
+   * 而不是让人点了没反应。
+   */
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DECISION_PATH,
+    handler: async (req, res) => {
+      try {
+        if (!enabled) {
+          writeJson(res, 200, { ok: true, enabled: false, note: '面板已被 kill-switch 关闭，写通道同时关闭' });
+          return;
+        }
+        if (!allowNonLoopback && !isLoopback(req)) {
+          writeJson(res, 403, { ok: false, error: 'loopback-only' });
+          return;
+        }
+        if (req.method !== 'POST') {
+          res.setHeader('allow', 'POST');
+          writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
+          return;
+        }
+        if (req.headers['x-agint-panel'] !== '1') {
+          writeJson(res, 403, { ok: false, error: 'missing x-agint-panel header' });
+          return;
+        }
+        if (!isSameOrigin(req)) {
+          writeJson(res, 403, { ok: false, error: 'cross-origin rejected' });
+          return;
+        }
+        if (!String(req.headers['content-type'] ?? '').includes('application/json')) {
+          writeJson(res, 415, { ok: false, error: 'content-type must be application/json' });
+          return;
+        }
+        const raw = await readBody(req, DECISION_BODY_MAX);
+        if (raw === null) {
+          writeJson(res, 413, { ok: false, error: `body 超过 ${DECISION_BODY_MAX} 字节` });
+          return;
+        }
+        let input;
+        try {
+          input = JSON.parse(raw);
+        } catch {
+          writeJson(res, 400, { ok: false, error: 'body 不是合法 JSON' });
+          return;
+        }
+        const id = typeof input?.id === 'string' ? input.id.trim() : '';
+        const status = typeof input?.status === 'string' ? input.status.trim() : '';
+        const reason = typeof input?.note === 'string' ? input.note.trim() : '';
+        if (id === '') {
+          writeJson(res, 400, { ok: false, error: '缺 id' });
+          return;
+        }
+        if (!DECISION_STATUSES.has(status)) {
+          writeJson(res, 400, { ok: false, error: `状态不在白名单：${status === '' ? '（空）' : status}` });
+          return;
+        }
+        if (REASON_REQUIRED.has(status) && reason.length < 2) {
+          const why = status === 'applied'
+            ? 'applied 必须写落地证据（改了哪些文件 / 哪一行）—— 全表 applied 行的 note 都是证据'
+            : `${status} 必须写理由（至少 2 个字符）—— 三个月后没人知道当时为什么`;
+          writeJson(res, 400, { ok: false, error: why });
+          return;
+        }
+        if (reason.length > 400) {
+          writeJson(res, 400, { ok: false, error: '理由上限 400 字' });
+          return;
+        }
+        const evolve = typeof ctx.get === 'function' ? ctx.get('agint.evolve') : null;
+        if (!evolve || typeof evolve.setStatus !== 'function') {
+          writeJson(res, 503, {
+            ok: false,
+            error: evolve ? 'agint.evolve 版本过旧：无 setStatus() 出口' : 'agint.evolve 未挂载 —— 提案写不了',
+          });
+          return;
+        }
+        const prev = typeof evolve.getProposal === 'function' ? await evolve.getProposal(id) : null;
+        if (prev === null || prev === undefined) {
+          writeJson(res, 404, { ok: false, error: `未找到提案 ${id}` });
+          return;
+        }
+        if (prev.status === status) {
+          // 幂等：目标态与现状相同就不写，避免 updatedAt 被无意义地刷。
+          writeJson(res, 200, { ok: true, changed: false, previousStatus: prev.status, proposal: prev, at: new Date().toISOString() });
+          return;
+        }
+        const at = new Date().toISOString();
+        const note = composeDecisionNote({ status, reason, prevNote: prev.note, at });
+        const rec = await evolve.setStatus(id, status, note);
+        if (rec === null || rec === undefined) {
+          writeJson(res, 500, { ok: false, error: 'setStatus() 返回空 —— 写入未生效' });
+          return;
+        }
+        writeJson(res, 200, { ok: true, changed: true, previousStatus: prev.status, proposal: rec, at });
+      } catch (err) {
+        writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
+      }
+    },
+  });
+
   ctx.provide('agint.familyPanel', {
     /** Current snapshot; the route and any in-process consumer share this. */
     status: () => buildStatus(ctx),
@@ -734,4 +1045,6 @@ export {
   collectSubscriptions,
   collectDeliveryByTopic,
   collectDeliveryHistory,
+  collectOracle,
+  collectProposals,
 };

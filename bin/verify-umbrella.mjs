@@ -21,12 +21,27 @@
  * @author AGINT
  */
 
-import { readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const HOME = process.env.DSH_HOME || join(process.env.USERPROFILE || '', '.dsh');
-const REPO = join(HOME, 'profiles/web');
+/**
+ * 本机「AGINT 装在哪个 profile」的真源：install.sh 3.7 写的安装事实文件。
+ * ⚠️ 2026-10-21 修：此前写死 web。web profile 已于 2026-10-18 退役（老板令），
+ * 2026-10-20 确认 profiles/web 目录已删 ⇒ 写死 web = 指向不存在的目录，
+ * 伞键验证会拿一个空目录当「全都不存在」⇒ 报绿但是查错了对象。
+ */
+function resolveProfileName(home) {
+  try {
+    const fact = JSON.parse(readFileSync(join(home, '.agint-bundle', 'profile.json'), 'utf8'));
+    if (typeof fact?.profile === 'string' && fact.profile.trim() !== '') return fact.profile.trim();
+  } catch {
+    /* 文件不存在 / 不是 JSON / 没这个字段：继续回落，不吵 */
+  }
+  return 'desktop';
+}
+const REPO = join(HOME, 'profiles', resolveProfileName(HOME));
 const BUNDLE_DIR = join(REPO, 'node_modules/@agint/host/plugins');
 const MIRROR_DIR = join(REPO, 'plugins');
 const SRC_DIR = process.cwd();
@@ -40,7 +55,7 @@ const EXPECT = {
     { consumes: ['agint.eventBus.publish', 'agint.eventBus.subscribe'] },
   ],
   'agint-population': [
-    { key: 'agint.population', anyOf: ['publishProposed', 'checkLimit', 'publishMountRequest'] },
+    { key: 'agint.population', anyOf: ['publishProposed', 'checkLimit'] },
     { consumes: ['agint.mutator'] },
   ],
   'agint-diagnosis': [{ key: 'agint.diagnosis', anyOf: ['annotate', 'cluster', 'report', 'schemas'] }],

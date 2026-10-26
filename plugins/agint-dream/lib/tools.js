@@ -126,9 +126,25 @@ function apply(ctx) {
                   dropped: { required: true, type: 'number' },
                 },
               },
+              // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
+              // 形状扁平 + 四属性全 required —— additionalProperties:false
+              // 漏声明 = 整个工具不可用（K164 同形状事故已咬过四次）。
+              sourceFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  humanKept: { required: true, type: 'number' },
+                  unknownKept: { required: true, type: 'number' },
+                  subagentDropped: { required: true, type: 'number' },
+                  judgeFailed: { required: true, type: 'boolean' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-10-19：提升边界闸拦下的工具错误残骸数。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（K164 第四次同形状事故：toolErrorFilter /
+              // evolutionTemplates / dedupeStats 都栽在这条上）。
+              skippedRawToolError: { required: true, type: 'number' },
               // 2026-10-05 补：分级去重统计。K164 第四次咬人 —— status() 返回
               // `counts: last?.counts ?? {兜底}`，跑过 sweep 时 last.counts 带 dedupeStats
               // （sweep.js:1401），但本 schema 漏声明 → additionalProperties:false 撞上
@@ -153,7 +169,7 @@ function apply(ctx) {
               promoted: { required: true, type: 'number' },
               recallAppended: { required: true, type: 'number' },
               recallPruned: { required: true, type: 'number' },
-              // P1 LLM consolidation mode（llm / heuristic-degraded）—— 与 lib/sweep.js result.counts 对齐
+              // P1 LLM consolidation mode（llm / not-attempted / failed）—— 与 lib/sweep.js result.counts 对齐
               // Sprint 13 / 2026-09-05 漏同步，导致 dream_status host 实测 schema 校验失败
               consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
@@ -254,9 +270,25 @@ function apply(ctx) {
                   dropped: { required: true, type: 'number' },
                 },
               },
+              // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
+              // 形状扁平 + 四属性全 required —— additionalProperties:false
+              // 漏声明 = 整个工具不可用（K164 同形状事故已咬过四次）。
+              sourceFilter: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  humanKept: { required: true, type: 'number' },
+                  unknownKept: { required: true, type: 'number' },
+                  subagentDropped: { required: true, type: 'number' },
+                  judgeFailed: { required: true, type: 'boolean' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
+              // 2026-10-19：提升边界闸拦下的工具错误残骸数。漏声明 = additionalProperties:false
+              // 撞上实际返回 → 整个工具不可用（K164 第四次同形状事故：toolErrorFilter /
+              // evolutionTemplates / dedupeStats 都栽在这条上）。
+              skippedRawToolError: { required: true, type: 'number' },
               // 2026-09-21（方案 B）：分级去重统计。2026-09-27（提案 0f91c868 问题1）补进
               // schema —— sweep.js result.counts 一直带着它，此前 additionalProperties:false
               // 撞上实际返回 → dream_run_now 整体校验失败。
@@ -278,7 +310,7 @@ function apply(ctx) {
               promoted: { required: true, type: 'number' },
               recallAppended: { required: true, type: 'number' },
               recallPruned: { required: true, type: 'number' },
-              // P1 LLM consolidation mode（llm / heuristic-degraded）
+              // P1 LLM consolidation mode（llm / not-attempted / failed）
               consolidationMode: { required: true, type: 'string' },
               consolidationReason: { oneOf: [{ type: 'string' }, { type: 'null' }] },
               // v0.2 (task 2 / C2 / 2026-09-06)：REM qualityEvaluator 评估摘要
@@ -475,7 +507,7 @@ function apply(ctx) {
   }));
 
   // P1 (Sprint 14 / 2026-09-05)：LLM consolidation 独立验证工具。
-  // 在 host plane 真调 ctx.agents.create() + ctx.subagents.start('spawn', {outputSchema})，
+  // 在 host plane 真调 ctx.agents.create() + ctx.subagents.startActivation(...)，
   // 不依赖 sweep 主体，不写 agint.memory。消耗 1 次 LLM call —— 验证 host 端 DSH
   // subagent runtime 通路是否真可用（设计文档第一步）。
   ctx.tools.register(defineTool({
@@ -483,7 +515,7 @@ function apply(ctx) {
     description: 'P1 验证工具：跑一次 minimal LLM consolidation。消耗 1 次 LLM call，验证 DSH host 端 ctx.agents / ctx.subagents 通路是否真可用。不写 agint.memory，仅返回 schema-validated structured result。',
     parameters: {
       provider: { type: 'string', description: 'LLM provider（默认 settings.yaml agent-default-model：minimax-cn）' },
-      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash-Preview）' },
+      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash）' },
       timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
     },
     output: {

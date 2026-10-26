@@ -5,6 +5,17 @@
 
 ## Unreleased
 
+- **新增 `memory_remove` 工具**（2026-10-19）：service 层早就有 `remove(id)`
+  （`lib/index.js:162`），但**工具面没有暴露它** —— 长期记忆只能写不能删。
+  后果不是抽象问题：2026-10-19 夜班 sweep 把 3 条原始报错残骸（工具 stderr
+  原文）以原文写进了长期记忆，而当时**没有任何合法路径能把它删掉**：
+  `memory_write` 只能改内容、`memory_forget_scan` 只在「L4 + resolved/replaced
+  + 730 天」时才清。噪音进了本体就出不去。
+  新工具走宿主服务方法（**不直写生产存储** —— 仓外脚本写存储会被宿主下一次
+  put 整体覆盖，见 three-state-audit §10），先读后删并把被删内容与理由回传，
+  让删除在会话记录里留痕。`id` 与 `reason` 均为必填。
+  配套：在 agint-rules 给 `memory_remove` 加 ask 门禁（不可撤销 ⇒ 先问）。
+
 - **补 `input.signal.self-observation.session-integrity` 订阅**（2026-10-06）：
   网关 `lib/schema.js` 枚举 5 个 self-observation 主题，memory 此前只订 4 个 ⇒
   C2 sessionIntegrity 检测器（0.1.1 实装）一旦产出信号无人消费（待做清单 H3）。

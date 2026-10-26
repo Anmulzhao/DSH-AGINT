@@ -22,9 +22,86 @@
  *   dsh 的 canonicalizeCronExpression 兼容该方言。
  */
 
+// D5 迁移：cron 引擎句柄装进 cron.js（单向依赖：host-schedule → cron）
+import { setHostCronEngine } from './cron.js';
+
 // 宿主模块懒加载缓存（同一进程只解析一次；解析失败保持 null 不重试）。
 let _hostModule = null;
 let _hostLoaded = false;
+
+/**
+ * D5 迁移（2026-10-21，老板令「复用 dsh ctx.schedule」）：把上游 cron 规则引擎
+ * 装配成 agint-cron 可同步调用的句柄。
+ *
+ * ## 为什么复用「纯函数」而不是 `ctx.schedule.create()`
+ *
+ * 上游 schedule 服务的投递语义是「往**绑定**的 Session 注入提醒消息」：
+ *   · `create(sessionId, request, signal)` —— 必须给一个 sessionId
+ *   · 投递要在 Session 承认 `session/flush` 之后才提交
+ * 而 agint-cron 的 27 个 job 是 **host 平面无人值守的 action 直调**（night-dream、
+ * metrics-collect…），没有可绑定的 Session，也不该变成 agent 消息。
+ * ⇒ 强行 create() 是**行为变更**（无人值守 job 变成会话消息），不是复用。
+ *
+ * ## 实际复用的是上游的规则引擎（纯函数，无投递、无 Session 依赖）
+ *
+ *   · `canonicalizeCronExpression` —— 表达式归一化 + 方言校验
+ *   · `createCronScheduleRecord`   —— 构造 cron 记录，内部算 `scheduledAt`
+ *                                     （= 严格晚于 now 的下一次）
+ *   · `resolveCronOccurrence`      —— 同时给 `occurrenceAt`（≤ 决策时刻的最近一次）
+ *                                     与 `nextScheduledAt`（下一次）
+ *
+ * 这两个纯函数正好覆盖 agint-cron 自研的 `nextFire` / `lastFire`，且：
+ *   · 上游用 Temporal 日历算（自研版是分钟粒度暴力扫描，上限 1 年 ⇒ 最坏 52 万次）
+ *   · 上游有 IANA 时区 + DST 正确性（自研版按本地时间字段近似）
+ *
+ * @param {object|null} host 宿主模块（loadHostSchedule 结果）
+ * @returns {null | { resolveNext(expression, timeZone, fromMs): number|null,
+ *                     resolveLast(expression, timeZone, atMs): number|null }}
+ */
+export function buildCronEngine(host) {
+  if (!host) return null;
+  const { canonicalizeCronExpression, createCronScheduleRecord, resolveCronOccurrence } = host;
+  if (typeof canonicalizeCronExpression !== 'function') return null;
+  if (typeof createCronScheduleRecord !== 'function') return null;
+  if (typeof resolveCronOccurrence !== 'function') return null;
+
+  // 上游 create() 要求 prompt/title 非空；这里只借它的时刻计算，用占位值。
+  const PROBE_ID = 'agint-cron-probe';
+  const PROBE_TEXT = 'agint-cron schedule probe';
+
+  /** 造一条 cron 记录（只为借它的 scheduledAt 计算）。 */
+  function probeRecord(expression, timeZone, nowMs) {
+    return createCronScheduleRecord(
+      PROBE_ID,
+      PROBE_TEXT,
+      { expression, time_zone: timeZone },
+      nowMs,
+      PROBE_ID,
+    );
+  }
+
+  return {
+    /** 严格晚于 fromMs 的下一次（epoch ms）。 */
+    resolveNext(expression, timeZone, fromMs) {
+      const rec = probeRecord(expression, timeZone, fromMs);
+      // scheduledAt = nextCronTarget(parsed, tz, now) = 严格晚于 now 的下一次
+      const ms = Date.parse(rec.scheduledAt);
+      return Number.isFinite(ms) ? ms : null;
+    },
+
+    /** ≤ atMs 的最近一次（epoch ms）。 */
+    resolveLast(expression, timeZone, atMs) {
+      // resolveCronOccurrence 返回 max(最近一次 ≤ decision, record.scheduledAt)，
+      // 所以 scheduledAt 必须**不晚于**真正的最近一次，否则会被它抬上去。
+      // 用一个足够早的探针起点（上游自身的回溯视野是 400 年，闰日规则最长 8 年一次）。
+      const probeFrom = atMs - 400 * 365.25 * 24 * 60 * 60 * 1000;
+      const rec = probeRecord(expression, timeZone, Math.round(probeFrom));
+      const occ = resolveCronOccurrence(rec, atMs);
+      const ms = occ?.occurrenceAt ? Date.parse(occ.occurrenceAt) : NaN;
+      return Number.isFinite(ms) ? ms : null;
+    },
+  };
+}
 
 /**
  * 动态加载宿主 @deepseek-ai/dsh-schedule。
@@ -40,12 +117,16 @@ export async function loadHostSchedule({ __loader } = {}) {
     const mod = __loader ? await __loader() : await import('@deepseek-ai/dsh-schedule');
     if (mod && typeof mod.canonicalizeCronExpression === 'function') {
       _hostModule = mod;
+      // D5：模块就位即把 cron 引擎装进 cron.js（同步调用点由此走上游）
+      setHostCronEngine(buildCronEngine(mod));
       return { ok: true, module: mod };
     }
     _hostModule = null;
+    setHostCronEngine(null);
     return { ok: false, reason: 'host-module-incomplete' };
   } catch (error) {
     _hostModule = null;
+    setHostCronEngine(null);
     return { ok: false, reason: `import-failed:${error?.message ?? String(error)}` };
   }
 }
@@ -158,6 +239,15 @@ export function createHostBridge({ getService, jobs, __loader } = {}) {
       const service = typeof getService === 'function' ? getService('schedule') : null;
       return mirrorCatalog(service);
     },
+
+    /**
+     * D5：确保宿主模块已加载（懒加载）。
+     * apply() 用它预热 cron 引擎 —— 引擎装好后，同步的 nextFire/lastFire
+     * 才走上游。不暴露 ensureHost 内部句柄，只暴露"确保就位"这个动作。
+     */
+    async ensureHost() {
+      return ensureHost();
+    },
   };
 }
 
@@ -165,4 +255,6 @@ export function createHostBridge({ getService, jobs, __loader } = {}) {
 export function _resetHostCache() {
   _hostModule = null;
   _hostLoaded = false;
+  // D5：缓存重置时引擎也要卸掉，否则下一个测试会拿到上个测试装好的引擎
+  setHostCronEngine(null);
 }

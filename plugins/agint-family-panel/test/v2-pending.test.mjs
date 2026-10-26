@@ -10,7 +10,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { makeStorages } from './fixtures/make-storages.mjs';
+// 2026-10-18 起本文件不再 import makeStorages：它曾用来重写共享的 v2-home，
+// 那是并行测试的竞态源（见下方 collectV2Data 段的注释）。本文件现在只用
+// 自己 mkdtemp 出来的 storages，不碰任何共享路径。
 import { aggPending, collectV2Data } from '../lib/v2-data.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,10 +38,19 @@ domain('agint_curriculum.json', {
   attempts: {},
 });
 
-// ── ② 技能候选：检测器有 54 个 pattern，但候选为 0（供给有、产出无）──
+// ── ② 技能候选：1 条待评估 + 3 条终态（已拒/已回滚），终态不算待办 ──────
+// 2026-10-18 老板令：审过的候选不要挂在待办里。原 select 是 () => true，
+// 生产上 42 条全是 REJECTED/ROLLED_BACK 却报「42 待审」。
 domain('agint_skill_autocreate.json', {
   task_patterns: { p1: {}, p2: {}, p3: {} },
-  candidates: { c1: { id: 'c1', title: '写一个巡检脚本' } },
+  candidates: {
+    c1: { id: 'c1', status: 'QUEUED_FOR_RELEASE', skillDraft: { name: '写一个巡检脚本' } },
+    c2: { id: 'c2', status: 'REJECTED' },
+    c3: { id: 'c3', status: 'REJECTED_STATIC' },
+    c4: { id: 'c4', status: 'ROLLED_BACK' },
+    c5: { id: 'c5', status: 'STABLE' },
+    c6: { id: 'c6', status: 'RELEASED' },
+  },
 });
 
 // ── ③ 进化提案：3 条待批 + 1 条已应用 ─────────────────────────────────
@@ -49,11 +60,19 @@ domain('agint_evolve.json', {
     b: { id: 'b', title: '提案乙', status: 'proposed' },
     c: { id: 'c', title: '提案丙', status: 'proposed' },
     d: { id: 'd', title: '提案丁', status: 'applied' },
+    e: { id: 'e', title: '提案戊', status: 'approved' },
   },
 });
 
-// ── ④ curator 重叠候选 ────────────────────────────────────────────────
-domain('agint_curator.json', { overlap_candidates: { o1: { id: 'o1' } } });
+// ── ④ curator 重叠候选：1 条 proposed + 2 条已处理 ────────────────────
+// 与 skill-candidate 同一类病（2026-10-18 一起修）：原 select 也是 () => true。
+domain('agint_curator.json', {
+  overlap_candidates: {
+    o1: { id: 'o1', skillA: 'a', skillB: 'b', status: 'proposed' },
+    o2: { id: 'o2', skillA: 'c', skillB: 'd', status: 'acknowledged' },
+    o3: { id: 'o3', skillA: 'e', skillB: 'f', status: 'resolved' },
+  },
+});
 
 // ── ⑤ 失败样本供给（不是「待办」，是上游供给不足）────────────────────
 domain('agint_evolution.json', { failure_pattern: { f1: { id: 'f1' }, f2: { id: 'f2' } } });
@@ -71,18 +90,31 @@ assert.deepEqual(
 
 const skill = byKey(P, 'skill-candidate');
 assert.equal(skill.state, 'ok');
-assert.equal(skill.pending, 1, '候选数即待办数');
+assert.equal(skill.pending, 1, '只有仍在等人处理的状态算待办：REJECTED/ROLLED_BACK/STABLE/RELEASED 都不算');
+assert.equal(skill.total, 6, 'total 仍报整表行数，好让「审过的有多少」看得见');
+assert.equal(skill.items.length, 1, '待办条目只列未终结的候选');
+assert.equal(skill.items[0].status, 'QUEUED_FOR_RELEASE');
+assert.equal(skill.items[0].title, '写一个巡检脚本', '标题取 skillDraft.name（候选没有顶层 title 字段）');
 assert.equal(skill.supply, 3, '同时报出上游 pattern 数：供给有而产出无要看得见');
 
 const evo = byKey(P, 'evolve-proposal');
 assert.equal(evo.state, 'ok');
-assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied 不算');
-assert.equal(evo.total, 4);
+assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied / approved 不算');
+assert.equal(evo.total, 5);
 assert.equal(evo.items[0].title, '提案甲');
+
+// 2026-10-23：approved 是「人工已批准、尚未执行」。它必须自己占一行待办 ——
+// 否则批准 = 从待办里消失，决定做完了却没人去做。
+const approvedQ = byKey(P, 'evolve-approved');
+assert.equal(approvedQ.state, 'ok');
+assert.equal(approvedQ.kind, 'action', '工作单是人能直接动手的，不是「供给不足」');
+assert.equal(approvedQ.pending, 1, '只算 status=approved');
+assert.equal(approvedQ.items[0].title, '提案戊');
 
 const cur = byKey(P, 'curator-overlap');
 assert.equal(cur.state, 'ok');
-assert.equal(cur.pending, 1);
+assert.equal(cur.pending, 1, '只有 status=proposed 待处理；acknowledged / resolved 是人已处理过的');
+assert.equal(cur.items[0].title, 'a ↔ b', '标题用 skillA ↔ skillB，比裸露 id 可读');
 
 const supply = byKey(P, 'failure-supply');
 assert.equal(supply.state, 'ok');
@@ -110,14 +142,19 @@ assert.equal(byKey(B, 'curriculum-challenge').state, 'error', '坏域 → error 
 assert.equal(byKey(B, 'evolve-proposal').state, 'ok', '一个域坏不能连累其余行');
 
 // ── 接进 collectV2Data：不接就等于没做（面板读的是这一个快照）────────
+// ⛔ 不调 makeStorages(v2-home)（2026-10-18 修）：本用例的 storagesDir 用的是
+// 自己的 mkdtemp 目录（见上 L18 的 dir），v2-home 只是 pluginsDir 的宿主。
+// 原先这里调 makeStorages(HOME) 会**重写** v2-data.test.mjs / smoke.mjs 共用的
+// fixtures/v2-home/storages/*.json —— 三个测试并行跑时 writeFileSync 互相覆盖，
+// 偶发读到半截文件。12 轮压测复现 1 次（v2-data.test.mjs 红、单独跑绿）。
+// 判据：只写自己独占的路径。要 storages 就在 mkdtemp 里造。
 const HOME = join(here, 'fixtures', 'v2-home');
-makeStorages(HOME);
 const R = collectV2Data(
   { pluginsDir: join(HOME, 'profiles', 'web', 'plugins'), storagesDir: dir, repoPluginsDir: null, repoPluginsSource: 'unresolved' },
   { cache: new Map() },
 );
 assert.ok(R.pending, 'collectV2Data 必须暴露 payload.pending —— 面板只读这一个快照');
-assert.equal(R.pending.queues.length, 5, '五条声明表全在');
+assert.equal(R.pending.queues.length, 6, '六条声明表全在（2026-10-23 加「已批准待执行」）');
 assert.equal(byKey(R.pending, 'curriculum-challenge').pending, 1, '经 collectV2Data 聚合后与直调一致');
 
 console.log('v2-pending: ok');

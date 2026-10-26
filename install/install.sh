@@ -2,10 +2,10 @@
 # AGINT 安装脚本（v0.2 — 安全左移版）
 #
 # 把 AGINT 仓库内容铺到 $DSH_HOME，对应 preset / bundle-plugin / bundle-patch
-# 三个注入点（外加一处兼容镜像位）。
+# 三个注入点（外加一处兼容镜像位）。目标 profile 由 --profile 指定，默认 web。
 #
 # ## 交付形态（2026-09-24 起）
-#   $DSH_HOME/.agent-presets/<id>/                      ← 三条 preset 的定义文件
+#   $DSH_HOME/.agent-presets/<id>/                      ← 4 套 preset 的定义文件
 #   $DSH_HOME/.agent-presets/node_modules               ← preset 裸包名解析入口
 #   $DSH_HOME/.agint-deps/dsh-runtime/                  ← AGINT 自带 dsh 运行时（依赖树实体）
 #        ├── package.json       name=@deepseek-ai/dsh（验真身用）
@@ -16,9 +16,9 @@
 #        ├── package.json       dsh.bundle.patch 声明
 #        ├── plugins/           agint-* 插件
 #        └── node_modules/@deepseek-ai  官方包解析入口
-#   $DSH_HOME/profiles/web/node_modules/@agint/host     ← 指向上面那个目录的 symlink
-#   $DSH_HOME/profiles/web/plugins/                     ← 兼容镜像位（AGINT 自身代码按此路径找插件）
-#   $DSH_HOME/profiles/web/cordis.patch.yml             ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
+#   $DSH_HOME/profiles/<profile>/node_modules/@agint/host  ← 指向上面那个目录的 symlink
+#   $DSH_HOME/profiles/<profile>/plugins/                  ← 兼容镜像位（AGINT 自身代码按此路径找插件）
+#   $DSH_HOME/profiles/<profile>/cordis.patch.yml          ← ⛔ 只读：AGINT 不再写它（写了 = 双重挂载）
 #
 # ⛔ 为什么 bundle 实体不在 node_modules 里（2026-10-01 修，AGINT 自毁坑）：
 #   dsh 的 plugin_manager 每次 install_bundle / remove_bundle 都会在 profile 目录
@@ -99,7 +99,7 @@ for arg in "$@"; do
       exit 2
       ;;
     -h|--help)
-      sed -n '2,32p' "$0"
+      sed -n '2,66p' "$0"
       exit 0
       ;;
     *)
@@ -206,7 +206,7 @@ PROFILE_MANIFEST="$PROFILE_ROOT/package.json"
 
 PRESETS_DST="$DSH_HOME/.agent-presets"
 # 兼容位（与 bundle 同源、同一次 sync）：AGINT 自身代码（agint-dream/lib/
-# quality-bridge.js）与三条 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
+# quality-bridge.js）与 4 套 preset 的 tools 行按 <此路径>/<plugin-id> 定位插件。
 PLUGINS_DST="$PROFILE_ROOT/plugins"
 # 只读：用于「AGINT 挂载段残留」检测，不再由本脚本写入
 PROFILE_PATCH_DST="$PROFILE_ROOT/cordis.patch.yml"
@@ -345,7 +345,7 @@ fi
 [ -f "$BUNDLE_PATCH_SRC" ]    || die "bundle patch 源缺失: $BUNDLE_PATCH_SRC"
 [ -f "$BUNDLE_MANIFEST_SRC" ] || die "bundle 清单源缺失: $BUNDLE_MANIFEST_SRC"
 [ -f "$PATCH_SRC" ]   || die "patch 源缺失（卸载 id 清单仍依赖它）: $PATCH_SRC"
-[ -d "$DSH_HOME" ]    || die "$DSH_HOME 不存在，请先跑 'dsh web' 初始化 dsh"
+[ -d "$DSH_HOME" ]    || die "$DSH_HOME 不存在，请先初始化 dsh（web 跑一次 'dsh web'；desktop 启动一次桌面版）"
 
 if [ "$FORCE" != "1" ] && [ ! -d "$AGINT_HOME/.git" ]; then
   die "AGINT_HOME 不是 git 仓库（$AGINT_HOME），加 --force 跳过"
@@ -884,6 +884,17 @@ ensure_bundle_module_entry
 # 任何 0.0.0-stub 一律替换为指向真包的链接。幂等；失败仅 warn 不阻断。
 # 与 1.1/1.2 同一坑族：safe_rsync 排除 node_modules ⇒ rsync 分支下本步产物
 # 能活过步骤 2；python 回退分支（无 rsync）会整树换入删掉 ⇒ 4.6 有 post-plugin 复跑。
+# 从 mirror 位真 import 一次 dsh-tools：能不能 import 才是「依赖树完整」的判据。
+# 没有 node ⇒ 跳过自检（不阻断）：没有 node 时装出来的包也用不了，但别在这里卡死。
+# 2026-10-21：这是「三包名单不够」那次的判据来源 —— dsh-tools 自己 import 失败，
+#   它的每个使用者（preset 的 25 个工具行）也都失败。
+mirror_dsh_tools_importable() {
+  local base="$1"
+  command -v node >/dev/null 2>&1 || return 0
+  [ -e "$base/dsh-tools/lib/index.js" ] || return 1
+  node --input-type=module -e "import { pathToFileURL } from 'node:url'; import(pathToFileURL(process.argv[1]).href).then(() => process.exit(0)).catch(() => process.exit(1));" "$base/dsh-tools/lib/index.js" >/dev/null 2>&1
+}
+
 ensure_mirror_module_entry() {
   local base="$PLUGINS_DST/node_modules/@deepseek-ai" target name link
   target="$(locate_dsh_dir)/node_modules/@deepseek-ai"
@@ -974,6 +985,44 @@ ensure_mirror_module_entry() {
   else
     warn "mirror 位以下入口未就绪（缺 lib/index.js）：$bad —— preset 挂载会报 required 校验错。"
   fi
+
+  # ⛔ 2026-10-21 补：上面的「三包名单」是**下限**，不是充分条件。
+  #
+  # 实测事故：本机 mirror 位只有那三个包，而 dsh-tools@0.2.1-rc.2 的 lib/index.js
+  #   还裸 import `@deepseek-ai/dsh-scope`（**它自己的 package.json 里都没声明
+  #   这个依赖**）⇒ dsh-tools 自己 import 就失败 ⇒ mirror 位的 **25 个工具行
+  #   import 全炸**（ERR_MODULE_NOT_FOUND）⇒ 智进 preset 挂得上、但一个 agint
+  #   工具都没有，**界面没有任何报错**。
+  #   症状与 10-06 的 dsh-tools stub 事故同族（工具全灭、界面不报错），
+  #   差别只在根因（那次是 stub，这次是依赖树不全）。
+  #
+  # 修法：判据从「名单里有这三个」改成「**dsh-tools 能不能 import**」。
+  # 不过就把整个 scope 换成指向 dsh 官方 scope 的**整链链接**（与 bundle 位同形），
+  # 一次性给全 306 个官方包，后续 dsh 升级新增依赖也不会再缺。
+  if [ "$DRY_RUN" != "1" ] && [ "$ok" = 1 ]; then
+    if ! mirror_dsh_tools_importable "$base"; then
+      warn "  mirror 位 dsh-tools 自身依赖解析不到（三包名单不够）→ 改用整链链接"
+      # 摘 scope 目录。⛔ 只摘这一层，且先摘内部 junction，
+      #   绝不让 rm -rf 穿透到 dsh 官方树（10-06 / 10-18 两次事故的教训）。
+      if [ -L "$base" ]; then
+        rm -f "$base"
+      else
+        find "$base" -maxdepth 2 -type l -exec rm -f {} \; 2>/dev/null || true
+        rm -rf "$base"
+      fi
+      mkdir -p "$(dirname "$base")"
+      local wl wt
+      wl="$(cygpath -w "$base" 2>/dev/null || printf '%s' "$base")"
+      wt="$(cygpath -w "$target" 2>/dev/null || printf '%s' "$target")"
+      if cmd //c "mklink /J \"$wl\" \"$wt\"" >/dev/null 2>&1; then
+        log "   ✓ mirror 位 @deepseek-ai 整链 → $target（306 个官方包，依赖树完整）"
+      elif ln -s "$target" "$base" 2>/dev/null; then
+        log "   ✓ mirror 位 @deepseek-ai 整链（symlink）→ $target"
+      else
+        warn "mirror 位整链重建失败（$base → $target）—— preset 工具行可能 import 失败。"
+      fi
+    fi
+  fi
 }
 ensure_mirror_module_entry
 
@@ -1012,7 +1061,7 @@ done
 #   · bundle patch 的 insert 行按「本 patch 文件所在目录」解析（app-boot
 #     anchorInsertedPluginNames）⇒ 插件必须在 <bundle>/plugins/ 下；
 #   · 而 AGINT 自身代码按老路径定位插件（agint-dream/lib/quality-bridge.js 用
-#     $DSH_HOME/profiles/web/plugins/<id>），三条 preset 的 tools 行同理 ⇒ 保留兼容位。
+#     $DSH_HOME/profiles/<profile>/plugins/<id>），4 套 preset 的 tools 行同理 ⇒ 保留兼容位。
 #   两处同源、同一次 sync，天然一致，不引入漂移。
 log "2.5/4 镜像到 bundle → $BUNDLE_PLUGINS_DST"
 # ⛔ 必须建到 plugins 这一层：rsync 3.1.3 只建 dst 的最后一级，中间目录缺失就
@@ -1198,17 +1247,63 @@ cp -f "$BUNDLE_MANIFEST_SRC" "$BUNDLE_MANIFEST_DST" || die "bundle package.json 
 # ⛔ 必须链在包内，且 safe_rsync 排除 node_modules，否则下次 sync 被 --delete 删掉。
 ensure_bundle_module_entry
 
-# 残留检测：profile 级 patch 若还留着 agint-* 挂载段 → 会与 bundle 层重复挂载。
+# 残留检测：profile 级 patch 若还留着 agint-* **挂载段** → 会与 bundle 层重复挂载。
 # 直接失败，不"打包带过"。
+#
+# ⚠️ 2026-10-23 修误报（旧版把本机 override 也当挂载段，本机部署被硬挡了 19 天）：
+#    旧判据是「出现 `- id: agint-*` 就算」，但 profile 级 patch 里合法存在的是
+#    **config-only 按 id 深合并**的本机 override（repoRoot / recordMode /
+#    observation_period_days 等，各机各配、不入库）。它们不带 name/path/main，
+#    cordis 找不到插件实体 ⇒ 不产生第二个实例，不是双重挂载。
+#    证据有两条：① 本脚本自己的成功提示语写的是「只剩本机本地覆盖」——
+#       「只剩」意味着 override 本该留下，旧正则却把它当残留；② profile patch 内
+#       agint-skill-autocreate 段注释写明「config-only 按 id 深合并（先例：
+#       agint-trajectory / agint-cron）」。
+#    新判据：段内出现 name / path / main / entry / plugin 之一才算真挂载段。
+#     sibling 键缩进 = id 行前导空白 + 2（`- ` 两字符），据此排除 config: 底下的同名嵌套键。
 if [ -f "$PROFILE_PATCH_DST" ]; then
-  python3 - "$(winpath "$PROFILE_PATCH_DST")" <<'PY' || die "profile 级 patch 仍含 AGINT 挂载段（会上双重挂载）。删掉该段后重跑；备份在 .agint-backups/"
+  python3 - "$(winpath "$PROFILE_PATCH_DST")" <<'PY' || die "profile 级 patch 仍含 AGINT 挂载段（会上双重挂载）。挂载段 = 带 name/path/main 入口键的段；config-only 的本机 override 不拦。备份在 .agint-backups/"
 import re, sys
 text = open(sys.argv[1], encoding='utf-8').read()
-hits = re.findall(r'^\s*- id:\s+(agint-[a-z0-9-]+)\s*$', text, re.M)
+SEG = re.compile(r'^(\s*)-\s+id:\s+(agint-[a-z0-9-]+)\s*(?:#.*)?$')
+MOUNT_KEYS = ('name', 'path', 'main', 'entry', 'plugin')
+
+def indent_of(ln):
+    return len(ln) - len(ln.lstrip(' '))
+
+hits, overrides = [], []
+cur_id, key_indent, cur_mount = None, None, False
+
+def close():
+    global cur_id, cur_mount
+    if cur_id is None:
+        return
+    (hits if cur_mount else overrides).append(cur_id)
+    cur_id, cur_mount = None, False
+
+for ln in text.split('\n'):
+    m = SEG.match(ln)
+    if m:
+        close()
+        cur_id, key_indent, cur_mount = m.group(2), len(m.group(1)) + 2, False
+        continue
+    if cur_id is None or ln.strip() == '':
+        continue
+    ind = indent_of(ln)
+    if ind <= key_indent - 2:          # 回到段级或更外层 ⇒ 本段结束
+        close()
+        continue
+    if ind == key_indent and ln.strip().split(':', 1)[0] in MOUNT_KEYS:
+        cur_mount = True
+close()
+
 if hits:
-    print(f"[AGINT]   ✗ profile 级 patch 残留 {len(hits)} 个 agint-* 挂载段（如 {', '.join(hits[:5])} ...）")
+    print(f"[AGINT]   ✗ profile 级 patch 残留 {len(hits)} 个 AGINT 挂载段（如 {', '.join(hits[:5])} ...）")
     sys.exit(1)
-print("[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（只剩本机本地覆盖）")
+if overrides:
+    print(f"[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（{len(overrides)} 个 config-only 本机 override 按 id 深合并，放行：{', '.join(overrides)}）")
+else:
+    print("[AGINT]   ✓ profile 级 patch 无 AGINT 挂载段（只剩本机本地覆盖）")
 PY
 fi
 
@@ -1265,7 +1360,7 @@ PY
 fi
 
 # ── 3.6 materialize node_modules/@agint/host 软链 ────────────────────────────
-# dsh 解析 bundle 的唯一位置是 profiles/web/node_modules/<name>，实体在
+# dsh 解析 bundle 的唯一位置是 profiles/<profile>/node_modules/<name>，实体在
 # $DSH_HOME/.agint-bundle/ ⇒ 这里必须有一条指过去的链接。3.5 已把
 # "link:<实体目录>" 写进 dependencies，pnpm 下次跑会认领这条链接；本步只保证
 # 「装完当下 dsh 就能看见 bundle」，不依赖 pnpm 被调用过。
@@ -1555,8 +1650,12 @@ log ""
 log "✅ 安装完成"
 log ""
 log "下一步："
-log "  1. 重启 dsh web（bundle 层与 profile 层都不热更新）："
-log "       dsh web"
+log "  1. 重启目标 profile：$PROFILE_NAME（bundle 层与 profile 层都不热更新）："
+if [ "$PROFILE_NAME" = "web" ]; then
+  log "       dsh web"
+else
+  log "       退出并重开使用 profile '$PROFILE_NAME' 的 dsh 客户端（desktop 即桌面版）"
+fi
 log "  2. 验证 bundle 真的被认（三步都要看）："
 log "       ① profile 清单里有它：grep '@agint/host' $PROFILE_MANIFEST"
 log "       ② 软链在位：ls -l $BUNDLE_LINK"

@@ -27,6 +27,12 @@
       "reason": "不是服务名，是 cron 配置项 repoRoot 在 services() 里的传递键。spec-index-refresh 要读仓库里的 docs/specs/，那是磁盘路径不是宿主服务 —— 宿主没有这个服务可 get。",
       "evidence": "plugins/agint-cron/lib/index.js（services() 映射，值取自 config.repoRoot 而非 ctx.get）",
       "since": "2026-10-03"
+    },
+    {
+      "name": "agint.agentsSizeGuard",
+      "reason": "不是服务名，是 cron 配置项 agentsSizeGuard 在 services() 里的传递键，与 agint.repoRoot 同构。agents-size-guard job 要读的是工作区 AGENTS.md 与 docs/ 报告目录，都是磁盘路径不是宿主服务 —— 宿主没有这个服务可 get。",
+      "evidence": "plugins/agint-cron/lib/index.js（services() 映射，值取自 config.agentsSizeGuard 而非 ctx.get）；job 定义 plugins/agint-cron/lib/jobs.js id=agents-size-guard",
+      "since": "2026-10-18"
     }
   ],
 
@@ -97,10 +103,10 @@
 
     {
       "topic": "mount.requested",
-      "reason": "发布方已接线，缺的是「一次真正走完的挂载」。orchestrator 在决策点各分支都有发布调用（requested/failed/succeeded/restart-*），订阅方 agint-metrics 也按六个主题建了计数器。但工单表只有 1 行且停在 PREPARED（外部探针造的），probe_history 与 rollback_log 均 0 行 ⇒ 挂载链在生产从未跑到任何终态。属「等待自然触发」，不是接线缺口；给它排期「补发布方」是重复劳动。",
+      "reason": "发布方已接线（orchestrator 各决策分支），缺的是「一次真正走完的挂载」：工单表只有 1 行且停在 PREPARED（外部探针造的），probe_history 与 rollback_log 均 0 行 ⇒ 挂载链在生产从未跑到任何终态。属「等待自然触发」，不是接线缺口；给它排期「补发布方」是重复劳动。⚠️ 2026-10-23 方案 B：原订阅方 agint-metrics 的 mount.* 计数订阅（永远收到 0 条）已与零调用点的 publishMountRequest 服务一并移除 ⇒ **本族现为「有发布方、零订阅方」**。保留豁免是为了防止门禁把它判成 ORPHAN_TOPIC 硬缺口；订阅方是**有意不补**，不是「等订阅方」。",
       "evidence": "plugins/agint-mount/lib/orchestrator.js:307（requested）/:333/:368/:374/:396/:429/:442/:463（failed 各分支）/:454（succeeded）/:591（restart-failed）/:608（restart-completed）+ health-probe.js:66；订阅方 plugins/agint-metrics/lib/mountCounters.js:16-31；2026-10-05 实测：总线全历史 20249 条里 mount.* 命中 0，~/.dsh/storages/agint_mount.json tickets=1（phase=PREPARED，mtime 2026-09-21T12:06:07Z）/probe_history=0/rollback_log=0；docs/known-limitations/event-bus-shadow-publish-gap.md §6.14 记「§6.13 曾点亮 1 条，已被内存快照回滚归 0」",
       "since": "2026-10-05",
-      "unblockWhen": "工单 phase 首次到 ACTIVATED 或 ROLLED_BACK 且有对应 mount.* 落库，本条族（六主题）可整批摘除。跟踪口径另立路线图项「mount 端到端首次真实挂载」，不在本豁免面内。"
+      "unblockWhen": "工单 phase 首次到 ACTIVATED 或 ROLLED_BACK 且有对应 mount.* 落库，本条族（六主题）可整批摘除。跟踪口径另立路线图项「mount 端到端首次真实挂载」，不在本豁免面内。⚠️ 2026-10-23 追加第二条摘除路径：若发布方 orchestrator 也被移除，本族 topic 一并注销，豁免整批作废（不必等真实挂载）。"
     },
     {
       "topic": "mount.succeeded",

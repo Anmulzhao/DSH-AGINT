@@ -4,6 +4,61 @@
 
 ---
 
+## v0.9.2 — 2026-10-18 — 桌面就绪假阴：lease/端口/祖先链三源全断，改判「新 GUI 树根连续两拍驻留」
+
+**背景**：本机 web profile 退役（老板 2026-10-18 令，Windows 只用 desktop）后，桌面重启回执每笔都记 ok=false，而宿主其实活着。
+**取证（当天实拍，非推断）**：桌面机当天一笔 restart-result.json 记 launched=true / desktopShell.killed=true / ready=false / readySignal=null / ok=false / readyWaitedMs=60257；同时新 GUI 的随机监听口有 LISTEN（宿主活着）。
+**根因（三条就绪信号源逐条证伪）**：
+1. sentinel.lease —— 桌面 app 不写：桌面机实测  下没有 sentinel.lease（Test-Path 判 False）。
+2. 固定端口 —— 桌面 GUI 每次启动随机监听口：当天三次重启实测监听口各不相同（随机高位口，非固定值）；老默认 3080 与 v0.9.1 override 配的 19387 均无监听。
+3. descendant-of-launched-shell —— GUI 启动后即脱离 wscript 壳：对活 GUI 进程树逐跳走祖先链：每个 GUI 根的父链首跳都 GONE（壳已退）。
+⇒ v0.9.1 的 port override 修法因端口转随机而失效；三条全断，waitReady 只能恒判失败。
+
+**改动（lib/respawn.js，纯新增，不动 lease/端口老判据）**：
+- 新增桌面结构就绪判据：拉起前对 GUI 映像名枚举一次取树根集合（根 = 父不在同 exe 集合里的那个，GPU/renderer 子进程不算根）；拉起后等新出现、且快照里没有的 GUI 根出现。不依赖端口、不依赖 lease、不解析创建时间（locale 坑）。
+- 新根必须**连续两拍可见**才判就绪（advanceFreshRoot 状态机）：只挂 pending 不定案；换了 pid 重新计数；第二拍消失则 pending 清零、不就绪。堵住「拉起的 GUI 秒退被轮询撞见一拍 → 假绿」（2026-10-13/15 崩溃弹窗形状）。
+- 探测不可达（powershell/CIM/WQL 注入面命中）返回 null，调用方退回老判据，绝不把「探测不了」写成「没有根」（空数组只在真枚举成功且无 GUI 时返回）。
+- 就绪时 newPid 从「被吞的壳 pid」换成「真根 pid」，restart_status 报的 pid 才杀得到。
+- 快照拿不到（null）不阻塞主流程，就绪自动退回 lease/端口老判据（web profile 机器行为不变）。
+- exports 增补 guiRootPids / pickFreshGuiRoot / advanceFreshRoot / listGuiRoots 供单测。
+
+**测试**：新增 test/desktop-readiness-v092.test.mjs 16 例全绿——结构判据纯函数用例（多进程 Electron 形状 / 空集合 / CIM 字符串数字对齐）、单实例锁被吞（无新根）判不就绪、advanceFreshRoot 四例（单拍不定案 / 两拍定案 / 换根重计 / 闪现清零）、WQL 单引号注入面拒查、真机枚举正反例、走完整 respawn 的 win32 e2e 正向（常驻⇒ok=true，newPid 是真根不是壳）与负向（秒退⇒ok=false，不许把失败洗成成功）。
+**基线不变**：smoke.mjs 改动前后均 46 pass / 1 fail（该 fail 为 win32 既存的端到端 lease case，v0.9.1 已记同形）；env-snapshot-redaction 的 1 fail 补丁前即存在（stash 对比确认）；plugin-check agint-restart 本体 11 维度全过。K19 那条 --all fail 扫描老 home .dsh\\profiles\\web 全树，补丁前后同一条，与本改动无关。
+
+---
+## v0.9.1 — 2026-10-15 — 桌面 profile 重启必崩：复现对象从 headless host 换成 GUI 主进程
+
+**背景**：老板两次截图同一张弹窗（2026-10-13、2026-10-15）——「The application could not start or stopped unexpectedly / Another DSH instance (such as dsh web or the desktop app) is running」。文案是误导：并没有第二个实例在跑，是 `/restart-dsh` 自己造出来的东西挡住了桌面 app。
+
+**根因链（两次实跑同形，时刻为本地）**：
+
+1. 老板跑 `/restart-dsh`。旧 host 退出后，respawn 用 `respawn-launch.vbs`（隐藏窗口）复现「我自己当初怎么起的」⇒ 起来一个**没有 GUI 的 headless host**，成功绑走 `127.0.0.1:19387`。
+2. 老板从资源管理器双击桌面 app。Electron 主进程必然自己再生一个 host 子进程 ⇒ `listen EADDRINUSE 127.0.0.1:19387` ⇒ 必需插件 `webserver` 激活失败 ⇒ `connection` 等 12 个插件缺服务挂起 ⇒ `DesktopHostFatalError` ⇒ 弹这个框。
+3. 点框里的 Restart 无效：只是 GUI 重生子 host，端口仍被那个遗留 host 占着。
+
+**为什么以前没暴露**：`dsh web`（麒麟/服务器）那条链路里，进程自己就是宿主，复现自己是对的。桌面 profile 是「GUI 拥有 host」的形状，同一段代码语义正好反了。判据取自打包进 app.asar 的宿主源码：`HostSupervisor.start()` 写明「Start this child **once**」（`if (this.child !== void 0) return`），子进程 close 只调 `fail()` 弹框，**不自动重生**——所以「让 GUI 自己把 host 拉回来」这条路不存在，必须重启 GUI 本身。
+
+**改动**：
+
+- `lib/index.js`：新增导出 `detectDesktopShell({argv, execPath, ppid})` —— 判 `argv[1]` 是否为 `dsh-desktop-host/lib/index.js`，是则返回 `{guiCommand=process.execPath, guiPid=process.ppid, guiExeName}`。`snapshotLaunch(override, desktop)` 在桌面模式下把拉起快照换成**裸起 exe**（`args: []`，带 `guiLaunch: true`）；显式配了 `config.launch` 时不接管（override 语义 = 老板说了算）。请求 payload 加 `desktop` 字段。
+- `lib/respawn.js`：① `pickEnv` 在 `guiLaunch` 时剥掉 `ELECTRON_RUN_AS_NODE`（**必须打在展开之后**：base 侧来自 respawn 自身继承的 host env，launch.env 侧是全量快照，两边都带）。带着它裸起 exe 会进 node 模式、没有入口脚本 ⇒ 立刻退出，GUI 根本起不来。② 新增 `probeProcess` / `killDesktopShell`：旧 host 退出后、等新 GUI 起来前，把旧 GUI 连子树 `taskkill /F /T` 掉——不杀它，Electron 单实例锁（`requestSingleInstanceLock` + `second-instance → focusOwner`）会把新起的 exe 直接吞成「聚焦旧窗口」，两头都不动等于谁也没重启。③ `main()` 加执行守卫（同 killer.js 写法）并导出 `pickEnv` / `killDesktopShell` / `probeProcess` 供单测。
+- `AGINT-date/profiles/desktop/cordis.patch.yml`（本机 override，不入库）：`agint-restart.readiness` 换成 `leasePath: null` + `port: 19387`。bundle 默认的 `sentinel.lease` + `3080` 是 `dsh web` 的值，桌面 profile 两条都不成立 ⇒ 自 2026-10-10 起每次重启都记 `ok=false` 而 host 其实活着（假阴），且 `waitPortFree(3080)` 空转、重启时从不等真端口释放。
+- `test/desktop-shell-respawn.test.mjs`（新增 12 例）：识别（win32/posix 路径、CLI argv 不误判、`execPath` 缺失、`ppid<=0` 落成 null）、env 剥离（两侧都剥、非 GUI 保留、不牵连 `DSH_HOME`）、拒杀护栏（无 pid / pid 已没 / 映像名不符 / 其实是 headless host），并断言被拒杀的进程**事后仍活着**（判据取事实不取日志）。
+
+**pid 复用防护**：`guiPid` 是开机时记下的父进程号，重启可能发生在几天后，那个 pid 完全可能被回收给别的程序。`killDesktopShell` 三道核身（进程还在 / 映像名 == 快照的 `guiExeName` / 命令行不含 host 入口脚本），任一不过就拒绝并记日志——宁可留下旧窗口，也不能凭一个可能已复用的 pid 乱杀老板的东西。
+
+**验证**：新增 15 例全绿；`node --test "test/*.test.mjs"` 30 pass / 0 fail / 10 skipped（skip 是既有的 win32 子进程形状限制）；`test/smoke.mjs` 46 pass / 1 fail，失败的是 `respawn.js 端到端` 一条，**未改动的部署位旧副本同样失败**（本机 win32 既有问题，非本次引入）。
+
+**用真机输入验插件侧，当场抓出一个 bug**：`_verify_plugin_side_20261015.mjs` 用 CIM 取活体 host 的 CommandLine 与 ppid，喂给已部署的 `detectDesktopShell`。第一版按 `argv[1]` 认入口 ⇒ 判成 `null`（等于修复完全不上线）。真机形状是 `spawn(exe, ["--expose-internals", entry, ...])`，而 `--expose-internals` 会不会留在 `process.argv` 里取决于 Electron node 模式怎么解析前置 flag（Win32 命令行里有，argv 里不确定）。改成**扫全量 argv**，并补该形状的用例。教训：判据要用线上真实输入喂，mock 掉 argv 形状等于把要验的东西验没了。
+
+**真机重启一次（21:50，文件式驱动部署位 respawn）**：`restart.log` 同一文件里前后对照——修复前 `cmd=exe + dsh-desktop-host/lib/index.js + 5 参数`、`60000ms 内未观测到就绪信号（lease=sentinel.lease port=3080）`、**ok=false**；修复后 `cmd=exe`（裸起）、`desktopShell.killed=true`、`portFree 7ms`（真端口 19387）、`ready=true 5393ms`、`readyVerified=descendant-of-launched-shell`、**ok=true**。拉起后树：壳 13908 → cmd 27664 → GUI 20688（有 MainWindowTitle）→ host 22260（LISTENING 19387、6 条 ESTABLISHED），HTTP 401 通过。生成的 `respawn-launch.cmd` 现在只有裸 exe 一行，修复前是整串 host 参数。
+
+**新增 `readyVerified` 判据**：win32 下 `launched.pid` 是 wscript 壳，永远不等于端口监听者，既有代码在这条路上只能走 `degraded`（判就绪但不验身份）。改成从监听者往上走祖先链，走到我拉起的壳即算真验过——「占端口的不是我拉起的那个」正是本次故障形态，值得从「没验成」升级成「验过」。走不通链时**保持 degraded 不翻失败**（探测能力问题 ≠ 没起来）。
+
+**一条无害留痕**：本次是文件式驱动（外部强杀旧 host），旧 GUI 的 supervisor 看见子进程 `exited with 1` 写了一份 crash log；插件发起的正常重启是优雅退出，不走这条。判据别认错——那条内容是 `dsh desktop host exited with 1`，不是 `EADDRINUSE` / `Another DSH instance`。
+
+---
+
 ## v0.9.0 — 2026-10-05 — 手动控制面：composer dock 两个按钮 + 终止链路
 
 **背景**：老板在插件管理页看到第三方插件 `@linxin666/dsh-client-ui-plugin-manager` 的「立即重启」按钮，想把同样的手动控制搬进 AGINT 体系，放在输入区原「终止 DSH」按钮（`@local/dsh-kill-switch`）的位置，并让它走 agint-restart 自己的能力。老板 2026-10-05 拍板：两个按钮都要、直接改 agint-restart 本体、停用并卸载 kill-switch、源码落 DSH-AGINT 仓库内。

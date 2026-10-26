@@ -143,6 +143,14 @@ const oracleBroadcastSchema = z.object({
   detail: z.string().default(''),
   /** weekly 提案数（Day 4-5；本次广播成功提交到 agint_evolve.proposal 的条数） */
   proposals: z.number().int().min(0).default(0),
+  /** 本轮实际走的输出路径：template / llm（空 = 未广播行）。
+   *
+   * ⛔ 为什么必须落到本表（r4）：AC-21 的原文是「生产存储 oracle_broadcasts 中
+   * `mode='llm'` 占比 ≥80%」。此前 mode 只进事件 payload 与审计 findings，
+   * **本表没有这一列** ⇒ 按 AC 原文去查，查不到任何数据，验收形同虚设。
+   * 2026-10-25 起无降级：LLM 失败不写 ok 行，改落 outcome=error。
+   */
+  mode: z.string().default(''),
 });
 
 const spec = defineDomain({

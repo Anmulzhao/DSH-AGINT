@@ -33,7 +33,8 @@
  *     autocreate-方案.md` §4）：LLM 的判定结果由调用方（index.js）算好后经
  *     `opts.llmVerdict` 传进来 —— **本模块保持纯函数、无 I/O**，才能单测。
  *     分工是互补不是替换：**LLM 判不了的活留给轨道 B，轨道 B 判不了的活交给
- *     LLM**。LLM 缺失/降级时行为与引入前完全一致（默认 off ⟹ 零行为变化）。
+ *     LLM**。judgeMode=off/shadow 时按配置走轨道 B；**primary 档 LLM 失败则判
+ *     null（需人工），不回落轨道 B**（2026-10-25 无降级）。
  *
  * 纯函数模块，无 I/O，可单测。
  */
@@ -127,7 +128,7 @@ export const VERDICT_REASONS = Object.freeze({
   OK_LLM: 'ok_llm',                       // LLM 判可标准化
   LLM_REJECT: 'llm_reject',               // LLM 判不可标准化
   LLM_LOW_CONFIDENCE: 'llm_low_confidence', // LLM 给不了把握 → 归「需人工」
-  LLM_DEGRADED: 'llm_degraded',           // 调用失败/超时/产出不可用 → 回落轨道 B
+  LLM_FAILED: 'llm_failed',               // 调用失败/超时/产出不可用 → 需人工（⛔ 不回落轨道 B）
 });
 
 /** 默认阈值（与 ConfigSchema 保持一致，纯函数默认值便于单测） */
@@ -234,8 +235,8 @@ export function hardVetoOf(pattern, opts = {}) {
  *                 —— 轨道 C 的输入（调用方调 LLM 后传入；null = 不用 LLM）
  *   llmShadow   : boolean —— true = 只观测不改变结论（把分歧写进
  *                 `signals.llmShadow`），用于 Phase A 灰度取证
- *   llmDegraded : string | null —— LLM 调用失败的 reason；非空时结论跟随轨道 B，
- *                 但 reason 标 `llm_degraded`（K59：降级必须留痕，且要能说清原因）
+ *   llmFailed   : string | null —— LLM 调用失败的 reason；非空时结论直接判 null
+ *                 （需人工），**不回落轨道 B**（2026-10-25 无降级）
  *
  * @returns {{
  *   standardizable: boolean|null,  // true=可标准化 / false=明确否 / null=需人工
@@ -270,6 +271,12 @@ export function judgeStandardizable(pattern, opts = {}) {
   // 固定顺序：硬否决(5) → [轨道 A] → [轨道 C] → 轨道 B 打分。
   // 上游（index.js）算出 LLM 结果后经 opts 传入；本函数不自己调模型。
   // 注：轨道 A 的判断在硬否决**之前**（既有行为，本轮不动）；轨道 C 恒在其后。
+  // 2026-10-25 无降级：primary 档下 LLM 失败直接判 null，⛔ 不回落轨道 B。
+  if (typeof opts.llmFailed === 'string' && opts.llmFailed) {
+    signals.llmFailed = true;
+    signals.llmFailedReason = opts.llmFailed;
+    return verdict(null, 0, 'llm', null, VERDICT_REASONS.LLM_FAILED, signals, minConfidence);
+  }
   const llm = usableLlmVerdict(opts.llmVerdict);
   if (llm) {
     const ruleScore = scoreSignals(signals);
@@ -308,29 +315,16 @@ export function judgeStandardizable(pattern, opts = {}) {
         minConfidence,
       );
     }
-  } else if (typeof opts.llmDegraded === 'string' && opts.llmDegraded) {
-    // 调用失败/超时/产出不合规 → 结论**完全跟随轨道 B**（下面照常打分），
-    // 但路径必须留痕：K59 的教训是「没有候选」与「429 超限」在日记上长得
-    // 一模一样，错误归因因此被固化 12 天。reason 直接标 llm_degraded，
-    // 轨道 B 原本的结论挪到 signals.ruleReason（信息不丢）。
-    signals.llmDegraded = true;
-    signals.llmDegradedReason = opts.llmDegraded;
   }
 
-  // ── 轨道 B：正向信号打分 → confidence（LLM 不可用时的兜底，行为不变）──
-  const degraded = signals.llmDegraded === true;
+  // ── 轨道 B：正向信号打分 → confidence（judgeMode=off/shadow 或 LLM 成功后的常规路径）──
   const score = scoreSignals(signals);
-  if (degraded) {
-    signals.ruleReason = score < minConfidence
-      ? VERDICT_REASONS.LOW_CONFIDENCE
-      : VERDICT_REASONS.OK_HEURISTIC;
-  }
   if (score < minConfidence) {
     return verdict(null, +score.toFixed(4), 'heuristic', null,
-      degraded ? VERDICT_REASONS.LLM_DEGRADED : VERDICT_REASONS.LOW_CONFIDENCE, signals, minConfidence);
+      VERDICT_REASONS.LOW_CONFIDENCE, signals, minConfidence);
   }
   return verdict(true, +score.toFixed(4), 'heuristic', null,
-    degraded ? VERDICT_REASONS.LLM_DEGRADED : VERDICT_REASONS.OK_HEURISTIC, signals, minConfidence);
+    VERDICT_REASONS.OK_HEURISTIC, signals, minConfidence);
 }
 
 /**

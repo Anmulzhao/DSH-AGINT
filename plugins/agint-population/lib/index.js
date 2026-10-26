@@ -526,53 +526,6 @@ function apply(ctx) {
     }
   }
 
-  // ── Service: publishMountRequest（Sprint 12 A4：消费方 publish mount.requested） ──
-  // 目的：population 作为 mount 消费方上游，把"请求挂载"动作通过 bus 影子发布。
-  // 红线（AGENTS.md / 设计稿 §A4）：**直连路径完整保留** —— mount.request 主调用方上层
-  //   （mutator / controller）继续走直连；bus 不可用时静默降级，不抛错、不打 error 级别日志。
-  // payload schema：plugins/agint-mount/schemas/mount-requested.schema.yaml v1
-  // ⚠️ 2026-09-20 接线判定：**保持无生产调用点 —— 这不是漏接线，是刻意不接。**
-  //   1. mount.requested 的发布方是 agint-mount 自己（orchestrator.js:190，挂载流程起点即发）。
-  //      本服务若也发，同一件事在总线上出现两条，订阅方无法区分来源。
-  //   2. 本服务的语义前提是「population 会主动发起挂载请求」，但 population 当前
-  //      未被生产驱动（ingest/promote/cull/fixate/rollback 的生产调用点均为 0）。
-  //      给没有真实语义的位置接调用点 = 造流量，不是接线。
-  //   3. 正解：将来真需要请求挂载时，调 agint.mount.request，由 mount 统一发事件。
-  //   详见 docs/known-limitations/event-bus-shadow-publish-gap.md §6.2
-  async function publishMountRequest(artifact) {
-    if (!artifact || typeof artifact !== 'object') {
-      return { published: false, reason: 'invalid-artifact' };
-    }
-    const ticketId = artifact.ticketId || ('t-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36));
-    const proposalId = artifact.proposalId || artifact.id || 'unknown';
-    const decision = artifact.decision || 'AUTO_DEPLOY';
-    const publish = (typeof ctx.get === 'function') ? ctx.get('agint.eventBus.publish') : null;
-    if (typeof publish !== 'function') {
-      return { published: false, reason: 'eventBus-unavailable', directPathUnaffected: true };
-    }
-    const payload = { ticketId, proposalId, decision };
-    try {
-      const env = {
-        topic: 'mount.requested',
-        version: 1,
-        source: 'agint-population',
-        correlationId: ticketId,
-        payload,
-      };
-      const result = await publish(env);
-      return {
-        published: true,
-        envelopeId: result?.envelopeId,
-        deliveredTo: result?.deliveredTo ?? 0,
-        deadLettered: result?.deadLettered ?? 0,
-        ticketId,
-        proposalId,
-      };
-    } catch (err) {
-      return { published: false, reason: `publish-threw:${err?.message || err}`, directPathUnaffected: true };
-    }
-  }
-
   // ── Provide Services ────────────────────────────────────────────────
   ctx.provide('agint.population.ingest', ingest);
   ctx.provide('agint.population.promote', promote);
@@ -581,7 +534,6 @@ function apply(ctx) {
   ctx.provide('agint.population.rollback', rollback);
   ctx.provide('agint.population.stats', stats);
   ctx.provide('agint.population.publishProposed', publishProposed);  // Sprint 12 A1: bus-side shadow publish
-  ctx.provide('agint.population.publishMountRequest', publishMountRequest);  // Sprint 12 A4: 消费方 publish mount.requested
   ctx.provide('agint.population.evaluate', fitnessEvaluate);    // 暴露 evaluate 让上层可单测
   ctx.provide('agint.population.recordEvaluation', recordEvaluation);
   ctx.provide('agint.population.limits', { variants: 100, fitness_history: 500, traffic_log: 500, generation_log: 50 });
@@ -605,7 +557,6 @@ function apply(ctx) {
     rollback,
     stats,
     publishProposed,
-    publishMountRequest,
     evaluate: fitnessEvaluate,
     recordEvaluation,
     checkLimit,
