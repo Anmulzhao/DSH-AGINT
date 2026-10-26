@@ -246,10 +246,12 @@
     # remove `disabled` from either ordinary tool row to expose that product
     # only to agents composed from the copy.
     #
-    # 2026-10-02：`tool-subagent-codex` 的 `disabled` 已移除 —— 老板要求开启。对应的
-    # provider 由 host 平面的 `subagent-spawn-in-process-codex` 行以 providerName:
-    # codex 注册（见 cordis.patch.yml）。**注意那个 provider 跑的是进程内 DSH agent，
-    # 不是 codex CLI**，名字对齐而已。
+    # 2026-10-02：`tool-subagent-codex` 的 `disabled` 已移除 —— 老板要求开启。
+    # 2026-10-26：provider 来源换成官方 bundle `@deepseek-ai/dsh-subagent-codex`
+    # （providerName: codex，**真 codex CLI**）。host 平面那个跑进程内 DSH agent 的
+    # `subagent-spawn-in-process-codex` 行已移除 —— 两边同名注册会让官方那行激活失败
+    # （"a subagent provider named 'codex' is already registered"）。
+    # 本行按 provider 名查找，provider 由谁注册不影响这一行的写法。
     - id: tool-subagent-codex
       name: '@deepseek-ai/dsh-tool-subagent'
       config:

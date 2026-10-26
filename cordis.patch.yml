@@ -48,27 +48,22 @@
       name: '@deepseek-ai/dsh-schedule'
       config: {}
 
-    # subagent-spawn-in-process-codex: 把一个 provider 以 `codex` 这个名字注册进
-    # ctx.subagents（2026-10-02 为开启 preset 的 `tool-subagent-codex` 行而加）。
+    # 2026-10-26 移除 `subagent-spawn-in-process-codex` 行（经确认后移除）。
     #
-    # 为什么必须挂在 host 平面而不是 preset 里：
-    #   - `subagents` 是宿主单例（dsh-base 的 `subagent` 行提供），preset 插件只应按
-    #     名字查它，不该自己再挂一份；
-    #   - preset 里 `tool-subagent-codex` 行的注释也明写「Product providers are
-    #     host-plane singletons」。
+    # 为什么移：官方 bundle `@deepseek-ai/dsh-subagent-codex` 已进 profile，它自己的
+    # DEFAULT_PROVIDER_NAME 也是 `codex`（lib/index.js:815）。两行向 ctx.subagents 注册
+    # 同名 provider → dsh 抛 "a subagent provider named 'codex' is already registered"，
+    # 官方那行激活失败（启动日志 "1 entry did not activate"）。
     #
-    # ⚠️ 这个 provider 跑的是**进程内 DSH agent**（SpawnInProcessProvider 复用本进程
-    #    的 agent factory / LLM / tool 服务），**不是 codex CLI**。名字叫 codex 是为了
-    #    匹配 preset 里那个既有行，不是宣称它执行 Codex。想真正调 codex CLI，用
-    #    `codex exec`（见 docs/operations/codex-handshake-20260821.md）。
-    #    同包已有 `spawn` 实例（dsh-base），dsh-subagent-spawn-in-process 的 apply()
-    #    无单例守卫，按 providerName 注册，两个实例互不覆盖。
+    # 移除后：`codex` 这个 provider 由官方 bundle 提供 —— **真 codex CLI**
+    # （前置条件：codex CLI 在 PATH 上），不再是进程内 DSH agent。
+    # preset 的 `tool-subagent-codex` 行按 provider 名查找，无需改动。
     #
-    # 回滚：删除本行并重启 dsh；preset 的 tool-subagent-codex 会退回到「provider 未注册」。
-    - id: subagent-spawn-in-process-codex
-      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
-      config:
-        providerName: codex
+    # 回滚：把下面四行取消注释并重启 dsh（会再次与官方 bundle 同名冲突）。
+    # - id: subagent-spawn-in-process-codex
+    #   name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+    #   config:
+    #     providerName: codex
 
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     #
