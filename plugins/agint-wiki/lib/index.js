@@ -52,6 +52,59 @@ function apply(ctx, config) {
     return { rel: trimmed, abs };
   };
 
+  // ── wiki.updated 发布（2026-10-26）────────────────────────────────────
+  // 背景：agint-wiki 此前对事件总线零感知（check-wiring 查 E' 的 UNWIRED），
+  //   知识层的写入在总线上完全无痕迹 ⇒ 没有任何插件能对 wiki 变化做反应。
+  //
+  // 语义：只有**真实发生的变更**才发 —— write 落盘成功、remove 删掉实际存在的文件。
+  //   remove 返 false（ENOENT）时不发，否则「删除一个不存在的文件」也会产生事件，
+  //   把 wiki.updatedCount 变成调用计数而不是变更计数。
+  //
+  // 红线（沿用 agint-rules / agint-mount 的接线纪律，K63/K64 教训）：
+  //   1. **文件读写是主契约** —— 返回值、抛错语义一律不变；发布失败只告警。
+  //   2. **三形态探测** —— event-bus 用 spec.provides 注册的是三个分服务名
+  //      （`agint.eventBus.publish` 等），**没有伞键**；部分 host 变体是伞键。
+  //      只查伞键会恒 undefined 并静默降级（gap 文档 §6.4 的 K63 同族事故）。
+  //   3. 不切 T2：主路径仍是文件系统直写，本条是影子广播。
+  function resolveBusPublish() {
+    const bind = (bus) => (bus && typeof bus.publish === 'function' ? bus.publish.bind(bus) : null);
+    const probes = [
+      () => (typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null),
+      () => bind(typeof ctx.getService === 'function' ? ctx.getService('agint.eventBus') : null),
+      () => bind(typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null),
+    ];
+    for (const probe of probes) {
+      try {
+        const fn = probe();
+        if (typeof fn === 'function') return fn;
+      } catch { /* 试下一种形态 */ }
+    }
+    return null;
+  }
+
+  async function publishWikiUpdated(payload) {
+    const publish = resolveBusPublish();
+    if (!publish) return { published: false, reason: 'eventBus-unavailable' };
+    try {
+      const result = await publish({
+        topic: 'wiki.updated',
+        version: 1,
+        source: 'agint-wiki',
+        payload,
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('wiki: wiki.updated publish failed', {
+          path: payload?.path,
+          action: payload?.action,
+          error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: 'publish-failed' };
+    }
+  }
+
   // Recursively collect .md files under dir, returning paths relative to root.
   const walk = async (dir) => {
     const out = [];
@@ -99,13 +152,17 @@ function apply(ctx, config) {
       const body = content.endsWith('\n') ? content : `${content}\n`;
       await writeFile(abs, body, 'utf8');
       const info = await stat(abs);
+      // 影子广播：知识层变了。落盘之后才发 —— 写失败的路径不应产生变更事件。
+      await publishWikiUpdated({ action: 'write', path: rel, bytes: info.size });
       return { path: rel, bytes: info.size };
     },
 
     async remove(p) {
-      const { abs } = clean(p);
+      const { rel, abs } = clean(p);
       try {
         await rm(abs);
+        // 只在真的删掉东西时发；下面 ENOENT 分支返回 false 表示无变更。
+        await publishWikiUpdated({ action: 'remove', path: rel });
         return true;
       } catch (error) {
         if (error.code === 'ENOENT') return false;

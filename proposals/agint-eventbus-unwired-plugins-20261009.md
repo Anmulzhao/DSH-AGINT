@@ -1,6 +1,9 @@
 # Proposal: 事件总线接线盲区 —— 5 个应接入未接入的插件
 
-> **状态**：草案（draft） · 类别 `plugin` · **未提交** evolve plugin runtime storage
+> **状态**：⭐ **B1 / B3 / B4 / B5 已完成并上线（2026-10-26）** —— 见 §9 执行结果。
+> B2（`agint-restart`）未在本轮范围。工作项 A（门禁加查 E'）已于更早批次落地，
+> `check-wiring` 现有「查 E'：总线零感知」即为该工作项产物。
+> 原状态：草案（draft） · 类别 `plugin` · **未提交** evolve plugin runtime storage
 > **目标插件**：`agint-rules` / `agint-quality-contract` / `agint-restart` / `agint-abtest` / `agint-wiki` + `bin/check-wiring.mjs`
 > **作者**：智进（agint preset 会话） · **日期**：2026-10-09
 > **风险等级**：P1（新增 topic 与发布调用点，不改 FROZEN 的 EventEnvelope/Subscription schema；不动门禁边语义）
@@ -279,3 +282,53 @@ node bin/check-wiring.mjs
 - `plugins/agint-event-bus/README.md` —— sync 模式「门禁边专属」定义（FROZEN 语义来源）
 - `proposals/agint-mount-integrate-restart.md` —— 与工作项 B2 同向，应合并推进
 - `待办核销报告-20261009.md` 第三节 —— wiki root 配置问题（独立议题）
+
+---
+
+## 9. 执行结果（2026-10-26）
+
+### 9.1 工作项逐条
+
+| 序 | 插件 | 结果 | 落点 |
+|---|---|---|---|
+| A | `bin/check-wiring.mjs` 加查 E' | ✅ **已于更早批次完成** | 现输出「查 E'：总线零感知（已挂载 + 提供跨插件服务，却从不碰事件总线）」 |
+| B1 | `agint-rules` | ✅ 发布侧 10-09 已在（生产 2 条）；本轮**补订阅侧** | `agint-metrics/lib/eventCounters.js` |
+| B2 | `agint-restart` | ⬜ **未做**（不在 2026-10-26 的 4 处缺口内） | — |
+| B3 | `agint-quality-contract` | ✅ 发布 `quality.contract.violated`（**仅** L0 拒绝分支）+ 订阅 | 同上 |
+| B4 | `agint-abtest` | ✅ 发布 `abtest.started` / `abtest.concluded` + 订阅。⚠️ **通电仍未做**（见 §5.2-1） | 同上 |
+| B5 | `agint-wiki` | ✅ 发布 `wiki.updated`（write/remove 落盘后）+ 订阅 | 同上 |
+
+**订阅侧统一落 metrics 而非各业务插件**：5 条主题共用一个模块、一张表，
+理由是 metrics 已是全系统遥测出口（policy.* / dream.rejected 同形态），
+这样「规则改了没 / wiki 写了没 / 契约被拦了没 / A/B 出结论没」能用同一条
+`metrics_series` 并排看。
+
+### 9.2 门禁前后对照
+
+| 观测项 | 前 | 后 |
+|---|---|---|
+| 硬缺口 | 4 | **0** |
+| 查 E' 零感知 | 3 | **0** |
+| `rules.changed` | `NO_SUBSCRIBER`（1 发 / 0 订 / 2 条） | **`OK`**（1/1 / 2 条） |
+| 查 H 仓库↔部署位 | 9 待上线 + 3 仓库独有 | **已全部同步** |
+
+### 9.3 §7.1「quality-contract 到底该发还是该订」—— 已定：**只发违例**
+
+读 D-QAF 设计后判定：它**不需要**发「调参成功」（L1 调参已写 `agint.memory` 审计，
+那条通路完整），也**不该**做纯订阅方（它没有需要响应外部状态的行为）。
+唯一值得上总线的时刻是 **L0 守卫拒绝** —— 因为 `validatePatch` 不通过即 throw，
+`memory.write` 根本没执行，错误随调用栈消失。
+
+### 9.4 本轮暴露的两个新问题（未修，已记账）
+
+1. **文本扫描型门禁会被抽象写法骗瞎**：订阅写成 `topics: SOME_CONST` 时，
+   `check-wiring` 的正则看不见 ⇒ 代码对、门禁仍报缺口。详见 gap 文档 §6.15.3。
+2. **查 H 漏检嵌套目录插件**：`plugins/agint-quality/agint-quality-contract/lib/`
+   改了但查 H 全程未报漂移（改前仓库/部署位 md5 明确不同）。
+   意味着以后改 contract / eval / policy / sandbox 源码，漂移不会被门禁发现。
+   详见 gap 文档 §6.15.4。
+
+### 9.5 未覆盖
+
+- **变异测试欠一笔**：新增 30 条单测，但未做「退回未接线 → 测试转红」的对照（§6.11.2 的标准）。
+- `agint-abtest` 存储域仍 DEAD；`agint-wiki` root 指向空目录 —— 两者都在本提案范围外。

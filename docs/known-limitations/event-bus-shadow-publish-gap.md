@@ -14,6 +14,94 @@
 
 ---
 
+### 6.15 ⭐⭐ 4 处接线硬缺口清零（2026-10-26）
+
+**结论先行**：`node bin/check-wiring.mjs` 从「4 硬缺口 / 3 插件总线零感知 / FAIL」
+变为「**0 硬缺口 / 0 零感知 / PASS**」。但**接线不等于通电** —— 4 条新主题生产数据仍为 0，
+`agint_abtest` 存储域仍 DEAD。下面把「做到了什么」与「没做到什么」分开写。
+
+#### 6.15.1 改动前后对照
+
+| 观测项 | 改前 | 改后 |
+|---|---|---|
+| 硬缺口 | **4** | **0** |
+| 插件总线零感知（查 E'） | 3（wiki / quality-contract / abtest） | **0** |
+| `rules.changed` | `NO_SUBSCRIBER` 1 发布 / 0 订阅 / 生产 2 条 | **`OK`** 1/1 / 2 条 |
+| `wiki.updated` | 无发布方、无订阅方 | 1/1，`NOT_YET_FIRED` |
+| `quality.contract.violated` | 主题不存在 | 1/1，`NOT_YET_FIRED` |
+| `abtest.started` / `abtest.concluded` | 主题不存在 | 各 1/1，`NOT_YET_FIRED` |
+| 仓库 ↔ 部署位（查 H） | 9 待上线 + 3 仓库独有 | **已全部同步** |
+
+#### 6.15.2 四处各自接了什么，为什么
+
+| # | 缺口 | 接法 | 语义理由（不是为凑门禁绿） |
+|---|---|---|---|
+| B1 | `rules.changed` 无订阅者 | `agint-metrics` 新增订阅（`lib/eventCounters.js`） | 该主题自 10-09 起就在发、生产已有 2 条，但 **deliveredTo 恒 0** —— 发了没人收等于白发。落 metrics 而非业务插件，因为它已是全系统统一遥测出口（policy.* / dream.rejected 同形态）。 |
+| B3 | `agint-wiki` 零感知 | 发布 `wiki.updated`（write/remove 落盘后） | 知识层写入此前零指标：`wiki.total` 只是快照值，看不出增长速率、更看不出哪天突然停写。 |
+| B4 | `agint-quality-contract` 零感知 | 发布 `quality.contract.violated`（**仅** L0 拒绝分支） | ⭐ 只发违例、不发调参成功。L1 调参已写 `agint.memory` 审计；真黑洞在拒绝分支 —— `validatePatch` 不通过即 throw，**memory.write 根本没执行**，错误随调用栈消失。而 AGENTS.md 明载「废除多签后 L0 没有事前审批」，运行时唯一守卫就是这个 validatePatch。 |
+| B5 | `agint-abtest` 零感知 | 发布 `abtest.started` / `abtest.concluded` | A/B 结论是 D-QAF 决策链证据之一，此前只活在存储域里。一旦结论要参与自动部署判定，没有时间锚点可对齐。 |
+
+**统一订阅侧**：5 条主题（含上述 4 条 + `rules.changed`）由
+`plugins/agint-metrics/lib/eventCounters.js` 一个模块订阅，落同一张 `agint_metrics` 表。
+一个模块而不是四处散挂，是为了让「规则改了没 / wiki 写了没 / 契约被拦了没 / A/B 出结论没」
+能用同一条 `metrics_series` 并排看。
+
+#### 6.15.3 ⭐ 新教训：抽象写法会让**文本扫描型门禁**失明
+
+`eventCounters` 第一版把订阅写成 `topics: SUBSCRIBED_TOPICS`（模块常量）。代码正确、
+单测全绿，但门禁**照样报 `NO_SUBSCRIBER(rules.changed)`**。
+
+原因：`check-wiring.mjs` 的订阅侧是逐行正则 `/topics:\s*\[([^\]]*)\]/`，只认**字面量数组**。
+变量形式对它是不可见的 ⇒ **代码对了，回归防线瞎了**。
+
+> ⭐ **教条**：给文本扫描型门禁新增接线时，被扫描的关键字必须留在它看得见的位置
+> （字面量、同行、紧邻 `subscribe(`）。「用常量消除重复」在这里是**反效果**：
+> 它优化了源码，却废掉了唯一的自动回归检测。
+> 两份事实（字面量 topics / key 映射表）的一致性，改由**单测**钉死
+> （`test/event-counters.test.mjs` 的「门禁可见性」用例断言两者集合相等）。
+
+#### 6.15.4 顺带发现：门禁查 H 漏检嵌套目录插件
+
+`agint-quality-contract` 的真实源码在 `plugins/agint-quality/agint-quality-contract/lib/`
+（顶层 `plugins/agint-quality-contract/` 只剩 `node_modules` 壳，见提案 §2.2 警告）。
+本轮已改该文件并同步三处部署位，但**门禁查 H 全程未报它漂移** —— 改前仓库 md5
+`002670…` 与部署位 `9ff1d1…` 明确不一致，查 H 却只报了 abtest / metrics / wiki 三个。
+
+⇒ 查 H 的「仓库路径 → 部署位路径」映射漏了嵌套 `agint-quality/*` 这一类。
+**这条不比 4 处接线缺口轻**：它意味着以后改 contract / eval / policy / sandbox
+这几个插件的源码，部署位漂移**不会被门禁发现**。已记入待修，本轮未动门禁。
+
+#### 6.15.5 ⚠️ 接线 ≠ 通电（如实声明）
+
+1. **4 条新主题生产数据全为 0**（`NOT_YET_FIRED`）。发布方与订阅方都已就位，
+   但没有一次真实触发：`quality.contract.violated` 要有人真去写 FROZEN 字段，
+   `abtest.*` 要真有 A/B 实验跑，`wiki.updated` 要 `wiki_write` 被真实调用。
+   **这四项在门禁里是「未触发」不是「缺口」**，判据见 §6.7。
+2. **`agint_abtest` 存储域仍 DEAD**（`agint_abtest.json` 从未生成）。提案 §5.2 已言明
+   「接线 ≠ 修复」：给一个从未跑过的插件接发布侧，只是「一旦有实验就能发」。
+   **让该域通电需真实跑一次 A/B，属独立议题，本轮未做。**
+3. **`agint-wiki` 的 root 配置问题未动**（提案 §2.3⑤ 记的「root 指向空目录」）。
+   即使 root 修好，也是另一次改动；本轮只补了「写入可被观测」。
+
+#### 6.15.6 验收记录
+
+| 层 | 结果 |
+|---|---|
+| 新增单测 | metrics 10 / wiki 7 / quality-contract 6 / abtest 7，**共 30 条** |
+| 四插件全量回归 | **79/79 绿** |
+| smoke（metrics / wiki） | 2/2、3/3 绿 |
+| `check-l0-frozen` | 通过（只加发布调用，未动 FROZEN schema） |
+| `verify-umbrella` | PASS 10/10 插件（16 槽位） |
+| `check-boundary` | 无新增越界 |
+| `check-wiring` | **PASS**，0 硬缺口 / 0 零感知 / 仓库↔部署位全同步 |
+
+> 变异验证未做（本轮未对其一主题跑「退回未接线 → 测试转红」）。
+> 30 条新测试里凡涉及「发了没发 / 落没落库」的断言均为双向（该发的必须发、
+> 不该发的一条都不许发），但**这不等于变异测试**，按 §6.11.2 的标准仍算欠一笔。
+
+---
+
+
 ### 6.14 ⭐⭐⭐ 外部直写生产存储不算落库 —— 宿主内存态全量落盘会把它回滚（2026-09-23 00:05）
 
 **起因**：复核 T2 状态时例行数总线总条数，发现 **907 条里 `mount.` 一次都没出现** ——
