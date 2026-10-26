@@ -164,7 +164,7 @@ describe('豁免机制', () => {
     assert.deepEqual(
       unexpected,
       [],
-      `这些文件改了仓库还没部署到宿主：\n${unexpected.join('\n')}`,
+      `以下文件仓库与部署位不一致（哈希比对判不出方向，最常见是仓库改了没跑 install）：\n${unexpected.join('\n')}`,
     );
   });
 
@@ -181,6 +181,53 @@ describe('豁免机制', () => {
       report.drift.checked > 100,
       `只比对了 ${report.drift.checked} 个文件 —— 多半是路径算错了，查 H 形同虚设`,
     );
+  });
+
+  // ─────────── 扫描范围自证（2026-10-26 三类盲区）───────────
+  // 修之前的实现是 `root/<名>/lib/*.js` 一层扫描，于是三类文件完全不可见：
+  //   1) 分组目录 plugins/agint-quality/ 下的五个子插件（它自己没有 lib/）
+  //   2) 根入口插件 plugins/agint-session-extract/index.js（没有 lib/）
+  //   3) lib 下的 .mjs（只收 .js）
+  // 实测过的后果：改了 contract 的 lib/index.js，仓库与三处部署位 md5 明确不同，
+  // 查 H 全程未报漂移 —— 门禁报 PASS。以下的断言就是钉住这件事不许回退。
+  describe('扫描范围：分组目录 / 根入口 / .mjs', () => {
+    const cov = report.drift.coverage;
+
+    test('覆盖度已导出（没有它就无法判断「查了哪些」）', () => {
+      assert.ok(cov, '缺少 drift.coverage —— 查 H 的扫描范围没有自证');
+      assert.ok(cov.plugins > 0 && cov.filesPerRoot > 0, 'coverage 数值异常');
+    });
+
+    test('分组目录下的插件在扫描范围内', () => {
+      const nested = ['agint-quality/agint-quality-contract', 'agint-quality/agint-quality-eval',
+        'agint-quality/agint-quality-policy', 'agint-quality/agint-quality-report',
+        'agint-quality/agint-quality-sandbox'];
+      for (const p of nested) {
+        assert.ok(cov.nested.includes(p), `${p} 未被发现 —— 又退回单层扫描了`);
+      }
+    });
+
+    test('根入口插件（index.js 不在 lib/ 下）在扫描范围内', () => {
+      assert.ok(
+        cov.rootEntry.includes('agint-session-extract/index.js'),
+        `根入口插件未纳入比对（实际 rootEntry=${JSON.stringify(cov.rootEntry)}）`,
+      );
+    });
+
+    test('lib 下的 .mjs 在扫描范围内', () => {
+      assert.ok(
+        cov.mjs.includes('agint-session-source/lib/index.mjs'),
+        `lib 内 .mjs 未纳入比对（实际 mjs=${JSON.stringify(cov.mjs)}）`,
+      );
+    });
+
+    test('每个部署根都真比了一遍（总数 = 每根文件数 × 根数）', () => {
+      assert.equal(
+        report.drift.checked,
+        cov.filesPerRoot * report.drift.roots.length,
+        `比对 ${report.drift.checked} 次 ≠ ${cov.filesPerRoot} 文件 × ${report.drift.roots.length} 根 —— 有部署位被漏比`,
+      );
+    });
   });
 
   test('查 E/H 真的查了：部署位探测到 ≥2 个副本（防止又被静默跳过）', () => {

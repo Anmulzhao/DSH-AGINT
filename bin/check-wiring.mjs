@@ -549,6 +549,78 @@ function sha(s) {
   return createHash('sha1').update(s).digest('hex').slice(0, 12);
 }
 
+// ───────────── 插件发现：兼容分组目录（嵌套）、根入口插件、lib 内 .mjs ─────────────
+// 2026-10-26 实测的三类盲区（此前查 E / 查 H 只扫 `root/<名>/lib/*.js` 一层）：
+//   1) 分组目录：plugins/agint-quality/ 本身不是插件，下面才挂着 contract / eval /
+//      policy / report / sandbox 五个真插件 —— 只扫一层会把它们整批漏掉。
+//      实测：改了 agint-quality/agint-quality-contract/lib/index.js，查 H 全程
+//      未报漂移（仓库与部署位 md5 明确不同）。
+//   2) 根入口插件：plugins/agint-session-extract/index.js（没有 lib/）。
+//   3) lib 内 .mjs：plugins/agint-session-source/lib/index.mjs。
+// 判定「是插件根」= 该目录自证：有 lib/ 或 manifest.json 或 index.(m)js。
+// 不满足则视为分组目录继续下潜 —— 深度不设限，也不必维护白名单。
+const REPO_PLUGINS = join(REPO_ROOT, 'plugins');
+
+function discoverPluginDirs(root) {
+  const out = [];
+  const visit = (dir, rel) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const names = new Set(entries.map((e) => e.name));
+    const isPlugin =
+      names.has('lib') || names.has('manifest.json') || names.has('index.js') || names.has('index.mjs');
+    if (isPlugin && rel) {
+      out.push(rel); // 插件根：不再下潜（插件内部不嵌套插件）
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      visit(join(dir, e.name), rel ? `${rel}/${e.name}` : e.name);
+    }
+  };
+  if (existsSync(root)) visit(root, '');
+  return out.sort();
+}
+
+const PLUGIN_DIRS = discoverPluginDirs(REPO_PLUGINS);
+/** 插件名 → 相对插件根（`agint-quality-contract` → `agint-quality/agint-quality-contract`）。
+ *  查 I 要按相对路径拼 smoke 入口，只拿名字会拼到错误位置。 */
+const PLUGIN_DIR_BY_NAME = new Map(PLUGIN_DIRS.map((d) => [d.slice(d.lastIndexOf('/') + 1), d]));
+
+/** 列出某根下所有「需比对」的插件源文件，返回相对该根的 POSIX 路径。 */
+function listPluginFiles(root) {
+  const out = [];
+  for (const rel of discoverPluginDirs(root)) {
+    const dir = join(root, rel);
+    for (const name of ['index.js', 'index.mjs']) {
+      if (existsSync(join(dir, name))) out.push(`${rel}/${name}`);
+    }
+    const libDir = join(dir, 'lib');
+    if (!existsSync(libDir)) continue;
+    const walkLib = (cur, sub) => {
+      let entries;
+      try {
+        entries = readdirSync(cur, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+        const p = sub ? `${sub}/${e.name}` : e.name;
+        if (e.isDirectory()) walkLib(join(cur, e.name), p);
+        else if (/\.m?js$/.test(e.name)) out.push(`${rel}/lib/${p}`);
+      }
+    };
+    walkLib(libDir, '');
+  }
+  return out;
+}
+
 const dup = {
   checked: 0,
   identical: 0,
@@ -568,15 +640,16 @@ if (STATIC_ONLY) {
 } else {
   const ref = DEPLOY_ROOTS[0];
   for (const other of DEPLOY_ROOTS.slice(1)) {
-    for (const dir of readdirSync(ref.path, { withFileTypes: true })) {
-      if (!dir.isDirectory()) continue;
-      for (const sub of ['lib/tools.js', 'lib/index.js']) {
-        const bPath = join(ref.path, dir.name, sub);
-        const mPath = join(other.path, dir.name, sub);
+    // 用插件发现而非 readdirSync 一层：bundle 位里 agint-quality/ 是分组目录，
+    // 其下五个子插件的 tools.js / index.js 以前整个不在比对范围内。
+    for (const relDir of discoverPluginDirs(ref.path)) {
+      for (const sub of ['lib/tools.js', 'lib/index.js', 'index.js', 'index.mjs']) {
+        const bPath = join(ref.path, relDir, sub);
+        const mPath = join(other.path, relDir, sub);
         if (!existsSync(bPath)) continue;
         dup.checked++;
         if (!existsSync(mPath)) {
-          dup.mirrorMissing.push(`${other.label}:${dir.name}/${sub}`);
+          dup.mirrorMissing.push(`${other.label}:${relDir}/${sub}`);
           continue;
         }
         let a;
@@ -588,7 +661,7 @@ if (STATIC_ONLY) {
           continue;
         }
         if (sha(a) === sha(b)) dup.identical++;
-        else dup.divergent.push(`${other.label}:${dir.name}/${sub}`);
+        else dup.divergent.push(`${other.label}:${relDir}/${sub}`);
       }
     }
   }
@@ -620,31 +693,16 @@ const dupOk = dup.divergent.length === 0 && dup.mirrorMissing.length === 0;
 //
 // 这类漂移在开发中是**常态**（改完还没部署），所以默认只报清单、不进退出码；
 // --strict 下才视为缺口。目的是让"上线前还有什么没同步"一眼可见。
-const REPO_PLUGINS = join(fileURLToPath(new URL('..', import.meta.url)), 'plugins');
+// 扫描口径见上方 discoverPluginDirs / listPluginFiles —— 分组目录、根入口插件、
+// lib 内 .mjs 都算在内（2026-10-26 修的三类盲区）。
 
-function listLibFiles(root) {
-  const out = [];
-  if (!existsSync(root)) return out;
-  for (const d of readdirSync(root, { withFileTypes: true })) {
-    if (!d.isDirectory() || d.name.startsWith('.')) continue;
-    const libDir = join(root, d.name, 'lib');
-    if (!existsSync(libDir)) continue;
-    const walk = (cur, rel) => {
-      for (const e of readdirSync(cur, { withFileTypes: true })) {
-        const p = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) walk(join(cur, e.name), p);
-        else if (e.name.endsWith('.js')) out.push(`${d.name}/lib/${p}`);
-      }
-    };
-    walk(libDir, '');
-  }
-  return out;
-}
-
+// 注：`repoNewer` 这个名字是历史包袱 —— 它只是「两边 sha 不同」，**不含方向**。
+// 哈希比对判不出谁新，部署位被手工改过也会落进这里（2026-10-26 变异实测确认过：
+// 改部署位 → 被报成「仓库已改」）。所以输出措辞不能说「仓库已改」。
+// 原 hostNewer 字段从未被赋值，已删除（死字段会让人以为方向是判过的）。
 const drift = {
   checked: 0,
   repoNewer: [],
-  hostNewer: [],
   repoOnly: [],
   hostOnly: [],
   roots: DEPLOY_ROOTS.map((r) => r.label),
@@ -656,10 +714,18 @@ if (STATIC_ONLY) {
   drift.noLayout = true;
   drift.skipReason = '部署位或仓库路径探测不到 —— 查 H 没查过，不是「已同步」';
 } else {
-  const repoFiles = new Set(listLibFiles(REPO_PLUGINS));
+  const repoFiles = new Set(listPluginFiles(REPO_PLUGINS));
+  // 扫描范围自证：单层扫描的时代这三项都是空的，把它们导出后自测能钉死回归。
+  drift.coverage = {
+    plugins: PLUGIN_DIRS.length,
+    filesPerRoot: repoFiles.size,
+    nested: PLUGIN_DIRS.filter((d) => d.includes('/')),
+    rootEntry: [...repoFiles].filter((f) => !f.includes('/lib/')),
+    mjs: [...repoFiles].filter((f) => f.endsWith('.mjs')),
+  };
   // 每个部署位都比一遍：漏同步的那一份正是查 H 要抓的
   for (const root of DEPLOY_ROOTS) {
-    const hostFiles = new Set(listLibFiles(root.path));
+    const hostFiles = new Set(listPluginFiles(root.path));
     for (const rel of repoFiles) {
       drift.checked++;
       const rp = join(REPO_PLUGINS, rel);
@@ -696,21 +762,31 @@ const driftPlugins = new Set();
 for (const d of [...dup.divergent, ...drift.repoNewer, ...drift.hostOnly, ...drift.repoOnly]) {
   // 条目形如 `bundle:profiles/desktop:agint-x/lib/y.js` —— 标签本身含冒号，
   // 所以插件名不能靠「冒号前的那段」取，要认 `/<plugin>/lib/` 这个结构。
-  const m = /(?:^|:)([a-z0-9-]+)\/lib\//.exec(d);
+  //
+  // 2026-10-26：分组目录（`agint-quality/agint-quality-contract/lib/index.js`）与
+  // 根入口插件（`agint-session-extract/index.js`）以前取不到名字 —— 它们的漂移
+  // 被查 H 看见了，却不会进查 I 跑 smoke，又退化成「看见了但没验证」。
+  // 分隔符要认 `/` 与 `:` 两种，且 lib 形态取不到时退到根入口形态。
+  const m = /(?:^|[:/])([a-z0-9][a-z0-9-]*)\/lib\//.exec(d) || /(?:^|[:/])([a-z0-9][a-z0-9-]*)\/index\.m?js$/.exec(d);
   if (m) driftPlugins.add(m[1]);
 }
 const smokeI = { checked: 0, pass: [], fail: [], skipped: driftPlugins.size === 0 };
 for (const plugin of [...driftPlugins].sort()) {
+  // 插件名 → 仓库内相对目录。嵌套插件（agint-quality/agint-quality-contract）
+  // 若按名字拼路径会指到 plugins/agint-quality-contract（空壳残留目录）去。
+  const dirRel = PLUGIN_DIR_BY_NAME.get(plugin) || plugin;
   let entry = 'test/smoke.mjs';
   try {
-    const man = JSON.parse(readFileSync(join(REPO_PLUGINS, plugin, 'manifest.json'), 'utf8'));
+    const man = JSON.parse(readFileSync(join(REPO_PLUGINS, dirRel, 'manifest.json'), 'utf8'));
     entry = man?.spec?.tests?.entry || man?.tests?.entry || 'test/smoke.mjs';
   } catch {
     /* 无 manifest：用默认入口 */
   }
-  const entryPath = join(REPO_PLUGINS, plugin, entry);
+  const entryPath = join(REPO_PLUGINS, dirRel, entry);
   if (!existsSync(entryPath)) {
-    smokeI.fail.push(`${plugin}（入口 ${entry} 不存在）`);
+    // 「没有 smoke 入口」与「smoke 跑挂了」是两件事，消息必须分清 ——
+    // 前者是「无法验证」，后者是「验证不通过」。两者都阻断，但别让日志撒谎。
+    smokeI.fail.push(`${plugin}（无 smoke 入口 ${entry}，漂移无法验证）`);
     continue;
   }
   smokeI.checked++;
@@ -791,6 +867,8 @@ if (AS_JSON) {
           noLayout: !!drift.noLayout,
           roots: drift.roots,
           checked: drift.checked,
+          // 扫描范围自证（2026-10-26）：单层扫描时代 coverage 三项全空 —— 自测靠它钉回归
+          coverage: drift.coverage ?? null,
           repoNewer: drift.repoNewer,
           repoOnly: drift.repoOnly,
           hostOnly: drift.hostOnly,
@@ -821,8 +899,16 @@ if (AS_JSON) {
             services: p.services,
             busRefs: p.busRefs,
           })),
-          exempted: unwiredExempt.map((p) => ({ plugin: p.plugin, reason: p.exemption?.reason ?? null })),
-          aware: busAware.map((p) => ({ plugin: p.plugin, busRefs: p.busRefs })),
+          // 三个桶都必须带 dir：自测「按入口路径解析目录」的断言会在三桶里找插件，
+          // 少一个字段就意味着插件换个桶（未接线→已接线/豁免）该断言就假红。
+          exempted: unwiredExempt.map((p) => ({
+            plugin: p.plugin,
+            dir: p.dir,
+            services: p.services,
+            busRefs: p.busRefs,
+            reason: p.exemption?.reason ?? null,
+          })),
+          aware: busAware.map((p) => ({ plugin: p.plugin, dir: p.dir, services: p.services, busRefs: p.busRefs })),
           noService: noService.map((p) => p.plugin),
           mountMissing: mountMissing.map((p) => ({ plugin: p.plugin, entry: p.entry })),
         },
@@ -971,7 +1057,11 @@ if (drift.skipped) {
     for (const f of head) console.log(`    ${C.dim}${f}${C.r}`);
     if (!VERBOSE && arr.length > head.length) console.log(`    ${C.dim}… 另 ${arr.length - head.length} 条（--verbose 展开）${C.r}`);
   };
-  show('待上线（仓库已改，部署位还是旧的 —— 需跑 install 才生效）', drift.repoNewer, C.yel);
+  show(
+    '不一致（仓库 ≠ 部署位；哈希比对判不出方向，最常见是仓库改了没跑 install）',
+    drift.repoNewer,
+    C.yel,
+  );
   show('部署位独有（宿主被本地改过，仓库不知情 —— 下次 install 会被覆盖）', drift.hostOnly, C.red);
   show('仓库独有（新文件尚未部署）', drift.repoOnly, C.dim);
 }
