@@ -49,7 +49,9 @@
 #                   作用范围（2026-10-08 补全，缺任何一项都会「装完零报错但能力不全」）：
 #                     · 4 处部署路径（profile 根下的 bundle 链 / 清单 / 插件镜像 / patch）
 #                     · 传给 agint-zod-bootstrap.sh 的 MIRROR 位
-#                     · 1.3  preset 工具行 ../../profiles/<名>/plugins/… 重写（agint 单套）
+#                     · 1.3  preset 工具行锚定 bundle 主挂载源 + 逐条核验（agint 单套）
+#                            ① 不随 profile 变 —— 一份 preset 文件服务所有 profile，
+#                              按 profile 改写会让先装的端工具全指空且零报错
 #                     · 2.6  部署位 manifest.json 的 read:profiles/<名>/plugins 权限声明重写
 #                     · 3.7  安装事实文件 $DSH_HOME/.agint-bundle/profile.json
 #   --dry-run  只打印会改什么，不写任何文件
@@ -683,53 +685,79 @@ for src in "$PRESETS_SRC"/*/; do
   log "   ✓ $name"
 done
 
-# ── 1.3 把 preset 工具行改指目标 profile ─────────────────────────────────────
+# ── 1.3 preset 工具行锚定 bundle 主挂载源并逐条核验 ─────────────────────────
 #
 # ⛔ 为什么必须有这一步（2026-10-08，装 desktop 的硬阻挡点）：
-#   presets/*/agent.cordis.yml 里 <id>/lib/tools.js 的声明行写的是相对路径
-#     name: ../../profiles/web/plugins/<plugin-id>/lib/tools.js
-#   从部署位 $DSH_HOME/.agent-presets/<id>/ 解析 ⇒ $DSH_HOME/profiles/web/plugins/…。
-#   仓库模板写死 'web'，装到 desktop 而不改 ⇒ 这些行全部指向一个不存在（或没装 AGINT）
-#   的目录 ⇒ **模型可见的工具全缺，且没有任何一行报错**（preset 加载失败不落日志）。
-#   4 个 preset 共 40+ 行，人工改必漏，所以由安装器统一重写。
-#   2026-10-26 起本仓只产出 agint 一套（13 行），子 preset 迁到 agint-presets
-#   独立仓，由那边的安装器改自己的 —— 各仓管各自的部署位，本安装器不再越界
-#   去改别的仓库铺进来的 preset。
+#   presets/agint/agent.cordis.yml 里 <id>/lib/tools.js 的声明行写的是相对路径，
+#   从部署位 $DSH_HOME/.agent-presets/agint/ 解析出去。仓库模板当初写死
+#   `../../profiles/web/plugins/…`，装到 desktop 而不改 ⇒ 这些行全部指向一个
+#   不存在（或没装 AGINT）的目录 ⇒ **模型可见的工具全缺，且没有任何一行报错**
+#   （preset 加载失败不落日志）。
+#
+# 🔁 2026-10-26 换锚：从「按 --profile 改写」改为「锚 .agint-bundle/plugins」
+#   原因：preset 文件全局只有一份（$DSH_HOME/.agent-presets/agint/），却被**所有**
+#   profile 共用。按 profile 改写 ⇒ 装 web 再装 desktop 会把 web 的 25 行全部指空，
+#   于是同一时刻只可能有一端是好的，失败表现依旧是「零报错、工具莫名消失」。
+#   .agint-bundle/plugins 是 dsh bundle 形态的**主挂载源**（见上方「部署位」说明；
+#   profiles/<p>/plugins 只是它的兼容镜像位）。锚在这里，路径里不含 profile 名，
+#   装一次两端同时成立。
+#   附带收益：preset 的 tools.js 与服务插件指向同一份物理文件 ⇒ 不会出现两个模块
+#   实例、模块级状态不共享的问题（check-wiring「查 E」点名的双实例风险）。
 #
 # 为什么在 rsync **之后**：步骤 1 的 safe_rsync 带 --delete，会把部署位整份镜像回
-#   仓库模板（web）。这一步必须在它之后，否则当次改完、下次重装又退回 web。
+#   仓库模板。这一步必须在它之后，否则当次改完、下次重装又退回模板。
 #
-# 只改 `profiles/<名>/plugins/` 这一段：preset 里另有 `profiles/web/cordis.patch.yml`
-#   这类**文档性**引用（注释里说明本机覆盖放哪），它没有 /plugins/ 段，不会被误伤。
+# 为什么只认 agint 一个目录：2026-10-26 起子 preset 迁到 agint-presets 独立仓，
+#   各仓管各自的部署位，本安装器不越界去改别的仓库铺进来的 preset。
+#
+# 幂等：历史部署里的旧写法（../../profiles/<名>/plugins/）会被迁移过来；已经是
+#   新锚点的文件不会被改动。
 rewrite_preset_profile_refs() {
   [ "$DRY_RUN" = "1" ] && {
-    log "   [DRY] 将把 presets 里的 profiles/*/plugins 改指 $PROFILE_NAME"
+    log "   [DRY] 把 preset 工具行统一锚到 ../../.agint-bundle/plugins/，并逐条核验目标存在"
     return 0
   }
-  python3 - "$(winpath "$PRESETS_DST")" "$PROFILE_NAME" <<'PY' || warn "preset 工具行重写失败（装到非 web profile 时工具会全缺）"
-import os, re, sys, glob
+  # 锚点是 bundle 主挂载源，由步骤 1/2 铺出来。不在就别假装改成功。
+  [ -d "$BUNDLE_PLUGINS_DST" ] || {
+    warn "工具行锚点不存在：$BUNDLE_PLUGINS_DST —— preset 的工具会全缺"
+    return 1
+  }
+  python3 - "$(winpath "$PRESETS_DST")" "$(winpath "$DSH_HOME")" <<'PY' || warn "preset 工具行锚定/核验未通过（工具会缺，或历史部署未迁移）"
+import os, re, sys
 
-root, profile = sys.argv[1], sys.argv[2]
-# 只匹配 <任意前缀>profiles/<名>/plugins/ ；profile 名已在 shell 侧过白名单
-pat = re.compile(r'(profiles/)[A-Za-z0-9._-]+(/plugins/)')
-total = 0
-for path in sorted(glob.glob(os.path.join(root, 'agint', 'agent.cordis.yml'))):
-    try:
-        text = open(path, encoding='utf-8').read()
-    except OSError as e:
-        print(f'[AGINT]   ! 读不动 {path}: {e}')
-        continue
-    new_text, n = pat.subn(lambda m: m.group(1) + profile + m.group(2), text)
-    if n == 0:
-        print(f'[AGINT]   · {os.path.basename(os.path.dirname(path))}: 无 profiles/*/plugins 行，跳过')
-        continue
-    if new_text == text:
-        print(f'[AGINT]   ↻ {os.path.basename(os.path.dirname(path))}: 已是 {profile}，跳过')
-        continue
+presets_dst, dsh_home = sys.argv[1], sys.argv[2]
+legacy = re.compile(r'\.\./\.\./profiles/[A-Za-z0-9._-]+/plugins/')
+anchor = '../../.agint-bundle/plugins/'
+row = re.compile(r'^\s*name:\s*(\.\./\.\./\.agint-bundle/plugins/\S+)\s*$', re.M)
+
+path = os.path.join(presets_dst, 'agint', 'agent.cordis.yml')
+if not os.path.isfile(path):
+    print(f'[AGINT]   ✗ 缺 {path}', file=sys.stderr)
+    sys.exit(1)
+
+text = open(path, encoding='utf-8').read()
+new_text, migrated = legacy.subn(anchor, text)
+if migrated:
     open(path, 'w', encoding='utf-8', newline='').write(new_text)
-    total += n
-    print(f'[AGINT]   ✓ {os.path.basename(os.path.dirname(path))}: {n} 行改指 profiles/{profile}/plugins')
-print(f'[AGINT]   ✓ preset 工具行合计重写 {total} 行 → profiles/{profile}/plugins')
+    text = new_text
+    print(f'[AGINT]   ↻ agint: 迁移 {migrated} 行旧写法 → {anchor}')
+
+base = os.path.join(dsh_home, '.agent-presets', 'agint')
+rels = row.findall(text)
+missing = []
+for rel in rels:
+    target = os.path.normpath(os.path.join(base, rel))
+    if not os.path.isfile(target):
+        missing.append((rel, target))
+
+if missing:
+    print(f'[AGINT]   ✗ {len(missing)} 个工具目标不存在（共 {len(rels)} 行工具声明）：', file=sys.stderr)
+    for rel, target in missing:
+        print(f'      {rel}\n        → {target}', file=sys.stderr)
+    print('[AGINT]   bundle 主挂载源没铺全，先确认步骤 1/2 成功。', file=sys.stderr)
+    sys.exit(1)
+
+print(f'[AGINT]   ✓ agint: {len(rels)} 行工具全部指向 bundle 主挂载源且目标存在')
 PY
 }
 rewrite_preset_profile_refs

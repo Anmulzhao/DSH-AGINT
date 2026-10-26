@@ -516,9 +516,11 @@ const tsDrift = [];
 
 // ───────────── 查 E：多副本一致性（各部署位逐字节一致） ─────────────
 // 背景：插件在本机有多份物理拷贝 —— bundle 位 + 每个 profile 的镜像位。
-// preset 的 tools 行指向镜像位，服务插件走 bundle 位 → 走偏（只同步一处）时
+// preset 的 tools 行**若**指向镜像位，而服务插件走 bundle 位 → 走偏（只同步一处）时
 // preset 加载的 tools.js 与 bundle 里的服务插件是两个模块实例，模块级状态
 // 不共享，且不会报错。
+// 2026-10-26 起 preset 工具行已锚 .agint-bundle/plugins（与服务插件同源），
+// 这类风险面归零；计数仍分开报，好让「老写法又回来了」一眼可见。
 //
 // ⚠️ 2026-10-19 修：此前这里写死 `profiles/web`。web profile 已于 2026-10-18
 // 退役删除 ⇒ existsSync 守卫直接短路 ⇒ 查 E/H 恒空 ⇒ 门禁报「一致」假绿，
@@ -552,7 +554,8 @@ const dup = {
   identical: 0,
   divergent: [],
   mirrorMissing: [],
-  presetRefs: 0,
+  presetMirrorRefs: 0,
+  presetAnchorRefs: 0,
   roots: DEPLOY_ROOTS.map((r) => r.label),
 };
 if (STATIC_ONLY) {
@@ -589,14 +592,22 @@ if (STATIC_ONLY) {
       }
     }
   }
-  // preset 实际引用了多少条镜像位路径（= 双实例风险面的大小）
+  // preset 的工具行落在哪一位 = 双实例风险面的大小
+  //
+  // 2026-10-26 起 preset 的工具行锚在 `.agint-bundle/plugins/`（bundle 主挂载源），
+  // 与服务插件指向同一份物理文件 ⇒ 只有一个模块实例，不构成风险。只有仍指向
+  // `profiles/<名>/plugins/` 的老写法才是风险面。
+  // 两类分开计：此前一条正则把两者都算进「引用镜像位」，改锚后会把「已修好」
+  // 误报成「42 条风险」——数字越大越像有问题，实际含义正好相反。
   const presetsDir = join(STORAGE_DIR, '..', '.agent-presets');
   if (existsSync(presetsDir)) {
     for (const p of readdirSync(presetsDir, { withFileTypes: true })) {
       if (!p.isDirectory()) continue;
       const yml = join(presetsDir, p.name, 'agent.cordis.yml');
       if (!existsSync(yml)) continue;
-      dup.presetRefs += (readFileSync(yml, 'utf8').match(/plugins\/[a-z0-9-]+\/lib\/tools\.js/g) || []).length;
+      const text = readFileSync(yml, 'utf8');
+      dup.presetMirrorRefs += (text.match(/\.\.\/\.\.\/profiles\/[A-Za-z0-9._-]+\/plugins\/\S*tools\.js/g) || []).length;
+      dup.presetAnchorRefs += (text.match(/\.\.\/\.\.\/\.agint-bundle\/plugins\/\S*tools\.js/g) || []).length;
     }
   }
 }
@@ -932,7 +943,7 @@ if (dup.skipped) {
   console.log(`  ${C.yel}⊘ 没查：部署位里没有可比对的 lib 文件${C.r}`);
 } else {
   console.log(
-    `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${C.dim}preset 引用镜像位 ${dup.presetRefs} 条${C.r}`,
+    `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${dup.presetMirrorRefs === 0 ? C.dim : C.red}preset 引镜像位 ${dup.presetMirrorRefs} 条${C.r}${C.dim} / 锚 bundle 位 ${dup.presetAnchorRefs} 条（无第二实例）${C.r}`,
   );
   for (const d of dup.divergent) console.log(`  ${C.red}DIVERGED${C.r} ${d}`);
   for (const d of dup.mirrorMissing) console.log(`  ${C.yel}MIRROR-MISSING${C.r} ${d}`);

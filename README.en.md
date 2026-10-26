@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 > A **self-evolving agent framework** built on DeepSeek Harness (`dsh`).
 
-**v0.13.0** · 40 Cordis plugins (36 mount declarations) · 1 preset · 25 preset tool rows · 27 cron jobs. For live numbers, see the LOCAL-STATE block at the end of [`AGENTS.md`](./AGENTS.md).
+**v0.14.0** · 40 Cordis plugins (36 mount declarations) · 1 preset · 25 preset tool rows · 27 cron jobs. For live numbers, see the LOCAL-STATE block at the end of [`AGENTS.md`](./AGENTS.md).
 
 - **Philosophy**: beauty = simple + true + dependable + proactive + safe. When two of these conflict, the earlier one wins. Full text: Wiki [PHILOSOPHY](https://github.com/Anmulzhao/DSH-AGINT/wiki/PHILOSOPHY).
 - **Position**: `dsh` is the upstream runtime. AGINT is a specification plus a component set on top of it. It is not a fork. AGINT is not an AGI implementation. It is the engineering skeleton that leads toward AGI: memory, reflection, constraints, metrics, evaluation. Every new feature must pass D-QAF evaluation.
@@ -34,6 +34,13 @@ cd ~/projects/AGINT
 ```
 
 After the install, **restart the target profile** (re-open `dsh web`, or quit and re-open the desktop app). The bundle layer and the profile layer do not hot-reload. To remove AGINT, run `./install/uninstall.sh`.
+
+> **One preset serves every profile**: `$DSH_HOME/.agent-presets/agint/` holds a
+> single file set shared by web and desktop. Its 25 tool declarations therefore
+> anchor to `.agint-bundle/plugins/` (the bundle's main mount source) and do
+> **not** vary with `--profile` — installing web and then desktop will not point
+> the first one at an empty directory. The installer verifies all 25 targets
+> exist and reports any that are missing.
 
 Four hard rules:
 
