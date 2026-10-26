@@ -4,6 +4,7 @@ description: "agint-* 插件挂载 / 源码变更的强制准入工作流。10 �
 tools:
   - bin/plugin-check.sh
   - bin/check-wiring.mjs
+  - install/redeploy.sh
   - safe-update.sh
   - node
 triggers:
@@ -178,41 +179,59 @@ node plugins/agint-<name>/test/smoke.mjs
 
 ```
 仓库真源  <repo>/plugins/agint-*/lib/*.js
-mirror 位  $DSH_HOME/profiles/web/plugins/agint-*/lib/*.js        ← preset tools 引用
-bundle 位  $DSH_HOME/.agint-bundle/plugins/agint-*/lib/*.js        ← 服务真正加载
-          （2026-10-01 起实体在此；$DSH_HOME/profiles/web/node_modules/@agint/host
+bundle 位  $DSH_HOME/.agint-bundle/plugins/agint-*/lib/*.js        ← 服务真正加载 + preset 工具行锚这
+mirror 位  $DSH_HOME/profiles/<profile>/plugins/agint-*/lib/*.js   ← 兼容镜像位（v0.14.0 起不再被引用）
+          （2026-10-01 起实体在 bundle；$DSH_HOME/profiles/<p>/node_modules/@agint/host
             是指过去的软链，写旧路径也能通，但别再往那儿手工放文件——
             pnpm 会按 dependencies 重算它）
 ```
 
-**正确顺序：改仓库 → 同步到 mirror 位 + bundle 位 → 重启。**
+**正确顺序：改仓库 → `./install/redeploy.sh`（铺部署位 + 核验 + 重启）→ 看它的核验结论。**
 只改 host 两份 = 下次部署静默回退；只改仓库不同步 = 服务跑的仍是旧代码且**不报错**。
+
+`install/redeploy.sh` 会依次做：`install.sh` → 部署位核验（挂载声明数 / `@agint/host` 注册 / 软链 /
+`profile.json` / 四套 preset 逐份查锚点且镜像位必须为 0 / 母 preset 与仓库逐字对比 /
+`check-preset-parity`）→ 按端口取 pid 重启 → 启动后核验（无 `skipping profile bundle` /
+agint 日志行 / cron job 数 / token 入口 / storage 落盘）。任一步不过就**不重启**（fail-closed），
+所以「跑完 exit 0」本身就是第 5 步的验收证据，不必再手工比对两处副本。
+只想核验不装不重启：`./install/redeploy.sh --verify-only`；只想看会做什么：`--dry-run`。
 
 > ⚠️ 两份副本只同步一处 = **静默分叉**（两个模块实例、状态不共享、不抛错）。`bin/check-wiring.mjs` 查 E 会报 `DIVERGED` 并 exit 1。改完必跑。
 
 ```sh
 bin/safe-update.sh smoke         # 当前 prod 状态冒烟
-bin/safe-update.sh edit-source   # 改源码时用这个（拍快照）
-bin/safe-update.sh mount-patch   # 改 cordis.patch.yml 时用这个（拍快照）
-# 编辑仓库 <repo>/plugins/... 与 <repo>/profile-patches/web/cordis.patch.yml
-# 然后同步双副本，并用 check-wiring 验证：
-node bin/check-wiring.mjs         # 查 E 双副本 + 查 H 仓库↔部署，查 I 漂移插件 smoke
+bin/safe-update.sh edit-source   # 改源码前用这个（拍快照 + 拿回滚点）
+bin/safe-update.sh mount-patch   # 改 cordis.patch.yml 前用这个（拍快照）
+# 编辑仓库 <repo>/plugins/... 与 <repo>/cordis.patch.yml（部署位副本别手改）
+./install/redeploy.sh            # 铺部署位 + 核验 + 重启，一条命令
+node bin/check-wiring.mjs        # 查 E 双副本 + 查 H 仓库↔部署，查 I 漂移插件 smoke
 ```
 
 **快照必须自己核实产物。** 2026-09-28 修掉一个静默失效：`compgen -G` 对 Windows 混合分隔符路径恒 MISS，`snapshot_plugins` 走「跳过」分支只打一行 warning 却 **exit 0** —— 改了源码却没回滚点，而调用方以为拍成功了。同源第二个坑：`tar` 把 `C:` 当远程主机前缀 → `Cannot connect to C: resolve failed`，因脚本无 `set -e` 仍打印 ✓（假成功）。两处已在 `bin/safe-update.sh` 修掉（`cygpath` 归一化 + 判据改 `cd` 后 `ls -d` + tar 失败即 `fail`），但**升级到旧版脚本的机器上仍会复发**，所以照例核对：
 
 ```sh
 ls -la "$DSH_HOME/.agint-backups"/agint-plugins-*.tar.gz | tail -1
-tar tzf <上面那个 tar> | grep -c '^agint-[^/]*/$'   # 应等于已挂载插件数（本机 35）
+tar tzf <上面那个 tar> | grep -c '^agint-[^/]*/$'   # 应等于 bundle 位 agint-* 目录数（本机 41）
 ```
 
-**重启 —— 首选 `restart_request` 工具，不要用 `safe-update.sh restart`：**
+**重启 —— 按场景分三条路，别混用：**
+
+| 场景 | 用什么 | 说明 |
+|---|---|---|
+| 改了仓库源码 / preset / patch（常态） | `./install/redeploy.sh` | 铺部署位 + 核验 + 重启一条命令，约 55s；2026-10-26 建 |
+| 只想重启，不动任何文件 | `restart_request` 工具（agint-restart v0.2.0+） | 三重护栏（confirm + 冷却期 + 熔断）、dryRun 可先看计划、`--no-open`、sideEffect 回报 |
+| 崩了要倒序回滚 | `bin/safe-update.sh rollback <TS>` | 快照与回滚是它唯一的职责，别拿它当部署工具 |
 
 ```sh
-# ✅ 首选：restart_request 工具（agint-restart 插件 v0.2.0+）
-#   三重护栏（confirm + 冷却期 + 熔断）、dryRun 可先看计划、--no-open、sideEffect 回报
-# ❌ safe-update.sh restart：Windows Git Bash 缺 pgrep/pkill
-#   graceful_stop_dsh 空转不报错 → start_dsh 拉起第二个实例抢 3080
+# ✅ 常态：一条命令搞定装 + 核验 + 重启
+./install/redeploy.sh
+# ✅ 只重启不动文件
+#   restart_request（工具）
+# ✅ 回滚
+#   bin/safe-update.sh rollback 20261026-233000
+# ⚠️ safe-update.sh restart 2026-10-26 已修「dsh 不在 PATH ⇒ 服务停在停止态」与
+#    「pgrep -f 'dsh web' 命中脚本自身」，Linux 可用；但 Windows Git Bash 缺 ss / pgrep，
+#    那条路径仍不可靠 —— Windows 上走 restart_request。
 # （历史备选 bin/restart-runbook.ps1 已于 2026-09-28 废弃删除，勿再引用）
 ```
 
@@ -248,7 +267,8 @@ preflight 完成的标志是：`bin/plugin-check.sh --all` 无**新增** fail（
 - `docs/plugins/PLUGIN-SPEC.md` —— 9 维度规范
 - `bin/plugin-check.sh` —— lint 入口
 - `bin/_verify-dim9.mjs` —— 维度 9 的 node 镜像（perl 不可用时）
-- `bin/safe-update.sh` —— 第 5 步的 SOP
+- `install/redeploy.sh` —— 第 5 步的常态路径（装 + 部署位核验 + 重启 + 启动后核验）
+- `bin/safe-update.sh` —— 改前快照与倒序回滚（部署别用它）
 - `docs/operations/dsh-restart-incident-20260821.md` —— SOP 起源
 - `docs/operations/safe-update-sop.md` —— 完整 4 份快照 SOP
 - Memory `plugin-spec-9-dimensions`（沉淀目标）
