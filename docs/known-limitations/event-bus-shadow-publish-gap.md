@@ -1003,3 +1003,68 @@ warns: [] / deadLettered: []
 「代码与部署位字节本身没问题」——此前唯一未被证明的一环。
 主进程内验证需真实走一次 `evolve_propose`（挂 preset 但不在我当前工具集），
 **路径已打通**：等一次自然提案或 cron，观察 `shadow-ingest` 标记是否自行增长。
+
+## 七、2026-10-27 — 方案 B 的收尾：删掉 `agint-mutator` 悬空的 `publish` 声明
+
+### 7.1 这一处为什么会红
+
+10-23 老板重拍方案 B（砍，不接）：`c1f7d95` 把 `agint-mutator` /
+`agint-population` 的 `publishMountRequest` **函数体 + `ctx.provide` 全名键 + 伞键**
+一并删掉，连带清了 `agint-metrics/lib/mountCounters.js` 整个文件。
+
+删得干净，但漏了一处**声明**：`agint-mutator/manifest.json` 的
+`spec.cordis.consumes` 里还挂着 `agint.eventBus.publish`。
+
+单看 manifest 无害，但家族面板的判据 3（文档腐化：`consumes` 里声明了、
+同族代码里既无 code 边也无 comment 边）每天都会因此红一行：
+
+```
+AssertionError: 仓库位文档腐化集合漂移：
+实测 {"agint-mutator":["agint.eventBus.publish"]}（声明了但同族代码无对应调用）
+```
+
+**根因不是"忘了接线"，正好相反 —— 是"接完又砍了，只砍了一半"。**
+方案 B 实施时列了「连带（三处）」的消费方清理（verify-umbrella / eval scenarios /
+scenario inventory），漏掉了 manifest 自身的 consumes 这一处。
+
+### 7.2 处置：删声明，不补实现
+
+保留声明的两条替代方案都被否掉，理由与 09-20 §6.2 的「不接」判定同源：
+
+| 方案 | 为什么不 |
+| --- | --- |
+| 补一个真实调用点 | `mount.requested` 的发布方是 `agint-mount` 自己（`orchestrator.js` 十处真实调用点）。mutator 再发一条，**同一件事在总线上出现两条**，订阅方无法区分来源 |
+| 留着不动、把面板判据改成白名单 | 白名单会让判据 3 对这棵树彻底失去敏感度；且这条声明的语义已经错了，留着是带着假事实 |
+
+真正需要请求挂载时走的是 `agint.mutator.synthForProposal` → `agint-mount.request`
+**直连**（`ae4d9ca` 的部署桥），由 mount 统一发事件 —— 这条链路已有真实生产路径。
+
+### 7.3 改了什么
+
+- `plugins/agint-mutator/manifest.json`：`consumes` 去掉 `agint.eventBus.publish`。
+- 版本 `0.6.10 → 0.6.11`（manifest + package.json 同步），CHANGELOG 记变更理由。
+- 三处部署位同步（bundle / `node_modules/@agint/host` 镜像 / `profiles/web/plugins`）。
+- `agint.eventBus.subscribe` **保留** —— `lib/index.js:1117` 有真实订阅
+  （`diagnosis.completed` 影子观察）。
+
+### 7.4 验收（如实分档）
+
+| 项 | 结果 |
+| --- | --- |
+| `test/q3-verdicts.test.mjs` | PASS，仓库位「悬空声明」集合 `{}`；部署位「文档腐化」行 1 → **0** |
+| `agint-mutator` 全量测试 | 140 pass / 0 fail |
+| `bin/check-wiring.mjs` | PASS —— 0 硬缺口 / 5 未触发 / 2 域从未通电 / 0 插件总线零感知 |
+| `bin/verify-manifests.mjs` / `check-spec-consistency.mjs` / `verify-umbrella.mjs` | 全部 PASS |
+| `查 E` 多副本一致性 | 134/134 一致；`查 H` 855 个 lib 文件已全部同步 |
+
+**没做到的（不得含糊）**：本轮没有重启 dsh，manifest 的 `consumes` 变更要到
+**下次 boot 才生效**。当前这条声明服务的是一条已被删除的能力，不重启不影响任何运行时行为
+（`check-wiring` 的 E' 零感知判定与 consumes 无关）；但若要"部署位=运行态"完全对齐，
+还需一次 `install/redeploy.sh`。
+
+### 7.5 教训
+
+> **删能力时，"声明"和"实现"是两份事实，必须一起删。**
+> `c1f7d95` 的提交信息写得很细（连 eval scenario 都列了），仍然漏了 manifest 的 consumes ——
+> 因为它不在任何一次 grep「publishMountRequest 的调用点」的结果里：声明处没有函数名。
+> 下次砍能力，除了 grep 调用点，还要 grep **`consumes` 里的服务键**。
