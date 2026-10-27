@@ -104,10 +104,68 @@ function scanTargets() {
 }
 
 // ── 提取 import/require 的 specifier ────────────────────────────────────────
-const RE_STATIC_IMPORT = /(?:^|[\s;}])(?:import|export)\s[\s\S]*?from\s*['"]([^'"]+)['"]/g;
+//
+// 2026-10-27：先**去掉注释**再扫。
+//
+// 此前不清注释，注释里写「`import x from 'a'`」这种举例会被当成真 import：
+// outcome-measurer.js 的写法说明、v2-data.js 的对照说明各中一枪，门禁于是
+// 长期红在两条**不存在的**第三方依赖上（包名干脆是 `a` / `a deployed copy`）。
+// 误报比漏报更伤 —— 真问题会淹在噪声里，而人会开始习惯「这条红的，别管它」。
+//
+// 顺带把静态 import 的字符类从 `[\s\S]*?` 收紧成 `[^;'"]*?`：
+// 原写法可以跨语句配对，把文件上方某个 `export`/`import` 和下方几十行外
+// 一个 `from "..."` 拼成一句不存在的 import。真 import 语句里不含 `;` 与引号，
+// 收紧不影响识别，多行具名导入（`import {\n a,\n} from 'x'`）也照样命中。
+const RE_STATIC_IMPORT = /(?:^|[\s;}])(?:import|export)\s[^;'"]*?from\s*['"]([^'"]+)['"]/g;
 const RE_BARE_IMPORT = /(?:^|[\s;}])import\s*['"]([^'"]+)['"]/g;
 const RE_DYNAMIC_IMPORT = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 const RE_REQUIRE = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+/**
+ * 把注释内容替换成等长空白（保留换行，行号不跑），字符串 / 模板串原样抄过。
+ *
+ * 只处理字符串与注释两种状态就够了：正则字面量里想写出未转义的 `//` 或 `/*`
+ * 在语法上不可能（`/` 必须转义），所以不做正则状态机也不会误吃到代码。
+ */
+export function stripComments(src) {
+  let out = '';
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (ch === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      out += src.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const end = src.indexOf('\n', i);
+      const stop = end === -1 ? n : end;
+      out += ' '.repeat(stop - i);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      // 字符串 / 模板串整段抄过去：里面的 // 与 /* 不是注释。
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === ch) { j += 1; break; }
+        if (ch !== '`' && src[j] === '\n') break;  // 单双引号不跨行
+        j += 1;
+      }
+      out += src.slice(i, j);
+      i = j;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
 
 export function extractSpecifiers(src) {
   const specs = [];
@@ -116,8 +174,9 @@ export function extractSpecifiers(src) {
     if (spec.includes('${')) return;
     specs.push(spec);
   };
+  const code = stripComments(src);
   for (const re of [RE_STATIC_IMPORT, RE_BARE_IMPORT, RE_DYNAMIC_IMPORT, RE_REQUIRE]) {
-    for (const m of src.matchAll(re)) push(m[1]);
+    for (const m of code.matchAll(re)) push(m[1]);
   }
   return specs;
 }
