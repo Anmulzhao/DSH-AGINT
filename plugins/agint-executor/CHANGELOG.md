@@ -1,5 +1,42 @@
 # agint-executor CHANGELOG
 
+## v0.1.1（2026-10-27 · 修：`inject` 漏声明 `timer`，首次部署插件根本没挂上）
+
+### 症状
+
+首次 `install/redeploy.sh` 全绿（装 + 核验 + 重启都通过），但面板 `pluginKinds` 里
+`agint-executor` 是 `kind: sdk`（= 有源码、**未挂载**），dsh 日志：
+
+```
+agint-executor (...plugins/agint-executor/lib/index.js): Error: cannot get property "timer" without inject
+    at new apply (.../lib/index.js:277:7)
+```
+
+### 根因
+
+`ctx.setInterval` / `ctx.setTimeout` 由宿主的 `timer` 服务提供，**必须写进 `inject`**。
+v0.1.0 写的是 `inject = []`，而 wake 去重里用了 `ctx.setTimeout` ⇒ apply 抛错 ⇒
+整个插件不挂载。判据与 `agint-cron` 同源（`const inject = ['timer', 'storageDomain']`）。
+
+### 为什么本地用例没抓到
+
+假 ctx 把 `setTimeout` / `setInterval` 直接给了出去，**比真宿主宽松** ——
+「替身复刻契约」这条纪律在这里被违反了：真宿主对未注入的服务是**抛错**，不是返回 undefined。
+
+### 修法
+
+1. `inject = ['timer']`，manifest `spec.cordis.inject` 同步。
+2. 补两条回归：`inject` 必须含 `timer`（并用源码反向校验代码确实在用宿主定时器，
+   否则断言会退化成摆设）；`enabled=true` 时 apply 必须注册恰好一个 interval。
+
+### 教训
+
+「部署位核验全绿」不等于「插件真起来了」：redeploy 的启动后核验看的是
+「无 skipping profile bundle + 有 agint 日志行 + cron job 数」，
+一个插件 apply 失败不会让这些判据变红。**判「新插件是否真挂上」要看运行时**
+（`/v2/data` 的 `pluginKinds` → `kind === 'host'`，或 `ctx.get('agint.executor')` 是否非空），
+不能只看安装脚本退出码。
+
 ## v0.1.0（2026-10-27 · 批准即执行：approved 之后由它动手）
 
 ### 为什么

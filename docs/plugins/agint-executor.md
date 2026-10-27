@@ -13,6 +13,10 @@
 
 **不做**：造变异内容、写仓库、D-QAF 决策、自己存状态。
 
+**注入**：`inject = ['timer']` —— `ctx.setInterval`（tick）/ `ctx.setTimeout`（wake 去重）
+由宿主 `timer` 服务提供。⛔ 漏声明不是「软降级」而是 apply 抛错、插件整个不挂载
+（v0.1.0 首次部署即此坑，见 CHANGELOG v0.1.1）。
+
 ## 为什么需要它
 
 ```

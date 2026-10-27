@@ -11,7 +11,8 @@
 // 运行：node test/executor.test.mjs
 
 import assert from 'node:assert/strict';
-import { apply } from '../lib/index.js';
+import { readFile } from 'node:fs/promises';
+import { apply, inject } from '../lib/index.js';
 import { startOfWeek, nextWeekStart } from '../lib/week.js';
 import { decideRun, canRetry } from '../lib/plan.js';
 import * as evolveExec from '../../agint-evolve/lib/execution.js';
@@ -247,3 +248,32 @@ const approved = (over = {}) => ({ id: 'p1', status: 'approved', execMode: 'imme
 }
 
 console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-switch / 周口径）');
+
+
+// ── 注入声明：用宿主定时器就必须 inject 'timer'（2026-10-27 首次部署翻车）──
+//
+// 实机症状：插件 apply 时抛 `cannot get property "timer" without inject`，
+// 整个插件没挂上，而面板只显示「服务 get 不到、tick 从不发生」。
+// 本地用例当时全绿 —— 因为假 ctx 把 setTimeout 直接给了出去，比真宿主宽松。
+// 这条断言钉的是「代码用了什么」与「声明要了什么」必须一致。
+{
+  assert.ok(
+    inject.includes('timer'),
+    '使用 ctx.setInterval / ctx.setTimeout 必须 inject timer，否则宿主拒绝挂载',
+  );
+  const src = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8');
+  assert.ok(
+    /ctx\.setInterval|ctx\.setTimeout/.test(src),
+    '反向校验：代码确实在用宿主定时器，否则这条断言会退化成摆设',
+  );
+}
+
+// ── 挂载即注册 tick（enabled=true 时）────────────────────────────────
+{
+  const ctx = makeCtx();
+  let intervals = 0;
+  ctx.setInterval = () => { intervals += 1; return { dispose() {} }; };
+  ctx.provide('agint.evolve', makeFakeEvolve({}));
+  apply(ctx, { enabled: true, tickMs: 60000 });
+  assert.equal(intervals, 1, 'enabled=true 时应注册恰好一个 interval');
+}

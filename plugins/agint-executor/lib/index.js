@@ -35,7 +35,17 @@
 import { decideRun, canRetry, oneLine } from './plan.js';
 
 const name = 'agint-executor';
-const inject = [];
+/**
+ * `timer` 是**必填**注入，不是可选依赖。
+ *
+ * ⛔ 2026-10-27 实机教训（首次部署即翻车）：本插件用 `ctx.setInterval` 做 tick、
+ *    `ctx.setTimeout` 做 wake 去重，但 inject 写的是 `[]`。宿主侧访问未注入的
+ *    `ctx.timer` 会直接抛 `cannot get property "timer" without inject`，
+ *    整个 apply 失败 ⇒ **插件根本没挂上**，而症状只是「服务 get 不到、tick 从不发生」。
+ *    本地用例没抓到，是因为假 ctx 把 setTimeout 直接给了出去（替身比真宿主宽松）。
+ *    判据与 agint-cron 同源：`const inject = ['timer', 'storageDomain']`。
+ */
+const inject = ['timer'];
 
 const KILL_ENV = 'AGINT_EXECUTOR';
 
