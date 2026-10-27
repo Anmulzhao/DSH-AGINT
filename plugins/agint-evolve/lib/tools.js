@@ -125,6 +125,21 @@ function apply(ctx) {
           status: { required: true, type: 'string' },
           source: { required: true, type: 'string' },
           note: { required: true, type: 'string' },
+          // 2026-10-27：补齐 proposalSchema 里同日新增的字段。
+          // ⛔ output schema 是 additionalProperties:false —— 返回体里有、schema 里
+          // 没声明 ⇒ DSH strict 校验直接判失败（2026-10-27 实测：每次 propose
+          // 都报 "value.blocker is not a declared property"）。声明必须与
+          // proposalSchema 同步增补，否则新增字段在输出面一律被挡。
+          blocker: { required: true, type: 'string' },
+          unblockCondition: { required: true, type: 'string' },
+          execMode: { required: true, type: 'string' },
+          execAt: { required: true, type: 'string' },
+          execState: { required: true, type: 'string' },
+          execAttempts: { required: true, type: 'integer' },
+          execError: { required: true, type: 'string' },
+          execStartedAt: { required: true, type: 'string' },
+          execFinishedAt: { required: true, type: 'string' },
+          autoExecutable: { required: true, type: 'boolean' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
         },
@@ -168,6 +183,16 @@ function apply(ctx) {
                 note: { required: true, type: 'string' },
                 blocker: { required: true, type: 'string' },
                 unblockCondition: { required: true, type: 'string' },
+                // 2026-10-27：同批补齐执行计划字段（proposalSchema 里已有，
+                // 但 output schema 没声明 ⇒ additionalProperties:false 直接判失败）。
+                execMode: { required: true, type: 'string' },
+                execAt: { required: true, type: 'string' },
+                execState: { required: true, type: 'string' },
+                execAttempts: { required: true, type: 'integer' },
+                execError: { required: true, type: 'string' },
+                execStartedAt: { required: true, type: 'string' },
+                execFinishedAt: { required: true, type: 'string' },
+                autoExecutable: { required: true, type: 'boolean' },
                 createdAt: { required: true, type: 'string' },
                 updatedAt: { required: true, type: 'string' },
               },
@@ -224,6 +249,9 @@ function apply(ctx) {
           execState: { required: true, type: 'string' },
           execAttempts: { required: true, type: 'integer' },
           execError: { required: true, type: 'string' },
+          // 2026-10-27：execute() 的返回体本来就带 autoExecutable（见下方 return），
+          // output schema 没声明 ⇒ additionalProperties:false 判失败。补上。
+          autoExecutable: { required: true, type: 'boolean' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
         },

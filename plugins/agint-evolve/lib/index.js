@@ -158,6 +158,15 @@ const proposalSchema = z.object({
   // 缺的就是「我不可自动执行」这个表达位。⛔ 默认 true：字段是后加的，老提案
   // （含 driver/mutator 产出的）一律仍可执行，不会因这次升级突然被挡。
   autoExecutable: z.boolean().default(true),
+  // 2026-10-27 补回：这两个时间戳字段在本次加 blocker/execMode/autoExecutable
+  // 时被漏掉了 —— schema 里没声明 ⇒ 存储域 open 时 zod **strip 掉**（未知键）
+  // ⇒ 内存里的提案行没有 createdAt ⇒ listProposals 排序
+  //   `b.createdAt.localeCompare(a.createdAt)` 直接抛 TypeError，
+  //   工具 evolve_proposals 全挂；更糟的是 setStatus 用「已 strip 的内存行」
+  //   写回磁盘，把该行的 createdAt 永久抹掉（实测 3 行中招）。
+  // ⛔ default('')：老行照读不报错（加字段不改 domain version，见上方注释）。
+  createdAt: z.string().default(''),
+  updatedAt: z.string().default(''),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -790,7 +799,9 @@ function apply(ctx, config) {
         if (filter.blocked === false && proposalBlocked(rec)) continue;
         out.push(normalizeProposal({ id, ...rec }));
       }
-      out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // 2026-10-27：createdAt 空值安全。schema 已补回该字段，但历史行可能真的没有
+      // （2026-10-27 之前的写坏行），排序不该被一条脏数据整段掀翻。
+      out.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
       return out;
     },
 

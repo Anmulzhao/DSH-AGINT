@@ -1,5 +1,53 @@
 # agint-evolve CHANGELOG
 
+## v0.11.1（2026-10-27 · 修 v0.11.0 漏声明时间戳字段：提案台排序崩 + 改状态即写坏数据）
+
+### 为什么
+
+v0.11.0 给提案行加 blocker / execMode / autoExecutable 时，`proposalSchema` 被重写，
+**把 `createdAt` / `updatedAt` 漏掉了**（同文件 `executionSchema` 里这两个字段还在
+⇒ 是漏写，不是有意删除）。后果有两层：
+
+1. **工具全挂**：存储域 open 时逐行过 schema
+   （`dsh-storage-domain/lib/index.js:371` `valueSchema.parse(raw)`），zod object 默认
+   strip 未知键 ⇒ 内存里的提案行没有 `createdAt` ⇒ `listProposals` 排序
+   `b.createdAt.localeCompare(a.createdAt)` 抛 `TypeError` ⇒ `evolve_proposals` 任何
+   过滤条件都崩；家族面板提案区走同一条出口，一并降级为「不可用」。
+2. **写坏磁盘数据**：`KvTableImpl.put` 原样落盘、不重跑 schema；而 `setStatus` 用
+   `normalizeProposal({ ...rec, status, updatedAt: nowIso() })` —— `rec` 是**已 strip 的
+   内存行** ⇒ 任何一次改状态/改备注，都会把该行的 `createdAt` 永久写回成「不存在」。
+   实测：`agint_evolve.json` 里 3 行（a85ef850 / c629019a / 4b34af47，均为 2026-10-27
+   11:53–12:00Z 被改过状态）丢失 `createdAt`；对照 10-26 23:21 的备份，这 3 行原本都有。
+
+同日还查出第三个面：**工具 output schema 与 proposalSchema 不同步**。output schema 是
+`additionalProperties: false`，v0.11.0 新增的字段一个都没声明 ⇒
+`evolve_propose` 每次调用都被 DSH strict 输出校验打回
+（`value.blocker is not a declared property`），`evolve_set_status` 同理（返回体含
+`autoExecutable` 而 schema 未声明）。⛔ `evolve_propose` 是「先落库、后校验」——
+**报错时提案已经写进库了**，实跑一次失败调用就留下一行孤儿提案。
+
+### 改动
+
+1. `proposalSchema` 补回 `createdAt` / `updatedAt`（`z.string().default('')`）。
+   ⛔ 不升 domain version（dsh 的 json backend 是硬版本校验，升版本会让现有 50+ 条
+   提案整表读不出来）；老行没有这两个字段时照读不报错，读出空串。
+2. `listProposals` 排序改空值安全：`String(b.createdAt ?? '').localeCompare(...)`
+   —— 历史行可能真的没有该字段，一条脏数据不该把整段排序掀翻。
+3. 三个工具的 output schema 补齐实际返回字段：
+   `evolve_propose`（+10 个字段）、`evolve_proposals` 的 item（+8 个执行字段）、
+   `evolve_set_status`（+`autoExecutable`）。
+
+### 红绿自证
+
+新增 `test/proposal-timestamps.test.mjs`（4 组）：propose 返回非空时间戳 /
+listProposals 不抛且按 createdAt 倒序 / setStatus 后磁盘那行仍留 createdAt /
+三个工具的 output schema 声明字段集 ⊇ 实际返回字段集。
+替身复刻了真实存储域的两条语义（open 时过 schema、put 不重跑 schema）。
+
+- 修复前：4 组全红，② 复现线上同一句 `TypeError: Cannot read properties of
+  undefined (reading 'localeCompare')`。
+- 修复后：4 组全绿；插件全量测试 68/68 通过。
+
 ## v0.11.0（2026-10-27 · 提案可声明「不可自动执行」：语义闸）
 
 ### 为什么
