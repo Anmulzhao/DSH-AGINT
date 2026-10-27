@@ -1310,6 +1310,10 @@ const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地
    五种处境。一个标签盖住五种处境，就会出现「面板说已批准待执行，实际正在自动跑」的误读。 */
 function plabel(it){
   if(!it||it.status!=="approved") return PLABEL[it&&it.status]||(it&&it.status)||"?";
+  /* 2026-10-27：不可自动执行的提案（复核类）单独一档。
+     不单列的话，它会落进「已批准·执行失败」—— 那是「试过没成功」，
+     而它压根没被允许试，读的人会以为系统还在替它跑。 */
+  if(it.autoExecutable===false) return "已批准（不可自动执行）";
   const m={queued:"已批准·排队中",running:"已批准·执行中",succeeded:"已落地",failed:"已批准·执行失败",
            deferred:"已批准·已顺延",cancelled:"已批准·执行已撤销",
            idle:it.execMode==="manual"?"已批准（手动）":"已批准·待入队"};
@@ -1318,6 +1322,7 @@ function plabel(it){
 /* 一句话说清「这条批准之后会怎么跑」：手动 / 定时 · 排队中 / 执行中 / 失败原因。 */
 function execText(it){
   if(!it) return "—";
+  if(it.autoExecutable===false) return "不可自动执行 —— 只能「只批准」（它没有可改的代码目标）";
   if((it.execMode||"manual")==="manual") return "手动 —— 只批准，不自动执行";
   const when=(it.execMode==="scheduled")
     ? `定时 ${String(it.execAt||"").slice(0,16).replace("T"," ")}`

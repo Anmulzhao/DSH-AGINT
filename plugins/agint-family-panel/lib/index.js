@@ -1074,7 +1074,10 @@ function apply(ctx, config = {}) {
         // 语义闸（不可强穿）：复核类提案没有可改的目标资产，排进去必然失败。
         // 实机首跑：oracle 的「美谕提案」正文自述「永不 auto-apply；是否执行由
         // 老板裁定」，却被默认的 immediate 塞进队列，两次各 1 秒失败。
-        if (wantsAutoExec && prev.autoExecutable === false) {
+        // ⛔ 按**请求后的有效值**判，不是只看现值：同一个请求里既标
+        //    autoExecutable=false 又排 immediate，是自相矛盾的请求，必须拒。
+        const effectiveAutoExec = autoExecutable !== undefined ? autoExecutable : (prev.autoExecutable !== false);
+        if (wantsAutoExec && !effectiveAutoExec) {
           writeJson(res, 400, {
             ok: false,
             error: '该提案声明不可自动执行（复核类提案）—— 只能「只批准」，不能排立即/定时执行',
@@ -1106,6 +1109,10 @@ function apply(ctx, config = {}) {
         if (execMode === 'scheduled' && execAt !== undefined) opts.execAt = execAt;
         // 2026-10-27：人工改「能不能自动执行」。省略 = 不动（冻结语义）。
         if (autoExecutable !== undefined) opts.autoExecutable = autoExecutable;
+        // 标成不可执行 ⇒ 执行计划一并归位 manual。
+        // ⛔ 不归位就会留下一条「立即执行」的僵尸计划：它永远不会跑，但面板会
+        //    一直显示「执行 立即」，读的人以为它还在队列里。
+        if (autoExecutable === false) opts.execMode = 'manual';
         // 非批准的判定：把执行计划顺手清回 manual，别留下"还会跑"的错觉。
         if (status !== 'approved' && execMode === undefined && (prev.execMode ?? 'manual') !== 'manual') {
           opts.execMode = 'manual';
@@ -1134,7 +1141,10 @@ function apply(ctx, config = {}) {
             mode: rec.execMode ?? 'manual',
             at: rec.execAt ?? '',
             state: rec.execState ?? 'idle',
-            auto: wantsAutoExec && !(rec.blocker ?? ''),
+            // ⛔ auto 必须与「真的进了队列」一致：标了不可执行、或有 blocker，
+            //    都不能报 true（面板 toast 会照它说「已入执行队列」）。
+            auto: wantsAutoExec && !(rec.blocker ?? '') && rec.autoExecutable !== false
+              && (rec.execState === 'queued' || rec.execState === 'running'),
             // 2026-10-27：面板据此把「立即/定时」置灰，只留「只批准」。
             autoExecutable: rec.autoExecutable !== false,
           },

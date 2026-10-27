@@ -409,3 +409,48 @@ test('autoExecutable 缺席 ⇒ 不动原值（冻结语义，与 blocker 一致
   assert.equal(r.status, 200);
   assert.equal(ev.calls[0].opts.autoExecutable, undefined, '没传就不许改 —— 否则补一句理由就把闸打开了');
 });
+
+
+// ── 2026-10-27：矛盾请求与「僵尸计划」两条修正 ─────────────────────────────
+//
+// 实机发现：同一个请求里既标 autoExecutable=false 又排 immediate，被放行了 ——
+// 提案存下「立即执行」的计划，但它永远不会跑（语义闸拦着入队），面板却显示
+// 「执行 立即」，读的人以为它还在队列里。
+test('同一请求里既标不可执行又排 immediate ⇒ 400（自相矛盾）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'immediate', autoExecutable: false }),
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /不可自动执行/);
+  assert.equal(ev.calls.length, 0, '矛盾的请求一律不许落库');
+});
+
+test('标成不可执行 ⇒ 执行计划一并归位 manual（不留僵尸计划）', async () => {
+  const ev = fakeEvolve({ p1: row({ execMode: 'immediate', execState: 'queued' }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', autoExecutable: false }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(ev.calls[0].opts.execMode, 'manual', '不可执行的提案不该留着「立即执行」的计划');
+  assert.equal(ev.calls[0].opts.autoExecutable, false);
+});
+
+test('响应 auto 字段不许谎报（没进队列就不能说「已入队」）', async () => {
+  const ev = fakeEvolve({ p1: row({ autoExecutable: false }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'manual' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.execution.auto, false, '只批准 ⇒ 不许报 auto=true（toast 会照它说「已入队」）');
+  assert.equal(r.json.execution.autoExecutable, false);
+});
