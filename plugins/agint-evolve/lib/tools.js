@@ -108,6 +108,14 @@ function apply(ctx) {
       body: { type: 'string', required: true, description: '提案详情：现状问题、改动方案、预期收益、风险' },
       category: { type: 'string', enum: CATEGORIES, description: '提案类别（默认 other）' },
       source: { type: 'string', description: '来源报告路径（如 2026-08-17-周复盘.md）' },
+      // 2026-10-27：成立条件。formulaVersion 由服务端自动填（当前判尺口径），
+      // 调用方只需要在「结论依赖某个具体口径」时用 assumedBy 写更强假设锚点。
+      assumedBy: { type: 'string', description: '可选：这条结论依赖的具体假设锚点（如 scoring.js@r2 / HTTP 超时 5s）。省略=只记当前判尺口径' },
+      conflictsWith: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '可选：声明本条与哪些提案互斥（提案 id 列表）。目标提案已 applied/approved ⇒ 拒绝创建，需在正文「关联」节写清如何共存',
+      },
     },
     output: {
       // propose returns the full proposalSchema record (9 fields). The old
@@ -142,9 +150,15 @@ function apply(ctx) {
           autoExecutable: { required: true, type: 'boolean' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
+          // 2026-10-27：成立条件三字段 + 派生值 staleSince。同样是
+          // additionalProperties:false ⇒ 返回体里有就必须在这里声明。
+          formulaVersion: { required: true, type: 'string' },
+          assumedBy: { required: true, type: 'string' },
+          conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          staleSince: { required: true, type: 'string' },
         },
       },
-      render: (_a, v) => [{ type: 'text', text: `evolve_propose: [${v.category}] ${v.title}（id=${v.id}, status=${v.status}）` }],
+      render: (_a, v) => [{ type: 'text', text: `evolve_propose: [${v.category}] ${v.title}（id=${v.id}, status=${v.status}）` + (v.formulaVersion ? `\n  成立口径：${v.formulaVersion}${v.assumedBy ? ` / ${v.assumedBy}` : ''}（口径变了会标 staleSince，需重新评审）` : '') }],
     },
     execute(args) {
       return evolve.propose(args);
@@ -195,13 +209,19 @@ function apply(ctx) {
                 autoExecutable: { required: true, type: 'boolean' },
                 createdAt: { required: true, type: 'string' },
                 updatedAt: { required: true, type: 'string' },
+                // 2026-10-27：成立条件。staleSince 非空 = 立项时的判尺口径已被
+                // 后续公式变更甩在身后（如 r2→r4），这条结论未必还站得住。
+                formulaVersion: { required: true, type: 'string' },
+                assumedBy: { required: true, type: 'string' },
+                conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+                staleSince: { required: true, type: 'string' },
               },
             },
           },
         },
       },
       render: (_a, v) => [
-        { type: 'text', text: `evolve_proposals: ${v.total} 条提案\n${v.proposals.map((p) => `  [${p.status}${p.status === 'approved' && p.blocker ? '·阻塞' : ''}] (${p.category}) ${p.title} — id=${p.id}${p.status === 'approved' && p.blocker ? `\n      ⛔ 卡在：${p.blocker}${p.unblockCondition ? `\n      ⏳ 解锁：${p.unblockCondition}` : ''}` : ''}`).join('\n')}` },
+        { type: 'text', text: `evolve_proposals: ${v.total} 条提案\n${v.proposals.map((p) => `  [${p.status}${p.status === 'approved' && p.blocker ? '·阻塞' : ''}${p.staleSince ? `·口径已变` : ''}] (${p.category}) ${p.title} — id=${p.id}${p.staleSince ? `\n      ⚠ 依赖口径已变（${p.staleSince}）：结论可能已失效，批准前先重新评审` : ''}${p.status === 'approved' && p.blocker ? `\n      ⛔ 卡在：${p.blocker}${p.unblockCondition ? `\n      ⏳ 解锁：${p.unblockCondition}` : ''}` : ''}`).join('\n')}` },
       ],
     },
     async execute(args) {
@@ -254,6 +274,11 @@ function apply(ctx) {
           autoExecutable: { required: true, type: 'boolean' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
+          // 2026-10-27：同 propose/proposals —— 成立条件三字段 + 派生 staleSince。
+          formulaVersion: { required: true, type: 'string' },
+          assumedBy: { required: true, type: 'string' },
+          conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          staleSince: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{
@@ -288,6 +313,9 @@ function apply(ctx) {
         execError: rec.execError ?? '',
         autoExecutable: rec.autoExecutable !== false,
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
+        formulaVersion: rec.formulaVersion ?? '', assumedBy: rec.assumedBy ?? '',
+        conflictsWith: Array.isArray(rec.conflictsWith) ? rec.conflictsWith : [],
+        staleSince: rec.staleSince ?? '',
       };
     },
   }));

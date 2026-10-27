@@ -1,5 +1,55 @@
 # agint-evolve CHANGELOG
 
+## v0.12.0（2026-10-27 · 提案台账加「成立条件」：判尺口径快照 + 声明式互斥检查）
+
+### 为什么
+
+提案 `a85ef850`「权重真标定：回测每周复盘报告，拟合 Q2 最丑归因与人工发现的重合度」：
+
+| 时刻 (2026-10-09) | 事件 |
+|---|---|
+| 12:58 | 该提案立项。当时 `q2Worst` 按**绝对扣分**排序，权重直接决定归因 ⇒「用归因反推权重」成立 |
+| 13:07 | 同日另一条 `f51d3280` 落地，Q2 改成 `ratio = deduction / maxWeight` 排序 |
+| 之后 | `deduction = maxWeight × g(value, threshold)`（`agint-aesthetic-oracle/lib/scoring.js:327-336`）⇒ 权重在分子分母**被约掉** ⇒ 该提案的方法论彻底失效 |
+
+失效了却没人知道：台账上它和任何一条正常提案长得一模一样，还挂着「待批」18 天，
+直到 2026-10-27 人工点开才发现「拿 Q2 归因标定权重」等于优化一个不随参数变化的目标
+（实测：36 条样本、随机 500 组权重 ⇒ 归因 0 变化；而 `CONFIDENCE` 0.70→0.55 能翻 24/36）。
+
+同批还有第二个缺口：`f51d3280`（要求「归因与权重解耦」）与 `a85ef850`（要求「用归因
+标定权重」）出自**同一份 2026-10-09 源码复审**、相隔 24 分钟立项、逻辑互斥，两条都进了池。
+
+### 变更
+
+1. **记成立条件**：`proposalSchema` 增三字段，`propose()` 落库时填
+   - `formulaVersion` —— 当前判尺口径（由 `agint.aestheticOracle.formulaVersion` 读；oracle 未挂载 ⇒ 空串 = **口径未知**）
+   - `assumedBy` —— 可选的人工假设锚点（如 `scoring.js@r2`）
+   - `conflictsWith` —— 声明式互斥列表
+2. **失效提示**：`listProposals()` / `getProposal()` 返回派生字段 `staleSince`
+   （`'r2→r4'` = 立项口径已被后续公式变更甩在身后）。⛔ **只提示、不改 status**：
+   判失效要人确认，机器不替人下判断。
+3. **互斥检查**：`propose({ conflictsWith })` 里目标提案处于 `applied` / `approved`
+   ⇒ **拒绝创建**并列出目标（截断 id + 状态 + 标题），要求正文「关联」节写清如何共存。
+   `proposed` / `rejected` / `wontfix` 不拦（还没生效，或已被否）。
+4. **三处工具 output schema 同步**：`evolve_propose` / `evolve_proposals` /
+   `evolve_set_status` 全部声明新四字段——`additionalProperties: false` 下漏一个就
+   被 strict 判失败（v0.11.0 已踩过一次，这次连测试一起加）。
+5. 面板侧由 `agint-family-panel` 0.8.3 带出并在行上标「口径已变」。
+
+### 边界
+
+- `formulaVersion` 空串 ≠「与当前一致」：历史行没有这个字段，一律读成空串，
+  **绝不因为「没记」就判它失效**（否则 90+ 条老提案集体标黄）。故存量提案暂不享受此提示。
+- 互斥检查是**声明式**的：不做自然语言语义比对（要上 LLM 且误报率高）。
+- 只覆盖「公式口径变更」这一类失效，覆盖不到「依赖的数据源消失」——那需要依赖图。
+
+### 验证
+
+- 新增 `test/proposal-provenance.test.mjs` 6 条（口径自动填、staleSince 三态、
+  派生值不落盘、互斥拒绝/放行）。
+- `test/proposal-timestamps.test.mjs` ④（output schema 覆盖断言）随新字段一起通过。
+- evolve 全量 9 个测试文件 + `proposal-provenance` 全 PASS。
+
 ## v0.11.1（2026-10-27 · 修 v0.11.0 漏声明时间戳字段：提案台排序崩 + 改状态即写坏数据）
 
 ### 为什么

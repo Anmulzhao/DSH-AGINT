@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolve",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "agint-evolve v0.11.1: 智进 review/self-evolution loop + 提案执行计划 + 可执行性声明。服务：dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory + 执行队列 8 个（enqueueExecution / claimDueExecutions / finishExecution / requeueExecution / cancelExecution / listExecutions / executionStats / describeExecution）。storage domain `agint_evolve` schemaVersion=2（表：proposal / baseline_history / execution）。⛔ 加表刻意不升 version：dsh 的 json backend 是硬版本校验，升版本会让现有 50+ 条提案整表读不出来。v0.11.0 增 autoExecutable：提案可声明「不可自动执行」（复核类），该声明是**语义闸**，force 也不强穿。v0.11.1 修 2026-10-27 v0.11.0 漏声明 createdAt/updatedAt 造成的时间戳丢失（zod strip ⇒ 提案台排序崩 + 改状态即写坏该行）与三个工具 output schema 未同步新字段（additionalProperties:false ⇒ strict 校验打回）。",
   "main": "lib/index.js",
   "agint": {
@@ -79,8 +79,8 @@
         "agint.evolve.writeReview": "数据快照 → 自动发现 → 写 reviews/<date>-周复盘.md；返回 path + findings 数",
         "agint.evolve.listReviews": "列出 reviews/ 目录下所有 .md 文件（path/size/mtime）",
         "agint.evolve.readReview": "读指定 .md 复盘报告（path 必须在 root 内，防穿越）",
-        "agint.evolve.propose": "创建提案；input.autoExecutable=false 声明「不可自动执行」（oracle 复核类走这条），默认 true",
-        "agint.evolve.listProposals": "按 status/category 过滤列 proposal（按 createdAt 倒序）",
+        "agint.evolve.propose": "创建提案；input.autoExecutable=false 声明「不可自动执行」（oracle 复核类走这条），默认 true；input.assumedBy 记假设锚点；input.conflictsWith 声明互斥（目标已 applied/approved ⇒ 拒绝创建）；formulaVersion 自动填当前判尺口径",
+        "agint.evolve.listProposals": "按 status/category 过滤列 proposal（按 createdAt 倒序）；每行带派生 staleSince（'r2→r4' = 立项口径已被后续公式变更甩在身后）",
         "agint.evolve.getProposal": "读单条 proposal（id miss → null）",
         "agint.evolve.setStatus": "更新 proposal 状态 + updatedAt；opts.execMode/execAt 落执行计划并在 approved 且无 blocker 时自动入队；opts.autoExecutable（布尔）显式改「能否自动执行」；非法状态/计划抛错",
         "agint.evolve.removeProposal": "删除 proposal（返回 boolean）",

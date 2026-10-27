@@ -167,6 +167,24 @@ const proposalSchema = z.object({
   // ⛔ default('')：老行照读不报错（加字段不改 domain version，见上方注释）。
   createdAt: z.string().default(''),
   updatedAt: z.string().default(''),
+  // 2026-10-27：提案的**成立条件** —— 这条结论依赖哪一版判尺口径。
+  //
+  // 实机反例（提案 a85ef850）：2026-10-09 12:58 立项「用 Q2 最丑归因标定权重」，
+  // 当时 q2Worst 按**绝对扣分**排序，权重直接决定归因，这条建议成立；同日 13:07
+  // 落地的 f51d3280 把排序改成 ratio(deduction/maxWeight)，而
+  // `deduction = maxWeight × g(value, threshold)` ⇒ 权重在分子分母被约掉，
+  // 归因只由阈值决定。于是这条提案**静默失效**，却仍挂在台账里「待批」，
+  // 直到 18 天后人工点开才发现方法已无意义。
+  //
+  //   formulaVersion  propose 时由当前判尺口径自动填（oracle 未挂载 ⇒ 空串=未知）
+  //   assumedBy       可选，人写的更强假设锚点（如 `scoring.js@r2`）
+  //   conflictsWith   声明与哪些提案互斥（创建时校验，见 propose）
+  //
+  // ⛔ formulaVersion 空串 = **口径未知**，不是「与当前一致」。历史行没有这个字段，
+  //    一律读成空串 —— 绝不因为「没记」就判它失效（那会把 90+ 条老提案集体标黄）。
+  formulaVersion: z.string().default(''),
+  assumedBy: z.string().default(''),
+  conflictsWith: z.array(z.string()).default([]),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -268,6 +286,25 @@ export function proposalBlocked(rec) {
   if (!rec || rec.status !== 'approved') return false;
   const b = normalizeProposal(rec).blocker.trim();
   return b !== '';
+}
+
+/**
+ * 这条提案的成立条件是否已被判尺口径的变更甩在身后。
+ *
+ * 返回 `'r2→r4'` 表示「立项时按 r2 成立，现在是 r4，结论未必还站得住」；
+ * 返回 `''` 表示**没有依据说它失效** —— 三态而非二态：
+ *   - 提案记了口径 + 当前口径已知 + 两者不同  ⇒ 有差值（标黄）
+ *   - 提案没记口径（历史行 / oracle 未挂载）  ⇒ 空（未知，不指控）
+ *   - 两者相同                                ⇒ 空（仍然成立）
+ *
+ * ⛔ 只产提示，**不改 status**：判失效要人确认。f51d3280 那次就是「看起来完全
+ *    正常的待批提案」，机器没资格替人决定它是不是已经废了。
+ */
+export function proposalStaleSince(rec, current) {
+  const own = String(rec?.formulaVersion ?? '').trim();
+  const cur = String(current ?? '').trim();
+  if (!own || !cur || own === cur) return '';
+  return `${own}→${cur}`;
 }
 
 
@@ -691,6 +728,23 @@ function apply(ctx, config) {
    *   写状态（applyStatus）与对齐队列（syncExecutionQueue）是两件事，
    *   setStatus = 两者串联；finishExecution 只调前者。
    */
+  /**
+   * 当前判尺口径。取不到 ⇒ 空串 = 口径未知，**不猜**。
+   *
+   * 由神谕层提供（`agint.aestheticOracle.formulaVersion`，静态常量）。
+   * ⛔ 不在这里 import scoring.js：evolve 与 oracle 是两个独立插件，
+   *    跨插件源码 import 会在部署位（各自独立目录）直接 ENOENT。
+   */
+  function currentFormulaVersion() {
+    try {
+      const oracle = ctx.get('agint.aestheticOracle');
+      const v = oracle && typeof oracle.formulaVersion === 'string' ? oracle.formulaVersion.trim() : '';
+      return v;
+    } catch {
+      return '';
+    }
+  }
+
   async function applyStatus(id, status, note = '', opts = {}) {
     const t = await table();
     const rec = t.get(id);
@@ -767,6 +821,28 @@ function apply(ctx, config) {
 
     async propose(input) {
       const t = await table();
+      const cur = currentFormulaVersion();
+      // 2026-10-27：声明式互斥检查。⛔ 只认调用方**显式给的** conflictsWith ——
+      // 自动判断「这两条建议互相矛盾」要上 LLM 且误报率高，本条不碰语义比对。
+      // 校验口径：目标提案处于 applied / approved 才算「已生效、会打架」；
+      // rejected / wontfix / proposed 三档不拦（还没生效，或者已被否）。
+      const declared = Array.isArray(input.conflictsWith)
+        ? input.conflictsWith.map((s) => String(s ?? '').trim()).filter(Boolean)
+        : [];
+      if (declared.length) {
+        const live = declared
+          .map((cid) => ({ id: cid, rec: t.get(cid) }))
+          .filter((x) => x.rec && (x.rec.status === 'applied' || x.rec.status === 'approved'));
+        if (live.length) {
+          const named = live
+            .map((x) => `${x.id.slice(0, 8)}（${x.rec.status}）「${String(x.rec.title ?? '').slice(0, 40)}」`)
+            .join('；');
+          throw new Error(
+            `agint-evolve: 与已生效提案互斥，拒绝创建 —— ${named}。`
+            + '如两者确实可共存，请在正文「关联」节写清如何并存，并去掉 conflictsWith 后重提。',
+          );
+        }
+      }
       const rec = proposalSchema.parse({
         id: input.id ?? randomId(),
         title: input.title,
@@ -778,17 +854,24 @@ function apply(ctx, config) {
         // 2026-10-27：复核类提案显式声明「不可自动执行」（oracle 走这条）。
         // ⛔ 只认显式 false —— 少写一个字段 = 可执行（默认 true，向后兼容）。
         autoExecutable: input.autoExecutable === false ? false : true,
+        // 成立条件快照：这条结论按哪一版判尺口径成立。空串 = oracle 未挂载，
+        // 口径未知 —— 后续不据此判失效，但至少能看出「这条没记」。
+        formulaVersion: cur,
+        assumedBy: String(input.assumedBy ?? '').trim(),
+        conflictsWith: declared,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       });
       await t.put(rec.id, rec);
       // A1 接线：落库后发布 evolution.proposed（失败不影响返回值）
       await publishProposed(rec);
-      return { ...rec };
+      // 刚创建 ⇒ 口径必然等于当前（或未知）⇒ staleSince 恒为空，仍带上以对齐输出面。
+      return { ...rec, staleSince: '' };
     },
 
     async listProposals(filter = {}) {
       const t = await table();
+      const cur = currentFormulaVersion();
       const out = [];
       for (const [id, rec] of t.entries()) {
         if (filter.status && rec.status !== filter.status) continue;
@@ -797,7 +880,10 @@ function apply(ctx, config) {
         // 不靠调用方自己从 blocker 字符串反推。
         if (filter.blocked === true && !proposalBlocked(rec)) continue;
         if (filter.blocked === false && proposalBlocked(rec)) continue;
-        out.push(normalizeProposal({ id, ...rec }));
+        // staleSince 是**派生值**，不进 schema、不落盘：它随当前口径变化，
+        // 一旦写进存储行就会在下次口径变更时变成过期事实（与 createdAt 被
+        // strip 那类坑同源，方向相反）。
+        out.push({ ...normalizeProposal({ id, ...rec }), staleSince: proposalStaleSince(rec, cur) });
       }
       // 2026-10-27：createdAt 空值安全。schema 已补回该字段，但历史行可能真的没有
       // （2026-10-27 之前的写坏行），排序不该被一条脏数据整段掀翻。
@@ -808,7 +894,8 @@ function apply(ctx, config) {
     async getProposal(id) {
       const t = await table();
       const rec = t.get(id);
-      return rec ? normalizeProposal({ ...rec }) : null;
+      if (!rec) return null;
+      return { ...normalizeProposal({ ...rec }), staleSince: proposalStaleSince(rec, currentFormulaVersion()) };
     },
 
     /**
