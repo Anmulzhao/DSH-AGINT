@@ -1,3 +1,28 @@
+## 0.8.2 — 2026-10-27
+
+### 标签分档补上 blocker：不许把「被前置挡住」写成「待入队」
+
+**为什么**：老板看到一条提案写着「已批准·待入队」来问「什么时候执行」。查下去它是
+`a85ef850`「权重真标定」—— `status=approved`、`execMode=immediate`、`execState=idle`，
+但身上挂着 blocker（31/31 样本未人工标注 + 8-12 周内冻结 `THRESHOLDS/DIM_WEIGHTS`）。
+
+自动入队闸 `autoEnqueueBlocker` 返回 `blocked` ⇒ `syncExecutionQueue` **不入队**，
+只把 `execState` 置回 `idle`。于是提案台标签按 `execState=idle` 渲染成「已批准·待入队」——
+读起来像「再等等就会自己跑」，实际它**永远不会入队**，要等人清 blocker。
+
+更刺眼的是同一份数据在待办里被正确归到「已批准·阻塞中（等前置）」，两处口径打架。
+
+**变更**
+
+1. `v2-proposals` 的 items 带出 `blocker` / `unblockCondition`（原本只有待办那边有）。
+2. `plabel()`：`approved` 且 blocker 非空 ⇒ 一律「已批准·阻塞中」，
+   **优先于任何 execState**（blocker 在时执行态没有意义：它根本排不进去）。
+   空白/纯空格不算阻塞（与 evolve 侧 `blocker.trim() !== ''` 同一口径）。
+3. `execText()`：阻塞时直接给原因 + `（解锁：<unblockCondition>）` —— 一行说清
+   「为什么不动、等什么」。
+
+**测试**：`proposal-board` 15 → 16、`v2-proposals` 18 → 19，两条合计 34/34 通过。
+
 ## 0.8.1 — 2026-10-27
 
 ### 面板会自动刷新了 —— 「已批准·排队中」不再永久钉在屏幕上

@@ -276,6 +276,27 @@ test('审批：服务端报错时明确说「状态未变」，不装作成功',
   assert.ok(els.pToast.innerHTML.includes('状态未变'));
 });
 
+// ── 2026-10-27：blocker 优先于执行态 ─────────────────────────────────────
+//
+// 实机 a85ef850「权重真标定」：approved + execMode=immediate + execState=idle
+// + 有 blocker。旧标签写「已批准·待入队」，读的人以为再等等就会自己跑 ——
+// 而它被前置条件挡着，永远不会入队。待办那边同一份数据写的是「阻塞中」。
+test('标签：approved + blocker ⇒ 「已批准·阻塞中」，不许写「待入队」', () => {
+  const { sandbox } = bootBoard(payload());
+  assert.equal(
+    sandbox.plabel({ status: 'approved', execMode: 'immediate', execState: 'idle', blocker: '样本未标注' }),
+    '已批准·阻塞中');
+  assert.equal(
+    sandbox.plabel({ status: 'approved', execMode: 'immediate', execState: 'idle', blocker: '   ' }),
+    '已批准·待入队', '空白 blocker 不算阻塞');
+  assert.equal(
+    sandbox.plabel({ status: 'approved', execMode: 'immediate', execState: 'queued', blocker: '样本未标注' }),
+    '已批准·阻塞中', 'blocker 优先于执行态');
+  assert.ok(
+    sandbox.execText({ status: 'approved', execMode: 'immediate', execState: 'idle', blocker: '样本未标注', unblockCondition: '满 8-12 周' })
+      .includes('解锁：满 8-12 周'), '阻塞要写明怎么解锁');
+});
+
 test('筛选：切到「已落地」页签才显示 applied 行', async () => {
   const { sandbox, els } = bootBoard(payload());
   await sandbox.load();

@@ -474,6 +474,11 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       execState: String(r?.execState ?? 'idle'),
       execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
       execError: String(r?.execError ?? ''),
+      // 2026-10-27：带出前置条件。标签要能区分「等入队」与「被 blocker 挡住」——
+      // 只看 execState 的话两者都是 idle，标签只能瞎猜（实机就显示成「已批准·待入队」，
+      // 而待办那边同一份数据写的是「已批准·阻塞中（等前置）」，两处口径打架）。
+      blocker: String(r?.blocker ?? ''),
+      unblockCondition: String(r?.unblockCondition ?? ''),
       // 2026-10-27：能不能自动执行。⛔ 缺席 = 可执行（与 evolve 侧默认一致）——
       // 「读成不可执行」会让老提案集体失去被批准后自动跑的能力。
       autoExecutable: r?.autoExecutable !== false,
