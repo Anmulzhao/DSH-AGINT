@@ -98,6 +98,9 @@ const proposal = (over = {}) => ({
   bodyTruncated: false, bodyChars: 60,
   sections: { problem: '- 队列只进不出', plan: '- 补 approved', benefit: '- 可审批', risk: null, links: null },
   sectionMatched: 3, sameSourceCount: 2,
+  // 2026-10-27（提案 567dabed）：成立条件字段。默认「没记口径」= 空串，
+  // 与 evolve 侧「历史行读成空串、不据此判失效」同口径。
+  formulaVersion: '', assumedBy: '', conflictsWith: [], staleSince: '',
   evidence: {
     state: 'ok', reason: null,
     paths: [{ raw: 'plugins/x/lib/index.js', rel: 'plugins/x/lib/index.js', exists: true, mtime: '2026-10-01T00:00:00.000Z', line: null },
@@ -295,6 +298,33 @@ test('标签：approved + blocker ⇒ 「已批准·阻塞中」，不许写「�
   assert.ok(
     sandbox.execText({ status: 'approved', execMode: 'immediate', execState: 'idle', blocker: '样本未标注', unblockCondition: '满 8-12 周' })
       .includes('解锁：满 8-12 周'), '阻塞要写明怎么解锁');
+});
+
+// ── 2026-10-27（提案 567dabed）：成立条件已变要看得见 ──────────────────────
+//
+// a85ef850 在 r2 落地后静默失效，却在台账里挂了 18 天「待批」，期间它和任何一条
+// 正常提案长得一模一样。`staleSince` 就是那个「长得一样」的破口。
+test('成立条件：staleSince 非空 ⇒ 行上标「口径已变」，并在黄条里计数', async () => {
+  const { sandbox, els } = bootBoard(payload({
+    proposals: {
+      ...payload().proposals,
+      items: [
+        proposal({ id: 'p-old', title: '旧口径提案', staleSince: 'r2→r4', formulaVersion: 'r2' }),
+        proposal({ id: 'p-new', title: '新口径提案', staleSince: '', formulaVersion: 'r4' }),
+      ],
+    },
+  }));
+  await sandbox.load();
+  const html = els.propRows.innerHTML;
+  assert.ok(html.includes('口径已变 r2→r4'), '口径变了的提案必须在行上标出来');
+  assert.equal(html.match(/口径已变/g).length, 1, '口径一致的提案不许被标（未知 ≠ 失效）');
+  assert.ok(els.propNotes.innerHTML.includes('成立条件已被判尺口径的变更甩在身后'), '黄条要提醒先重新评审');});
+
+test('成立条件：空 staleSince（历史行没记口径）不标黄、不计数', async () => {
+  const { sandbox, els } = bootBoard(payload());
+  await sandbox.load();
+  assert.equal(els.propRows.innerHTML.includes('口径已变'), false);
+  assert.equal(els.propNotes.innerHTML.includes('成立条件已被'), false);
 });
 
 test('筛选：切到「已落地」页签才显示 applied 行', async () => {

@@ -233,6 +233,11 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 .stt::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;flex:none;}
 .stt.proposed{color:var(--warn)} .stt.approved{color:var(--accent)}
 .stt.applied{color:var(--ok)} .stt.rejected{color:var(--err)} .stt.wontfix{color:var(--fg-3)}
+/* 2026-10-27（提案 567dabed）：成立条件已被判尺口径变更甩在身后。
+   与状态标签并列显示 —— 状态说「它在流程的哪一格」，这一枚说「它的结论还可不可信」。
+   方形点（旋转 45°）而不是圆点：一眼能区分「另一种信息」。 */
+.stt.stale{color:var(--warn);font-weight:var(--fw-med);}
+.stt.stale::before{border-radius:1px;transform:rotate(45deg);}
 .cat{font-family:var(--mono);font-size:var(--fs-xs);color:var(--fg-3);
   border:1px solid var(--border);border-radius:var(--r-sm);padding:0 5px;white-space:nowrap;}
 .dotmeter{display:inline-flex;gap:2px;align-items:center;}
@@ -1460,6 +1465,8 @@ function propDetail(it){
           · 更新 ${pesc((it.updatedAt||"—").slice(0,19).replace("T"," "))}
           · ${it.bodyChars} 字${it.bodyTruncated?"（正文过长，已截断）":""}
           <br>来源 ${pesc(it.source||"—")}${it.sameSourceCount>1?`　（同一来源共 ${it.sameSourceCount} 条）`:""}
+          ${it.formulaVersion||it.assumedBy?`<br>成立口径 ${pesc(it.formulaVersion||"(未记)")}${it.assumedBy?` · 假设 ${pesc(it.assumedBy)}`:""}${it.staleSince?`　<span style="color:var(--warn)">⚠ 现已 ${pesc(it.staleSince.split("→")[1]||"")}，结论需重新评审</span>`:""}`:""}
+          ${it.conflictsWith&&it.conflictsWith.length?`<br>声明互斥 ${pesc(it.conflictsWith.map(x=>x.slice(0,8)).join(" / "))}`:""}
           ${it.status==="approved"||it.execState!=="idle"?`<br>执行 ${pesc(execText(it))}`:""}
         </div></div>
       </div>
@@ -1482,6 +1489,7 @@ function propRow(it){
   return `<tr class="prow" tabindex="0" data-id="${pescAttr(it.id)}" aria-expanded="${open}">
     <td class="tcell"><div class="t">${pesc(it.title)}</div>
       <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(plabel(it))}</span>
+      ${it.staleSince?`<span class="stt stale" title="立项时按 ${pescAttr(it.staleSince.split("→")[0])} 的判尺口径成立，当前 ${pescAttr(it.staleSince.split("→")[1]||"")} —— 结论可能已失效，批准前先重新评审">口径已变 ${pesc(it.staleSince)}</span>`:""}
       <span style="margin-left:8px;font-family:var(--mono)">${pesc(it.id.slice(0,8))}</span></div></td>
     <td><span class="cat">${pesc(it.category)}</span></td>
     <td class="num ${it.ageDays>30?"fail-mid":""}">${ageTxt(it.ageDays)}</td>
@@ -1509,6 +1517,9 @@ function renderProposals(){
   if(PROP.source==="service"&&PROP.storage) notes.push("数据来自 agint.evolve.listProposals()（进程内权威读）；存储面仅作旁证。");
   const noSec=items.filter(i=>i.status==="proposed"&&i.sectionMatched===0).length;
   if(noSec>0) notes.push(`待批里有 ${noSec} 条正文没有分节（既无「现状问题」也无「改动方案」）—— 这类提案基本无法评审，建议直接拒绝或 wontfix 并写明理由。`);
+  // 2026-10-27（提案 567dabed）：失效提案长得和正常提案一模一样（a85ef850 挂了 18 天）。
+  const stale=items.filter(i=>i.staleSince&&(i.status==="proposed"||i.status==="approved")).length;
+  if(stale>0) notes.push(`有 ${stale} 条提案的成立条件已被判尺口径的变更甩在身后（行标「口径已变」）—— 批准前先重新评审：它当年成立，不代表现在还成立。`);
   propNotes.innerHTML=notes.map(n=>`<div>${pesc(n)}</div>`).join("");
 
   propStats.innerHTML=[

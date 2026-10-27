@@ -482,6 +482,15 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       // 2026-10-27：能不能自动执行。⛔ 缺席 = 可执行（与 evolve 侧默认一致）——
       // 「读成不可执行」会让老提案集体失去被批准后自动跑的能力。
       autoExecutable: r?.autoExecutable !== false,
+      // 2026-10-27（提案 567dabed）：成立条件。a85ef850 那条「用 Q2 归因标定权重」
+      // 在 r2 落地后静默失效，却在台账里挂了 18 天「待批」—— 失效提案和正常提案
+      // 长得一模一样，所以得有一栏把它标出来。
+      //   formulaVersion 立项时的判尺口径（空串 = 没记 / 口径未知，**不是**「一致」）
+      //   staleSince     派生值（'r2→r4'），非空 = 结论可能已经站不住
+      formulaVersion: String(r?.formulaVersion ?? ''),
+      assumedBy: String(r?.assumedBy ?? ''),
+      conflictsWith: Array.isArray(r?.conflictsWith) ? r.conflictsWith.map((x) => String(x)) : [],
+      staleSince: String(r?.staleSince ?? ''),
       createdAt: r?.createdAt ?? null,
       updatedAt: r?.updatedAt ?? null,
       ageDays: ageDaysOf(r?.createdAt, now),

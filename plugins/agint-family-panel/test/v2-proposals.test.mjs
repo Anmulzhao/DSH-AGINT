@@ -153,6 +153,41 @@ test('统计：队列口径只算 proposed，年龄分桶合计等于队列数',
 });
 
 // ── 6. 取数降级 ────────────────────────────────────────────
+// ── 6b. 成立条件字段（提案 567dabed）───────────────────────
+test('取数：带出 formulaVersion / staleSince / conflictsWith', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agint-prop-prov-'));
+  try {
+    const row = (over) => ({
+      title: 'T', body: '## 改动方案\n改 `plugins/x/lib/index.js`', category: 'plugin',
+      status: 'proposed', source: 's', note: '',
+      createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+      ...over,
+    });
+    writeFileSync(join(dir, 'agint_evolve.json'), JSON.stringify({
+      unit: { name: 'agint_evolve', version: 2 },
+      global: null,
+      tables: {
+        proposal: {
+          stale: row({ id: 'stale', formulaVersion: 'r2', staleSince: 'r2→r4', assumedBy: 'scoring.js@r2', conflictsWith: ['x1'] }),
+          old: row({ id: 'old' }), // 历史行：三个字段全缺
+        },
+      },
+    }), 'utf8');
+    const r = await collectProposals({}, { storagesDir: dir, repoPluginsDir: null });
+    const byId = Object.fromEntries(r.items.map((i) => [i.id, i]));
+    assert.equal(byId.stale.staleSince, 'r2→r4');
+    assert.equal(byId.stale.formulaVersion, 'r2');
+    assert.equal(byId.stale.assumedBy, 'scoring.js@r2');
+    assert.deepEqual(byId.stale.conflictsWith, ['x1']);
+    // 历史行：读成空值，绝不把「没记口径」渲染成「已失效」
+    assert.equal(byId.old.staleSince, '');
+    assert.equal(byId.old.formulaVersion, '');
+    assert.deepEqual(byId.old.conflictsWith, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('取数：既无服务也无文件 → unavailable，绝不返回空表冒充「没有提案」', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agint-prop-empty-'));
   try {
