@@ -1,23 +1,25 @@
 # CHANGELOG — agint-evolution-driver
 
-## v0.4.0 — 2026-10-25 — LLM 构造无降级 + 接 startActivation
+## v0.5.0 — 2026-10-27 — `runForProposal(proposalId)`：定向执行一条已批准的提案
 
-**背景**：宿主只有 `subagents.startActivation`，旧代码检查 `subagents.start` ⇒
-LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
+**背景**：`agint-executor` 要在批准后自动执行，但 `runOnce()` 的候选池写死
+`listProposals({ status: 'proposed' })` —— `approved` 的行它一眼不看。
+批准完的提案因此永远等不到执行，在面板里挂成一张催办工作单。
 
 **变更**
-1. `spawnLlm` 改调 `startActivation({ provider, label, request, signal, delivery:'caller' })`；
-   旧宿主保留 `start` 兼容分支。`request` 带 `parent` / `prompt` / `agentPreset` /
-   `agentOptions` / `outputSchema`；`agentOptions` 补 `reasoningEffort`。
-2. **无降级**：`construct` 遇 LLM 通路失败返回 `{ llmFailure:true, reason }`；
-   `runOnce` 立即发 `evolution.cycle.summary`（exitReason=`llm-unavailable`）并抛错，
-   cron 的 `lastError` 可见。⛔ 不再计入 `degraded` 后继续下一条。
-3. `not applicable` / 幻觉 `oldText` / 实体门命中仍是内容级拒绝，不触发整轮中止。
-4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
-   服务/方法/provider 三种病因分开报。
-5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+1. `runOnce(opts)` 增 `opts.proposalId`：定向模式只取那一条，**允许 `status='approved'`**
+   （`opts.allowAnyStatus` 可放宽，仅供排障），并且**不写 `state.seen`** ——
+   `seen` 的语义是「一轮里别重复试同一条」，而定向模式本来只有一条，失败重试必须能再跑。
+2. 新服务方法 `runForProposal(proposalId, opts)`：`runOnce` 的薄包装，返回补
+   `{ proposalId, ok }`（`ok` = 流走到 commit 且 commit.ok），让执行器不必自己解释返回形状。
+3. 定向模式下 `proposal-not-found` / `proposal-not-approved` 各自发一条 summary 并返回
+   `{ skipped: true, reason }` —— 此前这两种情况会被混进「no actionable candidate」。
 
-**测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
+**不改**：构造 → 幻觉闸门 → mutator.propose → validate → population.ingest → 写入后验证
+→ policy 决策 → commit/回滚 → 预测锁定 → ledger 入链，全沿用原路径。
+`runForProposal` **不写提案状态**：那是 `agint.evolve` 的事，两边都写 = 两套口径。
+
+**验证**：`node test/smoke.mjs` 49/49 绿（含 T36 等既有用例，确认定向分支未改变旧行为）。
 
 ## v0.4.1 — 2026-10-25 — A 段：合成产物 ⇒ mount 部署桥（**通电不上膛**）
 
@@ -53,6 +55,25 @@ PENDING_REVIEW ticket 就 return**，绝不进三段式。
    ⇒ TOOL_GAP 从未被判定 ⇒ TOOL_SYNTHESIS 候选历史 0 条。
    **不解决这一层，A 通电也是空转**（扫不到候选）。
 
+
+## v0.4.0 — 2026-10-25 — LLM 构造无降级 + 接 startActivation
+
+**背景**：宿主只有 `subagents.startActivation`，旧代码检查 `subagents.start` ⇒
+LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
+
+**变更**
+1. `spawnLlm` 改调 `startActivation({ provider, label, request, signal, delivery:'caller' })`；
+   旧宿主保留 `start` 兼容分支。`request` 带 `parent` / `prompt` / `agentPreset` /
+   `agentOptions` / `outputSchema`；`agentOptions` 补 `reasoningEffort`。
+2. **无降级**：`construct` 遇 LLM 通路失败返回 `{ llmFailure:true, reason }`；
+   `runOnce` 立即发 `evolution.cycle.summary`（exitReason=`llm-unavailable`）并抛错，
+   cron 的 `lastError` 可见。⛔ 不再计入 `degraded` 后继续下一条。
+3. `not applicable` / 幻觉 `oldText` / 实体门命中仍是内容级拒绝，不触发整轮中止。
+4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
+   服务/方法/provider 三种病因分开报。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+
+**测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
 
 ## v0.4.0+doc1 — 2026-10-25 — 文档订正：commit 开关口径以代码为准
 

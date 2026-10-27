@@ -614,6 +614,39 @@
         # D:/DSH/project源码/DSH-AGINT）⇒ 那台机必须在环境里设 AGINT_REPO_ROOT。
         repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
 
+    # agint-executor: 提案执行器 v0.1.0（2026-10-27 挂载）。
+    #
+    # 补的是「批准之后谁来动手」这个断口：agint-evolve 自 v0.8.0 起有 approved 这一档，
+    # agint-evolution-driver 有完整的「提案 → LLM 原子编辑 → D-QAF → commit」流水线，
+    # 但 driver 的 runOnce() 只挑 status:'proposed'，approved 的行它一眼不看 ⇒
+    # 批准完的提案在家族面板里挂成一张「已批准待执行（工作单）」，等人自己动手。
+    #
+    # 现在：批准时选 immediate / scheduled ⇒ 写进 agint_evolve.execution 队列 ⇒
+    # 本插件按 tick 捡到期任务，调 agint.evolutionDriver.runForProposal(proposalId)，
+    # 成功把提案标 applied（带落地证据），失败留原因并按 maxAttempts 有限重试。
+    #
+    # 红线（三道，缺一不可）：
+    #   AGINT_EXECUTOR=off       整体停摆（出厂即开；关掉只让提案停在「排队中」，不丢）
+    #   weeklyCommitCap: 3       本周自动落地次数上限 —— 把 AGENTS.md 的
+    #                            「不要跨周累计自动部署超过 3 次」变成可执行的代码；
+    #                            到顶不是失败，是顺延到下周起点（deferred，面板可见）
+    #   maxAttempts: 2           同一提案最多试 2 次，防无限重试烧 token
+    #
+    # ⛔ 不持存储域：队列正本在 agint_evolve.execution 表（单一事实源）。
+    # ⛔ 不造变异、不写仓库、不做 D-QAF 决策 —— 全部沿用 driver 既有路径，
+    #    本插件只回答「现在该不该跑」和「跑完算不算数」。
+    # ⛔ 加字段前批准的老提案 execMode 默认 manual ⇒ 不会被这次升级偷偷开始自动改代码。
+    # Service：agint.executor（tick / wake / status / runNow / runTick）。
+    - id: agint-executor
+      name: ./plugins/agint-executor/lib/index.js
+      config:
+        tickMs: 15000
+        weeklyCommitCap: 3
+        maxAttempts: 2
+        retryDelayMs: 300000
+        maxPerTick: 1
+        enabled: true
+
     # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
     # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），
     # 评分纯函数 + 美之三问（Q1 全排序无洞判定）→ 三档 cron 广播

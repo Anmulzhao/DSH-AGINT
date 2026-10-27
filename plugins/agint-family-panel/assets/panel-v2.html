@@ -528,7 +528,7 @@ let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sou
     PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null,
     /* 提案台（0.5.0）。PROP = host 半下发的 proposals 段；PSTATE = 纯前端视图状态，
        不进 URL、不落盘 —— 刷新回到「待批 + 最老优先」，这是每次开工最该看的那一屏。 */
-    PROP=null,PSTATE={status:"proposed",cat:"",q:"",sort:"oldest",staleOnly:false,open:new Set(),drafts:{},pending:null},
+    PROP=null,PSTATE={status:"proposed",cat:"",q:"",sort:"oldest",staleOnly:false,open:new Set(),drafts:{},pending:null,execMode:"immediate",execAt:""},
     /* 归因表（工具前缀 / cron / 宿主键）由 host 半随 payload 下发（v0.4.0）。
        ⛔ 这里不再放硬编码副本：档案页（停靠面板）与本页各抄一份必然漂移。 */
     OWNERS=null;
@@ -1306,6 +1306,28 @@ const pescAttr=s=>pesc(s).replace(/"/g,"&quot;");
      2) 证据栏只列可核对的事实（路径在不在、符号命不命中），措辞一律「线索」。
      3) 拒绝 / wontfix 必填理由：服务端也拦（4xx），不只靠前端。 */
 const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地",rejected:"已拒绝",wontfix:"wontfix"};
+/* 2026-10-27：approved 不再是单一状态 —— 它下面有「排队中 / 执行中 / 已顺延 / 失败 / 手动」
+   五种处境。一个标签盖住五种处境，就会出现「面板说已批准待执行，实际正在自动跑」的误读。 */
+function plabel(it){
+  if(!it||it.status!=="approved") return PLABEL[it&&it.status]||(it&&it.status)||"?";
+  const m={queued:"已批准·排队中",running:"已批准·执行中",succeeded:"已落地",failed:"已批准·执行失败",
+           deferred:"已批准·已顺延",cancelled:"已批准·执行已撤销",
+           idle:it.execMode==="manual"?"已批准（手动）":"已批准·待入队"};
+  return m[it.execState]||"已批准待执行";
+}
+/* 一句话说清「这条批准之后会怎么跑」：手动 / 定时 · 排队中 / 执行中 / 失败原因。 */
+function execText(it){
+  if(!it) return "—";
+  if((it.execMode||"manual")==="manual") return "手动 —— 只批准，不自动执行";
+  const when=(it.execMode==="scheduled")
+    ? `定时 ${String(it.execAt||"").slice(0,16).replace("T"," ")}`
+    : "立即";
+  const st={queued:"排队中",running:"执行中",succeeded:"已完成",failed:"失败",deferred:"已顺延",
+            cancelled:"已撤销",idle:"待入队"}[it.execState]||it.execState||"—";
+  const tries=Number(it.execAttempts)>0?`（第 ${it.execAttempts} 次）`:"";
+  const err=it.execError?` · ${it.execError}`:"";
+  return `${when} · ${st}${tries}${err}`;
+}
 const PORDER=["proposed","approved","applied","rejected","wontfix"];
 const PSEC=[["problem","目的 · 解决什么问题"],["plan","方案 · 打算怎么改"],
             ["benefit","价值 · 对 AGINT 的意义"],["risk","风险与边界"],["links","关联"]];
@@ -1373,9 +1395,28 @@ function propDetail(it){
       : [["proposed","重新打开","ghost"]];
   const pend=PSTATE.pending&&PSTATE.pending.id===it.id?PSTATE.pending:null;
   const draft=PSTATE.drafts[it.id]||"";
+  /* 2026-10-27：批准时选执行方式。默认「立即自动执行」——老板要的是批准即执行，
+     不是再生成一张催办工作单；「只批准」保留为显式选项（老语义）。 */
+  const execPick=PSTATE.execMode||"immediate";
+  const execBar=pend&&pend.status==="approved"?`
+      <div style="margin:6px 0 0;padding-top:8px;border-top:1px dashed var(--border)">
+        <span class="dlab" style="display:block;margin:0 0 4px">批准后怎么执行</span>
+        <select data-exec-mode style="background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">
+          <option value="immediate"${execPick==="immediate"?" selected":""}>立即自动执行（新增提案默认）</option>
+          <option value="scheduled"${execPick==="scheduled"?" selected":""}>定时自动执行</option>
+          <option value="manual"${execPick==="manual"?" selected":""}>只批准，不自动执行</option>
+        </select>
+        ${execPick==="scheduled"?`<input type="datetime-local" data-exec-at value="${pescAttr(PSTATE.execAt||"")}" style="margin-left:6px;background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">`:""}
+        <div style="margin-top:4px;font-size:var(--fs-xs);color:var(--fg-3)">
+          ${execPick==="manual"
+            ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
+            : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 3 次。"}
+        </div>
+      </div>`:"";
   const confirmBar=pend?`<div class="confirm">
       <div class="q">确认把 <b>${pesc(it.title)}</b> 标为 <b>${PLABEL[pend.status]||pend.status}</b>？<br>
       ${pend.note?`理由：${pesc(pend.note)}`:"未填理由（批准可以不填）。"}</div>
+      ${execBar}
       <div class="dbtns">
         <button class="btn ok" data-pact="confirm" data-id="${pescAttr(it.id)}">确认写入</button>
         <button class="btn ghost" data-pact="cancel" data-id="${pescAttr(it.id)}">取消</button>
@@ -1398,6 +1439,7 @@ function propDetail(it){
           · 更新 ${pesc((it.updatedAt||"—").slice(0,19).replace("T"," "))}
           · ${it.bodyChars} 字${it.bodyTruncated?"（正文过长，已截断）":""}
           <br>来源 ${pesc(it.source||"—")}${it.sameSourceCount>1?`　（同一来源共 ${it.sameSourceCount} 条）`:""}
+          ${it.status==="approved"||it.execState!=="idle"?`<br>执行 ${pesc(execText(it))}`:""}
         </div></div>
       </div>
       <div>
@@ -1418,7 +1460,7 @@ function propRow(it){
   const meter=[0,1,2,3,4].map(i=>`<i class="${i<(it.sectionMatched||0)?"on":""}"></i>`).join("");
   return `<tr class="prow" tabindex="0" data-id="${pescAttr(it.id)}" aria-expanded="${open}">
     <td class="tcell"><div class="t">${pesc(it.title)}</div>
-      <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(PLABEL[it.status]||it.status)}</span>
+      <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(plabel(it))}</span>
       <span style="margin-left:8px;font-family:var(--mono)">${pesc(it.id.slice(0,8))}</span></div></td>
     <td><span class="cat">${pesc(it.category)}</span></td>
     <td class="num ${it.ageDays>30?"fail-mid":""}">${ageTxt(it.ageDays)}</td>
@@ -1486,18 +1528,36 @@ function renderProposals(){
  *  ⛔ 写完必须重取，不能就地改本地状态：那样面板会显示「我以为的结果」。 */
 async function submitDecision(pend){
   const btn=propRows.querySelector(`[data-pact="confirm"][data-id="${pend.id}"]`);
+  // 批准时把执行方式一起带上（2026-10-27）：服务端据此落执行计划并入队。
+  let body={id:pend.id,status:pend.status,note:pend.note||""};
+  if(pend.status==="approved"){
+    const mode=PSTATE.execMode||"immediate";
+    body.execMode=mode;
+    if(mode==="scheduled"){
+      if(!PSTATE.execAt){ toast("定时自动执行需要选一个时间点","err"); return; }
+      const ts=new Date(PSTATE.execAt).getTime();
+      if(!Number.isFinite(ts)){ toast("时间格式不对，请重新选","err"); return; }
+      if(ts<Date.now()-60_000){ toast("定时时间在过去 —— 要立刻跑请选「立即自动执行」","err"); return; }
+      body.execAt=new Date(ts).toISOString();
+    }
+  }
   if(btn){ btn.disabled=true; btn.textContent="写入中…"; }
   try{
     const r=await fetch(new URL("proposal/decision",location.href),{
       method:"POST",
       headers:{"content-type":"application/json","x-agint-panel":"1"},
-      body:JSON.stringify({id:pend.id,status:pend.status,note:pend.note||""}),
+      body:JSON.stringify(body),
     });
     let D=null; try{ D=await r.json(); }catch{ D=null; }
     if(!r.ok||!D||D.ok!==true) throw new Error((D&&D.error)||("HTTP "+r.status));
     const p=D.proposal||{};
+    const ex=D.execution||{};
+    const exTxt = pend.status!=="approved" ? ""
+      : ex.mode==="manual"||!ex.mode ? "　· 只批准，未进执行队列"
+      : ex.mode==="scheduled" ? `　· 已排定时 ${pesc(String(ex.at||"").slice(0,16).replace("T"," "))}`
+      : `　· 已入执行队列（${pesc(ex.state||"queued")}），由执行器自动动手`;
     PSTATE.pending=null; PSTATE.drafts[pend.id]="";
-    toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${PLABEL[p.status]||p.status}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}`);
+    toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${plabel(p)}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}${exTxt}`);
     await load();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent="确认写入"; }
@@ -1578,6 +1638,15 @@ propStale.addEventListener("click",()=>{
 propRows.addEventListener("input",e=>{
   const ta=e.target.closest("textarea[data-note]"); if(!ta) return;
   PSTATE.drafts[ta.dataset.note]=ta.value;
+});
+/* 执行方式选择（2026-10-27）。
+   ⛔ datetime-local 的 change 不重渲染：重渲染会把正在选的日期控件收掉，
+      表现是「点一下就没了」。只在切 execMode 时重画。 */
+propRows.addEventListener("change",e=>{
+  const sel=e.target.closest("[data-exec-mode]");
+  if(sel){ PSTATE.execMode=sel.value; if(sel.value!=="scheduled") PSTATE.execAt=""; renderProposals(); return; }
+  const at=e.target.closest("[data-exec-at]");
+  if(at){ PSTATE.execAt=at.value; }
 });
 propRows.addEventListener("click",async e=>{
   const btn=e.target.closest("[data-pact]");

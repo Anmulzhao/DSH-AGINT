@@ -18,6 +18,10 @@ const CATEGORIES = ['rule', 'skill', 'doc', 'preset', 'service', 'plugin', 'othe
 // approved（2026-10-23）：人工批准、尚未执行。与 applied 分开，避免「点了头」
 // 被记成「已落地」。缺这一档时人工审批无处落笔 —— 51 条 proposed 只进不出。
 const STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
+// 2026-10-27：批准之后谁来动手 —— manual=只批准；immediate=立刻自动跑；
+// scheduled=按 execAt 自动跑。后两者由 agint-executor 负责，不需要人再点。
+const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
+const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
 
 // K21: raw JSON Schema form. `required` is array on parent object, not on
 // each property.
@@ -183,13 +187,15 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'evolve_set_status',
-    description: '更新一条改进提案的状态：人工批准等执行 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。批准的是**方向**、前置没到位时，同时传 blocker / unblockCondition，这条才不会在待办里被当成可催办的工作单。',
+    description: '更新一条改进提案的状态：人工批准 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。批准的是**方向**、前置没到位时，同时传 blocker / unblockCondition，这条才不会在待办里被当成可催办的工作单。execMode=immediate/scheduled 表示**批准后由 agint-executor 自动执行**（不需要人再动手）；不传则保持原计划（新提案默认 manual=只批准）。',
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },
       note: { type: 'string', description: '变更说明（如"已在 X 落地"）' },
       blocker: { type: 'string', description: '阻塞原因：为什么批准了还不能动手（传空字符串=解除阻塞）。省略=保持原值不动' },
       unblockCondition: { type: 'string', description: '解锁条件：等什么满足才算能动手（传空字符串=清除）。省略=保持原值不动' },
+      execMode: { type: 'string', enum: EXEC_MODES, description: '批准后的执行方式：manual=只批准不自动跑 / immediate=立即自动执行 / scheduled=按 execAt 定时自动执行。省略=保持原计划' },
+      execAt: { type: 'string', description: 'execMode=scheduled 时的执行时刻（ISO，如 2026-10-28T09:00:00+08:00）。其它模式传了会被忽略' },
     },
     output: {
       // setStatus returns the full proposalSchema record (9 fields). Previous
@@ -210,6 +216,11 @@ function apply(ctx) {
           note: { required: true, type: 'string' },
           blocker: { required: true, type: 'string' },
           unblockCondition: { required: true, type: 'string' },
+          execMode: { required: true, type: 'string' },
+          execAt: { required: true, type: 'string' },
+          execState: { required: true, type: 'string' },
+          execAttempts: { required: true, type: 'integer' },
+          execError: { required: true, type: 'string' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
         },
@@ -217,13 +228,20 @@ function apply(ctx) {
       render: (_a, v) => [{
         type: 'text',
         text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）`
-          + (v.status === 'approved' && v.blocker ? `\n  ⛔ 已标阻塞：${v.blocker}${v.unblockCondition ? `\n  ⏳ 解锁条件：${v.unblockCondition}` : ''}\n  ⇒ 家族面板待办里它会进「已批准·阻塞中」，不再计为可催办工作单。` : ''),
+          + (v.status === 'approved' && v.blocker ? `\n  ⛔ 已标阻塞：${v.blocker}${v.unblockCondition ? `\n  ⏳ 解锁条件：${v.unblockCondition}` : ''}\n  ⇒ 家族面板待办里它会进「已批准·阻塞中」，不再计为可催办工作单。` : '')
+          + (v.status === 'approved' && v.execMode !== 'manual'
+            ? `\n  ▶ 执行计划：${v.execMode === 'scheduled' ? `定时 ${v.execAt}` : '立即'} · 当前 ${v.execState}`
+              + (v.blocker ? '（有 blocker，暂不入队）' : '⇒ 已进入自动执行队列，由 agint-executor 执行，不需要人再动手')
+            : '')
+          + (v.execError ? `\n  ⚠ 最近一次执行：${v.execError}` : ''),
       }],
     },
     async execute(args) {
       const opts = {};
       if (typeof args.blocker === 'string') opts.blocker = args.blocker;
       if (typeof args.unblockCondition === 'string') opts.unblockCondition = args.unblockCondition;
+      if (typeof args.execMode === 'string') opts.execMode = args.execMode;
+      if (typeof args.execAt === 'string') opts.execAt = args.execAt;
       const rec = await evolve.setStatus(args.id, args.status, args.note, opts);
       if (!rec) throw new Error(`evolve_set_status: 未找到提案 ${args.id}`);
       return {
@@ -231,7 +249,109 @@ function apply(ctx) {
         category: rec.category, status: rec.status,
         source: rec.source, note: rec.note,
         blocker: rec.blocker ?? '', unblockCondition: rec.unblockCondition ?? '',
+        execMode: rec.execMode ?? 'manual', execAt: rec.execAt ?? '',
+        execState: rec.execState ?? 'idle', execAttempts: rec.execAttempts ?? 0,
+        execError: rec.execError ?? '',
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
+      };
+    },
+  }));
+
+  // ── 执行队列（2026-10-27）────────────────────────────────────────────
+  // 「批准即执行」之后，人还需要两个动作：看队列、必要时撤单/放行。
+  // ⛔ 不做「批准 + 执行」的二合一工具：批准是决定，执行是动作，
+  //    合成一个工具后，「我只是同意方向」和「现在就去改代码」就分不开了。
+  ctx.tools.register(defineTool({
+    name: 'evolve_executions',
+    description: '查看/操作提案的执行队列（批准后的自动执行）。action=list 看排队、在跑、失败、顺延；action=run 立刻放行一条（force 忽略 blocker/状态复核之外的等待，但仍会过执行器的状态与 blocker 复核）；action=cancel 撤销排队中或重试中的执行。执行由 agint-executor 负责，本工具不直接改代码。',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['list', 'run', 'cancel'], description: 'list=看队列 / run=立刻放行 / cancel=撤销' },
+      id: { type: 'string', description: '提案 id（run / cancel 必填；cancel 也接受执行 id）' },
+      state: { type: 'string', enum: EXEC_STATES, description: 'list 时按状态过滤（queued / running / succeeded / failed / deferred / cancelled）' },
+      limit: { type: 'integer', description: 'list 返回条数上限（默认 20）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          action: { required: true, type: 'string' },
+          ok: { required: true, type: 'boolean' },
+          message: { required: true, type: 'string' },
+          total: { required: true, type: 'integer' },
+          queued: { required: true, type: 'integer' },
+          running: { required: true, type: 'integer' },
+          weekCommits: { required: true, type: 'integer' },
+          items: { required: true,
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                id: { required: true, type: 'string' },
+                proposalId: { required: true, type: 'string' },
+                state: { required: true, type: 'string' },
+                dueAt: { required: true, type: 'string' },
+                attempts: { required: true, type: 'integer' },
+                summary: { required: true, type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      render: (_a, v) => [{
+        type: 'text',
+        text: v.action === 'list'
+          ? `evolve_executions: ${v.total} 条（排队 ${v.queued} / 在跑 ${v.running} / 本周已落地 ${v.weekCommits}）\n`
+            + (v.items.length === 0 ? '  （队列为空）' : v.items.map((x) => `  [${x.state}] ${x.proposalId.slice(0, 8)} · ${x.summary}`).join('\n'))
+          : `evolve_executions ${v.action}: ${v.message}`,
+      }],
+    },
+    async execute(args) {
+      const executor = typeof ctx.get === 'function' ? ctx.get('agint.executor') : null;
+      const stats = typeof evolve.executionStats === 'function' ? await evolve.executionStats({}) : { queued: 0, running: 0, lastWeekCommits: 0 };
+      const counts = {
+        total: stats.total ?? 0,
+        queued: stats.queued ?? 0,
+        running: stats.running ?? 0,
+        weekCommits: stats.lastWeekCommits ?? 0,
+      };
+      if (args.action === 'list') {
+        const rows = typeof evolve.listExecutions === 'function'
+          ? await evolve.listExecutions({ state: args.state, limit: args.limit ?? 20 })
+          : [];
+        return {
+          action: 'list', ok: true,
+          message: `${rows.length} 条`,
+          ...counts,
+          items: rows.map((r) => ({
+            id: r.id, proposalId: r.proposalId, state: r.state,
+            dueAt: r.dueAt ?? '', attempts: r.attempts ?? 0,
+            summary: r.summary ?? r.state,
+          })),
+        };
+      }
+      if (args.action === 'run') {
+        if (!args.id) throw new Error('evolve_executions run: 缺 id（提案 id）');
+        if (executor && typeof executor.runNow === 'function') {
+          const out = await executor.runNow(args.id, { force: true, by: 'tool' });
+          return {
+            action: 'run', ok: out?.ok === true,
+            message: out?.ok ? '已执行' : `已入队但本次未落地：${out?.reason ?? out?.result?.reason ?? out?.result?.error ?? '见队列'}`,
+            ...counts, items: [],
+          };
+        }
+        const out = await evolve.enqueueExecution(args.id, { force: true, by: 'tool' });
+        return {
+          action: 'run', ok: out?.enqueued === true,
+          message: out?.enqueued ? 'agint-executor 未挂载：已入队，等它上线后执行' : `入队失败：${out?.reason ?? '未知'}`,
+          ...counts, items: [],
+        };
+      }
+      if (!args.id) throw new Error('evolve_executions cancel: 缺 id');
+      const done = await evolve.cancelExecution(args.id, '工具撤销');
+      return {
+        action: 'cancel', ok: Array.isArray(done) && done.length > 0,
+        message: Array.isArray(done) && done.length ? `已撤销 ${done.length} 条` : '没有可撤销的执行',
+        ...counts, items: [],
       };
     },
   }));

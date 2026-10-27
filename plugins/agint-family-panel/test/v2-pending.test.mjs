@@ -69,6 +69,17 @@ domain('agint_evolve.json', {
       unblockCondition: '样本 ≥8 周且人工标注覆盖',
     },
     g: { id: 'g', title: '提案庚', status: 'approved', blocker: '' },
+    // 2026-10-27：批准即执行之后的两档 —— 一条在队列里跑，一条跑失败了。
+    // 它们都**不再**是工作单（前一条自己会跑完，后一条要人看）。
+    h: {
+      id: 'h', title: '提案辛', status: 'approved', blocker: '',
+      execMode: 'immediate', execState: 'queued', execAttempts: 1,
+    },
+    i: {
+      id: 'i', title: '提案壬', status: 'approved', blocker: '',
+      execMode: 'immediate', execState: 'failed', execAttempts: 2,
+      execError: 'no target asset resolved',
+    },
   },
 });
 
@@ -108,7 +119,7 @@ assert.equal(skill.supply, 3, '同时报出上游 pattern 数：供给有而产�
 const evo = byKey(P, 'evolve-proposal');
 assert.equal(evo.state, 'ok');
 assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied / approved 不算');
-assert.equal(evo.total, 7);
+assert.equal(evo.total, 9);
 assert.equal(evo.items[0].title, '提案甲');
 
 // 2026-10-23：approved 是「人工已批准、尚未执行」。它必须自己占一行待办 ——
@@ -126,6 +137,28 @@ assert.equal(
   approvedQ.items.filter((it) => it.title === '提案庚').length, 1,
   'blocker 是空串 ≠ 有 blocker —— 空串必须留在工作单里（否则「明确判过没卡住」被吞）',
 );
+
+// 2026-10-27：交给自动执行的提案**不是**工作单 —— 它已经在跑了。
+for (const t of ['提案辛', '提案壬']) {
+  assert.equal(
+    approvedQ.items.filter((it) => it.title === t).length, 0,
+    `${t} 已交给 agint-executor，放进工作单就是拿催办单去催一个自动流程`,
+  );
+}
+
+const execActive = byKey(P, 'evolve-exec-active');
+assert.equal(execActive.state, 'ok');
+assert.equal(execActive.kind, 'supply', '排队/在跑时人能做的只有等 —— 不是待办');
+assert.equal(execActive.pending, 1, '只收 queued/running/deferred');
+assert.equal(execActive.items[0].title, '提案辛');
+assert.equal(execActive.items[0].state, 'queued', '状态必须原样带出，不能只给个布尔');
+
+const execFailed = byKey(P, 'evolve-exec-failed');
+assert.equal(execFailed.state, 'ok');
+assert.equal(execFailed.kind, 'action', '执行失败必须人看，是会自己好不了的那一类');
+assert.equal(execFailed.pending, 1);
+assert.equal(execFailed.items[0].title, '提案壬');
+assert.match(execFailed.items[0].error, /no target asset/, '失败原因要带出，否则人不知道该改什么');
 
 // 2026-10-27：批准了但前置没到位的那一档，单独一行，且必须把原因和条件带出来。
 const blockedQ = byKey(P, 'evolve-approved-blocked');
@@ -180,7 +213,7 @@ const R = collectV2Data(
   { cache: new Map() },
 );
 assert.ok(R.pending, 'collectV2Data 必须暴露 payload.pending —— 面板只读这一个快照');
-assert.equal(R.pending.queues.length, 7, '七条声明表全在（2026-10-23 加「已批准待执行」，2026-10-27 加「已批准·阻塞中」）');
+assert.equal(R.pending.queues.length, 9, '九条声明表全在（2026-10-23 加「已批准待执行」，2026-10-27 加「阻塞中」+「执行中」+「执行失败」）');
 assert.equal(byKey(R.pending, 'curriculum-challenge').pending, 1, '经 collectV2Data 聚合后与直调一致');
 
 console.log('v2-pending: ok');

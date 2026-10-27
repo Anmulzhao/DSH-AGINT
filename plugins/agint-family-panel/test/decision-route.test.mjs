@@ -78,10 +78,18 @@ function fakeEvolve(rows = {}) {
     store,
     listProposals: () => Object.values(store),
     getProposal: (id) => store[id] ?? null,
-    setStatus(id, status, note) {
-      calls.push({ id, status, note });
+    setStatus(id, status, note, opts = {}) {
+      calls.push({ id, status, note, opts });
       if (!store[id]) return null;
-      store[id] = { ...store[id], status, note, updatedAt: '2026-10-23T14:00:00.000Z' };
+      // 复刻 agint.evolve 的可见副作用：显式给了 execMode 才改计划，
+      // 改了非 manual 的计划且状态是 approved ⇒ 进入 queued。
+      const patch = { status, note, updatedAt: '2026-10-23T14:00:00.000Z' };
+      if (typeof opts.execMode === 'string') {
+        patch.execMode = opts.execMode;
+        patch.execAt = opts.execMode === 'scheduled' ? (opts.execAt ?? '') : '';
+        patch.execState = opts.execMode === 'manual' ? 'idle' : 'queued';
+      }
+      store[id] = { ...store[id], ...patch };
       return store[id];
     },
   };
@@ -216,4 +224,89 @@ test('kill-switch 关闭时写通道同时关闭（不是只关读）', async ()
   assert.equal(r.status, 200);
   assert.equal(r.json.enabled, false);
   assert.equal(ev.calls.length, 0);
+});
+
+
+// ── 2026-10-27：批准即执行（execMode/execAt）────────────────────────────
+test('批准带 execMode=immediate ⇒ 计划落库并回执「已入队」（不是又一张工作单）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', note: '批', execMode: 'immediate' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(ev.calls[0].opts.execMode, 'immediate', '执行方式必须传到 setStatus（入队的唯一出口）');
+  assert.equal(r.json.execution.mode, 'immediate');
+  assert.equal(r.json.execution.state, 'queued');
+  assert.equal(r.json.execution.auto, true, '面板据此告诉人「已经自动在跑」');
+});
+
+test('批准带 execMode=scheduled + execAt ⇒ 计划带时刻；缺时刻/非法时刻一律 400', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const at = new Date(Date.now() + 3600_000).toISOString();
+  const ok = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'scheduled', execAt: at }),
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ev.calls[0].opts.execAt, at);
+
+  const missing = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'scheduled' }),
+  });
+  assert.equal(missing.status, 400);
+  assert.match(missing.json.error, /execAt/);
+
+  const bogus = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'scheduled', execAt: '明天早上' }),
+  });
+  assert.equal(bogus.status, 400);
+  assert.equal(ev.calls.length, 1, '被拒的请求一律不许落库');
+});
+
+test('execMode 不在白名单 ⇒ 400（别把拼错的模式当成 manual 静默降级）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, { headers: goodHeaders, body: envelope({ id: 'p1', status: 'approved', execMode: 'asap' }) });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /execMode/);
+  assert.equal(ev.calls.length, 0);
+});
+
+test('已批准的提案再批准一次（计划不变）⇒ 幂等短路，不重复入队', async () => {
+  const ev = fakeEvolve({ p1: row({ status: 'approved', execMode: 'immediate', execState: 'queued' }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'immediate' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.changed, false);
+  assert.equal(ev.calls.length, 0, '重复批准不得再写一次（否则会多排一条执行）');
+});
+
+test('拒绝/撤销时顺手把自动执行计划清回 manual（不留「还会跑」的错觉）', async () => {
+  const ev = fakeEvolve({ p1: row({ status: 'approved', execMode: 'scheduled', execAt: new Date(Date.now() + 60_000).toISOString(), execState: 'queued' }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  await call(ctx, { headers: goodHeaders, body: envelope({ id: 'p1', status: 'rejected', note: '不做' }) });
+  assert.equal(ev.calls[0].opts.execMode, 'manual', '非批准判定必须清计划，否则队列里还挂着定时');
+});
+
+test('setStatus 抛校验错（execAt 在过去等）⇒ 400 而不是 500（是参数问题，不是服务坏了）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  ev.setStatus = () => { throw new Error('agint-evolve: execAt 在过去'); };
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, { headers: goodHeaders, body: envelope({ id: 'p1', status: 'approved', execMode: 'immediate' }) });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /在过去/);
 });

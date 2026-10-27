@@ -86,6 +86,15 @@ const DECISION_STATUSES = new Set(['approved', 'applied', 'rejected', 'wontfix',
  * 允许「点了标记已落地但不写证据」，等于亲手把那张表变成不可信。
  */
 const REASON_REQUIRED = new Set(['rejected', 'wontfix', 'applied']);
+/**
+ * 批准时可选的执行方式（2026-10-27）。
+ *
+ * ⛔ 这是「批准即执行」的入口：选了 immediate / scheduled，`agint.evolve.setStatus`
+ *    会落执行计划并把提案放进 `agint_evolve.execution` 队列，由 `agint-executor`
+ *    自动跑 —— 不再生成一张催办工作单让老板自己动手。
+ *    `manual` = 只批准、不自动执行（老提案的语义，也是默认值）。
+ */
+const DECISION_EXEC_MODES = new Set(['manual', 'immediate', 'scheduled']);
 const DECISION_BODY_MAX = 4096;
 const DECISION_NOTE_MAX = 1000;
 const PANEL_NOTE_MARK = '人工审批（家族面板）';
@@ -986,6 +995,11 @@ function apply(ctx, config = {}) {
         // 传空串 = 明确解除阻塞。两种语义必须能区分，所以这里不做 `?? ''` 兜底。
         const blocker = typeof input?.blocker === 'string' ? input.blocker.trim() : undefined;
         const unblockCondition = typeof input?.unblockCondition === 'string' ? input.unblockCondition.trim() : undefined;
+        // 2026-10-27：批准后怎么执行。省略 = 不动原计划（冻结语义，与 blocker 一致）。
+        // ⛔ 不在这里兜底成 'manual'：那会把一条已定好定时的提案，被人补一句理由
+        //    就静默降级成「只批准」。
+        const execMode = typeof input?.execMode === 'string' ? input.execMode.trim() : undefined;
+        const execAt = typeof input?.execAt === 'string' ? input.execAt.trim() : undefined;
         if (id === '') {
           writeJson(res, 400, { ok: false, error: '缺 id' });
           return;
@@ -998,6 +1012,24 @@ function apply(ctx, config = {}) {
           writeJson(res, 400, { ok: false, error: '解锁条件上限 200 字' });
           return;
         }
+        if (execMode !== undefined && !DECISION_EXEC_MODES.has(execMode)) {
+          writeJson(res, 400, { ok: false, error: `execMode 不在白名单：${execMode === '' ? '（空）' : execMode}` });
+          return;
+        }
+        if (execMode === 'scheduled') {
+          if (!execAt) {
+            writeJson(res, 400, { ok: false, error: 'execMode=scheduled 必须给 execAt（ISO 时间）' });
+            return;
+          }
+          if (!Number.isFinite(Date.parse(execAt))) {
+            writeJson(res, 400, { ok: false, error: `execAt 不是合法时间：${execAt}` });
+            return;
+          }
+        }
+        // 自动执行只对「批准」有意义：拒绝/撤销时带 execMode 属于误操作，
+        // 直接忽略比报错友好，但要把计划一起清掉 —— 否则一条被拒绝的提案
+        // 还挂着「定时 10-28 09:00」的字段，日后读的人会以为它还会跑。
+        const wantsAutoExec = status === 'approved' && execMode !== undefined && execMode !== 'manual';
         if (!DECISION_STATUSES.has(status)) {
           writeJson(res, 400, { ok: false, error: `状态不在白名单：${status === '' ? '（空）' : status}` });
           return;
@@ -1030,7 +1062,9 @@ function apply(ctx, config = {}) {
         // 提案补一句为什么不能动手」这种写会被幂等短路掉，永远存不进去。
         const blockerChanged = blocker !== undefined && blocker !== (prev.blocker ?? '');
         const unblockChanged = unblockCondition !== undefined && unblockCondition !== (prev.unblockCondition ?? '');
-        if (prev.status === status && !blockerChanged && !unblockChanged) {
+        const execChanged = (execMode !== undefined && execMode !== (prev.execMode ?? 'manual'))
+          || (execMode === 'scheduled' && execAt !== undefined && execAt !== (prev.execAt ?? ''));
+        if (prev.status === status && !blockerChanged && !unblockChanged && !execChanged) {
           // 幂等：目标态与现状相同就不写，避免 updatedAt 被无意义地刷。
           writeJson(res, 200, { ok: true, changed: false, previousStatus: prev.status, proposal: prev, at: new Date().toISOString() });
           return;
@@ -1041,12 +1075,40 @@ function apply(ctx, config = {}) {
         const note = prev.status === status
           ? String(prev.note ?? '')
           : composeDecisionNote({ status, reason, prevNote: prev.note, at });
-        const rec = await evolve.setStatus(id, status, note, { blocker, unblockCondition });
+        const opts = { blocker, unblockCondition };
+        if (execMode !== undefined) opts.execMode = execMode;
+        if (execMode === 'scheduled' && execAt !== undefined) opts.execAt = execAt;
+        // 非批准的判定：把执行计划顺手清回 manual，别留下"还会跑"的错觉。
+        if (status !== 'approved' && execMode === undefined && (prev.execMode ?? 'manual') !== 'manual') {
+          opts.execMode = 'manual';
+        }
+        let rec;
+        try {
+          rec = await evolve.setStatus(id, status, note, opts);
+        } catch (error) {
+          // setStatus 抛的是校验类错误（execAt 在过去 / 超过一年等），按 400 回，
+          // 让人知道是"参数不对"而不是"服务坏了"。
+          writeJson(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+          return;
+        }
         if (rec === null || rec === undefined) {
           writeJson(res, 500, { ok: false, error: 'setStatus() 返回空 —— 写入未生效' });
           return;
         }
-        writeJson(res, 200, { ok: true, changed: true, previousStatus: prev.status, proposal: rec, at });
+        writeJson(res, 200, {
+          ok: true,
+          changed: true,
+          previousStatus: prev.status,
+          proposal: rec,
+          at,
+          // 面板据此在 toast 里说明「已进入自动执行队列」还是「只是批准」。
+          execution: {
+            mode: rec.execMode ?? 'manual',
+            at: rec.execAt ?? '',
+            state: rec.execState ?? 'idle',
+            auto: wantsAutoExec && !(rec.blocker ?? ''),
+          },
+        });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
       }

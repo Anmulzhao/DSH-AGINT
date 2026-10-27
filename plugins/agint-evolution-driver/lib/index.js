@@ -522,8 +522,15 @@ export function apply(ctx, config = {}) {
    * 跑一轮：挑候选 → 构造 → propose → validate → ingest。
    * @param {object} opts
    * @param {object} [opts.inject] 测试注入：{ evolve, mutator, population, skills, fs, llm }
+   * @param {string} [opts.proposalId] 定向执行这一条提案（2026-10-27）。
+   *   不带 = 老行为（挑 status:'proposed' 的一批）。
+   *   带 = **允许 approved**、只处理这一条、且不受 `state.seen` 影响。
+   *   为什么必须允许 approved：批准之后由 agint-executor 自动执行，
+   *   若这里还只认 proposed，执行器永远挑不到东西（这正是本次要补的断链）。
    */
   async function runOnce(opts = {}) {
+    const onlyId = typeof opts.proposalId === 'string' && opts.proposalId !== '' ? opts.proposalId : null;
+
     // 全路径出口：每条 return 都发一条 summary（2026-09-27 三修）。
     // 前两版只覆盖了「走到循环末尾」的情况，早期 return（依赖缺失等）照样静默。
     const emitSummary = async (exitReason, extra = {}) =>
@@ -587,7 +594,28 @@ export function apply(ctx, config = {}) {
 
     let proposals = [];
     try {
-      proposals = await evolve.listProposals({ status: 'proposed' });
+      if (onlyId) {
+        // 定向执行：直接取那一条。状态门在这里显式判，不用 listProposals 过滤 ——
+        // 「批了才跑」是执行器的前置条件，driver 只是不主动拒绝 approved。
+        const one = typeof evolve.getProposal === 'function' ? await evolve.getProposal(onlyId) : null;
+        if (!one) {
+          await emitSummary('proposal-not-found', { proposalId: onlyId });
+          return { skipped: true, reason: `proposal not found: ${onlyId}`, proposalId: onlyId };
+        }
+        const allowed = opts.allowAnyStatus === true || one.status === 'approved';
+        if (!allowed) {
+          await emitSummary('proposal-not-approved', { proposalId: onlyId, status: one.status ?? null });
+          return {
+            skipped: true,
+            reason: `proposal ${onlyId} status=${one.status} 不是 approved（定向执行只跑已批准的提案）`,
+            proposalId: onlyId,
+            status: one.status ?? null,
+          };
+        }
+        proposals = [one];
+      } else {
+        proposals = await evolve.listProposals({ status: 'proposed' });
+      }
     } catch (error) {
       state.degraded += 1;
       state.lastError = `listProposals failed: ${error?.message ?? String(error)}`;
@@ -654,8 +682,12 @@ export function apply(ctx, config = {}) {
     const entityGate = entityGateOn ? { repoFiles, getCodeIndex } : null;
 
     for (const candidate of pool) {
-      if (state.seen.has(candidate.id)) continue;
-      state.seen.add(candidate.id);
+      // 定向执行不看 seen：`seen` 的作用是「一轮里别重复试同一条」，
+      // 而这里本来就只有一条，且失败重试必须能再跑（否则第一次失败后永久哑火）。
+      if (!onlyId) {
+        if (state.seen.has(candidate.id)) continue;
+        state.seen.add(candidate.id);
+      }
 
       const target = resolveTargetAsset(candidate, available, repoFiles);
       if (!target) {
@@ -1233,6 +1265,27 @@ export function apply(ctx, config = {}) {
     };
   }
 
+  /**
+   * 定向执行一条已批准的提案（agint-executor 的唯一入口，2026-10-27）。
+   *
+   * 与 runOnce 的差别只有三点，其余流水线完全一致（构造 → mutator → D-QAF →
+   * commit → 预测锁定 → ledger）：
+   *   ① 只处理传入的 proposalId，且允许 status='approved'
+   *   ② 不写 `state.seen`，失败重试能再跑
+   *   ③ 返回里补 `proposalId` 与 `ok`，让执行器不必自己解释 driver 的返回形状
+   *
+   * ⛔ 不在这里做「状态 → applied」：写提案状态是 agint.evolve 的事，
+   *    driver 只回执行事实。两边都写 = 两套口径。
+   */
+  async function runForProposal(proposalId, opts = {}) {
+    if (typeof proposalId !== 'string' || proposalId === '') {
+      return { skipped: true, ok: false, reason: 'runForProposal: proposalId 必填' };
+    }
+    const out = await runOnce({ ...opts, proposalId });
+    const ok = out?.skipped === false && out?.commit?.ok === true;
+    return { ...out, proposalId, ok };
+  }
+
   function status() {
     return {
       runs: state.runs,
@@ -1316,6 +1369,8 @@ export function apply(ctx, config = {}) {
     // A 段「通电不上膛」：合成产物 ⇒ mount 的部署桥。
     // ⛔ 恒 PENDING_REVIEW，不自动 ACTIVATE（4 态里有 RESTART_REQUESTED，触碰重启红线）。
     requestSynthMount: (input) => requestSynthMount({ ctx, ...input }),
+    // 2026-10-27：给 agint-executor 的「按提案定向执行」入口 —— 批准即执行的落点。
+    runForProposal,
   });
 
   ctx.effect(() => () => {

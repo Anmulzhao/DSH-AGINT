@@ -70,6 +70,33 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 `evolve_set_status id applied "已在 X 落地"` 仍是闭环的最后一步。
 人工改判可以回到 `proposed`（家族面板的「撤销」走同一出口）。
 
+### 批准之后谁来动手（2026-10-27 起）：`execution` 队列 + `agint-executor`
+
+`approved` 曾经是个断口：`agint-evolution-driver.runOnce()` 只挑 `status:'proposed'`，
+`approved` 的行它不看 ⇒ 批准完的提案在家族面板里挂成一张「已批准待执行（工作单）」，
+等人自己动手。老板 2026-10-27 明确要求：**批准即进执行流程，可选立即或定时，不要再生成催办单。**
+
+| 字段 | 含义 |
+|---|---|
+| `execMode` | `manual`（只批准，默认）/ `immediate`（立即执行）/ `scheduled`（定时执行） |
+| `execAt` | 定时到期时刻（ISO）；其它模式为空串 |
+| `execState` | `idle` / `queued` / `running` / `succeeded` / `failed` / `deferred` / `cancelled` |
+| `execAttempts` | 已尝试次数（执行器 claim 时自增） |
+| `execError` | 最近一次失败 / 顺延原因 |
+| `execStartedAt` / `execFinishedAt` | 最近一次起止时刻 |
+
+- 状态成为 `approved` 且**没有 blocker**、计划是 `immediate`/`scheduled` ⇒ **自动入队**
+  （`agint_evolve.execution` 表）。已批准时清空 blocker ⇒ 补入队；离开 `approved` ⇒ 撤销活跃执行。
+- `agint-executor` 每 15s 捡到期任务（入队时 `wake()` 会立即捅一下），六道闸复核后调
+  `agint.evolutionDriver.runForProposal(proposalId)` 执行；成功**同一刻**把提案标 `applied`
+  （note 追加落地证据），失败留原因并按 `maxAttempts` 有限重试。
+- ⛔ **默认 `manual`**：加字段之前批准的提案不会因为这次升级突然开始自动改代码。
+- ⛔ **升 domain version 会炸**：`agint_evolve` 仍是 `version: 2`。dsh 的 json backend 是硬版本校验
+  （`stored version != expected` 直接抛 `version-mismatch`），加表 + 加带 default 的字段是安全的，
+  升版本会让现有 50+ 条提案整表读不出来。
+- 工具：`evolve_set_status <id> approved "<理由>" --execMode immediate`；
+  队列查看与手动放行/撤销走 `evolve_executions`（`action=list|run|cancel`）。
+
 ## 模型接口
 
 - `evolve_review [--date YYYY-MM-DD] [--notes "..."]` 立即跑一次（dry-run 默认写文件）
@@ -77,6 +104,8 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 - `evolve_propose [title] [body]` 提一条（category: rule/skill/doc/preset/service/plugin/other；`plugin` = 整 cordis 模块级改动，`service` = 模块内单 host 服务改动）
 - `evolve_proposals [status] [category] [blocked]` 看清单（`blocked=true` 只看阻塞中的）
 - `evolve_set_status id status [note] [blocker] [unblockCondition]` 更新状态
+  （批准时的执行方式：`execMode=manual|immediate|scheduled` + `execAt`）
+- `evolve_executions action=list|run|cancel [id] [state] [limit]` 看执行队列 / 立刻放行 / 撤销
 
 ## 路由规范（教训/方法/知识/改进）
 

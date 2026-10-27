@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "AGINT 家族面板：停靠面板默认内嵌 v2 视图（待办 / 神谕判词 / 提案台 / Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定），可切 v1 名册（分组/行状态/信号）；名册每行可点开单插件档案。0.5.0 新增提案台：按状态列出全部进化提案，行内展开目的/方案/收益/风险/关联五节与可核对的证据栏（引用路径是否存在、符号是否在引用文件命中），并对未执行提案提供批准 / 拒绝 / wontfix 人工审批。host 半路由：GET /api/agint-family/status、/v2、/v2/data（只读）与 POST /api/agint-family/proposal/decision（唯一写通道，经 agint.evolve.setStatus，回环 + 自定义头 + 同源 + 4KB 上限四道门）。",
   "main": "lib/index.js",
   "agint": {

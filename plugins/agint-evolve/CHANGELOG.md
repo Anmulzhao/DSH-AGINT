@@ -1,5 +1,49 @@
 # agint-evolve CHANGELOG
 
+## v0.10.0（2026-10-27 · 提案执行计划 + `execution` 队列：批准即执行的数据层）
+
+### 为什么
+
+`approved` 这一档自 v0.8.0 起只说明「同意做」，v0.9.0 又补了 `blocker` 说明「现在还不能做」，
+但**没有任何字段记录「该谁做、什么时候做、做到哪一步」**。结果批准之后信息就断在状态字段上：
+家族面板只能把它渲染成一张工作单，而"自动执行"在系统里连个表达位都没有。
+
+### 新增
+
+- `proposalSchema` 增 7 个字段：`execMode`（manual/immediate/scheduled）、`execAt`、
+  `execState`（idle/queued/running/succeeded/failed/deferred/cancelled）、`execAttempts`、
+  `execError`、`execStartedAt`、`execFinishedAt`。
+- 新表 `execution`（一行 = 一次批准触发的一次执行，重试复用同一行、attempts 自增、log 追加）。
+- 新模块 `lib/execution.js`：纯判据层（`validateExecPlan` / `autoEnqueueBlocker` /
+  `isJobDue` / `weeklyUsage` / `startOfWeek` / `interpretRunResult` / `describeExecution`）。
+  ⛔ 不碰存储、不读 env、不取 Date.now() —— 时间一律由调用方传，否则「定时到点该跑」测不住。
+- 8 个服务方法：`enqueueExecution` / `claimDueExecutions` / `finishExecution` /
+  `requeueExecution` / `cancelExecution` / `listExecutions` / `executionStats` / `describeExecution`。
+
+### 行为变更
+
+- `setStatus(id, status, note, { execMode, execAt })`：显式传才改计划（同 blocker 的冻结语义）。
+  状态成为 `approved`、无 blocker、且计划是 immediate/scheduled ⇒ **自动入队**；
+  已批准时清空 blocker ⇒ 补入队；离开 approved ⇒ 撤销活跃执行。
+- `finishExecution(ok:true)` 在**同一刻**把提案标 `applied`（note 追加落地证据）：
+  「执行成功」与「已落地」在自动执行路径上必须是同一刻，否则面板会同时显示两种相反状态。
+- 执行计划与队列的判定只有一处（`autoEnqueueBlocker`），面板与执行器各自读它 ——
+  判据散成两份就会「面板说排队中、执行器说没这条」。
+
+### 刻意不升 domain version
+
+`agint_evolve` 仍是 `version: 2`。dsh 的 json backend 是**硬版本校验**
+（`dsh-storage-json/lib/index.js:102`：`stored version != expected` 直接抛 `version-mismatch`，
+没有 `compatibleVersions` 通道），升版本 = 现有 50+ 条提案整表读不出来、域开不了。
+加表 + 加带 default 的可选字段在这个 backend 上是安全的：未声明的表按空表加载，
+老记录缺的键由 zod default 补齐。1→2 那次升版本是为加 `baseline_history` 付了手工迁移的代价，
+这次没有必须升的理由，就不制造「必须先迁移再启动」的窗口。
+
+### 红绿自证
+
+`test/execution.test.mjs`：批准即入队 / blocker 不入队 / 清空 blocker 补入队 / manual 永不入队 /
+定时未到不跑 / 成功同刻 applied / 失败留原因 / 撤销批准撤队列 / 重复批准不叠单 / 统计口径。
+
 ## v0.9.0（2026-10-27 · `approved` 补 `blocker` / `unblockCondition`：批准 ≠ 现在能做）
 
 ### 新增

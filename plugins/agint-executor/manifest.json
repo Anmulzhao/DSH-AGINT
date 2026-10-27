@@ -1,0 +1,70 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-executor",
+  "version": "0.1.0",
+  "description": "提案执行器：approved 之后由它动手。轮询 agint_evolve.execution 队列（immediate/scheduled），逐条复核状态与 blocker，调 agint.evolutionDriver.runForProposal 走既有 D-QAF 流水线，成功把提案标 applied 并留落地证据，失败留原因 + 有限重试。不持存储域（队列在 agint.evolve），全软依赖，AGINT_EXECUTOR=off 可停。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [],
+      "provides": [
+        "agint.executor"
+      ],
+      "consumes": [
+        "agint.evolve",
+        "agint.evolutionDriver",
+        "agint.evolution"
+      ],
+      "events": [],
+      "subscriptions": [],
+      "tools": []
+    },
+    "storage": {
+      "domains": [],
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "softDependencies": {
+      "agint-evolve": ">=0.10.0",
+      "agint-evolution-driver": ">=0.5.0"
+    },
+    "mountOrder": 62,
+    "permissions": {
+      "env": [
+        "AGINT_EXECUTOR"
+      ],
+      "fs": [],
+      "network": [],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "none",
+      "tools": "none",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/executor.test.mjs",
+      "command": "node test/executor.test.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.executor.tick": "跑一轮：claim 到期执行 → 逐条守护复核 → 调 driver → 写回结果。可重入保护，inFlight 期间返回 skipped",
+        "agint.executor.wake": "入队后捅一下调度器（立刻跑一轮，不等 tick）",
+        "agint.executor.status": "计数器 + 配置 + kill-switch 状态（面板/排障用，零副作用）",
+        "agint.executor.runNow": "手动放行一条提案：入队并立刻跑，返回该提案本次执行结果",
+        "agint.executor.runTick": "tick 的显式别名（cron/工具调用用）"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

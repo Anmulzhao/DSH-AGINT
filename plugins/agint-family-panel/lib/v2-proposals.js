@@ -466,6 +466,14 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       status: String(r?.status ?? 'proposed'),
       source: src,
       note: String(r?.note ?? ''),
+      // 2026-10-27：执行计划与执行态。面板要能一眼看出「批准了，是自己跑还是排队中」——
+      // 否则「已批准待执行」这个标签会同时覆盖「已入队自动跑」和「等你自己动手」两种
+      // 完全相反的情况（这正是上一版把批准变成催办单的成因）。
+      execMode: String(r?.execMode ?? 'manual'),
+      execAt: String(r?.execAt ?? ''),
+      execState: String(r?.execState ?? 'idle'),
+      execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
+      execError: String(r?.execError ?? ''),
       createdAt: r?.createdAt ?? null,
       updatedAt: r?.updatedAt ?? null,
       ageDays: ageDaysOf(r?.createdAt, now),

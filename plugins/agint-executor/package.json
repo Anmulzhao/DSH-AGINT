@@ -1,0 +1,18 @@
+{
+  "name": "agint-executor",
+  "version": "0.1.0",
+  "description": "智进 (agint) 提案执行器：批准即执行。轮询 agint_evolve.execution 队列，按 immediate/scheduled 到期捡任务，调 agint.evolutionDriver.runForProposal 落地，成功标 applied、失败留因并有限重试；内置 kill-switch 与「本周自动落地 ≤3 次」红线。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "agint",
+    "executor",
+    "automation"
+  ],
+  "license": "MIT",
+  "peerDependencies": {}
+}

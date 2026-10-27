@@ -397,6 +397,16 @@ const CANDIDATE_OPEN_STATUSES = Object.freeze([
  * ⛔ 字段缺席（加字段前的历史行）与空串都算「没卡住」—— 缺字段不等于原因未知。
  */
 const hasBlocker = (r) => typeof r?.blocker === 'string' && r.blocker.trim() !== '';
+/**
+ * 这条提案是不是正被自动执行管道处理（排队 / 在跑 / 顺延）。
+ *
+ * 判据的单一事实源在 agint-evolve（execution.js / claimDueExecutions 的 CLAIMABLE），
+ * 面板读的是落盘文件、不 import 那个插件，所以保留一份等价实现 ——
+ * 与 hasBlocker 同一处理方式，等价性由 v2-pending 用例钉住。
+ * ⛔ 字段缺席（2026-10-27 之前批准的行）算「不在执行中」：它们本来就没有执行计划。
+ */
+const isExecActive = (r) => ['queued', 'running', 'deferred'].includes(r?.execState);
+
 
 const PENDING_SPECS = Object.freeze([
   {
@@ -439,14 +449,57 @@ const PENDING_SPECS = Object.freeze([
     // （a85ef850 就是：批了"权重真标定"，但周报冻结权重常量等 8-12 周样本）
     // 归到下面那一行 —— 它们是「等人动手」吗？不是，是「等条件」。混在一起
     // 就是拿工作单催人去撞自家门禁。
+    // 2026-10-27 第三次收窄（批准即执行）：`execMode=immediate|scheduled` 的提案
+    // 批准后自己进队列、由 agint-executor 动手 —— 它们不再是"人要做的事"。
+    // 放进工作单就是拿催办单去催一个已经在跑的东西。
+    // 于是本档只剩「已批准、但明确选了手动执行」的那批（唯一真正的工作单）。
     key: 'evolve-approved',
-    label: '已批准待执行（工作单）',
+    label: '已批准·等手动执行（工作单）',
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    select: (r) => r.status === 'approved' && !hasBlocker(r),
+    select: (r) => r.status === 'approved' && !hasBlocker(r) && !isExecActive(r) && r.execState !== 'failed',
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
-    note: () => '人工已批准，代码/文档尚未改；落地后标 applied',
+    note: () => '人工已批准且未交给自动执行；落地后标 applied',
+  },
+  {
+    // 2026-10-27：批准即执行之后，「排队中 / 执行中 / 已顺延」是人**不用动手**的状态。
+    // kind='supply' 与 blocker 那档同型：此刻人能做的只有等（或去撤销）。
+    // ⛔ 不隐藏：隐藏掉的话，「批准之后到底有没有人在跑」就变成黑箱 ——
+    //    而这次改动的全部目的，就是让「批完就没人管」不再发生。
+    key: 'evolve-exec-active',
+    label: '自动执行中（排队 / 在跑 / 顺延）',
+    kind: 'supply',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved' && isExecActive(r),
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      state: r.execState ?? null,
+      execMode: r.execMode ?? null,
+      dueAt: r.execAt ?? '',
+      attempts: r.execAttempts ?? 0,
+      error: r.execError ?? '',
+    }),
+    note: () => '由 agint-executor 自动执行；成功会把提案标 applied，失败会留原因',
+  },
+  {
+    // 2026-10-27：自动执行失败且重试额度用尽 —— 这是**必须人看**的一档。
+    // 与「排队中」分开的理由：一个会自己好，一个不会。
+    key: 'evolve-exec-failed',
+    label: '自动执行失败（待处理）',
+    kind: 'action',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved' && r.execState === 'failed',
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      error: r.execError ?? '',
+      attempts: r.execAttempts ?? 0,
+    }),
+    note: (t) => `${t.attempts ?? 0} 次尝试后仍失败；改方案后重新批准，或 evolve_executions run 手动重跑`,
   },
   {
     // 2026-10-27 新增：「批准了但动不了手」这一档。
