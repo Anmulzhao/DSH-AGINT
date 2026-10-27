@@ -151,6 +151,25 @@ const oracleBroadcastSchema = z.object({
    * 2026-10-25 起无降级：LLM 失败不写 ok 行，改落 outcome=error。
    */
   mode: z.string().default(''),
+  // ── 人工标注栏（提案 a6e6e1d9 第一步，2026-10-27）─────────────────────────
+  //
+  // 此前 calibrationSamples() 把 humanVerdict 硬编码成 null，本表**根本没有这一列**
+  // ⇒ 老板就算口头标了「这周是 confidence」，下次调用仍然全是 null：采集面只有
+  // 出口、没有入口。这与 createdAt 被 zod strip 掉是同一类事故（2026-10-27 已踩过
+  // 一次）——**schema 不声明的字段，存储层 open 时会静默丢掉**。
+  //
+  // 两个标注口径必须分开采集，因为它们喂的是**两个不同目标**（见 test/calibration.mjs）：
+  //   humanVerdict  「本周期实际动手处理的最丑维」→ 标定 Q2 归因（阈值）
+  //   humanOverall  「本周期整体变美/变丑/持平」→ 标定权重（总分）
+  // 合并成一列会让两个目标互相污染 —— 正是 a85ef850 失效的技术根因同一个形状。
+  //
+  // ⛔ null = **尚未标注**，不是「标了没差异」（后者是 'none' / 'flat'）。
+  humanVerdict: z.enum(['noise', 'confidence', 'redundancy', 'bloat', 'none']).nullable().default(null),
+  humanOverall: z.enum(['better', 'worse', 'flat']).nullable().default(null),
+  /** 标注时随手写的依据（如「这周在清死条目」），空串 = 没写。 */
+  humanNote: z.string().default(''),
+  /** 最近一次标注时刻（ISO）；空串 = 从未标注。 */
+  annotatedAt: z.string().default(''),
 });
 
 const spec = defineDomain({

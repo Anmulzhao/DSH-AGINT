@@ -1,5 +1,44 @@
 # Changelog — agint-aesthetic-oracle
 
+## v0.9.0 — 2026-10-27 — 补人工标注入口（humanVerdict / humanOverall）+ 可复跑标定脚本
+
+**为什么**：`calibrationSamples()` 把 `humanVerdict` **硬编码成 null**，而
+`oracle_broadcasts` 表**根本没有这一列**。也就是说老板口头标了「这周是 confidence」，
+服务端无处可存，下次调用照样全 null —— 采集面只有出口、没有入口。
+「等 8-12 周人工标注样本再标定」这条前置因此**永远等不到**（实测 34 条样本 0 标注）。
+这与 `createdAt` 被 zod strip 掉是同一类事故（2026-10-27 已踩过一次）：
+**schema 不声明的字段，存储层 open 时会静默丢掉**。
+
+**变更**
+
+1. `oracleBroadcastSchema` 增四列（`default` 保老行可读，`version` 仍为 1）：
+   - `humanVerdict`：`noise | confidence | redundancy | bloat | none | null`
+   - `humanOverall`：`better | worse | flat | null`
+   - `humanNote` / `annotatedAt`
+   ⛔ 两列**分开采集**：`humanVerdict` 喂阈值标定（Q2 归因），`humanOverall` 喂权重标定
+   （总分感知）。合并成一列会让两个目标互相污染 —— 正是 a85ef850 失效的同一种形状。
+2. 新服务方法 `annotateCalibration({ id?, ts?, humanVerdict?, humanOverall?, note? })`：
+   id → ts 精确 → ts 前缀（唯一命中）定位；**前缀多义报错并列出候选，不猜**；
+   非法枚举值直接拒绝；`undefined` = 冻结该列，`null` = 明确清空。
+3. `calibrationSamples()` 读**真实标注**（不再硬编码 null），并给 `counts`
+   （`total` / `annotatedVerdict` / `annotatedOverall`），样本补 `id` 便于回写。
+4. 服务面暴露 `formulaVersion`（静态常量），供 `agint-evolve` 0.12.0 的提案台账
+   记录「成立条件」（提案 567dabed）。
+5. 新增 `test/calibration.mjs`：**可复跑的标定拟合器**
+   - 阈值 ← Q2 归因吻合度（`NOISE_RATIO × CONFIDENCE × REDUNDANCY` 网格）；
+   - 权重 ← 「总分变化方向 ↔ humanOverall」（**不用 `verdict(w)`**：Q1 是票数制，
+     权重只通过 r4 总分门间接影响判决 ⇒ 同样是近权重不变量，拿它拟合就是再踩一次
+     a85ef850 的坑）；
+   - 独立样本按 **ISO 周**去重（同周 daily 读数高度相关，按日计数会把 5 周吹成 34 条）；
+   - 0 标注 ⇒ 明写「无法拟合」并拒绝输出参数；并列最优多组时显式说明「无法选择」；
+   - 对当前样本无区分力的参数标 `unidentifiable`（`redundancy` / `bloat` 目前就是）；
+   - 开跑前用当前参数对拍 `dimDeduction`，**拟合器的尺必须先和原尺一致**，不一致 exit 2。
+
+**验证**：新增 `test/calibration-annotation.test.js` 6 条（落库可读、两列分计、
+前缀多义报错、非法值拒绝、null/undefined 语义、formulaVersion 暴露）+
+`test/calibration.test.js` 5 条（拟合分支真的跑、无标注不伪造、unidentifiable、worksheet、公式自检）。
+真实存储 34 条样本经离线宿主读出，`counts` 为 0/0（确实没人标过）。
+
 ## v0.8.0 — 2026-10-27 — 美谕提案声明「不可自动执行」
 
 美谕周报产出的提案是**复核请求**（正文写明「纯机械动作提案，**永不 auto-apply**；
