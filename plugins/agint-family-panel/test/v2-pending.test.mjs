@@ -80,6 +80,14 @@ domain('agint_evolve.json', {
       execMode: 'immediate', execState: 'failed', execAttempts: 2,
       execError: 'no target asset resolved',
     },
+    // 2026-10-27：声明「不可自动执行」的复核类提案。
+    // 它 execState 也可能是 failed（上次被误排进队列留下的历史），
+    // 但它要的动作是**人**去复核，不是机器再试一次 ⇒ 归「等手动执行（工作单）」。
+    j: {
+      id: 'j', title: '提案癸', status: 'approved', blocker: '',
+      autoExecutable: false, execMode: 'manual', execState: 'failed', execAttempts: 2,
+      execError: 'no target asset resolved',
+    },
   },
 });
 
@@ -119,7 +127,7 @@ assert.equal(skill.supply, 3, '同时报出上游 pattern 数：供给有而产�
 const evo = byKey(P, 'evolve-proposal');
 assert.equal(evo.state, 'ok');
 assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied / approved 不算');
-assert.equal(evo.total, 9);
+assert.equal(evo.total, 10);
 assert.equal(evo.items[0].title, '提案甲');
 
 // 2026-10-23：approved 是「人工已批准、尚未执行」。它必须自己占一行待办 ——
@@ -127,7 +135,7 @@ assert.equal(evo.items[0].title, '提案甲');
 const approvedQ = byKey(P, 'evolve-approved');
 assert.equal(approvedQ.state, 'ok');
 assert.equal(approvedQ.kind, 'action', '工作单是人能直接动手的，不是「供给不足」');
-assert.equal(approvedQ.pending, 2, '只算 status=approved 且没标 blocker（e / g）');
+assert.equal(approvedQ.pending, 3, '只算 status=approved 且没标 blocker（e / g / j —— j 是声明不可自动执行的复核类）');
 assert.ok(approvedQ.items.some((it) => it.title === '提案戊'));
 assert.equal(
   approvedQ.items.filter((it) => it.title === '提案己').length, 0,
@@ -152,6 +160,16 @@ assert.equal(execActive.kind, 'supply', '排队/在跑时人能做的只有等 �
 assert.equal(execActive.pending, 1, '只收 queued/running/deferred');
 assert.equal(execActive.items[0].title, '提案辛');
 assert.equal(execActive.items[0].state, 'queued', '状态必须原样带出，不能只给个布尔');
+
+// 2026-10-27：不可自动执行的复核类提案 ⇒ 归「等手动执行（工作单）」，不占「执行失败」。
+assert.equal(
+  approvedQ.items.filter((it) => it.title === '提案癸').length, 1,
+  '声明不可自动执行的提案要回到工作单 —— 它等人复核，不是机器的活',
+);
+assert.equal(
+  byKey(P, 'evolve-exec-failed').items.filter((it) => it.title === '提案癸').length, 0,
+  '它压根没被允许自动跑，不该挂在「自动执行失败（待处理）」里让人以为系统还在替它跑',
+);
 
 const execFailed = byKey(P, 'evolve-exec-failed');
 assert.equal(execFailed.state, 'ok');

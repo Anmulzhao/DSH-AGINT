@@ -458,7 +458,11 @@ const PENDING_SPECS = Object.freeze([
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    select: (r) => r.status === 'approved' && !hasBlocker(r) && !isExecActive(r) && r.execState !== 'failed',
+    // 2026-10-27：声明「不可自动执行」的提案（复核类）**属于这一档** ——
+    // 它等人做（复核一条记忆），不是「机器在跑」也不是「机器试过了」。
+    // ⛔ 字段缺席 = 可执行，老提案不受影响。
+    select: (r) => r.status === 'approved' && !hasBlocker(r)
+      && (r.autoExecutable === false || (!isExecActive(r) && r.execState !== 'failed')),
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
     note: () => '人工已批准且未交给自动执行；落地后标 applied',
   },
@@ -492,7 +496,10 @@ const PENDING_SPECS = Object.freeze([
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    select: (r) => r.status === 'approved' && r.execState === 'failed',
+    // ⛔ 排除 autoExecutable=false：这一档的含义是「自动执行试过了、没成功，
+    //    要人看」。不可自动执行的提案压根没被允许试 —— 放在这儿会让人以为
+    //    系统还在替它跑，而它要的动作本来就是人去复核。
+    select: (r) => r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false,
     item: (r) => ({
       id: r.id ?? null,
       title: r.title ?? null,
