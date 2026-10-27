@@ -506,7 +506,24 @@ const PENDING_SPECS = Object.freeze([
       error: r.execError ?? '',
       attempts: r.execAttempts ?? 0,
     }),
-    note: (t) => `${t.attempts ?? 0} 次尝试后仍失败；改方案后重新批准，或 evolve_executions run 手动重跑`,
+    // 2026-10-27 修：note 收到的是**整份域的表**（`spec.note(r.tables)`），
+    // 而 attempts 在每一行上 —— 取 `t.attempts` 恒 undefined，
+    // 于是这条文案永远印「0 次尝试后仍失败」（实测那条是第 1 次就失败）。
+    // 改为从 proposal 表里真正失败的行取最大值；一条都没有就不编数字。
+    // ⛔ 用 Object.values 而不是 buildPending 内部那个 rowsOf()：作用域不同，
+    //    回调里够不到它（运行期 ReferenceError，面板整节降级）。
+    note: (t) => {
+      const tbl = t && typeof t === 'object' ? t.proposal : null;
+      const rows = tbl && typeof tbl === 'object' ? Object.values(tbl) : [];
+      const max = rows.reduce((m, r) => (
+        r && r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false
+          ? Math.max(m, Number(r.execAttempts) || 0)
+          : m
+      ), 0);
+      return max > 0
+        ? `失败前最多试过 ${max} 次（这类失败不会自己好）；改方案后重新批准，或 evolve_executions run 手动重跑`
+        : '失败不会自己好；改方案后重新批准，或 evolve_executions run 手动重跑';
+    },
   },
   {
     // 2026-10-27 新增：「批准了但动不了手」这一档。

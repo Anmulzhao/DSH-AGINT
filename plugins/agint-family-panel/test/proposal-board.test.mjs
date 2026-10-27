@@ -39,8 +39,11 @@ function makeEl(id) {
   };
 }
 
-/** 建一个 vm 沙箱，把页面脚本跑起来，返回元素表与 fetch 记录。 */
-function bootBoard(payload) {
+/** 建一个 vm 沙箱，把页面脚本跑起来，返回元素表与 fetch 记录。
+ *  opts.timers=true 时才给 setInterval/clearInterval：默认沙箱没有定时器，
+ *  用来钉住「离线渲染不因缺定时器整块崩」（2026-10-27 踩过）。
+ *  opts.postReply 覆盖决策接口的响应，用来演「入队后追终态」。 */
+function bootBoard(payload, opts = {}) {
   const src = /<script>([\s\S]*)<\/script>/.exec(readFileSync(PAGE, 'utf8'))[1];
   const els = {};
   const idOf = (id) => els[id] || (els[id] = makeEl(id));
@@ -48,7 +51,8 @@ function bootBoard(payload) {
   for (const m of readFileSync(PAGE, 'utf8').matchAll(/id="([\w.-]+)"/g)) idOf(m[1]);
 
   const calls = { get: [], post: [] };
-  const postReply = { ok: true, changed: true, at: '2026-10-23T14:00:00.000Z', previousStatus: 'proposed',
+  const timers = { started: [], cleared: [] };
+  const postReply = opts.postReply || { ok: true, changed: true, at: '2026-10-23T14:00:00.000Z', previousStatus: 'proposed',
     proposal: { id: 'p1', title: '提案一', status: 'approved' } };
 
   const sandbox = {
@@ -64,8 +68,8 @@ function bootBoard(payload) {
       body: { appendChild(el) { if (el && el.id) els[el.id] = el; } },
     },
     location: { href: 'http://127.0.0.1:3080/api/agint-family/v2' },
-    fetch: async (url, opts) => {
-      if (opts && opts.method === 'POST') { calls.post.push({ url: String(url), ...opts }); return { ok: true, json: async () => postReply }; }
+    fetch: async (url, opts2) => {
+      if (opts2 && opts2.method === 'POST') { calls.post.push({ url: String(url), ...opts2 }); return { ok: true, json: async () => postReply }; }
       calls.get.push(String(url));
       return { ok: true, json: async () => payload };
     },
@@ -73,13 +77,18 @@ function bootBoard(payload) {
     setTimeout: () => 1,
     clearTimeout: () => {},
   };
+  if (opts.timers) {
+    let seq = 0;
+    sandbox.setInterval = (fn, ms) => { const id = ++seq; timers.started.push({ id, fn, ms }); return id; };
+    sandbox.clearInterval = (id) => { timers.cleared.push(id); };
+  }
   for (const [id, el] of Object.entries(els)) sandbox[id] = el;
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
 
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox);
-  return { sandbox, els, idOf, calls };
+  return { sandbox, els, idOf, calls, timers };
 }
 
 const proposal = (over = {}) => ({
@@ -273,4 +282,51 @@ test('筛选：切到「已落地」页签才显示 applied 行', async () => {
   await els.propStatus.dispatch('click', { target: { dataset: { pst: 'applied' }, closest: (s) => (s === '[data-pst]' ? { dataset: { pst: 'applied' } } : null) } });
   assert.ok(els.propRows.innerHTML.includes('提案二'));
   assert.ok(!els.propRows.innerHTML.includes('提案一'));
+});
+
+// ── 2026-10-27：自动刷新 —— 「已批准·排队中」不许永久钉在屏幕上 ────────────
+//
+// 事故原貌：submitDecision 写完只 load() 一次，而那一拍 execution 必然还是
+// queued（窗口不足 1 秒）⇒ 页面画上「已批准·排队中」；1 秒后转 failed，
+// 页面再也不重绘 ⇒ 执行态永久停在入队那一刻。老板看到的就是「我早就让它
+// 立即执行了，面板还说在排队」。两件事必须成立：①加载后有轮询表；
+// ②入队后追终态，不能等满 15 秒。
+test('自动刷新：加载后起 15s 轮询表（否则执行态停在入队那一刻）', async () => {
+  const { sandbox, timers } = bootBoard(payload(), { timers: true });
+  await sandbox.load();
+  assert.equal(timers.started.length, 1, '加载完应注册一个轮询表');
+  assert.equal(timers.started[0].ms, 15000, '兜底节奏是 15 秒');
+});
+
+test('自动刷新：批准入队后追终态（2 秒一拍，不等 15 秒）', async () => {
+  const { sandbox, els, timers } = bootBoard(payload(), {
+    timers: true,
+    postReply: {
+      ok: true, changed: true, at: '2026-10-27T13:00:00.000Z', previousStatus: 'proposed',
+      proposal: { id: 'p1', title: '提案一', status: 'approved', execMode: 'immediate', execState: 'queued' },
+      execution: { mode: 'immediate', state: 'queued', auto: true, autoExecutable: true },
+    },
+  });
+  await sandbox.load();
+  const base = timers.started.length;
+  await els.propRows.dispatch('click', { target: clickTarget({ pact: 'ask', id: 'p1', status: 'approved' }) });
+  await els.propRows.dispatch('click', { target: clickTarget({ pact: 'confirm', id: 'p1' }) });
+  assert.equal(timers.started.length, base + 1, '入队后应多一张追终态的表');
+  assert.equal(timers.started[timers.started.length - 1].ms, 2000, '追终态的间隔是 2 秒');
+});
+
+test('自动刷新：只批准（manual）不入队，就不该起追终态的表', async () => {
+  const { sandbox, els, timers } = bootBoard(payload(), {
+    timers: true,
+    postReply: {
+      ok: true, changed: true, at: '2026-10-27T13:00:00.000Z', previousStatus: 'proposed',
+      proposal: { id: 'p1', title: '提案一', status: 'approved', execMode: 'manual', execState: 'idle' },
+      execution: { mode: 'manual', state: 'idle', auto: false, autoExecutable: true },
+    },
+  });
+  await sandbox.load();
+  const base = timers.started.length;
+  await els.propRows.dispatch('click', { target: clickTarget({ pact: 'ask', id: 'p1', status: 'approved' }) });
+  await els.propRows.dispatch('click', { target: clickTarget({ pact: 'confirm', id: 'p1' }) });
+  assert.equal(timers.started.length, base, '手动批准没有队可追，多起一张表就是空转');
 });

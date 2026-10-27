@@ -1568,10 +1568,15 @@ async function submitDecision(pend){
     const exTxt = pend.status!=="approved" ? ""
       : ex.mode==="manual"||!ex.mode ? "　· 只批准，未进执行队列"
       : ex.mode==="scheduled" ? `　· 已排定时 ${pesc(String(ex.at||"").slice(0,16).replace("T"," "))}`
-      : `　· 已入执行队列（${pesc(ex.state||"queued")}），由执行器自动动手`;
+      /* ⛔ 不写「由执行器自动动手」就收工：入队只是开始，1 秒后可能就确定性失败。
+         写明结果会自动回到提案行，读的人才知道该看哪里，而不是盯着这句 toast。 */
+      : `　· 已入执行队列（${pesc(ex.state||"queued")}）—— 结果会自动刷新到提案行`;
     PSTATE.pending=null; PSTATE.drafts[pend.id]="";
     toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${plabel(p)}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}${exTxt}`);
     await load();
+    /* 2026-10-27：入队那一拍的 execState 必然是 queued，紧接着可能就是 failed。
+       只 load 一次 = 把「排队中」钉在屏幕上（本轮事故的直接成因）。 */
+    if(pend.status==="approved"&&(ex.state==="queued"||ex.state==="running")) chaseExecTerminal(pend.id);
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent="确认写入"; }
     toast("写入失败："+pesc(e.message)+" —— 状态未变，可以重试。","err");
@@ -1760,19 +1765,74 @@ function showSrcErrors(){
     document.querySelector(".overview").prepend(el); }
   el.textContent="⚠ 数据源降级 — "+SRC_ERRORS.join("；");
 }
-async function load(){
-  refreshBtn.disabled=true; refreshBtn.textContent="刷新中…";
+/* 2026-10-27：取数只有一个实现，手动与自动共用 —— 两份 fetch 必然漂移
+   （手动那份会校验 ok/报错，自动那份忘了校验，就变成「静默画旧数据」）。 */
+async function refreshData({silent=false}={}){
+  if(silent&&busyTyping()) return false;
+  const y=window.scrollY;
   try{
     const r=await fetch(new URL("v2/data",location.href),{cache:"no-store"});
     const D=await r.json();
     if(!D) throw new Error("空响应");
     if(D.ok===false&&D.enabled!==false) throw new Error(D.error||"数据端点报错");
-    applyPayload(D); render();
+    applyPayload(D); render(); showSrcErrors();
+    /* 轮询重绘不能把人从正在看的位置弹走：静默刷新恢复原滚动位置。
+       手动刷新不恢复 —— 那是「我要看最新的」，跳回顶部反而多余。 */
+    if(silent&&y>0&&window.scrollY!==y) window.scrollTo(0,y);
+    return true;
   }catch(e){
-    SRC_ERRORS=["取数失败："+e.message]; render();
-  }finally{
-    showSrcErrors();
+    /* 静默失败不覆盖画面：偶发一次取数失败就把整页刷成错误页，
+       比数据晚 15 秒更烦人。手点「刷新」时才把错误摆出来。 */
+    if(!silent){ SRC_ERRORS=["取数失败："+e.message]; render(); showSrcErrors(); }
+    return false;
+  }
+}
+/* 2026-10-27：自动刷新。
+   ⛔ 事故原貌：面板此前只在加载时取一次数。批准即执行后前端重取，那一瞬
+   execution 还是 queued（窗口不足 1 秒），页面就把「已批准·排队中」画在屏幕上；
+   1 秒后执行转 failed，但页面再不重绘 ⇒ 执行态永久停在入队那一刻。
+   实机后果：提案早已失败，面板还写着「排队中」，读的人以为它一直没动。
+   现在：15s 一拍静默刷新兜底；刚入队的那条额外追终态（见 chaseExecTerminal）。 */
+const AUTO_MS=15000;
+let autoTimer=null;
+let chaseTimer=null;
+/* 离线渲染测试（test/proposal-board.test.mjs）把本段脚本放进 vm 里跑，
+   沙箱没有定时器 —— 探测一下再起表，否则 load() 直接抛 ReferenceError，
+   整块提案台渲染不出来（测试报的就是「setInterval is not defined」）。 */
+const TIMERS_OK=typeof setInterval==="function"&&typeof clearInterval==="function";
+/** 人在打字 / 页面在后台时不重绘：重绘会重建输入框，正在输的搜索词会丢焦点。 */
+function busyTyping(){
+  if(document.hidden) return true;
+  const ae=document.activeElement;
+  return !!ae&&(/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)||ae.isContentEditable===true);
+}
+function startAutoRefresh(){
+  if(autoTimer||!TIMERS_OK) return;
+  autoTimer=setInterval(()=>{ void refreshData({silent:true}); },AUTO_MS);
+  /* 切回这个标签页立刻补一拍：后台时不刷新，回来不能还是 10 分钟前的画面。 */
+  if(typeof document!=="undefined"&&document.addEventListener){
+    document.addEventListener("visibilitychange",()=>{ if(!document.hidden) void refreshData({silent:true}); });
+  }
+}
+/** 入队后追终态：执行器的确定性失败通常 1 秒内落定，不必等满 15 秒。
+ *  只追这一条，追到非 queued/running 或满 6 次就停 —— 不无限轮询烧服务端。 */
+function chaseExecTerminal(id){
+  if(!TIMERS_OK) return;
+  clearInterval(chaseTimer);
+  let n=0;
+  chaseTimer=setInterval(async()=>{
+    n+=1;
+    const ok=await refreshData({silent:true});
+    const it=(ok&&PROP&&Array.isArray(PROP.items))?PROP.items.find(x=>x&&x.id===id):null;
+    const st=it?String(it.execState||"idle"):"";
+    if((it&&st!=="queued"&&st!=="running")||n>=6) clearInterval(chaseTimer);
+  },2000);
+}
+async function load(){
+  refreshBtn.disabled=true; refreshBtn.textContent="刷新中…";
+  try{ await refreshData(); }finally{
     refreshBtn.disabled=false; refreshBtn.textContent="刷新";
+    startAutoRefresh();
   }
 }
 refreshBtn.onclick=load;
