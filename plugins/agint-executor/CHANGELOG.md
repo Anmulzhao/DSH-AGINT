@@ -4,8 +4,7 @@
 
 ### 症状
 
-首次 `install/redeploy.sh` 全绿（装 + 核验 + 重启都通过），但面板 `pluginKinds` 里
-`agint-executor` 是 `kind: sdk`（= 有源码、**未挂载**），dsh 日志：
+首次 `install/redeploy.sh` 全绿（装 + 核验 + 重启都通过），但 dsh 日志：
 
 ```
 agint-executor (...plugins/agint-executor/lib/index.js): Error: cannot get property "timer" without inject
@@ -33,9 +32,27 @@ v0.1.0 写的是 `inject = []`，而 wake 去重里用了 `ctx.setTimeout` ⇒ a
 
 「部署位核验全绿」不等于「插件真起来了」：redeploy 的启动后核验看的是
 「无 skipping profile bundle + 有 agint 日志行 + cron job 数」，
-一个插件 apply 失败不会让这些判据变红。**判「新插件是否真挂上」要看运行时**
-（`/v2/data` 的 `pluginKinds` → `kind === 'host'`，或 `ctx.get('agint.executor')` 是否非空），
-不能只看安装脚本退出码。
+一个插件 apply 失败不会让这些判据变红。**判「新插件是否真挂上」要看运行时**：
+宿主 loader 的 `{total, active, failed}`（apply 成功才 active、抛错进 failed）
+＋ 日志里没有该插件的 `Error:`，或 `ctx.get('agint.executor')` 是否非空。
+
+### 更正（同日复核）：`pluginKinds` 的 `kind` 不能当挂载探针
+
+本节最初写的是「面板 `pluginKinds` 里它是 `kind: sdk`（= 有源码、未挂载）」——
+**这句是错的**，2026-10-27 复核运行时后更正：
+
+- `sdk` 的真实含义是「`tools === 0` 且 `provides > 0` ⇒ 服务库」（`v2-data.js:1092`），
+  是**正常形态**，跟挂载与否无关。零工具、只提供服务正是执行器该有的样子。
+- 反过来 `unmounted` 也不可靠：复查时 `agint-evolve` 与 `agint-cron` 都被标成
+  `unmounted`，而这两个明显在跑（cron 27 个 job、evolve 服务被面板写通道正常调用）。
+  该标签依赖面板传入的 `mounted` Set，而那个 Set 与运行时 loader 的身份命名不同源 ⇒
+  对不上的插件会被一律标成「已移除」。
+- 所以当时那条「未挂载」结论**成立，但证据不是 kind 标签**，而是日志里 apply 抛的
+  `cannot get property "timer" without inject`（apply 阶段抛错，必然没挂上）。
+
+留在上面的原结论不改（结论对），但把这条推理纠正掉：拿 `kind` 判挂载会得出
+两个方向的错误答案（把正常服务库当没挂上、把在跑的东西当已移除）。
+
 
 ## v0.1.0（2026-10-27 · 批准即执行：approved 之后由它动手）
 
