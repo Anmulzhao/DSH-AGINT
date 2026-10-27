@@ -186,16 +186,88 @@ export function resolveRepoRoot(env = {}, config = {}) {
   return null;
 }
 
-/** 从提案文本里提取反引号包裹的仓库相对路径（`plugins/x/lib/y.js` 形态）。 */
+/** 从提案文本里提取反引号包裹的仓库路径（`plugins/x/lib/y.js` 形态）。
+ *
+ *  2026-10-27 两处补：
+ *  ① 字符集补 `~ $ { }` —— 提案里常写部署位路径
+ *     `` `~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793` ``，
+ *     旧字符集不认 `~`，捕获会从 `/` 开始（`/.dsh/.agint-bundle/...`）。
+ *  ② 允许路径后面跟行号/区间再收尾 —— 否则 `index.js:793` 因为结尾不是反引号
+ *     而**整条抽不出来**（实机 `mentioned:1` 抽到的是正文里那个 `agint_evolve.json`，
+ *     真正要改的 index.js 根本没进候选）。行号由 normalizeRepoPath 剥。
+ *  归一化在 normalizeRepoPath 里做，这里只管「抽出来」。 */
 export function extractRepoPaths(text) {
   const out = [];
-  const re = /`([A-Za-z0-9_\-./]+\.(?:js|mjs|cjs|json|md|yml|yaml|txt|sh))`/g;
+  const re = /`([~$A-Za-z0-9_\-./{}]+\.(?:js|mjs|cjs|json|md|yml|yaml|txt|sh)(?::\d+(?:-\d+)?)?)`/g;
   let m;
   while ((m = re.exec(String(text ?? ''))) !== null) {
     const p = m[1].replace(/^\.\//, '');
     if (p && !out.includes(p)) out.push(p);
   }
   return out;
+}
+
+/**
+ * 部署位路径 → 仓库相对路径。
+ *
+ * 2026-10-27 实机：提案「修复 agint-evolve 提案台 schema…」正文写的是面板里看到的
+ * **部署位**路径（`~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793`），
+ * 而 `repoFiles` 是仓库相对路径（`plugins/agint-evolve/lib/index.js`）⇒ 求交恒空
+ * ⇒ 一条**真能改**的提案被判 `not-actionable`，1.5 秒白跑一次，还要起一次 LLM。
+ *
+ * 归一化只剥**已知的壳**，不做模糊猜测：剥完还不认识就原样返回，让上层判「定位不到」。
+ */
+export function normalizeRepoPath(raw) {
+  let p = String(raw ?? '').trim();
+  if (!p) return '';
+  p = p.replace(/:\d+(?:-\d+)?$/, ''); // 行号：index.js:793 / index.js:107-167
+  p = p.replace(/\\/g, '/');           // Windows 分隔符
+  p = p.replace(/^\.\//, '');
+  p = p.replace(/^\$\{?DSH_HOME\}?\/?/, ''); // $DSH_HOME / ${DSH_HOME}
+  p = p.replace(/^~\//, '');
+  // ① 部署 bundle：<任意>/.agint-bundle/plugins/x → plugins/x
+  let m = p.match(/\.agint-bundle\/(.+)$/);
+  if (m) return m[1].replace(/^\.\//, '');
+  // ② host 包位：<任意>/node_modules/@agint/host/plugins/x → plugins/x
+  //    ⛔ 必须排在 ③ 之前：这条路径里也含 `plugins/`，先命中会把 node_modules 前缀留下。
+  m = p.match(/node_modules\/@agint\/host\/(.+)$/);
+  if (m) return m[1];
+  // ③ profile 实体位：profiles/<名>/plugins/x → plugins/x
+  m = p.match(/(?:^|\/)profiles\/[^/]+\/plugins\/(.+)$/);
+  if (m) return `plugins/${m[1]}`;
+  // ④ 绝对路径带仓库根：/…/DSH-AGINT/plugins/x → plugins/x
+  m = p.match(/\/(?:DSH-AGINT|DSH-AGINT\.wiki)\/(.+)$/);
+  if (m) return m[1];
+  return p;
+}
+
+/**
+ * 从抽到的路径里挑出仓库里真实存在的那个文件。返回 null = 定位不到（**不猜**）。
+ *
+ * 两级：先归一等值命中；再后缀兜底（提案只写半截 `lib/index.js`、或多一层父目录）。
+ * ⛔ 后缀兜底有歧义就返回 null：`lib/index.js` 在多个插件里都有，改错文件比不改更糟。
+ */
+export function matchRepoFile(mentioned = [], repoFiles = []) {
+  const set = new Set(repoFiles);
+  const norm = [...new Set(mentioned.map(normalizeRepoPath).filter(Boolean))];
+  const exact = norm.filter((p) => set.has(p));
+  if (exact.length) return exact.sort((a, b) => b.length - a.length)[0];
+
+  const cands = new Set();
+  for (const p of norm) {
+    if (!p.includes('/')) continue; // 单段太泛（`index.js` 能匹配半个仓库）
+    for (const f of set) {
+      if (f === p) { cands.add(f); continue; }
+      if (f.endsWith(`/${p}`) || p.endsWith(`/${f}`)) cands.add(f);
+    }
+  }
+  const uniq = [...cands];
+  if (uniq.length === 1) return uniq[0];
+  if (!uniq.length) return null;
+  // 多个候选：只有其中一个**完整包含**其余路径时才算确定，否则算歧义。
+  const sorted = uniq.sort((a, b) => b.length - a.length);
+  const top = sorted[0];
+  return sorted.every((x) => x === top || top.endsWith(`/${x}`)) ? top : null;
 }
 
 /**
@@ -251,8 +323,13 @@ export function resolutionDiag(candidate, repoFiles = []) {
   const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}\n${candidate?.source ?? ''}`;
   const mentioned = extractRepoPaths(hay);
   const set = new Set(repoFiles);
-  const hits = mentioned.filter((p) => set.has(p));
-  return `mentioned:${mentioned.length} inRepo:${hits.length} bodyLen:${String(candidate?.body ?? '').length}`;
+  // 归一化后仍要报「部署位路径被认出来了没有」—— 只看原始串求交会把
+  // 「写法不对」误报成「仓库里没有这个文件」，2026-10-27 就是这么误判的。
+  const norm = [...new Set(mentioned.map(normalizeRepoPath).filter(Boolean))];
+  const exact = norm.filter((p) => set.has(p));
+  const hit = exact.length ? null : matchRepoFile(mentioned, repoFiles);
+  return `mentioned:${mentioned.length} inRepo:${exact.length}`
+    + `${hit ? ` suffix:${hit}` : ''} bodyLen:${String(candidate?.body ?? '').length}`;
 }
 
 /**
@@ -265,10 +342,10 @@ export function resolveTargetAsset(candidate, availableSkills = [], repoFiles = 
   if (Array.isArray(repoFiles) && repoFiles.length) {
     const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}`;
     const mentioned = extractRepoPaths(`${hay}\n${(candidate?.source ?? '')}`);
-    const set = new Set(repoFiles);
-    // 长路径优先：`plugins/a/lib/x.js` 应优先于片段 `a/lib/x.js`
-    const hits = mentioned.filter((p) => set.has(p)).sort((a, b) => b.length - a.length);
-    if (hits.length) return { type: 'repo', id: hits[0] };
+    // 2026-10-27：先归一再求交。提案里写部署位路径（`~/.dsh/.agint-bundle/…`）
+    // 是常态，直接 `set.has(raw)` 会恒 0 命中 ⇒ 真能改的提案被判不可执行。
+    const hit = matchRepoFile(mentioned, repoFiles);
+    if (hit) return { type: 'repo', id: hit };
   }
   return null;
 }

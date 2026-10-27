@@ -1,5 +1,37 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.6.1 — 2026-10-27 — 部署位路径归一：别再让「真能改」的提案被判不可执行
+
+**实机事故**：提案 `9d9697cf`「修复 agint-evolve 提案台 schema 缺 createdAt…」批准后
+选「立即执行」，**1.5 秒失败**：
+`not-actionable … no target asset resolved (mentioned:1 inRepo:0 bodyLen:1982)`。
+可它给的文件、行号、修法一个不缺 —— 失败纯粹因为**路径写法**：
+
+- 正文写的是面板里看到的部署位路径 `` `~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793` ``；
+- `repoFiles` 是仓库相对路径（`plugins/agint-evolve/lib/index.js`）⇒ `set.has(raw)` 恒 false；
+- 更隐蔽的一层：抽取正则要求「路径后面紧跟反引号」，而 `index.js:793` 后面是冒号 ⇒
+  **真正要改的 index.js 根本没被抽出来**。`mentioned:1` 里那个 1 是正文提到的
+  `agint_evolve.json`（存储域文件名，仓库里没有）。
+
+**变更**
+
+1. 新增导出 `normalizeRepoPath(raw)`：剥行号/列号、`\` → `/`、`$DSH_HOME`、`~/`，
+   再按已知壳归一到仓库相对路径 ——
+   `.agint-bundle/…`（部署 bundle）、`node_modules/@agint/host/…`（host 包位）、
+   `profiles/<名>/plugins/…`（profile 实体位）、`/…/DSH-AGINT/…`（绝对路径带仓库根）。
+   ⛔ 只剥**已知的壳**，剥完不认识就原样返回，让上层判「定位不到」——不做模糊猜测。
+2. 新增导出 `matchRepoFile(mentioned, repoFiles)`：两级匹配。
+   先归一后等值命中；未命中再**后缀兜底**（提案只写半截 `lib/index.js`、或多一层父目录）。
+   ⛔ 后缀命中出现歧义（`lib/index.js` 多个插件都有）⇒ 返回 null，不猜：
+   改错文件比不改更糟。
+3. `extractRepoPaths`：字符集补 `~ $ { }`，并允许路径后跟 `:行号` / `:起-止` 再收尾。
+4. `resolveTargetAsset` / `resolutionDiag` 改用上面两级匹配；诊断串在走后缀兜底时
+   补 `suffix:<命中的仓库路径>`，避免「写法不对」被读成「仓库里没这个文件」。
+
+**验证**：拿真实提案跑 `resolveTargetAsset`（repoFiles = `git ls-files`，1305 条）——
+改前 `mentioned:1 inRepo:0` → 改后 `mentioned:2 inRepo:1`，
+定位到 `plugins/agint-evolve/lib/index.js`。`smoke` 52 → **54 条**全过。
+
 ## v0.6.0 — 2026-10-27 — 定向失败区分「确定性不可执行」与「偶发」
 
 **背景**：自动执行失败后一律重试，但有些失败**重试也不会变**。实机那条 oracle 复核类

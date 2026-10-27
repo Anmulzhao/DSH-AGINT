@@ -11,6 +11,8 @@ import {
   resolveTargetSkill,
   resolveTargetAsset,
   extractRepoPaths,
+  normalizeRepoPath,
+  matchRepoFile,
   resolveRepoRoot,
   commitToRepo,
   restoreFromPreimage,
@@ -587,6 +589,41 @@ test('T21: resolveTargetAsset 三级定位', () => {
 
   assert.equal(resolveTargetAsset({ title: '改 agint-restart 护栏', body: '' }, ['plugin-preflight'], repoFiles), null);
   assert.equal(resolveTargetAsset({ title: 'x', body: 'y' }, [], []), null);
+});
+
+// ── T20b: normalizeRepoPath —— 部署位路径归一（2026-10-27 实机）────────────
+//
+// 实机那次：提案正文写面板里看到的 `~/.dsh/.agint-bundle/plugins/.../index.js:793`，
+// 而 repoFiles 是仓库相对路径 ⇒ 求交恒空 ⇒ 一条真能改的提案被判 not-actionable。
+test('T20b: 部署位路径 → 仓库相对路径', () => {
+  assert.equal(
+    normalizeRepoPath('~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793'),
+    'plugins/agint-evolve/lib/index.js', 'bundle 位 + 行号要一起剥掉');
+  assert.equal(normalizeRepoPath('$DSH_HOME/.agint-bundle/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(normalizeRepoPath('/home/u/.dsh/profiles/web/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(
+    normalizeRepoPath('/home/u/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-x/lib/i.js'),
+    'plugins/agint-x/lib/i.js', 'host 包位必须先剥，否则留下 node_modules 前缀');
+  assert.equal(normalizeRepoPath('/home/u/projects/DSH-AGINT/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(normalizeRepoPath('plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js', '已是仓库相对路径就别动');
+  assert.equal(normalizeRepoPath('docs/x.md:107-167'), 'docs/x.md');
+  assert.equal(normalizeRepoPath(''), '');
+});
+
+// ── T21b: 正文写部署位路径 ⇒ 仍能定位（实机 9d9697cf 那次失败）─────────────
+test('T21b: 部署位路径的提案也能定位到仓库文件', () => {
+  const repoFiles = ['plugins/agint-evolve/lib/index.js', 'plugins/agint-metrics/lib/service.js'];
+  assert.deepEqual(
+    resolveTargetAsset({ title: '修复提案台 schema', body: '根因在 `~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793`，照改。' }, [], repoFiles),
+    { type: 'repo', id: 'plugins/agint-evolve/lib/index.js' });
+  assert.deepEqual(
+    resolveTargetAsset({ title: 'x', body: '见 `/home/u/DSH-AGINT/plugins/agint-evolve/lib/index.js`' }, [], repoFiles),
+    { type: 'repo', id: 'plugins/agint-evolve/lib/index.js' }, '绝对路径带仓库根也要认');
+  // ⛔ 歧义（两个插件都有 lib/index.js）⇒ 不猜：改错文件比不改更糟
+  assert.equal(
+    matchRepoFile(['lib/index.js'], ['plugins/a/lib/index.js', 'plugins/b/lib/index.js']),
+    null, '有歧义就返回 null');
+  assert.equal(matchRepoFile(['plugins/agint-evolve/lib/index.js'], repoFiles), 'plugins/agint-evolve/lib/index.js');
 });
 
 // ── T22: isCommitEnabled 默认开（K51 + 2026-09-27 老板拍板）────────────────
