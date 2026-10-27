@@ -189,13 +189,30 @@ function apply(ctx, config) {
   async function decide({ results, config: overrideConfig, options } = {}) {
     if (disposed) throw new Error('agint-quality-policy: disposed');
     const mergedConfig = { ...cfg, ...overrideConfig };
+    // ── 效率护栏（2026-10-26，D2 收口 / evolution-framework.md §5.3）──
+    // 宪法要求「有效进化增量 ≤ 0 ⇒ 即使 HARM 提升也拒绝部署」，但这条从未生效：
+    // 分母的 token 项恒缺（capability-boundary.md §4 F3），公式算不出来。
+    // 现在由 quality-eval 现算两窗读数（软依赖：eval 未挂载 ⇒ 不传，决策照常，
+    // 但证据里不会出现 effective-delta-* 标记 —— 复盘点一眼能看出护栏没跑）。
+    let effectiveDelta = options?.effectiveDelta ?? null;
+    if (!effectiveDelta) {
+      try {
+        const qualityEvaluator = typeof ctx.get === 'function' ? ctx.get('agint.qualityEvaluator') : null;
+        if (qualityEvaluator && typeof qualityEvaluator.effectiveDelta === 'function') {
+          effectiveDelta = await qualityEvaluator.effectiveDelta({ origin: 'policy' });
+        }
+      } catch (err) {
+        console.warn(`[agint-quality-policy] effectiveDelta unavailable: ${err?.message ?? err}`);
+      }
+    }
+    const mergedOptions = effectiveDelta ? { ...(options ?? {}), effectiveDelta } : options;
     // 行动 #5（2026-09-28）：决策 provider 化 —— 默认走内置 provider（decidePolicy），
     // 可注册/切换外部 provider；provider 不可用回退内置 + fallback 审计。
     const providerIdHint = overrideConfig?.policyProvider ?? null;
     const { decision, providerId, fallback, fallbackReason } = await policyRegistry.resolveAndEvaluate({
       results,
       config: mergedConfig,
-      options,
+      options: mergedOptions,
       ...(providerIdHint ? { providerId: providerIdHint } : {}),
     });
     if (fallback && !disposed) {

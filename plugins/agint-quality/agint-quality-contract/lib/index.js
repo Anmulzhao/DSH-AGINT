@@ -238,6 +238,65 @@ function apply(ctx) {
   /** 默认配置（启动时载入；policy 可调后通过 setConfig 覆盖） */
   let config = QualityConfigSchema.parse({});
 
+  // ── quality.contract.violated 发布（2026-10-26）────────────────────────
+  // 背景：本插件此前对事件总线零感知（check-wiring 查 E' 的 UNWIRED）——
+  //   作为 agint-event-bus README 点名的 sync 边界三方之一，它连发布侧都没有。
+  //
+  // 为什么只发「违例」而不发「调参成功」：
+  //   L1 参数（HARM 权重 / 阈值 / 沙箱限额）被 policy 调整时，setConfig 已经写
+  //   agint.memory 审计日志（见下方 memory.write）—— 那条通路是完整的，总线再发
+  //   一遍只是重复。真正黑洞在**拒绝分支**：
+  //     validatePatch 不通过 ⇒ 直接 throw，**memory.write 根本没执行**，
+  //     错误只随调用栈消失在上层。谁试图改 FROZEN 字段、改了哪个字段，
+  //     事后无处可查 —— 而 AGENTS.md 明载「废除多签后 L0 没有事前审批」，
+  //     运行时唯一守卫就是这个 validatePatch。
+  //   ⇒ 本条事件的语义是「L0 护栏被触发了」，是**安全审计信号**，不是配置变更通知。
+  //
+  // 红线：
+  //   1. **违例判定与抛错行为一律不变** —— 仍然 throw 同一个 err、同一个 code；
+  //      发布是 best-effort，失败只告警，绝不影响拒绝语义。
+  //   2. **三形态探测**（gap 文档 §6.4）：分服务名 → 伞键 getService → 伞键 get。
+  //   3. 不切 T2：主路径仍是 throw，本条是影子广播。
+  function resolveBusPublish() {
+    const bind = (bus) => (bus && typeof bus.publish === 'function' ? bus.publish.bind(bus) : null);
+    const probes = [
+      () => (typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null),
+      () => bind(typeof ctx.getService === 'function' ? ctx.getService('agint.eventBus') : null),
+      () => bind(typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null),
+    ];
+    for (const probe of probes) {
+      try {
+        const fn = probe();
+        if (typeof fn === 'function') return fn;
+      } catch { /* 试下一种形态 */ }
+    }
+    return null;
+  }
+
+  async function publishContractViolated(violations, patch) {
+    const publish = resolveBusPublish();
+    if (!publish) return { published: false, reason: 'eventBus-unavailable' };
+    try {
+      const result = await publish({
+        topic: 'quality.contract.violated',
+        version: 1,
+        source: 'agint-quality-contract',
+        payload: {
+          violations: Array.isArray(violations) ? violations.slice(0, 32) : [],
+          // patch 的顶层键名足以归因（哪些字段被试图修改），不落值 —— 避免把
+          // 潜在敏感配置内容抄进事件存储。截断到 16 个键防爆。
+          patchKeys: patch && typeof patch === 'object' ? Object.keys(patch).slice(0, 16) : [],
+        },
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('agint-quality-contract: contract.violated publish failed', err);
+      } catch { /* noop */ }
+      return { published: false, reason: 'publish-failed' };
+    }
+  }
+
   ctx.effect(() => {
     // 当前无可逆副作用，但保留 effect 占位以备后续加监听器
     return () => {};
@@ -263,6 +322,9 @@ function apply(ctx) {
         err.code = 'L0_FROZEN_VIOLATION';
         err.violations = validation.violations;
         ctx.logger?.error?.(err.message);
+        // 影子广播：守卫被触发了。必须在 throw **之前** —— throw 之后这个函数就退出了。
+        // 发布失败不会改变上面任何一项（err / code / violations / logger 均已落定）。
+        await publishContractViolated(validation.violations, patch);
         throw err;
       }
 

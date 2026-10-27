@@ -182,6 +182,30 @@
     }
   ],
 
+  "plugins": [
+    {
+      "plugin": "agint-tool-stats",
+      "reason": "宿主事件的**消费方**而非生产方：它监听 tools/result 追加 agint_tool_stats.jsonl，产出的 agint.toolStats 是只读统计出口（summary / 按工具的调用数·失败率·延迟分位）。没有下游需要按『统计口径变了』做反应，接事件只会造噪声。",
+      "evidence": "plugins/agint-tool-stats/lib/index.js:135 提供 agint.toolStats（查询型）；cordis.patch.yml 挂载注释「tool usage profile. Listens on tools/result events, appends to ~/.dsh/storages/agint_tool_stats.jsonl」。2026-10-09 查 E' 实测 busRefs=0。",
+      "since": "2026-10-09",
+      "unblockWhen": "若日后出现需要按统计变化响应的订阅方（如「失败率突增自动开诊断」），届时再接。"
+    },
+    {
+      "plugin": "agint-quality-sdk",
+      "reason": "面向模型平面的 prompt 组装 SDK，导出全是纯函数（Config / validateManifest / renderPrompt / extractPlaceholders / staticCheckPrompt / runRegressionTests）。无生命周期状态、无跨插件副作用，不存在需要广播的状态变更。",
+      "evidence": "plugins/agint-quality-sdk/lib/index.js:84 提供 agint.promptSDK；同文件 export 段列出上述纯函数。2026-10-09 查 E' 实测 busRefs=0。",
+      "since": "2026-10-09",
+      "unblockWhen": "若 prompt 组装引入跨插件缓存/预编译并产生版本切换事件，再评估。"
+    },
+    {
+      "plugin": "agint-quality-static",
+      "reason": "静态档位检查器，导出为同步查询与白名单维护（checkPlugin / checkAll / listFamilies / addAllowlistEntry）。结果是即时计算值而非落库状态，不构成事件语义；且 self-evaluation forbidden 红线下它本就不该主动触发评估。",
+      "evidence": "plugins/agint-quality-static/lib/index.js:139 提供 agint.qualityStatic。2026-10-09 查 E' 实测 busRefs=0。",
+      "since": "2026-10-09",
+      "unblockWhen": "若 checkAll 改为定期批跑并产出『档位漂移』结论，再评估是否需要 wiki.updated 类广播。"
+    }
+  ],
+
   "domains": [
     {
       "domain": "agint_search",

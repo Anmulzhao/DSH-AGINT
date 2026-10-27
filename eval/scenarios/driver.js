@@ -130,6 +130,14 @@ export function makeRichEvalMockCtx(input) {
   const mockRules = {
     audit: () => ({ totals: { hits: 0, denies: 0, asks: 0, advisories: 0 } }),
     lint: async () => [],
+    // ⛔ 2026-10-09 补：`list` 是 safety 维度的**数据源**，缺了就不是「干净」而是「无数据」。
+    //    2026-10-07 的 S11 fail-closed 修复把 evalSafety 的初始分从 1.0 改成 null
+    //    （evaluators.js:143）—— 数据源不可用必须走「null → veto → REJECT」，
+    //    不能在门禁最需要它的时刻给满分。于是本 mock 缺 `list` 时：
+    //      safety = null ⇒ compositeScore 一票否决 ⇒ composite = null
+    //    ⇒ 三个 sandbox-gate 单元（期望 composite 非 null）由绿转红。
+    //    这是**夹具缺数据源**，不是判据错也不是期望错 ⇒ 修夹具，判据一字不改。
+    list: async () => ({ items: [] }),
   };
   const mockMetrics = {
     collect: async () => ({ count: 0, collected: [] }),
@@ -612,10 +620,76 @@ const dispatchers = {
     mod.apply(ctx, {});
     const memory = ctx.get('agint.memory');
     const input = scenario.input[0].args;
+    const exp = scenario.expected[0];
     const written = await memory.write(input);
     const read = await memory.read(written.id);
     const match = read && read.content === input.content && read.type === input.type;
-    return { ok: !!match, detail: `id=${written.id} content_match=${!!match}` };
+
+    // ── 原有唯一分支：write→read 回环 ──
+    if (!exp.kind || exp.kind === 'write-read-roundtrip') {
+      return { ok: !!match, detail: `id=${written.id} content_match=${!!match}` };
+    }
+
+    // ── NEW-03（2026-10-09，Frozen 新编单元）──────────────────────────
+    // recall 是记忆「活性」的唯一计量入口：recalls 计数与 lastRecall 时间戳
+    // 是 decay 与 search 排序（effectiveConfidence）的输入。现有唯一单元只测
+    // write→read，而 **read 不得推进计数、recall 必须推进、remove 必须幂等**
+    // 这三件事零覆盖。recall 计数坏了的失败模式是静默的（记忆永远「新鲜」，
+    // decay 永不触发）；remove 不幂等的失败模式是重复删除时行为不定。
+    if (exp.kind === 'recall-counts-and-remove-idempotent') {
+      const a = await memory.write({ type: 'lesson', content: 'recall-target-entry', evidence: 'test:eval:mem:recall' });
+      const b = await memory.write({ type: 'pattern', content: 'control-entry-no-recall', evidence: 'test:eval:mem:control' });
+      const before = await memory.read(a.id);
+      const r1 = await memory.recall(a.id);
+      const r2 = await memory.recall(a.id);
+      const control = await memory.read(b.id);
+      const removed1 = await memory.remove(a.id);
+      const afterRemove = await memory.read(a.id);
+      const removed2 = await memory.remove(a.id);
+      const checks = {
+        readDoesNotBump: before.recalls === 0,
+        recallBumpsPerCall: r1.recalls === 1 && r2.recalls === 2,
+        lastRecallAdvances: r2.lastRecall >= r1.lastRecall && r1.lastRecall >= before.lastRecall,
+        controlUntouched: control.recalls === 0,
+        removeExistingTrue: removed1 === true,
+        readNullAfterRemove: afterRemove === null,
+        removeMissingFalse: removed2 === false,
+      };
+      const bad = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+      return {
+        ok: bad.length === 0,
+        detail: bad.length ? `FAIL:${bad.join(',')}` : `recalls 0→1→2, remove true→read null→false`,
+      };
+    }
+
+    // ── NEW-04（2026-10-09，Frozen 新编单元）──────────────────────────
+    // 同 id 二次写入必须是 **upsert**（更新同一条），不是新增。这是 memory
+    // 表「不膨胀」的根基：dream/沉淀通道按 id 重写候选时（生产事故 7fee880
+    // 修的就是重复写入），若 write 退化成 always-insert ⇒ 每晚翻倍。
+    // 同时钉 upsert 的继承语义：未带的字段（confidence/evidence）从 existing
+    // 继承、createdAt 冻结、updatedAt 推进 —— 丢继承 = 证据链断裂。
+    if (exp.kind === 'same-id-upserts-not-duplicates') {
+      const first = await memory.write({ id: 'stable-upsert-id', type: 'decision', content: 'v1 content', confidence: 0.8, evidence: 'evidence:v1' });
+      const second = await memory.write({ id: 'stable-upsert-id', type: 'decision', content: 'v2 content' });
+      const all = await memory.list();
+      const stats = await memory.stats();
+      const checks = {
+        noDuplicateRows: stats.total === 1 && all.length === 1,
+        sameIdKept: second.id === first.id && all[0]?.id === first.id,
+        createdAtFrozen: second.createdAt === first.createdAt,
+        updatedAtAdvances: second.updatedAt >= first.updatedAt,
+        contentUpdated: second.content === 'v2 content',
+        confidenceInherited: second.confidence === 0.8,
+        evidenceInherited: second.evidence === 'evidence:v1',
+      };
+      const bad = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+      return {
+        ok: bad.length === 0,
+        detail: bad.length ? `FAIL:${bad.join(',')}` : `total=1, createdAt frozen, inherits conf/evidence`,
+      };
+    }
+
+    return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
 
   'agint-rules': async (scenario, ctx) => {
@@ -694,10 +768,15 @@ const dispatchers = {
     const { computeMetrics } = await import(`${AGINT_URL}/plugins/agint-metrics/lib/metrics.js`);
     const input = scenario.input[0].args;
     // JSON 不能直接传函数；支持 _fn + _returns 这种"伪函数"约定。
+    // _throws（NEW-02，2026-10-09）：伪函数直接抛错，模拟不健康的源。
     const sources = {};
     for (const [k, v] of Object.entries(input.sources ?? {})) {
       if (v && typeof v === 'object' && v._fn) {
-        sources[k] = { [v._fn]: () => v._returns };
+        sources[k] = {
+          [v._fn]: v._throws
+            ? () => { throw new Error(String(v._throws)); }
+            : () => v._returns,
+        };
       } else {
         sources[k] = v;
       }
@@ -712,6 +791,32 @@ const dispatchers = {
       const want = exp.expectedKeys;
       const ok = want.every((k) => cronKeys.includes(k));
       return { ok, detail: `cron_keys=${cronKeys.join(',')}` };
+    }
+    // ── NEW-02（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 模块文档头的承诺（metrics.js:3-5）："every computation is defensive so a
+    // missing/unhealthy source skips its metrics instead of failing the run"。
+    // 现有两个单元只验了空 sources 和 cron 正常路径，这条防御性**零覆盖**——
+    // 而 metrics 是 evolve 周报的统一数据源，一个源抛错就把整轮算崩 =
+    // 所有指标一起消失，比单指标错值严重得多。断言三件事：
+    //   ① computeMetrics 整体 resolve 不 reject（能走到这里本身就是 ① 的一半）
+    //   ② 健康源（cron）的指标照常产出 —— 隔离不能误伤
+    //   ③ 不健康源（rules.audit 抛错）的指标全部缺席 —— 隔离不是吞错后乱给 0
+    // 另加输出卫生不变式：每条 record 的 key ∈ METRIC_DEFS 且 value 是有限数
+    //（push() 的 def 白名单 + NaN/null 丢弃是靠约定维持的，这里钉死）。
+    if (exp.kind === 'unhealthy-source-isolated') {
+      const { METRIC_DEFS } = await import(`${AGINT_URL}/plugins/agint-metrics/lib/metrics.js`);
+      const defined = new Set(METRIC_DEFS.map((d) => d.key));
+      const keys = records.map((r) => r.key);
+      const cronOk = (exp.expectedCronKeys ?? []).every((k) => keys.includes(k));
+      const rulesAbsent = !keys.some((k) => k.startsWith('rules.'));
+      const hygiene = records.every((r) => defined.has(r.key) && Number.isFinite(r.value));
+      const badKeys = records.filter((r) => !defined.has(r.key) || !Number.isFinite(r.value)).map((r) => r.key);
+      const ok = cronOk && rulesAbsent && hygiene;
+      return {
+        ok,
+        detail: `cron_ok=${cronOk} rules_absent=${rulesAbsent} hygiene=${hygiene}`
+          + ` keys=[${keys.join(',')}]${badKeys.length ? ` BAD=[${badKeys.join(',')}]` : ''}`,
+      };
     }
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
@@ -740,6 +845,40 @@ const dispatchers = {
       const ids = defaultJobs.map((j) => j.id).sort();
       const ok = JSON.stringify(ids) === JSON.stringify(exp.expectedIds.sort());
       return { ok, detail: `ids=${ids.join(',')}` };
+    }
+    // ── NEW-01（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 断言三件事，全是**现有两个 cron 单元没覆盖**的：
+    //   ① 每个默认 job 的 schedule 都能被解析（不抛错）
+    //   ② nextFire 得到的时刻严格晚于 from（单调性，抓「表达式解析成过去时刻」）
+    //   ③ job id 唯一（抓重复注册 —— 重复 id 会让 stateTable 互相覆盖）
+    // 为什么值得占 Frozen 名额：新增 job 是高频改动，而「表达式写错 / id 撞车」
+    //   在现有门禁下**只有到点跑挂了才暴露**；本单元把它左移到提交时。
+    //   2026-10-09 实测事由：input-gateway-watchdog（9d600d0）新增时，
+    //   id 全等清单没同步 ⇒ 存量单元转红 —— 同一类「新增 job 未受检」问题。
+    if (exp.kind === 'default-jobs-schedules-valid') {
+      const from = new Date(input.from);
+      const bad = [];
+      const seen = new Set();
+      const dupes = [];
+      for (const j of defaultJobs) {
+        if (!j.id) { bad.push('<empty-id>'); continue; }
+        if (seen.has(j.id)) dupes.push(j.id);
+        seen.add(j.id);
+        try {
+          const parsed = parseCron(j.schedule);
+          const next = nextFire(parsed, from);
+          if (!(next instanceof Date) || Number.isNaN(next.getTime()) || next.getTime() <= from.getTime()) {
+            bad.push(`${j.id}(next<=from)`);
+          }
+        } catch (err) {
+          bad.push(`${j.id}(parse:${err.message})`);
+        }
+      }
+      const ok = defaultJobs.length > 0 && bad.length === 0 && dupes.length === 0;
+      return {
+        ok,
+        detail: `jobs=${defaultJobs.length} bad=[${bad.join(',')}] dupes=[${dupes.join(',')}]`,
+      };
     }
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
   },
@@ -783,6 +922,31 @@ const dispatchers = {
       } catch (e) {
         return { ok: false, detail: `stat failed: ${e.message}` };
       }
+    }
+
+    // ── NEW-05（2026-10-09，Frozen 新编单元）────────────────────────────
+    // 本域原有 6 个单元全是 grep 标记检查 —— 「包含标记」≠「脚本能解析」。
+    // 一次坏编辑可以保留全部标记但语法已坏，而 install 是所有护栏里最早跑的
+    // （B2 实跑是唯一能抓到它的既有手段，但那是手动低频操作）。bash -n 是
+    // 本域唯一可执行级断言：不改状态、不依赖环境、确定性红绿。
+    if (exp.kind === 'bash-syntax') {
+      if (process.platform === 'win32') {
+        return { ok: true, detail: 'SKIP on win32 (no bash)' };
+      }
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const oks = [];
+      for (const f of exp.files) {
+        const p = `${AGINT_ROOT}/${f}`;
+        try {
+          await run('bash', ['-n', p]);
+          oks.push(`${f}:ok`);
+        } catch (e) {
+          return { ok: false, detail: `bash -n ${f}: ${String(e.stderr ?? e.message).trim().split('\n')[0]}` };
+        }
+      }
+      return { ok: true, detail: oks.join(' ') };
     }
 
     return { ok: false, detail: `unsupported expected.kind ${exp.kind}` };
@@ -1215,6 +1379,58 @@ const dispatchers = {
       return { ok, detail: `count=${BASELINE_TARGETS.length} ids=[${ids.slice(0, 5).join(',')}...]` };
     }
 
+    // ── NEW-06（2026-10-09，Frozen 新编单元）────────────────────────────
+    // evaluateAll 的**输出结构合同**此前零覆盖：8 个维度键集合、score 取值域
+    //（0..1 或 null）、veto 派生规则（null ⇒ veto；safety < 阈值 ⇒ veto）。
+    // 这是 compositeScore 的一票否决、policy-decide、weekly regression、
+    // deploy budget 共同依赖的底层契约。2026-10-07 的 fail-closed 事件证明
+    // 这层会被静默改坏（当时 4 个下游单元红是症状，契约本体无单元钉住，
+    // 归因花了半天）。断言四件事：
+    //   ① dimensions 键序列 === DIMENSION_KEYS（evaluateAll 必须吃判据常量，
+    //      不许手搓清单 —— 手搓后新增维度必然漂移）
+    //   ② 每维 score 是 null 或有限数且落在 [0,1]（下游直接参与加权/展示）
+    //   ③ veto 派生与规则逐维一致（重算期望对比，不硬编码 mock 数据）
+    //   ④ compositeScore(result) 非 null：本 mock 下只有非 veto 维度
+    //      （effectiveness/convention/adaptability/promptStatic）为 null ——
+    //      这钉死 veto 名单 = safety+trust；往名单里加维度是判据变更，
+    //      必须让本单元变红走人工评审。
+    if (exp.kind === 'dimensions-contract') {
+      const { compositeScore, DIMENSION_KEYS, SAFETY_VETO_THRESHOLD } = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/evaluators.js`);
+      const evalMod = await import(`${AGINT_URL}/plugins/agint-quality/agint-quality-eval/lib/index.js`);
+      const richCtx = makeRichEvalMockCtx(input);
+      evalMod.apply(richCtx, {});
+      await new Promise((r) => setTimeout(r, 50));
+      const evaluator = richCtx.get('agint.qualityEvaluator');
+      if (!evaluator) return { ok: false, detail: 'evaluator service not registered' };
+      const result = await evaluator.evaluate(input.target);
+
+      const keys = result.dimensions.map((d) => d.key);
+      const keysOk = JSON.stringify(keys) === JSON.stringify([...DIMENSION_KEYS]);
+
+      const rangeBad = result.dimensions
+        .filter((d) => {
+          const s = d.score?.score;
+          return s !== null && !(Number.isFinite(s) && s >= 0 && s <= 1);
+        })
+        .map((d) => `${d.key}=${d.score?.score}`);
+
+      const vetoBad = result.dimensions
+        .filter((d) => {
+          const s = d.score?.score ?? null;
+          const expectVeto = s === null || (d.key === 'safety' && s < SAFETY_VETO_THRESHOLD);
+          return d.veto !== expectVeto;
+        })
+        .map((d) => `${d.key}(veto=${d.veto},score=${d.score?.score})`);
+
+      const composite = compositeScore(result);
+      const compositeOk = exp.compositeNotNull ? composite !== null : composite === null;
+
+      const ok = keysOk && rangeBad.length === 0 && vetoBad.length === 0 && compositeOk;
+      const detail = `keys_ok=${keysOk}(${keys.length}) range_bad=[${rangeBad.join(',')}]`
+        + ` veto_bad=[${vetoBad.join(',')}] composite=${composite}`;
+      return { ok, detail };
+    }
+
     // ── Sprint 3.1: sandbox gate Service 测试 ──────────────────────────
     if (exp.kind === 'sandbox-gate-passes'
       || exp.kind === 'sandbox-gate-rejects'
@@ -1294,13 +1510,27 @@ const dispatchers = {
         evaluator.evaluateAll = async (targets) => {
           // runBaselineSuite 只调一次 evaluateAll: 9 个 baseline target,
           // 8 ok + 1 fail → passRate = 8/9 = 0.889
+          // ⛔ 2026-10-09 补：维度必须同时给 safety **和 trust**。
+          //    compositeScore（evaluators.js:449）对 ['safety','trust'] 双双做
+          //    「缺失 / null / 低于阈值 ⇒ 返回 null」的一票否决。只造 safety 时
+          //    trust 缺失 ⇒ **9 个 target 全部 composite=null** ⇒ passRate=0
+          //    ⇒ delta=-0.95 ⇒ severity 判成 blocker，而本场景要的是 warn 档
+          //    （delta ∈ (-0.10, -0.02)）。同样是 10-07 那次 fail-closed 修复
+          //    暴露的夹具缺口：判据变严了，夹具没跟上 ⇒ 假 fail。
           return targets.map((t, i) => ({
             targetId: t.id, kind: t.kind, evaluatedAt: new Date().toISOString(), durationMs: 0,
-            dimensions: [{
-              key: 'safety', label: '安全',
-              score: { score: i === 0 ? 0 : 1 },
-              veto: i === 0, findings: [], raw: null, evidence: [], children: [],
-            }],
+            dimensions: [
+              {
+                key: 'safety', label: '安全',
+                score: { score: i === 0 ? 0 : 1 },
+                veto: i === 0, findings: [], raw: null, evidence: [], children: [],
+              },
+              {
+                key: 'trust', label: '可信',
+                score: { score: i === 0 ? 0 : 1 },
+                veto: i === 0, findings: [], raw: null, evidence: [], children: [],
+              },
+            ],
             harm: { homogeneity: 0.5, alignment: 0.5, reduction: 0.5, mutability: 0.5 },
             findings: i === 0 ? [{ severity: 'blocker', message: 'mocked fail', evidence: [] }] : [],
             evaluatorId: 'mock',

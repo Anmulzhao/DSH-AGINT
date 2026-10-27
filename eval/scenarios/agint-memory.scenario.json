@@ -1,23 +1,70 @@
-{
-  "scenario": "memory-write-read",
-  "plugin": "agint-memory",
-  "input": [
-    {
-      "service": "memory",
-      "action": "write",
-      "args": {
-        "type": "lesson",
-        "content": "Sprint 1.3 eval scenario smoke test entry",
-        "evidence": "test:eval:agint-memory:1"
+[
+  {
+    "scenario": "memory-write-read",
+    "plugin": "agint-memory",
+    "input": [
+      {
+        "service": "memory",
+        "action": "write",
+        "args": {
+          "type": "lesson",
+          "content": "Sprint 1.3 eval scenario smoke test entry",
+          "evidence": "test:eval:agint-memory:1"
+        }
       }
-    }
-  ],
-  "expected": [
-    {
-      "kind": "write-read-roundtrip",
-      "idIsNonEmpty": true,
-      "contentMatchesInput": true,
-      "typeMatchesInput": true
-    }
-  ]
-}
+    ],
+    "expected": [
+      {
+        "kind": "write-read-roundtrip",
+        "idIsNonEmpty": true,
+        "contentMatchesInput": true,
+        "typeMatchesInput": true
+      }
+    ]
+  },
+  {
+    "scenario": "memory-recall-counts-and-remove-idempotent",
+    "plugin": "agint-memory",
+    "input": [
+      {
+        "service": "memory",
+        "action": "write",
+        "args": {
+          "type": "lesson",
+          "content": "seed",
+          "evidence": "test:eval:mem:seed"
+        },
+        "_note": "NEW-03（Frozen 首期新编，2026-10-09）：recall 是记忆活性的唯一计量入口，recalls/lastRecall 是 decay 与 search 排序的输入。read 不得推进计数、recall 必须推进、remove 必须幂等 —— 三件事此前零覆盖。计数坏了是静默失败（记忆永远新鲜，decay 永不触发）。"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "recall-counts-and-remove-idempotent",
+        "_note": "判据：read 后 recalls=0；recall 两次 → 1→2；lastRecall 单调不减；对照组 recalls=0；remove 存在→true→read null→再 remove→false。任一不满足即红。"
+      }
+    ]
+  },
+  {
+    "scenario": "memory-same-id-upserts-not-duplicates",
+    "plugin": "agint-memory",
+    "input": [
+      {
+        "service": "memory",
+        "action": "write",
+        "args": {
+          "id": "stable-upsert-id",
+          "type": "decision",
+          "content": "seed",
+          "evidence": "test:eval:mem:upsert"
+        },
+        "_note": "NEW-04（Frozen 首期新编，2026-10-09）：同 id 二次写必须是 upsert 而非新增 —— memory 表不膨胀的根基。dream/沉淀通道按 id 重写候选（生产事故 7fee880 修的就是重复写入），write 退化成 always-insert ⇒ 每晚翻倍。同时钉继承语义：未带字段从 existing 继承、createdAt 冻结、updatedAt 推进。"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "same-id-upserts-not-duplicates",
+        "_note": "判据：stats.total=1 且 list.length=1；id 不变；createdAt 冻结；updatedAt 不减；content 更新；confidence/evidence 继承。任一不满足即红。"
+      }
+    ]
+  }
+]

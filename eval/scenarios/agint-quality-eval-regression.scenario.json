@@ -7,10 +7,26 @@
         "service": "regression",
         "action": "checkRegression",
         "cases": [
-          { "baselineRate": 1.0, "currentRate": 1.0, "expectedSeverity": "ok" },
-          { "baselineRate": 1.0, "currentRate": 0.95, "expectedSeverity": "warn" },
-          { "baselineRate": 1.0, "currentRate": 0.80, "expectedSeverity": "high" },
-          { "baselineRate": 1.0, "currentRate": 0.60, "expectedSeverity": "blocker" }
+          {
+            "baselineRate": 1.0,
+            "currentRate": 1.0,
+            "expectedSeverity": "ok"
+          },
+          {
+            "baselineRate": 1.0,
+            "currentRate": 0.95,
+            "expectedSeverity": "warn"
+          },
+          {
+            "baselineRate": 1.0,
+            "currentRate": 0.8,
+            "expectedSeverity": "high"
+          },
+          {
+            "baselineRate": 1.0,
+            "currentRate": 0.6,
+            "expectedSeverity": "blocker"
+          }
         ],
         "_note": "回归 4 个 severity 等级: ok / warn / high / blocker (阈值 2%/10%/25%)"
       }
@@ -18,7 +34,12 @@
     "expected": [
       {
         "kind": "regression-cases-match",
-        "expectedSeverities": ["ok", "warn", "high", "blocker"]
+        "expectedSeverities": [
+          "ok",
+          "warn",
+          "high",
+          "blocker"
+        ]
       }
     ]
   },
@@ -30,7 +51,13 @@
         "service": "regression",
         "action": "checkStagnation",
         "args": {
-          "scores": [70, 71, 72.5, 74, 76],
+          "scores": [
+            70,
+            71,
+            72.5,
+            74,
+            76
+          ],
           "k": 5,
           "threshold": 0.5
         },
@@ -53,7 +80,13 @@
         "service": "regression",
         "action": "checkStagnation",
         "args": {
-          "scores": [80, 80.2, 80.3, 80.3, 80.4],
+          "scores": [
+            80,
+            80.2,
+            80.3,
+            80.3,
+            80.4
+          ],
           "k": 5,
           "threshold": 0.5
         },
@@ -76,7 +109,9 @@
         "service": "regression",
         "action": "checkStagnation",
         "args": {
-          "scores": [75],
+          "scores": [
+            75
+          ],
           "k": 5
         },
         "_note": "只有 1 个 score, 不够计算 delta"
@@ -98,10 +133,22 @@
         "service": "regression",
         "action": "computePassRate",
         "results": [
-          { "id": "p1", "ok": true },
-          { "id": "p2", "ok": true },
-          { "id": "p3", "ok": false },
-          { "id": "p4", "ok": true }
+          {
+            "id": "p1",
+            "ok": true
+          },
+          {
+            "id": "p2",
+            "ok": true
+          },
+          {
+            "id": "p3",
+            "ok": false
+          },
+          {
+            "id": "p4",
+            "ok": true
+          }
         ]
       }
     ],
@@ -128,8 +175,47 @@
       {
         "kind": "baseline-targets-shape",
         "expectedCount": 9,
-        "expectedKinds": ["plugin"],
-        "mustIncludeIds": ["agint-memory", "agint-rules", "agint-quality-contract"]
+        "expectedKinds": [
+          "plugin"
+        ],
+        "mustIncludeIds": [
+          "agint-memory",
+          "agint-rules",
+          "agint-quality-contract"
+        ]
+      }
+    ]
+  },
+  {
+    "scenario": "eval-dimensions-contract",
+    "plugin": "agint-quality-eval",
+    "input": [
+      {
+        "service": "evaluator",
+        "action": "evaluate",
+        "target": {
+          "id": "agint-memory",
+          "kind": "plugin",
+          "path": "$AGINT_ROOT/plugins/agint-memory"
+        },
+        "sandboxMock": {
+          "ok": true,
+          "mode": "in-process",
+          "checks": [
+            {
+              "name": "plugin-exists",
+              "ok": true
+            }
+          ]
+        },
+        "_note": "NEW-06（Frozen 首期新编，2026-10-09）：evaluateAll 输出结构合同零覆盖——8 维键集合 / score 取值域 / veto 派生 / veto 名单=safety+trust。10-07 fail-closed 事件证明这层会被静默改坏（4 个下游单元红是症状，契约本体无单元钉住）。复用 sandbox-gate-passes 的 mock 环境。"
+      }
+    ],
+    "expected": [
+      {
+        "kind": "dimensions-contract",
+        "compositeNotNull": true,
+        "_note": "判据：①键序列===DIMENSION_KEYS ②score∈null∪[0,1] ③veto===派生规则（重算对比） ④composite 非 null（只有非 veto 维为 null 不得否决）。任一不满足即红。"
       }
     ]
   }

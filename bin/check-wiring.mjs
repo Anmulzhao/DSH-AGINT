@@ -11,6 +11,9 @@
  *   B. 孤儿主题  —— 有订阅方、无发布方（或反之），且生产数据为 0
  *   C. 生产对账  —— 读真实事件存储，按 topic 计数，揭穿「代码有了但从未通电」
  *
+ * 另有一查专门堵**上面三查共同的结构性盲区**：
+ *   E'. 总线零感知 —— 已挂载、提供跨插件服务，却对事件总线毫无察觉的插件
+ *
  * ⚠️ 判定边界（别过度归因）：
  *   - 生产调用点剔除 /test/ 与 eval/scenarios/ —— 测试自己调自己不算接线
  *   - 「有人喊」≠「有人应」：本脚本只证明调用点存在，不证明调用真跑到了（K64 教训）
@@ -25,9 +28,9 @@
  *
  * 退出码：0 = 无缺口 / 1 = 有缺口 / 2 = 脚本自身出错
  */
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative, sep } from 'node:path';
+import { join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -352,6 +355,95 @@ for (const [dom, info] of [...domains].sort()) {
 const deadReal = neverEnergized.filter((d) => !d.exemption);
 const deadExempt = neverEnergized.filter((d) => d.exemption);
 
+// ──────── 查 E'：总线零感知（已挂载 + 提供跨插件服务，却从不碰事件总线）────────
+// ⭐ 这一查专门堵**上面所有查法共同的结构性盲区**。
+//
+// 查 B/C 以 **topic 字符串**为索引：从订阅注册与 publish 调用点两侧收集 topic，
+// 再与生产存储对账。于是「一个该发事件、却连主题名都没声明过的插件」
+// **一行输出都不会有** —— 无论它该不该存在。
+// 2026-10-09 人工盘点据此漏掉了 5 个插件（rules / restart / quality-contract /
+// abtest / wiki），而门禁当时报的是 PASS。出处：
+// proposals/agint-eventbus-unwired-plugins-20261009.md
+//
+// 判据（三条同时成立才算缺口）：
+//   ① cordis.patch.yml 已挂载
+//   ② ctx.provide('agint.*') —— 它提供跨插件服务，别人**可以**消费它
+//   ③ lib/ 生产路径里 eventBus 引用数 = 0 —— 它对总线**毫无察觉**
+// ⇒ UNWIRED（硬缺口）。不 provide 任何 agint.* 服务的纯工具插件不适用本查。
+//
+// ⚠️ 为什么按**入口路径**解析插件目录、而不是按 `- id:` 的名字：
+//   id 与目录名不是一回事。实测 agint-quality-contract 的 id 是它，
+//   真实源码却在 plugins/agint-quality/agint-quality-contract/（v0.6.3 剥离后的残留壳
+//   plugins/agint-quality-contract/ 只剩 node_modules）。按 id 拼目录会指向空壳，
+//   把「没接线」误判成「插件不存在」—— 本查第一版就踩了，已钉死在测试里。
+const PATCH_YML = join(REPO_ROOT, 'cordis.patch.yml');
+const exempPlugin = new Map((exemp.plugins || []).map((p) => [p.plugin, p]));
+const mountedPlugins = [];
+let patchError = null;
+try {
+  const yml = readFileSync(PATCH_YML, 'utf8');
+  // 一条插件声明 = `- id: <id>` 紧跟 `name: <入口路径>`。容忍注释行与引号差异。
+  for (const m of yml.matchAll(/-\s*id:\s*['"]?([\w.-]+)['"]?[ \t]*\r?\n[ \t]*name:\s*['"]?([^\s'"]+)['"]?/g)) {
+    mountedPlugins.push({ id: m[1], entry: m[2] });
+  }
+} catch (e) {
+  patchError = e?.message || String(e);
+}
+
+/** 该插件提供的 agint.* 服务名集合（按目录前缀匹配，兼容嵌套目录） */
+function servicesOf(dirRel) {
+  const out = new Set();
+  for (const [name, sites] of provided) {
+    if (sites.some((s) => s.file === dirRel || s.file.startsWith(dirRel + sep))) out.add(name);
+  }
+  return out;
+}
+
+const busBlind = []; // UNWIRED：挂了、服务也提供，却对总线毫无察觉
+const busAware = []; // 已有 eventBus 引用的挂载插件
+const noService = []; // 不 provide agint.* 服务的纯工具插件 —— 本查不适用
+const mountMissing = []; // 挂载声明的入口在仓库里找不到
+
+for (const { id, entry } of mountedPlugins) {
+  // 入口 ./plugins/<...>/lib/index.js ⇒ 插件目录 = 上溯两级（lib → 插件根）
+  const abs = join(REPO_ROOT, entry.replace(/^\.\//, ''));
+  const dirAbs = dirname(dirname(abs));
+  const dirRel = relative(REPO_ROOT, dirAbs);
+
+  if (!existsSync(dirAbs)) {
+    mountMissing.push({ plugin: id, entry });
+    continue;
+  }
+  const services = servicesOf(dirRel);
+  if (services.size === 0) {
+    noService.push({ plugin: id });
+    continue;
+  }
+
+  // eventBus 引用数：只扫 lib/ 下的**生产路径**，与查 A/D/F 同一口径
+  let refs = 0;
+  for (const f of walk(join(dirAbs, 'lib'))) {
+    const relF = relative(REPO_ROOT, f);
+    if (!isProdPath(relF)) continue;
+    let src;
+    try {
+      src = readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const hits = stripComments(src).match(/eventBus/g);
+    if (hits) refs += hits.length;
+  }
+
+  const ex = exempPlugin.get(id) || null;
+  const row = { plugin: id, dir: dirRel, services: [...services].sort(), busRefs: refs, exemption: ex };
+  if (refs > 0) busAware.push(row);
+  else if (ex) busBlind.push({ ...row, verdict: 'EXEMPTED' });
+  else busBlind.push({ ...row, verdict: 'UNWIRED' });
+}
+const unwiredReal = busBlind.filter((p) => p.verdict === 'UNWIRED');
+const unwiredExempt = busBlind.filter((p) => p.verdict === 'EXEMPTED');
+
 // ───────── 查 F：命名空间错配（取了「没注册过的名字」= 恒 undefined） ─────────
 // ⭐⭐⭐ 本仓最隐蔽的一类断链，机制见 plugins/agint-curriculum/lib/index.js:121-124：
 //   cordis 的 service store 是**扁平的**（按确切键名查），
@@ -424,9 +516,11 @@ const tsDrift = [];
 
 // ───────────── 查 E：多副本一致性（各部署位逐字节一致） ─────────────
 // 背景：插件在本机有多份物理拷贝 —— bundle 位 + 每个 profile 的镜像位。
-// preset 的 tools 行指向镜像位，服务插件走 bundle 位 → 走偏（只同步一处）时
+// preset 的 tools 行**若**指向镜像位，而服务插件走 bundle 位 → 走偏（只同步一处）时
 // preset 加载的 tools.js 与 bundle 里的服务插件是两个模块实例，模块级状态
 // 不共享，且不会报错。
+// 2026-10-26 起 preset 工具行已锚 .agint-bundle/plugins（与服务插件同源），
+// 这类风险面归零；计数仍分开报，好让「老写法又回来了」一眼可见。
 //
 // ⚠️ 2026-10-19 修：此前这里写死 `profiles/web`。web profile 已于 2026-10-18
 // 退役删除 ⇒ existsSync 守卫直接短路 ⇒ 查 E/H 恒空 ⇒ 门禁报「一致」假绿，
@@ -455,12 +549,85 @@ function sha(s) {
   return createHash('sha1').update(s).digest('hex').slice(0, 12);
 }
 
+// ───────────── 插件发现：兼容分组目录（嵌套）、根入口插件、lib 内 .mjs ─────────────
+// 2026-10-26 实测的三类盲区（此前查 E / 查 H 只扫 `root/<名>/lib/*.js` 一层）：
+//   1) 分组目录：plugins/agint-quality/ 本身不是插件，下面才挂着 contract / eval /
+//      policy / report / sandbox 五个真插件 —— 只扫一层会把它们整批漏掉。
+//      实测：改了 agint-quality/agint-quality-contract/lib/index.js，查 H 全程
+//      未报漂移（仓库与部署位 md5 明确不同）。
+//   2) 根入口插件：plugins/agint-session-extract/index.js（没有 lib/）。
+//   3) lib 内 .mjs：plugins/agint-session-source/lib/index.mjs。
+// 判定「是插件根」= 该目录自证：有 lib/ 或 manifest.json 或 index.(m)js。
+// 不满足则视为分组目录继续下潜 —— 深度不设限，也不必维护白名单。
+const REPO_PLUGINS = join(REPO_ROOT, 'plugins');
+
+function discoverPluginDirs(root) {
+  const out = [];
+  const visit = (dir, rel) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const names = new Set(entries.map((e) => e.name));
+    const isPlugin =
+      names.has('lib') || names.has('manifest.json') || names.has('index.js') || names.has('index.mjs');
+    if (isPlugin && rel) {
+      out.push(rel); // 插件根：不再下潜（插件内部不嵌套插件）
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      visit(join(dir, e.name), rel ? `${rel}/${e.name}` : e.name);
+    }
+  };
+  if (existsSync(root)) visit(root, '');
+  return out.sort();
+}
+
+const PLUGIN_DIRS = discoverPluginDirs(REPO_PLUGINS);
+/** 插件名 → 相对插件根（`agint-quality-contract` → `agint-quality/agint-quality-contract`）。
+ *  查 I 要按相对路径拼 smoke 入口，只拿名字会拼到错误位置。 */
+const PLUGIN_DIR_BY_NAME = new Map(PLUGIN_DIRS.map((d) => [d.slice(d.lastIndexOf('/') + 1), d]));
+
+/** 列出某根下所有「需比对」的插件源文件，返回相对该根的 POSIX 路径。 */
+function listPluginFiles(root) {
+  const out = [];
+  for (const rel of discoverPluginDirs(root)) {
+    const dir = join(root, rel);
+    for (const name of ['index.js', 'index.mjs']) {
+      if (existsSync(join(dir, name))) out.push(`${rel}/${name}`);
+    }
+    const libDir = join(dir, 'lib');
+    if (!existsSync(libDir)) continue;
+    const walkLib = (cur, sub) => {
+      let entries;
+      try {
+        entries = readdirSync(cur, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+        const p = sub ? `${sub}/${e.name}` : e.name;
+        if (e.isDirectory()) walkLib(join(cur, e.name), p);
+        else if (/\.m?js$/.test(e.name)) out.push(`${rel}/lib/${p}`);
+      }
+    };
+    walkLib(libDir, '');
+  }
+  return out;
+}
+
 const dup = {
   checked: 0,
   identical: 0,
   divergent: [],
   mirrorMissing: [],
-  presetRefs: 0,
+  presetMirrorRefs: 0,
+  presetAnchorRefs: 0,
   roots: DEPLOY_ROOTS.map((r) => r.label),
 };
 if (STATIC_ONLY) {
@@ -473,15 +640,16 @@ if (STATIC_ONLY) {
 } else {
   const ref = DEPLOY_ROOTS[0];
   for (const other of DEPLOY_ROOTS.slice(1)) {
-    for (const dir of readdirSync(ref.path, { withFileTypes: true })) {
-      if (!dir.isDirectory()) continue;
-      for (const sub of ['lib/tools.js', 'lib/index.js']) {
-        const bPath = join(ref.path, dir.name, sub);
-        const mPath = join(other.path, dir.name, sub);
+    // 用插件发现而非 readdirSync 一层：bundle 位里 agint-quality/ 是分组目录，
+    // 其下五个子插件的 tools.js / index.js 以前整个不在比对范围内。
+    for (const relDir of discoverPluginDirs(ref.path)) {
+      for (const sub of ['lib/tools.js', 'lib/index.js', 'index.js', 'index.mjs']) {
+        const bPath = join(ref.path, relDir, sub);
+        const mPath = join(other.path, relDir, sub);
         if (!existsSync(bPath)) continue;
         dup.checked++;
         if (!existsSync(mPath)) {
-          dup.mirrorMissing.push(`${other.label}:${dir.name}/${sub}`);
+          dup.mirrorMissing.push(`${other.label}:${relDir}/${sub}`);
           continue;
         }
         let a;
@@ -493,18 +661,26 @@ if (STATIC_ONLY) {
           continue;
         }
         if (sha(a) === sha(b)) dup.identical++;
-        else dup.divergent.push(`${other.label}:${dir.name}/${sub}`);
+        else dup.divergent.push(`${other.label}:${relDir}/${sub}`);
       }
     }
   }
-  // preset 实际引用了多少条镜像位路径（= 双实例风险面的大小）
+  // preset 的工具行落在哪一位 = 双实例风险面的大小
+  //
+  // 2026-10-26 起 preset 的工具行锚在 `.agint-bundle/plugins/`（bundle 主挂载源），
+  // 与服务插件指向同一份物理文件 ⇒ 只有一个模块实例，不构成风险。只有仍指向
+  // `profiles/<名>/plugins/` 的老写法才是风险面。
+  // 两类分开计：此前一条正则把两者都算进「引用镜像位」，改锚后会把「已修好」
+  // 误报成「42 条风险」——数字越大越像有问题，实际含义正好相反。
   const presetsDir = join(STORAGE_DIR, '..', '.agent-presets');
   if (existsSync(presetsDir)) {
     for (const p of readdirSync(presetsDir, { withFileTypes: true })) {
       if (!p.isDirectory()) continue;
       const yml = join(presetsDir, p.name, 'agent.cordis.yml');
       if (!existsSync(yml)) continue;
-      dup.presetRefs += (readFileSync(yml, 'utf8').match(/plugins\/[a-z0-9-]+\/lib\/tools\.js/g) || []).length;
+      const text = readFileSync(yml, 'utf8');
+      dup.presetMirrorRefs += (text.match(/\.\.\/\.\.\/profiles\/[A-Za-z0-9._-]+\/plugins\/\S*tools\.js/g) || []).length;
+      dup.presetAnchorRefs += (text.match(/\.\.\/\.\.\/\.agint-bundle\/plugins\/\S*tools\.js/g) || []).length;
     }
   }
 }
@@ -517,31 +693,16 @@ const dupOk = dup.divergent.length === 0 && dup.mirrorMissing.length === 0;
 //
 // 这类漂移在开发中是**常态**（改完还没部署），所以默认只报清单、不进退出码；
 // --strict 下才视为缺口。目的是让"上线前还有什么没同步"一眼可见。
-const REPO_PLUGINS = join(fileURLToPath(new URL('..', import.meta.url)), 'plugins');
+// 扫描口径见上方 discoverPluginDirs / listPluginFiles —— 分组目录、根入口插件、
+// lib 内 .mjs 都算在内（2026-10-26 修的三类盲区）。
 
-function listLibFiles(root) {
-  const out = [];
-  if (!existsSync(root)) return out;
-  for (const d of readdirSync(root, { withFileTypes: true })) {
-    if (!d.isDirectory() || d.name.startsWith('.')) continue;
-    const libDir = join(root, d.name, 'lib');
-    if (!existsSync(libDir)) continue;
-    const walk = (cur, rel) => {
-      for (const e of readdirSync(cur, { withFileTypes: true })) {
-        const p = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) walk(join(cur, e.name), p);
-        else if (e.name.endsWith('.js')) out.push(`${d.name}/lib/${p}`);
-      }
-    };
-    walk(libDir, '');
-  }
-  return out;
-}
-
+// 注：`repoNewer` 这个名字是历史包袱 —— 它只是「两边 sha 不同」，**不含方向**。
+// 哈希比对判不出谁新，部署位被手工改过也会落进这里（2026-10-26 变异实测确认过：
+// 改部署位 → 被报成「仓库已改」）。所以输出措辞不能说「仓库已改」。
+// 原 hostNewer 字段从未被赋值，已删除（死字段会让人以为方向是判过的）。
 const drift = {
   checked: 0,
   repoNewer: [],
-  hostNewer: [],
   repoOnly: [],
   hostOnly: [],
   roots: DEPLOY_ROOTS.map((r) => r.label),
@@ -553,10 +714,18 @@ if (STATIC_ONLY) {
   drift.noLayout = true;
   drift.skipReason = '部署位或仓库路径探测不到 —— 查 H 没查过，不是「已同步」';
 } else {
-  const repoFiles = new Set(listLibFiles(REPO_PLUGINS));
+  const repoFiles = new Set(listPluginFiles(REPO_PLUGINS));
+  // 扫描范围自证：单层扫描的时代这三项都是空的，把它们导出后自测能钉死回归。
+  drift.coverage = {
+    plugins: PLUGIN_DIRS.length,
+    filesPerRoot: repoFiles.size,
+    nested: PLUGIN_DIRS.filter((d) => d.includes('/')),
+    rootEntry: [...repoFiles].filter((f) => !f.includes('/lib/')),
+    mjs: [...repoFiles].filter((f) => f.endsWith('.mjs')),
+  };
   // 每个部署位都比一遍：漏同步的那一份正是查 H 要抓的
   for (const root of DEPLOY_ROOTS) {
-    const hostFiles = new Set(listLibFiles(root.path));
+    const hostFiles = new Set(listPluginFiles(root.path));
     for (const rel of repoFiles) {
       drift.checked++;
       const rp = join(REPO_PLUGINS, rel);
@@ -593,21 +762,31 @@ const driftPlugins = new Set();
 for (const d of [...dup.divergent, ...drift.repoNewer, ...drift.hostOnly, ...drift.repoOnly]) {
   // 条目形如 `bundle:profiles/desktop:agint-x/lib/y.js` —— 标签本身含冒号，
   // 所以插件名不能靠「冒号前的那段」取，要认 `/<plugin>/lib/` 这个结构。
-  const m = /(?:^|:)([a-z0-9-]+)\/lib\//.exec(d);
+  //
+  // 2026-10-26：分组目录（`agint-quality/agint-quality-contract/lib/index.js`）与
+  // 根入口插件（`agint-session-extract/index.js`）以前取不到名字 —— 它们的漂移
+  // 被查 H 看见了，却不会进查 I 跑 smoke，又退化成「看见了但没验证」。
+  // 分隔符要认 `/` 与 `:` 两种，且 lib 形态取不到时退到根入口形态。
+  const m = /(?:^|[:/])([a-z0-9][a-z0-9-]*)\/lib\//.exec(d) || /(?:^|[:/])([a-z0-9][a-z0-9-]*)\/index\.m?js$/.exec(d);
   if (m) driftPlugins.add(m[1]);
 }
 const smokeI = { checked: 0, pass: [], fail: [], skipped: driftPlugins.size === 0 };
 for (const plugin of [...driftPlugins].sort()) {
+  // 插件名 → 仓库内相对目录。嵌套插件（agint-quality/agint-quality-contract）
+  // 若按名字拼路径会指到 plugins/agint-quality-contract（空壳残留目录）去。
+  const dirRel = PLUGIN_DIR_BY_NAME.get(plugin) || plugin;
   let entry = 'test/smoke.mjs';
   try {
-    const man = JSON.parse(readFileSync(join(REPO_PLUGINS, plugin, 'manifest.json'), 'utf8'));
+    const man = JSON.parse(readFileSync(join(REPO_PLUGINS, dirRel, 'manifest.json'), 'utf8'));
     entry = man?.spec?.tests?.entry || man?.tests?.entry || 'test/smoke.mjs';
   } catch {
     /* 无 manifest：用默认入口 */
   }
-  const entryPath = join(REPO_PLUGINS, plugin, entry);
+  const entryPath = join(REPO_PLUGINS, dirRel, entry);
   if (!existsSync(entryPath)) {
-    smokeI.fail.push(`${plugin}（入口 ${entry} 不存在）`);
+    // 「没有 smoke 入口」与「smoke 跑挂了」是两件事，消息必须分清 ——
+    // 前者是「无法验证」，后者是「验证不通过」。两者都阻断，但别让日志撒谎。
+    smokeI.fail.push(`${plugin}（无 smoke 入口 ${entry}，漂移无法验证）`);
     continue;
   }
   smokeI.checked++;
@@ -628,15 +807,24 @@ const fails = [
   ...topicRows
     .filter((r) => r.verdict === 'ORPHAN_TOPIC' || r.verdict === 'NO_SUBSCRIBER')
     .map((r) => ({ kind: r.verdict, name: r.topic })),
+  // 查 E'：应接入未接入的插件。判据见上方注释 —— 「已挂载 + 提供跨插件服务 + 总线零感知」。
+  ...unwiredReal.map((p) => ({ kind: 'UNWIRED', name: p.plugin })),
+  // 挂载清单读不到 ⇒ 本查处于「无法判定」状态。
+  // 静默放行会让这一查在最需要它的时候（清单坏掉）悄悄消失，故按缺口处理。
+  ...(patchError ? [{ kind: 'MOUNT_LIST_UNREADABLE', name: 'cordis.patch.yml' }] : []),
 ];
 const soft = topicRows.filter((r) => r.verdict === 'NOT_YET_FIRED');
 const exitCode =
   fails.length > 0 || (STRICT && soft.length > 0) || !dupOk || tsDrift.length > 0 || !smokeIOk ? 1 : 0;
 
 if (AS_JSON) {
-  console.log(
-    JSON.stringify(
-      {
+  // 2026-10-09 修：JSON 必须走**同步写**（fs.writeSync(fd 1)），不能用 console.log。
+  // 原因：console.log 写管道（execFileSync / node:test 捕获场景）是异步的，而下面
+  // 立即 process.exit —— 缓冲区没排空的数据被直接丢弃，下游 JSON.parse 报
+  // 「Unexpected end of input」。重定向到文件时写是同步的，所以这个 bug 只在
+  // 管道场景复现。查 E' 上线后报告变大超过管道缓冲，把雷引爆（check-wiring.test 首当其冲）。
+  writeSync(1, JSON.stringify(
+    {
         checkedAt: new Date().toISOString(),
         busStorage: BUS_STORAGE,
         prodTotal,
@@ -679,6 +867,8 @@ if (AS_JSON) {
           noLayout: !!drift.noLayout,
           roots: drift.roots,
           checked: drift.checked,
+          // 扫描范围自证（2026-10-26）：单层扫描时代 coverage 三项全空 —— 自测靠它钉回归
+          coverage: drift.coverage ?? null,
           repoNewer: drift.repoNewer,
           repoOnly: drift.repoOnly,
           hostOnly: drift.hostOnly,
@@ -700,12 +890,32 @@ if (AS_JSON) {
             exemption: d.exemption,
           })),
         },
+        busBlind: {
+          patchError,
+          mounted: mountedPlugins.length,
+          unwired: unwiredReal.map((p) => ({
+            plugin: p.plugin,
+            dir: p.dir,
+            services: p.services,
+            busRefs: p.busRefs,
+          })),
+          // 三个桶都必须带 dir：自测「按入口路径解析目录」的断言会在三桶里找插件，
+          // 少一个字段就意味着插件换个桶（未接线→已接线/豁免）该断言就假红。
+          exempted: unwiredExempt.map((p) => ({
+            plugin: p.plugin,
+            dir: p.dir,
+            services: p.services,
+            busRefs: p.busRefs,
+            reason: p.exemption?.reason ?? null,
+          })),
+          aware: busAware.map((p) => ({ plugin: p.plugin, dir: p.dir, services: p.services, busRefs: p.busRefs })),
+          noService: noService.map((p) => p.plugin),
+          mountMissing: mountMissing.map((p) => ({ plugin: p.plugin, entry: p.entry })),
+        },
         exitCode,
       },
-      null,
       2,
-    ),
-  );
+    ) + '\n');
   process.exit(exitCode);
 }
 
@@ -765,6 +975,27 @@ for (const d of deadExempt) {
   console.log(`  ${C.dim}EXEMPT ${d.domain} (${d.plugin}) — ${d.exemption.reason}${C.r}`);
 }
 
+console.log(`\n${C.b}── 查 E'：总线零感知（已挂载 + 提供跨插件服务，却从不碰事件总线）──${C.r}`);
+if (patchError) {
+  console.log(`  ${C.red}读不到挂载清单 cordis.patch.yml：${patchError} —— 本查无法判定，按缺口处理${C.r}`);
+} else {
+  console.log(
+    `  ${C.dim}已挂载 ${mountedPlugins.length} / 总线有感 ${busAware.length} / 零感知 ${busBlind.length}（其中豁免 ${unwiredExempt.length}）/ 无跨插件服务 ${noService.length}${C.r}`,
+  );
+  for (const p of unwiredReal) {
+    console.log(
+      `  ${C.red}UNWIRED${C.r} ${p.plugin.padEnd(26)}${C.dim}提供 ${p.services.length} 个服务但 eventBus 引用 0（${p.dir}）${C.r}`,
+    );
+    console.log(`         ${C.dim}服务：${p.services.join(', ')}${C.r}`);
+  }
+  for (const p of unwiredExempt) {
+    console.log(`  ${C.dim}EXEMPT ${p.plugin} — ${p.exemption.reason}${C.r}`);
+  }
+  if (unwiredReal.length === 0) {
+    console.log(`  ${C.grn}无缺口${C.r}：每个提供跨插件服务的挂载插件都在总线上有感知。`);
+  }
+}
+
 console.log(`\n${C.b}── 查 F：命名空间错配（取了没注册的名字 ⇒ 恒 undefined，不报错只软降级）──${C.r}`);
 if (missingServices.length === 0) {
   console.log(`  ${C.dim}无${C.r}`);
@@ -798,7 +1029,7 @@ if (dup.skipped) {
   console.log(`  ${C.yel}⊘ 没查：部署位里没有可比对的 lib 文件${C.r}`);
 } else {
   console.log(
-    `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${C.dim}preset 引用镜像位 ${dup.presetRefs} 条${C.r}`,
+    `  ${dupOk ? C.dim : C.red}${dup.identical}/${dup.checked} 一致${C.r}  ${dup.presetMirrorRefs === 0 ? C.dim : C.red}preset 引镜像位 ${dup.presetMirrorRefs} 条${C.r}${C.dim} / 锚 bundle 位 ${dup.presetAnchorRefs} 条（无第二实例）${C.r}`,
   );
   for (const d of dup.divergent) console.log(`  ${C.red}DIVERGED${C.r} ${d}`);
   for (const d of dup.mirrorMissing) console.log(`  ${C.yel}MIRROR-MISSING${C.r} ${d}`);
@@ -826,7 +1057,11 @@ if (drift.skipped) {
     for (const f of head) console.log(`    ${C.dim}${f}${C.r}`);
     if (!VERBOSE && arr.length > head.length) console.log(`    ${C.dim}… 另 ${arr.length - head.length} 条（--verbose 展开）${C.r}`);
   };
-  show('待上线（仓库已改，部署位还是旧的 —— 需跑 install 才生效）', drift.repoNewer, C.yel);
+  show(
+    '不一致（仓库 ≠ 部署位；哈希比对判不出方向，最常见是仓库改了没跑 install）',
+    drift.repoNewer,
+    C.yel,
+  );
   show('部署位独有（宿主被本地改过，仓库不知情 —— 下次 install 会被覆盖）', drift.hostOnly, C.red);
   show('仓库独有（新文件尚未部署）', drift.repoOnly, C.dim);
 }
@@ -850,7 +1085,7 @@ if (driftPlugins.size === 0) {
 }
 
 const modeSuffix = STATIC_ONLY ? '  [静态模式：查 E/H 已跳过]' : '';
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电 / ${unwiredReal.length} 插件总线零感知${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
 // 2026-10-19 修：末行的 PASS/FAIL 必须与退出码一致。此前 smoke 未过 / 双副本走偏 /
 // TS 漂移会让退出码 = 1，而末行照样打 PASS —— 读末行的人会以为门禁放行了。
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);

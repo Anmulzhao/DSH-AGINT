@@ -157,8 +157,22 @@ const EXTERNAL_FAMILY_MEMBERS = new Set([
   'dsh-kill-switch',
 ]);
 
+/**
+ * 外部 bundle 可能贡献的 preset 行。
+ *
+ * 2026-10-26：三个子 preset（blockchain / investor / ops）迁出到独立私有仓
+ * agint-presets，本仓不再产出它们。这里仍然列出 id，是因为面板要按「实际
+ * 挂载的行」分组 —— 装了那个仓时它们归属 AGENT预设 组，没装时这几条在
+ * roster 里根本不存在，也就不会显示（FAMILY_GROUPS 是 label map，不是
+ * allow-list，多写几个不存在的 id 不会让面板凭空多出行）。
+ *
+ * ⛔ 不要改成「按 -preset 后缀匹配」：那会把宿主官方的 preset 行一并拖进来。
+ *   要加新的一行，就在下面显式加一个 id（可审计）。
+ */
+const EXTERNAL_PRESET_IDS = ['agint-blockchain-preset', 'agint-investor-preset', 'agint-ops-preset'];
+
 const FAMILY_GROUPS = [
-  { id: 'preset', label: 'AGENT预设', members: ['agint-preset', 'agint-blockchain-preset', 'agint-investor-preset', 'agint-ops-preset'] },
+  { id: 'preset', label: 'AGENT预设', members: ['agint-preset', ...EXTERNAL_PRESET_IDS] },
   { id: 'memory', label: '记忆与知识', members: ['agint-memory', 'agint-wiki', 'agint-memory-provider', 'agint-search-tools'] },
   { id: 'governance', label: '调度与治理', members: ['agint-cron', 'agint-rules', 'agint-metrics', 'agint-tool-stats'] },
   { id: 'evolution', label: '反思与进化', members: ['agint-dream', 'agint-evolve', 'agint-evolution-memory', 'agint-diagnosis', 'agint-curriculum', 'agint-evolution-driver'] },

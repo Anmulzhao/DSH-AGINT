@@ -29,7 +29,7 @@
     - id: agint-dream
       name: ./plugins/agint-dream/lib/index.js
       config:
-        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
+        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
         sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
         lookbackDays: 2
 
@@ -37,7 +37,7 @@
     - id: agint-wiki
       name: ./plugins/agint-wiki/lib/index.js
       config:
-        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
+        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
 
     # dsh-schedule: 宿主原生调度（0.1.7-rc.2，行动 #2a 2026-09-28 挂载）。
     # agint-cron 的宿主调度桥（plugins/agint-cron/lib/host-schedule.js）依赖它做
@@ -48,27 +48,22 @@
       name: '@deepseek-ai/dsh-schedule'
       config: {}
 
-    # subagent-spawn-in-process-codex: 把一个 provider 以 `codex` 这个名字注册进
-    # ctx.subagents（2026-10-02 为开启 preset 的 `tool-subagent-codex` 行而加）。
+    # 2026-10-26 移除 `subagent-spawn-in-process-codex` 行（经确认后移除）。
     #
-    # 为什么必须挂在 host 平面而不是 preset 里：
-    #   - `subagents` 是宿主单例（dsh-base 的 `subagent` 行提供），preset 插件只应按
-    #     名字查它，不该自己再挂一份；
-    #   - preset 里 `tool-subagent-codex` 行的注释也明写「Product providers are
-    #     host-plane singletons」。
+    # 为什么移：官方 bundle `@deepseek-ai/dsh-subagent-codex` 已进 profile，它自己的
+    # DEFAULT_PROVIDER_NAME 也是 `codex`（lib/index.js:815）。两行向 ctx.subagents 注册
+    # 同名 provider → dsh 抛 "a subagent provider named 'codex' is already registered"，
+    # 官方那行激活失败（启动日志 "1 entry did not activate"）。
     #
-    # ⚠️ 这个 provider 跑的是**进程内 DSH agent**（SpawnInProcessProvider 复用本进程
-    #    的 agent factory / LLM / tool 服务），**不是 codex CLI**。名字叫 codex 是为了
-    #    匹配 preset 里那个既有行，不是宣称它执行 Codex。想真正调 codex CLI，用
-    #    `codex exec`（见 docs/operations/codex-handshake-20260821.md）。
-    #    同包已有 `spawn` 实例（dsh-base），dsh-subagent-spawn-in-process 的 apply()
-    #    无单例守卫，按 providerName 注册，两个实例互不覆盖。
+    # 移除后：`codex` 这个 provider 由官方 bundle 提供 —— **真 codex CLI**
+    # （前置条件：codex CLI 在 PATH 上），不再是进程内 DSH agent。
+    # preset 的 `tool-subagent-codex` 行按 provider 名查找，无需改动。
     #
-    # 回滚：删除本行并重启 dsh；preset 的 tool-subagent-codex 会退回到「provider 未注册」。
-    - id: subagent-spawn-in-process-codex
-      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
-      config:
-        providerName: codex
+    # 回滚：把下面四行取消注释并重启 dsh（会再次与官方 bundle 同名冲突）。
+    # - id: subagent-spawn-in-process-codex
+    #   name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+    #   config:
+    #     providerName: codex
 
     # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
     #
@@ -88,6 +83,9 @@
     #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
     #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
     #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
+    #   ⇒ 2026-10-26 新增 `AGINT_DATA_HOME`（数据根专用，优先级高于 AGINT_HOME）：
+    #     要把 dreams/wiki/reviews 挪位置就 export 它，**别 export AGINT_HOME** ——
+    #     那会把 install.sh 的源码根一起带偏。
     #
     # 2026-10-19 修（实测）：`$HOME/projects/DSH/DSH-AGINT` 在**本机不存在**
     #   （Test-Path → False；$HOME=C:\Users\Administrator 下只有 projects\AGINT），
@@ -120,7 +118,7 @@
         #   ① 多行块集合 `!!js ({ ... })` —— js-yaml 报 bad indentation of a mapping entry；
         #   ② 反引号模板字面量 —— 报 cannot resolve a node with js tag。
         #   验法：用 js-yaml 的 JSON_SCHEMA.extend(JsExpr) 按 dsh 原样 load 本文件。
-        agentsSizeGuard: !!js "({file: process.env.AGINT_AGENTS_MD || 'D:/DSH/AGENTS.md', reportDir: process.env.AGINT_DOCS_DIR || 'D:/DSH/docs', localFile: process.env.AGINT_AGENTS_LOCAL_MD || 'D:/DSH/AGENTS.local.md', maxBytes: 10000, maxChars: 5000, hostBudgetBytes: 12000})"
+        agentsSizeGuard: !!js "(() => { const r = process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'); return {file: process.env.AGINT_AGENTS_MD || (r + '/AGENTS.md'), reportDir: process.env.AGINT_DOCS_DIR || (r + '/docs'), localFile: process.env.AGINT_AGENTS_LOCAL_MD || (r + '/AGENTS.local.md'), maxBytes: 10000, maxChars: 5000, hostBudgetBytes: 12000}; })()"
 
     # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
     # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
@@ -139,7 +137,7 @@
     - id: agint-evolve
       name: ./plugins/agint-evolve/lib/index.js
       config:
-        root: !!js (process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
         # A4：eval 存量 FAIL 归因产物。部署位（.agint-bundle / profiles/desktop）
         #   祖先里没有 eval/ ⇒ 自动探测必然失败，必须显式给绝对路径。
         #   路径走环境变量（机器私有事实不入库）：AGINT_REPO_ROOT 已在
@@ -284,6 +282,10 @@
     #    （当前不可用）」。别的 AGINT 服务（memory/cron/wiki…）在 bundle 层照常加载，
     #    进一步掩盖「preset 没注册」这一事实。
     #
+    #    （2026-10-26 注：上面记的是当时的实况。后三个 preset 已迁出到独立仓库
+    #      agint-presets，本仓此处只剩 agint 一条声明，但那段事故的成因与修法
+    #      对任何 bundle 层的 preset 声明同样适用。）
+    #
     #    ⇒ 改用 `__DSH_HOME__` 占位符，install.sh 复制后展开成 `file://$DSH_HOME`
     #      （install.sh 3a-bis 段）。占位符而非写死绝对路径的原因：
     #      ① path 禁 `!!js`，没法在加载时求值；
@@ -294,7 +296,7 @@
     #    根解析」，据此写下 `../../` 路径。0.1.7 上成立，0.2.0 上不成立。依据当时读到的
     #    `anchorInsertedPluginNames()`（app-boot:3537）——该函数只锚定 **insert 行的
     #    name:**，确实不碰 config.path；但 0.2.0 的 baseUrl 已不是 profile 根。
-    # 回滚：删掉下面三段并重启 dsh；.agent-presets/ 与插件都无需动。
+    # 回滚：删掉下面这段并重启 dsh；.agent-presets/ 与插件都无需动。
     #
     # 旧版 preset.yml 里已有 name/description，但 0.1.7 不再读该文件 → 名称说明
     # 以本声明为准（preset.yml 保留作参考）。
@@ -308,47 +310,7 @@
           - id: agint-composition
             name: 'cordis:include'
             config:
-              path: file://D:/DSH/AGINT-date/.agent-presets/agint/agent.cordis.yml
-
-    - id: agint-blockchain-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-blockchain
-        name: 智进·区块链
-        description: 智进子 preset · 区块链/Web3 领域工程师 + 领域知识专家。共享母 preset 的全部 agint-* 服务（含 rules 门禁与 cron 自调）与 tool-cordis 自修改能力，能力范围聚焦：区块链与 Web3 领域编程（Solidity / Rust 合约、EVM/Solana/Cosmos 应用链、合约与链下代码）、调试（合约 revert 分析、RPC 节点排查、Gas 优化、合约漏洞模式识别）、领域知识（EVM 合约模式库、DeFi 机制、链交互工具链、钱包/签名安全）。任务路由：由智进会话按「涉及区块链/Web3 编程、调试、合约安全、链上数据分析→区块链子会话」模式分派；其他通用代码任务走母 preset。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: file://D:/DSH/AGINT-date/.agent-presets/agint-blockchain/agent.cordis.yml
-
-    - id: agint-investor-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-investor
-        name: 智进·投研
-        description: 智进子 preset · 投研分析师角色。共享母 preset 的 agint-memory / agint-wiki / agint-cron 服务，但禁用自修改工具（tool-cordis）和规则门禁写入工具（agint-rules-tools），只读、查、思、写笔记；不直接改生产代码。任务路由：由智进会话按「涉及研究/分析/查询→投研子会话」模式分派。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: file://D:/DSH/AGINT-date/.agent-presets/agint-investor/agent.cordis.yml
-
-    # agint-ops: 新能源生产运维办公助理（2026-09-30 新增）。
-    # 与上面三条同机制：cordis:include 复用 .agent-presets/agint-ops/agent.cordis.yml，
-    # 单一事实源仍在 presets 目录，本 patch 只放声明。
-    # ⚠️ path 是字面量，按 profile 根（profiles/desktop/）解析，故 2 级 .. 再进 .agent-presets/。
-    - id: agint-ops-preset
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: agint-ops
-        name: 智进·生产运维
-        description: 智进子 preset · 新能源（光伏/风电/储能）电站生产运维部门的日常办公助理。主业三块：文档（日报/周报/月报、异常与事故报告、交接班、SOP、台账、会议纪要）、数据分析（发电量/系统效率/设备可利用率/损失电量/故障趋势）、日常事务（派工与工单跟踪、巡检安排、整改闭环、经验沉淀）。共享母 preset 的 agint-memory / agint-wiki / agint-cron / agint-rules 服务，带 5 个领域技能（KPI 口径、文档写作规范、异常归因、数据分析执行规范、日常工作流）。禁用自修改工具（tool-cordis）与自进化实验工具（dream/curator/abtest/population 等）；tool-web 开 fetch 以便查标准与厂家资料，persona 内置「外部内容不可信」规则。任务路由：由智进会话按「生产运维文档/数据分析/日常事务→生产运维子会话」模式分派；DSH 系统自身问题与代码部署走母 preset。
-        plugins:
-          - id: agint-composition
-            name: 'cordis:include'
-            config:
-              path: file://D:/DSH/AGINT-date/.agent-presets/agint-ops/agent.cordis.yml
+              path: __DSH_HOME__/.agent-presets/agint/agent.cordis.yml
 
 
     # agint-restart: DSH restart detector v0.1.0 (2026-09-10).
@@ -704,4 +666,4 @@
       config:
         enabled: true
         allowNonLoopback: false
-        repoRoot: "D:/DSH/project源码/DSH-AGINT"
+        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))

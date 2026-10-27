@@ -148,7 +148,8 @@ export function injectAbtestDimension(results, abtestDimension) {
  * @param {object} args
  * @param {Array}  args.results   EvalResult[]
  * @param {object} args.config    QualityConfig (contract) — thresholds / weights / vetoThresholds
- * @param {object} args.options   { detectors?: { run: () => Promise<{report: 'clean'|'false-harmony', patterns: string[]}> } }
+ * @param {object} args.options   { detectors?: { run: () => Promise<{report: 'clean'|'false-harmony', patterns: string[]}> },
+ *                                  effectiveDelta?: ReturnType<computeEffectiveDelta>  // D-QAF §5.3 效率护栏（2026-10-26） }
  * @returns {Promise<Decision>}
  */
 export async function decidePolicy({ results, config = {}, options = {} } = {}) {
@@ -295,6 +296,27 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
   if (detectorFailed) {
     triggeredBy.push(...detectorVerdict.patterns);
     if (masterKind === 'AUTO_DEPLOY') masterKind = 'PENDING_REVIEW';
+  }
+
+  // ── 效率护栏（2026-10-26，D2 收口 / docs/evolution-framework.md §5.3）──
+  // 宪法原文：「若有效进化增量 ≤ 0，即使 HARM 提升也标记为『无效进化』并拒绝部署」。
+  // 此前这条**从未生效**：分母的 token 项恒缺，公式算不出来（capability-boundary.md §4 F3）。
+  // 现在由调用方把 computeEffectiveDelta() 的结果从 options 传进来（纯函数不自己读盘）。
+  //
+  // 两种 verdict 两种处置，别混：
+  //   · ineffective ⇒ AUTO_DEPLOY 封顶为 PENDING_REVIEW（= 拒绝自动部署，人工仍可否决/批准）
+  //   · unknown     ⇒ 不阻断，但必须留痕（护栏未生效这件事要能被复盘看见，
+  //                   而不是「没报错 = 通过」）
+  const effDelta = options?.effectiveDelta;
+  if (effDelta && typeof effDelta === 'object') {
+    if (effDelta.verdict === 'ineffective') {
+      triggeredBy.push(`effective-delta-ineffective:${effDelta.reason ?? 'unknown'}`);
+      if (masterKind === 'AUTO_DEPLOY') masterKind = 'PENDING_REVIEW';
+    } else if (effDelta.verdict === 'unknown') {
+      triggeredBy.push(`effective-delta-unmeasured:${effDelta.reason ?? 'unknown'}`);
+    } else if (effDelta.verdict === 'effective') {
+      triggeredBy.push(`effective-delta-effective:${effDelta.reason ?? 'ok'}`);
+    }
   }
 
   const avgScore = results.length > 0 ? Math.round((totalScore / results.length) * 10) / 10 : 0;

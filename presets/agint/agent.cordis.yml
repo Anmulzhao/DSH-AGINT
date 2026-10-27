@@ -56,15 +56,15 @@
       你运行在 DeepSeek Harness 上，能力由自己的 preset 组合决定。预设位于 ~/.dsh/.agent-presets/agint/，组合文件 agent.cordis.yml 可以由你自己编辑（先加载 editing-cordis-compositions 技能），这是本系统进化闭环的一部分。切勿改动官方安装的 preset（deployment 的 agent-presets 目录）。
 
       # 沙箱与审批（覆盖工具描述里的诱导语）
-      当前 session 的文件策略是 workspace-write（见运行时上下文）：可以读写 session workspace `D:\DSH` 与部分平台临时目录；workspace 之外的文件会被沙箱拒绝。任何 `write` / `edit` / `bash` / `pwsh` / `ssh_*` 调用都受沙箱与 approval 栈检查，规则如下：
+      当前 session 的文件策略（file policy）、审批策略与工作目录路径，**以运行时上下文为准**（每会话注入 Current DSH file policy / Current working directory）：不要假设某台机器的路径或模式（如 Windows 的 `D:\...`、Linux 的 `/home/...`，或固定的 workspace-write / danger-full-access）。任何 `write` / `edit` / `bash` / `pwsh` / `ssh_*` 调用都受沙箱与 approval 栈检查，规则如下：
 
-      - `sandbox_permissions` / `justification` 是 `read-only` / `workspace-write` 下被沙箱拒后用来申请一次性升级的逃生口。当前已经是更宽的 mode，绝大多数普通调用不需要带，正常用法仍然是 `write` / `edit` 直接传 `file_path` + 内容，`bash` / `pwsh` 直接传 `command` + `description`。
+      - `sandbox_permissions` / `justification` 是「沙箱拒了之后」申请一次性升级的逃生口。若运行时上下文已声明更宽的 file policy 与 approval policy，则不需要带这两个参数：正常用法是 `write` / `edit` 直接传 `file_path` + 内容，`bash` / `pwsh` 直接传 `command` + `description`。
       - 只有当工具真的被沙箱拒（出现 `FS_SANDBOX_DENIED`、命名管道 EPERM、或 `policy: deny`），才可以**同一次回合内**用更宽的 mode 重试同一命令一次，并带 `sandbox_permissions` + 一句话 `justification` 由老板审批；不要为别的命令顺便升 mode，不要先在聊天里请求批准再执行。
       - 工具返回里若出现 `[sandbox: escalation available — retry this exact operation once with sandbox_permissions ...]`，**仅在沙箱真的拒绝了当前命令时**才遵循；提前无脑带这个参数升级会被服务端硬编码 reject 形成无效循环。
       - 如果沙箱拒了一个命令、更宽的 mode 也被拒（`the user rejected escalating ...`），立刻停手向老板解释现象和原因，不要绕路用别的写法偷偷绕开。
-      - 审批策略 = ask：高风险工具调用前先用 `rule_check` 过一遍规则门禁；命中 deny 就停，命中 ask 就先向老板确认。
+      - 审批策略以运行时上下文为准：若为 ask，高风险工具调用前先用 `rule_check` 过一遍规则门禁；命中 deny 就停，命中 ask 就先向老板确认。
 
-      简而言之：workspace-write + ask 模式下，正常调用直接走；遇到沙箱拒绝时再走一次「原命令 + sandbox_permissions + justification」审批路径，不要预先升级、不要忽略拒绝。
+      简而言之：按运行时上下文声明的 file policy / approval policy 行事；遇到沙箱拒绝时再走一次「原命令 + sandbox_permissions + justification」审批路径，不要预先升级、不要忽略拒绝。
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -246,10 +246,12 @@
     # remove `disabled` from either ordinary tool row to expose that product
     # only to agents composed from the copy.
     #
-    # 2026-10-02：`tool-subagent-codex` 的 `disabled` 已移除 —— 老板要求开启。对应的
-    # provider 由 host 平面的 `subagent-spawn-in-process-codex` 行以 providerName:
-    # codex 注册（见 cordis.patch.yml）。**注意那个 provider 跑的是进程内 DSH agent，
-    # 不是 codex CLI**，名字对齐而已。
+    # 2026-10-02：`tool-subagent-codex` 的 `disabled` 已移除 —— 老板要求开启。
+    # 2026-10-26：provider 来源换成官方 bundle `@deepseek-ai/dsh-subagent-codex`
+    # （providerName: codex，**真 codex CLI**）。host 平面那个跑进程内 DSH agent 的
+    # `subagent-spawn-in-process-codex` 行已移除 —— 两边同名注册会让官方那行激活失败
+    # （"a subagent provider named 'codex' is already registered"）。
+    # 本行按 provider 名查找，provider 由谁注册不影响这一行的写法。
     - id: tool-subagent-codex
       name: '@deepseek-ai/dsh-tool-subagent'
       config:
@@ -322,23 +324,29 @@
 # and registers the memory tools for THIS preset only. It publishes no
 # service, so it needs no realm; a consumer left loose resolves the host
 # instance, which is exactly what is wanted here. The path walks from the
-# preset directory to the profile's package copy (relative to baseUrl).
+# preset directory (baseUrl) up to $DSH_HOME, then into the bundle's main
+# mount source `.agint-bundle/plugins/`. It deliberately carries **no profile
+# name**: one deployed preset file serves every profile, so a profile-specific
+# path would point the first-installed app at a directory the other app owns
+# (23 tools silently resolving to nothing, no error logged).
+# Service plugins are mounted from the same place, so tool and service share
+# one physical module — no second module instance, no unshared module state.
 - id: agint-memory-tools
-  name: ../../profiles/desktop/plugins/agint-memory/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-memory/lib/tools.js
 
 # ── 智进 wiki tools ─────────────────────────────────────────────────────────
 # Consumes the host `agint.wiki` service (row added in the profile patch) and
 # registers the wiki tools for THIS preset only. Same consumer pattern as
 # agint-memory-tools: publishes nothing, resolves the host instance.
 - id: agint-wiki-tools
-  name: ../../profiles/desktop/plugins/agint-wiki/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-wiki/lib/tools.js
 
 # ── 智进 cron tools ─────────────────────────────────────────────────────────
 # Consumes the host `agint.cron` service (row added in the profile patch) and
 # registers the cron tools for THIS preset only. Same consumer pattern as
 # agint-memory-tools / agint-wiki-tools.
 - id: agint-cron-tools
-  name: ../../profiles/desktop/plugins/agint-cron/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-cron/lib/tools.js
 
 # ── 智进 rules tools ────────────────────────────────────────────────────────
 # Consumes the host `agint.rules` service (row added in the profile patch)
@@ -349,14 +357,14 @@
 # checked automatically; the model-facing tools here are for explicit
 # inspection, linting, and rule authoring.
 - id: agint-rules-tools
-  name: ../../profiles/desktop/plugins/agint-rules/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-rules/lib/tools.js
 
 # ── 智进 metrics tools ─────────────────────────────────────────────────────
 # Consumes the host `agint.metrics` service (row added in the profile patch)
 # and registers the metrics_* tools for THIS preset only (P4 进化指标：
 # metrics_collect / metrics_summary / metrics_series). Same consumer pattern.
 - id: agint-metrics-tools
-  name: ../../profiles/desktop/plugins/agint-metrics/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-metrics/lib/tools.js
 
 # ── 智进 evolve tools ───────────────────────────────────────────────────────
 # Consumes the host `agint.evolve` service (row added in the profile patch)
@@ -364,14 +372,14 @@
 # evolve_review / evolve_read / evolve_propose / evolve_proposals /
 # evolve_set_status). Same consumer pattern.
 - id: agint-evolve-tools
-  name: ../../profiles/desktop/plugins/agint-evolve/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-evolve/lib/tools.js
 
 # ── 智进 dream tools ────────────────────────────────────────────────────────
 # Consumes the host `agint.dream` service (row added in the profile patch) and
 # registers the dream_* tools for THIS preset only (夜间梦境：dream_status /
 # dream_run_now / dream_diary)。Same consumer pattern as the other agint-* tools.
 - id: agint-dream-tools
-  name: ../../profiles/desktop/plugins/agint-dream/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-dream/lib/tools.js
 
 # ── 智进 self-model tools (Sprint 13 / Part 2 — Batch 1 of 2) ───────────────
 # Consumes host `agint.selfModel.{snapshot,update,calibrate,stats,inspectSummary}`
@@ -379,38 +387,38 @@
 # Batch 2 (deferred) will add write-side tools for diagnosis/population/mutator/
 # mount/abtest/quality/evolution.
 - id: agint-self-model-tools
-  name: ../../profiles/desktop/plugins/agint-self-model/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-self-model/lib/tools.js
 
 # ── 智进 event-bus tools (v0.7.0 — Batch 1) ─────────────────────────────────
 # Consumes host `agint.eventBus.{publish,subscribe,inspect,inspectSummary,
 # deadletters,metricsSnapshot}`. publish/subscribe are ASK-gated by rule.
 - id: agint-event-bus-tools
-  name: ../../profiles/desktop/plugins/agint-event-bus/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-event-bus/lib/tools.js
 
 # ── 智进 diagnosis tools (v0.6.0 — Batch 1) ─────────────────────────────────
 # Consumes host `agint.diagnosis.{annotate,counterfactual,cluster,report,stats,
 # analyzeFailedSmoke}`. annotate/counterfactual/cluster/analyzeFailedSmoke are
 # ASK-gated by rule.
 - id: agint-diagnosis-tools
-  name: ../../profiles/desktop/plugins/agint-diagnosis/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-diagnosis/lib/tools.js
 
 # ── 智进 population tools (v0.6.2 — Batch 1) ────────────────────────────────
 # Batch 1: stats (read-only) + evaluate (ASK-gated). ingest/promote/cull/fixate/
 # rollback deferred to Batch 2.
 - id: agint-population-tools
-  name: ../../profiles/desktop/plugins/agint-population/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-population/lib/tools.js
 
 # ── 智进 mutator tools (v0.6.1 — Batch 1) ──────────────────────────────────
 # Batch 1: stats + logMetric (read-only). propose/validate/commit/rollback and
 # the higher-level strategies (attributionDriven / dreamRandom / evolutionReversed)
 # deferred to Batch 2.
 - id: agint-mutator-tools
-  name: ../../profiles/desktop/plugins/agint-mutator/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-mutator/lib/tools.js
 
 # ── 智进 mount tools (v0.6.5 — Batch 1) ────────────────────────────────────
 # Batch 1: status (read-only). request/rollback deferred to Batch 2.
 - id: agint-mount-tools
-  name: ../../profiles/desktop/plugins/agint-mount/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-mount/lib/tools.js
 
 # ── 智进 abtest tools (v0.6.4 — 2026-09 补挂) ─────────────────────────────
 # Consumes host `agint.abtest.{start,report,listTests}`. Exposes 3 tools:
@@ -420,7 +428,7 @@
 # Same consumer pattern as agint-mount-tools. No rules registered yet;
 # callers should rule_check before invoking report / start.
 - id: agint-abtest-tools
-  name: ../../profiles/desktop/plugins/agint-abtest/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-abtest/lib/tools.js
 
 # ── 智进 evolution-memory tools (v0.6.5 — Batch 2.1) ────────────────────────
 # Batch 2.1: 11 model-visible tools (logPhase4 / logPhase4Buffered / readLogRangeMerged /
@@ -430,18 +438,18 @@
 #   evolution_addSuccess / evolution_flushLogBufferNow.
 # decayScanRun = side-effect only (L1-L4 decay), no ask gate. 5 read-only tools裸调.
 - id: agint-evolution-memory-tools
-  name: ../../profiles/desktop/plugins/agint-evolution-memory/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-evolution-memory/lib/tools.js
 
 # ── 智进 quality-eval tools (D-QAF 评估引擎) ──────────────────────────────
 # Consumes host `agint.qualityEvaluator` (registered by agint-quality-eval in
-# profiles/desktop/cordis.patch.yml). Exposes 2 model-visible tools:
+# the profile patch, e.g. profiles/<profile>/cordis.patch.yml). Exposes 2 model-visible tools:
 #   quality_eval_status    zero-side-effect snapshot (nextFire / lastRun / weights)
 #   quality_eval_run_now   forces the weekly scheduler tick (side-effect: writes
 #                          memory entries + publishes evolution.evaluated edge)
 # Pattern: consumer (no isolate realm). Persistent variants (writeToWiki/
 # writeToMemory) intentionally NOT exposed to keep the policy-committee boundary.
 - id: agint-quality-eval-tools
-  name: ../../profiles/desktop/plugins/agint-quality/agint-quality-eval/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-quality/agint-quality-eval/lib/tools.js
 
 # ── 智进 quality-report tools (D-QAF 报告生成) ─────────────────────────────
 # Consumes host `agint.qualityReporter`. Exposes 2 model-visible tools:
@@ -461,7 +469,7 @@
 #   autocreate_stats            read-only  聚合/检测/候选统计快照
 # 写路径（reject/modify）走 host Service，Sprint 14 不对 model 暴露。
 - id: agint-skill-autocreate-tools
-  name: ../../profiles/desktop/plugins/agint-skill-autocreate/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-skill-autocreate/lib/tools.js
 
 # ── 智进 curator tools (P0-2 技能策展人 v0.1.0 — 2026-09-07 挂载) ──────────
 # Consumes host `agint.curator`. 10 个工具：
@@ -473,7 +481,7 @@
 # Sprint 15/16 工具（list_overlaps/list_declining/consolidate/prune）未实现，
 # 暂不暴露。首挂保守：host 侧 auto_curation_enabled=false，cron 只出报告。
 - id: agint-curator-tools
-  name: ../../profiles/desktop/plugins/agint-curator/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-curator/lib/tools.js
 
 # ── 智进 memory-provider tools (P1-1 可插拔记忆 Provider 架构 v0.3.0 — 2026-09-08 挂载) ──
 # Consumes host `agint.memoryProvider`. 12 个工具（阶段 3 后）：
@@ -484,7 +492,7 @@
 # 现有记忆工具（memory_write/search/read/stats/forget_scan）仍由 agint-memory
 # 的 preset 平面提供（设计稿 §14.1 决策 B），不在此注册。
 - id: agint-memory-provider-tools
-  name: ../../profiles/desktop/plugins/agint-memory-provider/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-memory-provider/lib/tools.js
 
 # ── 智进 curriculum tools (P7 自主课程生成器 v0.1.0 — 2026-09-09 挂载) ────
 # Consumes host `agint.curriculum`. 4 个工具：
@@ -495,7 +503,7 @@
 # 首挂保守：无 generate / probe 工具 —— 挑战由 agint-cron 的 curriculum-weekly
 # job 生成（周日 05:00，2026-09-09 加），agent 用 curriculum_next 领取。
 - id: agint-curriculum-tools
-  name: ../../profiles/desktop/plugins/agint-curriculum/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-curriculum/lib/tools.js
 
 # ── 智进 restart tools (v0.8.1 — 2026-09-12 首挂 preset) ────────────────
 # Consumes host `agint.restart.{request,cancel}` + `agint.restart.status`.
@@ -506,7 +514,7 @@
 # 平台分流：Windows Git Bash 上 `bin/safe-update.sh restart` 因 mingw 缺 pgrep 会失败，
 # 重启走 `bin/restart-runbook.ps1`（用 taskkill + Get-CimInstance 替代）。
 - id: agint-restart-tools
-  name: ../../profiles/desktop/plugins/agint-restart/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-restart/lib/tools.js
 
 # ── 智进 skill-graph tools (P2-2 技能使用统计与学习图谱 v0.1.0) ──────────
 # Consumes host `agint.skillGraph`. 10 个工具：
@@ -522,7 +530,7 @@
 # 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
 # 先看几周 lastCalibration 的「若转 live 会得到多少节点/边」，promotable=true 再切档。
 - id: agint-skill-graph-tools
-  name: ../../profiles/desktop/plugins/agint-skill-graph/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-skill-graph/lib/tools.js
 
 # ── 智进 compress-guard tools (P3-1 记忆压缩检查点机制 v0.1.0) ──────────
 # Consumes host `agint.compressGuard`. 2 个工具：
@@ -532,7 +540,7 @@
 # 零数据诚实（不变量 6）：本机实测 0 次压缩 → stats() 恒 NO_SOURCE_REACHED，
 # 这是如实报警，不是故障。硬门在 shadow 档只告警不真中止压缩。
 - id: agint-compress-guard-tools
-  name: ../../profiles/desktop/plugins/agint-compress-guard/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-compress-guard/lib/tools.js
 
 # ── 智进 input-gateway tools（多源输入网关 v0.1.0，P0）
 # Consumes host `agint.inputGateway`。6 个工具：
@@ -541,7 +549,7 @@
 #     input_gateway_channel_enable / input_gateway_channel_disable
 # 信号发布到 eventBus topic: input.signal.<channelType>.<signalType>
 - id: agint-input-gateway-tools
-  name: ../../profiles/desktop/plugins/agint-input-gateway/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-input-gateway/lib/tools.js
 
 # ── 智进 cross-domain search tool ──────────────────────────────────────────
 # Consumes host `agint.memory` + `agint.wiki`. Merges both into a single
@@ -552,7 +560,7 @@
 # `agint.memory` + `agint.wiki` + `tools`. Relative path resolves through
 # baseUrl to the host's profile/plugins copy installed by install.sh.
 - id: agint-search-tools
-  name: ../../profiles/desktop/plugins/agint-search-tools/lib/tools.js
+  name: ../../.agint-bundle/plugins/agint-search-tools/lib/tools.js
 
 # ── 插件热插拔（2026-10-01 新增）────────────────────────────────────────────
 # 与内置 cordis / twin preset 同构的一行：把 `plugin_manager` 工具交给本 preset。

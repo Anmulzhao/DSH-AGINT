@@ -1,6 +1,8 @@
 # AGINT Safe-Update SOP — 挂载/重启前准备与回滚
 
 > 来自 2026-08-21 重启崩溃复盘。由 Codex 出方案、我（智进）整合落地。配套脚本 `bin/safe-update.sh`。
+>
+> **2026-10-26 起分工**：本 SOP 负责「改之前拍快照、崩了倒序回滚」；**把仓库改动装到部署位 + 重启 + 部署位核验**改用 `install/redeploy.sh`（一条命令，带挂载行 / preset 锚点 / `check-preset-parity` 门禁核验，本 SOP 的 smoke 不含这些）。`safe-update.sh restart` 保留为兜底。
 
 ## 一句话口诀
 
@@ -60,9 +62,13 @@ cd ~/projects && nohup dsh web > /tmp/dsh-web.log 2>&1 &
 # 1. sentinel lease 在 30s 内被新进程认领
 sleep 5; cat ~/.dsh/sentinel.lease   # 看 owner = 新 pid, at < now+30s
 
-# 2. 6 个内置 cron job 都在
-grep -lE 'memory-decay|wiki-lint|night-dream|metrics-collect|prompt-static-check|evolve-review' \
-  ~/.dsh/profiles/web/plugins/agint-cron/lib/jobs.js
+# 2. cron job 齐全（数量从 jobs.js 现读，2026-10-26 实测 27 个；别再写死 6 个）
+#    ⚠️ 插件实体自 2026-10-01 起在 .agint-bundle/plugins/，profile 下那份只是镜像位
+JS=~/.dsh/.agint-bundle/plugins/agint-cron/lib/jobs.js
+grep -coE "id: '[a-z0-9-]+'" "$JS"
+for j in memory-decay wiki-lint night-dream metrics-collect evolve-review; do
+  grep -q "id: '$j'" "$JS" || echo "MISSING job: $j"
+done
 
 # 3. tool_stats 行数 + dom 文件完整
 wc -l ~/.dsh/storages/agint_tool_stats.jsonl

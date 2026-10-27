@@ -73,7 +73,7 @@ winpath() {
 
 # 2026-09-24 起 AGINT 以 bundle 形态交付 ⇒ zod 主位在 **bundle 包内**
 # （bundle patch 的 insert 行相对 bundle 包根解析，插件已搬去那里）。
-# 兼容位与主位同源再放一份：AGINT 自身代码与 4 套 preset 的 tools 行仍按
+# 兼容位与主位同源再放一份：AGINT 自身代码与 preset 的 tools 行仍按
 # $DSH_HOME/profiles/<profile>/plugins/... 定位插件。
 #
 # ⚠️ 2026-10-08：主位恒在 bundle 实体（$DSH_HOME/.agint-bundle/），不随 profile 变；

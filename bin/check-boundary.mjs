@@ -153,6 +153,15 @@ const HOST_CAPABILITY_RULES = [
     re: /\b(tokenCost|avgTokenCost|promptTokens|completionTokens|totalTokenCount)\b/g,
     why: 'token 计量属宿主层（ctx.tokenMeter），AGINT 只该消费',
   },
+  {
+    id: 'host-service-key-selfinvent',
+    // 取了宿主**不存在**的服务键（2026-10-21 实测：dsh 0.2.1-rc.2 的 98 个服务键里
+    // 没有 dshHome / profilesDir）。原写法有 `|| process.env.DSH_HOME` 兜底所以不报错，
+    // 但取法是错的：宿主换 home 解析方式，AGINT 仍按旧假设走（§4 F6 / §5 D6）。
+    // 2026-10-26 D2/D6 收口后加此规则防回潮 —— 任何人再把这两行写回来都会红。
+    re: /ctx\.get\(\s*['"](?:dshHome|profilesDir)['"]\s*\)/g,
+    why: 'dshHome / profilesDir 不是 dsh 的服务键；home 走 process.env.DSH_HOME，profile 名走真实存在的 profileContext（§4 F6）',
+  },
 ];
 
 // ── 基线 ────────────────────────────────────────────────────────────────────

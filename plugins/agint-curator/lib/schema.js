@@ -134,7 +134,7 @@ export const UsageSchema = z.object({
   firstUsedAt: z.string().nullable().default(null),
   successRate: z.number().min(0).max(1).nullable().default(null),
   avgDurationMs: z.number().nullable().default(null),
-  avgTokenCost: z.number().nullable().default(null), // tool-stats 暂无 token 计量，恒 null
+  avgTokenCost: z.number().nullable().default(null), // null=没测到（≠ 0 测得零）；来源 tool-stats.deltaTokens（2026-10-26 D2 收口后生产有真值）
 });
 
 export const QualitySnapshotSchema = z.object({

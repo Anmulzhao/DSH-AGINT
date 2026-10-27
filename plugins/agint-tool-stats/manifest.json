@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-tool-stats",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "工具使用画像：监听 tools/result 事件追加写 agint_tool_stats.jsonl。提供 toolStats Service + tool_stats_summary tool。",
   "main": "lib/index.js",
   "agint": {

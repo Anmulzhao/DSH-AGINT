@@ -19,9 +19,13 @@
  *   { ts, sessionId, turn, step, tool, callId, latencyMs, ok, errorKind,
  *     argFingerprint, args }
  *
- * 已知缺口（如实标注）：
- *   - tool-stats 不记录 tokenCost → avgTokenCost 恒 null（设计稿 §4.2 字段
- *     保留，待 tool-stats 增补 token 计量后自然填充）。
+ * 已知口径（如实标注）：
+ *   - token 成本取 tool-stats 的 deltaTokens（2026-10-21 接上游 ctx.tokenMeter；
+ *     2026-10-26 D2 收口后生产有真值）。null=没测、0=测得零，两者不混同；
+ *     一条都没测到 → tokenCost 返回 null（不返回 0 冒充「测得零成本」）。
+ *     ⚠️ 语义是**任务级求和**（不是逐次调用均值）：同一 turn 内只有首次调用
+ *     拿得到非零差值，逐次平均会被 0 稀释。详见
+ *     docs/known-limitations/token-cost-not-billing-grade.md。
  *   - sessionId/turn 缺失的记录无法归属任务边界 → 计入 unmatched，不参与
  *     模式检测（宁可漏检，不可错检）。
  *

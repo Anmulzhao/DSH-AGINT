@@ -119,7 +119,7 @@ test('aggregateUsage：工具覆盖率推断命中（≥0.6）', () => {
   assert.equal(inference, 'inferred');
   assert.equal(usage.alpha.useCount, 1); // 覆盖率 2/2 = 1.0
   assert.equal(usage.beta.useCount, 0);  // 覆盖率 1/3 = 0.33 < 0.6
-  assert.equal(usage.alpha.avgTokenCost, null); // tool-stats 无 token 计量，恒 null
+  assert.equal(usage.alpha.avgTokenCost, null); // 样本里没有任何 deltaTokens 数值 ⇒ null（没测到），不是 0
 });
 
 test('aggregateUsage：记录带 skill 字段时走准确路径（P0-1 上线后自动生效）', () => {

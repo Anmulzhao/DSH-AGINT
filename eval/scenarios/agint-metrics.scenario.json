@@ -6,11 +6,16 @@
       {
         "service": "metrics",
         "action": "compute",
-        "args": { "sources": {} }
+        "args": {
+          "sources": {}
+        }
       }
     ],
     "expected": [
-      { "kind": "no-sources-returns-empty", "recordsLengthEquals": 0 }
+      {
+        "kind": "no-sources-returns-empty",
+        "recordsLengthEquals": 0
+      }
     ]
   },
   {
@@ -25,8 +30,17 @@
             "cron": {
               "_fn": "health",
               "_returns": {
-                "issues": [{ "id": "stale-1" }],
-                "jobs": [{ "id": "j1", "overdueMs": 86400000 }]
+                "issues": [
+                  {
+                    "id": "stale-1"
+                  }
+                ],
+                "jobs": [
+                  {
+                    "id": "j1",
+                    "overdueMs": 86400000
+                  }
+                ]
               }
             }
           }
@@ -36,7 +50,55 @@
     "expected": [
       {
         "kind": "cron-source-yields-cron-metrics",
-        "expectedKeys": ["cron.staleJobs", "cron.maxOverdueDays"]
+        "expectedKeys": [
+          "cron.staleJobs",
+          "cron.maxOverdueDays"
+        ]
+      }
+    ]
+  },
+  {
+    "scenario": "metrics-unhealthy-source-isolated",
+    "plugin": "agint-metrics",
+    "input": [
+      {
+        "service": "metrics",
+        "action": "compute",
+        "args": {
+          "sources": {
+            "cron": {
+              "_fn": "health",
+              "_returns": {
+                "issues": [
+                  {
+                    "id": "stale-1"
+                  }
+                ],
+                "jobs": [
+                  {
+                    "id": "j1",
+                    "overdueMs": 172800000
+                  }
+                ]
+              }
+            },
+            "rules": {
+              "_fn": "audit",
+              "_throws": "source down (simulated)"
+            }
+          },
+          "_note": "NEW-02（Frozen 首期新编，2026-10-09）：模块文档头承诺『不健康源被隔离跳过而不是拖垮整轮』，此前零覆盖。cron 健康 + rules 抛错 ⇒ rules 指标缺席、cron 指标照常、整体不 reject。⛔ 不得复制 metrics-compute-empty-sources（空集）与 metrics-compute-cron-source（正常路径）的断言。"
+        }
+      }
+    ],
+    "expected": [
+      {
+        "kind": "unhealthy-source-isolated",
+        "expectedCronKeys": [
+          "cron.staleJobs",
+          "cron.maxOverdueDays"
+        ],
+        "_note": "判据：computeMetrics 不 reject + cron 两键在 + rules.* 全缺席 + 每条 record key∈METRIC_DEFS 且 value 有限数。任一不满足即红。"
       }
     ]
   }

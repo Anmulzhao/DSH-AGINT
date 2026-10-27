@@ -502,6 +502,68 @@ function apply(ctx) {
 
   const nowIso = () => new Date().toISOString();
 
+  // ── rules.changed 发布（2026-10-09，工作项 B1）────────────────────────
+  // 背景：agint-rules 此前对事件总线零感知（查 E' 的 UNWIRED 头名），而规则集被
+  //   agint-evolve:234 / agint-metrics:47 以 `ctx.get('agint.rules')` 硬编码直连消费
+  //   —— deny 门禁增删对下游不可见，只能等被调用时现场拉一次快照。
+  //   取证与判据见 proposals/agint-eventbus-unwired-plugins-20261009.md。
+  //
+  // 红线（照抄 evolve 的 A1 接线纪律，K63/K64 教训）：
+  //   1. **直连路径完整保留** —— 规则增删改的返回值与落库不因发布失败而改变；
+  //      bus 缺席或 publish 抛错只告警，绝不阻断。
+  //   2. **三形态探测** —— agint-event-bus 用 spec.provides 注册的是三个分服务名
+  //      （agint.eventBus.publish 等），**没有伞键**；但部分 host 变体是伞键。
+  //      当年 mount 只查伞键 ⇒ 恒 undefined ⇒ 10 处发布静默降级 ⇒ mount.* 生产恒 0
+  //      （docs/known-limitations/event-bus-shadow-publish-gap.md §6.4）。故按
+  //      「分服务名 → 伞键 getService → 伞键 get」确定性降级探测，任一可用即用。
+  //   3. 不切 T2 流量：主线仍是 ctx.get 直连，本条是影子广播。
+  function resolveBusPublish() {
+    const bind = (bus) => (bus && typeof bus.publish === 'function' ? bus.publish.bind(bus) : null);
+    const probes = [
+      () => (typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null),
+      () => bind(typeof ctx.getService === 'function' ? ctx.getService('agint.eventBus') : null),
+      () => bind(typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null),
+    ];
+    for (const probe of probes) {
+      try {
+        const fn = probe();
+        if (typeof fn === 'function') return fn;
+      } catch { /* 试下一种形态 */ }
+    }
+    return null;
+  }
+
+  async function publishRulesChanged(change, rule) {
+    const publish = resolveBusPublish();
+    if (!publish) return { published: false, reason: 'eventBus-unavailable' };
+    const payload = {
+      change,
+      ruleId: rule?.id ?? null,
+      tool: rule?.tool ?? null,
+      action: rule?.action ?? null,
+      level: rule?.level ?? null,
+      enabled: rule?.enabled ?? null,
+    };
+    try {
+      const result = await publish({
+        topic: 'rules.changed',
+        version: 1,
+        source: 'agint-rules',
+        payload,
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('rules: rules.changed publish failed', {
+          ruleId: payload.ruleId,
+          change,
+          error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: 'publish-failed' };
+    }
+  }
+
   // In-memory audit counters. Keyed by rule id → { hits, denies, asks, advisories }.
   const audit = new Map();
   // Reminder dedup: `${ruleId}::${tool}` already injected in this plugin
@@ -535,13 +597,19 @@ function apply(ctx) {
         updatedAt: nowIso(),
       });
       await t.put(id, rule);
+      // 影子广播：规则集变了。**不 await 之外的任何影响** —— 上面的返回值才是主契约。
+      await publishRulesChanged(existing ? 'updated' : 'added', rule);
       return { ...rule };
     },
 
     async remove(id) {
       const t = await table();
+      const rec = t.get(id);
       const ok = await t.delete(id);
-      if (ok) audit.delete(id);
+      if (ok) {
+        audit.delete(id);
+        await publishRulesChanged('removed', rec);
+      }
       return ok;
     },
 
@@ -551,6 +619,7 @@ function apply(ctx) {
       if (!rec) return null;
       const updated = { ...rec, enabled: Boolean(enabled), updatedAt: nowIso() };
       await t.put(id, updated);
+      await publishRulesChanged(updated.enabled ? 'enabled' : 'disabled', updated);
       return { ...updated };
     },
 

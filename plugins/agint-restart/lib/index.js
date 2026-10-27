@@ -431,6 +431,108 @@ function apply(ctx, cfg = {}) {
   // v0.5.0：判断本次启动是否由插件自己的重启请求导致（用于切断重启环）
   const selfRestart = detectSelfRestart(marker, requestPath);
 
+  // ── restart.* 事件总线发布（2026-10-09，工作项 B2）─────────────────────
+  //
+  // 为什么这两个主题值得上总线：宿主重启会摧毁总线全部内存态（订阅表 + 环形缓冲
+  // 由 disposeBus() 清空），所以**跨重启**的通知没有任何进程内通路可走。
+  // restart.settled 由「重启后的新进程」在 apply 时发出，是这条链路上唯一可靠的落点。
+  // 取证见 proposals/agint-eventbus-unwired-plugins-20261009.md §4 工作项 B2。
+  //
+  // 红线：
+  //   1. 软依赖 —— bus 缺席/抛错只降级，绝不影响重启主链路；
+  //   2. 三形态探测 —— agint-event-bus 注册的是分服务名，没有伞键（mount 当年只查
+  //      伞键 ⇒ 恒 undefined ⇒ mount.* 生产恒 0，见 gap 文档 §6.4）；
+  //   3. **有界补挂** —— 本插件 apply 时 bus 可能还没 apply 上去（顺序不保证，
+  //      agint-ov-strategy 就栽在这）。settled 早退一次就永久静默，而它是跨重启事实、
+  //      当场补不回来 ⇒ 必须有界重试，重试窗口用 unref 定时器，不吊住进程。
+  function resolveBusPublish() {
+    const bind = (bus) => (bus && typeof bus.publish === 'function' ? bus.publish.bind(bus) : null);
+    const probes = [
+      () => (typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null),
+      () => bind(typeof ctx.getService === 'function' ? ctx.getService('agint.eventBus') : null),
+      () => bind(typeof ctx.get === 'function' ? ctx.get('agint.eventBus') : null),
+    ];
+    for (const probe of probes) {
+      try {
+        const fn = probe();
+        if (typeof fn === 'function') return fn;
+      } catch { /* 试下一种形态 */ }
+    }
+    return null;
+  }
+
+  async function publishRestart(topic, payload) {
+    const publish = resolveBusPublish();
+    if (!publish) return false;
+    try {
+      await publish({ topic, version: 1, source: 'agint-restart', payload });
+      return true;
+    } catch (err) {
+      console.warn(`[agint-restart] ${topic} publish failed:`, err?.message ?? err);
+      return false;
+    }
+  }
+
+  // ── restart.settled：本次启动确系一次重启的「落地」事实 ──
+  const SETTLE_RETRY_MS = 250;
+  const SETTLE_MAX_ATTEMPTS = 20;          // 5s 封顶，到点放弃并留告警，绝不无限重试
+  let settledDone = false;
+  let busGone = false;
+  const settleTimers = [];
+
+  ctx.effect(() => () => {
+    busGone = true;
+    for (const t of settleTimers) clearTimeout(t);
+    settleTimers.length = 0;
+  });
+
+  const settledPayload = {
+    bootAt,
+    prevBootAt,
+    downtimeMs,
+    selfRestart: selfRestart.self,
+    mode: config.mode,
+    lastSessionId,
+  };
+
+  async function emitSettled() {
+    if (settledDone || busGone) return settledDone;
+    if (await publishRestart('restart.settled', settledPayload)) {
+      settledDone = true;
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleSettleRetry() {
+    let attempts = 0;
+    const tick = () => {
+      if (settledDone || busGone) return;
+      attempts += 1;
+      if (attempts >= SETTLE_MAX_ATTEMPTS) {
+        console.warn(
+          `[agint-restart] restart.settled 补挂 ${SETTLE_MAX_ATTEMPTS} 次仍未找到 eventBus，放弃`
+          + '（本次重启事实未上总线；不影响重启本身）',
+        );
+        return;
+      }
+      if (resolveBusPublish()) {
+        void emitSettled();
+        return;
+      }
+      const t = setTimeout(tick, SETTLE_RETRY_MS);
+      t.unref?.();
+      settleTimers.push(t);
+    };
+    const t = setTimeout(tick, SETTLE_RETRY_MS);
+    t.unref?.();
+    settleTimers.push(t);
+  }
+
+  if (wasRestart) {
+    void emitSettled().then((ok) => { if (!ok) scheduleSettleRetry(); });
+  }
+
   // v0.8.0：运行中代码指纹 —— apply 时算一次，写进 marker 与 status()。
   // 目的：把"跑的是哪版代码 / 要不要重启"从推断变成事实（改完插件后 `status().codeStale` 一句回答）。
   // 测试钩子：AGINT_RESTART_CODE_DIR 可指向别处的同名 lib 目录（smoke 用它模拟"磁盘被改过"）。
@@ -790,6 +892,20 @@ function apply(ctx, cfg = {}) {
 
     pending = { requestId, at: Date.now() };
     recordRestart(requestId, reason);
+    // restart.requested：**尽力而为**。请求文件已落盘、守护进程已起，此刻重启已成事实，
+    //   所以发事件是对的；但 requestInner 是同步的（契约要求绝不 await，见上方注释），
+    //   而 shutdownSelf 会在 shutdownDelayMs 后把本进程带走 —— 这次 publish 是
+    //   fire-and-forget，**有可能来不及落盘**。
+    //   ⇒ 可靠的那一半是 restart.settled：它由重启后的新进程在 apply 时发出，
+    //   不依赖旧进程还活着。订阅方要判定「重启是否真的完成」，只信 settled。
+    void publishRestart('restart.requested', {
+      requestId,
+      reason,
+      mode: config.mode,
+      targetPid: process.pid,
+      shutdownInMs: delayMs,
+      requestedAt: payload.requestedAt,
+    });
     console.log(`[agint-restart] restart requested (${requestId}) reason=${reason || '-'} pid=${process.pid}`);
 
     // 延迟退出自己，让调用方先拿到返回值

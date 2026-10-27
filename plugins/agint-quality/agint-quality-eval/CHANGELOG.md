@@ -1,5 +1,37 @@
 # Changelog — agint-quality-eval
 
+## 0.4.0 (2026-10-26) — D-QAF §5.3 有效进化增量（token 项首次可算）
+
+### Added
+
+- **`agint.qualityEvaluator.effectiveDelta({ windowDays, minTokenCoverage })`** ——
+  有效进化增量 = Δ任务完成率 / Δ(token + 步数 + 耗时)，数据源是
+  `agint.toolStats.resourceWindow()` 的**相邻两窗**（当期 vs 上一周期，同天数同口径）。
+- **`lib/effectiveDelta.js`** —— 纯函数判定 + 三种 verdict：
+  `effective` / `ineffective`（⇒ `shouldBlockDeploy`）/ `unknown`（护栏未生效）。
+  **fail-closed**：token 覆盖率 < 0.5 ⇒ `unknown` + `reason='token-unmeasured'`，
+  绝不把分母悄悄退化成「步数 + 耗时」冒充完整读数。
+- `weeklyTask` 的 Phase 3 新增该检查（`console.warn` 出声 + 返回值新增 `effectiveDelta`）。
+- 测试 16 条：`test/effective-delta.test.mjs`（判定表 12 条，含 3 条阴性对照）
+  + `test/effective-delta-service.test.mjs`（服务面接线 4 条：注册 / 两窗参数 / toolStats 缺席 /
+  60s TTL 缓存）。
+
+### 为什么（背景）
+
+宪法 `docs/evolution-framework.md` §5.3 写着「有效进化增量 ≤ 0 ⇒ 即使 HARM 提升也拒绝部署」，
+但分母的 token 项恒缺（capability-boundary.md §4 F3）⇒ 这条约束从未执行过。
+本版把判定补上；**真正拦部署**在 agint-quality-policy 0.9.0（把 `ineffective`
+读成 AUTO_DEPLOY 封顶）。
+
+### 注意（口径边界）
+
+- 比值**没有**「收益太小也算无效」的门槛：宪法只写 ≤ 0。完成率微涨、资源涨 3 倍时
+  比值仍为正（判 effective），「值不值」留给上层阈值/人工。
+- token 项来自 tool-stats 的 `deltaTokens`（工具调用前后累计 token 的差值，**含该轮
+  模型回复**，是压力估计而非调用级精确计费）。要 billing 级精确值，上游另有
+  `@deepseek-ai/dsh-token-meter/client` 的 `deriveTurnTokenUsage(events)`（provider 上报的
+  usage，可回溯历史会话）—— 见本文档 §已知限制。
+
 ## 0.3.5 (2026-10-14) — 评估池纳入已挂载 plugin（老板拍板方案 2）
 
 ### Added

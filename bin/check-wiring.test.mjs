@@ -59,6 +59,8 @@ describe('输出契约', () => {
   test('退出码与缺口一致（有缺口必须 exit 1，无缺口才 exit 0）', () => {
     const hardGaps =
       report.topics.filter((t) => t.verdict === 'ORPHAN_TOPIC' || t.verdict === 'NO_SUBSCRIBER').length +
+      (report.busBlind?.unwired?.length ?? 0) +
+      (report.busBlind?.patchError ? 1 : 0) +
       report.missingServices.length +
       (report.tsDrift?.length ?? 0) +
       (report.dualCopy?.divergent?.length ?? 0) +
@@ -111,15 +113,18 @@ describe('豁免机制', () => {
   });
 
   test('豁免过的主题仍保留原始判定，便于复查', () => {
-    // 2026-09-29 更新：sandbox.failed 已有 **1 条**生产数据（v0.2.7 实跑时 runSmoke
-    // 返回 plugin-not-found，sandbox 插件仍发了 sandbox.failed —— 见
-    // plugins/agint-quality-sandbox/lib/index.js:296-300 的 addFailure 与 :230 的 withPublish）。
-    // 于是 check-wiring 的判定按「生产有数据 ⇒ 发布方是动态构造」翻转：
-    //   decide 逻辑 bin/check-wiring.mjs:274
-    //   if (pubs.length === 0 && subs.length > 0) verdict = n > 0 ? 'PUBLISHER_DYNAMIC' : 'ORPHAN_TOPIC'
-    // 从 ORPHAN_TOPIC 变成 PUBLISHER_DYNAMIC。**这是本断言按设计触发**（它本来就是
-    // 「上游通电就提醒复查」的 watchdog），不是回归。
-    assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'PUBLISHER_DYNAMIC');
+    // 判定规则（bin/check-wiring.mjs）：
+    //   pubs.length === 0 && subs.length > 0 ⇒ n > 0 ? 'PUBLISHER_DYNAMIC' : 'ORPHAN_TOPIC'
+    // 本断言是「上游通电就提醒复查豁免」的 watchdog：rawVerdict 一翻，这里就该红。
+    //
+    // 历史轨迹（两次翻转均为按设计触发，不是回归）：
+    //   2026-09-29 翻到 PUBLISHER_DYNAMIC —— v0.2.7 实跑 runSmoke 返回 plugin-not-found，
+    //     sandbox 插件仍发了 sandbox.failed（plugins/agint-quality-sandbox/lib/index.js:296-300）。
+    //     复查结论：豁免维持。
+    //   2026-10-09 翻回 ORPHAN_TOPIC —— 该条生产事件已被 ring buffer 轮转掉
+    //     （agint_event_bus.json 中 sandbox.failed 计数归零）。复查结论：豁免维持，
+    //     sandbox 插件只在 smoke 实跑时动态发布，静态扫描下本就无发布调用点。
+    assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'ORPHAN_TOPIC');
     // sandbox.passed 至今 n=0（runSmoke 从未返回过 ok），维持 ORPHAN_TOPIC。
     // 它一旦变成 PUBLISHER_DYNAMIC，这里就该红 —— 那同样是要复查豁免的信号。
     assert.equal(byTopic.get('sandbox.passed')?.rawVerdict, 'ORPHAN_TOPIC');
@@ -159,7 +164,7 @@ describe('豁免机制', () => {
     assert.deepEqual(
       unexpected,
       [],
-      `这些文件改了仓库还没部署到宿主：\n${unexpected.join('\n')}`,
+      `以下文件仓库与部署位不一致（哈希比对判不出方向，最常见是仓库改了没跑 install）：\n${unexpected.join('\n')}`,
     );
   });
 
@@ -176,6 +181,53 @@ describe('豁免机制', () => {
       report.drift.checked > 100,
       `只比对了 ${report.drift.checked} 个文件 —— 多半是路径算错了，查 H 形同虚设`,
     );
+  });
+
+  // ─────────── 扫描范围自证（2026-10-26 三类盲区）───────────
+  // 修之前的实现是 `root/<名>/lib/*.js` 一层扫描，于是三类文件完全不可见：
+  //   1) 分组目录 plugins/agint-quality/ 下的五个子插件（它自己没有 lib/）
+  //   2) 根入口插件 plugins/agint-session-extract/index.js（没有 lib/）
+  //   3) lib 下的 .mjs（只收 .js）
+  // 实测过的后果：改了 contract 的 lib/index.js，仓库与三处部署位 md5 明确不同，
+  // 查 H 全程未报漂移 —— 门禁报 PASS。以下的断言就是钉住这件事不许回退。
+  describe('扫描范围：分组目录 / 根入口 / .mjs', () => {
+    const cov = report.drift.coverage;
+
+    test('覆盖度已导出（没有它就无法判断「查了哪些」）', () => {
+      assert.ok(cov, '缺少 drift.coverage —— 查 H 的扫描范围没有自证');
+      assert.ok(cov.plugins > 0 && cov.filesPerRoot > 0, 'coverage 数值异常');
+    });
+
+    test('分组目录下的插件在扫描范围内', () => {
+      const nested = ['agint-quality/agint-quality-contract', 'agint-quality/agint-quality-eval',
+        'agint-quality/agint-quality-policy', 'agint-quality/agint-quality-report',
+        'agint-quality/agint-quality-sandbox'];
+      for (const p of nested) {
+        assert.ok(cov.nested.includes(p), `${p} 未被发现 —— 又退回单层扫描了`);
+      }
+    });
+
+    test('根入口插件（index.js 不在 lib/ 下）在扫描范围内', () => {
+      assert.ok(
+        cov.rootEntry.includes('agint-session-extract/index.js'),
+        `根入口插件未纳入比对（实际 rootEntry=${JSON.stringify(cov.rootEntry)}）`,
+      );
+    });
+
+    test('lib 下的 .mjs 在扫描范围内', () => {
+      assert.ok(
+        cov.mjs.includes('agint-session-source/lib/index.mjs'),
+        `lib 内 .mjs 未纳入比对（实际 mjs=${JSON.stringify(cov.mjs)}）`,
+      );
+    });
+
+    test('每个部署根都真比了一遍（总数 = 每根文件数 × 根数）', () => {
+      assert.equal(
+        report.drift.checked,
+        cov.filesPerRoot * report.drift.roots.length,
+        `比对 ${report.drift.checked} 次 ≠ ${cov.filesPerRoot} 文件 × ${report.drift.roots.length} 根 —— 有部署位被漏比`,
+      );
+    });
   });
 
   test('查 E/H 真的查了：部署位探测到 ≥2 个副本（防止又被静默跳过）', () => {
@@ -200,6 +252,62 @@ describe('豁免机制', () => {
   test('域豁免生效：agint_search 不计入 DEAD', () => {
     const dead = report.domains.neverEnergized.map((d) => d.domain);
     assert.ok(!dead.includes('agint_search') || report.domains.neverEnergized.find((d) => d.domain === 'agint_search')?.exemption);
+  });
+});
+
+// ───────────────────── 查 E'：总线零感知（2026-10-09 新增）─────────────────────
+// 为什么要有这一查：查 B/C 以 topic 字符串为索引，只对**已声明过的主题**产出结论。
+// 一个「该发事件却连主题名都没声明」的插件，一行输出都不会有 —— 于是
+// agint-rules / agint-restart / agint-abtest / agint-wiki / agint-quality-contract
+// 五个插件长期缺席，而门禁报的是 PASS（见 proposals/agint-eventbus-unwired-plugins-20261009.md）。
+describe('查 E\'：总线零感知', () => {
+  const blind = report.busBlind;
+
+  test('本查真的跑了：挂载清单读到了，且不是空跑', () => {
+    assert.equal(blind.patchError, null, `读不到 cordis.patch.yml：${blind.patchError}`);
+    assert.ok(blind.mounted > 20, `只认出 ${blind.mounted} 个挂载插件 —— 解析口径坏了`);
+    // 四类去向必须加起来等于挂载总数，否则有插件悄悄从本查的视野里消失
+    const accounted = blind.aware.length + blind.unwired.length + blind.exempted.length + blind.noService.length + blind.mountMissing.length;
+    assert.equal(accounted, blind.mounted, `四类去向合计 ${accounted} ≠ 挂载 ${blind.mounted}，有插件去向不明`);
+    // ⚠️ 上面那条「加起来相等」挡不住**语义被阉**的变异：若服务识别函数恒返回空，
+    //   全部 45 个插件都会落进 noService，账面依然平衡、unwired 归零、门禁转绿 ——
+    //   一条彻底失效的查法会伪装成「零缺口」。实测（2026-10-09 变异测试）确认过这个洞。
+    //   故必须再钉一条：真的有插件被认成「总线有感」，且占多数。
+    assert.ok(blind.aware.length > blind.mounted / 2, `总线有感仅 ${blind.aware.length}/${blind.mounted} —— 本查可能已被阉割成空转`);
+  });
+
+  test('⚠️ 按入口路径解析目录，不按 - id: 的名字（回归防线）', () => {
+    // agint-quality-contract 的 id 是它，真实源码却在 plugins/agint-quality/ 下面。
+    // 顶层 plugins/agint-quality-contract/ 只剩 node_modules（v0.6.3 剥离残留）。
+    // 若哪天有人把解析改成 `plugins/${id}`，本断言立刻红 —— 那会把「没接线」
+    // 误判成「插件不存在」，正是本查第一版的 bug。
+    const qc = [...blind.unwired, ...blind.exempted, ...blind.aware].find((p) => p.plugin === 'agint-quality-contract');
+    assert.ok(qc, 'agint-quality-contract 未被本查覆盖 —— 挂载清单解析可能坏了');
+    assert.match(qc.dir, /agint-quality[\\/]agint-quality-contract$/, 'quality-contract 目录解析错位（多半是按 id 拼路径了）');
+  });
+
+  test('已接线的插件不会被误判成零感知', () => {
+    // 反向验证：判据不是「零感知即缺口」，而是「零感知 ∧ 提供跨插件服务」。
+    // event-bus 自己引用极多；mount / metrics / evolve 等已接线的也不该出现在 unwired 里。
+    const names = blind.unwired.map((p) => p.plugin);
+    for (const wired of ['agint-event-bus', 'agint-mount', 'agint-metrics', 'agint-evolve']) {
+      assert.ok(!names.includes(wired), `${wired} 已接线却被判成零感知 —— 判据写反了`);
+    }
+  });
+
+  test('插件豁免生效：tool-stats / quality-sdk / quality-static 不计入 UNWIRED', () => {
+    const unwired = blind.unwired.map((p) => p.plugin);
+    for (const ex of ['agint-tool-stats', 'agint-quality-sdk', 'agint-quality-static']) {
+      assert.ok(!unwired.includes(ex), `${ex} 已豁免却仍计入 UNWIRED —— 豁免清单没被读进来`);
+      assert.ok(blind.exempted.some((p) => p.plugin === ex), `${ex} 应出现在 exempted 里`);
+    }
+    // 豁免条目必须三要素齐全，否则等于埋雷（wiring-exemptions.json 自己的规矩）
+    for (const e of blind.exempted) assert.ok(e.reason, `${e.plugin} 的豁免缺少 reason`);
+  });
+
+  test('纯工具插件（不 provide agint.* 服务）不进本查', () => {
+    // 不提供跨插件服务的插件没有「别人可以消费它」这回事，本查不适用
+    assert.ok(!blind.unwired.some((p) => blind.noService.includes(p.plugin)), 'noService 与 unwired 有交集，判据自相矛盾');
   });
 });
 
@@ -237,8 +345,17 @@ describe('当前真实状态断言（再变红时请更新豁免与文档）', (
 // 这件事被**说出来**了，而不只是没报错。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('--static-only 静态模式', () => {
-  const run = (args) =>
-    execFileSync(NODE, [SCRIPT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // ⚠️ 与文件头 runJson 同一个坑：门禁有缺口时退出码就是 1，而 execFileSync 见非零就抛 ——
+  // 那会把「门禁报出了缺口」变成「测试崩了」。下面这一组断言验的是**输出内容**，
+  // 不是退出码，所以捕获 exit 1 并取 stdout 是正确的；真崩（exit 2 / 语法错）仍不许吞。
+  const run = (args) => {
+    try {
+      return execFileSync(NODE, [SCRIPT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      if (e.status === 1 && e.stdout) return e.stdout;
+      throw e;
+    }
+  };
 
   test('跳过查 E 与查 H，并且**显式说出**跳过了（不是静默不查）', () => {
     const out = run(['--static-only']);
