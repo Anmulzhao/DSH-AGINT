@@ -199,6 +199,50 @@ export function extractRepoPaths(text) {
 }
 
 /**
+ * 一次失败是「确定性的」还是「偶发的」。
+ *
+ * 2026-10-27 实机教训：自动执行失败后一律重试，但有些失败**重试也不会变** ——
+ * 提案描述的目标在仓库里根本不存在（定位不到）、LLM 判定这条提案不适用、
+ * 幻觉闸门判定 oldText 对不上、实体闸门判定捏造了实体。这类失败重试 = 每次
+ * 再烧一遍 LLM，且结果逐字相同。实机那次：一条 oracle 复核类提案两次各 1 秒
+ * 失败（attempts=1 → 2），第二次的产出与第一次完全一致。
+ *
+ * ⛔ 默认 transient（宁可多重试一次，也不要把偶发失败判成死刑）：判错方向的后果
+ *    不对称 —— 把偶发当确定 = 提案永远不再自动跑；把确定当偶发 = 多烧一次 token。
+ *    显式的 transient 标记优先于 deterministic（LLM 挂了就该重试）。
+ */
+const DETERMINISTIC_FAILURE_PATTERNS = [
+  /no target asset resolved/,
+  /llm judged not applicable/,
+  /oldText not found in target file/,
+  /oldText occurs \d+ times/,
+  /empty or no-op edit/,
+  /fabricated entities in newText/,
+  /validate rejected/,
+  /unsafe path/,
+  /denylist hit/,
+];
+const TRANSIENT_FAILURE_PATTERNS = [
+  /llm unavailable/,
+  /llmFailure/,
+  /propose threw/,
+  /read failed/,
+  /timeout/i,
+  /ECONNRESET|ETIMEDOUT|ENOTFOUND/,
+];
+
+/**
+ * @param {string} text failures 里的一行
+ * @returns {'deterministic'|'transient'}
+ */
+export function classifyFailureKind(text) {
+  const s = String(text ?? '');
+  if (TRANSIENT_FAILURE_PATTERNS.some((re) => re.test(s))) return 'transient';
+  if (DETERMINISTIC_FAILURE_PATTERNS.some((re) => re.test(s))) return 'deterministic';
+  return 'transient';
+}
+
+/**
  * 定位失败时的诊断串：提案文本里到底提了哪些反引号路径、几条真实命中仓库。
  * 2026-09-27 观测升级：summary 的 failures 只留前 10 条，隐藏条目让「路径命中了却报
  * no target」这类矛盾无法取证 —— 把关键判据直接写进失败串本身。
@@ -1258,9 +1302,25 @@ export function apply(ctx, config = {}) {
       lastError: state.lastError,
     };
     warn('runOnce ended with no actionable candidate', summary);
+    // 2026-10-27：区分「这次没候选」与「这条提案没有可执行语义」。
+    //
+    // 定向模式（proposalId 指定）下，候选**就是那一条** —— 跑不出东西意味着
+    // 这条提案没有可改的目标，而不是「暂时没合适的候选」。这两种混在一起，
+    // 执行器就会当成偶发失败去重试（实机：oracle 复核类提案两次各 1 秒失败，
+    // 第二次产出与第一次逐字相同，纯浪费）。
+    //
+    // 判「确定性」只看失败原因本身：定位不到目标 / LLM 判定不适用 / 幻觉闸门
+    // 拒绝 / 实体闸门捏造 —— 这些重试不会变。sweep 模式（不指定 proposalId）
+    // 仍按原语义：以后可能有新候选，不算确定性失败。
+    const kinds = failures.map((f) => classifyFailureKind(f));
+    const deterministic = onlyId !== null && failures.length > 0 && kinds.every((k) => k === 'deterministic');
     return {
       skipped: true,
-      reason: 'no actionable candidate（无候选 / 定位不到目标 / LLM 判定不适用）',
+      reason: deterministic
+        ? `not-actionable（这条提案没有可改的目标，重试也不会变）：${String(failures[0] ?? '').slice(0, 300)}`
+        : 'no actionable candidate（无候选 / 定位不到目标 / LLM 判定不适用）',
+      deterministic,
+      failures: failures.slice(0, 30),
       ...summary,
     };
   }

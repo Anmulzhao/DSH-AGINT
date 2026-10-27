@@ -310,3 +310,102 @@ test('setStatus 抛校验错（execAt 在过去等）⇒ 400 而不是 500（是
   assert.equal(r.status, 400);
   assert.match(r.json.error, /在过去/);
 });
+
+
+// ── 2026-10-27：不可自动执行的提案 ⇒ 不许排立即/定时（a 的服务端闸）─────
+//
+// 实机反例：oracle 的「美谕提案」正文自述「永不 auto-apply」，却被默认的
+// immediate 排进队列 ⇒ driver 两次各 1 秒失败。这道闸必须在**服务端**，
+// 不能只靠前端置灰（前端可以被绕过，工具也能直接调）。
+test('autoExecutable=false 的提案排立即执行 ⇒ 400（语义闸，服务端兜底）', async () => {
+  const ev = fakeEvolve({ p1: row({ autoExecutable: false }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'immediate' }),
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /不可自动执行/);
+  assert.equal(ev.calls.length, 0, '被拒的请求一律不许落库');
+});
+
+test('autoExecutable=false 的提案排定时执行 ⇒ 同样 400', async () => {
+  const ev = fakeEvolve({ p1: row({ autoExecutable: false }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({
+      id: 'p1', status: 'approved', execMode: 'scheduled',
+      execAt: new Date(Date.now() + 3600_000).toISOString(),
+    }),
+  });
+  assert.equal(r.status, 400);
+  assert.equal(ev.calls.length, 0);
+});
+
+test('autoExecutable=false 的提案「只批准」⇒ 放行（批准本身仍然成立）', async () => {
+  const ev = fakeEvolve({ p1: row({ autoExecutable: false }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'manual' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(ev.calls.length, 1, '只批准必须能写进去 —— 语义闸拦的是「自动执行」，不是「批准」');
+});
+
+test('autoExecutable 缺席（老提案）⇒ 仍允许立即执行', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'immediate' }),
+  });
+  assert.equal(r.status, 200, '字段缺席 = 可执行（老提案不能因这次改动集体失去自动执行能力）');
+});
+
+
+// ── 2026-10-27：人工可以把一条提案标成「不可自动执行」─────────────────────
+//
+// 存量提案没有 autoExecutable 字段（默认 true）。人工要能补标 ——
+// 否则「这条其实不能自动跑」这件事永远改不了。
+test('autoExecutable=false ⇒ 写进 setStatus 的 opts（人工兜底闸）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'manual', autoExecutable: false }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(ev.calls[0].opts.autoExecutable, false, '标记必须传到 setStatus（唯一的写入口）');
+});
+
+test('autoExecutable 非布尔 ⇒ 400（不猜：猜错 = 钉死一条能跑的提案）', async () => {
+  const ev = fakeEvolve({ p1: row() });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', autoExecutable: 'false' }),
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /autoExecutable/);
+  assert.equal(ev.calls.length, 0, '被拒的请求不许落库');
+});
+
+test('autoExecutable 缺席 ⇒ 不动原值（冻结语义，与 blocker 一致）', async () => {
+  const ev = fakeEvolve({ p1: row({ autoExecutable: false }) });
+  const ctx = makeCtx({ evolve: ev });
+  apply(ctx, {});
+  const r = await call(ctx, {
+    headers: goodHeaders,
+    body: envelope({ id: 'p1', status: 'approved', execMode: 'manual' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(ev.calls[0].opts.autoExecutable, undefined, '没传就不许改 —— 否则补一句理由就把闸打开了');
+});

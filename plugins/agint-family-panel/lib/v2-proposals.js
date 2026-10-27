@@ -474,6 +474,9 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       execState: String(r?.execState ?? 'idle'),
       execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
       execError: String(r?.execError ?? ''),
+      // 2026-10-27：能不能自动执行。⛔ 缺席 = 可执行（与 evolve 侧默认一致）——
+      // 「读成不可执行」会让老提案集体失去被批准后自动跑的能力。
+      autoExecutable: r?.autoExecutable !== false,
       createdAt: r?.createdAt ?? null,
       updatedAt: r?.updatedAt ?? null,
       ageDays: ageDaysOf(r?.createdAt, now),

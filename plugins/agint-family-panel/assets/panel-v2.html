@@ -1397,20 +1397,26 @@ function propDetail(it){
   const draft=PSTATE.drafts[it.id]||"";
   /* 2026-10-27：批准时选执行方式。默认「立即自动执行」——老板要的是批准即执行，
      不是再生成一张催办工作单；「只批准」保留为显式选项（老语义）。 */
-  const execPick=PSTATE.execMode||"immediate";
+  /* 2026-10-27：不可自动执行的提案（复核类）只给「只批准」——
+     把「立即/定时」置灰而不是照排再失败。语义闸在服务端也有一道（400），
+     这里只是让人在点之前就看见，不用靠报错才知道。 */
+  const canAutoExec = it.autoExecutable!==false;
+  const execPick = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
   const execBar=pend&&pend.status==="approved"?`
       <div style="margin:6px 0 0;padding-top:8px;border-top:1px dashed var(--border)">
         <span class="dlab" style="display:block;margin:0 0 4px">批准后怎么执行</span>
         <select data-exec-mode style="background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">
-          <option value="immediate"${execPick==="immediate"?" selected":""}>立即自动执行（新增提案默认）</option>
-          <option value="scheduled"${execPick==="scheduled"?" selected":""}>定时自动执行</option>
+          <option value="immediate"${execPick==="immediate"?" selected":""}${canAutoExec?"":" disabled"}>立即自动执行（新增提案默认）</option>
+          <option value="scheduled"${execPick==="scheduled"?" selected":""}${canAutoExec?"":" disabled"}>定时自动执行</option>
           <option value="manual"${execPick==="manual"?" selected":""}>只批准，不自动执行</option>
         </select>
         ${execPick==="scheduled"?`<input type="datetime-local" data-exec-at value="${pescAttr(PSTATE.execAt||"")}" style="margin-left:6px;background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">`:""}
         <div style="margin-top:4px;font-size:var(--fs-xs);color:var(--fg-3)">
-          ${execPick==="manual"
-            ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
-            : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 3 次。"}
+          ${!canAutoExec
+            ? "⛔ 这条提案声明了不可自动执行（复核类）—— 它要的动作是人工复核，没有可改的代码目标，只能「只批准」。"
+            : execPick==="manual"
+              ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
+              : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 3 次。"}
         </div>
       </div>`:"";
   const confirmBar=pend?`<div class="confirm">
@@ -1531,7 +1537,9 @@ async function submitDecision(pend){
   // 批准时把执行方式一起带上（2026-10-27）：服务端据此落执行计划并入队。
   let body={id:pend.id,status:pend.status,note:pend.note||""};
   if(pend.status==="approved"){
-    const mode=PSTATE.execMode||"immediate";
+    // ⛔ 不可自动执行的提案只能「只批准」——与服务端同一口径（那边还会 400 兜底）。
+    const canAutoExec = pend.autoExecutable!==false;
+    const mode = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
     body.execMode=mode;
     if(mode==="scheduled"){
       if(!PSTATE.execAt){ toast("定时自动执行需要选一个时间点","err"); return; }
@@ -1663,7 +1671,11 @@ propRows.addEventListener("click",async e=>{
         const ta=propRows.querySelector(`textarea[data-note="${id}"]`); if(ta) ta.focus();
         return;
       }
-      PSTATE.pending={id,status,note}; renderProposals(); return;
+      // 带上 autoExecutable：提交时才知道能不能排自动执行（确认条与提交要同一口径）。
+      // ⛔ 提案列表在 PROP.items 里（`items` 是渲染函数内的局部变量，这里取不到）。
+      const plist=(PROP&&PROP.items)||[];
+      const prow=plist.find(x=>x&&x.id===id);
+      PSTATE.pending={id,status,note,autoExecutable:prow?prow.autoExecutable!==false:true}; renderProposals(); return;
     }
     if(pact==="confirm"){ await submitDecision({...PSTATE.pending}); return; }
     return;

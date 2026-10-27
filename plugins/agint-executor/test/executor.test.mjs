@@ -277,3 +277,98 @@ console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-
   apply(ctx, { enabled: true, tickMs: 60000 });
   assert.equal(intervals, 1, 'enabled=true 时应注册恰好一个 interval');
 }
+
+
+// ── 2026-10-27：确定性失败不重试（b）──────────────────────────────────
+//
+// 实机教训：oracle 的「美谕提案」没有可改的代码目标，driver 两次各 1 秒失败，
+// 第二次产出与第一次逐字相同 —— 重试只是再烧一遍 LLM。所以 driver 判定为
+// deterministic 时，执行器必须**一次就收尾**，不许排重试。
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job({ attempts: 0 })] });
+  const addFailureCalls = [];
+  await withExecutor({
+    evolve,
+    driver: {
+      runForProposal: async () => ({
+        skipped: true,
+        deterministic: true,
+        reason: 'not-actionable（这条提案没有可改的目标，重试也不会变）：p1: no target asset resolved',
+        failures: ['p1: no target asset resolved'],
+      }),
+    },
+    config: { maxAttempts: 3, retryDelayMs: 1000 },
+  }, async ({ ctx, svc }) => {
+    ctx.provide('agint.evolution', { addFailure: async (a) => addFailureCalls.push(a) });
+    const out = await svc.tick({ force: true });
+    assert.equal(out.results[0].action, 'fail');
+    assert.equal(out.results[0].deterministic, true, '结果里要带出「确定性」，否则调用方分不清');
+    assert.equal(evolve.calls.requeue.length, 0, '确定性失败绝不排重试（重试不会变，只烧 token）');
+    assert.equal(evolve.calls.finish.length, 1);
+    assert.equal(evolve.calls.finish[0].patch.ok, false);
+    assert.match(evolve.calls.finish[0].patch.error, /not-actionable/, '失败原因要带「不可执行」这个结论');
+    assert.equal(addFailureCalls.length, 1);
+    assert.equal(addFailureCalls[0].pattern, 'executor-run-not-actionable', '失败模式要能单独归类，周报才查得动');
+  });
+}
+
+// ── 2026-10-27：偶发失败仍然重试（别把 b 做成「一律不重试」）──────────
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job({ attempts: 0 })] });
+  await withExecutor({
+    evolve,
+    driver: { runForProposal: async () => ({ skipped: true, failures: ['p1: llm unavailable: timeout'] }) },
+    config: { maxAttempts: 3, retryDelayMs: 1000 },
+  }, async ({ svc }) => {
+    const out = await svc.tick({ force: true });
+    assert.equal(out.results[0].action, 'retry', 'LLM 挂掉这类偶发失败必须照常重试');
+    assert.equal(evolve.calls.requeue.length, 1);
+  });
+}
+
+// ── 2026-10-27：不可自动执行的提案 ⇒ 撤单（a 的执行侧兜底）──────────────
+//
+// 语义闸：复核类提案没有可改的目标，排进队列也只会失败。按 cancel 撤单
+// （不是 fail）——「这次不该跑」与「跑了但没跑成」是两回事。
+{
+  const evolve = makeFakeEvolve({
+    proposal: approved({ autoExecutable: false }),
+    jobs: [job()],
+  });
+  await withExecutor({
+    evolve,
+    driver: { runForProposal: async () => ({ skipped: false, commit: { ok: true, path: 'x' } }) },
+  }, async ({ svc }) => {
+    const out = await svc.tick({ force: true });
+    assert.equal(out.results[0].action, 'cancel');
+    assert.match(out.results[0].reason, /不可自动执行/);
+    assert.equal(evolve.calls.finish[0].patch.state, 'cancelled');
+  });
+}
+
+// ── decideRun：autoExecutable=false ⇒ cancel（纯判据层）────────────────
+{
+  const d = decideRun({
+    job: job({ attempts: 1 }),
+    proposal: approved({ autoExecutable: false }),
+    weekCommits: 0,
+    cap: 3,
+    driverReady: true,
+    now: Date.now(),
+  });
+  assert.equal(d.action, 'cancel');
+  assert.match(d.reason, /不可自动执行/);
+}
+
+// ── decideRun：autoExecutable 缺席（老提案）⇒ 照常可跑 ──────────────────
+{
+  const d = decideRun({
+    job: job({ attempts: 1 }),
+    proposal: { id: 'p1', status: 'approved', execMode: 'immediate', blocker: '' },
+    weekCommits: 0,
+    cap: 3,
+    driverReady: true,
+    now: Date.now(),
+  });
+  assert.equal(d.action, 'run', '字段缺席 = 可执行（老提案不能因这次改动集体失去自动执行能力）');
+}

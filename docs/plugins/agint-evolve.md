@@ -97,6 +97,28 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 - 工具：`evolve_set_status <id> approved "<理由>" --execMode immediate`；
   队列查看与手动放行/撤销走 `evolve_executions`（`action=list|run|cancel`）。
 
+### 2026-10-27 起：提案可以声明「不可自动执行」（`autoExecutable`）
+
+不是每条提案都能被执行。**复核类提案**（如 oracle 的「美谕提案」）正文自述
+「纯机械动作提案，永不 auto-apply；是否执行由老板裁定」—— 它要的动作是**人去复核
+一条记忆条目**，没有可改的代码目标。
+
+首跑实测的教训：面板默认「立即执行」⇒ 这类提案被排进队列 ⇒ driver 定位不到目标 ⇒
+两次各 1 秒失败，产出逐字相同。所以加了声明位：
+
+| 字段 | 含义 |
+|---|---|
+| `autoExecutable` | `false` = 这条提案**不可自动执行**（只能「只批准」）。⛔ 默认 `true` —— 字段是后加的，老提案一律仍可执行 |
+
+- 判据只有一处：`autoEnqueueBlocker()` 增闸 `not-auto-executable`。
+- ⛔ **语义闸不可强穿**：`force` 能跳过 blocker / 额度这类外部闸，但跳不过它 ——
+  「它根本没有可改的目标」不是「现在还不行」。
+- 执行器侧另有兜底：`decideRun()` 见 `autoExecutable === false` ⇒ 撤单（不是失败）。
+- 人工可改：`evolve_set_status <id> approved "<理由>" autoExecutable=false`（兜底闸）。
+  ⛔ 只认布尔；**存量提案没有这个字段 ⇒ 默认仍可自动执行** ⇒ 「这条其实不能自动跑」
+  这件事以前改不了，现在人工可补标（面板的决策写通道也收这个字段）。
+- 创建时声明：`evo.propose({ ..., autoExecutable: false })`（oracle 走这条）。
+
 ## 模型接口
 
 - `evolve_review [--date YYYY-MM-DD] [--notes "..."]` 立即跑一次（dry-run 默认写文件）

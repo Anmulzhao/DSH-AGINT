@@ -1,5 +1,23 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.6.0 — 2026-10-27 — 定向失败区分「确定性不可执行」与「偶发」
+
+**背景**：自动执行失败后一律重试，但有些失败**重试也不会变**。实机那条 oracle 复核类
+提案两次各 1 秒失败，产出逐字相同 —— 重试只是再烧一遍 LLM。
+
+**变更**
+1. 新增导出 `classifyFailureKind(text)` → `'deterministic' | 'transient'`。
+   确定性判据（定位不到目标 / LLM 判定不适用 / 幻觉闸门 / 实体闸门 / validate 拒绝 /
+   路径不安全）；⛔ **默认 transient** —— 判错方向不对称：把偶发判成确定 = 提案永远
+   不再自动跑；把确定当偶发 = 多烧一次 token。显式 transient 标记优先。
+2. 定向模式（`runForProposal` / `runOnce({proposalId})`）无可执行目标时，返回
+   `reason='not-actionable（…）'` + `deterministic: true`，并带上首个失败细节。
+   ⛔ **sweep 模式（不指定 proposalId）保持原语义**（`deterministic: false`）——
+   下一轮可能有新候选，那不是「不可能成功」。
+3. 新增 `failures`（前 30 条）到返回里，调用方不必再从 summary 猜。
+
+**验证**：`node test/smoke.mjs` 49 → **52 全绿**（T37 判据层 / T38 定向确定性 / T39 sweep 不变）。
+
 ## v0.5.0 — 2026-10-27 — `runForProposal(proposalId)`：定向执行一条已批准的提案
 
 **背景**：`agint-executor` 要在批准后自动执行，但 `runOnce()` 的候选池写死

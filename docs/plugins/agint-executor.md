@@ -13,6 +13,14 @@
 
 **不做**：造变异内容、写仓库、D-QAF 决策、自己存状态。
 
+**七道闸**（顺序有意义）：① 提案还在 → ② 还是 approved → ③ **能不能自动执行**
+（`autoExecutable === false` ⇒ 撤单）→ ④ blocker 还在 → ⑤ 驱动可用 → ⑥ 本周额度 →
+⑦ 尝试次数。
+
+**确定性失败不重试**：driver 定向执行失败时若判为 `not-actionable`（确定性 ——
+定位不到目标 / LLM 判定不适用 / 幻觉闸门拒绝，重试也不会变），执行器**一次收尾**，
+失败模式记 `executor-run-not-actionable`；⛔ 偶发失败（LLM 挂了、网络断了）照常重试。
+
 **注入**：`inject = ['timer']` —— `ctx.setInterval`（tick）/ `ctx.setTimeout`（wake 去重）
 由宿主 `timer` 服务提供。⛔ 漏声明不是「软降级」而是 apply 抛错、插件整个不挂载
 （v0.1.0 首次部署即此坑，见 CHANGELOG v0.1.1）。

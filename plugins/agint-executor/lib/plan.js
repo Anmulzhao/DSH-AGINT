@@ -11,12 +11,13 @@
  *
  *   ① 提案还在不在          —— 都没了，撤单
  *   ② 还是不是 approved     —— 人撤销了批准，撤单（不能让后台继续改代码）
- *   ③ blocker 还在不在     —— 前置没到位，撤单（不是失败，是"这次不该跑"）
- *   ④ 驱动在不在            —— 缺能力就是失败，且**不许**标成「跑过了」
- *   ⑤ 本周额度              —— 到顶就顺延到下周（不是失败）
- *   ⑥ 同一 job 的尝试次数   —— 到顶就失败收尾（防无限重试烧 token）
+ *   ③ 能不能自动执行        —— 复核类提案没有可改的目标，撤单（2026-10-27 新增）
+ *   ④ blocker 还在不在     —— 前置没到位，撤单（不是失败，是"这次不该跑"）
+ *   ⑤ 驱动在不在            —— 缺能力就是失败，且**不许**标成「跑过了」
+ *   ⑥ 本周额度              —— 到顶就顺延到下周（不是失败）
+ *   ⑦ 同一 job 的尝试次数   —— 到顶就失败收尾（防无限重试烧 token）
  *
- * ⛔ ④ 必须在 ⑤ 之前：能力缺失是配置问题，不该消耗「本周额度」这个稀缺资源，
+ * ⛔ ⑤ 必须在 ⑥ 之前：能力缺失是配置问题，不该消耗「本周额度」这个稀缺资源，
  *    也不该被顺延掩盖成"下周就能跑"。
  */
 
@@ -40,6 +41,13 @@ export function decideRun({ job, proposal, weekCommits = 0, cap = 0, driverReady
   }
   if (proposal.status !== 'approved') {
     return { action: 'cancel', reason: `提案状态是 ${proposal.status}，不再是 approved` };
+  }
+  // 2026-10-27：语义闸 —— 这条提案声明了「不可自动执行」（复核类）。
+  // 与 blocker/额度这类外部闸不同：这不是「现在还不行」，而是「它根本没有
+  // 可改的代码目标」—— 跑它必然失败。按 cancel 撤单（不是 fail），因为
+  // 「这次不该跑」和「跑了但没跑成」是两回事。
+  if (proposal.autoExecutable === false) {
+    return { action: 'cancel', reason: '该提案声明不可自动执行（复核类提案）—— 没有可改的代码目标，不进执行' };
   }
   const blocker = typeof proposal.blocker === 'string' ? proposal.blocker.trim() : '';
   if (blocker !== '') {

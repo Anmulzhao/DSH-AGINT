@@ -22,6 +22,7 @@ import {
   pickCandidate,
   spawnLlm,
   DEFAULT_AGENT_PRESET,
+  classifyFailureKind,
 } from '../lib/index.js';
 
 // 1a 归档复原断言用（T25f）：hash 纯函数 + 锁定用的 hypothesis 形状
@@ -1710,4 +1711,67 @@ test('T36: 1b 接线 —— measureOutcomes 先验锁再量账：没仓库根就
   assert.equal(st2.auditTampered, 2, '对不上 1 条 + 删行 1 条都算安全事件');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T36）');
+// ── T37: classifyFailureKind —— 确定性 vs 偶发（b 的判据层）──────────────
+//
+// 实机教训：自动执行失败后一律重试，但「定位不到目标 / LLM 判定不适用」这类
+// 失败重试也不会变 —— 实机那次两次各 1 秒失败，产出逐字相同。
+test('T37: classifyFailureKind 把「重试也不会变」与「偶发」分开', () => {
+  assert.equal(classifyFailureKind('c1: no target asset resolved (mentioned:0 inRepo:0)'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: llm judged not applicable'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: validate rejected — atomicity violated'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: oldText not found in target file (hallucination guard)'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: llm unavailable: timeout'), 'transient');
+  assert.equal(classifyFailureKind('c1: propose threw — ECONNRESET'), 'transient');
+  assert.equal(classifyFailureKind('c1: 没见过的一条失败'), 'transient',
+    '默认 transient —— 把偶发判成确定 = 提案永远不再自动跑；判错方向不对称');
+  assert.equal(classifyFailureKind('c1: construct failed — llm unavailable: read failed'), 'transient',
+    '显式 transient 标记优先于 deterministic');
+});
+
+// ── T38: 定向执行 ⇒ 确定性不可执行要说出来（b）────────────────────────────
+//
+// 实机那条 oracle 提案：正文自述「永不 auto-apply；是否执行由老板裁定」，
+// 却因为面板默认 immediate 被排进队列 ⇒ driver 定位不到目标 ⇒ 两次各 1 秒失败。
+// 定向模式下候选**就是那一条**，跑不出东西 = 这条提案没有可改的目标，
+// 不是「暂时没候选」—— 两者混在一起，执行器就会一直重试。
+test('T38: 定向执行定位不到目标 ⇒ deterministic=true + not-actionable', async () => {
+  const fakeEvolve2 = {
+    listProposals: async () => [],
+    getProposal: async (id) => ({
+      id,
+      title: '美谕提案：决策确信度 扣 1.7 分',
+      body: '建议：定向复核记忆条目 2d70d577 —— 该条无证据支撑。作为本周唯一候选提交人工复核；不改动、不删除、不自动生效。',
+      status: 'approved',
+      category: 'doc',
+    }),
+  };
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve2,
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-x');
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, true, '定向模式下的「无可执行目标」是确定性的');
+  assert.match(out.reason, /not-actionable/, '原因里要能看出「这不是偶发」');
+  assert.match(out.reason, /no target asset resolved/, '也要带上真正的失败细节');
+});
+
+// ── T39: sweep 模式保持原语义（以后可能有新候选，不算确定性失败）──────────
+test('T39: sweep 模式同样定位不到目标 ⇒ deterministic=false（仍可重试）', async () => {
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: '改点东西', body: '没有目标文件', status: 'proposed', createdAt: '2026-09-01' }]),
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm: GOOD_LLM },
+  });
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, false, 'sweep 模式不等于确定性失败 —— 下一轮可能有新候选');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T39）');

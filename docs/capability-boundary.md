@@ -46,7 +46,7 @@
 | agint-wiki | 0.2.0 | E | 知识库 |
 | agint-rules | 0.2.1 | E | 工具流水线规则门禁（约束） |
 | agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
-| agint-evolve | 0.1.0 | E | 周复盘 + 提案跟踪 |
+| agint-evolve | 0.11.0 | E | 周复盘 + 提案跟踪（含提案执行计划与可执行性声明） |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
 | agint-quality-eval | 0.4.0 | E | D-QAF 评估引擎 |
@@ -58,8 +58,8 @@
 | agint-diagnosis | 0.6.0 | E | 6 类根因归因 |
 | agint-mutator | 0.6.7 | E | 3 类变异构造 |
 | agint-population | 0.6.4 | E | 种群生命周期 + 适应度 |
-| agint-evolution-driver | 0.3.1 | E | 闭环驱动（提案→变异→种群） |
-| agint-executor | 0.1.1 | E | 批准即执行的调度与守护（提案→执行队列→driver 定向执行） |
+| agint-evolution-driver | 0.6.0 | E | 闭环驱动（提案→变异→种群）+ 定向执行入口 |
+| agint-executor | 0.2.0 | E | 批准即执行的调度与守护（提案→执行队列→driver 定向执行） |
 | agint-mount | 0.7.2 | E | 变更编排三段式事务 |
 | agint-abtest | 0.6.4 | E | Prompt A/B 统计判定 |
 | agint-curriculum | 0.1.6 | E | 自主课程生成 |
@@ -68,7 +68,7 @@
 | agint-skill-autocreate | 0.6.2 | E | 技能自动创建全链路 |
 | agint-curator | 0.2.1 | E | 技能生命周期策展 |
 | agint-skill-graph | 0.1.1 | E | 技能关系图谱 |
-| agint-aesthetic-oracle | 0.5.0 | E | 「美」的度量与广播 |
+| agint-aesthetic-oracle | 0.8.0 | E | 「美」的度量与广播（美谕提案声明不可自动执行） |
 | agint-event-bus | 0.7.1 | E | 进化事件基础设施 |
 | agint-ov-strategy | 0.1.0 | E | 经验沉淀与策略召回 |
 | agint-input-gateway | 0.1.5 | E | 多源信号进料 |
@@ -79,7 +79,7 @@
 | **agint-session-extract** | 0.1.0 | **H-越界** | 自建 zstd 解压 + jsonl 解析 + 会话文件发现 ⇒ 应消费 dsh `sessionQuery` |
 | **agint-session-source** | — | **H-越界** | 会话文件发现唯一入口（候选名表 + 后缀兜底）⇒ 应消费 dsh `sessionQuery` |
 | **agint-cron** | 0.2.16 | **E（调度原语偏 H）** | 自写 5 字段 cron 解析器 ⇒ 表达式解析属宿主层，应复用 dsh 调度原语 |
-| agint-family-panel | 0.2.9 | C | 家族面板（呈现） |
+| agint-family-panel | 0.8.0 | C | 家族面板（呈现） |
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
 | agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |

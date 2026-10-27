@@ -1000,6 +1000,17 @@ function apply(ctx, config = {}) {
         //    就静默降级成「只批准」。
         const execMode = typeof input?.execMode === 'string' ? input.execMode.trim() : undefined;
         const execAt = typeof input?.execAt === 'string' ? input.execAt.trim() : undefined;
+        // 2026-10-27：这条提案能不能自动执行。省略 = 不动原值（冻结语义）。
+        // ⛔ 只认布尔：传字符串/数字一律 400，不猜 —— 「猜错」的代价是把一条
+        //    能跑的提案永久钉死，或把复核类提案放出去白跑一次。
+        let autoExecutable;
+        if (input?.autoExecutable !== undefined && input?.autoExecutable !== null) {
+          if (typeof input.autoExecutable !== 'boolean') {
+            writeJson(res, 400, { ok: false, error: 'autoExecutable 必须是布尔值（true / false）' });
+            return;
+          }
+          autoExecutable = input.autoExecutable;
+        }
         if (id === '') {
           writeJson(res, 400, { ok: false, error: '缺 id' });
           return;
@@ -1058,13 +1069,28 @@ function apply(ctx, config = {}) {
           writeJson(res, 404, { ok: false, error: `未找到提案 ${id}` });
           return;
         }
+        // 2026-10-27：这条提案声明「不可自动执行」时，不许排自动执行。
+        //
+        // 语义闸（不可强穿）：复核类提案没有可改的目标资产，排进去必然失败。
+        // 实机首跑：oracle 的「美谕提案」正文自述「永不 auto-apply；是否执行由
+        // 老板裁定」，却被默认的 immediate 塞进队列，两次各 1 秒失败。
+        if (wantsAutoExec && prev.autoExecutable === false) {
+          writeJson(res, 400, {
+            ok: false,
+            error: '该提案声明不可自动执行（复核类提案）—— 只能「只批准」，不能排立即/定时执行',
+          });
+          return;
+        }
         // 2026-10-27：状态没变但阻塞信息变了，也是一次真实变更 —— 否则「给已批准的
         // 提案补一句为什么不能动手」这种写会被幂等短路掉，永远存不进去。
         const blockerChanged = blocker !== undefined && blocker !== (prev.blocker ?? '');
         const unblockChanged = unblockCondition !== undefined && unblockCondition !== (prev.unblockCondition ?? '');
         const execChanged = (execMode !== undefined && execMode !== (prev.execMode ?? 'manual'))
           || (execMode === 'scheduled' && execAt !== undefined && execAt !== (prev.execAt ?? ''));
-        if (prev.status === status && !blockerChanged && !unblockChanged && !execChanged) {
+        // 2026-10-27：改「能不能自动执行」也是一次真实变更 —— 否则「把这条标成
+        // 不可自动执行」这种写会被幂等短路掉，永远存不进去。
+        const autoExecChanged = autoExecutable !== undefined && autoExecutable !== (prev.autoExecutable !== false);
+        if (prev.status === status && !blockerChanged && !unblockChanged && !execChanged && !autoExecChanged) {
           // 幂等：目标态与现状相同就不写，避免 updatedAt 被无意义地刷。
           writeJson(res, 200, { ok: true, changed: false, previousStatus: prev.status, proposal: prev, at: new Date().toISOString() });
           return;
@@ -1078,6 +1104,8 @@ function apply(ctx, config = {}) {
         const opts = { blocker, unblockCondition };
         if (execMode !== undefined) opts.execMode = execMode;
         if (execMode === 'scheduled' && execAt !== undefined) opts.execAt = execAt;
+        // 2026-10-27：人工改「能不能自动执行」。省略 = 不动（冻结语义）。
+        if (autoExecutable !== undefined) opts.autoExecutable = autoExecutable;
         // 非批准的判定：把执行计划顺手清回 manual，别留下"还会跑"的错觉。
         if (status !== 'approved' && execMode === undefined && (prev.execMode ?? 'manual') !== 'manual') {
           opts.execMode = 'manual';
@@ -1107,6 +1135,8 @@ function apply(ctx, config = {}) {
             at: rec.execAt ?? '',
             state: rec.execState ?? 'idle',
             auto: wantsAutoExec && !(rec.blocker ?? ''),
+            // 2026-10-27：面板据此把「立即/定时」置灰，只留「只批准」。
+            autoExecutable: rec.autoExecutable !== false,
           },
         });
       } catch (err) {

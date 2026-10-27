@@ -37,6 +37,7 @@ import {
   normalizeExec,
   validateExecPlan,
   autoEnqueueBlocker,
+  isAutoExecutable,
   computeDueAt,
   isJobDue,
   weeklyUsage,
@@ -146,6 +147,17 @@ const proposalSchema = z.object({
   execError: z.string().default(''),
   execStartedAt: z.string().default(''),
   execFinishedAt: z.string().default(''),
+  // 2026-10-27：这条提案**能不能被自动执行**。
+  //
+  // 实机反例（首跑就撞上）：oracle 周报产出的「美谕提案：决策确信度 扣 1.7 分」，
+  // 正文自述「纯机械动作提案，status 锁 proposed，**永不 auto-apply**；是否执行
+  // 由老板裁定」「不改动、不删除、不自动生效」—— 它要的动作是**人去复核一条
+  // 记忆条目**，不是改代码。但面板默认 execMode=immediate ⇒ 它被塞进自动执行
+  // 队列 ⇒ driver 定位不到可改的目标资产 ⇒ 两次都在 1 秒内失败。
+  //
+  // 缺的就是「我不可自动执行」这个表达位。⛔ 默认 true：字段是后加的，老提案
+  // （含 driver/mutator 产出的）一律仍可执行，不会因这次升级突然被挡。
+  autoExecutable: z.boolean().default(true),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -389,6 +401,12 @@ function apply(ctx, config) {
     const running = jobs.find((j) => j.state === 'running');
     if (running) return { enqueued: false, reason: 'already-running', job: running };
     const why = autoEnqueueBlocker(rec, jobs);
+    // 2026-10-27：语义闸**不可强穿**。
+    //
+    // force 的本意是「忽略 blocker / 额度这类**外部**闸，我就是要跑」；
+    // 而「这条提案没有可执行语义」（复核类，没有可改的代码目标）不是外部闸
+    // —— 强穿它等于明知会失败还要跑一次，纯浪费。所以这一条先于 force 判定。
+    if (why === 'not-auto-executable') return { enqueued: false, reason: why };
     if (why && !force) return { enqueued: false, reason: why };
     if (jobs.length && !force) return { enqueued: false, reason: 'already-queued', job: jobs[0] };
     const et = await executionTable();
@@ -673,6 +691,9 @@ function apply(ctx, config) {
     const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
     if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
     if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
+    // 2026-10-27：显式改「能不能自动执行」。⛔ 只认布尔 —— 传字符串/数字一律
+    // 当作没传（不猜）。人工把一条提案标成不可自动执行，是给它的兜底闸。
+    if (typeof o.autoExecutable === 'boolean') updated.autoExecutable = o.autoExecutable;
     // 执行计划：显式传才改（同 blocker 的冻结语义）—— 判据在 validateExecPlan。
     if (typeof o.execMode === 'string' || typeof o.execAt === 'string') {
       const plan = validateExecPlan({
@@ -745,6 +766,9 @@ function apply(ctx, config) {
         status: 'proposed',
         source: input.source ?? '',
         note: input.note ?? '',
+        // 2026-10-27：复核类提案显式声明「不可自动执行」（oracle 走这条）。
+        // ⛔ 只认显式 false —— 少写一个字段 = 可执行（默认 true，向后兼容）。
+        autoExecutable: input.autoExecutable === false ? false : true,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       });

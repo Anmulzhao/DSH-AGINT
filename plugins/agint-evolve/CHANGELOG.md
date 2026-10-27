@@ -1,5 +1,40 @@
 # agint-evolve CHANGELOG
 
+## v0.11.0（2026-10-27 · 提案可声明「不可自动执行」：语义闸）
+
+### 为什么
+
+首跑当天就撞上：**面板默认 `execMode=immediate` ⇒ 批准即入队**，而 oracle 产出的
+「美谕提案：决策确信度 扣 1.7 分」正文自述「纯机械动作提案，**永不 auto-apply**；
+是否执行由老板裁定」「不改动、不删除、不自动生效」—— 它要的动作是**人去复核一条
+记忆条目**，没有可改的代码目标。
+
+结果：driver 定位不到目标 ⇒ 两次各 1 秒失败（第二次产出与第一次逐字相同），
+每次还要起一次 LLM。缺的正是「我不可自动执行」这个表达位。
+
+### 新增
+
+- `proposalSchema` 增 `autoExecutable`（布尔，**默认 true**）：⛔ 默认 true 是为了
+  不影响加字段之前的所有提案（老提案不因这次升级突然被挡）。
+- `normalizeExec` 归一（缺席 = true，绝不把「字段缺席」读成「不可执行」）。
+- `isAutoExecutable(rec)` —— 判据只有一处。
+- `autoEnqueueBlocker` 增闸 `not-auto-executable`。
+- `propose(input)` 接受 `input.autoExecutable`；`setStatus` 接受 `opts.autoExecutable`（人工兜底闸）。
+- 工具 `evolve_set_status` 增 `autoExecutable` 参数（布尔）：⛔ 只认布尔，传字符串/数字一律当没传（不猜）。
+  **存量提案没有这个字段 ⇒ 默认 true ⇒ 仍可自动执行** —— 所以「这条其实不能自动跑」
+  这件事以前改不了，现在人工可以补标。
+
+### 语义闸 ≠ 外部闸（刻意的不对称）
+
+`enqueueOne` 里 `force` 能跳过 blocker / 额度这类**外部**闸（「我知道有前置，我就是要跑」），
+但**跳过不了** `not-auto-executable`：这不是「现在还不行」，是「它根本没有可改的目标」，
+强穿等于明知会失败还要跑一次。
+
+### 红绿自证
+
+`test/execution.test.mjs` 增 4 组：声明 false ⇒ 不入队且 `execState` 保持 idle /
+force 也不强穿 / 老提案（无该字段）照常入队 / 改成 false ⇒ 撤掉已排的队。
+
 ## v0.10.0（2026-10-27 · 提案执行计划 + `execution` 队列：批准即执行的数据层）
 
 ### 为什么

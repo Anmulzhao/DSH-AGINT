@@ -1,5 +1,31 @@
 # agint-executor CHANGELOG
 
+## v0.2.0（2026-10-27 · 语义闸 + 确定性失败不重试）
+
+### 为什么
+
+首跑实测：一条 oracle 复核类提案被面板默认的「立即执行」排进队列，driver 两次各 1 秒
+失败（attempts 1 → 2），产出逐字相同。两个缺口：
+
+1. **提案没有「我不可自动执行」的声明位** ⇒ 复核类提案被当成代码变更去跑；
+2. **失败一律重试** ⇒ 确定性失败白烧一次 LLM，还让人以为「它在努力」。
+
+### 变更
+
+1. `decideRun` 增**语义闸**（七道闸的第 ③ 道，排在 blocker 之前）：
+   `proposal.autoExecutable === false` ⇒ `action: 'cancel'`（撤单，不是 fail）——
+   「这次不该跑」与「跑了但没跑成」是两回事。
+2. `interpret(out)` 带出 `deterministic`；`runJob` 见 `deterministic` ⇒ **一次收尾，
+   不排重试**，失败模式单列为 `executor-run-not-actionable`（周报查得动）。
+   ⛔ 偶发失败（LLM 挂了、网络断了）**照常重试** —— 别把这条做成「一律不重试」。
+3. 失败文案的取值优先级：**确定性 ⇒ 用 `reason`**（带 `not-actionable` 结论），
+   **偶发 ⇒ 用 `failures[0]`**（比泛化文案具体，排查靠它）。顺序反了两头都吃亏。
+
+### 红绿自证
+
+`test/executor.test.mjs` 增 5 组：确定性失败不重试（requeue=0、finish=1、失败模式单列）/
+偶发失败仍重试 / autoExecutable=false ⇒ 撤单 / decideRun 两态 / 字段缺席仍可跑。
+
 ## v0.1.1（2026-10-27 · 修：`inject` 漏声明 `timer`，首次部署插件根本没挂上）
 
 ### 症状

@@ -179,6 +179,19 @@ function apply(ctx, config) {
     }
 
     const attempts = Number(job.attempts) || 1;
+    // 2026-10-27：确定性失败**不重试**。
+    //
+    // 「这条提案没有可改的目标」这类失败重试不会变（实机：两次各 1 秒失败，
+    // 产出逐字相同）。重试只是再烧一遍 LLM，且让人看到「它在努力」而误以为
+    // 有希望。偶发失败（LLM 挂了、网络断了）仍照常重试。
+    if (verdict.deterministic) {
+      const err = oneLine(verdict.reason, 400);
+      await evolve.finishExecution(job.id, { ok: false, error: err });
+      state.failed += 1;
+      await recordFailure('executor-run-not-actionable', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
+      warn('executor: 确定性不可执行，不重试', { proposalId: job.proposalId, attempts, reason: err });
+      return { proposalId: job.proposalId, action: 'fail', error: err, deterministic: true };
+    }
     if (canRetry(attempts, cfg.maxAttempts)) {
       const dueAt = new Date(now + cfg.retryDelayMs).toISOString();
       await evolve.requeueExecution(job.id, { dueAt, error: oneLine(verdict.reason, 400), reason: `第 ${attempts} 次失败，${Math.round(cfg.retryDelayMs / 1000)}s 后重试` });
@@ -196,8 +209,25 @@ function apply(ctx, config) {
   function interpret(out) {
     if (!out || typeof out !== 'object') return { ok: false, reason: 'driver 没有返回结果' };
     if (out.skipped === true) {
+      // 2026-10-27：两条优先级，取决于 driver 有没有给出「确定性」判定。
+      //
+      //   确定性（deterministic=true）⇒ 用 reason：它带「not-actionable」这个
+      //     结论（而且已经把首个失败原因嵌在里面），人才知道**不该再试**。
+      //   偶发 ⇒ 用 failures[0]：它比 reason 泛（'no actionable candidate'）
+      //     具体得多（'xxx: no target asset resolved (...)'），排查要靠它。
+      //
+      // ⚠️ 顺序反了的后果不对称：泛化文案盖住细节 ⇒ 排查线索没了；
+      //    细节盖住结论 ⇒ 人以为「还在努力」，而它其实永远不会成功。
       const first = Array.isArray(out.failures) && out.failures.length ? out.failures[0] : null;
-      return { ok: false, reason: oneLine(first ?? out.reason ?? out.lastError ?? 'driver skipped') };
+      const reason = out.deterministic === true
+        ? (out.reason ?? first ?? 'driver skipped')
+        : (first ?? out.reason ?? out.lastError ?? 'driver skipped');
+      return {
+        ok: false,
+        reason: oneLine(reason),
+        // deterministic ⇒ 重试也不会变，不再排重试。
+        deterministic: out.deterministic === true,
+      };
     }
     const commit = out.commit ?? null;
     if (commit && commit.ok === true) {

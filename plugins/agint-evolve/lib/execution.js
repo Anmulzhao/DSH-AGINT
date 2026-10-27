@@ -54,7 +54,27 @@ export function normalizeExec(rec) {
     execError: typeof rec.execError === 'string' ? rec.execError : '',
     execStartedAt: typeof rec.execStartedAt === 'string' ? rec.execStartedAt : '',
     execFinishedAt: typeof rec.execFinishedAt === 'string' ? rec.execFinishedAt : '',
+    // 2026-10-27：这条提案**能不能被自动执行**。
+    // ⛔ 默认 true：字段是后来加的，老提案（含 driver/mutator 产出的）一律仍可执行。
+    //    只有显式写成 false 的（复核类提案）才被挡在队列外。
+    autoExecutable: rec.autoExecutable !== false,
   };
+}
+
+/**
+ * 这条提案允许自动执行吗。
+ *
+ * 2026-10-27 实机反例：oracle 周报产出的「美谕提案：决策确信度 扣 1.7 分」
+ * 正文自述「纯机械动作提案，永不 auto-apply；是否执行由老板裁定」「不改动、
+ * 不删除、不自动生效」—— 它要的动作是**人去复核一条记忆条目**，不是改代码。
+ * 而面板默认 execMode=immediate ⇒ 它被塞进自动执行队列 ⇒ driver 找不到可改的
+ * 目标资产 ⇒ 两次 1 秒内秒退（每次还要起一次 LLM，纯浪费）。
+ *
+ * 缺的正是「我不可自动执行」这个表达位。判据只此一处（autoEnqueueBlocker 读它），
+ * 面板与执行器各自读同一份 —— 判据散成两份就会出现「面板说能跑、执行器说不能」。
+ */
+export function isAutoExecutable(rec) {
+  return !!rec && rec.autoExecutable !== false;
 }
 
 /**
@@ -98,6 +118,9 @@ export function validateExecPlan(input = {}, now = Date.now()) {
  */
 export function autoEnqueueBlocker(rec, activeJobs = []) {
   if (!rec || rec.status !== 'approved') return 'not-approved';
+  // 语义闸（不可强穿）：这条提案本身没有可执行语义（复核类），跑它必然失败。
+  // 与 blocker/额度这类「外部闸」不同 —— force 也不该把它排进队列。
+  if (!isAutoExecutable(rec)) return 'not-auto-executable';
   const n = normalizeExec(rec);
   const blocker = typeof n.blocker === 'string' ? n.blocker.trim() : '';
   if (blocker !== '') return 'blocked';

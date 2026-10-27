@@ -375,6 +375,13 @@ function apply(ctx, config) {
         const rec = await evo.propose({
           title: d.title, body, category: d.category,
           source: name,
+          // 2026-10-27：美谕提案**不可自动执行**。
+          //
+          // 实机首跑教训：面板默认 execMode=immediate，于是这条被塞进自动执行队列，
+          // 而它要的动作是「老板复核一条记忆条目」（补 evidence/confidence）——
+          // 不是改代码。driver 定位不到可改的目标资产，两次都在 1 秒内失败，
+          // 每次还要起一次 LLM。缺的就是「我不可自动执行」这个声明位。
+          autoExecutable: false,
           // r4：note 带 worst=<key>，下一轮去重可精确匹配（不依赖 title 文案）
           note: `${targetId}（美的神谕层 weekly / ${d.note ?? ''}；evidence 见正文）`,
         });

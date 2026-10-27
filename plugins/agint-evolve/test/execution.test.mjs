@@ -248,4 +248,48 @@ await withApp(async ({ evo }) => {
   assert.equal(s2.lastWeekCommits, 1, '近 7 天落地数应算上这次');
 });
 
-console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计）');
+// ── 2026-10-27：autoExecutable=false ⇒ 不入队（语义闸，a）────────────────
+//
+// 实机反例：oracle 的「美谕提案」正文自述「永不 auto-apply；是否执行由老板裁定」，
+// 却被面板默认的 immediate 塞进队列 ⇒ driver 两次各 1 秒失败。
+// 缺的就是「我不可自动执行」这个声明位。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '复核类提案', body: '正文', source: 'agint-aesthetic-oracle', autoExecutable: false });
+  assert.equal((await evo.getProposal(p.id)).autoExecutable, false, '创建时就要落库这个声明');
+
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const jobs = await evo.listExecutions({ proposalId: p.id });
+  assert.equal(jobs.length, 0, '声明不可自动执行的提案**不许**入队 —— 排进去必然失败');
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.execState, 'idle', '没入队就不该显示排队中');
+  assert.equal(rec.status, 'approved', '批准这件事本身仍然成立');
+});
+
+// ── force 也不强穿语义闸（与 blocker/额度这类外部闸不同）──────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '复核类提案二', body: '正文', autoExecutable: false });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const forced = await evo.enqueueExecution(p.id, { force: true });
+  assert.equal(forced.enqueued, false, 'force 也不该把「没有可执行语义」的提案排进队列');
+  assert.match(forced.reason, /not-auto-executable/);
+});
+
+// ── 老提案（无 autoExecutable 字段）仍可自动执行 ──────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '普通提案', body: '正文' });
+  assert.equal((await evo.getProposal(p.id)).autoExecutable, true, '默认 true —— 字段是后加的，老提案不受影响');
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  assert.equal((await evo.listExecutions({ proposalId: p.id })).length, 1, '普通提案照常入队');
+});
+
+// ── setStatus 可以显式改这个标记（人工兜底闸）─────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '先可执行后改掉', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  assert.equal((await evo.listExecutions({ proposalId: p.id })).length, 1);
+  const rec = await evo.setStatus(p.id, 'approved', '这条其实不该自动跑', { autoExecutable: false });
+  assert.equal(rec.autoExecutable, false);
+  assert.equal((await evo.listExecutions({ proposalId: p.id, state: 'queued' })).length, 0, '改成不可执行 ⇒ 撤掉队列');
+});
+
+console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 不可自动执行）');
