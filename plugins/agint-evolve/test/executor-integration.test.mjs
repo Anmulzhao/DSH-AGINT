@@ -122,7 +122,46 @@ try {
   assert.equal(after3.execState, 'failed');
   assert.match(after3.execError, /runForProposal 未挂载/);
 
-  console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动 三条路径接口对齐）');
+  // ── 4. 部分落地：job 成功 ≠ 提案做完（2026-10-28 v0.2.1，提案 `846f4fbb` 实证）──
+  //
+  // 前面 driver 返回了 `scope.complete=false`（3 个原子单元只落地 1 个）。
+  // 旧口径：commit.ok ⇒ 成功 ⇒ 提案标 applied ⇒ 台账显示"已落地"，
+  // 而正文里另外两处替身 + 共用模块从此没有任何入口。
+  // 新口径：提案留在 approved，execState=partial，execError 写明还差哪些。
+  // 本节用**真实** evolve + 真实 executor 对一次 —— 单测两边各自替身是验不出形状错配的。
+  ctx.provide('agint.evolutionDriver', {
+    async runForProposal(proposalId) {
+      return {
+        skipped: false,
+        proposalId: 'mut-partial',
+        commit: { ok: true, path: 'plugins/agint-evolve/test/_stub-dsh-tools.mjs', policyDecision: 'AUTO_DEPLOY' },
+        scope: {
+          targets: ['a.mjs', 'b.mjs', 'c.mjs'],
+          unitsTotal: 3,
+          unitsApplied: 1,
+          remainingUnits: ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs'],
+          requiresNewAsset: false,
+          complete: false,
+          note: '范围记账 1/3',
+        },
+      };
+    },
+  });
+  const p4 = await evolve.propose({ title: '收紧替身', body: '抽一份共用的替身，再逐个迁。' });
+  await evolve.setStatus(p4.id, 'approved', '批', { execMode: 'immediate' });
+  const tick5 = await executor.tick({ force: true, now: Date.now() + 1000 });
+  assert.equal(tick5.results[0].ok, true, '单元确实落地了 ⇒ job 是成功的');
+  assert.equal(tick5.results[0].partial, true, '但只覆盖了一部分 ⇒ 必须打 partial');
+  const after4 = await evolve.getProposal(p4.id);
+  assert.equal(after4.status, 'approved', '⛔ 不许标 applied —— 标了就等于把没做的部分一起结账');
+
+  assert.equal(after4.execState, 'partial');
+  assert.match(after4.execError, /部分落地/);
+  assert.match(after4.execError, /agint-input-gateway/, '欠账里要点名具体文件路径，不然还得重走一遍取证');
+  assert.match(after4.note, /部分落地/, 'note 是唯一能追溯"哪一部分已经落地"的地方');
+  assert.equal(executor.status().partial, 1, '部分覆盖要单独计数 —— 否则周报把 1/3 的也数成"已落地"');
+
+  console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地 四条路径接口对齐）');
 } finally {
   await rm(root, { recursive: true, force: true });
 }

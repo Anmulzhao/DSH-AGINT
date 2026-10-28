@@ -10,6 +10,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { EXEC_STATES } from './execution.js';
 
 const name = 'agint-evolve-tools';
 const inject = ['tools', 'agint.evolve'];
@@ -21,7 +22,9 @@ const STATUSES = ['proposed', 'approved', 'applied', 'rejected', 'wontfix'];
 // 2026-10-27：批准之后谁来动手 —— manual=只批准；immediate=立刻自动跑；
 // scheduled=按 execAt 自动跑。后两者由 agint-executor 负责，不需要人再点。
 const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
-const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
+// ⛔ 不再在此处抄第二份：曾出现 execution.js 加了档而这里没加的漂移（2026-10-28
+//    加 `partial` 时修）。判据只准一处，工具、面板、执行器一律从 execution.js 引。
+//    `partial` = job 成功但提案还有单元没覆盖（见 execution.js 的注释与提案 846f4fbb）。
 
 // K21: raw JSON Schema form. `required` is array on parent object, not on
 // each property.
@@ -330,7 +333,7 @@ function apply(ctx) {
     parameters: {
       action: { type: 'string', required: true, enum: ['list', 'run', 'cancel'], description: 'list=看队列 / run=立刻放行 / cancel=撤销' },
       id: { type: 'string', description: '提案 id（run / cancel 必填；cancel 也接受执行 id）' },
-      state: { type: 'string', enum: EXEC_STATES, description: 'list 时按状态过滤（queued / running / succeeded / failed / deferred / cancelled）' },
+      state: { type: 'string', enum: EXEC_STATES, description: 'list 时按状态过滤（queued / running / succeeded / failed / deferred / cancelled / partial）' },
       limit: { type: 'integer', description: 'list 返回条数上限（默认 20）' },
     },
     output: {

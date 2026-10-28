@@ -1143,6 +1143,44 @@ function apply(ctx, config) {
       });
       await et.put(execId, next);
 
+      // ── 部分落地（2026-10-28，提案 `846f4fbb` 实证）──────────────────
+      //
+      // 「job 成功」≠「提案做完」。一次自动执行的原子单元是一个文件的一次编辑，
+      // 而提案横跨多文件是常态 —— driver v0.9.0 起会把 `scope`（unitsApplied/unitsTotal/
+      // remainingUnits）从返回值里带出来，执行器据此打 `partial=true`。
+      //
+      // ⛔ 这里**不**走 applyStatus('applied')：
+      //    2026-10-28 23:31 那次就是这样把 846f4fbb 结案的 —— 3 个单元只落地 1 个
+      //    （`agint-evolve` 的替身收窄了），却记成 `status=applied · execError=''`；
+      //    台账一结案，`agint-input-gateway` 的替身、共用模块、真调断言全部失去入口。
+      //    剩下两种之前的选项都不成立：报失败会把已落地的那份说成没做；报成功是撒谎。
+      //
+      // ⇒ 提案 status 保持 `approved`（仍然是要做的事），execState 打到 `partial`，
+      //    execError 里写明「落地了哪个、还差哪些」，面板一眼能看见欠账。
+      if (ok && patch.partial === true) {
+        const rec2 = await table().then((t) => t.get(job.proposalId));
+        const units = patch.unitsTotal ? `${patch.unitsApplied ?? 1}/${patch.unitsTotal}` : '多单元';
+        const evidence = `部分落地（${units} 个原子单元，job 已成功但提案未完）：`
+          + `已落地 ${patch.commitPath || '（无路径）'}`
+          + `${patch.policyDecision ? ` · policy=${patch.policyDecision}` : ''}`
+          + `${patch.mutationId ? ` · mutation=${patch.mutationId}` : ''}`
+          + ` · 剩余单元 ${Array.isArray(patch.remainingUnits) && patch.remainingUnits.length
+            ? patch.remainingUnits.join('、')
+            : '（提案要求新建资产，或 units 未上报）'}`
+          + ` —— agint-executor 于 ${ts}`;
+        const note2 = rec2?.note ? `${rec2.note} ｜ ${evidence}` : evidence;
+        await markProposal(job.proposalId, {
+          note: note2,
+          execState: 'partial',
+          execError: (patch.reason || `部分落地 ${units} 个单元，剩余单元见 note`).slice(0, 500),
+          execAttempts: next.attempts,
+          execFinishedAt: ts,
+        });
+        // ⛔ 不同"撤别的活跃 job"分支：partial 不是「已落地」，别的排队的执行
+        //   正是用来补剩余单元的，掐掉它们等于把拆出来的子任务一起杀掉。
+        return next;
+      }
+
       if (ok) {
         const rec = await table().then((t) => t.get(job.proposalId));
         const evidence = `自动执行落地：${patch.commitPath || '（无路径）'}`

@@ -1,5 +1,37 @@
 # agint-evolve CHANGELOG
 
+## v0.13.0（2026-10-28 · 执行态加 `partial`：job 成功了，提案未必做完）
+
+### 补的哪个洞
+
+执行态原先只有七档，`finishExecution(ok:true)` **必定** 走 `applyStatus('applied')`。
+于是「一次自动落地」在系统里只有两种写法：成功 ⇒ 提案做完；失败 ⇒ 什么都没做。
+但一次执行的原子单元是「一个文件的一次编辑」，提案横跨多文件是常态 —— 中间那一档
+（job 成功、提案未完）**没有表达位**，只能被记账成其中一种假话。
+
+实机后果（提案 `846f4fbb`，2026-10-28 23:31）：3~4 个原子单元只落地 1 个
+（`agint-evolve` 的 dsh-tools 替身），台账却写成 `status=applied · execError=''`；
+剩余单元（input-gateway 替身 / 共用模块 / 真调断言）在台账上彻底消失。
+
+### 改了什么
+
+- `EXEC_STATES` 加 `partial`；`partial = job 成功 ∧ 提案未完`。
+- `finishExecution()` 在 `patch.partial === true` 时走新分支：
+  **不**改 `status`（仍 `approved`），只把 `execState='partial'`，
+  并把「已落地哪个文件 + 剩余单元 + policy/mutation」写进 `note` 与 `execError`。
+- ⛔ 与成功分支不同的是**不**撤销同提案的其他活跃执行 —— 那些正是用来补剩余单元的；
+  cancelled 的那套语义在这里是错的（会连 drying partially-covered 的子任务一起杀掉）。
+- `lib/tools.js` 里那份 `EXEC_STATES` 副本删掉，改为从 `./execution.js` 引
+  （`partial` 加进来时发现这里抄了一份 —— 判据两处，下次还会漂）。
+
+### 验收
+
+- `node --import ./test/_stub-register.mjs test/executor-integration.test.mjs` ⇒
+  ok（第 4 节：真 evolve + 真 executor 跑一次部分落地 ⇒ `status=approved`、`execState=partial`、
+  `execError` 点名剩余文件路径）。第 1 节即为阴性对照：不传 partial 时照样标 applied。
+- `test/execution.test.mjs` / `executor-integration` / `proposal-provenance` /
+  `proposal-timestamps` / `shadow-publish` 全绿（16/16）。
+
 ## v0.12.0（2026-10-27 · 提案台账加「成立条件」：判尺口径快照 + 声明式互斥检查）
 
 ### 为什么

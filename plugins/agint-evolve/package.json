@@ -1,6 +1,6 @@
 {
   "name": "agint-evolve",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "智进 (agint) review/self-evolution loop: host service writing weekly review reports from live data snapshots plus proposal tracking, and preset-scoped evolve tools.",
   "type": "module",
   "main": "lib/index.js",

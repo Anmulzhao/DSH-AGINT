@@ -24,8 +24,18 @@
 /** 执行方式三档。`manual` = 只批准、不自动执行（老行的隐含默认值）。 */
 export const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
 
-/** 提案上的执行态（展示口径；与 execution 表的 job 状态不是同一个东西）。 */
-export const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
+/**
+ * 提案上的执行态（展示口径；与 execution 表的 job 状态不是同一个东西）。
+ *
+ * 2026-10-28 加 `partial`（提案 `846f4fbb` 实证）：
+ *   一次自动执行的原子单元是「一个文件的一次编辑」，但提案是按主题写的、常常横跨
+ *   多个文件。此前没有这一档，执行器只能二选一：
+ *     ① 报成功 ⇒ 提案被标 `applied`（尽管 3 个单元只落地 1 个，剩余单元在台账上彻底消失）；
+ *     ② 报失败 ⇒ 已经通过 policy + 验证写进仓库的那份改动被当成没做。
+ *   `partial` 就是为此存在的：**job 成功了，提案没做完**。
+ *   它不改变提案的 status（仍是 approved），只把欠账摆到 execError / 面板上。
+ */
+export const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled', 'partial'];
 
 /** 一次执行（execution 表一行）的状态机。 */
 export const JOB_STATES = ['queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
