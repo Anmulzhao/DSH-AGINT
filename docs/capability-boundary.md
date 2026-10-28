@@ -85,6 +85,39 @@
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
 | agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
 
+### 2.1 挂载分组（2026-10-28）
+
+`cordis.patch.yml` 里 38 个已挂载插件按功能域收进 7 个 `cordis:group`：
+
+| 组 | 成员数 | 覆盖 |
+|---|---|---|
+| `agint-core` | 6 | 四个记忆层 + 反思（dream）+ 知识库（wiki）+ 压缩保护 |
+| `agint-infra` | 7 | 事件总线 / 规则门禁 / 度量 / 工具统计 / 调度 / 自我认知 / 神谕 |
+| `agint-signals` | 2 | 信号聚合（input-gateway）+ 上游判读（upstream-watch） |
+| `agint-evolution` | 10 | 提案 → 变异 → 种群 → 诊断 → 执行 → 轨迹 → A/B → 变更编排 |
+| `agint-quality` | 6 | 契约 / 静态 / 沙箱 / 评估 / 策略 / SDK |
+| `agint-learning` | 4 | 技能自动创建 / 策展 / 图谱 / 自主课程 |
+| `agint-surface` | 3 | 家族面板 / 重启闭环 / 验证入口 |
+
+根上留两条不属于任何域的：`schedule`（宿主原生调度原语，agint-cron 的桥依赖）
+与 `agint-preset`（preset 声明行，不是插件）。
+
+**它改变了什么、没改变什么**（2026-10-28 读 dsh 源码核实，别凭印象改）：
+
+| 层面 | 行为 | 依据 |
+|---|---|---|
+| entry 自身的 `id` | **不变**（仍是 `agint-memory`） | `EntryTree.ensureId()` 只补缺失 id，不加前缀 |
+| 配置层 patch（`- id: xxx` 的覆盖 / disable / 往组里 insert） | **照旧有效，裸 id 即可** | `applyEntryPatches.buildMap()` 递归进 `entry.config`，`entryMap` 按裸 id 索引 |
+| 运行时 `Loader.resolve(id)` 系列 API | **要全路径 `agint-core:agint-memory`** | `resolve()` 按 `EntryTree.sep` 切段，末端在 subgroup 的 `store` 里找 |
+
+⇒ 日常改配置**什么都不会断**；只有直接调 loader API 按 id 定位时才需要带组名。
+「关整域」也照常走配置层：`- id: agint-learning` + `disabled: true`（命中 group 行本身）。
+
+⛔ 这些组**不许加 `isolate`**：group 只做配置层收纳；`isolate` 会新建隔离域，
+把子插件 provide 的 `agint.*` 服务从父级与兄弟节点摘掉，而 preset 的工具行（session ctx）
+正靠这条链取服务。dsh 官方只在 plan-mode / compaction 那种「确实要隔离一套同名服务」
+的地方用它，不拿它当命名空间。
+
 **未挂载的顶层插件**（代码在仓、patch 未引用）：`agint-mascot`、`agint-voice-hotkey`、`agint-search-tools`、`agint-session-extract`、`agint-session-source`、`agint-quality-report`。
 其中 `agint-session-extract` / `agint-session-source` 是**被别的插件以相对路径 import 的库**（不是独立插件），不挂载是正确的。
 `agint-quality-report` 在 patch 中被刻意注释掉（VERSION v0.12.0 记为「故意不挂载」）。
