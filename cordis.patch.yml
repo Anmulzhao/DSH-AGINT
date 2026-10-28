@@ -151,6 +151,11 @@
     - id: agint-tool-stats
       name: ./plugins/agint-tool-stats/lib/index.js
       config: {}
+    # agint-update-check: 检测 AGINT 仓库远端最新状态，并询问用户是否更新 / 部署。
+    # 工具注册在 host 平面 ⇒ 任何 preset 的会话都能看到（与 agint-tool-stats 同机制）。
+    - id: agint-update-check
+      name: ./plugins/agint-update-check/lib/index.js
+      config: {}
 
     # ── agint-verify-tools（2026-10-21 新增）────────────────────────────────
     # 为什么放在 host 平面：AGINT 的 cron / self-model 工具原本只在 agint preset

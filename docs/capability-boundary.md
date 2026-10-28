@@ -33,7 +33,7 @@
 
 ---
 
-## 2. 插件归属表（41 个顶层插件 + 5 个 quality 子模块）
+## 2. 插件归属表（42 个顶层插件 + 5 个 quality 子模块）
 
 图例：**E**=进化层 · **C**=载体层 · **H-越界**=自建了宿主层能力，应改为消费上游
 
@@ -82,6 +82,7 @@
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
 | agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
+| agint-update-check | 0.1.0 | C | 更新检测与部署控制面（宿主运维外壳） |
 
 **未挂载的顶层插件**（代码在仓、patch 未引用）：`agint-mascot`、`agint-voice-hotkey`、`agint-search-tools`、`agint-session-extract`、`agint-session-source`、`agint-quality-report`。
 其中 `agint-session-extract` / `agint-session-source` 是**被别的插件以相对路径 import 的库**（不是独立插件），不挂载是正确的。

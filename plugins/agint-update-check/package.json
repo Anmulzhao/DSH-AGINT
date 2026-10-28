@@ -1,0 +1,17 @@
+{
+  "name": "agint-update-check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "host 平面：检测 AGINT 仓库（DSH-AGINT）远端的最新状态，并询问用户是否更新与部署。",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./lib/index.js": "./lib/index.js",
+    "./lib/detect.js": "./lib/detect.js",
+    "./lib/repo.js": "./lib/repo.js",
+    "./lib/apply.js": "./lib/apply.js",
+    "./lib/git.js": "./lib/git.js"
+  },
+  "license": "MIT"
+}
