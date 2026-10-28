@@ -1,5 +1,23 @@
 ﻿# Changelog
 
+## 0.1.9 — 2026-10-28（提案 `846f4fbb` 单元 1+3）
+
+**测试替身收紧**：`test/_stub-storage-domain.mjs` 里的 `defineTool` 原先是
+`return { ...desc }`（原样透传），比真 dsh-tools 宽松 —— 插件把入口写成 `handler`、
+或只写 schema 不写 `output.render` 时，工具**照样注册成功**，缺陷要等到真调那一刻才炸
+（真宿主：`userExecute is not a function` / `userRender is not a function`）。
+现在改用 `plugins/_shared/test-stub-dsh-tools.mjs`，与真契约同紧。
+
+**新增真调断言**：`test/tools.test.mjs` 补一条 —— 6 个工具逐个跑
+`execute + output.render`。原来只调 execute，render 缺失一条都抓不到。
+
+阴性对照（改回旧写法必须红，实测已红）：
+- 把 `input_gateway_status` 的 `execute` 改名 `handler` ⇒ `userExecute is not a function`（3 条红）；
+- 把 `input_gateway_channel_status` 的 `render` 改名 ⇒ `userRender is not a function`（1 条红）。
+
+验收：`node --import ./test/_stub-register.mjs --test test/*.test.mjs` ⇒ 63 pass / 0 fail（2 skipped）；
+`bin/plugin-check.sh` 0 FAIL。
+
 ## 0.1.8 — 2026-10-28
 
 ### 变更：C3 子源 `upstream-release` 由每日 06:00 改为**每周三 06:00**

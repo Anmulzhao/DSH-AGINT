@@ -10,6 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as tools from '../lib/tools.js';
+import { assertToolCallable } from './_stub-storage-domain.mjs';
 
 function makeMockCtx(mockService) {
   const registered = [];
@@ -99,5 +100,41 @@ test('所有 6 个工具的 execute() 都不抛同步/异步错配错误', async
     } catch (e) {
       assert.fail(`${tool.name} execute() 抛错: ${e.message}`);
     }
+  }
+});
+
+// ── 2026-10-28 追加（提案 `846f4fbb` 单元 3）：output.render 也要真调一次 ────────
+//
+// 上面那条只调了 execute。真宿主是「先校验 schema、再调 output.render」
+// （dsh-tools/lib/index.js:846 / :856）⇒ 只写 schema 不写 render 的工具
+// **注册成功、execute 也正常**，缺陷晚到渲染那一刻才炸
+// （upstream-watch v0.3.0 现场：`output.render failed: userRender is not a function`）。
+// ⛔ 光有 execute 的测试，这类缺陷一条都抓不到。
+
+test('所有 6 个工具的 output.render 都存在且能真调一次', async () => {
+  const mockService = {
+    getStatus: () => ({ enabled: true, channelCount: 0, channels: [] }),
+    getChannelStatus: (id) => ({ channelId: id }),
+    forceFetch: async (id) => ({ ok: true, channelId: id }),
+    setQuota: (id, q) => ({ channelId: id, quota: q }),
+    setChannelEnabled: (id, e) => ({ channelId: id, enabled: e }),
+  };
+  const { ctx, registered } = makeMockCtx(mockService);
+  tools.apply(ctx);
+  assert.equal(registered.length, 6, '应有 6 个工具');
+
+  for (const tool of registered) {
+    const args = { channelId: 'self-observation', quota: 10 };
+    // tolerateRuntimeError=true：这里验的是**契约**（入口名 / render 在不在），
+    // 业务逻辑错误由上面那些用例负责。
+    const { error, renderError } = await assertToolCallable(tool, { args, tolerateRuntimeError: true });
+    assert.ok(
+      !(error instanceof TypeError && /userExecute is not a function/.test(error?.message ?? '')),
+      `${tool.name} 的入口不是 execute（真宿主会抛 userExecute is not a function）`,
+    );
+    assert.ok(
+      !(renderError instanceof TypeError && /userRender is not a function/.test(renderError?.message ?? '')),
+      `${tool.name} 缺 output.render（真宿主会抛 userRender is not a function）`,
+    );
   }
 });

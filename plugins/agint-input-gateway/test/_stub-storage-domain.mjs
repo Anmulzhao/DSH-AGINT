@@ -12,20 +12,16 @@
 //
 // 用法：node --import ./test/_stub-register.mjs --test test/xxx.test.mjs
 //
-// ⛔ 纪律（Playbook §3.5）：替身复刻真实契约，不做"让它通过"的变形。
-//   - defineDomain(spec) 原样返回 spec（由 ctx.storageDomain.open(spec) 消费）
-//   - defineTool(desc)   原样返回 desc（由 ctx.declareTool(desc) 消费）
+// ⛔ 2026-10-28 修订（提案 `846f4fbb` 单元 1+2）：本文件的 defineTool 原先是
+//   `return { ...desc }` —— **原样透传**，比真宿主宽松：
+//     · 插件把入口写成 `handler` ⇒ 替身下对象里照样带着 handler，测试怎么调都"正常"；
+//     · 真宿主只读 `options.execute`（dsh-tools/lib/index.js:839），真调必抛
+//       `TypeError: userExecute is not a function`；
+//     · `output.render` 同理（:846 / :856），只写 schema 不写 render 的缺陷
+//       要等到真调那一刻才炸（upstream-watch v0.3.0 的现场）。
+//   同类替身共三份（upstream-watch / evolve / 本插件），各抄一份必然漂移 ⇒
+//   现在共用 `plugins/_shared/test-stub-dsh-tools.mjs`，本文件只做转发。
+//   ⛔ 不要在这里恢复本地实现：改契约请改共用那一份，并跑它的阴性对照
+//     （plugins/_shared/test-stub-contract.test.mjs）。
 
-export function defineDomain(spec) {
-  if (!spec || typeof spec.name !== 'string') {
-    throw new Error('defineDomain: spec.name must be a string');
-  }
-  return { ...spec };
-}
-
-export function defineTool(desc) {
-  if (!desc || typeof desc.name !== 'string') {
-    throw new Error('defineTool: desc.name must be a string');
-  }
-  return { ...desc };
-}
+export { defineDomain, defineTool, assertRequiredTrue, assertToolCallable } from '../../_shared/test-stub-dsh-tools.mjs';
