@@ -33,7 +33,7 @@
 
 ---
 
-## 2. 插件归属表（42 个顶层插件 + 5 个 quality 子模块）
+## 2. 插件归属表（43 个顶层插件 + 5 个 quality 子模块）
 
 图例：**E**=进化层 · **C**=载体层 · **H-越界**=自建了宿主层能力，应改为消费上游
 
@@ -60,6 +60,7 @@
 | agint-population | 0.6.4 | E | 种群生命周期 + 适应度 |
 | agint-evolution-driver | 0.6.0 | E | 闭环驱动（提案→变异→种群）+ 定向执行入口 |
 | agint-executor | 0.2.0 | E | 批准即执行的调度与守护（提案→执行队列→driver 定向执行） |
+| agint-upstream-watch | 0.1.0 | E | 上游判读：跟踪 dsh 发行记录，实测依赖面 API 差异，产不可自动执行的提案（两段式：事实与结论分离） |
 | agint-mount | 0.7.2 | E | 变更编排三段式事务 |
 | agint-abtest | 0.6.4 | E | Prompt A/B 统计判定 |
 | agint-curriculum | 0.1.6 | E | 自主课程生成 |

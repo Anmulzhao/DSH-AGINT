@@ -52,6 +52,18 @@ export const C2_CRON = '0 2 * * 0';
 /** C3 外部世界 Channel 的 cron（每周日 04:00，错峰） */
 export const C3_CRON = '0 4 * * 0';
 
+/**
+ * C3 上游发行子源（P2，2026-10-28）的 cron：每日 06:00。
+ *
+ * 为什么是每日而不是每周：dsh 的出片节奏是 1–2 天一个版本，按周追会积压到「一次来五个版本」，
+ * 判读器要同时对五个版本下结论，噪声和误判都会放大。
+ *
+ * 为什么是 06:00：排在当日 04:00 metrics-collect / 04:30 tool-stats-backfill /
+ * 04:45 prompt-static-check 之后（不与它们抢），也避开 C3 原有 git 源的周日 04:00
+ * 与 C5 的周日 05:00。
+ */
+export const C3_RELEASE_CRON = '0 6 * * *';
+
 /** C5 跨 Agent Channel 的 cron（每周日 05:00，错峰；C3 04:00 之后 1h） */
 export const C5_CRON = '0 5 * * 0';
 
@@ -77,6 +89,8 @@ export const C3_GIT_REPOS = Object.freeze([
 export const CHANNEL_IDS = Object.freeze({
   SELF_OBSERVATION: 'self-observation',
   EXTERNAL: 'external-git',
+  /** C3 的第二个子源（2026-10-28）：上游 dsh 发行记录。与 external-git 并列，同属 external 类型。 */
+  RELEASE: 'upstream-release',
   ADVERSARIAL: 'adversarial',
   CROSS_AGENT: 'cross-agent',
 });
@@ -89,6 +103,7 @@ export const KNOWN_TOPICS = Object.freeze([
   'input.signal.self-observation.compress-loss',
   'input.signal.self-observation.session-integrity',
   'input.signal.external.repo-diff',
+  'input.signal.external.release-published',
   'input.signal.adversarial.counterfactual-result',
   'input.signal.adversarial.curriculum-result',
   'input.signal.adversarial.boundary-divergence',

@@ -16,9 +16,10 @@
 import { InputGateway } from './gateway.js';
 import { selfObservationChannel } from './channels/self-observation.js';
 import { externalGitChannel } from './channels/external-git.js';
+import { upstreamReleaseChannel } from './channels/upstream-release.js';
 import { adversarialChannel, initSubscriptions } from './channels/adversarial.js';
 import { crossAgentChannel } from './channels/cross-agent.js';
-import { PLUGIN_NAME, C2_CRON, C3_CRON, C4_CRON, C5_CRON } from './schema.js';
+import { PLUGIN_NAME, C2_CRON, C3_CRON, C3_RELEASE_CRON, C4_CRON, C5_CRON } from './schema.js';
 import { spec, emptyConfig, packConfig, emptyCounters } from './storage.js';
 
 const name = PLUGIN_NAME;
@@ -117,6 +118,11 @@ function apply(ctx, config) {
     // 注册 C3 Channel（外部世界 git 子源）
     gateway.registerChannel(externalGitChannel);
 
+    // 注册 C3 第二个子源（2026-10-28）：上游 dsh 发行记录。
+    // ⛔ 与 external-git 并列而不是替换：一个看本地仓库变化，一个看上游发了什么。
+    //    两者同属 external 类型，共享配额与安全门（DEFAULT_QUOTAS.EXTERNAL = 20 条/日）。
+    gateway.registerChannel(upstreamReleaseChannel);
+
     // 注册 C4 Channel（对抗挑战：订阅已有事件，只转发失败/边界）
     gateway.registerChannel(adversarialChannel);
     initSubscriptions(ctx, cfg, gateway);
@@ -128,11 +134,12 @@ function apply(ctx, config) {
     schedulerDisposer = gateway.startScheduler({
       'self-observation': C2_CRON,
       'external-git': C3_CRON,
+      'upstream-release': C3_RELEASE_CRON,
       'adversarial': C4_CRON,
       'cross-agent': C5_CRON,
     });
 
-    debug(`initialized: 4 channels (self-observation=${C2_CRON}, external-git=${C3_CRON}, adversarial=${C4_CRON}, cross-agent=${C5_CRON})`);
+    debug(`initialized: 5 channels (self-observation=${C2_CRON}, external-git=${C3_CRON}, upstream-release=${C3_RELEASE_CRON}, adversarial=${C4_CRON}, cross-agent=${C5_CRON})`);
   }).catch((e) => {
     console.error(`[${name}] init failed:`, e?.message ?? e);
   });

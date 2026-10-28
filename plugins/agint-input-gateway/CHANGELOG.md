@@ -1,5 +1,39 @@
 ﻿# Changelog
 
+## 0.1.7 — 2026-10-28
+
+### 新增：C3 第二个子源 `upstream-release`（`lib/channels/upstream-release.js`）
+
+**动机**：C3（外部世界）这个 channel 类型从 v0.1 就有，但只挂了一个读**本地** git HEAD 的
+`external-git`，而且从未启用 ⇒ AGINT 能感知自己（C2）、能接受挑战（C4）、能跨 agent 取经（C5），
+**却感知不到养它的那一层在变**。dsh 1–2 天一个版本，破坏性变更直接决定 AGINT 装不装得上。
+
+**实现**：
+
+1. **双源同时拉**：GitHub Releases（变更说了什么）+ npm dist-tags（现在装得到什么）。
+   两个源必须都要 —— 2026-10-28 实测 GitHub 最新是 `0.2.2-alpha.2`，而 npm `latest` 仍停在
+   `0.2.1-rc.2`（alpha 走独立轨）。只看一个会误判「已经是最新」。
+2. **只发元信息**：payload 只放版本号 / 发布时间 / 条目数 / breaking 命中数 / 版本轨，
+   ⛔ 不塞 changelog 全文 —— 管线 `payloadMaxBytes` 是 2 KB，截断后的半截文本比没有更危险。
+   全文由判读器（`agint-upstream-watch`）按 `url` 另取。
+3. **首跑只建基线**：与 `external-git.js` 同构。否则上线当天会把 10 个历史版本一次性打成新信号，
+   把整条下游（记忆 → 判读 → 提案）淹掉。
+4. **无网必须声张**：GitHub 失败而 npm 成功 ⇒ 降级该字段；两源全失败 ⇒ 抛错由管线记 `lastError`，
+   ⛔ 绝不返回空数组冒充「没有新版本」。
+5. **排期 06:00 每日**：排在 `metrics-collect`(04:00) / `tool-stats-backfill`(04:30) /
+   `prompt-static-check`(04:45) 之后，避开 C3 原有 git 源的周日 04:00 与 C5 的周日 05:00。
+   按日而非按周：dsh 日更，按周追会积压成「一次来五个版本」，判读噪声放大。
+
+**接线**：`schema.js` 加 `C3_RELEASE_CRON` / `CHANNEL_IDS.RELEASE` / topic
+`input.signal.external.release-published`；`index.js` 注册第 5 个 channel 并排班。
+与 `external-git` 并列而非替换 —— 一个看本地仓库变化，一个看上游发了什么。
+
+**验收**：部署位冒烟首跑 `signals=0`（建基线）、二跑 `signals=0`（无新版本）、
+制造未读后产出 5 条增量信号且 payload 387 字节（上限 2048）；
+`health()` 返回 `status=ok / seenTagCount=10 / npmReachable=true`。
+
+# Changelog
+
 ## 0.1.6 鈥?2026-10-14
 
 ### 鏂板锛氶€氶亾闆跺懡涓憡璀︼紙`lib/zero-hit.js`锛?

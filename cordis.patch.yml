@@ -700,3 +700,41 @@
         enabled: true
         allowNonLoopback: false
         repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+
+    # agint-upstream-watch: 上游判读器 v0.1.0（2026-10-28 挂载）。
+    #
+    # 补的是「感知不到养它的那一层在变」这个洞：AGINT 有五类信息 Channel，
+    # external（C3）这一类一直是空的 —— 只挂了一个读本地 git 的源且从未启用。
+    # dsh 1-2 天一个版本，破坏性变更直接决定 AGINT 装不装得上、起来了功能全不全，
+    # 而过去靠人读到 changelog 再转告。
+    #
+    # 入口是 C3 新子源 upstream-release（agint-input-gateway 内，每日 06:00）发出的
+    # input.signal.external.release-published。
+    #
+    # 两段式（事实与结论分离）：
+    #   段 1 确定性 → 版本语义 / release 条目统计 / **依赖面实测**
+    #                （拉 npm tarball 比对 .d.ts，算出 AGINT 用到的导出有没有被删或收窄）
+    #   段 2 LLM    → 判机会与缺口 → 写提案
+    # ⛔ 段 2 失败只落事实、不落结论、不产提案 —— 这是「事实照记」，不是拿启发式冒充结论。
+    #
+    # 为什么必须实测：2026-10-28 的 0.2.2-alpha.2 changelog 写「插件需迁移
+    # tools.resolve/executable」，读文字像要大改；实测 register 只是加了可选第二参，
+    # defineTool 一字未变，140 处调用零改动。只读 changelog 的判读器会变成喊狼来了的看门狗。
+    #
+    # 红线（三道）：
+    #   AGINT_UPSTREAM_WATCH=off    整体停摆（订阅保留，不处理）
+    #   autoExecutable: false       产出的每一条提案都不可自动执行 —— 依赖升级属宿主环境
+    #                               动作，AGENTS.md 红线：不动 dsh 安装目录
+    #   maxProposalsPerRelease: 2   单版本提案上限，防一次刷屏
+    #
+    # ⛔ 不装、不升 dsh；拿不到 tarball 或定位不到本机安装一律记 unknown，不猜 compatible。
+    # ⛔ 基准版本必须与 dsh 主包一致（profiles/node_modules 里可能有 App 升级甩下的遗留副本）。
+    # Service：agint.upstreamWatch（status / digest / runNow / listDigests）。
+    # 工具：upstream_status（只读）、upstream_digest（写，提案不可自动执行）。
+    - id: agint-upstream-watch
+      name: ./plugins/agint-upstream-watch/lib/index.js
+      config:
+        enabled: true
+        autoPropose: true
+        maxProposalsPerRelease: 2
+        timeoutMs: 90000
