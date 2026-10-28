@@ -347,6 +347,36 @@ export function classifyToolResultError(rec) {
 }
 
 /**
+ * 数一句文本里有几句「因果句式」（2026-10-28，提案「让 agint-dream 采集
+ * assistant 正文里的主张」第 1 步 · 观测先行）。
+ *
+ * 口径**复用**既有判据，不另立一套（两把尺子必须同口径）：
+ *   - 强档 = TOOL_ERROR_CAUSE_RE（为什么/因此/所以/导致/because…）—— 单独够；
+ *   - 弱档 = TOOL_ERROR_IMPERATIVE_RE（必须/应该/改成/must…）—— 要中文语境
+ *     （CJK_RE）且至少 CJK_MIN_CHARS 个汉字。
+ * 这与 classifyToolError 的强/弱分档完全一致；名字里的 TOOL_ERROR 是历史遗留，
+ * 这里借它的口径，判据本身不复制、不改写。
+ *
+ * 句子切分复用 splitSentences（与候选抽取同口径）⇒ 计数是**下界**：
+ * 长度不在 6~160 之间的句子不计。宁可少报，不虚报「可捞取量」。
+ *
+ * 前向引用说明：TOOL_ERROR_CAUSE_RE / TOOL_ERROR_IMPERATIVE_RE / CJK_RE /
+ * CJK_MIN_CHARS 定义在本函数之后，但它们是模块级 const —— 本函数只在 sweep
+ * 运行期被调用，那时模块已求值完毕，不会撞 TDZ。
+ */
+function countCausalSentences(text) {
+  let n = 0;
+  for (const s of splitSentences(String(text ?? ''))) {
+    const strong = TOOL_ERROR_CAUSE_RE.test(s);
+    const weak = TOOL_ERROR_IMPERATIVE_RE.test(s);
+    if (!strong && !(weak && CJK_RE.test(s))) continue;
+    if ((s.match(/[\u4e00-\u9fff]/g) ?? []).length < CJK_MIN_CHARS) continue;
+    n += 1;
+  }
+  return n;
+}
+
+/**
  * Collect per-session signals from one parsed log.
  * Returns { sessionKey, title, time, userTexts, memWrites, errors, toolCalls }.
  */
@@ -359,6 +389,17 @@ export function collectSessionSignals(records) {
   let humanKept = 0;
   let subagentDropped = 0;
   let unknownKept = 0;
+  // 2026-10-28（提案「让 agint-dream 采集 assistant 正文里的主张」第 1 步 · 观测先行）：
+  // assistant 正文**只统计、不进候选**。失败之后的「教训」真身是助手自己写下的
+  // 那句解释（「所以以后必须先确认 X」），此前 dream 完全看不见它 —— 修完
+  // 「候选池工具报错污染」之后，「失败 → 教训」这条链在中间是断的。
+  //
+  // 关键约束：assistantTexts 与 userTexts **分开存放**。extractCandidates 只遍历
+  // session.userTexts ⇒ 本步不改变候选池口径（先看可捞取量，再决定动不动提取
+  // 口径 —— 不重复「先造判据再找材料」的老错）。
+  const assistantTexts = [];
+  let assistantChars = 0;
+  let assistantCausalSentences = 0;
   for (const rec of records) {
     const t = rec?.time ?? rec?.seq ?? 0;
     if (rec?.type === 'user/message') {
@@ -372,6 +413,19 @@ export function collectSessionSignals(records) {
       if (text) {
         userTexts.push({ text, time: t });
         if (cls === 'human') humanKept += 1; else unknownKept += 1;
+      }
+    } else if (rec?.type === 'assistant/message') {
+      // 事件形态已取证（2026-10-28 实测 session.v4.jsonl.zstd）：
+      //   type='assistant/message'，正文在 data.message.content[]，块类型有
+      //   'reasoning' / 'tool-call' / 'text'。
+      // 只取 type='text' 的块：reasoning（模型内思考）与 tool-call（调用参数）
+      // 不是「助手写下的主张」；不算进来，本数才与用户正文同口径。
+      const content = rec.data?.message?.content ?? rec.data?.content;
+      const text = extractText({ content }).trim();
+      if (text) {
+        assistantTexts.push({ text, time: t });
+        assistantChars += text.length;
+        assistantCausalSentences += countCausalSentences(text);
       }
     } else if (rec?.type === 'tool/call' && rec.data?.name === 'memory_write') {
       let args = {};
@@ -393,6 +447,14 @@ export function collectSessionSignals(records) {
     userTexts,
     memWrites,
     errors,
+    // 2026-10-28 第 1 步：assistant 正文的采集结果（**统计口径**，不进候选）。
+    // 供日记/状态面回答「可捞取量有多少」；候选化留给第 2 步。
+    assistantTexts,
+    assistantStats: {
+      messages: assistantTexts.length,
+      chars: assistantChars,
+      causalSentences: assistantCausalSentences,
+    },
     startTime: times.length ? Math.min(...times) : 0,
     endTime: times.length ? Math.max(...times) : 0,
     sourceFilter: {
