@@ -914,6 +914,22 @@ function apply(ctx, config) {
     async setStatus(id, status, note = '', opts = {}) {
       const rec = await applyStatus(id, status, note, opts);
       if (!rec) return null;
+      // 2026-10-28：执行态必须跟着状态归位 —— 状态与执行态各说各话是最贵的不一致。
+      //
+      // 实机（提案 `846f4fbb`）：它被自动执行误结案成 applied（其实只落地了 3~4 个单元里的
+      // 1 个），人工改判回 `approved` 之后 `execState` 仍停在 `succeeded`，
+      // 面板照 `m['succeeded']` 显示「已落地」—— 与台账的 status 完全相反。
+      // 读的人看到的标签说"做完了"，而台账说"没做完"，两边都不像在撒谎，
+      // 这才是它比单纯的字段错误更难查的原因。
+      //
+      // ⛔ 有活跃执行的提案不动：那边正在跑，队列是事实，不能抢在它前面归位。
+      // ⛔ approved 也不动：reset partial 会把「欠账」从执行态上抹掉；它仍要在面板上显示。
+      //    其余（proposed / rejected / wontfix）⇒ 回到 idle（ Evidence 留在 note/execError 里）。
+      if (!['approved', 'applied'].includes(rec.status)
+        && ['succeeded', 'partial', 'failed', 'running'].includes(rec.execState)) {
+        const live = await activeJobsFor(id);
+        if (live.length === 0) await markProposal(id, { execState: 'idle' });
+      }
       // 计划写完立刻对齐队列：批准即执行就是在这里发生的。
       try {
         await syncExecutionQueue(rec, { autoEnqueue: opts?.autoEnqueue !== false });

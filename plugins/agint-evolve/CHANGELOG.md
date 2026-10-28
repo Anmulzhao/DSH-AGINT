@@ -1,5 +1,21 @@
 # agint-evolve CHANGELOG
 
+## v0.13.1（2026-10-28 · 改判回退时执行态要跟着归位）
+
+修 `846f4fbb` 那条记录时发现的第二处「各说各话」：它已被误结案成 `applied`
+（其实只落地了 1/3 的单元），人工改判回 `approved` 之后 `execState` 仍停在 `succeeded`
+⇒ 面板照 `m['succeeded']` 显示「已落地」，与台账的 `status` 正好相反。
+状态与执行态不一致比单纯的字段错误更难查：两边各自都像在陈述事实。
+
+- `setStatus()`：新的 status 不属于 `approved/applied` 时，若没有活跃执行 ⇒ `execState='idle'`；
+- ⛔ 有活跃执行不动（队列是事实，归位不能抢在它前面）；
+- ⛔ `approved` 不动 —— 那会把 partial 的欠账从执行态上抹掉；
+- ⛔ 归位发生在 `syncExecutionQueue` **之前**：execMode 还是 immediate 时再入队是合法的，
+  队列优先，不该被归位逻辑抢掉。
+
+验收：`test/executor-integration.test.mjs` 第 5 节（partial → 改判 proposed ⇒ idle）
++ 阴性对照（第 1 节真做完的那条仍是 succeeded）；其余 4 个测试文件 16/16 全绿。
+
 ## v0.13.0（2026-10-28 · 执行态加 `partial`：job 成功了，提案未必做完）
 
 ### 补的哪个洞

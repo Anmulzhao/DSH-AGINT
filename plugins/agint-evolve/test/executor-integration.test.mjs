@@ -161,6 +161,20 @@ try {
   assert.match(after4.note, /部分落地/, 'note 是唯一能追溯"哪一部分已经落地"的地方');
   assert.equal(executor.status().partial, 1, '部分覆盖要单独计数 —— 否则周报把 1/3 的也数成"已落地"');
 
+  // ── 5. 改判回退 ⇒ 执行态要跟着归位（2026-10-28，提案 `846f4fbb` 实证）──
+  //
+  // 上面那条被自动执行 thrust 成 applied（其实只落地一个单元），人工改判回 approved
+  // 时，execState 仍停在 succeeded ⇒ 面板显示「已落地」，与台账的 status 正好相反。
+  // 状态与执行态不许各说各话：脱离 applied 且没有活跃执行 ⇒ 归位 idle。
+  // ⛔ 归位要发生在入队**之前**：execMode 若仍是 immediate，再入队是合法行为，
+  //    队列优先（"马上又跑一次"），不该被归位逻辑抢掉 —— 所以改判到 manual/proposed 才测得到 idle。
+  const reverted = await evolve.setStatus(p4.id, 'proposed', '人工改判回退那条假的结案', { execMode: 'manual' });
+  assert.equal(reverted.status, 'proposed');
+  assert.equal(reverted.execState, 'idle', '脱离 applied 且无活跃执行 ⇒ 执行态必须归位，不许留在 succeeded');
+
+  // 阴性对照：第 1 节那条**真的**做完了，改判回退前它仍是 applied ⇒ 不受这条规则影响。
+  assert.equal(after1.execState, 'succeeded', '真做完的那条不该被这条规则带偏');
+
   console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地 四条路径接口对齐）');
 } finally {
   await rm(root, { recursive: true, force: true });
