@@ -1,5 +1,60 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.7.0 — 2026-10-28 — 修掉「已批准·执行失败」的三个真因（cwd / 截断 / 120s 闸门）
+
+**实机事故**：提案 `2f91b72b`「让 agint-dream 采集 assistant 正文里的主张」在面板批准后，
+执行器连跑两次，两次都报 `driver 抛错：evolution-driver aborted: llm unavailable:
+llm error: timeout after 120000ms`，`maxAttempts=2` 用尽 ⇒ 面板标「已批准·执行失败（待处理）」。
+同批 `846f4fbb` 也失败（一次超时 + 一次「llm judged not applicable」）。
+
+**取证（不是推测：解压孩子会话 `sessions/<cwd>/<childId>/session.v4.jsonl.zstd` 逐事件比对）**
+
+| 运行 | 工具调用 | 其中 bash | turn 结束于 | 结果 |
+| --- | --- | --- | --- | --- |
+| 19:36 成功 | 7 | 3 | 57.8s | 调了 `structured_output` ⇒ 拿到变异 |
+| 19:46 失败#1 | 15 | 13 | 119.2s | **没调 `structured_output`** ⇒ 父侧无结果 |
+| 22:35 失败#2 | 10 | 6 | 116.9s | 同上 |
+
+三条并列成因（缺一条都不至于失败）：
+
+1. **孩子会话的 cwd 是进程 cwd，不是仓库。** `spawnLlm` 写死 `meta: { cwd: process.cwd() }`，
+   而 dsh 这次是从 `~/桌面`（22:35 是 `~`）启动的 ⇒ 模型第一步就是
+   `ls -d ~/DSH-AGINT … find /home/kylin -maxdepth 4 -name 'agint-dream'`，
+   15 次调用里 13 次在找仓库。
+2. **提示只给 20000 字符，目标文件 96.5KB。** `plugins/agint-dream/lib/sweep.js` 有 96546 字节，
+   模型自己的 reasoning 写着「The file shown is truncated at the end (cut off mid `tokenOverlap`)」，
+   于是去读原文件 —— 截断本想省 token，实际换来更多轮次。
+3. **120s 闸门太紧，且失败时把已跑完的 turn 一起丢掉。** 成功案例已吃掉 48%（58s）/77%（92s）预算；
+   失败那两次 turn 在 119.2s 结束（距闸门 1 秒），父侧仍只报「超时」，看不出「其实是没交结构化输出」。
+
+**改动**
+
+- `DEFAULT_TIMEOUT_MS` 120_000 → **600_000**；新增 `resolveLlmTimeout(env, config)`：
+  env `AGINT_EVOLUTION_DRIVER_TIMEOUT_MS` > patch config `llmTimeoutMs` > 常量。
+  非数字 / ≤0 一律回落默认（⛔ 不让一条脏 env 把闸门变成 0ms）。
+- `construct()` 增 `cwd` 入参：缺省回落 patch config 的 `repoRoot`，再回落 `process.cwd()`；
+  `runOnce` / `runForProposal` 的调用点显式传 `cwd: repoRoot`。
+- `spawnLlm()` 增 `cwd` 入参，`meta.cwd` 用它（`preset` 不受影响）。
+- 提示词三处补：user 侧新增 `## Working directory` 段与「excerpt 可能被截断，要读就读这个精确相对路径，
+  不要全盘找」；system 侧新增「必须走 structured-output 工具调用，纯文本不算回答」与
+  「工作目录就是仓库，别去找项目」。
+- 文档：`construct` 的 JSDoc 补 `timeoutMs` / `cwd`。
+
+**行为变化（要知情的两点）**
+
+- 一次执行最长可占 600s。执行器是串行 `maxPerTick=1`，所以排队中的其他提案会等更久；
+  真正的成本闸仍是 `maxAttempts=2` + `weeklyCommitCap=3`，不靠这个超时。
+- 超时不再「覆盖」真实失败原因：模型跑完但没交结构化输出时，报错是
+  `structured output missing (stopReason=…)` 而不是笼统的 `timeout`。
+
+**验收清单**
+
+- `node test/smoke.mjs` ⇒ 58/58 PASS（新增 T40a–T40d 四条）。
+- 阴性对照（人为退回两处）：把常量改回 120_000 + `meta.cwd` 改回 `process.cwd()` ⇒
+  T40a / T40b / T40d 立刻变红；还原后全绿 ⇒ 用例有分辨力，不是摆设。
+- `bash bin/plugin-check.sh plugins/agint-evolution-driver` ⇒ 0 fail（1 条既有 WARN：
+  `lastError` 无 tool render 消费，与本次无关）。
+
 ## v0.6.1 — 2026-10-27 — 部署位路径归一：别再让「真能改」的提案被判不可执行
 
 **实机事故**：提案 `9d9697cf`「修复 agint-evolve 提案台 schema 缺 createdAt…」批准后

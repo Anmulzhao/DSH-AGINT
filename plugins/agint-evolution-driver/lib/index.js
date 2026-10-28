@@ -69,7 +69,15 @@ const KILL_ENV = 'AGINT_EVOLUTION_DRIVER';
 const COMMIT_ENV = 'AGINT_EVOLUTION_DRIVER_COMMIT';
 const REPO_ENV = 'AGINT_EVOLUTION_DRIVER_REPO_ROOT';
 const ENTITY_GATE_ENV = 'AGINT_EVOLUTION_DRIVER_ENTITY_GATE';
-const DEFAULT_TIMEOUT_MS = 120_000;
+// 2026-10-28：120s → 600s。实机取证（提案 2f91b72b / 846f4fbb 各失败 2 次）：
+//   孩子会话的 turn 本身就要 100~120s（含定位文件），而成功案例耗时 58s / 92s
+//   ＝ 已吃掉 48%~77% 预算 ⇒ 稍难一条必撞墙，且撞墙时**结果同时被丢弃**
+//   （报错统一成 `timeout after 120000ms`，看不出「其实是模型跑完了但没交结构化输出」）。
+//   ⛔ 这个闸门是**兜底**，不是节流阀：真正的成本闸是执行器的 maxAttempts + 周上限，
+//   拿它当「省 token」的手段只会把可执行提案变成永久失败。
+//   可用 env `AGINT_EVOLUTION_DRIVER_TIMEOUT_MS` 或 patch config `llmTimeoutMs` 覆盖。
+const DEFAULT_TIMEOUT_MS = 600_000;
+const TIMEOUT_ENV = 'AGINT_EVOLUTION_DRIVER_TIMEOUT_MS';
 // 2026-09-27 v0.2.2：6000 → 20000。实测 metrics.js 7334B 被截断，而提示词声称
 // "verbatim text of one target file" —— LLM 看不到尾部却以为看全了，会误判
 // not applicable；若 oldText 恰在截断点之后还会触发幻觉闸门误伤。
@@ -155,7 +163,15 @@ const SYSTEM_PROMPT = Object.freeze(
   'name the remaining steps in rationale — do not refuse just because the full proposal is bigger ' +
   'than one edit. Reply applicable=false only when the proposal is vague, requires creating new ' +
   'files, or belongs in a completely different file.\n' +
-  '4. Do not invent APIs, commands, or text that does not appear in the file.',
+  '4. Do not invent APIs, commands, or text that does not appear in the file.\n' +
+  // ⛔ 2026-10-28 实测（提案 2f91b72b）：孩子会话跑满 119s、最后一句是「Now I will construct the edit」，
+  //    全程没调 structured_output ⇒ 父侧什么也拿不到，只能等超时。规则本身没人告诉过它。
+  '5. You MUST deliver the answer as the structured-output tool call. Plain assistant text is NOT an answer: ' +
+  'the caller cannot read it and the whole run will be recorded as failed.\n' +
+  // ⛔ 同批实测：孩子会话的 cwd 曾是进程 cwd（家目录），于是 13/15 次工具调用都在 `ls`/`find` 找仓库。
+  //    现在 cwd 已改成 repoRoot，但仍要在提示里封住「顺手探索」这条路。
+  '6. The working directory IS the repository. Never go hunting for the project: the target path is given in ' +
+  'the prompt and is relative to the working directory — read that exact path if you need text beyond the excerpt.',
 );
 
 // ── 纯函数（可单测，不碰 ctx）────────────────────────────────────────────
@@ -184,6 +200,22 @@ export function resolveRepoRoot(env = {}, config = {}) {
   const fromCfg = String(config?.repoRoot ?? '').trim();
   if (fromCfg) return fromCfg;
   return null;
+}
+
+/**
+ * LLM 调用超时解析：env > patch config > 常量默认（600s）。
+ *
+ * ⛔ 2026-10-28 教训：这个值原先是写死的常量，于是「模型慢」这种环境差异
+ *    只能靠改代码解决；而它的失败形态是**把已经跑完的 turn 一起丢掉**，
+ *    从面板上看只剩下一个 `llm unavailable`，根因彻底不可见。
+ *    非数字 / ≤0 一律当没配，别让一条脏 env 把闸门变成 0ms。
+ */
+export function resolveLlmTimeout(env = {}, config = {}) {
+  const fromEnv = Number(env?.[TIMEOUT_ENV]);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return Math.trunc(fromEnv);
+  const fromCfg = Number(config?.llmTimeoutMs);
+  if (Number.isFinite(fromCfg) && fromCfg > 0) return Math.trunc(fromCfg);
+  return DEFAULT_TIMEOUT_MS;
 }
 
 /** 从提案文本里提取反引号包裹的仓库路径（`plugins/x/lib/y.js` 形态）。
@@ -577,9 +609,23 @@ export function apply(ctx, config = {}) {
    * 注入点：opts.llm（测试用），否则走 agents.create + subagents.start。
    * @param {object} [opts.entityGate] 实体存在性门：{ repoFiles, getCodeIndex }；
    *   缺省/null = 不启用（旧测试兼容）。getCodeIndex() 返回 null = 索引不可用 → snake 类放行并降级告警。
+   * @param {number} [opts.timeoutMs] 显式超时；缺省按 env/config/常量（见 resolveLlmTimeout）。
+   * @param {string} [opts.cwd] 孩子会话的工作目录（＝仓库根）。缺省回落 cfgRepoRoot → process.cwd()。
    */
-  async function construct({ candidate, targetId, fileText, timeoutMs = DEFAULT_TIMEOUT_MS, llm = null, entityGate = null }) {
+  async function construct({
+    candidate,
+    targetId,
+    fileText,
+    timeoutMs = null,
+    llm = null,
+    entityGate = null,
+    cwd = null,
+  }) {
     const build = llm ?? ((args) => spawnLlm(ctx, args));
+    const effectiveTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Math.trunc(Number(timeoutMs))
+      : resolveLlmTimeout(process.env, config);
+    const workDir = (typeof cwd === 'string' && cwd.trim()) ? cwd.trim() : (cfgRepoRoot ?? null);
     const out = await build({
       system: SYSTEM_PROMPT,
       user: [
@@ -590,15 +636,24 @@ export function apply(ctx, config = {}) {
         '',
         candidate.body ?? '',
         '',
+        '## Working directory',
+        workDir ?? '(the repository root that contains the target path below)',
+        '',
         `## Target file: ${targetId}`,
+        // ⛔ 别再只说「verbatim text」：sweep.js 有 96.5KB，20000 字符必被截断，而模型察觉截断后
+        //    会去全盘找仓库（2026-10-28 实测 13 次 bash 全用在 ls/find）。这里把「去哪读剩下的」写成一句话。
+        `(excerpt below may be truncated. The full file is \`${targetId}\` relative to the working directory — ` +
+        'if your anchor lies beyond the excerpt, read THAT exact path. Do not search the filesystem for it.)',
         '```',
         String(fileText).slice(0, DEFAULT_SNIPPET),
         '```',
         '',
         'Reply with the structured output: one atomic edit, or applicable=false.',
+        'Do not reply with prose only — the caller only receives the structured-output call.',
       ].join('\n'),
       schema: MUTATION_OUTPUT_SCHEMA,
-      timeoutMs,
+      timeoutMs: effectiveTimeout,
+      cwd: workDir,
     });
     if (!out || out.ok !== true) {
       // LLM 通路失败 = 硬失败，由 runOnce 中止本轮并抛错；⛔ 不再静默计入 degraded。
@@ -843,7 +898,12 @@ export function apply(ctx, config = {}) {
         continue;
       }
 
-      const built = await construct({ candidate, targetId, fileText, llm: inj.llm ?? null, entityGate });
+      // ⛔ 必须显式传 cwd＝repoRoot（2026-10-28 取证：不传则孩子会话拿 process.cwd()，
+      //    实机是 `~/桌面` 或 `~`，于是 15 次工具调用里 13 次在 `ls`/`find` 找仓库，
+      //    turn 烧到 119s 才结束，撞 120s 闸门后连结果一起丢）。
+      const built = await construct({
+        candidate, targetId, fileText, llm: inj.llm ?? null, entityGate, cwd: repoRoot ?? null,
+      });
       if (built.llmFailure) {
         // 无降级：LLM 通路失败就不再往下试（继续试只会重复失败且可能重复计费）。
         // 发 summary + 抛错，让 cron 的 lastError 亮起来。
@@ -1913,6 +1973,7 @@ export async function spawnLlm(ctx, {
   user,
   schema,
   timeoutMs,
+  cwd = null,
   preset = DEFAULT_AGENT_PRESET,
   provider = null,
   model = null,
@@ -1972,11 +2033,13 @@ export async function spawnLlm(ctx, {
       reasoningEffort: reasoningEffort ?? selection?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
     };
     const resolvedPreset = preset || DEFAULT_AGENT_PRESET;
+    // ⛔ 孩子会话的 cwd 必须是仓库根，不能是进程 cwd（2026-10-28 实测见 construct 调用点注释）。
+    const workDir = (typeof cwd === 'string' && cwd.trim()) ? cwd.trim() : process.cwd();
 
     const createPromise = agents.create({
       sessionId: `evolution-driver-${randomUUID()}`,
       // ⭐ agentPreset 不能省：省了 ⇒ child 无模型路由 ⇒ 建得出会话、跑不动一步（30 个空壳的血债）
-      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: resolvedPreset },
+      meta: { cwd: workDir, origin: 'subagent', agentPreset: resolvedPreset },
       // ⭐ agentOptions 同样不能省：它是 provider/model/reasoningEffort 的载体
       agentOptions,
       signal: controller.signal,

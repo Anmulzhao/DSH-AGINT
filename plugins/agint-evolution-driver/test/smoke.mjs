@@ -14,6 +14,7 @@ import {
   normalizeRepoPath,
   matchRepoFile,
   resolveRepoRoot,
+  resolveLlmTimeout,
   commitToRepo,
   restoreFromPreimage,
   verifyTargetFile,
@@ -1811,4 +1812,88 @@ test('T39: sweep 模式同样定位不到目标 ⇒ deterministic=false（仍可
   assert.equal(out.deterministic, false, 'sweep 模式不等于确定性失败 —— 下一轮可能有新候选');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T39）');
+// ── T40: 2026-10-28 三处硬伤（cwd / 超时口径 / 提示词）──────────────────
+// 案发：提案 2f91b72b 批准后连续两次 `timeout after 120000ms`。取证结论是
+//   ① 孩子会话 cwd=process.cwd()（实机是 `~/桌面`）⇒ 15 次工具调用里 13 次在 ls/find 找仓库；
+//   ② 提示只给 20000 字符，而目标 sweep.js 有 96.5KB，模型察觉截断后去读原文件；
+//   ③ 120s 闸门在成功后仍会吞掉结果（错误统一成 llm unavailable，根因不可见）。
+// 三条都要有用例压住，否则下次重构又会「顺手」退回去。
+
+test('T40a: resolveLlmTimeout —— 默认 600s；env > config；脏值不许把闸门变成 0ms', () => {
+  assert.equal(resolveLlmTimeout({}, {}), 600_000, '默认必须是 600s（120s 是实机失败值）');
+  assert.equal(resolveLlmTimeout({}, { llmTimeoutMs: 300_000 }), 300_000);
+  assert.equal(
+    resolveLlmTimeout({ AGINT_EVOLUTION_DRIVER_TIMEOUT_MS: '900000' }, { llmTimeoutMs: 300_000 }),
+    900_000,
+    'env 优先级高于 patch config（排障时不想改挂载文件）',
+  );
+  for (const bad of ['', 'abc', '0', '-5', 'NaN', '  ']) {
+    assert.equal(
+      resolveLlmTimeout({ AGINT_EVOLUTION_DRIVER_TIMEOUT_MS: bad }, {}),
+      600_000,
+      `脏 env=${JSON.stringify(bad)} 必须回落默认值`,
+    );
+  }
+});
+
+test('T40b: construct —— cwd 显式下发；提示里写清工作目录与「别去找仓库」', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  let seen = null;
+  const out = await svc.construct({
+    candidate: { id: 'c1', title: 't', body: '', status: 'proposed' },
+    targetId: 'plugins/agint-dream/lib/sweep.js',
+    fileText: 'const a = 1;\n',
+    cwd: '/repo/root',
+    llm: async (args) => { seen = args; return { ok: false, reason: 'stub' }; },
+  });
+  assert.equal(out.llmFailure, true);
+  assert.equal(seen.cwd, '/repo/root', 'cwd 必须传到 spawnLlm，不许它自己回落 process.cwd()');
+  assert.equal(seen.timeoutMs, 600_000, '缺省超时走 resolveLlmTimeout（600s）');
+  assert.match(seen.user, /## Working directory\n\/repo\/root/, '提示里必须有工作目录');
+  assert.match(seen.user, /plugins\/agint-dream\/lib\/sweep\.js/, '提示里必须给出要读的精确相对路径');
+  assert.match(seen.user, /Do not search the filesystem/, '必须封住「全盘找仓库」这条路');
+  assert.match(seen.user, /structured-output/, '必须要求走结构化输出（否则父侧拿到空结果）');
+});
+
+test('T40c: construct —— 未给 cwd 时回落 patch config 的 repoRoot', async () => {
+  const ctx = makeCtx({});
+  apply(ctx, { repoRoot: '/cfg/root' });
+  let seen = null;
+  await ctx.provided['agint.evolutionDriver'].construct({
+    candidate: { id: 'c1', title: 't', body: '', status: 'proposed' },
+    targetId: 'plugins/x/lib/y.js',
+    fileText: 'x\n',
+    llm: async (args) => { seen = args; return { ok: false, reason: 'stub' }; },
+  });
+  assert.equal(seen.cwd, '/cfg/root');
+});
+
+test('T40d: spawnLlm —— meta.cwd 用传入的 cwd；缺省才回落 process.cwd()', async () => {
+  const created = [];
+  const ctx = makeCtx({
+    agents: {
+      create: async (opts) => { created.push(opts); return { agent: {}, dispose: async () => {} }; },
+    },
+    subagents: {
+      getProvider: () => ({ ok: true }),
+      startActivation: async () => ({
+        result: Promise.resolve({ stopReason: 'completed', structured: { applicable: false } }),
+        dispose: async () => {},
+      }),
+    },
+    agentDefaultModel: {
+      currentSelection: () => ({ provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash', reasoningEffort: 'high' }),
+    },
+  });
+  const r1 = await spawnLlm(ctx, { system: 's', user: 'u', schema: {}, timeoutMs: 1000, cwd: '/repo/root' });
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  assert.equal(created[0].meta.cwd, '/repo/root');
+  assert.equal(created[0].meta.agentPreset, DEFAULT_AGENT_PRESET, 'preset 不能因为改 cwd 被顺手弄丢');
+
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: {}, timeoutMs: 1000 });
+  assert.equal(created[1].meta.cwd, process.cwd(), '没给 cwd 时才回落进程 cwd');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T40）');
