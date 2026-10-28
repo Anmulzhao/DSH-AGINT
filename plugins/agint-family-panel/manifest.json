@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.9.0",
-  "description": "AGINT 家族面板（v2）。六层聚合：源码扫描 / 运行态 / 存储 / 契约 / 档案 / 上游判读；提案台是整页唯一写入口。0.9.0 新增「上游」分区（dsh 发行记录判读结果 + 落后情况）。",
+  "version": "0.9.1",
+  "description": "AGINT 家族面板（v2）。六层聚合：源码扫描 / 运行态 / 存储 / 契约 / 档案 / 上游判读；提案台是整页唯一写入口。0.9.0 新增「上游」分区（dsh 发行记录判读结果 + 落后情况）。0.9.1 新增 `partial` 执行态文案（job 成功但提案未完，见提案 846f4fbb 实证）；",
   "main": "lib/index.js",
   "agint": {
     "kind": "dual",

@@ -1526,6 +1526,10 @@ function plabel(it){
   if(String(it.blocker??"").trim()!=="") return "已批准·阻塞中";
   const m={queued:"已批准·排队中",running:"已批准·执行中",succeeded:"已落地",failed:"已批准·执行失败",
            deferred:"已批准·已顺延",cancelled:"已批准·执行已撤销",
+           /* 2026-10-28：job 成功但提案没做完。一次自动执行只能落一个原子单元，
+              跨界多文件的提案会走到这一档 —— 没有它就只能二选一：标"已落地"（撒谎）
+              或报失败（把已落地的那份说成没做）。提案 846f4fbb 实证。 */
+           partial:"已批准·部分落地（剩余单元见详情）",
            idle:it.execMode==="manual"?"已批准（手动）":"已批准·待入队"};
   return m[it.execState]||"已批准待执行";
 }
@@ -1543,7 +1547,7 @@ function execText(it){
     ? `定时 ${String(it.execAt||"").slice(0,16).replace("T"," ")}`
     : "立即";
   const st={queued:"排队中",running:"执行中",succeeded:"已完成",failed:"失败",deferred:"已顺延",
-            cancelled:"已撤销",idle:"待入队"}[it.execState]||it.execState||"—";
+            cancelled:"已撤销",partial:"部分落地（剩余单元见 execError）",idle:"待入队"}[it.execState]||it.execState||"—";
   const tries=Number(it.execAttempts)>0?`（第 ${it.execAttempts} 次）`:"";
   const err=it.execError?` · ${it.execError}`:"";
   return `${when} · ${st}${tries}${err}`;
