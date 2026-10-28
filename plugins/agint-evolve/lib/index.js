@@ -922,11 +922,16 @@ function apply(ctx, config) {
       // 读的人看到的标签说"做完了"，而台账说"没做完"，两边都不像在撒谎，
       // 这才是它比单纯的字段错误更难查的原因。
       //
+      //    **兼职两种口径**：`succeeded` 只在 status=applied 时成立（一次成功 ⇒ 提案做完）；
+      //    `partial` / `failed` / `running` 只在 status 属于 approved/applied 时有意义。
       // ⛔ 有活跃执行的提案不动：那边正在跑，队列是事实，不能抢在它前面归位。
-      // ⛔ approved 也不动：reset partial 会把「欠账」从执行态上抹掉；它仍要在面板上显示。
-      //    其余（proposed / rejected / wontfix）⇒ 回到 idle（ Evidence 留在 note/execError 里）。
-      if (!['approved', 'applied'].includes(rec.status)
-        && ['succeeded', 'partial', 'failed', 'running'].includes(rec.execState)) {
+      // ⛔ 归位发生在 `syncExecutionQueue` **之前**：execMode 还是 immediate 时再入队是合法的，
+      //    队列优先，不该被归位逻辑抢掉（这条写反会让「重新批准」静默降级成什么都没排）。
+      const execAliveStatus = rec.status === 'approved' || rec.status === 'applied';
+      const staleExec = rec.execState === 'succeeded'
+        ? rec.status !== 'applied'
+        : (!execAliveStatus && ['partial', 'failed', 'running'].includes(rec.execState));
+      if (staleExec) {
         const live = await activeJobsFor(id);
         if (live.length === 0) await markProposal(id, { execState: 'idle' });
       }

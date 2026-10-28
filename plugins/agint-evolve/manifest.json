@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolve",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "agint-evolve v0.13.0: 智进 review/self-evolution loop + 提案执行计划 + 可执行性声明。服务：dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory + 执行队列 8 个（enqueueExecution / claimDueExecutions / finishExecution / requeueExecution / cancelExecution / listExecutions / executionStats / describeExecution）。storage domain `agint_evolve` schemaVersion=2（表：proposal / baseline_history / execution）。⛔ 加表刻意不升 version：dsh 的 json backend 是硬版本校验，升版本会让现有 50+ 条提案整表读不出来。v0.11.0 增 autoExecutable：提案可声明「不可自动执行」（复核类），该声明是**语义闸**，force 也不强穿。v0.11.1 修 2026-10-27 v0.11.0 漏声明 createdAt/updatedAt 造成的时间戳丢失（zod strip ⇒ 提案台排序崩 + 改状态即写坏该行）与三个工具 output schema 未同步新字段（additionalProperties:false ⇒ strict 校验打回）。",
   "main": "lib/index.js",
   "agint": {

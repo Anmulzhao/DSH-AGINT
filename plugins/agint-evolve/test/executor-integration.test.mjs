@@ -175,6 +175,12 @@ try {
   // 阴性对照：第 1 节那条**真的**做完了，改判回退前它仍是 applied ⇒ 不受这条规则影响。
   assert.equal(after1.execState, 'succeeded', '真做完的那条不该被这条规则带偏');
 
+  // `execState=succeeded` 只在 `status=applied` 时成立 —— 同 Apolo 同一份数据的两处口径
+  // 不许相反：applied → approved 之后必须归位，否则面板照旧显示「已落地」。
+  const reopened = await evolve.setStatus(p1.id, 'approved', '重新开工', { execMode: 'manual' });
+  assert.equal(reopened.status, 'approved');
+  assert.equal(reopened.execState, 'idle', 'status 已不是 applied ⇒ succeeded 必须归位 idle');
+
   console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地 四条路径接口对齐）');
 } finally {
   await rm(root, { recursive: true, force: true });

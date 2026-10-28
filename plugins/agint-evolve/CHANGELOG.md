@@ -1,5 +1,18 @@
 # agint-evolve CHANGELOG
 
+## v0.13.2（2026-10-28 · `succeeded` 只在 `applied` 时成立）
+
+v0.13.1 的规则漏了一档：`846f4fbb` 改判回 **approved**（它只落地了 1/3 的单元，不该按成功记账）
+之后 `execState` 仍是 `succeeded`，面板照 `m['succeeded']` 显示「已落地」—— 与 `status=approved`
+正好相反。原因是上一条规则只处理「离开 approved/applied」，没处理「succeeded 与 applied 绑定」。
+
+- `execState === 'succeeded'` ⇒ 只有 `status === 'applied'` 时成立，否则归位 idle；
+- `partial` / `failed` / `running` ⇒ 只在 status 属于 approved/applied 时有意义，否则归位 idle；
+- ⛔ 有活跃执行不动；⛔ 归位仍在入队之前（execMode=immediate 的再入队是合法行为，队列优先）。
+
+验收：`test/executor-integration.test.mjs` 第 5 节补一条 —— 第 1 节那条**真的**做完的提案
+改判回 approved（manual）⇒ execState 必须变 idle；以及 partial → proposed ⇒ idle。
+
 ## v0.13.1（2026-10-28 · 改判回退时执行态要跟着归位）
 
 修 `846f4fbb` 那条记录时发现的第二处「各说各话」：它已被误结案成 `applied`
