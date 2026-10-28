@@ -1,5 +1,51 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.9.0 — 2026-10-28 — 范围记账：「改了一个文件」不再被当成「提案做完了」
+
+起因是一条**反过来**的实证。提案 `846f4fbb`（同时收紧两处 dsh-tools 替身 + 抽共用模块）：
+同一天里它先在 v0.7.x 下被判死刑（第一个目标答 applicable=false ⇒ 整条不可执行），
+v0.8.0 改逐个尝试之后，它在 23:31 成功改掉了 `plugins/agint-evolve/test/_stub-dsh-tools.mjs`，
+于是 `commit.ok=true` ⇒ 执行器报成功 ⇒ evolve 把提案标成 `status=applied`、`execError=''`。
+而提案实际有 3~4 个原子单元：
+
+| 单元 | 状态（23:35 复核） |
+| --- | --- |
+| `agint-evolve/test/_stub-dsh-tools.mjs` | ✅ 已收窄（commit bd7c5b3） |
+| `agint-input-gateway/test/_stub-storage-domain.mjs` | ❌ 仍是 `return { ...desc }` |
+| `plugins/_shared/…` 共用替身 | ❌ 目录都不存在 |
+| 两个插件冒烟里的「真调一次」断言 | ❌ grep 零命中 |
+
+⇒ **假死刑**（还挂在队列里）比**假完成**（台账说已落地，剩下三个单元失去入口）便宜得多。
+第二次事故是这里修的对象。
+
+### 新模块 `lib/scope.js`（纯函数，不带 ctx）
+
+- `detectNewAssetIntent(text)`：正文出现「抽一份共用 / 共用模块 / 新增文件 / `plugins/_shared/`」⇒ 提案多一个单元；
+- `analyzeProposalScope({targets, body, appliedIndex})` ⇒
+  `{unitsTotal, unitsApplied, remainingUnits, requiresNewAsset, complete, note}`。
+
+口径上三条不准动：
+
+1. **已尝试但被模型否掉的目标不算欠账** —— 它当场答过 `applicable=false`，再记一次
+   会让每一条单文件提案都自称 incomplete（T44a 是这条的阴性对照：「抽出来」≠「抽共用模块」）；
+2. **applied 之后没轮到的目标算欠账** —— 它连被读取的机会都没有（T44b / T44e）；
+3. ⛔ **不为此新建事件主题**：`check-wiring` 把「有人发、没人订」判成 `NO_SUBSCRIBER` 硬缺口，
+   而现有 topic 的 payload 是 strict schema（加字段会被拒收）。欠账的出口走三条：
+   返回值 `out.scope`（执行器消费）、`warn(...)`、以及 `out.summary.scope`（cron 落盘）。
+
+### 行为变化
+
+- driver 返回值新增 `scope`（成功路径必有）；`status()` 新增 `partialScope` 计数器
+  （成功路径唯一的结构化出口 —— 计数不在那里就等于看不见）。
+- ⛔ 记账层**不做路由决策**：该不该结案是 agint-executor / agint-evolve 的事（见各自 CHANGELOG）。
+
+### 验收
+
+- `node test/smoke.mjs` ⇒ **73/73 PASS**（新增 T44a–f 共 6 条，T43 补 5 条范围断言）。
+- 阴性对照：把 `analyzeProposalScope` 换回「有 commit 就算 complete」⇒
+  T43 的 `complete===false` 与 T44b/e/f 立刻变红；还原即全绿 ⇒ 用例有分辨力。
+- `plugin-check` 0 FAIL；`check-wiring` PASS（未新增主题，0 硬缺口）。
+
 ## v0.8.0 — 2026-10-28 — 两处硬伤：截断换成锚点窗口、目标改成逐个尝试
 
 v0.7.0 修掉了「批准后必失败」的三个外因（cwd / 120s / 提示词），这一版修的是剩下两处

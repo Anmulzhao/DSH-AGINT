@@ -34,6 +34,7 @@ import { computeHypothesisLock } from '../lib/predictor.js';
 import { buildLockHypothesis } from '../lib/prediction-locker.js';
 import { EXPECTED_EFFECT_CODE, EXPECTED_EFFECT_SKILL } from '../lib/expected-effect.js';
 import { buildExcerpt, extractAnchors } from '../lib/excerpt.js';
+import { analyzeProposalScope } from '../lib/scope.js';
 
 /**
  * 建一个真实的临时仓库根（v0.2.8）。
@@ -2078,6 +2079,16 @@ test('T43: 第一个目标答 applicable=false ⇒ 继续试第二个并落地�
   assert.match(landed.promptPayload.newText, /userExecute/, '落地的正文要是「收紧后的替身」那段');
   assert.equal(out.target.id, 'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
     '返回的 target 必须是第二个候选，不是第一个（第一个是样板文件）');
+
+  // v0.9.0：这次「成功」只等于**一个原子单元**落地，不等于提案做完了。
+  // 实机 846f4fbb 就是这样被标成 applied 的（3 个单元只落地 1 个，剩余单元无任何记账）。
+  assert.ok(out.scope, 'driver 返回必须带范围记账 —— 调用方靠它决定能不能按「已落地」结案');
+  assert.equal(out.scope.unitsTotal, 3, '正文解析出 3 个目标文件');
+  assert.equal(out.scope.unitsApplied, 1, '只落地了一个单元');
+  assert.deepEqual(out.scope.remainingUnits, ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs'],
+    'applied 之前被模型否掉的样板不算欠账；applied 之后的那个才是');
+  assert.equal(out.scope.complete, false, '还有单元没覆盖 ⇒ 不许按已落地结案');
+  assert.match(out.scope.note, /范围记账 1\/3/, 'note 要一眼能读出 1/3，而不是让读的人自己去翻提案正文');
 });
 
 test('T43b: 全部目标都否 ⇒ not-actionable，但错误里要列出每个目标的拒因', async () => {
@@ -2112,4 +2123,107 @@ test('T43b: 全部目标都否 ⇒ not-actionable，但错误里要列出每个�
   assert.match(joined, /plugins\/b\/lib\/y\.js: llm judged not applicable/, '第二个的也要在');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T43）');
+// ── T44: 范围记账 —— 「改了一个文件」≠「提案做完了」 ─────────────────────────
+
+test('T44a: 单目标 + 无新建要求 ⇒ complete=true（别把每条正常提案都记成欠账）', () => {
+  const s = analyzeProposalScope({
+    targets: [{ id: 'plugins/a/lib/x.js' }],
+    body: '把 `plugins/a/lib/x.js` 里的常量抽出来。',
+    appliedIndex: 0,
+  });
+  assert.equal(s.unitsTotal, 1);
+  assert.equal(s.unitsApplied, 1);
+  assert.deepEqual(s.remainingUnits, []);
+  assert.equal(s.complete, true);
+  assert.match(s.note, /范围记账 1\/1/);
+  // ⛔ 阴性对照（这条最容易被写坏）：「抽」字出现在正文里就判 requiresNewAsset
+  //    ⇒ 每条提了重构词的提案都会被记成 incomplete ⇒ 面板全是欠账 ⇒ 没人看。
+  assert.equal(s.requiresNewAsset, false, '「抽出来」不等于「抽一份共用模块」');
+});
+
+test('T44b: applied 之前被否的目标不算欠账（模型当场答过 applicable=false）', () => {
+  const s = analyzeProposalScope({
+    targets: [{ id: 'sample.js' }, { id: 'real-a.js' }, { id: 'real-b.js' }],
+    body: '见 `sample.js` `real-a.js` `real-b.js`',
+    appliedIndex: 1,
+  });
+  assert.equal(s.unitsTotal, 3);
+  assert.deepEqual(s.remainingUnits, ['real-b.js'], '排在被落地那个之前的已经被否掉了，不该再计一次欠账');
+  assert.equal(s.complete, false);
+});
+
+test('T44c: 正文要求抽共用模块 ⇒ 多一个单元，光改一个文件不算完', () => {
+  const s = analyzeProposalScope({
+    targets: [{ id: 'plugins/a/test/_stub-tools.mjs' }],
+    body: '先抽一份共用的替身（`plugins/_shared/test-stub-dsh-tools.mjs`），再逐个迁。\n改 `plugins/a/test/_stub-tools.mjs`。',
+    appliedIndex: 0,
+  });
+  assert.equal(s.requiresNewAsset, true, '正文同时提到「抽一份共用」与共用地路径 ⇒ 必须判为真');
+  assert.equal(s.unitsTotal, 2, '1 个目标文件 + 1 个待新建资产');
+  assert.equal(s.complete, false, '即使所有目标文件都改了，共用模块没建 ⇒ 提案仍没做完');
+  assert.match(s.reason, /抽共用模块|共用目录路径/);
+});
+
+test('T44d: 一个单元都没落地 ⇒ unitsApplied=0 且 complete=false', () => {
+  const s = analyzeProposalScope({
+    targets: [{ id: 'a.js' }],
+    body: '见 `a.js`',
+    appliedIndex: -1,
+  });
+  assert.equal(s.unitsApplied, 0);
+  assert.deepEqual(s.remainingUnits, ['a.js']);
+  assert.equal(s.complete, false);
+});
+
+test('T44e: 846f4fbb 实机形状 —— 只改 evolve 替身时必须留下另外两个单元的欠账', () => {
+  const s = analyzeProposalScope({
+    targets: [
+      { id: 'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs' },
+      { id: 'plugins/agint-evolve/test/_stub-dsh-tools.mjs' },
+      { id: 'plugins/agint-input-gateway/test/_stub-storage-domain.mjs' },
+    ],
+    body: '把替身抽一份共用的（`plugins/_shared/test-stub-dsh-tools.mjs`），'
+      + '逐个迁 agint-evolve 与 agint-input-gateway 的替身，并加真调断言。',
+    appliedIndex: 1,
+  });
+  assert.equal(s.unitsTotal, 4, '3 个目标文件 + 1 个待新建的共用模块');
+  assert.equal(s.unitsApplied, 1);
+  assert.deepEqual(s.remainingUnits, ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs']);
+  assert.equal(s.complete, false);
+  assert.match(s.note, /范围记账 1\/4/);
+});
+
+test('T44f: 执行一次下来 partialScope 计数器随「部分覆盖」增加（假的已完成要能被数出来）', async () => {
+  const repo = await makeRepo({
+    'plugins/a/lib/x.js': 'const v = 1;\n',
+    'plugins/b/lib/y.js': 'const v = 2;\n',
+    'plugins/c/lib/z.js': 'const v = 3;\n',
+  });
+  const llm = async ({ user }) => (/## Target file: .*x\.js/m.test(user)
+    ? { ok: true, value: { applicable: false, targetSkill: '', oldText: '', newText: '', rationale: 'not this one' } }
+    : {
+      ok: true,
+      value: { applicable: true, targetSkill: '', oldText: 'const v = 2;', newText: 'const v = 22;', rationale: 'ok' },
+    });
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id, title: 't', status: 'approved', category: 'plugin',
+        body: '见 `plugins/a/lib/x.js`、`plugins/b/lib/y.js` 与 `plugins/c/lib/z.js`',
+      }),
+    },
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx, { repoRoot: repo });
+  const svc = ctx.provided['agint.evolutionDriver'];
+  await svc.runForProposal('p-partial', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(svc.status().partialScope, 1,
+    'status() 是成功路径唯一的结构化出口 —— 累计的部分覆盖次数必须从这里读得到');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T44）');

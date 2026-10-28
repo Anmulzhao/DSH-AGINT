@@ -57,6 +57,7 @@ import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import { requestSynthMount } from './deploy-bridge.js';
 import { extractAnchors, buildExcerpt } from './excerpt.js';
+import { analyzeProposalScope } from './scope.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -540,6 +541,9 @@ export function apply(ctx, config = {}) {
     lastError: null,
     lastProposalId: null,
     seen: new Set(),
+    // 2026-10-28 v0.9.0：部分覆盖计数。非 0 = 有提案只落地了一部分就被按成功处理
+    // （见 lib/scope.js）—— 这是**待办的欠账**，不是统计噪声，面板与 cron 都要看得见。
+    partialScope: 0,
   };
   // 仓库根（patch config 静态部分）；env 优先级在 resolveRepoRoot 里
   const cfgRepoRoot = String(config?.repoRoot ?? '').trim() || null;
@@ -1041,6 +1045,37 @@ export function apply(ctx, config = {}) {
         break;
       }
 
+      // ── 范围记账（2026-10-28 v0.9.0）─────────────────────────────────
+      // 「改成功了」只等于「**一个**原子单元落地了」。提案常常横跨多个文件
+      // （甚至要求先抽共用模块），而一次 mutation 结构上不可能跨文件原子。
+      // 于是必须在**提案层**留账：这次覆盖了几个单元、还剩几个。
+      //
+      // 实测反面教材（提案 `846f4fbb`，同一天两个版本各挖一个坑）：
+      //   - v0.7.x：第一个目标答否 ⇒ 整条判死刑，另两个替身从未被读过；
+      //   - v0.8.0：逐个试 ⇒ 首个目标改成功即报 succeeded，提案被标 applied，
+      //     而 3 个单元只落地 1 个（input-gateway 替身仍原样透传、共用模块没建）。
+      // ⛔ 后者更贵：假死刑至少还在队列里，假完成把后续入口一起关掉。
+      const scope = analyzeProposalScope({
+        targets,
+        body: `${candidate?.title ?? ''}\n${candidate?.body ?? ''}`,
+        appliedIndex: picked ? picked.step : -1,
+      });
+      if (scope.complete === false) {
+        state.partialScope += 1;
+        // ⛔ 不为此新建 topic：check-wiring 会把「有人发、没人订」判成 NO_SUBSCRIBER 硬缺口，
+        //    而现有 topic 的 payload schema 是 strict 的（加字段可能被 topics-adjust 拒收）。
+        //    欠账的可观测出口走三条：返回值 out.scope（执行器消费）、warn、以及 summary（cron 落盘）。
+        warn('proposal partially covered', {
+          candidateId: candidate.id,
+          appliedTarget: picked ? picked.targetId : null,
+          unitsApplied: scope.unitsApplied,
+          unitsTotal: scope.unitsTotal,
+          remainingUnits: scope.remainingUnits,
+          requiresNewAsset: scope.requiresNewAsset,
+          newAssetEvidence: scope.newAssetEvidence,
+        });
+      }
+
       if (picked === null) {
         // 所有目标都改不动 —— 这才是真的 not actionable，且必须留下**每个**目标的拒因，
         // 否则下一个人只能看到一句「不可执行」，重走一遍同样的取证。
@@ -1503,6 +1538,10 @@ export function apply(ctx, config = {}) {
         variantId: variant?.variant_id ?? null,
         policyDecision: variant?.policy_decision ?? null,
         rationale: v.rationale ?? '',
+        // 2026-10-28 v0.9.0：范围记账。调用方（agint-executor）**必须**看它：
+        // complete=false 时这次成功只代表"提案的一个原子单元落地了"，把它当
+        // 「提案已落地」结案会把剩余单元永久留在正文里没人认领（846f4fbb 实证）。
+        scope,
         // 2026-09-29（B 方案）：ok=false 时把决策与回滚结果一并带出，否则调用方
         // （cron 持久化只写死 "ok"）无从区分「写入被拒」与「路径不合法」两类失败。
         // v0.2.10 补齐成功分支：此前 policyDecision 只在**失败**分支带出，成功时
@@ -1525,6 +1564,9 @@ export function apply(ctx, config = {}) {
           proposalId: proposal.id,
           candidateId: candidate.id,
           commitAttempted: commit != null,
+          // v0.9.0：范围进 summary（cron 落盘通道）—— 成功路径也要看得见欠账，
+          // 「改了一个文件」与「提案做完了」不是一件事，证据层必须分得开。
+          scope,
           ...(commitAudit ?? { note: commit == null ? 'no-commit-attempted' : 'commit-ok-unknown' }),
           // 1a：锁的观测段独立于 commitAudit —— 跳过 commit 时也要看得见。
           prediction: predictionAudit,
@@ -1626,6 +1668,9 @@ export function apply(ctx, config = {}) {
       lastError: state.lastError,
       lastProposalId: state.lastProposalId,
       seenCandidates: state.seen.size,
+      // v0.9.0：部分覆盖次数（见 lib/scope.js）。非 0 ⇒ 有提案只被覆盖了一部分，
+      // 台账上不能当"已落地"结案 —— 这是本plugin唯一能把这个欠账喊出来的出入口。
+      partialScope: state.partialScope,
       commitEnabled: isCommitEnabled(process.env),
       repoRoot: cfgRepoRoot,
       killSwitch: isDisabled(process.env) ? 'off' : 'on',
