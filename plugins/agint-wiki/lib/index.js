@@ -221,20 +221,25 @@ function apply(ctx, config) {
        *   本条目内有两条互斥的认定 → contradiction，红。
        *   ⚠️ 行只是作者的排查告诫（如「不要用 grep 判断报错」），无任何冲突
        *   语义 → warnings 桶，黄。它曾经被一刀切算成矛盾，造成误报。
-       * 索引页（README.md）是 meta 不是知识，两个桶都豁免。
+       * 索引页（README.md）是 meta 不是知识，两个桶都豁免；
+       * 但它的**链接照常解析**（README 的链接必须计入 referenced）。
        */
       const CONFLICT_WORD_RE = /(更正|勘误|矛盾|冲突|推翻|作废|不再成立|过时)/;
       for (const [rel, content] of contents) {
         if (rel === 'WIKI_SCHEMA.md') continue; // schema doc is meta, not knowledge
-        if (basename(rel) === 'README.md') continue; // index page is meta, exempt from ⚠️ verdicts
         const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line.includes('⚠️')) continue;
-          // 带 path/line/snippet 而不是裸文件名：裸 rel 让复核者还得自己开文件找行
-          const hit = { path: rel, line: i + 1, snippet: line.trim().slice(0, 160) };
-          if (CONFLICT_WORD_RE.test(line)) contradictions.push(hit);
-          else warnings.push(hit);
+        // 索引页只豁免 ⚠️ 判定（矛盾/警告两桶都不记）；
+        // 链接解析必须照常执行 —— 否则 README 的链接不进入 referenced，
+        // 「登记到索引却仍报孤立」的自相矛盾会一直存在（2026-10-28 修复）。
+        if (basename(rel) !== 'README.md') {
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line.includes('⚠️')) continue;
+            // 带 path/line/snippet 而不是裸文件名：裸 rel 让复核者还得自己开文件找行
+            const hit = { path: rel, line: i + 1, snippet: line.trim().slice(0, 160) };
+            if (CONFLICT_WORD_RE.test(line)) contradictions.push(hit);
+            else warnings.push(hit);
+          }
         }
         const dir = dirname(rel);
         let m;
