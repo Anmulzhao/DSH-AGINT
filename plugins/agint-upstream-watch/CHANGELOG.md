@@ -1,5 +1,17 @@
 # Changelog — agint-upstream-watch
 
+## [0.3.1] — 2026-10-28（提案 `846f4fbb` 单元 2）
+
+本插件那份收紧后的 `defineTool` 替身，抽成 `plugins/_shared/test-stub-dsh-tools.mjs`
+三处共用（upstream-watch / evolve / input-gateway）—— 三份各抄一份必然漂移。
+`test/_stub-storage-domain.mjs` 改为转发，契约与行为逐字不变。
+
+⛔ 契约的任何改动都要改共用那一份，并跑它的阴性对照
+（`node --test plugins/_shared/test-stub-contract.test.mjs`，6/6）。
+
+验收：`node --import ./test/_stub-register.mjs --test test/*.mjs` ⇒ 82/82 PASS；
+`bin/plugin-check.sh` 0 FAIL。
+
 ## [0.3.0] — 2026-10-28
 
 判读质量仪器：让这套东西**能自证**。设计方案 §8 的最后一期。

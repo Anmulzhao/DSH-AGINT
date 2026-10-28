@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-upstream-watch",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "上游判读器。跟踪 dsh 发行记录，两段式判读（事实与结论分离）+ 语义面 + 判读质量仪器（升级后回填对拍）。所有提案 autoExecutable=false。",
   "main": "lib/index.js",
   "agint": {
