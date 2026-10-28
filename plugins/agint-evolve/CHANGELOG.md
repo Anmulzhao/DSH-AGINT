@@ -1,5 +1,24 @@
 # agint-evolve CHANGELOG
 
+## v0.13.3（2026-10-28 · 提案 `846f4fbb` 单元 2+3：替身共用 + 真调断言）
+
+- `test/_stub-dsh-tools.mjs` 改为转发 `plugins/_shared/test-stub-dsh-tools.mjs`
+  （三处共用，避免漂移；契约逐字不变）。
+- 新增 `test/tools-contract.test.mjs`：6 个工具逐个**真调一次** execute + output.render。
+  
+  为什么要它：本仓此前**没有一条测试真调过 evolve 的工具**（`node --test test/*.mjs`
+  根本没 import `lib/tools.js`）。而 `defineTool` 只认 `options.execute` 与
+  `options.output.render` ⇒ 入口写错 / render 漏写时工具照样注册成功，
+  缺陷要到真调那一刻才炸 —— upstream-watch 就是这么连着上线三个版本的。
+  
+  该文件**自己注册** module hook（`register(_stub-loader.mjs)`），不依赖外部
+  `--import`，否则"忘了加参数"会让用例退化成 ERR_MODULE_NOT_FOUND 而不是判据。
+
+阴性对照（实测已红）：把 `evolve_review` 的 `execute` 改名 `handler` ⇒
+`evolve_review 的入口不是 execute（真宿主会抛 userExecute is not a function）`。
+
+验收：`node --test test/*.mjs` ⇒ 31/31 PASS（新增 2 条）；`bin/plugin-check.sh` 0 FAIL。
+
 ## v0.13.2（2026-10-28 · `succeeded` 只在 `applied` 时成立）
 
 v0.13.1 的规则漏了一档：`846f4fbb` 改判回 **approved**（它只落地了 1/3 的单元，不该按成功记账）
