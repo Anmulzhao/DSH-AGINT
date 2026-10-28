@@ -33,16 +33,20 @@ const SYSTEM_PROMPT = `你是「智进」(AGINT) 的上游判读器。AGINT 是�
 
 1. **只能引用 facts 里存在的信息**。facts 里没有的 API 变化、文件、数字，一律不许出现。
    如果你觉得「按经验应该还有某处变化」，不要写 —— 那是幻觉。
-2. **区分「API 变了」和「AGINT 受影响」**。facts 里每个依赖包的 \`usedImpact\` 字段已经做了这个区分：
-   - \`breaking\`：AGINT 真的用到的符号被删或被收窄 —— 这是必须处理的缺口
-   - \`elsewhere\`：这个包的 API 有删除，但都不在 AGINT 的使用面上 —— 与 AGINT 无关
-   - \`additive\` / \`compatible\`：不构成风险
-   把 \`elsewhere\` 写成风险是错的。
+2. **区分「API 变了」和「AGINT 受影响」**。facts 里每个依赖包有两个独立字段：
+   - \`usedImpact\`（API 面）：\`breaking\` = AGINT 真用到的符号被删/被收窄，必须处理；
+     \`elsewhere\` = 该包 API 有删除但都不在使用面上，与 AGINT 无关；\`additive\`/\`compatible\` 无风险。
+   - \`overallImpact\`（合成档）：额外多一档 \`blocking\` = **装不上的前置变化**
+     （\`engines\` 抬高到本机不满足、\`type\` 改成 ESM）。这一档与「用没用到某个导出」无关，
+     任何使用面分析都救不回来。把 \`elsewhere\` 写成风险是错的；把 \`blocking\` 当无关也是错的。
+   - \`semanticImpact\` / \`semanticDeltas\`（v0.2 语义面）：签名之外、可确定性判定的变化 ——
+     引擎下限、依赖增删、导出常量值变化、新增 \`@deprecated\`。**这些是事实，不是风险等级**：
+     \`warn\` 只说明「值得看一眼」，不等于「会坏」。
 3. \`verdict\` 四选一，语义严格：
    - \`no-impact\`：facts 显示没有任何需要 AGINT 动手的地方
    - \`opportunity\`：上游新增的能力，AGINT 可以用它改进自己（不是修 bug）
    - \`gap\`：AGINT 现在的能力与上游脱节，需要补（例如上游提供的能力 AGINT 还在自己实现）
-   - \`risk\`：AGINT 用到的 API 被删/收窄，或者有硬性运行环境要求变化（Node 版本等）
+   - \`risk\`：AGINT 用到的 API 被删/收窄，或 \`overallImpact=blocking\`（装不上）
 4. \`proposals\` 可以为空数组。**宁可空，不要凑数** —— 一条没价值的提案会消耗人的注意力，
    比少提一条贵得多。每条提案必须能指向 facts 里的具体条目。
 5. \`headline\` 一句话，不超过 80 字，**结论先行**，不要复述 facts。
@@ -115,12 +119,31 @@ function condenseFacts(facts) {
       breakingSamples: facts.body.breakingSamples,
     },
     impactSummary: facts.impactSummary,
+    semanticSummary: facts.semanticSummary,
+    hostFace: facts.hostFace ? {
+      pkg: facts.hostFace.pkg,
+      from: facts.hostFace.from,
+      to: facts.hostFace.to,
+      overallImpact: facts.hostFace.overallImpact,
+      semanticImpact: facts.hostFace.semanticImpact,
+      semanticBySeverity: facts.hostFace.semanticBySeverity,
+      // 宿主主包的语义差异原样给：引擎下限、新增依赖这些是「装不装得上」的直接证据，
+      // 压掉就等于把最关键的材料藏起来（v0.2 的核心补丁）。
+      semanticDeltas: facts.hostFace.semanticDeltas,
+      evidence: facts.hostFace.evidence,
+    } : null,
     depFace: facts.depFace.map((d) => ({
       pkg: d.pkg,
       from: d.from,
       to: d.to,
       verdict: d.verdict,
       usedImpact: d.usedImpact,
+      overallImpact: d.overallImpact,
+      semanticImpact: d.semanticImpact,
+      semanticTotal: d.semanticTotal,
+      // 语义差异只给前 5 条（按严重度已排序）：全给会把 prompt 撑爆，
+      // 首条往往就是那条值钱的（引擎/依赖），截断顺序保证它不会被挤掉。
+      semanticDeltas: (d.semanticDeltas ?? []).slice(0, 5),
       usedCount: d.usedCount,
       removedCount: d.removedCount,
       narrowedCount: d.narrowedCount,

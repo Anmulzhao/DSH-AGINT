@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.8.4",
-  "description": "AGINT 家族面板：停靠面板默认内嵌 v2 视图（待办 / 神谕判词 / 提案台 / Q1 依赖拓扑 / Q2 实测产出 / Q3 腐化判定），可切 v1 名册（分组/行状态/信号）；名册每行可点开单插件档案。0.5.0 新增提案台：按状态列出全部进化提案，行内展开目的/方案/收益/风险/关联五节与可核对的证据栏（引用路径是否存在、符号是否在引用文件命中），并对未执行提案提供批准 / 拒绝 / wontfix 人工审批。host 半路由：GET /api/agint-family/status、/v2、/v2/data（只读）与 POST /api/agint-family/proposal/decision（唯一写通道，经 agint.evolve.setStatus，回环 + 自定义头 + 同源 + 4KB 上限四道门）。 v0.8.0：提案台按 autoExecutable 置灰「立即/定时」（复核类只能只批准）；POST /proposal/decision 对不可自动执行的提案排立即/定时一律 400。",
+  "version": "0.9.0",
+  "description": "AGINT 家族面板（v2）。六层聚合：源码扫描 / 运行态 / 存储 / 契约 / 档案 / 上游判读；提案台是整页唯一写入口。0.9.0 新增「上游」分区（dsh 发行记录判读结果 + 落后情况）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "dual",
@@ -66,7 +66,7 @@
     },
     "tests": {
       "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs && node test/v2-scan.test.mjs && node test/v2-data.test.mjs && node --test test/v2-proposals.test.mjs && node --test test/proposal-board.test.mjs && node --test test/decision-route.test.mjs && node --test test/v2-dossier.test.mjs && node --test test/dossier-view.test.mjs",
+      "command": "node test/smoke.mjs && node test/v2-scan.test.mjs && node test/v2-data.test.mjs && node --test test/v2-proposals.test.mjs && node --test test/proposal-board.test.mjs && node --test test/decision-route.test.mjs && node --test test/v2-dossier.test.mjs && node --test test/dossier-view.test.mjs && node --test test/upstream-view.test.mjs",
       "expectedExit": 0
     },
     "docs": {

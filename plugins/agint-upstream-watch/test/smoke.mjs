@@ -19,6 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { apply, name, inject } from '../lib/index.js';
+import { defineTool } from './_stub-storage-domain.mjs';
 
 /** 造一个内存 storage domain，形状与 dsh-storage-domain 一致：table().get/put/entries() */
 function fakeStorageDomain() {
@@ -118,14 +119,15 @@ test('apply 不抛错，且注册了 service / 工具 / 事件订阅', async () 
 
   // service
   assert.ok(provided['agint.upstreamWatch'], 'agint.upstreamWatch 未 provide');
-  for (const m of ['status', 'digest', 'runNow', 'listDigests']) {
+  for (const m of ['status', 'digest', 'runNow', 'listDigests', 'calibration', 'backfill']) {
     assert.equal(typeof provided['agint.upstreamWatch'][m], 'function', `service.${m} 缺失`);
   }
 
   // 工具
-  assert.equal(tools.length, 2, `应注册 2 个工具，实际 ${tools.length}`);
+  // v0.3 起三个：状态 / 手动判读 / 校准（判读准不准）
+  assert.equal(tools.length, 3, `应注册 3 个工具，实际 ${tools.length}`);
   const names = tools.map((t) => t.name);
-  assert.deepEqual(names.sort(), ['upstream_digest', 'upstream_status']);
+  assert.deepEqual(names.sort(), ['upstream_calibration', 'upstream_digest', 'upstream_status']);
 
   // 订阅
   assert.equal(subscribeCalls.length, 1);
@@ -187,16 +189,37 @@ test('digest() 在模型不可用时不产提案，且事实照落（事实与�
   assert.ok(storage._tables.get('releases')?.has('dsh-v0.2.2-alpha.2'));
 });
 
-test('digest() 幂等：同 tag 二次调用走缓存', async () => {
+test('digest() 幂等：已有 judged 记录时直接返回缓存', async () => {
+  const storageDomain = fakeStorageDomain();
+  const { ctx, provided } = fakeCtx({ storageDomain });
+  apply(ctx, {});
+  await flush();
+  // 预置一条"上次判读成功"的记录。⛔ 不靠"跑一次再跑一次"来造缓存：
+  // 离线环境下第一次必然 llmStatus=failed（依赖面 unknown 会触发 LLM），
+  // 而 failed 是**刻意不缓存**的（见下一条用例）。靠跑两次造缓存会测成另一件事。
+  storageDomain._tables.set('digests', new Map([['dsh-v0.0.9', {
+    tag: 'dsh-v0.0.9', targetVersion: '0.0.9', level: 'patch', llmStatus: 'judged',
+    verdict: 'no-impact', headline: 'x', factsSummary: '', proposalIds: [],
+    createdAt: '2026-10-28T00:00:00.000Z', updatedAt: '2026-10-28T00:00:00.000Z',
+  }]]));
+
+  const r = await provided['agint.upstreamWatch'].digest('dsh-v0.0.9', { body: 'x', via: 'test' });
+  assert.equal(r.cached, true, '已判读过的 tag 应返回缓存');
+  assert.equal(r.digest.tag, 'dsh-v0.0.9');
+});
+
+test('digest() 的失败结果不进缓存（失败不能被当成"已判读"）', async () => {
+  // 离线环境下所有包实测 unknown ⇒ 触发 LLM ⇒ 模型不可用 ⇒ failed。
+  // 这条钉的是：failed 不能写进缓存，否则下一次上游真出问题时我们会读到旧失败。
   const { ctx, provided } = fakeCtx({ storageDomain: fakeStorageDomain() });
   apply(ctx, {});
   await flush();
   const body = '<h3 id="cn-x">问题修复</h3>\n- 修了一个小问题';
-
-  const first = await provided['agint.upstreamWatch'].digest('dsh-v0.0.9', { body, via: 'test' });
+  const first = await provided['agint.upstreamWatch'].digest('dsh-v0.0.8', { body, via: 'test' });
   assert.equal(first.ok, true);
-  const second = await provided['agint.upstreamWatch'].digest('dsh-v0.0.9', { body, via: 'test' });
-  assert.equal(second.cached, true, '已判读过的 tag 应返回缓存');
+  assert.equal(first.digest.llmStatus, 'failed', '离线时 LLM 段应当失败（事实照落）');
+  const second = await provided['agint.upstreamWatch'].digest('dsh-v0.0.8', { body, via: 'test' });
+  assert.equal(second.cached, undefined, '失败结果不该被当缓存返回');
 });
 
 test('digest() 缺 tag 时明确失败，不静默', async () => {
@@ -221,4 +244,83 @@ test('信号回调用 tag 触发 digest（订阅链真的接上了）', async ()
 
   const s = await provided['agint.upstreamWatch'].status();
   assert.equal(s.stats.signaled, 1, '收到信号应计数（即使 payload 没 tag）');
+});
+
+// ── 2026-10-28 追加：工具入口必须是 execute ────────────────────────────────
+//
+// 真 dsh-tools 的 defineTool **只读 options.execute**
+// （dsh-tools/lib/index.js:839 `const userExecute = options.execute;`，
+//  :869 `return userExecute(args, exec);`），并把结果包成 tool.execute。
+// 插件若把入口写成 `handler`：工具**照样注册成功**，名字和 schema 都在工具表里，
+// 但真宿主调用时抛 `TypeError: userExecute is not a function`。
+//
+// ⛔ 本文件原有的冒烟只断言「注册了 2 个工具、名字对」，**从不调用**注册后的工具
+//    ⇒ 这类错注册能一路全绿通过（v0.1.0 → v0.3.0 三个版本就是这么上线的）。
+//    ⇒ 下面这条测试补的就是「真调一次」。
+
+test('工具入口必须是 execute：真调一次 upstream_status', async () => {
+  const { ctx, tools } = fakeCtx({ storageDomain: fakeStorageDomain() });
+  apply(ctx, {});
+  await flush();
+
+  const statusTool = tools.find((t) => t.name === 'upstream_status');
+  assert.ok(statusTool, 'upstream_status 未注册');
+
+  let err = null;
+  let value = null;
+  try {
+    value = await statusTool.execute({});
+  } catch (e) {
+    err = e;
+  }
+  // 先把「入口写错」这一类单独判出来：它长得跟别的错不一样
+  assert.ok(
+    !(err instanceof TypeError && /userExecute is not a function/.test(err.message)),
+    `upstream_status 的入口不是 execute（真宿主会抛 userExecute is not a function）：${err?.message ?? ''}`,
+  );
+  assert.equal(err, null, `upstream_status 调用失败：${err?.message ?? ''}`);
+  assert.equal(value.plugin, name, '返回值应符合 output.schema 的 plugin 字段');
+
+  // 真宿主是「先校验 schema、再调 output.render」⇒ 只写 schema 不写 render 的缺陷
+  // 晚到这一步才炸（2026-10-28 v0.3.0 的第二个现场）。
+  let renderErr = null;
+  let rendered = null;
+  try {
+    rendered = statusTool.output.render({}, value);
+  } catch (e) {
+    renderErr = e;
+  }
+  assert.ok(
+    !(renderErr instanceof TypeError && /userRender is not a function/.test(renderErr.message)),
+    `upstream_status 缺 output.render（真宿主会抛 userRender is not a function）：${renderErr?.message ?? ''}`,
+  );
+  assert.equal(renderErr, null, `output.render 调用失败：${renderErr?.message ?? ''}`);
+  assert.ok(Array.isArray(rendered), 'output.render 应返回内容块数组');
+  assert.equal(rendered[0]?.type, 'text', '内容块应有 type=text');
+});
+
+test('阴性对照：替身对 handler 版定义必须抛 userExecute is not a function', async () => {
+  const bad = defineTool({
+    name: 'bad_tool',
+    description: '故意把入口写成 handler 的错版本',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} } },
+    async handler() { return { ok: true }; },
+  });
+  // 替身与真宿主同紧 ⇒ 这条断言成立，上面那条才有判据价值
+  await assert.rejects(() => bad.execute({}), /userExecute is not a function/);
+});
+
+test('阴性对照：替身对缺 output.render 的定义必须抛 userRender is not a function', async () => {
+  const noRender = defineTool({
+    name: 'no_render_tool',
+    description: '故意不写 output.render 的错版本',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} } },
+    async execute() { return { ok: true }; },
+  });
+  // ⚠️ 真 dsh-tools 的 render 是**同步**函数（:856 `render(args, value) { return userRender(args, value); }`），
+  //    所以这里必须用 assert.throws 而不是 assert.rejects —— 后者只吃 rejected promise，
+  //    同步抛出会被判成「测试自己挂了」（这条阴性对照第一版就栽在这）。
+  assert.throws(() => noRender.output.render({}, { ok: true }), /userRender is not a function/);
 });

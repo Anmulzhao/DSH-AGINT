@@ -28,6 +28,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractApiSurface } from './tarball.js';
+import { collectSemanticDeltas, directImpact } from './semantics.js';
 
 /** 只测这些包的 API：AGINT 真的 import 它们。其余包只在 changelog 层面看。 */
 const REGISTRY = 'https://registry.npmjs.org';
@@ -208,11 +209,34 @@ export function resolveInstalledPackage(pkg, env = process.env) {
 
   const root = resolveDshRoot(env);
 
+  /**
+   * 探测对象就是宿主主包本身 ⇒ 直接采用 `resolveDshRoot()` 的结果。
+   *
+   * ⛔ 2026-10-28 实测踩到：`profiles/<p>/node_modules/@deepseek-ai/dsh` 里躺着
+   *    App 升级甩下的 0.1.1-rc.2，走「版本最大」兜底会选中它 —— 于是主包的
+   *    `engines` 比的是 0.1.1-rc.2（那时还没有 engines 字段）vs 新版，
+   *    得出「engines 从 (unset) 变成 >=24.9」这种没法处置的结论。
+   * ⛔ 必须放在候选收集**之前**：全局布局下（`lib/node_modules/@deepseek-ai/dsh`），
+   *    下面两条 push 的路径都撞不上，candidates 会是空的，早退就永远走不到这里。
+   */
+  if (pkg === '@deepseek-ai/dsh' && root) {
+    return { dir: root.dir, version: root.version, dshVersion: root.version, versionMismatch: false };
+  }
+
   // 1. dsh 主包自带依赖树（最可信）
   if (root) {
     push(join(root.dir, 'node_modules', ...segs));
-    // 兄弟 hoist 位：<dsh>/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg> 的上一层
-    push(join(dirname(root.dir), ...segs));
+    /**
+     * 兄弟 hoist 位：`<prefix>/lib/node_modules/@deepseek-ai/<pkg>`。
+     *
+     * ⛔ 旧写法是 `join(dirname(root.dir), ...segs)`，对 scoped 包算错了一层 ——
+     *    `root.dir` 已经是 `.../lib/node_modules/@deepseek-ai/dsh`，
+     *    `dirname()` 落在 `.../@deepseek-ai`，再拼 `@deepseek-ai/<pkg>` 得到
+     *    `.../@deepseek-ai/@deepseek-ai/<pkg>`。**全局安装布局下这两条 push 全部落空**，
+     *    candidates 只剩 profiles（遗留副本）或 createRequire，实测漏掉了真实安装树。
+     */
+    const scopedDir = dirname(root.dir);          // .../lib/node_modules/@deepseek-ai
+    push(join(scopedDir, segs[segs.length - 1])); // .../lib/node_modules/@deepseek-ai/<pkg>
   }
 
   // 2. createRequire 解析
@@ -246,6 +270,9 @@ export function resolveInstalledPackage(pkg, env = process.env) {
   const matched = dshVersion ? candidates.find((c) => c.version === dshVersion) : null;
   if (matched) return { ...matched, dshVersion, versionMismatch: false };
 
+  // 探测对象就是宿主主包自身、但 `resolveDshRoot()` 没命中（极端环境）⇒ 退回「版本最大」，
+  // 并在结果里标 versionMismatch 让调用方知道基准可疑。
+
   // 没有版本对得上的：退回「版本号最大的」而不是「路径最靠前的」——
   // 遗留副本的典型特征就是版本更旧。
   const sorted = [...candidates].sort((a, b) => String(b.version ?? '').localeCompare(String(a.version ?? '')));
@@ -267,7 +294,81 @@ export function readInstalledSurface(pkgDir) {
   if (existsSync(idx)) {
     try { out.set('lib/index.js', readFileSync(idx, 'utf8')); } catch { /* 跳过 */ }
   }
+  // package.json（v0.2）：语义层要比 engines / deps / type。不读进来说不了话 ——
+  // API 面完全看不到「engines 抬到 >=24.9」，而那一条直接决定装不装得上。
+  // 键名与 tarball 里的路径形态对齐（tarball 是 `package/package.json`），
+  // `readMetaFromFiles()` 按「层级最浅」取，所以这里放 `package.json` 也能命中。
+  const pj = join(pkgDir, 'package.json');
+  if (existsSync(pj)) {
+    try { out.set('package.json', readFileSync(pj, 'utf8')); } catch { /* 跳过 */ }
+  }
   return out;
+}
+
+/**
+ * 解析「要扫哪个目录来找 AGINT 的依赖面」。
+ *
+ * ⛔ 这是一个**必须显式处理**的问题，不能拿 `process.cwd()` 兜底了事：
+ *    插件跑在 dsh 进程里，cwd 通常是人启动 `dsh web` 时所在的目录（本机是 `/home/kylin`），
+ *    那里没有 `plugins/`。`scanDependencyFace()` 遇到不存在的目录会返回空 Map，
+ *    于是依赖面恒为空、每个版本都判「没有包受影响」—— 一次静默的假绿，
+ *    而且它看起来完全正常（factsSummary 里只是少了几项）。
+ *
+ * 四路兜底（按可信度排序）：
+ *   1. `AGINT_REPO_ROOT` —— 显式指定，门禁与离线测试走这条
+ *   2. `AGINT_HOME` / `DSH_HOME` —— 部署位
+ *   3. 从本文件往上找「同时有 `cordis.patch.yml` 与 `plugins/`」的目录
+ *      （仓库位、bundle 位、profile 镜像位都满足；三处的插件副本边相同）
+ *   4. cwd —— 最后兜底，并在 facts 里标 `scanSource='cwd'` 让人知道可能不对
+ *
+ * @param {object} [env]
+ * @returns {{root:string, source:'env'|'home'|'self-path'|'cwd'}}
+ */
+export function resolveAgintRoot(env = process.env) {
+  const isRoot = (d) => Boolean(d) && existsSync(join(d, 'cordis.patch.yml')) && existsSync(join(d, 'plugins'));
+
+  if (env.AGINT_REPO_ROOT && isRoot(env.AGINT_REPO_ROOT)) {
+    return { root: env.AGINT_REPO_ROOT, source: 'env' };
+  }
+  for (const key of ['AGINT_HOME', 'DSH_HOME']) {
+    const home = env[key];
+    if (!home) continue;
+    // 部署位：<home>/.agint-bundle 是挂载源；也兼容 <home> 本身是 bundle 根
+    for (const cand of [join(home, '.agint-bundle'), home]) {
+      if (isRoot(cand)) return { root: cand, source: 'home' };
+    }
+  }
+
+  try {
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 8; i += 1) {
+      if (isRoot(dir)) return { root: dir, source: 'self-path' };
+      const up = dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+  } catch { /* 继续 */ }
+
+  return { root: process.cwd(), source: 'cwd' };
+}
+
+/**
+ * 读某包**当前已装版本**的导出符号名集合（不联网、不拉 tarball）。
+ *
+ * 用途：v0.3 的判读校准 —— 升级后用真实的安装树重算一次「AGINT 用到的符号还在不在」，
+ * 与当时的预测对拍。这是整套仪器里唯一**能证伪**的一步：
+ *   - 当时判 `breaking`（符号被删），升级后符号还在 ⇒ 误报
+ *   - 当时判 `compatible/elsewhere`，升级后符号没了 ⇒ 漏报（更危险）
+ *
+ * ⛔ 只返回名字集合，不返回签名 —— 校准判的是「在不在」，签名变化当时的 digest 已经记过了。
+ *
+ * @param {string} pkgDir
+ * @returns {Set<string>}
+ */
+export function readInstalledSymbols(pkgDir) {
+  const files = readInstalledSurface(pkgDir);
+  const merged = mergeSurface(files);
+  return new Set(merged.keys());
 }
 
 /** 拉 npm tarball。返回 Buffer 或 null（失败不抛，由调用方判 unknown） */
@@ -589,6 +690,10 @@ export async function probePackageApi({ pkg, toVersion, usedNames = [], env = pr
     addedSymbols: [], removedSymbols: [], changedSignatures: [], widenedSignatures: [],
     changedFiles: [], usedImpact: 'none', evidence,
     baselineSuspect: located ? located.versionMismatch : true,
+    // v0.2 语义面：形状必须稳定（下游 facts.js / 面板 / 校准都按字段读），
+    // 拿不到时给 unknown 而不是省掉键 —— 省键会让「没测」和「没问题」长得一样。
+    semanticStatus: 'unknown', semanticReason: '未比对', semanticDeltas: [], semanticBySeverity: {},
+    semanticImpact: 'unknown', overallImpact: 'unknown',
     ...extra,
   });
 
@@ -604,7 +709,10 @@ export async function probePackageApi({ pkg, toVersion, usedNames = [], env = pr
     : null;
 
   if (fromVersion === toVersion) {
-    return empty('compatible', ['本机已是目标版本，无需比对'], { baselineSuspect: false });
+    return empty('compatible', ['本机已是目标版本，无需比对'], {
+      baselineSuspect: false,
+      semanticStatus: 'ok', semanticReason: null, semanticImpact: 'none', overallImpact: 'none',
+    });
   }
 
   const oldFiles = readInstalledSurface(pkgDir);
@@ -618,6 +726,21 @@ export async function probePackageApi({ pkg, toVersion, usedNames = [], env = pr
 
   const newFiles = extractApiSurface(tar.buf);
   const d = diffSurface(oldFiles, newFiles);
+  // ── 语义面（v0.2）：签名之外的、AGINT 会真受影响的变化 ──
+  // 与 API 面共用同一次 tarball 拉取 —— 拉两遍既慢又可能拿到两个不同快照。
+  const sem = collectSemanticDeltas({
+    oldFiles, newFiles, selfFrom: fromVersion, selfTo: toVersion,
+    // 本机实际运行时版本：把 engines 从「抬了」变成「我能不能装」（见 semantics.js）
+    localEngines: { node: process.versions.node },
+  });
+  const semDirect = directImpact(sem.deltas);
+  const semanticImpact = sem.status !== 'ok' && sem.deltas.length === 0
+    ? 'unknown'
+    : semDirect.length > 0
+      ? 'blocker'
+      : sem.deltas.some((x) => x.severity === 'warn')
+        ? 'warn'
+        : sem.deltas.length > 0 ? 'info' : 'none';
 
   // ── 使用面加权：把「API 变了」和「AGINT 受影响」分开 ──
   // ⛔ 判据只看**被删/被收窄**的符号在不在使用面里。
@@ -638,9 +761,35 @@ export async function probePackageApi({ pkg, toVersion, usedNames = [], env = pr
     ? `本包 API 有删除/收窄（${d.removedSymbols.length + d.changedSignatures.length} 处），但都不在 AGINT 的使用面上`
     : null;
 
+  /**
+   * 总判定：把 API 面与语义面里**能定档**的部分合成一档，取最严。
+   *
+   * 值域与 `usedImpact` 同构，只多一个 `blocking`：
+   *   blocking > breaking > elsewhere > additive > none > unknown
+   *
+   * `blocking` 单列的理由：`engines.node` 抬高、`type` 改成 ESM 这类变化
+   * **与「AGINT 用没用到某个导出」无关** —— 它决定装不装得上。折进 breaking
+   * 会让「本包 API 完全没动、只是引擎抬了」被显示成 API 破坏，归因就错了。
+   *
+   * 语义面的 warn/info **不参与定档**（它们不改变「API 面变没变」这个事实），
+   * 而是通过 `semanticImpact` 单独表达 —— 一个字段只说一件事，别让两个语义
+   * 挤在同一个枚举里（否则面板上永远分不清是「签名破了」还是「引擎抬了」）。
+   */
+  const RANK = { blocking: 0, breaking: 1, elsewhere: 2, additive: 3, none: 4, unknown: 5 };
+  let overallImpact = usedImpact;
+  if (semanticImpact === 'blocker') overallImpact = 'blocking';
+  if (RANK[overallImpact] === undefined) overallImpact = 'unknown';
+
+  const semanticNote = sem.status !== 'ok'
+    ? `语义面未能比对：${sem.reason}`
+    : sem.deltas.length === 0
+      ? null
+      : `语义面 ${sem.deltas.length} 条（${Object.entries(sem.bySeverity).map(([k, v]) => `${k} ${v}`).join(' / ')}）`;
+
   const evidence = [
     ...(baselineNote ? [baselineNote] : []),
     ...(impactNote ? [impactNote] : []),
+    ...(semanticNote ? [semanticNote] : []),
     ...d.evidence,
   ];
 
@@ -649,6 +798,12 @@ export async function probePackageApi({ pkg, toVersion, usedNames = [], env = pr
     usedImpact,
     usedRemoved, usedNarrowed, usedWidened,
     usedCount: used.size,
+    semanticStatus: sem.status,
+    semanticReason: sem.reason,
+    semanticDeltas: sem.deltas,
+    semanticBySeverity: sem.bySeverity,
+    semanticImpact,
+    overallImpact,
     evidence,
     baselineSuspect: located.versionMismatch,
   };

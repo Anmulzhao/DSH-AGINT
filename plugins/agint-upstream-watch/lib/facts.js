@@ -20,6 +20,12 @@ import {
   scanDependencyFace, probePackageApi, resolveDshRoot,
 } from './depface.js';
 
+/**
+ * 宿主主包名。AGINT 从不 import 它，所以它不在 `scanDependencyFace` 的依赖面里 ——
+ * 但「装不装得上 / 起不起得来」由它的 engines 和依赖锁决定，必须单独探一条。
+ */
+const HOST_PKG = '@deepseek-ai/dsh';
+
 /** 变更小节的分类关键词（中英双语 release body 用） */
 const SECTION_PATTERNS = [
   { id: 'feature', re: /新增|新功能|New Features|Features|特性/i },
@@ -178,10 +184,24 @@ export async function collectFacts({
     depFace.push({
       pkg,
       usedCount: probed.usedCount ?? rec.imports.size,
+      /**
+       * 当时用到的符号名（v0.3 校准要用）。
+       * ⛔ 必须跟上，否则升级后无从对拍「这些符号还在不在」——
+       *    而那是这套仪器里唯一能证伪判读的判据（见 lib/calibration.js 头注释）。
+       */
+      usedNames: [...rec.imports].slice(0, 200),
       from: probed.from ?? null,
       to: probed.to ?? targetVersion,
       verdict: probed.verdict,
       usedImpact: probed.usedImpact ?? 'none',
+      // v0.2：总判定与语义面分开存。⛔ 不要只留 overallImpact ——
+      // 「签名破了」和「引擎抬了」是两种完全不同的处置，面板与校准都要能分辨。
+      overallImpact: probed.overallImpact ?? probed.usedImpact ?? 'none',
+      semanticStatus: probed.semanticStatus ?? 'unknown',
+      semanticImpact: probed.semanticImpact ?? 'unknown',
+      semanticBySeverity: probed.semanticBySeverity ?? {},
+      semanticDeltas: (probed.semanticDeltas ?? []).slice(0, 10),
+      semanticTotal: (probed.semanticDeltas ?? []).length,
       removedCount: probed.removedSymbols?.length ?? 0,
       narrowedCount: probed.changedSignatures?.length ?? 0,
       addedCount: probed.addedSymbols?.length ?? 0,
@@ -192,10 +212,58 @@ export async function collectFacts({
     });
   }
 
-  const impactSummary = { breaking: 0, additive: 0, compatible: 0, elsewhere: 0, unknown: 0, none: 0 };
+  /**
+   * 宿主主包（`@deepseek-ai/dsh`）单列一条。
+   *
+   * 为什么必须单列：AGINT 从不 `import '@deepseek-ai/dsh'`，所以 `scanDependencyFace`
+   * 的依赖面里没有它 —— 但**装不装得上、起不起得来全由它决定**（`engines.node`、
+   * 它的 `dependencies` 里那一堆同版本包）。v0.1 只测「AGINT 用到的包」，
+   * 于是最要命的那条恰好在覆盖面外。
+   *
+   * 拿不到就记 unknown 并说明原因，不给 `none`。
+   */
+  let hostFace = null;
+  try {
+    const probed = await doProbe({ pkg: HOST_PKG, toVersion: targetVersion, usedNames: [], env });
+    hostFace = {
+      pkg: HOST_PKG,
+      from: probed.from ?? null,
+      to: probed.to ?? targetVersion,
+      verdict: probed.verdict,
+      overallImpact: probed.overallImpact ?? 'unknown',
+      semanticStatus: probed.semanticStatus ?? 'unknown',
+      semanticImpact: probed.semanticImpact ?? 'unknown',
+      semanticBySeverity: probed.semanticBySeverity ?? {},
+      semanticDeltas: (probed.semanticDeltas ?? []).slice(0, 10),
+      semanticTotal: (probed.semanticDeltas ?? []).length,
+      evidence: (probed.evidence ?? []).slice(0, 6),
+      baselineSuspect: probed.baselineSuspect === true,
+    };
+  } catch (e) {
+    hostFace = {
+      pkg: HOST_PKG, from: installed, to: targetVersion,
+      verdict: 'unknown', overallImpact: 'unknown',
+      semanticStatus: 'unknown', semanticImpact: 'unknown',
+      semanticBySeverity: {}, semanticDeltas: [], semanticTotal: 0,
+      evidence: [`宿主主包实测异常：${e?.message ?? e}`], baselineSuspect: true,
+    };
+  }
+
+  /** 汇总按 `overallImpact` 计（v0.2）。`blocking` 与 `breaking` 分开数 —— 前者与
+   *  「用没用到」无关，是装不装得上的问题。 */
+  const impactSummary = {
+    blocking: 0, breaking: 0, additive: 0, compatible: 0, elsewhere: 0, unknown: 0, none: 0,
+  };
   for (const d of depFace) {
-    const k = d.usedImpact === 'elsewhere' ? 'elsewhere' : d.usedImpact;
+    const k = d.overallImpact ?? d.usedImpact ?? 'unknown';
     impactSummary[k] = (impactSummary[k] ?? 0) + 1;
+  }
+  const semanticSummary = { blocker: 0, warn: 0, info: 0 };
+  for (const d of [...depFace, ...(hostFace ? [hostFace] : [])]) {
+    const n = d.semanticBySeverity ?? {};
+    semanticSummary.blocker += n.blocker ?? 0;
+    semanticSummary.warn += n.warn ?? 0;
+    semanticSummary.info += n.info ?? 0;
   }
 
   // ── 是否值得调模型 ──
@@ -203,6 +271,8 @@ export async function collectFacts({
   // 那种输入最容易让模型编出一个结论来。
   const triggered = (
     impactSummary.breaking > 0
+    || impactSummary.blocking > 0
+    || semanticSummary.blocker > 0
     || bodyInfo.breakingHits > 0
     || level === 'major' || level === 'minor'
     || stage === 'regressed'
@@ -226,7 +296,9 @@ export async function collectFacts({
     },
     versionTracks: signal?.versionTracks ?? null,
     depFace,
+    hostFace,
     impactSummary,
+    semanticSummary,
     triggered,
     collectedAt: new Date().toISOString(),
   };
@@ -247,5 +319,11 @@ export function summarizeFacts(facts) {
   parts.push(`变更 ${facts.body.entryCount} 条${tagStr ? `（${tagStr}）` : ''}，疑似破坏性 ${facts.body.breakingHits} 条`);
   const s = facts.impactSummary;
   parts.push(`依赖面：影响 AGINT ${s.breaking ?? 0} 个包、与他人相关 ${s.elsewhere ?? 0}、纯新增 ${s.additive ?? 0}、未测出 ${s.unknown ?? 0}`);
+  if ((s.blocking ?? 0) > 0) parts.push(`**装不上的前置变化 ${s.blocking} 处**`);
+  const sem = facts.semanticSummary ?? {};
+  const semTotal = (sem.blocker ?? 0) + (sem.warn ?? 0) + (sem.info ?? 0);
+  if (semTotal > 0) {
+    parts.push(`语义面 ${semTotal} 条（阻断 ${sem.blocker ?? 0} / 警示 ${sem.warn ?? 0} / 提示 ${sem.info ?? 0}）`);
+  }
   return parts.join('；');
 }

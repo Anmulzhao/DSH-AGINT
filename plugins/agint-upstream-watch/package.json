@@ -1,6 +1,6 @@
 {
   "name": "agint-upstream-watch",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "智进 (agint) 上游判读器：跟踪 dsh 发行记录，实测 API 面差异，判读机会与缺口，产出不可自动执行的提案。两段式设计（确定性事实 + LLM 结论），事实与结论分离，LLM 失败不发提案。",
   "type": "module",
   "main": "lib/index.js",

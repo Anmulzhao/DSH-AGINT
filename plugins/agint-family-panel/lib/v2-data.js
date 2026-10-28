@@ -875,6 +875,139 @@ export function readOracleFile(storagesDir) {
 }
 
 /**
+ * 上游判读（`agint_upstream_watch` 域）落盘口径。
+ *
+ * ⛔ 这一节与其它各节的失败模式不同，必须分开处理：
+ *    **「文件不存在」= 本机没启用这个插件**，不是「判读结果为空」。
+ *    前者显示为灰色不可用，后者才是真的 0（与待办节的「域不存在 ≠ 0」同一条纪律）。
+ *
+ * ⛔ `baselineOnly` 这一段是**刻意**的：频道首次运行只建基线、不产信号，
+ *    上线当天如果面板显示「0 条判读」，读的人会以为坏了。
+ *    判据：`releases` 有记录而 `digests` 为空 ⇒ 明确写出「已建基线，等新版本」。
+ *
+ * @param {string} storagesDir
+ * @returns {object}
+ */
+export function aggUpstream(storagesDir) {
+  const file = join(storagesDir, 'agint_upstream_watch.json');
+  if (!existsSync(file)) {
+    return {
+      state: 'unavailable',
+      source: 'storages',
+      reason: '上游判读存储域不存在（agint_upstream_watch.json 不在 storages/）—— 本机未启用 agint-upstream-watch，或尚未跑过第一次',
+      observedAt: null,
+      digests: [],
+      counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null,
+      releases: null,
+      baselineOnly: false,
+      calibration: null,
+    };
+  }
+
+  let body;
+  try { body = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
+    return {
+      state: 'error', source: 'storages',
+      reason: `存储域解析失败：${String((e && e.message) ?? e).slice(0, 160)}`,
+      observedAt: null, digests: [], counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null, releases: null, baselineOnly: false, calibration: null,
+    };
+  }
+
+  const t = body && typeof body.tables === 'object' && body.tables !== null ? body.tables : null;
+  if (t === null) {
+    return {
+      state: 'error', source: 'storages', reason: 'tables 缺失或形态未知',
+      observedAt: null, digests: [], counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null, releases: null, baselineOnly: false, calibration: null,
+    };
+  }
+
+  const vals = (tbl) => (tbl && typeof tbl === 'object' ? Object.values(tbl) : []);
+  const s = (v) => (typeof v === 'string' && v !== '' ? v : null);
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+  const releases = vals(t.releases);
+  const rawDigests = vals(t.digests);
+
+  // 最新发行 = 按发布时间（缺失则按 tag）取最大的一条
+  const latestRow = [...releases]
+    .sort((a, b) => String(b.publishedAt ?? b.tag ?? '').localeCompare(String(a.publishedAt ?? a.tag ?? '')))[0] ?? null;
+
+  const digests = rawDigests
+    .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+    .slice(0, 20)
+    .map((d) => {
+      const facts = d.facts && typeof d.facts === 'object' ? d.facts : {};
+      const impact = d.impactSummary ?? facts.impactSummary ?? null;
+      const sem = d.semanticSummary ?? facts.semanticSummary ?? null;
+      const host = d.hostFace ?? facts.hostFace ?? null;
+      return {
+        tag: s(d.tag),
+        targetVersion: s(d.targetVersion),
+        level: s(d.level),
+        preStageChange: s(d.preStageChange),
+        llmStatus: s(d.llmStatus) ?? 'unknown',
+        verdict: s(d.verdict),
+        confidence: n(d.confidence),
+        headline: s(d.headline),
+        factsSummary: s(d.factsSummary),
+        proposalCount: Array.isArray(d.proposalIds) ? d.proposalIds.length : 0,
+        // 语义面：面板要能一眼分开「签名破了」和「引擎抬了」
+        impact: impact && typeof impact === 'object' ? {
+          blocking: n(impact.blocking) ?? 0,
+          breaking: n(impact.breaking) ?? 0,
+          elsewhere: n(impact.elsewhere) ?? 0,
+          additive: n(impact.additive) ?? 0,
+          unknown: n(impact.unknown) ?? 0,
+        } : null,
+        semantic: sem && typeof sem === 'object' ? {
+          blocker: n(sem.blocker) ?? 0, warn: n(sem.warn) ?? 0, info: n(sem.info) ?? 0,
+        } : null,
+        host: host && typeof host === 'object' ? {
+          from: s(host.from), to: s(host.to),
+          semanticImpact: s(host.semanticImpact),
+          deltas: Array.isArray(host.semanticDeltas)
+            ? host.semanticDeltas.slice(0, 6).map((x) => ({
+              kind: s(x.kind), symbol: s(x.symbol), severity: s(x.severity), note: s(x.note),
+              before: s(x.before), after: s(x.after),
+            }))
+            : [],
+        } : null,
+        updatedAt: s(d.updatedAt) ?? s(d.createdAt),
+      };
+    });
+
+  const judged = digests.filter((d) => d.llmStatus === 'judged').length;
+  const failed = digests.filter((d) => d.llmStatus === 'failed').length;
+  const blockers = digests.reduce((a, d) => a + (d.impact?.blocking ?? 0) + (d.semantic?.blocker ?? 0), 0);
+  const semanticWarn = digests.reduce((a, d) => a + (d.semantic?.warn ?? 0), 0);
+
+  return {
+    state: 'ok',
+    source: 'storages',
+    observedAt: mtimeIso(file),
+    digests,
+    counts: { digests: rawDigests.length, judged, failed, blockers, semanticWarn },
+    latest: latestRow ? {
+      tag: s(latestRow.tag),
+      publishedAt: s(latestRow.publishedAt),
+      prerelease: latestRow.prerelease === true,
+      entryCount: n(latestRow.entryCount),
+      breakingHits: n(latestRow.breakingHits),
+    } : null,
+    releases: {
+      total: releases.length,
+      fetchedAt: s(latestRow?.fetchedAt),
+    },
+    // 有发行记录、没有判读 ⇒ 首跑只建了基线（不是坏了）
+    baselineOnly: releases.length > 0 && rawDigests.length === 0,
+    calibration: null, // 宿主半用服务面覆盖（v0.3）
+  };
+}
+
+/**
  * 落盘口径的神谕层聚合：读 `storages/agint_aesthetic_oracle.json` 三表并归一。
  *
  * 为什么读文件而不是只读服务面：面板其余各源都是落盘口径，且服务面依赖
@@ -1290,6 +1423,8 @@ export function collectV2Data(dirs, opts = {}) {
   // 神谕层：落盘口径先兜底（文件在就有数）。服务面在 lib/index.js 的
   // collectOracle 里覆盖，因为只有宿主进程内拿得到运行态开关与内存订阅回写。
   try { payload.oracle = aggOracle(dirs.storagesDir); } catch (e) { payload.oracle = errOf(e); }
+  // 上游判读（v0.6.0）：落盘口径兜底，宿主半用服务面覆盖（lag / calibration 只有服务端算得出）。
+  try { payload.upstream = aggUpstream(dirs.storagesDir); } catch (e) { payload.upstream = errOf(e); }
   try {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;

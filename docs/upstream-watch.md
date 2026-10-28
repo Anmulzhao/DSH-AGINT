@@ -2,7 +2,8 @@
 
 > 2026-10-28 立项。回答一个问题：**AGINT 能不能自己发现「宿主在变」并据此自我改进，这个能力长在哪。**
 >
-> 状态：v0.1 已实现（`agint-input-gateway` 的 C3 新子源 + `agint-upstream-watch` 判读器）。
+> 状态：**v0.1 / v0.2 / v0.3 全部已实现**（2026-10-28）。
+> v0.1 = C3 子源 + 两段式判读；v0.2 = 语义面 + 面板「上游」分区；v0.3 = 判读质量仪器（升级后回填对拍）。
 > 本文档是设计与边界的事实源，实现偏离本文档时先改文档再说。
 
 ---
@@ -202,10 +203,11 @@ autoExecutable: false, assumedBy: 'dsh <tag>' })`。
 
 | 面 | 形态 |
 |---|---|
-| service | `agint.upstreamWatch`：`status()` / `digest(tag)` / `runNow(tag)` / `listDigests({limit})` |
-| 工具 | `upstream_status`（只读）、`upstream_digest`（写工具，走 ask 门禁） |
-| 指标 | `upstream.lag`（本机版本落后几个 release）、`upstream.breaking_hits` |
-| 面板 | **v0.1 不接**。理由见 §6 第 4 条 |
+| service | `agint.upstreamWatch`：`status()` / `digest(tag)` / `runNow(tag)` / `listDigests({limit})` / **`calibration()`**（v0.3）/ **`backfill()`**（v0.3，手动触发回填） |
+| 工具 | `upstream_status`（只读）、`upstream_digest`（写，走 ask 门禁）、**`upstream_calibration`**（只读，v0.3） |
+| 指标 | `status().lag`（`{installed, latestVersion, behind, level}`）、`status().calibration`（对拍摘要） |
+| 面板 | **v0.2 起已接**：家族面板「上游」分区（`family-panel` 0.9.0）。四个 KPI（本机 / 上游最新 / 落后 / 判读记录）+ 一张按时间倒排的表 + 一张「判读对拍」格；语义差异只在展开行里给 |
+| 回填 | **v0.3**：`outcomes` 表（按 tag 主键），宿主启动与每次 digest 后自动扫一次 |
 
 ---
 
@@ -231,13 +233,22 @@ autoExecutable: false, assumedBy: 'dsh <tag>' })`。
    「插件需迁移 `tools.resolve/executable`」，按关键词会判「重度风险」；
    实测 `ctx.tools.register(def)` 只是**新增一个可选第二参**，`defineTool` 的 options 一字未变，
    140 处调用零改动。所以关键词只提高关注度，**结论必须由实测段给出**。
-2. **实测只覆盖「类型定义与导出名」，不覆盖运行时行为。** 语义变了签名没变的情况抓不到
-   （例：`storage-domain` 的版本校验从「丢弃旧版本记录」改成「接受并列出的版本」——
-   签名没动，语义变了）。这类只能靠 changelog 的 LLM 判读兜，属于已知缺口。
+2. **语义面覆盖「有结构化落点」的那部分，仍不覆盖纯运行时行为。**
+   v0.2 补了四类可确定性判定的：`engines` 下限、依赖增删、导出常量**值**变化、
+   新增 `@deprecated`。仍然抓不到的典型：
+   `storage-domain` 把版本校验从「丢弃旧版本记录」改成「接受并列出的版本」——
+   签名没动、包里也没有任何声明承载这个变化，只有实现代码里的一段逻辑变了。
+   这类只能靠 changelog 的 LLM 判读兜，是**已知缺口，不假装覆盖**。
+   为什么不去 diff 全部 `lib/*.js`：实现文件天天变，全量 diff 会让噪声淹没信号，
+   而判读器一旦开始喊狼来了，三次之后没人看。
 3. **首次运行必然静默。** 基线策略决定第一天不产信号，要看效果得等第二个版本。
    面板/状态里必须能看出「已建基线，等新版本」，否则会被当成坏了。
-4. **面板 v0.1 不接。** `agint-family-panel` 的 v2 页面有冻结基线（`v2-scan`，已重冻五次），
-   加分区要再冻一次。先用 service + 工具 + 指标把数据做出来，等确认这套判据真的有用再动面板。
+4. **面板（v0.2 已接，`family-panel` 0.9.0）。** 加分区时 `v2-scan` 基线按惯例重冻了一次
+   （第六次：家族 code 键 212 → 215，逐条账写在 `test/fixtures/v2-scan-baseline.json` 的 note 里）。
+   分区刻意只给「是/否 + 有多急」，不给图表：这一节要回答的是
+   「上游又动了，跟我有没有关系」，不是「上游历史趋势」。
+   ⛔ 四种状态（未启用 / 取不到 / 只建基线 / 正常）在页面上必须长得不一样，
+   `test/upstream-view.test.mjs` 逐条钉住了这一点。
 5. **不追 dsh 的 master 分支 commit，只追 release。** commit 粒度太细，日更场景下信噪比极差。
 
 ---
@@ -257,6 +268,11 @@ autoExecutable: false, assumedBy: 'dsh <tag>' })`。
 | 接线 | `node bin/check-wiring.mjs` | exit 0，硬缺口不增加 |
 | 边界 | `node bin/check-boundary.mjs` | 无新增越界（新插件须进 §2 归属表） |
 | 清单 | `node bin/verify-manifests.mjs` | ERROR 0 |
+| 语义面 | `node --test plugins/agint-upstream-watch/test/semantics.test.mjs` | 18 条全绿（含 6 处阴性对照） |
+| 引擎判定 | 同上一行 | 本机满足 ⇒ `warn`；本机不满足 ⇒ `blocker`（同一条变化两种结论） |
+| 对拍 | `node --test plugins/agint-upstream-watch/test/calibration.test.mjs` | 17 条全绿；误报/漏报/确认/不可判四分支各有正负用例 |
+| 面板四态 | `node --test plugins/agint-family-panel/test/upstream-view.test.mjs` | 10 条全绿（未启用 / 取不到 / 只建基线 / 正常 / 对拍三态） |
+| 校准入分 | `node --test plugins/agint-quality/agint-quality-eval/test/effectiveness-calibration.test.mjs` | 6 条全绿；非判读类 target 不受影响（阴性对照） |
 
 ---
 
@@ -264,8 +280,23 @@ autoExecutable: false, assumedBy: 'dsh <tag>' })`。
 
 | 期 | 内容 | 状态 |
 |---|---|---|
-| v0.1 | 频道 + 判读器（两段式）+ 存储 + service/工具/指标 | 本次 |
-| v0.2 | 面板「上游」分区（含 v2-scan 基线重冻）；语义差异检测（§6-2 的缺口） | 待立项 |
-| v0.3 | 判读质量仪器：升级后回填「这条判断对不对」进 `agint-quality-eval` | 待立项 |
+| v0.1 | 频道 + 判读器（两段式）+ 存储 + service/工具/指标 | ✅ 2026-10-28（`0c40d16`） |
+| v0.2 | 语义差异检测（`lib/semantics.js`）+ 面板「上游」分区（`family-panel` 0.9.0，v2-scan 基线第六次重冻） | ✅ 2026-10-28 |
+| v0.3 | 判读质量仪器：`prediction` 台账 + `outcomes` 回填 + `calibration()` 服务/工具 + 并入 `quality-eval` 的 effectiveness | ✅ 2026-10-28 |
 
 v0.3 才是让这套东西**可自证**的关键 —— 没有它，前两期做得再好也只是「多了个会说话的告警器」。
+
+### v0.3 的判据设计（为什么不是「准确率」）
+
+判读器对自己负责，唯一可证伪的东西是：**「当时说 AGINT 用到的这些符号在目标版本里还在不在」**。
+升级发生后，用真实安装树重算一次，两个方向都对拍：
+
+| 当时判 | 升级后实测 | 结论 |
+|---|---|---|
+| `breaking` | 符号还在 | 误报（白改代码） |
+| 非 breaking | 符号没了 | **漏报**（上线即坏） |
+
+⛔ 两个方向必须一起算。只算漏报会诱导它「全都报 breaking」，只算误报会诱导它「什么都不报」。
+⛔ 不给合成分数：两类错的代价不对称，合成一个数就把不对称抹掉了。`summarizeCalibration()`
+   分别给两个比率与各自的**包数分母**。
+⛔ 三种情形不下结论：目标版本没装上（`pending`）、拿不到安装位置、接口面为空。

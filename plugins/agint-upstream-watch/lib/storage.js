@@ -48,8 +48,42 @@ export const DigestSchema = z.object({
   headline: z.string().nullish(),
   rationale: z.string().nullish(),
   proposalIds: z.array(z.string()).nullish(),
+  /**
+   * v0.2 语义面汇总（落盘存一份，面板与校准不必重算 facts 里那份大对象）：
+   *   impactSummary  — { blocking, breaking, additive, compatible, elsewhere, unknown, none }
+   *   semanticSummary — { blocker, warn, info }
+   *   hostFace       — 宿主主包的元信息差异（engines / 依赖）
+   */
+  impactSummary: z.any().nullish(),
+  semanticSummary: z.any().nullish(),
+  hostFace: z.any().nullish(),
+  /**
+   * v0.3 预测台账（可证伪清单）：包 → 当时用到的符号 + 判定。
+   * 落盘而不现算的理由：判读之后 AGINT 的 import 面可能变，
+   * 回填时必须用**当时**的口径，否则对拍的是另一件事。
+   */
+  prediction: z.any().nullish(),
   createdAt: z.string().nullish(),
   updatedAt: z.string().nullish(),
+});
+
+/**
+ * v0.3 回填表：一个已判读版本装上之后，用真实安装树对拍一次的结果。
+ * 主键 tag（与 digests 同键，一对一）。⛔ 不覆盖历史：一次版本跃迁只对拍一次，
+ * 重复对拍只会因为「后来代码又改了」产生噪声。
+ */
+export const OutcomeSchema = z.object({
+  tag: z.string().min(1),
+  targetVersion: z.string().nullish(),
+  installedVersion: z.string().nullish(),
+  status: z.string().nullish(),
+  reason: z.string().nullish(),
+  perPackage: z.any().nullish(),
+  falsePositive: z.number().int().nullish(),
+  falseNegative: z.number().int().nullish(),
+  confirmed: z.number().int().nullish(),
+  unverifiable: z.number().int().nullish(),
+  evaluatedAt: z.string().nullish(),
 });
 
 export const ConfigSchema = z.object({
@@ -74,6 +108,9 @@ export const spec = defineDomain({
   tables: {
     releases: { valueSchema: ReleaseSchema },
     digests: { valueSchema: DigestSchema },
+    // v0.3：新增表**不升域版本**。storage 后端按表读，旧数据里没有 outcomes 表
+    // 只会被当成空表；升 version 反而会让已写入的 digests 整表读不出来（见文件头）。
+    outcomes: { valueSchema: OutcomeSchema },
     config: { valueSchema: ConfigSchema },
   },
 });

@@ -32,10 +32,15 @@
  *   config.maxProposalsPerRelease —— 单版本提案上限（默认 2，防刷屏）
  */
 
-import { collectFacts, summarizeFacts } from './facts.js';
+import { collectFacts, summarizeFacts, readInstalledDshVersion } from './facts.js';
 import { judgeFacts } from './judge.js';
 import { spec, emptyConfig } from './storage.js';
 import { registerTools } from './tools.js';
+import { classifyLevel, compareVersion, normalizeTag } from './version.js';
+import { resolveAgintRoot } from './depface.js';
+import {
+  buildPrediction, findBackfillTargets, evaluateOutcome, summarizeCalibration,
+} from './calibration.js';
 
 const name = 'agint-upstream-watch';
 
@@ -158,6 +163,9 @@ function apply(ctx, config) {
     }
 
     // ── 段 1：事实（永不失败，除非代码坏） ──
+    // ⛔ 扫描根不能用 `process.cwd()` 兜底：插件跑在 dsh 进程里，cwd 常是人的家目录，
+    //    扫不到 plugins/ 就得到空依赖面 ⇒ 每个版本都判「无包受影响」，一次静默假绿。
+    const agintRoot = resolveAgintRoot();
     let facts;
     try {
       facts = await collectFacts({
@@ -166,8 +174,11 @@ function apply(ctx, config) {
           versionTracks: versionTracks ?? null,
         },
         body: bodyText,
-        repoRoot: process.env.AGINT_REPO_ROOT || process.cwd(),
+        repoRoot: agintRoot.root,
       });
+      // 记下扫的是哪里：`scanSource=cwd` 意味着可能扫错地方，读的人要能看见。
+      facts.scanRoot = agintRoot.root;
+      facts.scanSource = agintRoot.source;
     } catch (e) {
       stats.lastError = `collectFacts failed: ${e?.message ?? e}`;
       return { ok: false, error: stats.lastError };
@@ -281,6 +292,15 @@ function apply(ctx, config) {
       headline: verdictObj?.headline ?? null,
       rationale: verdictObj?.rationale ?? null,
       proposalIds,
+      // v0.2 语义面汇总单独落一份：面板与校准读这几个字段就够，
+      // 不必反序列化 facts（那份含每包 10 条 delta，体积是这里的十倍）。
+      impactSummary: facts.impactSummary ?? null,
+      semanticSummary: facts.semanticSummary ?? null,
+      hostFace: facts.hostFace ?? null,
+      // v0.3：留下可证伪清单（包 → 当时用到的符号 + 判定）。
+      // ⛔ 必须在判读当时落盘：之后 AGINT 的 import 面可能变，
+      //    回填时要按「当时的」口径对拍，现算就是另一件事了。
+      prediction: buildPrediction(facts),
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
@@ -296,7 +316,121 @@ function apply(ctx, config) {
     stats.lastTag = tag;
     console.log(`[${name}] digest ${tag} (${via}): ${llmStatus} ${factsSummary}`);
 
+    // 判读之后可能紧接着就是升级（人看到结论就去升）。这里再扫一次：
+    // 不阻塞返回，失败只记日志 —— 回填是仪器，不该影响判读本身。
+    void backfillOutcomes().catch((e) => {
+      console.error(`[${name}] digest 后回填异常：${e?.message ?? e}`);
+    });
+
     return { ok: true, digest: rec, via };
+  }
+
+  // ── v0.3 判读质量仪器：升级发生后回填对拍 ──
+  /**
+   * 扫一遍：哪些已判读版本「已经真的装上了」，给它们各做一次对拍并落 outcomes。
+   *
+   * 触发时机三个（都在 ready 之后）：
+   *   1. 宿主启动时（最常见 —— 人升级 dsh 之后重启，这次启动就是回填时机）
+   *   2. 每次 digest 之后（判读之后紧接着装上的情形）
+   *   3. 服务暴露的 `backfill()`（排障用）
+   *
+   * ⛔ 只回填一次：同一个 tag 已有 outcome 就跳过。重复对拍只会因为
+   *    「后来代码又改了」产生噪声，而且会覆盖掉第一次（最有信息量）的记录。
+   */
+  async function backfillOutcomes({ force = false } = {}) {
+    const installed = readInstalledDshVersion();
+    const agintRoot = resolveAgintRoot();
+    const out = { installed, scanned: 0, backfilled: 0, skipped: 0, failed: 0, records: [] };
+
+    let digests;
+    let existing;
+    try {
+      const dTable = await table('digests');
+      digests = [...dTable.entries()].map(([, r]) => r);
+      const oTable = await table('outcomes');
+      existing = new Map([...oTable.entries()].map(([k, v]) => [k, v]));
+    } catch (e) {
+      out.error = `读存储失败：${e?.message ?? e}`;
+      return out;
+    }
+
+    const done = new Set(force ? [] : [...existing.keys()]);
+    const targets = findBackfillTargets(installed, digests, done);
+    out.scanned = digests.length;
+    out.skipped = digests.length - targets.length;
+
+    for (const t of targets) {
+      const row = digests.find((d) => d.tag === t.tag);
+      if (!row) continue;
+      try {
+        const prediction = row.prediction ?? null;
+        const o = evaluateOutcome({
+          prediction: prediction ?? { tag: row.tag, targetVersion: row.targetVersion, packages: [] },
+          installedVersion: installed,
+          repoRoot: agintRoot.root,
+        });
+        // prediction 缺失（v0.2 及更早的判读）也落一条：明确写「没有可对拍的清单」，
+        // 而不是留空让人以为「已经对拍过、没问题」。
+        if (!prediction) {
+          o.reason = '该判读早于 v0.3，未留预测清单，无法对拍';
+        }
+        const oTable = await table('outcomes');
+        await oTable.put(t.tag, { ...o, tag: t.tag });
+        out.backfilled += 1;
+        out.records.push({
+          tag: t.tag, falsePositive: o.falsePositive, falseNegative: o.falseNegative,
+          confirmed: o.confirmed, unverifiable: o.unverifiable, status: o.status,
+        });
+        console.log(`[${name}] 回填校准 ${t.tag}：确认 ${o.confirmed} / 误报 ${o.falsePositive} / 漏报 ${o.falseNegative} / 不可判 ${o.unverifiable}`);
+      } catch (e) {
+        out.failed += 1;
+        out.error = `${t.tag}: ${e?.message ?? e}`;
+      }
+    }
+    return out;
+  }
+
+  /** 校准报告：服务 / 工具 / 面板共用一份口径 */
+  async function calibrationReport() {
+    const installed = readInstalledDshVersion();
+    let digests = [];
+    let outcomes = [];
+    const notes = [];
+    try {
+      const dTable = await table('digests');
+      digests = [...dTable.entries()].map(([, r]) => r);
+    } catch (e) {
+      notes.push(`digests 读失败：${e?.message ?? e}`);
+    }
+    try {
+      const oTable = await table('outcomes');
+      outcomes = [...oTable.entries()].map(([, r]) => r);
+    } catch (e) {
+      notes.push(`outcomes 读失败：${e?.message ?? e}`);
+    }
+    const summary = summarizeCalibration({ digests, outcomes, installedVersion: installed });
+    return {
+      ...summary,
+      notes,
+      // 面板要看到「哪条错了」而不只是比率：漏报排前面（代价更大）
+      rows: outcomes
+        .sort((a, b) => (b.falseNegative ?? 0) - (a.falseNegative ?? 0)
+          || String(b.evaluatedAt ?? '').localeCompare(String(a.evaluatedAt ?? '')))
+        .slice(0, 10)
+        .map((o) => ({
+          tag: o.tag,
+          status: o.status,
+          falsePositive: o.falsePositive ?? 0,
+          falseNegative: o.falseNegative ?? 0,
+          confirmed: o.confirmed ?? 0,
+          unverifiable: o.unverifiable ?? 0,
+          evaluatedAt: o.evaluatedAt ?? null,
+          reason: o.reason ?? null,
+          worst: (o.perPackage ?? []).find((p) => p.verdict === 'false-negative')
+            ?? (o.perPackage ?? []).find((p) => p.verdict === 'false-positive')
+            ?? null,
+        })),
+    };
   }
 
   async function status() {
@@ -311,6 +445,11 @@ function apply(ctx, config) {
       stats: { ...stats },
       digestCount: 0,
       byStatus: {},
+      /**
+       * 落后情况（v0.2）。⛔ 只有「本机版本」与「最新 tag」都拿得到才给数字 ——
+       * 拿不到就给 null 并说明，不给 0：`lag 0` 会被读成「已是最新」。
+       */
+      lag: null,
       recent: [],
     };
     try {
@@ -330,8 +469,48 @@ function apply(ctx, config) {
           verdict: r.verdict,
           headline: r.headline,
           factsSummary: r.factsSummary,
+          // v0.2：语义面摘要随 status 下发（面板与工具都读这一份）
+          impactSummary: r.impactSummary ?? null,
+          semanticSummary: r.semanticSummary ?? null,
+          hostFace: r.hostFace ? {
+            from: r.hostFace.from ?? null,
+            to: r.hostFace.to ?? null,
+            semanticImpact: r.hostFace.semanticImpact ?? 'unknown',
+            semanticBySeverity: r.hostFace.semanticBySeverity ?? {},
+          } : null,
           updatedAt: r.updatedAt,
         }));
+
+      // ── 落后情况 ──
+      // 「落后几个 release」不能用 digests 条数糊出来（判读是按需的，不是每个版本都判过）。
+      // 口径：本机版本 vs 上游最新 tag，用与判读同一套版本语义比一次。
+      const installed = readInstalledDshVersion();
+      const latestTag = out.recent[0]?.tag ?? null;
+      const latestVersion = latestTag ? normalizeTag(latestTag) : null;
+      if (installed && latestVersion) {
+        out.lag = {
+          installed,
+          latestTag,
+          latestVersion,
+          behind: compareVersion(latestVersion, installed) > 0,
+          level: classifyLevel(installed, latestVersion),
+        };
+      } else {
+        out.lag = {
+          installed: installed ?? null,
+          latestTag,
+          latestVersion,
+          behind: null,
+          level: 'unknown',
+          reason: installed ? '尚无判读记录，不知上游最新版本' : '读不到本机 dsh 版本',
+        };
+      }
+
+      // v0.3：把校准摘要挂进 status —— 面板与工具读一次就拿到，
+      // 不必再单独调一次 calibration()（那是给「要看逐条错在哪」的场景用的）。
+      try { out.calibration = await calibrationReport(); } catch (e) {
+        out.calibration = { state: 'error', reason: String(e?.message ?? e).slice(0, 160) };
+      }
     } catch (e) {
       out.error = e?.message ?? String(e);
     }
@@ -348,6 +527,22 @@ function apply(ctx, config) {
       const rec = cfgTable.get('config');
       if (rec) Object.assign(cfg, readConfig({ ...cfg, ...rec }));
     } catch { /* 配置表读不到就用默认 */ }
+
+    /**
+     * v0.3 回填（放在订阅之前，且**不依赖订阅成功**）。
+     *
+     * 触发场景：人升级 dsh → 重启 → 这次启动就是「预测 vs 实际」的对拍时机。
+     * ⛔ 不能放在 eventBus 可用性判断之后：总线挂掉时插件仍应能回填，
+     *    否则「总线坏了」会把这个能力一并静默带走。
+     */
+    if (!disabled) {
+      void backfillOutcomes().then((r) => {
+        if (r.failed > 0) console.error(`[${name}] 回填失败 ${r.failed} 条：${r.error ?? ''}`);
+        else if (r.backfilled > 0) console.log(`[${name}] 回填校准 ${r.backfilled} 条（本机 ${r.installed ?? '?'}）`);
+      }).catch((e) => {
+        console.error(`[${name}] 回填异常：${e?.message ?? e}`);
+      });
+    }
 
     let subscribe = null;
     try { subscribe = ctx.get('agint.eventBus.subscribe'); } catch { /* ignore */ }
@@ -391,6 +586,13 @@ function apply(ctx, config) {
         .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
         .slice(0, limit);
     },
+    /**
+     * v0.3 校准：判读准不准（对拍记录 + 两类比率）。
+     * ⛔ 返回的是**可核对的事实**，不是「准确率 87%」这种合成分（理由见 calibration.js）。
+     */
+    calibration: () => calibrationReport(),
+    /** 手动触发一次回填（正常情况下升级后自动跑，这里给排障用） */
+    backfill: (opts = {}) => backfillOutcomes({ force: opts.force === true }),
   });
 
   // ── 工具 ──
@@ -398,6 +600,7 @@ function apply(ctx, config) {
     status,
     digest,
     runNow: (tag, opts) => digest(tag, { ...opts, force: true, via: 'manual' }),
+    calibration: () => calibrationReport(),
   });
 }
 

@@ -826,6 +826,86 @@ async function collectOracle(ctx, storagesDir) {
 }
 
 /**
+ * 上游判读分区的运行态补丁（v0.6.0）。
+ *
+ * 落盘口径（`aggUpstream`）能给出「判过哪些版本、结论是什么」，但给不出这三样：
+ *   - **lag**（本机落后几个版本）：需要「本机 dsh 版本 + 上游最新 tag + 版本语义比较」，
+ *     版本语义的实现只在上游判读器里有一份，面板抄一份必然漂移。
+ *   - **calibration**（判读准不准，v0.3）：需要把「预测」与「实际升级结果」对齐，
+ *     那两份数据都在判读器的存储里。
+ *   - **serviceOk**：「插件装着但一次都没跑过」与「插件没装」是两种不同的灰，
+ *     光看文件在不在分不开。
+ *
+ * ⛔ 服务面拿不到时**不伪造**：lag / calibration 均给 null 并写 notes，
+ *    由面板显示「运行态不可得」。给 0 会被读成「已是最新 / 准确率 0」。
+ *
+ * @param {object} ctx
+ * @param {object} base - `aggUpstream()` 的落盘结果（就地补，返回同一对象形状）
+ */
+async function collectUpstream(ctx, base) {
+  const out = { ...base };
+  const notes = [];
+
+  let svc = null;
+  let svcReason = null;
+  try {
+    svc = ctx.get('agint.upstreamWatch');
+  } catch (err) {
+    svcReason = `服务未注入：${String((err && err.message) ?? err).slice(0, 120)}`;
+  }
+  if (svcReason === null && (svc === null || svc === undefined)) {
+    svcReason = '上游判读器未挂载（agint.upstreamWatch 不可得）';
+  }
+
+  out.serviceAvailable = svcReason === null;
+  out.serviceReason = svcReason;
+  out.lag = null;
+  out.calibration = base.calibration ?? null;
+  out.stats = null;
+
+  if (svcReason !== null) {
+    notes.push(svcReason);
+    out.notes = notes;
+    return out;
+  }
+
+  const call = async (method, ...args) => {
+    if (typeof svc[method] !== 'function') { notes.push(`服务面无 ${method}() 出口`); return null; }
+    try { return await svc[method](...args); } catch (err) {
+      notes.push(`${method}() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+      return null;
+    }
+  };
+
+  const st = await call('status');
+  if (st && typeof st === 'object') {
+    out.lag = st.lag && typeof st.lag === 'object' ? st.lag : null;
+    out.stats = st.stats && typeof st.stats === 'object' ? st.stats : null;
+    out.config = st.config && typeof st.config === 'object' ? st.config : null;
+    // 服务面 recent 更新的那一条可能还没落盘刷新；只在落盘为空时用它兜底，
+    // 免得面板出现「同一 tag 两份不同时刻的结论」。
+    if ((out.digests ?? []).length === 0 && Array.isArray(st.recent) && st.recent.length > 0) {
+      notes.push('判读列表取自服务面 recent（落盘口径为空，可能是刚判完还没刷盘）');
+    }
+  }
+
+  // calibration 是 v0.3 才有的出口。旧版没有时**静默跳过**，不写 note ——
+  // 面板上不该出现「服务面无 calibration() 出口」这种只有开发者看得懂的噪音。
+  if (typeof svc.calibration === 'function') {
+    const cal = await call('calibration');
+    if (cal && typeof cal === 'object') out.calibration = cal;
+  }
+
+  // 「插件在、但从未判读过」要能看出来 —— 否则面板会显示成「一切正常，0 条」
+  if ((out.digests ?? []).length === 0 && out.baselineOnly !== true) {
+    notes.push('尚无判读记录：等频道拉到新版本，或用 upstream_digest 手动跑一次');
+  }
+
+  out.notes = notes;
+  return out;
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
@@ -855,6 +935,8 @@ async function buildV2Payload(ctx, config = {}) {
     payload.oracle = await collectOracle(ctx, dirs.storagesDir);
     // 提案台（0.5.0）：服务面优先、存储面兜底。同样必须 await。
     payload.proposals = await collectProposals(ctx, dirs);
+    // 上游判读（0.6.0）：落盘 base 已由 collectV2Data 给出，这里只补运行态三样。
+    payload.upstream = await collectUpstream(ctx, payload.upstream ?? { state: 'unavailable', digests: [] });
     return payload;
 }
 
@@ -1183,4 +1265,5 @@ export {
   collectDeliveryHistory,
   collectOracle,
   collectProposals,
+  collectUpstream,
 };

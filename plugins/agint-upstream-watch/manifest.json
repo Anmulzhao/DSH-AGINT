@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-upstream-watch",
-  "version": "0.1.0",
-  "description": "上游判读器：跟踪 dsh 发行记录，把「有新版本了」变成「这对 AGINT 意味着什么」。两段式——段1 确定性产事实（版本语义 / release 条目统计 / 拉 npm tarball 比对类型定义，算出 AGINT 用到的导出有没有被删或被收窄），段2 LLM 产结论（判机会与缺口）。事实与结论分离：模型挂了只落事实不落结论、不产提案。产出提案一律 autoExecutable=false（依赖升级属宿主环境动作，AGINT 不装不升 dsh）。",
+  "version": "0.3.0",
+  "description": "上游判读器。跟踪 dsh 发行记录，两段式判读（事实与结论分离）+ 语义面 + 判读质量仪器（升级后回填对拍）。所有提案 autoExecutable=false。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -69,7 +69,7 @@
     },
     "tests": {
       "entry": "test/smoke.mjs",
-      "command": "node --import ./test/_stub-register.mjs --test test/smoke.mjs test/upstream-watch.test.mjs",
+      "command": "node --import ./test/_stub-register.mjs --test test/smoke.mjs test/upstream-watch.test.mjs test/semantics.test.mjs test/calibration.test.mjs test/depface-resolve.test.mjs",
       "expectedExit": 0
     },
     "docs": {
