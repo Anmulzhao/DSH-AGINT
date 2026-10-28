@@ -1,5 +1,79 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.8.0 — 2026-10-28 — 两处硬伤：截断换成锚点窗口、目标改成逐个尝试
+
+v0.7.0 修掉了「批准后必失败」的三个外因（cwd / 120s / 提示词），这一版修的是剩下两处
+**结构性问题**。两处都有实测数据，不是照着直觉改的。
+
+### ① 提示里的目标文件：从头截断 → 锚点窗口 + 结构大纲
+
+**旧实现**：`String(fileText).slice(0, 20000)`。三个已知后果：
+
+- 锚点在 20000 字符之外 ⇒ 模型看不到要改的那段，只能答 `applicable=false`，或先花轮次去读；
+- 提示声称「verbatim text of one target file」，模型却看到被截断的文本 —— 它自己会说
+  「The file shown is truncated at the end」，然后去读原文件（截断本想省 token，换来更多轮次）；
+- 行号无处可依：模型即使想精确读，也只能从头翻。
+
+**新实现**（`lib/excerpt.js`，纯函数、可单测、不碰 ctx）：
+
+- 全文 ≤ budget ⇒ 原文照给（`mode='full'`），一个字符都不动；
+- 否则：从提案正文抽**锚点**（反引号里的标识符、`file:line`），在文件里定位到行，
+  每个锚点取 ±30 行窗口，合并重叠区间；再附一份**带行号的结构大纲**（顶层
+  `function` / `class` / `const` / Markdown 标题），让模型一次 `read offset=<行号>` 就能精准补读；
+- ⛔ **正文窗口逐字原样，绝不给行首加行号** —— 模型要复制 `oldText`，加前缀必挂
+  `anchorExists` 幻觉闸门。行号只出现在大纲与 `⟪omitted lines a-b⟫` 标记里。
+
+**度量（6 个真实提案 × 它们各自解析出的目标文件，只看 >20000 字符的）**
+
+| 提案 | 目标 | 大小 | 锚点 | 旧覆盖 | 新覆盖 | 字符 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2f91b72b | agint-dream/lib/sweep.js | 80957 | 6 | 4 | **6** | 20000→13263 |
+| d2b77b47 | agint-dream/lib/sweep.js | 80957 | 9 | 6 | **8** | 20000→14529 |
+| 567dabed | agint-evolve/lib/index.js | 47838 | 9 | 8 | **9** | 20000→10551 |
+| 9d9697cf | agint-evolve/lib/index.js | 47838 | 9 | 7 | 7 | 20000→14744 |
+| 58237933 | aesthetic-oracle/lib/scoring.js | 22529 | 10 | 6 | **7** | 20000→12942 |
+| a6e6e1d9 | aesthetic-oracle/lib/scoring.js | 22529 | 9 | 6 | 6 | 20000→8405 |
+
+合计 **37/52 → 43/52（71% → 83%）**，无一例变差；同时字符量 **120000 → 74434（−38%）**。
+合成判据（T41b）还压住了一个**必然失败**的情形：锚点在第 6000 行时，旧实现 100% 丢、新实现覆盖。
+
+> 仓库 1335 个受版本控制的文件里有 **104 个 >20000 字符**（7.8%），这类文件一旦成为目标就踩上面的坑。
+
+### ② 目标资产：按「路径字符串长度」挑一个 → 有序多候选逐个尝试
+
+**实机事故（提案 `846f4fbb`）**：正文里 5 条路径，`matchRepoFile` 用
+`exact.sort((a, b) => b.length - a.length)[0]` 挑**字符串最长**的那条 ⇒ 选中
+`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`（58 字符），
+而它恰恰是提案里写「已修好、本次已在 upstream-watch 落地」的**样板文件**。
+
+模型读完如实回答 `applicable=false` 并说明「待办在另外两个文件里」（判断完全正确），
+执行器却据此把整条提案判成确定性失败、不再重试 —— **真正该改的
+`agint-evolve/test/_stub-dsh-tools.mjs` 与 `agint-input-gateway/test/_stub-storage-domain.mjs`
+一次都没被读过**。路径字符串的长度与「这个文件该不该改」毫无关系。
+
+**新实现**：
+
+- `resolveTargetAssets()` 返回**有序候选**：文档出现顺序 → 精确命中优先 → 后缀兜底只在
+  **唯一**候选时收（歧义宁可丢，不猜）→ 去重保序。单目标调用方取 `[0]`（`resolveTargetAsset` 保持旧签名）。
+- runner 逐个尝试（`maxTargetAttempts`，默认 3）：某个目标答 `applicable=false` 只意味着**换下一个**；
+  全部候选都否才判 `not-actionable`，且错误里带上**每个**目标的拒因，人员不必重走一遍取证。
+- 提示里补 `## Target N of M` 段，明确「本轮只负责这一个文件，不要因为提案横跨多文件就拒答，
+  若本文件确实不用改，请 answer applicable=false 并指出该改哪个文件」。
+
+### 配置
+
+| 键 | 默认 | 作用 |
+| --- | --- | --- |
+| `excerptChars` | 20000 | 提示里目标文件的字符上限（换算法不换预算） |
+| `maxTargetAttempts` | 3 | 一次执行最多试几个目标（每个目标 = 一次真实 LLM 调用） |
+
+### 验收
+
+- `node test/smoke.mjs` ⇒ **67/67 PASS**（新增 T41a–e / T42a–b / T43a–b 共 9 条）。
+- **阴性对照**：把 excerpt 退回 `slice(0, budget)`、把目标数改回 1 ⇒ T41b/T41d/T43/T43b **四条立刻变红**；
+  还原后全绿 ⇒ 用例有分辨力。
+- `plugin-check` 0 fail；`check-wiring` PASS。
+
 ## v0.7.0 — 2026-10-28 — 修掉「已批准·执行失败」的三个真因（cwd / 截断 / 120s 闸门）
 
 **实机事故**：提案 `2f91b72b`「让 agint-dream 采集 assistant 正文里的主张」在面板批准后，

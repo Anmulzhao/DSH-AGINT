@@ -56,6 +56,7 @@ import { createContractAuditor } from './contract-audit.js';
 import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import { requestSynthMount } from './deploy-bridge.js';
+import { extractAnchors, buildExcerpt } from './excerpt.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -82,6 +83,14 @@ const TIMEOUT_ENV = 'AGINT_EVOLUTION_DRIVER_TIMEOUT_MS';
 // "verbatim text of one target file" —— LLM 看不到尾部却以为看全了，会误判
 // not applicable；若 oldText 恰在截断点之后还会触发幻觉闸门误伤。
 const DEFAULT_SNIPPET = 20_000;
+/**
+ * 一次执行最多尝试几个目标资产（2026-10-28）。
+ *
+ * 起因：提案正文里往往提到多个文件，其中既有「已经改好的样板」也有「真正要改的」。
+ * 旧实现只取一个（字符串最长那个）⇒ 撞上样板就整条判死。现在按正文顺序逐个试，
+ * 每个目标一次 LLM 调用，所以要有止损位：3 个足够覆盖「样板 + 1~2 个真目标」的常见形态。
+ */
+const DEFAULT_MAX_TARGET_ATTEMPTS = 3;
 const MAX_CANDIDATES = 5;
 /** commit 拒绝写入的路径（任何位置命中即拒）：挂载配置与 git 内部绝不碰。 */
 const COMMIT_DENYLIST = ['cordis.patch.yml', '.git/', 'node_modules/'];
@@ -200,6 +209,17 @@ export function resolveRepoRoot(env = {}, config = {}) {
   const fromCfg = String(config?.repoRoot ?? '').trim();
   if (fromCfg) return fromCfg;
   return null;
+}
+
+/**
+ * 正整数解析：非数字 / ≤0 / 越界一律回落默认值。
+ * ⛔ 别用 `Number(x) || default`：`'0'` 会被当成 falsy 悄悄变默认，
+ *    而这里两个参数（片段预算、目标数）一旦变 0 就是「全体静默降级」。
+ */
+function positiveInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) return fallback;
+  return Math.min(Math.trunc(n), max);
 }
 
 /**
@@ -369,17 +389,57 @@ export function resolutionDiag(candidate, repoFiles = []) {
  * 返回 {type:'skill', id} | {type:'repo', id} | null。repoFiles = 仓库相对路径集合。
  */
 export function resolveTargetAsset(candidate, availableSkills = [], repoFiles = []) {
+  const all = resolveTargetAssets(candidate, availableSkills, repoFiles);
+  return all.length > 0 ? all[0] : null;
+}
+
+/**
+ * 目标资产的**有序**候选列表（2026-10-28）。
+ *
+ * ⛔ 这里修的是一个真事故：提案 `846f4fbb` 正文里有 5 条路径，而 `matchRepoFile`
+ *    用 `exact.sort((a, b) => b.length - a.length)[0]` 挑**字符串最长**的那条
+ *    ⇒ 选中 `plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`（58 字符），
+ *    而它恰恰是提案里写「已修好、本次已在 upstream-watch 落地」的那个样板文件。
+ *    模型读完如实回答 applicable=false（它的判断没错），执行器却据此把整条提案判死，
+ *    真正该改的 `agint-evolve` / `agint-input-gateway` 两个替身**从未被尝试过**。
+ *    路径字符串的长度与「这个文件该不该改」毫无关系。
+ *
+ * 新口径：
+ *   ① **文档出现顺序** —— 提案作者先写的一般就是首要目标；
+ *   ② 精确命中优先于后缀兜底；
+ *   ③ 后缀兜底只在**唯一**候选时收（歧义宁可丢，不猜 —— 改错文件比不改更糟）；
+ *   ④ 去重保序。
+ *
+ * 单目标调用方取 `[0]`（见 resolveTargetAsset）；多目标由 runner 逐个尝试，
+ * 「模型说这个文件不该改」从此只是**换下一个目标**的理由，不是整条提案的死刑。
+ */
+export function resolveTargetAssets(candidate, availableSkills = [], repoFiles = []) {
   const skill = resolveTargetSkill(candidate, availableSkills);
-  if (skill) return { type: 'skill', id: skill };
-  if (Array.isArray(repoFiles) && repoFiles.length) {
-    const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}`;
-    const mentioned = extractRepoPaths(`${hay}\n${(candidate?.source ?? '')}`);
-    // 2026-10-27：先归一再求交。提案里写部署位路径（`~/.dsh/.agint-bundle/…`）
-    // 是常态，直接 `set.has(raw)` 会恒 0 命中 ⇒ 真能改的提案被判不可执行。
-    const hit = matchRepoFile(mentioned, repoFiles);
-    if (hit) return { type: 'repo', id: hit };
+  if (skill) return [{ type: 'skill', id: skill }];
+  if (!Array.isArray(repoFiles) || !repoFiles.length) return [];
+
+  const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}\n${candidate?.source ?? ''}`;
+  const mentioned = extractRepoPaths(hay);
+  const set = new Set(repoFiles);
+  const out = [];
+  const seen = new Set();
+  const push = (p) => {
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    out.push({ type: 'repo', id: p });
+  };
+
+  for (const raw of mentioned) {
+    const p = normalizeRepoPath(raw);
+    if (p && set.has(p)) push(p);
   }
-  return null;
+  for (const raw of mentioned) {
+    const p = normalizeRepoPath(raw);
+    if (!p || set.has(p) || !p.includes('/')) continue;
+    const cands = repoFiles.filter((f) => f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
+    if (cands.length === 1) push(cands[0]);
+  }
+  return out;
 }
 
 /**
@@ -483,6 +543,12 @@ export function apply(ctx, config = {}) {
   };
   // 仓库根（patch config 静态部分）；env 优先级在 resolveRepoRoot 里
   const cfgRepoRoot = String(config?.repoRoot ?? '').trim() || null;
+  // 2026-10-28：excerpt 算法换了（锚点窗口 + 大纲），但仍受同一个字符上限约束 ——
+  // 成本不涨，涨的是「窗口落在该改的那段上」的概率。见 lib/excerpt.js。
+  const cfgExcerptChars = positiveInt(config?.excerptChars, DEFAULT_SNIPPET);
+  // 一次执行最多试几个目标。⛔ 这是「选错目标」的止损位，不是重试次数上限：
+  // 每个目标都是一次真实 LLM 调用（可能几分钟），所以默认只给 3 个。
+  const cfgMaxTargetAttempts = positiveInt(config?.maxTargetAttempts, DEFAULT_MAX_TARGET_ATTEMPTS, 1, 6);
 
   // 可观测出口（2026-09-27 补）：本插件第一条 job 跑完（evolution-cycle
   // 06:32Z，lastResult ok）却零产出、零留痕 —— 静默失败是本项目头号杀手，
@@ -620,12 +686,21 @@ export function apply(ctx, config = {}) {
     llm = null,
     entityGate = null,
     cwd = null,
+    stepIndex = 0,
+    stepTotal = 0,
   }) {
     const build = llm ?? ((args) => spawnLlm(ctx, args));
     const effectiveTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
       ? Math.trunc(Number(timeoutMs))
       : resolveLlmTimeout(process.env, config);
     const workDir = (typeof cwd === 'string' && cwd.trim()) ? cwd.trim() : (cfgRepoRoot ?? null);
+    // 2026-10-28：截断换成「锚点窗口 + 结构大纲」（lib/excerpt.js）。
+    // ⛔ 正文逐字原样输出，行号只在 outline 与省略标记里 —— 给 oldText 加前缀必挂幻觉闸门。
+    const excerpt = buildExcerpt(fileText, {
+      targetId,
+      anchors: extractAnchors(`${candidate?.title ?? ''}\n${candidate?.body ?? ''}`),
+      budget: cfgExcerptChars,
+    });
     const out = await build({
       system: SYSTEM_PROMPT,
       user: [
@@ -636,16 +711,24 @@ export function apply(ctx, config = {}) {
         '',
         candidate.body ?? '',
         '',
+        ...(stepTotal > 1
+          ? [
+            `## Target ${stepIndex + 1} of ${stepTotal}`,
+            'This run is responsible for THIS file only. Other target files are tried separately — ' +
+            'do not refuse just because the whole proposal spans several files. ' +
+            'If this file genuinely needs no change, answer applicable=false and name the file that does.',
+            '',
+          ]
+          : []),
         '## Working directory',
         workDir ?? '(the repository root that contains the target path below)',
         '',
         `## Target file: ${targetId}`,
-        // ⛔ 别再只说「verbatim text」：sweep.js 有 96.5KB，20000 字符必被截断，而模型察觉截断后
-        //    会去全盘找仓库（2026-10-28 实测 13 次 bash 全用在 ls/find）。这里把「去哪读剩下的」写成一句话。
-        `(excerpt below may be truncated. The full file is \`${targetId}\` relative to the working directory — ` +
-        'if your anchor lies beyond the excerpt, read THAT exact path. Do not search the filesystem for it.)',
+        `(${excerpt.hint}. The full file is \`${targetId}\` relative to the working directory — ` +
+        'read THAT exact path if you need a range the excerpt does not cover. ' +
+        'Do not search the filesystem for it.)',
         '```',
-        String(fileText).slice(0, DEFAULT_SNIPPET),
+        excerpt.text,
         '```',
         '',
         'Reply with the structured output: one atomic edit, or applicable=false.',
@@ -865,8 +948,8 @@ export function apply(ctx, config = {}) {
         state.seen.add(candidate.id);
       }
 
-      const target = resolveTargetAsset(candidate, available, repoFiles);
-      if (!target) {
+      const targets = resolveTargetAssets(candidate, available, repoFiles);
+      if (targets.length === 0) {
         // 定位不到目标资产 → 换下一条，不硬凑。留痕：这是「有提案但没目标」的静默路径。
         warn('candidate skipped: no target asset resolved', {
           candidateId: candidate.id,
@@ -877,62 +960,98 @@ export function apply(ctx, config = {}) {
         failures.push(`${candidate.id}: no target asset resolved (${resolutionDiag(candidate, repoFiles)})`);
         continue;
       }
-      const targetId = target.id;
 
-      let fileText = null;
-      try {
-        fileText =
-          target.type === 'skill'
-            ? await readSkillText({ skillName: targetId, fs, roots: inj.skillRoots, repoRoot })
-            : await readRepoText({ repoRoot, relPath: targetId, fs: inj.fs });
-      } catch (error) {
-        fileText = null;
-        warn('candidate skipped: target file unreadable', {
-          candidateId: candidate.id,
+      // ── 多目标逐个尝试（2026-10-28）───────────────────────────────────
+      // ⛔ 旧实现只取一个目标，而那个「一个」是按**路径字符串长度**挑的
+      //    （matchRepoFile 的 `sort((a,b)=>b.length-a.length)[0]`）⇒ 844f 那种提案
+      //    会选中正文里「已修好、不用动」的样板文件，模型如实答 applicable=false，
+      //    于是整条提案被判死，真正该改的文件一次都没试。
+      //    现在：「这个文件不该改」只意味着换下一个目标；全部否掉才算 not-actionable。
+      //    每次尝试都是一次真实 LLM 调用 ⇒ 用 cfgMaxTargetAttempts 止损（默认 3）。
+      const rejections = [];
+      let picked = null;
+      const maxAttempts = Math.min(targets.length, cfgMaxTargetAttempts);
+      for (let ti = 0; ti < maxAttempts; ti += 1) {
+        const target = targets[ti];
+        const targetId = target.id;
+
+        let fileText = null;
+        try {
+          fileText =
+            target.type === 'skill'
+              ? await readSkillText({ skillName: targetId, fs, roots: inj.skillRoots, repoRoot })
+              : await readRepoText({ repoRoot, relPath: targetId, fs: inj.fs });
+        } catch (error) {
+          fileText = null;
+          warn('target skipped: file unreadable', {
+            candidateId: candidate.id,
+            targetId,
+            error: error?.message ?? String(error),
+          });
+        }
+        if (typeof fileText !== 'string' || !fileText) {
+          rejections.push(`${targetId}: unreadable`);
+          continue;
+        }
+
+        // ⛔ 必须显式传 cwd＝repoRoot（2026-10-28 取证：不传则孩子会话拿 process.cwd()，
+        //    实机是 `~/桌面` 或 `~`，于是 15 次工具调用里 13 次在 `ls`/`find` 找仓库，
+        //    turn 烧到 119s 才结束，撞 120s 闸门后连结果一起丢）。
+        const built = await construct({
+          candidate,
           targetId,
-          error: error?.message ?? String(error),
+          fileText,
+          llm: inj.llm ?? null,
+          entityGate,
+          cwd: repoRoot ?? null,
+          stepIndex: ti,
+          stepTotal: targets.length,
         });
+        if (built.llmFailure) {
+          // 无降级：LLM 通路失败就不再往下试（继续试只会重复失败且可能重复计费）。
+          // 发 summary + 抛错，让 cron 的 lastError 亮起来。
+          state.lastError = `llm unavailable: ${built.reason ?? 'unknown'}`;
+          failures.push(`${candidate.id}: ${state.lastError}`);
+          await emitSummary('llm-unavailable', {
+            poolSize: pool.length,
+            availableSkills: Array.isArray(available) ? available.length : 0,
+            repoFiles: repoFiles.length,
+            repoRoot: repoRoot ?? null,
+            failures: failures.slice(0, 30),
+            failuresTotal: failures.length,
+            lastError: state.lastError,
+          });
+          throw new Error(`evolution-driver aborted: ${state.lastError}`);
+        }
+        if (built.ok !== true) {
+          if (built.degraded) state.degraded += 1;
+          warn('target skipped: not applicable / gate refused', {
+            candidateId: candidate.id,
+            targetId,
+            step: `${ti + 1}/${targets.length}`,
+            reason: built.reason ?? 'unknown',
+            rationale: built.rationale ?? undefined,
+            degraded: built.degraded === true,
+            fabricated: built.fabricated ?? undefined,
+          });
+          rejections.push(`${targetId}: ${built.reason ?? 'unknown'}`);
+          continue;
+        }
+        picked = { target, targetId, value: built.value, step: ti };
+        break;
       }
-      if (typeof fileText !== 'string' || !fileText) {
-        failures.push(`${candidate.id}: target file unreadable (${targetId})`);
+
+      if (picked === null) {
+        // 所有目标都改不动 —— 这才是真的 not actionable，且必须留下**每个**目标的拒因，
+        // 否则下一个人只能看到一句「不可执行」，重走一遍同样的取证。
+        failures.push(
+          `${candidate.id}: no target produced an applicable edit — ${rejections.join(' | ')}`,
+        );
         continue;
       }
-
-      // ⛔ 必须显式传 cwd＝repoRoot（2026-10-28 取证：不传则孩子会话拿 process.cwd()，
-      //    实机是 `~/桌面` 或 `~`，于是 15 次工具调用里 13 次在 `ls`/`find` 找仓库，
-      //    turn 烧到 119s 才结束，撞 120s 闸门后连结果一起丢）。
-      const built = await construct({
-        candidate, targetId, fileText, llm: inj.llm ?? null, entityGate, cwd: repoRoot ?? null,
-      });
-      if (built.llmFailure) {
-        // 无降级：LLM 通路失败就不再往下试（继续试只会重复失败且可能重复计费）。
-        // 发 summary + 抛错，让 cron 的 lastError 亮起来。
-        state.lastError = `llm unavailable: ${built.reason ?? 'unknown'}`;
-        failures.push(`${candidate.id}: ${state.lastError}`);
-        await emitSummary('llm-unavailable', {
-          poolSize: pool.length,
-          availableSkills: Array.isArray(available) ? available.length : 0,
-          repoFiles: repoFiles.length,
-          repoRoot: repoRoot ?? null,
-          failures: failures.slice(0, 30),
-          failuresTotal: failures.length,
-          lastError: state.lastError,
-        });
-        throw new Error(`evolution-driver aborted: ${state.lastError}`);
-      }
-      if (built.ok !== true) {
-        if (built.degraded) state.degraded += 1;
-        warn('candidate skipped: construct failed', {
-          candidateId: candidate.id,
-          targetId,
-          reason: built.reason ?? 'unknown',
-          degraded: built.degraded === true,
-          fabricated: built.fabricated ?? undefined,
-        });
-        failures.push(`${candidate.id}: construct failed — ${built.reason ?? 'unknown'}`);
-        continue;
-      }
-      const v = built.value;
+      const target = picked.target;
+      const targetId = picked.targetId;
+      const v = picked.value;
 
       let proposal = null;
       try {

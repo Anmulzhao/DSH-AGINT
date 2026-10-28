@@ -15,6 +15,7 @@ import {
   matchRepoFile,
   resolveRepoRoot,
   resolveLlmTimeout,
+  resolveTargetAssets,
   commitToRepo,
   restoreFromPreimage,
   verifyTargetFile,
@@ -32,6 +33,7 @@ import {
 import { computeHypothesisLock } from '../lib/predictor.js';
 import { buildLockHypothesis } from '../lib/prediction-locker.js';
 import { EXPECTED_EFFECT_CODE, EXPECTED_EFFECT_SKILL } from '../lib/expected-effect.js';
+import { buildExcerpt, extractAnchors } from '../lib/excerpt.js';
 
 /**
  * 建一个真实的临时仓库根（v0.2.8）。
@@ -1896,4 +1898,218 @@ test('T40d: spawnLlm —— meta.cwd 用传入的 cwd；缺省才回落 process.
   assert.equal(created[1].meta.cwd, process.cwd(), '没给 cwd 时才回落进程 cwd');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T40）');
+// ── T41: excerpt —— 锚点窗口 + 结构大纲（2026-10-28 换掉「从头截断」）────────
+// 背景：旧实现是 `fileText.slice(0, 20000)`。锚点落在 20000 字符之后 ⇒ 模型看不到
+// 要改的那段，只能判 applicable=false 或先花轮次读文件。合成大文件那一例就是判据。
+
+function bigFile(lines = 8000) {
+  return Array.from({ length: lines }, (_, i) => `const pad${i + 1} = ${i + 1}; // filler filler filler`).join('\n');
+}
+
+test('T41a: 短文件 ⇒ 原文照给（mode=full），不做任何加工', () => {
+  const text = 'export function a() {}\nexport function b() {}\n';
+  const ex = buildExcerpt(text, { targetId: 'x.js', anchors: [], budget: 20_000 });
+  assert.equal(ex.mode, 'full');
+  assert.equal(ex.text, text, '全文模式必须逐字原样，一个字符都不能动');
+});
+
+test('T41b: 锚点在 20000 字符之后 —— 旧实现丢、新实现覆盖', () => {
+  const text = bigFile(8000); // 约 397KB，8000 行
+  const anchorLine = 6000;
+  const anchorText = `const pad${anchorLine} = ${anchorLine}; // filler filler filler`;
+  assert.equal(text.slice(0, 20_000).includes(anchorText), false, '前提：旧的头截断确实看不到它');
+
+  const ex = buildExcerpt(text, {
+    targetId: 'big.js',
+    anchors: [{ kind: 'ident', value: `pad${anchorLine}` }],
+    budget: 20_000,
+  });
+  assert.notEqual(ex.mode, 'full');
+  assert.equal(ex.text.includes(anchorText), true, '锚点所在行必须在 excerpt 里');
+  assert.ok(ex.chars <= 20_000, `excerpt 不许超预算，实际 ${ex.chars}`);
+  assert.ok(ex.anchorHits >= 1);
+  assert.equal(
+    ex.ranges.some(([a, b]) => anchorLine >= a && anchorLine <= b),
+    true,
+    '区间表要能证明覆盖',
+  );
+});
+
+test('T41c: 正文逐字 —— 不许给行首加行号（加了 oldText 必挂幻觉闸门）', () => {
+  const text = bigFile(3000);
+  const ex = buildExcerpt(text, {
+    targetId: 'big.js',
+    anchors: [{ kind: 'ident', value: 'pad1500' }],
+    budget: 20_000,
+  });
+  const rawLines = new Set(text.split('\n'));
+  // excerpt 里除标记行外，每一行都必须能在原文里逐字找到
+  const suspicious = ex.text
+    .split('\n')
+    .filter((l) => l.trim() && !l.startsWith('⟪'))
+    // 大纲行是 `  1234  decl padX` —— 它们的特征是以空格+数字开头，单独放过
+    .filter((l) => !/^\s*\d+\s{2}(decl|#)/.test(l))
+    .filter((l) => !rawLines.has(l));
+  assert.deepEqual(suspicious, [], '出现无法在原文中逐字匹配的行 ⇒ 说明加了前缀/改了空白');
+});
+
+test('T41d: 无锚点命中 ⇒ 退化到大纲 + 头尾，不假装看全了', () => {
+  const text = bigFile(3000);
+  const ex = buildExcerpt(text, { targetId: 'big.js', anchors: [{ kind: 'ident', value: 'nothing_like_this' }], budget: 20_000 });
+  assert.equal(ex.mode, 'outline');
+  assert.match(ex.text, /excerpt of big\.js/);
+  assert.match(ex.text, /outline \(top-level declarations/);
+  assert.ok(ex.ranges.length >= 1, '至少要给头尾');
+  assert.ok(ex.chars <= 20_000);
+});
+
+test('T41e: extractAnchors —— 只认反引号；`file:line` 变行锚点；太短的扔掉', () => {
+  const anchors = extractAnchors(
+    '问题在 `collectSessionSignals`（`lib/sweep.js:383`）里，`x` 这种太短的不算，`config.repoRoot` 算。',
+  );
+  const kinds = anchors.map((a) => `${a.kind}:${a.value}${a.line ? `:${a.line}` : ''}`);
+  assert.ok(kinds.includes('ident:collectSessionSignals'), kinds.join(' | '));
+  assert.ok(kinds.includes('line:lib/sweep.js:383'), kinds.join(' | '));
+  assert.ok(kinds.includes('ident:config.repoRoot'), kinds.join(' | '));
+  assert.equal(kinds.some((k) => k.endsWith(':x')), false, '1 个字符的标识符没有定位价值');
+});
+
+// ── T42: 目标候选顺序 —— 不再按「路径字符串长度」挑 ────────────────────────
+// 案发：846f4fbb 正文有 5 条路径，matchRepoFile 挑**最长**那条，
+// 恰好选中提案里写「已修好、不用动」的样板文件 ⇒ 整条提案被判死。
+
+const T42_REPO = [
+  'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs', // 58 字符，正文里最先出现，且是最长的
+  'plugins/agint-input-gateway/test/_stub-storage-domain.mjs', // 57
+  'plugins/agint-evolve/test/_stub-dsh-tools.mjs', // 45
+];
+
+test('T42a: 多目标按文档顺序全给出来（旧的单值出口只能看到第一个）', () => {
+  const candidate = {
+    title: '收紧其余插件的 dsh-tools 测试替身',
+    body: [
+      '已修好的样板（本次已在 upstream-watch 落地）：`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`',
+      '同类替身还有两处（本次未动）：',
+      '- `plugins/agint-evolve/test/_stub-dsh-tools.mjs`',
+      '- `plugins/agint-input-gateway/test/_stub-storage-domain.mjs`',
+    ].join('\n'),
+  };
+  const all = resolveTargetAssets(candidate, [], T42_REPO);
+  assert.deepEqual(all.map((t) => t.id), [
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs',
+    'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+    'plugins/agint-input-gateway/test/_stub-storage-domain.mjs',
+  ], '顺序必须是正文顺序，不是字符串长度顺序');
+  assert.equal(matchRepoFile(extractRepoPaths(candidate.body), T42_REPO),
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs',
+    '旧的单值匹配确实会挑最长那条 —— 这就是当初选错的机制（保留此断言以免有人把它「优化」回来）');
+});
+
+test('T42b: 后缀兜底只在唯一时收；有歧义就丢（改错文件比不改更糟）', () => {
+  const unique = resolveTargetAssets({ title: 'x', body: '见 `plugins/agint-evolve/lib/index.js`' }, [],
+    ['plugins/agint-evolve/lib/index.js']);
+  assert.deepEqual(unique.map((t) => t.id), ['plugins/agint-evolve/lib/index.js']);
+
+  const ambiguous = resolveTargetAssets({ title: 'x', body: '改 `lib/index.js`' }, [],
+    ['plugins/a/lib/index.js', 'plugins/b/lib/index.js']);
+  assert.deepEqual(ambiguous, [], '两个候选 ⇒ 不猜');
+});
+
+// ── T43: 目标遍历 —— 「这个文件不该改」只换下一个，不再判死整条提案 ──────────
+
+test('T43: 第一个目标答 applicable=false ⇒ 继续试第二个并落地（实机 846f4fbb 形状）', async () => {
+  const repo = await makeRepo({
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs': 'export const STUB_ALREADY_TIGHT = true;\n',
+    'plugins/agint-evolve/test/_stub-dsh-tools.mjs':
+      'export function defineTool(options) { return { ...options }; }\n',
+    'plugins/agint-input-gateway/test/_stub-storage-domain.mjs': 'export function defineTool(desc) { return { ...desc }; }\n',
+  });
+  const seenPrompts = [];
+  const targetOf = (user) => (/^## Target file: (.+)$/m.exec(user)?.[1] ?? '').trim();
+  const llm = async ({ user }) => {
+    seenPrompts.push(user);
+    if (targetOf(user).includes('_stub-storage-domain.mjs')) {
+      // 模型对「样板文件」的正确回答：这个文件不该改
+      return { ok: true, value: { applicable: false, targetSkill: '', oldText: '', newText: '', rationale: 'already fixed here' } };
+    }
+    return {
+      ok: true,
+      value: {
+        applicable: true,
+        targetSkill: 'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+        oldText: 'export function defineTool(options) { return { ...options }; }',
+        newText: 'export function defineTool(options) { if (!options.execute) throw new Error("userExecute"); return { ...options }; }',
+        rationale: 'tighten the stub',
+      },
+    };
+  };
+  const mutator = fakeMutator();
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id,
+        title: '收紧其余插件的 dsh-tools 测试替身',
+        body: '已修好的样板：`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`\n' +
+          '同类还有：`plugins/agint-evolve/test/_stub-dsh-tools.mjs`\n' +
+          '以及：`plugins/agint-input-gateway/test/_stub-storage-domain.mjs`',
+        status: 'approved',
+        category: 'plugin',
+      }),
+    },
+    'agint.mutator': mutator,
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-walk', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+
+  assert.equal(out.skipped, false, JSON.stringify(out.failures ?? out.reason));
+  assert.equal(seenPrompts.length, 2, '第一个目标被否 ⇒ 必须再试一个，且这里只需两次');
+  assert.match(seenPrompts[0], /already|_stub-storage-domain/, '第一次问的是样板文件');
+  assert.match(seenPrompts[1], /agint-evolve\/test\/_stub-dsh-tools\.mjs/, '第二次问的必须是真的该改的那个');
+  assert.match(seenPrompts[1], /## Target 2 of 3/, '提示里要说明这是第几个目标 —— 否则模型会因「提案太大」拒答');
+  assert.equal(mutator.calls.propose.length, 1, '只落一条变异，不能把两个目标都提交');
+  const landed = mutator.calls.propose[0];
+  assert.equal(landed.promptPayload.promptId, 'stub-dsh-tools-mjs',
+    '落地的必须是 evolve 那个替身（promptId 由目标文件名 slug 而来；样板文件的 slug 是 stub-storage-domain-mjs）');
+  assert.match(landed.promptPayload.newText, /userExecute/, '落地的正文要是「收紧后的替身」那段');
+  assert.equal(out.target.id, 'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+    '返回的 target 必须是第二个候选，不是第一个（第一个是样板文件）');
+});
+
+test('T43b: 全部目标都否 ⇒ not-actionable，但错误里要列出每个目标的拒因', async () => {
+  const repo = await makeRepo({
+    'plugins/a/lib/x.js': 'const a = 1;\n',
+    'plugins/b/lib/y.js': 'const b = 2;\n',
+  });
+  const llm = async () => ({
+    ok: true,
+    value: { applicable: false, targetSkill: '', oldText: '', newText: '', rationale: 'no anchor here' },
+  });
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id, title: 't', status: 'approved', category: 'plugin',
+        body: '见 `plugins/a/lib/x.js` 与 `plugins/b/lib/y.js`',
+      }),
+    },
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-none', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, true, '全部目标都改不动 ⇒ 重试也不会变');
+  const joined = JSON.stringify(out);
+  assert.match(joined, /plugins\/a\/lib\/x\.js: llm judged not applicable/, '第一个目标的拒因要在');
+  assert.match(joined, /plugins\/b\/lib\/y\.js: llm judged not applicable/, '第二个的也要在');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T43）');
