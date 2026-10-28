@@ -1090,6 +1090,19 @@ for src in "$PLUGINS_SRC"/agint-*/; do
   log "   ✓ $name"
 done
 
+# 2026-10-29：`plugins/_shared` **不是插件**（目录下没有 manifest.json），但三个插件的
+# 测试替身都从 `../../_shared/test-stub-dsh-tools.mjs` 取同一份契约 ⇒ 必须跟着一起铺。
+# ⛔ 漏掉它的后果（实测 2026-10-29）：仓库侧测试 31/31、63/63 全绿，而**部署位**
+# evolve 红 2 条、input-gateway 红 1 条（ERR_MODULE_NOT_FOUND）—— 门禁的 smoke 是在
+# 部署位跑的，于是「仓库绿、部署红」这种最难查的不一致就出现了。
+if [ -d "$PLUGINS_SRC/_shared" ]; then
+  dst="$PLUGINS_DST/_shared"
+  backup "plugins" "$dst"
+  safe_rsync "$PLUGINS_SRC/_shared" "$dst"
+  if [ "$DRY_RUN" != "1" ]; then register_step "rm_dst|$dst"; fi
+  log "   ✓ _shared（非插件的共用测试资产）"
+fi
+
 # ── 2.5 镜像到 bundle 部署位（dsh bundle 形态的主挂载源）─────────────────────
 # 为什么同一份源铺两处：
 #   · bundle patch 的 insert 行按「本 patch 文件所在目录」解析（app-boot
@@ -1108,6 +1121,12 @@ for src in "$PLUGINS_SRC"/agint-*/; do
   safe_rsync "$src" "$BUNDLE_PLUGINS_DST/$name"
   log "   ✓ $name"
 done
+
+# 同上：bundle 位也要有 `_shared`（preset 工具行锚在这里，插件测试也在这里跑）。
+if [ -d "$PLUGINS_SRC/_shared" ]; then
+  safe_rsync "$PLUGINS_SRC/_shared" "$BUNDLE_PLUGINS_DST/_shared"
+  log "   ✓ _shared（非插件的共用测试资产）"
+fi
 
 # ── 2.6 部署位引用重写：把 profiles/web 改成目标 profile ─────────────────────
 #
