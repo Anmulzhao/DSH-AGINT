@@ -144,6 +144,67 @@ const approved = (over = {}) => ({ id: 'p1', status: 'approved', execMode: 'imme
     assert.equal(patch.commitPath, 'plugins/agint-evolve/lib/index.js');
     assert.equal(patch.mutationId, 'mut-9');
     assert.equal(patch.policyDecision, 'AUTO_DEPLOY');
+    assert.notEqual(patch.partial, true, '单单元提案：新字段缺席时行为与原来逐字一致');
+  });
+}
+
+// ── ⑤b 部分落地：job 成功 ≠ 提案做完（2026-10-28，提案 `846f4fbb` 实证）──
+//
+// 一次自动执行的原子单元 = 一个文件的一次编辑，而提案横跨多文件是常态。
+// driver v0.9.0 起会把 `scope.complete=false` 带出来 —— 这时 finish 仍要 ok:true
+// （单元确实落地了），但**必须** 连同剩余单元一起声明 partial，否则 evolve
+// 会把提案标成 applied：账面上它做完了，而正文里其余三个单元从此没有入口。
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job()] });
+  await withExecutor({
+    evolve,
+    driver: {
+      runForProposal: async () => ({
+        skipped: false,
+        proposalId: 'mut-partial',
+        commit: { ok: true, path: 'plugins/agint-evolve/test/_stub-dsh-tools.mjs', policyDecision: 'AUTO_DEPLOY' },
+        scope: {
+          unitsTotal: 3, unitsApplied: 1,
+          remainingUnits: ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs'],
+          requiresNewAsset: false, complete: false,
+        },
+      }),
+    },
+  }, async ({ svc }) => {
+    const out = await svc.tick({ force: true });
+    assert.equal(out.results[0].ok, true, '单元确实落地 ⇒ 本次执行是成功的');
+    assert.equal(out.results[0].partial, true, '但只覆盖了一部分 ⇒ 必须声明 partial');
+    const patch = evolve.calls.finish[0].patch;
+    assert.equal(patch.ok, true);
+    assert.equal(patch.partial, true);
+    assert.equal(patch.unitsTotal, 3);
+    assert.equal(patch.unitsApplied, 1);
+    assert.deepEqual(patch.remainingUnits, ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs']);
+    assert.match(patch.reason, /部分落地/);
+    assert.equal(svc.status().partial, 1,
+      '周报要说清楚「本周完成 N 条」里有多少条是只做完了一部分');
+  });
+}
+
+// ── ⑤c 阴性对照：scope 说「单单元」⇒ 不许打 partial（假欠账也是污染）──
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job()] });
+  await withExecutor({
+    evolve,
+    driver: {
+      runForProposal: async () => ({
+        skipped: false,
+        proposalId: 'mut-single',
+        commit: { ok: true, path: 'plugins/agint-dream/lib/sweep.js', policyDecision: 'AUTO_DEPLOY' },
+        scope: { unitsTotal: 1, unitsApplied: 1, remainingUnits: [], requiresNewAsset: false, complete: true },
+      }),
+    },
+  }, async ({ svc }) => {
+    await svc.tick({ force: true });
+    const patch = evolve.calls.finish[0].patch;
+    assert.equal(patch.partial, false);
+    assert.equal(patch.reason, '');
+    assert.equal(svc.status().partial, 0, '每条正常提案都记成欠账 ⇒ 面板全是黄，等于没有欠账机制');
   });
 }
 

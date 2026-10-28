@@ -83,6 +83,9 @@ function apply(ctx, config) {
     lastError: null,
     claimed: 0,
     succeeded: 0,
+    // 2026-10-28：succeeded 里有多少是「只落地了提案的一部分」（提案 `846f4fbb` 实证）。
+    // 不单独计数的话，「本周自动落地 3 条」会把 1 条只做完 1/3 的也数进去。
+    partial: 0,
     failed: 0,
     deferred: 0,
     cancelled: 0,
@@ -167,15 +170,22 @@ function apply(ctx, config) {
       : interpret(out);
 
     if (verdict.ok) {
+      // 2026-10-28：部分落地要连同**剩余单元**一起交回 evolve，让它把提案留在
+      // `approved` + `execState=partial`，而不是悄悄标 applied（那就等于替下一部分结账了）。
       await evolve.finishExecution(job.id, {
         ok: true,
         mutationId: verdict.mutationId,
         commitPath: verdict.commitPath,
         policyDecision: verdict.policyDecision,
-        reason: '',
+        partial: verdict.partial === true,
+        unitsApplied: verdict.partial === true ? verdict.unitsApplied : null,
+        unitsTotal: verdict.partial === true ? verdict.unitsTotal : null,
+        remainingUnits: verdict.partial === true ? verdict.remainingUnits : [],
+        reason: verdict.partial === true ? verdict.reason : '',
       });
       state.succeeded += 1;
-      return { proposalId: job.proposalId, action: 'run', ok: true, commitPath: verdict.commitPath };
+      if (verdict.partial === true) state.partial += 1;
+      return { proposalId: job.proposalId, action: 'run', ok: true, partial: verdict.partial === true, commitPath: verdict.commitPath };
     }
 
     const attempts = Number(job.attempts) || 1;
@@ -231,11 +241,37 @@ function apply(ctx, config) {
     }
     const commit = out.commit ?? null;
     if (commit && commit.ok === true) {
+      // ── 「job 成功」≠「提案做完」（2026-10-28 v0.2.1，提案 `846f4fbb` 实证）──
+      //
+      // 一次自动执行的原子单元 = 一个文件的一次编辑；提案横跨多文件是常态。
+      // driver v0.9.0 起把 `scope`（unitsApplied/unitsTotal/remainingUnits）带出来：
+      // complete=false 时这次 commit 只是提案的**一个单元**，把它按「已落地」报上去，
+      // agint-evolve 就会把提案标成 applied —— 剩余单元从此失去入口。
+      // 实机：846f4fbb 三个单元只落地 agint-evolve 那个替身，却被结案成
+      // `status=applied · execError=''`（另一处替身至今仍是 `return { ...desc }`）。
+      //
+      // ⛔ 旧接口消失则退回原行为（ok:true） —— 老 driver 不受影响，
+      //    这是「新口径靠新字段」，不是「读懂返回里的每一句话」。
+      const scope = out.scope ?? null;
+      const remaining = Array.isArray(scope?.remainingUnits)
+        ? scope.remainingUnits.filter((x) => typeof x === 'string' && x.length > 0)
+        : [];
+      const partial = scope != null && scope.complete === false && (remaining.length > 0 || scope.requiresNewAsset === true);
+      const total = Number.isFinite(Number(scope?.unitsTotal)) ? Number(scope.unitsTotal) : null;
       return {
         ok: true,
         mutationId: out.proposalId ?? '',
         commitPath: commit.path ?? '',
         policyDecision: commit.policyDecision ?? '',
+        partial,
+        unitsApplied: partial ? Number(scope.unitsApplied) || 0 : null,
+        unitsTotal: partial ? total : null,
+        remainingUnits: partial ? remaining : [],
+        reason: partial
+          ? `部分落地（${Number(scope.unitsApplied) || 0}/${total ?? '？'} 个原子单元）：`
+            + `剩余 ${remaining.length ? remaining.join('、') : '提案要求新建的资产'}`
+            + ' —— 提案不按已落地结案'
+          : '',
       };
     }
     if (commit) {

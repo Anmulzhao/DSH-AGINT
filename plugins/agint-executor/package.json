@@ -1,6 +1,6 @@
 {
   "name": "agint-executor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "智进 (agint) 提案执行器：批准即执行。轮询 agint_evolve.execution 队列，按 immediate/scheduled 到期捡任务，调 agint.evolutionDriver.runForProposal 落地，成功标 applied、失败留因并有限重试；内置 kill-switch 与「本周自动落地 ≤3 次」红线。",
   "type": "module",
   "main": "lib/index.js",

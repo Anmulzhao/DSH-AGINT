@@ -1,5 +1,35 @@
 # agint-executor CHANGELOG
 
+## v0.2.1（2026-10-28 · 部分落地：job 成功不等于提案做完）
+
+### 为什么又要改这里
+
+上一版（`v0.2.0`）把「driver 返回 → 是否真的落地」收敛成一句话：`commit.ok === true ⇒ ok`。
+这个判据对**单文件提案**是对的，对多文件提案是错的：一次 mutation 结构上只能覆盖一个原子单元，
+把它按「落地」报上去，agint-evolve 就把提案标成 `applied` —— 账面上这条提案从此做完了。
+
+实机（提案 `846f4fbb`）：3~4 个单元只落地 `agint-evolve` 的替身，台账却写成
+`status=applied · execError=''`。第二次的事故往往比第一次贵：假死刑只是没推进，
+假完成是**宣布完成**。
+
+### 改了什么
+
+- `interpret()`：commit.ok 为真时再读 driver v0.9.0 起的 `out.scope`；
+  `complete===false ∧（有剩余目标 ∨ 要求新建资产）` ⇒ `partial=true`，并带出
+  `unitsApplied/unitsTotal/remainingUnits/reason`。
+  ⛔ 老 driver 不带 `scope` 时 `partial=false`，行为与原来逐字一致（靠新字段，不猜返回形状）。
+- `runJob()`：把 `partial` 与剩余单元交回 `evolve.finishExecution`；`status()` 新增 `partial` 计数器
+  —— 「本周自动落地 N 条」不能把只做完 1/3 的那条也数进去。
+- ⛔ 仍然 `state.succeeded += 1`：单元确实落地了，partial 不是成功也不是失败，
+  是「成功的一部分」，所以计数分开记、但两边都算。
+
+### 验收
+
+- `node --import ../agint-evolve/test/_stub-register.mjs` 集成用例第 4 节 ⇒
+  `result.partial === true`、`executor.status().partial === 1`、提案留在 `approved`。
+- 阴性对照：同一份 driver 返回把 `scope.complete` 改 true ⇒ 提案照旧标 applied（第 1 节），
+  ⇒ 新分支没有污染原路径。
+
 ## v0.2.0（2026-10-27 · 语义闸 + 确定性失败不重试）
 
 ### 为什么
