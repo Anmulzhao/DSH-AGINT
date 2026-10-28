@@ -124,6 +124,10 @@ function apply(ctx) {
                   total: { required: true, type: 'number' },
                   kept: { required: true, type: 'number' },
                   dropped: { required: true, type: 'number' },
+                  // 2026-10-28：来源分档。漏声明 = additionalProperties:false
+                  // 撞上实际返回 ⇒ 整个工具不可用（K164 同形状事故已咬过四次）。
+                  structured: { required: true, type: 'number' },
+                  legacy: { required: true, type: 'number' },
                 },
               },
               // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
@@ -220,7 +224,7 @@ function apply(ctx) {
           lines.push(`    ${v.qualityEval.note}`);
         }
         if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} recovered=${v.counts.recovered} promoted=${v.counts.promoted} recallAppended=${v.counts.recallAppended} recallPruned=${v.counts.recallPruned}`);
-        if (v.counts) lines.push(`  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0}`);
+        if (v.counts) lines.push(`  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0} · 结构化=${v.counts.toolErrorFilter?.structured ?? 0} 前缀兜底=${v.counts.toolErrorFilter?.legacy ?? 0}`);
         if (v.counts) lines.push(`  consolidation=${v.counts.consolidationMode ?? 'n/a'}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''} · validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
@@ -268,6 +272,10 @@ function apply(ctx) {
                   total: { required: true, type: 'number' },
                   kept: { required: true, type: 'number' },
                   dropped: { required: true, type: 'number' },
+                  // 2026-10-28：来源分档。漏声明 = additionalProperties:false
+                  // 撞上实际返回 ⇒ 整个工具不可用（K164 同形状事故已咬过四次）。
+                  structured: { required: true, type: 'number' },
+                  legacy: { required: true, type: 'number' },
                 },
               },
               // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。
@@ -373,7 +381,7 @@ function apply(ctx) {
         const lines = [
           `dream_run_now: ${v.apply ? 'APPLIED' : 'dry-run preview'} · day=${v.day} · ${(v.durationMs / 1000).toFixed(1)}s`,
           `  sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} errors=${v.counts.toolErrors}`,
-          `  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0}`,
+          `  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0} · 结构化=${v.counts.toolErrorFilter?.structured ?? 0} 前缀兜底=${v.counts.toolErrorFilter?.legacy ?? 0}`,
           `  candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} promoted=${v.counts.promoted}`,
           `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
           `  consolidation=${v.counts.consolidationMode}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''}`,

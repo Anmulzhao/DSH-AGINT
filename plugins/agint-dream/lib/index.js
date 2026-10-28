@@ -301,7 +301,7 @@ function apply(ctx, config) {
           sourceFilter: { humanKept: 0, unknownKept: 0, subagentDropped: 0, judgeFailed: false },
           // 2026-09-28：工具错误诊断过滤兜底（形状必须与 sweep result.counts 一致，
           // 否则 status() 在「还没跑过 sweep」时过不了自己的 output schema）
-          toolErrorFilter: { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0 },
+          toolErrorFilter: { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, structured: 0, legacy: 0 },
           // 2026-10-05 补：分级去重统计兜底。漏它的后果是「还没跑过 sweep」时
           // dream_status 过不了自己的 output schema（dedupeStats 声明为 required:true，
           // 2026-10-05 与 schema 同步时补上，见 lib/tools.js:139）。
