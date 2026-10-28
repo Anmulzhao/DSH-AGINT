@@ -428,6 +428,9 @@
           name: ./plugins/agint-executor/lib/index.js
           config:
             tickMs: 15000
+            # ⚠️ 2026-10-28 23:2x 曾临时置 0（＝不限）放行一次端到端验证（用户明确授权），
+            #    验完已改回 3。这是 AGENTS.md:57「跨周自动部署≤3」红线，不是可调阈值：
+            #    本轮因此变成 4/3（越线一次，已记录在 CHANGELOG 与当日备忘）。
             weeklyCommitCap: 3
             maxAttempts: 2
             retryDelayMs: 300000
