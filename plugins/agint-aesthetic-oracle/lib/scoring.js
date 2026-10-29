@@ -108,7 +108,28 @@ export const EFFECT_EPSILON = {
 
 /** 四维权重（§3.6 权重累减结构：避免一项满分掩盖四项差）。
  *  ⚠ noise/bloat 各 30、confidence/redundancy 各 20 —— 同样是经验分配，
- *  **无回测依据**（这正是提案 a85ef850 的正题）。改动本表会改变 scaleHash。 */
+ *  **无回测依据**。改动本表会改变 scaleHash。
+ *
+ *  标定目标（提案 a6e6e1d9，2026-10-27，**替代 a85ef850 的方法**）：
+ *  阈值与权重是**两个各自有自由度的目标**，不许混成一个：
+ *    阈值 ← Q2 归因吻合度  argmax_θ 吻合率( q2Worst(θ), humanVerdict )
+ *    权重 ← 总分/整体感知  argmax_w 一致率( sign(Δscore(w)), humanOverall )
+ *  humanOverall 取值 better | worse | flat，与 humanVerdict 分开采集、分开拟合。
+ *
+ *  ⛔ **权重不用 Q2 归因标定**（a85ef850 的方法在 r2 之后失效）：
+ *    Q2 排序键 ratio = deduction / maxWeight，而
+ *    deduction = maxWeight × g(value, threshold)（见下方 dimDeduction）
+ *    ⇒ ratio = g(value, threshold)：权重在分子分母被约掉，Q2 归因只由阈值决定。
+ *  实测（2026-10-27 复核，记录在 test/calibration.mjs 头注）：
+ *    36 条历史样本上随机 500 组权重（和为 100、含极端分配）⇒ 0 组改变任何一条
+ *    样本的归因；阈值 CONFIDENCE 0.70→0.55 ⇒ 24/36 条归因翻转。
+ *  即：目标函数不随参数变化 ⇒ 拿 Q2 归因标权重，样本攒到 100 周也不会收敛。
+ *  权重只影响 score 与 r4 的 Q1 总分门（Q1 本身是票数制），不参与 Q2 归因。
+ *
+ *  拟合入口：test/calibration.mjs 第二部分；标注由 annotateCalibration() 写入
+ *  humanOverall，只在**已标注**的**周级**样本上拟合（同周 daily 读数高度相关）；
+ *  标注不足时拟合器明写「无法拟合」，不许把未标注当吻合。
+ */
 export const DIM_WEIGHTS = {
   noise: 30,
   confidence: 20,
