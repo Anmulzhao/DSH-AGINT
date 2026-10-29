@@ -1,6 +1,6 @@
 {
   "name": "agint-dream",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "智进 (agint) dreaming: background memory consolidation — nightly sweep of session logs into scored candidates, promoted into long-term memory via agint.memory, with a human-readable dream diary (light→REM→deep model adapted from OpenClaw memory-core).",
   "type": "module",
   "main": "lib/index.js",

@@ -5,6 +5,40 @@
 
 ---
 
+## v0.7.1 — 2026-10-29 — assistant 正文统计量补齐四个出口（提案 d2b77b47）
+
+**症状**：v0.7.0 之前（2026-10-28 提案 2f91b72b / `0ac21ca`）`collectSessionSignals`
+已在每条会话上挂好 `assistantStats`（messages / chars / causalSentences），但**一个出口
+都没有**：日记不写、`result.counts` 不带、`tools.js` 两处 schema 不声明。10-28 23:05
+实测：处理 35 个会话 / `validation=OK`，但 `dreams/2026-10-28.preview.md` 里
+`grep -i assistant` 命中 **0 行** —— 数字被采到，然后被丢掉。
+
+**改动**（四处出口 + 一处兜底，照 `sourceFilter` 的既有范式）：
+
+1. `lib/sweep.js` 新增 `aggregateAssistantStats(signals)`：跨会话累加，并给
+   `collectorFailed` 一个明确口径 —— **有会话但一条 assistant 正文都没采到 = 采集口径
+   可能失效**，与「采到了但没有因果句」是相反的两种 0。
+2. `renderDiary` 加 `assistantStats` 参数，日记 Light 段恒出一行（数值为 0 也出，
+   否则「没采到」这件事永远看不见）。
+3. `result.counts.assistant`（扁平形状：`additionalProperties:false` 下开放字典声明不了）。
+4. `tools.js` 的 `dream_status` **和** `dream_run_now` 两处 output schema 都补声明 ——
+   K164 同形状事故第 5 次的前科是 `dedupeStats` **只补了 run_now**。
+5. `lib/index.js` 的 `counts` 兜底对象补 `assistant`（否则「还没跑过 sweep」时
+   `dream_status` 过不了自己的 schema，整套工具不可用）。
+
+**测试**：新增 `test/assistant-stats.test.mjs`（5 例）—— 累加口径、两个 0 分得开、
+日记恒出一行、失效时当场喊出来、以及「两处 schema 都声明了」的源码级回归闸。
+`node --test plugins/agint-dream/test/*.test.mjs` 46/46 PASS，`test/smoke.mjs` PASS。
+
+**落地经过（供日后复盘）**：本提案由 `agint-executor` 2026-10-29 04:13 UTC 自动执行，
+但 `agint-evolution-driver` 的目标解析只认出正文里**整段反引号就是一个路径**的
+`plugins/agint-dream/lib/sweep.js`；第二个目标 `.../tools.js` 写在命令式反引号里
+（`` grep -niE 'assistant' plugins/agint-dream/lib/tools.js ``），没被
+`extractRepoPaths` 抓到 ⇒ `unitsTotal=1` ⇒ 只改一处也判 `complete=true`、提案被标
+`applied`（**假完成**，scope 记账层的盲区）。上面第 2–5 项由人工补齐。
+
+---
+
 ## v0.7.0 — 2026-10-28 — 候选池污染修复：错误信号改结构化判定 + 候选层正交判据
 
 **症状**：2026-10-28 夜的启发式候选**9 条全是「工具执行报错：…」转录文本**，

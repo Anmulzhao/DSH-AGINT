@@ -500,6 +500,45 @@ export function aggregateSourceFilterStats(signals) {
   return acc;
 }
 
+/**
+ * 聚合一轮 sweep 里所有会话的 assistant 正文统计量（2026-10-28，提案
+ * 「让 agint-dream 采集到的 assistant 正文统计量真正可见」第 1 步 · 观测先行）。
+ *
+ * 存在的理由：采到了却没人看得见 = 数字被丢掉，等于没采。
+ * collectSessionSignals 已在每个会话上挂好 assistantStats（messages / chars /
+ * causalSentences），这里跨会话累加，让 diary / dream_status / result.counts
+ * 能直接回答「assistant 正文有多少、值不值得开第 2 步的口子」。
+ *
+ * 两种 0 必须可区分（含义完全不同）：
+ *   - 一条 assistant 正文都没采到 ⇒ 新采集口径失效（collectorFailed）
+ *   - 采到了但没有因果句       ⇒ 正常（causalSentences=0 而 messages>0）
+ *
+ * @returns {{sessions:number, sessionsWithAssistant:number, messages:number,
+ *            chars:number, causalSentences:number, collectorFailed:boolean}}
+ */
+export function aggregateAssistantStats(signals) {
+  const acc = {
+    sessions: 0,
+    sessionsWithAssistant: 0,
+    messages: 0,
+    chars: 0,
+    causalSentences: 0,
+  };
+  for (const s of signals ?? []) {
+    acc.sessions += 1;
+    const a = s?.assistantStats;
+    if (!a) continue;
+    const messages = a.messages ?? 0;
+    if (messages > 0) acc.sessionsWithAssistant += 1;
+    acc.messages += messages;
+    acc.chars += a.chars ?? 0;
+    acc.causalSentences += a.causalSentences ?? 0;
+  }
+  // 采集口径失效探针：新采集口径一条都没命中（≠「采到了但没有因果句」）。
+  acc.collectorFailed = acc.sessions > 0 && acc.sessionsWithAssistant === 0;
+  return acc;
+}
+
 // ── REM: candidate extraction (heuristic, deterministic) ───────────────────
 
 // Preference/decision/lesson keyword buckets. A sentence is only promoted if
@@ -1248,7 +1287,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
  *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, assistantStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -1283,6 +1322,16 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
     const f = sourceFilterStats;
     lines.push(`- 信号源过滤：真人 ${f.humanKept} 条 · 老格式 ${f.unknownKept} 条 · 拦 subagent prompt ${f.subagentDropped} 条`
       + (f.judgeFailed ? ' · ⚠️ **判据可能失效**（无人类标记消息，需复核 source 记录方式）' : ''));
+  }
+  // 2026-10-29（提案 d2b77b47）：assistant 正文规模必须**可见**。
+  // 采到了却没人看得见 = 数字被丢掉，等于没采。这一段是「第 2 步：把 assistant
+  // 主张接进候选池」的唯一判据来源 —— 没有规模统计，那一步就是盲改。
+  // ⛔ 恒出一行（不受 messages>0 约束）：两个 0 含义相反，
+  //    「没采到」要当场喊出来，不能因为「为 0 就省略」而看不见。
+  if (assistantStats && assistantStats.sessions > 0) {
+    const a = assistantStats;
+    lines.push(`- assistant 正文：${a.sessionsWithAssistant}/${a.sessions} 个会话 · ${a.messages} 条 · ${a.chars} 字 · 因果句 ${a.causalSentences} 条`
+      + (a.collectorFailed ? ' · ⚠️ **一条都没采到**（新采集口径可能已失效，需复核 assistantStats 的挂载点）' : ''));
   }
   lines.push('');
   if (memWrites.length > 0) {
@@ -1536,6 +1585,13 @@ export async function runSweep({
     console.warn(`[agint-dream] ${reason}`);
     errors.push(reason);
   }
+
+  // ── assistant 正文统计（2026-10-29 / 提案 d2b77b47）────────────────────
+  // collectSessionSignals 早在 2026-10-28 就把每条会话的 assistant 正文规模挂到了
+  // signals[i].assistantStats 上，但**一个出口都没有**：日记不写、counts 不带、
+  // dream_status 的 schema 也不声明 ⇒ 采到了等于没采。
+  // 这里补上唯一的聚合点；日记段、counts、tools.js 两处 schema 都读它。
+  const assistantStats = aggregateAssistantStats(signals);
 
   const memWrites = signals.flatMap((s) => s.memWrites.map((m) => ({ ...m, session: s.sessionKey })));
   // 2026-09-28：先按会话产出再 flat()，因为过滤统计挂在每个数组的非枚举属性上，
@@ -1884,6 +1940,8 @@ export async function runSweep({
     toolErrorStats,
     // 2026-10-23（提案 0f6c69bc）：信号源过滤统计
     sourceFilterStats,
+    // 2026-10-29（提案 d2b77b47）：assistant 正文统计
+    assistantStats,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   // 2026-09-28：dry-run 写 `<day>.preview.md`，不碰 `<day>.md`。
@@ -1923,6 +1981,17 @@ export async function runSweep({
         unknownKept: sourceFilterStats.unknownKept,
         subagentDropped: sourceFilterStats.subagentDropped,
         judgeFailed: sourceFilterStats.judgeFailed,
+      },
+      // 2026-10-29（提案 d2b77b47）：assistant 正文统计。形状扁平（同上），
+      // 因为 tools.js 的 output schema 是 additionalProperties:false ——
+      // 这里每加一个键，dream_status / dream_run_now 两处 schema 都必须同步声明，
+      // 否则整套工具当场不可用（K164 同形状事故第 5 次，详见提案正文）。
+      assistant: {
+        sessionsWithAssistant: assistantStats.sessionsWithAssistant,
+        messages: assistantStats.messages,
+        chars: assistantStats.chars,
+        causalSentences: assistantStats.causalSentences,
+        collectorFailed: assistantStats.collectorFailed,
       },
       candidates: scored.length,
       gated: gated.length,

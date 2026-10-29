@@ -142,6 +142,22 @@ function apply(ctx) {
                   judgeFailed: { required: true, type: 'boolean' },
                 },
               },
+              // 2026-10-29（提案 d2b77b47）：assistant 正文统计。
+              // 与 lib/sweep.js result.counts.assistant 逐字对齐。
+              // ⛔ dream_status 与 dream_run_now **两处都要**声明：前科 dedupeStats
+              //    （2026-09-27）只补了 run_now，status 当场整体不可用。
+              // collectorFailed = 「一条 assistant 正文都没采到」的探针，与
+              // 「采到了但没有因果句」是两种相反的 0，缺了它这两个 0 分不开。
+              assistant: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  sessionsWithAssistant: { required: true, type: 'number' },
+                  messages: { required: true, type: 'number' },
+                  chars: { required: true, type: 'number' },
+                  causalSentences: { required: true, type: 'number' },
+                  collectorFailed: { required: true, type: 'boolean' },
+                },
+              },
               candidates: { required: true, type: 'number' },
               gated: { required: true, type: 'number' },
               skippedPromoted: { required: true, type: 'number' },
@@ -225,6 +241,9 @@ function apply(ctx) {
         }
         if (v.counts) lines.push(`  counts: sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} toolErrors=${v.counts.toolErrors} candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} recovered=${v.counts.recovered} promoted=${v.counts.promoted} recallAppended=${v.counts.recallAppended} recallPruned=${v.counts.recallPruned}`);
         if (v.counts) lines.push(`  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0} · 结构化=${v.counts.toolErrorFilter?.structured ?? 0} 前缀兜底=${v.counts.toolErrorFilter?.legacy ?? 0}`);
+        // 2026-10-29（提案 d2b77b47）：assistant 正文规模。agent 读这段话就要能判断
+        // 「该不该开第 2 步」，所以放在 counts 摘要里而不是只进 JSON。
+        if (v.counts) lines.push(`  assistant: ${v.counts.assistant?.sessionsWithAssistant ?? 0}/${v.counts.sessions} 个会话 · ${v.counts.assistant?.messages ?? 0} 条 · ${v.counts.assistant?.chars ?? 0} 字 · 因果句 ${v.counts.assistant?.causalSentences ?? 0} 条${v.counts.assistant?.collectorFailed ? ' · ⚠️ 一条都没采到（采集口径可能失效）' : ''}`);
         if (v.counts) lines.push(`  consolidation=${v.counts.consolidationMode ?? 'n/a'}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''} · validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
@@ -288,6 +307,22 @@ function apply(ctx) {
                   unknownKept: { required: true, type: 'number' },
                   subagentDropped: { required: true, type: 'number' },
                   judgeFailed: { required: true, type: 'boolean' },
+                },
+              },
+              // 2026-10-29（提案 d2b77b47）：assistant 正文统计。
+              // 与 lib/sweep.js result.counts.assistant 逐字对齐。
+              // ⛔ dream_status 与 dream_run_now **两处都要**声明：前科 dedupeStats
+              //    （2026-09-27）只补了 run_now，status 当场整体不可用。
+              // collectorFailed = 「一条 assistant 正文都没采到」的探针，与
+              // 「采到了但没有因果句」是两种相反的 0，缺了它这两个 0 分不开。
+              assistant: { required: true,
+                type: 'object', additionalProperties: false,
+                properties: {
+                  sessionsWithAssistant: { required: true, type: 'number' },
+                  messages: { required: true, type: 'number' },
+                  chars: { required: true, type: 'number' },
+                  causalSentences: { required: true, type: 'number' },
+                  collectorFailed: { required: true, type: 'boolean' },
                 },
               },
               candidates: { required: true, type: 'number' },
@@ -382,6 +417,8 @@ function apply(ctx) {
           `dream_run_now: ${v.apply ? 'APPLIED' : 'dry-run preview'} · day=${v.day} · ${(v.durationMs / 1000).toFixed(1)}s`,
           `  sessions=${v.counts.sessions} userMsgs=${v.counts.userMessages} memWrites=${v.counts.memWrites} errors=${v.counts.toolErrors}`,
           `  toolErrorFilter: ${v.counts.toolErrorFilter?.enabled ? 'on' : 'OFF'} · 留=${v.counts.toolErrorFilter?.kept ?? 0} 拦=${v.counts.toolErrorFilter?.dropped ?? 0} · 结构化=${v.counts.toolErrorFilter?.structured ?? 0} 前缀兜底=${v.counts.toolErrorFilter?.legacy ?? 0}`,
+          // 2026-10-29（提案 d2b77b47）：assistant 正文规模（与 dream_status 同一口径）
+          `  assistant: ${v.counts.assistant?.sessionsWithAssistant ?? 0}/${v.counts.sessions} 个会话 · ${v.counts.assistant?.messages ?? 0} 条 · ${v.counts.assistant?.chars ?? 0} 字 · 因果句 ${v.counts.assistant?.causalSentences ?? 0} 条${v.counts.assistant?.collectorFailed ? ' · ⚠️ 一条都没采到（采集口径可能失效）' : ''}`,
           `  candidates=${v.counts.candidates} gated=${v.counts.gated} skippedPromoted=${v.counts.skippedPromoted} promoted=${v.counts.promoted}`,
           `  validation=${v.counts.validationOk ? 'OK' : 'REJECTED' + (v.counts.validationReason ? ': ' + v.counts.validationReason : '')}`,
           `  consolidation=${v.counts.consolidationMode}${v.counts.consolidationReason ? ' (' + v.counts.consolidationReason + ')' : ''}`,
