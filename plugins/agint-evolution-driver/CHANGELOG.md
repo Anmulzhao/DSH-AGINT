@@ -1,5 +1,53 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.9.1 — 2026-10-29 — 目标解析补第二类反引号：v0.9.0 的记账层被它从上游绕过了
+
+v0.9.0 建了范围记账，专治「改了一个文件就当提案做完了」。它上线第二天就被绕过一次，
+绕法不在记账层，而在更上游的**目标解析**：
+
+提案 `d2b77b47`（让 agint-dream 采集到的 assistant 正文统计量真正可见）正文点名 4 个单元，
+执行器 2026-10-29 04:13 UTC 跑完报 `succeeded`、提案被标 `applied` —— 实际只改了 1 个。
+离线复算的现场：
+
+```
+resolveTargetAssets(...) → [{ id: 'plugins/agint-dream/lib/sweep.js' }]   // 只有 1 个
+analyzeProposalScope({ targets, appliedIndex: 0 })
+  → unitsTotal=1, remainingUnits=[], complete=true
+```
+
+根因：`extractRepoPaths` 的正则要求「**整段反引号里只有一个路径**」，而正文里第二个目标
+是这么写的：
+
+```
+`grep -niE 'assistant' plugins/agint-dream/lib/tools.js`
+```
+
+含空格 ⇒ 整段不匹配。**记账层再准也救不了「目标没被解析出来」**：解析层说 1 个、
+记账层就按 1 个算，两层各自自洽，没有任何东西报警。
+
+改动（`extractRepoPaths` 三类命中，统一按首次出现位置排序）：
+
+1. 整段反引号 = 一个路径 —— **原口径逐字保留**，存量提案的抽取结果不变；
+2. 反引号里是**一段命令** —— 抓片段内所有路径样 token（grep / sed / node …）。
+   只收**含目录**的 token：命令里的裸文件名（`AGENTS.md`、`./package.json`）多半是
+   「参考」不是「要改的」，凭空变成目标会让 unitsTotal 虚高；`//example.com/a.js`
+   这种 URL 尾巴也不收。
+3. 扩展名白名单改**最长优先**（`json` 在 `js` 前）+ 加 `(?![A-Za-z0-9])` 收尾 ——
+   否则 `package.json` 会被截成 `package.js`（原口径靠反引号闭合兜住了，token 形态兜不住）。
+
+影响面（对存量 28 条提案离线跑一遍）：**5 条目标数变多，23 条不变**。
+其中 `58237933`（0→2）、`51e6e24f`（0→1）、`9d9697cf`（0→1）三条原本解析出 **0 个目标**
+⇒ 会被判 `not-actionable` 白跑一次；现在能定位了。
+
+⚠️ 行为变化（预期内，别当故障）：目标数变多 ⇒ 更多提案会以
+`execState=partial` 收尾（改了第一个、剩余单元列在 `remainingUnits`）。这是 v0.9.0
+想要的诚实记账，不是回归 —— 判据是「`git status` 里的文件数 = remaining 清单」。
+
+测试：`test/smoke.mjs` 新增 T20b / T20b2 / T20c / T20d / T20e 五例（含用该提案原文
+当夹具的回归断言）。78/78 PASS。
+
+---
+
 ## v0.9.0 — 2026-10-28 — 范围记账：「改了一个文件」不再被当成「提案做完了」
 
 起因是一条**反过来**的实证。提案 `846f4fbb`（同时收紧两处 dsh-tools 替身 + 抽共用模块）：

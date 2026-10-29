@@ -202,16 +202,37 @@ test('G10: 对全仓 32 个真技能，本文件的解析器与 skill-format che
 test('G11: 槽形状 —— 老板签的子集（四条 must-not-*）算数，其余只报数', () => {
   const dir = join(REPO, 'eval', 'skills', 'agint');
   const files = readdirSync(dir).filter((f) => f.endsWith('.cases.json'));
-  assert.equal(files.length, 9, 'agint preset 9 个技能 ⇒ 9 个槽');
+  // 2026-10-29：原来写死 9。新技能 `agint-install-bootstrap-rescue` 进来后这份槽也跟着加，
+  // 断言就红了 —— 而技能数会继续变。口径改成「每个 preset 技能恰好一份槽」，让它自己对齐。
+  const skills = readdirSync(join(REPO, 'presets', 'agint', 'skills'), { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  assert.deepEqual(
+    files.map((f) => f.replace(/\.cases\.json$/, '')).sort(),
+    skills.sort(),
+    'agint preset 的每个技能都该有一份 cases 槽，不多不少',
+  );
   const SIGNED = [
     'redline-no-machine-absolute-path', 'redline-no-secret-shaped-string',
     'redline-no-bypass-instruction', 'redline-asd-no-ambiguous-qualifiers',
   ];
+  // 2026-10-29：原来要求**每个槽**都正好带这四条。新技能进来的槽是**整槽未签核**
+  // （`three-state-audit` 的 6 条全是 proposed），逐槽硬要四条会红。
+  // 本意是「老板签过的就这四条，别人不许偷偷多签」⇒ 改判据：每槽要么 0 条、
+  // 要么正好这四条；半签（3 条）与多签（冒第 5 条）都算越界。
+  const SIGNED_SLOTS_FLOOR = 9; // 老板签过的那批槽数下限：少一个就说明签名被删了
+  let signedSlots = 0;
   for (const f of files) {
     const doc = JSON.parse(readFileSync(join(dir, f), 'utf8'));
     const { approved, proposed, invalid } = splitCases(doc);
     assert.equal(invalid.length, 0, `${f}: case 形状必须本来就合法`);
-    assert.deepEqual(approved.map((c) => c.id).sort(), [...SIGNED].sort(), `${f}: 已签核集合就是老板点的那四条`);
+    const approvedIds = approved.map((c) => c.id).sort();
+    assert.ok(
+      approvedIds.length === 0 || approvedIds.join('|') === [...SIGNED].sort().join('|'),
+      `${f}: 已签核集合要么为空、要么正好是老板点的那四条（实到 ${approvedIds.join(', ') || '空'}）`,
+    );
+    if (approvedIds.length === 0) continue; // 未签核的槽不进下面的分母断言
+    signedSlots += 1;
     assert.deepEqual(proposed.map((c) => c.id).sort(),
       ['redline-name-equals-dir', 'redline-referenced-paths-exist']
         .concat(f === 'plugin-preflight.cases.json' ? ['accepted-mutation-section'] : []).sort(),
@@ -229,6 +250,8 @@ test('G11: 槽形状 —— 老板签的子集（四条 must-not-*）算数，�
     assert.equal(run.proposedCount, f === 'plugin-preflight.cases.json' ? 3 : 2);
     assert.ok(Number.isFinite(run.passRate), `${f}: 有分母就该有 passRate（不是 null）`);
   }
+  assert.ok(signedSlots >= SIGNED_SLOTS_FLOOR,
+    `至少 ${SIGNED_SLOTS_FLOOR} 个槽带着老板签的四条（实到 ${signedSlots}）—— 少于这个数说明签名被删过`);
 });
 
 // ── 7. 假阳性锁（2026-10-03 首版清单核出来的两处）─────────────────────────

@@ -248,13 +248,59 @@ export function resolveLlmTimeout(env = {}, config = {}) {
  *  ② 允许路径后面跟行号/区间再收尾 —— 否则 `index.js:793` 因为结尾不是反引号
  *     而**整条抽不出来**（实机 `mentioned:1` 抽到的是正文里那个 `agint_evolve.json`，
  *     真正要改的 index.js 根本没进候选）。行号由 normalizeRepoPath 剥。
- *  归一化在 normalizeRepoPath 里做，这里只管「抽出来」。 */
+ *  归一化在 normalizeRepoPath 里做，这里只管「抽出来」。
+ *
+ *  ⛔ 2026-10-29 补第二类反引号（提案 d2b77b47 实锤的**假完成**根因）：
+ *     上面那个正则要求「整段反引号里**只有**一个路径」，于是正文里最常见的
+ *     「命令 + 路径」写法全部漏掉：
+ *       `` `grep -niE 'assistant' plugins/agint-dream/lib/tools.js` ``   ← 含空格
+ *     后果不是「少抽一条」这么轻：`resolveTargetAssets` 少认一个目标 ⇒
+ *     `analyzeProposalScope` 的 unitsTotal 少算一个 ⇒ remainingUnits 空 ⇒
+ *     complete=true ⇒ 只改了 1/N 也标 `applied`。解析层与记账层各自自洽，无人报警。
+ *     实机：d2b77b47 正文点名的 4 个单元只落地 1 个，台账却是「已落地」。
+ *
+ *  新口径（三条，顺序即优先级）：
+ *   ① 整段反引号就是一个路径 —— 原口径**逐字保留**，老提案的抽取结果不变；
+ *   ② 反引号里是一段**命令** —— 抓片段内所有路径样 token（grep / sed / node …）；
+ *      ② 只收**含目录分隔符**的 token：命令里的裸文件名（`AGENTS.md`、`package.json`）
+ *      多半是「参考」而不是「要改的目标」，凭空变成目标会让 unitsTotal 虚高。
+ *   ③ 两类命中统一按**首次出现位置**排序去重 —— 文档顺序是 resolveTargetAssets 的口径，
+ *      不能让「命令里写的那个」永远排在最后。
+ *
+ *  ⛔ 不做的事：不从正文裸文本里抓（没有反引号就不算引用，噪音太大）；
+ *    不在这里判存在性 —— 落在仓库外的候选由 resolveTargetAssets 的集合过滤丢弃。 */
+const PATH_TOKEN = '[~$A-Za-z0-9_\\-./{}]+\\.(?:json|mjs|cjs|js|md|yml|yaml|txt|sh)(?![A-Za-z0-9])(?::\\d+(?:-\\d+)?)?';
+
 export function extractRepoPaths(text) {
-  const out = [];
-  const re = /`([~$A-Za-z0-9_\-./{}]+\.(?:js|mjs|cjs|json|md|yml|yaml|txt|sh)(?::\d+(?:-\d+)?)?)`/g;
+  const src = String(text ?? '');
+  /** @type {{p:string, at:number}[]} */
+  const hits = [];
+
+  // ① 整段反引号 = 一个路径（原口径）
+  const bare = new RegExp('`(' + PATH_TOKEN + ')`', 'g');
   let m;
-  while ((m = re.exec(String(text ?? ''))) !== null) {
-    const p = m[1].replace(/^\.\//, '');
+  while ((m = bare.exec(src)) !== null) hits.push({ p: m[1], at: m.index });
+
+  // ② 反引号里夹着命令：在片段内部再扫一次路径 token（① 的命中会重复，靠去重吃掉）
+  const span = /`([^`\n]+)`/g;
+  const token = new RegExp(PATH_TOKEN, 'g');
+  while ((m = span.exec(src)) !== null) {
+    const inner = m[1];
+    token.lastIndex = 0;
+    let t;
+    while ((t = token.exec(inner)) !== null) {
+      if (t[0].startsWith('//')) continue; // URL 的 `//example.com/a.js` 尾巴，不是仓库路径
+      // 剥掉 `./` 前缀之后再判：`./package.json` 与 `package.json` 一样是仓库根的裸文件名
+      if (!t[0].replace(/^\.\//, '').includes('/')) continue;
+      hits.push({ p: t[0], at: m.index + 1 + t.index });
+    }
+  }
+
+  // ③ 按首次出现排序 + 去重
+  hits.sort((a, b) => a.at - b.at);
+  const out = [];
+  for (const h of hits) {
+    const p = h.p.replace(/^\.\//, '');
     if (p && !out.includes(p)) out.push(p);
   }
   return out;

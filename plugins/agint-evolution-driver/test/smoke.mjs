@@ -574,6 +574,65 @@ test('T20: extractRepoPaths 提取反引号仓库路径并去重', () => {
   assert.deepEqual(extractRepoPaths('没有路径'), []);
 });
 
+// ── T20b: 命令式反引号 —— 2026-10-29「假完成」的根因（提案 d2b77b47）─────────
+// 旧口径要求「整段反引号里只有一个路径」，正文里 `` `grep -niE 'x' plugins/a/lib/b.js` ``
+// 这种写法整段漏掉 ⇒ 少认一个目标 ⇒ unitsTotal=1 ⇒ 只改 1/N 也判 complete ⇒ 标 applied。
+// 这里用那条提案的**原文**当夹具，断言的正是「两个目标都要被认出来，且顺序是正文顺序」。
+
+const T20B_REPO = [
+  'plugins/agint-dream/lib/sweep.js',
+  'plugins/agint-dream/lib/tools.js',
+];
+
+const T20B_BODY = [
+  '提案 2f91b72b（commit 0ac21ca）已在 `plugins/agint-dream/lib/sweep.js:383` 的 `collectSessionSignals` 里采集了统计量。',
+  '| tools.js output schema | 未声明 | `grep -niE \'assistant\' plugins/agint-dream/lib/tools.js` 命中 **0 行** |',
+].join('\n');
+
+test('T20b: 命令式反引号里的路径也要抽出来（假完成根因）', () => {
+  const paths = extractRepoPaths(T20B_BODY);
+  // 行号 `:383` 保留在**抽取层**（归一化在 normalizeRepoPath 里剥），与 2026-10-27 口径一致
+  assert.deepEqual(paths, [
+    'plugins/agint-dream/lib/sweep.js:383',
+    'plugins/agint-dream/lib/tools.js',
+  ], '两处目标都必须抽到，且顺序 = 正文顺序');
+});
+
+test('T20b2: resolveTargetAssets 对同一条正文给出 2 个目标（修前只有 1 个 ⇒ 假完成）', () => {
+  const all = resolveTargetAssets({ title: '让统计量可见', body: T20B_BODY }, [], T20B_REPO);
+  assert.deepEqual(all.map((t) => t.id), T20B_REPO,
+    '少给一个目标 ⇒ scope 的 unitsTotal 就少算一个 ⇒ 改一半也判 complete');
+});
+
+test('T20c: 两类反引号混排时按首次出现位置排序，不是「命令里的排最后」', () => {
+  const text = [
+    '先看 `grep -n x plugins/a/lib/one.js`，它是要改的；',
+    '再核对 `plugins/a/lib/two.js`；',
+    '最后 `sed -i s/x/y/ plugins/a/lib/three.js` 收尾。',
+  ].join('\n');
+  assert.deepEqual(extractRepoPaths(text), [
+    'plugins/a/lib/one.js',
+    'plugins/a/lib/two.js',
+    'plugins/a/lib/three.js',
+  ]);
+});
+
+test('T20d: 命令里的裸文件名不当目标（含目录才收）', () => {
+  // AGENTS.md / package.json 在正文里通常是「参考」，不是「要改的」
+  const text = '按 `cat AGENTS.md` 与 `node -e "require(\'./package.json\')"` 的约定，改 `plugins/a/lib/x.js`';
+  assert.deepEqual(extractRepoPaths(text), ['plugins/a/lib/x.js'],
+    '命令里的裸文件名会让 unitsTotal 虚高，一律不收');
+  // 但单独一句 `AGENTS.md` 是显式引用，原口径照旧收
+  assert.deepEqual(extractRepoPaths('见 `AGENTS.md`'), ['AGENTS.md']);
+});
+
+test('T20e: 反引号外的裸文本不抓，URL 也不会变成目标', () => {
+  assert.deepEqual(extractRepoPaths('改 plugins/a/lib/x.js 就行'), [],
+    '没有反引号不算引用');
+  assert.deepEqual(extractRepoPaths('见 `curl https://example.com/a.js`'), [],
+    'URL 抽出来的 host 前缀不在仓库文件集里，由 resolveTargetAssets 过滤');
+});
+
 // ── T21: resolveTargetAsset —— 技能命中 > 仓库路径命中 > null ──────────────
 test('T21: resolveTargetAsset 三级定位', () => {
   const repoFiles = ['plugins/agint-metrics/lib/service.js', 'README.md'];
