@@ -458,11 +458,11 @@ const PENDING_SPECS = Object.freeze([
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    // 2026-10-27：声明「不可自动执行」的提案（复核类）**属于这一档** ——
-    // 它等人做（复核一条记忆），不是「机器在跑」也不是「机器试过了」。
-    // ⛔ 字段缺席 = 可执行，老提案不受影响。
+    // 2026-10-29：原来这里把 `autoExecutable===false` 的提案也塞进本档（等人做）。
+    // 语义闸撤掉之后这个分支没有意义了：现在它们会照常入队，
+    // 落进「自动执行中」或「自动执行失败」—— 都是机器的处境，不是人的工作单。
     select: (r) => r.status === 'approved' && !hasBlocker(r)
-      && (r.autoExecutable === false || (!isExecActive(r) && r.execState !== 'failed')),
+      && !isExecActive(r) && r.execState !== 'failed',
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
     note: () => '人工已批准且未交给自动执行；落地后标 applied',
   },
@@ -496,10 +496,8 @@ const PENDING_SPECS = Object.freeze([
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    // ⛔ 排除 autoExecutable=false：这一档的含义是「自动执行试过了、没成功，
-    //    要人看」。不可自动执行的提案压根没被允许试 —— 放在这儿会让人以为
-    //    系统还在替它跑，而它要的动作本来就是人去复核。
-    select: (r) => r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false,
+    // 2026-10-29：不再按 autoExecutable 排除 —— 那一档已不存在（批准即入队）。
+    select: (r) => r.status === 'approved' && r.execState === 'failed',
     item: (r) => ({
       id: r.id ?? null,
       title: r.title ?? null,
@@ -516,7 +514,7 @@ const PENDING_SPECS = Object.freeze([
       const tbl = t && typeof t === 'object' ? t.proposal : null;
       const rows = tbl && typeof tbl === 'object' ? Object.values(tbl) : [];
       const max = rows.reduce((m, r) => (
-        r && r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false
+        r && r.status === 'approved' && r.execState === 'failed'
           ? Math.max(m, Number(r.execAttempts) || 0)
           : m
       ), 0);

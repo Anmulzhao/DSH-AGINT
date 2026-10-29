@@ -80,9 +80,9 @@ domain('agint_evolve.json', {
       execMode: 'immediate', execState: 'failed', execAttempts: 2,
       execError: 'no target asset resolved',
     },
-    // 2026-10-27：声明「不可自动执行」的复核类提案。
-    // 它 execState 也可能是 failed（上次被误排进队列留下的历史），
-    // 但它要的动作是**人**去复核，不是机器再试一次 ⇒ 归「等手动执行（工作单）」。
+    // 2026-10-29：带历史 autoExecutable=false 标记、execState=failed 的提案。
+    // 语义闸撤掉之后它不再是「等人复核」的工作单 —— 它就是「自动执行试过没成功」，
+    // 归「自动执行失败（待处理）」，和人无关。
     j: {
       id: 'j', title: '提案癸', status: 'approved', blocker: '',
       autoExecutable: false, execMode: 'manual', execState: 'failed', execAttempts: 2,
@@ -135,7 +135,7 @@ assert.equal(evo.items[0].title, '提案甲');
 const approvedQ = byKey(P, 'evolve-approved');
 assert.equal(approvedQ.state, 'ok');
 assert.equal(approvedQ.kind, 'action', '工作单是人能直接动手的，不是「供给不足」');
-assert.equal(approvedQ.pending, 3, '只算 status=approved 且没标 blocker（e / g / j —— j 是声明不可自动执行的复核类）');
+assert.equal(approvedQ.pending, 2, '只算 status=approved、没标 blocker、且不在自动执行链路里（e / g）');
 assert.ok(approvedQ.items.some((it) => it.title === '提案戊'));
 assert.equal(
   approvedQ.items.filter((it) => it.title === '提案己').length, 0,
@@ -161,22 +161,27 @@ assert.equal(execActive.pending, 1, '只收 queued/running/deferred');
 assert.equal(execActive.items[0].title, '提案辛');
 assert.equal(execActive.items[0].state, 'queued', '状态必须原样带出，不能只给个布尔');
 
-// 2026-10-27：不可自动执行的复核类提案 ⇒ 归「等手动执行（工作单）」，不占「执行失败」。
+// 2026-10-29：语义闸撤了 ⇒ 带 autoExecutable=false 的提案不再单独分档。
+// 它的 execState=failed 就是字面意思（试过、没成功），归「执行失败」等人看；
+// 留在「工作单」会让人以为系统还在等他动手，而实际上没人会来。
 assert.equal(
-  approvedQ.items.filter((it) => it.title === '提案癸').length, 1,
-  '声明不可自动执行的提案要回到工作单 —— 它等人复核，不是机器的活',
+  approvedQ.items.filter((it) => it.title === '提案癸').length, 0,
+  '它不该被当成人工工作单 —— 批准即自动执行，没有「等人复核」这一档了',
 );
 assert.equal(
-  byKey(P, 'evolve-exec-failed').items.filter((it) => it.title === '提案癸').length, 0,
-  '它压根没被允许自动跑，不该挂在「自动执行失败（待处理）」里让人以为系统还在替它跑',
+  byKey(P, 'evolve-exec-failed').items.filter((it) => it.title === '提案癸').length, 1,
+  '执行失败就照实报在执行失败档，别按历史标记藏起来',
 );
 
 const execFailed = byKey(P, 'evolve-exec-failed');
 assert.equal(execFailed.state, 'ok');
 assert.equal(execFailed.kind, 'action', '执行失败必须人看，是会自己好不了的那一类');
-assert.equal(execFailed.pending, 1);
-assert.equal(execFailed.items[0].title, '提案壬');
-assert.match(execFailed.items[0].error, /no target asset/, '失败原因要带出，否则人不知道该改什么');
+assert.equal(execFailed.pending, 2);
+assert.ok(execFailed.items.some((it) => it.title === '提案壬'));
+assert.ok(
+  execFailed.items.find((it) => it.title === '提案壬').error.match(/no target asset/),
+  '失败原因要带出，否则人不知道该改什么',
+);
 
 // 2026-10-27：批准了但前置没到位的那一档，单独一行，且必须把原因和条件带出来。
 const blockedQ = byKey(P, 'evolve-approved-blocked');

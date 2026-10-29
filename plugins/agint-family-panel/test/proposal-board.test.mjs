@@ -233,12 +233,11 @@ test('审批：完成后重取权威数据（不能就地改本地状态冒充�
   assert.ok(els.pToast.innerHTML.includes('已写入'));
 });
 
-// ── 2026-10-27：不可自动执行的提案（复核类）⇒ 「立即/定时」置灰 ──────────
+// ── 2026-10-29：语义闸撤了 ⇒「立即/定时」一律可选，默认立即 ─────────────
 //
-// 实机首跑：面板默认「立即执行」，把一条 oracle 复核类提案排进了队列 ⇒
-// driver 两次各 1 秒失败。前端这一层的作用是**让人在点之前就看见**，
-// 真正的闸在服务端（400）。
-test('审批：autoExecutable=false ⇒ 立即/定时置灰、默认只批准', async () => {
+// 2026-10-27 曾在确认条里把「立即/定时」置灰（autoExecutable=false），并在文案里
+// 写「它要的动作是人工复核」。老板裁定撤销：批准即自动执行，跑不动由执行器报原因。
+test('审批：autoExecutable=false 也不再置灰，默认立即执行', async () => {
   const p4 = proposal({ id: 'p4', title: '美谕提案：决策确信度 扣 1.7 分', status: 'proposed', autoExecutable: false });
   const pay = payload();
   pay.proposals.items.push(p4);
@@ -246,14 +245,14 @@ test('审批：autoExecutable=false ⇒ 立即/定时置灰、默认只批准', 
   await sandbox.load();
   await els.propRows.dispatch('click', { target: clickTarget({ pact: 'ask', id: 'p4', status: 'approved' }) });
   const html = els.propRows.innerHTML;
-  assert.ok(html.includes('不可自动执行'), '确认条要写明为什么不能自动执行');
-  assert.ok(/value="immediate"[^>]*disabled/.test(html), '「立即自动执行」必须置灰');
-  assert.ok(/value="scheduled"[^>]*disabled/.test(html), '「定时自动执行」必须置灰');
-  assert.ok(/value="manual"[^>]*selected/.test(html), '默认落在「只批准」');
+  assert.ok(!html.includes('不可自动执行'), '这个标签已经不存在了');
+  assert.ok(!/value="immediate"[^>]*disabled/.test(html), '「立即自动执行」必须可选');
+  assert.ok(!/value="scheduled"[^>]*disabled/.test(html), '「定时自动执行」必须可选');
+  assert.ok(/value="immediate"[^>]*selected/.test(html), '默认落在「立即自动执行」');
 
   await els.propRows.dispatch('click', { target: clickTarget({ pact: 'confirm', id: 'p4' }) });
   const body = JSON.parse(calls.post[0].body);
-  assert.equal(body.execMode, 'manual', '提交时也必须是 manual —— 前端与服务端同一口径');
+  assert.equal(body.execMode, 'immediate', '提交时也不许降级成 manual');
 });
 
 // ── 2026-10-27：普通提案仍默认「立即自动执行」（不能被误伤）───────────────

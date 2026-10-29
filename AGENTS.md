@@ -54,7 +54,7 @@
 - secrets 不写文件，走 `$DSH_HOME/secrets/`
 - **不要评估自己**（agint-quality-eval 有 self-evaluation forbidden 兜底）
 - **不要绕过 D-QAF 任意阶段**直接部署
-- **不要跨周累计自动部署超过 3 次**
+- **不要跨周累计自动部署超过 5 次**（2026-10-29 老板裁定，原为 3；代码侧 `weeklyCommitCap`）
 - **写工具默认 ask 门禁**：`mutator_/population_/mount_/abtest_/qualityEval_/qualityPolicy_/eventBus_publish/diagnosis annotate 系` 默认走 rule_check ask gate；read-only 工具可裸调
 
 ## L0 变更（agint-quality-contract FROZEN 字段）
@@ -103,7 +103,7 @@ FROZEN 变更触发的 major，两条都是从未执行过的纸面约定。
 > —— 它们两台机器各不相同，写进来会让一台机器把另一台的事实覆盖掉。
 > 本机那份见 `AGENTS.local.md`（已 .gitignore，每台机器各持一份，由同一脚本生成）。
 
-- **仓库版本**：v0.20.0（VERSION 表首行）
+- **仓库版本**：v0.21.0（VERSION 表首行）
 - **preset tool rows**（25 个）：agint-memory、agint-wiki、agint-cron、agint-rules、agint-metrics、agint-evolve、agint-dream、agint-self-model、agint-event-bus、agint-diagnosis、agint-population、agint-mutator、agint-mount、agint-abtest、agint-evolution-memory、agint-quality-eval、agint-skill-autocreate、agint-curator、agint-memory-provider、agint-curriculum、agint-restart、agint-skill-graph、agint-compress-guard、agint-input-gateway、agint-search
 - **preset skills**（10 个）：agint-install-bootstrap-rescue、causal-reasoning、check-soundness、cordis-plugin-development、editing-cordis-compositions、github-push、measure-before-quota、memory-discipline、plugin-preflight、three-state-audit
 

@@ -387,10 +387,11 @@ console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-
   });
 }
 
-// ── 2026-10-27：不可自动执行的提案 ⇒ 撤单（a 的执行侧兜底）──────────────
+// ── 2026-10-29：语义闸已撤 —— autoExecutable=false 的提案照跑 ────────────
 //
-// 语义闸：复核类提案没有可改的目标，排进队列也只会失败。按 cancel 撤单
-// （不是 fail）——「这次不该跑」与「跑了但没跑成」是两回事。
+// 2026-10-27 曾按 cancel 撤单（复核类无目标 ⇒ 排进去只会失败）。老板 2026-10-29
+// 裁定撤销：批准即自动执行，「跑不动」必须由执行器如实报错，而不是伪装成「不该跑」。
+// 成本实测可承受：目标资产解析在起 LLM 之前，零目标直接 not-actionable。
 {
   const evolve = makeFakeEvolve({
     proposal: approved({ autoExecutable: false }),
@@ -401,13 +402,12 @@ console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-
     driver: { runForProposal: async () => ({ skipped: false, commit: { ok: true, path: 'x' } }) },
   }, async ({ svc }) => {
     const out = await svc.tick({ force: true });
-    assert.equal(out.results[0].action, 'cancel');
-    assert.match(out.results[0].reason, /不可自动执行/);
-    assert.equal(evolve.calls.finish[0].patch.state, 'cancelled');
+    assert.notEqual(out.results[0].action, 'cancel', '这个标记不再撤单');
+    assert.equal(evolve.calls.finish.length, 1, '照常走完一次执行并回写结果');
   });
 }
 
-// ── decideRun：autoExecutable=false ⇒ cancel（纯判据层）────────────────
+// ── decideRun：autoExecutable=false ⇒ run（纯判据层）──────────────────
 {
   const d = decideRun({
     job: job({ attempts: 1 }),
@@ -417,8 +417,7 @@ console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-
     driverReady: true,
     now: Date.now(),
   });
-  assert.equal(d.action, 'cancel');
-  assert.match(d.reason, /不可自动执行/);
+  assert.equal(d.action, 'run');
 }
 
 // ── decideRun：autoExecutable 缺席（老提案）⇒ 照常可跑 ──────────────────

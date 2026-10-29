@@ -37,7 +37,6 @@ import {
   normalizeExec,
   validateExecPlan,
   autoEnqueueBlocker,
-  isAutoExecutable,
   computeDueAt,
   isJobDue,
   weeklyUsage,
@@ -447,12 +446,6 @@ function apply(ctx, config) {
     const running = jobs.find((j) => j.state === 'running');
     if (running) return { enqueued: false, reason: 'already-running', job: running };
     const why = autoEnqueueBlocker(rec, jobs);
-    // 2026-10-27：语义闸**不可强穿**。
-    //
-    // force 的本意是「忽略 blocker / 额度这类**外部**闸，我就是要跑」；
-    // 而「这条提案没有可执行语义」（复核类，没有可改的代码目标）不是外部闸
-    // —— 强穿它等于明知会失败还要跑一次，纯浪费。所以这一条先于 force 判定。
-    if (why === 'not-auto-executable') return { enqueued: false, reason: why };
     if (why && !force) return { enqueued: false, reason: why };
     if (jobs.length && !force) return { enqueued: false, reason: 'already-queued', job: jobs[0] };
     const et = await executionTable();

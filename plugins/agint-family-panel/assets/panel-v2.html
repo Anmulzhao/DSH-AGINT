@@ -1515,10 +1515,9 @@ const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地
    五种处境。一个标签盖住五种处境，就会出现「面板说已批准待执行，实际正在自动跑」的误读。 */
 function plabel(it){
   if(!it||it.status!=="approved") return PLABEL[it&&it.status]||(it&&it.status)||"?";
-  /* 2026-10-27：不可自动执行的提案（复核类）单独一档。
-     不单列的话，它会落进「已批准·执行失败」—— 那是「试过没成功」，
-     而它压根没被允许试，读的人会以为系统还在替它跑。 */
-  if(it.autoExecutable===false) return "已批准（不可自动执行）";
+  /* 2026-10-29：原来这里有一档「已批准（不可自动执行）」，已撤。
+     老板裁定：批准即自动执行；那档标签等于把「跑不动」写成「不该跑」，
+     读的人会以为系统还在等他动手。现在一律按真实执行态显示。 */
   /* 2026-10-27：blocker 优先于执行态。前置没到位的提案**永远不会入队**，
      execState 只会停在 idle —— 旧逻辑显示「已批准·待入队」，读的人以为
      「再等等就会自己跑」；而待办那边同一份数据写的是「已批准·阻塞中（等前置）」。
@@ -1536,7 +1535,6 @@ function plabel(it){
 /* 一句话说清「这条批准之后会怎么跑」：手动 / 定时 · 排队中 / 执行中 / 失败原因。 */
 function execText(it){
   if(!it) return "—";
-  if(it.autoExecutable===false) return "不可自动执行 —— 只能「只批准」（它没有可改的代码目标）";
   const blocker=String(it.blocker??"").trim();
   if(blocker){
     const unlock=String(it.unblockCondition??"").trim();
@@ -1621,26 +1619,22 @@ function propDetail(it){
   const draft=PSTATE.drafts[it.id]||"";
   /* 2026-10-27：批准时选执行方式。默认「立即自动执行」——老板要的是批准即执行，
      不是再生成一张催办工作单；「只批准」保留为显式选项（老语义）。 */
-  /* 2026-10-27：不可自动执行的提案（复核类）只给「只批准」——
-     把「立即/定时」置灰而不是照排再失败。语义闸在服务端也有一道（400），
-     这里只是让人在点之前就看见，不用靠报错才知道。 */
-  const canAutoExec = it.autoExecutable!==false;
-  const execPick = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
+  /* 2026-10-29：置灰已撤 —— 任何提案都能选「立即/定时」（老板裁定：批准即自动执行）。
+     跑不动的由执行器给真实失败原因，不再在点之前就把人挡回去。 */
+  const execPick = PSTATE.execMode||"immediate";
   const execBar=pend&&pend.status==="approved"?`
       <div style="margin:6px 0 0;padding-top:8px;border-top:1px dashed var(--border)">
         <span class="dlab" style="display:block;margin:0 0 4px">批准后怎么执行</span>
         <select data-exec-mode style="background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">
-          <option value="immediate"${execPick==="immediate"?" selected":""}${canAutoExec?"":" disabled"}>立即自动执行（新增提案默认）</option>
-          <option value="scheduled"${execPick==="scheduled"?" selected":""}${canAutoExec?"":" disabled"}>定时自动执行</option>
+          <option value="immediate"${execPick==="immediate"?" selected":""}>立即自动执行（新增提案默认）</option>
+          <option value="scheduled"${execPick==="scheduled"?" selected":""}>定时自动执行</option>
           <option value="manual"${execPick==="manual"?" selected":""}>只批准，不自动执行</option>
         </select>
         ${execPick==="scheduled"?`<input type="datetime-local" data-exec-at value="${pescAttr(PSTATE.execAt||"")}" style="margin-left:6px;background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">`:""}
         <div style="margin-top:4px;font-size:var(--fs-xs);color:var(--fg-3)">
-          ${!canAutoExec
-            ? "⛔ 这条提案声明了不可自动执行（复核类）—— 它要的动作是人工复核，没有可改的代码目标，只能「只批准」。"
-            : execPick==="manual"
-              ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
-              : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 3 次。"}
+          ${execPick==="manual"
+            ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
+            : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 5 次。"}
         </div>
       </div>`:"";
   const confirmBar=pend?`<div class="confirm">
@@ -1767,9 +1761,8 @@ async function submitDecision(pend){
   // 批准时把执行方式一起带上（2026-10-27）：服务端据此落执行计划并入队。
   let body={id:pend.id,status:pend.status,note:pend.note||""};
   if(pend.status==="approved"){
-    // ⛔ 不可自动执行的提案只能「只批准」——与服务端同一口径（那边还会 400 兜底）。
-    const canAutoExec = pend.autoExecutable!==false;
-    const mode = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
+    // 2026-10-29：不再按 autoExecutable 降级成 manual（那道语义闸已撤）。
+    const mode = PSTATE.execMode||"immediate";
     body.execMode=mode;
     if(mode==="scheduled"){
       if(!PSTATE.execAt){ toast("定时自动执行需要选一个时间点","err"); return; }
@@ -1906,11 +1899,7 @@ propRows.addEventListener("click",async e=>{
         const ta=propRows.querySelector(`textarea[data-note="${id}"]`); if(ta) ta.focus();
         return;
       }
-      // 带上 autoExecutable：提交时才知道能不能排自动执行（确认条与提交要同一口径）。
-      // ⛔ 提案列表在 PROP.items 里（`items` 是渲染函数内的局部变量，这里取不到）。
-      const plist=(PROP&&PROP.items)||[];
-      const prow=plist.find(x=>x&&x.id===id);
-      PSTATE.pending={id,status,note,autoExecutable:prow?prow.autoExecutable!==false:true}; renderProposals(); return;
+      PSTATE.pending={id,status,note}; renderProposals(); return;
     }
     if(pact==="confirm"){ await submitDecision({...PSTATE.pending}); return; }
     return;

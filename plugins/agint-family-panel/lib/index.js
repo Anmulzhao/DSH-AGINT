@@ -1151,21 +1151,9 @@ function apply(ctx, config = {}) {
           writeJson(res, 404, { ok: false, error: `未找到提案 ${id}` });
           return;
         }
-        // 2026-10-27：这条提案声明「不可自动执行」时，不许排自动执行。
-        //
-        // 语义闸（不可强穿）：复核类提案没有可改的目标资产，排进去必然失败。
-        // 实机首跑：oracle 的「美谕提案」正文自述「永不 auto-apply；是否执行由
-        // 老板裁定」，却被默认的 immediate 塞进队列，两次各 1 秒失败。
-        // ⛔ 按**请求后的有效值**判，不是只看现值：同一个请求里既标
-        //    autoExecutable=false 又排 immediate，是自相矛盾的请求，必须拒。
-        const effectiveAutoExec = autoExecutable !== undefined ? autoExecutable : (prev.autoExecutable !== false);
-        if (wantsAutoExec && !effectiveAutoExec) {
-          writeJson(res, 400, {
-            ok: false,
-            error: '该提案声明不可自动执行（复核类提案）—— 只能「只批准」，不能排立即/定时执行',
-          });
-          return;
-        }
+        // 2026-10-29：这里原有一道「声明不可自动执行 ⇒ 400 拒排」的语义闸，已撤。
+        // 老板裁定：批准后就要自动执行，不许停下来等人，也不许把提案标成
+        // 「不可自动执行」—— 那等于把「跑不动」伪装成「不该跑」。
         // 2026-10-27：状态没变但阻塞信息变了，也是一次真实变更 —— 否则「给已批准的
         // 提案补一句为什么不能动手」这种写会被幂等短路掉，永远存不进去。
         const blockerChanged = blocker !== undefined && blocker !== (prev.blocker ?? '');
@@ -1189,12 +1177,9 @@ function apply(ctx, config = {}) {
         const opts = { blocker, unblockCondition };
         if (execMode !== undefined) opts.execMode = execMode;
         if (execMode === 'scheduled' && execAt !== undefined) opts.execAt = execAt;
-        // 2026-10-27：人工改「能不能自动执行」。省略 = 不动（冻结语义）。
+        // 2026-10-29：仍接受 autoExecutable 入参（老调用方/工具在用），但它是
+        // **惰性历史标记** —— 只落库，不拦执行、不再把执行计划归位 manual。
         if (autoExecutable !== undefined) opts.autoExecutable = autoExecutable;
-        // 标成不可执行 ⇒ 执行计划一并归位 manual。
-        // ⛔ 不归位就会留下一条「立即执行」的僵尸计划：它永远不会跑，但面板会
-        //    一直显示「执行 立即」，读的人以为它还在队列里。
-        if (autoExecutable === false) opts.execMode = 'manual';
         // 非批准的判定：把执行计划顺手清回 manual，别留下"还会跑"的错觉。
         if (status !== 'approved' && execMode === undefined && (prev.execMode ?? 'manual') !== 'manual') {
           opts.execMode = 'manual';
@@ -1225,9 +1210,9 @@ function apply(ctx, config = {}) {
             state: rec.execState ?? 'idle',
             // ⛔ auto 必须与「真的进了队列」一致：标了不可执行、或有 blocker，
             //    都不能报 true（面板 toast 会照它说「已入执行队列」）。
-            auto: wantsAutoExec && !(rec.blocker ?? '') && rec.autoExecutable !== false
+            auto: wantsAutoExec && !(rec.blocker ?? '')
               && (rec.execState === 'queued' || rec.execState === 'running'),
-            // 2026-10-27：面板据此把「立即/定时」置灰，只留「只批准」。
+            // 2026-10-29：置灰逻辑已撤；字段留着只为兼容旧面板缓存。
             autoExecutable: rec.autoExecutable !== false,
           },
         });

@@ -244,9 +244,9 @@ function apply(ctx) {
       unblockCondition: { type: 'string', description: '解锁条件：等什么满足才算能动手（传空字符串=清除）。省略=保持原值不动' },
       execMode: { type: 'string', enum: EXEC_MODES, description: '批准后的执行方式：manual=只批准不自动跑 / immediate=立即自动执行 / scheduled=按 execAt 定时自动执行。省略=保持原计划' },
       execAt: { type: 'string', description: 'execMode=scheduled 时的执行时刻（ISO，如 2026-10-28T09:00:00+08:00）。其它模式传了会被忽略' },
-      // 2026-10-27：这条提案能不能自动执行。false = 不可自动执行（复核类提案，
-      // 没有可改的代码目标）⇒ 不入队，即使 execMode=immediate 也不入（语义闸不可强穿）。
-      autoExecutable: { type: 'boolean', description: '能否自动执行：true=可以（默认）/ false=不可（复核类提案只能「只批准」）。省略=保持原值' },
+      // 2026-10-29：autoExecutable 已降级为**惰性历史标记**（老板裁定：批准即自动执行）。
+      // 仍然接受这个入参以兼容老调用方，但它**不再影响入队**。
+      autoExecutable: { type: 'boolean', description: '历史标记（2026-10-29 起不参与判据）：true/false 都照常入队执行。省略=保持原值' },
     },
     output: {
       // setStatus returns the full proposalSchema record (9 fields). Previous
@@ -288,7 +288,7 @@ function apply(ctx) {
         type: 'text',
         text: `evolve_set_status: ${v.title} → ${v.status}（${v.updatedAt}）`
           + (v.status === 'approved' && v.blocker ? `\n  ⛔ 已标阻塞：${v.blocker}${v.unblockCondition ? `\n  ⏳ 解锁条件：${v.unblockCondition}` : ''}\n  ⇒ 家族面板待办里它会进「已批准·阻塞中」，不再计为可催办工作单。` : '')
-          + (v.autoExecutable === false ? `\n  ⛔ 已标「不可自动执行」：即使选了立即/定时也不会入队（它没有可改的代码目标）。` : '')
+          + (v.autoExecutable === false ? `\n  ℹ 该提案带历史上的 autoExecutable=false 标记 —— 2026-10-29 起不再拦执行，照常入队。` : '')
           + (v.status === 'approved' && v.execMode !== 'manual'
             ? `\n  ▶ 执行计划：${v.execMode === 'scheduled' ? `定时 ${v.execAt}` : '立即'} · 当前 ${v.execState}`
               + (v.blocker ? '（有 blocker，暂不入队）' : '⇒ 已进入自动执行队列，由 agint-executor 执行，不需要人再动手')

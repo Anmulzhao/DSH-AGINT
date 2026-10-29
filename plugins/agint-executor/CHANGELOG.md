@@ -1,5 +1,34 @@
 # agint-executor CHANGELOG
 
+## v0.3.0（2026-10-29 · 撤掉「不可自动执行」语义闸：批准即执行）
+
+### 老板的裁定
+
+「我批准后就要自动去执行，而不是让我去执行或者标个无法自动执行这种的。」
+⇒ v0.17.0（2026-10-27）加的第 ③ 闸（`proposal.autoExecutable === false` ⇒ `cancel`）
+**整条删除**。判据顺序从 7 道变 6 道。
+
+### 为什么这个代价可承受（不是「老板说了就算」）
+
+那道闸的理由是「复核类提案没有可改目标，排进去必然秒失败」。但 2026-10-29 实测：
+`resolveTargetAssets()` 在**起 LLM 之前**跑（`agint-evolution-driver/lib/index.js:1001`
+`targets.length === 0 ⇒ warn + continue`），零目标时连模型都不调。
+所以「照排」的真实成本 = 一条 execution 行 + 毫秒级确定性失败，
+**不烧 token、不占周额度**（`weeklyUsage` 只数 `ok&&succeeded`）。
+
+而保留那道闸的成本是：面板长期挂着「已批准（不可自动执行）」，
+读的人以为系统在等他动手，实际没有任何机制会来——这比一条失败记录贵得多。
+
+### 行为变化
+
+- `decideRun()`：`autoExecutable === false` 不再 `cancel`，与其它已批准提案一致处理。
+- 字段仍在存储里（历史数据 + oracle/upstream-watch 的产出），但**不参与任何判据**。
+  ⛔ 若某条提案确实不该跑，正确表达是 `blocker`（第 ③ 闸，仍生效），不是这个标记。
+
+### 验收
+
+`test/executor.test.mjs` 两条改成「不再撤单」；smoke 输出尾巴改为「六道闸」。
+
 ## v0.2.1（2026-10-28 · 部分落地：job 成功不等于提案做完）
 
 ### 为什么又要改这里

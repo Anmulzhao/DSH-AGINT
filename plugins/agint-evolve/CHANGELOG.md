@@ -1,5 +1,20 @@
 # agint-evolve CHANGELOG
 
+## v0.14.0（2026-10-29 · `autoExecutable` 降级为惰性历史标记）
+
+- `autoEnqueueBlocker()` 删掉 `not-auto-executable` 分支 ⇒ 这个标记不再阻止入队。
+- `enqueueOne()` 删掉「语义闸不可强穿」那段（force 与普通入队现在同一结果）。
+- `isAutoExecutable()` 整个移除（唯一判据点没了，留着只会让下一个人以为它还有用）。
+- `normalizeExec()` 仍派生 `autoExecutable` 字段，但注释写明**不参与判据**。
+- 工具 `evolve_set_status` 仍收该参数（兼容老调用方），文案改为「历史标记，不再拦执行」。
+  原 `render` 里那句「⛔ 已标『不可自动执行』：即使选了立即/定时也不会入队」是**假话**，
+  必须改 —— 工具的输出文案比代码更容易被当成事实。
+
+### 依据
+
+2026-10-29 老板裁定：批准即自动执行。原闸的理由（复核类无目标 ⇒ 秒失败）在
+driver 的目标解析前置化之后已不成立（零目标不调 LLM、确定性失败、不占额度）。
+
 ## v0.13.3（2026-10-28 · 提案 `846f4fbb` 单元 2+3：替身共用 + 真调断言）
 
 - `test/_stub-dsh-tools.mjs` 改为转发 `plugins/_shared/test-stub-dsh-tools.mjs`
