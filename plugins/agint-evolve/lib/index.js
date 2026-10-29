@@ -54,6 +54,11 @@ const Config = z.object({
   // ⚠️ 路径在 apply() 里从 import.meta.url 推导（仓库根 = 插件所在 plugins/<name>/lib 的上两级），
   //    不用环境变量：cron 的 cwd 与宿主环境都不可靠（与 quality-sandbox 同款做法）。
   evalAttributionPath: z.string().min(1).optional(),
+  // 2026-10-30：`partial`（job 成功、提案没做完）之后最多自动续跑几次。
+  // ⛔ 0 = 不续跑（回到 2026-10-28 的行为：落进「等手动执行」工作单）。
+  // 默认 5 —— 与 unitsTotal 的常见量级同阶，且真正的止损是「这一轮有没有推进」
+  // （见 continuePartial：剩余单元没变就不再排），这个数只是兜底。
+  maxAutoContinuations: z.number().int().nonnegative().max(50).default(5),
 });
 
 /**
@@ -224,6 +229,15 @@ const executionSchema = z.object({
   policyDecision: z.string().default(''),
   reason: z.string().default(''),
   error: z.string().default(''),
+  // 2026-10-30：这一轮的范围账（只有 partial 才有值）。续跑判据全靠它：
+  //   done = unitsTotal - remainingUnits.length，比上一轮大 ⇒ 这一轮真的推进了。
+  // ⛔ 不用 unitsApplied 比：driver 报的是**本轮**落地数（通常恒为 1），
+  //    拿它跟前一轮比永远「没进展」，会把续跑刚开就掐死。
+  unitsApplied: z.number().int().nonnegative().nullable().default(null),
+  unitsTotal: z.number().int().nonnegative().nullable().default(null),
+  remainingUnits: z.array(z.string()).default([]),
+  // 这是第几次自动续跑（0 = 首次执行，不是续跑）。
+  continuations: z.number().int().nonnegative().default(0),
   // 逐次尝试的追加日志（截断到 4KB，防止一行长到把存储文件撑爆）
   log: z.string().default(''),
   startedAt: z.string().default(''),
@@ -309,6 +323,8 @@ export function proposalStaleSince(rec, current) {
 
 function apply(ctx, config) {
   const root = resolve(config.root);
+  // 2026-10-30：partial 之后自动续跑的次数上限（0 = 关掉续跑）。
+  const MAX_AUTO_CONTINUATIONS = Math.max(0, Number(config.maxAutoContinuations ?? 5) || 0);
   // A4：归因 JSON 路径。两级来源，优先级 config > 自动探测。
   // 不依赖 cwd / 环境变量（cron 的 cwd 不保证是仓库根，宿主环境变量也没约定）。
   //
@@ -439,7 +455,7 @@ function apply(ctx, config) {
    * 一条提案入队。判据走 `autoEnqueueBlocker()`（单一事实源）。
    * @returns {{enqueued:boolean, job?:object, reason?:string}}
    */
-  async function enqueueOne(rec, { by = 'approval', force = false } = {}) {
+  async function enqueueOne(rec, { by = 'approval', force = false, continuations = 0 } = {}) {
     const jobs = await activeJobsFor(rec.id);
     // ⛔ 正在跑的时候，force 也不允许再排一条：两条执行会同时改同一处资产，
     //    第二条的旧锚点必然失配（phantom 冲突），徒增一次失败记录。
@@ -458,14 +474,69 @@ function apply(ctx, config) {
       dueAt: computeDueAt(rec.execMode, rec.execAt, now),
       state: 'queued',
       attempts: 0,
+      continuations: Math.max(0, Number(continuations) || 0),
       requestedBy: by,
-      log: `${ts} queued（${rec.execMode}）by ${by}`,
+      log: `${ts} queued（${rec.execMode}）by ${by}`
+        + (continuations ? ` · 续跑第 ${continuations} 次` : ''),
       createdAt: ts,
       updatedAt: ts,
     });
     await et.put(job.id, job);
     await markProposal(rec.id, { execState: 'queued', execError: '', execFinishedAt: '' });
     return { enqueued: true, job };
+  }
+
+  /**
+   * 部分落地之后：还有剩余单元就**自动再排一次**（2026-10-30）。
+   *
+   * ## 为什么必须在这里做
+   *
+   * `partial` 表示「job 成功、提案没做完」—— 一次执行只能落一个原子单元，而提案
+   * 横跨多文件是常态。2026-10-29 实机（`a6e6e1d9`，1/3）：跑完就停在那儿，
+   * 面板把它归进「已批准·等手动执行（工作单）」—— 那正是老板说的「让我去执行」。
+   * 根治不在面板改分档，而在**这里没人续跑**：`syncExecutionQueue` 只在 setStatus
+   * 时被调，partial 只是一个 markProposal，没人再问「还剩的谁来跑」。
+   *
+   * ## 止损三条（缺一条都可能变成烧 token 的死循环）
+   *
+   *   ① **必须有剩余单元**：`remainingUnits` 为空（含 requiresNewAsset 的空快照）
+   *      ⇒ 不续跑 —— 没有可改的目标，再跑一次只会得到同样的结论。
+   *   ② **这一轮必须真的推进**：`done = unitsTotal − remaining.length` 要比**其它**
+   *      执行行都大。⛔ 不能拿 `unitsApplied` 比：driver 报的是本轮落地数（恒为 1），
+   *      跟上一轮比永远「没进展」，续跑刚开就被掐死。
+   *   ③ **次数上限** `maxAutoContinuations`（默认 5，配置可关）：兜底，不指望它止损。
+   *
+   * ⛔ 周额度不在这里判：入队照排，到顶由执行器 `defer` 顺延到下周 ——
+   *    「现在不能跑」和「不必排」是两件事，在这里提前拦会把续跑变成静默丢弃。
+   */
+  async function continuePartial(proposalId, justFinished) {
+    if (MAX_AUTO_CONTINUATIONS === 0) return { enqueued: false, reason: 'off' };
+    const rec = await table().then((t) => t.get(proposalId));
+    if (!rec || rec.status !== 'approved') return { enqueued: false, reason: 'not-approved' };
+    if (String(rec.blocker ?? '').trim() !== '') return { enqueued: false, reason: 'blocked' };
+
+    // ⛔ 用 entries() 而不是 values()：存储表与测试替身只共同承诺 entries()/get/put/delete。
+    const rows = [...(await executionTable()).entries()].map(([, j]) => j).filter((j) => j && j.proposalId === proposalId);
+    const done = (j) => {
+      const total = Number(j?.unitsTotal);
+      const left = Array.isArray(j?.remainingUnits) ? j.remainingUnits.length : 0;
+      return Number.isFinite(total) && total > 0 ? Math.max(0, total - left) : 0;
+    };
+    const remaining = Array.isArray(justFinished.remainingUnits) ? justFinished.remainingUnits.length : 0;
+    if (remaining === 0) return { enqueued: false, reason: 'no-remaining' };
+
+    const mine = done(justFinished);
+    const prevBest = rows
+      .filter((j) => j.id !== justFinished.id)
+      .reduce((m, j) => Math.max(m, done(j)), 0);
+    if (mine <= prevBest) return { enqueued: false, reason: 'no-progress' };
+
+    const used = rows.reduce((m, j) => Math.max(m, Number(j.continuations) || 0), 0);
+    if (used >= MAX_AUTO_CONTINUATIONS) return { enqueued: false, reason: 'cap' };
+
+    const out = await enqueueOne(rec, { by: 'auto-continue', continuations: used + 1 });
+    if (out.enqueued) execWake();
+    return out;
   }
 
   /**
@@ -1151,6 +1222,11 @@ function apply(ctx, config) {
         policyDecision: patch.policyDecision ?? job.policyDecision ?? '',
         reason: patch.reason ?? job.reason ?? '',
         error: patch.error ?? job.error ?? '',
+        // 2026-10-30：范围账（续跑判据的唯一来源，见 continuePartial）
+        unitsApplied: patch.unitsApplied ?? job.unitsApplied ?? null,
+        unitsTotal: patch.unitsTotal ?? job.unitsTotal ?? null,
+        remainingUnits: Array.isArray(patch.remainingUnits) ? patch.remainingUnits : (job.remainingUnits ?? []),
+        continuations: Math.max(0, Number(job.continuations) || 0),
         finishedAt: ts,
         updatedAt: ts,
         log: [job.log, `${ts} ${state}${detail ? ` ${detail}` : ''}`].filter(Boolean).join('\n').slice(-4000),
@@ -1192,6 +1268,27 @@ function apply(ctx, config) {
         });
         // ⛔ 不同"撤别的活跃 job"分支：partial 不是「已落地」，别的排队的执行
         //   正是用来补剩余单元的，掐掉它们等于把拆出来的子任务一起杀掉。
+        //
+        // 2026-10-30：**自动续跑剩余单元**。不续跑的话这条提案就停在 partial ——
+        // 面板归「已批准·等手动执行（工作单）」，等于把机器没干完的活摆回人面前。
+        // 停下来的三种情形要在 execError 里写明原因，否则读的人分不清
+        // 「做完了」「还在排」「做不动了」。
+        const cont = await continuePartial(job.proposalId, next);
+        if (!cont.enqueued) {
+          const why = {
+            off: '续跑已关闭（maxAutoContinuations=0）',
+            'no-remaining': '没有剩余单元可跑，停在这里',
+            'no-progress': '这一轮没推进任何单元（剩余清单没变）—— 不再自动重试，要人看',
+            cap: `已自动续跑 ${MAX_AUTO_CONTINUATIONS} 次仍未做完 —— 不再自动重试，要人看`,
+            blocked: '提案被标了 blocker，不续跑',
+            'not-approved': '提案已不在 approved，不续跑',
+            'already-queued': '已有排队中的执行，不重复排',
+            'already-running': '已有执行在跑，不重复排',
+          }[cont.reason] || `未续跑（${cont.reason}）`;
+          await markProposal(job.proposalId, {
+            execError: `${String(patch.reason || '').slice(0, 300)} ｜ ${why}`.slice(0, 500),
+          });
+        }
         return next;
       }
 

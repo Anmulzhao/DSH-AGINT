@@ -155,10 +155,21 @@ try {
   const after4 = await evolve.getProposal(p4.id);
   assert.equal(after4.status, 'approved', '⛔ 不许标 applied —— 标了就等于把没做的部分一起结账');
 
-  assert.equal(after4.execState, 'partial');
-  assert.match(after4.execError, /部分落地/);
-  assert.match(after4.execError, /agint-input-gateway/, '欠账里要点名具体文件路径，不然还得重走一遍取证');
+  // 2026-10-30：partial 之后**自动续跑**剩余单元（老板：「下一版让它自动续跑剩余单元」）
+  // ⇒ 执行态不再停在 partial，而是回到 queued —— 剩下的单元有人接了。
+  // ⛔ 欠账清单跟着搬到了 note：enqueueOne 会清空 execError（那字段是「上一次为什么没成」）。
+  assert.equal(after4.execState, 'queued', '剩余单元必须自动排上，不许停在「等人做」那一档');
   assert.match(after4.note, /部分落地/, 'note 是唯一能追溯"哪一部分已经落地"的地方');
+  assert.match(after4.note, /agint-input-gateway/, '欠账里要点名具体文件路径，不然还得重走一遍取证');
+  const p4jobs = await evolve.listExecutions({ proposalId: p4.id });
+  const cont4 = p4jobs.filter((j) => j.state === 'queued');
+  assert.equal(cont4.length, 1, '续跑那条要在队列里');
+  assert.equal(cont4[0].requestedBy, 'auto-continue');
+  assert.equal(cont4[0].continuations, 1);
+  // 范围账落在**刚刚那一轮**的行上（续跑那条新建的行只带 continuations）
+  const done4 = p4jobs.find((j) => j.state === 'succeeded');
+  assert.equal(done4.unitsTotal, 3);
+  assert.deepEqual(done4.remainingUnits, ['plugins/agint-input-gateway/test/_stub-storage-domain.mjs']);
   assert.equal(executor.status().partial, 1, '部分覆盖要单独计数 —— 否则周报把 1/3 的也数成"已落地"');
 
   // ── 5. 改判回退 ⇒ 执行态要跟着归位（2026-10-28，提案 `846f4fbb` 实证）──
@@ -170,7 +181,15 @@ try {
   //    队列优先（"马上又跑一次"），不该被归位逻辑抢掉 —— 所以改判到 manual/proposed 才测得到 idle。
   const reverted = await evolve.setStatus(p4.id, 'proposed', '人工改判回退那条假的结案', { execMode: 'manual' });
   assert.equal(reverted.status, 'proposed');
-  assert.equal(reverted.execState, 'idle', '脱离 applied 且无活跃执行 ⇒ 执行态必须归位，不许留在 succeeded');
+  // 2026-10-30：这条线现在还有一条**排队中的续跑**，所以改判时它的 execState 是
+  // `cancelled`（那条排队执行被如实撤销），不是 `idle` —— 两种都是"归位"，
+  // 区别只在「有没有东西被撤」。⛔ 不许留在 succeeded/partial：那才是两面说话。
+  assert.equal(reverted.execState, 'cancelled', '脱离 approved ⇒ 排队中的续跑被撤销，执行态据此归位');
+  assert.equal(
+    (await evolve.listExecutions({ proposalId: p4.id })).filter((j) => j.state === 'queued').length,
+    0,
+    '改判回退之后不许还有排队中的续跑（人撤了批，活还在后台跑）',
+  );
 
   // 阴性对照：第 1 节那条**真的**做完了，改判回退前它仍是 applied ⇒ 不受这条规则影响。
   assert.equal(after1.execState, 'succeeded', '真做完的那条不该被这条规则带偏');

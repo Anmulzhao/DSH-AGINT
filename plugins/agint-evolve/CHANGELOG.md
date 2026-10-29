@@ -1,5 +1,52 @@
 # agint-evolve CHANGELOG
 
+## v0.15.0（2026-10-30 · partial 之后自动续跑剩余单元）
+
+### 老板的话
+
+> 「下一版让它自动续跑剩余单元」
+
+2026-10-29 实机（提案 `a6e6e1d9`，1/3 个原子单元）：job 成功、提案未完 ⇒ `execState=partial`
+⇒ 面板归进「已批准·等手动执行（工作单）」，正是老板说的「让我去执行」。
+
+### 根因不在面板，在这里
+
+`syncExecutionQueue()` 只在 `setStatus()` 时被调；`partial` 只是一个 `markProposal`，
+**之后没有任何人再问「剩下的谁来跑」** ⇒ 提案停在 partial，永远等人。
+改面板分档只是把「没人跑」显示得好看一点。
+
+### 改动
+
+- `finishExecution()` 的 partial 分支末尾调 `continuePartial()`：还有剩余单元就
+  `enqueueOne({ by: 'auto-continue', continuations: n+1 })` 并 `execWake()`（不等下一个 tick）。
+- execution 行新增三个范围账字段（**带 default 的可选字段，不升 domain version**）：
+  `unitsApplied` / `unitsTotal` / `remainingUnits`，外加 `continuations`（第几次续跑）。
+- 新配置 `maxAutoContinuations`（默认 **5**，`0` = 关掉续跑、回到 10-28 的行为）。
+
+### 止损三条（缺一条都可能变成烧 token 的死循环）
+
+1. **必须有剩余单元** —— `remainingUnits` 为空（含 `requiresNewAsset` 的空快照）不续跑：
+   没有可改的目标，再跑一次只会得到同样的结论。
+2. **这一轮必须真的推进** —— `done = unitsTotal − remainingUnits.length` 要比**其它**
+   执行行都大。⛔ 不能拿 `unitsApplied` 比：driver 报的是**本轮**落地数（恒为 1），
+   跟上一轮比永远「没进展」，续跑刚开就被掐死。
+3. **次数上限** `maxAutoContinuations`：兜底，不指望它止损。
+
+停下来时把原因写进 `execError`（「没推进任何单元 / 已续跑 N 次仍未做完 / 续跑已关闭」）——
+否则读的人分不清「做完了」「还在排」「做不动了」。
+
+### 周额度不在这里判
+
+续跑照排，到顶由执行器 `defer` 顺延到下周。⛔ 「现在不能跑」和「不必排」是两件事：
+在这里提前拦，会把续跑变成静默丢弃（那正是「批准完就没人管」的另一种形态）。
+代价要说清：一次 partial 也 `ok=true`，因此**每续跑一次就吃一格周额度**，
+多单元提案会自然摊到几周里。
+
+### 验收
+
+`test/execution.test.mjs` 新增 4 组用例（续跑排上 / 没推进就停 / 无剩余单元不跑 /
+配置关掉）；`withApp` 支持传 config 覆盖 `maxAutoContinuations`。
+
 ## v0.14.0（2026-10-29 · `autoExecutable` 降级为惰性历史标记）
 
 - `autoEnqueueBlocker()` 删掉 `not-auto-executable` 分支 ⇒ 这个标记不再阻止入队。

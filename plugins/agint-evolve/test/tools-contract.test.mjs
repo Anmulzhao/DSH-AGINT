@@ -36,6 +36,14 @@ function registerAll() {
   return registered;
 }
 
+// ⛔ 2026-10-30：这段必须放在 test() **之前**。原来它在文件末尾（test 之后），
+//    而 `const { assertToolCallable } = await import(...)` 是**顶层 await** ——
+//    node:test 会在模块让出执行权的那一刻开始跑已注册的用例，于是用例撞上
+//    TDZ：`Cannot access 'assertToolCallable' before initialization`。
+//    这条一直没红只是因为「让出时机」凑巧站在后面；2026-10-30 一次重跑就翻。
+// 用动态 import 拿到共用替身里的断言助手（本文件已注册 hook ⇒ 裸包可解析）。
+const { assertToolCallable } = await import('../../_shared/test-stub-dsh-tools.mjs');
+
 test('工具注册：6 个工具全部进来，且都带 execute 与 output.render', () => {
   const registered = registerAll();
   assert.equal(registered.length, 6, `注册数不对：${registered.map((t) => t.name).join(', ')}`);
@@ -64,9 +72,6 @@ test('真调一次：每个工具的入口必须是 execute，render 必须真�
     );
   }
 });
-
-// 用动态 import 拿到共用替身里的断言助手（本文件已注册 hook ⇒ 裸包可解析）。
-const { assertToolCallable } = await import('../../_shared/test-stub-dsh-tools.mjs');
 
 async function assertToolCallableSafe(tool) {
   return assertToolCallable(tool, { args: {}, tolerateRuntimeError: true });

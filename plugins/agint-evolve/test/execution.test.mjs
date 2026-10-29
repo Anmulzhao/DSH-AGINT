@@ -53,10 +53,10 @@ function makeMockCtx() {
   };
 }
 
-async function withApp(fn) {
+async function withApp(fn, cfg = {}) {
   const root = await mkdtemp(join(tmpdir(), 'agint-evolve-exec-'));
   const ctx = makeMockCtx();
-  apply(ctx, { root });
+  apply(ctx, { root, ...cfg });
   const evo = ctx.get('agint.evolve');
   assert.ok(evo, 'agint.evolve 服务已注册');
   try {
@@ -290,4 +290,89 @@ await withApp(async ({ evo }) => {
   assert.equal((await evo.listExecutions({ proposalId: p.id, state: 'queued' })).length, 1, '标记不再撤队列');
 });
 
-console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记）');
+// ── 2026-10-30：partial 之后**自动续跑剩余单元** ─────────────────────────
+//
+// 实机（2026-10-29，提案 a6e6e1d9）：3 个原子单元只落地 1 个就停在那儿，面板把它
+// 归进「已批准·等手动执行（工作单）」—— 正是老板说的「让我去执行」。
+// 根因不在面板分档，而在 partial 之后没人问「剩下的谁来跑」。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '多单元提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, {
+    ok: true, commitPath: 'a.js', partial: true,
+    unitsApplied: 1, unitsTotal: 3, remainingUnits: ['b.js', 'c.js'],
+    reason: '部分落地（1/3 个原子单元）',
+  });
+
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.status, 'approved', 'partial 不许结案成 applied（那是替剩下两份结账）');
+
+  const jobs = await evo.listExecutions({ proposalId: p.id });
+  const queued = jobs.filter((j) => j.state === 'queued');
+  assert.equal(queued.length, 1, '剩余单元必须自动续跑 —— 不许停在「等人做」那一档');
+  assert.equal(queued[0].requestedBy, 'auto-continue');
+  assert.equal(queued[0].continuations, 1, '第一次续跑记 1');
+  assert.equal(rec.execState, 'queued', '续跑排上了，提案就该显示在自动执行档');
+
+  const first = jobs.find((j) => j.id === job.id);
+  assert.equal(first.unitsTotal, 3, '范围账要落库 —— 续跑判据只能靠它');
+  assert.deepEqual(first.remainingUnits, ['b.js', 'c.js']);
+});
+
+// ── 没推进就不许再排：否则是烧 token 的死循环 ────────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '卡住的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+
+  const [j1] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(j1.id, {
+    ok: true, partial: true, unitsApplied: 1, unitsTotal: 3,
+    remainingUnits: ['b.js', 'c.js'], reason: '部分落地（1/3）',
+  });
+
+  const [j2] = await evo.claimDueExecutions({ now: Date.now() + 2000, limit: 5 });
+  assert.ok(j2, '续跑那条应当被 claim 到');
+  assert.equal(j2.continuations, 1);
+
+  // 第二轮剩余清单没变 ⇒ done 还是 1 ⇒ 判为没推进
+  await evo.finishExecution(j2.id, {
+    ok: true, partial: true, unitsApplied: 1, unitsTotal: 3,
+    remainingUnits: ['b.js', 'c.js'], reason: '部分落地（1/3）',
+  });
+
+  const rec = await evo.getProposal(p.id);
+  const queued = (await evo.listExecutions({ proposalId: p.id })).filter((j) => j.state === 'queued');
+  assert.equal(queued.length, 0, '没推进就不许再排 —— 「试过一次没变」重试也不会变');
+  assert.equal(rec.execState, 'partial', '停在 partial，别伪装成还在跑');
+  assert.match(rec.execError, /没推进/, '要写明为什么停了，否则读的人分不清「做完了」和「做不动了」');
+});
+
+// ── 没有剩余单元 ⇒ 不续跑（requiresNewAsset 的空快照也走这条）─────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '要新建资产的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, {
+    ok: true, partial: true, unitsApplied: 0, unitsTotal: 2,
+    remainingUnits: [], reason: '需要新建资产，本轮只出快照',
+  });
+  const queued = (await evo.listExecutions({ proposalId: p.id })).filter((j) => j.state === 'queued');
+  assert.equal(queued.length, 0, '没有可改的目标，再跑一次只会得到同样的结论');
+});
+
+// ── 配置可关掉续跑（0 = 回到 2026-10-28 的行为）───────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '关掉续跑', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, {
+    ok: true, partial: true, unitsApplied: 1, unitsTotal: 3,
+    remainingUnits: ['b.js', 'c.js'], reason: '部分落地（1/3）',
+  });
+  const queued = (await evo.listExecutions({ proposalId: p.id })).filter((j) => j.state === 'queued');
+  assert.equal(queued.length, 0, 'maxAutoContinuations=0 ⇒ 一条都不排');
+  assert.match((await evo.getProposal(p.id)).execError, /续跑已关闭/);
+}, { maxAutoContinuations: 0 });
+
+console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑）');
