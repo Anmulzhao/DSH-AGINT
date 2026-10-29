@@ -115,11 +115,28 @@ function probe() {
   const repo = probePlugins(REPO_PLUGINS_DIR);
 
   // 仓库 ↔ host 漂移（只比对两侧都有 lib/index.js 的）
+  //
+  // ⛔ 2026-10-29：分母必须是**真比对过**的数，不能拿插件总数当分母。
+  //   本机 43 个插件里只有 36 个有 lib/index.js（agint-quality、agint-quality-contract、
+  //   agint-quality-eval、agint-quality-report、agint-search-tools、agint-session-extract、
+  //   agint-session-source 这 7 个没有），旧写法渲染成「43/43 个插件 lib/index.js 哈希一致，
+  //   无漂移 ✅」⇒ 7 个从未参与比对的插件被算进了「已校验」的分母。
+  //   一个口径没定义的 ✅ 比没有检查更危险 —— 它会替掉人肉排查（本仓技能 check-soundness 的命题）。
   const drift = [];
+  let compared = 0;
   for (const [name, h] of host) {
     const r = repo.get(name);
-    if (h.hash && r && r.hash && h.hash !== r.hash) drift.push(name);
+    if (h.hash && r && r.hash) {
+      compared += 1;
+      if (h.hash !== r.hash) drift.push(name);
+    }
   }
+  // 比不了的（任一侧缺 lib/index.js）—— 必须显式点名，不能混进分母。
+  const skipped = [...new Set([...host.keys(), ...repo.keys()])].filter((n) => {
+    const h = host.get(n);
+    const r = repo.get(n);
+    return !(h.hash && r && r.hash);
+  });
   const hostOnly = [...host.keys()].filter((n) => !repo.has(n));
   const repoOnly = [...repo.keys()].filter((n) => !host.has(n));
 
@@ -170,7 +187,7 @@ function probe() {
     repoVersion = (ver.match(/\|\s*(v[\d][\w.-]*)\s*\|/) || [])[1] || '—';
   } catch { /* no VERSION */ }
 
-  return { host, repo, drift, hostOnly, repoOnly, presetRows, presetSkills, patchSegs, cronJobs, repoVersion };
+  return { host, repo, drift, hostOnly, repoOnly, compared, skipped, presetRows, presetSkills, patchSegs, cronJobs, repoVersion };
 }
 
 // ── 入库块：只放仓库级事实。两台机器跑出来必须字节相同（否则 git 天天打架）──
@@ -215,10 +232,12 @@ function renderLocal(p) {
   const syncLine = p.host.size === 0
     ? `⚠️ 未探测到 host 插件目录（DSH_HOME 无 profiles/${HOST_PROFILE}/plugins？）`
     : p.drift.length === 0 && p.hostOnly.length === 0 && p.repoOnly.length === 0
-      ? `${p.host.size}/${p.repo.size} 个插件 lib/index.js 哈希一致，无漂移 ✅`
+      ? `${p.compared}/${p.repo.size} 个插件 lib/index.js 哈希一致，无漂移 ✅`
+        + (p.skipped.length ? `（另有 ${p.skipped.length} 个插件无 lib/index.js，未参与比对：${p.skipped.join('、')}）` : '')
       : `⚠️ lib/index.js 哈希漂移：${p.drift.join('、') || '无'}`
         + (p.hostOnly.length ? `；仅 host 有：${p.hostOnly.join('、')}` : '')
-        + (p.repoOnly.length ? `；仅仓库有：${p.repoOnly.join('、')}` : '');
+        + (p.repoOnly.length ? `；仅仓库有：${p.repoOnly.join('、')}` : '')
+        + (p.skipped.length ? `；${p.skipped.length} 个插件无 lib/index.js，未参与比对：${p.skipped.join('、')}` : '');
 
   const cronLine = p.cronJobs.length === 0
     ? '（agint_cron.json 无 cron_state 或不可读）'
