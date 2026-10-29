@@ -197,7 +197,15 @@ function renderRepo(p) {
 // ── 不入库块：纯本机私有。含绝对路径是应该的 —— 它永远不会被另一台机器读到 ──
 function renderLocal(p) {
   const now = new Date();
-  const ts = `${now.toISOString().slice(0, 10)} ${now.toTimeString().slice(0, 5)} UTC`;
+  // ⛔ 2026-10-29（提案 fafd3229）：原来这里拼的是「UTC 的日期 + 本地时区的时分」，
+  //    标签却只写 UTC —— 两个钟拼一个时刻，哪个口径都对不上。
+  //    toISOString() 是 UTC；toTimeString() 不带时区转换，是**本地**时分。
+  //    本机 TZ=Asia/Shanghai 时实测偏 16 小时（2026-10-29 00:26 +08 写成
+  //    「2026-10-28 00:26 UTC」，真实 UTC 是「2026-10-28 16:26 UTC」）；
+  //    跨本地午夜时日期与时分来自不同的钟，会拼出**盘上不存在的时刻**。
+  //    两台机器时区不同 ⇒ 同一份代码错得不一样，而本文件按设计就是两台各持一份。
+  //    改法：单一时间源，全程 UTC，标签与取值一致，跨机器可比。
+  const ts = `${now.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
   const pluginList = [...p.host.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
