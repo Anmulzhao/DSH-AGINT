@@ -1065,10 +1065,10 @@ ensure_mirror_module_entry
 # 顺序约束：步骤 2 用 safe_rsync --delete 把 plugins/agint-quality/node_modules/zod
 # 清掉（仓源没有），所以 zod 必须先放进 host，再让 plugin 同步覆盖。
 # 失败仅 warn，不阻断（用户可手动跑）。
-# 同时在 4.5 段保留一份兜底（理论上不会再跑，但万一 bootstrap 失败，
-# 后面 2/4 plugin 同步不会自愈——4.5 段的存在确保下一个 stage 还能补救）。
+# 同时在 2.7 段保留一份兜底（post-plugin 位置，见 2.7 段注释：非 rsync 机器的
+# 整树换入会清掉本段产物，届时由 2.7 段补回）。
 if [ "$DRY_RUN" != "1" ]; then
-  if AGINT_PROFILE="$PROFILE_NAME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+  if AGINT_PROFILE="$PROFILE_NAME" DSH_HOME="$DSH_HOME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
     log "   ✓ zod bootstrap OK（pre-plugin）"
   else
     warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：AGINT_PROFILE=$PROFILE_NAME bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
@@ -1163,6 +1163,30 @@ else:
 PY
 }
 rewrite_deployed_profile_refs
+
+# ── 2.7 同步后模块 bootstrap（zod + mirror 解析卫兵）────────────────────────
+# ⛔ 2026-10-27 排序修复：原 4.5/4.6 段把这两个 bootstrap 放在「4d 冒烟 + die」
+#   之后，但在**无 rsync** 的机器上步骤 2 走 python 回退分支，safe_rsync 用
+#   「整树换入」（rmtree(dst) + rename）把 bundle plugins 整目录重铺，
+#   会清掉 1.5 段刚铺进 plugins/agint-quality/node_modules 的 zod（mirror 位在
+#   $PLUGINS_DST/node_modules/@deepseek-ai，比被清子树高一级，不受影响）。于是 4d 冒烟时
+#   这 4 个 quality 插件相对路径 zod import
+#   全挂 → die 回滚，而本该补救的 4.5/4.6 排在 die 之后永远跑不到。
+#   修法：把 zod + mirror 这两个 post-plugin bootstrap 移到「步骤 2 同步之后、
+#   4d 冒烟之前」，与 1.5/1.45 形成「pre-plugin 主 + post-plugin 兜底」双保险。
+#   rsync 分支（--exclude node_modules 保活 zod）下 2.7 幂等跳过，无副作用。
+#   zod 源搜索缺口同步在 agint-zod-bootstrap.sh 补了 .agint-deps / .agint-bundle。
+log "2.7/4 同步后模块 bootstrap（zod + mirror）"
+if [ "$DRY_RUN" != "1" ]; then
+  if AGINT_PROFILE="$PROFILE_NAME" DSH_HOME="$DSH_HOME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
+    log "   ✓ zod bootstrap OK（post-plugin 兜底）"
+  else
+    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：AGINT_PROFILE=$PROFILE_NAME bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
+  fi
+  ensure_mirror_module_entry
+else
+  log "   ⊘ 跳过同步后模块 bootstrap（dry-run）"
+fi
 
 # ── 3. 同步 bundle 挂载层（patch + 清单 + 解析入口）─────────────────────────
 # 2026-09-24 起 AGINT 的挂载行住在 **bundle 层**，不再写 profile 级 patch：
@@ -1603,27 +1627,11 @@ PY
   fi
 fi
 
-# ── 4.5 zod bootstrap 兜底（正常情况下已被 1.5 覆盖；保留以应对手动 rsync）────
-# 主入口在 1.5 段（pre-plugin）。本段是冗余兜底，覆盖「步骤 2 同步 plugin 之后
-# 有人手动跑了 rsync 清掉 node_modules」之类的边角场景。
-# 见 install/agint-zod-bootstrap.sh。失败仅 warn，不阻断。
-if [ "$DRY_RUN" != "1" ]; then
-  if AGINT_PROFILE="$PROFILE_NAME" bash "$SCRIPT_DIR/agint-zod-bootstrap.sh" >/dev/null 2>&1; then
-    log "   ✓ zod bootstrap OK（post-plugin 兜底）"
-  else
-    warn "zod bootstrap 失败（agint-quality-* plugin 启动时会找不到 zod）。手动跑：AGINT_PROFILE=$PROFILE_NAME bash $SCRIPT_DIR/agint-zod-bootstrap.sh"
-  fi
-else
-  log "   ⊘ 跳过 zod bootstrap（dry-run）"
-fi
-
-# ── 4.6 mirror 解析卫兵复跑（与 1.45 同理：无 rsync 的机器整树换入会清掉）────
-# zod 是 1.5 主 + 4.5 兜底；mirror 三入口同理 1.45 主 + 4.6 复跑。幂等，已就绪即跳过。
-if [ "$DRY_RUN" != "1" ]; then
-  ensure_mirror_module_entry
-else
-  log "   ⊘ 跳过 mirror 解析卫兵复跑（dry-run）"
-fi
+# ── 4.5 / 4.6 已上移 ────────────────────────────────────────────────────────
+# 原 4.5（zod 兜底）与 4.6（mirror 解析卫兵复跑）于 2026-10-27 上移到 **2.7 段**
+# （步骤 2 同步之后、4d 冒烟之前）。原因：无 rsync 机器步骤 2 的 python 回退分支
+# 整树换入会清掉这两个 bootstrap 的产物，而原 4.5/4.6 排在 4d 冒烟的 die 之后，
+# 永远来不及补救 ⇒ quality 插件 import 冒烟必挂、安装必回滚。详见 2.7 段注释。
 
 # ── 4.55 zstd bootstrap（修复 agint-dream sweep ENOENT）─────────────────────
 # 背景：sweep.js 第 111 行用 `execFile('zstd', ...)` 读 session.jsonl.zstd。
