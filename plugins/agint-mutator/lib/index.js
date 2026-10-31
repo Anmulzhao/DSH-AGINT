@@ -1035,6 +1035,59 @@ function apply(ctx) {
     };
   }
 
+  /**
+   * `agint.mutator.getCommit({ commitId } | { proposalId }) → CommitView | null`
+   *
+   * 2026-10-31 新增。**只读查询**，不写表、不碰文件系统。
+   *
+   * ## 为什么是一个真服务键，而不是挂在 `commit` 上的属性
+   *
+   * 占位实现从来没存在过，但消费方（`agint-population` 的 fixate）一直按
+   * `typeof mutator.commit?.get === 'function'` 探测 —— 条件恒 false，于是那段
+   * 「hash 校验」静默跳过，测试还用 `commit: { get: fn }` 的假 mock 把它喂绿。
+   *
+   * 就算把 `get` 挂成函数属性，也**不修**这个问题：cordis 的 service store 是扁平的，
+   * 属性挂载在 `ctx.get('agint.mutator.commit')` 之后才存在，`check-wiring` 精确名字扫描
+   * 扫不到它、manifest 的 provides 也声明不了它 ⇒ 又一处门禁看不见的接口。
+   * 所以给它一个**真服务键**。
+   *
+   * ## 两种查询键都必须支持（这不是「顺手兼容」）
+   *
+   * driver 路径的顺序是 propose → validate → population.ingest → commit。
+   * `ingest` 发生在 commit **之前**，那一刻根本还没有 commitId，所以
+   * `variants.commit_id` 存的是 **proposalId**（population/lib/index.js:210/252）。
+   * 只支持按 commitId 查，等于让唯一的使用方永远查不到。
+   *
+   * ## 查不到返回 null，不抛
+   *
+   * 这不是 mutation 关键路径，是**取证查询**：ingest 早于 commit、commit 被 policy 拒、
+   * 记录被 prune —— 查不到都是正常情形。抛错会逼调用方写 try/catch 再吞掉，
+   * 那才是把「没有凭据」伪装成「有凭据」。
+   *
+   * @returns {Promise<null|{ok:true, commitId:string, proposalId:string, targetPath:string,
+   *   postimageHash:string, preimageHash:string, preimageContent:string, policyDecision:string,
+   *   committedAt:string, audit:object}>}
+   */
+  async function getCommit(input) {
+    const commitId = typeof input?.commitId === 'string' && input.commitId ? input.commitId : null;
+    const proposalId = typeof input?.proposalId === 'string' && input.proposalId ? input.proposalId : null;
+    if (!commitId && !proposalId) {
+      throw new Error('getCommit: 需要 commitId 或 proposalId（二者至少给一个）');
+    }
+    const rows = rowsOf(await t_commits());
+    // commitId 精确命中优先；否则按 proposalId 反查。同一 proposalId 理论上只有一条
+    // （commit() 要求 PENDING 才 commit，一次提案只能提交一次），多条时取最后写入的。
+    let entry = commitId
+      ? rows.find((e) => e.id === commitId)
+      : null;
+    if (!entry && proposalId) {
+      const hits = rows.filter((e) => e.proposalId === proposalId);
+      entry = hits.length ? hits[hits.length - 1] : null;
+    }
+    if (!entry) return null;
+    return { ok: true, ...unpackCommit(entry) };
+  }
+
   // ── Sprint 8 #5：3 条变异来源 Service + helpers（设计稿 §二.4） ──
   function softDepOrReturn(name) { const s = ctx && typeof ctx.get === 'function' ? ctx.get(name) : null; return { available: Boolean(s), service: s }; }
   async function degrade(source, reason, details) {
@@ -1108,6 +1161,9 @@ function apply(ctx) {
   // 只挂伞键会让 driver 侧永远拿到 undefined，然后走 recordExternalCommit unavailable 分支。
   ctx.provide('agint.mutator.recordExternalCommit', recordExternalCommit);
   ctx.provide('agint.mutator.rollback', rollback);
+  // 2026-10-31：只读凭据查询。占位实现 `commit.get` 从未存在过（见 getCommit 头注），
+  // 这里给真服务键 —— 属性挂载在扁平 service store 里不可发现、门禁也扫不到。
+  ctx.provide('agint.mutator.getCommit', getCommit);
   ctx.provide('agint.mutator.attributionDriven', attributionDriven);
   // B2：TOOL_SYNTHESIS ⇒ 合成器接线点。两个入口职责分开：
   //   synthPackage    直接吃 payload（供 driver / 薄壳在拿到设计时调用）
@@ -1184,6 +1240,7 @@ function apply(ctx) {
     commit,
     recordExternalCommit,
     rollback,
+    getCommit,
     attributionDriven,
     dreamRandom,
     evolutionReversed,

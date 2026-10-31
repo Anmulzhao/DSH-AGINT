@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-mutator",
-  "version": "0.6.12",
+  "version": "0.6.13",
   "description": "AGINT 变异构造器 v0.6.1：3 类变异（PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE，决策 D2 精简自原 5 类）+ 4 个 FROZEN Service（propose / validate / commit / rollback）+ 独立存储域 agint_mutator（三表 proposals 100 / commits 50 / findings 100）。Sprint 8 子任务 #2 仅交付骨架与 FROZEN schema，3 类 mutation 构造器 / validate 4 约束 / commit 沙箱闭环 / 3 条来源接口由子任务 #3-#5 接力。",
   "main": "lib/index.js",
   "agint": {
@@ -24,6 +24,7 @@
         "agint.mutator.validate",
         "agint.mutator.commit",
         "agint.mutator.rollback",
+        "agint.mutator.getCommit",
         "agint.mutator.attributionDriven",
         "agint.mutator.dreamRandom",
         "agint.mutator.evolutionReversed",
@@ -74,6 +75,7 @@
         "agint.mutator.validate": "校验 4 条硬约束（原子性 / 可证伪 / 必填 / payload 形态），写 findings 表",
         "agint.mutator.commit": "⚠️ write 路径**未启用**（生产零调用）：agint-evolution-driver 走自己的 commitToRepo + verifyTargetFile + policy，然后只调 recordExternalCommit 记账。本服务保留完整实现供 eval / 测试 / 将来统一用；报读 commit 索引请用 recordExternalCommit 写入的 commits 表。语义：进 agint-quality-sandbox verify 模式（决策 D3），D-QAF Phase 1-3 pass → 写 commits 表",
         "agint.mutator.rollback": "按 rollbackCondition 退回到 preimageHash（哈希链校验）",
+        "agint.mutator.getCommit": "只读凭据查询：按 commitId 或 proposalId（二者至少给一个）返回 commits 表一行；查不到返回 null 不抛错。\u26a0\ufe0f 只读 \u2014\u2014 \u4e0d\u505a hash \u6821\u9a8c\uff0c\u6bd4\u5bf9\u8bed\u4e49\u5728\u6d88\u8d39\u65b9\uff08\u82e5\u9700\u8981\uff0c\u5148\u7ed9 VariantSchema \u52a0 preimage_hash\uff09",
         "agint.mutator.attributionDriven": "归因定向变异来源：调 agint.diagnosis.annotate 拿 rootCause，路由到对应 kind 构造 proposal（缺/UNCERTAIN/抛错 → 降级 root-cause-uncertain）",
         "agint.mutator.dreamRandom": "梦境随机变异来源：种子化从 MUTATION_KINDS 抽 1-3 个 kind 各造 1 个 proposal（agint.dream 不可用 → 降级 dream-unavailable）",
         "agint.mutator.evolutionReversed": "进化记忆反向变异来源：failure_pattern 表命中 category ∈ {correctness, integration} → 逆向构造 payload（缺服务 / 0 匹配 → 降级 no-pattern-match）",

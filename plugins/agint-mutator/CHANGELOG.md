@@ -4,6 +4,54 @@
 
 ---
 
+## 0.6.13 (2026-10-31) — 新增只读 `getCommit`：补一个「消费方以为存在、其实从来没有」的接口
+
+**纯新增，零 schema / 零服务签名变更。**
+
+### 背景：一个存在性探测撑了三个月的假校验
+
+`agint-population` 的 `fixate` 一直这样写：
+
+```js
+if (typeof mutator.commit?.get === 'function') { … }   // 恒 false
+```
+
+`commit` 是裸 `async function commit(input)`，**没有 `.get` 属性**，全仓也没有 `getCommit`。
+于是那段注释里写着「hash 校验」的分支从未执行，测试用 `commit: { get: fn }` 的假 mock 把它喂绿。
+
+### 为什么给真服务键，而不是给 `commit` 挂一个 `.get`
+
+cordis 的 service store 是扁平的：属性挂载只有在 `ctx.get('agint.mutator.commit')` 之后才存在，
+`check-wiring` 的精确名字扫描扫不到它，manifest 的 `provides` 也无法声明它 ——
+等于再造一个**门禁看不见的接口**。所以用 `agint.mutator.getCommit`。
+
+### 为什么必须同时支持 `proposalId`
+
+driver 路径的顺序是 propose → validate → `population.ingest` → commit。
+`ingest` 在 commit **之前**发生，那一刻还没有 commitId，所以 `variants.commit_id`
+存的是 **proposalId**。只支持按 commitId 查，等于让唯一的使用方永远查不到。
+
+### 行为
+
+```
+agint.mutator.getCommit({ commitId } | { proposalId }) → CommitView | null
+```
+
+- 两个键至少给一个，都给时 `commitId` 优先，查不到再回落到 `proposalId`；
+  两个都不给 ⇒ 抛错（查询必须有键，不许退化成「返回全表」）。
+- **查不到返回 `null`，不抛**：ingest 早于 commit、被 policy 拒、记录被 prune 都是正常情形。
+  抛错会逼调用方 `try/catch` 再吞掉，等于又把「没有凭据」伪装成「有凭据」。
+- 只读：不写表、不碰文件系统、不做 hash 校验（比对语义在消费方，且需要
+  `VariantSchema` 先有 `preimage_hash` 字段 —— 见 population 0.6.6 的「未做」段）。
+
+### 验收
+
+`test/get-commit.test.mjs` 7 条：commitId 命中 / proposalId 反查 / 落回 / 查不到 null /
+缺键抛错 / **与 `recordExternalCommit` 双向对拍**（记账写进去的行必须读得回来）/
+伞键与平铺键是同一引用。mutator 全量 12 个文件 **158 用例全绿**。
+
+---
+
 ## 0.6.12 (2026-10-31) — 修 `table.entries()` 契约错配：状态机/唯一约束/回滚三处静默失效
 
 **这是一次纯 bugfix，零 schema / 零服务签名变更。**

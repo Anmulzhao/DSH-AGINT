@@ -4,7 +4,7 @@
 >
 > **版本**：v0.6.1（Sprint 8 子任务 #2，仅骨架 + FROZEN schema）
 > **存储域**：`agint_mutator`（独立于 `agint` / `agint_evolution` / `agint_diagnosis` / `agint_memory` / `agint_rules` / `agint_metrics`）
-> **Service 名**：`agint.mutator.propose` / `validate` / `commit` / `rollback`
+> **Service 名**：`agint.mutator.propose` / `validate` / `commit` / `rollback` / `getCommit`
 
 ---
 
@@ -55,6 +55,14 @@ agint.mutator.commit({ proposalId })
 agint.mutator.rollback({ commitId })
   → { ok: boolean, restoredHash }
 // 按 rollbackCondition 退回到 preimageHash（哈希链校验）
+
+agint.mutator.getCommit({ commitId } | { proposalId })
+  → CommitView | null
+// 只读凭据查询（2026-10-31 新增）。两个键至少给一个；commitId 优先，查不到再回落到 proposalId。
+// 查不到返回 null **不抛**（ingest 早于 commit 是正常情形）。
+// ⛔ 它是查询接口，不是校验接口：不做 hash 比对 —— 那需要消费方有可比的字段
+//    （variants 目前没有 preimage_hash）。此前 population 用 `mutator.commit?.get`
+//    探测一个从来不存在的属性，整段「hash 校验」静默跳过了三个月。
 ```
 
 **v0.6.1 当前状态**：4 个 Service 接口已注册，但实现全部抛 `Error('not implemented: … (sub-task #N)')`。子任务 #3-#5 接力时**不改签名**，只填充算法本体。
