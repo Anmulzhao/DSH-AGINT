@@ -179,6 +179,14 @@
           name: ./plugins/agint-event-bus/lib/index.js
           config: {}
 
+        # agint-update-check: 检测 AGINT 仓库远端最新状态，并询问用户是否更新 / 部署。
+        # 工具注册在 host 平面 ⇒ 任何 preset 的会话都能看到（与 agint-tool-stats 同机制）。
+        # ⛔ 冲突合并说明：178c3eb 原在此处加了 agint-tool-stats + agint-update-check 两条；
+        #   远端已在组内(8空格)挂载 agint-tool-stats，保留会重复挂载，故仅留本地独有的
+        #   agint-update-check，并修正其缩进为组内嵌套(原 178c3eb 写成 4 空格顶层，会跳出组)。
+        - id: agint-update-check
+          name: ./plugins/agint-update-check/lib/index.js
+          config: {}
 
         # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
         # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.

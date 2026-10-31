@@ -84,6 +84,7 @@
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
 | agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
+| agint-update-check | 0.1.0 | C | 更新检测与部署控制面（宿主运维外壳） |
 
 ### 2.1 挂载分组（2026-10-28）
 

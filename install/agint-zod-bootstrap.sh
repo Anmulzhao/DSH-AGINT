@@ -173,6 +173,12 @@ find_local_zod() {
     "${DSH_HOME:-$HOME/.dsh}/profiles/$AGINT_PROFILE/node_modules/zod"
     "$HOME/文档/claude-projects/openclaw/node_modules/zod"
     "$HOME/projects/Metaversefans/metaverse-fans-web/node_modules/zod"
+    # 2026-10-27 补源：Windows/桌面部署位上 dsh 把 zod 随 kernel 依赖树铺在
+    #   $DSH_HOME/.agint-deps/<runtime>/node_modules/zod；且本机已有的 BUNDLE_ZOD
+    #   （$DSH_HOME/.agint-bundle/node_modules/zod）也是一份有效 zod。原版只查
+    #   profiles/node_modules 与 macOS 的 ~/文档/~/projects，桌面部署位两头都不中
+    #   ⇒ 1.5 段找不到源而失败。补上这两个位置，桌面部署位即可自愈。
+    "${DSH_HOME:-$HOME/.dsh}/.agint-bundle/node_modules/zod"
   )
   for src in "${roots[@]}"; do
     if [ -f "$src/package.json" ] && [ -f "$src/index.js" ]; then
@@ -184,6 +190,20 @@ find_local_zod() {
       fi
     fi
   done
+  # 2026-10-27 补源：扫 $DSH_HOME/.agint-deps/*/node_modules/zod（kernel 依赖树必带
+  #   zod 4.x，且整树不随插件同步被清，是桌面部署位最稳的源）。
+  local d
+  if [ -d "${DSH_HOME:-$HOME/.dsh}/.agint-deps" ]; then
+    shopt -s nullglob
+    for d in "${DSH_HOME:-$HOME/.dsh}/.agint-deps"/*/node_modules/zod; do
+      if [ -f "$d/package.json" ] && [ -f "$d/index.js" ]; then
+        local vd
+        vd=$(python3 -c "import json; print(json.load(open('$(winpath "$d/package.json")'))['version'])" 2>/dev/null || echo "0")
+        case "$vd" in 4.*|3.*) echo "$d"; return 0 ;; esac
+      fi
+    done
+    shopt -u nullglob
+  fi
   local found
   found=$(find "$HOME/文档" "$HOME/projects" "$HOME/下载" \
     -path "*/node_modules/zod/package.json" 2>/dev/null \

@@ -1,0 +1,71 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-update-check",
+  "version": "0.1.0",
+  "description": "host 平面：检测 AGINT 仓库（DSH-AGINT）远端的最新状态 —— 落后多少提交、变了哪些文件、要不要重新部署与重启宿主 —— 并向用户询问是否更新与部署。提供 agint_update_check / agint_update_apply / agint_update_status 三个 model-visible 工具，外加 6 小时自持周期检查（发现更新就投递一条「要不要更新」）。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 1,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "tools"
+      ],
+      "optionalInject": [
+        "agents",
+        "timer"
+      ],
+      "provides": [],
+      "events": [],
+      "tools": [
+        "agint_update_check",
+        "agint_update_apply",
+        "agint_update_status"
+      ]
+    },
+    "storage": {
+      "domains": [],
+      "schemaVersion": 0,
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "mountOrder": 60,
+    "permissions": {
+      "env": [
+        "AGINT_REPO_ROOT",
+        "AGINT_HOME",
+        "DSH_HOME"
+      ],
+      "fs": [
+        "read:storages",
+        "write:storages"
+      ],
+      "network": [
+        "internet"
+      ],
+      "shell": true,
+      "_shellNote": "只 fork 两类可执行文件：git（读远端状态 / 快进合并）与 bash（跑 install/install.sh）。全部用 execFile + 参数数组，不过 shell 解释；不执行任何拼接用户输入的命令。git 参数只来自本插件常量与已校验的仓库路径。"
+    },
+    "lifecycle": {
+      "intervals": "must-dispose",
+      "listeners": "none",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {}
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}
