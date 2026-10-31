@@ -8,6 +8,8 @@
  *
  * 三查：
  *   A. 空壳服务  —— ctx.provide('agint.*') 注册了，但生产目录里没人 ctx.get 它
+ *   A2. 死方法   —— 命名空间有人取（伞键），但方法名在生产代码里从未以调用形态出现
+ *                   （2026-10-31 立；抓「以为通电实际没人跑」那一半 —— 见该段注释）
  *   B. 孤儿主题  —— 有订阅方、无发布方（或反之），且生产数据为 0
  *   C. 生产对账  —— 读真实事件存储，按 topic 计数，揭穿「代码有了但从未通电」
  *
@@ -25,10 +27,12 @@
  *   node bin/check-wiring.mjs --strict     NOT_YET_FIRED 也算失败
  *   node bin/check-wiring.mjs --static-only  静态模式：跳过查 E / 查 H（部署位相关）
  *                                            保留 A/B/C/D/F/G/I（设计 §5.2.2）
+ *   node bin/check-wiring.mjs --update-baseline  更新查 A2 的 DEAD_METHOD 基线
+ *                                            （唯一放行口：把当前死方法登记为「已认账」）
  *
  * 退出码：0 = 无缺口 / 1 = 有缺口 / 2 = 脚本自身出错
  */
-import { readFileSync, readdirSync, statSync, existsSync, writeSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +119,7 @@ const allFiles = walk(join(REPO_ROOT, 'plugins')).map((f) => ({
 // ─────────────────────────── 查 A：空壳服务 ───────────────────────────
 const provided = new Map(); // name -> [{file,line}]
 const consumed = new Map(); // name -> [{file,line}]
+const prodSources = []; // 查 A2 用：生产文件全文（已 stripComments）
 
 for (const { abs, rel } of allFiles) {
   // ⛔ provide 侧也必须过滤生产路径（2026-10-04 补）。
@@ -170,6 +175,9 @@ for (const { abs, rel } of allFiles) {
       addConsumed(m[1], rel, 0, 'inject', false);
     }
   }
+  // 查 A2 用：生产代码全文缓存（已 stripComments）。查 A 循环里顺手留一份，
+  // 避免第二次遍历磁盘 —— 也保证「判死用的文本」与「判消费用的文本」是同一份。
+  prodSources.push({ rel, code });
 }
 
 function addConsumed(name, file, line, via, hasFallback = false) {
@@ -213,6 +221,85 @@ for (const [name, regs] of [...provided].sort()) {
   const testOnly = (consumed.get(name) || []).filter((c) => !isProdPath(c.file));
   if (ev.level === 'NONE') shellServices.push({ name, registeredAt: regs, testOnlyCallers: testOnly });
   else weakServices.push({ name, registeredAt: regs, evidence: ev, level: ev.level });
+}
+
+// ─────────────────────── 查 A2：DEAD_METHOD（命名空间在，方法从没被碰）───────────
+/**
+ * 为什么需要这一查（2026-10-31 立，源自 mutator.commit 取证）：
+ *
+ *   查 A 只能判到「这个名字从没被 ctx.get / inject 提起」。但一个服务一旦被
+ *   **伞键**覆盖 —— driver 写 `ctx.get('agint.mutator')` 后调 `.propose()` ——
+ *   同命名空间下**所有**子键都被判成 `NAMESPACE_ONLY`（弱证据），而
+ *   `evidenceOf()` 明确「不判 FAIL」。于是：
+ *
+ *     · `agint.mutator` 命名空间 17 个服务里只有 3 条真 DIRECT；
+ *     · `agint.mutator.commit` 生产零调用三个月（driver 走自己的 commitToRepo），
+ *       commits 表靠另一条记账入口撑着，门禁一路全绿；
+ *     · 真正在跑的方法与从没被碰过的方法，在报告里长得一模一样。
+ *
+ *   ⇒ 「每加一个新子系统，以为通电实际没人跑的面积 +1」不是有人偷懒，
+ *     是判据在命名空间这一层**主动放弃了**。本查就是补上这一层。
+ *
+ * 判据（方向明确、宁漏勿错）：服务末段方法名必须在**生产代码**里以属性访问形态
+ *   出现过 —— `.commit(` / `.commit?.` / `['commit']`。一次都没出现 ⇒ DEAD_METHOD。
+ *   ⛔ 它是「有引用」的**下界**：证明不了真被调用（K64：有人喊≠有人应），
+ *      但能精确抓出「整块从没被碰过」—— 那正是查 A 看不见的那一半。
+ *      只在**零出现**时判死，避免把动态取用的活方法误判成尸体。
+ *
+ * 基线（docs/wiring-baseline.json）：存量死方法进基线、标 DEBT、不阻断；
+ *   **新增即 FAIL**。没有基线，第一次上线会一次冒出几十条，人就会把这条查静音 ——
+ *   等于没写。`--update-baseline` 是唯一放行口（= 承认这些死方法暂时留着）。
+ */
+const BASELINE_FILE = join(REPO_ROOT, 'docs', 'wiring-baseline.json');
+const UPDATE_BASELINE = argv.includes('--update-baseline');
+let deadBaseline = {};
+try {
+  deadBaseline = JSON.parse(readFileSync(BASELINE_FILE, 'utf8'))?.deadMethods ?? {};
+} catch {
+  // 允许缺失：首次生成前按空基线处理（此时所有存量死方法都算新增，正是要暴露的）
+  deadBaseline = {};
+}
+
+const deadMethods = [];
+for (const s of weakServices) {
+  if (s.level !== 'NAMESPACE_ONLY') continue;
+  const method = s.name.split('.').pop();
+  // 内部探针键（`_diagnosisCompletedObservationCount` 之类）不是对外方法，不适用
+  if (!method || method.startsWith('_')) continue;
+  // 判据是**调用形态**，不是「名字出现过」：
+  //   `.commit(` / `.commit?.(` / `['commit'](`
+  // ⛔ 为什么不能只判「出现」：`typeof mutator.commit?.get === 'function'` 这种**存在性探测**
+  //   会让一个死方法看起来像活的 —— 生产里边恰好有一处，而 commit.get 根本不存在
+  //   （population/lib/index.js:369，静默 no-op）。探测 = 「想知道有没有」，不是「用了」。
+  // ⛔ 正则里可选链是 `\??\.?`（问号**可选**）。写成 `\?\.?` 会变成「必须有个问号」——
+  //   第一版就这么错了：真调用 `mutator.propose(` 全部漏判，把 4 个活方法当成尸体。
+  const re = new RegExp(
+    `(?:\\.${method}\\s*\\??\\.?\\s*\\(|\\[\\s*['"\`]${method}['"\`]\\s*\\]\\s*\\()`,
+  );
+  const hit = prodSources.find((f) => re.test(f.code));
+  if (!hit) deadMethods.push({ name: s.name, method, registeredAt: s.registeredAt });
+}
+let deadAdded = deadMethods.filter((d) => !deadBaseline[d.name]);
+let deadKnown = deadMethods.filter((d) => deadBaseline[d.name]);
+const deadStale = Object.keys(deadBaseline).filter((n) => !deadMethods.some((d) => d.name === n));
+
+if (UPDATE_BASELINE) {
+  const next = {
+    $comment:
+      'check-wiring 查 A2 的 DEAD_METHOD 基线：registered 了、命名空间有人取、但方法名在生产代码里'
+      + '从未以属性访问形态出现。这里只放「已知且已认账」的存量；新增条目会让门禁 FAIL。'
+      + '删条目（或方法复活）会自动进 stale 提示 —— 请顺手更新，别让基线变成尸体登记簿。',
+    updatedAt: new Date().toISOString(),
+    deadMethods: Object.fromEntries(
+      deadMethods.map((d) => [d.name, { since: deadBaseline[d.name]?.since ?? new Date().toISOString().slice(0, 10), registeredAt: d.registeredAt.map((r) => `${r.file}:${r.line}`) }]),
+    ),
+  };
+  writeFileSync(BASELINE_FILE, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  console.log(`[check-wiring] 基线已更新：${BASELINE_FILE}（${deadMethods.length} 条 DEAD_METHOD）`);
+  // 更新后本次按「全部已认账」计：放行口只放这一次，下一次跑再新增就照旧 FAIL。
+  deadBaseline = next.deadMethods;
+  deadAdded = [];
+  deadKnown = deadMethods;
 }
 
 // ─────────────────────────── 查 B：主题发布/订阅 ───────────────────────────
@@ -804,6 +891,8 @@ const smokeIOk = smokeI.fail.length === 0;
 // ─────────────────────────── 输出 ────────────────────────────────────────
 const fails = [
   ...shellServices.filter((s) => !exempService.has(s.name)).map((s) => ({ kind: 'SHELL_SERVICE', name: s.name })),
+  // 查 A2：命名空间有人取、但方法名生产代码零出现 ⇒ 新增死方法。基线内的不算缺口（标 DEBT）。
+  ...deadAdded.map((d) => ({ kind: 'DEAD_METHOD', name: d.name })),
   ...topicRows
     .filter((r) => r.verdict === 'ORPHAN_TOPIC' || r.verdict === 'NO_SUBSCRIBER')
     .map((r) => ({ kind: r.verdict, name: r.topic })),
@@ -835,6 +924,12 @@ if (AS_JSON) {
           registeredAt: s.registeredAt,
           testOnlyCallers: s.testOnlyCallers,
         })),
+        deadMethods: {
+          added: deadAdded.map((d) => ({ name: d.name, registeredAt: d.registeredAt })),
+          baselined: deadKnown.map((d) => ({ name: d.name, registeredAt: d.registeredAt })),
+          stale: deadStale,
+          baselineFile: BASELINE_FILE,
+        },
         weakServices: weakServices.map((s) => ({
           name: s.name,
           level: s.level,
@@ -952,6 +1047,24 @@ if (mentioned.length) {
     const ev = s.evidence.calls[0];
     console.log(`  ${C.dim}MENTION ${s.name}  ← ${ev.file}:${ev.line}${C.r}`);
   }
+}
+
+console.log(`\n${C.b}── 查 A2：DEAD_METHOD（命名空间有人取，但方法名生产代码零出现）──${C.r}`);
+console.log(
+  `  ${C.dim}基线 ${Object.keys(deadBaseline).length} 条 / 命中 ${deadMethods.length} 条` +
+    `（新增 ${deadAdded.length}，已认账 ${deadKnown.length}，基线失效 ${deadStale.length}）${C.r}`,
+);
+for (const d of deadAdded) {
+  console.log(`  ${C.red}DEAD${C.r} ${d.name}  ${C.dim}注册于 ${d.registeredAt.map((r) => `${r.file}:${r.line}`).join(', ')}${C.r}`);
+}
+for (const d of deadKnown) {
+  console.log(`  ${C.yel}DEBT${C.r} ${d.name}  ${C.dim}（基线内，不阻断）${C.r}`);
+}
+for (const n of deadStale) {
+  console.log(`  ${C.dim}STALE ${n} —— 基线里有、本次没命中：要么方法被删，要么真被用起来了 ⇒ 请 --update-baseline 收缩${C.r}`);
+}
+if (deadAdded.length === 0) {
+  console.log(`  ${C.grn}无新增${C.r}：${deadKnown.length} 条存量死方法已进基线，新增会被这里拦住。`);
 }
 
 console.log(`\n${C.b}── 查 B/C：主题接线 × 生产数据 ──${C.r}`);
@@ -1085,7 +1198,7 @@ if (driftPlugins.size === 0) {
 }
 
 const modeSuffix = STATIC_ONLY ? '  [静态模式：查 E/H 已跳过]' : '';
-console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电 / ${unwiredReal.length} 插件总线零感知${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
+console.log(`\n${C.b}结论${C.r}: ${fails.length} 硬缺口 / ${soft.length} 未触发 / ${deadReal.length} 域从未通电 / ${unwiredReal.length} 插件总线零感知 / ${deadAdded.length} 新增死方法（存量 ${deadKnown.length} 已认账）${STATIC_ONLY ? '' : dupOk ? '' : ' / 双副本已走偏'}${STATIC_ONLY ? '' : driftOk ? '' : ' / 存在待上线改动'}${smokeIOk ? '' : ' / smoke 未过'}${modeSuffix}`);
 // 2026-10-19 修：末行的 PASS/FAIL 必须与退出码一致。此前 smoke 未过 / 双副本走偏 /
 // TS 漂移会让退出码 = 1，而末行照样打 PASS —— 读末行的人会以为门禁放行了。
 if (fails.length) console.log(`${C.red}FAIL${C.r} — ${fails.map((f) => `${f.kind}(${f.name})`).join(', ')}`);

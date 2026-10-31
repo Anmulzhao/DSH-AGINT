@@ -1,0 +1,85 @@
+{
+  "$comment": "check-wiring 查 A2 的 DEAD_METHOD 基线：registered 了、命名空间有人取、但方法名在生产代码里从未以属性访问形态出现。这里只放「已知且已认账」的存量；新增条目会让门禁 FAIL。删条目（或方法复活）会自动进 stale 提示 —— 请顺手更新，别让基线变成尸体登记簿。",
+  "updatedAt": "2026-10-31T11:20:13.351Z",
+  "deadMethods": {
+    "agint.diagnosis.checkLimit": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-diagnosis/lib/index.js:634"
+      ]
+    },
+    "agint.diagnosis.io": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-diagnosis/lib/index.js:638"
+      ]
+    },
+    "agint.diagnosis.limits": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-diagnosis/lib/index.js:635"
+      ]
+    },
+    "agint.eventBus.subscriptions": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-event-bus/lib/index.js:177",
+        "plugins/agint-event-bus/src/index.ts:133"
+      ]
+    },
+    "agint.mutator.attributionDriven": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1111"
+      ]
+    },
+    "agint.mutator.checkLimit": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1121"
+      ]
+    },
+    "agint.mutator.commit": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1104"
+      ]
+    },
+    "agint.mutator.dreamRandom": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1117"
+      ]
+    },
+    "agint.mutator.evolutionReversed": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1118"
+      ]
+    },
+    "agint.mutator.io": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1170"
+      ]
+    },
+    "agint.mutator.limits": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1122"
+      ]
+    },
+    "agint.mutator.synthPackage": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-mutator/lib/index.js:1115"
+      ]
+    },
+    "agint.qualityEvaluator.weights": {
+      "since": "2026-10-31",
+      "registeredAt": [
+        "plugins/agint-quality/agint-quality-eval/lib/index.js:584"
+      ]
+    }
+  }
+}
