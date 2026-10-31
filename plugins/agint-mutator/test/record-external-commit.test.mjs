@@ -51,8 +51,17 @@ function makeEnv() {
             // ⛔ size 必须给：recordExternalCommit 的 LIMITS 守门读 tC.size。
             // 缺 size ⇒ undefined >= cap 恒 false ⇒ 守门永不触发（与 eval 场景
             // service-annotations-table-full-throws 同根因的镜像版，见A4 归因报告）。
-            size: s.size,
-            entries: () => Array.from(s, ([id, v]) => ({ id, ...v })),
+            // 2026-10-31：改成 getter 复刻真实契约（KvTableImpl 的 size 是 getter，
+            // 构造时快照会掩盖「写入后 size 变大」）。
+            get size() { return s.size; },
+            // ⛔ 2026-10-31 契约修正：真实 `table.entries()` 返回 **`[key, value]` 元组迭代器**
+            // （dsh-storage-domain 0.2.1-rc.3 KvTableImpl:245），不是扁平 `{id, ...v}` 数组。
+            // 本 mock 原先返回扁平数组，于是「代码把元组当对象」被完美掩盖：
+            // Node 22 的 Iterator Helpers 让 `.find/.some` 在迭代器上存在且不抛，
+            // `e.id` 恒 undefined ⇒ 幂等恒失效、proposal 状态永不推进、rollback 恒查不到
+            // —— 生产 8 条 commit 配 8 条 PENDING proposal 就是这么来的。
+            // mock 必须复刻契约，否则等于在断言自己写的对象（K115）。
+            entries: () => [...s.entries()][Symbol.iterator](),
             put: async (id, v) => { s.set(id, v); },
             close: async () => {},
           };
@@ -127,6 +136,14 @@ test('闭环: recordExternalCommit 记账后，rollback 能把文件还原回 pr
     const rb = await env.services['agint.mutator.rollback']({ commitId: COMMIT_ID, repoRoot: env.workdir });
     assert.equal(rb.ok, true);
     assert.equal(readFileSync(abs, 'utf8'), PREIMAGE, 'rollback 后文件必须回到 preimage');
+
+    // ⛔ 2026-10-31：记账必须同时推进 proposal 状态。此前这条断言缺席，而实现里
+    //   `tP.entries().find(...)` 拿元组当对象用 ⇒ 恒 undefined ⇒ 记 reason
+    //   'proposal-absent' 后静默跳过，proposal 永远停在 PENDING（生产 8/8 全中）。
+    //   rollback 成功时会把状态改成 ROLLED_BACK，所以这里断言终态是 ROLLED_BACK
+    //   而不是 COMMITTED —— 前者证明「确实被推进过两次」，后者只能证明一次。
+    const stored = env.tables.proposals.get(PROPOSAL_ID);
+    assert.equal(stored.status, 'ROLLED_BACK', 'proposal 状态必须被真的推进（记账→COMMITTED，回滚→ROLLED_BACK）');
   } finally { env.cleanup(); }
 });
 

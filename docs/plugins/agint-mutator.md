@@ -45,6 +45,12 @@ agint.mutator.validate({ proposal })
 agint.mutator.commit({ proposalId })
   → { ok: boolean, commitId, postimageHash }
 // 进 sandbox verify（D3 默认 verify 模式），跑 D-QAF Phase 1-3，过 → 返回 commitId；失败 → 抛错
+// ⚠️ 2026-10-31：本服务的 **write 路径未启用**（生产零调用）。evolution-driver 走自己的
+//    commitToRepo（局部替换 + preimage 备份）→ verifyTargetFile → policy，然后只调
+//    recordExternalCommit 记账。commits 表因此由记账入口写入，rollback 读的也是同一张表。
+//    要改这条分叉，先解决两件事：deriveTargetPath 只认三种固定路径；driver 传的
+//    diffStrategy='unified_diff' 语义是整文件覆盖（会把 SKILL.md 覆盖成片段）。详见
+//    docs/known-limitations/evolution-main-chain-not-energized.md 的 2026-10-31 复核块。
 
 agint.mutator.rollback({ commitId })
   → { ok: boolean, restoredHash }

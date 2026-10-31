@@ -245,6 +245,25 @@ function apply(ctx) {
   const t_findings = () => table('findings');
   const t_metrics = () => table('metrics_log');
 
+  /**
+   * `table.entries()` 的真实契约是 **`[key, value]` 元组迭代器**，不是扁平对象流。
+   * 出处：`dsh-storage-domain` 的 `KvTableImpl.entries()`（0.2.1-rc.3，lib/index.js:245 –
+   * `return [...this.records.entries()][Symbol.iterator]()`）。
+   *
+   * ⛔ 2026-10-31 实测定性：Node 22 的 **Iterator Helpers** 让 `.find` / `.some` 在迭代器上
+   * 存在且**不抛错**，于是「把元组当对象用」成为纯静默错误 —— 回调里的 `e.id` 恒 undefined，
+   * 表现为「查不到 / 判不重 / 约束不触发」，而不是崩溃。四处后果全部静默了三个月：
+   *   ① `propose` 的 `uniq_atomicScope_pending` 恒不冲突（生产 8 条同 scope PENDING 并存）；
+   *   ② `commit()` 读不到 proposal ⇒ 恒抛「查不到」；
+   *   ③ `recordExternalCommit` 幂等恒失效，且 proposal 状态**永不推进**
+   *      （8 条 commit 对应 8 条 PENDING proposal 就是这么来的）；
+   *   ④ `rollback()` 查不到 commits 行 ⇒ A5 承诺的「driver 产出的 commit 可回滚」从未成立。
+   *
+   * 为什么一直绿：测试的假 ctx 让 `entries()` 返回扁平 `{id, ...v}` 数组 —— mock 复刻了
+   * 一个**不存在的契约**（K115）。所以修复必须同时改 mock，否则下一版又会被骗过去。
+   */
+  const rowsOf = (t) => [...t.entries()].map(([id, v]) => ({ id, ...v }));
+
   async function stats() {
     const p = await t_proposals(), c = await t_commits(), f = await t_findings(), m = await t_metrics();
     return {
@@ -361,7 +380,7 @@ function apply(ctx) {
     };
 
     // ── 8.5) 唯一索引校验（设计稿 §二.6 v2：atomicScope + status='PENDING' 不允许重复）
-    const existing = t.entries(); // 读 entries 是同步的（已在 table() 内同步）
+    const existing = rowsOf(t); // entries() 是 [key,value] 元组迭代器，必须解包（见 rowsOf 注）
     const conflict = checkPendingUnique(existing, business);
     if (conflict) {
       throw new Error(`propose: atomicScope='${business.atomicScope}' 已有 PENDING proposal（id=${conflict.conflict.existingId}）；同 scope 只允许 1 条 PENDING`);
@@ -607,7 +626,7 @@ function apply(ctx) {
 
     // ── 1) 读 proposal
     const tP = await t_proposals();
-    const proposals = tP.entries();
+    const proposals = rowsOf(tP);
     const proposalEntry = proposals.find((e) => e.id === proposalId);
     if (!proposalEntry) throw new Error(`commit: proposalId='${proposalId}' 在 proposals 表里查不到`);
     const proposal = unpackProposal(proposalEntry);
@@ -797,8 +816,9 @@ function apply(ctx) {
     if (!input.audit) throw new Error('recordExternalCommit: 缺 audit');
 
     const tC = await t_commits();
-    // 幂等：同 commitId 已记账则不重复写。
-    if (tC.entries().some((e) => e.id === input.commitId)) {
+    // 幂等：同 commitId 已记账则不重复写。⛔ 必须 rowsOf 解包：迭代器元素是 [key,value]，
+    //   直接 `.some(e => e.id === …)` 因 Iterator Helpers 不报错但恒 false（见 rowsOf 注）。
+    if (rowsOf(tC).some((e) => e.id === input.commitId)) {
       return { ok: true, commitId: input.commitId, recorded: false, reason: 'duplicate' };
     }
     if (tC.size >= LIMITS.COMMITS) {
@@ -841,7 +861,7 @@ function apply(ctx) {
     let proposalNote = null;
     try {
       const tP = await t_proposals();
-      const pe = tP.entries().find((e) => e.id === input.proposalId);
+      const pe = rowsOf(tP).find((e) => e.id === input.proposalId);
       if (!pe) {
         proposalNote = 'proposal-absent';
       } else {
@@ -887,7 +907,7 @@ function apply(ctx) {
 
     // ── 1) 从 commits 表查 commit 记录
     const tC = await t_commits();
-    const commitsList = tC.entries();
+    const commitsList = rowsOf(tC);
     const commitEntry = commitsList.find((e) => e.id === commitId);
     if (!commitEntry) throw new Error(`rollback: commitId='${commitId}' 在 commits 表里查不到`);
 
@@ -916,7 +936,7 @@ function apply(ctx) {
 
     // 查 proposal（决定 kind → 走 替换 / unlink 哪条路径）
     const tP = await t_proposals();
-    const proposalEntry = tP.entries().find((e) => e.id === commitEntry.proposalId);
+    const proposalEntry = rowsOf(tP).find((e) => e.id === commitEntry.proposalId);
     if (!proposalEntry) throw new Error(`rollback: proposalId='${commitEntry.proposalId}' 查不到（commit 残留？）`);
     const proposal = unpackProposal(proposalEntry);
 

@@ -31,7 +31,7 @@ function makeServices(opts = {}) {
       table: (name) => {
         const s = tables[name] || (tables[name] = new Map());
         return {
-          entries: () => Array.from(s, ([id, v]) => ({ id, ...v })),
+          entries: () => [...s.entries()][Symbol.iterator](),
           put: async (id, v) => { s.set(id, v); },
           close: async () => {},
         };
@@ -277,7 +277,7 @@ test('联动：validate happy path 不改 proposal.status（PENDING 保留）', 
   const tables = { proposals: new Map(), commits: new Map(), findings: new Map(), metrics_log: new Map() };
   const services = {};
   plugin.apply({
-    storageDomain: { open: async () => ({ table: (n) => { const s = tables[n] || (tables[n] = new Map()); return { entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }; } }) },
+    storageDomain: { open: async () => ({ table: (n) => { const s = tables[n] || (tables[n] = new Map()); return { entries: () => [...s.entries()][Symbol.iterator](), put: async (id, v) => { s.set(id, v); } }; } }) },
     get: (n) => {
       if (n === 'agint.diagnosis') return { annotate: async () => [], report: async () => ({}) };
       if (n === 'agint.evolution') return { queryFailures: async () => [] };

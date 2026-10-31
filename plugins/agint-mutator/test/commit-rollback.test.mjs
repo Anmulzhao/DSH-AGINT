@@ -87,7 +87,7 @@ function makeEnv({ sandboxOk = true, sandboxReason, policyDecision = 'AUTO_DEPLO
       table: (name) => {
         const s = tables[name] || (tables[name] = new Map());
         return {
-          entries: () => Array.from(s, ([id, v]) => ({ id, ...v })),
+          entries: () => [...s.entries()][Symbol.iterator](),
           put: async (id, v) => { s.set(id, v); },
           close: async () => {},
         };
@@ -348,7 +348,7 @@ test('commit 软依赖缺失抛错：agint.qualitySandbox=null 时 commit 不静
       table: (name) => {
         const s = tables[name] || (tables[name] = new Map());
         return {
-          entries: () => Array.from(s, ([id, v]) => ({ id, ...v })),
+          entries: () => [...s.entries()][Symbol.iterator](),
           put: async (id, v) => { s.set(id, v); },
           close: async () => {},
         };

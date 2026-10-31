@@ -74,7 +74,7 @@ function makeEnv({ commitSandboxOk = true, rollbackSmokeOk = true, rollbackSmoke
     storageDomain: { open: async () => ({
       table: (name) => {
         const s = tables[name] || (tables[name] = new Map());
-        return { entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); }, close: async () => {} };
+        return { entries: () => [...s.entries()][Symbol.iterator](), put: async (id, v) => { s.set(id, v); }, close: async () => {} };
       }, close: async () => {},
     }) },
     get: (n) => {

@@ -4,6 +4,55 @@
 
 ---
 
+## 0.6.12 (2026-10-31) — 修 `table.entries()` 契约错配：状态机/唯一约束/回滚三处静默失效
+
+**这是一次纯 bugfix，零 schema / 零服务签名变更。**
+
+### 根因
+
+`ctx.storageDomain` 的 `table.entries()` 返回的是 **`[key, value]` 元组迭代器**
+（`dsh-storage-domain` 0.2.1-rc.3，`KvTableImpl.entries()` 实现为
+`[...this.records.entries()][Symbol.iterator]()`），而本插件 6 处调用全部把它当
+**扁平对象流**用（`entries().find(e => e.id === …)`）。
+
+Node 22 的 **Iterator Helpers** 让 `.find` / `.some` 在迭代器上存在且**不抛错**，
+于是「把元组当对象」变成纯静默错误：回调里的 `e.id` 恒 `undefined`，
+表现为「查不到 / 判不重 / 约束不触发」，**没有任何异常**。
+
+### 四处后果（全部在生产里静默发生了）
+
+| 位置 | 症状 | 生产证据（2026-10-31 实读） |
+|---|---|---|
+| `propose` 的 `uniq_atomicScope_pending` | 同 `atomicScope` 的 PENDING 提案永不冲突 | `agint_mutator.proposals` 8 条**全是 `prompt/PENDING`** |
+| `commit()` 读 proposal | 恒抛「proposalId 查不到」 | `commit` 生产零调用，因此从未暴露 |
+| `recordExternalCommit` 幂等 + 状态推进 | 幂等恒失效；proposal 状态永不推进 | 8 条 commit 对应 8 条 **PENDING** proposal；`recorded` 一直为 true |
+| `rollback()` 查 commits / proposal | 恒抛「commitId 在 commits 表里查不到」 | **A5 承诺的「driver 产出的 commit 可回滚」从未成立** |
+
+### 改动
+
+1. 新增 `rowsOf(t)`（`lib/index.js`，紧邻 `t_*` 取表函数）：`[...t.entries()].map(([id, v]) => ({ id, ...v }))`，
+   6 处调用点全部改走它。
+2. **测试 mock 一并修正为真实契约**（8 个 `test/*.mjs`）：原 mock 让 `entries()` 返回
+   扁平 `{id, ...v}` 数组 —— mock 复刻了一个不存在的契约（K115），这正是这个 bug
+   绿了三个月的原因。`record-external-commit.test.mjs` 的 `size` 也由构造时快照改成 getter。
+3. 新增断言：记账 → 回滚闭环后 proposal 终态必须是 `ROLLED_BACK`
+   （一次推进到 COMMITTED、再一次到 ROLLED_BACK ⇒ 证明「确实被推进过」，而不是巧合）。
+
+### 验收
+
+- `test/*.mjs` 11 个文件全绿：**151 个用例**（commit-rollback 21 / sources 22 / validate 23 /
+  propose 18 / synth 16 / record-external-commit 13 / smoke 11 / rollback-transaction 10 /
+  v2-patch 8 / synth-l0-loop 5 / diagnosis-subscribe 4）。
+- `plugin-check agint-mutator` exit 0；L0 FROZEN 11 单元未变。
+
+### 存量数据（必须配套回填，否则修完反而堵死）
+
+修复后唯一约束**真的生效**，而存量 8 条 proposal 全是 `prompt/PENDING` ⇒ 下一次
+`propose({atomicScope:'prompt'})` 会被第一条僵尸挡住。这 8 条在 `commits` 表里都有
+对应 commit 且 `policyDecision=AUTO_DEPLOY` ⇒ 正确状态是 `COMMITTED`，回填后重启生效。
+
+---
+
 ## 0.6.11 (2026-10-27) — 删掉悬空的 `agint.eventBus.publish` 消费声明
 
 **纯声明清理，零代码改动。** `spec.cordis.consumes` 里的 `agint.eventBus.publish`

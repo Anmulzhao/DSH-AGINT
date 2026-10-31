@@ -22,7 +22,7 @@ function buildServices(opts = {}) {
   const subscribeArgs = [];
   const bus = opts.bus;
   plugin.apply({
-    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
+    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ entries: () => [...s.entries()][Symbol.iterator](), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
     get: (n) => {
       if (n === 'agint.eventBus.subscribe') {
         // bus 可用：返回一个捕获 handler 的 subscribe

@@ -112,7 +112,7 @@ test('storage spec: agint_mutator 域 + 4 表 + checkLimit + pack/unpack round-t
 function buildServices(opts = {}) {
   const services = {}, disposers = [];
   plugin.apply({
-    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ get size() { return s.size; }, entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
+    storageDomain: { open: async () => { const s = new Map(); return { table: () => ({ get size() { return s.size; }, entries: () => [...s.entries()][Symbol.iterator](), put: async (id, v) => { s.set(id, v); } }), close: async () => {} }; } },
     get: (n) => opts.softDeps?.[n] || null,
     provide: (n, f) => { services[n] = f; },
     effect: (d) => { disposers.push(d); return () => {}; },

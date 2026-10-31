@@ -10,7 +10,7 @@ function buildEnv({ deps = null } = {}) {
   const services = {};
   plugin.apply({
     storageDomain: { open: async () => ({
-      table: (n) => { const s = tables[n] || (tables[n] = new Map()); return { entries: () => Array.from(s, ([id, v]) => ({ id, ...v })), put: async (id, v) => { s.set(id, v); } }; },
+      table: (n) => { const s = tables[n] || (tables[n] = new Map()); return { entries: () => [...s.entries()][Symbol.iterator](), put: async (id, v) => { s.set(id, v); } }; },
       close: async () => {},
     }) },
     get: (n) => (deps === null ? null : (n === 'agint.diagnosis' ? deps.diagnosis : n === 'agint.dream' ? deps.dream : n === 'agint.evolution' ? deps.evolution : null)),
