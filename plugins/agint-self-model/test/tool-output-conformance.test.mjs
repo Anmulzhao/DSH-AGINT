@@ -26,6 +26,29 @@
  *
  * Run with: node --test plugins/agint-self-model/test/tool-output-conformance.test.mjs
  *           （cwd = 仓库根 D:\DSH\project源码\DSH-AGINT）
+ *
+ * ---------------------------------------------------------------------
+ * 本文件同时是「仓级 execute() 运行时返回值 vs output.schema 护栏」的**样板**
+ * （提案 1255b37a 后续动作第 1 条：把本文件的模式抄给其余 24 个工具模块）。
+ * 抄写时必须满足：
+ *
+ *   ① 每个模块配**该模块真实形状**的服务替身（fixture），不得使用「对任何服务
+ *      返回 []」的通用桩 —— 已实测通用桩会把已证清白的 selfModel_snapshot /
+ *      stats / inspectSummary 也标红（假红），等于装一个「上线即红/随机红」的
+ *      门禁，比没有门禁更坏。
+ *   ② 每模块至少一条**否定对照**：同一 schema 下喂一个必然违规的值，断言
+ *      validateJsonSchemaValue 返回非空违规数组、且 assertConforms 抛错，
+ *      以证明该模块的护栏不是空转。
+ *   ③ 正向用例必须走到**非空**分支（空分支会假绿）。
+ *   ④ 断言口径固定为 validateJsonSchemaValue(tool.output.schema,
+ *      await tool.execute(...)) 返回空数组；对 raw schema 不得再过
+ *      valueSchemaSpecToJsonSchema（见上）。
+ *
+ * 中期（仓级门禁，第 2 条）目标文件：bin/check-tool-output-runtime.mjs —— 判据复用
+ * 宿主 @deepseek-ai/dsh-tools 的 validateJsonSchemaValue，做成「逐模块提供 fixture」
+ * 的注册表（不是通用桩），并接进 bin/plugin-check.sh（接入前先测耗时）。
+ * 准入项文案（第 4 条）落在 wiki/插件准入-10维度.md：「工具 execute() 返回值必须过
+ * 自己的 output.schema」。
  */
 
 import { test } from 'node:test';
