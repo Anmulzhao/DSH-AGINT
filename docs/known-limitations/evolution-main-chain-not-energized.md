@@ -21,9 +21,35 @@
 > 只能从「改动落盘」反推它**不是** REJECT/ABSTAIN，**是 AUTO_DEPLOY 还是 PENDING_REVIEW 未取证**。
 > 这属于可观测性缺口，已记在下方待办。
 >
-> ⚠️ 另：`mutator.commit` 至今 `commits=0` 且**全仓仍无调用点**。本条通电**不代表** A 方案
+> ⚠️ 另：`mutator.commit` 至今**全仓仍无生产调用点**。本条通电**不代表** A 方案
 > （统一到 mutator.commit）已完成 —— 它需要给 FROZEN 的 `PromptMutationPayloadSchema` 加
 > `targetPath`，触发 L0 变更（人类多签 + 7 天影子 + major 版本），**未做**。
+>
+> ### 2026-10-31 复核：真正的问题不在「没人调 commit」，而在它旁边的状态机被契约错配废掉了
+>
+> 顺着「commit 零调用」往下查，查出三个此前没人写下来的事实：
+>
+> 1. **`table.entries()` 返回 `[key,value]` 元组迭代器**（`dsh-storage-domain` 0.2.1-rc.3
+>    `KvTableImpl.entries()`），而 mutator 6 处当扁平对象用。Node 22 的 Iterator Helpers
+>    让 `.find/.some` 在迭代器上**存在且不抛** ⇒ `e.id` 恒 undefined ⇒ 全部静默。
+>    ⇒ `propose` 的唯一约束、`recordExternalCommit` 的幂等与**状态推进**、`rollback` 的
+>    两次查表，四个功能一起失效；A5（2026-10-03）那句「driver 产出的 commit 从此可被
+>    `mutator.rollback` 回滚」**从未成立**。已修（mutator 0.6.12），并同步把 8 个测试文件的
+>    mock 改成真实契约 —— 原 mock 返回扁平数组，正是它让这个 bug 绿了三个月（K115）。
+> 2. **存量 8 条 proposal 全部停在 `PENDING`**（尽管 `commits` 表里 8 条一一对应、
+>    全 `AUTO_DEPLOY`）。修复后唯一约束真的会拦，故已按 `commit.policyDecision` 回填为
+>    `COMMITTED` 并重启生效（2026-10-31，8/8；备份 `/tmp/agint_mutator.before-backfill.json`）。
+> 3. **门禁此前看不见这类问题**：`check-wiring` 的查 A 只判到「名字有没人提」，一旦被
+>    伞键 `ctx.get('agint.mutator')` 覆盖就落 `NAMESPACE_ONLY`、**不判 FAIL**。
+>    已新增**查 A2 DEAD_METHOD**（只认调用形态，不认名字出现过）+ `docs/wiring-baseline.json`
+>    ratchet，存量 13 条认账、新增即红。
+>
+> **因此对 A 方案的判断随之改变**：`mutator.commit` 的边际收益比 2026-09-29 那次评估时更小
+> —— 记账、可回滚凭据、写入后验证（`verifyTargetFile` 比 `runSandbox` 更准）driver 都有了，
+> 只剩「提案状态机 + `metrics_log`」两样；而接过去仍要解决 `deriveTargetPath` 只认三种固定
+> 路径（实测 8 条 commit 目标 **0 条**算得对）与 `diffStrategy` 语义（driver 传
+> `unified_diff` = 整文件覆盖，8/8 全是该值，直接接会整份覆盖 SKILL.md）。故维持 B 方案，
+> 并把「`mutator.commit` 的 write 路径未启用」写进 manifest 描述，避免下一个人以为它在跑。
 
 ## 📌 三轮实跑踩到的坑（全部是「单测全绿也照样漏掉」的真实案例）
 
