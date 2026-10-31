@@ -118,6 +118,11 @@
 - **不满足**：
   - 缺 `provides`：挂载成功但 model 完全看不到它的能力（僵尸插件）
   - 缺 `inject`：硬依赖会永远 pending，调度不起来
+  - ⛔ **manifest 的 `inject` / `optionalInject` 只是文档**：cordis 真正注入什么，
+    只看 `lib/index.js` 模块 export 的 `inject`。两处不一致时以代码为准 —— 2026-10-31
+    `agint-update-check` 0.1.0 就死在「manifest 写了 optionalInject: timer，代码里
+    却访问 `ctx.setInterval`（timer 服务的糖）」⇒ `cannot get property "timer" without inject`
+    ⇒ 整个插件条目 `did not activate`，三个工具一起消失，日志只有一行 warning。
 
 ### 2. Storage
 - **为什么**：`agint-memory` 独占 `agint` 域，`agint-rules` 独占 `agint_rules`——互斥关系靠人手维护，上次 `agint-evolve` 写入 `agint_evolution` 时差点撞 `agint-evolution-memory`
@@ -134,6 +139,9 @@
 ### 5. Lifecycle
 - **为什么**：上次重启崩的部分原因就是 in-flight `setInterval` 被 SIGKILL 截断，没有 disposer 触发清理。`agint-cron` 已经做了（`ctx.effect(() => tickHandle.dispose)`）但其它插件不一定
 - **不满足**：graceful 重启变 SIGKILL 强杀，jsonl 截断、timer 泄漏
+- **建议**：要跑周期任务用 Node 原生 `setInterval` + `ctx.effect(() => () => clearInterval(h))`
+  （再 `h.unref()` 不 hold 进程退出）。`ctx.setInterval` 是 `cordis-plugin-timer` 的糖，
+  内部依赖 `ctx.timer` ⇒ 必须在 `inject` 里声明 `timer` 才能用，否则整条插件不激活。
 
 ### 6. Tests
 - **为什么**：插件挂上去没人验证就敢跑，等于在生产裸奔
