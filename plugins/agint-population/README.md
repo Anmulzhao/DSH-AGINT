@@ -141,7 +141,7 @@ FROZEN_OBSERVE --1世代后fitness≥0.9x-> 重新进入 Ingest 队列
 **硬依赖**：`storageDomain`（cordis 装载）
 
 **软依赖**（manifest 声明 + 用 `ctx.get()` 取，缺则降级）：
-- `agint.mutator` — `commit.get()` / `rollback()`（D11 强制调）/ `dreamRandom()`（多样性注入）
+- `agint.mutator` — `getCommit()`（固化凭据：commitId + preimageHash）/ `rollback()`（D11 强制调）/ `dreamRandom()`（多样性注入）
 - `agint.qualityPolicy` — `decide()`（Ingest Policy Gate）
 - `agint.memory` — `write()`（notify：fixate 成功后落一条 decision，2026-10-05 实装）
 - `agint.evolution` — `addFailure()`（写 failure_pattern — cull/rollback 强制）

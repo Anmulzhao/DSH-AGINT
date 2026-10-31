@@ -4,6 +4,49 @@
 
 ---
 
+## 0.6.6 (2026-10-31) — fixate 的「hash 校验」是装饰：改用真服务 `mutator.getCommit` 记凭据
+
+**纯接线修正，零 FROZEN schema 变更。**
+
+### 原来那段是三处都对不上
+
+```js
+if (mutator && typeof mutator.commit?.get === 'function') {   // ① 服务不存在
+  commitInfo = await mutator.commit.get({ commitId: v.commit_id });  // ② 键也不对
+}
+...
+writeTrafficLog(..., { commit: commitInfo?.preimageHash || null });  // ③ 拿 hash 当 commit 号
+```
+
+1. `mutator.commit` 是**裸函数**，没有 `.get` 属性，全仓也没有 `getCommit` ⇒ 条件恒 `false`，
+   整段静默跳过。测试还用 `commit: { get: fn }` 的假 mock 把它喂绿（K115）。
+2. `variants.commit_id` 存的是 **`proposal.id`**（ingest 发生在 commit **之前**），
+   按 `commitId` 查永远查不到。
+3. `VariantSchema`（FROZEN）**没有 `preimageHash` 字段** ⇒ 没有可比对的另一方；
+   而且拿到的值只写进 traffic log 与记忆文案，**全文没有一次 `if` 比较**。
+   ⇒ 它不是校验，是装饰。
+
+### 改动
+
+- 改调真服务 `agint.mutator.getCommit({ proposalId: v.commit_id })`（mutator 0.6.13 新增）。
+- traffic log 的 `FIXATE` 行改为 `{ commit: commitId | null, proposalId, preimageHash: … | null }`
+  —— ⛔ 不再拿 `preimageHash` 当 commit 号，也不拿 proposalId 冒充 commitId。
+- 记忆文案：`commit <commitId | 'unavailable'>，proposal <proposalId>`。
+- 服务在但查不到时**不阻止固化**（它只是记录，不是闸门），`commitInfo` 如实为 `null`。
+
+### 未做（需要动 FROZEN schema，另立一批）
+
+「preimage 不符 ⇒ 拒绝固化」：要先给 `VariantSchema` 加 `preimage_hash`、并处理存量
+variant 的空值。现在没有这个字段，任何「校验」都只能是假的。
+
+### 验收
+
+- `test/services.test.mjs` 21 条（含新增「查不到凭据 → 仍固化且 commitInfo=null」）
+- `test/e2e.mjs` 7 条（断言改的是**入参**：必须传 `proposalId`，不是 `commitId`）
+- 其余 5 个测试文件不变：fitness 13 / ingest-rules 15 / smoke 5 / states 19 / storage-and-policy 10
+
+---
+
 ## 0.6.4 (2026-10-06) — recordFailurePattern 假成功修复（立项 B-2）
 
 - 旧写法 `id: evo.addFailure(...)` 未 await：`written:true` + `id=Promise`（恒 truthy）

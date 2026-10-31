@@ -96,7 +96,7 @@ async function recordFailurePattern(ctx, payload, tags) {
  *  - 只写事实（variant / commit / 被冻结的同 scope 对手），不写评价 —— 评价归 quality-eval。
  * @param {object} ctx - cordis context
  * @param {object} updated - 固化后的 variant 行（含 variant_id / commit_id / fixed_at）
- * @param {object|null} commitInfo - mutator.commit.get() 的返回（hash 校验证据）
+ * @param {object|null} commitInfo - mutator.getCommit() 的返回（固化凭据：commitId + preimageHash）
  * @param {string[]} frozenIds - 本次被置为 FROZEN_OBSERVE 的同 scope 变体
  * @returns {Promise<{written:boolean, id?:string, reason?:string}>}
  */
@@ -110,8 +110,10 @@ async function notifyFixateMemory(ctx, updated, commitInfo, frozenIds) {
     const rec = await mem.write({
       id,
       type: 'decision',
-      content: `变体 ${updated.variant_id} 固化为 baseline（commit ${commitInfo?.preimageHash || updated.commit_id}）；`
-        + `同 scope 冻结 ${frozenIds.length} 个：${frozenIds.join(', ') || '无'}`,
+      // ⛔ 不拿 preimageHash 当 commit 号（此前写的就是 `commitInfo?.preimageHash || commit_id`，
+      //   于是记忆里那个 "commit" 有时是 hash、有时是 proposalId，两种都不是 commitId）。
+      content: `变体 ${updated.variant_id} 固化为 baseline（commit ${commitInfo?.commitId || 'unavailable'}，`
+        + `proposal ${updated.commit_id}）；同 scope 冻结 ${frozenIds.length} 个：${frozenIds.join(', ') || '无'}`,
       level: 'L2',
       confidence: 1,
       evidence: `population.fixate variant_id=${updated.variant_id} fixed_at=${updated.fixed_at}`,
@@ -351,7 +353,7 @@ function apply(ctx) {
     return { variant: unpackVariant(updated), rollback: rollbackResult, rollbackError: rollbackError?.message || null, failurePattern: fp };
   }
 
-  // ── Service: fixate（hash 校验 + baseline 更新 + 同 scope 其余 → FROZEN_OBSERVE）──
+  // ── Service: fixate（取固化凭据 + baseline 更新 + 同 scope 其余 → FROZEN_OBSERVE）──
   async function fixate(input) {
     const parsed = FixateInputSchema.safeParse(input || {});
     if (!parsed.success) throw new Error(`fixate: invalid input: ${parsed.error.issues[0]?.message}`);
@@ -360,14 +362,26 @@ function apply(ctx) {
     const tv = await t_variants();
     const v = findVariant(tv, variant_id);
     if (!v) throw new Error(`fixate: variant_id=${variant_id} 不存在`);
-    if (v.stage !== 'FULL') throw new Error(`fixate: variant 必须已到 FULL stage，当前 stage=${v.stage}`);
+    if (v.stage !== 'FULL') throw new Error(`fixate: variant 必须已到 FULL 阶段，当前 stage=${v.stage}`);
     if ((v.consecutive_pass || 0) < cfg.fixation_periods) throw new Error(`fixate: consecutive_pass ${v.consecutive_pass} < fixation_periods=${cfg.fixation_periods}`);
 
-    // ── hash 校验：从 mutator.commit.get() 拉 preimageHash 与 variants 的 preimageHash 对比
+    // ── 取固化凭据（2026-10-31 修正）
+    //
+    // 这里此前写的是「hash 校验：从 mutator.commit.get() 拉 preimageHash 与 variants 的
+    // preimageHash 对比」，三处都对不上：
+    //   ① `mutator.commit.get` **从来不存在**（commit 是裸函数，没有 .get 属性），
+    //      `typeof … === 'function'` 恒 false ⇒ 整段静默跳过；
+    //   ② 就算存在，传的键也不对 —— `variants.commit_id` 存的是 **proposalId**
+    //      （ingest 发生在 commit 之前，见本文件 :210/:252），按 commitId 查永远查不到；
+    //   ③ `VariantSchema`（FROZEN）**没有 preimageHash 字段**，没有可比对的另一方；
+    //      而且拿到的值只被写进 traffic log 与记忆文案，全文没有一次 if 比较。
+    // ⇒ 它不是校验，是装饰。现在改成**如实记录凭据**：拿到就记 commitId + preimageHash，
+    //    拿不到就记 null（并且不假装有）。真做「不符即拒绝」要先给 FROZEN 的
+    //    VariantSchema 加 preimage_hash 并处理存量空值 —— 那是另一批，不在本次。
     const mutator = softDep(ctx, 'agint.mutator');
     let commitInfo = null;
-    if (mutator && typeof mutator.commit?.get === 'function') {
-      try { commitInfo = await mutator.commit.get({ commitId: v.commit_id }); }
+    if (mutator && typeof mutator.getCommit === 'function') {
+      try { commitInfo = await mutator.getCommit({ proposalId: v.commit_id }); }
       catch (err) { commitInfo = { error: err.message || String(err) }; }
     }
 
@@ -390,7 +404,14 @@ function apply(ctx) {
     }
 
     const tl = await t_log();
-    await writeTrafficLog(ctx, tl, v.variant_id, v.traffic_pct, 100, 'FIXATE', { commit: commitInfo?.preimageHash || null });
+    // 记**凭据**：commitId 为 null 表示「这次固化没有可查的 commit 行」（proposal 未提交 /
+    // 被 prune），preimageHash 一并留档供日后对拍。⛔ 不拿 proposalId 冒充 commitId ——
+    // 两者不是同一个东西，混填会让「拿 commitId 去 rollback」永远失败且查不出原因。
+    await writeTrafficLog(ctx, tl, v.variant_id, v.traffic_pct, 100, 'FIXATE', {
+      commit: commitInfo?.commitId || null,
+      proposalId: v.commit_id,
+      preimageHash: commitInfo?.preimageHash || null,
+    });
 
     // notify 只在固化已成功之后。它自己吞错、不参与结果判定：固化已落库，记忆补写是事后的事。
     const frozenIds = competitors.map((c) => c.variant_id);

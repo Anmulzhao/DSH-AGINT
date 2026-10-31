@@ -73,13 +73,20 @@ test('E2E 场景1: baseline + 定向变异 + 随机变异 Ingest → Evaluate �
 
 // ── 场景 2: 连续 3 周期达标 → Fixate ──────────────────────────────
 
-test('E2E 场景2: 阶梯晋升至 FULL + fixate(hash 校验 + baseline 更新)', async () => {
-  let commitGetCalled = 0;
+test('E2E 场景2: 阶梯晋升至 FULL + fixate(取固化凭据 + baseline 更新)', async () => {
+  // 2026-10-31：原先 mock 的是 `commit: { get: fn }` —— 一个**生产里不存在**的形状
+  // （mutator 的 commit 是裸函数，没有 .get 属性），于是这段「hash 校验」被喂绿了三个月。
+  // 现在按真服务键 `getCommit` 造 mock，并且**记录入参**：只断言「被调用」是不够的，
+  // 要断言它拿的是 proposalId（variants.commit_id 存的是 proposalId，不是 commitId）。
+  const commitGetCalls = [];
   const memWrites = [];
   const ctx = setup({
     'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) },
     'agint.mutator': {
-      commit: { get: async () => { commitGetCalled++; return { preimageHash: 'h-fixate' }; } },
+      getCommit: async (input) => {
+        commitGetCalls.push(input);
+        return { ok: true, commitId: 'c-fixate', proposalId: input.proposalId, preimageHash: 'h-fixate' };
+      },
       rollback: async () => ({ ok: true, restoredHash: 'h' }),
     },
     // W3 接线（2026-10-05）：fixate 成功后落一条 decision 记忆（README 软依赖表里的 write() notify）
@@ -98,12 +105,14 @@ test('E2E 场景2: 阶梯晋升至 FULL + fixate(hash 校验 + baseline 更新)'
   const fr = await ctx._providers['agint.population.fixate']({ variant_id: v.variant_id });
   assert.equal(fr.variant.stage, 'FIXED');
   assert.ok(fr.variant.fixed_at);
-  assert.equal(commitGetCalled, 1, 'mutator.commit.get 应被调一次做 hash 校验');
+  assert.equal(commitGetCalls.length, 1, 'fixate 应调一次 mutator.getCommit 取固化凭据');
+  assert.equal(commitGetCalls[0].proposalId, v.commit_id,
+    '⭐ 必须按 proposalId 查：variants.commit_id 存的是 proposalId（ingest 早于 commit），按 commitId 查永远查不到');
   assert.equal(fr.memory.written, true, 'fixate 应调 agint.memory.write 落 notify');
   assert.equal(memWrites.length, 1, '一次固化只落一条记忆');
   assert.equal(memWrites[0].type, 'decision', '固化是决策留痕，不是 lesson/pattern');
   assert.ok(memWrites[0].content.includes(v.variant_id), 'notify 内容要能定位到被固化的变体');
-  assert.ok(memWrites[0].content.includes('h-fixate'), 'notify 要带 hash 校验拿到的 preimageHash');
+  assert.ok(memWrites[0].content.includes('c-fixate'), 'notify 要带真实 commitId（⛔ 不是 preimageHash，也不是 proposalId）');
   assert.equal(memWrites[0].id, `population-fixate-${v.variant_id}`, 'id 必须稳定 ⇒ 重复固化走 write 的 upsert，不堆同义条目');
 });
 

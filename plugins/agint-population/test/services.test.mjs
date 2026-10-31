@@ -257,12 +257,16 @@ test('rollback: 已 ROLLED_BACK 状态再 rollback → 抛错', async () => {
 
 // ── Fixate: 阶梯满 + consec_pass ≥ fixation_periods → FIXED ─────────
 
-test('fixate: 必需 stage=FULL + consec_pass≥3 + 调 mutator.commit.get', async () => {
-  const commitGetCalled = { v: 0 };
+test('fixate: 必需 stage=FULL + consec_pass≥3 + 按 proposalId 调 mutator.getCommit', async () => {
+  // 2026-10-31：mock 从 `commit: { get }`（生产里不存在的形状）改成真服务键 getCommit。
+  const commitGetCalls = [];
   const ctx = setupCtx({
     'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) },
     'agint.mutator': {
-      commit: { get: async () => { commitGetCalled.v++; return { preimageHash: 'h-fixate' }; } },
+      getCommit: async (input) => {
+        commitGetCalls.push(input);
+        return { ok: true, commitId: 'c-fixate', proposalId: input.proposalId, preimageHash: 'h-fixate' };
+      },
     },
   });
   // 直接构造一个 FULL + consec_pass=3 的 variant：手动 put 进 storage
@@ -283,7 +287,25 @@ test('fixate: 必需 stage=FULL + consec_pass≥3 + 调 mutator.commit.get', asy
 
   const fr = await ctx._providers['agint.population.fixate']({ variant_id: v.variant_id });
   assert.equal(fr.variant.stage, 'FIXED');
-  assert.equal(commitGetCalled.v, 1, 'mutator.commit.get 应被调用做 hash 校验');
+  assert.equal(commitGetCalls.length, 1, 'fixate 应调一次 mutator.getCommit');
+  assert.equal(commitGetCalls[0].proposalId, v.commit_id,
+    '⭐ 传的必须是 proposalId：variants.commit_id 存的是 proposalId，按 commitId 查永远查不到');
+  assert.equal(fr.commitInfo?.commitId, 'c-fixate', 'fixate 返回值要带回真实 commitId 凭据');
+});
+
+test('fixate: 查不到 commit 凭据 → 仍固化，commitInfo 为 null（⛔ 不拿 proposalId 冒充）', async () => {
+  const ctx = setupCtx({
+    'agint.qualityPolicy': { decide: async () => ({ decision: 'AUTO_DEPLOY' }) },
+    // 服务在、但查不到（ingest 早于 commit 的正常情形）
+    'agint.mutator': { getCommit: async () => null },
+  });
+  const v = await ctx._providers['agint.population.ingest']({ proposal: makeProposal() });
+  await ctx._providers['agint.population.recordEvaluation'](v.variant_id, { success_rate: 0.85, error_rate: 0.05, latency_p99: 5000, token_cost: 100, safety_violations: 0, user_satisfaction: 4.0, sample_count: 100 });
+  for (let i = 0; i < 4; i++) await ctx._providers['agint.population.promote']({ variant_id: v.variant_id });
+
+  const fr = await ctx._providers['agint.population.fixate']({ variant_id: v.variant_id });
+  assert.equal(fr.variant.stage, 'FIXED', '没有 commit 凭据不该阻止固化 —— 它只是记录，不是闸门');
+  assert.equal(fr.commitInfo, null, '查不到就是 null；不许回落成 proposalId 假装有凭据');
 });
 
 test('fixate: stage != FULL → 抛错', async () => {
