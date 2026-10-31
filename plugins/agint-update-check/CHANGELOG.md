@@ -1,5 +1,27 @@
 # Changelog — agint-update-check
 
+## v0.1.1 (2026-10-31) — 修「插件条目 did not activate」：不再访问未注入的 timer
+
+**症状**：宿主启动日志一行 `dsh: warning: 1 entry did not activate` +
+`agint-update-check (...): Error: cannot get property "timer" without inject`，
+界面上这个插件显示「失败」，三个工具全部不可用（但其余插件照常，很容易被忽略）。
+
+**根因**：定时器分支写了 `ctx.setInterval(...)`。它是 `cordis-plugin-timer` 提供的糖，
+内部转 `ctx.timer` —— 而 timer 只是 manifest 的 `optionalInject` 里写了，
+**真正生效的是 lib/index.js 模块导出的 `inject` 数组**（本插件只有 `['tools']`）。
+manifest 的 optionalInject 纯属文档，不会给 ctx 接服务 ⇒ 访问即抛。
+
+**修法**：不用 `ctx.setInterval`，改 Node 原生 `setInterval` + `ctx.effect` 注册
+`clearInterval` disposer（`unref()` 让周期检查不 hold 进程退出）。与 agint-restart 同款，
+零宿主服务依赖。
+
+**测试补强**：新增 `strictCtx`（Proxy 复刻 cordis gate：只有作用域内服务可访问，
+其它属性名一读就按宿主原文抛错）。原来那份假 ctx 是普通对象，任何属性都读得到 ——
+所以这类「未 inject 就访问」的 bug 在测试里永远绿，只在真宿主里炸。
+
+**口径提醒**：manifest `spec.cordis.inject` / `optionalInject` 只描述意图；
+cordis 真正注入什么，只看模块 export 的 `inject`。两者不一致时以代码为准。
+
 ## v0.1.0 (2026-10-28) — 初版：检测远端最新状态 + 询问用户是否更新部署
 
 **解决的问题**：AGINT 仓库自己会往前走，但「仓库走到哪了」和「部署位跑到哪了」是两件事。

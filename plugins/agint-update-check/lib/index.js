@@ -391,15 +391,16 @@ function apply(ctx, config = {}) {
   }
 
   // ── 定时器（must-dispose：dispose 时必须清掉）─────────────────────────
+  // ⛔ 不要用 ctx.setInterval：它是 cordis-plugin-timer 的糖，内部转 ctx.timer，
+  //    而 timer 不在本插件 inject 里 ⇒ 一访问就抛
+  //    `cannot get property "timer" without inject`，整个插件条目 did not activate，
+  //    3 个工具一起消失（2026-10-31 实测，启动日志只有一行 warning，界面上只显示「失败」）。
+  //    用 Node 原生 setInterval + ctx.effect 注册 disposer，零宿主服务依赖
+  //    （与 agint-restart 的做法一致）。unref 让周期检查不 hold 进程退出。
   if (cfg.autoCheck) {
-    const start = () => { void tick(); };
-    if (typeof ctx.setInterval === 'function') {
-      const handle = ctx.setInterval(start, cfg.checkIntervalMs);
-      ctx.effect(() => handle.dispose);
-    } else {
-      const handle = setInterval(start, cfg.checkIntervalMs);
-      ctx.effect(() => () => clearInterval(handle));
-    }
+    const handle = setInterval(() => { void tick(); }, cfg.checkIntervalMs);
+    handle.unref?.();
+    ctx.effect(() => () => clearInterval(handle));
   }
 
   // agents 软注入：缺席时只是不主动投递，工具照常可用。

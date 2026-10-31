@@ -5,7 +5,9 @@
  *   1) 纯函数层（版本号 / 提交表 / 脏文件 / 变更分类 / 影响面 / 提问语 / 阻断理由）；
  *   2) 仓库根解析（只认「既有 .git 又有 plugins/」的目录）；
  *   3) 路径安全（越界路径必须被拒）；
- *   4) 插件在假 ctx 上挂载不抛、注册 3 个工具、schema 合规（K19 自检）。
+ *   4) 插件在假 ctx 上挂载不抛、注册 3 个工具、schema 合规（K19 自检）；
+ *   5) 真宿主 gate 回归：strictCtx（Proxy）复刻 cordis「未 inject 就抛」的行为，
+ *      防止再次出现「假 ctx 全绿、真宿主 did not activate」。
  *
  * 不联网、不碰真仓库：所有 git 依赖都靠「临时目录 + 假 git」隔离。
  */
@@ -185,6 +187,53 @@ check('apply 在假 ctx 上挂载不抛、注册 3 个工具', () => {
   assert.equal(registered.length, 3);
   const names = registered.map((d) => d.name).sort();
   assert.deepEqual(names, ['agint_update_apply', 'agint_update_check', 'agint_update_status']);
+});
+
+// ── 真宿主 gate 回归（2026-10-31 事故）──────────────────────────────
+// 上面的 fakeCtx 是个普通对象：**任何属性都读得到**，所以 `ctx.setInterval`
+// （cordis-plugin-timer 的糖，内部转 ctx.timer）在测试里永远绿，到真宿主里却抛
+// `cannot get property "timer" without inject` —— 整个插件条目 did not activate，
+// 3 个工具一起消失，启动日志只有一行 warning、界面上只显示「失败」。
+// 下面这个 Proxy 复刻 cordis 的 gate：只有 tools + Context 内建成员可访问，
+// 任何其它属性名一律按宿主文案抛错。以后谁再访问未 inject 的服务，这条用例会红。
+function strictCtx({ services = {}, disposers = [] } = {}) {
+  const base = {
+    effect: (fn) => {
+      const d = fn();
+      if (typeof d === 'function') disposers.push(d);
+      return d;
+    },
+    inject: () => {},
+  };
+  for (const [k, v] of Object.entries(services)) base[k] = v;
+  return new Proxy(base, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return target[prop];
+      if (prop in target) return target[prop];
+      throw new Error(`cannot get property "${String(prop)}" without inject`);
+    },
+    has: (target, prop) => prop in target,
+  });
+}
+
+check('真宿主 gate：未注入的服务（timer/setInterval）一次都不许碰', () => {
+  const reg = [];
+  const disposers = [];
+  const ctx = strictCtx({
+    services: { tools: { register: (def) => reg.push(def) } },
+    disposers,
+  });
+  // autoCheck 开 = 走定时器分支（原事故点），必须在 strict ctx 上也不抛
+  plugin.apply(ctx, {
+    repoRoot: notRepo,
+    autoCheck: true,
+    notify: false,
+    checkIntervalMs: 3_600_000,
+    statePath: join(tmpRoot, 'state-strict.json'),
+  });
+  assert.equal(reg.length, 3, 'strict ctx 下三个工具都应注册');
+  assert.equal(disposers.length, 1, '定时器必须注册一个 disposer（must-dispose）');
+  for (const d of disposers) d();
 });
 
 check('工具 output.schema 合规（K19：object 必须显式 additionalProperties）', () => {

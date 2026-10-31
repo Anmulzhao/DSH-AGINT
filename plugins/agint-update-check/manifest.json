@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-update-check",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "host 平面：检测 AGINT 仓库（DSH-AGINT）远端的最新状态 —— 落后多少提交、变了哪些文件、要不要重新部署与重启宿主 —— 并向用户询问是否更新与部署。提供 agint_update_check / agint_update_apply / agint_update_status 三个 model-visible 工具，外加 6 小时自持周期检查（发现更新就投递一条「要不要更新」）。",
   "main": "lib/index.js",
   "agint": {
@@ -16,8 +16,7 @@
         "tools"
       ],
       "optionalInject": [
-        "agents",
-        "timer"
+        "agents"
       ],
       "provides": [],
       "events": [],
