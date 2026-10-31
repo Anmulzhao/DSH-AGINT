@@ -4,6 +4,28 @@
 
 ---
 
+## 0.6.11 (2026-10-27) — 删掉悬空的 `agint.eventBus.publish` 消费声明
+
+**纯声明清理，零代码改动。** `spec.cordis.consumes` 里的 `agint.eventBus.publish`
+已无对应实现：唯一发布点 `publishMountRequest` 在 `c1f7d95`（2026-10-23，方案 B
+空壳清理）连同 `ctx.provide` 全名键一并删除，当时漏了这一条声明。
+
+为什么删而不是补实现（三条，与 09-20 的判定同源）：
+
+1. `mount.requested` 的发布方是 `agint-mount` 自己（`orchestrator.js` 十处真实调用点）；
+   mutator 再发一条，同一件事在总线上会出现两条，订阅方无法区分来源。
+2. 本服务的语义前提是「mutator 主动发起挂载请求」，而现在这条链路走的是
+   `agint.mutator.synthForProposal` → `agint-mount.request` 直连（部署桥），
+   真正需要请求挂载时由 mount 统一发事件。
+3. 全仓 grep 零 `publish` 调用点 —— 声明留着只会让
+   `test/q3-verdicts.test.mjs` 判据 3（文档腐化）长期红一行。
+
+保留 `agint.eventBus.subscribe`：`lib/index.js:1117` 有真实订阅（`diagnosis.completed`
+影子观察）。`agint.eventBus` 伞键未声明，因为代码里没有按伞键取用的地方。
+
+验收：`node test/q3-verdicts.test.mjs` 仓库位「悬空声明」集合回到 `{}`。
+
+
 ## 0.6.10 (2026-10-25) — B2 收尾：合成器补进伞键
 
 `agint.mutator.synthPackage` / `agint.mutator.synthForProposal` 此前只 provide 了

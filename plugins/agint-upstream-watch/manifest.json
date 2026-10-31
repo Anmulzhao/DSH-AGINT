@@ -1,0 +1,88 @@
+{
+  "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
+  "name": "agint-upstream-watch",
+  "version": "0.3.0",
+  "description": "上游判读器。跟踪 dsh 发行记录，两段式判读（事实与结论分离）+ 语义面 + 判读质量仪器（升级后回填对拍）。所有提案 autoExecutable=false。",
+  "main": "lib/index.js",
+  "agint": {
+    "kind": "host",
+    "owner": "anmul",
+    "tier": 0,
+    "stability": "experimental"
+  },
+  "spec": {
+    "cordis": {
+      "inject": [
+        "storageDomain",
+        "agint.eventBus.subscribe",
+        "tools"
+      ],
+      "provides": [
+        "agint.upstreamWatch"
+      ],
+      "consumes": [
+        "agint.eventBus.subscribe",
+        "agint.evolve"
+      ],
+      "events": [
+        "input.signal.external.release-published"
+      ],
+      "subscriptions": [
+        "input.signal.external.release-published"
+      ],
+      "tools": [
+        "upstream_status",
+        "upstream_digest"
+      ]
+    },
+    "storage": {
+      "domains": [
+        "agint_upstream_watch"
+      ],
+      "atomic": "none"
+    },
+    "dependencies": {},
+    "softDependencies": {
+      "agint-input-gateway": ">=0.1.6",
+      "agint-evolve": ">=0.10.0"
+    },
+    "mountOrder": 63,
+    "permissions": {
+      "env": [
+        "AGINT_UPSTREAM_WATCH",
+        "AGINT_REPO_ROOT",
+        "DSH_HOME",
+        "DSH_ROOT"
+      ],
+      "fs": [],
+      "network": [
+        "api.github.com",
+        "registry.npmjs.org"
+      ],
+      "shell": false
+    },
+    "lifecycle": {
+      "intervals": "none",
+      "listeners": "must-dispose",
+      "tools": "must-dispose",
+      "shutdown": "graceful"
+    },
+    "tests": {
+      "entry": "test/smoke.mjs",
+      "command": "node --import ./test/_stub-register.mjs --test test/smoke.mjs test/upstream-watch.test.mjs test/semantics.test.mjs test/calibration.test.mjs test/depface-resolve.test.mjs",
+      "expectedExit": 0
+    },
+    "docs": {
+      "readme": "README.md",
+      "serviceDocs": {
+        "agint.upstreamWatch.status": "判读器状态：配置、计数器、最近 5 次判读（含 LLM 成功/失败分别计数）。零副作用",
+        "agint.upstreamWatch.digest": "判读一个 tag：拉 release 正文 → 段1 事实 → 段2 结论 → 落库 →（可选）产提案。同 tag 已判读过则返回缓存，除非 force",
+        "agint.upstreamWatch.runNow": "digest 的强制别名（force=true，via=manual）",
+        "agint.upstreamWatch.listDigests": "按更新时间倒序列出判读记录",
+        "agint.upstreamWatch": "上游判读器：订阅 input.signal.external.release-published，两段式判读 dsh 发行版本，产出不可自动执行的提案。AGINT_UPSTREAM_WATCH=off 停摆。"
+      }
+    },
+    "changelog": "CHANGELOG.md",
+    "compatSince": "0.1.0"
+  }
+}

@@ -11,7 +11,11 @@ import {
   resolveTargetSkill,
   resolveTargetAsset,
   extractRepoPaths,
+  normalizeRepoPath,
+  matchRepoFile,
   resolveRepoRoot,
+  resolveLlmTimeout,
+  resolveTargetAssets,
   commitToRepo,
   restoreFromPreimage,
   verifyTargetFile,
@@ -22,12 +26,14 @@ import {
   pickCandidate,
   spawnLlm,
   DEFAULT_AGENT_PRESET,
+  classifyFailureKind,
 } from '../lib/index.js';
 
 // 1a 归档复原断言用（T25f）：hash 纯函数 + 锁定用的 hypothesis 形状
 import { computeHypothesisLock } from '../lib/predictor.js';
 import { buildLockHypothesis } from '../lib/prediction-locker.js';
 import { EXPECTED_EFFECT_CODE, EXPECTED_EFFECT_SKILL } from '../lib/expected-effect.js';
+import { buildExcerpt, extractAnchors } from '../lib/excerpt.js';
 
 /**
  * 建一个真实的临时仓库根（v0.2.8）。
@@ -586,6 +592,41 @@ test('T21: resolveTargetAsset 三级定位', () => {
 
   assert.equal(resolveTargetAsset({ title: '改 agint-restart 护栏', body: '' }, ['plugin-preflight'], repoFiles), null);
   assert.equal(resolveTargetAsset({ title: 'x', body: 'y' }, [], []), null);
+});
+
+// ── T20b: normalizeRepoPath —— 部署位路径归一（2026-10-27 实机）────────────
+//
+// 实机那次：提案正文写面板里看到的 `~/.dsh/.agint-bundle/plugins/.../index.js:793`，
+// 而 repoFiles 是仓库相对路径 ⇒ 求交恒空 ⇒ 一条真能改的提案被判 not-actionable。
+test('T20b: 部署位路径 → 仓库相对路径', () => {
+  assert.equal(
+    normalizeRepoPath('~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793'),
+    'plugins/agint-evolve/lib/index.js', 'bundle 位 + 行号要一起剥掉');
+  assert.equal(normalizeRepoPath('$DSH_HOME/.agint-bundle/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(normalizeRepoPath('/home/u/.dsh/profiles/web/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(
+    normalizeRepoPath('/home/u/.dsh/profiles/web/node_modules/@agint/host/plugins/agint-x/lib/i.js'),
+    'plugins/agint-x/lib/i.js', 'host 包位必须先剥，否则留下 node_modules 前缀');
+  assert.equal(normalizeRepoPath('/home/u/projects/DSH-AGINT/plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js');
+  assert.equal(normalizeRepoPath('plugins/agint-x/lib/i.js'), 'plugins/agint-x/lib/i.js', '已是仓库相对路径就别动');
+  assert.equal(normalizeRepoPath('docs/x.md:107-167'), 'docs/x.md');
+  assert.equal(normalizeRepoPath(''), '');
+});
+
+// ── T21b: 正文写部署位路径 ⇒ 仍能定位（实机 9d9697cf 那次失败）─────────────
+test('T21b: 部署位路径的提案也能定位到仓库文件', () => {
+  const repoFiles = ['plugins/agint-evolve/lib/index.js', 'plugins/agint-metrics/lib/service.js'];
+  assert.deepEqual(
+    resolveTargetAsset({ title: '修复提案台 schema', body: '根因在 `~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793`，照改。' }, [], repoFiles),
+    { type: 'repo', id: 'plugins/agint-evolve/lib/index.js' });
+  assert.deepEqual(
+    resolveTargetAsset({ title: 'x', body: '见 `/home/u/DSH-AGINT/plugins/agint-evolve/lib/index.js`' }, [], repoFiles),
+    { type: 'repo', id: 'plugins/agint-evolve/lib/index.js' }, '绝对路径带仓库根也要认');
+  // ⛔ 歧义（两个插件都有 lib/index.js）⇒ 不猜：改错文件比不改更糟
+  assert.equal(
+    matchRepoFile(['lib/index.js'], ['plugins/a/lib/index.js', 'plugins/b/lib/index.js']),
+    null, '有歧义就返回 null');
+  assert.equal(matchRepoFile(['plugins/agint-evolve/lib/index.js'], repoFiles), 'plugins/agint-evolve/lib/index.js');
 });
 
 // ── T22: isCommitEnabled 默认开（K51 + 2026-09-27 老板拍板）────────────────
@@ -1710,4 +1751,365 @@ test('T36: 1b 接线 —— measureOutcomes 先验锁再量账：没仓库根就
   assert.equal(st2.auditTampered, 2, '对不上 1 条 + 删行 1 条都算安全事件');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T36）');
+// ── T37: classifyFailureKind —— 确定性 vs 偶发（b 的判据层）──────────────
+//
+// 实机教训：自动执行失败后一律重试，但「定位不到目标 / LLM 判定不适用」这类
+// 失败重试也不会变 —— 实机那次两次各 1 秒失败，产出逐字相同。
+test('T37: classifyFailureKind 把「重试也不会变」与「偶发」分开', () => {
+  assert.equal(classifyFailureKind('c1: no target asset resolved (mentioned:0 inRepo:0)'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: llm judged not applicable'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: validate rejected — atomicity violated'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: oldText not found in target file (hallucination guard)'), 'deterministic');
+  assert.equal(classifyFailureKind('c1: llm unavailable: timeout'), 'transient');
+  assert.equal(classifyFailureKind('c1: propose threw — ECONNRESET'), 'transient');
+  assert.equal(classifyFailureKind('c1: 没见过的一条失败'), 'transient',
+    '默认 transient —— 把偶发判成确定 = 提案永远不再自动跑；判错方向不对称');
+  assert.equal(classifyFailureKind('c1: construct failed — llm unavailable: read failed'), 'transient',
+    '显式 transient 标记优先于 deterministic');
+});
+
+// ── T38: 定向执行 ⇒ 确定性不可执行要说出来（b）────────────────────────────
+//
+// 实机那条 oracle 提案：正文自述「永不 auto-apply；是否执行由老板裁定」，
+// 却因为面板默认 immediate 被排进队列 ⇒ driver 定位不到目标 ⇒ 两次各 1 秒失败。
+// 定向模式下候选**就是那一条**，跑不出东西 = 这条提案没有可改的目标，
+// 不是「暂时没候选」—— 两者混在一起，执行器就会一直重试。
+test('T38: 定向执行定位不到目标 ⇒ deterministic=true + not-actionable', async () => {
+  const fakeEvolve2 = {
+    listProposals: async () => [],
+    getProposal: async (id) => ({
+      id,
+      title: '美谕提案：决策确信度 扣 1.7 分',
+      body: '建议：定向复核记忆条目 2d70d577 —— 该条无证据支撑。作为本周唯一候选提交人工复核；不改动、不删除、不自动生效。',
+      status: 'approved',
+      category: 'doc',
+    }),
+  };
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve2,
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-x');
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, true, '定向模式下的「无可执行目标」是确定性的');
+  assert.match(out.reason, /not-actionable/, '原因里要能看出「这不是偶发」');
+  assert.match(out.reason, /no target asset resolved/, '也要带上真正的失败细节');
+});
+
+// ── T39: sweep 模式保持原语义（以后可能有新候选，不算确定性失败）──────────
+test('T39: sweep 模式同样定位不到目标 ⇒ deterministic=false（仍可重试）', async () => {
+  const ctx = makeCtx({
+    'agint.evolve': fakeEvolve([{ id: 'c1', title: '改点东西', body: '没有目标文件', status: 'proposed', createdAt: '2026-09-01' }]),
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx);
+  const out = await ctx.provided['agint.evolutionDriver'].runOnce({
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm: GOOD_LLM },
+  });
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, false, 'sweep 模式不等于确定性失败 —— 下一轮可能有新候选');
+});
+
+// ── T40: 2026-10-28 三处硬伤（cwd / 超时口径 / 提示词）──────────────────
+// 案发：提案 2f91b72b 批准后连续两次 `timeout after 120000ms`。取证结论是
+//   ① 孩子会话 cwd=process.cwd()（实机是 `~/桌面`）⇒ 15 次工具调用里 13 次在 ls/find 找仓库；
+//   ② 提示只给 20000 字符，而目标 sweep.js 有 96.5KB，模型察觉截断后去读原文件；
+//   ③ 120s 闸门在成功后仍会吞掉结果（错误统一成 llm unavailable，根因不可见）。
+// 三条都要有用例压住，否则下次重构又会「顺手」退回去。
+
+test('T40a: resolveLlmTimeout —— 默认 600s；env > config；脏值不许把闸门变成 0ms', () => {
+  assert.equal(resolveLlmTimeout({}, {}), 600_000, '默认必须是 600s（120s 是实机失败值）');
+  assert.equal(resolveLlmTimeout({}, { llmTimeoutMs: 300_000 }), 300_000);
+  assert.equal(
+    resolveLlmTimeout({ AGINT_EVOLUTION_DRIVER_TIMEOUT_MS: '900000' }, { llmTimeoutMs: 300_000 }),
+    900_000,
+    'env 优先级高于 patch config（排障时不想改挂载文件）',
+  );
+  for (const bad of ['', 'abc', '0', '-5', 'NaN', '  ']) {
+    assert.equal(
+      resolveLlmTimeout({ AGINT_EVOLUTION_DRIVER_TIMEOUT_MS: bad }, {}),
+      600_000,
+      `脏 env=${JSON.stringify(bad)} 必须回落默认值`,
+    );
+  }
+});
+
+test('T40b: construct —— cwd 显式下发；提示里写清工作目录与「别去找仓库」', async () => {
+  const ctx = makeCtx({});
+  apply(ctx);
+  const svc = ctx.provided['agint.evolutionDriver'];
+  let seen = null;
+  const out = await svc.construct({
+    candidate: { id: 'c1', title: 't', body: '', status: 'proposed' },
+    targetId: 'plugins/agint-dream/lib/sweep.js',
+    fileText: 'const a = 1;\n',
+    cwd: '/repo/root',
+    llm: async (args) => { seen = args; return { ok: false, reason: 'stub' }; },
+  });
+  assert.equal(out.llmFailure, true);
+  assert.equal(seen.cwd, '/repo/root', 'cwd 必须传到 spawnLlm，不许它自己回落 process.cwd()');
+  assert.equal(seen.timeoutMs, 600_000, '缺省超时走 resolveLlmTimeout（600s）');
+  assert.match(seen.user, /## Working directory\n\/repo\/root/, '提示里必须有工作目录');
+  assert.match(seen.user, /plugins\/agint-dream\/lib\/sweep\.js/, '提示里必须给出要读的精确相对路径');
+  assert.match(seen.user, /Do not search the filesystem/, '必须封住「全盘找仓库」这条路');
+  assert.match(seen.user, /structured-output/, '必须要求走结构化输出（否则父侧拿到空结果）');
+});
+
+test('T40c: construct —— 未给 cwd 时回落 patch config 的 repoRoot', async () => {
+  const ctx = makeCtx({});
+  apply(ctx, { repoRoot: '/cfg/root' });
+  let seen = null;
+  await ctx.provided['agint.evolutionDriver'].construct({
+    candidate: { id: 'c1', title: 't', body: '', status: 'proposed' },
+    targetId: 'plugins/x/lib/y.js',
+    fileText: 'x\n',
+    llm: async (args) => { seen = args; return { ok: false, reason: 'stub' }; },
+  });
+  assert.equal(seen.cwd, '/cfg/root');
+});
+
+test('T40d: spawnLlm —— meta.cwd 用传入的 cwd；缺省才回落 process.cwd()', async () => {
+  const created = [];
+  const ctx = makeCtx({
+    agents: {
+      create: async (opts) => { created.push(opts); return { agent: {}, dispose: async () => {} }; },
+    },
+    subagents: {
+      getProvider: () => ({ ok: true }),
+      startActivation: async () => ({
+        result: Promise.resolve({ stopReason: 'completed', structured: { applicable: false } }),
+        dispose: async () => {},
+      }),
+    },
+    agentDefaultModel: {
+      currentSelection: () => ({ provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash', reasoningEffort: 'high' }),
+    },
+  });
+  const r1 = await spawnLlm(ctx, { system: 's', user: 'u', schema: {}, timeoutMs: 1000, cwd: '/repo/root' });
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  assert.equal(created[0].meta.cwd, '/repo/root');
+  assert.equal(created[0].meta.agentPreset, DEFAULT_AGENT_PRESET, 'preset 不能因为改 cwd 被顺手弄丢');
+
+  await spawnLlm(ctx, { system: 's', user: 'u', schema: {}, timeoutMs: 1000 });
+  assert.equal(created[1].meta.cwd, process.cwd(), '没给 cwd 时才回落进程 cwd');
+});
+
+// ── T41: excerpt —— 锚点窗口 + 结构大纲（2026-10-28 换掉「从头截断」）────────
+// 背景：旧实现是 `fileText.slice(0, 20000)`。锚点落在 20000 字符之后 ⇒ 模型看不到
+// 要改的那段，只能判 applicable=false 或先花轮次读文件。合成大文件那一例就是判据。
+
+function bigFile(lines = 8000) {
+  return Array.from({ length: lines }, (_, i) => `const pad${i + 1} = ${i + 1}; // filler filler filler`).join('\n');
+}
+
+test('T41a: 短文件 ⇒ 原文照给（mode=full），不做任何加工', () => {
+  const text = 'export function a() {}\nexport function b() {}\n';
+  const ex = buildExcerpt(text, { targetId: 'x.js', anchors: [], budget: 20_000 });
+  assert.equal(ex.mode, 'full');
+  assert.equal(ex.text, text, '全文模式必须逐字原样，一个字符都不能动');
+});
+
+test('T41b: 锚点在 20000 字符之后 —— 旧实现丢、新实现覆盖', () => {
+  const text = bigFile(8000); // 约 397KB，8000 行
+  const anchorLine = 6000;
+  const anchorText = `const pad${anchorLine} = ${anchorLine}; // filler filler filler`;
+  assert.equal(text.slice(0, 20_000).includes(anchorText), false, '前提：旧的头截断确实看不到它');
+
+  const ex = buildExcerpt(text, {
+    targetId: 'big.js',
+    anchors: [{ kind: 'ident', value: `pad${anchorLine}` }],
+    budget: 20_000,
+  });
+  assert.notEqual(ex.mode, 'full');
+  assert.equal(ex.text.includes(anchorText), true, '锚点所在行必须在 excerpt 里');
+  assert.ok(ex.chars <= 20_000, `excerpt 不许超预算，实际 ${ex.chars}`);
+  assert.ok(ex.anchorHits >= 1);
+  assert.equal(
+    ex.ranges.some(([a, b]) => anchorLine >= a && anchorLine <= b),
+    true,
+    '区间表要能证明覆盖',
+  );
+});
+
+test('T41c: 正文逐字 —— 不许给行首加行号（加了 oldText 必挂幻觉闸门）', () => {
+  const text = bigFile(3000);
+  const ex = buildExcerpt(text, {
+    targetId: 'big.js',
+    anchors: [{ kind: 'ident', value: 'pad1500' }],
+    budget: 20_000,
+  });
+  const rawLines = new Set(text.split('\n'));
+  // excerpt 里除标记行外，每一行都必须能在原文里逐字找到
+  const suspicious = ex.text
+    .split('\n')
+    .filter((l) => l.trim() && !l.startsWith('⟪'))
+    // 大纲行是 `  1234  decl padX` —— 它们的特征是以空格+数字开头，单独放过
+    .filter((l) => !/^\s*\d+\s{2}(decl|#)/.test(l))
+    .filter((l) => !rawLines.has(l));
+  assert.deepEqual(suspicious, [], '出现无法在原文中逐字匹配的行 ⇒ 说明加了前缀/改了空白');
+});
+
+test('T41d: 无锚点命中 ⇒ 退化到大纲 + 头尾，不假装看全了', () => {
+  const text = bigFile(3000);
+  const ex = buildExcerpt(text, { targetId: 'big.js', anchors: [{ kind: 'ident', value: 'nothing_like_this' }], budget: 20_000 });
+  assert.equal(ex.mode, 'outline');
+  assert.match(ex.text, /excerpt of big\.js/);
+  assert.match(ex.text, /outline \(top-level declarations/);
+  assert.ok(ex.ranges.length >= 1, '至少要给头尾');
+  assert.ok(ex.chars <= 20_000);
+});
+
+test('T41e: extractAnchors —— 只认反引号；`file:line` 变行锚点；太短的扔掉', () => {
+  const anchors = extractAnchors(
+    '问题在 `collectSessionSignals`（`lib/sweep.js:383`）里，`x` 这种太短的不算，`config.repoRoot` 算。',
+  );
+  const kinds = anchors.map((a) => `${a.kind}:${a.value}${a.line ? `:${a.line}` : ''}`);
+  assert.ok(kinds.includes('ident:collectSessionSignals'), kinds.join(' | '));
+  assert.ok(kinds.includes('line:lib/sweep.js:383'), kinds.join(' | '));
+  assert.ok(kinds.includes('ident:config.repoRoot'), kinds.join(' | '));
+  assert.equal(kinds.some((k) => k.endsWith(':x')), false, '1 个字符的标识符没有定位价值');
+});
+
+// ── T42: 目标候选顺序 —— 不再按「路径字符串长度」挑 ────────────────────────
+// 案发：846f4fbb 正文有 5 条路径，matchRepoFile 挑**最长**那条，
+// 恰好选中提案里写「已修好、不用动」的样板文件 ⇒ 整条提案被判死。
+
+const T42_REPO = [
+  'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs', // 58 字符，正文里最先出现，且是最长的
+  'plugins/agint-input-gateway/test/_stub-storage-domain.mjs', // 57
+  'plugins/agint-evolve/test/_stub-dsh-tools.mjs', // 45
+];
+
+test('T42a: 多目标按文档顺序全给出来（旧的单值出口只能看到第一个）', () => {
+  const candidate = {
+    title: '收紧其余插件的 dsh-tools 测试替身',
+    body: [
+      '已修好的样板（本次已在 upstream-watch 落地）：`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`',
+      '同类替身还有两处（本次未动）：',
+      '- `plugins/agint-evolve/test/_stub-dsh-tools.mjs`',
+      '- `plugins/agint-input-gateway/test/_stub-storage-domain.mjs`',
+    ].join('\n'),
+  };
+  const all = resolveTargetAssets(candidate, [], T42_REPO);
+  assert.deepEqual(all.map((t) => t.id), [
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs',
+    'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+    'plugins/agint-input-gateway/test/_stub-storage-domain.mjs',
+  ], '顺序必须是正文顺序，不是字符串长度顺序');
+  assert.equal(matchRepoFile(extractRepoPaths(candidate.body), T42_REPO),
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs',
+    '旧的单值匹配确实会挑最长那条 —— 这就是当初选错的机制（保留此断言以免有人把它「优化」回来）');
+});
+
+test('T42b: 后缀兜底只在唯一时收；有歧义就丢（改错文件比不改更糟）', () => {
+  const unique = resolveTargetAssets({ title: 'x', body: '见 `plugins/agint-evolve/lib/index.js`' }, [],
+    ['plugins/agint-evolve/lib/index.js']);
+  assert.deepEqual(unique.map((t) => t.id), ['plugins/agint-evolve/lib/index.js']);
+
+  const ambiguous = resolveTargetAssets({ title: 'x', body: '改 `lib/index.js`' }, [],
+    ['plugins/a/lib/index.js', 'plugins/b/lib/index.js']);
+  assert.deepEqual(ambiguous, [], '两个候选 ⇒ 不猜');
+});
+
+// ── T43: 目标遍历 —— 「这个文件不该改」只换下一个，不再判死整条提案 ──────────
+
+test('T43: 第一个目标答 applicable=false ⇒ 继续试第二个并落地（实机 846f4fbb 形状）', async () => {
+  const repo = await makeRepo({
+    'plugins/agint-upstream-watch/test/_stub-storage-domain.mjs': 'export const STUB_ALREADY_TIGHT = true;\n',
+    'plugins/agint-evolve/test/_stub-dsh-tools.mjs':
+      'export function defineTool(options) { return { ...options }; }\n',
+    'plugins/agint-input-gateway/test/_stub-storage-domain.mjs': 'export function defineTool(desc) { return { ...desc }; }\n',
+  });
+  const seenPrompts = [];
+  const targetOf = (user) => (/^## Target file: (.+)$/m.exec(user)?.[1] ?? '').trim();
+  const llm = async ({ user }) => {
+    seenPrompts.push(user);
+    if (targetOf(user).includes('_stub-storage-domain.mjs')) {
+      // 模型对「样板文件」的正确回答：这个文件不该改
+      return { ok: true, value: { applicable: false, targetSkill: '', oldText: '', newText: '', rationale: 'already fixed here' } };
+    }
+    return {
+      ok: true,
+      value: {
+        applicable: true,
+        targetSkill: 'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+        oldText: 'export function defineTool(options) { return { ...options }; }',
+        newText: 'export function defineTool(options) { if (!options.execute) throw new Error("userExecute"); return { ...options }; }',
+        rationale: 'tighten the stub',
+      },
+    };
+  };
+  const mutator = fakeMutator();
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id,
+        title: '收紧其余插件的 dsh-tools 测试替身',
+        body: '已修好的样板：`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`\n' +
+          '同类还有：`plugins/agint-evolve/test/_stub-dsh-tools.mjs`\n' +
+          '以及：`plugins/agint-input-gateway/test/_stub-storage-domain.mjs`',
+        status: 'approved',
+        category: 'plugin',
+      }),
+    },
+    'agint.mutator': mutator,
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-walk', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+
+  assert.equal(out.skipped, false, JSON.stringify(out.failures ?? out.reason));
+  assert.equal(seenPrompts.length, 2, '第一个目标被否 ⇒ 必须再试一个，且这里只需两次');
+  assert.match(seenPrompts[0], /already|_stub-storage-domain/, '第一次问的是样板文件');
+  assert.match(seenPrompts[1], /agint-evolve\/test\/_stub-dsh-tools\.mjs/, '第二次问的必须是真的该改的那个');
+  assert.match(seenPrompts[1], /## Target 2 of 3/, '提示里要说明这是第几个目标 —— 否则模型会因「提案太大」拒答');
+  assert.equal(mutator.calls.propose.length, 1, '只落一条变异，不能把两个目标都提交');
+  const landed = mutator.calls.propose[0];
+  assert.equal(landed.promptPayload.promptId, 'stub-dsh-tools-mjs',
+    '落地的必须是 evolve 那个替身（promptId 由目标文件名 slug 而来；样板文件的 slug 是 stub-storage-domain-mjs）');
+  assert.match(landed.promptPayload.newText, /userExecute/, '落地的正文要是「收紧后的替身」那段');
+  assert.equal(out.target.id, 'plugins/agint-evolve/test/_stub-dsh-tools.mjs',
+    '返回的 target 必须是第二个候选，不是第一个（第一个是样板文件）');
+});
+
+test('T43b: 全部目标都否 ⇒ not-actionable，但错误里要列出每个目标的拒因', async () => {
+  const repo = await makeRepo({
+    'plugins/a/lib/x.js': 'const a = 1;\n',
+    'plugins/b/lib/y.js': 'const b = 2;\n',
+  });
+  const llm = async () => ({
+    ok: true,
+    value: { applicable: false, targetSkill: '', oldText: '', newText: '', rationale: 'no anchor here' },
+  });
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id, title: 't', status: 'approved', category: 'plugin',
+        body: '见 `plugins/a/lib/x.js` 与 `plugins/b/lib/y.js`',
+      }),
+    },
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+  });
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-none', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.skipped, true);
+  assert.equal(out.deterministic, true, '全部目标都改不动 ⇒ 重试也不会变');
+  const joined = JSON.stringify(out);
+  assert.match(joined, /plugins\/a\/lib\/x\.js: llm judged not applicable/, '第一个目标的拒因要在');
+  assert.match(joined, /plugins\/b\/lib\/y\.js: llm judged not applicable/, '第二个的也要在');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T43）');

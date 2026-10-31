@@ -262,7 +262,7 @@ test('sweep: deep-recovery 不得重复写入本轮主通道刚提升的候选',
       const ts = NOW - d * 86400_000;
       await writeZstdSession(sd, [
         { type: 'session', id: `sess-day-${d}`, seq: 0, time: ts },
-        { type: 'user/message', seq: 1, time: ts + 1000, data: { source: { kind: 'user' }, content: [{ type: 'text', text: CLAIM }] } },
+        { type: 'user/message', seq: 1, time: ts + 1000, data: { source: { kind: 'user', rpcId: 'test-rpc' }, content: [{ type: 'text', text: CLAIM }] } },
       ]);
     }
     const result = await runSweep({

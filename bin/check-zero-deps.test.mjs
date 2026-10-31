@@ -20,7 +20,7 @@ const SCRIPT = join(__dirname, 'check-zero-deps.mjs');
 const REPO_ROOT = join(__dirname, '..');
 const ALLOWLIST_PATH = join(REPO_ROOT, 'docs', 'zero-deps-allowlist.json');
 
-const { classify, extractSpecifiers } = await import(pathToFileURL(SCRIPT).href);
+const { classify, extractSpecifiers, stripComments } = await import(pathToFileURL(SCRIPT).href);
 
 // ── 分类逻辑 ────────────────────────────────────────────────────────────────
 test('本地相对路径永远合法', () => {
@@ -74,6 +74,43 @@ export { z } from 're-export-pkg';
 test('模板串占位不参与判定（测试文件里的假包名是已知误报源）', () => {
   const src = `import a from '${'${CONTRACT_TOKEN}'}';`;
   assert.equal(extractSpecifiers(src).length, 0);
+});
+
+// ── 注释不是代码（2026-10-27：门禁曾长期红在两条不存在的依赖上）─────────────
+//
+// 实机症状：outcome-measurer.js 的写法说明里举了 `import x from 'a'`、
+// v2-data.js 的对照说明里写了 `separates "a checkout" from "a deployed copy"`，
+// 两条都被当成真依赖 ⇒ 门禁红着两个包名 `a` 与 `a deployed copy`。
+// 包名离谱到这种程度仍没人察觉，正说明「红着不管」有多容易发生。
+test('注释里的 import 示例不参与判定（行注释 / 块注释都要去干净）', () => {
+  const src = `
+/**
+ * 三种写法都得认：\`import x from 'a'\`、\`import 'a'\`、\`require('a')\`。
+ * separates "a checkout" from "a deployed copy" in one stat call.
+ */
+// import ghost from 'line-comment-pkg';
+import real from 'real-pkg';
+`;
+  assert.deepEqual(
+    extractSpecifiers(src), ['real-pkg'],
+    '注释里的示例被当成真依赖了 —— 误报会让真问题淹在噪声里',
+  );
+});
+
+test('去注释不能伤及字符串：URL 里的 // 不许把后面的 import 吃掉', () => {
+  const src = `const u = 'http://example.com/x';\nconst v = \`https://e.com/y\`;\nimport z from 'after-url-pkg';\n`;
+  assert.ok(
+    extractSpecifiers(src).includes('after-url-pkg'),
+    '字符串里的 // 被当成行注释起点 ⇒ 后面整行真 import 被静默丢弃（漏报）',
+  );
+});
+
+test('去注释后行号不变（报错定位靠它）', () => {
+  const src = `/* a\nb\nc */\nimport x from 'p';`;
+  assert.equal(
+    stripComments(src).split('\n').length, src.split('\n').length,
+    '注释替换必须保留换行，否则报错行号整体偏移',
+  );
 });
 
 // ── 白名单治理（G5：没门禁的排除名单就是后门）──────────────────────────────

@@ -52,6 +52,28 @@ export const C2_CRON = '0 2 * * 0';
 /** C3 外部世界 Channel 的 cron（每周日 04:00，错峰） */
 export const C3_CRON = '0 4 * * 0';
 
+/**
+ * C3 上游发行子源（P2，2026-10-28 建，2026-10-28 改排期）的 cron：**每周三 06:00**。
+ *
+ * ⚠️ 2026-10-28 用户要求由「每日 06:00」改为「每周三 06:00」。取舍如实记在这里，
+ *    改排期的人应该知道代价是什么：
+ *
+ * 代价（周更的固有后果）：dsh 的出片节奏是 1–2 天一个版本 ⇒ 一次 tick 通常要面对
+ *   3–5 个未读 tag，`fetch()` 会把它们**全部**作为增量发出去（信息不丢），
+ *   判读器因此要为每个 tag 各跑一次两段式判读（每次都可能触发一轮 LLM）。
+ *   单版本提案上限 `maxProposalsPerRelease: 2` 只限单 tag，不限单轮总量。
+ *   ⇒ 周三那一轮可能比日更时更重、更吵。若日后嫌吵，正确的收法是
+ *   在判读侧加「单轮只判最新 N 个，其余只记事实不产结论」，而不是在这里过滤信号
+ *   （过滤信号 = 悄悄丢信息，违反本频道「无网必须声张」的同一条纪律）。
+ *
+ * 为什么仍留 06:00：排在 04:00 metrics-collect / 04:30 tool-stats-backfill /
+ * 04:45 prompt-static-check 之后（不与它们抢），也避开 C3 原有 git 源的周日 04:00
+ * 与 C5 的周日 05:00、C2 的周日 02:00。周三这个位置在整周内是空的。
+ *
+ * cron 星期字段：0/7 = 周日，1 = 周一 … 3 = **周三**。
+ */
+export const C3_RELEASE_CRON = '0 6 * * 3';
+
 /** C5 跨 Agent Channel 的 cron（每周日 05:00，错峰；C3 04:00 之后 1h） */
 export const C5_CRON = '0 5 * * 0';
 
@@ -77,6 +99,8 @@ export const C3_GIT_REPOS = Object.freeze([
 export const CHANNEL_IDS = Object.freeze({
   SELF_OBSERVATION: 'self-observation',
   EXTERNAL: 'external-git',
+  /** C3 的第二个子源（2026-10-28）：上游 dsh 发行记录。与 external-git 并列，同属 external 类型。 */
+  RELEASE: 'upstream-release',
   ADVERSARIAL: 'adversarial',
   CROSS_AGENT: 'cross-agent',
 });
@@ -89,6 +113,7 @@ export const KNOWN_TOPICS = Object.freeze([
   'input.signal.self-observation.compress-loss',
   'input.signal.self-observation.session-integrity',
   'input.signal.external.repo-diff',
+  'input.signal.external.release-published',
   'input.signal.adversarial.counterfactual-result',
   'input.signal.adversarial.curriculum-result',
   'input.signal.adversarial.boundary-divergence',

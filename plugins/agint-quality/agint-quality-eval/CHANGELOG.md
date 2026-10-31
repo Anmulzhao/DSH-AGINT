@@ -1,5 +1,38 @@
 # Changelog — agint-quality-eval
 
+## 0.5.0 (2026-10-28) — effectiveness 接入判读准确率
+
+### Added
+
+- **判读类 target 的 effectiveness 并入真值样本**（`CALIBRATED_TARGETS = {'agint-upstream-watch'}`）：
+  ```
+  score = 0.5 × (usage × speed) + 0.5 × (1 - (误报 + 漏报) / 已对拍包数)
+  ```
+  数据源 `agint.upstreamWatch.calibration()`（`agint-upstream-watch` 0.3.0）。
+
+  **为什么需要**：判读器产出的是**结论**不是动作。dsh 一周发几个版本很正常，
+  `calls/100` 恒接近 0，于是「判得准不准」这个真正决定其质量的维度在评分里完全消失 ——
+  一个每次都判错的判读器，和一个每次都判对的，得分一模一样。
+
+- **样本 < 3 时不并入**，只出 info。1 个样本就能把分数拽到 0 或 1，比不给分更糟。
+
+- **无用工具记录但有真值样本时**，用准确率兜底而不是返回 null（`raw.basis='calibration-only'`）。
+  ⛔ 这不是「无数据源」——它判过、且判对了多少是已知事实。
+
+### 边界（刻意的）
+
+- **只对 `agint-upstream-watch` 生效**，其它插件的评分一字不动
+  （`test/effectiveness-calibration.test.mjs` 的阴性对照：`agint-evolve` 的分数不受校准影响）。
+- **服务不存在 / 出口不存在 / 抛错**一律返回 null 并只记一条 info ——
+  本机没装那个插件不是错误，不该在别人的评分里报 warn。
+- **漏报出 warn，误报出 info**：漏报意味着「上游破了而 AGINT 不知道」，直接动摇这个插件的可信度；
+  误报只是白改一次代码。两类代价不对称，级别也不该相同。
+
+### 声明
+
+- `spec.cordis.optionalInject` 与 `consumes` 加 `agint.upstreamWatch`（可选依赖：
+  本机没装判读器时这段逻辑整体不生效）。
+
 ## 0.4.0 (2026-10-26) — D-QAF §5.3 有效进化增量（token 项首次可算）
 
 ### Added

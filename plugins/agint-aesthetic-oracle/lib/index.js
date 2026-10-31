@@ -375,6 +375,13 @@ function apply(ctx, config) {
         const rec = await evo.propose({
           title: d.title, body, category: d.category,
           source: name,
+          // 2026-10-27：美谕提案**不可自动执行**。
+          //
+          // 实机首跑教训：面板默认 execMode=immediate，于是这条被塞进自动执行队列，
+          // 而它要的动作是「老板复核一条记忆条目」（补 evidence/confidence）——
+          // 不是改代码。driver 定位不到可改的目标资产，两次都在 1 秒内失败，
+          // 每次还要起一次 LLM。缺的就是「我不可自动执行」这个声明位。
+          autoExecutable: false,
           // r4：note 带 worst=<key>，下一轮去重可精确匹配（不依赖 title 文案）
           note: `${targetId}（美的神谕层 weekly / ${d.note ?? ''}；evidence 见正文）`,
         });
@@ -871,6 +878,7 @@ function apply(ctx, config) {
         sampleCounts: state.baseline?.sampleCounts ?? null,
       },
       samples: rows.map((r) => ({
+        id: r.id,
         ts: r.ts,
         kind: r.kind,
         score: r.score,
@@ -878,19 +886,126 @@ function apply(ctx, config) {
         // Q2 归因 = 机器侧「最丑维」。worstKey 为 '' 表示该轮无任何扣分维。
         machineWorst: r.worstKey || null,
         composites: r.composites ?? null,
-        humanVerdict: null, // 待老板/周报标注；null ≠ 吻合
+        // 2026-10-27（提案 a6e6e1d9 第一步）：读**真实标注**，不再硬编码 null。
+        // 这行此前是 `humanVerdict: null` —— 采集面只出口、无入口，人工标了也存不住。
+        humanVerdict: r.humanVerdict ?? null,
+        humanOverall: r.humanOverall ?? null,
+        humanNote: r.humanNote ?? '',
+        annotatedAt: r.annotatedAt ?? '',
       })),
+      counts: countsOf(rows),
       annotationGuide: [
         'humanVerdict 允许值：noise | confidence | redundancy | bloat | none | null',
         'null = 尚未标注（缺样本）；none = 人工认定四维均无问题',
         '标注口径：本周期内**人工实际动手处理**的最丑维度，不是「读数上看起来最糟的」',
+        'humanOverall 允许值：better | worse | flat | null（整体变美/变丑/持平，喂权重标定）',
+        '两列分开标：humanVerdict 标阈值（Q2 归因），humanOverall 标权重（总分）',
       ],
+    };
+  }
+
+  /** 标注进度：分母是「窗口内 ok 的日/周广播条数」，两列各自计数。 */
+  function countsOf(rows) {
+    return {
+      total: rows.length,
+      annotatedVerdict: rows.filter((r) => r.humanVerdict !== null && r.humanVerdict !== undefined).length,
+      annotatedOverall: rows.filter((r) => r.humanOverall !== null && r.humanOverall !== undefined).length,
+    };
+  }
+
+  const HUMAN_VERDICTS = ['noise', 'confidence', 'redundancy', 'bloat', 'none'];
+  const HUMAN_OVERALLS = ['better', 'worse', 'flat'];
+
+  /**
+   * 写一条人工标注（提案 a6e6e1d9 第一步，2026-10-27）。
+   *
+   * 为什么要它：`calibrationSamples()` 此前把 humanVerdict 硬编码成 null，
+   * 且 broadcasts 表**没有这一列** —— 老板口头说「这周是 confidence」，服务端
+   * 无处可存，下次调用照样全 null。没有入口的采集面 = 永远 0 标注 = 永远无法标定。
+   *
+   * 定位顺序：id → ts 精确 → ts 前缀（唯一命中，如 `2026-10-25`）。
+   * ⛔ 前缀多义时报错并列出候选，**不猜**哪一条是你想标的。
+   *
+   * 冻结语义（与 setStatus 的 blocker 同一族教训）：
+   *   传 undefined ⇒ 该列不动；传 null ⇒ 明确清空（撤销标注）。
+   *
+   * @param {{id?: string, ts?: string, humanVerdict?: string|null,
+   *          humanOverall?: string|null, note?: string}} input
+   */
+  async function annotateCalibration(input = {}) {
+    const id = String(input.id ?? '').trim();
+    const ts = String(input.ts ?? '').trim();
+    if (!id && !ts) throw new Error('annotateCalibration: 需要 id 或 ts 定位一条广播');
+
+    const all = await tables().broadcasts.values();
+    const okRows = all.filter((r) => r.outcome === 'ok' && (r.kind === 'daily' || r.kind === 'weekly'));
+    let target = null;
+    if (id) {
+      target = all.find((r) => r.id === id) ?? null;
+      if (!target) throw new Error(`annotateCalibration: 找不到广播 ${id}`);
+    } else {
+      const exact = okRows.filter((r) => r.ts === ts);
+      const prefixed = exact.length ? exact : okRows.filter((r) => String(r.ts ?? '').startsWith(ts));
+      if (prefixed.length === 0) throw new Error(`annotateCalibration: 没有 ts 匹配 ${ts} 的日/周广播（ok）`);
+      if (prefixed.length > 1) {
+        throw new Error(
+          `annotateCalibration: ts 前缀 ${ts} 命中 ${prefixed.length} 条，无法确定要标哪一条 —— `
+          + `请给完整 ts：${prefixed.slice(0, 6).map((r) => r.ts).join(' / ')}`,
+        );
+      }
+      target = prefixed[0];
+    }
+    if (target.outcome !== 'ok' || (target.kind !== 'daily' && target.kind !== 'weekly')) {
+      throw new Error(
+        `annotateCalibration: ${target.ts} 是 ${target.kind}/${target.outcome} 行，`
+        + '只有 ok 的日/周广播才有机器侧归因可供对照',
+      );
+    }
+
+    const pick = (v, allowed, label) => {
+      if (v === undefined) return undefined;          // 冻结：不动
+      if (v === null || v === '') return null;        // 明确清空
+      const s = String(v).trim().toLowerCase();
+      if (!allowed.includes(s)) {
+        throw new Error(`annotateCalibration: ${label} 只能取 ${allowed.join(' | ')} 或 null，收到 "${v}"`);
+      }
+      return s;
+    };
+    const nextVerdict = pick(input.humanVerdict, HUMAN_VERDICTS, 'humanVerdict');
+    const nextOverall = pick(input.humanOverall, HUMAN_OVERALLS, 'humanOverall');
+    if (nextVerdict === undefined && nextOverall === undefined && input.note === undefined) {
+      throw new Error('annotateCalibration: 没有任何要写的内容（humanVerdict / humanOverall / note 全未传）');
+    }
+
+    const updated = {
+      ...target,
+      humanVerdict: nextVerdict === undefined ? (target.humanVerdict ?? null) : nextVerdict,
+      humanOverall: nextOverall === undefined ? (target.humanOverall ?? null) : nextOverall,
+      humanNote: input.note === undefined ? (target.humanNote ?? '') : String(input.note),
+      annotatedAt: nowIso(),
+    };
+    await tables().broadcasts.put(updated.id, updated);
+
+    const rows = (await tables().broadcasts.values())
+      .filter((r) => r.outcome === 'ok' && (r.kind === 'daily' || r.kind === 'weekly'));
+    return {
+      id: updated.id,
+      ts: updated.ts,
+      machineWorst: updated.worstKey || null,
+      humanVerdict: updated.humanVerdict ?? null,
+      humanOverall: updated.humanOverall ?? null,
+      humanNote: updated.humanNote ?? '',
+      annotatedAt: updated.annotatedAt,
+      counts: countsOf(rows),
     };
   }
 
   ctx.provide('agint.aestheticOracle', {
     runBroadcast, runScheduled, alert, pause, resume, getState, status, history, cards,
-    calibrationSamples,
+    calibrationSamples, annotateCalibration,
+    // 2026-10-27：判尺口径快照，供 evolve 的提案台账写「成立条件」（提案 567dabed）。
+    // 静态常量，不是方法 —— evolve 每次 propose 都要读，不该为拿一个字符串去跑采集。
+    formulaVersion: FORMULA_VERSION,
     // 方案 D 的一次性重定基，同时作为服务面暴露：幂等判据命中才动手，
     // 老板可在任何时候显式调用确认当前基线形态（不会重复改写）。
     rebaseline: async (opts = {}) => {

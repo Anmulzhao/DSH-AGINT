@@ -5,6 +5,66 @@
 
 ---
 
+## v0.7.0 — 2026-10-28 — 候选池污染修复：错误信号改结构化判定 + 候选层正交判据
+
+**症状**：2026-10-28 夜的启发式候选**9 条全是「工具执行报错：…」转录文本**，
+其中若干条已以原文进了 recall store（score=0.00，躺了 2 天）。
+本轮回看：recall store 226 条里，最近 9 条新增全是污染。
+
+**取证（7 天 / 49 会话 / 1150 条 tool/result 实测，不是推测）**
+1. **信号层判错**：旧判据是正文正则 `/error|failed|denied|sandbox|exit code: [1-9]|deny/i`
+   ——「正文出现 error 字样就算失败」。实测命中 **243** 条，而结构化标记
+   （`message.isError===true` 或 `data.error` 存在）只有 **39** 条
+   ⇒ **204 条（84%）是误判**：成功的 `dream_status` / `recall_store_inspect` /
+   grep 输出 / read 的 `<path>…<content>` 包装 / `ls` 输出，只要正文含 "error" 就被抓。
+   **这才是污染的根** —— 大半「工具报错」根本不是错误。
+2. **候选层判松**：旧判据「含因果关键词即放行」，而祈使词
+   （must / should / never / always / rather than）在**工具契约类报错**里几乎必然出现
+   （`Error: old_string and new_string must differ` —— must 是契约，不是处方）。
+3. **产出实测**：旧链路放行的 9 条里，**0 条是主张**，100% 是转录文本
+   （diff hunk / 代码 / JSON dump / 日志行 / CLI help / node --test 输出）；
+   旧链路拦下的 226 条里，含中文主张措辞的 **0 条**（无误杀）。
+
+**变更**
+1. **信号层**：`classifyToolResultError()`（新导出）—— 优先看结构化字段；
+   老格式没有该字段时只认**严格前缀/后缀**（`Error:` / `错误：` / `[stderr]` /
+   `Traceback` / 以**非零** `exit code` 结尾）。不再看全文是否含关键词。
+   ⚠️ 复算时发现自引入的坑：`exit code: 0` 是成功，早期版本写成 `-?\d+`
+   把一批「[status: completed, exit code: 0]」的成功输出判成失败，已改回 `-?[1-9]\d*`。
+2. **候选层正交判据**（`classifyToolError`）：每条只管一件事，逐条可被单条样本证伪：
+   - `no-causal-clause` / `weak-imperative-only`：因果句式分强档（明确因果连接，
+     单独够）/ 弱档（纯祈使，还要中文语境）；
+   - `no-chinese-context`：必须是一句**中文**陈述（≥4 汉字）——
+     口径与 `SIGNAL_RULES` 对齐：英文原话同样进不了候选池，错误路径不能比原话路径宽松；
+   - `structural-symbol`：一句中文陈述里不该有 `{ } ( ) [ ] < > = |` 这些代码/日志骨架符号
+     （9 条真实污染样本**每一条**都含至少一个）；
+   - `transcript-shape`：形态闸（diff / file:line / 代码注释 / JSON / 日志行 / CLI help /
+     `<path>` 包装）；
+   - `self-pollution`：正文含「工具执行报错：」⇒ 是上一轮 sweep 的产物，自吞。
+3. **提升边界闸**：`promotionBlockReason` 增加形态复判（`transcript-shape-in-stored-text`），
+   判的是「真正要写进本体的那串文本」（先剥掉候选自带前缀）。
+4. **可观测**：`counts.toolErrorFilter` 增加 `structured` / `legacy` 两个来源分档
+   （⚠️ `tools.js` 两处 output schema 同步声明 —— `additionalProperties:false`
+   漏声明会让 `dream_status` / `dream_run_now` 整体不可用，K164 同形状事故）。
+   日记「工具错误信号」行也带上来源分档。
+5. **口径变更（明说）**：英文因果报错不再放行
+   （`Error: spawn ENOENT because …; you must create it before running`）。
+   理由见上：两把尺子同口径。
+
+**复算（同一语料，改动前后）**
+| | 旧 | 新 |
+|---|---|---|
+| 工具错误信号 | 243 | 68（结构化 40 · 严格前缀兜底 28） |
+| 进候选池 | 11 | **0** |
+| 分档 | causal-clause×11 | no-causal-clause×67 · weak-imperative-only×1 |
+
+**测试**：新增 9 条**真实语料**回归集（`TOOL_ERROR_1028_TRANSCRIPT_FIXTURES`，
+逐条取自旧链路真的放进候选池的文本）+ 结构化判定正/负样本 + `exit code 0` 回归。
+`node --test` 175 例全绿 + smoke 通过。
+另修一条**改动前就红**的测试（`sweep-integration` deep-recovery 去重用例：
+夹具的 user/message 缺 `rpcId` → 被 10-23 信号源过滤判成 subagent prompt →
+该主张从未被提升，去重路径其实一直没被测到）。
+
 ## v0.6.0 — 2026-10-25 — LLM consolidation 无降级 + 接 startActivation
 
 **背景**：宿主 `subagents` 服务只有 `startActivation`，没有 `start`。旧代码的

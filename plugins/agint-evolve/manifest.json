@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-evolve",
-  "version": "0.8.0",
-  "description": "agint-evolve v0.7.0: 智进 review/self-evolution loop. 9 services (dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory). storage domain `agint_evolve` schemaVersion=2 (新增 baseline_history 表，由 cron baseline-regression-suite 写入，driver mount 通道读 baselineGate)。",
+  "version": "0.12.0",
+  "description": "agint-evolve v0.11.1: 智进 review/self-evolution loop + 提案执行计划 + 可执行性声明。服务：dataSnapshot / writeReview / listReviews / readReview / propose / listProposals / getProposal / setStatus / removeProposal / stats / baselineGate / recordBaselineRun / listBaselineHistory + 执行队列 8 个（enqueueExecution / claimDueExecutions / finishExecution / requeueExecution / cancelExecution / listExecutions / executionStats / describeExecution）。storage domain `agint_evolve` schemaVersion=2（表：proposal / baseline_history / execution）。⛔ 加表刻意不升 version：dsh 的 json backend 是硬版本校验，升版本会让现有 50+ 条提案整表读不出来。v0.11.0 增 autoExecutable：提案可声明「不可自动执行」（复核类），该声明是**语义闸**，force 也不强穿。v0.11.1 修 2026-10-27 v0.11.0 漏声明 createdAt/updatedAt 造成的时间戳丢失（zod strip ⇒ 提案台排序崩 + 改状态即写坏该行）与三个工具 output schema 未同步新字段（additionalProperties:false ⇒ strict 校验打回）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -33,7 +33,8 @@
         "evolve_read",
         "evolve_propose",
         "evolve_set_status",
-        "evolve_proposals"
+        "evolve_proposals",
+        "evolve_executions"
       ]
     },
     "storage": {
@@ -78,15 +79,23 @@
         "agint.evolve.writeReview": "数据快照 → 自动发现 → 写 reviews/<date>-周复盘.md；返回 path + findings 数",
         "agint.evolve.listReviews": "列出 reviews/ 目录下所有 .md 文件（path/size/mtime）",
         "agint.evolve.readReview": "读指定 .md 复盘报告（path 必须在 root 内，防穿越）",
-        "agint.evolve.propose": "写入 proposal 表一行（status 默认 proposed，category 默认 other）",
-        "agint.evolve.listProposals": "按 status/category 过滤列 proposal（按 createdAt 倒序）",
+        "agint.evolve.propose": "创建提案；input.autoExecutable=false 声明「不可自动执行」（oracle 复核类走这条），默认 true；input.assumedBy 记假设锚点；input.conflictsWith 声明互斥（目标已 applied/approved ⇒ 拒绝创建）；formulaVersion 自动填当前判尺口径",
+        "agint.evolve.listProposals": "按 status/category 过滤列 proposal（按 createdAt 倒序）；每行带派生 staleSince（'r2→r4' = 立项口径已被后续公式变更甩在身后）",
         "agint.evolve.getProposal": "读单条 proposal（id miss → null）",
-        "agint.evolve.setStatus": "更新 proposal 状态 + updatedAt；非法状态抛错",
+        "agint.evolve.setStatus": "更新 proposal 状态 + updatedAt；opts.execMode/execAt 落执行计划并在 approved 且无 blocker 时自动入队；opts.autoExecutable（布尔）显式改「能否自动执行」；非法状态/计划抛错",
         "agint.evolve.removeProposal": "删除 proposal（返回 boolean）",
         "agint.evolve.stats": "返回 {total, byStatus, byCategory} 计数",
         "agint.evolve.baselineGate": "Sprint 12 B3: 读 baseline_history 最近一行返回 {frozen, lastRunAt, since, source}；无数据 → frozen=false",
         "agint.evolve.recordBaselineRun": "Sprint 12 B3: 由 cron baseline-regression-suite 调用，写 baseline_history 一行（id=ranAt）",
-        "agint.evolve.listBaselineHistory": "Sprint 12 B3: 列出 baseline_history 全部行（按 ranAt 倒序，调试/报告用）"
+        "agint.evolve.listBaselineHistory": "Sprint 12 B3: 列出 baseline_history 全部行（按 ranAt 倒序，调试/报告用）",
+        "agint.evolve.enqueueExecution": "手动入队一条提案（面板/工具 run-now）；force=true 不看 autoEnqueueBlocker，但**语义闸 not-auto-executable 不可强穿**（该提案没有可改的目标，排进去必然失败）；执行器 tick 会再复核状态与 blocker",
+        "agint.evolve.claimDueExecutions": "把到期的执行行置 running（attempts++）并返回；执行器的 claim 动作",
+        "agint.evolve.finishExecution": "一次执行的终局；ok=true 时同一刻把提案标 applied（带落地证据），ok=false 留 execError",
+        "agint.evolve.requeueExecution": "重新排队（失败重试 / 周上限顺延 deferred）；改 dueAt 与提案 execState",
+        "agint.evolve.cancelExecution": "撤销执行；参数可给 execution id 或 proposal id",
+        "agint.evolve.listExecutions": "列执行行（按 proposalId/state/since 过滤，带人读 summary）",
+        "agint.evolve.executionStats": "执行队列体检：排队/在跑/本周落地数（自然周口径）",
+        "agint.evolve.describeExecution": "一行执行的人读摘要（面板/工具共用一套措辞）"
       }
     },
     "changelog": "CHANGELOG.md",

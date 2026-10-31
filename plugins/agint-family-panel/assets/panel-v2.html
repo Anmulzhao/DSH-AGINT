@@ -233,6 +233,11 @@ tr.detail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-strong
 .stt::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;flex:none;}
 .stt.proposed{color:var(--warn)} .stt.approved{color:var(--accent)}
 .stt.applied{color:var(--ok)} .stt.rejected{color:var(--err)} .stt.wontfix{color:var(--fg-3)}
+/* 2026-10-27（提案 567dabed）：成立条件已被判尺口径变更甩在身后。
+   与状态标签并列显示 —— 状态说「它在流程的哪一格」，这一枚说「它的结论还可不可信」。
+   方形点（旋转 45°）而不是圆点：一眼能区分「另一种信息」。 */
+.stt.stale{color:var(--warn);font-weight:var(--fw-med);}
+.stt.stale::before{border-radius:1px;transform:rotate(45deg);}
 .cat{font-family:var(--mono);font-size:var(--fs-xs);color:var(--fg-3);
   border:1px solid var(--border);border-radius:var(--r-sm);padding:0 5px;white-space:nowrap;}
 .dotmeter{display:inline-flex;gap:2px;align-items:center;}
@@ -328,6 +333,33 @@ tr.pdetail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-stron
   .card{overflow-x:auto;}
   .card table{min-width:620px;}
 }
+/* ═══ SECTION: upstream — 上游判读（v0.6.0）
+   设计取向：这一节回答的是一个「是/否 + 有多急」的问题，不是给更多图表。
+   所以顶部放三个数字（本机 / 上游最新 / 落后），下面一张按时间倒排的表，
+   语义差异只在展开行里给 —— 平时不该占版面。 */
+.uphead{display:flex;flex-wrap:wrap;gap:var(--s4);margin:var(--s3) 0 var(--s4);}
+.upkpi{flex:1 1 150px;min-width:140px;padding:var(--s3) var(--s4);border-radius:var(--r-md);
+  border:1px solid var(--border);background:var(--bg-l1);}
+.upkpi .k{font-size:var(--fs-xs);color:var(--fg-3);letter-spacing:.03em;}
+.upkpi .v{font-size:18px;font-weight:var(--fw-med);color:var(--fg);margin-top:2px;
+  font-variant-numeric:tabular-nums;word-break:break-all;}
+.upkpi .s{font-size:var(--fs-xs);color:var(--fg-3);margin-top:2px;}
+.upkpi.alert{border-color:rgba(176,74,73,.45);}
+.upkpi.alert .v{color:var(--err);}
+.upkpi.muted{background:transparent;border-style:dashed;}
+.upsem{display:flex;gap:var(--s2);flex-wrap:wrap;}
+.upsem .sev{font-size:var(--fs-xs);padding:1px var(--s2);border-radius:var(--r-sm);
+  border:1px solid var(--border);color:var(--fg-2);font-variant-numeric:tabular-nums;}
+.upsem .sev.blocker{color:var(--err);border-color:rgba(176,74,73,.45);}
+.upsem .sev.warn{color:var(--warn);border-color:rgba(201,162,74,.45);}
+.updetail td{background:var(--bg-l0);}
+.updetail .facts{font-size:var(--fs-sm);color:var(--fg-2);line-height:1.85;word-break:break-word;}
+.updetail .dl{margin:var(--s2) 0 0;padding-left:0;list-style:none;font-size:var(--fs-xs);
+  color:var(--fg-2);line-height:1.8;}
+.updetail .dl li{padding:2px 0;border-top:1px dashed var(--border);}
+.updetail .dl li:first-child{border-top:0;}
+.updetail .dl .k{color:var(--fg);font-weight:var(--fw-med);}
+.updetail .host{color:var(--fg-3);font-size:var(--fs-xs);margin-bottom:var(--s1);}
 </style>
 </head>
 <body>
@@ -348,6 +380,7 @@ tr.pdetail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-stron
       <button class="tab" data-t="pend" role="tab" aria-selected="false">待办</button>
       <button class="tab" data-t="prop" role="tab" aria-selected="false">提案台<span class="tabn" id="propBadge">—</span></button>
       <button class="tab" data-t="oracle" role="tab" aria-selected="false">神谕 · 美之判词</button>
+      <button class="tab" data-t="up" role="tab" aria-selected="false">上游<span class="tabn" id="upBadge">—</span></button>
       <button class="tab on" data-t="q1" role="tab" aria-selected="true">Q1 谁依赖谁</button>
       <button class="tab" data-t="q2" role="tab" aria-selected="false">Q2 谁在干活</button>
       <button class="tab" data-t="q3" role="tab" aria-selected="false">Q3 哪里在腐化</button>
@@ -441,6 +474,28 @@ tr.pdetail>td{background:var(--bg-l2);border-bottom:1px solid var(--border-stron
     </div>
   </div>
 
+  <!-- ═══════════ 上游（dsh 发行记录判读，v0.6.0） ═══════════ -->
+  <div class="card panel" id="up">
+    <h2>上游 · dsh 在变，跟我有没有关系</h2>
+    <div class="cap">
+      数据 = <code>agint_upstream_watch</code> 存储域（落盘）+ <code>agint.upstreamWatch</code> 服务面（运行态）。
+      三列别混：<span class="tag code">影响</span>是**对你**的影响（<code>elsewhere</code> = 上游删了但你没用到，不是风险），
+      <span class="tag comment">语义</span>是签名之外的变化（引擎下限 / 依赖增删 / 常量值 / <code>@deprecated</code>），
+      <span class="tag warn">阻断</span>= 装不上的前置变化（引擎抬到本机不满足、模块形态变更）。
+      <b>「尚未判读」显示为灰色并写明原因</b>，不是 0 —— 本机没启用这个插件，与它判过但没发现问题，是两件事。
+      只读；判读结论若要动手，走提案台由人批。
+    </div>
+    <div class="uphead" id="upHead"></div>
+    <div class="notes" id="upNotes"></div>
+    <table>
+      <thead><tr>
+        <th>版本</th><th>级别</th><th>LLM</th><th>判定</th>
+        <th>影响（对你）</th><th>语义面</th><th class="num">提案</th><th>时间</th>
+      </tr></thead>
+      <tbody id="upRows"></tbody>
+    </table>
+  </div>
+
   <!-- ═══════════ Q1 ═══════════ -->
   <div class="card panel on" id="q1">
     <h2>Q1 · 谁依赖谁 <button class="btn sm" id="viewBtn">切到按服务视图</button></h2>
@@ -526,15 +581,22 @@ let HITS=[],PROVIDED={},TOOLS=[],CRON=[],BUS={total:0,deadletter:0,topics:[],sou
     FAMILY_DIRS=[],TOOL_DAILY={},BUS_DAILY={},OBS={},MANIFEST_CONSUMES={},REPO_DIRS=null,SRC_ERRORS=[],ANOM=[],
     PLUGIN_KINDS={},UNITS=[],SUB_SUMMARY=null,SUB_AUDIT=null,WIRING_EXEMPT=null,DELIVERY=null,DELIVERY_H=null,
     PENDING=null,PROBE_SOURCES=[],PROBE_SOURCE_STATE="missing",ORACLE=null,
+    /* 上游判读（0.6.0）。缺段 = host 半是旧版 ⇒ 渲染「取不到」而不是「没有上游」，
+       判断顺序见 renderUpstream 头部注释。 */
+    UPSTREAM=null,
     /* 提案台（0.5.0）。PROP = host 半下发的 proposals 段；PSTATE = 纯前端视图状态，
        不进 URL、不落盘 —— 刷新回到「待批 + 最老优先」，这是每次开工最该看的那一屏。 */
-    PROP=null,PSTATE={status:"proposed",cat:"",q:"",sort:"oldest",staleOnly:false,open:new Set(),drafts:{},pending:null},
+    PROP=null,PSTATE={status:"proposed",cat:"",q:"",sort:"oldest",staleOnly:false,open:new Set(),drafts:{},pending:null,execMode:"immediate",execAt:""},
     /* 归因表（工具前缀 / cron / 宿主键）由 host 半随 payload 下发（v0.4.0）。
        ⛔ 这里不再放硬编码副本：档案页（停靠面板）与本页各抄一份必然漂移。 */
     OWNERS=null;
 
 function render(){
-if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
+/* 「全空页」早退。⛔ 判据里必须带上游：上游判读是**独立数据源**，
+   一个只装了 upstream-watch、还没跑过任何 cron 的新机器，前三个源都可能为空
+   —— 那时若早退，上游分区永远渲染不出来，页面看起来像没接这个功能。
+   早退分支只清空、不渲染，所以这里补一次 renderUpstream()。 */
+if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)&&!(UPSTREAM&&UPSTREAM.digests&&UPSTREAM.digests.length)){
   stats.innerHTML=""; ages.innerHTML="";
   tbodyQ1.innerHTML=""; tbodySvc.innerHTML=""; tbodyQ2.innerHTML=""; tbodyHost.innerHTML="";
   tbodyQ3.innerHTML=""; tbodyChain.innerHTML=""; q3chips.innerHTML=""; umbList.innerHTML="";
@@ -543,6 +605,7 @@ if(!HITS.length&&!TOOLS.length&&!(BUS&&BUS.total)){
   oracleState.innerHTML=""; tbodyOracle.innerHTML="";
   propStats.innerHTML=""; propRows.innerHTML=""; propNotes.innerHTML="";
   propStatus.innerHTML=""; propCats.innerHTML=""; propRot.innerHTML=""; propRotLeg.textContent="";
+  if(typeof renderUpstream==="function") renderUpstream(); else if(typeof upRows!=="undefined"&&upRows){ upRows.innerHTML=""; upHead.innerHTML=""; upNotes.innerHTML=""; }
   cronUnmapped.innerHTML="—";
   return;
 }
@@ -1062,7 +1125,13 @@ tbodyPend.innerHTML=!PENDING
       }else if(q.items.length){
         cell=q.items.map(it=>{
           const bits=[it.title,(it.domain||it.level)?`${it.domain??""}${it.level?"·"+it.level:""}`:"",it.id].filter(Boolean);
-          return `<div style="font-size:12px">${esc(bits.join(" · "))}</div>`;
+          // 2026-10-27：阻塞原因与解锁条件必须印在条目上。只写「已批准」而不写
+          // 「卡在哪」，等于把「批准了没下文」换成「批准了但还是没下文」。
+          const blk=it.blocker
+            ? `<div style="font-size:11px;color:var(--warn);margin-left:8px">⛔ 卡在：${esc(it.blocker)}</div>`
+              +(it.unblockCondition?`<div style="font-size:11px;color:var(--fg-3);margin-left:8px">⏳ 解锁：${esc(it.unblockCondition)}</div>`:"")
+            : "";
+          return `<div style="font-size:12px">${esc(bits.join(" · "))}${blk}</div>`;
         }).join("")+(q.note?`<div style="font-size:11px;color:var(--fg-3)">${esc(q.note)}</div>`:"");
       }else{
         cell=`<span style="color:var(--fg-3)">—${q.note?"　"+esc(q.note):""}</span>`;
@@ -1286,6 +1355,148 @@ umbList.innerHTML=HITS.filter(h=>h[4]==="umbrella").map(h=>
 
 q.dispatchEvent(new Event("input")); // 重渲染后恢复过滤态
 renderProposals();                   // 提案台自成一节，不参与上面的过滤链
+renderUpstream();                    // 上游判读同理：独立一节，无跨分区过滤
+}
+
+// ── 上游判读（0.6.0）────────────────────────────────────
+/* 这一节的判断顺序很重要，别为了少写几个分支把它压平：
+   1. 服务面不可得 → 说「取不到运行态」，不用落盘冒充（lag / 准确率都算不出来）
+   2. 落盘域不存在 → 说「本机未启用」，不是「0 条判读」
+   3. baselineOnly → 说「已建基线等新版本」，不是「坏了」
+   4. 有记录     → 正常渲染
+   ⛔ 四种情形在页面上必须长得不一样。前三种都渲染成空表，读的人就分不清
+      「没装」「没跑」「跑了没问题」—— 这正是待办节当初踩过的坑。 */
+/* esc / escAttr 是 render() 里的局部 const，本节取不到（与提案台的 pesc 同一个坑）。
+   这里放一份同实现副本：只处理 & 与 <，与上面保持一致。 */
+const uesc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+/* fmtDate 同样是 render() 的局部 const。日期只在这一列用，格式与上面保持一致。 */
+const ufmt=ms=>ms?new Date(ms).toISOString().slice(5,16).replace("T"," "):"—";
+function upKpi(k,v,s,cls){
+  return `<div class="upkpi${cls?" "+cls:""}"><div class="k">${uesc(k)}</div><div class="v">${uesc(v)}</div><div class="s">${uesc(s||"")}</div></div>`;
+}
+function impactChips(imp){
+  if(!imp) return '<span style="color:var(--fg-3)">—</span>';
+  const defs=[["blocking","阻断","blocker"],["breaking","破坏","blocker"],["elsewhere","别人家",""],["additive","新增",""]];
+  const on=defs.filter(([k])=> (imp[k]||0)>0);
+  if(!on.length) return '<span style="color:var(--ok)">无</span>';
+  return on.map(([k,label,cls])=>`<span class="sev${cls&&k==="blocking"?" "+cls:""}" title="${uesc(k)}">${uesc(label)} ${imp[k]}</span>`).join("");
+}
+function semChips(sem, host){
+  const parts=[];
+  if(sem){
+    const tot=(sem.blocker||0)+(sem.warn||0)+(sem.info||0);
+    if(tot>0){
+      if(sem.blocker>0) parts.push(`<span class="sev blocker">阻断 ${sem.blocker}</span>`);
+      if(sem.warn>0) parts.push(`<span class="sev warn">警示 ${sem.warn}</span>`);
+      if(sem.info>0) parts.push(`<span class="sev">提示 ${sem.info}</span>`);
+    }
+  }
+  if(host&&host.semanticImpact&&host.semanticImpact!=="unknown"&&host.semanticImpact!=="none"){
+    parts.push(`<span class="sev warn" title="宿主主包 ${uesc(host.from||"?")}→${uesc(host.to||"?")}">宿主 ${uesc(host.semanticImpact)}</span>`);
+  }
+  return parts.length?`<div class="upsem">${parts.join("")}</div>`:'<span style="color:var(--fg-3)">—</span>';
+}
+function renderUpstream(){
+  if(!upRows) return;
+  const U=UPSTREAM;
+  upHead.innerHTML=""; upNotes.innerHTML=""; upRows.innerHTML="";
+  upBadge.textContent = U&&U.counts&&U.counts.digests ? String(U.counts.digests) : "—";
+
+  if(!U){
+    upHead.innerHTML=upKpi("上游判读","取不到","/v2/data 无 upstream 段（host 半是旧版，需重启 dsh）","muted");
+    return;
+  }
+  if(U.state==="unavailable"){
+    upHead.innerHTML=upKpi("上游判读","未启用",U.reason||"存储域不存在","muted");
+    return;
+  }
+  if(U.state==="error"){
+    upHead.innerHTML=upKpi("上游判读","读取失败",U.reason||"存储域解析失败","alert");
+    return;
+  }
+
+  const lag=U.lag;
+  const installed=(lag&&lag.installed)||null;
+  const latest=(lag&&lag.latestVersion)||(U.latest&&U.latest.tag)||null;
+  const behind=lag&&typeof lag.behind==="boolean"?lag.behind:null;
+  upHead.innerHTML =
+    upKpi("本机 dsh", installed||"—", installed?"正在跑的版本":"读不到安装版本")
+    + upKpi("上游最新", latest||"—", U.latest&&U.latest.publishedAt?("发布于 "+String(U.latest.publishedAt).slice(0,10)):"尚未拉到发行记录")
+    + (behind===null
+        ? upKpi("落后","—",(lag&&lag.reason)||"运行态不可得，不猜","muted")
+        : (behind
+            ? upKpi("落后","有新版",`级别 ${lag.level||"unknown"}`, "alert")
+            : upKpi("落后","已是最新",`级别 ${lag.level||"same"}`)))
+    + upKpi("判读记录", String(U.counts?.digests??0),
+        `已判 ${U.counts?.judged??0} · 失败 ${U.counts?.failed??0}${U.counts?.blockers?` · 阻断 ${U.counts.blockers}`:""}`,
+        U.counts?.failed>0?"alert":"");
+
+  /* 判读对拍（v0.3）：这一格回答「这套判读到底准不准」。
+     ⛔ 三个状态必须分开写：没有样本 / 运行态不可得 / 有样本。
+        合并成一个「0」会让人以为「一次都没错」。 */
+  const cal=U.calibration;
+  if(cal&&cal.state==="ok"){
+    const fp=cal.counts?.falsePositive??0, fn=cal.counts?.falseNegative??0;
+    upHead.innerHTML += upKpi("判读对拍", `${cal.packagesChecked??0} 个包`,
+      `误报 ${fp} · 漏报 ${fn} · 确认 ${cal.counts?.confirmed??0}`, (fn>0||fp>0)?"alert":"");
+  }else if(cal&&cal.state==="pending"){
+    upHead.innerHTML += upKpi("判读对拍","等升级",`已判 ${cal.pending??0} 个版本，装上后自动回填`,"muted");
+  }else if(cal&&cal.state==="error"){
+    upHead.innerHTML += upKpi("判读对拍","读失败",String(cal.reason||"").slice(0,60),"alert");
+  }else{
+    upHead.innerHTML += upKpi("判读对拍","尚无样本",
+      U.serviceAvailable===false?"运行态不可得":(cal?"还没有可对拍的判读":"—"),"muted");
+  }
+
+  if(U.baselineOnly){
+    upNotes.innerHTML = `<div class="note">已建基线，等新版本 —— 频道首次运行只记快照、不产信号（否则上线当天会把历史版本一次性打成新信号）。这是设计行为，不是故障。</div>`;
+  }
+  const notes=[...(U.notes||[])];
+  if(U.serviceAvailable===false&&U.serviceReason) notes.push(U.serviceReason);
+  if(notes.length&&!U.baselineOnly){
+    upNotes.innerHTML = `<div class="note">${notes.map(n=>uesc(n)).join("<br>")}</div>`;
+  }
+
+  if(!U.digests||!U.digests.length){
+    upRows.innerHTML = `<tr><td colspan="8" style="color:var(--fg-3)">尚无判读记录（${uesc(U.baselineOnly?"等频道拉到下一个版本":"可用 upstream_digest 手动跑一次")}）</td></tr>`;
+    return;
+  }
+
+  const rows=[];
+  for(const d of U.digests){
+    const id="up-"+String(d.tag||"").replace(/[^A-Za-z0-9]/g,"_");
+    const llm=d.llmStatus==="judged"?`<span class="tag code">judged</span>`
+      :d.llmStatus==="failed"?`<span class="tag warn">failed</span>`
+      :`<span class="tag comment">${uesc(d.llmStatus||"—")}</span>`;
+    const verdict=d.verdict?`<span class="tag${d.verdict==="risk"?" warn":""}">${uesc(d.verdict)}</span>`:`<span style="color:var(--fg-3)">—</span>`;
+    const lvl=d.level&&d.preStageChange==="regressed"?`${uesc(d.level)} <span class="tag warn">阶段倒退</span>`:uesc(d.level||"—");
+    rows.push(`<tr class="row" data-g="up" data-i="${uesc(d.tag||"")}" style="cursor:pointer">
+      <td class="name">${uesc(d.tag||"—")}</td>
+      <td>${lvl}</td>
+      <td>${llm}</td>
+      <td>${verdict}</td>
+      <td>${impactChips(d.impact)}</td>
+      <td>${semChips(d.semantic,d.host)}</td>
+      <td class="num">${d.proposalCount||0}</td>
+      <td style="font-size:12px;color:var(--fg-3)">${ufmt(d.updatedAt?new Date(d.updatedAt).getTime():null)}</td>
+    </tr>`);
+    const hostDeltas=(d.host&&d.host.deltas)||[];
+    const detail = `<tr class="updetail hidden" id="d-${uesc(id)}"><td colspan="8">
+      <div class="facts">${uesc(d.headline||"（无结论 headline）")}${d.factsSummary?`<br><span style="color:var(--fg-3)">${uesc(d.factsSummary)}</span>`:""}</div>
+      ${hostDeltas.length?`<div class="host">宿主主包语义差异（${uesc(d.host.from||"?")} → ${uesc(d.host.to||"?")}）：</div>
+        <ul class="dl">${hostDeltas.map(x=>`<li><span class="k">${uesc(x.kind||"")}</span>${x.symbol?` · ${uesc(x.symbol)}`:""}${(x.before||x.after)?` · ${uesc(x.before||"∅")} → ${uesc(x.after||"∅")}`:""}${x.severity?` <span class="sev${x.severity==="blocker"?" blocker":x.severity==="warn"?" warn":""}">${uesc(x.severity)}</span>`:""}${x.note?`<br><span style="color:var(--fg-3)">${uesc(x.note)}</span>`:""}</li>`).join("")}</ul>`
+      :`<div class="host">宿主主包语义差异：无记录（v0.1 判读没有这一层，或该版本元信息未取到）</div>`}
+    </td></tr>`;
+    rows.push(detail); // ⛔ 不能只 push 主行 —— 展开行不进 DOM 就等于「点了没反应」
+  }
+  upRows.innerHTML=rows.join("");
+
+  // 展开/收起：点行切换。与提案台同一交互（点行只展开，不写）。
+  upRows.onclick=(e)=>{
+    const tr=e.target.closest("tr.row"); if(!tr) return;
+    const det=document.getElementById("d-up-"+String(tr.dataset.i||"").replace(/[^A-Za-z0-9]/g,"_"));
+    if(det) det.classList.toggle("hidden");
+  };
 }
 
 // ── 提案台（0.5.0）────────────────────────────────────────
@@ -1300,6 +1511,43 @@ const pescAttr=s=>pesc(s).replace(/"/g,"&quot;");
      2) 证据栏只列可核对的事实（路径在不在、符号命不命中），措辞一律「线索」。
      3) 拒绝 / wontfix 必填理由：服务端也拦（4xx），不只靠前端。 */
 const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地",rejected:"已拒绝",wontfix:"wontfix"};
+/* 2026-10-27：approved 不再是单一状态 —— 它下面有「排队中 / 执行中 / 已顺延 / 失败 / 手动」
+   五种处境。一个标签盖住五种处境，就会出现「面板说已批准待执行，实际正在自动跑」的误读。 */
+function plabel(it){
+  if(!it||it.status!=="approved") return PLABEL[it&&it.status]||(it&&it.status)||"?";
+  /* 2026-10-27：不可自动执行的提案（复核类）单独一档。
+     不单列的话，它会落进「已批准·执行失败」—— 那是「试过没成功」，
+     而它压根没被允许试，读的人会以为系统还在替它跑。 */
+  if(it.autoExecutable===false) return "已批准（不可自动执行）";
+  /* 2026-10-27：blocker 优先于执行态。前置没到位的提案**永远不会入队**，
+     execState 只会停在 idle —— 旧逻辑显示「已批准·待入队」，读的人以为
+     「再等等就会自己跑」；而待办那边同一份数据写的是「已批准·阻塞中（等前置）」。
+     同一行数据在两个地方两种说法，就是这次困惑的来源（实机 a85ef850）。 */
+  if(String(it.blocker??"").trim()!=="") return "已批准·阻塞中";
+  const m={queued:"已批准·排队中",running:"已批准·执行中",succeeded:"已落地",failed:"已批准·执行失败",
+           deferred:"已批准·已顺延",cancelled:"已批准·执行已撤销",
+           idle:it.execMode==="manual"?"已批准（手动）":"已批准·待入队"};
+  return m[it.execState]||"已批准待执行";
+}
+/* 一句话说清「这条批准之后会怎么跑」：手动 / 定时 · 排队中 / 执行中 / 失败原因。 */
+function execText(it){
+  if(!it) return "—";
+  if(it.autoExecutable===false) return "不可自动执行 —— 只能「只批准」（它没有可改的代码目标）";
+  const blocker=String(it.blocker??"").trim();
+  if(blocker){
+    const unlock=String(it.unblockCondition??"").trim();
+    return `阻塞中 —— ${blocker}${unlock?`（解锁：${unlock}）`:""}`;
+  }
+  if((it.execMode||"manual")==="manual") return "手动 —— 只批准，不自动执行";
+  const when=(it.execMode==="scheduled")
+    ? `定时 ${String(it.execAt||"").slice(0,16).replace("T"," ")}`
+    : "立即";
+  const st={queued:"排队中",running:"执行中",succeeded:"已完成",failed:"失败",deferred:"已顺延",
+            cancelled:"已撤销",idle:"待入队"}[it.execState]||it.execState||"—";
+  const tries=Number(it.execAttempts)>0?`（第 ${it.execAttempts} 次）`:"";
+  const err=it.execError?` · ${it.execError}`:"";
+  return `${when} · ${st}${tries}${err}`;
+}
 const PORDER=["proposed","approved","applied","rejected","wontfix"];
 const PSEC=[["problem","目的 · 解决什么问题"],["plan","方案 · 打算怎么改"],
             ["benefit","价值 · 对 AGINT 的意义"],["risk","风险与边界"],["links","关联"]];
@@ -1367,9 +1615,34 @@ function propDetail(it){
       : [["proposed","重新打开","ghost"]];
   const pend=PSTATE.pending&&PSTATE.pending.id===it.id?PSTATE.pending:null;
   const draft=PSTATE.drafts[it.id]||"";
+  /* 2026-10-27：批准时选执行方式。默认「立即自动执行」——老板要的是批准即执行，
+     不是再生成一张催办工作单；「只批准」保留为显式选项（老语义）。 */
+  /* 2026-10-27：不可自动执行的提案（复核类）只给「只批准」——
+     把「立即/定时」置灰而不是照排再失败。语义闸在服务端也有一道（400），
+     这里只是让人在点之前就看见，不用靠报错才知道。 */
+  const canAutoExec = it.autoExecutable!==false;
+  const execPick = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
+  const execBar=pend&&pend.status==="approved"?`
+      <div style="margin:6px 0 0;padding-top:8px;border-top:1px dashed var(--border)">
+        <span class="dlab" style="display:block;margin:0 0 4px">批准后怎么执行</span>
+        <select data-exec-mode style="background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">
+          <option value="immediate"${execPick==="immediate"?" selected":""}${canAutoExec?"":" disabled"}>立即自动执行（新增提案默认）</option>
+          <option value="scheduled"${execPick==="scheduled"?" selected":""}${canAutoExec?"":" disabled"}>定时自动执行</option>
+          <option value="manual"${execPick==="manual"?" selected":""}>只批准，不自动执行</option>
+        </select>
+        ${execPick==="scheduled"?`<input type="datetime-local" data-exec-at value="${pescAttr(PSTATE.execAt||"")}" style="margin-left:6px;background:var(--bg-l1);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--r-sm);padding:4px 6px;font-size:var(--fs-sm)">`:""}
+        <div style="margin-top:4px;font-size:var(--fs-xs);color:var(--fg-3)">
+          ${!canAutoExec
+            ? "⛔ 这条提案声明了不可自动执行（复核类）—— 它要的动作是人工复核，没有可改的代码目标，只能「只批准」。"
+            : execPick==="manual"
+              ? "只写 approved，不进队列 —— 之后要跑，再点「立即执行」或改用定时。"
+              : "批准即入执行队列，由 agint-executor 自动动手（走既有 D-QAF 闸门，失败会留原因）。本周自动落地上限 3 次。"}
+        </div>
+      </div>`:"";
   const confirmBar=pend?`<div class="confirm">
       <div class="q">确认把 <b>${pesc(it.title)}</b> 标为 <b>${PLABEL[pend.status]||pend.status}</b>？<br>
       ${pend.note?`理由：${pesc(pend.note)}`:"未填理由（批准可以不填）。"}</div>
+      ${execBar}
       <div class="dbtns">
         <button class="btn ok" data-pact="confirm" data-id="${pescAttr(it.id)}">确认写入</button>
         <button class="btn ghost" data-pact="cancel" data-id="${pescAttr(it.id)}">取消</button>
@@ -1392,6 +1665,9 @@ function propDetail(it){
           · 更新 ${pesc((it.updatedAt||"—").slice(0,19).replace("T"," "))}
           · ${it.bodyChars} 字${it.bodyTruncated?"（正文过长，已截断）":""}
           <br>来源 ${pesc(it.source||"—")}${it.sameSourceCount>1?`　（同一来源共 ${it.sameSourceCount} 条）`:""}
+          ${it.formulaVersion||it.assumedBy?`<br>成立口径 ${pesc(it.formulaVersion||"(未记)")}${it.assumedBy?` · 假设 ${pesc(it.assumedBy)}`:""}${it.staleSince?`　<span style="color:var(--warn)">⚠ 现已 ${pesc(it.staleSince.split("→")[1]||"")}，结论需重新评审</span>`:""}`:""}
+          ${it.conflictsWith&&it.conflictsWith.length?`<br>声明互斥 ${pesc(it.conflictsWith.map(x=>x.slice(0,8)).join(" / "))}`:""}
+          ${it.status==="approved"||it.execState!=="idle"?`<br>执行 ${pesc(execText(it))}`:""}
         </div></div>
       </div>
       <div>
@@ -1412,7 +1688,8 @@ function propRow(it){
   const meter=[0,1,2,3,4].map(i=>`<i class="${i<(it.sectionMatched||0)?"on":""}"></i>`).join("");
   return `<tr class="prow" tabindex="0" data-id="${pescAttr(it.id)}" aria-expanded="${open}">
     <td class="tcell"><div class="t">${pesc(it.title)}</div>
-      <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(PLABEL[it.status]||it.status)}</span>
+      <div class="sub2"><span class="stt ${pescAttr(it.status)}">${pesc(plabel(it))}</span>
+      ${it.staleSince?`<span class="stt stale" title="立项时按 ${pescAttr(it.staleSince.split("→")[0])} 的判尺口径成立，当前 ${pescAttr(it.staleSince.split("→")[1]||"")} —— 结论可能已失效，批准前先重新评审">口径已变 ${pesc(it.staleSince)}</span>`:""}
       <span style="margin-left:8px;font-family:var(--mono)">${pesc(it.id.slice(0,8))}</span></div></td>
     <td><span class="cat">${pesc(it.category)}</span></td>
     <td class="num ${it.ageDays>30?"fail-mid":""}">${ageTxt(it.ageDays)}</td>
@@ -1440,6 +1717,9 @@ function renderProposals(){
   if(PROP.source==="service"&&PROP.storage) notes.push("数据来自 agint.evolve.listProposals()（进程内权威读）；存储面仅作旁证。");
   const noSec=items.filter(i=>i.status==="proposed"&&i.sectionMatched===0).length;
   if(noSec>0) notes.push(`待批里有 ${noSec} 条正文没有分节（既无「现状问题」也无「改动方案」）—— 这类提案基本无法评审，建议直接拒绝或 wontfix 并写明理由。`);
+  // 2026-10-27（提案 567dabed）：失效提案长得和正常提案一模一样（a85ef850 挂了 18 天）。
+  const stale=items.filter(i=>i.staleSince&&(i.status==="proposed"||i.status==="approved")).length;
+  if(stale>0) notes.push(`有 ${stale} 条提案的成立条件已被判尺口径的变更甩在身后（行标「口径已变」）—— 批准前先重新评审：它当年成立，不代表现在还成立。`);
   propNotes.innerHTML=notes.map(n=>`<div>${pesc(n)}</div>`).join("");
 
   propStats.innerHTML=[
@@ -1480,19 +1760,44 @@ function renderProposals(){
  *  ⛔ 写完必须重取，不能就地改本地状态：那样面板会显示「我以为的结果」。 */
 async function submitDecision(pend){
   const btn=propRows.querySelector(`[data-pact="confirm"][data-id="${pend.id}"]`);
+  // 批准时把执行方式一起带上（2026-10-27）：服务端据此落执行计划并入队。
+  let body={id:pend.id,status:pend.status,note:pend.note||""};
+  if(pend.status==="approved"){
+    // ⛔ 不可自动执行的提案只能「只批准」——与服务端同一口径（那边还会 400 兜底）。
+    const canAutoExec = pend.autoExecutable!==false;
+    const mode = canAutoExec ? (PSTATE.execMode||"immediate") : "manual";
+    body.execMode=mode;
+    if(mode==="scheduled"){
+      if(!PSTATE.execAt){ toast("定时自动执行需要选一个时间点","err"); return; }
+      const ts=new Date(PSTATE.execAt).getTime();
+      if(!Number.isFinite(ts)){ toast("时间格式不对，请重新选","err"); return; }
+      if(ts<Date.now()-60_000){ toast("定时时间在过去 —— 要立刻跑请选「立即自动执行」","err"); return; }
+      body.execAt=new Date(ts).toISOString();
+    }
+  }
   if(btn){ btn.disabled=true; btn.textContent="写入中…"; }
   try{
     const r=await fetch(new URL("proposal/decision",location.href),{
       method:"POST",
       headers:{"content-type":"application/json","x-agint-panel":"1"},
-      body:JSON.stringify({id:pend.id,status:pend.status,note:pend.note||""}),
+      body:JSON.stringify(body),
     });
     let D=null; try{ D=await r.json(); }catch{ D=null; }
     if(!r.ok||!D||D.ok!==true) throw new Error((D&&D.error)||("HTTP "+r.status));
     const p=D.proposal||{};
+    const ex=D.execution||{};
+    const exTxt = pend.status!=="approved" ? ""
+      : ex.mode==="manual"||!ex.mode ? "　· 只批准，未进执行队列"
+      : ex.mode==="scheduled" ? `　· 已排定时 ${pesc(String(ex.at||"").slice(0,16).replace("T"," "))}`
+      /* ⛔ 不写「由执行器自动动手」就收工：入队只是开始，1 秒后可能就确定性失败。
+         写明结果会自动回到提案行，读的人才知道该看哪里，而不是盯着这句 toast。 */
+      : `　· 已入执行队列（${pesc(ex.state||"queued")}）—— 结果会自动刷新到提案行`;
     PSTATE.pending=null; PSTATE.drafts[pend.id]="";
-    toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${PLABEL[p.status]||p.status}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}`);
+    toast(`已写入 <b>${pesc(p.title||pend.id)}</b> → ${plabel(p)}${D.changed===false?"（目标态与现状相同，未写盘）":""}　${pesc((D.at||"").slice(0,19).replace("T"," "))}${exTxt}`);
     await load();
+    /* 2026-10-27：入队那一拍的 execState 必然是 queued，紧接着可能就是 failed。
+       只 load 一次 = 把「排队中」钉在屏幕上（本轮事故的直接成因）。 */
+    if(pend.status==="approved"&&(ex.state==="queued"||ex.state==="running")) chaseExecTerminal(pend.id);
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent="确认写入"; }
     toast("写入失败："+pesc(e.message)+" —— 状态未变，可以重试。","err");
@@ -1535,7 +1840,7 @@ tabs.addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b) return;
   tabs.querySelectorAll(".tab").forEach(x=>{const on=x===b;
     x.classList.toggle("on",on); x.setAttribute("aria-selected",on?"true":"false");});
-  for(const id of ["pend","prop","oracle","q1","q2","q3","chain","umb"])
+  for(const id of ["pend","prop","oracle","up","q1","q2","q3","chain","umb"])
     document.getElementById(id).classList.toggle("on",id===b.dataset.t);
 });
 /* 「去提案台审批」这类跨区跳转：按钮上写 data-goto=<分区 id>，走同一条切换逻辑。 */
@@ -1573,6 +1878,15 @@ propRows.addEventListener("input",e=>{
   const ta=e.target.closest("textarea[data-note]"); if(!ta) return;
   PSTATE.drafts[ta.dataset.note]=ta.value;
 });
+/* 执行方式选择（2026-10-27）。
+   ⛔ datetime-local 的 change 不重渲染：重渲染会把正在选的日期控件收掉，
+      表现是「点一下就没了」。只在切 execMode 时重画。 */
+propRows.addEventListener("change",e=>{
+  const sel=e.target.closest("[data-exec-mode]");
+  if(sel){ PSTATE.execMode=sel.value; if(sel.value!=="scheduled") PSTATE.execAt=""; renderProposals(); return; }
+  const at=e.target.closest("[data-exec-at]");
+  if(at){ PSTATE.execAt=at.value; }
+});
 propRows.addEventListener("click",async e=>{
   const btn=e.target.closest("[data-pact]");
   if(btn){
@@ -1588,7 +1902,11 @@ propRows.addEventListener("click",async e=>{
         const ta=propRows.querySelector(`textarea[data-note="${id}"]`); if(ta) ta.focus();
         return;
       }
-      PSTATE.pending={id,status,note}; renderProposals(); return;
+      // 带上 autoExecutable：提交时才知道能不能排自动执行（确认条与提交要同一口径）。
+      // ⛔ 提案列表在 PROP.items 里（`items` 是渲染函数内的局部变量，这里取不到）。
+      const plist=(PROP&&PROP.items)||[];
+      const prow=plist.find(x=>x&&x.id===id);
+      PSTATE.pending={id,status,note,autoExecutable:prow?prow.autoExecutable!==false:true}; renderProposals(); return;
     }
     if(pact==="confirm"){ await submitDecision({...PSTATE.pending}); return; }
     return;
@@ -1657,6 +1975,9 @@ function applyPayload(D){
   /* 提案台：整段也是可选产物（host 半旧版没有这个键）。
      ⛔ 缺键 =「取不到」，不是「没有提案」—— 渲染区分开写（见 renderProposals）。 */
   PROP=(D.proposals&&typeof D.proposals==="object")?D.proposals:null;
+  /* 上游判读：缺段 = host 半旧版（会显示「取不到」）；段内 state 自己带降级信息，
+     不并进 SRC_ERRORS —— 本机没启用这个插件时不该在页面顶部弹一条黄条。 */
+  UPSTREAM=(D.upstream&&typeof D.upstream==="object")?D.upstream:null;
   REPO_DIRS=Array.isArray(D.repoDirs)?D.repoDirs:{state:"unavailable",reason:(D.repoDirs&&D.repoDirs.reason)||"不可得"};
   if(D.enabled===false) SRC_ERRORS.push("kill-switch 已关闭面板数据");
 }
@@ -1668,19 +1989,74 @@ function showSrcErrors(){
     document.querySelector(".overview").prepend(el); }
   el.textContent="⚠ 数据源降级 — "+SRC_ERRORS.join("；");
 }
-async function load(){
-  refreshBtn.disabled=true; refreshBtn.textContent="刷新中…";
+/* 2026-10-27：取数只有一个实现，手动与自动共用 —— 两份 fetch 必然漂移
+   （手动那份会校验 ok/报错，自动那份忘了校验，就变成「静默画旧数据」）。 */
+async function refreshData({silent=false}={}){
+  if(silent&&busyTyping()) return false;
+  const y=window.scrollY;
   try{
     const r=await fetch(new URL("v2/data",location.href),{cache:"no-store"});
     const D=await r.json();
     if(!D) throw new Error("空响应");
     if(D.ok===false&&D.enabled!==false) throw new Error(D.error||"数据端点报错");
-    applyPayload(D); render();
+    applyPayload(D); render(); showSrcErrors();
+    /* 轮询重绘不能把人从正在看的位置弹走：静默刷新恢复原滚动位置。
+       手动刷新不恢复 —— 那是「我要看最新的」，跳回顶部反而多余。 */
+    if(silent&&y>0&&window.scrollY!==y) window.scrollTo(0,y);
+    return true;
   }catch(e){
-    SRC_ERRORS=["取数失败："+e.message]; render();
-  }finally{
-    showSrcErrors();
+    /* 静默失败不覆盖画面：偶发一次取数失败就把整页刷成错误页，
+       比数据晚 15 秒更烦人。手点「刷新」时才把错误摆出来。 */
+    if(!silent){ SRC_ERRORS=["取数失败："+e.message]; render(); showSrcErrors(); }
+    return false;
+  }
+}
+/* 2026-10-27：自动刷新。
+   ⛔ 事故原貌：面板此前只在加载时取一次数。批准即执行后前端重取，那一瞬
+   execution 还是 queued（窗口不足 1 秒），页面就把「已批准·排队中」画在屏幕上；
+   1 秒后执行转 failed，但页面再不重绘 ⇒ 执行态永久停在入队那一刻。
+   实机后果：提案早已失败，面板还写着「排队中」，读的人以为它一直没动。
+   现在：15s 一拍静默刷新兜底；刚入队的那条额外追终态（见 chaseExecTerminal）。 */
+const AUTO_MS=15000;
+let autoTimer=null;
+let chaseTimer=null;
+/* 离线渲染测试（test/proposal-board.test.mjs）把本段脚本放进 vm 里跑，
+   沙箱没有定时器 —— 探测一下再起表，否则 load() 直接抛 ReferenceError，
+   整块提案台渲染不出来（测试报的就是「setInterval is not defined」）。 */
+const TIMERS_OK=typeof setInterval==="function"&&typeof clearInterval==="function";
+/** 人在打字 / 页面在后台时不重绘：重绘会重建输入框，正在输的搜索词会丢焦点。 */
+function busyTyping(){
+  if(document.hidden) return true;
+  const ae=document.activeElement;
+  return !!ae&&(/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)||ae.isContentEditable===true);
+}
+function startAutoRefresh(){
+  if(autoTimer||!TIMERS_OK) return;
+  autoTimer=setInterval(()=>{ void refreshData({silent:true}); },AUTO_MS);
+  /* 切回这个标签页立刻补一拍：后台时不刷新，回来不能还是 10 分钟前的画面。 */
+  if(typeof document!=="undefined"&&document.addEventListener){
+    document.addEventListener("visibilitychange",()=>{ if(!document.hidden) void refreshData({silent:true}); });
+  }
+}
+/** 入队后追终态：执行器的确定性失败通常 1 秒内落定，不必等满 15 秒。
+ *  只追这一条，追到非 queued/running 或满 6 次就停 —— 不无限轮询烧服务端。 */
+function chaseExecTerminal(id){
+  if(!TIMERS_OK) return;
+  clearInterval(chaseTimer);
+  let n=0;
+  chaseTimer=setInterval(async()=>{
+    n+=1;
+    const ok=await refreshData({silent:true});
+    const it=(ok&&PROP&&Array.isArray(PROP.items))?PROP.items.find(x=>x&&x.id===id):null;
+    const st=it?String(it.execState||"idle"):"";
+    if((it&&st!=="queued"&&st!=="running")||n>=6) clearInterval(chaseTimer);
+  },2000);
+}
+async function load(){
+  refreshBtn.disabled=true; refreshBtn.textContent="刷新中…";
+  try{ await refreshData(); }finally{
     refreshBtn.disabled=false; refreshBtn.textContent="刷新";
+    startAutoRefresh();
   }
 }
 refreshBtn.onclick=load;

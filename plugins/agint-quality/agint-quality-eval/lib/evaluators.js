@@ -102,15 +102,42 @@ export async function evalReliability(ctx, target) {
 }
 
 /**
+ * 判读类插件的 id：这类插件产出的是**结论**，不是动作。
+ *
+ * 对它们只看调用次数是错的 —— 一周只判几个 dsh 版本很正常，`calls/100` 恒接近 0，
+ * 于是「判得准不准」这个真正重要的质量维度在评分里完全消失。
+ * 2026-10-28（v0.3）起，对这类 target 额外读 `agint.upstreamWatch.calibration()`
+ * 的真值样本（升级后回填的对拍记录），把准确率并进 effectiveness。
+ *
+ * ⛔ 这里刻意写成精确集合而不是前缀匹配：放宽会把「恰好名字里带 upstream」的
+ *    无关插件也拽进来，而它也未必提供 calibration 出口。
+ */
+const CALIBRATED_TARGETS = new Set(['agint-upstream-watch']);
+
+/**
  * Effectiveness: 调用频次 + 平均延迟（反向）
  * 数据源：agint.toolStats.summary()
  *   score = clamp(0..1, calls/100) * (1 - clamp(0..1, avgLatency/5000) * 0.3)
+ *
+ * 判读类插件（`CALIBRATED_TARGETS`）额外并入**判读准确率**：
+ *   score = 0.5 * usage*speed + 0.5 * (1 - (误报+漏报)/已对拍包数)
+ * 样本 < 3 时不并入（一个样本就能把分数拽到 0 或 1），并在 findings 里说明。
  */
 export async function evalEffectiveness(ctx, target) {
   const out = { score: null, findings: [] };
   const toolStats = ctx.get('agint.toolStats');
+  const calibrated = CALIBRATED_TARGETS.has(target?.id);
+  const cal = calibrated ? await readCalibration(ctx, out) : null;
+
   if (!toolStats || typeof toolStats.summary !== 'function') {
     out.findings.push({ severity: 'warn', message: 'agint.toolStats unavailable', evidence: [] });
+    // 没有用量数据但有真值样本：仍然可以说「它判过、且判对了多少」——
+    // 这比 null 更接近事实。没有样本时保持 null（= 无数据源，维度不参与综合分）。
+    if (cal?.available && cal.metrics?.packagesChecked >= 3) {
+      out.score = accuracyOf(cal.metrics);
+      out.raw = { calibration: cal.metrics, basis: 'calibration-only' };
+      out.findings.push({ severity: 'info', message: '分数仅依据判读校准（无工具用量数据）', evidence: [] });
+    }
     return out;
   }
   try {
@@ -119,18 +146,85 @@ export async function evalEffectiveness(ctx, target) {
     const entry = items.find((s) => s.tool === target.id || s.name === target.id);
     if (!entry) {
       out.findings.push({ severity: 'info', message: `no summary records for ${target.id}`, evidence: [] });
+      if (cal?.available && cal.metrics?.packagesChecked >= 3) {
+        out.score = accuracyOf(cal.metrics);
+        out.raw = { calibration: cal.metrics, basis: 'calibration-only' };
+        out.findings.push({ severity: 'info', message: '分数仅依据判读校准（该插件没有工具调用记录）', evidence: [] });
+      }
       return out;
     }
     const calls = entry.calls || 0;
     const avgLatency = entry.avgLatencyMs || entry.avgLatency || 0;
     const usage = Math.min(1, calls / 100);
     const speed = 1 - Math.min(1, avgLatency / 5000) * 0.3;
-    out.score = usage * speed;
-    out.raw = { calls, avgLatency, usage, speed };
+    let score = usage * speed;
+
+    if (cal?.available && cal.metrics?.packagesChecked >= 3) {
+      const acc = accuracyOf(cal.metrics);
+      score = 0.5 * score + 0.5 * acc;
+      out.raw = { calls, avgLatency, usage, speed, calibration: cal.metrics, accuracy: acc };
+    } else {
+      out.raw = { calls, avgLatency, usage, speed };
+      if (calibrated) {
+        out.findings.push({
+          severity: 'info',
+          message: '判读校准样本不足（<3 个包），本次只用用量计分',
+          evidence: [cal?.reason].filter(Boolean),
+        });
+      }
+    }
+    for (const f of cal?.findings ?? []) {
+      // 漏报是 warn：它意味着「上游破了而 AGINT 不知道」，直接影响这个插件的可信度
+      out.findings.push(f);
+    }
+    out.score = score;
   } catch (err) {
     out.findings.push({ severity: 'warn', message: `toolStats.summary failed: ${err.message}`, evidence: [] });
   }
   return out;
+}
+
+/** 1 - (误报 + 漏报) / 已对拍包数。样本为 0 时返回 null（调用方已保证 >=3）。 */
+function accuracyOf(metrics) {
+  const n = metrics?.packagesChecked ?? 0;
+  if (!n) return null;
+  const bad = (metrics.falsePositiveRate ?? 0) + (metrics.falseNegativeRate ?? 0);
+  return Math.max(0, Math.min(1, 1 - bad));
+}
+
+/**
+ * 读判读器的校准出口。⛔ 服务不存在 / 出口不存在 / 抛错，一律返回 null 并只用一条 info ——
+ * 这不是错误，是「本机没装那个插件」，不该在别人的评分里报 warn。
+ */
+async function readCalibration(ctx, out) {
+  let svc = null;
+  try { svc = ctx.get('agint.upstreamWatch'); } catch { svc = null; }
+  if (!svc || typeof svc.calibration !== 'function') return null;
+  try {
+    const c = await svc.calibration();
+    if (!c || typeof c !== 'object') return null;
+    const n = c.packagesChecked ?? 0;
+    return {
+      available: n > 0,
+      reason: n > 0 ? null : '尚无已回填的判读样本',
+      metrics: n > 0 ? {
+        packagesChecked: n,
+        falsePositiveRate: c.falsePositiveRate ?? null,
+        falseNegativeRate: c.falseNegativeRate ?? null,
+        confirmed: c.counts?.confirmed ?? 0,
+      } : null,
+      findings: (c.counts?.falseNegative ?? 0) > 0
+        ? [{
+          severity: 'warn',
+          message: `判读器漏报 ${c.counts.falseNegative} 个包（当时判无风险，实际用到的符号没了）`,
+          evidence: [`falseNegativeRate=${c.falseNegativeRate}`],
+        }]
+        : [],
+    };
+  } catch (err) {
+    out.findings.push({ severity: 'info', message: `calibration() 失败：${String(err?.message ?? err).slice(0, 120)}`, evidence: [] });
+    return null;
+  }
 }
 
 /**

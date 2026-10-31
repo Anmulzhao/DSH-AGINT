@@ -86,6 +86,15 @@ const DECISION_STATUSES = new Set(['approved', 'applied', 'rejected', 'wontfix',
  * 允许「点了标记已落地但不写证据」，等于亲手把那张表变成不可信。
  */
 const REASON_REQUIRED = new Set(['rejected', 'wontfix', 'applied']);
+/**
+ * 批准时可选的执行方式（2026-10-27）。
+ *
+ * ⛔ 这是「批准即执行」的入口：选了 immediate / scheduled，`agint.evolve.setStatus`
+ *    会落执行计划并把提案放进 `agint_evolve.execution` 队列，由 `agint-executor`
+ *    自动跑 —— 不再生成一张催办工作单让老板自己动手。
+ *    `manual` = 只批准、不自动执行（老提案的语义，也是默认值）。
+ */
+const DECISION_EXEC_MODES = new Set(['manual', 'immediate', 'scheduled']);
 const DECISION_BODY_MAX = 4096;
 const DECISION_NOTE_MAX = 1000;
 const PANEL_NOTE_MARK = '人工审批（家族面板）';
@@ -817,6 +826,86 @@ async function collectOracle(ctx, storagesDir) {
 }
 
 /**
+ * 上游判读分区的运行态补丁（v0.6.0）。
+ *
+ * 落盘口径（`aggUpstream`）能给出「判过哪些版本、结论是什么」，但给不出这三样：
+ *   - **lag**（本机落后几个版本）：需要「本机 dsh 版本 + 上游最新 tag + 版本语义比较」，
+ *     版本语义的实现只在上游判读器里有一份，面板抄一份必然漂移。
+ *   - **calibration**（判读准不准，v0.3）：需要把「预测」与「实际升级结果」对齐，
+ *     那两份数据都在判读器的存储里。
+ *   - **serviceOk**：「插件装着但一次都没跑过」与「插件没装」是两种不同的灰，
+ *     光看文件在不在分不开。
+ *
+ * ⛔ 服务面拿不到时**不伪造**：lag / calibration 均给 null 并写 notes，
+ *    由面板显示「运行态不可得」。给 0 会被读成「已是最新 / 准确率 0」。
+ *
+ * @param {object} ctx
+ * @param {object} base - `aggUpstream()` 的落盘结果（就地补，返回同一对象形状）
+ */
+async function collectUpstream(ctx, base) {
+  const out = { ...base };
+  const notes = [];
+
+  let svc = null;
+  let svcReason = null;
+  try {
+    svc = ctx.get('agint.upstreamWatch');
+  } catch (err) {
+    svcReason = `服务未注入：${String((err && err.message) ?? err).slice(0, 120)}`;
+  }
+  if (svcReason === null && (svc === null || svc === undefined)) {
+    svcReason = '上游判读器未挂载（agint.upstreamWatch 不可得）';
+  }
+
+  out.serviceAvailable = svcReason === null;
+  out.serviceReason = svcReason;
+  out.lag = null;
+  out.calibration = base.calibration ?? null;
+  out.stats = null;
+
+  if (svcReason !== null) {
+    notes.push(svcReason);
+    out.notes = notes;
+    return out;
+  }
+
+  const call = async (method, ...args) => {
+    if (typeof svc[method] !== 'function') { notes.push(`服务面无 ${method}() 出口`); return null; }
+    try { return await svc[method](...args); } catch (err) {
+      notes.push(`${method}() 失败：${String((err && err.message) ?? err).slice(0, 140)}`);
+      return null;
+    }
+  };
+
+  const st = await call('status');
+  if (st && typeof st === 'object') {
+    out.lag = st.lag && typeof st.lag === 'object' ? st.lag : null;
+    out.stats = st.stats && typeof st.stats === 'object' ? st.stats : null;
+    out.config = st.config && typeof st.config === 'object' ? st.config : null;
+    // 服务面 recent 更新的那一条可能还没落盘刷新；只在落盘为空时用它兜底，
+    // 免得面板出现「同一 tag 两份不同时刻的结论」。
+    if ((out.digests ?? []).length === 0 && Array.isArray(st.recent) && st.recent.length > 0) {
+      notes.push('判读列表取自服务面 recent（落盘口径为空，可能是刚判完还没刷盘）');
+    }
+  }
+
+  // calibration 是 v0.3 才有的出口。旧版没有时**静默跳过**，不写 note ——
+  // 面板上不该出现「服务面无 calibration() 出口」这种只有开发者看得懂的噪音。
+  if (typeof svc.calibration === 'function') {
+    const cal = await call('calibration');
+    if (cal && typeof cal === 'object') out.calibration = cal;
+  }
+
+  // 「插件在、但从未判读过」要能看出来 —— 否则面板会显示成「一切正常，0 条」
+  if ((out.digests ?? []).length === 0 && out.baselineOnly !== true) {
+    notes.push('尚无判读记录：等频道拉到新版本，或用 upstream_digest 手动跑一次');
+  }
+
+  out.notes = notes;
+  return out;
+}
+
+/**
  * v2 快照 + 运行态订阅表 + 零投递分层。路由与服务出口共用这一份，防两处口径漂。
  *
  * 分层为什么放服务端：投递计数只活在本进程，浏览器半拿不到豁免表也读不到全历史，
@@ -846,6 +935,8 @@ async function buildV2Payload(ctx, config = {}) {
     payload.oracle = await collectOracle(ctx, dirs.storagesDir);
     // 提案台（0.5.0）：服务面优先、存储面兜底。同样必须 await。
     payload.proposals = await collectProposals(ctx, dirs);
+    // 上游判读（0.6.0）：落盘 base 已由 collectV2Data 给出，这里只补运行态三样。
+    payload.upstream = await collectUpstream(ctx, payload.upstream ?? { state: 'unavailable', digests: [] });
     return payload;
 }
 
@@ -982,10 +1073,56 @@ function apply(ctx, config = {}) {
         const id = typeof input?.id === 'string' ? input.id.trim() : '';
         const status = typeof input?.status === 'string' ? input.status.trim() : '';
         const reason = typeof input?.note === 'string' ? input.note.trim() : '';
+        // 2026-10-27：批准时可选带上「为什么还不能动手」。省略（undefined）= 不动原值；
+        // 传空串 = 明确解除阻塞。两种语义必须能区分，所以这里不做 `?? ''` 兜底。
+        const blocker = typeof input?.blocker === 'string' ? input.blocker.trim() : undefined;
+        const unblockCondition = typeof input?.unblockCondition === 'string' ? input.unblockCondition.trim() : undefined;
+        // 2026-10-27：批准后怎么执行。省略 = 不动原计划（冻结语义，与 blocker 一致）。
+        // ⛔ 不在这里兜底成 'manual'：那会把一条已定好定时的提案，被人补一句理由
+        //    就静默降级成「只批准」。
+        const execMode = typeof input?.execMode === 'string' ? input.execMode.trim() : undefined;
+        const execAt = typeof input?.execAt === 'string' ? input.execAt.trim() : undefined;
+        // 2026-10-27：这条提案能不能自动执行。省略 = 不动原值（冻结语义）。
+        // ⛔ 只认布尔：传字符串/数字一律 400，不猜 —— 「猜错」的代价是把一条
+        //    能跑的提案永久钉死，或把复核类提案放出去白跑一次。
+        let autoExecutable;
+        if (input?.autoExecutable !== undefined && input?.autoExecutable !== null) {
+          if (typeof input.autoExecutable !== 'boolean') {
+            writeJson(res, 400, { ok: false, error: 'autoExecutable 必须是布尔值（true / false）' });
+            return;
+          }
+          autoExecutable = input.autoExecutable;
+        }
         if (id === '') {
           writeJson(res, 400, { ok: false, error: '缺 id' });
           return;
         }
+        if (blocker !== undefined && blocker.length > 200) {
+          writeJson(res, 400, { ok: false, error: '阻塞原因上限 200 字' });
+          return;
+        }
+        if (unblockCondition !== undefined && unblockCondition.length > 200) {
+          writeJson(res, 400, { ok: false, error: '解锁条件上限 200 字' });
+          return;
+        }
+        if (execMode !== undefined && !DECISION_EXEC_MODES.has(execMode)) {
+          writeJson(res, 400, { ok: false, error: `execMode 不在白名单：${execMode === '' ? '（空）' : execMode}` });
+          return;
+        }
+        if (execMode === 'scheduled') {
+          if (!execAt) {
+            writeJson(res, 400, { ok: false, error: 'execMode=scheduled 必须给 execAt（ISO 时间）' });
+            return;
+          }
+          if (!Number.isFinite(Date.parse(execAt))) {
+            writeJson(res, 400, { ok: false, error: `execAt 不是合法时间：${execAt}` });
+            return;
+          }
+        }
+        // 自动执行只对「批准」有意义：拒绝/撤销时带 execMode 属于误操作，
+        // 直接忽略比报错友好，但要把计划一起清掉 —— 否则一条被拒绝的提案
+        // 还挂着「定时 10-28 09:00」的字段，日后读的人会以为它还会跑。
+        const wantsAutoExec = status === 'approved' && execMode !== undefined && execMode !== 'manual';
         if (!DECISION_STATUSES.has(status)) {
           writeJson(res, 400, { ok: false, error: `状态不在白名单：${status === '' ? '（空）' : status}` });
           return;
@@ -1014,19 +1151,86 @@ function apply(ctx, config = {}) {
           writeJson(res, 404, { ok: false, error: `未找到提案 ${id}` });
           return;
         }
-        if (prev.status === status) {
+        // 2026-10-27：这条提案声明「不可自动执行」时，不许排自动执行。
+        //
+        // 语义闸（不可强穿）：复核类提案没有可改的目标资产，排进去必然失败。
+        // 实机首跑：oracle 的「美谕提案」正文自述「永不 auto-apply；是否执行由
+        // 老板裁定」，却被默认的 immediate 塞进队列，两次各 1 秒失败。
+        // ⛔ 按**请求后的有效值**判，不是只看现值：同一个请求里既标
+        //    autoExecutable=false 又排 immediate，是自相矛盾的请求，必须拒。
+        const effectiveAutoExec = autoExecutable !== undefined ? autoExecutable : (prev.autoExecutable !== false);
+        if (wantsAutoExec && !effectiveAutoExec) {
+          writeJson(res, 400, {
+            ok: false,
+            error: '该提案声明不可自动执行（复核类提案）—— 只能「只批准」，不能排立即/定时执行',
+          });
+          return;
+        }
+        // 2026-10-27：状态没变但阻塞信息变了，也是一次真实变更 —— 否则「给已批准的
+        // 提案补一句为什么不能动手」这种写会被幂等短路掉，永远存不进去。
+        const blockerChanged = blocker !== undefined && blocker !== (prev.blocker ?? '');
+        const unblockChanged = unblockCondition !== undefined && unblockCondition !== (prev.unblockCondition ?? '');
+        const execChanged = (execMode !== undefined && execMode !== (prev.execMode ?? 'manual'))
+          || (execMode === 'scheduled' && execAt !== undefined && execAt !== (prev.execAt ?? ''));
+        // 2026-10-27：改「能不能自动执行」也是一次真实变更 —— 否则「把这条标成
+        // 不可自动执行」这种写会被幂等短路掉，永远存不进去。
+        const autoExecChanged = autoExecutable !== undefined && autoExecutable !== (prev.autoExecutable !== false);
+        if (prev.status === status && !blockerChanged && !unblockChanged && !execChanged && !autoExecChanged) {
           // 幂等：目标态与现状相同就不写，避免 updatedAt 被无意义地刷。
           writeJson(res, 200, { ok: true, changed: false, previousStatus: prev.status, proposal: prev, at: new Date().toISOString() });
           return;
         }
         const at = new Date().toISOString();
-        const note = composeDecisionNote({ status, reason, prevNote: prev.note, at });
-        const rec = await evolve.setStatus(id, status, note);
+        // 只改阻塞信息（状态不变）时不拼「批准/拒绝」抬头 —— 那会把一条注释伪装成
+        // 一次决定，而 decisions 的 note 抬头是给「谁在什么时候判了什么」留证的。
+        const note = prev.status === status
+          ? String(prev.note ?? '')
+          : composeDecisionNote({ status, reason, prevNote: prev.note, at });
+        const opts = { blocker, unblockCondition };
+        if (execMode !== undefined) opts.execMode = execMode;
+        if (execMode === 'scheduled' && execAt !== undefined) opts.execAt = execAt;
+        // 2026-10-27：人工改「能不能自动执行」。省略 = 不动（冻结语义）。
+        if (autoExecutable !== undefined) opts.autoExecutable = autoExecutable;
+        // 标成不可执行 ⇒ 执行计划一并归位 manual。
+        // ⛔ 不归位就会留下一条「立即执行」的僵尸计划：它永远不会跑，但面板会
+        //    一直显示「执行 立即」，读的人以为它还在队列里。
+        if (autoExecutable === false) opts.execMode = 'manual';
+        // 非批准的判定：把执行计划顺手清回 manual，别留下"还会跑"的错觉。
+        if (status !== 'approved' && execMode === undefined && (prev.execMode ?? 'manual') !== 'manual') {
+          opts.execMode = 'manual';
+        }
+        let rec;
+        try {
+          rec = await evolve.setStatus(id, status, note, opts);
+        } catch (error) {
+          // setStatus 抛的是校验类错误（execAt 在过去 / 超过一年等），按 400 回，
+          // 让人知道是"参数不对"而不是"服务坏了"。
+          writeJson(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+          return;
+        }
         if (rec === null || rec === undefined) {
           writeJson(res, 500, { ok: false, error: 'setStatus() 返回空 —— 写入未生效' });
           return;
         }
-        writeJson(res, 200, { ok: true, changed: true, previousStatus: prev.status, proposal: rec, at });
+        writeJson(res, 200, {
+          ok: true,
+          changed: true,
+          previousStatus: prev.status,
+          proposal: rec,
+          at,
+          // 面板据此在 toast 里说明「已进入自动执行队列」还是「只是批准」。
+          execution: {
+            mode: rec.execMode ?? 'manual',
+            at: rec.execAt ?? '',
+            state: rec.execState ?? 'idle',
+            // ⛔ auto 必须与「真的进了队列」一致：标了不可执行、或有 blocker，
+            //    都不能报 true（面板 toast 会照它说「已入执行队列」）。
+            auto: wantsAutoExec && !(rec.blocker ?? '') && rec.autoExecutable !== false
+              && (rec.execState === 'queued' || rec.execState === 'running'),
+            // 2026-10-27：面板据此把「立即/定时」置灰，只留「只批准」。
+            autoExecutable: rec.autoExecutable !== false,
+          },
+        });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
       }
@@ -1061,4 +1265,5 @@ export {
   collectDeliveryHistory,
   collectOracle,
   collectProposals,
+  collectUpstream,
 };

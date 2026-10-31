@@ -53,7 +53,7 @@ domain('agint_skill_autocreate.json', {
   },
 });
 
-// ── ③ 进化提案：3 条待批 + 1 条已应用 ─────────────────────────────────
+// ── ③ 进化提案：3 条待批 + 1 条已应用 + 1 条已批准可动手 + 1 条已批准但阻塞 ──
 domain('agint_evolve.json', {
   proposal: {
     a: { id: 'a', title: '提案甲', status: 'proposed' },
@@ -61,6 +61,33 @@ domain('agint_evolve.json', {
     c: { id: 'c', title: '提案丙', status: 'proposed' },
     d: { id: 'd', title: '提案丁', status: 'applied' },
     e: { id: 'e', title: '提案戊', status: 'approved' },
+    // 2026-10-27：批了方向、但前置没到位的那一档（生产实例 a85ef850）。
+    // blocker 为空串 ≠ 有 blocker：前者必须留在工作单里。
+    f: {
+      id: 'f', title: '提案己', status: 'approved',
+      blocker: '周报冻结权重常量，等 8-12 周人工标注样本',
+      unblockCondition: '样本 ≥8 周且人工标注覆盖',
+    },
+    g: { id: 'g', title: '提案庚', status: 'approved', blocker: '' },
+    // 2026-10-27：批准即执行之后的两档 —— 一条在队列里跑，一条跑失败了。
+    // 它们都**不再**是工作单（前一条自己会跑完，后一条要人看）。
+    h: {
+      id: 'h', title: '提案辛', status: 'approved', blocker: '',
+      execMode: 'immediate', execState: 'queued', execAttempts: 1,
+    },
+    i: {
+      id: 'i', title: '提案壬', status: 'approved', blocker: '',
+      execMode: 'immediate', execState: 'failed', execAttempts: 2,
+      execError: 'no target asset resolved',
+    },
+    // 2026-10-27：声明「不可自动执行」的复核类提案。
+    // 它 execState 也可能是 failed（上次被误排进队列留下的历史），
+    // 但它要的动作是**人**去复核，不是机器再试一次 ⇒ 归「等手动执行（工作单）」。
+    j: {
+      id: 'j', title: '提案癸', status: 'approved', blocker: '',
+      autoExecutable: false, execMode: 'manual', execState: 'failed', execAttempts: 2,
+      execError: 'no target asset resolved',
+    },
   },
 });
 
@@ -100,7 +127,7 @@ assert.equal(skill.supply, 3, '同时报出上游 pattern 数：供给有而产�
 const evo = byKey(P, 'evolve-proposal');
 assert.equal(evo.state, 'ok');
 assert.equal(evo.pending, 3, '只有 status=proposed 待批，applied / approved 不算');
-assert.equal(evo.total, 5);
+assert.equal(evo.total, 10);
 assert.equal(evo.items[0].title, '提案甲');
 
 // 2026-10-23：approved 是「人工已批准、尚未执行」。它必须自己占一行待办 ——
@@ -108,8 +135,58 @@ assert.equal(evo.items[0].title, '提案甲');
 const approvedQ = byKey(P, 'evolve-approved');
 assert.equal(approvedQ.state, 'ok');
 assert.equal(approvedQ.kind, 'action', '工作单是人能直接动手的，不是「供给不足」');
-assert.equal(approvedQ.pending, 1, '只算 status=approved');
-assert.equal(approvedQ.items[0].title, '提案戊');
+assert.equal(approvedQ.pending, 3, '只算 status=approved 且没标 blocker（e / g / j —— j 是声明不可自动执行的复核类）');
+assert.ok(approvedQ.items.some((it) => it.title === '提案戊'));
+assert.equal(
+  approvedQ.items.filter((it) => it.title === '提案己').length, 0,
+  '⛔ 标了 blocker 的不是工作单：放这里就是拿催办去撞自家门禁',
+);
+assert.equal(
+  approvedQ.items.filter((it) => it.title === '提案庚').length, 1,
+  'blocker 是空串 ≠ 有 blocker —— 空串必须留在工作单里（否则「明确判过没卡住」被吞）',
+);
+
+// 2026-10-27：交给自动执行的提案**不是**工作单 —— 它已经在跑了。
+for (const t of ['提案辛', '提案壬']) {
+  assert.equal(
+    approvedQ.items.filter((it) => it.title === t).length, 0,
+    `${t} 已交给 agint-executor，放进工作单就是拿催办单去催一个自动流程`,
+  );
+}
+
+const execActive = byKey(P, 'evolve-exec-active');
+assert.equal(execActive.state, 'ok');
+assert.equal(execActive.kind, 'supply', '排队/在跑时人能做的只有等 —— 不是待办');
+assert.equal(execActive.pending, 1, '只收 queued/running/deferred');
+assert.equal(execActive.items[0].title, '提案辛');
+assert.equal(execActive.items[0].state, 'queued', '状态必须原样带出，不能只给个布尔');
+
+// 2026-10-27：不可自动执行的复核类提案 ⇒ 归「等手动执行（工作单）」，不占「执行失败」。
+assert.equal(
+  approvedQ.items.filter((it) => it.title === '提案癸').length, 1,
+  '声明不可自动执行的提案要回到工作单 —— 它等人复核，不是机器的活',
+);
+assert.equal(
+  byKey(P, 'evolve-exec-failed').items.filter((it) => it.title === '提案癸').length, 0,
+  '它压根没被允许自动跑，不该挂在「自动执行失败（待处理）」里让人以为系统还在替它跑',
+);
+
+const execFailed = byKey(P, 'evolve-exec-failed');
+assert.equal(execFailed.state, 'ok');
+assert.equal(execFailed.kind, 'action', '执行失败必须人看，是会自己好不了的那一类');
+assert.equal(execFailed.pending, 1);
+assert.equal(execFailed.items[0].title, '提案壬');
+assert.match(execFailed.items[0].error, /no target asset/, '失败原因要带出，否则人不知道该改什么');
+
+// 2026-10-27：批准了但前置没到位的那一档，单独一行，且必须把原因和条件带出来。
+const blockedQ = byKey(P, 'evolve-approved-blocked');
+assert.equal(blockedQ.state, 'ok');
+assert.equal(blockedQ.kind, 'supply', '阻塞中的人此刻只能等，不是能直接动手的待办');
+assert.equal(blockedQ.pending, 1, '只算 status=approved 且有 blocker');
+const blockedItem = blockedQ.items[0];
+assert.equal(blockedItem.title, '提案己');
+assert.match(blockedItem.blocker, /8-12 周/, '阻塞原因必须原样带出，不能只给个布尔');
+assert.match(blockedItem.unblockCondition, /样本/, '解锁条件也要带出，否则人不知道等到什么时候');
 
 const cur = byKey(P, 'curator-overlap');
 assert.equal(cur.state, 'ok');
@@ -154,7 +231,7 @@ const R = collectV2Data(
   { cache: new Map() },
 );
 assert.ok(R.pending, 'collectV2Data 必须暴露 payload.pending —— 面板只读这一个快照');
-assert.equal(R.pending.queues.length, 6, '六条声明表全在（2026-10-23 加「已批准待执行」）');
+assert.equal(R.pending.queues.length, 9, '九条声明表全在（2026-10-23 加「已批准待执行」，2026-10-27 加「阻塞中」+「执行中」+「执行失败」）');
 assert.equal(byKey(R.pending, 'curriculum-challenge').pending, 1, '经 collectV2Data 聚合后与直调一致');
 
 console.log('v2-pending: ok');

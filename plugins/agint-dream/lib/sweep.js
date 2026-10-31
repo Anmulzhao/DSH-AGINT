@@ -296,6 +296,87 @@ export function classifyUserSource(rec) {
 }
 
 /**
+ * 工具结果的「严格错误前缀」—— 老格式（无 isError 字段）兜底用。
+ *
+ * 判据刻意**只认开头/结尾**，不再看全文是否含关键词：正文里出现 "error" 字样的
+ * **成功**输出（dream_status / grep / read 返回 / ls 输出）曾被整批当成工具错误
+ * （见 classifyToolResultError 的实测数据）。
+ */
+const STRICT_ERROR_PREFIX_RE = /^\s*(?:error\b|fatal\b|traceback|错误[：:]|失败[：:]|stderr\b|\[stderr\])/i;
+// ⚠️ 只认**非零**退出码：`exit code: 0` 是成功。2026-10-28 复算时发现，
+// 早期版本写成 `exit code\s*:\s*-?\d+` ⇒ 把一批「[status: completed, exit code: 0]」
+// 的**成功**输出判成了失败（复算里 legacy 桶 36 条中有 12 条是这种）。
+const STRICT_ERROR_SUFFIX_RE = /\s*[\[(]?\s*exit code\s*:\s*-?[1-9]\d*\s*[\])]?\s*$/i;
+
+/**
+ * 判定一条 tool/result 是不是「一次失败」（2026-10-28 重做）。
+ *
+ * 旧判据：正文正则 `/error|failed|denied|sandbox|exit code: [1-9]|deny/i`
+ * ——「正文出现 error 字样就算失败」。
+ *
+ * 实测（7 天 / 49 会话 / 1150 条 tool/result）：
+ *   - 旧正则命中：**243** 条
+ *   - 结构化标记（`message.isError === true` 或 `data.error` 存在）：**39** 条
+ *   ⇒ **204 条（84%）是误判**：成功的 dream_status / recall_store_inspect /
+ *     grep 输出 / read 工具的 `<path>…<content>` 包装 / ls 输出，只要正文里出现
+ *     "error" 字样就被当成「工具报错」。
+ *
+ * 这才是候选池被污染的**根**：那些「工具执行报错：…」大半根本不是错误，
+ * 而是**别的工具的成功输出**被正则误抓。后面再加多少关键词闸都是在错层打转。
+ *
+ * 新判据（分层）：
+ *   1. `structured`  —— 宿主写了结构化标记（isError / error 对象）⇒ 失败。
+ *   2. `legacy-prefix` —— 老格式没有该字段时，只认**严格前缀/后缀**
+ *      （Error: / 错误： / [stderr] / Traceback / 以 exit code 结尾）。
+ *   3. 其余 —— 不是错误。
+ *
+ * @returns {{ isError: boolean, source: 'structured'|'legacy-prefix'|'none', text: string }}
+ */
+export function classifyToolResultError(rec) {
+  const msg = rec?.data?.message;
+  const text = extractText(msg) || extractText(rec?.data) || '';
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (!trimmed) return { isError: false, source: 'none', text: '' };
+  const structured = msg?.isError === true || rec?.data?.error != null;
+  if (structured) return { isError: true, source: 'structured', text: trimmed.slice(0, 260) };
+  const core = trimmed.replace(STRICT_ERROR_SUFFIX_RE, '').trim();
+  if (STRICT_ERROR_PREFIX_RE.test(core) || STRICT_ERROR_SUFFIX_RE.test(trimmed)) {
+    return { isError: true, source: 'legacy-prefix', text: trimmed.slice(0, 260) };
+  }
+  return { isError: false, source: 'none', text: trimmed.slice(0, 260) };
+}
+
+/**
+ * 数一句文本里有几句「因果句式」（2026-10-28，提案「让 agint-dream 采集
+ * assistant 正文里的主张」第 1 步 · 观测先行）。
+ *
+ * 口径**复用**既有判据，不另立一套（两把尺子必须同口径）：
+ *   - 强档 = TOOL_ERROR_CAUSE_RE（为什么/因此/所以/导致/because…）—— 单独够；
+ *   - 弱档 = TOOL_ERROR_IMPERATIVE_RE（必须/应该/改成/must…）—— 要中文语境
+ *     （CJK_RE）且至少 CJK_MIN_CHARS 个汉字。
+ * 这与 classifyToolError 的强/弱分档完全一致；名字里的 TOOL_ERROR 是历史遗留，
+ * 这里借它的口径，判据本身不复制、不改写。
+ *
+ * 句子切分复用 splitSentences（与候选抽取同口径）⇒ 计数是**下界**：
+ * 长度不在 6~160 之间的句子不计。宁可少报，不虚报「可捞取量」。
+ *
+ * 前向引用说明：TOOL_ERROR_CAUSE_RE / TOOL_ERROR_IMPERATIVE_RE / CJK_RE /
+ * CJK_MIN_CHARS 定义在本函数之后，但它们是模块级 const —— 本函数只在 sweep
+ * 运行期被调用，那时模块已求值完毕，不会撞 TDZ。
+ */
+function countCausalSentences(text) {
+  let n = 0;
+  for (const s of splitSentences(String(text ?? ''))) {
+    const strong = TOOL_ERROR_CAUSE_RE.test(s);
+    const weak = TOOL_ERROR_IMPERATIVE_RE.test(s);
+    if (!strong && !(weak && CJK_RE.test(s))) continue;
+    if ((s.match(/[\u4e00-\u9fff]/g) ?? []).length < CJK_MIN_CHARS) continue;
+    n += 1;
+  }
+  return n;
+}
+
+/**
  * Collect per-session signals from one parsed log.
  * Returns { sessionKey, title, time, userTexts, memWrites, errors, toolCalls }.
  */
@@ -308,6 +389,17 @@ export function collectSessionSignals(records) {
   let humanKept = 0;
   let subagentDropped = 0;
   let unknownKept = 0;
+  // 2026-10-28（提案「让 agint-dream 采集 assistant 正文里的主张」第 1 步 · 观测先行）：
+  // assistant 正文**只统计、不进候选**。失败之后的「教训」真身是助手自己写下的
+  // 那句解释（「所以以后必须先确认 X」），此前 dream 完全看不见它 —— 修完
+  // 「候选池工具报错污染」之后，「失败 → 教训」这条链在中间是断的。
+  //
+  // 关键约束：assistantTexts 与 userTexts **分开存放**。extractCandidates 只遍历
+  // session.userTexts ⇒ 本步不改变候选池口径（先看可捞取量，再决定动不动提取
+  // 口径 —— 不重复「先造判据再找材料」的老错）。
+  const assistantTexts = [];
+  let assistantChars = 0;
+  let assistantCausalSentences = 0;
   for (const rec of records) {
     const t = rec?.time ?? rec?.seq ?? 0;
     if (rec?.type === 'user/message') {
@@ -322,15 +414,29 @@ export function collectSessionSignals(records) {
         userTexts.push({ text, time: t });
         if (cls === 'human') humanKept += 1; else unknownKept += 1;
       }
+    } else if (rec?.type === 'assistant/message') {
+      // 事件形态已取证（2026-10-28 实测 session.v4.jsonl.zstd）：
+      //   type='assistant/message'，正文在 data.message.content[]，块类型有
+      //   'reasoning' / 'tool-call' / 'text'。
+      // 只取 type='text' 的块：reasoning（模型内思考）与 tool-call（调用参数）
+      // 不是「助手写下的主张」；不算进来，本数才与用户正文同口径。
+      const content = rec.data?.message?.content ?? rec.data?.content;
+      const text = extractText({ content }).trim();
+      if (text) {
+        assistantTexts.push({ text, time: t });
+        assistantChars += text.length;
+        assistantCausalSentences += countCausalSentences(text);
+      }
     } else if (rec?.type === 'tool/call' && rec.data?.name === 'memory_write') {
       let args = {};
       try { args = JSON.parse(rec.data.arguments ?? '{}'); } catch { /* ignore */ }
       if (args?.content) memWrites.push({ content: String(args.content), time: t });
     } else if (rec?.type === 'tool/result') {
-      const text = extractText(rec.data?.message) || extractText(rec.data);
-      if (/error|failed|denied|sandbox|exit code: [1-9]|deny/i.test(text)) {
-        const line = text.replace(/\s+/g, ' ').trim().slice(0, 260);
-        if (line) errors.push({ text: line, time: t });
+      // 2026-10-28：改用结构化字段判定（见 classifyToolResultError）。
+      // 旧判据是正文正则「含 error 字样就算失败」⇒ 84% 的"错误信号"是误判。
+      const verdict = classifyToolResultError(rec);
+      if (verdict.isError && verdict.text) {
+        errors.push({ text: verdict.text, time: t, source: verdict.source });
       }
     }
     if (t) times.push(t);
@@ -341,6 +447,14 @@ export function collectSessionSignals(records) {
     userTexts,
     memWrites,
     errors,
+    // 2026-10-28 第 1 步：assistant 正文的采集结果（**统计口径**，不进候选）。
+    // 供日记/状态面回答「可捞取量有多少」；候选化留给第 2 步。
+    assistantTexts,
+    assistantStats: {
+      messages: assistantTexts.length,
+      chars: assistantChars,
+      causalSentences: assistantCausalSentences,
+    },
     startTime: times.length ? Math.min(...times) : 0,
     endTime: times.length ? Math.max(...times) : 0,
     sourceFilter: {
@@ -510,6 +624,90 @@ const TOOL_ERROR_CAUSAL_RE = new RegExp([
 ].map((r) => `(?:${r.source})`).join('|'), 'i');
 
 /**
+ * 因果句式的**两个档**（2026-10-28）。
+ *
+ * 为什么要分档：旧判据把「因果连接」和「祈使语气」并成一个关键词桶，
+ * 而祈使档的英文词（must / should / never / always / rather than）在**工具契约类
+ * 报错**里几乎必然出现 ——
+ *   "Error: old_string and new_string must differ"     ← must 是契约，不是处方
+ *   "Error: tool X returned invalid output"              ← 工具机制
+ * 于是「祈使词」这档事实上拦不住任何东西：2026-10-28 真实语料里 11 条放行的
+ * 「因果型」报错，10 条是转录文本。
+ *
+ * 分档后：
+ *   - **强档**（明确因果连接：为什么/因此/所以/导致/否则/because/…）：单独够。
+ *   - **弱档**（只有祈使：必须/应该/改成/must/should/…）：单独**不够**，
+ *     还要**中文语境**。理由不是"英文不重要"，而是**口径一致**：
+ *     本插件的主张抽取（SIGNAL_RULES）整体就是中文语境——英文原话同样进不了候选池。
+ *     两把尺子必须同口径，否则「错误路径比原话路径宽松」就成了漏洞。
+ */
+const TOOL_ERROR_CAUSE_RE = new RegExp([
+  /因为|由于|原因是|根因(?:是|在于)?|其实是|实际(?:是|为)|因此|所以|才会|导致|否则/,
+  /because|due to|root cause|therefore|so that/i,
+].map((r) => `(?:${r.source})`).join('|'), 'i');
+
+const TOOL_ERROR_IMPERATIVE_RE = new RegExp([
+  /必须|应该|应当|务必|切记|记得|不要|别再|改成|改用|应改为|才能|需要先/,
+  /must(?: not)?\b|should(?: not|'t)?\b|instead of|rather than|\bnever\b|\balways\b|need to/i,
+].map((r) => `(?:${r.source})`).join('|'), 'i');
+
+/** 中文语境判定（弱档祈使的附加条件）。 */
+const CJK_RE = /[\u4e00-\u9fff]/;
+
+/** 主张必须是「一句话」：中文汉字至少这么多个才算一句中文陈述。 */
+const CJK_MIN_CHARS = 4;
+
+/**
+ * 代码 / 日志**骨架符号** —— 一句中文陈述里不该出现这些。
+ *
+ * 这是「不是转录」的**正面判据**，比形态黑名单稳：黑名单要穷举代码/diff/JSON/日志
+ * 的表面特征（漏一个就漏一条），而「中文陈述里不该有 { } ; = ( ) [ ] < > | `」
+ * 只有一条，且可被单条样本证伪/证实。
+ *
+ * 实测 9 条真实污染样本里，**每一条**都含其中至少一个符号：
+ *   `F=./test/…`（=）｜`<path>…</path>`（< >）｜`z.enum(EXEC_MODES)`（( )）｜
+ *   `defineTool(options) {`（{ }）｜`Object.hasOwn(…)`（( )）｜`pid=2485212`（=）
+ */
+const STRUCTURAL_SYMBOL_RE = /[{}()\[\]<>|=`]/;
+
+/**
+ * 转录**形态**闸（2026-10-28）——「说清了因果」也不等于「是主张」。
+ *
+ * 真实语料里放行的 11 条「因果型报错」，形态上是这些（括号内是实测样本）：
+ *   - read 工具的 `<path>…<content>` 包装
+ *   - diff hunk 头/行（`14,19d13` / `25- * …`）
+ *   - file:line（`index.js types 838:function …`）
+ *   - 代码注释块（`// execError 最近一次失败/顺延的原因 …`）
+ *   - 代码记号（`const engines = Object.hasOwn(…)`）
+ *   - JSON / 对象 dump（`{ "id": "9d9697cf-…", "title": "…" }`）
+ *   - 日志行（`[agint-restart] restart requested … pid=2485212`）
+ *   - CLI help（`help: Run "pnpm approve-builds" …`）
+ *   - sweep 自己的产物（正文里含「工具执行报错：」）
+ * 这些是**机器痕迹**，不是「以后该怎么做」。
+ *
+ * 形态判据比关键词判据可靠：代码/日志/JSON 有各自稳定的表面特征，
+ * 而关键词在正常文本里也会偶然出现。
+ */
+const TOOL_ERROR_TRANSCRIPT_SHAPE_RE = new RegExp([
+  /^<path>/,                                          // read 工具的 <path>…<content> 包装
+  /^\s*\d+(?:,\d+)?[acd]\d+/m,                        // diff hunk 头（14,19d13）
+  /^\s*\d+\s*[-*]\s/m,                                // diff hunk 行（25- * …）
+  /^\s*\d+:\s*\S/m,                                   // file:line（28:export function）
+  /^\s*(?:\/\/|\*|\*\/|\/\*)/m,                       // 代码注释块
+  /\b(?:const|let|var|function|return|throw new|void 0|undefined)\b|=>/, // 代码记号
+  /^\s*[{[]/,                                         // JSON / 对象 dump 起头
+  /^\s*\[[a-z][a-z0-9-]*\]\s/i,                       // 日志行前缀（[agint-restart] …）
+  /\b(?:pid|fingerprint|request_id|uuid)\s*=\s*\S/i,  // key=value 日志
+  /^(?:help|usage)\s*:/im,                            // CLI help
+].map((r) => `(?:${r.source})`).join('|'), 'i');
+
+/**
+ * 自我污染判据：sweep 自己的产物（上一轮生成的「工具执行报错：…」文本）
+ * 被当成输入又当成输出，滚雪球。单独判，与形态闸分开计数。
+ */
+const SELF_POLLUTION_MARKER = '工具执行报错：';
+
+/**
  * 判定一条工具错误信号是否值得进候选池。
  *
  * 取舍（错杀 vs 误放，代价不对称）：
@@ -518,11 +716,23 @@ const TOOL_ERROR_CAUSAL_RE = new RegExp([
  *     稀释所有真信号的召回 —— 09-28 实测的 23 条错误信号就是这么烂进来的。
  *   → 因此默认**拒绝**：无因果句式 = 拦下。
  *
+ * 2026-10-28 三处收紧（实测语料 7 天 / 49 会话 / 1150 条 tool/result）：
+ *   1. **信号层**：错误与否改用结构化字段判（见 classifyToolResultError）。
+ *      旧正则「正文含 error 字样即算失败」误判率 84%（243 vs 39）。
+ *   2. **档位**：因果句式拆强/弱两档，弱档（纯祈使）需中文语境 ——
+ *      工具契约类报错（"must differ" / "must be a positive finite number"）
+ *      满身祈使词，旧判据对它们形同虚设。
+ *   3. **形态**：新增转录形态闸 + 自我污染判据 ——
+ *      说清了因果的转录文本（diff / 代码 / JSON / 日志 / help）同样不是主张。
+ *
  * 开关 `opts.toolErrorDiagnosticOnly=false` 时完全回退旧行为（全部放行）。
  *
  * @returns {{ keep: boolean, reason: string }} reason：
  *   'causal-clause'（放行）｜'filter-disabled'（开关关）｜'empty'｜
- *   'noise-shape'（噪音形态）｜'no-causal-clause'（无因果句式）
+ *   'noise-shape'（噪音形态）｜'no-causal-clause'（无因果句式）｜
+ *   'weak-imperative-only'（只有祈使、无明确因果）｜
+ *   'no-chinese-context'（不是中文陈述）｜'structural-symbol'（含代码/日志骨架符号）｜
+ *   'transcript-shape'（是转录文本，不是主张）｜'self-pollution'（sweep 自己的产物）
  */
 export function classifyToolError(text, opts = {}) {
   const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
@@ -531,7 +741,23 @@ export function classifyToolError(text, opts = {}) {
   if (!line) return { keep: false, reason: 'empty' };
   const core = line.replace(EXIT_CODE_SUFFIX_RE, '').trim() || line;
   if (TOOL_ERROR_NOISE_SHAPE_RE.test(core)) return { keep: false, reason: 'noise-shape' };
-  if (!TOOL_ERROR_CAUSAL_RE.test(core)) return { keep: false, reason: 'no-causal-clause' };
+  // 自我污染：正文里已经是「工具执行报错：…」⇒ 是上一轮 sweep 的产物，不是新信号。
+  if (core.includes(SELF_POLLUTION_MARKER)) return { keep: false, reason: 'self-pollution' };
+  // 因果句式分两档（2026-10-28）：强档单独够；弱档（纯祈使）还要中文语境。
+  const strong = TOOL_ERROR_CAUSE_RE.test(core);
+  const weak = TOOL_ERROR_IMPERATIVE_RE.test(core);
+  if (!strong && !(weak && CJK_RE.test(core))) {
+    return { keep: false, reason: weak ? 'weak-imperative-only' : 'no-causal-clause' };
+  }
+  // 正面判据：必须是一句**中文陈述**。
+  // 口径与 SIGNAL_RULES 对齐 —— 本插件的主张抽取整体就是中文语境，
+  // 英文原话同样进不了候选池；错误路径若比原话路径宽松，就是个洞。
+  const cjkCount = (core.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  if (cjkCount < CJK_MIN_CHARS) return { keep: false, reason: 'no-chinese-context' };
+  // 正面判据：一句话，不该有代码/日志骨架符号。
+  if (STRUCTURAL_SYMBOL_RE.test(core)) return { keep: false, reason: 'structural-symbol' };
+  // 转录形态闸：说清了因果也不等于「是主张」。
+  if (TOOL_ERROR_TRANSCRIPT_SHAPE_RE.test(core)) return { keep: false, reason: 'transcript-shape' };
   return { keep: true, reason: 'causal-clause' };
 }
 
@@ -554,15 +780,27 @@ export function promotionBlockReason(candidate, opts = {}) {
   if (!diagnosticOnly) return null;
   if (!candidate?.rawToolError) return null;
   const stored = String(candidate.text ?? '');
-  if (TOOL_ERROR_CAUSAL_RE.test(stored)) return null;
+  // 2026-10-28：形态闸也要在**将要写入本体的那串文本**上再跑一次。
+  // 抽取层判的是原始 stderr；截断后的残骸可能仍保留因果词，但形态已经碎了。
+  // 先剥掉候选自带的来源前缀（它本身含「工具执行报错：」，会被自我污染判据误伤）。
+  const storedCore = stored.replace(/^工具执行报错：/, '').replace(EXIT_CODE_SUFFIX_RE, '').trim();
+  if (TOOL_ERROR_TRANSCRIPT_SHAPE_RE.test(storedCore)) return 'transcript-shape-in-stored-text';
+  if (TOOL_ERROR_CAUSAL_RE.test(storedCore)) return null;
   return 'no-causal-clause-in-stored-text';
 }
 
 /** 单个 extractCandidates 结果上的过滤统计（由 extractCandidates 挂载）。 */
 export function toolErrorStatsOfOne(candidates) {
   const s = candidates?.toolErrorStats;
-  if (s && typeof s === 'object') return { ...s, byReason: { ...s.byReason } };
-  return { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, byReason: {} };
+  if (s && typeof s === 'object') {
+    return {
+      ...s,
+      byReason: { ...s.byReason },
+      structured: s.structured ?? 0,
+      legacy: s.legacy ?? 0,
+    };
+  }
+  return { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, byReason: {}, structured: 0, legacy: 0 };
 }
 
 /**
@@ -571,12 +809,22 @@ export function toolErrorStatsOfOne(candidates) {
  * additionalProperties:false，byReason 这种开放字典不好声明。
  */
 export function aggregateToolErrorStats(candidateLists) {
-  const out = { enabled: DEFAULTS.toolErrorDiagnosticOnly, total: 0, kept: 0, dropped: 0, byReason: {} };
+  const out = {
+    enabled: DEFAULTS.toolErrorDiagnosticOnly,
+    total: 0,
+    kept: 0,
+    dropped: 0,
+    byReason: {},
+    structured: 0,
+    legacy: 0,
+  };
   for (const list of candidateLists ?? []) {
     const s = toolErrorStatsOfOne(list);
     out.total += s.total;
     out.kept += s.kept;
     out.dropped += s.dropped;
+    out.structured += s.structured ?? 0;
+    out.legacy += s.legacy ?? 0;
     for (const [k, v] of Object.entries(s.byReason ?? {})) {
       out.byReason[k] = (out.byReason[k] ?? 0) + v;
     }
@@ -629,8 +877,20 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
   }
   // 工具错误信号：09-28 起走诊断化过滤（见 classifyToolError）。
   // 此前是无条件 push，等于把 stderr 原文当教训灌进长期记忆。
-  const errorStats = { enabled: diagnosticOnly, total: session.errors.length, kept: 0, dropped: 0, byReason: {} };
-  for (const { text, time } of session.errors) {
+  // 2026-10-28 追加：统计里区分「结构化判定」与「严格前缀兜底」两种来源 ——
+  // 旧判据（正文含 error 字样即算失败）误判率 84%，这个分档是那段误判的证词。
+  const errorStats = {
+    enabled: diagnosticOnly,
+    total: session.errors.length,
+    kept: 0,
+    dropped: 0,
+    byReason: {},
+    structured: 0,
+    legacy: 0,
+  };
+  for (const { text, time, source } of session.errors) {
+    if (source === 'structured') errorStats.structured += 1;
+    else if (source === 'legacy-prefix') errorStats.legacy += 1;
     const verdict = classifyToolError(text, { toolErrorDiagnosticOnly: diagnosticOnly });
     if (!verdict.keep) {
       errorStats.dropped += 1;
@@ -639,7 +899,7 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
     }
     errorStats.kept += 1;
     candidates.push({
-      text: `工具执行报错：${text}`.slice(0, DEFAULTS.maxCandidateChars),
+      text: `${SELF_POLLUTION_MARKER}${text}`.slice(0, DEFAULTS.maxCandidateChars),
       type: 'lesson',
       sessionKey: session.sessionKey,
       time: time || nowMs,
@@ -1006,7 +1266,8 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push(`- 扫描会话：${signals.length} 个`);
   lines.push(`- 用户消息信号：${signals.reduce((n, s) => n + s.userTexts.length, 0)} 条`);
   lines.push(`- 会话内 memory_write（已沉淀，不再重复提升）：${memWrites.length} 条`);
-  lines.push(`- 工具错误信号：${signals.reduce((n, s) => n + s.errors.length, 0)} 条`);
+  lines.push(`- 工具错误信号：${signals.reduce((n, s) => n + s.errors.length, 0)} 条`
+    + (toolErrorStats ? `（结构化 ${toolErrorStats.structured ?? 0} · 严格前缀兜底 ${toolErrorStats.legacy ?? 0}）` : ''));
   // 2026-09-28：过滤器必须**可见**。否则「拦了多少」无从判断，噪音治理就退化成
   // 一个看不见的黑洞 —— 跟当初 Light 通道静默失效 7 天是同一类盲区。
   if (toolErrorStats && toolErrorStats.total > 0) {
@@ -1649,6 +1910,10 @@ export async function runSweep({
         total: toolErrorStats.total,
         kept: toolErrorStats.kept,
         dropped: toolErrorStats.dropped,
+        // 2026-10-28：来源分档（结构化判定 vs 严格前缀兜底）。
+        // 旧判据误判率 84%（243 vs 39，7 天实测）——这两个数字是那段误判的证词。
+        structured: toolErrorStats.structured ?? 0,
+        legacy: toolErrorStats.legacy ?? 0,
       },
       // 2026-10-23（提案 0f6c69bc）：信号源过滤统计。形状扁平（与 toolErrorFilter 同款），
       // 因为 tools.js 的 output schema 是 additionalProperties:false，

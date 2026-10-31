@@ -33,7 +33,7 @@
 
 ---
 
-## 2. 插件归属表（42 个顶层插件 + 5 个 quality 子模块）
+## 2. 插件归属表（43 个顶层插件 + 5 个 quality 子模块）
 
 图例：**E**=进化层 · **C**=载体层 · **H-越界**=自建了宿主层能力，应改为消费上游
 
@@ -46,7 +46,7 @@
 | agint-wiki | 0.2.0 | E | 知识库 |
 | agint-rules | 0.2.1 | E | 工具流水线规则门禁（约束） |
 | agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
-| agint-evolve | 0.1.0 | E | 周复盘 + 提案跟踪 |
+| agint-evolve | 0.11.0 | E | 周复盘 + 提案跟踪（含提案执行计划与可执行性声明） |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
 | agint-quality-eval | 0.4.0 | E | D-QAF 评估引擎 |
@@ -58,7 +58,9 @@
 | agint-diagnosis | 0.6.0 | E | 6 类根因归因 |
 | agint-mutator | 0.6.7 | E | 3 类变异构造 |
 | agint-population | 0.6.4 | E | 种群生命周期 + 适应度 |
-| agint-evolution-driver | 0.3.1 | E | 闭环驱动（提案→变异→种群） |
+| agint-evolution-driver | 0.6.0 | E | 闭环驱动（提案→变异→种群）+ 定向执行入口 |
+| agint-executor | 0.2.0 | E | 批准即执行的调度与守护（提案→执行队列→driver 定向执行） |
+| agint-upstream-watch | 0.3.0 | E | 上游判读与自证：跟踪 dsh 发行记录，实测依赖面 API + 语义面差异（engines/依赖/常量值/@deprecated），产不可自动执行的提案（两段式：事实与结论分离）；升级后回填「预测 vs 实际」对拍，误报/漏报分别计 |
 | agint-mount | 0.7.2 | E | 变更编排三段式事务 |
 | agint-abtest | 0.6.4 | E | Prompt A/B 统计判定 |
 | agint-curriculum | 0.1.6 | E | 自主课程生成 |
@@ -67,7 +69,7 @@
 | agint-skill-autocreate | 0.6.2 | E | 技能自动创建全链路 |
 | agint-curator | 0.2.1 | E | 技能生命周期策展 |
 | agint-skill-graph | 0.1.1 | E | 技能关系图谱 |
-| agint-aesthetic-oracle | 0.5.0 | E | 「美」的度量与广播 |
+| agint-aesthetic-oracle | 0.8.0 | E | 「美」的度量与广播（美谕提案声明不可自动执行） |
 | agint-event-bus | 0.7.1 | E | 进化事件基础设施 |
 | agint-ov-strategy | 0.1.0 | E | 经验沉淀与策略召回 |
 | agint-input-gateway | 0.1.5 | E | 多源信号进料 |
@@ -78,11 +80,44 @@
 | **agint-session-extract** | 0.1.0 | **H-越界** | 自建 zstd 解压 + jsonl 解析 + 会话文件发现 ⇒ 应消费 dsh `sessionQuery` |
 | **agint-session-source** | — | **H-越界** | 会话文件发现唯一入口（候选名表 + 后缀兜底）⇒ 应消费 dsh `sessionQuery` |
 | **agint-cron** | 0.2.16 | **E（调度原语偏 H）** | 自写 5 字段 cron 解析器 ⇒ 表达式解析属宿主层，应复用 dsh 调度原语 |
-| agint-family-panel | 0.2.9 | C | 家族面板（呈现） |
+| agint-family-panel | 0.8.0 | C | 家族面板（呈现） |
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
 | agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
 | agint-update-check | 0.1.0 | C | 更新检测与部署控制面（宿主运维外壳） |
+
+### 2.1 挂载分组（2026-10-28）
+
+`cordis.patch.yml` 里 38 个已挂载插件按功能域收进 7 个 `cordis:group`：
+
+| 组 | 成员数 | 覆盖 |
+|---|---|---|
+| `agint-core` | 6 | 四个记忆层 + 反思（dream）+ 知识库（wiki）+ 压缩保护 |
+| `agint-infra` | 7 | 事件总线 / 规则门禁 / 度量 / 工具统计 / 调度 / 自我认知 / 神谕 |
+| `agint-signals` | 2 | 信号聚合（input-gateway）+ 上游判读（upstream-watch） |
+| `agint-evolution` | 10 | 提案 → 变异 → 种群 → 诊断 → 执行 → 轨迹 → A/B → 变更编排 |
+| `agint-quality` | 6 | 契约 / 静态 / 沙箱 / 评估 / 策略 / SDK |
+| `agint-learning` | 4 | 技能自动创建 / 策展 / 图谱 / 自主课程 |
+| `agint-surface` | 3 | 家族面板 / 重启闭环 / 验证入口 |
+
+根上留两条不属于任何域的：`schedule`（宿主原生调度原语，agint-cron 的桥依赖）
+与 `agint-preset`（preset 声明行，不是插件）。
+
+**它改变了什么、没改变什么**（2026-10-28 读 dsh 源码核实，别凭印象改）：
+
+| 层面 | 行为 | 依据 |
+|---|---|---|
+| entry 自身的 `id` | **不变**（仍是 `agint-memory`） | `EntryTree.ensureId()` 只补缺失 id，不加前缀 |
+| 配置层 patch（`- id: xxx` 的覆盖 / disable / 往组里 insert） | **照旧有效，裸 id 即可** | `applyEntryPatches.buildMap()` 递归进 `entry.config`，`entryMap` 按裸 id 索引 |
+| 运行时 `Loader.resolve(id)` 系列 API | **要全路径 `agint-core:agint-memory`** | `resolve()` 按 `EntryTree.sep` 切段，末端在 subgroup 的 `store` 里找 |
+
+⇒ 日常改配置**什么都不会断**；只有直接调 loader API 按 id 定位时才需要带组名。
+「关整域」也照常走配置层：`- id: agint-learning` + `disabled: true`（命中 group 行本身）。
+
+⛔ 这些组**不许加 `isolate`**：group 只做配置层收纳；`isolate` 会新建隔离域，
+把子插件 provide 的 `agint.*` 服务从父级与兄弟节点摘掉，而 preset 的工具行（session ctx）
+正靠这条链取服务。dsh 官方只在 plan-mode / compaction 那种「确实要隔离一套同名服务」
+的地方用它，不拿它当命名空间。
 
 **未挂载的顶层插件**（代码在仓、patch 未引用）：`agint-mascot`、`agint-voice-hotkey`、`agint-search-tools`、`agint-session-extract`、`agint-session-source`、`agint-quality-report`。
 其中 `agint-session-extract` / `agint-session-source` 是**被别的插件以相对路径 import 的库**（不是独立插件），不挂载是正确的。

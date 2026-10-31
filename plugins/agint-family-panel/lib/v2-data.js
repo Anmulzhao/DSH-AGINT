@@ -388,6 +388,26 @@ const CANDIDATE_OPEN_STATUSES = Object.freeze([
  *  - `supply` —— 上游供给不足（失败样本攒不够）。人能做的只是去产生真实失败，
  *    没有「直接处理」这个动作；混进待办列表会诱导出「点一下就好」的错觉。
  */
+/**
+ * 提案行有没有标阻塞。
+ *
+ * 判据的单一事实源在 agint-evolve（`proposalBlocked()`），但两个插件之间没有
+ * import 关系（面板只读存储文件），所以这里保留一份等价实现。等价性由测试钉住
+ * （v2-pending.test.mjs 的 blocker 用例 + agint-evolve smoke）。
+ * ⛔ 字段缺席（加字段前的历史行）与空串都算「没卡住」—— 缺字段不等于原因未知。
+ */
+const hasBlocker = (r) => typeof r?.blocker === 'string' && r.blocker.trim() !== '';
+/**
+ * 这条提案是不是正被自动执行管道处理（排队 / 在跑 / 顺延）。
+ *
+ * 判据的单一事实源在 agint-evolve（execution.js / claimDueExecutions 的 CLAIMABLE），
+ * 面板读的是落盘文件、不 import 那个插件，所以保留一份等价实现 ——
+ * 与 hasBlocker 同一处理方式，等价性由 v2-pending 用例钉住。
+ * ⛔ 字段缺席（2026-10-27 之前批准的行）算「不在执行中」：它们本来就没有执行计划。
+ */
+const isExecActive = (r) => ['queued', 'running', 'deferred'].includes(r?.execState);
+
+
 const PENDING_SPECS = Object.freeze([
   {
     key: 'curriculum-challenge',
@@ -424,14 +444,107 @@ const PENDING_SPECS = Object.freeze([
     // 没有这一行时，批准 = 从待办里消失 —— 决定做完了却没人去做，比不批更糟。
     // 这一行把「已批准」变成看得见的工作单。⚠️ 只统计，不自动执行：
     // 落地仍要人（或会话里的 AI）真的动手，落地后标 applied。
+    //
+    // 2026-10-27 收窄：只收**没有 blocker** 的。批准的是方向、前置没到位的那批
+    // （a85ef850 就是：批了"权重真标定"，但周报冻结权重常量等 8-12 周样本）
+    // 归到下面那一行 —— 它们是「等人动手」吗？不是，是「等条件」。混在一起
+    // 就是拿工作单催人去撞自家门禁。
+    // 2026-10-27 第三次收窄（批准即执行）：`execMode=immediate|scheduled` 的提案
+    // 批准后自己进队列、由 agint-executor 动手 —— 它们不再是"人要做的事"。
+    // 放进工作单就是拿催办单去催一个已经在跑的东西。
+    // 于是本档只剩「已批准、但明确选了手动执行」的那批（唯一真正的工作单）。
     key: 'evolve-approved',
-    label: '已批准待执行（工作单）',
+    label: '已批准·等手动执行（工作单）',
     kind: 'action',
     file: 'agint_evolve.json',
     table: 'proposal',
-    select: (r) => r.status === 'approved',
+    // 2026-10-27：声明「不可自动执行」的提案（复核类）**属于这一档** ——
+    // 它等人做（复核一条记忆），不是「机器在跑」也不是「机器试过了」。
+    // ⛔ 字段缺席 = 可执行，老提案不受影响。
+    select: (r) => r.status === 'approved' && !hasBlocker(r)
+      && (r.autoExecutable === false || (!isExecActive(r) && r.execState !== 'failed')),
     item: (r) => ({ id: r.id ?? null, title: r.title ?? null }),
-    note: () => '人工已批准，代码/文档尚未改；落地后标 applied',
+    note: () => '人工已批准且未交给自动执行；落地后标 applied',
+  },
+  {
+    // 2026-10-27：批准即执行之后，「排队中 / 执行中 / 已顺延」是人**不用动手**的状态。
+    // kind='supply' 与 blocker 那档同型：此刻人能做的只有等（或去撤销）。
+    // ⛔ 不隐藏：隐藏掉的话，「批准之后到底有没有人在跑」就变成黑箱 ——
+    //    而这次改动的全部目的，就是让「批完就没人管」不再发生。
+    key: 'evolve-exec-active',
+    label: '自动执行中（排队 / 在跑 / 顺延）',
+    kind: 'supply',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved' && isExecActive(r),
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      state: r.execState ?? null,
+      execMode: r.execMode ?? null,
+      dueAt: r.execAt ?? '',
+      attempts: r.execAttempts ?? 0,
+      error: r.execError ?? '',
+    }),
+    note: () => '由 agint-executor 自动执行；成功会把提案标 applied，失败会留原因',
+  },
+  {
+    // 2026-10-27：自动执行失败且重试额度用尽 —— 这是**必须人看**的一档。
+    // 与「排队中」分开的理由：一个会自己好，一个不会。
+    key: 'evolve-exec-failed',
+    label: '自动执行失败（待处理）',
+    kind: 'action',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    // ⛔ 排除 autoExecutable=false：这一档的含义是「自动执行试过了、没成功，
+    //    要人看」。不可自动执行的提案压根没被允许试 —— 放在这儿会让人以为
+    //    系统还在替它跑，而它要的动作本来就是人去复核。
+    select: (r) => r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false,
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      error: r.execError ?? '',
+      attempts: r.execAttempts ?? 0,
+    }),
+    // 2026-10-27 修：note 收到的是**整份域的表**（`spec.note(r.tables)`），
+    // 而 attempts 在每一行上 —— 取 `t.attempts` 恒 undefined，
+    // 于是这条文案永远印「0 次尝试后仍失败」（实测那条是第 1 次就失败）。
+    // 改为从 proposal 表里真正失败的行取最大值；一条都没有就不编数字。
+    // ⛔ 用 Object.values 而不是 buildPending 内部那个 rowsOf()：作用域不同，
+    //    回调里够不到它（运行期 ReferenceError，面板整节降级）。
+    note: (t) => {
+      const tbl = t && typeof t === 'object' ? t.proposal : null;
+      const rows = tbl && typeof tbl === 'object' ? Object.values(tbl) : [];
+      const max = rows.reduce((m, r) => (
+        r && r.status === 'approved' && r.execState === 'failed' && r.autoExecutable !== false
+          ? Math.max(m, Number(r.execAttempts) || 0)
+          : m
+      ), 0);
+      return max > 0
+        ? `失败前最多试过 ${max} 次（这类失败不会自己好）；改方案后重新批准，或 evolve_executions run 手动重跑`
+        : '失败不会自己好；改方案后重新批准，或 evolve_executions run 手动重跑';
+    },
+  },
+  {
+    // 2026-10-27 新增：「批准了但动不了手」这一档。
+    //
+    // kind='supply' 不是偷懒复用：按本文件顶上的判据，`action` = 人能直接动手，
+    // `supply` = 人能做的只是等上游/条件成熟。阻塞中的提案此刻唯一能做的事就是
+    // 等（等样本攒够、等依赖落地），放进 action 表会诱导「点一下就好」的错觉。
+    // 但不许隐藏：卡在哪、等什么必须一眼看得见，否则又退回「批了就没下文」。
+    key: 'evolve-approved-blocked',
+    label: '已批准·阻塞中（等前置）',
+    kind: 'supply',
+    file: 'agint_evolve.json',
+    table: 'proposal',
+    select: (r) => r.status === 'approved' && hasBlocker(r),
+    item: (r) => ({
+      id: r.id ?? null,
+      title: r.title ?? null,
+      blocker: r.blocker ?? '',
+      unblockCondition: r.unblockCondition ?? '',
+    }),
+    note: () => '批准的是方向，不是「现在动手」；解锁条件满足后清 blocker 回到工作单',
   },
   {
     key: 'curator-overlap',
@@ -758,6 +871,139 @@ export function readOracleFile(storagesDir) {
     broadcasts: vals(t.oracle_broadcasts),
     state: t.oracle_state && typeof t.oracle_state === 'object' ? (t.oracle_state.latest ?? null) : null,
     observedAt: mtimeIso(file),
+  };
+}
+
+/**
+ * 上游判读（`agint_upstream_watch` 域）落盘口径。
+ *
+ * ⛔ 这一节与其它各节的失败模式不同，必须分开处理：
+ *    **「文件不存在」= 本机没启用这个插件**，不是「判读结果为空」。
+ *    前者显示为灰色不可用，后者才是真的 0（与待办节的「域不存在 ≠ 0」同一条纪律）。
+ *
+ * ⛔ `baselineOnly` 这一段是**刻意**的：频道首次运行只建基线、不产信号，
+ *    上线当天如果面板显示「0 条判读」，读的人会以为坏了。
+ *    判据：`releases` 有记录而 `digests` 为空 ⇒ 明确写出「已建基线，等新版本」。
+ *
+ * @param {string} storagesDir
+ * @returns {object}
+ */
+export function aggUpstream(storagesDir) {
+  const file = join(storagesDir, 'agint_upstream_watch.json');
+  if (!existsSync(file)) {
+    return {
+      state: 'unavailable',
+      source: 'storages',
+      reason: '上游判读存储域不存在（agint_upstream_watch.json 不在 storages/）—— 本机未启用 agint-upstream-watch，或尚未跑过第一次',
+      observedAt: null,
+      digests: [],
+      counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null,
+      releases: null,
+      baselineOnly: false,
+      calibration: null,
+    };
+  }
+
+  let body;
+  try { body = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
+    return {
+      state: 'error', source: 'storages',
+      reason: `存储域解析失败：${String((e && e.message) ?? e).slice(0, 160)}`,
+      observedAt: null, digests: [], counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null, releases: null, baselineOnly: false, calibration: null,
+    };
+  }
+
+  const t = body && typeof body.tables === 'object' && body.tables !== null ? body.tables : null;
+  if (t === null) {
+    return {
+      state: 'error', source: 'storages', reason: 'tables 缺失或形态未知',
+      observedAt: null, digests: [], counts: { digests: 0, judged: 0, failed: 0, blockers: 0, semanticWarn: 0 },
+      latest: null, releases: null, baselineOnly: false, calibration: null,
+    };
+  }
+
+  const vals = (tbl) => (tbl && typeof tbl === 'object' ? Object.values(tbl) : []);
+  const s = (v) => (typeof v === 'string' && v !== '' ? v : null);
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+  const releases = vals(t.releases);
+  const rawDigests = vals(t.digests);
+
+  // 最新发行 = 按发布时间（缺失则按 tag）取最大的一条
+  const latestRow = [...releases]
+    .sort((a, b) => String(b.publishedAt ?? b.tag ?? '').localeCompare(String(a.publishedAt ?? a.tag ?? '')))[0] ?? null;
+
+  const digests = rawDigests
+    .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+    .slice(0, 20)
+    .map((d) => {
+      const facts = d.facts && typeof d.facts === 'object' ? d.facts : {};
+      const impact = d.impactSummary ?? facts.impactSummary ?? null;
+      const sem = d.semanticSummary ?? facts.semanticSummary ?? null;
+      const host = d.hostFace ?? facts.hostFace ?? null;
+      return {
+        tag: s(d.tag),
+        targetVersion: s(d.targetVersion),
+        level: s(d.level),
+        preStageChange: s(d.preStageChange),
+        llmStatus: s(d.llmStatus) ?? 'unknown',
+        verdict: s(d.verdict),
+        confidence: n(d.confidence),
+        headline: s(d.headline),
+        factsSummary: s(d.factsSummary),
+        proposalCount: Array.isArray(d.proposalIds) ? d.proposalIds.length : 0,
+        // 语义面：面板要能一眼分开「签名破了」和「引擎抬了」
+        impact: impact && typeof impact === 'object' ? {
+          blocking: n(impact.blocking) ?? 0,
+          breaking: n(impact.breaking) ?? 0,
+          elsewhere: n(impact.elsewhere) ?? 0,
+          additive: n(impact.additive) ?? 0,
+          unknown: n(impact.unknown) ?? 0,
+        } : null,
+        semantic: sem && typeof sem === 'object' ? {
+          blocker: n(sem.blocker) ?? 0, warn: n(sem.warn) ?? 0, info: n(sem.info) ?? 0,
+        } : null,
+        host: host && typeof host === 'object' ? {
+          from: s(host.from), to: s(host.to),
+          semanticImpact: s(host.semanticImpact),
+          deltas: Array.isArray(host.semanticDeltas)
+            ? host.semanticDeltas.slice(0, 6).map((x) => ({
+              kind: s(x.kind), symbol: s(x.symbol), severity: s(x.severity), note: s(x.note),
+              before: s(x.before), after: s(x.after),
+            }))
+            : [],
+        } : null,
+        updatedAt: s(d.updatedAt) ?? s(d.createdAt),
+      };
+    });
+
+  const judged = digests.filter((d) => d.llmStatus === 'judged').length;
+  const failed = digests.filter((d) => d.llmStatus === 'failed').length;
+  const blockers = digests.reduce((a, d) => a + (d.impact?.blocking ?? 0) + (d.semantic?.blocker ?? 0), 0);
+  const semanticWarn = digests.reduce((a, d) => a + (d.semantic?.warn ?? 0), 0);
+
+  return {
+    state: 'ok',
+    source: 'storages',
+    observedAt: mtimeIso(file),
+    digests,
+    counts: { digests: rawDigests.length, judged, failed, blockers, semanticWarn },
+    latest: latestRow ? {
+      tag: s(latestRow.tag),
+      publishedAt: s(latestRow.publishedAt),
+      prerelease: latestRow.prerelease === true,
+      entryCount: n(latestRow.entryCount),
+      breakingHits: n(latestRow.breakingHits),
+    } : null,
+    releases: {
+      total: releases.length,
+      fetchedAt: s(latestRow?.fetchedAt),
+    },
+    // 有发行记录、没有判读 ⇒ 首跑只建了基线（不是坏了）
+    baselineOnly: releases.length > 0 && rawDigests.length === 0,
+    calibration: null, // 宿主半用服务面覆盖（v0.3）
   };
 }
 
@@ -1177,6 +1423,8 @@ export function collectV2Data(dirs, opts = {}) {
   // 神谕层：落盘口径先兜底（文件在就有数）。服务面在 lib/index.js 的
   // collectOracle 里覆盖，因为只有宿主进程内拿得到运行态开关与内存订阅回写。
   try { payload.oracle = aggOracle(dirs.storagesDir); } catch (e) { payload.oracle = errOf(e); }
+  // 上游判读（v0.6.0）：落盘口径兜底，宿主半用服务面覆盖（lag / calibration 只有服务端算得出）。
+  try { payload.upstream = aggUpstream(dirs.storagesDir); } catch (e) { payload.upstream = errOf(e); }
   try {
     const classified = classifyPluginsWithMount(dirs.pluginsDir);
     payload.pluginKinds = classified.kinds;

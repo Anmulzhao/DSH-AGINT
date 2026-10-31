@@ -262,6 +262,13 @@ preflight 完成的标志是：`bin/plugin-check.sh --all` 无**新增** fail（
 
 例：`dream_verify_consolidation` 返回 `mode=llm · schemaOk=true · provider=… model=…`，`mode=llm` 即真调用（非兜底）。
 
+**改存量插件的默认值（模型 / provider / 档位）前，先核对宿主真源 —— 常量不在宿主注册目录里时，每次调用都抛 `UNKNOWN_MODEL`，lint 全绿、smoke exit 0 也照样是死路。**
+
+- 真源是 profile 的 `cordis.patch.yml`：`llm-pi-ai.providers.<provider>.models[].id` 与 `agent-default-model` 行。常量必须与目录里的 id 逐字一致 —— 本机 minimax-cn 只注册 `MiniMax-M3.1-Flash-Preview`，插件里写 `MiniMax-M3.1-Flash` 就是漂（2026-10-28 agint-dream P1 consolidation 即栽在这里，P1 从未真正跑通）。
+- 优先读宿主服务，不写死：`ctx.get('agentDefaultModel')?.currentSelection?.()` ⇒ `{ provider, model, reasoningEffort }`；路由优先级 **显式入参 > agentDefaultModel.currentSelection() > 兜底常量**，兜底常量只在宿主服务缺席的部署生效。
+- 「把硬编码换成另一份硬编码」不算修复 —— 仓内多个插件的默认值注释写着「host 注册模型已是 X（Y 不可路由）」，注释本身也会过期。
+- 判据落在真实调用：默认调用必须 `mode=llm · schemaOk=true`；`mode=failed` / `schemaOk=false` ⇒ 模型 id 不在运行期目录里，此时常量改对了也不算数。
+
 ## 关联
 
 - `docs/plugins/PLUGIN-SPEC.md` —— 9 维度规范

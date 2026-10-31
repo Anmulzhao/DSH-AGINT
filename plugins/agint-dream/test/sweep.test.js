@@ -9,6 +9,7 @@ import {
   collectSessionSignals,
   extractCandidates,
   classifyToolError,
+  classifyToolResultError,
   promotionBlockReason,
   aggregateToolErrorStats,
   scoreCandidates,
@@ -109,9 +110,35 @@ const TOOL_ERROR_STATE_ONLY_FIXTURE =
   'Error: tool "rule_list" returned invalid output: "value.rules[0].claim" is not a declared property (additionalProperties: false)';
 
 // 带因果句式的报错 —— 说清了「为什么 / 应该怎样」，配当教训，必须放行。
+// 2026-10-28 口径统一到「中文主张」：英文那一条挪到下面的拦截清单。
 const TOOL_ERROR_CAUSAL_FIXTURES = [
-  'Error: spawn ENOENT because the working directory does not exist; you must create it before running',
   '错误：DSH_HOME 指向已删除的 web profile，必须改回 AGINT-date，否则会话日志读不到',
+];
+
+// 2026-10-28 口径变更：英文因果报错不再放行。
+// 理由（不是"英文不重要"，是**两把尺子必须同口径**）：本插件的主张抽取
+// （SIGNAL_RULES）整体就是中文语境 —— 英文原话同样进不了候选池。错误路径若只凭
+// because/must 就放行，它就比原话路径宽松，是个洞：实测真实语料里
+// 「Error: old_string and new_string must differ」这类**工具契约**报错
+// （must 是契约不是处方）会被当成教训灌进长期记忆。
+const TOOL_ERROR_ENGLISH_CAUSAL_FIXTURES = [
+  'Error: spawn ENOENT because the working directory does not exist; you must create it before running',
+];
+
+// 2026-10-28：**真实语料**回归集（7 天 / 49 会话 / 1150 条 tool/result 实测）。
+// 这 9 条是旧链路（正文正则抓错误 + 因果关键词放行）真的放进候选池的文本，
+// 其中若干条已经在 recall store 里躺了 2 天（score=0.00）。
+// 全部是**转录文本**，没有一条是主张 —— 改动的验收标准就是「一条都不许再进池」。
+const TOOL_ERROR_1028_TRANSCRIPT_FIXTURES = [
+  "total 226 --- None score= None recall= 2 '工具执行报错：Error: old_string and new_string must differ' --- None score= None recall= 2 '工具执行报错：help: Run \"pnpm approve-builds\" to pick which dependencies should be allowed to run scripts. dsh: plugin command failed; diagn",
+  "./test/tool-output-schema.test.mjs F=./test/tool-output-schema.test.mjs ✖ 护栏本身不是空转：作者侧写错时 dsh 编译器必须抛错 (2.211472ms) ✖ 工具 output.schema 能过 dsh 编译器：plugins/agint-search-tools/lib/tools.js (3.412ms) ✖ failing tests: ✖ 护栏本身不是空转：作者侧写错时 dsh 编译器必须抛错 (2.211472ms) Error",
+  "<path>/home/kylin/projects/DSH/DSH-AGINT/plugins/agint-dream/test/sweep.test.js</path> <type>file</type> <content> 120: assert.equal(v.keep, false, `必须拦下: ${JSON.stringify(fx)} → ${v.reason}`); 121: } 122: }); 123: 124: test('classifyToolError: 10-19 夜里进了长期记忆的",
+  "// 旧判据放行 1 条 const TOOL_ERROR_1028_TRANSCRIPT_FIXTURES = [ // [0] \"Error: old_string and new_string must differ\", ]; ... 2",
+  "// execError 最近一次失败/顺延的原因（空串 = 没有） // execStartedAt 最近一次开始执行的时刻 // execFinishedAt 最近一次结束（成功或失败）的时刻 // // ⛔ 默认 manual：加字段之前批准的老提案（50+ 条）**不会**因为这次升级突然 // 开始自动改代码。要自动执行必须有人这一次明确选了 immediate/scheduled。 execMode: z.enum(EXEC_MODES).default('manual'), execAt: z.str",
+  "index.js types 838:function defineTool(options) { 847: if (options.timeoutMs !== void 0 && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) throw new Error(`defineTool(${options.name}): timeoutMs must be a positive finite number`); 1185: const ",
+  "Error: old_string and new_string must differ",
+  "help: Run \"pnpm approve-builds\" to pick which dependencies should be allowed to run scripts. dsh: plugin command failed; diagnostics: /home/kylin/projects/DSH/AGINT-data/profiles/headless/.plugin-manager/logs/operation-XPNkGp/pnpm.log === headless === \"version",
+  "const engines = Object.hasOwn(fields, \"engines\") ? objectOf$1(fields.engines, \"Plugin manifest engines\") : {}; if (Object.hasOwn(engines, \"dsh\")) { const range = engines.dsh; if (typeof range !== \"string\") throw new Error(\"Plugin manifest engines.dsh must be a",
 ];
 
 test('classifyToolError: 噪音形态一律拦下（09-28 真实样本）', () => {
@@ -149,6 +176,127 @@ test('classifyToolError: kill-switch 关闭时完全回退旧行为', () => {
     assert.equal(v.keep, true, '开关关掉就该全放行（回退语义）');
     assert.equal(v.reason, 'filter-disabled');
   }
+});
+
+// ── 2026-10-28：信号层改结构化字段 + 候选层正交判据 ────────────────────────
+//
+// 一句话背景：旧链路把「正文里出现 error 字样」当成工具失败（243 条 / 7 天），
+// 其中真实失败只有 39 条（84% 误判）；再叠加「含因果关键词就放行」，
+// 于是 9 条转录文本进了候选池，其中若干条以原文躺在 recall store 里。
+
+test('classifyToolResultError: 结构化标记才算失败，正文含 error 字样不算', () => {
+  const structured = classifyToolResultError({
+    type: 'tool/result',
+    data: { message: { isError: true, content: [{ type: 'text', text: 'Error: boom' }] } },
+  });
+  assert.equal(structured.isError, true);
+  assert.equal(structured.source, 'structured');
+
+  const withErrObj = classifyToolResultError({
+    type: 'tool/result',
+    data: {
+      error: { name: 'TeamError', code: 'TEAM_TASK_STALE_REVISION' },
+      message: { content: [{ type: 'text', text: 'Error: stale team task' }] },
+    },
+  });
+  assert.equal(withErrObj.isError, true);
+  assert.equal(withErrObj.source, 'structured');
+
+  // 反例（全部是真实语料里的成功输出）：正文含 error/failed 字样
+  for (const ok of [
+    'dream_status: enabled · 频率 0 3 * * * sessions=/home/...',
+    'recall_store_inspect: total=226 showing 9 | key(8) | type | score | recallCount',
+    'Found 203 matches /home/.../sweep.test.js Line 96: consolidation: async (gated) => ({',
+  ]) {
+    const v = classifyToolResultError({ type: 'tool/result', data: { message: { content: [{ type: 'text', text: ok }] } } });
+    assert.equal(v.isError, false, `成功输出不得被当成错误: ${ok}`);
+    assert.equal(v.source, 'none');
+  }
+});
+
+test('classifyToolResultError: 老格式（无 isError）按严格前缀兜底', () => {
+  const legacy = classifyToolResultError({
+    type: 'tool/result',
+    data: { message: { content: [{ type: 'text', text: 'Error: spawn ENOENT' }] } },
+  });
+  assert.equal(legacy.isError, true);
+  assert.equal(legacy.source, 'legacy-prefix');
+
+  const exitSuffix = classifyToolResultError({
+    type: 'tool/result',
+    data: { message: { content: [{ type: 'text', text: 'boom [exit code: 1]' }] } },
+  });
+  assert.equal(exitSuffix.isError, true);
+  assert.equal(exitSuffix.source, 'legacy-prefix');
+});
+
+test('classifyToolResultError: exit code 0 是成功，不得判成失败（2026-10-28 复算发现）', () => {
+  for (const ok of [
+    'openviking-dsh-memory-plugin-0.5.30.tgz [status: completed, exit code: 0]',
+    '0.5.28 redact files: 0.5.28 redactPayload hits: [status: completed, exit code: 0]',
+  ]) {
+    const v = classifyToolResultError({ type: 'tool/result', data: { message: { content: [{ type: 'text', text: ok }] } } });
+    assert.equal(v.isError, false, `exit code 0 不得判成失败: ${ok}`);
+  }
+});
+
+test('collectSessionSignals: 工具错误只认结构化标记（84% 误判的修复）', () => {
+  const records = [
+    { type: 'session', id: 's1' },
+    // 成功输出，正文含 error 字样 —— 旧判据会当成错误
+    { type: 'tool/result', seq: 1, time: NOW, data: { message: { content: [{ type: 'text', text: 'dream_status: enabled · error=0' }] } } },
+    // 真失败
+    { type: 'tool/result', seq: 2, time: NOW, data: { message: { isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
+  ];
+  const s = collectSessionSignals(records);
+  assert.equal(s.errors.length, 1, `只应收到 1 条真实错误，实际 ${s.errors.length}`);
+  assert.equal(s.errors[0].source, 'structured');
+  assert.match(s.errors[0].text, /boom/);
+});
+
+test('classifyToolError: 10-28 真实污染语料一条都不许再进候选池', () => {
+  for (const fx of TOOL_ERROR_1028_TRANSCRIPT_FIXTURES) {
+    const v = classifyToolError(fx);
+    assert.equal(v.keep, false, `必须拦下: ${fx.slice(0, 60)} → ${v.reason}`);
+  }
+});
+
+test('classifyToolError: 英文因果报错按新口径拦下（与 SIGNAL_RULES 同口径）', () => {
+  for (const fx of TOOL_ERROR_ENGLISH_CAUSAL_FIXTURES) {
+    const v = classifyToolError(fx);
+    assert.equal(v.keep, false, `英文报错不该进池: ${fx}`);
+    assert.equal(v.reason, 'no-chinese-context');
+  }
+});
+
+test('extractCandidates: 真实污染语料进候选池的条数必须为 0', () => {
+  const session = {
+    sessionKey: 's1',
+    userTexts: [],
+    errors: TOOL_ERROR_1028_TRANSCRIPT_FIXTURES.map((text) => ({ text, time: NOW, source: 'structured' })),
+  };
+  const cands = extractCandidates(session, NOW);
+  const errorCands = cands.filter((c) => c.text.startsWith('工具执行报错'));
+  assert.equal(errorCands.length, 0,
+    `污染候选必须归零，实际 ${errorCands.length}：${JSON.stringify(errorCands.map((c) => c.text.slice(0, 60)))}`);
+  assert.equal(cands.toolErrorStats.total, 9);
+  assert.equal(cands.toolErrorStats.kept, 0);
+  assert.equal(cands.toolErrorStats.dropped, 9);
+  assert.equal(cands.toolErrorStats.structured, 9);
+  assert.equal(cands.toolErrorStats.legacy, 0);
+});
+
+test('promotionBlockReason: 转录形态的存量文本必须在提升边界被拦下', () => {
+  const blocked = promotionBlockReason({
+    rawToolError: true,
+    text: '工具执行报错：const engines = Object.hasOwn(fields, "engines") ? {} : {};',
+  });
+  assert.equal(blocked, 'transcript-shape-in-stored-text');
+  // 正常中文主张不该被边界闸误伤
+  assert.equal(promotionBlockReason({
+    rawToolError: true,
+    text: '工具执行报错：错误：DSH_HOME 指向已删除的 web profile，必须改回 AGINT-date，否则会话日志读不到',
+  }), null);
 });
 
 test('extractCandidates: 工具错误噪音不再进候选（09-28 回归 + 10-19 收紧）', () => {
@@ -744,8 +892,10 @@ test('runSweep: 提升边界闸 —— 残骸不进记忆，因果句式的照�
   }
 
   // 因果句式落在截断点（候选文本 220 字符）之后：抽取闸放行，边界闸拦截。
-  const residueText = `Error: failed to start service ${'A'.repeat(215)} because the config file was never copied`;
-  const causalText = 'Error: failed because the config file was never copied';
+  // 2026-10-28：文本改成中文主张（英文报错按新口径在抽取闸就被拦，
+  // 这道闸就测不到东西了 —— 口径见 classifyToolError 的 doc）。
+  const residueText = `错误：启动服务失败${'啊'.repeat(215)}因为配置文件从未复制`;
+  const causalText = '错误：启动服务失败，因为配置文件从未复制';
 
   async function runWith(text, tag) {
     const base = await mkdtemp(join(tmpdir(), `dream-gate-${tag}-`));
@@ -802,5 +952,5 @@ test('runSweep: 提升边界闸 —— 残骸不进记忆，因果句式的照�
   assert.ok(causal.result.counts.gated >= 1, '因果句式必须过抽取闸');
   assert.equal(causal.result.counts.skippedRawToolError, 0, '因果句式不得被边界闸拦下');
   assert.equal(causal.calls.length, 1, '因果句式必须写进长期记忆');
-  assert.match(causal.calls[0].content, /because/);
+  assert.match(causal.calls[0].content, /因为/);
 });

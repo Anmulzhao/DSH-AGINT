@@ -9,16 +9,24 @@
 //
 // 用法：node --import ./test/_stub-register.mjs --test test/xxx.test.mjs
 //
-// ⛔ 只重定向这一个裸包，其余全部 next() 放行。不拦截 zod、不拦 node: 内建。
+// ⛔ 只重定向这两个裸包，其余全部 next() 放行。不拦截 zod、不拦 node: 内建。
+//
+// 2026-10-27 增补 '@deepseek-ai/dsh-tools'：
+//   lib/tools.js:12 `import { defineTool } from '@deepseek-ai/dsh-tools'`
+//   同样只在 dsh 运行时提供 ⇒ 要测工具的「声明字段 vs 返回字段」必须先能 import。
 
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 const STUB = pathToFileURL(join(import.meta.dirname, '_stub-storage-domain.mjs')).href;
+const STUB_TOOLS = pathToFileURL(join(import.meta.dirname, '_stub-dsh-tools.mjs')).href;
 
 export async function resolve(specifier, context, next) {
   if (specifier === '@deepseek-ai/dsh-storage-domain') {
     return { url: STUB, shortCircuit: true, format: 'module' };
+  }
+  if (specifier === '@deepseek-ai/dsh-tools') {
+    return { url: STUB_TOOLS, shortCircuit: true, format: 'module' };
   }
   return next(specifier, context);
 }

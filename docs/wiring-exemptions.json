@@ -203,6 +203,13 @@
       "evidence": "plugins/agint-quality-static/lib/index.js:139 提供 agint.qualityStatic。2026-10-09 查 E' 实测 busRefs=0。",
       "since": "2026-10-09",
       "unblockWhen": "若 checkAll 改为定期批跑并产出『档位漂移』结论，再评估是否需要 wiki.updated 类广播。"
+    },
+    {
+      "plugin": "agint-executor",
+      "reason": "执行器的产出全部落在 agint_evolve.execution 表与 evolution.failure_pattern（后者经 agint.evolution.addFailure），两者都已有既有下游：家族面板读表、周报读失败模式。服务 agint.executor 的消费方是**直接调用**（面板 run-now / evolve_executions 工具 / evolve 入队后 wake），不存在「按执行状态变化做反应」的订阅方；先发事件等于给同一事实开第二条通路，而这正是 event-bus 影子期要避免的第二套真相。",
+      "evidence": "plugins/agint-executor/lib/index.js 提供 agint.executor（tick/wake/status/runNow/runTick）；失败经同文件 recordFailure → agint.evolution.addFailure 落 failure_pattern。2026-10-27 查 E' 实测 busRefs=0。",
+      "since": "2026-10-27",
+      "unblockWhen": "若出现需要按执行结果响应的订阅方（如 trajectory 记执行轨迹、质量评估按执行算有效增量），按影子期口径先补 publish-only 发布方，再切订阅。"
     }
   ],
 

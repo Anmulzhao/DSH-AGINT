@@ -1,23 +1,204 @@
 # CHANGELOG — agint-evolution-driver
 
-## v0.4.0 — 2026-10-25 — LLM 构造无降级 + 接 startActivation
+## v0.8.0 — 2026-10-28 — 两处硬伤：截断换成锚点窗口、目标改成逐个尝试
 
-**背景**：宿主只有 `subagents.startActivation`，旧代码检查 `subagents.start` ⇒
-LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
+v0.7.0 修掉了「批准后必失败」的三个外因（cwd / 120s / 提示词），这一版修的是剩下两处
+**结构性问题**。两处都有实测数据，不是照着直觉改的。
+
+### ① 提示里的目标文件：从头截断 → 锚点窗口 + 结构大纲
+
+**旧实现**：`String(fileText).slice(0, 20000)`。三个已知后果：
+
+- 锚点在 20000 字符之外 ⇒ 模型看不到要改的那段，只能答 `applicable=false`，或先花轮次去读；
+- 提示声称「verbatim text of one target file」，模型却看到被截断的文本 —— 它自己会说
+  「The file shown is truncated at the end」，然后去读原文件（截断本想省 token，换来更多轮次）；
+- 行号无处可依：模型即使想精确读，也只能从头翻。
+
+**新实现**（`lib/excerpt.js`，纯函数、可单测、不碰 ctx）：
+
+- 全文 ≤ budget ⇒ 原文照给（`mode='full'`），一个字符都不动；
+- 否则：从提案正文抽**锚点**（反引号里的标识符、`file:line`），在文件里定位到行，
+  每个锚点取 ±30 行窗口，合并重叠区间；再附一份**带行号的结构大纲**（顶层
+  `function` / `class` / `const` / Markdown 标题），让模型一次 `read offset=<行号>` 就能精准补读；
+- ⛔ **正文窗口逐字原样，绝不给行首加行号** —— 模型要复制 `oldText`，加前缀必挂
+  `anchorExists` 幻觉闸门。行号只出现在大纲与 `⟪omitted lines a-b⟫` 标记里。
+
+**度量（6 个真实提案 × 它们各自解析出的目标文件，只看 >20000 字符的）**
+
+| 提案 | 目标 | 大小 | 锚点 | 旧覆盖 | 新覆盖 | 字符 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2f91b72b | agint-dream/lib/sweep.js | 80957 | 6 | 4 | **6** | 20000→13263 |
+| d2b77b47 | agint-dream/lib/sweep.js | 80957 | 9 | 6 | **8** | 20000→14529 |
+| 567dabed | agint-evolve/lib/index.js | 47838 | 9 | 8 | **9** | 20000→10551 |
+| 9d9697cf | agint-evolve/lib/index.js | 47838 | 9 | 7 | 7 | 20000→14744 |
+| 58237933 | aesthetic-oracle/lib/scoring.js | 22529 | 10 | 6 | **7** | 20000→12942 |
+| a6e6e1d9 | aesthetic-oracle/lib/scoring.js | 22529 | 9 | 6 | 6 | 20000→8405 |
+
+合计 **37/52 → 43/52（71% → 83%）**，无一例变差；同时字符量 **120000 → 74434（−38%）**。
+合成判据（T41b）还压住了一个**必然失败**的情形：锚点在第 6000 行时，旧实现 100% 丢、新实现覆盖。
+
+> 仓库 1335 个受版本控制的文件里有 **104 个 >20000 字符**（7.8%），这类文件一旦成为目标就踩上面的坑。
+
+### ② 目标资产：按「路径字符串长度」挑一个 → 有序多候选逐个尝试
+
+**实机事故（提案 `846f4fbb`）**：正文里 5 条路径，`matchRepoFile` 用
+`exact.sort((a, b) => b.length - a.length)[0]` 挑**字符串最长**的那条 ⇒ 选中
+`plugins/agint-upstream-watch/test/_stub-storage-domain.mjs`（58 字符），
+而它恰恰是提案里写「已修好、本次已在 upstream-watch 落地」的**样板文件**。
+
+模型读完如实回答 `applicable=false` 并说明「待办在另外两个文件里」（判断完全正确），
+执行器却据此把整条提案判成确定性失败、不再重试 —— **真正该改的
+`agint-evolve/test/_stub-dsh-tools.mjs` 与 `agint-input-gateway/test/_stub-storage-domain.mjs`
+一次都没被读过**。路径字符串的长度与「这个文件该不该改」毫无关系。
+
+**新实现**：
+
+- `resolveTargetAssets()` 返回**有序候选**：文档出现顺序 → 精确命中优先 → 后缀兜底只在
+  **唯一**候选时收（歧义宁可丢，不猜）→ 去重保序。单目标调用方取 `[0]`（`resolveTargetAsset` 保持旧签名）。
+- runner 逐个尝试（`maxTargetAttempts`，默认 3）：某个目标答 `applicable=false` 只意味着**换下一个**；
+  全部候选都否才判 `not-actionable`，且错误里带上**每个**目标的拒因，人员不必重走一遍取证。
+- 提示里补 `## Target N of M` 段，明确「本轮只负责这一个文件，不要因为提案横跨多文件就拒答，
+  若本文件确实不用改，请 answer applicable=false 并指出该改哪个文件」。
+
+### 配置
+
+| 键 | 默认 | 作用 |
+| --- | --- | --- |
+| `excerptChars` | 20000 | 提示里目标文件的字符上限（换算法不换预算） |
+| `maxTargetAttempts` | 3 | 一次执行最多试几个目标（每个目标 = 一次真实 LLM 调用） |
+
+### 验收
+
+- `node test/smoke.mjs` ⇒ **67/67 PASS**（新增 T41a–e / T42a–b / T43a–b 共 9 条）。
+- **阴性对照**：把 excerpt 退回 `slice(0, budget)`、把目标数改回 1 ⇒ T41b/T41d/T43/T43b **四条立刻变红**；
+  还原后全绿 ⇒ 用例有分辨力。
+- `plugin-check` 0 fail；`check-wiring` PASS。
+
+## v0.7.0 — 2026-10-28 — 修掉「已批准·执行失败」的三个真因（cwd / 截断 / 120s 闸门）
+
+**实机事故**：提案 `2f91b72b`「让 agint-dream 采集 assistant 正文里的主张」在面板批准后，
+执行器连跑两次，两次都报 `driver 抛错：evolution-driver aborted: llm unavailable:
+llm error: timeout after 120000ms`，`maxAttempts=2` 用尽 ⇒ 面板标「已批准·执行失败（待处理）」。
+同批 `846f4fbb` 也失败（一次超时 + 一次「llm judged not applicable」）。
+
+**取证（不是推测：解压孩子会话 `sessions/<cwd>/<childId>/session.v4.jsonl.zstd` 逐事件比对）**
+
+| 运行 | 工具调用 | 其中 bash | turn 结束于 | 结果 |
+| --- | --- | --- | --- | --- |
+| 19:36 成功 | 7 | 3 | 57.8s | 调了 `structured_output` ⇒ 拿到变异 |
+| 19:46 失败#1 | 15 | 13 | 119.2s | **没调 `structured_output`** ⇒ 父侧无结果 |
+| 22:35 失败#2 | 10 | 6 | 116.9s | 同上 |
+
+三条并列成因（缺一条都不至于失败）：
+
+1. **孩子会话的 cwd 是进程 cwd，不是仓库。** `spawnLlm` 写死 `meta: { cwd: process.cwd() }`，
+   而 dsh 这次是从 `~/桌面`（22:35 是 `~`）启动的 ⇒ 模型第一步就是
+   `ls -d ~/DSH-AGINT … find /home/kylin -maxdepth 4 -name 'agint-dream'`，
+   15 次调用里 13 次在找仓库。
+2. **提示只给 20000 字符，目标文件 96.5KB。** `plugins/agint-dream/lib/sweep.js` 有 96546 字节，
+   模型自己的 reasoning 写着「The file shown is truncated at the end (cut off mid `tokenOverlap`)」，
+   于是去读原文件 —— 截断本想省 token，实际换来更多轮次。
+3. **120s 闸门太紧，且失败时把已跑完的 turn 一起丢掉。** 成功案例已吃掉 48%（58s）/77%（92s）预算；
+   失败那两次 turn 在 119.2s 结束（距闸门 1 秒），父侧仍只报「超时」，看不出「其实是没交结构化输出」。
+
+**改动**
+
+- `DEFAULT_TIMEOUT_MS` 120_000 → **600_000**；新增 `resolveLlmTimeout(env, config)`：
+  env `AGINT_EVOLUTION_DRIVER_TIMEOUT_MS` > patch config `llmTimeoutMs` > 常量。
+  非数字 / ≤0 一律回落默认（⛔ 不让一条脏 env 把闸门变成 0ms）。
+- `construct()` 增 `cwd` 入参：缺省回落 patch config 的 `repoRoot`，再回落 `process.cwd()`；
+  `runOnce` / `runForProposal` 的调用点显式传 `cwd: repoRoot`。
+- `spawnLlm()` 增 `cwd` 入参，`meta.cwd` 用它（`preset` 不受影响）。
+- 提示词三处补：user 侧新增 `## Working directory` 段与「excerpt 可能被截断，要读就读这个精确相对路径，
+  不要全盘找」；system 侧新增「必须走 structured-output 工具调用，纯文本不算回答」与
+  「工作目录就是仓库，别去找项目」。
+- 文档：`construct` 的 JSDoc 补 `timeoutMs` / `cwd`。
+
+**行为变化（要知情的两点）**
+
+- 一次执行最长可占 600s。执行器是串行 `maxPerTick=1`，所以排队中的其他提案会等更久；
+  真正的成本闸仍是 `maxAttempts=2` + `weeklyCommitCap=3`，不靠这个超时。
+- 超时不再「覆盖」真实失败原因：模型跑完但没交结构化输出时，报错是
+  `structured output missing (stopReason=…)` 而不是笼统的 `timeout`。
+
+**验收清单**
+
+- `node test/smoke.mjs` ⇒ 58/58 PASS（新增 T40a–T40d 四条）。
+- 阴性对照（人为退回两处）：把常量改回 120_000 + `meta.cwd` 改回 `process.cwd()` ⇒
+  T40a / T40b / T40d 立刻变红；还原后全绿 ⇒ 用例有分辨力，不是摆设。
+- `bash bin/plugin-check.sh plugins/agint-evolution-driver` ⇒ 0 fail（1 条既有 WARN：
+  `lastError` 无 tool render 消费，与本次无关）。
+
+## v0.6.1 — 2026-10-27 — 部署位路径归一：别再让「真能改」的提案被判不可执行
+
+**实机事故**：提案 `9d9697cf`「修复 agint-evolve 提案台 schema 缺 createdAt…」批准后
+选「立即执行」，**1.5 秒失败**：
+`not-actionable … no target asset resolved (mentioned:1 inRepo:0 bodyLen:1982)`。
+可它给的文件、行号、修法一个不缺 —— 失败纯粹因为**路径写法**：
+
+- 正文写的是面板里看到的部署位路径 `` `~/.dsh/.agint-bundle/plugins/agint-evolve/lib/index.js:793` ``；
+- `repoFiles` 是仓库相对路径（`plugins/agint-evolve/lib/index.js`）⇒ `set.has(raw)` 恒 false；
+- 更隐蔽的一层：抽取正则要求「路径后面紧跟反引号」，而 `index.js:793` 后面是冒号 ⇒
+  **真正要改的 index.js 根本没被抽出来**。`mentioned:1` 里那个 1 是正文提到的
+  `agint_evolve.json`（存储域文件名，仓库里没有）。
 
 **变更**
-1. `spawnLlm` 改调 `startActivation({ provider, label, request, signal, delivery:'caller' })`；
-   旧宿主保留 `start` 兼容分支。`request` 带 `parent` / `prompt` / `agentPreset` /
-   `agentOptions` / `outputSchema`；`agentOptions` 补 `reasoningEffort`。
-2. **无降级**：`construct` 遇 LLM 通路失败返回 `{ llmFailure:true, reason }`；
-   `runOnce` 立即发 `evolution.cycle.summary`（exitReason=`llm-unavailable`）并抛错，
-   cron 的 `lastError` 可见。⛔ 不再计入 `degraded` 后继续下一条。
-3. `not applicable` / 幻觉 `oldText` / 实体门命中仍是内容级拒绝，不触发整轮中止。
-4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
-   服务/方法/provider 三种病因分开报。
-5. 默认模型更新为 `MiniMax-M3.1-Flash`。
 
-**测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
+1. 新增导出 `normalizeRepoPath(raw)`：剥行号/列号、`\` → `/`、`$DSH_HOME`、`~/`，
+   再按已知壳归一到仓库相对路径 ——
+   `.agint-bundle/…`（部署 bundle）、`node_modules/@agint/host/…`（host 包位）、
+   `profiles/<名>/plugins/…`（profile 实体位）、`/…/DSH-AGINT/…`（绝对路径带仓库根）。
+   ⛔ 只剥**已知的壳**，剥完不认识就原样返回，让上层判「定位不到」——不做模糊猜测。
+2. 新增导出 `matchRepoFile(mentioned, repoFiles)`：两级匹配。
+   先归一后等值命中；未命中再**后缀兜底**（提案只写半截 `lib/index.js`、或多一层父目录）。
+   ⛔ 后缀命中出现歧义（`lib/index.js` 多个插件都有）⇒ 返回 null，不猜：
+   改错文件比不改更糟。
+3. `extractRepoPaths`：字符集补 `~ $ { }`，并允许路径后跟 `:行号` / `:起-止` 再收尾。
+4. `resolveTargetAsset` / `resolutionDiag` 改用上面两级匹配；诊断串在走后缀兜底时
+   补 `suffix:<命中的仓库路径>`，避免「写法不对」被读成「仓库里没这个文件」。
+
+**验证**：拿真实提案跑 `resolveTargetAsset`（repoFiles = `git ls-files`，1305 条）——
+改前 `mentioned:1 inRepo:0` → 改后 `mentioned:2 inRepo:1`，
+定位到 `plugins/agint-evolve/lib/index.js`。`smoke` 52 → **54 条**全过。
+
+## v0.6.0 — 2026-10-27 — 定向失败区分「确定性不可执行」与「偶发」
+
+**背景**：自动执行失败后一律重试，但有些失败**重试也不会变**。实机那条 oracle 复核类
+提案两次各 1 秒失败，产出逐字相同 —— 重试只是再烧一遍 LLM。
+
+**变更**
+1. 新增导出 `classifyFailureKind(text)` → `'deterministic' | 'transient'`。
+   确定性判据（定位不到目标 / LLM 判定不适用 / 幻觉闸门 / 实体闸门 / validate 拒绝 /
+   路径不安全）；⛔ **默认 transient** —— 判错方向不对称：把偶发判成确定 = 提案永远
+   不再自动跑；把确定当偶发 = 多烧一次 token。显式 transient 标记优先。
+2. 定向模式（`runForProposal` / `runOnce({proposalId})`）无可执行目标时，返回
+   `reason='not-actionable（…）'` + `deterministic: true`，并带上首个失败细节。
+   ⛔ **sweep 模式（不指定 proposalId）保持原语义**（`deterministic: false`）——
+   下一轮可能有新候选，那不是「不可能成功」。
+3. 新增 `failures`（前 30 条）到返回里，调用方不必再从 summary 猜。
+
+**验证**：`node test/smoke.mjs` 49 → **52 全绿**（T37 判据层 / T38 定向确定性 / T39 sweep 不变）。
+
+## v0.5.0 — 2026-10-27 — `runForProposal(proposalId)`：定向执行一条已批准的提案
+
+**背景**：`agint-executor` 要在批准后自动执行，但 `runOnce()` 的候选池写死
+`listProposals({ status: 'proposed' })` —— `approved` 的行它一眼不看。
+批准完的提案因此永远等不到执行，在面板里挂成一张催办工作单。
+
+**变更**
+1. `runOnce(opts)` 增 `opts.proposalId`：定向模式只取那一条，**允许 `status='approved'`**
+   （`opts.allowAnyStatus` 可放宽，仅供排障），并且**不写 `state.seen`** ——
+   `seen` 的语义是「一轮里别重复试同一条」，而定向模式本来只有一条，失败重试必须能再跑。
+2. 新服务方法 `runForProposal(proposalId, opts)`：`runOnce` 的薄包装，返回补
+   `{ proposalId, ok }`（`ok` = 流走到 commit 且 commit.ok），让执行器不必自己解释返回形状。
+3. 定向模式下 `proposal-not-found` / `proposal-not-approved` 各自发一条 summary 并返回
+   `{ skipped: true, reason }` —— 此前这两种情况会被混进「no actionable candidate」。
+
+**不改**：构造 → 幻觉闸门 → mutator.propose → validate → population.ingest → 写入后验证
+→ policy 决策 → commit/回滚 → 预测锁定 → ledger 入链，全沿用原路径。
+`runForProposal` **不写提案状态**：那是 `agint.evolve` 的事，两边都写 = 两套口径。
+
+**验证**：`node test/smoke.mjs` 49/49 绿（含 T36 等既有用例，确认定向分支未改变旧行为）。
 
 ## v0.4.1 — 2026-10-25 — A 段：合成产物 ⇒ mount 部署桥（**通电不上膛**）
 
@@ -53,6 +234,25 @@ PENDING_REVIEW ticket 就 return**，绝不进三段式。
    ⇒ TOOL_GAP 从未被判定 ⇒ TOOL_SYNTHESIS 候选历史 0 条。
    **不解决这一层，A 通电也是空转**（扫不到候选）。
 
+
+## v0.4.0 — 2026-10-25 — LLM 构造无降级 + 接 startActivation
+
+**背景**：宿主只有 `subagents.startActivation`，旧代码检查 `subagents.start` ⇒
+LLM 构造 25 天全程不可用，只以 `state.degraded` 计数悄悄跳过。
+
+**变更**
+1. `spawnLlm` 改调 `startActivation({ provider, label, request, signal, delivery:'caller' })`；
+   旧宿主保留 `start` 兼容分支。`request` 带 `parent` / `prompt` / `agentPreset` /
+   `agentOptions` / `outputSchema`；`agentOptions` 补 `reasoningEffort`。
+2. **无降级**：`construct` 遇 LLM 通路失败返回 `{ llmFailure:true, reason }`；
+   `runOnce` 立即发 `evolution.cycle.summary`（exitReason=`llm-unavailable`）并抛错，
+   cron 的 `lastError` 可见。⛔ 不再计入 `degraded` 后继续下一条。
+3. `not applicable` / 幻觉 `oldText` / 实体门命中仍是内容级拒绝，不触发整轮中止。
+4. 超时双保险覆盖 create/start/result；晚到 handle/activation 也会 dispose；
+   服务/方法/provider 三种病因分开报。
+5. 默认模型更新为 `MiniMax-M3.1-Flash`。
+
+**测试**：`test/smoke.mjs` 49 例全绿（新增 startActivation 契约与旧 start 兼容用例）。
 
 ## v0.4.0+doc1 — 2026-10-25 — 文档订正：commit 开关口径以代码为准
 

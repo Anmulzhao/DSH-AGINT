@@ -14,31 +14,37 @@
 # ownership: injection resolves before any session exists, so there is no
 # agent to key by. Every agint-* plugin below is a host service consumer,
 # not a per-session capability — they all sit in this patch layer.
+#
+# ── 挂载分组（2026-10-28）─────────────────────────────────────────────────────
+# 38 个 agint 插件按功能域收进 7 个 `cordis:group`（core / infra / signals /
+# evolution / quality / learning / surface），组内为原文条目、逐字未改。
+# 不是「新东西」：dsh 自己的 experimental-*-bundle 全是这个形状
+# （`name: cordis:group` + `group: true` + `config: [子条目]`）。
+#
+# 为什么分：
+#   1) 平铺 40 条读不出结构 —— 看 patch 的人得逐条认插件才知道谁归谁；
+#   2) 分组给了「整域停用」的抓手：`- id: agint-learning` + `disabled: true`
+#      一处，等于同时停掉技能自动创建/策展/图谱/课程四条，不必逐个改；
+#   3) 面板与文档的域划分从此与挂载结构同构，不再各说一套。
+#
+# ⛔ 不许给这些组加 `isolate`：group 只做配置层收纳，`isolate` 会新建隔离域、
+#    把子插件 provide 的 `agint.*` 服务从父级与兄弟节点上摘掉 —— 而 preset 的
+#    工具行（session ctx）正靠这条链取服务。dsh 官方只在 plan-mode / compaction
+#    这种「确实要隔离一套同名服务」的地方用 isolate，不是拿它当命名空间。
+#
+# 相对路径安全：app-boot 的 `anchorInsertedPluginNames()` 会**递归进 group 的
+# config**（`if (entry.group && Array.isArray(entry.config)) entry.config.forEach(visit)`），
+# 所以组内的 `./plugins/agint-*/lib/index.js` 照样锚到本 bundle 根，不必写绝对路径。
+#
+# 根上留两条不属于任何域的：`schedule`（宿主原生调度原语，agint-cron 的桥依赖它）
+# 与 `agint-preset`（preset 声明行，不是插件）。
+#
+# 改动边界（读源码核实，别凭印象）：entry 自身的 id 不变、**配置层 patch 按裸 id
+# 定位照旧有效**（`applyEntryPatches.buildMap()` 递归进 config）；只有运行时
+# `Loader.resolve(id)` 需要全路径 `agint-core:agint-memory`。
+
 
 - insert:
-    # agint-memory: long-term memory (L1-L4 four-tier forgetting). Owns the
-    # `agint` storage domain exclusively.
-    - id: agint-memory
-      name: ./plugins/agint-memory/lib/index.js
-      config: {}
-
-    # agint-dream: nightly dream service (light → REM → deep). Reads session
-    # logs → heuristics → six-dim score → gate → promote into agint.memory.
-    # Diary at <root>/YYYY-MM-DD.md. Triggered by agint-cron's night-dream
-    # job (daily 03:00).
-    - id: agint-dream
-      name: ./plugins/agint-dream/lib/index.js
-      config:
-        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
-        sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
-        lookbackDays: 2
-
-    # agint-wiki: knowledge base (independent of task memory).
-    - id: agint-wiki
-      name: ./plugins/agint-wiki/lib/index.js
-      config:
-        root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
-
     # dsh-schedule: 宿主原生调度（0.1.7-rc.2，行动 #2a 2026-09-28 挂载）。
     # agint-cron 的宿主调度桥（plugins/agint-cron/lib/host-schedule.js）依赖它做
     # cron 表达式规范化校验 + catalog 只读镜像。投递语义（提醒注入 agent session）
@@ -65,186 +71,737 @@
     #   config:
     #     providerName: codex
 
-    # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
-    #
-    # repoRoot（2026-10-04 补）：三个 job 此前一直在空转，因为拿不到仓库根 ——
-    #   · frozen-anchor（Mon 10:30）**显式抛错**「agint.repoRoot 未配置」（刻意如此：
-    #     「没配」与「没有变更」是两件事，混起来等于入账 job 看着成功其实没干活）
-    #   · evolution-reconcile（Tue 08:00）、spec-index-refresh（每月 1 日）静默 soft-skip
-    # 它们要读的都是**仓库侧**文件：eval/scenarios/inventory.json、
-    # bin/anchor-frozen-set.mjs、docs/specs/INDEX.json（部署位没有这些）。
-    #
-    # 为什么用 `!!js` 而不是写死绝对路径 / 靠装脚本注入：
-    #   · 写死 ⇒ 违反 AGENTS.md:16 红线（机器私有值不入库，两机共用本仓）；
-    #   · 装脚本注入 ⇒ install.sh 的 `cp -f` 整份覆盖会把它静默冲掉
-    #     （evolution-driver 的 repoRoot override 就这么丢过一次，见该段旁红字）。
-    #   `!!js` 由 dsh 在加载时求值（与本文件里 agint-dream / agint-wiki 的 root 同一套做法），
-    #   两机各自算出自己的路径，不入库、不会被覆盖冲掉。
-    #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
-    #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
-    #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
-    #   ⇒ 2026-10-26 新增 `AGINT_DATA_HOME`（数据根专用，优先级高于 AGINT_HOME）：
-    #     要把 dreams/wiki/reviews 挪位置就 export 它，**别 export AGINT_HOME** ——
-    #     那会把 install.sh 的源码根一起带偏。
-    #
-    # 2026-10-19 修（实测）：`$HOME/projects/DSH/DSH-AGINT` 在**本机不存在**
-    #   （Test-Path → False；$HOME=C:\Users\Administrator 下只有 projects\AGINT），
-    #   而 AGINT_REPO_ROOT 也没设 ⇒ 三处 repoRoot 全部解析到一个不存在的路径。
-    #   后果：ledger-anchor 每晚 ENOENT（写 docs/evolution-ledger-anchor.md.tmp-*）、
-    #   frozen-anchor 每晚「清单读不到 eval/scenarios/inventory.json」。
-    #   真仓根是 D:\DSH\project源码\DSH-AGINT —— 但它是**机器私有绝对路径**，
-    #   按 AGENTS.md:16 红线不得写进库文件（两台机器共用本仓）。
-    #   解法：在**宿主启动 cwd**（本机 = D:\DSH\AGINT-date\profiles\desktop）放
-    #   `.env` 写 AGINT_REPO_ROOT=...，由 dsh-app-boot 的 loadLayeredEnv()
-    #   （lib/index.js:3736-3744）在启动时灌进 process.env。
-    #   取证：readEnvLayer 读 cwd 的 .env（project 层）+ home 的 .env（user 层），
-    #   只补 `process.env[name] === undefined` 的键 ⇒ 已继承的进程环境优先。
-    #   本机已落地该文件（见 D:\DSH\AGINT-date\profiles\desktop\.env）。
-    #   ⛔ 不要改成塞绝对路径进本文件 —— 那是机器私有事实入库，另一台机会读到错值。
-    - id: agint-cron
-      name: ./plugins/agint-cron/lib/index.js
+
+    # ══ agint-core ══ 记忆与知识：四个记忆层 + 反思 + 知识库 + 压缩保护
+    # 组内 6 个：agint-memory / agint-memory-provider / agint-evolution-memory / agint-dream / agint-wiki / agint-compress-guard
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-core
+      name: cordis:group
+      group: true
       config:
-        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
-        # （≤10000 字节 且 ≤5000 字符）+ 宿主 12000 预算，超限/逼近则写告警报告。
-        # ⛔ 老板 2026-10-18 拍板：**只告警，不自动改** —— 压缩顺序是给人执行的
-        #   判据，AI 自己决定删哪一段可能删掉刚写进去的约定。
-        # file / reportDir 同样是机器私有绝对路径 ⇒ 走 `!!js` 读环境变量（同上理）。
-        #   AGINT_AGENTS_MD     被核文件（工作区 AGENTS.md）
-        #   AGINT_DOCS_DIR      告警报告落盘目录（业务交付物一律落 docs/）
-        # 未配 ⇒ job **抛错**（不是 soft-skip）：静默 skip 会让哨兵看起来在跑，
-        #   实际一次都没核过（K134：能力不可用 vs 实现有 bug 要能分开）。
-        # ⛔ 2026-10-20 定稿修法：`!!js` 只能写成**单行标量**。下面两种写法都会让
-        #   整份 bundle patch 解析失败 ⇒ dsh 静默跳过整个 @agint/host ⇒ 智进消失：
-        #   ① 多行块集合 `!!js ({ ... })` —— js-yaml 报 bad indentation of a mapping entry；
-        #   ② 反引号模板字面量 —— 报 cannot resolve a node with js tag。
-        #   验法：用 js-yaml 的 JSON_SCHEMA.extend(JsExpr) 按 dsh 原样 load 本文件。
-        agentsSizeGuard: !!js "(() => { const r = process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'); return {file: process.env.AGINT_AGENTS_MD || (r + '/AGENTS.md'), reportDir: process.env.AGINT_DOCS_DIR || (r + '/docs'), localFile: process.env.AGINT_AGENTS_LOCAL_MD || (r + '/AGENTS.local.md'), maxBytes: 10000, maxChars: 5000, hostBudgetBytes: 12000}; })()"
+        # agint-memory: long-term memory (L1-L4 four-tier forgetting). Owns the
+        # `agint` storage domain exclusively.
+        - id: agint-memory
+          name: ./plugins/agint-memory/lib/index.js
+          config: {}
 
-    # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
-    # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
-    - id: agint-rules
-      name: ./plugins/agint-rules/lib/index.js
-      config: {}
 
-    # agint-metrics: evolution metrics. Owns `agint_metrics` domain. Reads
-    # agint.cron/rules/wiki/memory lazy, writes kv time series. Daily via cron.
-    - id: agint-metrics
-      name: ./plugins/agint-metrics/lib/index.js
-      config: {}
+        # agint-memory-provider: P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）
+        # v0.1.0 — 2026-09-08 挂载. ExternalProvider 抽象基类 + BuiltinProvider（封装
+        # agint.memory，行为完全一致，prefetch 默认只读）+ MemoryManager（激活/降级/
+        # 琐碎过滤/召回指示器）+ ProviderRegistry。Service：agint.memoryProvider
+        # （listProviders/getActiveProvider/activate/deactivate/getConfig/setConfig/
+        # getRecallStatus/getFallbackStats/pause/resume/stats/config 等）。
+        # testConnection / runPreCompressCheckpoint / registerProviderTools /
+        # routeToolCall 显式抛未实现（Sprint 16 接力）。独占 agint_memory_provider
+        # 存储域（5 表）。硬注入 agint.memory（builtin provider 封装源）；软依赖
+        # event-bus（provider-activated / provider-activation-failed / recall-injected
+        # 三事件）。首挂保守：默认 active_provider=builtin，行为与未挂载时完全一致。
+        - id: agint-memory-provider
+          name: ./plugins/agint-memory-provider/lib/index.js
+          config: {}
 
-    # agint-evolve: review / self-evolution loop. Reports to <root>/reviews.
-    # Sundays via cron's evolve-review job.
-    - id: agint-evolve
-      name: ./plugins/agint-evolve/lib/index.js
+
+        # agint-evolution-memory: evolution-only memory. Distinct from task memory;
+        # D-QAF auto-write landing.
+        - id: agint-evolution-memory
+          name: ./plugins/agint-evolution-memory/lib/index.js
+          # 2026-10-05：补 repoRoot（老板未点名的 C1 收口项，先改代码态、**未部署**）。
+          # 根因（实测+源码取证）：ledger-anchor cron（Mon 10:15）调 `evo.ledger.anchor()`，
+          # 锚点路径由 lib/ledger-anchor.js:61 的 `REPO_ROOT = <模块>/../../..` 推导 ——
+          # 在仓库里算出仓根，但在**部署位**算出 ~/.dsh/.agint-bundle ⇒ 写
+          # `~/.dsh/.agint-bundle/docs/evolution-ledger-anchor.md` 时 ENOENT（该目录不存在，
+          # 实测确认）。lib/index.js:208-209 已实现「config.repoRoot 存在则用它算 anchorFile」
+          # 的正确分支（config schema 在 :58 声明 repoRoot: z.string().optional()），
+          # 只是**没人给这个块填值** —— 之前 2ecb16d 填的是 agint-cron 块，治的是 job 读文件，
+          # 不是这条写路径。形状沿用同仓 `!!js` 惯例（与 cron / evolution-driver 两块一致）。
+          #
+          # 2026-10-19：与 agint-cron 块同因 —— `$HOME/projects/DSH/DSH-AGINT` 本机
+          #   不存在（实测 Test-Path=False），ledger-anchor 的 ENOENT 即该写路径所致。
+          #   修法同 cron 块：走 AGINT_REPO_ROOT（.env 落地），不在本文件塞绝对路径。
+          config:
+            repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+
+
+        # agint-dream: nightly dream service (light → REM → deep). Reads session
+        # logs → heuristics → six-dim score → gate → promote into agint.memory.
+        # Diary at <root>/YYYY-MM-DD.md. Triggered by agint-cron's night-dream
+        # job (daily 03:00).
+        - id: agint-dream
+          name: ./plugins/agint-dream/lib/index.js
+          config:
+            root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/dreams'
+            sessionsRoot: !!js (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions'
+            lookbackDays: 2
+
+
+        # agint-wiki: knowledge base (independent of task memory).
+        - id: agint-wiki
+          name: ./plugins/agint-wiki/lib/index.js
+          config:
+            root: !!js (process.env.AGINT_WIKI_ROOT || (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/wiki')
+
+
+        # agint-compress-guard: P3-1 记忆压缩检查点机制 v0.1.0（Sprint 20 实施，2026-09-13 挂载）。
+        # 立场：压缩可以发生，上下文不许消失（M4 fail-closed）。
+        # Service：agint.compressGuard（FROZEN 6：checkpoint / extract / search /
+        # recall / stats / setEnabled）。
+        # 两段式粒度：raw 检查点写失败 = 硬门 BLOCKED_CHECKPOINT（shadow 档只告警不真中止）；
+        # 洞察提取失败 / 3s 软超时 = 软降级 DEGRADED_INSIGHT，300s 冷却 → 探针 → 复位。
+        # 硬注入 storageDomain + agint.memory；软依赖 event-bus / agint.memoryProvider。
+        # 独占 agint_compress_guard 存储域（4 表 schemaVersion 1）；raw 唯一事实源仍归
+        # P1-1（Q3 分层不重建，双 id 空间 pcc_* / compactionId）。
+        # 接线：B 档主战场 = ctx.on('session/event') 过滤 compaction/start|summary|end|prune；
+        # C 档 = 显式 checkpoint() 委托 P1-1 runPreCompressCheckpoint；A 档已移出设计。
+        # 恢复双通道：compress_recall 工具 + 记忆查询 miss 兜底一次（装饰 agint.memory.search，
+        # 单次单向不回写，切断「压缩产物→记忆→再压缩」自我污染）。
+        # ⚠️ 三处保守：① shadow 档硬门只告警；② provider 注册进 P1-1 registry 但**不自动激活**；
+        #    ③ 本机 R10 探针实测 0 次压缩（155 会话 / 140,109 事件）→ 标定期 stats() 恒
+        #    NO_SOURCE_REACHED，是如实报警不是故障。转正由老板一周后拍板。
+        - id: agint-compress-guard
+          name: ./plugins/agint-compress-guard/lib/index.js
+          config: {}
+
+
+
+    # ══ agint-infra ══ 基础设施：事件总线 / 规则门禁 / 度量 / 自我认知 / 神谕 / 调度
+    # 组内 7 个：agint-event-bus / agint-rules / agint-metrics / agint-tool-stats / agint-cron / agint-self-model / agint-aesthetic-oracle
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-infra
+      name: cordis:group
+      group: true
       config:
-        root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
-        # A4：eval 存量 FAIL 归因产物。部署位（.agint-bundle / profiles/desktop）
-        #   祖先里没有 eval/ ⇒ 自动探测必然失败，必须显式给绝对路径。
-        #   路径走环境变量（机器私有事实不入库）：AGINT_REPO_ROOT 已在
-        #   profiles/desktop/.env 配置（2026-10-19 建立）。
-        #   ⛔ 只能写成 !!js 标量；反引号模板字面量让整份 patch 解析失败（2026-10-20 根因）。
-        #   （`!!js` 后加反引号会把字符串变成 " … " 拼接，js-yaml 认不出 js 标签。）
-        evalAttributionPath: !!js "(process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT')) + '/eval/attribution/fail-attribution.json'"
+        # agint-event-bus: event bus v0.7.0. FROZEN event-bus schema + 3 services +
+        # deadletter / isolation / backoff / traceId + sync quota.
+        - id: agint-event-bus
+          name: ./plugins/agint-event-bus/lib/index.js
+          config: {}
 
-    # agint-tool-stats: tool usage profile. Listens on tools/result events,
-    # appends to ~/.dsh/storages/agint_tool_stats.jsonl.
-    - id: agint-tool-stats
-      name: ./plugins/agint-tool-stats/lib/index.js
-      config: {}
-    # agint-update-check: 检测 AGINT 仓库远端最新状态，并询问用户是否更新 / 部署。
-    # 工具注册在 host 平面 ⇒ 任何 preset 的会话都能看到（与 agint-tool-stats 同机制）。
-    - id: agint-update-check
-      name: ./plugins/agint-update-check/lib/index.js
-      config: {}
+        # agint-update-check: 检测 AGINT 仓库远端最新状态，并询问用户是否更新 / 部署。
+        # 工具注册在 host 平面 ⇒ 任何 preset 的会话都能看到（与 agint-tool-stats 同机制）。
+        # ⛔ 冲突合并说明：178c3eb 原在此处加了 agint-tool-stats + agint-update-check 两条；
+        #   远端已在组内(8空格)挂载 agint-tool-stats，保留会重复挂载，故仅留本地独有的
+        #   agint-update-check，并修正其缩进为组内嵌套(原 178c3eb 写成 4 空格顶层，会跳出组)。
+        - id: agint-update-check
+          name: ./plugins/agint-update-check/lib/index.js
+          config: {}
 
-    # ── agint-verify-tools（2026-10-21 新增）────────────────────────────────
-    # 为什么放在 host 平面：AGINT 的 cron / self-model 工具原本只在 agint preset
-    # 的 25 个工具行里。会话实际可能跑在别的 preset（本机实测被切到过 cordis）
-    # ⇒ 那些工具一个都不出现 ⇒ 验证一次修复必须等一个 cron 周期。
-    #
-    # 曾经用「整段覆盖 preset-cordis 的 config.plugins」绕过，但那个解法有两个硬伤：
-    #   ① 覆盖是整体替换（dsh-app-boot applyPatches: `target[key] = value`，不深合并）
-    #      ⇒ 官方升级 cordis preset 后，新增插件被冻结的快照挡住，不再出现；
-    #   ② 官方若改名/删除某个插件，快照仍引用旧名 ⇒ 该 preset 可能整体起不来。
-    #
-    # 改用正确机制：host 平面 ctx.tools.register ⇒ 进 global 层 ⇒ 每个 preset 可见。
-    # 依据 @deepseek-ai/dsh-scope/lib/index.js:189-195
-    #   （`if (scope === void 0) layer = this.global;`，host ctx 无 scope）。
-    # 先例：同层的 agint-tool-stats 用同一手法注册 tool_stats_summary。
-    # ⛔ 本插件只**转调** host 服务，不复制 agint-cron / agint-self-model 的 schema
-    #    （复制会造第二份定义，两边一漂就出「工具描述与实现不符」）。
-    - id: agint-verify-tools
-      name: ./plugins/agint-verify-tools/lib/index.js
-      config: {}
+        # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
+        # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.
+        - id: agint-rules
+          name: ./plugins/agint-rules/lib/index.js
+          config: {}
 
-    # agint-quality-contract: D-QAF evaluation framework Seam layer (FROZEN).
-    # Defines schemas + interfaces; siblings (eval/sandbox/policy/report) plug
-    # in. L0-frozen field guard via validatePatch.
-    - id: agint-quality-contract
-      name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
-      config: {}
 
-    # agint-quality-sandbox: D-QAF sandbox runtime v0.6.3. In-process/隔离双模式
-    # 资源矩阵 + runSmoke/runVerify/runExplore；provide agint.qualitySandbox。
-    # agint-quality-eval / agint-mount 依赖此服务。
-    - id: agint-quality-sandbox
-      name: ./plugins/agint-quality-sandbox/lib/index.js
-      config: {}
+        # agint-metrics: evolution metrics. Owns `agint_metrics` domain. Reads
+        # agint.cron/rules/wiki/memory lazy, writes kv time series. Daily via cron.
+        - id: agint-metrics
+          name: ./plugins/agint-metrics/lib/index.js
+          config: {}
 
-    # agint-quality-eval: D-QAF evaluation engine v0.2. 7-dim scoring; safety
-    # gate (×0.30) vetoes below 0.5 → REJECT. Sunday 04:30 weekly evaluation.
-    # Reject self-evaluation.
-    - id: agint-quality-eval
-      name: ./plugins/agint-quality/agint-quality-eval/lib/index.js
-      config: {}
 
-    # agint-quality-policy: D-QAF Phase 4 policy engine. 4 decisions
-    # (AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN); false-harmony
-    # detector + meta-evaluation committee.
-    - id: agint-quality-policy
-      name: ./plugins/agint-quality/agint-quality-policy/lib/index.js
-      config: {}
+        # agint-tool-stats: tool usage profile. Listens on tools/result events,
+        # appends to ~/.dsh/storages/agint_tool_stats.jsonl.
+        - id: agint-tool-stats
+          name: ./plugins/agint-tool-stats/lib/index.js
+          config: {}
 
-    # agint-quality-report: HARM report generator. QualityReporterIface impl.
-    # REMOVED: model-facing 入口 + host patch 均已撤；weekly scheduler 仍按
-    # 原设计尝试调用 agint.qualityReporter，宿主缺失时软降级（不再有 report）。
-    # 如需恢复：在 host composition 重新挂回本 row，并在 preset 加
-    # agint-quality-report-tools 行（参考 git log）。
-    # - id: agint-quality-report
-    #   name: ./plugins/agint-quality/agint-quality-report/lib/index.js
-    #   config: {}
 
-    # agint-quality-sdk: Prompt SDK v0.5. PromptManifest FROZEN schema +
-    # template engine + static check + CLI.
-    - id: agint-quality-sdk
-      name: ./plugins/agint-quality-sdk/lib/index.js
-      config: {}
+        # agint-cron: scheduled tasks. 5-segment cron, missed triggers do NOT replay.
+        #
+        # repoRoot（2026-10-04 补）：三个 job 此前一直在空转，因为拿不到仓库根 ——
+        #   · frozen-anchor（Mon 10:30）**显式抛错**「agint.repoRoot 未配置」（刻意如此：
+        #     「没配」与「没有变更」是两件事，混起来等于入账 job 看着成功其实没干活）
+        #   · evolution-reconcile（Tue 08:00）、spec-index-refresh（每月 1 日）静默 soft-skip
+        # 它们要读的都是**仓库侧**文件：eval/scenarios/inventory.json、
+        # bin/anchor-frozen-set.mjs、docs/specs/INDEX.json（部署位没有这些）。
+        #
+        # 为什么用 `!!js` 而不是写死绝对路径 / 靠装脚本注入：
+        #   · 写死 ⇒ 违反 AGENTS.md:16 红线（机器私有值不入库，两机共用本仓）；
+        #   · 装脚本注入 ⇒ install.sh 的 `cp -f` 整份覆盖会把它静默冲掉
+        #     （evolution-driver 的 repoRoot override 就这么丢过一次，见该段旁红字）。
+        #   `!!js` 由 dsh 在加载时求值（与本文件里 agint-dream / agint-wiki 的 root 同一套做法），
+        #   两机各自算出自己的路径，不入库、不会被覆盖冲掉。
+        #   ⛔ 刻意**不用** `AGINT_HOME`：它是**双语义**变量（install.sh 当源码根，插件侧当
+        #   **数据根** `~/projects/AGINT`）——用它会把 repoRoot 指到数据目录，三个 job 照样读不到
+        #   eval/ 与 docs/specs/。见 README「环境变量」。覆盖口是 AGINT_REPO_ROOT。
+        #   ⇒ 2026-10-26 新增 `AGINT_DATA_HOME`（数据根专用，优先级高于 AGINT_HOME）：
+        #     要把 dreams/wiki/reviews 挪位置就 export 它，**别 export AGINT_HOME** ——
+        #     那会把 install.sh 的源码根一起带偏。
+        #
+        # 2026-10-19 修（实测）：`$HOME/projects/DSH/DSH-AGINT` 在**本机不存在**
+        #   （Test-Path → False；$HOME=C:\Users\Administrator 下只有 projects\AGINT），
+        #   而 AGINT_REPO_ROOT 也没设 ⇒ 三处 repoRoot 全部解析到一个不存在的路径。
+        #   后果：ledger-anchor 每晚 ENOENT（写 docs/evolution-ledger-anchor.md.tmp-*）、
+        #   frozen-anchor 每晚「清单读不到 eval/scenarios/inventory.json」。
+        #   真仓根是 D:\DSH\project源码\DSH-AGINT —— 但它是**机器私有绝对路径**，
+        #   按 AGENTS.md:16 红线不得写进库文件（两台机器共用本仓）。
+        #   解法：在**宿主启动 cwd**（本机 = D:\DSH\AGINT-date\profiles\desktop）放
+        #   `.env` 写 AGINT_REPO_ROOT=...，由 dsh-app-boot 的 loadLayeredEnv()
+        #   （lib/index.js:3736-3744）在启动时灌进 process.env。
+        #   取证：readEnvLayer 读 cwd 的 .env（project 层）+ home 的 .env（user 层），
+        #   只补 `process.env[name] === undefined` 的键 ⇒ 已继承的进程环境优先。
+        #   本机已落地该文件（见 D:\DSH\AGINT-date\profiles\desktop\.env）。
+        #   ⛔ 不要改成塞绝对路径进本文件 —— 那是机器私有事实入库，另一台机会读到错值。
+        - id: agint-cron
+          name: ./plugins/agint-cron/lib/index.js
+          config:
+            repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+            # （≤10000 字节 且 ≤5000 字符）+ 宿主 12000 预算，超限/逼近则写告警报告。
+            # ⛔ 老板 2026-10-18 拍板：**只告警，不自动改** —— 压缩顺序是给人执行的
+            #   判据，AI 自己决定删哪一段可能删掉刚写进去的约定。
+            # file / reportDir 同样是机器私有绝对路径 ⇒ 走 `!!js` 读环境变量（同上理）。
+            #   AGINT_AGENTS_MD     被核文件（工作区 AGENTS.md）
+            #   AGINT_DOCS_DIR      告警报告落盘目录（业务交付物一律落 docs/）
+            # 未配 ⇒ job **抛错**（不是 soft-skip）：静默 skip 会让哨兵看起来在跑，
+            #   实际一次都没核过（K134：能力不可用 vs 实现有 bug 要能分开）。
+            # ⛔ 2026-10-20 定稿修法：`!!js` 只能写成**单行标量**。下面两种写法都会让
+            #   整份 bundle patch 解析失败 ⇒ dsh 静默跳过整个 @agint/host ⇒ 智进消失：
+            #   ① 多行块集合 `!!js ({ ... })` —— js-yaml 报 bad indentation of a mapping entry；
+            #   ② 反引号模板字面量 —— 报 cannot resolve a node with js tag。
+            #   验法：用 js-yaml 的 JSON_SCHEMA.extend(JsExpr) 按 dsh 原样 load 本文件。
+            agentsSizeGuard: !!js "(() => { const r = process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'); return {file: process.env.AGINT_AGENTS_MD || (r + '/AGENTS.md'), reportDir: process.env.AGINT_DOCS_DIR || (r + '/docs'), localFile: process.env.AGINT_AGENTS_LOCAL_MD || (r + '/AGENTS.local.md'), maxBytes: 10000, maxChars: 5000, hostBudgetBytes: 12000}; })()"
 
-    # agint-quality-static: static-analysis rule check v0.8.0（2026-09-08 升级）.
-    # 插件向 6 族（l0-isolation + safety-boundary + prompt-injection 等）+
-    # 技能候选向 4 族 blocker（skill-format / dangerous-command / secret-scan /
-    # prompt-hijack，Sprint 15 T2，默认禁用防既有插件误报，经 SKILL_FAMILY_ENABLED
-    # 组合才启用；secret-scan 审计输出对密钥打码防二次泄露）。
-    - id: agint-quality-static
-      name: ./plugins/agint-quality-static/lib/index.js
-      config: {}
 
-    # agint-diagnosis: attribution engine v0.6.0. 6-class root-cause tagging
-    # + counterfactual simulation + pattern clustering + time-window reports.
-    - id: agint-diagnosis
-      name: ./plugins/agint-diagnosis/lib/index.js
-      config: {}
+        # agint-self-model: read-only observer v0.7.1. Capability map
+        # (CAN/CANNOT/UNCERTAIN) + reasoning profile + resource baseline + calibration.
+        - id: agint-self-model
+          name: ./plugins/agint-self-model/lib/index.js
+          config: {}
 
-    # agint-population: population manager v0.6.2. Three-variant tournament.
-    - id: agint-population
-      name: ./plugins/agint-population/lib/index.js
-      config: {}
 
-    # agint-mount: dynamic mount orchestrator v0.6.5. 4-state state machine +
-    # three-segment transaction + health probe + L0 isolation.
-    - id: agint-mount
-      name: ./plugins/agint-mount/lib/index.js
-      config: {}
+        # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
+        # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），
+        # 评分纯函数 + 美之三问（Q1 全排序无洞判定）→ 三档 cron 广播
+        # （agint-cron 的 oracle-daily 09:00 / oracle-weekly 周一 08:00 / oracle-monthly
+        # 每月 1 日 10:00；2026-09-28 重排，oracle-weekly 原为周日 21:00）。
+        # ⚠️ 09:00 是 oracle-daily 的**固定位**，新增周任务不得占用（排期原则②）。
+        # 首行透出 asOf（§5 硬规则：数据截至 04:00 采集，禁止反向
+        # 触发 _collectRaw）；单条 ≤2KB（§7）；分档配额 + oracle.alert 独立日配额（§5.4）。
+        # 写白名单（§9.1）：evolution_log（经 agint.evolution.logPhase4，targetKind=
+        # oracle-*，decision=ABSTAIN——评论员不做部署决策）+ 自有存储域
+        # agint_aesthetic_oracle（oracle_state / oracle_broadcasts 2 表）。
+        # 回滚与自保（§6.2/§6.3/§6.4）：runScheduled 3 次重试（1s/4s/16s）→ 连续 3 次
+        # 失败沉默（只写审计；24h 后 oracle.alert 一次）→ 配额违规 ≥3 自动沉默+告警；
+        # 系统总分不触发任何回滚（P0-1：不杀信使）。
+        # kill-switch：config enabled:false 或 env AGINT_AESTHETIC_ORACLE=off ⇒ 不
+        # provide 服务 ⇒ 3 个 cron job soft-skip（秒级可逆）；运行时 pause/resume 落
+        # oracle_state（老板 oracle_pause 语义）。基线：前 7 条 daily 均值，建立后 Δ
+        # 全部相对基线（§3.6）。
+        # Service：agint.aestheticOracle（runBroadcast / runScheduled / alert /
+        # pause / resume / getState / status / history）。
+        # 软依赖：agint.metrics（硬消费面，缺席则跳过+告警）、agint.evolution（审计，
+        # 缺席 auditLogged=false）、agint.eventBus.publish（oracle.* topic，缺席 false）。
+        - id: agint-aesthetic-oracle
+          name: ./plugins/agint-aesthetic-oracle/lib/index.js
+          config:
+            enabled: true
+
+
+
+    # ══ agint-signals ══ 感知与进料：外部信号聚合 + 上游发行判读
+    # 组内 2 个：agint-input-gateway / agint-upstream-watch
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-signals
+      name: cordis:group
+      group: true
+      config:
+        # agint-input-gateway: 多源输入网关 v0.1.0（P0，2026-09-29）。
+        # 统一接入异构信息 Channel，经归一化/去重/过滤/配额后发布到 eventBus。
+        # P0：Gateway 核心框架 + C2 系统自观测 Channel（toolStats异常/metrics退化/
+        # 规则高频命中/压缩丢失/session完整性）。每日 02:00 自动 fetch。
+        - id: agint-input-gateway
+          name: ./plugins/agint-input-gateway/lib/index.js
+          config: {}
+
+
+        # agint-upstream-watch: 上游判读器 v0.1.0（2026-10-28 挂载）。
+        #
+        # 补的是「感知不到养它的那一层在变」这个洞：AGINT 有五类信息 Channel，
+        # external（C3）这一类一直是空的 —— 只挂了一个读本地 git 的源且从未启用。
+        # dsh 1-2 天一个版本，破坏性变更直接决定 AGINT 装不装得上、起来了功能全不全，
+        # 而过去靠人读到 changelog 再转告。
+        #
+        # 入口是 C3 新子源 upstream-release（agint-input-gateway 内，每周三 06:00）发出的
+        # input.signal.external.release-published。
+        #
+        # 两段式（事实与结论分离）：
+        #   段 1 确定性 → 版本语义 / release 条目统计 / **依赖面实测**
+        #                （拉 npm tarball 比对 .d.ts，算出 AGINT 用到的导出有没有被删或收窄）
+        #   段 2 LLM    → 判机会与缺口 → 写提案
+        # ⛔ 段 2 失败只落事实、不落结论、不产提案 —— 这是「事实照记」，不是拿启发式冒充结论。
+        #
+        # 为什么必须实测：2026-10-28 的 0.2.2-alpha.2 changelog 写「插件需迁移
+        # tools.resolve/executable」，读文字像要大改；实测 register 只是加了可选第二参，
+        # defineTool 一字未变，140 处调用零改动。只读 changelog 的判读器会变成喊狼来了的看门狗。
+        #
+        # 红线（三道）：
+        #   AGINT_UPSTREAM_WATCH=off    整体停摆（订阅保留，不处理）
+        #   autoExecutable: false       产出的每一条提案都不可自动执行 —— 依赖升级属宿主环境
+        #                               动作，AGENTS.md 红线：不动 dsh 安装目录
+        #   maxProposalsPerRelease: 2   单版本提案上限，防一次刷屏
+        #
+        # ⛔ 不装、不升 dsh；拿不到 tarball 或定位不到本机安装一律记 unknown，不猜 compatible。
+        # ⛔ 基准版本必须与 dsh 主包一致（profiles/node_modules 里可能有 App 升级甩下的遗留副本）。
+        # Service：agint.upstreamWatch（status / digest / runNow / listDigests）。
+        # 工具：upstream_status（只读）、upstream_digest（写，提案不可自动执行）。
+        - id: agint-upstream-watch
+          name: ./plugins/agint-upstream-watch/lib/index.js
+          config:
+            enabled: true
+            autoPropose: true
+            maxProposalsPerRelease: 2
+            timeoutMs: 90000
+
+
+
+    # ══ agint-evolution ══ 进化闭环：提案 → 变异 → 种群 → 诊断 → 执行 → 轨迹
+    # 组内 10 个：agint-evolve / agint-evolution-driver / agint-executor / agint-mutator / agint-population / agint-diagnosis / agint-abtest / agint-mount / agint-trajectory / agint-ov-strategy
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-evolution
+      name: cordis:group
+      group: true
+      config:
+        # agint-evolve: review / self-evolution loop. Reports to <root>/reviews.
+        # Sundays via cron's evolve-review job.
+        - id: agint-evolve
+          name: ./plugins/agint-evolve/lib/index.js
+          config:
+            root: !!js (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/reviews'
+            # A4：eval 存量 FAIL 归因产物。部署位（.agint-bundle / profiles/desktop）
+            #   祖先里没有 eval/ ⇒ 自动探测必然失败，必须显式给绝对路径。
+            #   路径走环境变量（机器私有事实不入库）：AGINT_REPO_ROOT 已在
+            #   profiles/desktop/.env 配置（2026-10-19 建立）。
+            #   ⛔ 只能写成 !!js 标量；反引号模板字面量让整份 patch 解析失败（2026-10-20 根因）。
+            #   （`!!js` 后加反引号会把字符串变成 " … " 拼接，js-yaml 认不出 js 标签。）
+            evalAttributionPath: !!js "(process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT')) + '/eval/attribution/fail-attribution.json'"
+
+
+        # agint-evolution-driver: 闭环引擎的驱动源 v0.2.0（2026-09-27 挂载，同日两次升级）。
+        # mutator/population 从未运行的第二层根因：propose() 要求 caller 自带变异
+        # 内容，而 mutator 红线是「不调真 LLM」⇒ 缺一个「想出变异」的部件。
+        # 本插件就是那个 caller：evolve 提案 → spawn subagent 生成原子编辑 →
+        # 幻觉闸门（oldText 必须真实存在于原文且唯一）→ propose → validate → ingest
+        # → commit 写回仓库正本（preimage 备份 + git 可回滚 + committed 事件）。
+        # 不持存储域（正本在 mutator/population）；全软依赖；
+        # kill-switch env AGINT_EVOLUTION_DRIVER=off（出厂即开）。
+        # commit 默认开（2026-09-27 老板拍板「开放改仓库代码」；AGINT_EVOLUTION_DRIVER_COMMIT=off 可关）。
+        # repoRoot：仓库正本绝对路径（env AGINT_EVOLUTION_DRIVER_REPO_ROOT 优先于它）。
+        # Service：agint.evolutionDriver（runOnce/status/construct）。
+        # 设计稿：proposals/agint-evolution-driver.md。
+        - id: agint-evolution-driver
+          name: ./plugins/agint-evolution-driver/lib/index.js
+          config:
+            # 2026-10-04：与 agint-cron 块同一形状改成 `!!js`（老板拍板方案 2，两块并存）。
+            # 起因：这里原是字面量 + $DSH_HOME 侧 HOME override，而 install.sh 的
+            # `cp -f` 整文件覆盖把 override 静默冲掉过一次（2026-10-04 20:30 实测事故：
+            # 覆盖后生效位与仓库模板 md5 完全相同）。`!!js` 由 dsh 在加载时求值 ⇒
+            #   ① 机器私有绝对路径不入库（AGENTS.md:16 红线）；
+            #   ② 部署覆盖不掉它（覆盖的只是表达式，值每次加载现算）；
+            #   ③ 每台机算出自己的路径，逃生口 = 环境变量 AGINT_REPO_ROOT。
+            # ⚠ 回退值 `$HOME/projects/DSH/DSH-AGINT` 在**麒麟机**与实机路径一致
+            # （/home/kylin/projects/DSH/DSH-AGINT）；**Windows 机不成立**（那边真仓库是
+            # D:/DSH/project源码/DSH-AGINT）⇒ 那台机必须在环境里设 AGINT_REPO_ROOT。
+            repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+
+
+        # agint-executor: 提案执行器 v0.1.0（2026-10-27 挂载）。
+        #
+        # 补的是「批准之后谁来动手」这个断口：agint-evolve 自 v0.8.0 起有 approved 这一档，
+        # agint-evolution-driver 有完整的「提案 → LLM 原子编辑 → D-QAF → commit」流水线，
+        # 但 driver 的 runOnce() 只挑 status:'proposed'，approved 的行它一眼不看 ⇒
+        # 批准完的提案在家族面板里挂成一张「已批准待执行（工作单）」，等人自己动手。
+        #
+        # 现在：批准时选 immediate / scheduled ⇒ 写进 agint_evolve.execution 队列 ⇒
+        # 本插件按 tick 捡到期任务，调 agint.evolutionDriver.runForProposal(proposalId)，
+        # 成功把提案标 applied（带落地证据），失败留原因并按 maxAttempts 有限重试。
+        #
+        # 红线（三道，缺一不可）：
+        #   AGINT_EXECUTOR=off       整体停摆（出厂即开；关掉只让提案停在「排队中」，不丢）
+        #   weeklyCommitCap: 3       本周自动落地次数上限 —— 把 AGENTS.md 的
+        #                            「不要跨周累计自动部署超过 3 次」变成可执行的代码；
+        #                            到顶不是失败，是顺延到下周起点（deferred，面板可见）
+        #   maxAttempts: 2           同一提案最多试 2 次，防无限重试烧 token
+        #
+        # ⛔ 不持存储域：队列正本在 agint_evolve.execution 表（单一事实源）。
+        # ⛔ 不造变异、不写仓库、不做 D-QAF 决策 —— 全部沿用 driver 既有路径，
+        #    本插件只回答「现在该不该跑」和「跑完算不算数」。
+        # ⛔ 加字段前批准的老提案 execMode 默认 manual ⇒ 不会被这次升级偷偷开始自动改代码。
+        # Service：agint.executor（tick / wake / status / runNow / runTick）。
+        - id: agint-executor
+          name: ./plugins/agint-executor/lib/index.js
+          config:
+            tickMs: 15000
+            # ⚠️ 2026-10-28 23:2x 曾临时置 0（＝不限）放行一次端到端验证（用户明确授权），
+            #    验完已改回 3。这是 AGENTS.md:57「跨周自动部署≤3」红线，不是可调阈值：
+            #    本轮因此变成 4/3（越线一次，已记录在 CHANGELOG 与当日备忘）。
+            weeklyCommitCap: 3
+            maxAttempts: 2
+            retryDelayMs: 300000
+            maxPerTick: 1
+            enabled: true
+
+
+        # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
+        # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
+        # propose/validate/commit/rollback three-segment transaction.
+        # NOTE: 必须排在 agint-event-bus 之后——mutator 启动时一次性读取
+        # agint.eventBus.subscribe，取不到会永久降级（diagnosis.completed 影子观察失效）。
+        - id: agint-mutator
+          name: ./plugins/agint-mutator/lib/index.js
+          config: {}
+
+
+        # agint-population: population manager v0.6.2. Three-variant tournament.
+        - id: agint-population
+          name: ./plugins/agint-population/lib/index.js
+          config: {}
+
+
+        # agint-diagnosis: attribution engine v0.6.0. 6-class root-cause tagging
+        # + counterfactual simulation + pattern clustering + time-window reports.
+        - id: agint-diagnosis
+          name: ./plugins/agint-diagnosis/lib/index.js
+          config: {}
+
+
+        # agint-abtest: A/B test framework v0.6.4.
+        - id: agint-abtest
+          name: ./plugins/agint-abtest/lib/index.js
+          config: {}
+
+
+        # agint-mount: dynamic mount orchestrator v0.6.5. 4-state state machine +
+        # three-segment transaction + health probe + L0 isolation.
+        - id: agint-mount
+          name: ./plugins/agint-mount/lib/index.js
+          config: {}
+
+
+        # agint-trajectory: P2-1 进化轨迹记录（训练数据层）v0.1.0（Sprint 18 实施，2026-09-13 挂载）。
+        # 把 task / dream / eval / evolution / subagent 五类执行记为结构化轨迹，成功失败分离
+        # 存储，ShareGPT + JSONL 双格式导出（离线分析与未来微调原料）。
+        # Service：agint.trajectory（record / getStats / export / prune / setRecordMode /
+        # config 等）。独占 agint_trajectory 存储域（schemaVersion 1）。
+        # 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）。
+        # 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
+        # diagnosis.completed / evoorch.task-started / evoorch.task-completed（P2-3 未实施）。
+        # 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断。
+        # **轨迹数据不进任何在线决策**；**不注册 model-visible 工具**（观察层）。
+        # ⚠️ 默认档 count-only（标定期）：不落正式轨迹表，只写 meta + 标定报告。
+        #    无 ready 标定报告直接 setRecordMode('live') 会被不变量 #5 硬门禁拒绝并抛错。
+        - id: agint-trajectory
+          name: ./plugins/agint-trajectory/lib/index.js
+          # 2026-10-06 老板拍板（标定报告 ready:true，官方 calibrate.js 现算：
+          # 日均 21.4 / P50 737B / P95 759B / 截断率 0% < 5% ⇒ 中段摘要不启用）。
+          # 正规切 live + §7.4 重拍容量；报告存档 _P7五项推进_20261006.md §4。
+          # ⚠️ failure 大轨迹（65~224KB 级）进来后 maxBytes 须按方程重估。
+          config:
+            recordMode: live
+            maxCount: 3852      # = 90 天 × 21.4 条/天 × 安全系数 2
+            maxBytes: 2923668   # = 3852 × P95 759B
+
+
+        # agint-ov-strategy: OpenViking 策略层 v0.1.0（2026-09-27 挂载）。
+        # 全仓唯一消费官方 openvikingMemory runtime 的缝（单缝原则 R1）：dream/diagnosis
+        # 产物 write-through 投影进 OV（经官方 enqueueWrite/pending/dispose 全链，
+        # 不重建传输 R4）+ scope 白名单过滤 + 策略侧召回（软失败契约 R3）。
+        # 不持有存储域（R2）；全软依赖（bundle/总线缺席照常 apply）；
+        # kill-switch env AGINT_OV_STRATEGY=off（出厂即开）。
+        # Service：agint.ovStrategy（remember/recall/status）。总线订阅
+        # dream.completed（promoted>0 才记）与 diagnosis.completed（恒记），
+        # 发布 ov.strategy.remembered / ov.strategy.write-failed。
+        # 设计稿：proposals/agint-ov-strategy.md。
+        - id: agint-ov-strategy
+          name: ./plugins/agint-ov-strategy/lib/index.js
+          config: {}
+
+
+
+    # ══ agint-quality ══ 质量与评估：契约 / 静态 / 沙箱 / 评估 / 策略 / SDK
+    # 组内 6 个：agint-quality-contract / agint-quality-sandbox / agint-quality-eval / agint-quality-policy / agint-quality-sdk / agint-quality-static
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-quality
+      name: cordis:group
+      group: true
+      config:
+        # agint-quality-contract: D-QAF evaluation framework Seam layer (FROZEN).
+        # Defines schemas + interfaces; siblings (eval/sandbox/policy/report) plug
+        # in. L0-frozen field guard via validatePatch.
+        - id: agint-quality-contract
+          name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
+          config: {}
+
+
+        # agint-quality-sandbox: D-QAF sandbox runtime v0.6.3. In-process/隔离双模式
+        # 资源矩阵 + runSmoke/runVerify/runExplore；provide agint.qualitySandbox。
+        # agint-quality-eval / agint-mount 依赖此服务。
+        - id: agint-quality-sandbox
+          name: ./plugins/agint-quality-sandbox/lib/index.js
+          config: {}
+
+
+        # agint-quality-eval: D-QAF evaluation engine v0.2. 7-dim scoring; safety
+        # gate (×0.30) vetoes below 0.5 → REJECT. Sunday 04:30 weekly evaluation.
+        # Reject self-evaluation.
+        - id: agint-quality-eval
+          name: ./plugins/agint-quality/agint-quality-eval/lib/index.js
+          config: {}
+
+
+        # agint-quality-policy: D-QAF Phase 4 policy engine. 4 decisions
+        # (AUTO_DEPLOY / PENDING_REVIEW / REJECT / ABSTAIN); false-harmony
+        # detector + meta-evaluation committee.
+        - id: agint-quality-policy
+          name: ./plugins/agint-quality/agint-quality-policy/lib/index.js
+          config: {}
+
+        # agint-quality-report: HARM report generator. QualityReporterIface impl.
+        # REMOVED: model-facing 入口 + host patch 均已撤；weekly scheduler 仍按
+        # 原设计尝试调用 agint.qualityReporter，宿主缺失时软降级（不再有 report）。
+        # 如需恢复：在 host composition 重新挂回本 row，并在 preset 加
+        # agint-quality-report-tools 行（参考 git log）。
+        # - id: agint-quality-report
+        #   name: ./plugins/agint-quality/agint-quality-report/lib/index.js
+        #   config: {}
+
+
+        # agint-quality-sdk: Prompt SDK v0.5. PromptManifest FROZEN schema +
+        # template engine + static check + CLI.
+        - id: agint-quality-sdk
+          name: ./plugins/agint-quality-sdk/lib/index.js
+          config: {}
+
+
+        # agint-quality-static: static-analysis rule check v0.8.0（2026-09-08 升级）.
+        # 插件向 6 族（l0-isolation + safety-boundary + prompt-injection 等）+
+        # 技能候选向 4 族 blocker（skill-format / dangerous-command / secret-scan /
+        # prompt-hijack，Sprint 15 T2，默认禁用防既有插件误报，经 SKILL_FAMILY_ENABLED
+        # 组合才启用；secret-scan 审计输出对密钥打码防二次泄露）。
+        - id: agint-quality-static
+          name: ./plugins/agint-quality-static/lib/index.js
+          config: {}
+
+
+
+    # ══ agint-learning ══ 技能与课程：自动创建 / 策展 / 图谱 / 自主课程
+    # 组内 4 个：agint-skill-autocreate / agint-curator / agint-skill-graph / agint-curriculum
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-learning
+      name: cordis:group
+      group: true
+      config:
+        # agint-skill-autocreate: P0-1 技能自动创建 v0.2.0（Sprint 14 检测层 +
+        # Sprint 15 P0-1 评估层，2026-09-08 升级，storage schemaVersion 1 不变）。
+        # 聚合 tool-stats JSONL → 重复任务模式检测 → SKILL.md 候选提案 → A 路径分流评估：
+        # 复用 D-QAF 执行层与阶段结构，但**不复用综合分做放行**（新候选 composite 恒
+        # 71.4 < 75 的语义错配）→ 硬门判定 + 得分仅排队，输出 provisional: true +
+        # evidence E0，evolution 写 phase3-provisional tag（P0-2 curator 跨域读取）。
+        # Service：agint.skillAutocreate（detect/listPatterns/listCandidates/getCandidate/
+        # rejectCandidate/modifyCandidate/staging/evaluator/triggerEval/stats/pause/resume/config）。
+        # release / rollback 显式抛未实现（Sprint 16 发布层接力，prune 默认禁用）。
+        # 独占 agint_skill_autocreate 存储域（5 表）。软依赖 event-bus
+        # （pattern-detected / candidate-created 两事件）+ quality-static（软）。
+        # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（05:15；
+        # 2026-09-28 重排，原 04:45 与 prompt-static-check 同分钟撞车）。
+        - id: agint-skill-autocreate
+          name: ./plugins/agint-skill-autocreate/lib/index.js
+          config:
+            # 门 2 人工确认窗（schema 默认值也是 false，此处显式写出以表明当前意图）。
+            # 2026-09-17 曾因自动发布产出空壳技能置 true 止血；同日 23:35 拍板关闭——
+            # A2/A3 质量门（Phase 2）已落地，再叠人工审批会让闭环不流动。
+            # 逃生通道：本字段与 require_human_approval_until 都在 RUNTIME_CONFIG_KEYS
+            # 白名单内，可走 agint.skillAutocreate 的 config(patch) 进程内改回 true
+            # 即时生效（重启后会回落到本文件的静态值；要跨重启则改这里）。
+            require_human_approval: false
+            # 观察窗 14 → 7 天（B 组 B1，2026-10-03 老板拍板，Sprint 16 拍板 3 的反向调整）。
+            # ⚠ 该键不在 RUNTIME_CONFIG_KEYS 白名单 ⇒ autocreate_config 进程内改不动，
+            #    必须重启 dsh 才生效；生效与否在新会话用 configApi() 读数验证。
+            # schema 默认 14（schema.js observation_period_days）。
+            observation_period_days: 7
+            # ── A1 脚手架黑名单追加（2026-10-08）────────────────────────────
+            # 来源：生产审计 pattern_specificity_unknown_tools（2026-09-29 ~ 10-08
+            # 共 4 条审计、去重 15 个工具）。程序化核对：与部署位内置 SCAFFOLD_TOOLS
+            # （50 项）交集 0/15，全部为读状态/列目录/排程/展示类通用控制面动作，
+            # 无领域业务工具 ⇒ 补入不会误杀。与内置黑名单取并集，不替换。
+            # ⚠️ 必须写在**仓库根**这份：install.sh 会把仓库根整份 cp -f 到
+            #    $DSH_HOME/.agint-bundle/cordis.patch.yml —— 只改部署位会被下次
+            #    安装静默冲掉（2026-10-08 部署 v0.6.1 时已实测冲掉一次）。
+            #    含 __DSH_HOME__ 占位符的模板不许反向拷回仓库（会写死本机路径）。
+            # 生效：需重启 dsh web。验证：重启后下次 05:15 聚合的审计里
+            # pattern_specificity_unknown_tools 不再出现这 15 个名字。
+            scaffold_tools_extra: ["metrics_summary", "cron_health", "present", "evolution_stats", "schedule_create", "schedule_list", "plugin_manager", "cordis_inspect_query", "curator_stats", "mutator_stats", "job_kill", "metrics_collect", "metrics_series", "rule_list", "wiki_read"]
+
+
+        # agint-curator: P0-2 技能策展人 v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2
+        # 智能策展）— 2026-09-07 挂载 v0.1.0，2026-09-08 升级 v0.2.0（schemaVersion 1→2 已迁移，
+        # 增 overlap_candidates 表；skill_states/reports 旧数据向后兼容）。
+        # 扫描 preset skills 目录 + tool-stats JSONL → 状态机（active/stale/archived/
+        # pinned/quality_declining）→ 每周自动策展 + 报告。Service：agint.curator（run/dryRun/
+        # listSkills/getSkill/pin/unpin/archive/unarchive/stats/getReport/pause/resume/config/
+        # listOverlaps/listDeclining）。
+        # Sprint 15 新增：三维度重叠检测（curator.overlap-detected 事件 + overlap_candidates 表 +
+        # curator_list_overlaps 工具）、质量评估（成功率周快照 + 跨域 evolution 读取
+        # phase3-provisional HARM 趋势 → quality_declining 状态 + curator.quality-declining 事件 +
+        # curator_list_declining 工具）、质量加速规则 1-3（§7.2）。
+        # consolidate / prune 显式抛未实现（Sprint 16，prune 默认永久禁用）。
+        # 独占 agint_curator 存储域（5 表）。软依赖 event-bus
+        # （skill-staled/archived/reactivated/pinned/run-completed/overlap-detected/
+        # quality-declining/consolidate-proposed）+ agint.evolution（软，缺失降级）。
+        # 每周策展由 agint-cron 的 curator-weekly job 驱动（周一 07:00；2026-09-28
+        # 重排，原周日 02:00。⛔ 必须早于 evolve-review（周一 07:30）—— 周复盘要吃
+        # 本周策展报告，见 docs/operations/cron-schedule-principles.md）。
+        # 2026-09-29 放行：三周 dryRun（W38/39/40）零 stale/archive/overlap/declining，
+        # 观察窗 16 天到期，auto_curation_enabled: true → cron 真归档（或随时 curator_pause）。
+        #
+        # 2026-10-01 补 skills_dir 多根（curator v0.2.1）：放行后实测「账实不符」——
+        # 用户级根 $DSH_HOME/skills 只装 autocreate 投放的技能，AGINT 手工维护的 7 个技能
+        # 仍在 preset 目录里，**整批不在账上**。改单根为列表：先用户级（投放位），
+        # 后 preset 目录（手工位），多根按 name 去重（声明顺序在前者优先）。
+        # ⚠️ 用 process.env.DSH_HOME 而不是 dshHomePath()：后者在 bundle 级 patch 的
+        #    !!js 求值作用域里未定义（本文件其余 !!js 一律走 process.env，保持一致）。
+        - id: agint-curator
+          name: ./plugins/agint-curator/lib/index.js
+          config:
+            auto_curation_enabled: true
+            skills_dir: !!js >-
+              [(process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/skills',
+               (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/.agent-presets/agint/skills']
+
+
+        # agint-skill-graph: P2-2 技能使用统计与学习图谱 v0.1.0（Sprint 19 实施，2026-09-13 挂载）。
+        # 从 tool-stats / preset 目录 / curator 状态聚合技能使用画像与技能关系边
+        # （co_use / similar / extends / conflicts 四类），成功失败分离。
+        # Service：agint.skillGraph（FROZEN 6：updateFull / getStats / neighbors /
+        # clusters / recommend / getCoverage；另有 listForPrompt / exportGraph /
+        # proposeConsolidate / setLlmAnnotation / setMode / config / stats）。
+        # 独占 agint_skill_graph 存储域（3 表：usage_stats / skill_edges / graph_meta）。
+        # 软依赖 event-bus / curator / evolve / skill-autocreate（任一缺失均降级不报错）。
+        # **只读消费上游**：不调用 curator 任何写方法，不进 policy / HARM / evolution 决策。
+        # 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周五 09:30；
+        # 2026-09-28 重排，原周日 07:00）。
+        # ⚠️ 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
+        #    看几周 lastCalibration（「若转 live 会得到多少节点/边」）、promotable=true
+        #    后才用 skillGraph_set_mode('live') 切档（未跑过标定期调用会直接抛错）。
+        - id: agint-skill-graph
+          name: ./plugins/agint-skill-graph/lib/index.js
+          # 2026-10-06 老板拍板切 live（K178 修法 B：config 为基线档位，可持久；
+          # graph_meta.mode 是只写不读的死字段，运行内 setMode 仍可临时覆盖）。
+          # 凭据：lastCalibration.promotable=true（2026-W40）+ count-only 约 3.5 周 + 元数据全齐。
+          config:
+            mode: live
+
+
+        # agint-curriculum: P7 自主课程生成器 v0.1.1（Sprint 14 Part B，2026-09-09 挂载）。
+        # 消费 self-model 能力画像，在 UNCERTAIN / 久未复验 / 校准失准的域上生成带
+        # 可自动判定通过条件的挑战（4 域模板 codegen/reasoning/planning/tool-use ×
+        # D1-D5 难度档，40%-70% 完成率护栏 + 连续序列防刷分）。判定外部化 C1/C2/C3：
+        # 挑战必带 verifySpec、自评只进 notes、无 evidence 记 fail。出队不自动执行
+        # （auto_execute_enabled 恒 false，§4.5）。Service：agint.curriculum
+        # （probe/generate/nextChallenge/submit/list/stats/difficulty/pause/resume/
+        # config）。独占 agint_curriculum 存储域（4 表：challenges/attempts/
+        # difficulty_state/audit_log）。软依赖 event-bus（4 个 curriculum.* 事件）与
+        # self-model（snapshot/update，不可用降级 skipped）。硬注入 storageDomain。
+        # 首挂保守：无 cron job、无 generate 工具 —— 挂载后不会自动生成任何挑战，
+        # 需 host 服务显式调用或后续补 curriculum-weekly job 才出活。
+        - id: agint-curriculum
+          name: ./plugins/agint-curriculum/lib/index.js
+          config: {}
+
+
+
+    # ══ agint-surface ══ 对外面：家族面板 / 重启闭环 / 验证入口
+    # 组内 3 个：agint-family-panel / agint-restart / agint-verify-tools
+    # ⛔ 不加 isolate：group 只做配置层收纳。isolate 会隔断 ctx 服务可见性，
+    #    子插件 provide 的 agint.* 服务父级与兄弟节点就取不到了。
+    - id: agint-surface
+      name: cordis:group
+      group: true
+      config:
+        # agint-family-panel: AGINT 家族面板 v0.1.0（2026-09-29 挂载）。
+        # 双半插件（dual）：host 半开一条回环 JSON 路由 GET /api/agint-family/status，
+        # 浏览器半（package.json 的 dsh.client + exports ./client）注册到**宿主原生
+        # 布局席位**——侧栏 panellist 入口行 + root 作用域 main keyed slot 面板页，
+        # 两者共用同一个 id（sidebar 契约：行 id 即 main 的 key）。
+        # ⛔ 席位注册一律走 ctx.slots.inject：宿主没声明该席位就静默不挂，
+        #    绝不拖垮 GUI 启动（第三方 client 插件不得让宿主启动失败）。
+        # ⛔ 浏览器半禁止 require 任何 @deepseek-ai/dsh-client-ui-* 包（非 API 面），
+        #    样式只准用 --dsw-alias-* token，保证明暗主题跟宿主走。
+        # 数据源（全软依赖，缺席即降级为 unavailable 并带 reason）：
+        #   ctx.loader.entries()（权威名册，与 patch 声明无关）+ agint.cron.list()
+        #   + agint.metrics.summary() + agint.selfModel.stats()。
+        # 真实优先：读不到就报「未通电/状态未读到」，绝不用 0 冒充绿。
+        # kill-switch：config enabled:false ⇒ 路由仍应答 {enabled:false}，面板显示
+        # 「已关闭」而非「未挂载」；allowNonLoopback 默认 false（只放行回环）。
+        # Service：agint.familyPanel（status / apiPrefix / setEnabled / isEnabled）。
+        # repoRoot（2026-10-18 补）：仓库正本绝对路径，v2 面板据此读 docs/wiring-exemptions.json。
+        # 不加它时面板的自身路径回退会把自己认成仓库（`.agint-bundle` 同时有 plugins/ 与
+        # cordis.patch.yml），实测 repoDirsSource=self-path、117 项（78 个 *.tmp 残留）、
+        # wiringExemptions=unavailable。机器私有值 ⇒ 不入库，各机各配。
+        - id: agint-family-panel
+          name: ./plugins/agint-family-panel/lib/index.js
+          config:
+            enabled: true
+            allowNonLoopback: false
+            repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+
+
+        - id: agint-restart
+          name: ./plugins/agint-restart/lib/index.js
+          config:
+            enabled: true
+            stateDir: .agint-restart
+            target: primary
+            deliveryMode: wake
+            resumeLastSession: true
+            resumeWaitMs: 5000
+            # 抖动窗口：相邻两次启动间隔小于此值则不投递通知（只挡"刚起来又被拉起"的抖动）。
+            # v0.6.1：300000 → 60000。5 分钟窗口会吞掉"重启后 1-3 分钟又重启"的正常投递，
+            # 导致恢复通知发不出去、会话不接续；重启环由 restart_request 的 burst 熔断兜底。
+            notifyDebounceMs: 60000
+            # v0.5.0：允许拉起的新实例自动打开浏览器吗？false = 给 dsh web 补 --no-open。
+            # dsh web 默认 openBrowser=true，不改的话每次重启都弹一个新浏览器标签/窗口。
+            openBrowserOnRestart: false
+            # v0.6.1：自触发重启是否也投"恢复"通知？true = 投（保证会话接续）。
+            # 旧默认 false 的判据实际是"这次启动留没留请求文件"= 凡走插件协议的重启，
+            # 等于恢复通知几乎永远发不出去（老板让 agent 重启并要求"重启完向我问好"收不到）。
+            # 断环改由通知文案（"不需要再次重启"）+ restart_request 的 burst 熔断承担。
+            resumeOnSelfRestart: true
+            # 发出重启请求后延迟多久退出（计入用户感知的等待时间）
+            shutdownDelayMs: 1500
+            notice: ''
+            shutdownGraceMs: 600000
+            ignoredSessionPrefixes:
+              - head-
+
+
+        # ── agint-verify-tools（2026-10-21 新增）────────────────────────────────
+        # 为什么放在 host 平面：AGINT 的 cron / self-model 工具原本只在 agint preset
+        # 的 25 个工具行里。会话实际可能跑在别的 preset（本机实测被切到过 cordis）
+        # ⇒ 那些工具一个都不出现 ⇒ 验证一次修复必须等一个 cron 周期。
+        #
+        # 曾经用「整段覆盖 preset-cordis 的 config.plugins」绕过，但那个解法有两个硬伤：
+        #   ① 覆盖是整体替换（dsh-app-boot applyPatches: `target[key] = value`，不深合并）
+        #      ⇒ 官方升级 cordis preset 后，新增插件被冻结的快照挡住，不再出现；
+        #   ② 官方若改名/删除某个插件，快照仍引用旧名 ⇒ 该 preset 可能整体起不来。
+        #
+        # 改用正确机制：host 平面 ctx.tools.register ⇒ 进 global 层 ⇒ 每个 preset 可见。
+        # 依据 @deepseek-ai/dsh-scope/lib/index.js:189-195
+        #   （`if (scope === void 0) layer = this.global;`，host ctx 无 scope）。
+        # 先例：同层的 agint-tool-stats 用同一手法注册 tool_stats_summary。
+        # ⛔ 本插件只**转调** host 服务，不复制 agint-cron / agint-self-model 的 schema
+        #    （复制会造第二份定义，两边一漂就出「工具描述与实现不符」）。
+        - id: agint-verify-tools
+          name: ./plugins/agint-verify-tools/lib/index.js
+          config: {}
+
+
 
     # ── 智进 preset 声明（dsh 0.1.7+ 声明式注册，2026-09-23）──────────────────
     #
@@ -323,352 +880,3 @@
     #   marker file + pid diff + cordis dispose hook (fixes upstream SIGTERM double-kill bug);
     #   agent decides next step autonomously (no forced continue);
     #   rollback: delete this block + bin/safe-update.sh rollback <TS>.
-- insert:
-    - id: agint-restart
-      name: ./plugins/agint-restart/lib/index.js
-      config:
-        enabled: true
-        stateDir: .agint-restart
-        target: primary
-        deliveryMode: wake
-        resumeLastSession: true
-        resumeWaitMs: 5000
-        # 抖动窗口：相邻两次启动间隔小于此值则不投递通知（只挡"刚起来又被拉起"的抖动）。
-        # v0.6.1：300000 → 60000。5 分钟窗口会吞掉"重启后 1-3 分钟又重启"的正常投递，
-        # 导致恢复通知发不出去、会话不接续；重启环由 restart_request 的 burst 熔断兜底。
-        notifyDebounceMs: 60000
-        # v0.5.0：允许拉起的新实例自动打开浏览器吗？false = 给 dsh web 补 --no-open。
-        # dsh web 默认 openBrowser=true，不改的话每次重启都弹一个新浏览器标签/窗口。
-        openBrowserOnRestart: false
-        # v0.6.1：自触发重启是否也投"恢复"通知？true = 投（保证会话接续）。
-        # 旧默认 false 的判据实际是"这次启动留没留请求文件"= 凡走插件协议的重启，
-        # 等于恢复通知几乎永远发不出去（老板让 agent 重启并要求"重启完向我问好"收不到）。
-        # 断环改由通知文案（"不需要再次重启"）+ restart_request 的 burst 熔断承担。
-        resumeOnSelfRestart: true
-        # 发出重启请求后延迟多久退出（计入用户感知的等待时间）
-        shutdownDelayMs: 1500
-        notice: ''
-        shutdownGraceMs: 600000
-        ignoredSessionPrefixes:
-          - head-
-
-    # agint-abtest: A/B test framework v0.6.4.
-    - id: agint-abtest
-      name: ./plugins/agint-abtest/lib/index.js
-      config: {}
-
-    # agint-event-bus: event bus v0.7.0. FROZEN event-bus schema + 3 services +
-    # deadletter / isolation / backoff / traceId + sync quota.
-    - id: agint-event-bus
-      name: ./plugins/agint-event-bus/lib/index.js
-      config: {}
-
-    # agint-skill-autocreate: P0-1 技能自动创建 v0.2.0（Sprint 14 检测层 +
-    # Sprint 15 P0-1 评估层，2026-09-08 升级，storage schemaVersion 1 不变）。
-    # 聚合 tool-stats JSONL → 重复任务模式检测 → SKILL.md 候选提案 → A 路径分流评估：
-    # 复用 D-QAF 执行层与阶段结构，但**不复用综合分做放行**（新候选 composite 恒
-    # 71.4 < 75 的语义错配）→ 硬门判定 + 得分仅排队，输出 provisional: true +
-    # evidence E0，evolution 写 phase3-provisional tag（P0-2 curator 跨域读取）。
-    # Service：agint.skillAutocreate（detect/listPatterns/listCandidates/getCandidate/
-    # rejectCandidate/modifyCandidate/staging/evaluator/triggerEval/stats/pause/resume/config）。
-    # release / rollback 显式抛未实现（Sprint 16 发布层接力，prune 默认禁用）。
-    # 独占 agint_skill_autocreate 存储域（5 表）。软依赖 event-bus
-    # （pattern-detected / candidate-created 两事件）+ quality-static（软）。
-    # 每日聚合由 agint-cron 的 skill-autocreate-aggregate job 驱动（05:15；
-    # 2026-09-28 重排，原 04:45 与 prompt-static-check 同分钟撞车）。
-    - id: agint-skill-autocreate
-      name: ./plugins/agint-skill-autocreate/lib/index.js
-      config:
-        # 门 2 人工确认窗（schema 默认值也是 false，此处显式写出以表明当前意图）。
-        # 2026-09-17 曾因自动发布产出空壳技能置 true 止血；同日 23:35 拍板关闭——
-        # A2/A3 质量门（Phase 2）已落地，再叠人工审批会让闭环不流动。
-        # 逃生通道：本字段与 require_human_approval_until 都在 RUNTIME_CONFIG_KEYS
-        # 白名单内，可走 agint.skillAutocreate 的 config(patch) 进程内改回 true
-        # 即时生效（重启后会回落到本文件的静态值；要跨重启则改这里）。
-        require_human_approval: false
-        # 观察窗 14 → 7 天（B 组 B1，2026-10-03 老板拍板，Sprint 16 拍板 3 的反向调整）。
-        # ⚠ 该键不在 RUNTIME_CONFIG_KEYS 白名单 ⇒ autocreate_config 进程内改不动，
-        #    必须重启 dsh 才生效；生效与否在新会话用 configApi() 读数验证。
-        # schema 默认 14（schema.js observation_period_days）。
-        observation_period_days: 7
-        # ── A1 脚手架黑名单追加（2026-10-08）────────────────────────────
-        # 来源：生产审计 pattern_specificity_unknown_tools（2026-09-29 ~ 10-08
-        # 共 4 条审计、去重 15 个工具）。程序化核对：与部署位内置 SCAFFOLD_TOOLS
-        # （50 项）交集 0/15，全部为读状态/列目录/排程/展示类通用控制面动作，
-        # 无领域业务工具 ⇒ 补入不会误杀。与内置黑名单取并集，不替换。
-        # ⚠️ 必须写在**仓库根**这份：install.sh 会把仓库根整份 cp -f 到
-        #    $DSH_HOME/.agint-bundle/cordis.patch.yml —— 只改部署位会被下次
-        #    安装静默冲掉（2026-10-08 部署 v0.6.1 时已实测冲掉一次）。
-        #    含 __DSH_HOME__ 占位符的模板不许反向拷回仓库（会写死本机路径）。
-        # 生效：需重启 dsh web。验证：重启后下次 05:15 聚合的审计里
-        # pattern_specificity_unknown_tools 不再出现这 15 个名字。
-        scaffold_tools_extra: ["metrics_summary", "cron_health", "present", "evolution_stats", "schedule_create", "schedule_list", "plugin_manager", "cordis_inspect_query", "curator_stats", "mutator_stats", "job_kill", "metrics_collect", "metrics_series", "rule_list", "wiki_read"]
-
-    # agint-curator: P0-2 技能策展人 v0.2.0（Sprint 14 阶段 1 基础策展 + Sprint 15 阶段 2
-    # 智能策展）— 2026-09-07 挂载 v0.1.0，2026-09-08 升级 v0.2.0（schemaVersion 1→2 已迁移，
-    # 增 overlap_candidates 表；skill_states/reports 旧数据向后兼容）。
-    # 扫描 preset skills 目录 + tool-stats JSONL → 状态机（active/stale/archived/
-    # pinned/quality_declining）→ 每周自动策展 + 报告。Service：agint.curator（run/dryRun/
-    # listSkills/getSkill/pin/unpin/archive/unarchive/stats/getReport/pause/resume/config/
-    # listOverlaps/listDeclining）。
-    # Sprint 15 新增：三维度重叠检测（curator.overlap-detected 事件 + overlap_candidates 表 +
-    # curator_list_overlaps 工具）、质量评估（成功率周快照 + 跨域 evolution 读取
-    # phase3-provisional HARM 趋势 → quality_declining 状态 + curator.quality-declining 事件 +
-    # curator_list_declining 工具）、质量加速规则 1-3（§7.2）。
-    # consolidate / prune 显式抛未实现（Sprint 16，prune 默认永久禁用）。
-    # 独占 agint_curator 存储域（5 表）。软依赖 event-bus
-    # （skill-staled/archived/reactivated/pinned/run-completed/overlap-detected/
-    # quality-declining/consolidate-proposed）+ agint.evolution（软，缺失降级）。
-    # 每周策展由 agint-cron 的 curator-weekly job 驱动（周一 07:00；2026-09-28
-    # 重排，原周日 02:00。⛔ 必须早于 evolve-review（周一 07:30）—— 周复盘要吃
-    # 本周策展报告，见 docs/operations/cron-schedule-principles.md）。
-    # 2026-09-29 放行：三周 dryRun（W38/39/40）零 stale/archive/overlap/declining，
-    # 观察窗 16 天到期，auto_curation_enabled: true → cron 真归档（或随时 curator_pause）。
-    #
-    # 2026-10-01 补 skills_dir 多根（curator v0.2.1）：放行后实测「账实不符」——
-    # 用户级根 $DSH_HOME/skills 只装 autocreate 投放的技能，AGINT 手工维护的 7 个技能
-    # 仍在 preset 目录里，**整批不在账上**。改单根为列表：先用户级（投放位），
-    # 后 preset 目录（手工位），多根按 name 去重（声明顺序在前者优先）。
-    # ⚠️ 用 process.env.DSH_HOME 而不是 dshHomePath()：后者在 bundle 级 patch 的
-    #    !!js 求值作用域里未定义（本文件其余 !!js 一律走 process.env，保持一致）。
-    - id: agint-curator
-      name: ./plugins/agint-curator/lib/index.js
-      config:
-        auto_curation_enabled: true
-        skills_dir: !!js >-
-          [(process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/skills',
-           (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/.agent-presets/agint/skills']
-
-    # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
-    # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
-    # propose/validate/commit/rollback three-segment transaction.
-    # NOTE: 必须排在 agint-event-bus 之后——mutator 启动时一次性读取
-    # agint.eventBus.subscribe，取不到会永久降级（diagnosis.completed 影子观察失效）。
-    - id: agint-mutator
-      name: ./plugins/agint-mutator/lib/index.js
-      config: {}
-
-    # agint-self-model: read-only observer v0.7.1. Capability map
-    # (CAN/CANNOT/UNCERTAIN) + reasoning profile + resource baseline + calibration.
-    - id: agint-self-model
-      name: ./plugins/agint-self-model/lib/index.js
-      config: {}
-
-    # agint-evolution-memory: evolution-only memory. Distinct from task memory;
-    # D-QAF auto-write landing.
-    - id: agint-evolution-memory
-      name: ./plugins/agint-evolution-memory/lib/index.js
-      # 2026-10-05：补 repoRoot（老板未点名的 C1 收口项，先改代码态、**未部署**）。
-      # 根因（实测+源码取证）：ledger-anchor cron（Mon 10:15）调 `evo.ledger.anchor()`，
-      # 锚点路径由 lib/ledger-anchor.js:61 的 `REPO_ROOT = <模块>/../../..` 推导 ——
-      # 在仓库里算出仓根，但在**部署位**算出 ~/.dsh/.agint-bundle ⇒ 写
-      # `~/.dsh/.agint-bundle/docs/evolution-ledger-anchor.md` 时 ENOENT（该目录不存在，
-      # 实测确认）。lib/index.js:208-209 已实现「config.repoRoot 存在则用它算 anchorFile」
-      # 的正确分支（config schema 在 :58 声明 repoRoot: z.string().optional()），
-      # 只是**没人给这个块填值** —— 之前 2ecb16d 填的是 agint-cron 块，治的是 job 读文件，
-      # 不是这条写路径。形状沿用同仓 `!!js` 惯例（与 cron / evolution-driver 两块一致）。
-      #
-      # 2026-10-19：与 agint-cron 块同因 —— `$HOME/projects/DSH/DSH-AGINT` 本机
-      #   不存在（实测 Test-Path=False），ledger-anchor 的 ENOENT 即该写路径所致。
-      #   修法同 cron 块：走 AGINT_REPO_ROOT（.env 落地），不在本文件塞绝对路径。
-      config:
-        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
-
-    # agint-memory-provider: P1-1 可插拔记忆 Provider 架构（Sprint 15 基础抽象层）
-    # v0.1.0 — 2026-09-08 挂载. ExternalProvider 抽象基类 + BuiltinProvider（封装
-    # agint.memory，行为完全一致，prefetch 默认只读）+ MemoryManager（激活/降级/
-    # 琐碎过滤/召回指示器）+ ProviderRegistry。Service：agint.memoryProvider
-    # （listProviders/getActiveProvider/activate/deactivate/getConfig/setConfig/
-    # getRecallStatus/getFallbackStats/pause/resume/stats/config 等）。
-    # testConnection / runPreCompressCheckpoint / registerProviderTools /
-    # routeToolCall 显式抛未实现（Sprint 16 接力）。独占 agint_memory_provider
-    # 存储域（5 表）。硬注入 agint.memory（builtin provider 封装源）；软依赖
-    # event-bus（provider-activated / provider-activation-failed / recall-injected
-    # 三事件）。首挂保守：默认 active_provider=builtin，行为与未挂载时完全一致。
-    - id: agint-memory-provider
-      name: ./plugins/agint-memory-provider/lib/index.js
-      config: {}
-
-    # agint-curriculum: P7 自主课程生成器 v0.1.1（Sprint 14 Part B，2026-09-09 挂载）。
-    # 消费 self-model 能力画像，在 UNCERTAIN / 久未复验 / 校准失准的域上生成带
-    # 可自动判定通过条件的挑战（4 域模板 codegen/reasoning/planning/tool-use ×
-    # D1-D5 难度档，40%-70% 完成率护栏 + 连续序列防刷分）。判定外部化 C1/C2/C3：
-    # 挑战必带 verifySpec、自评只进 notes、无 evidence 记 fail。出队不自动执行
-    # （auto_execute_enabled 恒 false，§4.5）。Service：agint.curriculum
-    # （probe/generate/nextChallenge/submit/list/stats/difficulty/pause/resume/
-    # config）。独占 agint_curriculum 存储域（4 表：challenges/attempts/
-    # difficulty_state/audit_log）。软依赖 event-bus（4 个 curriculum.* 事件）与
-    # self-model（snapshot/update，不可用降级 skipped）。硬注入 storageDomain。
-    # 首挂保守：无 cron job、无 generate 工具 —— 挂载后不会自动生成任何挑战，
-    # 需 host 服务显式调用或后续补 curriculum-weekly job 才出活。
-    - id: agint-curriculum
-      name: ./plugins/agint-curriculum/lib/index.js
-      config: {}
-
-    # agint-skill-graph: P2-2 技能使用统计与学习图谱 v0.1.0（Sprint 19 实施，2026-09-13 挂载）。
-    # 从 tool-stats / preset 目录 / curator 状态聚合技能使用画像与技能关系边
-    # （co_use / similar / extends / conflicts 四类），成功失败分离。
-    # Service：agint.skillGraph（FROZEN 6：updateFull / getStats / neighbors /
-    # clusters / recommend / getCoverage；另有 listForPrompt / exportGraph /
-    # proposeConsolidate / setLlmAnnotation / setMode / config / stats）。
-    # 独占 agint_skill_graph 存储域（3 表：usage_stats / skill_edges / graph_meta）。
-    # 软依赖 event-bus / curator / evolve / skill-autocreate（任一缺失均降级不报错）。
-    # **只读消费上游**：不调用 curator 任何写方法，不进 policy / HARM / evolution 决策。
-    # 每周图谱由 agint-cron 的 skill-graph-weekly job 驱动（周五 09:30；
-    # 2026-09-28 重排，原周日 07:00）。
-    # ⚠️ 默认档 count-only（标定期）：只扫不落正式图，正式表 0 行 → health 恒 EMPTY。
-    #    看几周 lastCalibration（「若转 live 会得到多少节点/边」）、promotable=true
-    #    后才用 skillGraph_set_mode('live') 切档（未跑过标定期调用会直接抛错）。
-    - id: agint-skill-graph
-      name: ./plugins/agint-skill-graph/lib/index.js
-      # 2026-10-06 老板拍板切 live（K178 修法 B：config 为基线档位，可持久；
-      # graph_meta.mode 是只写不读的死字段，运行内 setMode 仍可临时覆盖）。
-      # 凭据：lastCalibration.promotable=true（2026-W40）+ count-only 约 3.5 周 + 元数据全齐。
-      config:
-        mode: live
-
-    # agint-trajectory: P2-1 进化轨迹记录（训练数据层）v0.1.0（Sprint 18 实施，2026-09-13 挂载）。
-    # 把 task / dream / eval / evolution / subagent 五类执行记为结构化轨迹，成功失败分离
-    # 存储，ShareGPT + JSONL 双格式导出（离线分析与未来微调原料）。
-    # Service：agint.trajectory（record / getStats / export / prune / setRecordMode /
-    # config 等）。独占 agint_trajectory 存储域（schemaVersion 1）。
-    # 硬注入 storageDomain；软依赖 event-bus / metrics / toolStats（缺失均降级不报错）。
-    # 订阅 6 类事件：dream.completed / evolution.proposed / evolution.evaluated /
-    # diagnosis.completed / evoorch.task-started / evoorch.task-completed（P2-3 未实施）。
-    # 治理六件套：采样 / 脱敏 / 截断 / 预算 / prune / 熔断。
-    # **轨迹数据不进任何在线决策**；**不注册 model-visible 工具**（观察层）。
-    # ⚠️ 默认档 count-only（标定期）：不落正式轨迹表，只写 meta + 标定报告。
-    #    无 ready 标定报告直接 setRecordMode('live') 会被不变量 #5 硬门禁拒绝并抛错。
-    - id: agint-trajectory
-      name: ./plugins/agint-trajectory/lib/index.js
-      # 2026-10-06 老板拍板（标定报告 ready:true，官方 calibrate.js 现算：
-      # 日均 21.4 / P50 737B / P95 759B / 截断率 0% < 5% ⇒ 中段摘要不启用）。
-      # 正规切 live + §7.4 重拍容量；报告存档 _P7五项推进_20261006.md §4。
-      # ⚠️ failure 大轨迹（65~224KB 级）进来后 maxBytes 须按方程重估。
-      config:
-        recordMode: live
-        maxCount: 3852      # = 90 天 × 21.4 条/天 × 安全系数 2
-        maxBytes: 2923668   # = 3852 × P95 759B
-
-    # agint-compress-guard: P3-1 记忆压缩检查点机制 v0.1.0（Sprint 20 实施，2026-09-13 挂载）。
-    # 立场：压缩可以发生，上下文不许消失（M4 fail-closed）。
-    # Service：agint.compressGuard（FROZEN 6：checkpoint / extract / search /
-    # recall / stats / setEnabled）。
-    # 两段式粒度：raw 检查点写失败 = 硬门 BLOCKED_CHECKPOINT（shadow 档只告警不真中止）；
-    # 洞察提取失败 / 3s 软超时 = 软降级 DEGRADED_INSIGHT，300s 冷却 → 探针 → 复位。
-    # 硬注入 storageDomain + agint.memory；软依赖 event-bus / agint.memoryProvider。
-    # 独占 agint_compress_guard 存储域（4 表 schemaVersion 1）；raw 唯一事实源仍归
-    # P1-1（Q3 分层不重建，双 id 空间 pcc_* / compactionId）。
-    # 接线：B 档主战场 = ctx.on('session/event') 过滤 compaction/start|summary|end|prune；
-    # C 档 = 显式 checkpoint() 委托 P1-1 runPreCompressCheckpoint；A 档已移出设计。
-    # 恢复双通道：compress_recall 工具 + 记忆查询 miss 兜底一次（装饰 agint.memory.search，
-    # 单次单向不回写，切断「压缩产物→记忆→再压缩」自我污染）。
-    # ⚠️ 三处保守：① shadow 档硬门只告警；② provider 注册进 P1-1 registry 但**不自动激活**；
-    #    ③ 本机 R10 探针实测 0 次压缩（155 会话 / 140,109 事件）→ 标定期 stats() 恒
-    #    NO_SOURCE_REACHED，是如实报警不是故障。转正由老板一周后拍板。
-    - id: agint-compress-guard
-      name: ./plugins/agint-compress-guard/lib/index.js
-      config: {}
-
-    # agint-input-gateway: 多源输入网关 v0.1.0（P0，2026-09-29）。
-    # 统一接入异构信息 Channel，经归一化/去重/过滤/配额后发布到 eventBus。
-    # P0：Gateway 核心框架 + C2 系统自观测 Channel（toolStats异常/metrics退化/
-    # 规则高频命中/压缩丢失/session完整性）。每日 02:00 自动 fetch。
-    - id: agint-input-gateway
-      name: ./plugins/agint-input-gateway/lib/index.js
-      config: {}
-
-    # agint-ov-strategy: OpenViking 策略层 v0.1.0（2026-09-27 挂载）。
-    # 全仓唯一消费官方 openvikingMemory runtime 的缝（单缝原则 R1）：dream/diagnosis
-    # 产物 write-through 投影进 OV（经官方 enqueueWrite/pending/dispose 全链，
-    # 不重建传输 R4）+ scope 白名单过滤 + 策略侧召回（软失败契约 R3）。
-    # 不持有存储域（R2）；全软依赖（bundle/总线缺席照常 apply）；
-    # kill-switch env AGINT_OV_STRATEGY=off（出厂即开）。
-    # Service：agint.ovStrategy（remember/recall/status）。总线订阅
-    # dream.completed（promoted>0 才记）与 diagnosis.completed（恒记），
-    # 发布 ov.strategy.remembered / ov.strategy.write-failed。
-    # 设计稿：proposals/agint-ov-strategy.md。
-    - id: agint-ov-strategy
-      name: ./plugins/agint-ov-strategy/lib/index.js
-      config: {}
-
-    # agint-evolution-driver: 闭环引擎的驱动源 v0.2.0（2026-09-27 挂载，同日两次升级）。
-    # mutator/population 从未运行的第二层根因：propose() 要求 caller 自带变异
-    # 内容，而 mutator 红线是「不调真 LLM」⇒ 缺一个「想出变异」的部件。
-    # 本插件就是那个 caller：evolve 提案 → spawn subagent 生成原子编辑 →
-    # 幻觉闸门（oldText 必须真实存在于原文且唯一）→ propose → validate → ingest
-    # → commit 写回仓库正本（preimage 备份 + git 可回滚 + committed 事件）。
-    # 不持存储域（正本在 mutator/population）；全软依赖；
-    # kill-switch env AGINT_EVOLUTION_DRIVER=off（出厂即开）。
-    # commit 默认开（2026-09-27 老板拍板「开放改仓库代码」；AGINT_EVOLUTION_DRIVER_COMMIT=off 可关）。
-    # repoRoot：仓库正本绝对路径（env AGINT_EVOLUTION_DRIVER_REPO_ROOT 优先于它）。
-    # Service：agint.evolutionDriver（runOnce/status/construct）。
-    # 设计稿：proposals/agint-evolution-driver.md。
-    - id: agint-evolution-driver
-      name: ./plugins/agint-evolution-driver/lib/index.js
-      config:
-        # 2026-10-04：与 agint-cron 块同一形状改成 `!!js`（老板拍板方案 2，两块并存）。
-        # 起因：这里原是字面量 + $DSH_HOME 侧 HOME override，而 install.sh 的
-        # `cp -f` 整文件覆盖把 override 静默冲掉过一次（2026-10-04 20:30 实测事故：
-        # 覆盖后生效位与仓库模板 md5 完全相同）。`!!js` 由 dsh 在加载时求值 ⇒
-        #   ① 机器私有绝对路径不入库（AGENTS.md:16 红线）；
-        #   ② 部署覆盖不掉它（覆盖的只是表达式，值每次加载现算）；
-        #   ③ 每台机算出自己的路径，逃生口 = 环境变量 AGINT_REPO_ROOT。
-        # ⚠ 回退值 `$HOME/projects/DSH/DSH-AGINT` 在**麒麟机**与实机路径一致
-        # （/home/kylin/projects/DSH/DSH-AGINT）；**Windows 机不成立**（那边真仓库是
-        # D:/DSH/project源码/DSH-AGINT）⇒ 那台机必须在环境里设 AGINT_REPO_ROOT。
-        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
-
-    # agint-aesthetic-oracle: 美的神谕层 v0.1.0（2026-09-27 挂载，方案 v2.3 Day 1）。
-    # agint-metrics 之上的薄评论员（方案 C）：只消费 summary()（零直连域 service），
-    # 评分纯函数 + 美之三问（Q1 全排序无洞判定）→ 三档 cron 广播
-    # （agint-cron 的 oracle-daily 09:00 / oracle-weekly 周一 08:00 / oracle-monthly
-    # 每月 1 日 10:00；2026-09-28 重排，oracle-weekly 原为周日 21:00）。
-    # ⚠️ 09:00 是 oracle-daily 的**固定位**，新增周任务不得占用（排期原则②）。
-    # 首行透出 asOf（§5 硬规则：数据截至 04:00 采集，禁止反向
-    # 触发 _collectRaw）；单条 ≤2KB（§7）；分档配额 + oracle.alert 独立日配额（§5.4）。
-    # 写白名单（§9.1）：evolution_log（经 agint.evolution.logPhase4，targetKind=
-    # oracle-*，decision=ABSTAIN——评论员不做部署决策）+ 自有存储域
-    # agint_aesthetic_oracle（oracle_state / oracle_broadcasts 2 表）。
-    # 回滚与自保（§6.2/§6.3/§6.4）：runScheduled 3 次重试（1s/4s/16s）→ 连续 3 次
-    # 失败沉默（只写审计；24h 后 oracle.alert 一次）→ 配额违规 ≥3 自动沉默+告警；
-    # 系统总分不触发任何回滚（P0-1：不杀信使）。
-    # kill-switch：config enabled:false 或 env AGINT_AESTHETIC_ORACLE=off ⇒ 不
-    # provide 服务 ⇒ 3 个 cron job soft-skip（秒级可逆）；运行时 pause/resume 落
-    # oracle_state（老板 oracle_pause 语义）。基线：前 7 条 daily 均值，建立后 Δ
-    # 全部相对基线（§3.6）。
-    # Service：agint.aestheticOracle（runBroadcast / runScheduled / alert /
-    # pause / resume / getState / status / history）。
-    # 软依赖：agint.metrics（硬消费面，缺席则跳过+告警）、agint.evolution（审计，
-    # 缺席 auditLogged=false）、agint.eventBus.publish（oracle.* topic，缺席 false）。
-    - id: agint-aesthetic-oracle
-      name: ./plugins/agint-aesthetic-oracle/lib/index.js
-      config:
-        enabled: true
-
-    # agint-family-panel: AGINT 家族面板 v0.1.0（2026-09-29 挂载）。
-    # 双半插件（dual）：host 半开一条回环 JSON 路由 GET /api/agint-family/status，
-    # 浏览器半（package.json 的 dsh.client + exports ./client）注册到**宿主原生
-    # 布局席位**——侧栏 panellist 入口行 + root 作用域 main keyed slot 面板页，
-    # 两者共用同一个 id（sidebar 契约：行 id 即 main 的 key）。
-    # ⛔ 席位注册一律走 ctx.slots.inject：宿主没声明该席位就静默不挂，
-    #    绝不拖垮 GUI 启动（第三方 client 插件不得让宿主启动失败）。
-    # ⛔ 浏览器半禁止 require 任何 @deepseek-ai/dsh-client-ui-* 包（非 API 面），
-    #    样式只准用 --dsw-alias-* token，保证明暗主题跟宿主走。
-    # 数据源（全软依赖，缺席即降级为 unavailable 并带 reason）：
-    #   ctx.loader.entries()（权威名册，与 patch 声明无关）+ agint.cron.list()
-    #   + agint.metrics.summary() + agint.selfModel.stats()。
-    # 真实优先：读不到就报「未通电/状态未读到」，绝不用 0 冒充绿。
-    # kill-switch：config enabled:false ⇒ 路由仍应答 {enabled:false}，面板显示
-    # 「已关闭」而非「未挂载」；allowNonLoopback 默认 false（只放行回环）。
-    # Service：agint.familyPanel（status / apiPrefix / setEnabled / isEnabled）。
-    # repoRoot（2026-10-18 补）：仓库正本绝对路径，v2 面板据此读 docs/wiring-exemptions.json。
-    # 不加它时面板的自身路径回退会把自己认成仓库（`.agint-bundle` 同时有 plugins/ 与
-    # cordis.patch.yml），实测 repoDirsSource=self-path、117 项（78 个 *.tmp 残留）、
-    # wiringExemptions=unavailable。机器私有值 ⇒ 不入库，各机各配。
-    - id: agint-family-panel
-      name: ./plugins/agint-family-panel/lib/index.js
-      config:
-        enabled: true
-        allowNonLoopback: false
-        repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))

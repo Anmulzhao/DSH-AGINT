@@ -1,5 +1,205 @@
 # agint-evolve CHANGELOG
 
+## v0.12.0（2026-10-27 · 提案台账加「成立条件」：判尺口径快照 + 声明式互斥检查）
+
+### 为什么
+
+提案 `a85ef850`「权重真标定：回测每周复盘报告，拟合 Q2 最丑归因与人工发现的重合度」：
+
+| 时刻 (2026-10-09) | 事件 |
+|---|---|
+| 12:58 | 该提案立项。当时 `q2Worst` 按**绝对扣分**排序，权重直接决定归因 ⇒「用归因反推权重」成立 |
+| 13:07 | 同日另一条 `f51d3280` 落地，Q2 改成 `ratio = deduction / maxWeight` 排序 |
+| 之后 | `deduction = maxWeight × g(value, threshold)`（`agint-aesthetic-oracle/lib/scoring.js:327-336`）⇒ 权重在分子分母**被约掉** ⇒ 该提案的方法论彻底失效 |
+
+失效了却没人知道：台账上它和任何一条正常提案长得一模一样，还挂着「待批」18 天，
+直到 2026-10-27 人工点开才发现「拿 Q2 归因标定权重」等于优化一个不随参数变化的目标
+（实测：36 条样本、随机 500 组权重 ⇒ 归因 0 变化；而 `CONFIDENCE` 0.70→0.55 能翻 24/36）。
+
+同批还有第二个缺口：`f51d3280`（要求「归因与权重解耦」）与 `a85ef850`（要求「用归因
+标定权重」）出自**同一份 2026-10-09 源码复审**、相隔 24 分钟立项、逻辑互斥，两条都进了池。
+
+### 变更
+
+1. **记成立条件**：`proposalSchema` 增三字段，`propose()` 落库时填
+   - `formulaVersion` —— 当前判尺口径（由 `agint.aestheticOracle.formulaVersion` 读；oracle 未挂载 ⇒ 空串 = **口径未知**）
+   - `assumedBy` —— 可选的人工假设锚点（如 `scoring.js@r2`）
+   - `conflictsWith` —— 声明式互斥列表
+2. **失效提示**：`listProposals()` / `getProposal()` 返回派生字段 `staleSince`
+   （`'r2→r4'` = 立项口径已被后续公式变更甩在身后）。⛔ **只提示、不改 status**：
+   判失效要人确认，机器不替人下判断。
+3. **互斥检查**：`propose({ conflictsWith })` 里目标提案处于 `applied` / `approved`
+   ⇒ **拒绝创建**并列出目标（截断 id + 状态 + 标题），要求正文「关联」节写清如何共存。
+   `proposed` / `rejected` / `wontfix` 不拦（还没生效，或已被否）。
+4. **三处工具 output schema 同步**：`evolve_propose` / `evolve_proposals` /
+   `evolve_set_status` 全部声明新四字段——`additionalProperties: false` 下漏一个就
+   被 strict 判失败（v0.11.0 已踩过一次，这次连测试一起加）。
+5. 面板侧由 `agint-family-panel` 0.8.3 带出并在行上标「口径已变」。
+
+### 边界
+
+- `formulaVersion` 空串 ≠「与当前一致」：历史行没有这个字段，一律读成空串，
+  **绝不因为「没记」就判它失效**（否则 90+ 条老提案集体标黄）。故存量提案暂不享受此提示。
+- 互斥检查是**声明式**的：不做自然语言语义比对（要上 LLM 且误报率高）。
+- 只覆盖「公式口径变更」这一类失效，覆盖不到「依赖的数据源消失」——那需要依赖图。
+
+### 验证
+
+- 新增 `test/proposal-provenance.test.mjs` 6 条（口径自动填、staleSince 三态、
+  派生值不落盘、互斥拒绝/放行）。
+- `test/proposal-timestamps.test.mjs` ④（output schema 覆盖断言）随新字段一起通过。
+- evolve 全量 9 个测试文件 + `proposal-provenance` 全 PASS。
+
+## v0.11.1（2026-10-27 · 修 v0.11.0 漏声明时间戳字段：提案台排序崩 + 改状态即写坏数据）
+
+### 为什么
+
+v0.11.0 给提案行加 blocker / execMode / autoExecutable 时，`proposalSchema` 被重写，
+**把 `createdAt` / `updatedAt` 漏掉了**（同文件 `executionSchema` 里这两个字段还在
+⇒ 是漏写，不是有意删除）。后果有两层：
+
+1. **工具全挂**：存储域 open 时逐行过 schema
+   （`dsh-storage-domain/lib/index.js:371` `valueSchema.parse(raw)`），zod object 默认
+   strip 未知键 ⇒ 内存里的提案行没有 `createdAt` ⇒ `listProposals` 排序
+   `b.createdAt.localeCompare(a.createdAt)` 抛 `TypeError` ⇒ `evolve_proposals` 任何
+   过滤条件都崩；家族面板提案区走同一条出口，一并降级为「不可用」。
+2. **写坏磁盘数据**：`KvTableImpl.put` 原样落盘、不重跑 schema；而 `setStatus` 用
+   `normalizeProposal({ ...rec, status, updatedAt: nowIso() })` —— `rec` 是**已 strip 的
+   内存行** ⇒ 任何一次改状态/改备注，都会把该行的 `createdAt` 永久写回成「不存在」。
+   实测：`agint_evolve.json` 里 3 行（a85ef850 / c629019a / 4b34af47，均为 2026-10-27
+   11:53–12:00Z 被改过状态）丢失 `createdAt`；对照 10-26 23:21 的备份，这 3 行原本都有。
+
+同日还查出第三个面：**工具 output schema 与 proposalSchema 不同步**。output schema 是
+`additionalProperties: false`，v0.11.0 新增的字段一个都没声明 ⇒
+`evolve_propose` 每次调用都被 DSH strict 输出校验打回
+（`value.blocker is not a declared property`），`evolve_set_status` 同理（返回体含
+`autoExecutable` 而 schema 未声明）。⛔ `evolve_propose` 是「先落库、后校验」——
+**报错时提案已经写进库了**，实跑一次失败调用就留下一行孤儿提案。
+
+### 改动
+
+1. `proposalSchema` 补回 `createdAt` / `updatedAt`（`z.string().default('')`）。
+   ⛔ 不升 domain version（dsh 的 json backend 是硬版本校验，升版本会让现有 50+ 条
+   提案整表读不出来）；老行没有这两个字段时照读不报错，读出空串。
+2. `listProposals` 排序改空值安全：`String(b.createdAt ?? '').localeCompare(...)`
+   —— 历史行可能真的没有该字段，一条脏数据不该把整段排序掀翻。
+3. 三个工具的 output schema 补齐实际返回字段：
+   `evolve_propose`（+10 个字段）、`evolve_proposals` 的 item（+8 个执行字段）、
+   `evolve_set_status`（+`autoExecutable`）。
+
+### 红绿自证
+
+新增 `test/proposal-timestamps.test.mjs`（4 组）：propose 返回非空时间戳 /
+listProposals 不抛且按 createdAt 倒序 / setStatus 后磁盘那行仍留 createdAt /
+三个工具的 output schema 声明字段集 ⊇ 实际返回字段集。
+替身复刻了真实存储域的两条语义（open 时过 schema、put 不重跑 schema）。
+
+- 修复前：4 组全红，② 复现线上同一句 `TypeError: Cannot read properties of
+  undefined (reading 'localeCompare')`。
+- 修复后：4 组全绿；插件全量测试 68/68 通过。
+
+## v0.11.0（2026-10-27 · 提案可声明「不可自动执行」：语义闸）
+
+### 为什么
+
+首跑当天就撞上：**面板默认 `execMode=immediate` ⇒ 批准即入队**，而 oracle 产出的
+「美谕提案：决策确信度 扣 1.7 分」正文自述「纯机械动作提案，**永不 auto-apply**；
+是否执行由老板裁定」「不改动、不删除、不自动生效」—— 它要的动作是**人去复核一条
+记忆条目**，没有可改的代码目标。
+
+结果：driver 定位不到目标 ⇒ 两次各 1 秒失败（第二次产出与第一次逐字相同），
+每次还要起一次 LLM。缺的正是「我不可自动执行」这个表达位。
+
+### 新增
+
+- `proposalSchema` 增 `autoExecutable`（布尔，**默认 true**）：⛔ 默认 true 是为了
+  不影响加字段之前的所有提案（老提案不因这次升级突然被挡）。
+- `normalizeExec` 归一（缺席 = true，绝不把「字段缺席」读成「不可执行」）。
+- `isAutoExecutable(rec)` —— 判据只有一处。
+- `autoEnqueueBlocker` 增闸 `not-auto-executable`。
+- `propose(input)` 接受 `input.autoExecutable`；`setStatus` 接受 `opts.autoExecutable`（人工兜底闸）。
+- 工具 `evolve_set_status` 增 `autoExecutable` 参数（布尔）：⛔ 只认布尔，传字符串/数字一律当没传（不猜）。
+  **存量提案没有这个字段 ⇒ 默认 true ⇒ 仍可自动执行** —— 所以「这条其实不能自动跑」
+  这件事以前改不了，现在人工可以补标。
+
+### 语义闸 ≠ 外部闸（刻意的不对称）
+
+`enqueueOne` 里 `force` 能跳过 blocker / 额度这类**外部**闸（「我知道有前置，我就是要跑」），
+但**跳过不了** `not-auto-executable`：这不是「现在还不行」，是「它根本没有可改的目标」，
+强穿等于明知会失败还要跑一次。
+
+### 红绿自证
+
+`test/execution.test.mjs` 增 4 组：声明 false ⇒ 不入队且 `execState` 保持 idle /
+force 也不强穿 / 老提案（无该字段）照常入队 / 改成 false ⇒ 撤掉已排的队。
+
+## v0.10.0（2026-10-27 · 提案执行计划 + `execution` 队列：批准即执行的数据层）
+
+### 为什么
+
+`approved` 这一档自 v0.8.0 起只说明「同意做」，v0.9.0 又补了 `blocker` 说明「现在还不能做」，
+但**没有任何字段记录「该谁做、什么时候做、做到哪一步」**。结果批准之后信息就断在状态字段上：
+家族面板只能把它渲染成一张工作单，而"自动执行"在系统里连个表达位都没有。
+
+### 新增
+
+- `proposalSchema` 增 7 个字段：`execMode`（manual/immediate/scheduled）、`execAt`、
+  `execState`（idle/queued/running/succeeded/failed/deferred/cancelled）、`execAttempts`、
+  `execError`、`execStartedAt`、`execFinishedAt`。
+- 新表 `execution`（一行 = 一次批准触发的一次执行，重试复用同一行、attempts 自增、log 追加）。
+- 新模块 `lib/execution.js`：纯判据层（`validateExecPlan` / `autoEnqueueBlocker` /
+  `isJobDue` / `weeklyUsage` / `startOfWeek` / `interpretRunResult` / `describeExecution`）。
+  ⛔ 不碰存储、不读 env、不取 Date.now() —— 时间一律由调用方传，否则「定时到点该跑」测不住。
+- 8 个服务方法：`enqueueExecution` / `claimDueExecutions` / `finishExecution` /
+  `requeueExecution` / `cancelExecution` / `listExecutions` / `executionStats` / `describeExecution`。
+
+### 行为变更
+
+- `setStatus(id, status, note, { execMode, execAt })`：显式传才改计划（同 blocker 的冻结语义）。
+  状态成为 `approved`、无 blocker、且计划是 immediate/scheduled ⇒ **自动入队**；
+  已批准时清空 blocker ⇒ 补入队；离开 approved ⇒ 撤销活跃执行。
+- `finishExecution(ok:true)` 在**同一刻**把提案标 `applied`（note 追加落地证据）：
+  「执行成功」与「已落地」在自动执行路径上必须是同一刻，否则面板会同时显示两种相反状态。
+- 执行计划与队列的判定只有一处（`autoEnqueueBlocker`），面板与执行器各自读它 ——
+  判据散成两份就会「面板说排队中、执行器说没这条」。
+
+### 刻意不升 domain version
+
+`agint_evolve` 仍是 `version: 2`。dsh 的 json backend 是**硬版本校验**
+（`dsh-storage-json/lib/index.js:102`：`stored version != expected` 直接抛 `version-mismatch`，
+没有 `compatibleVersions` 通道），升版本 = 现有 50+ 条提案整表读不出来、域开不了。
+加表 + 加带 default 的可选字段在这个 backend 上是安全的：未声明的表按空表加载，
+老记录缺的键由 zod default 补齐。1→2 那次升版本是为加 `baseline_history` 付了手工迁移的代价，
+这次没有必须升的理由，就不制造「必须先迁移再启动」的窗口。
+
+### 红绿自证
+
+`test/execution.test.mjs`：批准即入队 / blocker 不入队 / 清空 blocker 补入队 / manual 永不入队 /
+定时未到不跑 / 成功同刻 applied / 失败留原因 / 撤销批准撤队列 / 重复批准不叠单 / 统计口径。
+
+## v0.9.0（2026-10-27 · `approved` 补 `blocker` / `unblockCondition`：批准 ≠ 现在能做）
+
+### 新增
+
+- `proposalSchema` 增两个可选字段：`blocker`（卡在什么上）、`unblockCondition`（等什么满足）。
+- 导出 `normalizeProposal()` / `proposalBlocked()`：判据单一事实源，读出口统一归一。
+  ⛔ 字段缺席（加字段前的历史行）与空串在展示口径上等价，但这个等价只在归一函数里做一次。
+- `listProposals({ blocked })`：`true` 只挑「批准了但动不了手」的，`false` 反之。
+- `setStatus(id, status, note, { blocker, unblockCondition })`：显式传字符串才改，
+  不传=冻结原值（否则改状态会把上次写的阻塞原因静默洗掉）；传 `''`=解除。
+- `evolve_proposals` 输出补两字段 + `blocked` 过滤；`evolve_set_status` 补两参数。
+
+### 为什么
+
+- 实测反例：提案 `a85ef850`（权重真标定）2026-10-26 被人工批准，可它自己的 note 写着
+  「第 3 步客观不可行」，当周周报又明确 **31/31 样本未标注、8-12 周内冻结权重常量**。
+  于是它在家族面板待办里挂成一张「已批准待执行（工作单）」，催人去动手 ——
+  而真动手就撞自家门禁。缺的不是状态档，是「为什么还不能做」的表达位。
+
+### 行为变更
+
+- `applied` 时若仍挂着 `blocker`，**不静默清空**：原阻塞原因转写进 `note`（`解除阻塞（原：…）`）。
+
 ## v0.8.0（2026-10-23 · 提案状态机补 `approved`：人工批准与落地分开记）
 
 ### 新增

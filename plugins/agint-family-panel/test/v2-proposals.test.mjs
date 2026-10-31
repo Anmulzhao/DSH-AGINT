@@ -153,6 +153,41 @@ test('统计：队列口径只算 proposed，年龄分桶合计等于队列数',
 });
 
 // ── 6. 取数降级 ────────────────────────────────────────────
+// ── 6b. 成立条件字段（提案 567dabed）───────────────────────
+test('取数：带出 formulaVersion / staleSince / conflictsWith', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agint-prop-prov-'));
+  try {
+    const row = (over) => ({
+      title: 'T', body: '## 改动方案\n改 `plugins/x/lib/index.js`', category: 'plugin',
+      status: 'proposed', source: 's', note: '',
+      createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+      ...over,
+    });
+    writeFileSync(join(dir, 'agint_evolve.json'), JSON.stringify({
+      unit: { name: 'agint_evolve', version: 2 },
+      global: null,
+      tables: {
+        proposal: {
+          stale: row({ id: 'stale', formulaVersion: 'r2', staleSince: 'r2→r4', assumedBy: 'scoring.js@r2', conflictsWith: ['x1'] }),
+          old: row({ id: 'old' }), // 历史行：三个字段全缺
+        },
+      },
+    }), 'utf8');
+    const r = await collectProposals({}, { storagesDir: dir, repoPluginsDir: null });
+    const byId = Object.fromEntries(r.items.map((i) => [i.id, i]));
+    assert.equal(byId.stale.staleSince, 'r2→r4');
+    assert.equal(byId.stale.formulaVersion, 'r2');
+    assert.equal(byId.stale.assumedBy, 'scoring.js@r2');
+    assert.deepEqual(byId.stale.conflictsWith, ['x1']);
+    // 历史行：读成空值，绝不把「没记口径」渲染成「已失效」
+    assert.equal(byId.old.staleSince, '');
+    assert.equal(byId.old.formulaVersion, '');
+    assert.deepEqual(byId.old.conflictsWith, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('取数：既无服务也无文件 → unavailable，绝不返回空表冒充「没有提案」', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agint-prop-empty-'));
   try {
@@ -185,6 +220,35 @@ test('取数：存储面兜底可用，服务面抛错不吞原因', async () =>
     assert.equal(r.items.length, 1);
     assert.equal(r.items[0].sectionMatched, 1);
     assert.equal(r.items[0].evidence.state, 'unavailable');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── 2026-10-27：blocker 必须带到前端 ────────────────────────────────────
+//
+// 面板标签要区分「等入队」与「被前置挡住」—— 只看 execState 的话两者都是 idle，
+// 标签只能瞎猜。实机 a85ef850：待办写「已批准·阻塞中（等前置）」，
+// 提案台标签却写「已批准·待入队」，同一行数据两种说法。
+test('取数：blocker / unblockCondition 必须带出（标签据此分档）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agint-prop-blocker-'));
+  try {
+    writeFileSync(join(dir, 'agint_evolve.json'), JSON.stringify({
+      unit: { name: 'agint_evolve', version: 2 },
+      global: null,
+      tables: {
+        proposal: {
+          b: { id: 'b', title: '权重真标定', body: '## 改动方案\n回测周报', category: 'doc', status: 'approved',
+            source: 's', note: '', execMode: 'immediate', execState: 'idle',
+            blocker: '样本未标注', unblockCondition: '满 8-12 周',
+            createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' },
+        },
+      },
+    }), 'utf8');
+    const r = await collectProposals({}, { storagesDir: dir, repoPluginsDir: null });
+    assert.equal(r.items[0].blocker, '样本未标注');
+    assert.equal(r.items[0].unblockCondition, '满 8-12 周');
+    assert.equal(r.items[0].execState, 'idle', 'idle + blocker 才是「阻塞」的完整现场');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

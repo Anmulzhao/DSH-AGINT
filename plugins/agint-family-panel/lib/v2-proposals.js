@@ -466,6 +466,31 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       status: String(r?.status ?? 'proposed'),
       source: src,
       note: String(r?.note ?? ''),
+      // 2026-10-27：执行计划与执行态。面板要能一眼看出「批准了，是自己跑还是排队中」——
+      // 否则「已批准待执行」这个标签会同时覆盖「已入队自动跑」和「等你自己动手」两种
+      // 完全相反的情况（这正是上一版把批准变成催办单的成因）。
+      execMode: String(r?.execMode ?? 'manual'),
+      execAt: String(r?.execAt ?? ''),
+      execState: String(r?.execState ?? 'idle'),
+      execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
+      execError: String(r?.execError ?? ''),
+      // 2026-10-27：带出前置条件。标签要能区分「等入队」与「被 blocker 挡住」——
+      // 只看 execState 的话两者都是 idle，标签只能瞎猜（实机就显示成「已批准·待入队」，
+      // 而待办那边同一份数据写的是「已批准·阻塞中（等前置）」，两处口径打架）。
+      blocker: String(r?.blocker ?? ''),
+      unblockCondition: String(r?.unblockCondition ?? ''),
+      // 2026-10-27：能不能自动执行。⛔ 缺席 = 可执行（与 evolve 侧默认一致）——
+      // 「读成不可执行」会让老提案集体失去被批准后自动跑的能力。
+      autoExecutable: r?.autoExecutable !== false,
+      // 2026-10-27（提案 567dabed）：成立条件。a85ef850 那条「用 Q2 归因标定权重」
+      // 在 r2 落地后静默失效，却在台账里挂了 18 天「待批」—— 失效提案和正常提案
+      // 长得一模一样，所以得有一栏把它标出来。
+      //   formulaVersion 立项时的判尺口径（空串 = 没记 / 口径未知，**不是**「一致」）
+      //   staleSince     派生值（'r2→r4'），非空 = 结论可能已经站不住
+      formulaVersion: String(r?.formulaVersion ?? ''),
+      assumedBy: String(r?.assumedBy ?? ''),
+      conflictsWith: Array.isArray(r?.conflictsWith) ? r.conflictsWith.map((x) => String(x)) : [],
+      staleSince: String(r?.staleSince ?? ''),
       createdAt: r?.createdAt ?? null,
       updatedAt: r?.updatedAt ?? null,
       ageDays: ageDaysOf(r?.createdAt, now),
