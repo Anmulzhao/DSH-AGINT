@@ -1,7 +1,7 @@
 # Proposal: dsh 0.2.1 能力面承接（把宿主的 82 个传感器接进来）
 
-> **状态**：**执行中** · 类别 `framework` · A1 已完成并部署（`28929dc`，2026-11-01）；A2 / B / C 待拍板
-> **作者**：外部编码助手（WorkBuddy 会话） · **日期**：2026-11-01（A1 执行至 11-02 00:10）
+> **状态**：**执行中** · A1 完成（`28929dc`，0.9.3）· A2 完成（`baa99c0`，0.1.11，**形态已按复核结论修订**）· 两条均已部署生效 · B / C 待拍板
+> **作者**：外部编码助手（WorkBuddy 会话） · **日期**：2026-11-01（执行至 11-02 00:45）
 > **目标对象**：`docs/capability-boundary.md` §3 候选清单 + `agint-input-gateway` / `agint-tool-stats` / `agint-mutator` / `agint-self-model` / `agint-family-panel` / `agint-restart`
 > **风险等级**：A 批 P2（纯止损，不动挂载）· B 批 P1（要动挂载 / 重启）· C 批需单独立项
 > **前置**：本机 dsh `0.2.1-rc.5`，AGINT `v0.24.0`
@@ -170,7 +170,9 @@ P7 建了总线、建了死信、建了配额，但源头一直窄。
   - 服务面复核：`/api/agint-family/v2/data` 200、`scan.errors` 空、`bus.total` 26907、`deadletter` 0、`oracle.state ok`；
     `redeploy.sh --verify-only` EXIT 0（preset 平价 CRITICAL 0 / INFO 64、5 个 preset 工具行镜像位全 0）。
 
-#### A2 · `sessionQuery` 仍半接：通往上游的那扇门修好了，但没人走
+#### A2 · `sessionQuery` 仍半接：通往上游的那扇门修好了，但没人走 — ✅ **已完成 2026-11-02（`baa99c0`，0.1.11，已部署生效），但形态与原判不同**
+
+> ⛔ **本条的原始判定是错的，动手前复核才发现。** 留着原判和推翻过程，比删掉更有用。
 
 - **现象**：`docs/capability-boundary.md` §4-F2 已判——上游分支产出的 `path` 恒 `null`，
   下游仍 `execFileSync(zstd, ['-dc', path])` 自读盘。**「用上游替代自建」这半件事没做。**
@@ -201,6 +203,61 @@ P7 建了总线、建了死信、建了配额，但源头一直窄。
 - **⚠️ 动手前的两个前置**：该文件 2026-11-01 刚被另一处改动碰过（`4e3798e`），
   改前先 `git status --short` 确认没有并发写者；函数体 500+ 行且被 `sessionIntegrity` /
   `self-observation` 两个子源共用，**先拆测试再改实现**，不要一次性重写。
+
+##### ⛔ 复核结论：上面那个「修法」会关掉检测能力，不能做（2026-11-02）
+
+动手前读 `self-observation.js:476-500` 才发现，2026-10-21 已经有过一次「接上去然后当天回退」，
+作者把理由写在了代码里：
+
+> ① 完整性检查查的是磁盘上的**原始日志**（坏行 / seq 断裂 / 缺 content / 未配对 call）。
+> 上游 `readSession` 给的是**重放校验后**的事件流 —— 缺陷在校验阶段就被抹平
+> ⇒ 拿它做完整性检查，**检测能力直接归零**。
+> ② 上游不给磁盘路径 ⇒ `path` 空串 ⇒ 解压必然失败 ⇒ 全部会话被判 `undecompressible`。
+
+**这是运行态实测，不是推理。** 所以 F2 那个「正确形态」对 self-observation 是错的：
+它的判据是「AGINT 没接上游」，而真相是「这条链路**必须**读原始字节，上游给不了」。
+
+**正确的分界**（已写进 `docs/capability-boundary.md` §4-F2 终判表）：
+
+| 消费类型 | 正确做法 | 本仓实例 |
+|---|---|---|
+| **语义消费** — 只要读到内容，不关心字节原貌 | 走上游 `readSession(id)`，回落本地 | `agint-dream/lib/sweep.js`、`agint-tool-stats`（`readEvents()` 的 upstream 分支**有真实调用方**，不是死代码） |
+| **字节检测** — 检测对象就是原始日志的缺陷 | **只能**读本地原始日志 | `sessionIntegrity` 子源 |
+
+⇒ 归属裁定：宿主**不提供**「读原始会话日志」接口 ⇒ **宿主层缺口（B-008）**，不是 AGINT 越界。
+
+##### ✅ A2 实际做了什么（换了目标，但仍然是「让进化闭环更真」）
+
+修的是上一版回退时**留下的假读数**：
+
+```js
+// 2026-10-21 ~ 11-01 的代码
+const notify = onFallback ?? ((r) => console.warn(`...会话源降级: ${r}`));
+notify('local-by-design: session 完整性检查必须读原始日志...');
+```
+
+每次调用都往 `console.warn` 写一条「会话源降级」，而它按设计就该读本地。
+v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方向的「没事喊狼来了」——
+**同样是假读数，而且更难发现**（「有告警」看起来像负责）。本提案 A2 的初版就是被它带偏的。
+
+- 设计路径不出声；返回项加 `sourceMode:'local-raw'`，`detectSessionIntegrity` 的 `report` 同带
+  ⇒ 面板能区分「设计路径」与「本该走上游却回落了」（后者才是降级）。
+- 只有**真降级**（候选名 + 后缀兜底一个都没命中）才走 `onFallback`。
+- 删 `createSessionSourceForSelfObservation()`（全仓 0 调用方，且它编码的正是被推翻的判定）。
+- 同批改 `docs/capability-boundary.md`：F2「正确形态」标注勿照做 + 判定表；
+  §2 归属表 `agint-session-extract` / `agint-session-source` 由 **H-越界 → E（宿主缺口 B-008）**。
+
+**验收（2026-11-02 实跑）**：`session-integrity.test.mjs` 8/6pass/0fail（2 skip 需 zstd）；
+新增 2 条互钉用例（设计路径不得告警 / 阴性对照：真降级必须出声）；
+阴性对照实测——注入一条 `console.warn('[fake] ... degraded')` → 用例转红并精确列出实际告警，移除即绿；
+插件全量 75/73pass/0fail；`plugin-check` EXIT 0 / FAIL 0；`check-boundary` EXIT 0 无新增越界；
+`check-wiring` 部署后 **PASS**；`redeploy.sh` 全绿（新 pid 2457088，端口 15s 就绪，27 cron job，
+无 `skipping profile bundle`）；启动日志 `会话源降级` 计数 **0**。
+
+> **这一条的方法论教训**（比代码更值钱）：**提案里的「修法」在动手前必须回读一遍当事代码。**
+> F2 写于 2026-10-19，10-21 就被现实推翻，但文档没跟着改 —— 于是三天前写的提案
+> 又照着旧结论设计了一遍。判据要打在最终产物上（`skills/check-soundness` 第八节），
+> 判断也要打在最新取证上。
 
 ---
 
