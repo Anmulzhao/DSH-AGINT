@@ -1,5 +1,63 @@
 ﻿# Changelog
 
+## 0.1.10 — 2026-11-01
+
+### 修复：`sessionIntegrity` 子源自 v0.3 上线起从未真正执行过（静默失明）
+
+**症状**：`input-gateway-watchdog` 连续报 `WARN self-observation 采集 4 次但
+signalsEmitted 与 signalsFiltered 均为 0 —— 空转`，而 `selfObservationChannel.health()`
+同时自称 `status: 'ok'` + 5 个检测器全 `active: true`。两边对不上。
+
+**根因**（`lib/channels/self-observation.js`）：
+
+```js
+if (!existsSync(resolveZstdBin())) return [];   // ← 旧代码
+```
+
+`resolveZstdBin()` 的 fallback 只有 `/usr/bin/zstd`、`/usr/local/bin/zstd`、`/bin/zstd`，
+三处全 miss 时 `return 'zstd'`（一个**命令名**）。调用方拿命令名去 `existsSync()` ——
+那查的是 **cwd 下的相对路径**，不是 PATH 查找 ⇒ **恒 false** ⇒ 直接 `return []`，
+`listRecentSessions()` 压根没被调用。
+
+本机实测：`which zstd` = `/home/kylin/.local/bin/zstd`，三个 fallback 一个都不存在。
+耗时对照（同一份代码、同一 DSH_HOME）：不设 `ZSTD_BIN` **109 ms 返回 0 条（没扫）**；
+设 `ZSTD_BIN=~/.local/bin/zstd` **470 ms（真解压 8 个会话）**。
+
+⇒ 这个子源不是"扫过没问题"，是**从来没扫过**。只是因为会话恰好健康，才没出事。
+
+**四处改动**：
+
+1. `zstdCandidatePaths()`：fallback 补 `join(homedir(), '.local/bin/zstd')`（本机实际位置），
+   `ZSTD_BIN` 排最前，允许绝对路径或命令名。
+2. `probeZstd()`（新增）：判据从"路径存在"改成"**真跑一次 `--version` 拿到退出码 0**" ——
+   绝对路径存在 ≠ 可执行（无 x 位 / 架构不符 / 动态库缺失），命令名也必须交给 PATH 解析。
+   结果缓存到模块级（cron 每周一次，不必反复 spawn），`force` 可强制重探。
+3. `detectSessionIntegrity()`：改用 `probeZstd()`，**跳过要出声** —— 以前 `return []`
+   静默降级，现在 `report({skipped, reason, tried})` 交给 health 面。
+4. `health()` 重写：不再硬编码 `active: true`。每个子源报「上次真跑了没」
+   （`active` / `ran` / `produced` / `skipped` / `reason` / `stats` / `lastRunAt`），
+   `status` 语义变为 `unknown`（本 boot 未跑）/ `degraded`（有子源被跳过或出错）/ `ok`。
+   附 `ranCount` / `skippedDetectors` / `erroredDetectors` / `zstd` 探测结果。
+
+**配套**：`fetch()` 用 `runDetector()` 包裹 5 个子源统一记账。
+⛔ 子源抛错**原样抛出**（保持"fetch 整体失败 → gateway 记 lastError"的既有语义），
+不吞 —— 吞掉就是把"子源故障"变成静默，正是本次要修的那类 bug。
+
+**阴性证据（改后实测，不设 ZSTD_BIN）**：
+- `sessionIntegrity`：`ran=true`、`zstdBin=/home/kylin/.local/bin/zstd`、
+  `scannedSessions=8`、`flaggedSessions=0`（真扫了，会话健康）；
+- 只喂 tool_stats 时 `metricRegression` / `compressLoss` / `sessionIntegrity` 三条
+  如实报 `active=false` + `skipped` 原因，`status=degraded` —— 不再假绿。
+
+**测试**：`test/tool-anomaly-streak.test.mjs` 里那条"取证：5 个检测器全 active"
+锁的正是旧的假绿形状，已改写为「有数据的子源必须真跑 + 缺依赖的子源必须自报 skipped」。
+
+**验收**：`node --import ./test/_stub-register.mjs --test test/*.test.mjs`
+⇒ 67 tests / 64 pass / 1 fail（`tool-output-conformance.test.mjs`，**既有红**：
+其 import 的 `validateJsonSchemaValue` 不在 `plugins/_shared/test-stub-dsh-tools.mjs`
+的导出里，属测试替身与真 dsh-tools 契约不同步，与本改动无交集）/ 2 skipped。
+`bin/plugin-check.sh`：L0 FROZEN / addFailure / patch YAML 9/9 / 能力边界 / dsh 兼容 全 PASS。
+
 ## 0.1.9 — 2026-10-28（提案 `846f4fbb` 单元 1+3）
 
 **测试替身收紧**：`test/_stub-storage-domain.mjs` 里的 `defineTool` 原先是
