@@ -159,6 +159,12 @@ function apply(ctx) {
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
           staleSince: { required: true, type: 'string' },
+          // 2026-11-01：工单状态机。与 staleSince 同样是派生值 —— 不进 schema、
+          // 不落盘，但**输出面必须声明**，否则 DSH 的 strict 校验直接把整个返回打回。
+          stage: { required: true, type: 'string' },
+          stageSide: { required: true, type: 'string' },
+          stageLabel: { required: true, type: 'string' },
+          stageWhy: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{ type: 'text', text: `evolve_propose: [${v.category}] ${v.title}（id=${v.id}, status=${v.status}）` + (v.formulaVersion ? `\n  成立口径：${v.formulaVersion}${v.assumedBy ? ` / ${v.assumedBy}` : ''}（口径变了会标 staleSince，需重新评审）` : '') }],
@@ -218,6 +224,11 @@ function apply(ctx) {
                 assumedBy: { required: true, type: 'string' },
                 conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
                 staleSince: { required: true, type: 'string' },
+                // 2026-11-01：工单状态机（派生值，同 staleSince）。
+                stage: { required: true, type: 'string' },
+                stageSide: { required: true, type: 'string' },
+                stageLabel: { required: true, type: 'string' },
+                stageWhy: { required: true, type: 'string' },
               },
             },
           },
@@ -282,6 +293,11 @@ function apply(ctx) {
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
           staleSince: { required: true, type: 'string' },
+          // 2026-11-01：工单状态机（派生值，同 staleSince）。
+          stage: { required: true, type: 'string' },
+          stageSide: { required: true, type: 'string' },
+          stageLabel: { required: true, type: 'string' },
+          stageWhy: { required: true, type: 'string' },
         },
       },
       render: (_a, v) => [{

@@ -1,5 +1,47 @@
 # agint-evolve CHANGELOG
 
+## v0.16.0（2026-11-01 · 工单状态机 `stage`：一条提案，一个「现在该谁动」的答案）
+
+### 起因
+
+`status` 说「台账上算哪一档」，`execState` 说「最近一次执行跑到哪一步」，两个字段各自都对，
+但**没有一个字段回答「现在该谁动」**。面板只能拿 `execState` 硬猜，猜出过两次相反的事故：
+
+- `a85ef850`：approved + immediate + `execState=idle` + blocker 非空 ⇒ 标签写「已批准·待入队」，
+  读的人以为再等等就会自己跑 —— 而它被前置挡着，**永远不会入队**。
+- `846f4fbb`：误结案成 applied 后人工改回 approved，`execState` 仍停在 `succeeded`
+  ⇒ 标签说「已落地」，台账说「没做完」，两边都不像在撒谎。
+
+两次根因同一个：**「等机器」与「等人」被混在一个字段里。**
+
+### 改动
+
+- 新增纯函数 `lib/execution.js:ticketStage(rec)`，九档：
+  `closed` / `draft` / `person·blocked` / `person·failed` / `person·review` /
+  `person·plan` / `working·queued` / `working` / `stalled`。
+  判据自上而下第一个命中，**复用 `autoEnqueueBlocker()` 作为单一事实源**，没有第二套判据。
+- 读接口统一走新的 `decorateProposal()`：`propose` / `listProposals` / `getProposal`
+  三处都带 `stage` / `stageSide` / `stageLabel` / `stageWhy`。**派生值，不进 schema、不落盘**
+  （同 `staleSince` —— 写进存储行会在下次变化时变成过期事实）。
+- 服务面新增 `agint.evolve.ticketStage(rec)` 与 `agint.evolve.stages()`。
+- 三个工具的 output schema 同步补四个字段（`additionalProperties:false`，不声明会被 strict 打回）。
+
+### 两条刻意的设计决定
+
+1. **不收 `now`。** 判据里只要有时间项，面板那份镜像实现就会算出不同的答案（它拿不到同一时刻）。
+   现在 `ticketStage` 连时钟都不碰：同一个行喂两次，结果逐字相同（有用例）。
+2. **没有 `idle` 这一档。** dsh-superagent 的同一张表里有 `idle`（「这轮干完了，等下一条
+   Trigger」）—— 那是健康静息态。AGINT 没有它：一条 `approved` 提案的唯一正常归宿是**被执行**。
+   照抄会把「应入队未入队」这个静默缺陷画成「等着呢，会来的」。所以那一档叫 `stalled`，
+   `side` 是 `system` 而不是 `person` —— **没有人需要回答什么问题，需要的是修一个缺陷。**
+
+### 验收
+
+`test/stage.test.mjs` 6 组用例（22 个现场逐条命中 / side·label·stalled 与表一致 /
+九档全可达 / 九档标签互不相同 / 判据不读时钟不改入参 / 命名约定）；evolve 全量 82 用例全绿
+（`node --test "test/*.test.mjs" "test/*.test.js"`，含被严格 output schema 抓到后补的三处声明）。
+面板侧镜像的等价性由 `agint-family-panel/test/stage-parity.test.mjs` 的 1080 组穷举钉住。
+
 ## v0.15.0（2026-10-30 · partial 之后自动续跑剩余单元）
 
 ### 老板的话

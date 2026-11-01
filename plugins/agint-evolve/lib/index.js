@@ -42,6 +42,9 @@ import {
   weeklyUsage,
   startOfWeek,
   describeExecution,
+  // 别名：服务上也有同名方法，直接用原名在 svc 里会看起来像自引用。
+  ticketStage as stageOf,
+  TICKET_STAGES,
 } from './execution.js';
 
 const name = 'agint-evolve';
@@ -318,6 +321,31 @@ export function proposalStaleSince(rec, current) {
   const cur = String(current ?? '').trim();
   if (!own || !cur || own === cur) return '';
   return `${own}→${cur}`;
+}
+
+/**
+ * 读接口的统一出口：归一化 + 两个**派生值**（`staleSince` / `stage*`）。
+ *
+ * ⛔ 派生值都**不进 schema、不落盘** —— 它们随当前口径与执行队列变化，写进存储行
+ *    就会在下次变化时变成过期事实。`createdAt` 被 zod strip 那次是「该在的不在」，
+ *    这类是「不该在的在」，两个方向都会让台账说假话。
+ * ⛔ 三处读路径（propose / listProposals / getProposal）必须都走这里：
+ *    少一处，那一路的使用者就看不到 stage，于是各自再算一遍 —— 判据又散开了。
+ *
+ * stage 摊平成四个字段（而不是塞一个对象）是为了跟 `staleSince` / `blocker` 一样
+ * 能被面板直接 `it.stage` 读到；嵌一层 `stage.stage` 只会让人写错。
+ */
+export function decorateProposal(rec, currentFormulaVersion) {
+  const row = normalizeProposal(rec);
+  const s = stageOf(row);
+  return {
+    ...row,
+    staleSince: proposalStaleSince(rec, currentFormulaVersion),
+    stage: s.stage,
+    stageSide: s.side,
+    stageLabel: s.label,
+    stageWhy: s.why,
+  };
 }
 
 
@@ -930,7 +958,7 @@ function apply(ctx, config) {
       // A1 接线：落库后发布 evolution.proposed（失败不影响返回值）
       await publishProposed(rec);
       // 刚创建 ⇒ 口径必然等于当前（或未知）⇒ staleSince 恒为空，仍带上以对齐输出面。
-      return { ...rec, staleSince: '' };
+      return decorateProposal(rec, cur);
     },
 
     async listProposals(filter = {}) {
@@ -947,7 +975,7 @@ function apply(ctx, config) {
         // staleSince 是**派生值**，不进 schema、不落盘：它随当前口径变化，
         // 一旦写进存储行就会在下次口径变更时变成过期事实（与 createdAt 被
         // strip 那类坑同源，方向相反）。
-        out.push({ ...normalizeProposal({ id, ...rec }), staleSince: proposalStaleSince(rec, cur) });
+        out.push(decorateProposal({ id, ...rec }, cur));
       }
       // 2026-10-27：createdAt 空值安全。schema 已补回该字段，但历史行可能真的没有
       // （2026-10-27 之前的写坏行），排序不该被一条脏数据整段掀翻。
@@ -959,7 +987,22 @@ function apply(ctx, config) {
       const t = await table();
       const rec = t.get(id);
       if (!rec) return null;
-      return { ...normalizeProposal({ ...rec }), staleSince: proposalStaleSince(rec, currentFormulaVersion()) };
+      return decorateProposal(rec, currentFormulaVersion());
+    },
+
+    /**
+     * 一条提案此刻卡在谁身上（纯函数出口，零 IO）。
+     *
+     * 存在的理由：别的插件（executor / 面板 / 工具）要判「这条还有没有人管」时，
+     * 不该自己再写一遍判据 —— 那正是 stage 要消灭的东西。
+     * ⛔ 收的是**提案行**，不是 id：调用方手上已经有行时不该再多一次读盘。
+     */
+    ticketStage(rec) {
+      return stageOf(rec);
+    },
+    /** 全部 stage 档位的名字（面板做图例 / 工具做校验时用，别各自硬编码）。 */
+    stages() {
+      return [...TICKET_STAGES];
     },
 
     /**

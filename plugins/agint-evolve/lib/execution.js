@@ -12,13 +12,15 @@
  *
  * ## 为什么判据要单独成文件
  *
- * 「能不能入队」「什么时候该跑」「这次算不算成功」三件事会被四个地方问：
- *   setStatus（批准入口）／家族面板（显示口径）／agint-executor（调度）／工具。
- * 判据散成四份，就会出现「面板说排队中、执行器说没这条」的自相矛盾 ——
- * 这正是 blocker 那次改动踩过的坑（`proposalBlocked()` 只能有一处）。
+ * 「能不能入队」「什么时候该跑」「这次算不算成功」「现在卡在谁身上」四件事会被
+ * 五个地方问：setStatus（批准入口）／家族面板（显示口径）／agint-executor（调度）／
+ * 工具／待办汇总。判据散成五份，就会出现「面板说排队中、执行器说没这条」的
+ * 自相矛盾 —— 这正是 blocker 那次改动踩过的坑（`proposalBlocked()` 只能有一处）。
  *
  * ⛔ 本文件不许碰存储、不许读 env、不许拿 Date.now()：时间一律由调用方传 now。
  *    这样「定时到点该跑」「过了周上限该顺延」才测得住。
+ *    `ticketStage()` 更进一步：它连 now 都不收 —— 判据里有任何时间项，面板那份
+ *    镜像实现就会和这边算出不同的答案（面板拿不到同一时刻）。
  */
 
 /** 执行方式三档。`manual` = 只批准、不自动执行（老行的隐含默认值）。 */
@@ -214,6 +216,157 @@ export function interpretRunResult(out) {
     };
   }
   return { ok: false, mutationId: out.proposalId ?? '', reason: 'no-commit-attempted（变异已构造但没写盘：commit 关闭或缺 repoRoot）' };
+}
+
+/**
+ * 一条提案此刻「卡在谁身上」—— 工单状态机（2026-11-01，v0.16.0）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * `status` 说的是「这件事在台账上算哪一档」，`execState` 说的是「最近一次执行跑到
+ * 哪一步」—— 两个字段各自都对，但**没有一个字段回答「现在该谁动」**。于是面板只能
+ * 拿 execState 硬猜，猜出过两次相反的事故：
+ *
+ *   · `a85ef850`：approved + immediate + execState=idle + blocker 非空 ⇒ 标成
+ *     「已批准·待入队」，而它其实卡在前置上，永远等不到入队那一刻。
+ *   · `846f4fbb`：误结案成 applied 后人工改回 approved，execState 仍停在 succeeded
+ *     ⇒ 标签说「已落地」，台账说「没做完」，两边都不像在撒谎。
+ *
+ * 两次的根因是同一个：**「等机器」与「等人」被混在一个字段里**。
+ *
+ * ## 为什么不复用 superagent 的 stage 表（照抄会错）
+ *
+ * dsh-superagent 的同一张表里有一档 `idle`（「这一轮干完了，等下一条 Trigger」）。
+ * AGINT 没有这个健康静息态：一条 `approved` 提案的唯一正常归宿是**被执行**，
+ * 不是等什么。所以「批准了、计划就绪、队列里却没有」在那边是 idle，在这里是
+ * **异常**（下面的 `stalled`）。照抄会把一个真实的静默缺陷伪装成正常。
+ *
+ * ## 判据顺序不能改
+ *
+ *   ① 已结束 → ② 待批准 → ③ blocker → ④ 失败 → ⑤ 部分落地 →
+ *   ⑥ 排队/顺延 → ⑦ 在跑 → ⑧ 计划没定 → ⑨ 应入队未入队
+ *
+ * ⛔ ③ 必须排在 ④~⑦ 之前：blocker 在时执行态没有意义（它根本排不进去）。
+ *    这条是 `a85ef850` 那次定下的，面板 CHANGELOG 也这么写。
+ * ⛔ ⑥⑦ 必须在 ⑧ 之前：`autoEnqueueBlocker()` 会把 queued/running 的提案
+ *    也判成「该入队」，反过来问会得到「计划就绪却 stalled」的假警报。
+ */
+export const TICKET_STAGES = Object.freeze([
+  'closed',
+  'draft',
+  'person/blocked',
+  'person/failed',
+  'person/review',
+  'person/plan',
+  'working/queued',
+  'working',
+  'stalled',
+]);
+
+/** stage → 谁在等。`system` = 没人在等，这是个该被修掉的缺陷。 */
+export const STAGE_SIDES = Object.freeze({
+  closed: 'closed',
+  draft: 'person',
+  'person/blocked': 'person',
+  'person/failed': 'person',
+  'person/review': 'person',
+  'person/plan': 'person',
+  'working/queued': 'working',
+  working: 'working',
+  stalled: 'system',
+});
+
+/** stage → 面板标签。⛔ 标签只在这里定义：面板镜像同一张表，靠用例钉等价。 */
+export const STAGE_LABELS = Object.freeze({
+  closed: '已结束',
+  draft: '待批准',
+  'person/blocked': '阻塞·等前置',
+  'person/failed': '执行失败·等处理',
+  'person/review': '部分落地·等续跑',
+  'person/plan': '待定执行计划',
+  'working/queued': '排队中',
+  working: '执行中',
+  stalled: '应入队未入队',
+});
+
+/** 已结束的提案状态（不再有人等，也不该再占面板空间）。 */
+const ENDED_STATUS = new Set(['applied', 'rejected', 'wontfix']);
+
+/** `autoEnqueueBlocker()` 的原因码 → 人话。加了新码这里必须补，否则面板显示裸码。 */
+const PLAN_REASONS = Object.freeze({
+  manual: '执行方式选了 manual（只批准、不自动跑）—— 要么改成 immediate/scheduled，要么手动放行',
+  'scheduled-at-missing': '选了 scheduled 但没填时刻',
+  'scheduled-at-invalid': 'execAt 不是合法时间',
+  'already-queued': '已有活跃执行（理论上不会走到这里）',
+  'not-approved': '状态不是 approved（理论上不会走到这里）',
+  blocked: '被 blocker 挡住（理论上不会走到这里）',
+});
+
+const clip = (text, max = 120) => {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+/**
+ * 一条提案此刻卡在谁身上。
+ *
+ * @param {object} rec 提案行（可以是未归一化的历史行）
+ * @returns {{stage:string, side:string, label:string, why:string, stalled:boolean}}
+ *
+ * ⛔ 只看 `rec` 本身，**不碰 execution 表、不读时钟**。
+ *    面板走的是「直接读 agint_evolve.json 的 tables.proposal」那条路（不 import
+ *    本插件），所以只要判据依赖 execution 表，两边就必然算出不同的答案 ——
+ *    而修 stage 的全部意义就是让两边说同一句话。
+ */
+export function ticketStage(rec) {
+  const n = normalizeExec(rec) ?? {};
+  const status = typeof n.status === 'string' && n.status !== '' ? n.status : 'proposed';
+  const state = n.execState;
+  const blocker = typeof n.blocker === 'string' ? n.blocker.trim() : '';
+
+  const out = (stage, why) => ({
+    stage,
+    side: STAGE_SIDES[stage] ?? 'system',
+    label: STAGE_LABELS[stage] ?? stage,
+    why: why ?? '',
+    stalled: stage === 'stalled',
+  });
+
+  // ① 已结束
+  if (ENDED_STATUS.has(status)) return out('closed', `提案已 ${status}`);
+
+  // ② 待批准 —— 人还没表态，谈不上执行
+  if (status === 'proposed') return out('draft', '还没人批准这条提案');
+
+  // ③ blocker 优先于任何执行态（a85ef850）
+  if (blocker !== '') return out('person/blocked', `阻塞：${clip(blocker, 80)}`);
+
+  // ④ 机器试过、没成功
+  if (state === 'failed') return out('person/failed', clip(n.execError) || '上次执行失败，原因未记录');
+
+  // ⑤ job 成功但提案没做完（846f4fbb）—— 可评审的成果已就绪，欠账在 execError 里
+  if (state === 'partial') return out('person/review', clip(n.execError) || 'job 成功但提案没做完');
+
+  // ⑥ 排队中 / 已顺延
+  if (state === 'deferred') return out('working/queued', clip(n.execError) || '已顺延，到期自动恢复');
+  if (state === 'queued') {
+    const at = String(n.execAt ?? '');
+    return out('working/queued', at ? `排在 ${at.slice(0, 16).replace('T', ' ')}` : '等执行器捡起');
+  }
+
+  // ⑦ 正在跑
+  if (state === 'running') return out('working', '执行器正在跑');
+
+  // ⑧ 批准了，但执行计划没定 —— 这一步复用 autoEnqueueBlocker，判据只有一份
+  const why = autoEnqueueBlocker(n, []);
+  if (why !== null) return out('person/plan', PLAN_REASONS[why] ?? String(why));
+
+  // ⑨ 计划就绪却不在队列里（idle / succeeded / cancelled 的残留）
+  //
+  // ⛔ 这一档是 AGINT 独有、superagent 没有的：那边 idle 是健康状态（等 Trigger），
+  //    这边 approved + 计划就绪 + 队列空 = 没人会来跑它。labelled 为 system 而非
+  //    person，因为**没有人需要回答什么问题**，需要的是修一个缺陷。
+  return out('stalled', `计划就绪（${n.execMode}）但队列里没有执行 —— 应入队未入队`);
 }
 
 /** 一行执行的人读摘要（面板、工具、日志共用一句话，避免各印各的）。 */
