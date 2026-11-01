@@ -21,7 +21,7 @@ import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
 // 引 `../../agint-session-extract/index.js` 同形）。
 // ⛔ 不用裸包名 'agint-session-source'：全仓 grep 命中 **0 行** 这种写法，
 //    插件间依赖在部署位不是 npm 包树，裸包名解析不到。
-import { createSessionSource, findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
+import { findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -453,51 +453,40 @@ function listRecentSessionsFallback(maxCount = 8) {
 }
 
 /**
- * 拿一个会话源。ctx 由调用方注入（channel 拿不到 ctx ⇒ 传 null 走回落）。
- * ⛔ 回落的出声回调必需：没它就抛错，不静默降级。
- */
-export function createSessionSourceForSelfObservation({ ctx = null, onFallback }) {
-  return createSessionSource({
-    ctx,
-    fallback: ({ maxCount = 8 } = {}) => listRecentSessionsFallback(maxCount),
-    onFallback,
-    source: 'input-gateway/self-observation',
-  });
-}
-
-/**
- * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
+ * 列出最近 maxCount 个会话**原始日志**文件（mtime 排序；同会话多格式只取最新存在者）。
  * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
  *
- * 2026-10-19 改：走 `agint-session-source`（上游优先 + 回落出声）。
- * 既有调用方不用改签名；ctx 缺省时走回落并出声。
+ * ── 2026-11-02 定判（第三次，覆盖前两次） ─────────────────────────────────
+ * **本通道按设计读本地原始日志。这不是降级，也不该以降级的形式被报告。**
+ *
+ * 判据：完整性检测查的是**原始字节里的缺陷**（坏行 / seq 断裂 / 缺 content / 未配对 call）。
+ * 上游 `readSession` 给的是**重放校验后**的事件流 —— 缺陷在校验阶段已被抹平，
+ * 拿它做完整性检查 = 拿干净数据找脏东西，检测能力直接归零（2026-10-21 实测，不是推理）。
+ *
+ * 所以「要不要走上游」取决于**消费的是语义还是字节**，不取决于「有没有上游」：
+ *   · 语义消费（不要求原始字节）⇒ 走上游正确。`agint-dream/lib/sweep.js` 与
+ *     `agint-tool-stats` 正是这么做的，`readEvents()` 的 upstream 分支有真实调用方，不是死代码。
+ *   · 字节检测（要求原始日志）⇒ 只能读本地。本通道属于这一类，宿主目前**不提供**
+ *     「读原始会话日志」的接口 ⇒ 这是宿主层缺口，不是 AGINT 越界。
+ *
+ * ⛔ 上一版（2026-10-21 ~ 2026-11-01）每次调用都 notify 一条 `local-by-design: ...`，
+ * 落到默认 console.warn ⇒ 每周一条「会话源降级」。那正是 v0.13.0 静默失败治理的反面：
+ * 治的是「真故障不吭声」，这条是「没事喊狼来了」——**同样是假读数**，只是方向相反。
+ * 现在：设计路径**不出声**，改在返回项上带 `sourceMode: 'local-raw'` 供 health 面展示；
+ * 只有**真的**一个会话都没找到时，才通过 onFallback 出声（那才是降级）。
  */
 export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback = null } = {}) {
-  // ⚠️ 2026-10-21 回退（运行态取证）——本通道**按设计走本地原始日志**，不走上游。
-  //
-  // 为什么必须回退（D1 迁移把这条链接上上游后，它反而瞎了）：
-  //   ① **检测对象不同**：完整性检查查的是磁盘上的**原始日志**（坏行 / seq 断裂 /
-  //      缺 content / 未配对 call）。上游 `readSession` 给的是**重放校验后**的
-  //      事件流 —— 缺陷在校验阶段就被抹平 ⇒ 拿它做完整性检查，检测能力直接归零。
-  //   ② **上游不给磁盘路径**：`listSessions` 的记录没有 path ⇒ 下游拿到的
-  //      `path` 是空串 ⇒ 解压必然失败 ⇒ 全部会话被判为 undecompressible。
-  //
-  // 宿主若再改会话日志命名，本通道靠 `findSessionLogFile` 的候选名 + 后缀兜底兜住
-  // （2026-09-22 改名致 12 天断供的教训）。
-  //
-  // 代价要说清：这仍是 B-008 登记的「宿主层能力自建」（自拉 zstd 解压），
-  // 本轮**不**消除 —— 完整性检查需要原始字节，上游目前不提供该形态。
-  void ctx;
-  const notify = onFallback ?? ((reason) => {
-    if (typeof console !== 'undefined' && console.warn) {
-      console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
-    }
-  });
-  notify('local-by-design: session 完整性检查必须读原始日志（上游是重放校验后的产物，且不含磁盘路径）');
-  // 对齐既有形状：{ path, sessionId, mtimeMs }
-  return listRecentSessionsFallback(maxCount).map((r) => ({
-    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs,
+  void ctx; // 本通道按设计不用上游，理由见上（保留参数以对齐 session-source 的形状）
+  // 对齐既有形状，另加 sourceMode：让调用方能区分「按设计读本地」与「本该走上游却回落了」。
+  const files = listRecentSessionsFallback(maxCount).map((r) => ({
+    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs, sourceMode: 'local-raw',
   }));
+  if (files.length === 0 && onFallback) {
+    // 真降级：候选名 + `.jsonl.zstd` 后缀兜底都没命中。此时必须出声，否则
+    // 「扫了 0 个」和「扫了 8 个都没问题」在 health 面上长得一样（本项目最坏的一类失败）。
+    onFallback('no-session-log-found: 候选名与 .jsonl.zstd 后缀兜底均未命中');
+  }
+  return files;
 }
 
 /**
@@ -512,12 +501,14 @@ export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback 
  *   - 未配对 call：tool/call 的 callId 无对应 tool/result
  * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
  *
- * ⚠️ 2026-10-21 回退（运行态取证）：**只读本地原始日志**，不走上游。
+ * ⚠️ 2026-10-21 回退、2026-11-02 定判：**只读本地原始日志**，不走上游。
  *   ① 完整性检查查的就是原始日志的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call）；
  *      上游 `readSession` 给的是**重放校验后**的事件流 ⇒ 缺陷已被抹平，
  *      拿它检查等于拿干净数据找脏东西 —— 检测能力直接归零。
  *   ② 上游记录不含磁盘路径，本函数却必须拿到日志文件才能解压。
- *   ⇒ 本函数签名不再接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
+ *   ⇒ 本函数签名不接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
+ *   ⛔ 这个设计**不是待修项**。完整判据与「语义消费 vs 字节检测」的分界见
+ *      `listRecentSessions` 上方那段注释；别再把它当成「没接上游」改回去。
  */
 export async function inspectSessionFile(file) {
   let events;
@@ -636,7 +627,9 @@ async function detectSessionIntegrity({ ctx = null, onFallback = null, report = 
 
   // 正常路径也要留下「真扫了几个会话」的证据 —— 否则「扫了 0 个」和
   // 「扫了 8 个都没问题」在 health 面上长得一样（本项目最坏的一类失败）。
-  report?.({ zstdBin: probe.bin, scannedSessions: files.length, flaggedSessions: issues.length });
+  // sourceMode 显式写 'local-raw'：本通道按设计读原始日志（判据见 listRecentSessions 上方），
+  // 让面板能区分「设计路径」与「本该走上游却回落了」——后者才是降级。
+  report?.({ zstdBin: probe.bin, sourceMode: 'local-raw', scannedSessions: files.length, flaggedSessions: issues.length });
 
   if (issues.length === 0) return [];
   return issues.map((i) => ({

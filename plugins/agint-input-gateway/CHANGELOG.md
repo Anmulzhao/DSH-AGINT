@@ -1,5 +1,48 @@
 ﻿# Changelog
 
+## 0.1.11 — 2026-11-02
+
+### 修复：一条每周都在喊的「会话源降级」，其实是设计如此
+
+**一句话**：`listRecentSessions` 每次调用都 `notify('local-by-design: ...')`，落到默认
+`console.warn` ⇒ 每周一条「会话源降级」。可它读本地原始日志是**按设计**的，不是降级。
+
+**为什么说这不是小事**：v0.13.0 的静默失败治理治的是「真故障不吭声」；这条是反方向的
+「没事喊狼来了」——**同样是假读数**，只是更难发现（因为「有告警」看起来像负责）。
+它会让人以为会话源坏了，从而去修一个不该修的东西（本提案 A2 差点就这么做）。
+
+**判据（为什么上游不能接）**：
+| 消费类型 | 正确做法 | 本仓实例 |
+|---|---|---|
+| 语义消费 | 走上游 `readSession(id)`，回落本地 | `agint-dream/sweep.js`、`agint-tool-stats` |
+| **字节检测** | **只能**读本地原始日志 | `sessionIntegrity` 子源（本通道） |
+
+上游给的是**重放校验之后**的事件流 ⇒ 坏行 / seq 断裂 / 未配对 call 在校验阶段已被抹平。
+拿它做完整性检查 = 拿干净数据找脏东西，检测能力直接归零（2026-10-21 接上去当天的运行态实测）。
+
+**改动**：
+- 设计路径**不再出声**；返回项加 `sourceMode: 'local-raw'`，`detectSessionIntegrity` 的
+  `report` 同步带该字段 ⇒ 面板能区分「设计路径」与「本该走上游却回落了」（后者才是降级）。
+- **只有真降级才出声**：候选名 + `.jsonl.zstd` 后缀兜底一个都没命中时，才走 `onFallback`。
+- 删 `createSessionSourceForSelfObservation()`：全仓 0 调用方，且它编码的正是
+  「self-observation 应该走上游」这个被推翻的判定。留着只会把下一个人带到同一条沟里。
+- `kill` 掉 `createSessionSource` import（只被上面那个函数用过）。
+
+**文档同步（同批）**：`docs/capability-boundary.md` §4-F2 的「正确形态」被推翻并标为勿照做；
+§2 归属表里 `agint-session-extract` / `agint-session-source` 由 **H-越界** 改判为
+**E（宿主缺口 B-008）** —— 宿主不提供「读原始会话日志」接口，自建 zstd 读盘是合法兜底。
+
+**验收（2026-11-02 本机实跑）**：
+- `node --test test/session-integrity.test.mjs` → **8 tests / 6 pass / 0 fail**（2 skip 为需 zstd 的解压用例）
+- 新增 2 条互钉用例：① 设计路径不得往 `console.warn` 写任何东西 + `sourceMode==='local-raw'`；
+  ② 阴性对照：真降级必须出声一次（防止有人「反正不告警了」顺手把 `onFallback` 也删了）
+- **阴性对照实测**：往函数首行注入一条 `console.warn('[fake] ... degraded')` → 用例①转红，
+  报错精确列出实际告警内容；移除即绿
+- `node --test test/*.test.mjs` → **75 tests / 73 pass / 0 fail**
+- `node bin/check-boundary.mjs` → EXIT 0，「无新增越界」（19 处已知欠账为基线登记）
+
+---
+
 ## 0.1.10 — 2026-11-01
 
 ### 修复：`sessionIntegrity` 子源自 v0.3 上线起从未真正执行过（静默失明）
