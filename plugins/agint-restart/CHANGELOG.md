@@ -4,6 +4,47 @@
 
 ---
 
+## v0.9.3 — 2026-11-01 — 修一个从未生效过的订阅：`agent/session-start` 宿主从不发
+
+**一句话**：`tryFlushPending()`（重启后补投压着的恢复通知）的**唯一入口**订阅了一个不存在的事件，
+从 v0.7.2 起一次都没执行过。
+
+**取证（2026-11-01，非推断）**：
+1. dsh `0.2.1-rc.5` 的 `EVENT_API`（`dsh-tool-cordis/lib/types/api-catalog.js`，宿主自生成的权威事件表）
+   82 条里**没有** `agent/session-start`。
+2. 对 dsh 安装树 `grep -rn "agent/session-start"` **命中 0 行** ⇒ 宿主不发。
+3. 全仓该字符串只出现在本插件（`lib/index.js` 的 `ctx.on`、两个测试文件）⇒ AGINT 自己也不 emit。
+
+⇒ cordis 订阅一个不存在的事件不报错、只是永不触发：**静默失效**。
+形状与 2026-09-20「preset 整张静默不挂载」相同 —— 门禁不红、日志不报、功能不出现。
+
+**为什么没炸（诚实版）**：v0.7.2 注释记载的第二条路径（`ctx.inject(['agents'])` 的 boot 轮询）
+仍在投递，日常重启照常收到通知。死掉的只是「重启时没有任何活跃会话」那个窗口的兜底 ——
+落盘的通知本该等下一个会话起来时补投，而补投代码已经不在。**修的是这个窗口，不是「通知全丢」。**
+
+**改动**：
+- 订阅改 `agent/created`（`[serial]`，"an entered agent is ready for per-agent initialization
+  after factory setup"，payload 同为 `{ agent }`，与旧代码逐字兼容）。
+- ⚠️ `serial` 与 `emit` 的差别**改变了故障面**：`agent/created` 的 listener 抛错或 reject，
+  agent 创建本身失败、会话直接起不来。补投是尽力而为的能力，不许拿它的失败换一条命 ⇒
+  handler 整段自己吞异常。`agent/pre-step`（waterfall）那段**不**加 try/catch —— 它必须把
+  `next()` 的结果交回去，吞掉它就是另一类 bug。
+
+**新增护栏用例**（`test/pending-notice.test.mjs`）：「订阅的宿主事件名必须存在于能力面基线」。
+不靠手抄名单 —— 直接读 `docs/dsh-surface-baseline.json` 的 `events` 做断言，基线缺失则明说
+「**没查**，不是通过」。阴性对照实测：把事件名改回 `agent/session-start`，**4 条用例转红**，
+报错精确到 `订阅了宿主不存在的事件 "agent/session-start" —— 它将永不触发`。
+
+**验收（2026-11-01 本机实跑）**：
+- `node --test test/pending-notice.test.mjs` → **9/9 通过**
+- `node test/smoke.mjs` → fail 0（skip 1，平台相关）
+- `bash bin/plugin-check.sh plugins/agint-restart` → **EXIT=0 / FAIL 0**（2 条存量 INFO：
+  `dsh-desktop-host` 测试期引用、`host-version-unknown` 因本机是 npm 版 dsh 无 app.asar）
+- `test/desktop-shell-respawn.test.mjs` 有 3 条红 —— **存量**：改动前后逐字相同的 3 条
+  （win32 用例在 Linux 跑），已用 `git checkout --` 还原后对照确认，**非本次引入**。
+
+---
+
 ## v0.9.2 — 2026-10-18 — 桌面就绪假阴：lease/端口/祖先链三源全断，改判「新 GUI 树根连续两拍驻留」
 
 **背景**：本机 web profile 退役（老板 2026-10-18 令，Windows 只用 desktop）后，桌面重启回执每笔都记 ok=false，而宿主其实活着。
