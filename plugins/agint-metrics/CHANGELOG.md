@@ -1,24 +1,47 @@
 # Changelog — agint-metrics
 
-## 1.1.4 — 2026-11-02 新增两条宿主事件主题的计数（B1 的消费侧）
+## 1.1.4 — 2026-11-02 补 `inc()` 出口（复活总线的全部计数）+ 两条宿主事件主题
+
+### ① 补 `inc()` —— 一条躺了很久的静默失败
+
+`agint-event-bus` 的 `busCtx.metrics` 从 v0.7.0 起就是：
+
+```js
+metrics: (key, delta) => { const m = ctx.get('agint.metrics'); if (m?.inc) return m.inc(key, delta); }
+```
+
+而**本服务从来没有 `inc` 方法**（实际方法只有 collect / summary / series / keys / stats）。
+⇒ 总线的全部计数（`publishInvalid` / `handlerError` / `deliveryFailed` / `deadletter`，
+以及 2026-11-02 B1 新加的 `hostBridge*`）**一直是静默丢弃的**：
+不报错、不落表、调用方零信号。
+
+这不是"算错了"，是"这条路上什么都没发生，而没人知道"—— 本项目最典型的失败形状。
+它恰好挡在「可观测性能不能成立」的入口上，所以补上。
+
+- `inc(key, delta=1)`：写一条增量记录（与 eventCounters 同形），查询走 summary / series。
+- 非法输入（空 key / NaN / 非数字）返回 `false` 且**不写** —— NaN 进了时间序列就洗不掉。
+- 测试 `test/service-inc.test.mjs` 5 条，含阴性对照（把 inc 删掉，第 ① 条立即红）。
+
+### ② 两条宿主事件主题的计数（B1 的消费侧）
 
 **背景**：`agint-event-bus` 0.8.0 把宿主的 `domain/changed`（白名单域）与 `workflow/end`
-桥成了总线主题。本版是它们的**唯一订阅方** —— 与 2026-10-26 那批（rules.changed / wiki.updated /
-quality.contract.violated / abtest.*）同一形态、同一张表。
+桥成了总线主题。本版是它们的**唯一订阅方** —— 与 2026-10-26 那批同一形态、同一张表。
 
-**为什么值得记**：这两件事在 AGINT 侧此前**零指标**。
-进化闭环能看见自己发了什么事件，却看不见自己**被写了什么**：
-一个域昨晚写了 300 次还是 0 次，之前只能去翻存储文件时间戳。
-`host.domainChangedCount` / `host.workflowEndCount` 让「哪天突然停写」「工作流是不是根本没在跑」
-第一次成为可观测事实。
+**为什么值得记**：这两件事在 AGINT 侧此前**零指标**。进化闭环能看见自己发了什么事件，
+却看不见自己**被写了什么**：一个域昨晚写了 300 次还是 0 次，之前只能去翻存储文件时间戳。
 
 **改动**：
 - `COUNTER_METRIC_KEYS` / `COUNTER_METRIC_LABELS` 各加两行。
-- `SUBSCRIPTION.topics` 加两条（仍是**单行字面量** —— 门禁靠正则扫源码，变量形式对它是不可见的，
-  这条纪律见本文件 2026-10-26 那段注释）。
+- `SUBSCRIPTION.topics` 加两条（仍是**单行字面量** —— 门禁靠正则扫源码，变量形式对它是不可见的）。
 
 **验收**：`node --test test/event-counters.test.mjs` → **10/10 通过**
 （覆盖清单用例改为字面量 7 条：刻意不写 `length >= 5`，那对「悄悄删掉一条」完全无感）。
+
+**生产实测（2026-11-02 00:58，部署后约 1 分钟）**：`eventBus.hostDomainIgnored` 落 **332 行**
+⇒ 桥接确实订阅到了宿主 `domain/changed`，`inc` 也确实写进了表。
+⚠️ 这 332 行同时暴露了新问题：非白名单域写入频率约 **5.5 次/秒**，
+若每条都写表，metrics 表每天涨 40 万行。已在 `host-bridge.js` 改为**采样**
+（首次 + 每 100 次），见该文件 `ignoredSeen` 段注释。
 
 ---
 

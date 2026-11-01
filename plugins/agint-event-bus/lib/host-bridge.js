@@ -101,10 +101,30 @@ export function attachHostBridge(ctx, { publish, metrics } = {}) {
 
   // ── 1. domain/changed：存储域写入（持久化确认之后）──
   // 签名：'domain/changed'(change: DomainChanged) —— DomainChangedBase = { domain, table, key }
+  //
+  // ⚠️ `ignoredSeen` + 采样：2026-11-02 首次部署后实测，**1 分钟 332 次**非白名单写入
+  // （约 5.5 次/秒）。若每次都 inc 就写一行 metric，等于给 metrics 表灌进每天 40 万行 ——
+  // 「为了可观测而压垮观测表」。所以：
+  //   · 白名单命中（有业务价值、本身低频）→ 全量计数；
+  //   · 被过滤（只用来证明「订阅活着」，没有业务价值）→ **首次 + 每 100 次**计一次。
+  // 采样会让这个数字失真，但它要回答的问题是「桥接到底订阅上没有」，不是「忽略了多少条」。
+  let ignoredSeen = 0;
   disposers.push(ctx.on('domain/changed', (change) => {
     try {
       const domain = String(change?.domain ?? '');
-      if (!DOMAIN_WHITELIST.includes(domain)) return;
+      if (!DOMAIN_WHITELIST.includes(domain)) {
+        // ⚠️ 这一行不是装饰，是**可观测性的必要条件**。
+        // 没有它，"桥接没订阅上" 与 "订阅上了但全部被白名单过滤" 在外部**完全同形**
+        // （都是 changed=0、总线无新 topic）。2026-11-02 首次部署后我就撞上了这个歧义：
+        // 启动后确有一次域写入（agint_memory_provider，不在白名单），但无法证明桥接在工作。
+        // 计数 ignored > 0 而 changed = 0 ⇒ 订阅正常、只是没命中白名单；
+        // 两个都是 0 ⇒ 压根没订阅上。**不允许让这两件事长得一样。**
+        ignoredSeen += 1;
+        if (ignoredSeen === 1 || ignoredSeen % 100 === 0) {
+          inc('eventBus.hostDomainIgnored');
+        }
+        return;
+      }
       inc('eventBus.hostDomainChanged');
       publishDetached({
         topic: 'input.signal.host.domain-changed', // 字面量：门禁要扫得到（见上方注释）

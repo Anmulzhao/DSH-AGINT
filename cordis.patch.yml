@@ -54,6 +54,22 @@
       name: '@deepseek-ai/dsh-schedule'
       config: {}
 
+    # worktree: 宿主的工作树原语（0.2.1-rc.5，B3 2026-11-02 挂载）。
+    # 提供 `ctx.worktrees.create(agent, {name, from})` → { path, branch, baseCommit, repositoryRoot }，
+    # 语义是「建新分支、checkout 到 pinned revision、进入它；已存在的分支或路径直接失败」（fail-closed）。
+    #
+    # 为什么挂：本仓有并发写者（另一个 agent 会话会直接改 plugins/**），而 mutator 现在是
+    # 「bin/safe-update.sh 拍快照 + 直接改主工作区」—— 两边同时动就是谁覆盖谁。
+    # worktree 把试验挪出主工作区，主工作区不再被试验污染。
+    #
+    # ⛔ 边界：本行**只提供能力**。mutator 真正用它做隔离实验是**后续独立评审**的事 ——
+    #    动的是「改代码」这条最敏感的路径，不该和「挂一个服务」混在一次改动里。
+    #    当前没有任何 AGINT 插件硬依赖 ctx.worktrees（全仓 grep 命中 0 处非测试引用）。
+    # 回滚：删除本行并重启 dsh，零影响。
+    - id: worktree
+      name: '@deepseek-ai/dsh-experimental-worktree'
+      config: {}
+
     # 2026-10-26 移除 `subagent-spawn-in-process-codex` 行（经确认后移除）。
     #
     # 为什么移：官方 bundle `@deepseek-ai/dsh-subagent-codex` 已进 profile，它自己的

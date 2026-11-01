@@ -62,12 +62,32 @@ test('挂载两个宿主事件监听（domain/changed + workflow/end）', () => 
 test('H3 白名单：非白名单域一个事件都不发', () => {
   const ctx = makeCtx();
   const pub = makePublisher();
-  attachHostBridge(ctx, { publish: pub });
+  const metrics = [];
+  attachHostBridge(ctx, { publish: pub, metrics: (k) => metrics.push(k) });
   // agint_metrics / agint_event_bus 是高频域，刻意不进白名单
   for (const domain of ['agint_metrics', 'agint_event_bus', 'agint_input_gateway', 'not_a_domain']) {
     ctx.emit('domain/changed', { domain, table: 't', key: 'k', operation: 'put' });
   }
   assert.equal(pub.calls.length, 0, '非白名单域不得发布 —— 否则总线会被高频写淹掉');
+  // ⚠️ 这条断言同样重要：过滤必须留下痕迹。
+  // 否则「没订阅上」与「订阅上了但全被过滤」在外部完全同形（都是计数 0、总线无新 topic），
+  // 2026-11-02 首次部署后就撞上过这个歧义。
+  assert.equal(
+    metrics.filter((k) => k === 'eventBus.hostDomainIgnored').length,
+    1,
+    '被过滤必须留下痕迹（首次一条），但不能每条都写 —— 实测 5.5 次/秒会让 metrics 表每天涨 40 万行',
+  );
+});
+
+test('被过滤的计数是采样的：首次一条 + 每 100 次一条（防淹没 metrics 表）', () => {
+  const ctx = makeCtx();
+  const metrics = [];
+  attachHostBridge(ctx, { publish: makePublisher(), metrics: (k) => metrics.push(k) });
+  for (let i = 0; i < 101; i += 1) {
+    ctx.emit('domain/changed', { domain: 'agint_metrics', table: 't', key: 'k', operation: 'put' });
+  }
+  const n = metrics.filter((k) => k === 'eventBus.hostDomainIgnored').length;
+  assert.equal(n, 2, `101 次被过滤应只计 2 条（首次 + 第 100 次），实际 ${n} 条`);
 });
 
 test('白名单域：topic / source / payload 形状正确，且 H4 不带 value', async () => {

@@ -1,6 +1,9 @@
 # Proposal: dsh 0.2.1 能力面承接（把宿主的 82 个传感器接进来）
 
-> **状态**：**执行中** · A1 完成（`28929dc`，0.9.3）· A2 完成（`baa99c0`，0.1.11，**形态已按复核结论修订**）· 两条均已部署生效 · B / C 待拍板
+> **状态**：**A 批已收口 / B 批已收口（3 做 2 挂起）**
+> · A1 `28929dc`（0.9.3）· A2 `baa99c0`（0.1.11，形态按复核修订）
+> · B1 `fb70d01`（event-bus 0.8.0 + metrics 1.1.4）· B3 挂载行 · B4 **不实施**（`docs/session-projections-assessment.md`）· B2/B5 **挂起**（`docs/host-mods-layer-assessment.md`）
+> · 全部已部署生效；C 批待拍板
 > **作者**：外部编码助手（WorkBuddy 会话） · **日期**：2026-11-01（执行至 11-02 00:45）
 > **目标对象**：`docs/capability-boundary.md` §3 候选清单 + `agint-input-gateway` / `agint-tool-stats` / `agint-mutator` / `agint-self-model` / `agint-family-panel` / `agint-restart`
 > **风险等级**：A 批 P2（纯止损，不动挂载）· B 批 P1（要动挂载 / 重启）· C 批需单独立项
@@ -265,6 +268,8 @@ v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方
 
 #### B1 · 事件源扩容：把 `domain/changed` 与 `workflow/*` 接进总线
 
+> ✅ **已完成 2026-11-02（`fb70d01`，event-bus 0.7.3→0.8.0 / metrics 1.1.3→1.1.4，已部署）**：接 `domain/changed`（白名单 7 域）与 `workflow/end`，约束 H1~H5 写在 `lib/host-bridge.js` 头注释。**顺带挖出两个静默失败**：① `verify-event-topics` 扫不到引用常量的 topic（门禁假绿）；② `agint.metrics` 服务从来没有 `inc` 方法，而 event-bus 的 busCtx.metrics 全靠它 ⇒ **总线所有计数自 v0.7.0 起静默丢弃**。两个都修了，后者补 `inc()` + 5 条用例。
+
 - **为什么是这条**：一条提案的杠杆全在这里。AGINT 花了 v0.7 一整个版本建总线，
   却在输入端只接了 5 类 channel。宿主 82 个事件是现成的传感器阵列。
 - **接哪几个（按增益排序，不贪多）**：
@@ -285,6 +290,8 @@ v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方
   面板刷新时不再触发全量 `v2-scan`。
 
 #### B2 · 调用级 token：`TurnUsage` 补上「非 billing 级」这个已知限制
+
+> ⛔ **挂起（2026-11-02 探测结论）**：`claudeCodeMods` 在 npm 分发的 dsh 0.2.1-rc.5 里**没有任何包提供**（全树 grep 只命中 api-catalog 文档）。试装 `dsh-hooks-claude-code` 证伪：它 `dsh: null`（不是 profile layer），实现是 Claude Code 外部 hooks 桥，与 mod 宿主无关。详见 `docs/host-mods-layer-assessment.md`。
 
 - **现状**：`docs/known-limitations/token-cost-not-billing-grade.md` 写明
   —— `deltaTokens` 是**压力差估计**，412/4746 行带数值，`avgTokenCost=1068`，但**不是调用级计费**。
@@ -309,6 +316,8 @@ v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方
 
 #### B3 · `worktrees`：给 mutator 一个真隔离实验环境
 
+> 🟡 **能力已就绪，接入待独立评审（2026-11-02）**：`cordis.patch.yml` 已加 `worktree` 行（`dsh-experimental-worktree`），`--dump-config` 实证进了组合树、启动无报错。⛔ mutator 真正改用它属**后续独立评审** —— 动的是「改代码」这条最敏感的路径，不该和「挂一个服务」混在一次改动里。
+
 - **现状**：`capability-boundary.md` §3 记「未接（10-19 已论证：AGINT 无裸 worktree 可替换）」。
   **这个论证的结论要改**：不是「没有可替换对象」，是「当时宿主没给这个原语」——现在给了。
 - **宿主已给**：`ctx.worktrees.create(agent, request)` →
@@ -325,6 +334,8 @@ v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方
 
 #### B4 · `sessionProjections`：把派生状态交给宿主托管
 
+> ⛔ **已评估，不实施（2026-11-02）**：服务确实可用（`--dump-config` 有 `session-projection` 行），但 AGINT 现有四类派生值**没有一个对得上** —— 投影的作用域是单个 session 的事件游标，而 tool-stats 的数据源是自落 jsonl、compress-guard 落的是持久事实、提案 stage 与 self-model 快照跨 session。判据、逐条核对、复评触发条件见 `docs/session-projections-assessment.md`。
+
 - **现状**：AGINT 的派生值（`stage` / `staleSince` / `hasBlocker`）靠「不落盘、每次现算」或
   「落盘 + 手动失效」两选一。v0.24.0 刚为这事专门写了「派生值不落盘」的设计决定。
 - **宿主已给**：`ctx.sessionProjections.register(definition)` + `onChanged(listener)` + `stateOf(session, key)`。
@@ -337,6 +348,8 @@ v0.13.0 的静默失败治理治的是「真故障不吭声」，这条是反方
   会话结束 `onChanged` 不再触发（不泄漏）。
 
 #### B5 · `claudeCodeMods` 的 pane / band：载体层的第二条路（**先评估，不实施**）
+
+> ⛔ **挂起，与 B2 同一根因**：`ModsApi.ui` / `watchBand` / `pressBand` 全挂在 `claudeCodeMods` 上，而该服务在本机无 provider ⇒ 连评估都无从谈起（装置都没有，谈不上形态取舍）。评估见 `docs/host-mods-layer-assessment.md` §5（附带：`dsh-hooks-claude-code` 对 `agint-rules` 不构成替代 —— 一个是执行外部命令，一个是进程内 fail-closed 判定）。
 
 - **现状**：`agint-family-panel` 自建 `webServer` 路由 + 独立 HTML 页面。
   `capability-boundary.md` 把它归 C（载体层）—— 合规，但离宿主 GUI 是两张皮。
