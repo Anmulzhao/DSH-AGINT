@@ -1,5 +1,27 @@
 # Changelog — agint-metrics
 
+## 1.1.4 — 2026-11-02 新增两条宿主事件主题的计数（B1 的消费侧）
+
+**背景**：`agint-event-bus` 0.8.0 把宿主的 `domain/changed`（白名单域）与 `workflow/end`
+桥成了总线主题。本版是它们的**唯一订阅方** —— 与 2026-10-26 那批（rules.changed / wiki.updated /
+quality.contract.violated / abtest.*）同一形态、同一张表。
+
+**为什么值得记**：这两件事在 AGINT 侧此前**零指标**。
+进化闭环能看见自己发了什么事件，却看不见自己**被写了什么**：
+一个域昨晚写了 300 次还是 0 次，之前只能去翻存储文件时间戳。
+`host.domainChangedCount` / `host.workflowEndCount` 让「哪天突然停写」「工作流是不是根本没在跑」
+第一次成为可观测事实。
+
+**改动**：
+- `COUNTER_METRIC_KEYS` / `COUNTER_METRIC_LABELS` 各加两行。
+- `SUBSCRIPTION.topics` 加两条（仍是**单行字面量** —— 门禁靠正则扫源码，变量形式对它是不可见的，
+  这条纪律见本文件 2026-10-26 那段注释）。
+
+**验收**：`node --test test/event-counters.test.mjs` → **10/10 通过**
+（覆盖清单用例改为字面量 7 条：刻意不写 `length >= 5`，那对「悄悄删掉一条」完全无感）。
+
+---
+
 ## 1.1.2 — 2026-09-29 修复：metrics_summary output schema 缺 meta ⇒ 宿主整条拒收
 
 **事故**：agint 自检调 `metrics_summary` 返回 `Error: tool "metrics_summary" ... schema

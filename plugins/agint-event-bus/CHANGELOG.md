@@ -1,5 +1,64 @@
 # Changelog — agint-event-bus
 
+## 0.8.0 (2026-11-02) — B1：把宿主的两类事件接进总线（domain/changed + workflow/end）
+
+**一句话**：AGINT 自称「事件总线驱动的自进化系统」，但宿主给 82 个事件我们只接了 6 个，
+全是工具流水线与会话 —— **进化闭环最该看的两类信号一条没接**。本版接上其中两类。
+
+**为什么是这两条**（不是凑数）：
+- `domain/changed` —— 24 个 storage 域里任何一个被写，宿主都在**持久化确认之后**发一条
+  （"emitted once per write strictly after the backend acknowledged durability"）。
+  在此之前，AGINT 的派生状态（面板、self-model 快照）只能靠全量重扫或 cron 兜，
+  「提案台账昨晚被谁改过」这种问题在总线上一片空白。
+- `workflow/end` —— preset 已经挂了 `dsh-tool-workflow` / `dsh-workflow-ptc`，
+  但工作流跑过什么从未进入总线 ⇒ trajectory / 进化记忆无法留档。
+
+**设计约束（写死在 `lib/host-bridge.js` 头注释，改前先读）**：
+| # | 约束 | 为什么 |
+|---|---|---|
+| H1 | 绝不阻塞宿主 | `domain/changed` 处在写路径尾部，listener 里 await 会把存储写入拖成 O(总线投递) |
+| H2 | 绝不把异常抛回宿主 | 桥接一抛，某次域写入就失败 —— 这是本项目最不能犯的错。抛错一律吞掉并计数 |
+| H3 | 白名单，不做全量 | 24 个域里 5 个是高频写（event_bus / metrics / input_gateway / cron / restart），全接会把总线淹掉、events 表撑爆 |
+| H4 | 不携带 value | `DomainChangedPut` 带整行数据；要看内容的下游自己去读（事实 = 变了；内容 = 自取） |
+| H5 | 可关 | `Config.hostBridge: false` 整体关掉。接的是**别人的**事件源，量级由宿主决定不由我们决定 |
+
+**白名单 7 个域**（判据：写入代表「系统的实质状态变了」）：
+`agint_evolve` / `agint_evolution` / `agint_self_model` / `agint_population` /
+`agint_rules` / `agint_mount` / `agint_curriculum`
+
+**产物**：
+- 新 topic `input.signal.host.domain-changed` / `input.signal.host.workflow-end`，
+  命名沿用 `input.signal.<频道>.<类型>`，与 C2/C3/C4/C5 同构。
+- `Config` 从 `z.object({})` 变为 `{ hostBridge?: boolean }`（唯一新增字段，optional）。
+- manifest `spec.cordis.events` 登记 `domain/changed` 与 `workflow/end`（原本只有 `tools/post-execute`）。
+
+**⛔ 两个刻意不做的事**：
+1. **不做节流**。节流会让计数失真，而 metrics 侧正是靠计数看「哪天突然停写」。
+   用白名单控制量级，比用节流掩盖量级更诚实。
+2. **不做判读**。宿主事件是事实，桥接只做格式转换。要不要因此做某事由订阅者各自决定。
+
+**⚠️ 门禁可见性的坑（踩了并修好）**：`bin/verify-event-topics.mjs` 靠
+`/topic\s*:\s*['"]…['"]/` 逐行扫源码。第一版把 publish 的 topic 写成引用 `HOST_TOPICS` 常量
+⇒ 两条新主题对门禁**不可见**，门禁照样报绿（假绿，正是本项目反复被咬的形态）。
+现改为字面量，并加用例钉死「常量值必须同时以 `topic: '<字面量>'` 出现在源码里」。
+
+**顺带发现的清单漂移**：跑 `verify-event-topics.mjs --update` 时，清单被**误删 5 条**
+（`input.signal.external.repo-diff` / `mount.requested` / `policy.rolledback` /
+`sandbox.failed` / `skill-autocreate.rolled-back`）—— 它们代码里都还在，
+只是写法不在扫描器的三种形式内。已手工补回并在清单 `note` 里留警示；
+清单从 47 条增至 **58 条**（补登历史漏登 9 条 + 新增 2 条）。
+
+**验收（2026-11-02 实跑）**：
+- `node --test test/host-bridge.test.mjs` → **12/12 通过**（新文件，含 3 条 H2 红线用例）
+- **阴性对照**：移除 `domain/changed` listener 体内的 catch → 测试文件整体崩（pass 0 / fail 1），
+  恢复即绿 —— 证明 H2 的 catch 是必要的，不是装饰
+- `node test/smoke.mjs` → 10/10
+- `bin/plugin-check.sh plugins/agint-event-bus` → EXIT 0 / FAIL 0
+- `node bin/check-wiring.mjs` → **PASS**（0 硬缺口；新 topic 有订阅者，未新增 NO_SUBSCRIBER）
+- `node bin/verify-event-topics.mjs` → EXIT 0，「代码里所有 topic 都在事实清单中」
+
+---
+
 ## 0.7.3 (2026-10-05) — manifest 契约对齐代码：删 `agint.memory` 悬空声明，补两个实际取用的服务
 
 **起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」

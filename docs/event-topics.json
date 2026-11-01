@@ -1,15 +1,31 @@
 {
   "version": "1.0",
-  "generatedAt": "2026-10-02T16:18:47.357Z",
+  "generatedAt": "2026-11-01T16:35:57.612Z",
   "generatedBy": "bin/verify-event-topics.mjs --update",
   "source": {
     "code": "plugins/<name>/lib/ + plugins/<name>/*.js（排除 test/）",
-    "production": "C:/Users/Administrator/.dsh/storages/agint_event_bus.json",
+    "production": "../../../.dsh/storages/agint_event_bus.json",
     "productionAvailable": true
   },
-  "note": "事实清单 = 代码字面量 ∪ 生产实测 topic。生产侧能捞到静态扫不到的动态构造 topic （模板串/变量），两者缺一都会漏。新增 topic 需刻意登记：先改代码再跑 --update，让 diff 里能看见这个新主题。",
-  "topicCount": 47,
+  "note": "事实清单 = 代码字面量 ∪ 生产实测 topic。生产侧能捞到静态扫不到的动态构造 topic （模板串/变量），两者缺一都会漏。新增 topic 需刻意登记：先改代码再跑 --update，让 diff 里能看见这个新主题。 ⚠️ 2026-11-02 补记：本清单曾被 --update 误删 5 条（input.signal.external.repo-diff / mount.requested / policy.rolledback / sandbox.failed / skill-autocreate.rolled-back）——它们在代码里仍存在，只是写法不在扫描器的三种形式内（常量表 / 拼接 / 对象 key）。已手工补回；下次 --update 前请先比对删除项，别让清单缩水。",
+  "topicCount": 58,
   "topics": {
+    "abtest.concluded": {
+      "evidence": {
+        "code": [
+          "plugins/agint-abtest/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "abtest.started": {
+      "evidence": {
+        "code": [
+          "plugins/agint-abtest/lib/index.js"
+        ],
+        "productionCount": 0
+      }
+    },
     "compress-guard.blocked": {
       "evidence": {
         "code": [
@@ -24,19 +40,25 @@
         "code": [
           "plugins/agint-compress-guard/lib/engine.js"
         ],
-        "productionCount": 6
+        "productionCount": 10
       }
     },
     "curator.run-completed": {
       "evidence": {
         "code": [],
-        "productionCount": 9
+        "productionCount": 5
       }
     },
     "curriculum.boundary-probed": {
       "evidence": {
         "code": [],
-        "productionCount": 5
+        "productionCount": 6
+      }
+    },
+    "curriculum.challenge-created": {
+      "evidence": {
+        "code": [],
+        "productionCount": 4
       }
     },
     "diagnosis.completed": {
@@ -45,7 +67,7 @@
           "plugins/agint-diagnosis/lib/index.js",
           "plugins/agint-trajectory/lib/subscribers.js"
         ],
-        "productionCount": 30
+        "productionCount": 14
       }
     },
     "dream.completed": {
@@ -54,7 +76,7 @@
           "plugins/agint-dream/lib/index.js",
           "plugins/agint-trajectory/lib/subscribers.js"
         ],
-        "productionCount": 53
+        "productionCount": 38
       }
     },
     "dream.rejected": {
@@ -62,7 +84,7 @@
         "code": [
           "plugins/agint-dream/lib/index.js"
         ],
-        "productionCount": 1
+        "productionCount": 0
       }
     },
     "evolution.contract.locked": {
@@ -70,7 +92,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/contract-manager.js"
         ],
-        "productionCount": 0
+        "productionCount": 7
       }
     },
     "evolution.cycle.summary": {
@@ -78,7 +100,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/index.js"
         ],
-        "productionCount": 7
+        "productionCount": 14
       }
     },
     "evolution.evaluated": {
@@ -86,13 +108,21 @@
         "code": [
           "plugins/agint-trajectory/lib/subscribers.js"
         ],
-        "productionCount": 345
+        "productionCount": 342
       }
     },
     "evolution.ledger.anchored": {
       "evidence": {
         "code": [
           "plugins/agint-evolution-memory/lib/ledger-anchor.js"
+        ],
+        "productionCount": 4
+      }
+    },
+    "evolution.mutation.accounting-failed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolution-driver/lib/index.js"
         ],
         "productionCount": 0
       }
@@ -110,7 +140,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/index.js"
         ],
-        "productionCount": 4
+        "productionCount": 9
       }
     },
     "evolution.mutation.proposed": {
@@ -118,7 +148,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/index.js"
         ],
-        "productionCount": 7
+        "productionCount": 9
       }
     },
     "evolution.mutation.rejected": {
@@ -126,7 +156,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/index.js"
         ],
-        "productionCount": 1
+        "productionCount": 0
       }
     },
     "evolution.mutation.rolledback": {
@@ -134,7 +164,7 @@
         "code": [
           "plugins/agint-evolution-driver/lib/index.js"
         ],
-        "productionCount": 2
+        "productionCount": 0
       }
     },
     "evolution.proposed": {
@@ -145,7 +175,7 @@
           "plugins/agint-population/lib/index.js",
           "plugins/agint-trajectory/lib/subscribers.js"
         ],
-        "productionCount": 16
+        "productionCount": 27
       }
     },
     "evoorch.task-completed": {
@@ -164,10 +194,32 @@
         "productionCount": 0
       }
     },
+    "input.signal.cross-agent.pattern": {
+      "evidence": {
+        "code": [],
+        "productionCount": 4
+      }
+    },
     "input.signal.external.repo-diff": {
       "evidence": {
         "code": [],
         "productionCount": 3
+      }
+    },
+    "input.signal.host.domain-changed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-event-bus/lib/host-bridge.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "input.signal.host.workflow-end": {
+      "evidence": {
+        "code": [
+          "plugins/agint-event-bus/lib/host-bridge.js"
+        ],
+        "productionCount": 0
       }
     },
     "memory.pre-compress-checkpoint": {
@@ -183,7 +235,7 @@
         "code": [
           "plugins/agint-memory-provider/lib/manager.js"
         ],
-        "productionCount": 250
+        "productionCount": 72
       }
     },
     "memory.provider-activation-failed": {
@@ -207,7 +259,7 @@
         "code": [
           "plugins/agint-memory-provider/lib/manager.js"
         ],
-        "productionCount": 2
+        "productionCount": 31
       }
     },
     "memory.provider-recovered": {
@@ -245,7 +297,7 @@
     "metrics.snapshot": {
       "evidence": {
         "code": [],
-        "productionCount": 500
+        "productionCount": 575
       }
     },
     "mount.requested": {
@@ -260,55 +312,75 @@
     "oracle.daily": {
       "evidence": {
         "code": [],
-        "productionCount": 6
+        "productionCount": 34
       }
     },
     "oracle.monthly": {
       "evidence": {
         "code": [],
-        "productionCount": 2
+        "productionCount": 3
       }
     },
     "oracle.weekly": {
       "evidence": {
         "code": [],
-        "productionCount": 2
+        "productionCount": 5
       }
     },
     "ov.profile.delivered": {
       "evidence": {
         "code": [],
-        "productionCount": 99
+        "productionCount": 191
       }
     },
     "ov.recall.checked": {
       "evidence": {
         "code": [],
-        "productionCount": 2348
+        "productionCount": 4618
       }
     },
     "ov.session.flushed": {
       "evidence": {
         "code": [],
-        "productionCount": 10339
+        "productionCount": 20546
+      }
+    },
+    "ov.strategy.remembered": {
+      "evidence": {
+        "code": [],
+        "productionCount": 7
       }
     },
     "ov.tool.called": {
       "evidence": {
         "code": [],
-        "productionCount": 38
+        "productionCount": 87
       }
     },
     "policy.deployed": {
       "evidence": {
         "code": [],
-        "productionCount": 47
+        "productionCount": 9
       }
     },
     "policy.rolledback": {
       "evidence": {
         "code": [],
         "productionCount": 111
+      }
+    },
+    "restart.requested": {
+      "evidence": {
+        "code": [],
+        "productionCount": 11
+      }
+    },
+    "rules.changed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-rules/lib/index.js"
+        ],
+        "productionCount": 2
       }
     },
     "sandbox.failed": {
@@ -322,7 +394,7 @@
         "code": [
           "plugins/agint-self-model/lib/index.js"
         ],
-        "productionCount": 79
+        "productionCount": 58
       }
     },
     "skill-autocreate.rolled-back": {
@@ -334,7 +406,7 @@
     "skill-graph.updated": {
       "evidence": {
         "code": [],
-        "productionCount": 2
+        "productionCount": 3
       }
     },
     "trajectory.budget-exhausted": {
@@ -358,7 +430,15 @@
         "code": [
           "plugins/agint-trajectory/lib/index.js"
         ],
-        "productionCount": 0
+        "productionCount": 334
+      }
+    },
+    "wiki.updated": {
+      "evidence": {
+        "code": [
+          "plugins/agint-wiki/lib/index.js"
+        ],
+        "productionCount": 1
       }
     }
   }
