@@ -58,13 +58,14 @@
     # 提供 `ctx.worktrees.create(agent, {name, from})` → { path, branch, baseCommit, repositoryRoot }，
     # 语义是「建新分支、checkout 到 pinned revision、进入它；已存在的分支或路径直接失败」（fail-closed）。
     #
-    # 为什么挂：本仓有并发写者（另一个 agent 会话会直接改 plugins/**），而 mutator 现在是
+    # 为什么挂：本仓有并发写者（另一个 agent 会话会直接改 plugins/**），而 mutator 当时是
     # 「bin/safe-update.sh 拍快照 + 直接改主工作区」—— 两边同时动就是谁覆盖谁。
     # worktree 把试验挪出主工作区，主工作区不再被试验污染。
     #
-    # ⛔ 边界：本行**只提供能力**。mutator 真正用它做隔离实验是**后续独立评审**的事 ——
-    #    动的是「改代码」这条最敏感的路径，不该和「挂一个服务」混在一次改动里。
-    #    当前没有任何 AGINT 插件硬依赖 ctx.worktrees（全仓 grep 命中 0 处非测试引用）。
+    # 2026-11-03（W6 / mutator v0.7.0）起有消费方：agint-mutator 的 commit() 在
+    # `config.worktreeIsolation: true` 时用它做隔离写 + 隔离内 sandbox 验证。
+    # ⛔ 软依赖：mutator 走 ctx.get('worktrees')，取不到就降级直写、不报错。
+    #    删掉本行 ⇒ 隔离自动关闭，commit 行为退回 v0.6.x（已用 B2 用例钉住）。
     # 回滚：删除本行并重启 dsh，零影响。
     - id: worktree
       name: '@deepseek-ai/dsh-experimental-worktree'
@@ -471,14 +472,23 @@
             enabled: true
 
 
-        # agint-mutator: mutation constructor v0.6.1. 3 modification schemes
+        # agint-mutator: mutation constructor v0.7.0. 3 modification schemes
         # (PROMPT_MUTATION / TOOL_SYNTHESIS / STRATEGY_REWRITE) +
         # propose/validate/commit/rollback three-segment transaction.
         # NOTE: 必须排在 agint-event-bus 之后——mutator 启动时一次性读取
         # agint.eventBus.subscribe，取不到会永久降级（diagnosis.completed 影子观察失效）。
+        #
+        # worktreeIsolation（W6 / v0.7.0）：commit 的 postimage 改为先在宿主 Git
+        # worktree 里写 + 在那里跑 sandbox，验过才写回主工作区。
+        # 目的：消灭「postimage 已落地主工作区、但 sandbox 还没跑完」这个 30 秒级窗口。
+        # ⛔ 依赖上方 `id: worktree` 那行；那一行不在 ⇒ 自动降级直写，不报错。
+        # ⛔ 任何一步失败都降级直写（worktree 是优化，不是 commit 的前置条件），
+        #    原因记进 commits 表的 audit.worktree.reason。
+        # 回滚：把 worktreeIsolation 改回 false（或删掉这个 key）并重启 dsh。
         - id: agint-mutator
           name: ./plugins/agint-mutator/lib/index.js
-          config: {}
+          config:
+            worktreeIsolation: true
 
 
         # agint-population: population manager v0.6.2. Three-variant tournament.
