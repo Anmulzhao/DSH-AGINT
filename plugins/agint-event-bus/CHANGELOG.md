@@ -1,5 +1,49 @@
 # Changelog — agint-event-bus
 
+## 0.9.0 (2026-11-03) — W1/W4：宿主事件桥扩容（subagent / skills / goal / workflow-phase）
+
+**一句话**：0.8.0 接上了「存储写入」与「工作流结束」两类信号，但盘点剩下的三类
+——**多 Agent 行为 / 技能变更 / 目标变更**——仍然一条没接，外加 `workflow/end`
+只拿得到结局拿不到过程。本版一次补齐。
+
+**依据**（`proposals/agint-dsh-surface-absorption-20261101.md` §4-B1 的表 + §2 盘点）：
+宿主 82 个事件里 AGINT 原来只接 6 个，且**位置单一**——4 个工具流水线、2 个会话。
+本版新增 6 条监听，宿主事件覆盖面从 6 提到 12（不含宿主从不发出的
+`agent/session-start`，那条已在 0.9.3 修）。
+
+| 宿主事件 | 签名（实测位置） | 新 topic | 换来的信号 |
+|---|---|---|---|
+| `workflow/phase` | `(info, title)` · workflow-ptc:646 | `input.signal.host.workflow-phase` | 工作流过程序列（trajectory 缺的就是这半） |
+| `subagent/start` | `(identity, parent)` · subagent:197 | `...host.subagent-start` | P8 多 Agent 的**第一份真数据** |
+| `subagent/end` | `({...identity, stopReason, lastAssistantMessage?}, parent)` · subagent:200 | `...host.subagent-end` | 子代理终态由**宿主**判定，不是自述 |
+| `skills/change` | `()` **无参数** · dsh-skill:404 | `...host.skills-change` | 技能目录变更驱动策展 |
+| `goal/changed` | `({ agent, change })` · dsh-goal:877 | `...host.goal-changed` | 课程对齐真实目标 |
+| `goal/activation-changed` | `({ sessionId, goal? })` · dsh-goal:798 | `...host.goal-activation-changed` | 目标启用/停用 |
+
+**新增的两条纪律**（写进代码注释，改前先读）：
+- **H4 扩面**：`subagent/end` 的 `lastAssistantMessage` 是子代理完整输出（可能几千字），
+  payload **只记 `messageLength`，正文不进**。要看内容的订阅者自己去 session 读。
+  同理 `goal/*` 只摘 `revision`/`activation`，不整份带 `goal` 视图。
+- **不许编造字段**：`skills/change` 宿主**确实不带参数**，payload 里显式写
+  `skillName: null` 而不是猜一个名字或干脆省略——下游要能区分「事件没带」
+  与「字段名写错」。无参数不是缺陷，是契约。
+
+**为什么 `workflow/phase` 不节流**：相位条数由工作流脚本自己决定（通常 3~8 相），
+不是宿主写的频率。预先节流会让「相位丢失」与「脚本没跑那相」在外部同形——
+这比相位过多更难查。真出现 200 相的脚本，`eventBus.hostWorkflowPhase` 计数会先叫。
+
+**产物**：
+- `lib/host-bridge.js` +166 行（6 条监听 + 共享的 identity 摘取函数）
+- `test/host-bridge.test.mjs` +169 行 / 11 条新用例（23/23 全绿）
+- `docs/event-topics.json` 64 条（代码 43 条全部登记）
+- `manifest.json` 的 `spec.cordis.events` 补 6 条
+
+**阴性对照**：删掉任一监听体内的 `try/catch`，「H2 红线扩面」用例必须红；
+把 `lastAssistantMessage` 塞进 payload，「W1 subagent/end」用例必须红。
+
+**验收**：`node --test plugins/agint-event-bus/test/host-bridge.test.mjs` → 23/23；
+`node bin/verify-event-topics.mjs` → 「代码里所有 topic 都在事实清单中」。
+
 ## 0.8.0 (2026-11-02) — B1：把宿主的两类事件接进总线（domain/changed + workflow/end）
 
 **一句话**：AGINT 自称「事件总线驱动的自进化系统」，但宿主给 82 个事件我们只接了 6 个，

@@ -58,6 +58,16 @@ export const DOMAIN_WHITELIST = Object.freeze([
 export const HOST_TOPICS = Object.freeze({
   DOMAIN_CHANGED: 'input.signal.host.domain-changed',
   WORKFLOW_END: 'input.signal.host.workflow-end',
+  // ── 2026-11-03 扩容（W1 / W4）────────────────────────────────────────
+  // 这四条补的是 2026-11-01 盘点里「接的位置太窄」的另一半：
+  // 原来 6 个订阅点里 4 个是工具流水线、2 个是会话，**多 Agent 行为 / 技能变更 /
+  // 目标变更 / 工作流过程**这四类一条都没接。
+  WORKFLOW_PHASE: 'input.signal.host.workflow-phase',
+  SUBAGENT_START: 'input.signal.host.subagent-start',
+  SUBAGENT_END: 'input.signal.host.subagent-end',
+  SKILLS_CHANGE: 'input.signal.host.skills-change',
+  GOAL_CHANGED: 'input.signal.host.goal-changed',
+  GOAL_ACTIVATION_CHANGED: 'input.signal.host.goal-activation-changed',
 });
 
 /*
@@ -161,6 +171,162 @@ export function attachHostBridge(ctx, { publish, metrics } = {}) {
           // 错误串截断：总线 payload 进 events 表，长栈会把单条记录撑大
           error: result?.error ? String(result.error).slice(0, 200) : null,
           agentsStarted: Number(result?.agentsStarted ?? 0),
+        },
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  // ── 3. workflow/phase：一次工作流运行中的相位推进 ──────────────────────
+  // 签名：'workflow/phase'(info: WorkflowRunInfo, title: string)
+  // 为什么补（W4）：只接 `workflow/end` 拿得到「跑完了」，拿不到「卡在哪一相」。
+  // trajectory 要的是过程，不是结局 —— 没有相位序列，一次失败的工作流在
+  // 训练数据里只剩一行 stopReason:'error'，等于把最有信息量的部分扔了。
+  //
+  // ⚠️ H3 例外说明：这条**不设白名单也不节流**，因为 phase 的条数由工作流脚本
+  //    自己决定（一个脚本通常 3~8 相），不是宿主写的频率。如果哪天有人写出
+  //    200 相的脚本，会在这里看见（`eventBus.hostWorkflowPhase` 计数飙升），
+  //    到时候再谈限额 —— 但**不要**预先节流，相位丢失比相位过多更难查。
+  disposers.push(ctx.on('workflow/phase', (info, title) => {
+    try {
+      inc('eventBus.hostWorkflowPhase');
+      publishDetached({
+        topic: 'input.signal.host.workflow-phase', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: {
+          hostEvent: 'workflow/phase',
+          workflowId: String(info?.id ?? ''),
+          name: String(info?.meta?.name ?? ''),
+          // 相位标题截断到 100：它是人写的自由文本，可能带长说明
+          phase: String(title ?? '').slice(0, 100),
+        },
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  // ── 4. subagent/start + subagent/end：子代理生命周期（W1）────────────────
+  // 签名（实测 dsh-subagent/lib/index.js:197 / :200）：
+  //   'subagent/start'(identity: SubagentIdentity, parent: Agent)
+  //   'subagent/end'(  { ...identity, stopReason, lastAssistantMessage? }, parent: Agent)
+  //   SubagentIdentity = { runId, provider: string, id: childId, local: boolean }
+  //
+  // 为什么接：P8 多 Agent 进化**没有数据**。现在 subagent 跑了什么、用哪个 provider、
+  // 成没成、是不是本地，进化层一概不知 —— 而这正是「哪些子代理值得派」的唯一依据。
+  //
+  // ⚠️ H4 落实点：`lastAssistantMessage` 是**子代理的完整输出**，可能是几千字。
+  //    总线 payload 要进 events 表，所以这里只留长度，正文不进 payload。
+  //    要看内容的订阅者自己去 session 里读 —— 事实（跑完了、多长）与内容分离。
+  const subagentIdentityPayload = (identity, hostEvent) => ({
+    hostEvent,
+    runId: String(identity?.runId ?? ''),
+    provider: String(identity?.provider ?? ''),
+    childId: String(identity?.id ?? ''),
+    local: identity?.local === true,
+  });
+
+  disposers.push(ctx.on('subagent/start', (identity) => {
+    try {
+      inc('eventBus.hostSubagentStart');
+      publishDetached({
+        topic: 'input.signal.host.subagent-start', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: subagentIdentityPayload(identity, 'subagent/start'),
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  disposers.push(ctx.on('subagent/end', (identity) => {
+    try {
+      inc('eventBus.hostSubagentEnd');
+      const message = identity?.lastAssistantMessage;
+      publishDetached({
+        topic: 'input.signal.host.subagent-end', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: {
+          ...subagentIdentityPayload(identity, 'subagent/end'),
+          // stopReason 是宿主判定的终态（completed / aborted / error / max-tokens），
+          // 不是子代理自述 —— 这正是「成功判定要有外证」在子代理层的落点
+          stopReason: String(identity?.stopReason ?? ''),
+          // 只记长度不记正文（H4）
+          messageLength: typeof message === 'string' ? message.length : 0,
+        },
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  // ── 5. skills/change：技能目录变更（W2）──────────────────────────────
+  // 签名：'skills/change'() —— **无参数**（dsh-skill/lib/index.js:404，dispatch("emit", ["skills/change"])）
+  // ⚠️ 无参数意味着拿不到「哪个技能变了」。这不是缺陷，是宿主的契约：
+  //    它只保证「目录变了」，具体 diff 要自己去读 skills 服务。
+  //    ⇒ payload 里**不要**编造 skillName 字段，只记一条事实。下游（curator）
+  //      自己做增量扫描并 diff，别指望这个事件携带变更内容。
+  disposers.push(ctx.on('skills/change', () => {
+    try {
+      inc('eventBus.hostSkillsChange');
+      publishDetached({
+        topic: 'input.signal.host.skills-change', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: {
+          hostEvent: 'skills/change',
+          // 显式写 null 而不是省略：下游能区分「事件没带」与「字段名写错」
+          skillName: null,
+        },
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  // ── 6. goal/changed + goal/activation-changed：目标变更（W3）─────────────
+  // 签名（dsh-goal/lib/index.js:798 / :877）：
+  //   'goal/changed'(payload: { agent, change: { operation, ref, goal? } })   ← scoped by agent
+  //   'goal/activation-changed'(payload: { sessionId, goal?: { id, revision, activation } })
+  //
+  // 为什么接：agint-curriculum 现在自推课程，与老板真正在追的目标没关系。
+  // 目标变了，课程队列该跟着变 —— 这是「课程对齐真实目标」的唯一输入。
+  //
+  // ⚠️ 两条事件**作用域不同**：goal/changed 是 agent 级的（挂某个 agent 上），
+  //    activation-changed 是 session 级的。别把两者当同一件事的两种写法。
+  disposers.push(ctx.on('goal/changed', (payload) => {
+    try {
+      inc('eventBus.hostGoalChanged');
+      const change = payload?.change;
+      publishDetached({
+        topic: 'input.signal.host.goal-changed', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: {
+          hostEvent: 'goal/changed',
+          operation: String(change?.operation ?? ''),
+          goalId: String(change?.ref?.id ?? change?.goal?.id ?? ''),
+          // goal 是整份目标视图（含 phases 等），H4：摘字段不整份带
+          revision: change?.goal?.revision === undefined ? null : Number(change.goal.revision),
+          activation: change?.goal?.activation === undefined ? null : String(change.goal.activation),
+        },
+      });
+    } catch {
+      inc('eventBus.hostBridgeThrow');
+    }
+  }));
+
+  disposers.push(ctx.on('goal/activation-changed', (payload) => {
+    try {
+      inc('eventBus.hostGoalActivationChanged');
+      publishDetached({
+        topic: 'input.signal.host.goal-activation-changed', // 字面量：门禁要扫得到
+        source: 'agint-event-bus',
+        payload: {
+          hostEvent: 'goal/activation-changed',
+          sessionId: String(payload?.sessionId ?? ''),
+          goalId: String(payload?.goal?.id ?? ''),
+          revision: payload?.goal?.revision === undefined ? null : Number(payload.goal.revision),
+          activation: payload?.goal?.activation === undefined ? null : String(payload.goal.activation),
         },
       });
     } catch {

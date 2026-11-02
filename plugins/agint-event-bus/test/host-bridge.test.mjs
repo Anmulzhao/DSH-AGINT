@@ -232,3 +232,172 @@ test('常量与源码字面量必须一致（门禁扫的是字面量，漂移 =
     );
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-03 扩容：workflow/phase · subagent/* · skills/change · goal/*
+// 这组用例守的是同一批纪律（H1/H2/H4），外加两条本批特有的：
+//   · skills/change **无参数** —— 不许编造 skillName；
+//   · subagent/end 的 lastAssistantMessage 是长文本 —— 只许记长度，不许进 payload。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('扩容后挂载 8 个宿主事件监听（原有 2 + 新增 6）', () => {
+  const ctx = makeCtx();
+  attachHostBridge(ctx, { publish: makePublisher() });
+  for (const evt of [
+    'domain/changed', 'workflow/end',                      // 原有
+    'workflow/phase',                                      // W4
+    'subagent/start', 'subagent/end',                      // W1
+    'skills/change',                                       // W2
+    'goal/changed', 'goal/activation-changed',             // W3
+  ]) {
+    assert.ok(ctx.has(evt), `必须订阅 ${evt}`);
+  }
+});
+
+test('W4 workflow/phase：payload 带 workflowId / name / phase，phase 截断到 100', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  ctx.emit('workflow/phase', { id: 'wf-2', meta: { name: 'nightly' } }, 'P'.repeat(500));
+  await tick();
+  assert.equal(pub.calls.length, 1);
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.WORKFLOW_PHASE);
+  assert.equal(p.workflowId, 'wf-2');
+  assert.equal(p.name, 'nightly');
+  assert.equal(p.phase.length, 100, '相位标题必须截断，否则长说明会撑大 events 表');
+});
+
+test('W1 subagent/start：identity 四字段齐全（runId/provider/childId/local）', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  ctx.emit('subagent/start', { runId: 'r-1', provider: 'in-process', id: 'c-1', local: true }, {});
+  await tick();
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.SUBAGENT_START);
+  assert.deepEqual(p, {
+    hostEvent: 'subagent/start',
+    runId: 'r-1',
+    provider: 'in-process',
+    childId: 'c-1',
+    local: true,
+  });
+});
+
+test('W1 subagent/end：H4 —— lastAssistantMessage 只记长度，正文不进 payload', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  const long = 'x'.repeat(8000);
+  ctx.emit('subagent/end', {
+    runId: 'r-2', provider: 'in-process', id: 'c-2', local: false,
+    stopReason: 'completed', lastAssistantMessage: long,
+  }, {});
+  await tick();
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.SUBAGENT_END);
+  assert.equal(p.stopReason, 'completed', 'stopReason 是宿主判定的终态，必须原样带出');
+  assert.equal(p.messageLength, 8000);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(p, 'lastAssistantMessage'),
+    false,
+    'H4：子代理完整输出不得进 payload（会把 events 表单条记录撑到几千字）',
+  );
+});
+
+test('W2 skills/change：无参数事件，payload 不许编造 skillName', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  ctx.emit('skills/change');           // 宿主确实不带参数
+  await tick();
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.SKILLS_CHANGE);
+  assert.equal(p.skillName, null, '宿主不带参数就写 null，不许猜一个名字下游');
+});
+
+test('W3 goal/changed：只在白名单外摘 revision/activation，不整份带 goal', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  ctx.emit('goal/changed', {
+    agent: {},
+    change: {
+      operation: 'update',
+      ref: { id: 'g-1' },
+      goal: { id: 'g-1', revision: 7, activation: 'active', phases: [{ big: 'x'.repeat(5000) }] },
+    },
+  });
+  await tick();
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.GOAL_CHANGED);
+  assert.equal(p.operation, 'update');
+  assert.equal(p.goalId, 'g-1');
+  assert.equal(p.revision, 7);
+  assert.equal(p.activation, 'active');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(p, 'phases'),
+    false,
+    'H4：goal 是整份视图，只摘字段',
+  );
+});
+
+test('W3 goal/activation-changed：sessionId 与 goal 字段缺失时不抛（宿主只带 sessionId）', async () => {
+  const ctx = makeCtx();
+  const pub = makePublisher();
+  attachHostBridge(ctx, { publish: pub });
+  // 宿主 dsh-goal:796 的展开是 `...goal === undefined ? {} : {...}` ⇒ goal 可能整个缺席
+  ctx.emit('goal/activation-changed', { sessionId: 's-1' });
+  await tick();
+  const p = pub.calls[0].payload;
+  assert.equal(pub.calls[0].topic, HOST_TOPICS.GOAL_ACTIVATION_CHANGED);
+  assert.equal(p.sessionId, 's-1');
+  assert.equal(p.goalId, '');
+  assert.equal(p.revision, null, '缺失要记 null 而不是 NaN/undefined，面板才判得出「没带」');
+});
+
+test('H2 红线扩面：六条新监听全部不得把异常抛回宿主', async () => {
+  const ctx = makeCtx();
+  attachHostBridge(ctx, { publish: makePublisher('throw'), metrics: () => {} });
+  const cases = [
+    ['workflow/phase', { id: 'w', meta: {} }, 'phase'],
+    ['subagent/start', { runId: 'r', provider: 'p', id: 'c' }, {}],
+    ['subagent/end', { runId: 'r', provider: 'p', id: 'c' }, {}],
+    ['skills/change'],
+    ['goal/changed', { change: { operation: 'add', ref: { id: 'g' } } }],
+    ['goal/activation-changed', { sessionId: 's' }],
+  ];
+  for (const [evt, ...args] of cases) {
+    assert.doesNotThrow(() => ctx.emit(evt, ...args), `${evt} 的 publish 抛错不得冒泡到宿主`);
+  }
+});
+
+test('H2 红线扩面：payload 构造阶段字段是抛错 getter 也不得冒泡', () => {
+  const ctx = makeCtx();
+  const metrics = [];
+  attachHostBridge(ctx, { publish: makePublisher(), metrics: (k) => metrics.push(k) });
+  assert.doesNotThrow(() => {
+    ctx.emit('subagent/end', {
+      runId: 'r',
+      get provider() { throw new Error('shape changed'); },
+      id: 'c',
+    }, {});
+  });
+  assert.ok(metrics.includes('eventBus.hostBridgeThrow'), '构造失败必须计数，不能静默');
+});
+
+test('H1 不阻塞扩面：新事件 emit 也必须同步返回', () => {
+  const ctx = makeCtx();
+  attachHostBridge(ctx, { publish: () => new Promise(() => {}) }); // 永不 resolve
+  for (const [evt, ...args] of [
+    ['workflow/phase', { id: 'w', meta: {} }, 'p'],
+    ['subagent/start', { runId: 'r', provider: 'p', id: 'c' }, {}],
+    ['skills/change'],
+    ['goal/changed', { change: {} }],
+  ]) {
+    const t0 = Date.now();
+    ctx.emit(evt, ...args);
+    assert.ok(Date.now() - t0 < 50, `${evt} 必须立刻返回，不许 await`);
+  }
+});
