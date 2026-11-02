@@ -1,5 +1,41 @@
 # agint-curator 变更日志
 
+## v0.3.0 (2026-11-03) — W2：订阅 `skills/change`，策展不再只靠 cron
+
+**一句话**：策展此前**只有 cron 一个触发源**。宿主明明提供了 `skills/change`
+（`dsh-skill/lib/index.js:404`，`dispatch("emit", ["skills/change"])`），AGINT 没接。
+本版接上，但**刻意不让它自动跑策展**。
+
+**做了什么**：订阅 `input.signal.host.skills-change`，置一个 `pending` 标记；
+新增只读服务键 `agint.curator.skillsChange()` 暴露观测面。
+
+**为什么收到事件不自动跑 `run()`**（三条，写在 lib/index.js 的 W2 段）：
+1. `run()` 是**秒级全量操作**（扫全部技能根 + 读 tool_stats + 落四张表），
+   而 `skills/change` 可能成批连发（目录扫描、批量安装）⇒ 一次目录操作被放大成 N 次扫描；
+2. 自动归档**不可逆**（文件被挪进 `.archive/`）。让目录变更引发归档，会把
+   「谁动了技能目录」与「谁被归档了」焊死，出事查不清；
+3. 与 `agint-curriculum` 的 `goalAlignment` 同口径：**事件让系统知道，动手由人显式调**
+   `curator.run()`。
+
+**防抖**：5 秒内的连发合并成一个批次（只在观测面生效，`pending` 保持不变）。
+没有这个，面板会被刷屏、`batches` 计数也失去意义。
+
+**`pending` 何时清**：只有**真跑**（非 dry-run）成功后才清。
+dry-run 刻意不清 —— 它没落盘、没归档任何东西，清了就等于谎报「已处理」。
+
+**观测面口径**（不许合并的两个状态）：
+| 状态 | 含义 | 排障指向 |
+|---|---|---|
+| `received:false` | 链路没通电，退回纯 cron | 总线/订阅问题 |
+| `received:true, pending:true` | 目录变过、还没策展 | 该跑一次 `curator_run_now` |
+
+**产物**：`lib/index.js` +85 行；`test/skills-change-watch.test.mjs` 新增 6 条用例（6/6）；
+`manifest.json` 的 `spec.cordis.events` 补 `input.signal.host.skills-change`。
+
+**阴性对照**：去掉 `if (!dryRun)` 守卫 ⇒「dry-run 不清 pending」用例变红（实测 6→5 通过 1 失败）。
+
+**验收**：`node --test plugins/agint-curator/test/skills-change-watch.test.mjs` → 6/6。
+
 ## v0.2.2 (2026-10-21) — 修「多根只改了扫描侧」：归档/恢复按技能所属根定位
 
 > 起因：v0.2.1 把 `skills_dir` 改成目录列表，**只改了扫描侧**。归档侧
