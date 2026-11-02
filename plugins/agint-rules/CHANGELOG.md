@@ -1,5 +1,43 @@
 # Changelog — agint-rules
 
+## [0.2.2] — 2026-11-02
+
+### Added — 命中计数持久化（提案 09ae2017：重启不清零）
+
+**起因**：`rule_audit` 返回的 hits/denies/asks/advisories 原本只是
+`lib/index.js` 里的内存 Map，dsh 重启即清零。后果是「这条 ask 门禁历史上到底
+拦过多少次」永远答不出来——2026-09-07 排查 abtest_start 两次调用是否被
+`tools/pre-execute` 拦过，回溯不到就是当时的实测卡点。epistemic 护栏命中数
+同样每次重启归零。
+
+**改法**：
+- `agint_rules` 域加第二张表 `rule_audit`（key = ruleId，
+  值 = `{hits, denies, asks, advisories, epistemics, firstHitAt, lastHitAt}`），
+  **version 保持 1**（升版本会让存量 `agint_rules.json` 打不开，见 README 边界）。
+- `bump()`：同步改内存 → 标脏 → 微任务里合并成一次 flush → `put` 落库。
+  写失败只告警，拦截判定不受影响。
+- 启动时 `loadAuditBaseline()` 把表里的基线**合并**进内存（存储值 + 本次启动
+  已累计的 delta），boot 早期命中的计数不会被基线盖掉。
+- `audit()` **保持同步**（`agint-metrics` 读 `rules.audit().totals` 不 await，
+  改成 Promise 会让 rules.hits / adherencePct 静默变恒 0）。
+- `rule_remove` 不再删计数：历史账本与规则表分离。
+- 行数上限 100，超限按 hits 升序淘汰。
+
+**语义变化（重要）**：`rule_audit` 的数值从「本会话」变成「跨重启累计
+（lifetime）」。`rules.hits` / `rules.adherencePct` 指标也随之为累计口径，
+delta 才是「上次采集以来的活动量」。
+
+**验证**：
+- `node --test test/audit-persist.test.mjs` → 9/9（含反向控制：删掉
+  `queueFlush()` 或 `loadAuditBaseline()` 会红 1 / 3 条）
+- `node --test test/domain-version-compat.test.mjs` → 2/2（真实 json 后端：
+  老文件→新代码可开、审计行落盘、重开仍在、老代码可读回；对照测试证明
+  version 升到 2 必然 version-mismatch）
+- 既有 57 条 + smoke 4/4 全绿，无回归。
+
+**回滚**：`git revert` 本提交即可。已落库的 `rule_audit` 表在旧代码下被忽略
+（旧代码按 descriptor.tables 遍历），不会打挂存储。
+
 ## [0.2.1] — 2026-09-28
 
 ### Fixed — lint() 不再误报 epistemic 三规则为 duplicate-pattern

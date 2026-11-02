@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-rules",
-  "version": "0.2.1",
-  "description": "规则门禁（advisory/ask/deny 三档）。监听 tools/pre-execute + tools/post-execute waterfall。独占 agint_rules domain（与 agint 互斥）。v0.2.0 新增断言型护栏（epistemic guard）：在动作层正则之外加第二条认知层通道，检查模型输出的断言有没有带证据——命中记 audit + advisory 提醒；豁免优先（已带证据/疑问/任务/已声明未查/条件句/非技术宾语一律放行）。",
+  "version": "0.2.2",
+  "description": "规则门禁（advisory/ask/deny 三档）。监听 tools/pre-execute + tools/post-execute waterfall。独占 agint_rules domain（与 agint 互斥）。v0.2.0 新增断言型护栏（epistemic guard）：在动作层正则之外加第二条认知层通道，检查模型输出的断言有没有带证据——命中记 audit + advisory 提醒；豁免优先（已带证据/疑问/任务/已声明未查/条件句/非技术宾语一律放行）。v0.2.2 起审计计数落库（本域 rule_audit 表），重启不清零。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -63,7 +63,7 @@
     },
     "tests": {
       "entry": "test/smoke.mjs",
-      "command": "node --test test/epistemic.test.mjs && node test.mjs",
+      "command": "node --test test/epistemic.test.mjs test/audit-persist.test.mjs test/domain-version-compat.test.mjs && node test.mjs",
       "expectedExit": 0
     },
     "docs": {

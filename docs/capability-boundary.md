@@ -44,8 +44,8 @@
 | agint-evolution-memory | 0.6.15 | E | 进化记忆层（物理隔离存储域） |
 | agint-dream | 0.5.0 | E | 夜间记忆整合（反思） |
 | agint-wiki | 0.2.0 | E | 知识库 |
-| agint-rules | 0.2.1 | E | 工具流水线规则门禁（约束） |
-| agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
+| agint-rules | 0.2.2 | E | 工具流水线规则门禁（约束）；命中计数落库、跨重启累计 |
+| agint-metrics | 1.1.4 | E | 客观指标采集（度量）；补 `inc()` 出口 + 宿主事件计数采样 |
 | agint-evolve | 0.11.0 | E | 周复盘 + 提案跟踪（含提案执行计划与可执行性声明） |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
@@ -70,9 +70,9 @@
 | agint-curator | 0.2.1 | E | 技能生命周期策展 |
 | agint-skill-graph | 0.1.1 | E | 技能关系图谱 |
 | agint-aesthetic-oracle | 0.8.0 | E | 「美」的度量与广播（美谕提案声明不可自动执行） |
-| agint-event-bus | 0.7.1 | E | 进化事件基础设施 |
+| agint-event-bus | 0.8.0 | E | 进化事件基础设施；接宿主 `domain/changed` / `workflow/end` |
 | agint-ov-strategy | 0.1.0 | E | 经验沉淀与策略召回 |
-| agint-input-gateway | 0.1.5 | E | 多源信号进料 |
+| agint-input-gateway | 0.1.11 | E | 多源信号进料；会话源「降级」告警已区分设计路径与真降级 |
 | agint-search-tools | 0.1.0 | E | 记忆/知识跨域检索 |
 | agint-tool-stats | 0.2.0 | E | 工具统计（**为评估供料**） |
 | agint-verify-tools | 0.1.0 | E | 验证入口全局化 |
@@ -83,7 +83,7 @@
 | agint-family-panel | 0.8.0 | C | 家族面板（呈现） |
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
-| agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
+| agint-restart | 0.9.3 | C | 重启闭环与控制面（宿主运维外壳）；挂起补投改挂 `agent/created` |
 | agint-update-check | 0.1.0 | C | 更新检测与部署控制面（宿主运维外壳） |
 
 ### 2.1 挂载分组（2026-10-28）
