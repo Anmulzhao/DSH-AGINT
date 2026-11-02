@@ -67,4 +67,27 @@ enabled:  boolean # 默认 true
 - `rule_list` 返回种子规则 3 条
 - `rule_check({tool:'bash', args:{command:'rm -rf /'}})` 命中 deny
 - `rule_check({tool:'bash', args:{command:'npm publish'}})` 命中 advisory
-- `rule_audit` 返回 hits/totals 计数
+- `rule_audit` 返回 hits/totals 计数（**跨重启累计**，见下节）
+
+## 审计计数持久化（v0.2.2，提案 09ae2017）
+
+计数不再只活在内存里。每次命中先改内存，再异步写进本域的第二张表
+`rule_audit`（key = ruleId），进程重启后从该表载回基线。
+
+**口径**
+- 数值是**跨重启累计**（lifetime），不是单会话。`rule_audit` 因此能回答
+  「这条门禁历史上拦过多少次」。
+- 每行字段：`hits` / `denies` / `asks` / `advisories` / `epistemics` /
+  `firstHitAt` / `lastHitAt`。
+- 删规则**不删**计数行：那是历史账本，删规则不等于那段历史没发生。
+
+**边界（改这里之前先读）**
+- `agint_rules` 域的 `version` **必须保持 1**。`dsh-storage-json` 见到
+  `version !== 期望值` 会抛 `version-mismatch`，整次 `domain.open` 失败，
+  结果是 agint-rules 挂不上、全部规则门禁消失，而且界面不报错。
+  加表在 version 1 上是双向兼容的（老文件缺表 = 空表；新文件多表 = 老代码忽略）。
+  守卫测试：`test/domain-version-compat.test.mjs`（用真实 json 后端跑通四个方向）。
+- `audit()` 保持**同步**。`agint-metrics` 读 `rules.audit().totals` 时不 await，
+  改成 Promise 会让 `rules.hits` / `rules.adherencePct` 静默变恒 0。
+- 写盘失败只告警，不改拦截结果；内存计数照常累加，脏行留待下次重试。
+- 行数上限 100（规则量级 28），超限按 `hits` 升序淘汰。

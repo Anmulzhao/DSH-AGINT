@@ -44,7 +44,7 @@
 | agint-evolution-memory | 0.6.15 | E | 进化记忆层（物理隔离存储域） |
 | agint-dream | 0.5.0 | E | 夜间记忆整合（反思） |
 | agint-wiki | 0.2.0 | E | 知识库 |
-| agint-rules | 0.2.1 | E | 工具流水线规则门禁（约束） |
+| agint-rules | 0.2.2 | E | 工具流水线规则门禁（约束）；命中计数落库、跨重启累计 |
 | agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
 | agint-evolve | 0.11.0 | E | 周复盘 + 提案跟踪（含提案执行计划与可执行性声明） |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |

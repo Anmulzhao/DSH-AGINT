@@ -17,10 +17,13 @@
  *                                             mandatory reminder:  the card
  *                                             appears,  the call is allowed)
  *
- * Per-call audit (matched/hit counters) lives in an in-memory Map so the
- * preset tools can report "advisory rate" / "rule adherence" without
- * touching storage. No persistence: the counter resets on reload,  which
- * matches how metrics are computed fresh each session.
+ * Audit counters (per-rule hit counts) are read from an in-memory Map and
+ * written to the `rule_audit` table of this same domain, so they survive a
+ * restart (proposal 09ae2017): rule hit history stays auditable across boots
+ * and `rules.hits` / `rules.adherencePct` get a real denominator.
+ * Reads stay SYNCHRONOUS on purpose — `agint-metrics` reads
+ * `rules.audit().totals` without awaiting; an async audit() would make those
+ * metrics silently constant-zero. Only the write path is async.
  *
  * Row (profile cordis.patch.yml):
  *   - insert:
@@ -83,10 +86,39 @@ const ruleSchema = z.object({
   claim: z.boolean().default(false),
 });
 
+/**
+ * 审计计数行（key = ruleId，2026-11-02 提案 09ae2017）。
+ *
+ * ⚠️ **只加表、不升 version**（spec 保持 version: 1）。
+ *   `@deepseek-ai/dsh-storage-json` 的 parse() 对 `version !== descriptor.version`
+ *   直接抛 `version-mismatch`，整次 domain.open 失败 ⇒ agint-rules 挂不上 ⇒
+ *   全部规则门禁消失（而且不报错，正是 K47.7 那类静默事故）。
+ *   加表在 version 1 上是**双向兼容**的：
+ *     · 老文件没有这张表 → parse 按 descriptor.tables 遍历，缺表 = 空表；
+ *     · 新文件多这张表 → 老代码同样按 descriptor 遍历，多余表被忽略。
+ *   所以这里绝不能顺手把 version 改成 2。要升版本必须同时写迁移，另开工作项。
+ *
+ * 计数值是**跨重启累计**（lifetime），不是单会话。字段随 bump 更新；
+ * firstHitAt 只在首次命中时写，用来回答「这个门禁第一次真拦人是什么时候」。
+ */
+const auditRowSchema = z.object({
+  hits: z.number().int().min(0).default(0),
+  denies: z.number().int().min(0).default(0),
+  asks: z.number().int().min(0).default(0),
+  advisories: z.number().int().min(0).default(0),
+  epistemics: z.number().int().min(0).default(0),
+  firstHitAt: z.string().optional(),
+  lastHitAt: z.string().optional(),
+});
+
 const spec = defineDomain({
   name: 'agint_rules',
   version: 1,
-  tables: { rule: { valueSchema: ruleSchema } },
+  tables: {
+    rule: { valueSchema: ruleSchema },
+    // 计数落库表：重启不清零（提案 09ae2017）。见上方 version 说明。
+    rule_audit: { valueSchema: auditRowSchema },
+  },
 });
 
 // Seed rules — fail loud on `rm -rf /`, confirm force pushes,  advise on
@@ -471,19 +503,25 @@ function apply(ctx) {
 
   // ctx.effect semantics: callback runs IMMEDIATELY, return value is disposer.
   ctx.effect(() => {
-    return () => {
+    return async () => {
+      // 退出前把脏计数写完（最多丢一次微任务窗口内的增量，不会丢整段历史）。
+      // 写失败不影响关闭流程：上下文正在拆，留痕即可。
+      try { await flushAudit(); } catch { /* noop */ }
       disposed = true;
       if (domain) return domain.close();
     };
   });
 
   const ready = ctx.storageDomain.open(spec).then(
-    (d) => {
+    async (d) => {
       if (disposed) {
         void d.close().catch(() => {});
         return null;
       }
       domain = d;
+      // 重启不清零：把上次进程落下的计数合并进内存（提案 09ae2017）。
+      // 放在 open 的同一链上 —— 之后任何 flush 都会先等到这次的基线载入完成。
+      await loadAuditBaseline(d);
       return d;
     },
     (error) => {
@@ -498,6 +536,15 @@ function apply(ctx) {
     const d = await ready;
     if (!d) throw new Error('agint-rules: domain unavailable');
     return d.table('rule');
+  };
+
+  // 计数表：**软失败**。计数写不进去不该让拦截链路跟着炸，所以这里返回 null
+  // 而不是抛错（与 table() 的硬语义区分开）。
+  const auditTable = async () => {
+    if (domainError) return null;
+    const d = await ready;
+    if (!d) return null;
+    return d.table('rule_audit');
   };
 
   const nowIso = () => new Date().toISOString();
@@ -564,19 +611,165 @@ function apply(ctx) {
     }
   }
 
-  // In-memory audit counters. Keyed by rule id → { hits, denies, asks, advisories }.
+  // ═══════════════════════════════════════════════════════════════════════
+  // 审计计数：内存累加 + 落库持久化（提案 09ae2017，2026-11-02）
+  //
+  // 旧实现只有内存 Map，dsh 重启即清零 ⇒「这条 ask 门禁历史上到底拦过多少次」
+  // 永远答不出来（2026-09-07 abtest_start 两次调用是否被 tools/pre-execute
+  // 拦过，回溯不到就是当时的实测卡点）。
+  //
+  // 分工：
+  //   · 读 —— audit() 保持**同步**，只读内存 Map。agint-metrics 里
+  //     `const audit = rules.audit(); audit?.totals` 没有 await；
+  //     改成异步会让 rules.hits / rules.adherencePct 静默变成恒 0
+  //     （K113 那类"指标在、但其实是常数"的坑）。
+  //   · 写 —— bump() 同步改内存 → 标脏 → 微任务里合并成一次 flush →
+  //     把脏行 put 进本域的 `rule_audit` 表（域层已有单写链，不用自己加锁）。
+  //   · 载入 —— domain open 成功后把表里的基线**合并**进内存（存储值 + 本次
+  //     启动已累计的 delta），所以 boot 早期命中的计数不会被基线盖掉。
+  //
+  // 红线：写失败只告警，绝不改变拦截结果。pre-execute 的 deny/ask 判定
+  // 不依赖写盘是否成功。
+  // ═══════════════════════════════════════════════════════════════════════
+  const AUDIT_CAP = 100;   // 规则量级 28，留足余量；超限按 hits 升序淘汰
   const audit = new Map();
-  // Reminder dedup: `${ruleId}::${tool}` already injected in this plugin
-  // lifetime (i.e. current session). Audit counters still count every hit.
+  const auditDirty = new Set();
+  let auditWriteChain = Promise.resolve();
+  let auditFlushQueued = false;
+
+  function warnAudit(msg, extra) {
+    try { ctx.logger?.warn?.(msg, extra); } catch { /* noop */ }
+  }
+
+  /** 取两个时间戳里较晚的那个（都可能是 undefined） */
+  function newerTs(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    return Date.parse(b) >= Date.parse(a) ? b : a;
+  }
+
+  /** 内存记录 → 落库行。过一遍 schema，防止脏值把下一次 open 打成 invalid-record */
+  function toAuditRow(counts) {
+    try {
+      return auditRowSchema.parse({
+        hits: counts.hits ?? 0,
+        denies: counts.denies ?? 0,
+        asks: counts.asks ?? 0,
+        advisories: counts.advisories ?? 0,
+        epistemics: counts.epistemics ?? 0,
+        ...(counts.firstHitAt ? { firstHitAt: counts.firstHitAt } : {}),
+        ...(counts.lastHitAt ? { lastHitAt: counts.lastHitAt } : {}),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** 载入持久基线：存储值 + 启动后已累计的 delta（后者不能被覆盖） */
+  async function loadAuditBaseline(domainHandle) {
+    let rows;
+    try {
+      const t = await domainHandle.table('rule_audit');
+      rows = [...t.entries()];
+    } catch (err) {
+      warnAudit('rules: audit baseline unavailable', { error: String(err?.message ?? err) });
+      return;
+    }
+    for (const [id, stored] of rows) {
+      if (!stored || typeof stored !== 'object') continue;
+      const delta = audit.get(id);
+      audit.set(id, {
+        hits: (stored.hits ?? 0) + (delta?.hits ?? 0),
+        denies: (stored.denies ?? 0) + (delta?.denies ?? 0),
+        asks: (stored.asks ?? 0) + (delta?.asks ?? 0),
+        advisories: (stored.advisories ?? 0) + (delta?.advisories ?? 0),
+        epistemics: (stored.epistemics ?? 0) + (delta?.epistemics ?? 0),
+        firstHitAt: stored.firstHitAt ?? delta?.firstHitAt,
+        lastHitAt: newerTs(stored.lastHitAt, delta?.lastHitAt),
+      });
+    }
+  }
+
+  /** cap 保护：超限按 hits 升序淘汰（内存与存储同步删） */
+  async function pruneAudit(t) {
+    if (audit.size <= AUDIT_CAP) return;
+    const drop = [...audit.entries()]
+      .sort((a, b) => (a[1].hits ?? 0) - (b[1].hits ?? 0))
+      .slice(0, audit.size - AUDIT_CAP);
+    for (const [id] of drop) {
+      audit.delete(id);
+      auditDirty.delete(id);
+      try { await t.delete(id); } catch { /* 淘汰失败不影响计数 */ }
+    }
+  }
+
+  async function flushAuditDirty() {
+    if (auditDirty.size === 0) return;
+    let t;
+    try {
+      t = await auditTable();
+    } catch {
+      return;   // 域不可用：脏标记留着，下次命中再试
+    }
+    if (!t) return;
+    const ids = [...auditDirty];
+    auditDirty.clear();
+    for (const id of ids) {
+      const counts = audit.get(id);
+      if (!counts) continue;
+      const row = toAuditRow(counts);
+      if (!row) { warnAudit('rules: audit row rejected by schema', { ruleId: id }); continue; }
+      try {
+        await t.put(id, row);
+      } catch (err) {
+        auditDirty.add(id);   // 下次 flush 重试；内存计数不受影响
+        warnAudit('rules: audit persist failed', { ruleId: id, error: String(err?.message ?? err) });
+        return;
+      }
+    }
+    await pruneAudit(t);
+  }
+
+  /**
+   * 串行化写盘：两次并发 flush 会互相覆盖同一批行，统一挂在一条链上。
+   * 返回的 promise 供测试与关闭流程等待。
+   */
+  function flushAudit() {
+    auditWriteChain = auditWriteChain.then(
+      () => flushAuditDirty(),
+      () => flushAuditDirty(),
+    );
+    return auditWriteChain;
+  }
+
+  /** 合并同一 tick 内的多次 bump（一次工具调用常同时命中多条规则） */
+  function queueFlush() {
+    if (auditFlushQueued) return;
+    auditFlushQueued = true;
+    void Promise.resolve().then(() => {
+      auditFlushQueued = false;
+      return flushAudit();
+    });
+  }
+
+  // In-memory audit counters. Keyed by rule id →
+  // { hits, denies, asks, advisories, epistemics, firstHitAt, lastHitAt }.
   const reminded = new Set();
   function bump(ruleId, kind) {
-    const cur = audit.get(ruleId) ?? { hits: 0, denies: 0, asks: 0, advisories: 0, epistemics: 0 };
+    const cur = audit.get(ruleId) ?? {
+      hits: 0, denies: 0, asks: 0, advisories: 0, epistemics: 0,
+    };
+    const ts = nowIso();
     cur.hits += 1;
     if (kind === 'deny') cur.denies += 1;
     else if (kind === 'ask') cur.asks += 1;
     else if (kind === 'advisory') cur.advisories += 1;
     else if (kind === 'epistemic') cur.epistemics += 1;
+    if (!cur.firstHitAt) cur.firstHitAt = ts;
+    cur.lastHitAt = ts;
     audit.set(ruleId, cur);
+    auditDirty.add(ruleId);
+    queueFlush();
   }
 
   const agintRules = {
@@ -607,7 +800,8 @@ function apply(ctx) {
       const rec = t.get(id);
       const ok = await t.delete(id);
       if (ok) {
-        audit.delete(id);
+        // ⚠️ 计数**故意不删**（2026-11-02）：rule_audit 是历史账本，删规则不等于
+        // 那段历史没发生。内存也不删，否则「重启后又冒出来」比不删更怪。
         await publishRulesChanged('removed', rec);
       }
       return ok;
@@ -677,6 +871,9 @@ function apply(ctx) {
     },
 
     // Audit log for the preset tools — which rules fired,  what counts.
+    //
+    // **同步**：只读内存 Map（已含启动时从 rule_audit 表载入的基线）。
+    // 保留同步语义是硬约束，见本文件顶部与 apply() 里的持久化段落说明。
     audit() {
       const out = [];
       for (const [id, counts] of audit.entries()) {
@@ -781,6 +978,8 @@ function apply(ctx) {
 
     // Internal — for boot-level diagnostics only.
     _audit: audit,
+    // Internal — 把待落库的计数立刻写完（测试与优雅关闭用；返回值是写链的尾部）。
+    _flushAudit: () => flushAudit(),
   };
 
   ctx.provide('agint.rules', agintRules);
