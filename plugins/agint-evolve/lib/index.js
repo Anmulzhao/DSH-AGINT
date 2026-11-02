@@ -838,13 +838,25 @@ function apply(ctx, config) {
     }
   }
 
-  async function applyStatus(id, status, note = '', opts = {}) {
+  async function applyStatus(id, status, note, opts = {}) {
     const t = await table();
     const rec = t.get(id);
     if (!rec) return null;
     if (!PROPOSAL_STATUSES.includes(status)) throw new Error(`agint-evolve: invalid status "${status}"`);
     const o = opts && typeof opts === 'object' ? opts : {};
-    const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
+    // 2026-11-03：note 与 blocker / execMode 统一成**冻结语义**。
+    //   未传（undefined / null）⇒ 保留现状；传 '' ⇒ 显式清除；传非空 ⇒ 覆盖。
+    // ⛔ 原实现是 `note ?? rec.note ?? ''` 配 `setStatus(note = '')` 默认参数：
+    //    默认值先把 undefined 降级成空串，`??` 就再也拦不住 —— 于是「只改状态」
+    //    这一最无害的调用成了「静默删掉上一轮人工记录」的入口。
+    //    真凶是**默认参数**，不是 `??`（传 null 时 `??` 是能拦住的，用例 N4 钉着）。
+    const nextNote = note === undefined || note === null
+      ? (rec.note ?? '')
+      : note;
+    if (typeof nextNote !== 'string') {
+      throw new Error(`agint-evolve: note 必须是字符串（收到 ${typeof nextNote}）`);
+    }
+    const updated = normalizeProposal({ ...rec, status, note: nextNote, updatedAt: nowIso() });
     if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
     if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
     // 2026-10-27：显式改「能不能自动执行」。⛔ 只认布尔 —— 传字符串/数字一律
@@ -1009,6 +1021,13 @@ function apply(ctx, config) {
     /**
      * setStatus(id, status, note, opts)
      *
+     * note（2026-11-03 起）：与 blocker 同一**冻结语义** —— 不传（undefined/null）
+     * = 保留现状，传 '' = 显式清除，传非空 = 覆盖。
+     * ⛔ 此前不传等价于清空：`note=''` 默认参数先把 undefined 降级成空串，
+     *    再被 `note ?? rec.note` 当成「用户就是要空」⇒ 一次只改状态的调用
+     *    （工具不带 note、服务直调两参数）会静默抹掉上一轮人工判断。
+     *    要清记录必须显式传空串。
+     *
      * opts.blocker / opts.unblockCondition：只在**显式传字符串**时才改。
      * 不传 = 冻结现状 —— 否则每次改状态都会把上次写的阻塞原因洗成空，
      * 正是「状态变了但理由静默消失」那一族坑。
@@ -1019,7 +1038,7 @@ function apply(ctx, config) {
      *   且没有 blocker ⇒ **自动入执行队列**，由 agint-executor 捡起来跑。
      *   opts.autoEnqueue === false 可以只写计划不入队（给"先批准、等会儿手动放行"用）。
      */
-    async setStatus(id, status, note = '', opts = {}) {
+    async setStatus(id, status, note, opts = {}) {
       const rec = await applyStatus(id, status, note, opts);
       if (!rec) return null;
       // 2026-10-28：执行态必须跟着状态归位 —— 状态与执行态各说各话是最贵的不一致。

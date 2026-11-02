@@ -1,5 +1,99 @@
 # agint-evolve CHANGELOG
 
+## v0.19.0（2026-11-03 · W8-2 Outbox + receipt：note 冻结语义 + set_status 返回体补齐）
+
+### 一、`note` 改成冻结语义 —— 修一条「静默删掉人工记录」的活路径
+
+原实现两行合起来是个陷阱：
+
+```js
+async setStatus(id, status, note = '', opts = {}) { ... }     // ① 默认值把 undefined 变成 ''
+const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '' });  // ② ?? 以为能拦住
+```
+
+① 先把 `undefined` 降级成空串，② 的 `??` 就再也拦不住 —— `'' ?? rec.note` 求值为 `''`。
+**结果：任何「只改状态、不给 note」的调用都会把整行 note 清空。**
+真凶是默认参数，不是 `??`（传 `null` 时 `??` 是能拦住的，用例 N4 钉着）。
+
+两条真实入口都踩在这上面：
+
+| 入口 | 形态 | 后果 |
+|---|---|---|
+| 工具 `evolve_set_status` | `tools.js:323` 直接透传 `args.note`；模型不带 note 时是 `undefined` | 落库成功、note 被抹、**无任何报错** |
+| 服务直调 | `evolve.setStatus(id, 'applied')`（`shadow-publish.test.mjs:131` 就这么写） | 同上 |
+
+为什么这比报错贵：本仓的提案 `note` 是**唯一的人工判断留痕**。面板写路由靠
+`composeDecisionNote` 自己拼前缀绕开了它，所以从面板操作完全看不出来；
+一旦从工具侧改判，证据静默消失、而 `updatedAt` 照常刷新 —— 事后读到的是
+「刚被改过、但什么都没留下」的一行，比抛错难查得多。
+
+改为与 `blocker` / `execMode` **同一冻结语义**：
+
+- 不传（`undefined` / `null`）⇒ 保留现状
+- 传 `''` ⇒ 显式清除（要清就得说清，不能靠省略）
+- 传非空 ⇒ 覆盖
+- 传非字符串 ⇒ 抛错（不猜）
+
+工具入参描述同步改成「省略=保持原有记录不动；要清除请显式传空字符串」——
+此前只写「变更说明」，模型会合理地认为不填没关系。
+
+### 二、`evolve_set_status` 返回体补齐 stage 四件（既有 bug，非本次引入）
+
+v0.24.0 引入 stage 九档时，`ticketStage()` 的四个派生值被写进
+`evolve_set_status` 的 output schema 并标 `required`，但 `execute()` 的返回体没有它们。
+
+- `evolve_proposals` 幸免：它直接返回 `listProposals()` 的行（自带 `decorateProposal`）
+- `evolve_set_status` 是手工拼返回体 ⇒ **每次调用必被 DSH strict 校验打回**
+
+而写路径是「先落库、后校验」⇒ 报错时状态**已经改完**。调用方看到失败重试一次，
+撞上幂等短路得到「状态没变」—— 两边对不上账。
+
+`proposal-timestamps.test.mjs` ④ 一直红着，`git stash` 验证过与本次改动无关。
+
+补的时候踩到一个值得记的坑：`ticketStage()` 返回的键是**短名**
+`side` / `label` / `why`，工具输出要的是 `stageSide` / `stageLabel` / `stageWhy`。
+最初写成 `stage.stageSide` ⇒ 三个字段「存在、类型对、永远为空」，schema 照过、面板照显示空白。
+`S4`（声明集 ⊇ 返回集）**抓不到**，因为键是齐的。必须靠 `S1`（不许空串）
++ `S2`（映射不错位）两层一起拦。
+
+顺带补齐 `execStartedAt` / `execFinishedAt`（返回体原来漏带，schema 也没声明）。
+
+### 三、smoke 补路径纪律 fixture（消掉长期 WARN）
+
+`manifest.permissions.fs` 声明了 `read:plugins` / `write:reviews`，但 smoke 没有
+路径用例 ⇒ `plugin-check` 长期报「permissions.fs 非空但 smoke 缺跨平台 fixture」。
+补三条：正向正斜杠相对路径可读、`../` 逃逸必须抛 `escapes root`、
+前导 `/` 被剥后仍按 root 内相对路径寻址。
+
+### 用例
+
+- `test/note-preservation.test.mjs`（新，10 例）：N1 阴性对照（复刻修复前求值、
+  实测算出 `''`）+ N2–N10 覆盖四条入口 × 四种传参 + applied 追加原阻塞痕迹。
+- `test/set-status-derived.test.mjs`（新，5 例）：S1 四件齐全且值随状态变（不许硬编码）、
+  S2 与 `ticketStage()` 逐键对拍（钉键名映射）、S3 老版本服务无 `ticketStage()` 时字段仍存在、
+  S3b 阴性对照（读错键得到 `undefined`）、S4 声明集 ⊇ 返回集。
+- `agint-evolve` 全量：**108/108 通过**（此前 103 例 + 1 既有红 ⇒ 现在 0 红）。
+
+### 阴性对照（全部实测变红）
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| 把 `applyStatus` 改回 `note ?? rec.note ?? ''` + 默认参数 | N2 / N3 / N7 / N10 |
+| 把工具里的键名改回 `stage.stageSide` 等 | S1 / S2（S3、S4 仍绿 —— 证明两层护栏缺一不可） |
+| 拆掉 `clean()` 的 `escapes root` 判断 | smoke 11b |
+
+### 未做（诚实边界）
+
+- **没做 outbox 表**。原本计划加一张 outbox 记录「面板点了什么、有没有被消费」，
+  但读码后确认：面板路由的幂等短路 + `composeDecisionNote` 保留 `prev.note`
+  已经把「重复写」和「中转丢 note」都处理了，真问题是 `setStatus` 的 note 语义。
+  加一张表只会多一个需要清理和核对的状态源。**事件让系统知道，动手要显式** ——
+  这里该修的是入口语义，不是再加一层记账。
+- `note` 冻结语义不改变 `REASON_REQUIRED`（`applied` / `rejected` / `wontfix` 仍必须写理由）。
+  那条是**跨调用**的完整性要求，与「同一次调用的缺省行为」是两件事。
+- 面板 `composeDecisionNote` 未改：它的 `PANEL_NOTE_MARK` 前缀去重逻辑仍然需要，
+  因为状态变化时确实要拼「谁在什么时候判了什么」的抬头。
+
 ## v0.18.0（2026-11-03 · W8-1 Effects：周额度按「提案」计数，不再按「执行行」）
 
 ### 起因：红线说的是「部署几次」，代码数的是「改了几个文件」

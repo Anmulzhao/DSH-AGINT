@@ -148,6 +148,25 @@ async function main() {
   assert.ok(ctx._tables.has('proposal'), 'proposal 表存在');
   assert.equal(ctx._tables.get('baseline_history').size, 2, '2 行 baseline_history');
 
+  // 11. 路径纪律（permissions.fs 的 fixture 面）—— clean() 三道闸各打一发。
+  //     补这一组是为了消掉 plugin-check「permissions.fs 非空但 smoke 缺跨平台 fixture」
+  //     的长期 WARN：声明了 read:plugins / write:reviews，就得有用例证明路径不被带出去。
+  // 11a. 正向：正斜杠相对路径可读（Windows 反斜杠归一化那次的回归面）
+  await writeFile(join(root, 'ok.md'), '# ok\n', 'utf8');
+  const okRead = await evo.readReview('ok.md');
+  assert.equal(okRead?.content, '# ok\n', '正斜杠相对路径必须可读');
+
+  // 11b. 负向：`../` 逃逸必须被拒（归一化不能削弱安全）
+  await assert.rejects(
+    () => evo.readReview('../../etc/passwd.md'),
+    /escapes root/,
+    '⛔ ../ 逃逸必须抛 escapes root —— 归一化的目的不是放宽边界',
+  );
+
+  // 11c. 负向：绝对路径同样不许绕过（前导 / 被剥掉后回归相对路径，仍在 root 内）
+  const absLike = await evo.readReview(`/${join(root, 'ok.md')}`);
+  assert.equal(absLike, null, '剥掉前导 / 之后是 root 下的真实路径 ⇒ 读得到但用相对路径寻址');
+
   await rm(root, { recursive: true, force: true });
   console.log(`agint-evolve smoke: ok (baselineGate / recordBaselineRun / listBaselineHistory / 兼容 v0.1.0)`);
 }

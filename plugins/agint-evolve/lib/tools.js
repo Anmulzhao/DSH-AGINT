@@ -250,7 +250,8 @@ function apply(ctx) {
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },
-      note: { type: 'string', description: '变更说明（如"已在 X 落地"）' },
+      // 2026-11-03：不能把「省略 note」写成「清空」—— 见下方 note 说明。
+      note: { type: 'string', description: '变更说明（如"已在 X 落地"）。省略=保持原有记录不动；要清除请显式传空字符串' },
       blocker: { type: 'string', description: '阻塞原因：为什么批准了还不能动手（传空字符串=解除阻塞）。省略=保持原值不动' },
       unblockCondition: { type: 'string', description: '解锁条件：等什么满足才算能动手（传空字符串=清除）。省略=保持原值不动' },
       execMode: { type: 'string', enum: EXEC_MODES, description: '批准后的执行方式：manual=只批准不自动跑 / immediate=立即自动执行 / scheduled=按 execAt 定时自动执行。省略=保持原计划' },
@@ -283,6 +284,9 @@ function apply(ctx) {
           execState: { required: true, type: 'string' },
           execAttempts: { required: true, type: 'integer' },
           execError: { required: true, type: 'string' },
+          // 2026-11-03：补齐 —— 返回体带了就必须声明（additionalProperties:false）。
+          execStartedAt: { required: true, type: 'string' },
+          execFinishedAt: { required: true, type: 'string' },
           // 2026-10-27：execute() 的返回体本来就带 autoExecutable（见下方 return），
           // output schema 没声明 ⇒ additionalProperties:false 判失败。补上。
           autoExecutable: { required: true, type: 'boolean' },
@@ -322,6 +326,17 @@ function apply(ctx) {
       if (typeof args.execAt === 'string') opts.execAt = args.execAt;
       const rec = await evolve.setStatus(args.id, args.status, args.note, opts);
       if (!rec) throw new Error(`evolve_set_status: 未找到提案 ${args.id}`);
+      // 2026-11-03：stage 四件是**派生值**（不落盘，见 execution.js:ticketStage），
+      // 必须现算。此前 output schema 把它们声明成 required，返回体却没有 ⇒
+      // DSH strict 校验每次调用都打回（而且是「先落库后校验」⇒ 报错时状态已改）。
+      // 与 proposal-timestamps.test.mjs ④ 同一条护栏：声明集必须 ⊇ 返回集。
+      // ⛔ 键名映射别猜：ticketStage() 返回的是 `side` / `label` / `why`（短名），
+      //    工具输出要的是 `stageSide` / `stageLabel` / `stageWhy`。
+      //    读错键不会报错 —— 会得到三个「存在但永远为空」的字段，schema 照过，
+      //    面板照显示空白。set-status-derived.test.mjs 的 S1 钉的就是这一点。
+      const stage = typeof evolve.ticketStage === 'function'
+        ? (evolve.ticketStage(rec) ?? {})
+        : {};
       return {
         id: rec.id, title: rec.title, body: rec.body,
         category: rec.category, status: rec.status,
@@ -330,11 +345,18 @@ function apply(ctx) {
         execMode: rec.execMode ?? 'manual', execAt: rec.execAt ?? '',
         execState: rec.execState ?? 'idle', execAttempts: rec.execAttempts ?? 0,
         execError: rec.execError ?? '',
+        // 2026-11-03：这两项原来漏带，schema 里也没声明 —— 一并补齐（无 schema 依赖，
+        // 但「返回体能少带就少带」是先前裁剪期的遗留，不该继续留着）。
+        execStartedAt: rec.execStartedAt ?? '', execFinishedAt: rec.execFinishedAt ?? '',
         autoExecutable: rec.autoExecutable !== false,
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
         formulaVersion: rec.formulaVersion ?? '', assumedBy: rec.assumedBy ?? '',
         conflictsWith: Array.isArray(rec.conflictsWith) ? rec.conflictsWith : [],
         staleSince: rec.staleSince ?? '',
+        stage: String(stage.stage ?? 'draft'),
+        stageSide: String(stage.side ?? 'system'),
+        stageLabel: String(stage.label ?? ''),
+        stageWhy: String(stage.why ?? ''),
       };
     },
   }));
