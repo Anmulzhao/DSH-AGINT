@@ -225,6 +225,65 @@ test('planToWriteCalls: added 路径能写出', async () => {
   assert.equal(result.lineageKey, null);
 });
 
+/**
+ * ⛔ 回归：planToWriteCalls 曾三条分支都不传 confidence，agint.memory.write 的
+ * `input.confidence ?? 0.5` 兜底把每条提升记忆写成假 50% 确信。
+ * 神谕层决策确信度 = Σ(conf × [evidence 非空]) / N 是全库均值 ⇒ 这批假 0.5
+ * 把指标从 0.69 压到 0.61（阈 0.70 判红）。这里钉死「必须显式传 confidence」。
+ */
+test('planToWriteCalls: 三条分支都必须显式带 confidence（不得落 0.5 兜底）', async () => {
+  const cases = [
+    { key: 'c1', text: '禁止在生产环境直接 rm -rf', path: 'memory/c.md', startLine: 1, endLine: 2, score: 0.9 },
+    { key: 'c2', text: '禁止在生产环境 rm -rf 系统文件', path: 'memory/d.md', startLine: 3, endLine: 4, score: 0.8 },
+    { key: 'c3', text: '禁止在生产环境 rm -rf 关键目录', path: 'memory/e.md', startLine: 5, endLine: 6, score: 0.7 },
+  ];
+  const existing = [{ id: 'e1', type: 'lesson', content: '禁止在生产环境 rm -rf 系统文件', lineageKey: 'safety/rm-rf', supersedesKey: null }];
+
+  const plans = [
+    // added
+    validateAndApply({ gated: [cases[0]], existing, operations: [{ candidateKey: 'c1', action: 'added', priorEntries: [] }] }),
+    // merged（priorEntry 命中存量）
+    validateAndApply({
+      gated: [cases[1]], existing,
+      operations: [{ candidateKey: 'c2', action: 'merged', priorEntries: ['禁止在生产环境 rm -rf 系统文件'] }],
+      maxPriorEntryLossFraction: 1.0,
+    }),
+    // superseded
+    validateAndApply({
+      gated: [cases[2]], existing,
+      operations: [{ candidateKey: 'c3', action: 'superseded', priorEntries: ['禁止在生产环境 rm -rf 系统文件'], lineageKey: 'safety/rm-rf' }],
+      maxPriorEntryLossFraction: 1.0,
+    }),
+  ];
+
+  const seen = [];
+  for (const r of plans) {
+    assert.equal(r.ok, true, `plan 应有效：${r.reason ?? ''}`);
+    const [call] = planToWriteCalls(r.plan);
+    const fakeMemory = { write: async (input) => ({ id: 'x', ...input }) };
+    const out = await call.write(fakeMemory, 'ev');
+    assert.equal(typeof out.confidence, 'number', `${call.action} 分支缺 confidence`);
+    assert.notEqual(out.confidence, undefined);
+    seen.push({ action: call.action, confidence: out.confidence });
+  }
+
+  // 分数原样映射（0.9/0.8/0.7），不是被兜底成统一值
+  assert.deepEqual(seen, [
+    { action: 'added', confidence: 0.9 },
+    { action: 'merged', confidence: 0.8 },
+    { action: 'superseded', confidence: 0.7 },
+  ]);
+});
+
+test('planToWriteCalls: candidate.score 缺失时退到 0.6 档，不用 0.5', async () => {
+  const noScore = [{ key: 'c9', text: '无分数的候选', path: 'memory/f.md', startLine: 1, endLine: 2 }];
+  const r = validateAndApply({ gated: noScore, existing: [], operations: [{ candidateKey: 'c9', action: 'added', priorEntries: [] }] });
+  assert.equal(r.ok, true);
+  const [call] = planToWriteCalls(r.plan);
+  const out = await call.write({ write: async (i) => ({ id: 'y', ...i }) }, 'ev');
+  assert.equal(out.confidence, 0.6, '缺分数不等于 50% 确信，应退到启发式抽取档 0.6');
+});
+
 test('planToWriteCalls: superseded 路径带 supersedesKey', async () => {
   // 单 candidate 单 superseded：1 priorEntry / 2 existing = 0.5，budget 提到 1.0 通过
   const r = validateAndApply({

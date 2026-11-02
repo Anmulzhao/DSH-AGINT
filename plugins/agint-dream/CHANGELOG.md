@@ -5,6 +5,40 @@
 
 ---
 
+## v0.7.2 — 2026-11-01 — 提升记忆写入必须带 confidence（决策确信度卡 0.61 的第二病灶）
+
+**症状**：神谕层「决策确信度」长期 0.610（阈 0.70）判红。该指标口径是
+`Σ(conf × [evidence 非空]) / N`（全库均值，`agint-aesthetic-oracle/lib/scoring.js:270`），
+而 `noEvidence.count` 实测为 **0** —— 271 条全有证据，所以扣分全部来自置信度数值本身。
+实测 271 条里 **195 条置信度恰好是 0.5**，其中 **48 条来自本插件**。
+
+**根因**：`lib/validation-gate.js` 的 `planToWriteCalls()` 三条分支
+（added / merged / superseded）调 `memory.write()` 时**都不传 confidence**，
+`agint-memory/lib/index.js:137` 的 `input.confidence ?? 0.5` 兜底把每一条提升记忆
+写成假 50% 确信。讽刺的是同文件 1267 行的 `entryFor()` 一直在按
+`candidate.score` 算置信度，但 **sweep.js 里零引用** —— 算好的值从来没被用上。
+
+**改动**：
+
+1. `checkOperations` 的 plan 补带 `candidateScore`（取自 `candidateByKey.get(key).score`），
+   让分数能流到写入层。
+2. 新增 `scoreToConfidence(score)`：0..1 一位小数（与 `entryFor` 同口径）；
+   **缺失/非有限时退到 0.6**（= 启发式抽取、未经充分验证档），
+   ⛔ 不回 0.5 —— 0.5 正是「假装有一半把握」这个病灶本身。
+3. 三条 write 分支都显式传 `confidence`。
+
+**未做（诚实边界）**：存量 48 条的分数**无法回填**。
+`storages/agint_dream_recall.jsonl` 的 `score` 字段**98 条全部是 0.0**
+（`lib/recall-store.js:205` 的 `c.score ?? null`，而抽取阶段 `c.score` 就是 undefined），
+拿它回填会把 48 条打成 0 分，比现在的 0.5 更失真。这批留待 recall-store 分数链修好后重算。
+
+**验收**：
+- `test/validation-gate.test.js` 22/22 通过（新增 2 例：三分支必须显式带 confidence
+  且值 = 候选分数；缺分数退 0.6）。
+- `test/*.test.*` 全量 182/182。
+
+---
+
 ## v0.7.1 — 2026-10-29 — assistant 正文统计量补齐四个出口（提案 d2b77b47）
 
 **症状**：v0.7.0 之前（2026-10-28 提案 2f91b72b / `0ac21ca`）`collectSessionSignals`
