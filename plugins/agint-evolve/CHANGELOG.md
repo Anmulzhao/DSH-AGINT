@@ -1,5 +1,59 @@
 # agint-evolve CHANGELOG
 
+## v0.18.0（2026-11-03 · W8-1 Effects：周额度按「提案」计数，不再按「执行行」）
+
+### 起因：红线说的是「部署几次」，代码数的是「改了几个文件」
+
+`weeklyUsage()` 的判据是 `jobs.filter(ok===true && state==='succeeded').length`
+—— 数的是**执行行**。而 v0.22.0 起 `partial` 会自动续跑：一条横跨 N 个文件的提案
+会产出 **N 条** `ok:true, state:'succeeded'` 的执行行（每条只落地一个原子单元）。
+
+于是**一条提案吃掉 N 格周额度**。实测后果（本机 `weeklyCommitCap=5`）：
+一条 3 单元提案 + 续跑上限 5 ⇒ 单条提案就能把 5 格全吃光，之后所有提案一律
+`defer` 顺延到下周。那一周系统看起来「很忙」，实际只推进了一条提案。
+
+这不是限流，是误伤 —— AGENTS.md 红线原文是「不要跨周累计自动**部署**超过 N 次」，
+部署的单位是**提案**，不是文件。
+
+### 改动
+
+- `lib/execution.js:weeklyUsage()` 返回 `count` 改为按 `proposalId` 去重后的条数；
+  新增 `proposals`（去重后的 id 列表）。`jobs` 仍是**未去重**明细 —— 周报要能说出
+  「跑了 7 次、涉及 3 条提案」，两个数语义不同都保留。
+- `executionStats()` 新增 `weekExecutions`（成功执行**行**数）与 `weekProposals`。
+  `lastWeekCommits` 字段名不变（执行器 `decideRun({ weekCommits })` 与面板按它判上限），
+  语义变更见上。
+- `lib/tools.js` 的 `evolve_executions` 输出 schema 加 `weekExecutions`，
+  渲染成「本周落地 3 条提案（共 7 次执行）」。
+  ⛔ 必须与 `weekCommits` 并列：只报一个数会让人把续跑误读成又落地了一条新提案。
+
+### 两条刻意的口径决定
+
+1. **宁多算，不错并**。缺 `proposalId` 的行（历史脏数据 / 手写夹具）每条算独立一格，
+   键退回 `__row_<id>`。天真写法 `String(j.proposalId ?? '')` 会把两条 `undefined`
+   和一条 `''` 全部挤成同一个键 —— 实测 3 条真实执行被记成 1 格，上限被静默放宽 3 倍。
+   **错并让红线悄悄失效，多算只会让它更早触发**，方向不对称。
+2. **一致性由用例钉住，不靠人工记忆**。`agint-executor/test/week-unit.test.mjs`
+   有一份独立实现（跨插件不许直接 import）；`weeklyUsage` 侧新增 E11 用真实现
+   对拍五组数据，其中「缺 proposalId」那组正是两条实现最容易分歧的地方。
+
+### 验收
+
+- `agint-evolve` 全量 **92/92**（新增 `test/weekly-usage.test.mjs` 11 例）。
+- `agint-executor` **6/6**（新增 `test/week-unit.test.mjs` 5 例）。
+- ⛔ **阴性对照实测会红**：① 拆掉去重退回旧口径 → E1/E2/E3 红（证明这三条真在测口径）；
+  ② 让 evolve 侧退回天真去重 → E6/E11 红（证明对拍真在起作用）。
+- `plugin-check` 两插件 exit 0；`check-wiring` exit 0。
+
+### 未做（诚实边界）
+
+这次只修**计数单位**，没动「partial 也报 `ok:true`」这件事本身。
+后者是执行台账的真实语义（job 确实成功了），改成 `ok:false` 会把「已落地那一份」
+说成没做。要彻底分离「job 成功」与「提案闭环」，得引入独立的 effects 台账
+（W8-1 的完整形态），那是独立改动。
+
+---
+
 ## v0.17.0（2026-11-03 · 孤儿执行回收：宿主重启后卡在 running 的执行行能被结算掉）
 
 ### 起因（实机取证）

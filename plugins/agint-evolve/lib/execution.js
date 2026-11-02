@@ -212,8 +212,33 @@ export function isJobDue(job, now = Date.now()) {
  *    的可执行化。之前它是纸面约定，因为「自动部署」这件事根本没发生过；
  *    现在批准即自动执行，它必须变成代码，否则第一条越线的改动就没人拦。
  *
+ * ══ W8-1 / Effects（v0.18.0）：计数单位从「执行行」改成「提案」══
+ *
+ * 旧口径 = `jobs.filter(ok && succeeded).length` —— 数的是**执行行**。
+ * 而 v0.22.0 起 `partial` 会自动续跑：一条横跨 N 个文件的提案，会产出
+ * N 条 `ok:true, state:'succeeded'` 的执行行（每条只落地一个原子单元）。
+ * 于是**一条提案吃掉 N 格周额度** —— 红线说的是「部署几次」，不是「改了几个文件」。
+ *
+ * 实测后果（本机）：一条 3 单元提案 + 续跑上限 5 ⇒ 单条提案就能把
+ * `weeklyCommitCap=5` 全部吃光，之后所有提案一律 `defer` 顺延到下周。
+ * 这不是限流，是误伤：那一周系统看起来「很忙」，实际只推进了一条提案。
+ *
+ * 新口径 = 按 `proposalId` 去重后的条数。语义更贴近红线原文：
+ *   「本周自动落地了**几条提案**」。
+ *
+ * ⛔ 为什么去重键是 proposalId 而不是「取最早那条」：
+ *    续跑行的 proposalId 恒等于首次执行行（`enqueueOne(rec, ...)` 用 rec.id），
+ *    所以直接 Set 去重就是「一条提案算一次」，不需要挑代表行。
+ * ⛔ 为什么 jobs 仍然返回**全部命中行**（不去重）：
+ *    调用方（周报 / 面板）要看的是「这一周都跑了什么」，去重会让人以为只跑了一次。
+ *    `count` 是计数（去重后），`jobs` 是明细（未去重）—— 两者语义不同，都保留。
+ * ⛔ 缺 `proposalId` 的行（历史脏数据 / 手写夹具）不参与去重合并：
+ *    每条按独立提案计。宁可多算（更保守、更容易触发上限）也不错合并
+ *    —— 错合并会让上限**静默失效**，那才是真的危险方向。
+ *
  * @param {Array} jobs 最近窗口内的执行行
- * @param {number} cap 上限（0 = 不限，给测试/临时放开用）
+ * @param {number} now 当前毫秒时间戳
+ * @param {number} windowMs 窗口宽度（默认 7 天；生产传「本周起点至今」）
  */
 export function weeklyUsage(jobs, now = Date.now(), windowMs = 7 * 24 * 60 * 60 * 1000) {
   const since = now - windowMs;
@@ -222,7 +247,23 @@ export function weeklyUsage(jobs, now = Date.now(), windowMs = 7 * 24 * 60 * 60 
     const ts = Date.parse(String(j.finishedAt ?? j.updatedAt ?? ''));
     return Number.isFinite(ts) && ts >= since;
   });
-  return { count: hits.length, since: new Date(since).toISOString(), jobs: hits };
+  // 去重键：有 proposalId 用它；没有就退回该行自己的 id（或用下标兜底，
+  // 保证「每条都是独立一格」而不是全部塌缩成同一个 undefined 键）。
+  const seen = new Set();
+  const proposals = [];
+  hits.forEach((j, i) => {
+    const key = String(j.proposalId ?? '').trim() || `__row_${j.id ?? i}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    proposals.push(key);
+  });
+  return {
+    count: proposals.length,
+    proposals,
+    since: new Date(since).toISOString(),
+    // 明细保持未去重：周报要能说出「这一周跑了 7 次、涉及 3 条提案」
+    jobs: hits,
+  };
 }
 
 /**

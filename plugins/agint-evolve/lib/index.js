@@ -1510,7 +1510,15 @@ function apply(ctx, config) {
         byState,
         queued: rows.filter((r) => r.state === 'queued' || r.state === 'deferred').length,
         running: byState.running ?? 0,
+        // ⛔ W8-1（v0.18.0）：这个数现在是**提案去重后**的条数，不再等于 jobs.length。
+        //    字段名保持不变（执行器 `decideRun({ weekCommits })` 与面板都按它判上限），
+        //    语义变更见 weeklyUsage 的注释。要看「跑了几次」读 weekExecutions。
         lastWeekCommits: week.count,
+        // 明细：这一周真正跑成功的**执行行**数（含同一提案的续跑行）。
+        // ⛔ 与 lastWeekCommits 必须分开报：面板写「本周落地 3 条提案（共 7 次执行）」
+        //    才是可核对的；只报一个数会让人把「续跑」误读成「又落地一条新提案」。
+        weekExecutions: week.jobs.length,
+        weekProposals: week.proposals,
         weekSince: week.since,
         weekOf: new Date(startOfWeek(now)).toISOString(),
         latest: rows[0] ?? null,

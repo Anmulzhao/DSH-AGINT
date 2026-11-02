@@ -363,6 +363,10 @@ function apply(ctx) {
           queued: { required: true, type: 'integer' },
           running: { required: true, type: 'integer' },
           weekCommits: { required: true, type: 'integer' },
+          // W8-1（v0.18.0）：本周成功执行**行**数（含同一提案的续跑行）。
+          // ⛔ 必须与 weekCommits 并列出现：weekCommits 是「几条提案」（判周上限用），
+          //    这个是「跑了几次」。只报一个数会让人把续跑误读成又落地了一条新提案。
+          weekExecutions: { required: true, type: 'integer' },
           items: { required: true,
             type: 'array',
             items: {
@@ -382,7 +386,7 @@ function apply(ctx) {
       render: (_a, v) => [{
         type: 'text',
         text: v.action === 'list'
-          ? `evolve_executions: ${v.total} 条（排队 ${v.queued} / 在跑 ${v.running} / 本周已落地 ${v.weekCommits}）\n`
+          ? `evolve_executions: ${v.total} 条（排队 ${v.queued} / 在跑 ${v.running} / 本周落地 ${v.weekCommits} 条提案${v.weekExecutions > v.weekCommits ? `（共 ${v.weekExecutions} 次执行）` : ''}）\n`
             + (v.items.length === 0 ? '  （队列为空）' : v.items.map((x) => `  [${x.state}] ${x.proposalId.slice(0, 8)} · ${x.summary}`).join('\n'))
           : `evolve_executions ${v.action}: ${v.message}`,
       }],
@@ -395,6 +399,7 @@ function apply(ctx) {
         queued: stats.queued ?? 0,
         running: stats.running ?? 0,
         weekCommits: stats.lastWeekCommits ?? 0,
+        weekExecutions: stats.weekExecutions ?? 0,
       };
       if (args.action === 'list') {
         const rows = typeof evolve.listExecutions === 'function'
