@@ -1,5 +1,46 @@
 # agint-evolve CHANGELOG
 
+## v0.17.0（2026-11-03 · 孤儿执行回收：宿主重启后卡在 running 的执行行能被结算掉）
+
+### 起因（实机取证）
+
+提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 从 2026-11-01T16:00:04.986Z 起
+永远停在 `state='running'`（`finishedAt=''`），面板显示「已批准·执行中」，
+而**没有任何东西在跑**。三条原因叠在一起：
+
+1. 宿主在执行途中被重启/关停 ⇒ 结算调用撞上已 dispose 的存储域，抛错；
+2. 执行器把结算失败**静默吞掉**（`catch { /* noop */ }`）⇒ 行永远停在 running；
+3. `lib/execution.js:46` 的 `CLAIMABLE` 只含 `queued`/`deferred` ⇒ running 行永不再被捡；
+   `lib/index.js:442-450` 的 `activeJobsFor` 又把 running 算活跃 job ⇒
+   `autoEnqueueBlocker` 判 `already-queued` ⇒ 提案再也排不进去。
+
+⇒ **队列不自愈**：没人会再来结算这一行，也没人能再排一条新的。
+
+### 改动
+
+- `lib/execution.js` 新增纯函数 `isOrphanExecution(job, {now, mountedAt, staleMs, excludeIds})`：
+  - 判据①（硬证据）：行在**本进程挂载之前**就被 claim（`startedAt < mountedAt`）
+    ⇒ 上一进程已死，本进程不可能是它的执行者 ⇒ 孤儿；
+  - 判据②（兜底）：行 running 超过 `staleMs` 且不在 `excludeIds`（本进程活跃执行）里。
+  - 无 IO、无时钟（`now` 由调用方传），与本文件其余判据同风格。
+- `lib/index.js` 新增服务方法 `reapOrphanExecutions({now, mountedAt, staleMs, excludeIds})`：
+  孤儿行落 `failed`（**不是** cancelled —— 中断 ≠ 人撤销），写 `finishedAt` 与日志；
+  提案侧 `execState → failed`、`execError` 写明「因宿主重启/进程中断未结算」。
+- ⛔ **回收不得把提案标 applied**：中断的是「一次执行」，不是「这件事做完了」。
+  提案保持 `approved`，剩余单元仍有入口（partial 的自动续跑机制继续有效）。
+- ⛔ 回收**不自动重排**：重排由提案自己的入队机制（`autoEnqueueBlocker`）决定，
+  执行器/本插件不越权 —— 否则一次重启能凭空多出 N 条自动执行。
+
+### 面板口径
+
+`agint-family-panel/lib/v2-proposals.js:469` 已有 `failed → person/failed` 分支，
+回收后自动显示为「执行失败·等处理」，**面板无需改动**。
+
+### 测试
+
+`test/execution.test.mjs` 新增 4 组用例：跨进程孤儿被回收且提案不被标 applied /
+`excludeIds` 里的 job 不被误判 / 超时兜底 / 非 running 行不被回收。
+
 ## v0.16.0（2026-11-01 · 工单状态机 `stage`：一条提案，一个「现在该谁动」的答案）
 
 ### 起因

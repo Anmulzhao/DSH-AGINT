@@ -45,6 +45,65 @@ export const JOB_STATES = ['queued', 'running', 'succeeded', 'failed', 'deferred
 /** 到期仍可被 claim 的状态：queued 是正常待跑，deferred 是被周上限/前置顺延过的。 */
 const CLAIMABLE = new Set(['queued', 'deferred']);
 
+/**
+ * 孤儿执行的判据（纯函数，无 IO、无时钟 —— now 由调用方传）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * 2026-11-02 实机：提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 停在
+ * `state='running'`（startedAt=2026-11-01T16:00:04.986Z，finishedAt=''），面板显示
+ * 「已批准·执行中」，而实际没有东西在跑。三条原因叠在一起：
+ *
+ *   ① 宿主在执行途中被重启/关停 ⇒ 结算调用撞上已 dispose 的存储域，抛错；
+ *   ② 执行器把结算失败**静默吞掉** ⇒ 行永远停在 running；
+ *   ③ `CLAIMABLE` 只含 queued/deferred（execution.js:46）⇒ running 行永不再被捡；
+ *      `activeJobsFor` 又把 running 算活跃 job（agint-evolve/lib/index.js:442-450）
+ *      ⇒ `autoEnqueueBlocker` 判 'already-queued' ⇒ 提案再也排不进去。
+ *
+ * ⇒ 队列**不自愈**：没人会再来结算这一行，也没人能再排一条新的。
+ *
+ * ## 判据怎么定（要有据，不能只按「超时」猜）
+ *
+ *   ① **跨进程**：行是在**本次进程挂载之前**就被 claim 的（startedAt < mountedAt）
+ *      ⇒ 上一进程死了，本进程不可能是它的执行者 ⇒ 孤儿。硬证据，不需要等超时。
+ *   ② **跨时长**：行 running 超过 `staleMs` 且不在本进程的活跃执行名单里
+ *      ⇒ 兜底（覆盖「同进程内结算失败」这种跨进程判据抓不到的情形）。
+ *
+ * ⛔ 回收**不得**把提案标成 applied：中断的是「一次执行」，不是「这件事做完了」。
+ *    提案的剩余单元必须继续有入口。
+ *
+ * @param {object} job execution 行
+ * @param {object} opts
+ * @param {number} opts.now 当前时刻（毫秒）
+ * @param {number} opts.mountedAt 本进程挂载时刻（毫秒）
+ * @param {number} opts.staleMs 超时兜底阈值（毫秒）
+ * @param {string[]} [opts.excludeIds] 本进程正在跑的 job id（不判孤儿）
+ * @returns {{orphan:boolean, reason:string}}
+ */
+export function isOrphanExecution(job, { now = Date.now(), mountedAt = 0, staleMs = 30 * 60 * 1000, excludeIds = [] } = {}) {
+  if (!job || job.state !== 'running') return { orphan: false, reason: '' };
+  const id = String(job.id ?? '');
+  if (Array.isArray(excludeIds) && excludeIds.includes(id)) {
+    return { orphan: false, reason: '' };
+  }
+  const startedAt = Date.parse(String(job.startedAt ?? ''));
+  if (!Number.isFinite(startedAt)) {
+    // 时间字段坏了：判不出跨进程，但也不能因为「读不出来」就永远留着。
+    // 按超时兜底处理（staleMs 从 mountedAt 起算），让这一行至少能被结算掉。
+    const since = Number.isFinite(Number(mountedAt)) && Number(mountedAt) > 0 ? Number(mountedAt) : now;
+    return now - since > staleMs
+      ? { orphan: true, reason: `running 行缺少 startedAt，超过 ${Math.round(staleMs / 1000)}s 仍未结算` }
+      : { orphan: false, reason: '' };
+  }
+  if (Number.isFinite(Number(mountedAt)) && Number(mountedAt) > 0 && startedAt < Number(mountedAt)) {
+    return { orphan: true, reason: `宿主重启前就已 running（startedAt=${job.startedAt} < 本进程挂载时刻），上一进程已死` };
+  }
+  if (Number.isFinite(staleMs) && staleMs > 0 && now - startedAt > staleMs) {
+    return { orphan: true, reason: `已 running 超过 ${Math.round(staleMs / 1000)}s 且不在本进程活跃执行里` };
+  }
+  return { orphan: false, reason: '' };
+}
+
 /** 定时的上限/下限：太远的将来（>365 天）几乎一定是填错了。 */
 const MAX_AHEAD_MS = 365 * 24 * 60 * 60 * 1000;
 /** 允许的过去容差：面板填 09:00、提交时已经 09:00:03 属于正常，不该拒。 */

@@ -72,6 +72,14 @@ function readConfig(raw = {}) {
     retryDelayMs: Math.max(0, num(raw.retryDelayMs, 5 * 60_000)),
     /** 每个 tick 最多处理几条执行（串行）。 */
     maxPerTick: Math.max(1, Math.trunc(num(raw.maxPerTick, 1))),
+    /**
+     * 孤儿执行回收的超时兜底阈值（毫秒）。
+     *
+     * 2026-11-02（提案 a6e6e1d9 实证）：宿主重启前就在 running 的行，
+     * 靠「startedAt < 本进程挂载时刻」这条硬证据就能抓住，不需要等超时；
+     * 这条阈值只兜底「同进程内结算失败」的情形。默认 30 分钟。
+     */
+    orphanStaleMs: Math.max(0, num(raw.orphanStaleMs, 30 * 60_000)),
     /** 挂载即开始调度。false 时只能手动 tick()（测试/排障用）。 */
     enabled: raw.enabled !== false,
   };
@@ -79,6 +87,10 @@ function readConfig(raw = {}) {
 
 function apply(ctx, config) {
   const cfg = readConfig(config ?? {});
+  // 2026-11-02：本进程挂载时刻。孤儿回收的第一判据是「startedAt < mountedAt」
+  // ⇒ 这一行是**上一个进程** claim 的，而那个进程已经死了（实机：提案 a6e6e1d9 的
+  // exec-1793280728689-kmy9h1 停在 running 一整天，面板显示「已批准·执行中」）。
+  const mountedAt = Date.now();
   const state = {
     ticks: 0,
     lastTickAt: null,
@@ -92,6 +104,8 @@ function apply(ctx, config) {
     failed: 0,
     deferred: 0,
     cancelled: 0,
+    // 2026-11-02：回收掉的孤儿执行数（跨宿主重启遗留的 running 行）。
+    reaped: 0,
     lastResult: null,
   };
 
@@ -103,6 +117,8 @@ function apply(ctx, config) {
   let wakeScheduled = false;
   let intervalHandle = null;
   let wakeHandle = null;
+  // 本进程正在跑的 job id —— 回收孤儿时不能把它们当成上一进程的遗留。
+  const activeJobIds = new Set();
 
   const warn = (msg, data) => {
     try { ctx.logger?.warn?.(msg, data); } catch { /* noop */ }
@@ -284,6 +300,42 @@ function apply(ctx, config) {
   }
 
   /**
+   * 回收孤儿执行（2026-11-02）。
+   *
+   * 什么时候做：挂载后立刻做一次（上一进程遗留的 running 行就靠这条被抓到），
+   * 之后每轮 tick 前再做一次（兜底「同进程内结算失败」的情形）。
+   *
+   * ⛔ 回收的是**执行行**，不是提案：被回收的提案仍是 approved、仍有入口，
+   *    绝不会被标成 applied（判据与动作见 agint-evolve 的 reapOrphanExecutions）。
+   */
+  async function reapOrphans(evolve, now = Date.now()) {
+    if (!evolve || typeof evolve.reapOrphanExecutions !== 'function') return { reaped: [], count: 0 };
+    let out;
+    try {
+      out = await evolve.reapOrphanExecutions({
+        now,
+        mountedAt,
+        staleMs: cfg.orphanStaleMs,
+        // 本进程正在跑的 job 不能被判成孤儿。
+        excludeIds: [...activeJobIds],
+      });
+    } catch (error) {
+      // 回收失败也不许吞：吞了就是下一次又卡在 running。
+      state.lastError = `reapOrphans failed: ${error?.message ?? error}`;
+      warn('executor: 回收孤儿执行失败', { error: state.lastError });
+      await recordFailure('executor-reap-orphans-failed', state.lastError);
+      return { reaped: [], count: 0 };
+    }
+    const count = Number(out?.count) || 0;
+    if (count > 0) {
+      state.reaped += count;
+      warn('executor: 回收了孤儿执行（宿主重启遗留的 running 行）', { count, jobs: out.reaped });
+      await recordFailure('executor-reaped-orphan-execution', `count=${count} ${JSON.stringify(out.reaped).slice(0, 300)}`);
+    }
+    return out ?? { reaped: [], count: 0 };
+  }
+
+  /**
    * 跑一轮。可重入保护：inFlight 期间直接返回，不排队 ——
    * 排队的语义会让一次慢执行之后连着放好几条，把「每 tick 一条」变成「一次爆发」。
    */
@@ -301,10 +353,13 @@ function apply(ctx, config) {
     try {
       const evolve = dep('agint.evolve');
       if (!evolve || typeof evolve.claimDueExecutions !== 'function') {
-        state.lastError = 'agint.evolve 缺 claimDueExecutions（版本过旧或未挂载）';
+        state.lastError = 'agint-evolve 缺 claimDueExecutions（版本过旧或未挂载）';
         return { skipped: true, reason: state.lastError };
       }
       const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      // 回收在前、claim 在后：先把上一进程遗留的 running 行结算掉，
+      // 否则它们会占着「活跃 job」的名额，让真正该跑的提案排不进去。
+      await reapOrphans(evolve, now);
       const jobs = await evolve.claimDueExecutions({ now, limit: cfg.maxPerTick });
       if (!Array.isArray(jobs) || jobs.length === 0) {
         return { ran: 0, cleared: true };
@@ -312,6 +367,7 @@ function apply(ctx, config) {
       state.claimed += jobs.length;
       const results = [];
       for (const job of jobs) {
+        activeJobIds.add(job.id);
         try {
           results.push(await runJob(job, { now }));
         } catch (error) {
@@ -320,8 +376,19 @@ function apply(ctx, config) {
           warn('executor: runJob threw', { proposalId: job.proposalId, error: state.lastError });
           try {
             await evolve.finishExecution(job.id, { ok: false, error: oneLine(state.lastError, 400) });
-          } catch { /* noop */ }
+          } catch (settleError) {
+            // ⛔ 2026-11-02：结算失败**不许静默吞**。
+            // 吞掉的代价：这一行永远停在 running，队列不自愈，提案再也排不进去
+            // （实机：提案 a6e6e1d9 的 exec-1793280728689-kmy9h1 停在 running
+            //  整整一天，面板显示「已批准·执行中」，而没有任何东西在跑）。
+            const msg = `结算失败（执行行 ${job.id} 仍停在 running）：${settleError?.message ?? settleError}`;
+            state.lastError = msg;
+            warn('executor: 结算失败，执行行会停在 running', { jobId: job.id, error: msg });
+            await recordFailure('executor-settle-failed', msg);
+          }
           results.push({ proposalId: job.proposalId, action: 'fail', error: oneLine(state.lastError) });
+        } finally {
+          activeJobIds.delete(job.id);
         }
       }
       state.lastResult = results;
@@ -356,6 +423,15 @@ function apply(ctx, config) {
   ctx.effect(() => {
     if (cfg.enabled && typeof ctx.setInterval === 'function') {
       intervalHandle = ctx.setInterval(() => { void tick(); }, cfg.tickMs);
+    }
+    // 2026-11-02：挂载即回收孤儿执行。
+    // 上一进程遗留的 running 行（宿主重启打断的）此刻就是孤儿 ——
+    // 它们会占着「活跃 job」的名额，让真正该跑的提案永远排不进去。
+    // ⛔ 不等第一次 tick：tick 前有 15 秒窗口，而孤儿行的危害是**挡路**。
+    if (cfg.enabled) {
+      void reapOrphans(dep('agint.evolve')).catch((error) => {
+        warn('executor: 挂载后回收孤儿执行失败', { error: error?.message ?? error });
+      });
     }
     // 挂载后先跑一轮：重启可能错过一堆已到期的执行，等 15 秒才开始跑说不通。
     if (cfg.enabled) wake();

@@ -39,6 +39,7 @@ import {
   autoEnqueueBlocker,
   computeDueAt,
   isJobDue,
+  isOrphanExecution,
   weeklyUsage,
   startOfWeek,
   describeExecution,
@@ -1400,6 +1401,65 @@ function apply(ctx, config) {
         execError: deferred ? (opts.reason ?? '') : (opts.error ?? ''),
       });
       return next;
+    },
+
+    /**
+     * 回收孤儿执行（2026-11-02，提案 `a6e6e1d9` 实证）。
+     *
+     * ## 为什么需要它
+     *
+     * 实机：`exec-1793280728689-kmy9h1` 停在 `state='running'`，startedAt=
+     * 2026-11-01T16:00:04.986Z，finishedAt=''，面板显示「已批准·执行中」，
+     * 但**没有任何东西在跑**。原因链见 `execution.js` 的 `isOrphanExecution` 注释。
+     * 队列不自愈：running 行永不被 claim（CLAIMABLE 只有 queued/deferred），
+     * 又被 `activeJobsFor` 算成活跃 job ⇒ 提案再也排不进去。
+     *
+     * ## 回收动作的三条边界
+     *
+     *   ① **绝不**把提案标 applied：中断的是「一次执行」，不是「这件事做完了」。
+     *      提案仍是 approved，剩余单元仍有入口（partial 的自动续跑机制继续有效）。
+     *   ② 行落到 `failed`（不是 cancelled）：中断是失败，不是人撤销。
+     *   ③ 不自动重排：重排由提案自己的续跑/入队机制决定（`autoEnqueueBlocker`），
+     *      执行器不越权 —— 否则一次重启能凭空多出 N 条自动执行。
+     *
+     * @param {object} opts
+     * @param {number} opts.now 当前时刻（毫秒）
+     * @param {number} opts.mountedAt 本进程挂载时刻（毫秒）
+     * @param {number} opts.staleMs 超时兜底阈值（毫秒）
+     * @param {string[]} [opts.excludeIds] 本进程正在跑的 job id（不判孤儿）
+     */
+    async reapOrphanExecutions(opts = {}) {
+      const et = await executionTable();
+      const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      const mountedAt = Number.isFinite(Number(opts.mountedAt)) ? Number(opts.mountedAt) : 0;
+      const staleMs = Number.isFinite(Number(opts.staleMs)) ? Number(opts.staleMs) : 30 * 60 * 1000;
+      const excludeIds = Array.isArray(opts.excludeIds) ? opts.excludeIds : [];
+      const reaped = [];
+      for (const [id, row] of et.entries()) {
+        if (!row) continue;
+        const verdict = isOrphanExecution({ id, ...row }, { now, mountedAt, staleMs, excludeIds });
+        if (!verdict.orphan) continue;
+        const ts = new Date(now).toISOString();
+        const next = executionSchema.parse({
+          ...row,
+          state: 'failed',
+          ok: false,
+          reason: `孤儿执行已回收：${verdict.reason}`,
+          error: `宿主重启/进程中断导致本次执行未结算（${verdict.reason}）`,
+          finishedAt: ts,
+          updatedAt: ts,
+          log: [row.log, `${ts} failed 孤儿回收：${verdict.reason}`].filter(Boolean).join('\n').slice(-4000),
+        });
+        await et.put(id, next);
+        // 提案侧：释放「执行中」这盏灯，但保持 approved —— 剩余单元不能失去入口。
+        await markProposal(row.proposalId, {
+          execState: 'failed',
+          execError: `上次执行因宿主重启/进程中断未结算（${verdict.reason}）—— 提案未完成，可重新入队`,
+          execFinishedAt: ts,
+        });
+        reaped.push({ id, proposalId: row.proposalId, reason: verdict.reason });
+      }
+      return { reaped, count: reaped.length };
     },
 
     /**

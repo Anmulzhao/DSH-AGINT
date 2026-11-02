@@ -34,8 +34,8 @@ function makeCtx() {
 }
 
 /** 假 evolve：只实现执行器真正会调的那几个口，行为按用例需要配置。 */
-function makeFakeEvolve({ proposal, jobs = [], weekCommits = 0 } = {}) {
-  const calls = { finish: [], requeue: [], enqueue: [], claim: 0 };
+function makeFakeEvolve({ proposal, jobs = [], weekCommits = 0, finishThrows = false } = {}) {
+  const calls = { finish: [], requeue: [], enqueue: [], claim: 0, reap: [] };
   const state = { proposal: proposal ? { ...proposal } : null, jobs: jobs.map((j) => ({ ...j })) };
   return {
     calls,
@@ -46,12 +46,20 @@ function makeFakeEvolve({ proposal, jobs = [], weekCommits = 0 } = {}) {
       const claimable = state.jobs.filter((j) => j.state === 'queued' || j.state === 'deferred');
       return claimable.map((j) => ({ ...j, state: 'running', attempts: (j.attempts ?? 0) + 1 }));
     },
-    async finishExecution(id, patch) { calls.finish.push({ id, patch }); return { id, ...patch }; },
+    async finishExecution(id, patch) {
+      calls.finish.push({ id, patch });
+      if (finishThrows) throw new Error('storage domain disposed');
+      return { id, ...patch };
+    },
     async requeueExecution(id, opts) { calls.requeue.push({ id, opts }); return { id, ...opts }; },
     async executionStats() { return { lastWeekCommits: weekCommits }; },
     async enqueueExecution(id, opts) {
       calls.enqueue.push({ id, opts });
       return { enqueued: true, job: { id: 'exec-fake' } };
+    },
+    async reapOrphanExecutions(opts) {
+      calls.reap.push(opts);
+      return { reaped: [], count: 0 };
     },
   };
 }
@@ -309,6 +317,92 @@ const approved = (over = {}) => ({ id: 'p1', status: 'approved', execMode: 'imme
 }
 
 console.log('# agint-executor smoke: ok（六道闸 / 周上限 / 重试 / kill-switch / 周口径）');
+
+// ── 2026-11-02：结算失败不许静默吞（提案 a6e6e1d9 实证）────────────────────
+//
+// 实机：宿主在执行途中重启 ⇒ 结算调用撞上已 dispose 的存储域抛错 ⇒
+// 执行器原来的 `catch { /* noop */ }` 把错误吞掉 ⇒ 那一行永远停在 running ⇒
+// 队列不自愈、提案再也排不进去（面板显示「已批准·执行中」一整天）。
+// ⛔ 吞掉的代价不是「少一条日志」，是「一条提案永久卡死」。
+{
+  const evolve = makeFakeEvolve({
+    proposal: approved(),
+    jobs: [job({ attempts: 0 })],
+    finishThrows: true,
+  });
+  const addFailureCalls = [];
+  const warns = [];
+  const ctx = makeCtx();
+  ctx.provide('agint.evolve', evolve);
+  ctx.provide('agint.evolution', { addFailure: async (a) => addFailureCalls.push(a) });
+  ctx.logger = { warn: (msg, data) => warns.push({ msg, data }), info() {}, error() {} };
+  apply(ctx, { enabled: false });
+  const svc = ctx.get('agint.executor');
+  await svc.tick({ force: true });
+
+  assert.equal(evolve.calls.finish.length >= 1, true, '结算必须真的被调用');
+  assert.equal(
+    addFailureCalls.some((c) => c.pattern === 'executor-settle-failed'),
+    true,
+    '结算失败必须落到 failure_pattern —— 吞掉就等于让提案永久卡死',
+  );
+  assert.equal(
+    warns.some((w) => /结算失败/.test(w.msg)),
+    true,
+    '结算失败必须 warn —— 静默是这次事故的直接成因',
+  );
+}
+
+// ── 2026-11-02：孤儿执行回收被调用，且带着本进程挂载时刻 ───────────────────
+//
+// 判据是「startedAt < 本进程挂载时刻」⇒ 上一进程遗留的 running 行是孤儿。
+// 所以传给 evolve 的 opts 里必须有 mountedAt，否则回收器无从判跨进程。
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [] });
+  const ctx = makeCtx();
+  ctx.provide('agint.evolve', evolve);
+  apply(ctx, { enabled: false });
+  const svc = ctx.get('agint.executor');
+  await svc.tick({ force: true });
+  assert.equal(evolve.calls.reap.length, 1, '每轮 tick 前必须回收一次孤儿');
+  const opts = evolve.calls.reap[0];
+  assert.equal(typeof opts.mountedAt, 'number', '必须带上本进程挂载时刻 —— 跨进程判据靠它');
+  assert.equal(opts.mountedAt > 0, true);
+  assert.equal(typeof opts.staleMs, 'number', '必须带上超时兜底阈值');
+  assert.deepEqual(opts.excludeIds, [], '本进程没有活跃执行时排除名单为空');
+}
+
+// ── 2026-11-02：回收在 claim 之前（孤儿行会挡路）─────────────────────────
+{
+  const order = [];
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [] });
+  const origReap = evolve.reapOrphanExecutions.bind(evolve);
+  evolve.reapOrphanExecutions = async (opts) => { order.push('reap'); return origReap(opts); };
+  const origClaim = evolve.claimDueExecutions.bind(evolve);
+  evolve.claimDueExecutions = async (opts) => { order.push('claim'); return origClaim(opts); };
+  const ctx = makeCtx();
+  ctx.provide('agint.evolve', evolve);
+  apply(ctx, { enabled: false });
+  await ctx.get('agint.executor').tick({ force: true });
+  assert.deepEqual(order, ['reap', 'claim'], '先回收再 claim —— 否则孤儿行占着活跃名额，真正该跑的排不进去');
+}
+
+// ── 2026-11-02：回收失败不许吞 ──────────────────────────────────────────
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [] });
+  evolve.reapOrphanExecutions = async () => { throw new Error('storage domain disposed'); };
+  const addFailureCalls = [];
+  const ctx = makeCtx();
+  ctx.provide('agint.evolve', evolve);
+  ctx.provide('agint.evolution', { addFailure: async (a) => addFailureCalls.push(a) });
+  apply(ctx, { enabled: false });
+  await ctx.get('agint.executor').tick({ force: true });
+  assert.equal(
+    addFailureCalls.some((c) => c.pattern === 'executor-reap-orphans-failed'),
+    true,
+    '回收失败必须落 failure_pattern —— 吞掉就等于下一次还是卡死',
+  );
+}
 
 
 // ── 注入声明：用宿主定时器就必须 inject 'timer'（2026-10-27 首次部署翻车）──
