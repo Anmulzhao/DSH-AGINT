@@ -88,3 +88,6 @@ plugins/agint-family-panel/test/fixtures/v2-home/storages/
 # 一次性用完即弃；插件源码的权威副本在仓库 plugins/ 下，勿把快照当交付物。
 agint-host-sync-*.tar.gz
 agint-host-sync-*.sh
+
+# 判尺标定的临时分析脚本（含本机数据，不入库）
+.calib-scratch/
