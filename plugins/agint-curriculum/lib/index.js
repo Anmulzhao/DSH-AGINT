@@ -83,6 +83,61 @@ function apply(ctx, config) {
     return merged;
   };
 
+  // ── W3（2026-11-03）：目标变更 → 课程重排 ───────────────────────────────
+  //
+  // WHY：课程此前是**自推**的 —— 由 boundary-probe 从 self-model 的能力缺口里挑，
+  // 与老板真正在追什么目标没有任何关系。宿主的 `goal/changed` /
+  // `goal/activation-changed` 是「课程该对齐谁」的唯一输入端。
+  //
+  // ⛔ 本段**只记账、不改课程队列**。理由：
+  //    课程队列是 agint_curriculum 域里的持久事实，按事件自动重排等于让
+  //    「一次目标编辑」变成「一串无法回滚的课程增删」。真正的重排入口是
+  //    `curriculum.probe({ preferGoal })` —— 由人/agent 显式调用。
+  //    这里做的只是让 probe **知道**目标变了：把最近一次目标状态记成对齐提示。
+  //
+  // ⚠️ 三条纪律：
+  //   1. 软取总线（`ctx.get`），总线不在就纯降级 —— curriculum 的硬 inject 只有 storageDomain；
+  //   2. 事件回调里**不 await 任何存储**，目标编辑处在宿主写路径上，拖住它就是 H1 的翻版；
+  //   3. 只留最后一条（`goalAlignment`），不追加日志 —— 目标可能被连改十次，
+  //      留全量既没用又会把内存和 events 表撑大。
+  let goalAlignment = null;
+  let goalEventsSeen = 0;
+
+  function attachGoalAlignment() {
+    const subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+    if (typeof subscribe !== 'function') return;
+
+    const onGoal = (event) => {
+      goalEventsSeen += 1;
+      const p = event?.payload ?? {};
+      // activation-changed 与 changed 的作用域不同（前者 session 级，后者 agent 级），
+      // 但「最近一次目标状态」这个用途下按同一口径合并是安全的 ——
+      // 因为 revision 单调递增，比 revision 就能判新旧，不依赖事件类型。
+      const revision = Number.isFinite(p.revision) ? p.revision : -1;
+      const prevRevision = Number.isFinite(goalAlignment?.revision) ? goalAlignment.revision : -1;
+      if (goalAlignment && revision < prevRevision) return; // 迟到的旧事件，丢掉
+      goalAlignment = {
+        goalId: String(p.goalId ?? ''),
+        revision,
+        activation: p.activation == null ? null : String(p.activation),
+        sessionId: p.sessionId == null ? null : String(p.sessionId),
+        observedAt: new Date().toISOString(),
+        // 只记「这是第几条事件」，不记事件内容 —— 排障时能判出「收到了」与「没收到」
+        seq: goalEventsSeen,
+      };
+    };
+
+    try {
+      subscribe({ topic: 'input.signal.host.goal-changed', source: name }, onGoal);
+      subscribe({ topic: 'input.signal.host.goal-activation-changed', source: name }, onGoal);
+    } catch (e) {
+      // 订阅失败不影响课程本体：probe 会退回「不看目标」的旧行为
+      if (!disposed) console.warn(`[${name}] goal 订阅失败（课程将退回自推模式）:`, e?.message ?? e);
+    }
+  }
+
+  void ready.then(() => attachGoalAlignment()).catch(() => {});
+
   // ── 事件发布（软依赖 event-bus，降级不抛）──────────────────────────────
   async function publishEvent(topic, payload) {
     const p = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
@@ -195,6 +250,22 @@ function apply(ctx, config) {
       unverifiable: unverifiable.map((d) => d.domain),
     });
     return { skipped: false, domains, unverifiable, probedAt: lastProbeAt };
+  }
+
+  /**
+   * W3：目标对齐快照（只读）。
+   *
+   * 返回最后观测到的宿主目标状态，或 null（= 从未收到目标事件 / 总线不在）。
+   * `received: false` 与 `goalId: ''` 是**两件事**，别混：
+   *   · received=false ⇒ 这条链路根本没通电，课程退回自推；
+   *   · received=true 且 goalId='' ⇒ 通电了，但宿主没带 goal（如 goal 被清空）。
+   * 面板与 probe 都按这个区分措辞，否则「没接上」和「没有目标」长得一样。
+   */
+  function goalAlignmentState() {
+    if (!goalAlignment) {
+      return { received: false, eventsSeen: goalEventsSeen, goalId: null, revision: null, activation: null, sessionId: null, observedAt: null };
+    }
+    return { received: true, eventsSeen: goalEventsSeen, ...goalAlignment };
   }
 
   // ── Service: generate（§4.3 [2] + 7.1 冷却/上限）────────────────────────
@@ -636,6 +707,8 @@ function apply(ctx, config) {
     pause,
     resume,
     config: configApi,
+    // W3：目标对齐观测面（只读）。派生值不落盘，与 v0.24.0「派生值不落盘」同口径。
+    goalAlignment: goalAlignmentState,
   });
 }
 
