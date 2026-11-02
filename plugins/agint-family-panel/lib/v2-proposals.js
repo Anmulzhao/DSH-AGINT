@@ -383,6 +383,99 @@ function readFromStorage(storagesDir) {
  * @param {{storagesDir?: string, repoPluginsDir?: string|null}} dirs
  * @returns {Promise<object>}
  */
+/* ── 工单状态机（2026-11-01，与 agint-evolve v0.16.0 的 ticketStage 等价）───────
+ *
+ * 这个面板**不 import agint-evolve**（既有纪律：面板只读落盘文件），所以这里保留
+ * 一份等价实现。与 hasBlocker / isExecActive / startOfWeek 同一处理方式，
+ * 等价性由 `test/stage-parity.test.mjs` 拿两边逐个用例比对钉住 ——
+ * 不是「照着抄一遍」，是「抄了但有人看着」。
+ *
+ * 判据的单一事实源仍在 plugins/agint-evolve/lib/execution.js: ticketStage()。
+ * 改那边必须同时改这里，否则用例立刻红。
+ */
+const STAGE_SIDES = Object.freeze({
+  closed: 'closed',
+  draft: 'person',
+  'person/blocked': 'person',
+  'person/failed': 'person',
+  'person/review': 'person',
+  'person/plan': 'person',
+  'working/queued': 'working',
+  working: 'working',
+  stalled: 'system',
+});
+const STAGE_LABELS = Object.freeze({
+  closed: '已结束',
+  draft: '待批准',
+  'person/blocked': '阻塞·等前置',
+  'person/failed': '执行失败·等处理',
+  'person/review': '部分落地·等续跑',
+  'person/plan': '待定执行计划',
+  'working/queued': '排队中',
+  working: '执行中',
+  stalled: '应入队未入队',
+});
+const ENDED_STATUS = new Set(['applied', 'rejected', 'wontfix']);
+const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
+const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled', 'partial'];
+const PLAN_REASONS = Object.freeze({
+  manual: '执行方式选了 manual（只批准、不自动跑）—— 要么改成 immediate/scheduled，要么手动放行',
+  'scheduled-at-missing': '选了 scheduled 但没填时刻',
+  'scheduled-at-invalid': 'execAt 不是合法时间',
+  'not-approved': '状态不是 approved（理论上不会走到这里）',
+});
+const clipStage = (text, max = 120) => {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+/**
+ * `autoEnqueueBlocker(rec, [])` 在「没有活跃执行」这一前提下的化简。
+ *
+ * ⛔ 只能是化简，不能重新发明：真正的判据在 evolve 侧，这里多一个分支就是多一处漂移。
+ *    传入空数组时那边剩下的分支是 status≠approved / manual / scheduled-at-missing /
+ *    scheduled-at-invalid，以及「都满足 ⇒ null」。
+ * ⛔ status 这一支不能省 —— 省了，脏数据（status 不在枚举里）会让两边给出不同的
+ *    理由文案。stage-parity 的笛卡尔用例就是靠这一格抓到的。
+ */
+function planBlocker(status, mode, at) {
+  if (status !== 'approved') return 'not-approved';
+  if (mode === 'manual') return 'manual';
+  if (mode === 'scheduled') {
+    if (at === '') return 'scheduled-at-missing';
+    if (!Number.isFinite(Date.parse(at))) return 'scheduled-at-invalid';
+  }
+  return null;
+}
+
+/** 一条提案此刻卡在谁身上。返回 `{stage, side, label, why, stalled}`。 */
+export function ticketStageOf(rec) {
+  const mode = EXEC_MODES.includes(rec?.execMode) ? rec.execMode : 'manual';
+  const state = EXEC_STATES.includes(rec?.execState) ? rec.execState : 'idle';
+  const at = typeof rec?.execAt === 'string' ? rec.execAt : '';
+  const blocker = typeof rec?.blocker === 'string' ? rec.blocker.trim() : '';
+  const err = typeof rec?.execError === 'string' ? rec.execError : '';
+  const status = typeof rec?.status === 'string' && rec.status !== '' ? rec.status : 'proposed';
+  const out = (stage, why) => ({
+    stage,
+    side: STAGE_SIDES[stage] ?? 'system',
+    label: STAGE_LABELS[stage] ?? stage,
+    why: why ?? '',
+    stalled: stage === 'stalled',
+  });
+  if (ENDED_STATUS.has(status)) return out('closed', `提案已 ${status}`);
+  if (status === 'proposed') return out('draft', '还没人批准这条提案');
+  if (blocker !== '') return out('person/blocked', `阻塞：${clipStage(blocker, 80)}`);
+  if (state === 'failed') return out('person/failed', clipStage(err) || '上次执行失败，原因未记录');
+  if (state === 'partial') return out('person/review', clipStage(err) || 'job 成功但提案没做完');
+  if (state === 'deferred') return out('working/queued', clipStage(err) || '已顺延，到期自动恢复');
+  if (state === 'queued') return out('working/queued', at ? `排在 ${at.slice(0, 16).replace('T', ' ')}` : '等执行器捡起');
+  if (state === 'running') return out('working', '执行器正在跑');
+  const why = planBlocker(status, mode, at);
+  if (why !== null) return out('person/plan', PLAN_REASONS[why] ?? String(why));
+  return out('stalled', `计划就绪（${mode}）但队列里没有执行 —— 应入队未入队`);
+}
+
 export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
   const observedAt = new Date(now).toISOString();
   const storagesDir = typeof dirs.storagesDir === 'string' ? dirs.storagesDir : null;
@@ -459,6 +552,7 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
     const refs = extractRefs(body);
     const evidence = probeEvidence(refs, repoRoot);
     const src = String(r?.source ?? '').trim();
+    const stage0 = ticketStageOf(r);
     return {
       id: String(r?.id ?? ''),
       title: String(r?.title ?? '（无标题）'),
@@ -474,6 +568,14 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       execState: String(r?.execState ?? 'idle'),
       execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
       execError: String(r?.execError ?? ''),
+      // 2026-11-01：工单状态机。status + execState + blocker 三个字段各自都对，但
+      // 「现在该谁动」从来没有一个字段回答 —— 面板只能拿 execState 硬猜，猜出过
+      // 两次相反的事故（a85ef850 把「卡在前置」写成「待入队」；846f4fbb 把
+      // 「没做完」写成「已落地」）。stage 就是那个缺的字段。
+      stage: stage0.stage,
+      stageSide: stage0.side,
+      stageLabel: stage0.label,
+      stageWhy: stage0.why,
       // 2026-10-27：带出前置条件。标签要能区分「等入队」与「被 blocker 挡住」——
       // 只看 execState 的话两者都是 idle，标签只能瞎猜（实机就显示成「已批准·待入队」，
       // 而待办那边同一份数据写的是「已批准·阻塞中（等前置）」，两处口径打架）。

@@ -24,8 +24,11 @@
  * ## 安全开关
  *
  *   AGINT_EXECUTOR=off        —— 整体停摆（出厂即开；红线定义见 AGENTS.md）
- *   config.weeklyCommitCap    —— 本周自动落地次数上限，默认 3，对齐 AGENTS.md
- *                                「不要跨周累计自动部署超过 3 次」这条红线
+ *   config.weeklyCommitCap    —— 本周自动落地次数上限。⛔ 代码默认 3、红线 5，
+ *                                两者**不是同一个数**：红线 2026-10-29 由 3 改为 5
+ *                                （commit a3b9b48），默认值故意没跟着动 ——
+ *                                新部署没写 config 时不该拿着一个未经裁定的数字
+ *                                开始自动改代码。改红线请改 config（本机/NAS 都写 5）。
  *   config.maxAttempts        —— 同一提案最多试几次（默认 2，防无限重试烧 token）
  *   config.maxPerTick         —— 每个 tick 最多跑几条（默认 1，串行，不抢 CPU）
  *

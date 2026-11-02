@@ -80,10 +80,28 @@ proposed ──批准（人工）──▶ approved  （已批准待执行）
 |---|---|
 | `execMode` | `manual`（只批准，默认）/ `immediate`（立即执行）/ `scheduled`（定时执行） |
 | `execAt` | 定时到期时刻（ISO）；其它模式为空串 |
-| `execState` | `idle` / `queued` / `running` / `succeeded` / `failed` / `deferred` / `cancelled` |
+| `execState` | `idle` / `queued` / `running` / `succeeded` / `failed` / `deferred` / `cancelled` / `partial` |
 | `execAttempts` | 已尝试次数（执行器 claim 时自增） |
 | `execError` | 最近一次失败 / 顺延原因 |
 | `execStartedAt` / `execFinishedAt` | 最近一次起止时刻 |
+
+> ⚠️ `execState = partial`（2026-10-28 加）：job 成功、提案没做完。
+> 一次自动执行的原子单元是「一个文件的一次编辑」，而提案常常横跨多个文件 ⇒
+> 没有这一档就只能二选一：标 `applied`（撒谎）或报失败（把已落地的那份说成没做）。
+> 提案 `846f4fbb` 实证。
+
+### 工单状态机 `stage`（2026-11-01，v0.16.0）
+
+`status` 与 `execState` 各自都对，但没有一个字段回答「现在该谁动」。`stage` 补这一格：
+纯函数 `lib/execution.js:ticketStage()`，九档（closed / draft / person·blocked /
+person·failed / person·review / person·plan / working·queued / working / stalled），
+**不读时钟、不碰 execution 表**，只看提案行本身 —— 面板直接读落盘 JSON 时才能算出同一个答案。
+
+读接口（`propose` / `listProposals` / `getProposal`）带 `stage` / `stageSide` /
+`stageLabel` / `stageWhy` 四个**派生字段，不落盘**（同 `staleSince`）。
+完整判据表见 `docs/plugins/agint-executor.md`「工单状态机」一节。
+⛔ 面板有一份等价镜像（`v2-proposals.js:ticketStageOf`），等价性由
+`test/stage-parity.test.mjs` 的 1080 组穷举钉住 —— 改这边必须同时改那边。
 
 - 状态成为 `approved` 且**没有 blocker**、计划是 `immediate`/`scheduled` ⇒ **自动入队**
   （`agint_evolve.execution` 表）。已批准时清空 blocker ⇒ 补入队；离开 `approved` ⇒ 撤销活跃执行。

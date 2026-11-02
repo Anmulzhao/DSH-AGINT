@@ -1513,8 +1513,29 @@ const pescAttr=s=>pesc(s).replace(/"/g,"&quot;");
 const PLABEL={proposed:"待批",approved:"已批准待执行",applied:"已落地",rejected:"已拒绝",wontfix:"wontfix"};
 /* 2026-10-27：approved 不再是单一状态 —— 它下面有「排队中 / 执行中 / 已顺延 / 失败 / 手动」
    五种处境。一个标签盖住五种处境，就会出现「面板说已批准待执行，实际正在自动跑」的误读。 */
+/* 2026-11-01：服务端 v2-proposals 现在会给出 `stage`（工单状态机，判据在
+   agint-evolve lib/execution.js: ticketStage）。有 stage 就按 stage 出标签 ——
+   它是**唯一**一次算出来的「现在该谁动」；没有就退回下面那套按 execState 猜的
+   旧逻辑（老 payload / 别的调用方仍要能work）。
+   ⛔ 文案仍留在页面里：stage 是判据，措辞是展示层的事，别让后台决定中文怎么写。 */
+const PSTAGE={
+  "person/blocked":"已批准·阻塞中",
+  "person/failed":"已批准·执行失败",
+  "person/review":"已批准·部分落地（剩余单元见详情）",
+  "working/queued":"已批准·排队中",
+  working:"已批准·执行中",
+  /* 旧逻辑在这一档说不出来：plan 就绪、队列空，它会一直显示「待入队」，
+     读的人以为再等等就会自己跑 —— 而它永远不会（没人会来把它排进去）。 */
+  stalled:"已批准·应入队未入队（缺陷）",
+};
 function plabel(it){
   if(!it||it.status!=="approved") return PLABEL[it&&it.status]||(it&&it.status)||"?";
+  const s=it.stage;
+  if(s&&PSTAGE[s]) return PSTAGE[s];
+  /* person/plan 要按执行方式细分：manual 是「等人改计划」，定时缺时刻是「计划不完整」。
+     两者旧逻辑都写成「待入队」，而它们都排不进去。 */
+  if(s==="person/plan")
+    return it.execMode==="manual"?"已批准（手动）":"已批准·定时缺时刻";
   /* 2026-10-29：原来这里有一档「已批准（不可自动执行）」，已撤。
      老板裁定：批准即自动执行；那档标签等于把「跑不动」写成「不该跑」，
      读的人会以为系统还在等他动手。现在一律按真实执行态显示。 */

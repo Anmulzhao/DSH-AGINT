@@ -1,5 +1,41 @@
 # agint-family-panel CHANGELOG
 
+## 0.11.0 — 2026-11-01
+
+### 提案台开始带 `stage`（工单状态机）
+
+`agint-evolve` v0.16.0 起了 `ticketStage()`：一条提案，一个「现在该谁动」的答案。
+面板这边做两件事，都不改现有行为：
+
+1. **数据层带出 stage**：`v2-proposals.js` 的每条 item 新增
+   `stage` / `stageSide` / `stageLabel` / `stageWhy` 四个字段。
+2. **标签优先按 stage 出**：`panel-v2.html:plabel()` 先看 `it.stage`，没有就退回原来那套
+   按 `execState` 猜的逻辑（老 payload / 别的调用方仍要能work）。文案仍留在页面里 ——
+   stage 是判据，中文措辞是展示层的事，不让后台决定。
+
+### 顺带补掉两个说不出来的现场
+
+- `stalled`（计划就绪、队列里却没有执行）—— 旧逻辑在这一档只能显示「已批准·待入队」，
+  读的人以为再等等就会自己跑，而**永远不会**（没人会来把它排进去）。
+  新标签：`已批准·应入队未入队（缺陷）`。
+- `person/plan` 里定时缺时刻的那一支 —— 旧逻辑同样写成「待入队」，其实计划就不完整。
+
+### 镜像实现与等价性
+
+面板**不 import agint-evolve**（既有纪律：它只读落盘文件），所以 `v2-proposals.js` 里保留了
+`ticketStageOf()` 镜像。与 `hasBlocker` / `isExecActive` / `startOfWeek` 同一处理方式：
+**两处各有一份，靠用例钉住等价** —— 这次是 `test/stage-parity.test.mjs` 的 1080 组穷举
+（status × execMode × execState × blocker × execAt）。
+
+> 这不是形式主义：写这份用例时它立刻抓到一处真实漂移 —— 我的镜像漏了
+> `autoEnqueueBlocker()` 的 `not-approved` 分支，脏数据下两边会给出不同的理由文案。
+> 已经补上。漂移一旦上线，面板说的和工具说的就是两件事，而两边都不像在撒谎。
+
+### 验收
+
+面板全量 135 用例全绿（含新增 3 组等价性用例）；`plabel` 的旧断言（阻塞优先 / 空白 blocker
+不算阻塞）**逐条未改**——它们走的是无 `stage` 的回退路径，正好证明这条改动是加法。
+
 ## 0.10.0 — 2026-10-29
 
 ### 「不可自动执行」这一档整体拆除

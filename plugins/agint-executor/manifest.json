@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-executor",
-  "version": "0.3.0",
-  "description": "提案执行器：（v0.2.1：部分落地 —— job 成功不等于提案做完，scope.complete=false 时把剩余单元交回 evolve，提案不标 applied）approved 之后由它动手。轮询 agint_evolve.execution 队列（immediate/scheduled），逐条复核状态与 blocker，调 agint.evolutionDriver.runForProposal 走既有 D-QAF 流水线，成功把提案标 applied 并留落地证据，失败留原因 + 有限重试。不持存储域（队列在 agint.evolve），全软依赖，AGINT_EXECUTOR=off 可停。 v0.2.0：新增语义闸（提案声明 autoExecutable=false ⇒ 撤单，不进执行）；driver 判确定性失败（not-actionable）时一次收尾不重试。",
+  "version": "0.3.1",
+  "description": "提案执行器：（v0.2.1：部分落地 —— job 成功不等于提案做完，scope.complete=false 时把剩余单元交回 evolve，提案不标 applied）approved 之后由它动手。轮询 agint_evolve.execution 队列（immediate/scheduled），逐条复核状态与 blocker，调 agint.evolutionDriver.runForProposal 走既有 D-QAF 流水线，成功把提案标 applied 并留落地证据，失败留原因 + 有限重试。不持存储域（队列在 agint.evolve），全软依赖，AGINT_EXECUTOR=off 可停。 v0.3.0：删掉 v0.2.0 加的语义闸（autoExecutable=false ⇒ 撤单），老板裁定「批准即自动执行」⇒ 判据从 7 道回到 6 道，字段保留但不再参与任何判据。v0.3.1：修注释里 weeklyCommitCap 的红线旧值（代码默认 3 / 红线 5，刻意不同），零行为改动。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -69,5 +69,10 @@
     },
     "changelog": "CHANGELOG.md",
     "compatSince": "0.1.0"
+  },
+  "tests": {
+    "entry": "test/executor.test.mjs",
+    "command": "node test/executor.test.mjs",
+    "expectedExit": 0
   }
 }
