@@ -149,16 +149,32 @@ function apply(ctx, config) {
       weekCommits = Number(stats?.lastWeekCommits ?? 0) || 0;
     } catch { /* 数不出来按 0 算；周上限由 decideRun 的 cap>0 分支再判 */ }
 
+    // 2026-11-03（W8-3）：核审批凭据。
+    // 取不到（老版 evolve / 调用抛错）⇒ null ⇒ decideRun 不拦。
+    // ⛔ 这里刻意不把「取不到」当 mismatch：那会把 evolve 的临时故障
+    //    变成「所有提案疑似越权」的一次性停摆。
+    let mandate = null;
+    try {
+      if (typeof evolve.checkMandate === 'function') {
+        mandate = await evolve.checkMandate(job.proposalId);
+      }
+    } catch (error) {
+      state.lastError = `checkMandate failed: ${error?.message ?? error}`;
+    }
+
     const decision = decideRun({
       job,
       proposal,
       weekCommits,
       cap: cfg.weeklyCommitCap,
       driverReady: typeof driver?.runForProposal === 'function',
+      mandate,
       now,
     });
 
     if (decision.action === 'cancel') {
+      // ⛔ 越权撤单要把「为什么」写进执行台账的 reason 里 —— 否则人看到的
+      //    只是「已撤销」，会以为是有人主动撤的。
       await evolve.finishExecution(job.id, { state: 'cancelled', reason: decision.reason });
       state.cancelled += 1;
       return { proposalId: job.proposalId, action: 'cancel', reason: decision.reason };

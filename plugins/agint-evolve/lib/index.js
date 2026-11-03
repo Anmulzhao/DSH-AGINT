@@ -30,6 +30,9 @@ import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { findingsFromSnapshot, buildReport } from './report.js';
+// W8-3 审批凭据：纯函数模块，无外部依赖。
+// ⛔ 不要改成从 agint-evolution-driver import —— 跨插件源码 import 在部署位会 ENOENT。
+import { grantMandate, checkMandate } from './mandate.js';
 import {
   EXEC_MODES,
   EXEC_STATES,
@@ -193,6 +196,27 @@ const proposalSchema = z.object({
   formulaVersion: z.string().default(''),
   assumedBy: z.string().default(''),
   conflictsWith: z.array(z.string()).default([]),
+  // 2026-11-03（W8-3）：**审批凭据** —— 批准那一刻的改动范围。
+  //
+  // 为什么需要：`approved` 只说「同意做」，没说「同意改哪些东西」。driver 从提案
+  // **正文**抽路径再写仓库，所以「改哪里」是执行那一刻才定的。正文批准后被改宽，
+  // 或抽取规则变宽，都会让一次批准覆盖到没人批过的文件，而台账上毫无异常。
+  //
+  //   proposalId     凭据归属（防挪用；与提案 id 不符 ⇒ 直接判越权）
+  //   paths          批准时从正文抽出的仓库相对路径（归一 + 排序）
+  //   grantedAt      签发时刻
+  //   policyVersion  签发时的判尺口径（空串 = 未知，不猜）
+  //
+  // ⛔ 必须 nullable + default(null)：老提案（90+ 条）没有这个字段，若设成
+  //    `.default({...})` 会给它们凭空造一份「批准范围为空」的凭据 ——
+  //    那会让 checkMandate 把「没有凭据」（unknown）误读成「批准了零个文件」。
+  //    null 与「有凭据但是空数组」必须可区分。
+  mandate: z.object({
+    proposalId: z.string().default(''),
+    paths: z.array(z.string()).default([]),
+    grantedAt: z.string().default(''),
+    policyVersion: z.string().default(''),
+  }).nullable().default(null),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -857,6 +881,22 @@ function apply(ctx, config) {
       throw new Error(`agint-evolve: note 必须是字符串（收到 ${typeof nextNote}）`);
     }
     const updated = normalizeProposal({ ...rec, status, note: nextNote, updatedAt: nowIso() });
+    // 2026-11-03（W8-3）：进入 approved 的那一刻签发审批凭据。
+    //
+    // 只在**没有凭据时**签发（`rec.mandate == null`）：
+    //   - 已批准后再改 blocker / 执行计划 ⇒ 不该重签，否则「改一句阻塞原因」
+    //     就能把范围悄悄刷新成新正文 —— 那等于给越权开了后门。
+    //   - 从 applied/rejected 改判回 approved ⇒ 原文已变，这时**应该**重签，
+    //     因为这是一次新的批准（旧凭据对应的是旧状态下的决定）。
+    if (status === 'approved' && (rec.mandate === null || rec.mandate === undefined)) {
+      updated.mandate = grantMandate(updated, currentFormulaVersion());
+    }
+    // 离开 approved ⇒ 凭据作废。凭据的意义是「这次批准覆盖什么」，
+    // 状态已经不是批准了，留着它只会让下次核对拿一份过期授权。
+    // （改判回 proposed 再批准会重新签发，见上。）
+    if (status !== 'approved' && updated.mandate !== null && updated.mandate !== undefined) {
+      updated.mandate = null;
+    }
     if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
     if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
     // 2026-10-27：显式改「能不能自动执行」。⛔ 只认布尔 —— 传字符串/数字一律
@@ -1016,6 +1056,28 @@ function apply(ctx, config) {
     /** 全部 stage 档位的名字（面板做图例 / 工具做校验时用，别各自硬编码）。 */
     stages() {
       return [...TICKET_STAGES];
+    },
+
+    /**
+     * checkMandate(id) —— 核对该提案此刻的改动范围是否仍在批准范围内。
+     *
+     * 2026-11-03（W8-3）：给 agint-executor 在**动手之前**调。
+     * 返回三态 `{state: 'ok'|'mismatch'|'unknown', extra, granted, current, reason}`。
+     *
+     * ⛔ 调用方必须区分 unknown 与 ok：
+     *    unknown = 老提案没凭据（升级前批的）⇒ **放行**，但要在日志里留痕，
+     *              否则「没验过」和「验过了」在台账上长得一模一样。
+     *    mismatch ⇒ 拒绝执行，让它回队列等重新审批。
+     * 把 unknown 当 mismatch 会让升级瞬间所有历史提案集体停摆；
+     * 把 unknown 当 ok 又会让「没验过」冒充「验过了」—— 两者都不行。
+     *
+     * 未知 id 返回 null（与 getProposal 同口径：找不到就是找不到）。
+     */
+    async checkMandate(id) {
+      const t = await table();
+      const rec = t.get(id);
+      if (!rec) return null;
+      return checkMandate(rec);
     },
 
     /**

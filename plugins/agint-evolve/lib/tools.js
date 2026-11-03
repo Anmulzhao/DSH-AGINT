@@ -158,6 +158,18 @@ function apply(ctx) {
           formulaVersion: { required: true, type: 'string' },
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+          // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+          mandate: {
+            required: true,
+            type: ['object', 'null'],
+            properties: {
+              proposalId: { type: 'string' },
+              paths: { type: 'array', items: { type: 'string' } },
+              grantedAt: { type: 'string' },
+              policyVersion: { type: 'string' },
+            },
+          },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机。与 staleSince 同样是派生值 —— 不进 schema、
           // 不落盘，但**输出面必须声明**，否则 DSH 的 strict 校验直接把整个返回打回。
@@ -223,6 +235,18 @@ function apply(ctx) {
                 formulaVersion: { required: true, type: 'string' },
                 assumedBy: { required: true, type: 'string' },
                 conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+                // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+                // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+                mandate: {
+                  required: true,
+                  type: ['object', 'null'],
+                  properties: {
+                    proposalId: { type: 'string' },
+                    paths: { type: 'array', items: { type: 'string' } },
+                    grantedAt: { type: 'string' },
+                    policyVersion: { type: 'string' },
+                  },
+                },
                 staleSince: { required: true, type: 'string' },
                 // 2026-11-01：工单状态机（派生值，同 staleSince）。
                 stage: { required: true, type: 'string' },
@@ -296,6 +320,18 @@ function apply(ctx) {
           formulaVersion: { required: true, type: 'string' },
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+          // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+          mandate: {
+            required: true,
+            type: ['object', 'null'],
+            properties: {
+              proposalId: { type: 'string' },
+              paths: { type: 'array', items: { type: 'string' } },
+              grantedAt: { type: 'string' },
+              policyVersion: { type: 'string' },
+            },
+          },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机（派生值，同 staleSince）。
           stage: { required: true, type: 'string' },
@@ -352,6 +388,11 @@ function apply(ctx) {
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
         formulaVersion: rec.formulaVersion ?? '', assumedBy: rec.assumedBy ?? '',
         conflictsWith: Array.isArray(rec.conflictsWith) ? rec.conflictsWith : [],
+        // 2026-11-03（W8-3）：审批凭据。approve 之后这里会是一份
+        // {proposalId, paths, grantedAt, policyVersion}，其它状态是 null。
+        // ⛔ 传 null 而不是省略：省略在 strict 校验下等于"字段不存在"，
+        //    与"有凭据但内容空"分不开。
+        mandate: rec.mandate ?? null,
         staleSince: rec.staleSince ?? '',
         stage: String(stage.stage ?? 'draft'),
         stageSide: String(stage.side ?? 'system'),

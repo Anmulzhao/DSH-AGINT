@@ -38,10 +38,11 @@ import { nextWeekStart } from './week.js';
  * @param {number} input.weekCommits 本周已自动落地次数
  * @param {number} input.cap         周上限（0 = 不限）
  * @param {boolean} input.driverReady `agint.evolutionDriver.runForProposal` 是否可用
+ * @param {object|null} [input.mandate] `agint.evolve.checkMandate()` 的结果（W8-3）
  * @param {number} input.now
  * @returns {{action:'run'}|{action:'cancel',reason:string}|{action:'defer',dueAt:string,reason:string}|{action:'fail',error:string}}
  */
-export function decideRun({ job, proposal, weekCommits = 0, cap = 0, driverReady = false, now = Date.now() }) {
+export function decideRun({ job, proposal, weekCommits = 0, cap = 0, driverReady = false, mandate = null, now = Date.now() }) {
   if (!proposal) {
     return { action: 'cancel', reason: '提案已不存在（可能被删除）' };
   }
@@ -56,6 +57,21 @@ export function decideRun({ job, proposal, weekCommits = 0, cap = 0, driverReady
   }
   if (!driverReady) {
     return { action: 'fail', error: 'agint.evolutionDriver.runForProposal 未挂载 —— 没有执行能力，拒不改仓库' };
+  }
+  // 2026-11-03（W8-3）：审批凭据核验 —— 放在驱动之后、周额度之前。
+  //
+  // 为什么在额度之前：越权不是「这次不该跑」，是「这次没资格跑」。
+  // 让它去顺延会把一份无效授权排到下周，下周照样无效。也不该算失败消耗重试。
+  //
+  // ⛔ 只有**明确的 mismatch** 才拦：
+  //    unknown（老提案没凭据）必须放行 —— 升级瞬间 90+ 条历史提案都没有凭据，
+  //    拦下来等于全站停摆。但放行不等于安心：`mandateState` 会带回调用方，
+  //    让它落进执行日志，「没验过」和「验过了」在台账上不能长得一样。
+  if (mandate && mandate.state === 'mismatch') {
+    return {
+      action: 'cancel',
+      reason: `审批凭据不覆盖当前改动范围，需重新审批：${mandate.reason}`,
+    };
   }
   if (cap > 0 && weekCommits >= cap) {
     return {
