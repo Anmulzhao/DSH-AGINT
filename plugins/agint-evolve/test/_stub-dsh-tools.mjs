@@ -25,4 +25,9 @@
 //   ⛔ 改契约请改 `plugins/_shared/test-stub-dsh-tools.mjs`，并跑它的阴性对照
 //     （plugins/_shared/test-stub-contract.test.mjs）。
 
-export { defineTool, assertRequiredTrue, assertToolCallable } from '../../_shared/test-stub-dsh-tools.mjs';
+export {
+  defineTool,
+  assertRequiredTrue,
+  assertSchemaSubset,
+  assertToolCallable,
+} from '../../_shared/test-stub-dsh-tools.mjs';

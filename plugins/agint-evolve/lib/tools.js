@@ -159,16 +159,33 @@ function apply(ctx) {
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
           // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
-          // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+          // 不能被读成「批准范围为空」。
+          // ⛔ 可空**只能**用 oneOf 表达，不能写 `type: ['object','null']`：
+          //    dsh-tools 的 JSON Schema 子集只收**单个** type 字符串
+          //    （dsh-tools/lib/types/json-schema.js:244，
+          //    SCHEMA_TYPES 是个闭集），type 数组会在 tools.register() 里
+          //    抛 `unsupported JSON schema: … .type must be string/number/…`。
+          //    而 register() 是**整个 tools 插件挂载**的入口 ⇒ 一行 schema 写错
+          //    等于 agint-evolve-tools 整行激活失败 ⇒ 该 preset 的 agent 起不来，
+          //    UI 显示「加载失败」。DSH 上游的惯用写法见 agint-cron/lib/tools.js:132。
+          //    另：oneOf 分支里**不许**出现 required/properties 等兄弟关键字
+          //    （json-schema.js:175 ONE_OF_SIBLING_KEYWORDS），故 properties 只能
+          //    留在 object 分支内部。
           mandate: {
             required: true,
-            type: ['object', 'null'],
-            properties: {
-              proposalId: { type: 'string' },
-              paths: { type: 'array', items: { type: 'string' } },
-              grantedAt: { type: 'string' },
-              policyVersion: { type: 'string' },
-            },
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  proposalId: { type: 'string' },
+                  paths: { type: 'array', items: { type: 'string' } },
+                  grantedAt: { type: 'string' },
+                  policyVersion: { type: 'string' },
+                },
+              },
+              { type: 'null' },
+            ],
           },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机。与 staleSince 同样是派生值 —— 不进 schema、
@@ -236,16 +253,25 @@ function apply(ctx) {
                 assumedBy: { required: true, type: 'string' },
                 conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
                 // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
-                // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+                // 不能被读成「批准范围为空」。
+                // ⛔ 可空只能用 oneOf，`type: ['object','null']` 会被 dsh-tools 的
+                //    JSON Schema 子集拒收，进而让整行 tools 插件挂载失败（详见
+                //    propose 段同名字段的取证注释）。
                 mandate: {
                   required: true,
-                  type: ['object', 'null'],
-                  properties: {
-                    proposalId: { type: 'string' },
-                    paths: { type: 'array', items: { type: 'string' } },
-                    grantedAt: { type: 'string' },
-                    policyVersion: { type: 'string' },
-                  },
+                  oneOf: [
+                    {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        proposalId: { type: 'string' },
+                        paths: { type: 'array', items: { type: 'string' } },
+                        grantedAt: { type: 'string' },
+                        policyVersion: { type: 'string' },
+                      },
+                    },
+                    { type: 'null' },
+                  ],
                 },
                 staleSince: { required: true, type: 'string' },
                 // 2026-11-01：工单状态机（派生值，同 staleSince）。
@@ -321,16 +347,25 @@ function apply(ctx) {
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
           // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
-          // 不能被读成「批准范围为空」。type 用 ['object','null'] 表达可空。
+          // 不能被读成「批准范围为空」。
+          // ⛔ 可空只能用 oneOf，`type: ['object','null']` 会被 dsh-tools 的
+          //    JSON Schema 子集拒收，进而让整行 tools 插件挂载失败（详见
+          //    propose 段同名字段的取证注释）。
           mandate: {
             required: true,
-            type: ['object', 'null'],
-            properties: {
-              proposalId: { type: 'string' },
-              paths: { type: 'array', items: { type: 'string' } },
-              grantedAt: { type: 'string' },
-              policyVersion: { type: 'string' },
-            },
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  proposalId: { type: 'string' },
+                  paths: { type: 'array', items: { type: 'string' } },
+                  grantedAt: { type: 'string' },
+                  policyVersion: { type: 'string' },
+                },
+              },
+              { type: 'null' },
+            ],
           },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机（派生值，同 staleSince）。

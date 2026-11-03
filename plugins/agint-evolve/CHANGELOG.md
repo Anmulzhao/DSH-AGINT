@@ -1,5 +1,75 @@
 # agint-evolve CHANGELOG
 
+## v0.21.0（2026-11-03 · 紧急修复：v0.20.0 的 output schema 让整个 preset 加载失败）
+
+### 现象
+
+升级到 0.20.0 后，UI 里所有 AGINT preset（`agint` / `agint-blockchain` / `agint-investor` /
+`agint-ops` / `agint-zgs`）一律显示红色「加载失败」，错误原文：
+
+```
+agint-evolve-tools (../../.agint-bundle/plugins/agint-evolve/lib/tools.js):
+unsupported JSON schema:
+schema.properties.mandate.type must be string/number/integer/boolean/null/array/object/json,
+or use oneOf
+```
+
+### 根因
+
+v0.20.0 给三处 output schema 的可空凭据写成 `type: ['object','null']`。
+dsh-tools 的 JSON Schema **子集只收单个 type 字符串**
+（`dsh-tools/lib/types/json-schema.js:244`，`SCHEMA_TYPES` 是闭集），
+type 数组直接抛 `UNSUPPORTED_SCHEMA`。
+
+而 `assertSupportedJsonSchema(output.schema)` 的位置是 `tools.register()`
+（`dsh-tools/lib/index.js:2978`）—— **tools 插件挂载的入口**。
+一行 schema 写错 ⇒ 整行 `agint-evolve-tools` 激活失败 ⇒ 该 preset 下所有 agent 起不来。
+preset 的失败态是整条链的，所以五个 preset 一起红。
+
+### 为什么门禁全绿、用例全绿
+
+- 门禁四连（plugin-check / check-wiring / parity / compat）**都不调 `tools.register()`**，
+  它们查的是接线、副本一致性、dsh 版本兼容；
+- 共用契约替身 `plugins/_shared/test-stub-dsh-tools.mjs` 的 `assertRequiredTrue`
+  **只查 `required === true`，完全不看 `type`** —— 这是最大的盲区：
+  替身比真宿主宽松，所以「全绿」没有判据价值。
+
+### 修法
+
+1. `lib/tools.js` 三处改成上游惯用的 oneOf 写法（对照 `agint-cron/lib/tools.js:132`）：
+   ```js
+   mandate: {
+     required: true,
+     oneOf: [
+       { type: 'object', additionalProperties: false, properties: { ... } },
+       { type: 'null' },
+     ],
+   }
+   ```
+   ⛔ `properties` 只能留在 object 分支**内部** —— raw 子集禁止 `properties` 与 `oneOf` 同级
+   （`json-schema.js:175`）。但 `required: true` 可以同级：它是 DSL 作者层的 requiredness 标记，
+   编译期被提到父级 `required` 数组、不进入子节点产物（`index.js:603/604`），实测无误。
+
+2. **补护栏**：`plugins/_shared/test-stub-dsh-tools.mjs` 新增 `assertSchemaSubset()`，
+   `defineTool` 在 `assertRequiredTrue` 之后调用它。复刻 raw 子集的三条判定：
+   type 必须单字符串且在闭集内 / type 与 oneOf 不并存 / oneOf 同级禁 properties·required(数组)·items。
+   ⚠️ 布尔 `required: true` 与 oneOf 同级**要放行** —— 拒绝真宿主接受的写法是另一种失真。
+
+3. `plugins/_shared/test-stub-contract.test.mjs` 加 5 条用例（阴性对照 ④⑤⑥⑦ + 两条阳性），
+   其中 ④ 直接复刻本次事故形状。
+
+### 阴性对照（实测变红）
+
+把任一处改回 `type: ['object','null']` ⇒ evolve 用例 **9 条变红**，
+含 `tools-contract.test.mjs` 的「工具注册」「真调一次」两条。
+
+### 验证
+
+- 真实 dsh-tools（0.2.1-rc.5）直接 `mod.apply(fakeCtx)` ⇒ 6 个工具全部注册成功
+  （`evolve_review` / `evolve_read` / `evolve_propose` / `evolve_proposals` /
+  `evolve_set_status` / `evolve_executions`）；
+- evolve 测试 119/119；共用契约测试 12/12。
+
 ## v0.20.0（2026-11-03 · W8-3 Mandate：批准时固化改动范围，越界须重新审批）
 
 ### 起因：`approved` 只说「同意做」，没说「同意改哪些东西」
