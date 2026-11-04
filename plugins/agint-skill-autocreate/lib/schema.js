@@ -218,6 +218,12 @@ export const ConfigSchema = z.object({
   // 置 false 整门关闭，退回 2026-09-17 及之前的行为。
   pattern_specificity_gate_enabled: z.boolean().default(true),
 
+  // ── 检测层信息量门（提案 2f5c70ce；与 A1 特异性门同判据层，信息半）──────
+  // 判据（lib/detector.js `passesInformationGate`）：过了 A1 的模式，其参数签名
+  // 至少要有一个参数键，否则视为"非脚手架但零信息"（如业务工具被零参数重复调用），
+  // 不成候选、照常入库留痕。默认 **开**；置 false 整门关闭，退回只靠 A1 的行为。
+  pattern_information_gate_enabled: z.boolean().default(true),
+
   // 追加的**脚手架黑名单**（与 detector.js 的 SCAFFOLD_TOOLS 取**并集**，不替换）。
   // 为什么扩展的是黑名单而不是白名单：判据是黑名单（序列全是脚手架才拦），
   // 需要能补的是「宿主新出现的一种通用动作」（如新 shell 工具、新的通用检索工具），
@@ -464,6 +470,8 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'sessions_root',
   // A1 特异性门（2026-09-18）
   'pattern_specificity_gate_enabled',
+  // 检测层信息量门（提案 2f5c70ce）
+  'pattern_information_gate_enabled',
   'scaffold_tools_extra',
   // 发布前特异性复检（2026-09-18）
   'release_specificity_gate_enabled',

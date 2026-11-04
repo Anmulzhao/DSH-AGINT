@@ -92,6 +92,10 @@ export async function evaluateCandidate(args) {
     : checkModelScope({ draft: candidate.skillDraft });
   const allFindings = [...staticFindings, ...semanticFindings, ...modelScopeFindings];
   const blockers = allFindings.filter((f) => f.severity === 'blocker');
+  // 信息量/形态判据在 Phase 1 的落点：A3 四条 blocker 显式标 `criterion:
+  // 'information-form'`（见 semantics.js）。这里单独计数，便于周复盘区分
+  // 「安全/格式向被拒」与「信息量/形态向被拒」。
+  const informationFindings = allFindings.filter((f) => f.criterion === 'information-form').length;
   evalResults.phase1 = {
     status: blockers.length ? 'reject' : 'pass',
     families: [...new Set(allFindings.map((f) => f.family))],
@@ -99,7 +103,9 @@ export async function evaluateCandidate(args) {
     // 便于周复盘区分「安全向被拒」与「语义向被拒」
     semanticFindings: semanticFindings.length,
     modelScopeFindings: modelScopeFindings.length,
+    informationFindings,
     semanticCodes: semanticFindings.map((f) => f.code),
+    informationCodes: allFindings.filter((f) => f.criterion === 'information-form').map((f) => f.code),
   };
   if (blockers.length) {
     return {

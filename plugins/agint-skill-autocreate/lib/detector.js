@@ -150,6 +150,50 @@ export function passesSpecificityGate(toolSequence, opts = {}) {
 }
 
 /**
+ * 信息量门（检测层"信息量/形态"判据的**信息半**）—— 提案 2f5c70ce。
+ *
+ * 与 A1 特异性门（形态半）的分工（两者正交、同判据层）：
+ *   - A1 判「序列里有没有领域工具」→ 拦纯脚手架（形态层面：这不是一类事）；
+ *   - 本门判「过了 A1 的模式**有没有实质参数信息**」→ 拦"非脚手架但零信息"。
+ *
+ * 为什么需要：A1 只问形态。一个序列只要带一个领域工具（如 `wiki_write`）
+ * 就能过 A1，但如果这个工具每次都是**零参数**被调用，那它只是"重复调了某个
+ * 业务工具 N 次"——工具自己的文档已经说了它能做什么，这条模式没有比工具文档
+ * 多知道任何东西。这与 Phase 1 的 A3（正文零具体值）同源：检测层先挡一道，
+ * 让"零信息"模式不成候选；A3 四条是正文层面的兜底。
+ *
+ * 判据（纯结构、字符串可判定）：模式的参数签名里**至少有一个真实参数键**。
+ * 参数签名形态见 aggregator.signatureOf：
+ *   - 工具零参被调 → `'empty'`；null/数组入参 → `'none'` —— 这两种**不算信息**
+ *     （"调了工具但没带参数" = 零信息，与没调一样没多知道东西）；
+ *   - 真实入参 → `'key:type|key:type'`，其中的 key 才是信息。
+ * 全部工具签名都是 `empty`/`none`/缺失 ⇒ 零信息 ⇒ 拦下（仍入库留痕，可观测）。
+ *
+ * ⚠️ 这是信息量判据的**地板**（只拦"完全零参数"这种 unambiguous 情形）：
+ * 更细的"参数全是占位符 / 无变化 / 无具体值"由 Phase 1 的 A3（正文零具体值 /
+ * 纯工具复述）在正文层面兜底——那里能看到真实渲染内容，判别力更高。
+ * 检测层守这条地板，是为了在**生成候选之前**就拦掉最廉价的零信息模式，
+ * 省一轮 LLM 判定与提案撰写。
+ *
+ * 默认 **开**（K42/K51：这是拦错误的门，不是放大错误的门）。
+ * opts.enabled === false 时恒放行（kill-switch），与 A1 同策略。
+ */
+export function passesInformationGate(toolSequence, paramSignature, opts = {}) {
+  if (opts.enabled === false) return true;
+  const sig = paramSignature ?? {};
+  let informativeParams = 0;
+  for (const tool of new Set(toolSequence ?? [])) {
+    const entry = String(sig[tool] ?? '');
+    // 只认「真实参数签名」：'empty'（工具零参）/ 'none'（null/数组入参）不算信息。
+    if (!entry || entry === 'empty' || entry === 'none') continue;
+    // 'key1:type1|key2:type2' → 数参数键（冒号前第一段）
+    const keys = entry.split('|').map((p) => p.split(':')[0].trim()).filter(Boolean);
+    informativeParams += keys.length;
+  }
+  return informativeParams > 0;
+}
+
+/**
  * 参数结构相似度：两个 paramSignature map（tool → sig）的加权 Jaccard。
  * - 只在两边共有的工具上比较签名 token 集合的 Jaccard
  * - 工具集合本身不一致时按共有工具比例折减
@@ -207,17 +251,20 @@ export function passesSuccessGate(successRate, minRate = DEFAULT_MIN_SUCCESS_RAT
  *   similarityThreshold : 参数相似度阈值（默认 0.8）
  *   minSuccessRate   : 成功率准入门（默认 0.6）— 传 0 可关闭
  *   specificityGate  : 特异性门总开关（默认 true；传 false 整体退回旧行为）
+ *   informationGate   : 信息量门总开关（默认 true；传 false 整体退回旧行为）
  *   scaffoldTools    : 追加的脚手架黑名单（与内置 SCAFFOLD_TOOLS 取并集，不替换）
  *   nowMs            : 时间基准
  *
- * 返回 { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity }：
+ * 返回 { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity, blockedByLowInformation }：
  *   upserts    : 本次要写入/更新的 pattern 业务字段数组（不含 storage metadata）
- *   newRepeat  : 其中「本次跨过 minOccurrence 门槛、过成功率门、且过特异性门」的 pattern（发事件用）
+ *   newRepeat  : 其中「本次跨过 minOccurrence 门槛、过成功率门、过特异性门、过信息量门」的 pattern（发事件用）
  *   blockedBySuccessRate : 跨过次数门槛但被成功率门拦下的（仍入库，不生成候选；供审计留痕）
  *   blockedByLowSpecificity : 过了成功率门但被特异性门拦下的（仍入库；纯脚手架序列）
+ *   blockedByLowInformation : 过了特异性门但被信息量门拦下的（仍入库；非脚手架但零参数信息）
  *
- * 三个桶互斥，判定顺序固定为 成功率 → 特异性：成功率是更硬的否决，
- * 一个模式不会同时出现在两个 blocked 桶里（避免审计重复计数）。
+ * 四个桶互斥，判定顺序固定为 成功率 → 特异性 → 信息量：成功率是更硬的否决，
+ * 信息量是更软的追加筛（只拦 unambiguous 的零参数模式）。一个模式不会同时
+ * 出现在两个 blocked 桶里（避免审计重复计数）。
  */
 export function detectPatterns(taskInstances, opts = {}) {
   const minOccurrence = opts.minOccurrence ?? 3;
@@ -226,6 +273,8 @@ export function detectPatterns(taskInstances, opts = {}) {
   const nowIso = opts.nowIso ?? new Date().toISOString();
   // 特异性门默认开（A1）；opts.scaffoldTools 为追加黑名单，不替换内置集合。
   const specificityGate = opts.specificityGate !== false;
+  // 信息量门默认开（提案 2f5c70ce）；kill-switch 与 A1 同策略。
+  const informationGate = opts.informationGate !== false;
   const scaffoldTools = opts.scaffoldTools;
   const existing = Array.isArray(opts.existingPatterns) ? opts.existingPatterns : [];
 
@@ -255,6 +304,8 @@ export function detectPatterns(taskInstances, opts = {}) {
   const blocked = new Set();
   // 过了成功率门但被特异性门拦下的（纯脚手架序列）——同样入库留痕
   const lowSpec = new Set();
+  // 过了特异性门但被信息量门拦下的（非脚手架但零参数信息）——同样入库留痕
+  const lowInfo = new Set();
 
   for (const task of taskInstances) {
     if (!task?.toolSequence?.length) continue;
@@ -315,6 +366,7 @@ export function detectPatterns(taskInstances, opts = {}) {
     if ((wasBelow || p._isNew) && p.occurrenceCount >= minOccurrence) {
       if (!passesSuccessGate(p.successRate, minSuccessRate)) blocked.add(p);
       else if (!passesSpecificityGate(p.toolSequence, { enabled: specificityGate, scaffoldTools })) lowSpec.add(p);
+      else if (!passesInformationGate(p.toolSequence, p.paramSignature, { enabled: informationGate })) lowInfo.add(p);
       else crossed.add(p);
     }
   }
@@ -335,6 +387,7 @@ export function detectPatterns(taskInstances, opts = {}) {
     newRepeat: [...crossed],
     blockedBySuccessRate: [...blocked].map((p) => { const { _isNew, ...rest } = p; return rest; }),
     blockedByLowSpecificity: [...lowSpec].map((p) => { const { _isNew, ...rest } = p; return rest; }),
+    blockedByLowInformation: [...lowInfo].map((p) => { const { _isNew, ...rest } = p; return rest; }),
   };
 }
 

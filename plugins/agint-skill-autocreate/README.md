@@ -14,6 +14,7 @@ agint_tool_stats.jsonl ──▶ 聚合任务实例 ──▶ 模式检测 ─�
 ```
 
 - **detect()**：读 tool-stats JSONL 过去 24h → 按 `(sessionId, turn)` 聚合任务实例 → 与历史 `task_patterns` 比对（工具序列严格全等 + 参数结构相似度 ≥0.8）→ 累计 ≥3 次跨过「重复门槛」→ 选匹配模板生成 SKILL.md 草稿候选，状态 `PENDING_EVAL`。
+- **检测层两道"信息量/形态"门**（提案 2f5c70ce）：跨过次数门槛的模式依次过 ① **成功率门**（successRate ≥ 阈值）② **A1 特异性门**（序列含领域工具，拦纯脚手架＝形态半）③ **信息量门**（`passesInformationGate`：参数签名至少有一个真实参数键，拦"非脚手架但零参数"＝信息半）。三道门互斥，被拦模式照常入库 + 审计留痕，只是不成候选。信息量门 kill-switch：`pattern_information_gate_enabled`（默认开）。
 - **评估与发布**：`triggerEval`（D-QAF）与 `release`/`rollback`/`observe`（Sprint 16 三道门 + 14 天观察期 + 归档式回滚）已接入，流程见 Service 表与设计稿 §6。
 - **自我评估禁止**（设计稿 §9.4）：技能名/描述含 `autocreate` / `自动创建` 等关键词 → 不生成候选，防递归自改。
 - **事件**（软依赖 agint-event-bus，不可用降级为仅 audit）：`skill-autocreate.pattern-detected`、`skill-autocreate.candidate-created`。

@@ -21,6 +21,7 @@ import {
   detectPatterns,
   classifySpecificity,
   passesSpecificityGate,
+  passesInformationGate,
   DOMAIN_TOOLS,
   SCAFFOLD_TOOLS,
 } from '../lib/detector.js';
@@ -183,4 +184,57 @@ test('detect: 低成功率优先于低特异性（成功率是更硬的否决）
   );
   assert.equal(blockedBySuccessRate.length, 1);
   assert.equal(blockedByLowSpecificity.length, 0, '已因成功率被拦，不再重复计入特异性桶');
+});
+
+// ── 3. 信息量门（提案 2f5c70ce：检测层"信息量/形态"判据的信息半）─────────
+
+test('passesInformationGate: 含参数键的领域模式 → 通过', () => {
+  assert.equal(passesInformationGate(['read', 'wiki_write'], { wiki_write: 'page_title:s' }), true);
+});
+
+test('passesInformationGate: 零参数签名 → 拦下（非脚手架但零信息）', () => {
+  // wiki_write 是领域工具（过 A1），但参数签名全空 ⇒ 这条模式只说"调了 wiki_write"
+  // —— 工具自己的文档已说明它能做什么，模式没多知道任何东西。
+  assert.equal(passesInformationGate(['read', 'wiki_write', 'write'], {}), false);
+});
+
+test('passesInformationGate: 工具零参（signatureOf 的 empty/none 形态）→ 不算信息，拦下', () => {
+  // 真实生产里零参被调的签名是 'empty'（见 aggregator.signatureOf），不是空串/缺键。
+  assert.equal(passesInformationGate(['read', 'wiki_write', 'write'], { read: 'empty', wiki_write: 'empty', write: 'empty' }), false);
+  assert.equal(passesInformationGate(['ssh_exec'], { ssh_exec: 'none' }), false);
+});
+
+test('passesInformationGate: enabled=false 可整门关闭（回滚通道有效）', () => {
+  assert.equal(passesInformationGate(['read', 'wiki_write'], {}), false);
+  assert.equal(passesInformationGate(['read', 'wiki_write'], {}, { enabled: false }), true);
+});
+
+test('detect: 零参数领域模式被信息量门拦下，不进 newRepeat', () => {
+  // 零参签名用 signatureOf 的真实形态 'empty'（工具零参被调）；这样三条记录
+  // 能按参数签名合并、跨过次数门槛，再被信息量门拦下（否则空签名不合并，永远跨不过门槛）。
+  const { newRepeat, blockedByLowInformation } = detectPatterns(
+    repeat(['read', 'wiki_write', 'write'], 3, { paramSignature: { read: 'empty', wiki_write: 'empty', write: 'empty' } }),
+    { minOccurrence: 3 },
+  );
+  assert.equal(newRepeat.length, 0);
+  assert.equal(blockedByLowInformation.length, 1);
+  assert.deepEqual(blockedByLowInformation[0].toolSequence, ['read', 'wiki_write', 'write']);
+});
+
+test('detect: 含参数键的领域模式正常放行（信息量门不误杀）', () => {
+  const { newRepeat, blockedByLowInformation } = detectPatterns(
+    repeat(['read', 'wiki_write', 'write'], 3, {
+      paramSignature: { read: 'path:s', wiki_write: 'page_title:s', write: 'path:s' },
+    }),
+    { minOccurrence: 3 },
+  );
+  assert.equal(newRepeat.length, 1);
+  assert.equal(blockedByLowInformation.length, 0);
+});
+
+test('detect: 四个桶互斥（成功率 → 特异性 → 信息量，一个模式只落一个桶）', () => {
+  const { newRepeat, blockedBySuccessRate, blockedByLowSpecificity, blockedByLowInformation } =
+    detectPatterns(repeat(['glob', 'read', 'pwsh']), { minOccurrence: 3 });
+  const total = newRepeat.length + blockedBySuccessRate.length + blockedByLowSpecificity.length + blockedByLowInformation.length;
+  assert.equal(total, 1, `应恰好落在某一个桶，实际 ${total}`);
 });
