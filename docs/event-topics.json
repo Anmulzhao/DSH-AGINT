@@ -8,7 +8,7 @@
     "productionAvailable": true
   },
   "note": "事实清单 = 代码字面量 ∪ 生产实测 topic。生产侧能捞到静态扫不到的动态构造 topic （模板串/变量），两者缺一都会漏。新增 topic 需刻意登记：先改代码再跑 --update，让 diff 里能看见这个新主题。",
-  "topicCount": 47,
+  "topicCount": 48,
   "topics": {
     "compress-guard.blocked": {
       "evidence": {
@@ -146,6 +146,15 @@
           "plugins/agint-trajectory/lib/subscribers.js"
         ],
         "productionCount": 16
+      }
+    },
+    "evolution.status-changed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-evolve/lib/index.js",
+          "plugins/agint-trajectory/lib/subscribers.js"
+        ],
+        "productionCount": 0
       }
     },
     "evoorch.task-completed": {

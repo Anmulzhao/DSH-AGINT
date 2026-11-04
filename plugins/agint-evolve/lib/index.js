@@ -811,6 +811,69 @@ function apply(ctx, config) {
     }
   }
 
+  // ── evolution.status-changed 发布（2026-11-02 接线）─────────────────────
+  //
+  // ## 补的是哪个洞
+  //
+  // `evolution.proposed` 是提案链路上**唯一**的可观测出口：提案被创建时发一条，
+  // 之后的**每一次决定**（批准 / 驳回 / 落地 / 暂不处理）都只改存储、不发事件。
+  // 2026-11-02 实测：把 `3c988611` 从 approved 改成 rejected，总线里前后没有一行新数据
+  // ⇒ 「谁在什么时候判了什么」只能靠翻 `agint_evolve.json` 的行尾 note，事件侧完全空白。
+  //
+  // ## 为什么挂 applyStatus 而不是 setStatus
+  //
+  // 状态有两条写入路径：人工 `setStatus()`（面板 / 工具）与执行器 `finishExecution()`
+  // 直接调 `applyStatus()` 结案。挂在上层会漏掉机器落地那半边，审计链就断在中间。
+  // `applyStatus` 是唯一写入口 ⇒ 挂这里，两条路径自动都覆盖。
+  //
+  // ## 只在状态**真的变了**时发
+  //
+  // `setStatus` 允许「状态不变、只补 blocker / 执行计划」（幂等语义，见 applyStatus 注释）。
+  // 那种写不是一次决定，发事件会把审计链冲成噪声 ⇒ 判据是 `prevStatus !== status`。
+  //
+  // ## 红线（与 publishProposed 同一条）
+  //
+  // 落库与返回值不因发布失败而改变：bus 缺失 / publish 抛错只告警，不阻断状态写入。
+  //
+  // 订阅方：`agint-trajectory`（`evolution.status-changed` → 轨迹表，role:'record'）。
+  async function publishStatusChanged(rec, prevStatus) {
+    const publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.status-changed publish skipped', {
+          proposalId: rec.id, reason: 'agint.eventBus.publish unavailable',
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: 'eventBus-unavailable' };
+    }
+    try {
+      const result = await publish({
+        topic: 'evolution.status-changed',
+        version: 1,
+        source: 'agint-evolve',
+        payload: {
+          proposalId: rec.id,
+          from: prevStatus,
+          to: rec.status,
+          kind: rec.category || 'other',
+          // note 上限 200 字：事件是通知面不是数据面，全文在存储行里。
+          note: String(rec.note ?? '').slice(0, 200),
+          blocker: String(rec.blocker ?? '').slice(0, 200),
+          execMode: rec.execMode ?? 'manual',
+          origin: 'agint-evolve',
+        },
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.status-changed publish failed', {
+          proposalId: rec.id, error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: `publish-threw:${err?.message || err}` };
+    }
+  }
+
   /**
    * 提案状态落盘的**核心**（不碰队列）。
    *
@@ -841,6 +904,8 @@ function apply(ctx, config) {
     const t = await table();
     const rec = t.get(id);
     if (!rec) return null;
+    // 旧状态要在覆写前抓：事件 payload 的 `from` 靠它（2026-11-02）。
+    const prevStatus = rec.status;
     if (!PROPOSAL_STATUSES.includes(status)) throw new Error(`agint-evolve: invalid status "${status}"`);
     const o = opts && typeof opts === 'object' ? opts : {};
     const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
@@ -868,6 +933,9 @@ function apply(ctx, config) {
       if (typeof o.unblockCondition !== 'string') updated.unblockCondition = '';
     }
     await t.put(id, updated);
+    // 状态真的变了才算一次「决定」⇒ 发事件。幂等写（只补 blocker / 执行计划）不发，
+    // 否则审计链会被同一状态的重复写冲成噪声。发布失败不影响返回值（红线同 propose）。
+    if (prevStatus !== status) await publishStatusChanged(updated, prevStatus);
     return updated;
   }
 

@@ -22,6 +22,9 @@ test('订阅清单：只列设计稿核实的事件，且 mode 为 async（不�
     'dream.completed',
     'evolution.proposed',
     'evolution.evaluated',
+    // 2026-11-02 新增：提案的**决定**（批准/驳回/落地）。发布方 agint-evolve 的
+    // applyStatus()，是状态写入的唯一入口 ⇒ 人工与执行器两条路径都覆盖。
+    'evolution.status-changed',
     'diagnosis.completed',
     'evoorch.task-started',
     'evoorch.task-completed',
@@ -94,6 +97,26 @@ test('mapEvent(evolution.evaluated)：VETOED → failure，但不猜 errorClass'
   assert.equal(r.taskRef.variantId, 'v-7');
   assert.equal(r.outcome.errorClass ?? null, null, 'errorClass 留给 diagnosis 回填');
   assert.match(r.outcome.errorMsg, /VETOED/);
+});
+
+test('mapEvent(evolution.status-changed)：决定记 success，from/to 方向不许丢', () => {
+  const env = {
+    topic: 'evolution.status-changed',
+    ts: '2026-11-02T11:28:42.464Z',
+    payload: {
+      proposalId: 'p-9', from: 'approved', to: 'rejected', kind: 'service',
+      execMode: 'manual', note: '控制变量探针收尾', blocker: '',
+    },
+  };
+  const r = mapEvent(env);
+  assert.equal(r.source, 'evolution');
+  assert.equal(r.via, 'event');
+  // ⛔ rejected 是**决策**不是**失败**：记成 failure 会把轨迹失败率变成「提案被驳回的次数」
+  assert.equal(r.kind, 'success');
+  assert.deepEqual(r.taskRef, { candidateId: 'p-9' });
+  assert.equal(r.final.from, 'approved', 'from 丢了就只剩「变成了什么」，看不出方向');
+  assert.equal(r.final.to, 'rejected');
+  assert.match(r.title, /approved→rejected/);
 });
 
 test('mapEvent(evoorch.task-completed)：status 非成功 → failure + 关联键', () => {

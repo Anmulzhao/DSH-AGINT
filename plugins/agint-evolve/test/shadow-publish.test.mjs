@@ -122,12 +122,47 @@ test('publish 抛错时 propose() 照常返回，异常被吞掉但留告警', a
   assert.match(ctx._warns[0].extra.error, /bus exploded/);
 });
 
-test('setStatus / removeProposal 不触发重复发布（只有 propose 是发布点）', async () => {
+// 2026-11-02：本条此前断言「setStatus / removeProposal 不触发发布（只有 propose 是发布点）」。
+// 那个设计已被推翻 —— 提案的**决定**（批准 / 驳回 / 落地 / 暂不处理）在事件侧完全不可见，
+// 「谁在什么时候判了什么」只能翻 agint_evolve.json 的行尾 note（实测：把 3c988611 从
+// approved 改成 rejected，总线前后零新行）。改为：决定要发，幂等写不发。
+test('setStatus 改状态发一条 evolution.status-changed（带 from/to）', async () => {
   const envelopes = [];
   const { evo } = await makeEvolve({
     publish: async (env) => { envelopes.push(env); return { envelopeId: 'e', deliveredTo: 1 }; },
   });
   await evo.propose({ ...PROPOSAL, id: 'p-4' });
-  await evo.setStatus('p-4', 'applied');
-  assert.equal(envelopes.length, 1, '状态变更不应再发一条');
+  await evo.setStatus('p-4', 'applied', '已落地');
+
+  assert.equal(envelopes.length, 2, 'propose 一条 + 状态变更一条');
+  assert.equal(envelopes[0].topic, 'evolution.proposed');
+  const env = envelopes[1];
+  assert.equal(env.topic, 'evolution.status-changed');
+  assert.equal(env.source, 'agint-evolve');
+  assert.equal(env.version, 1);
+  assert.equal(env.payload.proposalId, 'p-4');
+  assert.equal(env.payload.from, 'proposed', 'from 必须是**旧**状态（写反了审计链就倒着走）');
+  assert.equal(env.payload.to, 'applied');
+  assert.equal(env.payload.kind, 'plugin', 'kind 取 proposal.category');
+});
+
+test('状态不变（只补 blocker / 执行计划）不发事件 —— 幂等写不是一次决定', async () => {
+  const envelopes = [];
+  const { evo } = await makeEvolve({
+    publish: async (env) => { envelopes.push(env); return { envelopeId: 'e', deliveredTo: 1 }; },
+  });
+  await evo.propose({ ...PROPOSAL, id: 'p-5' });
+  envelopes.length = 0;
+  await evo.setStatus('p-5', 'proposed', '补一句为什么还不能动手', { blocker: '等 X 就绪' });
+  assert.equal(envelopes.length, 0, '状态未变 ⇒ 一条都不发');
+});
+
+test('bus 缺失时 setStatus 照常落库（直连路径完整保留，只告警）', async () => {
+  const { ctx, evo } = await makeEvolve(); // 不注入 publish
+  await evo.propose({ ...PROPOSAL, id: 'p-6' });
+  ctx._warns.length = 0; // 只关心状态变更这一次
+  const rec = await evo.setStatus('p-6', 'rejected', '评估后不做');
+  assert.equal(rec.status, 'rejected', '发布失败不得影响状态写入');
+  assert.equal(ctx._warns.length, 1, 'bus 缺失必须留痕（不能静默）');
+  assert.match(ctx._warns[0].msg, /evolution\.status-changed/);
 });
