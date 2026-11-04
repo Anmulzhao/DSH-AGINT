@@ -227,6 +227,9 @@ function checkOperations({ operations, gated, existingByKey, existingByContent, 
       priorEntries: priorEntries.map((p) => (typeof p === 'string' ? stripPriorEntryDecoration(p) : p)),
       lineageKey: lineageKey || null,
       candidateType: candidateByKey.get(candidateKey)?.type || 'lesson',
+      // 候选抽取分数（quality gate 算出的 0..1）。带进 plan 是为了让 write 落 confidence——
+      // 缺它时 agint.memory.write 走 `?? 0.5` 兜底，所有提升条目都会变成假 50% 确信。
+      candidateScore: candidateByKey.get(candidateKey)?.score,
     });
   }
   // 1:1 覆盖
@@ -236,16 +239,36 @@ function checkOperations({ operations, gated, existingByKey, existingByContent, 
   return { ok: true, plan };
 }
 
+/**
+ * 把 plan 上的候选分数转成可落库的 confidence。
+ *
+ * ⛔ 2026-11-01：此前三条 write 分支都不传 confidence，agint.memory.write 的
+ *    `input.confidence ?? 0.5` 兜底把**每一条**提升记忆都写成 0.5（实测 48 条
+ *    agint-dream 条目全是 0.5）。神谕层决策确信度是全库均值，这些假 0.5 是
+ *    指标长期卡在 0.61 的第二大成因。
+ *
+ *    归一：candidate.score 是 quality gate 的分（0..1）；缺失/非有限 →
+ *    不用 0.5 兜底（那正是病灶），退到 0.6 = 「启发式抽取、未经充分验证」
+ *    这一档，与 agint-memory 信号订阅侧的默认档一致。
+ */
+function scoreToConfidence(score) {
+  const s = Number(score);
+  if (!Number.isFinite(s)) return 0.6;
+  return Math.min(1, Math.max(0, Math.round(s * 10) / 10));
+}
+
 /** 给 host plane 用：把 plan 翻译成 agint.memory.write 调用的描述。 */
 export function planToWriteCalls(plan) {
   return plan.map((p) => ({
     candidateKey: p.candidateKey,
     action: p.action,
     write: (memory, evidence) => {
+      const confidence = scoreToConfidence(p.candidateScore);
       if (p.action === 'added') {
         return memory.write({
           type: p.candidateType || 'lesson',
           content: stripEntryPrefix(p.resultEntry),
+          confidence,
           evidence: evidence || `agint-dream validation-gate added`,
           lineageKey: p.lineageKey,
           supersedesKey: null,
@@ -255,6 +278,7 @@ export function planToWriteCalls(plan) {
         return memory.write({
           type: p.candidateType || 'lesson',
           content: stripEntryPrefix(p.resultEntry),
+          confidence,
           evidence: evidence || `agint-dream validation-gate merged`,
           lineageKey: p.lineageKey || `agint-merge-${p.candidateKey}`,
           supersedesKey: null,
@@ -264,6 +288,7 @@ export function planToWriteCalls(plan) {
         return memory.write({
           type: p.candidateType || 'lesson',
           content: stripEntryPrefix(p.resultEntry),
+          confidence,
           evidence: evidence || `agint-dream validation-gate superseded`,
           lineageKey: p.lineageKey,
           supersedesKey: p.priorEntries?.[0] ?? null,

@@ -22,9 +22,78 @@
  * 会当场退出宿主进程，单测拿不到返回值（check-soundness 纪律：判据必须可被真跑）。
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { readAsarPackage, readAsarFile, findHostAppAsar } from './asar-read.mjs';
 
+/** 仓库根（bin/ 的上一级）。与 asar-read.mjs 同口径，但那边没导出，这里自算。 */
+const REPO_ROOT_HERE = join(dirname(fileURLToPath(import.meta.url)), '..');
+
 export { findHostAppAsar, readAsarPackage, readAsarFile };
+
+/**
+ * 判断本机是不是「npm/CLI 安装」形态的 dsh（≠ Electron 桌面版）。
+ *
+ * 判据（任一成立即认为 CLI）：
+ *   ① 能找到 `@deepseek-ai/dsh/package.json` 且其旁边**没有** `resources/app.asar`；
+ *   ② 环境变量 `DSH_HOST_APP_ASAR` 显式指向不存在的路径 **且** 未在 AGENTS.local.md 配锚点
+ *      —— 这种情况属于「配错了」，仍按 unknown 处理（见 checkHostVersion 的分支顺序）。
+ *
+ * ⚠️ 为什么不用 `process.platform` 判定：桌面版 dsh 也有 Linux 构建（本机平台就是
+ *    linux/arm64），用平台判会把「Linux 桌面版」误判成 CLI —— 那才是真假绿。
+ *    只有「装在哪、有没有 resources/」这两个事实是可靠的。
+ *
+ * @param {object} [opts] 透传 env / repoRoot
+ * @returns {boolean}
+ */
+export function isCliInstallation({ env = process.env, repoRoot = null } = {}) {
+  const e = env ?? {};
+  // 用户显式指了一个不存在的 asar ⇒ 是配置问题，不是形态问题，交给 unknown 分支
+  if (e.DSH_HOST_APP_ASAR) return false;
+
+  const root = repoRoot ?? REPO_ROOT_HERE;
+  try {
+    const localFile = join(root, 'AGENTS.local.md');
+    if (existsSync(localFile)) {
+      const m = /^\s*hostAppAsar\s*:\s*(.+?)\s*$/m.exec(readFileSync(localFile, 'utf8'));
+      if (m) return false;   // 配了锚点却扫不到 ⇒ unknown（配置错），不是 CLI
+    }
+  } catch { /* 读不到继续往下判 */ }
+
+  // 判据①：npm 全局安装树里能找到 dsh 包，且同层无 resources/
+  //
+  // ⛔ 这里**只许用调用方传进来的 env**，不许回探 `process.execPath` / 真实 PATH：
+  //    测试注入隔离 env（`{ DSH_HOST_APP_ASAR:'', LOCALAPPDATA: tmpDir }`）就是为了
+  //    模拟「三个来源全失效」。若此时还去本机找 node 旁边的 dsh，就会把
+  //    「这台机器上查不到宿主」误判成「这台机器是 CLI 形态」——
+  //    既有用例 test/host-version.test.mjs:180 立刻变红，而且红得对。
+  //    判据要保持可被真跑，就不能偷偷读进程状态。
+  const candidates = [];
+  const pushBin = (binPath) => {
+    if (!binPath) return;
+    // <prefix>/bin/dsh ⇒ <prefix>/lib/node_modules/@deepseek-ai/dsh
+    candidates.push(join(dirname(binPath), '..', 'lib', 'node_modules', '@deepseek-ai', 'dsh'));
+  };
+
+  // NVM_BIN 优先；否则从传入的 PATH 里找 dsh 可执行文件
+  if (e.NVM_BIN) pushBin(join(e.NVM_BIN, 'dsh'));
+  for (const p of String(e.PATH ?? '').split(':')) {
+    if (!p) continue;
+    pushBin(join(p, 'dsh'));
+  }
+
+  const seen = new Set();
+  for (const c of candidates) {
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    if (existsSync(join(c, 'package.json')) && !existsSync(join(c, 'resources', 'app.asar'))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * 宿主版本 vs 门禁判据版本。
@@ -36,6 +105,33 @@ export { findHostAppAsar, readAsarPackage, readAsarFile };
 export function checkHostVersion(judgedVersion, opts = {}) {
   const host = findHostAppAsar(opts);
   if (!host) {
+    // ── 2026-11-03 补：区分「配错了」与「这台机器压根没有桌面宿主」──────────
+    // 原实现只有一条 host-version-unknown，措辞是「未找到 ⇒ 没核对」。
+    // 问题是它把两种情况说成同一件事：
+    //   (a) Electron 桌面版用户，只是 asar 没扫到（配错了，该去补路径）；
+    //   (b) **npm 装的 CLI**（本机就是：nvm 下 @deepseek-ai/dsh，无 resources/，
+    //       全盘无 *.asar）—— 根本没有第二个「宿主」，门禁判据树**就是**宿主本体。
+    // 情况 (b) 下报「未核对宿主版本」是**假警报**：它暗示有另一个宿主在跑旧版本，
+    // 而实际上没有。这条 INFO 自 2026-10-21 起一直挂在门禁输出里，正是这个成因。
+    //
+    // ⇒ 判定为 CLI 安装时给一条 **not-applicable** 级的说明，并明确指出
+    //    「此时判据树与宿主同体，版本一致性由 dsh --version 与判据树同源保证」。
+    //    仍然保留 info 级（不升不降），因为「有没有第二个宿主」这件事不由本门禁决定。
+    if (isCliInstallation(opts)) {
+      return [{
+        level: 'info',
+        kind: 'host-version-not-applicable',
+        message:
+          '本机是 **npm/CLI 安装**的 dsh（无 Electron resources/app.asar）⇒ '
+          + '不存在「另一个宿主」：门禁的判据树就是宿主本体，'
+          + '宿主版本一致性由判据树自身版本保证（本次判据版本即宿主版本）。'
+          + '**这不是缺失，是形态不同。**',
+        remedy:
+          '仅当本机另跑了 Electron 桌面版 dsh 时才需要锚点：设 '
+          + 'DSH_HOST_APP_ASAR=<桌面版>/resources/app.asar，或在 AGENTS.local.md 写 '
+          + '`hostAppAsar: <路径>`（该文件不入库）。',
+      }];
+    }
     return [{
       level: 'info',
       kind: 'host-version-unknown',

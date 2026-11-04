@@ -45,7 +45,7 @@
 | agint-dream | 0.5.0 | E | 夜间记忆整合（反思） |
 | agint-wiki | 0.2.0 | E | 知识库 |
 | agint-rules | 0.2.2 | E | 工具流水线规则门禁（约束）；命中计数落库、跨重启累计 |
-| agint-metrics | 1.1.2 | E | 客观指标采集（度量） |
+| agint-metrics | 1.1.4 | E | 客观指标采集（度量）；补 `inc()` 出口 + 宿主事件计数采样 |
 | agint-evolve | 0.11.0 | E | 周复盘 + 提案跟踪（含提案执行计划与可执行性声明） |
 | agint-quality | 0.1.0 | E | D-QAF 评估框架聚合包（meta） |
 | agint-quality-contract | — | E | D-QAF FROZEN 契约（Seam） |
@@ -70,20 +70,20 @@
 | agint-curator | 0.2.1 | E | 技能生命周期策展 |
 | agint-skill-graph | 0.1.1 | E | 技能关系图谱 |
 | agint-aesthetic-oracle | 0.8.0 | E | 「美」的度量与广播（美谕提案声明不可自动执行） |
-| agint-event-bus | 0.7.1 | E | 进化事件基础设施 |
+| agint-event-bus | 0.8.0 | E | 进化事件基础设施；接宿主 `domain/changed` / `workflow/end` |
 | agint-ov-strategy | 0.1.0 | E | 经验沉淀与策略召回 |
-| agint-input-gateway | 0.1.5 | E | 多源信号进料 |
+| agint-input-gateway | 0.1.11 | E | 多源信号进料；会话源「降级」告警已区分设计路径与真降级 |
 | agint-search-tools | 0.1.0 | E | 记忆/知识跨域检索 |
 | agint-tool-stats | 0.2.0 | E | 工具统计（**为评估供料**） |
 | agint-verify-tools | 0.1.0 | E | 验证入口全局化 |
 | agint-compress-guard | 0.1.0 | E | 压缩前洞察提取 + 恢复通道（保护进化信号） |
-| **agint-session-extract** | 0.1.0 | **H-越界** | 自建 zstd 解压 + jsonl 解析 + 会话文件发现 ⇒ 应消费 dsh `sessionQuery` |
-| **agint-session-source** | — | **H-越界** | 会话文件发现唯一入口（候选名表 + 后缀兜底）⇒ 应消费 dsh `sessionQuery` |
+| **agint-session-extract** | 0.1.0 | **E（原判 H-越界 · 2026-11-02 改判）** | 自建 zstd 解压 + jsonl 解析 + 会话文件发现。原判「应消费 dsh `sessionQuery`」；**改判理由**：完整性检测要的是**原始字节**，上游给的是**校验后**事件流，替代即检测归零。宿主不提供「读原始会话日志」接口 ⇒ 属**宿主缺口（B-008）**，不是越界。详见 §4-F2 终判表 |
+| **agint-session-source** | — | **E（原判 H-越界 · 2026-11-02 改判）** | 会话文件发现唯一入口（候选名表 + 后缀兜底）。其 `readEvents()` 的 upstream 分支**有真实调用方**（`agint-dream` / `agint-tool-stats` 的语义消费）⇒ 既不是空转，也不是越界 |
 | **agint-cron** | 0.2.16 | **E（调度原语偏 H）** | 自写 5 字段 cron 解析器 ⇒ 表达式解析属宿主层，应复用 dsh 调度原语 |
 | agint-family-panel | 0.8.0 | C | 家族面板（呈现） |
 | agint-mascot | 0.1.0 | C | 桌宠状态源（呈现） |
 | agint-voice-hotkey | 0.2.5 | **C（与宿主重复）** | 自建热键/录音/SSE ⇒ dsh 已有 `dsh-experimental-client-ui-voice-input` 与 `dsh-voice-mode` |
-| agint-restart | 0.9.2 | C | 重启闭环与控制面（宿主运维外壳） |
+| agint-restart | 0.9.3 | C | 重启闭环与控制面（宿主运维外壳）；挂起补投改挂 `agent/created` |
 | agint-update-check | 0.1.0 | C | 更新检测与部署控制面（宿主运维外壳） |
 
 ### 2.1 挂载分组（2026-10-28）
@@ -162,18 +162,40 @@
 
 ### F2 · 「接上游 sessionQuery」实际未生效 ⇒ AGINT 仍在自读盘
 
+> ⚠️ **本条的「正确形态」已被 2026-11-02 推翻，勿照做。** 撤的是结论，不是事实：
+> 事实（上游不给 path、上游给的是校验后的事件流）仍然成立，错的是「所以应该改成走 readSession」。
+
 - 现象：`agint-session-source` 的上游分支产出的记录 `path` 恒为 `null`，
   而下游 `self-observation` 的出口 mapper 读 `r.path` 并用 `zstd -dc <path>` 读文件。
 - 取证：`plugins/agint-session-source/lib/index.mjs:139-140`（"它未必给磁盘路径"）、
-  `plugins/agint-input-gateway/lib/channels/self-observation.js:392`（`path: r.path ?? ''`）、
-  同文件 `:411`（`execFileSync(bin, ['-dc', file.path])`）。
+  `plugins/agint-input-gateway/lib/channels/self-observation.js` 的 `path: r.path ?? ''` 与
+  `execFileSync(bin, ['-dc', file.path])`。
 - 上游侧：dsh `sessionQuery.listSessions()` 返回的是逻辑会话元数据（`live`/`persisted` 标记），
   `readSession(id)` 返回重放校验过的事件流 —— **两者都不提供磁盘路径**。
 - 结论：上游分支**给不出下游需要的东西** ⇒ 这条「接上游」路径实际空转，
-  生产仍走本地扫盘 + 自解 zstd。2026-10-19 那次接入只完成了「把 4 处手搓收敛成 1 处」，
-  **没完成「用上游替代自建」**（后者才是 J1 的收益）。
-- 正确形态：**列举走 `listSessions()`，内容走 `readSession(id)`，本地 zstd 读盘降级为回落层**。
-  保留在 AGINT 的只有「从事件里抽进化语义（工具调用序列 / 模型范围）」这一层。
+  生产仍走本地扫盘 + 自解 zstd。2026-10-19 那次接入只完成了「把 4 处手搓收敛成 1 处」。
+- ❌ ~~正确形态：列举走 `listSessions()`，内容走 `readSession(id)`，本地 zstd 读盘降级为回落层~~
+  —— **这条对 self-observation 是错的，2026-10-21 接上去当天就把检测能力关掉了**（见下）。
+- ✅ **终判（2026-11-02，第二次判定）**：要不要走上游，取决于**消费的是语义还是字节**，
+  不取决于「有没有上游」：
+
+  | 消费类型 | 判据 | 正确做法 | 本仓实例 |
+  |---|---|---|---|
+  | **语义消费** | 只要能读到事件内容，不关心字节原貌 | 走上游 `readSession(id)`，回落本地 | `agint-dream/lib/sweep.js`、`agint-tool-stats/lib/index.js`（`readEvents()` 的 upstream 分支有真实调用方，不是死代码） |
+  | **字节检测** | 检测对象就是原始日志的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call） | **只能**读本地原始日志 | `agint-input-gateway` 的 `sessionIntegrity` 子源 |
+
+  为什么字节检测不能走上游：`readSession` 给的是**重放校验之后**的事件流 ⇒ 坏行、seq 断裂、
+  未配对 call 在校验阶段已被抹平。拿它做完整性检查 = 拿干净数据找脏东西，**检测能力直接归零**
+  （2026-10-21 接上去后的运行态实测，不是推理）。
+- **归属裁定**：宿主**不提供**「读原始会话日志」的接口 ⇒ 这是**宿主层缺口（B-008）**，
+  不是 AGINT 越界。自建 zstd 读盘留在 AGINT 是合法的，除非上游将来提供原始字节形态。
+- ✅ **本轮实际修的不是「接上游」，是移除上一版留下的假读数（2026-11-02，`agint-input-gateway` 0.1.11）**：
+  2026-10-21 回退时留了一行 `notify('local-by-design: ...')`，落到默认 `console.warn`
+  ⇒ 每周一条「会话源降级」。v0.13.0 静默失败治理治的是「真故障不吭声」，
+  这条是反方向的「没事喊狼来了」——**同样是假读数**。
+  现改为：设计路径不出声、返回项标 `sourceMode:'local-raw'`、health 面带同字段；
+  只有真降级（候选名 + 后缀兜底一个都没命中）才出声。用例见
+  `test/session-integrity.test.mjs`（一条正向 + 一条阴性对照，互相钉住）。
 
 ### F3 · AGINT 全仓无 token 计量 ⇒ D-QAF 有效进化增量公式的 token 项恒缺
 

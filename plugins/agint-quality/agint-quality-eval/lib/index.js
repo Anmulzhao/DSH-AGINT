@@ -186,20 +186,14 @@ function apply(ctx, config) {
     };
   }
 
-  /** 把 EvalResult 转成能写进 memory 的精简 record */
+  /**
+   * 把 EvalResult 转成能写进 memory 的精简 record。
+   *
+   * （实现已提到模块级 buildMemoryRecord，见文件末尾导出——闭包内无法从测试触达，
+   *   而「confidence 必须显式给」这条是回归闸，必须有用例钉住。）
+   */
   function toMemoryRecord(result, decision) {
-    return {
-      type: 'decision',
-      content: `[agint.quality] ${result.targetId} evaluated → ${decision} (${JSON.stringify({
-        trust: result.dimensions.find(d => d.key === 'trust')?.score?.score,
-        reliability: result.dimensions.find(d => d.key === 'reliability')?.score?.score,
-        effectiveness: result.dimensions.find(d => d.key === 'effectiveness')?.score?.score,
-        safety: result.dimensions.find(d => d.key === 'safety')?.score?.score,
-        integrability: result.dimensions.find(d => d.key === 'integrability')?.score?.score,
-        harm: result.harm,
-      })})`,
-      evidence: `agint-quality-eval:${result.evaluatorId}`,
-    };
+    return buildMemoryRecord(result, decision);
   }
 
   /** 加载 baseline 历史：从 evo.queryTemplates 筛 appliesTo 包含 'baseline-suite' 的 */
@@ -797,6 +791,41 @@ function apply(ctx, config) {
       console.warn('agint-quality-eval: scheduler init failed (timer unavailable); manual runNow() still works:', err.message);
     }
   });
+}
+
+/**
+ * 把 EvalResult 转成写进 memory 的精简 record（模块级，便于测试直接钉住）。
+ *
+ * ⛔ confidence 必须显式给（2026-11-01 修）：此前只返回 type/content/evidence，
+ *    agint.memory.write 的 `input.confidence ?? 0.5` 兜底把它写成本文的 0.5。结果是
+ *    每次 weekly 都往记忆里灌一条「假 50% 确信」的日志，而神谕层决策确信度 =
+ *    Σ(conf × [evidence 非空]) / N 是**全库均值** —— 实测 271 条里 195 条是 0.5，
+ *    其中 109 条来自这里，直接把该指标压到 0.610（阈 0.70 判红）。
+ *
+ *    这里的置信度不是「评估员有多自信」，而是**这次评估的结论有多可信** =
+ *    compositeScore / 100（0..100 → 0..1）。compositeScore 为 null（safety/trust
+ *    veto 或维度全缺）表示没结论可下 —— 给 0，与「无结论 = 零确信」同义，
+ *    不用 0.5 冒充「有一半把握」。
+ *
+ * @param {object} result EvalResult
+ * @param {string} decision 'REJECT' | 'PENDING_REVIEW'
+ */
+export function buildMemoryRecord(result, decision) {
+  const composite = compositeScore(result);
+  const dim = (k) => result?.dimensions?.find((d) => d.key === k)?.score?.score;
+  return {
+    type: 'decision',
+    content: `[agint.quality] ${result.targetId} evaluated → ${decision} (${JSON.stringify({
+      trust: dim('trust'),
+      reliability: dim('reliability'),
+      effectiveness: dim('effectiveness'),
+      safety: dim('safety'),
+      integrability: dim('integrability'),
+      harm: result.harm,
+    })})`,
+    confidence: composite === null ? 0 : Math.min(1, Math.max(0, composite / 100)),
+    evidence: `agint-quality-eval:${result.evaluatorId}`,
+  };
 }
 
 export { Config, apply, inject, name };

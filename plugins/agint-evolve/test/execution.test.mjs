@@ -375,4 +375,69 @@ await withApp(async ({ evo }) => {
   assert.match((await evo.getProposal(p.id)).execError, /续跑已关闭/);
 }, { maxAutoContinuations: 0 });
 
-console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑）');
+// ── 2026-11-02：孤儿执行回收（提案 a6e6e1d9 实证）──────────────────────
+//
+// 实机：exec-1793280728689-kmy9h1 停在 state='running'（startedAt=
+// 2026-11-01T16:00:04.986Z，finishedAt=''），面板显示「已批准·执行中」，
+// 但没有任何东西在跑 —— 宿主在执行途中重启，结算撞上已 dispose 的存储域被吞掉。
+// 队列不自愈：running 行永不被 claim，又被 activeJobsFor 算成活跃 job。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '重启遗留的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  // 模拟「宿主在执行途中重启」：本进程挂载时刻晚于该行的 startedAt。
+  const mountedAt = Date.now() + 60_000;
+  const out = await evo.reapOrphanExecutions({ now: mountedAt, mountedAt, staleMs: 30 * 60_000 });
+  assert.equal(out.count, 1, '重启前就在 running 的行必须被回收');
+  assert.equal(out.reaped[0].id, job.id);
+
+  const after = await evo.listExecutions({ proposalId: p.id });
+  assert.equal(after[0].state, 'failed', '孤儿行落 failed（不是 cancelled：中断≠人撤销）');
+  assert.equal(after[0].finishedAt !== '', true, '回收必须写 finishedAt，否则仍像在跑');
+  assert.match(after[0].error, /宿主重启|进程中断/);
+
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.status, 'approved', '⛔ 回收不得把提案标 applied —— 中断的是一次执行，不是这件事做完了');
+  assert.notEqual(rec.execState, 'running', '提案不得再显示「执行中」');
+  assert.match(rec.execError, /未结算|中断/, '要写明为什么停了，否则读的人分不清「做完了」和「做不动了」');
+});
+
+// ── 回收不得吃掉本进程正在跑的 job ────────────────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '本进程正在跑的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  const out = await evo.reapOrphanExecutions({
+    now: Date.now(), mountedAt: Date.now() - 10_000, staleMs: 30 * 60_000,
+    excludeIds: [job.id],
+  });
+  assert.equal(out.count, 0, 'excludeIds 里的 job 不能被判成孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'running');
+});
+
+// ── 超时兜底：没有跨进程证据时，靠 staleMs 判孤儿 ────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '卡住很久的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  // mountedAt 早于 startedAt（没有跨进程证据），但已 running 超过 staleMs。
+  const out = await evo.reapOrphanExecutions({
+    now: Date.now() + 60 * 60_000, mountedAt: Date.now() - 1000, staleMs: 60_000,
+  });
+  assert.equal(out.count, 1, '超过 staleMs 且不在活跃执行里 ⇒ 兜底判孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'failed');
+});
+
+// ── 非 running 行不得被回收（回收范围只限 running）─────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '正常排队的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const out = await evo.reapOrphanExecutions({ now: Date.now() + 999_999_999, mountedAt: Date.now() + 1 });
+  assert.equal(out.count, 0, 'queued 行不是孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'queued');
+});
+
+console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑 / 孤儿回收）');

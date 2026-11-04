@@ -86,6 +86,39 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
   };
 
   const service = {
+    /**
+     * inc —— 供 `agint-event-bus` 的 busCtx.metrics 出口使用（2026-11-02 补）。
+     *
+     * ⛔ 为什么现在才补：`bus.js` 从 v0.7.0 起就调 `ctx.metrics(key, delta)`，
+     * 而 busCtx.metrics 的实现是 `if (m?.inc) return m.inc(key, delta)` ——
+     * **本服务从来没有 inc 方法**。于是总线的全部计数（publishInvalid / handlerError /
+     * deliveryFailed / deadletter，以及 2026-11-02 B1 新加的 hostBridge*）
+     * **一直是静默丢弃的**：不报错、不落表、调用方拿不到任何信号。
+     *
+     * 这是本项目最典型的失败形状 —— 不是"算错了"，是"这条路上什么都没发生，而没人知道"。
+     * 它恰好挡在「可观测性能不能成立」的入口上，所以补上。
+     *
+     * 语义：写一条增量记录（与 eventCounters 同形），查询走 summary / series。
+     * 不走聚合写入：失败本身应当低频，低频还聚合会把「偶发一次」抹成「一直有」。
+     */
+    async inc(key, delta = 1) {
+      if (typeof key !== 'string' || key.length === 0) return false;
+      const n = Number(delta);
+      if (!Number.isFinite(n)) return false;
+      const t = await table();
+      const record = metricSchema.parse({
+        id: randomId(),
+        key,
+        label: key,
+        value: n,
+        unit: 'count',
+        meta: JSON.stringify({ via: 'inc' }),
+        ts: new Date().toISOString(),
+      });
+      await t.put(record.id, record);
+      return true;
+    },
+
     // 主 collect：写表 + 尾部触发 A7 影子 publish（fire-and-forget，软降级不破坏主路径）
     async collect() {
       const result = await doCollect();

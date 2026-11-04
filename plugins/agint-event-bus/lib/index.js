@@ -20,6 +20,7 @@
 import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscriptionsSummary, deliveryByTopic, deliveryHistory, disposeBus } from './bus.js';
 import { listDeadletters, sweepExpiredDeadletters } from './deadletter.js';
 import { EventEnvelopeSchema } from './schemas.js';
+import { attachHostBridge } from './host-bridge.js';
 import { z } from 'zod';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 const name = 'agint-event-bus';
@@ -82,7 +83,7 @@ const spec = defineDomain({
  *   - ctx.get('agint.metrics').inc ⇒ 健康度计数
  *   - ctx.on / ctx.effect / ctx.provide ⇒ cordis 基础
  */
-function apply(ctx, _config = {}) {
+function apply(ctx, config = {}) {
     const disposers = [];
     // ── lifecycle: dispose 时清订阅表 + ring buffer ──
     ctx.effect(() => () => {
@@ -159,6 +160,18 @@ function apply(ctx, _config = {}) {
     ctx.effect(() => clearInterval(sweepTimer));
     // ── 注册 3 Service ──
     ctx.provide('agint.eventBus.publish', (input) => publish(busCtx, input));
+    // ── B1（2026-11-02）：宿主事件 → 总线 ──────────────────────────────────
+    // 接 domain/changed（白名单域）与 workflow/end，理由与约束见 host-bridge.js 头注释。
+    //
+    // ⚠️ 挂在 provide 之后：桥接要用 publish，而 publish 依赖 busCtx，此处都已就绪。
+    // ⚠️ 关掉的方式：config.hostBridge === false（H5）。不发新版、不改代码即可止血 ——
+    //    一旦某个域意外变成高频写，改配置 + 重启比追一次发版快。
+    if (config.hostBridge !== false) {
+        disposers.push(attachHostBridge(ctx, {
+            publish: (input) => publish(busCtx, input),
+            metrics: busCtx.metrics,
+        }));
+    }
     ctx.provide('agint.eventBus.subscribe', (rawSub, handler) => subscribe(rawSub, handler));
     ctx.provide('agint.eventBus.inspect', (filter) => inspect((filter ?? {})));
     ctx.provide('agint.eventBus.inspectSummary', (filter) => inspectSummary((filter ?? {})));
@@ -269,5 +282,15 @@ function stubTable() {
         size: async () => m.size,
     };
 }
-export const Config = z.object({});
+/**
+ * 配置（2026-11-02 起非空）。
+ *
+ * hostBridge：宿主事件桥（B1）的开关。默认开；`false` 时彻底不订阅宿主事件。
+ * 为什么留这个开关而不是写死：桥接接的是**别人的**事件源，量级由宿主决定不由我们决定。
+ * 一旦某个域意外变成高频写（宿主改实现、或我们新挂插件），改配置 + 重启比追一次发版快。
+ * ⛔ 别把它做成「节流参数」——节流会让计数失真，而 metrics 正是靠计数看「哪天突然停写」。
+ */
+export const Config = z.object({
+    hostBridge: z.boolean().optional(),
+});
 export { apply, inject, name };

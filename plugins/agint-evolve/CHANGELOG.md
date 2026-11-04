@@ -1,5 +1,330 @@
 # agint-evolve CHANGELOG
 
+## v0.21.0（2026-11-03 · 紧急修复：v0.20.0 的 output schema 让整个 preset 加载失败）
+
+### 现象
+
+升级到 0.20.0 后，UI 里所有 AGINT preset（`agint` / `agint-blockchain` / `agint-investor` /
+`agint-ops` / `agint-zgs`）一律显示红色「加载失败」，错误原文：
+
+```
+agint-evolve-tools (../../.agint-bundle/plugins/agint-evolve/lib/tools.js):
+unsupported JSON schema:
+schema.properties.mandate.type must be string/number/integer/boolean/null/array/object/json,
+or use oneOf
+```
+
+### 根因
+
+v0.20.0 给三处 output schema 的可空凭据写成 `type: ['object','null']`。
+dsh-tools 的 JSON Schema **子集只收单个 type 字符串**
+（`dsh-tools/lib/types/json-schema.js:244`，`SCHEMA_TYPES` 是闭集），
+type 数组直接抛 `UNSUPPORTED_SCHEMA`。
+
+而 `assertSupportedJsonSchema(output.schema)` 的位置是 `tools.register()`
+（`dsh-tools/lib/index.js:2978`）—— **tools 插件挂载的入口**。
+一行 schema 写错 ⇒ 整行 `agint-evolve-tools` 激活失败 ⇒ 该 preset 下所有 agent 起不来。
+preset 的失败态是整条链的，所以五个 preset 一起红。
+
+### 为什么门禁全绿、用例全绿
+
+- 门禁四连（plugin-check / check-wiring / parity / compat）**都不调 `tools.register()`**，
+  它们查的是接线、副本一致性、dsh 版本兼容；
+- 共用契约替身 `plugins/_shared/test-stub-dsh-tools.mjs` 的 `assertRequiredTrue`
+  **只查 `required === true`，完全不看 `type`** —— 这是最大的盲区：
+  替身比真宿主宽松，所以「全绿」没有判据价值。
+
+### 修法
+
+1. `lib/tools.js` 三处改成上游惯用的 oneOf 写法（对照 `agint-cron/lib/tools.js:132`）：
+   ```js
+   mandate: {
+     required: true,
+     oneOf: [
+       { type: 'object', additionalProperties: false, properties: { ... } },
+       { type: 'null' },
+     ],
+   }
+   ```
+   ⛔ `properties` 只能留在 object 分支**内部** —— raw 子集禁止 `properties` 与 `oneOf` 同级
+   （`json-schema.js:175`）。但 `required: true` 可以同级：它是 DSL 作者层的 requiredness 标记，
+   编译期被提到父级 `required` 数组、不进入子节点产物（`index.js:603/604`），实测无误。
+
+2. **补护栏**：`plugins/_shared/test-stub-dsh-tools.mjs` 新增 `assertSchemaSubset()`，
+   `defineTool` 在 `assertRequiredTrue` 之后调用它。复刻 raw 子集的三条判定：
+   type 必须单字符串且在闭集内 / type 与 oneOf 不并存 / oneOf 同级禁 properties·required(数组)·items。
+   ⚠️ 布尔 `required: true` 与 oneOf 同级**要放行** —— 拒绝真宿主接受的写法是另一种失真。
+
+3. `plugins/_shared/test-stub-contract.test.mjs` 加 5 条用例（阴性对照 ④⑤⑥⑦ + 两条阳性），
+   其中 ④ 直接复刻本次事故形状。
+
+### 阴性对照（实测变红）
+
+把任一处改回 `type: ['object','null']` ⇒ evolve 用例 **9 条变红**，
+含 `tools-contract.test.mjs` 的「工具注册」「真调一次」两条。
+
+### 验证
+
+- 真实 dsh-tools（0.2.1-rc.5）直接 `mod.apply(fakeCtx)` ⇒ 6 个工具全部注册成功
+  （`evolve_review` / `evolve_read` / `evolve_propose` / `evolve_proposals` /
+  `evolve_set_status` / `evolve_executions`）；
+- evolve 测试 119/119；共用契约测试 12/12。
+
+## v0.20.0（2026-11-03 · W8-3 Mandate：批准时固化改动范围，越界须重新审批）
+
+### 起因：`approved` 只说「同意做」，没说「同意改哪些东西」
+
+执行器把 `proposalId` 交给 driver，driver 从**提案正文抽路径**（`extractRepoPaths`）
+再写仓库 —— 也就是说「改哪里」是在执行的那一刻才被决定的。两个口子：
+
+1. 正文在批准后被编辑，多写一个路径 ⇒ 这次执行就改到了没人批过的文件，
+   而台账上毫无异常：status 是 approved，凭据"一直在"。
+2. 抽取规则本身变宽（比如认了新的路径形态），历史批准的语义随之扩大。
+   这不是假设 —— `normalizeRepoPath` 就因为部署位路径认不出来而加过一轮壳剥离。
+
+### 凭据结构
+
+`mandate = { proposalId, paths[], grantedAt, policyVersion }`，在 `approved` 落库那一刻签发。
+
+⛔ `nullable().default(null)`，**不能**给默认对象：老提案（90+ 条）没有这个字段，
+给默认 `{paths: []}` 等于凭空造一份「批准范围为空」的凭据，`checkMandate`
+会把「没有凭据」（unknown）误读成「批准了零个文件」。
+**null 与「有凭据但是空数组」必须可区分。**
+
+### 判定：三态，不是布尔
+
+| state | 含义 | 执行器怎么办 |
+|---|---|---|
+| `ok` | 正文路径 ⊆ 凭据路径（收窄也算 ok） | 跑 |
+| `mismatch` | 有路径不在凭据里，或凭据归属不对 | **拦**，须重新审批 |
+| `unknown` | 没有凭据（老提案），或两边都空 | **放行**，但留痕 |
+
+⛔ **`unknown` ≠ `mismatch`**，这是本设计最容易做错的地方：
+- 判成 mismatch ⇒ 升级瞬间 90+ 条历史提案全部停摆；
+- 判成 ok 而不留痕 ⇒ 「没验过」冒充「验过了」，台账上两者长得一样。
+
+判据收窄的方向也写死了：本模块的路径抽取只认反引号包裹、且含 `/` 的 token
+（比 driver 那份窄）。漏认会让范围偏小，偏小是**安全**方向 —— 多出来的路径
+会被判 mismatch 走重新审批，而不是被静默放行。
+
+### 凭据生命周期
+
+- 进入 `approved` 且**当前没有凭据** ⇒ 签发。
+  已批准后改 blocker / 执行计划**不重签** —— 否则「改一句阻塞原因」就能把范围
+  悄悄刷新成新正文，等于给越权开后门。
+- 离开 `approved` ⇒ 凭据置 null。状态已不是批准，留着只是一份过期授权。
+  从 applied/rejected 改判回 approved 会重新签发（那是一次新的批准）。
+
+### 用例
+
+- `test/mandate.test.mjs`（新，11 例）：M0 归一化（去重/排序/剥 `./`、行号、尾斜杠）、
+  M1 批准时签发、M1b 抽不到路径时是 `[]` 而非 undefined、
+  M2 正文改宽判 mismatch 且指出具体路径、M2b 收窄仍 ok、M2c 顺序无关、
+  M3 老提案 unknown、M3b 两边都空也是 unknown、M3c 凭据归属错判 mismatch、
+  M4 `checkMandate` 只读（不改入参）。
+- evolve 全量 **119/119 通过**。
+
+### 顺带修
+
+三个工具的 output schema 补 `mandate` 声明（`type: ['object','null']`）。
+`proposal-timestamps` ④ 立刻抓住 —— 这正是那条护栏的用途。
+
+### 已知边界（未做）
+
+`markProposal` 是通用的读-改-写，注释说「只动执行相关字段」但没有技术约束，
+理论上 `patch` 里放 `body` 能改正文。**查过了：对外服务里没有改正文的入口**
+（`body` 只在 `propose` 出现一次），所以这目前是理论缺口，没有加白名单 ——
+加白名单会波及所有调用点，收益不值这个风险。若日后新增正文编辑入口，必须先回来看这里。
+
+## v0.19.0（2026-11-03 · W8-2 Outbox + receipt：note 冻结语义 + set_status 返回体补齐）
+
+### 一、`note` 改成冻结语义 —— 修一条「静默删掉人工记录」的活路径
+
+原实现两行合起来是个陷阱：
+
+```js
+async setStatus(id, status, note = '', opts = {}) { ... }     // ① 默认值把 undefined 变成 ''
+const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '' });  // ② ?? 以为能拦住
+```
+
+① 先把 `undefined` 降级成空串，② 的 `??` 就再也拦不住 —— `'' ?? rec.note` 求值为 `''`。
+**结果：任何「只改状态、不给 note」的调用都会把整行 note 清空。**
+真凶是默认参数，不是 `??`（传 `null` 时 `??` 是能拦住的，用例 N4 钉着）。
+
+两条真实入口都踩在这上面：
+
+| 入口 | 形态 | 后果 |
+|---|---|---|
+| 工具 `evolve_set_status` | `tools.js:323` 直接透传 `args.note`；模型不带 note 时是 `undefined` | 落库成功、note 被抹、**无任何报错** |
+| 服务直调 | `evolve.setStatus(id, 'applied')`（`shadow-publish.test.mjs:131` 就这么写） | 同上 |
+
+为什么这比报错贵：本仓的提案 `note` 是**唯一的人工判断留痕**。面板写路由靠
+`composeDecisionNote` 自己拼前缀绕开了它，所以从面板操作完全看不出来；
+一旦从工具侧改判，证据静默消失、而 `updatedAt` 照常刷新 —— 事后读到的是
+「刚被改过、但什么都没留下」的一行，比抛错难查得多。
+
+改为与 `blocker` / `execMode` **同一冻结语义**：
+
+- 不传（`undefined` / `null`）⇒ 保留现状
+- 传 `''` ⇒ 显式清除（要清就得说清，不能靠省略）
+- 传非空 ⇒ 覆盖
+- 传非字符串 ⇒ 抛错（不猜）
+
+工具入参描述同步改成「省略=保持原有记录不动；要清除请显式传空字符串」——
+此前只写「变更说明」，模型会合理地认为不填没关系。
+
+### 二、`evolve_set_status` 返回体补齐 stage 四件（既有 bug，非本次引入）
+
+v0.24.0 引入 stage 九档时，`ticketStage()` 的四个派生值被写进
+`evolve_set_status` 的 output schema 并标 `required`，但 `execute()` 的返回体没有它们。
+
+- `evolve_proposals` 幸免：它直接返回 `listProposals()` 的行（自带 `decorateProposal`）
+- `evolve_set_status` 是手工拼返回体 ⇒ **每次调用必被 DSH strict 校验打回**
+
+而写路径是「先落库、后校验」⇒ 报错时状态**已经改完**。调用方看到失败重试一次，
+撞上幂等短路得到「状态没变」—— 两边对不上账。
+
+`proposal-timestamps.test.mjs` ④ 一直红着，`git stash` 验证过与本次改动无关。
+
+补的时候踩到一个值得记的坑：`ticketStage()` 返回的键是**短名**
+`side` / `label` / `why`，工具输出要的是 `stageSide` / `stageLabel` / `stageWhy`。
+最初写成 `stage.stageSide` ⇒ 三个字段「存在、类型对、永远为空」，schema 照过、面板照显示空白。
+`S4`（声明集 ⊇ 返回集）**抓不到**，因为键是齐的。必须靠 `S1`（不许空串）
++ `S2`（映射不错位）两层一起拦。
+
+顺带补齐 `execStartedAt` / `execFinishedAt`（返回体原来漏带，schema 也没声明）。
+
+### 三、smoke 补路径纪律 fixture（消掉长期 WARN）
+
+`manifest.permissions.fs` 声明了 `read:plugins` / `write:reviews`，但 smoke 没有
+路径用例 ⇒ `plugin-check` 长期报「permissions.fs 非空但 smoke 缺跨平台 fixture」。
+补三条：正向正斜杠相对路径可读、`../` 逃逸必须抛 `escapes root`、
+前导 `/` 被剥后仍按 root 内相对路径寻址。
+
+### 用例
+
+- `test/note-preservation.test.mjs`（新，10 例）：N1 阴性对照（复刻修复前求值、
+  实测算出 `''`）+ N2–N10 覆盖四条入口 × 四种传参 + applied 追加原阻塞痕迹。
+- `test/set-status-derived.test.mjs`（新，5 例）：S1 四件齐全且值随状态变（不许硬编码）、
+  S2 与 `ticketStage()` 逐键对拍（钉键名映射）、S3 老版本服务无 `ticketStage()` 时字段仍存在、
+  S3b 阴性对照（读错键得到 `undefined`）、S4 声明集 ⊇ 返回集。
+- `agint-evolve` 全量：**108/108 通过**（此前 103 例 + 1 既有红 ⇒ 现在 0 红）。
+
+### 阴性对照（全部实测变红）
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| 把 `applyStatus` 改回 `note ?? rec.note ?? ''` + 默认参数 | N2 / N3 / N7 / N10 |
+| 把工具里的键名改回 `stage.stageSide` 等 | S1 / S2（S3、S4 仍绿 —— 证明两层护栏缺一不可） |
+| 拆掉 `clean()` 的 `escapes root` 判断 | smoke 11b |
+
+### 未做（诚实边界）
+
+- **没做 outbox 表**。原本计划加一张 outbox 记录「面板点了什么、有没有被消费」，
+  但读码后确认：面板路由的幂等短路 + `composeDecisionNote` 保留 `prev.note`
+  已经把「重复写」和「中转丢 note」都处理了，真问题是 `setStatus` 的 note 语义。
+  加一张表只会多一个需要清理和核对的状态源。**事件让系统知道，动手要显式** ——
+  这里该修的是入口语义，不是再加一层记账。
+- `note` 冻结语义不改变 `REASON_REQUIRED`（`applied` / `rejected` / `wontfix` 仍必须写理由）。
+  那条是**跨调用**的完整性要求，与「同一次调用的缺省行为」是两件事。
+- 面板 `composeDecisionNote` 未改：它的 `PANEL_NOTE_MARK` 前缀去重逻辑仍然需要，
+  因为状态变化时确实要拼「谁在什么时候判了什么」的抬头。
+
+## v0.18.0（2026-11-03 · W8-1 Effects：周额度按「提案」计数，不再按「执行行」）
+
+### 起因：红线说的是「部署几次」，代码数的是「改了几个文件」
+
+`weeklyUsage()` 的判据是 `jobs.filter(ok===true && state==='succeeded').length`
+—— 数的是**执行行**。而 v0.22.0 起 `partial` 会自动续跑：一条横跨 N 个文件的提案
+会产出 **N 条** `ok:true, state:'succeeded'` 的执行行（每条只落地一个原子单元）。
+
+于是**一条提案吃掉 N 格周额度**。实测后果（本机 `weeklyCommitCap=5`）：
+一条 3 单元提案 + 续跑上限 5 ⇒ 单条提案就能把 5 格全吃光，之后所有提案一律
+`defer` 顺延到下周。那一周系统看起来「很忙」，实际只推进了一条提案。
+
+这不是限流，是误伤 —— AGENTS.md 红线原文是「不要跨周累计自动**部署**超过 N 次」，
+部署的单位是**提案**，不是文件。
+
+### 改动
+
+- `lib/execution.js:weeklyUsage()` 返回 `count` 改为按 `proposalId` 去重后的条数；
+  新增 `proposals`（去重后的 id 列表）。`jobs` 仍是**未去重**明细 —— 周报要能说出
+  「跑了 7 次、涉及 3 条提案」，两个数语义不同都保留。
+- `executionStats()` 新增 `weekExecutions`（成功执行**行**数）与 `weekProposals`。
+  `lastWeekCommits` 字段名不变（执行器 `decideRun({ weekCommits })` 与面板按它判上限），
+  语义变更见上。
+- `lib/tools.js` 的 `evolve_executions` 输出 schema 加 `weekExecutions`，
+  渲染成「本周落地 3 条提案（共 7 次执行）」。
+  ⛔ 必须与 `weekCommits` 并列：只报一个数会让人把续跑误读成又落地了一条新提案。
+
+### 两条刻意的口径决定
+
+1. **宁多算，不错并**。缺 `proposalId` 的行（历史脏数据 / 手写夹具）每条算独立一格，
+   键退回 `__row_<id>`。天真写法 `String(j.proposalId ?? '')` 会把两条 `undefined`
+   和一条 `''` 全部挤成同一个键 —— 实测 3 条真实执行被记成 1 格，上限被静默放宽 3 倍。
+   **错并让红线悄悄失效，多算只会让它更早触发**，方向不对称。
+2. **一致性由用例钉住，不靠人工记忆**。`agint-executor/test/week-unit.test.mjs`
+   有一份独立实现（跨插件不许直接 import）；`weeklyUsage` 侧新增 E11 用真实现
+   对拍五组数据，其中「缺 proposalId」那组正是两条实现最容易分歧的地方。
+
+### 验收
+
+- `agint-evolve` 全量 **92/92**（新增 `test/weekly-usage.test.mjs` 11 例）。
+- `agint-executor` **6/6**（新增 `test/week-unit.test.mjs` 5 例）。
+- ⛔ **阴性对照实测会红**：① 拆掉去重退回旧口径 → E1/E2/E3 红（证明这三条真在测口径）；
+  ② 让 evolve 侧退回天真去重 → E6/E11 红（证明对拍真在起作用）。
+- `plugin-check` 两插件 exit 0；`check-wiring` exit 0。
+
+### 未做（诚实边界）
+
+这次只修**计数单位**，没动「partial 也报 `ok:true`」这件事本身。
+后者是执行台账的真实语义（job 确实成功了），改成 `ok:false` 会把「已落地那一份」
+说成没做。要彻底分离「job 成功」与「提案闭环」，得引入独立的 effects 台账
+（W8-1 的完整形态），那是独立改动。
+
+---
+
+## v0.17.0（2026-11-03 · 孤儿执行回收：宿主重启后卡在 running 的执行行能被结算掉）
+
+### 起因（实机取证）
+
+提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 从 2026-11-01T16:00:04.986Z 起
+永远停在 `state='running'`（`finishedAt=''`），面板显示「已批准·执行中」，
+而**没有任何东西在跑**。三条原因叠在一起：
+
+1. 宿主在执行途中被重启/关停 ⇒ 结算调用撞上已 dispose 的存储域，抛错；
+2. 执行器把结算失败**静默吞掉**（`catch { /* noop */ }`）⇒ 行永远停在 running；
+3. `lib/execution.js:46` 的 `CLAIMABLE` 只含 `queued`/`deferred` ⇒ running 行永不再被捡；
+   `lib/index.js:442-450` 的 `activeJobsFor` 又把 running 算活跃 job ⇒
+   `autoEnqueueBlocker` 判 `already-queued` ⇒ 提案再也排不进去。
+
+⇒ **队列不自愈**：没人会再来结算这一行，也没人能再排一条新的。
+
+### 改动
+
+- `lib/execution.js` 新增纯函数 `isOrphanExecution(job, {now, mountedAt, staleMs, excludeIds})`：
+  - 判据①（硬证据）：行在**本进程挂载之前**就被 claim（`startedAt < mountedAt`）
+    ⇒ 上一进程已死，本进程不可能是它的执行者 ⇒ 孤儿；
+  - 判据②（兜底）：行 running 超过 `staleMs` 且不在 `excludeIds`（本进程活跃执行）里。
+  - 无 IO、无时钟（`now` 由调用方传），与本文件其余判据同风格。
+- `lib/index.js` 新增服务方法 `reapOrphanExecutions({now, mountedAt, staleMs, excludeIds})`：
+  孤儿行落 `failed`（**不是** cancelled —— 中断 ≠ 人撤销），写 `finishedAt` 与日志；
+  提案侧 `execState → failed`、`execError` 写明「因宿主重启/进程中断未结算」。
+- ⛔ **回收不得把提案标 applied**：中断的是「一次执行」，不是「这件事做完了」。
+  提案保持 `approved`，剩余单元仍有入口（partial 的自动续跑机制继续有效）。
+- ⛔ 回收**不自动重排**：重排由提案自己的入队机制（`autoEnqueueBlocker`）决定，
+  执行器/本插件不越权 —— 否则一次重启能凭空多出 N 条自动执行。
+
+### 面板口径
+
+`agint-family-panel/lib/v2-proposals.js:469` 已有 `failed → person/failed` 分支，
+回收后自动显示为「执行失败·等处理」，**面板无需改动**。
+
+### 测试
+
+`test/execution.test.mjs` 新增 4 组用例：跨进程孤儿被回收且提案不被标 applied /
+`excludeIds` 里的 job 不被误判 / 超时兜底 / 非 running 行不被回收。
+
 ## v0.16.0（2026-11-01 · 工单状态机 `stage`：一条提案，一个「现在该谁动」的答案）
 
 ### 起因

@@ -1,5 +1,95 @@
 # agint-executor CHANGELOG
 
+## v0.5.0（2026-11-03 · W8-3：执行前核审批凭据）
+
+### 新增第七道闸
+
+`decideRun()` 现在收一个 `mandate` 参数（`agint.evolve.checkMandate()` 的结果），
+在**驱动可用之后、周额度之前**核验：
+
+```
+① 提案还在不在 → ② 还是不是 approved → ③ blocker → ④ 驱动在不在
+→ ★ 审批凭据 → ⑤ 周额度 → ⑥ 重试次数
+```
+
+**为什么在周额度之前**：越权不是「这次不该跑」，是「这次没资格跑」。
+让它去顺延会把一份无效授权排到下周，而下周凭据照样无效 —— 等于无限拖延。
+也不该算失败消耗重试次数。
+
+**为什么在驱动之后**：能力缺失是配置问题，比授权问题更前置。
+
+### ⛔ 只有明确的 mismatch 才拦
+
+| mandate.state | 判决 |
+|---|---|
+| `mismatch` | `cancel`，理由写明超出的路径与「需重新审批」 |
+| `unknown` | **放行**（老提案没凭据不是越权） |
+| `ok` / `null` | 放行 |
+
+把 `unknown` 当 mismatch 拦下来 = 升级瞬间 90+ 条历史提案集体停摆。
+但放行不等于安心：`checkMandate` 取不到（老版 evolve / 调用抛错）时
+**不拦**，避免把 evolve 的临时故障变成「所有提案疑似越权」的一次性停摆。
+
+### 用例
+
+`test/mandate-gate.test.mjs`（新，7 例）：
+
+- G0 无凭据信息 ⇒ 照常 run（不改变既有行为）
+- G1 mismatch ⇒ cancel，理由含越权路径与「重新审批」
+- G2 ⛔ unknown ⇒ 放行 / G2b ok ⇒ 放行
+- G3 **越权 + 周额度已满 ⇒ 仍是 cancel 而非 defer**（钉判据顺序）
+- G4 越权但驱动没挂载 ⇒ 先报驱动缺失（钉顺序）
+- G5 越权但状态已变 ⇒ 撤单理由是状态，不能被凭据盖掉（钉顺序）
+
+### 阴性对照（实测变红）
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| 删掉 mismatch 拦截（`if (false)`） | G1 / G3 |
+| 把拦截条件改成 `state !== 'ok'`（即把 unknown 也拦） | G2 |
+
+两个方向都试了 —— 拦太松和拦太紧都能被抓到，这是三态设计的意义所在。
+
+### 全量
+
+`agint-executor` 13/13 通过。
+
+## v0.4.0（2026-11-03 · 结算失败不再静默吞 + 挂载即回收孤儿执行）
+
+### 起因（实机取证）
+
+提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 停在 `state='running'`
+一整天，面板显示「已批准·执行中」，而没有任何东西在跑。
+driver 会话转储的最后一条事件是
+`{"type":"agent/inbox/spliced","data":{"outcome":"canceled"}}` ⇒ 执行被取消；
+而同一宿主进程在 2 分钟后还成功落地了另一条（`exec-1793446896075-or1m5x`，
+16:06:23Z succeeded）⇒ 执行器没被占死，**是结算那一步没落地**。
+
+根因在两处：
+- `lib/index.js` 的 tick 捕获段里，结算失败走 `catch { /* noop */ }` ⇒ 错误被吞，
+  执行行永远停在 running；
+- 队列不自愈（`agint-evolve/lib/execution.js:46` 的 `CLAIMABLE` 不含 running）。
+
+⛔ 吞掉的代价不是「少一条日志」，是「一条提案永久卡死」。
+
+### 改动
+
+- **结算失败不再静默**：tick 的兜底结算抛错时，改为 `warn` + 记
+  `evolution.failure_pattern`（`executor-settle-failed`）。
+- **挂载即回收**：插件挂载后立刻调 `agint.evolve.reapOrphanExecutions()` ——
+  上一进程遗留的 running 行此刻就是孤儿，它们会**挡路**（占着活跃 job 名额），
+  不必等第一个 tick。
+- **每轮 tick 前回收**：`reap` 在 `claim` **之前** —— 否则孤儿行让真正该跑的提案排不进去。
+- 判据用本进程挂载时刻（`mountedAt`）与超时兜底（`config.orphanStaleMs`，默认 30 分钟）；
+  本进程正在跑的 job id 进 `excludeIds`，不会被误判。
+- 回收失败同样不吞：记 `executor-reap-orphans-failed`。
+- `state.reaped` 计数上报到 `agint.executor.status()`，排障一眼可见。
+
+### 测试
+
+`test/executor.test.mjs` 新增 4 组用例：结算抛错时必须有 warn + failure_pattern /
+回收必须带 `mountedAt` / 回收必须排在 claim 之前 / 回收失败必须落 failure_pattern。
+
 ## v0.3.1（2026-11-01 · 修代码注释里的红线旧值，零行为改动）
 
 `lib/index.js` 的配置注释仍写着「`weeklyCommitCap` 默认 3，对齐 AGENTS.md『不要跨周累计

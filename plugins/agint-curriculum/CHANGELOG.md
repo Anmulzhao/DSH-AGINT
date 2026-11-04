@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## 0.2.0（2026-11-03 · W3：订阅 `goal/*`，课程与真实目标对齐有了输入端）
+
+**一句话**：课程此前由 `boundary-probe` 从 self-model 的**能力缺口**自推，
+与老板真正在追什么目标没有任何关系。宿主的 `goal/changed` / `goal/activation-changed`
+是「课程该对齐谁」的唯一输入端，本版接上。
+
+**做了什么**：订阅两条 goal 主题，把最后观测到的目标状态记成对齐提示；
+新增只读服务键 `agint.curriculum.goalAlignment()`。
+
+**⛔ 只记账、不改课程队列**：课程队列是 `agint_curriculum` 域里的持久事实，
+按事件自动重排等于让「一次目标编辑」变成「一串无法回滚的课程增删」。
+真正的重排入口仍是 `curriculum.probe(...)`，由人/agent 显式调用。
+这与 `agint-curator` 的 W2 是同一条纪律：**事件让系统知道，动手要显式**。
+
+**两条 goal 事件的作用域不同**（别当同一件事的两种写法）：
+- `goal/changed` —— **agent 级**（`dsh-goal:877`，`emit("goal/changed", { change })`）；
+- `goal/activation-changed` —— **session 级**（`dsh-goal:798`，带 `sessionId`）。
+本用途下按同一口径合并是安全的：`revision` 单调递增，比 revision 就能判新旧，
+不依赖事件类型。**迟到的旧 revision 直接丢弃**（否则乱序事件会把对齐状态拉回去），
+但 `eventsSeen` 照常计数 —— 丢弃的是状态覆盖，不是观测。
+
+**观测面口径**（同样不许合并）：
+| 状态 | 含义 |
+|---|---|
+| `received:false` | 这条链路根本没通电，课程退回自推 |
+| `received:true` 且 `goalId:''` | 通电了，但宿主没带 goal（如 goal 被清空） |
+
+**三条纪律**（写在 lib/index.js 的 W3 段）：①软取总线，总线不在就纯降级；
+②回调里**不 await 任何存储**；③只留最后一条，不追加日志 —— 目标可能被连改十次。
+
+**产物**：`lib/index.js` +75 行；`test/goal-alignment.test.mjs` 新增 6 条用例（6/6）；
+`manifest.json` 的 `spec.cordis.events` 补两条宿主主题。
+
+**阴性对照**：删掉 revision 丢弃逻辑 ⇒「迟到的旧 revision 被丢弃」用例变红（实测 6→5 通过 1 失败）。
+
+**验收**：`node --test plugins/agint-curriculum/test/goal-alignment.test.mjs` → 6/6。
+
 ## 0.1.6（2026-10-21 · 新增只读出口 listAttempts，供 self-model pull 成绩）
 
 ### 变更

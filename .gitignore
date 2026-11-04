@@ -88,3 +88,11 @@ plugins/agint-family-panel/test/fixtures/v2-home/storages/
 # 一次性用完即弃；插件源码的权威副本在仓库 plugins/ 下，勿把快照当交付物。
 agint-host-sync-*.tar.gz
 agint-host-sync-*.sh
+
+# 判尺标定的临时分析脚本（含本机数据，不入库）
+.calib-scratch/
+
+# dsh worktree service (0.2.1-rc.5) 的默认 checkout 根（Config.directory = ".agents/worktrees"）。
+# 它自己会在根上写一个 `.gitignore` 内含 `*`，但那只对**新**建的根有效，且不进本仓版本控制；
+# 本仓有并发写者会 `git status -u` ⇒ 不显式忽略就会在别人的 status 里冒出一堆 worktree 文件。
+.agents/

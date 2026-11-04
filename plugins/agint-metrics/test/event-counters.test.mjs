@@ -45,12 +45,23 @@ function makeTableFn() {
 let idSeq = 0;
 const randomIdFn = () => `m-${++idSeq}`;
 
-// ─────────────────── 1. 主题覆盖（5 条，不能漏） ───────────────────
+// ─────────────────── 1. 主题覆盖（不能漏） ───────────────────
 
-test('订阅覆盖全部 5 条主题，且每条都有独立 metric key', () => {
+test('订阅覆盖全部主题，且每条都有独立 metric key', () => {
+  // 2026-11-02（B1）新增两条宿主事件桥主题。刻意继续用**字面量列表**而不是
+  // `assert.ok(SUBSCRIBED_TOPICS.length >= 5)` —— 后者对「悄悄删掉一条」完全无感。
+  // 代价是每次加主题都要改这里，这是值得的：本文件守的正是「订阅真的挂上了」。
   assert.deepEqual(
     [...SUBSCRIBED_TOPICS].sort(),
-    ['abtest.concluded', 'abtest.started', 'quality.contract.violated', 'rules.changed', 'wiki.updated'],
+    [
+      'abtest.concluded',
+      'abtest.started',
+      'input.signal.host.domain-changed',
+      'input.signal.host.workflow-end',
+      'quality.contract.violated',
+      'rules.changed',
+      'wiki.updated',
+    ],
   );
   // key 也必须两两不同，否则两条主题会写进同一个时间序列、无法区分
   const keys = Object.values(COUNTER_METRIC_KEYS);

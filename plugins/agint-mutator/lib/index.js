@@ -32,6 +32,7 @@ import * as nodeFs from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
 import { withMutex } from './rollback-mutex.js';
 import { runRollbackTransaction } from './rollback.js';
+import { runIsolatedWrite } from './worktree-isolation.js';
 import { synthPluginPackage, synthForProposal } from './synth.js';
 import {
   MutationProposalSchema, MutationPayloadSchema, MutationKindSchema, MUTATION_KINDS,
@@ -105,7 +106,27 @@ const SOURCE_STUBS = {
   STRATEGY_REWRITE: { expectedEffect: 'reorder 通过率 >= 80% within 7 天', rollbackCondition: 'manual rollback after 3 failures', payloadField: { strategyPayload: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } }, template: { strategyId: 'default-strategy', oldSteps: ['fetch_context','plan_subtasks','execute','verify'], newSteps: ['plan_subtasks','fetch_context','execute','verify'], ordering: 'replace' } },
 };
 
-const Config = z.object({});
+// ⛔ W6（v0.7.0）：worktree 隔离**默认关**。
+//
+// 默认关的三条理由（不是保守，是这三条任一没被实测覆盖就不该默认开）：
+//   1. `ctx.worktrees.create()` 会切换**调用者 agent 的 cwd**，还原走 workingDirectory.set。
+//      本机是单 agent 会话（`dsh web`），换回来通常没问题；但并发会话下
+//      「A 的 commit 改了 B 的 cwd 一瞬间」是不可接受的默认行为。
+//   2. worktree 服务只在该行被挂载时存在（`cordis.patch.yml` 的 `id: worktree`）。
+//      配置里没有这一行 ⇒ ctx.get('worktrees') 为 null ⇒ 隔离路径直接降级。
+//      默认开会让「挂没挂这一行」决定 commit 的行为，这不是配置该有的语义。
+//   3. 隔离只在「sandbox 验证耗时 > 0」时才带来收益。sandbox 不可用/秒回的场景里，
+//      它只多花一次 git worktree add（≈几十毫秒 ~ 秒级）。
+//
+// 打开方式：cordis.patch.yml 里 agint-mutator 那行 config 加
+//   worktreeIsolation: true
+// 任何一步失败都**降级回直写**并把原因记进 audit.worktree.reason，不抛错 ——
+// commit 的核心契约（写 postimage / 写 commits 表 / policy 决策）不受本开关影响。
+const Config = z.object({
+  worktreeIsolation: z.boolean().default(false),
+  // 分支名前缀：只为人工辨认（`git branch` 里一眼看出是 mutator 建的）
+  worktreeBranchPrefix: z.string().default('agint-mut/'),
+});
 
 // ── 入参 schema（设计稿 §二.1：propose input 形态） ─────────────────────
 // 业务 payload 字段由 caller 传（fixture / 人类 owner）；软依赖仅做「服务可用」守门。
@@ -214,8 +235,13 @@ function placeholder(fnName, subTask, info) {
   };
 }
 
-function apply(ctx) {
+function apply(ctx, config = {}) {
   let domain = null, domainError = null, disposed = false;
+  // W6：Config 是 zod schema，但 cordis 传进来的 config 可能缺字段（本地假 ctx 测试更常见）
+  const wtIsolationEnabled = config.worktreeIsolation === true;
+  const wtBranchPrefix = typeof config.worktreeBranchPrefix === 'string' && config.worktreeBranchPrefix.length > 0
+    ? config.worktreeBranchPrefix
+    : 'agint-mut/';
 
   // lifecycle：副作用走 ctx.effect → graceful shutdown（设计稿 §八 + AGENTS.md 挂载红线）
   ctx.effect(() => () => {
@@ -608,6 +634,44 @@ function apply(ctx) {
   }
 
   /**
+   * W6（v0.7.0）：worktree 隔离写 + 隔离内验证。
+   *
+   * 契约（与 `commit()` 的其它 helper 不同 —— 它**永不抛错**）：
+   *   返回 `null` = 开关没开，调用方走原直写路径；
+   *   返回 `{ ok:false, reason }` = 开关开了但隔离没做成，调用方**降级**直写；
+   *   返回 `{ ok:true, verifyResult, … }` = 已在 worktree 里写完并验完，
+   *     调用方负责把 postimage 写回主工作区，并直接用 verifyResult 当 sandbox 结果。
+   *
+   * ⛔ 为什么不抛错：worktree 是**优化**，不是 commit 的前置条件。抛错会让「挂错了一行配置」
+   *    变成「所有 mutation 全部失败」—— 那是把可降级问题升级成停机问题。
+   *    降级原因进 audit.worktree.reason，可查、不静默。
+   */
+  async function maybeIsolatedVerify({ ctx, enabled, repoRoot, targetPath, postimage, branchPrefix, sandbox, targetPlugin }) {
+    if (!enabled) return null;
+    if (disposed) return { ok: false, reason: 'plugin-disposed', cleanupNotes: [] };
+    let result;
+    try {
+      result = await runIsolatedWrite({
+        ctx,
+        repoRoot,
+        targetPath,
+        postimage,
+        branchPrefix,
+        // 在 worktree 里调 sandbox。⛔ 传 worktree 内的绝对路径 ——
+        // sandbox 按 process.cwd() 解析相对路径（2026-09-29 事故），
+        // 而且我们要验的**就是 worktree 里那份**，不是主工作区那份（那份此刻还没写）。
+        verify: async ({ absTargetInWorktree }) => sandbox.runSmoke({
+          target: { path: absTargetInWorktree, name: `${targetPlugin}/${basename(targetPath)}` },
+        }),
+      });
+    } catch (err) {
+      // runIsolatedWrite 内部已 try/catch，这里是最后一道：任何意外都不许打断 commit
+      return { ok: false, reason: `isolation-threw: ${err && err.message ? err.message : String(err)}`, cleanupNotes: [] };
+    }
+    return result;
+  }
+
+  /**
    * `agint.mutator.commit(input) → { ok, commitId, postimageHash, committedAt, policyDecision, audit }`
    * 设计稿 §2.1：7 步
    *   1) 读 proposal
@@ -664,14 +728,30 @@ function apply(ctx) {
     // ── 3) 写 postimage 到 targetPath
     // v0.6.7：把 preimage 传进去 —— diffStrategy='line_replace' 需要它做局部替换
     const postimage = generatePostimage(proposal, preimageContent);
-    await nodeFs.mkdir(dirname(absTarget), { recursive: true });
-    await nodeFs.writeFile(absTarget, postimage, 'utf8');
     const postimageHash = await contentHash(postimage);
     const commitId = randomId();
     const committedAt = nowIso();
 
     // 软依赖：sandbox（决策 D3：默认 verify 模式）。mutation 关键路径，不静默。
     const sandbox = softDepOrThrow(ctx, 'agint.qualitySandbox', 'commit verify 必须 sandbox.runSmoke（决策 D3 默认 verify）；FROZEN Service 接口');
+
+    // ── 3a) W6：worktree 隔离（默认关，见 Config 上方注释）
+    // 目标：postimage 在**被验证之前**不落地主工作区。这里只做「隔离写 + 在 worktree 里验」，
+    // 决策与写回仍在下面原有的代码路径上 —— 隔离失败 ⇒ isolation 为 null ⇒ 走原直写。
+    const isolation = await maybeIsolatedVerify({
+      ctx, enabled: wtIsolationEnabled, repoRoot, targetPath, postimage,
+      branchPrefix: wtBranchPrefix, sandbox, targetPlugin,
+    });
+    if (isolation && isolation.ok) {
+      // 验完了：写回主工作区（此刻才是主工作区第一次被碰）
+      await nodeFs.mkdir(dirname(absTarget), { recursive: true });
+      await nodeFs.writeFile(absTarget, postimage, 'utf8');
+    } else {
+      // 未启用 / 降级：保持 v0.6.x 的原始顺序（直写 → 验）
+      await nodeFs.mkdir(dirname(absTarget), { recursive: true });
+      await nodeFs.writeFile(absTarget, postimage, 'utf8');
+    }
+
     // ── 5) sandbox verify
     // ⛔ 传 absTarget（绝对路径），不是 targetPath。理由与 driver v0.2.7→v0.2.8 同源：
     //   sandbox 内部 `const targetPath = resolve(target.path)` 是 Node 的 path.resolve，
@@ -683,9 +763,11 @@ function apply(ctx) {
     //   第 567 行，absTarget 早就算好了）。**不动 FROZEN payload schema** ——
     //   targetPath 本就是仓库相对路径，commit 侧有 repoRoot 能拼绝对路径，
     //   没必要把绝对路径塞进契约。
-    const sandboxResult = await sandbox.runSmoke({
-      target: { path: absTarget, name: `${targetPlugin}/${basename(targetPath)}` },
-    });
+    const sandboxResult = isolation && isolation.ok
+      ? { ...isolation.verifyResult, target: { path: absTarget, name: `${targetPlugin}/${basename(targetPath)}` } }
+      : await sandbox.runSmoke({
+          target: { path: absTarget, name: `${targetPlugin}/${basename(targetPath)}` },
+        });
     const sandboxKind = classifySandboxResult(sandboxResult);
 
     // 软依赖：policy
@@ -719,6 +801,14 @@ function apply(ctx) {
       sandboxResult: sandboxKind,
       rollbackTrigger: proposal.rollbackCondition,
     };
+    // W6：隔离结果的取证字段。
+    // ⛔ 只在开关打开时写 —— 默认关的运行不该多出字段（audit 是 AuditSchema 的 payload，
+    //    多塞字段一旦 strict 就会被打回；且「没启用」与「启用了但降级」必须长得不一样）。
+    if (wtIsolationEnabled) {
+      audit.worktree = isolation && isolation.ok
+        ? { isolated: true, baseCommit: isolation.baseCommit, branch: isolation.branch, cleanupNotes: isolation.cleanupNotes }
+        : { isolated: false, reason: isolation ? isolation.reason : 'not-attempted', cleanupNotes: isolation?.cleanupNotes ?? [] };
+    }
 
     // ── 4) 写 commits 表（不管 decision 都写，方便 rollback）
     const tC = await t_commits();

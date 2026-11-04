@@ -514,7 +514,17 @@ function isSameOrigin(req) {
  *
  * 为什么不是简单覆盖：`note` 在 applied 行里是**落地证据**，在 proposed 行里可能是
  * 上游留下的说明。人工决定要能追溯，但不能把别人的证据冲掉。
- * 上一版已是面板写的记录时不再叠加（连续改判会让 note 无限膨胀）。
+ *
+ * ⛔ 2026-11-03 修正（W8-2）：删掉「上一版以 PANEL_NOTE_MARK 开头就不叠加」那条。
+ *   原判据是 `keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ...`，
+ *   意图是防连续改判让 note 膨胀，但**前缀根本不携带「这条已没用了」的信息** ——
+ *   面板自己写过的 note 恰恰最可能含唯一的人工判断。
+ *   实测（提案 a85ef850）：300+ 字的失效论证与实测数据（36 条样本 / 随机 500 组权重 /
+ *   阈值 0.70→0.55 能翻 24/36）在一次「改判回 proposed」之后整段消失，
+ *   note 只剩 48 字的抬头，而 updatedAt 照常刷新 —— 事后读到的是
+ *   「刚被改过、但什么都没留下」。
+ *   膨胀保护改用长度上限（DECISION_NOTE_MAX 本来就是为这个存在的），
+ *   不再按「谁写的」判废。
  *
  * @param {{status:string, reason:string, prevNote:string, at:string}} input
  * @returns {string}
@@ -522,7 +532,7 @@ function isSameOrigin(req) {
 function composeDecisionNote({ status, reason, prevNote, at }) {
   const head = `${PANEL_NOTE_MARK} · ${at} · ${status}${reason === '' ? '' : ` · ${reason}`}`;
   const keep = String(prevNote ?? '').trim();
-  const preserved = keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ` ｜ 原记录：${keep}`;
+  const preserved = keep === '' ? '' : ` ｜ 原记录：${keep}`;
   const text = `${head}${preserved}`;
   return text.length > DECISION_NOTE_MAX ? `${text.slice(0, DECISION_NOTE_MAX)}…` : text;
 }

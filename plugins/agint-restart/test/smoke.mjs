@@ -296,10 +296,11 @@ test('优雅 dispose 触发持久化（含最近活跃 session）', async () => 
   process.env.DSH_HOME = tmpRoot;
   try {
     apply(ctx, { stateDir: '.agint-restart-smoke' });
-    // 第一次启动后调 agent/session-start 模拟 agent 出现
-    const sessionStartListener = listeners.find((l) => l.event === 'agent/session-start');
-    assert.ok(sessionStartListener, '应注册 agent/session-start 监听器');
-    sessionStartListener.fn({ agent: { id: 'agent-test-001' } });
+    // 第一次启动后调 agent/created 模拟 agent 出现
+    // （v0.9.3：原为 agent/session-start —— 宿主 0.2.x 从不发该事件，订阅它等于没订阅）
+    const agentCreatedListener = listeners.find((l) => l.event === 'agent/created');
+    assert.ok(agentCreatedListener, '应注册 agent/created 监听器');
+    agentCreatedListener.fn({ agent: { id: 'agent-test-001' } });
     // dispose 触发（cordis fiber dispose）
     for (const d of disposers) { try { d(); } catch { /* ignore */ } }
     // marker 应包含 lastSessionId = agent-test-001

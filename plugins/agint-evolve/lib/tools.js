@@ -158,6 +158,35 @@ function apply(ctx) {
           formulaVersion: { required: true, type: 'string' },
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+          // 不能被读成「批准范围为空」。
+          // ⛔ 可空**只能**用 oneOf 表达，不能写 `type: ['object','null']`：
+          //    dsh-tools 的 JSON Schema 子集只收**单个** type 字符串
+          //    （dsh-tools/lib/types/json-schema.js:244，
+          //    SCHEMA_TYPES 是个闭集），type 数组会在 tools.register() 里
+          //    抛 `unsupported JSON schema: … .type must be string/number/…`。
+          //    而 register() 是**整个 tools 插件挂载**的入口 ⇒ 一行 schema 写错
+          //    等于 agint-evolve-tools 整行激活失败 ⇒ 该 preset 的 agent 起不来，
+          //    UI 显示「加载失败」。DSH 上游的惯用写法见 agint-cron/lib/tools.js:132。
+          //    另：oneOf 分支里**不许**出现 required/properties 等兄弟关键字
+          //    （json-schema.js:175 ONE_OF_SIBLING_KEYWORDS），故 properties 只能
+          //    留在 object 分支内部。
+          mandate: {
+            required: true,
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  proposalId: { type: 'string' },
+                  paths: { type: 'array', items: { type: 'string' } },
+                  grantedAt: { type: 'string' },
+                  policyVersion: { type: 'string' },
+                },
+              },
+              { type: 'null' },
+            ],
+          },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机。与 staleSince 同样是派生值 —— 不进 schema、
           // 不落盘，但**输出面必须声明**，否则 DSH 的 strict 校验直接把整个返回打回。
@@ -223,6 +252,27 @@ function apply(ctx) {
                 formulaVersion: { required: true, type: 'string' },
                 assumedBy: { required: true, type: 'string' },
                 conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+                // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+                // 不能被读成「批准范围为空」。
+                // ⛔ 可空只能用 oneOf，`type: ['object','null']` 会被 dsh-tools 的
+                //    JSON Schema 子集拒收，进而让整行 tools 插件挂载失败（详见
+                //    propose 段同名字段的取证注释）。
+                mandate: {
+                  required: true,
+                  oneOf: [
+                    {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        proposalId: { type: 'string' },
+                        paths: { type: 'array', items: { type: 'string' } },
+                        grantedAt: { type: 'string' },
+                        policyVersion: { type: 'string' },
+                      },
+                    },
+                    { type: 'null' },
+                  ],
+                },
                 staleSince: { required: true, type: 'string' },
                 // 2026-11-01：工单状态机（派生值，同 staleSince）。
                 stage: { required: true, type: 'string' },
@@ -250,7 +300,8 @@ function apply(ctx) {
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },
-      note: { type: 'string', description: '变更说明（如"已在 X 落地"）' },
+      // 2026-11-03：不能把「省略 note」写成「清空」—— 见下方 note 说明。
+      note: { type: 'string', description: '变更说明（如"已在 X 落地"）。省略=保持原有记录不动；要清除请显式传空字符串' },
       blocker: { type: 'string', description: '阻塞原因：为什么批准了还不能动手（传空字符串=解除阻塞）。省略=保持原值不动' },
       unblockCondition: { type: 'string', description: '解锁条件：等什么满足才算能动手（传空字符串=清除）。省略=保持原值不动' },
       execMode: { type: 'string', enum: EXEC_MODES, description: '批准后的执行方式：manual=只批准不自动跑 / immediate=立即自动执行 / scheduled=按 execAt 定时自动执行。省略=保持原计划' },
@@ -283,6 +334,9 @@ function apply(ctx) {
           execState: { required: true, type: 'string' },
           execAttempts: { required: true, type: 'integer' },
           execError: { required: true, type: 'string' },
+          // 2026-11-03：补齐 —— 返回体带了就必须声明（additionalProperties:false）。
+          execStartedAt: { required: true, type: 'string' },
+          execFinishedAt: { required: true, type: 'string' },
           // 2026-10-27：execute() 的返回体本来就带 autoExecutable（见下方 return），
           // output schema 没声明 ⇒ additionalProperties:false 判失败。补上。
           autoExecutable: { required: true, type: 'boolean' },
@@ -292,6 +346,27 @@ function apply(ctx) {
           formulaVersion: { required: true, type: 'string' },
           assumedBy: { required: true, type: 'string' },
           conflictsWith: { required: true, type: 'array', items: { type: 'string' } },
+          // 2026-11-03（W8-3）：审批凭据。nullable —— 老提案是 null（没有凭据），
+          // 不能被读成「批准范围为空」。
+          // ⛔ 可空只能用 oneOf，`type: ['object','null']` 会被 dsh-tools 的
+          //    JSON Schema 子集拒收，进而让整行 tools 插件挂载失败（详见
+          //    propose 段同名字段的取证注释）。
+          mandate: {
+            required: true,
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  proposalId: { type: 'string' },
+                  paths: { type: 'array', items: { type: 'string' } },
+                  grantedAt: { type: 'string' },
+                  policyVersion: { type: 'string' },
+                },
+              },
+              { type: 'null' },
+            ],
+          },
           staleSince: { required: true, type: 'string' },
           // 2026-11-01：工单状态机（派生值，同 staleSince）。
           stage: { required: true, type: 'string' },
@@ -322,6 +397,17 @@ function apply(ctx) {
       if (typeof args.execAt === 'string') opts.execAt = args.execAt;
       const rec = await evolve.setStatus(args.id, args.status, args.note, opts);
       if (!rec) throw new Error(`evolve_set_status: 未找到提案 ${args.id}`);
+      // 2026-11-03：stage 四件是**派生值**（不落盘，见 execution.js:ticketStage），
+      // 必须现算。此前 output schema 把它们声明成 required，返回体却没有 ⇒
+      // DSH strict 校验每次调用都打回（而且是「先落库后校验」⇒ 报错时状态已改）。
+      // 与 proposal-timestamps.test.mjs ④ 同一条护栏：声明集必须 ⊇ 返回集。
+      // ⛔ 键名映射别猜：ticketStage() 返回的是 `side` / `label` / `why`（短名），
+      //    工具输出要的是 `stageSide` / `stageLabel` / `stageWhy`。
+      //    读错键不会报错 —— 会得到三个「存在但永远为空」的字段，schema 照过，
+      //    面板照显示空白。set-status-derived.test.mjs 的 S1 钉的就是这一点。
+      const stage = typeof evolve.ticketStage === 'function'
+        ? (evolve.ticketStage(rec) ?? {})
+        : {};
       return {
         id: rec.id, title: rec.title, body: rec.body,
         category: rec.category, status: rec.status,
@@ -330,11 +416,23 @@ function apply(ctx) {
         execMode: rec.execMode ?? 'manual', execAt: rec.execAt ?? '',
         execState: rec.execState ?? 'idle', execAttempts: rec.execAttempts ?? 0,
         execError: rec.execError ?? '',
+        // 2026-11-03：这两项原来漏带，schema 里也没声明 —— 一并补齐（无 schema 依赖，
+        // 但「返回体能少带就少带」是先前裁剪期的遗留，不该继续留着）。
+        execStartedAt: rec.execStartedAt ?? '', execFinishedAt: rec.execFinishedAt ?? '',
         autoExecutable: rec.autoExecutable !== false,
         createdAt: rec.createdAt, updatedAt: rec.updatedAt,
         formulaVersion: rec.formulaVersion ?? '', assumedBy: rec.assumedBy ?? '',
         conflictsWith: Array.isArray(rec.conflictsWith) ? rec.conflictsWith : [],
+        // 2026-11-03（W8-3）：审批凭据。approve 之后这里会是一份
+        // {proposalId, paths, grantedAt, policyVersion}，其它状态是 null。
+        // ⛔ 传 null 而不是省略：省略在 strict 校验下等于"字段不存在"，
+        //    与"有凭据但内容空"分不开。
+        mandate: rec.mandate ?? null,
         staleSince: rec.staleSince ?? '',
+        stage: String(stage.stage ?? 'draft'),
+        stageSide: String(stage.side ?? 'system'),
+        stageLabel: String(stage.label ?? ''),
+        stageWhy: String(stage.why ?? ''),
       };
     },
   }));
@@ -363,6 +461,10 @@ function apply(ctx) {
           queued: { required: true, type: 'integer' },
           running: { required: true, type: 'integer' },
           weekCommits: { required: true, type: 'integer' },
+          // W8-1（v0.18.0）：本周成功执行**行**数（含同一提案的续跑行）。
+          // ⛔ 必须与 weekCommits 并列出现：weekCommits 是「几条提案」（判周上限用），
+          //    这个是「跑了几次」。只报一个数会让人把续跑误读成又落地了一条新提案。
+          weekExecutions: { required: true, type: 'integer' },
           items: { required: true,
             type: 'array',
             items: {
@@ -382,7 +484,7 @@ function apply(ctx) {
       render: (_a, v) => [{
         type: 'text',
         text: v.action === 'list'
-          ? `evolve_executions: ${v.total} 条（排队 ${v.queued} / 在跑 ${v.running} / 本周已落地 ${v.weekCommits}）\n`
+          ? `evolve_executions: ${v.total} 条（排队 ${v.queued} / 在跑 ${v.running} / 本周落地 ${v.weekCommits} 条提案${v.weekExecutions > v.weekCommits ? `（共 ${v.weekExecutions} 次执行）` : ''}）\n`
             + (v.items.length === 0 ? '  （队列为空）' : v.items.map((x) => `  [${x.state}] ${x.proposalId.slice(0, 8)} · ${x.summary}`).join('\n'))
           : `evolve_executions ${v.action}: ${v.message}`,
       }],
@@ -395,6 +497,7 @@ function apply(ctx) {
         queued: stats.queued ?? 0,
         running: stats.running ?? 0,
         weekCommits: stats.lastWeekCommits ?? 0,
+        weekExecutions: stats.weekExecutions ?? 0,
       };
       if (args.action === 'list') {
         const rows = typeof evolve.listExecutions === 'function'

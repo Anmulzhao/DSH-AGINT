@@ -39,6 +39,12 @@ const COUNTER_METRIC_KEYS = {
   'quality.contract.violated': 'quality.contractViolatedCount',
   'abtest.started': 'abtest.startedCount',
   'abtest.concluded': 'abtest.concludedCount',
+  // ── 2026-11-02（B1）：宿主事件桥的两条主题 ──
+  // 生产者是 agint-event-bus/lib/host-bridge.js。接它们不是为了凑门禁绿，
+  // 是因为「宿主的域被写了」与「工作流跑完了」在 AGINT 侧此前**零指标**：
+  // 进化闭环能看见自己发了什么事件，却看不见自己**被写了什么**。
+  'input.signal.host.domain-changed': 'host.domainChangedCount',
+  'input.signal.host.workflow-end': 'host.workflowEndCount',
 };
 
 const COUNTER_METRIC_LABELS = {
@@ -47,6 +53,8 @@ const COUNTER_METRIC_LABELS = {
   'quality.contract.violated': 'L0 frozen-field write attempt blocked',
   'abtest.started': 'A/B test started count',
   'abtest.concluded': 'A/B test concluded count',
+  'input.signal.host.domain-changed': 'host storage-domain write count (whitelisted domains only)',
+  'input.signal.host.workflow-end': 'workflow run settled count (any stop reason)',
 };
 
 const SUBSCRIBED_TOPICS = Object.keys(COUNTER_METRIC_KEYS);
@@ -63,7 +71,7 @@ const SUBSCRIBED_TOPICS = Object.keys(COUNTER_METRIC_KEYS);
  */
 const SUBSCRIPTION = {
   subscriber: 'agint-metrics',
-  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded'],
+  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded', 'input.signal.host.domain-changed', 'input.signal.host.workflow-end'],
   mode: 'async', // sync 配额全局上限 3，留给真正的门禁边
   timeoutMs: 5000,
 };

@@ -115,6 +115,73 @@ function apply(ctx, config) {
     return record;
   }
 
+  // ── W2（2026-11-03）：技能目录变更 → 标记「该策展」 ──────────────────────
+  //
+  // WHY：策展此前**只靠 cron**。`skills/change` 是宿主主动告知「技能目录变了」的
+  // 唯一信号（dsh-skill:404，`dispatch("emit", ["skills/change"])`），
+  // 不接它就只能等下一次定时全量扫描。
+  //
+  // ⛔ 本段**不自动跑 run()**，只置一个待策展标记。三条理由：
+  //    1. run() 会扫全部技能根 + 读 tool_stats + 落 skill_states 四张表，
+  //       是**秒级**操作；而 `skills/change` 可能成批连发（目录扫描、批量安装）。
+  //       直接在回调里触发 = 把宿主的一次目录操作放大成 N 次全量扫描。
+  //    2. 自动归档是**不可逆动作**（文件被挪进 .archive/）。让一次目录变更
+  //       自动引发归档，等于把「谁动了技能目录」和「谁被归档了」焊死 —— 出事查不清。
+  //    3. 与 curriculum 的 goalAlignment 同一口径：事件让系统**知道**，
+  //       真正动手由人/agent 显式调 `curator.run()`。
+  //
+  // ⚠️ 宿主契约：`skills/change` **无参数**。所以这里拿不到「哪个技能变了」，
+  //    只能记「变过」。要判断变了什么，必须自己扫 —— 这正是 run() 干的事。
+  const SKILLS_CHANGE_DEBOUNCE_MS = 5000;
+  let skillsChangeState = null;   // { firstSeenAt, lastSeenAt, batches, pending }
+
+  function attachSkillsChangeWatch() {
+    const subscribe = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.subscribe') : null;
+    if (typeof subscribe !== 'function') return;
+
+    const onChange = () => {
+      const nowMs = Date.now();
+      if (!skillsChangeState) {
+        skillsChangeState = { firstSeenAt: new Date(nowMs).toISOString(), lastSeenAt: null, batches: 0, pending: true };
+      }
+      // 防抖只在「观测面」生效：连续变更合并成一个批次计数，pending 保持 true，
+      // 直到有人调 run() 才清掉。这样面板能看出「技能目录动过、还没策展」。
+      const sinceLast = skillsChangeState.lastSeenAt
+        ? nowMs - Date.parse(skillsChangeState.lastSeenAt)
+        : Number.POSITIVE_INFINITY;
+      if (sinceLast >= SKILLS_CHANGE_DEBOUNCE_MS) skillsChangeState.batches += 1;
+      skillsChangeState.lastSeenAt = new Date(nowMs).toISOString();
+      skillsChangeState.pending = true;
+    };
+
+    try {
+      subscribe({ topic: 'input.signal.host.skills-change', source: name }, onChange);
+    } catch (e) {
+      if (!disposed) console.warn(`[${name}] skills/change 订阅失败（策展将退回纯 cron）:`, e?.message ?? e);
+    }
+  }
+
+  void ready.then(() => attachSkillsChangeWatch()).catch(() => {});
+
+  /**
+   * W2：技能变更观测面（只读）。
+   *
+   * `received: false` = 链路没通电（退回纯 cron）；
+   * `pending: true` = 技能目录变过、还没策展（面板该提示「该跑一次 curator_run_now」）。
+   * ⛔ 这两个状态不许合并 —— 「没接上」和「接上了但还没跑」在排障时是完全不同的问题。
+   */
+  function skillsChangeStatus() {
+    if (!skillsChangeState) {
+      return { received: false, pending: false, batches: 0, firstSeenAt: null, lastSeenAt: null };
+    }
+    return { received: true, ...skillsChangeState };
+  }
+
+  /** run() / dryRun() 成功后清掉待策展标记 —— 只有真跑过才算「已处理」 */
+  function clearSkillsChangePending() {
+    if (skillsChangeState && skillsChangeState.pending) skillsChangeState.pending = false;
+  }
+
   const executor = createExecutor({
     getTable: table,
     audit,
@@ -471,6 +538,10 @@ function apply(ctx, config) {
       reason: null,
     }).catch(() => { /* 审计写失败不阻断本次运行结果 */ });
 
+    // W2：只有**真跑**（非 dry-run）才算把「技能目录变过」这件事处理掉了。
+    // dry-run 刻意不清：它没落盘、也没归档任何东西，清了就等于谎报「已处理」。
+    if (!dryRun) clearSkillsChangePending();
+
     return {
       week: report.week,
       dryRun,
@@ -622,6 +693,8 @@ function apply(ctx, config) {
     pause,
     resume,
     config: configApi,
+    // W2：技能变更观测面（只读）。派生值不落盘。
+    skillsChange: skillsChangeStatus,
   });
 }
 

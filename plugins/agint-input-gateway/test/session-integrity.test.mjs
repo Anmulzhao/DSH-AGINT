@@ -174,3 +174,56 @@ test('listRecentSessions: 按 mtime 取最近 N 个，多格式只取最新存�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── 2026-11-02：假读数治理 —— 设计路径不得被报成「降级」 ─────────────────
+// 背景：2026-10-21 回退时，listRecentSessions 每次调用都 notify 一条
+//   `local-by-design: ...` 到默认 console.warn ⇒ 每周一条「会话源降级」。
+// 但本通道**按设计**读原始日志（上游是重放校验后的产物，拿它做完整性检查 = 检测能力归零），
+// 那不是降级。v0.13.0 静默失败治理治的是「真故障不吭声」，这条是「没事喊狼来了」——
+// 方向相反，同样是假读数。
+test('⛔ 设计路径不得报降级：正常发现会话时不得往 console.warn 写任何东西', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sessquiet-'));
+  const warns = [];
+  const origWarn = console.warn;
+  try {
+    const sessRoot = join(root, 'sessions');
+    mkdirSync(join(sessRoot, 'ws-a', 'sid-q'), { recursive: true });
+    writeFileSync(join(sessRoot, 'ws-a', 'sid-q', 'session.v4.jsonl.zstd'), 'x');
+    process.env.DSH_HOME = root;
+    console.warn = (...args) => { warns.push(args.map(String).join(' ')); };
+
+    const logs = await listRecentSessions(8);
+    assert.equal(logs.length, 1);
+    assert.equal(
+      logs[0].sourceMode,
+      'local-raw',
+      '必须显式标注这是设计路径，不能让下游靠「有没有告警」猜',
+    );
+    assert.deepEqual(warns, [], '设计路径不该告警（实际：' + JSON.stringify(warns) + '）');
+  } finally {
+    console.warn = origWarn;
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 阴性对照：与上一条成对。若哪天有人顺手把 onFallback 也删了（「反正不告警了」），
+// 这条必须红 —— 真降级（一个会话都没找到）必须出声，否则「扫了 0 个」与
+// 「扫了 8 个都没问题」在 health 面上又长得一样。
+test('阴性对照：真降级（候选名 + 后缀兜底全没命中）必须出声', async () => {
+  const oldHome = process.env.DSH_HOME;
+  const root = mkdtempSync(join(tmpdir(), 'agint-sessempty-'));
+  try {
+    mkdirSync(join(root, 'sessions'), { recursive: true }); // 空目录：没有任何会话
+    process.env.DSH_HOME = root;
+    const seen = [];
+    const logs = await listRecentSessions(8, { onFallback: (r) => seen.push(r) });
+    assert.equal(logs.length, 0);
+    assert.equal(seen.length, 1, '真降级必须出声一次（不是 0 次，也不是每次都喊）');
+    assert.ok(/no-session-log-found/.test(seen[0]), '出声原因要可判（实际：' + seen[0] + '）');
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

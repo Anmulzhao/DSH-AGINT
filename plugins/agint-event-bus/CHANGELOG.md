@@ -1,5 +1,119 @@
 # Changelog — agint-event-bus
 
+## 0.9.0 (2026-11-03) — W1/W4：宿主事件桥扩容（subagent / skills / goal / workflow-phase）
+
+**一句话**：0.8.0 接上了「存储写入」与「工作流结束」两类信号，但盘点剩下的三类
+——**多 Agent 行为 / 技能变更 / 目标变更**——仍然一条没接，外加 `workflow/end`
+只拿得到结局拿不到过程。本版一次补齐。
+
+**依据**（`proposals/agint-dsh-surface-absorption-20261101.md` §4-B1 的表 + §2 盘点）：
+宿主 82 个事件里 AGINT 原来只接 6 个，且**位置单一**——4 个工具流水线、2 个会话。
+本版新增 6 条监听，宿主事件覆盖面从 6 提到 12（不含宿主从不发出的
+`agent/session-start`，那条已在 0.9.3 修）。
+
+| 宿主事件 | 签名（实测位置） | 新 topic | 换来的信号 |
+|---|---|---|---|
+| `workflow/phase` | `(info, title)` · workflow-ptc:646 | `input.signal.host.workflow-phase` | 工作流过程序列（trajectory 缺的就是这半） |
+| `subagent/start` | `(identity, parent)` · subagent:197 | `...host.subagent-start` | P8 多 Agent 的**第一份真数据** |
+| `subagent/end` | `({...identity, stopReason, lastAssistantMessage?}, parent)` · subagent:200 | `...host.subagent-end` | 子代理终态由**宿主**判定，不是自述 |
+| `skills/change` | `()` **无参数** · dsh-skill:404 | `...host.skills-change` | 技能目录变更驱动策展 |
+| `goal/changed` | `({ agent, change })` · dsh-goal:877 | `...host.goal-changed` | 课程对齐真实目标 |
+| `goal/activation-changed` | `({ sessionId, goal? })` · dsh-goal:798 | `...host.goal-activation-changed` | 目标启用/停用 |
+
+**新增的两条纪律**（写进代码注释，改前先读）：
+- **H4 扩面**：`subagent/end` 的 `lastAssistantMessage` 是子代理完整输出（可能几千字），
+  payload **只记 `messageLength`，正文不进**。要看内容的订阅者自己去 session 读。
+  同理 `goal/*` 只摘 `revision`/`activation`，不整份带 `goal` 视图。
+- **不许编造字段**：`skills/change` 宿主**确实不带参数**，payload 里显式写
+  `skillName: null` 而不是猜一个名字或干脆省略——下游要能区分「事件没带」
+  与「字段名写错」。无参数不是缺陷，是契约。
+
+**为什么 `workflow/phase` 不节流**：相位条数由工作流脚本自己决定（通常 3~8 相），
+不是宿主写的频率。预先节流会让「相位丢失」与「脚本没跑那相」在外部同形——
+这比相位过多更难查。真出现 200 相的脚本，`eventBus.hostWorkflowPhase` 计数会先叫。
+
+**产物**：
+- `lib/host-bridge.js` +166 行（6 条监听 + 共享的 identity 摘取函数）
+- `test/host-bridge.test.mjs` +169 行 / 11 条新用例（23/23 全绿）
+- `docs/event-topics.json` 64 条（代码 43 条全部登记）
+- `manifest.json` 的 `spec.cordis.events` 补 6 条
+
+**阴性对照**：删掉任一监听体内的 `try/catch`，「H2 红线扩面」用例必须红；
+把 `lastAssistantMessage` 塞进 payload，「W1 subagent/end」用例必须红。
+
+**验收**：`node --test plugins/agint-event-bus/test/host-bridge.test.mjs` → 23/23；
+`node bin/verify-event-topics.mjs` → 「代码里所有 topic 都在事实清单中」。
+
+## 0.8.0 (2026-11-02) — B1：把宿主的两类事件接进总线（domain/changed + workflow/end）
+
+**一句话**：AGINT 自称「事件总线驱动的自进化系统」，但宿主给 82 个事件我们只接了 6 个，
+全是工具流水线与会话 —— **进化闭环最该看的两类信号一条没接**。本版接上其中两类。
+
+**为什么是这两条**（不是凑数）：
+- `domain/changed` —— 24 个 storage 域里任何一个被写，宿主都在**持久化确认之后**发一条
+  （"emitted once per write strictly after the backend acknowledged durability"）。
+  在此之前，AGINT 的派生状态（面板、self-model 快照）只能靠全量重扫或 cron 兜，
+  「提案台账昨晚被谁改过」这种问题在总线上一片空白。
+- `workflow/end` —— preset 已经挂了 `dsh-tool-workflow` / `dsh-workflow-ptc`，
+  但工作流跑过什么从未进入总线 ⇒ trajectory / 进化记忆无法留档。
+
+**设计约束（写死在 `lib/host-bridge.js` 头注释，改前先读）**：
+| # | 约束 | 为什么 |
+|---|---|---|
+| H1 | 绝不阻塞宿主 | `domain/changed` 处在写路径尾部，listener 里 await 会把存储写入拖成 O(总线投递) |
+| H2 | 绝不把异常抛回宿主 | 桥接一抛，某次域写入就失败 —— 这是本项目最不能犯的错。抛错一律吞掉并计数 |
+| H3 | 白名单，不做全量 | 24 个域里 5 个是高频写（event_bus / metrics / input_gateway / cron / restart），全接会把总线淹掉、events 表撑爆 |
+| H4 | 不携带 value | `DomainChangedPut` 带整行数据；要看内容的下游自己去读（事实 = 变了；内容 = 自取） |
+| H5 | 可关 | `Config.hostBridge: false` 整体关掉。接的是**别人的**事件源，量级由宿主决定不由我们决定 |
+
+**白名单 7 个域**（判据：写入代表「系统的实质状态变了」）：
+`agint_evolve` / `agint_evolution` / `agint_self_model` / `agint_population` /
+`agint_rules` / `agint_mount` / `agint_curriculum`
+
+**产物**：
+- 新 topic `input.signal.host.domain-changed` / `input.signal.host.workflow-end`，
+  命名沿用 `input.signal.<频道>.<类型>`，与 C2/C3/C4/C5 同构。
+- `Config` 从 `z.object({})` 变为 `{ hostBridge?: boolean }`（唯一新增字段，optional）。
+- manifest `spec.cordis.events` 登记 `domain/changed` 与 `workflow/end`（原本只有 `tools/post-execute`）。
+
+**⛔ 两个刻意不做的事**：
+1. **不做节流**。节流会让计数失真，而 metrics 侧正是靠计数看「哪天突然停写」。
+   用白名单控制量级，比用节流掩盖量级更诚实。
+2. **不做判读**。宿主事件是事实，桥接只做格式转换。要不要因此做某事由订阅者各自决定。
+
+**⚠️ 门禁可见性的坑（踩了并修好）**：`bin/verify-event-topics.mjs` 靠
+`/topic\s*:\s*['"]…['"]/` 逐行扫源码。第一版把 publish 的 topic 写成引用 `HOST_TOPICS` 常量
+⇒ 两条新主题对门禁**不可见**，门禁照样报绿（假绿，正是本项目反复被咬的形态）。
+现改为字面量，并加用例钉死「常量值必须同时以 `topic: '<字面量>'` 出现在源码里」。
+
+**顺带发现的清单漂移**：跑 `verify-event-topics.mjs --update` 时，清单被**误删 5 条**
+（`input.signal.external.repo-diff` / `mount.requested` / `policy.rolledback` /
+`sandbox.failed` / `skill-autocreate.rolled-back`）—— 它们代码里都还在，
+只是写法不在扫描器的三种形式内。已手工补回并在清单 `note` 里留警示；
+清单从 47 条增至 **58 条**（补登历史漏登 9 条 + 新增 2 条）。
+
+**验收（2026-11-02 实跑）**：
+- `node --test test/host-bridge.test.mjs` → **12/12 通过**（新文件，含 3 条 H2 红线用例）
+- **阴性对照**：移除 `domain/changed` listener 体内的 catch → 测试文件整体崩（pass 0 / fail 1），
+  恢复即绿 —— 证明 H2 的 catch 是必要的，不是装饰
+- `node test/smoke.mjs` → 10/10
+- `bin/plugin-check.sh plugins/agint-event-bus` → EXIT 0 / FAIL 0
+- `node bin/check-wiring.mjs` → **PASS**（0 硬缺口；新 topic 有订阅者，未新增 NO_SUBSCRIBER）
+- `node bin/verify-event-topics.mjs` → EXIT 0，「代码里所有 topic 都在事实清单中」
+
+**部署后的两个追加修正（同日，同一批未发版；0.8.0 一并生效）**：
+1. **过滤要留痕**：首版被白名单过滤时静默 return ⇒ 「没订阅上」与「订阅上了但全被过滤」
+   在外部完全同形。改为首次过滤时 `inc('eventBus.hostDomainIgnored')`，让两者可区分。
+2. **但留痕不能压垮观测表**：实测非白名单写入 **5.5 次/秒**，逐条 inc 会让 metrics 表
+   每天涨 40 万行。改为**采样**（首次 + 每 100 次），并在注释里写清「这个数字要回答的是
+   『订阅活着没有』，不是『忽略了多少条』」。
+3. 顺带补上 `agint-metrics` 缺失的 `inc()`（见该插件 1.1.4）—— 没有它，上面两步全是空写。
+
+**生产实测（部署后 25 秒内行数零增长）**：`eventBus.hostDomainIgnored` 2511 行保持不变，
+总行数 3671 不变 —— 采样生效；而桥接仍在接收事件（内存计数在涨）。
+
+---
+
 ## 0.7.3 (2026-10-05) — manifest 契约对齐代码：删 `agint.memory` 悬空声明，补两个实际取用的服务
 
 **起因**：家族面板 0.2.4 起把「manifest 声明消费（`consumes` ∪ `optionalInject`）里、代码从不取用」

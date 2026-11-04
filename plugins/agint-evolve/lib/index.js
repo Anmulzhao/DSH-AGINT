@@ -30,6 +30,9 @@ import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { findingsFromSnapshot, buildReport } from './report.js';
+// W8-3 审批凭据：纯函数模块，无外部依赖。
+// ⛔ 不要改成从 agint-evolution-driver import —— 跨插件源码 import 在部署位会 ENOENT。
+import { grantMandate, checkMandate } from './mandate.js';
 import {
   EXEC_MODES,
   EXEC_STATES,
@@ -39,6 +42,7 @@ import {
   autoEnqueueBlocker,
   computeDueAt,
   isJobDue,
+  isOrphanExecution,
   weeklyUsage,
   startOfWeek,
   describeExecution,
@@ -192,6 +196,27 @@ const proposalSchema = z.object({
   formulaVersion: z.string().default(''),
   assumedBy: z.string().default(''),
   conflictsWith: z.array(z.string()).default([]),
+  // 2026-11-03（W8-3）：**审批凭据** —— 批准那一刻的改动范围。
+  //
+  // 为什么需要：`approved` 只说「同意做」，没说「同意改哪些东西」。driver 从提案
+  // **正文**抽路径再写仓库，所以「改哪里」是执行那一刻才定的。正文批准后被改宽，
+  // 或抽取规则变宽，都会让一次批准覆盖到没人批过的文件，而台账上毫无异常。
+  //
+  //   proposalId     凭据归属（防挪用；与提案 id 不符 ⇒ 直接判越权）
+  //   paths          批准时从正文抽出的仓库相对路径（归一 + 排序）
+  //   grantedAt      签发时刻
+  //   policyVersion  签发时的判尺口径（空串 = 未知，不猜）
+  //
+  // ⛔ 必须 nullable + default(null)：老提案（90+ 条）没有这个字段，若设成
+  //    `.default({...})` 会给它们凭空造一份「批准范围为空」的凭据 ——
+  //    那会让 checkMandate 把「没有凭据」（unknown）误读成「批准了零个文件」。
+  //    null 与「有凭据但是空数组」必须可区分。
+  mandate: z.object({
+    proposalId: z.string().default(''),
+    paths: z.array(z.string()).default([]),
+    grantedAt: z.string().default(''),
+    policyVersion: z.string().default(''),
+  }).nullable().default(null),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -900,7 +925,7 @@ function apply(ctx, config) {
     }
   }
 
-  async function applyStatus(id, status, note = '', opts = {}) {
+  async function applyStatus(id, status, note, opts = {}) {
     const t = await table();
     const rec = t.get(id);
     if (!rec) return null;
@@ -908,7 +933,35 @@ function apply(ctx, config) {
     const prevStatus = rec.status;
     if (!PROPOSAL_STATUSES.includes(status)) throw new Error(`agint-evolve: invalid status "${status}"`);
     const o = opts && typeof opts === 'object' ? opts : {};
-    const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
+    // 2026-11-03：note 与 blocker / execMode 统一成**冻结语义**。
+    //   未传（undefined / null）⇒ 保留现状；传 '' ⇒ 显式清除；传非空 ⇒ 覆盖。
+    // ⛔ 原实现是 `note ?? rec.note ?? ''` 配 `setStatus(note = '')` 默认参数：
+    //    默认值先把 undefined 降级成空串，`??` 就再也拦不住 —— 于是「只改状态」
+    //    这一最无害的调用成了「静默删掉上一轮人工记录」的入口。
+    //    真凶是**默认参数**，不是 `??`（传 null 时 `??` 是能拦住的，用例 N4 钉着）。
+    const nextNote = note === undefined || note === null
+      ? (rec.note ?? '')
+      : note;
+    if (typeof nextNote !== 'string') {
+      throw new Error(`agint-evolve: note 必须是字符串（收到 ${typeof nextNote}）`);
+    }
+    const updated = normalizeProposal({ ...rec, status, note: nextNote, updatedAt: nowIso() });
+    // 2026-11-03（W8-3）：进入 approved 的那一刻签发审批凭据。
+    //
+    // 只在**没有凭据时**签发（`rec.mandate == null`）：
+    //   - 已批准后再改 blocker / 执行计划 ⇒ 不该重签，否则「改一句阻塞原因」
+    //     就能把范围悄悄刷新成新正文 —— 那等于给越权开了后门。
+    //   - 从 applied/rejected 改判回 approved ⇒ 原文已变，这时**应该**重签，
+    //     因为这是一次新的批准（旧凭据对应的是旧状态下的决定）。
+    if (status === 'approved' && (rec.mandate === null || rec.mandate === undefined)) {
+      updated.mandate = grantMandate(updated, currentFormulaVersion());
+    }
+    // 离开 approved ⇒ 凭据作废。凭据的意义是「这次批准覆盖什么」，
+    // 状态已经不是批准了，留着它只会让下次核对拿一份过期授权。
+    // （改判回 proposed 再批准会重新签发，见上。）
+    if (status !== 'approved' && updated.mandate !== null && updated.mandate !== undefined) {
+      updated.mandate = null;
+    }
     if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
     if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
     // 2026-10-27：显式改「能不能自动执行」。⛔ 只认布尔 —— 传字符串/数字一律
@@ -1074,7 +1127,36 @@ function apply(ctx, config) {
     },
 
     /**
+     * checkMandate(id) —— 核对该提案此刻的改动范围是否仍在批准范围内。
+     *
+     * 2026-11-03（W8-3）：给 agint-executor 在**动手之前**调。
+     * 返回三态 `{state: 'ok'|'mismatch'|'unknown', extra, granted, current, reason}`。
+     *
+     * ⛔ 调用方必须区分 unknown 与 ok：
+     *    unknown = 老提案没凭据（升级前批的）⇒ **放行**，但要在日志里留痕，
+     *              否则「没验过」和「验过了」在台账上长得一模一样。
+     *    mismatch ⇒ 拒绝执行，让它回队列等重新审批。
+     * 把 unknown 当 mismatch 会让升级瞬间所有历史提案集体停摆；
+     * 把 unknown 当 ok 又会让「没验过」冒充「验过了」—— 两者都不行。
+     *
+     * 未知 id 返回 null（与 getProposal 同口径：找不到就是找不到）。
+     */
+    async checkMandate(id) {
+      const t = await table();
+      const rec = t.get(id);
+      if (!rec) return null;
+      return checkMandate(rec);
+    },
+
+    /**
      * setStatus(id, status, note, opts)
+     *
+     * note（2026-11-03 起）：与 blocker 同一**冻结语义** —— 不传（undefined/null）
+     * = 保留现状，传 '' = 显式清除，传非空 = 覆盖。
+     * ⛔ 此前不传等价于清空：`note=''` 默认参数先把 undefined 降级成空串，
+     *    再被 `note ?? rec.note` 当成「用户就是要空」⇒ 一次只改状态的调用
+     *    （工具不带 note、服务直调两参数）会静默抹掉上一轮人工判断。
+     *    要清记录必须显式传空串。
      *
      * opts.blocker / opts.unblockCondition：只在**显式传字符串**时才改。
      * 不传 = 冻结现状 —— 否则每次改状态都会把上次写的阻塞原因洗成空，
@@ -1086,7 +1168,7 @@ function apply(ctx, config) {
      *   且没有 blocker ⇒ **自动入执行队列**，由 agint-executor 捡起来跑。
      *   opts.autoEnqueue === false 可以只写计划不入队（给"先批准、等会儿手动放行"用）。
      */
-    async setStatus(id, status, note = '', opts = {}) {
+    async setStatus(id, status, note, opts = {}) {
       const rec = await applyStatus(id, status, note, opts);
       if (!rec) return null;
       // 2026-10-28：执行态必须跟着状态归位 —— 状态与执行态各说各话是最贵的不一致。
@@ -1471,6 +1553,65 @@ function apply(ctx, config) {
     },
 
     /**
+     * 回收孤儿执行（2026-11-02，提案 `a6e6e1d9` 实证）。
+     *
+     * ## 为什么需要它
+     *
+     * 实机：`exec-1793280728689-kmy9h1` 停在 `state='running'`，startedAt=
+     * 2026-11-01T16:00:04.986Z，finishedAt=''，面板显示「已批准·执行中」，
+     * 但**没有任何东西在跑**。原因链见 `execution.js` 的 `isOrphanExecution` 注释。
+     * 队列不自愈：running 行永不被 claim（CLAIMABLE 只有 queued/deferred），
+     * 又被 `activeJobsFor` 算成活跃 job ⇒ 提案再也排不进去。
+     *
+     * ## 回收动作的三条边界
+     *
+     *   ① **绝不**把提案标 applied：中断的是「一次执行」，不是「这件事做完了」。
+     *      提案仍是 approved，剩余单元仍有入口（partial 的自动续跑机制继续有效）。
+     *   ② 行落到 `failed`（不是 cancelled）：中断是失败，不是人撤销。
+     *   ③ 不自动重排：重排由提案自己的续跑/入队机制决定（`autoEnqueueBlocker`），
+     *      执行器不越权 —— 否则一次重启能凭空多出 N 条自动执行。
+     *
+     * @param {object} opts
+     * @param {number} opts.now 当前时刻（毫秒）
+     * @param {number} opts.mountedAt 本进程挂载时刻（毫秒）
+     * @param {number} opts.staleMs 超时兜底阈值（毫秒）
+     * @param {string[]} [opts.excludeIds] 本进程正在跑的 job id（不判孤儿）
+     */
+    async reapOrphanExecutions(opts = {}) {
+      const et = await executionTable();
+      const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      const mountedAt = Number.isFinite(Number(opts.mountedAt)) ? Number(opts.mountedAt) : 0;
+      const staleMs = Number.isFinite(Number(opts.staleMs)) ? Number(opts.staleMs) : 30 * 60 * 1000;
+      const excludeIds = Array.isArray(opts.excludeIds) ? opts.excludeIds : [];
+      const reaped = [];
+      for (const [id, row] of et.entries()) {
+        if (!row) continue;
+        const verdict = isOrphanExecution({ id, ...row }, { now, mountedAt, staleMs, excludeIds });
+        if (!verdict.orphan) continue;
+        const ts = new Date(now).toISOString();
+        const next = executionSchema.parse({
+          ...row,
+          state: 'failed',
+          ok: false,
+          reason: `孤儿执行已回收：${verdict.reason}`,
+          error: `宿主重启/进程中断导致本次执行未结算（${verdict.reason}）`,
+          finishedAt: ts,
+          updatedAt: ts,
+          log: [row.log, `${ts} failed 孤儿回收：${verdict.reason}`].filter(Boolean).join('\n').slice(-4000),
+        });
+        await et.put(id, next);
+        // 提案侧：释放「执行中」这盏灯，但保持 approved —— 剩余单元不能失去入口。
+        await markProposal(row.proposalId, {
+          execState: 'failed',
+          execError: `上次执行因宿主重启/进程中断未结算（${verdict.reason}）—— 提案未完成，可重新入队`,
+          execFinishedAt: ts,
+        });
+        reaped.push({ id, proposalId: row.proposalId, reason: verdict.reason });
+      }
+      return { reaped, count: reaped.length };
+    },
+
+    /**
      * 撤销执行。参数可以是 execution id，也可以是 proposal id
      * （面板拿到的是提案 id，工具拿到的是执行 id —— 两种都得认，不然必有一边点不动）。
      */
@@ -1518,7 +1659,15 @@ function apply(ctx, config) {
         byState,
         queued: rows.filter((r) => r.state === 'queued' || r.state === 'deferred').length,
         running: byState.running ?? 0,
+        // ⛔ W8-1（v0.18.0）：这个数现在是**提案去重后**的条数，不再等于 jobs.length。
+        //    字段名保持不变（执行器 `decideRun({ weekCommits })` 与面板都按它判上限），
+        //    语义变更见 weeklyUsage 的注释。要看「跑了几次」读 weekExecutions。
         lastWeekCommits: week.count,
+        // 明细：这一周真正跑成功的**执行行**数（含同一提案的续跑行）。
+        // ⛔ 与 lastWeekCommits 必须分开报：面板写「本周落地 3 条提案（共 7 次执行）」
+        //    才是可核对的；只报一个数会让人把「续跑」误读成「又落地一条新提案」。
+        weekExecutions: week.jobs.length,
+        weekProposals: week.proposals,
         weekSince: week.since,
         weekOf: new Date(startOfWeek(now)).toISOString(),
         latest: rows[0] ?? null,
