@@ -14,7 +14,7 @@
 
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { decayScan, effectiveConfidence, nextLevel, shouldClear } from './decay.js';
+import { decayScan, effectiveConfidence, nextLevel, shouldClear, scanHorizon } from './decay.js';
 
 const name = 'agint-memory';
 const inject = ['storageDomain', 'agint.eventBus.subscribe'];
@@ -168,7 +168,11 @@ function apply(ctx) {
 
     async decayScanRun(opts = {}) {
       const t = await table();
-      const scan = decayScan([...t.entries()]);
+      const rows = [...t.entries()];
+      const scan = decayScan(rows);
+      // 0 动作自解释：把「池子最老几天 / 离下一次降级还差几天」并入 report。
+      // 天数口径只来自 decay.js 的 scanHorizon；此处不重算，避免第二套基线。
+      const report = { ...scan.report, ...scanHorizon(rows) };
       const applied = [];
       if (opts.apply) {
         const now = nowIso();
@@ -184,7 +188,7 @@ function apply(ctx) {
           }
         }
       }
-      return { actions: scan.actions, report: scan.report, applied };
+      return { actions: scan.actions, report, applied };
     },
 
     async stats() {

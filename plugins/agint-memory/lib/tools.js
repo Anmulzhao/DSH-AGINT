@@ -207,7 +207,8 @@ function apply(ctx) {
     description:
       'Run the L1-L4 forgetting scan. Dry-run by default (reports planned actions only). ' +
       'With apply:true, downgrades stale entries and clears L4 entries that are resolved/replaced and 730+ days stale. ' +
-      'Use periodically or when memory_stats shows bloat.',
+      'Use periodically or when memory_stats shows bloat. ' +
+      'The report includes oldestEntryDays / nextThresholdDays, so a zero-action scan says why it did nothing.',
     parameters: {
       apply: { type: 'boolean', description: 'Apply decay actions (default false = dry run).' },
     },
@@ -226,9 +227,17 @@ function apply(ctx) {
           report: { required: true, type: 'object', additionalProperties: true },
         },
       },
-      render: (_a, v) => [
-        { type: 'text', text: `memory_forget_scan: ${v.actions.length} planned, ${v.applied.length} applied\n${v.actions.map((a) => `  ${a.id}: ${a.action} ${a.from ? `${a.from}->` : ''}${a.to ?? 'clear'} (${a.reason})`).join('\n')}` },
-      ],
+      render: (_a, v) => {
+        const r = v.report ?? {};
+        const horizon = Number.isFinite(r.oldestEntryDays)
+          ? (Number.isFinite(r.nextThresholdDays)
+            ? `oldest=${r.oldestEntryDays}d, ${r.nextTransition} in ${r.nextThresholdDays}d`
+            : `oldest=${r.oldestEntryDays}d, no pending downgrade`)
+          : 'oldest=n/a (empty pool)';
+        return [
+          { type: 'text', text: `memory_forget_scan: ${v.actions.length} planned, ${v.applied.length} applied\n${horizon}\n${v.actions.map((a) => `  ${a.id}: ${a.action} ${a.from ? `${a.from}->` : ''}${a.to ?? 'clear'} (${a.reason})`).join('\n')}` },
+        ];
+      },
     },
     execute(args) {
       return memory.decayScanRun({ apply: Boolean(args.apply) }).then(({ actions, report, applied }) => ({ actions, report, applied }));
