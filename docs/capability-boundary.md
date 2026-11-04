@@ -39,7 +39,7 @@
 
 | 插件 | v | 层 | 依据（manifest description 摘要） |
 |---|---|---|---|
-| agint-memory | 0.2.0 | E | 长时记忆 + L1-L4 遗忘模型 |
+| agint-memory | 0.2.1 | E | 长时记忆 + L1-L4 遗忘模型 |
 | agint-memory-provider | 0.3.0 | E | 可插拔记忆 Provider 抽象与降级 |
 | agint-evolution-memory | 0.6.15 | E | 进化记忆层（物理隔离存储域） |
 | agint-dream | 0.5.0 | E | 夜间记忆整合（反思） |

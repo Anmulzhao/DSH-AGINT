@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-memory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "长/短期记忆读写 + L1-L4 四级衰减扫描。独占 agint storage domain。",
   "main": "lib/index.js",
   "agint": {
@@ -60,7 +60,7 @@
     },
     "tests": {
       "entry": "test/decay.test.js",
-      "command": "node test/decay.test.js",
+      "command": "node --test test/decay.test.js test/tools-contract.test.mjs test/forget-scan-horizon.test.mjs",
       "expectedExit": 0
     },
     "docs": {

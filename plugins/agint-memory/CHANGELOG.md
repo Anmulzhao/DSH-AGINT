@@ -5,6 +5,21 @@
 
 ## Unreleased
 
+- **forget_scan 的 0 动作自解释（0.2.1，提案 `55d8eb24`）**：池子里没有条目
+  达到 90 天门槛时，扫描只返回「0 planned, 0 applied」。这无法区分「机制正常
+  但池子太新」与「机制坏了」。现在 `decayScanRun()` 的 report 多带三个字段：
+  `oldestEntryDays`（池内最老条目的天数）、`nextThresholdDays`（离最近一次
+  降级还差几天，`0` 表示已有条目达标）、`nextTransition`（如 `L1->L2`）。
+  工具 render 多打一行 `oldest=42d, L1->L2 in 48d`。
+  天数口径由 `decay.js` 的 `scanHorizon()` 统一提供，与 `decayScan()` 共用
+  `recencyIso` / `daysSince` / `THRESHOLDS`，不另立一套基线。
+  L4 不计入候选（clear 需 `resolved/replaced`，不是降级）；空池三个字段为 `null`。
+  ⚠️ 覆盖范围是 `memory_forget_scan` 工具与 `memory-decay` cron 的返回体。
+  cron 的 `summarizeResult` 只搬 `scanned` / `counts`，健康摘要里仍看不到这两项
+  （后续项，本提案未含）。
+  测试：`test/forget-scan-horizon.test.mjs`（10 例，含真 service 端到端；
+  摘掉 report 合并行做 negative control 时必须变红 5 例）。
+
 - **新增 `memory_remove` 工具**（2026-10-19）：service 层早就有 `remove(id)`
   （`lib/index.js:162`），但**工具面没有暴露它** —— 长期记忆只能写不能删。
   后果不是抽象问题：2026-10-19 夜班 sweep 把 3 条原始报错残骸（工具 stderr
