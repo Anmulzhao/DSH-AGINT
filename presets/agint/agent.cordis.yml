@@ -92,6 +92,20 @@
   name: '@deepseek-ai/dsh-tool-bash'
   disabled: !!js process.platform === 'win32'
 
+# Windows 上的 `bash`：官方那行按平台启用（win32 禁用），而 host 的 shell
+# 服务在 win32 上是 pwsh。智进要**真 bash**，所以在 win32 上另挂一个工具名
+# 同为 `bash` 的 Git Bash 工具（两条按平台互斥，不会重复注册）。
+# 可执行文件解析与「找不到就跳过注册」的策略见 bash.mjs 头注。
+- id: agint-bash-win
+  name: ./bash.mjs
+  disabled: !!js process.platform !== 'win32'
+
+# `bash-exec`：直接执行一个程序（argv 精确传参，不经 shell 字符串解析），
+# 返回 stdout / stderr / exitCode。与 `bash` 的分工写在工具描述里：
+# `bash` 跑命令字符串，`bash-exec` 跑「程序 + 参数数组」。
+- id: agint-bash-exec
+  name: ./bash-exec.mjs
+
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
   disabled: !!js process.platform !== 'win32'
