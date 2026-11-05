@@ -1,5 +1,28 @@
 # agint-curator 变更日志
 
+## v0.3.1 (2026-11-05) — 修订阅入参形状：`{topic,source}` → `SubscriptionSchema`
+
+**一句话**：v0.3.0 的 `skills/change` 订阅从未注册成功。入参用了事件 envelope 的
+`{ topic, source }`，而总线 `validateSubscription` 要求 `{ subscriber, topics, mode }`。
+`subscribe()` 抛错后被 `catch` 吞成一条 warn，运行态静默退回纯 cron。
+
+**三条证据**：
+1. 真 schema 对照：`validateSubscription({topic,source})` 抛
+   `subscriber: expected string, received undefined; topics: expected array; mode: Invalid option`。
+2. 生产存储：`input.signal.host.skills-change` 有事件行，但 `deliveries` 的订阅者集合为空、`delivered=0`。
+3. 同总线对照：`input.signal.host.domain-changed` 由 `agint-metrics` 订阅，`delivered=252`
+   ⇒ 总线与投递正常，坏的只是订阅侧入参。
+
+**为什么测试没拦住**：假总线只记 `(sub, handler)`、不校验入参；用例还断言了错误的
+`sub.topic` 形状 ⇒ 错误契约被测试钉死。现在测试改为调用真实 `validateSubscription`。
+
+**改动**：
+1. `lib/index.js` 订阅入参改为 `{ subscriber: name, topics: [...], mode: 'async' }`。
+2. 保存退订函数并注册 `ctx.effect`，dispose 时退订。
+3. `test/skills-change-watch.test.mjs` 的假总线接真实 schema，按 `sub.topics` 路由。
+
+**验收**：`node --test plugins/agint-curator/test/*.test.mjs` → 103/103。
+
 ## v0.3.0 (2026-11-03) — W2：订阅 `skills/change`，策展不再只靠 cron
 
 **一句话**：策展此前**只有 cron 一个触发源**。宿主明明提供了 `skills/change`

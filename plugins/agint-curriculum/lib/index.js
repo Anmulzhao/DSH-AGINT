@@ -128,8 +128,13 @@ function apply(ctx, config) {
     };
 
     try {
-      subscribe({ topic: 'input.signal.host.goal-changed', source: name }, onGoal);
-      subscribe({ topic: 'input.signal.host.goal-activation-changed', source: name }, onGoal);
+      // 入参是 SubscriptionSchema（subscriber/topics/mode），不是事件 envelope 的 { topic, source }。
+      const off = subscribe({
+        subscriber: name,
+        topics: ['input.signal.host.goal-changed', 'input.signal.host.goal-activation-changed'],
+        mode: 'async',
+      }, onGoal);
+      if (typeof off === 'function') ctx.effect(() => () => { try { off(); } catch { /* ignore */ } });
     } catch (e) {
       // 订阅失败不影响课程本体：probe 会退回「不看目标」的旧行为
       if (!disposed) console.warn(`[${name}] goal 订阅失败（课程将退回自推模式）:`, e?.message ?? e);

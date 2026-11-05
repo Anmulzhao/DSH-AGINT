@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-curator",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "P0-2 技能策展人 v0.2.2：在 v0.2.0 基础策展（周聚合使用数据 → 状态机检测陈旧 → 保护 → 归档可恢复）+ v0.2.1 多根扫描/孤儿清扫/lastRunAt 落盘之上，修「多根只改了扫描侧」的漏项 —— 归档/恢复的路径计算改为按技能所属根定位（账本新增 rootDir/dirName 字段，扫描时写、归档时用），多根部署下不再因 path.join(数组) 抛错而静默失效。存储域 agint_curator schemaVersion 保持 2（两个新字段可选且有默认值，双向兼容；bump 需 compatibleVersions 且会让回滚路径 version-mismatch）。不做 consolidate/prune（Sprint 16，显式抛未实现）。",
   "main": "lib/index.js",
   "agint": {

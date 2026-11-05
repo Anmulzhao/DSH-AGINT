@@ -155,7 +155,12 @@ function apply(ctx, config) {
     };
 
     try {
-      subscribe({ topic: 'input.signal.host.skills-change', source: name }, onChange);
+      // 入参是 SubscriptionSchema（subscriber/topics/mode），不是事件 envelope 的 { topic, source }。
+      const off = subscribe(
+        { subscriber: name, topics: ['input.signal.host.skills-change'], mode: 'async' },
+        onChange,
+      );
+      if (typeof off === 'function') ctx.effect(() => () => { try { off(); } catch { /* ignore */ } });
     } catch (e) {
       if (!disposed) console.warn(`[${name}] skills/change 订阅失败（策展将退回纯 cron）:`, e?.message ?? e);
     }

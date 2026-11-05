@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { apply } from '../lib/index.js';
+import { validateSubscription } from '../../agint-event-bus/lib/schemas.js';
 
 /** 假存储域（内存兜底），与其它 curriculum 测试同构 */
 function fakeDomain() {
@@ -33,14 +34,23 @@ function fakeDomain() {
   return { close: async () => {}, table: (n) => { if (!tables.has(n)) tables.set(n, mk()); return tables.get(n); } };
 }
 
+/**
+ * 假总线用**真实** SubscriptionSchema 校验入参。
+ * ⛔ 不校验的假总线会放过错误形状（2026-11-05：{topic,source} 一路绿到生产，
+ *    真总线 validateSubscription 直接拒，订阅从未注册）。
+ */
 function makeBus() {
   const subs = [];
   return {
     subs,
-    subscribe: (sub, handler) => subs.push({ sub, handler }),
+    subscribe: (sub, handler) => {
+      const validated = validateSubscription(sub);
+      subs.push({ sub: validated, handler });
+      return () => { const i = subs.findIndex((x) => x.handler === handler); if (i >= 0) subs.splice(i, 1); };
+    },
     publish: async () => ({ accepted: true }),
     fire(topic, payload = {}) {
-      for (const s of subs.filter((x) => x.sub?.topic === topic)) {
+      for (const s of subs.filter((x) => x.sub.topics.includes(topic))) {
         s.handler({ topic, payload });
       }
     },
@@ -65,7 +75,7 @@ async function mount({ withBus = true } = {}) {
 
 test('订阅两条 goal 主题（changed + activation-changed）', async () => {
   const { bus } = await mount();
-  const topics = bus.subs.map((s) => s.sub?.topic).sort();
+  const topics = bus.subs.flatMap((s) => s.sub.topics).sort();
   assert.deepEqual(topics, [
     'input.signal.host.goal-activation-changed',
     'input.signal.host.goal-changed',

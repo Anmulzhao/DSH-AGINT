@@ -16,17 +16,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { apply } from '../lib/index.js';
+import { validateSubscription } from '../../agint-event-bus/lib/schemas.js';
 import { mockCtx, makeSkillsDir, makeStatsJsonl } from './_helpers.mjs';
 
-/** 装一个能捕获订阅的假总线：把所有 (topic, handler) 记下来，供用例手工触发 */
+/**
+ * 装一个能捕获订阅的假总线：用**真实** SubscriptionSchema 校验入参，再记下 (sub, handler)。
+ * ⛔ 不校验的假总线会放过错误形状（2026-11-05：{topic,source} 就是这么一路绿到生产，
+ *    真总线 validateSubscription 直接拒，订阅从未注册）。
+ */
 function makeBus() {
   const subs = [];
   return {
     subs,
-    subscribeService: (sub, handler) => { subs.push({ sub, handler }); },
+    subscribeService: (sub, handler) => {
+      const validated = validateSubscription(sub);
+      subs.push({ sub: validated, handler });
+      return () => { const i = subs.findIndex((x) => x.handler === handler); if (i >= 0) subs.splice(i, 1); };
+    },
     publishService: async () => ({ accepted: true, deliveredTo: [], deadLettered: [] }),
     fire(topic, event = {}) {
-      for (const s of subs.filter((x) => x.sub?.topic === topic)) s.handler(event);
+      for (const s of subs.filter((x) => x.sub.topics.includes(topic))) s.handler(event);
     },
   };
 }
@@ -52,8 +61,9 @@ async function mount({ withBus = true } = {}) {
 
 test('订阅 input.signal.host.skills-change（且只订阅这一条）', async () => {
   const { bus } = await mount();
-  const topics = bus.subs.map((s) => s.sub?.topic);
+  const topics = bus.subs.flatMap((s) => s.sub.topics);
   assert.deepEqual(topics, ['input.signal.host.skills-change']);
+  assert.equal(bus.subs[0].sub.mode, 'async', '策展观测不许占 sync 配额');
 });
 
 test('收到 skills/change 只置标记，绝不自动跑 run()', async () => {

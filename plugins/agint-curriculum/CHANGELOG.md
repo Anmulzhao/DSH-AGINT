@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 0.2.1（2026-11-05 · 修订阅入参形状 —— `goal/*` 链路从未注册）
+
+**一句话**：0.2.0 的两条 goal 订阅从未注册成功。入参用了事件 envelope 的
+`{ topic, source }`，而总线 `validateSubscription` 要求 `{ subscriber, topics, mode }`。
+`subscribe()` 抛错后被 `catch` 吞成一条 warn，运行态静默退回自推模式。
+
+**证据**：
+1. 真 schema 对照：同一入参在 `agint-event-bus/lib/schemas.js` 被拒。
+2. 生产存储：`input.signal.host.goal-changed` / `goal-activation-changed` 无订阅投递记录。
+3. 同总线对照：`input.signal.host.domain-changed` 投递正常 ⇒ 问题只在订阅入参。
+
+**为什么测试没拦住**：假总线不校验入参，且断言了错误的 `sub.topic` 形状。
+现在测试调用真实 `validateSubscription`。
+
+**改动**：
+1. `lib/index.js`：两条 topic 合并为一次 `{ subscriber: name, topics: [两条], mode: 'async' }` 订阅。
+2. 保存退订函数并注册 `ctx.effect`。
+3. `test/goal-alignment.test.mjs` 的假总线接真实 schema，按 `sub.topics` 路由。
+
+**验收**：`node --test plugins/agint-curriculum/test/*.test.mjs` → 69/69。
+
 ## 0.2.0（2026-11-03 · W3：订阅 `goal/*`，课程与真实目标对齐有了输入端）
 
 **一句话**：课程此前由 `boundary-probe` 从 self-model 的**能力缺口**自推，
