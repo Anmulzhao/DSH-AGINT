@@ -33,6 +33,47 @@ AGINT 把它当作部署契约：版本不对应就跑不起来。
 > `npm install -g` 的收尾删除（残留 434M 的 `.dsh-XXXX` 暂存目录、退出码 1、**包体并未落位**，
 > `dsh --version` 仍是旧值）⇒ 必须 `env -u CODEBUDDY_SAFE_DELETE_* -u NODE_OPTIONS` 再装，
 > 装完用 `dsh --version` + 包内 `package.json` 双复核，别只看退出码。
+>
+> **2026-11-06 补充**：dsh 升 **0.2.2-rc.1**（npm latest，2026-11-04 发布；跨 alpha.2 / alpha.3）。
+> 本次是 AGINT 侧**有代码改动的适配**，不是纯 UI 版。
+> ① **依赖 / 运行时**：`engines.node` 新设 `>=24.9.0`；cordis `~4.0.5→~4.1.0`、
+> schemastery `~3.18.5→~3.19.0`、`dsh-tools` / `dsh-storage-domain` → `0.2.2-rc.1`；
+> 新增 `dsh-official-bundles` 等 4 个包（`check-dsh-compat` 检 41 个引用包全在，critical 0）。
+> ⛔ `dsh-tools/lib/types/json-schema.js` **新旧逐字节一致** ⇒ output schema DSL 未变；
+> 真实 `assertSupportedJsonSchema` 探测：oneOf 可空 ACCEPT、`type` 数组 REJECT，与 rc.5 同。
+> ② ⭐ **唯一硬 breaking**：`@deepseek-ai/dsh-tool-subagent-control` 的 `./list-agents`
+> 子路径导出被删（`list_agents` 并入主包），shipped cordis 基线 34→33 个 name 行
+> （`check-preset-parity` 口径 33→32 能力行）。残留即 `never started` ⇒ 整张 preset 拒绝挂载。
+> 删行要**两处**：preset 副本（`3b7de1f` 已删）**和** profile 级 `cordis.patch.yml`
+> （安装器不碰、只在本机；漏掉会让 parity 判 2 条 CRITICAL、redeploy fail-closed）。
+> ③ **shipped 基线另两处 config 变化**（平价门禁只查能力行，抓不到）：`tool-fs` 新增
+> `applyPatch: false`（默认值即 false，不写等价）；`tool-subagent` 的
+> `modelSelectionSettings: true` 拆成 `modelSelection: true` + `modelDiscovery: true`。
+> ⚠️ 保留旧键前必须确认该行实际加载的是哪一版 `dsh-tool-subagent` —— 旧版只认旧键、
+> 0.2.2 只认新键，**升包不换键（或换键不升包）都会让模型选择静默失效**。
+> ④ **AGINT 同步**：ff 合入 origin/main 10 提交至 `5df1c9f`；0.2.2 相关 4 条
+> （删 list-agents 行 / 新增 `./bash.mjs` + `./bash-exec.mjs` 两条 preset-local 工具行 /
+> 订阅入参改 SubscriptionSchema / `preset-rows-import` 纳入 `./` 相对行），另 6 条为自身功能。
+> 新工具行的测试桩需同时支持 win32 `Path`+PATHEXT 与 POSIX `PATH`：只认 Windows 形态时
+> Linux 上 `bash.mjs` 恒找不到可执行文件，两条行为用例会假红。
+> ⑤ **验收**：门禁四连全 exit 0（plugin-check 6 插件 0 FAIL / check-wiring PASS，0 硬缺口、
+> 140/140 部署位一致、918 lib 全同步 / parity CRITICAL 0 / compat critical 0）；
+> 单测 103+69+21+426+121+12+6 全绿；`dump-config` exit 0 且 skipping=0、list-agents=0；
+> redeploy install 0 / 端口就绪 / 27 cron / 无 `disabling profile plugin row` / 无 `fatal uncaught`。
+> ⚠️ **真机长期存活（普通启动）**：受本机沙箱 `ulimit -v` 4 GiB 硬限约束
+> （soft=hard，无 CAP_SYS_RESOURCE 提不了权），约 1 分钟后 V8 创建 Worker Isolate 报
+> `Fatal process out of memory: Failed to reserve virtual memory for CodeRange` 退出；
+> 两次干净重启稳定复现。**与挂载无关、不是 AGINT/dsh 适配缺陷**，崩溃前所有挂载判据已全绿，
+> 非沙箱环境不受此限。
+> ✅ **缓解方案已实跑**：`NODE_OPTIONS=--jitless` 启动（绕开 CodeRange 预留）后，
+> t=0/35/70s 三次采样 `/api/agint-family/v2/data` 全 **HTTP 200**、进程存活，
+> `fatal uncaught` / OOM / `disabling profile plugin row` / `skipping profile bundle` 计数全 **0**；
+> 数据面 419KB：`ok=true`、`panelVersion 0.12.0`、`scan.errors=[]`、`bus.total 28796`、
+> `deadletter 0`、`oracle.state ok`、`mountState.mountedCount 43`、20 条接线豁免在册。
+> ⚠️ **代价**：`--jitless` 禁用 WebAssembly ⇒ `@xmanrui/dsh-im` 导入报
+> `ReferenceError: WebAssembly is not defined`（日志 `warning: 1 entry did not activate`），
+> 仅该 IM 通道不可用，其余挂载正常；后台任务作用域结束时进程会被沙箱回收、日志无崩溃记录
+> ⇒ 不是 dsh 自崩，正式使用需常驻终端起服务。
 
 | AGINT | dsh minimum | dsh tested | notes |
 |-------|-------------|------------|-------|
