@@ -41,8 +41,13 @@ function resolveOnPath(command) {
   if (command.includes('/') || command.includes('\\')) {
     return fs.existsSync(command) ? command : null;
   }
-  const exts = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';');
-  for (const dir of (process.env.Path || '').split(';')) {
+  // win32 的 PATH 变量叫 `Path`（分号分隔 + PATHEXT 后缀），POSIX 叫 `PATH`
+  // （冒号分隔、无后缀）。桩只认 Windows 形态时 Linux 上 `Path` 恒为 undefined
+  // ⇒ resolveWindowsBash 找不到 bash ⇒ 跳过注册 ⇒ 两条行为用例假红。
+  const isWin = process.platform === 'win32';
+  const exts = isWin ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';') : [];
+  const pathVar = isWin ? (process.env.Path || process.env.PATH || '') : (process.env.PATH || '');
+  for (const dir of pathVar.split(isWin ? ';' : ':')) {
     if (dir.length === 0) continue;
     for (const ext of ['', ...exts]) {
       const candidate = path.join(dir, command + ext.toLowerCase());
