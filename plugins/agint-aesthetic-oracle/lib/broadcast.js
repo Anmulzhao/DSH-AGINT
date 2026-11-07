@@ -264,6 +264,36 @@ export function rollQuota(quota, now = new Date()) {
   return q;
 }
 
+// ── 能力向量栏（v0.10.0；只读展示，绝不进评分链路）────────────────────────
+
+/**
+ * 把「能力证据」并排摆到分数旁边。
+ *
+ * 为什么需要：`aesthetic_score` 只量内部卫生（噪声/确信度/冗余/臃肿），实测
+ * 6 周从 80.3 涨到 99.9，而能力图谱只覆盖 1 个 ISO 周、CAN 条目恒为 0
+ * （见 `bin/score-vs-evidence.mjs` 的麒麟机 `NOT_COMPARABLE` 结论）。只报分数
+ * 会让读者把「尺子变干净」读成「系统变聪明」。这一栏不加分数、不改权重、
+ * 不参与 Q1/Q2/Q3，只是把另一侧**有没有证据**如实摆出来。
+ *
+ * ⛔ 三态纪律：任一服务不可用 ⇒ 对应数字为 `null`，渲染成 `?` 并列出未采集源。
+ *    **绝不写 0** —— 写 0 会把「没采到」伪装成「能力为零」，正是本项目反复
+ *    踩过的那种失真（Growth Report 三态 / 冻结标签 0 条同理）。
+ * ⛔ 本函数零 I/O、零服务访问：`cap` 由编排层 `lib/index.js` 懒解析后传入，
+ *    保证 broadcast.js 仍是纯函数（§5 结构边界）。
+ *
+ * @param {object|null} cap
+ * @returns {string|null} 无数据对象时返回 null（调用方不渲染该栏）
+ */
+export function formatCapabilityVector(cap) {
+  if (!cap || typeof cap !== 'object') return null;
+  const n = (v) => (isNum(v) ? String(v) : '?');
+  const missing = Array.isArray(cap.unavailable) ? cap.unavailable : [];
+  const suffix = missing.length ? `｜未采集：${missing.join('/')}` : '';
+  return `能力 CAN ${n(cap.can)}／CANNOT ${n(cap.cannot)}／UNCERTAIN ${n(cap.uncertain)}`
+    + ` · 课程挑战 ${n(cap.challenges)}／尝试 ${n(cap.attempts)}`
+    + ` · 闭环成功 ${n(cap.succeeded)}／提案 ${n(cap.proposals)}${suffix}`;
+}
+
 // ── 三档 + alert 模板（§5；AC-2：daily ≤5 行、≤2KB、首行含 asOf）────────────
 
 /**
@@ -313,7 +343,11 @@ export function renderReport(kind, c = {}) {
   // §6.1 缓存回退标注（Day 2-3）：合进总分行不加行——AC-2 的 daily ≤5 行上限
   // 不因数据陈旧而放松；首行 asOf（缓存时点）本身已诚实透出数据新旧。
   const staleTxt = isNum(c.staleDays) ? `｜⚠缓存${c.staleDays}天` : '';
-  const scoreLine = `${scoreTxt}（${baseTxt}）${deltaTxt}${breath}${naTxt}${staleTxt}`;
+  // v0.10.0 能力向量：daily **同行追加**（AC-2 的 ≤5 行不放宽，与 naTxt/staleTxt
+  // 同一先例）；weekly/monthly 单独成行更醒目。⛔ 只读展示，不进评分链路。
+  const capTxt = formatCapabilityVector(c.capability);
+  const scoreLine = `${scoreTxt}（${baseTxt}）${deltaTxt}${breath}${naTxt}${staleTxt}`
+    + (kind === 'daily' && capTxt ? `｜${capTxt}` : '');
 
   // 最丑行 + 建议 + 证据（Q2/Q3；最丑缺席时后两行收起）
   const worst = ev.worst ?? null;
@@ -341,6 +375,7 @@ export function renderReport(kind, c = {}) {
     return fitLines([
       `📈 本周美谕 ${weekRangeText(c.now ?? new Date())}（数据截至 ${asOfText}）`,
       scoreLine,
+      ...(capTxt ? [capTxt] : []),
       ...(loopLine ? [loopLine] : []),
       `本周三问：Q1 ${vText}${q1}`,
       ...worstLines,
@@ -352,6 +387,7 @@ export function renderReport(kind, c = {}) {
   return fitLines([
     `🗓️ 本月美鉴 ${monthKey(c.now ?? new Date())}（数据截至 ${asOfText}）`,
     scoreLine,
+    ...(capTxt ? [capTxt] : []),
     `本月三问：Q1 ${vText}`,
     ...worstLines,
   ]);

@@ -333,6 +333,66 @@ function apply(ctx, config) {
   }
 
   /**
+   * v0.10.0 能力向量快照（只读，绝不进评分链路）。
+   *
+   * 为什么要有这一栏：`aesthetic_score` 量的是内部卫生，实测能涨到 99.9 而
+   * `capability_map` 只有 2 行、覆盖 1 个 ISO 周。广播只报分数，读者必然把
+   * 「尺子变干净」读成「系统变聪明」。这里把另一侧**有没有证据**并排摆出来。
+   *
+   * ⛔ 三态纪律：每个来源独立懒解析 + 软失败；取不到 ⇒ 该项 `null` + 记进
+   *   `unavailable`，由渲染层显示 `?`。**绝不写 0**（写 0 会把「没采到」伪装成
+   *   「能力为零」，与 Growth Report / 冻结标签同一条诚实纪律）。
+   * ⛔ 不新增 `inject`：与 svcMetrics / svcEvolve 同款懒解析，服务缺席可降级；
+   *   也**不落盘**（能力向量只进广播文本，不动 storage schema 与域版本）。
+   */
+  async function collectCapabilityVector() {
+    const cap = {
+      can: null, cannot: null, uncertain: null,
+      challenges: null, attempts: null,
+      succeeded: null, proposals: null,
+      unavailable: [],
+    };
+    // ① self-model 三态（umbrella 键；用 .snapshot() 调用形态，门禁扫得到）
+    const selfModel = typeof ctx.get === 'function' ? ctx.get('agint.selfModel') : null;
+    if (!selfModel || typeof selfModel.snapshot !== 'function') {
+      cap.unavailable.push('self-model');
+    } else {
+      try {
+        const snap = await selfModel.snapshot();
+        const rows = Array.isArray(snap?.capabilities) ? snap.capabilities : null;
+        if (!rows) cap.unavailable.push('self-model');
+        else {
+          cap.can = rows.filter((r) => r?.status === 'CAN').length;
+          cap.cannot = rows.filter((r) => r?.status === 'CANNOT').length;
+          cap.uncertain = rows.filter((r) => r?.status === 'UNCERTAIN').length;
+        }
+      } catch { cap.unavailable.push('self-model'); }
+    }
+    // ② curriculum 挑战 / 尝试计数
+    const curriculum = typeof ctx.get === 'function' ? ctx.get('agint.curriculum') : null;
+    if (!curriculum || typeof curriculum.stats !== 'function') {
+      cap.unavailable.push('curriculum');
+    } else {
+      try {
+        const st = await curriculum.stats();
+        if (isNum(st?.challenges?.total) && isNum(st?.attempts?.total)) {
+          cap.challenges = st.challenges.total;
+          cap.attempts = st.attempts.total;
+        } else cap.unavailable.push('curriculum');
+      } catch { cap.unavailable.push('curriculum'); }
+    }
+    // ③ 闭环：复用 readOwnProposals（同源口径，避免第二套「算不算处理过」）
+    try {
+      const own = await readOwnProposals();
+      if (Array.isArray(own)) {
+        cap.proposals = own.length;
+        cap.succeeded = own.filter((p) => p?.status === 'succeeded').length;
+      } else cap.unavailable.push('loop');
+    } catch { cap.unavailable.push('loop'); }
+    return cap;
+  }
+
+  /**
    * 写白名单 #3（Day 4-5，§5 weekly）：weekly 美谕提案 → agint_evolve.proposal。
    * 提案 = 可用维按偏离度 top3（扣分 ≥ MIN_PROPOSAL_DEDUCTION，阈内不提），
    * 每条经 q3Advice 生成（纯机械动作 + 必附证据）。⭐ 只写文本不执行：永不调
@@ -664,6 +724,8 @@ function apply(ctx, config) {
     // r4 weekly 闭环行：读本插件提案积压（只读）。缓存回退路径也要用，
     // 故在主链路之前算一次；非 weekly 档不算（省一次服务调用）。
     const loopStat = kind === 'weekly' ? await weeklyLoopStat() : null;
+    // v0.10.0 能力向量：三态懒解析，三个源全缺席也只是显示 `?`，绝不阻断广播。
+    const capability = await collectCapabilityVector();
     const metrics = svcMetrics();
     let summary = null;
     let summaryError = null;
@@ -703,7 +765,7 @@ function apply(ctx, config) {
         const report = renderReport(kind, {
           now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
           baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-          dayIndex, staleDays, reason: opts.reason, detail: opts.detail, loop: loopStat,
+          dayIndex, staleDays, reason: opts.reason, detail: opts.detail, loop: loopStat, capability,
         });
         report.staleDays = staleDays; // finalizeBroadcast 靠它把 staleDays 写进 payload 与返回值
         // 缓存回退只换数据源，不换输出层：判词仍必须走 LLM（无降级）。
@@ -748,7 +810,7 @@ function apply(ctx, config) {
     const report = renderReport(kind, {
       now, asOf: view.asOf, evaluation, atomic: view.atomic, activity: view.activity,
       baseline: { established: Boolean(state.baseline.establishedAt), score: state.baseline.score },
-      dayIndex, reason: opts.reason, detail: opts.detail, loop: loopStat,
+      dayIndex, reason: opts.reason, detail: opts.detail, loop: loopStat, capability,
     });
 
     // ── §8.1 LLM 输出层（无降级；只作用于输出层，不碰评分链路）──────────────
