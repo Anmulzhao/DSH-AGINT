@@ -53,6 +53,17 @@ const Config = z
         maxBytes: z.number().int().positive().nullish(),
         maxChars: z.number().int().positive().nullish(),
         hostBudgetBytes: z.number().int().positive().nullish(),
+        /**
+         * 记忆索引门禁（2026-11-07 阶段 1）。默认开：job 用 agint.repoRoot 推
+         * bin/check-memory.mjs，跑 --enforce --json。enabled=false 是 kill-switch。
+         * ⛔ 必须在这里声明：zod 默认 strip 未声明键（与上面 agentsSizeGuard 同理）。
+         */
+        memoryIndex: z
+          .object({
+            enabled: z.boolean().nullish(),
+            memoryDir: z.string().min(1).nullish(),
+          })
+          .nullish(),
       })
       .nullish(),
   })

@@ -24,6 +24,10 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export const DEFAULT_LIMITS = Object.freeze({
   maxBytes: 10000, // AGENTS.md §本文件大小硬限
@@ -84,6 +88,66 @@ function pickNumber(v, fallback) {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
+function summarizeMemoryReport(report, exitCode) {
+  const findings = Array.isArray(report?.findings) ? report.findings : [];
+  const fails = findings.filter((f) => f.level === 'F');
+  const warns = findings.filter((f) => f.level === 'W');
+  return {
+    level: exitCode === 0 ? 'ok' : 'fail',
+    exitCode,
+    fail: fails.length,
+    warn: warns.length,
+    info: findings.filter((f) => f.level === 'I').length,
+    memoryLines: report?.stats?.memLines ?? null,
+    memoryChars: report?.stats?.memChars ?? null,
+    injectBytes: report?.stats?.injectBytes ?? null,
+    topFails: fails.slice(0, 5).map((f) => f.code),
+    messages: fails.slice(0, 5).map((f) => f.msg),
+  };
+}
+
+/**
+ * 记忆索引门禁：直接调 check-memory.mjs --enforce --json。
+ * 不复制判据 —— 体积、行数、悬空 K 的权威判据在脚本里（单一事实源，K133）。
+ * exit 0 判绿；有 FAIL 判红；脚本崩或输出不是 JSON 一律抛错，绝不当绿。
+ *
+ * @param {object} opts
+ * @param {string} opts.script        check-memory.mjs 绝对路径
+ * @param {string} [opts.repo]        仓库根（透传 --repo）
+ * @param {string} [opts.memoryDir]   记忆目录（透传 --memory-dir）
+ */
+export async function runMemoryIndexGate(opts = {}) {
+  const { script, repo, memoryDir } = opts;
+  if (!script || typeof script !== 'string') {
+    throw new Error('memory-index-guard: script 缺失（应由 agint.repoRoot 推 bin/check-memory.mjs）');
+  }
+  const args = [script, '--enforce', '--json'];
+  if (repo) args.push('--repo', repo);
+  if (memoryDir) args.push('--memory-dir', memoryDir);
+
+  let stdout = '';
+  try {
+    const r = await execFileAsync(process.execPath, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    stdout = r.stdout;
+  } catch (e) {
+    const status = typeof e.status === 'number' ? e.status : typeof e.code === 'number' ? e.code : null;
+    stdout = e.stdout ?? '';
+    if (status !== 1) {
+      throw new Error(
+        `memory-index-guard: check-memory 执行失败（status=${status ?? 'none'}，${e.code || e.message}）`,
+      );
+    }
+  }
+
+  let report;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    throw new Error('memory-index-guard: check-memory 输出不是合法 JSON，拒绝判绿');
+  }
+  return summarizeMemoryReport(report, report?.counts?.fail > 0 ? 1 : 0);
+}
+
 /**
  * @param {object} opts
  * @param {string} opts.file          被核文件绝对路径（AGENTS.md）
@@ -94,7 +158,7 @@ function pickNumber(v, fallback) {
  * @param {number} [opts.hostBudgetBytes]
  */
 export async function runAgentsSizeGuard(opts = {}) {
-  const { file, reportDir, localFile } = opts;
+  const { file, reportDir, localFile, memoryIndex } = opts;
   if (!file || typeof file !== 'string') {
     throw new Error('agents-size-guard: config.file 缺失（patch.yml 的 agint-cron.agentsSizeGuard.file）');
   }
@@ -176,11 +240,22 @@ export async function runAgentsSizeGuard(opts = {}) {
     hostDropRisk,
     sections,
     reportPath: null,
+    memoryIndex: null,
     wroteReport: false,
   };
 
+  // 记忆索引门禁：只有显式传入才跑。老调用方不传 ⇒ 行为完全不变。
+  if (memoryIndex === false || memoryIndex?.enabled === false) {
+    result.memoryIndex = { level: 'disabled', reason: 'config.agentsSizeGuard.memoryIndex.enabled=false' };
+  } else if (memoryIndex) {
+    result.memoryIndex = memoryIndex.script
+      ? await runMemoryIndexGate(memoryIndex)
+      : { level: 'skipped', reason: 'agint.repoRoot 未配置，无法定位 bin/check-memory.mjs' };
+  }
+  const memoryIndexFail = result.memoryIndex?.level === 'fail';
+
   // 只在「有事要说」时写盘，避免每天都往 docs/ 丢一份无信息量的报告。
-  if (level !== 'ok' || hostDropRisk) {
+  if (level !== 'ok' || hostDropRisk || memoryIndexFail) {
     const stamp = localStamp();
     const reportPath = join(reportDir, `AGENTS-体积告警-${stamp}.md`);
     const content = renderReport(result);
@@ -208,6 +283,8 @@ export function summarizeGuard(r) {
     hostDropRisk: r.hostDropRisk,
     wroteReport: r.wroteReport,
     report: r.reportPath,
+    memoryIndexLevel: r.memoryIndex?.level ?? null,
+    memoryIndexFail: r.memoryIndex?.fail ?? null,
   };
 }
 
@@ -256,6 +333,21 @@ function renderReport(r) {
     lines.push(`| ${s.title} | ${'#'.repeat(s.level) || '—'} | ${s.bytes} | ${s.pctBytes}% | ${s.chars} |`);
   }
   lines.push('');
+  if (r.memoryIndex) {
+    lines.push('## 记忆索引门禁（check-memory --enforce）');
+    lines.push('');
+    const mi = r.memoryIndex;
+    if (mi.level === 'fail') {
+      lines.push(`FAIL：${mi.fail} 条。MEMORY.md ${mi.memoryLines ?? '-'} 行 / ${mi.memoryChars ?? '-'} 字符。`);
+      for (const m of mi.messages ?? []) lines.push(`- ${m}`);
+    } else if (mi.level === 'ok') {
+      lines.push(`通过：0 fail / ${mi.warn} warn。MEMORY.md ${mi.memoryLines ?? '-'} 行 / ${mi.memoryChars ?? '-'} 字符。`);
+    } else {
+      lines.push(`未执行：${mi.reason ?? mi.level}`);
+    }
+    lines.push('');
+  }
+
   lines.push('## 建议动作（AGENTS.md「本文件大小硬限」规定的压缩顺序）');
   lines.push('');
   lines.push('1. 删重复表述。');

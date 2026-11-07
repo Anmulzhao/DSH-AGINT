@@ -37,6 +37,7 @@
  *   ③ curator-weekly 必须早于 evolve-review（周复盘要吃本周策展报告）
  */
 
+import { join } from 'node:path';
 import { parseCron, nextFire, lastFire } from './cron.js';
 import { auditSpecIndex } from './spec-index-audit.js';
 import { auditEvolutionReconcile } from './evolution-reconcile-audit.js';
@@ -1022,8 +1023,27 @@ export const defaultJobs = [
         );
       }
       const { runAgentsSizeGuard, summarizeGuard } = await import('./agents-size-guard.js');
-      const r = await runAgentsSizeGuard(cfg);
-      return { summary: summarizeGuard(r), level: r.level, bytes: r.bytes, chars: r.chars, wroteReport: r.wroteReport };
+      // 记忆索引门禁：用 repoRoot 推脚本路径。未配 repoRoot ⇒ script=null，
+      // 结果记 skipped 并写进报告（不静默跳过，K134）。
+      const repoRoot = services['agint.repoRoot'];
+      const memoryIndex =
+        cfg.memoryIndex?.enabled === false
+          ? { enabled: false }
+          : {
+              script: repoRoot ? join(repoRoot, 'bin', 'check-memory.mjs') : null,
+              repo: repoRoot ?? undefined,
+              memoryDir: cfg.memoryIndex?.memoryDir ?? undefined,
+            };
+      const r = await runAgentsSizeGuard({ ...cfg, memoryIndex });
+      return {
+        summary: summarizeGuard(r),
+        level: r.level,
+        bytes: r.bytes,
+        chars: r.chars,
+        wroteReport: r.wroteReport,
+        memoryIndexLevel: r.memoryIndex?.level ?? null,
+        memoryIndexFail: r.memoryIndex?.fail ?? null,
+      };
     },
   },
 ];
