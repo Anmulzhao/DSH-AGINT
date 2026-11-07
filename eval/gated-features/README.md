@@ -232,6 +232,8 @@ node bin/oracle-runtime.mjs --storages "$S" --deliver \
 
 ⛔ `service_window_ack` 不是形式：dsh 在跑时持整域内存副本，外部进程直写盘会被
 整体重写覆盖。要么停机窗口，要么另开一轮改服务内入口。
+⚠ 服务进程与 cron daemon 的可见性随会话/沙箱视角变化（23:07 可见且有自然触发台账；
+23:43 视角查不到进程、`crontab -l` 权限不足）⇒ 评审时**现场确认**，不沿用历史读数。
 
 ⛔ 当前 0 条冻结金标 ⇒ 该分支**必然拒绝**；`writesToProduction` 实测恒 0。
 即便五闸 5/5，默认/心跳路径的 sink 仍是 dry-run ⇒ `WOULD_DELIVER_NO_SINK`，不是写入。
