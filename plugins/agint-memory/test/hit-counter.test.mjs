@@ -164,6 +164,23 @@ test('memory_read 不推进计数（读不是用）', async () => {
   });
 });
 
+test('memory_read 返回合并后的 recalls（与 search / list 同一口径）', async () => {
+  await withHome(async () => {
+    const service = makeService([['m1', entry('alpha 条目')]]);
+    await searchTool(service).execute({ query: 'alpha' });
+    const read = await service.read('m1');
+    assert.equal(read.recalls, 1, 'read 必须与 search/list 同一口径，不能一个 1 一个 0');
+  });
+});
+
+test('没被检索过的条目，read 的 recalls 仍是 0', async () => {
+  await withHome(async () => {
+    const service = makeService([['m1', entry('alpha 条目')]]);
+    assert.equal((await service.read('m1')).recalls, 0);
+    assert.equal(await service.read('不存在'), null);
+  });
+});
+
 test('memory_list 不推进计数', async () => {
   await withHome(async () => {
     const service = makeService([['m1', entry('alpha 条目')]]);

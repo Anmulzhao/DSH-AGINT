@@ -110,7 +110,10 @@ function apply(ctx) {
     async read(id) {
       const t = await table();
       const rec = t.get(id);
-      return rec ? { ...rec } : null;
+      if (!rec) return null;
+      // 与 list()/search() 同一口径：返回合并后的 recalls（见 lib/hits.js）。
+      const map = await hitStore.snapshot();
+      return withHits({ id, ...rec }, map);
     },
 
     async list(filter = {}) {
