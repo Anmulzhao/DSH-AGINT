@@ -1,5 +1,17 @@
 # agint-family-panel CHANGELOG
 
+## 0.12.1 — 2026-11-07（手动计划档显示真实原因）
+
+配合 agint-evolve v0.22.0：确定性不可执行的提案会被降为 `execMode=manual`、
+`execState=idle`，档位落 `person/plan`（待定执行计划）。此前该档的说明固定是
+「执行方式选了 manual」—— 读的人会以为是自己选的，真实原因（未解析到可执行目标）
+被标签盖掉。
+
+现在 `manual` 且 `execError` 非空时，`why` 优先显示 `execError`。
+与 `agint-evolve/lib/execution.js` 的 `ticketStage()` 同步修改，
+`test/stage-parity.test.mjs` 的三组等价用例全过（面板 139/140，唯一失败
+`v2-scan` 为既有基线漂移，HEAD 干净副本同样失败）。
+
 ## 0.12.0 — 2026-11-03（W8-2：改判不再清空上一版审批记录）
 
 ### 起因：一次「改判回 proposed」删掉了 300 字的唯一证据

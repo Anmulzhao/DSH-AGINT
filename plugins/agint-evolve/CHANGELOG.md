@@ -1,5 +1,32 @@
 # agint-evolve CHANGELOG
 
+## v0.22.0（2026-11-07 · 确定性不可执行不再挂成「已批准·执行失败」）
+
+### 问题（生产实证）
+
+2026-11-04 批量批准 19 条、2026-11-07 批准 4 条，全部以 `已批准·执行失败` 挂在面板。
+失败原因集中在 `not-actionable`：driver 的 `resolveTargetAssets()` 只认单个仓库文件/技能，
+而特性级、机械动作类提案的正文里没有仓库路径（实测 `mentioned:0 inRepo:0`）。
+这类失败是 **deterministic**（重试不会变），但旧协议只把 job 记成 failed，
+提案 `execState=failed` 就永久停在 `person/failed`，**没有任何自动出口**，只能人工改状态。
+
+### 改动
+
+新增 `agint.evolve.markNotActionable(id, reason)`：
+
+- `status` 保持 `approved` —— 批准是人的决定，机器不替人撤销。
+- `execMode → manual`（退出自动执行队列）、`execState → idle`（脱离失败态）。
+- `execError` / `note` 写明原因与下一步：已实现→applied / 不适用→wontfix / 需拆分→补可执行单元。
+- 撤销同提案其它活跃 job，避免重复尝试。
+- ⛔ 不自动标 applied / wontfix：两者都要证据与判断，机器代判就是撒谎。
+- ⛔ 只动 `approved` 的行；人已改判成 applied/wontfix/proposed 时不抢写。
+
+面板档位从 `person/failed` 变为 `person/plan`（待定执行计划），由人决定结案方式。
+
+### 测试
+
+`test/execution.test.mjs` 新增「确定性不可执行 ⇒ 退出自动队列」用例；71 项全过。
+
 ## v0.21.0（2026-11-03 · 紧急修复：v0.20.0 的 output schema 让整个 preset 加载失败）
 
 ### 现象

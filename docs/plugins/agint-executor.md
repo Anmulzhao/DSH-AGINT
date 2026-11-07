@@ -27,6 +27,12 @@
 定位不到目标 / LLM 判定不适用 / 幻觉闸门拒绝，重试也不会变），执行器**一次收尾**，
 失败模式记 `executor-run-not-actionable`；⛔ 偶发失败（LLM 挂了、网络断了）照常重试。
 
+**确定性失败自动收口（2026-11-07, v0.6.0）**：收尾后调用
+`agint.evolve.markNotActionable()` —— 提案保留 `approved`，`execMode` 降 `manual`、
+`execState` 归 `idle`，原因写进 `execError`/`note`。面板档位从 `person/failed`
+（执行失败·等处理）变为 `person/plan`（待定执行计划），由人决定 applied / wontfix /
+拆分可执行单元。⛔ 机器不自动标 applied 或 wontfix —— 已实现与不适用都要证据和判断。
+
 **注入**：`inject = ['timer']` —— `ctx.setInterval`（tick）/ `ctx.setTimeout`（wake 去重）
 由宿主 `timer` 服务提供。⛔ 漏声明不是「软降级」而是 apply 抛错、插件整个不挂载
 （v0.1.0 首次部署即此坑，见 CHANGELOG v0.1.1）。

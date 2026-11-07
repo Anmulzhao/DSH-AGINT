@@ -235,7 +235,24 @@ function apply(ctx, config) {
       state.failed += 1;
       await recordFailure('executor-run-not-actionable', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
       warn('executor: 确定性不可执行，不重试', { proposalId: job.proposalId, attempts, reason: err });
-      return { proposalId: job.proposalId, action: 'fail', error: err, deterministic: true };
+      // 2026-11-07：确定性不可执行 ⇒ 提案退出自动队列，不再沉淀成「已批准·执行失败」。
+      // 之前只在 job 上记 failed，提案 execState 跟着 failed，面板挂 person/failed；
+      // 而这类失败重试不会变，挂着等于把无出口的欠账摆给人。收口口径见
+      // agint-evolve.markNotActionable（保留 approved、降 manual、execState 归 idle）。
+      // 老版 evolve 没有这个方法 ⇒ 退回原行为（job 仍是 failed，提案仍是 failed）。
+      let parked = false;
+      if (typeof evolve.markNotActionable === 'function') {
+        try {
+          const rec = await evolve.markNotActionable(job.proposalId, err);
+          parked = rec !== null && rec !== undefined;
+        } catch (error) {
+          warn('executor: markNotActionable failed', {
+            proposalId: job.proposalId,
+            error: error?.message ?? String(error),
+          });
+        }
+      }
+      return { proposalId: job.proposalId, action: 'fail', error: err, deterministic: true, parked };
     }
     if (canRetry(attempts, cfg.maxAttempts)) {
       const dueAt = new Date(now + cfg.retryDelayMs).toISOString();

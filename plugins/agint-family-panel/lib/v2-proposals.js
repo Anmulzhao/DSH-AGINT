@@ -472,7 +472,14 @@ export function ticketStageOf(rec) {
   if (state === 'queued') return out('working/queued', at ? `排在 ${at.slice(0, 16).replace('T', ' ')}` : '等执行器捡起');
   if (state === 'running') return out('working', '执行器正在跑');
   const why = planBlocker(status, mode, at);
-  if (why !== null) return out('person/plan', PLAN_REASONS[why] ?? String(why));
+  if (why !== null) {
+    // 与 execution.js ticketStage 同步（2026-11-07）：manual 且 execError 非空时，
+    // 显示的是「自动执行不适用」的真实原因，不是 generic 的 manual 文案。
+    const detail = why === 'manual' && err !== ''
+      ? clipStage(err)
+      : (PLAN_REASONS[why] ?? String(why));
+    return out('person/plan', detail);
+  }
   return out('stalled', `计划就绪（${mode}）但队列里没有执行 —— 应入队未入队`);
 }
 

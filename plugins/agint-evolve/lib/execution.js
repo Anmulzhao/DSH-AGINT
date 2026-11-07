@@ -459,7 +459,15 @@ export function ticketStage(rec) {
 
   // ⑧ 批准了，但执行计划没定 —— 这一步复用 autoEnqueueBlocker，判据只有一份
   const why = autoEnqueueBlocker(n, []);
-  if (why !== null) return out('person/plan', PLAN_REASONS[why] ?? String(why));
+  if (why !== null) {
+    // 2026-11-07：markNotActionable() 把「自动执行不适用」的提案降成 manual 后，
+    // execError 里写着真实原因（无目标资产 / 驱动拒绝 / 校验不过）。这一档若仍显示
+    // generic 的 manual 文案，读的人会以为是自己选了 manual —— 真实原因被标签盖掉。
+    const detail = why === 'manual' && n.execError !== ''
+      ? clip(n.execError)
+      : (PLAN_REASONS[why] ?? String(why));
+    return out('person/plan', detail);
+  }
 
   // ⑨ 计划就绪却不在队列里（idle / succeeded / cancelled 的残留）
   //

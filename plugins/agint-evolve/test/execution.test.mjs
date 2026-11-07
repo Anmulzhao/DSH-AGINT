@@ -440,4 +440,31 @@ await withApp(async ({ evo }) => {
   assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'queued');
 });
 
-console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑 / 孤儿回收）');
+// ── 确定性不可执行 ⇒ 退出自动队列，不挂 failed（2026-11-07）────────────
+//
+// 根因：执行器只做单原子文件编辑，特性级/机械动作提案没有仓库目标 ⇒ driver 判
+// deterministic not-actionable ⇒ 旧协议把提案打成 execState=failed，面板
+// 「已批准·执行失败」永久挂着，没有自动出口。收口口径：保留 approved（批准是
+// 人的决定），execMode 降 manual、execState 归 idle，原因写进 execError/note。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '特性级提案', body: '正文没有仓库路径' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, { ok: false, error: 'no target asset resolved' });
+  assert.equal((await evo.getProposal(p.id)).execState, 'failed', '前置：旧路径会留下 failed');
+
+  const parked = await evo.markNotActionable(p.id, 'no target asset resolved (mentioned:0 inRepo:0)');
+  assert.equal(parked.status, 'approved', '批准是人的决定，机器不撤销');
+  assert.equal(parked.execMode, 'manual', '退出自动执行队列');
+  assert.equal(parked.execState, 'idle', '不得再挂 failed');
+  assert.match(parked.execError, /自动执行不适用/);
+  assert.match(parked.note, /请人工结案/, 'note 必须写明下一步');
+  assert.match(parked.note, /批准/, '原有 note 不得被覆盖');
+
+  // 人已经改判过的行，机器不抢写
+  await evo.setStatus(p.id, 'applied', '已实现', {});
+  const after = await evo.markNotActionable(p.id, 'late');
+  assert.equal(after.status, 'applied', '非 approved 的行不得被收口改写');
+});
+
+console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑 / 孤儿回收 / 不可执行收口）');

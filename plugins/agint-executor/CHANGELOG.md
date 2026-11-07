@@ -1,5 +1,29 @@
 # agint-executor CHANGELOG
 
+## v0.6.0（2026-11-07 · 确定性不可执行时收口提案，不再留「已批准·执行失败」）
+
+### 问题
+
+driver 对「没有可改目标」的提案返回 `deterministic: true` 的 `not-actionable`。
+执行器此前只把 job 记 failed 就返回，提案跟着 `execState=failed` 永久挂起（见
+agint-evolve v0.22.0 的说明）。实机：11-04 一批 19 条、11-07 4 条。
+
+### 改动
+
+确定性失败分支（`verdict.deterministic === true`）在 `finishExecution` 之后调用
+`evolve.markNotActionable(proposalId, reason)`：
+
+- job 仍记 failed（审计：确实尝试过）。
+- 提案退出自动队列：保留 approved、`execMode=manual`、`execState=idle`，
+  面板落 `person/plan`（待定执行计划），人在那里决定 applied / wontfix / 拆分。
+- 偶发失败（LLM 不可用等）**不收口**，仍按重试策略走 —— 下次可能就成功。
+- 老版 evolve 没有该方法时退回原行为，不抛错；tick 结果带 `parked` 如实报告。
+
+### 测试
+
+新增 `test/deterministic-park.test.mjs`：确定性失败收口 / 偶发失败不收口 /
+老版 evolve 回退，三条全过；`node --test` 14 项全过。
+
 ## v0.5.0（2026-11-03 · W8-3：执行前核审批凭据）
 
 ### 新增第七道闸

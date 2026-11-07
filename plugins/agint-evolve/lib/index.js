@@ -1207,6 +1207,45 @@ function apply(ctx, config) {
       return (await svc.getProposal(id)) ?? rec;
     },
 
+    /**
+     * 确定性不可执行（目标资产解析不到）⇒ 提案退出自动执行队列，但**不挂成失败**。
+     *
+     * 2026-11-07 老板口径：已实现或不适用要把提案结了，不要弄个「已批准·执行失败」
+     * 永久挂着。此前链路：执行器按「单原子文件编辑」设计 ⇒ 特性级/机械动作提案
+     * 解析不到目标 ⇒ driver 判 deterministic not-actionable ⇒ 执行器照实收尾
+     * `execState=failed` ⇒ 面板 `person/failed`。这一档没有自动出口，只能人改状态，
+     * 于是每次批量批准都攒一批失败。
+     *
+     * 处置：**状态保持 approved**（批准是人的决定，机器不替人撤销），
+     *       `execMode→manual`（退出自动队列）、`execState→idle`（不是失败），
+     *       `execError`/`note` 写明原因与可选下一步。面板档位落 `person/plan`
+     *       「待定执行计划」，由人决定结案方式。
+     *
+     * ⛔ 不自动标 applied / wontfix：已实现与不适用都要证据和判断，机器代判 = 撒谎。
+     * ⛔ 只动 approved 的行：人已经把状态改成 applied/wontfix/proposed 时，不抢写。
+     * ⛔ 撤销同提案的其它活跃 job：自动执行已判定不适用，继续排只会重复失败。
+     */
+    async markNotActionable(id, reason) {
+      const t = await table();
+      const rec = t.get(id);
+      if (!rec) return null;
+      if (rec.status !== 'approved') return rec;
+      const ts = nowIso();
+      const why = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || '未解析到可执行目标';
+      const evidence = `自动执行不适用：${why} —— 已退出自动队列；请人工结案：已实现→applied / 不适用→wontfix / 需拆分→补可执行单元`;
+      const note = rec.note ? `${rec.note} ｜ ${evidence}` : evidence;
+      const updated = await markProposal(id, {
+        execMode: 'manual',
+        execState: 'idle',
+        execError: evidence.slice(0, 500),
+        execFinishedAt: ts,
+        note,
+      });
+      const others = await activeJobsFor(id);
+      if (others.length) await cancelJobs(others, '自动执行不适用：目标资产解析不到');
+      return updated;
+    },
+
     async removeProposal(id) {
       const t = await table();
       const ok = await t.delete(id);
