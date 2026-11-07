@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-wiki",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Wiki 知识库（按 domain 分目录的 markdown）。提供读写、lint、健康检查。",
   "main": "lib/index.js",
   "agint": {
