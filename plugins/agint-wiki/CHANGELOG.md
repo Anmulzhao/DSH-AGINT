@@ -1,5 +1,19 @@
 # Changelog — agint-wiki
 
+## 0.3.1 (2026-11-07)
+
+**Feat — `agint.wiki` 服务暴露 `root`（正斜杠归一化）**。
+
+起因：cron 的 `wiki-build` 门禁需要知道真实 wiki 根。可选做法是在 `cordis.patch.yml`
+里再写一遍那串 `!!js` 回退链（`AGINT_WIKI_ROOT || AGINT_DATA_HOME || AGINT_HOME || HOME + '/projects/AGINT'`），
+但那样就是第二种口径 —— 改了 wiki 根之后，门禁会静默核到另一个目录，还报「通过」。
+
+所以由服务自己暴露：`ctx.provide('agint.wiki', { root: normRoot, ... })`。
+消费方（`plugins/agint-cron/lib/jobs.js`）取 `services['agint.wiki'].root`，
+取不到就记 `skipped` 并写明理由，不静默降级成通过（K134）。
+
+测试：`test/representation.test.mjs` 加 1 条，断言 `wiki.root` 存在且已归一化成正斜杠。
+
 ## 0.3.0 (2026-11-07)
 
 **Feat — 表示层构建器（阶段 3）**。此前 `agint.wiki` 只是「一个目录 + 一堆互不认识的 .md」：

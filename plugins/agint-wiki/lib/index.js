@@ -140,6 +140,12 @@ function apply(ctx, config) {
   };
 
   ctx.provide('agint.wiki', {
+    // 根目录以正斜杠形式暴露（2026-11-07）：
+    // 消费方（cron 的 wiki-build 门禁）要拿真实根，不能在配置里复制一遍
+    // cordis.patch.yml 那串 !!js 回退链 —— 复制出来就是第二种口径，
+    // 改了 wiki 根之后门禁会静默核到另一个目录。取服务上的值才只有一份。
+    root: normRoot,
+
     async read(p) {
       const { rel, abs } = clean(p);
       const content = await readMaybe(abs);

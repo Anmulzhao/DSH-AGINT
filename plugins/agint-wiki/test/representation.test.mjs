@@ -305,7 +305,7 @@ async function withWikiRoot(files, fn) {
       on() {},
     };
     apply(ctx, { root });
-    return await fn({ wiki: ctx.get('agint.wiki') });
+    return await fn({ wiki: ctx.get('agint.wiki'), root });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -336,6 +336,13 @@ test('⭐ ⑯ 生成页链接照常计入（README 之外的生成页也能被�
 test('⑰ 门槛默认值来自原文，改动会被这里拦住', () => {
   assert.equal(BUILD_DEFAULTS.minSources, 2, '2 = 单文档无增益这条实验结论');
   assert.equal(BUILD_DEFAULTS.maxRatio, 1.0, '1.0 = 超过语料量等于没抽象');
+});
+
+test('⑲ 服务暴露 root，供 cron 门禁取真实 wiki 根（不复制配置回退链）', async () => {
+  await withWikiRoot({ 'a.md': '# a\n' }, async ({ wiki, root }) => {
+    assert.equal(typeof wiki.root, 'string', 'agint.wiki 必须暴露 root');
+    assert.equal(wiki.root, root.replace(/\\/g, '/'), 'root 要正斜杠归一化，与内部路径比较口径一致');
+  });
 });
 
 test('⭐ ⑱ 二次构建幂等：生成页进语料后再校验，不许把自己判成违规', () => {
