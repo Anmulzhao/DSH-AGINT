@@ -329,8 +329,14 @@ export async function runAgentsSizeGuard(opts = {}) {
   }
   const wikiIndexDrift = result.wikiIndex?.level === 'stale';
 
+  // 「没核过」必须留痕（K134）：门禁被跳过 = 一次都没核过，
+  // 若不写盘，报告目录里什么都没有 ⇒ 看起来像「在跑且没问题」。
+  // 'disabled' 是用户主动关掉，不算跳过，不因此报红。
+  const gateSkipped =
+    result.memoryIndex?.level === 'skipped' || result.wikiIndex?.level === 'skipped';
+
   // 只在「有事要说」时写盘，避免每天都往 docs/ 丢一份无信息量的报告。
-  if (level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift) {
+  if (level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift || gateSkipped) {
     const stamp = localStamp();
     const reportPath = join(reportDir, `AGENTS-体积告警-${stamp}.md`);
     const content = renderReport(result);
