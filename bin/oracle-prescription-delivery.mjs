@@ -186,6 +186,89 @@ export function evaluateDelivery(envelope, options = {}) {
 }
 
 /**
+ * 异步投递（2026-11-07 接线新增）。五闸判据与 evaluateDelivery() 逐条一致，
+ * 唯一差别是 **await sink**：真 sink 走插件 lib 的 propose()/generate()，
+ * 都是异步写穿；同步版不等待会出现「返回 writes=1 但磁盘还没落」的假象。
+ *
+ * ⛔ 仍默认零写入：没注入 sink ⇒ WOULD_DELIVER_NO_SINK。
+ * ⛔ sink 抛错 / 返回 ok!=true ⇒ SINK_ERROR / SINK_REJECTED，writes 恒 0，绝不假装成功。
+ */
+export async function evaluateDeliveryAsync(envelope, options = {}) {
+  const {
+    env = process.env,
+    switchOn = null,
+    sink = null,
+    humanVeto = false,
+    emergencyStop = false,
+    vetoWindowHours = 24,
+  } = options;
+
+  const base = {
+    schemaVersion: DELIVERY_SCHEMA,
+    defaultDeny: true,
+    writes: 0,
+    sinkInvoked: false,
+    delivered: false,
+  };
+
+  if (!envelope || envelope.status !== 'proposed') {
+    return { ...base, status: 'NO_ENVELOPE', reason: '信封无效或状态不是 proposed ⇒ 零写入' };
+  }
+
+  const sw = switchOn === null ? readSwitch(env) : switchOn === true;
+  const gate = evaluateAutonomousWrite({
+    labelAuthority: envelope.labelAuthority,
+    target: envelope.target,
+    predictedDelta: envelope.predictedDelta,
+    predictedDeltaSource: envelope.predictedDeltaSource,
+    humanVeto,
+    emergencyStop,
+    vetoWindowHours,
+  }, { switchOn: sw });
+
+  if (!gate.allowed) {
+    return { ...base, status: 'DEFAULT_DENY', reason: gate.reason, gate };
+  }
+
+  if (typeof sink !== 'function') {
+    return {
+      ...base,
+      status: 'WOULD_DELIVER_NO_SINK',
+      reason: '五闸全过，但没注入 sink ⇒ 仍是零写入；生产接线须显式注入经过审批的 sink',
+      gate,
+      envelope,
+    };
+  }
+
+  let sinkResult;
+  try {
+    sinkResult = await sink(Object.freeze({ ...envelope }));
+  } catch (e) {
+    return { ...base, status: 'SINK_ERROR', reason: `SINK_ERROR: ${e.message}`, gate };
+  }
+  if (!sinkResult || sinkResult.ok !== true) {
+    return {
+      ...base,
+      status: 'SINK_REJECTED',
+      reason: sinkResult?.reason ?? 'sink 未确认写入',
+      gate,
+      sinkResult,
+    };
+  }
+
+  return {
+    ...base,
+    writes: sinkResult.writes ?? 1,
+    sinkInvoked: true,
+    delivered: true,
+    status: 'DELIVERED_PROPOSED',
+    reason: '已投递 status=proposed 候选处方；执行仍走既有驱动与人工审批（附二 R1）',
+    gate,
+    sinkResult,
+  };
+}
+
+/**
  * 只读五闸探针：用真实现状跑一次，证明默认路径是零写入。
  * ⛔ 不构造信封（0 条冻结标签本就造不出合法锚），只展示五闸判定。
  */
