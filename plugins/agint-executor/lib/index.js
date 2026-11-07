@@ -31,11 +31,26 @@
  *                                开始自动改代码。改红线请改 config（本机/NAS 都写 5）。
  *   config.maxAttempts        —— 同一提案最多试几次（默认 2，防无限重试烧 token）
  *   config.maxPerTick         —— 每个 tick 最多跑几条（默认 1，串行，不抢 CPU）
+ *   config.envBreakerThreshold —— 连续几次环境故障就整轮停手（默认 2）
+ *   config.envBreakerCooldownMs —— 环境熔断的冷却窗口（默认 10 分钟）
+ *   config.envMaxBackoffMs    —— 环境故障退避上限（默认 30 分钟）
+ *
+ * ## 环境故障 ≠ 提案失败（2026-11-07，提案 cdf41d63 实证）
+ *
+ * LLM 通道挂掉时 driver 抛错，旧逻辑把它当普通失败：排一次 5 分钟重试，第二次
+ * 到点仍挂 ⇒ `finishExecution(ok:false)` ⇒ 提案 `execState=failed` ⇒ 面板
+ * 「已批准·执行失败·等处理」。一天之内 5 条执行行全部这么被记成「提案失败」，
+ * 而它们一行代码都没改、也一行都没错。
+ *
+ * 现在环境故障走另一条路：顺延（deferred）+ 指数退避 + **退还尝试额度**，
+ * 连续两次就熔断一轮并冷却 10 分钟。提案保持 approved，面板显示「已顺延」。
+ * 判据在 `lib/env.js`，与 driver 的 deterministic 判据互不覆盖。
  *
  * 关掉它不会让已批准的提案消失，只会让它们停在「排队中」—— 面板上一眼可见。
  */
 
 import { decideRun, canRetry, oneLine } from './plan.js';
+import { isEnvironmentFailure, envBackoffMs } from './env.js';
 
 const name = 'agint-executor';
 /**
@@ -82,6 +97,18 @@ function readConfig(raw = {}) {
     orphanStaleMs: Math.max(0, num(raw.orphanStaleMs, 30 * 60_000)),
     /** 挂载即开始调度。false 时只能手动 tick()（测试/排障用）。 */
     enabled: raw.enabled !== false,
+    /**
+     * 环境故障熔断阈值（连续几次环境故障就整轮停手）。默认 2。
+     *
+     * 2026-11-07（提案 cdf41d63 实证）：LLM 通道挂掉时，每个 tick 仍会捡下一条
+     * 提案、起一次注定失败的调用。当天 5 条执行行在 24 分钟内全部被烧掉，
+     * 每条都记成「提案失败」。熔断的作用就是**一次故障只付一次代价**。
+     */
+    envBreakerThreshold: Math.max(1, Math.trunc(num(raw.envBreakerThreshold, 2))),
+    /** 环境故障后的冷却窗口（毫秒）。冷却期内 tick 直接跳过，不 claim。默认 10 分钟。 */
+    envBreakerCooldownMs: Math.max(0, num(raw.envBreakerCooldownMs, 10 * 60_000)),
+    /** 环境故障退避上限（毫秒）。默认 30 分钟。 */
+    envMaxBackoffMs: Math.max(0, num(raw.envMaxBackoffMs, 30 * 60_000)),
   };
 }
 
@@ -106,6 +133,13 @@ function apply(ctx, config) {
     cancelled: 0,
     // 2026-11-02：回收掉的孤儿执行数（跨宿主重启遗留的 running 行）。
     reaped: 0,
+    // 2026-11-07：环境故障（LLM 通道/宿主能力不可用）次数。与 failed 分开计数 ——
+    // 混在一起看，就读不出「是提案不行」还是「机器不行」。
+    envDeferred: 0,
+    // 连续环境故障计数与熔断到期时刻（毫秒）。
+    envStreak: 0,
+    breakerUntil: 0,
+    breakerTrips: 0,
     lastResult: null,
   };
 
@@ -220,6 +254,8 @@ function apply(ctx, config) {
       });
       state.succeeded += 1;
       if (verdict.partial === true) state.partial += 1;
+      // 通道恢复的硬证据：一次真的跑完了 ⇒ 连续环境故障归零。
+      state.envStreak = 0;
       return { proposalId: job.proposalId, action: 'run', ok: true, partial: verdict.partial === true, commitPath: verdict.commitPath };
     }
 
@@ -254,6 +290,50 @@ function apply(ctx, config) {
       }
       return { proposalId: job.proposalId, action: 'fail', error: err, deterministic: true, parked };
     }
+    // 2026-11-07：环境故障与提案失败**分开记账**。
+    //
+    // 判据：失败原因落在「LLM 通道 / 宿主能力不可用」这一族（见 lib/env.js）。
+    // 动作：顺延（deferred）+ 指数退避 + **退还这次 claim 消耗的尝试次数**。
+    //
+    // 为什么必须退还：maxAttempts 的语义是「这条提案最多试几次」，指的是提案
+    // 本身值不值得再试。通道挂掉与提案无关，把额度烧在这里，等于通道恢复后
+    // 这条提案已经没资格再跑（实机：cdf41d63 在 08:10 批准后 9 秒烧完 2 次，
+    // 之后只能人工再批一次，再烧一次）。
+    //
+    // 为什么用 deferred 而不是 failed：deferred 的语义就是「不是失败，是等条件」
+    // （见 agint-evolve/lib/execution.js 的 requeueExecution）。面板据此显示
+    // 「已顺延，到期自动恢复」，而不是「执行失败·等处理」—— 后者会把人叫来处理
+    // 一件他处理不了的事（模型通道）。
+    if (isEnvironmentFailure(verdict.reason)) {
+      const wait = envBackoffMs(attempts, cfg.retryDelayMs, cfg.envMaxBackoffMs);
+      const dueAt = new Date(now + wait).toISOString();
+      const err = oneLine(verdict.reason, 400);
+      const reason = `环境不可用（${oneLine(verdict.reason, 160)}）；${Math.round(wait / 1000)}s 后再试，不计入提案失败次数`;
+      try {
+        await evolve.requeueExecution(job.id, { dueAt, error: err, reason, deferred: true, refundAttempt: true });
+      } catch (error) {
+        // 顺延失败（老版 evolve / 存储故障）⇒ 退回一次普通重试，别把 job 卡在 running。
+        warn('executor: 环境故障顺延失败', { proposalId: job.proposalId, error: error?.message ?? String(error) });
+        if (canRetry(attempts, cfg.maxAttempts)) {
+          await evolve.requeueExecution(job.id, { dueAt, error: err, reason });
+          return { proposalId: job.proposalId, action: 'retry', attempts, reason };
+        }
+        await evolve.finishExecution(job.id, { ok: false, error: err });
+        state.failed += 1;
+        return { proposalId: job.proposalId, action: 'fail', error: err };
+      }
+      state.envDeferred += 1;
+      state.envStreak += 1;
+      await recordFailure('executor-env-unavailable', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
+      warn('executor: 环境不可用，顺延且不消耗提案额度', {
+        proposalId: job.proposalId, attempts, nextDueAt: dueAt, reason: err,
+      });
+      return {
+        proposalId: job.proposalId, action: 'retry', attempts, reason, deferred: true, env: true, dueAt,
+      };
+    }
+    // 走到这里 = 非环境故障。连续环境故障计数归零（熔断只认「连续」）。
+    state.envStreak = 0;
     if (canRetry(attempts, cfg.maxAttempts)) {
       const dueAt = new Date(now + cfg.retryDelayMs).toISOString();
       await evolve.requeueExecution(job.id, { dueAt, error: oneLine(verdict.reason, 400), reason: `第 ${attempts} 次失败，${Math.round(cfg.retryDelayMs / 1000)}s 后重试` });
@@ -380,6 +460,14 @@ function apply(ctx, config) {
       return { skipped: true, reason: 'executor disabled（config.enabled=false）' };
     }
     if (inFlight) return { skipped: true, reason: 'already-running' };
+    // 2026-11-07：环境熔断。冷却期内不 claim —— 通道挂着的时候，每捡一条就是
+    // 一次注定失败的调用，而每条都会在面板上留一道痕迹，看上去像「提案有问题」。
+    // force=true（面板手动「立即执行」）是人对单条的点名，允许穿透。
+    const nowMs = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+    if (opts.force !== true && nowMs < state.breakerUntil) {
+      const left = Math.ceil((state.breakerUntil - nowMs) / 1000);
+      return { skipped: true, reason: `环境熔断中（连续 ${state.envStreak} 次环境故障），${left}s 后恢复` };
+    }
     inFlight = true;
     state.ticks += 1;
     state.lastTickAt = nowIso();
@@ -422,6 +510,23 @@ function apply(ctx, config) {
           results.push({ proposalId: job.proposalId, action: 'fail', error: oneLine(state.lastError) });
         } finally {
           activeJobIds.delete(job.id);
+        }
+        // 2026-11-07：连续环境故障到阈值 ⇒ 本轮立刻停手，并进入冷却。
+        // 不这么做的话，maxPerTick 只限制「一轮跑几条」，挡不住「每 15 秒一轮」：
+        // 故障期里整条队列会被依次捡起来各撞一次墙（实机 11-07 一天 5 条）。
+        const last = results[results.length - 1];
+        if (last?.env === true && state.envStreak >= cfg.envBreakerThreshold) {
+          state.breakerUntil = now + cfg.envBreakerCooldownMs;
+          state.breakerTrips += 1;
+          state.lastError = `环境熔断：连续 ${state.envStreak} 次环境故障，${Math.round(cfg.envBreakerCooldownMs / 1000)}s 内不再 claim`;
+          warn('executor: 环境熔断', {
+            streak: state.envStreak,
+            cooldownMs: cfg.envBreakerCooldownMs,
+            remaining: jobs.length - results.length,
+            reason: last.reason,
+          });
+          await recordFailure('executor-env-breaker', `streak=${state.envStreak} ${last.reason}`);
+          break;
         }
       }
       state.lastResult = results;

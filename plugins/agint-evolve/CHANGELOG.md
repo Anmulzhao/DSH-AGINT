@@ -1,5 +1,27 @@
 # agint-evolve CHANGELOG
 
+## v0.22.1（2026-11-07 · 执行队列支持退还尝试额度）
+
+### 问题
+
+`claimDueExecutions()` 在 claim 时就把 `attempts` +1 记到执行行与提案
+（`execAttempts`）。这套语义对「提案自己的失败」是对的，对**环境故障**是错的：
+LLM 通道挂掉与提案无关，但额度照样被扣。实机 `cdf41d63` 在批准后 9 秒内两次撞上
+同一个通道故障，`maxAttempts=2` 烧光 ⇒ 通道恢复后这条提案也没有资格再跑，
+只能人工再批一次、再烧一次。
+
+### 改动
+
+`requeueExecution(execId, { refundAttempt: true })`：把本次 claim 消耗的次数退还
+（执行行 `attempts` 与提案 `execAttempts` 同步减 1，日志追加「退还本次尝试额度」）。
+只有环境故障路径会传这个标记（判据在 `agint-executor/lib/env.js`）；普通失败仍按
+原行为扣额度，否则重试上限失效。
+
+### 验证
+
+`test/execution.test.mjs` 新增「环境故障顺延 ⇒ 退还额度」用例，含反向断言：
+不传 `refundAttempt` 时额度照扣、状态回到 `queued`。
+
 ## v0.22.0（2026-11-07 · 确定性不可执行不再挂成「已批准·执行失败」）
 
 ### 问题（生产实证）

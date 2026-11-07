@@ -1,5 +1,46 @@
 # agint-executor CHANGELOG
 
+## v0.6.1（2026-11-07 · 环境故障与提案失败分开记账）
+
+### 问题
+
+LLM 子代理通道挂掉时 driver 抛错（`llm unavailable: stopReason=error`），执行器把它
+当普通失败处理：排一次 5 分钟重试，第二次仍挂就 `finishExecution(ok:false)`。
+
+实机（提案 `cdf41d63`，2026-11-07）：通道从 11-05 14:35 起全挂，当天 5 条执行行全部
+同一个错；`cdf41d63` 在 07:52 与 08:10 两次批准，每次 9 秒内烧完 `maxAttempts=2`，
+最后面板显示「已批准·执行失败」。提案一行代码没改、也一行没错 —— 是机器没跑起来。
+
+三个结构性缺陷：
+
+1. 抛错路径不分类：`driver 抛错：…` 既没有 deterministic 也没有 transient 判定，
+   driver 里的 `classifyFailureKind()` 完全被绕过。
+2. 环境故障消耗提案额度：`maxAttempts` 的语义是「这条提案值不值得再试」，
+   而通道故障与提案无关。额度烧完后，通道恢复时提案已失去自动执行资格。
+3. 没有熔断：`maxPerTick` 只限制一轮几条，挡不住「每 15 秒一轮」—— 故障期里
+   整条队列被依次捡起来各撞一次墙。
+
+### 改动
+
+- 新增 `lib/env.js`：`isEnvironmentFailure()`（判据只收 LLM 通道/宿主能力/网络类）
+  + `envBackoffMs()`（指数退避，封顶）。纯函数，无 IO、无时钟。
+- `runJob` 在确定性失败分支之后、普通重试之前插入环境故障分支：顺延
+  （`requeueExecution({deferred:true, refundAttempt:true})`）+ 指数退避，
+  不调 `finishExecution(ok:false)` ⇒ 提案保持 `approved`、`execState=deferred`，
+  面板显示「已顺延」而不是「执行失败·等处理」。
+- 熔断：连续 `envBreakerThreshold`（默认 2）次环境故障 ⇒ 本轮立即停手并进入
+  `envBreakerCooldownMs`（默认 10 分钟）冷却，冷却期内 tick 直接跳过。
+  `force=true`（面板手动「立即执行」）允许穿透。
+- 新增 config：`envBreakerThreshold` / `envBreakerCooldownMs` / `envMaxBackoffMs`。
+- `status()` 新增 `envDeferred` / `envStreak` / `breakerUntil` / `breakerTrips`。
+
+### 验证
+
+- `test/env-failure.test.mjs`（新增 4 组）：环境故障顺延 + 退款 + 熔断 + 冷却恢复
+  + 非环境失败不许被放行 + 判据正反例。
+- 负控制：`oldText not found`（LLM 产出不合格）仍走原结算路径，不被环境判据放行。
+- 部署位（`.agint-bundle` 与 `profiles/desktop` 两份）单跑同一用例通过。
+
 ## v0.6.0（2026-11-07 · 确定性不可执行时收口提案，不再留「已批准·执行失败」）
 
 ### 问题

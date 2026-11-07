@@ -2215,6 +2215,9 @@ export async function spawnLlm(ctx, {
   }
 
   const controller = new AbortController();
+  // 2026-11-07：失败排查需要「花了多久」。实机 llm unavailable 每次都是 4–9 秒，
+  // 这个数字是区分「请求没发出去」和「模型跑到一半挂了」的唯一线索。
+  const startedAt = Date.now();
   let rejectOnTimeout = null;
   const timeoutGuard = new Promise((_, reject) => { rejectOnTimeout = reject; });
   const timer = setTimeout(() => {
@@ -2288,7 +2291,19 @@ export async function spawnLlm(ctx, {
     activation = await Promise.race([startPromise, timeoutGuard]);
     const result = await Promise.race([activation.result, timeoutGuard]);
     if (result?.stopReason !== 'completed') {
-      return { ok: false, reason: `stopReason=${result?.stopReason ?? 'unknown'}` };
+      // 2026-11-07：原样只留 `stopReason=error` 是**不可归因**的。
+      // 实机（提案 cdf41d63，07:52–08:15）：子会话 4–9 秒结束、0 条消息，
+      // 而面板只有这五个字，排查必须去翻子会话文件（那天 10 个全是空壳）
+      // 和事件总线。归因字段必须自己带出来：哪个 provider/模型、跑了多久、
+      // 宿主有没有给错误文本。⛔ 不许在这里吞掉 result.error。
+      const errorText = result?.error?.message ?? result?.error ?? '';
+      return {
+        ok: false,
+        reason: `stopReason=${result?.stopReason ?? 'unknown'}`
+          + ` (provider=${agentOptions.provider} model=${agentOptions.model}`
+          + ` preset=${resolvedPreset} elapsed=${Date.now() - startedAt}ms`
+          + `${errorText ? ` error=${String(errorText).slice(0, 200)}` : ''})`,
+      };
     }
     // ⭐ 结果在 `structured`，不在 `output`（第二处血泪 bug）。
     const structured = result?.structured;

@@ -1562,6 +1562,12 @@ function apply(ctx, config) {
     /**
      * 重新排队（失败重试 / 周上限顺延）。dueAt 决定什么时候再被 claim；
      * deferred=true 表示「不是失败，是等条件」，面板按 supply 显示。
+     *
+     * `refundAttempt: true`（2026-11-07）：把这次 claim 消耗的尝试次数**退还**。
+     * 只给「环境故障」用（LLM 通道 / 宿主能力不可用，见 agint-executor/lib/env.js）：
+     * attempts 的语义是「这条提案最多试几次」，而通道挂掉与提案本身无关。
+     * 不退还的后果（实机 cdf41d63）：批准后 9 秒内两次撞上同一个通道故障，
+     * 额度烧完 ⇒ 提案被记成 failed，通道恢复后也没有资格再跑。
      */
     async requeueExecution(execId, opts = {}) {
       const et = await executionTable();
@@ -1573,20 +1579,26 @@ function apply(ctx, config) {
       const dueAt = typeof opts.dueAt === 'string' && opts.dueAt !== ''
         ? opts.dueAt
         : new Date(Date.now()).toISOString();
+      const refund = opts.refundAttempt === true;
+      const attempts = refund
+        ? Math.max(0, (Number(job.attempts) || 0) - 1)
+        : (Number(job.attempts) || 0);
       const next = executionSchema.parse({
         ...job,
         state,
+        attempts,
         dueAt,
         reason: opts.reason ?? job.reason ?? '',
         error: deferred ? '' : (opts.error ?? job.error ?? ''),
         finishedAt: '',
         updatedAt: ts,
-        log: [job.log, `${ts} ${state} → ${dueAt}${opts.reason ? ` ${opts.reason}` : ''}`].filter(Boolean).join('\n').slice(-4000),
+        log: [job.log, `${ts} ${state} → ${dueAt}${opts.reason ? ` ${opts.reason}` : ''}${refund ? '（退还本次尝试额度）' : ''}`].filter(Boolean).join('\n').slice(-4000),
       });
       await et.put(execId, next);
       await markProposal(job.proposalId, {
         execState: state,
         execError: deferred ? (opts.reason ?? '') : (opts.error ?? ''),
+        ...(refund ? { execAttempts: attempts } : {}),
       });
       return next;
     },

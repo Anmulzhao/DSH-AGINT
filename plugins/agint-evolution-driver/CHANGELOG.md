@@ -1,5 +1,20 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.9.2 — 2026-11-07 — 子代理报错必须可归因：`stopReason=error` 不再只有一个词
+
+2026-11-07 07:52–08:15，执行器连续 5 次收到 `llm unavailable: stopReason=error`。
+排查时发现这条错误串**不携带任何归因字段**：不知道是哪个 provider / 模型、
+跑了多久、宿主有没有给出错误文本。只能反向翻子会话文件（那天 10 个全是 232 字节
+的空壳）和事件总线（`subagent/end` 只有 `stopReason` + `messageLength`）。
+
+结果是一条通道故障两天没被发现（最后一次成功 11-05 14:31），而同一时刻用同一
+key 直连 provider 是 200 —— 说明故障在子代理会话层，错误串却把这点线索也盖掉了。
+
+改动：`spawnLlm()` 在 `stopReason !== 'completed'` 时，错误串补
+`provider / model / preset / elapsed / error.message`。判据不变，只加观测字段。
+
+验证：`test/smoke.mjs` 78/78 通过（既有断言只匹配 `llm unavailable: <reason>` 前缀）。
+
 ## v0.9.1 — 2026-10-29 — 目标解析补第二类反引号：v0.9.0 的记账层被它从上游绕过了
 
 v0.9.0 建了范围记账，专治「改了一个文件就当提案做完了」。它上线第二天就被绕过一次，

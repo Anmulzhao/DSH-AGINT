@@ -467,4 +467,36 @@ await withApp(async ({ evo }) => {
   assert.equal(after.status, 'applied', '非 approved 的行不得被收口改写');
 });
 
+// ── 环境故障顺延 ⇒ 退还本次尝试额度（2026-11-07）──────────────────────
+//
+// 根因：LLM 通道挂掉与提案本身无关，但 claim 已经把 attempts +1 记在提案上。
+// 不退额度的话，通道恢复时这条提案已经被烧完 2 次、永久失去自动执行资格
+// （实机 cdf41d63：批准后 9 秒内两次撞同一个通道故障）。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '通道故障期间被顺延的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  assert.equal(job.attempts, 1, '前置：claim 会消耗一次额度');
+  assert.equal((await evo.getProposal(p.id)).execAttempts, 1);
+
+  const dueAt = new Date(Date.now() + 300_000).toISOString();
+  const next = await evo.requeueExecution(job.id, {
+    dueAt, reason: '环境不可用（llm unavailable）', deferred: true, refundAttempt: true,
+  });
+  assert.equal(next.state, 'deferred');
+  assert.equal(next.attempts, 0, '环境故障必须退还本次 claim 的额度');
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.execState, 'deferred', '提案是顺延，不是失败');
+  assert.equal(rec.execAttempts, 0, '提案侧计数也要跟着退，否则面板与执行行对不上');
+  assert.equal(rec.status, 'approved', '批准不受影响');
+  assert.match(rec.execError, /环境不可用/);
+
+  // 普通失败（不传 refundAttempt）保持原行为：额度照扣，否则重试上限失效
+  const [job2] = await evo.claimDueExecutions({ now: Date.now() + 400_000, limit: 5 });
+  assert.equal(job2.attempts, 1);
+  const again = await evo.requeueExecution(job2.id, { dueAt, reason: '第 1 次失败', error: 'x' });
+  assert.equal(again.state, 'queued');
+  assert.equal(again.attempts, 1, '普通失败不退还');
+});
+
 console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑 / 孤儿回收 / 不可执行收口）');
