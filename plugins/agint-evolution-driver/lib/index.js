@@ -58,6 +58,7 @@ import { resolveTargetMetric } from './metric-resolver.js';
 import { requestSynthMount } from './deploy-bridge.js';
 import { extractAnchors, buildExcerpt } from './excerpt.js';
 import { analyzeProposalScope } from './scope.js';
+import { runProposalLoop } from './proposal-run.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -71,6 +72,13 @@ const KILL_ENV = 'AGINT_EVOLUTION_DRIVER';
 const COMMIT_ENV = 'AGINT_EVOLUTION_DRIVER_COMMIT';
 const REPO_ENV = 'AGINT_EVOLUTION_DRIVER_REPO_ROOT';
 const ENTITY_GATE_ENV = 'AGINT_EVOLUTION_DRIVER_ENTITY_GATE';
+/**
+ * 提案级执行开关（2026-11-07）：`off` 退回「一次执行只改一个文件」。
+ *
+ * 用途只有一个：线上发现提案级执行有问题时，不改代码、`off` 一下就能回到
+ * 旧口径（旧口径本身仍在，且有 78 条 smoke 守着）。
+ */
+const PROPOSAL_TXN_ENV = 'AGINT_PROPOSAL_TXN';
 // 2026-10-28：120s → 600s。实机取证（提案 2f91b72b / 846f4fbb 各失败 2 次）：
 //   孩子会话的 turn 本身就要 100~120s（含定位文件），而成功案例耗时 58s / 92s
 //   ＝ 已吃掉 48%~77% 预算 ⇒ 稍难一条必撞墙，且撞墙时**结果同时被丢弃**
@@ -599,6 +607,17 @@ export function apply(ctx, config = {}) {
   // 一次执行最多试几个目标。⛔ 这是「选错目标」的止损位，不是重试次数上限：
   // 每个目标都是一次真实 LLM 调用（可能几分钟），所以默认只给 3 个。
   const cfgMaxTargetAttempts = positiveInt(config?.maxTargetAttempts, DEFAULT_MAX_TARGET_ATTEMPTS, 1, 6);
+  /**
+   * 一次定向执行最多落地几个文件（2026-11-07，老板裁定「以提案为执行目标」）。
+   *
+   * 语义：**一次执行 = 整条提案**。执行器只开一条 execution 行，本插件按顺序把
+   * 提案点名的目标逐个改完（每个文件仍过一次完整闸门），再一次性交回结果。
+   * 这个值只限制单次执行的成本上限，不改变「提案是执行单元」这件事。
+   * ⛔ 关掉它（`AGINT_PROPOSAL_TXN=off` 或 config 设为 false）退回旧口径：
+   *    一次执行只改一个文件，剩余单元交给执行器的续跑机制。
+   */
+  const cfgMaxUnitsPerProposal = positiveInt(config?.maxUnitsPerProposal, 6, 1, 20);
+  const cfgProposalTxn = config?.proposalTransaction !== false;
 
   // 可观测出口（2026-09-27 补）：本插件第一条 job 跑完（evolution-cycle
   // 06:32Z，lastResult ok）却零产出、零留痕 —— 静默失败是本项目头号杀手，
@@ -998,7 +1017,26 @@ export function apply(ctx, config = {}) {
         state.seen.add(candidate.id);
       }
 
-      const targets = resolveTargetAssets(candidate, available, repoFiles);
+      const resolvedTargets = resolveTargetAssets(candidate, available, repoFiles);
+      // 2026-11-07：提案级执行（见 lib/proposal-run.js）时，本次执行里已经落地的
+      // 目标不再重复尝试 —— 否则第二轮又会读到同一个文件、再改一遍。
+      const skipTargets = Array.isArray(opts.skipTargets) ? opts.skipTargets.map((x) => String(x)) : [];
+      const targets = skipTargets.length === 0
+        ? resolvedTargets
+        : resolvedTargets.filter((t) => !skipTargets.includes(String(t?.id ?? '')));
+      if (targets.length === 0 && resolvedTargets.length > 0) {
+        // 全部目标都已在本次执行中落地 ⇒ 本轮没有剩余工作，正常收尾。
+        await emitSummary('no-remaining-target', {
+          candidateId: candidate.id,
+          skippedTargets: skipTargets,
+        });
+        return {
+          skipped: true,
+          noRemaining: true,
+          proposalId: candidate.id,
+          reason: 'no-remaining-target（提案点名的目标都已在本次执行中落地）',
+        };
+      }
       if (targets.length === 0) {
         // 定位不到目标资产 → 换下一条，不硬凑。留痕：这是「有提案但没目标」的静默路径。
         warn('candidate skipped: no target asset resolved', {
@@ -1107,7 +1145,9 @@ export function apply(ctx, config = {}) {
         appliedIndex: picked ? picked.step : -1,
       });
       if (scope.complete === false) {
-        state.partialScope += 1;
+        // 2026-11-07：提案级执行下，一条提案会调用 runOnce 多次 —— 计数必须按
+        // 「一次执行」算一次，否则 partialScope 会被同一条提案刷成 N。
+        if (opts.suppressPartialScope !== true) state.partialScope += 1;
         // ⛔ 不为此新建 topic：check-wiring 会把「有人发、没人订」判成 NO_SUBSCRIBER 硬缺口，
         //    而现有 topic 的 payload schema 是 strict 的（加字段可能被 topics-adjust 拒收）。
         //    欠账的可观测出口走三条：返回值 out.scope（执行器消费）、warn、以及 summary（cron 落盘）。
@@ -1685,7 +1725,34 @@ export function apply(ctx, config = {}) {
     if (typeof proposalId !== 'string' || proposalId === '') {
       return { skipped: true, ok: false, reason: 'runForProposal: proposalId 必填' };
     }
-    const out = await runOnce({ ...opts, proposalId });
+    // 2026-11-07（老板裁定「以提案为执行目标」）：一次执行跑完整条提案。
+    //
+    // 旧口径：runOnce 只挑一个目标改，剩余单元靠执行器续跑（partial 机制），
+    // 一条 4 文件的提案 = 4 条执行行 + 4 次审批周期 + 续跑上限。
+    // 新口径：本函数循环调用 runOnce，每次只放它改一个还没改过的目标，
+    // 直到提案覆盖完 / 没得改 / 失败 / 到达单次成本上限。
+    //
+    // ⛔ 每个文件仍要过完整闸门（目标解析 → 幻觉 → 实体 → validate → verify → policy）。
+    //    变的只是「执行单元」，不是「安全面」。
+    const env = opts.env ?? process.env;
+    const txnEnabled = cfgProposalTxn && String(env?.[PROPOSAL_TXN_ENV] ?? 'on') !== 'off';
+    if (!txnEnabled) {
+      const out = await runOnce({ ...opts, proposalId });
+      const ok = out?.skipped === false && out?.commit?.ok === true;
+      return { ...out, proposalId, ok };
+    }
+    const out = await runProposalLoop({
+      proposalId,
+      maxUnits: positiveInt(opts.maxUnits, cfgMaxUnitsPerProposal, 1, 20),
+      runOnce: ({ proposalId: pid, skipTargets }) => runOnce({
+        ...opts,
+        proposalId: pid,
+        skipTargets,
+        // 计数改由循环按「一次执行」结算（见下 onPartial）。
+        suppressPartialScope: true,
+      }),
+      onPartial: () => { state.partialScope += 1; },
+    });
     const ok = out?.skipped === false && out?.commit?.ok === true;
     return { ...out, proposalId, ok };
   }

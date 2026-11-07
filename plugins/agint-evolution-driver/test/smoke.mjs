@@ -2285,4 +2285,58 @@ test('T44f: 执行一次下来 partialScope 计数器随「部分覆盖」增加
     'status() 是成功路径唯一的结构化出口 —— 累计的部分覆盖次数必须从这里读得到');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T44）');
+// ── T45（2026-11-07）：提案级执行 —— 一次 runForProposal 改完整条提案 ────────
+//
+// 老板裁定「执行器要以提案为执行目标」。旧口径一条 3 文件提案要 3 条执行行、
+// 3 次续跑；现在一次执行按顺序改完 3 个文件，交回 scope.complete=true。
+test('T45: 提案级执行 —— 3 个文件一次改完，scope.complete=true', async () => {
+  const repo = await makeRepo({
+    'plugins/a/lib/x.js': 'const v = 1;\n',
+    'plugins/b/lib/y.js': 'const v = 2;\n',
+    'plugins/c/lib/z.js': 'const v = 3;\n',
+  });
+  const targetOf = (user) => (/^## Target file: (.+)$/m.exec(user)?.[1] ?? '').trim();
+  const editFor = (id) => {
+    const oldText = /x\.js$/.test(id) ? 'const v = 1;' : /y\.js$/.test(id) ? 'const v = 2;' : 'const v = 3;';
+    const newText = oldText.replace(/(\d)/, (d) => `${d}${d}`);
+    return { applicable: true, targetSkill: '', oldText, newText, rationale: 'bump' };
+  };
+  const prompts = [];
+  const llm = async ({ user }) => {
+    const id = targetOf(user);
+    prompts.push(id);
+    return { ok: true, value: editFor(id) };
+  };
+  const ctx = makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async (id) => ({
+        id, title: 't', status: 'approved', category: 'plugin',
+        body: '见 `plugins/a/lib/x.js`、`plugins/b/lib/y.js` 与 `plugins/c/lib/z.js`',
+      }),
+    },
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+    // verify / policy 是 commit 的前置条件（fail-closed），这里给真形状的替身
+    'agint.qualitySandbox': { runSmoke: async () => ({ ok: true }) },
+    'agint.qualityPolicy': { decide: async () => ({ kind: 'AUTO_DEPLOY', reason: '' }) },
+  });
+  apply(ctx, { repoRoot: repo });
+  const svc = ctx.provided['agint.evolutionDriver'];
+  const out = await svc.runForProposal('p-txn', {
+    env: {},
+    inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+
+  assert.equal(out.skipped, false, JSON.stringify(out.failures ?? out.reason));
+  assert.equal(prompts.length, 3, '三个目标各一次 LLM，不多不少');
+  assert.equal(out.commits.length, 3, '一次执行必须把三个文件都改完');
+  assert.equal(out.scope.unitsApplied, 3);
+  assert.equal(out.scope.complete, true, '覆盖完必须 complete，否则执行器会当 partial 续跑');
+  assert.equal(await readFile(join(repo, 'plugins/a/lib/x.js'), 'utf8'), 'const v = 11;\n');
+  assert.equal(await readFile(join(repo, 'plugins/b/lib/y.js'), 'utf8'), 'const v = 22;\n');
+  assert.equal(await readFile(join(repo, 'plugins/c/lib/z.js'), 'utf8'), 'const v = 33;\n');
+  assert.equal(svc.status().partialScope, 0, '整条提案做完了，不该记欠账');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T45）');
