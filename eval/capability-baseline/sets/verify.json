@@ -1,0 +1,11 @@
+{
+  "setName": "verify",
+  "setVersion": "1.0",
+  "authority": "VERIFY",
+  "layerScope": "L0-L5",
+  "frozenAt": "",
+  "frozenBy": "",
+  "contentHash": "",
+  "samples": [],
+  "note": "轮换验证集，每季度由授权人工换 20%。与 gold 分离，用于候选筛选而非最终裁决。contentHash 为空且 samples 为空 = UNSEALED（合法未密封态）。"
+}

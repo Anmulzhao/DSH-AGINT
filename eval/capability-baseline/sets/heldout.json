@@ -1,0 +1,11 @@
+{
+  "setName": "heldout",
+  "setVersion": "1.0",
+  "authority": "HELDOUT",
+  "layerScope": "L0-L5",
+  "frozenAt": "",
+  "frozenBy": "",
+  "contentHash": "",
+  "samples": [],
+  "note": "只在宣布重大版本时开一次，单次使用后降级并入 verify。⛔ 与 gold 的 id 交集必须为 0，由 bin/capability-baseline.mjs 强制。开启权限见 external-anchor 提案 §7 D2（待拍板）。"
+}

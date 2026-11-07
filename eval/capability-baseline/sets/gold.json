@@ -1,0 +1,11 @@
+{
+  "setName": "gold",
+  "setVersion": "1.0",
+  "authority": "GOLD",
+  "layerScope": "L0-L5",
+  "frozenAt": "",
+  "frozenBy": "",
+  "contentHash": "",
+  "samples": [],
+  "note": "一致率基准。append-only，仅授权人工可写。contentHash 为空且 samples 为空 = UNSEALED（合法未密封态）。⛔ 不许拿本集调参 —— 一旦调参即退化为训练集。出题与冻结标签须由人完成，脚本不代填。"
+}
