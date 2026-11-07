@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runAgentsSizeGuard, measureSections, DEFAULT_LIMITS } from '../lib/agents-size-guard.js';
+import { runAgentsSizeGuard, runMemoryIndexGate, measureSections, DEFAULT_LIMITS } from '../lib/agents-size-guard.js';
 
 async function withTmp(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'asg-'));
@@ -24,6 +24,14 @@ async function withTmp(fn) {
 }
 
 const bigText = (n) => 'x'.repeat(n);
+
+/** 造一个假的 check-memory.mjs：输出指定 JSON，并以指定退出码结束。 */
+async function fakeGate(dir, exitCode, payload) {
+  const p = join(dir, 'fake-check-memory.mjs');
+  const body = `process.stdout.write(${JSON.stringify(JSON.stringify(payload))}); process.exitCode = ${exitCode};`;
+  await writeFile(p, body, 'utf8');
+  return p;
+}
 
 test('默认限值与 AGENTS.md 自述的双限一致', () => {
   assert.equal(DEFAULT_LIMITS.maxBytes, 10000);
@@ -228,5 +236,90 @@ test('自定义限值时以传入值为准（宿主预算可随 profile 调整�
     });
     assert.equal(r.critical, true);
     assert.equal(r.overBytes, 100);
+  });
+});
+
+// ── 记忆索引门禁（2026-11-07 阶段 1 接入） ─────────────────────────
+
+test('记忆索引门禁：exit 0 判绿并带回体积', async () => {
+  await withTmp(async (dir) => {
+    const script = await fakeGate(dir, 0, {
+      stats: { memLines: 124, memChars: 9803, injectBytes: 47252 },
+      counts: { fail: 0, warn: 11, info: 3 },
+      findings: [],
+    });
+    const r = await runMemoryIndexGate({ script });
+    assert.equal(r.level, 'ok');
+    assert.equal(r.fail, 0);
+    assert.equal(r.memoryChars, 9803);
+    assert.equal(r.injectBytes, 47252);
+  });
+});
+
+test('记忆索引门禁：有 FAIL 判红，带回 topFails', async () => {
+  await withTmp(async (dir) => {
+    const script = await fakeGate(dir, 1, {
+      stats: { memLines: 124, memChars: 9803 },
+      counts: { fail: 1, warn: 10, info: 3 },
+      findings: [{ level: 'F', code: 'memory-too-large', msg: 'MEMORY.md 9803 字符 > 9500' }],
+    });
+    const r = await runMemoryIndexGate({ script });
+    assert.equal(r.level, 'fail');
+    assert.equal(r.fail, 1);
+    assert.deepEqual(r.topFails, ['memory-too-large']);
+  });
+});
+
+test('记忆索引门禁：脚本崩（exit 2）必须抛错，不许判绿', async () => {
+  await withTmp(async (dir) => {
+    const script = await fakeGate(dir, 2, {});
+    await assert.rejects(() => runMemoryIndexGate({ script }), /执行失败/);
+  });
+});
+
+test('记忆索引门禁：输出不是 JSON 必须抛错', async () => {
+  await withTmp(async (dir) => {
+    const script = join(dir, 'bad.mjs');
+    await writeFile(script, "process.stdout.write('not json'); process.exitCode = 0;", 'utf8');
+    await assert.rejects(() => runMemoryIndexGate({ script }), /不是合法 JSON/);
+  });
+});
+
+test('size guard 接入记忆门禁：FAIL 时写报告且含门禁小节', async () => {
+  await withTmp(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    await writeFile(file, '# A\n\nshort\n', 'utf8');
+    const script = await fakeGate(dir, 1, {
+      stats: { memLines: 124, memChars: 9803 },
+      counts: { fail: 1, warn: 10, info: 3 },
+      findings: [{ level: 'F', code: 'memory-too-large', msg: 'MEMORY.md 9803 字符 > 9500' }],
+    });
+    const r = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs'), memoryIndex: { script } });
+    assert.equal(r.level, 'ok', 'AGENTS.md 本身没超，level 语义不变');
+    assert.equal(r.memoryIndex.level, 'fail');
+    assert.equal(r.wroteReport, true, '记忆门禁红也要写报告');
+    const body = await readFile(r.reportPath, 'utf8');
+    assert.match(body, /记忆索引门禁/);
+    assert.match(body, /memory-too-large|9803/);
+  });
+});
+
+test('size guard 记忆门禁 kill-switch：enabled=false 记为 disabled 且不写报告', async () => {
+  await withTmp(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    await writeFile(file, '# A\n\nshort\n', 'utf8');
+    const r = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs'), memoryIndex: { enabled: false } });
+    assert.equal(r.memoryIndex.level, 'disabled');
+    assert.equal(r.wroteReport, false);
+  });
+});
+
+test('size guard 未传 memoryIndex：老调用方行为不变', async () => {
+  await withTmp(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    await writeFile(file, '# A\n\nshort\n', 'utf8');
+    const r = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs') });
+    assert.equal(r.memoryIndex, null);
+    assert.equal(r.level, 'ok');
   });
 });
