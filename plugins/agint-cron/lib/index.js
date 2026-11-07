@@ -64,6 +64,15 @@ const Config = z
             memoryDir: z.string().min(1).nullish(),
           })
           .nullish(),
+        // 知识库表示层门禁（2026-11-07）。zod 默认剥离未声明键 ——
+        // 少声明一个字段，配置就静默失效，门禁看起来在跑其实一次没核过（K134）。
+        wikiIndex: z
+          .object({
+            enabled: z.boolean().nullish(),
+            root: z.string().min(1).nullish(),
+            maxRatio: z.number().positive().nullish(),
+          })
+          .nullish(),
       })
       .nullish(),
   })

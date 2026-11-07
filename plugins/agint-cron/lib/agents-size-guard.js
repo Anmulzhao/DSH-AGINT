@@ -149,6 +149,65 @@ export async function runMemoryIndexGate(opts = {}) {
 }
 
 /**
+ * 知识库表示层门禁：直接调 bin/wiki-build.mjs --check --json。
+ * 不复制判据 —— 门槛（≥2 篇来源 / 生成量 ≤ 语料量 / 逐字引用）在构建器里（K133 单一事实源）。
+ *
+ * ⛔ 退出码语义必须分清，否则「漂移」会被当成「脚本崩了」：
+ *   0 = 已是最新；1 = 漂移（正常业务结果，判 stale）；2 = 硬失败（逐字/断链/参数错）。
+ *   2 一律抛错 —— 那是判据本身不成立，不能报成「需要重建」。
+ *
+ * @param {object} opts
+ * @param {string} opts.script      bin/wiki-build.mjs 绝对路径
+ * @param {string} opts.root        wiki 根目录（取 agint.wiki 服务暴露的 root）
+ * @param {number} [opts.maxRatio]  语料占比上限（默认由构建器决定）
+ */
+export async function runWikiIndexGate(opts = {}) {
+  const { script, root, maxRatio } = opts;
+  if (!script || typeof script !== 'string') {
+    throw new Error('wiki-index-guard: script 缺失（应由 agint.repoRoot 推 bin/wiki-build.mjs）');
+  }
+  if (!root || typeof root !== 'string') {
+    throw new Error('wiki-index-guard: root 缺失（应取 agint.wiki 服务暴露的 root）');
+  }
+  const args = [script, '--root', root, '--check', '--json'];
+  if (typeof maxRatio === 'number' && Number.isFinite(maxRatio)) args.push('--max-ratio', String(maxRatio));
+
+  let stdout = '';
+  try {
+    const r = await execFileAsync(process.execPath, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    stdout = r.stdout;
+  } catch (e) {
+    const status = typeof e.status === 'number' ? e.status : typeof e.code === 'number' ? e.code : null;
+    stdout = e.stdout ?? '';
+    if (status !== 1) {
+      throw new Error(
+        `wiki-index-guard: wiki-build --check 执行失败（status=${status ?? 'none'}，${e.code || e.message}）`,
+      );
+    }
+  }
+
+  let report;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    throw new Error('wiki-index-guard: wiki-build 输出不是合法 JSON，拒绝判绿');
+  }
+  // 显式判 drift，不从退出码反推：退出码 1 也可能是「有主题被门槛拒绝」的将来扩展。
+  const drift = report?.drift === true;
+  return {
+    level: drift ? 'stale' : 'ok',
+    drift,
+    corpusDocs: report?.corpusDocs ?? null,
+    corpusBytes: report?.corpusBytes ?? null,
+    generatedPages: report?.generatedPages ?? null,
+    corpusRatio: report?.corpusRatio ?? null,
+    stalePages: Array.isArray(report?.writes) ? report.writes.map((w) => w.path) : [],
+    staleGenerated: Array.isArray(report?.stale) ? report.stale : [],
+    rejects: (Array.isArray(report?.rejects) ? report.rejects : []).map((r) => `${r.page}:${r.reason}`),
+  };
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.file          被核文件绝对路径（AGENTS.md）
  * @param {string} opts.reportDir     告警报告落盘目录（docs/）
@@ -158,7 +217,7 @@ export async function runMemoryIndexGate(opts = {}) {
  * @param {number} [opts.hostBudgetBytes]
  */
 export async function runAgentsSizeGuard(opts = {}) {
-  const { file, reportDir, localFile, memoryIndex } = opts;
+  const { file, reportDir, localFile, memoryIndex, wikiIndex } = opts;
   if (!file || typeof file !== 'string') {
     throw new Error('agents-size-guard: config.file 缺失（patch.yml 的 agint-cron.agentsSizeGuard.file）');
   }
@@ -241,6 +300,7 @@ export async function runAgentsSizeGuard(opts = {}) {
     sections,
     reportPath: null,
     memoryIndex: null,
+    wikiIndex: null,
     wroteReport: false,
   };
 
@@ -254,8 +314,23 @@ export async function runAgentsSizeGuard(opts = {}) {
   }
   const memoryIndexFail = result.memoryIndex?.level === 'fail';
 
+  // 知识库表示层门禁：同样只在显式传入时跑。
+  if (wikiIndex === false || wikiIndex?.enabled === false) {
+    result.wikiIndex = { level: 'disabled', reason: 'config.agentsSizeGuard.wikiIndex.enabled=false' };
+  } else if (wikiIndex) {
+    if (!wikiIndex.script) {
+      result.wikiIndex = { level: 'skipped', reason: 'agint.repoRoot 未配置，无法定位 bin/wiki-build.mjs' };
+    } else if (!wikiIndex.root) {
+      // 不静默降级成「通过」：没有根目录 = 一次都没核过（K134）。
+      result.wikiIndex = { level: 'skipped', reason: 'agint.wiki 未暴露 root，无法定位 wiki 目录' };
+    } else {
+      result.wikiIndex = await runWikiIndexGate(wikiIndex);
+    }
+  }
+  const wikiIndexDrift = result.wikiIndex?.level === 'stale';
+
   // 只在「有事要说」时写盘，避免每天都往 docs/ 丢一份无信息量的报告。
-  if (level !== 'ok' || hostDropRisk || memoryIndexFail) {
+  if (level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift) {
     const stamp = localStamp();
     const reportPath = join(reportDir, `AGENTS-体积告警-${stamp}.md`);
     const content = renderReport(result);
@@ -285,6 +360,8 @@ export function summarizeGuard(r) {
     report: r.reportPath,
     memoryIndexLevel: r.memoryIndex?.level ?? null,
     memoryIndexFail: r.memoryIndex?.fail ?? null,
+    wikiIndexLevel: r.wikiIndex?.level ?? null,
+    wikiIndexDrift: r.wikiIndex?.drift ?? null,
   };
 }
 
@@ -347,7 +424,29 @@ function renderReport(r) {
     }
     lines.push('');
   }
-
+  if (r.wikiIndex) {
+    lines.push('## 知识库表示层门禁（wiki-build --check）');
+    lines.push('');
+    const wi = r.wikiIndex;
+    if (wi.level === 'stale') {
+      lines.push(`漂移：${wi.stalePages.length} 页待重建。语料 ${wi.corpusDocs ?? '-'} 篇 / ${wi.corpusBytes ?? '-'} 字节，生成 ${wi.generatedPages ?? '-'} 页，占比 ${wi.corpusRatio ?? '-'}。`);
+      for (const p of wi.stalePages) lines.push(`- 待写 ${p}`);
+      for (const p of wi.staleGenerated) lines.push(`- 过期 ${p}`);
+      lines.push('');
+      lines.push('修法：`node bin/wiki-build.mjs --root <wiki 根> --write`（过期页加 `--prune`）。');
+    } else if (wi.level === 'ok') {
+      lines.push(`通过：无漂移。语料 ${wi.corpusDocs ?? '-'} 篇 / ${wi.corpusBytes ?? '-'} 字节，生成 ${wi.generatedPages ?? '-'} 页，占比 ${wi.corpusRatio ?? '-'}。`);
+      if (wi.rejects?.length) {
+        lines.push('');
+        lines.push(`另有 ${wi.rejects.length} 个主题被门槛拒绝（不是漂移，是设计）：`);
+        for (const x of wi.rejects) lines.push(`- ${x}`);
+      }
+    } else {
+      lines.push(`未执行：${wi.reason ?? wi.level}`);
+    }
+    lines.push('');
+  }
+  lines.push('');
   lines.push('## 建议动作（AGENTS.md「本文件大小硬限」规定的压缩顺序）');
   lines.push('');
   lines.push('1. 删重复表述。');
