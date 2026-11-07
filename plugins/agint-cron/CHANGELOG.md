@@ -2,6 +2,48 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.3.0] — agents-size-guard 兼作两道索引门禁（2026-11-07）
+
+**背景**：AGINT 有两处「索引容易腐坏但没人每天核」的地方 —— 顶层注入的 `MEMORY.md`
+（历史四次超限被截断）和 `agint-wiki` 的表示层（生成页可能落后于源文档）。
+两者都不值得新开排期位，所以都挂到已有的 `agents-size-guard`（daily 06:45）上，
+**不新增 cron job、不占 schedule 槽**。
+
+### 新增
+
+- `runMemoryIndexGate({script, repo, memoryDir})`：直接调 `bin/check-memory.mjs --enforce --json`。
+  有 FAIL 判 `fail`；脚本崩或输出不是 JSON **一律抛错，绝不当绿**。
+- `runWikiIndexGate({script, root, maxRatio})`：直接调 `bin/wiki-build.mjs --check --json`。
+  ⚠️ 退出码必须分清：**0 = 最新，1 = 漂移（正常业务结果），2 = 硬失败**。
+  把 1 当崩溃处理，门禁就会每天报一次假警；把 2 当漂移处理，等于把判据失效说成「该重建了」。
+  本实现按 `drift` 字段判，不从退出码反推。
+- 配置均带 `enabled: false` kill-switch（K51：出厂即开，能关）。
+
+### 接线（jobs.js）
+
+- `memoryIndex.script` 由 `agint.repoRoot` 推 `bin/check-memory.mjs`；未配 repoRoot 记 `skipped` 并写进报告。
+- `wikiIndex.root` **取运行中 `agint.wiki` 服务暴露的 `root`**，不在配置里复制
+  `cordis.patch.yml` 那串 `!!js` 回退链 —— 复制出来就是第二种口径，改了 wiki 根之后
+  门禁会静默核到另一个目录（K133）。
+- 两个门禁任一「有事要说」都写报告，避免每天丢一份无信息量的文件。
+
+### 配置
+
+```yaml
+agentsSizeGuard:
+  memoryIndex: { enabled: true }                 # 默认开
+  wikiIndex:   { enabled: true, maxRatio: 1.0 }  # 默认开；root 自动取
+```
+
+⚠️ zod 默认剥离未声明键：`wikiIndex` 三个字段都必须在 schema 里显式声明，
+少一个就静默失效，门禁看起来在跑其实一次没核过（K134）。
+
+### 测试
+
+`test/agents-size-guard.test.mjs` 23 → 29 条。新增 6 条覆盖：无漂移判 ok、漂移（exit 1）
+判 stale **不抛错**、exit 2 抛错、输出非 JSON 抛错、缺 root/script 抛错、漂移也写报告且摘要带
+`wikiIndexLevel`、kill-switch 与缺 root 的降级理由。
+
 ## [0.2.16] — 修 input-gateway-watchdog 判据：即投通道误判为「采集器失明」（2026-10-09）
 
 ### 问题（门禁在校验，但校验的是错的东西）
