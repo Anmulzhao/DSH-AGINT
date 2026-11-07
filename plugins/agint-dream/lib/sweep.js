@@ -46,6 +46,9 @@ import {
 } from './recall-store.js';
 import { validateAndApply, planToWriteCalls } from './validation-gate.js';
 import { consolidate, consolidateBatched, DEFAULT_BATCH_SIZE } from './consolidation.js';
+// 阶段 2（2026-11-07）：记忆维护三件套（证据审计 / 预加载候选 / 衰减体检）。
+// 纯函数、只读；结果只进 diary，不进 result.counts（schema 连带风险见接入处注释）。
+import { buildMaintenanceReport } from './memory-maintenance.js';
 // D1 迁移（2026-10-21）：会话内容读统一走 session-source（上游优先 + 回落出声）
 import { createSessionSource } from '../../agint-session-source/lib/index.mjs';
 
@@ -1287,7 +1290,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
  *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, assistantStats = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, assistantStats = null, maintenance = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -1437,6 +1440,35 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
     }
     lines.push('');
   }
+  // ── 阶段 2：记忆维护（只读） ──
+  if (maintenance) {
+    const ev = maintenance.evidence ?? {};
+    const pl = maintenance.preload ?? {};
+    const dc = maintenance.decay ?? {};
+    lines.push('## 记忆维护（只读，不改任何行）');
+    lines.push('');
+    lines.push(`- 池规模：${dc.total ?? 0} 条 · L1 ${dc.levels?.L1 ?? 0} / L2 ${dc.levels?.L2 ?? 0} / L3 ${dc.levels?.L3 ?? 0}`);
+    lines.push(
+      `- 证据审计：ok ${ev.ok ?? 0} · 断链 ${ev.brokenCount ?? 0} · 无证据 ${ev.noEvidence ?? 0}` +
+        ` · 无路径 ${ev.noPaths ?? 0} · 无法验证 ${ev.unverifiable ?? 0}${ev.reason ? `（${ev.reason}）` : ''}`,
+    );
+    for (const b of ev.broken ?? []) lines.push(`  - 断链：${b.id ?? '?'} → ${b.path}`);
+    lines.push(`- 预加载候选：${pl.picked ?? 0} 条${pl.reason ? `（${pl.reason}）` : ''}`);
+    if (pl.nearest) {
+      lines.push(
+        `  - 最接近门槛：${pl.nearest.id ?? '?'} conf=${pl.nearest.confidence}` +
+          ` recalls=${pl.nearest.recalls} · 还差 conf ${pl.nearest.missingConfidence}` +
+          ` / recalls ${pl.nearest.missingRecalls}`,
+      );
+    }
+    lines.push(
+      `- 池红旗：recalls 全零 ${dc.flags?.recallsAllZero ? '是' : '否'}` +
+        ` · 无一条已解决 ${dc.flags?.nothingResolved ? '是' : '否'}` +
+        ` · 默认置信度占多数 ${dc.flags?.defaultConfidenceMajority ? '是' : '否'}`,
+    );
+    lines.push('');
+  }
+
   if (errors.length > 0) {
     lines.push('## 本次 sweep 异常');
     lines.push('');
@@ -1524,6 +1556,13 @@ export async function runSweep({
   // 阈值可调，默认 3 次（1 次可能只是这两天没活动，3 次基本是通道坏了）。
   zeroHitAlert = true,
   zeroHitAlertThreshold = DEFAULT_ZERO_HIT_THRESHOLD,
+  // ── 阶段 2（2026-11-07）：记忆维护（只读，默认开） ──
+  // 证据路径审计 + 预加载候选 + 衰减体检。不改 memory、不改注入层。
+  maintenanceEnabled = true,
+  maintenanceRepoRoot = null,
+  preloadMinConfidence = 0.8,
+  preloadMinRecalls = 3,
+  preloadMax = 10,
 }) {
   const startedAt = Date.now();
   const errors = [];
@@ -1903,6 +1942,25 @@ export async function runSweep({
     }
   }
 
+  // ── 阶段 2：记忆维护（只读） ──────────────────────────────────────────
+  // 只判「证据路径还在不在 / 该不该预加载 / 池健不健康」，不改 memory、不改注入层。
+  // ⛔ 不进 result.counts：tools.js 的 output schema 是 additionalProperties:false，
+  //    加键必须同步两处 schema（K164 同形状事故）。维护结果只进 diary。
+  let maintenance = null;
+  if (maintenanceEnabled && memory) {
+    try {
+      maintenance = buildMaintenanceReport(existing, {
+        repoRoot: maintenanceRepoRoot ?? (process.env.AGINT_REPO_ROOT || null),
+        minConfidence: preloadMinConfidence,
+        minRecalls: preloadMinRecalls,
+        maxPreload: preloadMax,
+        nowMs,
+      });
+    } catch (err) {
+      errors.push(`maintenance failed: ${err.message}`);
+    }
+  }
+
   // ── Diary ───────────────────────────────────────────────────────────────
   const diary = renderDiary({
     day,
@@ -1942,6 +2000,8 @@ export async function runSweep({
     sourceFilterStats,
     // 2026-10-29（提案 d2b77b47）：assistant 正文统计
     assistantStats,
+    // 阶段 2（2026-11-07）：记忆维护（证据审计 / 预加载候选 / 衰减体检）
+    maintenance,
   });
   await mkdir(resolve(diaryRoot), { recursive: true });
   // 2026-09-28：dry-run 写 `<day>.preview.md`，不碰 `<day>.md`。

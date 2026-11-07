@@ -72,6 +72,14 @@ const Config = z.object({
   // `(no output) [exit code: 1]` 这类输出残骸被灌进长期记忆（score 恒 0.00）。
   // 出厂即开；kill-switch：设 false → 完全回退旧行为（全部放行）。
   toolErrorDiagnosticOnly: z.boolean().default(DEFAULTS.toolErrorDiagnosticOnly),
+  // ── 阶段 2（2026-11-07）：记忆维护（只读） ──
+  // 证据路径审计 + 预加载候选 + 衰减体检。只进 diary，不改 memory、不改注入层。
+  // 出厂即开（K51）；kill-switch：maintenanceEnabled=false。
+  maintenanceEnabled: z.boolean().default(true),
+  maintenanceRepoRoot: z.string().min(1).nullish(),
+  preloadMinConfidence: z.number().min(0).max(1).default(0.8),
+  preloadMinRecalls: z.number().int().nonnegative().default(3),
+  preloadMax: z.number().int().positive().default(10),
 });
 
 /**
@@ -85,6 +93,8 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'dedupeMid',
   // 2026-09-28：诊断化过滤的回退开关
   'toolErrorDiagnosticOnly',
+  // 2026-11-07：记忆维护总开关（关掉后 diary 不再出维护小节）
+  'maintenanceEnabled',
 ]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -180,6 +190,12 @@ function apply(ctx, config) {
           // 2026-09-18：零命中告警（默认开；配置可关 / 可调阈值）
           zeroHitAlert: opts.zeroHitAlert ?? eff.zeroHitAlert,
           zeroHitAlertThreshold: opts.zeroHitAlertThreshold ?? eff.zeroHitAlertThreshold,
+          // 2026-11-07 阶段 2：记忆维护（只读，结果只进 diary）
+          maintenanceEnabled: opts.maintenanceEnabled ?? eff.maintenanceEnabled,
+          maintenanceRepoRoot: opts.maintenanceRepoRoot ?? eff.maintenanceRepoRoot ?? null,
+          preloadMinConfidence: opts.preloadMinConfidence ?? eff.preloadMinConfidence,
+          preloadMinRecalls: opts.preloadMinRecalls ?? eff.preloadMinRecalls,
+          preloadMax: opts.preloadMax ?? eff.preloadMax,
         });
         state.lastSweep = nowMs;
         state.lastResult = result;
