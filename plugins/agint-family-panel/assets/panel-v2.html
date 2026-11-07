@@ -1568,8 +1568,22 @@ function execText(it){
   const st={queued:"排队中",running:"执行中",succeeded:"已完成",failed:"失败",deferred:"已顺延",
             cancelled:"已撤销",partial:"部分落地（剩余单元见 execError）",idle:"待入队"}[it.execState]||it.execState||"—";
   const tries=Number(it.execAttempts)>0?`（第 ${it.execAttempts} 次）`:"";
+  /* 2026-11-07：提案级执行的范围账。execCommits 由 driver → executor → evolve 落到 proposal 行。
+     没有这些字段的老行一律不显示，不编数字。*/
+  const cmts=Array.isArray(it.execCommits)?it.execCommits:[];
+  const left=Array.isArray(it.execRemainingUnits)?it.execRemainingUnits.filter(Boolean):[];
+  const total=Number(it.execUnitsTotal)||0;
+  const applied=Number(it.execUnitsApplied)||0;
+  const hasScope=total>0||applied>0||left.length>0||cmts.length>0;
+  const scope=hasScope
+    ? ` · 已改 ${applied}/${total||applied} 个文件`
+      +`${left.length?` · 还差 ${left.length} 个：${left.slice(0,3).join("、")}${left.length>3?"…":""}`:""}`
+    :"";
+  const files=cmts.length
+    ? ` · ${cmts.slice(0,3).map(c=>String(c&&c.path||"").split("/").pop()||"").filter(Boolean).join("、")}${cmts.length>3?"…":""}`
+    :"";
   const err=it.execError?` · ${it.execError}`:"";
-  return `${when} · ${st}${tries}${err}`;
+  return `${when} · ${st}${tries}${scope}${files}${err}`;
 }
 const PORDER=["proposed","approved","applied","rejected","wontfix"];
 const PSEC=[["problem","目的 · 解决什么问题"],["plan","方案 · 打算怎么改"],

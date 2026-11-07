@@ -1,5 +1,25 @@
 # agint-evolve CHANGELOG
 
+## v0.22.2（2026-11-07 · 提案行带出 commits[] 与范围账）
+
+### 问题
+
+driver v0.11.0 一次执行交回 `commits[]`（含新建文件）与范围账，但执行器只把
+`unitsApplied/remainingUnits` 写进 **execution 行**。家族面板只读 `proposal` 表
+⇒ 老板看不到「这条提案改了哪几个文件、还差几个」。
+
+### 改动
+
+`proposalSchema` 新增四个字段（全部 default，老行照读）：
+`execUnitsApplied` / `execUnitsTotal` / `execRemainingUnits` / `execCommits`。
+`finishExecution()` 在 succeeded / partial / failed / deferred 四条分支统一写回。
+
+### 验证
+
+`test/execution.test.mjs` 新增用例：一次执行带 2 个 commits（含 created=true），
+落库后 proposal 行字段逐一核对。
+
+
 ## v0.22.1（2026-11-07 · 执行队列支持退还尝试额度）
 
 ### 问题

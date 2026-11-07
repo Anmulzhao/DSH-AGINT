@@ -1,18 +1,18 @@
 {
   "generatedFrom": "repo plugins/ (DSH-AGINT)，agint.* 家族键口径",
-  "generatedAt": "2026-10-28T12:54:00.000Z",
+  "generatedAt": "2026-11-07T09:48:22.000Z",
   "criterion": "family-only：仅统计服务键以 agint. 开头的边；宿主键见 hostCounts，不参与断言",
   "counts": {
-    "code": 215,
-    "comment": 40,
+    "code": 223,
+    "comment": 41,
     "umbrella": 0
   },
   "hostCounts": {
-    "code": 29,
-    "comment": 17,
+    "code": 31,
+    "comment": 18,
     "umbrella": 0
   },
   "providedKeys": 101,
   "familyDirs": 43,
-  "note": "2026-10-28 第六次重冻。触发原因：家族 code 键 215 vs 基线 212（净 +3，超 ±2 容差）。\n\n【第一轮先看扫描器：本轮零变更】lib/v2-scan.js 自 10-27 基线以来无任何提交（git log --since=2026-10-27 -- plugins/agint-family-panel/lib/v2-scan.js 为空）。与 10-27 那次一样，「扫描器增量与代码漂移互相掩盖」的账本轮不存在，+3 全部记在代码侧。\n\n【归因方法：逐条差集，不用总数倒推】取 HEAD 版 plugins 导出到临时目录，用同一份 v2-scan 各扫一遍，按 (插件|文件|行|键|kind) 求新增/移除集合。行号位移会产生成对「假增假减」（本轮 6 对），只有「键本身不同」的才是真增量 —— 按此剔除后真增量恰好 1 条。\n\n【+3 的逐条账】\n  ① +1  agint-family-panel/lib/index.js  ctx.get('agint.upstreamWatch')  —— 0.9.0 新增「上游」分区，collectUpstream 读判读器的运行态（lag / calibration / stats）。\n  ② +1  agint-upstream-watch/lib/index.js  agint.evolve     —— v0.1.0 起的真边（写提案）。\n  ③ +1  agint-upstream-watch/lib/index.js  agint.eventBus.subscribe —— 订阅 input.signal.external.release-published。\n  ②③ 未计入 10-27 基线的唯一原因：该插件 10-28 才建，基线先于它。不是漏扫。\n\n【hostCounts 27 → 29】agint-upstream-watch/lib/judge.js 的 agents / subagents 两条（LLM 段）。按既定口径（非 agint. 前缀归宿主）计入 host，只报不拦。\n\n【providedKeys 100 → 101】agint.upstreamWatch（新插件 provide）。\n【familyDirs 42 → 43】新插件目录。\n\n【口径未变】family-only 判据、±2 容差、宿主键只报不拦，三条一字未改 —— 本轮只重冻数值。"
+  "note": "2026-11-07 第七次重冻。触发原因：家族 code 键 223 vs 基线 215（净 +8，超 ±2 容差）。\n\n【归因】在干净 HEAD(4f6c0a4) 临时 worktree 上用同一份 v2-scan 扫描得 220，即 +5 来自 11-07 当日已提交的三批改动（executor 环境故障判据 / driver 提案级执行 / 本轮之前的修复），+3 来自本轮未提交的提案级全组事务新增代码。逐条差集方法沿用 10-28 第六次重冻的口径，扫描器 lib/v2-scan.js 本轮零变更。\n\n【+8 的性质】全部是新增代码里真实存在的 agint.* 服务引用（agint.evolve / agint.mutator / agint.qualityPolicy / agint.qualitySandbox / agint.eventBus.publish 等），不是口径漂移，也没有删边。comment 边 +1 为同一批注释里的服务名。\n\n【hostCounts 29 → 31（code）、17 → 18（comment）】非 agint. 前缀的新增引用，按既定口径只报不拦。\n\n【口径未变】family-only 判据、±2 容差、宿主键只报不拦，三条一字未改 —— 本轮只重冻数值。"
 }

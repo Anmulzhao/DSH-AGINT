@@ -575,6 +575,13 @@ export async function collectProposals(ctx, dirs = {}, now = Date.now()) {
       execState: String(r?.execState ?? 'idle'),
       execAttempts: Number.isFinite(Number(r?.execAttempts)) ? Number(r.execAttempts) : 0,
       execError: String(r?.execError ?? ''),
+      // 2026-11-07：提案级执行的范围账（driver v0.11.0 的 commits[] 经 executor →
+      // evolve 写到 proposal 行）。面板用它回答「改了哪几个文件、还差几个」。
+      execUnitsApplied: Number.isFinite(Number(r?.execUnitsApplied)) ? Number(r.execUnitsApplied) : 0,
+      execUnitsTotal: Number.isFinite(Number(r?.execUnitsTotal)) ? Number(r.execUnitsTotal) : 0,
+      execRemainingUnits: Array.isArray(r?.execRemainingUnits)
+        ? r.execRemainingUnits.filter((x) => typeof x === 'string') : [],
+      execCommits: Array.isArray(r?.execCommits) ? r.execCommits : [],
       // 2026-11-01：工单状态机。status + execState + blocker 三个字段各自都对，但
       // 「现在该谁动」从来没有一个字段回答 —— 面板只能拿 execState 硬猜，猜出过
       // 两次相反的事故（a85ef850 把「卡在前置」写成「待入队」；846f4fbb 把

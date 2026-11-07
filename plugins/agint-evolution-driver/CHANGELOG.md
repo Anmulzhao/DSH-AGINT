@@ -1,5 +1,42 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.11.0 — 2026-11-07 — 全组事务 + 新建文件：提案级执行补齐两块天花板
+
+老板 2026-11-07 要求把「支持新建文件」「全组事务」「面板显示还差几个文件」按重要性做完。
+
+### ① 新建文件（共用模块 / 新插件骨架）
+
+- 新 `resolveCreateTargets()`：只在正文明确带「新建 / 抽共用 / 共用模块 / plugins/_shared/」
+  信号时，把**仓库里不存在**的反引号路径认成 create 目标。否则「参考 docs/x.md」会被
+  凭空造文件。
+- 新 `NEW_FILE_OUTPUT_SCHEMA`（applicable/path/content/rationale），与单文件编辑 schema
+  分开 —— 新建文件没有 oldText，硬塞同一个 schema 会逼模型编造原文。
+- 新 `createRepoFile()`：denylist + 路径逃逸 + 禁止覆盖已有文件；回滚动作是删掉它。
+
+### ② 全组事务
+
+- 新 `lib/proposal-transaction.js`：纯编排，IO 全部注入。六阶段顺序写死：
+  construct → postimage(内存) → verify(内存) → gate → write → record。
+  **①②③④ 期间绝不写盘**；任一失败整组放弃；写盘中途失败 ⇒ restoreMany 整组回滚。
+- 新 `lib/verify-text.js`：对还没落盘的 postimage 做语法检查（.js ESM 漏检修法与
+  verifyTargetFile 对齐、.sh bash -n、.json parse、其他跳过）。
+- `runForProposal` 默认走事务；`AGINT_PROPOSAL_ATOMIC=off` 退回 v0.10.0 逐个文件，
+  `AGINT_PROPOSAL_TXN=off` 再退回 v0.9.x 单文件。三级可回退。
+
+### ③ 范围账外送
+
+事务成功返回 `commits[]`（每个文件带 path / policyDecision / created）与
+`scope`，供 executor → evolve → 家族面板消费。
+
+### 验证
+
+- 新 `test/proposal-transaction.test.mjs` 8 组（含 4 条 negative control：前置阶段失败
+  时 write 必须为 0）。
+- smoke T46 真 repo 真写盘：新建共用模块 + 改现有文件一次落地；
+  T47 任一单元语法不过 ⇒ 一个字节都不落；T48 policy REJECT ⇒ 不写盘。
+- smoke 82/82；旧 4 条用例显式走 `AGINT_PROPOSAL_ATOMIC=off` 保留旧口径覆盖。
+
+
 ## v0.10.0 — 2026-11-07 — 执行单元从「一个文件」改成「一条提案」
 
 老板 2026-11-07 裁定：**执行器要以提案为执行目标**，不再一次只做一个文件的单点编辑。

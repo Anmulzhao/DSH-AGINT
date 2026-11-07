@@ -1,5 +1,17 @@
 # agint-executor CHANGELOG
 
+## v0.6.2（2026-11-07 · 透传提案级 commits[]）
+
+driver v0.11.0 起一次执行可能落地 N 个文件（含新建）。`interpret()` 原先只取
+`commit.path`，会把多文件执行压成单条路径，面板因此读不到明细。
+
+改动：成功 / 跳过 / 部分落地三条返回路径都带出 `out.commits`，`finishExecution`
+把 `commits` 交给 evolve 写进 proposal 行。
+
+验证：`test/env-failure.test.mjs` 新增用例，断言 2 个 commits（含 created）被完整透传、
+且 `complete=true` 时不误判 partial。executor 全量 15/15。
+
+
 ## v0.6.1（2026-11-07 · 环境故障与提案失败分开记账）
 
 ### 问题

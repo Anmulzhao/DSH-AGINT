@@ -158,6 +158,20 @@ const proposalSchema = z.object({
   execError: z.string().default(''),
   execStartedAt: z.string().default(''),
   execFinishedAt: z.string().default(''),
+  // 2026-11-07：提案级执行的「范围账」。
+  //
+  // 以前只有 job 上有 unitsApplied/unitsTotal/remainingUnits，面板只读 proposal 表
+  // ⇒ 老板在家族面板里看不到「这条提案改了哪几个文件、还差几个」。
+  // driver v0.11.0 起一次执行交回 commits[]（含新建文件），在这里同步写到提案行。
+  // ⛔ 全部 default：老提案没有这些字段，读进来一律按「没有范围信息」处理。
+  execUnitsApplied: z.number().int().nonnegative().default(0),
+  execUnitsTotal: z.number().int().nonnegative().default(0),
+  execRemainingUnits: z.array(z.string()).default([]),
+  execCommits: z.array(z.object({
+    path: z.string(),
+    policyDecision: z.string().default(''),
+    created: z.boolean().default(false),
+  })).default([]),
   // 2026-10-27：这条提案**能不能被自动执行**。
   //
   // 实机反例（首跑就撞上）：oracle 周报产出的「美谕提案：决策确信度 扣 1.7 分」，
@@ -1445,6 +1459,30 @@ function apply(ctx, config) {
         : (wanted === 'deferred' || wanted === 'cancelled' ? wanted : 'failed');
       const ts = nowIso();
       const detail = patch.error || patch.reason || '';
+      // 2026-11-07：把 driver 交回的 commits[] / 范围账同步写到提案行（面板只读 proposal 表）。
+      const commits = Array.isArray(patch.commits)
+        ? patch.commits
+          .filter((c) => c && typeof c === 'object' && typeof c.path === 'string')
+          .map((c) => ({
+            path: c.path,
+            policyDecision: String(c.policyDecision ?? ''),
+            created: c.created === true,
+          }))
+        : [];
+      const hasNum = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
+      const unitsApplied = hasNum(patch.unitsApplied)
+        ? Number(patch.unitsApplied)
+        : (commits.length > 0 ? commits.length : (ok ? 1 : 0));
+      const unitsTotal = hasNum(patch.unitsTotal)
+        ? Number(patch.unitsTotal)
+        : Math.max(unitsApplied, 1);
+      const scopeFields = {
+        execUnitsApplied: unitsApplied,
+        execUnitsTotal: unitsTotal,
+        execRemainingUnits: Array.isArray(patch.remainingUnits)
+          ? patch.remainingUnits.filter((x) => typeof x === 'string') : [],
+        execCommits: commits,
+      };
       const next = executionSchema.parse({
         ...job,
         state,
@@ -1497,6 +1535,7 @@ function apply(ctx, config) {
           execError: (patch.reason || `部分落地 ${units} 个单元，剩余单元见 note`).slice(0, 500),
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
         // ⛔ 不同"撤别的活跃 job"分支：partial 不是「已落地」，别的排队的执行
         //   正是用来补剩余单元的，掐掉它们等于把拆出来的子任务一起杀掉。
@@ -1537,6 +1576,7 @@ function apply(ctx, config) {
           execError: '',
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
         // 同一提案若还排着别的执行，一并撤掉（一次落地就够，不重复改同一处）。
         const others = (await activeJobsFor(job.proposalId)).filter((j) => j.id !== execId);
@@ -1547,11 +1587,13 @@ function apply(ctx, config) {
           execError: (patch.error || patch.reason || '未知原因').slice(0, 500),
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
       } else if (state === 'deferred') {
         await markProposal(job.proposalId, {
           execState: 'deferred',
           execError: (patch.reason || '').slice(0, 500),
+          ...scopeFields,
         });
       } else if (state === 'cancelled') {
         await markProposal(job.proposalId, { execState: 'cancelled' });

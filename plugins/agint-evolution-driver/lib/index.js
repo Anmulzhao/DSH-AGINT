@@ -57,8 +57,10 @@ import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
 import { requestSynthMount } from './deploy-bridge.js';
 import { extractAnchors, buildExcerpt } from './excerpt.js';
-import { analyzeProposalScope } from './scope.js';
+import { analyzeProposalScope, detectNewAssetIntent } from './scope.js';
 import { runProposalLoop } from './proposal-run.js';
+import { executeProposalTransaction } from './proposal-transaction.js';
+import { verifyPostimageText } from './verify-text.js';
 import {
   isGoalBridgeEnabled,
   buildGoalObjective,
@@ -79,6 +81,8 @@ const ENTITY_GATE_ENV = 'AGINT_EVOLUTION_DRIVER_ENTITY_GATE';
  * 旧口径（旧口径本身仍在，且有 78 条 smoke 守着）。
  */
 const PROPOSAL_TXN_ENV = 'AGINT_PROPOSAL_TXN';
+/** 提案级全组事务开关：`off` 退回 v0.10.0 的「逐个文件写、失败即停」。 */
+const PROPOSAL_ATOMIC_ENV = 'AGINT_PROPOSAL_ATOMIC';
 // 2026-10-28：120s → 600s。实机取证（提案 2f91b72b / 846f4fbb 各失败 2 次）：
 //   孩子会话的 turn 本身就要 100~120s（含定位文件），而成功案例耗时 58s / 92s
 //   ＝ 已吃掉 48%~77% 预算 ⇒ 稍难一条必撞墙，且撞墙时**结果同时被丢弃**
@@ -166,6 +170,28 @@ export const MUTATION_OUTPUT_SCHEMA = Object.freeze({
       type: 'string',
       description: 'One paragraph: why this edit implements the proposal, and how to falsify it.',
     },
+  },
+});
+
+/**
+ * 「新建文件」单元的结构化输出（2026-11-07）。
+ *
+ * ⛔ 刻意与 MUTATION_OUTPUT_SCHEMA 分开：新建文件没有 oldText，硬塞进同一个
+ *    schema 会逼模型编造一段不存在的原文，幻觉闸门必然误伤。
+ * ⛔ additionalProperties:false —— 与既有 schema 同口径，不许模型自由发挥。
+ */
+export const NEW_FILE_OUTPUT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: ['applicable', 'path', 'content', 'rationale'],
+  properties: {
+    applicable: {
+      type: 'boolean',
+      description: 'Whether the proposal really requires creating this new file. Answer false if it does not.',
+    },
+    path: { type: 'string', description: 'Echo back the exact repository-relative path from the prompt.' },
+    content: { type: 'string', description: 'The complete text of the new file. No markdown fences, no prose.' },
+    rationale: { type: 'string', description: 'One paragraph: why this file is needed and how to falsify it.' },
   },
 });
 
@@ -493,6 +519,40 @@ export function resolveTargetAssets(candidate, availableSkills = [], repoFiles =
     if (!p || set.has(p) || !p.includes('/')) continue;
     const cands = repoFiles.filter((f) => f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
     if (cands.length === 1) push(cands[0]);
+  }
+  return out;
+}
+
+/**
+ * 解析「提案要求新建的文件」（2026-11-07，提案级事务配套）。
+ *
+ * ⛔ 只在正文明确带「新建 / 抽共用 / 共用模块 / plugins/_shared/」这类信号时才认。
+ *    提案正文里的反引号路径大多是**引用**，不是要创建的目标 —— 不设这道闸会把
+ *    「参考 `docs/foo.md`」当成要新建 docs/foo.md，然后凭空造文件。
+ *
+ * ⛔ 只收仓库里**不存在**的路径。已存在的走 resolveTargetAssets 的编辑通道。
+ * ⛔ 路径安全与挂载配置同样要过（不许借「新建」绕过 denylist）。
+ *
+ * @param {object} candidate 提案
+ * @param {string[]} repoFiles 仓库现有文件（相对路径）
+ * @param {number} [max=3] 单次执行最多新建几个文件
+ * @returns {Array<{type:'create', id:string, evidence:string[]}>}
+ */
+export function resolveCreateTargets(candidate, repoFiles = [], max = 3) {
+  const hay = `${candidate?.title ?? ''}\n${candidate?.body ?? ''}\n${candidate?.source ?? ''}`;
+  const evidence = detectNewAssetIntent(hay);
+  if (evidence.length === 0) return [];
+  const set = new Set(Array.isArray(repoFiles) ? repoFiles : []);
+  const out = [];
+  const seen = new Set();
+  for (const raw of extractRepoPaths(hay)) {
+    const p = normalizeRepoPath(raw);
+    if (!p || p.includes('..') || p.startsWith('/') || /^[a-zA-Z]:/.test(p)) continue;
+    if (set.has(p) || seen.has(p) || !p.includes('/')) continue;
+    if (COMMIT_DENYLIST.some((d) => p === d || p.includes(d))) continue;
+    seen.add(p);
+    out.push({ type: 'create', id: p, evidence });
+    if (out.length >= Math.max(1, max)) break;
   }
   return out;
 }
@@ -1710,6 +1770,246 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * 提案级全组事务（2026-11-07，v0.11.0）。
+   *
+   * 把一条提案的全部目标（含新建文件）一次性编排：先构造、先在内存里验证、
+   * 先过闸门，最后才写盘。任一环节失败 ⇒ 一个字节都不落。
+   * ⛔ 与 runOnce 的单文件流水线是**两条独立通道**；这里不复用那段 400 行提交代码，
+   *    而是把 IO 以 hooks 交给 lib/proposal-transaction.js 的纯编排层。
+   */
+  async function runProposalTransaction(proposalId, opts = {}) {
+    const env = opts.env ?? process.env;
+    const inj = opts.inject ?? {};
+    const evolve = inj.evolve ?? dep('agint.evolve');
+    const mutator = inj.mutator ?? dep('agint.mutator');
+    const policy = inj.policy ?? dep('agint.qualityPolicy');
+    const fs = inj.fs ?? null;
+    const repoRoot = resolveRepoRoot(env, { repoRoot: cfgRepoRoot });
+    const commitOn = isCommitEnabled(env);
+
+    const failOut = (reason, extra = {}) => {
+      state.lastError = reason;
+      warn('proposal transaction failed', { proposalId, reason });
+      // K113：唯一外部可读出口。失败也必须发 summary，否则静默失败。
+      void publish('evolution.cycle.summary', {
+        exitReason: 'proposal-transaction-failed',
+        proposalId, runs: state.runs, lastError: reason,
+        failures: [reason], failuresTotal: 1,
+      });
+      return { skipped: true, ok: false, reason, proposalId, failures: [reason], ...extra };
+    };
+
+    if (!evolve || typeof evolve.getProposal !== 'function') return failOut('agint.evolve unavailable');
+    if (!mutator || typeof mutator.propose !== 'function') return failOut('agint.mutator unavailable');
+    if (!commitOn || !repoRoot) return failOut('verify-unavailable (commit off or no repoRoot)');
+    if (typeof policy?.decide !== 'function') return failOut('verify-unavailable (policy.decide missing)');
+
+    let candidate;
+    try { candidate = await evolve.getProposal(proposalId); } catch (e) {
+      return failOut(`getProposal failed: ${e?.message ?? e}`);
+    }
+    if (!candidate) return failOut(`proposal not found: ${proposalId}`);
+    if (opts.allowAnyStatus !== true && candidate.status !== 'approved') {
+      return failOut(`proposal ${proposalId} status=${candidate.status} 不是 approved`);
+    }
+
+    let repoFiles = [];
+    try { repoFiles = await listRepoFiles(repoRoot, { fs }); } catch { repoFiles = []; }
+    const available = Array.isArray(inj.skillNames) ? inj.skillNames : [];
+    const editsTargets = resolveTargetAssets(candidate, available, repoFiles);
+    const createTargets = resolveCreateTargets(candidate, repoFiles, cfgMaxUnitsPerProposal);
+
+    const units = [];
+    for (const t of editsTargets.slice(0, cfgMaxUnitsPerProposal)) {
+      units.push({ id: t.id, kind: 'edit', type: t.type, text: '' });
+    }
+    for (const t of createTargets) units.push({ id: t.id, kind: 'create', type: 'create', text: '' });
+    if (units.length === 0) return failOut('no target asset resolved');
+
+    // 读取现有文件原文（新建单元没有原文）。
+    for (const u of units) {
+      if (u.kind !== 'edit') continue;
+      try {
+        u.text = u.type === 'skill'
+          ? await readSkillText({ skillName: u.id, fs, roots: inj.skillRoots, repoRoot })
+          : await readRepoText({ repoRoot, relPath: u.id, fs });
+      } catch { u.text = ''; }
+    }
+    const readable = units.filter((u) => u.kind === 'create' || (typeof u.text === 'string' && u.text));
+    if (readable.length === 0) return failOut('no readable target file');
+
+    // 实体门（与 runOnce 同源，不另造弱门禁）。
+    let codeIndex = null;
+    try { codeIndex = await buildCodeIndex(repoRoot, repoFiles, { fs }); } catch { codeIndex = null; }
+    const entityGate = { repoFiles, getCodeIndex: async () => codeIndex };
+
+    const llm = inj.llm ?? ((args) => spawnLlm(ctx, args));
+    const hooks = {
+      construct: async ({ unit, index, total }) => {
+        if (unit.kind === 'create') {
+          const out = await llm({
+            system: 'You create ONE new repository file for an approved improvement proposal. '
+              + 'Reply with the structured output only. The content must be the complete file, no markdown fences.',
+            user: [
+              '## Improvement proposal', `Title: ${candidate.title ?? ''}`, '', candidate.body ?? '', '',
+              `## New file ${index + 1} of ${total}: ${unit.id}`,
+              'Create this file only if the proposal really requires it. Otherwise answer applicable=false.',
+            ].join('\n'),
+            schema: NEW_FILE_OUTPUT_SCHEMA,
+            timeoutMs: resolveLlmTimeout(env, config),
+            cwd: repoRoot,
+          });
+          if (!out || out.ok !== true) return { llmFailure: true, reason: out?.reason ?? 'llm unavailable' };
+          const v = out.value ?? {};
+          if (v.applicable !== true) return { applicable: false, rationale: v.rationale ?? '' };
+          return {
+            applicable: true,
+            edit: { content: v.content ?? '', rationale: v.rationale ?? '' },
+            rationale: v.rationale ?? '',
+          };
+        }
+        const built = await construct({
+          candidate, targetId: unit.id, fileText: unit.text, llm: inj.llm ?? null,
+          entityGate, cwd: repoRoot, stepIndex: index, stepTotal: total,
+        });
+        if (built?.llmFailure) return { llmFailure: true, reason: built.reason ?? 'llm unavailable' };
+        if (built?.ok !== true) {
+          // 「这个文件不用改」是合法跳过；幻觉/实体门/空编辑是硬失败。
+          if (/not applicable/i.test(String(built?.reason ?? ''))) {
+            return { applicable: false, rationale: built.rationale ?? '' };
+          }
+          return { ok: false, reason: built.reason ?? 'construct failed' };
+        }
+        const v = built.value ?? {};
+        return {
+          applicable: true,
+          edit: { oldText: v.oldText, newText: v.newText, rationale: v.rationale ?? '' },
+          rationale: v.rationale ?? '',
+        };
+      },
+      verify: async ({ unit, postimage }) => verifyPostimageText({ relPath: unit.id, text: postimage }),
+      propose: async ({ unit, edit, kind }) => mutator.propose({
+        source: 'evolution-reversed',
+        failureId: candidate.id,
+        rootCause: `PROMPT_DEFICIENCY: ${candidate.category ?? 'other'}`,
+        atomicScope: 'prompt',
+        expectedEffect: expectedEffectForTarget({ targetType: kind === 'create' ? 'repo' : unit.type }),
+        rollbackCondition: 'regression → auto-rollback',
+        promptPayload: {
+          promptId: slugifyPromptId(unit.id),
+          oldText: kind === 'create' ? '' : String(edit.oldText ?? ''),
+          newText: kind === 'create' ? String(edit.content ?? '') : String(edit.newText ?? ''),
+          diffStrategy: 'unified_diff',
+        },
+        failureContext: { proposalTitle: candidate.title ?? '', rationale: edit.rationale ?? '' },
+      }),
+      validate: async ({ proposal }) => (typeof mutator.validate === 'function'
+        ? mutator.validate({ proposal }) : { ok: true, findings: [] }),
+      decide: async ({ verify }) => {
+        const r = await policy.decide({
+          results: [{
+            target: { id: proposalId, kind: 'plugin-postimage' },
+            dimensions: verify?.ok
+              ? [{ key: 'safety', name: 'safety', score: { score: 1.0, veto: false } },
+                 { key: 'trust', name: 'trust', score: { score: 1.0, veto: false } }]
+              : [{ key: 'safety', name: 'safety', score: { score: 0.0, veto: true } },
+                 { key: 'trust', name: 'trust', score: { score: 0.0, veto: true } }],
+            ok: Boolean(verify?.ok),
+          }],
+        });
+        return r?.kind ?? 'ABSTAIN';
+      },
+      write: async ({ unit, edit, kind }) => (kind === 'create'
+        ? createRepoFile({ repoRoot, relPath: unit.id, content: edit.content, fs })
+        : commitToRepo({ repoRoot, relPath: unit.id, oldText: edit.oldText, newText: edit.newText, fs })),
+      // 整组回滚：新建的删掉、编辑的用 preimage 内容写回。
+      restoreMany: async (written) => {
+        const { writeFile, rm } = await import('node:fs/promises');
+        const { resolve: pathResolve } = await import('node:path');
+        let restored = 0;
+        const errors = [];
+        for (const w of written) {
+          try {
+            const abs = pathResolve(repoRoot, w.path);
+            if (w.created) await rm(abs, { force: true });
+            else await writeFile(abs, String(w.preimageContent ?? ''), 'utf8');
+            restored += 1;
+          } catch (e) { errors.push(`${w.path}: ${e?.message ?? e}`); }
+        }
+        return { ok: errors.length === 0, restored, reason: errors.join(' | ') };
+      },
+      record: async (written) => {
+        for (const w of written) {
+          const eventId = await publish('evolution.mutation.committed', {
+            proposalId, candidateId: candidate.id, path: w.path,
+            policyDecision: w.policyDecision, sandboxOk: true, verifyMode: 'preimage-in-memory',
+            transaction: true,
+          });
+          state.mutatorRecorded += 1;
+          if (typeof mutator.recordExternalCommit === 'function') {
+            try {
+              await mutator.recordExternalCommit({
+                commitId: eventId || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                proposalId: w.proposal?.id ?? proposalId,
+                targetPath: w.path,
+                preimageContent: String(w.preimageContent ?? ''),
+                postimageHash: await contentHashOf(String(w.postimageContent ?? '')),
+                policyDecision: w.policyDecision,
+                audit: { source: 'proposal-transaction', transaction: true },
+              });
+            } catch (e) {
+              state.mutatorRecordFailed += 1;
+              warn('proposal transaction: recordExternalCommit failed', { path: w.path, error: e?.message ?? e });
+            }
+          }
+        }
+      },
+    };
+
+    state.runs += 1;
+    state.lastRunAt = new Date().toISOString();
+    const txn = await executeProposalTransaction({ units: readable, hooks });
+    if (txn.ok !== true) {
+      return failOut(`transaction ${txn.phase}: ${txn.reason}`, {
+        exitPhase: txn.phase, reverted: txn.reverted ?? null,
+      });
+    }
+
+    const commits = txn.commits.map((c) => ({
+      path: c.path, policyDecision: c.policyDecision, created: c.created === true,
+    }));
+    const requiresNewAsset = createTargets.length > 0;
+    const remainingUnits = [];
+    const complete = true; // 事务成功 = 所有适用单元都落地了
+    await publish('evolution.cycle.summary', {
+      exitReason: 'proposal-transaction-committed', proposalId,
+      unitsApplied: commits.length, skipped: txn.skipped,
+      failures: [], failuresTotal: 0, runs: state.runs,
+    });
+    return {
+      skipped: false,
+      ok: true,
+      proposalId,
+      commit: {
+        ok: true,
+        path: commits[commits.length - 1]?.path ?? '',
+        policyDecision: commits[commits.length - 1]?.policyDecision ?? '',
+      },
+      commits,
+      failures: [],
+      scope: {
+        unitsApplied: commits.length,
+        unitsTotal: commits.length + txn.skipped.length,
+        remainingUnits,
+        requiresNewAsset,
+        complete,
+        reason: '',
+      },
+      transaction: true,
+    };
+  }
+
+  /**
    * 定向执行一条已批准的提案（agint-executor 的唯一入口，2026-10-27）。
    *
    * 与 runOnce 的差别只有三点，其余流水线完全一致（构造 → mutator → D-QAF →
@@ -1740,6 +2040,11 @@ export function apply(ctx, config = {}) {
       const out = await runOnce({ ...opts, proposalId });
       const ok = out?.skipped === false && out?.commit?.ok === true;
       return { ...out, proposalId, ok };
+    }
+    // v0.11.0：默认走全组事务（先全部验证、再一次性写盘；含新建文件）。
+    // `AGINT_PROPOSAL_ATOMIC=off` ⇒ 退回 v0.10.0 的逐个文件口径。
+    if (String(env?.[PROPOSAL_ATOMIC_ENV] ?? 'on') !== 'off') {
+      return runProposalTransaction(proposalId, opts);
     }
     const out = await runProposalLoop({
       proposalId,
@@ -1997,6 +2302,48 @@ export { buildCodeIndex };
  * 三保险：preimage 备份 + oldText 唯一性校验 + denylist。
  * fs.writeRepo 可注入测试。返回 {ok, path, preimagePath, bytes} 或 {ok:false, reason}。
  */
+/**
+ * 新建一个仓库文件（2026-11-07，提案级事务配套的 create 单元）。
+ *
+ * ⛔ 与 commitToRepo 同一套路径安全闸：denylist + 路径逃逸 + 禁止覆盖已有文件。
+ * ⛔ 绝不覆盖：已存在的文件必须走编辑通道，否则一次「新建」能静默抹掉既有内容。
+ * ⛔ 不写 preimage 备份文件 —— 文件本来就不存在；回滚动作是「删掉它」。
+ */
+export async function createRepoFile({ repoRoot, relPath, content, fs }) {
+  const norm = String(relPath ?? '').split('\\').join('/').replace(/^\.\//, '');
+  if (!repoRoot) return { ok: false, reason: 'no repoRoot' };
+  if (!norm || norm.includes('..') || norm.startsWith('/') || /^[a-zA-Z]:/.test(norm)) {
+    return { ok: false, reason: `unsafe path: ${norm}` };
+  }
+  if (COMMIT_DENYLIST.some((d) => norm === d || norm.includes(d))) {
+    return { ok: false, reason: `denylist hit: ${norm}` };
+  }
+  if (typeof content !== 'string' || !content.trim()) return { ok: false, reason: 'empty content' };
+  const { writeFile, mkdir, stat } = await import('node:fs/promises');
+  const { join, dirname, resolve: pathResolve } = await import('node:path');
+  const abs = pathResolve(repoRoot, norm);
+  try {
+    await stat(abs);
+    return { ok: false, reason: `file already exists: ${norm}` };
+  } catch { /* 不存在才是我们要的 */ }
+  try {
+    await mkdir(dirname(abs), { recursive: true });
+    if (typeof fs?.writeRepo === 'function') await fs.writeRepo(norm, content);
+    else await writeFile(abs, content, 'utf8');
+  } catch (error) {
+    return { ok: false, reason: `write failed: ${error?.message ?? error}` };
+  }
+  return {
+    ok: true,
+    path: norm,
+    created: true,
+    preimageContent: '',
+    postimageContent: content,
+    bytesBefore: 0,
+    bytesAfter: Buffer.byteLength(content, 'utf8'),
+  };
+}
+
 export async function commitToRepo({ repoRoot, relPath, oldText, newText, fs, now = new Date() }) {
   const norm = String(relPath ?? '').split('\\').join('/').replace(/^\.\//, '');
   if (!repoRoot) return { ok: false, reason: 'no repoRoot' };

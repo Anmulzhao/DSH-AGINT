@@ -1851,7 +1851,7 @@ test('T38: 定向执行定位不到目标 ⇒ deterministic=true + not-actionabl
     'agint.population': fakePopulation(),
   });
   apply(ctx);
-  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-x');
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-x', { env: { AGINT_PROPOSAL_ATOMIC: 'off' } });
   assert.equal(out.skipped, true);
   assert.equal(out.deterministic, true, '定向模式下的「无可执行目标」是确定性的');
   assert.match(out.reason, /not-actionable/, '原因里要能看出「这不是偶发」');
@@ -2122,7 +2122,7 @@ test('T43: 第一个目标答 applicable=false ⇒ 继续试第二个并落地�
   });
   apply(ctx, { repoRoot: repo });
   const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-walk', {
-    env: {},
+    env: { AGINT_PROPOSAL_ATOMIC: 'off' },
     inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
   });
 
@@ -2172,7 +2172,7 @@ test('T43b: 全部目标都否 ⇒ not-actionable，但错误里要列出每个�
   });
   apply(ctx, { repoRoot: repo });
   const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-none', {
-    env: {},
+    env: { AGINT_PROPOSAL_ATOMIC: 'off' },
     inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
   });
   assert.equal(out.skipped, true);
@@ -2278,7 +2278,7 @@ test('T44f: 执行一次下来 partialScope 计数器随「部分覆盖」增加
   apply(ctx, { repoRoot: repo });
   const svc = ctx.provided['agint.evolutionDriver'];
   await svc.runForProposal('p-partial', {
-    env: {},
+    env: { AGINT_PROPOSAL_ATOMIC: 'off' },
     inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
   });
   assert.equal(svc.status().partialScope, 1,
@@ -2339,4 +2339,88 @@ test('T45: 提案级执行 —— 3 个文件一次改完，scope.complete=true'
   assert.equal(svc.status().partialScope, 0, '整条提案做完了，不该记欠账');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T45）');
+// ── T46~T48（2026-11-07）：提案级全组事务 + 新建文件 ────────────────────────
+
+function txnCtx(repo, candidate, decision = 'AUTO_DEPLOY') {
+  return makeCtx({
+    'agint.evolve': {
+      listProposals: async () => [],
+      getProposal: async () => candidate,
+    },
+    'agint.mutator': fakeMutator(),
+    'agint.population': fakePopulation(),
+    'agint.qualitySandbox': { runSmoke: async () => ({ ok: true }) },
+    'agint.qualityPolicy': { decide: async () => ({ kind: decision, reason: '' }) },
+  });
+}
+
+test('T46: 新建共用模块 + 改现有文件，同一事务里一次落地', async () => {
+  const repo = await makeRepo({ 'plugins/a/lib/x.js': 'const v = 1;\n' });
+  const candidate = {
+    id: 'p-create', title: '抽共用模块', status: 'approved', category: 'plugin',
+    body: '抽一份共用模块 `plugins/_shared/helper.js`，并同步改 `plugins/a/lib/x.js`。',
+  };
+  const llm = async ({ user }) => (/## New file/.test(user)
+    ? { ok: true, value: { applicable: true, path: 'plugins/_shared/helper.js', content: 'export const shared = 1;\n', rationale: 'new module' } }
+    : { ok: true, value: { applicable: true, targetSkill: '', oldText: 'const v = 1;', newText: 'const v = 2;', rationale: 'bump' } });
+  const ctx = txnCtx(repo, candidate);
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-create', {
+    env: {}, inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.ok, true, JSON.stringify(out.reason ?? out.failures));
+  assert.equal(out.transaction, true);
+  assert.equal(out.commits.length, 2, '编辑 + 新建，两个单元都要落地');
+  assert.equal(await readFile(join(repo, 'plugins/_shared/helper.js'), 'utf8'), 'export const shared = 1;\n',
+    '⛔ 新建文件必须真的出现在磁盘上');
+  assert.equal(await readFile(join(repo, 'plugins/a/lib/x.js'), 'utf8'), 'const v = 2;\n');
+  assert.equal(out.scope.requiresNewAsset, true, '正文要求新建资产，要如实标出来');
+  assert.equal(out.scope.complete, true, '新建能力已经具备，不再因此判 incomplete');
+});
+
+test('T47: 任一单元语法验证不过 ⇒ 一个字节都不落（negative control）', async () => {
+  const repo = await makeRepo({
+    'plugins/a/lib/x.js': 'const v = 1;\n',
+    'plugins/b/lib/y.js': 'const w = 1;\n',
+  });
+  const candidate = {
+    id: 'p-bad', title: '改两个文件', status: 'approved', category: 'plugin',
+    body: '见 `plugins/a/lib/x.js` 与 `plugins/b/lib/y.js`',
+  };
+  const n = { v: 0 };
+  const llm = async () => {
+    n.v += 1;
+    return n.v === 1
+      ? { ok: true, value: { applicable: true, targetSkill: '', oldText: 'const v = 1;', newText: 'const v = 2;', rationale: 'ok' } }
+      : { ok: true, value: { applicable: true, targetSkill: '', oldText: 'const w = 1;', newText: 'const w = ;', rationale: 'broken' } };
+  };
+  const ctx = txnCtx(repo, candidate);
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-bad', {
+    env: {}, inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /verify/, '失败必须归到验证阶段');
+  assert.equal(await readFile(join(repo, 'plugins/a/lib/x.js'), 'utf8'), 'const v = 1;\n',
+    '⛔ 第一个文件本来能改，但同组有坏单元 ⇒ 整组不落地');
+  assert.equal(await readFile(join(repo, 'plugins/b/lib/y.js'), 'utf8'), 'const w = 1;\n');
+});
+
+test('T48: policy 拒绝 ⇒ 不写盘', async () => {
+  const repo = await makeRepo({ 'plugins/a/lib/x.js': 'const v = 1;\n' });
+  const candidate = {
+    id: 'p-reject', title: '改一个文件', status: 'approved', category: 'plugin',
+    body: '见 `plugins/a/lib/x.js`',
+  };
+  const llm = async () => ({ ok: true, value: { applicable: true, targetSkill: '', oldText: 'const v = 1;', newText: 'const v = 2;', rationale: 'ok' } });
+  const ctx = txnCtx(repo, candidate, 'REJECT');
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-reject', {
+    env: {}, inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /policy/);
+  assert.equal(await readFile(join(repo, 'plugins/a/lib/x.js'), 'utf8'), 'const v = 1;\n');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T48）');

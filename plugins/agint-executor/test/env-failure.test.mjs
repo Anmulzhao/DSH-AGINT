@@ -171,4 +171,31 @@ const llmBroken = () => ({
   assert.equal(envBackoffMs(0, 300_000, 1_800_000), 300_000, 'attempts=0 按第一次算');
 }
 
+// ── ⑤ 提案级 commits[] 要透传给 evolve（面板只读 proposal 表）──────────
+{
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job()] });
+  await withExecutor({
+    evolve,
+    driver: {
+      runForProposal: async () => ({
+        skipped: false,
+        ok: true,
+        commit: { ok: true, path: 'plugins/x/a.js', policyDecision: 'AUTO_DEPLOY' },
+        commits: [
+          { path: 'plugins/x/a.js', policyDecision: 'AUTO_DEPLOY' },
+          { path: 'plugins/_shared/helper.js', created: true },
+        ],
+        scope: { complete: true, unitsApplied: 2, unitsTotal: 2, remainingUnits: [] },
+      }),
+    },
+  }, async ({ svc }) => {
+    await svc.tick({ force: true });
+    assert.equal(evolve.calls.finish.length, 1);
+    const patch = evolve.calls.finish[0].patch;
+    assert.equal(patch.commits.length, 2, '⛔ 不许把多文件执行压成单个 commitPath');
+    assert.equal(patch.commits[1].created, true);
+    assert.equal(patch.partial, false, 'complete=true ⇒ 不是 partial');
+  });
+}
+
 console.log('env-failure.test.mjs: all cases passed');

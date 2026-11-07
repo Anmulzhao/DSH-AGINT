@@ -1,5 +1,27 @@
 # agint-family-panel CHANGELOG
 
+## 0.12.2 — 2026-11-07（执行摘要显示「已改 N/M · 还差几个文件」）
+
+### 问题
+
+提案级执行（driver v0.11.0）一次落地多个文件，但面板的 `execText()` 只显示
+执行态与 execError。老板看不到「改了哪几个、还差几个」。
+
+### 改动
+
+- `lib/v2-proposals.js`：归一化 `execUnitsApplied` / `execUnitsTotal` /
+  `execRemainingUnits` / `execCommits` 四个新字段。
+- `assets/panel-v2.html` 的 `execText()`：追加「已改 N/M 个文件 · 还差 K 个：a、b、c」
+  与 commits 文件名。⛔ 老行没有这些字段就不显示，不编数字（负控制已钉）。
+- `test/fixtures/v2-scan-baseline.json` 第七次重冻（家族 code 键 215 → 223）。
+
+### 验证
+
+`test/proposal-board.test.mjs` 新增用例（含负控制）；`v2-scan` 门禁绿。
+⚠️ `v2-data.test.mjs` 在含中文路径的本机工作区会因 `cpSync` 崩溃（0xC0000409），
+在纯 ASCII 路径的干净 worktree 上同代码通过 ⇒ 判为环境存量债，非本批引入。
+
+
 ## 0.12.1 — 2026-11-07（手动计划档显示真实原因）
 
 配合 agint-evolve v0.22.0：确定性不可执行的提案会被降为 `execMode=manual`、

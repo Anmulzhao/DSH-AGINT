@@ -440,6 +440,32 @@ await withApp(async ({ evo }) => {
   assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'queued');
 });
 
+// ── 提案级范围账落到 proposal 行（2026-11-07）──────────────────────────
+//
+// driver 一次执行交回 commits[]，面板只读 proposal 表 ⇒ 必须在这里同步写过去。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '一次改两个文件', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, {
+    ok: true,
+    commitPath: 'plugins/x/a.js',
+    commits: [
+      { path: 'plugins/x/a.js', policyDecision: 'AUTO_DEPLOY' },
+      { path: 'plugins/_shared/helper.js', created: true },
+    ],
+    unitsApplied: 2,
+    unitsTotal: 3,
+    remainingUnits: ['plugins/x/c.js'],
+  });
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.execCommits.length, 2, 'commits[] 必须落到 proposal 行');
+  assert.equal(rec.execCommits[1].created, true, '新建文件要能标出来');
+  assert.equal(rec.execUnitsApplied, 2);
+  assert.equal(rec.execUnitsTotal, 3);
+  assert.deepEqual(rec.execRemainingUnits, ['plugins/x/c.js']);
+});
+
 // ── 确定性不可执行 ⇒ 退出自动队列，不挂 failed（2026-11-07）────────────
 //
 // 根因：执行器只做单原子文件编辑，特性级/机械动作提案没有仓库目标 ⇒ driver 判

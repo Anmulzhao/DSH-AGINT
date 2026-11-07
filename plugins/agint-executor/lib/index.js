@@ -250,6 +250,9 @@ function apply(ctx, config) {
         unitsApplied: verdict.partial === true ? verdict.unitsApplied : null,
         unitsTotal: verdict.partial === true ? verdict.unitsTotal : null,
         remainingUnits: verdict.partial === true ? verdict.remainingUnits : [],
+        // 2026-11-07：driver 的事务返回 commits[]（本次落地/新建了哪些文件）。
+        // 透传给 evolve，由它写到提案行 —— 面板只读 proposal 表。
+        commits: verdict.commits ?? [],
         reason: verdict.partial === true ? verdict.reason : '',
       });
       state.succeeded += 1;
@@ -369,6 +372,7 @@ function apply(ctx, config) {
         reason: oneLine(reason),
         // deterministic ⇒ 重试也不会变，不再排重试。
         deterministic: out.deterministic === true,
+        commits: Array.isArray(out.commits) ? out.commits : [],
       };
     }
     const commit = out.commit ?? null;
@@ -395,6 +399,8 @@ function apply(ctx, config) {
         mutationId: out.proposalId ?? '',
         commitPath: commit.path ?? '',
         policyDecision: commit.policyDecision ?? '',
+        // 2026-11-07 v0.11.0：一次执行可能落地 N 个文件（含新建）。
+        commits: Array.isArray(out.commits) ? out.commits : [],
         partial,
         unitsApplied: partial ? Number(scope.unitsApplied) || 0 : null,
         unitsTotal: partial ? total : null,
