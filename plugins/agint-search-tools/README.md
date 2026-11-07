@@ -53,6 +53,9 @@ D:\DSH\plugins\agint-search-tools\
 - **不需要 isolate realm**(consumer-only)
 - 排序:memory 先(已按 effectiveConfidence 排),wiki 后(按路径排),最后按 `limit` 截断
 - **没有去重、没有 hit-scoring、没有 highlighting** — 这些是后续迭代
+- **记忆域命中计入召回**（2026-11-07，v0.1.1）：`memory.search` 传 `countHits: true`
+  —— 模型检索命中算一次召回，口径见 `agint-memory/lib/hits.js`。
+  后台自检检索（provider prefetch / 压缩兜底 / 诊断反事实 / 质量评估）不带这个参数，不计数。
 
 ## 与已有工具的关系
 

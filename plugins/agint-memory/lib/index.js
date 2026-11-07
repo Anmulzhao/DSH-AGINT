@@ -15,6 +15,7 @@
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { decayScan, effectiveConfidence, nextLevel, shouldClear, scanHorizon } from './decay.js';
+import { createHitStore, defaultHitsPath } from './hits.js';
 
 const name = 'agint-memory';
 const inject = ['storageDomain', 'agint.eventBus.subscribe'];
@@ -93,6 +94,18 @@ function apply(ctx) {
 
   const nowIso = () => new Date().toISOString();
 
+  // 召回命中计数（旁路文件；口径与实测依据见 lib/hits.js）。
+  const hitStore = createHitStore(defaultHitsPath());
+  const noteHits = async (ids) => {
+    try { return await hitStore.note(ids); } catch { return 0; }
+  };
+  /** 把旁路命中数合并进条目的 recalls（读侧合并，不回写 memory 表）。 */
+  const withHits = (entry, map) => {
+    const extra = map.get(entry.id) ?? 0;
+    if (!extra) return entry;
+    return { ...entry, recalls: (entry.recalls ?? 0) + extra };
+  };
+
   ctx.provide('agint.memory', {
     async read(id) {
       const t = await table();
@@ -102,11 +115,12 @@ function apply(ctx) {
 
     async list(filter = {}) {
       const t = await table();
+      const map = await hitStore.snapshot();
       const out = [];
       for (const [id, rec] of t.entries()) {
         if (filter.type && rec.type !== filter.type) continue;
         if (filter.level && rec.level !== filter.level) continue;
-        out.push({ id, ...rec });
+        out.push(withHits({ id, ...rec }, map));
       }
       return out;
     },
@@ -122,7 +136,13 @@ function apply(ctx) {
       }
       out.sort((a, b) => b._eff - a._eff);
       const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 20;
-      return out.slice(0, limit).map(({ _eff, ...rec }) => rec);
+      const found = out.slice(0, limit).map(({ _eff, ...rec }) => rec);
+      // countHits：只有模型面向的检索才计数（口径见 lib/hits.js）。
+      if (opts.countHits === true && found.length > 0) {
+        await noteHits(found.map((r) => r.id));
+      }
+      const map = await hitStore.snapshot();
+      return found.map((rec) => withHits(rec, map));
     },
 
     async write(input) {
@@ -157,6 +177,20 @@ function apply(ctx) {
       const updated = { ...rec, recalls: rec.recalls + 1, lastRecall: nowIso(), updatedAt: nowIso() };
       await t.put(id, updated);
       return { ...updated };
+    },
+
+    /**
+     * 记一次「被模型检索命中」。走旁路计数，不写 memory 表
+     * （单行写实测 ~700ms，依据见 lib/hits.js）。
+     */
+    async noteHits(ids) {
+      return noteHits(ids);
+    },
+
+    /** 命中计数快照：{ id: 次数 }。 */
+    async hitCounts() {
+      const map = await hitStore.snapshot();
+      return Object.fromEntries(map);
     },
 
     async remove(id) {
@@ -203,7 +237,16 @@ function apply(ctx) {
         byLevel[rec.level] = (byLevel[rec.level] ?? 0) + 1;
         confidenceSum += rec.confidence ?? 0;
       }
-      return { total, byType, byLevel, avgConfidence: total ? confidenceSum / total : 0 };
+      const hitMap = await hitStore.snapshot();
+      let hitTotal = 0;
+      for (const n of hitMap.values()) hitTotal += n;
+      return {
+        total,
+        byType,
+        byLevel,
+        avgConfidence: total ? confidenceSum / total : 0,
+        hits: { entries: hitMap.size, total: hitTotal },
+      };
     },
   });
 

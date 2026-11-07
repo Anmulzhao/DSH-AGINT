@@ -113,7 +113,7 @@ function apply(ctx) {
       const counts = { memory: 0, wiki: 0 };
 
       if (sources.includes('memory')) {
-        const opts = {};
+        const opts = { countHits: true };   // 模型检索命中 = 一次召回（口径见 agint-memory/lib/hits.js）
         if (args.type) opts.type = args.type;
         const results = await memory.search(args.query, opts);
         for (const r of results) {

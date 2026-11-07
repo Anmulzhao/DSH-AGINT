@@ -121,7 +121,8 @@ function apply(ctx) {
         : [{ type: 'text', text: v.results.map((r) => `• [${r.type}/${r.level}] ${r.content}`).join('\n') }],
     },
     execute(args) {
-      return memory.search(args.query, { type: args.type, limit: args.limit }).then((results) => ({ results }));
+      return memory.search(args.query, { type: args.type, limit: args.limit, countHits: true })
+        .then((results) => ({ results }));
     },
   }));
 

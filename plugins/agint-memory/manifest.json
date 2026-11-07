@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-memory",
-  "version": "0.2.1",
-  "description": "长/短期记忆读写 + L1-L4 四级衰减扫描。独占 agint storage domain。",
+  "version": "0.3.0",
+  "description": "长/短期记忆读写 + L1-L4 四级衰减扫描 + 召回命中计数（旁路文件）。独占 agint storage domain。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -60,13 +60,13 @@
     },
     "tests": {
       "entry": "test/decay.test.js",
-      "command": "node --test test/decay.test.js test/tools-contract.test.mjs test/forget-scan-horizon.test.mjs",
+      "command": "node --test test/decay.test.js test/tools-contract.test.mjs test/forget-scan-horizon.test.mjs test/hit-counter.test.mjs",
       "expectedExit": 0
     },
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.memory": "长/短期记忆读写 + 四级衰减扫描"
+        "agint.memory": "长/短期记忆读写 + 四级衰减扫描 + 召回命中计数"
       }
     },
     "changelog": "CHANGELOG.md",
