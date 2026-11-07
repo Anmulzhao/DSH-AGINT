@@ -33,7 +33,15 @@ confidence 0.5 占 534 条（61.4%）。⇒ 预加载候选必然为空，reason
 
 **kill-switch**：`maintenanceEnabled=false`，默认开（K51）。
 
-**测试**：`test/memory-maintenance.test.mjs` 14 条，含负控制（门槛降到 0 必须出候选）。
+**测试**：`test/memory-maintenance.test.mjs` 16 条，含负控制（门槛降到 0 必须出候选；
+连字符前缀不许被截断；`.json` 不许被截成 `.js`）。
+
+**同日修正**：首版 `PATH_RE` 有两处截断假阳性，把 5 条**路径正确**的记忆误报成断链。
+① 左边界用了 `[^\w/]`，允许连字符 ⇒ `agint-quality-eval/lib/index.js` 被截成
+`eval/lib/index.js`、`agent-presets/src/index.ts` 被截成 `presets/src/index.ts`；
+② 扩展名 `js` 排在 `json` 前 ⇒ `.json` 被吃掉 `js`，报成 `package.js`。
+改为 `[^\w/.-]` + `json` 前置后，同一份 869 行生产数据：断链 **5 → 0**，ok 42 → 47。
+⛔ 未改动任何生产记忆的 evidence —— 按「改数据去迁就判据」会删掉 5 条正确路径。
 
 ## v0.7.2 — 2026-11-01 — 提升记忆写入必须带 confidence（决策确信度卡 0.61 的第二病灶）
 
