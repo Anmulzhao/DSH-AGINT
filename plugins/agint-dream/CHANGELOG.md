@@ -5,6 +5,36 @@
 
 ---
 
+## v0.8.0 — 2026-11-07 — 阶段 2：记忆维护三件套（证据审计 / 预加载候选 / 衰减体检）
+
+**背景**：Anthropic 博客《The components of agent memory》把 dreaming 定义为四项操作：
+纠错、生成笔记、构建表示层、塑造预加载。本插件此前只做第二项。本次补「写之后」的检查。
+
+**新增** `lib/memory-maintenance.js`（纯函数，只读）：
+
+1. `auditMemoryEvidence`：抽出 evidence 里的仓库相对路径，逐条判存在性。
+   断链只标记，不改写。⛔ 不判语义真假 —— 文本相似度不是「记忆是错的」的证据（K117/K138）。
+2. `selectPreloadCandidates`：按 L1 + 未解决 + confidence ≥ 0.8 + recalls ≥ 3 选预加载候选。
+   0 结果时给 `reason` 与 `nearest`（离门槛最近的一条差多少）。
+3. `summarizeDecay`：层级与类型分布 + 三条红旗（recalls 全零、无一条已解决、默认置信度占多数）。
+
+**接入**：
+
+- `lib/sweep.js`：Deep 阶段末尾算一次维护报告，写进 diary 的「记忆维护」小节。
+  ⛔ 不进 `result.counts` —— tools.js 的 output schema 是 `additionalProperties:false`，
+  加键会炸工具面（K164 同形状事故）。
+- `lib/index.js`：Config 加 `maintenanceEnabled` / `maintenanceRepoRoot` /
+  `preloadMinConfidence` / `preloadMinRecalls` / `preloadMax`；
+  `maintenanceEnabled` 进 RUNTIME_CONFIG_KEYS，可运行时关。
+
+**实测（2026-11-07）**：生产记忆 869 条，`recalls` 869/869 全为 0，`resolved` 全 false，
+confidence 0.5 占 534 条（61.4%）。⇒ 预加载候选必然为空，reason 写
+`recalls-all-zero: 召回计数没在记，门槛不可能达成`。这不是「没有候选」，是「召回没通电」。
+
+**kill-switch**：`maintenanceEnabled=false`，默认开（K51）。
+
+**测试**：`test/memory-maintenance.test.mjs` 14 条，含负控制（门槛降到 0 必须出候选）。
+
 ## v0.7.2 — 2026-11-01 — 提升记忆写入必须带 confidence（决策确信度卡 0.61 的第二病灶）
 
 **症状**：神谕层「决策确信度」长期 0.610（阈 0.70）判红。该指标口径是
