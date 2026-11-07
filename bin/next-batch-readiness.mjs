@@ -8,9 +8,11 @@
  *   B2 阈值拟合需 ≥4 已标注周、权重需 ≥5，现为 0
  *   C2 前置 C1 阶段 2/3（D1–D5 拍板 + 外部真值）未开工
  *
- * ⛔ 本脚本**不实现** B1/B2/C2，不写任何存储、不改任何常量、不调用 LLM。
- *    它只把「为什么现在不能开工」做成可复跑、可验收的判据 —— 防止下一批
+ * ⛔ 本脚本**不执行** B1/B2/C2：三项的只读实现见 bin/oracle-*.mjs
+ *    （2026-11-07「实现功能但守住闸门」档，默认关闭、运行态零写入）。
+ *    它只把「为什么现在还不能接线」做成可复跑、可验收的判据 —— 防止下一批
  *    在缺真值时先动手，重演「分数涨到 99.9 而能力证据为空」。
+ *    ⛔ implementation.available=true 只说明「代码存在」，不改变 READY 判定。
  * ⛔ 三态纪律：数据缺失 ⇒ { value:null, reason }，绝不拿 0 冒充「查过了没有」。
  * ⛔ 存储根不显式给就报错，拒绝 fallback 到 ~/.dsh（本机最常见的假绿）。
  *
@@ -24,7 +26,7 @@ import { resolveStorages, readDomain, oracleEvidence, FIT_GATES, ok, noData } fr
 import { verifyBaseline, DEFAULT_SETS_DIR, EXTERNAL_AUTHORITIES } from './capability-baseline.mjs';
 import { evaluateAutonomousWrite, readSwitch, AUTONOMOUS_WRITE_SWITCH_ENV } from './autonomous-write-gate.mjs';
 
-export const READINESS_SCHEMA = '1.0';
+export const READINESS_SCHEMA = '1.1';
 
 /** 一项就绪度：blockers 为空才 READY；三态读数全走 ok/noData。 */
 function item(id, name, blockers, metrics, note) {
@@ -137,8 +139,22 @@ export function buildReadiness({
     readyCount: ready,
     blockedCount: items.length - ready,
     items,
-    disclaimer: '本清单只判「前置是否齐备」，不实现 B1/B2/C2，不评估 AGINT 能力，不产出任何判定。'
-      + ' BLOCKED 是设计结果，不是故障。',
+    // 2026-11-07「实现功能但守住闸门」：三项只读实现已就位，但运行态默认关闭。
+    // ⛔ 这个字段是**状态说明**，不参与 overall 判定 —— 代码存在不等于前置齐备。
+    implementation: {
+      available: true,
+      modules: {
+        B1: 'bin/oracle-prescription-delivery.mjs',
+        B2: 'bin/oracle-calibration-replay.mjs',
+        C2: 'bin/oracle-judge-channel.mjs',
+      },
+      runtimeDefault: 'OFF',
+      writesByDefault: 0,
+      note: '三项功能代码已就位，但默认关闭、五闸不绕过、无默认 sink ⇒ 运行态零写入。'
+        + 'READY 仍只由外部冻结真值 / 人工标注 / D1–D5 拍板决定，不因代码就位而变化。',
+    },
+    disclaimer: '本清单只判「前置是否齐备」，不执行 B1/B2/C2（只读实现见 bin/oracle-*.mjs，默认零写入），'
+      + '不评估 AGINT 能力，不产出任何判定。BLOCKED 是设计结果，不是故障。',
   };
 }
 

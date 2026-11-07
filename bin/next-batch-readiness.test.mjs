@@ -203,3 +203,17 @@ test('✅ markdown 渲染含三态说明与「BLOCKED 是设计结果」', () =>
     assert.match(md, /B1 ·/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('⛔ 功能实现就位不得改变 READY 判定 ⇒ 仍 ALL_BLOCKED', () => {
+  const dir = emptySets();
+  try {
+    const r = buildReadiness({ oracle: unannotatedOracle(6), setsDir: dir, env: {} });
+    assert.equal(r.implementation.available, true);
+    assert.equal(r.implementation.runtimeDefault, 'OFF');
+    assert.equal(r.implementation.writesByDefault, 0);
+    assert.equal(r.implementation.modules.B1, 'bin/oracle-prescription-delivery.mjs');
+    assert.equal(r.overall, 'ALL_BLOCKED', '代码存在 ≠ 前置齐备');
+    assert.equal(r.readyCount, 0);
+    assert.match(r.disclaimer, /默认零写入/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
