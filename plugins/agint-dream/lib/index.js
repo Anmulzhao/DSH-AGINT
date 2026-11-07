@@ -53,6 +53,16 @@ const Config = z.object({
   minScore: z.number().min(0).max(1).default(DEFAULTS.minScore),
   minRecall: z.number().int().positive().default(DEFAULTS.minRecall),
   minUniqueSessions: z.number().int().positive().default(DEFAULTS.minUniqueSessions),
+  // ── 2026-11-07（方案 C）：准入从「逐字复现」改成「形态 + LLM 裁决」──
+  // 老口径（repetition）要求「同一句逐字复现 ≥3 次且跨 ≥2 会话」。实测真实语料里
+  // 这种形态几乎不存在（7 天窗口 129 个不同句子只有 1 个够门槛）⇒ 候选池被永久关死，
+  // 梦境自 2026-10-21 起过门数持续为 0。
+  // 新口径（shape，出厂默认）：准入只管形态，「该不该记」交给 P1 LLM consolidation
+  // 裁决（它能判 add/merge/supersede），校验门（loss fraction ≤ 0.25、lineageKey、
+  // operations 1:1）兜底。复现次数退回评分权重。
+  // 回滚开关：admissionMode='repetition' ⇒ 恢复老口径（K51 出厂即开 + 一键可关）。
+  admissionMode: z.enum(['shape', 'repetition']).default(DEFAULTS.admissionMode),
+  maxGated: z.number().int().positive().default(DEFAULTS.maxGated),
   // 2026-09-18：零命中告警。连续 N 次 sweep 扫不到会话 → health.status=degraded。
   // 动机：09-10 起宿主改会话日志命名，Light 7 天零命中而 dream_status 仍报
   // validation=OK —— "没扫到"和"扫到了没过关"在返回里长一样。
@@ -95,6 +105,8 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'toolErrorDiagnosticOnly',
   // 2026-11-07：记忆维护总开关（关掉后 diary 不再出维护小节）
   'maintenanceEnabled',
+  // 2026-11-07（方案 C）：准入口径回退开关 —— 形态准入 → 复现准入（老口径）
+  'admissionMode',
 ]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -180,6 +192,9 @@ function apply(ctx, config) {
           minScore: opts.minScore ?? eff.minScore,
           minRecall: opts.minRecall ?? eff.minRecall,
           minUniqueSessions: opts.minUniqueSessions ?? eff.minUniqueSessions,
+          // 2026-11-07（方案 C）：准入口径 + 准入上限
+          admissionMode: opts.admissionMode ?? eff.admissionMode,
+          maxGated: opts.maxGated ?? eff.maxGated,
           // 2026-09-21：分级去重旋钮（kill-switch 走运行时覆盖，见 config() API）
           dedupeTieredEnabled: opts.dedupeTieredEnabled ?? eff.dedupeTieredEnabled,
           dedupeHigh: opts.dedupeHigh ?? eff.dedupeHigh,

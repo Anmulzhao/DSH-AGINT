@@ -76,7 +76,31 @@ export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
 // 取值对齐 settings.yaml 的 agent-default-model.reasoningEffort（high）；
 // 合法档位见 llm-pi-ai.providers.minimax-cn.models[].reasoningEfforts
 // （off/minimal/low/medium/high），off 不可用于本模型。
+//
+// ⚠️ 2026-11-07：这个 'high' 是**与宿主模型目录的耦合**，不是自由常量。
+// 宿主在 resolveReasoningLevel() 里对「模型没声明的档位」直接抛
+// UNSUPPORTED_REASONING_EFFORT（dsh-llm-pi-ai/lib/index.js:1810-1814）。
+// 本机 profile 的模型条目一度没声明 reasoningEfforts ⇒ 目录里没有裸 id
+// MiniMax-M3.1-Flash（目录里的 id 都是 provider-scoped）⇒ 模型被当成非推理模型
+// ⇒ 支持档位只剩 off ⇒ 每次 P1 调用都 error（实测 stopReason=error、diagnostic 空）。
+// 两处都要对：① 宿主侧声明该模型的 reasoningEfforts（profile patch，本机私有）；
+// ② 本插件优先取宿主 agentDefaultModel.currentSelection() 的档位，取不到才用这个兜底。
 export const DEFAULT_REASONING_EFFORT = 'high';
+
+/**
+ * 取推理档位：显式入参 > 宿主 agentDefaultModel 的当前选择 > 兜底常量。
+ * 取不到就返回 undefined —— 不传档位时宿主走适配器默认（而不是硬塞一个可能不被支持的档位）。
+ */
+function resolveReasoningEffort(ctx, explicit) {
+  if (explicit) return explicit;
+  try {
+    const selection = ctx?.get?.('agentDefaultModel')?.currentSelection?.();
+    const effort = selection?.reasoningEffort;
+    return typeof effort === 'string' && effort ? effort : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，30 个空壳换来的，见项目 KNOWLEDGE.md K114）。
 // `agents.create()` 的 `meta.agentPreset` 是模型路由与 persona 的**唯一来源**：
@@ -194,7 +218,7 @@ export async function consolidate({
   day,
   provider = DEFAULT_PROVIDER,
   model = DEFAULT_MODEL,
-  reasoningEffort = DEFAULT_REASONING_EFFORT,
+  reasoningEffort = null,
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   logger = null,
@@ -251,6 +275,10 @@ export async function consolidate({
   // 2. 建临时 parent agent（路径 Y — host plane 无现成 agent）
   //    在 try/finally 里严格 dispose，避免泄漏 child session。
   const abortController = new AbortController();
+  // 2026-11-07：推理档位优先取宿主的当前选择，取不到才用兜底常量；
+  // 两处都没有就不传（宿主走适配器默认，而不是硬塞一个可能不被支持的档位）。
+  const effort = resolveReasoningEffort(ctx, reasoningEffort) ?? DEFAULT_REASONING_EFFORT;
+  const agentOptions = { provider, model, reasoningEffort: effort };
   // 超时双保险：① abort 信号让子 agent 自行收敛；② timeoutGuard 让本函数
   // 无论如何都能返回。缺 ② 时，若 provider 不认 signal（挂死的 HTTP、卡住的
   // 适配器），`await run.result` 会永久 pending —— 夜间 sweep 随之卡死、
@@ -277,7 +305,7 @@ export async function consolidate({
       // 就 error（2026-09-05 实测）。
       // ⭐ agentPreset：模型路由的唯一来源。缺失 ⇒ child 是空壳（见 DEFAULT_AGENT_PRESET 注释）。
       meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
-      agentOptions: { provider, model, reasoningEffort },
+      agentOptions,
       signal: abortController.signal,
     }).then((h) => {
       if (cancelled) disposeLate(h);
@@ -295,7 +323,7 @@ export async function consolidate({
           parent: consolidationHandle.agent,
           prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
           agentPreset,
-          agentOptions: { provider, model, reasoningEffort },
+          agentOptions,
           outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
         },
         signal: abortController.signal,

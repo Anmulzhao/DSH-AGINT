@@ -5,6 +5,50 @@
 
 ---
 
+## v0.9.0 — 2026-11-07 — 方案 C：准入从「逐字复现」改成「形态 + LLM 裁决」
+
+**背景（实测，2026-11-07）**：梦境自 2026-10-21 起过门数持续为 0，最后一次非零提升是
+2026-10-20（4 条）。量化根因（用真插件代码复跑，脚本见工作区根目录 `_dream-rem-why{,2,3}-20261107.mjs`）：
+
+- **抽取层**：候选源只剩「用户原话 + 工具错误」。昨晚 24 个会话 → 用户原话 20 条 → 15 句 →
+  12 句无关键词桶、3 句疑问；工具错误「留 0 / 拦 46」（v0.7.0 污染修复的预期行为）。
+- **门槛层**：准入要求「同一句逐字复现 ≥3 次且跨 ≥2 会话」。7 天窗口 60 个会话里，
+  用户原话 75 个不同句子 + assistant 主张 54 个 = 129 个，重复度几乎全是「1 次 / 1 会话」，
+  够门槛的只有 **1 个** ⇒ 老门槛把候选池永久关死。
+- 把窗口放宽到 7 天（候选 5 条）仍然过门 0：三条各卡 `score < 0.6` 与 `signalCount < 3`。
+
+**变更**：
+
+1. **`extractCandidates` 新增 assistant 正文作为第三条候选源**（补 2026-10-28 提案
+   `d2b77b47` 的第 2 步「候选化」—— 第 1 步只做了统计，注释里点名的「链在中间是断的」至今未接）。
+   形态判据：含经验/要求词 · 10–160 字 · 非引用块 · 非记忆条目形态 · 无代码骨架/路径 ·
+   非工具回显 · 非疑问句；拒绝按原因计数（`shapeStats.byReason`）。
+2. **`gateCandidates` 新增 `admission` 模式**：`shape`（新，出厂默认）不按复现次数拒绝，
+   复现次数退回评分权重（frequency / diversity / consolidation 本来就在算）；
+   `repetition`（旧）逐字保留。准入上限 `maxGated`（默认 20）控制每轮进 LLM 的量。
+3. **配置**：`admissionMode`（`shape` / `repetition`，出厂 `shape`，运行时可改 = kill-switch）
+   + `maxGated`（默认 20）。
+4. **可观测**：日记新增「候选来源」「assistant 形态判据」「准入」三行 —— 「候选 0 条」
+   现在能拆开看是没采到、形态挡掉了，还是被上限截断了。
+5. **P1 consolidation 档位不再只靠硬编码**：档位优先取宿主 `agentDefaultModel.currentSelection()`，
+   取不到才用兜底常量 `DEFAULT_REASONING_EFFORT='high'`（宿主对模型没声明的档位直接抛
+   `UNSUPPORTED_REASONING_EFFORT`；见 `dsh-llm-pi-ai/lib/index.js:1810-1814`）。
+   同时 `stopReason != completed` 的 diagnostic 不再是空数组字符串，改成带
+   `diagnostic` / `error` / `errors` / 输出摘要的分段说明。
+
+**宿主侧配套（本机私有，不进仓）**：`profiles/desktop/cordis.patch.yml` 的
+`llm-pi-ai.providers.minimax-cn.models[].reasoningEfforts` 补回声明
+（minimal/low/medium/high）。不声明 ⇒ 目录里没有裸 id `MiniMax-M3.1-Flash`
+（目录里的 id 都是 provider-scoped）⇒ 模型被当成非推理模型 ⇒ 支持档位只剩 off ⇒
+P1 每次调用都 `stopReason=error`、`diagnostic` 为空 ⇒ 提升通道恒 0。
+补上后实测：`dream_verify_consolidation` 从 `mode=failed` 变为 `mode=llm · schemaOk=true`。
+
+**测试**：`test/admission-shape.test.js`（11 例）。负控制实测：
+把 `DEFAULTS.admissionMode` 改回 `repetition` → 1 例变红；摘掉 assistant 源 → 3 例变红。
+既有 198 例全部保持通过（老门槛语义的用例改为显式传 `admission: 'repetition'`）。
+
+---
+
 ## v0.8.0 — 2026-11-07 — 阶段 2：记忆维护三件套（证据审计 / 预加载候选 / 衰减体检）
 
 **背景**：Anthropic 博客《The components of agent memory》把 dreaming 定义为四项操作：

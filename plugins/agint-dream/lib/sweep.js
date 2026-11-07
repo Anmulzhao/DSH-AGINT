@@ -90,6 +90,15 @@ export const DEFAULTS = {
   minScore: 0.6,
   minRecall: 3,             // signal occurrences across messages
   minUniqueSessions: 2,     // distinct sessions that surfaced it
+  // ── 2026-11-07（方案 C）：准入从「逐字复现」改成「形态 + LLM 裁决」──
+  // 实测（2026-11-07）：真实语料里「同一句逐字复现 ≥3 次且跨 ≥2 会话」几乎不存在
+  // （7 天窗口：用户原话 75 个不同句子 + assistant 主张 54 个 = 129 个，只有 1 个够门槛），
+  // 老门槛把候选池永久关死 ⇒ 梦境自 2026-10-21 起过门数持续为 0，最后一次非零提升是 10-20。
+  // 现在：准入只管形态，「该不该记」交给 P1 LLM consolidation 裁决；
+  // 复现次数退回评分权重（frequency / diversity / consolidation 本来就在算）。
+  // 回滚：admissionMode='repetition' ⇒ 恢复老口径（K51 出厂即开 + 一键可关）。
+  admissionMode: 'shape',
+  maxGated: 20,             // 准入上限：控制每轮进 LLM 的候选量
   // Dedupe
   dedupeTokenOverlap: 0.6,  // normalized token overlap → considered covered
   // ── 分级去重（2026-09-21，proposals/agint-dream-dedupe-lineage.md 方案 B）──
@@ -571,6 +580,38 @@ const SIGNAL_RULES = [
 
 const NOISE_RE = /^(你好|hi|hello|谢谢|好的|嗯|嗯嗯|再见|bye|在吗|ok|okay|收到|明白了?)$/i;
 
+// ── 2026-11-07（方案 C）：assistant 正文的形态判据 ─────────────────────
+// 准入只看「这句话像不像一条可沉淀的主张」，不看它复现过几次。
+// 复现次数已经退回评分权重（frequency / diversity / consolidation）。
+const ASSISTANT_CLAIM_RE = /(所以|因此|必须|应该|不要|别|一律|切记|以后|每次|先.*再|禁止|务必|注意|记住|教训|踩坑|规定|规则|默认|统一|不得|宁可|宁愿)/;
+// 代码骨架：命令、路径、堆栈、函数体 —— 这类句子记进本体没有意义，
+// 而且历史上正是它们把「工具报错残骸」灌进长期记忆（见 classifyToolError 注释）。
+// 路径也算代码骨架：句子切分会把 `const x = require("fs"); 必须改 X.js` 拆成两半，
+// 后半句不含任何代码符号 —— 只看句子会漏掉它（2026-11-07 实测踩到）。
+const CODE_SKELETON_RE = /(`|\{|\}|=>|function |const |import |require\(|\.js:|\.mjs:|\.ts:|at [A-Za-z_$]|npm |node |PowerShell|\$\(|Traceback|Exception|Error:|[A-Za-z0-9_.\/-]+\.(js|mjs|cjs|ts|tsx|json|ya?ml)\b|\/[a-z][a-z0-9_-]*\/[a-z])/i;
+// 工具回显：assistant 复述工具输出时留下的行首标记。
+const TOOL_ECHO_RE = /(memory_search|memory_write|memory_read|memory_stats|memory_forget_scan|memory_remove|agint_search|wiki_search|wiki_read|bash|grep|glob|read_file|write_file)\s*[:：]/;
+// assistant 主张的类型判定：命中哪条就是哪类；都不命中按 pattern 兜底。
+const ASSISTANT_TYPE_RULES = [
+  { type: 'lesson', re: /(禁止|不要|别|千万别|切记|务必|必须|一定不要|不可以|教训|踩坑|危险|小心)/ },
+  { type: 'decision', re: /(决定|采用|选用|换成|改用|以后用|改成|统一用|迁移到|弃用|停用|命名)/ },
+  { type: 'preference', re: /(我希望|我喜欢|我偏好|更喜欢|希望以后|以后就|称呼|叫我|讨厌|不喜欢|更愿意|要求)/ },
+  { type: 'pattern', re: /(习惯|规律|每次|总是|通常|一般会|流程|套路|方法论|思路|工作模式|思维模式|行为模式)/ },
+];
+
+function assistantClaimType(sentence) {
+  for (const rule of ASSISTANT_TYPE_RULES) if (rule.re.test(sentence)) return rule.type;
+  return 'pattern';
+}
+
+/** assistant 句切分：10–160 字（比用户原话下限高 —— 助手的一句话通常更长）。 */
+function splitAssistantSentences(text) {
+  return String(text ?? '')
+    .split(/[。！？!?；;\n]+/)
+    .map((s) => s.replace(/[“”"']/g, '').trim())
+    .filter((s) => s.length >= 10 && s.length <= 160);
+}
+
 // Questions often carry no '？' in Chinese; any interrogative word marks the
 // utterance as a request, not a durable statement.
 const QUESTION_RE = /(什么|怎么|为什么|如何|哪[些个]|是不是|能不能|可不可以|有没有|可不可以|多少|谁|吗$|呢$|吧$|能.*吗)/;
@@ -850,6 +891,46 @@ export function toolErrorStatsOfOne(candidates) {
  * 返回值形状刻意保持扁平 —— tools.js 的 output schema 是
  * additionalProperties:false，byReason 这种开放字典不好声明。
  */
+/**
+ * 读 `gateCandidates` 附在数组上的准入统计；没有（旧调用方 / 桩数据）时给兜底。
+ */
+export function admissionStatsOf(gated) {
+  const s = gated?.admissionStats;
+  if (s && typeof s === 'object') return { ...s };
+  return {
+    mode: DEFAULTS.admissionMode,
+    maxGated: DEFAULTS.maxGated,
+    rejectedByScore: 0,
+    rejectedBySignal: 0,
+    rejectedBySessions: 0,
+    capped: 0,
+  };
+}
+
+/**
+ * 2026-11-07（方案 C）：聚合各会话的形态判据统计与候选来源分布。
+ * 没有这两组数字，「候选 0 条」分不清是「没采到」还是「采到了全被挡」。
+ */
+export function aggregateShapeStats(candidateLists) {
+  const out = { sentences: 0, kept: 0, dropped: 0, byReason: {}, sources: { user: 0, assistant: 0, 'tool-error': 0 } };
+  for (const list of candidateLists ?? []) {
+    const s = list?.shapeStats;
+    if (s) {
+      out.sentences += s.sentences ?? 0;
+      out.kept += s.kept ?? 0;
+      out.dropped += s.dropped ?? 0;
+      for (const [k, v] of Object.entries(s.byReason ?? {})) {
+        out.byReason[k] = (out.byReason[k] ?? 0) + v;
+      }
+    }
+    const src = list?.sourceStats;
+    if (src) {
+      for (const k of Object.keys(out.sources)) out.sources[k] += src[k] ?? 0;
+    }
+  }
+  return out;
+}
+
 export function aggregateToolErrorStats(candidateLists) {
   const out = {
     enabled: DEFAULTS.toolErrorDiagnosticOnly,
@@ -887,6 +968,8 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
   const diagnosticOnly = opts.toolErrorDiagnosticOnly ?? DEFAULTS.toolErrorDiagnosticOnly;
   const candidates = [];
   const seen = new Set();
+  // 已产出的候选文本（跨源去重）：assistant 源与用户源撞车时只留一条。
+  const producedKeys = new Set();
   for (const { text, time } of session.userTexts) {
     if (NOISE_RE.test(text.trim())) continue;
     // 引用块 / 带 (id=...) 前缀的记忆条目形态 → 不是本人主张，且会把污染写进本体
@@ -908,15 +991,55 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
           candidates.push({
             text: sentence.slice(0, DEFAULTS.maxCandidateChars),
             type: rule.type,
+            source: 'user',
             sessionKey: session.sessionKey,
             time: time || nowMs,
             signals: [sentence],
           });
+          producedKeys.add(key);
           break;
         }
       }
     }
   }
+  // ── 2026-11-07（方案 C）：assistant 正文作为第三条候选源 ──────────────
+  // 动机（实测）：候选源只剩「用户原话 + 工具错误」两条 ——
+  //   ① 用户原话几乎不含 4 类桶的陈述句（2026-11-07 实测 15 句 → 12 句无桶、3 句疑问）
+  //   ② 工具错误被因果过滤全拦（实测 留 0 / 拦 46）
+  // ⇒ 候选池长期为 0。而「失败之后真正长出的教训」是助手自己写下的那句
+  // 「所以以后必须先确认 X」—— 2026-10-28 提案 d2b77b47 第 1 步只做了统计，
+  // 第 2 步（候选化）一直没做，这条链在中间是断的。本步补第 2 步。
+  //
+  // 准入只看形态，不看复现次数（复现次数已退回评分权重）：
+  //   含经验/要求词 · 10–160 字 · 非引用块 · 非记忆条目形态 · 无代码骨架 · 非工具回显。
+  const shapeStats = { sentences: 0, kept: 0, dropped: 0, byReason: {} };
+  const shapeDrop = (reason) => {
+    shapeStats.dropped += 1;
+    shapeStats.byReason[reason] = (shapeStats.byReason[reason] ?? 0) + 1;
+  };
+  for (const { text, time } of session.assistantTexts ?? []) {
+    for (const sentence of splitAssistantSentences(text)) {
+      shapeStats.sentences += 1;
+      const key = normalizeForCompare(sentence);
+      if (producedKeys.has(key)) { shapeDrop('duplicate'); continue; }
+      if (QUOTED_RE.test(sentence) || PREFIXED_ENTRY_RE.test(sentence)) { shapeDrop('quoted'); continue; }
+      if (QUESTION_RE.test(sentence) || /[?？]$/.test(sentence)) { shapeDrop('question'); continue; }
+      if (CODE_SKELETON_RE.test(sentence)) { shapeDrop('code'); continue; }
+      if (TOOL_ECHO_RE.test(sentence)) { shapeDrop('tool-echo'); continue; }
+      if (!ASSISTANT_CLAIM_RE.test(sentence)) { shapeDrop('no-claim-word'); continue; }
+      producedKeys.add(key);
+      shapeStats.kept += 1;
+      candidates.push({
+        text: sentence.slice(0, DEFAULTS.maxCandidateChars),
+        type: assistantClaimType(sentence),
+        source: 'assistant',
+        sessionKey: session.sessionKey,
+        time: time || nowMs,
+        signals: [sentence],
+      });
+    }
+  }
+
   // 工具错误信号：09-28 起走诊断化过滤（见 classifyToolError）。
   // 此前是无条件 push，等于把 stderr 原文当教训灌进长期记忆。
   // 2026-10-28 追加：统计里区分「结构化判定」与「严格前缀兜底」两种来源 ——
@@ -943,6 +1066,7 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
     candidates.push({
       text: `${SELF_POLLUTION_MARKER}${text}`.slice(0, DEFAULTS.maxCandidateChars),
       type: 'lesson',
+      source: 'tool-error',
       sessionKey: session.sessionKey,
       time: time || nowMs,
       signals: [text],
@@ -954,6 +1078,15 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
   // 非枚举：保持数组语义（`deepEqual(candidates, [...])` / `.length` 不变），
   // 但 runSweep / 日记可读 `.toolErrorStats` 做观测。
   Object.defineProperty(candidates, 'toolErrorStats', { value: errorStats, enumerable: false });
+  // 2026-11-07（方案 C）：供给侧可观测 —— 候选来自哪条源、assistant 句被什么判据挡掉。
+  // 没有这两组数字，「候选 0 条」就分不清是「没采到」还是「采到了全被挡」。
+  const sourceStats = { user: 0, assistant: 0, 'tool-error': 0 };
+  for (const c of candidates) {
+    const key = c.source === 'assistant' ? 'assistant' : c.source === 'user' ? 'user' : 'tool-error';
+    sourceStats[key] += 1;
+  }
+  Object.defineProperty(candidates, 'shapeStats', { value: shapeStats, enumerable: false });
+  Object.defineProperty(candidates, 'sourceStats', { value: sourceStats, enumerable: false });
   return candidates;
 }
 
@@ -1199,6 +1332,15 @@ export function gateCandidates(scored, existing = [], opts = {}) {
   const minScore = opts.minScore ?? DEFAULTS.minScore;
   const minRecall = opts.minRecall ?? DEFAULTS.minRecall;
   const minUnique = opts.minUniqueSessions ?? DEFAULTS.minUniqueSessions;
+  // 2026-11-07（方案 C）：两种准入口径。
+  //   'repetition'（旧）：score ≥ minScore ∧ 同句复现 ≥ minRecall ∧ 跨 ≥ minUnique 个会话。
+  //                      实测真实语料里几乎不存在这种形态 ⇒ 候选池被永久关死。
+  //   'shape'（新，出厂默认）：不按复现次数拒绝 —— 复现次数已退回评分权重；
+  //                      形态判据在抽取层做完，这里只做去重 + 按分数排序取前 maxGated 条。
+  // 「该不该记」由 P1 LLM consolidation 裁决（它能判 add/merge/supersede），
+  // 校验门（loss fraction ≤ 0.25、lineageKey、operations 1:1）兜底。
+  const admission = opts.admission ?? DEFAULTS.admissionMode;
+  const maxGated = Number.isInteger(opts.maxGated) && opts.maxGated > 0 ? opts.maxGated : DEFAULTS.maxGated;
   const overlap = opts.dedupeTokenOverlap ?? DEFAULTS.dedupeTokenOverlap;
   // 分级去重旋钮。dedupeMid 的**默认值**跟 dedupeTokenOverlap 走（不是写死 0.6），
   // 否则 cordis.patch.yml 里只改了 dedupeTokenOverlap 时会静默失配。
@@ -1211,10 +1353,21 @@ export function gateCandidates(scored, existing = [], opts = {}) {
   const kept = [];
   // 可观测性（K51）：被丢弃的候选必须计数，否则分不清「没有候选」和「全被挡了」。
   const dedupeStats = { enabled: Boolean(tiered), dropped: 0, suspicious: 0, checked: 0, maxSimilarity: 0 };
+  // 准入统计：各条准入口各挡了多少 —— 「候选 0 条」要能拆开看是哪一档挡的。
+  const admissionStats = {
+    mode: admission,
+    maxGated,
+    rejectedByScore: 0,
+    rejectedBySignal: 0,
+    rejectedBySessions: 0,
+    capped: 0,
+  };
   for (const c of scored) {
-    if (c.score < minScore) continue;
-    if (c.signalCount < minRecall) continue;
-    if (c.uniqueSessions < minUnique) continue;
+    if (admission === 'repetition') {
+      if (c.score < minScore) { admissionStats.rejectedByScore += 1; continue; }
+      if (c.signalCount < minRecall) { admissionStats.rejectedBySignal += 1; continue; }
+      if (c.uniqueSessions < minUnique) { admissionStats.rejectedBySessions += 1; continue; }
+    }
     dedupeStats.checked += 1;
     const norm = normalizeForCompare(c.text);
     let covered = false;
@@ -1253,7 +1406,15 @@ export function gateCandidates(scored, existing = [], opts = {}) {
   // 非枚举：保持数组语义（`deepEqual(kept, [...])` 与 `kept.length` 不变），
   // 但调用方可读 `dedupeStats` 做观测。
   Object.defineProperty(kept, 'dedupeStats', { value: dedupeStats, enumerable: false });
-  return kept;
+  // 形状准入：score 只当排序权重，取前 maxGated 条（其余让位给下一轮）。
+  // 复现准入：保持旧行为，一字不改。
+  const out = admission === 'shape'
+    ? [...kept].sort((a, b) => b.score - a.score).slice(0, maxGated)
+    : kept;
+  admissionStats.capped = admission === 'shape' ? kept.length - out.length : 0;
+  Object.defineProperty(out, 'dedupeStats', { value: dedupeStats, enumerable: false });
+  Object.defineProperty(out, 'admissionStats', { value: admissionStats, enumerable: false });
+  return out;
 }
 
 /**
@@ -1290,7 +1451,7 @@ function fmtDay(ms) {
  *           errors, durationMs, windows?, skippedPromoted?, skippedRawToolError?,
  *           validationOk?, validationReason?, recallWrite?, pruneResult? }.
  */
-export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, assistantStats = null, maintenance = null, apply = true }) {
+export function renderDiary({ day, signals, memWrites, candidates, gated, promoted, recovered = [], errors = [], durationMs, windows, skippedPromoted = 0, skippedRawToolError = 0, validationOk = true, validationReason, recallWrite, pruneResult, consolidationMode = 'failed', consolidationReason = null, qualityEvalSummary = null, evolutionSummary = null, evolutionBoost = 0, health = null, dedupeStats = null, toolErrorStats = null, sourceFilterStats = null, assistantStats = null, maintenance = null, shapeStats = null, admissionStats = null, apply = true }) {
   const lines = [];
   lines.push(`# 梦境日记 ${day}`);
   lines.push('');
@@ -1346,11 +1507,35 @@ export function renderDiary({ day, signals, memWrites, candidates, gated, promot
   lines.push('## REM — 候选提炼');
   lines.push('');
   lines.push(`- 启发式候选：${candidates.length} 条（偏好/决策/教训/规律）`);
+  // 2026-11-07（方案 C）：供给侧必须可见 —— 候选来自哪条源、assistant 句被什么判据挡掉。
+  // 没有这两行，「候选 0 条」分不清是「没采到」还是「采到了全被挡」。
+  if (shapeStats) {
+    const reasons = Object.entries(shapeStats.byReason ?? {})
+      .map(([k, v]) => `${k}×${v}`).join(' · ');
+    lines.push(
+      `- 候选来源：用户原话 ${shapeStats.sources?.user ?? 0} · assistant 正文 ${shapeStats.sources?.assistant ?? 0}`
+      + ` · 工具错误 ${shapeStats.sources?.['tool-error'] ?? 0}`,
+    );
+    lines.push(
+      `- assistant 形态判据：句子 ${shapeStats.sentences ?? 0} · 入池 ${shapeStats.kept ?? 0}`
+      + ` · 挡 ${shapeStats.dropped ?? 0}${reasons ? `（${reasons}）` : ''}`,
+    );
+  }
   lines.push('- REM 强化：跨 7 天窗口的信号并入评分（提高 frequency/consolidation），不单独产生候选');
   lines.push('');
   lines.push('## Deep — 评分与提升');
   lines.push('');
   lines.push(`- 门槛通过候选：${gated.length} 条`);
+  // 2026-11-07（方案 C）：准入口径必须可见 —— 否则「过门 0 条」看不出是形态没命中、
+  // 还是被复现次数门槛挡了，还是被上限截断了。
+  if (admissionStats) {
+    const a = admissionStats;
+    lines.push(
+      `- 准入：${a.mode === 'shape' ? '形态准入（复现次数只当权重，不作准入）' : '复现准入（旧口径）'}`
+      + ` · 上限 ${a.maxGated} · 因上限截断 ${a.capped ?? 0}`
+      + ` · 复现口径挡下：分 ${a.rejectedByScore ?? 0} / 信号 ${a.rejectedBySignal ?? 0} / 跨会话 ${a.rejectedBySessions ?? 0}`,
+    );
+  }
   if (skippedPromoted > 0) lines.push(`- 已 promote 跳过：${skippedPromoted} 条`);
   // 2026-10-19：提升边界闸的拦截数必须可见 —— 拦下来的东西不能是黑洞。
   if (skippedRawToolError > 0) {
@@ -1518,6 +1703,9 @@ export async function runSweep({
   minScore,
   minRecall,
   minUniqueSessions,
+  // 2026-11-07（方案 C）：准入口径（'shape' 出厂默认 / 'repetition' 回滚老口径）+ 准入上限。
+  admissionMode = DEFAULTS.admissionMode,
+  maxGated = DEFAULTS.maxGated,
   // 2026-09-21（方案 B 分级去重）运行时旋钮 —— 见 DEFAULTS 处的长注释
   dedupeTieredEnabled,
   dedupeHigh,
@@ -1638,6 +1826,8 @@ export async function runSweep({
   const candidateLists = signals.map((s) => extractCandidates(s, nowMs, { toolErrorDiagnosticOnly }));
   const candidates = candidateLists.flat();
   const toolErrorStats = aggregateToolErrorStats(candidateLists);
+  // 2026-11-07（方案 C）：供给侧统计（assistant 形态判据 + 候选来源分布）。
+  const shapeStats = aggregateShapeStats(candidateLists);
 
   // ── P2 Light: 把候选写入 recall store（带 recallKey 归一化）──────────
   // 2026-09-28：apply=false（dry-run preview）不再写 recall store。
@@ -1722,10 +1912,11 @@ export async function runSweep({
   // ── Deep: gate + P0 validation gate + promote ────────────────────────
   const existing = memory ? await memory.list({}) : [];
   const dedupeOpts = { dedupeTieredEnabled, dedupeHigh, dedupeMid };
-  const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions, ...dedupeOpts });
+  const gated = gateCandidates(scored, existing, { minScore, minRecall, minUniqueSessions, admission: admissionMode, maxGated, ...dedupeOpts });
   // 2026-09-21：去重埋点（K51 可观测 > 可审批）—— 被丢弃的候选也要计数，
   // 否则分不清「没有候选」和「全被去重挡了」。
   const dedupeStats = dedupeStatsOf(gated);
+  const admissionStats = admissionStatsOf(gated);
   // P2: 过滤掉已 promoted 的候选（在 validation/consolidation 之前过滤，避免重复写）
   const unpromotedGated = gated.filter((c) => {
     const k = recallKey(normalizeForCompare(c.text));
@@ -1892,7 +2083,7 @@ export async function runSweep({
       const recGated = gateCandidates(
         recEligible,
         existingForRecovery,
-        { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2, ...dedupeOpts },
+        { minScore: minScore ?? DEFAULTS.minScore, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', ...dedupeOpts },
       );
       // P0: recovery 也走 validation gate
       const recValidation = validateAndApply({
@@ -1985,6 +2176,9 @@ export async function runSweep({
     // P1 LLM consolidation 模式（llm / not-attempted / failed）
     consolidationMode,
     consolidationReason,
+    // 2026-11-07（方案 C）：供给侧与准入侧统计
+    shapeStats,
+    admissionStats,
     // v0.2 (task 2 / C2 / 2026-09-06)：REM 阶段 qualityEvaluator 评估摘要
     qualityEvalSummary,
     // v0.3 (task 3 / 2026-09-06)：Deep 阶段 evolution 摘要
