@@ -2,6 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.3.1] — 门禁 skipped 必须留痕（2026-11-07）
+
+**背景**：0.3.0 的写盘条件是 `level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift`。
+两道门禁任一为 `skipped`（`agint.repoRoot` 未配、或 `agint.wiki` 没暴露 `root`）时
+**不写任何报告** —— 而 `skipped` 的语义正是「一次都没核过」。
+于是报告目录里空空如也，看起来像「在跑且没问题」。这是 K134 明令禁止的静默降级。
+
+**修复**：`skipped` 现在也触发写盘，报告里写明「未执行：<reason>」。
+`disabled`（用户主动关掉）**不**因此写盘 —— 停用不该产生每日噪音。
+
+**判据**：`wroteReport` 由「有没有未核过的门禁」决定，不再由「有没有判红」决定。
+
+**验证**：`test/agents-size-guard.test.mjs` 31/31（原 29）。
+新增负控制：`memoryIndex` 与 `wikiIndex` 同时 `disabled` 时 `wroteReport` 仍为 `false`。
+
+**发现路径**：用加载位字节做端到端（真 `agint-wiki` 插件 → 真服务对象 → 真 job action），
+负控制「服务对象去掉 root」暴露出「记 skipped 但不写盘」。
+
 ## [0.3.0] — agents-size-guard 兼作两道索引门禁（2026-11-07）
 
 **背景**：AGINT 有两处「索引容易腐坏但没人每天核」的地方 —— 顶层注入的 `MEMORY.md`
