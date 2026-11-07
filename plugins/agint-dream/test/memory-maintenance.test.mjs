@@ -54,6 +54,32 @@ test('evidence 非字符串（对象）也能提路径', () => {
   assert.deepEqual(paths, ['plugins/x/lib/index.js']);
 });
 
+test('⭐ 路径提取负控制：带连字符的前缀不许被截断成仓库根前缀', () => {
+  // 2026-11-07 真数据踩到：agint-quality-eval/ 被截成 eval/，agent-presets/ 被截成 presets/
+  const paths = extractEvidencePaths(
+    'location=plugins/agint-quality/agint-quality-eval/lib/index.js line 272；'
+    + '另见 agent-presets/src/index.ts:110 与 plugins/agint-quality/agint-quality-eval/lib/tools.js',
+  );
+  assert.deepEqual(paths.sort(), [
+    'plugins/agint-quality/agint-quality-eval/lib/index.js',
+    'plugins/agint-quality/agint-quality-eval/lib/tools.js',
+  ]);
+  assert.ok(!paths.includes('eval/lib/index.js'), '截断片段不许出现');
+  assert.ok(!paths.includes('presets/src/index.ts'), '截断片段不许出现');
+});
+
+test('⭐ 扩展名负控制：.json 不许被当成 .js 截断', () => {
+  const paths = extractEvidencePaths(
+    'plugins/agint-self-model/package.json peerDeps；docs/wiring-exemptions.json:54-59',
+  );
+  assert.deepEqual(paths.sort(), [
+    'docs/wiring-exemptions.json',
+    'plugins/agint-self-model/package.json',
+  ]);
+  assert.ok(!paths.some((p) => p.endsWith('package.js')), 'package.json 不许截成 package.js');
+  assert.ok(!paths.some((p) => p.endsWith('wiring-exemptions.js')), '.json 不许截成 .js');
+});
+
 test('证据审计：空证据与无路径分开计数，不合并成一个数', () => {
   const r = auditMemoryEvidence([
     entry({ id: 'a', evidence: '' }),
