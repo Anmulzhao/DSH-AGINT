@@ -6,13 +6,19 @@
 >
 > **一句话边界**：链路全部连通、隔离域真写入已验证；**生产写入仍恒为 0**。
 > 打开的始终是「功能可用」，不是「写入许可」，更不是「判定权」。
+>
+> **2026-11-07 第三批「让链路真正亮起来」**：链路已接进**真实运行节奏**（系统 cron 每小时心跳），
+> G1 在心跳进程内显式打开，五闸逐闸求值并留审计台账。⛔ 这不等于放行投递：默认配置仍
+> `OFF`、默认 sink 仍 dry-run、生产写入仍 0；G2 外部金标与 G4 可证伪预测两闸如实拒绝。
+> 详见第 8 节。
 
 ## 1. 两批各自做了什么
 
 | 批次 | 代码位置 | 已实现 | ⛔ 刻意未做 |
 | --- | --- | --- | --- |
 | 第一批：纯函数模块 | `bin/oracle-prescription-delivery.mjs`、`oracle-calibration-replay.mjs`、`oracle-judge-channel.mjs` | 五闸信封、56 组公式自检回放、notes-only judge 契约 | 不挂 cordis、不注册 cron、不建域、不提供默认 sink |
-| **第二批：接线（本批）** | `bin/oracle-runtime-sources.mjs`、`oracle-runtime-sinks.mjs`、`oracle-runtime.mjs` | 真实 storages/冻结集只读接入、**接 evolve/curriculum 插件 lib 的真 sink**（走 zod spec）、端到端编排器、隔离域演练与回读验证、G5 否决/撤销窗口自省 | ⛔ 不注入生产 sink、不设生产开关、不填标注、不冻结标签、不改评分常量、不调 LLM、不挂 cordis |
+| 第二批：接线 | `bin/oracle-runtime-sources.mjs`、`oracle-runtime-sinks.mjs`、`oracle-runtime.mjs` | 真实 storages/冻结集只读接入、**接 evolve/curriculum 插件 lib 的真 sink**（走 zod spec）、端到端编排器、隔离域演练与回读验证、G5 否决/撤销窗口自省 | ⛔ 不注入生产 sink、不设生产开关、不填标注、不冻结标签、不改评分常量、不调 LLM、不挂 cordis |
+| **第三批：运行态点亮** | `bin/oracle-live-tick.mjs`（+ `.test.mjs`） | 真实运行节奏心跳（系统 cron 每小时）、G1 **进程级**显式打开、五闸逐闸明细、可审计 ledger、心跳活性自省、台账禁入生产 storages 硬判据 | ⛔ 不改默认开关、不重启 dsh、不动 `cordis.patch.yml`、不注入生产 sink、不伪造真值/预测 |
 
 `oracle-prescription-delivery.mjs` 本批补了 `evaluateDeliveryAsync()`：真 sink 走插件 lib 的
 `propose()`/`generate()` 是**异步写穿**，同步版不 await 会出现「返回 writes=1 但磁盘没落」的假象。
@@ -43,6 +49,8 @@ S=$DSH_HOME/storages
 node bin/oracle-runtime.mjs --storages "$S" --status     # 接线自省 + 真实读数 + 缺什么
 node bin/oracle-runtime.mjs --storages "$S"              # 默认 dry-run：零写入
 node bin/oracle-runtime.mjs --storages "$S" --rehearse   # 隔离域真写入 + 回读验证
+node bin/oracle-live-tick.mjs --storages "$S" --switch on          # 真实心跳（追加审计台账）
+node bin/oracle-live-tick.mjs --storages "$S" --switch on --status  # 通电状态 + 心跳活性
 ```
 
 `--rehearse` 实测（2026-11-07）：`DELIVERED_PROPOSED`、隔离域写入 **1 条** `status=proposed`
@@ -73,7 +81,9 @@ G5 撤销窗口 24h 与 `--veto`（`humanVeto=true`）已接进编排器：即�
 - 6 周 `humanVerdict` / `humanOverall` 标注由人填完（阈值 ≥4 周、权重 ≥5 周），并解决 `redundancy`/`bloat` 的 `unidentifiable`；
 - 带 `predictedDelta` + `predictedDeltaSource` 的真实处方（现有 7 条历史提案都不带）；
 - C1 阶段 2/3 的 D1–D5 拍板，独立 preset / 独立会话建立；
-- `AGINT_ORACLE_AUTONOMOUS_WRITE=on` 由人显式开启，G5 撤销与人工否决在面板可达；
+- `AGINT_ORACLE_AUTONOMOUS_WRITE` 的**生产级**开关由人显式开启：第三批只在心跳进程内用
+  `--switch on` 打开 G1（`scope=PROCESS_ONLY`，默认配置恒 OFF），它只让五闸真实求值、不产生任何写入；
+  把开关写进生产配置并注入生产 sink 仍需单独批准；G5 撤销与人工否决在面板可达；
 - 把 `sink` 注入运行时、指向**生产** storages 并单独评审、单独发版。
 
 ⛔ 接线时 `sink` 必须走既有面板路由或插件 lib（本批已实现），禁止直写 storages JSON、
@@ -104,3 +114,65 @@ node bin/next-batch-readiness.mjs --storages "$S" --sets eval/capability-baselin
 
 最后一条应仍为 `ALL_BLOCKED` —— **这是设计结果，不是故障**：代码与接线都齐了，
 但真值、标注、拍板、开关四样仍需人给。
+
+## 8. 运行态点亮（2026-11-07 第三批）
+
+「亮」= **接进真实运行节奏、每次真实求值留痕、G1 显式通电**，不是「放行写入」。
+
+### 8.1 现状读数（麒麟机）
+
+```text
+受控链路 · 运行态心跳
+  接线 CONNECTED ｜ 通电 ON（本次进程显式打开；默认配置仍为 OFF）｜ 默认配置恒 OFF
+  真实读数：广播 51 条 / weekly 7 周 / 回流 7
+  冻结标签 0 ｜ labelAuthority=UNSET ｜ 合格处方 0
+  五闸：✓ G1 / x G2 / ✓ G3 / x G4 / ✓ G5 ⇒ DEFAULT_DENY（3/5）
+  链路：sources READ → B1_envelope REJECTED → five_gates DEFAULT_DENY
+        → sink NO_ENVELOPE → B2 INSUFFICIENT_ANNOTATIONS → C2 BLOCKED
+  ⛔ 生产写入 0 ／ 冻结集 0 ／ 评分常量 0 ／ 标注 0 ／ LLM 0
+```
+
+**还暗着的两盏灯，性质完全不同**：
+
+- `G2_external_anchor` —— **人给金标**。0 条 GOLD/HELDOUT 冻结标签 ⇒ `UNSET` 必拒。
+  ⛔ 绝不代填、绝不拿 `SILVER` 自评顶替；这是「判定权归人」那道闸，代码不得绕过。
+- `G4_falsifiable_prediction` —— **系统侧可自愈**。7 条历史提案全缺
+  `predictedDelta` / `predictedDeltaSource`，当前没有可证伪预测。修法是让 oracle 周报在产出提案时
+  把预测与来源一并写入（下一批），**不是**给五闸塞占位 `0`。心跳器明文判它 fail，
+  绝不拿占位值冒充处方（这是本批顺手修掉的一处口径瑕疵）。
+
+### 8.2 真实调度（可逆、零重启）
+
+系统 `cron` daemon 在跑、原 `crontab` 为空，故追加一条**每小时第 7 分**的心跳（实际为单行）：
+
+```cron
+7 * * * * cd /home/kylin/projects/DSH/DSH-AGINT && DSH_HOME=/home/kylin/projects/DSH/AGINT-data AGINT_DATA_HOME=/home/kylin/projects/DSH/AGINT-data /home/kylin/.nvm/versions/node/v24.21.0/bin/node bin/oracle-live-tick.mjs --storages /home/kylin/projects/DSH/AGINT-data/storages --switch on --quiet >> /home/kylin/projects/DSH/AGINT-data/.oracle-live/live-tick.log 2>&1
+```
+
+- 不动 dsh 服务进程、不 `redeploy`、不改 `cordis.patch.yml` ⇒ 零重启风险，服务仍照常响应。
+- `--quiet` 不吐 stdout；审计台账落 `<DSH_HOME>/.oracle-live/live-ledger.jsonl`（**仓库外**，
+  避免每小时把 `git status` 弄脏），上限 240 行滚动；每行含逐闸结果、通电状态、四个恒定零。
+- `assertLedgerOutsideProduction()` 硬拒把台账写进生产 storages（单测有阴性对照）。
+- **撤销**：`crontab -l | grep -v 'oracle-live-tick.mjs' | crontab -`。
+  安装前的 crontab 已备份在 `<DSH_HOME>/.oracle-live/crontab.before`。删掉后心跳停止、默认配置仍 OFF。
+
+### 8.3 验收
+
+- 单测 `bin/oracle-live-tick.test.mjs` **11/11**；受控链路相关合计 **152/152**。
+- 四道门禁：① `plugin-check` EXIT=0 / 0 FAIL；② `check-wiring` EXIT=1 —— **2 个既有**
+  `NO_SUBSCRIBER(input.signal.host.subagent-end/start)`，如实保留未伪装；
+  ③ `check-preset-parity` EXIT=0（⛔ 必须先 `export PATH=<nvm>/bin:$PATH`，
+  否则 `spawnSync dsh ENOENT` 会假报 `baseline-unavailable` CRITICAL）；④ `check-dsh-compat` EXIT=0。
+- 真实心跳前后对拍 `agint_evolve.json` / `agint_aesthetic_oracle.json` / `agint_cron.json`
+  与三份冻结集的联合 sha256：`b55a38440449bdcf657b72ad155ab990040f2704fa2a4f72b56c99515c943da2`
+  → 完全一致，**逐字节未变**。
+- `bin/next-batch-readiness.mjs` 仍为 `ALL_BLOCKED`：运行态通电不改变硬前置。
+
+### 8.4 让最后一盏灯亮起来（需人）
+
+1. 授权人工冻结 `gold` / `verify` / `heldout` 标签 ⇒ `verifyBaseline()` 判 `READY`，G2 才有真值；
+2. 让周报提案带 `predictedDelta` + `predictedDeltaSource` ⇒ G4 过，B1 才造得出合法信封；
+3. 单独评审「把 sink 注入生产 storages + 生产级开关」并单独发版；
+4. G5 24h 撤销窗口与人工否决保持可达。
+
+⛔ 在 1～3 备齐前，心跳会继续真实地亮着、也真实地拒绝 —— **亮的是链路，不是许可**。
