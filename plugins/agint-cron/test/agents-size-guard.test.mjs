@@ -397,11 +397,44 @@ test('size guard wiki 门禁 kill-switch 与缺 root 的降级理由', async () 
     await writeFile(file, '# A\n\nshort\n', 'utf8');
     const off = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs'), wikiIndex: { enabled: false } });
     assert.equal(off.wikiIndex.level, 'disabled');
-    assert.equal(off.wroteReport, false);
+    assert.equal(off.wroteReport, false, '主动关掉不算「没核过」，不写报告');
 
     const noRoot = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs'), wikiIndex: { script: join(dir, 'x.mjs') } });
     assert.equal(noRoot.wikiIndex.level, 'skipped');
     assert.match(noRoot.wikiIndex.reason, /agint\.wiki 未暴露 root/);
-    assert.equal(noRoot.wroteReport, false, 'skipped 不该天天写报告');
+    // 2026-11-07 修正：skipped = 一次都没核过。若不写盘，报告目录里什么都没有，
+    // 看起来就像「在跑且没问题」—— 那是 K134 明令禁止的静默降级。
+    assert.equal(noRoot.wroteReport, true, 'skipped 必须留痕：写一份「未执行」报告');
+    const body = await readFile(noRoot.reportPath, 'utf8');
+    assert.match(body, /未执行：agint\.wiki 未暴露 root/);
+  });
+});
+
+test('⭐ 负控制：门禁 disabled 时不许写报告（否则停用后天天有噪音）', async () => {
+  await withTmp(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    await writeFile(file, '# A\n\nshort\n', 'utf8');
+    const r = await runAgentsSizeGuard({
+      file,
+      reportDir: join(dir, 'docs'),
+      memoryIndex: { enabled: false },
+      wikiIndex: { enabled: false },
+    });
+    assert.equal(r.memoryIndex.level, 'disabled');
+    assert.equal(r.wikiIndex.level, 'disabled');
+    assert.equal(r.wroteReport, false);
+  });
+});
+
+test('记忆门禁 skipped 同样要留痕（repoRoot 未配 = 没核过）', async () => {
+  await withTmp(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    await writeFile(file, '# A\n\nshort\n', 'utf8');
+    const r = await runAgentsSizeGuard({ file, reportDir: join(dir, 'docs'), memoryIndex: { script: null } });
+    assert.equal(r.memoryIndex.level, 'skipped');
+    assert.match(r.memoryIndex.reason, /repoRoot/);
+    assert.equal(r.wroteReport, true, '记忆门禁没核过也要写报告');
+    const body = await readFile(r.reportPath, 'utf8');
+    assert.match(body, /未执行：.*repoRoot/);
   });
 });
