@@ -10,8 +10,10 @@
  *    恒为 0；默认 sink 仍是 dry-run；LLM 调用 0。
  * ⛔ 不伪造外部真值：0 条 GOLD/HELDOUT ⇒ labelAuthority=UNSET、G2 必拒；
  *    SILVER 自评永远不算锚定。
- * ⛔ 不替人填标注、不构造合格处方；**无合法信封时 G4 明文判 fail**，
- *    绝不拿 predictedDelta=0 的占位值冒充可证伪预测。
+ * ⛔ 不替人填标注、不伪造金标；G4 只读真实可证伪预测（工程承诺型），
+ *    无真实处方时明文判 fail，绝不拿 predictedDelta=0 的占位值冒充预测。
+ * ⛔ 第四批（2026-11-07）解耦：G4 与 G2 各读各的真实输入 ⇒ 系统侧全部点亮后
+ *    五闸只剩 G2 一盏，判定权仍归人；生产写入恒 0。
  * ⛔ --switch on 只在**本次进程**打开 G1，绝不改默认配置（默认恒 OFF）。
  * ⛔ ledger 只能写在生产 storages 之外（assertLedgerOutsideProduction 硬判据）。
  *
@@ -55,17 +57,24 @@ export function assertLedgerOutsideProduction(ledgerPath, productionStorages) {
 }
 
 /**
- * 诚实逐闸输入：只有 B1 信封真的造出来，G4 才有预测可判。
- * ⛔ 无信封 ⇒ predictedDelta=null / source='' ⇒ G4 必 fail，不拿占位 0 冒充。
+ * 诚实逐闸输入（2026-11-07 第四批解耦）：
+ * G4 判「这条处方有没有真实可证伪预测」，G2 判「有没有外部冻结真值」——
+ * 两者**互不代理**。此前 G4 绑在 envelopeResult.ok 上，锚不合格 ⇒ 信封造不出
+ * ⇒ 预测明明已就位也被判 fail，两道独立缺口混成一条。
+ *
+ * ⛔ 纪律不变：没有真实处方 / 预测为空 ⇒ predictedDelta=null、source=''，
+ *    G4 必 fail，绝不拿占位 0 冒充可证伪预测。
  */
 export function buildLiveGateInput(plan) {
-  const ok = plan?.envelopeResult?.ok === true;
-  const env = plan?.envelope ?? null;
+  const p = plan?.prescription ?? null;
+  const hasPrediction = !!p
+    && typeof p.predictedDelta === 'number' && Number.isFinite(p.predictedDelta)
+    && typeof p.predictedDeltaSource === 'string' && p.predictedDeltaSource.trim().length > 0;
   return {
     labelAuthority: plan?.anchor?.labelAuthority ?? 'UNSET',
-    target: (ok ? env?.target : plan?.prescription?.target) ?? 'proposal_queue',
-    predictedDelta: ok ? env.predictedDelta : null,
-    predictedDeltaSource: ok ? env.predictedDeltaSource : '',
+    target: p?.target ?? 'proposal_queue',
+    predictedDelta: hasPrediction ? p.predictedDelta : null,
+    predictedDeltaSource: hasPrediction ? p.predictedDeltaSource : '',
     humanVeto: plan?.veto?.humanVeto ?? false,
     emergencyStop: plan?.veto?.emergencyStop ?? false,
     vetoWindowHours: plan?.veto?.vetoWindowHours ?? VETO_WINDOW_HOURS,
@@ -81,7 +90,8 @@ export async function buildLiveReport(sources, opts = {}) {
   const gate = evaluateAutonomousWrite(buildLiveGateInput(plan), { switchOn: sw });
   const run = await executeRuntimePlan(plan, { env, switchOn: sw });
 
-  // plan.gateProbe 用占位预测做「现状探针」；心跳对外只报诚实逐闸结果，避免两套口径。
+  // plan.gateProbe 与心跳共用同一份真实处方/真实锚输入；这里再算一次，
+  // 对外只报诚实逐闸结果，避免「探针一套口径、实际一套口径」。
   const chain = run.steps.map((s) => (s.id === 'five_gates'
     ? { ...s, status: gate.allowed ? 'ALLOWED' : 'DEFAULT_DENY', note: gate.reason }
     : s));

@@ -85,3 +85,33 @@
 **回滚**：删本目录与 `bin/capability-baseline.mjs`（未跟踪文件，零残留）。不占周额度、不重启、不改任何运行时数据。
 
 **下一步（需人投入）**：由你或指定人按 §2 逐层出题并冻结 `GOLD` 标签；之后 `bin/capability-baseline.mjs` 会转 `READY`，`eval/anchor/anchor.mjs` 才有分母可算一致率。⛔ 在此之前不要写「AGINT 能力有提升」这类结论。
+
+---
+
+## 5. 就绪包：把出题后的手工活压成三条命令（2026-11-07 第四批）
+
+`bin/capability-baseline-freeze.mjs` 只做**模板 / 只读校验 / 密封**，⛔ 绝不代填真值：
+
+```bash
+node bin/capability-baseline-freeze.mjs --template     # 单条样本形状，零写入
+node bin/capability-baseline-freeze.mjs --check        # 治理体检（只读）
+node bin/capability-baseline-freeze.mjs --seal gold    # 只写 contentHash
+```
+
+- **唯一被写入的字段是 `contentHash = canonicalHash(samples)`**；`samples` / `label` /
+  `labelAuthority` / `frozenBy` / `frozenAt` / `authority` 逐字段对拍不变。
+- 硬拒：占位署名（`agent`/`system`/`ai`/`''` …）、`frozenAt` 非 ISO8601、
+  `verify` 样本标 `GOLD`/`HELDOUT`、`gold ∩ heldout` 有交集、缺 `description`/
+  `mechanicalCheck`、空集密封、路径越出 `sets/`。
+- ⚠ `verify.authority="VERIFY"` 是合法用途标记（`deriveAnchorAuthority` 只读
+  gold/heldout），脚本不要求它落在 `labelAuthority` 枚举内，不倒逼改既有数据。
+- ⚠ 「有样本但 `contentHash` 为空」是**待密封的正常态**，`--check` 记为
+  `UNSEALED_PENDING` 与 warning，不当治理违规（否则密封永远进不去）。
+
+顺序：`--template` 看形状 → 人按 §2 出题、给 `PASS/REJECT`、逐条署名 →
+`--check` 通过 → 逐份 `--seal` → `node bin/capability-baseline.mjs --json` 判 `READY`
+→ `node bin/oracle-live-tick.mjs --storages "$DSH_HOME/storages" --switch on --status`
+看到 `G2_external_anchor` 变 ✓。
+
+⛔ **五闸 5/5 仍不等于生产写入**：默认/心跳 sink 仍是 dry-run。真正的写入许可
+要另走 `eval/gated-features/生产投递评审单.md` 的单独评审。

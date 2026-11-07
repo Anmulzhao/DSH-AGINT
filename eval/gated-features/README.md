@@ -9,8 +9,13 @@
 >
 > **2026-11-07 第三批「让链路真正亮起来」**：链路已接进**真实运行节奏**（系统 cron 每小时心跳），
 > G1 在心跳进程内显式打开，五闸逐闸求值并留审计台账。⛔ 这不等于放行投递：默认配置仍
-> `OFF`、默认 sink 仍 dry-run、生产写入仍 0；G2 外部金标与 G4 可证伪预测两闸如实拒绝。
-> 详见第 8 节。
+> `OFF`、默认 sink 仍 dry-run、生产写入仍 0。详见第 8 节。
+>
+> **2026-11-07 第四批「授权让最后一盏灯亮起来」**：G4 与 G2 解耦（真实可证伪预测独立求值），
+> 生产投递分支落地但 fail-closed，金标做成模板/校验/密封就绪包。实测五闸 **4/5，
+> 只剩 `G2_external_anchor`**。⛔ 由系统自己出题、跑分、署名会让「外部锚定」退化成
+> 「系统自证」⇒ 本批**不代填金标、不代签、不擅自置 approve=true**；生产写入仍恒 0。
+> 评审材料见同目录 `生产投递评审单.md` 与 `D1-D5拍板建议单.md`，详见第 9 节。
 
 ## 1. 两批各自做了什么
 
@@ -19,6 +24,7 @@
 | 第一批：纯函数模块 | `bin/oracle-prescription-delivery.mjs`、`oracle-calibration-replay.mjs`、`oracle-judge-channel.mjs` | 五闸信封、56 组公式自检回放、notes-only judge 契约 | 不挂 cordis、不注册 cron、不建域、不提供默认 sink |
 | 第二批：接线 | `bin/oracle-runtime-sources.mjs`、`oracle-runtime-sinks.mjs`、`oracle-runtime.mjs` | 真实 storages/冻结集只读接入、**接 evolve/curriculum 插件 lib 的真 sink**（走 zod spec）、端到端编排器、隔离域演练与回读验证、G5 否决/撤销窗口自省 | ⛔ 不注入生产 sink、不设生产开关、不填标注、不冻结标签、不改评分常量、不调 LLM、不挂 cordis |
 | **第三批：运行态点亮** | `bin/oracle-live-tick.mjs`（+ `.test.mjs`） | 真实运行节奏心跳（系统 cron 每小时）、G1 **进程级**显式打开、五闸逐闸明细、可审计 ledger、心跳活性自省、台账禁入生产 storages 硬判据 | ⛔ 不改默认开关、不重启 dsh、不动 `cordis.patch.yml`、不注入生产 sink、不伪造真值/预测 |
+| **第四批：点亮到只剩 G2** | `bin/oracle-falsifiable-prescription.mjs`、`bin/capability-baseline-freeze.mjs`（各 + test）、`bin/oracle-production-delivery.test.mjs` | G4 真实可证伪预测（工程承诺型，基线取真实 storages）、G4/G2 解耦、`--deliver` fail-closed 八项前置 + 审计台账、金标模板/治理校验/只写 `contentHash` 的密封 | ⛔ 不代填标签/署名、不代拍 D1–D5、不设生产开关、不注入生产 sink、不伪造 GOLD、不改评分常量、不发版 |
 
 `oracle-prescription-delivery.mjs` 本批补了 `evaluateDeliveryAsync()`：真 sink 走插件 lib 的
 `propose()`/`generate()` 是**异步写穿**，同步版不 await 会出现「返回 writes=1 但磁盘没落」的假象。
@@ -168,11 +174,124 @@ node bin/next-batch-readiness.mjs --storages "$S" --sets eval/capability-baselin
   → 完全一致，**逐字节未变**。
 - `bin/next-batch-readiness.mjs` 仍为 `ALL_BLOCKED`：运行态通电不改变硬前置。
 
-### 8.4 让最后一盏灯亮起来（需人）
+### 8.4 让最后一盏灯亮起来（第四批后的现状）
 
-1. 授权人工冻结 `gold` / `verify` / `heldout` 标签 ⇒ `verifyBaseline()` 判 `READY`，G2 才有真值；
-2. 让周报提案带 `predictedDelta` + `predictedDeltaSource` ⇒ G4 过，B1 才造得出合法信封；
-3. 单独评审「把 sink 注入生产 storages + 生产级开关」并单独发版；
-4. G5 24h 撤销窗口与人工否决保持可达。
+- 原第 2 项（G4）**已由系统侧完成**，见 §9.1：实测 `✓ G4_falsifiable_prediction`。
+- 现在只剩两件需人做的事：**① 冻结金标**（G2）、**② 单独评审生产级开关 + 注入生产 sink**。
+- G5 24h 撤销窗口与人工否决保持可达（不变）。
+- 具体步骤、评审材料与回滚 SOP 见 §9 及同目录 `生产投递评审单.md`。
 
-⛔ 在 1～3 备齐前，心跳会继续真实地亮着、也真实地拒绝 —— **亮的是链路，不是许可**。
+⛔ 备齐前心跳会继续真实地亮着、也真实地拒绝 —— **亮的是链路，不是许可**。
+
+---
+
+## 9. 第四批：点亮到只剩 G2（2026-11-07）
+
+### 9.1 关键解耦：G4 不再绑死在信封上
+
+此前 `buildRuntimePlan()` 真实分支的 `prescription` 恒为 `null`，
+`buildPrescriptionEnvelope()` 又先查 `ANCHOR_NOT_EXTERNAL` ⇒ 锚不合格时信封造不出，
+心跳器把 G4 的输入绑在 `envelopeResult.ok` 上 ⇒ **「缺外部真值」和「缺可证伪预测」
+两个独立缺口混成一条**，五闸读数不能反映链路真实状态。
+
+本批新增 `bin/oracle-falsifiable-prescription.mjs`：从真实 storages 读数构造一份
+**工程承诺型**候选处方（⛔ 不是业务建议、不是能力结论、不含任何分数字段）：
+
+```text
+基线：agint_evolve.proposal 里 oracle 源 7 条，带 predictedDeltaSource 的 0 条
+预测：下一 ISO 周该计数为 1 ⇒ Δ=+1
+对拍：下周重读同一表算 actualDelta，写入 growth-report.prediction_outcomes；
+      若实际增量 ≠ 预测，本条被证伪并如实记为预测失败，不解释为能力退步。
+```
+
+G4 现在读**真实处方**、G2 读**真实锚**，互不代理。锚仍不合格 ⇒ B1 信封继续
+`ANCHOR_NOT_EXTERNAL` 拒收 ⇒ `NO_ENVELOPE` ⇒ 零写入。⛔ 纪律未松：
+域不可用 / 无真实处方时 `predictedDelta=null`，G4 明文 fail，绝不拿占位 0 冒充。
+
+### 9.2 实测读数（麒麟机 23:12）
+
+```text
+✓ G1  ✓ G3  ✓ G4  ✓ G5      x G2      ⇒ DEFAULT_DENY（4/5，只剩 G2_external_anchor）
+B1 REJECTED（ANCHOR_NOT_EXTERNAL）→ sink NO_ENVELOPE → B2 INSUFFICIENT → C2 BLOCKED
+⛔ 生产写入 0 ／ 冻结集 0 ／ 评分常量 0 ／ 标注 0 ／ LLM 0
+```
+
+### 9.3 生产投递分支：已实现、默认恒拒
+
+```bash
+node bin/oracle-runtime.mjs --storages "$S" --deliver          # 只读前置体检
+node bin/oracle-runtime.mjs --storages "$S" --deliver \
+     --approve --ack-service-window                            # 评审批准后
+```
+
+`evaluateProductionPrerequisites()` 八项逐条核验：`approve_explicit` /
+`service_window_ack` / `G1_production_switch` / `baseline_ready` /
+`G2_external_truth` / `B1_envelope` / `five_gates` / `production_root`。
+任一不过 ⇒ `PREREQUISITES_NOT_MET`、`writes=0`；**被拒绝的尝试也写审计台账**
+`<DSH_HOME>/.oracle-live/delivery-audit.jsonl`（硬拒写进生产 storages）。
+
+⛔ `service_window_ack` 不是形式：dsh 在跑时持整域内存副本，外部进程直写盘会被
+整体重写覆盖。要么停机窗口，要么另开一轮改服务内入口。
+
+⛔ 当前 0 条冻结金标 ⇒ 该分支**必然拒绝**；`writesToProduction` 实测恒 0。
+即便五闸 5/5，默认/心跳路径的 sink 仍是 dry-run ⇒ `WOULD_DELIVER_NO_SINK`，不是写入。
+
+### 9.4 金标就绪包（把手工活压成命令）
+
+```bash
+node bin/capability-baseline-freeze.mjs --template     # 打印单条样本形状，零写入
+node bin/capability-baseline-freeze.mjs --check        # 只读治理体检
+node bin/capability-baseline-freeze.mjs --seal gold    # 只写 contentHash
+```
+
+`--seal` 的硬约束：治理校验全绿 + 非空集 + 人已署名；**唯一写入字段是
+`contentHash = canonicalHash(samples)`**，`samples` / `label` / `labelAuthority` /
+`frozenBy` / `frozenAt` / `authority` 逐字段对拍不变。占位署名
+（`agent`/`system`/`ai`/`''` …）一律拒；`verify` 样本标 `GOLD` 一律拒；
+`gold ∩ heldout` 有交集一律拒；空集与路径逃逸一律拒。
+
+⚠ 真实 `verify.json` 顶层 `authority="VERIFY"` 是**用途标记**（`deriveAnchorAuthority`
+只读 gold/heldout），脚本不要求它落在 `labelAuthority` 枚举内，不倒逼改既有数据。
+
+### 9.5 最后一公里（评审单 §6）
+
+1. 你按模板出题、给真值、逐条署名 → `--check` → 三份 `--seal` →
+   `capability-baseline.mjs --json` 判 `READY` → 心跳看到 G2 ✓ / 五闸 5/5；
+2. **单独**评审「生产级 G1 开关载体 + 注入生产 sink」（七项材料，见
+   `生产投递评审单.md` §2），确认停机窗口；
+3. 批准后 `export AGINT_ORACLE_AUTONOMOUS_WRITE=on` +
+   `--deliver --approve --ack-service-window` ⇒ 验收判据：生产写入**恰 1 条**
+   `proposed` / `autoExecutable=false`，且只有 `agint_evolve.json` 的 hash 变。
+
+⛔ 由系统自己出题、跑分、署名会让「外部锚定」退化成「系统自证」——
+本批**没有**这么做。若决定改这条宪法级边界，须单独开一轮、单独提交，
+明确记录授权来源与降级后的语义，绝不悄悄塞进本批或伪装成 `GOLD`。
+
+### 9.6 验收
+
+- 新增单测：真实预测 **7/7**、生产投递 **6/6**、金标就绪包 **12/12**；
+  心跳器更新后 **13/13**（含「域不可用 ⇒ G4 仍 fail」阴性对照）；
+  受控链路相关合计全绿（见 §10 复核命令）。
+- 四道门禁：① `plugin-check` / ③ `check-preset-parity`（⛔ dsh 需进 PATH）/
+  ④ `check-dsh-compat` EXIT=0；② `check-wiring` 保留 **2 个既有** `NO_SUBSCRIBER`。
+- 生产三域（evolve / oracle / cron）+ 三份冻结集联合 sha256 前后逐字节一致。
+- `bin/next-batch-readiness.mjs` 仍 `ALL_BLOCKED` —— 代码与节奏齐了，
+  真值、标注、拍板、开关四样仍需人给。
+
+## 10. 本批复核命令
+
+```bash
+export PATH=/home/kylin/.nvm/versions/node/v24.21.0/bin:$PATH
+export DSH_HOME=/home/kylin/projects/DSH/AGINT-data
+export TMPDIR=/home/kylin/projects/DSH/.test-tmp
+S=$DSH_HOME/storages
+
+node --test bin/oracle-falsifiable-prescription.test.mjs \
+            bin/oracle-production-delivery.test.mjs \
+            bin/capability-baseline-freeze.test.mjs \
+            bin/oracle-live-tick.test.mjs bin/oracle-runtime.test.mjs
+
+node bin/oracle-live-tick.mjs --storages "$S" --switch on --status
+node bin/oracle-runtime.mjs --storages "$S" --deliver
+node bin/capability-baseline-freeze.mjs --check
+```

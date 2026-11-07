@@ -18,6 +18,7 @@ import {
   buildLiveReport, ledgerRecord, appendLedger, readLedgerTail, deriveHeartbeat,
 } from './oracle-live-tick.mjs';
 import { AUTONOMOUS_WRITE_SWITCH_ENV } from './autonomous-write-gate.mjs';
+import { buildRuntimePlan } from './oracle-runtime.mjs';
 
 const PROD = resolve('/home/kylin/projects/DSH/AGINT-data/storages');
 
@@ -84,7 +85,31 @@ test('buildLiveGateInput：无合法信封 ⇒ G4 输入为空，绝不拿 0 冒
   assert.equal(input.target, 'proposal_queue');
 });
 
-test('心跳（G1 OFF）：G1/G2/G4 三闸未过，逐闸明细长度 5', async () => {
+test('buildLiveGateInput：有真实可证伪预测 ⇒ G4 输入是真实 Δ，不再绑死在信封上', () => {
+  const plan = buildRuntimePlan(fakeSources(), { env: {}, switchOn: true });
+  const input = buildLiveGateInput(plan);
+  assert.equal(input.predictedDelta, 1);
+  assert.match(input.predictedDeltaSource, /真实读数/);
+  assert.match(input.predictedDeltaSource, /对拍口径/);
+  assert.equal(input.labelAuthority, 'UNSET', '⛔ G4 点亮绝不顺带把 G2 点亮');
+});
+
+test('⛔ 阴性对照：oracle 域不可用 ⇒ 无真实处方 ⇒ G4 明文 fail，绝不拿占位 0 冒充', async () => {
+  const noDomain = fakeSources({
+    oracle: {
+      domainOk: false, domainReason: 'DOMAIN_MISSING', broadcasts: 0, weeklyCount: 0,
+      weeklyProposalCount: 0,
+      prescriptionCandidates: { value: null, reason: 'DOMAIN_MISSING' },
+      historical: { total: 0, eligible: 0, missingFields: [] },
+    },
+  });
+  const r = await buildLiveReport(noDomain, { switchOn: true, env: {} });
+  assert.ok(r.gates.failedIds.includes('G4_falsifiable_prediction'));
+  assert.equal(r.delivery.status, 'NO_ENVELOPE');
+  assert.equal(r.writesToProduction, 0);
+});
+
+test('心跳（G1 OFF）：G1/G2 两闸未过，G4 已被真实预测点亮，逐闸明细长度 5', async () => {
   const r = await buildLiveReport(fakeSources(), { switchOn: false, env: {} });
   assert.equal(r.schemaVersion, LIVE_SCHEMA);
   assert.equal(r.wiring, 'CONNECTED');
@@ -92,20 +117,20 @@ test('心跳（G1 OFF）：G1/G2/G4 三闸未过，逐闸明细长度 5', async 
   assert.equal(r.runtimeDefault, 'OFF');
   assert.equal(r.gates.checks.length, 5);
   assert.equal(r.gates.status, 'DEFAULT_DENY');
-  assert.deepEqual(r.gates.failedIds, ['G1_switch', 'G2_external_anchor', 'G4_falsifiable_prediction']);
-  assert.equal(r.gates.passed, 2); // G3 白名单 / G5 撤销窗口
+  assert.deepEqual(r.gates.failedIds, ['G1_switch', 'G2_external_anchor']);
+  assert.equal(r.gates.passed, 3); // G3 白名单 / G4 真实可证伪预测 / G5 撤销窗口
   assert.equal(r.chain.find((s) => s.id === 'five_gates').status, 'DEFAULT_DENY');
 });
 
-test('心跳（G1 显式 ON）：只在本进程通电，默认仍 OFF；G2/G4 依旧拒绝', async () => {
+test('心跳（G1 显式 ON）：只在本进程通电，默认仍 OFF；**只剩 G2 一盏未亮**', async () => {
   const env = {};
   const r = await buildLiveReport(fakeSources(), { switchOn: true, env });
   assert.equal(r.powered, true);
   assert.equal(r.switch.scope, 'PROCESS_ONLY');
   assert.equal(r.runtimeDefault, 'OFF');
   assert.ok(!r.gates.failedIds.includes('G1_switch'));
-  assert.deepEqual(r.gates.failedIds, ['G2_external_anchor', 'G4_falsifiable_prediction']);
-  assert.equal(r.gates.passed, 3);
+  assert.deepEqual(r.gates.failedIds, ['G2_external_anchor']);
+  assert.equal(r.gates.passed, 4);
   // ⛔ 不写环境变量：进程外读开关仍是关闭
   assert.equal(env[AUTONOMOUS_WRITE_SWITCH_ENV], undefined);
   assert.equal(process.env[AUTONOMOUS_WRITE_SWITCH_ENV], undefined);

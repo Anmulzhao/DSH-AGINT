@@ -75,6 +75,7 @@ export function readHistoricalPrescriptions(storages, { anchorAvailable = false 
       reason: `EVOLVE_DOMAIN_UNAVAILABLE: ${domain.reason}`,
       missingFields: [],
       anchorAvailable,
+      withPredictedDeltaSource: 0,
       statusDistribution: {},
       samples: [],
     };
@@ -83,9 +84,12 @@ export function readHistoricalPrescriptions(storages, { anchorAvailable = false 
     .filter((r) => String(r.source ?? '').includes('oracle'));
   const missing = new Set();
   let eligible = 0;
+  // 真实基线：oracle 源提案里已带可证伪预测来源的条数（G4 工程承诺的对拍基线）。
+  let withPredictedDeltaSource = 0;
   for (const r of rows) {
     const lack = PRESCRIPTION_CONTRACT_FIELDS.filter((f) => r[f] === null || r[f] === undefined || r[f] === '');
     lack.forEach((f) => missing.add(f));
+    if (!lack.includes('predictedDeltaSource')) withPredictedDeltaSource += 1;
     if (lack.length === 0 && anchorAvailable) eligible += 1;
   }
   const statusDistribution = rows.reduce((m, r) => {
@@ -97,10 +101,12 @@ export function readHistoricalPrescriptions(storages, { anchorAvailable = false 
     eligible,
     eligibleReason: rows.length === 0
       ? 'NO_HISTORICAL_PRESCRIPTIONS: evolve 里没有 oracle 源提案'
-      : `历史提案 ${rows.length} 条；缺契约字段 [${[...missing].join(', ') || '无'}]；`
+      : `历史提案 ${rows.length} 条；带 predictedDeltaSource 的 ${withPredictedDeltaSource} 条；`
+        + `缺契约字段 [${[...missing].join(', ') || '无'}]；`
         + `外部锚可用=${anchorAvailable} ⇒ 满足受控投递契约的 ${eligible} 条`,
     missingFields: [...missing],
     anchorAvailable,
+    withPredictedDeltaSource,
     statusDistribution,
     samples: rows.slice(0, 2).map((r) => ({
       id: r.id, title: String(r.title ?? '').slice(0, 60), status: r.status,
