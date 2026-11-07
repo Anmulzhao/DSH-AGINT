@@ -21,6 +21,7 @@
 import { readFile, writeFile, readdir, stat, mkdir, rm } from 'node:fs/promises';
 import { join, resolve, dirname, relative, basename } from 'node:path';
 import { z } from 'zod';
+import { isGenerated } from './marker.js';
 
 const name = 'agint-wiki';
 const inject = [];
@@ -231,7 +232,12 @@ function apply(ctx, config) {
         // 索引页只豁免 ⚠️ 判定（矛盾/警告两桶都不记）；
         // 链接解析必须照常执行 —— 否则 README 的链接不进入 referenced，
         // 「登记到索引却仍报孤立」的自相矛盾会一直存在（2026-10-28 修复）。
-        if (basename(rel) !== 'README.md') {
+        //
+        // 生成页（阶段 3，2026-11-07）同样只豁免 ⚠️、不豁免链接：
+        //   聚合页里的 ⚠️ 行是**源文件的逐字引用**，不是本页的主张。
+        //   若照常判定，聚合页一生成就把 healthy 打成 false —— 引用了别人的
+        //   告警，等于自己认领了那条告警。判据在 marker.js，只有一份。
+        if (basename(rel) !== 'README.md' && !isGenerated(content)) {
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             if (!line.includes('⚠️')) continue;
