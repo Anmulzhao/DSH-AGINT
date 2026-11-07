@@ -29,8 +29,15 @@ const L1 = 'L1';
 //    （plugins/agint-dream/test/smoke.mjs），从仓库根解析必然不存在。
 //    2026-11-07 实测：含这三个前缀时 12 条「断链」里 8 条是这个假阳性。
 //    宁可少判（记为 noPaths），也不造假警报 —— 假警报会训练人忽略这条。
+// ⛔ 两处必须的边界守卫（2026-11-07 实测踩到，都是**截断假阳性**）：
+//   a) 左边界不能是 `-` 或 `.`：否则 `agint-quality-eval/lib/index.js` 会被
+//      匹配成 `eval/lib/index.js`、`agent-presets/src/index.ts` 会被匹配成
+//      `presets/src/index.ts` —— 截断后的片段当然不存在，于是整条记忆被误报断链。
+//   b) 扩展名 alternation 里 `json` 必须排在 `js` 前面：否则 `.json` 被吃掉
+//      `js` 剩下 `on`，得到 `.../package.js` 这种不存在的路径。
+//   实测影响：修前 5 条「断链」全是这两类假阳性，真实断链 0 条。
 const PATH_RE =
-  /(?:^|[^\w/])((?:docs|bin|plugins|presets|install|eval|wiki)\/[\w./@*-]+\.(?:md|mjs|js|json|yml|yaml|sh|ts|txt))/g;
+  /(?:^|[^\w/.-])((?:docs|bin|plugins|presets|install|eval|wiki)\/[\w./@*-]+\.(?:md|mjs|json|js|yml|yaml|sh|ts|txt))/g;
 
 function finite(v, d = 0) {
   return typeof v === 'number' && Number.isFinite(v) ? v : d;
