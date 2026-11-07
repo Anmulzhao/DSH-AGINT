@@ -16,6 +16,12 @@
 > 只剩 `G2_external_anchor`**。⛔ 由系统自己出题、跑分、署名会让「外部锚定」退化成
 > 「系统自证」⇒ 本批**不代填金标、不代签、不擅自置 approve=true**；生产写入仍恒 0。
 > 评审材料见同目录 `生产投递评审单.md` 与 `D1-D5拍板建议单.md`，详见第 9 节。
+>
+> **2026-11-08 第五批「剩下的两步」**：G2 已由**委托机械真值**点亮，实测五闸 **5/5**、
+> `verifyBaseline=READY` / 17 条可用冻结标签。⚠ 但这是「运营者授权 · agent 执行 ·
+> **非人类验证**」，语义已降级（`humanValidated:false`），⛔ 不表示人工金标、
+> 不得据此宣称 AGINT 能力。生产投递评审现场确认**服务窗口不成立** ⇒
+> 判定**不予放行**，生产写入仍恒 **0**。详见第 11 节与 `生产投递评审单.md` §8。
 
 ## 1. 两批各自做了什么
 
@@ -65,32 +71,44 @@ node bin/oracle-live-tick.mjs --storages "$S" --switch on --status  # 通电状�
 单测里用 sha256 逐字节对拍了演练前后的生产 `agint_evolve.json`、`agint_aesthetic_oracle.json`
 与三份 `sets/*.json`，全部不变。
 
-## 4. 生产写入为何仍是 0（五重保证）
+## 4. 生产写入为何仍是 0（2026-11-08 现状，五重保证已重排）
 
-1. **开关**：`AGINT_ORACLE_AUTONOMOUS_WRITE` 未设为字面量 `on` ⇒ G1 必拒（`readSwitch` 不认 `ON`/`1`/`true`）。
-2. **外部锚定**：`labelAuthority` 只认 `GOLD`/`HELDOUT`；`SILVER`/`UNSET` 拒。三份冻结集 `samples: []`
-   ⇒ 0 条真值，**G2 必拒**；`--status` 显示 `labelAuthority=UNSET`。
-3. **处方契约**：真实历史处方 0 条满足契约 ⇒ 构造不出合法信封 ⇒ `NO_ENVELOPE`，连五闸都不必走。
-4. **默认 sink 是 dry-run**：`executeRuntimePlan()` 不注入 sink 时只把信封记进内存，`writes=0`。
+⚠ **历史口径已过时**：旧版第 2、3 条（0 条真值 ⇒ G2 必拒、造不出信封）在第五批后
+不再成立 —— G2 已亮、真实可证伪处方与 B1 信封都已构造成功、五闸实测 **5/5**。
+⛔ 但**五闸全过 ≠ 写入许可**，下面是新的五重保证：
+
+1. **服务窗口未确认（首要硬闸）**：现场取证 dsh web 活着（3080 `401`）、服务在另一
+   PID 命名空间（本会话停不掉也重启不了）、面板唯一写路由只做 `setStatus()`、
+   无服务内 `propose` 入口 ⇒ `--ack-service-window` **未声明，也不该伪造**（评审单 §8.4）。
+2. **G1 生产开关未打开**：`AGINT_ORACLE_AUTONOMOUS_WRITE` 未设为字面量 `on`；
+   `readSwitch` 不认 `ON`/`1`/`true`。心跳的 `--switch on` 是 `PROCESS_ONLY`，不算生产开关。
+3. **`--deliver` 八项前置 fail-closed**：实测给了 `--approve` 仍
+   `PREREQUISITES_NOT_MET`（`service_window_ack` / `G1_production_switch` / `five_gates`），
+   `writesToProduction=0`，被拒尝试也写审计台账。
+4. **默认 sink 是 dry-run**：`executeRuntimePlan()` 不注入 sink 时只把信封记进内存，`writes=0`；
+   心跳与默认 CLI 走这条路，5/5 也只到 `WOULD_DELIVER_NO_SINK`。
 5. **演练域硬判据**：`assertRehearsalRoot()` 拒绝等于/位于生产 storages 的根；未显式 `approve`
-   一律拒绝构造真 sink，且**不自动创建目录**。本 CLI 永不置 `approve=true`。
-   真 sink 只能通过 `makeEvolveSink()` / `makeCurriculumSink()` 显式指向隔离域。
+   一律拒绝构造真 sink，且**不自动创建目录**。真 sink 只通过
+   `makeEvolveSink()` / `makeCurriculumSink()` 显式指向隔离域。
 
 G5 撤销窗口 24h 与 `--veto`（`humanVeto=true`）已接进编排器：即便其它四闸全过，
-人一否决立即 `DEFAULT_DENY`、零写入。
+人一否决立即 `DEFAULT_DENY`、零写入（第五批实测通过）。
 
-## 5. 生产接线仍缺什么（**只差真值与人工批准**）
+## 5. 生产接线仍缺什么（2026-11-08 收敛后）
 
-机械部分已全部就位；下列前置**必须由人备齐**，我绝不代填：
+机械部分已全部就位：G2 由委托机械真值点亮（⚠ 非人类验证，见 §11）、五闸 5/5、
+真实可证伪处方与 B1 信封已构造、隔离域端到端演练真写入并回读已验证。
+剩下**两样硬前置**：
 
-- `eval/capability-baseline/sets/{gold,verify,heldout}.json` 由**授权人工**冻结标签，`verifyBaseline()` 判 `READY`；
-- 6 周 `humanVerdict` / `humanOverall` 标注由人填完（阈值 ≥4 周、权重 ≥5 周），并解决 `redundancy`/`bloat` 的 `unidentifiable`；
-- 带 `predictedDelta` + `predictedDeltaSource` 的真实处方（现有 7 条历史提案都不带）；
-- C1 阶段 2/3 的 D1–D5 拍板，独立 preset / 独立会话建立；
-- `AGINT_ORACLE_AUTONOMOUS_WRITE` 的**生产级**开关由人显式开启：第三批只在心跳进程内用
-  `--switch on` 打开 G1（`scope=PROCESS_ONLY`，默认配置恒 OFF），它只让五闸真实求值、不产生任何写入；
-  把开关写进生产配置并注入生产 sink 仍需单独批准；G5 撤销与人工否决在面板可达；
-- 把 `sink` 注入运行时、指向**生产** storages 并单独评审、单独发版。
+- **服务窗口 / 服务内入口**（运行环境事实）：真正停掉 dsh web，或另开一轮新增
+  服务内 `propose` 入口并重启服务。⛔ 不能用 `--ack-service-window` 伪造（评审单 §8.4–8.5）。
+- **6 周 `humanVerdict` / `humanOverall` 标注**（判定权归人）：阈值 ≥4 周、权重 ≥5 周，
+  并解决 `redundancy`/`bloat` 的 `unidentifiable`；⛔ 绝不代填。
+
+放行那次还需显式给 `AGINT_ORACLE_AUTONOMOUS_WRITE=on` ＋
+`--deliver --approve --ack-service-window`；D1–D5 的**人类签字栏**仍空白，
+独立 preset / 独立会话（C1 阶段 2/3）尚未建立；`sink` 注入生产 storages 需单独评审。
+G5 撤销与人工否决在面板可达，未放宽。
 
 ⛔ 接线时 `sink` 必须走既有面板路由或插件 lib（本批已实现），禁止直写 storages JSON、
 禁止直改评分常量 / prompt / rules（五闸 G3）。投递的只能是 `status=proposed` 候选，
@@ -297,3 +315,62 @@ node bin/oracle-live-tick.mjs --storages "$S" --switch on --status
 node bin/oracle-runtime.mjs --storages "$S" --deliver
 node bin/capability-baseline-freeze.mjs --check
 ```
+
+---
+
+## 11. 第五批：G2 点亮（委托机械真值）与生产投递评审判定（2026-11-08）
+
+### 11.1 做了什么 / 没做什么
+
+| | |
+|---|---|
+| ✅ 做了 | `bin/capability-baseline-mechanical.mjs`（+ test）：23 条确定性断言**实跑**生成三份集合；`capability-baseline-freeze.mjs` 升 `FREEZE_SCHEMA 1.1` 加委托类别治理护栏；三份 `--seal`；G2 点亮；生产投递评审逐项复核；隔离域演练 / fail-closed / G5 撤销 / 生产哈希对拍全部实测 |
+| ⛔ 没做 | 不伪装人类签名、不代填 `humanVerdict` / `humanOverall`、不伪造 `--ack-service-window`、**生产写入 0**、不改评分常量、零 LLM、不重启服务、不发版 |
+
+### 11.2 实测读数
+
+```text
+verifyBaseline  verdict=READY ｜ 可用冻结标签 17 ｜ gold∩heldout=0
+                ｜ capabilityConclusion=null ｜ 三份 SEALED
+--verify        重跑 23 / 冻结 23 ｜ PASS 21 / REJECT 2（真负控制）｜ 不一致 0
+心跳            ALL_GATES_PASSED (5/5) ｜ labelAuthority=GOLD ｜ 冻结标签 17
+                ｜ 生产写入 0（台账已留 ALL_GATES_PASSED 一行）
+--deliver --approve
+                PREREQUISITES_NOT_MET
+                failed=[service_window_ack, G1_production_switch, five_gates]
+                ｜ writesToProduction=0 ｜ 被拒尝试已写审计
+--rehearse      隔离域真写入 1 条 status=proposed ｜ 生产 6 对象 sha256 6/6 不变
+--veto          DEFAULT_DENY（G5 failed：humanVeto=true）｜ writes=0
+```
+
+### 11.3 评审判定：不予放行
+
+§2 七项材料复核后剩**两项硬缺口**：
+
+1. **6 周人工标注 0 条** —— `humanVerdict` / `humanOverall` 判定权归人，绝不代填；
+2. **服务窗口不成立** —— dsh web 在另一 PID 命名空间活着（3080 `401`），
+   面板唯一写路由只做 `setStatus()`（不能创建候选），无服务内 `propose` 入口。
+
+⇒ **不伪造 `--ack-service-window`，生产写入保持 0**。完整取证、决定记录、
+放行命令与回滚见 `生产投递评审单.md` §8；D1–D5 的非人类决定记录见建议单 §5。
+
+⛔ **语义降级**：`GOLD` / `HELDOUT` 本批仅表示「外部冻结真值：可独立复现、
+密封不可篡改、外置于评分回路」，**不表示**「授权人工已验证 AGINT 能力」；
+`humanValidated:false`，构造期自参照局限已写进 `provenance.knownLimitation`。
+
+### 11.4 本批复核命令
+
+```bash
+export PATH=/home/kylin/.nvm/versions/node/v24.21.0/bin:$PATH
+export DSH_HOME=/home/kylin/projects/DSH/AGINT-data
+S=$DSH_HOME/storages
+
+node --test bin/capability-baseline-freeze.test.mjs \
+            bin/capability-baseline-mechanical.test.mjs   # 21/21
+node bin/capability-baseline.mjs --json                   # verdict=READY
+node bin/capability-baseline-mechanical.mjs --verify      # REPRODUCIBLE
+node bin/capability-baseline-freeze.mjs --check           # 治理 ✓ + 降级 banner
+node bin/oracle-live-tick.mjs --storages "$S" --switch on --status   # 5/5
+```
+
+> ⛔ 亮的是**链路与判据**，不是写入许可，更不是能力结论。

@@ -201,10 +201,19 @@ test('⛔ verify.authority="VERIFY" 是合法用途标记，不阻挡 gold 密�
   } finally { t.cleanup(); }
 });
 
-test('真实仓库冻结集：当前仍为 NO_FROZEN_LABELS，治理无违规，脚本不擅自改动', () => {
+test('真实仓库冻结集：治理无违规、能力结论恒 null，脚本不擅自改动', () => {
   const g = inspectSetGovernance(DEFAULT_SETS_DIR);
-  assert.equal(g.baselineVerdict, 'NO_FROZEN_LABELS');
-  assert.equal(g.usableFrozenLabels.value, 0);
   assert.equal(g.ok, true, g.errors.join(' | '));
-  assert.equal(verifyBaseline(DEFAULT_SETS_DIR).verdict, 'NO_FROZEN_LABELS');
+  // ⛔ 2026-11-08：集合可能已由委托机械真值填充（READY）或仍是空集
+  //    （NO_FROZEN_LABELS）；测试只钉不变量，不钉状态快照。
+  assert.ok(['NO_FROZEN_LABELS', 'READY'].includes(g.baselineVerdict), `verdict=${g.baselineVerdict}`);
+  assert.equal(verifyBaseline(DEFAULT_SETS_DIR).capabilityConclusion.value, null);
+  assert.equal(g.goldHeldoutOverlap.length, 0);
+  for (const n of SET_NAMES) {
+    const s = g.perSet[n];
+    if (s?.delegated) {
+      assert.equal(s.humanValidated, false, `${n} 委托类别必须 humanValidated=false`);
+      assert.equal(s.authorityBasis, 'MECHANICAL_REPRODUCIBLE');
+    }
+  }
 });

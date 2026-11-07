@@ -1,6 +1,9 @@
 # 冻结能力基准集（A2）
 
-> 状态：**规格 + 空集就位，0 冻结标签**（2026-11-07 · 麒麟机）
+> 状态（2026-11-08）：三份集合已由「**委托机械真值**」填充并密封 —— 23 条断言 /
+> 17 条可用冻结标签 / `READY`。⚠ **运营者授权 · agent 执行 · 非人类验证**，
+> 语义已降级，⛔ 不得据此宣称 AGINT 能力水平或能力变化 —— 详见 §6。
+> 历史（2026-11-07）：规格 + 空集就位，0 冻结标签。
 > 依据：`AGINT-P1拍板单-20261107.md` A2；`proposals/agint-external-anchor-eval.md` §3.4 三层样本集
 > 配套：`eval/anchor/README.md`（`labelAuthority` 采集契约）、`bin/capability-baseline.mjs`（只读校验器）
 
@@ -12,7 +15,12 @@
 
 本目录提供**右侧**该有的东西：一组跨 L0–L5、机械可验证、真值标签外部冻结的能力基准。
 
-⛔ 但本批**不提供任何标签**：题目与 `PASS/REJECT` 真值必须由授权人工冻结。脚本不会替人推断标签，0 标签时校验器按设计**拒绝出任何能力结论**。
+⛔ 2026-11-07 批次**不提供任何标签**：题目与 `PASS/REJECT` 真值按定义须由授权人工冻结；
+0 标签时校验器按设计**拒绝出任何能力结论**。
+
+⚠ 2026-11-08 第五批按运营者授权改由确定性断言实跑生成，但 `GOLD` / `HELDOUT`
+的**语义已降级**，`humanValidated:false`，`capabilityConclusion` 仍恒 `null`
+—— 见 §6，⛔ 勿把「真值已可读」误读成「能力已被验证」。
 
 ---
 
@@ -73,7 +81,7 @@
 
 ---
 
-## 4. 当前状态（2026-11-07）
+## 4. 历史状态快照（2026-11-07，⛔ 数值已被 §6 取代）
 
 | 项 | 值 |
 |---|---|
@@ -115,3 +123,75 @@ node bin/capability-baseline-freeze.mjs --seal gold    # 只写 contentHash
 
 ⛔ **五闸 5/5 仍不等于生产写入**：默认/心跳 sink 仍是 dry-run。真正的写入许可
 要另走 `eval/gated-features/生产投递评审单.md` 的单独评审。
+
+---
+
+## 6. 委托机械真值（2026-11-08 第五批，⛔ 语义已降级）
+
+> 依据 `eval/gated-features/生产投递评审单.md` §7 预留的宪法级边界变更路径：
+> 运营者授权 agent **单独开一轮**代执行 G2 —— 单独改动、单独提交，
+> 明确记录授权来源与降级后的语义；绝不悄悄塞进上一批、绝不伪装成人工 `GOLD`。
+
+### 6.1 是什么，不是什么
+
+| | |
+|---|---|
+| **是** | 一组对确定性**代码行为**的客观断言。每条 `label` 由 `bin/capability-baseline-mechanical.mjs` 的 `verify()` **实跑**得出（PASS=断言真 / REJECT=断言假），第三方重跑 `--verify` 得同解。真值外置于评分回路：不含分数字段、不读 `aesthetic_score`、不调 LLM、不依赖系统自评，密封后运行时不可篡改 |
+| **不是** | ⛔ **不是授权人工冻结的能力金标**。题目由系统侧依现有代码契约构造 ⇒ 存在**构造期自参照**：系统可能挑自己易通过的断言。不得据此宣称 AGINT 能力水平或能力变化 |
+
+`GOLD` / `HELDOUT` 在本批仅表示「外部冻结真值：断言可独立复现、密封不可篡改、
+外置于评分回路」，**不再表示**「授权人工已验证 AGINT 能力」。
+
+### 6.2 实测数据
+
+| 项 | 值 |
+|---|---|
+| 断言总数 | **23**（gold 13 / verify 6 / heldout 4），L0–L5 全覆盖 |
+| 实跑结果 | PASS **21** / REJECT **2**（两条真负控制，证明校验器不是一律盖章） |
+| `verifyBaseline` | `READY` ｜ 三份 `SEALED` ｜ `usableFrozenLabels=17` |
+| 分母口径 | 只有 gold 13（GOLD）+ heldout 4（HELDOUT）计入；verify 6 条 `SILVER` 不进分母 |
+| `gold ∩ heldout` | **0** |
+| `capabilityConclusion` | `{ value: null, reason: 'JUDGEMENT_EXTERNAL…' }` —— **仍拒绝输出** |
+| 可复现对拍 | 重跑 23 / 冻结 23 / 不一致 **0** |
+
+### 6.3 provenance 与治理护栏
+
+每份集合顶层 `provenance` 八字段齐全：`basis=MECHANICAL_REPRODUCIBLE`、
+`humanValidated=false`、`delegatedBy=operator`、`mandate`（授权原文）、
+`executedBy=WorkBuddy agent（非人类）`、`semanticDowngrade`、
+`knownLimitation`（构造期自参照）、`reproduceCommand`；另有 `authorityBasis`
+显式标注，逐条样本带 `--id <id>` 可复现命令。
+
+`bin/capability-baseline-freeze.mjs`（`FREEZE_SCHEMA 1.1`）对委托类别做**更严格**
+的校验，不是靠「署名字符串碰巧不在禁词表」放行：
+
+- 缺顶层 provenance / 缺 `authorityBasis` ⇒ 拒绝密封（禁止悄悄代签）；
+- `humanValidated !== false` ⇒ 拒绝（绝不允许把机械真值说成人类已验证）；
+- 混入人工署名、逐条缺 `reproduceCommand --id` ⇒ 拒绝；
+- 未写出「不表示 / 不得据此」降级语义、未披露构造期自参照 ⇒ 拒绝；
+- `--check` 打出醒目降级 banner，不静默放行。
+
+⛔ 人工金标路径**完全未变**：占位署名硬拒、`verify` 样本标 GOLD 硬拒、
+空集密封硬拒、`gold ∩ heldout` 交集硬拒、路径逃逸硬拒。
+
+### 6.4 复核命令
+
+```bash
+export PATH=/home/kylin/.nvm/versions/node/v24.21.0/bin:$PATH
+node bin/capability-baseline-mechanical.mjs --verify    # REPRODUCIBLE
+node bin/capability-baseline-freeze.mjs --check          # 治理 ✓ + 降级 banner
+node bin/capability-baseline.mjs --json                  # verdict=READY
+```
+
+### 6.5 不变式与已知局限
+
+- ⛔ 不写 `humanVerdict` / `humanOverall`；人工标注仍 **0 条**。
+- ⛔ 不改 `lib/scoring.js` 与任何评分常量；该文件哈希在本批前后未变。
+- ⛔ 零 LLM、零 3080 调用、不挂 cordis、不碰生产 storages。
+- ⛔ `verifyBaseline()` 仍不产出能力结论；`eval/anchor/anchor.mjs` 的一致率
+  仍须以**真正的外部标注**为分母，不得把这 17 条机械真值当能力一致率用。
+- ⚠ 已知局限：构造期自参照（§6.1）。要恢复「授权人工冻结」的原始语义，
+  仍需人重新出题、给 `PASS/REJECT`、逐条署名；`git revert` 本批即可回到三份空集。
+
+> 本节只解决「存在一组可独立复现、密封不可篡改的判据」；
+> **不证明 AGINT 能力，也不构成生产写入许可**（评审判定见评审单 §8：**不予放行**）。

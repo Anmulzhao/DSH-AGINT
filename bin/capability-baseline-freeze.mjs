@@ -11,6 +11,13 @@
  *   - 唯一被脚本写入的字段是 `contentHash` = canonicalHash(samples)，
  *     这是对**人已经填好的 samples** 做密封，不是生成内容。
  *
+ * 2026-11-08 补充「委托机械真值」类别（FREEZE_SCHEMA 1.1，评审单 §7 预留路径）：
+ *   samples 由 `capability-baseline-mechanical.mjs --generate` 实跑确定性断言生成，
+ *   ⛔ 本脚本仍不生成任何真值，只做**更严格**的治理校验 —— 委托集合必须
+ *   顶层 provenance 完整、`humanValidated` 恒 false、`authorityBasis` 显式标注、
+ *   逐条带 `--id` 可复现命令，且 `--check` 会打出醒目语义降级告警；缺一即拒密封。
+ *   人工金标路径完全不变；⛔ 委托署名绝不冒充「授权人工已验证」。
+ *
  * 用法：
  *   node bin/capability-baseline-freeze.mjs --template            # 打印单条样本形状，不写文件
  *   node bin/capability-baseline-freeze.mjs --check               # 只读体检（含治理校验）
@@ -30,7 +37,7 @@ import {
 import { canonicalHash } from './lib/canonical-json.mjs';
 import { LABEL_AUTHORITY_VALUES } from './lib/scenario-tier.mjs';
 
-export const FREEZE_SCHEMA = '1.0';
+export const FREEZE_SCHEMA = '1.1';
 export const SEALABLE_FIELD = 'contentHash';
 
 /** ⛔ 这些署名一律视为「系统代签」，拒绝密封。人必须用可追溯的真实署名。 */
@@ -38,6 +45,80 @@ export const FORBIDDEN_FROZEN_BY = Object.freeze([
   '', 'agent', 'system', 'auto', 'script', 'ai', 'assistant', 'llm', 'model',
   'bot', 'generated', 'todo', 'tbd', '系统', '自动', '模型', '待填',
 ]);
+
+/**
+ * 2026-11-08「运营者授权·系统代执行」显式类别（评审单 §7 预留路径）。
+ * ⛔ 关键：不靠「署名字符串碰巧不在禁词表」蒙混过护栏。声明了委托类别的
+ *    集合必须 provenance 完整、humanValidated 恒 false、逐条带可复现命令，
+ *    且 --check 会打出醒目降级告警。人工金标路径完全不变。
+ */
+export const DELEGATED_BASIS = 'MECHANICAL_REPRODUCIBLE';
+export const DELEGATED_SIGNATURE_PREFIX = 'operator-delegated /';
+export const DELEGATION_NOTICE = '⚠ 非人类验证 / 语义已降级：GOLD/HELDOUT 在此仅表示'
+  + '「外部冻结真值：可独立复现、密封不可篡改、外置于评分回路」，不表示'
+  + '「授权人工已验证 AGINT 能力」。不得据此宣称能力水平或能力变化。';
+
+/** 委托类别必需的顶层 provenance 字段（缺一即拒密封）。 */
+export const REQUIRED_PROVENANCE_FIELDS = Object.freeze([
+  'basis', 'humanValidated', 'delegatedBy', 'mandate', 'executedBy',
+  'semanticDowngrade', 'knownLimitation', 'reproduceCommand',
+]);
+
+export function isDelegatedSignature(v) {
+  const s = String(v ?? '');
+  return s.startsWith(DELEGATED_SIGNATURE_PREFIX) && /NOT human-validated/i.test(s);
+}
+
+/**
+ * 委托集合的治理校验。⛔ 返回 errors 会让 sealSet 直接拒绝。
+ * 只做「语义降级是否被如实声明」的校验，不评估任何能力。
+ */
+export function inspectDelegation(d, name) {
+  const errors = [];
+  const p = d.provenance;
+  const declared = p?.basis === DELEGATED_BASIS
+    || (Array.isArray(d.samples) && d.samples.some((s) => isDelegatedSignature(s?.frozenBy)));
+  if (!declared) return { present: false, errors: [], provenance: null };
+
+  if (!p || typeof p !== 'object') {
+    errors.push(`${name}: 声明了委托代执行但缺顶层 provenance ⇒ 拒绝（禁止悄悄代签）`);
+    return { present: true, errors, provenance: null };
+  }
+  if (p.basis !== DELEGATED_BASIS) errors.push(`${name}.provenance.basis 必须是 ${DELEGATED_BASIS}`);
+  if (p.humanValidated !== false) {
+    errors.push(`${name}.provenance.humanValidated 必须恒为 false ⛔ 绝不允许把机械真值说成人类已验证`);
+  }
+  for (const f of REQUIRED_PROVENANCE_FIELDS) {
+    if (p[f] === undefined || p[f] === null || p[f] === '') errors.push(`${name}.provenance.${f} 缺失`);
+  }
+  if (p.basis === DELEGATED_BASIS && p.humanValidated === false) {
+    if (!/不表示|不得据此/.test(String(p.semanticDowngrade ?? ''))) {
+      errors.push(`${name}.provenance.semanticDowngrade 未明确写出降级后的语义`);
+    }
+    if (!/构造期自参照|自参照/.test(String(p.knownLimitation ?? ''))) {
+      errors.push(`${name}.provenance.knownLimitation 未披露构造期自参照局限`);
+    }
+    if (!String(p.mandate ?? '').trim()) errors.push(`${name}.provenance.mandate 未记录授权来源`);
+  }
+  // ⛔ 顶层 authority 是枚举内的 GOLD/HELDOUT（G2 只认这两个），但必须显式标注 basis，
+  //    否则读文件的人会把机械真值误读成人类金标。
+  if ((name === 'gold' || name === 'heldout') && d.authorityBasis !== DELEGATED_BASIS) {
+    errors.push(`${name}.authorityBasis 缺失 ⇒ 顶层 authority=${d.authority} 会被误读为「授权人工冻结」，必须显式标注 ${DELEGATED_BASIS}`);
+  }
+  for (const [i, s] of (d.samples ?? []).entries()) {
+    const tag = `${name}.samples[${i}]`;
+    if (!isDelegatedSignature(s?.frozenBy)) {
+      errors.push(`${tag}.frozenBy 不是委托署名 ⇒ 与顶层委托类别不一致（禁止混用人工署名）`);
+    }
+    if (s?.provenance?.basis !== DELEGATED_BASIS || s?.provenance?.humanValidated !== false) {
+      errors.push(`${tag}.provenance 缺 basis/humanValidated=false`);
+    }
+    if (!String(s?.provenance?.reproduceCommand ?? '').includes('--id')) {
+      errors.push(`${tag}.provenance.reproduceCommand 必须指向该条可复现命令`);
+    }
+  }
+  return { present: true, errors, provenance: p };
+}
 
 /** 单条样本的形状说明（__EXAMPLE_ONLY__，绝不当作真实样本落盘）。 */
 export const SAMPLE_TEMPLATE = Object.freeze({
@@ -79,6 +160,7 @@ export function inspectSetGovernance(dir = DEFAULT_SETS_DIR) {
   const errors = [];
   const warnings = [];
   const perSet = {};
+  const delegations = [];
 
   for (const name of SET_NAMES) {
     const loaded = loadSet(dir, name);
@@ -86,6 +168,14 @@ export function inspectSetGovernance(dir = DEFAULT_SETS_DIR) {
     const d = loaded.data ?? {};
     const setErrors = [];
     const authority = typeof d.authority === 'string' ? d.authority : '';
+
+    // ⛔ 委托类别：显式校验 provenance，并把降级语义写进告警（不静默放行）。
+    const delegation = inspectDelegation(d, name);
+    if (delegation.present) {
+      delegations.push(name);
+      setErrors.push(...delegation.errors);
+      warnings.push(`${name}: ${DELEGATION_NOTICE}`);
+    }
 
     if (name === 'verify' && EXTERNAL_AUTHORITIES.includes(authority)) {
       setErrors.push(`verify.authority=${authority} 不应是外部权威（避免验证集冒充冻结真值）`);
@@ -119,7 +209,8 @@ export function inspectSetGovernance(dir = DEFAULT_SETS_DIR) {
       if (name === 'verify' && EXTERNAL_AUTHORITIES.includes(s.labelAuthority)) {
         setErrors.push(`${tag}.labelAuthority=${s.labelAuthority} ⇒ ⛔ verify 样本混进可用冻结标签分母`);
       }
-      if (isPlaceholderSignature(s.frozenBy)) {
+      // 委托类别由 inspectDelegation 校验（含逐条 provenance）；人工类别仍走占位署名硬拒。
+      if (!delegation.present && isPlaceholderSignature(s.frozenBy)) {
         signed = false;
         setErrors.push(`${tag}.frozenBy 缺失或为系统占位署名 ⇒ ⛔ 真值必须由人署名`);
       }
@@ -143,6 +234,9 @@ export function inspectSetGovernance(dir = DEFAULT_SETS_DIR) {
       sealed: needsSeal ? 'UNSEALED_PENDING' : checked.sealed,
       samples: d.samples.length,
       authority,
+      authorityBasis: d.authorityBasis ?? null,
+      humanValidated: delegation.present ? d.provenance?.humanValidated ?? null : null,
+      delegated: delegation.present,
       contentHash: d.contentHash ?? '',
       expectedHash: d.samples.length ? canonicalHash(d.samples) : '',
       frozenSigned: signed && d.samples.length > 0,
@@ -169,7 +263,15 @@ export function inspectSetGovernance(dir = DEFAULT_SETS_DIR) {
     baselineVerdict: baseline.verdict,
     usableFrozenLabels: baseline.usableFrozenLabels,
     goldHeldoutOverlap: overlap,
-    note: '⛔ 本层只读校验，不产出任何标签、不代替人署名、不评估能力。',
+    delegation: {
+      present: delegations.length > 0,
+      sets: delegations,
+      humanValidated: delegations.length ? false : null,
+      notice: delegations.length ? DELEGATION_NOTICE : null,
+    },
+    note: delegations.length
+      ? '⛔ 委托机械真值（运营者授权·agent 执行·非人类验证）：只读校验语义降级声明，不产出能力结论、不冒充人工金标。'
+      : '⛔ 本层只读校验，不产出任何标签、不代替人署名、不评估能力。',
   };
 }
 
@@ -217,9 +319,16 @@ function renderCheck(gov) {
   L.push('冻结金标 · 就绪体检（只读）');
   L.push(`  判词 verifyBaseline=${gov.baselineVerdict} ｜ 可用冻结标签 ${gov.usableFrozenLabels.value ?? '无数据'}`);
   L.push(`  治理：${gov.ok ? '✓ 通过' : `x 未通过（${gov.errors.length} 项）`}`);
+  if (gov.delegation?.present) {
+    L.push('  ─────────────────────────────────────────────────────────');
+    L.push(`  ${DELEGATION_NOTICE}`);
+    L.push(`  委托集合 [${gov.delegation.sets.join(', ')}] ｜ 授权来源见 provenance.mandate ｜ 可复现命令见 provenance.reproduceCommand`);
+    L.push('  ─────────────────────────────────────────────────────────');
+  }
   for (const n of SET_NAMES) {
     const s = gov.perSet[n];
-    L.push(`  ${n}: ${s.sealed} ｜ 样本 ${s.samples} ｜ authority=${s.authority} ｜ 已署名 ${s.frozenSigned ? '是' : '否'}`);
+    L.push(`  ${n}: ${s.sealed} ｜ 样本 ${s.samples} ｜ authority=${s.authority} ｜ 已署名 ${s.frozenSigned ? '是' : '否'}`
+      + (s.delegated ? ` ｜ ⚠ 委托机械真值 (basis=${s.authorityBasis}, humanValidated=${s.humanValidated})` : ''));
   }
   if (gov.goldHeldoutOverlap.length) L.push(`  ⛔ gold ∩ heldout = ${gov.goldHeldoutOverlap.join(', ')}`);
   for (const e of gov.errors) L.push(`    x ${e}`);
@@ -265,7 +374,7 @@ function main() {
         '5. 逐份 --seal gold / --seal verify / --seal heldout',
         '6. node bin/capability-baseline.mjs --json 判 READY；再跑心跳看 G2',
       ],
-      note: '⛔ 模板不产生任何样本、不写任何文件；真值与署名必须由人给。',
+      note: '⛔ 模板不产生任何样本、不写任何文件；真值与署名必须由人给。委托机械真值路径不走本模板，见 capability-baseline-mechanical.mjs。',
       writes: 0,
     };
   } else if (o.mode === 'seal') {

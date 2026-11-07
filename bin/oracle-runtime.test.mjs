@@ -48,11 +48,22 @@ function fixture() {
   writeFileSync(join(storages, 'agint_evolve.json'), `${JSON.stringify({
     unit: { name: 'agint_evolve', version: 1 }, tables: { proposal: proposals },
   }, null, 1)}\n`);
-  return { dir, storages };
+  // ⛔ 2026-11-08：真实仓库已由委托机械真值填充（GOLD / READY）。
+  //    给「0 标签 ⇒ UNSET」这类语义测试一份隔离空集，避免测试随仓库数据漂移。
+  const setsEmpty = join(dir, 'sets-empty');
+  mkdirSync(setsEmpty);
+  for (const n of ['gold', 'verify', 'heldout']) {
+    writeFileSync(join(setsEmpty, `${n}.json`), `${JSON.stringify({
+      setName: n, setVersion: '1.0',
+      authority: n === 'verify' ? 'VERIFY' : n.toUpperCase(),
+      contentHash: '', samples: [],
+    }, null, 2)}\n`);
+  }
+  return { dir, storages, setsEmpty };
 }
 
-function sourcesOf(f) {
-  return readRuntimeSources({ storages: f.storages, setsDir: DEFAULT_SETS_DIR, env: { DSH_HOME: f.dir } });
+function sourcesOf(f, setsDir = DEFAULT_SETS_DIR) {
+  return readRuntimeSources({ storages: f.storages, setsDir, env: { DSH_HOME: f.dir } });
 }
 
 // ── 数据源层 ──────────────────────────────────────────────────────────────
@@ -85,7 +96,7 @@ test('⛔ 域缺失记 unavailable（三态 null），不拿 0 冒充', () => {
 test('⛔ 真 0 与「没测过」分开：0 冻结标签是真 0，标注周数也是真 0', () => {
   const f = fixture();
   try {
-    const s = sourcesOf(f);
+    const s = sourcesOf(f, f.setsEmpty);
     assert.equal(s.anchor.frozenLabels.value, 0, s.anchor.frozenLabels.reason);
     assert.equal(s.anchor.labelAuthority, 'UNSET', '0 标签绝不伪造 GOLD');
     assert.equal(s.anchor.available, false);
@@ -111,8 +122,14 @@ test('⛔ 历史处方接真实 evolve.proposal：oracle 源 1 条、缺契约�
 });
 
 test('⛔ deriveAnchorAuthority：0 标签恒 UNSET；读不到合法 authority 也不猜 GOLD', () => {
-  assert.equal(deriveAnchorAuthority(DEFAULT_SETS_DIR, verifyBaseline(DEFAULT_SETS_DIR)), 'UNSET');
-  assert.equal(deriveAnchorAuthority('/definitely/not/exist', { usableFrozenLabels: { value: 3 } }), 'UNSET');
+  const f = fixture();
+  try {
+    assert.equal(deriveAnchorAuthority(f.setsEmpty, verifyBaseline(f.setsEmpty)), 'UNSET');
+    assert.equal(deriveAnchorAuthority('/definitely/not/exist', { usableFrozenLabels: { value: 3 } }), 'UNSET');
+    // 真实仓库当前是委托机械真值（GOLD）⇒ 只钉「返回合法外部枚举」，不钉具体状态。
+    const real = deriveAnchorAuthority(DEFAULT_SETS_DIR, verifyBaseline(DEFAULT_SETS_DIR));
+    assert.ok(['UNSET', 'GOLD', 'HELDOUT'].includes(real), `real=${real}`);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
 test('⛔ 处方来源若带上 anchorAvailable=true 仍缺字段 ⇒ 还是 0 条可用', () => {
@@ -164,10 +181,10 @@ test('makeDryRunSink 只记录载荷、零写入；describeSinks 列出两个真
 
 // ── 编排器 ────────────────────────────────────────────────────────────────
 
-test('⛔ 真实模式：无合格处方 ⇒ 信封拒、G1/G2 必拒、五个计数恒 0', () => {
+test('⛔ 真实模式（空集锚）：无合格处方 ⇒ 信封拒、G1/G2 必拒、五个计数恒 0', () => {
   const f = fixture();
   try {
-    const s = sourcesOf(f);
+    const s = sourcesOf(f, f.setsEmpty);
     const plan = buildRuntimePlan(s, { env: {} });
     assert.equal(plan.synthetic, false);
     assert.equal(plan.envelope, null);
@@ -175,6 +192,20 @@ test('⛔ 真实模式：无合格处方 ⇒ 信封拒、G1/G2 必拒、五个�
     assert.equal(plan.gateProbe.allowed, false);
     assert.ok(plan.blockers.some((b) => b.startsWith('G1_SWITCH_OFF')));
     assert.ok(plan.blockers.some((b) => b.startsWith('G2_NO_EXTERNAL_TRUTH')));
+    assert.equal(plan.writesToProduction, 0);
+    assert.equal(plan.frozenSetsWritten, 0);
+    assert.equal(plan.llmCalls, 0);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('⛔ 锚到位（真实委托机械真值）但 G1 关 ⇒ 信封可造，五闸仍拒、写入恒 0', () => {
+  const f = fixture();
+  try {
+    const s = sourcesOf(f, DEFAULT_SETS_DIR);
+    const plan = buildRuntimePlan(s, { env: {} });
+    assert.equal(plan.synthetic, false);
+    assert.equal(plan.gateProbe.allowed, false, '⛔ 真值到位 ≠ 放行：G1 未开仍拒');
+    assert.ok(plan.blockers.some((b) => b.startsWith('G1_SWITCH_OFF')));
     assert.equal(plan.writesToProduction, 0);
     assert.equal(plan.frozenSetsWritten, 0);
     assert.equal(plan.llmCalls, 0);
