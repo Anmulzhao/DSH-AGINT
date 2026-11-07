@@ -5,6 +5,34 @@
 > 观测日期：2026-10-09。相关：[diagnosis-report-loop.md](./diagnosis-report-loop.md)、
 > [event-bus-shadow-publish-gap.md](./event-bus-shadow-publish-gap.md)。
 
+> ### ⚠️ 2026-11-06 复核：上游确实在长，但还没到门槛 —— 裁定「维持现状」依然成立
+>
+> | 观测项 | 2026-10-09 记录 | 2026-11-06 实读 |
+> |---|---|---|
+> | `agint_evolution.failure_pattern` | **1** | **5**（涨了 4，仍差 5 条到 `COLD_START_MIN = 10`） |
+> | `agint_diagnosis.annotations` | 0 | **0** |
+> | `agint_diagnosis.clusters` | 0 | **0** |
+> | `agint_diagnosis.reports` | 14 | **14** —— 一条没涨 |
+> | 总线 `diagnosis.completed` | 14 条（全空壳） | **14 条，末条仍 2026-10-06T11:09:39Z** |
+>
+> 逐条复算那 14 条：**全部 `clusterCount = 0`、`targetIds = []`** ——
+> 仍是空壳，**没有产生任何一条新的**。
+>
+> ⇒ **两道守门仍然叠加生效**，本文的根因链（`failure_pattern` 不足 10
+> → `annotate()` 抛 → `annotations` 恒 0 → `report()` 空壳守门早退）**一字未变**。
+>
+> ✅ **一条值得记的正向事实**：上游 `failure_pattern` 从 1 涨到 5，
+> 说明「真实失败测量自然流入」这件事**确实在发生**，只是还没到 10 条。
+> 这正是本文 §裁定 说的「让门槛去适应数据」该有的样子 —— **数据在长，门槛没动。**
+>
+> ⛔ **再次明确否决下调 `COLD_START_MIN`**（本文原已否决一次，本次数据进一步支持）：
+> 现在下调到 5 会立刻放行 5 条 `annotations`，产出 5 条**新的空壳事件** ——
+> 正是 09-29 到 10-06 已经发生过的那 14 条的翻版。
+>
+> ⚠️ **仍未取证**：「10-06 之后没人调 `report()`」与「空壳守门挡住了」这两个成因
+> **依然分不开** —— `reportRateGuard` 只存在于内存（`stats()` 返回，不落盘），
+> `$DSH_HOME/logs/` 里也没有运行时日志。本文 §复核命令 仍然有效。
+
 ## 症状
 
 - `agint-diagnosis.report()` 的发布接线**存在且正确**，但总线 `diagnosis.completed`

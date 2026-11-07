@@ -3,6 +3,32 @@
 > 状态：**环已掐断（数据已清、守门已加），但"谁在调"未拿到直接证据。**
 > 本文记录现场取证、两次修复的边界，以及下一次复发时的一条命令定位法。
 
+> ### ✅ 2026-11-06 复核：未复发，三道守门在位，但「熔断是否被咬过」依然读不到
+>
+> | 观测项 | 2026-09-26 事故后 | 2026-11-06 实读 |
+> |---|---|---|
+> | `agint_diagnosis.reports` | 14（清理后） | **14** —— **41 天零增长** |
+> | `agint_diagnosis.annotations` | 0 | **0** |
+> | `agint_diagnosis.clusters` | 0 | **0** |
+> | 总线 `diagnosis.completed` | 6 条 | **14 条**（但**全为空壳**，见 [上游断供篇](./diagnosis-completed-upstream-starved.md)） |
+> | `diagnosis-watchdog` cron | 已挂 | **在跑** —— 最近 tick 2026-11-05 11:00Z |
+>
+> ⇒ **自激环未复发。** 频率熔断 + 在途计数 + watchdog 三道守门都在位。
+>
+> ⚠️ **判据②的取证缺口仍未补上（本文自己埋的坑）**：§已落地的第三道守门
+> 一度把「熔断真被咬过的唯一直接证据」列为它的独门价值，但**熔断计数只存在于内存**
+> —— `plugins/agint-diagnosis/lib/index.js:165` 的 `stats().reportRateGuard`
+> 返回 `trips` / `recent`，**不落盘**。`agint_diagnosis.json` 里没有这个字段
+> ⇒ **从存储反推调用次数这条路仍然不通**。
+> ⇒ 本条若复发，**仍需靠日志 / 调用栈**定位（本文 §复发时的一条命令定位法），
+> **不能靠读存储**。
+>
+> ✅ **一条被本文验证过的判据依然有效**：唯一的上游是
+> `agint_evolution.failure_pattern`，它已从 1 涨到 **5**
+> （见 [上游断供篇](./diagnosis-completed-upstream-starved.md)）
+> ⇒ **上游在长，但守门没放行。** 这正是本文想要的形态：
+> **数据不足时不产出，而不是产出空壳。**
+
 ## 症状
 
 - `agint-mutator` 控制台持续刷 `[agint-mutator.observe] diagnosis.completed reportId=... observationCount=<递增>`，
