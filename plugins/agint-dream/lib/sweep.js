@@ -583,7 +583,11 @@ const NOISE_RE = /^(你好|hi|hello|谢谢|好的|嗯|嗯嗯|再见|bye|在吗|o
 // ── 2026-11-07（方案 C）：assistant 正文的形态判据 ─────────────────────
 // 准入只看「这句话像不像一条可沉淀的主张」，不看它复现过几次。
 // 复现次数已经退回评分权重（frequency / diversity / consolidation）。
-const ASSISTANT_CLAIM_RE = /(所以|因此|必须|应该|不要|别|一律|切记|以后|每次|先.*再|禁止|务必|注意|记住|教训|踩坑|规定|规则|默认|统一|不得|宁可|宁愿)/;
+// 「像一条可沉淀的主张」的判据：**祈使/规范句式**（必须/禁止/一律/切记/不要…）。
+// 2026-11-07 实测收紧过一次：原判据含「以后/注意/默认/规则/先…再」，
+// 结果把「继续核实两处口径：…」「恢复规则门禁，并核验结果」这类**任务进度句**
+// 也放进候选池（18 条里大部分是汇报残句）。祈使句式才接近「沉淀下来的原则」。
+const ASSISTANT_CLAIM_RE = /(必须|一律|禁止|切记|务必|不得|不要|不可以|严禁|应该|记住)/;
 // 代码骨架：命令、路径、堆栈、函数体 —— 这类句子记进本体没有意义，
 // 而且历史上正是它们把「工具报错残骸」灌进长期记忆（见 classifyToolError 注释）。
 // 路径也算代码骨架：句子切分会把 `const x = require("fs"); 必须改 X.js` 拆成两半，
@@ -591,6 +595,16 @@ const ASSISTANT_CLAIM_RE = /(所以|因此|必须|应该|不要|别|一律|切�
 const CODE_SKELETON_RE = /(`|\{|\}|=>|function |const |import |require\(|\.js:|\.mjs:|\.ts:|at [A-Za-z_$]|npm |node |PowerShell|\$\(|Traceback|Exception|Error:|[A-Za-z0-9_.\/-]+\.(js|mjs|cjs|ts|tsx|json|ya?ml)\b|\/[a-z][a-z0-9_-]*\/[a-z])/i;
 // 工具回显：assistant 复述工具输出时留下的行首标记。
 const TOOL_ECHO_RE = /(memory_search|memory_write|memory_read|memory_stats|memory_forget_scan|memory_remove|agint_search|wiki_search|wiki_read|bash|grep|glob|read_file|write_file)\s*[:：]/;
+// assistant 源专用的疑问词：中文疑问句常常不带问号（「要不要补上企微 webhook」）。
+const ASSISTANT_QUESTION_RE = /(要不要|该不该|好不好|行不行|是不是|有没有|如何|怎么)/;
+// 人称：可沉淀的原则是**祈使句**（「必须先跑 check-wiring」），不带对话里的人。
+// 含第一人称/第二人称的是对话或汇报（「我等你拍板」「建议你…」）—— 不是主张。
+const PERSON_RE = /(我|你|您|咱|老板)/;
+// 报告体：表格行、列表项、粗体、破折号 —— 这是「写给人看的汇报」的形状，
+// 不是「沉淀下来的原则」的形状。实测：候选里一半是这类碎片（2026-11-07）。
+const REPORT_SHAPE_RE = /(\||`|\*\*|^[-*#]\s|^\d+[.、]\s|——|：\s*$)/m;
+// 状态汇报：完成了/收到/正在处理 —— 没有可沉淀的内容。
+const STATUS_CHATTER_RE = /(已完成|处理完成|收到|明白了|明白了|放心|正在处理|进行中|稍等|马上|好的，)/;
 // assistant 主张的类型判定：命中哪条就是哪类；都不命中按 pattern 兜底。
 const ASSISTANT_TYPE_RULES = [
   { type: 'lesson', re: /(禁止|不要|别|千万别|切记|务必|必须|一定不要|不可以|教训|踩坑|危险|小心)/ },
@@ -1023,9 +1037,12 @@ export function extractCandidates(session, nowMs = Date.now(), opts = {}) {
       const key = normalizeForCompare(sentence);
       if (producedKeys.has(key)) { shapeDrop('duplicate'); continue; }
       if (QUOTED_RE.test(sentence) || PREFIXED_ENTRY_RE.test(sentence)) { shapeDrop('quoted'); continue; }
-      if (QUESTION_RE.test(sentence) || /[?？]$/.test(sentence)) { shapeDrop('question'); continue; }
+      if (QUESTION_RE.test(sentence) || ASSISTANT_QUESTION_RE.test(sentence) || /[?？]$/.test(sentence)) { shapeDrop('question'); continue; }
       if (CODE_SKELETON_RE.test(sentence)) { shapeDrop('code'); continue; }
       if (TOOL_ECHO_RE.test(sentence)) { shapeDrop('tool-echo'); continue; }
+      if (REPORT_SHAPE_RE.test(sentence)) { shapeDrop('report-shape'); continue; }
+      if (PERSON_RE.test(sentence)) { shapeDrop('person'); continue; }
+      if (STATUS_CHATTER_RE.test(sentence)) { shapeDrop('status-chatter'); continue; }
       if (!ASSISTANT_CLAIM_RE.test(sentence)) { shapeDrop('no-claim-word'); continue; }
       producedKeys.add(key);
       shapeStats.kept += 1;
