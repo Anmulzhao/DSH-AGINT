@@ -4,6 +4,35 @@
 > agint-quality-eval 0.4.0 / agint-quality-policy 0.9.0。
 > 相关：[`docs/capability-boundary.md`](../capability-boundary.md) §4 F3 / §5 D2。
 
+> ### ⚠️ 2026-11-06 复核：三周后覆盖率仍在门槛下，升级路径**仍未启用**
+>
+> | 判据 | 2026-10-26 记录 | 2026-11-06 实读 |
+> |---|---|---|
+> | `agint_tool_stats.jsonl` 总行数 | 4,746 | **7,032** |
+> | 其中 `tokenSource = "tokenMeter"` | 412 | **2,698** |
+> | 带 token 实测的行占比 | ~8.7% | **38.4%** |
+>
+> ⚠️ **口径提醒（本文 §口径表已写，此处重申，因为它是本条的判据核心）**：
+> 38.4% 是**全部历史行**的占比；而 `computeEffectiveDelta` 要求的是
+> **基线窗与当期窗各自 ≥ 0.5（`MIN_TOKEN_COVERAGE`）**。
+> 历史累计覆盖率 38.4% 低于门槛 ⇒ **「有效进化增量：测不出来」大概率仍在报。**
+>
+> ✅ **覆盖率确实在涨**：8.7% → 38.4% ⇒ §「什么时候该回头看这份文档」第 1 条
+> 说的「覆盖率会随日期推进自动达标」方向没错，**只是还没到**。
+>
+> ⛔ **升级路径仍未启用**：本文 §「想要 billing 级精确值时的升级路径」列的
+> `@deepseek-ai/dsh-token-meter/client` → `deriveTurnTokenUsage(events)`
+> —— **全仓仍未消费**：`grep -rn "dsh-token-meter\|deriveTurnTokenUsage"` 在插件代码里
+> 只命中两处**注释**（`agint-family-panel` 的边界说明与其测试断言），**无一处 import**。
+> ⇒ 「历史会话也能算、基线窗不再被迫 unknown」这个收益**仍然拿不到**。
+>
+> ⚠️ **未取证**：基线窗 / 当期窗**逐窗**的覆盖率本文没有算
+> （需按 `computeEffectiveDelta` 的窗口切分重算）。
+> **38.4% 是全局值，不能直接断言「护栏此刻报 unknown」** ——
+> 那个断言要由 `agint-quality-eval` 的实际输出给出。
+> 要确认请读 `agint_metrics.json` 的 `metric` 表里 quality-eval 相关键
+> （本次实读：该表 4,264 行，**未见任何 token / coverage 命名的键**）。
+
 ## 一句话
 
 D-QAF §5.2 的分母现在**算得出来**了（token 项接上上游 `ctx.tokenMeter`），

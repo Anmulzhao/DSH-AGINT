@@ -37,25 +37,46 @@ function emptySets() {
 
 function cleanup(dir) { rmSync(dir, { recursive: true, force: true }); }
 
-// ── 本批真实状态：三份空集 ─────────────────────────────────────────────────
-test('✅ 仓库真实空集 ⇒ NO_FROZEN_LABELS，0 标签是真 0，能力结论无数据', () => {
-  const r = verifyBaseline(DEFAULT_SETS_DIR);
-  assert.equal(r.verdict, 'NO_FROZEN_LABELS');
-  assert.equal(r.usableFrozenLabels.value, 0, '表在、0 行是真 0，不是 null');
-  assert.equal(r.goldHeldoutOverlap.value, 0, '查过且确实零交集');
-  assert.equal(r.frozenIntegrity.value, 'OK');
-  for (const n of SET_NAMES) assert.equal(r.sets[n].sealed, 'UNSEALED');
-  assert.equal(r.capabilityConclusion.value, null);
-  assert.match(r.capabilityConclusion.reason, /拒绝出任何能力结论/);
-  assert.deepEqual(Object.keys(r.layerCoverage), [...LAYERS]);
-  assert.ok(Object.values(r.layerCoverage).every((v) => v === 0));
+// ── 空集语义测「行为」，⛔ 不钉死真实仓库的当前状态 ────────────────────────
+// 2026-11-08：真实仓库已由委托机械真值填充并密封（READY / 17 标签）。
+// 把「0 标签」断言绑在 DEFAULT_SETS_DIR 上会让测试随数据状态漂移，
+// 故改为构造隔离空集测行为，真实仓库只断言不变量。
+test('✅ 空集 ⇒ NO_FROZEN_LABELS，0 标签是真 0，能力结论无数据', () => {
+  const dir = emptySets();
+  try {
+    const r = verifyBaseline(dir);
+    assert.equal(r.verdict, 'NO_FROZEN_LABELS');
+    assert.equal(r.usableFrozenLabels.value, 0, '表在、0 行是真 0，不是 null');
+    assert.equal(r.goldHeldoutOverlap.value, 0, '查过且确实零交集');
+    assert.equal(r.frozenIntegrity.value, 'OK');
+    for (const n of SET_NAMES) assert.equal(r.sets[n].sealed, 'UNSEALED');
+    assert.equal(r.capabilityConclusion.value, null);
+    assert.match(r.capabilityConclusion.reason, /拒绝出任何能力结论/);
+    assert.deepEqual(Object.keys(r.layerCoverage), [...LAYERS]);
+    assert.ok(Object.values(r.layerCoverage).every((v) => v === 0));
+  } finally { cleanup(dir); }
 });
 
 test('⛔ 0 标签时 markdown 不写「能力为零」，且明写拒绝判定', () => {
-  const md = renderMarkdown(verifyBaseline(DEFAULT_SETS_DIR));
-  assert.doesNotMatch(md, /能力为零/);
-  assert.match(md, /不产出/);
-  assert.match(md, /NO_FROZEN_LABELS/);
+  const dir = emptySets();
+  try {
+    const md = renderMarkdown(verifyBaseline(dir));
+    assert.doesNotMatch(md, /能力为零/);
+    assert.match(md, /不产出/);
+    assert.match(md, /NO_FROZEN_LABELS/);
+  } finally { cleanup(dir); }
+});
+
+test('真实仓库冻结集：只钉不变量，不钉当前状态快照', () => {
+  const r = verifyBaseline(DEFAULT_SETS_DIR);
+  assert.ok(['NO_FROZEN_LABELS', 'READY'].includes(r.verdict), `verdict=${r.verdict}`);
+  assert.equal(r.capabilityConclusion.value, null, '⛔ 无论有无标签都拒绝产出能力结论');
+  assert.equal(r.goldHeldoutOverlap.value, 0, 'gold/heldout 交集必须为 0');
+  assert.deepEqual(Object.keys(r.layerCoverage), [...LAYERS]);
+  for (const n of SET_NAMES) {
+    assert.ok(['UNSEALED', 'SEALED', 'CORRUPT'].includes(r.sets[n].sealed));
+    assert.equal(r.sets[n].errors.length, 0, `${n} 不应有校验错误`);
+  }
 });
 
 // ── 密封性 / 篡改 ──────────────────────────────────────────────────────────

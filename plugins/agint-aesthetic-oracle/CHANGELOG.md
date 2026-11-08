@@ -1,5 +1,44 @@
 # Changelog — agint-aesthetic-oracle
 
+## v0.10.0 — 2026-11-07 — 日报加「能力向量」栏（只读展示，不进评分链路）
+
+**为什么**：`aesthetic_score` 量的是内部卫生（噪声 / 确信度 / 冗余 / 臃肿），
+麒麟机实测 6 周从 80.3 涨到 99.9，而 `capability_map` 只有 2 行、只覆盖
+1 个 ISO 周、6 周里 `CAN` 条目恒为 0 —— `bin/score-vs-evidence.mjs` 判
+`NOT_COMPARABLE` 并拒绝出方向一致率。只报分数的日报会让读者把「尺子变干净」
+读成「系统变聪明」。本版把另一侧**有没有证据**并排摆到分数旁边。
+
+**变更**
+
+1. `lib/broadcast.js` 新增纯函数 `formatCapabilityVector(cap)`：渲染
+   `CAN / CANNOT / UNCERTAIN` 三态 + 课程挑战/尝试 + 闭环提案/成功计数。
+   ⛔ **零 I/O、零服务访问**：数据由编排层传入，广播层仍是纯函数（§5 结构边界）。
+2. `lib/broadcast.js` 渲染入口：
+   - `daily` **同行追加**到总分行（与 `naTxt` / `staleTxt` 同一先例）——
+     AC-2 的 `≤5 行 / ≤2KB` 不放宽，实测加栏前后都是 5 行、298B 起、远低于 2KB；
+   - `weekly` / `monthly` 单独成行（更醒目）；`alert` 不渲染。
+3. `lib/index.js` 新增 `collectCapabilityVector()`：三个来源各自**懒解析 + 软失败**
+   （`agint.selfModel.snapshot` / `agint.curriculum.stats` / 复用 `readOwnProposals`），
+   不新增 `inject`、不落盘、不动 storage schema 与域版本。
+4. ⛔ **三态纪律**：任一源缺席 ⇒ 该项为 `null`、渲染成 `?` 并列出未采集源，
+   **绝不写 0**（写 0 会把「没采到」伪装成「能力为零」）。已采到的**真 0** 仍如实显示 0。
+
+**⛔ 红线（本版一个字节都没碰）**
+
+- `lib/scoring.js` 未改：`FORMULA_VERSION=r4`、`scaleHash=f4f5c879`、
+  `SCALE_SPEC` 全部阈值/权重/效应量逐值对拍通过 ⇒ **历史分数仍可跨版本比较**。
+- 能力向量不参与 Q1 / Q2 / Q3、不进 `METRIC_DEFS`、不进指标存储、
+  不触发任何回滚或提案；§9.5「评分链路零 LLM」不变。
+- 未传 `capability` 时渲染与旧版**逐字节一致**（向后兼容单测钉住）。
+
+**验收**：`test/capability-vector.test.js` 13/13；插件全量回归 **122/122**；
+`bin/next-batch-readiness.test.mjs` 10/10、bin 层五组相关单测 91/91；
+`plugin-check` 5 PASS / 0 `[FAIL]`、`check-preset-parity` / `check-dsh-compat` /
+`check-spec-consistency` exit 0；⛔ `check-wiring` 仍是既有 2 个 `NO_SUBSCRIBER`
+（`subagent-end` / `subagent-start`），本批未碰 preset 与事件总线，如实保留；
+`install/redeploy.sh` 退出码 0（冷启动 21s、27 个 cron job、CRITICAL 0 / INFO 68），
+部署位 `manifest.json` = 0.10.0 且含 `formatCapabilityVector`，启动后写入 1 个 storage 域。
+
 ## v0.9.0 — 2026-10-27 — 补人工标注入口（humanVerdict / humanOverall）+ 可复跑标定脚本
 
 **为什么**：`calibrationSamples()` 把 `humanVerdict` **硬编码成 null**，而

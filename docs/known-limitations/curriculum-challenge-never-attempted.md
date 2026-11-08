@@ -7,6 +7,51 @@
 > 已逐条标注当前值。
 > 相关：[diagnosis-completed-upstream-starved.md](./diagnosis-completed-upstream-starved.md)。
 
+> ### ⚠️ 2026-11-06 复核：断链依旧；挑战在**每周 +1** 自然积压；本文留的「cap 未知」今天有答案
+>
+> | 观测项 | 2026-10-09 记录 | 2026-11-06 实读 |
+> |---|---|---|
+> | `agint_curriculum.challenges` | 1 | **5** |
+> | `agint_curriculum.attempts` | 1（带外提交） | **1** —— 没涨 |
+> | `agint_curriculum.audit_log` | 2 | **6**（5 次生成 + 1 次判定） |
+> | `agint_curriculum.difficulty_state` | 1 | **1** |
+> | 总线 `curriculum.boundary-probed` | 3 | **7** |
+> | 总线 `curriculum.challenge-created` | — | **5** |
+> | 总线 `curriculum.challenge-verdicted` | 0 | **0** —— 仍 0 |
+>
+> ⇒ **「出队不自动执行」这条断链一字未变**：`challenges` 每周 +1（cron
+> `curriculum-weekly` 每周四 01:30 跑），`attempts` 没涨，`challenge-verdicted` 仍 0。
+>
+> ✅ **本文留的悬案今天有答案**：§裁定 里写「`challenges` 表会持续积压
+> （**cap 未知**），届时需要单独评估清理策略」。**cap 是 200**
+> —— `plugins/agint-curriculum/lib/schema.js:28` 的 `LIMITS.CHALLENGES = 200`，
+> 注释明写「超限 warn，**不自动 prune**」。
+> ⇒ 5/200，离上限还有 40 倍，**积压不构成现实风险**，那个「届时」的评估暂不需要做。
+>
+> ⚠️ **但积压的速率现在有刻度了**：**每周 +1 条 `status=open`**。
+> 照此速率，200 条上限约在 **200 周后**才触及 —— 仍是低风险。
+>
+> ⚠️ **真正该留意的是它揭示的东西**：`audit_log` 里**只有 5 条
+> `challenge_generated` 和 1 条 `challenge_verdicted`，一条 `challenge_next` 都没有**
+> ⇒ 人确实**从未走工具路径出队**。这正是 §裁定 §「前提已被部分行使，
+> 但行使方式暴露一个流程缺口」那条的持续坐实：
+> **人工投入对下游（adversarial）与审计追溯都是不可见的。**
+>
+> ⚠️ **仍未取证**：5 条挑战**全部落在同一个域 `integration`** ——
+> self-model 的能力画像仍然只探得出这一个待练域。§「上游已经恢复」那一节
+> 说「self-model 已恢复出 `integration` 域」，本次复核确认它**没再退化**，
+> 但也**没有变宽**。
+
+**5 条挑战逐条实读**（全部 `domain=integration`、`level=D1`）：
+
+| id | status | attemptCount | createdAt |
+|---|---|---|---|
+| `clg_20261008_064839` | `passed` | 1 | 2026-10-08T01:30:45Z |
+| `clg_20261015_f0c980` | **`open`** | **0** | 2026-10-15T01:30:42Z |
+| `clg_20261022_9aad22` | **`open`** | **0** | 2026-10-22T01:30:00Z |
+| `clg_20261029_badff4` | **`open`** | **0** | 2026-10-29T01:30:49Z |
+| `clg_20261105_aa50f0` | **`open`** | **0** | 2026-11-05T01:30:47Z |
+
 ## 症状
 
 - 总线 `curriculum.challenge-verdicted` **全历史 0 条**（2026-10-09 12:15 实读仍为 0）。

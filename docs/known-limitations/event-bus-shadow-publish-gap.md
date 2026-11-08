@@ -1,6 +1,57 @@
 
 ---
 
+### ⭐ 2026-11-06 复核：总线已从 907 条长到 29,185 条，但 §6.15 的 4 处缺口又裂开第 5 处
+
+**结论先行**：`node bin/check-wiring.mjs` **当前是红的（exit 1）** —— 2 个硬缺口，
+都是 `NO_SUBSCRIBER`：`input.signal.host.subagent-start`、
+`input.signal.host.subagent-end`。
+除此之外 §6.15 宣布清零的 4 处接线**没有回退**，但其中 2 处至今仍未触发。
+
+| 观测项 | 本文基线（2026-09-24） | 2026-11-06 实读 |
+| --- | --- | --- |
+| 总线条数 / 死信 | 907 / 0 | **29,185 / 0** |
+| 主题数 | 12 | **38** |
+| `wiki.updated` | `NOT_YET_FIRED` | **1 条 —— 已触发** ✅ |
+| `rules.changed` | 生产 2 条 | **2 条** —— 一致 ✅ |
+| `quality.contract.violated` | `NOT_YET_FIRED` | **0 条** —— 仍未触发 |
+| `abtest.started` / `abtest.concluded` | `NOT_YET_FIRED` | **0 条** —— 仍未触发 |
+| `sandbox.passed` / `sandbox.failed` | 0 | **0** —— 仍无真沙箱调用 |
+| `mount.*` 六主题 | 0 | **0** —— `agint_mount.json` 至今不存在 |
+| `hmr.settled` | 0 | **0** |
+| `memory.pre-compress-checkpoint` | 0 | 主题仍不存在（压缩侧的 `compress-guard.checkpointed` 另有 10 条，见另篇） |
+| `curriculum.challenge-verdicted` | 0 | **0** —— 仍按设计休眠 |
+| `evolution.mutation.committed` | — | **10 条** —— 自进化主链路已彻底通电 ✅ |
+
+#### ⭐ 新硬缺口：subagent 边界事件「发了没人收」
+
+`plugins/agint-event-bus/lib/host-bridge.js:234` / `:248` 以**字面量**发布
+`input.signal.host.subagent-start` / `-end`（源码注释明写「字面量：门禁要扫得到」）。
+生产**各触发过 1 次**，但**全仓零订阅方** ⇒ 门禁判 `NO_SUBSCRIBER` ⇒ FAIL。
+
+这与 §6.15 的 B1（`rules.changed` 发了没人收）是**同一形态**。差别在于：
+这次发布方本身就是 `agint-event-bus`，而本该收它的订阅侧是
+`agint-input-gateway` —— 它的 5 个频道（adversarial / cross-agent /
+external-git / self-observation / upstream-release）**都不订阅 subagent 主题**。
+
+⇒ 与 §6.15 的处置口径一致：**先查「谁该收」，再补接线**，不要为了门禁变绿
+硬塞一个订阅方。**本条不主张现在修** —— 需要老板先定「subagent 边界事件
+该不该进对抗频道」，那是产品决策，不是接线问题。
+
+#### 存储域：3 个仍未通电
+
+`agint_abtest.json` / `agint_mount.json` / `agint_quality_sandbox.json`
+**至今不存在**（文件从未生成）。这与 §6.15.5 的「接线 ≠ 通电」完全一致：
+发布方就位只意味着「一旦有实验 / 挂载 / 沙箱就能发」。
+
+#### 另立一篇：总线自身的写放大
+
+总线文件现已 **27.4 MB**，且**每写一条事件就整文件重写一遍** ——
+详见 [`event-bus-single-file-full-rewrite.md`](./event-bus-single-file-full-rewrite.md)。
+其中 93.1% 的事件是 `agint-ov-strategy` 的观测噪声。
+
+---
+
 > ### 📌 先读这条（2026-09-24）
 >
 > **本文记录的是「服务级空壳」，它的上游根因已经找到并单独建档：**
