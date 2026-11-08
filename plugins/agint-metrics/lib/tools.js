@@ -113,7 +113,7 @@ function apply(ctx) {
     description:
       '查看某个指标的时间序列（默认最近 30 天，按时间升序）。用于观察趋势：指标是否持续恶化、改善是否保持。',
     parameters: {
-      key: { type: 'string', required: true, description: '指标 key（如 cron.staleJobs / rules.adherencePct / wiki.brokenLinks），先用 metrics_summary 看有哪些' },
+      key: { type: 'string', required: true, description: '指标 key（如 cron.staleOverdue / cron.staleInactive / rules.adherencePct / wiki.brokenLinks），先用 metrics_summary 看有哪些。注：cron.staleJobs 是两维度的并集汇总，已弃用' },
       days: { type: 'integer', description: '回溯天数（默认 30）' },
     },
     output: {

@@ -183,7 +183,7 @@ const health = [
   {
     title: 'cron 健康', tone: 'bad',
     value: cronBad.length + ' / ' + num(cronState), label: '个 job 上次跑非 ok',
-    detail: 'cron.staleJobs=' + (M('cron.staleJobs').value ?? '?') + '，maxOverdueDays=' + (M('cron.maxOverdueDays').value ?? '?') + '。' + cronBad.map(([k, v]) => esc(k) + '：' + esc(String(v.lastError || '').slice(0, 70))).join('；'),
+    detail: 'cron.staleOverdue=' + (M('cron.staleOverdue').value ?? '?') + '，cron.staleInactive=' + (M('cron.staleInactive').value ?? '?') + '（并集 cron.staleJobs=' + (M('cron.staleJobs').value ?? '?') + '，已弃用），maxOverdueDays=' + (M('cron.maxOverdueDays').value ?? '?') + '。' + cronBad.map(([k, v]) => esc(k) + '：' + esc(String(v.lastError || '').slice(0, 70))).join('；'),
   },
   {
     title: '记忆规模', tone: 'ok',
@@ -211,7 +211,7 @@ const digest = [
   '| promoted（policy.deployedCount） | ' + (M('policy.deployedCount').value ?? 0) + '（最后事件 2026-10-27，本周 0） | agint_metrics.json |',
   '| recalled（evolution_log.recalls > 0） | 0（275 行 recalls 全为 0） | agint_evolution.json |',
   '| 规则总数 | ' + num(rules.rule) + ' | agint_rules.json |',
-  '| cron 漏跑（staleJobs） | ' + (M('cron.staleJobs').value ?? '?') + ' | agint_metrics.json |',
+  '| cron 漏跑（staleOverdue / staleInactive） | ' + (M('cron.staleOverdue').value ?? '?') + ' / ' + (M('cron.staleInactive').value ?? '?') + ' | agint_metrics.json |',
   '| curator 本周归档 | ' + (w45?.summary?.newlyArchived ?? '?') + '（W45 报告） | agint_curator.json |',
   '| evolution_log 近 7 日新增 | ' + logThisWeek + ' | agint_evolution.json |',
   '| 指标口径 evolution.logCount7d | ' + (M('evolution.logCount7d').value ?? '?') + ' | agint_metrics.json |',

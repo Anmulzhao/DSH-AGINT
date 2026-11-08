@@ -38,6 +38,40 @@ test('stale cron job surfaces as a warn finding', () => {
   assert.match(stale.message, /memory-decay/);
 });
 
+// 2026-11-08（提案 cdf41d63）：久未活动维度。过期通道没覆盖的那些必须单独报出来
+// ——「从没跑过」的 job 只在久未活动维度里可见。
+test('久未活动且未被过期通道覆盖的 job 单独报一条', () => {
+  const snapshot = {
+    ...healthySnapshot,
+    cron: {
+      healthy: true,
+      issues: [],
+      staleInactive: [{ id: 'never-run', reason: 'inactive for 3 days (period 1 d)' }],
+      jobs: [],
+    },
+  };
+  const findings = findingsFromSnapshot(snapshot);
+  const inactive = findings.find((f) => f.key === 'cron.staleInactive');
+  assert.ok(inactive, 'expected a cron.staleInactive finding');
+  assert.equal(inactive.level, 'warn');
+  assert.match(inactive.message, /never-run/);
+});
+
+test('两个维度都命中的 job 只报一条（不制造重复告警）', () => {
+  const snapshot = {
+    ...healthySnapshot,
+    cron: {
+      healthy: false,
+      issues: [{ id: 'both', reason: 'overdue by 30240 min' }],
+      staleInactive: [{ id: 'both', reason: 'inactive for 21 days (period 7 d)' }],
+      jobs: [],
+    },
+  };
+  const findings = findingsFromSnapshot(snapshot);
+  assert.equal(findings.filter((f) => f.key === 'cron.stale').length, 1);
+  assert.equal(findings.filter((f) => f.key === 'cron.staleInactive').length, 0, '过期通道已覆盖的不重复报');
+});
+
 test('wiki problems surface as warn/info findings', () => {
   const snapshot = {
     ...healthySnapshot,

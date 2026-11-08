@@ -13,10 +13,12 @@ import {
   METRIC_DEFS_EXT, computeMetricsExt, makeSkillsFsSource, defaultSkillRoots,
 } from '../lib/metrics-ext.js';
 
-test('METRIC_DEFS = 基础 13 + 扩展 4 = 17，且新 key 全部在册', () => {
-  assert.equal(METRIC_DEFS_BASE.length, 13);
+// 基础块从 13 涨到 15：2026-11-08（提案 cdf41d63）把 cron.staleJobs 拆成
+// staleOverdue + staleInactive 两维度（汇总 key 保留，故净增 2）。
+test('METRIC_DEFS = 基础 15 + 扩展 4 = 19，且新 key 全部在册', () => {
+  assert.equal(METRIC_DEFS_BASE.length, 15);
   assert.equal(METRIC_DEFS_EXT.length, 4);
-  assert.equal(METRIC_DEFS.length, 17);
+  assert.equal(METRIC_DEFS.length, 19);
   const keys = METRIC_DEFS.map((d) => d.key);
   for (const k of [
     'autocreate.candidatesRejected', 'skills.totalBytes',
@@ -24,8 +26,8 @@ test('METRIC_DEFS = 基础 13 + 扩展 4 = 17，且新 key 全部在册', () => 
   ]) {
     assert.ok(keys.includes(k), `missing metric key ${k}`);
   }
-  // 基础 13 key 不受扩展影响（引用同一数组元素，顺序保持）
-  assert.deepEqual(METRIC_DEFS.slice(0, 13), METRIC_DEFS_BASE);
+  // 基础 15 key 不受扩展影响（引用同一数组元素，顺序保持）
+  assert.deepEqual(METRIC_DEFS.slice(0, 15), METRIC_DEFS_BASE);
 });
 
 test('computeMetricsExt：三个 source 全健康时 4 key 齐全', async () => {

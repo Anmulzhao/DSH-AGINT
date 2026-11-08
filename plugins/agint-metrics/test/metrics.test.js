@@ -3,7 +3,7 @@
  * Run: node --test packages/agint-metrics/test/
  */
 
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeMetrics, METRIC_DEFS, UNCOLLECTED } from '../lib/metrics.js';
 
@@ -11,6 +11,9 @@ const fakeCron = {
   health: () => ({
     healthy: false,
     issues: [{ id: 'memory-decay', reason: 'overdue by 30240 min' }],
+    // 2026-11-08（提案 cdf41d63）：health() 现在给两个失效维度。
+    staleOverdue: [{ id: 'memory-decay', reason: 'overdue by 30240 min' }],
+    staleInactive: [{ id: 'wiki-lint', reason: 'inactive for 21 days (period 7 d)' }],
     jobs: [
       { id: 'memory-decay', overdueMs: 30240 * 60_000 },
       { id: 'wiki-lint', overdueMs: 0 },
@@ -48,9 +51,9 @@ const fakeMemory = {
 
 test('METRIC_DEFS covers the computable PLAN metrics', () => {
   const keys = METRIC_DEFS.map((d) => d.key);
-  for (const k of ['cron.staleJobs', 'cron.maxOverdueDays', 'rules.hits', 'rules.blocked',
-    'rules.adherencePct', 'rules.lintIssues', 'wiki.brokenLinks', 'wiki.contradictions',
-    'wiki.orphans', 'memory.total', 'memory.avgConfidence']) {
+  for (const k of ['cron.staleJobs', 'cron.staleOverdue', 'cron.staleInactive', 'cron.maxOverdueDays',
+    'rules.hits', 'rules.blocked', 'rules.adherencePct', 'rules.lintIssues', 'wiki.brokenLinks',
+    'wiki.contradictions', 'wiki.orphans', 'memory.total', 'memory.avgConfidence']) {
     assert.ok(keys.includes(k), `missing metric key ${k}`);
   }
 });
@@ -66,7 +69,9 @@ test('computeMetrics with all sources returns expected values', async () => {
   const byKey = new Map(recs.map((r) => [r.key, r]));
 
   // cron
-  assert.equal(byKey.get('cron.staleJobs').value, 1);
+  assert.equal(byKey.get('cron.staleJobs').value, 2, 'staleJobs = 两个维度的并集（memory-decay + wiki-lint）');
+  assert.equal(byKey.get('cron.staleOverdue').value, 1, '过期未跑维度');
+  assert.equal(byKey.get('cron.staleInactive').value, 1, '久未活动维度');
   assert.equal(byKey.get('cron.maxOverdueDays').value, 21); // 30240 min = 21 days
   // rules
   assert.equal(byKey.get('rules.hits').value, 10);
@@ -124,4 +129,41 @@ test('computeMetrics handles sync and async source methods uniformly', async () 
   const byKey = new Map(recs.map((r) => [r.key, r]));
   assert.equal(byKey.get('rules.adherencePct').value, 100);
   assert.equal(byKey.get('memory.avgConfidence').value, 0);
+});
+
+// ── cron 失效两维度（提案 cdf41d63，2026-11-08）──────────────────────────
+describe('cron 失效两维度', () => {
+  test('两个维度分开采集，staleJobs 是并集（去重）', async () => {
+    const cron = {
+      health: () => ({
+        healthy: false,
+        issues: [{ id: 'a' }],
+        staleOverdue: [{ id: 'a' }, { id: 'b' }],
+        staleInactive: [{ id: 'b' }, { id: 'c' }],
+        jobs: [],
+      }),
+    };
+    const recs = await computeMetrics({ cron });
+    const byKey = new Map(recs.map((r) => [r.key, r]));
+    assert.equal(byKey.get('cron.staleOverdue').value, 2);
+    assert.equal(byKey.get('cron.staleInactive').value, 2);
+    // 并集 = {a, b, c} —— b 两个维度都命中只算一次
+    assert.equal(byKey.get('cron.staleJobs').value, 3, 'staleJobs 必须是并集去重，不是两个数相加');
+  });
+
+  test('旧宿主没有新字段时回落 issues（不静默变 0）', async () => {
+    const cron = { health: () => ({ healthy: false, issues: [{ id: 'a' }, { id: 'b' }], jobs: [] }) };
+    const recs = await computeMetrics({ cron });
+    const byKey = new Map(recs.map((r) => [r.key, r]));
+    assert.equal(byKey.get('cron.staleOverdue').value, 2, '没有 staleOverdue 时回落 issues 的条数');
+    assert.equal(byKey.get('cron.staleInactive').value, 0, '没有 staleInactive 时记 0，不是不产出该 key');
+    assert.equal(byKey.get('cron.staleJobs').value, 2);
+  });
+
+  test('两个维度都必须落表（否则看板读不到，等于没拆）', async () => {
+    const recs = await computeMetrics({ cron: fakeCron });
+    const keys = recs.map((r) => r.key);
+    assert.ok(keys.includes('cron.staleOverdue'));
+    assert.ok(keys.includes('cron.staleInactive'));
+  });
 });

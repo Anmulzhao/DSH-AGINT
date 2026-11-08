@@ -1,8 +1,8 @@
 {
   "$schema": "../../PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-cron",
-  "version": "0.3.1",
-  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。v0.2.13：失败轮 lastResult 落 'error' 而非 'ok'，list() 的 lastOk 错误优先——修「写盘失败被记成成功」。v0.2.14：health() 新增 failures 通道报上轮失败的 job，healthy 语义不变（只报不拦），cron_health 工具面一并渲染。",
+  "version": "0.4.0",
+  "description": "5 字段 cron 调度器（基于 cordis-plugin-timer）。默认注册 memory-decay / wiki-lint / metrics-collect / evolve-review / night-dream / tool-stats-backfill / prompt-static-check 7 个 job，并把每个 job 的运行状态持久化到 agint_cron 存储域，使 host 重启后 cron_list 能恢复真实 lastRunAt。v0.2.13：失败轮 lastResult 落 'error' 而非 'ok'，list() 的 lastOk 错误优先——修「写盘失败被记成成功」。v0.2.14：health() 新增 failures 通道报上轮失败的 job，healthy 语义不变（只报不拦），cron_health 工具面一并渲染。v0.4.0：health() 的失效拆两个维度——staleOverdue（过期未跑，= issues 同源别名）与 staleInactive（久未活动，距上次运行 > 2 个调度周期），issues 语义与 healthy 判定均未动。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -83,7 +83,7 @@
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.cron": "5 字段 cron 调度（无秒级精度，host 本地时区，per-job mutex 防重叠），提供 list / runNow / health"
+        "agint.cron": "5 字段 cron 调度（无秒级精度，host 本地时区，per-job mutex 防重叠），提供 list / runNow / health。health() 的失效分两个维度：staleOverdue（过期未跑，= issues 同源别名，决定 healthy）与 staleInactive（久未活动，> 2 个调度周期，只报不拦）"
       }
     },
     "changelog": "CHANGELOG.md",

@@ -1,5 +1,26 @@
 # agint-evolve CHANGELOG
 
+## v0.23.0（2026-11-08 · 周报多一个失效维度：久未活动）
+
+### 问题
+
+`agint-cron.health()` 从 v0.4.0 起把失效拆成两个维度（`staleOverdue` 过期未跑 /
+`staleInactive` 久未活动）。周报的发现生成器只读 `cron.issues` ⇒ 新维度在周报里
+看不见 = 接了不消费（新的观测侧假绿）。
+
+### 改动
+
+`findingsFromSnapshot()` 新增一条发现通道 `cron.staleInactive`：
+
+- 只报**过期通道没覆盖**的 job。跑过的 job 若久未活动必然也已过期（idle > 2P ⇒ > 1.5P），
+  重复报只是噪音。
+- 真正新增的信号是「从没跑过」的 job —— 过期通道对这类 job 用固定 7 天窗口兜底，看不见。
+
+### 验证
+
+`test/report.test.js` 新增 2 条判据（久未活动且未重叠的单独报；两个维度都命中的只报一条）。
+agint-evolve 测试 17/17 通过。
+
 ## v0.22.2（2026-11-07 · 提案行带出 commits[] 与范围账）
 
 ### 问题

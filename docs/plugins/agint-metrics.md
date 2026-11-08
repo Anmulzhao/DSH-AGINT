@@ -13,9 +13,15 @@
 
 ## 指标清单
 
+> 口径真源是 `plugins/agint-metrics/lib/metrics.js` 的 `METRIC_DEFS`（基础 15 + 扩展 4 = 19）。
+> 下表是面向人的导读，其中若干行早于当前 `METRIC_DEFS`（生产存储实测只有 27 个 key，
+> 见 `agint_metrics.json`），以 `METRIC_DEFS` 为准。
+
 | key | 来源 | delta 含义 |
 |---|---|---|
-| `cron.staleJobs` | agint.cron | + = 任务变陈旧 |
+| `cron.staleOverdue` | agint.cron | + = 更多任务过期未跑（2026-11-08 拆维度） |
+| `cron.staleInactive` | agint.cron | + = 更多任务久未活动（> 2 个调度周期） |
+| `cron.staleJobs` | agint.cron | ⛔ 已弃用：上面两者的并集汇总，只作旧看板兜底 |
 | `cron.overdue` | agint.cron | + = 错过的窗口 |
 | `rules.adherencePct` | agint.rules | - = 改善 |
 | `rules.denyHits` | agint.rules | + = 命中变多（不一定坏） |

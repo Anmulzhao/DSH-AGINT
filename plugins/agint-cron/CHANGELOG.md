@@ -2,6 +2,35 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.4.0] — 失效拆两个维度：过期未跑 / 久未活动（2026-11-08 · 提案 cdf41d63）
+
+**背景**：`health()` 只有一个失效口径（过期未跑）。`agint-metrics` 据此产出的
+`cron.staleJobs` 在 series 里同一分钟出现过 7 和 3 两个值 —— 阈值是悬崖，delta
+失去意义，运维也分不清「该跑没跑」和「早就不跑了」。
+
+**改动**：
+
+1. 新增 `lib/staleness.js`（纯函数、零 IO、零依赖）：`classifyInactivity()` 判久未活动，
+   判据常量 `INACTIVE_PERIOD_FACTOR = 2`（距上次运行 > 2 × 调度周期）。
+2. `health()` 输出加两个通道：`staleOverdue`（= 原 `issues`，**同源同数组**）与
+   `staleInactive`。`issues` 保留为历史别名，语义与取值均未变。
+3. 每个 job 的 status 加 `staleOverdue` / `staleInactive` / `inactiveMs` / `periodMs`。
+4. `cron_health` 工具面渲染久未活动条目（接了不消费 = 新的观测侧假绿）。
+
+**口径要点（别想当然）**：
+
+- 对**跑过**的 job，久未活动 ⇒ 必然也已过期（idle > 2P ⇒ > 1.5P），是过期维度的子集：
+  只标注严重程度，不新增计数。
+- 真正新增的信号是**从未运行**的 job：过期通道对它们用固定 7 天窗口兜底，久未活动用
+  真实周期 ⇒「每日任务从没跑过」从此可见。
+- `healthy` 仍只看过期维度（沿用 2026-10-07「只报不拦」口径），未改判定。
+
+**验证**：`test/smoke.mjs` 新增 4 组两维度判据（含从未运行的 job 与倍数常量）；
+`test/run-state-accounting.test.mjs` 新增 5 条（两通道同源、never-run 归类、周期逐 job
+暴露、刚跑过不报、工具面消费）。agint-cron 测试 226/226 通过。
+
+**破坏性**：`health()` 输出**新增**字段，向后兼容；`issues` 与 `healthy` 判定未动。
+
 ## [0.3.1] — 门禁 skipped 必须留痕（2026-11-07）
 
 **背景**：0.3.0 的写盘条件是 `level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift`。
