@@ -200,11 +200,10 @@ try {
   assert.equal(reopened.status, 'approved');
   assert.equal(reopened.execState, 'idle', 'status 已不是 applied ⇒ succeeded 必须归位 idle');
 
-  // ── 5. 确定性不可执行：提案退出自动队列，不挂 failed（2026-11-07）──────
+  // ── 5. 确定性不可执行：终局判决 + 结案（2026-11-08 口径）──────────────
   //
-  // 根因实机：特性级提案正文没有仓库路径 ⇒ driver 判 deterministic
-  // not-actionable ⇒ 旧协议把提案打成 execState=failed，面板「已批准·执行失败」
-  // 永久挂着。收口口径：保留 approved，execMode 降 manual、execState 归 idle。
+  // 老板裁定不许留悬案：执行器给 verdict=not-actionable，evolve 结案成 wontfix。
+  // 可逆性由「改回 proposed 再批准」保证，文案里必须写明。
   ctx.provide('agint.evolutionDriver', {
     async runForProposal() {
       return {
@@ -220,17 +219,21 @@ try {
   const tick6 = await executor.tick({ force: true, now: Date.now() + 1000 });
   assert.equal(tick6.results[0].action, 'fail');
   assert.equal(tick6.results[0].parked, true, '确定性失败必须收口提案');
+  assert.equal(tick6.results[0].verdict, 'not-actionable', '执行器必须给出最终判决');
+  assert.equal(tick6.results[0].settled, true);
 
   const after5 = await evolve.getProposal(p5.id);
-  assert.equal(after5.status, 'approved', '批准是人的决定，机器不撤销');
-  assert.equal(after5.execMode, 'manual', '退出自动执行队列');
+  assert.equal(after5.status, 'wontfix', '终局：结案');
+  assert.equal(after5.execVerdict, 'not-actionable', '判决必须落盘');
+  assert.equal(after5.execMode, 'manual', '不再自动重跑');
   assert.equal(after5.execState, 'idle', '不得再挂 failed');
-  assert.match(after5.execError, /自动执行不适用/);
-  assert.match(after5.note, /请人工结案/);
+  assert.match(after5.execError, /no target asset resolved/);
+  assert.match(after5.note, /要复活/);
 
   const stage5 = evolve.ticketStage(after5);
-  assert.equal(stage5.stage, 'person/plan', '档位应是待定执行计划，不是执行失败');
-  assert.equal(stage5.label, '待定执行计划');
+  assert.equal(stage5.stage, 'closed', '档位应是已结束，不是执行失败');
+  assert.equal(stage5.label, '已结束');
+  assert.match(stage5.why, /not-actionable/, '已结束也要说清判成了什么');
 
   console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地/不可执行收口 六条路径接口对齐）');
 } finally {
