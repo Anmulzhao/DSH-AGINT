@@ -303,6 +303,48 @@ const approved = (over = {}) => ({ id: 'p1', status: 'approved', execMode: 'imme
   assert.equal(canRetry(1, 0), false);
 }
 
+// ── 2026-11-05：机械动作提案不进自动执行队列（提案 2b340183 实证）─────────
+//
+// 实机：美谕提案被批成 immediate 后，driver 的 resolveTargetAssets 解析不到
+// 仓库文件（动作对象是记忆/技能/wiki 数据）⇒ not-actionable，重试也不会变。
+// 同批 15 条同因失败。判据层要在**起 LLM 之前**拦住，别让它先跑一次再判死。
+{
+  const ORACLE_BODY = [
+    '建议：定向复核低置信且无证据的 lesson 条目',
+    '证据：memory id + confidence 排序列表',
+    '性质：纯机械动作提案（status 锁 proposed，永不 auto-apply；执行与否由老板定）',
+  ].join('\n');
+  const base = { job: { attempts: 1 }, weekCommits: 0, cap: 3, driverReady: true, now: Date.now() };
+
+  // 信号①：source 命中
+  assert.equal(decideRun({ ...base, proposal: approved({ source: 'agint-aesthetic-oracle' }) }).action, 'cancel');
+  // 信号②：正文自带「纯机械动作提案 … 永不 auto-apply」声明（source 不命中也拦）
+  assert.equal(decideRun({ ...base, proposal: approved({ source: '手写', body: ORACLE_BODY }) }).action, 'cancel');
+  // 非机械动作提案照常可跑（这道闸不许变成「什么都不跑」）
+  assert.equal(decideRun({ ...base, proposal: approved({ source: 'agint-evolve' }) }).action, 'run');
+  // 只提到「auto-apply」但没声明「纯机械动作提案」的正文，不该被误伤
+  assert.equal(decideRun({ ...base, proposal: approved({ source: 'x', body: '提案永不 auto-apply；观察者不成为修改者。' }) }).action, 'run');
+  // 撤单原因要能看出「为什么」，不能只写「已撤销」
+  const d = decideRun({ ...base, proposal: approved({ source: 'agint-aesthetic-oracle' }) });
+  assert.match(d.reason, /机械动作提案/);
+  assert.match(d.reason, /不自动执行/);
+
+  // 端到端：tick 时撤单，且**不调用** driver（不起 LLM）
+  {
+    let driverCalls = 0;
+    const evolve = makeFakeEvolve({ proposal: approved({ source: 'agint-aesthetic-oracle' }), jobs: [job()] });
+    await withExecutor({
+      evolve,
+      driver: { runForProposal: async () => { driverCalls += 1; return { skipped: false, commit: { ok: true } }; } },
+    }, async ({ svc }) => {
+      const out = await svc.tick({ force: true });
+      assert.equal(out.results[0].action, 'cancel');
+      assert.equal(driverCalls, 0, '机械动作提案不该起 driver 调用（那会烧一次 LLM）');
+      assert.match(evolve.calls.finish[0].patch.reason, /机械动作提案/);
+    });
+  }
+}
+
 // ── 自然周口径：本插件与 agint-evolve 必须算出同一个周一 00:00 ──────────
 {
   // 2026-10-27 是周二；用几个跨周边界验（含周日/周一本身）。
