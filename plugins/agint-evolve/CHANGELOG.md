@@ -1,5 +1,39 @@
 # agint-evolve CHANGELOG
 
+## v0.24.0（2026-11-08 · 终局判决字段与结案服务）
+
+### 问题
+
+执行器失败后没有终态：提案停在 `approved + execState=failed` 等一个
+不会自动来的动作。实测当天 2 条悬案、37 条 failed 执行行。
+
+### 改动
+
+- `lib/execution.js` 新增 `EXEC_VERDICTS` 六值枚举。
+- `proposalSchema` 新增 `execVerdict` / `execVerdictAt`（均 `default('')`，
+  老行照读，不升 domain version）。
+- 新增 `settleOne()` / `settleExecution()`：判决 + 落 `wontfix` +
+  `execMode=manual` + `execState=idle` + 撤活跃 job + note 写复活路径，
+  四件事一次做完。⛔ 只动 `approved`：人已改判或重复结案返回 `null`，
+  执行器据此如实报「没结成」。
+- 新增 `listUnsettledProposals()`：只读列历史悬案候选，只认有执行行
+  错误原文的；判决判据不在本插件（单一事实源在 executor/lib/verdict.js）。
+- `markNotActionable()` 改为走 `settleOne()` 结案，保留兼容入口。
+- `ticketStage()` 的 `closed` 档带出判决（`已结案·<判决>...`）；
+  无判决字段的老 wontfix 显示原文案（负控制）。
+- `lib/tools.js` 三处 output schema 补声明 `execVerdict` / `execVerdictAt`。
+  ⛔ 不写 `required`：老存储行没有这两个字段，加 required 会让历史提案
+  在 DSH strict 校验下全判失败。
+
+### 验证
+
+- 新增 `test/verdict-settle.test.mjs` 5 组（含抢写 / 幂等 / 无证据负控制）。
+- 更新 `execution.test.mjs` 与 `executor-integration.test.mjs` 的旧断言：
+  旧口径「保留 approved + 请人工结案」已废止。
+- 存量红灯（与本批无关）：`proposal-timestamps.test.mjs` ④ 仍报
+  4 个 `execUnits*` 字段未声明 ⇒ 提案 `cd9dae2c…` 待批。本批新增的
+  两个判决字段已声明，没有扩大差集。
+
 ## v0.23.0（2026-11-08 · 周报多一个失效维度：久未活动）
 
 ### 问题
