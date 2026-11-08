@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readAsarPackage, readAsarFile, findHostAppAsar } from './asar-read.mjs';
@@ -78,8 +78,12 @@ export function isCliInstallation({ env = process.env, repoRoot = null } = {}) {
   };
 
   // NVM_BIN 优先；否则从传入的 PATH 里找 dsh 可执行文件
+  // ⚠️ 2026-11-08 修：PATH 分隔符写死 ':' ⇒ Windows 上（分隔符 ';'）永远切不开，
+  // isCliInstallation 恒 false ⇒ CLI 形态被误报成 host-version-unknown。
+  // 用 path.delimiter：Windows ';' / POSIX ':'，跨平台自动对。
+  // 实证：test/host-version.test.mjs 的「CLI 形态 ⇒ not-applicable」用例在本机一直红。
   if (e.NVM_BIN) pushBin(join(e.NVM_BIN, 'dsh'));
-  for (const p of String(e.PATH ?? '').split(':')) {
+  for (const p of String(e.PATH ?? '').split(delimiter)) {
     if (!p) continue;
     pushBin(join(p, 'dsh'));
   }
