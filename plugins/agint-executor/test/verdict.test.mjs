@@ -17,6 +17,7 @@ import {
   isInterrupted,
   decideVerdict,
   verdictFromError,
+  isLlmSubjectiveVerdict,
 } from '../lib/verdict.js';
 import { isEnvironmentFailure } from '../lib/env.js';
 import { EXEC_VERDICTS } from '../../agint-evolve/lib/execution.js';
@@ -95,4 +96,13 @@ test('⑨ 纯函数：冻结入参连喂两次，结果逐字相同、入参不�
   assert.equal(a, b);
   assert.equal(a, 'env-blocked');
   assert.deepEqual(Object.keys(input).sort(), ['attempts', 'envDeferrals', 'maxAttempts', 'maxEnvDeferrals', 'reason']);
+});
+
+test('⑩ LLM 主观判否要单独标记（根因① 提案 cdf41d63）', () => {
+  assert.equal(isLlmSubjectiveVerdict('plugin-preflight: llm judged not applicable'), true);
+  assert.equal(isLlmSubjectiveVerdict('llm judged not applicable: no target'), true);
+  assert.equal(isLlmSubjectiveVerdict('no target asset resolved'), false, '结构化判否不许被标成主观');
+  assert.equal(isLlmSubjectiveVerdict('llm unavailable: stopReason=error'), false, '环境故障不许被标成主观');
+  assert.equal(isLlmSubjectiveVerdict(''), false);
+  assert.equal(verdictFromError('plugin-preflight: llm judged not applicable'), 'not-actionable', '标记不推翻判决');
 });

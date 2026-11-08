@@ -51,6 +51,18 @@
   `531e2631` → `interrupted`，均为终局。
 - `check-tool-schemas` 0 invalid；`verify-manifests` 0 ERROR。
 
+### 同日补强（老板令：自己拍板，不留待定项）
+
+- `lib/verdict.js` 新增 `isLlmSubjectiveVerdict()`：`llm judged not applicable`
+  这类**主观判否**在结案文案里标「建议复核目标路径」。面板上一眼能区分
+  「机器查出来没目标」与「模型猜它不适用」。标记不推翻判决，不改 driver
+  的目标解析层（那是独立根因，另案）。
+- 用**部署位**的判决器离线把生产 2 条历史悬案结案：
+  `04d6199c` → `not-actionable`、`531e2631` → `interrupted`。
+  宿主当时不在运行，无并发写；先备份、写前二次核对、写后逐行复核
+  （其余 97 条提案与 40 条执行行逐字未变）。
+- 测试增至 33/33（仓库位与部署位各一遍）。
+
 ## v0.6.2（2026-11-07 · 透传提案级 commits[]）
 
 driver v0.11.0 起一次执行可能落地 N 个文件（含新建）。`interpret()` 原先只取

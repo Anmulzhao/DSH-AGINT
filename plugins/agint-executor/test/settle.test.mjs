@@ -95,6 +95,18 @@ test('① 确定性失败 ⇒ 判决 not-actionable 并结案', async () => {
   });
 });
 
+test('①b LLM 主观判否结案时带「建议复核」标记', async () => {
+  const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job()] });
+  await withExecutor({
+    evolve,
+    driver: skippedDriver('plugin-preflight: llm judged not applicable', true),
+  }, async ({ svc }) => {
+    await svc.tick({ force: true });
+    assert.equal(evolve.calls.settle[0].opts.verdict, 'not-actionable', '标记不推翻判决');
+    assert.match(evolve.calls.settle[0].opts.reason, /建议复核目标路径/, '面板上要能区分「查出来的」与「模型猜的」');
+  });
+});
+
 test('② 普通失败额度用尽 ⇒ 判决 exhausted 并结案', async () => {
   const evolve = makeFakeEvolve({ proposal: approved(), jobs: [job({ attempts: 1 })] });
   await withExecutor({ evolve, driver: skippedDriver('policy REJECT：改动超出批准范围'), config: { maxAttempts: 2 } }, async ({ svc }) => {

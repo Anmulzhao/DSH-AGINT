@@ -30,9 +30,26 @@
 - 新增 `test/verdict-settle.test.mjs` 5 组（含抢写 / 幂等 / 无证据负控制）。
 - 更新 `execution.test.mjs` 与 `executor-integration.test.mjs` 的旧断言：
   旧口径「保留 approved + 请人工结案」已废止。
-- 存量红灯（与本批无关）：`proposal-timestamps.test.mjs` ④ 仍报
-  4 个 `execUnits*` 字段未声明 ⇒ 提案 `cd9dae2c…` 待批。本批新增的
-  两个判决字段已声明，没有扩大差集。
+- 新增 `test/verdict-settle.test.mjs` 5 组；旧断言「请人工结案」改为结案口径。
+
+### 同日补强（老板令：自己拍板，不留待定项）
+
+两条存量提案由我自行批准并执行，不再挂着等批：
+
+- `cd9dae2c`：三处 output schema 补齐 4 个 `execUnits*` 字段
+  （`execUnitsApplied` / `execUnitsTotal` / `execRemainingUnits` / `execCommits`），
+  同样**不写 required**。`proposal-timestamps.test.mjs` ④ 转绿，
+  `evolve_proposals` / `evolve_propose` 在模型侧不再报校验错。
+- `e4f77535`：11c 断言本身是错的 —— 文案写「读得到但用相对路径寻址」，
+  却断言返回 `null`。改为验证真实安全性质：root 内绝对路径读得到、
+  返回体 `path` 是相对路径；新增 root 外绝对路径必须抛 `escapes root`
+  的负控制。同时修 `clean()`：`rel` 归一为相对 root 的路径，不再把盘符
+  路径带回模型侧（`clean` 只被 `readReview` 一处调用，影响面为零）。
+- 附带修 `report-eval-attribution.test.js` 的部署位判据（K141）：
+  分支改用 `repoRootFromHere() !== null`，与 `dataSnapshot()` 的
+  `pathResolved` 同源。旧写法在部署位会退化成相对 cwd 的 `eval`，
+  cwd 恰好是仓库根时假阳性 ⇒ 走错分支。
+- evolve 全量 **128/128**（仓库位与部署位各一遍），`smoke` exit 0。
 
 ## v0.23.0（2026-11-08 · 周报多一个失效维度：久未活动）
 

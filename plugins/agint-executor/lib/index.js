@@ -62,7 +62,7 @@
 
 import { decideRun, canRetry, oneLine } from './plan.js';
 import { isEnvironmentFailure, envBackoffMs } from './env.js';
-import { decideVerdict, verdictFromError, isTerminalVerdict } from './verdict.js';
+import { decideVerdict, verdictFromError, isTerminalVerdict, isLlmSubjectiveVerdict } from './verdict.js';
 
 const name = 'agint-executor';
 /**
@@ -206,9 +206,14 @@ function apply(ctx, config) {
   const settle = async (proposalId, verdict, reason) => {
     const evolve = dep('agint.evolve');
     if (!evolve || !isTerminalVerdict(verdict)) return false;
+    // 2026-11-08：LLM 主观判否不是结构化事实。结案文案必须标「建议复核」，
+    // 否则老板在面板上分不清「机器查出来没目标」和「模型猜它不适用」。
+    const settledReason = isLlmSubjectiveVerdict(reason)
+      ? `【LLM 主观判否，非结构化事实；建议复核目标路径后再决定是否复活】${oneLine(reason, 400)}`
+      : oneLine(reason, 400);
     if (typeof evolve.settleExecution === 'function') {
       try {
-        const rec = await evolve.settleExecution(proposalId, { verdict, reason: oneLine(reason, 400) });
+        const rec = await evolve.settleExecution(proposalId, { verdict, reason: settledReason });
         state.settled += 1;
         // 审计出口：每次结案落一条失败模式，周报/面板查得动（K113 纪律）。
         await recordFailure(`executor-verdict-${verdict}`, `proposalId=${proposalId} ${oneLine(reason, 300)}`);
@@ -222,7 +227,7 @@ function apply(ctx, config) {
     }
     if (verdict === 'not-actionable' && typeof evolve.markNotActionable === 'function') {
       try {
-        const rec = await evolve.markNotActionable(proposalId, oneLine(reason, 400));
+        const rec = await evolve.markNotActionable(proposalId, settledReason);
         state.settled += 1;
         return rec !== null && rec !== undefined;
       } catch (error) {

@@ -374,9 +374,15 @@ test('⛔ 真·端到端：起真插件 → dataSnapshot() → buildReport，标
 
   const snapshot = await evo.dataSnapshot();
 
-  // 判据按「当前所在位置」分支，但**两边都必须真的被观察到**：
-  const resolved = existsSync(join(repoRootFromHere() ?? '', 'eval'));
+  // 判据按「当前所在位置」分支，但**两边都必须真的被观察到**。
+  // 2026-11-08（K141）：分支判据必须与 dataSnapshot() 的 pathResolved 同源。
+  // 旧写法 existsSync(join(repoRootFromHere() ?? '', 'eval')) 在部署位会退化成
+  // 相对 cwd 的 'eval'；若 cwd 恰好是仓库根，目录存在 ⇒ 假阳性 ⇒ 走错分支。
+  // 部署位单跑时就是这样红的，与本批改动无关，但判据本身必须修。
+  const detectedRoot = repoRootFromHere();
+  const resolved = detectedRoot !== null;
   if (resolved) {
+    assert.ok(existsSync(join(detectedRoot, 'eval')), '解析出来的根必须有 eval/ 目录');
     // 仓库位：路径解析出来了 ⇒ 标志位必须**不存在**
     assert.notEqual(snapshot.evalFailAttributionUnresolved, true,
       '仓库位路径能解析，不该报「未解析」');

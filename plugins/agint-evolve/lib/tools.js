@@ -154,6 +154,22 @@ function apply(ctx) {
           // 加 required 会让所有历史提案在 DSH strict 校验下直接判失败。
           execVerdict: { type: 'string' },
           execVerdictAt: { type: 'string' },
+          // 2026-11-08：补齐 4 个范围账字段（提案 cd9dae2c 自行拍板执行）。
+          // ⛔ 同样不写 required：老存储行没有这些字段。
+          execUnitsApplied: { type: 'integer' },
+          execUnitsTotal: { type: 'integer' },
+          execRemainingUnits: { type: 'array', items: { type: 'string' } },
+          execCommits: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                path: { type: 'string' },
+                policyDecision: { type: 'string' },
+                created: { type: 'boolean' },
+              },
+            },
+          },
           autoExecutable: { required: true, type: 'boolean' },
           createdAt: { required: true, type: 'string' },
           updatedAt: { required: true, type: 'string' },
@@ -251,6 +267,21 @@ function apply(ctx) {
                 // 2026-11-08：同 propose —— 终局判决，不写 required（老行兼容）。
                 execVerdict: { type: 'string' },
                 execVerdictAt: { type: 'string' },
+                // 2026-11-08：同 propose —— 4 个范围账字段，不写 required。
+                execUnitsApplied: { type: 'integer' },
+                execUnitsTotal: { type: 'integer' },
+                execRemainingUnits: { type: 'array', items: { type: 'string' } },
+                execCommits: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      path: { type: 'string' },
+                      policyDecision: { type: 'string' },
+                      created: { type: 'boolean' },
+                    },
+                  },
+                },
                 autoExecutable: { required: true, type: 'boolean' },
                 createdAt: { required: true, type: 'string' },
                 updatedAt: { required: true, type: 'string' },
@@ -347,6 +378,21 @@ function apply(ctx) {
           // 2026-11-08：同 propose —— 终局判决，不写 required（老行兼容）。
           execVerdict: { type: 'string' },
           execVerdictAt: { type: 'string' },
+          // 2026-11-08：同 propose —— 4 个范围账字段，不写 required。
+          execUnitsApplied: { type: 'integer' },
+          execUnitsTotal: { type: 'integer' },
+          execRemainingUnits: { type: 'array', items: { type: 'string' } },
+          execCommits: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                path: { type: 'string' },
+                policyDecision: { type: 'string' },
+                created: { type: 'boolean' },
+              },
+            },
+          },
           // 2026-10-27：execute() 的返回体本来就带 autoExecutable（见下方 return），
           // output schema 没声明 ⇒ additionalProperties:false 判失败。补上。
           autoExecutable: { required: true, type: 'boolean' },

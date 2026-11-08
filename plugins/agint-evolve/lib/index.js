@@ -711,7 +711,11 @@ function apply(ctx, config) {
     const abs = resolve(root, trimmed);
     const normAbs = abs.replace(/\\/g, '/');
     if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
-    return { rel: trimmed, abs };
+    // 2026-11-08：rel 必须是相对 root 的路径。此前直接回 trimmed，
+    // 绝对路径输入会把盘符路径原样带回 readReview 的返回体（模型侧看见绝对路径）。
+    // abs 已经过了上面的 root 边界检查，切片出来的相对路径一定还在 root 内。
+    const rel = normAbs === normRoot ? '' : normAbs.slice(normRoot.length + 1);
+    return { rel, abs };
   };
 
   const walk = async (dir) => {

@@ -160,3 +160,22 @@ export function verdictFromError(text) {
   if (isEnvironmentFailure(s)) return 'env-blocked';
   return 'exhausted';
 }
+
+/**
+ * 这条判决是不是 LLM 的**主观判否**（2026-11-08）。
+ *
+ * 提案 `cdf41d63` 的 11-04 失败就是 `plugin-preflight: llm judged not applicable`：
+ * 提案横跨 cron 核心、metrics 与文档，实际可改，LLM 判否。这类结论不是结构化
+ * 事实，不能和「目标文件不存在」「额度用尽」混成同一种口气。
+ *
+ * ⛔ 本函数不推翻判决（执行器不读仓库、不做目标解析），只给结案文案加一个
+ *    「建议复核」的标记，让面板上一眼能区分「机器查出来的」与「模型猜的」。
+ *
+ * @param {string} text 失败原因原文
+ * @returns {boolean}
+ */
+export function isLlmSubjectiveVerdict(text) {
+  const s = String(text ?? '');
+  if (s === '') return false;
+  return /llm judged not applicable|plugin-preflight:\s*llm judged/i.test(s);
+}
