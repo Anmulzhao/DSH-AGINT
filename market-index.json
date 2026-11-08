@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "title": {
+    "en": "AGINT",
+    "zh": "AGINT 智进"
+  },
+  "description": {
+    "en": "Self-evolving agent framework for DeepSeek Harness.",
+    "zh": "基于 DeepSeek Harness 的自进化智能体框架。"
+  },
+  "plugins": [
+    {
+      "name": "@agint/host",
+      "title": {
+        "en": "AGINT host bundle",
+        "zh": "AGINT 自进化框架"
+      },
+      "description": {
+        "en": "Self-evolving agent framework: 39 mounted Cordis plugins, one preset, evolution loop.",
+        "zh": "自进化智能体框架：39 个已挂载插件、一套 preset、进化闭环。"
+      },
+      "author": "Anmul",
+      "homepage": "https://github.com/Anmulzhao/DSH-AGINT#readme",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Anmulzhao/DSH-AGINT.git"
+      },
+      "versions": [
+        {
+          "version": "0.26.0",
+          "publishTimestamp": 1794136007,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Anmulzhao/DSH-AGINT.git",
+            "commit": "2a24b8347e6e16151a460082b0fec09db934051c"
+          }
+        }
+      ]
+    }
+  ]
+}
