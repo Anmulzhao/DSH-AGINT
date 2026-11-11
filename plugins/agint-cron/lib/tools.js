@@ -161,10 +161,15 @@ function apply(ctx) {
         // 措辞必须把两者分开 —— 「healthy」+「N 个 job 上轮失败」并排出现时，
         // 读的人必须一眼看出 healthy 说的是调度时效，不是成败。
         const failed = Array.isArray(h.failures) ? h.failures.length : 0;
+        // 2026-11-08：两个失效维度分开显示（提案 cdf41d63）。
+        // 接了不消费 = 新的观测侧假绿：health() 报了久未活动，工具面看不见就等于没报。
+        const inactive = Array.isArray(h.staleInactive) ? h.staleInactive.length : 0;
         const parts = [h.healthy ? 'healthy' : h.issues.length + ' issues'];
+        if (inactive > 0) parts.push(inactive + ' 个 job 久未活动');
         if (failed > 0) parts.push(failed + ' 个 job 上轮失败');
         const lines = [`cron_health: ${parts.join('，')}`];
         h.issues.forEach((i) => lines.push(`  ! ${i.id}: ${i.reason}`));
+        (h.staleInactive ?? []).forEach((i) => lines.push(`  ~ ${i.id}: ${i.reason}`));
         (h.failures ?? []).forEach((f) => {
           lines.push(`  x ${f.id}: ${f.reason}${f.lastRunAt ? '（' + f.lastRunAt + '）' : ''}`);
         });

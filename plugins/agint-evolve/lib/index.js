@@ -36,6 +36,7 @@ import { grantMandate, checkMandate } from './mandate.js';
 import {
   EXEC_MODES,
   EXEC_STATES,
+  EXEC_VERDICTS,
   JOB_STATES,
   normalizeExec,
   validateExecPlan,
@@ -172,6 +173,18 @@ const proposalSchema = z.object({
     policyDecision: z.string().default(''),
     created: z.boolean().default(false),
   })).default([]),
+  // 2026-11-08：执行器的**终局判决**（提案 cdf41d63 收口）。
+  //
+  // 在此之前，一次自动执行只有「跑成了」和「没跑成」两种落法：后者把提案留在
+  // `approved + execState=failed`（悬案，等一个不会自动来的动作）。实测当天
+  // 生产存储里 2 条提案就停在这个状态，37 条执行行全是 failed。
+  //
+  // 判决 = 「为什么没落地」的一个可读字段。空串 = 还没判（尚未执行或还在顺延）。
+  // ⛔ default('')：老行照读不报错；加字段不改 domain version（见上方注释）。
+  // 枚举口径见 lib/execution.js 的 EXEC_VERDICTS。
+  execVerdict: z.string().default(''),
+  // 判决时刻（ISO）。空串 = 没判过。
+  execVerdictAt: z.string().default(''),
   // 2026-10-27：这条提案**能不能被自动执行**。
   //
   // 实机反例（首跑就撞上）：oracle 周报产出的「美谕提案：决策确信度 扣 1.7 分」，
@@ -498,6 +511,45 @@ function apply(ctx, config) {
     return updated;
   };
 
+  /**
+   * 判决 + 结案的**唯一实现**（2026-11-08）。
+   *
+   * ⛔ 为什么单独成函数而不是服务方法：结案要同时做四件事（写判决字段 / 落终态 /
+   *    撤掉同提案的其他排队执行 / 追加 note），这四件事必须**一次做完**，
+   *    分两处写就会出现「状态结了、队列没撤」或「队列撤了、状态没结」的半截状态 ——
+   *    半截状态正是这次要消灭的悬案。
+   */
+  const settleOne = async (proposalId, { verdict, reason, status = 'wontfix' } = {}) => {
+    const t = await table();
+    const rec = t.get(proposalId);
+    if (!rec) return null;
+    // ⛔ 只动 approved。sweep 是异步的：列出候选之后、写回之前，人可能已把它
+    //    改判成 applied/rejected/wontfix/proposed。抢写会把人的决定覆盖掉。
+    //    返回 null（不是 rec）⇒ 调用方据此如实报告「没结成」，不谎报成功；
+    //    重复结案同样被这里挡住，note 不会被追加第二遍。
+    if (rec.status !== 'approved') return null;
+    const v = EXEC_VERDICTS.includes(String(verdict)) ? String(verdict) : 'exhausted';
+    const ts = nowIso();
+    const why = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || '未提供理由';
+    const evidence = `执行器判决「${v}」：${why} —— 已结案（status=${status}），不再自动重跑；`
+      + '要复活：把状态改回 proposed 并重新批准即可重跑';
+    const note = rec.note ? `${rec.note} ｜ ${evidence}` : evidence;
+    const updated = await markProposal(proposalId, {
+      status,
+      execMode: 'manual',
+      execState: 'idle',
+      execVerdict: v,
+      execVerdictAt: ts,
+      execError: evidence.slice(0, 500),
+      execFinishedAt: ts,
+      note,
+    });
+    // 同一提案若还排着别的执行，一并撤掉（已结案 ⇒ 不该再排）。
+    const others = await activeJobsFor(proposalId);
+    if (others.length) await cancelJobs(others, `提案已结案（判决 ${v}）`);
+    return updated;
+  };
+
   const cancelJobs = async (jobs, reason) => {
     const et = await executionTable();
     const ts = nowIso();
@@ -659,7 +711,11 @@ function apply(ctx, config) {
     const abs = resolve(root, trimmed);
     const normAbs = abs.replace(/\\/g, '/');
     if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
-    return { rel: trimmed, abs };
+    // 2026-11-08：rel 必须是相对 root 的路径。此前直接回 trimmed，
+    // 绝对路径输入会把盘符路径原样带回 readReview 的返回体（模型侧看见绝对路径）。
+    // abs 已经过了上面的 root 边界检查，切片出来的相对路径一定还在 root 内。
+    const rel = normAbs === normRoot ? '' : normAbs.slice(normRoot.length + 1);
+    return { rel, abs };
   };
 
   const walk = async (dir) => {
@@ -1222,42 +1278,101 @@ function apply(ctx, config) {
     },
 
     /**
-     * 确定性不可执行（目标资产解析不到）⇒ 提案退出自动执行队列，但**不挂成失败**。
+     * `markNotActionable()` 保留为兼容入口（2026-11-07 老调用方仍在调）。
      *
-     * 2026-11-07 老板口径：已实现或不适用要把提案结了，不要弄个「已批准·执行失败」
-     * 永久挂着。此前链路：执行器按「单原子文件编辑」设计 ⇒ 特性级/机械动作提案
-     * 解析不到目标 ⇒ driver 判 deterministic not-actionable ⇒ 执行器照实收尾
-     * `execState=failed` ⇒ 面板 `person/failed`。这一档没有自动出口，只能人改状态，
-     * 于是每次批量批准都攒一批失败。
-     *
-     * 处置：**状态保持 approved**（批准是人的决定，机器不替人撤销），
-     *       `execMode→manual`（退出自动队列）、`execState→idle`（不是失败），
-     *       `execError`/`note` 写明原因与可选下一步。面板档位落 `person/plan`
-     *       「待定执行计划」，由人决定结案方式。
-     *
-     * ⛔ 不自动标 applied / wontfix：已实现与不适用都要证据和判断，机器代判 = 撒谎。
-     * ⛔ 只动 approved 的行：人已经把状态改成 applied/wontfix/proposed 时，不抢写。
-     * ⛔ 撤销同提案的其它活跃 job：自动执行已判定不适用，继续排只会重复失败。
+     * ⚠️ 口径已在 2026-11-08 变更：它不再「退出自动队列、留一句请人工结案」，
+     * 而是直接走 `settleOne()` 给出终局判决并结案（status=wontfix +
+     * execVerdict=not-actionable）。理由与复活路径见上面的 `settleExecution`。
+     * 老板当日裁定：机器不许留悬案；可逆性由「改回 proposed 再批准」保证。
      */
+    /**
+     * **终局判决 + 结案**（2026-11-08，提案 cdf41d63 收口）。
+     *
+     * ## 它补的是哪个洞
+     *
+     * 一次自动执行的结局只有两种落法时，失败的提案会永远停在
+     * `status=approved + execState=failed` —— 老板在面板上看到「已批准·执行失败·等处理」，
+     * 而**没有任何自动机制会来结它**。实测（2026-11-08 生产存储）：approved 2 条
+     * 全是这种形态，37 条执行行全是 failed，0 条 deferred。
+     *
+     * ⇒ 执行器必须给出**判决**（「为什么没落地」），提案必须落到**终态**。
+     *
+     * ## 口径
+     *
+     *   · `applied` / `partial` 不走这里（成功路径在 finishExecution 里）。
+     *   · 其余判决（not-actionable / exhausted / env-blocked / interrupted）⇒
+     *     `status=wontfix`（暂不处理 = 结案），`execMode=manual`（不再自动重跑），
+     *     `execState=idle`（不再是「执行失败」的悬案态），并把理由原文写进
+     *     execError + note。
+     *   · **可逆**：把 status 改回 `proposed` 再批准即可复活（setStatus 支持任意切换）。
+     *     判决文案里必须写清这条复活路径 —— 否则人看到「已结案」会以为这条提案作废了。
+     *
+     * @param {string} id 提案 id
+     * @param {object} o
+     * @param {string} o.verdict 判决（EXEC_VERDICTS 之一）
+     * @param {string} o.reason 理由原文（可复现，必须带）
+     * @param {string} [o.status] 终局状态，默认 wontfix
+     * @returns {Promise<object|null>} 更新后的提案行
+     */
+    async settleExecution(id, opts = {}) {
+      return settleOne(id, opts);
+    },
+
+    /**
+     * 列出**历史悬案**候选（2026-11-08）。只读，不改任何东西。
+     *
+     * 判据：status='approved' 且 execState ∈ {failed, idle} 且 execVerdict===''。
+     * 这正是「执行完了但没人结」的历史欠账形状。
+     *
+     * ⚠️ 只列**有执行行证据**的候选：找不到执行行、或行里没有错误原文 ⇒ 不列
+     * （宁可留着悬案，也不凭 execError 文本编一个判决出来）。
+     *
+     * ⛔ 这里**不判**判决：判决的判据在 agint-executor/lib/verdict.js（单一事实源）。
+     *    evolve 只提供候选与写回（`settleExecution`），不自己解释失败。
+     */
+    async listUnsettledProposals() {
+      const t = await table();
+      const et = await executionTable();
+      const out = [];
+      for (const [id, rec] of t.entries()) {
+        if (!rec) continue;
+        if (rec.status !== 'approved') continue;
+        if (rec.execState !== 'failed' && rec.execState !== 'idle') continue;
+        if (String(rec.execVerdict ?? '') !== '') continue;
+        // 取这条提案最后一条执行行作为判决依据。
+        let last = null;
+        for (const [jid, row] of et.entries()) {
+          if (!row || row.proposalId !== id) continue;
+          if (!last || String(row.updatedAt ?? '') > String(last.updatedAt ?? '')) last = { id: jid, ...row };
+        }
+        if (!last) continue;
+        const errText = String(last.error || last.reason || '').trim();
+        if (!errText) continue;
+        out.push({
+          id,
+          execId: last.id,
+          execState: last.state,
+          error: errText,
+          updatedAt: String(last.updatedAt ?? ''),
+        });
+      }
+      return out;
+    },
+
     async markNotActionable(id, reason) {
       const t = await table();
       const rec = t.get(id);
       if (!rec) return null;
       if (rec.status !== 'approved') return rec;
-      const ts = nowIso();
-      const why = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || '未解析到可执行目标';
-      const evidence = `自动执行不适用：${why} —— 已退出自动队列；请人工结案：已实现→applied / 不适用→wontfix / 需拆分→补可执行单元`;
-      const note = rec.note ? `${rec.note} ｜ ${evidence}` : evidence;
-      const updated = await markProposal(id, {
-        execMode: 'manual',
-        execState: 'idle',
-        execError: evidence.slice(0, 500),
-        execFinishedAt: ts,
-        note,
+      // 2026-11-08：确定性不可执行 ⇒ **结案**（wontfix + 判决），不再停在
+      // 「已批准 + 请人工结案」。老板 2026-11-08 明确要求：执行器要么给执行结果，
+      // 要么给最终判决并结案，不许留悬案。
+      // 复活路径写进 note：改回 proposed 再批准即可重跑。
+      const updated = await settleOne(id, {
+        verdict: 'not-actionable',
+        reason: String(reason ?? '') || '未解析到可执行目标',
       });
-      const others = await activeJobsFor(id);
-      if (others.length) await cancelJobs(others, '自动执行不适用：目标资产解析不到');
-      return updated;
+      return updated ?? rec;
     },
 
     async removeProposal(id) {

@@ -1,5 +1,35 @@
 # Changelog — agint-metrics
 
+## 1.2.0 — 2026-11-08 cron 失效拆两维度（提案 cdf41d63）
+
+### 问题
+
+`cron.staleJobs` 只有一个口径（过期未跑），阈值是悬崖：series 里同一分钟出现过 7 和 3
+两个值，delta 因此失去意义；运维也分不清「该跑没跑」与「早就不跑了」。
+
+### 改动
+
+- 新增两个指标 key：
+  - `cron.staleOverdue` —— 过期未跑。取 `health().staleOverdue`；宿主旧版本没有这个
+    字段时**回落** `health().issues`（同一个口径，不静默变 0）。
+  - `cron.staleInactive` —— 久未活动。取 `health().staleInactive`；宿主旧版本没有 ⇒ 0。
+- `cron.staleJobs` **保留**，降级为两者的**并集**（按 id 去重）。meta 里带
+  `deprecated: true` 与 `definition: union(cron.staleOverdue, cron.staleInactive)`。
+  旧看板 / 报告模板直接引用这个 key，删掉会当场空图。
+- 基础指标块 13 → 15（总 17 → 19）。
+
+### 口径变了（看趋势须知）
+
+`cron.staleJobs` 的口径从「单一过期计数」变成「两维度并集」。跑过的 job 两个维度高度
+重叠，但**从未运行**的 job 只进久未活动维度 ⇒ 汇总值可能比历史值大 1~2。
+要判趋势请改用两个新维度；`cron.staleJobs` 只作旧看板兜底。
+
+### 验证
+
+`test/metrics.test.js` 新增 3 组判据（两维度分开采集、staleJobs 并集去重而非相加、
+旧宿主回落 issues）；`test/metrics-ext.test.js` 的基础块计数断言同步更新（13→15 / 17→19）。
+agint-metrics 测试 45/45 通过。
+
 ## 1.1.4 — 2026-11-02 补 `inc()` 出口（复活总线的全部计数）+ 两条宿主事件主题
 
 ### ① 补 `inc()` —— 一条躺了很久的静默失败

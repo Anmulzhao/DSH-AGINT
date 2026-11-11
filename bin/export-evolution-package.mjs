@@ -25,6 +25,7 @@ import { packTarGz } from './lib/tar.mjs';
 import { unifiedDiff, applyReverse } from './lib/diff.mjs';
 import { generalizePaths, scanSensitiveDeep, redactText } from './lib/redact.mjs';
 import { textHash } from './lib/canonical-json.mjs';
+import { assessBaselineProvenance, ATTESTATION_TABLE } from './lib/baseline-provenance.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -422,7 +423,7 @@ function readGitHead() {
 
 // ── 生成 manifest ───────────────────────────────────────────────────────────
 
-function buildManifest({ runtime, code, preimageCount, hasDiffPatch, fileHashes, ledgerAvailable, ledgerReason }) {
+function buildManifest({ runtime, code, preimageCount, hasDiffPatch, fileHashes, ledgerAvailable, ledgerReason, baselineAttestation }) {
   const now = new Date().toISOString();
   const packageId = `EVO-PKG-${now.slice(0, 10).replace(/-/g, '')}-${textHash(now).slice(0, 8)}`;
 
@@ -456,7 +457,7 @@ function buildManifest({ runtime, code, preimageCount, hasDiffPatch, fileHashes,
     reproductionCaveats: [
       '变异由 LLM 生成，重跑结果不保证相同（R3 不可达，见规范 §2.1 三条原因）',
       '宿主私有包未随包分发，需接收方自行安装 dsh',
-      '判定基准非外部锚定（NOT_ANCHORED），评估结论的可信度受限（见 03-evaluation/PROVENANCE.json）',
+      `判定基准 ${baselineAttestation.baselineProvenance}（实算：${baselineAttestation.counts.attested}/${baselineAttestation.counts.total} 行有独立人工签发），评估结论的可信度受限（见 03-evaluation/PROVENANCE.json 与 BASELINE-ATTESTATION.json）`,
       hasDiffPatch
         ? 'diff.patch 只覆盖**有 preimage 备份且当前文件仍存在**的路径；未覆盖部分见 01-code/diff-manifest.json 的 skipped'
         : '本包不含 diff.patch（无可配对的 preimage）⇒ 代码复现依赖接收方自行比对 preimage',
@@ -494,6 +495,19 @@ function main() {
   // 演化 Ledger 可用性 —— 必须查生产存储，不能假设
   const evo = readStorage('agint_evolution');
   const evoTables = tablesOf(evo.data);
+
+  // ── 判定基准签发状态：实算，不硬编码 ──────────────────────────────────
+  // 原实现把 NOT_ANCHORED 写死。写死的声明在有签发时不会升级、
+  // 无签发时也无法逐条说明缺在哪 ⇒ 改为读独立签发文件逐条比对。
+  // ⛔ 签发域不进 ALLOWED_DOMAINS：签发记录含署名，逐条结果由
+  //    03-evaluation/BASELINE-ATTESTATION.json 投影出去即可（不重复导出）。
+  const att = readStorage('agint_baseline_attestation');
+  const attTables = att.exists && !att.error ? tablesOf(att.data) : {};
+  const baselineAttestation = assessBaselineProvenance({
+    success_template: evoTables.success_template ?? {},
+    benchmark_frozen_set: evoTables.benchmark_frozen_set ?? {},
+    [ATTESTATION_TABLE]: attTables[ATTESTATION_TABLE] ?? {},
+  });
   // ⚠️ 必须用 rowCountOf（认 dict），不能用 Array.isArray —— 见该函数头注的实测 bug。
   const ledgerRows = rowCountOf(evoTables.evolution_ledger);
   const ledgerAnchored = countAnchoredLedgerRows(evoTables.evolution_ledger);
@@ -512,6 +526,7 @@ function main() {
   console.log(`  runtime 表 ${runtime.items.length} 张 · 排除 ${runtime.excluded.length} 项`);
   console.log(`  code 文件 ${code.items.length} 个 · preimage ${code.preimageCount} 份`);
   console.log(`  Ledger proof：${ledgerAvailable ? '可用' : `不可用（${ledgerReason}）`}`);
+  console.log(`  判定基准：${baselineAttestation.baselineProvenance}（${baselineAttestation.counts.attested}/${baselineAttestation.counts.total} 行已签发）`);
 
   // ── D3 二次扫描：整包文本再扫一遍 ──
   // 理由：D1 逐行扫描只覆盖 runtime 表。01-code 的 git-commit / 清单文本
@@ -552,21 +567,62 @@ function main() {
     });
   }
 
-  // PROVENANCE —— G1 缺口如实上报（规范 §6）
+  // PROVENANCE —— G1 缺口如实上报（规范 §6）。
+  // ⛔ baselineAnchored / baselineProvenance 必须来自实算，不得硬编码（R2 纪律）。
+  //    当前生产 0 条签发 ⇒ 实算结果仍是 NOT_ANCHORED，但值变了会跟着变。
+  const provWhy = baselineAttestation.reasons.length > 0
+    ? baselineAttestation.reasons.join('；')
+    : '无逐条异常，但未达到全部签发的门槛';
   allItems.push({
     path: '03-evaluation/PROVENANCE.json',
     content: `${JSON.stringify(
       {
-        baselineSource: 'agint_evolution.success_template',
-        baselineAnchored: false,
-        baselineProvenance: 'NOT_ANCHORED',
+        baselineSource: 'agint_evolution.success_template + benchmark_frozen_set',
+        baselineAnchored: baselineAttestation.baselineAnchored,
+        baselineProvenance: baselineAttestation.baselineProvenance,
+        assessment: {
+          method: baselineAttestation.method,
+          counts: baselineAttestation.counts,
+          reasons: baselineAttestation.reasons,
+          report: '03-evaluation/BASELINE-ATTESTATION.json',
+        },
         why:
           '判定基准与被评对象同池（success_template 有 model-visible 写工具 evolution_addSuccess）、' +
-          '上限 50、无 provenance 记录 ⇒ 接收方无法验证「该次进化通过了基准评估」这一声明。',
+          '上限 50。独立人工签发通道见 bin/attest-baseline.mjs。' +
+          `本次实算：${provWhy}。`,
         consequence:
           '导出包的评估结论可信度受限。**不得声称其「不可篡改」。** ' +
           '完整信任模型需等 external-anchor 提案实施（老板 2026-10-01 已拍板存档，Phase 3 不实施）。',
         honestDegradation: true,
+      },
+      null,
+      2,
+    )}\n`,
+  });
+
+  // 逐条比对报告 —— 每一行基准的签发状态、hash、缺什么，全部留痕。
+  // ⛔ 没核过的必须写 reason（K219），不许用 0 占位伪装「已核」。
+  allItems.push({
+    path: '03-evaluation/BASELINE-ATTESTATION.json',
+    content: `${JSON.stringify(
+      {
+        note: '判定基准的独立人工签发逐条实算。由 bin/lib/baseline-provenance.mjs 产出。',
+        baselineAnchored: baselineAttestation.baselineAnchored,
+        baselineProvenance: baselineAttestation.baselineProvenance,
+        counts: baselineAttestation.counts,
+        reasons: baselineAttestation.reasons,
+        volatileKeysExcluded: baselineAttestation.volatileKeysExcluded,
+        rows: baselineAttestation.rows.map((r) => {
+          const excluded = r.targetKind === 'benchmark_frozen_set';
+          return {
+            ...r,
+            verifiableByRecipient: !excluded,
+            reason: [r.reason, excluded
+              ? '该表不在导出白名单 D1 内 ⇒ 接收方无法独立重算此行 hash（未核过，留痕）'
+              : ''].filter(Boolean).join('；'),
+          };
+        }),
+        attestationChannel: 'bin/attest-baseline.mjs（离线 CLI，非 model-visible 工具）',
       },
       null,
       2,
@@ -648,7 +704,8 @@ function main() {
       '3. 时间维度不可复现：工具链、网络、外部服务状态随时间变\n\n' +
     diffSection +
       '## 3. 评估结论 —— 基准非外部锚定\n\n' +
-      '见 `03-evaluation/PROVENANCE.json`。基准存于 `success_template`（同池可写、无 provenance）。\n\n' +
+      '见 `03-evaluation/PROVENANCE.json`（实算 ' + baselineAttestation.baselineProvenance + '）' +
+      '与 `03-evaluation/BASELINE-ATTESTATION.json`（逐条签发状态与内容 hash）。\n\n' +
       '## 4. 路径已泛化\n\n' +
       `D2 规则共泛化 ${pathTotal} 处绝对路径。**因此不能用本包直接回滚** —— ` +
       '路径需人工适配（规范 §9 已知限制第 4 条）。\n',
@@ -687,6 +744,7 @@ function main() {
     fileHashes,
     ledgerAvailable,
     ledgerReason,
+    baselineAttestation,
   });
 
   // manifest 与 package-hash 自身也要进包
@@ -928,6 +986,21 @@ if (manifest && manifest.integrity) {
   } catch (e) {
     fail('Merkle root 校验失败：' + e.message);
   }
+}
+
+// ③b 判定基准逐条报告与 PROVENANCE 声明必须一致
+try {
+  const attJ = JSON.parse(readFileSync(join(ROOT, '03-evaluation/BASELINE-ATTESTATION.json'), 'utf8'));
+  const provJ = JSON.parse(readFileSync(join(ROOT, '03-evaluation/PROVENANCE.json'), 'utf8'));
+  if (attJ.baselineProvenance === provJ.baselineProvenance
+      && attJ.baselineAnchored === provJ.baselineAnchored) {
+    ok('判定基准逐条报告与 PROVENANCE 一致（' + attJ.baselineProvenance + '）');
+  } else {
+    fail('判定基准逐条报告与 PROVENANCE 不一致 ⇒ 声明不可信');
+  }
+  if (!Array.isArray(attJ.rows)) fail('BASELINE-ATTESTATION.json 缺 rows 数组');
+} catch (e) {
+  fail('判定基准逐条报告缺失或不可解析：' + e.message);
 }
 
 // ④ 脱敏报告非空（D5）

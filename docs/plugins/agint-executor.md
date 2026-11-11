@@ -27,11 +27,20 @@
 定位不到目标 / LLM 判定不适用 / 幻觉闸门拒绝，重试也不会变），执行器**一次收尾**，
 失败模式记 `executor-run-not-actionable`；⛔ 偶发失败（LLM 挂了、网络断了）照常重试。
 
-**确定性失败自动收口（2026-11-07, v0.6.0）**：收尾后调用
-`agint.evolve.markNotActionable()` —— 提案保留 `approved`，`execMode` 降 `manual`、
-`execState` 归 `idle`，原因写进 `execError`/`note`。面板档位从 `person/failed`
-（执行失败·等处理）变为 `person/plan`（待定执行计划），由人决定 applied / wontfix /
-拆分可执行单元。⛔ 机器不自动标 applied 或 wontfix —— 已实现与不适用都要证据和判断。
+**终局判决与结案（2026-11-08, v0.7.0）**：老板裁定执行器不许留悬案。
+一次执行要么给执行结果，要么给最终判决并结案。判据在 `lib/verdict.js`
+（纯函数，不调 LLM）。四个终局判决：`not-actionable`（确定性失败）、
+`exhausted`（重试额度用尽）、`env-blocked`（环境长期不可用）、
+`interrupted`（宿主重启打断）。执行器调 `agint.evolve.settleExecution()`：
+写 `execVerdict` + 落 `wontfix` + 撤活跃 job + note 写复活路径。
+面板档位从 `person/failed` 变为 `closed`（已结案·<判决>）。
+
+**可逆**：把状态改回 `proposed` 再批准即可重跑。
+⛔ **不结案的两类**：前置闸（提案不存在 / 状态变了 / blocker / 驱动没挂）
+不是「跑完没结论」；环境故障未到 `envMaxDeferrals` 上限仍在顺延。
+⛔ **不自动收敛的旧案由 sweep 处理**：`settleUnsettled()` 每
+`settleIntervalMs`（默认 5 分钟）扫一次历史悬案，三道闸见代码注释。
+⛔ **旧口径已废止**：2026-11-07 的「保留 approved + 请人工结案」不再生效。
 
 **注入**：`inject = ['timer']` —— `ctx.setInterval`（tick）/ `ctx.setTimeout`（wake 去重）
 由宿主 `timer` 服务提供。⛔ 漏声明不是「软降级」而是 apply 抛错、插件整个不挂载
@@ -59,6 +68,8 @@ agint-evolution-driver: runOnce() 只挑 status:'proposed'
 | `execAttempts` | 已尝试次数（claim 时自增） |
 | `execError` | 最近一次失败 / 顺延原因 |
 | `execStartedAt` / `execFinishedAt` | 最近一次起止时刻 |
+| `execVerdict` | 执行器的终局判决（空串 = 还没判）。口径见上方「终局判决与结案」 |
+| `execVerdictAt` | 判决时刻（ISO）；空串 = 没判过 |
 
 ⛔ 默认 `manual` 是刻意的：**升级不会让历史提案开始自动改代码。**
 

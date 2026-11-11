@@ -22,6 +22,15 @@ export function findingsFromSnapshot(snapshot) {
       out.push({ level: 'warn', key: 'cron.stale', message: `定时任务失效：${issue.id}（${issue.reason ?? '未知原因'}）` });
     }
   }
+  // 2026-11-08（提案 cdf41d63）：久未活动是独立维度。只报**过期通道没覆盖**的那些 ——
+  // 跑过的 job 若久未活动必然也已过期（idle > 2P ⇒ > 1.5P），重复报只是噪音；
+  // 真正的新增信号是「从没跑过」的 job（过期通道对它们用固定 7 天窗口兜底，看不见）。
+  const inactive = Array.isArray(cron?.staleInactive) ? cron.staleInactive : [];
+  const overdueIds = new Set((Array.isArray(cron?.issues) ? cron.issues : []).map((i) => i?.id));
+  for (const issue of inactive) {
+    if (overdueIds.has(issue?.id)) continue;
+    out.push({ level: 'warn', key: 'cron.staleInactive', message: `定时任务久未活动：${issue.id}（${issue.reason ?? '未知原因'}）` });
+  }
 
   // ---- wiki: knowledge health ----
   const wiki = s.wiki;

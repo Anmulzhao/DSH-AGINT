@@ -1,5 +1,68 @@
 # agint-executor CHANGELOG
 
+## v0.7.0（2026-11-08 · 终局判决：执行器不许留悬案）
+
+### 问题
+
+老板裁定：一次自动执行要么给出执行结果，要么给出最终判决并结案。
+此前失败只有 `finishExecution(ok:false)` 一种落法 ⇒ 提案停在
+`approved + execState=failed`，面板「已批准·执行失败·等处理」，没有自动出口。
+
+实测生产存储（2026-11-08）：99 条提案里 2 条是这样的悬案，40 条执行行
+37 条 failed、0 条 deferred。两条悬案的错误原文分别指向
+「事务门撞同 scope PENDING」与「宿主重启打断」。
+
+`agint-evolve` 侧已有 `EXEC_VERDICTS` / `execVerdict` / `settleExecution()` /
+`listUnsettledProposals()`，但执行器侧一行没接，注释指向的
+`lib/verdict.js` 根本不存在 ⇒ 结案服务是死代码。
+
+### 改动
+
+- 新增 `lib/verdict.js`：判决判据单一事实源（纯函数，不调 LLM、不读时钟、
+  不碰存储）。`decideVerdict()` 给运行时出口判，`verdictFromError()` 给历史
+  执行行错误原文判。枚举与 evolve 的 `EXEC_VERDICTS` 逐字一致，由测试钉住。
+- `runJob` 三个终局出口接判决：确定性失败 → `not-actionable`；重试额度用尽
+  → `exhausted`；环境故障顺延到 `envMaxDeferrals`（默认 6 次 ≈ 2 小时）
+  → `env-blocked`。判决经 `settleExecution()` 落到 `status=wontfix` +
+  `execVerdict` + 撤活跃 job + note 写复活路径。
+- 新增 `settleUnsettled()`：收敛历史悬案。三道闸（执行行 failed / 过宽限期 /
+  错误原文非空），被重启打断的判 `interrupted`。tick 开头按
+  `settleIntervalMs`（默认 5 分钟）节流；也可由 service 手动触发。
+- 可观测出口：`status().settled` / `lastSettle`，每次结案落一条
+  `executor-verdict-<判决>` failure_pattern（周报查得动）。
+- 降级：老版 evolve 无 `settleExecution` 时，只有 `not-actionable` 可走
+  `markNotActionable`（语义等价）；其余判决如实报未结案，不谎报。
+
+### 边界
+
+- ⛔ 前置闸（`decideRun` 的 cancel / fail）不结案：驱动没挂是配置缺陷，
+  该修宿主，不是把提案了结掉。
+- ⛔ 环境顺延次数记在进程内存，宿主重启清零（结案可逆，可复活）。
+- ⛔ 判决不修 driver 的 LLM 判定：`cdf41d63` 那次「LLM 判否」的误判风险
+  仍在。本批保证的是「给结论并结案」，不是「判得更准」。
+
+### 验证
+
+- 新增 `test/verdict.test.mjs` 9 组、`test/settle.test.mjs` 7 组（每条配
+  negative control，两条样本逐字取自生产错误原文）。
+- executor 全量 31/31；evolve execution/integration/stage/verdict-settle 13/13；
+  面板 stage-parity / v2-pending 4/4。
+- 生产数据离线对照（只读、不写盘）：`04d6199c` → `not-actionable`、
+  `531e2631` → `interrupted`，均为终局。
+- `check-tool-schemas` 0 invalid；`verify-manifests` 0 ERROR。
+
+### 同日补强（老板令：自己拍板，不留待定项）
+
+- `lib/verdict.js` 新增 `isLlmSubjectiveVerdict()`：`llm judged not applicable`
+  这类**主观判否**在结案文案里标「建议复核目标路径」。面板上一眼能区分
+  「机器查出来没目标」与「模型猜它不适用」。标记不推翻判决，不改 driver
+  的目标解析层（那是独立根因，另案）。
+- 用**部署位**的判决器离线把生产 2 条历史悬案结案：
+  `04d6199c` → `not-actionable`、`531e2631` → `interrupted`。
+  宿主当时不在运行，无并发写；先备份、写前二次核对、写后逐行复核
+  （其余 97 条提案与 40 条执行行逐字未变）。
+- 测试增至 33/33（仓库位与部署位各一遍）。
+
 ## v0.6.2（2026-11-07 · 透传提案级 commits[]）
 
 driver v0.11.0 起一次执行可能落地 N 个文件（含新建）。`interpret()` 原先只取

@@ -18,6 +18,7 @@
 
 import { z } from 'zod';
 import { nextFire, isDue, getHostCronEngine } from './cron.js';
+import { classifyInactivity } from './staleness.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { createHostBridge } from './host-schedule.js';
@@ -507,6 +508,11 @@ function apply(ctx, config) {
       // 为什么不能塞进 issues：`healthy = issues.length === 0` —— 塞进去就等于
       // 「有失败 ⇒ 不健康」，那是另一个语义，会连锁影响 agint-metrics / agint-evolve /
       // agint-curator 三处消费方。issues 的语义保持原样：只装 stale / overdue。
+      // 2026-11-08（提案 cdf41d63）：失效拆两个维度 ——
+      //   staleOverdue  = 过期未跑（本数组 = issues，历史别名保留，语义不变）
+      //   staleInactive = 久未活动（距上次运行 > 2 个调度周期，见 lib/staleness.js）
+      // healthy 仍只看过期维度：久未活动是观测信号，不改 healthy（沿用「只报不拦」口径）。
+      const staleInactive = [];
       const failures = [];
       const status = jobs.map((j) => {
         const last = j.lastRunAt ?? bootTime;
@@ -516,6 +522,22 @@ function apply(ctx, config) {
         const windowMs = expected && j.lastRunAt ? expected.getTime() - (j.lastRunAt ?? expected.getTime()) : 7 * 86_400_000;
         const stale = j.lastRunAt === null ? (now - bootTime > windowMs * 2) : (overdueMs > windowMs * 0.5);
         if (stale) issues.push({ id: j.id, reason: 'overdue by ' + Math.round(overdueMs / 60_000) + ' min' });
+        // 久未活动：独立维度。周期 = 相邻两次触发的间隔；从未运行的 job 从启动时刻起算。
+        const inact = classifyInactivity({
+          now,
+          lastRunAt: j.lastRunAt,
+          bootTime,
+          expectedNextRunAt: expected ? expected.getTime() : null,
+        });
+        if (inact.staleInactive) {
+          staleInactive.push({
+            id: j.id,
+            reason: 'inactive for ' + Math.round(inact.inactiveMs / 86_400_000) + ' days (period ' +
+              Math.round(inact.periodMs / 86_400_000) + ' d)',
+            inactiveMs: inact.inactiveMs,
+            periodMs: inact.periodMs,
+          });
+        }
         const err = j.lastError ? j.lastError.message : null;
         if (err) {
           failures.push({
@@ -527,14 +549,27 @@ function apply(ctx, config) {
         return {
           id: j.id,
           stale,
+          // 两个维度分列，别再让下游只能看到一个 stale。
+          staleOverdue: stale,
+          staleInactive: inact.staleInactive,
           overdueMs,
+          inactiveMs: inact.inactiveMs,
+          periodMs: inact.periodMs,
           lastRunAt: j.lastRunAt ? new Date(j.lastRunAt).toISOString() : null,
           expectedNextRunAt: expected?.toISOString() ?? null,
           // 每个 job 也带上自己的 lastError，工具面不必再反查 failures。
           lastError: err,
         };
       });
-      return { healthy: issues.length === 0, issues, failures, jobs: status };
+      return {
+        healthy: issues.length === 0,
+        issues,
+        // 过期维度 = issues（同源同数组）。staleInactive 是新增维度。
+        staleOverdue: issues,
+        staleInactive,
+        failures,
+        jobs: status,
+      };
     },
 
     // Internal helper for diagnostics; not part of the public surface but

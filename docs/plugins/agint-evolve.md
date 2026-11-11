@@ -17,7 +17,8 @@
 
 1. **采集快照**：memory / wiki / cron / rules / metrics / **quality**
 2. **自动发现**：
-   - cron.staleJobs > 0
+   - cron 过期未跑（`cron.health().staleOverdue`，= issues 同源别名）
+   - cron 久未活动（`cron.health().staleInactive`，2026-11-08 拆维度；与过期通道重叠的不重复报）
    - wiki.brokenLinks > 0
    - wiki.orphans > 0
    - rules.adherencePct 下降

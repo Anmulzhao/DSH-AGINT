@@ -39,6 +39,42 @@ export const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
  */
 export const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled', 'partial'];
 
+/**
+ * 执行器对一次自动执行给出的**终局判决**（2026-11-08，提案 cdf41d63 收口）。
+ *
+ * ## 为什么要有这一层
+ *
+ * 在此之前，一次自动执行的结局只有三种落法：
+ *   成功 ⇒ `status=applied`；失败 ⇒ `status=approved + execState=failed`；
+ *   确定性不可执行 ⇒ `status=approved + execState=idle`（并留一句「请人工结案」）。
+ *
+ * 后两种都是**悬案**：提案还挂在「已批准」里，等一个不会自动来的动作。
+ * 实测（2026-11-08 生产存储）：2 条提案停在 `approved + execState=failed`，
+ * 37 条执行行全是 failed，0 条 deferred —— 执行器只在「跑成了」和「没跑成」之间二选一，
+ * 从没给过结论。
+ *
+ * ⇒ 判决把「为什么没落地」变成一个**可读的字段**，并把提案落到终态（wontfix），
+ *    人看到的从「已批准·执行失败·等处理」变成「已结案·不可执行（附理由）」。
+ *
+ * 判决是**可逆**的：把状态改回 `proposed` 再批准即可复活，人随时能接管。
+ *
+ * 枚举值（口径写在这里，改动前先想清楚）：
+ *   applied        —— 全部落地（唯一由「成功」产生的终局）
+ *   partial        —— 落地一部分，剩余单元仍要续跑（**不是终局**，status 保持 approved）
+ *   not-actionable —— 自动执行判「没有可改的目标 / 撞上同 scope PENDING」：重试不会变
+ *   exhausted      —— 非确定性失败且重试额度用尽
+ *   env-blocked    —— 环境（LLM 通道 / 宿主能力）长期不可用，顺延到上限
+ *   interrupted    —— 被宿主重启 / 进程中断打断
+ */
+export const EXEC_VERDICTS = [
+  'applied',
+  'partial',
+  'not-actionable',
+  'exhausted',
+  'env-blocked',
+  'interrupted',
+];
+
 /** 一次执行（execution 表一行）的状态机。 */
 export const JOB_STATES = ['queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
 
@@ -432,8 +468,14 @@ export function ticketStage(rec) {
     stalled: stage === 'stalled',
   });
 
-  // ① 已结束
-  if (ENDED_STATUS.has(status)) return out('closed', `提案已 ${status}`);
+  // ① 已结束。2026-11-08：带判决的结案要说清「为什么结的」，
+  //    否则面板只显示「已结束」，人看不出这是执行器判的、判成了什么。
+  if (ENDED_STATUS.has(status)) {
+    const v = String(n.execVerdict ?? '').trim();
+    return out('closed', v
+      ? `已结案·${v}（${clip(n.execError, 80)}）`
+      : `提案已 ${status}`);
+  }
 
   // ② 待批准 —— 人还没表态，谈不上执行
   if (status === 'proposed') return out('draft', '还没人批准这条提案');

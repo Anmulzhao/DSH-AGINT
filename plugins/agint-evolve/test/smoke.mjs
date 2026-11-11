@@ -163,9 +163,21 @@ async function main() {
     '⛔ ../ 逃逸必须抛 escapes root —— 归一化的目的不是放宽边界',
   );
 
-  // 11c. 负向：绝对路径同样不许绕过（前导 / 被剥掉后回归相对路径，仍在 root 内）
+  // 11c. 绝对路径：前导 / 被剥掉后回归 root 内的真实路径 ⇒ 读得到，
+  //      且返回体的 path 必须是相对 root 的路径（不把盘符路径带回模型侧）。
+  //      2026-11-08 更正（提案 e4f77535）：旧断言写 equal(absLike, null)，
+  //      与它自己的文案「读得到但用相对路径寻址」矛盾 —— 错的是断言，不是实现。
+  //      安全边界是「不许逃出 root」，不是「不许用绝对路径」。
   const absLike = await evo.readReview(`/${join(root, 'ok.md')}`);
-  assert.equal(absLike, null, '剥掉前导 / 之后是 root 下的真实路径 ⇒ 读得到但用相对路径寻址');
+  assert.equal(absLike?.content, '# ok\n', 'root 内的绝对路径应当读得到');
+  assert.equal(absLike?.path, 'ok.md', '返回体必须用相对路径寻址，不泄漏盘符路径');
+
+  // 11c-neg. 负控制：指向 root 外的绝对路径必须被拒，证明归一化没削弱边界。
+  await assert.rejects(
+    () => evo.readReview(`/${join(tmpdir(), 'agint-evolve-escape.md')}`),
+    /escapes root/,
+    '⛔ root 外的绝对路径必须抛 escapes root',
+  );
 
   await rm(root, { recursive: true, force: true });
   console.log(`agint-evolve smoke: ok (baselineGate / recordBaselineRun / listBaselineHistory / 兼容 v0.1.0)`);

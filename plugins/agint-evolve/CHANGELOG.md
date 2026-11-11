@@ -1,5 +1,77 @@
 # agint-evolve CHANGELOG
 
+## v0.24.0（2026-11-08 · 终局判决字段与结案服务）
+
+### 问题
+
+执行器失败后没有终态：提案停在 `approved + execState=failed` 等一个
+不会自动来的动作。实测当天 2 条悬案、37 条 failed 执行行。
+
+### 改动
+
+- `lib/execution.js` 新增 `EXEC_VERDICTS` 六值枚举。
+- `proposalSchema` 新增 `execVerdict` / `execVerdictAt`（均 `default('')`，
+  老行照读，不升 domain version）。
+- 新增 `settleOne()` / `settleExecution()`：判决 + 落 `wontfix` +
+  `execMode=manual` + `execState=idle` + 撤活跃 job + note 写复活路径，
+  四件事一次做完。⛔ 只动 `approved`：人已改判或重复结案返回 `null`，
+  执行器据此如实报「没结成」。
+- 新增 `listUnsettledProposals()`：只读列历史悬案候选，只认有执行行
+  错误原文的；判决判据不在本插件（单一事实源在 executor/lib/verdict.js）。
+- `markNotActionable()` 改为走 `settleOne()` 结案，保留兼容入口。
+- `ticketStage()` 的 `closed` 档带出判决（`已结案·<判决>...`）；
+  无判决字段的老 wontfix 显示原文案（负控制）。
+- `lib/tools.js` 三处 output schema 补声明 `execVerdict` / `execVerdictAt`。
+  ⛔ 不写 `required`：老存储行没有这两个字段，加 required 会让历史提案
+  在 DSH strict 校验下全判失败。
+
+### 验证
+
+- 新增 `test/verdict-settle.test.mjs` 5 组（含抢写 / 幂等 / 无证据负控制）。
+- 更新 `execution.test.mjs` 与 `executor-integration.test.mjs` 的旧断言：
+  旧口径「保留 approved + 请人工结案」已废止。
+- 新增 `test/verdict-settle.test.mjs` 5 组；旧断言「请人工结案」改为结案口径。
+
+### 同日补强（老板令：自己拍板，不留待定项）
+
+两条存量提案由我自行批准并执行，不再挂着等批：
+
+- `cd9dae2c`：三处 output schema 补齐 4 个 `execUnits*` 字段
+  （`execUnitsApplied` / `execUnitsTotal` / `execRemainingUnits` / `execCommits`），
+  同样**不写 required**。`proposal-timestamps.test.mjs` ④ 转绿，
+  `evolve_proposals` / `evolve_propose` 在模型侧不再报校验错。
+- `e4f77535`：11c 断言本身是错的 —— 文案写「读得到但用相对路径寻址」，
+  却断言返回 `null`。改为验证真实安全性质：root 内绝对路径读得到、
+  返回体 `path` 是相对路径；新增 root 外绝对路径必须抛 `escapes root`
+  的负控制。同时修 `clean()`：`rel` 归一为相对 root 的路径，不再把盘符
+  路径带回模型侧（`clean` 只被 `readReview` 一处调用，影响面为零）。
+- 附带修 `report-eval-attribution.test.js` 的部署位判据（K141）：
+  分支改用 `repoRootFromHere() !== null`，与 `dataSnapshot()` 的
+  `pathResolved` 同源。旧写法在部署位会退化成相对 cwd 的 `eval`，
+  cwd 恰好是仓库根时假阳性 ⇒ 走错分支。
+- evolve 全量 **128/128**（仓库位与部署位各一遍），`smoke` exit 0。
+
+## v0.23.0（2026-11-08 · 周报多一个失效维度：久未活动）
+
+### 问题
+
+`agint-cron.health()` 从 v0.4.0 起把失效拆成两个维度（`staleOverdue` 过期未跑 /
+`staleInactive` 久未活动）。周报的发现生成器只读 `cron.issues` ⇒ 新维度在周报里
+看不见 = 接了不消费（新的观测侧假绿）。
+
+### 改动
+
+`findingsFromSnapshot()` 新增一条发现通道 `cron.staleInactive`：
+
+- 只报**过期通道没覆盖**的 job。跑过的 job 若久未活动必然也已过期（idle > 2P ⇒ > 1.5P），
+  重复报只是噪音。
+- 真正新增的信号是「从没跑过」的 job —— 过期通道对这类 job 用固定 7 天窗口兜底，看不见。
+
+### 验证
+
+`test/report.test.js` 新增 2 条判据（久未活动且未重叠的单独报；两个维度都命中的只报一条）。
+agint-evolve 测试 17/17 通过。
+
 ## v0.22.2（2026-11-07 · 提案行带出 commits[] 与范围账）
 
 ### 问题

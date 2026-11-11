@@ -23,12 +23,18 @@
  *   5. 上轮失败的 job 进 failures，**不进 issues** —— healthy 语义不许被改
  *   6. 每个 job 的 status 带自己的 lastError
  *   7. 工具面 render 必须消费 failures（接了不消费 = 新的观测侧假绿）
+ *
+ * 第三组判据（health() 的失效两维度 —— 提案 cdf41d63，2026-11-08）：
+ *   8. health() 同时给 staleOverdue（过期未跑）与 staleInactive（久未活动）
+ *   9. 久未活动用真实调度周期，周期从「上次运行 → 下一次应触发」推
+ *  10. healthy 仍只看过期维度（久未活动是观测，不改 healthy）
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { classifyInactivity } from '../lib/staleness.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CRON_LIB = join(HERE, '..', 'lib', 'index.js');
@@ -269,10 +275,14 @@ describe('cron list() · lastOk 错误优先', () => {
 const HOUR = 3_600_000;
 
 function makeHealth(jobs) {
-  return new Function('jobs', 'bootTime', 'nextFire', `return (${healthSrc});`)(
+  // classifyInactivity 必须注入：health() 是从源码里抠出来的独立函数体，
+  // new Function 的作用域拿不到模块级 import（不注入 ⇒ ReferenceError ⇒
+  // 测的是「测试自己没跟上实现」，不是真 bug）。
+  return new Function('jobs', 'bootTime', 'nextFire', 'classifyInactivity', `return (${healthSrc});`)(
     jobs,
     Date.now() - 10 * HOUR,
     (_parsed, from) => new Date(from.getTime() + (jobs.__staleOffsetMs ?? 3 * HOUR)),
+    classifyInactivity,
   );
 }
 
@@ -350,5 +360,62 @@ describe('cron_health 工具面 · 必须消费 failures', () => {
       /healthy[^\n]*\?\s*['"]healthy['"]\s*:\s*[^\n]*failures/,
       'healthy 的三元表达式里不得出现 failures —— 那等于「失败即不健康」，越过老板拍板的口径',
     );
+  });
+});
+
+/**
+ * health() 的失效两维度（提案 cdf41d63，2026-11-08）。
+ *
+ * nextFire 桩返回「上次运行 + offsetMs」⇒ 调度周期 = offsetMs。
+ * 关键反例：**从未运行**的 job。过期通道对这类 job 用固定 7 天窗口兜底，
+ * 久未活动用真实周期（P）—— 所以久未活动能抓到「每日任务从没跑过」，
+ * 这正是拆维度要新增的信号（否则该盲区永远看不见）。
+ */
+describe('cron health() · 失效两维度（过期未跑 / 久未活动）', () => {
+  test('health() 同时给 staleOverdue 与 staleInactive 两个通道', () => {
+    const jobs = [{ id: 'j1', lastRunAt: Date.now() - 1 * HOUR, lastError: null }];
+    const h = makeHealth(jobs)();
+
+    assert.ok(Array.isArray(h.staleOverdue), 'staleOverdue 必须是数组');
+    assert.ok(Array.isArray(h.staleInactive), 'staleInactive 必须是数组');
+    assert.equal(h.staleOverdue, h.issues, 'staleOverdue 与 issues 同源（历史别名，不许分叉）');
+  });
+
+  test('从未运行的 job 进 staleInactive，但不进 issues，healthy 不变', () => {
+    const jobs = [{ id: 'never-run', lastRunAt: null, lastError: null }];
+    const h = makeHealth(jobs)();
+
+    assert.equal(h.staleInactive.length, 1, '从未运行的 job 必须被久未活动维度抓到');
+    assert.equal(h.staleInactive[0].id, 'never-run');
+    assert.equal(h.issues.length, 0, '过期通道对从未运行的 job 用固定 7 天窗口，不该在这里报');
+    assert.equal(h.healthy, true, 'healthy 只看过期维度（沿用 2026-10-07「只报不拦」口径）');
+  });
+
+  test('周期取自调度本身，并逐 job 暴露', () => {
+    const jobs = [{ id: 'daily', lastRunAt: Date.now() - 10 * HOUR, lastError: null }];
+    jobs.__staleOffsetMs = 3 * HOUR; // 周期 3 小时 ⇒ idle 10 小时 > 2×3 小时
+    const h = makeHealth(jobs)();
+
+    assert.equal(h.staleInactive.length, 1, 'idle 超过 2 个周期必须判久未活动');
+    const job = h.jobs.find((j) => j.id === 'daily');
+    assert.equal(job.periodMs, 3 * HOUR, '每个 job 必须带自己的调度周期');
+    assert.equal(job.staleInactive, true, '逐 job 必须给两个维度的判定');
+    assert.equal(job.staleOverdue, true);
+    assert.ok(job.inactiveMs > 0, '必须带 idle 时长');
+  });
+
+  test('刚跑过的 job 两个维度都不报', () => {
+    const jobs = [{ id: 'fresh', lastRunAt: Date.now() - 1 * HOUR, lastError: null }];
+    const h = makeHealth(jobs)();
+
+    assert.equal(h.issues.length, 0);
+    assert.equal(h.staleInactive.length, 0);
+    assert.equal(h.healthy, true);
+  });
+});
+
+describe('cron_health 工具面 · 必须消费两个失效维度', () => {
+  test('render 读 staleInactive（接了不消费 = 新的观测侧假绿）', () => {
+    assert.match(toolsSrc, /h\.staleInactive/, 'render 必须读 h.staleInactive，否则新维度在工具面看不见');
   });
 });

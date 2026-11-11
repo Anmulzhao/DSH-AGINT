@@ -15,6 +15,7 @@
  */
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   readSessionLog,
@@ -225,6 +226,27 @@ const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta
 assert.ok(Array.isArray(manifest.spec.permissions.shell), 'permissions.shell must be an array (declaring zstd CLI dependency)');
 assert.ok(manifest.spec.permissions.shell.includes('zstd'), 'permissions.shell must declare "zstd"');
 console.log(`[smoke] manifest ✓ (permissions.shell = ${JSON.stringify(manifest.spec.permissions.shell)})`);
+
+// ── 5. output schema ↔ return shape conformance（提案 339c0892）─────────────
+// 断言文件早就在，但没有任何门禁跑它 ⇒ 新增返回字段仍可带病上线。
+// check-wiring 查 I 把本文件当 smoke 入口，串在这里就等于接进部署门。
+// 只核 exit code 不够：测试被清空或跳过时同样 exit 0。必须核真的跑了用例。
+const conformanceFile = fileURLToPath(new URL('./output-schema-conformance.test.mjs', import.meta.url));
+let conformanceOut;
+try {
+  conformanceOut = execFileSync(process.execPath, ['--test', conformanceFile], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+} catch (err) {
+  const detail = `${err.stdout ?? ''}${err.stderr ?? ''}`.slice(-1200);
+  assert.fail(`output-schema-conformance 未通过，部署门必须挡住 schema 漂移：\n${detail}`);
+}
+const conformancePassed = Number(/# pass (\d+)/.exec(conformanceOut)?.[1] ?? 0);
+const conformanceFailed = Number(/# fail (\d+)/.exec(conformanceOut)?.[1] ?? 1);
+assert.ok(conformancePassed >= 3 && conformanceFailed === 0,
+  `一致性守卫必须真跑且全绿（pass=${conformancePassed} fail=${conformanceFailed}）`);
+console.log(`[smoke] output schema ↔ return shape ✓ (${conformancePassed} pass / ${conformanceFailed} fail)`);
 
 // ── summary ──────────────────────────────────────────────────────────────
 console.log('[smoke] PASS ✓');

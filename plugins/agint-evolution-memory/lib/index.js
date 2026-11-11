@@ -234,8 +234,25 @@ function apply(ctx, config) {
 
   // ── 写入 helpers ────────────────────────────────────────────────────────
 
+  /**
+   * 把调用方给出的研究诊断归一成可存字符串（2026-11-11，RSI-Env 借鉴）。
+   *
+   * 起因：生产实测 283 条 evolution_log 的 evidence 全为空串、recalls 全为 0。
+   * 决策写进去了「上一轮为什么这么判」没写进去，下一代改进器无从复用。
+   * baseFields 早有 evidence 槽位，缺的是调用方把诊断搬进来的通道。
+   *
+   * 纪律：字符串原样保留；对象走 JSON.stringify；null / 循环引用一律返回 ''。
+   * 不猜字段、不推断内容（nothing is inferred）。空串是「没核过」的显式留痕，
+   * 不等于「通过」。见 docs/specs/evolution-contract-v1.md 的 Γ 四条规则。
+   */
+  function normalizeEvidence(value) {
+    if (value == null || value === '') return '';
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value); } catch { return ''; }
+  }
+
   /** Append one evolution-log entry. Returns the persisted record. */
-  async function logPhase4({ targetId, targetKind, decision, scores = {}, findings = [], tags = [] }) {
+  async function logPhase4({ targetId, targetKind, decision, scores = {}, findings = [], tags = [], evidence = '' }) {
     if (!targetId) throw new Error('logPhase4: targetId is required');
     const entry = evolutionLogEntrySchema.parse({
       id: randomId(),
@@ -246,6 +263,7 @@ function apply(ctx, config) {
       scores,
       findings,
       tags,
+      evidence: normalizeEvidence(evidence),
     });
     await (await t_log()).put(entry.id, entry);
     return { ...entry };
@@ -263,7 +281,7 @@ function apply(ctx, config) {
    * 不返回存储的 entry（异步）；返回 { queued: true, id } 即可。
    * 读时走 readLogRangeMerged（buffer + storage 合并视图），不破坏 storage。
    */
-  async function logPhase4Buffered({ targetId, targetKind, decision, scores = {}, findings = [], tags = [] }) {
+  async function logPhase4Buffered({ targetId, targetKind, decision, scores = {}, findings = [], tags = [], evidence = '' }) {
     if (!targetId) throw new Error('logPhase4Buffered: targetId is required');
     const entry = evolutionLogEntrySchema.parse({
       id: randomId(),
@@ -274,13 +292,14 @@ function apply(ctx, config) {
       scores,
       findings,
       tags,
+      evidence: normalizeEvidence(evidence),
     });
     // fix-20260921：显式等待 buffer 就绪（含 domain 初始化），避免早调即丢。
     const buffer = await ensureLogBuffer();
     if (!buffer) {
       // 降级：存储域不可用 → 走同步路径，**不丢事件**，并计数暴露。
       bump('evolutionMemory.logPhase4Buffered.degraded');
-      return logPhase4({ targetId, targetKind, decision, scores, findings, tags });
+      return logPhase4({ targetId, targetKind, decision, scores, findings, tags, evidence });
     }
     try {
       buffer.enqueue(entry);
@@ -292,7 +311,7 @@ function apply(ctx, config) {
         id: entry.id,
         error: err instanceof Error ? err.message : String(err ?? 'unknown'),
       });
-      return logPhase4({ targetId, targetKind, decision, scores, findings, tags });
+      return logPhase4({ targetId, targetKind, decision, scores, findings, tags, evidence });
     }
   }
 

@@ -209,6 +209,40 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
 
 // ── 聚合：校准实测 per domain（evolution 成功率）────────────────────────────
 
+/**
+ * 域归属：failure_pattern 有 category，success_template 没有 category 只有 appliesTo。
+ * 旧代码两者都读 category，templates 全落进 'unknown'（提案 4df1c0db 缺陷 3）。
+ */
+function domainOf(rec) {
+  const c = rec?.category;
+  if (typeof c === 'string' && c.trim()) return c.trim();
+  const a = rec?.appliesTo;
+  if (typeof a === 'string' && a.trim()) return a.trim();
+  if (Array.isArray(a)) {
+    const hit = a.find((x) => typeof x === 'string' && x.trim());
+    if (hit) return hit.trim();
+  }
+  return 'unknown';
+}
+
+/**
+ * 先验预测：取能力图当前 confidence。
+ * 旧代码两处都传 getPriorPredicted: () => null，runCalibration 回落到
+ * calibration_log 里「上一轮自己写的 predicted」，而该表唯一写者写的就是 0
+ * ⇒ 自引用闭环，生产 26 行 calibration_log 的 predicted 恒 0（缺陷 2）。
+ * capability_map.confidence 是自我模型对「该域能不能做到」的当前预测，
+ * 与 actual（窗口内进化成功率）同量纲，可直接算校准误差。
+ * 取不到时返回 undefined：保留 runCalibration 原有的回落路径，不猜。
+ */
+function priorPredicted(store, domain) {
+  try {
+    for (const [, rec] of store.tables.capabilityMap.entries()) {
+      if (rec?.domain === domain && Number.isFinite(rec.confidence)) return rec.confidence;
+    }
+  } catch { /* 软降级：能力图不可读时不猜 */ }
+  return undefined;
+}
+
 async function buildCalibrationDomains(deps, { windowDays }) {
   let failures = [];
   let templates = [];
@@ -221,14 +255,24 @@ async function buildCalibrationDomains(deps, { windowDays }) {
     if (evo && typeof evo.queryTemplates === 'function') templates = (await evo.queryTemplates({ days: windowDays })) ?? [];
   }
   catch { templates = []; }
+  // 窗口对称（缺陷 1）：queryFailures 读 days，queryTemplates 的版本不读。
+  // 在消费侧按同一口径过滤，不改跨插件契约。时间戳缺失或非法时保留该行，
+  // 与 queryFailures「宁多不少」的口径一致。
+  const cutoffMs = Number.isFinite(windowDays) && windowDays > 0
+    ? Date.now() - windowDays * 86_400_000 : null;
+  const inWindow = (rec) => {
+    if (cutoffMs === null) return true;
+    const ts = Date.parse(rec?.updatedAt ?? rec?.createdAt ?? '');
+    return Number.isNaN(ts) || ts >= cutoffMs;
+  };
   const byDomain = new Map();
   const push = (domain, kind) => {
     const d = domain && typeof domain === 'string' && domain.length > 0 ? domain : 'unknown';
     if (!byDomain.has(d)) byDomain.set(d, { ok: 0, fail: 0 });
     byDomain.get(d)[kind] += 1;
   };
-  for (const f of (Array.isArray(failures) ? failures : [])) push(f?.category ?? 'unknown', 'fail');
-  for (const t of (Array.isArray(templates) ? templates : [])) push(t?.category ?? 'unknown', 'ok');
+  for (const f of (Array.isArray(failures) ? failures : [])) if (inWindow(f)) push(domainOf(f), 'fail');
+  for (const t of (Array.isArray(templates) ? templates : [])) if (inWindow(t)) push(domainOf(t), 'ok');
   return [...byDomain.entries()].map(([domain, info]) => {
     const total = info.ok + info.fail;
     return { domain, actual: total > 0 ? info.ok / total : 0, samples: total };
@@ -312,7 +356,7 @@ async function selfUpdate(ctx, store, deps, { trigger, evidence, metricsIngest, 
     const result = await runCalibration({
       store,
       getDomains: () => buildCalibrationDomains(deps, { windowDays: DEFAULT_CALIBRATION_WINDOW_DAYS }),
-      getPriorPredicted: () => null, // runCalibration 自行从 calibration_log 取最新 predicted
+      getPriorPredicted: (domain) => priorPredicted(store, domain),
       writeFailure: async (domain, error) => {
         const evo = deps.get('agint.evolution');
         if (evo && typeof evo.addFailure === 'function') {
@@ -431,7 +475,7 @@ function apply(ctx, config = {}) {
     const result = await runCalibration({
       store,
       getDomains: () => buildCalibrationDomains(deps, { windowDays: wd }),
-      getPriorPredicted: () => null,
+      getPriorPredicted: (domain) => priorPredicted(store, domain),
       writeFailure: async (d, error) => {
         const evo = deps.get('agint.evolution');
         if (evo && typeof evo.addFailure === 'function') {

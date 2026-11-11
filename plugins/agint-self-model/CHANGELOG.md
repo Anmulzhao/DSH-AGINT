@@ -1,5 +1,24 @@
 # Changelog — agint-self-model
 
+## 0.8.0 (2026-11-08) — 修校准读数三缺陷（提案 4df1c0db）
+
+生产 `calibration_log` 26 行 `predicted` 恒 0，`domain` 退化成 `unknown`，`maxError` 假绿。
+三个独立根因，一次修完：
+
+1. **窗口不对称**：`queryFailures({days})` 按窗口过滤，`queryTemplates` 的版本不读 days。
+   在 `buildCalibrationDomains` 消费侧按同一口径过滤 templates，不改跨插件契约。
+   时间戳缺失或非法时保留该行，与 `queryFailures` 的「宁多不少」一致。
+2. **predicted 自引用闭环**：两处 `getPriorPredicted: () => null` 让 `runCalibration`
+   回落到 `calibration_log` 里「上一轮自己写的 predicted」，而该表唯一写者写的就是 0。
+   改从 `capability_map.confidence` 取当前预测。取不到时返回 `undefined`，保留原回落路径，不猜。
+3. **domain 退化**：`success_template` 行没有 `category`，只有 `appliesTo`。
+   新增 `domainOf()`：category → appliesTo → unknown。
+
+测试 `test/calibration-readout.test.mjs` 5 例，配负控制：
+摘掉 `priorPredicted` 接线后 ③ 变红，恢复后 5/5；365 天窗口下过期行仍计入，证明 ① 不是碰巧。
+
+验证：新测试 5/5、smoke 19/19、self-model 全量 27/27，仓库位与两处部署位一致。
+
 ## 0.7.9 (2026-10-21) — 0.7.8 的 evidence 改成 pull（修读数振荡）
 
 **0.7.8 的缺陷**：它把 `evidence` 从 `selfUpdate` 传进聚合，解决了「成绩不进画像」，
