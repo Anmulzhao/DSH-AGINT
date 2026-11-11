@@ -78,7 +78,10 @@ function apply(ctx) {
       'ASK-gated per Batch 2.1 决策 — call goes through rule_check ask gate.',
     parameters: {
       entry: { type: 'object', required: true, additionalProperties: true,
-        description: 'EvolutionLogEntry: { targetId, targetKind, decision, scores?, findings?, tags? }' },
+        description: 'EvolutionLogEntry: { targetId, targetKind, decision, scores?, findings?, tags?, evidence? }. '
+          + 'findings items must be { ruleId, severity(low|medium|high), detail? }; scores is { dim: number }. '
+          + 'evidence accepts a string or an object (object is JSON-serialized, unserializable becomes ""). '
+          + 'Empty evidence means "not checked", not "passed".' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
@@ -96,7 +99,10 @@ function apply(ctx) {
       'Returns { queued: true, id }. ASK-gated per Batch 2.1.',
     parameters: {
       entry: { type: 'object', required: true, additionalProperties: true,
-        description: 'EvolutionLogEntry: { targetId, targetKind, decision, scores?, findings?, tags? }' },
+        description: 'EvolutionLogEntry: { targetId, targetKind, decision, scores?, findings?, tags?, evidence? }. '
+          + 'findings items must be { ruleId, severity(low|medium|high), detail? }; scores is { dim: number }. '
+          + 'evidence accepts a string or an object (object is JSON-serialized, unserializable becomes ""). '
+          + 'Empty evidence means "not checked", not "passed".' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
