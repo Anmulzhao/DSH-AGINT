@@ -50,6 +50,7 @@ import {
   TRUST_VETO_THRESHOLD,
   compositeScore,
 } from '../../agint-quality-eval/lib/evaluators.js';
+import { detectCrossCapabilityRegression } from './crossCapabilityGuard.js';
 
 /** 默认 policyId（contract.pluginId + version 标识） */
 export const DEFAULT_POLICY_ID = 'agint-quality-policy@0.4.0';
@@ -316,6 +317,32 @@ export async function decidePolicy({ results, config = {}, options = {} } = {}) 
       triggeredBy.push(`effective-delta-unmeasured:${effDelta.reason ?? 'unknown'}`);
     } else if (effDelta.verdict === 'effective') {
       triggeredBy.push(`effective-delta-effective:${effDelta.reason ?? 'ok'}`);
+    }
+  }
+
+  // ── 跨能力回归门（2026-11-11，RSI-Env 借鉴）────────────────────────────
+  // 论文表 1：目标维度涨、非目标维度掉是常态，不是异常。只盯 composite 会放行。
+  // 调用前提：调用方必须显式给 baseline / current / targetDimensions。
+  // 没给 = 本门完全不跑，既有决策零行为变化；也绝不伪造「没退化」的结论。
+  // kill-switch：config.crossCapabilityGuard.enabled = false 可关（K51：出厂即开）。
+  // 处置与效率护栏同口径：regressed ⇒ AUTO_DEPLOY 封顶 PENDING_REVIEW；
+  // unmeasured ⇒ 不阻断，但强制留痕（没核过这件事必须能被复盘看见）。
+  const ccConfig = config.crossCapabilityGuard ?? {};
+  const ccInput = options?.crossCapability;
+  if (ccConfig.enabled !== false && ccInput && typeof ccInput === 'object') {
+    const cc = detectCrossCapabilityRegression({
+      baseline: ccInput.baseline,
+      current: ccInput.current,
+      targetDimensions: ccInput.targetDimensions,
+      dropThreshold: ccConfig.dropThreshold,
+    });
+    if (cc.verdict === 'regressed') {
+      triggeredBy.push(`cross-capability-regressed:${cc.reason}`);
+      if (masterKind === 'AUTO_DEPLOY') masterKind = 'PENDING_REVIEW';
+    } else if (cc.verdict === 'unmeasured') {
+      triggeredBy.push(`cross-capability-unmeasured:${cc.reason}`);
+    } else {
+      triggeredBy.push(`cross-capability-stable:${cc.reason}`);
     }
   }
 
