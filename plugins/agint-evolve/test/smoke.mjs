@@ -172,6 +172,20 @@ async function main() {
   assert.equal(absLike?.content, '# ok\n', 'root 内的绝对路径应当读得到');
   assert.equal(absLike?.path, 'ok.md', '返回体必须用相对路径寻址，不泄漏盘符路径');
 
+  // 11c-bis. 2026-11-11 Linux 回归：多个前导斜杠只能剥 1 个。
+  //   旧实现 replace(/^\/+/,'') 把 `///tmp/root/ok.md` 剥成相对路径
+  //   `tmp/root/ok.md`，resolve(root, ...) 得到 root/tmp/root/ok.md ⇒ 恒读不到。
+  const multiSlash = await evo.readReview(`//${join(root, 'ok.md')}`);
+  assert.equal(multiSlash?.content, '# ok\n', '多个前导斜杠仍须解析成 root 内的绝对路径');
+  assert.equal(multiSlash?.path, 'ok.md', '多前导斜杠的返回体仍用相对路径寻址');
+
+  // 11c-bis-neg. 多前导斜杠指向 root 外依旧必须被拒，证明修复没放宽边界。
+  await assert.rejects(
+    () => evo.readReview(`//${join(tmpdir(), 'agint-evolve-escape.md')}`),
+    /escapes root/,
+    '⛔ root 外的多前导斜杠绝对路径必须抛 escapes root',
+  );
+
   // 11c-neg. 负控制：指向 root 外的绝对路径必须被拒，证明归一化没削弱边界。
   await assert.rejects(
     () => evo.readReview(`/${join(tmpdir(), 'agint-evolve-escape.md')}`),

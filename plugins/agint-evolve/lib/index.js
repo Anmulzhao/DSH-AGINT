@@ -25,7 +25,7 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve, dirname, relative } from 'node:path';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
@@ -706,9 +706,17 @@ function apply(ctx, config) {
   const normRoot = root.replace(/\\/g, '/');
 
   const clean = (p) => {
-    const trimmed = String(p ?? '').replace(/^\/+/, '');
-    if (!trimmed.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
-    const abs = resolve(root, trimmed);
+    // 2026-11-11：只剥「一个」额外前导斜杠；剥完仍呈绝对形态时按绝对路径解析。
+    //   旧写法 replace(/^\/+/, '') 把 POSIX 的 `//tmp/root/x.md` 剥成相对路径
+    //   `tmp/root/x.md`，再 resolve(root, ...) 得到 root/tmp/root/x.md ⇒ Linux 上
+    //   readReview 恒返回 null（smoke 11c 红）；Windows 因盘符仍是绝对形态而恒绿。
+    //   用 path.isAbsolute 让两端判据一致；相对路径（含 `/ok.md`）仍按 root 解析，
+    //   `../` 逃逸与 root 边界闸不变。
+    const raw = String(p ?? '');
+    const stripped = raw.startsWith('/') ? raw.slice(1) : raw;
+    if (!stripped.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
+    const absoluteForm = isAbsolute(stripped) || /^[A-Za-z]:[\\/]/.test(stripped);
+    const abs = absoluteForm ? resolve(stripped) : resolve(root, stripped);
     const normAbs = abs.replace(/\\/g, '/');
     if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
     // 2026-11-08：rel 必须是相对 root 的路径。此前直接回 trimmed，
