@@ -31,6 +31,34 @@
  *
  * 软降级：event-bus / storage 不可用 → 不抛，metrics 域其他指标照常工作。
  * 红线：不改 FROZEN schema；不切 T2（本条纯订阅，主路径不受影响）。
+ *
+ * 2026-11-11 扩容：补三条宿主信号主题（本模块是它们的唯一订阅方）
+ * ---------------------------------------------------------------
+ * 起因：`node bin/check-wiring.mjs` 报 2 个硬缺口 —— NO_SUBSCRIBER(
+ * input.signal.host.subagent-start) / (-end)。取证：
+ *   · 发布方 = agint-event-bus/lib/host-bridge.js（字面量 topic，门禁扫得到）
+ *   · 生产总线实读 **40 条 start / 35 条 end**，首条 2026-11-04T12:23:01Z
+ *   · 仓库里零订阅方（grep `input.signal.host.subagent` 在 plugins/ 下只命中发布侧 2 处）
+ *   · 正负对照（生产 agint_metrics.json 实读）：host.* 计数 668 条**全是**
+ *     domainChangedCount，subagent 两个 key **0 条** —— 同模块同一条 attach 通路，
+ *     旧主题有数、新主题零，证明缺的是订阅而不是采集能力
+ *   ⇒ 不是「尚未触发」，是**接了发布没接消费**（同 rules.changed 那一类）。
+ *
+ * ⚠️ 取证口径：`deliveredTo` 是 bus.js 里 publish() 的**返回值**，不落盘
+ * （agint_event_bus.json 记录层只有 envelope / payloadPreview / occurredAt / traceId）。
+ * 它恒空只能由「零订阅方」推断，不能写成存储实读。可测的证据是上面那组计数对照。
+ *
+ * 为什么落 metrics 而不是新建业务插件：
+ *   ① metrics 是全系统既定的统一遥测出口，domain-changed / workflow-end 已是同形态；
+ *   ② 「多 Agent 跑了多少、成没成、用哪个 provider」在 AGINT 侧此前**零指标** ——
+ *      进化闭环能看见自己发了什么事件，却看不见宿主真的派了多少子代理
+ *      （host-bridge 头注释原话：这是「哪些子代理值得派」的唯一依据）；
+ *   ③ 事件 payload 里已带 provider / stopReason / messageLength，meta 原样落库，
+ *      后续要按 provider 或终态聚合，直接查这一张表，不用另建采集通道。
+ *
+ * 第三条 workflow-phase：同族潜在缺口（发布方 1 / 订阅方 0 / 生产 0）——
+ *   门禁此刻只报 NOT_YET_FIRED（软），但第一次有工作流跑起来就会翻成 NO_SUBSCRIBER。
+ *   一并接上，避免同一诉求分两次改、两次重启。
  */
 
 const COUNTER_METRIC_KEYS = {
@@ -45,6 +73,13 @@ const COUNTER_METRIC_KEYS = {
   // 进化闭环能看见自己发了什么事件，却看不见自己**被写了什么**。
   'input.signal.host.domain-changed': 'host.domainChangedCount',
   'input.signal.host.workflow-end': 'host.workflowEndCount',
+  // ── 2026-11-11：子代理边界事件 + 工作流相位 ──
+  // 生产已有 40 条 start / 35 条 end 且零订阅方（check-wiring 判 NO_SUBSCRIBER）。
+  'input.signal.host.subagent-start': 'host.subagentStartCount',
+  'input.signal.host.subagent-end': 'host.subagentEndCount',
+  // 同族潜在缺口：发布方 1 / 订阅方 0 / 生产 0，此刻软报 NOT_YET_FIRED，
+  // 第一次有工作流跑起来就会翻成 NO_SUBSCRIBER ⇒ 一并接。
+  'input.signal.host.workflow-phase': 'host.workflowPhaseCount',
 };
 
 const COUNTER_METRIC_LABELS = {
@@ -55,6 +90,9 @@ const COUNTER_METRIC_LABELS = {
   'abtest.concluded': 'A/B test concluded count',
   'input.signal.host.domain-changed': 'host storage-domain write count (whitelisted domains only)',
   'input.signal.host.workflow-end': 'workflow run settled count (any stop reason)',
+  'input.signal.host.subagent-start': 'host subagent start count (child agent spawned)',
+  'input.signal.host.subagent-end': 'host subagent end count (child agent settled, stopReason in meta)',
+  'input.signal.host.workflow-phase': 'workflow phase advance count (one per phase)',
 };
 
 const SUBSCRIBED_TOPICS = Object.keys(COUNTER_METRIC_KEYS);
@@ -71,7 +109,7 @@ const SUBSCRIBED_TOPICS = Object.keys(COUNTER_METRIC_KEYS);
  */
 const SUBSCRIPTION = {
   subscriber: 'agint-metrics',
-  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded', 'input.signal.host.domain-changed', 'input.signal.host.workflow-end'],
+  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded', 'input.signal.host.domain-changed', 'input.signal.host.workflow-end', 'input.signal.host.subagent-start', 'input.signal.host.subagent-end', 'input.signal.host.workflow-phase'],
   mode: 'async', // sync 配额全局上限 3，留给真正的门禁边
   timeoutMs: 5000,
 };

@@ -16,6 +16,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   recordEventCounter,
   attachEventCounterSubscription,
@@ -57,7 +58,11 @@ test('订阅覆盖全部主题，且每条都有独立 metric key', () => {
       'abtest.concluded',
       'abtest.started',
       'input.signal.host.domain-changed',
+      // 2026-11-11：宿主 subagent 边界事件（生产已有 40/35 条却零订阅方）
+      'input.signal.host.subagent-end',
+      'input.signal.host.subagent-start',
       'input.signal.host.workflow-end',
+      'input.signal.host.workflow-phase',
       'quality.contract.violated',
       'rules.changed',
       'wiki.updated',
@@ -79,6 +84,51 @@ test('门禁可见性：SUBSCRIPTION.topics 必须与 key 映射一一对应', (
   );
   assert.equal(SUBSCRIPTION.subscriber, 'agint-metrics');
   assert.equal(SUBSCRIPTION.mode, 'async');
+});
+
+test('门禁可见性（源码级）：topics 必须是**字面量数组**，换成变量就让防线瞎', () => {
+  // §6.15.3 教训：`bin/check-wiring.mjs` 的订阅侧靠正则 /topics:\s*\[([^\]]*)\]/ 扫源码。
+  // 变量形式对它**不可见** ⇒「代码对了，回归防线瞎了」（第一版就踩过：
+  // topics: SUBSCRIBED_TOPICS，门禁照样报 NO_SUBSCRIBER(rules.changed)）。
+  // 上一条断言只比对「SUBSCRIPTION.topics ↔ key 映射」：两者若**同时**改成变量，
+  // 它照样绿，但门禁已经看不见任何一条订阅。这里直接读源码，钉死字面量这件事。
+  const src = readFileSync(new URL('../lib/eventCounters.js', import.meta.url), 'utf8');
+  const m = src.match(/topics:\s*\[([^\]]*)\]/);
+  assert.ok(m, '源码里找不到 topics: [...] 字面量数组 —— 门禁的正则扫不到它');
+  for (const t of Object.keys(COUNTER_METRIC_KEYS)) {
+    assert.ok(m[1].includes(`'${t}'`), `topics 字面量里缺 ${t} —— 门禁看不到这条订阅`);
+  }
+});
+
+test('新补的三条宿主主题各自落一条计数，key 不串、payload 事实不丢', async () => {
+  const tableFn = makeTableFn();
+  const cases = [
+    ['input.signal.host.subagent-start', 'host.subagentStartCount'],
+    ['input.signal.host.subagent-end', 'host.subagentEndCount'],
+    ['input.signal.host.workflow-phase', 'host.workflowPhaseCount'],
+  ];
+  for (const [topic] of cases) {
+    await recordEventCounter({
+      tableFn,
+      randomIdFn,
+      envelope: {
+        topic,
+        source: 'agint-event-bus',
+        payload: { hostEvent: topic, provider: 'spawn', stopReason: 'completed', messageLength: 42 },
+      },
+    });
+  }
+  const rows = tableFn.tbl.entries();
+  assert.equal(rows.length, 3, '三条主题应各落一条');
+  assert.deepEqual(rows.map((r) => r.key).sort(), cases.map(([, k]) => k).sort());
+  for (const r of rows) {
+    assert.equal(r.value, 1, '计数器必须是增量 1');
+    const meta = JSON.parse(r.meta);
+    assert.equal(meta.source, 'agint-event-bus');
+    // 事实不丢：后续要按 provider / 终态聚合，只能靠 meta 里这份原文
+    assert.equal(meta.payload.provider, 'spawn');
+    assert.equal(meta.payload.stopReason, 'completed');
+  }
 });
 
 // ─────────────────── 2. 落库（handler 真的写了吗） ───────────────────
