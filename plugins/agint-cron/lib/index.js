@@ -457,14 +457,16 @@ function apply(ctx, config) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  async function runOne(job) {
+  // opts 只透传只读标注（当前仅 triggerSource，来自事件快路径），
+  // ⛔ 不改 lastRunAt / due 记账语义；cron tick 调用时是 undefined。
+  async function runOne(job, opts) {
     job.running = true;
     const startedAt = new Date().toISOString();
     try {
       let result = null;
       for (let attempt = 1; ; attempt += 1) {
         try {
-          result = await job.action(services());
+          result = await job.action(services(), opts);
           break;
         } catch (error) {
           if (attempt >= RETRY_MAX || !isTransientWriteError(error)) throw error;
@@ -597,11 +599,11 @@ function apply(ctx, config) {
       }));
     },
 
-    async runNow(id) {
+    async runNow(id, opts) {
       const job = jobById.get(id);
       if (!job) throw new Error(`agint-cron: no job '${id}'`);
       if (job.running) throw new Error(`agint-cron: job '${id}' already running`);
-      await runOne(job);
+      await runOne(job, opts);
       // lastError 在内存里是 { startedAt, message } 对象（L265），而本工具输出
       // schema 声明 oneOf [string, null] ⇒ 原样返回会校验失败（matched 0），
       // 恰好把「为什么失败」这条最该看见的信息吞掉（2026-10-04 实测两次撞上）。

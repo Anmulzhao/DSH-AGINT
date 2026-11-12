@@ -136,10 +136,27 @@ test('skills-change → 真调 runNow(curator-weekly)（完整 run，不是只�
 
   await h.flush();
   assert.deepEqual(h.calls.map((c) => c.id), ['curator-weekly']);
+  assert.deepEqual(
+    h.calls.map((c) => c.opts?.triggerSource),
+    ['event:input.signal.host.skills-change'],
+    '必须透传触发源，让终态事件能自证不是 cron 兜底',
+  );
   assert.equal(curator(h).runs, 1);
   assert.equal(curator(h).pending, false);
   assert.equal(curator(h).lastError, null);
   assert.equal(h.pubs.length, 0, '成功路径不该由本桥另发终态事件（业务侧发 run-completed）');
+});
+
+test('事件触发源按 topic 逐条透传：evolve-review 也能自证来源', async () => {
+  const h = harness();
+  h.bridge.attach();
+  h.emit('curator.run-completed', { dryRun: false });
+  await h.flush();
+  assert.deepEqual(h.calls.map((c) => c.id), ['evolve-review']);
+  assert.deepEqual(
+    h.calls.map((c) => c.opts?.triggerSource),
+    ['event:curator.run-completed'],
+  );
 });
 
 test('5s 去抖：成批 skills/change 只跑一次全量策展', async () => {

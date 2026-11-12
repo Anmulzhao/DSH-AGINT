@@ -13,7 +13,8 @@
  *   3. 业务插件（curator）保持「只提供能力、不自己决定什么时候动手」的职责。
  *
  * ⛔ 三条硬纪律（评估 §四 / §五 / §七）：
- *   - **cron 兜底不可去**：27 个 job 一个不删，事件只是快路径。⛔ 也不改写
+ *   - **cron 兜底不可去**：默认 job 表一个不删（评估口径 27、当前 29），
+ *     事件只是快路径。⛔ 也不改写
  *     runOne 的 lastRunAt 记账 —— 曾设计 `keepDueOnFailure`（失败不写
  *     lastRunAt 以保持 due），重读 cron.js 的 isDue() 后否决：due 取的是
  *     「最近一次自然周期触发时刻」，事件失败写不写 lastRunAt 都不妨碍下个
@@ -120,8 +121,13 @@ export function createEventTriggerBridge({
     }
     try {
       // 复用 agint.cron.runNow(id)：重试 / lastResult / persistJobState / health()
-      // 全在这条路径上。⛔ 不传任何改写 lastRunAt 的选项 —— 见头注释硬纪律 1。
-      const result = await runNow(trigger.jobId);
+      // 全在这条路径上。⛔ 只透传**只读的触发源标注**，不传任何改写 lastRunAt
+      // 的选项 —— 见头注释硬纪律 1。标注经 jobs.js 落到 curator.run-completed
+      // 的 payload.trigger，让终态事件能自证「这次是事件触发，不是周一 07:00
+      // 的 cron 兜底」（2026-11-12 补，解决验收遗留 1）。
+      const result = await runNow(trigger.jobId, {
+        triggerSource: 'event:' + trigger.topic,
+      });
       if (result?.ok === true) {
         s.pending = false;
         s.runs += 1;

@@ -177,10 +177,16 @@ export const defaultJobs = [
     name: '技能策展',
     schedule: '0 7 * * 1',
     description: '扫描技能 → 聚合使用 → 状态转换 → 归档陈旧技能 → 写策展报告（weekly）',
-    action: async (services) => {
+    // opts 由 agint.cron.runNow(id, opts) 透传；只有事件快路径会带
+    // triggerSource，cron tick 与手动 runNow(id) 都是 undefined ⇒ 保持原字面量。
+    action: async (services, opts) => {
       const curator = services['agint.curator'];
       if (!curator) return { skipped: true, reason: 'agint.curator not mounted' };
-      const result = await curator.run({ trigger: 'cron:curator-weekly' });
+      // ⚠️ trigger 会原样进 curator.run-completed 的 payload 与审计明细。
+      // 事件触发时写 `event:<topic>`，让终态事件能自证来源（2026-11-12）。
+      const result = await curator.run({
+        trigger: opts?.triggerSource ?? 'cron:curator-weekly',
+      });
       if (result.skipped) return { skipped: true, reason: result.reason };
       return {
         week: result.week,
