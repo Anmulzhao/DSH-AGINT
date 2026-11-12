@@ -19,16 +19,27 @@
  *     **不判绿也不判红**，明确「链路未通电 / 窗口内无流量」。
  *   - 未部署事件桥时实跑大概率 `TERMINAL_MISSING`（真缺口，不是脚本 bug）。
  *
+ * ⛔ 双数据源（2026-11-12 重启后新增，这是本脚本最容易被悄悄废掉的地方）：
+ *   生产 `agint_event_bus` 域已由 **single 布局**切到 **per-record 布局**
+ *   （`storages/agint_event_bus/events/<uuid>.json`，消除每次写整份重写
+ *   28.6MB 的写放大）。旧 `storages/agint_event_bus.json` 从此**冻结在迁移
+ *   水位线**，不再更新。只认旧文件 ⇒ 最近 24h 永远读到 0 条 ⇒ 静默假绿。
+ *   因此默认同时读两处、按 `envelope.id` 合并去重；报告里显式列出每个
+ *   数据源的条数，让「看见了什么」可被核对。
+ *   迁移水位线见 `storages/agint_event_bus_migration.json`（只搬 30 天窗口，
+ *   更早的历史仍只在旧 JSON 里 ⇒ 不能只取新目录）。
+ *
  * 用法：
- *   node bin/check-event-trigger-lag.mjs                 # 默认最近 24h
+ *   node bin/check-event-trigger-lag.mjs                 # 默认最近 24h，双源
  *   node bin/check-event-trigger-lag.mjs --since 2026-11-12T00:00:00Z
  *   node bin/check-event-trigger-lag.mjs --window-min 60 --json
- *   node bin/check-event-trigger-lag.mjs --storage <path>   # 离线复核
+ *   node bin/check-event-trigger-lag.mjs --storage <path>              # 离线单源
+ *   node bin/check-event-trigger-lag.mjs --storage <path> --record-dir <dir>
  * 退出码：0 = OK / NO_TRIGGER_EVENTS，1 = TERMINAL_MISSING，2 = 脚本自身出错
  *
  * 零依赖：只用 node:fs / node:path / node:url。
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -37,12 +48,34 @@ export const TERMINAL_TOPICS = Object.freeze(['curator.run-completed', 'curator.
 export const DEFAULT_WINDOW_MIN = 30;
 export const DEFAULT_DAYS = 1;
 const BUS_REL = join('storages', 'agint_event_bus.json');
+const BUS_DIR_REL = join('storages', 'agint_event_bus');
+export const RECORD_SUBDIR = 'events';
 
 /**
- * 从事件总线存储 JSON 抽出 topic / occurredAt / payload。
- * ⚠️ 兼容两种落盘形状：新写入 { envelope, deliveries }（2026-11-12 结构性
- *    冗余清理后），存量行还带顶层 topic / occurredAt。只认能解析的时间戳。
+ * 把一条落盘记录归一成判据用的形状。
+ * ⚠️ 兼容三种形状：
+ *   ① 旧 single 表的存量行（顶层 topic / occurredAt）
+ *   ② 新 single 表精简行 { envelope, deliveries }
+ *   ③ per-record 文件 { version, record: { envelope, deliveries } }
+ * `id` 用于跨源去重；取不到就留 null（此时合并时**不去重**，宁可重复计数，
+ * 也不能把两条同毫秒的技能变更误合并成一条 ⇒ 那是漏报，等于假绿）。
  */
+function normalizeRow(r) {
+  if (!r || typeof r !== 'object') return null;
+  const env = r.envelope && typeof r.envelope === 'object' ? r.envelope : r;
+  const topic = typeof env.topic === 'string' ? env.topic : null;
+  const occurredAt = typeof env.occurredAt === 'string' ? env.occurredAt : null;
+  if (!topic || !occurredAt || Number.isNaN(Date.parse(occurredAt))) return null;
+  return {
+    id: typeof env.id === 'string' ? env.id : null,
+    topic,
+    occurredAt,
+    ts: Date.parse(occurredAt),
+    payload: env.payload ?? null,
+  };
+}
+
+/** 从 single 布局的事件总线存储 JSON 抽事件。 */
 export function collectEvents(raw) {
   const tbl = raw?.tables?.events ?? raw?.events ?? raw;
   const rows = Array.isArray(tbl)
@@ -50,17 +83,53 @@ export function collectEvents(raw) {
     : Object.values(tbl && typeof tbl === 'object' ? tbl : {});
   const out = [];
   for (const r of rows) {
-    if (!r || typeof r !== 'object') continue;
-    const env = r.envelope && typeof r.envelope === 'object' ? r.envelope : r;
-    const topic = typeof env.topic === 'string' ? env.topic : null;
-    const occurredAt = typeof env.occurredAt === 'string' ? env.occurredAt : null;
-    if (!topic || !occurredAt || Number.isNaN(Date.parse(occurredAt))) continue;
-    out.push({
-      topic,
-      occurredAt,
-      ts: Date.parse(occurredAt),
-      payload: env.payload ?? null,
-    });
+    const e = normalizeRow(r);
+    if (e) out.push(e);
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
+/** 从 per-record 布局目录抽事件；目录不存在时如实返回 available:false。 */
+export function collectRecordDir(dir) {
+  const eventsDir = join(dir, RECORD_SUBDIR);
+  let names;
+  try {
+    names = readdirSync(eventsDir).filter((n) => n.endsWith('.json'));
+  } catch (e) {
+    return {
+      events: [], fileCount: 0, errors: 0, dir: eventsDir,
+      available: false, error: e?.message ?? String(e),
+    };
+  }
+  const out = [];
+  let errors = 0;
+  for (const n of names) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(eventsDir, n), 'utf8'));
+      const e = normalizeRow(parsed?.record ?? parsed);
+      if (e) out.push(e);
+    } catch {
+      errors += 1; // 单个坏文件不阻断整轮；errors 会在报告里显形
+    }
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return { events: out, fileCount: names.length, errors, dir: eventsDir, available: true };
+}
+
+/** 跨源合并：有 envelope.id 才按 id 去重，无 id 一律保留（保守，防漏报）。 */
+export function mergeEvents(...lists) {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const e of list ?? []) {
+      if (e.id) {
+        const key = `id:${e.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      out.push(e);
+    }
   }
   out.sort((a, b) => a.ts - b.ts);
   return out;
@@ -111,7 +180,10 @@ export function evaluateLag(events, { since = 0, windowMin = DEFAULT_WINDOW_MIN,
 }
 
 export function parseArgs(argv = []) {
-  const out = { days: DEFAULT_DAYS, windowMin: DEFAULT_WINDOW_MIN, json: false, storage: null, since: null };
+  const out = {
+    days: DEFAULT_DAYS, windowMin: DEFAULT_WINDOW_MIN, json: false,
+    storage: null, recordDir: null, since: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--json') out.json = true;
@@ -119,14 +191,24 @@ export function parseArgs(argv = []) {
     else if (a === '--days') out.days = Number(argv[++i]);
     else if (a === '--window-min') out.windowMin = Number(argv[++i]);
     else if (a === '--storage') out.storage = argv[++i];
+    else if (a === '--record-dir') out.recordDir = argv[++i];
   }
   return out;
 }
 
+function storageRoot() {
+  return process.env.DSH_HOME
+    ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.dsh');
+}
+
 export function busStoragePath(explicit = null) {
   if (explicit) return explicit;
-  const root = process.env.DSH_HOME ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.dsh');
-  return join(root, BUS_REL);
+  return join(storageRoot(), BUS_REL);
+}
+
+export function recordDirPath(explicit = null) {
+  if (explicit) return explicit;
+  return join(storageRoot(), BUS_DIR_REL);
 }
 
 export function main(argv = process.argv.slice(2)) {
@@ -141,21 +223,52 @@ export function main(argv = process.argv.slice(2)) {
     ? args.since
     : now - (Number.isFinite(args.days) && args.days > 0 ? args.days : DEFAULT_DAYS) * 86_400_000;
 
-  let raw;
-  const path = busStoragePath(args.storage);
+  const singlePath = busStoragePath(args.storage);
+  const sources = [];
+  let singleEvents = [];
   try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
+    singleEvents = collectEvents(JSON.parse(readFileSync(singlePath, 'utf8')));
+    sources.push({ kind: 'single', path: singlePath, count: singleEvents.length, available: true });
   } catch (e) {
-    console.error(`[check-event-trigger-lag] 读不到事件总线存储 ${path}: ${e?.message ?? e}`);
+    // 显式 --storage 指向坏文件时给警告，但只要 per-record 目录有数据就继续
+    sources.push({
+      kind: 'single', path: singlePath, count: 0, available: false,
+      error: e?.message ?? String(e),
+    });
+  }
+
+  // ⛔ 显式 --storage 且未给 --record-dir ⇒ 纯离线单源复核，不误读生产目录
+  const dirPath = args.recordDir ?? (args.storage ? null : recordDirPath());
+  let dirResult = { events: [], fileCount: 0, errors: 0, dir: null, available: false };
+  if (dirPath) {
+    dirResult = collectRecordDir(dirPath);
+    sources.push({
+      kind: 'per-record', path: dirResult.dir, count: dirResult.events.length,
+      files: dirResult.fileCount, errors: dirResult.errors, available: dirResult.available,
+    });
+  }
+
+  const events = mergeEvents(singleEvents, dirResult.events);
+  if (events.length === 0) {
+    console.error('[check-event-trigger-lag] 两个事件源都读不到事件，判据不可用：');
+    for (const s of sources) console.error(`  ${s.kind}: ${s.path} (${s.error ?? '0 条'})`);
     return 2;
   }
-  const report = evaluateLag(collectEvents(raw), { since, windowMin: args.windowMin, now });
-  report.storage = path;
+
+  const report = evaluateLag(events, { since, windowMin: args.windowMin, now });
+  report.storage = singlePath;
+  report.sources = sources;
+  report.eventCount = events.length;
+  report.duplicatesMerged = singleEvents.length + dirResult.events.length - events.length;
 
   if (args.json) {
     console.log(JSON.stringify(report, null, 2));
   } else {
-    console.log(`[check-event-trigger-lag] ${path}`);
+    console.log(`[check-event-trigger-lag] 数据源 ${sources.map((s) => `${s.kind}=${s.count}`).join(' + ')} · 合并去重后 ${events.length} 条`);
+    for (const s of sources) {
+      if (!s.available) console.log(`  ⚠️ ${s.kind} 不可用：${s.path}${s.error ? ` — ${s.error}` : ''}`);
+      else if (s.kind === 'per-record' && s.errors > 0) console.log(`  ⚠️ per-record 有 ${s.errors} 个文件解析失败（已跳过，不影响其余）`);
+    }
     console.log(`  窗口 since=${report.since} · windowMin=${report.windowMin} · 触发 ${report.triggerCount} 条 / 终态 ${report.terminalCount} 条（失败终态 ${report.failedTerminalCount} 条）`);
     if (report.verdict === 'OK') {
       console.log(`  ✓ OK — ${report.matched.length} 条触发全部在窗口内有终态记录`);
