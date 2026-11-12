@@ -29,7 +29,22 @@ export async function recordDeadletter(ctx, envelope, sub, meta) {
 }
 async function recordDeadletterInternal(ctx, envelope, sub, meta) {
     const entry = {
-        id: `${envelope.id}:${sub.id}`,
+        // 2026-11-12：key 必须**路径安全**。
+        //
+        // per-record 布局下，宿主要求表 key 匹配
+        // `SAFE_KEY_RE = /^[a-zA-Z0-9_-]+$/`（@deepseek-ai/dsh-storage-json
+        // lib/index.js:317），不满足直接抛 `per-record key ... is not path-safe`。
+        //
+        // 旧写法 `${envelope.id}:${sub.id}` 有两个问题：
+        //   ① 冒号 `:` 不在允许字符集里；
+        //   ② `sub.id`（订阅 id）只是 `z.string().min(1)` 的任意非空字符串
+        //      （lib/schemas.js:91）—— 生产里的订阅方名形如 `agint.metrics`、
+        //      `agint-evolution-memory`，**含点号**，点号同样不在允许字符集里。
+        //
+        // ⇒ 订阅 id 用 base64url 编码（字符集恰为 A-Z a-z 0-9 - _，且无 padding）。
+        // 编码不可逆不影响使用：死信条目 value 里仍存明文 `subscriber` 与
+        // `subscriptionId`，读侧按 value 取，不按 key 反解。
+        id: `${envelope.id}__${Buffer.from(String(sub.id), 'utf8').toString('base64url')}`,
         envelope,
         payloadPreview: previewEntry(envelope),
         subscriber: sub.subscriber,

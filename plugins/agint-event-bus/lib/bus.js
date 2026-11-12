@@ -18,7 +18,7 @@
  *   - 不调 qualityEvaluator（self-evaluation forbidden）
  */
 import { randomUUID } from 'node:crypto';
-import { makeEnvelope, assertEnvelope, previewEntry } from './envelope.js';
+import { makeEnvelope, assertEnvelope } from './envelope.js';
 import { validateSubscription, } from './schemas.js';
 import { deliverAsync, deliverSync } from './delivery.js';
 import { RingBuffer, buildEventLogEntry, recordDelivery, filterEntries, summarize, } from './observability.js';
@@ -130,18 +130,28 @@ export async function publish(ctx, input) {
     ring.push(entry);
     publishedCount += 1;
     try {
+        // 2026-11-12（结构性冗余清理）：写入只留 { envelope, deliveries } 两项。
+        //
+        // 为什么删：
+        //   - payloadPreview = envelope.payload 的副本（envelope.js previewEntry：
+        //     ≤200 字符原样复制，否则截断成 {__truncated,preview}）⇒ 纯冗余，
+        //     全仓 grep 零读取方（写入点 3 处：bus.js / deadletter.js / observability.js，
+        //     其中 events 表这一处是唯一进持久化的）。
+        //   - 顶层 topic / source / occurredAt / traceId = envelope 同名字段的副本。
+        //     取证：grep -rn "record\.\(topic\|source\|occurredAt\|traceId\)"
+        //     plugins/agint-event-bus/lib/ → 只命中 bus.js 的 deliveryHistory 两处，
+        //     且两处都**已内建 envelope fallback**（顶层优先、缺失时拆 envelope）。
+        //     traceId 侧全仓零读取方 ⇒ 一并去掉。
+        //   - 事件总字节预计降约 29%（payloadPreview 约占单条 record 体积的三成）。
+        //
+        // 为什么 deliveries 必须留：它是**跨重启** per-topic 投递数的唯一来源
+        // （deliveryHistory 靠它算 coverage；存量行没这字段 ⇒ 标 legacyOnly，
+        //  历史口径仍是 unknown，不回填不伪造）。
+        //
+        // ⚠️ 存量行（single 布局旧文件）仍有这些顶层字段：EventRecordSchema 已把
+        //   它们改成 optional，读侧一律 envelope 优先 + 顶层兜底 ⇒ 两种形态都能读。
         await ctx.tables.events.put(envelope.id, {
             envelope,
-            payloadPreview: previewEntry(envelope),
-            occurredAt: envelope.occurredAt,
-            traceId: envelope.traceId,
-            // 2026-09-27（提案 0f91c868 问题2）：顶层冗余 topic/source。
-            // 此前外部工具想按 topic/source 过滤必须拆 value.envelope；
-            // 补两个标量字段让存储文件可直读。声明进 EventRecordSchema（optional，
-            // 存量 1155 条没有这两个字段）。hashtable 形状本身是 dsh-storage-domain
-            // 的 KV 契约，不改（改数组 = 破坏全仓存储域统一格式，且仓库内零读取方）。
-            topic: envelope.topic,
-            source: envelope.source,
             // 2026-10-05（评审 3.3 方案 A）：顶层 deliveries 落盘。
             // 此前投递结果只进内存 ring，重启即丢 ⇒ per-topic 投递数跨重启不可答。
             // 这里把publish 路径已填好的 entry.deliveries 原样落库（此时分发已完成，
@@ -391,10 +401,14 @@ export async function deliveryHistory(ctx) {
             if (!record || typeof record !== 'object')
                 continue;
             scanned += 1;
-            // 顶层 topic 优先；缺失时（存量行）拆 envelope，两条路都要走通。
-            const topic = typeof record.topic === 'string' && record.topic
-                ? record.topic
-                : (record.envelope && typeof record.envelope.topic === 'string' ? record.envelope.topic : '');
+            // 2026-11-12：读侧一律以 envelope 为真身。
+            //   envelope 优先（唯一事实源）；存量行（single 布局旧文件里带顶层
+            //   topic/occurredAt 的那些）走顶层兜底 —— 两种形态都要能读。
+            const envelopeTopic = record.envelope && typeof record.envelope.topic === 'string'
+                ? record.envelope.topic
+                : '';
+            const topic = envelopeTopic
+                || (typeof record.topic === 'string' ? record.topic : '');
             if (!topic)
                 continue;
             const rec = byTopic.get(topic) ?? {
@@ -412,9 +426,11 @@ export async function deliveryHistory(ctx) {
                 lastOccurredAt: null,
             };
             rec.rows += 1;
-            const at = typeof record.occurredAt === 'string'
-                ? record.occurredAt
-                : (record.envelope && typeof record.envelope.occurredAt === 'string' ? record.envelope.occurredAt : null);
+            const envelopeAt = record.envelope && typeof record.envelope.occurredAt === 'string'
+                ? record.envelope.occurredAt
+                : null;
+            const at = envelopeAt
+                ?? (typeof record.occurredAt === 'string' ? record.occurredAt : null);
             if (at && (!rec.firstOccurredAt || at < rec.firstOccurredAt))
                 rec.firstOccurredAt = at;
             if (at && (!rec.lastOccurredAt || at > rec.lastOccurredAt))

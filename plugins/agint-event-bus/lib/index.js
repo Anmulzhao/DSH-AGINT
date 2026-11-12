@@ -21,8 +21,24 @@ import { publish, subscribe, inspect, inspectSummary, metricsSnapshot, subscript
 import { listDeadletters, sweepExpiredDeadletters } from './deadletter.js';
 import { EventEnvelopeSchema } from './schemas.js';
 import { attachHostBridge } from './host-bridge.js';
+import { applyMigration, resolveStoragesRoot } from './migrate.js';
 import { z } from 'zod';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
+
+/**
+ * 迁移/保留窗口（天）：切换 per-record 时只搬窗口内的记录，窗口外的历史
+ * 由保留策略负责清掉 —— 搬过去再删是白费 IO。
+ * ⚠️ 与 `agint.eventBus.prune` 的默认窗口保持一致（同一口径，不各写一个数）。
+ */
+const MIGRATION_MAX_AGE_DAYS = 30;
+
+/**
+ * 永不删除的 topic 前缀（决策与审计类事件，不是遥测）。
+ * 事件表一旦开始按时间淘汰，这些必须留下 —— 决策链断不得。
+ */
+const PINNED_TOPIC_PREFIXES = [
+  'evolution.', 'restart.', 'diagnosis.', 'quality.', 'mount.',
+];
 const name = 'agint-event-bus';
 // fix-20260904-2338：打破 cordis 循环依赖。
 //   原 `['storageDomain', 'agint.evolution']` 与 agint-evolution-memory
@@ -34,23 +50,30 @@ const inject = ['storageDomain'];
 /** sync 订阅硬上限（设计稿 §A2.6 + schema yaml constraints） */
 export const SYNC_GLOBAL_LIMIT = 3;
 // ── 存储域声明（对齐 dsh-storage-domain defineDomain API） ─────────────
-// events 表 value：{ envelope, payloadPreview, occurredAt, traceId, topic?, source? }
-//   topic/source 为 2026-09-27（提案 0f91c868 问题2）新增顶层冗余标量 ——
-//   外部工具不用拆 envelope 即可按 topic/source 过滤；optional 兼容存量记录。
+// events 表 value：{ envelope, deliveries? }
+//   2026-11-12（结构性冗余清理）：写入不再写 payloadPreview 与顶层
+//   topic/source/occurredAt/traceId —— 它们全是 envelope 内同名字段的副本
+//   （payloadPreview 还是 payload 的副本），全仓零读取方。
+//   ⚠️ 存量行（single 布局旧文件）仍带这些字段 ⇒ 全部声明为 optional，
+//   读侧（bus.js deliveryHistory）一律 envelope 优先 + 顶层兜底，两种形态都读得通。
 //   ⚠️ src/index.ts 与本文件已漂移（src 还是旧版 storageDomain.open API，无
 //   defineDomain spec）—— EventRecordSchema 只存在于本文件，勿跑 build 覆盖。
-// deadletter 表 value：死信条目（id = `${envelope.id}:${sub.id}`）
+// deadletter 表 value：死信条目（key = `${envelope.id}__${sub.id}`，见下）
 const EventRecordSchema = z.object({
     envelope: EventEnvelopeSchema,
-    payloadPreview: z.unknown(),
-    occurredAt: z.string(),
-    traceId: z.string(),
+    // ↓ 全部 optional：存量行有 / 新写入没有，两种形态都要能解析。
+    //   payloadPreview：payload 的副本（≤200 字符原样，否则截断），零读取方。
+    payloadPreview: z.unknown().optional(),
+    occurredAt: z.string().optional(),
+    traceId: z.string().optional(),
     topic: z.string().optional(),
     source: z.string().optional(),
     // 2026-10-05（评审 3.3 方案 A）：顶层 deliveries = { [subscriber]: status }。
     // 存的是 publish 路径的**终态**（DELIVERED / DEAD_LETTERED / PENDING / FAILED），
     // 取自内存 ring 那份的浅拷贝。optional：存量 21,803 行没有此字段，永远补不回，
     // 读侧必须把「无此字段」判成 unknown 而不是 0。
+    // ⚠️ deliveries **必须保留**：它是跨重启 per-topic 投递数的唯一来源
+    //   （deliveryHistory 靠它算 coverage）。
     deliveries: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 const DeadletterEntrySchema = z.object({
@@ -68,6 +91,27 @@ const DeadletterEntrySchema = z.object({
 const spec = defineDomain({
   name: 'agint_event_bus',
   version: 1,
+    // 2026-11-12：切到 per-record 布局。
+    //
+    // 为什么切：`single` 布局每次 put 都**整份原子重写文件**
+    // （@deepseek-ai/dsh-storage-json/lib/index.js:166-170）。events 表已涨到
+    // 28.6 MB / 3 万余行 ⇒ 每写一条事件重写 28.6 MB。本机实测
+    // （/tmp/agint_bloat/scale_bench.mjs，单条 630 B）：
+    //   N=300  single 11.57 ms/条 → per-record 7.69 ms/条
+    //   N=3000 single 26.08 ms/条 → per-record 4.76 ms/条
+    //   N=6000 single 34.79 ms/条 → per-record 6.51 ms/条
+    // single 的每条写成本随规模线性增长，per-record 恒定 ⇒ 生产规模外推
+    // 每条写 45 ms → 6.5 ms（7×），日磁盘写 18.3 GB → 约 1.2 MB。
+    //
+    // 为什么**不改 dsh 源码**：改 node_modules 是 AGINT 明令禁止的越界，且会被
+    // npm 升级静默覆盖（patches/dsh-builtin-toggles/README.md，2026-10-21 老板令）。
+    // layout 是域声明的**公开能力**（DomainSpec.layout，dsh-storage-domain
+    // lib/types/spec.d.ts:43），AGINT 侧声明即可。
+    //
+    // ⚠️ 回滚路径：把这一行改回 'single' 即可。single 读 <storages>/agint_event_bus.json，
+    // per-record 读 <storages>/agint_event_bus/ 目录 ⇒ **两者可共存于磁盘**，
+    // 旧文件原地保留就是回滚备份。
+    layout: 'per-record',
   tables: {
     events: { valueSchema: EventRecordSchema },
     deadletter: { valueSchema: DeadletterEntrySchema },
@@ -99,10 +143,26 @@ function apply(ctx, config = {}) {
         }
     });
     // ── 构造 EventBusContext 适配层（连接 host 平面到模块函数） ──
+    // ── 启动期写入代理表（2026-11-12，评估报告 §五 步骤 0）────────────────
+    //
+    // ⛔ 修复前这里用的是 stubTable()（纯内存 Map），open 成功后 **整体替换**
+    //    `busCtx.tables = { events: tblEvents, deadletter: tblDead }`。而 publish
+    //    在 :162 就已 provide、宿主事件桥在 :170 就同步 attach —— 于是启动最初
+    //    那几百毫秒内发布的事件全部写进 stub，open 完成后 stub 连同里面的事件
+    //    一起被丢弃：**进过 ring（published 有数）、events 表却永远查不到**。
+    //
+    //    2026-11-11 生产实测：15:29:36 启动，ring 内 skills-change published 13 /
+    //    delivered 0 / subscribers []，而 events 表 15:29:36 之后该 topic 落盘 0 行；
+    //    同一窗口其它 topic 落盘 1750 条（说明总线没坏，只有启动瞬间的写入丢了）。
+    //
+    // 修法：表句柄**引用不变**，open 成功后把真实表 attach 进去，并把启动期
+    // 暂存的写入按原顺序补刷。零改动 bus.js / 存储 schema / 存量 31k 行数据。
+    const earlyEvents = createBufferingTable();
+    const earlyDeadletter = createBufferingTable();
     const busCtx = {
         tables: {
-            events: stubTable(),
-            deadletter: stubTable(),
+            events: earlyEvents,
+            deadletter: earlyDeadletter,
         },
         logBuffered: async (entry) => {
             const evo = typeof ctx.get === 'function' ? ctx.get('agint.evolution') : null;
@@ -120,9 +180,44 @@ function apply(ctx, config = {}) {
                 return m.inc(key, delta);
         },
     };
+    // ── 启动前补迁（2026-11-12，切换 per-record 布局的零丢失保证）──────────
+    //
+    // ⛔ **必须发生在 `ctx.storageDomain.open(spec)` 之前**。
+    // dsh 的 domain 在 open() 时做一次 loadAll() 把介质读进内存，之后内存与磁盘
+    // 不再自动同步（只有 put/delete 更新两边）。若在 open 之后补迁，会造成
+    // 「文件里有、内存里没有」的分叉：那些事件在读侧（deliveryHistory 等）查不到，
+    // prune 也删不到它们 —— 等于「迁移了但等于没迁」。
+    //
+    // 幂等：水位线文件记录已迁到的位置 + 源文件 mtime/size。源文件没变 ⇒ 直接跳过
+    // （避免每次启动都重读 28.6 MB 旧文件）。源文件变了（迁移脚本跑完后宿主又写了
+    // 新事件）⇒ 只补迁 occurredAt > 水位线的那些，通常只有几十条，毫秒级完成。
+    //
+    // 失败处理：补迁失败**不许**阻塞 open —— 记 warn 后继续，历史数据缺席但总线可用
+    // （宁可少历史，不可少总线）。
+    try {
+        const storageRoot = resolveStoragesRoot();
+        if (storageRoot) {
+            const mig = applyMigration({
+                storageRoot,
+                maxAgeDays: MIGRATION_MAX_AGE_DAYS,
+                dryRun: false,
+            });
+            if (mig.migrated > 0 || mig.unchanged) {
+                console.info(
+                    `[agint-event-bus] 启动前补迁：迁入 ${mig.migrated} 条、跳过 ${mig.skipped} 条` +
+                    `、失败 ${mig.failed} 条（窗口 ${MIGRATION_MAX_AGE_DAYS} 天，共 ${mig.totalRows} 行）`,
+                );
+            }
+        }
+    }
+    catch (err) {
+        console.warn(`[agint-event-bus] 启动前补迁失败（不影响总线可用性）：${err?.message ?? err}`);
+    }
     // ── 打开 storageDomain（事件表 + 死信表；失败软降级为 stub） ──
     // open 返回 Promise：用 .then(onOk, onErr) 双回调处理，避免 async rejection
     // 逃逸成 unhandled rejection / fatal load failure。
+    // ⚠️ 两条分支都必须把代理表 settle：成功 → attach(真实表) 补刷启动期写入；
+    //    失败 → degrade() 放行挂起的 put（软降级为内存态，绝不永久挂起 publish）。
     let storageHandle = null;
     ctx.storageDomain.open(spec).then(
         (handle) => {
@@ -131,9 +226,13 @@ function apply(ctx, config = {}) {
                 const tblEvents = handle.table('events');
                 const tblDead = handle.table('deadletter');
                 if (tblEvents && tblDead) {
-                    busCtx.tables = { events: tblEvents, deadletter: tblDead };
+                    earlyEvents.attach(tblEvents);
+                    earlyDeadletter.attach(tblDead);
                     // 真实死信表刚挂上：立即清一轮（apply 时的首轮 sweep 只扫到 stub 空表）
                     void sweepExpiredDeadletters(busCtx).catch(() => { });
+                } else {
+                    earlyEvents.degrade();
+                    earlyDeadletter.degrade();
                 }
                 storageHandle = handle;
                 disposers.push(() => {
@@ -142,10 +241,16 @@ function apply(ctx, config = {}) {
                     }
                     catch { /* ignore */ }
                 });
+            } else {
+                earlyEvents.degrade();
+                earlyDeadletter.degrade();
             }
         },
         () => {
-            // 软降级：保留 stub（事件仅落在内存 ring + deadletter stub；不影响契约）
+            // 软降级：保留暂存（事件仍进 ring 且可被 inspect 读到），
+            // 但不落盘 —— 与修复前 stub 的语义一致，只是不再"必然丢且不可见"。
+            earlyEvents.degrade();
+            earlyDeadletter.degrade();
         },
     );
     // ── 死信 reaper（2026-10-07 补，S8）────────────────────────────────────
@@ -216,6 +321,71 @@ function apply(ctx, config = {}) {
             };
         }
     });
+    // ── 保留窗口：events 表按时间淘汰（30 天默认）──────────────────────────
+    //
+    // 为什么需要：events 表此前**只增不删**（全仓无任何针对该表的 delete），
+    // 实测 28.6 MB / 3 万余行，且每写一条事件都重写整份文件。
+    //
+    // 契约：`ctx.provide('agint.eventBus.prune', async (opts) => {...})`
+    //   opts.maxAgeDays（默认 30）/ opts.dryRun（默认 false = 真删）
+    //   返回 `{ removed, kept, wouldRemove, dryRun }`
+    // 消费方：`plugins/agint-cron` 的 storage-prune job 用 ctx.get 调用；取不到就跳过。
+    //
+    // ⛔ 决策与审计类 topic 永不删（PINNED_TOPIC_PREFIXES）—— 事件表淘汰的
+    // 是遥测，不是决策链。删决策事件等于毁掉进化闭环的证据。
+    ctx.provide('agint.eventBus.prune', async (opts = {}) => {
+        const maxAgeDays = Number.isFinite(opts?.maxAgeDays) ? opts.maxAgeDays : MIGRATION_MAX_AGE_DAYS;
+        const dryRun = opts?.dryRun === true;
+        const handle = storageHandle;
+        if (!handle || typeof handle.table !== 'function') {
+            return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'storage-not-ready' };
+        }
+        let table;
+        try { table = handle.table('events'); }
+        catch { return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'events-table-unavailable' }; }
+        if (!table || typeof table.entries !== 'function') {
+            return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'events-table-unavailable' };
+        }
+        const cutoff = Date.now() - maxAgeDays * 86_400_000;
+        const victims = [];
+        let total = 0;
+        for (const [key, rec] of table.entries()) {
+            total++;
+            const topic = String(rec?.envelope?.topic ?? rec?.topic ?? '');
+            if (topic && PINNED_TOPIC_PREFIXES.some((p) => topic.startsWith(p))) continue;
+            const at = rec?.envelope?.occurredAt ?? rec?.occurredAt;
+            const ts = Date.parse(String(at ?? ''));
+            if (!Number.isFinite(ts) || ts >= cutoff) continue;
+            victims.push(key);
+        }
+        if (dryRun) {
+            return { removed: 0, kept: total - victims.length, wouldRemove: victims.length, dryRun: true };
+        }
+        let removed = 0;
+        if (victims.length > 0 && typeof table.deleteMany === 'function') {
+            try {
+                removed = await table.deleteMany(victims);
+            }
+            catch (err) {
+                return {
+                    removed: 0, kept: null, wouldRemove: victims.length, dryRun,
+                    skipped: `delete-failed: ${err?.message ?? err}`,
+                };
+            }
+        }
+        // 留痕：prune 本身也是一件「发生了的事」，发一条事件（不递归触发 prune）。
+        try {
+            const pub = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+            if (typeof pub === 'function') {
+                await pub({
+                    topic: 'events.pruned',
+                    payload: { removed, freedRows: victims.length, maxAgeDays, kept: total - removed },
+                });
+            }
+        }
+        catch { /* 留痕失败不阻断主流程 */ }
+        return { removed, kept: total - removed, wouldRemove: victims.length, dryRun: false };
+    });
     // ── umbrella 键（2026-09-24 补）────────────────────────────────────────
     // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
     // ctx.get('agint.eventBus') 恒为 undefined，且不报错。后果是全仓每个消费方
@@ -271,16 +441,73 @@ function apply(ctx, config = {}) {
     // 不调 next() 会令瀑布结果为 undefined，dsh-tools 读 decision.kind 抛错，
     // 所有工具调用失败。event-bus 不消费工具结果，不监听。
 }
-/** 最小 TableHandle stub（host storageDomain 不可用时兜底；smoke / 单元测试可用） */
-function stubTable() {
-    const m = new Map();
+/**
+ * 启动期写入代理表（2026-11-12）。
+ *
+ * 职责：在 `storageDomain.open()` 完成前接住所有 put —— 既不丢（补刷到真实表），
+ * 也不让 publish 永久挂起（open 失败时 degrade 放行）。
+ *
+ * 语义三条，别改：
+ *  1. **表句柄引用不变**：调用方（bus.js 的 busCtx.tables）拿到的始终是同一个
+ *     对象，attach 只换内部 target，不换对象 —— 这正是修复「整体替换丢写入」的关键。
+ *  2. 未 settle 时 put 返回**挂起的 Promise**：等补刷完成才 resolve，这样 publish
+ *     返回时事件已落盘（或已明确降级），不制造「看着成功其实没写」的假绿。
+ *  3. open 失败只 degrade 不强抛：与修复前 stub 软降级一致，且 staging 仍可被
+ *     inspect / deliveryHistory 读到 ⇒ 「没落盘」与「没发生」两件事不再同形。
+ *
+ * events 表主键是 envelope.id（UUID，唯一）、deadletter 主键也是唯一 id，
+ * 故补刷与 attach 之后的新 put 不存在同键覆盖顺序问题，无需额外串行化。
+ */
+function createBufferingTable() {
+    const staging = new Map();
+    const waiters = [];
+    let target = null;
+    let settled = false;
+    const release = () => { for (const r of waiters.splice(0)) r(); };
     return {
-        get: async (id) => m.get(id) ?? null,
-        put: async (id, value) => { m.set(id, value); },
-        delete: async (id) => { m.delete(id); },
-        entries: () => m.entries(),
-        size: async () => m.size,
+        get: async (id) => (target ? target.get(id) : (staging.get(id) ?? null)),
+        put: async (id, value) => {
+            if (target) return target.put(id, value);
+            staging.set(id, value);
+            if (settled) return; // 已降级：留内存副本即可，不挂起
+            return new Promise((resolve) => waiters.push(resolve));
+        },
+        delete: async (id) => {
+            staging.delete(id);
+            if (target) return target.delete(id);
+            return undefined;
+        },
+        entries: () => (target ? target.entries() : staging.entries()),
+        size: () => {
+            if (!target) return Promise.resolve(staging.size);
+            return typeof target.size === 'function' ? target.size() : Promise.resolve(target.size ?? 0);
+        },
+        /** open 成功：换上真实表并按插入顺序补刷启动期写入 */
+        attach(real) {
+            target = real;
+            settled = true;
+            const batch = [...staging.entries()];
+            staging.clear();
+            void (async () => {
+                for (const [id, value] of batch) {
+                    try { await real.put(id, value); }
+                    catch { /* 单条失败不阻断后续；bus.js 侧另有写失败可见性 */ }
+                }
+            })().finally(release);
+        },
+        /** open 失败：软降级，放行所有挂起的 put（不落盘、不挂起） */
+        degrade() {
+            settled = true;
+            release();
+        },
     };
+}
+
+/** 纯内存 TableHandle stub（保留给 smoke / 单元测试直接构造 ctx 用）。 */
+export function stubTable() {
+    const t = createBufferingTable();
+    t.degrade();
+    return t;
 }
 /**
  * 配置（2026-11-02 起非空）。
