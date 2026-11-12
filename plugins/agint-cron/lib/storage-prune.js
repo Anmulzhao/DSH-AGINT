@@ -105,7 +105,7 @@ export function planBackupCleanup(root, { keepPerDomain = KEEP_BACKUPS_PER_DOMAI
     });
     plan.push({
       base,
-      keep: list.slice(0, keepPerDomain).map((f) => f.name),
+      keep: list.slice(0, keepPerDomain).map((f) => ({ name: f.name, path: f.path })),
       archive: list.slice(keepPerDomain),
     });
   }
@@ -207,7 +207,30 @@ export function applyBackupArchive(plan, { backupDir, dryRun = true, now = Date.
       deleted.push(f.name);
     } catch { /* 单个删不掉不阻断：归档已经落盘，数据不丢 */ }
   }
-  return { archivePath, archived: toArchive.map((f) => f.name), deleted, bytes, dryRun: false };
+  // ── 自检：keep 的那一份必须还在原地（2026-11-12 加）────────────────────
+  //
+  // 为什么需要：keep 的语义是「每个域保留最近 1 份 .bak 作为回滚点」。
+  // 如果 apply 之后 keep 不见了，**归档里也没有它**（归档只装 archive 列表）
+  // ⇒ 该域就彻底没有回滚点了，而且**全程无任何报错** —— 这正是「看起来在
+  // 治理、实际静默失效」那一类缺陷。
+  //
+  // ⚠️ 2026-11-12 实测踩坑：有人用 `ls .bak-*` 检查残留 ⇒ 该 glob 只匹配
+  // **以点开头**的隐藏文件，而实际文件名是 `agint_x.json.bak-<ts>` ⇒ 恒为空
+  // ⇒ 误判成「keep 全丢了」，据此做了一次多余且有破坏性的「恢复」操作。
+  // ⇒ 检查必须用 `*.bak-*`（或直接列目录再过滤），且要能区分
+  // 「glob 没匹配到」与「匹配到 0 个」—— 前者 bash 会把模式原样传给 ls 并报错。
+  const keepMissing = [];
+  for (const g of plan) {
+    for (const k of g.keep) {
+      const path = k.path ?? k.name;
+      if (!existsSync(path)) keepMissing.push(k.name ?? String(k));
+    }
+  }
+  return {
+    archivePath, archived: toArchive.map((f) => f.name), deleted, bytes, dryRun,
+    keepCount: plan.reduce((a, g) => a + (g.keep?.length ?? 0), 0),
+    keepMissing,
+  };
 }
 
 /** 执行孤儿 .tmp 删除 */
@@ -282,8 +305,18 @@ export async function runStoragePrune({
       deleted: applied.deleted,
       bytes: applied.bytes,
       keepPerDomain: KEEP_BACKUPS_PER_DOMAIN,
-      groups: backupPlan.map((g) => ({ base: g.base, keep: g.keep, archiveCount: g.archive.length })),
+      // 自检：keep 必须还在原地（不在 ⇒ 该域没有回滚点了，且归档里也没有）
+      keepCount: applied.keepCount ?? 0,
+      keepMissing: applied.keepMissing ?? [],
+      groups: backupPlan.map((g) => ({ base: g.base, keep: (g.keep ?? []).map((k) => k.name ?? String(k)), archiveCount: g.archive.length })),
     };
+    if ((applied.keepMissing ?? []).length > 0) {
+      // 失败可见：这是「回滚点静默消失」，不能只躺在返回值里等人看
+      files.errors.push(
+        `keep 自检失败：${applied.keepMissing.length} 份应保留的 .bak 不在原地 ` +
+        `（${applied.keepMissing.slice(0, 3).join(', ')}...）—— 该域已无回滚点`,
+      );
+    }
     files.tmp = {
       deleted: tmpApplied.deleted,
       candidates: tmpPlan.map((f) => f.name),
