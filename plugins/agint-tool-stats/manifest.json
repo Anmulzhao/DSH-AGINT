@@ -1,8 +1,8 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-tool-stats",
-  "version": "0.2.0",
-  "description": "工具使用画像：监听 tools/result 事件追加写 agint_tool_stats.jsonl。提供 toolStats Service + tool_stats_summary tool。",
+  "version": "0.3.0",
+  "description": "工具使用画像：监听 tools/result 事件追加写 agint_tool_stats.jsonl。提供 toolStats Service + tool_stats_summary tool + toolStats.prune 保留能力（30 天明细 + 周 rollup）。写盘默认参数指纹化（不落 args 原文）。",
   "main": "lib/index.js",
   "agint": {
     "kind": "host",
@@ -16,18 +16,23 @@
         "tools"
       ],
       "provides": [
-        "agint.toolStats"
+        "agint.toolStats",
+        "agint.toolStats.prune"
       ],
       "events": [
         "session/created",
-        "tools/result"
+        "tools/result",
+        "toolStats.pruned"
       ],
       "tools": [
         "tool_stats_summary"
       ]
     },
     "storage": {
-      "domains": [],
+      "domains": [
+        "agint_tool_stats",
+        "agint_tool_stats_rollup"
+      ],
       "schemaVersion": 0,
       "atomic": "jsonl"
     },
@@ -50,14 +55,15 @@
       "shutdown": "graceful"
     },
     "tests": {
-      "entry": "test/aggregate.test.js",
-      "command": "node test/aggregate.test.js",
+      "entry": "test/smoke.mjs",
+      "command": "node test/smoke.mjs",
       "expectedExit": 0
     },
     "docs": {
       "readme": "README.md",
       "serviceDocs": {
-        "agint.toolStats": "工具调用次数/失败率/p95 延迟画像（jsonl appender）"
+        "agint.toolStats": "工具调用次数/失败率/p95 延迟画像（jsonl appender）",
+        "agint.toolStats.prune": "保留机制：删 30 天前明细（先按工具×周 rollup 到 agint_tool_stats_rollup.jsonl），可选 dryRun 只算不删"
       }
     },
     "changelog": "CHANGELOG.md",

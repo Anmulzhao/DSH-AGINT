@@ -3,7 +3,13 @@
  *
  * Each record (one line of agint_tool_stats.jsonl):
  *   { ts, sessionId, turn, step, tool, callId, latencyMs, ok, errorKind,
- *     argFingerprint, args }
+ *     argFingerprint, argsHash, argsBytes?, argsPreview?, args? }
+ *
+ * ⚠️ `args`（参数原文）**可选**：2026-11-12 起写侧默认 `storeArgs:false`，
+ *    新行只有 argFingerprint / argsHash / argsBytes / argsPreview，没有 args。
+ *    ⇒ 任何依赖 `record.args` 的读侧都必须优雅降级（返回 undefined 或标注
+ *    argsUnavailable），**不许抛错**。存量行仍带 args（不回填改写），
+ *    所以同一份文件里两种形态并存是常态。
  *
  * No I/O, no side effects — pure arithmetic on the parsed array. The host
  * service reads/writes the file; this module only computes.
@@ -25,6 +31,12 @@ export function parseSince(since, nowMs = Date.now()) {
  * Aggregate records → per-tool summary.
  * Returns: [{ tool, calls, failRate, avgMs, p95Ms }]
  * Sorted by calls desc.
+ *
+ * ✅ 依赖事实（2026-11-12 核对）：本函数（及 slowest / failureRate / timeseries）
+ *    **只读指纹与时延**，一个字段都不碰 `record.args`
+ *    —— 用到的只有 r.ts / r.tool / r.ok / r.latencyMs。
+ *    ⇒ 写侧关掉 args 原文（storeArgs:false）对这四个聚合口径**零影响**，
+ *      这也是「参数指纹化」敢默认关的判据（不是"应该没影响"，是逐字段核过）。
  */
 export function summarize(records, opts = {}) {
   const sinceMs = opts.sinceMs ?? parseSince(opts.since);
@@ -97,7 +109,17 @@ export function repeatPatterns(records, opts = {}) {
   for (const r of filtered) {
     const key = `${r.tool}::${r.argFingerprint}`;
     if (!groups.has(key)) {
-      groups.set(key, { tool: r.tool, fingerprint: r.argFingerprint, sampleArgs: r.args, hits: [], sessions: new Set() });
+      // ⚠️ 降级点（2026-11-12）：`r.args` 在 storeArgs:false 的新行上不存在 ⇒
+      //    sampleArgs = undefined、argsUnavailable = true（**不抛错**）。
+      //    存量行仍带 args ⇒ 同一份文件里两种形态并存，两种都走这一条分支。
+      groups.set(key, {
+        tool: r.tool,
+        fingerprint: r.argFingerprint,
+        sampleArgs: r.args,
+        argsUnavailable: r.args === undefined,
+        hits: [],
+        sessions: new Set(),
+      });
     }
     const g = groups.get(key);
     g.hits.push(r.ts);
@@ -114,12 +136,15 @@ export function repeatPatterns(records, opts = {}) {
     out.push({
       fingerprint: (g.fingerprint ?? '').slice(0, 12),
       tool: g.tool,
+      // sampleArgs 可能是 undefined（args 未落盘）—— 消费侧必须容忍。
       sampleArgs: g.sampleArgs,
+      argsUnavailable: g.argsUnavailable === true,
       count: g.hits.length,
       sessions: [...g.sessions],
       firstSeen: g.hits[0],
       lastSeen: g.hits[g.hits.length - 1],
       avgIntervalMs: Math.round(avgIntervalMs),
+      // args 缺席时 suggestName 降级为 `${tool}-pattern`（见下），不会抛错。
       suggestedSkillName: suggestName(g.tool, g.sampleArgs),
       confidence: +(0.6 * frequency + 0.4 * diversity).toFixed(2),
     });
@@ -128,6 +153,11 @@ export function repeatPatterns(records, opts = {}) {
   return out.slice(0, maxResults);
 }
 
+/**
+ * 从参数正文猜一个技能名。**args 缺席时优雅降级**（2026-11-12）：
+ *   - args 为 undefined/null ⇒ 走最后的兜底分支，返回 `${tool}-pattern`；
+ *   - 绝不因为缺 args 就抛错（storeArgs:false 是常态，不是异常）。
+ */
 function suggestName(tool, args) {
   if (tool === 'bash' && typeof args?.command === 'string') {
     const m = args.command.trim().split(/\s+/);

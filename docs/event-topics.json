@@ -49,6 +49,14 @@
         "productionCount": 6
       }
     },
+    "curator.run-failed": {
+      "evidence": {
+        "code": [
+          "plugins/agint-cron/lib/event-trigger.js"
+        ],
+        "productionCount": 0
+      }
+    },
     "curriculum.boundary-probed": {
       "evidence": {
         "code": [],
@@ -347,6 +355,14 @@
       "evidence": {
         "code": [
           "plugins/agint-memory-provider/lib/manager.js"
+        ],
+        "productionCount": 0
+      }
+    },
+    "metrics.pruned": {
+      "evidence": {
+        "code": [
+          "plugins/agint-metrics/lib/prune.js"
         ],
         "productionCount": 0
       }

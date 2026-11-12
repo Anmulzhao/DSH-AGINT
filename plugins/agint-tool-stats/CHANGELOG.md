@@ -3,6 +3,45 @@
 > 本文件此前缺失（manifest 声明了 `CHANGELOG.md` 但文件不存在），2026-10-02 补建。
 > 条目来源：`git log -- plugins/agint-tool-stats`，只记录有提交可查的变更。
 
+## 0.3.0 (2026-11-12) — 参数指纹化 + 保留机制（30 天明细 + 周 rollup）
+
+### Added
+
+- **`storeArgs` 配置（默认 `false`）** —— 不再把 args 原文写进 JSONL。
+  `false` 时每行写 `argFingerprint` / `argsHash`（本来就有）+ **新增**
+  `argsBytes`（原 args JSON 字节数）/ `argsPreview`（原 args JSON 前 120 字符，
+  超出截断），**不写 `args` 字段**；`true` 时行为与 0.2.0 完全一致（回退开关）。
+- **`agint.toolStats.prune({ maxAgeDays = 30, dryRun = false })`** —— 保留机制：
+  删 `ts` 早于 30 天的明细行，**先按「工具 × 周」rollup 再删**，rollup 写进同目录
+  `agint_tool_stats_rollup.jsonl`（一行一周一工具，不带 args）。
+  返回 `{ removed, freedBytes, rolled, dryRun, applied, kept, maxAgeDays, cutoff }`。
+- **`lib/prune.js`** —— prune + rollup 的口径只在该文件定义一次（周口径 = UTC 周一
+  00:00；p95 = 升序取 `min(n-1, floor(n*0.95))`，与 `aggregate.js` 同口径）。
+- **`toolStats.pruned` 事件** —— prune 落地后经 `ctx.get('agint.eventBus.publish')`
+  发布，payload `{ removed, freedBytes }`；总线缺席/抛错 ⇒ 静默跳过（不抛错）。
+- **`test/smoke.mjs`** —— 新增 smoke 入口（13 个用例）：参数指纹化 ① ②、
+  prune ③、dryRun ④、读侧降级 ⑤、apply 级配置通路 ⑥ ⑦。
+
+### Changed
+
+- **读侧优雅降级** —— `repeatPatterns()` 在记录没有 `args` 时返回
+  `sampleArgs: undefined` + `argsUnavailable: true`，`suggestedSkillName` 降级为
+  `${tool}-pattern`；**不抛错**。
+- `summarize()` / `slowest()` / `failureRate()` / `timeseries()` 经逐字段核对
+  **完全不读 `args`**（只用 `ts` / `tool` / `ok` / `latencyMs`）⇒ 指纹化对统计口径零影响。
+
+### 不变（明确承诺）
+
+- **存量行不回填改写**：已落盘的旧行仍带 `args`，prune / backfill 都不改它们
+  （改写等于毁证）。同一份文件里新旧两种形态并存是常态。
+- **30 天内的行不被 prune 触碰**（原样保留，含旧行的 args 原文）。
+
+### 依据（生产实测）
+
+明细文件 7.9 MB / 7331 行，**args 正文占全文件 84%**（bash 1.94 MB / 4210 次，
+edit 653 KB / 545 次，write 646 KB / 136 次）；而每行**已经**带
+`argFingerprint`(sha256) + `argsHash` ⇒ 正文对统计口径零增量，纯体积 + 明文负担。
+
 ## 0.2.0 (2026-10-26) — D2 收口：资源窗口聚合（给「有效进化增量」供料）
 
 ### Added

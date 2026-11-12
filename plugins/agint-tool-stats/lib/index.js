@@ -3,7 +3,14 @@
  *
  * HOST plane, single instance. 监听 tools/result waterfall，追加写
  * ~/.dsh/storages/agint_tool_stats.jsonl；提供 5 个读取方法 + 1 个
- * model-visible 工具。
+ * model-visible 工具 + 1 个 prune 能力（agint.toolStats.prune）。
+ *
+ * 2026-11-12 两条改动（都只影响本插件，不碰存量行）：
+ *   ① 参数指纹化：`storeArgs` 默认 false ⇒ 写盘**不落 args 原文**，只留
+ *      argFingerprint/argsHash/argsBytes/argsPreview（生产实测 args 正文占
+ *      JSONL 全文件 84%，而指纹齐备 ⇒ 正文对统计口径零增量）。
+ *   ② 保留机制：`agint.toolStats.prune` 删 30 天前的明细，先按「工具 × 周」
+ *      rollup 进同目录 agint_tool_stats_rollup.jsonl 再删明细；存量行不回填改写。
  *
  * 设计依据：wiki/AGINT/d2-dream-evolve-linkage.md Step 1。
  * 模型可见工具：tool_stats_summary（仅 1 个，最小可用）。
@@ -35,7 +42,7 @@ export function lazyService(ctx, key) {
   };
 }
 
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, dirname, join } from 'node:path';
 import { appendFile, readFile, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -62,6 +69,8 @@ import {
 // 资源窗口聚合（2026-10-26，D2）：给 D-QAF「有效进化增量」供料。
 // 口径只在 resource-window.js 定义一次；本插件只负责读盘 + 传窗口。
 import { summarizeResourceWindow } from './resource-window.js';
+// 保留机制（2026-11-12）：明细 30 天 + 周 rollup。口径只在 prune.js 定义一次。
+import { pruneToolStats, ROLLUP_FILENAME, DEFAULT_MAX_AGE_DAYS } from './prune.js';
 
 const DAY_MS = 86400000;
 
@@ -76,14 +85,54 @@ const Config = z.object({
   sessionsRoot: z.string().default(
     () => (process.env.DSH_HOME || (process.env.HOME + '/.dsh')) + '/sessions',
   ),
+  // ── 参数指纹化（2026-11-12）───────────────────────────────────────────
+  // 默认 false = **不再把 args 原文写进 JSONL**。
+  //
+  // 依据（生产实测）：agint_tool_stats.jsonl 7.9 MB / 7331 行，args 正文占 84%
+  //   （bash 1.94 MB / 4210 次，edit 653 KB / 545 次，write 646 KB / 136 次）。
+  // 而每行**已经**带 argFingerprint(sha256) + argsHash ⇒ 统计口径（去重、复用
+  //   检测、模式聚类）用指纹就够，args 原文是纯体积负担，还是明文（命令、
+  //   路径、可能带 token 的参数全在里面）。
+  // true = 回退到旧行为（保留 args 原文），给需要看参数正文的排查场景用。
+  storeArgs: z.boolean().default(false),
+  // rollup 文件路径；缺省 = 明细文件**同目录**下的 agint_tool_stats_rollup.jsonl
+  //（刻意不写死绝对路径：数据根由 $DSH_HOME 推导，两台机器路径不同）。
+  rollupPath: z.string().optional(),
 });
 
 function apply(ctx, config) {
   const jsonlPath = resolvePath(config.jsonlPath);
   const sessionsRoot = resolvePath(config.sessionsRoot);
+  // 参数指纹化开关（默认 false）：false ⇒ 写盘只留指纹 + 预览，不落 args 原文。
+  const storeArgs = config.storeArgs === true;
+  // rollup 与明细同目录（默认推导，不写死绝对路径）。
+  const rollupPath = resolvePath(config.rollupPath || join(dirname(jsonlPath), ROLLUP_FILENAME));
   // sessionId 缓存：tools/result 不带 sessionId，要从 session/event 维护。
   let currentSessionId = null;
   let writeQueue = Promise.resolve();
+
+  // ── 事件发布（软依赖：总线缺席就静默跳过，绝不抛错）────────────────────
+  /**
+   * 发布一条事件。返回 true = 发出去了；false = 总线缺席或抛错（静默）。
+   *
+   * ⚠️ 与 trajectory 的 publish 同一纪律：**每次使用前重新取** ctx.get，
+   *   不能在 apply 时取一次（上游注册顺序没有保证，取早了恒为 null）。
+   */
+  async function publishEvent(topic, payload) {
+    let p = null;
+    try {
+      p = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+    } catch {
+      p = null;
+    }
+    if (typeof p !== 'function') return false;
+    try {
+      await p({ topic, version: 1, source: name, payload });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   // ── token 计量（2026-10-21 接上游 ctx.tokenMeter，见 capability-boundary.md §4 F3）──
   //
@@ -177,7 +226,7 @@ function apply(ctx, config) {
     const tokenSource = getTokenMeter() ? 'tokenMeter' : null;
 
     writeQueue = writeQueue
-      .then(() => persist(exec, result, currentSessionId, jsonlPath, { deltaTokens, tokenSource }))
+      .then(() => persist(exec, result, currentSessionId, jsonlPath, { deltaTokens, tokenSource, storeArgs }))
       .catch((err) => {
         console.error('agint-tool-stats: persist failed', err.message);
       });
@@ -265,6 +314,20 @@ function apply(ctx, config) {
 
   ctx.provide('agint.toolStats', toolStats);
 
+  // ── 保留机制：prune（2026-11-12）────────────────────────────────────
+  // 单独暴露成一个 provider key（与 agint-cron 的 storage-prune job 对齐：
+  // 它用 ctx.get('agint.toolStats.prune') 取，取不到就跳过 —— 缺席是常态，
+  // 不报错）。参数：{ maxAgeDays = 30, dryRun = false }。
+  //
+  // 契约：
+  //   - 先 rollup 再删明细（被删明细按「工具 × 周」聚合成一行写进同目录
+  //     agint_tool_stats_rollup.jsonl，不带 args）；
+  //   - 存量行**不回填改写**：30 天内的行原样保留（含旧行的 args 原文）；
+  //   - dryRun:true 只算不删不写（返回将删多少行、将释放多少字节）。
+  ctx.provide('agint.toolStats.prune', (opts = {}) =>
+    pruneToolStats({ jsonlPath, rollupPath, opts: opts ?? {}, publish: publishEvent }),
+  );
+
   // ── 注册 model-visible 工具（让模型能在会话中调 summary） ──
   ctx.tools.register(defineTool({
     name: 'tool_stats_summary',
@@ -347,9 +410,75 @@ async function persist(exec, result, sessionId, jsonlPath, tokenInfo = {}) {
     // ⚠️ 口径：这是"调用前后的累计差"，含该轮模型回复，不等于本次工具调用本身的计费额。
     deltaTokens: tokenInfo.deltaTokens ?? null,
     tokenSource: tokenInfo.tokenSource ?? null,
-    args,
   };
+  // ── 参数指纹化（2026-11-12）──────────────────────────────────────────
+  // storeArgs 默认 false ⇒ **不写 args 字段**（参数正文含命令、路径、可能带
+  // token 的参数，是明文体积大户：生产实测占 JSONL 全文件 84%）。
+  // 改为写三个"够用的"字段：
+  //   argsBytes   —— 原 args JSON 的字节数（体量指标，不含内容）
+  //   argsPreview —— 原 args JSON 前 120 字符（超出截断；够人工认个眼熟，
+  //                  不够还原长命令）
+  //   argFingerprint / argsHash —— 本来就有（sha256），统计口径不依赖正文。
+  // storeArgs=true ⇒ 行为与旧版完全一致（保留 args 原文），供排查场景回退。
+  const storeArgs = tokenInfo.storeArgs === true;
+  if (storeArgs) {
+    record.args = args;
+  } else {
+    record.argsBytes = argsJsonBytes(args);
+    record.argsPreview = argsJsonPreview(args);
+    // 2026-11-12：`tool === 'skill'` 时**额外**单独保留技能名。
+    //   起因（取证）：`agint-skill-graph/lib/collect.js:167` 靠 `r.args.name`
+    //   认「这次调的是哪个技能」。storeArgs:false 后新行没有 args ⇒ 技能归属丢失，
+    //   技能级调用统计会整体掉进 skippedNoSkillField。
+    //   ⇒ 只留这一个短字符串（不是整个 args），代价可忽略，信息不丢。
+    //   读侧（skill-graph）优先读 argsName，再退回 args.name（存量行仍带 args）。
+    if (record.tool === 'skill' && args && typeof args === 'object') {
+      const nm = args.name;
+      if (typeof nm === 'string' && nm) record.argsName = nm;
+    }
+  }
   await appendFile(jsonlPath, JSON.stringify(record) + '\n', 'utf8');
+}
+
+/** argsPreview 长度上限（字符）。 */
+const ARGS_PREVIEW_LIMIT = 120;
+
+/**
+ * args → JSON 文本（循环引用等异常时回落到 stableStringify，绝不抛错）。
+ * @param {unknown} args
+ * @returns {string}
+ */
+function argsToJson(args) {
+  try {
+    const s = JSON.stringify(args ?? {});
+    if (typeof s === 'string') return s;
+  } catch {
+    /* 循环引用 → 回落 */
+  }
+  try {
+    return stableStringify(args ?? {});
+  } catch {
+    return '{}';
+  }
+}
+
+/**
+ * 原 args 的字节数（JSON 编码后）。
+ * @param {unknown} args
+ * @returns {number}
+ */
+function argsJsonBytes(args) {
+  return Buffer.byteLength(argsToJson(args), 'utf8');
+}
+
+/**
+ * 原 args JSON 的前 N 字符（超出截断）。
+ * @param {unknown} args
+ * @returns {string}
+ */
+function argsJsonPreview(args) {
+  const s = argsToJson(args);
+  return s.length > ARGS_PREVIEW_LIMIT ? s.slice(0, ARGS_PREVIEW_LIMIT) : s;
 }
 
 async function readAllRecords(jsonlPath) {
@@ -443,4 +572,4 @@ async function backfill(sessionsRoot, jsonlPath, sessionSource = null) {
   return { records: records.length, updated, unmatched, sessions: logs.length };
 }
 
-export { Config, apply, inject, name, backfill };
+export { Config, apply, inject, name, backfill, persist, pruneToolStats, DEFAULT_MAX_AGE_DAYS, ROLLUP_FILENAME };

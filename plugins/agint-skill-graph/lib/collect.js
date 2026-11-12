@@ -164,7 +164,14 @@ export function collectSkillCalls(records, { lookbackDays = 180, nowMs = Date.no
     if (isExcludedRecord(r)) continue;                       // 复用 curator 黑名单（不新写第 4 份）
     if (typeof r?.ts !== 'number') continue;
     if (r.ts < since || r.ts > nowMs + DAY_MS) continue;      // 容忍轻微时钟漂移
-    const skillName = r.tool === 'skill' ? r?.args?.name : null;
+    // 2026-11-12：`storeArgs:false` 之后新行不再有 `args`，但**技能归属不能丢**。
+    //   `agint-tool-stats` 为此在 `tool === 'skill'` 时**单独保留** `argsName`
+    //   （只留技能名这一个短字符串，不是整个 args）⇒ 这里优先读 argsName，
+    //   再退回 args.name（存量行仍带 args）。
+    //   没有这条兜底：技能级调用统计会整体掉进 skippedNoSkillField。
+    const skillName = r.tool === 'skill'
+      ? (typeof r?.argsName === 'string' && r.argsName ? r.argsName : r?.args?.name)
+      : null;
     if (typeof skillName !== 'string' || !skillName) { skippedNoSkillField++; continue; }
     if (known.size && !known.has(skillName)) { unknownSkillName++; continue; }
     calls.push({
