@@ -31,11 +31,14 @@
  *   都是误判 —— 本文件用 meta.baseline=true 明确标出「这天的 0 是基线，不是净增」。
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-/** 快照文件名（放在 $DSH_HOME 根，不放 storages/ —— 理由见文末） */
+/** per-record 事件表 topic 抽样的上限（全读 3 万个文件太慢） */
+export const TOPIC_SAMPLE_FILES = 2000;
+
+/** 存储度量快照文件名（放在 $DSH_HOME 根，不放 storages/ —— 理由见文末） */
 export const SNAPSHOT_FILE = 'agint_storage_guard.json';
 /** 快照保留份数：只留最近 2 天（今天 + 昨天），文件自己不许膨胀 */
 export const SNAPSHOT_KEEP = 2;
@@ -76,11 +79,74 @@ function isHiddenTmp(name) {
  * 扫存储根：域字节 / 表行数 / 备份占用 / 事件 topic 分布。
  * 只读。任何单文件失败都记进 errors，不中断整体扫描。
  */
+/**
+ * 递归统计一个 per-record 布局的目录：`<dir>/<table>/<key>.json`。
+ *
+ * 深度固定两层（目录 → 表目录 → 记录文件），不无限递归。
+ * @param {string} dirPath
+ * @returns {{bytes:number, files:number, rows:number, tables:Array<{table:string,rows:number}>}}
+ */
+export function scanPerRecordDir(dirPath) {
+  const out = { bytes: 0, files: 0, rows: 0, tables: [] };
+  let tableDirs;
+  try {
+    tableDirs = readdirSync(dirPath, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch {
+    return out;
+  }
+  for (const td of tableDirs) {
+    const tablePath = join(dirPath, td.name);
+    let files;
+    try { files = readdirSync(tablePath, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')); }
+    catch { continue; }
+    let bytes = 0;
+    for (const f of files) {
+      try { bytes += statSync(join(tablePath, f.name)).size; } catch { /* ignore */ }
+    }
+    out.bytes += bytes;
+    out.files += files.length;
+    out.rows += files.length;
+    out.tables.push({ table: td.name, rows: files.length });
+  }
+  return out;
+}
+
+/**
+ * 抽样统计 per-record 事件表的 topic 分布（全读太慢：3 万条 = 3 万次文件读）。
+ * @param {string} eventsDir
+ * @param {number} limit
+ */
+export function sampleTopics(eventsDir, limit = 2000) {
+  const counts = new Map();
+  let total = 0;
+  let sampled = 0;
+  let files;
+  try { files = readdirSync(eventsDir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')); }
+  catch { return { topics: [], total: 0, sampled: false }; }
+  for (const f of files.slice(0, limit)) {
+    let doc;
+    try { doc = JSON.parse(readFileSync(join(eventsDir, f.name), 'utf8')); }
+    catch { continue; }
+    const rec = doc?.record ?? doc;
+    const topic = rec?.envelope?.topic ?? rec?.topic ?? '(unknown)';
+    counts.set(topic, (counts.get(topic) ?? 0) + 1);
+    sampled++;
+  }
+  total = files.length;
+  return {
+    topics: [...counts.entries()].map(([topic, count]) => ({ topic, count })).sort((a, b) => b.count - a.count),
+    total,
+    sampled: sampled < files.length,
+  };
+}
+
 export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_BYTES } = {}) {
   const out = {
     root,
     scannedAt: new Date(now).toISOString(),
     domains: [],
+    dirs: [],
+    topicsSampled: false,
     totalBytes: 0,
     domainBytes: 0,
     totalRows: 0,
@@ -100,6 +166,34 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
   }
 
   for (const entry of entries) {
+    // ── 目录 = per-record 布局的存储单元（2026-11-12 补）────────────────────
+    //
+    // ⛔ 为什么必须扫目录：event bus 已切到 per-record 布局，数据在
+    // `<storages>/agint_event_bus/events/<id>.json` 这样的**目录树**里。
+    // 只扫 *.json 文件 ⇒ 新布局的数据完全不被度量 ⇒ 旧的 single 文件不再增长
+    // ⇒ 日增恒为 0 ⇒ **监控对新布局失明**（最坏的一类：看起来「存储没长」，
+    // 实际数据在另一个地方疯长）。
+    if (entry.isDirectory()) {
+      const dirName = entry.name;
+      const stat = scanPerRecordDir(join(root, dirName));
+      if (stat.files === 0 && stat.bytes === 0) continue;
+      out.totalBytes += stat.bytes;
+      out.domainBytes += stat.bytes;
+      out.totalRows += stat.rows;
+      out.dirs.push({
+        domain: dirName, dir: dirName, layout: 'per-record',
+        bytes: stat.bytes, files: stat.files, rows: stat.rows, tables: stat.tables,
+      });
+      // 事件表 topic 分布：per-record 下每条记录一个文件，全读太慢 ⇒ 抽样
+      // （上限 TOPIC_SAMPLE_FILES），并在结果里标明抽样口径，不假装是全量。
+      if (dirName === 'agint_event_bus' && out.topics.length === 0) {
+        const sample = sampleTopics(join(root, dirName, 'events'), TOPIC_SAMPLE_FILES);
+        out.eventsTotal = sample.total;
+        out.topics = sample.topics;
+        out.topicsSampled = sample.sampled;
+      }
+      continue;
+    }
     if (!entry.isFile()) continue;
     const name = entry.name;
     const path = join(root, name);
@@ -153,7 +247,12 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
     out.totalRows += rows;
 
     // 事件表 topic 分布（只对 agint_event_bus 域做，避免为它再解析一遍）
-    if (unitName === 'agint_event_bus' || domain === 'agint_event_bus') {
+    //
+    // ⚠️ 2026-11-12：若存在同名 per-record 目录，则**当前活跃布局是目录**，
+    //   旧的 single 文件只是回滚备份（不再增长）⇒ topic 分布必须取自目录，
+    //   否则会报出「静止的旧分布」，看起来像没变化。
+    const hasPerRecordDir = existsSync(join(root, 'agint_event_bus'));
+    if ((unitName === 'agint_event_bus' || domain === 'agint_event_bus') && !hasPerRecordDir) {
       const counts = new Map();
       const events = doc?.tables?.events;
       if (events && typeof events === 'object') {
@@ -250,6 +349,40 @@ export function buildGuardMetrics({ scan, previous = null, today = null }) {
         meta: { file: d.file },
       });
     }
+  }
+
+  // per-record 布局的目录（2026-11-12 补）：单独归口，不与同名 .json 文件的
+  // 指标 key 冲突（同一个 domain 名可能同时存在 single 旧文件与 per-record 目录）。
+  for (const d of scan.dirs ?? []) {
+    metrics.push({
+      key: `storage.bytes.perrecord.${d.domain}`,
+      value: d.bytes,
+      unit: 'bytes',
+      label: `per-record 目录 ${d.domain} 体积`,
+      meta: { dir: d.dir, layout: 'per-record', files: d.files, rows: d.rows },
+    });
+    for (const t of d.tables ?? []) {
+      metrics.push({
+        key: `storage.rows.perrecord.${d.domain}.${t.table}`,
+        value: t.rows,
+        unit: 'count',
+        label: `per-record 表 ${d.domain}.${t.table} 行数`,
+        meta: { dir: d.dir, layout: 'per-record' },
+      });
+    }
+  }
+  // 事件表的**活跃**行数：per-record 目录里的文件数才是当前布局的真实行数
+  // （旧的 single 文件是回滚备份，不再增长 —— 拿它算行数会高估且不再变化）。
+  const activeEvents = (scan.dirs ?? []).find((d) => d.domain === 'agint_event_bus');
+  if (activeEvents) {
+    const ev = (activeEvents.tables ?? []).find((t) => t.table === 'events');
+    metrics.push({
+      key: 'storage.events.activeRows',
+      value: ev?.rows ?? 0,
+      unit: 'count',
+      label: '事件表活跃行数（per-record 当前布局）',
+      meta: { layout: 'per-record', dir: activeEvents.dir, note: '旧的 single 文件是回滚备份，不再增长' },
+    });
   }
 
   metrics.push({
