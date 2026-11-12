@@ -266,6 +266,13 @@
           name: ./plugins/agint-cron/lib/index.js
           config:
             repoRoot: !!js (process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT'))
+            # 2026-11-12 用户明确授权「打开开关」：事件触发桥的默认关闭守卫见
+            #   lib/index.js:373 / Config:55。开启后 skills-change 经 5s 去抖 +
+            #   6h 冷却触发完整 curator.run()；cron 全部 job 保留为兜底，
+            #   auto_curation_enabled / dry_run_default / weekly_archive_budget 不变。
+            # ⛔ 本文件非持久层：仓库根与部署位各写一份，不可整份互拷（占位符不同）。
+            eventTrigger:
+              enabled: true
             # （≤10000 字节 且 ≤5000 字符）+ 宿主 12000 预算，超限/逼近则写告警报告。
             # ⛔ 老板 2026-10-18 拍板：**只告警，不自动改** —— 压缩顺序是给人执行的
             #   判据，AI 自己决定删哪一段可能删掉刚写进去的约定。
