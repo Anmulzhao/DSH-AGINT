@@ -144,6 +144,71 @@ function datedId(prefix) {
   return `${prefix}_${day}_${rand}`;
 }
 
+// ── sampleArgs 长度上限（2026-11-12）──────────────────────────────────────
+//
+// 病：task_patterns 的行内 `sampleArgs` 存的是**工具参数原文**，没有上限。
+// 2026-11-12 生产实测：277 行 / 1.54 MB，均 3.3 KB，**最大单行 31.4 KB**
+// ⇒ 一行 pattern 比一行审计日志大 30 倍，存储被单行撑爆的风险是真实的。
+//
+// 约束：**upsert 时**把 sampleArgs 的 JSON 序列化长度压到 SAMPLE_ARGS_MAX_CHARS
+// 以内（保留前 2 KB，超出部分截断并打标记）。
+//   · **不改任何已有字段名**（sampleArgs 仍是 sampleArgs，键仍是原键名）；
+//   · 截断只动**值**，不动结构：值类型保持原样（对象仍是对象、字符串仍是字符串），
+//     被裁的字符串尾部加 TRUNCATION_MARK 标记（消费方 templates.js 的
+//     firstMeaningfulValue 只取前 60 字符，不受影响）；
+//   · 预算耗尽时**丢后面的键**而不是丢整个工具 —— 保住「这个工具被用过」的事实。
+//
+// 为什么不在读的时候裁：读时裁会让"表里到底存了多少"永远说不清（三个真相），
+// 而行体积是存储层的问题，应该在写入层解决。
+const SAMPLE_ARGS_MAX_CHARS = 2048;
+const TRUNCATION_MARK = '…[truncated]';
+
+/**
+ * 把 sampleArgs 压到长度上限内（纯函数，不改入参）。
+ * 超限时：长字符串截断 + 标记；预算不够的键直接丢弃；形状（工具 → 参数对象）保持。
+ */
+function capSampleArgs(sampleArgs) {
+  if (!sampleArgs || typeof sampleArgs !== 'object' || Array.isArray(sampleArgs)) {
+    return sampleArgs ?? {};
+  }
+  let json;
+  try { json = JSON.stringify(sampleArgs); } catch { return sampleArgs; }
+  if (!json || json.length <= SAMPLE_ARGS_MAX_CHARS) return sampleArgs;
+
+  const out = {};
+  const sizeOf = () => { try { return JSON.stringify(out).length; } catch { return Infinity; } };
+  const isObjValue = (v) => v && typeof v === 'object' && !Array.isArray(v);
+
+  for (const [tool, rawArgs] of Object.entries(sampleArgs)) {
+    const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs))
+      ? rawArgs
+      : { value: rawArgs };
+    const clipped = {};
+    out[tool] = clipped;                       // 先占位：保住「这个工具被用过」的事实
+    if (sizeOf() > SAMPLE_ARGS_MAX_CHARS) { delete out[tool]; break; }
+    for (const [k, v] of Object.entries(args)) {
+      // 逐级收敛：原值 → 截断 512 → 截断 128 → 放弃这个键
+      const candidates = [
+        v,
+        typeof v === 'string'
+          ? v.slice(0, 512) + TRUNCATION_MARK
+          : (isObjValue(v) ? JSON.stringify(v).slice(0, 512) + TRUNCATION_MARK : v),
+        typeof v === 'string'
+          ? v.slice(0, 128) + TRUNCATION_MARK
+          : (isObjValue(v) ? JSON.stringify(v).slice(0, 128) + TRUNCATION_MARK : v),
+      ];
+      let placed = false;
+      for (const cand of candidates) {
+        clipped[k] = cand;
+        if (sizeOf() <= SAMPLE_ARGS_MAX_CHARS) { placed = true; break; }
+        delete clipped[k];
+      }
+      if (!placed) break;   // 连 128 都放不下 ⇒ 这个工具的其余键放弃
+    }
+  }
+  return out;
+}
+
 // ── pack：业务字段 → storage record（补 metadata）────────────────────────
 
 function packTaskPattern(business, existing) {
@@ -154,6 +219,8 @@ function packTaskPattern(business, existing) {
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     ...business,
+    // sampleArgs 长度上限在这里生效（upsert 唯一入口）——见上方 SAMPLE_ARGS_MAX_CHARS 注释
+    sampleArgs: capSampleArgs(business?.sampleArgs),
   });
 }
 
@@ -186,6 +253,8 @@ export {
   packTaskPattern,
   packCandidate,
   packAudit,
+  capSampleArgs,
+  SAMPLE_ARGS_MAX_CHARS,
   taskPatternEntrySchema,
   candidateEntrySchema,
   releaseEntrySchema,

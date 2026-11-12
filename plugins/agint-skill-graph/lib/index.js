@@ -441,7 +441,7 @@ function apply(ctx, config) {
         const newIds = new Set(edges.map((e) => e.edgeId));
         for (const [key, v] of edgeTable.entries()) {
           if (computedTypes.has(v.type) && !newIds.has(v.edgeId)) {
-            await edgeTable.del(key).catch(() => {});
+            await edgeTable.delete(key).catch(() => {});
             edgesRemoved++;
           }
         }

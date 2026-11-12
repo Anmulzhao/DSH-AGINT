@@ -6,7 +6,12 @@ export function fakeTable() {
   return {
     put: async (k, v) => { if (v === undefined) m.delete(k); else m.set(k, v); },
     entries: () => [...m.entries()],
-    del: async (k) => { m.delete(k); },
+    // 宿主表 API 的真实形状（@deepseek-ai/dsh-storage-domain/lib/types/domain.d.ts:70,86）：
+    // 只有 delete(key)/deleteMany(keys)，**没有 del**。mock 必须与真实一致 ——
+    // 否则「调用了宿主没有的 del」在测试里永远是绿的（2026-11-12 假上限的成因之一）。
+    delete: async (k) => m.delete(k),
+    deleteMany: async (keys) => { let n = 0; for (const k of keys) if (m.delete(k)) n += 1; return n; },
+    get size() { return m.size; },
     _map: m,
   };
 }

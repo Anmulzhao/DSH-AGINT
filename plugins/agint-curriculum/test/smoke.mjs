@@ -150,3 +150,112 @@ test('boundary-probe：UNCERTAIN 域优先 + miscalibrated 加权 + CAN 复验',
   assert.ok(unverifiable.map((d) => d.domain).includes('custom-domain'));
   assert.ok(!domains.map((d) => d.domain).includes('custom-domain'));
 });
+
+// ── 2026-11-12：假上限修复的取证用例 ───────────────────────────────────────
+//
+// 宿主 storage 表 API 只有 delete(key)/deleteMany(keys)（**没有 del**），
+// 而本插件此前用的是 `del`（恒 undefined ⇒ `if (del)` 整块跳过 ⇒ 永不删除），
+// 且计数用迭代器的 `.length`（undefined）⇒ 上限检查恒不触发。
+// 合起来 = **滚动清理从未真的发生过**。
+//
+// 本组用例锁：① 超上限后行数真的下降 ② 被删的行确实消失
+//            ③ 删了要留痕（*.pruned 事件）④ 删除 API 缺失时失败可见（指标计数）
+
+/** 内存版 storage 表：**镜像宿主 API 的真实形状**（entries 是迭代器、有 size、有 delete） */
+function fakeTable({ withDelete = true } = {}) {
+  const m = new Map();
+  const t = {
+    put: async (k, v) => { m.set(k, v); },
+    entries: () => [...m.entries()][Symbol.iterator](),
+    get size() { return m.size; },
+    _map: m,
+  };
+  if (withDelete) {
+    t.delete = async (k) => m.delete(k);
+    t.deleteMany = async (keys) => { let n = 0; for (const k of keys) if (m.delete(k)) n += 1; return n; };
+  }
+  return t;
+}
+
+function fakeDomain({ withDelete = true } = {}) {
+  const tables = new Map();
+  return {
+    close: async () => {},
+    table: (name) => {
+      if (!tables.has(name)) tables.set(name, fakeTable({ withDelete }));
+      return tables.get(name);
+    },
+  };
+}
+
+function mockCtx({ withDelete = true } = {}) {
+  const provided = {};
+  const published = [];
+  const metrics = {};
+  const domain = fakeDomain({ withDelete });
+  return {
+    storageDomain: { open: async () => domain },
+    get: (key) => (key === 'agint.eventBus.publish'
+      ? async (envelope) => { published.push(envelope); return { accepted: true }; }
+      : null),
+    provide: (key, val) => { provided[key] = val; },
+    effect: () => {},
+    metrics: (key, delta) => { metrics[key] = (metrics[key] ?? 0) + delta; },
+    _provided: provided,
+    _published: published,
+    _metrics: metrics,
+    _domain: domain,
+  };
+}
+
+/** 预填 audit_log 到上限（1000 行） */
+async function seedAuditLog(t, count = 1000) {
+  const base = Date.parse('2026-01-01T00:00:00Z');
+  for (let i = 0; i < count; i += 1) {
+    await t.put(`seed_${i}`, {
+      id: `seed_${i}`,
+      kind: 'audit_log',
+      timestamp: new Date(base + i * 1000).toISOString(),
+      actor: 'system',
+      action: 'seed',
+      targetType: 'x',
+      targetId: 'x',
+      details: {},
+      reason: null,
+    });
+  }
+}
+
+test('audit_log 超上限后真删行（行数不增）+ 发 *.pruned 事件', async () => {
+  const ctx = mockCtx();
+  plugin.apply(ctx, {});
+  const svc = ctx._provided['agint.curriculum'];
+  const t = ctx._domain.table('audit_log');
+  await seedAuditLog(t, 1000);
+  assert.equal(t.size, 1000);
+
+  await svc.pause();
+  await svc.pause();
+  await svc.pause();
+
+  assert.equal(t.size, 1000, 'audit_log 必须被压回上限（修复前会涨到 1003）');
+  assert.equal(t._map.has('seed_0'), false, '最旧的 seed 行必须真的消失');
+  assert.equal(t._map.has('seed_999'), true, '较新的行不该被删');
+  const pruned = ctx._published.filter((e) => String(e.topic).endsWith('.pruned'));
+  assert.ok(pruned.length >= 1, '必须发出 *.pruned 事件');
+  assert.ok(pruned[0].payload.removed >= 1);
+  assert.equal(ctx._metrics['storage.pruneFailed'], undefined);
+});
+
+test('表 API 没有 delete 时：兜底失败可见（不抛错 + 指标计数）', async () => {
+  const ctx = mockCtx({ withDelete: false });
+  plugin.apply(ctx, {});
+  const svc = ctx._provided['agint.curriculum'];
+  const t = ctx._domain.table('audit_log');
+  await seedAuditLog(t, 1000);
+
+  await svc.pause();   // 不抛错
+
+  assert.equal(ctx._metrics['storage.pruneFailed'], 1, '删除失败必须计入 storage.pruneFailed');
+  assert.equal(t.size, 1001, '删不掉就是删不掉，不许假装删了');
+});

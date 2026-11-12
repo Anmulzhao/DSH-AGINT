@@ -118,6 +118,60 @@ function apply(ctx, config) {
     }
   }
 
+  // ── 指标计数（宿主 ctx.metrics 可选；不可用时静默跳过）──────────────────
+  //
+  // 用途：把「静默失败」变成「可数的失败」。没有它，删除失败只存在于
+  // console 里，事后没人查得到（K59：静默失败是本系统头号杀手）。
+  function countMetric(key, delta = 1) {
+    if (typeof ctx.metrics !== 'function') return;
+    try { ctx.metrics(key, delta); } catch { /* 指标失败不阻断业务 */ }
+  }
+
+  // ── 表行数（2026-11-12）─────────────────────────────────────────────────
+  //
+  // ⚠️ `t.entries()` 返回的是**迭代器**，`entries.length` 恒为 undefined。
+  // 本文件此前写的是 `const entries = t.entries(); checkLimit(..., entries.length)`
+  // ⇒ 传进去的 count 是 undefined ⇒ `undefined > 1000` 恒 false ⇒
+  // **上限检查从未触发**（与 bin/check-storage-table-api.mjs 同源的一类坑：
+  // 那条门禁只扫内联写法 `.entries().length`，变量形式漏网）。
+  // 宿主 API 有 `size`（当前记录数），用它；老 mock 没有 size 时退回展开迭代器
+  // （两者都是真值，不是估计）。
+  const tableSize = (t) => (typeof t.size === 'number' ? t.size : [...t.entries()].length);
+
+  // ── 真删除（2026-11-12 修「假上限」）────────────────────────────────────
+  //
+  // 宿主 storage 域的表 API **只有** `delete(key)` / `deleteMany(keys)`
+  // （@deepseek-ai/dsh-storage-domain/lib/types/domain.d.ts:70,86）——
+  // **没有 `del`**。此前本插件（及 curator / curriculum）调的是 `del`：
+  //   · `typeof t.del === 'function'` 恒 false ⇒ 整块跳过，**永不删除**；
+  //   · 或抛 TypeError 被 `.catch(() => {})` **静默吞掉**。
+  // 两种形态都表现为「上限是假的」，且生产表未到上限前这段代码根本不会被触发
+  // ⇒ 问题隐身至今（2026-11-12 实测：audit_log 72 行，远低于 1000 上限）。
+  //
+  // 兜底 reject **不许再被空 catch 吞掉**：失败时 ① console.warn 打日志
+  // ② ctx.metrics('storage.pruneFailed') 计数（名字见下）。
+  function delOf(t) {
+    return typeof t.delete === 'function'
+      ? (key) => t.delete(key)
+      : (key) => Promise.reject(new Error('audit_log prune: table API has no delete'));
+  }
+
+  /**
+   * 删一行；成功返回 true，失败返回 false（**失败可见**：warn + 指标计数）。
+   * @param {object} t    宿主表句柄
+   * @param {string} key  行键
+   */
+  async function deleteRow(t, key) {
+    try {
+      await delOf(t)(key);
+      return true;
+    } catch (e) {
+      console.warn(`[${name}] 表行删除失败（key=${key}）: ${e?.message ?? e}`);
+      countMetric('storage.pruneFailed', 1);
+      return false;
+    }
+  }
+
   // ── agint-diagnosis 软依赖（[4] 轨道 A）────────────────────────────────
   //
   // 仅当 diagnosis 服务暴露 `classify(trajectory)` 时轨道 A 才可用。
@@ -146,31 +200,32 @@ function apply(ctx, config) {
   });
 
   // ── audit（唯一自动滚动清理的表：>1000 条删最旧）───────────────────────
+  //
+  // ⚠️ 2026-11-12：这段的「滚动清理」此前是**假上限**（两处独立成因，都已修）：
+  //   ① 计数用 `entries.length`（迭代器没有 length ⇒ undefined）⇒ 上限恒不触发；
+  //   ② 删除用宿主 API 里不存在的 `del` ⇒ 即使触发了也删不掉（异常被空 catch 吞）。
+  // 现在的语义：真的超了上限就**真的删最旧的**，删了多少条通过 *.pruned 事件留痕。
   async function audit(entry) {
     const t = await table('audit_log');
     const record = packAudit(entry);
     await t.put(record.id, record);
-    const entries = t.entries();
-    const warn = checkLimit('audit_log', entries.length);
+    const warn = checkLimit('audit_log', tableSize(t));
     if (warn) {
       // 滚动清理：保留最近 LIMITS.AUDIT_LOG 条（按 timestamp 升序删最旧）
-      const overflow = entries.length - warn.limit;
+      const overflow = tableSize(t) - warn.limit;
       if (overflow > 0) {
-        const del = delOf(t);
-        const sorted = [...entries].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
+        const sorted = [...t.entries()].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
+        let removed = 0;
         for (const [key] of sorted.slice(0, overflow)) {
-          await del(key).catch(() => {});
+          if (await deleteRow(t, key)) removed += 1;
+        }
+        if (removed > 0) {
+          // 留痕：删了什么必须可观测（动作发生了、证据没了 = 典型谎报）
+          await publishEvent('skill-autocreate.auditLog.pruned', { removed });
         }
       }
     }
     return record;
-  }
-
-  // 通用删除兜底（storage 域 API 若无 del，退化处理）
-  function delOf(t) {
-    return typeof t.del === 'function'
-      ? (key) => t.del(key)
-      : (key) => Promise.reject(new Error('audit_log prune: table API has no del'));
   }
 
   // ── 读 tool-stats JSONL（设计稿 §10.1：读文件，不重复采集）─────────────
@@ -1039,6 +1094,92 @@ function apply(ctx, config) {
     return list;
   }
 
+  /**
+   * task_patterns 真 prune（2026-11-12）——此前是**假上限**。
+   *
+   * 病：schema.js 声明 LIMITS.TASK_PATTERNS = 500，但 storage.js 的 checkLimit
+   * 只产 `_warn`、**不 prune** ⇒ 超限后无界增长（2026-11-12 生产实测：
+   * 277 行 / 1.54 MB，均 3.3 KB，最大单行 31.4 KB —— 行内 sampleArgs 存
+   * 工具参数原文所致）。
+   *
+   * 删谁：**最旧且最近 maxAgeDays 天没再命中**的 pattern。
+   *   「没再命中」= 最近活动时间早于 maxAgeDays 天前：
+   *     · 有 `lastHitAt` 用它（schema 目前无此字段，存量行也无 ⇒ 依次退到
+   *       lastSeenAt / updatedAt / createdAt / firstSeenAt）；
+   *     · 从未命中过、且创建已超过 maxAgeDays 天 ⇒ 同样算「没再命中」。
+   *
+   * ⛔ 宁可超限也不误删（任务书原话：误删会毁掉模式识别能力）：
+   *   · 全部 pattern 都还活跃 ⇒ **一条都不删**（removed=0 + skipped 原因）；
+   *   · 与候选/已发布技能有回链的 pattern（linkedCandidateId 非空，或
+   *     status ∈ candidate/proposed/released）**不删** —— 删了就断掉
+   *     「这个技能从哪来」的审计链；
+   *   · 一个时间戳都读不出来的 pattern ⇒ 视为活跃，不删。
+   *
+   * @param {object} opts { maxAgeDays=30, maxCount=500, nowMs? }
+   * @returns {Promise<{removed:number, freedBytes:number, total:number}>}
+   */
+  async function prunePatterns(opts = {}) {
+    const maxAgeDays = Number.isFinite(opts.maxAgeDays) ? opts.maxAgeDays : 30;
+    const maxCount = Number.isFinite(opts.maxCount) ? opts.maxCount : LIMITS.TASK_PATTERNS;
+    const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+    const cutoff = nowMs - maxAgeDays * 86_400_000;
+    const t = await table('task_patterns');
+    const entries = [...t.entries()];
+    const total = entries.length;
+    if (total <= maxCount) {
+      return { removed: 0, freedBytes: 0, total, remaining: total, skipped: 'under-limit' };
+    }
+    // 最近活动时间：显式命中时间优先，退到观测/写入时间
+    const activityOf = (p) => {
+      for (const f of ['lastHitAt', 'lastSeenAt', 'updatedAt', 'createdAt', 'firstSeenAt']) {
+        const v = p?.[f];
+        if (typeof v !== 'string') continue;
+        const ms = Date.parse(v);
+        if (!Number.isNaN(ms)) return ms;
+      }
+      return null;
+    };
+    // 有回链 / 已是候选或已发布 ⇒ 不删（审计链不能断）
+    const isProtected = (p) => {
+      if (p?.linkedCandidateId) return true;
+      return ['candidate', 'proposed', 'released'].includes(p?.status);
+    };
+    const stale = entries
+      .map(([key, p]) => ({ key, p, activity: activityOf(p) }))
+      .filter((x) => !isProtected(x.p))
+      .filter((x) => x.activity !== null && x.activity < cutoff)
+      .sort((a, b) => a.activity - b.activity);   // 最旧优先
+    const need = total - maxCount;
+    const victims = stale.slice(0, need);
+    let removed = 0;
+    let freedBytes = 0;
+    for (const v of victims) {
+      const bytes = JSON.stringify(v.p ?? {}).length;
+      if (await deleteRow(t, v.key)) {
+        removed += 1;
+        freedBytes += bytes;
+      }
+    }
+    if (removed > 0) {
+      await publishEvent('skillAutocreate.patternsPruned', { removed, freedBytes });
+      await audit({
+        actor: 'system',
+        action: 'task_patterns_pruned',
+        targetType: 'task_pattern',
+        targetId: '*',
+        details: { removed, freedBytes, maxCount, maxAgeDays, totalBefore: total },
+        reason: `task_patterns 超上限（${total} > ${maxCount}）⇒ 清理最旧且 ${maxAgeDays} 天未命中的模式`,
+      });
+    }
+    return {
+      removed,
+      freedBytes,
+      total,
+      remaining: tableSize(t),
+      skipped: removed === 0 ? 'no-stale-patterns' : null,
+    };
+  }
+
   async function listCandidates(args = {}) {
     const t = await table('candidates');
     let list = [...t.entries()].map(([, v]) => v);
@@ -1492,6 +1633,7 @@ function apply(ctx, config) {
   ctx.provide('agint.skillAutocreate', {
     detect,
     listPatterns,
+    prunePatterns,
     listCandidates,
     getCandidate,
     rejectCandidate,
@@ -1515,6 +1657,15 @@ function apply(ctx, config) {
     // 行动 #3（2026-09-28）：KV Cache 安全判据（append-only 纯函数，供调用方/工具验证）
     toolAddition: { assertAppendOnly: assertToolAdditionAppendOnly },
   });
+
+  // ── 独立子键出口（2026-11-12）：task_patterns 真 prune ────────────────
+  //
+  // 为什么单开一个子键而不只是塞进上面的服务对象：消费方（agint-cron 的
+  // storage-prune job）按 `ctx.get('agint.skillAutocreate.prunePatterns')`
+  // 取**函数**；cordis 的 service store 是扁平的（按确切键名查），
+  // 取不到就跳过（不报错、不阻断其它 job）。
+  // opts: { maxAgeDays = 30, maxCount = 500 } → 返回 { removed, freedBytes }
+  ctx.provide('agint.skillAutocreate.prunePatterns', (opts = {}) => prunePatterns(opts));
 }
 
 export { ConfigSchema, apply, inject, name };

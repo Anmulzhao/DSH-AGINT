@@ -156,20 +156,69 @@ function apply(ctx, config) {
     }
   }
 
+  // ── 指标计数（宿主 ctx.metrics 可选；不可用时静默跳过）──────────────────
+  function countMetric(key, delta = 1) {
+    if (typeof ctx.metrics !== 'function') return;
+    try { ctx.metrics(key, delta); } catch { /* 指标失败不阻断业务 */ }
+  }
+
+  // ── 表行数（2026-11-12）─────────────────────────────────────────────────
+  //
+  // ⚠️ `t.entries()` 返回**迭代器**，`entries.length` 恒为 undefined。
+  // 本文件此前写的是 `const entries = t.entries(); checkLimit(..., entries.length)`
+  // ⇒ count 是 undefined ⇒ `undefined > 1000` 恒 false ⇒ **上限检查从未触发**。
+  // 宿主 API 有 `size`（当前记录数），用它；老 mock 没有 size 时退回展开迭代器。
+  const tableSize = (t) => (typeof t.size === 'number' ? t.size : [...t.entries()].length);
+
+  // ── 真删除（2026-11-12 修「假上限」）────────────────────────────────────
+  //
+  // 宿主 storage 域的表 API **只有** `delete(key)` / `deleteMany(keys)`
+  // （@deepseek-ai/dsh-storage-domain/lib/types/domain.d.ts:70,86）——
+  // **没有 `del`**。此前本插件调的是 `del`：
+  // `typeof t.del === 'function'` 恒 false ⇒ 整块跳过 ⇒ **永不删除**。
+  // 生产表未到上限前这段代码根本不会被触发 ⇒ 问题长期隐身
+  // （2026-11-12 实测：audit_log 6 行，远低于 1000 上限）。
+  //
+  // 兜底 reject **不许再被空 catch 吞掉**：失败时 ① console.warn ② 指标计数。
+  function delOf(t) {
+    return typeof t.delete === 'function'
+      ? (key) => t.delete(key)
+      : (key) => Promise.reject(new Error('curriculum prune: table API has no delete'));
+  }
+
+  /** 删一行；成功 true / 失败 false（失败可见：warn + 指标计数） */
+  async function deleteRow(t, key) {
+    try {
+      await delOf(t)(key);
+      return true;
+    } catch (e) {
+      console.warn(`[${name}] 表行删除失败（key=${key}）: ${e?.message ?? e}`);
+      countMetric('storage.pruneFailed', 1);
+      return false;
+    }
+  }
+
   // ── audit（唯一自动滚动清理的表）───────────────────────────────────────
+  //
+  // ⚠️ 2026-11-12：这段的「滚动清理」此前是**假上限**（两处独立成因，都已修）：
+  //   ① 计数用迭代器的 `.length`（undefined）⇒ 上限恒不触发；
+  //   ② 删除用宿主 API 里不存在的 `del` ⇒ 即使触发了也删不掉。
   async function audit(entry) {
     const t = await table('audit_log');
     const record = packAudit(entry);
     await t.put(record.id, record);
-    const entries = t.entries();
-    const warn = checkLimit('audit_log', entries.length);
+    const warn = checkLimit('audit_log', tableSize(t));
     if (warn) {
-      const overflow = entries.length - warn.limit;
+      const overflow = tableSize(t) - warn.limit;
       if (overflow > 0) {
-        const del = typeof t.del === 'function' ? (k) => t.del(k) : null;
-        if (del) {
-          const sorted = [...entries].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
-          for (const [key] of sorted.slice(0, overflow)) await del(key).catch(() => {});
+        const sorted = [...t.entries()].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
+        let removed = 0;
+        for (const [key] of sorted.slice(0, overflow)) {
+          if (await deleteRow(t, key)) removed += 1;
+        }
+        if (removed > 0) {
+          // 留痕：删了什么必须可观测
+          await publishEvent('curriculum.auditLog.pruned', { removed });
         }
       }
     }

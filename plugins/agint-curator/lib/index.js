@@ -95,20 +95,71 @@ function apply(ctx, config) {
     }
   }
 
+  // ── 指标计数（宿主 ctx.metrics 可选；不可用时静默跳过）──────────────────
+  function countMetric(key, delta = 1) {
+    if (typeof ctx.metrics !== 'function') return;
+    try { ctx.metrics(key, delta); } catch { /* 指标失败不阻断业务 */ }
+  }
+
+  // ── 表行数（2026-11-12）─────────────────────────────────────────────────
+  //
+  // ⚠️ `t.entries()` 返回**迭代器**，`entries.length` 恒为 undefined。
+  // 本文件此前写的是 `const entries = t.entries(); checkLimit(..., entries.length)`
+  // ⇒ count 是 undefined ⇒ `undefined > 1000` 恒 false ⇒ **上限检查从未触发**。
+  // 宿主 API 有 `size`（当前记录数），用它；老 mock 没有 size 时退回展开迭代器。
+  const tableSize = (t) => (typeof t.size === 'number' ? t.size : [...t.entries()].length);
+
+  // ── 真删除（2026-11-12 修「假上限」）────────────────────────────────────
+  //
+  // 宿主 storage 域的表 API **只有** `delete(key)` / `deleteMany(keys)`
+  // （@deepseek-ai/dsh-storage-domain/lib/types/domain.d.ts:70,86）——
+  // **没有 `del`**。此前本插件两处调的是 `del`：
+  //   · `typeof t.del === 'function'` 恒 false ⇒ 整块跳过，**永不删除**；
+  //   · 或抛 TypeError 被 `.catch(() => {})` **静默吞掉**。
+  // 两种形态都表现为「上限是假的」，且生产表未到上限前根本不会被触发
+  // ⇒ 长期隐身（2026-11-12 实测：audit_log 10 行、overlap_candidates 少量，
+  // 都远低于 1000 / 200 上限）。
+  //
+  // 兜底 reject **不许再被空 catch 吞掉**：失败时 ① console.warn ② 指标计数。
+  function delOf(t) {
+    return typeof t.delete === 'function'
+      ? (key) => t.delete(key)
+      : (key) => Promise.reject(new Error('curator prune: table API has no delete'));
+  }
+
+  /** 删一行；成功 true / 失败 false（失败可见：warn + 指标计数） */
+  async function deleteRow(t, key) {
+    try {
+      await delOf(t)(key);
+      return true;
+    } catch (e) {
+      console.warn(`[${name}] 表行删除失败（key=${key}）: ${e?.message ?? e}`);
+      countMetric('storage.pruneFailed', 1);
+      return false;
+    }
+  }
+
   // ── audit（唯一自动滚动清理的表）───────────────────────────────────────
+  //
+  // ⚠️ 2026-11-12：这段的「滚动清理」此前是**假上限**（两处独立成因，都已修）：
+  //   ① 计数用迭代器的 `.length`（undefined）⇒ 上限恒不触发；
+  //   ② 删除用宿主 API 里不存在的 `del` ⇒ 即使触发了也删不掉。
   async function audit(entry) {
     const t = await table('audit_log');
     const record = packAudit(entry);
     await t.put(record.id, record);
-    const entries = t.entries();
-    const warn = checkLimit('audit_log', entries.length);
+    const warn = checkLimit('audit_log', tableSize(t));
     if (warn) {
-      const overflow = entries.length - warn.limit;
+      const overflow = tableSize(t) - warn.limit;
       if (overflow > 0) {
-        const del = typeof t.del === 'function' ? (k) => t.del(k) : null;
-        if (del) {
-          const sorted = [...entries].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
-          for (const [key] of sorted.slice(0, overflow)) await del(key).catch(() => {});
+        const sorted = [...t.entries()].sort((a, b) => String(a[1].timestamp).localeCompare(String(b[1].timestamp)));
+        let removed = 0;
+        for (const [key] of sorted.slice(0, overflow)) {
+          if (await deleteRow(t, key)) removed += 1;
+        }
+        if (removed > 0) {
+          // 留痕：删了什么必须可观测
+          await publishEvent('curator.auditLog.pruned', { removed });
         }
       }
     }
@@ -129,6 +180,18 @@ function apply(ctx, config) {
   //       自动引发归档，等于把「谁动了技能目录」和「谁被归档了」焊死 —— 出事查不清。
   //    3. 与 curriculum 的 goalAlignment 同一口径：事件让系统**知道**，
   //       真正动手由人/agent 显式调 `curator.run()`。
+  //
+  // ⚠️ 2026-11-12 决策变更（用户拍板，cron 事件驱动评估 §七 步骤 1）：
+  //    **本段自身仍不自动跑 run()** —— 上面三条针对「宿主回调里直接跑」依然
+  //    成立，故本文件代码不动；但「全系统不得因 skills/change 自动跑 run()」
+  //    这条**全局禁令已撤销**。现由 `agint-cron/lib/event-trigger.js` 订阅同一
+  //    topic，5s 去抖 + 6h 冷却后调 `agint.cron.runNow('curator-weekly')`，
+  //    执行**完整 run()（含归档）**。
+  //    护栏一律保留：auto_curation_enabled / dry_run_default /
+  //    weekly_archive_budget 不动；cron 全部 job（评估口径 27、当前 29）保留
+  //    为兜底；失败发 `curator.run-failed` 终态事件。
+  //    ⛔ 别再引用上面第 3 条当作「事件不能驱动 run()」的依据 —— 那是本段的
+  //      局部理由，不是全系统约束。
   //
   // ⚠️ 宿主契约：`skills/change` **无参数**。所以这里拿不到「哪个技能变了」，
   //    只能记「变过」。要判断变了什么，必须自己扫 —— 这正是 run() 干的事。
@@ -262,10 +325,17 @@ function apply(ctx, config) {
       if (!dryRun) {
         const record = packOverlapCandidate({ skillA, skillB, dims, recommendation });
         // 覆盖同对旧记录（保持幂等）
+        let removed = 0;
         for (const [key, v] of t.entries()) {
           if (v.skillA === skillA && v.skillB === skillB && v.kind === 'overlap_candidate') {
-            await t.del(key).catch(() => {});
+            // ⚠️ 2026-11-12：此前调的是 `t.del`（宿主表 API 无此方法）
+            // ⇒ TypeError 被空 catch 吞掉 ⇒ **旧记录永远删不掉**（覆盖不生效，
+            // overlap_candidates 表按周累积）。现在用真的 delete + 留痕。
+            if (await deleteRow(t, key)) removed += 1;
           }
+        }
+        if (removed > 0) {
+          await publishEvent('curator.overlapCandidates.pruned', { removed });
         }
         await t.put(record.id, record);
         written++;
