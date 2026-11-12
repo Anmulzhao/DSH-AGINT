@@ -34,6 +34,20 @@ const inject = ['storageDomain'];
 export const SYNC_GLOBAL_LIMIT = 3;
 
 /**
+ * 迁移/保留窗口（天）：与 lib/index.js 的 MIGRATION_MAX_AGE_DAYS 同口径，
+ * 不各写一个数（两个数一旦漂移，「迁过去的」和「留下的」就对不上）。
+ */
+const MIGRATION_MAX_AGE_DAYS = 30;
+
+/**
+ * 永不删除的 topic 前缀（决策与审计类事件，不是遥测）。
+ * 事件表一旦开始按时间淘汰，这些必须留下 —— 决策链断不得。
+ */
+const PINNED_TOPIC_PREFIXES = [
+  'evolution.', 'restart.', 'diagnosis.', 'quality.', 'mount.',
+];
+
+/**
  * Cordis apply(ctx)。
  *
  * ctx 期望能力（host 平面提供；缺失时软降级）：
@@ -155,6 +169,71 @@ function apply(ctx: any, _config: any = {}) {
         unknownDeliveryTopics: [],
       };
     }
+  });
+  // ── 保留窗口：events 表按时间淘汰（30 天默认）────────────────────────────
+  //
+  // 2026-11-12 新增。为什么需要：events 表此前**只增不删**（全仓无任何针对该表的
+  // delete），实测 28.6 MB / 3 万余行，且每写一条事件都重写整份文件。
+  //
+  // 契约：`ctx.provide('agint.eventBus.prune', async (opts) => {...})`
+  //   opts.maxAgeDays（默认 30）/ opts.dryRun（默认 false = 真删）
+  //   返回 `{ removed, kept, wouldRemove, dryRun }`
+  // 消费方：plugins/agint-cron 的 storage-prune job 用 ctx.get 调用；取不到就跳过。
+  //
+  // ⛔ 决策与审计类 topic 永不删 —— 事件表淘汰的是遥测，不是决策链。
+  //   删决策事件等于毁掉进化闭环的证据。
+  ctx.provide('agint.eventBus.prune', async (opts: { maxAgeDays?: number; dryRun?: boolean } = {}) => {
+    const maxAgeDays = Number.isFinite(opts?.maxAgeDays) ? (opts!.maxAgeDays as number) : MIGRATION_MAX_AGE_DAYS;
+    const dryRun = opts?.dryRun === true;
+    const handle = storageHandle as any;
+    if (!handle || typeof handle.table !== 'function') {
+      return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'storage-not-ready' };
+    }
+    let table: { entries?: () => IterableIterator<[string, any]>; deleteMany?: (keys: readonly string[]) => Promise<number> } | undefined;
+    try { table = handle.table('events') as any; }
+    catch { return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'events-table-unavailable' }; }
+    if (!table || typeof table.entries !== 'function') {
+      return { removed: 0, kept: null, wouldRemove: 0, dryRun, skipped: 'events-table-unavailable' };
+    }
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const victims: string[] = [];
+    let total = 0;
+    for (const [key, rec] of table.entries()) {
+      total++;
+      const topic = String(rec?.envelope?.topic ?? rec?.topic ?? '');
+      if (topic && PINNED_TOPIC_PREFIXES.some((p) => topic.startsWith(p))) continue;
+      const at = rec?.envelope?.occurredAt ?? rec?.occurredAt;
+      const ts = Date.parse(String(at ?? ''));
+      if (!Number.isFinite(ts) || ts >= cutoff) continue;
+      victims.push(key);
+    }
+    if (dryRun) {
+      return { removed: 0, kept: total - victims.length, wouldRemove: victims.length, dryRun: true };
+    }
+    let removed = 0;
+    if (victims.length > 0 && typeof table.deleteMany === 'function') {
+      try {
+        removed = await table.deleteMany(victims);
+      }
+      catch (err) {
+        return {
+          removed: 0, kept: null, wouldRemove: victims.length, dryRun,
+          skipped: `delete-failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+    // 留痕：prune 本身也是一件「发生了的事」，发一条事件（不递归触发 prune）。
+    try {
+      const pub = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      if (typeof pub === 'function') {
+        await (pub as (i: unknown) => Promise<unknown>)({
+          topic: 'events.pruned',
+          payload: { removed, freedRows: victims.length, maxAgeDays, kept: total - removed },
+        });
+      }
+    }
+    catch { /* 留痕失败不阻断主流程 */ }
+    return { removed, kept: total - removed, wouldRemove: victims.length, dryRun: false };
   });
   // ── umbrella 键（2026-09-24 补）───────────────────────────────────────────
   // cordis 的 service store 是**扁平的**：provide('agint.eventBus.publish') 之后，
