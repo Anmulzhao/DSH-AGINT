@@ -18,8 +18,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   collectEvents, collectRecordDir, mergeEvents, evaluateLag, parseArgs,
-  busStoragePath, recordDirPath, main, RECORD_SUBDIR,
-  TRIGGER_TOPIC, TERMINAL_TOPICS, DEFAULT_WINDOW_MIN,
+  busStoragePath, recordDirPath, main, loadActivation, ACTIVATION_FILE,
+  RECORD_SUBDIR, TRIGGER_TOPIC, TERMINAL_TOPICS, DEFAULT_WINDOW_MIN,
 } from './check-event-trigger-lag.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -228,4 +228,169 @@ test('main --json 报告带 sources / duplicatesMerged（双源重叠不制造�
   assert.equal(report.duplicatesMerged, 1);
   assert.equal(report.sources.length, 2);
   assert.equal(report.eventCount, 1);
+}));
+
+// ── 开关生效基线（2026-11-12 验收遗留 2）────────────────────────────────
+// ⚠️ 这里最容易写出「过滤掉历史就宣布绿」的假绿。四条护栏必须全部钉住：
+//    ① 不传 effectiveFrom ⇒ 旧行为一字不变；② 生效后仍缺 ⇒ 照红；
+//    ③ 生效后 0 条 ⇒ NO_TRIGGER_EVENTS + verified=false；④ windowMin 不放宽。
+const ACTIVATION_MS = T0 + 100_000;
+const WINDOW = { since: T0 - 3600_000, now: T0 + 3600_000 };
+
+test('不传 effectiveFrom 时行为完全不变（向后兼容，全量追责）', () => {
+  const r = evaluateLag([trigger(0), done(60_000), trigger(200_000)], WINDOW);
+  assert.equal(r.verdict, 'TERMINAL_MISSING');
+  assert.equal(r.triggerCount, 2);
+  assert.equal(r.missing.length, 1);
+  assert.equal(r.effectiveFrom, null);
+  assert.equal(r.preActivation.triggerCount, 0);
+});
+
+test('基线把生效前的历史触发分离为 preActivation，欠账数字如实保留', () => {
+  // ⚠️ 终态放在 T0+31.7min：仍配得上生效后的 trigger(200_000)（窗口到
+  //    T0+33.3min），但**配不上**生效前的 trigger(0)（窗口只到 T0+30min），
+  //    ⇒ preActivation.missingCount 才能如实显形。配对仍是纯时间邻近口径，
+  //    基线没有改它 —— 这正是「不放宽判据」要钉住的细节。
+  const r = evaluateLag(
+    [trigger(0), trigger(200_000), done(1_900_000)],
+    { ...WINDOW, effectiveFrom: ACTIVATION_MS },
+  );
+  assert.equal(r.verdict, 'OK');
+  assert.equal(r.verified, true);
+  assert.equal(r.triggerCount, 1, '只有生效后的 1 条参与判绿');
+  assert.equal(r.totalTriggerCount, 2, '总触发数不许被抹掉');
+  assert.equal(r.matched.length, 1);
+  assert.equal(r.missing.length, 0);
+  assert.equal(r.preActivation.triggerCount, 1);
+  assert.equal(r.preActivation.missingCount, 1, '历史欠账 1 条必须显形，不许静默吞掉');
+  assert.equal(r.preActivation.firstTriggerAt, at(0));
+  assert.equal(r.effectiveFrom, at(100_000));
+  assert.equal(r.evaluatedSince, at(100_000));
+});
+
+test('生效后仍有触发缺终态 ⇒ 照常 TERMINAL_MISSING（基线不放宽判据）', () => {
+  const r = evaluateLag(
+    [trigger(0), trigger(200_000)],
+    { ...WINDOW, effectiveFrom: ACTIVATION_MS },
+  );
+  assert.equal(r.verdict, 'TERMINAL_MISSING');
+  assert.equal(r.missing.length, 1);
+  assert.equal(r.missing[0].triggerAt, at(200_000));
+  assert.equal(r.preActivation.missingCount, 1);
+});
+
+test('⛔ 生效后 0 条触发 ⇒ NO_TRIGGER_EVENTS + verified=false（过滤不得变全绿）', () => {
+  const r = evaluateLag(
+    [trigger(0), done(60_000)],
+    { ...WINDOW, effectiveFrom: ACTIVATION_MS },
+  );
+  assert.equal(r.verdict, 'NO_TRIGGER_EVENTS');
+  assert.equal(r.verified, false);
+  assert.equal(r.triggerCount, 0);
+  assert.equal(r.totalTriggerCount, 1);
+  assert.equal(r.preActivation.triggerCount, 1);
+});
+
+test('基线不改变 windowMin：终态超窗仍判 TERMINAL_MISSING', () => {
+  const r = evaluateLag(
+    [trigger(200_000), done(200_000 + DEFAULT_WINDOW_MIN * 60_000 + 1)],
+    { ...WINDOW, effectiveFrom: ACTIVATION_MS },
+  );
+  assert.equal(r.verdict, 'TERMINAL_MISSING');
+  assert.equal(r.missing.length, 1);
+});
+
+test('parseArgs 支持 effective-from / activation-file / no-baseline', () => {
+  const a = parseArgs([
+    '--effective-from', '2026-11-12T04:15:38.852Z',
+    '--activation-file', '/tmp/act.json', '--no-baseline',
+  ]);
+  assert.equal(a.effectiveFrom, Date.parse('2026-11-12T04:15:38.852Z'));
+  assert.equal(a.activationFile, '/tmp/act.json');
+  assert.equal(a.noBaseline, true);
+  const d = parseArgs([]);
+  assert.equal(d.effectiveFrom, null);
+  assert.equal(d.activationFile, null);
+  assert.equal(d.noBaseline, false);
+});
+
+test('loadActivation：合法可读，坏文件 / 不可解析时间 / 文件缺失一律返回 null', () => withTmp((dir) => {
+  const p = join(dir, 'act.json');
+  writeFileSync(p, JSON.stringify({ activatedAt: '2026-11-12T04:15:38.852Z' }));
+  const r = loadActivation(p);
+  assert.equal(r.at, Date.parse('2026-11-12T04:15:38.852Z'));
+  assert.equal(r.path, p);
+  writeFileSync(p, '{not json');
+  assert.equal(loadActivation(p), null, '基线损坏必须退回严格口径，不能因此判绿');
+  writeFileSync(p, JSON.stringify({ activatedAt: 'not-a-date' }));
+  assert.equal(loadActivation(p), null);
+  assert.equal(loadActivation(join(dir, 'missing.json')), null);
+}));
+
+test('默认基线文件落地且时间可核对（不许被悄悄前移）', () => {
+  const r = loadActivation();
+  assert.ok(r, `${ACTIVATION_FILE} 必须存在且可解析`);
+  assert.equal(r.at, Date.parse('2026-11-12T04:15:38.852Z'));
+  assert.ok(r.path.endsWith('docs/event-trigger-activation.json'));
+});
+
+test('main：带基线 → OK；--no-baseline 复现全量严格口径 → TERMINAL_MISSING', () => withTmp((dir) => {
+  const singlePath = join(dir, 'agint_event_bus.json');
+  const actPath = join(dir, 'activation.json');
+  mkdirSync(join(dir, RECORD_SUBDIR));
+  writeFileSync(singlePath, JSON.stringify({ tables: { events: {} } }));
+  const base = Date.now() - 10 * 60_000;
+  const oldTs = base - 60 * 60_000;
+  const newTs = base + 60_000;
+  writeFileSync(actPath, JSON.stringify({ activatedAt: new Date(base).toISOString() }));
+  writeRecord(dir, 'old.json', {
+    id: 'old', topic: TRIGGER_TOPIC, occurredAt: new Date(oldTs).toISOString(), payload: {},
+  });
+  writeRecord(dir, 'new.json', {
+    id: 'new', topic: TRIGGER_TOPIC, occurredAt: new Date(newTs).toISOString(), payload: {},
+  });
+  writeRecord(dir, 'done.json', {
+    id: 'done', topic: 'curator.run-completed',
+    occurredAt: new Date(newTs + 30_000).toISOString(), payload: { dryRun: false },
+  });
+
+  const ok = captureMain([
+    '--storage', singlePath, '--record-dir', dir,
+    '--activation-file', actPath, '--json',
+  ]);
+  assert.equal(ok.rc, 0);
+  const rep = JSON.parse(ok.text);
+  assert.equal(rep.verdict, 'OK');
+  assert.equal(rep.triggerCount, 1);
+  assert.equal(rep.preActivation.triggerCount, 1);
+  assert.equal(rep.preActivation.missingCount, 1, '历史欠账必须在报告里看得见');
+  assert.equal(rep.activation.kind, 'file');
+
+  const strict = captureMain([
+    '--storage', singlePath, '--record-dir', dir, '--no-baseline', '--json',
+  ]);
+  assert.equal(strict.rc, 1);
+  const srep = JSON.parse(strict.text);
+  assert.equal(srep.verdict, 'TERMINAL_MISSING');
+  assert.equal(srep.missing.length, 1);
+  assert.equal(srep.activation, null);
+}));
+
+test('main：基线把所有触发都划到生效前 ⇒ 仍 verified=false，不判绿', () => withTmp((dir) => {
+  const singlePath = join(dir, 'agint_event_bus.json');
+  mkdirSync(join(dir, RECORD_SUBDIR));
+  writeFileSync(singlePath, JSON.stringify({ tables: { events: {} } }));
+  writeRecord(dir, 'old.json', {
+    id: 'old', topic: TRIGGER_TOPIC,
+    occurredAt: new Date(Date.now() - 60_000).toISOString(), payload: {},
+  });
+  const r = captureMain([
+    '--storage', singlePath, '--record-dir', dir,
+    '--effective-from', new Date(Date.now() + 3600_000).toISOString(), '--json',
+  ]);
+  const rep = JSON.parse(r.text);
+  assert.equal(rep.verdict, 'NO_TRIGGER_EVENTS');
+  assert.equal(rep.verified, false);
+  assert.equal(rep.triggerCount, 0);
+  assert.equal(rep.preActivation.triggerCount, 1);
 }));
