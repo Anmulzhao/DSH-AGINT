@@ -108,7 +108,16 @@ function apply(ctx) {
     (error) => { domainError = error; return null; },
   );
 
-  ctx.provide('agint.metrics', buildMetricsService({ ctx, table, computeMetrics, describeMetric, randomId }));
+  const metricsService = buildMetricsService({ ctx, table, computeMetrics, describeMetric, randomId });
+  ctx.provide('agint.metrics', metricsService);
+  // 2026-11-12：保留机制的对外入口。
+  //   · `agint.metrics.prune`  —— 消费方约定：plugins/agint-cron 的 storage-prune
+  //     job 用 ctx.get('agint.metrics.prune') 调用；取不到就跳过（不报错）。
+  //   · `agint.metrics.record` —— 写任意指标（体积类指标走它，inc 只认计数增量）。
+  //     agint-trajectory 的 reportDiscard 早就探测过这个键（"若未来 metrics 暴露
+  //     record 接口则自动接上"）—— 现在它存在了，那条自动接线会生效。
+  ctx.provide('agint.metrics.prune', (opts) => metricsService.prune(opts ?? {}));
+  ctx.provide('agint.metrics.record', (input) => metricsService.record(input ?? {}));
 }
 
 export { Config, apply, inject, name };

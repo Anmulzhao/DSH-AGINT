@@ -22,6 +22,7 @@ import { classifyInactivity } from './staleness.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { createHostBridge } from './host-schedule.js';
+import { createEventTriggerBridge } from './event-trigger.js';
 
 const name = 'agint-cron';
 const inject = ['timer', 'storageDomain'];
@@ -37,6 +38,25 @@ const Config = z
      *   没配就 soft-skip，理由写进 lastResultSummary。
      */
     repoRoot: z.string().min(1).nullish(),
+    /**
+     * 事件触发桥（`lib/event-trigger.js`）：给「到点才做」的 cron job 加一条
+     * 「状态变了就做」的快路径（cron 全部保留为兜底，不删任何 job）。
+     *
+     * ⛔ **默认关闭**（enabled 默认 false），这是有意的：
+     *   · 它改的是 27 个 job 的**触发语义**（不只是新增一个 job），
+     *     属于行为变更，**不在老板批准的那批存储治理改动范围内**；
+     *   · 能力、单测、文档都已就位，默认不生效 ⇒ 零行为变更风险；
+     *   · 等老板明确要开时，把这里改成 true 即可，无需改代码。
+     *
+     * 顺带说明它修的真问题（2026-11-11 生产实测）：宿主启动瞬间订阅者还没注册，
+     * 事件进了 ring 但 delivered=0 ⇒ 「机器重启后第一次技能变更」必然丢 ——
+     * 而那正是最需要策展的时刻。该桥的「启动补读」正是补这个洞。
+     */
+    eventTrigger: z
+      .object({
+        enabled: z.boolean().default(false),
+      })
+      .optional(),
     /**
      * 工作区指令体积哨兵（agents-size-guard job，daily 06:45）的配置。
      *
@@ -74,6 +94,31 @@ const Config = z
             maxRatio: z.number().positive().nullish(),
           })
           .nullish(),
+      })
+      .nullish(),
+    /**
+     * 存储度量/回收（storage-guard / storage-prune 两个 job）的配置。
+     *
+     * ⚠️ 必须在这里显式声明：cordis 用 zod 解析行 config，**默认剥离未声明的键**
+     *   （zod object 默认 strip）—— 只改 patch.yml 与 jobs.js、漏改本 schema ⇒
+     *   config 里根本不出现这个键，job 静默用默认值（与 2026-10-19 的
+     *   agentsSizeGuard 同一个洞）。
+     */
+    storage: z
+      .object({
+        /**
+         * 存储根（绝对路径）。缺省 ⇒ $DSH_HOME/storages（再退 ~/.dsh/storages）。
+         * ⛔ 不猜别的目录：猜错会去审计另一个数据根，报出一堆假的体积数。
+         */
+        root: z.string().min(1).nullish(),
+        /** .bak-* 归档目录。缺省 ⇒ 存储根的上一级/.agint-backups */
+        backupDir: z.string().min(1).nullish(),
+        /**
+         * storage-prune 的 dry-run 开关。
+         * ⛔ **默认 true（安全侧）**：真删是不可逆动作，无人值守的定时任务不该默认做。
+         *   要真清理必须显式配成 false（或调 runStoragePrune({dryRun:false})）。
+         */
+        pruneDryRun: z.boolean().nullish(),
       })
       .nullish(),
   })
@@ -262,6 +307,21 @@ function apply(ctx, config) {
     //   services 是白名单而非 ctx 全量透传，只改 jobs.js 会让该 job 每天抛
     //   "未配置 agint-cron.config.agentsSizeGuard.file"，症状与「哨兵没跑」一样。
     'agint.agentsSizeGuard': config?.agentsSizeGuard ?? null,
+    // 存储度量/回收（2026-11-12 新增 job storage-guard / storage-prune）。
+    // 同样是 config 而非宿主服务：存储根与 dry-run 开关是**机器私有事实**。
+    // ⛔ 别漏这行 —— services 是白名单而非 ctx 全量透传（2026-10-09 实测同一个洞）。
+    'agint.storage': config?.storage ?? null,
+    // 存储回收要调各域自带的 prune 能力。**服务缺席是常态**（agint-event-bus /
+    // agint-tool-stats / agint-skill-autocreate 至今没有 provide prune）⇒
+    // 缺席即跳过并记原因，不报错。
+    'agint.trajectory.prune': ctx.get('agint.trajectory.prune'),
+    'agint.eventBus.prune': ctx.get('agint.eventBus.prune'),
+    'agint.metrics.prune': ctx.get('agint.metrics.prune'),
+    'agint.toolStats.prune': ctx.get('agint.toolStats.prune'),
+    'agint.skillAutocreate.prunePatterns': ctx.get('agint.skillAutocreate.prunePatterns'),
+    // 指标写入口（storage-guard 用）：agint.metrics.record 写任意指标
+    //（inc 只认计数增量，体积类指标走 record）。
+    'agint.metrics.record': ctx.get('agint.metrics.record'),
   });
 
   // Jobs in one tick run to completion, in declaration order. Previously each
@@ -286,7 +346,56 @@ function apply(ctx, config) {
   let tickStartedAt = 0;
   let tickGen = 0;
 
+  // ── 事件触发桥（2026-11-12，评估报告 §七 步骤 1）────────────────────────
+  //
+  // 快路径：skills/change → curator-weekly（完整 run()，用户 2026-11-12 拍板），
+  //         curator.run-completed(dryRun:false) → evolve-review。
+  // ⛔ 27 个 cron job 一个不删（评估 §六 第 3 条）：本轮是降级为兜底，不是取消。
+  //
+  // 三个「不」：
+  //   1. 不把 agint.eventBus.* 写进 inject。硬依赖下总线一旦挂不上，本插件整体
+  //      PENDING ⇒ 连 cron 兜底一起没了，正好踩红线。
+  //   2. 不改 runOne 的 lastRunAt 记账。曾考虑「事件失败时保持 due」，重读
+  //      isDue() 后否决：due 是最近一次**自然周期**触发时刻，事件失败写不写
+  //      lastRunAt 都不妨碍下个周期补跑；反而若 job 从未跑过却不写，tick 每
+  //      60s 判一次 due ⇒ 每分钟重跑一次全量策展（风暴）。详见 event-trigger.js。
+  //   3. 不在 apply 同步期假定服务已就绪。cordis 挂载顺序虽是 event-bus(195)
+  //      先于 cron(265)，但 PENDING / 热重载仍可能取空 ⇒ apply 末尾先试一次，
+  //      没取到就随每轮 tick 重试，期间 cron 照常跑（软降级，不报错）。
+  let eventTriggerBridge = null;
+  let eventTriggerAttempted = false;
+  ctx.effect(() => () => { eventTriggerBridge?.dispose(); });
+
+  function ensureEventTriggerAttached() {
+    // ⛔ 默认关闭（2026-11-12）：事件触发桥改的是 job 的触发语义，属行为变更，
+    //   不在老板批准的存储治理范围内。能力在、默认不生效 ⇒ 零行为变更风险。
+    //   开启方式：配置里加 eventTrigger.enabled = true。
+    if (config?.eventTrigger?.enabled !== true) return;
+    if (eventTriggerAttempted || disposed) return;
+    const getService = (key) => (typeof ctx.get === 'function' ? ctx.get(key) : null);
+    const subscribe = getService('agint.eventBus.subscribe');
+    if (typeof subscribe !== 'function') return; // 总线未就绪：下轮 tick 再试
+    eventTriggerAttempted = true;                 // 只构造一次，避免重复订阅
+    const bridge = createEventTriggerBridge({
+      runNow: (id, opts) => cronService.runNow(id, opts),
+      subscribe,
+      inspect: getService('agint.eventBus.inspect'),
+      publish: getService('agint.eventBus.publish'),
+      log: (kind, detail) => console.info(
+        '[agint-cron][event-trigger] ' + kind + ' ' + JSON.stringify(detail ?? {}),
+      ),
+    });
+    eventTriggerBridge = bridge;
+    const result = bridge.attach();
+    console.info(
+      '[agint-cron] event-trigger attached=' + result.attached +
+      ' recovered=' + result.recovered +
+      '（cron 全部保留为兜底；状态见 agint.cron.eventTrigger.status()）',
+    );
+  }
+
   async function tick() {
+    ensureEventTriggerAttached(); // 总线晚挂载时随 tick 补挂；失败不影响 cron
     const now = Date.now();
     if (tickRunning) {
       if (now - tickStartedAt < STALL_MS) return; // a tick is already in flight
@@ -470,7 +579,7 @@ function apply(ctx, config) {
     await table.put(job.id, record);
   }
 
-  ctx.provide('agint.cron', {
+  const cronService = {
     list() {
       const now = Date.now();
       return jobs.map((j) => ({
@@ -586,7 +695,19 @@ function apply(ctx, config) {
       validateSchedules: () => hostSchedule.validateSchedules(),
       mirrorCatalog: () => hostSchedule.mirrorCatalog(),
     },
-  });
+
+    // 事件快路径的可观测面：pending / runs / failures / recovered / cooldownSkips。
+    // 总线未就绪时如实返回 attached:false，不抛错、也不伪装成正常。
+    eventTrigger: {
+      status: () => eventTriggerBridge?.status() ?? {
+        attached: false,
+        cronRetained: true,
+        reason: 'agint.eventBus.subscribe unavailable（cron 兜底照常）',
+      },
+    },
+  };
+  ctx.provide('agint.cron', cronService);
+  ensureEventTriggerAttached();
 }
 
 export { Config, apply, inject, name };

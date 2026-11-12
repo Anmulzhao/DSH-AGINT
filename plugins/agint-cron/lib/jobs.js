@@ -30,6 +30,8 @@
  *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
  *   evolution-reconcile Tue 08:00 闭环取数三方对账（evolution-cycle 之后；Phase -1.1）
  *   outcome-measure   Tue 10:15 进化实测对账：双态跑改动面测试子集量 actualDelta（Phase 1.1 支点 1b）
+ *   storage-guard     daily 04:15 存储体积/行数/日增度量（观察态，零副作用）
+ *   storage-prune     Sun  06:30 存储回收（各域 prune + .bak-* 归档 + 孤儿 .tmp；默认 dry-run）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -37,10 +39,16 @@
  *   ③ curator-weekly 必须早于 evolve-review（周复盘要吃本周策展报告）
  */
 
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { unlinkSync } from 'node:fs';
 import { parseCron, nextFire, lastFire } from './cron.js';
 import { auditSpecIndex } from './spec-index-audit.js';
 import { auditEvolutionReconcile } from './evolution-reconcile-audit.js';
+import {
+  resolveStorageRoot, scanStorage, loadSnapshot, saveSnapshot,
+  buildGuardMetrics, toSnapshot, dayKey, SNAPSHOT_FILE,
+} from './storage-guard.js';
+import { runStoragePrune, APPLY_ONCE_MARKER, hasApplyOnceMarker } from './storage-prune.js';
 
 export const defaultJobs = [
   {
@@ -1058,6 +1066,177 @@ export const defaultJobs = [
         memoryIndexFail: r.memoryIndex?.fail ?? null,
         wikiIndexLevel: r.wikiIndex?.level ?? null,
         wikiIndexDrift: r.wikiIndex?.drift ?? null,
+      };
+    },
+  },
+  {
+    // 存储体积哨兵（2026-11-12 新增，daily 04:15）。
+    //
+    // 为什么必须有它（2026-11-12 实测取证）：
+    //   · 27 个 cron job 里**没有一个负责存储清理**（逐条核对，负责清理的 0 个）；
+    //   · 28 项指标里**没有一项覆盖存储体积或日增**（逐条核对，覆盖存储的 0 项）；
+    //   · `agint_metrics` 域 `metric` 表每次采集为每个 key put 一条**全新 uuid 行**
+    //     （agint-metrics/lib/service.js），表声明无任何上限 ⇒ 实测 4624 行 / 1.59 MB；
+    //   · `agint_trajectory` 的 90 天/1800 条/64 MB 三重约束早就写好，但接线端空着
+    //     ⇒ 策略存在却永不执行。
+    //   也就是说：**存储在长，没人知道长了多少**。本 job 把「长了多少」变成每天可见的数。
+    //
+    // 排期 daily 04:15：① 04:00 是 metrics-collect 的固定位、04:30 是
+    // tool-stats-backfill、04:45 是 prompt-static-check ⇒ 04:15 是 04:00–04:30 之间
+    // 唯一不撞车的分钟（前后各隔 15 分钟，满足排期原则②）；
+    // ② 早于所有清理动作，看完数再决定要不要清。
+    //
+    // ⚠️ 观察态：只记录，不产生 deny/ask 规则，不告警（阈值待积累几周基线后再定）。
+    //
+    // ⚠️ **首日 delta 必然为 0，这是预期状态而不是故障**：净增要拿「昨日快照」比，
+    //   首次运行只落基线（meta.baseline=true），次日才有真 delta。
+    //   任何把首日 0 判成「存储没长」的告警都是误判 —— 注释与 README 都写明了。
+    id: 'storage-guard',
+    name: '存储体积哨兵',
+    schedule: '15 4 * * *', // daily 04:15
+    description: '度量存储域字节/表行数/日增/备份占用/事件 Top topic（daily，观察态，零副作用）',
+    action: async (services) => {
+      const cfg = services['agint.storage'] ?? null;
+      const root = resolveStorageRoot({ root: cfg?.root ?? null });
+      const now = Date.now();
+      const scan = scanStorage(root);
+
+      // 存储根整个读不出来 ⇒ 是故障（不是「今天没数据」），要让 cron 健康看见。
+      if (scan.errors.length > 0 && scan.domains.length === 0) {
+        throw new Error(
+          `storage-guard: 存储根不可读（${root}）—— ${scan.errors.map((e) => e.error).join(' | ')}`,
+        );
+      }
+
+      // 昨日基线：快照文件里保留最近 2 天（今天 + 昨天），文件自己不许膨胀。
+      // 快照放在**存储根的上一级**（默认即 $DSH_HOME/agint_storage_guard.json）——
+      // 放 storages/ 里会被自己的域扫描当成「一个存储域」，等于自己量自己。
+      const snapshotPath = join(dirname(root), SNAPSHOT_FILE);
+      const existing = loadSnapshot(snapshotPath);
+      const today = dayKey(now);
+      const previous = existing.snapshots.find((s) => s && s.date !== today) ?? null;
+
+      const metrics = buildGuardMetrics({ scan, previous, today });
+
+      // 写指标：走 agint-metrics 的既有写路径（record），取不到就如实记「没写」。
+      const recordFn = typeof services['agint.metrics.record'] === 'function'
+        ? services['agint.metrics.record']
+        : (typeof services['agint.metrics']?.record === 'function'
+          ? services['agint.metrics'].record.bind(services['agint.metrics'])
+          : null);
+      let written = 0;
+      const writeErrors = [];
+      if (!recordFn) {
+        writeErrors.push('agint.metrics.record not available（agint-metrics 未挂载 ⇒ 指标无处可写）');
+      } else {
+        for (const m of metrics) {
+          try {
+            if (await recordFn(m)) written += 1;
+            else writeErrors.push(`${m.key}: record 返回 false（非法输入）`);
+          } catch (error) {
+            writeErrors.push(`${m.key}: ${String(error?.message ?? error)}`);
+          }
+        }
+      }
+
+      // 落今日快照（失败只记，不抛 —— 采集成功比快照成功更重要）。
+      let snapshotSaved = false;
+      try {
+        saveSnapshot(snapshotPath, toSnapshot(scan, { now }));
+        snapshotSaved = true;
+      } catch (error) {
+        writeErrors.push(`snapshot: ${String(error?.message ?? error)}`);
+      }
+
+      return {
+        // 走 cron 的「约定式摘要通道」（result.summary）：只搬结构化结论，
+        // 且必须能被 SUMMARY_MAX_BYTES(2000) 装下 —— 装不下会被整段截断成
+        // {truncated:true}，那就等于没报。
+        summary: {
+          root,
+          domains: scan.domains.length,
+          totalBytes: scan.totalBytes,
+          totalRows: scan.totalRows,
+          backupBytes: scan.backupBytes,
+          metrics: metrics.length,
+          written,
+          baseline: !previous,
+          previousDate: previous?.date ?? null,
+          snapshotSaved,
+          scanErrors: scan.errors.length,
+          writeErrors: writeErrors.length,
+        },
+        // 明细留在返回值里（不写进 cron_state 摘要，避免超限被截断）。
+        scan,
+        metricKeys: metrics.map((m) => m.key),
+        writeErrors,
+      };
+    },
+  },
+  {
+    // 存储回收（2026-11-12 新增，Sun 06:30）。
+    //
+    // 时点说明（与任务书原提案 `0 6 * * 0` 的偏差，理由在下面）：
+    //   agint-trajectory/lib/schema.js 的 DEFAULTS.PRUNE_CRON 原本就写着
+    //   「周日 06:00 prune（本版只暴露 prune()，调度由外部 cron 接）」—— 那个接线端
+    //   空了很久，策略存在却永不执行。本 job 就是那个接线端。
+    //   ⛔ **不能放 06:00**：`0 6 * * 0` 与 input-gateway-watchdog（daily `0 6 * * *`）
+    //   **同分钟撞车**，而仓内排期门禁 test/schedule-layout.test.mjs 原则①明写
+    //   「任意两个 job 的触发时刻不得重合，含 daily × weekly 交叉」（同 tick 串行 ⇒
+    //   拖尾 + 归因困难，见 docs/operations/cron-schedule-principles.md 第一节）。
+    //   ⇒ 改 06:30：与相邻的 daily 06:15（skill-autocreate-observe）、
+    //   daily 06:45（agents-size-guard）各隔 15 分钟，满足原则②。
+    //   trajectory 的 PRUNE_CRON 默认值已同步改成 '30 6 * * 0'（声明与接线一致）。
+    //
+    // ⛔ **默认 dry-run = true**（老板 2026-11-12 倾向，本实现采纳）：
+    //   无人值守的定时任务默认做**不可逆**的删除，风险不对称 —— 配错了没人看见，
+    //   备份删了不可回滚。要真清必须显式 `{ dryRun: false }`。
+    //   代价：默认档下存量回收不落地，需人工/配置开一次 apply（这比悄悄删生产备份安全）。
+    //
+    // 每一步都 try/catch：单步失败不许中断整体（周任务跑一半崩掉比少清一点更糟）。
+    // 服务缺席是常态（eventBus / toolStats / skillAutocreate 至今没有 prune 能力），
+    // 缺席 ⇒ 跳过并写清「缺哪一项」，不报错。
+    id: 'storage-prune',
+    name: '存储回收',
+    schedule: '30 6 * * 0', // Sun 06:30
+    description: '周回收：各域 prune + .bak-* 归档（只留最近 1 份）+ 孤儿 .tmp 清理（默认 dry-run）',
+    action: async (services) => {
+      const cfg = services['agint.storage'] ?? null;
+      const root = resolveStorageRoot({ root: cfg?.root ?? null });
+      // 「一次性 apply」标记：存在 ⇒ 本次真删，执行完删掉标记 ⇒ 自动回到 dry-run。
+      // 用途：老板批准的一次性存量回收（80 份 .bak 快照 + 11 个孤儿 .tmp）需要真跑一次，
+      // 但为此改配置再重启一次代价太大，且「改配置」这种开关容易忘了关（⇒ 长期真删）。
+      // 标记文件路径与 storage-guard 的快照同层（存储根的上一级）。
+      const markerPath = join(dirname(root), APPLY_ONCE_MARKER);
+      const applyOnce = hasApplyOnceMarker(markerPath);
+      // 默认 true（安全侧）。显式配成 false 或存在一次性标记 ⇒ 真删。
+      const dryRun = (!applyOnce && cfg?.pruneDryRun !== false) ? true : false;
+      const r = await runStoragePrune({
+        services,
+        storageRoot: root,
+        dryRun,
+        backupDir: cfg?.backupDir ?? null,
+      });
+      // 一次性标记用掉即删：下一次运行自动回到 dry-run。
+      if (applyOnce) {
+        try { unlinkSync(markerPath); } catch { /* 删不掉就留着，下轮再 apply 一次（幂等） */ }
+      }
+      const skippedSteps = r.steps.filter((s) => s.status === 'skipped');
+      const errorSteps = r.steps.filter((s) => s.status === 'error');
+      return {
+        summary: {
+          dryRun: r.dryRun,
+          steps: r.steps.length,
+          skipped: skippedSteps.length,
+          errored: errorSteps.length,
+          firstError: errorSteps[0]?.reason ?? null,
+          freedBytes: r.totalFreedBytes,
+          archived: r.files.backups?.archived?.length ?? 0,
+          tmpDeleted: r.files.tmp?.deleted?.length ?? 0,
+          fileErrors: r.files.errors.length,
+        },
+        steps: r.steps,
+        files: r.files,
       };
     },
   },

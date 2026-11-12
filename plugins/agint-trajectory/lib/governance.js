@@ -64,13 +64,21 @@ export async function computeStats(args = {}) {
 
 /**
  * 非 FROZEN：prune（§4.2）—— 删最旧非 pinned，直到满足保留期 + 条数 + 字节。
- * @returns {Promise<{removed:number, freedBytes:number, kept:number}>}
+ *
+ * 2026-11-12 增补 `opts.dryRun`：
+ *   存储回收类 cron（agint-cron 的 storage-prune）默认是 dry-run —— 真删是不可逆的
+ *   对外动作，不该由无人值守的定时任务默认执行。dryRun=true 时**只算不删**，
+ *   返回 `wouldRemove`（将删条数）与 `freedBytes`（将释放字节），removed 恒为 0。
+ *   默认（不传 dryRun）行为与原来完全一致 —— 现存调用方不受影响。
+ *
+ * @returns {Promise<{removed:number, freedBytes:number, kept:number, wouldRemove?:number, dryRun?:boolean}>}
  */
 export async function pruneRows(args = {}) {
   const { table, cfg, opts = {}, publish } = args;
   const maxAgeDays = opts.maxAgeDays ?? cfg.retentionDays;
   const maxCount = opts.maxCount ?? cfg.maxCount;
   const maxBytes = opts.maxBytes ?? cfg.maxBytes;
+  const dryRun = opts.dryRun === true;
   const t = await table('trajectories');
   const rows = [...t.entries()].map(([k, v]) => ({ key: k, row: v }));
   const cutoff = Date.now() - maxAgeDays * 86400_000;
@@ -94,15 +102,25 @@ export async function pruneRows(args = {}) {
       keptBytes += row.bytes ?? 0;
       continue;
     }
-    await t.delete(key);
+    if (!dryRun) {
+      await t.delete(key);
+    }
     removed.push(key);
     freedBytes += row.bytes ?? 0;
   }
 
-  if (removed.length && typeof publish === 'function') {
+  if (removed.length && !dryRun && typeof publish === 'function') {
     await publish('trajectory.pruned', { removed: removed.length, freedBytes });
   }
-  return { removed: removed.length, freedBytes, kept: keptCount };
+  return {
+    removed: dryRun ? 0 : removed.length,
+    freedBytes: dryRun ? 0 : freedBytes,
+    kept: keptCount,
+    // dry-run 的诚实口径：将删多少、将释放多少（一个字节都没动）
+    wouldRemove: removed.length,
+    wouldFreeBytes: freedBytes,
+    dryRun,
+  };
 }
 
 /**

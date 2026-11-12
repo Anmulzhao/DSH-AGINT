@@ -74,8 +74,23 @@ export const DEFAULTS = Object.freeze({
   }),
   /** 标定样本滚动窗口（P50/P95 的样本池） */
   CALIBRATION_SAMPLES: 500,
-  /** prune cron（周日 06:00，T10；本版只暴露 prune()，调度由外部 cron 接） */
-  PRUNE_CRON: '0 6 * * 0',
+  /**
+   * prune cron（周日 06:30，T10）。
+   *
+   * 2026-11-12 接线时从 '0 6 * * 0' 改成 '30 6 * * 0'，原因不是随手改：
+   * `0 6 * * 0` 与 **input-gateway-watchdog（daily `0 6 * * *`）同分钟撞车**，
+   * 而仓内排期门禁 `plugins/agint-cron/test/schedule-layout.test.mjs` 原则①
+   * 明写「任意两个 job 的触发时刻不得重合，含 daily × weekly 交叉」——
+   * 周日 06:00 两个 job 会同时落在同一个 tick（同 tick 串行 ⇒ 拖尾 + 归因困难，
+   * 见 docs/operations/cron-schedule-principles.md 第一节）。
+   * 06:30 与前后相邻触发点（daily 06:15 skill-autocreate-observe、daily 06:45
+   * agents-size-guard）各隔 15 分钟，满足原则②。
+   *
+   * 原注释「本版只暴露 prune()，调度由外部 cron 接」的接线端已于 2026-11-12 补上：
+   * agint-trajectory 暴露 `agint.trajectory.prune`，agint-cron 的 storage-prune
+   * job（schedule `30 6 * * 0`）在周日这个时点调用它。
+   */
+  PRUNE_CRON: '30 6 * * 0',
   /** 容量规划安全系数（§7.4） */
   SAFETY_FACTOR: 2,
 });

@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { flushSnapshotOnce, METRICS_SNAPSHOT_TOPIC } from './snapshotPublisher.js';
 import { makeSkillsFsSource } from './metrics-ext.js';
+import { pruneMetricTable, DEFAULT_MAX_AGE_DAYS } from './prune.js';
 
 export const metricSchema = z.object({
   id: z.string().min(1),
@@ -118,6 +119,56 @@ export function buildMetricsService({ ctx, table, computeMetrics, describeMetric
       await t.put(record.id, record);
       return true;
     },
+
+    /**
+     * record —— 写一条任意指标（既有写路径的公开出口，2026-11-12 新增）。
+     *
+     * 为什么需要它：`inc()` 只认「计数增量」（unit 恒为 'count'），而体积类
+     * 指标（字节数、占比）不是计数 —— 走 inc 会把 unit 写错，下游无法区分
+     * 「1MB」与「1 次」。本方法与 collect/inc 走**同一条写路径**
+     * （metricSchema.parse → table.put），不是旁路。
+     *
+     * 非法输入一律返回 false 且**不落脏数据**（NaN 进时间序列就洗不掉了）。
+     */
+    async record(input = {}) {
+      const key = typeof input?.key === 'string' ? input.key.trim() : '';
+      if (!key) return false;
+      const value = Number(input?.value);
+      if (!Number.isFinite(value)) return false;
+      const t = await table();
+      let meta = '';
+      if (typeof input?.meta === 'string') meta = input.meta;
+      else if (input?.meta && typeof input.meta === 'object') {
+        try { meta = JSON.stringify(input.meta); } catch { meta = ''; }
+      }
+      const rec = metricSchema.parse({
+        id: randomId(),
+        key,
+        label: typeof input?.label === 'string' && input.label ? input.label : key,
+        value,
+        unit: typeof input?.unit === 'string' ? input.unit : '',
+        meta,
+        ts: typeof input?.ts === 'string' && input.ts ? input.ts : new Date().toISOString(),
+      });
+      await t.put(rec.id, rec);
+      return true;
+    },
+
+    /**
+     * prune —— metric 表保留机制（90 天 + 周粒度降采样），2026-11-12 新增。
+     *
+     * 契约：`opts.maxAgeDays`（默认 90）、`opts.dryRun`（默认 false = 真删）。
+     * 返回 `{ removed, kept, aggregated, expired, dryRun, maxAgeDays }`。
+     * 细节见 lib/prune.js（含「归档行不得与原始行混淆」的幂等标记）。
+     */
+    async prune(opts = {}) {
+      const t = await table();
+      const publishFn = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+      return pruneMetricTable({ table: t, randomId, publishFn, opts: opts ?? {} });
+    },
+
+    /** prune 的默认保留期（供消费方自述口径，避免各处各写一个 90） */
+    pruneDefaultMaxAgeDays: DEFAULT_MAX_AGE_DAYS,
 
     // 主 collect：写表 + 尾部触发 A7 影子 publish（fire-and-forget，软降级不破坏主路径）
     async collect() {

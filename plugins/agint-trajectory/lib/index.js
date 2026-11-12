@@ -346,6 +346,19 @@ function apply(ctx, config) {
   };
 
   ctx.provide('agint.trajectory', service);
+  // 2026-11-12：把 prune 单独暴露成一个 provider key。
+  //
+  // 为什么：agint-trajectory/lib/schema.js 的 DEFAULTS.PRUNE_CRON 早就声明了
+  // 「周日 06:00 跑 prune」，但**没有任何调用方**——「本版只暴露 prune()，调度由
+  // 外部 cron 接」的接线端一直空着，于是保留期/容量三重约束（90 天 / 1800 条 /
+  // 64 MB）**形同虚设**：trajectory 实测仍在按 10~20 行/天增长。
+  // 外部 cron（agint-cron 的 storage-prune job）用的就是 ctx.get('agint.trajectory.prune')，
+  // 取不到就跳过（软降级，不报错）。
+  //
+  // 参数沿用原约束：opts.maxAgeDays / opts.maxCount / opts.maxBytes 缺省时取
+  // cfg 的 retentionDays / maxCount / maxBytes；另加 opts.dryRun（只算不删）。
+  // 三重约束、pinned 保护、trajectory.pruned 事件全部保持原样。
+  ctx.provide('agint.trajectory.prune', (opts = {}) => prune(opts ?? {}));
   return service;
 }
 
