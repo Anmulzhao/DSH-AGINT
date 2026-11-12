@@ -239,7 +239,10 @@ function skipped(step, reason) {
  * @param {string} [args.backupDir]
  * @returns {Promise<object>} 汇总（steps[] + files 段）
  */
-export async function runStoragePrune({ services = {}, storageRoot, dryRun = true, backupDir = null, now = Date.now() } = {}) {
+export async function runStoragePrune({
+  services = {}, storageRoot, dryRun = true, backupDir = null, now = Date.now(),
+  tmpMaxAgeHours = undefined,
+} = {}) {
   const steps = [];
 
   // ① 各域自带 prune —— 缺席是常态（eventBus/toolStats/skillAutocreate 至今
@@ -269,7 +272,7 @@ export async function runStoragePrune({ services = {}, storageRoot, dryRun = tru
   const files = { backups: null, tmp: null, errors: [] };
   try {
     const backupPlan = planBackupCleanup(storageRoot);
-    const tmpPlan = planTmpCleanup(storageRoot, { now });
+    const tmpPlan = planTmpCleanup(storageRoot, { now, maxAgeHours: tmpMaxAgeHours ?? TMP_MAX_AGE_HOURS });
     const dir = backupDir ?? join(dirname(storageRoot), '.agint-backups');
     const applied = applyBackupArchive(backupPlan, { backupDir: dir, dryRun, now });
     const tmpApplied = applyTmpCleanup(tmpPlan, { dryRun });

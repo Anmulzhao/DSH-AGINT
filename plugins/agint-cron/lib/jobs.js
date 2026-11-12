@@ -1216,6 +1216,12 @@ export const defaultJobs = [
         storageRoot: root,
         dryRun,
         backupDir: cfg?.backupDir ?? null,
+        // 一次性 apply 时把孤儿 .tmp 的年龄阈值收紧到 1 小时（常规是 24 小时）。
+        // 理由：布局切换会在旧介质上留下**整份重写的残留** —— 本机实测有一个
+        // 32,004,404 字节的 tmp（= 旧 event bus 单文件的全量），它正是 single
+        // 布局「每次写都重写整份」留下的物证。24 小时阈值要等到第二天才清它；
+        // 1 小时足够安全（一次原子写的 fsync 是秒级，且此刻新布局不再写旧介质）。
+        tmpMaxAgeHours: applyOnce ? 1 : undefined,
       });
       // 一次性标记用掉即删：下一次运行自动回到 dry-run。
       if (applyOnce) {

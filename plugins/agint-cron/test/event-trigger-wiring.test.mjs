@@ -7,10 +7,18 @@
  * 纯逻辑，覆盖不了「服务键取没取到 / 订阅挂没挂上 / dispose 收不收得回」。
  *
  * 用最小 fake ctx 直接调 apply()：不挂 cordis、不连 3080、不碰 storages。
+ *
+ * ⚠️ 2026-11-12：入口另有 `config.eventTrigger.enabled !== true ⇒ return` 的
+ *    默认关闭守卫（并发写者加，理由：事件触发属行为变更，默认零风险）。
+ *    所以验「事件桥真挂上」的用例必须显式传 { eventTrigger: { enabled: true } }；
+ *    另留一条用例把「默认关闭」本身钉住，免得有人悄悄改默认值而无人察觉。
+ *    ⛔ 本测试不判断开关该开该关 —— 那是配置决策，由人拍板。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { apply } from '../lib/index.js';
+
+const ENABLED = { eventTrigger: { enabled: true } };
 
 function makeCtx({ bus = true } = {}) {
   const provided = new Map();
@@ -58,10 +66,26 @@ const cleanup = (disposers) => {
   for (const d of disposers) { try { d(); } catch { /* ignore */ } }
 };
 
-test('总线可用：apply 后 agint.cron 提供 eventTrigger 面，且两条订阅真挂上', () => {
+test('默认关闭：未显式开启 eventTrigger.enabled 时不挂事件桥，cron 兜底照常', () => {
   const { ctx, provided, subs, disposers } = makeCtx({ bus: true });
   try {
     apply(ctx, {});
+    const svc = provided.get('agint.cron');
+    assert.ok(svc, 'agint.cron 必须 provide');
+    assert.equal(svc.eventTrigger.status().attached, false);
+    assert.equal(subs.length, 0, '默认关闭时不得产生任何事件总线订阅');
+    assert.ok(svc.list().length >= 27, 'cron job 表完整，兜底不丢');
+    assert.equal(typeof svc.runNow, 'function');
+    assert.equal(typeof svc.health, 'function');
+  } finally {
+    cleanup(disposers);
+  }
+});
+
+test('总线可用：apply 后 agint.cron 提供 eventTrigger 面，且两条订阅真挂上', () => {
+  const { ctx, provided, subs, disposers } = makeCtx({ bus: true });
+  try {
+    apply(ctx, ENABLED);
     const svc = provided.get('agint.cron');
     assert.ok(svc, 'agint.cron 必须 provide');
     const s = svc.eventTrigger.status();
@@ -83,7 +107,7 @@ test('总线可用：apply 后 agint.cron 提供 eventTrigger 面，且两条订
 test('总线缺席：软降级 attached:false，cron 服务完整可用（兜底不丢）', () => {
   const { ctx, provided, disposers } = makeCtx({ bus: false });
   try {
-    apply(ctx, {});
+    apply(ctx, ENABLED);
     const svc = provided.get('agint.cron');
     assert.ok(svc);
     const s = svc.eventTrigger.status();
@@ -100,7 +124,7 @@ test('总线缺席：软降级 attached:false，cron 服务完整可用（兜底
 test('真实事件经入口订阅入队：pending=true + 5s 去抖 timer 排上', () => {
   const { ctx, provided, subs, disposers } = makeCtx({ bus: true });
   try {
-    apply(ctx, {});
+    apply(ctx, ENABLED);
     const svc = provided.get('agint.cron');
     const handler = subs.find(
       (x) => x.sub.topics.includes('input.signal.host.skills-change'),
@@ -125,7 +149,7 @@ test('真实事件经入口订阅入队：pending=true + 5s 去抖 timer 排上'
 
 test('dispose 收回两条订阅与挂起 timer，不留野订阅', () => {
   const { ctx, provided, subs, offs, disposers } = makeCtx({ bus: true });
-  apply(ctx, {});
+  apply(ctx, ENABLED);
   const handler = subs.find(
     (x) => x.sub.topics.includes('input.signal.host.skills-change'),
   ).handler;
