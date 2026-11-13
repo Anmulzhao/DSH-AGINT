@@ -713,7 +713,14 @@ function apply(ctx, config) {
     //   用 path.isAbsolute 让两端判据一致；相对路径（含 `/ok.md`）仍按 root 解析，
     //   `../` 逃逸与 root 边界闸不变。
     const raw = String(p ?? '');
-    const stripped = raw.startsWith('/') ? raw.slice(1) : raw;
+    let stripped = raw.startsWith('/') ? raw.slice(1) : raw;
+    // 2026-11-12（Windows 回归修复）：`//C:\...` 剥掉一个斜杠后是 `/C:\...`，
+    //   win32.resolve 把它读成「当前盘根 + C:\...」⇒ 得到 `C:\C:\...` ⇒ 越界。
+    //   剥开后紧跟盘符形态的，再剥这一个斜杠；POSIX 的 `/tmp/...` 不剥
+    //   （再剥就退回相对路径，Linux 上 readReview 恒读不到 —— 见 8839d8b）。
+    if (stripped.startsWith('/') && /^[A-Za-z]:[\\/]/.test(stripped.slice(1))) {
+      stripped = stripped.slice(1);
+    }
     if (!stripped.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
     const absoluteForm = isAbsolute(stripped) || /^[A-Za-z]:[\\/]/.test(stripped);
     const abs = absoluteForm ? resolve(stripped) : resolve(root, stripped);

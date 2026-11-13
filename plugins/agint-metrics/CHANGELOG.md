@@ -1,5 +1,50 @@
 # Changelog — agint-metrics
 
+## v1.3.0 — 2026-11-11 — 宿主子代理信号补订阅（接线修复）
+
+> 本节与并行的「skills 字节分类」任务共用 v1.3.0 版号。那部分的代码与条目此刻**尚未入库**，
+> 由该任务自行收口；本条只覆盖 `lib/eventCounters.js` 的订阅补齐（commit 8544c90）。
+> `manifest.json` / `package.json` 的版本号 bump 随该任务一起落，本次不动。
+
+**为什么**：`check-wiring` 报 2 个硬缺口 `NO_SUBSCRIBER(input.signal.host.subagent-start / -end)`。
+根因是 11-03 `agint-event-bus/lib/host-bridge.js` 扩容时只接发布、没接消费。
+这是存量债，11-04 起已记录在案；与 DSH_HOME 迁移（10-06）无关，首条事件晚于迁移 29 天。
+
+**变更**
+
+- `eventCounters.js` 的 `SUBSCRIPTION.topics` 补三条宿主主题：`subagent-start` / `subagent-end`
+  / `workflow-phase`，对应 key `host.subagentStartCount` / `host.subagentEndCount` / `host.workflowPhaseCount`。
+- `workflow-phase` 是同族潜在缺口（发布方 1 / 订阅方 0 / 生产 0），此刻只软报 `NOT_YET_FIRED`，
+  第一次有工作流跑起来就翻成 `NO_SUBSCRIBER`。一并接，避免同一诉求分两次改、两次重启。
+- 落点选 metrics 而非新建插件：metrics 是既定统一遥测出口，`domain-changed` / `workflow-end`
+  已是同形态。「宿主派了多少子代理、成没成、用哪个 provider」此前在 AGINT 侧零指标。
+- 改正取证口径：`deliveredTo` 是 `bus.js` 里 `publish()` 的返回值，**不落盘**，
+  原注释把它写成「生产存储实读」属过强断言，已换成可测的计数对照。
+
+**验证**
+
+- `test/event-counters.test.mjs` 12/12；`bin/check-wiring.test.mjs` 35/35。
+- `check-wiring` 0 硬缺口 PASS，两主题由 `NO_SUBSCRIBER 1/0` 转 `OK 1/1`；三副本 md5 一致。
+- `bin/check-wiring.mjs` 本体未改动（不是改门禁凑绿）。
+
+**运行态 / 数据态验收（2026-11-13 复核：已生效）**
+
+- 冷启 `bootAt=2026-11-11T11:51:32.873Z` 晚于部署同步 `11:23:12Z` ⇒ 加载的是新文件。
+  面板 `/v2/data` 里 agint-metrics 订阅 `createdAt=11:51:39.983Z`，10 条 topic 全在位。
+- 冷启后宿主实派 3 个子代理（runId `f62c2228` / `282fc6eb` / `3f44fab1`）。
+  总线 6 条边界事件 ↔ metrics 6 条计数，按 `runId + hostEvent` **6/6 配对**，
+  孤儿计数 0、漏计 0，投递延迟 9–33 ms。
+- 发布侧总量 40→43（start）/ 35→38（end），增量与计数一致。
+- `stopReason` 收到 `error` 1 次、`completed` 2 次 ⇒ 失败路径同样计数，不是只数成功。
+
+**仍未验证 / 已知无信息量（不声称已验证）**
+
+- `workflow-phase` 与 `workflow-end` 生产仍各 0 条事件、0 条计数 ⇒ `NOT_YET_FIRED`。
+  属预防性接线，还没有真实工作流跑过。
+- 三条 `subagent-end` 的 `messageLength` **全为 0**，含 `completed` 的正常结束 ⇒
+  宿主没供 `lastAssistantMessage`，该字段当前无信息量。上游既有问题，本次不动。
+
+
 ## 1.2.0 — 2026-11-08 cron 失效拆两维度（提案 cdf41d63）
 
 ### 问题
