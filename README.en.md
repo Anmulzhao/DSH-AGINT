@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 > A **self-evolving agent framework** built on DeepSeek Harness (`dsh`).
 
-**v0.26.0** · 39 mounted plugins (39 mount declarations) · 1 preset · 25 preset tool rows · 10 skills · 27 cron jobs.
+**v0.27.0** · 39 mounted plugins (39 mount declarations) · 1 preset · 25 preset tool rows · 10 skills · 27 cron jobs.
 These are repository-level facts. Version: first row of `VERSION`. Plugins: `node bin/verify-manifests.mjs`. All other counts: the LOCAL-STATE block at the end of [`AGENTS.md`](./AGENTS.md). Live runtime numbers are not in this file.
 
 - **Philosophy**: beauty = simple + true + dependable + proactive + safe. When two of these conflict, the earlier one wins.

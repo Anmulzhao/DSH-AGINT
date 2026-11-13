@@ -8,7 +8,7 @@
 
 > 基于 DeepSeek Harness (dsh) 的**自进化智能体框架**。
 
-**v0.26.0** · 39 个插件已挂载（39 条挂载声明）· 1 套 preset · 25 个工具行 · 10 个 skills · 27 个 cron job。
+**v0.27.0** · 39 个插件已挂载（39 条挂载声明）· 1 套 preset · 25 个工具行 · 10 个 skills · 27 个 cron job。
 数字取自仓库级判据：版本看 `VERSION` 表首行，插件看 `node bin/verify-manifests.mjs`，其余看 [`AGENTS.md`](./AGENTS.md) 文末 LOCAL-STATE 块。实时运行数字不在本文件。
 
 - **哲学**：美 = 简洁 + 真实 + 靠谱 + 主动 + 安全；冲突时取前者。
