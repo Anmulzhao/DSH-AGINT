@@ -27,12 +27,12 @@
       },
       "versions": [
         {
-          "version": "0.26.0",
-          "publishTimestamp": 1794136007,
+          "version": "0.27.0",
+          "publishTimestamp": 1794587508,
           "source": {
             "type": "git",
             "url": "https://github.com/Anmulzhao/DSH-AGINT.git",
-            "commit": "2a24b8347e6e16151a460082b0fec09db934051c"
+            "commit": "b17be2e6ab97201af54f38fe2bdefd5ecba03374"
           }
         }
       ]

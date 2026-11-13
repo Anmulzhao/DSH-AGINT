@@ -23,11 +23,11 @@ dsh 会读索引、列出 `@agint/host`，再由 `plugin_manager install_bundle`
 | 字段 | 值 | 说明 |
 | --- | --- | --- |
 | 包名 | `@agint/host` | 合法 npm 包名，也是 dsh bundle 名 |
-| 版本 | `0.26.0` | 与 `package.json` / `VERSION` 表 / `AGENTS.md` 四处一致 |
-| `publishTimestamp` | `1794136007` | 阶段 A 提交时间，Unix 秒 |
+| 版本 | `0.27.0` | 与 `package.json` / `VERSION` 表 / `AGENTS.md` 四处一致 |
+| `publishTimestamp` | `1794587508` | 阶段 A 提交时间，Unix 秒 |
 | 源类型 | `git` | 不依赖 npm registry，不需要发布 npm 包 |
-| 固定 commit | `2a24b8347e6e16151a460082b0fec09db934051c` | 该提交的 `package.json` 已是 `0.26.0` / `private:false` |
-| 生成安装参数 | `git+https://github.com/Anmulzhao/DSH-AGINT.git#2a24b8347e6e16151a460082b0fec09db934051c` | 由 `marketInstallTarget()` 实跑产出 |
+| 固定 commit | `b17be2e6ab97201af54f38fe2bdefd5ecba03374` | 该提交的 `package.json` 已是 `0.27.0` / `private:false` |
+| 生成安装参数 | `git+https://github.com/Anmulzhao/DSH-AGINT.git#b17be2e6ab97201af54f38fe2bdefd5ecba03374` | 由 `marketInstallTarget()` 实跑产出 |
 
 **为什么 commit 不指向含索引的那个提交**：索引文件无法把自己的 SHA 写进自己。
 所以索引固定到「阶段 A」提交 —— 那次提交已包含全部运行时代码与正确的版本号。
@@ -71,7 +71,7 @@ node D:/DSH/_verify_market_index.mjs
 
 ```
 GIT PARSE OK -> git+https://github.com/Anmulzhao/DSH-AGINT.git#<40hex>
-NPM PARSE OK -> @agint/host@0.26.0  registry https://registry.npmjs.org/
+NPM PARSE OK -> @agint/host@0.27.0  registry https://registry.npmjs.org/
 ```
 
 改索引后必须重跑校验。格式 1 的必填项包括
