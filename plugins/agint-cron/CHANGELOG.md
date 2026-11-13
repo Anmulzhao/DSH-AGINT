@@ -2,6 +2,37 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [Unreleased] — 存储块占用口径 + reconcile 兼容 per-record（2026-11-14 · 提案 d6994da2 / b8f5123c）
+
+**改动**（只读/度量口径，不改任何删除行为）：
+
+- `lib/storage-guard.js`：per-record 目录新增盘上块占用口径
+  `storage.bytes.perrecord.<domain>.allocatedBytes` / `.blockAmplification`
+  （`ceil(size/4096)*4096`）；逻辑字节 key **保留不替换**，两者并列才看得出小文件放大。
+  冻结的 legacy 单文件改归 `storage.legacy.bytes.<domain>`，不再与同域活跃数据重复计入
+  `storage.bytes.<domain>` / `storage.rows.*` / `totalRows`（仍计入 `totalBytes`，它确实占盘）。
+  快照带 `measurementVersion=2`，**只供事后判读、不参与 baseline 判定**。
+- `lib/evolution-reconcile-core.js`：committed 事件由「只读冻结的 legacy 单文件」改为
+  single + per-record 双介质读取，按 `proposalId` 合并去重（legacy 优先）；`busReadable`
+  兼容 per-record 布局；解析失败的记录单独计数进 `notes`（没读到 ≠ 没有事件）。
+
+**生产实跑取证**：
+
+- per-record 19,828 文件：逻辑 16,246,752 B / 块占用 81,293,312 B / **放大 5.004×**
+  （提案估 4.96×）。`agint_event_bus.json` 32,003,341 B / 33,957 行判为回滚备份，
+  `storage.bytes.agint_event_bus` 不再产出；`session_projcache.json` 同判据命中。
+- reconcile：legacy 10 + per-record 8 − 重复 8 = **10** 条 committed，
+  `layout=both` / `malformed=0` / `hardDiffs=0`；热缓存约 3.1s（首次冷缓存 29.6s，
+  与既有 storage-guard 扫同目录同量级）。
+
+⛔ **判据偏差（如实记录）**：提案原文用「legacy mtime 早于域首次 per-record 写入时间」
+判冻结，生产实测 legacy mtime `2026-11-12T00:36:25Z` 反而晚于 per-record 最早记录
+（08:24 CST，迁移是批量回填），该比较不成立。改用「同名非空 per-record 目录存在」，
+与本文件既有 `hasPerRecordDir` 判据一致。
+
+**验收**：新增 10 条单测（`evolution-reconcile-per-record` 5 / `storage-guard-block-accounting` 5）；
+`agint-cron` 显式集 236 / 233 pass / 0 fail / 3 skipped；`test/smoke.mjs` ok。
+
 ## [0.4.0] — 失效拆两个维度：过期未跑 / 久未活动（2026-11-08 · 提案 cdf41d63）
 
 **背景**：`health()` 只有一个失效口径（过期未跑）。`agint-metrics` 据此产出的

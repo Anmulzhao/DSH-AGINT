@@ -17,6 +17,12 @@
  *   storage.bytes.<domain>      每个**存储域文件**（$DSH_HOME/storages/*.json）的字节。
  *                                剔除 `.bak-*` 与隐藏 `.tmp`（它们不是域数据）。
  *   storage.rows.<domain>.<table>  每个表的行数（域文件 tables.<table> 的键数）。
+ *   storage.bytes.perrecord.<domain>.allocatedBytes      per-record 目录按 4KB 块对齐后的**盘上占用**；
+ *                                `.blockAmplification` = 盘上占用 ÷ 逻辑字节（小文件放大倍数）。
+ *                                逻辑字节口径**保留不替换**，两者并列才看得出放大。
+ *   storage.legacy.bytes.<domain>  已被同名非空 per-record 目录取代的冻结单文件（回滚备份）。
+ *                                单独归口，**不混进运行态** storage.bytes.<domain> /
+ *                                storage.rows.* / totalRows；但仍计入 totalBytes（它确实占盘）。
  *   storage.dailyDelta.bytes     今日快照总量 − 昨日快照总量（**首次运行只有基线，delta=0**）。
  *   storage.dailyDelta.rows      同上（行数）。
  *   storage.writeAmplification   昨日磁盘写入量 ÷ 净增量。**本版取不到写入量 ⇒ 恒为 -1**
@@ -31,7 +37,7 @@
  *   都是误判 —— 本文件用 meta.baseline=true 明确标出「这天的 0 是基线，不是净增」。
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -46,6 +52,14 @@ export const SNAPSHOT_KEEP = 2;
 export const MAX_PARSE_BYTES = 64 * 1024 * 1024;
 /** Top-N topic 的 N */
 export const TOPIC_TOP_N = 5;
+/** 盘上分配块大小（ext4 默认）。换文件系统需同步调整 —— 见提案 d6994da2 风险段。 */
+export const BLOCK_SIZE = 4096;
+/**
+ * 度量口径版本。v2（2026-11-14）起：冻结 legacy 单文件不计入运行态行数/域字节，
+ * per-record 另出块占用口径。写进快照供事后判读，**不参与 baseline 判定** ——
+ * 旧快照没有这个字段，不能因此把「有昨日快照」误判成首日基线。
+ */
+export const MEASUREMENT_VERSION = 2;
 
 /**
  * 定位 DSH_HOME。
@@ -84,10 +98,11 @@ function isHiddenTmp(name) {
  *
  * 深度固定两层（目录 → 表目录 → 记录文件），不无限递归。
  * @param {string} dirPath
- * @returns {{bytes:number, files:number, rows:number, tables:Array<{table:string,rows:number}>}}
+ * @returns {{bytes:number, allocatedBytes:number, blockAmplification:number,
+ *            files:number, rows:number, tables:Array<{table:string,rows:number}>}}
  */
 export function scanPerRecordDir(dirPath) {
-  const out = { bytes: 0, files: 0, rows: 0, tables: [] };
+  const out = { bytes: 0, allocatedBytes: 0, files: 0, rows: 0, tables: [] };
   let tableDirs;
   try {
     tableDirs = readdirSync(dirPath, { withFileTypes: true }).filter((e) => e.isDirectory());
@@ -100,14 +115,25 @@ export function scanPerRecordDir(dirPath) {
     try { files = readdirSync(tablePath, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')); }
     catch { continue; }
     let bytes = 0;
+    let allocated = 0;
     for (const f of files) {
-      try { bytes += statSync(join(tablePath, f.name)).size; } catch { /* ignore */ }
+      try {
+        const size = statSync(join(tablePath, f.name)).size;
+        bytes += size;
+        // 盘上占用按块对齐：一个 200B 的 JSON 仍吃掉一整个 4KB 块。
+        // 用 ceil(size/BLOCK_SIZE)*BLOCK_SIZE；size=0 记 0，不凭空造一块。
+        allocated += Math.ceil(size / BLOCK_SIZE) * BLOCK_SIZE;
+      } catch { /* ignore */ }
     }
     out.bytes += bytes;
+    out.allocatedBytes += allocated;
     out.files += files.length;
     out.rows += files.length;
     out.tables.push({ table: td.name, rows: files.length });
   }
+  out.blockAmplification = out.bytes > 0
+    ? Math.round((out.allocatedBytes / out.bytes) * 1000) / 1000
+    : 0;
   return out;
 }
 
@@ -149,8 +175,11 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
     topicsSampled: false,
     totalBytes: 0,
     domainBytes: 0,
+    allocatedBytes: 0,
     totalRows: 0,
     backupBytes: 0,
+    legacyBytes: 0,
+    legacy: [],
     backups: [],
     tmpFiles: [],
     topics: [],
@@ -165,6 +194,18 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
     return out;
   }
 
+  // 预扫 per-record 目录：结果在主循环复用，同时用来判定同名 .json 单文件是否冻结。
+  // ⛔ 不按 mtime 判新旧：生产实测 legacy 单文件 mtime(11-12 08:36) 反而**晚于**
+  //   per-record 最早记录(08:24)（迁移是批量回填），mtime 大小证明不了谁在服役。
+  //   改用「同名非空 per-record 目录存在」，与下方 topic 分支的既有判据一致。
+  const dirStats = new Map();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const stat = scanPerRecordDir(join(root, entry.name));
+    if (stat.files === 0 && stat.bytes === 0) continue;
+    dirStats.set(entry.name, stat);
+  }
+
   for (const entry of entries) {
     // ── 目录 = per-record 布局的存储单元（2026-11-12 补）────────────────────
     //
@@ -175,14 +216,18 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
     // 实际数据在另一个地方疯长）。
     if (entry.isDirectory()) {
       const dirName = entry.name;
-      const stat = scanPerRecordDir(join(root, dirName));
-      if (stat.files === 0 && stat.bytes === 0) continue;
+      const stat = dirStats.get(dirName);
+      if (!stat) continue;
       out.totalBytes += stat.bytes;
+      out.allocatedBytes += stat.allocatedBytes;
       out.domainBytes += stat.bytes;
       out.totalRows += stat.rows;
       out.dirs.push({
         domain: dirName, dir: dirName, layout: 'per-record',
-        bytes: stat.bytes, files: stat.files, rows: stat.rows, tables: stat.tables,
+        bytes: stat.bytes,
+        allocatedBytes: stat.allocatedBytes,
+        blockAmplification: stat.blockAmplification,
+        files: stat.files, rows: stat.rows, tables: stat.tables,
       });
       // 事件表 topic 分布：per-record 下每条记录一个文件，全读太慢 ⇒ 抽样
       // （上限 TOPIC_SAMPLE_FILES），并在结果里标明抽样口径，不假装是全量。
@@ -216,12 +261,40 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
       continue;
     }
 
-    // 其余常规文件计入总量（含 .jsonl 等非域文件）
+    // 其余常规文件计入总量（含 .jsonl 等非域文件）。冻结的 legacy 单文件也确实占盘，
+    // 物理总量必须算它，只是不再混进「运行态域」口径。
     out.totalBytes += st.size;
     if (!name.endsWith('.json')) continue;
 
-    out.domainBytes += st.size;
     const domain = name.slice(0, -'.json'.length);
+    const activePerRecord = dirStats.get(domain);
+    if (activePerRecord && activePerRecord.files > 0) {
+      // 同名非空 per-record 目录存在 ⇒ 该域已切布局，这份单文件是回滚备份。
+      // 单独归口 storage.legacy.*：不产生 storage.bytes.<domain> / storage.rows.*，
+      // 也不进 totalRows（那份 33957 行与 per-record 活跃记录是同一批数据的两份副本）。
+      let rows = -1;
+      const tables = [];
+      if (st.size <= maxParseBytes) {
+        try {
+          const doc = JSON.parse(readFileSync(path, 'utf8'));
+          rows = 0;
+          for (const [tableName, records] of Object.entries(doc?.tables ?? {})) {
+            const n = records && typeof records === 'object' ? Object.keys(records).length : 0;
+            tables.push({ table: tableName, rows: n });
+            rows += n;
+          }
+        } catch { rows = -1; /* 解析不了就记 -1，不猜 */ }
+      }
+      out.legacyBytes += st.size;
+      out.legacy.push({
+        domain, file: name, bytes: st.size, rows, tables,
+        mtime: new Date(st.mtimeMs).toISOString(),
+        reason: '同名非空 per-record 目录存在 ⇒ 冻结的回滚备份',
+      });
+      continue;
+    }
+
+    out.domainBytes += st.size;
     if (st.size > maxParseBytes) {
       out.domains.push({ domain, file: name, bytes: st.size, rows: -1, tables: [], parseSkipped: 'too-large' });
       out.errors.push({ file: name, error: `size ${st.size} > maxParseBytes ${maxParseBytes}（行数不可知，记 -1）` });
@@ -251,7 +324,7 @@ export function scanStorage(root, { now = Date.now(), maxParseBytes = MAX_PARSE_
     // ⚠️ 2026-11-12：若存在同名 per-record 目录，则**当前活跃布局是目录**，
     //   旧的 single 文件只是回滚备份（不再增长）⇒ topic 分布必须取自目录，
     //   否则会报出「静止的旧分布」，看起来像没变化。
-    const hasPerRecordDir = existsSync(join(root, 'agint_event_bus'));
+    const hasPerRecordDir = dirStats.has('agint_event_bus');
     if ((unitName === 'agint_event_bus' || domain === 'agint_event_bus') && !hasPerRecordDir) {
       const counts = new Map();
       const events = doc?.tables?.events;
@@ -326,10 +399,12 @@ export function buildGuardMetrics({ scan, previous = null, today = null }) {
   const deltaMeta = {
     baseline,
     windowDays,
+    measurementVersion: MEASUREMENT_VERSION,
     previousDate: previous?.date ?? null,
     note: baseline
       ? '首次运行：只落基线，昨日快照不存在 ⇒ delta 恒为 0（预期状态，不是故障）'
       : '今日快照 − 昨日快照',
+    accountingNote: `v${MEASUREMENT_VERSION} 口径：冻结 legacy 单文件不计入运行态行数/域字节；per-record 另出块占用。跨版本 delta 含一次口径切换，不是数据丢失`,
   };
 
   for (const d of scan.domains ?? []) {
@@ -354,12 +429,38 @@ export function buildGuardMetrics({ scan, previous = null, today = null }) {
   // per-record 布局的目录（2026-11-12 补）：单独归口，不与同名 .json 文件的
   // 指标 key 冲突（同一个 domain 名可能同时存在 single 旧文件与 per-record 目录）。
   for (const d of scan.dirs ?? []) {
+    const allocated = d.allocatedBytes ?? 0;
+    const amp = d.blockAmplification ?? (d.bytes > 0
+      ? Math.round((allocated / d.bytes) * 1000) / 1000
+      : 0);
     metrics.push({
       key: `storage.bytes.perrecord.${d.domain}`,
       value: d.bytes,
       unit: 'bytes',
-      label: `per-record 目录 ${d.domain} 体积`,
-      meta: { dir: d.dir, layout: 'per-record', files: d.files, rows: d.rows },
+      label: `per-record 目录 ${d.domain} 逻辑字节`,
+      meta: {
+        dir: d.dir, layout: 'per-record', files: d.files, rows: d.rows,
+        allocatedBytes: allocated, blockAmplification: amp, blockSize: BLOCK_SIZE,
+      },
+    });
+    // 提案 d6994da2：逻辑字节会系统性少报盘上占用（生产实测 16.2 MB 逻辑 / 81.3 MB 盘、
+    // 放大 5.0×）。两个口径并列，不替换原有 key。
+    metrics.push({
+      key: `storage.bytes.perrecord.${d.domain}.allocatedBytes`,
+      value: allocated,
+      unit: 'bytes',
+      label: `per-record 目录 ${d.domain} 盘上块占用`,
+      meta: {
+        dir: d.dir, layout: 'per-record', blockSize: BLOCK_SIZE,
+        note: '按 ceil(size/BLOCK_SIZE)*BLOCK_SIZE 求和；逻辑字节见同名不带后缀的 key，两者并列才看得出小文件放大',
+      },
+    });
+    metrics.push({
+      key: `storage.bytes.perrecord.${d.domain}.blockAmplification`,
+      value: amp,
+      unit: 'ratio',
+      label: `per-record 目录 ${d.domain} 块放大倍数`,
+      meta: { dir: d.dir, layout: 'per-record', logicalBytes: d.bytes, allocatedBytes: allocated },
     });
     for (const t of d.tables ?? []) {
       metrics.push({
@@ -371,6 +472,21 @@ export function buildGuardMetrics({ scan, previous = null, today = null }) {
       });
     }
   }
+  // 冻结的回滚备份单独归口：不再与同域 per-record 活跃数据相加，
+  // 但字节仍留在 totalBytes（物理占盘）与 dailyDelta 里。
+  for (const l of scan.legacy ?? []) {
+    metrics.push({
+      key: `storage.legacy.bytes.${l.domain}`,
+      value: l.bytes,
+      unit: 'bytes',
+      label: `冻结 legacy 单文件 ${l.domain} 体积`,
+      meta: {
+        file: l.file, mtime: l.mtime, rows: l.rows, tables: l.tables, reason: l.reason,
+        note: '回滚备份，不再被写；已计入 totalBytes，但不计入运行态 domainBytes / totalRows',
+      },
+    });
+  }
+
   // 事件表的**活跃**行数：per-record 目录里的文件数才是当前布局的真实行数
   // （旧的 single 文件是回滚备份，不再增长 —— 拿它算行数会高估且不再变化）。
   const activeEvents = (scan.dirs ?? []).find((d) => d.domain === 'agint_event_bus');
@@ -449,10 +565,13 @@ export function toSnapshot(scan, { now = Date.now() } = {}) {
   return {
     date: dayKey(now),
     takenAt: new Date(now).toISOString(),
+    measurementVersion: MEASUREMENT_VERSION,
     totalBytes: scan.totalBytes ?? 0,
     domainBytes: scan.domainBytes ?? 0,
+    allocatedBytes: scan.allocatedBytes ?? 0,
     totalRows: scan.totalRows ?? 0,
     backupBytes: scan.backupBytes ?? 0,
+    legacyBytes: scan.legacyBytes ?? 0,
     domains,
     tables,
   };

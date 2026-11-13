@@ -66,25 +66,97 @@ function tableOf(store, name) {
   if (!store?.tables) return [];
   return rowsOf(store.tables[name]);
 }
-function readCommitted(dir) {
+// ── 第 1 源：event_bus 的 committed 事件（双介质）──────────────────────────
+// 2026-11-14（提案 b8f5123c）：event bus 已切到 per-record 布局，新事件只写
+//   <storages>/agint_event_bus/events/<id>.json，旧的 agint_event_bus.json 冻结成
+//   回滚备份、不再被写。只读单文件 ⇒ committed 集合永远停在切换那一刻，判据对
+//   「新 commit 是否发生」彻底失明。这里两个介质都读、按 proposalId 合并去重
+//   （legacy 优先，删旧文件前窗口外的历史事件也不会丢）。
+// ⛔ 不用 mtime 判谁是活跃布局：生产实测 legacy 单文件 mtime 08:36 反而**晚于**
+//   per-record 最早记录 08:24（迁移是批量回填），mtime 大小证明不了新旧。
+const PER_RECORD_EVENTS_DIR = ['agint_event_bus', 'events'];
+
+function perRecordEventsDir(dir) {
+  return join(dir, ...PER_RECORD_EVENTS_DIR);
+}
+
+/** @returns {string[]|null} null = 目录不存在/读不到；[] = 存在但无事件文件 */
+function perRecordEventFiles(dir) {
+  try { return readdirSync(perRecordEventsDir(dir)).filter((f) => f.endsWith('.json')); }
+  catch { return null; }
+}
+
+/** 兼容三种落盘形状：{record:{envelope}} / {envelope} / 顶层 envelope。 */
+function normalizeEnvelope(doc) {
+  const rec = doc?.record ?? doc;
+  return rec?.envelope ?? rec ?? null;
+}
+
+function committedFromEnvelope(env) {
+  if (!env || env.topic !== 'evolution.mutation.committed') return null;
+  const pl = env.payload ?? {};
+  return {
+    proposalId: pl.proposalId ?? null,
+    candidateId: pl.candidateId ?? null,
+    path: pl.path ?? null,
+    preimagePath: pl.preimagePath ?? null,
+    occurredAt: env.occurredAt ?? null,
+  };
+}
+
+function readLegacyCommitted(dir) {
   const store = readJson(dir, 'agint_event_bus.json');
   const out = [];
   if (!store?.tables) return out;
   for (const key of Object.keys(store.tables)) {
     for (const row of rowsOf(store.tables[key])) {
-      const env = row?.envelope ?? row;
-      if (!env || env.topic !== 'evolution.mutation.committed') continue;
-      const pl = env.payload ?? {};
-      out.push({
-        proposalId: pl.proposalId ?? null,
-        candidateId: pl.candidateId ?? null,
-        path: pl.path ?? null,
-        preimagePath: pl.preimagePath ?? null,
-        occurredAt: env.occurredAt ?? null,
-      });
+      const c = committedFromEnvelope(row?.envelope ?? row);
+      if (c) out.push(c);
     }
   }
   return out;
+}
+
+function readPerRecordCommitted(dir, files) {
+  const out = [];
+  let malformed = 0;
+  const eventsDir = perRecordEventsDir(dir);
+  for (const f of files ?? []) {
+    let doc;
+    try { doc = JSON.parse(readFileSync(join(eventsDir, f), 'utf8')); }
+    catch { malformed++; continue; }
+    const c = committedFromEnvelope(normalizeEnvelope(doc));
+    if (c) out.push(c);
+  }
+  return { rows: out, malformed };
+}
+
+/**
+ * 合并两个介质。解析失败的记录单独计数并进 notes —— 「没读到」不等于「没有事件」。
+ * @returns {{rows:Array,legacyCount:number,perRecordCount:number,perRecordFiles:number,
+ *            perRecordPresent:boolean,malformed:number,duplicatesMerged:number}}
+ */
+function readCommitted(dir, perRecordFiles = null) {
+  const legacy = readLegacyCommitted(dir);
+  const files = perRecordFiles ?? perRecordEventFiles(dir);
+  const perRecord = readPerRecordCommitted(dir, files);
+  const seen = new Set();
+  const rows = [];
+  let duplicatesMerged = 0;
+  for (const c of [...legacy, ...perRecord.rows]) {
+    if (c.proposalId && seen.has(c.proposalId)) { duplicatesMerged++; continue; }
+    if (c.proposalId) seen.add(c.proposalId);
+    rows.push(c);
+  }
+  return {
+    rows,
+    legacyCount: legacy.length,
+    perRecordCount: perRecord.rows.length,
+    perRecordFiles: files?.length ?? 0,
+    perRecordPresent: files !== null && files.length > 0,
+    malformed: perRecord.malformed,
+    duplicatesMerged,
+  };
 }
 function readPopulation(dir) {
   const store = readJson(dir, 'agint_population.json');
@@ -139,20 +211,25 @@ export function reconcileEvolutionStats(opts = {}) {
   const storageDir = resolve(opts.storageDir || defaultStorageDir());
   const repoRoot = opts.repoRoot ? resolve(opts.repoRoot) : null;
 
-  // 诚实守卫：存储里既无 event_bus 也无 population = 读不到数据源，绝不 fallthrough 成 0-diff 假 PASS。
-  const busReadable = existsSync(join(storageDir, 'agint_event_bus.json'));
+  // 诚实守卫：存储里既无 event_bus（single 或 per-record 任一布局）也无 population
+  //   = 读不到数据源，绝不 fallthrough 成 0-diff 假 PASS。
+  const legacyBusPresent = existsSync(join(storageDir, 'agint_event_bus.json'));
+  const perRecordFiles = perRecordEventFiles(storageDir);
+  const perRecordBusPresent = perRecordFiles !== null && perRecordFiles.length > 0;
+  const busReadable = legacyBusPresent || perRecordBusPresent;
   const popReadable = existsSync(join(storageDir, 'agint_population.json'));
   if (!busReadable && !popReadable) {
     return {
       status: 'unavailable',
-      reason: `STORAGE_UNREADABLE: ${storageDir} 下无 agint_event_bus.json / agint_population.json`,
+      reason: `STORAGE_UNREADABLE: ${storageDir} 下无 agint_event_bus.json / agint_event_bus/events/*.json / agint_population.json`,
       counts: null, structural: null, diffs: null, notes: [],
       sources: { storageDir, repoRoot },
       verdict: { hardDiffs: 0, softDiffs: 0, pass: false },
     };
   }
 
-  const committed = readCommitted(storageDir);
+  const busSource = readCommitted(storageDir, perRecordFiles);
+  const committed = busSource.rows;
   const population = readPopulation(storageDir);
   const preimage = readPreimageDir(repoRoot);
   const mutator = readMutator(storageDir);
@@ -163,6 +240,9 @@ export function reconcileEvolutionStats(opts = {}) {
   const popCommitIds = new Set(population.map((p) => p.commitId));
 
   const notes = [];
+  if (busSource.malformed > 0) {
+    notes.push(`EVENT_BUS_PER_RECORD_MALFORMED: ${busSource.malformed} 个事件记录解析失败（未计入 committed；没读到 ≠ 没有事件）`);
+  }
   const R1 = [];
   const R2 = [];
   const preimageCheckable = preimage.present;
@@ -198,9 +278,20 @@ export function reconcileEvolutionStats(opts = {}) {
   return {
     status: hardDiffs > 0 ? 'diff' : 'ok',
     generatedAt: new Date().toISOString(),
-    sources: { storageDir, repoRoot, preimageDir: preimage.dir, preimageDirPresent: preimage.present, preimageCheckable },
+    sources: {
+      storageDir, repoRoot, preimageDir: preimage.dir, preimageDirPresent: preimage.present, preimageCheckable,
+      eventBusLayout: legacyBusPresent
+        ? (perRecordBusPresent ? 'both' : 'single')
+        : (perRecordBusPresent ? 'per-record' : 'none'),
+      eventBusPerRecordPresent: perRecordBusPresent,
+    },
     counts: {
       eventBusCommitted: committed.length,
+      eventBusCommittedLegacy: busSource.legacyCount,
+      eventBusCommittedPerRecord: busSource.perRecordCount,
+      eventBusPerRecordFiles: busSource.perRecordFiles,
+      eventBusDuplicatesMerged: busSource.duplicatesMerged,
+      eventBusMalformedRecords: busSource.malformed,
       populationVariants: population.length,
       diskPreimages: preimage.present ? preimage.files.size : 0,
       mutatorCommits: mutator.count,
