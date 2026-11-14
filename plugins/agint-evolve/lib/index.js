@@ -67,6 +67,12 @@ const Config = z.object({
   // 默认 5 —— 与 unitsTotal 的常见量级同阶，且真正的止损是「这一轮有没有推进」
   // （见 continuePartial：剩余单元没变就不再排），这个数只是兜底。
   maxAutoContinuations: z.number().int().nonnegative().max(50).default(5),
+  // 2026-11-14：提案**批准后的默认执行计划**，由服务端在 propose() 写进提案行。
+  // 出厂即开（immediate）；配成 'manual' 可一键退回「批准只改状态、不建任务」。
+  // ⛔ 这里改的是「新提案的默认计划」，不是「已批准老行的行为」——老行没有
+  //    execMode 字段，normalizeExec() 仍把缺字段归一成 manual，升级不会让存量
+  //    提案突然开始改代码。两个默认值服务两个不同目的，不冲突。
+  defaultExecMode: z.enum(EXEC_MODES).default('immediate'),
 });
 
 /**
@@ -150,8 +156,13 @@ const proposalSchema = z.object({
   //   execStartedAt     最近一次开始执行的时刻
   //   execFinishedAt    最近一次结束（成功或失败）的时刻
   //
-  // ⛔ 默认 manual：加字段之前批准的老提案（50+ 条）**不会**因为这次升级突然
-  //    开始自动改代码。要自动执行必须有人这一次明确选了 immediate/scheduled。
+  // ⛔ schema 默认仍是 manual，但它的含义是**历史行兜底**，不是新提案的口径：
+  //    加字段之前写的老行没有 execMode，读进来由 normalizeExec() 归一成 manual，
+  //    于是升级不会让存量提案突然开始改代码。
+  //    新提案的计划由 propose() 显式写入（默认来自 config.defaultExecMode = immediate），
+  //    所以「批准」这一动作不再依赖调用方记得传 execMode —— 批准即形成自动化任务。
+  //    要「只批准、不自动跑」，由**提议方**显式声明 execMode='manual'（结构化否决，
+  //    不是靠正文里写一句「永不 auto-apply」让执行器去猜）。
   execMode: z.enum(EXEC_MODES).default('manual'),
   execAt: z.string().default(''),
   execState: z.enum(EXEC_STATES).default('idle'),
@@ -403,6 +414,11 @@ export function decorateProposal(rec, currentFormulaVersion) {
 
 function apply(ctx, config) {
   const root = resolve(config.root);
+  // 2026-11-14：批准即形成自动化任务。白名单兜底，防止 patch 里写了个拼错的
+  // 值让 propose() 静默产出一条永不入队的提案（症状与「批准没生效」一模一样）。
+  const DEFAULT_EXEC_MODE = EXEC_MODES.includes(config.defaultExecMode)
+    ? config.defaultExecMode
+    : 'immediate';
   // 2026-10-30：partial 之后自动续跑的次数上限（0 = 关掉续跑）。
   const MAX_AUTO_CONTINUATIONS = Math.max(0, Number(config.maxAutoContinuations ?? 5) || 0);
   // A4：归因 JSON 路径。两级来源，优先级 config > 自动探测。
@@ -1141,6 +1157,14 @@ function apply(ctx, config) {
           );
         }
       }
+      // 2026-11-14：执行计划在**提议时**就定下来，批准只负责「按这份计划建任务」。
+      // 判据只有一份（validateExecPlan），与 setStatus / 面板共用；非法计划直接抛，
+      // 不静默降级成另一个模式 —— 静默降级会让「定时」看起来生效其实没生效。
+      const plan = validateExecPlan({
+        execMode: input.execMode ?? DEFAULT_EXEC_MODE,
+        execAt: input.execAt,
+      });
+      if (!plan.ok) throw new Error(`agint-evolve: ${plan.reason}`);
       const rec = proposalSchema.parse({
         id: input.id ?? randomId(),
         title: input.title,
@@ -1152,6 +1176,10 @@ function apply(ctx, config) {
         // 2026-10-27：复核类提案显式声明「不可自动执行」（oracle 走这条）。
         // ⛔ 只认显式 false —— 少写一个字段 = 可执行（默认 true，向后兼容）。
         autoExecutable: input.autoExecutable === false ? false : true,
+        // 一行提案 = 一份任务规格。批准时 setStatus 的冻结语义会保留这份计划，
+        // syncExecutionQueue 据此往 execution 表写一行 queued 任务。
+        execMode: plan.mode,
+        execAt: plan.at,
         // 成立条件快照：这条结论按哪一版判尺口径成立。空串 = oracle 未挂载，
         // 口径未知 —— 后续不据此判失效，但至少能看出「这条没记」。
         formulaVersion: cur,

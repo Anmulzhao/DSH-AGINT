@@ -62,7 +62,7 @@ agint-evolution-driver: runOnce() 只挑 status:'proposed'
 
 | 字段 | 含义 |
 |---|---|
-| `execMode` | `manual`（只批准，默认）/ `immediate`（立即）/ `scheduled`（定时） |
+| `execMode` | `manual`（只批准）/ `immediate`（立即，新提案默认）/ `scheduled`（定时） |
 | `execAt` | 定时到期时刻（ISO）；其它模式为空串 |
 | `execState` | `idle` / `queued` / `running` / `succeeded` / `failed` / `deferred` / `cancelled` / `partial` |
 | `execAttempts` | 已尝试次数（claim 时自增） |
@@ -71,7 +71,16 @@ agint-evolution-driver: runOnce() 只挑 status:'proposed'
 | `execVerdict` | 执行器的终局判决（空串 = 还没判）。口径见上方「终局判决与结案」 |
 | `execVerdictAt` | 判决时刻（ISO）；空串 = 没判过 |
 
-⛔ 默认 `manual` 是刻意的：**升级不会让历史提案开始自动改代码。**
+⛔ 两个默认值各管一件事，不要混：
+
+1. `proposalSchema` 的 `execMode` 默认 `manual` 是**历史行兜底**。加字段之前写的
+   老行没有这个键，`normalizeExec()` 归一成 `manual`，升级不会让存量提案突然改代码。
+2. `propose()` 写入新提案行时，默认来自 `config.defaultExecMode`（出厂 `immediate`）。
+   批准沿用这份计划：`setStatus` 不再依赖调用方记得传 `execMode` ⇒ 批准即形成任务。
+   配置 `defaultExecMode: manual` 可一键退回旧行为。
+
+要「只批准、不自动跑」，由**提议方**显式传 `execMode: manual`（例如美的神谕层的
+建议类提案）。不要靠正文写「永不 auto-apply」：判据不读正文，那句话挡不住入队。
 
 ## 队列（`agint_evolve.execution` 表）
 

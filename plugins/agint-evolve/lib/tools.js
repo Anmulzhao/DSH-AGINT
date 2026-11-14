@@ -334,7 +334,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'evolve_set_status',
-    description: '更新一条改进提案的状态：人工批准 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。批准的是**方向**、前置没到位时，同时传 blocker / unblockCondition，这条才不会在待办里被当成可催办的工作单。execMode=immediate/scheduled 表示**批准后由 agint-executor 自动执行**（不需要人再动手）；不传则保持原计划（新提案默认 manual=只批准）。',
+    description: '更新一条改进提案的状态：人工批准 → approved；落地完成 → applied；评估后不做 → rejected；暂不处理 → wontfix。附 note 说明。approved 与 applied 不是同一件事：前者是决定，后者是事实。批准的是**方向**、前置没到位时，同时传 blocker / unblockCondition，这条才不会在待办里被当成可催办的工作单。execMode=immediate/scheduled 表示**批准后由 agint-executor 自动执行**（不需要人再动手）；不传则保持原计划。新提案在提议时已定下计划（默认 immediate ⇒ 批准即形成自动化任务）；要「只批准」需显式传 execMode=manual。',
     parameters: {
       id: { type: 'string', required: true, description: '提案 id（evolve_proposals 返回）' },
       status: { type: 'string', required: true, enum: STATUSES, description: '目标状态' },
