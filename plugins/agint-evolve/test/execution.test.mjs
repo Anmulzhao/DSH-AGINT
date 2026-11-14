@@ -177,12 +177,22 @@ await withApp(async ({ evo }) => {
   assert.equal(back.execState, 'cancelled');
 });
 
-// ── ④ manual 永不入队 ────────────────────────────────────────────────
+// ── ④ 显式 manual 永不入队（2026-11-14 口径更新）──────────────────────
+// 旧断言「不传 execMode 默认 manual」描述的是 v0.16.0 的旧设计。
+// 新设计：新提案在提议时定下计划（默认 immediate），批准沿用计划 ⇒ 批准即形成任务；
+// 要「只批准」必须显式声明 manual。下面两条互为对照：一条证明否决有效，
+// 一条证明默认真的会建任务（只改前一条等于把门禁悄悄放宽）。
 await withApp(async ({ evo }) => {
-  const p = await evo.propose({ title: '改 c', body: '正文' });
-  const rec = await evo.setStatus(p.id, 'approved', '只批准');
-  assert.equal(rec.execMode, 'manual', '不传 execMode 默认 manual');
-  assert.equal((await evo.listExecutions({ proposalId: p.id })).length, 0, 'manual 不得自动执行');
+  const explicit = await evo.propose({ title: '改 c', body: '正文', execMode: 'manual' });
+  const rec = await evo.setStatus(explicit.id, 'approved', '只批准');
+  assert.equal(rec.execMode, 'manual', '显式 manual 必须被尊重');
+  assert.equal((await evo.listExecutions({ proposalId: explicit.id })).length, 0, 'manual 不得自动执行');
+
+  const auto = await evo.propose({ title: '改 c-2', body: '正文' });
+  assert.equal(auto.execMode, 'immediate', '不传 execMode 默认 immediate（批准即形成任务）');
+  const rec2 = await evo.setStatus(auto.id, 'approved');
+  assert.equal(rec2.execMode, 'immediate');
+  assert.equal((await evo.listExecutions({ proposalId: auto.id })).length, 1, '对照：默认计划必须入队');
 });
 
 // ── ⑤ 定时未到不跑 ───────────────────────────────────────────────────
