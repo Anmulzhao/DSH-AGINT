@@ -271,6 +271,8 @@ body{margin:0;background:var(--bg);color:var(--ink);font:12.5px/1.5 -apple-syste
 .kpi b{font-size:12.5px;color:var(--ink);font-variant-numeric:tabular-nums}
 .kpi.ok b{color:var(--ok)}.kpi.warn b{color:var(--warn)}.kpi.bad b{color:var(--bad)}
 .stamp{font-size:9.5px;color:var(--mute);text-align:right;line-height:1.45;white-space:nowrap}
+.stamp b{font-weight:700;letter-spacing:.02em}
+.stamp.live b{color:#15803d}.stamp.snap b{color:#b45309}
 .stamp i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px;background:#94a3b8;vertical-align:middle}
 .stamp.live i{background:#15803d}.stamp.snap i{background:#b45309}
 .bench{background:#fff;border:1px solid var(--line);border-radius:9px;overflow:hidden}
@@ -350,9 +352,9 @@ export function renderArchPage(model, opts = {}) {
 <style>${CSS}</style></head><body><div class="app">
 
 <header class="top">
-<div class="brand">AGINT 进化架构图<span>· 系统动态 · ${esc(modeText)}</span></div>
+<div class="brand">AGINT 进化架构图<span id="brandMode">· 系统动态 · ${esc(modeText)}</span></div>
 <div class="kpis" id="kpis">${frag.kpis}</div>
-<div class="stamp ${mode === 'live' ? 'live' : 'snap'}" id="stamp"><i></i><span id="stampText">${esc(model.generatedAt)}</span><br>${esc(model.storageLabel)}/ · ${model.domains.length} 域</div>
+<div class="stamp ${mode === 'live' ? 'live' : 'snap'}" id="stamp"><i></i><b id="stampMode">${esc(modeText)}</b> <span id="stampText">${esc(model.generatedAt)}</span><br>${esc(model.storageLabel)}/ · ${model.domains.length} 域</div>
 </header>
 
 <div class="bench">
@@ -525,10 +527,15 @@ export function renderArchPage(model, opts = {}) {
   selfcheck();
 
   function setStamp(mode, at, note){
-    LIVE = mode==='live';
-    stamp.className='stamp '+(mode==='live'?'live':'snap');
-    stamp.innerHTML='<i></i><span id="stampText">'+es(at)+'</span><br>'+es(note||'');
+    var live = mode==='live';
+    LIVE = live;
+    var txt = live ? '实时聚合' : '离线快照';
+    stamp.className='stamp '+(live?'live':'snap');
+    /* 模式必须是显式徽标：只给一个 ISO 时间戳，悬挂时会被误读成实时。 */
+    stamp.innerHTML='<i></i><b id="stampMode">'+txt+'</b> <span id="stampText">'+es(at)+'</span><br>'+es(note||'');
     stampText=document.getElementById('stampText');
+    var bm=document.getElementById('brandMode');
+    if(bm) bm.textContent='· 系统动态 · '+txt;
   }
 
   var toneMap = {
@@ -595,10 +602,10 @@ export function renderArchPage(model, opts = {}) {
       if(!d || !d.ok || !d.model) throw new Error('bad payload');
       failCount = 0;
       applyModel(d.model, d.fragments);
-      setStamp('live', d.generatedAt, '实时聚合 · /v2/arch');
+      setStamp('live', d.generatedAt, '/v2/arch · 30s 轮询');
     }).catch(function(err){
       failCount++;
-      setStamp('snapshot', M.generatedAt, '离线快照 · ' + String(err && err.message || err).slice(0,40));
+      setStamp('snapshot', M.generatedAt, '请求失败 · ' + String(err && err.message || err).slice(0,40));
       // 路由未注册时（重启前返回 401/404）不要每 30s 打一次：退避到 5 分钟。
       // 宿主重启后自动恢复实时，无需刷新页面。
       if(failCount === 3 && timer){ clearInterval(timer); timer = setInterval(fetchLive, 300000); }
