@@ -624,3 +624,27 @@ if [ -f "$DSH_COMPAT_SCRIPT" ]; then
     exit 1
   fi
 fi
+
+# ── LLM 模型选择单一真源门禁（阻断） ────────────────────────────────────────
+# 2026-11-15 接入：调 LLM 的插件必须读宿主 agentDefaultModel.currentSelection()，
+# 且写进 lib 的兜底 provider/model/推理档位必须与宿主 profile 的
+# llm-pi-ai.providers.*.models[].id 逐字一致。
+# 历史上三次静默事故都出在这份漂移（dream P1 从未真正跑通 / reasoningEfforts 不
+# 被支持导致 promoted 恒 0 / 旧 subagents.start 让四个插件恒失败），靠人肉同步必复发。
+# 找不到宿主 patch 或 js-yaml 时脚本 exit 2 ⇒ 这里一并红灯，**绝不假绿**。
+LLM_PARITY_SCRIPT="$(dirname "$0")/check-llm-selection-parity.mjs"
+if [ -f "$LLM_PARITY_SCRIPT" ]; then
+  echo
+  echo "─── LLM 模型选择漂移门禁 ───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$LLM_PARITY_SCRIPT"; then
+      echo "  [PASS] 兜底常量与宿主模型目录一致，且所有 LLM 插件读宿主选择"
+    else
+      echo "  [FAIL] 模型选择漂移 —— 先改宿主 profile 或同步插件兜底值，别让运行时静默调旧模型"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，模型选择门禁无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi
