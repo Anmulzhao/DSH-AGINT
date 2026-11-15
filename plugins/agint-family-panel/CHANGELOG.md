@@ -1,5 +1,60 @@
 # agint-family-panel CHANGELOG
 
+## 0.13.0 — 2026-11-16（架构图实时聚合；单点数据/渲染；7 视图）
+
+### 问题
+
+架构图（`eviz` tab）是**生成时静态快照**：`bin/evolution-viz-snapshot.mjs` 直读
+9 个 storages 域把读数烤进 `srcdoc`，而其余 9 个 tab 走 `/v2/data` 实时聚合。
+实测两轨时点差 **13m52s**（快照 15:49:06Z vs 实时 16:02:58Z），域覆盖**交集只有 5 个**
+（架构图独有 metrics/trajectory/rules/abtest，面板独有 oracle/curriculum/event_bus/
+upstream_watch/tool_stats）。任何跨 tab 的融合都会把「同一实体两个时刻两个数」摆在同一屏。
+
+同时架构图有四处与面板脱节：`eval` 节点恒 `—`（神谕有 3 卡却读不到）、无队列视图
+（9 条待办只在「待办」tab）、断点边只有判定没有证据、L0 没有上游扰动输入。
+
+### 改动
+
+- **新增 `lib/arch-data.js`**（数据单一真源，纯函数 `collectArchData({storagesDir,now,v2})`）：
+  复用 `aggPending` / `aggOracle` / `aggUpstream`，补读 `agint_curriculum` / `agint_mutator` /
+  `agint_population` / `agint_tool_stats.jsonl`（按 mtime 缓存）。输出 21 节点 / 26 边 /
+  7 视图 / 9 队列 / 14 域盘点。`EDGE_DECL` 把每条边的 `basis`（依据）与 `breakWhen`
+  （断点判据）写成可导出常量：**数据恢复后断点自动变 live**，不留永久红叉。
+- **新增 `lib/arch-render.js`**（渲染单一真源）：`renderArchPage`（离线快照/独立 HTML）
+  与 `renderArchFragments`（实时片段）共用同一套模板。浏览器只做 DOM 更新，不重写模板 ——
+  避免「生成器一套 HTML、路由一套 HTML」的口径漂移。
+- **新增 `GET /api/agint-family/v2/arch`**（回环 + kill-switch 同 `/v2/data`）：
+  返回 `{ok, generatedAt, mode:'live', model, fragments}`，约 **34 KB**（对比 `/v2/data`
+  521 KB）。事件总线段**复用** `/v2/data` 已算好的 bus（per-record 目录实测 2 万+ 文件，
+  30s 轮询重扫会打爆磁盘）；无缓存时标 `deferred` 并说明原因，⛔ 不拿迁移前单文件冒充全量。
+- `bin/evolution-viz-snapshot.mjs` 瘦身为「调数据层 → 调渲染层 → 写盘 → 注入三副本」
+  （原 957 行 → 约 170 行）。⛔ 读数与模板不再写回生成器。
+- iframe 首屏用内嵌快照，随后 `fetch('/api/agint-family/v2/arch')` 覆盖；
+  30s 轮询 + `visibilitychange` 立即重取；**连续失败 3 次退避到 5 分钟**（路由未注册时
+  返回 401，不该每 30s 打一次），宿主重启后自动恢复。
+- 新增「队列」与「校验」视图；`eval` 节点接神谕判词卡/广播史；`propose` 节点加
+  待批/已批；L0 新增「上游扰动」节点（`agint_upstream_watch`）；断点边带当次 `evidence`。
+- 节点详情加 `postMessage` 导航按钮（去提案台/待办/Q1/Q3/神谕/上游）；父页新增监听，
+  **只切 tab、不代执行写操作**，并校验 `e.source === iframe.contentWindow`。
+
+### 行为变化
+
+- 状态点区分两形态：「实时 · `<generatedAt>`」= 已从 `/v2/arch` 覆盖；
+  「离线快照 · `<时点>`」= 服务不可达（如 `file://` 打开独立 HTML），⛔ 不假装实时。
+- 课程待做改用 `status === 'open'`（与 `PENDING_SPECS['curriculum-challenge']` 同源），
+  消除「KPI 报 0、队列报 5」的同类不一致。
+- 域缺失仍是灰 `—`，不是 0；`missing` 只记错误码，**不再把 ENOENT 的绝对路径烤进仓内文件**
+  （AGENTS.md 第 16 条红线）。
+
+### 验收
+
+- `node --test test/arch-data.test.mjs` → 6/6（三态、五类边之和、课程判据同源、
+  断点动态恢复、无绝对路径泄漏、unavailable 队列 pending=null）。
+- 产物验证 34/34：srcdoc 解码与独立 HTML 逐字节一致、内联 JS 经 `node:vm` + DOM stub
+  真执行、7 视图 / 21 节点 / 26 边 / 9 队列 / 14 域、数字与 storages 对拍、无外链无绝对路径。
+- 生成器：三副本 sha 一致；`payload 34061B < /v2/data 的 1/3`。
+- ⚠️ 新增路由属 lib 层，**需重启 `dsh web` 才生效**；重启前 iframe 稳定停在离线快照。
+
 ## 0.12.3 — 2026-11-15（事件总线认 per-record 布局；tool_stats 缺席=空态）
 
 ### 问题
