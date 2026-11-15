@@ -1,3 +1,25 @@
+## 未发版 · 2026-11-15 — LLM 判定通路的模型选择收敛到宿主单一真源
+
+**依据**：`docs/capability-boundary.md:27`（LLM provider 属 L-宿主）与 `:489`
+（provider/model 硬编码 4 份是未修欠账）。本插件 `judgeViaLLM()` 此前把三个模型入参
+写死在签名默认值里，宿主换模型时不会跟随；`lib/tools.js` 的参数描述还残留
+`MiniMax-M3.1-Flash-Preview`（与实际兜底值、宿主目录都不一致）。
+
+**行为变化**
+- `lib/llm-verdict.js` 新增导出 `resolveLlmSelection(ctx, explicit)`：显式入参 > 宿主
+  `agentDefaultModel.currentSelection()` > 离线兜底常量；ctx.get 软取、不进 inject。
+- `judgeViaLLM()` 三个模型入参默认值由 `DEFAULT_*` 改为空串（非空默认值会让宿主选择
+  永远排不上队），`agentOptions` 与 `meta` 改用解析后的生效值。
+- `lib/verify.js` 改 import `resolveLlmSelection`，`autocreate_verify_llm` 报告**生效值**
+  而非入参 —— 验证工具的价值正是说清「这一轮实际用的哪个模型」。
+- `lib/tools.js` 参数描述不再写死模型名，改为指向宿主当前模型。
+- 宿主服务缺席 / 取值抛错 ⇒ 落兜底常量；判定轨道 C 的「LLM 失败不回落轨道 B」、
+  每日硬预算 20 次（含 shadow）等语义一字未改。
+
+**验收**：`test/llm-selection.test.mjs` 7/7（含端到端断言 `agents.create` 收到的
+`agentOptions` 来自宿主）；全量 `node --test "test/*.test.mjs" "test/*.test.js"`
+421 pass / 0 fail / 5 skipped；`bin/check-llm-selection-parity.mjs` 全绿。
+
 ## 未发版 · 提案 2f5c70ce — 检测层"信息量/形态"判据（信息半）+ Phase 1 四条 blocker 显式化
 
 **背景**：技能自动创建的"信息量/形态"判据此前分散在两处且只有一半落地：
