@@ -19,7 +19,7 @@ import {
 import { extractTextFiles, extractApiSurface } from '../lib/tarball.js';
 import { extractApiSymbols, diffSurface } from '../lib/depface.js';
 import { parseReleaseBody, summarizeFacts } from '../lib/facts.js';
-import { extractJson, validateVerdict } from '../lib/judge.js';
+import { judgeFacts, JUDGE_OUTPUT_SCHEMA, extractJson, validateVerdict } from '../lib/judge.js';
 
 // ── 测试夹具：手写最小 tar 条目 ────────────────────────────────────────────
 function tarEntry(name, content, typeflag = '0') {
@@ -331,4 +331,104 @@ test('validateVerdict 允许空提案（宁可空不凑数）', () => {
     verdict: 'no-impact', confidence: 0.9, headline: 'h', rationale: 'r', proposals: [],
   };
   assert.equal(validateVerdict(ok), null);
+});
+
+// ── 宿主子代理契约（2026-11-15 修复：dsh 0.2.2-rc.1 移除嵌套 request） ──────
+
+const VERDICT_OK = {
+  verdict: 'no-impact',
+  confidence: 0.9,
+  headline: '本次发行对 AGINT 无影响',
+  rationale: 'facts 显示影响 AGINT 0 个包',
+  proposals: [],
+};
+
+const MIN_FACTS = {
+  tag: 'dsh-v0.2.2-alpha.3',
+  targetVersion: '0.2.2-alpha.3',
+  installedVersion: '0.2.2-rc.1',
+  agintTestedVersion: '0.2.2-rc.1',
+  level: 'downgrade',
+  preStageChange: true,
+  versionTracks: null,
+  body: { entryCount: 3, tagCounts: {}, breakingHits: 0, breakingSamples: [] },
+  impactSummary: {},
+  semanticSummary: {},
+  hostFace: null,
+  depFace: [],
+};
+
+/** 假宿主：记录 startActivation 收到的 spec，回一个可控的 result。全程离线。 */
+function fakeJudgeHost({
+  structured = VERDICT_OK, stopReason = 'completed', includeStructured = true,
+} = {}) {
+  const seen = { spec: null, createOpts: null };
+  const parent = { id: 'parent-1' };
+  const ctx = {
+    get(name) {
+      if (name === 'agents') {
+        return {
+          async create(opts) {
+            seen.createOpts = opts;
+            return { agent: parent, dispose() {} };
+          },
+        };
+      }
+      if (name === 'subagents') {
+        return {
+          async startActivation(spec) {
+            seen.spec = spec;
+            return {
+              result: Promise.resolve({
+                stopReason,
+                ...(includeStructured ? { structured } : {}),
+                // 阴性对照：output 放无效文本。结论若从 output 抠，本组测试必红。
+                output: [{ type: 'text', text: '不是 JSON' }],
+              }),
+              dispose() {},
+            };
+          },
+        };
+      }
+      return null;
+    },
+  };
+  return { ctx, seen, parent };
+}
+
+test('judgeFacts: startActivation 参数摊在 spec 顶层，不再带 request', async () => {
+  const { ctx, seen, parent } = fakeJudgeHost();
+  const r = await judgeFacts(ctx, MIN_FACTS, { timeoutMs: 5000 });
+  assert.equal(r.ok, true, '新宿主契约下必须能判读成功');
+  const spec = seen.spec;
+  assert.equal(spec.request, undefined, '宿主 0.2.2-rc.1 起不再读 spec.request');
+  assert.equal(spec.parent, parent, 'parent 必须在顶层，否则 spec.parent.id 抛错');
+  assert.equal(spec.provider, 'spawn');
+  assert.equal(spec.delivery, 'caller');
+  assert.equal(spec.label, 'agint-upstream-watch dsh-v0.2.2-alpha.3');
+  assert.equal(spec.agentPreset, 'agint');
+  assert.deepEqual(spec.agentOptions, {
+    provider: 'minimax-cn', model: 'MiniMax-M3.1-Flash', reasoningEffort: 'high',
+  });
+  assert.equal(spec.outputSchema, JUDGE_OUTPUT_SCHEMA);
+  assert.equal(spec.prompt[0].type, 'text');
+  assert.equal(seen.createOpts.meta.agentPreset, 'agint', 'K114：create 侧不能省 preset');
+});
+
+test('judgeFacts: 结论取自 result.structured，不从 result.output 抠（阴性对照）', async () => {
+  const { ctx } = fakeJudgeHost({ structured: VERDICT_OK });
+  const r = await judgeFacts(ctx, MIN_FACTS, { timeoutMs: 5000 });
+  assert.equal(r.ok, true);
+  assert.equal(r.mode, 'judged');
+  assert.equal(r.verdict.verdict, 'no-impact');
+  assert.notEqual(r.reason, 'model output is not valid JSON');
+});
+
+test('judgeFacts: structured 缺失 ⇒ failed 且不带结论（不降级）', async () => {
+  const { ctx } = fakeJudgeHost({ includeStructured: false });
+  const r = await judgeFacts(ctx, MIN_FACTS, { timeoutMs: 5000 });
+  assert.equal(r.ok, false);
+  assert.equal(r.mode, 'failed');
+  assert.match(r.reason, /structured output missing/);
+  assert.equal(r.verdict, undefined, '失败时绝不能编造结论');
 });
