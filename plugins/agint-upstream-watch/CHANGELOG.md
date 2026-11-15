@@ -1,5 +1,22 @@
 # Changelog — agint-upstream-watch
 
+## [Unreleased] — 2026-11-15 — 段 2 判读的模型选择收敛到宿主单一真源
+
+**依据**：同 `docs/capability-boundary.md:489` 的硬编码欠账。本插件此前 `judgeFacts()`
+把 provider/model/reasoningEffort 全写死在签名默认值里，与宿主 profile 的模型目录无对拍。
+
+**行为变化**（`lib/judge.js`）
+- 新增导出 `resolveLlmSelection(ctx, explicit)`：显式入参 > 宿主
+  `agentDefaultModel.currentSelection()` > 离线兜底常量；服务缺席 / 抛错按 null 处理。
+- `judgeFacts()` 三个模型入参默认值改空串，两处 `agentOptions` 改用解析后的生效值。
+- 段 1 事实与「模型失败 ⇒ 只落事实、不落结论、不产提案」的**无降级**语义一字未改。
+
+**验收**：`test/llm-selection.test.mjs` 4/4（含端到端断言 `agents.create` 的
+`agentOptions`）；`node --import ./test/_stub-register.mjs --test "test/*.test.mjs"` 67/67；
+`bin/check-llm-selection-parity.mjs` 全绿。
+⚠️ 单独跑 `test/smoke.mjs` 有 1 条**既有红**（`d.level` 期望 `patch` 实得 `downgrade`），
+用 HEAD 版 `judge.js` 做基线对照同样为红 ⇒ 与本改动无关，未纳入本次修改范围。
+
 ## [0.3.1] — 2026-10-28（提案 `846f4fbb` 单元 2）
 
 本插件那份收紧后的 `defineTool` 替身，抽成 `plugins/_shared/test-stub-dsh-tools.mjs`
