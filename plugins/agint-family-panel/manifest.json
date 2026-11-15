@@ -66,7 +66,7 @@
     },
     "tests": {
       "entry": "test/smoke.mjs",
-      "command": "node test/smoke.mjs && node test/v2-scan.test.mjs && node test/v2-data.test.mjs && node --test test/arch-data.test.mjs && node --test test/v2-proposals.test.mjs && node --test test/proposal-board.test.mjs && node --test test/decision-route.test.mjs && node --test test/v2-dossier.test.mjs && node --test test/dossier-view.test.mjs && node --test test/upstream-view.test.mjs",
+      "command": "node test/smoke.mjs && node test/v2-scan.test.mjs && node test/v2-data.test.mjs && node --test test/arch-data.test.mjs && node --test test/arch-route.test.mjs && node --test test/v2-proposals.test.mjs && node --test test/proposal-board.test.mjs && node --test test/decision-route.test.mjs && node --test test/v2-dossier.test.mjs && node --test test/dossier-view.test.mjs && node --test test/upstream-view.test.mjs",
       "expectedExit": 0
     },
     "docs": {

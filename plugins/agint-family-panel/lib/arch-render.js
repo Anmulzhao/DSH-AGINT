@@ -474,11 +474,13 @@ export function renderArchPage(model, opts = {}) {
   }
   bindNodes();
 
-  document.addEventListener('click', function(e){
-    var b = e.target.closest && e.target.closest('[data-nav]');
-    if(!b) return;
-    try { if(window.parent && window.parent !== window) window.parent.postMessage({ type:'agint-nav', target:b.getAttribute('data-nav') }, '*'); } catch(err){}
-  });
+  if (document.addEventListener) {
+    document.addEventListener('click', function(e){
+      var b = e.target && e.target.closest && e.target.closest('[data-nav]');
+      if(!b) return;
+      try { if(window.parent && window.parent !== window) window.parent.postMessage({ type:'agint-nav', target:b.getAttribute('data-nav') }, '*'); } catch(err){}
+    });
+  }
 
   var paused=false;
   var motionBtn=document.getElementById('motionBtn');
