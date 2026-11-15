@@ -5,6 +5,27 @@
 
 ---
 
+## 未发版 · 2026-11-15 — LLM 模型选择收敛到宿主单一真源
+
+**依据**：`docs/capability-boundary.md:27` 把 LLM provider 列为 L-宿主；`:489` 把
+「provider/model 硬编码 4 份（上游已有 `agentDefaultModel.currentSelection()`）」
+列为未修已裁决欠账。本插件此前**只把推理档位**接了宿主，provider/model 仍落死常量，
+宿主换模型时 P1 会毫无报错地继续调旧 id（即 2026-10-28「P1 从未真正跑通」那类漂移）。
+
+**行为变化**（`lib/consolidation.js`）
+- 新增导出 `resolveLlmSelection(ctx, explicit)`：显式入参 > 宿主当前选择 > 离线兜底常量。
+  `agentDefaultModel` 是宿主 lazyService，ctx.get 软取，不进 inject。
+- `consolidate()` 的 provider/model 默认值由 `DEFAULT_*` 改为空串（非空默认值会让宿主
+  选择永远排不上队），`agentOptions` 改用解析后的生效值；档位仍走既有
+  `resolveReasoningEffort()`。
+- `lib/verify.js` 默认入参改空串，报告**生效值**而非入参；`lib/tools.js` 参数描述不再
+  写死模型名；`lib/sweep.js` 注释同步为「由 consolidate() 解析宿主选择」。
+- 宿主服务缺席 / 取值抛错 ⇒ 落兜底常量，行为逐字不变。
+
+**验收**：`test/llm-selection.test.mjs` 4/4（含端到端断言 `agents.create` 收到的
+`agentOptions` 来自宿主）；全量 `node --test "test/*.test.mjs" "test/*.test.js"` 209/209；
+`bin/check-llm-selection-parity.mjs` 5 个插件全绿。
+
 ## v0.9.0 — 2026-11-07 — 方案 C：准入从「逐字复现」改成「形态 + LLM 裁决」
 
 **背景（实测，2026-11-07）**：梦境自 2026-10-21 起过门数持续为 0，最后一次非零提升是
