@@ -1,5 +1,39 @@
 # agint-family-panel CHANGELOG
 
+## 0.12.3 — 2026-11-15（事件总线认 per-record 布局；tool_stats 缺席=空态）
+
+### 问题
+
+agint-event-bus v0.9.0 起域声明 `layout:'per-record'`，介质从单文件
+`agint_event_bus.json` 换成 `agint_event_bus/<表>/<key>.json`。面板 `aggBus()`
+仍读旧单文件：新机器上该文件从未存在 ⇒ eventBus 源 ENOENT 降级，挂「⚠ 数据源
+降级」黄条；老机器上即使有旧文件也只是迁移前快照，显示过期数据。
+同横幅的另一半：`agint_tool_stats.jsonl` 由 tool-stats 首次记录工具调用才创建，
+新机器必然缺席，被当故障报降级，实为空态。
+
+### 改动
+
+- `lib/v2-data.js` `aggBus()`：per-record 目录在 ⇒ 读目录（权威，宿主 open()
+  只 loadAll 目录），deadletter 数 `deadletter/` 目录文件；目录不在才回退
+  single 文件（未迁移部署）。两者并存不双计。坏记录文件跳过不整源报废。
+  `observedAt` per-record 时取 `events/` 目录 mtime。
+- `lib/v2-data.js` `signature()`：per-record 的 `events/`/`deadletter/` 目录
+  mtime 进缓存签名 —— 否则新事件落地签名不变，只能靠 30s TTL 兜。
+- `lib/v2-data.js` `aggTools()`：文件 ENOENT 且 storages 目录在 ⇒ 返回空聚合
+  （rows=[]、total=0、observedAt=null），不报降级；目录不在/其余读失败照旧降级。
+- `test/q3-verdicts.test.mjs`：真数据回放门槛认两种布局任一；仓库位解析不出
+  （副本无 .git）时契约段跳过不崩（`resolve(null)` 存量坑）。
+
+### 验证
+
+新增 `test/v2-bus-perrecord.test.mjs`：single 回退 / 并存不双计 / 坏记录跳过 /
+新事件签名失效 / 仅 per-record / 双缺降级 / tool_stats 空态，七组全绿。
+`v2-data`、`v2-data-v03` 回归绿。部署位实测：bus 121 条、deadletter 0、
+三源全 ok，浏览器确认黄条消失。
+⚠️ 存量环境债（非本批引入）：v2-scan 冻结基线漂移（239 vs 223）；
+v2-oracle / v2-delivery-by-topic / decision-* 在仓库位缺 zod（zod 只布部署位）。
+
+
 ## 0.12.2 — 2026-11-07（执行摘要显示「已改 N/M · 还差几个文件」）
 
 ### 问题
