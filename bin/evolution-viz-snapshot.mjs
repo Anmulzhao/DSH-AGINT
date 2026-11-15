@@ -2,6 +2,10 @@
 // 2026-11-15 由「进化流水线 · 六阶段时序」升级为「进化架构图 · 系统动态」：
 //   分层拓扑 + 真实读写/触发关系 + 反馈闭环。流动粒子表示链路方向与拓扑，
 //   ⛔ 不表示实时流量、不代表吞吐或成功率；节点读数每次重跑从 storages 现取。
+// 2026-11-15 二次优化（紧凑版）：原「图 + 4 个独立 section + 大 banner + 长 footer」
+//   改为一屏工作区：顶栏 KPI + 架构图 + 5 视图检查器（节点/支路/健康/复盘/数据源）
+//   + 折叠边界。信息密度提到节点内（副读数 / 真实 sparkline / 上下游度数 / 层统计），
+//   画布 840→650、层间距 110→88，4 个部分不再是独立页面区块。
 // 三态纪律：有数显示数；域不存在显示 —（灰，不是 0）；表存在但 0 行显示 0 并注明。
 //   ⛔ 结构节点若不在本快照数据源内，显示 — 而不编造数字，不拿 0 冒充没测过。
 // 2026-11-04 定案的部署路线不变：家族面板一个 tab、不新建插件、不改
@@ -265,7 +269,7 @@ const digest = [
   '',
   '- ' + (proposal
     ? '状态：' + proposal.status + '；立项 ' + String(proposal.createdAt ?? '').slice(0, 10) + '，已 ' + createdDays + ' 天未动。'
-    : '该提案 ID 已不在当前 agint_evolve.json 的 proposal 表（本次 ' + num(proposals) + ' 条），旧版面板围绕它的「待批准 / 暂缓判据失效」叙事不再适用。'),
+    : '该提案 ID 已不在当前 agint_evolve.json 的 proposal 表（本次 ' + num(proposals) + ' 条），旧版面板围绕它的「待批准 / 档 5 暂缓」叙事已不适用。'),
   '- Evolution Ledger 当前 ' + num(ledger) + ' 行。',
 ].join('\n');
 
@@ -280,19 +284,6 @@ const tableCounts = [
   ['agint_skill_autocreate.json', [['task_patterns', num(autocreate.task_patterns)], ['candidates', num(acCandidates)], ['proposals', num(acProposals)], ['releases', num(acReleases)]]],
   ['agint_rules.json', [['rule', num(rules.rule)], ['rule_audit', num(ruleAudit)]]],
 ];
-
-const stageCards = stages.map((s, i) => '<div class="stage tone-' + s.tone + '" title="' + esc(s.src) + '">'
-  + '<div class="stage-h"><span class="stage-i">' + (i + 1) + '</span><span class="stage-n">' + esc(s.name) + '</span><span class="stage-cn">' + esc(s.cn) + '</span></div>'
-  + '<div class="stage-v">' + s.main.toLocaleString() + '<span class="stage-u">' + esc(s.unit) + '</span></div>'
-  + '<div class="stage-s">' + esc(s.sub) + '</div>'
-  + '<div class="stage-src">来源：' + esc(s.src) + '</div>'
-  + '</div>').join('<div class="arrow">→</div>');
-
-const healthCards = health.map((h) => '<div class="hcard tone-' + h.tone + '"><div class="hcard-t">' + esc(h.title) + '</div>'
-  + '<div class="hcard-v">' + esc(h.value) + '</div><div class="hcard-l">' + esc(h.label) + '</div>'
-  + '<div class="hcard-d">' + esc(h.detail) + '</div></div>').join('');
-
-const countsHtml = tableCounts.map(([f, rows]) => '<tr><td class="mono">' + esc(f) + '</td><td>' + rows.map(([k, v]) => '<span class="chip">' + esc(k) + ' <b>' + v + '</b></span>').join(' ') + '</td></tr>').join('');
 
 // ── 进化架构图：分层拓扑 + 真实读数 + 信号流动 ─────────────────────────
 // 关系依据 docs/architecture.md「数据流：复盘 + 评估闭环」与 AGENTS.md 子系统清单。
@@ -379,9 +370,13 @@ const archLayers = [
   ] },
 ];
 
-// 坐标：左侧 0..130 放层标签，主区 140..1130；右侧 1184..1224 留给回流折线。
-const AX = 140, AW = 990, NH = 78, NGAP = 26, RX0 = 1184;
-const VB_W = 1240, VB_H = 840;
+// 坐标：单一真源 LAYER_Y0 / LAYER_STEP / NH，避免 7 层手写 y 漂移。
+// 紧凑版：层间距 110→88、节点高 78→68、画布 840→650，同时塞进更多真实读数。
+const AX = 140, AW = 990, NH = 68, NGAP = 24, RX0 = 1184;
+const LAYER_Y0 = 30, LAYER_STEP = 88, LAYER_BAND_H = 78;
+const VB_W = 1240, VB_H = 650;
+// archLayers 里的 y 字段只是可读性标注，渲染一律用这里算出的值。
+archLayers.forEach((L, i) => { L.y = LAYER_Y0 + i * LAYER_STEP; });
 function layout(L) {
   const n = L.nodes.length;
   if (n === 1) {
@@ -393,6 +388,61 @@ function layout(L) {
 }
 const archNodes = archLayers.flatMap(layout);
 const nodeById = Object.fromEntries(archNodes.map((n) => [n.id, n]));
+
+// ── 信息密度：把原「健康 / 数据源 / 支路」的读数压进架构图节点本身 ────────
+function byDayOf(rows, dateFn) {
+  const m = {};
+  for (const v of vals(rows)) {
+    const d = String(dateFn(v) || '').slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) m[d] = (m[d] || 0) + 1;
+  }
+  return m;
+}
+const sparkMetric = byDayOf(metricRows, (v) => v.ts);
+const sparkProp = byDayOf(proposals, (v) => v.createdAt || v.updatedAt || v.ts);
+const sparkOut = byDayOf(evolution.prediction_outcomes, (v) => v.measuredAt || v.createdAt || v.recordedAt || v.ts);
+const SPARK = { evoMem: logByDay, trajectory: trajByDay, metrics: sparkMetric, propose: sparkProp, outcomes: sparkOut };
+
+/** 迷你折线：只画真实按日序列；点数 < 2 就不画，不造平滑曲线充数。 */
+function sparkSvg(series, w, h, color) {
+  const e = Object.entries(series).filter(([k]) => /^\d{4}-\d{2}-\d{2}$/.test(k))
+    .sort(([a], [b]) => a.localeCompare(b)).slice(-30);
+  if (e.length < 2) return '';
+  const max = Math.max(1, ...e.map(([, v]) => v));
+  const pts = e.map(([, v], i) => [(i / (e.length - 1)) * w, h - 2 - (v / max) * (h - 4)]);
+  const last = pts[pts.length - 1];
+  return '<polyline points="' + pts.map(([x, y]) => x.toFixed(1) + ',' + y.toFixed(1)).join(' ')
+    + '" fill="none" stroke="' + color + '" stroke-width="1.3" stroke-linejoin="round" opacity=".85"/>'
+    + '<circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="1.8" fill="' + color + '"/>';
+}
+
+/** sub = 节点内副读数（第二行）；tables = 该节点实际关联的 storages 表与行数。 */
+const EX = {
+  host:       { sub: 'preset 工具行权威值见 AGENTS.md', tables: [['cron_state', num(cronState)]] },
+  metrics:    { sub: '近 30 日 ' + Object.keys(sparkMetric).length + ' 个采样日', tables: [['metric', num(metricRows)]] },
+  cron:       { sub: 'staleOverdue ' + (M('cron.staleOverdue').value ?? '?') + ' · maxOverdue ' + (M('cron.maxOverdueDays').value ?? '?'), tables: [['cron_state', num(cronState)]] },
+  trajectory: { sub: 'dream ' + (trajSource.dream || 0) + ' 条 · ' + Object.keys(trajByDay).length + ' 个采样日', tables: [['trajectories', num(traj)]] },
+  rules:      { sub: 'adherence ' + (adherence ?? '?') + '% · hits ' + (hits ?? '?'), tables: [['rule', num(rules.rule)], ['rule_audit', num(ruleAudit)]] },
+  memory:     { sub: 'avgConfidence ' + (M('memory.avgConfidence').value ?? '?'), tables: [['metric[memory.total]', memTotal]] },
+  dream:      { sub: '03:00 · light → REM → deep', tables: [['dream 源轨迹', trajSource.dream || 0]] },
+  evoMem:     { sub: 'ledger ' + num(ledger) + ' · fp ' + num(evolution.failure_pattern) + ' · po ' + num(evolution.prediction_outcomes) + ' · bfs ' + num(evolution.benchmark_frozen_set),
+                tables: [['evolution_log', num(evLog)], ['evolution_ledger', num(ledger)], ['failure_pattern', num(evolution.failure_pattern)], ['prediction_outcomes', num(evolution.prediction_outcomes)], ['benchmark_frozen_set', num(evolution.benchmark_frozen_set)]] },
+  skillAc:    { sub: [num(autocreate.task_patterns), num(acCandidates), num(acProposals), num(acReleases)].join(' → ') + ' （patterns→cand→prop→rel）',
+                tables: [['task_patterns', num(autocreate.task_patterns)], ['candidates', num(acCandidates)], ['proposals', num(acProposals)], ['releases', num(acReleases)]] },
+  eval:       { sub: '评分链路永久零 LLM', tables: [['不在快照域', '—']] },
+  baseline:   { sub: 'SEALED · contentHash · 非人类验证', tables: [['仓库冻结集', '—']] },
+  observe:    { sub: abMissing ? '域不存在，不是 0 行实验' : 'samples ' + num(abtest.samples),
+                tables: abMissing ? [['域不存在', '—']] : [['abtests', num(abtest.abtests)], ['samples', num(abtest.samples)]] },
+  propose:    { sub: JSON.stringify(statusDist), tables: [['proposal', num(proposals)]] },
+  curriculum: { sub: '本快照未采集队列读数', tables: [['不在快照域', '—']] },
+  mutator:    { sub: '本快照未采集读数', tables: [['不在快照域', '—']] },
+  gates:      { sub: 'G1 on · G2 GOLD/HELDOUT · G5 24h', tables: [['不在快照域', '—']] },
+  queue:      { sub: num(acProposals) === 0 ? '表存在但无记录' : JSON.stringify(acPropStatus), tables: [['proposals', num(acProposals)]] },
+  release:    { sub: 'deployedCount ' + (M('policy.deployedCount').value ?? '?') + ' · ' + JSON.stringify(relStatus), tables: [['releases', num(acReleases)]] },
+  outcomes:   { sub: '下一 ISO 周对拍 actualDelta', tables: [['prediction_outcomes', num(evolution.prediction_outcomes)]] },
+  human:      { sub: '人工标注不代填', tables: [['不在快照域', '—']] },
+};
+const exOf = (id) => EX[id] || { sub: '', tables: [] };
 
 // 每条边都是一条真实存在的读写 / 触发 / 回流关系；break = 本次快照里这条链路没有数据。
 const archEdges = [
@@ -432,8 +482,8 @@ function edgePath(e, rx) {
       + ' C' + x1.toFixed(1) + ',' + my.toFixed(1) + ' ' + x2.toFixed(1) + ',' + my.toFixed(1)
       + ' ' + x2.toFixed(1) + ',' + y2.toFixed(1);
   }
-  // 回流走右侧直角折线：水平段落在层间空隙（目标层上方 26px），不穿任何节点。
-  const ax = a.x + a.w, ay = a.y + a.h / 2, gy = y2 - 26;
+  // 回流走右侧直角折线：层间距 88 / 节点高 68 ⇒ 空隙 20px，水平段取 y2-10 落在正中。
+  const ax = a.x + a.w, ay = a.y + a.h / 2, gy = y2 - 10;
   return 'M' + ax.toFixed(1) + ',' + ay.toFixed(1)
     + ' L' + rx + ',' + ay.toFixed(1) + ' L' + rx + ',' + gy.toFixed(1)
     + ' L' + x2.toFixed(1) + ',' + gy.toFixed(1) + ' L' + x2.toFixed(1) + ',' + y2.toFixed(1);
@@ -465,30 +515,61 @@ const archEdgesSvg = archEdges.map((e) => {
     body += '<circle cx="' + mx.toFixed(1) + '" cy="' + my.toFixed(1) + '" r="8.5" fill="#fff" stroke="#b91c1c" stroke-width="1.4"/>'
       + '<text x="' + mx.toFixed(1) + '" y="' + (my + 3.4).toFixed(1) + '" text-anchor="middle" font-size="9" font-weight="700" fill="#b91c1c">断</text>';
   }
+  // 关系标签默认隐藏，由顶栏「关系标签」开关切换，避免 25 条边把图糊住。
+  if (e.kind !== 'feedback') {
+    const a0 = nodeById[e.from], b0 = nodeById[e.to];
+    const lx = (a0.x + a0.w / 2 + b0.x + b0.w / 2) / 2;
+    const ly = (a0.y + a0.h + b0.y) / 2 - 4;
+    const short = e.label.length > 12 ? e.label.slice(0, 11) + '…' : e.label;
+    body += '<text class="elabel" x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1)
+      + '" text-anchor="middle" font-size="8" fill="' + st.stroke
+      + '" paint-order="stroke" stroke="#fff" stroke-width="2.6">' + esc(short) + '</text>';
+  }
   return '<g data-edge="' + e.i + '"><title>' + esc(nodeById[e.from].name + ' → ' + nodeById[e.to].name + '：' + e.label)
     + '</title>' + body + '</g>';
 }).join('');
 
+const layerStat = archLayers.map((L) => {
+  const ids = L.nodes.map((n) => n.id);
+  const measured = ids.filter((id) => nodeById[id].value !== NO_DATA).length;
+  return L.name + '：' + ids.length + ' 节点 / ' + measured + ' 有读数';
+});
 const archLayersSvg = archLayers.map((L, i) =>
-  '<rect x="134" y="' + (L.y - 10) + '" width="1002" height="96" rx="10" fill="'
+  '<rect x="134" y="' + (L.y - 8) + '" width="1002" height="' + LAYER_BAND_H + '" rx="10" fill="'
   + (i % 2 ? '#eef2f7' : '#f4f7fb') + '" opacity=".72"/>'
-  + '<text x="16" y="' + (L.y + 8) + '" font-size="10" font-weight="700" fill="#94a3b8">' + L.key + '</text>'
-  + '<text x="16" y="' + (L.y + 28) + '" font-size="12.5" font-weight="700" fill="#334155">' + esc(L.name) + '</text>'
-  + '<text x="16" y="' + (L.y + 45) + '" font-size="9" fill="#94a3b8">' + esc(L.hint) + '</text>'
+  + '<text x="16" y="' + (L.y + 4) + '" font-size="9.5" font-weight="700" fill="#94a3b8">' + L.key + '</text>'
+  + '<text x="16" y="' + (L.y + 20) + '" font-size="11.5" font-weight="700" fill="#334155">' + esc(L.name) + '</text>'
+  + '<text x="16" y="' + (L.y + 34) + '" font-size="8.5" fill="#94a3b8">' + esc(L.hint) + '</text>'
+  + '<text x="16" y="' + (L.y + 48) + '" font-size="8.5" fill="#64748b">' + esc(layerStat[i]) + '</text>'
+  + '<text x="1126" y="' + (L.y + 4) + '" text-anchor="end" font-size="8.5" fill="#94a3b8">' + esc(L.key + ' · ' + L.nodes.length + ' 节点') + '</text>'
 ).join('');
+
+// 上下游度数：让「动态关系」在节点内也可见，不必点开检查器。
+const deg = {};
+archEdges.forEach((e) => {
+  deg[e.from] = deg[e.from] || { i: 0, o: 0 };
+  deg[e.to] = deg[e.to] || { i: 0, o: 0 };
+  deg[e.from].o++; deg[e.to].i++;
+});
 
 const archNodesSvg = archNodes.map((n) => {
   const t = TONE[n.tone];
   const cut = (s, max) => (s.length > max ? s.slice(0, max - 1) + '…' : s);
+  const ex = exOf(n.id);
+  const spark = SPARK[n.id] ? sparkSvg(SPARK[n.id], 46, 18, t.chip) : '';
+  const d = deg[n.id] || { i: 0, o: 0 };
   return '<g class="node" data-node="' + n.id + '" role="button" tabindex="0" aria-label="' + esc(n.name) + '">'
     + '<rect x="' + n.x.toFixed(1) + '" y="' + n.y + '" width="' + n.w.toFixed(1) + '" height="' + n.h
-    + '" rx="9" fill="' + t.fill + '" stroke="' + t.stroke + '" stroke-width="1.5"/>'
-    + '<rect x="' + n.x.toFixed(1) + '" y="' + n.y + '" width="4" height="' + n.h + '" rx="2" fill="' + t.stroke + '"/>'
-    + '<circle cx="' + (n.x + n.w - 13).toFixed(1) + '" cy="' + (n.y + 15) + '" r="4" fill="' + t.stroke + '"/>'
-    + '<text x="' + (n.x + 14).toFixed(1) + '" y="' + (n.y + 23) + '" font-size="13" font-weight="700" fill="#1c2733">' + esc(cut(n.name, 13)) + '</text>'
-    + '<text x="' + (n.x + 14).toFixed(1) + '" y="' + (n.y + 39) + '" font-size="9.5" fill="#64748b" font-family="ui-monospace,Consolas,monospace">' + esc(cut(n.code, Math.floor(n.w / 6))) + '</text>'
-    + '<text x="' + (n.x + 14).toFixed(1) + '" y="' + (n.y + 64) + '" font-size="20" font-weight="750" fill="' + t.chip + '">' + esc(String(n.value)) + '</text>'
-    + '<text x="' + (n.x + n.w - 12).toFixed(1) + '" y="' + (n.y + 64) + '" text-anchor="end" font-size="10" fill="#64748b">' + esc(cut(n.unit, 16)) + '</text>'
+    + '" rx="8" fill="' + t.fill + '" stroke="' + t.stroke + '" stroke-width="1.4"/>'
+    + '<rect x="' + n.x.toFixed(1) + '" y="' + n.y + '" width="3.5" height="' + n.h + '" rx="2" fill="' + t.stroke + '"/>'
+    + '<circle cx="' + (n.x + n.w - 12).toFixed(1) + '" cy="' + (n.y + 12) + '" r="3.5" fill="' + t.stroke + '"/>'
+    + '<text x="' + (n.x + 12).toFixed(1) + '" y="' + (n.y + 17) + '" font-size="11.5" font-weight="700" fill="#1c2733">' + esc(cut(n.name, 13)) + '</text>'
+    + '<text x="' + (n.x + 12).toFixed(1) + '" y="' + (n.y + 30) + '" font-size="8.5" fill="#64748b" font-family="ui-monospace,Consolas,monospace">' + esc(cut(n.code, Math.floor(n.w / 5.6))) + '</text>'
+    + (spark ? '<g transform="translate(' + (n.x + n.w - 58).toFixed(1) + ',' + (n.y + 22) + ')">' + spark + '</g>' : '')
+    + '<text x="' + (n.x + 12).toFixed(1) + '" y="' + (n.y + 50) + '" font-size="17" font-weight="750" fill="' + t.chip + '">' + esc(String(n.value)) + '</text>'
+    + '<text x="' + (n.x + n.w - 10).toFixed(1) + '" y="' + (n.y + 50) + '" text-anchor="end" font-size="9" fill="#64748b">' + esc(cut(n.unit, 15)) + '</text>'
+    + '<text x="' + (n.x + 12).toFixed(1) + '" y="' + (n.y + 62) + '" font-size="8.5" fill="#64748b">' + esc(cut(ex.sub, Math.floor(n.w / 5.4) - 7)) + '</text>'
+    + '<text x="' + (n.x + n.w - 10).toFixed(1) + '" y="' + (n.y + 62) + '" text-anchor="end" font-size="8.5" fill="#94a3b8">↑' + d.i + ' ↓' + d.o + '</text>'
     + '</g>';
 }).join('');
 
@@ -504,7 +585,8 @@ const archSvg = '<svg id="arch" viewBox="0 0 ' + VB_W + ' ' + VB_H + '" width="1
 // 交互数据：节点详情 + 上下游关系。JSON 里的 < 转义，避免 </script> 提前闭合 iframe 脚本。
 const archDetail = {
   nodes: archNodes.map((n) => ({ id: n.id, name: n.name, code: n.code, value: String(n.value), unit: n.unit,
-    tone: n.tone, toneLabel: TONE[n.tone].label, src: n.src, detail: n.detail, layer: n.layer })),
+    tone: n.tone, toneLabel: TONE[n.tone].label, src: n.src, detail: n.detail, layer: n.layer,
+    sub: exOf(n.id).sub, tables: exOf(n.id).tables, deg: deg[n.id] || { i: 0, o: 0 } })),
   edges: archEdges.map((e) => ({ from: e.from, to: e.to, fromName: nodeById[e.from].name, toName: nodeById[e.to].name,
     kind: e.kind, kindLabel: EDGE[e.kind].label, label: e.label })),
 };
@@ -516,130 +598,164 @@ const breakCount = archEdges.filter((e) => e.kind === 'break').length;
 const feedbackCount = archEdges.filter((e) => e.kind === 'feedback').length;
 const measuredCount = archNodes.filter((n) => n.value !== NO_DATA).length;
 
+// ── 融合：原 4 个独立 section 变成架构图检查器的视图 + 顶栏 KPI ──────────
+const kpiHtml = [
+  ['节点', archNodes.length, ''],
+  ['主链路', liveCount, 'ok'],
+  ['断点', breakCount, 'bad'],
+  ['回流', feedbackCount, 'ok'],
+  ['域缺失', missing.length, 'bad'],
+  ['dream 轨迹', trajSource.dream || 0, 'warn'],
+  ['遵守率', (adherence ?? '?') + '%', zeroHitFull ? 'bad' : 'warn'],
+  ['cron 非 ok', cronBad.length + '/' + num(cronState), cronBad.length ? 'bad' : 'ok'],
+  ['记忆', memTotal, ''],
+  ['近 7 日 log', logThisWeek, ''],
+].map(([k, v, t]) => '<span class="kpi ' + t + '"><b>' + esc(String(v)) + '</b>' + esc(k) + '</span>').join('');
+
+// 视图「支路」：六阶段压成一行 6 格，取代原独立 section。
+const branchHtml = '<div class="strip">'
+  + stages.map((s, i) => '<div class="cell tone-' + s.tone + '" title="' + esc(s.src) + '">'
+    + '<b>' + (i + 1) + ' · ' + esc(s.name) + '</b>'
+    + '<span class="cv">' + esc(String(s.main)) + '</span>'
+    + '<span class="cs">' + esc(s.sub) + '</span></div>').join('<div class="sep">→</div>')
+  + '</div><div class="hint">⛔ 不画桑基图：跨表无统一 trace id（ledger 用 contractId/populationCandidateId，autocreate 用 candidateId），强行连线会造出系统里不存在的轨迹。节点内 <span class="mono">patterns→cand→prop→rel</span> 即本支路的压缩形态。</div>';
+
+// 视图「健康」：4 张紧凑卡 + 两张真实按日序列，取代原仪表盘 section。
+const healthHtml = '<div class="hstrip">'
+  + health.map((h) => '<div class="hcell tone-' + h.tone + '"><span>' + esc(h.title) + '</span><b>' + esc(h.value)
+    + '</b><small>' + esc(h.detail) + '</small></div>').join('')
+  + '</div><div class="charts2">'
+  + '<div class="mini"><b>evolution_log 每日新增 · 共 ' + num(evLog) + ' 行</b>' + lineChart(logByDay, 380, 92, '#1d4ed8') + '</div>'
+  + '<div class="mini"><b>trajectory 每日写入 · 共 ' + num(traj) + ' 条</b>' + lineChart(trajByDay, 380, 92, '#0f766e') + '</div>'
+  + '</div>';
+
+// 视图「复盘」：原周复盘导出，Markdown 全文；复制按钮移到顶栏。
+const digestHtml = '<pre class="dg" id="dg">' + esc(digest) + '</pre>';
+
+// 视图「数据源」：按架构图节点组织（不是按文件），点行可跳回对应节点。
+const srcHtml = archNodes.map((n) => {
+  const ex = exOf(n.id);
+  return '<div class="srcrow" data-goto="' + n.id + '"><b>' + esc(n.name) + '</b>'
+    + '<span class="mono">' + esc(n.src) + '</span>'
+    + ex.tables.map(([k, v]) => '<span class="chip">' + esc(k) + ' <b>' + esc(String(v)) + '</b></span>').join('')
+    + '</div>';
+}).join('') + (missing.length ? '<div class="hint bad">⛔ 域不存在（不是 0 行）：' + esc(missing.join('；')) + '</div>' : '');
+
 const generatedAt = new Date().toISOString();
 const html = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AGINT 进化架构图 · 系统动态（只读快照）</title>
 <style>
 :root{--bg:#f6f8fb;--card:#fff;--line:#e3e8ef;--ink:#1c2733;--sub:#5b6879;--mute:#8a94a6;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--blue:#1d4ed8}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif}
-.wrap{max-width:1240px;margin:0 auto;padding:28px 24px 60px}
-header{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:18px;flex-wrap:wrap}
-h1{font-size:23px;margin:0 0 4px;letter-spacing:.2px}.lede{color:var(--sub);font-size:13px;margin:0}
-.meta{font-size:12px;color:var(--mute);text-align:right;line-height:1.8}.mono{font-family:ui-monospace,Consolas,monospace}
-.banner{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;padding:16px 18px;margin-bottom:22px}
-.banner-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
-.tag{font-size:11px;padding:2px 9px;border-radius:20px;background:#eef2ff;color:var(--blue);border:1px solid #dbe4ff;font-weight:600}
-.tag.amber{background:#fffbeb;color:var(--warn);border-color:#fde68a}.tag.green{background:#f0fdf4;color:var(--ok);border-color:#bbf7d0}.tag.red{background:#fef2f2;color:var(--bad);border-color:#fecaca}
-.banner h2{font-size:15px;margin:0}.banner p{margin:6px 0 0;color:var(--sub);font-size:13px}
-.banner b{color:var(--ink)}
-section{margin-bottom:26px}.sec-h{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
-.sec-h h2{font-size:16px;margin:0}.sec-h span{font-size:12px;color:var(--mute)}
-.note{background:#fff;border:1px solid var(--line);border-radius:9px;padding:11px 14px;font-size:12.5px;color:var(--sub);margin-bottom:12px}
-.note b{color:var(--ink)}
-.flow{display:flex;align-items:stretch;gap:6px;overflow-x:auto;padding-bottom:6px}
-.stage{flex:1 1 0;min-width:172px;background:#fff;border:1px solid var(--line);border-top:3px solid var(--mute);border-radius:9px;padding:12px 13px}
-.stage.tone-ok{border-top-color:var(--ok)}.stage.tone-warn{border-top-color:var(--warn)}.stage.tone-bad{border-top-color:var(--bad)}
-.stage-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:9px}
-.stage-i{width:18px;height:18px;border-radius:50%;background:#eef2f7;color:var(--sub);font-size:11px;display:grid;place-items:center;font-weight:700}
-.stage-n{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;font-weight:700}.stage-cn{font-size:11px;color:var(--mute)}
-.stage-v{font-size:27px;font-weight:700;line-height:1.1;letter-spacing:-.5px}.stage-u{font-size:11px;font-weight:400;color:var(--sub);margin-left:5px;letter-spacing:0}
-.stage-s{font-size:11.5px;color:var(--sub);margin-top:8px;min-height:46px}
-.stage-src{font-size:10px;color:var(--mute);border-top:1px dashed var(--line);padding-top:7px;margin-top:8px;word-break:break-all}
-.tone-bad .stage-v{color:var(--bad)}.tone-warn .stage-v{color:var(--warn)}.tone-ok .stage-v{color:var(--ok)}
-.arrow{display:grid;place-items:center;color:#b8c2d0;font-size:17px;flex:0 0 12px}
-.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.hcard{background:#fff;border:1px solid var(--line);border-radius:9px;padding:14px 15px;border-top:3px solid var(--mute)}
-.hcard.tone-ok{border-top-color:var(--ok)}.hcard.tone-warn{border-top-color:var(--warn)}.hcard.tone-bad{border-top-color:var(--bad)}
-.hcard-t{font-size:12px;color:var(--sub);font-weight:600}.hcard-v{font-size:25px;font-weight:700;margin:5px 0 1px;letter-spacing:-.5px}
-.tone-bad .hcard-v{color:var(--bad)}.tone-warn .hcard-v{color:var(--warn)}.tone-ok .hcard-v{color:var(--ok)}
-.hcard-l{font-size:11px;color:var(--mute);margin-bottom:8px}.hcard-d{font-size:11.5px;color:var(--sub);border-top:1px dashed var(--line);padding-top:8px}
-.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
-.chart{background:#fff;border:1px solid var(--line);border-radius:9px;padding:14px 16px}.chart h3{font-size:13px;margin:0 0 2px}.chart .cap{font-size:11px;color:var(--mute);margin-bottom:6px}
-.empty{color:var(--mute);font-size:12px;padding:20px 0}
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12px}
-td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td:first-child{width:230px;color:var(--sub)}
-.chip{display:inline-block;background:#f2f5f9;border:1px solid #e5eaf1;border-radius:5px;padding:1px 7px;margin:2px 4px 2px 0;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--sub)}.chip b{color:var(--ink)}
-pre{background:#0f172a;color:#dbe4f0;border-radius:9px;padding:16px 18px;font:12px/1.65 ui-monospace,Consolas,monospace;overflow:auto;max-height:420px;margin:0}
-.btn{background:var(--blue);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-size:12px;cursor:pointer;margin-bottom:10px}.btn:hover{opacity:.88}
-.btn.ghost{background:#fff;color:var(--blue);border:1px solid #c7d7ff;margin-bottom:0}.btn.ghost:hover{opacity:.75}
-.statbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
-.stat{background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px 15px;min-width:128px}
-.stat b{display:block;font-size:23px;line-height:1.2;font-variant-numeric:tabular-nums}.stat span{font-size:11px;color:var(--mute)}
-.arch-shell{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px 14px 12px}
-.arch-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
-.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--sub)}
-.lg{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.lg i{display:inline-block}
-.lg .sq{width:11px;height:11px;border:1.5px solid;border-radius:3px}.lg .ln{width:17px;height:0;border-top:2px solid}
-.arch-scroll{overflow-x:auto}#arch{display:block;width:100%;min-width:920px;height:auto}
-#arch .node{cursor:pointer}#arch .node:hover rect:first-child{stroke-width:2.6}#arch .node.sel rect:first-child{stroke-width:3}
-.detail{margin-top:12px;background:#f8fafc;border:1px solid var(--line);border-radius:9px;padding:14px 16px;min-height:104px}
-.detail h3{margin:0 0 6px;font-size:15px}.detail .kv{font-size:12px;color:var(--sub);margin:3px 0}.detail .kv b{color:var(--ink)}
-.detail .rel{font-size:11.5px;color:var(--sub);border-top:1px dashed var(--line);margin-top:9px;padding-top:8px}
-.selfcheck{font-size:11.5px;font-weight:700;color:var(--ok);margin-top:10px}.selfcheck.bad{color:var(--bad)}
-details{margin-top:10px}details summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--blue)}
-footer{font-size:11.5px;color:var(--sub);border-top:1px solid var(--line);padding-top:14px;margin-top:26px}footer li{margin-bottom:4px}
-@media(max-width:900px){.grid4{grid-template-columns:repeat(2,1fr)}.charts{grid-template-columns:1fr}}
-@media(max-width:620px){.grid4{grid-template-columns:1fr}}
-</style></head><body><div class="wrap">
-<header><div><h1>AGINT 进化架构图 · 系统动态</h1><p class="lede">分层拓扑 · 真实信号流 · 反馈闭环 · 只读快照（2026-11-15 由「进化流水线」升级）</p></div>
-<div class="meta">快照生成：${esc(generatedAt)}<br>数据源：${esc(STORAGES_LABEL)}/（9 个域，只读）<br>形态：单文件 HTML，零外部依赖</div></header>
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:12.5px/1.5 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif}
+.app{max-width:1280px;margin:0 auto;padding:9px 12px 10px}
+.mono{font-family:ui-monospace,Consolas,monospace}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:7px}
+.brand{font-size:15px;font-weight:750;white-space:nowrap}.brand span{font-size:10.5px;color:var(--mute);font-weight:400;margin-left:5px}
+.kpis{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.kpi{display:inline-flex;align-items:baseline;gap:4px;background:#fff;border:1px solid var(--line);border-radius:5px;padding:2px 7px;font-size:10px;color:var(--sub);white-space:nowrap}
+.kpi b{font-size:12.5px;color:var(--ink);font-variant-numeric:tabular-nums}
+.kpi.ok b{color:var(--ok)}.kpi.warn b{color:var(--warn)}.kpi.bad b{color:var(--bad)}
+.stamp{font-size:9.5px;color:var(--mute);text-align:right;line-height:1.45;white-space:nowrap}
+.bench{background:#fff;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.bench-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 10px;border-bottom:1px solid var(--line);background:#f8fafc;flex-wrap:wrap}
+.legend{display:flex;gap:9px;flex-wrap:wrap;font-size:9.5px;color:var(--sub)}
+.lg{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}.lg i{display:inline-block}
+.lg .sq{width:9px;height:9px;border:1.5px solid;border-radius:2px}.lg .ln{width:14px;height:0;border-top:2px solid}
+.tools{display:flex;gap:5px}
+.tools button{font:inherit;font-size:10px;padding:3px 9px;border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--sub);cursor:pointer;white-space:nowrap}
+.tools button:hover{border-color:var(--blue);color:var(--blue)}
+.tools button.on{background:#eef2ff;border-color:#c7d7ff;color:var(--blue)}
+.canvas{padding:1px 6px 0}
+.arch-scroll{overflow-x:auto}
+#arch{display:block;width:100%;max-width:1240px;min-width:1000px;height:auto;margin:0 auto}
+#arch .node{cursor:pointer}#arch .node:hover rect:first-child{stroke-width:2.4}#arch .node.sel rect:first-child{stroke-width:3}
+.elabel{display:none}body.show-labels .elabel{display:inline}
+.inspect{border-top:1px solid var(--line);background:#fbfcfe}
+.tabs{display:flex;align-items:center;gap:0;border-bottom:1px solid var(--line);padding:0 9px}
+.tb{font:inherit;font-size:10.5px;padding:6px 10px;border:0;border-bottom:2px solid transparent;background:none;color:var(--sub);cursor:pointer;white-space:nowrap}
+.tb:hover{color:var(--blue)}.tb.on{color:var(--blue);border-bottom-color:var(--blue);font-weight:700}
+.selfcheck{margin-left:auto;font-size:9.5px;font-weight:700;color:var(--ok);white-space:nowrap}.selfcheck.bad{color:var(--bad)}
+.views{height:138px;overflow:auto;padding:7px 11px}
+.view{display:none}.view.on{display:block}
+.detail h3{margin:0 0 4px;font-size:12.5px}
+.detail .kv{font-size:10.5px;color:var(--sub);margin:2px 0}.detail .kv b{color:var(--ink)}
+.detail .rel{font-size:10px;color:var(--sub);border-top:1px dashed var(--line);margin-top:5px;padding-top:5px;column-count:2;column-gap:16px}
+.chips{margin-top:3px}
+.chip{display:inline-block;background:#f2f5f9;border:1px solid #e5eaf1;border-radius:4px;padding:1px 6px;margin:2px 4px 2px 0;font:10px ui-monospace,Consolas,monospace;color:var(--sub)}.chip b{color:var(--ink)}
+.strip{display:flex;align-items:stretch;gap:4px;overflow-x:auto}
+.cell{flex:1;min-width:132px;background:#fff;border:1px solid var(--line);border-top:2px solid var(--mute);border-radius:5px;padding:5px 7px}
+.cell.tone-ok{border-top-color:var(--ok)}.cell.tone-warn{border-top-color:var(--warn)}.cell.tone-bad{border-top-color:var(--bad)}
+.cell b{display:block;font:700 10px ui-monospace,Consolas,monospace}.cell .cv{display:block;font-size:15px;font-weight:750;line-height:1.25}
+.cell .cs{display:block;font-size:9.5px;color:var(--sub);line-height:1.35}
+.sep{display:grid;place-items:center;color:#b8c2d0;font-size:12px}
+.hint{font-size:9.5px;color:var(--mute);margin-top:5px}.hint.bad{color:var(--bad)}
+.hstrip{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.hcell{background:#fff;border:1px solid var(--line);border-top:2px solid var(--mute);border-radius:5px;padding:4px 7px;min-width:0}
+.hcell.tone-ok{border-top-color:var(--ok)}.hcell.tone-warn{border-top-color:var(--warn)}.hcell.tone-bad{border-top-color:var(--bad)}
+.hcell span{font-size:9.5px;color:var(--sub)}.hcell b{display:block;font-size:15px;line-height:1.25}
+.hcell small{display:block;font-size:9px;color:var(--sub);line-height:1.35;max-height:26px;overflow:hidden}
+.charts2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px}
+.mini{background:#fff;border:1px solid var(--line);border-radius:5px;padding:3px 8px}.mini b{font-size:9.5px}
+.dg{background:#0f172a;color:#dbe4f0;border-radius:6px;padding:8px 10px;font:10px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;margin:0;max-height:124px;overflow:auto}
+.srcrow{display:flex;align-items:center;gap:6px;padding:3px 6px;border-bottom:1px dashed var(--line);cursor:pointer;flex-wrap:wrap}
+.srcrow:hover{background:#eef2ff}
+.srcrow>b{font-size:10px;min-width:118px}.srcrow>.mono{font-size:9px;color:var(--mute);min-width:200px}
+.foot{display:flex;align-items:center;gap:12px;margin-top:5px;font-size:9.5px;color:var(--mute);flex-wrap:wrap}
+details summary{cursor:pointer;color:var(--blue);font-size:9.5px}
+.bounds{padding:6px 10px;background:#fff;border:1px solid var(--line);border-radius:6px;margin-top:4px;line-height:1.65;font-size:10px;max-width:1100px}
+@media(max-width:900px){.hstrip{grid-template-columns:repeat(2,1fr)}.charts2{grid-template-columns:1fr}}
+</style></head><body><div class="app">
 
-<div class="banner"><div class="banner-top"><span class="tag green">正式形态 · 只读 HTML</span><span class="tag">分层架构图</span><span class="tag amber">${breakCount} 处断点链路</span><span class="tag red">${missing.length} 个域不存在</span><span class="tag green">不写任何状态</span></div>
-<h2>不再是一条流水线，而是一张会动的系统结构图</h2>
-<p>旧版把进化画成「六阶段线性时序」，并把 11-08 的读数与提案故事烤进页面。本版改为<b>分层架构图</b>：L0 宿主 → L1 采集 → L2 记忆 → L3 判据 → L4 决策 → L5 闸门投递 → L6 反馈回流，<b>连线上流动的信号表示各子系统之间真实存在的读写 / 触发 / 回流关系</b>，右侧绿色折线是闭环。六阶段降为图中一条支路的明细。</p>
-<p>所有读数、状态色、断点判定、周复盘文字<b>每次重跑都从生产 storages 现取</b>。本次读到 ${num(metricRows)} 条 metric、${num(evLog)} 行 evolution_log、${num(proposals)} 条 proposal；提案 d85347bf ${proposal ? '仍在表中' : '已不在当前 proposal 表'}，旧版围绕它的「待批准 / 暂缓判据失效」叙事<b>已不再适用</b>。</p></div>
+<header class="top">
+<div class="brand">AGINT 进化架构图<span>· 系统动态 · 只读快照</span></div>
+<div class="kpis">${kpiHtml}</div>
+<div class="stamp">${esc(generatedAt)}<br>${esc(STORAGES_LABEL)}/ · 9 域</div>
+</header>
 
-<div class="statbar">
-<div class="stat"><b>${archNodes.length}</b><span>架构节点</span></div>
-<div class="stat"><b>${measuredCount}</b><span>有 storages 读数</span></div>
-<div class="stat"><b>${liveCount}</b><span>主链路（活跃）</span></div>
-<div class="stat"><b style="color:var(--bad)">${breakCount}</b><span>断点链路</span></div>
-<div class="stat"><b style="color:var(--ok)">${feedbackCount}</b><span>反馈回流</span></div>
-<div class="stat"><b>${missing.length}</b><span>域不存在（非 0）</span></div>
+<div class="bench">
+<div class="bench-head">
+<div class="legend">${toneLegend}<span class="lg" style="color:var(--mute)">│</span>${edgeLegend}</div>
+<div class="tools">
+<button id="motionBtn">⏸ 动态</button>
+<button id="labelBtn">关系标签</button>
+<button id="copyBtn">复制复盘</button>
+</div>
+</div>
+<div class="canvas"><div class="arch-scroll">${archSvg}</div></div>
+<div class="inspect">
+<div class="tabs">
+<button class="tb on" data-v="node">节点</button>
+<button class="tb" data-v="branch">支路 · 六阶段</button>
+<button class="tb" data-v="health">健康 · 趋势</button>
+<button class="tb" data-v="digest">复盘 · ${currentWeek}</button>
+<button class="tb" data-v="src">数据源 · ${tableCounts.length} 域</button>
+<span class="selfcheck" id="selfcheck">自检…</span>
+</div>
+<div class="views">
+<div class="view on" id="v-node"><div class="detail" id="detail"><h3>系统总览</h3>
+<div class="kv">点击任意节点查看<b>读数、来源表、状态与上下游</b>；下方 5 个视图承载支路 / 健康 / 复盘 / 数据源，不再另开页面区块。</div>
+<div class="kv">本次 <b>${archNodes.length}</b> 节点 / <b>${archEdges.length}</b> 关系：主链路 ${liveCount} · 断点 ${breakCount} · 回流 ${feedbackCount}；<b>${measuredCount}</b> 个有 storages 读数，<b>${archNodes.length - measuredCount}</b> 个结构节点显示 —。</div>
+<div class="kv">节点内右上小折线是<b>真实按日序列</b>（evolution_log / trajectory / metric / proposal / prediction_outcomes），右下 ↑↓ 是上下游度数；副读数来自该节点关联的表。</div>
+</div></div>
+<div class="view" id="v-branch">${branchHtml}</div>
+<div class="view" id="v-health">${healthHtml}</div>
+<div class="view" id="v-digest">${digestHtml}</div>
+<div class="view" id="v-src">${srcHtml}</div>
+</div>
+</div>
 </div>
 
-<section><div class="sec-h"><h2>1 · 进化架构图（Evolution Architecture）</h2><span>${archLayers.length} 层 · ${archNodes.length} 节点 · ${archEdges.length} 条关系 · 点节点看来源</span></div>
-<div class="note"><b>「动态」到底表示什么。</b>沿连线移动的小圆点表示<b>真实存在的读写 / 触发 / 回流关系与方向</b>（依据 docs/architecture.md「复盘 + 评估闭环」与 AGENTS.md 子系统清单），⛔ <b>不是实时流量</b>，不代表吞吐、频率或成功率。节点读数取自本次快照，宿主继续写存储时本页不会自动变化。红色虚线<b>不画粒子</b> —— 那是本次快照里没有数据的真实断点，把空数据画成流动的线是不诚实的。</div>
-<div class="arch-shell">
-<div class="arch-top"><div class="legend">${toneLegend}</div><button class="btn ghost" id="motionBtn">⏸ 暂停动态</button></div>
-<div class="legend" style="margin-bottom:10px">${edgeLegend}</div>
-<div class="arch-scroll">${archSvg}</div>
-<div class="detail" id="detail"><h3>系统总览</h3>
-<div class="kv">点击图中任意节点，查看它的<b>真实读数、来源字段、状态判定与上下游链路</b>。</div>
-<div class="kv">本次快照共 <b>${archNodes.length}</b> 个节点、<b>${archEdges.length}</b> 条关系；<b>${measuredCount}</b> 个节点有 storages 读数，<b>${archNodes.length - measuredCount}</b> 个是运行时结构节点（显示 <b>—</b>，不编造数字）。</div>
-<div class="kv">红色「断」标记共 <b>${breakCount}</b> 处；右侧绿色折线是 <b>${feedbackCount}</b> 条反馈回流，构成闭环。</div>
+<div class="foot">
+<details><summary>边界与口径（点开）</summary><div class="bounds">
+<b>① 动态的含义：</b>流动粒子表示真实存在的读写 / 触发 / 回流关系与方向（依据 docs/architecture.md 与 AGENTS.md），⛔ 不是实时流量、不代表吞吐或成功率；${breakCount} 条断点边不画粒子，不把空数据画成好看的流动线。<br>
+<b>② 三态纪律：</b>有数显示数；域不存在显示 <b>—</b>（不是 0）；表存在但 0 行显示 0 并注明。本次 ${missing.length} 个域不存在：${esc(missing.join('；')) || '无'}。${archNodes.length - measuredCount} 个运行时结构节点不在 9 个 storages 域内，只画拓扑位置。<br>
+<b>③ 口径与不自评：</b>logCount7d=${logCount7d ?? '?'} vs 按日近 7 日 ${logThisWeek}（${Number(logCount7d) === logThisWeek ? '本次一致' : '不一致，同时列出不调和'}）；外置冻结集是「运营者授权 · agent 执行 · 非人类验证」的机械真值，capabilityConclusion 恒 null，⛔ 不据此宣称能力水平；人工标注不代填。<br>
+<b>④ 只读与刷新：</b>本页不改任何表 / 提案状态 / 写接口；重跑 <span class="mono">node bin/evolution-viz-snapshot.mjs</span> 同步独立 HTML 与三份面板副本，宿主按 mtime 重读资产、不需要重启。⛔ 想看新状态就重跑，本页不会自己动。
+</div></details>
+<span>粒子=拓扑方向，非实时指标 · 断点不画粒子 · 只读不写状态</span>
 </div>
-<div class="selfcheck" id="selfcheck">数据自检：检查中…</div>
-</div></section>
-
-<section><div class="sec-h"><h2>2 · 支路明细：技能自动创建六阶段</h2><span>原「进化流水线」时序，现降为图中一条支路</span></div>
-<details><summary>展开六阶段计数（按当次数据判定，不沿用历史结论）</summary>
-<div class="note" style="margin-top:10px"><b>不画桑基图。</b>跨表没有统一 trace id：ledger 用 contractId / populationCandidateId，autocreate 用 candidateId，两者无 join key。强行连线会造出系统里不存在的轨迹。这里只给阶段计数与断点标记。</div>
-<div class="flow" style="margin-top:10px">${stageCards}</div></details></section>
-
-<section><div class="sec-h"><h2>3 · 健康仪表盘（Health Dashboard）</h2><span>四卡片 · 阈值按当次数据判定，不粉饰</span></div>
-<div class="grid4">${healthCards}</div>
-<div class="charts"><div class="chart"><h3>evolution_log 每日新增</h3><div class="cap">近 30 个有数据的日期 · 共 ${num(evLog)} 行</div>${lineChart(logByDay, 520, 170, '#1d4ed8')}</div>
-<div class="chart"><h3>trajectory 每日写入</h3><div class="cap">calibration.current.byDay · 共 ${num(traj)} 条</div>${lineChart(trajByDay, 520, 170, '#0f766e')}</div></div></section>
-
-<section><div class="sec-h"><h2>4 · 周复盘导出（Weekly Digest）</h2><span>${currentWeek} · 断点与数字按当次数据生成</span></div>
-<button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('dg').textContent).then(()=>{this.textContent='已复制';setTimeout(()=>this.textContent='复制 Markdown',1600)})">复制 Markdown</button>
-<pre id="dg">${esc(digest)}</pre></section>
-
-<section><div class="sec-h"><h2>5 · 数据源盘点</h2><span>本页实际读取的表与行数</span></div>
-<table>${countsHtml}</table>${missing.length ? '<div class="note" style="margin-top:10px"><b>⛔ 域不存在（不是 0 行）：</b>' + esc(missing.join('；')) + '。面板显示 — 而不是 0，也不把它计入「实验数为 0」。</div>' : ''}</section>
-
-<footer><b>数据可信度与边界</b><ol>
-<li>本页只读。它不改 agint 任何表，不改提案状态，不调用写接口。生成后宿主继续写存储，本页保持生成时刻的快照。</li>
-<li><b>三态纪律：</b>有数显示数；域不存在显示 <b>—</b>（灰，⛔ 不是 0）；表存在但 0 行显示 0 并注明。本次 ${missing.length} 个域不存在：${esc(missing.join('；')) || '无'}。</li>
-<li><b>结构节点：</b>${archNodes.length - measuredCount} 个子系统不在本快照的 9 个 storages 域内（宿主 / 评估引擎 / 冻结集 / 课程 / 变异 / 五闸 / 人工否决），只画拓扑位置，读数显示 —。<b>不编造数字，不拿 0 冒充没测过。</b></li>
-<li><b>动态的含义：</b>粒子表示链路拓扑与信号方向，不表示实时流量；${breakCount} 条断点链路不画粒子。⛔ 不把空数据画成好看的流动线。</li>
-<li><b>口径冲突：</b>metrics 的 evolution.logCount7d=${logCount7d ?? '?'}，而 evolution_log 按日计数近 7 日合计 ${logThisWeek}。${Number(logCount7d) === logThisWeek ? '本次两者一致。' : '两者不一致，面板同时列出，不替它们调和。'}</li>
-<li><b>不替 AGINT 评估自己：</b>外置冻结集是「运营者授权 · agent 执行 · 非人类验证」的机械真值，capabilityConclusion 恒 null；本页不据此宣称能力水平或能力变化。人工标注需由人填写，本页不代填。</li>
-<li><b>正式形态与部署：</b>2026-11-04 定案「保持只读 HTML」的路线不变；2026-11-15 由「进化流水线」tab 升级为「进化架构图」tab。本页作为家族面板该 tab 的 iframe 内容呈现，独立 HTML 仍可直接打开。不新建插件、不改 cordis.patch.yml、不加 cron、不重启宿主。桑基图因跨表无 join key 未做。</li>
-<li><b>刷新方式：</b>重跑 <span class="mono">node bin/evolution-viz-snapshot.mjs</span>。它同时更新独立 HTML 与三份 panel-v2.html 的 tab 内容；宿主按 mtime 重读资产，不需要重启。⛔ 想看新状态就重跑，本页不会自己动。</li>
-</ol></footer>
 </div>
 <script>
 (function(){
@@ -651,48 +767,87 @@ footer{font-size:11.5px;color:var(--sub);border-top:1px solid var(--line);paddin
   var detail = document.getElementById('detail');
   var map = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
   function es(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return map[c]; }); }
+
+  var tabs = document.querySelectorAll('.tb');
+  var views = { node:'v-node', branch:'v-branch', health:'v-health', digest:'v-digest', src:'v-src' };
+  function setView(v){
+    for(var i=0;i<tabs.length;i++){ tabs[i].classList.toggle('on', tabs[i].getAttribute('data-v')===v); }
+    Object.keys(views).forEach(function(k){ var el=document.getElementById(views[k]); if(el) el.classList.toggle('on', k===v); });
+  }
+  for(var ti=0;ti<tabs.length;ti++){
+    (function(t){ t.addEventListener('click', function(){ setView(t.getAttribute('data-v')); }); })(tabs[ti]);
+  }
+
   function rel(id){
-    var ins = D.edges.filter(function(e){ return e.to === id; });
-    var outs = D.edges.filter(function(e){ return e.from === id; });
-    function row(e){ return '<div>· ' + es(e.kindLabel) + '：' + es(e.label) + '（' + es(e.fromName) + ' → ' + es(e.toName) + '）</div>'; }
-    return '<div class="rel"><b>上游（' + ins.length + '）</b>' + (ins.length ? ins.map(row).join('') : '<div>· 无</div>')
-      + '<b style="display:block;margin-top:6px">下游（' + outs.length + '）</b>' + (outs.length ? outs.map(row).join('') : '<div>· 无</div>') + '</div>';
+    var ins=D.edges.filter(function(e){return e.to===id;}), outs=D.edges.filter(function(e){return e.from===id;});
+    function row(e){ return '<div>· '+es(e.kindLabel)+'：'+es(e.label)+'（'+es(e.fromName)+' → '+es(e.toName)+'）</div>'; }
+    return '<div class="rel"><b>上游（'+ins.length+'）</b>'+(ins.length?ins.map(row).join(''):'<div>· 无</div>')
+      +'<b style="display:block;margin-top:4px">下游（'+outs.length+'）</b>'+(outs.length?outs.map(row).join(''):'<div>· 无</div>')+'</div>';
+  }
+  function chips(n){
+    return n.tables.length ? '<div class="chips">'+n.tables.map(function(t){ return '<span class="chip">'+es(t[0])+' <b>'+es(String(t[1]))+'</b></span>'; }).join('')+'</div>' : '';
   }
   function show(id){
-    var n = byId[id]; if(!n) return;
-    detail.innerHTML = '<h3>' + es(n.name) + ' <span class="mono" style="font-size:11px;color:var(--mute);font-weight:400">' + es(n.layer) + ' · ' + es(n.code) + '</span></h3>'
-      + '<div class="kv">读数：<b>' + es(n.value) + '</b> ' + es(n.unit) + ' ｜ 状态：<b>' + es(n.toneLabel) + '</b></div>'
-      + '<div class="kv">来源：<span class="mono">' + es(n.src) + '</span></div>'
-      + '<div class="kv" style="margin-top:6px">' + es(n.detail) + '</div>' + rel(id);
-    var gs = document.querySelectorAll('#arch .node');
-    for(var i = 0; i < gs.length; i++){ gs[i].classList.toggle('sel', gs[i].getAttribute('data-node') === id); }
+    var n=byId[id]; if(!n) return;
+    detail.innerHTML='<h3>'+es(n.name)+' <span class="mono" style="font-size:10px;color:var(--mute);font-weight:400">'+es(n.layer)+' · '+es(n.code)+'</span></h3>'
+      +'<div class="kv">读数：<b>'+es(n.value)+'</b> '+es(n.unit)+' ｜ 状态：<b>'+es(n.toneLabel)+'</b> ｜ 上下游：<b>↑'+n.deg.i+' ↓'+n.deg.o+'</b></div>'
+      +'<div class="kv">副读数：'+es(n.sub)+'</div>'
+      +'<div class="kv">来源：<span class="mono">'+es(n.src)+'</span></div>'+chips(n)
+      +'<div class="kv" style="margin-top:4px">'+es(n.detail)+'</div>'+rel(id);
+    var gs=document.querySelectorAll('#arch .node');
+    for(var i=0;i<gs.length;i++){ gs[i].classList.toggle('sel', gs[i].getAttribute('data-node')===id); }
+    setView('node');
   }
-  var gs = document.querySelectorAll('#arch .node');
-  for(var i = 0; i < gs.length; i++){
+  var gs=document.querySelectorAll('#arch .node');
+  for(var i=0;i<gs.length;i++){
     (function(g){
-      g.addEventListener('click', function(){ show(g.getAttribute('data-node')); });
-      g.addEventListener('keydown', function(e){ if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); show(g.getAttribute('data-node')); } });
+      g.addEventListener('click',function(){ show(g.getAttribute('data-node')); });
+      g.addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); show(g.getAttribute('data-node')); } });
     })(gs[i]);
   }
-  var paused = false;
-  var btn = document.getElementById('motionBtn');
-  function setPaused(p){
-    paused = p;
-    if(typeof svg.pauseAnimations === 'function'){ if(p){ svg.pauseAnimations(); } else { svg.unpauseAnimations(); } }
-    btn.textContent = p ? '▶ 继续动态' : '⏸ 暂停动态';
+  var rows=document.querySelectorAll('.srcrow');
+  for(var ri=0;ri<rows.length;ri++){
+    (function(r){ r.addEventListener('click',function(){ show(r.getAttribute('data-goto')); }); })(rows[ri]);
   }
-  btn.addEventListener('click', function(){ setPaused(!paused); });
+
+  var paused=false;
+  var motionBtn=document.getElementById('motionBtn');
+  function setPaused(p){
+    paused=p;
+    if(typeof svg.pauseAnimations==='function'){ if(p){ svg.pauseAnimations(); } else { svg.unpauseAnimations(); } }
+    motionBtn.textContent=p?'▶ 动态':'⏸ 动态';
+    motionBtn.classList.toggle('on', !p);
+  }
+  motionBtn.addEventListener('click',function(){ setPaused(!paused); });
   if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches){ setPaused(true); }
-  var sc = document.getElementById('selfcheck');
-  var nodeOk = document.querySelectorAll('#arch .node').length === D.nodes.length;
-  var edgeOk = document.querySelectorAll('#arch [data-edge]').length === D.edges.length;
-  var linkOk = D.edges.every(function(e){ return !!byId[e.from] && !!byId[e.to]; });
-  var dataOk = D.nodes.every(function(n){ return !!n.name && !!n.src && n.value !== undefined; });
-  var ok = nodeOk && edgeOk && linkOk && dataOk;
-  sc.className = 'selfcheck' + (ok ? '' : ' bad');
-  sc.textContent = ok
-    ? '数据自检：通过 · ' + D.nodes.length + ' 个节点 / ' + D.edges.length + ' 条关系全部可解析，读数均来自本次 storages 快照，无手写数字'
-    : '数据自检：未通过（节点=' + nodeOk + ' 边=' + edgeOk + ' 链路=' + linkOk + ' 数据=' + dataOk + '）';
+  else { motionBtn.classList.add('on'); }
+
+  var labelBtn=document.getElementById('labelBtn');
+  labelBtn.addEventListener('click',function(){
+    var on=document.body.classList.toggle('show-labels');
+    labelBtn.classList.toggle('on', on);
+  });
+
+  var copyBtn=document.getElementById('copyBtn');
+  copyBtn.addEventListener('click',function(){
+    var txt=document.getElementById('dg').textContent;
+    function done(){ copyBtn.textContent='已复制'; setTimeout(function(){ copyBtn.textContent='复制复盘'; },1600); }
+    if(typeof navigator!=='undefined' && navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(done, done);
+    } else { done(); }
+  });
+
+  var sc=document.getElementById('selfcheck');
+  var nodeOk=document.querySelectorAll('#arch .node').length===D.nodes.length;
+  var edgeOk=document.querySelectorAll('#arch [data-edge]').length===D.edges.length;
+  var linkOk=D.edges.every(function(e){ return !!byId[e.from] && !!byId[e.to]; });
+  var dataOk=D.nodes.every(function(n){ return !!n.name && !!n.src && n.value!==undefined && Array.isArray(n.tables); });
+  var viewOk=Object.keys(views).every(function(k){ return !!document.getElementById(views[k]); });
+  var ok=nodeOk&&edgeOk&&linkOk&&dataOk&&viewOk;
+  sc.className='selfcheck'+(ok?'':' bad');
+  sc.textContent=ok
+    ? '自检通过 · '+D.nodes.length+' 节点 / '+D.edges.length+' 关系 / 5 视图 / 读数均来自 storages'
+    : '自检未通过（节点='+nodeOk+' 边='+edgeOk+' 链路='+linkOk+' 数据='+dataOk+' 视图='+viewOk+'）';
 })();
 </script>
 </body></html>`;
@@ -745,13 +900,12 @@ const tabBody = '      <button class="tab" data-t="eviz" role="tab" aria-selecte
 const panelBody = [
   '  <div class="card panel" id="eviz">',
   '    <h2>进化架构图 · 系统动态（只读快照）</h2>',
-  '    <div class="cap">分层拓扑 + 真实信号流 + 反馈闭环，读数来自生产存储 ' + esc(STORAGES_LABEL) + '/。',
-  '      连线上流动的圆点表示<b>链路方向与拓扑</b>，不是实时流量；红色虚线是本次快照的真实断点，不画粒子。',
-  '      ⛔ 本页只读、不写任何状态；点节点可看读数与来源。快照随 <code>node bin/evolution-viz-snapshot.mjs</code> 重跑而更新，宿主按 mtime 重读资产，不需要重启。',
-  '      iframe 内为固定浅色主题，不跟随家族面板的明暗切换 —— 这是刻意的样式隔离。</div>',
+  '    <div class="cap">一屏工作区：顶栏 KPI + 分层架构图 + 5 视图检查器（节点 / 支路 / 健康 / 复盘 / 数据源）。',
+  '      流动的圆点表示<b>链路方向与拓扑</b>，不是实时流量；红色虚线是真实断点，不画粒子。点节点看读数、来源表与上下游。',
+  '      ⛔ 只读、不写任何状态。重跑 <code>node bin/evolution-viz-snapshot.mjs</code> 刷新；宿主按 mtime 重读资产，不需要重启。</div>',
   '    <iframe title="AGINT 进化架构图（只读）"',
   '      srcdoc="' + srcdoc + '"',
-  '      style="display:block;width:100%;height:86vh;border:1px solid var(--border);border-radius:8px;background:#f6f8fb"',
+  '      style="display:block;width:100%;height:88vh;max-height:860px;min-height:620px;border:1px solid var(--border);border-radius:8px;background:#f6f8fb"',
   '    ></iframe>',
   '  </div>',
 ].join('\n');
@@ -796,6 +950,8 @@ console.log('三副本 sha256 一致=' + (new Set(injectReport.map((r) => r.sha)
 console.log('arch layers=' + archLayers.length + ' nodes=' + archNodes.length + ' edges=' + archEdges.length
   + ' live=' + liveCount + ' break=' + breakCount + ' feedback=' + feedbackCount
   + ' measured=' + measuredCount + ' structural=' + (archNodes.length - measuredCount));
+console.log('canvas=' + VB_W + 'x' + VB_H + ' inspectorViews=5 sparks=' + Object.keys(SPARK).length
+  + ' edgeLabels=' + archEdges.filter((e) => e.kind !== 'feedback').length);
 console.log('proposal=' + (proposal ? proposal.status : 'ABSENT(已不在 proposal 表)') + ' days=' + createdDays);
 console.log('ledger=' + num(ledger) + ' evolution_log=' + num(evLog) + ' metric=' + num(metricRows) + ' proposals=' + num(proposals));
 console.log('missing=' + JSON.stringify(missing));
