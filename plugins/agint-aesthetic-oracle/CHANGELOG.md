@@ -1,5 +1,41 @@
 # Changelog — agint-aesthetic-oracle
 
+## v0.11.0 — 2026-11-11 — 臃肿度分子只算 AGINT 负责的技能（判尺 r5）
+
+**为什么**：生产实测（2026-11-11）用户级 skills 根 153852 字节 / 总 265342 字节 = 58%
+是 skillhub 装的第三方技能（`skillhub_list` 实证 9 个）。把它们算进 AGINT 的质量扣分，
+等于判官考核老板自己装的工具；且没有任何可执行动作能改它——归档会删老板的工具，
+压缩会坏第三方功能。旧建议「归档 curator 判定陈旧/重叠的技能」引用的 `curatorOverlaps`
+生产实测恒 0（`curator_list_overlaps` 实测「无重叠候选」），建议引用的是一个不存在的证据。
+
+**变更**
+
+1. `lib/scoring.js`：bloat 分子/分母改 managed 口径（`skillsManagedBytes` /
+   `skillsManagedCount`）。managed 判定在 metrics 采集端：preset 根（路径含
+   `.agent-presets`）下全部 managed；其他根下目录内存在 `.agint-managed` 标记者 managed。
+   缺 managed 数据判 N/A，**不退回旧口径**（避免同名字段跨轮次含义不同）。
+2. `lib/scoring.js`：Q3 建议改口。bloat 超预算时点名真实的最大 managed 技能与真实字节；
+   建议栏与证据栏都**不再引用 curator overlaps**。
+3. `lib/broadcast.js`：最丑行透出常驻成本（frontmatter 字节）与第三方字节说明
+   （「第三方 X KB 不计入」），让读者看见真实上下文税。
+4. `FORMULA_VERSION` r4 → r5：分子组成变了，**跨版本总分不可比**。
+   `scaleHash` 不变——阈值/权重/效应量一个字节都没改。
+
+**影响（生产原子值复算，2026-11-11）**
+
+| 口径 | bloat | 该维扣分 |
+|---|---|---|
+| r4（全部技能） | 1.2503 | ≈ 7.6 分 |
+| r5（AGINT 负责） | 0.9981 | 0 分 |
+
+差值全部来自第三方技能误记。
+
+**⛔ 没做的**
+
+- 阈值 11170 B/技能仍无回测依据（沿用 r4 的待办，未动）。
+- 「平均单技能体积」这个统计量本身仍掩盖分布（未改判据形状）。
+
+
 ## v0.10.0 — 2026-11-07 — 日报加「能力向量」栏（只读展示，不进评分链路）
 
 **为什么**：`aesthetic_score` 量的是内部卫生（噪声 / 确信度 / 冗余 / 臃肿），

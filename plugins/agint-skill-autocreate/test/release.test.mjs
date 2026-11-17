@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,12 +20,7 @@ function fakeTable() {
   return {
     put: async (k, v) => { if (v === undefined) m.delete(k); else m.set(k, v); },
     entries: () => [...m.entries()],
-    // 宿主表 API 的真实形状（@deepseek-ai/dsh-storage-domain/lib/types/domain.d.ts:70,86）：
-    // 只有 delete(key)/deleteMany(keys)，**没有 del**。mock 必须与真实一致 ——
-    // 否则「调用了宿主没有的 del」在测试里永远是绿的（2026-11-12 假上限的成因之一）。
-    delete: async (k) => m.delete(k),
-    deleteMany: async (keys) => { let n = 0; for (const k of keys) if (m.delete(k)) n += 1; return n; },
-    get size() { return m.size; },
+    del: async (k) => { m.delete(k); },
     _map: m,
   };
 }
@@ -176,6 +171,10 @@ test('门 2 人工确认窗：auto 被拦 → BUDGET_WAIT；manual 放行并落�
   const skillDir = join(h.skillsRoot, 'batch-frontmatter');
   assert.ok(existsSync(join(skillDir, 'SKILL.md')), 'SKILL.md 落盘');
   assert.ok(existsSync(join(skillDir, 'manifest.json')), 'manifest.json 落盘');
+  // r5（2026-11-11）：发布时打「AGINT 负责」标记，metrics 采集端据此把本技能
+  // 算进臃肿度分子（第三方技能不扣分）。标记缺失 ⇒ 该技能会被误判为第三方。
+  assert.ok(existsSync(join(skillDir, '.agint-managed')), '.agint-managed 标记落盘');
+  assert.match(readFileSync(join(skillDir, '.agint-managed'), 'utf8'), /agint-skill-autocreate/);
   const after2 = await h.svc.getCandidate(cand.id);
   assert.equal(after2.status, 'RELEASED');
   assert.ok(after2.releasedAt);

@@ -122,7 +122,23 @@ test('computeMetrics handles sync and async source methods uniformly', async () 
     // Day 0 扩展 source：全健康 ⇒ 每个可算 key（含 4 个新 key）都应出现
     skillAutocreate: { stats: () => ({ candidates: { total: 0, byStatus: {} } }) },
     evolution: { getLogRange: () => [] },
-    skillsFs: { measure: () => ({ totalBytes: 0, fileCount: 0, roots: ['fake-root'], missingRoots: [] }) },
+    // r5（2026-11-11）：measure() 的返回形状已扩 —— managedBytes / thirdPartyBytes /
+    // frontmatterBytes 三个新 key 与 totalBytes 同源，不给这三个字段它们算不出来
+    // （push 遇 undefined 直接跳过 ⇒ recs.length 少 3）。
+    skillsFs: {
+      measure: () => ({
+        totalBytes: 0,
+        fileCount: 0,
+        roots: ['fake-root'],
+        missingRoots: [],
+        managedBytes: 0,
+        managedCount: 0,
+        thirdPartyBytes: 0,
+        thirdPartyCount: 0,
+        frontmatterBytes: 0,
+        topManaged: [],
+      }),
+    },
   };
   const recs = await computeMetrics(mixed);
   assert.equal(recs.length, METRIC_DEFS.length); // every computable key present

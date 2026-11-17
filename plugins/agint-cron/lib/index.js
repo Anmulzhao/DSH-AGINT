@@ -6,6 +6,12 @@
  * (see tick()); a per-job mutex plus a tick re-entrancy guard prevent
  * overlapping runs.
  *
+ * 提案 35744895（2026-11-14）：同 tick 的 due job 分两层执行 —— fast 层先跑完，
+ * heavy 层后跑，两层内部都保持声明顺序。长跑 job 因此不再堵住短 job。
+ * diagnosis-watchdog 另走一条独立心跳通道，不受 tickRunning 抑制。
+ * ⛔ 不做「按单个 job 预计耗时排序」：jobs.js 里有多条靠声明顺序维持的依赖链，
+ *    排序会静默断链。跨层只搬「整条链」，链内相对顺序一律不动。
+ *
  * Default jobs (memory-decay, wiki-lint, metrics-collect, evolve-review) are
  * registered at boot. The service exposes list / runNow / health for the
  * preset tools.
@@ -22,10 +28,50 @@ import { classifyInactivity } from './staleness.js';
 import { compileJobs } from './jobs.js';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { createHostBridge } from './host-schedule.js';
-import { createEventTriggerBridge } from './event-trigger.js';
 
 const name = 'agint-cron';
 const inject = ['timer', 'storageDomain'];
+
+// ── tick 分层策略（提案 35744895）──────────────────────────────────────────
+//
+// HEAVY_LANE 是「可能跑很久」的 job 集合。它同时也是**顺序依赖分组**：
+// 一条依赖链要么整条进 heavy，要么整条留 fast，绝不拆开。理由见 jobs.js 的
+// curator-weekly 注释与 test/schedule-layout.test.mjs 原则③b —— 同 tick 补跑
+// （宿主停机后重启，lastRunAt=null ⇒ isDue 恒真）时排期时刻完全失效，只有
+// 声明顺序算数。全局按代价重排会让周复盘读到上周策展报告、让 autocreate
+// 的 detect→release→observe 闭环错位，而且都不报错。
+//
+// ⚠️ 新增 heavy job 前先问：它有没有下游 job 吃它的产物？有 ⇒ 整条链一起搬。
+//    test/tick-lane.test.mjs 对 ORDER_CHAINS 有「全在或全不在」的断言。
+//
+// 实测依据（2026-11-13 09:25–09:43）：开机补跑时 tool-stats-backfill 单独
+// in flight 18 分钟，其后 17 个 job 全被挡住，cron_health 报 overdue 1077 min；
+// 只能等 STALL_MS=15min 的接管 tick 放行。
+const HEAVY_LANE = new Set([
+  // 链①：周复盘吃本周策展报告（硬契约，门禁断言）。
+  'curator-weekly', 'evolve-review',
+  // 链②：backfill 补完 latencyMs/turn/step → aggregate 吃它 → release → observe。
+  'night-dream', 'tool-stats-backfill',
+  'skill-autocreate-aggregate', 'skill-autocreate-release', 'skill-autocreate-observe',
+  // 链③：driver 产出 → 三方对账 → 实测对账。
+  'evolution-cycle', 'evolution-reconcile', 'outcome-measure',
+  // 无下游依赖的 LLM 密集 / 全量重算 job。
+  'oracle-daily', 'oracle-weekly', 'oracle-monthly',
+  'curriculum-weekly', 'skill-graph-weekly',
+]);
+
+/** 顺序依赖链。每条链必须整体落在同一层；门禁在 test/tick-lane.test.mjs。 */
+const ORDER_CHAINS = Object.freeze([
+  ['curator-weekly', 'evolve-review'],
+  ['tool-stats-backfill', 'skill-autocreate-aggregate', 'skill-autocreate-release', 'skill-autocreate-observe'],
+  ['evolution-cycle', 'evolution-reconcile', 'outcome-measure'],
+]);
+
+/** 唯一走独立心跳通道的 job：高频（每 30 分钟）、action 纯读、不写业务存储域。 */
+const HEARTBEAT_JOB = 'diagnosis-watchdog';
+
+// 导出给门禁测试。不是运行时服务面（与 cronStateSchema 同例）。
+export const tickLane = Object.freeze({ HEAVY_LANE, ORDER_CHAINS, HEARTBEAT_JOB });
 
 const Config = z
   .object({
@@ -39,24 +85,19 @@ const Config = z
      */
     repoRoot: z.string().min(1).nullish(),
     /**
-     * 事件触发桥（`lib/event-trigger.js`）：给「到点才做」的 cron job 加一条
-     * 「状态变了就做」的快路径（cron 全部保留为兜底，不删任何 job）。
+     * tick 分层策略（提案 35744895）。
      *
-     * ⛔ **默认关闭**（enabled 默认 false），这是有意的：
-     *   · 它改的是 27 个 job 的**触发语义**（不只是新增一个 job），
-     *     属于行为变更，**不在老板批准的那批存储治理改动范围内**；
-     *   · 能力、单测、文档都已就位，默认不生效 ⇒ 零行为变更风险；
-     *   · 等老板明确要开时，把这里改成 true 即可，无需改代码。
-     *
-     * 顺带说明它修的真问题（2026-11-11 生产实测）：宿主启动瞬间订阅者还没注册，
-     * 事件进了 ring 但 delivered=0 ⇒ 「机器重启后第一次技能变更」必然丢 ——
-     * 而那正是最需要策展的时刻。该桥的「启动补读」正是补这个洞。
+     * ⛔ 默认开：kill-switch ≠ 默认关。enabled:false 退回旧的单链串行 +
+     *    watchdog 回归主 tick，整个新策略一行都不生效，可秒级回滚。
+     * ⛔ 必须在这里声明：zod object 默认 strip 未声明键，漏声明 = 配置静默失效
+     *    （与 agentsSizeGuard / storage 同一个洞）。
      */
-    eventTrigger: z
+    tickPolicy: z
       .object({
-        enabled: z.boolean().default(false),
+        enabled: z.boolean().nullish(),
+        heartbeatMs: z.number().int().min(10_000).nullish(),
       })
-      .optional(),
+      .nullish(),
     /**
      * 工作区指令体积哨兵（agents-size-guard job，daily 06:45）的配置。
      *
@@ -94,31 +135,6 @@ const Config = z
             maxRatio: z.number().positive().nullish(),
           })
           .nullish(),
-      })
-      .nullish(),
-    /**
-     * 存储度量/回收（storage-guard / storage-prune 两个 job）的配置。
-     *
-     * ⚠️ 必须在这里显式声明：cordis 用 zod 解析行 config，**默认剥离未声明的键**
-     *   （zod object 默认 strip）—— 只改 patch.yml 与 jobs.js、漏改本 schema ⇒
-     *   config 里根本不出现这个键，job 静默用默认值（与 2026-10-19 的
-     *   agentsSizeGuard 同一个洞）。
-     */
-    storage: z
-      .object({
-        /**
-         * 存储根（绝对路径）。缺省 ⇒ $DSH_HOME/storages（再退 ~/.dsh/storages）。
-         * ⛔ 不猜别的目录：猜错会去审计另一个数据根，报出一堆假的体积数。
-         */
-        root: z.string().min(1).nullish(),
-        /** .bak-* 归档目录。缺省 ⇒ 存储根的上一级/.agint-backups */
-        backupDir: z.string().min(1).nullish(),
-        /**
-         * storage-prune 的 dry-run 开关。
-         * ⛔ **默认 true（安全侧）**：真删是不可逆动作，无人值守的定时任务不该默认做。
-         *   要真清理必须显式配成 false（或调 runStoragePrune({dryRun:false})）。
-         */
-        pruneDryRun: z.boolean().nullish(),
       })
       .nullish(),
   })
@@ -252,6 +268,38 @@ function apply(ctx, config) {
   const tickHandle = ctx.setInterval(() => void tick(), 60_000);
   ctx.effect(() => tickHandle.dispose);
 
+  // ── 心跳旁路（提案 35744895）──────────────────────────────────────────────
+  // 主 tick 的 `tickRunning` 在长跑 job 期间恒为 true，后续 tick 被抑制到
+  // STALL_MS 才接管。看门狗每 30 分钟一次，正好落在盲区里 —— 监控自己先瞎。
+  // 这条独立 interval 不读 tickRunning，因此长跑期间仍能在 ≤60s 内触发。
+  //
+  // ⛔ 为什么它安全（写竞争面）：
+  //   · diagnosis-watchdog 的 action 只调 stats() 读占用率，不写任何业务存储域；
+  //   · runOne 唯一写点是 persistJobState → agint_cron 域自己的那一行，
+  //     下面给它加了进程内串行写队列，与并发的另一个 job 的 state 写不互相覆盖；
+  //   · 心跳与主 tick 永不碰同一个 job：policyEnabled 时 tick() 会跳过它。
+  // ⛔ 不要把这个集合扩到会写业务存储域的 job：three-state-audit §10 的存储是
+  //    整单元 last-write-wins，并发写会静默丢数据（不是报 EPERM 那种可见故障）。
+  const policyEnabled = () => config?.tickPolicy?.enabled !== false;
+  const heartbeatMs = config?.tickPolicy?.heartbeatMs ?? 60_000;
+  const heartbeatHandle = ctx.setInterval(() => { void heartbeatTick(); }, heartbeatMs);
+  ctx.effect(() => heartbeatHandle.dispose);
+
+  async function heartbeatTick() {
+    if (!policyEnabled()) return; // kill-switch：watchdog 回归主 tick
+    const job = jobById.get(HEARTBEAT_JOB);
+    if (!job || job.running) return;
+    if (!isDue(job.parsed, job.lastRunAt, Date.now())) return;
+    try {
+      await runOne(job);
+    } catch (error) {
+      console.error(
+        '[agint-cron] heartbeat error for ' + HEARTBEAT_JOB + ': ' +
+        (error && error.message ? error.message : String(error)),
+      );
+    }
+  }
+
   // Service resolution map: jobs receive a snapshot of common host services
   // they need. Resolved lazily at tick time so services are available by then.
   const services = () => ({
@@ -307,21 +355,6 @@ function apply(ctx, config) {
     //   services 是白名单而非 ctx 全量透传，只改 jobs.js 会让该 job 每天抛
     //   "未配置 agint-cron.config.agentsSizeGuard.file"，症状与「哨兵没跑」一样。
     'agint.agentsSizeGuard': config?.agentsSizeGuard ?? null,
-    // 存储度量/回收（2026-11-12 新增 job storage-guard / storage-prune）。
-    // 同样是 config 而非宿主服务：存储根与 dry-run 开关是**机器私有事实**。
-    // ⛔ 别漏这行 —— services 是白名单而非 ctx 全量透传（2026-10-09 实测同一个洞）。
-    'agint.storage': config?.storage ?? null,
-    // 存储回收要调各域自带的 prune 能力。**服务缺席是常态**（agint-event-bus /
-    // agint-tool-stats / agint-skill-autocreate 至今没有 provide prune）⇒
-    // 缺席即跳过并记原因，不报错。
-    'agint.trajectory.prune': ctx.get('agint.trajectory.prune'),
-    'agint.eventBus.prune': ctx.get('agint.eventBus.prune'),
-    'agint.metrics.prune': ctx.get('agint.metrics.prune'),
-    'agint.toolStats.prune': ctx.get('agint.toolStats.prune'),
-    'agint.skillAutocreate.prunePatterns': ctx.get('agint.skillAutocreate.prunePatterns'),
-    // 指标写入口（storage-guard 用）：agint.metrics.record 写任意指标
-    //（inc 只认计数增量，体积类指标走 record）。
-    'agint.metrics.record': ctx.get('agint.metrics.record'),
   });
 
   // Jobs in one tick run to completion, in declaration order. Previously each
@@ -341,61 +374,16 @@ function apply(ctx, config) {
   // wedged job only ever blocked itself. On takeover the stale tick bails out
   // between jobs, and `job.running` still guards the wedged job from a
   // duplicate start.
+  //
+  // 2026-11-14：分层后 STALL_MS 不再是「长跑期间的唯一出路」。
+  // fast 层串行跑完才轮到 heavy 层，所以长跑 job 挡不住短 job；心跳另走旁路。
+  // 这 15 分钟现在只兑付「真的卡死」这一件事，语义回到它本来该有的样子。
   const STALL_MS = 15 * 60_000;
   let tickRunning = false;
   let tickStartedAt = 0;
   let tickGen = 0;
 
-  // ── 事件触发桥（2026-11-12，评估报告 §七 步骤 1）────────────────────────
-  //
-  // 快路径：skills/change → curator-weekly（完整 run()，用户 2026-11-12 拍板），
-  //         curator.run-completed(dryRun:false) → evolve-review。
-  // ⛔ 27 个 cron job 一个不删（评估 §六 第 3 条）：本轮是降级为兜底，不是取消。
-  //
-  // 三个「不」：
-  //   1. 不把 agint.eventBus.* 写进 inject。硬依赖下总线一旦挂不上，本插件整体
-  //      PENDING ⇒ 连 cron 兜底一起没了，正好踩红线。
-  //   2. 不改 runOne 的 lastRunAt 记账。曾考虑「事件失败时保持 due」，重读
-  //      isDue() 后否决：due 是最近一次**自然周期**触发时刻，事件失败写不写
-  //      lastRunAt 都不妨碍下个周期补跑；反而若 job 从未跑过却不写，tick 每
-  //      60s 判一次 due ⇒ 每分钟重跑一次全量策展（风暴）。详见 event-trigger.js。
-  //   3. 不在 apply 同步期假定服务已就绪。cordis 挂载顺序虽是 event-bus(195)
-  //      先于 cron(265)，但 PENDING / 热重载仍可能取空 ⇒ apply 末尾先试一次，
-  //      没取到就随每轮 tick 重试，期间 cron 照常跑（软降级，不报错）。
-  let eventTriggerBridge = null;
-  let eventTriggerAttempted = false;
-  ctx.effect(() => () => { eventTriggerBridge?.dispose(); });
-
-  function ensureEventTriggerAttached() {
-    // ⛔ 默认关闭（2026-11-12）：事件触发桥改的是 job 的触发语义，属行为变更，
-    //   不在老板批准的存储治理范围内。能力在、默认不生效 ⇒ 零行为变更风险。
-    //   开启方式：配置里加 eventTrigger.enabled = true。
-    if (config?.eventTrigger?.enabled !== true) return;
-    if (eventTriggerAttempted || disposed) return;
-    const getService = (key) => (typeof ctx.get === 'function' ? ctx.get(key) : null);
-    const subscribe = getService('agint.eventBus.subscribe');
-    if (typeof subscribe !== 'function') return; // 总线未就绪：下轮 tick 再试
-    eventTriggerAttempted = true;                 // 只构造一次，避免重复订阅
-    const bridge = createEventTriggerBridge({
-      runNow: (id, opts) => cronService.runNow(id, opts),
-      subscribe,
-      inspect: getService('agint.eventBus.inspect'),
-      publish: getService('agint.eventBus.publish'),
-      log: (kind, detail) => console.info(
-        '[agint-cron][event-trigger] ' + kind + ' ' + JSON.stringify(detail ?? {}),
-      ),
-    });
-    eventTriggerBridge = bridge;
-    const result = bridge.attach();
-    console.info(
-      '[agint-cron] event-trigger attached=' + result.attached +
-      ' recovered=' + result.recovered +
-      '（cron 全部保留为兜底；状态见 agint.cron.eventTrigger.status()）',
-    );
-  }
-
   async function tick() {
-    ensureEventTriggerAttached(); // 总线晚挂载时随 tick 补挂；失败不影响 cron
     const now = Date.now();
     if (tickRunning) {
       if (now - tickStartedAt < STALL_MS) return; // a tick is already in flight
@@ -408,9 +396,14 @@ function apply(ctx, config) {
     tickRunning = true;
     tickStartedAt = now;
     try {
+      // 先把本轮 due 的 job 收集齐，再分层执行。收集阶段与原来的逐条判定等价：
+      // 原实现也用 tick 开头捕获的同一个 `now`，且前面的 job 不会改后面的 lastRunAt。
+      const due = [];
       for (const job of jobs) {
         if (gen !== tickGen) return; // superseded by a newer tick — abandon this pass
         if (!job.id) continue; // (already filtered, but keep types)
+        // 心跳已交给独立通道。⛔ 不跳过就会两边各跑一次同一个 job。
+        if (policyEnabled() && job.id === HEARTBEAT_JOB) continue;
         try {
           // Backfill-aware due check (replaces the old nextFire-from-lastRun
           // logic that silently skipped weekly jobs whose narrow fire window
@@ -421,6 +414,26 @@ function apply(ctx, config) {
           // double-firing the same occurrence.
           if (!isDue(job.parsed, job.lastRunAt, now)) continue;
           if (job.running) continue; // skip if previous run still in flight
+          due.push(job);
+        } catch (error) {
+          console.error('[agint-cron] tick error for ' + job.id + ': ' + (error && error.message ? error.message : String(error)));
+        }
+      }
+
+      // fast 先、heavy 后。两层内部都是 `due` 的原声明顺序 ⇒ 依赖链不断。
+      // kill-switch 关闭时 ordered === due，逐字退回旧的单链串行行为。
+      const ordered = policyEnabled()
+        ? [
+          ...due.filter((j) => !HEAVY_LANE.has(j.id)),
+          ...due.filter((j) => HEAVY_LANE.has(j.id)),
+        ]
+        : due;
+
+      for (const job of ordered) {
+        if (gen !== tickGen) return; // superseded by a newer tick — abandon this pass
+        // 收集到执行之间，旁路或 runNow 可能已抢先启动同一个 job。
+        if (job.running) continue;
+        try {
           // Run to completion before the next job is considered.
           await runOne(job);
         } catch (error) {
@@ -457,16 +470,14 @@ function apply(ctx, config) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // opts 只透传只读标注（当前仅 triggerSource，来自事件快路径），
-  // ⛔ 不改 lastRunAt / due 记账语义；cron tick 调用时是 undefined。
-  async function runOne(job, opts) {
+  async function runOne(job) {
     job.running = true;
     const startedAt = new Date().toISOString();
     try {
       let result = null;
       for (let attempt = 1; ; attempt += 1) {
         try {
-          result = await job.action(services(), opts);
+          result = await job.action(services());
           break;
         } catch (error) {
           if (attempt >= RETRY_MAX || !isTransientWriteError(error)) throw error;
@@ -565,6 +576,12 @@ function apply(ctx, config) {
   // Best-effort persist of a job's run state to the cron_state domain so a
   // later process restart can hydrate lastRunAt/lastResult/lastError. Failures
   // are swallowed: the in-memory state is authoritative for the current run.
+  //
+  // 2026-11-14：心跳旁路让两个 job 可能同时走到这里。dsh 存储域是「读内存态
+  // → 改 → 整单元重写」；两次并发 put 会各自基于同一份旧快照，后写的盖掉先写的，
+  // 且**不报任何错**（不是 Windows EPERM 那种可见竞态）。用一条进程内 promise
+  // 链把所有 put 串行化。record 必须在入队前快照，否则排队期间 job 状态已变。
+  let stateWriteTail = Promise.resolve();
   async function persistJobState(job) {
     const record = {
       lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
@@ -577,11 +594,16 @@ function apply(ctx, config) {
       lastResultSummary: job.lastError ? null : (job.lastResult ? summarizeResult(job.lastResult.result) : null),
       updatedAt: new Date().toISOString(),
     };
-    const table = await stateTable();
-    await table.put(job.id, record);
+    const write = stateWriteTail.then(async () => {
+      const table = await stateTable();
+      await table.put(job.id, record);
+    });
+    // 一次写失败不能把后续写永久堵死；错误仍由 runOne 的 .catch 吞掉。
+    stateWriteTail = write.catch(() => {});
+    return write;
   }
 
-  const cronService = {
+  ctx.provide('agint.cron', {
     list() {
       const now = Date.now();
       return jobs.map((j) => ({
@@ -599,11 +621,11 @@ function apply(ctx, config) {
       }));
     },
 
-    async runNow(id, opts) {
+    async runNow(id) {
       const job = jobById.get(id);
       if (!job) throw new Error(`agint-cron: no job '${id}'`);
       if (job.running) throw new Error(`agint-cron: job '${id}' already running`);
-      await runOne(job, opts);
+      await runOne(job);
       // lastError 在内存里是 { startedAt, message } 对象（L265），而本工具输出
       // schema 声明 oneOf [string, null] ⇒ 原样返回会校验失败（matched 0），
       // 恰好把「为什么失败」这条最该看见的信息吞掉（2026-10-04 实测两次撞上）。
@@ -687,6 +709,17 @@ function apply(ctx, config) {
     // useful for the boot-level diagnostic.
     _tickNow() { return tick(); },
     _jobs() { return jobById; },
+    // 分层策略的运行时诊断面。不是 preset 工具，宿主内可查（含 kill-switch 实况）。
+    _tickPolicy() {
+      return {
+        enabled: policyEnabled(),
+        heartbeatMs,
+        heartbeatJob: HEARTBEAT_JOB,
+        heartbeatRunning: jobById.get(HEARTBEAT_JOB)?.running ?? null,
+        heavyLane: jobs.filter((j) => HEAVY_LANE.has(j.id)).map((j) => j.id),
+        fastLane: jobs.filter((j) => !HEAVY_LANE.has(j.id) && j.id !== HEARTBEAT_JOB).map((j) => j.id),
+      };
+    },
 
     // 行动 #2a（2026-09-28）：宿主原生调度桥面。validateSchedules 用宿主
     // canonicalizeCronExpression 校验全部 job；mirrorCatalog 只读镜像宿主
@@ -697,19 +730,7 @@ function apply(ctx, config) {
       validateSchedules: () => hostSchedule.validateSchedules(),
       mirrorCatalog: () => hostSchedule.mirrorCatalog(),
     },
-
-    // 事件快路径的可观测面：pending / runs / failures / recovered / cooldownSkips。
-    // 总线未就绪时如实返回 attached:false，不抛错、也不伪装成正常。
-    eventTrigger: {
-      status: () => eventTriggerBridge?.status() ?? {
-        attached: false,
-        cronRetained: true,
-        reason: 'agint.eventBus.subscribe unavailable（cron 兜底照常）',
-      },
-    },
-  };
-  ctx.provide('agint.cron', cronService);
-  ensureEventTriggerAttached();
+  });
 }
 
 export { Config, apply, inject, name };
