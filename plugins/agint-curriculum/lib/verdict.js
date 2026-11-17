@@ -108,6 +108,43 @@ const ASSERTERS = {
   'exec-code': assertExecCode,
 };
 
+/**
+ * 证据结构体检（提案 409d571f）：判定前先查必填数组字段是否被参数层压坏。
+ *
+ * 只认「字段确实提交了、但结构无法解析」这一种基础设施故障 —— 这正是
+ * 2026-11-17 的生产事故：evidence.steps 被包成 {item:[...]}，判定器取不到
+ * 数组，静默判成 `steps 数量 0 < minLength`，被 self-model 当成能力不足。
+ *
+ * ⛔ 逃逸口防线：字段**缺失**仍是真实的 fail（没交证据就是没做），不标失效。
+ *    只有「交了但坏了」才是尺子的问题。失效只影响下游能力判定，不改变
+ *    result 事实（宁 fail 不 pass）。
+ *
+ * @returns {string|null} 失效原因；null 表示结构正常或非数组型断言
+ */
+function detectEvidenceInvalidation(spec, ev) {
+  if (!spec || spec.type !== 'step-list') return null;
+  // 字段根本没提交 → 真实失败，不是失效
+  if (!Object.prototype.hasOwnProperty.call(ev, 'steps')) return null;
+  const raw = ev.steps;
+  let steps = [];
+  let restorable = false;
+  if (Array.isArray(raw)) { steps = raw; restorable = true; }
+  else if (raw && typeof raw === 'object') {
+    const keys = Object.keys(raw);
+    const arrayKeys = keys.filter((k) => Array.isArray(raw[k]));
+    if (arrayKeys.length === 1) { steps = raw[arrayKeys[0]]; restorable = true; }
+    else if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+      steps = keys.sort((a, b) => Number(a) - Number(b)).map((k) => raw[k]);
+      restorable = true;
+    }
+  }
+  // 字段存在，但既还原不出数组、又含非字符串元素 ⇒ 传输/参数层压坏了必填数组
+  if (!restorable || !steps.every((s) => typeof s === 'string')) {
+    return `evidence.steps 结构无法解析（字段已提交但非字符串数组）：${JSON.stringify(raw).slice(0, 160)}`;
+  }
+  return null;
+}
+
 // ── judge ────────────────────────────────────────────────────────────────
 
 /**
@@ -115,7 +152,8 @@ const ASSERTERS = {
  * @param {object} challenge 挑战记录（含 verifySpec）
  * @param {object} rawEvidence 执行者提交的 evidence（原始，可能含 selfAssessment）
  * @param {object} opts { requireEvidence = true }
- * @returns {{ result: 'pass'|'fail', reason: string, notes: string|null, evidence: object }}
+ * @returns {{ result: 'pass'|'fail', reason: string, notes: string|null, evidence: object, invalidation: string|null }}
+ *   invalidation 非 null = 判定基础设施故障（证据结构被压坏），本条 fail 不是能力不足。
  */
 export function judge(challenge, rawEvidence, { requireEvidence = true } = {}) {
   const ev = rawEvidence && typeof rawEvidence === 'object' ? rawEvidence : {};
@@ -137,10 +175,16 @@ export function judge(challenge, rawEvidence, { requireEvidence = true } = {}) {
       reason: '无 evidence（C3：无证据不记 pass；selfAssessment 不是证据）',
       notes,
       evidence: {},
+      invalidation: null,
     };
   }
 
   const spec = challenge?.verifySpec;
+  // 证据结构体检（提案 409d571f）：在断言之前判定「尺子是否坏了」。
+  // 无对应断言本身就是判定基础设施故障 —— 与「证据被压坏」同类。
+  const invalidation = spec && ASSERTERS[spec.type]
+    ? detectEvidenceInvalidation(spec, evidencePayload)
+    : (spec ? `verifySpec 类型 ${spec.type} 无对应断言（判定器不可用）` : 'verifySpec 缺失（判定器不可用）');
   const asserter = spec ? ASSERTERS[spec.type] : null;
   if (!asserter) {
     // 理论上不会发生（C1 保证生成时必带 verifySpec）；防御性兜底，宁 fail 不 pass
@@ -149,6 +193,7 @@ export function judge(challenge, rawEvidence, { requireEvidence = true } = {}) {
       reason: `verifySpec 类型 ${spec?.type ?? '缺失'} 无对应断言（防御性 fail）`,
       notes,
       evidence: evidencePayload,
+      invalidation,
     };
   }
 
@@ -158,6 +203,7 @@ export function judge(challenge, rawEvidence, { requireEvidence = true } = {}) {
     reason,
     notes,
     evidence: evidencePayload,
+    invalidation,
   };
 }
 

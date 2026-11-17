@@ -150,6 +150,11 @@ export const AttemptSchema = z.object({
   // C2：LLM 自评只进 notes，不进 result
   selfAssessment: z.string().nullable().default(null),
   reason: z.string().default(''),
+  // 失效标记（提案 409d571f）：判定基础设施故障时 result 仍是 fail（事实），
+  // 但 invalidated=true 表示这次失败不是能力不足，下游能力判定必须排除。
+  // default false/'' 保证存量 attempt 读入零影响（向后兼容，不升 domain version）。
+  invalidated: z.boolean().default(false),
+  invalidationReason: z.string().default(''),
   verifiedAt: z.string(),
   // 防复读标记（提案 10d2d87f）：result 仍是 pass（事实不变），但本次属复读 →
   // 不计入能力成功数。default false 保证存量 attempt 读入零影响。

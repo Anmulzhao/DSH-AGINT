@@ -114,3 +114,37 @@ test('step-list：参数层数组包装 { item: [...] } 可还原（2026-11-17 �
   assert.equal(judge(ch, { steps: { item: [1, 2, 3, 4, 'test', 'build'] } }).result, 'fail', '非字符串元素不放宽判据');
   assert.equal(judge(ch, { steps: { 0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'test', 5: 'build' } }).result, 'pass', '数字下标形态可还原');
 });
+
+// ── 提案 409d571f：判定基础设施故障 = 失效，不等于能力不足 ──────────────────
+
+test('失效：证据字段提交了但结构无法解析 → invalidation 非空，result 仍是 fail', () => {
+  const ch = mk('planning', 'D2');
+  // 传输层把必填数组压坏成各种不可解析形态
+  for (const bad of ['not-array', { foo: 'bar' }, { a: [1], b: [2] }, [1, 2, 3]]) {
+    const v = judge(ch, { steps: bad });
+    assert.equal(v.result, 'fail', '事实仍是 fail，绝不因失效放松判据');
+    assert.ok(typeof v.invalidation === 'string' && v.invalidation.includes('steps'),
+      `结构 ${JSON.stringify(bad)} 应标失效`);
+  }
+});
+
+test('非失效：字段缺失/内容不足/不可还原但合法的 fail 都不得标失效（逃逸口防线）', () => {
+  const ch = mk('planning', 'D2');
+  // 字段根本没提交 = 没做，是真实失败，不是尺子坏
+  assert.equal(judge(ch, {}).invalidation, null, '未提交 steps 不标失效');
+  // 合法数组但步数不足/缺关键词 = 能力不足，不标失效
+  assert.equal(judge(ch, { steps: ['a', 'b', 'c'] }).invalidation, null, '步数不足不标失效');
+  assert.equal(judge(ch, { steps: ['a', 'b', 'c', 'd'] }).invalidation, null, '缺关键词不标失效');
+  // 单键数组包装还原后步数不足 = 内容问题，不是结构问题
+  assert.equal(judge(ch, { steps: { item: ['a', 'b'] } }).invalidation, null, '可还原后内容不足不标失效');
+  // 其它断言类型不适用结构体检
+  const codeCh = mk('codegen', 'D1');
+  assert.equal(judge(codeCh, { exitCode: 1, output: 'boom' }).invalidation, null, '非数组型断言不标失效');
+});
+
+test('失效：verifySpec 无对应断言 → 判定器不可用，标失效（宁 fail 不 pass）', () => {
+  const ch = { ...mk('codegen', 'D1'), verifySpec: { type: 'unknown-type' } };
+  const v = judge(ch, { exitCode: 0, output: 'ok' });
+  assert.equal(v.result, 'fail');
+  assert.match(v.invalidation, /无对应断言/);
+});

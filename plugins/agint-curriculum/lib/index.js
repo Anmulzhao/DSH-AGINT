@@ -615,6 +615,11 @@ function apply(ctx, config) {
       selfAssessment: verdict.notes,
       reason: verdict.reason,
       verifiedAt: nowIso(),
+      // 失效标记（提案 409d571f）：result 仍是 fail（事实），但判定基础设施
+      // 故障时 invalidated=true，下游 self-model 必须排除，不计能力不足。
+      // verdict.invalidation 由证据结构体检给出；外部调用方无法经 submit 参数伪造。
+      invalidated: typeof verdict.invalidation === 'string' && verdict.invalidation.length > 0,
+      invalidationReason: verdict.invalidation ?? '',
       // 复读标记：result 仍是 pass（事实），但 replay.isReplay=true 表示不计能力成功
       replay: replay.isReplay || replay.llm ? {
         isReplay: replay.isReplay,
@@ -647,10 +652,12 @@ function apply(ctx, config) {
     // 难度调节（§4.6）——复读 pass 不计入能力成功数（提案 10d2d87f）：
     // counted=false 既不进滚动窗口也不推进 consecutivePass，难度状态保持原样。
     const df = await readDifficulty(challenge.domain);
+    // 失效 attempt 同样不计入难度窗口：尺子坏了的 fail 不该把难度档位打下去
+    //（与 replay 不计成功对称，提案 409d571f）。
     const recorded = recordVerdict(df, {
       result: verdict.result,
       at: attempt.verifiedAt,
-      counted: !replay.isReplay,
+      counted: !replay.isReplay && !attempt.invalidated,
     }, {
       windowDays: c.difficulty_window_days,
     });
@@ -667,6 +674,7 @@ function apply(ctx, config) {
     await publishEvent('curriculum.challenge-verdicted', {
       challengeId, domain: challenge.domain, result: verdict.result, reason: verdict.reason,
       replay: replay.isReplay, replayKind: replay.kind,
+      invalidated: attempt.invalidated, invalidationReason: attempt.invalidationReason,
     });
     // 复读不计成功 ⇒ 难度状态没动 ⇒ 不发 difficulty-adjusted（避免谎报升档）
     if (adjusted.action !== 'keep' && !replay.isReplay) {
@@ -681,7 +689,11 @@ function apply(ctx, config) {
     // §4.9 self-model 回写：只提供证据，由 self-model 决定是否更新 capability。
     // ⛔ 复读 pass 不回写成功信号（提案 10d2d87f）——否则 capability.recentSuccess
     //    仍会被复读灌水，与难度侧不计成功自相矛盾。fail 照常回写失败信号。
-    if (c.self_model_writeback !== false && !(verdict.result === 'pass' && replay.isReplay)) {
+    // ⛔ 失效 attempt 不回写任何信号（提案 409d571f）——判定基础设施坏了的 fail
+    //    不是能力不足；若这里回写，self-model 的 evidence 补充路径会把它重新计入，
+    //    抵消 pull 侧的排除。result 事实仍由 attempt 表留档，只是不喂给能力判定。
+    if (c.self_model_writeback !== false && !attempt.invalidated
+        && !(verdict.result === 'pass' && replay.isReplay)) {
       const sm = getSelfModel();
       if (sm && typeof sm.update === 'function') {
         try {
@@ -712,6 +724,8 @@ function apply(ctx, config) {
         replay: replay.isReplay,
         replayKind: replay.kind,
         replayReasons: replay.reasons,
+        invalidated: attempt.invalidated,
+        invalidationReason: attempt.invalidationReason,
         replayLlm: replay.llm ? {
           called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
           confidence: replay.llm.confidence, reason: replay.llm.reason,
@@ -739,6 +753,9 @@ function apply(ctx, config) {
       replay: replay.isReplay,
       replayKind: replay.kind,
       countedForSuccess: !replay.isReplay,
+      // 失效可观测面（提案 409d571f）：调用方/面板据此识别「fail 但非能力不足」
+      invalidated: attempt.invalidated,
+      invalidationReason: attempt.invalidationReason,
       replayLlm: replay.llm ? {
         called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
         confidence: replay.llm.confidence, reason: replay.llm.reason,
