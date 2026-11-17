@@ -1,5 +1,97 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.11.0 — 2026-11-07 — 全组事务 + 新建文件：提案级执行补齐两块天花板
+
+老板 2026-11-07 要求把「支持新建文件」「全组事务」「面板显示还差几个文件」按重要性做完。
+
+### ① 新建文件（共用模块 / 新插件骨架）
+
+- 新 `resolveCreateTargets()`：只在正文明确带「新建 / 抽共用 / 共用模块 / plugins/_shared/」
+  信号时，把**仓库里不存在**的反引号路径认成 create 目标。否则「参考 docs/x.md」会被
+  凭空造文件。
+- 新 `NEW_FILE_OUTPUT_SCHEMA`（applicable/path/content/rationale），与单文件编辑 schema
+  分开 —— 新建文件没有 oldText，硬塞同一个 schema 会逼模型编造原文。
+- 新 `createRepoFile()`：denylist + 路径逃逸 + 禁止覆盖已有文件；回滚动作是删掉它。
+
+### ② 全组事务
+
+- 新 `lib/proposal-transaction.js`：纯编排，IO 全部注入。六阶段顺序写死：
+  construct → postimage(内存) → verify(内存) → gate → write → record。
+  **①②③④ 期间绝不写盘**；任一失败整组放弃；写盘中途失败 ⇒ restoreMany 整组回滚。
+- 新 `lib/verify-text.js`：对还没落盘的 postimage 做语法检查（.js ESM 漏检修法与
+  verifyTargetFile 对齐、.sh bash -n、.json parse、其他跳过）。
+- `runForProposal` 默认走事务；`AGINT_PROPOSAL_ATOMIC=off` 退回 v0.10.0 逐个文件，
+  `AGINT_PROPOSAL_TXN=off` 再退回 v0.9.x 单文件。三级可回退。
+
+### ③ 范围账外送
+
+事务成功返回 `commits[]`（每个文件带 path / policyDecision / created）与
+`scope`，供 executor → evolve → 家族面板消费。
+
+### 验证
+
+- 新 `test/proposal-transaction.test.mjs` 8 组（含 4 条 negative control：前置阶段失败
+  时 write 必须为 0）。
+- smoke T46 真 repo 真写盘：新建共用模块 + 改现有文件一次落地；
+  T47 任一单元语法不过 ⇒ 一个字节都不落；T48 policy REJECT ⇒ 不写盘。
+- smoke 82/82；旧 4 条用例显式走 `AGINT_PROPOSAL_ATOMIC=off` 保留旧口径覆盖。
+
+
+## v0.10.0 — 2026-11-07 — 执行单元从「一个文件」改成「一条提案」
+
+老板 2026-11-07 裁定：**执行器要以提案为执行目标**，不再一次只做一个文件的单点编辑。
+
+### 旧口径的问题
+
+`runOnce` 每轮只对「第一个可改的目标」构造一次编辑并提交，剩余单元交给
+`agint-evolve` 的 partial 续跑。一条横跨 4 个文件的提案 = 4 条执行行 +
+4 次审批周期 + 续跑次数上限；中途失败就停在半成品，且面板上读不出
+「这条提案还差几个文件」。
+
+### 新口径（v1 边界写死在这里，别当成事务）
+
+`runForProposal` 改为循环：反复调 `runOnce({proposalId, skipTargets})`，每次只放它
+改一个还没改过的目标，直到提案覆盖完 / 没有可改目标 / 失败 / 到达
+`maxUnitsPerProposal`（默认 6）。
+
+- **执行单元 = 提案；写入单元 = 文件。** 每个文件仍要过完整闸门
+  （目标解析 → 幻觉闸门 → 实体门 → mutator.validate → 写入后 verify → policy）。
+- **失败即停**：某个文件失败后，后续文件不再写。已落地的文件不回滚 ——
+  它们在写入时已各自通过 verify + policy，回滚它们才是破坏已验证的成果。
+- **⛔ 不是全组事务。** 「N 个文件都写进去再统一验证、任一失败全回滚」需要重写
+  提交段 400 行，本版不做。欠账如实交回 `scope.remainingUnits`，由既有 partial
+  机制接管。
+- **不新建文件**：提案要求新建资产（`requiresNewAsset`）时仍按不完整记账。
+
+### 其他改动
+
+- `scope.partialScope` 计数从「每次 runOnce」改成「每次执行」，否则同一提案会被数 N 次。
+- 新配置 `maxUnitsPerProposal`（默认 6）、`proposalTransaction`（默认 true）；
+  环境开关 `AGINT_PROPOSAL_TXN=off` 可退回旧口径（旧路径与 78 条 smoke 全部保留）。
+
+### 验证
+
+- 新增 `test/proposal-run.test.mjs`（6 组：全改完 / 中途失败停手 / 首次失败不伪造
+  成功 / maxUnits 截断 / skipTargets 透传 / 提前 complete 不多起 LLM）。
+- 新增 smoke `T45`：真 repo + 真写入，一次 `runForProposal` 改完 3 个文件，
+  `scope.complete=true`，`partialScope=0`。
+- smoke 全量 79/79 通过（含既有 78 条，旧口径未被破坏）。
+
+## v0.9.2 — 2026-11-07 — 子代理报错必须可归因：`stopReason=error` 不再只有一个词
+
+2026-11-07 07:52–08:15，执行器连续 5 次收到 `llm unavailable: stopReason=error`。
+排查时发现这条错误串**不携带任何归因字段**：不知道是哪个 provider / 模型、
+跑了多久、宿主有没有给出错误文本。只能反向翻子会话文件（那天 10 个全是 232 字节
+的空壳）和事件总线（`subagent/end` 只有 `stopReason` + `messageLength`）。
+
+结果是一条通道故障两天没被发现（最后一次成功 11-05 14:31），而同一时刻用同一
+key 直连 provider 是 200 —— 说明故障在子代理会话层，错误串却把这点线索也盖掉了。
+
+改动：`spawnLlm()` 在 `stopReason !== 'completed'` 时，错误串补
+`provider / model / preset / elapsed / error.message`。判据不变，只加观测字段。
+
+验证：`test/smoke.mjs` 78/78 通过（既有断言只匹配 `llm unavailable: <reason>` 前缀）。
+
 ## v0.9.1 — 2026-10-29 — 目标解析补第二类反引号：v0.9.0 的记账层被它从上游绕过了
 
 v0.9.0 建了范围记账，专治「改了一个文件就当提案做完了」。它上线第二天就被绕过一次，

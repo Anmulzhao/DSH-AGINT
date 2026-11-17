@@ -1,0 +1,28 @@
+name: publish-safety
+
+# 本仓不做自动发布。这个 workflow 只跑只读校验。
+# 不含 npm publish，不含任何写远端的操作。
+# 依据：bin/check-publish-safety.mjs 在 private:false 时要求本目录存在，
+#       门禁注释写明其意图是「CI 里禁 publish 步骤」。
+# 为什么只跑一个门禁：其余自检依赖 dsh 运行时的 node_modules。
+#       干净 CI 环境裸跑会假红，那是设计约束，不是缺陷。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run publish safety gate
+        run: node bin/check-publish-safety.mjs

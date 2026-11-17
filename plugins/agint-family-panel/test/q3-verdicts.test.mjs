@@ -23,7 +23,8 @@ const STORAGES = join(DSH, 'storages');
 const REPO_ROOT = resolveV2Dirs({ DSH_HOME: DSH }).repoPluginsDir === null
   ? null
   : resolve(resolveV2Dirs({ DSH_HOME: DSH }).repoPluginsDir, '..');
-const haveData = existsSync(join(STORAGES, 'agint_event_bus.json')) && existsSync(PLUGINS);
+// event bus 两种布局任一即可：single 文件（旧）或 per-record 目录（v0.9.0 起）。
+const haveData = (existsSync(join(STORAGES, 'agint_event_bus.json')) || existsSync(join(STORAGES, 'agint_event_bus', 'events'))) && existsSync(PLUGINS);
 if (!haveData) {
   console.log(`SKIP：本机无部署位或 storages（DSH_HOME=${DSH}），真数据回放跳过`);
   process.exit(0);
@@ -261,8 +262,10 @@ console.log(`  repoDirs：${Array.isArray(D.repoDirs) ? D.repoDirs.length + ' �
 //
 // 仓库位口径用同一套判据，要求「漏写 = 0 且悬空声明 = KNOWN_STALE_DECL 冻结集合」。
 // ─────────────────────────────────────────────────────────────────────────────
-const REPO_PLUGINS = resolve(REPO_ROOT, 'plugins');
-if (existsSync(REPO_PLUGINS)) {
+// 仓库位解析不出（无 AGINT_HOME/AGINT_REPO_ROOT，且副本无 .git ⇒ isRepoRoot 不认）
+// 时跳过契约段：部署位回放已跑完，契约断言宁缺毋崩。
+const REPO_PLUGINS = REPO_ROOT === null ? null : resolve(REPO_ROOT, 'plugins');
+if (REPO_PLUGINS !== null && existsSync(REPO_PLUGINS)) {
   const R = collectV2Data(
     { pluginsDir: REPO_PLUGINS, storagesDir: STORAGES, repoPluginsDir: REPO_PLUGINS, repoPluginsSource: 'self-path' },
     { force: true, cache: new Map() },

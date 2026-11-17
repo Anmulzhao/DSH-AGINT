@@ -34,6 +34,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectV2Data, resolveV2Dirs, classifySubscriptions, normalizeOracle, readOracleFile } from './v2-data.js';
 import { collectProposals } from './v2-proposals.js';
+import { collectArchData } from './arch-data.js';
+import { renderArchFragments } from './arch-render.js';
 
 const name = 'agint-family-panel';
 const inject = ['webServer'];
@@ -68,6 +70,23 @@ const STATUS_PATH = `${API_PREFIX}/status`;
 /** v2 整页与其实时数据端点（0.2.0）。 */
 const V2_PAGE_PATH = `${API_PREFIX}/v2`;
 const V2_DATA_PATH = `${API_PREFIX}/v2/data`;
+/**
+ * 架构图实时聚合端点（0.13.0，2026-11-16）。
+ *
+ * 为什么单独一条而不是复用 /v2/data：架构图只需要 21 个节点 / 26 条边 /
+ * 7 个视图所需的字段，/v2/data 是 500KB+ 的全量（含 410 条源码扫描边、
+ * 45 份档案、per-record 事件表）。iframe 每 30s 拉全量既慢又把两套口径混在一起。
+ *
+ * ⛔ 与 /v2/data 同用 arch-data + arch-render 这一对模块，保证「一处定义」。
+ */
+const V2_ARCH_PATH = `${API_PREFIX}/v2/arch`;
+/**
+ * 最近一次 /v2/data 的 bus 段。事件总线的 per-record 目录实测 2 万个记录文件，
+ * 30s 轮询重新遍历会打爆磁盘；这里只复用同进程已算好的结果，过期就不给，
+ * 由 arch-data 标 deferred 并说明原因（⛔ 不拿迁移前的单文件快照冒充全量）。
+ */
+let lastV2Bus = { at: 0, bus: null };
+const LAST_V2_BUS_TTL = 5 * 60 * 1000;
 /**
  * 提案审批写入口（0.5.0，2026-10-23）。
  *
@@ -514,7 +533,17 @@ function isSameOrigin(req) {
  *
  * 为什么不是简单覆盖：`note` 在 applied 行里是**落地证据**，在 proposed 行里可能是
  * 上游留下的说明。人工决定要能追溯，但不能把别人的证据冲掉。
- * 上一版已是面板写的记录时不再叠加（连续改判会让 note 无限膨胀）。
+ *
+ * ⛔ 2026-11-03 修正（W8-2）：删掉「上一版以 PANEL_NOTE_MARK 开头就不叠加」那条。
+ *   原判据是 `keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ...`，
+ *   意图是防连续改判让 note 膨胀，但**前缀根本不携带「这条已没用了」的信息** ——
+ *   面板自己写过的 note 恰恰最可能含唯一的人工判断。
+ *   实测（提案 a85ef850）：300+ 字的失效论证与实测数据（36 条样本 / 随机 500 组权重 /
+ *   阈值 0.70→0.55 能翻 24/36）在一次「改判回 proposed」之后整段消失，
+ *   note 只剩 48 字的抬头，而 updatedAt 照常刷新 —— 事后读到的是
+ *   「刚被改过、但什么都没留下」。
+ *   膨胀保护改用长度上限（DECISION_NOTE_MAX 本来就是为这个存在的），
+ *   不再按「谁写的」判废。
  *
  * @param {{status:string, reason:string, prevNote:string, at:string}} input
  * @returns {string}
@@ -522,7 +551,7 @@ function isSameOrigin(req) {
 function composeDecisionNote({ status, reason, prevNote, at }) {
   const head = `${PANEL_NOTE_MARK} · ${at} · ${status}${reason === '' ? '' : ` · ${reason}`}`;
   const keep = String(prevNote ?? '').trim();
-  const preserved = keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ` ｜ 原记录：${keep}`;
+  const preserved = keep === '' ? '' : ` ｜ 原记录：${keep}`;
   const text = `${head}${preserved}`;
   return text.length > DECISION_NOTE_MAX ? `${text.slice(0, DECISION_NOTE_MAX)}…` : text;
 }
@@ -926,6 +955,11 @@ async function buildV2Payload(ctx, config = {}) {
         (typeof ctx?.get === 'function' ? ctx.get('profileContext')?.name : null) ?? null,
     );
     const payload = collectV2Data(dirs);
+    // 供 /v2/arch 复用（2026-11-16）：事件总线 per-record 有 2 万+ 文件，
+    // 实时端点不该为此每 30s 重扫一遍。只缓存已算好的聚合结果。
+    if (payload && payload.bus && typeof payload.bus.total === 'number') {
+        lastV2Bus = { at: Date.now(), bus: payload.bus };
+    }
     payload.subscriptions = collectSubscriptions(ctx);
     payload.deliveryByTopic = collectDeliveryByTopic(ctx);
     payload.deliveryHistory = collectDeliveryHistory(ctx);
@@ -1015,6 +1049,63 @@ function apply(ctx, config = {}) {
         }
         const payload = await buildV2Payload(ctx, config);
         writeJson(res, 200, { ...payload, enabled: true });
+      } catch (err) {
+        writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
+      }
+    },
+  });
+
+  /**
+   * 架构图实时聚合（0.13.0）：与生成器共用 arch-data / arch-render。
+   *
+   * 契约：
+   *   { ok, generatedAt, mode:'live', model, fragments }
+   *   - model     ≈ 30KB JSON，供 iframe 更新节点读数 / 边状态 / 自检
+   *   - fragments 服务端渲染好的 HTML 片段（KPI / 7 视图），浏览器只 innerHTML 替换
+   *
+   * ⛔ 只读：不碰任何写路由、不改 storages、不替提案台执行动作。
+   * ⛔ 与 /v2/data 同回环约束与 kill-switch 语义。
+   */
+  ctx.webServer.register({
+    kind: 'exact',
+    path: V2_ARCH_PATH,
+    handler: async (req, res) => {
+      try {
+        if (!enabled) {
+          writeJson(res, 200, { ok: false, enabled: false, reason: '面板已被 kill-switch 关闭' });
+          return;
+        }
+        if (!allowNonLoopback && !isLoopback(req)) {
+          writeJson(res, 403, { ok: false, error: 'loopback-only' });
+          return;
+        }
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          writeJson(res, 405, { ok: false, error: 'method-not-allowed' });
+          return;
+        }
+        const repoRoot = typeof config?.repoRoot === 'string' && config.repoRoot.trim() !== ''
+          ? config.repoRoot.trim()
+          : null;
+        const dirs = resolveV2Dirs(
+          process.env,
+          import.meta.url,
+          repoRoot,
+          (typeof ctx?.get === 'function' ? ctx.get('profileContext')?.name : null) ?? null,
+        );
+        const v2 = (lastV2Bus.bus && Date.now() - lastV2Bus.at <= LAST_V2_BUS_TTL)
+          ? { bus: lastV2Bus.bus }
+          : null;
+        const model = collectArchData({ storagesDir: dirs.storagesDir, v2 });
+        const fragments = renderArchFragments(model);
+        // 精简传输：fragments 已覆盖视图 HTML，sparkSeries 按日序列在 30s 尺度上不会变。
+        const slim = { ...model };
+        delete slim.sparkSeries;
+        delete slim.domains;
+        delete slim.stages;
+        delete slim.vitals;
+        delete slim.digest;
+        delete slim.queues;
+        writeJson(res, 200, { ok: true, generatedAt: model.generatedAt, mode: 'live', model: slim, fragments });
       } catch (err) {
         writeJson(res, 500, { ok: false, error: String((err && err.message) ?? err).slice(0, 300) });
       }

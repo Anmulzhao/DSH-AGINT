@@ -1,0 +1,16 @@
+{
+  "activatedAt": "2026-11-12T04:15:38.852Z",
+  "reason": "用户 2026-11-12 授权打开 agint-cron 事件触发桥开关。此时间为真机重启并加载 eventTrigger.enabled=true 的时刻（面板 subscriptions.bootAt）。生效前的触发发生时事件桥尚未通电，不应由终态滞后门禁追责。",
+  "evidence": {
+    "commit": "4d80e60",
+    "configFiles": [
+      "cordis.patch.yml",
+      "$DSH_HOME/.agint-bundle/cordis.patch.yml"
+    ],
+    "socketInodeBefore": 286073898,
+    "socketInodeAfter": 288225608,
+    "firstSubscriptionAt": "2026-11-12T04:16:52.580Z"
+  },
+  "note": "只影响 bin/check-event-trigger-lag.mjs 的评估下界：把生效前触发分离为 preActivation 并从 verdict 中排除。不改 windowMin、不改时间邻近配对口径、不删除或改写任何历史事件；生效后窗口内 0 条触发仍判 NO_TRIGGER_EVENTS + verified=false。",
+  "maintenance": "若日后关闭再重开事件桥，更新 activatedAt 并在 reason/evidence 里写明新一次的重启证据；不要为了让门禁转绿而前移这个时间。"
+}

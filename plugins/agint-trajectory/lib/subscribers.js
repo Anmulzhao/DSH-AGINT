@@ -50,6 +50,10 @@ export const SUBSCRIPTIONS = Object.freeze([
   { topic: 'dream.completed', source: 'dream', role: 'record' },
   { topic: 'evolution.proposed', source: 'evolution', role: 'record' },
   { topic: 'evolution.evaluated', source: 'evolution', role: 'record' },
+  // 2026-11-02：提案的**决定**（批准/驳回/落地/暂不处理）此前不发事件，
+  // 只能翻存储行的 note 才知道谁在什么时候判了什么。发布方在 agint-evolve 的
+  // applyStatus()（状态写入的唯一入口，人工与执行器两条路径都覆盖）。
+  { topic: 'evolution.status-changed', source: 'evolution', role: 'record' },
   { topic: 'diagnosis.completed', source: 'task', role: 'attribution' },
   // P2-3 设计稿已定义的契约（尚未实施）。原名 `evo-orch.*` 首段含连字符属**非法
   // topic**，会让整批订阅被拒（见 TOPIC_RE 注释）→ 2026-09-17 改为 `evoorch.*`。
@@ -129,6 +133,35 @@ export function mapEvent(envelope) {
       final: { decision: p.decision ?? 'SCORED', scores: p.scores ?? null, findings: Array.isArray(p.findings) ? p.findings : [] },
       // 不猜 errorClass：等 diagnosis.completed 回填（真实 > 讨好）
       outcome: vetoed ? { errorMsg: 'VETOED by quality-eval composite score' } : {},
+    };
+  }
+
+  if (topic === 'evolution.status-changed') {
+    // 决定事件：一次「谁在什么时候把提案判成什么」。
+    // ⛔ kind 恒 'success'：rejected / wontfix 是**决策**不是**失败**。
+    //    记成 failure 会把轨迹失败率变成「提案被驳回的次数」，指标立刻失真。
+    const from = typeof p.from === 'string' ? p.from : null;
+    const to = typeof p.to === 'string' ? p.to : null;
+    return {
+      ...base,
+      kind: 'success',
+      title: `evolution.status ${from ?? '?'}→${to ?? '?'} ${p.proposalId ?? ''}`.trim(),
+      taskRef: { candidateId: p.proposalId ?? null },
+      startedAt: now,
+      endedAt: now,
+      durationMs: 0,
+      steps: [{
+        seq: 0, role: 'observation',
+        content: `from=${from ?? '-'} to=${to ?? '-'} execMode=${p.execMode ?? '-'} note=${String(p.note ?? '').slice(0, 120)}`,
+      }],
+      final: {
+        proposalId: p.proposalId ?? null,
+        from,
+        to,
+        kind: p.kind ?? null,
+        execMode: p.execMode ?? null,
+        blocker: p.blocker ?? null,
+      },
     };
   }
 

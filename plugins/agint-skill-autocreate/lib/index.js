@@ -328,13 +328,15 @@ function apply(ctx, config) {
 
     const tp = await table('task_patterns');
     const existing = [...tp.entries()].map(([, v]) => v);
-    const { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity } = detectPatterns(tasks, {
+    const { upserts, newRepeat, blockedBySuccessRate, blockedByLowSpecificity, blockedByLowInformation } = detectPatterns(tasks, {
       existingPatterns: existing,
       minOccurrence: c.min_occurrence_count,
       similarityThreshold: c.param_similarity_threshold,
       minSuccessRate: c.min_pattern_success_rate,
       // A1 特异性门（默认开）：纯脚手架序列不成候选。可运行时关（kill-switch）。
       specificityGate: c.pattern_specificity_gate_enabled !== false,
+      // 检测层信息量门（提案 2f5c70ce，默认开）：过了 A1 但零参数信息的模式不成候选。
+      informationGate: c.pattern_information_gate_enabled !== false,
       scaffoldTools: c.scaffold_tools_extra,
       nowIso: nowIso(),
     });
@@ -407,6 +409,30 @@ function apply(ctx, config) {
           occurrenceCount: blockedStored.occurrenceCount,
           toolSequence: blockedStored.toolSequence,
           reason: 'scaffold-only',
+        },
+      });
+    }
+
+    // ── 信息量门拦下的模式（提案 2f5c70ce）──────────────────────────────
+    // 与特异性门同构：照常入库、照常留痕，但不发 pattern-detected、不成候选。
+    // 留痕意义：能回答"过了 A1 却仍零信息的模式有多少"——这个数高说明
+    // 检测层参数签名采集有缺口（工具调用没带参数），而非门太严。
+    let informationBlocked = 0;
+    for (const pattern of blockedByLowInformation) {
+      const blockedStored = upserted.find(
+        (u) => u.toolSequence.join('>') === pattern.toolSequence.join('>'),
+      );
+      if (!blockedStored) continue;
+      informationBlocked++;
+      await audit({
+        actor: 'system',
+        action: 'pattern_blocked_low_information',
+        targetType: 'task_pattern',
+        targetId: blockedStored.id,
+        details: {
+          occurrenceCount: blockedStored.occurrenceCount,
+          toolSequence: blockedStored.toolSequence,
+          reason: 'no-informative-params',
         },
       });
     }
@@ -952,6 +978,7 @@ function apply(ctx, config) {
       forceRecheckEvaluated: forceRecheckBatch.length, // Sprint 17：forceRecheck=true 命中的历史 pattern 数
       successRateBlocked,   // 2026-09-13：跨过次数门槛但成功率不达标的
       specificityBlocked,   // A1：纯脚手架序列（仍入库留痕，不成候选）
+      informationBlocked,   // 提案 2f5c70ce：检测层信息量门拦下的（非脚手架但零参数信息）
       unknownTools: unknownToolCounts.size, // 白名单缺口：未收录但已放行的工具种类数
       standardizable: {
         judged: standardizableJudged,

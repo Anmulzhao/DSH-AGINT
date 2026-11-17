@@ -155,8 +155,8 @@ function apply(ctx) {
       '一个通用脚手架），检查输出能否过 schema、模型是否真能分辨（而不是一律说 true）。' +
       '**只读**：不写候选/审计、不动每日预算。⚠️ 会真实消耗模型 token，别当烟雾测试天天跑。',
     parameters: {
-      provider: { type: 'string', description: '留空 = 用插件默认 provider（minimax-cn）' },
-      model: { type: 'string', description: '留空 = 用插件默认模型（MiniMax-M3.1-Flash-Preview）' },
+      provider: { type: 'string', description: '留空 = 宿主当前模型（agentDefaultModel）；宿主服务缺席才落插件兜底值' },
+      model: { type: 'string', description: '留空 = 宿主当前模型（同上）。不要写死模型名，换模型时以宿主 profile 为准' },
       timeoutMs: { type: 'number', description: '单次调用超时（默认 60000）' },
     },
     output: {

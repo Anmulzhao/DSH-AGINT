@@ -301,6 +301,20 @@ test('A3-4：类级描述（无编号/日期）→ 不报 one-off-narrative', ()
   assert.ok(!has(f, 'one-off-narrative'));
 });
 
+test('A3 blocker 命中即标 criterion:"information-form"（信息量/形态判据在 Phase 1 的落点，不误标旧四条）', () => {
+  const f = checkSkillSemantics({
+    draft: { name: 'glob-glob-glob-glob', frontmatter: { tools: ['glob', 'read', 'pwsh'] }, body: PUBLISHED_SHELL_BODY },
+    pattern: { successRate: 1 },
+    cfg: {},
+  });
+  const a3Codes = ['non-informative-body', 'no-concrete-value', 'tool-recap-only', 'one-off-narrative'];
+  const a3Hits = f.filter((x) => a3Codes.includes(x.code));
+  assert.ok(a3Hits.length >= 1, 'PUBLISHED_SHELL_BODY 应至少命中一条 A3');
+  for (const x of a3Hits) assert.equal(x.criterion, 'information-form', `${x.code} 必须标为 information-form`);
+  // 旧四条（问"危不危险"）即便命中也不标 information-form
+  assert.ok(!f.some((x) => ['tool-capability-negative-claim', 'env-failure-without-fix', 'transient-error-without-handling'].includes(x.code) && x.criterion === 'information-form'));
+});
+
 test('A3 独立开关：semantics_quality_gate_enabled:false → A3 四条全关，旧四条仍在', () => {
   const f = checkSkillSemantics({
     draft: { name: 'glob-glob-glob-glob', frontmatter: { tools: ['glob'] }, body: `${PUBLISHED_SHELL_BODY}\n\n浏览器工具不能用。` },

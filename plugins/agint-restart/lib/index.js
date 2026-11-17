@@ -752,9 +752,28 @@ function apply(ctx, cfg = {}) {
   };
 
   // 4. 监听 agent 活动事件（追踪最近活跃会话 + 补投落盘通知）
-  ctx.on('agent/session-start', ({ agent }) => {
-    recordActivity(agent);
-    tryFlushPending(agent);
+  //
+  // ⛔ v0.9.3（2026-11-01）：原订阅的是 `agent/session-start`，**宿主从不发这个事件**。
+  //   取证：dsh 0.2.1-rc.5 的 `EVENT_API` 82 条里没有它（`api-catalog.js`，宿主自己生成的
+  //   权威目录）；对 dsh 安装树 `grep -rn "agent/session-start"` 命中 0 行；AGINT 自己也不 emit。
+  //   ⇒ 从 v0.7.2 起这段**一次都没执行过**，"重启后补投压着的恢复通知"是死代码。
+  //   为什么没炸：同文件 v0.7.2 注释里的第二条路径（`ctx.inject(['agents'])` 的 boot 轮询）
+  //   仍在投递，所以日常重启照常收到通知 —— 死掉的是「重启时没有活跃会话」那个窗口的兜底。
+  //
+  //   改订阅 `agent/created`：serial 语义，"an entered agent is ready for per-agent
+  //   initialization after factory setup"，payload 同为 `{ agent }`，与旧代码逐字兼容。
+  //
+  //   ⚠️ serial 与 emit 的差别是**会改变故障面**：`agent/created` 的 listener 抛错或 reject，
+  //   agent 创建本身失败、会话直接起不来。补投是尽力而为的能力，不许拿它的失败换一条命 ⇒
+  //   整段必须自己吞异常，绝不能把异常抛回宿主。（`agent/pre-step` 的 waterfall 分支相反，
+  //   它必须把 `next()` 的结果返回，所以那段不包 try/catch。）
+  ctx.on('agent/created', ({ agent }) => {
+    try {
+      recordActivity(agent);
+      tryFlushPending(agent);
+    } catch (err) {
+      console.warn('[agint-restart] agent/created handler failed (ignored):', err);
+    }
   });
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     recordActivity(agent);

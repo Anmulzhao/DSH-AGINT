@@ -41,6 +41,7 @@ const fixtureSummary = () => ({
       }),
     },
     { key: 'skills.totalBytes', value: 82652, meta: JSON.stringify({ fileCount: 11, roots: ['/x'] }) },
+    { key: 'skills.managedBytes', value: 82652, meta: JSON.stringify({ managedCount: 11, topManaged: [{ name: 'demo-skill', bytes: 82652 }] }) },
     { key: 'evolution.logCount7d', value: 5, meta: JSON.stringify({ excludedOracle: 0 }) },
     { key: 'evolution.logCount30d', value: 173, meta: JSON.stringify({ excludedOracle: 0 }) },
   ],
@@ -53,6 +54,7 @@ const partialSummary = () => ({
   metrics: [
     { key: 'memory.total', value: 336, meta: JSON.stringify({ avgConfXCompliance: 0.544 }) },
     { key: 'skills.totalBytes', value: 82652, meta: JSON.stringify({ fileCount: 11, roots: ['/x'] }) },
+    { key: 'skills.managedBytes', value: 82652, meta: JSON.stringify({ managedCount: 11, topManaged: [{ name: 'demo-skill', bytes: 82652 }] }) },
   ],
 });
 
@@ -299,6 +301,7 @@ const todaySummary = () => ({
       }),
     },
     { key: 'skills.totalBytes', value: 86039, meta: JSON.stringify({ fileCount: 8 }) },
+    { key: 'skills.managedBytes', value: 86039, meta: JSON.stringify({ managedCount: 8, topManaged: [{ name: 'demo-skill', bytes: 86039 }] }) },
     { key: 'evolution.logCount7d', value: 5, meta: JSON.stringify({ excludedOracle: 0 }) },
     { key: 'evolution.logCount30d', value: 173, meta: JSON.stringify({ excludedOracle: 0 }) },
   ],
@@ -1122,6 +1125,7 @@ test('Day4-5 buildWeeklyProposals：绝对扣分 top3（无证据维跳过），
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 0.9, skillsBytes: 1000, skillsTotal: 2,
+    skillsManagedBytes: 1000, skillsManagedCount: 2,
   }, { adviceCtx: {} });
   assert.equal(buildWeeklyProposals(healthy, {}, {}).length, 0, '阈内系统不提案');
 });

@@ -6,7 +6,8 @@
  * missing/unhealthy source skips its metrics instead of failing the run.
  *
  * The PLAN's 7 metrics map as follows (everything computable today):
- *   盲区天数           → cron.staleJobs + cron.maxOverdueDays
+ *   盲区天数           → cron.staleOverdue + cron.staleInactive + cron.maxOverdueDays
+ *                        （2026-11-08 拆维度：原单一 cron.staleJobs 降级为并集汇总，已弃用）
  *   门禁遵守率         → rules.hits / rules.blocked / rules.adherencePct
  *   记忆矛盾数         → wiki.contradictions (memory-lint 尚未实现，见报告)
  *   谄媚率             → 未采集（需 session 日志抽样，evolve 报告标注 future work）
@@ -28,7 +29,14 @@
 import { METRIC_DEFS_EXT, computeMetricsExt, describeMetricExt, NO_EVIDENCE_IDS_CAP } from './metrics-ext.js';
 
 export const METRIC_DEFS_BASE = [
-  { key: 'cron.staleJobs', label: '定时任务失效数（盲区）', unit: 'count', source: 'cron' },
+  // 2026-11-08（提案 cdf41d63）：cron.staleJobs 拆成两个维度。
+  //   cron.staleOverdue  = 过期未跑（原 staleJobs 的口径，issues 的条数）
+  //   cron.staleInactive = 久未活动（距上次运行 > 2 个调度周期）
+  // cron.staleJobs 保留为两者的**并集汇总**，已弃用：新看板一律读两个维度。
+  // 为什么留汇总：既有 dashboard / 报告模板直接引用这个 key，删掉会当场空图。
+  { key: 'cron.staleJobs', label: '定时任务失效数（盲区·汇总，已弃用）', unit: 'count', source: 'cron', deprecated: true },
+  { key: 'cron.staleOverdue', label: '定时任务过期未跑数', unit: 'count', source: 'cron' },
+  { key: 'cron.staleInactive', label: '定时任务久未活动数', unit: 'count', source: 'cron' },
   { key: 'cron.maxOverdueDays', label: '最大任务逾期天数', unit: 'days', source: 'cron' },
   { key: 'rules.hits', label: '门禁命中总数', unit: 'count', source: 'rules' },
   { key: 'rules.blocked', label: '门禁阻断/询问数', unit: 'count', source: 'rules' },
@@ -83,8 +91,27 @@ export async function computeMetrics(sources) {
   if (cron && typeof cron.health === 'function') {
     try {
       const health = cron.health();
-      const stale = Array.isArray(health.issues) ? health.issues.length : 0;
-      push('cron.staleJobs', stale, { issues: health.issues ?? [] });
+      // 2026-11-08（提案 cdf41d63）：失效拆两个维度采集。
+      //   staleOverdue  = 过期未跑 —— health.staleOverdue；宿主旧版本没有这个字段时
+      //                    回落 health.issues（同一个口径，历史兼容）。
+      //   staleInactive = 久未活动 —— health.staleInactive（宿主旧版本没有 ⇒ 0）。
+      //   staleJobs     = 两者并集（按 id 去重），**已弃用**，只为旧看板兜底。
+      const overdue = Array.isArray(health.staleOverdue)
+        ? health.staleOverdue
+        : (Array.isArray(health.issues) ? health.issues : []);
+      const inactive = Array.isArray(health.staleInactive) ? health.staleInactive : [];
+      const unionIds = new Set();
+      for (const x of overdue) if (x?.id) unionIds.add(x.id);
+      for (const x of inactive) if (x?.id) unionIds.add(x.id);
+      push('cron.staleOverdue', overdue.length, { jobs: overdue.map((x) => x?.id ?? null) });
+      push('cron.staleInactive', inactive.length, { jobs: inactive.map((x) => x?.id ?? null) });
+      push('cron.staleJobs', unionIds.size, {
+        deprecated: true,
+        definition: 'union(cron.staleOverdue, cron.staleInactive)',
+        overdue: overdue.length,
+        inactive: inactive.length,
+        issues: overdue,
+      });
       const jobs = Array.isArray(health.jobs) ? health.jobs : [];
       const maxOverdueMs = jobs.reduce((m, j) => Math.max(m, j?.overdueMs ?? 0), 0);
       push('cron.maxOverdueDays', round(maxOverdueMs / 86_400_000, 1), { jobs: jobs.length });

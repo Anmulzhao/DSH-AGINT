@@ -73,6 +73,47 @@ export function shouldClear(entry, now = Date.now()) {
 }
 
 /**
+ * Horizon of the whole pool: how old the oldest entry is, and how many days
+ * remain before the nearest downgrade threshold.
+ *
+ * Uses the same recencyIso / daysSince / THRESHOLDS as decayScan. Do not
+ * recompute "age" outside this file: a second definition would drift from the
+ * scan itself. L4 is skipped: clear needs resolved/replaced and is not a
+ * downgrade. Days are rounded to one decimal. null means "not applicable"
+ * (empty pool, or no pending downgrade).
+ *
+ * nextTransition is the label for the nearest threshold, e.g. "L1->L2".
+ * nextThresholdDays === 0 means at least one entry has already reached it.
+ */
+export function scanHorizon(entries, now = Date.now()) {
+  const rows = Array.from(entries ?? []);
+  if (rows.length === 0) {
+    return { oldestEntryDays: null, nextThresholdDays: null, nextTransition: null };
+  }
+  const round1 = (n) => Math.round(n * 10) / 10;
+  let oldest = 0;
+  let remaining = Infinity;
+  let transition = null;
+  for (const [, entry] of rows) {
+    const age = daysSince(recencyIso(entry ?? {}), now);
+    if (age > oldest) oldest = age;
+    const from = entry?.level ?? 'L1';
+    const next = TRANSITIONS.find((t) => t.from === from);
+    if (!next) continue; // L4: clear threshold has extra eligibility, not a downgrade.
+    const gap = next.days - age;
+    if (gap < remaining) {
+      remaining = gap;
+      transition = `${next.from}->${next.to}`;
+    }
+  }
+  return {
+    oldestEntryDays: round1(oldest),
+    nextThresholdDays: Number.isFinite(remaining) ? round1(Math.max(0, remaining)) : null,
+    nextTransition: transition,
+  };
+}
+
+/**
  * Run a decay scan over entries (array of [id, entry] pairs).
  * Returns { actions, report } — never mutates the entries.
  * action: { id, action: 'downgrade'|'clear', from?, to?, reason }

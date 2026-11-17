@@ -37,6 +37,7 @@
  *   ③ curator-weekly 必须早于 evolve-review（周复盘要吃本周策展报告）
  */
 
+import { join } from 'node:path';
 import { parseCron, nextFire, lastFire } from './cron.js';
 import { auditSpecIndex } from './spec-index-audit.js';
 import { auditEvolutionReconcile } from './evolution-reconcile-audit.js';
@@ -1022,8 +1023,42 @@ export const defaultJobs = [
         );
       }
       const { runAgentsSizeGuard, summarizeGuard } = await import('./agents-size-guard.js');
-      const r = await runAgentsSizeGuard(cfg);
-      return { summary: summarizeGuard(r), level: r.level, bytes: r.bytes, chars: r.chars, wroteReport: r.wroteReport };
+      // 记忆索引门禁：用 repoRoot 推脚本路径。未配 repoRoot ⇒ script=null，
+      // 结果记 skipped 并写进报告（不静默跳过，K134）。
+      const repoRoot = services['agint.repoRoot'];
+      const memoryIndex =
+        cfg.memoryIndex?.enabled === false
+          ? { enabled: false }
+          : {
+              script: repoRoot ? join(repoRoot, 'bin', 'check-memory.mjs') : null,
+              repo: repoRoot ?? undefined,
+              memoryDir: cfg.memoryIndex?.memoryDir ?? undefined,
+            };
+      // 知识库表示层门禁：同样用 repoRoot 推脚本。
+      // root 取运行中 agint.wiki 服务暴露的 root —— 不在这儿复制 patch.yml 的
+      // 那串 !!js 回退链，否则改了 wiki 根，门禁会静默核到另一个目录（K133 第二种口径）。
+      const wikiSvc = services['agint.wiki'];
+      const wikiRoot = typeof wikiSvc?.root === 'string' && wikiSvc.root ? wikiSvc.root : null;
+      const wikiIndex =
+        cfg.wikiIndex?.enabled === false
+          ? { enabled: false }
+          : {
+              script: repoRoot ? join(repoRoot, 'bin', 'wiki-build.mjs') : null,
+              root: cfg.wikiIndex?.root ?? wikiRoot ?? undefined,
+              maxRatio: typeof cfg.wikiIndex?.maxRatio === 'number' ? cfg.wikiIndex.maxRatio : undefined,
+            };
+      const r = await runAgentsSizeGuard({ ...cfg, memoryIndex, wikiIndex });
+      return {
+        summary: summarizeGuard(r),
+        level: r.level,
+        bytes: r.bytes,
+        chars: r.chars,
+        wroteReport: r.wroteReport,
+        memoryIndexLevel: r.memoryIndex?.level ?? null,
+        memoryIndexFail: r.memoryIndex?.fail ?? null,
+        wikiIndexLevel: r.wikiIndex?.level ?? null,
+        wikiIndexDrift: r.wikiIndex?.drift ?? null,
+      };
     },
   },
 ];

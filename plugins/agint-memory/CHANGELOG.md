@@ -5,6 +5,39 @@
 
 ## Unreleased
 
+- **召回计数接上生产者（0.3.0，提案 `ec113dee`）**：`recalls` 此前从未被接线 ——
+  生产池 869 条 `recalls` 869/869 全为 0。根因：唯一写点 `memory.recall()` 的生产调用者
+  在 `agint-memory-provider/lib/builtin-provider.js:120`，被默认关闭的 `builtin_recall_touch`
+  挡住；而它的入口 `manager.beginTurn()` 全仓无调用者（宿主 `app.asar` 命中 0、preset 命中 0）。
+  本次：模型面向的检索命中记到旁路文件 `<DSH_HOME>/storages/agint_memory_hits.jsonl`
+  （append，一次检索一行），读接口 `list()` / `search()` 把计数合并进返回条目的 `recalls`。
+  - **为什么不写 memory 表**：该表是 single-layout 单元（单文件 ~879KB），每写一行整体重写；
+    单行写实测平均 764ms（工具统计 `memory_write` n=517），命中 20 条要等 ~15 秒 ⇒ 不可行。
+  - **口径**：只有模型面向的检索（`memory_search` / `agint_search`）算召回；provider prefetch、
+    压缩兜底、诊断反事实、质量评估检索、`memory_read` / `memory_list` / `memory_forget_scan` 不算。
+  - **不改变排序与衰减**：合并只在读侧呈现，不回写表；不改 `lastRecall`。
+  - 新增 service 方法 `noteHits(ids)` / `hitCounts()`；`stats()` 多带 `hits: { entries, total }`。
+  - 文档更正：README 原写「指数遗忘项与 `recalls` 共同决定实际得分」是错的 ——
+    `decay.js` 的 `effectiveConfidence` 从不读 `recalls`，已更正。
+  - 测试：`test/hit-counter.test.mjs`（11 例；摘掉工具层 `countHits: true` → 6 例变红）。
+  - 已知边界：`agint-search-tools` 仓内无 manifest / 测试目录，本次只改其 `memory.search`
+    调用参数（透传 `countHits`），该插件的声明式覆盖缺失属既存欠账。
+
+- **forget_scan 的 0 动作自解释（0.2.1，提案 `55d8eb24`）**：池子里没有条目
+  达到 90 天门槛时，扫描只返回「0 planned, 0 applied」。这无法区分「机制正常
+  但池子太新」与「机制坏了」。现在 `decayScanRun()` 的 report 多带三个字段：
+  `oldestEntryDays`（池内最老条目的天数）、`nextThresholdDays`（离最近一次
+  降级还差几天，`0` 表示已有条目达标）、`nextTransition`（如 `L1->L2`）。
+  工具 render 多打一行 `oldest=42d, L1->L2 in 48d`。
+  天数口径由 `decay.js` 的 `scanHorizon()` 统一提供，与 `decayScan()` 共用
+  `recencyIso` / `daysSince` / `THRESHOLDS`，不另立一套基线。
+  L4 不计入候选（clear 需 `resolved/replaced`，不是降级）；空池三个字段为 `null`。
+  ⚠️ 覆盖范围是 `memory_forget_scan` 工具与 `memory-decay` cron 的返回体。
+  cron 的 `summarizeResult` 只搬 `scanned` / `counts`，健康摘要里仍看不到这两项
+  （后续项，本提案未含）。
+  测试：`test/forget-scan-horizon.test.mjs`（10 例，含真 service 端到端；
+  摘掉 report 合并行做 negative control 时必须变红 5 例）。
+
 - **新增 `memory_remove` 工具**（2026-10-19）：service 层早就有 `remove(id)`
   （`lib/index.js:162`），但**工具面没有暴露它** —— 长期记忆只能写不能删。
   后果不是抽象问题：2026-10-19 夜班 sweep 把 3 条原始报错残骸（工具 stderr

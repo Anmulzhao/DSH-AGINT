@@ -1,3 +1,72 @@
+## 未发版 · 2026-11-15 — LLM 判定通路的模型选择收敛到宿主单一真源
+
+**依据**：`docs/capability-boundary.md:27`（LLM provider 属 L-宿主）与 `:489`
+（provider/model 硬编码 4 份是未修欠账）。本插件 `judgeViaLLM()` 此前把三个模型入参
+写死在签名默认值里，宿主换模型时不会跟随；`lib/tools.js` 的参数描述还残留
+`MiniMax-M3.1-Flash-Preview`（与实际兜底值、宿主目录都不一致）。
+
+**行为变化**
+- `lib/llm-verdict.js` 新增导出 `resolveLlmSelection(ctx, explicit)`：显式入参 > 宿主
+  `agentDefaultModel.currentSelection()` > 离线兜底常量；ctx.get 软取、不进 inject。
+- `judgeViaLLM()` 三个模型入参默认值由 `DEFAULT_*` 改为空串（非空默认值会让宿主选择
+  永远排不上队），`agentOptions` 与 `meta` 改用解析后的生效值。
+- `lib/verify.js` 改 import `resolveLlmSelection`，`autocreate_verify_llm` 报告**生效值**
+  而非入参 —— 验证工具的价值正是说清「这一轮实际用的哪个模型」。
+- `lib/tools.js` 参数描述不再写死模型名，改为指向宿主当前模型。
+- 宿主服务缺席 / 取值抛错 ⇒ 落兜底常量；判定轨道 C 的「LLM 失败不回落轨道 B」、
+  每日硬预算 20 次（含 shadow）等语义一字未改。
+
+**验收**：`test/llm-selection.test.mjs` 7/7（含端到端断言 `agents.create` 收到的
+`agentOptions` 来自宿主）；全量 `node --test "test/*.test.mjs" "test/*.test.js"`
+421 pass / 0 fail / 5 skipped；`bin/check-llm-selection-parity.mjs` 全绿。
+
+## 未发版 · 提案 2f5c70ce — 检测层"信息量/形态"判据（信息半）+ Phase 1 四条 blocker 显式化
+
+**背景**：技能自动创建的"信息量/形态"判据此前分散在两处且只有一半落地：
+- **形态半（检测层特异性门 A1，2026-09-18）**：拦纯脚手架序列——已上线。
+- **信息半（评估层 A3 四条，2026-09-17）**：拦空壳正文——已上线，但只在 Phase 1
+  正文层面兜底，检测层对"过了 A1 却零信息"的模式毫无防备。
+
+提案 2f5c70ce 把"信息量/形态"收成一个**两层一致**的判据：检测层补信息半、评估层
+把 A3 四条显式钉为"信息量/形态"落点。
+
+**检测层信息半（lib/detector.js `passesInformationGate`）**
+- 判据：模式的参数签名里**至少有一个真实参数键**（`aggregator.signatureOf` 的
+  `'key:type'` 形态）。工具零参被调（`'empty'`）/ null·数组入参（`'none'`）/ 缺键
+  一律**不算信息**——"调了工具但没带参数"与零信息同义。
+- 与 A1 正交：A1 判"有没有领域工具"（形态），本门判"过了 A1 有没有实质参数信息"。
+- 判定顺序固定 成功率 → 特异性 → 信息量，四桶互斥（一个模式只落一个桶）。
+- kill-switch `pattern_information_gate_enabled`（默认**开**，K42/K51：拦错误的门）。
+- 地板而非天花板：只拦"完全零参数"这种 unambiguous 情形；更细的"参数占位符/无变化"
+  仍由 Phase 1 的 A3（零具体值/纯工具复述）兜底。
+- 被拦模式**照常入库** + 审计 `pattern_blocked_low_information`，可观测不静默丢弃。
+
+**Phase 1 显式化（lib/semantics.js + lib/evaluator.js）**
+- A3 四条 blocker（`non-informative-body` / `no-concrete-value` / `tool-recap-only` /
+  `one-off-narrative`）显式打 `criterion: 'information-form'`，与"危不危险"的旧四条
+  在 findings 上区分开。
+- `evaluateCandidate` 的 `phase1` 结果新增 `informationFindings` / `informationCodes`
+  计数，便于周复盘区分"安全向被拒"与"信息量/形态向被拒"。
+
+**配置**：`pattern_information_gate_enabled` 入 `RUNTIME_CONFIG_KEYS`（可运行时启停，
+重启还原）；`detect()` 返回新增 `informationBlocked` 统计。
+
+**验证**：新增 7 例（信息量门纯函数 4 + detect 集成 2 + A3 打标 1），存量 419 →
+426（420 pass / 6 skip）。护栏自证：A1 既有用例（domain 模式带 `'x:s'` 占位参数）
+仍 newRepeat=1，证明信息量门不误杀有参数签名的模式。
+
+---
+
+## v0.8.0 — 2026-11-11 — 发布技能时写入 `.agint-managed` 标记
+
+**为什么**：metrics 采集端要区分「AGINT 维护的技能」与「用户自装的第三方技能」，
+需要一个权威标记。目录即注册的用户级技能根里两类混放，不能靠目录路径区分。
+
+**变更**：`lib/release-manager.js` 的 `publishToSkillsRoot()` 在发布时写入
+`.agint-managed`（内容含 `managed-by: agint-skill-autocreate` 与发布时间）。
+同名常量另见 `agint-metrics/lib/metrics-ext.js` 的 `MANAGED_MARKER`——两处须一致。
+
+
 ## v0.7.0 — 2026-10-25 — LLM 判定无降级 + 接 startActivation
 
 **背景**：宿主只有 `subagents.startActivation`；旧代码检查 `start` ⇒ LLM 判定

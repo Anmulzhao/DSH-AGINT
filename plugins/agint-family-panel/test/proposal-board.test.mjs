@@ -299,6 +299,29 @@ test('标签：approved + blocker ⇒ 「已批准·阻塞中」，不许写「�
       .includes('解锁：满 8-12 周'), '阻塞要写明怎么解锁');
 });
 
+// ── 2026-11-07：提案级执行的范围账要能被老板一眼看见 ──────────────────────
+//
+// driver v0.11.0 一次执行交回 commits[]，经 executor → evolve 落到 proposal 行。
+// 面板只读 proposal 表，所以这里显示「已改 N/M 个文件 · 还差几个 · 改了哪些」。
+test('范围账：已改 N/M 与还差几个文件要出现在执行摘要里', () => {
+  const { sandbox } = bootBoard(payload());
+  const out = sandbox.execText({
+    status: 'approved', execMode: 'immediate', execState: 'partial',
+    execUnitsApplied: 2, execUnitsTotal: 5,
+    execRemainingUnits: ['a.js', 'b.js', 'c.js'],
+    execCommits: [
+      { path: 'plugins/x/a.js', policyDecision: 'AUTO_DEPLOY' },
+      { path: 'plugins/_shared/helper.js', created: true },
+    ],
+  });
+  assert.match(out, /已改 2\/5 个文件/);
+  assert.match(out, /还差 3 个：a\.js、b\.js、c\.js/);
+  assert.match(out, /a\.js、helper\.js/, 'commits 里的文件名要带出来');
+  // 负控制：老行没有这些字段 ⇒ 不许编数字
+  const legacy = sandbox.execText({ status: 'approved', execMode: 'immediate', execState: 'queued' });
+  assert.equal(legacy.includes('已改'), false, '没有范围信息就不该显示范围');
+});
+
 // ── 2026-10-27（提案 567dabed）：成立条件已变要看得见 ──────────────────────
 //
 // a85ef850 在 r2 落地后静默失效，却在台账里挂了 18 天「待批」，期间它和任何一条

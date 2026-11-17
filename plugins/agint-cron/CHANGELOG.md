@@ -2,6 +2,95 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.4.0] — 失效拆两个维度：过期未跑 / 久未活动（2026-11-08 · 提案 cdf41d63）
+
+**背景**：`health()` 只有一个失效口径（过期未跑）。`agint-metrics` 据此产出的
+`cron.staleJobs` 在 series 里同一分钟出现过 7 和 3 两个值 —— 阈值是悬崖，delta
+失去意义，运维也分不清「该跑没跑」和「早就不跑了」。
+
+**改动**：
+
+1. 新增 `lib/staleness.js`（纯函数、零 IO、零依赖）：`classifyInactivity()` 判久未活动，
+   判据常量 `INACTIVE_PERIOD_FACTOR = 2`（距上次运行 > 2 × 调度周期）。
+2. `health()` 输出加两个通道：`staleOverdue`（= 原 `issues`，**同源同数组**）与
+   `staleInactive`。`issues` 保留为历史别名，语义与取值均未变。
+3. 每个 job 的 status 加 `staleOverdue` / `staleInactive` / `inactiveMs` / `periodMs`。
+4. `cron_health` 工具面渲染久未活动条目（接了不消费 = 新的观测侧假绿）。
+
+**口径要点（别想当然）**：
+
+- 对**跑过**的 job，久未活动 ⇒ 必然也已过期（idle > 2P ⇒ > 1.5P），是过期维度的子集：
+  只标注严重程度，不新增计数。
+- 真正新增的信号是**从未运行**的 job：过期通道对它们用固定 7 天窗口兜底，久未活动用
+  真实周期 ⇒「每日任务从没跑过」从此可见。
+- `healthy` 仍只看过期维度（沿用 2026-10-07「只报不拦」口径），未改判定。
+
+**验证**：`test/smoke.mjs` 新增 4 组两维度判据（含从未运行的 job 与倍数常量）；
+`test/run-state-accounting.test.mjs` 新增 5 条（两通道同源、never-run 归类、周期逐 job
+暴露、刚跑过不报、工具面消费）。agint-cron 测试 226/226 通过。
+
+**破坏性**：`health()` 输出**新增**字段，向后兼容；`issues` 与 `healthy` 判定未动。
+
+## [0.3.1] — 门禁 skipped 必须留痕（2026-11-07）
+
+**背景**：0.3.0 的写盘条件是 `level !== 'ok' || hostDropRisk || memoryIndexFail || wikiIndexDrift`。
+两道门禁任一为 `skipped`（`agint.repoRoot` 未配、或 `agint.wiki` 没暴露 `root`）时
+**不写任何报告** —— 而 `skipped` 的语义正是「一次都没核过」。
+于是报告目录里空空如也，看起来像「在跑且没问题」。这是 K134 明令禁止的静默降级。
+
+**修复**：`skipped` 现在也触发写盘，报告里写明「未执行：<reason>」。
+`disabled`（用户主动关掉）**不**因此写盘 —— 停用不该产生每日噪音。
+
+**判据**：`wroteReport` 由「有没有未核过的门禁」决定，不再由「有没有判红」决定。
+
+**验证**：`test/agents-size-guard.test.mjs` 31/31（原 29）。
+新增负控制：`memoryIndex` 与 `wikiIndex` 同时 `disabled` 时 `wroteReport` 仍为 `false`。
+
+**发现路径**：用加载位字节做端到端（真 `agint-wiki` 插件 → 真服务对象 → 真 job action），
+负控制「服务对象去掉 root」暴露出「记 skipped 但不写盘」。
+
+## [0.3.0] — agents-size-guard 兼作两道索引门禁（2026-11-07）
+
+**背景**：AGINT 有两处「索引容易腐坏但没人每天核」的地方 —— 顶层注入的 `MEMORY.md`
+（历史四次超限被截断）和 `agint-wiki` 的表示层（生成页可能落后于源文档）。
+两者都不值得新开排期位，所以都挂到已有的 `agents-size-guard`（daily 06:45）上，
+**不新增 cron job、不占 schedule 槽**。
+
+### 新增
+
+- `runMemoryIndexGate({script, repo, memoryDir})`：直接调 `bin/check-memory.mjs --enforce --json`。
+  有 FAIL 判 `fail`；脚本崩或输出不是 JSON **一律抛错，绝不当绿**。
+- `runWikiIndexGate({script, root, maxRatio})`：直接调 `bin/wiki-build.mjs --check --json`。
+  ⚠️ 退出码必须分清：**0 = 最新，1 = 漂移（正常业务结果），2 = 硬失败**。
+  把 1 当崩溃处理，门禁就会每天报一次假警；把 2 当漂移处理，等于把判据失效说成「该重建了」。
+  本实现按 `drift` 字段判，不从退出码反推。
+- 配置均带 `enabled: false` kill-switch（K51：出厂即开，能关）。
+
+### 接线（jobs.js）
+
+- `memoryIndex.script` 由 `agint.repoRoot` 推 `bin/check-memory.mjs`；未配 repoRoot 记 `skipped` 并写进报告。
+- `wikiIndex.root` **取运行中 `agint.wiki` 服务暴露的 `root`**，不在配置里复制
+  `cordis.patch.yml` 那串 `!!js` 回退链 —— 复制出来就是第二种口径，改了 wiki 根之后
+  门禁会静默核到另一个目录（K133）。
+- 两个门禁任一「有事要说」都写报告，避免每天丢一份无信息量的文件。
+
+### 配置
+
+```yaml
+agentsSizeGuard:
+  memoryIndex: { enabled: true }                 # 默认开
+  wikiIndex:   { enabled: true, maxRatio: 1.0 }  # 默认开；root 自动取
+```
+
+⚠️ zod 默认剥离未声明键：`wikiIndex` 三个字段都必须在 schema 里显式声明，
+少一个就静默失效，门禁看起来在跑其实一次没核过（K134）。
+
+### 测试
+
+`test/agents-size-guard.test.mjs` 23 → 29 条。新增 6 条覆盖：无漂移判 ok、漂移（exit 1）
+判 stale **不抛错**、exit 2 抛错、输出非 JSON 抛错、缺 root/script 抛错、漂移也写报告且摘要带
+`wikiIndexLevel`、kill-switch 与缺 root 的降级理由。
+
 ## [0.2.16] — 修 input-gateway-watchdog 判据：即投通道误判为「采集器失明」（2026-10-09）
 
 ### 问题（门禁在校验，但校验的是错的东西）

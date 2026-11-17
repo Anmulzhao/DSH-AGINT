@@ -4,6 +4,74 @@
 
 ---
 
+## 0.7.0 (2026-11-03) — W6：把 postimage 的「落地」和「验证」拆开，主工作区不再有未验证窗口
+
+**纯新增 + 一个默认关闭的 config key，零 FROZEN schema 破坏（`AuditSchema` 只加可选字段）。**
+
+### 背景：不是"用上新能力"，是修一个真实的并发窗口
+
+`commit()` 原来的顺序是：
+
+```
+① 读 preimage → ② 直接写主工作区 postimage → ③ sandbox 验（子进程，30s 超时）→ ④ policy 决策
+                                        → ⑤ REJECT 才把 preimage 写回去
+```
+
+②③ 之间 postimage **已经躺在主工作区里**，而谁都不知道它能不能过。这三十秒里：
+
+- 另一个 agent 会话（本仓明确有并发写者）读到的就是未验证内容，它会把这当"当前代码"继续改；
+- 人工 `git status` / 打包 / 部署脚本拿到半成品；
+- 进程在这期间被杀（本机有前科：inspector fatal、SAFE_DELETE 拦收尾）⇒ 主工作区永久留下
+  未验证内容，且 commits 表里**没有**这条记录 ⇒ `rollback()` 查不到 ⇒ 无凭据可回滚。
+
+W6 把 ②③ 挪进一个宿主 Git worktree：验证期间主工作区**完全不变**，验过才写回。
+窗口从"30 秒级"压到一次同步写。
+
+### 改动
+
+- 新增 `lib/worktree-isolation.js`：`runIsolatedWrite()` + `resolveInside()` + `disposeWorktree()` + `readHead()`。
+- `commit()` 在写盘前插一段 `maybeIsolatedVerify()`；隔离成功 ⇒ 用 worktree 内的验证结果，
+  并把 postimage 一次性写回主工作区；未启用/失败 ⇒ **原样走 v0.6.x 路径**。
+- `Config` 新增 `worktreeIsolation`（默认 **false**）与 `worktreeBranchPrefix`（默认 `agint-mut/`）。
+- `AuditSchema` 加**可选** `worktree: { isolated, baseCommit?, branch?, reason?, cleanupNotes? }`。
+  只在开关打开时写：`isolated:false`（开了但降级，要读 reason）与"字段不存在"（根本没启用）
+  必须可区分 —— 所以它不能是必填，必填还会让历史 commits 行解析失败。
+- `.gitignore` 加 `.agents/`（worktree 服务的默认 checkout 根）。
+
+### 四条边界（都不是可选项，逐条有测试钉住）
+
+1. ⛔ `ctx.worktrees.create()` 会调 `workingDirectory.set(agent, path)` —— 它切的是
+   **调用者 agent 的 cwd**（站源码 `dsh-experimental-worktree/lib/index.js:357`）。
+   所以用完必须 set 回来，且**放在 finally 里**；拿不到 workingDirectory 服务时整个隔离
+   直接放弃（建了换不回来比不建糟得多）。
+2. ⛔ 服务**只有 `create()`，没有 remove/prune**，失败路径还明说 "Any created checkout and branch
+   are retained"。所以自己 `git worktree remove --force` + `worktree prune` + `branch -D`，
+   全程 best-effort：清理失败只进 `cleanupNotes`，不影响 commit 结果。
+3. ⛔ 主工作区 HEAD ≠ worktree `baseCommit` ⇒ 拒绝隔离。preimage 是从主工作区读的，
+   base 不同就意味着 worktree 里那个文件未必是 preimage，写回就是静默丢改动。
+4. 路径护栏：`targetPath` 必须落在 worktree 内。`deriveTargetPath` 只产三种固定形态，
+   但它是**字符串拼**的（`plugins/${pluginId}/prompts/${p.promptId}.md`），promptId 由 caller 给
+   —— 不假设它干净。
+
+### 验收
+
+- 全量 **156/156**（新增 `test/worktree-isolation.test.mjs` 9 例）。
+- ⛔ **四条阴性对照实测会红**（护栏没证明过会红等于没有护栏）：
+  ① 拆掉 cwd 还原 → A1/A2 红；② 拆掉 baseCommit 比对 → A3 红；
+  ③ 拆掉 worktree 清理 → A1/B1/B4 红；④ 强制关闭隔离 → **B1 红**（"验证期间主工作区还是 preimage"
+  这条断言真的在测隔离，不是自证）。
+- `plugin-check` exit 0 且**零 WARN**（顺带补了维度 5.5 要的 forward-slash 正向 + `../` 负向 case，
+  这次是真的有路径要守，不是为消 WARN 而加）。
+- `check-wiring` exit 0；`check-preset-parity` / `check-dsh-compat` 全绿。
+
+### 线上默认值
+
+`cordis.patch.yml` 里 agint-mutator 那行写 `worktreeIsolation: true`。
+⚠️ 本机 dsh 是单 agent 会话，cwd 还原风险可控；并发会话场景要重新评估边界 1。
+回滚：改成 `false`（或删掉 key）并重启 dsh，行为逐字节退回 v0.6.x —— 已用 B2/B3 用例钉住。
+
+---
+
 ## 0.6.13 (2026-10-31) — 新增只读 `getCommit`：补一个「消费方以为存在、其实从来没有」的接口
 
 **纯新增，零 schema / 零服务签名变更。**

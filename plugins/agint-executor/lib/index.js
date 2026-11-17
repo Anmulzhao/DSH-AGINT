@@ -24,15 +24,45 @@
  * ## 安全开关
  *
  *   AGINT_EXECUTOR=off        —— 整体停摆（出厂即开；红线定义见 AGENTS.md）
- *   config.weeklyCommitCap    —— 本周自动落地次数上限，默认 3，对齐 AGENTS.md
- *                                「不要跨周累计自动部署超过 3 次」这条红线
+ *   config.weeklyCommitCap    —— 本周自动落地次数上限。⛔ 代码默认 3、红线 5，
+ *                                两者**不是同一个数**：红线 2026-10-29 由 3 改为 5
+ *                                （commit a3b9b48），默认值故意没跟着动 ——
+ *                                新部署没写 config 时不该拿着一个未经裁定的数字
+ *                                开始自动改代码。改红线请改 config（本机/NAS 都写 5）。
  *   config.maxAttempts        —— 同一提案最多试几次（默认 2，防无限重试烧 token）
  *   config.maxPerTick         —— 每个 tick 最多跑几条（默认 1，串行，不抢 CPU）
+ *   config.envBreakerThreshold —— 连续几次环境故障就整轮停手（默认 2）
+ *   config.envBreakerCooldownMs —— 环境熔断的冷却窗口（默认 10 分钟）
+ *   config.envMaxBackoffMs    —— 环境故障退避上限（默认 30 分钟）
+ *
+ * ## 环境故障 ≠ 提案失败（2026-11-07，提案 cdf41d63 实证）
+ *
+ * LLM 通道挂掉时 driver 抛错，旧逻辑把它当普通失败：排一次 5 分钟重试，第二次
+ * 到点仍挂 ⇒ `finishExecution(ok:false)` ⇒ 提案 `execState=failed` ⇒ 面板
+ * 「已批准·执行失败·等处理」。一天之内 5 条执行行全部这么被记成「提案失败」，
+ * 而它们一行代码都没改、也一行都没错。
+ *
+ * 现在环境故障走另一条路：顺延（deferred）+ 指数退避 + **退还尝试额度**，
+ * 连续两次就熔断一轮并冷却 10 分钟。提案保持 approved，面板显示「已顺延」。
+ * 判据在 `lib/env.js`，与 driver 的 deterministic 判据互不覆盖。
  *
  * 关掉它不会让已批准的提案消失，只会让它们停在「排队中」—— 面板上一眼可见。
+ *
+ * ## 终局判决（2026-11-08，老板令：不许留悬案）
+ *
+ * 一次执行要么给出执行结果，要么给出最终判决并结案。判据在 `lib/verdict.js`
+ * （纯函数，不调 LLM）。执行器在三个出口收口：确定性失败 → `not-actionable`、
+ * 额度耗尽 → `exhausted`、环境顺延到上限 → `env-blocked`；被重启打断的行由
+ * `settleUnsettled()` 判 `interrupted`。结案走 evolve 的 `settleExecution()`：
+ * 写 execVerdict + 落 wontfix + 撤队列 + 留复活路径。
+ *
+ * ⛔ 前置闸（decideRun 的 cancel / fail）不是「跑完没给结论」，不结案：
+ *    驱动没挂是配置缺陷，该修的是宿主，不是把提案了结掉。
  */
 
 import { decideRun, canRetry, oneLine } from './plan.js';
+import { isEnvironmentFailure, envBackoffMs } from './env.js';
+import { decideVerdict, verdictFromError, isTerminalVerdict, isLlmSubjectiveVerdict } from './verdict.js';
 
 const name = 'agint-executor';
 /**
@@ -69,13 +99,47 @@ function readConfig(raw = {}) {
     retryDelayMs: Math.max(0, num(raw.retryDelayMs, 5 * 60_000)),
     /** 每个 tick 最多处理几条执行（串行）。 */
     maxPerTick: Math.max(1, Math.trunc(num(raw.maxPerTick, 1))),
+    /**
+     * 孤儿执行回收的超时兜底阈值（毫秒）。
+     *
+     * 2026-11-02（提案 a6e6e1d9 实证）：宿主重启前就在 running 的行，
+     * 靠「startedAt < 本进程挂载时刻」这条硬证据就能抓住，不需要等超时；
+     * 这条阈值只兜底「同进程内结算失败」的情形。默认 30 分钟。
+     */
+    orphanStaleMs: Math.max(0, num(raw.orphanStaleMs, 30 * 60_000)),
     /** 挂载即开始调度。false 时只能手动 tick()（测试/排障用）。 */
     enabled: raw.enabled !== false,
+    /**
+     * 环境故障熔断阈值（连续几次环境故障就整轮停手）。默认 2。
+     *
+     * 2026-11-07（提案 cdf41d63 实证）：LLM 通道挂掉时，每个 tick 仍会捡下一条
+     * 提案、起一次注定失败的调用。当天 5 条执行行在 24 分钟内全部被烧掉，
+     * 每条都记成「提案失败」。熔断的作用就是**一次故障只付一次代价**。
+     */
+    envBreakerThreshold: Math.max(1, Math.trunc(num(raw.envBreakerThreshold, 2))),
+    /** 环境故障后的冷却窗口（毫秒）。冷却期内 tick 直接跳过，不 claim。默认 10 分钟。 */
+    envBreakerCooldownMs: Math.max(0, num(raw.envBreakerCooldownMs, 10 * 60_000)),
+    /** 环境故障退避上限（毫秒）。默认 30 分钟。 */
+    envMaxBackoffMs: Math.max(0, num(raw.envMaxBackoffMs, 30 * 60_000)),
+    /**
+     * 单条提案最多顺延几次环境故障。超过就判 `env-blocked` 并结案（2026-11-08）。
+     * 默认 6 次 ≈ 5+10+20+30+30+30 分钟 ≈ 2 小时。
+     * ⚠️ 计数在本进程内存里，宿主重启会清零 —— 已知边界；结案可逆，可复活。
+     */
+    envMaxDeferrals: Math.max(1, Math.trunc(num(raw.envMaxDeferrals, 6))),
+    /** 历史悬案 sweep 的间隔（毫秒）。默认 5 分钟。0 = 每轮 tick 都扫。 */
+    settleIntervalMs: Math.max(0, num(raw.settleIntervalMs, 5 * 60_000)),
+    /** 执行行失败后多久才允许被 sweep 结案（毫秒）。默认 10 分钟，给重试留窗口。 */
+    settleAfterMs: Math.max(0, num(raw.settleAfterMs, 10 * 60_000)),
   };
 }
 
 function apply(ctx, config) {
   const cfg = readConfig(config ?? {});
+  // 2026-11-02：本进程挂载时刻。孤儿回收的第一判据是「startedAt < mountedAt」
+  // ⇒ 这一行是**上一个进程** claim 的，而那个进程已经死了（实机：提案 a6e6e1d9 的
+  // exec-1793280728689-kmy9h1 停在 running 一整天，面板显示「已批准·执行中」）。
+  const mountedAt = Date.now();
   const state = {
     ticks: 0,
     lastTickAt: null,
@@ -89,8 +153,23 @@ function apply(ctx, config) {
     failed: 0,
     deferred: 0,
     cancelled: 0,
+    // 2026-11-02：回收掉的孤儿执行数（跨宿主重启遗留的 running 行）。
+    reaped: 0,
+    // 2026-11-07：环境故障（LLM 通道/宿主能力不可用）次数。与 failed 分开计数 ——
+    // 混在一起看，就读不出「是提案不行」还是「机器不行」。
+    envDeferred: 0,
+    // 连续环境故障计数与熔断到期时刻（毫秒）。
+    envStreak: 0,
+    breakerUntil: 0,
+    breakerTrips: 0,
     lastResult: null,
+    // 2026-11-08：终局判决。settled = 累计结案条数；lastSettle = 最近一次 sweep 明细。
+    settled: 0,
+    lastSettle: null,
+    lastSettleAt: 0,
   };
+  /** 单条提案累计环境顺延次数（进程内，见 envMaxDeferrals 的边界说明）。 */
+  const envDeferralsByProposal = new Map();
 
   const dep = (n) => (typeof ctx.get === 'function' ? ctx.get(n) : null);
   const isDisabled = (env = process.env) => String(env?.[KILL_ENV] ?? 'on') === 'off';
@@ -100,6 +179,8 @@ function apply(ctx, config) {
   let wakeScheduled = false;
   let intervalHandle = null;
   let wakeHandle = null;
+  // 本进程正在跑的 job id —— 回收孤儿时不能把它们当成上一进程的遗留。
+  const activeJobIds = new Set();
 
   const warn = (msg, data) => {
     try { ctx.logger?.warn?.(msg, data); } catch { /* noop */ }
@@ -114,6 +195,98 @@ function apply(ctx, config) {
       }
     } catch { /* 记账失败不改变执行结果 */ }
   };
+
+  /**
+   * 把一条终局判决写回 evolve 并结案（唯一出口，2026-11-08）。
+   *
+   * ⛔ 降级只保留语义等价的一条：老版 evolve 没有 `settleExecution` 时，
+   *    `not-actionable` 仍可走 `markNotActionable`（它在新版里就是结案）。
+   *    其余判决绝不降级 —— 没有结案能力却报「已结案」就是撒谎。
+   */
+  const settle = async (proposalId, verdict, reason) => {
+    const evolve = dep('agint.evolve');
+    if (!evolve || !isTerminalVerdict(verdict)) return false;
+    // 2026-11-08：LLM 主观判否不是结构化事实。结案文案必须标「建议复核」，
+    // 否则老板在面板上分不清「机器查出来没目标」和「模型猜它不适用」。
+    const settledReason = isLlmSubjectiveVerdict(reason)
+      ? `【LLM 主观判否，非结构化事实；建议复核目标路径后再决定是否复活】${oneLine(reason, 400)}`
+      : oneLine(reason, 400);
+    if (typeof evolve.settleExecution === 'function') {
+      try {
+        const rec = await evolve.settleExecution(proposalId, { verdict, reason: settledReason });
+        state.settled += 1;
+        // 审计出口：每次结案落一条失败模式，周报/面板查得动（K113 纪律）。
+        await recordFailure(`executor-verdict-${verdict}`, `proposalId=${proposalId} ${oneLine(reason, 300)}`);
+        return rec !== null && rec !== undefined;
+      } catch (error) {
+        state.lastError = `settleExecution failed: ${error?.message ?? error}`;
+        warn('executor: 结案失败', { proposalId, verdict, error: state.lastError });
+        await recordFailure('executor-settle-verdict-failed', state.lastError);
+        return false;
+      }
+    }
+    if (verdict === 'not-actionable' && typeof evolve.markNotActionable === 'function') {
+      try {
+        const rec = await evolve.markNotActionable(proposalId, settledReason);
+        state.settled += 1;
+        return rec !== null && rec !== undefined;
+      } catch (error) {
+        warn('executor: markNotActionable failed', {
+          proposalId, error: error?.message ?? String(error),
+        });
+      }
+    }
+    return false;
+  };
+
+  /**
+   * 收敛历史悬案（2026-11-08）。只读候选 → 判 → 写回，不改仓库。
+   *
+   * ⛔ 三道收敛闸，缺一就会误伤：
+   *   ① 最后一条执行行必须是 failed（queued / deferred / running / cancelled 都还会动）
+   *   ② 失败必须已过 settleAfterMs 宽限（刚失败可能正在排重试）
+   *   ③ 错误原文非空（没证据就不判，K117）
+   */
+  async function settleUnsettled(now = Date.now()) {
+    // 先记时刻：没有结案能力时也不该每轮 tick 都重试一遍。
+    state.lastSettleAt = now;
+    const evolve = dep('agint.evolve');
+    if (!evolve || typeof evolve.listUnsettledProposals !== 'function'
+        || typeof evolve.settleExecution !== 'function') {
+      return { scanned: 0, settled: 0, skipped: 0, details: [], reason: 'evolve 无结案能力' };
+    }
+    let candidates = [];
+    try {
+      candidates = await evolve.listUnsettledProposals();
+    } catch (error) {
+      state.lastError = `listUnsettledProposals failed: ${error?.message ?? error}`;
+      warn('executor: 列历史悬案失败', { error: state.lastError });
+      return { scanned: 0, settled: 0, skipped: 0, details: [], reason: state.lastError };
+    }
+    const list = Array.isArray(candidates) ? candidates : [];
+    const out = { scanned: list.length, settled: 0, skipped: 0, details: [] };
+    for (const c of list) {
+      if (!c || c.execState !== 'failed') { out.skipped += 1; continue; }
+      const age = now - Date.parse(String(c.updatedAt ?? ''));
+      if (Number.isFinite(age) && age < cfg.settleAfterMs) { out.skipped += 1; continue; }
+      const v = verdictFromError(c.error);
+      if (!v) {
+        out.skipped += 1;
+        out.details.push({ id: c.id, skipped: '错误原文为空，不判' });
+        continue;
+      }
+      const ok = await settle(c.id, v, c.error);
+      if (ok) {
+        out.settled += 1;
+        out.details.push({ id: c.id, verdict: v });
+      } else {
+        out.skipped += 1;
+        out.details.push({ id: c.id, skipped: '结案失败' });
+      }
+    }
+    state.lastSettle = out;
+    return out;
+  }
 
   async function runJob(job, { now = Date.now() } = {}) {
     const evolve = dep('agint.evolve');
@@ -130,16 +303,32 @@ function apply(ctx, config) {
       weekCommits = Number(stats?.lastWeekCommits ?? 0) || 0;
     } catch { /* 数不出来按 0 算；周上限由 decideRun 的 cap>0 分支再判 */ }
 
+    // 2026-11-03（W8-3）：核审批凭据。
+    // 取不到（老版 evolve / 调用抛错）⇒ null ⇒ decideRun 不拦。
+    // ⛔ 这里刻意不把「取不到」当 mismatch：那会把 evolve 的临时故障
+    //    变成「所有提案疑似越权」的一次性停摆。
+    let mandate = null;
+    try {
+      if (typeof evolve.checkMandate === 'function') {
+        mandate = await evolve.checkMandate(job.proposalId);
+      }
+    } catch (error) {
+      state.lastError = `checkMandate failed: ${error?.message ?? error}`;
+    }
+
     const decision = decideRun({
       job,
       proposal,
       weekCommits,
       cap: cfg.weeklyCommitCap,
       driverReady: typeof driver?.runForProposal === 'function',
+      mandate,
       now,
     });
 
     if (decision.action === 'cancel') {
+      // ⛔ 越权撤单要把「为什么」写进执行台账的 reason 里 —— 否则人看到的
+      //    只是「已撤销」，会以为是有人主动撤的。
       await evolve.finishExecution(job.id, { state: 'cancelled', reason: decision.reason });
       state.cancelled += 1;
       return { proposalId: job.proposalId, action: 'cancel', reason: decision.reason };
@@ -181,10 +370,16 @@ function apply(ctx, config) {
         unitsApplied: verdict.partial === true ? verdict.unitsApplied : null,
         unitsTotal: verdict.partial === true ? verdict.unitsTotal : null,
         remainingUnits: verdict.partial === true ? verdict.remainingUnits : [],
+        // 2026-11-07：driver 的事务返回 commits[]（本次落地/新建了哪些文件）。
+        // 透传给 evolve，由它写到提案行 —— 面板只读 proposal 表。
+        commits: verdict.commits ?? [],
         reason: verdict.partial === true ? verdict.reason : '',
       });
       state.succeeded += 1;
       if (verdict.partial === true) state.partial += 1;
+      // 通道恢复的硬证据：一次真的跑完了 ⇒ 连续环境故障归零。
+      state.envStreak = 0;
+      envDeferralsByProposal.delete(job.proposalId);
       return { proposalId: job.proposalId, action: 'run', ok: true, partial: verdict.partial === true, commitPath: verdict.commitPath };
     }
 
@@ -200,19 +395,92 @@ function apply(ctx, config) {
       state.failed += 1;
       await recordFailure('executor-run-not-actionable', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
       warn('executor: 确定性不可执行，不重试', { proposalId: job.proposalId, attempts, reason: err });
-      return { proposalId: job.proposalId, action: 'fail', error: err, deterministic: true };
+      // 2026-11-08：确定性失败必须给终局判决并结案，不再留「已批准·执行失败」。
+      // parked 保留给老测试与面板读（语义 = 已收口）；没有结案能力时如实报 false。
+      const settled = await settle(job.proposalId, 'not-actionable', err);
+      return {
+        proposalId: job.proposalId, action: 'fail', error: err, deterministic: true,
+        parked: settled, settled, verdict: 'not-actionable',
+      };
     }
+    // 2026-11-07：环境故障与提案失败**分开记账**。
+    //
+    // 判据：失败原因落在「LLM 通道 / 宿主能力不可用」这一族（见 lib/env.js）。
+    // 动作：顺延（deferred）+ 指数退避 + **退还这次 claim 消耗的尝试次数**。
+    //
+    // 为什么必须退还：maxAttempts 的语义是「这条提案最多试几次」，指的是提案
+    // 本身值不值得再试。通道挂掉与提案无关，把额度烧在这里，等于通道恢复后
+    // 这条提案已经没资格再跑（实机：cdf41d63 在 08:10 批准后 9 秒烧完 2 次，
+    // 之后只能人工再批一次，再烧一次）。
+    //
+    // 为什么用 deferred 而不是 failed：deferred 的语义就是「不是失败，是等条件」
+    // （见 agint-evolve/lib/execution.js 的 requeueExecution）。面板据此显示
+    // 「已顺延，到期自动恢复」，而不是「执行失败·等处理」—— 后者会把人叫来处理
+    // 一件他处理不了的事（模型通道）。
+    if (isEnvironmentFailure(verdict.reason)) {
+      // 2026-11-08：环境故障不能无限顺延。到上限 ⇒ 判 env-blocked 并结案。
+      const prior = Number(envDeferralsByProposal.get(job.proposalId)) || 0;
+      const v = decideVerdict({
+        reason: verdict.reason, attempts, maxAttempts: cfg.maxAttempts,
+        envDeferrals: prior, maxEnvDeferrals: cfg.envMaxDeferrals,
+      });
+      if (v === 'env-blocked') {
+        const err = oneLine(verdict.reason, 400);
+        await evolve.finishExecution(job.id, { ok: false, error: err });
+        state.failed += 1;
+        envDeferralsByProposal.delete(job.proposalId);
+        const settled = await settle(job.proposalId, 'env-blocked',
+          `环境故障连续顺延 ${prior} 次仍不可用，已达上限 ${cfg.envMaxDeferrals}：${err}`);
+        warn('executor: 环境长期不可用，判决 env-blocked 并结案', { proposalId: job.proposalId, deferrals: prior });
+        return { proposalId: job.proposalId, action: 'fail', error: err, settled, verdict: 'env-blocked' };
+      }
+      envDeferralsByProposal.set(job.proposalId, prior + 1);
+      const wait = envBackoffMs(attempts, cfg.retryDelayMs, cfg.envMaxBackoffMs);
+      const dueAt = new Date(now + wait).toISOString();
+      const err = oneLine(verdict.reason, 400);
+      const reason = `环境不可用（${oneLine(verdict.reason, 160)}）；${Math.round(wait / 1000)}s 后再试，不计入提案失败次数`;
+      try {
+        await evolve.requeueExecution(job.id, { dueAt, error: err, reason, deferred: true, refundAttempt: true });
+      } catch (error) {
+        // 顺延失败（老版 evolve / 存储故障）⇒ 退回一次普通重试，别把 job 卡在 running。
+        warn('executor: 环境故障顺延失败', { proposalId: job.proposalId, error: error?.message ?? String(error) });
+        if (canRetry(attempts, cfg.maxAttempts)) {
+          await evolve.requeueExecution(job.id, { dueAt, error: err, reason });
+          return { proposalId: job.proposalId, action: 'retry', attempts, reason };
+        }
+        await evolve.finishExecution(job.id, { ok: false, error: err });
+        state.failed += 1;
+        // 顺延都写不进去 = 存储/结案能力异常，这条执行同样不许悬着。
+        const settled = await settle(job.proposalId, 'env-blocked',
+          `环境故障顺延失败且无重试额度：${err}`);
+        return { proposalId: job.proposalId, action: 'fail', error: err, settled, verdict: 'env-blocked' };
+      }
+      state.envDeferred += 1;
+      state.envStreak += 1;
+      await recordFailure('executor-env-unavailable', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
+      warn('executor: 环境不可用，顺延且不消耗提案额度', {
+        proposalId: job.proposalId, attempts, nextDueAt: dueAt, reason: err,
+      });
+      return {
+        proposalId: job.proposalId, action: 'retry', attempts, reason, deferred: true, env: true, dueAt,
+      };
+    }
+    // 走到这里 = 非环境故障。连续环境故障计数归零（熔断只认「连续」）。
+    state.envStreak = 0;
     if (canRetry(attempts, cfg.maxAttempts)) {
       const dueAt = new Date(now + cfg.retryDelayMs).toISOString();
       await evolve.requeueExecution(job.id, { dueAt, error: oneLine(verdict.reason, 400), reason: `第 ${attempts} 次失败，${Math.round(cfg.retryDelayMs / 1000)}s 后重试` });
       warn('executor: 执行失败，已排重试', { proposalId: job.proposalId, attempts, reason: oneLine(verdict.reason) });
       return { proposalId: job.proposalId, action: 'retry', attempts, reason: oneLine(verdict.reason) };
     }
-    await evolve.finishExecution(job.id, { ok: false, error: oneLine(verdict.reason, 400) });
+    const err = oneLine(verdict.reason, 400);
+    await evolve.finishExecution(job.id, { ok: false, error: err });
     state.failed += 1;
     await recordFailure('executor-run-failed', `proposalId=${job.proposalId} attempts=${attempts} ${verdict.reason}`);
-    warn('executor: 执行失败且不再重试', { proposalId: job.proposalId, attempts, reason: oneLine(verdict.reason) });
-    return { proposalId: job.proposalId, action: 'fail', error: oneLine(verdict.reason) };
+    warn('executor: 执行失败且不再重试', { proposalId: job.proposalId, attempts, reason: err });
+    // 2026-11-08：额度用尽 = 终局。给判决并结案，不留悬案。
+    const settled = await settle(job.proposalId, 'exhausted', `重试额度用尽（${attempts}/${cfg.maxAttempts}）：${err}`);
+    return { proposalId: job.proposalId, action: 'fail', error: err, settled, verdict: 'exhausted' };
   }
 
   /** driver 返回 → 是否真的落地（只有 commit ok 算）。 */
@@ -237,6 +505,7 @@ function apply(ctx, config) {
         reason: oneLine(reason),
         // deterministic ⇒ 重试也不会变，不再排重试。
         deterministic: out.deterministic === true,
+        commits: Array.isArray(out.commits) ? out.commits : [],
       };
     }
     const commit = out.commit ?? null;
@@ -263,6 +532,8 @@ function apply(ctx, config) {
         mutationId: out.proposalId ?? '',
         commitPath: commit.path ?? '',
         policyDecision: commit.policyDecision ?? '',
+        // 2026-11-07 v0.11.0：一次执行可能落地 N 个文件（含新建）。
+        commits: Array.isArray(out.commits) ? out.commits : [],
         partial,
         unitsApplied: partial ? Number(scope.unitsApplied) || 0 : null,
         unitsTotal: partial ? total : null,
@@ -281,6 +552,42 @@ function apply(ctx, config) {
   }
 
   /**
+   * 回收孤儿执行（2026-11-02）。
+   *
+   * 什么时候做：挂载后立刻做一次（上一进程遗留的 running 行就靠这条被抓到），
+   * 之后每轮 tick 前再做一次（兜底「同进程内结算失败」的情形）。
+   *
+   * ⛔ 回收的是**执行行**，不是提案：被回收的提案仍是 approved、仍有入口，
+   *    绝不会被标成 applied（判据与动作见 agint-evolve 的 reapOrphanExecutions）。
+   */
+  async function reapOrphans(evolve, now = Date.now()) {
+    if (!evolve || typeof evolve.reapOrphanExecutions !== 'function') return { reaped: [], count: 0 };
+    let out;
+    try {
+      out = await evolve.reapOrphanExecutions({
+        now,
+        mountedAt,
+        staleMs: cfg.orphanStaleMs,
+        // 本进程正在跑的 job 不能被判成孤儿。
+        excludeIds: [...activeJobIds],
+      });
+    } catch (error) {
+      // 回收失败也不许吞：吞了就是下一次又卡在 running。
+      state.lastError = `reapOrphans failed: ${error?.message ?? error}`;
+      warn('executor: 回收孤儿执行失败', { error: state.lastError });
+      await recordFailure('executor-reap-orphans-failed', state.lastError);
+      return { reaped: [], count: 0 };
+    }
+    const count = Number(out?.count) || 0;
+    if (count > 0) {
+      state.reaped += count;
+      warn('executor: 回收了孤儿执行（宿主重启遗留的 running 行）', { count, jobs: out.reaped });
+      await recordFailure('executor-reaped-orphan-execution', `count=${count} ${JSON.stringify(out.reaped).slice(0, 300)}`);
+    }
+    return out ?? { reaped: [], count: 0 };
+  }
+
+  /**
    * 跑一轮。可重入保护：inFlight 期间直接返回，不排队 ——
    * 排队的语义会让一次慢执行之后连着放好几条，把「每 tick 一条」变成「一次爆发」。
    */
@@ -292,16 +599,36 @@ function apply(ctx, config) {
       return { skipped: true, reason: 'executor disabled（config.enabled=false）' };
     }
     if (inFlight) return { skipped: true, reason: 'already-running' };
+    // 2026-11-07：环境熔断。冷却期内不 claim —— 通道挂着的时候，每捡一条就是
+    // 一次注定失败的调用，而每条都会在面板上留一道痕迹，看上去像「提案有问题」。
+    // force=true（面板手动「立即执行」）是人对单条的点名，允许穿透。
+    const nowMs = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+    if (opts.force !== true && nowMs < state.breakerUntil) {
+      const left = Math.ceil((state.breakerUntil - nowMs) / 1000);
+      return { skipped: true, reason: `环境熔断中（连续 ${state.envStreak} 次环境故障），${left}s 后恢复` };
+    }
     inFlight = true;
     state.ticks += 1;
     state.lastTickAt = nowIso();
     try {
       const evolve = dep('agint.evolve');
       if (!evolve || typeof evolve.claimDueExecutions !== 'function') {
-        state.lastError = 'agint.evolve 缺 claimDueExecutions（版本过旧或未挂载）';
+        state.lastError = 'agint-evolve 缺 claimDueExecutions（版本过旧或未挂载）';
         return { skipped: true, reason: state.lastError };
       }
       const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      // 2026-11-08：先收敛历史悬案，再回收孤儿，最后 claim。
+      // 顺序有意义：sweep 会撤掉已结案提案的活跃 job，撤完再 claim 才不会捡到废单。
+      if (now - state.lastSettleAt >= cfg.settleIntervalMs) {
+        try {
+          await settleUnsettled(now);
+        } catch (error) {
+          warn('executor: 收敛历史悬案失败', { error: error?.message ?? String(error) });
+        }
+      }
+      // 回收在前、claim 在后：先把上一进程遗留的 running 行结算掉，
+      // 否则它们会占着「活跃 job」的名额，让真正该跑的提案排不进去。
+      await reapOrphans(evolve, now);
       const jobs = await evolve.claimDueExecutions({ now, limit: cfg.maxPerTick });
       if (!Array.isArray(jobs) || jobs.length === 0) {
         return { ran: 0, cleared: true };
@@ -309,6 +636,7 @@ function apply(ctx, config) {
       state.claimed += jobs.length;
       const results = [];
       for (const job of jobs) {
+        activeJobIds.add(job.id);
         try {
           results.push(await runJob(job, { now }));
         } catch (error) {
@@ -317,8 +645,36 @@ function apply(ctx, config) {
           warn('executor: runJob threw', { proposalId: job.proposalId, error: state.lastError });
           try {
             await evolve.finishExecution(job.id, { ok: false, error: oneLine(state.lastError, 400) });
-          } catch { /* noop */ }
+          } catch (settleError) {
+            // ⛔ 2026-11-02：结算失败**不许静默吞**。
+            // 吞掉的代价：这一行永远停在 running，队列不自愈，提案再也排不进去
+            // （实机：提案 a6e6e1d9 的 exec-1793280728689-kmy9h1 停在 running
+            //  整整一天，面板显示「已批准·执行中」，而没有任何东西在跑）。
+            const msg = `结算失败（执行行 ${job.id} 仍停在 running）：${settleError?.message ?? settleError}`;
+            state.lastError = msg;
+            warn('executor: 结算失败，执行行会停在 running', { jobId: job.id, error: msg });
+            await recordFailure('executor-settle-failed', msg);
+          }
           results.push({ proposalId: job.proposalId, action: 'fail', error: oneLine(state.lastError) });
+        } finally {
+          activeJobIds.delete(job.id);
+        }
+        // 2026-11-07：连续环境故障到阈值 ⇒ 本轮立刻停手，并进入冷却。
+        // 不这么做的话，maxPerTick 只限制「一轮跑几条」，挡不住「每 15 秒一轮」：
+        // 故障期里整条队列会被依次捡起来各撞一次墙（实机 11-07 一天 5 条）。
+        const last = results[results.length - 1];
+        if (last?.env === true && state.envStreak >= cfg.envBreakerThreshold) {
+          state.breakerUntil = now + cfg.envBreakerCooldownMs;
+          state.breakerTrips += 1;
+          state.lastError = `环境熔断：连续 ${state.envStreak} 次环境故障，${Math.round(cfg.envBreakerCooldownMs / 1000)}s 内不再 claim`;
+          warn('executor: 环境熔断', {
+            streak: state.envStreak,
+            cooldownMs: cfg.envBreakerCooldownMs,
+            remaining: jobs.length - results.length,
+            reason: last.reason,
+          });
+          await recordFailure('executor-env-breaker', `streak=${state.envStreak} ${last.reason}`);
+          break;
         }
       }
       state.lastResult = results;
@@ -353,6 +709,15 @@ function apply(ctx, config) {
   ctx.effect(() => {
     if (cfg.enabled && typeof ctx.setInterval === 'function') {
       intervalHandle = ctx.setInterval(() => { void tick(); }, cfg.tickMs);
+    }
+    // 2026-11-02：挂载即回收孤儿执行。
+    // 上一进程遗留的 running 行（宿主重启打断的）此刻就是孤儿 ——
+    // 它们会占着「活跃 job」的名额，让真正该跑的提案永远排不进去。
+    // ⛔ 不等第一次 tick：tick 前有 15 秒窗口，而孤儿行的危害是**挡路**。
+    if (cfg.enabled) {
+      void reapOrphans(dep('agint.evolve')).catch((error) => {
+        warn('executor: 挂载后回收孤儿执行失败', { error: error?.message ?? error });
+      });
     }
     // 挂载后先跑一轮：重启可能错过一堆已到期的执行，等 15 秒才开始跑说不通。
     if (cfg.enabled) wake();
@@ -395,6 +760,11 @@ function apply(ctx, config) {
       return { ok: hit?.ok === true || hit?.action === 'run', enqueued: enq.job?.id ?? null, result: hit, tick: out };
     },
     async runTick(opts = {}) { return tick(opts); },
+    /** 手动收敛历史悬案（排障 / 面板「立即结案」用）。只读候选 + 写回，不改仓库。 */
+    async settleUnsettled(opts = {}) {
+      const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      return settleUnsettled(now);
+    },
   });
 }
 

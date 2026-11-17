@@ -51,8 +51,16 @@ import { createHash } from 'node:crypto';
  * ⛔ 版本号只增不减，且**只用于公式结构变更**。阈值/权重的参数微调不 bump
  * 版本，由 scaleHash（见下）自动分段——否则每改一次参数就要人工记一次版本，
  * 漏记则历史趋势被误读为连续（提案 98c8e911）。
+ *
+ * r5（2026-11-11）：bloat 分子由「两处根全部 SKILL.md 字节」改为「**AGINT 负责
+ *   的技能**字节」（skillsManagedBytes / skillsManagedCount），第三方技能不进
+ *   AGINT 的账。**分子组成变了 ⇒ 跨版本总分不可比**，故 bump 版本号。
+ *   scaleHash 不变（阈值/权重/效应量一个字节都没改）——两者的分工见下：
+ *   formulaVersion 管结构（分子组成变了），scaleHash 管参数取值。
+ *   影响实测（2026-11-11 生产原子值）：bloat 1.2503 → 0.9981，
+ *   即这一维多扣的约 7.6 分（满分 30 权重）全部来自第三方技能误记。
  */
-export const FORMULA_VERSION = 'r4';
+export const FORMULA_VERSION = 'r5';
 
 // ── 阈值常量（v2.3 §3；改这里 = 改判尺，须走评审）────────────────────────────
 //
@@ -227,9 +235,12 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
  * @param {number} [a.avgConfXCompliance] Σ(conf×[evidence非空])/N（metrics meta 增补）
  * @param {number} [a.curatorOverlaps] curator 判定的技能重叠对数（可缺省 0；
  *   Day 0 未入 metrics 原子表，当前实测恒 0，接入路径 = metrics-ext 后续增 key）
- * @param {number} [a.skillsTotal] SKILL.md 个数（冗余度分母；r4 起同时是臃肿度的
- *   单技能体积分母——缺席则 bloat 判 N/A，不退回总量口径）
- * @param {number} [a.skillsBytes] Σ SKILL.md 字节（臃肿度分子）
+ * @param {number} [a.skillsTotal] SKILL.md 总个数（冗余度分母；r5 起不再是臃肿度分母）
+ * @param {number} [a.skillsBytes] Σ 全部 SKILL.md 字节（r5 起只作展示，不作臃肿度分子）
+ * @param {number} [a.skillsManagedBytes] Σ **AGINT 负责的** SKILL.md 字节（r5 臃肿度分子）
+ * @param {number} [a.skillsManagedCount] AGINT 负责的技能个数（r5 臃肿度分母）
+ * @param {number} [a.skillsThirdPartyBytes] 用户自装第三方技能字节（只展示，不扣分）
+ * @param {number} [a.skillsFrontmatterBytes] frontmatter 字节（每轮常驻上下文成本）
  * @returns {{noise: object, confidence: object, redundancy: object, bloat: object}}
  */
 export function deriveComposites(a = {}) {
@@ -298,18 +309,24 @@ export function deriveComposites(a = {}) {
   //    生产证据（2026-10-22）：221853 B / 20 技能 = 10.83KB，落在方案自定的
   //    8–12KB 合理区间，旧口径却给 b=1.805、扣 24.15 分（满分 30）。
   //
-  // r4 口径：b = (Σbytes / skillsTotal) / BLOAT_BUDGET_PER_SKILL_BYTES。
-  //   判据含义从「总量超没超一个固定数」变成「单个技能平均写多大」。
-  //   缺 skillsTotal 时**不退回总量口径**——那会让同名字段在不同轮次含义不同，
-  //   是更隐蔽的口径漂移。直接 N/A 走权重归一（AC-4），让缺数据可见。
+  // r5（2026-11-11）：分子换成 **AGINT 负责的技能**（skillsManagedBytes），
+  //   不再是「两处根所有 SKILL.md」之和。
+  //   理由（生产证据）：用户级根 153852 B / 265342 B = 58% 是 skillhub 装的
+  //   第三方技能（skillhub_list 实证 9 个）。把老板自己装的工具算进 AGINT 的
+  //   质量扣分，等于考核不可控对象；且没有任何可执行动作能改它——归档会删掉
+  //   老板的工具，压缩会坏第三方功能。判尺只考核 AGINT 自己维护的技能。
+  //   ⇒ 分母同步换成 managed 技能数（两边口径必须一致）。
+  //
+  //   缺 managed 数据时**不退回旧口径**——同名字段在不同轮次含义不同，是更隐蔽
+  //   的口径漂移。直接 N/A 走权重归一（AC-4），让缺数据可见。
   let bloat;
   {
-    const bytes = a.skillsBytes;
-    const count = a.skillsTotal;
+    const bytes = a.skillsManagedBytes;
+    const count = a.skillsManagedCount;
     if (!isNum(bytes)) {
-      bloat = na('skillsBytes 缺席（skills 文件系统不可达）');
+      bloat = na('skillsManagedBytes 缺席（AGINT 负责的技能字节不可达）');
     } else if (!isNum(count) || count <= 0) {
-      bloat = na('skillsTotal 缺席或为 0（单技能体积口径无分母，不退回总量口径）');
+      bloat = na('skillsManagedCount 缺席或为 0（单技能体积口径无分母，不退回总量口径）');
     } else {
       const perSkill = (bytes / count) / THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES;
       // 绝对上界兜底：per-skill 对「一万个 1KB 技能」失效，超界按比例追加。
@@ -493,6 +510,23 @@ export function q2Worst(composites, dims) {
 }
 
 /**
+ * 最大 managed 技能的短文本（建议栏用）：「name 12.3KB、name 9.8KB」。
+ * 明细未采集时明说「未采集」，不编数字。
+ */
+function topText(top) {
+  if (!Array.isArray(top) || top.length === 0) return '（最大技能明细未采集）';
+  return top.slice(0, 3)
+    .map((t) => `${t?.name ?? '?'} ${((t?.bytes ?? 0) / 1024).toFixed(1)}KB`)
+    .join('、');
+}
+
+/** 最大 managed 技能的证据明细（证据栏用）：带真实字节数。 */
+function topDetail(top) {
+  if (!Array.isArray(top) || top.length === 0) return '；最大技能明细未采集';
+  return `；最大：${top.slice(0, 5).map((t) => `${t?.name ?? '?'} ${t?.bytes ?? 0}B`).join('、')}`;
+}
+
+/**
  * Q3：建议怎么做才能更美？（§4 映射表，四条全量；纯机械动作 + 必附证据）
  *
  * ⛔ §4 真实关（2026-09-29 修复）：建议必须绑定真实 lint 证据——
@@ -567,35 +601,41 @@ export function q3Advice(worstKey, ctx = {}) {
       return { advice: `${head}${detail}`, evidence: 'memory id 清单（evidence 为空；confidence 未逐条下发，故不宣称低置信）' };
     }
     case 'bloat': {
-      const bytes = isNum(ctx.skillsBytes) ? ctx.skillsBytes : null;
-      const count = isNum(ctx.skillsTotal) && ctx.skillsTotal > 0 ? ctx.skillsTotal : null;
-      // r4：预算随技能数走 ⇒ 没有 skillsTotal 就算不出预算，也就无从判定超限。
+      const bytes = isNum(ctx.skillsManagedBytes) ? ctx.skillsManagedBytes : null;
+      const count = isNum(ctx.skillsManagedCount) && ctx.skillsManagedCount > 0 ? ctx.skillsManagedCount : null;
+      // r5：预算随技能数走 ⇒ 没有 managed 技能数就算不出预算，也就无从判定超限。
       // 此时返回 NO_ADVICE 而不是拿一个固定数硬判（那正是 r3 的病根）。
       if (bytes === null || count === null) {
         return {
           advice: NO_ADVICE,
-          evidence: `skillsBytes=${bytes ?? '?'} / skillsTotal=${count ?? '?'}，单技能体积口径无法判定`,
+          evidence: `skillsManagedBytes=${bytes ?? '?'} / skillsManagedCount=${count ?? '?'}，单技能体积口径无法判定`,
         };
       }
       const budget = Math.round(count * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES);
       const perSkillKb = ((bytes / count) / 1024).toFixed(1);
       const budgetKb = (THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES / 1024).toFixed(1);
+      const top = Array.isArray(ctx.skillsTopManaged) ? ctx.skillsTopManaged : [];
       if (bytes <= budget) {
         return {
           advice: NO_ADVICE,
-          evidence: `${count} 个技能共 ${bytes} 字节（均 ${perSkillKb}KB / 预算 ${budgetKb}KB），总量未超 ${budget} 字节`,
+          evidence: `${count} 个 AGINT 技能共 ${bytes} 字节（均 ${perSkillKb}KB / 预算 ${budgetKb}KB），未超 ${budget} 字节预算`,
         };
       }
       // 绝对上界驱动时，问题在「技能太多」不在「单个太大」——动作不同，必须分开说。
       if (bytes > THRESHOLDS.BLOAT_ABS_CEILING_BYTES) {
         return {
-          advice: `技能总量超绝对上界（${bytes} > ${THRESHOLDS.BLOAT_ABS_CEILING_BYTES} 字节，${count} 个）：归档 curator 判定陈旧/重叠技能`,
-          evidence: 'curator overlaps / 陈旧检测输出（绝对上界判据，非单技能体积判据）',
+          advice: `AGINT 技能总量超绝对上界（${bytes} > ${THRESHOLDS.BLOAT_ABS_CEILING_BYTES} 字节，${count} 个）：拆分或归档体积最大的技能`,
+          evidence: `skills 实测（managed ${count} 个 / Σ${bytes} 字节）${topDetail(top)}`,
         };
       }
+      // r5（2026-11-11）：**不再引用 curator overlaps**。
+      //   原话「归档 curator 判定陈旧/重叠的技能」引用的 curatorOverlaps 在
+      //   broadcast.js 里是硬编码 0（注释自述「生产实测恒 0」），而
+      //   curator_list_overlaps 实测返回「无重叠候选」⇒ 建议引用的是一个不存在的
+      //   证据。现在点名真实 managed 技能 + 真实字节：可复核、可执行。
       return {
-        advice: `归档 curator 判定陈旧/重叠的技能（${count} 个技能共 ${bytes} 字节，均 ${perSkillKb}KB 超预算 ${budgetKb}KB）`,
-        evidence: 'curator overlaps / 陈旧检测输出',
+        advice: `压缩体积最大的 AGINT 技能：${topText(top)}`,
+        evidence: `skills 实测（${count} 个 AGINT 技能共 ${bytes} 字节，均 ${perSkillKb}KB 超预算 ${budgetKb}KB，预算 ${budget} 字节）${topDetail(top)}`,
       };
     }
     default:

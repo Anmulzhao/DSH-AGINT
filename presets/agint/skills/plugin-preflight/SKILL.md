@@ -21,261 +21,101 @@ related_skills:
 
 # 插件准入预检（Plugin Preflight）
 
-**适用两种场景**（2026-09-28 补充）：
+结论先行：任何 agint-* 插件源码变更、新插件创建、改存量插件常量 / provider / 默认值、cordis.patch.yml 新增 `- id` 行，走下面 5 步，**强顺序**，任一步 fail 即 abort。场景 A 挂新插件走满 5 步；场景 B 改存量插件第 2 步通常**免写**，但第 5 步**双副本同步是硬要求**。
 
-| 场景 | 典型动作 | 差异 |
-|---|---|---|
-| **A. 挂新插件** | 新建 `plugins/agint-<name>/`、往 `cordis.patch.yml` 加 `- id` 行 | 走满 5 步 |
-| **B. 改存量插件** | 改已挂载插件的常量 / provider / 默认值 | 第 2 步通常**免写**（已有 smoke），但第 5 步的**双副本同步是硬要求**，见下 |
+lint 只看静态源码，看不到运行时 waterfall 契约（PLUGIN-SPEC 第 9 维度 **runtime-contract**）。
 
-本 skill 是 PLUGIN-SPEC 8 维度的「**事中**」兜底，**事前**已经做了还不够 —— 因为 lint 只能看到静态源码，看不到运行时 waterfall 契约。
-
-## 为什么需要 preflight
-
-> **2026-09 全栈事故**：agint-event-bus 和 agint-mount 各自注册了一个 `ctx.on('tools/post-execute', () => {})` 占位监听。loader 在挂载阶段不报错（loader 不知道这是 waterfall），但每次工具调用时瀑布链断在占位监听、结果变 `undefined`，dsh-tools 读 `decision.kind` 抛 `Cannot read properties of undefined (reading 'kind')`，**所有 preset、所有 session 的工具调用全挂**。
-
-8 维度 lint 帮不到 waterfall 契约 —— 它是第 9 维度（**runtime-contract**）。
-
-## 工作流（5 步，强顺序）
-
-### 第 1 步：lint 全 9 维度
+## 第 1 步：lint 全 9 维度
 
 ```sh
 bin/plugin-check.sh --all
 ```
 
-预期：`0 fail`。任何 fail 即 abort，挂载流程不进入第 2 步。
-
-如果机器没装 perl 跑不了新维度 9 的扫描，退到 `node` 镜像：
+预期 `0 fail`，任何 fail 即 abort，不进第 2 步。没装 perl 时退到 node 镜像：
 
 ```sh
 node bin/_verify-dim9.mjs plugins/agint-<name>/lib/index.js
 ```
 
-新增的 waterfall 监听必须满足：
-- **监听器体非空**
-- **体里出现 `next(` 调用**（独立 token，避免误中 `nextStep` / `nextTick`）
+新增 waterfall 监听必须：**监听器体非空** + **体里出现 `next(` 调用**（独立 token，避免误中 `nextStep` / `nextTick`）。正例与 ❌ 禁例见同目录 reference.md。
 
-正确写法：
-```js
-ctx.on('tools/post-execute', async (exec, result, next) => {
-  return next();   // 或：先 await next() 再 return 基于它构造的决策
-});
-```
+已知 waterfall 事件名（DSH 文档声明）：`tools/pre-execute`、`tools/post-execute`、`tools/ptc-dispatch-log`、`agent/pre-step`。新增 waterfall 事件时同步更新 `bin/plugin-check.sh` 里的 `$waterfall_pat`。
 
-❌ 禁：
-```js
-ctx.on('tools/post-execute', () => {});                          // 空体
-ctx.on('tools/post-execute', async () => { /* TODO */ });        // 体非空但没 next
-ctx.on('tools/post-execute', (exec, result) => { ... });         // 缺 next 参数
-```
+## 第 2 步：写一个**最小冒烟 fixture**
 
-已知 waterfall 事件名（DSH 文档声明）：
-- `tools/pre-execute`（allow / deny / ask）
-- `tools/post-execute`（inspect / replace / attach context）
-- `tools/ptc-dispatch-log`（持久日志副本的同款约束）
-- `agent/pre-step`（UserPromptSubmit 模拟）
+放在 `plugins/agint-<name>/test/smoke.mjs`（或在已有 manifest 里改 `tests.entry`）。至少验证三件事：加载不抛（`require('./lib/index.js')`）、`apply(ctx)` 在 fake ctx 上不抛、声明 waterfall 监听时触发一次事件并断言决策结构正确。**不要满足于「能 import」**。
 
-新增 waterfall 事件时同步更新 `bin/plugin-check.sh` 里的 `$waterfall_pat`。
+补强 A（v0.4 新增）：`permissions.fs` 非空时 smoke **必须**额外覆盖跨平台路径 case——forward-slash 相对路径 + native-sep 根（`resolve()` 在 Windows 返回 `<盘符>:\...`）。原因（v0.4 agint-wiki 教训）与模板见 reference.md。
 
-### 第 2 步：写一个**最小冒烟 fixture**
+plugin-check.sh 会追加一条 **soft warning**（不阻断）：`manifest.spec.permissions.fs` 非空但 smoke 缺 `'foo/bar.md'` / `'../escape.md'` 字面量 ⇒ 提示补跨平台 fixture。
 
-放在 `plugins/agint-<name>/test/smoke.mjs`（或在已有 manifest 里改 `tests.entry`）：
+补强 B（v0.5 新增，静默零 silent-zero）：插件有读本地存储做自观测 / 统计 / 检测的代码（`*.jsonl`、metrics JSON、规则表）时，smoke **必须**喂真实 schema 样本（真实存储是 `agint_tool_stats.jsonl` 的 boolean `ok`）并断言检测器真的产出信号：
 
-```js
-// 至少验证三件事：
-// 1. 加载不抛（require('./lib/index.js')）
-// 2. apply(ctx) 在 fake ctx 上不抛
-// 3. 若声明 waterfall 监听：fake ctx 上触发一次事件，断言决策结构正确
-```
-
-不要满足于「能 import」 —— waterfall 契约的破坏只有在事件触发时才显现。
-
-#### 第 2 步补强（v0.4 新增）：跨平台 fixture
-
-若 plugin 的 `permissions.fs` 非空（涉及文件系统路径），smoke **必须**额外覆盖**跨平台路径 case** —— 既测 forward-slash 相对路径（典型：模型/工具传参风格）也测 native-sep 根（典型：`resolve()` 在 Windows 返回 `<盘符>:\...`）。原因：v0.4 agint-wiki 教训里，`clean()` 用 `abs.startsWith(root + '/')` 检查越界在 Linux/macOS 永远成立，在 Windows 永远不成立，仓内 master 一直绿但 Windows 上一跑全挂。
-
-参考模板（agint-wiki v0.4 test/smoke.mjs 的正向 + 负向 case）：
-
-```js
-// 正向：forward-slash 相对路径必须 accept
-const checks = [
-  ['basename', 'hello.md', '# hi\n'],
-  ['nested',   'sub/dir/note.md', '# note\n'],
-  ['leading-slash stripped', '/leading.md', '# l\n'],
-];
-for (const [label, relPath, content] of checks) {
-  await wiki.write(relPath, content);
-  const back = await wiki.read(relPath);
-  assert.equal(back.content, content);
-}
-
-// 负向：相对路径 escape 必须 reject（路径安全不能因为 fix 而削弱）
-for (const evil of ['../escape.md', '../../etc/passwd.md']) {
-  await assert.rejects(() => wiki.write(evil, 'evil'), /path escapes root/);
-}
-```
-
-plugin-check.sh 在 dim9 扫描外会追加一条 **soft warning**（不阻断）：若 `manifest.spec.permissions.fs` 非空但 smoke 没出现 `'foo/bar.md'` / `'../escape.md'` 这类字符串字面量，提示「建议加跨平台 fixture」。
-
-#### 第 2 步补强（v0.5 新增）：静默零（silent-zero）fixture
-
-若 plugin 里有**读本地存储做自观测 / 统计 / 检测**的代码（`*.jsonl`、metrics JSON、规则表），smoke **必须**额外覆盖一类 case：**喂真实 schema 的样本，断言检测器真的产出信号**。
-
-> **2026-09-29 事故**：agint-input-gateway 的 self-observation channel 5 个检测器里 4 个恒返回 0 —— 判定条件读的是自造字段（`status==='error'`、`errorCount`、`severity`），真实存储却是 `agint_tool_stats.jsonl` 的 boolean `ok`，以及 metrics / rules 里 `tables.*[uuid]` 下按 `id,key,label,value` 记的条目、规则用的是 `level`（L1-L4）不是 `severity`。结果是 force_fetch `ok=true in=0 emitted=0`、errors=0，**看起来健康，其实静默失明**：lint 全绿、smoke exit 0，全绿掩盖了失明。
-
-smoke 里至少断言三件事：
-- **正样本**：用真实 schema 造的坏数据（`ok:false` 的工具调用、下降的 `rules.adherencePct`、真实 `level:'L1'` 的 deny 规则）必须产出 ≥1 条信号
+- **正样本**：真实 schema 的坏数据（`ok:false` 的工具调用、下降的 `rules.adherencePct`、真实 `level:'L1'` 的 deny 规则）必须产出 ≥1 条信号
 - **负样本**：全好数据必须产出 0 条（防"永远有信号"的反向失明）
-- **接线状态**：未实现的检测器不许伪装成在跑 —— status / `health()` 显式暴露活跃子源数（如 `subSources: 1/5`）与每个检测器是否 active，让"0 信号"与"检测器全瞎"在状态层可区分
+- **接线状态**：未实现的检测器不许伪装成在跑——status / `health()` 显式暴露活跃子源数（如 `subSources: 1/5`）与每个检测器是否 active，让"0 信号"与"检测器全瞎"在状态层可区分
 
-写检测逻辑前**先取证再写码**：dump 真实存储（字段名、成功标记是 boolean 还是字符串、条目在顶层还是 `tables.*[uuid]`），不得凭字段名直觉假设；阈值必须按真实规模重估（真实 deny=2、L1=2 时，`>=10` 的阈值等于永久静默）。修好前在 shadow 档观察，防止一次性被历史信号刷屏。
+写检测逻辑前**先取证再写码**：dump 真实存储（字段名、成功标记是 boolean 还是字符串、条目在顶层还是 `tables.*[uuid]`）；阈值按真实规模重估（真实 deny=2、L1=2 时，`>=10` 的阈值等于永久静默）；修好前在 shadow 档观察。细节见 reference.md。
 
-### 第 3 步：跑 smoke
+## 第 3 步：跑 smoke
 
 ```sh
 node plugins/agint-<name>/test/smoke.mjs
 ```
 
-预期 exit 0。任何非 0 即 abort。
+预期 exit 0，任何非 0 即 abort。
 
-### 第 4 步：diff + manifest 完整性自查
+## 第 4 步：diff + manifest 完整性自查
 
-提交前自查：
 - `manifest.json` 8 维度 + 9 维度全填齐
 - `README.md` 里 provides 一句话 + 一个使用示例
 - `CHANGELOG.md` 写清楚破环性变更
 - `package.json` 里有 semver 版本号
 - 没有裸 `setInterval` / `setTimeout` —— 必须 `ctx.effect` 注册 disposer
 
-**字节保真自查（2026-09-29 实测踩坑）**：编辑工具会静默剥掉 UTF-8 BOM 并把换行统一规范化。
-仓内 `plugins/**/lib/*.js` 与 `presets/**/skills/*/SKILL.md` 约定是 **BOM + LF**，
-部分文件末尾还多一个 CRLF（实测 `tools.js` 结尾是 `};\n\r\n`）。
-一个只改一行的 render 修复曾被撑成 `172 insert / 169 delete` 的全文件 diff。
+**字节保真**：仓内 `plugins/**/lib/*.js` 与 `presets/**/skills/*/SKILL.md` 约定是 **BOM + LF**，部分文件末尾还多一个 CRLF（实测 `tools.js` 结尾是 `};\n\r\n`）。
 
-- 改完必须 `git diff --stat` 核对：行数与预期不符就是编码被动过，不是你的改动
-- 取原始字节**不要用 `git show HEAD:file`** —— PowerShell 5.1 的管道会转码 LF→CRLF，
-  量出来的「原始是 CRLF」是假的（2026-09-29 因此差点反向改错）。正确做法：
+- 改完必须 `git diff --stat` 核对：行数与预期不符就是编码被动过
+- 取原始字节**不要用 `git show HEAD:file`** —— PowerShell 5.1 的管道会转码 LF→CRLF，量出来的「原始是 CRLF」是假的。正确脚本见 reference.md。
+- 还原：`[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($true)))`，再按实测的原始字节约定重建尾部
 
-  ```powershell
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = "git"; $psi.Arguments = 'cat-file blob "HEAD:<path>"'
-  $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
-  $p = [System.Diagnostics.Process]::Start($psi)
-  $ms = New-Object System.IO.MemoryStream
-  $p.StandardOutput.BaseStream.CopyTo($ms); $p.WaitForExit(); $b = $ms.ToArray()
-  ```
+**技能副本同样要同步**：`presets/<preset>/skills/<name>/SKILL.md` 是真源，部署位是 `$DSH_HOME/.agent-presets/<preset>/skills/<name>/SKILL.md`（旧 home `~/.dsh/.agent-presets/<preset>/skills/<name>/SKILL.md`）——只改部署位会被下次同步静默回退。子 preset（agint-blockchain / agint-investor，2026-10-26 起在独立仓 agint-presets）里的同名技能是**指针桩**。
 
-- 还原：`[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($true)))`，
-  再按实测的原始字节约定重建尾部
+## 第 5 步：走完整挂载 / 上线流程
 
-**技能自身的副本同样要同步**：`presets/<preset>/skills/<name>/SKILL.md` 是真源，
-部署位是 `~/.dsh/.agent-presets/<preset>/skills/<name>/SKILL.md`——只改部署位会被下次同步静默回退。
-子 preset（agint-blockchain / agint-investor，2026-10-26 起在独立仓 agint-presets）里的同名技能是**指针桩**，明写「以母 preset 为准」，不必重复维护。
-
-### 第 5 步：走完整挂载 / 上线流程
-
-**先分清编辑目标**（2026-09-28 实测澄清）。仓库源码与 host 部署位是**两份独立副本**，不是链接：
+**先分清编辑目标**：仓库源码与 host 部署位是**两份独立副本**，不是链接：
 
 ```
 仓库真源  <repo>/plugins/agint-*/lib/*.js
 bundle 位  $DSH_HOME/.agint-bundle/plugins/agint-*/lib/*.js        ← 服务真正加载 + preset 工具行锚这
 mirror 位  $DSH_HOME/profiles/<profile>/plugins/agint-*/lib/*.js   ← 兼容镜像位（v0.14.0 起不再被引用）
-          （2026-10-01 起实体在 bundle；$DSH_HOME/profiles/<p>/node_modules/@agint/host
-            是指过去的软链，写旧路径也能通，但别再往那儿手工放文件——
-            pnpm 会按 dependencies 重算它）
 ```
 
-**正确顺序：改仓库 → `./install/redeploy.sh`（铺部署位 + 核验 + 重启）→ 看它的核验结论。**
-只改 host 两份 = 下次部署静默回退；只改仓库不同步 = 服务跑的仍是旧代码且**不报错**。
+**正确顺序：改仓库 → `./install/redeploy.sh`（铺部署位 + 核验 + 重启）→ 看它的核验结论。** 只改 host 两份 = 下次部署静默回退；只改仓库不同步 = 服务跑的仍是旧代码且**不报错**。任一步不过就**不重启**（fail-closed），「跑完 exit 0」就是验收证据；只核验用 `./install/redeploy.sh --verify-only`，只看计划用 `--dry-run`。
 
-`install/redeploy.sh` 会依次做：`install.sh` → 部署位核验（挂载声明数 / `@agint/host` 注册 / 软链 /
-`profile.json` / 四套 preset 逐份查锚点且镜像位必须为 0 / 母 preset 与仓库逐字对比 /
-`check-preset-parity`）→ 按端口取 pid 重启 → 启动后核验（无 `skipping profile bundle` /
-agint 日志行 / cron job 数 / token 入口 / storage 落盘）。任一步不过就**不重启**（fail-closed），
-所以「跑完 exit 0」本身就是第 5 步的验收证据，不必再手工比对两处副本。
-只想核验不装不重启：`./install/redeploy.sh --verify-only`；只想看会做什么：`--dry-run`。
+> ⚠️ 两份副本只同步一处 = **静默分叉**。`bin/check-wiring.mjs` 查 E 会报 `DIVERGED` 并 exit 1。改完必跑。
 
-> ⚠️ 两份副本只同步一处 = **静默分叉**（两个模块实例、状态不共享、不抛错）。`bin/check-wiring.mjs` 查 E 会报 `DIVERGED` 并 exit 1。改完必跑。
+改源码前跑 `bin/safe-update.sh edit-source`（拍快照 + 拿回滚点），改 `cordis.patch.yml` 前跑 `bin/safe-update.sh mount-patch`，当前 prod 冒烟用 `bin/safe-update.sh smoke`；部署用 `./install/redeploy.sh`，改完跑 `node bin/check-wiring.mjs`（查 E 双副本 + 查 H 仓库↔部署，查 I 漂移插件 smoke）。仓库里改 `<repo>/plugins/...` 与 `<repo>/cordis.patch.yml`，部署位副本别手改。
 
-```sh
-bin/safe-update.sh smoke         # 当前 prod 状态冒烟
-bin/safe-update.sh edit-source   # 改源码前用这个（拍快照 + 拿回滚点）
-bin/safe-update.sh mount-patch   # 改 cordis.patch.yml 前用这个（拍快照）
-# 编辑仓库 <repo>/plugins/... 与 <repo>/cordis.patch.yml（部署位副本别手改）
-./install/redeploy.sh            # 铺部署位 + 核验 + 重启，一条命令
-node bin/check-wiring.mjs        # 查 E 双副本 + 查 H 仓库↔部署，查 I 漂移插件 smoke
-```
-
-**快照必须自己核实产物。** 2026-09-28 修掉一个静默失效：`compgen -G` 对 Windows 混合分隔符路径恒 MISS，`snapshot_plugins` 走「跳过」分支只打一行 warning 却 **exit 0** —— 改了源码却没回滚点，而调用方以为拍成功了。同源第二个坑：`tar` 把 `C:` 当远程主机前缀 → `Cannot connect to C: resolve failed`，因脚本无 `set -e` 仍打印 ✓（假成功）。两处已在 `bin/safe-update.sh` 修掉（`cygpath` 归一化 + 判据改 `cd` 后 `ls -d` + tar 失败即 `fail`），但**升级到旧版脚本的机器上仍会复发**，所以照例核对：
+**快照必须自己核实产物**（`compgen -G` 恒 MISS、`tar` 把 `C:` 当远程主机前缀会假成功；已在 `bin/safe-update.sh` 修掉，旧版机器仍复发）：
 
 ```sh
 ls -la "$DSH_HOME/.agint-backups"/agint-plugins-*.tar.gz | tail -1
 tar tzf <上面那个 tar> | grep -c '^agint-[^/]*/$'   # 应等于 bundle 位 agint-* 目录数（本机 41）
 ```
 
-**重启 —— 按场景分三条路，别混用：**
+**重启按场景分三条路，别混用：**
 
-| 场景 | 用什么 | 说明 |
-|---|---|---|
-| 改了仓库源码 / preset / patch（常态） | `./install/redeploy.sh` | 铺部署位 + 核验 + 重启一条命令，约 55s；2026-10-26 建 |
-| 只想重启，不动任何文件 | `restart_request` 工具（agint-restart v0.2.0+） | 三重护栏（confirm + 冷却期 + 熔断）、dryRun 可先看计划、`--no-open`、sideEffect 回报 |
-| 崩了要倒序回滚 | `bin/safe-update.sh rollback <TS>` | 快照与回滚是它唯一的职责，别拿它当部署工具 |
+- 常态（改了仓库源码 / preset / patch）：`./install/redeploy.sh`——铺部署位 + 核验 + 重启一条命令，约 55s
+- 只重启不动文件：`restart_request` 工具（agint-restart v0.2.0+）——三重护栏（confirm + 冷却期 + 熔断）、dryRun、`--no-open`、sideEffect 回报
+- 崩了倒序回滚：`bin/safe-update.sh rollback <TS>`——快照与回滚是它唯一的职责
 
-```sh
-# ✅ 常态：一条命令搞定装 + 核验 + 重启
-./install/redeploy.sh
-# ✅ 只重启不动文件
-#   restart_request（工具）
-# ✅ 回滚
-#   bin/safe-update.sh rollback 20261026-233000
-# ⚠️ safe-update.sh restart 2026-10-26 已修「dsh 不在 PATH ⇒ 服务停在停止态」与
-#    「pgrep -f 'dsh web' 命中脚本自身」，Linux 可用；但 Windows Git Bash 缺 ss / pgrep，
-#    那条路径仍不可靠 —— Windows 上走 restart_request。
-# （历史备选 bin/restart-runbook.ps1 已于 2026-09-28 废弃删除，勿再引用）
-```
-
-重启后验收用 `restart_status` 的时间戳差，而不是 sentinel.lease（后者在部分机器上不生成）：
-
-```
-lastRestart=07:43:49.992Z   boot=07:44:00.352Z   → 启动延迟 ≈10.4s（红线 <30s）
-lastResult=ok=true ready=true
-```
-
-崩了就 `plugin → patch → preset` 倒序回滚（详见 `docs/operations/safe-update-sop.md`）。
-
-## 与现有 skill 的关系
-
-| Skill | 在 preflight 里扮演 |
-|---|---|
-| `editing-cordis-compositions` | 第 5 步编辑 cordis.patch.yml 时调用 —— 它管 plane / realm 规则 |
-| `cordis-plugin-development` | 第 1~3 步的实现细节 —— `ctx.on / ctx.effect / inject` API |
-| `memory-discipline` | 写完一个新插件模式，沉淀为 lesson / pattern |
+崩了就 `plugin → patch → preset` 倒序回滚（详见 `docs/operations/safe-update-sop.md`）。**Windows Git Bash 缺 ss / pgrep，`bin/safe-update.sh restart` 那条路径仍不可靠——Windows 上走 `restart_request`**；Linux 可用。重启后验收用 `restart_status` 的时间戳差而不是 sentinel.lease（后者部分机器不生成），红线 <30s。
 
 ## 输出契约
 
-preflight 完成的标志是：`bin/plugin-check.sh --all` 无**新增** fail（既存 fail 记基线再对比，不是要求绝对 0）+ smoke exit 0 + `check-wiring.mjs` PASS + 第 5 步快照**经 tar 条目数核实**齐备。
+完成标志：`bin/plugin-check.sh --all` 无**新增** fail（既存 fail 记基线再对比，不是要求绝对 0）+ smoke exit 0 + `check-wiring.mjs` PASS + 快照**经 tar 条目数核实**齐备。本机仓库有 **4 个既存 fail**（1×K19 schema + 3×manifest 缺失），判据是「改动前后 fail 数与清单是否一致」。
 
-> 基线对比：本机仓库有 **4 个既存 fail**（1×K19 schema + 3×manifest 缺失），与本次改动无关。判据是「改动前后 fail 数与清单是否一致」，不是「必须 0」。
+**场景 B 另加两条硬验收：真实调用一次 + 先核对宿主真源。** smoke 与单测证明不了（改常量后单测自证通过，smoke 全 mock）；常量不在宿主注册目录里时每次调用都抛 `UNKNOWN_MODEL`，lint 全绿、smoke exit 0 也是死路。判据：真实调用必须 `mode=llm · schemaOk=true`（`mode=failed` / `schemaOk=false` ⇒ 模型 id 不在目录里）。细节见 reference.md。
 
-**改存量插件（场景 B）另加一条硬验收：真实调用一次，证明默认路径解析正确。** smoke 与单测证明不了这件事 —— 断言常量的单测在改常量后必然自证通过，smoke 全是 mock，check-wiring 只管文件一致性。只有真实 LLM call 才能证明运行时路由到了新值。
-
-例：`dream_verify_consolidation` 返回 `mode=llm · schemaOk=true · provider=… model=…`，`mode=llm` 即真调用（非兜底）。
-
-**改存量插件的默认值（模型 / provider / 档位）前，先核对宿主真源 —— 常量不在宿主注册目录里时，每次调用都抛 `UNKNOWN_MODEL`，lint 全绿、smoke exit 0 也照样是死路。**
-
-- 真源是 profile 的 `cordis.patch.yml`：`llm-pi-ai.providers.<provider>.models[].id` 与 `agent-default-model` 行。常量必须与目录里的 id 逐字一致 —— 本机 minimax-cn 只注册 `MiniMax-M3.1-Flash-Preview`，插件里写 `MiniMax-M3.1-Flash` 就是漂（2026-10-28 agint-dream P1 consolidation 即栽在这里，P1 从未真正跑通）。
-- 优先读宿主服务，不写死：`ctx.get('agentDefaultModel')?.currentSelection?.()` ⇒ `{ provider, model, reasoningEffort }`；路由优先级 **显式入参 > agentDefaultModel.currentSelection() > 兜底常量**，兜底常量只在宿主服务缺席的部署生效。
-- 「把硬编码换成另一份硬编码」不算修复 —— 仓内多个插件的默认值注释写着「host 注册模型已是 X（Y 不可路由）」，注释本身也会过期。
-- 判据落在真实调用：默认调用必须 `mode=llm · schemaOk=true`；`mode=failed` / `schemaOk=false` ⇒ 模型 id 不在运行期目录里，此时常量改对了也不算数。
-
-## 关联
-
-- `docs/plugins/PLUGIN-SPEC.md` —— 9 维度规范
-- `bin/plugin-check.sh` —— lint 入口
-- `bin/_verify-dim9.mjs` —— 维度 9 的 node 镜像（perl 不可用时）
-- `install/redeploy.sh` —— 第 5 步的常态路径（装 + 部署位核验 + 重启 + 启动后核验）
-- `bin/safe-update.sh` —— 改前快照与倒序回滚（部署别用它）
-- `docs/operations/dsh-restart-incident-20260821.md` —— SOP 起源
-- `docs/operations/safe-update-sop.md` —— 完整 4 份快照 SOP
-- Memory `plugin-spec-9-dimensions`（沉淀目标）
+长代码示例、事故背景推导、完整输出样例、关联清单与分工见同目录 reference.md，用 read 工具打开（本会话 skill 加载返回的 Base directory 即技能基目录）。

@@ -451,7 +451,7 @@ test('gateCandidates: thresholds and existing-memory dedupe', () => {
     { text: '低分候选内容', type: 'lesson', signalCount: 1, uniqueSessions: 1, score: 0.2, sessions: ['s1'], days: ['2026-08-15'], signals: ['c'] },
   ];
   const existing = [{ id: 'm1', type: 'decision', content: '已有记忆的重复内容测试' }];
-  const gated = gateCandidates(scored, existing, { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
+  const gated = gateCandidates(scored, existing, { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' });
   assert.deepEqual(gated.map((c) => c.text), ['以后用 vger 称呼我']);
 });
 
@@ -573,7 +573,7 @@ test('tokenOverlap: Chinese partial match score is below 1.0 (no longer whole-st
     // about a different topic. Whitespace-split would have collapsed to 1.0.
     [{ text: '更新工具的流程先备份后替换', type: 'pattern', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
     [{ id: 'm1', type: 'pattern', content: '遵守用户隐私保护政策' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 },
   );
   // Distinct topics → bigram overlap < 0.5 → NOT covered.
   assert.equal(gated.length, 1, 'distinct Chinese sentences must not be falsely covered');
@@ -592,7 +592,7 @@ test('分级去重（行为变更）：互含但长度悬殊 → 降级为中档
     score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'],
   }];
   const existing = [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }]; // substring of candidate
-  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 };
+  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 };
   const gated = gateCandidates(scored.map((c) => ({ ...c })), existing, opts);
   assert.equal(gated.length, 1, 'ratio 0.64 (<0.85) → 疑似档，放行给 LLM 裁');
   assert.equal(gated[0].dedupeSuspicion.kind, 'substring');
@@ -606,7 +606,7 @@ test('tokenOverlap: bag-of-words full-match triggers dedupe', async () => {
   const gated = gateCandidates(
     [{ text: 'keep workspace clean', type: 'lesson', signalCount: 3, uniqueSessions: 2, score: 0.8, sessions: ['s1'], days: ['2026-08-15'], signals: ['x'] }],
     [{ id: 'm1', type: 'lesson', content: 'keep workspace clean' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 0, 'exact match must be deduped');
 });
@@ -627,7 +627,7 @@ test('分级去重：高相似（≥0.85 精确同句）仍被丢弃 → gated �
   const gated = gateCandidates(
     [CAND('keep workspace clean')],
     [{ id: 'm1', type: 'lesson', content: 'keep workspace clean' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' },
   );
   assert.equal(gated.length, 0, 'exact match is real duplication → dropped');
   assert.equal(gated.dedupeStats.dropped, 1);
@@ -640,7 +640,7 @@ test('分级去重：互含但长度悬殊（ratio < 0.85）→ 放行 + dedupeS
   const gated = gateCandidates(
     [CAND('智进使用 vger 称呼')],
     [{ id: 'm1', type: 'decision', content: '使用 vger 称呼' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 1, '中相似档必须放行给 LLM 裁');
   assert.equal(gated[0].dedupeSuspicion.kind, 'substring');
@@ -657,7 +657,7 @@ test('分级去重：中相似（0.6~0.85 二元组重叠）→ 放行 + kind=si
   const gated = gateCandidates(
     [CAND('索引化方案用于长期投资')],
     [{ id: 'm2', type: 'decision', content: '指数化方案用于长期投资' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeMid: 0.6, dedupeHigh: 0.85 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeMid: 0.6, dedupeHigh: 0.85 },
   );
   assert.equal(gated.length, 1, '中相似档放行');
   assert.equal(gated[0].dedupeSuspicion.kind, 'similarity');
@@ -673,7 +673,7 @@ test('分级去重：低相似（<0.6）→ 无标记放行', async () => {
   const gated = gateCandidates(
     [CAND('更新工具的流程先备份后替换')],
     [{ id: 'm1', type: 'pattern', content: '遵守用户隐私保护政策' }],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 },
   );
   assert.equal(gated.length, 1);
   assert.equal(gated[0].dedupeSuspicion, undefined, '低相似不得被打标（防误伤）');
@@ -693,7 +693,7 @@ test('回归护栏：dedupeTieredEnabled=false → 与现状（单一阈值布�
     { id: 'm2', type: 'decision', content: '使用 vger 称呼' },
     { id: 'm3', type: 'pattern', content: '遵守用户隐私保护政策' },
   ];
-  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, dedupeTokenOverlap: 0.5 };
+  const opts = { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition', dedupeTokenOverlap: 0.5 };
   const tiered = gateCandidates(scored.map((c) => ({ ...c })), existing, opts);
   const legacy = gateCandidates(scored.map((c) => ({ ...c })), existing, { ...opts, dedupeTieredEnabled: false });
   // 旧逻辑：互含即丢 → 只剩「无关」那条
@@ -707,7 +707,7 @@ test('回归护栏：dedupeTieredEnabled=false → 与现状（单一阈值布�
 
 test('分级去重：空 existing → 全部放行且零计数', async () => {
   const { gateCandidates } = await import('../lib/sweep.js');
-  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
+  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' });
   assert.equal(gated.length, 1);
   assert.deepEqual(
     { dropped: gated.dedupeStats.dropped, suspicious: gated.dedupeStats.suspicious, max: gated.dedupeStats.maxSimilarity },
@@ -720,7 +720,7 @@ test('分级去重：1 条 existing 且内容为空/纯标点 → 不产生 NaN'
   const gated = gateCandidates(
     [CAND('以后用 vger 称呼我')],
     [{ id: 'm1', type: 'lesson', content: '   ' }],  // normalize 后为空 → 被 filter 掉
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' },
   );
   assert.equal(gated.length, 1);
   assert.equal(gated[0].dedupeSuspicion, undefined);
@@ -729,7 +729,7 @@ test('分级去重：1 条 existing 且内容为空/纯标点 → 不产生 NaN'
 
 test('分级去重：dedupeStats 是非枚举属性 —— 数组语义（length/deepEqual）不受影响', async () => {
   const { gateCandidates } = await import('../lib/sweep.js');
-  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 });
+  const gated = gateCandidates([CAND('以后用 vger 称呼我')], [], { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' });
   assert.deepEqual(gated, [gated[0]], 'deepEqual 只比数组元素，不带统计字段');
   assert.deepEqual(Object.keys(gated), ['0'], '统计不得成为可枚举键');
 });
@@ -739,7 +739,7 @@ test('分级去重：门槛未过的候选不计入 checked（埋点只统计真
   const gated = gateCandidates(
     [CAND('低分候选', 0.2), CAND('过门候选')],
     [],
-    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2 },
+    { minScore: 0.75, minRecall: 3, minUniqueSessions: 2, admission: 'repetition' },
   );
   assert.equal(gated.length, 1);
   assert.equal(gated.dedupeStats.checked, 1, '被 score 门槛挡掉的不算「进过去重」');

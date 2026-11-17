@@ -10,7 +10,8 @@ AGINT 家族面板 —— 以**宿主原生停靠面板**形态展示整个 AGIN
 
 | 半 | 文件 | 职责 |
 |---|---|---|
-| host | `lib/index.js` | 开三条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）；不碰 DOM |
+| host | `lib/index.js` | 开四条**只读回环**路由：`GET /api/agint-family/status`（v1 快照）、`GET /api/agint-family/v2`（v2 整页 HTML）、`GET /api/agint-family/v2/data`（v2 实时聚合 JSON，TTL 30s + mtime 缓存）、`GET /api/agint-family/v2/arch`（架构图实时聚合，约 34KB，与生成器共用 `arch-data`/`arch-render`）；不碰 DOM |
+| host | `lib/arch-data.js` / `lib/arch-render.js` | **架构图单点数据与渲染**（0.13.0）：`collectArchData()` 聚合 21 节点 / 26 边 / 9 队列 / 14 域，`renderArchPage()` 出离线快照、`renderArchFragments()` 出实时片段。⛔ 生成器与路由必须共用这两个模块，否则口径与模板必然漂 |
 | host | `lib/v2-scan.js` / `lib/v2-data.js` | v2 数据层：源码扫描（L0.5 真源，code/comment/umbrella 三分类 + manifest 声明补边）+ storages 三源聚合 + 声明消费契约（`consumes` ∪ `optionalInject`，同时作补边白名单）；每源独立降级，不装绿 |
 | host | `lib/v2-dossier.js` | **单插件档案数据层**（v0.4.0）：汇拢一个 id 的**全部物理位置**，读 manifest 契约 / package 身份 / CHANGELOG 变更史 / 代码体量，产出可核对的 `drift`（版本分裂、契约与代码分家、声明了没自述） |
 | host | `lib/v2-owners.js` | **归因表单一事实源**（工具名前缀 / cron id / 宿主键），随 `payload.owners` 下发；整页视图与档案页都从这里取，不再各写一份常量 |

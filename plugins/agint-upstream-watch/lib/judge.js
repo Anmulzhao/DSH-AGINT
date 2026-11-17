@@ -15,12 +15,40 @@
 
 import { randomUUID } from 'node:crypto';
 
-/** 默认模型参数，与 agint-dream 保持一致（同一宿主、同一套 settings.yaml） */
+/** 离线兜底模型参数（**不是运行时真源**）：正常路径走宿主
+ * `ctx.get('agentDefaultModel').currentSelection()`，只有宿主服务缺席才落到这里。
+ * 与 agint-dream / agint-aesthetic-oracle / agint-evolution-driver 同源同值；
+ * 由 `bin/check-llm-selection-parity.mjs` 与宿主 profile 模型目录静态对拍。 */
 export const DEFAULT_PROVIDER = 'minimax-cn';
 export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
 export const DEFAULT_REASONING_EFFORT = 'high';
 export const DEFAULT_AGENT_PRESET = 'agint';
 export const DEFAULT_TIMEOUT_MS = 90_000;
+
+/**
+ * 模型路由的单一真源解析：显式入参 > 宿主当前选择 > 离线兜底常量。
+ *
+ * `agentDefaultModel` 是宿主 lazyService，靠 ctx.get 软取即可，**不进 inject**。
+ * 服务缺席 / 取值抛错按 null 处理，不影响段 1 事实照常落库。
+ *
+ * @param {object} ctx cordis host ctx
+ * @param {{provider?:string, model?:string, reasoningEffort?:string}} [explicit]
+ * @returns {{provider:string, model:string, reasoningEffort:string, source:'host'|'fallback'}}
+ */
+export function resolveLlmSelection(ctx, explicit = {}) {
+  let selection = null;
+  try {
+    selection = ctx?.get?.('agentDefaultModel')?.currentSelection?.() ?? null;
+  } catch {
+    selection = null;
+  }
+  return {
+    provider: explicit.provider || selection?.provider || DEFAULT_PROVIDER,
+    model: explicit.model || selection?.model || DEFAULT_MODEL,
+    reasoningEffort: explicit.reasoningEffort || selection?.reasoningEffort || DEFAULT_REASONING_EFFORT,
+    source: selection ? 'host' : 'fallback',
+  };
+}
 
 const SYSTEM_PROMPT = `你是「智进」(AGINT) 的上游判读器。AGINT 是一个跑在 DeepSeek Harness (dsh) 上的
 自进化系统。dsh 是你的宿主，它频繁发版，破坏性变更会决定 AGINT 能不能装、装上了功能全不全。
@@ -176,9 +204,9 @@ function buildPrompt(facts) {
  */
 export async function judgeFacts(ctx, facts, opts = {}) {
   const {
-    provider = DEFAULT_PROVIDER,
-    model = DEFAULT_MODEL,
-    reasoningEffort = DEFAULT_REASONING_EFFORT,
+    provider = '',
+    model = '',
+    reasoningEffort = '',
     agentPreset = DEFAULT_AGENT_PRESET,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     log = () => {},
@@ -187,6 +215,14 @@ export async function judgeFacts(ctx, facts, opts = {}) {
   if (!ctx || typeof ctx.get !== 'function') {
     return { ok: false, mode: 'failed', reason: 'ctx unavailable' };
   }
+
+  // ⚠️ 默认值必须是空串而不是 DEFAULT_*：非空默认值会让宿主当前选择永远排不上队。
+  const selection = resolveLlmSelection(ctx, { provider, model, reasoningEffort });
+  const agentOptions = {
+    provider: selection.provider,
+    model: selection.model,
+    reasoningEffort: selection.reasoningEffort,
+  };
 
   // 1. 服务可解析性（失败即 failed，不回退启发式）
   const agents = ctx.get('agents');
@@ -218,22 +254,26 @@ export async function judgeFacts(ctx, facts, opts = {}) {
         sessionId: `upstream-watch-${facts.targetVersion}-${randomUUID().slice(0, 8)}`,
         // cwd 必给：child session 继承的 persona 段里 {{cwd}} 取不到值会直接 throw
         meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
-        agentOptions: { provider, model, reasoningEffort },
+        agentOptions,
         signal: abort.signal,
       })),
       timeoutGuard,
     ]);
 
+    // ⛔ 宿主 dsh 0.2.2-rc.1（app.asar 2026-11-13）起，SubagentActivationSpec 不再接受
+    //    嵌套的 request：prompt / parent / agentPreset / agentOptions / outputSchema
+    //    必须直接放在 spec 顶层。旧宿主读 spec.request.parent.id，新宿主读 spec.parent.id。
+    //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+    //    "Cannot read properties of undefined (reading 'id')" ⇒ 判读恒 failed。
+    //    宿主自带 upgrade-guide 原文：「嵌套的 request 字段已移除」。
     const startPromise = Promise.resolve().then(() => subagents.startActivation({
       provider: 'spawn',
       label: `agint-upstream-watch ${facts.tag}`,
-      request: {
-        parent: parentHandle.agent,
-        prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${buildPrompt(facts)}` }],
-        agentPreset,
-        agentOptions: { provider, model, reasoningEffort },
-        outputSchema: JUDGE_OUTPUT_SCHEMA,
-      },
+      parent: parentHandle.agent,
+      prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${buildPrompt(facts)}` }],
+      agentPreset,
+      agentOptions,
+      outputSchema: JUDGE_OUTPUT_SCHEMA,
       signal: abort.signal,
       delivery: 'caller',
     }));
@@ -250,7 +290,17 @@ export async function judgeFacts(ctx, facts, opts = {}) {
       };
     }
 
-    const parsed = extractJson(result.output);
+    // ⭐ 结论在 result.structured，不在 result.output（K114）。
+    //    带 outputSchema 时宿主把结构化结果挂 structured；output 只是 assistant 最终文本。
+    //    读 output 会退回「抠 JSON 文本」，命中不了 ⇒ 恒判 not valid JSON ⇒ 结论永远落不了库。
+    const structured = result?.structured;
+    if (structured === undefined || structured === null) {
+      return {
+        ok: false, mode: 'failed',
+        reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`,
+      };
+    }
+    const parsed = extractJson(structured);
     if (!parsed) {
       return { ok: false, mode: 'failed', reason: 'model output is not valid JSON' };
     }

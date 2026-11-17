@@ -65,7 +65,10 @@ test('部署位存在时，preset 的每个相对行都必须能 import', async 
   for (const preset of presets) {
     const dir = path.dirname(preset);
     const name = path.basename(dir);
-    const relative = readRows(preset).filter((r) => r.name && r.name.startsWith('../'));
+    // 相对行有两类：`../` 指向 bundle 里的插件工具模块，`./` 指向 preset 目录
+    // 自己的 preset-local 模块（liangshen 的 custom-bash / 智进系的 bash.mjs、
+    // bash-exec.mjs）。两类同样会在挂载时炸，一并扫。
+    const relative = readRows(preset).filter((r) => r.name && (r.name.startsWith('../') || r.name.startsWith('./')));
     await t.test(`${name}（${relative.length} 个相对行）`, async () => {
       const failures = [];
       for (const row of relative) {

@@ -1,6 +1,6 @@
 {
   "name": "agint-search-tools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Cross-domain unified search across agint memory (principles) and agint wiki (knowledge files). Consumes host services `agint.memory` and `agint.wiki`.",
   "main": "lib/tools.js",

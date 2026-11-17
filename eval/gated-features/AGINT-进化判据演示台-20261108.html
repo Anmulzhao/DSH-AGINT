@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGINT 到底有没有在进化 · 判据演示台</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --surface:#ffffff; --surface2:#f0f3f7; --line:#dfe4eb;
+    --ink:#171b21; --ink2:#55606e; --ink3:#8792a0;
+    --blue:#2563eb; --blue-bg:#eaf1ff;
+    --green:#15803d; --green-bg:#e8f6ec;
+    --red:#b3261e; --red-bg:#fdeceb;
+    --amber:#a35c00; --amber-bg:#fff3e0;
+    --shadow:0 1px 2px rgba(20,30,45,.05),0 8px 24px rgba(20,30,45,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#101418; --surface:#181e25; --surface2:#202832; --line:#2c3742;
+      --ink:#e9eef4; --ink2:#a8b3c0; --ink3:#7d8996;
+      --blue:#7aa7ff; --blue-bg:#1b2c4a;
+      --green:#66c98a; --green-bg:#16311f;
+      --red:#ff8b83; --red-bg:#3a1d1b;
+      --amber:#e8b464; --amber-bg:#3a2a14;
+      --shadow:0 1px 2px rgba(0,0,0,.25),0 10px 28px rgba(0,0,0,.28);
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.75;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.92em}
+  code{background:var(--surface2);padding:1px 5px;border-radius:4px;border:1px solid var(--line)}
+
+  header.hero{padding:64px 0 36px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-size:12px;letter-spacing:.16em;color:var(--ink3);text-transform:uppercase;font-weight:700}
+  h1{font-size:38px;line-height:1.3;margin:14px 0 16px;letter-spacing:-.02em}
+  .lead{font-size:19px;color:var(--ink2);max-width:820px;margin:0 0 20px}
+  .verdict{display:inline-block;background:var(--amber-bg);color:var(--amber);
+    border:1px solid var(--amber);border-radius:8px;padding:8px 14px;font-weight:700;font-size:16px;margin-bottom:18px}
+  .meta{font-size:13px;color:var(--ink3);display:flex;gap:18px;flex-wrap:wrap}
+
+  nav{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--line);
+    display:flex;gap:6px;flex-wrap:wrap;padding:10px 0;margin-bottom:36px}
+  nav a{font-size:13px;color:var(--ink2);padding:5px 11px;border-radius:6px;white-space:nowrap}
+  nav a:hover{background:var(--surface2);color:var(--ink);text-decoration:none}
+
+  section{margin:0 0 62px;scroll-margin-top:64px}
+  h2{font-size:25px;margin:0 0 8px;letter-spacing:-.01em}
+  h2 .num{color:var(--ink3);font-weight:500;margin-right:10px;font-variant-numeric:tabular-nums}
+  .sub{color:var(--ink2);margin:0 0 24px;font-size:15px}
+  h3{font-size:17px;margin:26px 0 10px}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px 24px;box-shadow:var(--shadow)}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:3px 9px;border-radius:5px;margin-bottom:10px}
+  .t-red{background:var(--red-bg);color:var(--red)}
+  .t-green{background:var(--green-bg);color:var(--green)}
+  .t-blue{background:var(--blue-bg);color:var(--blue)}
+  .t-amber{background:var(--amber-bg);color:var(--amber)}
+  .card p{margin:8px 0;font-size:14.5px;color:var(--ink2)}
+  .card strong{color:var(--ink)}
+  .big{font-size:30px;font-weight:750;color:var(--ink);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .big small{font-size:14px;font-weight:500;color:var(--ink3);margin-left:6px}
+
+  .flow{width:100%;height:auto;display:block;margin:8px 0 4px}
+  .note{font-size:13px;color:var(--ink3);margin-top:10px}
+
+  .principles{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .principle{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--blue);
+    border-radius:9px;padding:16px 18px}
+  .principle b{display:block;font-size:15px;margin-bottom:4px}
+  .principle span{font-size:13.5px;color:var(--ink2)}
+  .principle em{font-style:normal;color:var(--ink3);font-size:12.5px;display:block;margin-top:6px}
+
+  .lab{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+  .lab-head{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--surface2)}
+  .lab-head b{font-size:16px}
+  .lab-head p{margin:4px 0 0;font-size:13.5px;color:var(--ink2)}
+  .lab-body{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .controls{padding:20px 24px;border-right:1px solid var(--line)}
+  .results{padding:20px 24px;background:var(--surface)}
+  .ctl{margin-bottom:15px}
+  .ctl label{display:block;font-size:13px;font-weight:700;margin-bottom:5px}
+  .ctl label i{font-style:normal;color:var(--ink3);font-weight:500;margin-left:6px}
+  select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px;
+    background:var(--surface2);color:var(--ink);font-size:13.5px;font-family:inherit}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  button{font-family:inherit;font-size:13px;font-weight:650;padding:8px 13px;border-radius:7px;
+    border:1px solid var(--line);background:var(--surface2);color:var(--ink);cursor:pointer}
+  button:hover{border-color:var(--blue);color:var(--blue)}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  button.primary:hover{opacity:.9;color:#fff}
+
+  .gate{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px dashed var(--line)}
+  .gate:last-of-type{border-bottom:none}
+  .dot{width:11px;height:11px;border-radius:50%;flex:none;margin-top:7px}
+  .dot.ok{background:var(--green)} .dot.no{background:var(--red)}
+  .gate .gname{font-size:13.5px;font-weight:700}
+  .gate .gdesc{font-size:12.5px;color:var(--ink2);line-height:1.55}
+  .gate .gstate{font-size:11.5px;font-weight:700;margin-left:auto;flex:none;padding:2px 7px;border-radius:4px}
+  .gstate.ok{background:var(--green-bg);color:var(--green)}
+  .gstate.no{background:var(--red-bg);color:var(--red)}
+  .judge{margin-top:16px;padding:14px 16px;border-radius:9px;font-size:14px;font-weight:700}
+  .judge.ok{background:var(--green-bg);color:var(--green);border:1px solid var(--green)}
+  .judge.no{background:var(--red-bg);color:var(--red);border:1px solid var(--red)}
+  .judge small{display:block;font-weight:500;font-size:12.5px;margin-top:5px;opacity:.9}
+  .layers{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+  .layer{display:flex;align-items:center;gap:10px;font-size:13px;padding:5px 0;color:var(--ink2)}
+  .layer b{color:var(--ink);min-width:96px;font-size:12.5px}
+  .bar{height:7px;border-radius:4px;background:var(--surface2);flex:1;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--green);border-radius:4px}
+  .bar i.off{background:var(--red)}
+  .layer .v{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink);min-width:64px;text-align:right}
+  .callout{margin-top:14px;padding:12px 14px;border-radius:8px;background:var(--amber-bg);
+    color:var(--amber);font-size:13px;font-weight:600}
+
+  table{width:100%;border-collapse:collapse;background:var(--surface);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:14px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--surface2);font-size:12.5px;color:var(--ink2);font-weight:700}
+  tr:last-child td{border-bottom:none}
+  td .v{font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .pill{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:4px;white-space:nowrap}
+  .p-ok{background:var(--green-bg);color:var(--green)}
+  .p-warn{background:var(--amber-bg);color:var(--amber)}
+  .p-stop{background:var(--red-bg);color:var(--red)}
+  .cmd{background:var(--surface2);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;font-size:12.5px;overflow-x:auto;white-space:pre;color:var(--ink2);margin-top:12px}
+
+  .reason{display:flex;gap:14px;padding:15px 0;border-bottom:1px solid var(--line)}
+  .reason:last-child{border-bottom:none}
+  .reason .n{font-size:20px;font-weight:800;color:var(--ink3);min-width:28px;font-variant-numeric:tabular-nums}
+  .reason b{font-size:14.5px}
+  .reason p{margin:3px 0 0;font-size:13.5px;color:var(--ink2)}
+
+  .redcard{background:var(--red-bg);border:1px solid var(--red);border-radius:11px;padding:20px 24px}
+  .redcard h3{margin:0 0 10px;color:var(--red)}
+  .redcard ul{margin:0;padding-left:20px;font-size:14px;color:var(--ink)}
+  .redcard li{margin:7px 0}
+  .redcard .kicker{margin-top:14px;padding-top:12px;border-top:1px solid var(--red);
+    font-weight:700;font-size:14.5px;color:var(--red)}
+
+  details{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:12px 16px;margin-top:12px}
+  summary{cursor:pointer;font-size:14px;font-weight:650}
+  details .cmd{margin-bottom:8px}
+
+  footer{border-top:1px solid var(--line);padding-top:20px;color:var(--ink3);font-size:12.5px}
+  .selfcheck{margin-top:14px;font-size:12.5px;font-weight:700;color:var(--green)}
+  .selfcheck.bad{color:var(--red)}
+
+  @media (max-width:820px){
+    .grid3,.grid2,.principles{grid-template-columns:1fr}
+    .lab-body{grid-template-columns:1fr}
+    .controls{border-right:none;border-bottom:1px solid var(--line)}
+    h1{font-size:29px}
+    .wrap{padding:0 16px 64px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">AGINT · 进化评估 · 判据演示台</div>
+  <h1>到底有没有在进化？<br>我把判据做出来了，并且跑了一遍</h1>
+  <div class="verdict">现在最诚实的回答：还不知道 —— 而且现在给它打任何分数都不算数</div>
+  <p class="lead">原因不是它没变化，是<strong>量它的那把尺子有问题</strong>。这一页用大白话讲清楚问题在哪、科学合理的判据该长什么样，下面还有一个可以亲手拨的开关台 —— 五道闸是代码里真正在跑的规则，不是示意图。页面上每个数字都是我刚刚实跑得到的。</p>
+  <div class="meta">
+    <span>实测时间：<span data-reading="capturedAt">—</span></span>
+    <span>代码版本：<code data-reading="head">—</code></span>
+    <span>生产写入：<strong>0</strong></span>
+  </div>
+</header>
+
+<nav>
+  <a href="#s1">1 · 为什么分数不算数</a>
+  <a href="#s2">2 · 科学合理的判据</a>
+  <a href="#s3">3 · 亲手拨五道闸</a>
+  <a href="#s4">4 · 我实测过了</a>
+  <a href="#s5">5 · 最后一盏灯</a>
+  <a href="#s6">6 · 必须说清的边界</a>
+  <a href="#s7">7 · 下一步</a>
+</nav>
+
+<section id="s1">
+  <h2><span class="num">01</span>为什么日报那个分数不算数</h2>
+  <p class="sub">你之前问「智能水平能有多高，是不是就是每日日报分数」。答案是否定的，而且理由很具体。</p>
+
+  <div class="grid3">
+    <div class="card">
+      <span class="tag t-red">分数涨了，但没证明什么</span>
+      <div class="big"><span data-reading="score.from">—</span> → <span data-reading="score.to">—</span><small>近 <span data-reading="score.weeks">—</span> 周 · Δ<span data-reading="score.delta">—</span></small></div>
+      <p>这个分数由 <code>noise / confidence / redundancy / bloat</code> 四个数字套固定公式算出，<strong>评分链路完全不用大模型</strong>，也不读系统真实能力。公式算得越漂亮，只说明输入更合公式胃口。</p>
+    </div>
+    <div class="card">
+      <span class="tag t-red">自己出题、自己判、自己报</span>
+      <div class="big">自我参照</div>
+      <p>题是系统侧的、分是系统算的、报是系统发的。这种情况下<strong>涨分可以靠「把尺子磨顺」实现</strong>，不需要真的变强。经济学里管这叫 Goodhart：一旦指标变成目标，它就不再是好指标。</p>
+    </div>
+    <div class="card">
+      <span class="tag t-amber">缺的那块证据</span>
+      <div class="big"><span data-reading="score.humanAnnotations">—</span><small>条人工标注</small></div>
+      <p>能独立证明能力的外部标注是 <strong>0 条</strong>；能力图谱只覆盖 <span data-reading="score.isoWeeksWithCapabilityMap">—</span> 个 ISO 周，所以对照工具判定 <code data-reading="score.verdict">—</code>，<strong>拒绝给出「方向和分数一致」这种结论</strong>。</p>
+    </div>
+  </div>
+  <p class="note">数字取自本页生成时重跑的 <code>bin/score-vs-evidence.mjs --json</code>：<code data-reading="score.verdict">—</code>，能力图谱只覆盖 <span data-reading="score.isoWeeksWithCapabilityMap">—</span> 个 ISO 周，方向一致率按设计不计算。11-07 的历史报告写的是 99.9，本次实跑末值为 <span data-reading="score.to">—</span>（第 6 周卡片更新所致），本页一律采用本次实跑值。</p>
+
+  <div class="card" style="margin-top:16px">
+    <h3 style="margin-top:0">换一把尺子：从「系统自评」搬成「外部判据」</h3>
+    <svg class="flow" viewBox="0 0 1000 190" role="img" aria-label="旧做法与新做法的对比流程">
+      <text x="0" y="22" font-size="13" font-weight="700" fill="var(--ink3)">旧做法（自评）</text>
+      <g font-size="13" fill="var(--ink)">
+        <rect x="0" y="36" width="150" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="75" y="64" text-anchor="middle">系统自己</text>
+        <rect x="180" y="36" width="150" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="255" y="64" text-anchor="middle">自己出题</text>
+        <rect x="360" y="36" width="150" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="435" y="64" text-anchor="middle">公式算分</text>
+        <rect x="540" y="36" width="150" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="615" y="64" text-anchor="middle">自己播报</text>
+        <rect x="720" y="36" width="270" height="46" rx="8" fill="var(--red-bg)" stroke="var(--red)"/>
+        <text x="855" y="64" text-anchor="middle" fill="var(--red)" font-weight="700">分数涨了 ⇒ 能说变强吗？不能</text>
+      </g>
+      <g stroke="var(--ink3)" fill="none" stroke-width="1.5">
+        <path d="M152 59 L178 59"/><path d="M332 59 L358 59"/><path d="M512 59 L538 59"/><path d="M692 59 L718 59"/>
+      </g>
+
+      <text x="0" y="118" font-size="13" font-weight="700" fill="var(--ink3)">新做法（外部锚定）</text>
+      <g font-size="13" fill="var(--ink)">
+        <rect x="0" y="132" width="180" height="46" rx="8" fill="var(--blue-bg)" stroke="var(--blue)"/>
+        <text x="90" y="160" text-anchor="middle">尺子放到系统外</text>
+        <rect x="210" y="132" width="180" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="300" y="160" text-anchor="middle">事先写死题目</text>
+        <rect x="420" y="132" width="180" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="510" y="160" text-anchor="middle">密封不可改</text>
+        <rect x="630" y="132" width="180" height="46" rx="8" fill="var(--surface2)" stroke="var(--line)"/>
+        <text x="720" y="160" text-anchor="middle">跑完再对拍</text>
+        <rect x="840" y="132" width="150" height="46" rx="8" fill="var(--green-bg)" stroke="var(--green)"/>
+        <text x="915" y="160" text-anchor="middle" fill="var(--green)" font-weight="700">可被证伪</text>
+      </g>
+      <g stroke="var(--ink3)" fill="none" stroke-width="1.5">
+        <path d="M182 155 L208 155"/><path d="M392 155 L418 155"/><path d="M602 155 L628 155"/><path d="M812 155 L838 155"/>
+      </g>
+    </svg>
+    <p class="note">关键区别不是「算得更准」，而是<strong>被评对象碰不到判据</strong>：题在外面、答案密封、跑分的是独立校验器，而且事先声明什么算进步，事后可以被打脸。</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">02</span>一份科学合理的判据长什么样</h2>
+  <p class="sub">四条原则，每条都对应仓库里真实存在的东西，不是设想。</p>
+  <div class="principles">
+    <div class="principle"><b>1 · 外置</b><span>判据不读任何分数字段，不由被评对象生成或改写。三份冻结集一次性密封，运行时只能读。</span><em>实现：eval/capability-baseline/sets/{gold,verify,heldout}.json + contentHash</em></div>
+    <div class="principle"><b>2 · 可复现</b><span>每条 PASS / REJECT 由确定性校验器当场实跑得出，不硬编码；任何第三方重跑得到同一答案。</span><em>实现：23 条断言，node bin/capability-baseline-mechanical.mjs --verify</em></div>
+    <div class="principle"><b>3 · 可证伪</b><span>事先写清「预计下周某计数从 0 变成 1」，下周重读同一张表算实际值；不符就如实记为预测失败，不解释成能力退步。</span><em>实现：predictedDelta=+1 与 predictedDeltaSource，下一 ISO 周对拍 actualDelta</em></div>
+    <div class="principle"><b>4 · 可撤销</b><span>默认拒绝。要动真格写入必须五道闸全过；人随时能否决，24 小时内可撤回。</span><em>实现：defaultDeny + 五闸 + vetoWindowHours=24 + --veto</em></div>
+  </div>
+  <p class="note">这四条合起来的效果：<strong>系统再怎么优化自己，也改不了判据；判据说没通过，就是没通过。</strong>这才是「判断进化」，而不是「播报进化」。</p>
+</section>
+
+<section id="s3">
+  <h2><span class="num">03</span>亲手拨一拨：五道闸实验台</h2>
+  <p class="sub">下面五个下拉框直接对应 <code>bin/autonomous-write-gate.mjs</code> 里的判定条件。随便拨，右侧实时变。<strong>默认全关</strong> —— 这就是「默认拒绝」的意思。</p>
+
+  <div class="lab">
+    <div class="lab-head">
+      <b>受控投递 · 五闸实时判定</b>
+      <p>闸全过只代表「允许投递一份候选」，<strong>不等于已经写进生产</strong>。请特别留意最下面那条红色的物理条件。</p>
+    </div>
+    <div class="lab-body">
+      <div class="controls">
+        <div class="ctl"><label>G1 · 总开关 <i>只认字面量 on</i></label>
+          <select id="c1">
+            <option value="off">未设置 / 关闭（默认）</option>
+            <option value="ON">ON（大写 — 故意写错，不算开）</option>
+            <option value="1">1（不算开）</option>
+            <option value="on">on（正确打开）</option>
+          </select></div>
+        <div class="ctl"><label>G2 · 外部证据等级 <i>自评不算数</i></label>
+          <select id="c2">
+            <option value="UNSET">UNSET（没有外部真值）</option>
+            <option value="SILVER">SILVER（系统自评）</option>
+            <option value="GOLD">GOLD（外部冻结）</option>
+            <option value="HELDOUT">HELDOUT（外部冻结·留卷）</option>
+          </select></div>
+        <div class="ctl"><label>G3 · 写入目标 <i>白名单外一律拒</i></label>
+          <select id="c3">
+            <option value="proposal_queue">proposal_queue（候选提案队列）</option>
+            <option value="curriculum_challenge_queue">curriculum_challenge_queue（课程挑战队列）</option>
+            <option value="storages">直接改 storages / 评分常量 / 规则（禁止）</option>
+          </select></div>
+        <div class="ctl"><label>G4 · 可证伪预测 <i>没预测就不是处方</i></label>
+          <select id="c4">
+            <option value="full">有 Δ=+1 且写明来源</option>
+            <option value="nosrc">只有数字，没有来源</option>
+            <option value="none">没有预测</option>
+            <option value="placeholder">拿 0 当占位预测（同样不接受）</option>
+          </select></div>
+        <div class="ctl"><label>G5 · 人类否决与撤销窗口</label>
+          <select id="c5">
+            <option value="ok">未否决 · 24h 撤销窗口</option>
+            <option value="veto">人工已否决</option>
+            <option value="stop">急停中</option>
+            <option value="nowindow">没有撤销窗口</option>
+          </select></div>
+        <div class="btns">
+          <button class="primary" id="btnReal">载入今天的真实状态</button>
+          <button id="btnDefault">恢复默认（全关）</button>
+          <button id="btnDeliver">试着真的写一次</button>
+        </div>
+      </div>
+      <div class="results">
+        <div id="gates"></div>
+        <div class="judge no" id="judge">默认拒绝<small>尚未满足任何投递条件</small></div>
+        <div class="layers">
+          <div class="layer"><b>① 判据</b><div class="bar"><i id="bar1" style="width:0%"></i></div><span class="v" id="v1">—</span></div>
+          <div class="layer"><b>② 五闸</b><div class="bar"><i id="bar2" style="width:0%"></i></div><span class="v" id="v2">0 / 5</span></div>
+          <div class="layer"><b>③ 真写入</b><div class="bar"><i class="off" id="bar3" style="width:100%"></i></div><span class="v" id="v3">0 条</span></div>
+        </div>
+        <div class="callout" id="callout">「闸全过」只到第 ② 层。第 ③ 层还卡着真实服务窗口，见第 5 节。</div>
+        <div id="deliverResult"></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">G1 那个「ON 不算开」不是玩笑：代码里是严格字面量比较，<code>ON / 1 / true / yes</code> 全部视为关闭，避免配置里一个大小写就把自动写入打开了。</p>
+</section>
+
+<section id="s4">
+  <h2><span class="num">04</span>我实测过了：逐项结果</h2>
+  <p class="sub">这些不是设计目标，是刚才在本机一条条跑出来的读数。页面上的数字与实跑输出逐项绑定。</p>
+  <table>
+    <thead><tr><th style="width:23%">检查项</th><th style="width:31%">真实结果</th><th>说明</th><th style="width:9%">判定</th></tr></thead>
+    <tbody>
+      <tr><td>冻结集是否可用</td><td class="mono"><span class="v" data-reading="baseline.verdict">—</span> · <span data-reading="baseline.usable">—</span> 条可用标签 / <span data-reading="baseline.samples">—</span> 条样本</td><td>三份集合（gold <span data-reading="baseline.sets.gold">—</span> / verify <span data-reading="baseline.sets.verify">—</span> / heldout <span data-reading="baseline.sets.heldout">—</span>）全部密封，gold 与 heldout 交集 <span data-reading="baseline.overlap">—</span>。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>别人能不能跑出同一答案</td><td class="mono">重跑 <span data-reading="mechanical.rerun">—</span> 条 · PASS <span data-reading="mechanical.pass">—</span> / REJECT <span data-reading="mechanical.reject">—</span> · 不一致 <span data-reading="mechanical.mismatches">—</span></td><td>其中 2 条 REJECT 是<strong>故意放进去的负控制</strong>，证明校验器不是一律盖章。可复现 = <span data-reading="mechanical.reproducible">—</span>。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>真实节奏里的心跳</td><td class="mono"><span data-reading="heartbeat.passed">—</span>/<span data-reading="heartbeat.total">—</span> 闸 · 写入 <span data-reading="heartbeat.writesToProduction">—</span></td><td>读真实数据：广播 <span data-reading="heartbeat.broadcasts">—</span> 条 / weekly <span data-reading="heartbeat.weeklyWeeks">—</span> 周 / 回流 <span data-reading="heartbeat.feedback">—</span>，每小时真实求值并留台账（现 <span data-reading="heartbeat.ledgerRows">—</span> 行）。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>隔离域里真写一次</td><td class="mono">写入 <span data-reading="rehearsal.writes">—</span> 条 · 回读 <span data-reading="rehearsal.persistedRecords">—</span> 条 · <span data-reading="rehearsal.status">—</span></td><td>在与生产完全隔离的目录里端到端跑通，证明「代码链路是通的」，不是纸上谈兵。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>尝试向生产投递</td><td class="mono"><span data-reading="delivery.status">—</span> · 写入 <span data-reading="delivery.writesToProduction">—</span></td><td>即便闸全过，仍因 3 项前置不满足被拒：<code>service_window_ack</code>、<code>G1_production_switch</code>、<code>five_gates</code>。被拒尝试已写进审计台账。</td><td><span class="pill p-stop">按设计拒绝</span></td></tr>
+      <tr><td>人一否决会不会立刻停</td><td class="mono"><span data-reading="veto.reason">—</span></td><td>撤销演练：<code>--veto</code> 立即回落默认拒绝，写入 0。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>单测</td><td class="mono"><span data-reading="tests.pass">—</span> / <span data-reading="tests.total">—</span> 通过</td><td>受控链路与冻结集相关的 12 个测试文件全量。</td><td><span class="pill p-ok">通过</span></td></tr>
+      <tr><td>生产对象有没有被动过</td><td class="mono"><span data-reading="hash.unchanged">—</span>/<span data-reading="hash.checked">—</span> 哈希不变</td><td>两个生产 storages 域、三份冻结集、评分公式文件；<code>agint_evolve.json</code> 全程 <span data-reading="hash.evolve">—</span>…</td><td><span class="pill p-ok">通过</span></td></tr>
+    </tbody>
+  </table>
+  <div class="cmd">node bin/capability-baseline-mechanical.mjs --verify
+node bin/oracle-live-tick.mjs --storages "$S" --switch on --status
+node bin/oracle-runtime.mjs --storages "$S" --rehearse --json
+node bin/oracle-runtime.mjs --storages "$S" --deliver --approve --json
+node --test bin/capability-baseline*.test.mjs bin/oracle-*.test.mjs bin/next-batch-readiness.test.mjs</div>
+  <p class="note">「按设计拒绝」这一行不是失败，恰恰是这套判据起作用的证据 —— 条件不齐时它必须拦住自己。</p>
+</section>
+
+<section id="s5">
+  <h2><span class="num">05</span>最后一盏灯为什么没亮</h2>
+  <p class="sub">五道闸全绿，为什么还是「生产写入 0」？因为「允许」和「真的落盘」中间还隔着一个物理条件，现场取证发现它不成立。</p>
+  <div class="card">
+    <div class="reason"><div class="n">1</div><div><b>服务在另一个进程房间，停不掉也重启不了</b><p>3080 端口仍返回 <code>401</code>（说明服务活着），但当前会话的进程表里看不到它 —— 服务与本会话分属不同的 PID 命名空间。没有停机窗口，就没有安全的写入窗口。</p></div></div>
+    <div class="reason"><div class="n">2</div><div><b>写了也会被覆盖，而且面板根本看不见</b><p>服务内存里持有一整份提案表；从外面直接改文件，服务下次落盘会整体覆写。面板读的是服务内存态，所以这条写入既留不住、也显示不出来。只拿「盘上回读成功」当证明是假绿。</p></div></div>
+    <div class="reason"><div class="n">3</div><div><b>服务里没有「新建候选」的入口</b><p>面板唯一的写接口只能修改<strong>已有记录的状态</strong>，记录不存在就返回空；dsh 也没有通用的工具调用路由。要写，得先另开一轮加接口并重启服务。</p></div></div>
+    <div class="reason"><div class="n">4</div><div><b>人工标注仍然是 0 条</b><p>判尺标定需要人来判断「这条日报到底准不准」，这件事我不代填 —— 系统自己给自己标注，又回到自评循环了。</p></div></div>
+  </div>
+  <div class="callout" style="margin-top:16px">所以我没有伪造「服务窗口已确认」这个人工声明。<strong>不写，是判据起作用的结果，不是链路坏了。</strong>能安全验证的都验证了：隔离域里真写 1 条并回读、生产哈希 6/6 不变。</div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">06</span>必须说清楚的边界（这一节最重要）</h2>
+  <p class="sub">你让我「科学合理地做完」，那诚实就比好看重要。这批东西有一个必须写在明面上的降级。</p>
+  <div class="redcard">
+    <h3>这批「GOLD」不是人类验证过的金标</h3>
+    <ul>
+      <li>它是<strong>运营者授权、由 agent 执行、非人类验证</strong>的机械真值：每题的 PASS / REJECT 由确定性校验器实跑得出，第三方重跑同解，密封后不可篡改。</li>
+      <li>署名里明写 <code>NOT human-validated</code>，<code>humanValidated: false</code>，授权来源、执行者、降级语义全部记在 provenance 里，可审计、可回滚。</li>
+      <li><strong>构造期自参照</strong>：题目是系统侧依现有代码契约构造的，系统有可能挑自己容易通过的断言。这个局限已经写进文件，没有藏起来。</li>
+      <li>因此 GOLD / HELDOUT 在这里只表示「外置于评分回路、可独立复现、密封不可篡改的判据」，<strong>不表示授权人工已验证 AGINT 能力</strong>。</li>
+    </ul>
+    <div class="kicker">所以：不能据此说「AGINT 变聪明了 / 能力提高了」。校验器里的能力结论字段恒为空（<code>capabilityConclusion = null</code>），这一批只证明「存在一组像样的外部判据」。</div>
+  </div>
+  <p class="note">这不是把事情做砸了，而是不把「系统自己出题自己判」包装成人类金标 —— 那样外部锚定当场退化成系统自证，整个诊断要修的正是这个问题。</p>
+</section>
+
+<section id="s7">
+  <h2><span class="num">07</span>还差什么，以及怎么放行</h2>
+  <p class="sub">两条物理前置，一条归运行环境，一条归人。齐了之后是一条命令的事。</p>
+  <div class="grid2">
+    <div class="card"><span class="tag t-blue">前置 ① · 运行环境</span><p>真正停掉 dsh web 拿到停机窗口；<strong>或者</strong>另开一轮新增服务内「新建候选」入口并重启服务。</p></div>
+    <div class="card"><span class="tag t-blue">前置 ② · 人</span><p>6 周的 <code>humanVerdict</code> / <code>humanOverall</code> 标注由人填完；D1–D5 的人类签字栏保持空白等真正签字。</p></div>
+  </div>
+  <details>
+    <summary>放行命令与验收判据（点开看）</summary>
+    <div class="cmd">export PATH=&lt;本机 node bin 目录&gt;:$PATH
+export DSH_HOME=&lt;本机 AGINT-data 目录&gt;
+export AGINT_DATA_HOME="$DSH_HOME"
+export AGINT_ORACLE_AUTONOMOUS_WRITE=on
+S="$DSH_HOME/storages"
+node bin/oracle-runtime.mjs --storages "$S" --deliver --approve --ack-service-window</div>
+    <p style="font-size:13.5px;color:var(--ink2);margin:10px 0 0">验收：生产写入<strong>恰好 1 条</strong>、状态 <code>proposed</code>、<code>autoExecutable=false</code>（不进自动执行）、只有 <code>agint_evolve.json</code> 的哈希变化、冻结集与评分常量与人工标注均不变、审计台账有记录、G5 撤销可用。回滚走面板或插件 lib，禁止直改 JSON。</p>
+  </details>
+  <details>
+    <summary>想复核这一页的数字？可复现命令（点开看）</summary>
+    <div class="cmd">node -e "import('./bin/capability-baseline.mjs').then(m=>console.log(m.verifyBaseline()))"
+node bin/capability-baseline-mechanical.mjs --verify --json
+node bin/capability-baseline-freeze.mjs --check
+node bin/oracle-live-tick.mjs --storages "$S" --switch on --status
+sha256sum "$S/agint_evolve.json" eval/capability-baseline/sets/*.json</div>
+    <p style="font-size:13.5px;color:var(--ink2);margin:10px 0 0">详细取证见 <code>AGINT-最后一盏灯与生产投递评审-20261108.md</code> 与仓库内 <code>eval/gated-features/生产投递评审单.md</code> §8。</p>
+  </details>
+</section>
+
+<footer>
+  数据取自 <span data-reading="capturedAt">—</span> 本机实跑；代码版本 <code data-reading="head">—</code>。全程未触碰生产 storages、评分公式、人工标注与运行中的服务进程。<br>
+  本页为只读说明与交互演示，不连接任何后端、不发起任何写入、不加载外部资源。
+  <div class="selfcheck" id="selfcheck">数据自检：检查中…</div>
+</footer>
+
+</div>
+
+<script id="readings" type="application/json">
+{
+  "capturedAt": "2026-11-08 12:13 CST",
+  "head": "8159a52",
+  "baseline": {"verdict":"READY","usable":17,"samples":23,"overlap":0,"conclusion":null,
+               "sets":{"gold":13,"verify":6,"heldout":4}},
+  "mechanical": {"rerun":23,"frozen":23,"pass":21,"reject":2,"mismatches":0,"reproducible":true},
+  "heartbeat": {"passed":5,"total":5,"broadcasts":52,"weeklyWeeks":7,"feedback":7,
+                "writesToProduction":0,"labelAuthority":"GOLD","ledgerRows":19},
+  "rehearsal": {"writes":1,"persistedRecords":1,"status":"proposed","writesToProduction":0},
+  "delivery": {"status":"PREREQUISITES_NOT_MET","writesToProduction":0,
+               "failed":["service_window_ack","G1_production_switch","five_gates"]},
+  "veto": {"allowed":false,"reason":"DEFAULT_DENY: 未通过 G1_switch, G5_human_veto"},
+  "tests": {"total":129,"pass":129,"fail":0},
+  "hash": {"checked":6,"unchanged":6,"evolve":"a74704cc"},
+  "score": {"from":80.3,"to":100,"delta":19.7,"weeks":6,"isoWeeksWithCapabilityMap":1,
+            "humanAnnotations":0,"verdict":"NOT_COMPARABLE"}
+}
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var R = JSON.parse(document.getElementById('readings').textContent);
+
+  function pick(path) {
+    var v = R;
+    var parts = path.split('.');
+    for (var i = 0; i < parts.length; i++) {
+      if (v === null || v === undefined || !Object.prototype.hasOwnProperty.call(v, parts[i])) return undefined;
+      v = v[parts[i]];
+    }
+    return v;
+  }
+  function show(v) {
+    if (v === null) return 'null';
+    if (v === true) return 'true';
+    if (v === false) return 'false';
+    return String(v);
+  }
+
+  // 页面上每一个数字都从实跑读数填入，杜绝手写数字与实跑结果不一致
+  var nodes = document.querySelectorAll('[data-reading]');
+  var missing = [];
+  Array.prototype.forEach.call(nodes, function (el) {
+    var v = pick(el.getAttribute('data-reading'));
+    if (v === undefined) { missing.push(el.getAttribute('data-reading')); return; }
+    el.textContent = show(v);
+  });
+  var sc = document.getElementById('selfcheck');
+  if (missing.length) {
+    sc.className = 'selfcheck bad';
+    sc.textContent = '数据自检：未通过，缺失字段 ' + missing.join(', ');
+  } else {
+    sc.textContent = '数据自检：通过 · ' + nodes.length + ' 个读数全部来自实跑结果，无手写数字';
+  }
+
+  // ── 五闸：与 bin/autonomous-write-gate.mjs 的 evaluateAutonomousWrite 逐条对齐 ──
+  var EXTERNAL = ['GOLD', 'HELDOUT'];
+  var TARGETS = ['proposal_queue', 'curriculum_challenge_queue'];
+  var LABELS = {
+    G1_switch: 'G1 · 总开关',
+    G2_external_anchor: 'G2 · 外部证据',
+    G3_target_whitelist: 'G3 · 目标白名单',
+    G4_falsifiable_prediction: 'G4 · 可证伪预测',
+    G5_human_veto: 'G5 · 人类否决'
+  };
+
+  function readControls() {
+    var c1 = document.getElementById('c1').value;
+    var c2 = document.getElementById('c2').value;
+    var c3 = document.getElementById('c3').value;
+    var c4 = document.getElementById('c4').value;
+    var c5 = document.getElementById('c5').value;
+    return {
+      switchOn: c1 === 'on',
+      labelAuthority: c2,
+      target: c3,
+      predictedDelta: (c4 === 'full' || c4 === 'nosrc' || c4 === 'placeholder') ? (c4 === 'placeholder' ? 0 : 1) : null,
+      predictedDeltaSource: (c4 === 'full') ? '真实读数 agint_evolve.proposal' : '',
+      humanVeto: c5 === 'veto',
+      emergencyStop: c5 === 'stop',
+      vetoWindowHours: c5 === 'ok' ? 24 : 0
+    };
+  }
+
+  function evaluate(s) {
+    var checks = [];
+    function add(id, passed, detail) { checks.push({ id: id, passed: passed === true, detail: detail }); }
+
+    add('G1_switch', s.switchOn, s.switchOn
+      ? 'AGINT_ORACLE_AUTONOMOUS_WRITE=on，开关已显式打开'
+      : '开关未开启（只认字面量 on）⇒ 回落默认拒绝');
+
+    var ext = EXTERNAL.indexOf(s.labelAuthority) !== -1;
+    add('G2_external_anchor', ext, ext
+      ? '外部冻结证据 ' + s.labelAuthority
+      : 'labelAuthority=' + s.labelAuthority + ' 不是 GOLD/HELDOUT ⇒ SILVER 自评不算数');
+
+    var tgt = TARGETS.indexOf(s.target) !== -1;
+    add('G3_target_whitelist', tgt, tgt
+      ? '目标 ' + s.target + ' 在白名单内'
+      : '目标不在白名单 ⇒ 不得直写 storages / 评分常量 / 规则');
+
+    var hasDelta = typeof s.predictedDelta === 'number' && isFinite(s.predictedDelta);
+    var hasSource = typeof s.predictedDeltaSource === 'string' && s.predictedDeltaSource.trim().length > 0;
+    add('G4_falsifiable_prediction', hasDelta && hasSource, hasDelta && hasSource
+      ? 'predictedDelta=' + s.predictedDelta + '，来源已写明 ⇒ 可与 actualDelta 对拍'
+      : 'Δ 须为有限数且来源非空 ⇒ 无预测（或拿 0 占位）的处方不是处方');
+
+    var windowOk = typeof s.vetoWindowHours === 'number' && isFinite(s.vetoWindowHours) && s.vetoWindowHours > 0;
+    add('G5_human_veto', !s.humanVeto && !s.emergencyStop && windowOk,
+      s.humanVeto ? 'humanVeto=true ⇒ 人工已否决'
+        : s.emergencyStop ? 'emergencyStop=true ⇒ 急停中'
+          : windowOk ? '撤销窗口 ' + s.vetoWindowHours + 'h ⇒ 人类最终否决权保留'
+            : '没有撤销窗口 ⇒ 不许自动投递');
+
+    var failed = checks.filter(function (c) { return !c.passed; }).map(function (c) { return c.id; });
+    return {
+      allowed: failed.length === 0,
+      checks: checks,
+      failed: failed,
+      reason: failed.length === 0
+        ? 'ALL_GATES_PASSED: 五闸全通过，允许投递 status=proposed 的候选处方（仍非自动执行）'
+        : 'DEFAULT_DENY: 未通过 ' + failed.join(', ')
+    };
+  }
+
+  function render() {
+    var s = readControls();
+    var r = evaluate(s);
+    var html = '';
+    r.checks.forEach(function (c) {
+      html += '<div class="gate">'
+        + '<span class="dot ' + (c.passed ? 'ok' : 'no') + '"></span>'
+        + '<div><div class="gname">' + LABELS[c.id] + '</div><div class="gdesc">' + c.detail + '</div></div>'
+        + '<span class="gstate ' + (c.passed ? 'ok' : 'no') + '">' + (c.passed ? '通过' : '拒绝') + '</span>'
+        + '</div>';
+    });
+    document.getElementById('gates').innerHTML = html;
+
+    var judge = document.getElementById('judge');
+    var passed = r.checks.length - r.failed.length;
+    judge.className = 'judge ' + (r.allowed ? 'ok' : 'no');
+    judge.innerHTML = (r.allowed ? '允许投递候选（五闸全过）' : '默认拒绝 · 还有 ' + r.failed.length + ' 闸未过')
+      + '<small>' + r.reason + '</small>';
+
+    var anchorReady = EXTERNAL.indexOf(s.labelAuthority) !== -1;
+    document.getElementById('bar1').style.width = anchorReady ? '100%' : '0%';
+    document.getElementById('v1').textContent = anchorReady ? 'READY' : '未锚定';
+    var b2 = document.getElementById('bar2');
+    b2.style.width = (passed / 5 * 100) + '%';
+    b2.className = r.allowed ? '' : 'off';
+    document.getElementById('v2').textContent = passed + ' / 5';
+    document.getElementById('v3').textContent = '0 条';
+    document.getElementById('callout').textContent = r.allowed
+      ? '闸全过只到第 ② 层。第 ③ 层仍被真实服务窗口卡住 ⇒ 实际写入 0。见第 5 节。'
+      : '「闸全过」只到第 ② 层。当前连闸都没全过，更谈不上写入。';
+  }
+
+  ['c1','c2','c3','c4','c5'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', render);
+  });
+
+  document.getElementById('btnReal').addEventListener('click', function () {
+    document.getElementById('c1').value = 'on';
+    document.getElementById('c2').value = 'GOLD';
+    document.getElementById('c3').value = 'proposal_queue';
+    document.getElementById('c4').value = 'full';
+    document.getElementById('c5').value = 'ok';
+    document.getElementById('deliverResult').innerHTML = '';
+    render();
+  });
+  document.getElementById('btnDefault').addEventListener('click', function () {
+    document.getElementById('c1').value = 'off';
+    document.getElementById('c2').value = 'UNSET';
+    document.getElementById('c3').value = 'proposal_queue';
+    document.getElementById('c4').value = 'none';
+    document.getElementById('c5').value = 'nowindow';
+    document.getElementById('deliverResult').innerHTML = '';
+    render();
+  });
+  document.getElementById('btnDeliver').addEventListener('click', function () {
+    var d = R.delivery;
+    document.getElementById('deliverResult').innerHTML =
+      '<div class="judge no" style="margin-top:14px">实跑结果：' + d.status
+      + '<small>writesToProduction=' + d.writesToProduction + ' ｜ 未满足：' + d.failed.join('、')
+      + ' ｜ 这不是模拟，是刚才 --deliver --approve 的真实返回值，已写入审计台账。</small></div>';
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

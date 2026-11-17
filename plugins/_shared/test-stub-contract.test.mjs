@@ -14,7 +14,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defineTool, assertRequiredTrue, assertToolCallable } from './test-stub-dsh-tools.mjs';
+import {
+  defineTool,
+  assertRequiredTrue,
+  assertSchemaSubset,
+  assertToolCallable,
+} from './test-stub-dsh-tools.mjs';
 
 const GOOD = {
   name: 'demo_tool',
@@ -88,4 +93,86 @@ test('assertRequiredTrue：嵌套与数组也要查（只查顶层等于留了�
     ),
     /required 只能是 true/,
   );
+});
+
+// ── schema 子集（2026-11-03 v0.20.0 上线事故的护栏）────────────────────────────
+// 事故形状：`mandate: { type: ['object','null'], properties: {...} }`。
+// assertRequiredTrue 只查 required、不看 type ⇒ 全部用例全绿；
+// 真宿主 tools.register() 里 assertSupportedJsonSchema 抛 UNSUPPORTED_SCHEMA
+// ⇒ 整行 tools 插件挂载失败 ⇒ agint preset 的 agent 全部「加载失败」。
+
+test('阴性对照④：type 写成数组 ⇒ 注册即拒（v0.20.0 真事故形状）', () => {
+  assert.throws(
+    () => defineTool({
+      name: 'bad_type_array',
+      output: {
+        schema: {
+          type: 'object',
+          properties: { mandate: { type: ['object', 'null'], properties: { a: { type: 'string' } } } },
+        },
+        render: () => [],
+      },
+      execute: async () => ({}),
+    }),
+    /type 必须是单个类型字符串/,
+    'type 数组正是 dsh-tools 拒收的形状；替身不拒就等于给这类 bug 发绿灯',
+  );
+});
+
+test('阴性对照⑤：type 写成未知字符串 ⇒ 注册即拒（拼错也要拦）', () => {
+  assert.throws(
+    () => assertSchemaSubset({ type: 'object', properties: { a: { type: 'str' } } }, 'typo'),
+    /type 必须是单个类型字符串/,
+  );
+});
+
+test('阴性对照⑥：type 与 oneOf 并存 ⇒ 注册即拒（真宿主 :219）', () => {
+  assert.throws(
+    () => assertSchemaSubset({ type: 'object', oneOf: [{ type: 'string' }, { type: 'null' }] }, 'both'),
+    /不能同时声明 type 与 oneOf/,
+  );
+});
+
+test('阴性对照⑦：oneOf 同级写 properties ⇒ 注册即拒（真宿主 :175）', () => {
+  assert.throws(
+    () => assertSchemaSubset({
+      oneOf: [{ type: 'object' }, { type: 'null' }],
+      properties: { a: { type: 'string' } },
+    }, 'sibling'),
+    /不能与 oneOf 同级/,
+  );
+});
+
+test('阳性：required:true 与 oneOf 同级是合法的（DSL 作者层标记，编译期提到父级）', () => {
+  // 真宿主实测（dsh 0.2.1-rc.5 valueSchemaSpecToJsonSchema）：
+  //   { required: true, oneOf: [...] } ⇒ 产物 properties.x = { oneOf: [...] }
+  //   + 父级 required: ["x"]，子节点无残留。
+  // 替身若把这条判红，就是在拒绝一个真宿主接受的写法（比真宿主严 = 另一种失真）。
+  assert.doesNotThrow(() => assertSchemaSubset({
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      x: { required: true, oneOf: [{ type: 'object', additionalProperties: false, properties: {} }, { type: 'null' }] },
+    },
+  }, 'required-with-oneof'));
+});
+
+test('阳性：可空对象的正确写法（oneOf + object 分支内 properties）能过', () => {
+  const ok = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      mandate: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: { proposalId: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } },
+          },
+          { type: 'null' },
+        ],
+      },
+    },
+  };
+  assert.doesNotThrow(() => assertSchemaSubset(ok, 'nullable-ok'));
 });

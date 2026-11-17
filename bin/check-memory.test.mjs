@@ -144,4 +144,73 @@ describe('判据正确性（不是「脚本能不能跑」）', () => {
     assert.equal(r.exitCode, 1);
     assert.ok(has(r, 'memory-missing'));
   });
+
+  test('⑪ MEMORY.md 超行数 → WARN memory-too-many-lines（默认不改退出码）', () => {
+    const body = '# M\n\n' + Array.from({ length: 30 }, (_, i) => `行 ${i}`).join('\n');
+    const f = fixture({ memory: body, knowledge: KD_OK });
+    const r = runJson(['--memory-dir', f.memDir, '--repo', f.repo, '--max-lines', '10']);
+    assert.equal(r.exitCode, 0, '默认只告警，不许改退出码');
+    assert.ok(has(r, 'memory-too-many-lines'), codes(r).join(','));
+    assert.equal(r.report.stats.memLines > 10, true);
+  });
+
+  test('⭐ ⑫ --enforce：体积超限从 WARN 升 FAIL（同 fixture 负控制）', () => {
+    const f = fixture({ memory: '# M\n\n' + 'x'.repeat(200), knowledge: KD_OK });
+    const soft = runJson(['--memory-dir', f.memDir, '--repo', f.repo, '--max-chars', '50']);
+    assert.equal(soft.exitCode, 0, '负控制：不加 --enforce 必须绿');
+    const hard = runJson(['--memory-dir', f.memDir, '--repo', f.repo, '--max-chars', '50', '--enforce']);
+    assert.equal(hard.exitCode, 1, '加 --enforce 必须红');
+    const hit = hard.report.findings.find((x) => x.code === 'memory-too-large');
+    assert.ok(hit, codes(hard).join(','));
+    assert.equal(hit.level, 'F');
+  });
+
+  test('⑬ --enforce 不制造恒红：未超限时仍绿', () => {
+    const f = fixture({ memory: MEM_OK, knowledge: KD_OK });
+    const r = runJson(['--memory-dir', f.memDir, '--repo', f.repo, '--enforce']);
+    assert.equal(r.exitCode, 0);
+    assert.deepEqual(r.report.findings.filter((x) => x.level === 'F'), []);
+  });
+
+  test('⑭ 注入层体积报数：AGENTS.md 在仓库上两级也必须计入（不许只扫一级）', () => {
+    const f = fixture({
+      memory: MEM_OK,
+      knowledge: KD_OK,
+      extraFiles: { 'AGENTS.md': 'x'.repeat(300) },
+    });
+    // 真实布局：repo=D:/DSH/project源码/DSH-AGINT，AGENTS.md=D:/DSH/AGENTS.md（上两级）。
+    const r = runJson(['--memory-dir', f.memDir, '--repo', join(f.repo, 'deep', 'deeper')]);
+    assert.ok(has(r, 'inject-layer-size'), codes(r).join(','));
+    assert.ok(r.report.stats.injectBytes >= 300, `injectBytes=${r.report.stats.injectBytes}`);
+    const labels = r.report.stats.injectFiles.map((x) => x.label);
+    assert.ok(labels.includes('workspace-memory-index'), JSON.stringify(labels));
+    assert.ok(labels.includes('workspace-agents'), JSON.stringify(labels));
+  });
+
+  test('⑮ 带后缀的附录条目不算重复：K199-B 不许算成 K199', () => {
+    const f = fixture({
+      memory: '# M\n\n引 K199。\n',
+      knowledge: '# K\n\n## K199 甲\n\n## K199-B 附录\n',
+    });
+    const r = runJson(['--memory-dir', f.memDir, '--repo', f.repo]);
+    assert.ok(!has(r, 'dup-undeclared'), codes(r).join(','));
+    assert.ok(!has(r, 'dup-k'), codes(r).join(','));
+    assert.equal(r.exitCode, 0);
+  });
+
+  test('⑯ 注入层取工作区 AGENTS.md，不取仓库内同名文件', () => {
+    const f = fixture({
+      memory: MEM_OK,
+      knowledge: KD_OK,
+      extraFiles: {
+        'AGENTS.md': 'w'.repeat(300),
+        'repo/AGENTS.md': 'r'.repeat(900),
+      },
+    });
+    const r = runJson(['--memory-dir', f.memDir, '--repo', f.repo]);
+    const hit = r.report.stats.injectFiles.find((x) => x.label === 'workspace-agents');
+    assert.ok(hit, JSON.stringify(r.report.stats.injectFiles.map((x) => x.label)));
+    assert.equal(hit.bytes, 300, `取错了文件：${hit.path}`);
+    assert.notEqual(hit.path, join(f.repo, 'AGENTS.md'), '取到了仓库内同名文件');
+  });
 });

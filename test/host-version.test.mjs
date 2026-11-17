@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { checkHostVersion, findHostAppAsar, resolveHostDshVersion } from '../bin/host-version.mjs';
+import { checkHostVersion, findHostAppAsar, resolveHostDshVersion, isCliInstallation } from '../bin/host-version.mjs';
 import { readAsarPackage, listAsarFiles } from '../bin/asar-read.mjs';
 
 /**
@@ -238,6 +238,100 @@ test('readAsarPackage: 读不到 / 格式不对 ⇒ null（不抛、不猜）', 
     const bad = join(dir, 'bad.asar');
     writeFileSync(bad, 'x');
     assert.equal(readAsarPackage(bad), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-03 补：CLI 形态与「配错了」必须不同形
+//
+// 背景：`host-version-unknown` 自 2026-10-21 起一直挂在门禁输出里。真实成因是
+// **本机是 npm/CLI 装的 dsh（无 Electron resources/）**，根本没有第二个宿主 ——
+// 但原措辞「未找到 ⇒ 没核对」会让人以为配错了路径，每台 CLI 机器都会收到一条假警报。
+// 这组用例守：形态不同 ⇒ 结论类型不同 ⇒ 不许合并成同一条 INFO。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 造一个假 npm 安装树：<prefix>/bin/dsh + <prefix>/lib/node_modules/@deepseek-ai/dsh */
+function makeCliPrefix(withResources = false) {
+  const prefix = tmp();
+  mkdirSync(join(prefix, 'bin'), { recursive: true });
+  const pkgDir = join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh');
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '9.9.9' }));
+  writeFileSync(join(prefix, 'bin', 'dsh'), '#!/usr/bin/env node\n');
+  if (withResources) {
+    mkdirSync(join(pkgDir, 'resources'), { recursive: true });
+    makeAsar(join(pkgDir, 'resources'), { name: '@deepseek-ai/dsh-desktop', version: '9.9.9' });
+  }
+  return prefix;
+}
+
+test('CLI 形态（有 dsh 包、无 resources/）⇒ not-applicable，不说「没查到」', () => {
+  const prefix = makeCliPrefix(false);
+  const dir = tmp();
+  try {
+    const issues = checkHostVersion('0.2.1-rc.5', {
+      env: { PATH: join(prefix, 'bin') },
+      repoRoot: dir,          // 无 AGENTS.local.md
+    });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'host-version-not-applicable', 'CLI 形态必须单独归类');
+    assert.equal(issues[0].level, 'info', '仍不许升成 critical（它不是不一致）');
+    assert.match(issues[0].message, /npm|CLI/, '措辞必须点明这是安装形态，不是缺失');
+    assert.doesNotMatch(issues[0].message, /未找到真实宿主/, '⛔ 不许沿用「未找到」的措辞');
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 阴性对照：装了 resources/ 的 dsh 不许被判成 CLI（那是桌面版）', () => {
+  const prefix = makeCliPrefix(true);   // 有 resources/app.asar
+  const dir = tmp();
+  try {
+    const issues = checkHostVersion('0.2.1-rc.5', {
+      env: { PATH: join(prefix, 'bin') },
+      repoRoot: dir,
+    });
+    assert.notEqual(
+      issues[0]?.kind,
+      'host-version-not-applicable',
+      '有 resources/ 就不是 CLI 形态 —— 误判会让真正的宿主版本不一致被当成「不适用」而放过',
+    );
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 阴性对照：显式配了不存在的 hostAppAsar ⇒ 仍是 unknown（配置错，不是形态问题）', () => {
+  const prefix = makeCliPrefix(false);
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'AGENTS.local.md'), 'hostAppAsar: /nonexistent/app.asar\n');
+    const issues = checkHostVersion('0.2.1-rc.5', {
+      env: { PATH: join(prefix, 'bin') },
+      repoRoot: dir,
+    });
+    assert.equal(
+      issues[0]?.kind,
+      'host-version-unknown',
+      '配了锚点却扫不到 = 配错了，必须报 unknown 让用户去修，不许说「不适用」',
+    );
+  } finally {
+    rmSync(prefix, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('⛔ 不许回探进程状态：env 里没有任何 dsh 线索时判不出 CLI', () => {
+  const dir = tmp();
+  try {
+    // 空 env ⇒ 候选集为空 ⇒ 必须返回 false（哪怕这台机器上真的装着 CLI dsh）。
+    // 这条守的是「判据可被真跑」：一旦代码去读 process.execPath / 真实 PATH，
+    // 隔离 env 的测试就会失去意义（第 180 行那条既有用例会红）。
+    assert.equal(isCliInstallation({ env: {}, repoRoot: dir }), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

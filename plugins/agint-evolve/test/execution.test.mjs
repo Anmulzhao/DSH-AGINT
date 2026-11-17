@@ -177,12 +177,22 @@ await withApp(async ({ evo }) => {
   assert.equal(back.execState, 'cancelled');
 });
 
-// ── ④ manual 永不入队 ────────────────────────────────────────────────
+// ── ④ 显式 manual 永不入队（2026-11-14 口径更新）──────────────────────
+// 旧断言「不传 execMode 默认 manual」描述的是 v0.16.0 的旧设计。
+// 新设计：新提案在提议时定下计划（默认 immediate），批准沿用计划 ⇒ 批准即形成任务；
+// 要「只批准」必须显式声明 manual。下面两条互为对照：一条证明否决有效，
+// 一条证明默认真的会建任务（只改前一条等于把门禁悄悄放宽）。
 await withApp(async ({ evo }) => {
-  const p = await evo.propose({ title: '改 c', body: '正文' });
-  const rec = await evo.setStatus(p.id, 'approved', '只批准');
-  assert.equal(rec.execMode, 'manual', '不传 execMode 默认 manual');
-  assert.equal((await evo.listExecutions({ proposalId: p.id })).length, 0, 'manual 不得自动执行');
+  const explicit = await evo.propose({ title: '改 c', body: '正文', execMode: 'manual' });
+  const rec = await evo.setStatus(explicit.id, 'approved', '只批准');
+  assert.equal(rec.execMode, 'manual', '显式 manual 必须被尊重');
+  assert.equal((await evo.listExecutions({ proposalId: explicit.id })).length, 0, 'manual 不得自动执行');
+
+  const auto = await evo.propose({ title: '改 c-2', body: '正文' });
+  assert.equal(auto.execMode, 'immediate', '不传 execMode 默认 immediate（批准即形成任务）');
+  const rec2 = await evo.setStatus(auto.id, 'approved');
+  assert.equal(rec2.execMode, 'immediate');
+  assert.equal((await evo.listExecutions({ proposalId: auto.id })).length, 1, '对照：默认计划必须入队');
 });
 
 // ── ⑤ 定时未到不跑 ───────────────────────────────────────────────────
@@ -375,4 +385,154 @@ await withApp(async ({ evo }) => {
   assert.match((await evo.getProposal(p.id)).execError, /续跑已关闭/);
 }, { maxAutoContinuations: 0 });
 
-console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑）');
+// ── 2026-11-02：孤儿执行回收（提案 a6e6e1d9 实证）──────────────────────
+//
+// 实机：exec-1793280728689-kmy9h1 停在 state='running'（startedAt=
+// 2026-11-01T16:00:04.986Z，finishedAt=''），面板显示「已批准·执行中」，
+// 但没有任何东西在跑 —— 宿主在执行途中重启，结算撞上已 dispose 的存储域被吞掉。
+// 队列不自愈：running 行永不被 claim，又被 activeJobsFor 算成活跃 job。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '重启遗留的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  // 模拟「宿主在执行途中重启」：本进程挂载时刻晚于该行的 startedAt。
+  const mountedAt = Date.now() + 60_000;
+  const out = await evo.reapOrphanExecutions({ now: mountedAt, mountedAt, staleMs: 30 * 60_000 });
+  assert.equal(out.count, 1, '重启前就在 running 的行必须被回收');
+  assert.equal(out.reaped[0].id, job.id);
+
+  const after = await evo.listExecutions({ proposalId: p.id });
+  assert.equal(after[0].state, 'failed', '孤儿行落 failed（不是 cancelled：中断≠人撤销）');
+  assert.equal(after[0].finishedAt !== '', true, '回收必须写 finishedAt，否则仍像在跑');
+  assert.match(after[0].error, /宿主重启|进程中断/);
+
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.status, 'approved', '⛔ 回收不得把提案标 applied —— 中断的是一次执行，不是这件事做完了');
+  assert.notEqual(rec.execState, 'running', '提案不得再显示「执行中」');
+  assert.match(rec.execError, /未结算|中断/, '要写明为什么停了，否则读的人分不清「做完了」和「做不动了」');
+});
+
+// ── 回收不得吃掉本进程正在跑的 job ────────────────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '本进程正在跑的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  const out = await evo.reapOrphanExecutions({
+    now: Date.now(), mountedAt: Date.now() - 10_000, staleMs: 30 * 60_000,
+    excludeIds: [job.id],
+  });
+  assert.equal(out.count, 0, 'excludeIds 里的 job 不能被判成孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'running');
+});
+
+// ── 超时兜底：没有跨进程证据时，靠 staleMs 判孤儿 ────────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '卡住很久的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+
+  // mountedAt 早于 startedAt（没有跨进程证据），但已 running 超过 staleMs。
+  const out = await evo.reapOrphanExecutions({
+    now: Date.now() + 60 * 60_000, mountedAt: Date.now() - 1000, staleMs: 60_000,
+  });
+  assert.equal(out.count, 1, '超过 staleMs 且不在活跃执行里 ⇒ 兜底判孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'failed');
+});
+
+// ── 非 running 行不得被回收（回收范围只限 running）─────────────────────
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '正常排队的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const out = await evo.reapOrphanExecutions({ now: Date.now() + 999_999_999, mountedAt: Date.now() + 1 });
+  assert.equal(out.count, 0, 'queued 行不是孤儿');
+  assert.equal((await evo.listExecutions({ proposalId: p.id }))[0].state, 'queued');
+});
+
+// ── 提案级范围账落到 proposal 行（2026-11-07）──────────────────────────
+//
+// driver 一次执行交回 commits[]，面板只读 proposal 表 ⇒ 必须在这里同步写过去。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '一次改两个文件', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, {
+    ok: true,
+    commitPath: 'plugins/x/a.js',
+    commits: [
+      { path: 'plugins/x/a.js', policyDecision: 'AUTO_DEPLOY' },
+      { path: 'plugins/_shared/helper.js', created: true },
+    ],
+    unitsApplied: 2,
+    unitsTotal: 3,
+    remainingUnits: ['plugins/x/c.js'],
+  });
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.execCommits.length, 2, 'commits[] 必须落到 proposal 行');
+  assert.equal(rec.execCommits[1].created, true, '新建文件要能标出来');
+  assert.equal(rec.execUnitsApplied, 2);
+  assert.equal(rec.execUnitsTotal, 3);
+  assert.deepEqual(rec.execRemainingUnits, ['plugins/x/c.js']);
+});
+
+// ── 确定性不可执行 ⇒ 终局判决 + 结案（2026-11-08 口径）──────────────────
+//
+// 老板 2026-11-08 裁定：执行器要么给执行结果，要么给最终判决并结案，不许留悬案。
+// 旧口径（保留 approved + 「请人工结案」）已被替换。结案可逆：改回 proposed 再批准。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '特性级提案', body: '正文没有仓库路径' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  await evo.finishExecution(job.id, { ok: false, error: 'no target asset resolved' });
+  assert.equal((await evo.getProposal(p.id)).execState, 'failed', '前置：结算后正是悬案形态');
+
+  const settled = await evo.markNotActionable(p.id, 'no target asset resolved (mentioned:0 inRepo:0)');
+  assert.equal(settled.status, 'wontfix', '终局：结案，不再挂在 approved');
+  assert.equal(settled.execVerdict, 'not-actionable', '判决字段必须落盘');
+  assert.notEqual(settled.execVerdictAt, '', '判决时刻必须落盘');
+  assert.equal(settled.execMode, 'manual', '不再自动重跑');
+  assert.equal(settled.execState, 'idle', '不得再挂 failed');
+  assert.match(settled.execError, /no target asset resolved/);
+  assert.match(settled.note, /要复活/, 'note 必须写明复活路径');
+  assert.match(settled.note, /批准/, '原有 note 不得被覆盖');
+
+  // 人已经改判过的行，机器不抢写
+  await evo.setStatus(p.id, 'applied', '已实现', {});
+  const after = await evo.markNotActionable(p.id, 'late');
+  assert.equal(after.status, 'applied', '非 approved 的行不得被收口改写');
+});
+
+// ── 环境故障顺延 ⇒ 退还本次尝试额度（2026-11-07）──────────────────────
+//
+// 根因：LLM 通道挂掉与提案本身无关，但 claim 已经把 attempts +1 记在提案上。
+// 不退额度的话，通道恢复时这条提案已经被烧完 2 次、永久失去自动执行资格
+// （实机 cdf41d63：批准后 9 秒内两次撞同一个通道故障）。
+await withApp(async ({ evo }) => {
+  const p = await evo.propose({ title: '通道故障期间被顺延的提案', body: '正文' });
+  await evo.setStatus(p.id, 'approved', '批准', { execMode: 'immediate' });
+  const [job] = await evo.claimDueExecutions({ now: Date.now() + 1000, limit: 5 });
+  assert.equal(job.attempts, 1, '前置：claim 会消耗一次额度');
+  assert.equal((await evo.getProposal(p.id)).execAttempts, 1);
+
+  const dueAt = new Date(Date.now() + 300_000).toISOString();
+  const next = await evo.requeueExecution(job.id, {
+    dueAt, reason: '环境不可用（llm unavailable）', deferred: true, refundAttempt: true,
+  });
+  assert.equal(next.state, 'deferred');
+  assert.equal(next.attempts, 0, '环境故障必须退还本次 claim 的额度');
+  const rec = await evo.getProposal(p.id);
+  assert.equal(rec.execState, 'deferred', '提案是顺延，不是失败');
+  assert.equal(rec.execAttempts, 0, '提案侧计数也要跟着退，否则面板与执行行对不上');
+  assert.equal(rec.status, 'approved', '批准不受影响');
+  assert.match(rec.execError, /环境不可用/);
+
+  // 普通失败（不传 refundAttempt）保持原行为：额度照扣，否则重试上限失效
+  const [job2] = await evo.claimDueExecutions({ now: Date.now() + 400_000, limit: 5 });
+  assert.equal(job2.attempts, 1);
+  const again = await evo.requeueExecution(job2.id, { dueAt, reason: '第 1 次失败', error: 'x' });
+  assert.equal(again.state, 'queued');
+  assert.equal(again.attempts, 1, '普通失败不退还');
+});
+
+console.log('# agint-evolve execution smoke: ok（批准即入队 / blocker / 定时 / 失败 / 撤销 / 统计 / 惰性标记 / 续跑 / 孤儿回收 / 不可执行收口）');

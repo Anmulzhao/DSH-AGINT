@@ -25,23 +25,31 @@
 
 import { readFile, writeFile, readdir, stat, mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve, dirname, relative } from 'node:path';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { findingsFromSnapshot, buildReport } from './report.js';
+// W8-3 审批凭据：纯函数模块，无外部依赖。
+// ⛔ 不要改成从 agint-evolution-driver import —— 跨插件源码 import 在部署位会 ENOENT。
+import { grantMandate, checkMandate } from './mandate.js';
 import {
   EXEC_MODES,
   EXEC_STATES,
+  EXEC_VERDICTS,
   JOB_STATES,
   normalizeExec,
   validateExecPlan,
   autoEnqueueBlocker,
   computeDueAt,
   isJobDue,
+  isOrphanExecution,
   weeklyUsage,
   startOfWeek,
   describeExecution,
+  // 别名：服务上也有同名方法，直接用原名在 svc 里会看起来像自引用。
+  ticketStage as stageOf,
+  TICKET_STAGES,
 } from './execution.js';
 
 const name = 'agint-evolve';
@@ -59,6 +67,12 @@ const Config = z.object({
   // 默认 5 —— 与 unitsTotal 的常见量级同阶，且真正的止损是「这一轮有没有推进」
   // （见 continuePartial：剩余单元没变就不再排），这个数只是兜底。
   maxAutoContinuations: z.number().int().nonnegative().max(50).default(5),
+  // 2026-11-14：提案**批准后的默认执行计划**，由服务端在 propose() 写进提案行。
+  // 出厂即开（immediate）；配成 'manual' 可一键退回「批准只改状态、不建任务」。
+  // ⛔ 这里改的是「新提案的默认计划」，不是「已批准老行的行为」——老行没有
+  //    execMode 字段，normalizeExec() 仍把缺字段归一成 manual，升级不会让存量
+  //    提案突然开始改代码。两个默认值服务两个不同目的，不冲突。
+  defaultExecMode: z.enum(EXEC_MODES).default('immediate'),
 });
 
 /**
@@ -142,8 +156,13 @@ const proposalSchema = z.object({
   //   execStartedAt     最近一次开始执行的时刻
   //   execFinishedAt    最近一次结束（成功或失败）的时刻
   //
-  // ⛔ 默认 manual：加字段之前批准的老提案（50+ 条）**不会**因为这次升级突然
-  //    开始自动改代码。要自动执行必须有人这一次明确选了 immediate/scheduled。
+  // ⛔ schema 默认仍是 manual，但它的含义是**历史行兜底**，不是新提案的口径：
+  //    加字段之前写的老行没有 execMode，读进来由 normalizeExec() 归一成 manual，
+  //    于是升级不会让存量提案突然开始改代码。
+  //    新提案的计划由 propose() 显式写入（默认来自 config.defaultExecMode = immediate），
+  //    所以「批准」这一动作不再依赖调用方记得传 execMode —— 批准即形成自动化任务。
+  //    要「只批准、不自动跑」，由**提议方**显式声明 execMode='manual'（结构化否决，
+  //    不是靠正文里写一句「永不 auto-apply」让执行器去猜）。
   execMode: z.enum(EXEC_MODES).default('manual'),
   execAt: z.string().default(''),
   execState: z.enum(EXEC_STATES).default('idle'),
@@ -151,6 +170,32 @@ const proposalSchema = z.object({
   execError: z.string().default(''),
   execStartedAt: z.string().default(''),
   execFinishedAt: z.string().default(''),
+  // 2026-11-07：提案级执行的「范围账」。
+  //
+  // 以前只有 job 上有 unitsApplied/unitsTotal/remainingUnits，面板只读 proposal 表
+  // ⇒ 老板在家族面板里看不到「这条提案改了哪几个文件、还差几个」。
+  // driver v0.11.0 起一次执行交回 commits[]（含新建文件），在这里同步写到提案行。
+  // ⛔ 全部 default：老提案没有这些字段，读进来一律按「没有范围信息」处理。
+  execUnitsApplied: z.number().int().nonnegative().default(0),
+  execUnitsTotal: z.number().int().nonnegative().default(0),
+  execRemainingUnits: z.array(z.string()).default([]),
+  execCommits: z.array(z.object({
+    path: z.string(),
+    policyDecision: z.string().default(''),
+    created: z.boolean().default(false),
+  })).default([]),
+  // 2026-11-08：执行器的**终局判决**（提案 cdf41d63 收口）。
+  //
+  // 在此之前，一次自动执行只有「跑成了」和「没跑成」两种落法：后者把提案留在
+  // `approved + execState=failed`（悬案，等一个不会自动来的动作）。实测当天
+  // 生产存储里 2 条提案就停在这个状态，37 条执行行全是 failed。
+  //
+  // 判决 = 「为什么没落地」的一个可读字段。空串 = 还没判（尚未执行或还在顺延）。
+  // ⛔ default('')：老行照读不报错；加字段不改 domain version（见上方注释）。
+  // 枚举口径见 lib/execution.js 的 EXEC_VERDICTS。
+  execVerdict: z.string().default(''),
+  // 判决时刻（ISO）。空串 = 没判过。
+  execVerdictAt: z.string().default(''),
   // 2026-10-27：这条提案**能不能被自动执行**。
   //
   // 实机反例（首跑就撞上）：oracle 周报产出的「美谕提案：决策确信度 扣 1.7 分」，
@@ -189,6 +234,27 @@ const proposalSchema = z.object({
   formulaVersion: z.string().default(''),
   assumedBy: z.string().default(''),
   conflictsWith: z.array(z.string()).default([]),
+  // 2026-11-03（W8-3）：**审批凭据** —— 批准那一刻的改动范围。
+  //
+  // 为什么需要：`approved` 只说「同意做」，没说「同意改哪些东西」。driver 从提案
+  // **正文**抽路径再写仓库，所以「改哪里」是执行那一刻才定的。正文批准后被改宽，
+  // 或抽取规则变宽，都会让一次批准覆盖到没人批过的文件，而台账上毫无异常。
+  //
+  //   proposalId     凭据归属（防挪用；与提案 id 不符 ⇒ 直接判越权）
+  //   paths          批准时从正文抽出的仓库相对路径（归一 + 排序）
+  //   grantedAt      签发时刻
+  //   policyVersion  签发时的判尺口径（空串 = 未知，不猜）
+  //
+  // ⛔ 必须 nullable + default(null)：老提案（90+ 条）没有这个字段，若设成
+  //    `.default({...})` 会给它们凭空造一份「批准范围为空」的凭据 ——
+  //    那会让 checkMandate 把「没有凭据」（unknown）误读成「批准了零个文件」。
+  //    null 与「有凭据但是空数组」必须可区分。
+  mandate: z.object({
+    proposalId: z.string().default(''),
+    paths: z.array(z.string()).default([]),
+    grantedAt: z.string().default(''),
+    policyVersion: z.string().default(''),
+  }).nullable().default(null),
 });
 
 // Sprint 12 B3: baseline_history 表由 cron `baseline-regression-suite` 写入，
@@ -320,9 +386,39 @@ export function proposalStaleSince(rec, current) {
   return `${own}→${cur}`;
 }
 
+/**
+ * 读接口的统一出口：归一化 + 两个**派生值**（`staleSince` / `stage*`）。
+ *
+ * ⛔ 派生值都**不进 schema、不落盘** —— 它们随当前口径与执行队列变化，写进存储行
+ *    就会在下次变化时变成过期事实。`createdAt` 被 zod strip 那次是「该在的不在」，
+ *    这类是「不该在的在」，两个方向都会让台账说假话。
+ * ⛔ 三处读路径（propose / listProposals / getProposal）必须都走这里：
+ *    少一处，那一路的使用者就看不到 stage，于是各自再算一遍 —— 判据又散开了。
+ *
+ * stage 摊平成四个字段（而不是塞一个对象）是为了跟 `staleSince` / `blocker` 一样
+ * 能被面板直接 `it.stage` 读到；嵌一层 `stage.stage` 只会让人写错。
+ */
+export function decorateProposal(rec, currentFormulaVersion) {
+  const row = normalizeProposal(rec);
+  const s = stageOf(row);
+  return {
+    ...row,
+    staleSince: proposalStaleSince(rec, currentFormulaVersion),
+    stage: s.stage,
+    stageSide: s.side,
+    stageLabel: s.label,
+    stageWhy: s.why,
+  };
+}
+
 
 function apply(ctx, config) {
   const root = resolve(config.root);
+  // 2026-11-14：批准即形成自动化任务。白名单兜底，防止 patch 里写了个拼错的
+  // 值让 propose() 静默产出一条永不入队的提案（症状与「批准没生效」一模一样）。
+  const DEFAULT_EXEC_MODE = EXEC_MODES.includes(config.defaultExecMode)
+    ? config.defaultExecMode
+    : 'immediate';
   // 2026-10-30：partial 之后自动续跑的次数上限（0 = 关掉续跑）。
   const MAX_AUTO_CONTINUATIONS = Math.max(0, Number(config.maxAutoContinuations ?? 5) || 0);
   // A4：归因 JSON 路径。两级来源，优先级 config > 自动探测。
@@ -428,6 +524,45 @@ function apply(ctx, config) {
     if (!rec) return null;
     const updated = normalizeProposal({ ...rec, ...patch, updatedAt: nowIso() });
     await t.put(proposalId, updated);
+    return updated;
+  };
+
+  /**
+   * 判决 + 结案的**唯一实现**（2026-11-08）。
+   *
+   * ⛔ 为什么单独成函数而不是服务方法：结案要同时做四件事（写判决字段 / 落终态 /
+   *    撤掉同提案的其他排队执行 / 追加 note），这四件事必须**一次做完**，
+   *    分两处写就会出现「状态结了、队列没撤」或「队列撤了、状态没结」的半截状态 ——
+   *    半截状态正是这次要消灭的悬案。
+   */
+  const settleOne = async (proposalId, { verdict, reason, status = 'wontfix' } = {}) => {
+    const t = await table();
+    const rec = t.get(proposalId);
+    if (!rec) return null;
+    // ⛔ 只动 approved。sweep 是异步的：列出候选之后、写回之前，人可能已把它
+    //    改判成 applied/rejected/wontfix/proposed。抢写会把人的决定覆盖掉。
+    //    返回 null（不是 rec）⇒ 调用方据此如实报告「没结成」，不谎报成功；
+    //    重复结案同样被这里挡住，note 不会被追加第二遍。
+    if (rec.status !== 'approved') return null;
+    const v = EXEC_VERDICTS.includes(String(verdict)) ? String(verdict) : 'exhausted';
+    const ts = nowIso();
+    const why = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || '未提供理由';
+    const evidence = `执行器判决「${v}」：${why} —— 已结案（status=${status}），不再自动重跑；`
+      + '要复活：把状态改回 proposed 并重新批准即可重跑';
+    const note = rec.note ? `${rec.note} ｜ ${evidence}` : evidence;
+    const updated = await markProposal(proposalId, {
+      status,
+      execMode: 'manual',
+      execState: 'idle',
+      execVerdict: v,
+      execVerdictAt: ts,
+      execError: evidence.slice(0, 500),
+      execFinishedAt: ts,
+      note,
+    });
+    // 同一提案若还排着别的执行，一并撤掉（已结案 ⇒ 不该再排）。
+    const others = await activeJobsFor(proposalId);
+    if (others.length) await cancelJobs(others, `提案已结案（判决 ${v}）`);
     return updated;
   };
 
@@ -587,12 +722,31 @@ function apply(ctx, config) {
   const normRoot = root.replace(/\\/g, '/');
 
   const clean = (p) => {
-    const trimmed = String(p ?? '').replace(/^\/+/, '');
-    if (!trimmed.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
-    const abs = resolve(root, trimmed);
+    // 2026-11-11：只剥「一个」额外前导斜杠；剥完仍呈绝对形态时按绝对路径解析。
+    //   旧写法 replace(/^\/+/, '') 把 POSIX 的 `//tmp/root/x.md` 剥成相对路径
+    //   `tmp/root/x.md`，再 resolve(root, ...) 得到 root/tmp/root/x.md ⇒ Linux 上
+    //   readReview 恒返回 null（smoke 11c 红）；Windows 因盘符仍是绝对形态而恒绿。
+    //   用 path.isAbsolute 让两端判据一致；相对路径（含 `/ok.md`）仍按 root 解析，
+    //   `../` 逃逸与 root 边界闸不变。
+    const raw = String(p ?? '');
+    let stripped = raw.startsWith('/') ? raw.slice(1) : raw;
+    // 2026-11-12（Windows 回归修复）：`//C:\...` 剥掉一个斜杠后是 `/C:\...`，
+    //   win32.resolve 把它读成「当前盘根 + C:\...」⇒ 得到 `C:\C:\...` ⇒ 越界。
+    //   剥开后紧跟盘符形态的，再剥这一个斜杠；POSIX 的 `/tmp/...` 不剥
+    //   （再剥就退回相对路径，Linux 上 readReview 恒读不到 —— 见 8839d8b）。
+    if (stripped.startsWith('/') && /^[A-Za-z]:[\\/]/.test(stripped.slice(1))) {
+      stripped = stripped.slice(1);
+    }
+    if (!stripped.endsWith('.md')) throw new Error(`agint-evolve: path must end with .md (got "${p}")`);
+    const absoluteForm = isAbsolute(stripped) || /^[A-Za-z]:[\\/]/.test(stripped);
+    const abs = absoluteForm ? resolve(stripped) : resolve(root, stripped);
     const normAbs = abs.replace(/\\/g, '/');
     if (normAbs !== normRoot && !normAbs.startsWith(normRoot + '/')) throw new Error(`agint-evolve: path escapes root (got "${p}")`);
-    return { rel: trimmed, abs };
+    // 2026-11-08：rel 必须是相对 root 的路径。此前直接回 trimmed，
+    // 绝对路径输入会把盘符路径原样带回 readReview 的返回体（模型侧看见绝对路径）。
+    // abs 已经过了上面的 root 边界检查，切片出来的相对路径一定还在 root 内。
+    const rel = normAbs === normRoot ? '' : normAbs.slice(normRoot.length + 1);
+    return { rel, abs };
   };
 
   const walk = async (dir) => {
@@ -783,6 +937,69 @@ function apply(ctx, config) {
     }
   }
 
+  // ── evolution.status-changed 发布（2026-11-02 接线）─────────────────────
+  //
+  // ## 补的是哪个洞
+  //
+  // `evolution.proposed` 是提案链路上**唯一**的可观测出口：提案被创建时发一条，
+  // 之后的**每一次决定**（批准 / 驳回 / 落地 / 暂不处理）都只改存储、不发事件。
+  // 2026-11-02 实测：把 `3c988611` 从 approved 改成 rejected，总线里前后没有一行新数据
+  // ⇒ 「谁在什么时候判了什么」只能靠翻 `agint_evolve.json` 的行尾 note，事件侧完全空白。
+  //
+  // ## 为什么挂 applyStatus 而不是 setStatus
+  //
+  // 状态有两条写入路径：人工 `setStatus()`（面板 / 工具）与执行器 `finishExecution()`
+  // 直接调 `applyStatus()` 结案。挂在上层会漏掉机器落地那半边，审计链就断在中间。
+  // `applyStatus` 是唯一写入口 ⇒ 挂这里，两条路径自动都覆盖。
+  //
+  // ## 只在状态**真的变了**时发
+  //
+  // `setStatus` 允许「状态不变、只补 blocker / 执行计划」（幂等语义，见 applyStatus 注释）。
+  // 那种写不是一次决定，发事件会把审计链冲成噪声 ⇒ 判据是 `prevStatus !== status`。
+  //
+  // ## 红线（与 publishProposed 同一条）
+  //
+  // 落库与返回值不因发布失败而改变：bus 缺失 / publish 抛错只告警，不阻断状态写入。
+  //
+  // 订阅方：`agint-trajectory`（`evolution.status-changed` → 轨迹表，role:'record'）。
+  async function publishStatusChanged(rec, prevStatus) {
+    const publish = typeof ctx.get === 'function' ? ctx.get('agint.eventBus.publish') : null;
+    if (typeof publish !== 'function') {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.status-changed publish skipped', {
+          proposalId: rec.id, reason: 'agint.eventBus.publish unavailable',
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: 'eventBus-unavailable' };
+    }
+    try {
+      const result = await publish({
+        topic: 'evolution.status-changed',
+        version: 1,
+        source: 'agint-evolve',
+        payload: {
+          proposalId: rec.id,
+          from: prevStatus,
+          to: rec.status,
+          kind: rec.category || 'other',
+          // note 上限 200 字：事件是通知面不是数据面，全文在存储行里。
+          note: String(rec.note ?? '').slice(0, 200),
+          blocker: String(rec.blocker ?? '').slice(0, 200),
+          execMode: rec.execMode ?? 'manual',
+          origin: 'agint-evolve',
+        },
+      });
+      return { published: true, envelopeId: result?.envelopeId, deliveredTo: result?.deliveredTo ?? 0 };
+    } catch (err) {
+      try {
+        ctx.logger?.warn?.('evolve: evolution.status-changed publish failed', {
+          proposalId: rec.id, error: err instanceof Error ? err.message : String(err ?? 'unknown'),
+        });
+      } catch { /* noop */ }
+      return { published: false, reason: `publish-threw:${err?.message || err}` };
+    }
+  }
+
   /**
    * 提案状态落盘的**核心**（不碰队列）。
    *
@@ -809,13 +1026,43 @@ function apply(ctx, config) {
     }
   }
 
-  async function applyStatus(id, status, note = '', opts = {}) {
+  async function applyStatus(id, status, note, opts = {}) {
     const t = await table();
     const rec = t.get(id);
     if (!rec) return null;
+    // 旧状态要在覆写前抓：事件 payload 的 `from` 靠它（2026-11-02）。
+    const prevStatus = rec.status;
     if (!PROPOSAL_STATUSES.includes(status)) throw new Error(`agint-evolve: invalid status "${status}"`);
     const o = opts && typeof opts === 'object' ? opts : {};
-    const updated = normalizeProposal({ ...rec, status, note: note ?? rec.note ?? '', updatedAt: nowIso() });
+    // 2026-11-03：note 与 blocker / execMode 统一成**冻结语义**。
+    //   未传（undefined / null）⇒ 保留现状；传 '' ⇒ 显式清除；传非空 ⇒ 覆盖。
+    // ⛔ 原实现是 `note ?? rec.note ?? ''` 配 `setStatus(note = '')` 默认参数：
+    //    默认值先把 undefined 降级成空串，`??` 就再也拦不住 —— 于是「只改状态」
+    //    这一最无害的调用成了「静默删掉上一轮人工记录」的入口。
+    //    真凶是**默认参数**，不是 `??`（传 null 时 `??` 是能拦住的，用例 N4 钉着）。
+    const nextNote = note === undefined || note === null
+      ? (rec.note ?? '')
+      : note;
+    if (typeof nextNote !== 'string') {
+      throw new Error(`agint-evolve: note 必须是字符串（收到 ${typeof nextNote}）`);
+    }
+    const updated = normalizeProposal({ ...rec, status, note: nextNote, updatedAt: nowIso() });
+    // 2026-11-03（W8-3）：进入 approved 的那一刻签发审批凭据。
+    //
+    // 只在**没有凭据时**签发（`rec.mandate == null`）：
+    //   - 已批准后再改 blocker / 执行计划 ⇒ 不该重签，否则「改一句阻塞原因」
+    //     就能把范围悄悄刷新成新正文 —— 那等于给越权开了后门。
+    //   - 从 applied/rejected 改判回 approved ⇒ 原文已变，这时**应该**重签，
+    //     因为这是一次新的批准（旧凭据对应的是旧状态下的决定）。
+    if (status === 'approved' && (rec.mandate === null || rec.mandate === undefined)) {
+      updated.mandate = grantMandate(updated, currentFormulaVersion());
+    }
+    // 离开 approved ⇒ 凭据作废。凭据的意义是「这次批准覆盖什么」，
+    // 状态已经不是批准了，留着它只会让下次核对拿一份过期授权。
+    // （改判回 proposed 再批准会重新签发，见上。）
+    if (status !== 'approved' && updated.mandate !== null && updated.mandate !== undefined) {
+      updated.mandate = null;
+    }
     if (typeof o.blocker === 'string') updated.blocker = o.blocker.trim();
     if (typeof o.unblockCondition === 'string') updated.unblockCondition = o.unblockCondition.trim();
     // 2026-10-27：显式改「能不能自动执行」。⛔ 只认布尔 —— 传字符串/数字一律
@@ -840,6 +1087,9 @@ function apply(ctx, config) {
       if (typeof o.unblockCondition !== 'string') updated.unblockCondition = '';
     }
     await t.put(id, updated);
+    // 状态真的变了才算一次「决定」⇒ 发事件。幂等写（只补 blocker / 执行计划）不发，
+    // 否则审计链会被同一状态的重复写冲成噪声。发布失败不影响返回值（红线同 propose）。
+    if (prevStatus !== status) await publishStatusChanged(updated, prevStatus);
     return updated;
   }
 
@@ -907,6 +1157,14 @@ function apply(ctx, config) {
           );
         }
       }
+      // 2026-11-14：执行计划在**提议时**就定下来，批准只负责「按这份计划建任务」。
+      // 判据只有一份（validateExecPlan），与 setStatus / 面板共用；非法计划直接抛，
+      // 不静默降级成另一个模式 —— 静默降级会让「定时」看起来生效其实没生效。
+      const plan = validateExecPlan({
+        execMode: input.execMode ?? DEFAULT_EXEC_MODE,
+        execAt: input.execAt,
+      });
+      if (!plan.ok) throw new Error(`agint-evolve: ${plan.reason}`);
       const rec = proposalSchema.parse({
         id: input.id ?? randomId(),
         title: input.title,
@@ -918,6 +1176,10 @@ function apply(ctx, config) {
         // 2026-10-27：复核类提案显式声明「不可自动执行」（oracle 走这条）。
         // ⛔ 只认显式 false —— 少写一个字段 = 可执行（默认 true，向后兼容）。
         autoExecutable: input.autoExecutable === false ? false : true,
+        // 一行提案 = 一份任务规格。批准时 setStatus 的冻结语义会保留这份计划，
+        // syncExecutionQueue 据此往 execution 表写一行 queued 任务。
+        execMode: plan.mode,
+        execAt: plan.at,
         // 成立条件快照：这条结论按哪一版判尺口径成立。空串 = oracle 未挂载，
         // 口径未知 —— 后续不据此判失效，但至少能看出「这条没记」。
         formulaVersion: cur,
@@ -930,7 +1192,7 @@ function apply(ctx, config) {
       // A1 接线：落库后发布 evolution.proposed（失败不影响返回值）
       await publishProposed(rec);
       // 刚创建 ⇒ 口径必然等于当前（或未知）⇒ staleSince 恒为空，仍带上以对齐输出面。
-      return { ...rec, staleSince: '' };
+      return decorateProposal(rec, cur);
     },
 
     async listProposals(filter = {}) {
@@ -947,7 +1209,7 @@ function apply(ctx, config) {
         // staleSince 是**派生值**，不进 schema、不落盘：它随当前口径变化，
         // 一旦写进存储行就会在下次口径变更时变成过期事实（与 createdAt 被
         // strip 那类坑同源，方向相反）。
-        out.push({ ...normalizeProposal({ id, ...rec }), staleSince: proposalStaleSince(rec, cur) });
+        out.push(decorateProposal({ id, ...rec }, cur));
       }
       // 2026-10-27：createdAt 空值安全。schema 已补回该字段，但历史行可能真的没有
       // （2026-10-27 之前的写坏行），排序不该被一条脏数据整段掀翻。
@@ -959,11 +1221,55 @@ function apply(ctx, config) {
       const t = await table();
       const rec = t.get(id);
       if (!rec) return null;
-      return { ...normalizeProposal({ ...rec }), staleSince: proposalStaleSince(rec, currentFormulaVersion()) };
+      return decorateProposal(rec, currentFormulaVersion());
+    },
+
+    /**
+     * 一条提案此刻卡在谁身上（纯函数出口，零 IO）。
+     *
+     * 存在的理由：别的插件（executor / 面板 / 工具）要判「这条还有没有人管」时，
+     * 不该自己再写一遍判据 —— 那正是 stage 要消灭的东西。
+     * ⛔ 收的是**提案行**，不是 id：调用方手上已经有行时不该再多一次读盘。
+     */
+    ticketStage(rec) {
+      return stageOf(rec);
+    },
+    /** 全部 stage 档位的名字（面板做图例 / 工具做校验时用，别各自硬编码）。 */
+    stages() {
+      return [...TICKET_STAGES];
+    },
+
+    /**
+     * checkMandate(id) —— 核对该提案此刻的改动范围是否仍在批准范围内。
+     *
+     * 2026-11-03（W8-3）：给 agint-executor 在**动手之前**调。
+     * 返回三态 `{state: 'ok'|'mismatch'|'unknown', extra, granted, current, reason}`。
+     *
+     * ⛔ 调用方必须区分 unknown 与 ok：
+     *    unknown = 老提案没凭据（升级前批的）⇒ **放行**，但要在日志里留痕，
+     *              否则「没验过」和「验过了」在台账上长得一模一样。
+     *    mismatch ⇒ 拒绝执行，让它回队列等重新审批。
+     * 把 unknown 当 mismatch 会让升级瞬间所有历史提案集体停摆；
+     * 把 unknown 当 ok 又会让「没验过」冒充「验过了」—— 两者都不行。
+     *
+     * 未知 id 返回 null（与 getProposal 同口径：找不到就是找不到）。
+     */
+    async checkMandate(id) {
+      const t = await table();
+      const rec = t.get(id);
+      if (!rec) return null;
+      return checkMandate(rec);
     },
 
     /**
      * setStatus(id, status, note, opts)
+     *
+     * note（2026-11-03 起）：与 blocker 同一**冻结语义** —— 不传（undefined/null）
+     * = 保留现状，传 '' = 显式清除，传非空 = 覆盖。
+     * ⛔ 此前不传等价于清空：`note=''` 默认参数先把 undefined 降级成空串，
+     *    再被 `note ?? rec.note` 当成「用户就是要空」⇒ 一次只改状态的调用
+     *    （工具不带 note、服务直调两参数）会静默抹掉上一轮人工判断。
+     *    要清记录必须显式传空串。
      *
      * opts.blocker / opts.unblockCondition：只在**显式传字符串**时才改。
      * 不传 = 冻结现状 —— 否则每次改状态都会把上次写的阻塞原因洗成空，
@@ -975,7 +1281,7 @@ function apply(ctx, config) {
      *   且没有 blocker ⇒ **自动入执行队列**，由 agint-executor 捡起来跑。
      *   opts.autoEnqueue === false 可以只写计划不入队（给"先批准、等会儿手动放行"用）。
      */
-    async setStatus(id, status, note = '', opts = {}) {
+    async setStatus(id, status, note, opts = {}) {
       const rec = await applyStatus(id, status, note, opts);
       if (!rec) return null;
       // 2026-10-28：执行态必须跟着状态归位 —— 状态与执行态各说各话是最贵的不一致。
@@ -1012,6 +1318,104 @@ function apply(ctx, config) {
       }
       // 回读一次：syncExecutionQueue 可能改了 execState。
       return (await svc.getProposal(id)) ?? rec;
+    },
+
+    /**
+     * `markNotActionable()` 保留为兼容入口（2026-11-07 老调用方仍在调）。
+     *
+     * ⚠️ 口径已在 2026-11-08 变更：它不再「退出自动队列、留一句请人工结案」，
+     * 而是直接走 `settleOne()` 给出终局判决并结案（status=wontfix +
+     * execVerdict=not-actionable）。理由与复活路径见上面的 `settleExecution`。
+     * 老板当日裁定：机器不许留悬案；可逆性由「改回 proposed 再批准」保证。
+     */
+    /**
+     * **终局判决 + 结案**（2026-11-08，提案 cdf41d63 收口）。
+     *
+     * ## 它补的是哪个洞
+     *
+     * 一次自动执行的结局只有两种落法时，失败的提案会永远停在
+     * `status=approved + execState=failed` —— 老板在面板上看到「已批准·执行失败·等处理」，
+     * 而**没有任何自动机制会来结它**。实测（2026-11-08 生产存储）：approved 2 条
+     * 全是这种形态，37 条执行行全是 failed，0 条 deferred。
+     *
+     * ⇒ 执行器必须给出**判决**（「为什么没落地」），提案必须落到**终态**。
+     *
+     * ## 口径
+     *
+     *   · `applied` / `partial` 不走这里（成功路径在 finishExecution 里）。
+     *   · 其余判决（not-actionable / exhausted / env-blocked / interrupted）⇒
+     *     `status=wontfix`（暂不处理 = 结案），`execMode=manual`（不再自动重跑），
+     *     `execState=idle`（不再是「执行失败」的悬案态），并把理由原文写进
+     *     execError + note。
+     *   · **可逆**：把 status 改回 `proposed` 再批准即可复活（setStatus 支持任意切换）。
+     *     判决文案里必须写清这条复活路径 —— 否则人看到「已结案」会以为这条提案作废了。
+     *
+     * @param {string} id 提案 id
+     * @param {object} o
+     * @param {string} o.verdict 判决（EXEC_VERDICTS 之一）
+     * @param {string} o.reason 理由原文（可复现，必须带）
+     * @param {string} [o.status] 终局状态，默认 wontfix
+     * @returns {Promise<object|null>} 更新后的提案行
+     */
+    async settleExecution(id, opts = {}) {
+      return settleOne(id, opts);
+    },
+
+    /**
+     * 列出**历史悬案**候选（2026-11-08）。只读，不改任何东西。
+     *
+     * 判据：status='approved' 且 execState ∈ {failed, idle} 且 execVerdict===''。
+     * 这正是「执行完了但没人结」的历史欠账形状。
+     *
+     * ⚠️ 只列**有执行行证据**的候选：找不到执行行、或行里没有错误原文 ⇒ 不列
+     * （宁可留着悬案，也不凭 execError 文本编一个判决出来）。
+     *
+     * ⛔ 这里**不判**判决：判决的判据在 agint-executor/lib/verdict.js（单一事实源）。
+     *    evolve 只提供候选与写回（`settleExecution`），不自己解释失败。
+     */
+    async listUnsettledProposals() {
+      const t = await table();
+      const et = await executionTable();
+      const out = [];
+      for (const [id, rec] of t.entries()) {
+        if (!rec) continue;
+        if (rec.status !== 'approved') continue;
+        if (rec.execState !== 'failed' && rec.execState !== 'idle') continue;
+        if (String(rec.execVerdict ?? '') !== '') continue;
+        // 取这条提案最后一条执行行作为判决依据。
+        let last = null;
+        for (const [jid, row] of et.entries()) {
+          if (!row || row.proposalId !== id) continue;
+          if (!last || String(row.updatedAt ?? '') > String(last.updatedAt ?? '')) last = { id: jid, ...row };
+        }
+        if (!last) continue;
+        const errText = String(last.error || last.reason || '').trim();
+        if (!errText) continue;
+        out.push({
+          id,
+          execId: last.id,
+          execState: last.state,
+          error: errText,
+          updatedAt: String(last.updatedAt ?? ''),
+        });
+      }
+      return out;
+    },
+
+    async markNotActionable(id, reason) {
+      const t = await table();
+      const rec = t.get(id);
+      if (!rec) return null;
+      if (rec.status !== 'approved') return rec;
+      // 2026-11-08：确定性不可执行 ⇒ **结案**（wontfix + 判决），不再停在
+      // 「已批准 + 请人工结案」。老板 2026-11-08 明确要求：执行器要么给执行结果，
+      // 要么给最终判决并结案，不许留悬案。
+      // 复活路径写进 note：改回 proposed 再批准即可重跑。
+      const updated = await settleOne(id, {
+        verdict: 'not-actionable',
+        reason: String(reason ?? '') || '未解析到可执行目标',
+      });
+      return updated ?? rec;
     },
 
     async removeProposal(id) {
@@ -1213,6 +1617,30 @@ function apply(ctx, config) {
         : (wanted === 'deferred' || wanted === 'cancelled' ? wanted : 'failed');
       const ts = nowIso();
       const detail = patch.error || patch.reason || '';
+      // 2026-11-07：把 driver 交回的 commits[] / 范围账同步写到提案行（面板只读 proposal 表）。
+      const commits = Array.isArray(patch.commits)
+        ? patch.commits
+          .filter((c) => c && typeof c === 'object' && typeof c.path === 'string')
+          .map((c) => ({
+            path: c.path,
+            policyDecision: String(c.policyDecision ?? ''),
+            created: c.created === true,
+          }))
+        : [];
+      const hasNum = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
+      const unitsApplied = hasNum(patch.unitsApplied)
+        ? Number(patch.unitsApplied)
+        : (commits.length > 0 ? commits.length : (ok ? 1 : 0));
+      const unitsTotal = hasNum(patch.unitsTotal)
+        ? Number(patch.unitsTotal)
+        : Math.max(unitsApplied, 1);
+      const scopeFields = {
+        execUnitsApplied: unitsApplied,
+        execUnitsTotal: unitsTotal,
+        execRemainingUnits: Array.isArray(patch.remainingUnits)
+          ? patch.remainingUnits.filter((x) => typeof x === 'string') : [],
+        execCommits: commits,
+      };
       const next = executionSchema.parse({
         ...job,
         state,
@@ -1265,6 +1693,7 @@ function apply(ctx, config) {
           execError: (patch.reason || `部分落地 ${units} 个单元，剩余单元见 note`).slice(0, 500),
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
         // ⛔ 不同"撤别的活跃 job"分支：partial 不是「已落地」，别的排队的执行
         //   正是用来补剩余单元的，掐掉它们等于把拆出来的子任务一起杀掉。
@@ -1305,6 +1734,7 @@ function apply(ctx, config) {
           execError: '',
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
         // 同一提案若还排着别的执行，一并撤掉（一次落地就够，不重复改同一处）。
         const others = (await activeJobsFor(job.proposalId)).filter((j) => j.id !== execId);
@@ -1315,11 +1745,13 @@ function apply(ctx, config) {
           execError: (patch.error || patch.reason || '未知原因').slice(0, 500),
           execAttempts: next.attempts,
           execFinishedAt: ts,
+          ...scopeFields,
         });
       } else if (state === 'deferred') {
         await markProposal(job.proposalId, {
           execState: 'deferred',
           execError: (patch.reason || '').slice(0, 500),
+          ...scopeFields,
         });
       } else if (state === 'cancelled') {
         await markProposal(job.proposalId, { execState: 'cancelled' });
@@ -1330,6 +1762,12 @@ function apply(ctx, config) {
     /**
      * 重新排队（失败重试 / 周上限顺延）。dueAt 决定什么时候再被 claim；
      * deferred=true 表示「不是失败，是等条件」，面板按 supply 显示。
+     *
+     * `refundAttempt: true`（2026-11-07）：把这次 claim 消耗的尝试次数**退还**。
+     * 只给「环境故障」用（LLM 通道 / 宿主能力不可用，见 agint-executor/lib/env.js）：
+     * attempts 的语义是「这条提案最多试几次」，而通道挂掉与提案本身无关。
+     * 不退还的后果（实机 cdf41d63）：批准后 9 秒内两次撞上同一个通道故障，
+     * 额度烧完 ⇒ 提案被记成 failed，通道恢复后也没有资格再跑。
      */
     async requeueExecution(execId, opts = {}) {
       const et = await executionTable();
@@ -1341,22 +1779,87 @@ function apply(ctx, config) {
       const dueAt = typeof opts.dueAt === 'string' && opts.dueAt !== ''
         ? opts.dueAt
         : new Date(Date.now()).toISOString();
+      const refund = opts.refundAttempt === true;
+      const attempts = refund
+        ? Math.max(0, (Number(job.attempts) || 0) - 1)
+        : (Number(job.attempts) || 0);
       const next = executionSchema.parse({
         ...job,
         state,
+        attempts,
         dueAt,
         reason: opts.reason ?? job.reason ?? '',
         error: deferred ? '' : (opts.error ?? job.error ?? ''),
         finishedAt: '',
         updatedAt: ts,
-        log: [job.log, `${ts} ${state} → ${dueAt}${opts.reason ? ` ${opts.reason}` : ''}`].filter(Boolean).join('\n').slice(-4000),
+        log: [job.log, `${ts} ${state} → ${dueAt}${opts.reason ? ` ${opts.reason}` : ''}${refund ? '（退还本次尝试额度）' : ''}`].filter(Boolean).join('\n').slice(-4000),
       });
       await et.put(execId, next);
       await markProposal(job.proposalId, {
         execState: state,
         execError: deferred ? (opts.reason ?? '') : (opts.error ?? ''),
+        ...(refund ? { execAttempts: attempts } : {}),
       });
       return next;
+    },
+
+    /**
+     * 回收孤儿执行（2026-11-02，提案 `a6e6e1d9` 实证）。
+     *
+     * ## 为什么需要它
+     *
+     * 实机：`exec-1793280728689-kmy9h1` 停在 `state='running'`，startedAt=
+     * 2026-11-01T16:00:04.986Z，finishedAt=''，面板显示「已批准·执行中」，
+     * 但**没有任何东西在跑**。原因链见 `execution.js` 的 `isOrphanExecution` 注释。
+     * 队列不自愈：running 行永不被 claim（CLAIMABLE 只有 queued/deferred），
+     * 又被 `activeJobsFor` 算成活跃 job ⇒ 提案再也排不进去。
+     *
+     * ## 回收动作的三条边界
+     *
+     *   ① **绝不**把提案标 applied：中断的是「一次执行」，不是「这件事做完了」。
+     *      提案仍是 approved，剩余单元仍有入口（partial 的自动续跑机制继续有效）。
+     *   ② 行落到 `failed`（不是 cancelled）：中断是失败，不是人撤销。
+     *   ③ 不自动重排：重排由提案自己的续跑/入队机制决定（`autoEnqueueBlocker`），
+     *      执行器不越权 —— 否则一次重启能凭空多出 N 条自动执行。
+     *
+     * @param {object} opts
+     * @param {number} opts.now 当前时刻（毫秒）
+     * @param {number} opts.mountedAt 本进程挂载时刻（毫秒）
+     * @param {number} opts.staleMs 超时兜底阈值（毫秒）
+     * @param {string[]} [opts.excludeIds] 本进程正在跑的 job id（不判孤儿）
+     */
+    async reapOrphanExecutions(opts = {}) {
+      const et = await executionTable();
+      const now = Number.isFinite(Number(opts.now)) ? Number(opts.now) : Date.now();
+      const mountedAt = Number.isFinite(Number(opts.mountedAt)) ? Number(opts.mountedAt) : 0;
+      const staleMs = Number.isFinite(Number(opts.staleMs)) ? Number(opts.staleMs) : 30 * 60 * 1000;
+      const excludeIds = Array.isArray(opts.excludeIds) ? opts.excludeIds : [];
+      const reaped = [];
+      for (const [id, row] of et.entries()) {
+        if (!row) continue;
+        const verdict = isOrphanExecution({ id, ...row }, { now, mountedAt, staleMs, excludeIds });
+        if (!verdict.orphan) continue;
+        const ts = new Date(now).toISOString();
+        const next = executionSchema.parse({
+          ...row,
+          state: 'failed',
+          ok: false,
+          reason: `孤儿执行已回收：${verdict.reason}`,
+          error: `宿主重启/进程中断导致本次执行未结算（${verdict.reason}）`,
+          finishedAt: ts,
+          updatedAt: ts,
+          log: [row.log, `${ts} failed 孤儿回收：${verdict.reason}`].filter(Boolean).join('\n').slice(-4000),
+        });
+        await et.put(id, next);
+        // 提案侧：释放「执行中」这盏灯，但保持 approved —— 剩余单元不能失去入口。
+        await markProposal(row.proposalId, {
+          execState: 'failed',
+          execError: `上次执行因宿主重启/进程中断未结算（${verdict.reason}）—— 提案未完成，可重新入队`,
+          execFinishedAt: ts,
+        });
+        reaped.push({ id, proposalId: row.proposalId, reason: verdict.reason });
+      }
+      return { reaped, count: reaped.length };
     },
 
     /**
@@ -1407,7 +1910,15 @@ function apply(ctx, config) {
         byState,
         queued: rows.filter((r) => r.state === 'queued' || r.state === 'deferred').length,
         running: byState.running ?? 0,
+        // ⛔ W8-1（v0.18.0）：这个数现在是**提案去重后**的条数，不再等于 jobs.length。
+        //    字段名保持不变（执行器 `decideRun({ weekCommits })` 与面板都按它判上限），
+        //    语义变更见 weeklyUsage 的注释。要看「跑了几次」读 weekExecutions。
         lastWeekCommits: week.count,
+        // 明细：这一周真正跑成功的**执行行**数（含同一提案的续跑行）。
+        // ⛔ 与 lastWeekCommits 必须分开报：面板写「本周落地 3 条提案（共 7 次执行）」
+        //    才是可核对的；只报一个数会让人把「续跑」误读成「又落地一条新提案」。
+        weekExecutions: week.jobs.length,
+        weekProposals: week.proposals,
         weekSince: week.since,
         weekOf: new Date(startOfWeek(now)).toISOString(),
         latest: rows[0] ?? null,

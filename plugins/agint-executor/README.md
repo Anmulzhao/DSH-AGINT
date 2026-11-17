@@ -36,7 +36,7 @@
 | ② | 仍是 `approved` | 撤单 | 人撤销了批准，后台不许继续改代码 |
 | ③ | 没有 `blocker` | 撤单 | 批准的是方向，前置没到位 ≠ 现在能做（a85ef850 教训） |
 | ④ | driver 可用 | **失败** | 能力缺失不是「等下周」，不能被顺延掩盖 |
-| ⑤ | 本周自动落地 < 3 | **顺延**到下周起点 | 对齐 AGENTS.md「不要跨周累计自动部署超过 3 次」 |
+| ⑤ | 本周自动落地 < `weeklyCommitCap` | **顺延**到下周起点 | 对齐 AGENTS.md「不跨周累计自动部署超过 5 次」（2026-10-29 由 3 改为 5） |
 | ⑥ | 尝试次数 < maxAttempts | **失败**收尾 | 防无限重试烧 token |
 
 ④ 必须在 ⑤ 之前：配置缺失不该消耗本周额度，也不该被伪装成「下周就能跑」。
@@ -53,8 +53,12 @@ queued ──claim──▶ running ──成功──▶ succeeded
    └──请求撤销 / 状态不再 qualified──▶ cancelled
 ```
 
-提案行上的 `execState` 与它一一对应（`queued / running / succeeded / failed / deferred / cancelled / idle`），
-面板直接读这两个字段，不再用「已批准待执行」一个标签盖住五种处境。
+提案行上的 `execState` 与它一一对应（`idle / queued / running / succeeded / failed / deferred / cancelled / partial`），
+面板直接读这两个字段，不再用「已批准待执行」一个标签盖住六种处境。
+
+⚠️ `execState` 仍然回答不了「现在该谁动」。2026-11-01 起 `agint-evolve` 另给一份
+`stage`（纯函数 `ticketStage()`，九档，见 `docs/plugins/agint-executor.md`
+「工单状态机」）。**要判「这条还有没有人管」就用 stage，别自己再从 execState 反推。**
 
 ## Services
 
@@ -69,7 +73,7 @@ queued ──claim──▶ running ──成功──▶ succeeded
 | 键 | 默认 | 含义 |
 |---|---|---|
 | `tickMs` | `15000` | 轮询兜底间隔（真实延迟通常远小于它，因为入队会 wake） |
-| `weeklyCommitCap` | `3` | 本周自动落地上限；`0` = 不限（仅排查时用） |
+| `weeklyCommitCap` | `3` | 本周自动落地上限；`0` = 不限（仅排查时用）。⚠️ 本机与 NAS 的 `cordis.patch.yml` 都显式写 `5` —— 红线值是 5，代码默认值故意留在 3，改红线请改 config |
 | `maxAttempts` | `2` | 同一提案最多试几次（含首次） |
 | `retryDelayMs` | `300000` | 失败后多久重试 |
 | `maxPerTick` | `1` | 每 tick 最多跑几条（串行，不抢 CPU） |

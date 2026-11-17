@@ -249,6 +249,22 @@ function apply(ctx, config) {
             detail: `${t.targetId}: ${t.reason}`,
           })),
           tags: ['policy-decision', `decision:${decision.kind}`],
+          // 2026-11-11 RSI-Env 借鉴：把「为什么这么判」一并写进研究日志。
+          // 生产实测 283 条 evolution_log 的 evidence 全为空串、recalls 全为 0：
+          // 下一代改进器只看得到决策枚举，看不到归因，跨代复用无从发生。
+          // triggeredBy 与 perTarget 原样搬，不截断（K116 纪律 B：截断会藏诊断尾巴）。
+          evidence: JSON.stringify({
+            reason: decision.reason ?? null,
+            triggeredBy: decision.triggeredBy ?? [],
+            perTarget: (decision.perTarget ?? []).map((t) => ({
+              targetId: t.targetId,
+              kind: t.kind,
+              score: t.score,
+              reason: t.reason,
+            })),
+            providerId: decision.providerId ?? null,
+            fallback: fallback ? { providerId, reason: fallbackReason ?? null } : null,
+          }),
         });
       } catch (err) {
         if (!disposed) console.error('[agint-quality-policy] evo.logPhase4 failed:', err.message);

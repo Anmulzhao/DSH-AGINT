@@ -166,6 +166,60 @@ const weekly = weeklyDedup(samples);
 const annotatedVerdict = weekly.filter((s) => s.humanVerdict !== null);
 const annotatedOverall = weekly.filter((s) => s.humanOverall === 'better' || s.humanOverall === 'worse');
 
+// ── --candidate：本周标注候选（提案「标注采集面」·2026-11-03）────────────────
+//
+// 为什么单列一个模式：--worksheet 是「全量待标注清单」（补历史用），
+// --candidate 是**每周一的例行采集面** —— cron 只出候选文件，不写标注。
+// 输出即可直接重定向成候选文件（由 cron 调用，本脚本不自己建目录）：
+//   node test/calibration.mjs --candidate --week 2026-W45 > reviews/oracle-annotation-2026-W45.md
+//
+// ⛔ 三条纪律（与本脚本另两条一致）：
+//   ① 机器判的最丑维只是**线索**，不是答案；「实际动手处理的最丑维」只能由人填；
+//   ② 机器从 git 史实或 LLM 自评推出的标签**不算** ground truth（自己证明自己）；
+//   ③ 候选文件本身不产生任何标注 —— 空必须由人填，再用 annotateCalibration 写回。
+
+if (argv.includes('--candidate')) {
+  const wantWeek = flag('--week');
+  const target = wantWeek
+    ? weekly.find((s) => s.week === wantWeek)
+    : weekly[weekly.length - 1];
+  if (!target) {
+    console.error(`✗ 没有可出候选的周：${wantWeek ? `找不到 ${wantWeek}` : '样本为空'}`);
+    process.exit(2);
+  }
+  const comp = target.composites ?? {};
+  const compText = DIMS.map((k) => `${k}=${Number.isFinite(comp[k]) ? comp[k] : '—'}`).join('  ');
+  const scoreText = typeof target.score === 'number' ? target.score.toFixed(1) : '—';
+  const perWeek = new Map();
+  for (const s of samples) {
+    const wk = isoWeek(s.ts);
+    perWeek.set(wk, (perWeek.get(wk) ?? 0) + 1);
+  }
+  console.log(`# 判尺标定 · 人工标注候选（${target.week}）`);
+  console.log('');
+  console.log(`- 机器判的最丑维：${target.machineWorst ?? '(无扣分维)'}　← 线索，不是答案`);
+  console.log(`- 机器总分：${scoreText}　｜　周内广播条数：${perWeek.get(target.week) ?? 0}`);
+  console.log(`- 当周 composites：${compText}`);
+  console.log(`- 样本时间：${target.ts}`);
+  console.log('');
+  console.log('## 请你只填这两格（其余不动）');
+  console.log('');
+  console.log('本周你实际动手处理的最丑维：____　（noise / confidence / redundancy / bloat / none）');
+  console.log('本周整体变美/变丑：____　（better / worse / flat）');
+  console.log('');
+  console.log('## 填完写回（落盘到 oracle_broadcasts）');
+  console.log('');
+  console.log('```');
+  console.log(`node ~/.workbuddy/skills/agint-offline-harness/scripts/agint-harness.mjs oracle-annotate ${target.ts} --verdict <noise|confidence|redundancy|bloat|none> --overall <better|worse|flat> --note '<依据>'`);
+  console.log('```');
+  console.log('');
+  console.log('⛔ 取「本周期实际动手处理的最丑维度」，不是「读数上看起来最糟的」——');
+  console.log('   后者机器已经判了，再抄一遍等于自己证明自己。');
+  console.log('⛔ 标完必须重启 dsh（install/redeploy.sh --no-install）：运行中的 dsh 持有整域内存副本，');
+  console.log('   下次写入会用内存版覆盖磁盘，外部标注会被静默冲掉。');
+  process.exit(0);
+}
+
 const machineCount = Object.fromEntries(DIMS.map((k) => [k, 0]));
 let noDim = 0;
 for (const s of samples) {

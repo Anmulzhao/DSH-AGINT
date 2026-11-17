@@ -14,14 +14,14 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { CHANNEL_IDS, CHANNEL_TYPES, C2_CRON } from '../schema.js';
 // 跨插件引用走相对路径（与 `agint-skill-autocreate/lib/semantic-window.js:24`
 // 引 `../../agint-session-extract/index.js` 同形）。
 // ⛔ 不用裸包名 'agint-session-source'：全仓 grep 命中 **0 行** 这种写法，
 //    插件间依赖在部署位不是 npm 包树，裸包名解析不到。
-import { createSessionSource, findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
+import { findSessionLogFile } from '../../../agint-session-source/lib/index.mjs';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -68,9 +68,12 @@ function readRecentToolStats(n = 200) {
  *   a) 失败率突增：最近 200 条失败率 > 15%（基线 ~5-7%，3 倍突增）
  *   b) 单工具连续失败：同一 tool 连续 ≥3 次 ok===false
  */
-function detectToolAnomaly() {
+function detectToolAnomaly(report = null) {
   const recent = readRecentToolStats(200);
-  if (recent.length < 20) return [];
+  if (recent.length < 20) {
+    report?.({ skipped: 'insufficient-tool-stats', sampleSize: recent.length, minSample: 20 });
+    return [];
+  }
 
   const signals = [];
 
@@ -150,6 +153,14 @@ function detectToolAnomaly() {
     });
   }
 
+  report?.({
+    sampleSize: recent.length,
+    failedCalls: failed.length,
+    failRate: Number(failRate.toFixed(3)),
+    maxStreak: maxStreakCount,
+    maxStreakTool,
+  });
+
   return signals;
 }
 
@@ -183,9 +194,12 @@ function saveMetricsSnapshot(snap) {
  * 取 error 类指标的最新值，与上次快照对比。
  * 触发：当前值 > 上次值 × 1.5 且差值 > 5。
  */
-function detectMetricRegression() {
+function detectMetricRegression(report = null) {
   const metrics = safeReadJson(join(storagesDir(), 'agint_metrics.json'));
-  if (!metrics?.tables?.metric) return [];
+  if (!metrics?.tables?.metric) {
+    report?.({ skipped: 'no-metrics-data', file: join(storagesDir(), 'agint_metrics.json') });
+    return [];
+  }
 
   // 取每个 error 类 key 的最新记录
   const latestByKey = {};
@@ -228,6 +242,9 @@ function detectMetricRegression() {
   }
 
   saveMetricsSnapshot(newSnap);
+  // trackedKeys 是把「守着一个恒 0 的指标」这种形状暴露出来的唯一办法：
+  // 只看 produced=0 分不清「指标涨不动」和「压根没找到指标」。
+  report?.({ trackedKeys: Object.keys(latestByKey), snapshotKeys: Object.keys(newSnap) });
   return signals;
 }
 
@@ -238,12 +255,18 @@ function detectMetricRegression() {
  * 真实数据：全量 9277 条里 denied=4（0.04%），基线 ≈ 0。
  * 阈值：最近 200 条里 denied ≥1 就报告——基线是 0，任何一次规则拒绝都值得注意。
  */
-function detectRuleHotspot() {
+function detectRuleHotspot(report = null) {
   const recent = readRecentToolStats(200);
-  if (recent.length === 0) return [];
+  if (recent.length === 0) {
+    report?.({ skipped: 'no-tool-stats' });
+    return [];
+  }
 
   const denied = recent.filter((r) => r.errorKind === 'denied');
-  if (denied.length < 1) return [];
+  if (denied.length < 1) {
+    report?.({ sampleSize: recent.length, deniedCount: 0 });
+    return [];
+  }
 
   const byTool = {};
   for (const d of denied) {
@@ -271,13 +294,19 @@ function detectRuleHotspot() {
  * 子源 4：压缩丢失
  * 通过 ctx 获取 agint.compressGuard service，调用 stats()。
  */
-function detectCompressLoss(ctx) {
+function detectCompressLoss(ctx, report = null) {
   const compressGuard = ctx?.services?.compressGuard;
-  if (!compressGuard || typeof compressGuard.stats !== 'function') return [];
+  if (!compressGuard || typeof compressGuard.stats !== 'function') {
+    // 离线/少挂 compressGuard 时这里是「没检查」而不是「检查过没问题」——
+    // 两者在 counters 上都是 produced=0，必须靠 report 分开。
+    report?.({ skipped: 'compressGuard-unavailable' });
+    return [];
+  }
 
   try {
     const stats = compressGuard.stats();
     const signals = [];
+    report?.({ guardStatus: stats?.status ?? null });
 
     if (stats.status === 'BLOCKED' || stats.status === 'DEGRADED') {
       signals.push({
@@ -295,23 +324,89 @@ function detectCompressLoss(ctx) {
     }
 
     return signals;
-  } catch {
+  } catch (e) {
+    // 保持原行为（不抛，别让护栏自伤），但把故障记到 health 面上
+    report?.({ error: String(e?.message ?? e).slice(0, 160) });
     return [];
   }
 }
 
 // ── 子源 5：session 完整性（v0.3.0 实装）──────────────────────────────────
 
-/** zstd 二进制解析（对齐 agint-session-extract 的 resolveZstdBin 语义） */
+/**
+ * zstd 可执行文件的候选清单（按优先级）。
+ *
+ * 2026-11-01 修（v0.1.10）：原 fallback 只有 /usr/bin、/usr/local/bin、/bin 三处，
+ * 而本机 zstd 装在 `~/.local/bin/zstd`（Debian/Ubuntu 上 pip/conda/手工装的常见位置）。
+ * 三处全 miss 时旧实现 `return 'zstd'`（一个**命令名**），调用方却拿它去
+ * `existsSync()` —— 那查的是 cwd 下的相对路径，不是 PATH 查找 ⇒ **恒 false** ⇒
+ * sessionIntegrity 子源自 v0.3 上线起从未真正执行过一次（见 probeZstd 注释）。
+ */
+function zstdCandidatePaths() {
+  const envBin = process.env.ZSTD_BIN;
+  const list = process.platform === 'win32'
+    ? ['D:/Tools/zstd/zstd.exe', 'C:/Tools/zstd/zstd.exe', 'D:/Tools/zstd/zstd', 'C:/Tools/zstd/zstd']
+    : [
+        '/usr/bin/zstd',
+        '/usr/local/bin/zstd',
+        '/bin/zstd',
+        join(homedir(), '.local/bin/zstd'),   // 2026-11-01 补：本机实际位置
+      ];
+  // ZSTD_BIN 排最前：允许覆盖；它可以是绝对路径，也可以是命令名（交给 PATH）
+  return envBin ? [envBin, ...list] : list;
+}
+
+/** 旧语义保留：只回答「最可能用哪个」，不做可用性判断。 */
 function resolveZstdBin() {
   if (process.env.ZSTD_BIN) return process.env.ZSTD_BIN;
-  const fallback = process.platform === 'win32'
-    ? ['D:/Tools/zstd/zstd.exe', 'C:/Tools/zstd/zstd.exe', 'D:/Tools/zstd/zstd', 'C:/Tools/zstd/zstd']
-    : ['/usr/bin/zstd', '/usr/local/bin/zstd', '/bin/zstd'];
-  for (const p of fallback) {
+  for (const p of zstdCandidatePaths()) {
     try { if (existsSync(p)) return p; } catch { /* ignore */ }
   }
   return 'zstd';
+}
+
+/**
+ * zstd 可用性探测（2026-11-01 新增）。
+ *
+ * 为什么不能只用 `existsSync`：
+ *   ① 命令名（`zstd`）交给 PATH 解析时，`existsSync('zstd')` 查的是 cwd ⇒ 恒 false；
+ *   ② 绝对路径存在 ≠ 可执行（无 x 位 / 架构不符 / 动态库缺失）。
+ * 判据只能是「真跑一次 --version 并拿到退出码 0」。
+ *
+ * 结果缓存到模块级（cron 每周一次，没必要每次都起子进程）。
+ * 安装了新的 zstd 后需要重启 dsh 才会重新探测 —— 用 `force` 可强制重探（测试用）。
+ *
+ * @returns {{ok: boolean, bin: string|null, reason: string|null, tried: Array<{bin:string,ok:boolean,reason:string}>}}
+ */
+let _zstdProbe = null;
+function probeZstd({ force = false } = {}) {
+  if (!force && _zstdProbe) return _zstdProbe;
+
+  const tried = [];
+  for (const cand of zstdCandidatePaths()) {
+    // 绝对路径先看存在性，省一次 spawn；命令名直接交给 PATH
+    if (isAbsolute(cand)) {
+      let exists = false;
+      try { exists = existsSync(cand); } catch { /* ignore */ }
+      if (!exists) { tried.push({ bin: cand, ok: false, reason: 'not-found' }); continue; }
+    }
+    try {
+      execFileSync(cand, ['--version'], { encoding: 'utf8', timeout: 5000, stdio: 'ignore' });
+      _zstdProbe = { ok: true, bin: cand, reason: null, tried };
+      return _zstdProbe;
+    } catch (e) {
+      tried.push({ bin: cand, ok: false, reason: String(e?.code ?? e?.message ?? 'exec-failed').slice(0, 120) });
+    }
+  }
+
+  _zstdProbe = {
+    ok: false,
+    bin: null,
+    reason: `zstd 不可执行：试过 ${tried.length} 个候选（${tried.map((t) => t.bin).join(', ')}）`
+      + '；设 ZSTD_BIN 指向可执行文件或把 zstd 装到候选路径后重启',
+    tried,
+  };
+  return _zstdProbe;
 }
 
 /**
@@ -358,51 +453,40 @@ function listRecentSessionsFallback(maxCount = 8) {
 }
 
 /**
- * 拿一个会话源。ctx 由调用方注入（channel 拿不到 ctx ⇒ 传 null 走回落）。
- * ⛔ 回落的出声回调必需：没它就抛错，不静默降级。
- */
-export function createSessionSourceForSelfObservation({ ctx = null, onFallback }) {
-  return createSessionSource({
-    ctx,
-    fallback: ({ maxCount = 8 } = {}) => listRecentSessionsFallback(maxCount),
-    onFallback,
-    source: 'input-gateway/self-observation',
-  });
-}
-
-/**
- * 列出最近 maxCount 个会话文件（mtime 排序；同会话多格式只取最新存在者）。
+ * 列出最近 maxCount 个会话**原始日志**文件（mtime 排序；同会话多格式只取最新存在者）。
  * 结构：sessionsRoot/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
  *
- * 2026-10-19 改：走 `agint-session-source`（上游优先 + 回落出声）。
- * 既有调用方不用改签名；ctx 缺省时走回落并出声。
+ * ── 2026-11-02 定判（第三次，覆盖前两次） ─────────────────────────────────
+ * **本通道按设计读本地原始日志。这不是降级，也不该以降级的形式被报告。**
+ *
+ * 判据：完整性检测查的是**原始字节里的缺陷**（坏行 / seq 断裂 / 缺 content / 未配对 call）。
+ * 上游 `readSession` 给的是**重放校验后**的事件流 —— 缺陷在校验阶段已被抹平，
+ * 拿它做完整性检查 = 拿干净数据找脏东西，检测能力直接归零（2026-10-21 实测，不是推理）。
+ *
+ * 所以「要不要走上游」取决于**消费的是语义还是字节**，不取决于「有没有上游」：
+ *   · 语义消费（不要求原始字节）⇒ 走上游正确。`agint-dream/lib/sweep.js` 与
+ *     `agint-tool-stats` 正是这么做的，`readEvents()` 的 upstream 分支有真实调用方，不是死代码。
+ *   · 字节检测（要求原始日志）⇒ 只能读本地。本通道属于这一类，宿主目前**不提供**
+ *     「读原始会话日志」的接口 ⇒ 这是宿主层缺口，不是 AGINT 越界。
+ *
+ * ⛔ 上一版（2026-10-21 ~ 2026-11-01）每次调用都 notify 一条 `local-by-design: ...`，
+ * 落到默认 console.warn ⇒ 每周一条「会话源降级」。那正是 v0.13.0 静默失败治理的反面：
+ * 治的是「真故障不吭声」，这条是「没事喊狼来了」——**同样是假读数**，只是方向相反。
+ * 现在：设计路径**不出声**，改在返回项上带 `sourceMode: 'local-raw'` 供 health 面展示；
+ * 只有**真的**一个会话都没找到时，才通过 onFallback 出声（那才是降级）。
  */
 export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback = null } = {}) {
-  // ⚠️ 2026-10-21 回退（运行态取证）——本通道**按设计走本地原始日志**，不走上游。
-  //
-  // 为什么必须回退（D1 迁移把这条链接上上游后，它反而瞎了）：
-  //   ① **检测对象不同**：完整性检查查的是磁盘上的**原始日志**（坏行 / seq 断裂 /
-  //      缺 content / 未配对 call）。上游 `readSession` 给的是**重放校验后**的
-  //      事件流 —— 缺陷在校验阶段就被抹平 ⇒ 拿它做完整性检查，检测能力直接归零。
-  //   ② **上游不给磁盘路径**：`listSessions` 的记录没有 path ⇒ 下游拿到的
-  //      `path` 是空串 ⇒ 解压必然失败 ⇒ 全部会话被判为 undecompressible。
-  //
-  // 宿主若再改会话日志命名，本通道靠 `findSessionLogFile` 的候选名 + 后缀兜底兜住
-  // （2026-09-22 改名致 12 天断供的教训）。
-  //
-  // 代价要说清：这仍是 B-008 登记的「宿主层能力自建」（自拉 zstd 解压），
-  // 本轮**不**消除 —— 完整性检查需要原始字节，上游目前不提供该形态。
-  void ctx;
-  const notify = onFallback ?? ((reason) => {
-    if (typeof console !== 'undefined' && console.warn) {
-      console.warn(`[input-gateway/self-observation] 会话源降级: ${reason}`);
-    }
-  });
-  notify('local-by-design: session 完整性检查必须读原始日志（上游是重放校验后的产物，且不含磁盘路径）');
-  // 对齐既有形状：{ path, sessionId, mtimeMs }
-  return listRecentSessionsFallback(maxCount).map((r) => ({
-    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs,
+  void ctx; // 本通道按设计不用上游，理由见上（保留参数以对齐 session-source 的形状）
+  // 对齐既有形状，另加 sourceMode：让调用方能区分「按设计读本地」与「本该走上游却回落了」。
+  const files = listRecentSessionsFallback(maxCount).map((r) => ({
+    path: r.path ?? '', sessionId: r.dir, mtimeMs: r.mtimeMs, sourceMode: 'local-raw',
   }));
+  if (files.length === 0 && onFallback) {
+    // 真降级：候选名 + `.jsonl.zstd` 后缀兜底都没命中。此时必须出声，否则
+    // 「扫了 0 个」和「扫了 8 个都没问题」在 health 面上长得一样（本项目最坏的一类失败）。
+    onFallback('no-session-log-found: 候选名与 .jsonl.zstd 后缀兜底均未命中');
+  }
+  return files;
 }
 
 /**
@@ -417,12 +501,14 @@ export async function listRecentSessions(maxCount = 8, { ctx = null, onFallback 
  *   - 未配对 call：tool/call 的 callId 无对应 tool/result
  * 解压失败（zstd 缺失/文件损坏）返回 { decompressError }。
  *
- * ⚠️ 2026-10-21 回退（运行态取证）：**只读本地原始日志**，不走上游。
+ * ⚠️ 2026-10-21 回退、2026-11-02 定判：**只读本地原始日志**，不走上游。
  *   ① 完整性检查查的就是原始日志的缺陷（坏行 / seq 断裂 / 缺 content / 未配对 call）；
  *      上游 `readSession` 给的是**重放校验后**的事件流 ⇒ 缺陷已被抹平，
  *      拿它检查等于拿干净数据找脏东西 —— 检测能力直接归零。
  *   ② 上游记录不含磁盘路径，本函数却必须拿到日志文件才能解压。
- *   ⇒ 本函数签名不再接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
+ *   ⇒ 本函数签名不接受 sessionSource（2026-10-21 之前接受过，见 git 史）。
+ *   ⛔ 这个设计**不是待修项**。完整判据与「语义消费 vs 字节检测」的分界见
+ *      `listRecentSessions` 上方那段注释；别再把它当成「没接上游」改回去。
  */
 export async function inspectSessionFile(file) {
   let events;
@@ -430,7 +516,9 @@ export async function inspectSessionFile(file) {
   let badLinesSeen = null;   // zstd 路径读入时累计的坏行数
 
   {
-    const bin = resolveZstdBin();
+    // 与 detectSessionIntegrity 共用同一份探测结果：不许出现「探测说行、执行却换另一个 bin」
+    const probe = probeZstd();
+    const bin = probe.ok ? probe.bin : resolveZstdBin();
     try {
       const text = execFileSync(bin, ['-dc', file.path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
       // ⛔ 不能 .filter(Boolean) 丢坏行 —— 那等于把"坏行计数"这个检测项废掉。
@@ -504,11 +592,21 @@ export async function inspectSessionFile(file) {
  * 数据源：~/.dsh/sessions/<workspace>/<sessionId>/session.{v3,v4,}.jsonl.zstd
  * 最近 8 个会话（mtime 排序）。zstd 不可用时整体软降级返回 []（不误报"全会话损坏"）。
  */
-async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
-  if (!existsSync(resolveZstdBin())) return [];     // zstd 缺失 → 软降级
+async function detectSessionIntegrity({ ctx = null, onFallback = null, report = null } = {}) {
+  // 2026-11-01 修：原来这里是 `if (!existsSync(resolveZstdBin())) return []` ——
+  // 命令名交给 existsSync 查的是 cwd，恒 false，整个子源从未执行（静默失明）。
+  // 现在必须真探测到可执行，且**跳过要出声**（report 把原因交给 health 面）。
+  const probe = probeZstd();
+  if (!probe.ok) {
+    report?.({ skipped: 'zstd-unavailable', reason: probe.reason, tried: probe.tried });
+    return [];
+  }
   // 2026-10-19：listRecentSessions 改为异步（要走上游服务探测），调用方必须 await。
   const files = await listRecentSessions(8, { ctx, onFallback });
-  if (files.length === 0) return [];
+  if (files.length === 0) {
+    report?.({ skipped: 'no-session-files', zstdBin: probe.bin, sessionsRoot: join(dshHome(), 'sessions') });
+    return [];
+  }
 
   const issues = [];
   for (const f of files) {
@@ -526,6 +624,12 @@ async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
     }
     if (flags.length) issues.push({ ...insp, flags });
   }
+
+  // 正常路径也要留下「真扫了几个会话」的证据 —— 否则「扫了 0 个」和
+  // 「扫了 8 个都没问题」在 health 面上长得一样（本项目最坏的一类失败）。
+  // sourceMode 显式写 'local-raw'：本通道按设计读原始日志（判据见 listRecentSessions 上方），
+  // 让面板能区分「设计路径」与「本该走上游却回落了」——后者才是降级。
+  report?.({ zstdBin: probe.bin, sourceMode: 'local-raw', scannedSessions: files.length, flaggedSessions: issues.length });
 
   if (issues.length === 0) return [];
   return issues.map((i) => ({
@@ -551,6 +655,64 @@ async function detectSessionIntegrity({ ctx = null, onFallback = null } = {}) {
 }
 
 /**
+ * 各子源上一次执行的真实结果（2026-11-01 新增）。
+ *
+ * 为什么要有它：`health()` 原本把 5 个检测器一律写成 `active: true`，
+ * 于是「守着恒 0 的指标」和「压根没执行」在面板上长得一样 —— sessionIntegrity
+ * 就靠这个假绿藏了整整一个版本（zstd 探测恒 false，从未扫过一次会话）。
+ *
+ * 记录形状：{ ran, produced, skipped, reason, error, at, ...统计字段 }
+ *   ran      true=真执行了；false=被跳过（看 skipped/reason）；null=本 boot 还没跑过
+ *   skipped  跳过原因码（zstd-unavailable / compressGuard-unavailable / ...）
+ *   produced 该子源本次产出信号条数
+ */
+const _detectorRuns = Object.create(null);
+
+const DETECTOR_META = {
+  toolAnomaly: { schema: 'ok===false', threshold: 'failRate>15% or streak>=3' },
+  metricRegression: { schema: 'error-metric snapshot diff', threshold: 'current>prev*1.5 & +5' },
+  ruleHotspot: { schema: 'errorKind===denied', threshold: '>=1 in last 200 (baseline=0)' },
+  compressLoss: { schema: 'agint.compressGuard.stats()', threshold: 'status in BLOCKED|DEGRADED' },
+  sessionIntegrity: { schema: 'sessions/<ws>/<sid>/session.{v4,v3,}.jsonl.zstd', threshold: 'badLines>=5&>5% | seqGaps>=5 | missingContent>=3 | unpaired>20%' },
+};
+
+function nowIso() { return new Date().toISOString(); }
+
+/**
+ * 跑一个子源并记录它的执行事实。
+ * ⛔ 子源抛错一律**原样抛出去**：旧行为是让 fetch 整体失败、由 gateway 记 lastError，
+ *    这里若吞掉就把「子源故障」变成静默 —— 那正是本次要修的那类 bug。
+ */
+async function runDetector(key, fn) {
+  const notes = {};
+  const report = (n) => { if (n && typeof n === 'object') Object.assign(notes, n); };
+  try {
+    const out = await fn(report);
+    const signals = Array.isArray(out) ? out : [];
+    _detectorRuns[key] = {
+      ran: notes.skipped ? false : true,
+      produced: signals.length,
+      skipped: notes.skipped ?? null,
+      reason: notes.reason ?? null,
+      error: null,
+      at: nowIso(),
+      ...notes,
+    };
+    return signals;
+  } catch (e) {
+    _detectorRuns[key] = {
+      ran: true,
+      produced: 0,
+      skipped: null,
+      error: String(e?.message ?? e).slice(0, 200),
+      at: nowIso(),
+      ...notes,
+    };
+    throw e;
+  }
+}
+
+/**
  * C2 Channel 实例。
  */
 export const selfObservationChannel = {
@@ -559,30 +721,61 @@ export const selfObservationChannel = {
   cron: C2_CRON,
 
   async fetch(ctx) {
+    // 顺序执行（与原实现一致），但每个子源留下「真跑了 / 被跳过 / 出错」的证据
     const signals = [
-      ...detectToolAnomaly(),
-      ...detectMetricRegression(),
-      ...detectRuleHotspot(),
-      ...detectCompressLoss(ctx || {}),
+      ...(await runDetector('toolAnomaly', (r) => detectToolAnomaly(r))),
+      ...(await runDetector('metricRegression', (r) => detectMetricRegression(r))),
+      ...(await runDetector('ruleHotspot', (r) => detectRuleHotspot(r))),
+      ...(await runDetector('compressLoss', (r) => detectCompressLoss(ctx || {}, r))),
       // ctx 透传给会话源：上游 sessionQuery 可用就走它，不可用回落并出声
-      ...(await detectSessionIntegrity({ ctx: ctx || null })),
+      ...(await runDetector('sessionIntegrity', (r) => detectSessionIntegrity({ ctx: ctx || null, report: r }))),
     ];
     return signals;
   },
 
   async health() {
+    // 2026-11-01 重写：不再硬编码 active:true —— 每个子源报「上次真跑了没」。
+    // status 语义：unknown=本 boot 还没 fetch 过；degraded=有子源被跳过或出错；
+    //              ok=5 个子源都真跑过且无跳过。
+    const keys = Object.keys(DETECTOR_META);
+    const runs = keys.map((k) => _detectorRuns[k] ?? null);
+    const ranCount = runs.filter((r) => r && r.ran).length;
+    const skippedKeys = keys.filter((k) => _detectorRuns[k] && _detectorRuns[k].ran === false);
+    const erroredKeys = keys.filter((k) => _detectorRuns[k] && _detectorRuns[k].error);
+
+    const status = runs.every((r) => r === null)
+      ? 'unknown'
+      : ((skippedKeys.length || erroredKeys.length) ? 'degraded' : 'ok');
+
+    const detectors = {};
+    for (const k of keys) {
+      const r = _detectorRuns[k] ?? null;
+      detectors[k] = {
+        ...DETECTOR_META[k],
+        active: r ? r.ran === true : null,   // null = 本 boot 尚未执行（不是"正常"）
+        ran: r ? r.ran : null,
+        produced: r ? r.produced : null,
+        skipped: r?.skipped ?? null,
+        reason: r?.reason ?? null,
+        error: r?.error ?? null,
+        lastRunAt: r?.at ?? null,
+        stats: r ? Object.fromEntries(Object.entries(r).filter(
+          ([f]) => !['ran', 'produced', 'skipped', 'reason', 'error', 'at'].includes(f),
+        )) : null,
+      };
+    }
+
+    const zstd = probeZstd();
     return {
       channelId: this.id,
-      status: 'ok',
+      status,
       subSources: 5,
-      detectors: {
-        toolAnomaly: { active: true, schema: 'ok===false', threshold: 'failRate>15% or streak>=3' },
-        metricRegression: { active: true, schema: 'error-metric snapshot diff', threshold: 'current>prev*1.5 & increase>5' },
-        ruleHotspot: { active: true, schema: 'errorKind===denied', threshold: '>=1 in last 200 (baseline=0)' },
-        compressLoss: { active: true, depends: 'agint.compressGuard' },
-        sessionIntegrity: { active: true, schema: '~/.dsh/sessions/<ws>/<sid>/session.{v3,v4,}.jsonl.zstd', threshold: 'badLines>=5&>5% | seqGaps>=5 | missingContent>=3 | unpaired>20%(非进行中)' },
-      },
-      note: 'v0.3: sessionIntegrity 实装（zstd 解压最近 8 会话，检测坏行/seq 断裂/缺 content/未配对 call）',
+      ranCount,
+      skippedDetectors: skippedKeys,
+      erroredDetectors: erroredKeys,
+      zstd: { ok: zstd.ok, bin: zstd.bin, reason: zstd.reason },
+      detectors,
+      note: 'v0.4: 执行面自报 —— active=上次是否真执行（null=本 boot 未跑）；被跳过的子源会给出 skipped/reason',
     };
   },
 };

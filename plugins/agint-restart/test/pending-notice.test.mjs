@@ -66,12 +66,13 @@ function makeCtx({ agents = [] } = {}) {
     emit(evt, payload) {
       for (const h of handlers.get(evt) ?? []) h(payload);
     },
-    // 测试专用：把 agent 加进"内存池"并广播 session-start
+    // 测试专用：把 agent 加进"内存池"并广播 agent/created
+    // （v0.9.3：原为 agent/session-start，宿主从不发该事件，详见 lib/index.js 那段注释）
     openSession(agent) {
       service.list = () => [agent];
       service.roots = () => [agent];
       service.get = (id) => (String(id) === String(agent.id) ? agent : undefined);
-      ctx.emit('agent/session-start', { agent });
+      ctx.emit('agent/created', { agent });
     },
     provide: () => {},
     // v0.9.0 起 apply() 会软依赖查找 ctx.get('commands')（缺席时插件照常挂载，
@@ -232,9 +233,36 @@ test('源码护栏：找不到目标时必须落盘，不得再出现"直接丢�
   const src = readFileSync(join(LIB_DIR, 'index.js'), 'utf8');
   assert.ok(!/skip wake/.test(src), '不应再出现 skip wake（旧行为会把通知丢掉）');
   assert.ok(/writePending\('boot'\)/.test(src), '重启分支必须先落盘通知');
-  assert.ok(/tryFlushPending\(agent\)/.test(src), 'session-start 时必须尝试补投');
+  assert.ok(/tryFlushPending\(agent\)/.test(src), 'agent 出现时必须尝试补投');
   assert.ok(/clearPending\(\)/.test(src), '送达后必须清除落盘副本');
   assert.ok(/deliveredForBoot/.test(src), 'v0.7.2：必须有"同一次 boot 只投一次"的去重位');
+});
+
+test('订阅的宿主事件名必须存在于能力面基线（写错 = 永不触发的死订阅）', () => {
+  // 守的是 v0.9.3 修的那一处：`agent/session-start` 在 dsh 0.2.x 的 82 个宿主事件里**不存在**，
+  // 而 cordis 订阅一个不存在的事件不报错、只是永不触发 ⇒ 静默失效。
+  // 它从 v0.7.2 一直躺到 2026-11-01 才被发现，"重启后补投压着的通知"这段时间一次没跑过。
+  //
+  // 判据不靠手抄名单：直接读 docs/dsh-surface-baseline.json —— 它由 bin/dsh-surface.mjs --record
+  // 从宿主自己的 api-catalog 生成，是宿主声明的权威事件表。
+  // 阴性对照：把事件名改回任何一个不存在的名字，本用例必须变红。
+  //
+  // 约束：本插件**只允许**订阅宿主事件。若日后要订阅 AGINT 内部事件，先改这条用例并把
+  // 白名单写清楚，不要图省事把断言删掉。
+  const baselinePath = join(LIB_DIR, '../../../docs/dsh-surface-baseline.json');
+  assert.ok(existsSync(baselinePath), '能力面基线缺失 ⇒ 这一项**没查**，不是通过');
+  const hostEvents = new Set(JSON.parse(readFileSync(baselinePath, 'utf8')).events);
+  assert.ok(hostEvents.size > 50, '基线事件数异常（<50），先确认文件没写坏再往下判');
+
+  const src = readFileSync(join(LIB_DIR, 'index.js'), 'utf8');
+  const subscribed = [...src.matchAll(/ctx\.on\(\s*'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(subscribed.length > 0, '没扫到任何 ctx.on —— 正则或代码结构变了，本用例已失效');
+  for (const evt of subscribed) {
+    assert.ok(
+      hostEvents.has(evt),
+      `订阅了宿主不存在的事件 "${evt}" —— 它将永不触发。改前先查 api-catalog 的事件表。`,
+    );
+  }
 });
 
 test('同一次 boot 只投一次：补投成功后 boot 轮询不得再投（v0.7.2 去重）', async () => {

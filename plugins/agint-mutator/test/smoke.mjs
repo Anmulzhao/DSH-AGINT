@@ -246,3 +246,84 @@ test('propose 写表后能读出 + 同 payload 同 preimageHash（不同 atomicS
   assert.notEqual(a.id, b.id);
   assert.equal((await services['agint.mutator.stats']()).proposals, 2);
 });
+
+// ── W6（v0.7.0）worktree 隔离的路径护栏 ─────────────────────────────
+// plugin-check 维度 5.5 要求 permissions.fs 非空的插件在 smoke 里给出：
+//   ① forward-slash 相对路径的正向 case（'plugins/x/prompts/y.md' 形态）
+//   ② '../' 负向 case（逃逸必须被拒）
+// 这不是为了消 WARN：`resolveInside` 真的在守 commit 的落点，而 targetPath 是
+// `plugins/${pluginId}/prompts/${p.promptId}.md` 这种**字符串拼**出来的，promptId 由调用方给。
+// 跨平台要点：Windows 上 `..\` 与 `C:\` 也能逃逸，所以两种分隔符都要能挡。
+
+test('resolveInside: forward-slash 相对路径正常解析（Linux / Windows 同源）', async () => {
+  const { resolveInside } = await import('../lib/worktree-isolation.js');
+  const root = process.platform === 'win32' ? 'C:\\repo' : '/repo';
+  const got = resolveInside(root, 'plugins/agint-mutator/prompts/sys-prompt.md');
+  assert.ok(got.endsWith('sys-prompt.md'), `应解析到 sys-prompt.md，实际 ${got}`);
+  assert.ok(got.startsWith(root), `必须落在 root 内，实际 ${got}`);
+});
+
+test('resolveInside: ../ 逃逸必须被拒（负向 case）', async () => {
+  const { resolveInside } = await import('../lib/worktree-isolation.js');
+  const root = process.platform === 'win32' ? 'C:\\repo' : '/repo';
+  assert.throws(() => resolveInside(root, '../../etc/passwd'), /越出 worktree 根/);
+  assert.throws(() => resolveInside(root, 'plugins/../../../x.md'), /越出 worktree 根/);
+  // 绝对路径一律拒（否则 resolve 会直接丢掉 root）
+  assert.throws(() => resolveInside(root, '/etc/passwd'), /绝对路径/);
+});
+
+test('smoke: worktree 隔离默认关闭 ⇒ commit 不出现 audit.worktree 字段', async () => {
+  // ⛔ 不用 buildServices：它的 storageDomain 每次 table() 都新建 Map，跨服务调用读不到前一次写的行。
+  //    这个用例要读 commit 写进 commits 表的 audit，必须共享同一份表。
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const repoRoot = mkdtempSync(join(tmpdir(), 'agint-smoke-wt-'));
+  const tables = { proposals: new Map(), commits: new Map(), findings: new Map(), metrics_log: new Map() };
+  const services = {};
+  try {
+    plugin.apply({
+      storageDomain: {
+        open: async () => ({
+          table: (n) => {
+            const s = tables[n] || (tables[n] = new Map());
+            return {
+              get size() { return s.size; },
+              entries: () => [...s.entries()][Symbol.iterator](),
+              put: async (id, v) => { s.set(id, v); },
+              close: async () => {},
+            };
+          },
+          close: async () => {},
+        }),
+      },
+      get: (n) => {
+        if (n === 'agint.qualitySandbox') {
+          return { runSmoke: async ({ target }) => ({ target, ok: true, mode: 'in-process', exitCode: 0, stdout: '', stderr: '', checks: [], durationMs: 1 }) };
+        }
+        if (n === 'agint.qualityPolicy') return { decide: async () => ({ kind: 'AUTO_DEPLOY', score: 80, reason: 'smoke' }) };
+        if (n === 'agint.diagnosis') return { annotate: async () => [], report: async () => ({}) };
+        if (n === 'agint.evolution') return { queryFailures: async () => [] };
+        // ⛔ 故意**不给** worktrees / workingDirectory：这就是「默认关 + 没有 worktree 服务」的真实形态
+        return null;
+      },
+      provide: (n, f) => { services[n] = f; },
+      effect: () => () => {},
+    }, {}); // config 空 = 默认关
+
+    // TOOL_SYNTHESIS 新建文件，不需要 preimage 存在（插件目录里没有 plugins/agint-mutator/prompts/）
+    const p = await services['agint.mutator.propose']({
+      source: 'attribution-driven', failureId: 'f-wt-smoke', rootCause: 'TOOL_GAP',
+      expectedEffect: 'tool OK >= 80% in 7d', rollbackCondition: 'tool fail >10% → rollback',
+      atomicScope: 'tool',
+      toolPayload: { toolName: 'smoke-tool', signature: 'smoke(c) -> P<R>', stubs: ['// stub'], intent: 'smoke 用工具' },
+      targetPlugin: 'agint-mutator',
+    });
+    await services['agint.mutator.commit']({ proposalId: p.id, repoRoot });
+    const entry = [...tables.commits.values()][0];
+    assert.ok(entry, 'commits 表应有一行');
+    assert.equal('worktree' in entry.audit, false, '默认关的配置不该多出字段 —— 「没启用」与「启用了但降级」必须可区分');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

@@ -64,13 +64,25 @@ test.after(() => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
 });
 
-test('取证：fetch() 返回数组，channel.health() 报 5 个检测器全 active', async () => {
+test('取证：health() 的执行面必须与真实执行一致（不许假绿）', async () => {
   const r = await fetchWith(Array.from({ length: 30 }, () => rec('read', true)));
   assert.ok(Array.isArray(r), 'fetch() 必须返回数组');
   const h = await selfObservationChannel.health();
   assert.equal(h.subSources, 5, `子源数应为 5，实得 ${h.subSources}`);
-  const actives = Object.values(h.detectors).filter((d) => d.active !== false).length;
-  assert.equal(actives, 5, `5 个检测器应全 active，实得 ${actives}`);
+
+  // 本次只喂了 tool_stats：这两个子源有数据，必须真跑
+  assert.equal(h.detectors.toolAnomaly.active, true, 'toolAnomaly 有数据时必须真跑');
+  assert.equal(h.detectors.ruleHotspot.active, true, 'ruleHotspot 有数据时必须真跑');
+
+  // 缺依赖的子源必须自报跳过 + 原因，**不许**报 active:true。
+  // 2026-11-01 之前 health() 把 5 个检测器一律写成 active:true，
+  // sessionIntegrity 的 zstd 探测恒 false 却报绿，子源从未执行过都看不出来。
+  for (const k of ['metricRegression', 'compressLoss', 'sessionIntegrity']) {
+    const d = h.detectors[k];
+    assert.equal(d.active, false, `${k} 缺依赖时必须报 active:false，不许假绿`);
+    assert.ok(d.skipped, `${k} 必须给出 skipped 原因（实得 ${JSON.stringify(d)}）`);
+  }
+  assert.notEqual(h.status, 'ok', `有子源被跳过时 status 不能是 ok，实得 ${h.status}`);
 });
 
 test('⛔ 修复后：中间段的连续失败必须被检出（末尾是成功也不漏）', async () => {

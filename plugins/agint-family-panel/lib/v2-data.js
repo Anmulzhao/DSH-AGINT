@@ -264,7 +264,14 @@ function dayIndex(ts, now) {
 
 function aggTools(storagesDir, now) {
   const file = join(storagesDir, 'agint_tool_stats.jsonl');
-  const text = readFileSync(file, 'utf8');
+  // 文件由 tool-stats 在首次记录工具调用时才 appendFile 创建：新机器上必然缺席。
+  // 「还没有任何工具调用」是空态不是故障 —— 返回空聚合，别挂「数据源降级」黄条。
+  // 其余读失败（权限/坏盘）照旧抛给调用方降级。
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch (e) {
+    if (e?.code !== 'ENOENT' || !existsSync(storagesDir)) throw e;
+    return { rows: [], daily: {}, total: 0, windowDays: WINDOW_DAYS, observedAt: null };
+  }
   const cutoff = now - WINDOW_DAYS * DAY_MS;
   const byTool = new Map();
   const daily = new Map();
@@ -306,11 +313,49 @@ function aggCron(storagesDir) {
   return { jobs, count: jobs.length, observedAt: mtimeIso(file) };
 }
 
+/**
+ * per-record 布局的一张表：<storages>/agint_event_bus/<table>/<key>.json，
+ * 单记录文档 {version, record}（dsh-storage-json 的 serializeRecord 口径）。
+ * 坏文件跳过不整表报废 —— 与 aggTools 的坏行同哲学。目录不存在返回 null，
+ * 调用方据此回退 single 布局。
+ */
+function readPerRecordTable(tableDir) {
+  if (!existsSync(tableDir)) return null;
+  const out = [];
+  for (const name of readdirSync(tableDir)) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const doc = JSON.parse(readFileSync(join(tableDir, name), 'utf8'));
+      if (doc?.record) out.push(doc.record);
+    } catch { /* 坏记录跳过 */ }
+  }
+  return out;
+}
+
 function aggBus(storagesDir, now) {
-  const file = join(storagesDir, 'agint_event_bus.json');
-  const body = JSON.parse(readFileSync(file, 'utf8'));
-  const events = body?.tables?.events;
-  if (!events || typeof events !== 'object') return { state: 'error', reason: 'events 表缺失或形态未知' };
+  // agint-event-bus v0.9.0 起域声明 layout:'per-record'（migrate.js 负责补迁），
+  // 介质从单文件 agint_event_bus.json 换成 agint_event_bus/<表>/<key>.json。
+  // 目录在 ⇒ 它就是权威（宿主 open() 只 loadAll 目录），single 文件即使残留
+  // 也是迁移前的旧快照，读它会拿到过期数据；目录不在才回退 single（未迁移部署）。
+  const busDir = join(storagesDir, 'agint_event_bus');
+  const perRecord = readPerRecordTable(join(busDir, 'events'));
+  let values;
+  let deadletter;
+  let observedPath;
+  if (perRecord !== null) {
+    values = perRecord;
+    deadletter = readPerRecordTable(join(busDir, 'deadletter'))?.length ?? 0;
+    observedPath = join(busDir, 'events');
+  } else {
+    const file = join(storagesDir, 'agint_event_bus.json');
+    const body = JSON.parse(readFileSync(file, 'utf8'));
+    const events = body?.tables?.events;
+    if (!events || typeof events !== 'object') return { state: 'error', reason: 'events 表缺失或形态未知' };
+    values = Object.values(events);
+    const dl = body?.tables?.deadletter;
+    deadletter = dl && typeof dl === 'object' ? Object.keys(dl).length : 0;
+    observedPath = file;
+  }
   const topics = new Map();
   const topicLast = new Map();
   const sources = new Map();
@@ -318,7 +363,7 @@ function aggBus(storagesDir, now) {
   let total = 0;
   let first = null;
   let last = null;
-  for (const v of Object.values(events)) {
+  for (const v of values) {
     const e = v?.envelope;
     if (!e) continue;
     total += 1;
@@ -341,11 +386,10 @@ function aggBus(storagesDir, now) {
       }
     }
   }
-  const dl = body?.tables?.deadletter;
   const sortDesc = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   return {
     total,
-    deadletter: dl && typeof dl === 'object' ? Object.keys(dl).length : 0,
+    deadletter,
     topics: sortDesc(topics),
     /** topic → 全历史最后一次发布的 occurredAt。订阅投递分层要用：投递计数随进程重启
      *  清零，而「这个主题到底有没有人发过」只有全历史能回答。 */
@@ -353,7 +397,9 @@ function aggBus(storagesDir, now) {
     sources: sortDesc(sources),
     daily: Object.fromEntries(daily),
     range: [first, last],
-    observedAt: mtimeIso(file),
+    // per-record 时取 events 目录 mtime：新增/删除记录文件都会更新它，
+    // 与 single 布局「文件 mtime = 最近一次写」的口径对齐。
+    observedAt: mtimeIso(observedPath),
   };
 }
 
@@ -1276,11 +1322,17 @@ const SKIP_FOR_KIND = new Set(['node_modules', 'test', 'tests', 'fixtures', 'sch
 
 /** mtime 签名：三个 storages 文件 + 神谕层存储域 + 各插件 lib 目录 mtime。
  *  ⛔ 神谕层文件必须进签名：它不在原三源之列，漏了就只能靠 30s TTL 兜，
- *     09:00 广播刚落地时面板会显示上一轮判词（看起来像「神谕没跑」）。 */
+ *     09:00 广播刚落地时面板会显示上一轮判词（看起来像「神谕没跑」）。
+ *  ⛔ event bus 的 per-record 目录也要进签名（v0.9.0 布局）：single 文件不再
+ *     被写，只签它的话新事件落地后签名不变，面板只能靠 TTL 兜。目录 mtime
+ *     随记录文件的增删更新，与 single「每次 put 改文件 mtime」口径等价。 */
 function signature(dirs) {
   const sig = [];
   for (const f of ['agint_tool_stats.jsonl', 'agint_cron.json', 'agint_event_bus.json', 'agint_aesthetic_oracle.json']) {
     sig.push(mtimeIso(join(dirs.storagesDir, f)));
+  }
+  for (const t of ['events', 'deadletter']) {
+    sig.push(mtimeIso(join(dirs.storagesDir, 'agint_event_bus', t)));
   }
   try {
     for (const d of readdirSync(dirs.pluginsDir)) {

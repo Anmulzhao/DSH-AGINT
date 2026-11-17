@@ -1,5 +1,245 @@
 # agint-family-panel CHANGELOG
 
+## 0.13.0 — 2026-11-16（架构图实时聚合；单点数据/渲染；7 视图）
+
+### 问题
+
+架构图（`eviz` tab）是**生成时静态快照**：`bin/evolution-viz-snapshot.mjs` 直读
+9 个 storages 域把读数烤进 `srcdoc`，而其余 9 个 tab 走 `/v2/data` 实时聚合。
+实测两轨时点差 **13m52s**（快照 15:49:06Z vs 实时 16:02:58Z），域覆盖**交集只有 5 个**
+（架构图独有 metrics/trajectory/rules/abtest，面板独有 oracle/curriculum/event_bus/
+upstream_watch/tool_stats）。任何跨 tab 的融合都会把「同一实体两个时刻两个数」摆在同一屏。
+
+同时架构图有四处与面板脱节：`eval` 节点恒 `—`（神谕有 3 卡却读不到）、无队列视图
+（9 条待办只在「待办」tab）、断点边只有判定没有证据、L0 没有上游扰动输入。
+
+### 改动
+
+- **新增 `lib/arch-data.js`**（数据单一真源，纯函数 `collectArchData({storagesDir,now,v2})`）：
+  复用 `aggPending` / `aggOracle` / `aggUpstream`，补读 `agint_curriculum` / `agint_mutator` /
+  `agint_population` / `agint_tool_stats.jsonl`（按 mtime 缓存）。输出 21 节点 / 26 边 /
+  7 视图 / 9 队列 / 14 域盘点。`EDGE_DECL` 把每条边的 `basis`（依据）与 `breakWhen`
+  （断点判据）写成可导出常量：**数据恢复后断点自动变 live**，不留永久红叉。
+- **新增 `lib/arch-render.js`**（渲染单一真源）：`renderArchPage`（离线快照/独立 HTML）
+  与 `renderArchFragments`（实时片段）共用同一套模板。浏览器只做 DOM 更新，不重写模板 ——
+  避免「生成器一套 HTML、路由一套 HTML」的口径漂移。
+- **新增 `GET /api/agint-family/v2/arch`**（回环 + kill-switch 同 `/v2/data`）：
+  返回 `{ok, generatedAt, mode:'live', model, fragments}`，约 **34 KB**（对比 `/v2/data`
+  521 KB）。事件总线段**复用** `/v2/data` 已算好的 bus（per-record 目录实测 2 万+ 文件，
+  30s 轮询重扫会打爆磁盘）；无缓存时标 `deferred` 并说明原因，⛔ 不拿迁移前单文件冒充全量。
+- `bin/evolution-viz-snapshot.mjs` 瘦身为「调数据层 → 调渲染层 → 写盘 → 注入三副本」
+  （原 957 行 → 约 170 行）。⛔ 读数与模板不再写回生成器。
+- iframe 首屏用内嵌快照，随后 `fetch('/api/agint-family/v2/arch')` 覆盖；
+  30s 轮询 + `visibilitychange` 立即重取；**连续失败 3 次退避到 5 分钟**（路由未注册时
+  返回 401，不该每 30s 打一次），宿主重启后自动恢复。
+- 新增「队列」与「校验」视图；`eval` 节点接神谕判词卡/广播史；`propose` 节点加
+  待批/已批；L0 新增「上游扰动」节点（`agint_upstream_watch`）；断点边带当次 `evidence`。
+- 节点详情加 `postMessage` 导航按钮（去提案台/待办/Q1/Q3/神谕/上游）；父页新增监听，
+  **只切 tab、不代执行写操作**，并校验 `e.source === iframe.contentWindow`。
+
+### 行为变化
+
+- 状态点区分两形态：「实时 · `<generatedAt>`」= 已从 `/v2/arch` 覆盖；
+  「离线快照 · `<时点>`」= 服务不可达（如 `file://` 打开独立 HTML），⛔ 不假装实时。
+- 课程待做改用 `status === 'open'`（与 `PENDING_SPECS['curriculum-challenge']` 同源），
+  消除「KPI 报 0、队列报 5」的同类不一致。
+- 域缺失仍是灰 `—`，不是 0；`missing` 只记错误码，**不再把 ENOENT 的绝对路径烤进仓内文件**
+  （AGENTS.md 第 16 条红线）。
+- 状态戳补**显式模式徽标**（`离线快照` / `实时聚合`）并联动顶栏副标题：原先首屏只给一个
+  ISO 时间戳，请求悬挂时会被误读成实时；现在模式与时间戳分列，切换时两处同步更新。
+
+### 验收
+
+- `node --test test/arch-data.test.mjs` → 6/6（三态、五类边之和、课程判据同源、
+  断点动态恢复、无绝对路径泄漏、unavailable 队列 pending=null）。
+- 产物验证 34/34：srcdoc 解码与独立 HTML 逐字节一致、内联 JS 经 `node:vm` + DOM stub
+  真执行、7 视图 / 21 节点 / 26 边 / 9 队列 / 14 域、数字与 storages 对拍、无外链无绝对路径。
+- 实时模式验证 18/18：用**真实 `/v2/arch` payload** 驱动面板内联脚本，断言首屏即发请求、
+  注册 30s 轮询、状态戳与顶栏副标题切到「实时聚合」、5 个视图被片段逐字节覆盖、节点 tone 落盘。
+- 生成器：三副本 sha 一致；`payload 34061B < /v2/data 的 1/3`。
+- 重启后实测：`GET /v2/arch` → 200 / 34061B / 0.22s；连打两次 `generatedAt` 不同（每次重算，
+  非缓存冒充实时）；面板拉过 `/v2/data` 后事件段由 `deferred` 变 `ok`（20440 条 / deadletter 0）。
+- ⚠️ 新增路由属 lib 层，**需重启 `dsh web` 才生效**；重启前 iframe 稳定停在离线快照。
+
+## 0.12.3 — 2026-11-15（事件总线认 per-record 布局；tool_stats 缺席=空态）
+
+### 问题
+
+agint-event-bus v0.9.0 起域声明 `layout:'per-record'`，介质从单文件
+`agint_event_bus.json` 换成 `agint_event_bus/<表>/<key>.json`。面板 `aggBus()`
+仍读旧单文件：新机器上该文件从未存在 ⇒ eventBus 源 ENOENT 降级，挂「⚠ 数据源
+降级」黄条；老机器上即使有旧文件也只是迁移前快照，显示过期数据。
+同横幅的另一半：`agint_tool_stats.jsonl` 由 tool-stats 首次记录工具调用才创建，
+新机器必然缺席，被当故障报降级，实为空态。
+
+### 改动
+
+- `lib/v2-data.js` `aggBus()`：per-record 目录在 ⇒ 读目录（权威，宿主 open()
+  只 loadAll 目录），deadletter 数 `deadletter/` 目录文件；目录不在才回退
+  single 文件（未迁移部署）。两者并存不双计。坏记录文件跳过不整源报废。
+  `observedAt` per-record 时取 `events/` 目录 mtime。
+- `lib/v2-data.js` `signature()`：per-record 的 `events/`/`deadletter/` 目录
+  mtime 进缓存签名 —— 否则新事件落地签名不变，只能靠 30s TTL 兜。
+- `lib/v2-data.js` `aggTools()`：文件 ENOENT 且 storages 目录在 ⇒ 返回空聚合
+  （rows=[]、total=0、observedAt=null），不报降级；目录不在/其余读失败照旧降级。
+- `test/q3-verdicts.test.mjs`：真数据回放门槛认两种布局任一；仓库位解析不出
+  （副本无 .git）时契约段跳过不崩（`resolve(null)` 存量坑）。
+
+### 验证
+
+新增 `test/v2-bus-perrecord.test.mjs`：single 回退 / 并存不双计 / 坏记录跳过 /
+新事件签名失效 / 仅 per-record / 双缺降级 / tool_stats 空态，七组全绿。
+`v2-data`、`v2-data-v03` 回归绿。部署位实测：bus 121 条、deadletter 0、
+三源全 ok，浏览器确认黄条消失。
+⚠️ 存量环境债（非本批引入）：v2-scan 冻结基线漂移（239 vs 223）；
+v2-oracle / v2-delivery-by-topic / decision-* 在仓库位缺 zod（zod 只布部署位）。
+
+
+## 0.12.2 — 2026-11-07（执行摘要显示「已改 N/M · 还差几个文件」）
+
+### 问题
+
+提案级执行（driver v0.11.0）一次落地多个文件，但面板的 `execText()` 只显示
+执行态与 execError。老板看不到「改了哪几个、还差几个」。
+
+### 改动
+
+- `lib/v2-proposals.js`：归一化 `execUnitsApplied` / `execUnitsTotal` /
+  `execRemainingUnits` / `execCommits` 四个新字段。
+- `assets/panel-v2.html` 的 `execText()`：追加「已改 N/M 个文件 · 还差 K 个：a、b、c」
+  与 commits 文件名。⛔ 老行没有这些字段就不显示，不编数字（负控制已钉）。
+- `test/fixtures/v2-scan-baseline.json` 第七次重冻（家族 code 键 215 → 223）。
+
+### 验证
+
+`test/proposal-board.test.mjs` 新增用例（含负控制）；`v2-scan` 门禁绿。
+⚠️ `v2-data.test.mjs` 在含中文路径的本机工作区会因 `cpSync` 崩溃（0xC0000409），
+在纯 ASCII 路径的干净 worktree 上同代码通过 ⇒ 判为环境存量债，非本批引入。
+
+
+## 0.12.1 — 2026-11-07（手动计划档显示真实原因）
+
+配合 agint-evolve v0.22.0：确定性不可执行的提案会被降为 `execMode=manual`、
+`execState=idle`，档位落 `person/plan`（待定执行计划）。此前该档的说明固定是
+「执行方式选了 manual」—— 读的人会以为是自己选的，真实原因（未解析到可执行目标）
+被标签盖掉。
+
+现在 `manual` 且 `execError` 非空时，`why` 优先显示 `execError`。
+与 `agint-evolve/lib/execution.js` 的 `ticketStage()` 同步修改，
+`test/stage-parity.test.mjs` 的三组等价用例全过（面板 139/140，唯一失败
+`v2-scan` 为既有基线漂移，HEAD 干净副本同样失败）。
+
+## 0.12.0 — 2026-11-03（W8-2：改判不再清空上一版审批记录）
+
+### 起因：一次「改判回 proposed」删掉了 300 字的唯一证据
+
+线上实测（提案 `a85ef850`，非构造数据）：
+
+- 改判前 note = 359 字，内容是「原方法在 r2 后失效」的完整论证：
+  `f51d3280` 把 Q2 排序改成 `ratio(deduction/maxWeight)` ⇒ 权重被约掉；
+  实测 36 条样本、随机 500 组权重归因 0 变化，而阈值 0.70→0.55 能翻 24/36。
+- 一次改判回 `proposed`（不带 note）之后，note 变成 48 字：
+  `人工审批（家族面板） · <新时间> · proposed`，**原记录整段消失**。
+- `updatedAt` 照常刷新 ⇒ 事后读到的是「刚被改过、但什么都没留下」的一行。
+
+根因在 `composeDecisionNote`：
+
+```js
+const preserved = keep === '' || keep.startsWith(PANEL_NOTE_MARK) ? '' : ` ｜ 原记录：${keep}`;
+```
+
+设计意图是「上一版已是面板写的就不叠加，免得连续改判让 note 无限膨胀」。
+但**前缀根本不携带「这条已经没用了」的信息** —— 面板自己写过的 note
+恰恰最可能含唯一的人工判断（它的抬头格式就是这样，人填的内容跟在后面）。
+用「前缀相同」判断「是我写的、可以覆盖」，等于把「谁写的」误当成「有没有价值」。
+
+### 改法
+
+删掉前缀判废，只保留长度上限：
+
+```js
+const preserved = keep === '' ? '' : ` ｜ 原记录：${keep}`;
+```
+
+膨胀保护本来就该由 `DECISION_NOTE_MAX = 1000` 负责，它一直在生效。
+老板裁定（2026-11-03）：**全部保留**，超长截断。
+
+### 被推翻的既有断言
+
+`test/decision-route.test.mjs` 原有一条：
+
+```js
+assert.ok(!note.includes('第一次'), '上一版是面板记录时不该叠进去');
+```
+
+它用 `第一次` / `第二次` 这种**瞬时的操作理由**做样本，就得出「带前缀的都该丢」，
+是样本选取导致的过度概括。已如实改写成两条同时成立的断言：
+保留旧内容 + 整体仍受长度上限约束。**不是删断言，是把它测的意图说清楚。**
+
+### 用例（`test/decision-note.test.mjs`，新增 5 例）
+
+- D1 ⛔ 阴性对照：复刻旧三元表达式，自证它对带前缀记录判空
+- D2 上一版是面板写的 ⇒ 改判后原记录完整保留
+- D3 连续改判 5 次（proposed→approved→wontfix→proposed→wontfix）⇒ 第一份证据一次不丢
+- D4 保留不得突破 1000 字上限（截断带 `…` 标记，不悄悄切）
+- D5 上一版为空 ⇒ 不拼空的 `原记录：`
+
+### 阴性对照（实测变红）
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| 把 `preserved` 改回 `keep.startsWith(PANEL_NOTE_MARK)` | D2 / D3 / D4（D1、D5 仍绿） |
+
+### 全量
+
+`agint-family-panel` 140 例：139 通过。
+唯一失败是 `v2-scan.test.mjs`「家族键计数漂移 219 vs 基线 215」——
+**与本改动无关的既有红**，已 `git stash` 验证：改动前同样失败。
+那是前端 HTML 与后端家族键对账的冻结基线，属另一件事，不在本批处理。
+
+### 已知未做
+
+- `permissions.fs` 的 smoke fixture WARN 仍在（与 `agint-evolve` 那条同型）。
+  面板的路径解析在 `v2-data.js`（`resolveV2Dirs`），已有 `profile-dir.test.mjs`
+  覆盖 profile 参数化，但那测的是「选对目录」，不是「不许逃出目录」。
+  两者不是一回事，需单独补，未混进本批。
+
+## 0.11.0 — 2026-11-01
+
+### 提案台开始带 `stage`（工单状态机）
+
+`agint-evolve` v0.16.0 起了 `ticketStage()`：一条提案，一个「现在该谁动」的答案。
+面板这边做两件事，都不改现有行为：
+
+1. **数据层带出 stage**：`v2-proposals.js` 的每条 item 新增
+   `stage` / `stageSide` / `stageLabel` / `stageWhy` 四个字段。
+2. **标签优先按 stage 出**：`panel-v2.html:plabel()` 先看 `it.stage`，没有就退回原来那套
+   按 `execState` 猜的逻辑（老 payload / 别的调用方仍要能work）。文案仍留在页面里 ——
+   stage 是判据，中文措辞是展示层的事，不让后台决定。
+
+### 顺带补掉两个说不出来的现场
+
+- `stalled`（计划就绪、队列里却没有执行）—— 旧逻辑在这一档只能显示「已批准·待入队」，
+  读的人以为再等等就会自己跑，而**永远不会**（没人会来把它排进去）。
+  新标签：`已批准·应入队未入队（缺陷）`。
+- `person/plan` 里定时缺时刻的那一支 —— 旧逻辑同样写成「待入队」，其实计划就不完整。
+
+### 镜像实现与等价性
+
+面板**不 import agint-evolve**（既有纪律：它只读落盘文件），所以 `v2-proposals.js` 里保留了
+`ticketStageOf()` 镜像。与 `hasBlocker` / `isExecActive` / `startOfWeek` 同一处理方式：
+**两处各有一份，靠用例钉住等价** —— 这次是 `test/stage-parity.test.mjs` 的 1080 组穷举
+（status × execMode × execState × blocker × execAt）。
+
+> 这不是形式主义：写这份用例时它立刻抓到一处真实漂移 —— 我的镜像漏了
+> `autoEnqueueBlocker()` 的 `not-approved` 分支，脏数据下两边会给出不同的理由文案。
+> 已经补上。漂移一旦上线，面板说的和工具说的就是两件事，而两边都不像在撒谎。
+
+### 验收
+
+面板全量 135 用例全绿（含新增 3 组等价性用例）；`plabel` 的旧断言（阻塞优先 / 空白 blocker
+不算阻塞）**逐条未改**——它们走的是无 `stage` 的回退路径，正好证明这条改动是加法。
+
 ## 0.10.0 — 2026-10-29
 
 ### 「不可自动执行」这一档整体拆除

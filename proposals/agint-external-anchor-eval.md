@@ -1,6 +1,10 @@
 # Proposal: 外部锚定评估架构（判定权与被评对象分离）
 
-> **状态**：草案（draft） · 类别 `framework` · **未启动**（老板 2026-10-01 拍板：先存档，以后再做）
+> **状态**：**已批准重启（active · 阶段 1）** · 类别 `framework`
+> **历史**：2026-10-01 老板拍板「先存档，以后再做」；**2026-11-07 该存档决定被撤销**。
+> **批准依据**：对 `AGINT-P1拍板单-20261107.md` 问题 2「是否撤销存档、重启本提案」的回复「2按你的建议」；建议顺序 C1 → A2 → A3 → A1 → B1/B2 → C2。⛔ 这是对该回复的工程转述，不是补写的指示。
+> **本阶段授权范围**：仅 §8 写明的「阶段 1 零风险子集」（纯函数 + 单测，不挂载、不建域、零运行时影响）。阶段 2/3 仍需 §7 的 D1–D5 逐项拍板，**本批不代拍**。
+> **配套规格**：`AGINT-边界放宽实施规格-20261107.md`（工作区根，非入库）。
 > **目标插件**：`agint-quality-eval`（v0.2.0 当前）+ `agint-quality-policy` + `agint-evolution-memory`（读侧）
 > **作者**：智进（agint preset 会话） · **日期**：2026-10-01
 > **风险等级**：P1（新增 storageDomain + 新增插件行 → 需走挂载/重启 SOP；**不破 FROZEN 契约**）
@@ -183,12 +187,24 @@ return await evo.addSuccess({ template: `baseline-suite-passrate:...`, appliesTo
 
 ## 8. 优先级与前置
 
-**当前优先级：低（已存档，未启动）**
+**当前优先级（2026-11-07 起）：中 · 阶段 1 已重启**（原「低（已存档，未启动）」为 2026-10-01 的历史状态，保留记录）
 
-**开工前提**：
-1. §7 五项决策全部拍板
+**阶段 1 不必等 §7 拍板**：§8 明写的零风险子集（纯函数 + 单测）不挂载、不建域、零运行时影响，按 D4=B 执行。
+
+**阶段 2/3 开工前提（仍未满足）**：
+1. §7 五项决策全部拍板 —— 本批**未代拍**，见下表
 2. §5 准入 10 维度补全
-3. 若涉及新增插件行（D4=A）→ 按 `wiki/挂载-重启红线.md` 走挂载/重启 SOP
+3. 若改选 D4=A（新增 `agint_quality_anchor` 插件行）→ 按 `wiki/挂载-重启红线.md` 走挂载/重启 SOP
+
+**§7 D1–D5 状态（提案原作者建议 ≠ 老板决定）**：
+
+| 决策 | 原作者建议 | 状态 |
+|---|---|---|
+| D1 金标样本来源 | A：历史反推 + sandbox 硬真值 | 待确认 |
+| D2 held-out 开启权限 | A：仅老板授权 + 留审计 | 待确认 |
+| D3 阶段 3 准入阈值 | 先用阶段 1 数据定基线 | 待确认 |
+| D4 新增插件行 | **B：先只落纯函数不挂载** | ✅ 本批按 B |
+| D5 样本集落点 | 待定 | 暂落仓库 `eval/capability-baseline/sets/` |
 
 **建议的首个最小动作**（阶段 1 的零风险子集）：
 只写 `anchor.js` 纯函数（`computeConsistency` / `groupByKind` / `splitFalsePosNeg`）+ 单测，**不挂载、不建域、零运行时影响**。可随时丢弃。
@@ -198,3 +214,18 @@ return await evo.addSuccess({ template: `baseline-suite-passrate:...`, appliesTo
 ## 附：一句话立场
 
 > 你要的「以后它自己进化」，靠的不是允许它给自己打分——是让它**能被外部验证，然后放心地自己动手**。前者是自欺，后者才是自治。
+
+---
+
+## 附二：阶段 1 落地记录（2026-11-07 · 麒麟机）
+
+| 项 | 落点 | 性质 |
+|---|---|---|
+| `anchor.js` 纯函数 | `eval/anchor/anchor.mjs`：`computeConsistency` / `groupByKind` / `splitFalsePosNeg` | **零依赖运行时**：不挂载、不建域、不改任何插件与部署位 |
+| 单测 | `eval/anchor/anchor.test.mjs` | 含 `SILVER` / `UNSET` 阴性对照、0 样本三态、分组退化、假阴假阳 |
+| 采集契约 | `eval/anchor/README.md` | 枚举沿用 `bin/lib/scenario-tier.mjs` 的 `UNSET / SILVER / GOLD / HELDOUT`，**不另造第二套** |
+| 冻结能力基准（A2） | `eval/capability-baseline/sets/{gold,verify,heldout}.json` + `bin/capability-baseline.mjs` | 三层分离、L0–L5 绑定、**当前 0 标签** ⇒ 校验器按设计拒绝出任何能力结论 |
+
+⛔ 阶段 1 **没有**产生任何外部冻结标签。`docs/specs/evaluation-protocol-v1.md` 的 `labelAuthority` 仍全为 `UNSET`；`prediction_outcomes` 里该列压根未采（麒麟机实测 4 行），体检脚本如实报「无数据」而非「0 条锚定」。**机制先就位，真值仍需人给。**
+
+⛔ 本阶段不写 `agint_quality_anchor` 域、不迁 `success_template`、不撤 `self-evaluate` throw、不跑 `runAnchorConsistency()` 接入任何决策路径 —— 全部留给阶段 2/3。

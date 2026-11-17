@@ -1,5 +1,138 @@
 # Changelog — agint-metrics
 
+## v1.3.0 — 2026-11-11 — skills 采集区分「AGINT 负责的技能」与「用户自装第三方技能」
+
+**为什么**：原 `skills.totalBytes` 把两处根的全部 SKILL.md 字节并在一起，其中 58%
+是 skillhub 装的第三方技能。臃肿度拿它当分子，等于让 AGINT 为老板装的工具背锅。
+
+**变更**
+
+1. 新增三个原子 key：`skills.managedBytes`（AGINT 负责的技能字节）、
+   `skills.thirdPartyBytes`（用户自装第三方技能字节）、
+   `skills.frontmatterBytes`（frontmatter 字节 = 每轮常驻上下文成本）。
+2. `skills.totalBytes` 保留为总量口径（向后兼容，不再进扣分）。
+3. managed 判定：preset 根（路径含 `.agent-presets`）下全部 managed；其他根下目录内
+   存在 `.agint-managed` 标记文件者 managed（由 agint-skill-autocreate 发布时写入）；
+   其余 thirdParty。
+4. `skills.managedBytes` 的 meta 带 `managedCount` 与 `topManaged`（最大的 8 个
+   managed 技能名与字节），供神谕层建议点名具体文件。
+
+### 追加诉求（同日，与上面的 skills 字节分类无关）：宿主子代理信号补订阅
+
+**为什么**：`check-wiring` 报 2 个硬缺口 `NO_SUBSCRIBER(input.signal.host.subagent-start / -end)`。
+根因是 11-03 `agint-event-bus/lib/host-bridge.js` 扩容时只接发布、没接消费。
+这是存量债，11-04 起已记录在案；与 DSH_HOME 迁移（10-06）无关，首条事件晚于迁移 29 天。
+
+**变更**
+
+- `eventCounters.js` 的 `SUBSCRIPTION.topics` 补三条宿主主题：`subagent-start` / `subagent-end`
+  / `workflow-phase`，对应 key `host.subagentStartCount` / `host.subagentEndCount` / `host.workflowPhaseCount`。
+- `workflow-phase` 是同族潜在缺口（发布方 1 / 订阅方 0 / 生产 0），此刻只软报 `NOT_YET_FIRED`，
+  第一次有工作流跑起来就翻成 `NO_SUBSCRIBER`。一并接，避免同一诉求分两次改、两次重启。
+- 落点选 metrics 而非新建插件：metrics 是既定统一遥测出口，`domain-changed` / `workflow-end`
+  已是同形态。「宿主派了多少子代理、成没成、用哪个 provider」此前在 AGINT 侧零指标。
+- 改正取证口径：`deliveredTo` 是 `bus.js` 里 `publish()` 的返回值，**不落盘**，
+  原注释把它写成「生产存储实读」属过强断言，已换成可测的计数对照。
+
+**验证**
+
+- `test/event-counters.test.mjs` 12/12；`bin/check-wiring.test.mjs` 35/35。
+- `check-wiring` 0 硬缺口 PASS，两主题由 `NO_SUBSCRIBER 1/0` 转 `OK 1/1`；三副本 md5 一致。
+- `bin/check-wiring.mjs` 本体未改动（不是改门禁凑绿）。
+
+**运行态 / 数据态验收（2026-11-13 复核：已生效）**
+
+- 冷启 `bootAt=2026-11-11T11:51:32.873Z` 晚于部署同步 `11:23:12Z` ⇒ 加载的是新文件。
+  面板 `/v2/data` 里 agint-metrics 订阅 `createdAt=11:51:39.983Z`，10 条 topic 全在位。
+- 冷启后宿主实派 3 个子代理（runId `f62c2228` / `282fc6eb` / `3f44fab1`）。
+  总线 6 条边界事件 ↔ metrics 6 条计数，按 `runId + hostEvent` **6/6 配对**，
+  孤儿计数 0、漏计 0，投递延迟 9–33 ms。
+- 发布侧总量 40→43（start）/ 35→38（end），增量与计数一致。
+- `stopReason` 收到 `error` 1 次、`completed` 2 次 ⇒ 失败路径同样计数，不是只数成功。
+
+**仍未验证 / 已知无信息量（不声称已验证）**
+
+- `workflow-phase` 与 `workflow-end` 生产仍各 0 条事件、0 条计数 ⇒ `NOT_YET_FIRED`。
+  属预防性接线，还没有真实工作流跑过。
+- 三条 `subagent-end` 的 `messageLength` **全为 0**，含 `completed` 的正常结束 ⇒
+  宿主没供 `lastAssistantMessage`，该字段当前无信息量。上游既有问题，本次不动。
+
+
+## 1.2.0 — 2026-11-08 cron 失效拆两维度（提案 cdf41d63）
+
+### 问题
+
+`cron.staleJobs` 只有一个口径（过期未跑），阈值是悬崖：series 里同一分钟出现过 7 和 3
+两个值，delta 因此失去意义；运维也分不清「该跑没跑」与「早就不跑了」。
+
+### 改动
+
+- 新增两个指标 key：
+  - `cron.staleOverdue` —— 过期未跑。取 `health().staleOverdue`；宿主旧版本没有这个
+    字段时**回落** `health().issues`（同一个口径，不静默变 0）。
+  - `cron.staleInactive` —— 久未活动。取 `health().staleInactive`；宿主旧版本没有 ⇒ 0。
+- `cron.staleJobs` **保留**，降级为两者的**并集**（按 id 去重）。meta 里带
+  `deprecated: true` 与 `definition: union(cron.staleOverdue, cron.staleInactive)`。
+  旧看板 / 报告模板直接引用这个 key，删掉会当场空图。
+- 基础指标块 13 → 15（总 17 → 19）。
+
+### 口径变了（看趋势须知）
+
+`cron.staleJobs` 的口径从「单一过期计数」变成「两维度并集」。跑过的 job 两个维度高度
+重叠，但**从未运行**的 job 只进久未活动维度 ⇒ 汇总值可能比历史值大 1~2。
+要判趋势请改用两个新维度；`cron.staleJobs` 只作旧看板兜底。
+
+### 验证
+
+`test/metrics.test.js` 新增 3 组判据（两维度分开采集、staleJobs 并集去重而非相加、
+旧宿主回落 issues）；`test/metrics-ext.test.js` 的基础块计数断言同步更新（13→15 / 17→19）。
+agint-metrics 测试 45/45 通过。
+
+## 1.1.4 — 2026-11-02 补 `inc()` 出口（复活总线的全部计数）+ 两条宿主事件主题
+
+### ① 补 `inc()` —— 一条躺了很久的静默失败
+
+`agint-event-bus` 的 `busCtx.metrics` 从 v0.7.0 起就是：
+
+```js
+metrics: (key, delta) => { const m = ctx.get('agint.metrics'); if (m?.inc) return m.inc(key, delta); }
+```
+
+而**本服务从来没有 `inc` 方法**（实际方法只有 collect / summary / series / keys / stats）。
+⇒ 总线的全部计数（`publishInvalid` / `handlerError` / `deliveryFailed` / `deadletter`，
+以及 2026-11-02 B1 新加的 `hostBridge*`）**一直是静默丢弃的**：
+不报错、不落表、调用方零信号。
+
+这不是"算错了"，是"这条路上什么都没发生，而没人知道"—— 本项目最典型的失败形状。
+它恰好挡在「可观测性能不能成立」的入口上，所以补上。
+
+- `inc(key, delta=1)`：写一条增量记录（与 eventCounters 同形），查询走 summary / series。
+- 非法输入（空 key / NaN / 非数字）返回 `false` 且**不写** —— NaN 进了时间序列就洗不掉。
+- 测试 `test/service-inc.test.mjs` 5 条，含阴性对照（把 inc 删掉，第 ① 条立即红）。
+
+### ② 两条宿主事件主题的计数（B1 的消费侧）
+
+**背景**：`agint-event-bus` 0.8.0 把宿主的 `domain/changed`（白名单域）与 `workflow/end`
+桥成了总线主题。本版是它们的**唯一订阅方** —— 与 2026-10-26 那批同一形态、同一张表。
+
+**为什么值得记**：这两件事在 AGINT 侧此前**零指标**。进化闭环能看见自己发了什么事件，
+却看不见自己**被写了什么**：一个域昨晚写了 300 次还是 0 次，之前只能去翻存储文件时间戳。
+
+**改动**：
+- `COUNTER_METRIC_KEYS` / `COUNTER_METRIC_LABELS` 各加两行。
+- `SUBSCRIPTION.topics` 加两条（仍是**单行字面量** —— 门禁靠正则扫源码，变量形式对它是不可见的）。
+
+**验收**：`node --test test/event-counters.test.mjs` → **10/10 通过**
+（覆盖清单用例改为字面量 7 条：刻意不写 `length >= 5`，那对「悄悄删掉一条」完全无感）。
+
+**生产实测（2026-11-02 00:58，部署后约 1 分钟）**：`eventBus.hostDomainIgnored` 落 **332 行**
+⇒ 桥接确实订阅到了宿主 `domain/changed`，`inc` 也确实写进了表。
+⚠️ 这 332 行同时暴露了新问题：非白名单域写入频率约 **5.5 次/秒**，
+若每条都写表，metrics 表每天涨 40 万行。已在 `host-bridge.js` 改为**采样**
+（首次 + 每 100 次），见该文件 `ignoredSeen` 段注释。
+
+---
+
 ## 1.1.2 — 2026-09-29 修复：metrics_summary output schema 缺 meta ⇒ 宿主整条拒收
 
 **事故**：agint 自检调 `metrics_summary` 返回 `Error: tool "metrics_summary" ... schema

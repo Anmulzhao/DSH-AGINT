@@ -296,6 +296,19 @@ if [ -n "$OLD_PID" ]; then
       sleep 2
     fi
   fi
+elif port_busy; then
+  # 端口在听，但 ss -ltnp 给不出 pid=：几乎只有一种原因 —— 当前 shell 与 dsh 不在
+  # 同一 PID namespace（在容器/沙箱里执行本脚本）。把它当「冷启动」会一路走到
+  # 「15s 后端口仍被占用 → 放弃拉起」，把人引向「端口没释放」，而真正的原因是
+  # 它停不掉、也看不见那个进程。⛔ 别在这里假绿：直接说清并拒绝。
+  if [ "$DRY_RUN" -eq 1 ]; then
+    warn "端口 $PORT 在监听，但看不到持有者 PID（跨 PID namespace）—— 真跑会在端口检查处失败"
+  else
+    bad "端口 $PORT 在监听，但看不到持有者 PID（ss -ltnp 无 pid=）"
+    printf '  ⇒ 当前 shell 与 dsh 不在同一 PID namespace，本脚本停不掉它。\n' >&2
+    printf '  ⇒ 请在 dsh 所在的终端执行 ./install/redeploy.sh；只想部署用 --no-restart。\n' >&2
+    exit 5
+  fi
 else
   inf "端口 $PORT 上没有实例（冷启动）"
 fi

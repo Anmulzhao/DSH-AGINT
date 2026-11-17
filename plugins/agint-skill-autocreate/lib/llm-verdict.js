@@ -361,13 +361,14 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 // ⚠️ 与 provider/model「跟随宿主默认」不同，这个**必须**给默认值 —— 不给就是空壳。
 export const DEFAULT_AGENT_PRESET = 'agint';
 
-// ── provider / model 默认值（2026-10-08 取证后新增）────────────────────────
-// 取值来源：宿主实际配置 `$DSH_HOME/profiles/web/cordis.patch.yml` 的
-// `llm-pi-ai.providers.minimax-cn.models` 与 `agent-default-model` 两段
-// （本机实测：minimax-cn / MiniMax-M3.1-Flash-Preview）。
-// ⛔ **绝对不能硬编码 'deepseek'/'deepseek-chat'** —— DSH 把 deepseek 仅作
-// fallback adapter，host 真实可用 provider 由配置决定。
-// ⚠️ 换模型时这三处必须同步改：常量本体 + 本注释的取值来源 + 测试断言。
+// ── provider / model 离线兜底值（2026-10-08 取证后新增）────────────────────
+// ⛔ 这三个常量**不是运行时真源**：正常路径一律走宿主
+// `ctx.get('agentDefaultModel').currentSelection()`（见下方 resolveLlmSelection）。
+// 只有宿主服务缺席的部署（离线 smoke / 假 ctx）才落到这里，因此它们必须与宿主
+// profile 的 `llm-pi-ai.providers.*.models[].id` 逐字一致 —— 由
+// `bin/check-llm-selection-parity.mjs` 静态对拍，漂移即红灯。
+// ⛔ 绝不硬编码 'deepseek'/'deepseek-chat'：DSH 只把它当 fallback adapter。
+// ⚠️ 换模型时的正确动作是改宿主 profile；仓内兜底值由门禁提示同步，别手改了就完事。
 //   （与 agint-dream/lib/consolidation.js 的 DEFAULT_PROVIDER / DEFAULT_MODEL
 //   同源同值；测试请 import 常量而非再写一遍字面量。）
 export const DEFAULT_PROVIDER = 'minimax-cn';
@@ -375,6 +376,36 @@ export const DEFAULT_PROVIDER = 'minimax-cn';
 export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
 // MiniMax-M3.1-Flash 强制 adaptive thinking；不传档位会 400。
 export const DEFAULT_REASONING_EFFORT = 'high';
+
+/**
+ * 模型路由的单一真源解析。
+ *
+ * 优先级：**显式入参 > 宿主 agentDefaultModel.currentSelection() > 离线兜底常量**。
+ * 与 agint-dream / agint-aesthetic-oracle / agint-evolution-driver 同口径
+ * （见 presets/agint/skills/plugin-preflight/SKILL.md「默认调用必须 mode=llm」一节）。
+ *
+ * `agentDefaultModel` 是宿主 lazyService，靠 ctx.get 软取即可，**不进 inject**
+ * （仓内三个已接插件均未声明，加进 inject 反而在服务缺席时挂激活）。
+ * 服务缺席 / 取值抛错都按 null 处理 —— 绝不让模型路由把插件启动拖垮。
+ *
+ * @param {object} ctx cordis host ctx
+ * @param {{provider?:string, model?:string, reasoningEffort?:string}} [explicit]
+ * @returns {{provider:string, model:string, reasoningEffort:string, source:'host'|'fallback'}}
+ */
+export function resolveLlmSelection(ctx, explicit = {}) {
+  let selection = null;
+  try {
+    selection = ctx?.get?.('agentDefaultModel')?.currentSelection?.() ?? null;
+  } catch {
+    selection = null;
+  }
+  return {
+    provider: explicit.provider || selection?.provider || DEFAULT_PROVIDER,
+    model: explicit.model || selection?.model || DEFAULT_MODEL,
+    reasoningEffort: explicit.reasoningEffort || selection?.reasoningEffort || DEFAULT_REASONING_EFFORT,
+    source: selection ? 'host' : 'fallback',
+  };
+}
 
 /**
  * 一次 LLM 调用 → verdict + authoring。**永不抛错**：任何异常都转成
@@ -385,9 +416,9 @@ export const DEFAULT_REASONING_EFFORT = 'high';
  * @param {object}   args.ctx        cordis host ctx（取 agents / subagents）
  * @param {object}   args.pattern    待判 pattern（业务字段）
  * @param {string}   args.windowText 窗口原文（不可信输入，会被分隔标记包住）
- * @param {string}   [args.provider] 空 = DEFAULT_PROVIDER（**不能真留空**，见模块头 ①）
- * @param {string}   [args.model]    空 = DEFAULT_MODEL（同上）
- * @param {string}   [args.reasoningEffort] 空 = DEFAULT_REASONING_EFFORT
+ * @param {string}   [args.provider] 空 = 宿主当前选择（服务缺席才落兜底常量）
+ * @param {string}   [args.model]    空 = 宿主当前选择（同上）
+ * @param {string}   [args.reasoningEffort] 空 = 宿主当前选择（同上）
  * @param {number}   [args.timeoutMs]
  * @param {AbortSignal} [args.signal] 外部中止信号（可选）
  * @returns {Promise<
@@ -404,20 +435,22 @@ export async function judgeViaLLM({
   ctx,
   pattern,
   windowText = '',
-  provider = DEFAULT_PROVIDER,
-  model = DEFAULT_MODEL,
-  reasoningEffort = DEFAULT_REASONING_EFFORT,
+  provider = '',
+  model = '',
+  reasoningEffort = '',
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal = null,
 } = {}) {
-  // `''` 与 `undefined` 同义：都表示「调用方没指定」⇒ 落到默认。
-  // 生产侧 `lib/index.js` 传的是 `c.llm_provider ?? ''`，而 `llm_provider` 的
-  // 配置默认值就是空串 ⇒ **只靠参数默认值（仅对 undefined 生效）会漏**，
-  // 空串会原样进 agentOptions，把 {{model}} 重新变成无值。这里统一归一。
-  const effProvider = provider || DEFAULT_PROVIDER;
-  const effModel = model || DEFAULT_MODEL;
-  const effReasoningEffort = reasoningEffort || DEFAULT_REASONING_EFFORT;
+  // `''` 与 `undefined` 同义：都表示「调用方没指定」。生产侧 `lib/index.js` 传的是
+  // `c.llm_provider ?? ''`，默认值就是空串 ⇒ 只靠参数默认值（仅对 undefined 生效）会漏，
+  // 空串会原样进 agentOptions，把 {{model}} 重新变成无值。
+  // ⚠️ 参数默认值也不能写成 DEFAULT_* 常量：那会让宿主当前选择永远排不上队
+  // （非空默认值的优先级高于 selection），2026-11-15 收敛时改成了空串。
+  const selection = resolveLlmSelection(ctx, { provider, model, reasoningEffort });
+  const effProvider = selection.provider;
+  const effModel = selection.model;
+  const effReasoningEffort = selection.reasoningEffort;
   const startedAt = Date.now();
   const meta = () => ({ durationMs: Date.now() - startedAt, provider: effProvider, model: effModel });
   const failed = (reason, diagnostic = null, attempted = false) => ({

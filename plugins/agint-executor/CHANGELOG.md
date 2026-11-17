@@ -1,5 +1,248 @@
 # agint-executor CHANGELOG
 
+## v0.7.0（2026-11-08 · 终局判决：执行器不许留悬案）
+
+### 问题
+
+老板裁定：一次自动执行要么给出执行结果，要么给出最终判决并结案。
+此前失败只有 `finishExecution(ok:false)` 一种落法 ⇒ 提案停在
+`approved + execState=failed`，面板「已批准·执行失败·等处理」，没有自动出口。
+
+实测生产存储（2026-11-08）：99 条提案里 2 条是这样的悬案，40 条执行行
+37 条 failed、0 条 deferred。两条悬案的错误原文分别指向
+「事务门撞同 scope PENDING」与「宿主重启打断」。
+
+`agint-evolve` 侧已有 `EXEC_VERDICTS` / `execVerdict` / `settleExecution()` /
+`listUnsettledProposals()`，但执行器侧一行没接，注释指向的
+`lib/verdict.js` 根本不存在 ⇒ 结案服务是死代码。
+
+### 改动
+
+- 新增 `lib/verdict.js`：判决判据单一事实源（纯函数，不调 LLM、不读时钟、
+  不碰存储）。`decideVerdict()` 给运行时出口判，`verdictFromError()` 给历史
+  执行行错误原文判。枚举与 evolve 的 `EXEC_VERDICTS` 逐字一致，由测试钉住。
+- `runJob` 三个终局出口接判决：确定性失败 → `not-actionable`；重试额度用尽
+  → `exhausted`；环境故障顺延到 `envMaxDeferrals`（默认 6 次 ≈ 2 小时）
+  → `env-blocked`。判决经 `settleExecution()` 落到 `status=wontfix` +
+  `execVerdict` + 撤活跃 job + note 写复活路径。
+- 新增 `settleUnsettled()`：收敛历史悬案。三道闸（执行行 failed / 过宽限期 /
+  错误原文非空），被重启打断的判 `interrupted`。tick 开头按
+  `settleIntervalMs`（默认 5 分钟）节流；也可由 service 手动触发。
+- 可观测出口：`status().settled` / `lastSettle`，每次结案落一条
+  `executor-verdict-<判决>` failure_pattern（周报查得动）。
+- 降级：老版 evolve 无 `settleExecution` 时，只有 `not-actionable` 可走
+  `markNotActionable`（语义等价）；其余判决如实报未结案，不谎报。
+
+### 边界
+
+- ⛔ 前置闸（`decideRun` 的 cancel / fail）不结案：驱动没挂是配置缺陷，
+  该修宿主，不是把提案了结掉。
+- ⛔ 环境顺延次数记在进程内存，宿主重启清零（结案可逆，可复活）。
+- ⛔ 判决不修 driver 的 LLM 判定：`cdf41d63` 那次「LLM 判否」的误判风险
+  仍在。本批保证的是「给结论并结案」，不是「判得更准」。
+
+### 验证
+
+- 新增 `test/verdict.test.mjs` 9 组、`test/settle.test.mjs` 7 组（每条配
+  negative control，两条样本逐字取自生产错误原文）。
+- executor 全量 31/31；evolve execution/integration/stage/verdict-settle 13/13；
+  面板 stage-parity / v2-pending 4/4。
+- 生产数据离线对照（只读、不写盘）：`04d6199c` → `not-actionable`、
+  `531e2631` → `interrupted`，均为终局。
+- `check-tool-schemas` 0 invalid；`verify-manifests` 0 ERROR。
+
+### 同日补强（老板令：自己拍板，不留待定项）
+
+- `lib/verdict.js` 新增 `isLlmSubjectiveVerdict()`：`llm judged not applicable`
+  这类**主观判否**在结案文案里标「建议复核目标路径」。面板上一眼能区分
+  「机器查出来没目标」与「模型猜它不适用」。标记不推翻判决，不改 driver
+  的目标解析层（那是独立根因，另案）。
+- 用**部署位**的判决器离线把生产 2 条历史悬案结案：
+  `04d6199c` → `not-actionable`、`531e2631` → `interrupted`。
+  宿主当时不在运行，无并发写；先备份、写前二次核对、写后逐行复核
+  （其余 97 条提案与 40 条执行行逐字未变）。
+- 测试增至 33/33（仓库位与部署位各一遍）。
+
+## v0.6.2（2026-11-07 · 透传提案级 commits[]）
+
+driver v0.11.0 起一次执行可能落地 N 个文件（含新建）。`interpret()` 原先只取
+`commit.path`，会把多文件执行压成单条路径，面板因此读不到明细。
+
+改动：成功 / 跳过 / 部分落地三条返回路径都带出 `out.commits`，`finishExecution`
+把 `commits` 交给 evolve 写进 proposal 行。
+
+验证：`test/env-failure.test.mjs` 新增用例，断言 2 个 commits（含 created）被完整透传、
+且 `complete=true` 时不误判 partial。executor 全量 15/15。
+
+
+## v0.6.1（2026-11-07 · 环境故障与提案失败分开记账）
+
+### 问题
+
+LLM 子代理通道挂掉时 driver 抛错（`llm unavailable: stopReason=error`），执行器把它
+当普通失败处理：排一次 5 分钟重试，第二次仍挂就 `finishExecution(ok:false)`。
+
+实机（提案 `cdf41d63`，2026-11-07）：通道从 11-05 14:35 起全挂，当天 5 条执行行全部
+同一个错；`cdf41d63` 在 07:52 与 08:10 两次批准，每次 9 秒内烧完 `maxAttempts=2`，
+最后面板显示「已批准·执行失败」。提案一行代码没改、也一行没错 —— 是机器没跑起来。
+
+三个结构性缺陷：
+
+1. 抛错路径不分类：`driver 抛错：…` 既没有 deterministic 也没有 transient 判定，
+   driver 里的 `classifyFailureKind()` 完全被绕过。
+2. 环境故障消耗提案额度：`maxAttempts` 的语义是「这条提案值不值得再试」，
+   而通道故障与提案无关。额度烧完后，通道恢复时提案已失去自动执行资格。
+3. 没有熔断：`maxPerTick` 只限制一轮几条，挡不住「每 15 秒一轮」—— 故障期里
+   整条队列被依次捡起来各撞一次墙。
+
+### 改动
+
+- 新增 `lib/env.js`：`isEnvironmentFailure()`（判据只收 LLM 通道/宿主能力/网络类）
+  + `envBackoffMs()`（指数退避，封顶）。纯函数，无 IO、无时钟。
+- `runJob` 在确定性失败分支之后、普通重试之前插入环境故障分支：顺延
+  （`requeueExecution({deferred:true, refundAttempt:true})`）+ 指数退避，
+  不调 `finishExecution(ok:false)` ⇒ 提案保持 `approved`、`execState=deferred`，
+  面板显示「已顺延」而不是「执行失败·等处理」。
+- 熔断：连续 `envBreakerThreshold`（默认 2）次环境故障 ⇒ 本轮立即停手并进入
+  `envBreakerCooldownMs`（默认 10 分钟）冷却，冷却期内 tick 直接跳过。
+  `force=true`（面板手动「立即执行」）允许穿透。
+- 新增 config：`envBreakerThreshold` / `envBreakerCooldownMs` / `envMaxBackoffMs`。
+- `status()` 新增 `envDeferred` / `envStreak` / `breakerUntil` / `breakerTrips`。
+
+### 验证
+
+- `test/env-failure.test.mjs`（新增 4 组）：环境故障顺延 + 退款 + 熔断 + 冷却恢复
+  + 非环境失败不许被放行 + 判据正反例。
+- 负控制：`oldText not found`（LLM 产出不合格）仍走原结算路径，不被环境判据放行。
+- 部署位（`.agint-bundle` 与 `profiles/desktop` 两份）单跑同一用例通过。
+
+## v0.6.0（2026-11-07 · 确定性不可执行时收口提案，不再留「已批准·执行失败」）
+
+### 问题
+
+driver 对「没有可改目标」的提案返回 `deterministic: true` 的 `not-actionable`。
+执行器此前只把 job 记 failed 就返回，提案跟着 `execState=failed` 永久挂起（见
+agint-evolve v0.22.0 的说明）。实机：11-04 一批 19 条、11-07 4 条。
+
+### 改动
+
+确定性失败分支（`verdict.deterministic === true`）在 `finishExecution` 之后调用
+`evolve.markNotActionable(proposalId, reason)`：
+
+- job 仍记 failed（审计：确实尝试过）。
+- 提案退出自动队列：保留 approved、`execMode=manual`、`execState=idle`，
+  面板落 `person/plan`（待定执行计划），人在那里决定 applied / wontfix / 拆分。
+- 偶发失败（LLM 不可用等）**不收口**，仍按重试策略走 —— 下次可能就成功。
+- 老版 evolve 没有该方法时退回原行为，不抛错；tick 结果带 `parked` 如实报告。
+
+### 测试
+
+新增 `test/deterministic-park.test.mjs`：确定性失败收口 / 偶发失败不收口 /
+老版 evolve 回退，三条全过；`node --test` 14 项全过。
+
+## v0.5.0（2026-11-03 · W8-3：执行前核审批凭据）
+
+### 新增第七道闸
+
+`decideRun()` 现在收一个 `mandate` 参数（`agint.evolve.checkMandate()` 的结果），
+在**驱动可用之后、周额度之前**核验：
+
+```
+① 提案还在不在 → ② 还是不是 approved → ③ blocker → ④ 驱动在不在
+→ ★ 审批凭据 → ⑤ 周额度 → ⑥ 重试次数
+```
+
+**为什么在周额度之前**：越权不是「这次不该跑」，是「这次没资格跑」。
+让它去顺延会把一份无效授权排到下周，而下周凭据照样无效 —— 等于无限拖延。
+也不该算失败消耗重试次数。
+
+**为什么在驱动之后**：能力缺失是配置问题，比授权问题更前置。
+
+### ⛔ 只有明确的 mismatch 才拦
+
+| mandate.state | 判决 |
+|---|---|
+| `mismatch` | `cancel`，理由写明超出的路径与「需重新审批」 |
+| `unknown` | **放行**（老提案没凭据不是越权） |
+| `ok` / `null` | 放行 |
+
+把 `unknown` 当 mismatch 拦下来 = 升级瞬间 90+ 条历史提案集体停摆。
+但放行不等于安心：`checkMandate` 取不到（老版 evolve / 调用抛错）时
+**不拦**，避免把 evolve 的临时故障变成「所有提案疑似越权」的一次性停摆。
+
+### 用例
+
+`test/mandate-gate.test.mjs`（新，7 例）：
+
+- G0 无凭据信息 ⇒ 照常 run（不改变既有行为）
+- G1 mismatch ⇒ cancel，理由含越权路径与「重新审批」
+- G2 ⛔ unknown ⇒ 放行 / G2b ok ⇒ 放行
+- G3 **越权 + 周额度已满 ⇒ 仍是 cancel 而非 defer**（钉判据顺序）
+- G4 越权但驱动没挂载 ⇒ 先报驱动缺失（钉顺序）
+- G5 越权但状态已变 ⇒ 撤单理由是状态，不能被凭据盖掉（钉顺序）
+
+### 阴性对照（实测变红）
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| 删掉 mismatch 拦截（`if (false)`） | G1 / G3 |
+| 把拦截条件改成 `state !== 'ok'`（即把 unknown 也拦） | G2 |
+
+两个方向都试了 —— 拦太松和拦太紧都能被抓到，这是三态设计的意义所在。
+
+### 全量
+
+`agint-executor` 13/13 通过。
+
+## v0.4.0（2026-11-03 · 结算失败不再静默吞 + 挂载即回收孤儿执行）
+
+### 起因（实机取证）
+
+提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 停在 `state='running'`
+一整天，面板显示「已批准·执行中」，而没有任何东西在跑。
+driver 会话转储的最后一条事件是
+`{"type":"agent/inbox/spliced","data":{"outcome":"canceled"}}` ⇒ 执行被取消；
+而同一宿主进程在 2 分钟后还成功落地了另一条（`exec-1793446896075-or1m5x`，
+16:06:23Z succeeded）⇒ 执行器没被占死，**是结算那一步没落地**。
+
+根因在两处：
+- `lib/index.js` 的 tick 捕获段里，结算失败走 `catch { /* noop */ }` ⇒ 错误被吞，
+  执行行永远停在 running；
+- 队列不自愈（`agint-evolve/lib/execution.js:46` 的 `CLAIMABLE` 不含 running）。
+
+⛔ 吞掉的代价不是「少一条日志」，是「一条提案永久卡死」。
+
+### 改动
+
+- **结算失败不再静默**：tick 的兜底结算抛错时，改为 `warn` + 记
+  `evolution.failure_pattern`（`executor-settle-failed`）。
+- **挂载即回收**：插件挂载后立刻调 `agint.evolve.reapOrphanExecutions()` ——
+  上一进程遗留的 running 行此刻就是孤儿，它们会**挡路**（占着活跃 job 名额），
+  不必等第一个 tick。
+- **每轮 tick 前回收**：`reap` 在 `claim` **之前** —— 否则孤儿行让真正该跑的提案排不进去。
+- 判据用本进程挂载时刻（`mountedAt`）与超时兜底（`config.orphanStaleMs`，默认 30 分钟）；
+  本进程正在跑的 job id 进 `excludeIds`，不会被误判。
+- 回收失败同样不吞：记 `executor-reap-orphans-failed`。
+- `state.reaped` 计数上报到 `agint.executor.status()`，排障一眼可见。
+
+### 测试
+
+`test/executor.test.mjs` 新增 4 组用例：结算抛错时必须有 warn + failure_pattern /
+回收必须带 `mountedAt` / 回收必须排在 claim 之前 / 回收失败必须落 failure_pattern。
+
+## v0.3.1（2026-11-01 · 修代码注释里的红线旧值，零行为改动）
+
+`lib/index.js` 的配置注释仍写着「`weeklyCommitCap` 默认 3，对齐 AGENTS.md『不要跨周累计
+自动部署超过 **3** 次』」—— 那条红线 2026-10-29 已由老板改成 **5**（commit `a3b9b48`），
+`AGENTS.md:57` 也同步了，只有这段注释没跟。
+
+⛔ 这不是简单把 3 改成 5：**代码默认值确实是 3，红线是 5，两者刻意不同**。
+默认值只在新部署没写 config 时生效；本机与 NAS 的 `cordis.patch.yml` 都显式写了 `5`。
+注释现在把这件事写清楚 —— 否则下一个人改红线时会顺手把默认值也改成 5，
+于是新机器拿着一个未经裁定的数字开始自动改代码。
+
+无代码逻辑改动。`node test/executor.test.mjs` 仍全绿。
+
 ## v0.3.0（2026-10-29 · 撤掉「不可自动执行」语义闸：批准即执行）
 
 ### 老板的裁定

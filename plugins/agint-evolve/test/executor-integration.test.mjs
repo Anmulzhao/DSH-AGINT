@@ -200,7 +200,42 @@ try {
   assert.equal(reopened.status, 'approved');
   assert.equal(reopened.execState, 'idle', 'status 已不是 applied ⇒ succeeded 必须归位 idle');
 
-  console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地 四条路径接口对齐）');
+  // ── 5. 确定性不可执行：终局判决 + 结案（2026-11-08 口径）──────────────
+  //
+  // 老板裁定不许留悬案：执行器给 verdict=not-actionable，evolve 结案成 wontfix。
+  // 可逆性由「改回 proposed 再批准」保证，文案里必须写明。
+  ctx.provide('agint.evolutionDriver', {
+    async runForProposal() {
+      return {
+        skipped: true,
+        reason: 'p5: no target asset resolved',
+        failures: ['p5: no target asset resolved (mentioned:0 inRepo:0 bodyLen:1200)'],
+        deterministic: true,
+      };
+    },
+  });
+  const p5 = await evolve.propose({ title: '特性级提案', body: '正文没有仓库路径' });
+  await evolve.setStatus(p5.id, 'approved', '批准', { execMode: 'immediate' });
+  const tick6 = await executor.tick({ force: true, now: Date.now() + 1000 });
+  assert.equal(tick6.results[0].action, 'fail');
+  assert.equal(tick6.results[0].parked, true, '确定性失败必须收口提案');
+  assert.equal(tick6.results[0].verdict, 'not-actionable', '执行器必须给出最终判决');
+  assert.equal(tick6.results[0].settled, true);
+
+  const after5 = await evolve.getProposal(p5.id);
+  assert.equal(after5.status, 'wontfix', '终局：结案');
+  assert.equal(after5.execVerdict, 'not-actionable', '判决必须落盘');
+  assert.equal(after5.execMode, 'manual', '不再自动重跑');
+  assert.equal(after5.execState, 'idle', '不得再挂 failed');
+  assert.match(after5.execError, /no target asset resolved/);
+  assert.match(after5.note, /要复活/);
+
+  const stage5 = evolve.ticketStage(after5);
+  assert.equal(stage5.stage, 'closed', '档位应是已结束，不是执行失败');
+  assert.equal(stage5.label, '已结束');
+  assert.match(stage5.why, /not-actionable/, '已结束也要说清判成了什么');
+
+  console.log('# executor ⇄ evolve 集成: ok（入库→claim→落地/失败/缺驱动/部分落地/不可执行收口 六条路径接口对齐）');
 } finally {
   await rm(root, { recursive: true, force: true });
 }

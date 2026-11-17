@@ -148,6 +148,51 @@ async function main() {
   assert.ok(ctx._tables.has('proposal'), 'proposal 表存在');
   assert.equal(ctx._tables.get('baseline_history').size, 2, '2 行 baseline_history');
 
+  // 11. 路径纪律（permissions.fs 的 fixture 面）—— clean() 三道闸各打一发。
+  //     补这一组是为了消掉 plugin-check「permissions.fs 非空但 smoke 缺跨平台 fixture」
+  //     的长期 WARN：声明了 read:plugins / write:reviews，就得有用例证明路径不被带出去。
+  // 11a. 正向：正斜杠相对路径可读（Windows 反斜杠归一化那次的回归面）
+  await writeFile(join(root, 'ok.md'), '# ok\n', 'utf8');
+  const okRead = await evo.readReview('ok.md');
+  assert.equal(okRead?.content, '# ok\n', '正斜杠相对路径必须可读');
+
+  // 11b. 负向：`../` 逃逸必须被拒（归一化不能削弱安全）
+  await assert.rejects(
+    () => evo.readReview('../../etc/passwd.md'),
+    /escapes root/,
+    '⛔ ../ 逃逸必须抛 escapes root —— 归一化的目的不是放宽边界',
+  );
+
+  // 11c. 绝对路径：前导 / 被剥掉后回归 root 内的真实路径 ⇒ 读得到，
+  //      且返回体的 path 必须是相对 root 的路径（不把盘符路径带回模型侧）。
+  //      2026-11-08 更正（提案 e4f77535）：旧断言写 equal(absLike, null)，
+  //      与它自己的文案「读得到但用相对路径寻址」矛盾 —— 错的是断言，不是实现。
+  //      安全边界是「不许逃出 root」，不是「不许用绝对路径」。
+  const absLike = await evo.readReview(`/${join(root, 'ok.md')}`);
+  assert.equal(absLike?.content, '# ok\n', 'root 内的绝对路径应当读得到');
+  assert.equal(absLike?.path, 'ok.md', '返回体必须用相对路径寻址，不泄漏盘符路径');
+
+  // 11c-bis. 2026-11-11 Linux 回归：多个前导斜杠只能剥 1 个。
+  //   旧实现 replace(/^\/+/,'') 把 `///tmp/root/ok.md` 剥成相对路径
+  //   `tmp/root/ok.md`，resolve(root, ...) 得到 root/tmp/root/ok.md ⇒ 恒读不到。
+  const multiSlash = await evo.readReview(`//${join(root, 'ok.md')}`);
+  assert.equal(multiSlash?.content, '# ok\n', '多个前导斜杠仍须解析成 root 内的绝对路径');
+  assert.equal(multiSlash?.path, 'ok.md', '多前导斜杠的返回体仍用相对路径寻址');
+
+  // 11c-bis-neg. 多前导斜杠指向 root 外依旧必须被拒，证明修复没放宽边界。
+  await assert.rejects(
+    () => evo.readReview(`//${join(tmpdir(), 'agint-evolve-escape.md')}`),
+    /escapes root/,
+    '⛔ root 外的多前导斜杠绝对路径必须抛 escapes root',
+  );
+
+  // 11c-neg. 负控制：指向 root 外的绝对路径必须被拒，证明归一化没削弱边界。
+  await assert.rejects(
+    () => evo.readReview(`/${join(tmpdir(), 'agint-evolve-escape.md')}`),
+    /escapes root/,
+    '⛔ root 外的绝对路径必须抛 escapes root',
+  );
+
   await rm(root, { recursive: true, force: true });
   console.log(`agint-evolve smoke: ok (baselineGate / recordBaselineRun / listBaselineHistory / 兼容 v0.1.0)`);
 }

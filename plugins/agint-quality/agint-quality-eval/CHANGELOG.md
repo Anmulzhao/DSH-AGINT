@@ -1,5 +1,37 @@
 # Changelog — agint-quality-eval
 
+## 0.5.1 (2026-11-01) — memory 记录必须带 confidence（决策确信度卡 0.61 的主病灶）
+
+### Fixed
+
+- **`toMemoryRecord()` 补 `confidence`**（实现提到模块级 `buildMemoryRecord()` 以便测试触达）。
+
+  **症状**：神谕层「决策确信度」0.610 判红（阈 0.70）。口径是全库均值
+  `Σ(conf × [evidence 非空]) / N`（`agint-aesthetic-oracle/lib/scoring.js:270`）。
+  实测 `noEvidence.count = 0` —— 证据**全部合规**，扣分只来自置信度数值：
+  271 条里 195 条恰好 0.5，**其中 109 条是本插件写的**，是第一大单一来源。
+
+  **根因**：`toMemoryRecord()` 只返回 `type/content/evidence`，不传 confidence，
+  `agint-memory` 的 `input.confidence ?? 0.5` 兜底把它写成假 50% 确信。
+  每周一次 weekly 就多灌 N 条，越积越脏。
+
+  **口径**：不是「评估员有多自信」，而是**这次评估的结论有多可信** =
+  `compositeScore / 100`。`compositeScore` 为 null（safety/trust veto、或维度全缺）
+  时给 **0** —— 与「无结论 = 零确信」同义，不拿 0.5 冒充「有一半把握」。
+
+### Added
+
+- `test/memory-confidence.test.mjs`（6 例）：confidence 必须显式存在；
+  值 = compositeScore/100；safety veto → 0；维度全 null → 0；
+  evidence 非空；content 尾部 JSON 维度明细可回填复算。
+  ⛔ 此前这个函数在闭包里，测试够不着 —— 这正是 bug 能潜伏到指标判红才被发现的原因。
+
+### 存量
+
+- 109 条历史记录的 confidence 已按各自 content 里的维度评分**精确复算回填**
+  （106 条 → 0.71，2 条无维度可算保留 0.5，1 条本身 0.9）。
+  备份：`AGINT-data/storages/agint.json.bak-confbackfill-20261102155707`。
+
 ## 0.5.0 (2026-10-28) — effectiveness 接入判读准确率
 
 ### Added

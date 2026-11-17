@@ -5,6 +5,149 @@
 
 ---
 
+## 未发版 · 2026-11-15 — LLM 模型选择收敛到宿主单一真源
+
+**依据**：`docs/capability-boundary.md:27` 把 LLM provider 列为 L-宿主；`:489` 把
+「provider/model 硬编码 4 份（上游已有 `agentDefaultModel.currentSelection()`）」
+列为未修已裁决欠账。本插件此前**只把推理档位**接了宿主，provider/model 仍落死常量，
+宿主换模型时 P1 会毫无报错地继续调旧 id（即 2026-10-28「P1 从未真正跑通」那类漂移）。
+
+**行为变化**（`lib/consolidation.js`）
+- 新增导出 `resolveLlmSelection(ctx, explicit)`：显式入参 > 宿主当前选择 > 离线兜底常量。
+  `agentDefaultModel` 是宿主 lazyService，ctx.get 软取，不进 inject。
+- `consolidate()` 的 provider/model 默认值由 `DEFAULT_*` 改为空串（非空默认值会让宿主
+  选择永远排不上队），`agentOptions` 改用解析后的生效值；档位仍走既有
+  `resolveReasoningEffort()`。
+- `lib/verify.js` 默认入参改空串，报告**生效值**而非入参；`lib/tools.js` 参数描述不再
+  写死模型名；`lib/sweep.js` 注释同步为「由 consolidate() 解析宿主选择」。
+- 宿主服务缺席 / 取值抛错 ⇒ 落兜底常量，行为逐字不变。
+
+**验收**：`test/llm-selection.test.mjs` 4/4（含端到端断言 `agents.create` 收到的
+`agentOptions` 来自宿主）；全量 `node --test "test/*.test.mjs" "test/*.test.js"` 209/209；
+`bin/check-llm-selection-parity.mjs` 5 个插件全绿。
+
+## v0.9.0 — 2026-11-07 — 方案 C：准入从「逐字复现」改成「形态 + LLM 裁决」
+
+**背景（实测，2026-11-07）**：梦境自 2026-10-21 起过门数持续为 0，最后一次非零提升是
+2026-10-20（4 条）。量化根因（用真插件代码复跑，脚本见工作区根目录 `_dream-rem-why{,2,3}-20261107.mjs`）：
+
+- **抽取层**：候选源只剩「用户原话 + 工具错误」。昨晚 24 个会话 → 用户原话 20 条 → 15 句 →
+  12 句无关键词桶、3 句疑问；工具错误「留 0 / 拦 46」（v0.7.0 污染修复的预期行为）。
+- **门槛层**：准入要求「同一句逐字复现 ≥3 次且跨 ≥2 会话」。7 天窗口 60 个会话里，
+  用户原话 75 个不同句子 + assistant 主张 54 个 = 129 个，重复度几乎全是「1 次 / 1 会话」，
+  够门槛的只有 **1 个** ⇒ 老门槛把候选池永久关死。
+- 把窗口放宽到 7 天（候选 5 条）仍然过门 0：三条各卡 `score < 0.6` 与 `signalCount < 3`。
+
+**变更**：
+
+1. **`extractCandidates` 新增 assistant 正文作为第三条候选源**（补 2026-10-28 提案
+   `d2b77b47` 的第 2 步「候选化」—— 第 1 步只做了统计，注释里点名的「链在中间是断的」至今未接）。
+   形态判据：**祈使/规范句式**（必须/禁止/一律/切记/不要…）· 10–160 字 · 非引用块 ·
+   非记忆条目形态 · 无代码骨架/路径 · 非工具回显 · 非疑问句 · **不含人称**
+   （我/你/老板 —— 对话与汇报不是主张）· 非报告体（表格行/列表项/粗体）· 非状态汇报
+   （已完成/收到/正在处理）；拒绝按原因计数（`shapeStats.byReason`）。
+   ⛔ 判据是**实测收紧**出来的：初版用宽判据（含「以后/注意/默认/规则/先…再」）
+   在真实语料上产出 43 条候选，其中大半是汇报残句（「继续核实两处口径：…」）；
+   收紧到祈使句式后剩 1 条（2 天窗口）。**注意：assistant 聊天记录不是可靠的主张源**
+   —— 本机真正沉淀下来的知识写在文件里（docs/、CHANGELOG、代码注释），dream 读不到。
+2. **`gateCandidates` 新增 `admission` 模式**：`shape`（新，出厂默认）不按复现次数拒绝，
+   复现次数退回评分权重（frequency / diversity / consolidation 本来就在算）；
+   `repetition`（旧）逐字保留。准入上限 `maxGated`（默认 20）控制每轮进 LLM 的量。
+3. **配置**：`admissionMode`（`shape` / `repetition`，出厂 `shape`，运行时可改 = kill-switch）
+   + `maxGated`（默认 20）。
+4. **可观测**：日记新增「候选来源」「assistant 形态判据」「准入」三行 —— 「候选 0 条」
+   现在能拆开看是没采到、形态挡掉了，还是被上限截断了。
+5. **P1 consolidation 档位不再只靠硬编码**：档位优先取宿主 `agentDefaultModel.currentSelection()`，
+   取不到才用兜底常量 `DEFAULT_REASONING_EFFORT='high'`（宿主对模型没声明的档位直接抛
+   `UNSUPPORTED_REASONING_EFFORT`；见 `dsh-llm-pi-ai/lib/index.js:1810-1814`）。
+   同时 `stopReason != completed` 的 diagnostic 不再是空数组字符串，改成带
+   `diagnostic` / `error` / `errors` / 输出摘要的分段说明。
+
+**宿主侧配套（本机私有，不进仓）**：`profiles/desktop/cordis.patch.yml` 的
+`llm-pi-ai.providers.minimax-cn.models[].reasoningEfforts` 补回声明
+（minimal/low/medium/high）。不声明 ⇒ 目录里没有裸 id `MiniMax-M3.1-Flash`
+（目录里的 id 都是 provider-scoped）⇒ 模型被当成非推理模型 ⇒ 支持档位只剩 off ⇒
+P1 每次调用都 `stopReason=error`、`diagnostic` 为空 ⇒ 提升通道恒 0。
+补上后实测：`dream_verify_consolidation` 从 `mode=failed` 变为 `mode=llm · schemaOk=true`。
+
+**测试**：`test/admission-shape.test.js`（11 例）。负控制实测：
+把 `DEFAULTS.admissionMode` 改回 `repetition` → 1 例变红；摘掉 assistant 源 → 3 例变红。
+既有 198 例全部保持通过（老门槛语义的用例改为显式传 `admission: 'repetition'`）。
+
+---
+
+## v0.8.0 — 2026-11-07 — 阶段 2：记忆维护三件套（证据审计 / 预加载候选 / 衰减体检）
+
+**背景**：Anthropic 博客《The components of agent memory》把 dreaming 定义为四项操作：
+纠错、生成笔记、构建表示层、塑造预加载。本插件此前只做第二项。本次补「写之后」的检查。
+
+**新增** `lib/memory-maintenance.js`（纯函数，只读）：
+
+1. `auditMemoryEvidence`：抽出 evidence 里的仓库相对路径，逐条判存在性。
+   断链只标记，不改写。⛔ 不判语义真假 —— 文本相似度不是「记忆是错的」的证据（K117/K138）。
+2. `selectPreloadCandidates`：按 L1 + 未解决 + confidence ≥ 0.8 + recalls ≥ 3 选预加载候选。
+   0 结果时给 `reason` 与 `nearest`（离门槛最近的一条差多少）。
+3. `summarizeDecay`：层级与类型分布 + 三条红旗（recalls 全零、无一条已解决、默认置信度占多数）。
+
+**接入**：
+
+- `lib/sweep.js`：Deep 阶段末尾算一次维护报告，写进 diary 的「记忆维护」小节。
+  ⛔ 不进 `result.counts` —— tools.js 的 output schema 是 `additionalProperties:false`，
+  加键会炸工具面（K164 同形状事故）。
+- `lib/index.js`：Config 加 `maintenanceEnabled` / `maintenanceRepoRoot` /
+  `preloadMinConfidence` / `preloadMinRecalls` / `preloadMax`；
+  `maintenanceEnabled` 进 RUNTIME_CONFIG_KEYS，可运行时关。
+
+**实测（2026-11-07）**：生产记忆 869 条，`recalls` 869/869 全为 0，`resolved` 全 false，
+confidence 0.5 占 534 条（61.4%）。⇒ 预加载候选必然为空，reason 写
+`recalls-all-zero: 召回计数没在记，门槛不可能达成`。这不是「没有候选」，是「召回没通电」。
+
+**kill-switch**：`maintenanceEnabled=false`，默认开（K51）。
+
+**测试**：`test/memory-maintenance.test.mjs` 16 条，含负控制（门槛降到 0 必须出候选；
+连字符前缀不许被截断；`.json` 不许被截成 `.js`）。
+
+**同日修正**：首版 `PATH_RE` 有两处截断假阳性，把 5 条**路径正确**的记忆误报成断链。
+① 左边界用了 `[^\w/]`，允许连字符 ⇒ `agint-quality-eval/lib/index.js` 被截成
+`eval/lib/index.js`、`agent-presets/src/index.ts` 被截成 `presets/src/index.ts`；
+② 扩展名 `js` 排在 `json` 前 ⇒ `.json` 被吃掉 `js`，报成 `package.js`。
+改为 `[^\w/.-]` + `json` 前置后，同一份 869 行生产数据：断链 **5 → 0**，ok 42 → 47。
+⛔ 未改动任何生产记忆的 evidence —— 按「改数据去迁就判据」会删掉 5 条正确路径。
+
+## v0.7.2 — 2026-11-01 — 提升记忆写入必须带 confidence（决策确信度卡 0.61 的第二病灶）
+
+**症状**：神谕层「决策确信度」长期 0.610（阈 0.70）判红。该指标口径是
+`Σ(conf × [evidence 非空]) / N`（全库均值，`agint-aesthetic-oracle/lib/scoring.js:270`），
+而 `noEvidence.count` 实测为 **0** —— 271 条全有证据，所以扣分全部来自置信度数值本身。
+实测 271 条里 **195 条置信度恰好是 0.5**，其中 **48 条来自本插件**。
+
+**根因**：`lib/validation-gate.js` 的 `planToWriteCalls()` 三条分支
+（added / merged / superseded）调 `memory.write()` 时**都不传 confidence**，
+`agint-memory/lib/index.js:137` 的 `input.confidence ?? 0.5` 兜底把每一条提升记忆
+写成假 50% 确信。讽刺的是同文件 1267 行的 `entryFor()` 一直在按
+`candidate.score` 算置信度，但 **sweep.js 里零引用** —— 算好的值从来没被用上。
+
+**改动**：
+
+1. `checkOperations` 的 plan 补带 `candidateScore`（取自 `candidateByKey.get(key).score`），
+   让分数能流到写入层。
+2. 新增 `scoreToConfidence(score)`：0..1 一位小数（与 `entryFor` 同口径）；
+   **缺失/非有限时退到 0.6**（= 启发式抽取、未经充分验证档），
+   ⛔ 不回 0.5 —— 0.5 正是「假装有一半把握」这个病灶本身。
+3. 三条 write 分支都显式传 `confidence`。
+
+**未做（诚实边界）**：存量 48 条的分数**无法回填**。
+`storages/agint_dream_recall.jsonl` 的 `score` 字段**98 条全部是 0.0**
+（`lib/recall-store.js:205` 的 `c.score ?? null`，而抽取阶段 `c.score` 就是 undefined），
+拿它回填会把 48 条打成 0 分，比现在的 0.5 更失真。这批留待 recall-store 分数链修好后重算。
+
+**验收**：
+- `test/validation-gate.test.js` 22/22 通过（新增 2 例：三分支必须显式带 confidence
+  且值 = 候选分数；缺分数退 0.6）。
+- `test/*.test.*` 全量 182/182。
+
+---
+
 ## v0.7.1 — 2026-10-29 — assistant 正文统计量补齐四个出口（提案 d2b77b47）
 
 **症状**：v0.7.0 之前（2026-10-28 提案 2f91b72b / `0ac21ca`）`collectSessionSignals`

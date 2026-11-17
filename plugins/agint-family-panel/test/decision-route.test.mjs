@@ -205,15 +205,23 @@ test('写入：目标态与现状相同 → changed:false 且不落库（幂等�
   assert.equal(ev.calls.length, 0);
 });
 
-test('写入：连续改判不会让 note 无限膨胀（上一版是面板记录时替换而非叠加）', async () => {
+// 2026-11-03（W8-2）改判：这条原来断言「上一版是面板记录时不该叠进去」，
+// 理由是「连续改判会让 note 无限膨胀」。
+// 实测推翻了这个理由：提案 a85ef850 的 note 是 300+ 字的失效论证（含实测数据），
+// 一次改判回 proposed 之后整段消失 —— 前缀相同被误当成「没价值」。
+// 老板裁定（2026-11-03）：**全部保留**，膨胀靠 DECISION_NOTE_MAX=1000 截断。
+// 所以现在断言的是「保留住旧内容 + 仍受长度上限约束」这两件事同时成立。
+test('写入：连续改判保留上一版记录，且整体仍受长度上限约束（不无限膨胀）', async () => {
   const ev = fakeEvolve({ p1: row({ status: 'proposed' }) });
   const ctx = makeCtx({ evolve: ev });
   apply(ctx, {});
   await call(ctx, { headers: goodHeaders, body: envelope({ id: 'p1', status: 'approved', note: '第一次' }) });
   await call(ctx, { headers: goodHeaders, body: envelope({ id: 'p1', status: 'wontfix', note: '第二次' }) });
   const note = ev.calls[1].note;
-  assert.ok(note.length < 200, `note 应保持简短，实际 ${note.length}`);
-  assert.ok(!note.includes('第一次'), '上一版是面板记录时不该叠进去');
+  assert.ok(note.includes('第一次'),
+    '上一版内容必须保留 —— 它可能是唯一的人工判断，前缀不携带「已没用」的信息');
+  assert.ok(note.length <= 1001,
+    `保留不等于无限膨胀：必须受 DECISION_NOTE_MAX 约束，实际 ${note.length}`);
 });
 
 test('kill-switch 关闭时写通道同时关闭（不是只关读）', async () => {

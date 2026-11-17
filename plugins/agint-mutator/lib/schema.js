@@ -100,6 +100,19 @@ export const AuditSchema = z.object({
   timestamp: z.string().min(1),
   sandboxResult: SandboxResultKindSchema,
   rollbackTrigger: z.string().min(1),
+  // W6（v0.7.0）：worktree 隔离取证。**可选** —— 只在 config.worktreeIsolation=true 时写。
+  //
+  // ⛔ 为什么不是必填：默认关的运行不该多出字段（旧 commits 表里的行没有它，
+  //    zod 解析历史记录时必填字段会让整表读不出来 —— 与「手改 storages 撞版本校验」同源）。
+  // ⛔ `isolated:false` 与「字段不存在」是两件事，必须能区分：
+  //    前者 = 开关打开了但这次降级了（要看 reason）；后者 = 本次根本没启用。
+  worktree: z.object({
+    isolated: z.boolean(),
+    baseCommit: z.string().optional(),
+    branch: z.string().optional(),
+    reason: z.string().optional(),
+    cleanupNotes: z.array(z.string()).optional(),
+  }).optional(),
 });
 
 // Sprint 8 #4 扩展：CommitSchema 加 policyDecision + audit（设计稿 §2.1 显式定义 commit 返回值）

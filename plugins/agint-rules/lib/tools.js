@@ -203,7 +203,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'rule_audit',
-    description: '返回 agint-rules 当前的命中审计(hits/denies/asks/advisories)。用于统计门禁遵守率、指标序列。',
+    description: '返回 agint-rules 的命中审计(hits/denies/asks/advisories/epistemics)。2026-11-02 起计数已持久化到 agint_rules 域的 rule_audit 表：数值是**跨重启累计**（lifetime），不是单会话，因此可用于回答「这个门禁历史上拦过多少次」与统计遵守率。',
     parameters: {},
     output: {
       schema: {
@@ -225,6 +225,10 @@ function apply(ctx) {
                 // (lib/index.js:511) ⇒ 每条都会带, 必须声明, 否则被
                 // additionalProperties:false 拒绝。
                 epistemics: { required: true, type: 'number' },
+                // 持久化时间戳（提案 09ae2017，2026-11-02）：bump 时写入，
+                // boot 时从 rule_audit 表载回。老记录可能没有 ⇒ 可选属性。
+                firstHitAt: { type: 'string' },
+                lastHitAt: { type: 'string' },
               },
             },
           },
@@ -246,10 +250,11 @@ function apply(ctx) {
       render(_a, v) {
         const t = v.totals;
         const lines = [
-          `rule_audit: totals hits=${t.hits} denies=${t.denies} asks=${t.asks} advisories=${t.advisories}`,
+          `rule_audit: totals hits=${t.hits} denies=${t.denies} asks=${t.asks} advisories=${t.advisories} epistemics=${t.epistemics} (跨重启累计)`,
         ];
         v.rules.forEach((r) => {
-          lines.push(`  [${r.ruleId.padEnd(30)}] hits=${r.hits}  deny=${r.denies}  ask=${r.asks}  adv=${r.advisories}`);
+          const tail = r.lastHitAt ? `  last=${r.lastHitAt}` : '';
+          lines.push(`  [${r.ruleId.padEnd(30)}] hits=${r.hits}  deny=${r.denies}  ask=${r.asks}  adv=${r.advisories}${tail}`);
         });
         return [{ type: 'text', text: lines.join('\n') }];
       },

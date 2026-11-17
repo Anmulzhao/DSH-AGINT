@@ -122,6 +122,11 @@ export function extractAtomic(summary) {
   const contradMeta = meta('wiki.contradictions');
   const memoryMeta = meta('memory.total');
   const skillsMeta = meta('skills.totalBytes');
+  // r5：managed 口径的原子值（臃肿度分子/分母）+ 第三方字节 + 常驻成本
+  const managedMeta = meta('skills.managedBytes');
+  const managedBytes = num('skills.managedBytes');
+  const managedCount = isNum(managedMeta.managedCount) ? managedMeta.managedCount : null;
+  const topManaged = Array.isArray(managedMeta.topManaged) ? managedMeta.topManaged : [];
 
   const lintIssues = Array.isArray(rulesMeta.issues) ? rulesMeta.issues : [];
   // duplicate-pattern 才是冗余分子；lint 还有其他 kind（stale 等），别混。
@@ -169,6 +174,11 @@ export function extractAtomic(summary) {
       curatorOverlaps: 0,
       skillsTotal: isNum(skillsMeta.fileCount) ? skillsMeta.fileCount : null,
       skillsBytes: num('skills.totalBytes'),
+      // r5：臃肿度分子/分母只认 AGINT 负责的技能；第三方与常驻成本只作展示。
+      skillsManagedBytes: managedBytes,
+      skillsManagedCount: managedCount,
+      skillsThirdPartyBytes: num('skills.thirdPartyBytes'),
+      skillsFrontmatterBytes: num('skills.frontmatterBytes'),
     },
     // Q3 建议的证据上下文（广播文本只引用计数与机制，id 清单进审计条目——§5 示例口径）
     // §4 真实关（2026-09-29）：建议必须绑定真实 lint 证据，故把 wiki 矛盾/孤儿
@@ -182,6 +192,11 @@ export function extractAtomic(summary) {
       wikiOrphanFiles: strList(wikiMeta.files),
       curatorOverlaps: 0,
       skillsBytes: num('skills.totalBytes'),
+      // r5：bloat 建议改用 managed 口径，并带上真实的最大技能明细
+      // （旧口径建议引用 curator overlaps —— 该值恒 0，等于引用不存在的证据）。
+      skillsManagedBytes: managedBytes,
+      skillsManagedCount: managedCount,
+      skillsTopManaged: topManaged,
       // r4：bloat 改为单技能体积口径 ⇒ q3Advice 需要技能数才能算预算。
       // 不传这一项，bloat 最丑时建议栏会永久哑火（与 2026-10-08 那次
       // lowConfidenceNoEvidence 恒空是同一类缺陷）。
@@ -238,14 +253,21 @@ function describeWorst(key, value, atomic) {
       // r4：必须把「多少个技能 × 多少 KB = 预算多少 KB」一次说清。
       // 只写「超预算」在技能数变化时无法解读——这正是 r3 的病灶
       // （221853 B / 20 技能 = 10.83KB 正常，却被固定 120KB 判成超标 80%）。
-      const kb = Math.round((atomic.skillsBytes ?? 0) / 1024);
-      const n = atomic.skillsTotal;
+      // r5：口径只算 **AGINT 负责的技能**（managed）；第三方技能单列并说明
+      // 「不计入」（判尺不考核不可控对象）。同时透出常驻成本（frontmatter）。
+      const kb = Math.round((atomic.skillsManagedBytes ?? 0) / 1024);
+      const n = atomic.skillsManagedCount;
       if (!isNum(n) || n <= 0) {
-        return `${pct(value)}（${THRESHOLD_TEXT.bloat}）——SKILL.md 共 ${kb}KB（技能数未知，预算无法展开）`;
+        return `${pct(value)}（${THRESHOLD_TEXT.bloat}）——AGINT 技能共 ${kb}KB（技能数未知，预算无法展开）`;
       }
       const per = THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES / 1024;
       const budgetKb = Math.round((n * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES) / 1024);
-      return `${pct(value)} 单技能体积（${n} 个技能 × ${per.toFixed(1)}KB = 预算 ${budgetKb}KB）——SKILL.md 共 ${kb}KB`;
+      const tp = atomic.skillsThirdPartyBytes;
+      const thirdParty = isNum(tp) && tp > 0 ? `｜第三方 ${Math.round(tp / 1024)}KB 不计入` : '';
+      const fm = atomic.skillsFrontmatterBytes;
+      const resident = isNum(fm) && fm > 0 ? `｜常驻 ${Math.round(fm / 1024)}KB/轮` : '';
+      return `${pct(value)} 单技能体积（${n} 个 AGINT 技能 × ${per.toFixed(1)}KB = 预算 ${budgetKb}KB）`
+        + `——AGINT 技能共 ${kb}KB${thirdParty}${resident}`;
     }
     default:
       return `${value}`;
@@ -262,6 +284,36 @@ export function rollQuota(quota, now = new Date()) {
   if (q.weeklyKey !== wk) { q.weeklyKey = wk; q.weekly = 0; }
   if (q.monthlyKey !== mk) { q.monthlyKey = mk; q.monthly = 0; }
   return q;
+}
+
+// ── 能力向量栏（v0.10.0；只读展示，绝不进评分链路）────────────────────────
+
+/**
+ * 把「能力证据」并排摆到分数旁边。
+ *
+ * 为什么需要：`aesthetic_score` 只量内部卫生（噪声/确信度/冗余/臃肿），实测
+ * 6 周从 80.3 涨到 99.9，而能力图谱只覆盖 1 个 ISO 周、CAN 条目恒为 0
+ * （见 `bin/score-vs-evidence.mjs` 的麒麟机 `NOT_COMPARABLE` 结论）。只报分数
+ * 会让读者把「尺子变干净」读成「系统变聪明」。这一栏不加分数、不改权重、
+ * 不参与 Q1/Q2/Q3，只是把另一侧**有没有证据**如实摆出来。
+ *
+ * ⛔ 三态纪律：任一服务不可用 ⇒ 对应数字为 `null`，渲染成 `?` 并列出未采集源。
+ *    **绝不写 0** —— 写 0 会把「没采到」伪装成「能力为零」，正是本项目反复
+ *    踩过的那种失真（Growth Report 三态 / 冻结标签 0 条同理）。
+ * ⛔ 本函数零 I/O、零服务访问：`cap` 由编排层 `lib/index.js` 懒解析后传入，
+ *    保证 broadcast.js 仍是纯函数（§5 结构边界）。
+ *
+ * @param {object|null} cap
+ * @returns {string|null} 无数据对象时返回 null（调用方不渲染该栏）
+ */
+export function formatCapabilityVector(cap) {
+  if (!cap || typeof cap !== 'object') return null;
+  const n = (v) => (isNum(v) ? String(v) : '?');
+  const missing = Array.isArray(cap.unavailable) ? cap.unavailable : [];
+  const suffix = missing.length ? `｜未采集：${missing.join('/')}` : '';
+  return `能力 CAN ${n(cap.can)}／CANNOT ${n(cap.cannot)}／UNCERTAIN ${n(cap.uncertain)}`
+    + ` · 课程挑战 ${n(cap.challenges)}／尝试 ${n(cap.attempts)}`
+    + ` · 闭环成功 ${n(cap.succeeded)}／提案 ${n(cap.proposals)}${suffix}`;
 }
 
 // ── 三档 + alert 模板（§5；AC-2：daily ≤5 行、≤2KB、首行含 asOf）────────────
@@ -313,7 +365,11 @@ export function renderReport(kind, c = {}) {
   // §6.1 缓存回退标注（Day 2-3）：合进总分行不加行——AC-2 的 daily ≤5 行上限
   // 不因数据陈旧而放松；首行 asOf（缓存时点）本身已诚实透出数据新旧。
   const staleTxt = isNum(c.staleDays) ? `｜⚠缓存${c.staleDays}天` : '';
-  const scoreLine = `${scoreTxt}（${baseTxt}）${deltaTxt}${breath}${naTxt}${staleTxt}`;
+  // v0.10.0 能力向量：daily **同行追加**（AC-2 的 ≤5 行不放宽，与 naTxt/staleTxt
+  // 同一先例）；weekly/monthly 单独成行更醒目。⛔ 只读展示，不进评分链路。
+  const capTxt = formatCapabilityVector(c.capability);
+  const scoreLine = `${scoreTxt}（${baseTxt}）${deltaTxt}${breath}${naTxt}${staleTxt}`
+    + (kind === 'daily' && capTxt ? `｜${capTxt}` : '');
 
   // 最丑行 + 建议 + 证据（Q2/Q3；最丑缺席时后两行收起）
   const worst = ev.worst ?? null;
@@ -341,6 +397,7 @@ export function renderReport(kind, c = {}) {
     return fitLines([
       `📈 本周美谕 ${weekRangeText(c.now ?? new Date())}（数据截至 ${asOfText}）`,
       scoreLine,
+      ...(capTxt ? [capTxt] : []),
       ...(loopLine ? [loopLine] : []),
       `本周三问：Q1 ${vText}${q1}`,
       ...worstLines,
@@ -352,6 +409,7 @@ export function renderReport(kind, c = {}) {
   return fitLines([
     `🗓️ 本月美鉴 ${monthKey(c.now ?? new Date())}（数据截至 ${asOfText}）`,
     scoreLine,
+    ...(capTxt ? [capTxt] : []),
     `本月三问：Q1 ${vText}`,
     ...worstLines,
   ]);

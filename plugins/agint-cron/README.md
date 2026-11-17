@@ -143,6 +143,34 @@ const h = cron.health();
 > 工具面 `cron_health` 会把两者并排显示，措辞刻意分开：
 > `cron_health: healthy，1 个 job 上轮失败`。**`healthy` 说的是调度时效，不是成败。**
 
+### 失效两维度：过期未跑 / 久未活动（v0.4.0 起，提案 cdf41d63）
+
+`health()` 的输出加了**两个失效维度**（v0.4.0）：
+
+| 字段 | 装什么 | 决定 `healthy` 吗 |
+|---|---|---|
+| `staleOverdue` | 过期未跑（= `issues`，同源同数组，历史别名） | ✅ 是 |
+| `staleInactive` | 久未活动：距上次运行 > 2 × 调度周期 | ❌ 否（只报不拦，同 `failures` 口径） |
+| `issues` | 历史别名 = `staleOverdue` | ✅ 是 |
+
+每个 job 的 status 也带 `staleOverdue` / `staleInactive` / `inactiveMs` / `periodMs`。
+
+```js
+const h = cron.health();
+// h.staleOverdue.length   // 过期未跑的 job
+// h.staleInactive.length  // 久未活动的 job（> 2 个调度周期没动）
+```
+
+> ⚠️ 口径要点（别想当然，判据在 `lib/staleness.js`）：
+> - 对**跑过**的 job，久未活动 ⇒ 必然也已过期（idle > 2P ⇒ > 1.5P）。所以久未活动是
+>   过期维度的**子集**：它标注严重程度，不新增计数。
+> - 真正新增的信号是**从未运行**的 job —— 过期通道对这类 job 用固定 7 天窗口兜底，
+>   久未活动用真实周期（真实周期 P）。所以「每日任务从没跑过」从此可见。
+> - `healthy` 仍只看过期维度（沿用 2026-10-07「只报不拦」口径）。
+>
+> 消费方：`agint-metrics` 据此产出 `cron.staleOverdue` / `cron.staleInactive`
+> 两个指标 key；`agint-evolve` 的周报多一条 `cron.staleInactive` 发现。
+
 ## 加载
 
 host 插件通过 dsh 的 user-patch 层挂载：

@@ -111,8 +111,8 @@ function sentences(text) {
   return String(text ?? '').split(/[。；;\n!?！？]/).filter((s) => s.trim());
 }
 
-function finding(family, severity, code, message, location = 'SKILL.md') {
-  return { family, severity, code, message, location };
+function finding(family, severity, code, message, location = 'SKILL.md', criterion) {
+  return { family, severity, code, message, location, ...(criterion ? { criterion } : {}) };
 }
 
 /**
@@ -211,13 +211,13 @@ export function checkSkillSemantics({ draft, pattern = {}, cfg = {} } = {}) {
     const informative = informativeText(body, toolNames);
     if (body && informative.length < MIN_INFORMATIVE_CHARS) {
       findings.push(finding(SEMANTICS_FAMILY, 'blocker', 'non-informative-body',
-        `正文剥掉模板固定话术、工具名与参数键名后只剩 ${informative.length} 个有效字符（< ${MIN_INFORMATIVE_CHARS}）——这条技能没有比工具文档多知道任何东西。补上「这类任务为什么这么做 / 坑在哪 / 真实参数长什么样」，否则不该发布`));
+        `正文剥掉模板固定话术、工具名与参数键名后只剩 ${informative.length} 个有效字符（< ${MIN_INFORMATIVE_CHARS}）——这条技能没有比工具文档多知道任何东西。补上「这类任务为什么这么做 / 坑在哪 / 真实参数长什么样」，否则不该发布`, 'SKILL.md', 'information-form'));
     }
 
     // A3-2 正文零具体值：无路径/命令/端点/错误码 → 无可执行信息
     if (body && !CONCRETE_RE.test(body)) {
       findings.push(finding(SEMANTICS_FAMILY, 'blocker', 'no-concrete-value',
-        '正文里找不到任何一个具体值（真实路径 / 命令 / URL / 错误码 / CLI 选项）——只有工具名和泛化描述的技能无法被执行者照做。至少补一条真实命令或路径示例'));
+        '正文里找不到任何一个具体值（真实路径 / 命令 / URL / 错误码 / CLI 选项）——只有工具名和泛化描述的技能无法被执行者照做。至少补一条真实命令或路径示例', 'SKILL.md', 'information-form'));
     }
 
     // A3-3 步骤全是工具复述：'调用 <工具> … 确认输出符合预期' 形态占比 > 50%
@@ -225,7 +225,7 @@ export function checkSkillSemantics({ draft, pattern = {}, cfg = {} } = {}) {
     const recapSteps = steps.filter((s) => RECAP_STEP_RE.test(s)).length;
     if (steps.length && recapSteps / steps.length > 0.5) {
       findings.push(finding(SEMANTICS_FAMILY, 'blocker', 'tool-recap-only',
-        `步骤里 ${recapSteps}/${steps.length} 条是「调用 <工具名>…确认输出符合预期」的复述形态——执行者本来就会看工具文档，复述一遍不产生知识。步骤应写「这一步要达成什么、参数从哪来、怎么判断成了」`));
+        `步骤里 ${recapSteps}/${steps.length} 条是「调用 <工具名>…确认输出符合预期」的复述形态——执行者本来就会看工具文档，复述一遍不产生知识。步骤应写「这一步要达成什么、参数从哪来、怎么判断成了」`, 'SKILL.md', 'information-form'));
     }
 
     // A3-4 一次性任务叙事：≥3 处 PR/issue 编号或日期
@@ -233,7 +233,7 @@ export function checkSkillSemantics({ draft, pattern = {}, cfg = {} } = {}) {
     const oneOff = body.match(ONE_OFF_RE) ?? [];
     if (oneOff.length >= 3) {
       findings.push(finding(SEMANTICS_FAMILY, 'blocker', 'one-off-narrative',
-        `正文出现 ${oneOff.length} 处 PR/issue 编号或日期（如 ${oneOff.slice(0, 3).join('、')}）——这是「一次性任务叙事」，下次遇到同类问题这些编号毫无意义。改写成类级描述`));
+        `正文出现 ${oneOff.length} 处 PR/issue 编号或日期（如 ${oneOff.slice(0, 3).join('、')}）——这是「一次性任务叙事」，下次遇到同类问题这些编号毫无意义。改写成类级描述`, 'SKILL.md', 'information-form'));
     }
   }
 

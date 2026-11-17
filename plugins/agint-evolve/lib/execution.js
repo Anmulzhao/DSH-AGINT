@@ -12,13 +12,15 @@
  *
  * ## 为什么判据要单独成文件
  *
- * 「能不能入队」「什么时候该跑」「这次算不算成功」三件事会被四个地方问：
- *   setStatus（批准入口）／家族面板（显示口径）／agint-executor（调度）／工具。
- * 判据散成四份，就会出现「面板说排队中、执行器说没这条」的自相矛盾 ——
- * 这正是 blocker 那次改动踩过的坑（`proposalBlocked()` 只能有一处）。
+ * 「能不能入队」「什么时候该跑」「这次算不算成功」「现在卡在谁身上」四件事会被
+ * 五个地方问：setStatus（批准入口）／家族面板（显示口径）／agint-executor（调度）／
+ * 工具／待办汇总。判据散成五份，就会出现「面板说排队中、执行器说没这条」的
+ * 自相矛盾 —— 这正是 blocker 那次改动踩过的坑（`proposalBlocked()` 只能有一处）。
  *
  * ⛔ 本文件不许碰存储、不许读 env、不许拿 Date.now()：时间一律由调用方传 now。
  *    这样「定时到点该跑」「过了周上限该顺延」才测得住。
+ *    `ticketStage()` 更进一步：它连 now 都不收 —— 判据里有任何时间项，面板那份
+ *    镜像实现就会和这边算出不同的答案（面板拿不到同一时刻）。
  */
 
 /** 执行方式三档。`manual` = 只批准、不自动执行（老行的隐含默认值）。 */
@@ -37,11 +39,106 @@ export const EXEC_MODES = ['manual', 'immediate', 'scheduled'];
  */
 export const EXEC_STATES = ['idle', 'queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled', 'partial'];
 
+/**
+ * 执行器对一次自动执行给出的**终局判决**（2026-11-08，提案 cdf41d63 收口）。
+ *
+ * ## 为什么要有这一层
+ *
+ * 在此之前，一次自动执行的结局只有三种落法：
+ *   成功 ⇒ `status=applied`；失败 ⇒ `status=approved + execState=failed`；
+ *   确定性不可执行 ⇒ `status=approved + execState=idle`（并留一句「请人工结案」）。
+ *
+ * 后两种都是**悬案**：提案还挂在「已批准」里，等一个不会自动来的动作。
+ * 实测（2026-11-08 生产存储）：2 条提案停在 `approved + execState=failed`，
+ * 37 条执行行全是 failed，0 条 deferred —— 执行器只在「跑成了」和「没跑成」之间二选一，
+ * 从没给过结论。
+ *
+ * ⇒ 判决把「为什么没落地」变成一个**可读的字段**，并把提案落到终态（wontfix），
+ *    人看到的从「已批准·执行失败·等处理」变成「已结案·不可执行（附理由）」。
+ *
+ * 判决是**可逆**的：把状态改回 `proposed` 再批准即可复活，人随时能接管。
+ *
+ * 枚举值（口径写在这里，改动前先想清楚）：
+ *   applied        —— 全部落地（唯一由「成功」产生的终局）
+ *   partial        —— 落地一部分，剩余单元仍要续跑（**不是终局**，status 保持 approved）
+ *   not-actionable —— 自动执行判「没有可改的目标 / 撞上同 scope PENDING」：重试不会变
+ *   exhausted      —— 非确定性失败且重试额度用尽
+ *   env-blocked    —— 环境（LLM 通道 / 宿主能力）长期不可用，顺延到上限
+ *   interrupted    —— 被宿主重启 / 进程中断打断
+ */
+export const EXEC_VERDICTS = [
+  'applied',
+  'partial',
+  'not-actionable',
+  'exhausted',
+  'env-blocked',
+  'interrupted',
+];
+
 /** 一次执行（execution 表一行）的状态机。 */
 export const JOB_STATES = ['queued', 'running', 'succeeded', 'failed', 'deferred', 'cancelled'];
 
 /** 到期仍可被 claim 的状态：queued 是正常待跑，deferred 是被周上限/前置顺延过的。 */
 const CLAIMABLE = new Set(['queued', 'deferred']);
+
+/**
+ * 孤儿执行的判据（纯函数，无 IO、无时钟 —— now 由调用方传）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * 2026-11-02 实机：提案 `a6e6e1d9` 的执行行 `exec-1793280728689-kmy9h1` 停在
+ * `state='running'`（startedAt=2026-11-01T16:00:04.986Z，finishedAt=''），面板显示
+ * 「已批准·执行中」，而实际没有东西在跑。三条原因叠在一起：
+ *
+ *   ① 宿主在执行途中被重启/关停 ⇒ 结算调用撞上已 dispose 的存储域，抛错；
+ *   ② 执行器把结算失败**静默吞掉** ⇒ 行永远停在 running；
+ *   ③ `CLAIMABLE` 只含 queued/deferred（execution.js:46）⇒ running 行永不再被捡；
+ *      `activeJobsFor` 又把 running 算活跃 job（agint-evolve/lib/index.js:442-450）
+ *      ⇒ `autoEnqueueBlocker` 判 'already-queued' ⇒ 提案再也排不进去。
+ *
+ * ⇒ 队列**不自愈**：没人会再来结算这一行，也没人能再排一条新的。
+ *
+ * ## 判据怎么定（要有据，不能只按「超时」猜）
+ *
+ *   ① **跨进程**：行是在**本次进程挂载之前**就被 claim 的（startedAt < mountedAt）
+ *      ⇒ 上一进程死了，本进程不可能是它的执行者 ⇒ 孤儿。硬证据，不需要等超时。
+ *   ② **跨时长**：行 running 超过 `staleMs` 且不在本进程的活跃执行名单里
+ *      ⇒ 兜底（覆盖「同进程内结算失败」这种跨进程判据抓不到的情形）。
+ *
+ * ⛔ 回收**不得**把提案标成 applied：中断的是「一次执行」，不是「这件事做完了」。
+ *    提案的剩余单元必须继续有入口。
+ *
+ * @param {object} job execution 行
+ * @param {object} opts
+ * @param {number} opts.now 当前时刻（毫秒）
+ * @param {number} opts.mountedAt 本进程挂载时刻（毫秒）
+ * @param {number} opts.staleMs 超时兜底阈值（毫秒）
+ * @param {string[]} [opts.excludeIds] 本进程正在跑的 job id（不判孤儿）
+ * @returns {{orphan:boolean, reason:string}}
+ */
+export function isOrphanExecution(job, { now = Date.now(), mountedAt = 0, staleMs = 30 * 60 * 1000, excludeIds = [] } = {}) {
+  if (!job || job.state !== 'running') return { orphan: false, reason: '' };
+  const id = String(job.id ?? '');
+  if (Array.isArray(excludeIds) && excludeIds.includes(id)) {
+    return { orphan: false, reason: '' };
+  }
+  const startedAt = Date.parse(String(job.startedAt ?? ''));
+  if (!Number.isFinite(startedAt)) {
+    // 时间字段坏了：判不出跨进程，但也不能因为「读不出来」就永远留着。
+    // 按超时兜底处理（staleMs 从 mountedAt 起算），让这一行至少能被结算掉。
+    const since = Number.isFinite(Number(mountedAt)) && Number(mountedAt) > 0 ? Number(mountedAt) : now;
+    return now - since > staleMs
+      ? { orphan: true, reason: `running 行缺少 startedAt，超过 ${Math.round(staleMs / 1000)}s 仍未结算` }
+      : { orphan: false, reason: '' };
+  }
+  if (Number.isFinite(Number(mountedAt)) && Number(mountedAt) > 0 && startedAt < Number(mountedAt)) {
+    return { orphan: true, reason: `宿主重启前就已 running（startedAt=${job.startedAt} < 本进程挂载时刻），上一进程已死` };
+  }
+  if (Number.isFinite(staleMs) && staleMs > 0 && now - startedAt > staleMs) {
+    return { orphan: true, reason: `已 running 超过 ${Math.round(staleMs / 1000)}s 且不在本进程活跃执行里` };
+  }
+  return { orphan: false, reason: '' };
+}
 
 /** 定时的上限/下限：太远的将来（>365 天）几乎一定是填错了。 */
 const MAX_AHEAD_MS = 365 * 24 * 60 * 60 * 1000;
@@ -151,8 +248,33 @@ export function isJobDue(job, now = Date.now()) {
  *    的可执行化。之前它是纸面约定，因为「自动部署」这件事根本没发生过；
  *    现在批准即自动执行，它必须变成代码，否则第一条越线的改动就没人拦。
  *
+ * ══ W8-1 / Effects（v0.18.0）：计数单位从「执行行」改成「提案」══
+ *
+ * 旧口径 = `jobs.filter(ok && succeeded).length` —— 数的是**执行行**。
+ * 而 v0.22.0 起 `partial` 会自动续跑：一条横跨 N 个文件的提案，会产出
+ * N 条 `ok:true, state:'succeeded'` 的执行行（每条只落地一个原子单元）。
+ * 于是**一条提案吃掉 N 格周额度** —— 红线说的是「部署几次」，不是「改了几个文件」。
+ *
+ * 实测后果（本机）：一条 3 单元提案 + 续跑上限 5 ⇒ 单条提案就能把
+ * `weeklyCommitCap=5` 全部吃光，之后所有提案一律 `defer` 顺延到下周。
+ * 这不是限流，是误伤：那一周系统看起来「很忙」，实际只推进了一条提案。
+ *
+ * 新口径 = 按 `proposalId` 去重后的条数。语义更贴近红线原文：
+ *   「本周自动落地了**几条提案**」。
+ *
+ * ⛔ 为什么去重键是 proposalId 而不是「取最早那条」：
+ *    续跑行的 proposalId 恒等于首次执行行（`enqueueOne(rec, ...)` 用 rec.id），
+ *    所以直接 Set 去重就是「一条提案算一次」，不需要挑代表行。
+ * ⛔ 为什么 jobs 仍然返回**全部命中行**（不去重）：
+ *    调用方（周报 / 面板）要看的是「这一周都跑了什么」，去重会让人以为只跑了一次。
+ *    `count` 是计数（去重后），`jobs` 是明细（未去重）—— 两者语义不同，都保留。
+ * ⛔ 缺 `proposalId` 的行（历史脏数据 / 手写夹具）不参与去重合并：
+ *    每条按独立提案计。宁可多算（更保守、更容易触发上限）也不错合并
+ *    —— 错合并会让上限**静默失效**，那才是真的危险方向。
+ *
  * @param {Array} jobs 最近窗口内的执行行
- * @param {number} cap 上限（0 = 不限，给测试/临时放开用）
+ * @param {number} now 当前毫秒时间戳
+ * @param {number} windowMs 窗口宽度（默认 7 天；生产传「本周起点至今」）
  */
 export function weeklyUsage(jobs, now = Date.now(), windowMs = 7 * 24 * 60 * 60 * 1000) {
   const since = now - windowMs;
@@ -161,7 +283,23 @@ export function weeklyUsage(jobs, now = Date.now(), windowMs = 7 * 24 * 60 * 60 
     const ts = Date.parse(String(j.finishedAt ?? j.updatedAt ?? ''));
     return Number.isFinite(ts) && ts >= since;
   });
-  return { count: hits.length, since: new Date(since).toISOString(), jobs: hits };
+  // 去重键：有 proposalId 用它；没有就退回该行自己的 id（或用下标兜底，
+  // 保证「每条都是独立一格」而不是全部塌缩成同一个 undefined 键）。
+  const seen = new Set();
+  const proposals = [];
+  hits.forEach((j, i) => {
+    const key = String(j.proposalId ?? '').trim() || `__row_${j.id ?? i}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    proposals.push(key);
+  });
+  return {
+    count: proposals.length,
+    proposals,
+    since: new Date(since).toISOString(),
+    // 明细保持未去重：周报要能说出「这一周跑了 7 次、涉及 3 条提案」
+    jobs: hits,
+  };
 }
 
 /**
@@ -214,6 +352,171 @@ export function interpretRunResult(out) {
     };
   }
   return { ok: false, mutationId: out.proposalId ?? '', reason: 'no-commit-attempted（变异已构造但没写盘：commit 关闭或缺 repoRoot）' };
+}
+
+/**
+ * 一条提案此刻「卡在谁身上」—— 工单状态机（2026-11-01，v0.16.0）。
+ *
+ * ## 它补的是哪个洞
+ *
+ * `status` 说的是「这件事在台账上算哪一档」，`execState` 说的是「最近一次执行跑到
+ * 哪一步」—— 两个字段各自都对，但**没有一个字段回答「现在该谁动」**。于是面板只能
+ * 拿 execState 硬猜，猜出过两次相反的事故：
+ *
+ *   · `a85ef850`：approved + immediate + execState=idle + blocker 非空 ⇒ 标成
+ *     「已批准·待入队」，而它其实卡在前置上，永远等不到入队那一刻。
+ *   · `846f4fbb`：误结案成 applied 后人工改回 approved，execState 仍停在 succeeded
+ *     ⇒ 标签说「已落地」，台账说「没做完」，两边都不像在撒谎。
+ *
+ * 两次的根因是同一个：**「等机器」与「等人」被混在一个字段里**。
+ *
+ * ## 为什么不复用 superagent 的 stage 表（照抄会错）
+ *
+ * dsh-superagent 的同一张表里有一档 `idle`（「这一轮干完了，等下一条 Trigger」）。
+ * AGINT 没有这个健康静息态：一条 `approved` 提案的唯一正常归宿是**被执行**，
+ * 不是等什么。所以「批准了、计划就绪、队列里却没有」在那边是 idle，在这里是
+ * **异常**（下面的 `stalled`）。照抄会把一个真实的静默缺陷伪装成正常。
+ *
+ * ## 判据顺序不能改
+ *
+ *   ① 已结束 → ② 待批准 → ③ blocker → ④ 失败 → ⑤ 部分落地 →
+ *   ⑥ 排队/顺延 → ⑦ 在跑 → ⑧ 计划没定 → ⑨ 应入队未入队
+ *
+ * ⛔ ③ 必须排在 ④~⑦ 之前：blocker 在时执行态没有意义（它根本排不进去）。
+ *    这条是 `a85ef850` 那次定下的，面板 CHANGELOG 也这么写。
+ * ⛔ ⑥⑦ 必须在 ⑧ 之前：`autoEnqueueBlocker()` 会把 queued/running 的提案
+ *    也判成「该入队」，反过来问会得到「计划就绪却 stalled」的假警报。
+ */
+export const TICKET_STAGES = Object.freeze([
+  'closed',
+  'draft',
+  'person/blocked',
+  'person/failed',
+  'person/review',
+  'person/plan',
+  'working/queued',
+  'working',
+  'stalled',
+]);
+
+/** stage → 谁在等。`system` = 没人在等，这是个该被修掉的缺陷。 */
+export const STAGE_SIDES = Object.freeze({
+  closed: 'closed',
+  draft: 'person',
+  'person/blocked': 'person',
+  'person/failed': 'person',
+  'person/review': 'person',
+  'person/plan': 'person',
+  'working/queued': 'working',
+  working: 'working',
+  stalled: 'system',
+});
+
+/** stage → 面板标签。⛔ 标签只在这里定义：面板镜像同一张表，靠用例钉等价。 */
+export const STAGE_LABELS = Object.freeze({
+  closed: '已结束',
+  draft: '待批准',
+  'person/blocked': '阻塞·等前置',
+  'person/failed': '执行失败·等处理',
+  'person/review': '部分落地·等续跑',
+  'person/plan': '待定执行计划',
+  'working/queued': '排队中',
+  working: '执行中',
+  stalled: '应入队未入队',
+});
+
+/** 已结束的提案状态（不再有人等，也不该再占面板空间）。 */
+const ENDED_STATUS = new Set(['applied', 'rejected', 'wontfix']);
+
+/** `autoEnqueueBlocker()` 的原因码 → 人话。加了新码这里必须补，否则面板显示裸码。 */
+const PLAN_REASONS = Object.freeze({
+  manual: '执行方式选了 manual（只批准、不自动跑）—— 要么改成 immediate/scheduled，要么手动放行',
+  'scheduled-at-missing': '选了 scheduled 但没填时刻',
+  'scheduled-at-invalid': 'execAt 不是合法时间',
+  'already-queued': '已有活跃执行（理论上不会走到这里）',
+  'not-approved': '状态不是 approved（理论上不会走到这里）',
+  blocked: '被 blocker 挡住（理论上不会走到这里）',
+});
+
+const clip = (text, max = 120) => {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+/**
+ * 一条提案此刻卡在谁身上。
+ *
+ * @param {object} rec 提案行（可以是未归一化的历史行）
+ * @returns {{stage:string, side:string, label:string, why:string, stalled:boolean}}
+ *
+ * ⛔ 只看 `rec` 本身，**不碰 execution 表、不读时钟**。
+ *    面板走的是「直接读 agint_evolve.json 的 tables.proposal」那条路（不 import
+ *    本插件），所以只要判据依赖 execution 表，两边就必然算出不同的答案 ——
+ *    而修 stage 的全部意义就是让两边说同一句话。
+ */
+export function ticketStage(rec) {
+  const n = normalizeExec(rec) ?? {};
+  const status = typeof n.status === 'string' && n.status !== '' ? n.status : 'proposed';
+  const state = n.execState;
+  const blocker = typeof n.blocker === 'string' ? n.blocker.trim() : '';
+
+  const out = (stage, why) => ({
+    stage,
+    side: STAGE_SIDES[stage] ?? 'system',
+    label: STAGE_LABELS[stage] ?? stage,
+    why: why ?? '',
+    stalled: stage === 'stalled',
+  });
+
+  // ① 已结束。2026-11-08：带判决的结案要说清「为什么结的」，
+  //    否则面板只显示「已结束」，人看不出这是执行器判的、判成了什么。
+  if (ENDED_STATUS.has(status)) {
+    const v = String(n.execVerdict ?? '').trim();
+    return out('closed', v
+      ? `已结案·${v}（${clip(n.execError, 80)}）`
+      : `提案已 ${status}`);
+  }
+
+  // ② 待批准 —— 人还没表态，谈不上执行
+  if (status === 'proposed') return out('draft', '还没人批准这条提案');
+
+  // ③ blocker 优先于任何执行态（a85ef850）
+  if (blocker !== '') return out('person/blocked', `阻塞：${clip(blocker, 80)}`);
+
+  // ④ 机器试过、没成功
+  if (state === 'failed') return out('person/failed', clip(n.execError) || '上次执行失败，原因未记录');
+
+  // ⑤ job 成功但提案没做完（846f4fbb）—— 可评审的成果已就绪，欠账在 execError 里
+  if (state === 'partial') return out('person/review', clip(n.execError) || 'job 成功但提案没做完');
+
+  // ⑥ 排队中 / 已顺延
+  if (state === 'deferred') return out('working/queued', clip(n.execError) || '已顺延，到期自动恢复');
+  if (state === 'queued') {
+    const at = String(n.execAt ?? '');
+    return out('working/queued', at ? `排在 ${at.slice(0, 16).replace('T', ' ')}` : '等执行器捡起');
+  }
+
+  // ⑦ 正在跑
+  if (state === 'running') return out('working', '执行器正在跑');
+
+  // ⑧ 批准了，但执行计划没定 —— 这一步复用 autoEnqueueBlocker，判据只有一份
+  const why = autoEnqueueBlocker(n, []);
+  if (why !== null) {
+    // 2026-11-07：markNotActionable() 把「自动执行不适用」的提案降成 manual 后，
+    // execError 里写着真实原因（无目标资产 / 驱动拒绝 / 校验不过）。这一档若仍显示
+    // generic 的 manual 文案，读的人会以为是自己选了 manual —— 真实原因被标签盖掉。
+    const detail = why === 'manual' && n.execError !== ''
+      ? clip(n.execError)
+      : (PLAN_REASONS[why] ?? String(why));
+    return out('person/plan', detail);
+  }
+
+  // ⑨ 计划就绪却不在队列里（idle / succeeded / cancelled 的残留）
+  //
+  // ⛔ 这一档是 AGINT 独有、superagent 没有的：那边 idle 是健康状态（等 Trigger），
+  //    这边 approved + 计划就绪 + 队列空 = 没人会来跑它。labelled 为 system 而非
+  //    person，因为**没有人需要回答什么问题**，需要的是修一个缺陷。
+  return out('stalled', `计划就绪（${n.execMode}）但队列里没有执行 —— 应入队未入队`);
 }
 
 /** 一行执行的人读摘要（面板、工具、日志共用一句话，避免各印各的）。 */

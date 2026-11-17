@@ -1,13 +1,14 @@
 {
   "name": "agint-memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "智进 (agint) long-term memory: host service over the DSH storage domain plus preset-scoped memory tools and the L1-L4 forgetting model.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./lib/tools.js": "./lib/tools.js",
-    "./lib/decay.js": "./lib/decay.js"
+    "./lib/decay.js": "./lib/decay.js",
+    "./lib/hits.js": "./lib/hits.js"
   },
   "license": "MIT"
 }

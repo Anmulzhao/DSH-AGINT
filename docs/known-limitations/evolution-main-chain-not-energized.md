@@ -51,6 +51,34 @@
 > `unified_diff` = 整文件覆盖，8/8 全是该值，直接接会整份覆盖 SKILL.md）。故维持 B 方案，
 > 并把「`mutator.commit` 的 write 路径未启用」写进 manifest 描述，避免下一个人以为它在跑。
 
+> ### ⭐ 2026-11-06 复核：主链路已**彻底**通电 —— 10 次真实 commit，无一滞留 PENDING
+>
+> 上面那个「`policyDecision` 拿不到」的可观测性缺口，**现在补上了** ——
+> 不是靠推断，是靠 `commits` 表本身。
+>
+> | 判据 | 2026-11-06 实读 |
+> |---|---|
+> | `agint_mutator.proposals` | **10 条**，状态分布 `{COMMITTED: 10}` —— 无一条滞留 PENDING |
+> | `agint_mutator.commits` | **10 条**，`policyDecision` 分布 `{AUTO_DEPLOY: 9, PENDING_REVIEW: 1}` |
+> | `agint_population` 存储域 | **存在**（2026-09-24 时根本不存在） |
+> | 总线 `evolution.mutation.committed` | **10 条**，source 全部为 `agint-evolution-driver` |
+> | 总线该主题的时间跨度 | 2026-10-04T12:09Z → **2026-11-02T16:29:39Z**（最近一次） |
+>
+> ⇒ **「AUTO_DEPLOY 还是 PENDING_REVIEW 未取证」这个悬念有答案了：两者都有（9:1）。**
+> 这也顺带说明 2026-10-31 那次「8 条存量全部停在 PENDING」的回填是对的 ——
+> 现在 10 条全是 COMMITTED，说明修复后的唯一约束**真的在拦**，而且没把状态机卡死。
+>
+> ⇒ **`mutator.commit` 依然全仓无生产调用点**（A 方案未做），这一点没变。
+> 维持 B 方案的决定依然成立 —— 且现在多了一条支持它的证据：
+> driver 侧的 `commits` 表 10 条齐全，说明 driver 自己的**记账、preimage、
+> 写入后验证**三件套都已经在生产跑住了。
+>
+> ⚠️ **两处仍未取证，不得含糊**：
+> ① 总线里那 10 条 `evolution.mutation.committed` 的**最早一条是 10-04**，
+>    而本文 §「已通电」那次实跑是 **09-29** ⇒ 那一次的事件**不在总线里**
+>    （本文当时用的判据是 `git status` + preimage，本就不是总线判据，两者不矛盾）。
+> ② `agint_mutator.metrics_log` 至今 **0 条** ⇒ 提案状态机这一格仍未接上。
+
 ## 📌 三轮实跑踩到的坑（全部是「单测全绿也照样漏掉」的真实案例）
 
 | 版本 | 问题 | 发现方式 |

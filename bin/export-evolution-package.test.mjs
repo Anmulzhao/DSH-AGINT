@@ -17,6 +17,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { unpackTar } from './lib/tar.mjs';
+import { makeAttestation, rowHash } from './lib/baseline-provenance.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -32,7 +33,7 @@ function makeSandbox(storages = {}) {
   const bin = join(root, 'bin');
   mkdirSync(join(bin, 'lib'), { recursive: true });
   cpSync(SCRIPT, join(bin, 'export-evolution-package.mjs'));
-  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs', 'diff.mjs']) {
+  for (const f of ['tar.mjs', 'redact.mjs', 'canonical-json.mjs', 'diff.mjs', 'baseline-provenance.mjs']) {
     cpSync(join(__dirname, 'lib', f), join(bin, 'lib', f));
   }
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', version: '0.9.0' }));
@@ -397,6 +398,65 @@ test('✅ PROVENANCE 如实标 NOT_ANCHORED（G1 缺口不掩盖）', () => {
     assert.equal(j.baselineProvenance, 'NOT_ANCHORED');
     assert.equal(j.honestDegradation, true);
     assert.ok(j.why.length > 20, '必须写明为什么');
+    // 实算而非硬编码：必须带实算依据与逐条报告路径。
+    assert.equal(j.assessment.method, 'bin/lib/baseline-provenance.mjs#assessBaselineProvenance');
+    assert.equal(j.assessment.report, '03-evaluation/BASELINE-ATTESTATION.json');
+    assert.ok(j.assessment.reasons.length > 0, '未签发必须逐条留痕，不许只留一个 false');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('✅ BASELINE-ATTESTATION 逐条留痕，且与 PROVENANCE 声明一致', () => {
+  const row = { id: 'st-1', kind: 'success-template', template: '先写测试再写实现' };
+  const { root, dsh } = makeSandbox({
+    agint_evolution: { tables: { success_template: { 'st-1': row } } },
+  });
+  try {
+    const out = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${out}`]).status, 0);
+    const files = unpackTar(readFileSync(out));
+    const att = JSON.parse(files.find((e) => e.path.endsWith('BASELINE-ATTESTATION.json')).content.toString('utf8'));
+    const prov = JSON.parse(files.find((e) => e.path.endsWith('PROVENANCE.json')).content.toString('utf8'));
+    assert.equal(att.baselineProvenance, prov.baselineProvenance);
+    assert.equal(att.baselineAnchored, prov.baselineAnchored);
+    assert.equal(att.counts.total, 1);
+    assert.equal(att.counts.unattested, 1);
+    assert.equal(att.rows[0].status, 'UNATTESTED');
+    assert.ok(att.rows[0].reason.length > 0, '未签发必须带 reason');
+    assert.equal(att.rows[0].verifiableByRecipient, true, 'success_template 在包内，接收方可重算 hash');
+    assert.equal(att.attestationChannel.includes('离线 CLI'), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('✅ 真签发后实算升级为 ANCHORED（证明不是硬编码 NOT_ANCHORED）', () => {
+  const row = { id: 'st-1', kind: 'success-template', template: '先写测试再写实现' };
+  const att = makeAttestation({
+    targetKind: 'success_template', targetId: 'st-1', row,
+    signedBy: '大鱼', mandate: '2026-11-11 人工复核',
+    signedAt: '2026-11-11T00:00:00.000Z',
+  });
+  const { root, dsh } = makeSandbox({
+    agint_evolution: { tables: { success_template: { 'st-1': row } } },
+    agint_baseline_attestation: { tables: { baseline_attestation: { [att.id]: att } } },
+  });
+  try {
+    const out = join(root, 'p.tar.gz');
+    assert.equal(run(root, dsh, ['--confirm', `--out=${out}`]).status, 0);
+    const files = unpackTar(readFileSync(out));
+    const prov = JSON.parse(files.find((e) => e.path.endsWith('PROVENANCE.json')).content.toString('utf8'));
+    const rep = JSON.parse(files.find((e) => e.path.endsWith('BASELINE-ATTESTATION.json')).content.toString('utf8'));
+    assert.equal(prov.baselineAnchored, true);
+    assert.equal(prov.baselineProvenance, 'ANCHORED');
+    assert.equal(rep.rows[0].status, 'ATTESTED');
+    assert.equal(rep.rows[0].contentHash, rowHash(row));
+    const mf = JSON.parse(files.find((e) => e.path === 'manifest.json').content.toString('utf8'));
+    assert.ok(
+      mf.reproductionCaveats.some((c) => c.includes('ANCHORED') && c.includes('实算')),
+      `caveats 必须同步实算结果：${JSON.stringify(mf.reproductionCaveats)}`,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
