@@ -480,14 +480,15 @@ test('T17: agents.create 必须带 meta.agentPreset；startActivation request �
     DEFAULT_AGENT_PRESET,
     'meta.agentPreset 缺失 ⇒ child 的 agentPreset=null ⇒ modelSelection=null ⇒ 会话建得出但跑不动（30 个空壳的血债）',
   );
-  // 新宿主契约：provider / label / delivery / request 四件套
+  // 新宿主契约：provider / label / delivery 摊在 spec 顶层（request 嵌套字段已被宿主移除）
   const spec = rt.started[0];
   assert.equal(spec.provider, 'spawn');
   assert.equal(spec.delivery, 'caller');
-  assert.equal(spec.request.parent.id, 'fake-parent');
-  assert.equal(spec.request.agentPreset, DEFAULT_AGENT_PRESET, 'request.agentPreset 是新契约的必填项');
-  assert.deepEqual(spec.request.agentOptions, rt.created[0].agentOptions);
-  assert.ok(spec.request.outputSchema, 'outputSchema 必须进 request');
+  assert.equal(spec.parent.id, 'fake-parent');
+  assert.equal(spec.agentPreset, DEFAULT_AGENT_PRESET, 'agentPreset 是新契约的必填项');
+  assert.deepEqual(spec.agentOptions, rt.created[0].agentOptions);
+  assert.ok(spec.outputSchema, 'outputSchema 必须进 spec 顶层');
+  assert.equal(spec.request, undefined, '宿主 0.2.2-rc.1 起不再接受嵌套 request（套回 ⇒ spec.parent undefined ⇒ reading id 报错）');
 });
 
 test('T17b: 旧宿主只有 start() 时走兼容分支', async () => {

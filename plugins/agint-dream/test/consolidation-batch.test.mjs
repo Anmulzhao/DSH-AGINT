@@ -33,7 +33,7 @@ function makeMockCtx({ perBatchLimit = Infinity } = {}) {
       if (key === 'subagents') {
         return {
           getProvider: () => ({}),
-          async startActivation({ request: { prompt } }) {
+          async startActivation({ prompt }) {
             subagents.startCount += 1;
             if (batchSizes.length >= perBatchLimit) {
               // 模拟该批跑不完：延迟到超时守卫之后

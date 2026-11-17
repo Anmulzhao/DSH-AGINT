@@ -142,9 +142,10 @@ test('正常返回：verdict + authoring 都清洗后返回', async () => {
   assert.equal(started.length, 1);
   assert.equal(started[0].provider, 'spawn');
   assert.equal(started[0].delivery, 'caller');
-  assert.equal(started[0].request.agentPreset, DEFAULT_AGENT_PRESET);
-  assert.equal(started[0].request.outputSchema, JUDGE_OUTPUT_SCHEMA);
-  assert.deepEqual(started[0].request.agentOptions, {
+  assert.equal(started[0].agentPreset, DEFAULT_AGENT_PRESET);
+  assert.equal(started[0].outputSchema, JUDGE_OUTPUT_SCHEMA);
+  assert.equal(started[0].request, undefined, '宿主 0.2.2-rc.1 起不再接受嵌套 request');
+  assert.deepEqual(started[0].agentOptions, {
     provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
@@ -165,7 +166,10 @@ test('agents.create 必带 meta.agentPreset（缺了就是空壳子代理）', a
   await judgeViaLLM({ ctx, pattern: PATTERN });
   assert.equal(created.length, 1);
   assert.equal(created[0].meta.agentPreset, DEFAULT_AGENT_PRESET);
-  assert.equal(created[0].meta.origin, 'subagent');
+  // ⛔ 2026-11-17：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无 resident
+  //    activation ⇒ 抛 "agent has no active runtime owner"（dsh-subagent/lib/types/manager.js:421-430）。
+  //    临时 parent 是树根 ⇒ 不许标 origin。
+  assert.notEqual(created[0].meta.origin, 'subagent', '临时 parent 不许标 origin:subagent');
   assert.ok(created[0].meta.cwd, 'cwd 缺失会让 child persona 的 {{cwd}} throw');
 });
 

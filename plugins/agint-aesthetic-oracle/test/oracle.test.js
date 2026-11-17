@@ -85,8 +85,10 @@ function fakeLlmServices() {
     getProvider: () => ({ name: 'spawn' }),
     startActivation: async (spec) => {
       calls.push(spec);
-      const promptText = spec.request.prompt.map((b) => b?.text ?? '').join('\n');
-      const structured = fakeLlmStructured(spec.request.outputSchema, promptText);
+      // ⛔ 2026-11-17：宿主 dsh 0.2.2-rc.1 起 spec 顶层带 prompt/outputSchema，
+      //    不再有嵌套 request（宿主 dsh-subagent/lib/index.js:3024 读 spec.parent.id）。
+      const promptText = spec.prompt.map((b) => b?.text ?? '').join('\n');
+      const structured = fakeLlmStructured(spec.outputSchema, promptText);
       return {
         childId: `child-${calls.length}`,
         result: Promise.resolve({ stopReason: 'completed', structured }),
@@ -819,7 +821,8 @@ test('无降级：weekly L3 失败 → 整轮抛错，零提案落盘（先润�
   const subagents = {
     getProvider: () => ({ name: 'spawn' }),
     startActivation: async (spec) => {
-      const required = spec.request.outputSchema?.required ?? [];
+      // ⛔ 2026-11-17：spec 顶层带 outputSchema（宿主 dsh 0.2.2-rc.1 起不再嵌套 request）。
+      const required = spec.outputSchema?.required ?? [];
       if (required.includes('body')) {
         return {
           childId: 'l3-fail',

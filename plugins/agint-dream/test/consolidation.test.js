@@ -261,9 +261,13 @@ test('consolidate: subagent 返回 llm structured → mode=llm, operations 对�
   }
   assert.equal(calls.startArgs.provider, 'spawn');
   assert.equal(calls.startArgs.delivery, 'caller');
-  assert.equal(calls.startArgs.request.parent.id, 'mock-parent');
-  assert.equal(calls.startArgs.request.agentPreset, DEFAULT_AGENT_PRESET);
-  assert.ok(calls.startArgs.request.outputSchema, 'outputSchema must be passed in request');
+  // ⛔ 2026-11-17：宿主 dsh 0.2.2-rc.1 起 SubagentActivationSpec 不接受嵌套 request ——
+  //    parent / prompt / agentPreset / agentOptions / outputSchema 摊在 spec 顶层
+  //    （宿主 dsh-subagent/lib/index.js:3024 读 spec.parent.id）。
+  //    套回 request ⇒ spec.parent 为 undefined ⇒ 宿主抛 "reading 'id'" ⇒ 合并恒失败。
+  assert.equal(calls.startArgs.parent.id, 'mock-parent');
+  assert.equal(calls.startArgs.agentPreset, DEFAULT_AGENT_PRESET);
+  assert.ok(calls.startArgs.outputSchema, 'outputSchema must be passed in spec');
   // activation + handle disposed in finally
   assert.ok(calls.disposed.includes('activation'));
   assert.ok(calls.disposed.includes('handle'));
@@ -343,7 +347,10 @@ test('consolidate: agents.create 必带 meta.agentPreset（缺省 = DEFAULT_AGEN
     day: '2026-09-27',
   });
   assert.equal(calls.createArgs.meta.agentPreset, DEFAULT_AGENT_PRESET, '缺 agentPreset ⇒ 空壳子代理');
-  assert.equal(calls.createArgs.meta.origin, 'subagent');
+  // ⛔ 2026-11-17：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无 resident
+  //    activation ⇒ 抛 "agent has no active runtime owner"（dsh-subagent/lib/types/manager.js:421-430）。
+  //    临时 parent 是树根 ⇒ 不许标 origin。
+  assert.notEqual(calls.createArgs.meta.origin, 'subagent', '临时 parent 不许标 origin:subagent');
   assert.ok(calls.createArgs.meta.cwd, 'cwd 缺失会让 child persona 的 {{cwd}} throw');
 });
 

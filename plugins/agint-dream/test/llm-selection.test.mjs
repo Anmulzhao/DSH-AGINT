@@ -73,7 +73,8 @@ test('consolidate：provider/model 与档位都跟随宿主当前选择', async 
   assert.equal(created[0].agentOptions.provider, HOST.provider);
   assert.equal(created[0].agentOptions.model, HOST.model);
   assert.equal(created[0].agentOptions.reasoningEffort, HOST.reasoningEffort);
-  assert.equal(started[0].request.agentOptions.model, HOST.model);
+  assert.equal(started[0].agentOptions.model, HOST.model);
+  assert.equal(started[0].request, undefined, '宿主 0.2.2-rc.1 起不再接受嵌套 request');
   assert.equal(out.ok, false, 'stopReason=error 必须 failed，不许回落启发式');
 });
 

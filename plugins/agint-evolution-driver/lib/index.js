@@ -2666,7 +2666,12 @@ export async function spawnLlm(ctx, {
     const createPromise = agents.create({
       sessionId: `evolution-driver-${randomUUID()}`,
       // ⭐ agentPreset 不能省：省了 ⇒ child 无模型路由 ⇒ 建得出会话、跑不动一步（30 个空壳的血债）
-      meta: { cwd: workDir, origin: 'subagent', agentPreset: resolvedPreset },
+      // ⛔ 2026-11-17 实测：宿主 dsh-subagent/lib/types/manager.js:421-430 判「delegated」
+      //    的依据是 session.header.origin === 'subagent'。临时 parent 标了这个 origin ⇒
+      //    它既没有 resident activation 又自称 delegated ⇒ 宿主抛
+      //    "agent has no active runtime owner"（UNAUTHORIZED）。
+      //    临时 parent 是树根，不是别人的子代理 ⇒ 不许标 origin。
+      meta: { cwd: workDir, agentPreset: resolvedPreset },
       // ⭐ agentOptions 同样不能省：它是 provider/model/reasoningEffort 的载体
       agentOptions,
       signal: controller.signal,
@@ -2680,13 +2685,18 @@ export async function spawnLlm(ctx, {
       ? Promise.resolve().then(() => subagents.startActivation({
         provider: 'spawn',
         label: 'agint-evolution-driver mutation',
-        request: {
-          parent: handle.agent,
-          prompt,
-          agentPreset: resolvedPreset,
-          agentOptions,
-          outputSchema: schema,
-        },
+        // ⛔ 宿主 dsh 0.2.2-rc.1 起 SubagentActivationSpec 不再接受嵌套 request：
+        //    prompt / parent / agentPreset / agentOptions / outputSchema 必须摊在 spec 顶层
+        //    （宿主源码 dsh-subagent/lib/index.js:3024 读的是 spec.parent.id）。
+        //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+        //    "Cannot read properties of undefined (reading 'id')"。
+        //    2026-11-17 实测：嵌套写法让本插件的 LLM 通路恒失败，进化提案全部被判
+        //    环境故障顺延。参照 agint-upstream-watch/lib/judge.js 的同款修复。
+        parent: handle.agent,
+        prompt,
+        agentPreset: resolvedPreset,
+        agentOptions,
+        outputSchema: schema,
         signal: controller.signal,
         // caller：后台进化循环不回写父会话
         delivery: 'caller',
