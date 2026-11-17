@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## 未发布（2026-11-18 · 三笔待发版改动：D5 题池 / 防复读护栏 / LLM 语义判据）
+
+> ⚠️ **未升版本号**：`manifest.json` 仍 0.2.1、`package.json` 仍 0.2.3（历史遗留不同步，本次不动）。
+> 本段按老板指令「改变动和 wiki，部署」补齐变更记录，**不等于发版**——VERSION/wiki 版本表/tag/push 均未动。
+> 三笔 commit：`9c71e43`（提案 2cac5f70，已 push）、`ba1ed9f` + `af5c0d7`（提案 10d2d87f，本地）。
+
+### 一、integration D5 题池与域封顶出路（commit `9c71e43`，提案 2cac5f70）
+
+- **改动**：integration / correctness 每档扩到 3 道题池，同档撞重先换 variant 再顺延档位；新增 `exec-code` 题型作 D5 封顶后的换题型出路；判池明确跳过写 `no_new_challenge` audit；域毕业降权（`graduate_deprioritize` 可一键回退）。
+- **验收**：81/81 单测、smoke 10/10、四门禁 EXIT=0；18 道 challenger 落库含 3 道 exec-code。
+
+### 二、防复读护栏（commit `ba1ed9f`，提案 10d2d87f 方案 1/2/4）
+
+- **问题（生产实证）**：`clg_20261008/1015/1022` 三题 prompt 逐字相同却全 pass，integration 被灌到 D5 上限、`consecutivePass=6`；`clg_20261112` 两次 pass 的 steps 逐字完全相同。判定器只查步数 + 关键词，分不出解题与复读。
+- **改动**：新增 `lib/replay.js` 纯函数——steps 指纹（方案 4）+ 同 domain/level/prompt 实例去重（方案 1 核心护栏）+ 关键词分布/承接线索信号（方案 2 只报不改判）。submit 判定 pass 后检测复读：attempt 打 replay 标记（result 仍 pass），但 difficulty 不计数、不发升档事件、不回写 self-model 成功信号。
+- **存量兼容**：只对本次新提交判定，不回溯；生产数据离线回放验证零误伤（首 pass=novel、同题面=duplicate-prompt、原样复读=fingerprint）。
+- **验收**：91/91、smoke 10/10、四门禁 EXIT=0。
+
+### 三、LLM 语义判据（commit `af5c0d7`，提案 10d2d87f 方案 3）
+
+- ⚠️ **架构违规声明（随记录保留）**：本笔**违反项目纲领 §9.5「评分链路永久零 LLM」**，由老板明确知情拍板（选项 2「完整实现并默认启用」），承担架构决策。
+- **改动**：新增 `lib/replay-llm.js`，照抄经真实验证的宿主调用契约（agents.create + subagents.startActivation + agentPreset + agentOptions + structured + 双超时 + dispose），读 `agentDefaultModel.currentSelection()`。确定性护栏未命中时才调 LLM 补判「换说法复读」；判等价且置信度达阈值（默认 high）⇒ 升级 replay，不计能力成功。**失败一律降级、不抛、不阻塞 submit**（与 oracle「无降级」刻意不同，守判定可用性）。
+- **开关**：`replay_llm`（默认 true）/ `replay_llm_timeout_ms`（30s）/ `replay_llm_min_confidence`（high），可一键关回零 LLM 口径。manifest `optionalInject` 声明 agents/subagents/agentDefaultModel；network 保持 `[]`（LLM 走 cordis 服务面，不占 HTTP 出站）。
+- **配套**：`bin/check-llm-selection-parity.mjs` 白名单登记 curriculum（门禁新增 LLM 插件的硬要求）；兜底常量与宿主模型目录一致。
+- **验收**：104/104、smoke 10/10；新测 13 例覆盖服务缺失/stopReason 降级/资源 dispose/集成升级/开关回退；四门禁 + LLM parity 全 PASS；tools.register() 4 工具全注册。
+
+---
+
 ## 0.2.3（2026-11-17 · CANNOT 候选标记补对称清除路径 —— 假信号不再挂死）
 
 **一句话**：降档分支只置位 `cannotCandidate=true`，全流程没有对称的清除路径 ——
