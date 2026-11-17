@@ -100,7 +100,7 @@ function apply(ctx) {
           toolUsed: { type: 'string' },
           selfAssessment: { type: 'string' },
         },
-        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning/integration→{steps:string[]}；tool-use→{toolUsed,exitCode,output}；correctness→{conclusion}。可附带 selfAssessment（自评，仅记录）。',
+        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning→{steps:string[]}；integration→{steps:string[]} 或（D5 换题型的 exec-code）{exitCode,output} 且输出须含 passCriteria 列出的全部信号；tool-use→{toolUsed,exitCode,output}；correctness→{conclusion}。可附带 selfAssessment（自评，仅记录）。',
       },
     },
     output: {

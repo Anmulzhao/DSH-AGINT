@@ -234,6 +234,21 @@ function apply(ctx, config) {
     return packed;
   }
 
+  /**
+   * v0.2.4（提案 2cac5f70 第 2 点·横向）：读「毕业域」列表。
+   * 判据与升档证据一致——必须靠证据走到 D5 封顶（level=D5 且连续 pass 达标），
+   * 而非「被误推到 D5」。毕业域在 boundary-probe 里降权，让出题位给未完成域。
+   */
+  async function graduatedDomains(promoteStreak) {
+    const t = await table('difficulty_state');
+    return [...t.entries()]
+      .map(([, v]) => v)
+      .filter((d) => d.level === 'D5'
+        && (d.consecutivePass ?? 0) >= promoteStreak
+        && d.cannotCandidate !== true)
+      .map((d) => d.domain);
+  }
+
   // ── Service: probe（§4.3 [1]）──────────────────────────────────────────
   async function probe(args = {}) {
     const c = effectiveConfig();
@@ -245,16 +260,23 @@ function apply(ctx, config) {
       return { skipped: true, reason: 'self-model snapshot 不可用（软降级）' };
     }
     const nowMs = Number.isFinite(args.nowMs) ? args.nowMs : Date.now();
+    // v0.2.4（提案 2cac5f70 横向）：域毕业让位。开关关时不读 difficulty_state、
+    // 不传毕业域，行为逐字回退 v0.2.3。
+    const graduated = c.graduate_deprioritize !== false
+      ? await graduatedDomains(c.force_promote_streak)
+      : [];
     const { domains, unverifiable } = probeDomains(snapshot, {
       staleReverifyDays: c.stale_reverify_days,
       nowMs,
+      graduatedDomains: graduated,
     });
     lastProbeAt = nowIso();
     await publishEvent('curriculum.boundary-probed', {
       domains: domains.map((d) => d.domain),
       unverifiable: unverifiable.map((d) => d.domain),
+      graduated: [...graduated],
     });
-    return { skipped: false, domains, unverifiable, probedAt: lastProbeAt };
+    return { skipped: false, domains, unverifiable, graduated, probedAt: lastProbeAt };
   }
 
   /**
@@ -380,12 +402,39 @@ function apply(ctx, config) {
 
     // 全部撞重（该域题面耗尽）：不写 lastGeneratedAt —— 没生成就不能假装生成过，
     // 否则白白烧掉 24h 冷却。如实返回 skipped。
+    //
+    // v0.2.4（提案 2cac5f70 第 3 点）：此前只有笼统的 dedupSkipped 计数，cron 日志
+    // 看起来像正常生成。现在结构化标注「本周无新题 / 题目池耗尽 + 档位封顶」，
+    // 并落一条 audit_log（no_new_challenge），让周复盘能直接筛出「本周没出题」。
+    // 判池发生在生成循环内（已遍历全部档位 × 全部 variant 仍无可用题面）——这本身就是
+    // 最准的「池是否还有货」判定，无需另起一遍预扫描（避免与 dedup 口径漂移）。
     if (created.length === 0) {
+      const atCeiling = df.level === DIFFICULTY_LEVELS[DIFFICULTY_LEVELS.length - 1];
+      const reason = `本周无新题：domain "${domainName}" 在 ${c.dedup_window_days} 天内 ${df.level}-D5 全部 ${totalBankSize(domainName)} 道题面均已出过（题目池耗尽${atCeiling ? '，且已到 D5 档位上限，无更高档可顺延' : ''}）；force=true 可绕过去重，或继续扩题库`;
+      await audit({
+        actor: 'system',
+        action: 'no_new_challenge',
+        targetType: 'difficulty_state',
+        targetId: `df_${domainName}`,
+        details: {
+          domain: domainName,
+          level: df.level,
+          atCeiling,
+          poolSize: totalBankSize(domainName),
+          dedupWindowDays: c.dedup_window_days,
+          dedupSkipped: duplicates.length,
+        },
+        reason,
+      });
       return {
         skipped: true,
-        reason: `domain "${domainName}" 在 ${c.dedup_window_days} 天内 ${df.level}-D5 全部题面（共 ${totalBankSize(domainName)} 道）均已出过（题目池耗尽；force=true 可绕过，或继续扩题库）`,
+        reason,
         domain: domainName,
         level: df.level,
+        // 结构化标记：cron 日志/面板据此直读「本周无新题」，不必解析中文 reason。
+        poolExhausted: true,
+        noNewChallenge: true,
+        atCeiling,
         duplicates,
       };
     }
@@ -657,6 +706,7 @@ function apply(ctx, config) {
         generation_batch_limit: effectiveConfig().generation_batch_limit,
         challenge_cooldown_hours: effectiveConfig().challenge_cooldown_hours,
         dedup_window_days: effectiveConfig().dedup_window_days,
+        graduate_deprioritize: effectiveConfig().graduate_deprioritize,
         difficulty_window_days: effectiveConfig().difficulty_window_days,
         difficulty_min_samples: effectiveConfig().difficulty_min_samples,
         pass_floor: effectiveConfig().pass_floor,

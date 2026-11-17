@@ -151,3 +151,28 @@ test('CANNOT 但不在模板域内 → 诚实留白进 unverifiable（C1/Q5 不�
   assert.equal(unverifiable.length, 1);
   assert.equal(unverifiable[0].domain, 'some-non-template-domain');
 });
+
+// ── v0.2.4（提案 2cac5f70 横向）：域毕业让位 ──────────────────────────────
+
+test('毕业域降权：已封顶 CANNOT 域让位给未毕业 UNCERTAIN 域', () => {
+  const snap = makeSnapshot([
+    makeCapability('integration', 'CANNOT', { lastVerifiedAt: '2026-08-01T00:00:00Z' }), // 3×38
+    makeCapability('codegen', 'UNCERTAIN', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),  // 2×38
+  ]);
+  // 不传毕业域：integration 权重 3 > codegen 2，排最前（旧行为）
+  const before = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW });
+  assert.deepEqual(before.domains.map((d) => d.domain), ['integration', 'codegen']);
+
+  // integration 毕业：权重压到 1，让位给 codegen(2)
+  const after = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW, graduatedDomains: ['integration'] });
+  assert.deepEqual(after.domains.map((d) => d.domain), ['codegen', 'integration']);
+  assert.ok(after.domains.find((d) => d.domain === 'integration').reason.some((r) => r.includes('毕业')));
+});
+
+test('毕业域不排除：仅它一个待练域时仍在列表（周期性复验）', () => {
+  const snap = makeSnapshot([
+    makeCapability('integration', 'CANNOT', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+  ]);
+  const { domains } = probeDomains(snap, { staleReverifyDays: 30, nowMs: NOW, graduatedDomains: ['integration'] });
+  assert.equal(domains.length, 1, '毕业域压到权重 1 而非 0，仍保留复验机会');
+});

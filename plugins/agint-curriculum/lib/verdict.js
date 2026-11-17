@@ -76,11 +76,36 @@ function assertToolMatch(spec, ev) {
   return { pass: true, reason: `工具 ${spec.expected} 命中且运行成功` };
 }
 
+/**
+ * exec-code（v0.2.4 / 提案 2cac5f70）：D5 封顶后「换题型」——真实写代码并运行。
+ *
+ * 判据比 exit-code-output 更严：不仅 exitCode=0 且输出非空，输出还必须同时包含
+ * expected 里的全部确定性信号（如 `diff=[4]`）。这样「随便打印点东西」蒙混不过，
+ * 必须真的把那段集成逻辑跑出正确结果——把「会拆解步骤」升级成「能跑通实现」。
+ * 证据字段沿用 exitCode/output（tools.js 已声明），不引入新字段，不踩 schema 坑。
+ */
+function assertExecCode(spec, ev) {
+  if (ev.exitCode !== 0) {
+    return { pass: false, reason: `exitCode=${ev.exitCode}，期望 0（真实运行须成功）` };
+  }
+  const out = typeof ev.output === 'string' ? ev.output : '';
+  if (out.trim().length < spec.minLength) {
+    return { pass: false, reason: `output 过短（${out.trim().length} < ${spec.minLength}）` };
+  }
+  for (const signal of spec.expected ?? []) {
+    if (!out.includes(String(signal))) {
+      return { pass: false, reason: `output 缺少必需的运行信号「${signal}」（须真实执行得出，非口述步骤）` };
+    }
+  }
+  return { pass: true, reason: `真实运行成功（exitCode=0）且输出含全部 ${(spec.expected ?? []).length} 个确定性信号` };
+}
+
 const ASSERTERS = {
   'exit-code-output': assertExitCodeOutput,
   'conclusion-match': assertConclusionMatch,
   'step-list': assertStepList,
   'tool-match': assertToolMatch,
+  'exec-code': assertExecCode,
 };
 
 // ── judge ────────────────────────────────────────────────────────────────

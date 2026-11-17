@@ -123,7 +123,9 @@ export const ChallengeSchema = z.object({
 
   // 可自动判定的通过条件（C1 的机器侧：verdict 用 verifySpec 还原断言）
   verifySpec: z.object({
-    type: z.enum(['exit-code-output', 'conclusion-match', 'step-list', 'tool-match']),
+    // v0.2.4（提案 2cac5f70）：新增 exec-code —— D5 封顶后「换题型」，
+    // 要求真实写代码并运行，输出含确定性信号（复用 exitCode/output 证据字段）。
+    type: z.enum(['exit-code-output', 'conclusion-match', 'step-list', 'tool-match', 'exec-code']),
     expected: z.any().default(null),
     minLength: z.number().int().min(0).default(0),
   }),
@@ -192,6 +194,11 @@ export const ConfigSchema = z.object({
   // 生成；过期允许复出（复验）。与 stale_reverify_days 语义不同，各自独立。
   dedup_window_days: z.number().int().min(0).default(30),        // 0 = 关闭去重
 
+  // v0.2.4（提案 2cac5f70）：域毕业让位——已封顶 D5 的域在 boundary-probe
+  // 里降权，把出题位让给未完成的 UNCERTAIN/CANNOT 域。默认开；设 false 回退
+  // 旧行为（全局出题节奏变更，留一键回退口）。
+  graduate_deprioritize: z.boolean().default(true),
+
   // difficulty-ctl（§4.6）
   difficulty_window_days: z.number().int().min(1).default(28),
   difficulty_min_samples: z.number().int().min(1).default(5),   // 样本 < 5 不调档
@@ -221,6 +228,7 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'generation_batch_limit',
   'challenge_cooldown_hours',
   'dedup_window_days',
+  'graduate_deprioritize',
   'difficulty_window_days',
   'difficulty_min_samples',
   'pass_floor',
