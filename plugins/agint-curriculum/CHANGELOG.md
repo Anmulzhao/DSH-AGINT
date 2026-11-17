@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 0.2.2（2026-11-17 · 修复 evidence 数组传输缺陷 —— 提交判定恒 fail）
+
+**一句话**：`curriculum_submit` 的 evidence 里，数组型证据（`steps`）在参数层
+被包装成 `{ item: [...] }`，判定器取不到真数组，`step-list` 断言恒判
+`steps 数量 0 < minLength N`。**不是题目难，也不是答案错 —— 是证据在传输层被压扁了。**
+
+**证据**：
+1. 生产存储 `agint_curriculum` 域 `attempts` 表：2026-11-17 的多次提交，`evidence`
+   字段形态恒为 `{"steps":{"item":[...]}}`（`steps_type=WRAPPED:['item']`）。
+2. 对照组：顶层数组参数（`agint_search` 的 `sources:["memory","wiki"]`）原样到达
+   ⇒ 退化只发生在**自由对象型参数内部**，不是宿主全局数组能力缺失。
+3. 判定失败是恒定的、且与内容无关：同一份答案在 `verdict.js` 里本地判定为
+   `pass`，经工具链路提交后为 `fail`。
+
+**改动**：
+1. `lib/tools.js`：`evidence` 显式声明 `properties.steps: array<string>`（原来只挂
+   `additionalProperties: true` 的 free-form object），并在 `execute` 前经
+   `unwrapArray` / `normalizeEvidence` 归一化（支持 `{item:[...]}` 与数字下标两种形态）。
+2. `lib/verdict.js`：`assertStepList` 还原包装后再按**原判据**判定 —— 还原后仍不是
+   字符串数组的（元素非字符串、数量不足、缺关键词）照常 fail，**不放宽通过条件**。
+3. `test/verdict.test.mjs`：新增回归用例，断言「包装形态可还原」且「还原后判据不放松」。
+
+**验收**：`node --test plugins/agint-curriculum/test/*.test.mjs` → 70/70；
+`bin/plugin-check.sh --all` → exit 0；部署并重启后，5 个 integration 课程挑战
+首次提交即全部 PASS，`attempts` 表记录 `steps_type=str[]`。
+
+**⚠️ 这次失败留下的真实痕迹**（不掩盖）：10 次传输失败把 integration 域的难度档
+打到 `consecutiveFail=10 / cannotCandidate=true`；补交 pass 后 `consecutiveFail` 归零、
+`consecutivePass=5`，但 `cannotCandidate` 标记仍为 true（§4.6 的降档分支只置位、
+没有对称的清除路径）。历史 `attempts` 行按设计留档。
+
+
 ## 0.2.1（2026-11-05 · 修订阅入参形状 —— `goal/*` 链路从未注册）
 
 **一句话**：0.2.0 的两条 goal 订阅从未注册成功。入参用了事件 envelope 的
