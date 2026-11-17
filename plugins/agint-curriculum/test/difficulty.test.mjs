@@ -129,3 +129,24 @@ test('adjustDifficulty 纯函数：同输入同输出且不改入参', () => {
 test('难度档序列为 D1-D5', () => {
   assert.deepEqual(DIFFICULTY_LEVELS, ['D1', 'D2', 'D3', 'D4', 'D5']);
 });
+
+test('CANNOT 候选标记有对称清除路径：连续 pass ≥3 → 标记失效（2026-11-17 补）', () => {
+  const flagged = baseState({
+    windowResults: results('fail', 'fail', 'fail', 'pass', 'pass'),
+    consecutivePass: 3,
+    cannotCandidate: true,
+  });
+  const adj = adjustDifficulty(flagged, { minSamples: 5, forcePromoteStreak: 3 });
+  assert.equal(adj.action, 'force-promote');
+  assert.equal(adj.cannotCandidate, false, '连续 pass 达标后 CANNOT 候选标记应清除');
+  assert.equal(adj.candidateCleared, true, '应记录本次确实清除了标记');
+
+  const notFlagged = baseState({
+    windowResults: results('pass', 'pass', 'pass'),
+    consecutivePass: 3,
+    cannotCandidate: false,
+  });
+  const adj2 = adjustDifficulty(notFlagged, { minSamples: 5, forcePromoteStreak: 3 });
+  assert.equal(adj2.cannotCandidate, false);
+  assert.equal(adj2.candidateCleared, false, '原本未标记时不应声称清除了什么');
+});

@@ -82,9 +82,18 @@ export function adjustDifficulty(state, {
   }
 
   // 连续 pass ≥ 3 → 强制升档（防停在舒适区刷分，§4.6）
+  //
+  // 同时**清除 CANNOT 候选标记**（2026-11-17 补对称路径）：降档分支只置位
+  // cannotCandidate=true，全流程没有对称的清除 —— 于是域一旦被打上标记就永远挂着，
+  // 即使随后连过 N 关。2026-11-17 实测：10 次传输失败把 integration 打成
+  // consecutiveFail=10 / cannotCandidate=true；补交后 consecutiveFail 归零、
+  // consecutivePass=5，但标记仍是 true ⇒ stats 报的是假信号。
+  // 判据：与置位条件对称 —— 连续 pass ≥ forcePromoteStreak 即视为已复验通过，
+  // 标记失效（域已证明能做，这一轮「不能」的候选问题已消解）。
   if (consecutivePass >= forcePromoteStreak) {
     const next = Math.min(DIFFICULTY_LEVELS.length - 1, current + 1);
     const clamped = next === current;
+    const hadCandidate = state.cannotCandidate === true;
     return {
       level: DIFFICULTY_LEVELS[next],
       action: 'force-promote',
@@ -92,7 +101,8 @@ export function adjustDifficulty(state, {
         ? `连续 pass ${consecutivePass} ≥ ${forcePromoteStreak}（已到 ${state.level} 上限）`
         : `连续 pass ${consecutivePass} ≥ ${forcePromoteStreak}（强制升档防刷分）`,
       windowStats,
-      cannotCandidate: state.cannotCandidate ?? false,
+      cannotCandidate: hadCandidate ? false : (state.cannotCandidate ?? false),
+      candidateCleared: hadCandidate,
     };
   }
 
