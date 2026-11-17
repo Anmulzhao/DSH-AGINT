@@ -40,9 +40,14 @@ function apply(ctx) {
       'Writes to agint.diagnosis; downstream mutator/curriculum consume these annotations.',
     parameters: {
       event: { type: 'object', required: true, additionalProperties: true,
-        description: 'Failure event: { id?, source, error, context? }' },
-      category: { type: 'string', required: true,
-        description: 'One of 6 root-cause classes (e.g. ENVIRONMENT_SHIFT, LOGIC_ERROR).' },
+        description: 'Failure event: { id?, source, error, context? }. id 用于定位 failure_pattern 的失败样本（可等同 failureId）。' },
+      // category 由必填改为可选（提案 49ac5e58 改动 3）：
+      // rootCauseClassify(trajectory) 是 6 类特征投票，不接受人工类别 —— 旧 schema 把
+      // category 设为必填却被服务层静默丢弃，是「必填参数被无视」的最坏状态。
+      // 现在作为可选 hint：服务层会把值记入 evidence.hintCategory 供审计，但**不**
+      // 覆盖算法判定；实际 rootCause 仍由特征投票决定。
+      category: { type: 'string',
+        description: 'Optional analyst hint. NOT authoritative: the 6-class feature vote decides rootCause; this value is recorded in evidence.hintCategory only.' },
       notes: { type: 'string', description: 'Optional analyst notes.' },
     },
     output: {

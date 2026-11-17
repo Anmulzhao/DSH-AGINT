@@ -189,8 +189,20 @@ function apply(ctx, config = {}) {
    *   - 不调真 LLM（设计稿 §八）。
    */
   async function annotate(input) {
-    const failureId = input && typeof input.failureId === 'string' ? input.failureId : '';
-    if (!failureId) throw new Error('annotate: failureId is required');
+    // 参数名断层修复（提案 49ac5e58 改动 1）：
+    // 工具层 diagnosis_annotate 传的是 { event: {id,...}, category, notes }，
+    // 旧代码只读 input.failureId ⇒ event.id 填了也读不到，必抛 failureId is required。
+    // 现在两种形状都接受：优先显式 failureId，回退 event.id。
+    const failureId = (input && typeof input.failureId === 'string' && input.failureId)
+      || (input && input.event && typeof input.event.id === 'string' ? input.event.id : '')
+      || '';
+    if (!failureId) throw new Error('annotate: failureId is required（可直接传 failureId，或传 event.id）');
+    // 调用方给的人工类别提示：不参与投票（分类器只吃 trajectory），但记入 evidence
+    // 供审计，避免「必填却静默丢弃」（提案 49ac5e58 改动 3）。
+    const categoryHint = (input && typeof input.category === 'string' && input.category)
+      || (input && input.event && typeof input.event.category === 'string' ? input.event.category : '')
+      || '';
+    const analystNotes = (input && typeof input.notes === 'string') ? input.notes : '';
 
     // ── 软依赖：尝试从 agint-evolution-memory.failure_pattern 取真实 trajectory
     const evolution = ctx.get && typeof ctx.get === 'function' ? ctx.get('agint.evolution') : null;
@@ -221,10 +233,21 @@ function apply(ctx, config = {}) {
       }
     }
 
-    // ── cold-start 守门
+    // ── cold-start 守门（语义不变，仅把隐藏前置写进错误信息 —— 提案 49ac5e58 改动 2）
     if (patternCount < COLD_START_MIN) {
+      // 把两种“进不来”的原因都写清，别只抛一句笼统的 cold-start：
+      //   - failureId 在表里找不到 → 开头先报 not found（可操作：核对 id / 喂种子）
+      //   - 表里有货但样本不足 → 报 cold-start，写清当前 N/10 与喂种子路径
+      // 保留 "cold-start: failure_pattern 样本数 N < M" 子串，兼容既有断言正则。
+      const notFoundPrefix = (patternCount > 0 && !fetchedTrajectory)
+        ? `annotate: failureId "${failureId}" 未在 failure_pattern 表中找到`
+          + `（已查 ${patternCount} 条，匹配 id 或 pattern 字段均失败）；`
+        : '';
       throw new Error(
-        `cold-start: failure_pattern 样本数 ${patternCount} < ${COLD_START_MIN}，需先喂失败种子`,
+        notFoundPrefix
+        + `cold-start: failure_pattern 样本数 ${patternCount} < ${COLD_START_MIN}，`
+        + `无法可靠投票（当前 ${patternCount}/${COLD_START_MIN}）；`
+        + `需先喂失败种子，用 evolution_addFailure 写入 failure_pattern 表至 ≥${COLD_START_MIN} 条后再标注`,
       );
     }
 
@@ -247,6 +270,9 @@ function apply(ctx, config = {}) {
       scores: result.evidence.scores,
       tied: result.evidence.tied ?? null,
       note: result.evidence.note ?? null,
+      // 审计用：调用方的人工类别提示 + 备注。不参与投票，仅留痕（提案 49ac5e58 改动 3）。
+      hintCategory: categoryHint || null,
+      analystNotes: analystNotes || null,
     });
     const business = {
       failureId,

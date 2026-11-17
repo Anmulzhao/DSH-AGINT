@@ -4,6 +4,34 @@
 
 ---
 
+## 0.7.1（2026-11-17）— 修 diagnosis_annotate 参数名断层 / cold-start 错误信息 / category 被静默丢弃（提案 49ac5e58 改动 1~3）
+
+### 依据
+
+提案 49ac5e58（问题单）：`diagnosis_annotate` 是唯一能把失败标注成根因类别的入口，实测完全不可用。
+- 生产取证：`agint_evolution.failure_pattern` 7 行（< `COLD_START_MIN=10`）、`agint_diagnosis.annotations` 0 行 / `clusters` 0 / `reports` 14；`diagnosis_report` 输出 `annotationCount:0, skipReason:"no-annotations"`。
+- 源码逐行：工具层 `lib/tools.js` 传 `{ event, category, notes }`，服务层 `lib/index.js` 只读 `input.failureId` ⇒ `event.id` 填了也读不到，必抛 `failureId is required`。
+
+### 改动（只做 1~3，第 4 项「标注时写 failure_pattern」属红线，需老板裁定，本版不做）
+
+1. **参数名断层**：服务层 `annotate` 解析 `failureId` 时同时接受 `input.failureId` 与回退 `input.event.id`（显式 failureId 优先）。工具层不再需要改调用形状。
+2. **cold-start 错误信息可诊断**：守门语义不变（样本 <10 仍拒），错误信息补齐「当前 N/10 + `evolution_addFailure` 喂种子路径」；failureId 在表中找不到时开头先报 `未在 failure_pattern 表中找到`，并保留 `cold-start: failure_pattern 样本数 N < M` 子串兼容既有断言。
+3. **category 不再静默丢弃**：工具 schema 把 `category` 从必填改为可选（分类器 `rootCauseClassify(trajectory)` 是 6 类特征投票，本就不接受人工类别）；调用方给的 `category`/`notes` 记入 `evidence.hintCategory`/`evidence.analystNotes` 供审计，但**不参与投票**——实际 `rootCause` 仍由特征投票决定。
+
+### 行为变化 / 未做
+
+- 调用方可直接用 `diagnosis_annotate({ event: { id, ... }, ... })` 标注（参数名断层解除）。
+- ⚠️ **冷启动守门没解除**：生产当前 7<10，标注仍会被拒；须先用 `evolution_addFailure` 把 failure_pattern 喂到 ≥10 条。错误信息现已写明这一前置。
+- ⛔ **不写 failure_pattern**：`annotate` 仍不写 failure_pattern 表（设计稿 §二.2 / §八 红线），提案第 4 项未实施。
+- FROZEN：4 个 Service 签名、6 类根因 enum、三表 schema 全部未改。
+
+### 验收
+
+- 新增 `test/annotate-input-shape.test.mjs`（6 例）：event.id 兜底 / 显式优先 / 两者皆无的 required 报错 / cold-start 信息含 N/10 与 evolution_addFailure / not found 与 cold-start 双诊断 / category 留痕且不污染投票。
+- 回归：diagnosis 全量单测 **80/80** PASS；四道门禁 `plugin-check`(0 `[FAIL]`) / `check-wiring`(0 硬缺口) / `check-preset-parity` / `check-dsh-compat` 全 exit 0；`check-tool-schemas` 124 schema / 0 invalid。
+
+---
+
 ## 2026-09-26（二修）— `report()` 加「与调用方无关」的频率熔断 + 闭合 cap 并发窗口
 
 ### 现场
