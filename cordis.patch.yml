@@ -396,6 +396,14 @@
             #   ⛔ 只能写成 !!js 标量；反引号模板字面量让整份 patch 解析失败（2026-10-20 根因）。
             #   （`!!js` 后加反引号会把字符串变成 " … " 拼接，js-yaml 认不出 js 标签。）
             evalAttributionPath: !!js "(process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT')) + '/eval/attribution/fail-attribution.json'"
+            # 2026-11-17 老板拍板「接 dsh 原生 schedule」：批准提案时真建一条 dsh 自动化任务
+            #   （title=agint-proposal:<id>，new_once target，prompt 驱动 agent 调既有执行工具跑六道闸）。
+            #   ⛔ 推翻 2026-10-21 D5「不调用 ctx.schedule.create()」决策：语义从无人值守直调
+            #      变为 agent 在环投递；原 execution 表 + executor 轮询路径保留作兜底/去重，
+            #      dsh 任务在执行落地/撤销时自动 cancel。
+            #   默认关；此处显式打开（agent 在环是高风险语义变更，须留显式开关键）。
+            scheduleBridge:
+              enabled: true
 
 
         # agint-evolution-driver: 闭环引擎的驱动源 v0.2.0（2026-09-27 挂载，同日两次升级）。
