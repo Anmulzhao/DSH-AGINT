@@ -20,7 +20,7 @@
  *                  provider, model, day, gatedCount }
  */
 
-import { consolidate } from './consolidation.js';
+import { consolidate, resolveLlmSelection } from './consolidation.js';
 import { createHash } from 'node:crypto';
 
 /** 构造一个最小但真实的测试场景：2 个候选 + 1 个 existing。
@@ -66,20 +66,23 @@ function buildMinimalFixtures() {
  */
 export async function runVerification({
   ctx,
-  // 默认值跟 host 注册模型对齐（2026-10-25：minimax-cn 注册 MiniMax-M3.1-Flash）
-  provider = 'minimax-cn',
-  model = 'MiniMax-M3.1-Flash',
+  // 空串 = 宿主当前模型；不要写死模型名（换模型时以宿主 profile 为准）
+  provider = '',
+  model = '',
   timeoutMs = 60_000,
   day = `verify-${new Date().toISOString().slice(0, 10)}`,
 } = {}) {
   const { gated, existing } = buildMinimalFixtures();
+  // 报**生效值**而不是入参：入参空时实际用的是宿主当前选择 / 离线兜底值，
+  // 写 '(default)' 等于藏起了「这轮到底用的哪个模型」。
+  const selection = resolveLlmSelection(ctx, { provider, model });
   const result = await consolidate({
     ctx,
     gated,
     existing,
     day,
-    provider,
-    model,
+    provider: selection.provider,
+    model: selection.model,
     timeoutMs,
   });
   // 截断 operations 到 5 条避免输出过大
@@ -93,8 +96,8 @@ export async function runVerification({
     diagnostic: result.diagnostic ?? null,
     // startActivation 拿不到 child localAgent 事件；诊断改由 result.diagnostic 承担
     childErrors: null,
-    provider,
-    model,
+    provider: selection.provider,
+    model: selection.model,
     day,
     // schema 校验态：DSH provider 自动 schema-validation；这里只标记 "拿到 structured 就算 true"
     schemaOk: result.mode === 'llm' && Array.isArray(result.operations),

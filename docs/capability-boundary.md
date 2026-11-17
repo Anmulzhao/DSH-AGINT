@@ -486,7 +486,7 @@ compare API 显示 1925 提交 / 300 文件）。本机包树内**没有**变更
 
 | 类 | 条数 | 最重的项 |
 |---|---|---|
-| 硬编码上游私有格式 | 11 | 会话文件名表另有 2 份副本（dream 已修，`session-extract` 仍持正则）；provider/model 硬编码 4 份（上游已有 `agentDefaultModel.currentSelection()`）；至少 10 处手搓 `DSH_HOME \|\| homedir()/.dsh`（上游有 `dsh-home-paths`） |
+| 硬编码上游私有格式 | 10 | 会话文件名表另有 2 份副本（dream 已修，`session-extract` 仍持正则）；至少 10 处手搓 `DSH_HOME \|\| homedir()/.dsh`（上游有 `dsh-home-paths`）。⚠️ **provider/model 硬编码 4 份已于 2026-11-15 收敛**：5 个调 LLM 的插件统一「显式入参 > `agentDefaultModel.currentSelection()` > 离线兜底常量」，兜底值由 `bin/check-llm-selection-parity.mjs` 与宿主 profile 的 `llm-pi-ai.providers.*.models[].id` / `reasoningEfforts` 静态对拍（纳入 `bin/plugin-check.sh` 阻断位）。仍不自建 LLM provider 配置：L-宿主归属不变 |
 | 重复造轮子 | 7 | 会话发现 4 处自建 vs `sessionQuery`；技能枚举 3 处 vs `skills.list()`；插件挂载/清单 vs `pluginManager`/`pluginInventory`；手搓 UserMessage vs `dsh-llm.createUserMessage` |
 | 越界侵入框架层 | 7 | 改写上游源码（已退役）；自带并锁死一份 dsh 运行时（门禁对着副本不是宿主）；直接写 dsh 的 `cordis.patch.yml`；沙箱缺席时默认在宿主进程内跑被测代码（`allowInProcessFallback` 默认 `true`） |
 | 软依赖静默降级 | 9（含 1 正例） | `agint-quality-policy` 明确注释「memory 不可用 → 静默跳过」；`agint-search-tools` 依赖缺失 ⇒ 工具根本不注册、无日志；`agint-evolve` 同文件两套缺席标准（memory 缺席则键消失，oracle 缺席则 null） |

@@ -559,8 +559,8 @@ function apply(ctx) {
     name: 'dream_verify_consolidation',
     description: 'P1 验证工具：跑一次 minimal LLM consolidation。消耗 1 次 LLM call，验证 DSH host 端 ctx.agents / ctx.subagents 通路是否真可用。不写 agint.memory，仅返回 schema-validated structured result。',
     parameters: {
-      provider: { type: 'string', description: 'LLM provider（默认 settings.yaml agent-default-model：minimax-cn）' },
-      model: { type: 'string', description: 'model id（默认 MiniMax-M3.1-Flash）' },
+      provider: { type: 'string', description: '留空 = 宿主当前模型（agentDefaultModel）；宿主服务缺席才落插件兜底值' },
+      model: { type: 'string', description: '留空 = 宿主当前模型（同上）。不要写死模型名，换模型时以宿主 profile 为准' },
       timeoutMs: { type: 'number', description: 'subagent 超时（默认 60000）' },
     },
     output: {

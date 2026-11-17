@@ -242,8 +242,11 @@ try {
   const detail = `${err.stdout ?? ''}${err.stderr ?? ''}`.slice(-1200);
   assert.fail(`output-schema-conformance 未通过，部署门必须挡住 schema 漂移：\n${detail}`);
 }
-const conformancePassed = Number(/# pass (\d+)/.exec(conformanceOut)?.[1] ?? 0);
-const conformanceFailed = Number(/# fail (\d+)/.exec(conformanceOut)?.[1] ?? 1);
+// Node 24 的 node:test 默认 reporter 是 spec，输出 `ℹ pass 3`；旧版/TTY 下才是
+// TAP 的 `# pass 3`。只认 TAP 会让本守卫在 Node 24 上恒报 pass=0/fail=1（假红），
+// 进而把整个 smoke 挡在部署门外 —— 两种格式都要认，断言强度不变。
+const conformancePassed = Number(/(?:#|ℹ)\s*pass\s+(\d+)/.exec(conformanceOut)?.[1] ?? 0);
+const conformanceFailed = Number(/(?:#|ℹ)\s*fail\s+(\d+)/.exec(conformanceOut)?.[1] ?? 1);
 assert.ok(conformancePassed >= 3 && conformanceFailed === 0,
   `一致性守卫必须真跑且全绿（pass=${conformancePassed} fail=${conformanceFailed}）`);
 console.log(`[smoke] output schema ↔ return shape ✓ (${conformancePassed} pass / ${conformanceFailed} fail)`);

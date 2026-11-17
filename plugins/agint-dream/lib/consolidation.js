@@ -56,14 +56,16 @@ export const CONSOLIDATION_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
-// 导出给测试引用：测试若硬编码 provider 名会随 settings.yaml 变化漂移
+// 导出给测试引用：测试若硬编码 provider 名会随宿主配置变化漂移
 // （fbfd060 引入本常量时 test/consolidation.test.js 仍断言 'deepseek'，
 // 该断言红到 2026-09-17 才被发现）。断言默认值一律 import 这里的常量。
 export const DEFAULT_TIMEOUT_MS = 60_000;
-// 默认 provider/model 从 ~/.dsh/settings.yaml agent-default-model 读（2026-09-05
-// 实测：minimax-cn / MiniMax-M3）。DSH 部署真实默认是 minimax-cn，不是 deepseek。
-// **绝对不能硬编码 'deepseek'/'deepseek-chat'**——DSH 把 deepseek 仅作 fallback
-// adapter，host 真实可用 provider 由 settings.yaml 决定。
+// ⚠️ 下面两个常量是**离线兜底值，不是运行时真源**：正常路径走
+// `ctx.get('agentDefaultModel').currentSelection()`（见 resolveLlmSelection）。
+// 2026-11-15 前本文件只把推理档位接了宿主，provider/model 仍落死常量 ——
+// 宿主换模型时 P1 会在毫无报错的情况下继续调旧 id，正是 K21 那类静默漂移。
+// DSH 部署可用 provider 由宿主 profile 决定，⛔ 绝不硬编码 'deepseek'/'deepseek-chat'
+// （deepseek 只是 fallback adapter）。
 export const DEFAULT_PROVIDER = 'minimax-cn';
 // 2026-10-25：host 注册模型已是 MiniMax-M3.1-Flash（-Preview 不可路由）。
 export const DEFAULT_MODEL = 'MiniMax-M3.1-Flash';
@@ -100,6 +102,30 @@ function resolveReasoningEffort(ctx, explicit) {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * provider / model 的单一真源解析：显式入参 > 宿主当前选择 > 离线兜底常量。
+ * 与 agint-aesthetic-oracle / agint-evolution-driver / agint-skill-autocreate /
+ * agint-upstream-watch 同口径；`agentDefaultModel` 是宿主 lazyService，ctx.get 软取
+ * 即可，**不进 inject**（服务缺席时挂激活反而更糟）。
+ *
+ * @param {object} ctx cordis host ctx
+ * @param {{provider?:string, model?:string}} [explicit]
+ * @returns {{provider:string, model:string, source:'host'|'fallback'}}
+ */
+export function resolveLlmSelection(ctx, explicit = {}) {
+  let selection = null;
+  try {
+    selection = ctx?.get?.('agentDefaultModel')?.currentSelection?.() ?? null;
+  } catch {
+    selection = null;
+  }
+  return {
+    provider: explicit.provider || selection?.provider || DEFAULT_PROVIDER,
+    model: explicit.model || selection?.model || DEFAULT_MODEL,
+    source: selection ? 'host' : 'fallback',
+  };
 }
 
 // ⭐ 子代理「空壳会话」根因字段（2026-09-27 取证，30 个空壳换来的，见项目 KNOWLEDGE.md K114）。
@@ -216,8 +242,8 @@ export async function consolidate({
   gated,
   existing,
   day,
-  provider = DEFAULT_PROVIDER,
-  model = DEFAULT_MODEL,
+  provider = '',
+  model = '',
   reasoningEffort = null,
   agentPreset = DEFAULT_AGENT_PRESET,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -275,10 +301,12 @@ export async function consolidate({
   // 2. 建临时 parent agent（路径 Y — host plane 无现成 agent）
   //    在 try/finally 里严格 dispose，避免泄漏 child session。
   const abortController = new AbortController();
-  // 2026-11-07：推理档位优先取宿主的当前选择，取不到才用兜底常量；
-  // 两处都没有就不传（宿主走适配器默认，而不是硬塞一个可能不被支持的档位）。
+  // 2026-11-15：provider/model 与推理档位一样优先取宿主当前选择；
+  // ⚠️ 参数默认值必须是空串而不是 DEFAULT_*，否则宿主选择永远排不上队。
+  // 档位取不到才用兜底常量（不传档位时宿主走适配器默认，而不是硬塞一个不被支持的档位）。
+  const selection = resolveLlmSelection(ctx, { provider, model });
   const effort = resolveReasoningEffort(ctx, reasoningEffort) ?? DEFAULT_REASONING_EFFORT;
-  const agentOptions = { provider, model, reasoningEffort: effort };
+  const agentOptions = { provider: selection.provider, model: selection.model, reasoningEffort: effort };
   // 超时双保险：① abort 信号让子 agent 自行收敛；② timeoutGuard 让本函数
   // 无论如何都能返回。缺 ② 时，若 provider 不认 signal（挂死的 HTTP、卡住的
   // 适配器），`await run.result` 会永久 pending —— 夜间 sweep 随之卡死、
