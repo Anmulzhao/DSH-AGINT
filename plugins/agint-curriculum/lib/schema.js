@@ -158,6 +158,16 @@ export const AttemptSchema = z.object({
     kind: z.string().nullable().default(null),
     reasons: z.array(z.string()).default([]),
     fingerprint: z.string().nullable().default(null),
+    // 方案 3 LLM 语义判据的结果（选项 2 拍板启用；默认 null = 未调用/存量）
+    // 只记信号，不进任何评分字段。
+    llm: z.object({
+      called: z.boolean(),
+      ok: z.boolean(),
+      isReplay: z.boolean(),
+      confidence: z.string().nullable().default(null),
+      rationale: z.string().default(''),
+      reason: z.string().nullable().default(null),
+    }).nullable().default(null),
   }).nullable().default(null),
 });
 
@@ -224,6 +234,11 @@ export const ConfigSchema = z.object({
   replay_detection: z.boolean().default(true),        // 总开关；false = 完全回退旧行为
   replay_fingerprint: z.boolean().default(true),      // 方案 4：steps 指纹（原样复读）
   replay_prompt_dedup: z.boolean().default(true),     // 方案 1：同题面第 2 次起不计成功
+  // 方案 3：LLM 语义判据（选项 2 拍板「完整实现并默认启用」，明知违反纲领 §9.5）
+  // 只在确定性护栏未命中时对 pass 补判「换说法复读」；LLM 不可用/超时一律降级不阻塞。
+  replay_llm: z.boolean().default(true),              // false = 只走确定性护栏（零 LLM 回退口径）
+  replay_llm_timeout_ms: z.number().int().min(1000).default(30000),
+  replay_llm_min_confidence: z.enum(['low', 'medium', 'high']).default('high'),
 
   // 执行边界（§4.5）
   auto_execute_enabled: z.boolean().default(false),             // Sprint 14 恒 false
@@ -254,6 +269,9 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'replay_detection',
   'replay_fingerprint',
   'replay_prompt_dedup',
+  'replay_llm',
+  'replay_llm_timeout_ms',
+  'replay_llm_min_confidence',
 ]);
 
 /** 模板域 → 模板描述（供工具/文档展示；实际模板见 challenge-gen.js） */

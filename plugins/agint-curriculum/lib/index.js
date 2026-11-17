@@ -42,6 +42,7 @@ import { generateChallenge, hasTemplate, bankSize, totalBankSize } from './chall
 import { judge } from './verdict.js';
 import { recordVerdict, adjustDifficulty } from './difficulty.js';
 import { detectReplay } from './replay.js';
+import { judgeReplayWithLlm } from './replay-llm.js';
 
 const name = 'agint-curriculum';
 const inject = ['storageDomain'];
@@ -574,6 +575,32 @@ function apply(ctx, config) {
           promptDedupEnabled: c.replay_prompt_dedup !== false,
         },
       });
+
+      // ── 方案 3：LLM 语义判据（选项 2 拍板默认启用，明知违反纲领 §9.5）────
+      // 只在确定性护栏未命中时对 pass 补判「换说法复读」；已命中则跳过省调用。
+      // LLM 不可用 / 超时 / 异常一律降级（judgeReplayWithLlm 永不抛），
+      // 保持确定性结论，绝不阻塞 submit。
+      if (!replay.isReplay && c.replay_llm !== false && priorPasses.length > 0) {
+        const llm = await judgeReplayWithLlm(ctx, {
+          challenge,
+          evidence: verdict.evidence,
+          priorPasses,
+          config: {
+            enabled: true,
+            timeoutMs: c.replay_llm_timeout_ms,
+            minConfidence: c.replay_llm_min_confidence,
+          },
+        });
+        replay.llm = llm;
+        if (llm.isReplay) {
+          replay.isReplay = true;
+          replay.kind = 'llm-equivalent';
+          replay.matchedAttemptId = llm.matchedAttemptId;
+          replay.reasons.push(
+            `LLM 判语义等价（置信度 ${llm.confidence}）：${llm.rationale || '换说法复读'}`,
+          );
+        }
+      }
     }
 
     // 落 attempts（C2：selfAssessment 剥离为 notes；C3：evidence 原样留档）
@@ -589,11 +616,19 @@ function apply(ctx, config) {
       reason: verdict.reason,
       verifiedAt: nowIso(),
       // 复读标记：result 仍是 pass（事实），但 replay.isReplay=true 表示不计能力成功
-      replay: replay.isReplay ? {
-        isReplay: true,
+      replay: replay.isReplay || replay.llm ? {
+        isReplay: replay.isReplay,
         kind: replay.kind,
         reasons: replay.reasons,
         fingerprint: replay.fingerprint,
+        llm: replay.llm ? {
+          called: replay.llm.called,
+          ok: replay.llm.ok,
+          isReplay: replay.llm.isReplay,
+          confidence: replay.llm.confidence,
+          rationale: replay.llm.rationale,
+          reason: replay.llm.reason,
+        } : null,
       } : null,
     });
     await at.put(attempt.id, attempt);
@@ -677,6 +712,10 @@ function apply(ctx, config) {
         replay: replay.isReplay,
         replayKind: replay.kind,
         replayReasons: replay.reasons,
+        replayLlm: replay.llm ? {
+          called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
+          confidence: replay.llm.confidence, reason: replay.llm.reason,
+        } : null,
         countedForSuccess: !replay.isReplay,
       },
       reason: replay.isReplay
@@ -700,6 +739,10 @@ function apply(ctx, config) {
       replay: replay.isReplay,
       replayKind: replay.kind,
       countedForSuccess: !replay.isReplay,
+      replayLlm: replay.llm ? {
+        called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
+        confidence: replay.llm.confidence, reason: replay.llm.reason,
+      } : null,
     };
   }
 

@@ -13,7 +13,7 @@
   "spec": {
     "cordis": {
       "inject": ["storageDomain"],
-      "optionalInject": ["agint.eventBus", "agint.selfModel"],
+      "optionalInject": ["agint.eventBus", "agint.selfModel", "agents", "subagents", "agentDefaultModel"],
       "provides": ["agint.curriculum"],
       "events": [
         "curriculum.boundary-probed",
