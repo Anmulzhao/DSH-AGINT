@@ -1,5 +1,65 @@
 # Changelog — agint-rules
 
+## [0.3.0] — 2026-11-17
+
+### Added — 规则引擎自保护（提案「护住规则引擎自身」A1/A2/A3）
+
+**起因（实测取证）**：`rule_check(rule_set_enabled, {id, enabled:false})` →
+`NO_MATCH`；`rule_list` 实况里没有一条规则覆盖 `rule_add` / `rule_remove` /
+`rule_set_enabled` ⇒ 被门禁约束的 agent 可以把 deny 规则关掉。
+与 RSI 综述同一类失效：系统既是改进者，又改得动自己的评估过程
+（看守自己的锁由被看守者拆）。
+
+**A1（deny 级规则在引擎内不可变）**：
+- `rule_remove(deny 规则)` → 抛错拒绝
+- `rule_set_enabled(deny 规则, false)` → 抛错拒绝
+- `rule_add` 改写既有 deny 规则（含改 `reason`）→ 抛错拒绝
+
+仍允许两件事：**新建**规则（新建 deny 是加固）、`enable(true)`（恢复生效
+不等于削弱约束）。`advisory` / `ask` 级规则不受此约束 —— 日常运维不能被锁死。
+
+**A2（删规则走人工确认）**：`rule_remove` 命中 ask 级。参数里只有 `id`，
+正则无法判别被删规则是 deny 还是 advisory，故按提案取舍用 ask 而非 deny，
+保留「误建的坏规则由人确认后删除」的口子。
+
+**A3（新增规则的 reason 走人工确认）**：`rule_add` 命中 ask 级。
+`reason` 会被 `buildAdvisoryMessage` 拼进注入消息 ⇒ 任意文本可经 reason
+进入模型上下文（提示注入面）。
+
+**补种口径（关键）**：`seedIfEmpty()` 原本第一行就是「规则表非空就 return」
+⇒ 老装机永远拿不到这三条 ⇒ 写在代码里的门禁形同虚设。这正是 `seedEpistemic`
+当初被拆出来的同一个坑。现在三条自保护规则**无条件补种**：
+- 按 id 幂等（重复 boot 不重复播种）；
+- 已被「同 tool + 同 action + 同 pattern」的等价规则覆盖时跳过（避免 lint
+  判成 `duplicate-pattern`）；
+- 已存在但被停用（`enabled=false`）的会被**重新启用** —— 停用自保护规则
+  正是本提案要堵的失效形态。
+
+**参数文本口径**：这三个工具的 args 没有 `command`/`cmd` 键 ⇒ `argText` 走
+`JSON.stringify(args)`，产出**无空格** JSON（如 `{"id":"x","enabled":false}`）
+⇒ pattern 必须按无空格写。
+
+**人工解封**：引擎内不可变 ⇒ 误建的 deny 规则无法用工具删，须由人改
+agint_rules 存储的文件层 / 带签名写入路径。
+
+**验证**：
+- `node --test test/self-protection.test.mjs` → 5/5（补种口径：非空表补种 /
+  幂等 / 停用后重新启用 / 等价规则跳过 / lint 不误报 duplicate-pattern）
+- `node --test test/audit-persist.test.mjs` → 12/12（新增第 9 组 3 条：
+  三条削弱路径全拒绝 / `enable(true)` 放行 / ask 级规则不受约束）
+- 声明的测试命令四文件合计 → **59/59 全绿**
+  （`node --test test/epistemic.test.mjs test/audit-persist.test.mjs
+  test/domain-version-compat.test.mjs test/self-protection.test.mjs`）
+- `node test.mjs` → 23/23 全绿
+- `node bin/verify-manifests.mjs` → ERROR 0（并顺带清掉本插件此前
+  manifest 0.2.2 ≠ package 0.2.1 的 VERSION_DRIFT WARN）
+- `node bin/check-l0-frozen.mjs` → 11 个受保护单元未变更
+
+**已知代价**：deny 级规则一旦写错，工具层面无法删除或停用，只能走人工解封路径。
+
+**回滚**：`git revert` 本提交即可；已补种的三条自保护规则留在存储里，
+需人工从 agint_rules 存储层删除。
+
 ## [0.2.2] — 2026-11-02
 
 ### Added — 命中计数持久化（提案 09ae2017：重启不清零）

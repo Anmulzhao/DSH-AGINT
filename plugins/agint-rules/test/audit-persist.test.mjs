@@ -99,6 +99,21 @@ const DENY_RULE = {
   reason: '测试用：禁止删根',
 };
 
+/**
+ * 非 deny 的命中规则 —— 用于「删规则不删历史」那条用例。
+ * ⛔ 不能用 DENY_RULE：2026-11-17 起 deny 规则在引擎内不可变
+ * （见 test 9），remove 会被拒，这条用例会失去被测对象。
+ */
+const ASK_RULE = {
+  id: 'ask-persist-test',
+  tool: 'bash',
+  pattern: 'rm\\s+-rf\\s+/',
+  flags: '',
+  action: 'ask',
+  level: 'L1',
+  reason: '测试用：删根需人工确认',
+};
+
 /** 走真 pre-execute 钩子命中一次 deny */
 async function fireDeny(handlers) {
   const hook = handlers.get('tools/pre-execute');
@@ -304,18 +319,72 @@ test('rule_remove 不删计数：历史账本与规则表分开', async () => {
   const store = makeStore();
   const { rules, handlers } = boot(store);
   await settled(rules);
-  await rules.add(DENY_RULE);
+  await rules.add(ASK_RULE);
   await fireDeny(handlers);
   await rules._flushAudit();
 
-  await rules.remove(DENY_RULE.id);
-  const still = rules.audit().rules.find((r) => r.ruleId === DENY_RULE.id);
+  await rules.remove(ASK_RULE.id);
+  const still = rules.audit().rules.find((r) => r.ruleId === ASK_RULE.id);
   assert.ok(still, '删规则把历史计数也删了');
   assert.equal(still.hits, 1);
-  assert.equal(store.tables.get('rule_audit').get(DENY_RULE.id).hits, 1);
+  assert.equal(store.tables.get('rule_audit').get(ASK_RULE.id).hits, 1);
 
   // 再重启一次，历史仍在（内存与存储的口径必须一致）
   const again = boot(store);
   await settled(again.rules);
-  assert.ok(again.rules.audit().rules.some((r) => r.ruleId === DENY_RULE.id && r.hits === 1));
+  assert.ok(again.rules.audit().rules.some((r) => r.ruleId === ASK_RULE.id && r.hits === 1));
+});
+
+// ───────────────────── 9. deny 规则在引擎内不可变 ─────────────────────
+// 起因（2026-11-17 实测取证）：rule_check(rule_set_enabled, {id,enabled:false})
+//   → NO_MATCH；rule_list 实况里无一条规则覆盖 rule_add / rule_remove /
+//   rule_set_enabled ⇒ 被门禁约束的 agent 可以把 deny 规则关掉。
+// 这三条断言锁死「削弱路径一律拒绝、恢复路径放行」的口径。
+
+test('deny 规则不可变：remove / setEnabled(false) / 改写 三条削弱路径全部拒绝', async () => {
+  const store = makeStore();
+  const { rules } = boot(store);
+  await settled(rules);
+  await rules.add(DENY_RULE);
+
+  await assert.rejects(
+    () => rules.remove(DENY_RULE.id),
+    /拒绝删除 deny 级规则/,
+    'deny 规则能被删 —— 门禁可被它约束的对象拆掉',
+  );
+  await assert.rejects(
+    () => rules.setEnabled(DENY_RULE.id, false),
+    /拒绝停用 deny 级规则/,
+    'deny 规则能被停用 —— 门禁可被它约束的对象关掉',
+  );
+  await assert.rejects(
+    () => rules.add({ ...DENY_RULE, reason: '改成放行' }),
+    /拒绝改写 deny 级规则/,
+    'deny 规则能被改写 —— 改 reason 就能把约束改成别的东西',
+  );
+
+  // 规则仍在，且仍是 deny
+  const listed = (await rules.list({})).find((r) => r.id === DENY_RULE.id);
+  assert.ok(listed, '被拒绝的三条路径把规则弄丢了');
+  assert.equal(listed.action, 'deny');
+});
+
+test('deny 规则允许 enable(true)（恢复生效不等于削弱约束）', async () => {
+  const store = makeStore();
+  const { rules } = boot(store);
+  await settled(rules);
+  await rules.add(DENY_RULE);
+  await rules.setEnabled(DENY_RULE.id, false).catch(() => {}); // 旧装机的存量停用态
+  const updated = await rules.setEnabled(DENY_RULE.id, true);
+  assert.ok(updated, 'enable(true) 被拒了');
+  assert.equal(updated.enabled, true);
+});
+
+test('ask / advisory 级规则不受不可变约束（日常运维不能被锁死）', async () => {
+  const store = makeStore();
+  const { rules } = boot(store);
+  await settled(rules);
+  await rules.add(ASK_RULE);
+  const removed = await rules.remove(ASK_RULE.id);
+  assert.ok(removed, 'ask 级规则被拒绝删除 —— 门禁不可变约束外溢了');
 });
