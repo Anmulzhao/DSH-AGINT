@@ -51,6 +51,7 @@ import {
   ticketStage as stageOf,
   TICKET_STAGES,
 } from './execution.js';
+import { createBridge } from './schedule-bridge.js';
 
 const name = 'agint-evolve';
 const inject = ['storageDomain'];
@@ -73,6 +74,19 @@ const Config = z.object({
   //    execMode 字段，normalizeExec() 仍把缺字段归一成 manual，升级不会让存量
   //    提案突然开始改代码。两个默认值服务两个不同目的，不冲突。
   defaultExecMode: z.enum(EXEC_MODES).default('immediate'),
+  // 2026-11-17：提案批准后是否同步登记为 **dsh 原生自动化任务**（ctx.schedule）。
+  // ⛔ 默认 false —— 这是推翻 2026-10-21 D5「不调用 schedule.create()」决策的语义变更
+  //    （无人值守直调 → agent 在环投递），必须显式开启；关闭时桥接零副作用，
+  //    execution 表 + executor 轮询路径完全不变。
+  //    开法：cordis.patch.yml 的 agint-evolve 块写 scheduleBridge: { enabled: true }。
+  scheduleBridge: z.object({
+    enabled: z.boolean().default(false),
+    // 定时立即档的 dsh 投递延迟（秒）；一次性延迟可短于一分钟。
+    immediateDelaySeconds: z.number().int().nonnegative().default(10),
+    // 新 Session 用的 agent preset 与工作目录；缺省 preset=agint、cwd 由 apply 推导仓库根。
+    agentPreset: z.string().min(1).default('agint'),
+    cwd: z.string().min(1).optional(),
+  }).default({}),
 });
 
 /**
@@ -421,6 +435,22 @@ function apply(ctx, config) {
     : 'immediate';
   // 2026-10-30：partial 之后自动续跑的次数上限（0 = 关掉续跑）。
   const MAX_AUTO_CONTINUATIONS = Math.max(0, Number(config.maxAutoContinuations ?? 5) || 0);
+  // 2026-11-17：dsh 原生自动化任务桥（默认关）。软依赖 ctx.schedule，取不到注解。
+  // cwd 缺省用本插件所在仓库根（与 root 一致），不写死绝对路径。
+  const scheduleBridge = createBridge({
+    enabled: config.scheduleBridge?.enabled === true,
+    getScheduleService: () => (typeof ctx.get === 'function' ? ctx.get('schedule') : null),
+    createOpts: {
+      cwd: config.scheduleBridge?.cwd ?? root,
+      agentPreset: config.scheduleBridge?.agentPreset ?? 'agint',
+      immediateDelaySeconds: config.scheduleBridge?.immediateDelaySeconds ?? 10,
+    },
+    log: (level, msg, meta) => {
+      const logger = ctx.logger;
+      if (level === 'warn') logger?.warn?.(msg, meta);
+      else logger?.info?.(msg, meta);
+    },
+  });
   // A4：归因 JSON 路径。两级来源，优先级 config > 自动探测。
   // 不依赖 cwd / 环境变量（cron 的 cwd 不保证是仓库根，宿主环境变量也没约定）。
   //
@@ -583,6 +613,10 @@ function apply(ctx, config) {
       await et.put(job.id, next);
       done.push(next);
     }
+    // 2026-11-17：撤销执行时一并删除 dsh 自动化任务（幂等；软依赖）。
+    for (const pid of new Set(done.map((j) => j.proposalId).filter(Boolean))) {
+      void scheduleBridge.cancel(pid).catch(() => {});
+    }
     return done;
   };
 
@@ -618,6 +652,10 @@ function apply(ctx, config) {
     });
     await et.put(job.id, job);
     await markProposal(rec.id, { execState: 'queued', execError: '', execFinishedAt: '' });
+    // 2026-11-17：同步登记为 dsh 原生自动化任务（软依赖，失败不影响入队事实）。
+    // ⛔ fire-and-forget：dsh create() 是 IO，不阻塞入队；提案已在 execution 表，
+    //    即便 dsh 侧没建成，executor 轮询照旧兜底执行。
+    void scheduleBridge.sync(rec).catch(() => {});
     return { enqueued: true, job };
   }
 
@@ -1089,7 +1127,13 @@ function apply(ctx, config) {
     await t.put(id, updated);
     // 状态真的变了才算一次「决定」⇒ 发事件。幂等写（只补 blocker / 执行计划）不发，
     // 否则审计链会被同一状态的重复写冲成噪声。发布失败不影响返回值（红线同 propose）。
-    if (prevStatus !== status) await publishStatusChanged(updated, prevStatus);
+    if (prevStatus !== status) {
+      await publishStatusChanged(updated, prevStatus);
+      // 2026-11-17：提案离开 approved（落地 applied / 撤销 / 改判）⇒ 删除 dsh
+      // 自动化任务（幂等；软依赖）。挂在这里覆盖人工与机器两条写入路径，
+      // 避免已落地的提案还留着一条会投递的 dsh 任务。
+      if (prevStatus === 'approved') void scheduleBridge.cancel(id).catch(() => {});
+    }
     return updated;
   }
 
