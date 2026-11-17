@@ -13,6 +13,37 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 const name = 'agint-curriculum-tools';
 const inject = ['tools', 'agint.curriculum'];
 
+/**
+ * 证据归一化（2026-11-17）：把参数层可能施加的数组包装还原成真数组。
+ *
+ * 观测到的形态（生产存储 ~/.dsh/storages/agint_curriculum.json 的 attempts 表）：
+ *   evidence = { steps: { item: ["第一步", "第二步"] } }
+ * 即数组被包成 { item: [...] }。还原策略：
+ *   - 顶层就是数组 → 原样
+ *   - 对象里只有一个数组值 → 取该数组
+ *   - 对象键全是数字下标 → 按下标排序还原成数组
+ * 还原后仍不是数组的，交给判定器照常判 fail（不放宽判据，只修传输形态）。
+ */
+export function unwrapArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value);
+    const arrayKeys = keys.filter((k) => Array.isArray(value[k]));
+    if (arrayKeys.length === 1) return value[arrayKeys[0]];
+    if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+      return keys.sort((a, b) => Number(a) - Number(b)).map((k) => value[k]);
+    }
+  }
+  return value;
+}
+
+export function normalizeEvidence(evidence) {
+  if (!evidence || typeof evidence !== 'object') return evidence;
+  const out = { ...evidence };
+  if (out.steps !== undefined && !Array.isArray(out.steps)) out.steps = unwrapArray(out.steps);
+  return out;
+}
+
 function apply(ctx) {
   const svc = ctx['agint.curriculum'];
 
@@ -56,7 +87,20 @@ function apply(ctx) {
         // 证据字段随挑战类型变化（codegen/reasoning/planning/tool-use 各不相同），
         // 只能开放。参照 output.schema 的 K19 政策。
         additionalProperties: true,
-        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning/integration→{steps:[]}；tool-use→{toolUsed,exitCode,output}；correctness→{conclusion}。可附带 selfAssessment（自评，仅记录）。',
+        // 显式声明各证据字段的类型（2026-11-17 实测修复）：
+        // 只挂 additionalProperties 的 free-form object 里，数组型证据（steps）在
+        // 客户端/模型参数层会被包装成 { item: [...] }，判定器拿不到真数组，
+        // 每次提交都被判 "steps 数量 0 < minLength N"。声明 type 后参数层按
+        // 真实数组发送，判定器拿到的就是 string[]。
+        properties: {
+          steps: { type: 'array', items: { type: 'string' } },
+          conclusion: { type: 'string' },
+          output: { type: 'string' },
+          exitCode: { type: 'number' },
+          toolUsed: { type: 'string' },
+          selfAssessment: { type: 'string' },
+        },
+        description: '判定证据。按挑战类型提供：codegen→{exitCode,output}；reasoning→{conclusion}；planning/integration→{steps:string[]}；tool-use→{toolUsed,exitCode,output}；correctness→{conclusion}。可附带 selfAssessment（自评，仅记录）。',
       },
     },
     output: {
@@ -69,7 +113,7 @@ function apply(ctx) {
     async execute(args) {
       if (!args.challengeId) throw new Error('curriculum_submit: challengeId is required');
       if (!args.evidence) throw new Error('curriculum_submit: evidence is required');
-      return svc.submit({ challengeId: args.challengeId, evidence: args.evidence });
+      return svc.submit({ challengeId: args.challengeId, evidence: normalizeEvidence(args.evidence) });
     },
   }));
 

@@ -39,7 +39,21 @@ function assertConclusionMatch(spec, ev) {
 }
 
 function assertStepList(spec, ev) {
-  const steps = Array.isArray(ev.steps) ? ev.steps : [];
+  // 证据里的 steps 必须是真正的 string[]：参数层可能把它包成 { item: [...] }
+  // （2026-11-17 生产存储实测），这里先还原传输形态，再按原判据判定——
+  // 还原后仍不是字符串数组的，照常判 fail，不放宽通过条件。
+  const raw = ev.steps;
+  let steps = [];
+  if (Array.isArray(raw)) steps = raw;
+  else if (raw && typeof raw === 'object') {
+    const keys = Object.keys(raw);
+    const arrayKeys = keys.filter((k) => Array.isArray(raw[k]));
+    if (arrayKeys.length === 1) steps = raw[arrayKeys[0]];
+    else if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+      steps = keys.sort((a, b) => Number(a) - Number(b)).map((k) => raw[k]);
+    }
+  }
+  if (!steps.every((s) => typeof s === 'string')) steps = [];
   if (steps.length < spec.minLength) {
     return { pass: false, reason: `steps 数量 ${steps.length} < minLength ${spec.minLength}` };
   }

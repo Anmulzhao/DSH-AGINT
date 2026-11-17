@@ -77,3 +77,13 @@ test('listVerifierTypes 覆盖 4 种断言', () => {
     ['conclusion-match', 'exit-code-output', 'step-list', 'tool-match'],
   );
 });
+
+test('step-list：参数层数组包装 { item: [...] } 可还原（2026-11-17 传输缺陷回归）', () => {
+  const ch = mk('planning', 'D2'); // min 4, keywords [test, build]
+  const wrapped = { item: ['a', 'b', 'c', 'd', 'test', 'build'] };
+  assert.equal(judge(ch, { steps: wrapped }).result, 'pass', '包装形态应还原后按原判据判定');
+  assert.equal(judge(ch, { steps: { item: ['a', 'b', 'c'] } }).result, 'fail', '还原后步数不足仍 fail');
+  assert.equal(judge(ch, { steps: { item: ['a', 'b', 'c', 'd'] } }).result, 'fail', '还原后缺关键词仍 fail');
+  assert.equal(judge(ch, { steps: { item: [1, 2, 3, 4, 'test', 'build'] } }).result, 'fail', '非字符串元素不放宽判据');
+  assert.equal(judge(ch, { steps: { 0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'test', 5: 'build' } }).result, 'pass', '数字下标形态可还原');
+});
