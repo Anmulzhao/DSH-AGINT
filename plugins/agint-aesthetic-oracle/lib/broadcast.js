@@ -122,6 +122,11 @@ export function extractAtomic(summary) {
   const contradMeta = meta('wiki.contradictions');
   const memoryMeta = meta('memory.total');
   const skillsMeta = meta('skills.totalBytes');
+  // r5：managed 口径的原子值（臃肿度分子/分母）+ 第三方字节 + 常驻成本
+  const managedMeta = meta('skills.managedBytes');
+  const managedBytes = num('skills.managedBytes');
+  const managedCount = isNum(managedMeta.managedCount) ? managedMeta.managedCount : null;
+  const topManaged = Array.isArray(managedMeta.topManaged) ? managedMeta.topManaged : [];
 
   const lintIssues = Array.isArray(rulesMeta.issues) ? rulesMeta.issues : [];
   // duplicate-pattern 才是冗余分子；lint 还有其他 kind（stale 等），别混。
@@ -169,6 +174,11 @@ export function extractAtomic(summary) {
       curatorOverlaps: 0,
       skillsTotal: isNum(skillsMeta.fileCount) ? skillsMeta.fileCount : null,
       skillsBytes: num('skills.totalBytes'),
+      // r5：臃肿度分子/分母只认 AGINT 负责的技能；第三方与常驻成本只作展示。
+      skillsManagedBytes: managedBytes,
+      skillsManagedCount: managedCount,
+      skillsThirdPartyBytes: num('skills.thirdPartyBytes'),
+      skillsFrontmatterBytes: num('skills.frontmatterBytes'),
     },
     // Q3 建议的证据上下文（广播文本只引用计数与机制，id 清单进审计条目——§5 示例口径）
     // §4 真实关（2026-09-29）：建议必须绑定真实 lint 证据，故把 wiki 矛盾/孤儿
@@ -182,6 +192,11 @@ export function extractAtomic(summary) {
       wikiOrphanFiles: strList(wikiMeta.files),
       curatorOverlaps: 0,
       skillsBytes: num('skills.totalBytes'),
+      // r5：bloat 建议改用 managed 口径，并带上真实的最大技能明细
+      // （旧口径建议引用 curator overlaps —— 该值恒 0，等于引用不存在的证据）。
+      skillsManagedBytes: managedBytes,
+      skillsManagedCount: managedCount,
+      skillsTopManaged: topManaged,
       // r4：bloat 改为单技能体积口径 ⇒ q3Advice 需要技能数才能算预算。
       // 不传这一项，bloat 最丑时建议栏会永久哑火（与 2026-10-08 那次
       // lowConfidenceNoEvidence 恒空是同一类缺陷）。
@@ -238,14 +253,21 @@ function describeWorst(key, value, atomic) {
       // r4：必须把「多少个技能 × 多少 KB = 预算多少 KB」一次说清。
       // 只写「超预算」在技能数变化时无法解读——这正是 r3 的病灶
       // （221853 B / 20 技能 = 10.83KB 正常，却被固定 120KB 判成超标 80%）。
-      const kb = Math.round((atomic.skillsBytes ?? 0) / 1024);
-      const n = atomic.skillsTotal;
+      // r5：口径只算 **AGINT 负责的技能**（managed）；第三方技能单列并说明
+      // 「不计入」（判尺不考核不可控对象）。同时透出常驻成本（frontmatter）。
+      const kb = Math.round((atomic.skillsManagedBytes ?? 0) / 1024);
+      const n = atomic.skillsManagedCount;
       if (!isNum(n) || n <= 0) {
-        return `${pct(value)}（${THRESHOLD_TEXT.bloat}）——SKILL.md 共 ${kb}KB（技能数未知，预算无法展开）`;
+        return `${pct(value)}（${THRESHOLD_TEXT.bloat}）——AGINT 技能共 ${kb}KB（技能数未知，预算无法展开）`;
       }
       const per = THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES / 1024;
       const budgetKb = Math.round((n * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES) / 1024);
-      return `${pct(value)} 单技能体积（${n} 个技能 × ${per.toFixed(1)}KB = 预算 ${budgetKb}KB）——SKILL.md 共 ${kb}KB`;
+      const tp = atomic.skillsThirdPartyBytes;
+      const thirdParty = isNum(tp) && tp > 0 ? `｜第三方 ${Math.round(tp / 1024)}KB 不计入` : '';
+      const fm = atomic.skillsFrontmatterBytes;
+      const resident = isNum(fm) && fm > 0 ? `｜常驻 ${Math.round(fm / 1024)}KB/轮` : '';
+      return `${pct(value)} 单技能体积（${n} 个 AGINT 技能 × ${per.toFixed(1)}KB = 预算 ${budgetKb}KB）`
+        + `——AGINT 技能共 ${kb}KB${thirdParty}${resident}`;
     }
     default:
       return `${value}`;

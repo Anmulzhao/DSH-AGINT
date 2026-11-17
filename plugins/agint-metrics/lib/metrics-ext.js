@@ -18,13 +18,22 @@
  * 防御块纪律与 metrics.js 相同：任一 source 缺席 / 抛错 → 跳过该 key，不失败。
  */
 
-import { readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, statSync, readFileSync } from 'node:fs';
+import { join, basename } from 'node:path';
+
+/**
+ * AGINT 负责的技能标记文件（r5，2026-11-11）。
+ * agint-skill-autocreate 发布技能时写入；存在即视为 AGINT 维护的技能。
+ */
+export const MANAGED_MARKER = '.agint-managed';
 
 /** 4 个新原子 key 的定义（与 METRIC_DEFS 合并后 summary 可见）。 */
 export const METRIC_DEFS_EXT = [
   { key: 'autocreate.candidatesRejected', label: '技能候选拒绝数（门禁工作证据）', unit: 'count', source: 'skillAutocreate' },
   { key: 'skills.totalBytes', label: '技能提示词总量（两处 skills 根 SKILL.md 字节和）', unit: 'bytes', source: 'skillsFs' },
+  { key: 'skills.managedBytes', label: 'AGINT 负责的技能字节（preset 根 + 自动生成技能）', unit: 'bytes', source: 'skillsFs' },
+  { key: 'skills.thirdPartyBytes', label: '用户自装第三方技能字节（不计入臃肿度扣分）', unit: 'bytes', source: 'skillsFs' },
+  { key: 'skills.frontmatterBytes', label: '技能 frontmatter 字节（每轮常驻上下文成本）', unit: 'bytes', source: 'skillsFs' },
   { key: 'evolution.logCount7d', label: '近 7 天进化日志数（排除 oracle 审计条目）', unit: 'count', source: 'evolution' },
   { key: 'evolution.logCount30d', label: '近 30 天进化日志数（排除 oracle 审计条目）', unit: 'count', source: 'evolution' },
 ];
@@ -54,28 +63,97 @@ export function defaultSkillRoots(env = process.env) {
  * 造一个 skills 文件系统 source：懒遍历两处 skills 根，统计 SKILL.md 字节。
  * 每次调用 re-walk（collect 一天一次，成本可忽略；§7 预算 ≤1s/天）。
  *
+ * r5（2026-11-11）：同时区分 **AGINT 负责的技能** 与 **用户自装的第三方技能**。
+ * 判定规则（唯一真源，可核）：
+ *   1. preset 根（路径含 `.agent-presets` 段）下的技能 → managed
+ *      （AGINT 仓库镜像 + 自研技能，由 AGINT 维护并镜像同步）
+ *   2. 其他根下的技能：技能目录内存在 `.agint-managed` 标记文件 → managed
+ *      （agint-skill-autocreate 发布时写入）
+ *   3. 其余 → thirdParty（用户自己装的工具，AGINT 不维护、不归档、不扣分）
+ *
+ * 为什么必须分（生产证据 2026-11-11）：用户级根里 9 个技能 153852 字节全部是
+ * skillhub 装的第三方（skillhub_list 实证），占原分子 265342 的 58%。把它们算进
+ * AGINT 的「臃肿度」，等于让判官考核老板装的工具；且没有任何可执行动作能改它
+ * （归档会删老板的工具，压缩会坏第三方功能）。
+ *
  * @param {string[]} roots — 目录列表（测试可传临时目录）
  */
 export function makeSkillsFsSource(roots = defaultSkillRoots()) {
   return {
-    /** @returns {{ totalBytes: number, fileCount: number, roots: string[], missingRoots: string[] }} */
+    /**
+     * @returns {{totalBytes:number, fileCount:number, roots:string[], missingRoots:string[],
+     *            managedBytes:number, managedCount:number,
+     *            thirdPartyBytes:number, thirdPartyCount:number,
+     *            frontmatterBytes:number, topManaged:{name:string,bytes:number}[]}}
+     */
     measure() {
       let totalBytes = 0;
       let fileCount = 0;
+      let managedBytes = 0;
+      let managedCount = 0;
+      let thirdPartyBytes = 0;
+      let thirdPartyCount = 0;
+      let frontmatterBytes = 0;
       const found = [];
       const missing = [];
+      const topManaged = [];
       for (const root of roots) {
         try {
-          const n = walkSkillMd(root, (bytes) => { totalBytes += bytes; fileCount += 1; });
+          const preset = isPresetRoot(root);
+          const n = walkSkillMd(root, (f) => {
+            totalBytes += f.bytes;
+            fileCount += 1;
+            frontmatterBytes += frontmatterBytesOf(f.path);
+            if (preset || hasManagedMarker(f.dir)) {
+              managedBytes += f.bytes;
+              managedCount += 1;
+              topManaged.push({ name: basename(f.dir), bytes: f.bytes });
+            } else {
+              thirdPartyBytes += f.bytes;
+              thirdPartyCount += 1;
+            }
+          });
           if (n > 0 || statSync(root).isDirectory()) found.push(root);
         } catch { missing.push(root); }
       }
-      return { totalBytes, fileCount, roots: found, missingRoots: missing };
+      topManaged.sort((a, b) => b.bytes - a.bytes);
+      return {
+        totalBytes,
+        fileCount,
+        roots: found,
+        missingRoots: missing,
+        managedBytes,
+        managedCount,
+        thirdPartyBytes,
+        thirdPartyCount,
+        frontmatterBytes,
+        // 只留最大的 8 个，供神谕层建议点名具体文件（§4 真实关：建议要可复核）。
+        topManaged: topManaged.slice(0, 8),
+      };
     },
   };
 }
 
-/** 递归遍历目录，对每个 SKILL.md 调 onFile(字节)；返回命中的文件数。 */
+/** 根路径里含 `.agent-presets` 段 ⇒ preset 根（AGINT 维护的技能镜像位）。 */
+function isPresetRoot(root) {
+  return /[\\/]\.agent-presets[\\/]/.test(root);
+}
+
+/** 技能目录里有 `.agint-managed` 标记 ⇒ AGINT 自动生成的技能。 */
+function hasManagedMarker(dir) {
+  try { return statSync(join(dir, MANAGED_MARKER)).isFile(); } catch { return false; }
+}
+
+/** SKILL.md 的 frontmatter 字节数（--- 到 --- 之间，含分隔行）＝ 每轮常驻上下文成本。 */
+function frontmatterBytesOf(filePath) {
+  try {
+    const text = readFileSync(filePath, 'utf8');
+    const m = /^---\r?\n[\s\S]*?\r?\n---/.exec(text);
+    return m ? Buffer.byteLength(m[0], 'utf8') : 0;
+  } catch { return 0; }
+}
+
+/** 递归遍历目录，对每个 SKILL.md 调 onFile(文件信息)；返回命中的文件数。 */
 function walkSkillMd(dir, onFile) {
   let count = 0;
   let entries;
@@ -84,7 +162,10 @@ function walkSkillMd(dir, onFile) {
     const p = join(dir, e.name);
     if (e.isDirectory()) count += walkSkillMd(p, onFile);
     else if (e.isFile() && e.name === 'SKILL.md') {
-      try { onFile(statSync(p).size); count += 1; } catch { /* 文件刚被删 → 跳过 */ }
+      try {
+        onFile({ path: p, dir, bytes: statSync(p).size });
+        count += 1;
+      } catch { /* 文件刚被删 → 跳过 */ }
     }
   }
   return count;
@@ -162,6 +243,16 @@ export async function computeMetricsExt(sources) {
         /* skip：no scan target */
       } else {
         push('skills.totalBytes', m.totalBytes, { fileCount: m.fileCount, roots: m.roots, missingRoots: m.missingRoots });
+        // r5：AGINT 负责的技能（臃肿度分子用它，第三方技能不算进 AGINT 的账）
+        push('skills.managedBytes', m.managedBytes, {
+          managedCount: m.managedCount,
+          topManaged: m.topManaged,
+          marker: MANAGED_MARKER,
+        });
+        // r5：第三方技能只观测不扣分——广播里显式说明，避免「扣分对象不可控」。
+        push('skills.thirdPartyBytes', m.thirdPartyBytes, { thirdPartyCount: m.thirdPartyCount });
+        // r5：真实常驻上下文成本（frontmatter 每轮都进，body 按需加载）
+        push('skills.frontmatterBytes', m.frontmatterBytes, { fileCount: m.fileCount });
       }
     } catch { /* skip */ }
   }

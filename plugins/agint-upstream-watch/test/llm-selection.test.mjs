@@ -92,7 +92,10 @@ test('judgeFacts：agentOptions 用宿主模型（不是签名上的 DEFAULT_*�
     model: HOST.model,
     reasoningEffort: HOST.reasoningEffort,
   });
-  assert.equal(started[0].request.agentOptions.model, HOST.model);
+  // 宿主 dsh 0.2.2-rc.1（2026-11-13）起 SubagentActivationSpec 移除嵌套 request，
+  // agentOptions 与 parent/prompt 一样摊在 spec 顶层（见 upstream-watch.test.mjs 契约用例）。
+  assert.equal(started[0].request, undefined);
+  assert.equal(started[0].agentOptions.model, HOST.model);
   assert.equal(out.ok, false, 'stopReason=error 必须 failed，不许造结论');
 });
 

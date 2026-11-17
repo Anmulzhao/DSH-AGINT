@@ -19,418 +19,125 @@ related_skills:
 
 ---
 
-# Develop Dynamic Cordis Plugins
+# 开发动态 Cordis 插件
 
-First determine whether a capability belongs on Host or Client, then query the real interface before writing code. Never infer a complete API from a Service name, Event payload, Slot props, theme token, or example.
+判据：先定 Host/Client，再查真实接口，再写码。禁从 Service 名、Event payload、Slot props、主题 token、示例推断 API。
 
-## Standard workflow
-
-1. Call `cordis_inspect_list` to obtain the Providers, methods, and schemas currently registered on Host and Client.
-2. Select the smallest set of `cordis_inspect_query` calls needed to read the exact Services, Events, Builtins, Slots, Theme tokens, or Tools that the implementation will use.
-3. For a new Plugin, design its first Package. To modify an existing Plugin, first use `cordis_inspect_self(pluginId, packageId)` to read the base source and diagnostics.
-4. Write plain JavaScript in `code.host`, `code.client`, or both, then call `cordis_define`.
-5. Call `cordis_run` with the final `pluginId` and `packageId` returned by define.
-6. Handle approval, waiting, Client loading, and render failures from the Run card, steering messages, or `cordis_inspect_self`.
-7. Use `cordis_stop` to disable the Plugin temporarily. Use `cordis_undefine` only when it is no longer needed.
-
-Do not wait in the same turn for user approval or asynchronous browser results. After `cordis_run` returns `awaiting-approval` or `starting`, end the current Tool flow and wait for the system to report the final outcome through state updates and steering.
-
-## Tool usage guidance
-
-| Tool | Use it when | Do not |
-| --- | --- | --- |
-| `cordis_inspect_list` | Discover current Host/Client Providers and method schemas in one call; refresh after the runtime capability directory changes | Hard-code Provider names and skip list; treat a manifest as business data |
-| `cordis_inspect_query` | Confirm exact Service methods, Event modes, Builtins, Slots, tokens, or Tool schemas before writing code | Use it instead of calling a real Service from the Plugin; assume a Client query will finish without a responding page |
-| `cordis_inspect_self` | List current Plugins, inspect version pointers, or read exact Package source and runtime diagnostics | Fetch all source just to build a list; use it to modify or start a Plugin |
-| `cordis_define` | Create a Plugin's first version or append an immutable Package to an existing Plugin; let the user preview the code first | Expect define to execute `apply`, request approval, or update current |
-| `cordis_run` | Activate an exact Package; use `run` for first activation, restart, or rollback, and `update` to switch versions | Use `run` to switch versions implicitly; treat pending or starting as success |
-| `cordis_stop` | Pause current effects while preserving Packages, grants, and version pointers for later use | Use stop to mean permanent deletion |
-| `cordis_undefine` | Permanently remove a Plugin and all of its Packages and clear historical business views | Call it while rollback, inspection, or restart is still needed |
+## 标准流程
 
-## Choose a platform
-
-| Requirement | Preferred platform | Inspect first |
-| --- | --- | --- |
-| Files, commands, processes, or networking | Host | `fs`, `bash`, `subprocess`, `pty`, and `web` in `Service.listService` |
-| Agents, durable Session data, or Host lifecycle | Host | The relevant Service and `Event.listEvents` |
-| Register a dynamic Tool callable in the next model step | Host | `harness` in `Builtin.listBuiltins`, plus `Tool.listTools` |
-| Page theme, layout, or current page state | Client | `Theme.listTokens` and Client `Service.listService` |
-| Conversation Snapshot or session/workspace lists | Client | The target Slot's standard props and owner props |
-| Settings pages, sidebars, input areas, overlays, or Tool cards | Client | `Slots.listSubTree` |
-| Fetch on Host and display on Client | Both | Host Service + `harness.handle`; Client Slot + `host.call` |
-
-Prefer the capability closest to the data owner. If Slot props already provide the Conversation Snapshot, do not fetch it again through Host. If only the Package's own styles need to change, do not override the global theme. If only a small entry point is needed, do not replace an entire product UI region.
-
-## Provider navigation
-
-Select methods from the actual `cordis_inspect_list` result. Common initial methods include:
-
-- `Service.listService`: without `service`, returns every callable Service with its purpose and exact method signatures. Query the selected `service` again for access rules, structured method descriptions/parameters/returns, and only its referenced types.
-- `Event.listEvents`: without `event`, returns every Event with its purpose, dispatch mode, and exact listener signature. Query the selected `event` again for its structured listener contract and only its referenced types; a Waterfall listener must call `next()`.
-- `Builtin.listBuiltins`: returns evaluator-provided symbols and signatures that cannot be obtained through `ctx.get()`.
-- `Slots.listSubTree`: without `root`, returns compact live trees with each Slot's purpose, kind, scope, registration keys, replacement risk, and children. With an exact `root`, it also returns that selected Slot's full contract, props, and current occupants while keeping descendants compact.
-- `Theme.listTokens`: returns theme tokens that may currently be queried and overridden; it does not modify the theme.
-- `Tool.listTools`: returns Tool schemas actually visible to the current Agent, including dynamically registered Tools.
+1. `cordis_inspect_list`：取当前 Host/Client 的 Provider、方法、schema。
+2. `cordis_inspect_query`（最少集）：读要用的 Service、Event、Builtin、Slot、token、Tool 签名。
+3. 新插件设计首个 Package；改已有插件先 `cordis_inspect_self(pluginId, packageId)` 读基线源码与诊断。
+4. `code.host`/`code.client` 写纯 JS，再 `cordis_define`。
+5. 用 define 返回的 `pluginId`+`packageId` 调 `cordis_run`。
+6. 从 Run 卡片、steering、`cordis_inspect_self` 处理审批、等待、加载、渲染失败。
+7. `cordis_stop` 停用；不再需要才 `cordis_undefine`。
 
-Provider names, methods, and inputs must come from the current list result. The Service/Event Catalog describes which interfaces this version permits; it does not guarantee that a Service is currently mounted. At runtime, use real Services and Events rather than caching or displaying Catalog query results.
+禁同轮等审批或异步浏览器结果。`cordis_run` 返 `awaiting-approval`/`starting` 后结束当前 Tool 流程，等状态更新与 steering 报终态。
 
-## Execution environment
+## 工具用法
 
-Both `code.host` and `code.client` are plain JavaScript function bodies that return a Cordis Plugin. They are not compiled by TypeScript, JSX, or a bundler.
-
-Do not use:
-
-- `import`, `require`, TypeScript types, `as`, decorators, or JSX;
-- globals not confirmed by `Builtin.listBuiltins`;
-- guessed access to `window`, `document`, `process`, `Buffer`, `fetch`, or native timers.
-
-Client React code must use `React.createElement(...)`.
-
-Correct:
-
-```js
-return {
-  apply(ctx) {
-    const slots = ctx.get('slots')
-    if (slots === undefined) return
-    slots.inject('tool.view.cordis', () => slots.register(
-      { name: 'tool.view.cordis', key: 'self' },
-      () => React.createElement('div', null, 'Hello'),
-    ))
-  },
-}
-```
-
-Incorrect:
-
-```jsx
-return {
-  apply(ctx) {
-    return <div>Hello</div>
-  },
-}
-```
-
-JSX is not the only problem in this example. `apply()` registers lifecycle contributions and cannot return a React Element as the Plugin result. UI must be registered in a queried Slot.
-
-## Access Services
-
-Read optional capabilities with `ctx.get(name)` by default and handle their absence:
-
-```js
-return {
-  apply(ctx) {
-    const service = ctx.get('serviceName')
-    if (service === undefined) return
-    service.someMethod()
-  },
-}
-```
-
-Declare `inject` only when a Service is a hard dependency and the Plugin must enter waiting until Cordis reactivates it after the Service appears:
-
-```js
-return {
-  inject: ['requiredService'],
-  apply(ctx) {
-    ctx.requiredService.someMethod()
-  },
-}
-```
-
-Do not overuse `inject` merely to avoid an `undefined` check. Do not access `ctx.requiredService` without declaring the injection; the Guard rejects undeclared dependencies.
-
-## Manage side effects
-
-Every contribution must be removed after the Plugin is stopped, updated, or removed. Prefer Cordis lifecycle APIs:
-
-- Use `ctx.on()` to register Event listeners.
-- Use `ctx.effect()` to own an external subscription that returns a disposer.
-- Retain disposers returned by Cordis Service, Tool, Slot, timer, and theme APIs.
-- Do not create process-wide or page-wide side effects at module scope or outside `apply()`.
-
-Recommended:
-
-```js
-return {
-  apply(ctx) {
-    const service = ctx.get('serviceName')
-    if (service === undefined) return
-    ctx.effect(() => service.subscribe((value) => {
-      console.log(value)
-    }))
-  },
-}
-```
-
-If `subscribe()` does not return a disposer, first query whether the Service provides a supported cleanup mechanism. Do not assume unload automatically removes arbitrary third-party callbacks.
-
-## Host and Client timers
-
-On both platforms, the timer is a Service named `timer` with the same interface; it is not a Builtin. Query `{ "service": "timer" }` through the corresponding platform's `Service.listService` before using it. Declare `inject: ['timer']` before using the timer mixin.
-
-One-shot delay:
-
-```js
-return {
-  inject: ['timer'],
-  apply(ctx) {
-    const onClick = () => {
-      ctx.timeout(() => console.log('done'), 300)
-    }
-    // Pass onClick to a queried Slot UI.
-  },
-}
-```
-
-Periodic work in a React component:
-
-```js
-return {
-  inject: ['timer'],
-  apply(ctx) {
-    function Clock() {
-      React.useEffect(() => ctx.interval(() => console.log('tick'), 1000), [])
-      return React.createElement('div', null, 'Running')
-    }
-    // Register Clock in a queried Slot.
-  },
-}
-```
-
-Incorrect:
-
-```js
-return {
-  apply(ctx) {
-    ctx.timeout(() => console.log('invalid'), 300)
-  },
-}
-```
-
-```js
-setTimeout(() => console.log('invalid'), 300)
-```
-
-The first example does not declare the timer hard dependency. The second uses a global timer that does not exist.
-
-## Listen to Events
-
-Query the Event Provider first to confirm the platform, parameter order, return value, and `mode`.
-
-Ordinary emit Event:
-
-```js
-return {
-  apply(ctx) {
-    ctx.on('some/event', (payload) => {
-      console.log(payload)
-    })
-  },
-}
-```
-
-The last parameter of a Waterfall Event is `next`. Unless the listener intentionally stops downstream processing, it must call and return it:
-
-```js
-return {
-  apply(ctx) {
-    ctx.on('some/waterfall', (payload, next) => {
-      console.log(payload)
-      return next()
-    })
-  },
-}
-```
+- `cordis_inspect_list`：禁当 manifest 是业务数据。
+- `cordis_inspect_query`：禁代替插件内调真实 Service、禁假设 Client 查询无响应也完成。
+- `cordis_inspect_self`：禁为建列表拉全部源码、禁拿来改或启动插件。
+- `cordis_define`：先让用户预览代码；禁指望它执行 `apply`、请求审批、更新 current。
+- `cordis_run`：禁当 pending、starting 是成功；换版本须显式 `update`。
+- `cordis_stop`：暂停，留 Package、授权、版本指针；禁当永久删除。
+- `cordis_undefine`：永久移除插件及全部 Package、清历史业务视图；禁在仍需回滚/检查/重启时调。
 
-## Register Client UI
-
-Query `Slots.listSubTree` without `root` to choose a target from the compact purpose and topology tree, then query the exact Slot with `root` before writing its registration. The exact result determines:
-
-- the Slot's purpose in the layout;
-- whether its registration protocol is `single`, `list`, `keyed`, or `chain`;
-- registration options;
-- scope standard props and business owner props;
-- current occupants, replacement risks, and descendant Slots.
-
-Use `ctx.get('slots')` and handle its absence. Then use `slots.inject` to wait for the Slot declaration and call `slots.register` inside the callback:
-
-```js
-return {
-  apply(ctx) {
-    const slots = ctx.get('slots')
-    if (slots === undefined) return
-    slots.inject('target.slot', () => slots.register(
-      { name: 'target.slot', id: 'my-view' },
-      (props) => React.createElement('div', null, String(props.someValue)),
-    ))
-  },
-}
-```
+## 选平面
 
-`ctx.get('slots')` does not require an injection. Do not rewrite it as `ctx.slots` unless `inject: ['slots']` is declared:
+- Host：文件/命令/进程/网络、Agent 与持久 Session、Host 生命周期、下步模型可调的动态 Tool。
+- Client：主题/布局/页面状态、Snapshot 与 session/workspace 列表、设置页/侧边栏/输入区/覆盖层/Tool 卡片。
+- 两侧：Host 取数加 Client 展示。
 
-```js
-return {
-  apply(ctx) {
-    ctx.slots.register({ name: 'target.slot' }, () => null)
-  },
-}
-```
+各需求先查哪个 Provider 方法见同目录 reference.md。取最贴近数据拥有者的能力：Slot props 已给 Snapshot 不经 Host 取；只改样式不覆盖全局主题；小入口不替换整个 UI 区域。
 
-Do not guess an `id`, `key`, selector, or props before querying the Slot protocol. Do not default to root-level `root`, `sidebar`, `conversation`, or `details` Slots; replacing an entire occupant also removes the descendant Slots it declares.
+## Provider 导航
 
-### Settings pages
+Provider 名、方法名、入参必须来自当前 `cordis_inspect_list`；两遍查询法见同目录 reference.md。Catalog 不保证 Service 已挂载；运行时用真实 Service 与 Event。
 
-A full settings UI should usually register its own section through `settings.section` to obtain a complete content area. `settings.general.item` is only appropriate for one compact, general-purpose preference. Query the actual subtree, options, and props for both, then select the narrowest entry point that is still sufficient.
+## 执行环境
 
-Dynamic Plugins are temporary and process-local, so their settings UI does not need persistent storage. Do not add durable settings or another persistence mechanism for it. Register the UI in the appropriate settings Slot and keep any transient interaction state in memory for the lifetime of the Plugin.
+`code.host`/`code.client` 是返回 Cordis 插件的纯 JS 函数体，未经 TS/JSX/打包器编译。
 
-### Session and page data
+禁：`import`、`require`、TS 类型、`as`、装饰器、JSX；`Builtin.listBuiltins` 未确认的全局量；猜测访问 `window`、`document`、`process`、`Buffer`、`fetch`、原生定时器。
 
-A session-scoped Slot may provide `useSession`, `useSessions`, `useWorkspaces`, `useProjection`, input state, or actions through standard props. Follow the query result and prefer owner or standard props directly; do not add a Host RPC for data already present there.
+Client React 必须用 `React.createElement(...)`；`apply()` 只注册生命周期贡献，禁返 React Element；UI 必注册到已查 Slot。
 
-Select only the fields that the UI actually needs. Do not copy or render an entire Conversation Snapshot, Session, Tool call, or Slot props object.
+## 访问 Service
 
-### Cordis Run-specific panel
+默认 `ctx.get(name)` 读可选能力并处理缺失；仅当 Service 是硬依赖、插件须等它出现后重新激活才继续时声明 `inject`。
 
-To place interactive UI in the latest `cordis_run` card, register `tool.view.cordis` with `key: 'self'`:
+禁为省 `undefined` 判断滥用 `inject`；禁未声明注入即访问 `ctx.requiredService`（Guard 拒绝）。
 
-When the feature needs user interaction tied to this Package's result, this region is often a good fit because it keeps the controls in the conversation flow beside the Run card. It is not the default target for every Client UI: settings, sidebars, message actions, and overlays should use their own queried Slots when those locations better match the feature.
+## 副作用
 
-```js
-return {
-  apply(ctx) {
-    const slots = ctx.get('slots')
-    if (slots === undefined) return
-    slots.inject('tool.view.cordis', () => slots.register(
-      { name: 'tool.view.cordis', key: 'self' },
-      (props) => React.createElement('div', null, `Package ${props.packageId}`),
-    ))
-  },
-}
-```
+停止、更新、移除后每个贡献都要移除。`ctx.on()` 注册 Event 监听器；`ctx.effect()` 持有返 disposer 的外部订阅；留 Service、Tool、Slot、定时器、主题 API 的 disposer。
 
-At runtime, `self` binds to `pluginId + packageId`. Do not include `pluginRunId` in the key. When the same Package runs multiple times, the latest Run card hosts the UI and older cards automatically degrade.
+禁在模块作用域或 `apply()` 之外造进程级、页面级副作用。`subscribe()` 不返 disposer 时先查该 Service 有无清理机制；禁假设卸载会移除回调。
 
-### Ordinary Tool cards
+## 定时器
 
-To customize the call card for an ordinary model Tool, query `tool.call.toolview`. Its key is the Tool name; registering an existing key may replace the product's default card. When customizing only a newly added Tool, first verify its schema with `Tool.listTools`, then query the complete `ToolCallOwnerProps`.
+Host 与 Client 的定时器都是名为 `timer` 的 Service，非 Builtin。用前先用对应平台 `Service.listService` 查 `{ "service": "timer" }`，并声明 `inject: ['timer']`。
 
-### Overlays and local entry points
+`ctx.timeout(fn, 300)` 一次性延时，`ctx.interval(fn, 1000)` 周期任务，React 组件内配 `React.useEffect`。禁不声明 `inject: ['timer']` 即用；禁全局 `setTimeout`。
 
-- For toasts, status notices, and frame-wide overlays, query `shell.overlay` first; observe its pointer-events and ordering rules.
-- When the selected target is a global overlay Slot, decide whether the UI should be draggable, how the user shows and hides it, and which existing layers it must cover or remain below.
-- For small sidebar actions, prefer additive inner Slots such as `sidebar.footer.action`; do not replace the entire sidebar.
-- For supplementary content after a conversation turn, query `conversation.chat.turnTail` and register according to its returned chain selector and fallback rules.
+## 监听 Event
 
-## Themes and styles
+查 Event Provider 确认平台、参数顺序、返回值、`mode`；Waterfall 末参 `next`，除非有意中断下游须调并返。
 
-Determine the scope of the change first:
+## 注册 Client UI
 
-1. Global theme: first query `Theme.listTokens`, then query `{ "service": "theme" }` through Client `Service.listService`. Supply light and dark values for each override as required by the query, and retain the returned disposer.
-2. The Package's own components: use `styles.insert(css)` and prefer theme CSS variables for colors.
-3. New visible content: choose a Slot first, then decide between local CSS and global tokens.
+先不带 `root` 查 `Slots.listSubTree` 选目标，再带精确 `root` 查一次再写注册；结果决定 Slot 用途、注册协议、注册选项、props、占用者与子 Slot。
 
-Do not manipulate `document.body`, `window`, or hard-coded product DOM selectors. The theme Service changes tokens but does not create UI. Slots create UI but do not replace the theme system.
+`ctx.get('slots')` 并处理缺失，再用 `slots.inject` 等 Slot 声明、回调内 `slots.register`；`ctx.get('slots')` 不需注入。
 
-## Call Host from Client
+禁未声明 `inject: ['slots']` 即写成 `ctx.slots`；禁查协议前猜 `id`/`key`/选择器/props；禁默认用根级 `root`、`sidebar`、`conversation`、`details` Slot。设置页、会话数据、Run 面板、Tool 卡片、覆盖层的 Slot 名与细则见同目录 reference.md。
 
-Host registers a Package-private method with `harness.handle(method, handler)`, and Client invokes it with `host.call(method, args)`. This is Client→Host JSON RPC.
+## Client 调 Host
 
-Host:
+Host 用 `harness.handle(method, handler)` 注册 Package 私有方法，Client 用 `host.call(method, args)` 调用。参数与返回值必须无损 JSON；禁传函数、React 元素、类实例、Context、Service、运行时对象；无数据返 `null`。禁注册公共 Remote Service，禁 `ctx.remote`。
 
-```js
-return {
-  apply(ctx) {
-    harness.handle('read-state', async (args) => {
-      return { value: args.key }
-    })
-  },
-}
-```
+## 注册动态模型 Tool
 
-Client:
+Host 用 `harness` 注册下一步模型可调的 Tool：先用 Host `Builtin.listBuiltins` 查 `harness` 签名，再用 `Tool.listTools` 查现有 Tool 名与 schema 以免冲突。参数与返回值必须 JSON 兼容；`execute` 负责业务结果，render 只管模型与原生 UI 所见；Tool 注册须属当前插件 Fiber，stop 或 update 后自动移除。
 
-```js
-return {
-  async apply(ctx) {
-    const result = await host.call('read-state', { key: 'demo' })
-    console.log(result.value)
-  },
-}
-```
+## 内部活数据
 
-Arguments and return values must be lossless JSON. Do not pass functions, React elements, class instances, Contexts, Services, or other runtime objects; return `null` when there is no response data. Do not register a public Remote Service or use `ctx.remote` for Package-private communication.
+Service 实例、Event payload、Slot props、Session/Conversation Snapshot、Tool 状态等是内部活数据。禁对其或后代调 `JSON.stringify`、`structuredClone`；禁递归枚举、全量复制、整体展示；禁把 Host 对象放进 Package 状态或 RPC 返回值。只读所需叶子字段，先抽标量再构造自有 JSON。
 
-## Register a dynamic model Tool
+## 版本、审批与修复
 
-Host can use `harness` to register a Tool callable in the next model step. First query the current `harness` signature with Host `Builtin.listBuiltins`, then inspect existing Tool names and schemas with `Tool.listTools` to avoid conflicts.
+`pluginId`=插件，`packageId`=不可变版本，`pluginRunId`=每次激活运行 id；`currentPackageId`=最新成功版，`nextPackageId`=待审批或失败版。
 
-Tool arguments and return values must be JSON-compatible. `execute` owns the business result; render and presentation own only what the model and native UI see. Tool registration must belong to the current Plugin Fiber so it is automatically removed after stop or update.
+mode：无或同 current→`run`；换版本→`update`；update 失败修 `nextPackageId` 再 `update`，或跑 `currentPackageId` 用 `run` 回滚。
 
-## Handle internal live data
+未授权 Client Package 返 `awaiting-approval`；单勾只授权当前 Package，双勾授权未来版本；技术失败后授权仍保留；已授权返 `starting`。
 
-Service instances, Event payloads, Slot props, Session and Conversation Snapshots, Tool state, and other DSH/Cordis objects are internal live data.
+技术性失败后：1. `cordis_inspect_self(pluginId, packageId)` 读失败版本源码与诊断。2. 报错涉未知能力则重列并查 Provider。3. 同插件下定义新 Package，禁覆盖失败者。4. 用新 `packageId` 与正确 mode 再跑。禁自动重试被拒的审批；update 失败不自动恢复旧 Run，需恢复时显式 run current。
 
-Do not:
+## 修改 @pluginId
 
-- call `JSON.stringify` or `structuredClone` on these objects or their descendants;
-- recursively enumerate, fully copy, or display them as a whole;
-- place Host objects in the Package's long-lived state or RPC return values.
+用户以 `@pluginId` 指目标时禁另建插件；注入上下文只含身份、版本指针与基线 Package，无源码。
 
-Read only the leaf fields required by the current feature. Extract the minimum strings, numbers, booleans, and other scalar values before constructing owned JSON.
+1. `cordis_inspect_self(pluginId, packageId)` 读基线 Package。
+2. 留不需改的那半，只改目标代码。
+3. `cordis_define` 带 `plugin.kind: 'existing'` 与原 `pluginId`。
+4. 用返回的 `packageId`；已有 current 时通常用 `update` 激活。
 
-## Versions, approval, and repair
+引用不可用时说明插件已移除、属别的会话或进程重启后丢失。禁建同名替代品。
 
-- A Plugin is the stable instance identified by `pluginId`.
-- A Package is an immutable code version identified by `packageId`.
-- Every activation attempt has its own `pluginRunId`.
-- `currentPackageId` is the latest successful version; it does not imply that the Plugin is currently running.
-- `nextPackageId` is the target awaiting approval, activating, awaiting Client activation, or most recently failed.
+## 常见故障排查
 
-Choose the `cordis_run` mode as follows:
-
-| Current state | Target | mode |
-| --- | --- | --- |
-| No current | Any Package under the Plugin | `run` |
-| Has current | The same Package | `run` |
-| Has current | A different Package | `update` |
-| Update failed | `nextPackageId` | `update` to retry |
-| Update failed | `currentPackageId` | `run` to roll back |
-
-An unauthorized Client Package returns `awaiting-approval`. A single check mark authorizes only the current Package; double check marks authorize future versions of the same Plugin. A grant remains after a technical runtime failure. An authorized Package returns `starting` and completes asynchronously in the browser.
-
-After a technical failure:
-
-1. Use `cordis_inspect_self(pluginId, packageId)` to read the failed version's source and exact diagnostics.
-2. If the error involves an unknown capability, list and query the corresponding Provider again.
-3. Define a new Package under the same Plugin; do not overwrite the failed Package.
-4. Run again with the new `packageId` and the correct mode.
-
-Do not retry automatically after the user rejects approval. A failed update does not automatically restore the old physical Run; explicitly run current when recovery is required.
-
-## Modify @pluginId
-
-When the user identifies a target with `@pluginId`, do not create another Plugin. The injected context contains only identity, version pointers, and the default base Package, not source code.
-
-Modify it as follows:
-
-1. Read the base Package with `cordis_inspect_self(pluginId, packageId)`.
-2. Preserve the Host or Client half that does not need to change and modify only the target code.
-3. Call `cordis_define` with `plugin.kind: 'existing'` and the original `pluginId`.
-4. Use the returned `packageId`; when current exists, activate the new version with `update` in the usual case.
-
-If the reference is unavailable, explain that the Plugin was removed, belongs to another Session, or was lost on process restart. Do not create a same-named replacement.
-
-## Common failure checks
-
-| Failure | Check first |
+| 故障 | 先查 |
 | --- | --- |
-| `service "x" is not declared` | Whether code uses `ctx.x` without declaring `inject: ['x']` on the Plugin object; switch to `ctx.get('x')` with an absence check or declare a true hard dependency |
-| `cannot get property "timer" without inject` | Query the timer Service and declare `inject: ['timer']` |
-| Client parse failure | Whether the code uses JSX, TypeScript, import, or an unavailable global |
-| Slot registration failure | Whether the live subtree was queried, the Slot exists, and options, key, or selector satisfy the returned protocol |
-| UI loads but the page reports an error | Inspect the `client-render` diagnostic and stack; the error belongs to an exact Run, so define a new Package to repair it |
-| `host.call` failure | The Host handler name, current `pluginRunId`, JSON arguments, and real Service dependencies inside the handler |
-| Update failure | Preserve current/next semantics; repair next and update, or run current to roll back |
+| `service "x" is not declared` | `ctx.x` 缺 `inject: ['x']`？改 `ctx.get('x')` |
+| `cannot get property "timer" without inject` | 声明 `inject: ['timer']` |
+| Client 解析失败 | 用了 JSX/TS/import 或不可用全局量？ |
+| Slot 注册失败 | 查过活子树？Slot 存在？key/选择器合协议？ |
+| UI 加载但页面报错 | 查 `client-render` 诊断与堆栈，定义新 Package 修 |
+| `host.call` 失败 | handler 名、`pluginRunId`、JSON 参数、handler 内 Service 依赖 |
+| update 失败 | 修 next 再 update，或 run current 回滚 |
+
+代码示例、错误示例、查询方法详解见同目录 reference.md，用 read 工具打开（本会话 skill 加载返回的 Base directory 即技能基目录）。

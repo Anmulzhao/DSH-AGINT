@@ -23,8 +23,8 @@ const PLAN_ATOMIC = {
   memoryTotal: 336,
   avgConfXCompliance: 0.544,
   curatorOverlaps: 0,
-  skillsTotal: 11,
-  skillsBytes: 82652,
+  skillsTotal: 11, skillsManagedCount: 11,
+  skillsBytes: 82652, skillsManagedBytes: 82652,
 };
 
 test('方案标定数据复算：四指标与总分 = 53.4 ± 0.5（AC-0d 确定性部分，公式 r3）', () => {
@@ -59,7 +59,7 @@ test('完美系统 = 100 分；各项阈值内不扣分', () => {
   const c = deriveComposites({
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
-    avgConfXCompliance: 0.70, curatorOverlaps: 0, skillsTotal: 5, skillsBytes: 0,
+    avgConfXCompliance: 0.70, curatorOverlaps: 0, skillsTotal: 5, skillsManagedCount: 5, skillsBytes: 0, skillsManagedBytes: 0,
   });
   const s = computeAestheticScore(c);
   assert.equal(s.score, 100);
@@ -69,7 +69,7 @@ test('单维扣满结构：noise 爆表只扣 30，不影响其他维', () => {
   const c = deriveComposites({
     wikiOrphans: 1000, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 1000, rulesTotal: 10, memoryTotal: 10,
-    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsBytes: 0,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsManagedCount: 5, skillsBytes: 0, skillsManagedBytes: 0,
   });
   const s = computeAestheticScore(c);
   assert.equal(s.dims.noise.deduction, 30);
@@ -83,8 +83,8 @@ test('bloat 超预算线性扣分且不封顶（bloat=2 → −30）', () => {
   const c = deriveComposites({
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
-    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5,
-    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsManagedCount: 5,
+    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2, skillsManagedBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2,
   });
   const s = computeAestheticScore(c);
   assert.equal(s.dims.bloat.deduction, 30);
@@ -95,8 +95,8 @@ test('r2：bloat 扣分饱和于 2.5 倍预算（b=3 → 扣 45，b=4 → 仍 45
   const mk = (mult) => deriveComposites({
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
-    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5,
-    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * mult,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsManagedCount: 5,
+    skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * mult, skillsManagedBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * mult,
   });
   // b=3：min(max(0,2),1.5)=1.5 → 扣 45
   assert.equal(computeAestheticScore(mk(3)).dims.bloat.deduction, 45);
@@ -114,7 +114,7 @@ test('r4：生产复算（2026-10-22 真实原子值）—— 单技能 10.83KB 
     wikiOrphans: 5, wikiContradictions: 1, ruleDuplicates: 0, memoryNoEvidence: 1,
     wikiTotal: 10, rulesTotal: 29, memoryTotal: 851,
     avgConfXCompliance: 0.6484, curatorOverlaps: 0,
-    skillsTotal: 20, skillsBytes: 221853,
+    skillsTotal: 20, skillsManagedCount: 20, skillsBytes: 221853, skillsManagedBytes: 221853,
   });
   // 单技能 11092.65 B / 11170 B = 0.9931 < 1 → 不超预算
   assert.equal(c.bloat.value, 0.9931);
@@ -134,7 +134,7 @@ test('r4：规模不变性——单技能体积相同、技能数翻倍，b 不�
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 1.0, curatorOverlaps: 0,
-    skillsTotal: n, skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * n,
+    skillsTotal: n, skillsManagedCount: n, skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * n, skillsManagedBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * n,
   });
   const small = mk(10);
   const big = mk(20);
@@ -143,15 +143,15 @@ test('r4：规模不变性——单技能体积相同、技能数翻倍，b 不�
   assert.equal(small.bloat.budget * 2, big.bloat.budget, '预算总额随技能数线性增长');
 });
 
-test('r4：skillsTotal 缺席 → bloat N/A 且权重归一，不退回总量口径', () => {
+test('r5：skillsManagedCount 缺席 → bloat N/A 且权重归一，不退回总量口径', () => {
   const c = deriveComposites({
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 0.70, curatorOverlaps: 0,
-    skillsBytes: 221853, // 有字节数但无技能数
+    skillsBytes: 221853, skillsManagedBytes: 221853, // 有字节数但无技能数
   });
   assert.equal(c.bloat.na, true);
-  assert.match(c.bloat.reason, /skillsTotal/);
+  assert.match(c.bloat.reason, /skillsManagedCount/);
   const s = computeAestheticScore(c);
   // skillsTotal 同时是 redundancy 的分母 ⇒ 缺它时两维一起 N/A（这是正确后果，不是缺陷）
   assert.deepEqual(s.naDims, ['redundancy', 'bloat']);
@@ -159,12 +159,38 @@ test('r4：skillsTotal 缺席 → bloat N/A 且权重归一，不退回总量口
   assert.equal(s.renormalized, true);
 });
 
+test('r5：臃肿度分子只认 AGINT 负责的技能（managed）——第三方技能不进 AGINT 的账', () => {
+  const c = deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0,
+    skillsTotal: 19, skillsManagedCount: 10,
+    skillsBytes: 265342, skillsManagedBytes: 111490,
+    skillsThirdPartyBytes: 153852,
+  });
+  // managed 均 11149B ≤ 11170B 预算 ⇒ bloat 不扣分（第三方 153852B 不参与）
+  assert.equal(c.bloat.na, false);
+  assert.equal(c.bloat.value, 0.9981);
+  assert.equal(c.bloat.bytes, 111490);
+  assert.equal(c.bloat.skillsTotal, 10);
+  assert.equal(c.bloat.budget, 111700);
+  // 同一批字节若按旧口径（全部技能）算 ⇒ 1.25，这就是口径差，不是数据变好
+  const legacy = deriveComposites({
+    wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
+    wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0,
+    skillsTotal: 19, skillsBytes: 265342,
+    skillsManagedCount: 19, skillsManagedBytes: 265342,
+  });
+  assert.equal(legacy.bloat.value, 1.2503);
+});
+
 test('r4：绝对上界兜底——一万个 1KB 技能绕过 per-skill 判定时仍被扣分', () => {
   const c = deriveComposites({
     wikiOrphans: 0, wikiContradictions: 0, ruleDuplicates: 0, memoryNoEvidence: 0,
     wikiTotal: 10, rulesTotal: 10, memoryTotal: 10,
     avgConfXCompliance: 1.0, curatorOverlaps: 0,
-    skillsTotal: 10000, skillsBytes: 10 * 1024 * 1024, // 均 1KB，per-skill 只有 0.09
+    skillsTotal: 10000, skillsManagedCount: 10000, skillsBytes: 10 * 1024 * 1024, skillsManagedBytes: 10 * 1024 * 1024, // 均 1KB，per-skill 只有 0.09
   });
   assert.equal(c.bloat.drivenBy, 'ceiling', '判定必须由绝对上界驱动');
   assert.ok(c.bloat.value > 10, `b=${c.bloat.value} 应远超 1`);
@@ -176,7 +202,7 @@ test('r2：Q1 效应量门槛——阈下波动不计入恶化/改善', () => {
   const mk = ({ nr }) => deriveComposites({
     wikiOrphans: Math.round(nr * 1000), wikiContradictions: 0, ruleDuplicates: 0,
     memoryNoEvidence: 0, wikiTotal: 1000, rulesTotal: 100, memoryTotal: 100,
-    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsBytes: 0,
+    avgConfXCompliance: 1.0, curatorOverlaps: 0, skillsTotal: 5, skillsManagedCount: 5, skillsBytes: 0, skillsManagedBytes: 0,
   });
   // 噪声比 0.040 → 0.045：Δ=0.005 < ε(noise)=0.03 → 持平（旧公式计恶化一维）
   const v = q1Verdict(mk({ nr: 0.045 }), mk({ nr: 0.040 }));
@@ -248,9 +274,9 @@ test('AC-4：任一维 N/A → 广播仍输出，扣分按权重归一（ΣmaxW=
     // 缺 wiki/rules/memory 全部分母 → noise N/A
     wikiContradictions: 1,
     avgConfXCompliance: 0.35, // conf 扣满 20
-    curatorOverlaps: 0, rulesTotal: 10, wikiTotal: 10, skillsTotal: 10,
+    curatorOverlaps: 0, rulesTotal: 10, wikiTotal: 10, skillsTotal: 10, skillsManagedCount: 10,
     ruleDuplicates: 1, // redundancy = (1+1+0)/30 → 扣满 20
-    skillsBytes: 0,
+    skillsBytes: 0, skillsManagedBytes: 0,
   });
   assert.equal(c.noise.na, true);
   const s = computeAestheticScore(c);
@@ -302,9 +328,9 @@ test('Q1：composite 全程走一遍（noise↑ + redundancy↑ → 丑；全改
       wikiOrphans: Math.round(nr * 100), wikiContradictions: 0, ruleDuplicates: 0,
       memoryNoEvidence: Math.round(nr * 100),
       wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
-      avgConfXCompliance: conf, curatorOverlaps: 0, skillsTotal: 100,
+      avgConfXCompliance: conf, curatorOverlaps: 0, skillsTotal: 100, skillsManagedCount: 100,
       ruleDuplicates2: 0,
-      skillsBytes: Math.round(bl * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 100),
+      skillsBytes: Math.round(bl * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 100), skillsManagedBytes: Math.round(bl * THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 100),
       // redundancy 用 ruleDuplicates + wikiContradictions 构造
     });
     // 覆盖 redundancy：直接改值（保持纯函数可测）
@@ -342,7 +368,7 @@ test('Q3：有证据时四条映射齐全，均附证据（§4 P2-10 修复：�
     noise: { memoryNoEvidenceCount: 71, memoryNoEvidenceIds: ['a', 'b'] },
     confidence: { lowConfidenceNoEvidence: ['lesson-a', 'lesson-b'] },
     redundancy: { ruleLintIssues: [{ ruleId: 'R1', kind: 'duplicate-pattern', with: 'R2' }] },
-    bloat: { skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2, skillsTotal: 5 },
+    bloat: { skillsBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2, skillsManagedBytes: THRESHOLDS.BLOAT_BUDGET_PER_SKILL_BYTES * 5 * 2, skillsTotal: 5, skillsManagedCount: 5 },
   };
   for (const key of DIM_KEYS) {
     const a = q3Advice(key, ctxByKey[key]);
@@ -375,8 +401,24 @@ test('Q3 证据绑定：redundancy 全零分子 → 输出「本日无可执行�
   assert.equal(noise.advice, NO_ADVICE);
   const conf = q3Advice('confidence', {});
   assert.equal(conf.advice, NO_ADVICE);
-  const bloat = q3Advice('bloat', { skillsBytes: 0 });
+  const bloat = q3Advice('bloat', { skillsManagedBytes: 0, skillsManagedCount: 5 });
   assert.equal(bloat.advice, NO_ADVICE);
+});
+
+test('r5：bloat 建议点名真实的最大技能，不得引用恒为 0 的 curator overlaps（2026-11-11 编证据 bug 回归）', () => {
+  const a = q3Advice('bloat', {
+    skillsManagedBytes: 240000,
+    skillsManagedCount: 10,
+    skillsTopManaged: [
+      { name: 'cordis-plugin-development', bytes: 21329 },
+      { name: 'plugin-preflight', bytes: 16922 },
+    ],
+  });
+  assert.ok(a.advice.includes('cordis-plugin-development'), a.advice);
+  assert.ok(a.advice.includes('20.8KB'), a.advice);
+  assert.ok(a.evidence.includes('21329'), a.evidence);
+  assert.ok(!a.advice.includes('curator'), '不得再引用生产恒 0 的 curator 重叠作为证据');
+  assert.ok(!a.evidence.includes('curator'), '证据栏同样不得引用 curator');
 });
 
 test('Q3 证据绑定：noise 无无证据记忆但 wiki 有孤儿 → 建议归档孤儿', () => {
@@ -400,7 +442,7 @@ test('r3：矛盾/重复不进 noise 分子，只在 redundancy 记一次账', (
   const base = {
     wikiOrphans: 0, memoryNoEvidence: 0,
     wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
-    avgConfXCompliance: 1, curatorOverlaps: 0, skillsTotal: 100, skillsBytes: 0,
+    avgConfXCompliance: 1, curatorOverlaps: 0, skillsTotal: 100, skillsManagedCount: 100, skillsBytes: 0, skillsManagedBytes: 0,
   };
   const clean = deriveComposites({ ...base, wikiContradictions: 0, ruleDuplicates: 0 });
   const dirty = deriveComposites({ ...base, wikiContradictions: 20, ruleDuplicates: 20 });
@@ -441,7 +483,7 @@ test('r3：noise 分子只认死条目——orphans 与 noEvidence 仍进分子'
   const c = deriveComposites({
     wikiOrphans: 10, memoryNoEvidence: 20,
     wikiTotal: 100, rulesTotal: 100, memoryTotal: 100,
-    avgConfXCompliance: 1, skillsTotal: 100, skillsBytes: 0,
+    avgConfXCompliance: 1, skillsTotal: 100, skillsManagedCount: 100, skillsBytes: 0, skillsManagedBytes: 0,
   });
   assert.equal(c.noise.numerator, 30, '10 孤儿 + 20 无证据 = 30');
   assert.equal(c.noise.denominator, 300);

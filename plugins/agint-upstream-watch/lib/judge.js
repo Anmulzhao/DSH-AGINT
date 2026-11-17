@@ -260,16 +260,20 @@ export async function judgeFacts(ctx, facts, opts = {}) {
       timeoutGuard,
     ]);
 
+    // ⛔ 宿主 dsh 0.2.2-rc.1（app.asar 2026-11-13）起，SubagentActivationSpec 不再接受
+    //    嵌套的 request：prompt / parent / agentPreset / agentOptions / outputSchema
+    //    必须直接放在 spec 顶层。旧宿主读 spec.request.parent.id，新宿主读 spec.parent.id。
+    //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+    //    "Cannot read properties of undefined (reading 'id')" ⇒ 判读恒 failed。
+    //    宿主自带 upgrade-guide 原文：「嵌套的 request 字段已移除」。
     const startPromise = Promise.resolve().then(() => subagents.startActivation({
       provider: 'spawn',
       label: `agint-upstream-watch ${facts.tag}`,
-      request: {
-        parent: parentHandle.agent,
-        prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${buildPrompt(facts)}` }],
-        agentPreset,
-        agentOptions,
-        outputSchema: JUDGE_OUTPUT_SCHEMA,
-      },
+      parent: parentHandle.agent,
+      prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${buildPrompt(facts)}` }],
+      agentPreset,
+      agentOptions,
+      outputSchema: JUDGE_OUTPUT_SCHEMA,
       signal: abort.signal,
       delivery: 'caller',
     }));
@@ -286,7 +290,17 @@ export async function judgeFacts(ctx, facts, opts = {}) {
       };
     }
 
-    const parsed = extractJson(result.output);
+    // ⭐ 结论在 result.structured，不在 result.output（K114）。
+    //    带 outputSchema 时宿主把结构化结果挂 structured；output 只是 assistant 最终文本。
+    //    读 output 会退回「抠 JSON 文本」，命中不了 ⇒ 恒判 not valid JSON ⇒ 结论永远落不了库。
+    const structured = result?.structured;
+    if (structured === undefined || structured === null) {
+      return {
+        ok: false, mode: 'failed',
+        reason: `structured output missing (stopReason=${result?.stopReason ?? 'unknown'})`,
+      };
+    }
+    const parsed = extractJson(structured);
     if (!parsed) {
       return { ok: false, mode: 'failed', reason: 'model output is not valid JSON' };
     }

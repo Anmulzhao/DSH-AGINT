@@ -115,19 +115,48 @@ describe('豁免机制', () => {
   test('豁免过的主题仍保留原始判定，便于复查', () => {
     // 判定规则（bin/check-wiring.mjs）：
     //   pubs.length === 0 && subs.length > 0 ⇒ n > 0 ? 'PUBLISHER_DYNAMIC' : 'ORPHAN_TOPIC'
-    // 本断言是「上游通电就提醒复查豁免」的 watchdog：rawVerdict 一翻，这里就该红。
     //
-    // 历史轨迹（两次翻转均为按设计触发，不是回归）：
-    //   2026-09-29 翻到 PUBLISHER_DYNAMIC —— v0.2.7 实跑 runSmoke 返回 plugin-not-found，
-    //     sandbox 插件仍发了 sandbox.failed（plugins/agint-quality-sandbox/lib/index.js:296-300）。
-    //     复查结论：豁免维持。
-    //   2026-10-09 翻回 ORPHAN_TOPIC —— 该条生产事件已被 ring buffer 轮转掉
-    //     （agint_event_bus.json 中 sandbox.failed 计数归零）。复查结论：豁免维持，
-    //     sandbox 插件只在 smoke 实跑时动态发布，静态扫描下本就无发布调用点。
-    assert.equal(byTopic.get('sandbox.failed')?.rawVerdict, 'ORPHAN_TOPIC');
-    // sandbox.passed 至今 n=0（runSmoke 从未返回过 ok），维持 ORPHAN_TOPIC。
-    // 它一旦变成 PUBLISHER_DYNAMIC，这里就该红 —— 那同样是要复查豁免的信号。
-    assert.equal(byTopic.get('sandbox.passed')?.rawVerdict, 'ORPHAN_TOPIC');
+    // ⚠️ 2026-11-11 修判据：原来断言 rawVerdict 的**具体取值**，
+    //    而该取值由生产计数决定 ⇒ 断言的是一条会自己变动的线。
+    //    实测翻转史（每次都不是回归）：09-29 翻到 PUBLISHER_DYNAMIC（runSmoke 返回
+    //    plugin-not-found，sandbox 插件仍发了 sandbox.failed）→ 10-09 翻回 ORPHAN_TOPIC
+    //    （该条生产事件被轮转掉，计数归零）→ 11-11 又翻回 PUBLISHER_DYNAMIC
+    //    （生产文件里那条 2026-09-29T05:26:53Z 的事件在，source=agint-quality-sandbox）。
+    //    三次复查结论都是「豁免维持」—— 变的只是数据，不是豁免的依据。
+    //
+    // 现在断言三件**不会自己变**的事：
+    //   ① 静态扫描看不到发布方 —— sandbox 的发布是 smoke 实跑时动态发生的（豁免的前提）
+    //   ② rawVerdict 落在「动态发布」的两种合法判定里（不是别的组合）
+    //   ③ 豁免理由还在（人写的那句依据没被删）
+    // 阳性对照：domain-changed 同时有发布方与订阅方 ⇒ rawVerdict 必是 OK / NOT_YET_FIRED，
+    //   证明本用例读的是真判定，不是恒真的空断言。
+    // 阴性对照：若哪天 sandbox 改成**静态**发布（源码里出现 topic: 'sandbox.failed'），
+    //   ① 会红 —— 那正是「上游通电了、该撤豁免」的信号，watchdog 的牙齿还在。
+    const forTopic = (topic) => {
+      const t = byTopic.get(topic);
+      assert.ok(t, `未检出 ${topic}`);
+      return t;
+    };
+    for (const topic of ['sandbox.failed', 'sandbox.passed']) {
+      const t = forTopic(topic);
+      assert.equal(
+        t.publishers.length, 0,
+        `${topic} 出现静态发布方 ⇒ 该撤豁免（上游真通电了），而不是改断言`,
+      );
+      assert.ok(
+        ['ORPHAN_TOPIC', 'PUBLISHER_DYNAMIC'].includes(t.rawVerdict),
+        `${topic} 的 rawVerdict=${t.rawVerdict} —— 既不是动态发布的两种判定，说明判据或扫描变了`,
+      );
+      assert.ok(t.exemption?.reason, `${topic} 的豁免缺少 reason`);
+    }
+    // 阳性对照：有发布方 + 有订阅方 ⇒ 判定必须是「动态发布」之外的那两种
+    const dc = forTopic('input.signal.host.domain-changed');
+    assert.equal(dc.publishers.length, 1, '阳性对照失真：domain-changed 应有 1 个发布方');
+    assert.equal(dc.subscribers.length, 1, '阳性对照失真：domain-changed 应有 1 个订阅方');
+    assert.ok(
+      ['OK', 'NOT_YET_FIRED'].includes(dc.rawVerdict),
+      `阳性对照失真：domain-changed 的 rawVerdict=${dc.rawVerdict}`,
+    );
   });
 
   test('查 F：没有任何「取了但没注册」的命名空间（恒 undefined 不报错，最阴的一类）', () => {

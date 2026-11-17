@@ -57,6 +57,16 @@
 
 ---
 
+## v0.8.0 — 2026-11-11 — 发布技能时写入 `.agint-managed` 标记
+
+**为什么**：metrics 采集端要区分「AGINT 维护的技能」与「用户自装的第三方技能」，
+需要一个权威标记。目录即注册的用户级技能根里两类混放，不能靠目录路径区分。
+
+**变更**：`lib/release-manager.js` 的 `publishToSkillsRoot()` 在发布时写入
+`.agint-managed`（内容含 `managed-by: agint-skill-autocreate` 与发布时间）。
+同名常量另见 `agint-metrics/lib/metrics-ext.js` 的 `MANAGED_MARKER`——两处须一致。
+
+
 ## v0.7.0 — 2026-10-25 — LLM 判定无降级 + 接 startActivation
 
 **背景**：宿主只有 `subagents.startActivation`；旧代码检查 `start` ⇒ LLM 判定

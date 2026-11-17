@@ -174,6 +174,47 @@ const seedRules = [
     frozenness: 'L0-frozen',  // 必须 human multi-sign 才能修改这条规则
     reason: '禁止删除 evolution-log 历史记录 — 这是系统自进化的不可篡改审计日志。如果需要 rotate，请 mv 到 backup 目录（agint-rules 不拦截）。',
   },
+  // ── 护住规则引擎自身（2026-10-15，提案「护住规则引擎自身」A1/A2/A3）────
+  // 起因（实测取证）：rule_check(rule_set_enabled, {id,enabled:false}) → NO_MATCH；
+  //   rule_list 实况里无一条规则覆盖 rule_add / rule_remove / rule_set_enabled
+  //   ⇒ 被门禁约束的 agent 可以把 deny 规则关掉 —— 系统既是改进者，又改得动
+  //   自己的评估过程（看守自己的锁由被看守者拆）。
+  // 参数文本口径：这些工具的 args 没有 command/cmd 键 ⇒ argText 走
+  //   JSON.stringify(args)，产出**无空格** JSON（如 {"id":"x","enabled":false}）
+  //   ⇒ pattern 必须按无空格写（见 index.js:argText）。
+  // A1：禁止停用任何规则。enabled:true 不命中 —— 恢复生效不等于削弱约束。
+  {
+    id: 'rule-disable-forbidden',
+    tool: 'rule_set_enabled',
+    pattern: '"enabled":false',
+    flags: '',
+    action: 'deny',
+    level: 'L1',
+    reason: '禁止停用既有规则 — 规则引擎不得被它所约束的对象削弱（停用是关掉门禁）。恢复生效（enabled:true）不受影响。',
+  },
+  // A2：删除规则走人工确认。正则无法从 {id} 判别被删规则是 deny 还是 advisory
+  //   （实测 rule_remove 参数只有 id），故按提案取舍用 ask 而非 deny，
+  //   保留「误建的坏规则由人确认后删除」的口子。
+  {
+    id: 'rule-remove-needs-human',
+    tool: 'rule_remove',
+    pattern: '.',
+    flags: '',
+    action: 'ask',
+    level: 'L1',
+    reason: '删除规则需人工确认 — 规则集就是门禁本体，误删会让约束失效；参数里没有可判别规则强度的字段，只能由人裁决。',
+  },
+  // A3：rule_add 的 reason 会被 buildAdvisoryMessage 拼进注入消息
+  //   ⇒ 任意文本可经 reason 进入模型上下文（提示注入面）⇒ 加 ask 级人工确认。
+  {
+    id: 'rule-add-reason-needs-human',
+    tool: 'rule_add',
+    pattern: '"reason":"',
+    flags: '',
+    action: 'ask',
+    level: 'L2',
+    reason: '新增规则的 reason 会拼进注入消息，存在提示注入面 — 请人工确认 reason 内容后再放行。',
+  },
 ];
 
 function compilePattern(rule) {
@@ -773,10 +814,29 @@ function apply(ctx) {
   }
 
   const agintRules = {
+    // ── deny 级规则不可变（2026-10-15，提案「护住规则引擎自身」）────────
+    // 起因（实测取证）：rule_check(rule_set_enabled, {id, enabled:false}) → NO_MATCH；
+    //   rule_list 实况里无一条规则覆盖 rule_add / rule_remove / rule_set_enabled
+    //   ⇒ 被门禁约束的 agent 可以把 deny 规则关掉 —— 与 RSI 综述同一类失效：
+    //   系统既是改进者，又改得动自己的评估过程（看守自己的锁由被看守者拆）。
+    // 落点：规则层（用 rule_add 装一条规则）只补得上工具路径，补不上
+    //   「直接调本服务」与「直接改 agint_rules 存储」这两条路；故在**引擎内部**
+    //   给 deny 级规则加不可变约束（提案 B 方案 2）：改写 / 删除 / 停用三条
+    //   削弱路径一律拒绝。
+    // 仍然允许的两件事：① 新建规则（新建 deny 是加固不是削弱）；
+    //   ② enable(true) —— 恢复生效不等于削弱约束。
+    //   advisory / ask 级规则不受此约束：日常运维不能被锁死。
+    // 人工解封（有意为之）：走 agint_rules 存储的文件层 / 带签名写入路径
+    //   （提案 B 方案 1、3）。代价是误建的 deny 规则无法用工具删，须由人改文件。
     async add(input) {
       const t = await table();
       const id = input.id ?? `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const existing = t.get(id);
+      // 改写既有 deny 规则 = 弱化门禁 ⇒ 拒绝（reason 也在内：它会被拼进
+      // 注入消息，是提示注入面，见提案 A3）。
+      if (existing && existing.action === 'deny') {
+        throw new Error(`agint-rules: 拒绝改写 deny 级规则 [${id}] — deny 规则在引擎内不可变，需人工走存储层/签名写入路径`);
+      }
       const rule = ruleSchema.parse({
         id,
         tool: input.tool ?? '*',
@@ -798,6 +858,9 @@ function apply(ctx) {
     async remove(id) {
       const t = await table();
       const rec = t.get(id);
+      if (rec && rec.action === 'deny') {
+        throw new Error(`agint-rules: 拒绝删除 deny 级规则 [${id}] — deny 规则在引擎内不可变，需人工走存储层/签名写入路径`);
+      }
       const ok = await t.delete(id);
       if (ok) {
         // ⚠️ 计数**故意不删**（2026-11-02）：rule_audit 是历史账本，删规则不等于
@@ -811,6 +874,10 @@ function apply(ctx) {
       const t = await table();
       const rec = t.get(id);
       if (!rec) return null;
+      // 停用 deny 规则 = 直接关掉门禁 ⇒ 拒绝（enable(true) 允许）
+      if (rec.action === 'deny' && !enabled) {
+        throw new Error(`agint-rules: 拒绝停用 deny 级规则 [${id}] — deny 规则在引擎内不可变，需人工走存储层/签名写入路径`);
+      }
       const updated = { ...rec, enabled: Boolean(enabled), updatedAt: nowIso() };
       await t.put(id, updated);
       await publishRulesChanged(updated.enabled ? 'enabled' : 'disabled', updated);
@@ -965,15 +1032,42 @@ function apply(ctx) {
       const t = await table();
       let any = false;
       for (const _ of t.entries()) { any = true; break; }
-      if (any) return { seeded: false, count: 0 };
       const now = nowIso();
+      // ── 自保护规则无条件补种（2026-10-15，提案「护住规则引擎自身」A1/A2/A3）──
+      // 起因（实测取证）：本函数原本在「规则表非空」时第一行就 return ⇒ 老装机
+      //   （实测生产规则表 11 条）永远拿不到这三条 ⇒ 写在代码里的门禁形同虚设。
+      //   这正是 seedEpistemic 当初被拆出来的同一个坑，不能重蹈。
+      // 口径：按 id 幂等补种；已被「同 tool + 同 action」的等价规则覆盖时跳过
+      //   （避免重复播种被 lint 判成 duplicate-pattern）；已存在但被停用（enabled=false）
+      //   的自保护规则会被重新启用 —— 停用自保护规则正是本提案要堵的失效形态。
+      const SELF_PROTECTION_IDS = ['rule-disable-forbidden', 'rule-remove-needs-human', 'rule-add-reason-needs-human'];
+      let guardAdded = 0;
+      let guardHealed = 0;
+      for (const r of seedRules) {
+        if (!SELF_PROTECTION_IDS.includes(r.id)) continue;
+        const existing = t.get(r.id);
+        if (existing) {
+          if (existing.enabled === false) {
+            await t.put(r.id, ruleSchema.parse({ ...existing, enabled: true, updatedAt: now }));
+            guardHealed += 1;
+          }
+          continue;
+        }
+        const covered = [...t.entries()].some(([, x]) => (
+          x.tool === r.tool && x.action === r.action && (x.pattern === r.pattern || x.pattern === '.')
+        ));
+        if (covered) continue;
+        await t.put(r.id, ruleSchema.parse({ ...r, createdAt: now, updatedAt: now }));
+        guardAdded += 1;
+      }
+      if (any) return { seeded: false, count: 0, guardAdded, guardHealed };
       for (const r of seedRules) {
         await t.put(r.id, ruleSchema.parse({ ...r, createdAt: now, updatedAt: now }));
       }
       // 断言型种子单独播种：它们与动作型规则共存，且必须幂等
       // （老装机上表非空，seedIfEmpty 会提前返回 —— 所以另走 seedEpistemic）。
       const ep = await agintRules.seedEpistemic();
-      return { seeded: true, count: seedRules.length, epistemic: ep.added };
+      return { seeded: true, count: seedRules.length, epistemic: ep.added, guardAdded, guardHealed };
     },
 
     // Internal — for boot-level diagnostics only.

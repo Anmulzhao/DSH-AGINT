@@ -283,7 +283,7 @@ function apply(ctx, config) {
           `基线分 ${before.score ?? '?'} → ${next.score ?? '?'}`,
           `样本：${next.rows} 条 daily / ${next.windowDays} 天窗口`,
           `每维 n：${DIM_KEYS.map((k) => `${k}=${next.sampleCounts[k]}`).join(' ')}`,
-          '⚠ 重定基后 Q1 的 Δ 基准改变，切换前后的 Δ 不可直接比较（formulaVersion 同为 r3）',
+          `⚠ 重定基后 Q1 的 Δ 基准改变，切换前后的 Δ 不可直接比较（公式版本未变：${FORMULA_VERSION}）`,
         ].join(' | '),
       }],
       tags: ['aesthetic-oracle', 'baseline'],

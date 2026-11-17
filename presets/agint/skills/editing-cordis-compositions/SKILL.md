@@ -18,164 +18,100 @@ related_skills:
 
 ---
 
-# Editing Cordis compositions
+# 编辑 Cordis 组合
 
-Every capability in this harness is a plugin row in a `cordis.yml`. There is no separate configuration language: changing what an agent can do means changing which rows are composed for it.
+本 harness 的每项能力都是 `cordis.yml` 里的一行插件行。没有独立的配置语言：改 agent 能做什么，就是改它被组合了哪些行。
 
-## Off-limits
+## 禁改区
 
-**Never edit, delete, or overwrite a preset that ships with the deployment** — the `agent-presets` directory beside the deployment's own config, which supplies `standard`, `code`, `minimal`, and `cordis`. Never escalate the sandbox to reach it, even when a change there looks quicker. An upgrade overwrites that install, and corrupting `cordis` disables preset authoring itself. Reading a shipped composition is the intended way to start; writing to one is not, and neither is editing the host composition to work around a preset limitation.
+**绝不编辑、删除或覆盖部署自带的 preset**——部署自身配置旁边的 `agent-presets` 目录，它提供 `standard`、`code`、`minimal`、`cordis`。不要升级沙箱去够它：升级会覆盖该安装，损坏 `cordis` 会禁掉 preset 编制本身。读自带组合是正确起点，写它不是，改 host 组合绕开 preset 限制也不是。
 
-To change what a shipped preset does, copy it and edit the copy. Locally authored presets under the user root are yours to create, edit, and delete.
+要改自带 preset 的行为，就复制一份改副本。用户根下自建的 preset 归你创建、编辑、删除。
 
-## Decide the plane first
+## 先判平面
 
-Two planes, and the choice is not about how "agent-related" something feels — it is about whether the thing must be shared.
+两个平面。判据不是「看起来有多 agent」，而是**这东西是不是必须被共享**。
 
-**Host composition.** The registries themselves (`tools`, `systemPrompt`, `agents`, `agent-loop`, `sessions`), anything crossing sessions (persistence, session query, storage, settings, credentials, telemetry), the sandbox and approval stack, the model route, and the subagent registry with its spawn/fork backends. One instance for the process.
+**Host 组合**：注册表本身（`tools`、`systemPrompt`、`agents`、`agent-loop`、`sessions`）、跨会话的东西（持久化、会话查询、存储、设置、凭证、遥测）、沙箱与审批栈、模型路由、subagent 注册表与 spawn/fork 后端。进程内一份。
 
-**Agent preset.** What one session contributes to those registries: its tool plugins, its persona and prompt sections, its compaction policy. One instance per session, mounted under that session's scope and unwound with it.
+**Agent preset**：一个会话往注册表贡献的——工具插件、人格与 prompt 段、压缩策略。每会话一份，随会话作用域挂载卸载。
 
-**A service with a consumer outside the agent plane cannot move into a preset.** `subagents` is the worked example: the registry answers cross-session queries for the host api-proxy, so a per-session copy both starves that host row — it waits forever for a service nothing provides — and collides on the second session, since a provider name registers once. The preset contributes the delegation *tools*; the registry and its backends stay host-side.
+**有 agent 平面之外消费者的 service 不能搬进 preset。** 推导见同目录 reference.md。
 
-A preset is a directory holding one `agent.cordis.yml`, optionally beside a `preset.yml` carrying display metadata — `name` and `description` (and, for shipped presets, a roster `order`). Write the metadata too: a preset without it shows up in every picker as its bare directory name.
+preset 是一个目录，含一个 `agent.cordis.yml`，旁边可选 `preset.yml` 承载展示元数据 `name` 与 `description`（自带 preset 还带名册 `order`）。元数据也要写：没有它，选择器里只显示裸目录名。
 
-Locally authored presets live one directory per preset under `${DSH_HOME:-$HOME/.dsh}/.agent-presets/`, and the shipped set sits beside the deployment's own config. Use those when the user asks where to look. A deployment can configure other roots, so the path you read or edit comes from `list()` or `resolve()` — which is also where `copy()` reports what it just created.
+自建 preset 位于 `${DSH_HOME:-$HOME/.dsh}/.agent-presets/` 下每 preset 一个目录，自带集合在部署自身配置旁边。部署可配其它根，读写路径来自 `list()` 或 `resolve()`。
 
-## The roster service
+## 名册服务
 
-`ctx.agentPresets` owns discovery, authoring, and mounting. You reach it by mounting a temporary plugin that injects it and registers a tool for yourself — `cordis_mount` returns only the mount acknowledgement, so a registered tool is how a service answer gets back to you, and it becomes callable on your next step.
+`ctx.agentPresets` 负责发现、编制与挂载。拿到它：挂一个临时插件注入它并给自己注册一个工具——`cordis_mount` 只返回挂载回执，注册的工具才能把回答送回给你，并在你下一步变为可调。
 
-Read `cordis_inspect what:"api" name:"agentPresets"` for the current signatures before writing the code. What this skill relies on:
+写码前先读 `cordis_inspect what:"api" name:"agentPresets"` 取当前签名。本技能依赖：
 
-- `list()` — every preset with its `id`, `trust` (`system` for the shipped set, `user` for authored ones), and the absolute `path` of its composition file. This is how you locate any composition without knowing the install layout; the directory is that path's parent.
-- `read(id)` — one preset's composition text, without a file tool or a path.
-- `copy(from, id, name?)` — the only authoring write (see below).
-- `standingKeyFor(id)` — mount-validate one preset (see below).
+- `list()`——每个 preset 及其 `id`、`trust`（自带 `system`，自建 `user`）、组合文件绝对 `path`；目录是该 path 父目录。
+- `read(id)`——读一个 preset 的组合文本，不用文件工具也不用 path。
+- `copy(from, id, name?)`——唯一的编制写操作。
+- `standingKeyFor(id)`——挂载校验一个 preset。
 
-```js
-return {
-  name: 'preset-tools',
-  inject: ['agentPresets', 'tools'],
-  apply(ctx) {
-    harness.registerTool(ctx, harness.defineTool({
-      name: 'preset_check',
-      description: 'Mount-validate one preset by id.',
-      parameters: { id: { type: 'string', required: true } },
-      output: { schema: { type: 'string' }, render(_a, v) { return [{ type: 'text', text: v }] } },
-      async execute(args) {
-        try {
-          await ctx.agentPresets.standingKeyFor(args.id)
-          return 'mounted OK'
-        } catch (error) {
-          return error.message
-        }
-      },
-    }))
-  },
-}
-```
+用完用 `cordis_unmount` 卸掉；它是探针不是要留下的能力。探针模板见同目录 reference.md。
 
-Unmount the plugin with `cordis_unmount` when you are done; it is a probe, not a capability to leave behind.
+## 编制一个 preset
 
-## Authoring a preset
+1. **从副本开始。** `copy(from, id, name)` 复制整个 preset 目录到用户根：组合、元数据、skill 目录、素材都复制。它按 `[a-z0-9][a-z0-9-]*` 校验 id（id 变成目录名，不能以连字符开头），拒绝任何根已提供的 id，失败会回滚，并重写副本 `preset.yml`：保留源描述、丢掉源 name 与名册 `order`。优先用它而不是 shell 拷贝：不用升级沙箱，落在本部署可写的根里，副本与源一样可加载。`resolve(id)` 给出它创建的文件路径，后续编辑目标是那个路径，不是猜的。`standard` 是完整编码 agent，通常作源。
+2. **预期副本之后的每次编辑都会撞上文件沙箱。** 用户 preset 根在工作区之外，默认 `workspace-write` 策略下第一次写那里会被拒。只写操作：按绝对路径读任何组合不需要升级。把那条命令原样带 `sandbox_permissions` 升级重试一次并附简短理由，用户会看到并批准。批量写（每个文件一次 heredoc），别为许多小命令反复升级。`copy()` 在 host 侧跑不需要这些，编辑需要。
+3. **写副本的 `description`** 到 `preset.yml`，以及没给 `copy()` 传 name 时的 `name`。
+4. **逐行编辑 `agent.cordis.yml`**，守住平面规则与 realm 规则。
+5. **挂载校验结果**，再交给用户开真实会话——两者都在「验证一个改动」一节。
 
-1. **Start from a copy.** `copy(from, id, name)` copies a whole preset directory into the user root — composition, metadata, skill directories, assets. It validates the id against `[a-z0-9][a-z0-9-]*` (it becomes the directory name, so no leading hyphen), refuses an id any root already supplies, rolls a failed copy back, and rewrites the copy's `preset.yml` to keep the source's description while dropping its name and roster `order`. Prefer it over a shell copy: it needs no sandbox escalation, it lands the copy in whichever root this deployment made writable, and the copy is exactly as loadable as its source. `resolve(id)` then names the file it created — that path, not a guessed one, is what the following edits target. `standard` is the full coding agent and the usual source.
-2. **Expect the file sandbox on every edit after the copy.** The user preset root lies outside the session workspace, so under the default `workspace-write` policy the first write there is denied. Only writes are: reading any composition by absolute path needs no escalation. Retry that exact command once with `sandbox_permissions` escalation and a short justification — the user sees and approves it. Batch your writes (one heredoc per file) rather than escalating many small commands. `copy()` itself runs host-side and needs none of this; the edits do.
-3. **Write the copy's `description`** in `preset.yml`, and its `name` if you passed none to `copy()`.
-4. **Edit `agent.cordis.yml`** row by row, keeping the plane rule and the realm rule.
-5. **Mount-validate the result**, then hand off to the user for a real session — both under *Verifying a change*.
+从零写的组合通常会漏掉一个 group realm 或一个消费者行；副本一上来就可加载。
 
-A composition written from scratch usually forgets a group realm or a consumer row; a copy starts loadable.
+## 最容易踩的规则
 
-## The rule that catches people
+**发布 service 的行不能散落在 preset 里。** 没有 isolate realm 就进了进程全局 realm，第二个会话挂载该 preset 就与第一个冲突。挂载会拒绝，不让冲突日后浮现。
 
-**A row that publishes a service may not sit loose in a preset.** Registering a service without an isolate realm puts it in the process-global realm, so the second session mounting that preset collides with the first. The mount rejects it rather than letting the collision surface later.
+某行是否发布 service 从名字看不出来，装的部署里也没有包 README。从活运行时读：`cordis_inspect what:"services"` 列出每个 service 及其所属 fiber；归属 fiber 不是你正在加的那行，说明它消费而非提供。不在当前组合里的行，去做挂载校验并读拒绝信息，它会点名那个 service。
 
-Whether a row publishes a service is not visible from its name, and package READMEs are absent from an installed deployment. Read it off the live runtime instead: `cordis_inspect what:"services"` lists every service with the fiber that owns it, so a service attributed to a fiber other than the row you are adding is one that row consumes rather than provides. For a row not in your current composition, mount-validate and read the rejection — it names the offending service.
+preset 真拥有某个 service 时，把**提供方和所有能到达它的消费者**一起包进一个带 `isolate` realm 的 group。`true` 是每挂载会话私有的 realm；字符串标签把子树并进共享 realm，该符号下第二次 `provide()` 仍抛错，所以标签不池化实例，也不是 preset 要的。
 
-When a preset genuinely owns a service, wrap the provider **and every consumer that reaches it** in one group carrying an `isolate` realm. The shipped `standard` composition does this for `workflows`, which nothing outside an agent reads — its `delegation` group, with the delegation tools omitted here:
+留在 group 外的消费者去解析 host 注册表，而 preset 没往里填东西，于是什么都不贡献，挂载校验把它报成一行从未激活。
 
-```yaml
-- id: delegation
-  name: cordis:group
-  group: true
-  isolate:
-    workflows: true
-  config:
-    - id: workflow-worker-thread
-      name: '@deepseek-ai/dsh-workflow-worker-thread'
-      config:
-        provider: spawn
-    - id: tool-workflow
-      name: '@deepseek-ai/dsh-tool-workflow'
-```
+realm 只给 preset 拥有的 service，不是给每个 group。只被 preset 消费的 host 能力必须留在 realm 外，否则该行解析不到：`tool-bash`、`tool-jobs`、`tool-goal` 什么都不发布，在 `standard` 里散着。把消费者行单独包进自己的 realm，与把它留在提供方 realm 外是同一个错误。YAML 见同目录 reference.md。
 
-`true` means a realm private to each mounting session. A string label instead joins subtrees into one shared realm; `provide()` still throws on the second registration under that symbol, so a label does not pool instances and is not what a preset needs.
+## 验证一个改动
 
-A consumer left outside the group resolves the host's registry, which the preset did not populate, and then contributes nothing. Mount-validation catches that as a row that never activated.
+**`standingKeyFor(id)` 就是检查。** 它真实组合该 preset 的插件子树（与会话启动同一挂载，只少 agent），拒绝组合失败的四种方式：
 
-Realms are for services a preset owns, not for every group. A host capability the preset only consumes must stay outside a realm, or the row cannot resolve it: `tool-bash`, `tool-jobs`, and `tool-goal` publish nothing and sit loose in `standard`, which explains in comments which host instance each one resolves and why a realm would break it. Wrapping a consumer row in a realm of its own is the same error as leaving one outside its provider's realm.
+- 包解析不了的行（`Cannot find package …`）；
+- config 非法的行（`invalid config: $.<field> missing required value`）；
+- 从未激活的行（`N row(s) did not activate: <id>: waiting for <service>`）；
+- 发布进 root realm 的 service：`row(s) published process-global service(s) [<name>]; a preset service must sit behind an isolate realm or move to the host composition`；host 已提供的名字在审计前就冲突：`service "<name>" has been registered at <Owner>`。两条都点名那个 service。
 
-## Verifying a change
+组合能挂载时它正常返回。把它当完工编辑的最后一道检查，别每写一行就跑一次：成功挂载会装一个常驻 generation 活到进程退出，失败则销毁子树不留痕迹。
 
-**`standingKeyFor(id)` is the check.** It composes the preset's plugin subtree for real — the same mount a session start performs, minus the agent — and rejects the four ways a composition fails:
+**不要把名册的 `broken` 字段当验证。** `list()` 的 `broken` 来自形状检查（文件在加载器的 YAML 方言里能解析且有具名行），上面每种失败都能过。它抓损坏文件，不抓不可用的组合。
 
-- a row whose package does not resolve (`Cannot find package …`);
-- a row whose config is invalid (`invalid config: $.<field> missing required value`);
-- a row that never activated (`N row(s) did not activate: <id>: waiting for <service>`);
-- a service published into the root realm, which arrives as one of two messages. A name the host does not supply lands in the root realm and the mount audit rejects it: `row(s) published process-global service(s) [<name>]; a preset service must sit behind an isolate realm or move to the host composition` — this is the shape a preset's own forgotten realm takes. A name the host already supplies collides before the audit: `service "<name>" has been registered at <Owner>`. Both name the offending service.
+`cordis_inspect` 报的是**本会话**的组合，只确认该行在当前运行时里做什么，不说明新 preset 会做什么。
 
-It returns normally when the composition mounts. Run it as the final check on a finished edit rather than after every line: a successful mount installs a standing generation that lives until the process exits, while a failed one disposes its subtree and leaves nothing behind.
+干净通过挂载校验后，请用户在新 preset 上开一个会话并确认工具列表；preset 决定工具 schema 与 prompt 段，只有真实会话能显示该组合产出什么。
 
-**Do not treat the roster's `broken` field as validation.** `list()` reports `broken` from a shape check — the file parses in the loader's YAML dialect and holds named rows — which every failure above passes. It catches a damaged file, not an unusable composition.
+`cordis_mount` 对活运行时求值 JavaScript，重启即消失。它是探针不是交付能力：能力属于组合文件。
 
-`cordis_inspect` reports THIS session's composition, so it confirms what a row does in the runtime you are already in, never what your new preset will do.
+## 原生产品 subagent
 
-After a clean mount-validation, ask the user to start a session on the new preset and confirm the tool list; the preset decides tool schemas and prompt sections, and only a real session shows the agent that composition produces.
+Codex 与 Claude Code provider 已住在 host 组合里。preset 靠贡献与 spawn、fork 用的同一个普通委派工具行来选产品；绝不把产品 provider 搬进 preset，绝不加产品专属的设置字段。
 
-`cordis_mount` evaluates JavaScript against the live runtime and disappears on restart. It is for probing, not for shipping a capability: a capability belongs in a composition file.
+从自带完整 preset 复制这些禁用模板，只为用户要的产品去掉 `disabled`（YAML 见同目录 reference.md）。两行互相独立：全禁=保持副本原样，启用一个=只暴露该产品工具，都启用=两个都暴露。host 必须在 `PATH` 上提供 `codex` 或 `claude`；preset 不安装、不认证、不选模型、不探测产品。
 
-## Native product subagents
+## 不要搬进 preset 的东西
 
-Codex and Claude Code providers already live in the host composition. A preset chooses either product by contributing the same ordinary delegation-tool row used for spawn and fork; never move a product provider into the preset and never add a product-specific settings field.
+`agent-loop` 注册唯一的 agent 工厂，第二个会抛错。注册表拥有 per-session 分层，本身不能 per-session。会话持久化必须留在 host 侧，否则会话列表会碎。沙箱、审批与权限行是刻意划的边界：preset 的权限上限就是它点名的插件，让它放松自己的禁闭就等于废掉禁闭。
 
-Copy these disabled templates from a shipped full preset and remove `disabled` only for the products the user requested:
+## Tool schema ↔ host service 形状（K19, 2026-08-17）
 
-```yaml
-- id: tool-subagent-codex
-  name: '@deepseek-ai/dsh-tool-subagent'
-  disabled: true
-  config:
-    provider: codex
-    toolName: subagent_codex
-    enableRunInBackground: false
-    maxDepth: provider-managed
+`defineTool({ output: { schema } })` 的 `schema.properties` 必须声明对应 service 方法实际返回的每个字段。同一 host 方法有两条执行路径时（如 `rule_check` 带和不带 `tool`）返回**不同**形状：用 `oneOf` 覆盖两条路径，**或者**把 host 方法归一成一个形状（更推荐）。
 
-- id: tool-subagent-claude-code
-  name: '@deepseek-ai/dsh-tool-subagent'
-  disabled: true
-  config:
-    provider: claude-code
-    toolName: subagent_claude_code
-    enableRunInBackground: false
-    maxDepth: provider-managed
-```
+`additionalProperties: false` 且声明字段少于 host 返回字段时，`dsh-tools` 在 execute 时拒绝，即使 `standingKeyFor` 干净挂载（K18 的「挂载校验 ≠ service 可用」）。形状不能完全掌控的嵌套对象默认 `additionalProperties: true`。
 
-The two rows are independent. Leaving both disabled preserves the copied preset, enabling one exposes only that product tool, and enabling both exposes both. The host must provide `codex` or `claude` on `PATH`; the preset does not install, authenticate, select a model for, or probe either product.
+字段集等价是判据：`schema declared fields == service return fields（按执行路径逐条比）`。写 `verify-*.mjs` 跑真实 `runProfile` 启动，走遍每条路径比对字段，不一致即回归。
 
-## What not to move into a preset
-
-`agent-loop` registers the one agent factory and throws on a second. The registries own the per-session layering and cannot themselves be per-session. Session persistence must stay host-side or the session list fragments. The sandbox, approval, and permission rows are a deliberate boundary: a preset is exactly as privileged as the plugins it names, so letting one relax its own confinement would defeat the confinement.
-
-## Tool schema ↔ host service shape (K19, 2026-08-17)
-
-When you write a `defineTool({ output: { schema } })` row, every field the corresponding service method actually returns must be declared on `schema.properties`. When the same host method has two execution paths (e.g. `rule_check` with and without a `tool`), they return *different shapes* — the schema must cover both via `oneOf`, **or** the host method must be normalised to one shape (preferred).
-
-A schema with `additionalProperties: false` plus fewer declared fields than the host returns will be rejected by `dsh-tools` at execute time even though `standingKeyFor` mounts the preset cleanly (this is K18's "mount-validate ≠ service available"). Default to `additionalProperties: true` on nested objects whose shape you cannot fully control (e.g. the result of another plugin's service call).
-
-Field-set equivalence is the verifier:
-```
-schema declared fields  ==  service return fields (per execution path)
-```
-Write a `verify-*.mjs` script that runs a real `runProfile` boot, exercises every path, and compares fields — treat any mismatch as a regression.
+代码示例、YAML 模板与推导见同目录 reference.md，用 read 工具打开（本会话 skill 加载返回的 Base directory 即技能基目录）。

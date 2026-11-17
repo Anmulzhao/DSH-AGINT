@@ -59,6 +59,15 @@ enabled:  boolean # 默认 true
 种子在首次启动且规则表为空时由 `seedIfEmpty()` 写入。可用
 `rule_remove` 删除或 `rule_set_enabled` 禁用。
 
+例外：下面三条**自保护规则**无条件补种（表非空也补），且 deny 级的那条
+不可删、不可停用 —— 见「规则引擎自保护」一节。
+
+| id | tool | action | 命中 |
+|---|---|---|---|
+| `rule-disable-forbidden` | rule_set_enabled | deny | `{"enabled":false}` ⇒ 禁止停用任何规则 |
+| `rule-remove-needs-human` | rule_remove | ask | 任何删规则调用 ⇒ 人工确认 |
+| `rule-add-reason-needs-human` | rule_add | ask | `reason` 会拼进注入消息 ⇒ 人工确认 |
+
 ## 验收
 
 启动级诊断（在 web profile 关闭 HMR 期间验证）：
@@ -91,3 +100,47 @@ enabled:  boolean # 默认 true
   改成 Promise 会让 `rules.hits` / `rules.adherencePct` 静默变恒 0。
 - 写盘失败只告警，不改拦截结果；内存计数照常累加，脏行留待下次重试。
 - 行数上限 100（规则量级 28），超限按 `hits` 升序淘汰。
+## 规则引擎自保护（v0.3.0，提案「护住规则引擎自身」）
+
+### 起因（实测取证）
+
+`rule_check(rule_set_enabled, {id, enabled:false})` → `NO_MATCH`；
+`rule_list` 实况里没有一条规则覆盖 `rule_add` / `rule_remove` /
+`rule_set_enabled` ⇒ **被门禁约束的 agent 可以把 deny 规则关掉**。
+看守自己的锁由被看守者拆。
+
+### 三条削弱路径被封死
+
+| 路径 | 旧行为 | 新行为 |
+|---|---|---|
+| `rule_remove(deny 规则)` | 删掉 | 抛错拒绝（deny 规则在引擎内不可变） |
+| `rule_set_enabled(deny 规则, false)` | 停用 | 抛错拒绝 |
+| `rule_add` 改写既有 deny 规则 | 覆盖 | 抛错拒绝 |
+
+仍然允许两件事：
+- **新建**规则（新建 deny 是加固，不是削弱）。
+- `enable(true)` —— 恢复生效不等于削弱约束。
+
+`advisory` / `ask` 级规则不受此约束：日常运维不能被锁死。
+
+### 补种口径
+
+`seedIfEmpty()` 原本第一行就是「规则表非空就 return」⇒ 老装机永远拿不到
+这三条 ⇒ 写在代码里的门禁形同虚设。现在三条自保护规则**无条件补种**
+（与 `seedEpistemic` 同一个坑，不能重蹈）：
+
+- 按 id 幂等：重复 boot 不重复播种。
+- 已被「同 tool + 同 action + 同 pattern」的等价规则覆盖时跳过（避免 lint
+  判成 `duplicate-pattern`）。
+- 已存在但被停用（`enabled=false`）的自保护规则会被**重新启用** ——
+  停用自保护规则正是要堵的失效形态。
+
+### 人工解封
+
+引擎内不可变 ⇒ 误建的 deny 规则无法用工具删。解封走 agint_rules 存储的
+文件层 / 带签名写入路径（人工操作）。
+
+### 守卫测试
+
+`test/self-protection.test.mjs`（补种口径 5 条）
+`test/audit-persist.test.mjs` 第 9 组（不可变三条路径 + 放行口径 3 条）

@@ -15,13 +15,14 @@ import {
 
 // 基础块从 13 涨到 15：2026-11-08（提案 cdf41d63）把 cron.staleJobs 拆成
 // staleOverdue + staleInactive 两维度（汇总 key 保留，故净增 2）。
-test('METRIC_DEFS = 基础 15 + 扩展 4 = 19，且新 key 全部在册', () => {
+test('METRIC_DEFS = 基础 15 + 扩展 7 = 22，且新 key 全部在册', () => {
   assert.equal(METRIC_DEFS_BASE.length, 15);
-  assert.equal(METRIC_DEFS_EXT.length, 4);
-  assert.equal(METRIC_DEFS.length, 19);
+  assert.equal(METRIC_DEFS_EXT.length, 7);
+  assert.equal(METRIC_DEFS.length, 22);
   const keys = METRIC_DEFS.map((d) => d.key);
   for (const k of [
     'autocreate.candidatesRejected', 'skills.totalBytes',
+    'skills.managedBytes', 'skills.thirdPartyBytes', 'skills.frontmatterBytes',
     'evolution.logCount7d', 'evolution.logCount30d',
   ]) {
     assert.ok(keys.includes(k), `missing metric key ${k}`);
@@ -30,7 +31,7 @@ test('METRIC_DEFS = 基础 15 + 扩展 4 = 19，且新 key 全部在册', () => 
   assert.deepEqual(METRIC_DEFS.slice(0, 15), METRIC_DEFS_BASE);
 });
 
-test('computeMetricsExt：三个 source 全健康时 4 key 齐全', async () => {
+test('computeMetricsExt：三个 source 全健康时 7 key 齐全', async () => {
   const fakeAutocreate = {
     stats: async () => ({
       candidates: { total: 42, byStatus: { REJECTED: 37, RELEASED: 3, ROLLED_BACK: 2 } },
@@ -57,15 +58,51 @@ test('computeMetricsExt：三个 source 全健康时 4 key 齐全', async () => 
 
     const recs = await computeMetricsExt({ skillAutocreate: fakeAutocreate, evolution: fakeEvolution, skillsFs });
     const byKey = new Map(recs.map((r) => [r.key, r]));
-    assert.equal(byKey.size, 4);
+    assert.equal(byKey.size, 7);
     assert.equal(byKey.get('autocreate.candidatesRejected').value, 37);
     assert.equal(byKey.get('skills.totalBytes').value, 3000);
     assert.equal(byKey.get('skills.totalBytes').meta && JSON.parse(byKey.get('skills.totalBytes').meta).fileCount, 2);
+    // r5：这两个临时根既不是 preset 根、目录里也没有 .agint-managed 标记
+    // ⇒ 全部算第三方（用户自装），不进 AGINT 的臃肿度账
+    assert.equal(byKey.get('skills.managedBytes').value, 0);
+    assert.equal(byKey.get('skills.thirdPartyBytes').value, 3000);
+    assert.equal(JSON.parse(byKey.get('skills.thirdPartyBytes').meta).thirdPartyCount, 2);
     // 173 条系统日志（175 − 2 条 oracle），oracle 审计条目不进活跃度
     assert.equal(byKey.get('evolution.logCount30d').value, 173);
     assert.equal(byKey.get('evolution.logCount7d').value, 5);
     const meta30 = JSON.parse(byKey.get('evolution.logCount30d').meta);
     assert.equal(meta30.excludedOracle, 2);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('r5：managed 分类——preset 根与 .agint-managed 标记算 AGINT 负责，其余算第三方', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'agint-metrics-managed-'));
+  try {
+    // ① preset 根（路径含 .agent-presets）下的技能 → managed
+    const presetRoot = join(tmp, '.agent-presets', 'agint', 'skills');
+    mkdirSync(join(presetRoot, 'own-skill'), { recursive: true });
+    writeFileSync(join(presetRoot, 'own-skill', 'SKILL.md'), '---\nname: own\n---\nbody');
+    // ② 用户级根 + .agint-managed 标记（skill-autocreate 发布）→ managed
+    const userRoot = join(tmp, 'skills');
+    mkdirSync(join(userRoot, 'auto-skill'), { recursive: true });
+    writeFileSync(join(userRoot, 'auto-skill', 'SKILL.md'), '---\nname: auto\n---\nbody');
+    writeFileSync(join(userRoot, 'auto-skill', '.agint-managed'), 'managed-by: agint-skill-autocreate\n');
+    // ③ 用户级根无标记 → 第三方
+    mkdirSync(join(userRoot, 'third-party'), { recursive: true });
+    writeFileSync(join(userRoot, 'third-party', 'SKILL.md'), '---\nname: tp\n---\nbody');
+
+    const m = makeSkillsFsSource([presetRoot, userRoot]).measure();
+    assert.equal(m.fileCount, 3);
+    assert.equal(m.managedCount, 2);
+    assert.equal(m.thirdPartyCount, 1);
+    assert.equal(m.managedBytes, m.totalBytes - m.thirdPartyBytes);
+    assert.ok(m.thirdPartyBytes > 0);
+    assert.ok(m.frontmatterBytes > 0, 'frontmatter 字节应被采集（每轮常驻上下文成本）');
+    // topManaged 只留 AGINT 负责的技能，且按体积降序
+    assert.ok(m.topManaged.length >= 1);
+    assert.ok(!m.topManaged.some((t) => t.name === 'third-party'), '第三方技能不得进 topManaged');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -138,7 +175,13 @@ test('computeMetrics 全链路：基础 source + 扩展 source 同跑，17 key �
     skillAutocreate: { stats: async () => ({ candidates: { total: 2, byStatus: { REJECTED: 2 } } }) },
     evolution: { getLogRange: async () => [{ ts: new Date().toISOString() }] },
     // 根存在但目录为空 → value 0 是真实读数（空 roots 数组才会被跳过）
-    skillsFs: { measure: () => ({ totalBytes: 0, fileCount: 0, roots: ['fake-root'], missingRoots: [] }) },
+    skillsFs: {
+      measure: () => ({
+        totalBytes: 0, fileCount: 0, roots: ['fake-root'], missingRoots: [],
+        managedBytes: 0, managedCount: 0, thirdPartyBytes: 0, thirdPartyCount: 0,
+        frontmatterBytes: 0, topManaged: [],
+      }),
+    },
   };
   const recs = await computeMetrics(mixed);
   const byKey = new Map(recs.map((r) => [r.key, r]));
@@ -152,6 +195,8 @@ test('computeMetrics 全链路：基础 source + 扩展 source 同跑，17 key �
   assert.equal(byKey.get('evolution.logCount7d').value, 1);
   assert.equal(byKey.get('evolution.logCount30d').value, 1);
   assert.equal(byKey.get('skills.totalBytes').value, 0);
+  assert.equal(byKey.get('skills.managedBytes').value, 0);
+  assert.equal(byKey.get('skills.thirdPartyBytes').value, 0);
 
   // meta 增补（派生原料）
   const lintMeta = JSON.parse(byKey.get('rules.lintIssues').meta);

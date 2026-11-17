@@ -250,6 +250,16 @@ export async function renameWithRetry(src, dest, opts = {}) {
 }
 
 /**
+ * AGINT 负责的技能标记文件（r5，2026-11-11）。
+ *
+ * 作用：让 metrics 采集端能把「AGINT 自己维护的技能」与「用户自装的第三方技能」
+ * 分开计量（臃肿度分子只算前者）。同名常量另见
+ * `agint-metrics/lib/metrics-ext.js` 的 `MANAGED_MARKER`——**两处必须一致**，
+ * 改一处要同时改另一处（metrics-ext.js 里有交叉注释）。
+ */
+export const MANAGED_MARKER = '.agint-managed';
+
+/**
  * 原子发布：staging 物料 → skillsRoot/<skillName>（先写 tmp 再整目录 rename）。
  * @returns {{ dir: string, version: string }}
  */
@@ -275,6 +285,8 @@ export async function publishToSkillsRoot({ candidate, skillsRoot, quarantineRoo
     manifest.stagedBy = 'agint-skill-autocreate/sprint16-release';
     await writeFile(join(tmp, 'SKILL.md'), renderSkillMd(draft), 'utf8');
     await writeFile(join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    // r5：打「AGINT 负责」标记 —— metrics 采集端据此把本技能算进臃肿度分子。
+    await writeFile(join(tmp, MANAGED_MARKER), `managed-by: agint-skill-autocreate\npublishedAt: ${nowIso()}\n`, 'utf8');
     const scripts = draft?.scripts ?? [];
     if (scripts.length) {
       const scriptsDir = join(tmp, 'scripts');

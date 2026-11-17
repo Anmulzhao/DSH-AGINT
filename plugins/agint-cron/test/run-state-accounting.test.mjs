@@ -136,9 +136,16 @@ const isTransientWriteError = new Function(
 
 /** 造一个能真跑起来的 runOne：services / persistJobState / console 都是注入的。 */
 function makeRunOne({ onPersist } = {}) {
-  const persistJobState = new Function('stateTable', 'summarizeResult', `return (${persistSrc});`)(
+  // 注入清单必须跟实现同步（与 2026-10-21 的 RETRY_* 同一类）。2026-11-14 的
+  // persistJobState 新增 stateWriteTail（心跳旁路并发时的 state 写串行队列）；
+  // 漏注入会让负例抛 ReferenceError，把原始的 EPERM 错误盖掉 —— 测的就成了
+  // 「测试自己没跟上实现」，不是记账行为。
+  const persistJobState = new Function(
+    'stateTable', 'summarizeResult', 'stateWriteTail', `return (${persistSrc});`,
+  )(
     async () => ({ put: async () => {} }),
     summarizeResult,
+    Promise.resolve(),
   );
   return new Function(
     'services', 'persistJobState', 'console',
@@ -196,8 +203,13 @@ describe('cron runOne · 失败必须清掉 lastResult', () => {
 });
 
 describe('cron persistJobState · lastError 优先于 lastResult', () => {
-  const buildPersist = () =>
-    new Function('stateTable', 'summarizeResult', `return (${persistSrc});`);
+  const buildPersist = () => {
+    const build = new Function(
+      'stateTable', 'summarizeResult', 'stateWriteTail', `return (${persistSrc});`,
+    );
+    // 每个用例一条新队列，互不串；真运行时 apply() 里只有一份共享队列。
+    return (table, summary) => build(table, summary, Promise.resolve());
+  };
   const capture = () => {
     const writes = [];
     return { writes, table: async () => ({ put: async (k, v) => writes.push(v) }) };

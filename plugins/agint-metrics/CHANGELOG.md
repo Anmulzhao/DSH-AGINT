@@ -1,10 +1,23 @@
 # Changelog — agint-metrics
 
-## v1.3.0 — 2026-11-11 — 宿主子代理信号补订阅（接线修复）
+## v1.3.0 — 2026-11-11 — skills 采集区分「AGINT 负责的技能」与「用户自装第三方技能」
 
-> 本节与并行的「skills 字节分类」任务共用 v1.3.0 版号。那部分的代码与条目此刻**尚未入库**，
-> 由该任务自行收口；本条只覆盖 `lib/eventCounters.js` 的订阅补齐（commit 8544c90）。
-> `manifest.json` / `package.json` 的版本号 bump 随该任务一起落，本次不动。
+**为什么**：原 `skills.totalBytes` 把两处根的全部 SKILL.md 字节并在一起，其中 58%
+是 skillhub 装的第三方技能。臃肿度拿它当分子，等于让 AGINT 为老板装的工具背锅。
+
+**变更**
+
+1. 新增三个原子 key：`skills.managedBytes`（AGINT 负责的技能字节）、
+   `skills.thirdPartyBytes`（用户自装第三方技能字节）、
+   `skills.frontmatterBytes`（frontmatter 字节 = 每轮常驻上下文成本）。
+2. `skills.totalBytes` 保留为总量口径（向后兼容，不再进扣分）。
+3. managed 判定：preset 根（路径含 `.agent-presets`）下全部 managed；其他根下目录内
+   存在 `.agint-managed` 标记文件者 managed（由 agint-skill-autocreate 发布时写入）；
+   其余 thirdParty。
+4. `skills.managedBytes` 的 meta 带 `managedCount` 与 `topManaged`（最大的 8 个
+   managed 技能名与字节），供神谕层建议点名具体文件。
+
+### 追加诉求（同日，与上面的 skills 字节分类无关）：宿主子代理信号补订阅
 
 **为什么**：`check-wiring` 报 2 个硬缺口 `NO_SUBSCRIBER(input.signal.host.subagent-start / -end)`。
 根因是 11-03 `agint-event-bus/lib/host-bridge.js` 扩容时只接发布、没接消费。
