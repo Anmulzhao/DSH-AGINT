@@ -20,9 +20,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * 把一次判定结果并入难度状态（窗口滚动 + 连续序列维护）。
  * @param {object} state 当前难度状态（DifficultyStateSchema 业务字段）
- * @param {object} verdict { result: 'pass'|'fail', at: ISO 时间 }
+ * @param {object} verdict { result: 'pass'|'fail', at: ISO 时间, counted?: boolean }
  * @param {object} opts { windowDays, nowMs }
  * @returns {object} 更新后的状态
+ *
+ * counted=false（提案 10d2d87f 防复读）：本次判定**不计入能力成功数**——
+ * 既不进滚动窗口、也不推进 consecutivePass（连续 pass 计数被复读灌水就是漏洞本体）。
+ * 与「fail」区别开：fail 会重置 consecutivePass 并累加 consecutiveFail；
+ * counted=false 是「这件事没发生」，两个计数器都保持原值。
+ * 默认 counted=true —— 存量调用与旧数据零影响。
  */
 export function recordVerdict(state, verdict, { windowDays = 28, nowMs = Date.now() } = {}) {
   const cutoff = nowMs - windowDays * DAY_MS;
@@ -30,13 +36,19 @@ export function recordVerdict(state, verdict, { windowDays = 28, nowMs = Date.no
     const ts = Date.parse(r.at);
     return Number.isNaN(ts) ? false : ts >= cutoff;
   };
-  const windowResults = [...(state.windowResults ?? []), {
-    result: verdict.result,
-    at: verdict.at,
-  }].filter(keep);
+  const counted = verdict.counted !== false;
+  const existingWindow = (state.windowResults ?? []).filter(keep);
+  // 复读不计入：窗口不追加本次 pass；连续两个计数器保持原值（不是 fail，不重置）
+  const windowResults = counted
+    ? [...existingWindow, { result: verdict.result, at: verdict.at }].filter(keep)
+    : existingWindow;
 
-  const consecutivePass = verdict.result === 'pass' ? (state.consecutivePass ?? 0) + 1 : 0;
-  const consecutiveFail = verdict.result === 'fail' ? (state.consecutiveFail ?? 0) + 1 : 0;
+  const consecutivePass = !counted
+    ? (state.consecutivePass ?? 0)
+    : verdict.result === 'pass' ? (state.consecutivePass ?? 0) + 1 : 0;
+  const consecutiveFail = !counted
+    ? (state.consecutiveFail ?? 0)
+    : verdict.result === 'fail' ? (state.consecutiveFail ?? 0) + 1 : 0;
 
   return {
     ...state,

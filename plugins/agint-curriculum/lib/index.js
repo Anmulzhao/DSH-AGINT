@@ -41,6 +41,7 @@ import { probeDomains } from './boundary-probe.js';
 import { generateChallenge, hasTemplate, bankSize, totalBankSize } from './challenge-gen.js';
 import { judge } from './verdict.js';
 import { recordVerdict, adjustDifficulty } from './difficulty.js';
+import { detectReplay } from './replay.js';
 
 const name = 'agint-curriculum';
 const inject = ['storageDomain'];
@@ -537,6 +538,44 @@ function apply(ctx, config) {
 
     const verdict = judge(challenge, evidence, { requireEvidence: c.require_evidence !== false });
 
+    // ── 防复读检测（提案 10d2d87f）──────────────────────────────────────
+    // 只对 pass 判定；fail 本来就不计能力成功，无需复读检测。
+    // 历史 pass 从 attempts 表 join challenges 表组装（不新增存储，提案要求）。
+    // 存量 attempt 无 replay 字段视为非复读（default null），历史含义零改变。
+    let replay = {
+      isReplay: false, kind: null, reasons: [], fingerprint: null, signals: null, matchedAttemptId: null,
+    };
+    if (verdict.result === 'pass' && c.replay_detection !== false) {
+      const atTable = await table('attempts');
+      const chTable = await table('challenges');
+      const chById = new Map([...chTable.entries()].map(([, v]) => [v.id, v]));
+      const priorPasses = [...atTable.entries()]
+        .map(([, v]) => v)
+        .filter((a) => a.result === 'pass' && a.id !== undefined)
+        .map((a) => {
+          const ch = chById.get(a.challengeId) ?? {};
+          return {
+            id: a.id,
+            challengeId: a.challengeId,
+            domain: a.domain ?? ch.domain,
+            level: a.level ?? ch.level,
+            prompt: ch.prompt ?? null,
+            evidence: a.evidence,
+            verifiedAt: a.verifiedAt,
+          };
+        });
+      replay = detectReplay({
+        challenge,
+        evidence: verdict.evidence,
+        priorPasses,
+        spec: challenge.verifySpec,
+        config: {
+          fingerprintEnabled: c.replay_fingerprint !== false,
+          promptDedupEnabled: c.replay_prompt_dedup !== false,
+        },
+      });
+    }
+
     // 落 attempts（C2：selfAssessment 剥离为 notes；C3：evidence 原样留档）
     const at = await table('attempts');
     const attempt = packAttempt({
@@ -549,6 +588,13 @@ function apply(ctx, config) {
       selfAssessment: verdict.notes,
       reason: verdict.reason,
       verifiedAt: nowIso(),
+      // 复读标记：result 仍是 pass（事实），但 replay.isReplay=true 表示不计能力成功
+      replay: replay.isReplay ? {
+        isReplay: true,
+        kind: replay.kind,
+        reasons: replay.reasons,
+        fingerprint: replay.fingerprint,
+      } : null,
     });
     await at.put(attempt.id, attempt);
     const aw = checkLimit('attempts', at.size);
@@ -563,9 +609,14 @@ function apply(ctx, config) {
     };
     await ct.put(updatedChallenge.id, updatedChallenge);
 
-    // 难度调节（§4.6）
+    // 难度调节（§4.6）——复读 pass 不计入能力成功数（提案 10d2d87f）：
+    // counted=false 既不进滚动窗口也不推进 consecutivePass，难度状态保持原样。
     const df = await readDifficulty(challenge.domain);
-    const recorded = recordVerdict(df, { result: verdict.result, at: attempt.verifiedAt }, {
+    const recorded = recordVerdict(df, {
+      result: verdict.result,
+      at: attempt.verifiedAt,
+      counted: !replay.isReplay,
+    }, {
       windowDays: c.difficulty_window_days,
     });
     const adjusted = adjustDifficulty(recorded, {
@@ -580,8 +631,10 @@ function apply(ctx, config) {
     // 事件（§4.8）
     await publishEvent('curriculum.challenge-verdicted', {
       challengeId, domain: challenge.domain, result: verdict.result, reason: verdict.reason,
+      replay: replay.isReplay, replayKind: replay.kind,
     });
-    if (adjusted.action !== 'keep') {
+    // 复读不计成功 ⇒ 难度状态没动 ⇒ 不发 difficulty-adjusted（避免谎报升档）
+    if (adjusted.action !== 'keep' && !replay.isReplay) {
       await publishEvent('curriculum.difficulty-adjusted', {
         domain: challenge.domain,
         from: challenge.level,
@@ -590,8 +643,10 @@ function apply(ctx, config) {
       });
     }
 
-    // §4.9 self-model 回写：只提供证据，由 self-model 决定是否更新 capability
-    if (c.self_model_writeback !== false) {
+    // §4.9 self-model 回写：只提供证据，由 self-model 决定是否更新 capability。
+    // ⛔ 复读 pass 不回写成功信号（提案 10d2d87f）——否则 capability.recentSuccess
+    //    仍会被复读灌水，与难度侧不计成功自相矛盾。fail 照常回写失败信号。
+    if (c.self_model_writeback !== false && !(verdict.result === 'pass' && replay.isReplay)) {
       const sm = getSelfModel();
       if (sm && typeof sm.update === 'function') {
         try {
@@ -614,23 +669,37 @@ function apply(ctx, config) {
 
     await audit({
       actor: 'agent',
-      action: 'challenge_verdicted',
+      action: replay.isReplay ? 'challenge_verdicted_replay' : 'challenge_verdicted',
       targetType: 'challenge',
       targetId: challengeId,
-      details: { domain: challenge.domain, result: verdict.result, level: challenge.level },
-      reason: verdict.reason,
+      details: {
+        domain: challenge.domain, result: verdict.result, level: challenge.level,
+        replay: replay.isReplay,
+        replayKind: replay.kind,
+        replayReasons: replay.reasons,
+        countedForSuccess: !replay.isReplay,
+      },
+      reason: replay.isReplay
+        ? `${verdict.reason}；复读不计能力成功：${replay.reasons.join('；')}`
+        : verdict.reason,
     });
 
     return {
       challengeId,
       result: verdict.result,
-      reason: verdict.reason,
+      reason: replay.isReplay
+        ? `${verdict.reason}（复读，不计能力成功：${replay.reasons.join('；')}）`
+        : verdict.reason,
       notes: verdict.notes,
       domain: challenge.domain,
       levelBefore: challenge.level,
       levelAfter: adjusted.level,
       difficultyAction: adjusted.action,
       windowStats: adjusted.windowStats,
+      // 防复读可观测面（提案 10d2d87f）：调用方/面板据此识别「pass 但不计成功」
+      replay: replay.isReplay,
+      replayKind: replay.kind,
+      countedForSuccess: !replay.isReplay,
     };
   }
 

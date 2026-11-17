@@ -151,6 +151,14 @@ export const AttemptSchema = z.object({
   selfAssessment: z.string().nullable().default(null),
   reason: z.string().default(''),
   verifiedAt: z.string(),
+  // 防复读标记（提案 10d2d87f）：result 仍是 pass（事实不变），但本次属复读 →
+  // 不计入能力成功数。default false 保证存量 attempt 读入零影响。
+  replay: z.object({
+    isReplay: z.boolean(),
+    kind: z.string().nullable().default(null),
+    reasons: z.array(z.string()).default([]),
+    fingerprint: z.string().nullable().default(null),
+  }).nullable().default(null),
 });
 
 export const DifficultyStateSchema = z.object({
@@ -211,6 +219,12 @@ export const ConfigSchema = z.object({
   require_evidence: z.boolean().default(true),                  // 无 evidence → fail（C3）
   verdict_expires_days: z.number().int().min(1).default(30),    // 超时未提交 → expired
 
+  // 防复读护栏（提案 10d2d87f）：判定「换说法填两遍 / 原样复读」的 pass，
+  // 标 replay 但不计入能力成功数；默认开。两个子开关可分别关，回退到旧计数口径。
+  replay_detection: z.boolean().default(true),        // 总开关；false = 完全回退旧行为
+  replay_fingerprint: z.boolean().default(true),      // 方案 4：steps 指纹（原样复读）
+  replay_prompt_dedup: z.boolean().default(true),     // 方案 1：同题面第 2 次起不计成功
+
   // 执行边界（§4.5）
   auto_execute_enabled: z.boolean().default(false),             // Sprint 14 恒 false
 
@@ -237,6 +251,9 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'force_demote_streak',
   'require_evidence',
   'self_model_writeback',
+  'replay_detection',
+  'replay_fingerprint',
+  'replay_prompt_dedup',
 ]);
 
 /** 模板域 → 模板描述（供工具/文档展示；实际模板见 challenge-gen.js） */

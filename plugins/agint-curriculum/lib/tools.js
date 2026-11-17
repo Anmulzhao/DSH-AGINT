@@ -107,7 +107,9 @@ function apply(ctx) {
       schema: { type: 'object', additionalProperties: true },
       render: (_a, v) => [{
         type: 'text',
-        text: `curriculum_submit: ${v.challengeId} → ${v.result.toUpperCase()}\n  ${v.reason}\n  难度: ${v.levelBefore} → ${v.levelAfter}（${v.difficultyAction}）`,
+        text: `curriculum_submit: ${v.challengeId} → ${v.result.toUpperCase()}`
+          + `\n  ${v.reason}\n  难度: ${v.levelBefore} → ${v.levelAfter}（${v.difficultyAction}）`
+          + (v.replay ? `\n  ⚠️ 复读（${v.replayKind}）· 本次 pass 不计能力成功，难度未推进` : ''),
       }],
     },
     async execute(args) {
