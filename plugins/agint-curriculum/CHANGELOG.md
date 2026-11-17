@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 0.2.3（2026-11-17 · CANNOT 候选标记补对称清除路径 —— 假信号不再挂死）
+
+**一句话**：降档分支只置位 `cannotCandidate=true`，全流程没有对称的清除路径 ——
+域一旦被打上标记就永远挂着，即使随后连过 N 关。`curriculum_stats` 于是长期报
+一个已经不成立的「CANNOT 候选」。
+
+**证据**（生产存储 `agint_curriculum` 域 `difficulty_state.df_integration`）：
+2026-11-17 传输缺陷导致 10 次连续 fail，域被打上 `cannotCandidate=true`；
+补交 5 关后 `consecutiveFail=0`、`consecutivePass=5`，但 `cannotCandidate` 仍是 true。
+
+**影响面**（grep 取证）：`cannotCandidate` 仅被
+`plugins/agint-curriculum/lib/index.js:684`（stats 输出）与 `lib/difficulty.js`
+自身引用；`agint-self-model` 未读取该字段（grep `cannotCandidate` 于
+`plugins/agint-self-model/lib/*.js` 命中 0 行）。所以它不影响判定与能力图谱，
+但**周复盘与 stats 读到的是假信号**。
+
+**改动**：`lib/difficulty.js` 的 force-promote 分支按与置位条件对称的判据
+（连续 pass ≥ forcePromoteStreak）清除标记，并记 `candidateCleared=true` 以便审计。
+
+**验收**：`node --test plugins/agint-curriculum/test/*.test.mjs` → 71/71。
+
 ## 0.2.2（2026-11-17 · 修复 evidence 数组传输缺陷 —— 提交判定恒 fail）
 
 **一句话**：`curriculum_submit` 的 evidence 里，数组型证据（`steps`）在参数层
