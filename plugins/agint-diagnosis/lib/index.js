@@ -257,10 +257,17 @@ function apply(ctx, config = {}) {
       throw new Error(`annotations table full (cap ${LIMITS.ANNOTATIONS})`);
     }
 
-    // ── 调算法：优先用从 failure_pattern 拉来的 trajectory，回退入参
-    const trajectory = fetchedTrajectory && fetchedTrajectory.length > 0
-      ? fetchedTrajectory
-      : (Array.isArray(input && input.trajectory) ? input.trajectory : []);
+    // ── 调算法：显式 trajectory 优先（2026-11-18 修复，提案 49ac5e58 后续）
+    // 旧顺序是「failure_pattern 单行 > 入参 trajectory」⇒ 只要 failureId 命中表内，
+    // 调用方给的真实失败步骤序列就被丢弃，6 类投票只看到 1 步 ⇒ 恒判 UNCERTAIN。
+    // 实测对照（同一份 3 步 trajectory）：命中表内 → UNCERTAIN(conf=0)；
+    // 不命中表内 → TOOL_GAP(conf=1)。
+    // 现在：显式 trajectory > failure_pattern 单行兜底 > 空数组。
+    const explicitTrajectory = Array.isArray(input && input.trajectory) ? input.trajectory : null;
+    const hasExplicit = Boolean(explicitTrajectory && explicitTrajectory.length > 0);
+    const hasFetched = Boolean(fetchedTrajectory && fetchedTrajectory.length > 0);
+    const trajectory = hasExplicit ? explicitTrajectory : (hasFetched ? fetchedTrajectory : []);
+    const trajectorySource = hasExplicit ? 'explicit' : (hasFetched ? 'failure_pattern' : 'empty');
 
     const result = rootCauseClassify(trajectory);
 
@@ -273,6 +280,10 @@ function apply(ctx, config = {}) {
       // 审计用：调用方的人工类别提示 + 备注。不参与投票，仅留痕（提案 49ac5e58 改动 3）。
       hintCategory: categoryHint || null,
       analystNotes: analystNotes || null,
+      // 投票证据来源：explicit = 调用方给的步骤序列；failure_pattern = 单行兜底；
+      // empty = 无证据（此时判 UNCERTAIN 是诚实结果，不是失灵）。
+      trajectorySource,
+      trajectorySteps: Array.isArray(trajectory) ? trajectory.length : 0,
     });
     const business = {
       failureId,
@@ -559,7 +570,9 @@ function apply(ctx, config = {}) {
    * 写表：annotations（与 annotate 共用路径）；rootCause 必为 RootCauseKindSchema enum 之一。
    */
   async function analyzeFailedSmoke(payload) {
-    const reason = String(payload?.reason ?? 'unknown');
+    // 空串也要归一到 'unknown'：旧写法 String(payload?.reason ?? 'unknown') 会把
+    // '' 保留下来，reason='' 时一条规则都不命中，rootCause 落到兜底分支。
+    const reason = String(payload?.reason ?? '').trim() || 'unknown';
     const failed = Array.isArray(payload?.failedChecks) ? payload.failedChecks : [];
     const targetPath = String(payload?.target?.path ?? '');
 
@@ -614,6 +627,13 @@ function apply(ctx, config = {}) {
     if (failed.length >= 3) confidence += 0.1;
     confidence = Math.min(confidence, 0.95);
 
+    // ── FROZEN enum 归一（2026-11-18 修复）────────────────────────────
+    // 映射表给出的是小写连字符形态（'environment-shift'），而 AnnotationSchema
+    // 的 rootCause 是 FROZEN 7 类大写枚举（'ENVIRONMENT_SHIFT'）⇒ 旧代码 packAnnotation
+    // 必抛 zod 校验错 ⇒ sandbox.failed 这条自动归因路径**一行都写不进去**
+    // （且 evidence 传的是数组，schema 要求 string —— 两处都错）。
+    const rootCauseEnum = rootCause.replace(/-/g, '_').toUpperCase();
+
     // ── 写 annotations 表（不阻塞；cold-start 不强制；reasoning-error 写一条说明）──
     let written = false;
     let writeError = null;
@@ -623,9 +643,9 @@ function apply(ctx, config = {}) {
       const entry = packAnnotation({
         id,
         failureId: targetPath || reason,
-        rootCause,
+        rootCause: rootCauseEnum,
         confidence,
-        evidence,
+        evidence: JSON.stringify(evidence),
         generatedAt: nowIso(),
         source: 'sandbox.failed',
       });
@@ -636,7 +656,7 @@ function apply(ctx, config = {}) {
     }
 
     return {
-      rootCause,
+      rootCause: rootCauseEnum,
       confidence,
       evidence,
       targetPath,
