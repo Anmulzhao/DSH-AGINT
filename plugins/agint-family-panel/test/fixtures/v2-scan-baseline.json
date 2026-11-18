@@ -1,18 +1,18 @@
 {
   "generatedFrom": "repo plugins/ (DSH-AGINT)，agint.* 家族键口径",
-  "generatedAt": "2026-11-07T09:48:22.000Z",
+  "generatedAt": "2026-11-18T13:45:00.000Z",
   "criterion": "family-only：仅统计服务键以 agint. 开头的边；宿主键见 hostCounts，不参与断言",
   "counts": {
-    "code": 223,
+    "code": 227,
     "comment": 41,
     "umbrella": 0
   },
   "hostCounts": {
-    "code": 31,
-    "comment": 18,
+    "code": 40,
+    "comment": 23,
     "umbrella": 0
   },
-  "providedKeys": 101,
+  "providedKeys": 102,
   "familyDirs": 43,
-  "note": "2026-11-07 第七次重冻。触发原因：家族 code 键 223 vs 基线 215（净 +8，超 ±2 容差）。\n\n【归因】在干净 HEAD(4f6c0a4) 临时 worktree 上用同一份 v2-scan 扫描得 220，即 +5 来自 11-07 当日已提交的三批改动（executor 环境故障判据 / driver 提案级执行 / 本轮之前的修复），+3 来自本轮未提交的提案级全组事务新增代码。逐条差集方法沿用 10-28 第六次重冻的口径，扫描器 lib/v2-scan.js 本轮零变更。\n\n【+8 的性质】全部是新增代码里真实存在的 agint.* 服务引用（agint.evolve / agint.mutator / agint.qualityPolicy / agint.qualitySandbox / agint.eventBus.publish 等），不是口径漂移，也没有删边。comment 边 +1 为同一批注释里的服务名。\n\n【hostCounts 29 → 31（code）、17 → 18（comment）】非 agint. 前缀的新增引用，按既定口径只报不拦。\n\n【口径未变】family-only 判据、±2 容差、宿主键只报不拦，三条一字未改 —— 本轮只重冻数值。"
+  "note": "2026-11-18 第八次重冻。触发原因：家族 code 键 227 vs 基线 223（净 +4，超 ±2 容差）。\n\n【归因】在干净冻结参照 4f6c0a4 临时 worktree 上用同一份 v2-scan 扫描得 220（与第七次重冻记录一致）；当前 HEAD + 本轮工作树 = 227。本轮改动（面板上游 tab 降级整合 / arch-render navBtns 深链 / update-check 撤挂 / upstream-watch 部署位对齐 / docs）经 git diff 逐行核实零新增 agint.* 引用，arch-render.js 两版 ctx.get 均为 0 ⇒ 工作树与 HEAD 扫描一致，+7 全部来自 11-07 → 11-18 的已提交代码。\n\n【+7 的分布】aesthetic-oracle +2（lib/index.js:356 agint.selfModel / :372 agint.curriculum，r5 判尺对齐批）、evolution-driver +3、executor +2 —— 全部是真实服务引用（agint.evolve / agint.mutator / agint.qualityPolicy / agint.qualitySandbox / agint.eventBus.publish / agint.evolution 等），不是口径漂移，没有删边。基线 223 已含第七次冻结时 +3 未提交部分，故净差 +4。cron / curriculum 的 +/- 明细为纯行号平移（同键净计数不变）。探针：D:/DSH/_scan_diff_20261118.mjs。\n\n【providedKeys 101 → 102】当前扫描与干净冻结参照一致（102）；第七次冻结记的 101 是当时未提交状态值，本次属回归而非新增。familyDirs 43 不变（update-check 撤挂但目录保留，归 unmounted 类；upstream-watch 同）。\n\n【hostCounts 31 → 40（code）、18 → 23（comment）】非 agint. 前缀的新增引用，按既定口径只报不拦。\n\n【口径未变】family-only 判据、±2 容差、宿主键只报不拦，三条一字未改 —— 本轮只重冻数值。扫描器 lib/v2-scan.js 自 4f6c0a4 零变更（git diff 核实）。"
 }

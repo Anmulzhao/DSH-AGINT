@@ -441,11 +441,14 @@ export function renderArchPage(model, opts = {}) {
     return (n.tables&&n.tables.length) ? '<div class="chips">'+n.tables.map(function(t){ return '<span class="chip">'+es(t[0])+' <b>'+es(String(t[1]))+'</b></span>'; }).join('')+'</div>' : '';
   }
   function navBtns(id){
-    var map2 = { propose:'prop', curriculum:'pend', queue:'prop', release:'prop', outcomes:'prop', rules:'q3', skillAc:'pend', eval:'oracle', upstream:'up', host:'q1' };
+    var map2 = { propose:'prop', curriculum:'pend', queue:'prop', release:'prop', outcomes:'prop', rules:'q3', skillAc:'pend', eval:'oracle', upstream:'prop', host:'q1' };
     var t = map2[id];
     if(!t) return '';
-    var label = { prop:'去提案台（唯一写入口）', pend:'去待办', q1:'去 Q1 依赖拓扑', q3:'去 Q3 腐化判定', oracle:'去神谕判词', up:'去上游判读' }[t] || '去详情';
-    return '<button class="navbtn" data-nav="'+t+'">'+label+' →</button>';
+    var label = { prop:'去提案台（唯一写入口）', pend:'去待办', q1:'去 Q1 依赖拓扑', q3:'去 Q3 腐化判定', oracle:'去神谕判词' }[t] || '去详情';
+    /* 上游判读 2026-11-18 起折进提案台 #upDetails：跳 tab 同时带上要展开的块 id。 */
+    var open = '';
+    if(id==='upstream'){ label='去上游判读（提案台内）'; open=' data-open="upDetails"'; }
+    return '<button class="navbtn" data-nav="'+t+'"'+open+'>'+label+' →</button>';
   }
   function show(id){
     var n=byId[id]; if(!n) return;
@@ -480,7 +483,7 @@ export function renderArchPage(model, opts = {}) {
     document.addEventListener('click', function(e){
       var b = e.target && e.target.closest && e.target.closest('[data-nav]');
       if(!b) return;
-      try { if(window.parent && window.parent !== window) window.parent.postMessage({ type:'agint-nav', target:b.getAttribute('data-nav') }, '*'); } catch(err){}
+      try { if(window.parent && window.parent !== window) window.parent.postMessage({ type:'agint-nav', target:b.getAttribute('data-nav'), open:b.getAttribute('data-open')||'' }, '*'); } catch(err){}
     });
   }
 

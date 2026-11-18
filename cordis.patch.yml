@@ -197,13 +197,13 @@
           config: {}
 
         # agint-update-check: 检测 AGINT 仓库远端最新状态，并询问用户是否更新 / 部署。
-        # 工具注册在 host 平面 ⇒ 任何 preset 的会话都能看到（与 agint-tool-stats 同机制）。
-        # ⛔ 冲突合并说明：178c3eb 原在此处加了 agint-tool-stats + agint-update-check 两条；
-        #   远端已在组内(8空格)挂载 agint-tool-stats，保留会重复挂载，故仅留本地独有的
-        #   agint-update-check，并修正其缩进为组内嵌套(原 178c3eb 写成 4 空格顶层，会跳出组)。
-        - id: agint-update-check
-          name: ./plugins/agint-update-check/lib/index.js
-          config: {}
+        # REMOVED（2026-11-18 老板拍板「不要了」）：host patch 撤挂，目录与代码保留
+        # （同 agint-quality-report 退役先例，扫描器归 unmounted 类）。
+        # 与 agint-upstream-watch 不重叠：前者盯 AGINT 仓库远端，后者盯 dsh 宿主发行；
+        # 本次只撤前者。如需恢复：取消下面三行注释（历史冲突合并说明见 git log 178c3eb）。
+        # - id: agint-update-check
+        #   name: ./plugins/agint-update-check/lib/index.js
+        #   config: {}
 
         # agint-rules: rule gate (advisory + ask + deny). Owns `agint_rules` domain
         # exclusively. Listens on tools/pre-execute + tools/post-execute waterfalls.

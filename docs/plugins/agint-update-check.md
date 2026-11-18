@@ -1,5 +1,9 @@
 # agint-update-check
 
+> **已退役（2026-11-18）**：老板拍板「不要了」。host patch 已撤挂（cordis.patch.yml 内
+> REMOVED 注释），目录与代码保留作历史参考。本文档描述退役前的行为。
+> 注意与 agint-upstream-watch 的分工：本插件盯 AGINT 仓库远端，upstream-watch 盯 dsh 宿主发行，两者不重叠。
+
 检测 AGINT 仓库（DSH-AGINT）远端的最新状态，并**询问用户**是否更新与部署。
 
 ## 职责

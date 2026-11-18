@@ -100,7 +100,7 @@ const hookBody = [
   '  const b=e.target.closest(".tab"); if(!b) return;',
   '  document.getElementById("eviz")?.classList.toggle("on", b.dataset.t==="eviz");',
   '});',
-  '/* 架构图 iframe → 父页导航：只切 tab，不代执行任何写操作。',
+  '/* 架构图 iframe → 父页导航：只切 tab（可选展开一个 details 块），不代执行任何写操作。',
   '   校验来源是 eviz 里的那个 iframe，别的窗口发同样形状的消息一律忽略。 */',
   'if (typeof window.addEventListener === "function") {',
   '  window.addEventListener("message",e=>{',
@@ -110,6 +110,9 @@ const hookBody = [
   '    const t=String(d.target||""); if(!/^[a-z0-9]+$/.test(t)) return;',
   '    const b=document.querySelector(\'.tab[data-t="\'+t+\'"]\');',
   '    if(b) b.click();',
+  '    const o=String(d.open||""); if(/^[A-Za-z0-9]+$/.test(o)){',
+  '      const el=document.getElementById(o); if(el&&"open" in el) el.open=true;',
+  '    }',
   '  });',
   '}',
 ].join('\n');

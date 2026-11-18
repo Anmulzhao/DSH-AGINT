@@ -1,5 +1,35 @@
 # agint-family-panel CHANGELOG
 
+## 0.13.1 — 2026-11-18（上游 tab 降级整合进提案台；老板拍板 A 案）
+
+### 问题
+
+上游判读独立占一个 tab，但它是低频告警不是日常页：实测存储仅 1 条 digest、0 提案、
+0 对拍样本；动作出口本就在提案台（有风险才产提案）。10 个 tab 的认知负担与产出不匹配。
+
+### 改动
+
+- **删 `data-t="up"` tab 与 `#up` 独立分区**。判读证据面（upHead/upNotes/upRows/upBadge
+  四个元素 ID 原样保留）折进提案台 `#prop` 尾部 `<details id="upDetails">`，默认收起。
+- **overview 新增 `#upStrip`**：本机 dsh / 上游最新 / 落后 三数字，落后或阻断时红色。
+  `renderUpStrip()` 与 `renderUpstream()` 同源同口径，全空页早退分支同样覆盖。
+- **四态纪律不打折**：取不到（host 旧版）/ 未启用 / 已建基线等新版本 / 有记录，
+  四种渲染原样保留 —— `test/upstream-view.test.mjs` 10 条断言一条未改、全绿。
+- **架构图深链改指**：`arch-render.js` navBtns 的 `upstream:'up'` 改 `'prop'`，
+  按钮带 `data-open="upDetails"`；postMessage 增加 `open` 字段；
+  `bin/evolution-viz-snapshot.mjs` hookBody 收到后切 tab 并展开对应 details。
+- 同窗口执行老板另两条拍板：agint-update-check 撤挂（REMOVED 注释，目录保留）；
+  agint-upstream-watch 维持停用（db21844），bundle 位残留挂载行对齐清除。
+  两者不影响扫描计数（扫描器只读 lib 源码，不读挂载表）。
+
+### 验证
+
+- 面板全量 `node --test test/*.test.mjs` 153/153 绿 + smoke/v2-scan/v2-data 三脚本绿。
+- v2-scan 基线第八次重冻 223 → 227（归因与逐条账见 fixtures note；本轮改动零新增引用）。
+- check-patch-yaml 14/14、preset-rows-import、check-wiring 0 硬缺口。
+- 三副本 sha256 一致（996a50c7b2c84e92）；快照生成器重注入 eviz 段。
+- 主机当时未运行，未做在线浏览器验证；资产按 mtime 热加载，lib/patch 改动随下次启动生效。
+
 ## 0.13.0 — 2026-11-16（架构图实时聚合；单点数据/渲染；7 视图）
 
 ### 问题
