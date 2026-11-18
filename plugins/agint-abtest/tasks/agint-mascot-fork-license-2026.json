@@ -1,0 +1,64 @@
+{
+  "promptId": "agint-mascot-fork-license-2026",
+  "assetPath": "proposals/agint-mascot-fork-license-20261004.md",
+  "artifactKind": "document",
+  "rubric": { "dims": ["accuracy", "completeness", "actionability"] },
+  "tasks": [
+    {
+      "id": "ml-01",
+      "description": "按本提案：fork 仓的 LICENSE 保持什么许可证？只回答许可证名。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "Apache-2.0" }
+    },
+    {
+      "id": "ml-02",
+      "description": "按本提案：AGINT 资产装在哪里？为什么不放进 fork？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "ml-03",
+      "description": "按本提案：AGINT 状态源独立插件用什么许可证？只回答许可证名。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "MIT" }
+    },
+    {
+      "id": "ml-04",
+      "description": "按本提案：v4 方案与 v5 方案的核心差别是什么？v4 为什么被替代？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "ml-05",
+      "description": "按本提案：为什么不把 AGINT 代码写进 fork 本体？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "ml-06",
+      "description": "按本提案：fork 内现存的 assets/agint/ 57 帧如何处置？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "ml-07",
+      "description": "按本提案：AGINT 新写文件需要加哪些版权/声明文件？每行一个文件名。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": ["LICENSE"], "minLength": 2 }
+    },
+    {
+      "id": "ml-08",
+      "description": "按本提案：走 GitHub fork 还是下载后重新上传？只回答「fork」或「重新上传」。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "fork" }
+    },
+    {
+      "id": "ml-09",
+      "description": "本提案是否规定了商标授权条款？只回答「有规定」或「文档未提及」。",
+      "layer": "L2", "kind": "negative-control", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "文档未提及" }
+    },
+    {
+      "id": "ml-10",
+      "description": "把本提案的定案条款压缩成执行清单，至少 3 行，每行一条。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": [], "minLength": 3 }
+    }
+  ]
+}

@@ -21,10 +21,10 @@ test('welchTTest: 等均值样本 → pValue 接近 1', () => {
   assert.equal(r.pValue, 1);
 });
 
-test('welchTTest: 显著差异（A=0.9×10, B=0.5×10）→ pValue<0.05 + |t|大', () => {
+test('welchTTest: 显著差异（有方差样本，A≈0.9 vs B≈0.5 各 10）→ pValue<0.05 + |t|大', () => {
   const r = welchTTest(
-    [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9],
-    [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+    [0.92, 0.88, 0.95, 0.85, 0.9, 0.93, 0.87, 0.91, 0.89, 0.94],
+    [0.52, 0.48, 0.55, 0.45, 0.5, 0.53, 0.47, 0.51, 0.49, 0.54],
   );
   assert.ok(Math.abs(r.t) > 5, `|t|=${Math.abs(r.t)} 应 >5`);
   assert.ok(r.pValue < 0.05, `pValue=${r.pValue} 应 <0.05`);
@@ -79,9 +79,20 @@ test('cohensD: pooledStd=0（边界）→ 0', () => {
 
 // ── decideWinner ──────────────────────────────────────────────────────
 
-test('decideWinner: A 显著优于 B（各 10 个 0.9 vs 0.5）→ winner="A"', () => {
+test('decideWinner: 常数组（0.9×10 vs 0.5×10）→ inconclusive（v0.7.0 epsilon 护栏，零方差不得假显著）', () => {
   const a = Array(10).fill(0.9);
   const b = Array(10).fill(0.5);
+  const taskSuite = Array.from({ length: 10 }, (_, k) => `t${k}`);
+  const r = decideWinner({ samplesA: a, samplesB: b, threshold: 0.05, taskSuite });
+  assert.equal(r.winner, 'inconclusive');
+  assert.equal(r.pValue, 1);
+  assert.equal(r.effectSize, 0);
+  assert.equal(r.samples, 20);
+});
+
+test('decideWinner: A 显著优于 B（有方差的 10 对样本）→ winner="A"', () => {
+  const a = [0.92, 0.88, 0.95, 0.85, 0.9, 0.93, 0.87, 0.91, 0.89, 0.94];
+  const b = [0.52, 0.48, 0.55, 0.45, 0.5, 0.53, 0.47, 0.51, 0.49, 0.54];
   const taskSuite = Array.from({ length: 10 }, (_, k) => `t${k}`);
   const r = decideWinner({ samplesA: a, samplesB: b, threshold: 0.05, taskSuite });
   assert.equal(r.winner, 'A');

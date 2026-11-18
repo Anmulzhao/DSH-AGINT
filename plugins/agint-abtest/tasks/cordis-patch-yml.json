@@ -1,0 +1,66 @@
+{
+  "promptId": "cordis-patch-yml",
+  "assetPath": "cordis.patch.yml",
+  "artifactKind": "document",
+  "rubric": { "dims": ["accuracy", "completeness", "actionability"] },
+  "executionNote": "变体是 cordis.patch.yml 的注释段突变（skill-autocreate-aggregate 排期注释）。任务只围绕该注释段内容；oldText 不在当前文件时物化失败 → 样本 skipped。",
+  "tasks": [
+    {
+      "id": "cp-01",
+      "description": "按该注释段：skill-autocreate 每日聚合几点跑？只回答 HH:MM。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "05:15" }
+    },
+    {
+      "id": "cp-02",
+      "description": "按该注释段：排期为什么从 04:45 改到 05:15？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "cp-03",
+      "description": "按该注释段：原 04:45 排期与哪个 job 撞车？只回答 job 名。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "prompt-static-check" }
+    },
+    {
+      "id": "cp-04",
+      "description": "按该注释段：05:15 对应的 cron 表达式是什么？只回答表达式。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "15 5 * * *" }
+    },
+    {
+      "id": "cp-05",
+      "description": "按该注释段：每日聚合由哪个 job 驱动？只回答 job 名。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "skill-autocreate-aggregate" }
+    },
+    {
+      "id": "cp-06",
+      "description": "按该注释段体现的排期原则：新增 cron job 选分钟时应避免什么？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "cp-07",
+      "description": "若要新增一个 05:15 的 job，按该注释段的教训应先核查什么？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "cp-08",
+      "description": "按该注释段：排期解撞车发生在哪一天？只回答 YYYY-MM-DD。",
+      "layer": "L2", "kind": "normal", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "2026-09-28" }
+    },
+    {
+      "id": "cp-09",
+      "description": "该注释段是否规定了 job 失败重试策略？只回答「有规定」或「文档未提及」。",
+      "layer": "L2", "kind": "negative-control", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "文档未提及" }
+    },
+    {
+      "id": "cp-10",
+      "description": "把该注释段的要点列成清单，至少 2 行，每行一条。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": [], "minLength": 2 }
+    }
+  ]
+}

@@ -1,5 +1,20 @@
 # Changelog — agint-abtest
 
+## 0.7.0 (2026-11-18) — 打分机制接线（方案 v2.1，老板三拍板）
+
+### Added
+- **`lib/scoring.js`** 三层打分：L1-check 检查器通过率 / L1-exec verifySpec 断言（复用 curriculum verdict.judge，扩 `expected-failure` 类型供阴性对照）/ L2 pointwise 盲评 judge（复用 llm-verdict 管道层，新输出契约，meta.agentPreset 必传 K114）/ L3 校准一致率（<0.7 建议关闸）。
+- **`lib/observe.js`** 观察编排：候选对（oldText=A/newText=B）→ 语料 gating → 隔离执行（文档类子会话答题 / 代码类原位物化备份还原）→ 预算帽 60 → 幂等注入 → report 恰一次 → 24h stale abort。judge 默认 preset `agint-zgs`（老板拍板：老板分身，判据口径对齐）。
+- **`_internal.putSample / abort / listSamples / results`**：注入入口（确定性 id `smp-<testId>-<taskId>-<variant>` 幂等、score 夹 0..1、终态拒注）；results 只读最新终态结论供 policy 软取（不标状态不发事件）。
+- **`tasks/`** 6 份任务语料 ×10 任务（plugin-preflight / plugin-check-sh / agint-mascot-fork-license-2026 / cordis-patch-yml / skill-authoring-test-mjs / tool-output-conformance-test-m），各 ≥2 区分度 + ≥1 阴性对照，断言经实跑校准。
+
+### Changed
+- **`lib/statistics.js`** 四处修复：p 值改 t 分布 CDF（不完全贝塔连分式，临界值表对拍 <1e-4）；零方差 epsilon 护栏（VAR_EPS=1e-12，常数组浮点噪声曾造出 d=4.8e15 假显著）；Bonferroni 按 numExperiments（不再除任务数）；新增 decideWinnerPaired 配对检验。
+- **`report`** 切配对取样（按 taskId 配对，孤儿样本不计入）。FROZEN 服务签名 start/report/listTests 不变。
+
+### Tests
+- 新增 statistics-v2 / abtest-v2 / scoring / observe / tasks-corpus 五套；全套 104/104。
+
 ## 0.6.5 (2026-09-07) — K19 round-trip + ask-abtest-report
 
 ### Changed

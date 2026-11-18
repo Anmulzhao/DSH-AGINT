@@ -30,6 +30,7 @@
  *   spec-index-refresh 每月 1 日 10:30 协议索引只读巡检（Phase-3 轨道 C）
  *   evolution-reconcile Tue 08:00 闭环取数三方对账（evolution-cycle 之后；Phase -1.1）
  *   outcome-measure   Tue 10:15 进化实测对账：双态跑改动面测试子集量 actualDelta（Phase 1.1 支点 1b）
+ *   abtest-observe    daily 06:30 A/B 实验观察打分（候选对→语料→执行+打分→配对 report；LLM 密集，预算帽 60）
  *
  * 排期硬约束（由 test/schedule-layout.test.mjs 强制）：
  *   ① 任意两个 job 不得落在同一分钟（含 daily × weekly 交叉）
@@ -1059,6 +1060,50 @@ export const defaultJobs = [
         wikiIndexLevel: r.wikiIndex?.level ?? null,
         wikiIndexDrift: r.wikiIndex?.drift ?? null,
       };
+    },
+  },
+  {
+    // A/B 实验观察打分（方案 v2.1，2026-11-18）。LLM 密集型（执行+judge），
+    // 预算帽 60 次/轮。daily 06:30：release 05:45 隔 45min、curator Mon 07:00
+    // 与 evolution-cycle Tue 07:00 各隔 30min、oracle-weekly Mon 08:00 隔 90min
+    // （HEAVY ≥30min）；observe 06:15 / size-guard 06:45 各隔 15min（原则②）。
+    // 实体在 agint-abtest/lib/observe.js；本 job 只做服务白名单转接。
+    // 服务缺席 / repoRoot 未配 / 无候选对 → soft-skip，不做定时空洞实验。
+    id: 'abtest-observe',
+    name: 'A/B 实验观察打分',
+    schedule: '30 6 * * *',
+    description: '候选对检测 → 任务语料 → 隔离执行+三层打分 → 配对 report（daily，预算帽 60）',
+    action: async (services) => {
+      const abtest = services['agint.abtest'];
+      if (!abtest?._internal?.putSample) {
+        return { skipped: true, reason: 'agint.abtest not mounted (or < v0.7.0)' };
+      }
+      const repoRoot = services['agint.repoRoot'];
+      if (!repoRoot) {
+        return { skipped: true, reason: 'agint.repoRoot 未配置（agint-cron 行 config.repoRoot）' };
+      }
+      const populationStats = services['agint.population.stats'];
+      if (typeof populationStats !== 'function') {
+        return { skipped: true, reason: 'agint.population.stats not mounted' };
+      }
+      const population = { stats: populationStats };
+      const { runObserve } = await import('../../agint-abtest/lib/observe.js');
+      // 迷你 ctx：只供 resolveLlmSelection / agents / subagents 软取，
+      // 不透传宿主全量（services 白名单纪律）。
+      const hostServices = {
+        agents: services['host.agents'] ?? null,
+        subagents: services['host.subagents'] ?? null,
+        agentDefaultModel: services['host.agentDefaultModel'] ?? null,
+      };
+      const miniCtx = { get: (k) => hostServices[k] ?? null };
+      const publish = services['agint.eventBus.publish'];
+      return await runObserve({
+        abtest, population,
+        ctx: miniCtx,
+        publish: typeof publish === 'function' ? publish : null,
+        tasksDir: join(repoRoot, 'plugins', 'agint-abtest', 'tasks'),
+        repoRoot,
+      });
     },
   },
 ];

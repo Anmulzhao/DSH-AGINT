@@ -1,5 +1,13 @@
 # Changelog — agint-quality-policy
 
+## 0.10.0 (2026-11-18) — A/B 消费链接线（方案 v2.1 方案 B）
+
+### Added
+- **`decide()` 软取 abtest**（仿 effectiveDelta 先例）：软取 `agint.abtest._internal.results()`（只读最新终态实验，⛔ 绝不在此调 report——它有标终态+重发事件副作用）进 `options.abtestResults`；软取 `agint.quality.getConfig().abtest` 进 config（激活 contract ADJUSTABLE 配置链，此前 getConfig 零读取方）。调用方显式传值优先；服务缺席/抛错不拖垮决策。5 个生产调用点零改动。
+
+### Tests
+- abtest-softfetch 5/5；全套 64/64。
+
 ## 0.9.0 (2026-10-26) — D-QAF §5.3 效率护栏：无效进化不许自动部署
 
 ### Added

@@ -1,0 +1,66 @@
+{
+  "promptId": "tool-output-conformance-test-m",
+  "assetPath": "plugins/agint-self-model/test/tool-output-conformance.test.mjs",
+  "artifactKind": "code",
+  "rubric": { "dims": ["accuracy", "completeness", "actionability"] },
+  "executionNote": "L1-exec 原位物化变体测试文件（备份→替换→node --test→还原）。运行 cwd 必须是仓库根。oldText 不在当前文件时物化失败 → 样本 skipped。",
+  "tasks": [
+    {
+      "id": "toc-01",
+      "description": "运行本测试文件（node --test），输出完整结果。",
+      "layer": "L1-exec", "kind": "normal",
+      "runner": { "type": "run-tests-inplace", "args": [] },
+      "verifySpec": { "type": "exit-code-output", "minLength": 50 }
+    },
+    {
+      "id": "toc-02",
+      "description": "只运行名称含「schema」的测试（node --test --test-name-pattern=schema），输出完整结果。",
+      "layer": "L1-exec", "kind": "discrimination",
+      "runner": { "type": "run-tests-inplace", "args": ["--test-name-pattern=schema"] },
+      "verifySpec": { "type": "exit-code-output", "minLength": 30 }
+    },
+    {
+      "id": "toc-03",
+      "description": "阅读本测试：工具输出一致性检查的核心断言是什么？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "toc-04",
+      "description": "阅读本测试：运行方式与 cwd 要求是什么？为什么 cwd 必须是仓库根？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "toc-05",
+      "description": "阅读本测试：列出被检查的工具或 schema 对象（每行一个）。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": [], "minLength": 2 }
+    },
+    {
+      "id": "toc-06",
+      "description": "阅读本测试：lossless-JSON 往返检查防的是什么问题？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "toc-07",
+      "description": "阅读本测试：否定对照用例是怎么构造的？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "toc-08",
+      "description": "阅读本测试：给一个新的工具输出 schema 写一条一致性用例，写出测试代码。",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "toc-09",
+      "description": "本测试文件是否调用真实 LLM？只回答「调用」或「不调用」。",
+      "layer": "L2", "kind": "negative-control", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "不调用" }
+    },
+    {
+      "id": "toc-10",
+      "description": "总结本测试文件的覆盖面，至少 3 行，每行一条。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": [], "minLength": 3 }
+    }
+  ]
+}

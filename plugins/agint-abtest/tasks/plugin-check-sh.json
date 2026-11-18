@@ -1,0 +1,70 @@
+{
+  "promptId": "plugin-check-sh",
+  "assetPath": "bin/plugin-check.sh",
+  "artifactKind": "code",
+  "rubric": { "dims": ["accuracy", "completeness", "actionability"] },
+  "executionNote": "L1-exec 任务原位物化变体脚本（备份→替换→运行→还原）。不断言 exitCode：全局 dsh 兼容门禁受宿主版本混杂影响（2026-11-18 实测宿主 0.2.2-rc.3 vs 判据 0.2.1-rc.2），exit code 不纯反映插件 lint 结果；只断言输出信号。",
+  "tasks": [
+    {
+      "id": "pcs-01",
+      "description": "对 plugins/agint-self-model/fixtures/broken-policy 运行本脚本，输出完整日志。",
+      "layer": "L1-exec", "kind": "negative-control",
+      "runner": { "type": "run-script-inplace", "args": ["plugins/agint-self-model/fixtures/broken-policy"] },
+      "verifySpec": { "type": "expected-failure", "expected": ["[FAIL] package.json 缺失"] }
+    },
+    {
+      "id": "pcs-02",
+      "description": "对 plugins/agint-self-model/fixtures/broken-domain 运行本脚本，输出完整日志。",
+      "layer": "L1-exec", "kind": "negative-control",
+      "runner": { "type": "run-script-inplace", "args": ["plugins/agint-self-model/fixtures/broken-domain"] },
+      "verifySpec": { "type": "expected-failure", "expected": ["[FAIL] package.json 缺失", "─── broken-domain ───"] }
+    },
+    {
+      "id": "pcs-03",
+      "description": "对 plugins/agint-self-model/fixtures/broken-mutator 运行本脚本，输出完整日志。",
+      "layer": "L1-exec", "kind": "normal",
+      "runner": { "type": "run-script-inplace", "args": ["plugins/agint-self-model/fixtures/broken-mutator"] },
+      "verifySpec": { "type": "expected-failure", "expected": ["─── broken-mutator ───"] }
+    },
+    {
+      "id": "pcs-04",
+      "description": "对 plugins/agint-self-model/fixtures/broken-population 运行本脚本，输出完整日志。",
+      "layer": "L1-exec", "kind": "normal",
+      "runner": { "type": "run-script-inplace", "args": ["plugins/agint-self-model/fixtures/broken-population"] },
+      "verifySpec": { "type": "expected-failure", "expected": ["─── broken-population ───"] }
+    },
+    {
+      "id": "pcs-05",
+      "description": "对健康插件 plugins/agint-mascot 运行本脚本，输出完整日志。",
+      "layer": "L1-exec", "kind": "normal",
+      "runner": { "type": "run-script-inplace", "args": ["plugins/agint-mascot"] },
+      "verifySpec": { "type": "expected-failure", "expected": ["─── agint-mascot ───"] }
+    },
+    {
+      "id": "pcs-06",
+      "description": "阅读本脚本：维度 11（observability-reachability）检查的是什么差集？为什么属于「观测侧假绿」？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "pcs-07",
+      "description": "阅读本脚本：维度 11 的 soft warning 与 blocker 处置有何不同？脚本最终如何汇总维度 11 的结果？",
+      "layer": "L2", "kind": "discrimination", "answerShape": "text"
+    },
+    {
+      "id": "pcs-08",
+      "description": "阅读本脚本：DSH_HOME 与插件扫描目录是如何解析的？写错目录会导致什么后果？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "pcs-09",
+      "description": "列出本脚本覆盖的检查维度（每行一个维度，含编号与名称）。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": ["storage", "permissions"], "minLength": 9 }
+    },
+    {
+      "id": "pcs-10",
+      "description": "阅读本脚本：宿主 dsh 版本与门禁判据版本不一致时，脚本给出什么结论与处置建议？",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    }
+  ]
+}

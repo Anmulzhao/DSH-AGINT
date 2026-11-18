@@ -1,5 +1,11 @@
 /**
- * agint-abtest v0.6.4 — Sprint 10 #9 收口
+ * agint-abtest v0.7.0 — 打分机制接线（方案 v2.1，2026-11-18）
+ *
+ * v0.6.4 → v0.7.0：
+ *   - _internal.putSample：分数注入入口（确定性 id 幂等、score 夹 0..1、终态拒注）
+ *   - _internal.abort：崩溃恢复置 aborted
+ *   - report 改配对取样（decideWinnerPaired），孤儿样本不计入
+ *   - statistics.js 同步修复（t 分布 CDF / epsilon 护栏 / Bonferroni 按实验数）
  *
  * Prompt-A/B 测试基础设施独立 Cordis 插件（设计稿 §二.6）。
  *
@@ -38,7 +44,7 @@
 
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { welchTTest, bonferroniAdjust, cohensD, decideWinner } from './statistics.js';
+import { welchTTest, bonferroniAdjust, cohensD, decideWinner, decideWinnerPaired } from './statistics.js';
 
 const name = 'agint-abtest';
 const inject = ['storageDomain'];
@@ -191,22 +197,40 @@ function apply(ctx, config) {
     return { testId: entry.id, status: entry.status };
   }
 
+  // ── 配对取样（report / results 共享）────────────────────────────────
+  // 2026-11-18 v0.7.0：A/B 是同任务配对产出，独立样本检验违反独立性假设；
+  // 按 taskId 配对取差值做单样本 t。只纳入 A、B 都有分的任务；孤儿不计入。
+  async function collectPairs(testId) {
+    const tS = await t_samples();
+    // 2026-10-13：table.entries() 返回迭代器；Node 的 Iterator Helpers 让迭代器
+    // **有** .filter/.map，但返回的仍是迭代器而非数组 ⇒ .length 全 undefined。
+    // 必须先 [...entries()] 展开成数组。（实测：it.map(...) → isArray=false）
+    const byTask = new Map();
+    for (const s of [...tS.entries()]) {
+      if (s.testId !== testId) continue;
+      if (!byTask.has(s.taskId)) byTask.set(s.taskId, {});
+      byTask.get(s.taskId)[s.variant] = s.score;
+    }
+    const pairs = [];
+    for (const [taskId, v] of byTask) {
+      if (typeof v.A === 'number' && typeof v.B === 'number') {
+        pairs.push({ taskId, scoreA: v.A, scoreB: v.B });
+      }
+    }
+    return pairs;
+  }
+
   // ── Service: report ───────────────────────────────────────────────
   async function report({ testId }) {
     if (!testId) throw new Error('report: testId 必填');
     const tT = await t_tests();
     const testEntry = tT.entries().find((e) => e.id === testId);
     if (!testEntry) throw new Error(`report: testId='${testId}' 在 abtests 表里查不到`);
-    const tS = await t_samples();
-    // 2026-10-13：table.entries() 返回迭代器；Node 的 Iterator Helpers 让迭代器
-    // **有** .filter/.map，但返回的仍是迭代器而非数组 ⇒ .length 全 undefined。
-    // 必须先 [...entries()] 展开成数组。（实测：it.map(...) → isArray=false）
-    const samplesA = [...tS.entries()].filter((s) => s.testId === testId && s.variant === 'A').map((s) => s.score);
-    const samplesB = [...tS.entries()].filter((s) => s.testId === testId && s.variant === 'B').map((s) => s.score);
-    const decision = decideWinner({
-      samplesA, samplesB,
+    const pairs = await collectPairs(testId);
+    const decision = decideWinnerPaired({
+      pairs,
       threshold: testEntry.significanceThreshold,
-      taskSuite: testEntry.taskSuite,
+      numExperiments: 1,
     });
     // 顺手标 status 落 abtests 表（不影响 FROZEN 签名）
     const updated = { ...testEntry, status: decision.winner === 'inconclusive' ? 'inconclusive' : 'completed' };
@@ -241,10 +265,71 @@ function apply(ctx, config) {
     return { tests };
   }
 
+  // ── _internal: putSample（v0.7.0 新增，方案 v2.1 §三.1 / §九.4）─────
+  // FROZEN 服务签名（start/report/listTests）不动；注入入口挂 _internal，
+  // 与 README 示例口径一致。确定性 id ⇒ 幂等：重跑覆盖同 id 不增行。
+  async function putSample({ testId, variant, taskId, score }) {
+    if (!testId) throw new Error('putSample: testId 必填');
+    if (variant !== 'A' && variant !== 'B') throw new Error(`putSample: variant 必须是 A|B，收到 '${variant}'`);
+    if (!taskId) throw new Error('putSample: taskId 必填');
+    if (!Number.isFinite(score)) throw new Error(`putSample: score 必须是有限数，收到 ${score}`);
+    const tT = await t_tests();
+    const testEntry = tT.entries().find((e) => e.id === testId);
+    if (!testEntry) throw new Error(`putSample: testId='${testId}' 在 abtests 表里查不到`);
+    if (testEntry.status !== 'running') {
+      throw new Error(`putSample: 实验已终态（${testEntry.status}），拒绝注入`);
+    }
+    const clamped = Math.min(1, Math.max(0, score));
+    const id = `smp-${testId}-${taskId}-${variant}`;
+    const entry = SampleRecordSchema.parse({
+      id, kind: 'sample', testId, variant, score: clamped, taskId, createdAt: nowIso(),
+    });
+    const tS = await t_samples();
+    if (tS.size >= LIMITS.SAMPLES && !tS.get(id)) {
+      throw new Error(`samples table full (cap ${LIMITS.SAMPLES})`);
+    }
+    await tS.put(id, entry);
+    return { id, score: clamped };
+  }
+
+  // ── _internal: abort（v0.7.0 新增，方案 v2.1 §九.4 崩溃恢复）────────
+  async function abort({ testId, reason = 'unspecified' }) {
+    if (!testId) throw new Error('abort: testId 必填');
+    const tT = await t_tests();
+    const testEntry = tT.entries().find((e) => e.id === testId);
+    if (!testEntry) throw new Error(`abort: testId='${testId}' 在 abtests 表里查不到`);
+    if (testEntry.status !== 'running') return { testId, status: testEntry.status, already: true };
+    const updated = { ...testEntry, status: 'aborted', abortReason: String(reason), abortedAt: nowIso() };
+    await tT.put(updated.id, updated);
+    return { testId, status: 'aborted' };
+  }
+
+  // ── _internal: listSamples（v0.7.0 新增，observe 续跑去重用）────────
+  async function listSamples({ testId }) {
+    if (!testId) throw new Error('listSamples: testId 必填');
+    const tS = await t_samples();
+    const samples = [...tS.entries()].filter((s) => s.testId === testId);
+    return { samples };
+  }
+
+  // ── _internal: results（v0.7.0 新增，policy 软取用）─────────────────
+  // 只读最新终态实验的结论：不标状态、不发事件、不写表（report 的副作用
+  // 版本只允许 observe job 调一次；policy 每轮决策都读，必须无副作用）。
+  async function results() {
+    const tT = await t_tests();
+    const terminal = [...tT.entries()].filter((e) => e.status === 'completed' || e.status === 'inconclusive');
+    if (terminal.length === 0) return [];
+    terminal.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    const latest = terminal[0];
+    const pairs = await collectPairs(latest.id);
+    const d = decideWinnerPaired({ pairs, threshold: latest.significanceThreshold, numExperiments: 1 });
+    return [{ testId: latest.id, status: latest.status, winner: d.winner, pValue: d.pValue, effectSize: d.effectSize, samples: d.samples }];
+  }
+
   ctx.provide('agint.abtest', {
     start, report, listTests,
     limits: LIMITS,
-    _internal: { bonferroniAdjust, cohensD, welchTTest }, // 测试可见
+    _internal: { bonferroniAdjust, cohensD, welchTTest, putSample, abort, listSamples, results }, // 测试可见 + caller 注入
   });
 }
 

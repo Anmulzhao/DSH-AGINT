@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.5.0] — abtest-observe job：A/B 实验观察打分（2026-11-18 · 方案 v2.1）
+
+### Added
+- **`abtest-observe`** job（daily 06:30，LLM 密集型登记 HEAVY）：委托 agint-abtest/lib/observe.js 跑候选对→语料→执行+打分→配对 report。服务缺席 / repoRoot 未配 / 无候选对 → soft-skip，不做定时空洞实验。
+- **services 白名单 +6 键**：agint.abtest / agint.population.stats（⛔ 子键非伞键——伞键取用会激活 check-wiring A2 对 population 9 个模型平面方法的死方法检查）/ agint.eventBus.publish / host.agents / host.subagents / host.agentDefaultModel。
+
+### Tests
+- abtest-observe 5/5；schedule-layout 全约束绿（06:30 与 HEAVY 邻 job ≥30min）。
+
 ## [0.4.0] — 失效拆两个维度：过期未跑 / 久未活动（2026-11-08 · 提案 cdf41d63）
 
 **背景**：`health()` 只有一个失效口径（过期未跑）。`agint-metrics` 据此产出的

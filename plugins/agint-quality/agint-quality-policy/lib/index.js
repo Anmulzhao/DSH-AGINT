@@ -206,13 +206,41 @@ function apply(ctx, config) {
       }
     }
     const mergedOptions = effectiveDelta ? { ...(options ?? {}), effectiveDelta } : options;
+    // ── A/B 软取（方案 v2.1 §九.3 方案 B，2026-11-18，仿 effectiveDelta 先例）──
+    // 消费链此前断着：decidePolicy 读 options.abtestResults 但无生产调用方传它，
+    // contract.getConfig() 也零读取方。这里单点接上：软取最新终态实验结论 +
+    // contract 的 abtest 配置。调用方显式传值优先；服务缺席/抛错不拖垮决策。
+    // ⛔ 只读 _internal.results()（无副作用）——绝不在此调 report()：
+    //   report 每调一次标终态并重发 concluded，会膨胀计数（方案 §九.4）。
+    let abtestResults = mergedOptions?.abtestResults ?? null;
+    if (!abtestResults) {
+      try {
+        const abtestSvc = typeof ctx.get === 'function' ? ctx.get('agint.abtest') : null;
+        if (abtestSvc?._internal?.results) {
+          const r = await abtestSvc._internal.results();
+          if (Array.isArray(r) && r.length > 0) abtestResults = r;
+        }
+      } catch (err) {
+        console.warn(`[agint-quality-policy] abtest results unavailable: ${err?.message ?? err}`);
+      }
+    }
+    if (!mergedConfig.abtest) {
+      try {
+        const contractSvc = typeof ctx.get === 'function' ? ctx.get('agint.quality') : null;
+        const contractCfg = contractSvc?.getConfig?.();
+        if (contractCfg?.abtest) mergedConfig.abtest = contractCfg.abtest;
+      } catch (err) {
+        console.warn(`[agint-quality-policy] contract abtest config unavailable: ${err?.message ?? err}`);
+      }
+    }
+    const finalOptions = abtestResults ? { ...(mergedOptions ?? {}), abtestResults } : mergedOptions;
     // 行动 #5（2026-09-28）：决策 provider 化 —— 默认走内置 provider（decidePolicy），
     // 可注册/切换外部 provider；provider 不可用回退内置 + fallback 审计。
     const providerIdHint = overrideConfig?.policyProvider ?? null;
     const { decision, providerId, fallback, fallbackReason } = await policyRegistry.resolveAndEvaluate({
       results,
       config: mergedConfig,
-      options: mergedOptions,
+      options: finalOptions,
       ...(providerIdHint ? { providerId: providerIdHint } : {}),
     });
     if (fallback && !disposed) {

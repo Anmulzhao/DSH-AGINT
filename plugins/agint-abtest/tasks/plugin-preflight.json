@@ -1,0 +1,65 @@
+{
+  "promptId": "plugin-preflight",
+  "assetPath": "presets/agint/skills/plugin-preflight/SKILL.md",
+  "artifactKind": "document",
+  "rubric": { "dims": ["accuracy", "completeness", "actionability"] },
+  "tasks": [
+    {
+      "id": "pp-01",
+      "description": "按本文档给一个新插件草稿走完 preflight 全流程，输出步骤记录（每步一行，含动作与结论）。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": ["校验", "同步"], "minLength": 5 }
+    },
+    {
+      "id": "pp-02",
+      "description": "场景：只改一个存量插件的默认常量。按本文档判断该走哪几步、哪步可免，并说明理由。",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "pp-03",
+      "description": "按本文档流程对 plugins/agint-self-model/fixtures/broken-policy 执行准入检查，列出应阻断项（每行一条，含检查器给出的原文标记）。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": ["package.json"], "minLength": 1 }
+    },
+    {
+      "id": "pp-04",
+      "description": "解释：为什么 runtime-contract（第 9 维度）是静态 lint 看不到的？按本文档作答。",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "pp-05",
+      "description": "列出双副本同步必须覆盖的位点与核对命令（每行一个位点或命令）。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": ["check-wiring"], "minLength": 2 }
+    },
+    {
+      "id": "pp-06",
+      "description": "判断：只在 cordis.patch.yml 新增一行 - id、不改任何源码，是否触发本 preflight？只回答「是」或「否」。",
+      "layer": "L2", "kind": "discrimination", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "是" }
+    },
+    {
+      "id": "pp-07",
+      "description": "判断：某插件 manifest 声明了 fs 权限，但 smoke 里没出现路径字面量。按本文档，该不该阻断挂载？只回答「阻断」或「不阻断」。",
+      "layer": "L2", "kind": "discrimination", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "不阻断" }
+    },
+    {
+      "id": "pp-08",
+      "description": "某插件草稿源码里硬编码了一个 API secret。按本文档走 preflight，最终结论是什么？只回答「pass」或「fail」。",
+      "layer": "L2", "kind": "negative-control", "answerShape": "conclusion",
+      "verifySpec": { "type": "conclusion-match", "expected": "fail" }
+    },
+    {
+      "id": "pp-09",
+      "description": "场景 B 改存量插件：第 2 步免写的条件是什么、第 5 步的硬要求是什么？各举一个例子。",
+      "layer": "L2", "kind": "normal", "answerShape": "text"
+    },
+    {
+      "id": "pp-10",
+      "description": "把本 preflight 流程压缩成给新会话的交接说明，至少 5 行，每行一个要点。",
+      "layer": "L2", "kind": "normal", "answerShape": "steps",
+      "verifySpec": { "type": "step-list", "expected": [], "minLength": 5 }
+    }
+  ]
+}

@@ -355,6 +355,20 @@ function apply(ctx, config) {
     //   services 是白名单而非 ctx 全量透传，只改 jobs.js 会让该 job 每天抛
     //   "未配置 agint-cron.config.agentsSizeGuard.file"，症状与「哨兵没跑」一样。
     'agint.agentsSizeGuard': config?.agentsSizeGuard ?? null,
+    // A/B 实验观察打分（2026-11-18 新增 job abtest-observe）。懒解析；
+    // 未挂载时为 undefined → job soft-skip。⛔ 白名单纪律：只改 jobs.js
+    // 不加这几行，job 会天天 skipped（input-gateway 同款洞，2026-10-09 实测）。
+    'agint.abtest': ctx.get('agint.abtest'),
+    // 只取 stats 子键（diagnosis.stats 同款先例）：observe job 只读变体清单。
+    // ⛔ 别取伞键 agint.population —— 会让 check-wiring A2 把 population 全部
+    //   模型平面服务面（promote/cull/fixate 等 9 个）判成死方法（2026-11-18 实测）。
+    'agint.population.stats': ctx.get('agint.population.stats'),
+    'agint.eventBus.publish': ctx.get('agint.eventBus.publish'),
+    // 宿主子会话三件套：observe 的执行器/judge 走 agents.create + startActivation，
+    // 模型路由走 agentDefaultModel（K114：meta.agentPreset 必传）。
+    'host.agents': ctx.get('agents'),
+    'host.subagents': ctx.get('subagents'),
+    'host.agentDefaultModel': ctx.get('agentDefaultModel'),
   });
 
   // Jobs in one tick run to completion, in declaration order. Previously each

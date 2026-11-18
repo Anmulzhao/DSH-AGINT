@@ -59,6 +59,7 @@ const HEAVY = new Set([
   'oracle-daily',                // 神谕层
   'oracle-weekly',
   'oracle-monthly',
+  'abtest-observe',              // A/B 执行器 + judge 调 LLM（预算帽 60）
 ]);
 
 test('每个 job 的表达式可被 parseCron 解析，且 job id 唯一', () => {
