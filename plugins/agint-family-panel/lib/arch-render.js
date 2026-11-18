@@ -588,7 +588,12 @@ export function renderArchPage(model, opts = {}) {
       });
       if(!selected){
         var ov=document.getElementById('v-node');
-        if(ov && fragments.overview) ov.innerHTML = fragments.overview;
+        if(ov && fragments.overview){
+          ov.innerHTML = fragments.overview;
+          // ⛔ overview 覆盖会替换 #detail 节点本身：闭包捕获的旧引用就此脱离 DOM，
+          // 之后 show() 全写进 detached 节点，点任何节点都停在总览（2026-11-18 实测）。
+          detail = document.getElementById('detail');
+        }
       }
     }
     if(selected) show(selected);

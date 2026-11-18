@@ -1,7 +1,7 @@
 {
   "$schema": "../../docs/plugins/PLUGIN-SPEC.md#manifest-schema",
   "name": "agint-family-panel",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "AGINT 家族面板（v2）。六层聚合：源码扫描 / 运行态 / 存储 / 契约 / 档案 / 上游判读；提案台是整页唯一写入口。0.13.1 上游判读降级整合：独立 tab 撤销，概览三数字进 overview，证据表折进提案台 #upDetails（四态渲染不变）。0.9.1 新增 `partial` 执行态文案（job 成功但提案未完，见提案 846f4fbb 实证）；",
   "main": "lib/index.js",
   "agint": {
