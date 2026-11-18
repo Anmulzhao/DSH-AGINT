@@ -520,6 +520,21 @@ export function resolveTargetAssets(candidate, availableSkills = [], repoFiles =
     const cands = repoFiles.filter((f) => f.endsWith(`/${p}`) || p.endsWith(`/${f}`));
     if (cands.length === 1) push(cands[0]);
   }
+  // 点名插件兜底（2026-11-18，实机 78cada8c）：upstream-watch 产的提案只写
+  // 「在 agint-upstream-watch 的判读流水线上加闸门」，全篇无反引号路径 ⇒ 上面
+  // 两条通道命中 0 ⇒ 事务判「no target asset resolved」确定性结案，批准永远落不了地。
+  // 口径与后缀兜底同源：不猜 —— 只收 `plugins/<名>/lib/index.js` 真实存在于
+  // 仓库文件集的点名插件；有显式路径命中时不掺入（作者点名的路径才是意图）。
+  if (out.length === 0) {
+    const names = new Set();
+    const re = /\bagint-[a-z][a-z0-9]*(?:-[a-z0-9]+)*\b/g;
+    let m;
+    while ((m = re.exec(hay)) !== null) names.add(m[0]);
+    for (const n of names) {
+      const p = `plugins/${n}/lib/index.js`;
+      if (set.has(p)) push(p);
+    }
+  }
   return out;
 }
 
@@ -1824,7 +1839,9 @@ export function apply(ctx, config = {}) {
       units.push({ id: t.id, kind: 'edit', type: t.type, text: '' });
     }
     for (const t of createTargets) units.push({ id: t.id, kind: 'create', type: 'create', text: '' });
-    if (units.length === 0) return failOut('no target asset resolved');
+    // 失败串带判据（与 runOnce 通道的 resolutionDiag 同口径）：裸文案盖住
+    // 「提了几条路径、几条在仓库里」，78cada8c 排查时就是被它挡住的。
+    if (units.length === 0) return failOut(`no target asset resolved (${resolutionDiag(candidate, repoFiles)})`);
 
     // 读取现有文件原文（新建单元没有原文）。
     for (const u of units) {

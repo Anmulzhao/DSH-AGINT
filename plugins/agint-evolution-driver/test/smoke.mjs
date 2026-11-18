@@ -2424,4 +2424,88 @@ test('T48: policy 拒绝 ⇒ 不写盘', async () => {
   assert.equal(await readFile(join(repo, 'plugins/a/lib/x.js'), 'utf8'), 'const v = 1;\n');
 });
 
-console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T48）');
+// ── T49（2026-11-18）：点名插件兜底定位 —— 实机 78cada8c ─────────────────────
+//
+// upstream-watch 产的提案正文只写「在 agint-upstream-watch 的判读流水线上加闸门」，
+// 全篇没有一个反引号仓库路径 ⇒ extractRepoPaths 命中 0 ⇒ 事务通道 units=0 ⇒
+// 「no target asset resolved」确定性失败 ×2 ⇒ exhausted 结案 wontfix。
+// 老板批准了却看不到落地。兜底口径：正文点名的 agint-* 插件名，若
+// `plugins/<名>/lib/index.js` 真实存在于仓库文件集，就收为目标（存在性校验，不猜）。
+
+test('T49a: 正文只点名插件（无反引号路径）⇒ 按存在性兜底定位到 lib/index.js', () => {
+  const candidate = {
+    title: '给上游判读流水线加版本闸门',
+    body: '在 agint-upstream-watch 的判读流水线上加一道版本闸门，level=downgrade 时直接定档 no-impact。',
+  };
+  const repoFiles = [
+    'plugins/agint-upstream-watch/lib/index.js',
+    'plugins/agint-upstream-watch/lib/judge.js',
+    'plugins/agint-evolve/lib/index.js',
+  ];
+  const all = resolveTargetAssets(candidate, [], repoFiles);
+  assert.deepEqual(all.map((t) => t.id), ['plugins/agint-upstream-watch/lib/index.js'],
+    '点名的插件必须能被定位 —— 否则批准永远落不了地');
+  assert.equal(all[0].type, 'repo');
+});
+
+test('T49b: 点名的插件在仓库里不存在 ⇒ 不收（存在性校验，不猜）', () => {
+  const candidate = { title: 't', body: '给 agint-not-exist 加个闸门' };
+  const all = resolveTargetAssets(candidate, [], ['plugins/agint-evolve/lib/index.js']);
+  assert.deepEqual(all, []);
+});
+
+test('T49c: 反引号路径已命中 ⇒ 兜底不掺入（作者点名的路径才是意图）', () => {
+  const candidate = {
+    title: 't',
+    body: '改 `plugins/agint-evolve/lib/index.js`，参考 agint-upstream-watch 的做法。',
+  };
+  const repoFiles = [
+    'plugins/agint-evolve/lib/index.js',
+    'plugins/agint-upstream-watch/lib/index.js',
+  ];
+  const all = resolveTargetAssets(candidate, [], repoFiles);
+  assert.deepEqual(all.map((t) => t.id), ['plugins/agint-evolve/lib/index.js'],
+    '有显式路径时不得把顺带提到的插件也塞进目标列表');
+});
+
+test('T49d: 事务通道 —— 只点名插件的提案能定位并走完落地（78cada8c 形状）', async () => {
+  const repo = await makeRepo({
+    'plugins/agint-upstream-watch/lib/index.js': 'const v = 1;\n',
+  });
+  const candidate = {
+    id: 'p-name-only', title: '给上游判读流水线加版本闸门', status: 'approved', category: 'plugin',
+    body: '在 agint-upstream-watch 的判读流水线上加一道版本闸门。',
+  };
+  const prompts = [];
+  const llm = async ({ user }) => {
+    prompts.push((/^## Target file: (.+)$/m.exec(user)?.[1] ?? '').trim());
+    return { ok: true, value: { applicable: true, targetSkill: '', oldText: 'const v = 1;', newText: 'const v = 2;', rationale: 'gate' } };
+  };
+  const ctx = txnCtx(repo, candidate);
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-name-only', {
+    env: {}, inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm },
+  });
+  assert.equal(out.ok, true, JSON.stringify(out.reason ?? out.failures));
+  assert.deepEqual(prompts, ['plugins/agint-upstream-watch/lib/index.js']);
+  assert.equal(await readFile(join(repo, 'plugins/agint-upstream-watch/lib/index.js'), 'utf8'), 'const v = 2;\n');
+});
+
+test('T49e: 定位不到目标的失败串必须带诊断（mentioned/inRepo），不许只留裸文案', async () => {
+  const repo = await makeRepo({ 'plugins/a/lib/x.js': 'const v = 1;\n' });
+  const candidate = {
+    id: 'p-no-target', title: 't', status: 'approved', category: 'plugin',
+    body: '改一个不存在的地方。',
+  };
+  const ctx = txnCtx(repo, candidate);
+  apply(ctx, { repoRoot: repo });
+  const out = await ctx.provided['agint.evolutionDriver'].runForProposal('p-no-target', {
+    env: {}, inject: { skillNames: [], fs: { readSkill: async () => SKILL_TEXT }, llm: async () => ({ ok: true, value: {} }) },
+  });
+  assert.equal(out.skipped, true);
+  assert.match(out.reason, /no target asset resolved/);
+  assert.match(out.reason, /mentioned:\d+ inRepo:\d+/,
+    '裸文案盖住判据 —— 78cada8c 排查时就是因为它只写了 no target asset resolved');
+});
+
+console.log('\nagint-evolution-driver smoke: 全部用例通过（T1–T49）');

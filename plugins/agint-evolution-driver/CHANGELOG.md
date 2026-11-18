@@ -1,5 +1,43 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.12.0 — 2026-11-18 — 点名插件兜底定位：批准的提案不再因「无反引号路径」判死
+
+实机 78cada8c：老板在家族面板批准了 upstream-watch 产的「版本闸门」提案，执行器
+23:15 连跑两次都报 `no target asset resolved`，确定性失败 ×2 ⇒ exhausted 结案 wontfix。
+面板上只看到「已批准·排队中」→ 消失，批准像石沉大海。
+
+### 根因
+
+提案正文写「在 agint-upstream-watch 的判读流水线上加一道版本闸门」——点名了插件，
+但全篇没有一个反引号仓库路径。`extractRepoPaths` 命中 0 ⇒ `resolveTargetAssets` /
+`resolveCreateTargets` 全空 ⇒ 事务通道 units=0。upstream-watch 的判读 LLM 只拿到
+上游 facts、不知道仓库文件布局（其 prompt 规则 1 禁止引用 facts 之外的文件），
+所以这类提案**天然**不带路径 —— 不是偶发，是整类提案永远落不了地。
+
+### 修法（两处）
+
+1. `resolveTargetAssets` 加第三条通道：前两条（精确路径 / 唯一后缀）命中 0 时，
+   扫正文点名的 `agint-*` 插件名，只收 `plugins/<名>/lib/index.js` **真实存在于
+   仓库文件集**的条目。与后缀兜底同口径：存在性校验，不猜；有显式路径命中时
+   不掺入（作者点名的路径才是意图）。多目标逐个试的既有闸门（applicable=false
+   只换下一个）原样兜住「顺带提到但不该改」的插件。
+2. 事务通道 units=0 的失败串带上 `resolutionDiag`（mentioned/inRepo 计数），
+   与 runOnce 通道同口径 —— 裸文案盖住判据，这次排查就是被它挡住的。
+
+### 验证
+
+- smoke 新增 T49a–T49e（先 RED 后 GREEN）：点名定位 / 不存在不收 / 显式路径优先 /
+  事务通道真 repo 真写盘走通 78cada8c 形状 / 失败串带诊断。
+- 真实提案 78cada8c 正文 + `git ls-files` 1537 条复算：修前 targets=[]，
+  修后 targets=[plugins/agint-upstream-watch/lib/index.js]。
+- driver 368/368、executor 33/33、evolve 98/98 全绿。
+
+### 遗留（不在本次代码范围）
+
+- 78cada8c 已结案 wontfix：复活按存储 note 的口径「状态改回 proposed 并重新批准」，
+  走家族面板 decision API，由老板操作。
+- 修复要生效需部署两槽 + 重启（运行进程仍是 0.11.0）。
+
 ## v0.11.0 — 2026-11-07 — 全组事务 + 新建文件：提案级执行补齐两块天花板
 
 老板 2026-11-07 要求把「支持新建文件」「全组事务」「面板显示还差几个文件」按重要性做完。
