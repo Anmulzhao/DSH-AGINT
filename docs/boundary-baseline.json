@@ -1,7 +1,7 @@
 {
   "$comment": "能力边界门禁的已知欠账基线。每条必须带 reason。命中项不在此表 ⇒ 门禁 exit 1（新增越界）。条目失效（代码里已消失）只报 INFO，不阻断 —— 目的是让门禁能立刻上线，同时把存量收敛期显式记账。",
   "version": 1,
-  "updatedAt": "2026-10-21",
+  "updatedAt": "2026-11-18",
   "items": [
     {
       "id": "B-001",
@@ -22,20 +22,6 @@
       "category": "zstd-self-decompress",
       "file": "plugins/agint-session-extract/index.js",
       "reason": "会话提取器自解 zstd + 自解析 jsonl。宿主层能力（dsh-session-format / dsh-session-persistence 已有）。应改为读上游已解码事件流，AGINT 只保留「抽进化语义」这一层。",
-      "foundAt": "2026-10-21"
-    },
-    {
-      "id": "B-006",
-      "category": "machine-private-path",
-      "file": "plugins/agint-session-extract/index.js",
-      "reason": "zstd 解析器的本机路径回落候选写进库文件。违反 AGENTS.md「机器私有事实不入库」红线。修法：只读 ZSTD_BIN 环境变量，库内不写盘符。",
-      "foundAt": "2026-10-21"
-    },
-    {
-      "id": "B-007",
-      "category": "machine-private-path",
-      "file": "plugins/agint-input-gateway/lib/channels/self-observation.js",
-      "reason": "同 B-006：zstd 回落路径硬编码本机盘符。修法：只读环境变量。",
       "foundAt": "2026-10-21"
     },
     {

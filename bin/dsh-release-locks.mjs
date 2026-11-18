@@ -40,11 +40,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 
 const HOME = (() => {
   const i = process.argv.indexOf('--home');
   if (i >= 0) return process.argv[i + 1];
-  return process.env.DSH_HOME || 'C:/Users/Administrator/.dsh';
+  return process.env.DSH_HOME || path.join(homedir(), '.dsh');
 })();
 const APPLY = process.argv.includes('--apply');
 

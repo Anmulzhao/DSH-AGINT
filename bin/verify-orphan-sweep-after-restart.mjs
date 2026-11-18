@@ -20,9 +20,10 @@
 import { readdir, mkdir, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const DSH_HOME = process.env.DSH_HOME || join(process.env.USERPROFILE || 'C:/Users/Administrator', '.dsh');
+const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
 // 2026-09-23 起自动生成技能的投放目标改到**用户级根**（`$DSH_HOME/skills`，与插件
 // schema 默认值一致）：旧的 `.agent-presets/agint/skills` 属 install.sh 镜像管理范围，
 // 重装会把自动生成的技能整片清掉。`AGINT_SKILLS_ROOT` 可覆盖（隔离测试用临时目录）。

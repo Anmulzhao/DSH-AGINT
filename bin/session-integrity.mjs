@@ -55,10 +55,11 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 
 const SESSIONS_ROOT = process.argv.includes('--root')
   ? process.argv[process.argv.indexOf('--root') + 1]
-  : 'C:/Users/Administrator/.dsh/sessions';
+  : path.join(process.env.DSH_HOME || path.join(homedir(), '.dsh'), 'sessions');
 
 const MODE = process.argv.includes('--fix') ? 'fix'
   : process.argv.includes('--dry') ? 'dry'

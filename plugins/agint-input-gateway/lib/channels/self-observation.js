@@ -344,8 +344,9 @@ function detectCompressLoss(ctx, report = null) {
  */
 function zstdCandidatePaths() {
   const envBin = process.env.ZSTD_BIN;
+  // win32 机器私有装位走 ZSTD_BIN（$DSH_HOME/.env 注入）；仓库只留平台通用位
   const list = process.platform === 'win32'
-    ? ['D:/Tools/zstd/zstd.exe', 'C:/Tools/zstd/zstd.exe', 'D:/Tools/zstd/zstd', 'C:/Tools/zstd/zstd']
+    ? []
     : [
         '/usr/bin/zstd',
         '/usr/local/bin/zstd',

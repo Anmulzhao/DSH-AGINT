@@ -23,9 +23,11 @@ import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const SINKS_SCHEMA = '1.0';
-export const DEFAULT_DSH_ROOT = '/home/kylin/.nvm/versions/node/v24.21.0/lib/node_modules/@deepseek-ai/dsh';
-export const DEFAULT_REPO_ROOT = '/home/kylin/projects/DSH/DSH-AGINT';
-export const DEFAULT_BUNDLE_ROOT = '/home/kylin/projects/DSH/AGINT-data/.agint-bundle/plugins';
+// 机器私有路径不入库（Phase -1.4）：默认值一律 env 驱动，与 cordis.patch.yml 同约定。
+// AGINT_DSH_ROOT 无通用推导式（各机 dsh 安装位不同）⇒ 未配则 null，loadFacility 显式报错。
+export const DEFAULT_DSH_ROOT = process.env.AGINT_DSH_ROOT || null;
+export const DEFAULT_REPO_ROOT = process.env.AGINT_REPO_ROOT || (process.env.HOME + '/projects/DSH/DSH-AGINT');
+export const DEFAULT_BUNDLE_ROOT = (process.env.AGINT_DATA_HOME || process.env.AGINT_HOME || (process.env.HOME + '/projects/AGINT')) + '/.agint-bundle/plugins';
 
 /**
  * ⛔ 硬判据：演练域不得等于生产 storages，也不得是它的子目录。
@@ -95,6 +97,9 @@ function fileKvBackend(storages) {
 }
 
 async function loadFacility(dshRoot, storages) {
+  if (!dshRoot) {
+    throw new Error('AGINT_DSH_ROOT 未配置：演练 sink 需要 dsh 安装根（机器私有，走启动环境或 $DSH_HOME/.env 注入）');
+  }
   const facilityPath = join(dshRoot, 'node_modules/@deepseek-ai/dsh-storage-domain/lib/index.js');
   if (!existsSync(facilityPath)) {
     throw new Error(`DSH_STORAGE_DOMAIN_MISSING: ${facilityPath} 不存在（DSH_ROOT 是否指对？）`);

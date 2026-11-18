@@ -13,9 +13,12 @@
  * 退出码：0 = 结构自洽（可带 WARN）；1 = 结构错误。
  */
 import { EDGE_DECL, collectArchData } from '../plugins/agint-family-panel/lib/arch-data.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const KINDS = new Set(['live', 'break', 'frozen', 'human', 'feedback']);
-const STORAGES = (process.env.DSH_HOME || 'D:/DSH/AGINT-date') + '/storages';
+// 兜底与 cordis.patch.yml 的 DSH_HOME 表达式同约定（$HOME/.dsh）；机器值走启动环境注入
+const STORAGES = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'storages');
 
 const model = collectArchData({ storagesDir: STORAGES });
 const ids = new Set(model.nodes.map((n) => n.id));

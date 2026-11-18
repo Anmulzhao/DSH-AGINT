@@ -1711,6 +1711,16 @@ if [ "$DRY_RUN" != "1" ]; then
   commit_install
 fi
 
+# ── 装后体检：机器级环境配置（只报告，不阻断安装） ────────────────────────────
+# 新机器装完时机器值可能还没填（先有 DSH_HOME 才谈得上 $DSH_HOME/.env）⇒ 不用 --strict。
+# 阻断式门禁在 bin/plugin-check.sh 末尾（--strict）。模板见 machine-env.example。
+if [ "$DRY_RUN" != "1" ] && command -v node >/dev/null 2>&1; then
+  log ""
+  log "─── 机器级环境配置体检（只报告，不阻断） ───"
+  DSH_HOME="$DSH_HOME" node "$AGINT_HOME/bin/validate-env-config.mjs" --repo-root="$AGINT_HOME" || true
+  log "有 ⛔ 项：按 machine-env.example 把本机值填进 \$DSH_HOME/.env（DSH_HOME 本身走启动环境注入）"
+fi
+
 log ""
 log "✅ 安装完成"
 log ""

@@ -1,0 +1,47 @@
+# machine-env.example — 机器级环境配置模板（多机配置分层，2026-11-18）
+#
+# ⛔ 旧模板 .agint-env.local.example 已废：运行时加载器（dsh-app-boot loadLayeredEnv）
+#    根本不读 .agint-env.local —— 写那里只会造出「校验绿、运行坏」假象。
+#
+# 真实生效的两条通道（与加载器严格一致）：
+#   1. 启动环境注入（start-dsh.cmd / compose environment / systemd）：
+#      DSH_HOME 等 DSH_ / XDG_ 前缀与 PATH/HOME 是 bootstrap-only，
+#      写进任何 .env 运行时直接抛错，只能走这条。
+#   2. $DSH_HOME/.env（user 层，每机一份，不入库，不随仓库 clone 走）：
+#      AGINT_* 等其余机器值写这里。优先级：进程 env > 启动 cwd .env > $DSH_HOME/.env。
+#
+# 用法：把下面需要的行抄进 $DSH_HOME/.env，按本机实际路径填值。
+# 校验：node bin/validate-env-config.mjs --strict（读文件与运行时一致）
+
+# ── 通道 1：启动环境注入（示例，不是 .env 内容）──────────────────────────
+#   Windows  start-dsh.cmd:  set DSH_HOME=D:\path\to\AGINT-date
+#   NAS      compose:        environment: DSH_HOME=/dsh
+#   Linux    systemd/脚本:   export DSH_HOME=/home/<you>/.dsh
+
+# ── 通道 2：$DSH_HOME/.env 内容 ──────────────────────────────────────────
+
+# 仓库正本根（必填）。cordis 4 处 repoRoot 的真通道；喂 driver/cron/family-panel。
+#   Windows 示例：AGINT_REPO_ROOT=D:/path/to/DSH-AGINT
+#   Linux   示例：AGINT_REPO_ROOT=/home/<you>/projects/DSH/DSH-AGINT
+AGINT_REPO_ROOT=
+
+# 数据根专用（可选，优先于 AGINT_HOME）。dreams/wiki/reviews 落点。
+# 不配则回退 AGINT_HOME，再回退 $HOME/projects/AGINT。
+AGINT_DATA_HOME=
+
+# agint wiki 根（可选）。不配则从数据根派生。
+AGINT_WIKI_ROOT=
+
+# AGINT 仓根（可选；install.sh 推导用，非数据目录）。
+AGINT_HOME=
+
+# zstd 二进制装位（可选）。win32 仓库候选已去机器化，本机装位由此注入。
+#   Windows 示例：ZSTD_BIN=D:/path/to/zstd.exe
+ZSTD_BIN=
+
+# oracle 演练 sink 用的 dsh 安装根（可选，仅演练 CLI 需要；各机安装位不同，无通用推导）。
+AGINT_DSH_ROOT=
+
+# ── 其余 DSH_* 通道（bootstrap-only，只能走通道 1）───────────────────────
+# DSH_WIKI_ROOT / DSH_PROJECT_ROOT / DSH_INPUT_GATEWAY_REPOS：
+# 宿主 wiki 根 / input-gateway dsh-agint 槽位 / 追加 git 仓库（id=path;path2）。

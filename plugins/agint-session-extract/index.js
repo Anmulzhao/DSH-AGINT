@@ -27,6 +27,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 // F5 收口（2026-10-19）：会话文件名表与后缀常量的唯一真相源在 agint-session-source。
 // 相对路径引用（与 semantic-window.js:24 引 agint-session-extract 同形）——
@@ -40,17 +41,17 @@ const execFileAsync = promisify(execFile);
 
 /**
  * 解析 zstd 二进制路径。宿主环境不保证 zstd 在 PATH 里：
- *   - 本机 Windows：D:/Tools/zstd/zstd
- *   - gszx Linux 容器：/usr/bin/zstd
- * 故支持 ZSTD_BIN 环境变量覆盖，否则按平台兜底绝对路径，最后回退 'zstd'。
+ * win32 机器私有装位走 ZSTD_BIN（$DSH_HOME/.env 注入，见 machine-env.example）；
+ * Linux 留平台通用位兜底，最后回退 'zstd'。
  */
 export function resolveZstdBin() {
   if (process.env.ZSTD_BIN) return process.env.ZSTD_BIN;
+  // win32 机器私有装位走 ZSTD_BIN（$DSH_HOME/.env 注入）；仓库只留平台通用位
   const fallback = process.platform === 'win32'
-    ? ['D:/Tools/zstd/zstd', 'C:/Tools/zstd/zstd']
+    ? []
     : ['/usr/bin/zstd', '/usr/local/bin/zstd', '/bin/zstd'];
   for (const p of fallback) {
-    try { if (require('node:fs').existsSync(p)) return p; } catch { /* ignore */ }
+    try { if (existsSync(p)) return p; } catch { /* ignore */ }
   }
   return 'zstd';
 }
@@ -85,7 +86,7 @@ export function sessionVerRank(fileName) {
 
 /**
  * 解压单个 zstd 会话文件 → 原始 jsonl 文本。
- * 宿主已装 zstd（本机 D:/Tools/zstd）；失败抛错由调用方 containment。
+ * 宿主已装 zstd（装位经 ZSTD_BIN 注入，见 machine-env.example）；失败抛错由调用方 containment。
  */
 export async function decompressSession(path, { maxBuffer = 64 * 1024 * 1024 } = {}) {
   const bin = resolveZstdBin();

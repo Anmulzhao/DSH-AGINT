@@ -22,12 +22,14 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { collectArchData } from '../plugins/agint-family-panel/lib/arch-data.js';
 import { renderArchPage } from '../plugins/agint-family-panel/lib/arch-render.js';
 
 const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
-const DSH_HOME = process.env.DSH_HOME || 'D:/DSH/AGINT-date';
+// 兜底与 cordis.patch.yml 的 DSH_HOME 表达式同约定（$HOME/.dsh）；机器值走启动环境注入
+const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
 const STORAGES = join(DSH_HOME, 'storages');
 const STORAGES_LABEL = '$DSH_HOME/storages';
 const OUT = join(DSH_HOME, '..', 'docs', 'AGINT-进化架构图.html');

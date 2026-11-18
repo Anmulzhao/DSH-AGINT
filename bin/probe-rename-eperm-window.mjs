@@ -19,7 +19,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-const SKILLS = 'C:/Users/Administrator/.dsh/.agent-presets/agint/skills';
+const DSH_HOME = process.env.DSH_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.dsh');
+const SKILLS = path.join(DSH_HOME, '.agent-presets/agint/skills');
 const RUN = String(process.argv[2] ?? Date.now()).slice(-6);
 const N = Number(process.argv[3] ?? 60);
 

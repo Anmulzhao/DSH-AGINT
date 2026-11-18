@@ -648,3 +648,25 @@ if [ -f "$LLM_PARITY_SCRIPT" ]; then
     exit 1
   fi
 fi
+
+# ── 机器级环境配置门禁（阻断） ────────────────────────────────────────────────
+# 2026-11-18 接入（多机配置分层步3）：三台机器（Windows/NAS/麒麟）共用本仓，
+# 机器私有路径走 env（$DSH_HOME/.env + 启动注入）。本门禁查三件事：
+# 必填通道没配 / 配了不存在的路径 / 有人把绝对路径硬编码回源码。
+# 历史事故：repoRoot 兜底指错路 ⇒ ledger-anchor 每晚 ENOENT、driver 静默停 commit。
+ENV_CONFIG_SCRIPT="$(dirname "$0")/validate-env-config.mjs"
+if [ -f "$ENV_CONFIG_SCRIPT" ]; then
+  echo
+  echo "─── 机器级环境配置门禁 ───"
+  if command -v node >/dev/null 2>&1; then
+    if node "$ENV_CONFIG_SCRIPT" --strict --repo-root="$(cd "$(dirname "$0")/.." && pwd)"; then
+      echo "  [PASS] 机器通道配齐且路径存在，源码无硬编码机器路径"
+    else
+      echo "  [FAIL] 机器级环境配置有问题 —— 按 machine-env.example 补 \$DSH_HOME/.env，或去掉硬编码路径"
+      exit 1
+    fi
+  else
+    echo "  [FAIL] node 不可用，环境配置门禁无法执行 —— 拒绝放行（fail-closed）"
+    exit 1
+  fi
+fi

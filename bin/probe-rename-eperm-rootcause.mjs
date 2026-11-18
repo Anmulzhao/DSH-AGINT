@@ -24,9 +24,10 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-const SKILLS = 'C:/Users/Administrator/.dsh/.agent-presets/agint/skills';
+const DSH_HOME = process.env.DSH_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.dsh');
+const SKILLS = path.join(DSH_HOME, '.agent-presets/agint/skills');
 // 同盘兄弟目录 —— 保证 rename 仍是同文件系统（原子），但在 watcher 监听范围之外
-const OUTSIDE = 'C:/Users/Administrator/.dsh/.agent-presets/agint/_probe_staging';
+const OUTSIDE = path.join(DSH_HOME, '.agent-presets/agint/_probe_staging');
 const RUN = String(process.argv[2] ?? Date.now()).slice(-6);
 const N = Number(process.argv[3] ?? 300);
 

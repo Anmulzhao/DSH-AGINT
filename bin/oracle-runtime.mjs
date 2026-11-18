@@ -43,12 +43,12 @@ import {
 } from './oracle-falsifiable-prescription.mjs';
 import {
   makeDryRunSink, makeEvolveSink, makeCurriculumSink,
-  assertRehearsalRoot, describeSinks, SINKS_SCHEMA,
+  assertRehearsalRoot, describeSinks, SINKS_SCHEMA, DEFAULT_REPO_ROOT,
 } from './oracle-runtime-sinks.mjs';
 
 export const RUNTIME_SCHEMA = '1.1';
 export const DELIVERY_AUDIT_NAME = 'delivery-audit.jsonl';
-export const DEFAULT_REHEARSAL_PARENT = '/home/kylin/projects/DSH/.oracle-rehearsal';
+export const DEFAULT_REHEARSAL_PARENT = join(dirname(DEFAULT_REPO_ROOT), '.oracle-rehearsal');
 export const VETO_WINDOW_HOURS = 24;
 
 /** ⛔ 合成真值只用于演练：绝不落盘到冻结集，绝不冒充已锚定。 */

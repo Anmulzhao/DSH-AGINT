@@ -20,9 +20,11 @@
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const HOST = process.env.DSH_HOST ?? '127.0.0.1:3080';
-const LOG = process.env.DSH_LOG ?? 'C:\\Users\\Administrator\\AppData\\Local\\Temp\\dsh-web.log';
+const LOG = process.env.DSH_LOG ?? join(process.env.LOCALAPPDATA || tmpdir(), 'Temp', 'dsh-web.log');
 
 /** 从宿主日志尾部取最新 launch token（每次重启必变，不能复用旧的）。 */
 function latestToken() {
