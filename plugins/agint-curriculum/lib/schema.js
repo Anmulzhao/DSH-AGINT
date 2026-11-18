@@ -123,7 +123,9 @@ export const ChallengeSchema = z.object({
 
   // 可自动判定的通过条件（C1 的机器侧：verdict 用 verifySpec 还原断言）
   verifySpec: z.object({
-    type: z.enum(['exit-code-output', 'conclusion-match', 'step-list', 'tool-match']),
+    // v0.2.4（提案 2cac5f70）：新增 exec-code —— D5 封顶后「换题型」，
+    // 要求真实写代码并运行，输出含确定性信号（复用 exitCode/output 证据字段）。
+    type: z.enum(['exit-code-output', 'conclusion-match', 'step-list', 'tool-match', 'exec-code']),
     expected: z.any().default(null),
     minLength: z.number().int().min(0).default(0),
   }),
@@ -148,7 +150,30 @@ export const AttemptSchema = z.object({
   // C2：LLM 自评只进 notes，不进 result
   selfAssessment: z.string().nullable().default(null),
   reason: z.string().default(''),
+  // 失效标记（提案 409d571f）：判定基础设施故障时 result 仍是 fail（事实），
+  // 但 invalidated=true 表示这次失败不是能力不足，下游能力判定必须排除。
+  // default false/'' 保证存量 attempt 读入零影响（向后兼容，不升 domain version）。
+  invalidated: z.boolean().default(false),
+  invalidationReason: z.string().default(''),
   verifiedAt: z.string(),
+  // 防复读标记（提案 10d2d87f）：result 仍是 pass（事实不变），但本次属复读 →
+  // 不计入能力成功数。default false 保证存量 attempt 读入零影响。
+  replay: z.object({
+    isReplay: z.boolean(),
+    kind: z.string().nullable().default(null),
+    reasons: z.array(z.string()).default([]),
+    fingerprint: z.string().nullable().default(null),
+    // 方案 3 LLM 语义判据的结果（选项 2 拍板启用；默认 null = 未调用/存量）
+    // 只记信号，不进任何评分字段。
+    llm: z.object({
+      called: z.boolean(),
+      ok: z.boolean(),
+      isReplay: z.boolean(),
+      confidence: z.string().nullable().default(null),
+      rationale: z.string().default(''),
+      reason: z.string().nullable().default(null),
+    }).nullable().default(null),
+  }).nullable().default(null),
 });
 
 export const DifficultyStateSchema = z.object({
@@ -192,6 +217,11 @@ export const ConfigSchema = z.object({
   // 生成；过期允许复出（复验）。与 stale_reverify_days 语义不同，各自独立。
   dedup_window_days: z.number().int().min(0).default(30),        // 0 = 关闭去重
 
+  // v0.2.4（提案 2cac5f70）：域毕业让位——已封顶 D5 的域在 boundary-probe
+  // 里降权，把出题位让给未完成的 UNCERTAIN/CANNOT 域。默认开；设 false 回退
+  // 旧行为（全局出题节奏变更，留一键回退口）。
+  graduate_deprioritize: z.boolean().default(true),
+
   // difficulty-ctl（§4.6）
   difficulty_window_days: z.number().int().min(1).default(28),
   difficulty_min_samples: z.number().int().min(1).default(5),   // 样本 < 5 不调档
@@ -203,6 +233,17 @@ export const ConfigSchema = z.object({
   // verdict（§4.4 C1/C2/C3）
   require_evidence: z.boolean().default(true),                  // 无 evidence → fail（C3）
   verdict_expires_days: z.number().int().min(1).default(30),    // 超时未提交 → expired
+
+  // 防复读护栏（提案 10d2d87f）：判定「换说法填两遍 / 原样复读」的 pass，
+  // 标 replay 但不计入能力成功数；默认开。两个子开关可分别关，回退到旧计数口径。
+  replay_detection: z.boolean().default(true),        // 总开关；false = 完全回退旧行为
+  replay_fingerprint: z.boolean().default(true),      // 方案 4：steps 指纹（原样复读）
+  replay_prompt_dedup: z.boolean().default(true),     // 方案 1：同题面第 2 次起不计成功
+  // 方案 3：LLM 语义判据（选项 2 拍板「完整实现并默认启用」，明知违反纲领 §9.5）
+  // 只在确定性护栏未命中时对 pass 补判「换说法复读」；LLM 不可用/超时一律降级不阻塞。
+  replay_llm: z.boolean().default(true),              // false = 只走确定性护栏（零 LLM 回退口径）
+  replay_llm_timeout_ms: z.number().int().min(1000).default(30000),
+  replay_llm_min_confidence: z.enum(['low', 'medium', 'high']).default('high'),
 
   // 执行边界（§4.5）
   auto_execute_enabled: z.boolean().default(false),             // Sprint 14 恒 false
@@ -221,6 +262,7 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'generation_batch_limit',
   'challenge_cooldown_hours',
   'dedup_window_days',
+  'graduate_deprioritize',
   'difficulty_window_days',
   'difficulty_min_samples',
   'pass_floor',
@@ -229,6 +271,12 @@ export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'force_demote_streak',
   'require_evidence',
   'self_model_writeback',
+  'replay_detection',
+  'replay_fingerprint',
+  'replay_prompt_dedup',
+  'replay_llm',
+  'replay_llm_timeout_ms',
+  'replay_llm_min_confidence',
 ]);
 
 /** 模板域 → 模板描述（供工具/文档展示；实际模板见 challenge-gen.js） */

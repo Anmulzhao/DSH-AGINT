@@ -132,7 +132,10 @@ export async function spawnOracleLlm(ctx, { system, user, schema, timeoutMs, lab
     const createPromise = agents.create({
       sessionId: `oracle-llm-${randomUUID()}`,
       // ⭐ agentPreset 不能省（空壳会话血债）
-      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: DEFAULT_AGENT_PRESET },
+      // ⛔ 2026-11-17 实测：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无
+      //    resident activation ⇒ 抛 "agent has no active runtime owner"。
+      //    见 dsh-subagent/lib/types/manager.js:421-430。临时 parent 是树根，不标 origin。
+      meta: { cwd: process.cwd(), agentPreset: DEFAULT_AGENT_PRESET },
       // ⭐ agentOptions 是 provider/model/reasoningEffort 的载体
       agentOptions,
       signal: controller.signal,
@@ -147,14 +150,17 @@ export async function spawnOracleLlm(ctx, { system, user, schema, timeoutMs, lab
       ? Promise.resolve().then(() => subagents.startActivation({
         provider: 'spawn',
         label,
-        request: {
-          parent: handle.agent,
-          prompt,
-          // 子级独立 preset：与 parent 相同，但显式传给 request（新契约）
-          agentPreset: DEFAULT_AGENT_PRESET,
-          agentOptions,
-          outputSchema: schema,
-        },
+        // ⛔ 宿主 dsh 0.2.2-rc.1 起 SubagentActivationSpec 不再接受嵌套 request：
+        //    prompt / parent / agentPreset / agentOptions / outputSchema 必须摊在 spec 顶层
+        //    （宿主源码 dsh-subagent/lib/index.js:3024 读的是 spec.parent.id）。
+        //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+        //    "Cannot read properties of undefined (reading 'id')" ⇒ 审美增强恒失败。
+        parent: handle.agent,
+        prompt,
+        // 子级独立 preset：与 parent 相同，但显式传给 spec（新契约）
+        agentPreset: DEFAULT_AGENT_PRESET,
+        agentOptions,
+        outputSchema: schema,
         signal: controller.signal,
         // caller：只回结果，不向父 agent 发完成通知（后台广播不该污染会话）
         delivery: 'caller',

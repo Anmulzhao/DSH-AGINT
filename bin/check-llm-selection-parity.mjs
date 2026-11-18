@@ -38,6 +38,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 /** 已知走宿主子代理服务面调 LLM 的插件。自动发现与之对拍，防止新增插件绕过门禁。 */
 export const KNOWN_LLM_PLUGINS = [
   'agint-aesthetic-oracle',
+  // 2026-11-18 提案 10d2d87f 选项 2 拍板：curriculum 方案 3 复读语义判据接入宿主 LLM。
+  // 明知违反纲领 §9.5「评分链路永久零 LLM」，用户承担架构决策；此处按门禁要求登记，
+  // 其 lib/replay-llm.js 已读 agentDefaultModel.currentSelection()，兜底常量与宿主目录一致。
+  'agint-curriculum',
   'agint-dream',
   'agint-evolution-driver',
   'agint-skill-autocreate',

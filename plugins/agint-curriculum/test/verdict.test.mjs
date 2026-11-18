@@ -71,9 +71,80 @@ test('防御性：verifySpec 缺失 → fail 不 pass（宁 fail 不 pass）', (
   assert.match(v.reason, /防御性 fail/);
 });
 
-test('listVerifierTypes 覆盖 4 种断言', () => {
+test('listVerifierTypes 覆盖 5 种断言（v0.2.4 增 exec-code）', () => {
   assert.deepEqual(
     [...listVerifierTypes()].sort(),
-    ['conclusion-match', 'exit-code-output', 'step-list', 'tool-match'],
+    ['conclusion-match', 'exec-code', 'exit-code-output', 'step-list', 'tool-match'],
   );
+});
+
+// ── v0.2.4（提案 2cac5f70）：D5 封顶换题型 exec-code ──────────────────────
+
+test('exec-code：exitCode=0 + 输出含全部确定性信号 → pass', () => {
+  const ch = generateChallenge('integration', 'D5', { variant: 3 }); // diff=[4] / consistent=false
+  assert.equal(ch.verifySpec.type, 'exec-code');
+  assert.equal(judge(ch, { exitCode: 0, output: 'region diff diff=[4], consistent=false' }).result, 'pass');
+});
+
+test('exec-code：缺任一信号 / 口述步骤 / exitCode≠0 → fail（宁 fail 不 pass）', () => {
+  const ch = generateChallenge('integration', 'D5', { variant: 3 });
+  assert.equal(judge(ch, { exitCode: 0, output: '我会在两边做一致性校验' }).result, 'fail', '口述不算真实执行');
+  assert.equal(judge(ch, { exitCode: 0, output: 'diff=[4] only' }).result, 'fail', '信号不齐');
+  assert.equal(judge(ch, { exitCode: 1, output: 'diff=[4] consistent=false' }).result, 'fail', '运行失败');
+});
+
+test('exec-code：3 道新题 pass 证据真跑可判 pass（提案风险章节要求预判验证）', () => {
+  const cases = [
+    { v: 3, output: 'diff=[4] consistent=false' },
+    { v: 4, output: 'rollback=true active_version=v1 canary_aborted=true' },
+    { v: 5, output: 'migrated=100 cutover=done downtime=0s' },
+  ];
+  for (const { v, output } of cases) {
+    const ch = generateChallenge('integration', 'D5', { variant: v });
+    assert.equal(judge(ch, { exitCode: 0, output }).result, 'pass', `variant=${v} 应可判 pass`);
+  }
+});
+
+test('step-list：参数层数组包装 { item: [...] } 可还原（2026-11-17 传输缺陷回归）', () => {
+  const ch = mk('planning', 'D2'); // min 4, keywords [test, build]
+  const wrapped = { item: ['a', 'b', 'c', 'd', 'test', 'build'] };
+  assert.equal(judge(ch, { steps: wrapped }).result, 'pass', '包装形态应还原后按原判据判定');
+  assert.equal(judge(ch, { steps: { item: ['a', 'b', 'c'] } }).result, 'fail', '还原后步数不足仍 fail');
+  assert.equal(judge(ch, { steps: { item: ['a', 'b', 'c', 'd'] } }).result, 'fail', '还原后缺关键词仍 fail');
+  assert.equal(judge(ch, { steps: { item: [1, 2, 3, 4, 'test', 'build'] } }).result, 'fail', '非字符串元素不放宽判据');
+  assert.equal(judge(ch, { steps: { 0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'test', 5: 'build' } }).result, 'pass', '数字下标形态可还原');
+});
+
+// ── 提案 409d571f：判定基础设施故障 = 失效，不等于能力不足 ──────────────────
+
+test('失效：证据字段提交了但结构无法解析 → invalidation 非空，result 仍是 fail', () => {
+  const ch = mk('planning', 'D2');
+  // 传输层把必填数组压坏成各种不可解析形态
+  for (const bad of ['not-array', { foo: 'bar' }, { a: [1], b: [2] }, [1, 2, 3]]) {
+    const v = judge(ch, { steps: bad });
+    assert.equal(v.result, 'fail', '事实仍是 fail，绝不因失效放松判据');
+    assert.ok(typeof v.invalidation === 'string' && v.invalidation.includes('steps'),
+      `结构 ${JSON.stringify(bad)} 应标失效`);
+  }
+});
+
+test('非失效：字段缺失/内容不足/不可还原但合法的 fail 都不得标失效（逃逸口防线）', () => {
+  const ch = mk('planning', 'D2');
+  // 字段根本没提交 = 没做，是真实失败，不是尺子坏
+  assert.equal(judge(ch, {}).invalidation, null, '未提交 steps 不标失效');
+  // 合法数组但步数不足/缺关键词 = 能力不足，不标失效
+  assert.equal(judge(ch, { steps: ['a', 'b', 'c'] }).invalidation, null, '步数不足不标失效');
+  assert.equal(judge(ch, { steps: ['a', 'b', 'c', 'd'] }).invalidation, null, '缺关键词不标失效');
+  // 单键数组包装还原后步数不足 = 内容问题，不是结构问题
+  assert.equal(judge(ch, { steps: { item: ['a', 'b'] } }).invalidation, null, '可还原后内容不足不标失效');
+  // 其它断言类型不适用结构体检
+  const codeCh = mk('codegen', 'D1');
+  assert.equal(judge(codeCh, { exitCode: 1, output: 'boom' }).invalidation, null, '非数组型断言不标失效');
+});
+
+test('失效：verifySpec 无对应断言 → 判定器不可用，标失效（宁 fail 不 pass）', () => {
+  const ch = { ...mk('codegen', 'D1'), verifySpec: { type: 'unknown-type' } };
+  const v = judge(ch, { exitCode: 0, output: 'ok' });
+  assert.equal(v.result, 'fail');
+  assert.match(v.invalidation, /无对应断言/);
 });

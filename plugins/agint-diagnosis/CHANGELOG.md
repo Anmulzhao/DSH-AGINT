@@ -4,6 +4,71 @@
 
 ---
 
+## 0.7.2（2026-11-18）— 修「归因恒 UNCERTAIN」与 sandbox.failed 自动归因写不进表（提案 49ac5e58 后续）
+
+### 依据（改前实跑取证）
+
+0.7.1 解除了 `diagnosis_annotate` 的参数名断层，标注入口打通（生产 `annotations` 从 0 行 → 1 行，`diagnosis_report` 的 `annotationCount` 从 0 → 1）。但第一次真实标注返回 `rootCause=UNCERTAIN, confidence=0`，追下去发现根因不在入口，在**取值顺序**：
+
+| 场景（同一份 3 步 trajectory） | 改前结果 |
+|---|---|
+| failureId 命中 `failure_pattern` 表 + 显式 trajectory | `UNCERTAIN` conf=0 |
+| failureId 不在表内 + 同一份 trajectory | `TOOL_GAP` conf=1 |
+| 不传 trajectory，failureId 命中表内 | `UNCERTAIN` conf=0 |
+
+根因：服务层 `annotate` 的取值顺序是「failure_pattern **单行** > 入参 trajectory」——只要 failureId 在表内，调用方手里最真实的失败步骤序列就被丢弃；6 类特征投票只看得到 1 步，而单步最多命中 1 个特征，投票门槛是 ≥2 ⇒ **每次都判 UNCERTAIN**。后果外溢：`agint-self-model` 的 `nonEnvRatio` 取自 `rootCauseDistribution`，分布恒空 ⇒ 失败永远被算成「非环境根因」。
+
+另发现：`analyzeFailedSmoke`（sandbox.failed 自动归因路径）**一行都没写进过表**——它传 `rootCause='environment-shift'`（小写连字符）且 `evidence` 传数组，而 FROZEN `AnnotationSchema` 要的是 7 类**大写枚举** + `evidence: string`，`packAnnotation` 必抛 zod 校验错，错误只落在返回值 `writeError` 里没人看。生产 `annotations` 表 0 行来自该路径（`sandbox.failed` 主题在 39578 行事件历史里 0 次发布）。
+
+### 改动
+
+1. **显式 trajectory 优先**：`annotate` 的取值顺序改为「调用方显式 trajectory > failure_pattern 单行兜底 > 空数组」。空数组不覆盖已有证据。证据来源写进 `evidence.trajectorySource`（`explicit` / `failure_pattern` / `empty`）与 `evidence.trajectorySteps`，审计可查。
+2. **工具层补 `trajectory` 参数**：`diagnosis_annotate` 的 schema 新增可选 `trajectory`（步骤数组），并透传给服务层——服务层本来就读 `input.trajectory`（0.7.1 的单测已覆盖），**缺的是工具层这一环**。步骤用分类器词表 `{ pattern, evidence, note, message, tool }`；trajectory-store 的步只有 `content`，投票不读它，需自行映射到 `evidence`。
+3. **sandbox.failed 路径写表修好**：`analyzeFailedSmoke` 把 `rootCause` 归一到 FROZEN 大写枚举（`environment-shift` → `ENVIRONMENT_SHIFT`），`evidence` 改为 `JSON.stringify` 后的 string，空 `reason` 归一到 `unknown`。
+4. **工具层参数名断层（另一处同型）**：`diagnosis_analyzeFailedSmoke` 旧 schema 只有一个 `smokeRunId`，而服务层要的是事件 payload `{ target, mode, reason, failedChecks, durationMs }`；且 `agint-quality-sandbox` **不存 smoke 运行记录**（只 publish `sandbox.failed`），`smokeRunId` 在系统里没有可查实体，传进来必然退化成 `reason='unknown'`。工具改为直收 payload 各字段，`smokeRunId` 保留为「只记证据、不解析」的兼容位。
+
+### 行为变化 / 未做
+
+- `diagnosis_annotate` 现在能判出真实根因（前提：调用方给出多步失败序列）。**判不出时仍诚实落 `UNCERTAIN`**——本次没有为了「看起来能用」去调低投票门槛或伪造判定。
+- ⛔ 仍不写 `failure_pattern`（设计稿 §二.2 / §八 红线）；提案 49ac5e58 第 4 项继续不做。
+- FROZEN：4 个 Service 签名、6 类根因 enum、三表 schema 全部未改。`evidence` 新增两个字段属于 evidence 字符串内的 JSON 键，不动 schema。
+- 分类器本身未改：`content` 字段**故意不纳入**投票文本——真实轨迹正文里高频出现 "prompt" 一词，纳入会制造 `PROMPT_DEFICIENCY` 假阳性，把「诚实落 UNCERTAIN」变成「自信地判错」。
+
+### 验收
+
+- 新增 `test/root-cause-trajectory.test.mjs`（5 例）：显式 trajectory 压过单行兜底 / 无 trajectory 时退回单行且来源标注正确 / 空数组不覆盖 / analyzeFailedSmoke 大写枚举 + string evidence + 写表成功 / 空 reason 归一到 unknown 仍可写。
+- 全量：`node --test test/*.test.mjs` → 85 pass / 0 fail（改前 80 pass / 0 fail）。
+
+---
+
+## 0.7.1（2026-11-17）— 修 diagnosis_annotate 参数名断层 / cold-start 错误信息 / category 被静默丢弃（提案 49ac5e58 改动 1~3）
+
+### 依据
+
+提案 49ac5e58（问题单）：`diagnosis_annotate` 是唯一能把失败标注成根因类别的入口，实测完全不可用。
+- 生产取证：`agint_evolution.failure_pattern` 7 行（< `COLD_START_MIN=10`）、`agint_diagnosis.annotations` 0 行 / `clusters` 0 / `reports` 14；`diagnosis_report` 输出 `annotationCount:0, skipReason:"no-annotations"`。
+- 源码逐行：工具层 `lib/tools.js` 传 `{ event, category, notes }`，服务层 `lib/index.js` 只读 `input.failureId` ⇒ `event.id` 填了也读不到，必抛 `failureId is required`。
+
+### 改动（只做 1~3，第 4 项「标注时写 failure_pattern」属红线，需老板裁定，本版不做）
+
+1. **参数名断层**：服务层 `annotate` 解析 `failureId` 时同时接受 `input.failureId` 与回退 `input.event.id`（显式 failureId 优先）。工具层不再需要改调用形状。
+2. **cold-start 错误信息可诊断**：守门语义不变（样本 <10 仍拒），错误信息补齐「当前 N/10 + `evolution_addFailure` 喂种子路径」；failureId 在表中找不到时开头先报 `未在 failure_pattern 表中找到`，并保留 `cold-start: failure_pattern 样本数 N < M` 子串兼容既有断言。
+3. **category 不再静默丢弃**：工具 schema 把 `category` 从必填改为可选（分类器 `rootCauseClassify(trajectory)` 是 6 类特征投票，本就不接受人工类别）；调用方给的 `category`/`notes` 记入 `evidence.hintCategory`/`evidence.analystNotes` 供审计，但**不参与投票**——实际 `rootCause` 仍由特征投票决定。
+
+### 行为变化 / 未做
+
+- 调用方可直接用 `diagnosis_annotate({ event: { id, ... }, ... })` 标注（参数名断层解除）。
+- ⚠️ **冷启动守门没解除**：生产当前 7<10，标注仍会被拒；须先用 `evolution_addFailure` 把 failure_pattern 喂到 ≥10 条。错误信息现已写明这一前置。
+- ⛔ **不写 failure_pattern**：`annotate` 仍不写 failure_pattern 表（设计稿 §二.2 / §八 红线），提案第 4 项未实施。
+- FROZEN：4 个 Service 签名、6 类根因 enum、三表 schema 全部未改。
+
+### 验收
+
+- 新增 `test/annotate-input-shape.test.mjs`（6 例）：event.id 兜底 / 显式优先 / 两者皆无的 required 报错 / cold-start 信息含 N/10 与 evolution_addFailure / not found 与 cold-start 双诊断 / category 留痕且不污染投票。
+- 回归：diagnosis 全量单测 **80/80** PASS；四道门禁 `plugin-check`(0 `[FAIL]`) / `check-wiring`(0 硬缺口) / `check-preset-parity` / `check-dsh-compat` 全 exit 0；`check-tool-schemas` 124 schema / 0 invalid。
+
+---
+
 ## 2026-09-26（二修）— `report()` 加「与调用方无关」的频率熔断 + 闭合 cap 并发窗口
 
 ### 现场

@@ -253,7 +253,10 @@ export async function judgeFacts(ctx, facts, opts = {}) {
       Promise.resolve().then(() => agents.create({
         sessionId: `upstream-watch-${facts.targetVersion}-${randomUUID().slice(0, 8)}`,
         // cwd 必给：child session 继承的 persona 段里 {{cwd}} 取不到值会直接 throw
-        meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
+        // ⛔ 2026-11-17 实测：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无
+        //    resident activation ⇒ 抛 "agent has no active runtime owner"。
+        //    见 dsh-subagent/lib/types/manager.js:421-430。临时 parent 是树根，不标 origin。
+        meta: { cwd: process.cwd(), agentPreset },
         agentOptions,
         signal: abort.signal,
       })),

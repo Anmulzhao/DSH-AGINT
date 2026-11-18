@@ -83,10 +83,31 @@ const INTEGRATION_TASKS = {
     { task: '把「把搜索索引接入主库变更流并保证最终一致」拆解成集成步骤清单。', min: 6, keywords: ['索引', '变更', '补偿'] },
     { task: '把「把消息队列接入订单履约并处理重复投递」拆解成集成步骤清单。', min: 6, keywords: ['投递', '重复', '确认'] },
   ],
+  // v0.2.4（提案 2cac5f70）：D5 封顶后「换题型」而非无题可出。
+  // variant 0-2 是原 step-list 题（历史存量，逐字不动，向后兼容）；
+  // variant 3-5 是 exec-code 新题——写真实可运行代码并运行，输出须含确定性信号。
+  // 这样 integration 到 D5 封顶后，撞重顺延会从「步骤清单」自然换成「代码 + 实跑」，
+  // 而不是题池耗尽后 skipped。新题的 expected 是运行输出信号，由 verdict 的
+  // exec-code 断言器校验（exitCode=0 + output 含全部信号），可自动判定（C1）。
   D5: [
     { task: '把「多服务集成的零停机版本切换」拆解成集成步骤清单。', min: 7, keywords: ['灰度', '回滚', '健康'] },
     { task: '把「把单区域部署扩为多区域双活并保持数据一致」拆解成集成步骤清单。', min: 7, keywords: ['区域', '同步', '切换'] },
     { task: '把「把自建日志管道迁移到托管服务且不丢数据」拆解成集成步骤清单。', min: 7, keywords: ['迁移', '校验', '回滚'] },
+    {
+      kind: 'exec-code',
+      task: '编写并运行一段代码，模拟多区域双活的数据一致性校验：region-a 有记录 [1,2,3]，region-b 有 [1,2,4]，计算并打印差异。要求运行成功且输出同时包含信号 `diff=[4]` 与 `consistent=false`。提交 evidence：{ exitCode, output }。',
+      min: 8, expected: ['diff=[4]', 'consistent=false'],
+    },
+    {
+      kind: 'exec-code',
+      task: '编写并运行一段代码，模拟服务网格的灰度发布与自动回滚：v2 灰度 10% 流量，健康检查失败率 30% 超过阈值触发回滚。要求运行成功且输出同时包含信号 `rollback=true`、`active_version=v1`、`canary_aborted=true`。提交 evidence：{ exitCode, output }。',
+      min: 10, expected: ['rollback=true', 'active_version=v1', 'canary_aborted=true'],
+    },
+    {
+      kind: 'exec-code',
+      task: '编写并运行一段代码，模拟云迁移的不停机切换：源端 100 条记录全部同步到目标端后切换读流量。要求运行成功且输出同时包含信号 `migrated=100`、`cutover=done`、`downtime=0s`。提交 evidence：{ exitCode, output }。',
+      min: 10, expected: ['migrated=100', 'cutover=done', 'downtime=0s'],
+    },
   ],
 };
 
@@ -211,6 +232,15 @@ const TEMPLATES = {
   integration: {
     generate(level, variant) {
       const t = pick(INTEGRATION_TASKS, level, variant);
+      // v0.2.4（提案 2cac5f70）：D5 变体 3-5 是 exec-code 题型——真实写代码并运行，
+      // 输出须含确定性信号；其余（含 D5 变体 0-2 历史存量）仍是 step-list。
+      if (t.kind === 'exec-code') {
+        return {
+          prompt: t.task,
+          passCriteria: `编写可运行代码并真实执行，提交 evidence：{ exitCode, output }（exitCode=0 且输出须含全部信号：${t.expected.join('、')}）。`,
+          verifySpec: { type: 'exec-code', expected: t.expected, minLength: t.min },
+        };
+      }
       return {
         prompt: t.task,
         passCriteria: `提交 evidence：{ steps: string[] }（至少 ${t.min} 步，且含必需环节关键词）。`,

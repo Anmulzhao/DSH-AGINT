@@ -74,7 +74,7 @@ const baseArgs = {
 
 // ── 宿主契约 ────────────────────────────────────────────────────────────────
 
-test('spawnOracleLlm: 优先 startActivation，request 带 parent/preset/model/outputSchema', async () => {
+test('spawnOracleLlm: 优先 startActivation，spec 顶层带 parent/preset/model/outputSchema', async () => {
   const { ctx, calls } = makeCtx();
   const r = await spawnOracleLlm(ctx, baseArgs);
   assert.equal(r.ok, true);
@@ -86,11 +86,12 @@ test('spawnOracleLlm: 优先 startActivation，request 带 parent/preset/model/o
   assert.equal(spec.label, 'test-label');
   assert.equal(spec.delivery, 'caller');
   assert.ok(spec.signal instanceof AbortSignal);
-  assert.equal(spec.request.parent.id, 'parent-1');
-  assert.equal(spec.request.agentPreset, 'agint');
-  assert.deepEqual(spec.request.agentOptions, SELECTION);
-  assert.equal(spec.request.outputSchema, baseArgs.schema);
-  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: 'sys\n\nusr' }]);
+  assert.equal(spec.parent.id, 'parent-1');
+  assert.equal(spec.agentPreset, 'agint');
+  assert.deepEqual(spec.agentOptions, SELECTION);
+  assert.equal(spec.outputSchema, baseArgs.schema);
+  assert.deepEqual(spec.prompt, [{ type: 'text', text: 'sys\n\nusr' }]);
+  assert.equal(spec.request, undefined, '宿主 0.2.2-rc.1 起不再接受嵌套 request（套回 ⇒ spec.parent undefined ⇒ reading id 报错）');
 
   // parent agent 也必须带 preset + 同一路由（空壳会话 + MiniMax 400 的旧坑）
   assert.equal(calls.create[0].meta.agentPreset, 'agint');

@@ -20,9 +20,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * 把一次判定结果并入难度状态（窗口滚动 + 连续序列维护）。
  * @param {object} state 当前难度状态（DifficultyStateSchema 业务字段）
- * @param {object} verdict { result: 'pass'|'fail', at: ISO 时间 }
+ * @param {object} verdict { result: 'pass'|'fail', at: ISO 时间, counted?: boolean }
  * @param {object} opts { windowDays, nowMs }
  * @returns {object} 更新后的状态
+ *
+ * counted=false（提案 10d2d87f 防复读）：本次判定**不计入能力成功数**——
+ * 既不进滚动窗口、也不推进 consecutivePass（连续 pass 计数被复读灌水就是漏洞本体）。
+ * 与「fail」区别开：fail 会重置 consecutivePass 并累加 consecutiveFail；
+ * counted=false 是「这件事没发生」，两个计数器都保持原值。
+ * 默认 counted=true —— 存量调用与旧数据零影响。
  */
 export function recordVerdict(state, verdict, { windowDays = 28, nowMs = Date.now() } = {}) {
   const cutoff = nowMs - windowDays * DAY_MS;
@@ -30,13 +36,19 @@ export function recordVerdict(state, verdict, { windowDays = 28, nowMs = Date.no
     const ts = Date.parse(r.at);
     return Number.isNaN(ts) ? false : ts >= cutoff;
   };
-  const windowResults = [...(state.windowResults ?? []), {
-    result: verdict.result,
-    at: verdict.at,
-  }].filter(keep);
+  const counted = verdict.counted !== false;
+  const existingWindow = (state.windowResults ?? []).filter(keep);
+  // 复读不计入：窗口不追加本次 pass；连续两个计数器保持原值（不是 fail，不重置）
+  const windowResults = counted
+    ? [...existingWindow, { result: verdict.result, at: verdict.at }].filter(keep)
+    : existingWindow;
 
-  const consecutivePass = verdict.result === 'pass' ? (state.consecutivePass ?? 0) + 1 : 0;
-  const consecutiveFail = verdict.result === 'fail' ? (state.consecutiveFail ?? 0) + 1 : 0;
+  const consecutivePass = !counted
+    ? (state.consecutivePass ?? 0)
+    : verdict.result === 'pass' ? (state.consecutivePass ?? 0) + 1 : 0;
+  const consecutiveFail = !counted
+    ? (state.consecutiveFail ?? 0)
+    : verdict.result === 'fail' ? (state.consecutiveFail ?? 0) + 1 : 0;
 
   return {
     ...state,
@@ -82,9 +94,18 @@ export function adjustDifficulty(state, {
   }
 
   // 连续 pass ≥ 3 → 强制升档（防停在舒适区刷分，§4.6）
+  //
+  // 同时**清除 CANNOT 候选标记**（2026-11-17 补对称路径）：降档分支只置位
+  // cannotCandidate=true，全流程没有对称的清除 —— 于是域一旦被打上标记就永远挂着，
+  // 即使随后连过 N 关。2026-11-17 实测：10 次传输失败把 integration 打成
+  // consecutiveFail=10 / cannotCandidate=true；补交后 consecutiveFail 归零、
+  // consecutivePass=5，但标记仍是 true ⇒ stats 报的是假信号。
+  // 判据：与置位条件对称 —— 连续 pass ≥ forcePromoteStreak 即视为已复验通过，
+  // 标记失效（域已证明能做，这一轮「不能」的候选问题已消解）。
   if (consecutivePass >= forcePromoteStreak) {
     const next = Math.min(DIFFICULTY_LEVELS.length - 1, current + 1);
     const clamped = next === current;
+    const hadCandidate = state.cannotCandidate === true;
     return {
       level: DIFFICULTY_LEVELS[next],
       action: 'force-promote',
@@ -92,7 +113,8 @@ export function adjustDifficulty(state, {
         ? `连续 pass ${consecutivePass} ≥ ${forcePromoteStreak}（已到 ${state.level} 上限）`
         : `连续 pass ${consecutivePass} ≥ ${forcePromoteStreak}（强制升档防刷分）`,
       windowStats,
-      cannotCandidate: state.cannotCandidate ?? false,
+      cannotCandidate: hadCandidate ? false : (state.cannotCandidate ?? false),
+      candidateCleared: hadCandidate,
     };
   }
 

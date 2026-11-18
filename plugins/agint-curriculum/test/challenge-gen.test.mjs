@@ -53,3 +53,31 @@ test('无效域抛错；无 sessionId 时生成默认 curriculum- 前缀', () =>
   const c = generateChallenge('codegen', 'D1');
   assert.ok(c.sessionId.startsWith('curriculum-'), '默认 sessionId 必须带 curriculum- 前缀（D1）');
 });
+
+// ── v0.2.4（提案 2cac5f70）：D5 封顶换题型 ────────────────────────────────
+
+test('integration D5 题池扩到 6 道：前 3 道 step-list 逐字不变，后 3 道 exec-code', async () => {
+  const { bankSize } = await import('../lib/challenge-gen.js');
+  assert.equal(bankSize('integration', 'D5'), 6, 'D5 应扩到 6 道');
+
+  // 向后兼容：variant 0-2 仍是原 step-list 题面
+  assert.equal(generateChallenge('integration', 'D5', { variant: 0 }).prompt,
+    '把「多服务集成的零停机版本切换」拆解成集成步骤清单。');
+  for (let v = 0; v < 3; v++) {
+    assert.equal(generateChallenge('integration', 'D5', { variant: v }).verifySpec.type, 'step-list');
+  }
+  for (let v = 3; v < 6; v++) {
+    const c = generateChallenge('integration', 'D5', { variant: v });
+    assert.equal(c.verifySpec.type, 'exec-code', `variant=${v} 应为 exec-code`);
+    assert.ok(Array.isArray(c.verifySpec.expected) && c.verifySpec.expected.length >= 2,
+      'exec-code 须带 ≥2 个确定性信号');
+  }
+});
+
+test('integration D5 六道题面互不相同（换题型不复读）', () => {
+  const prompts = new Set();
+  for (let v = 0; v < 6; v++) {
+    prompts.add(generateChallenge('integration', 'D5', { variant: v }).prompt);
+  }
+  assert.equal(prompts.size, 6, '6 道题面必须互不相同');
+});

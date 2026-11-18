@@ -72,12 +72,14 @@ function fakeLlmServices() {
       getProvider: () => ({ name: 'spawn' }),
       startActivation: async (spec) => {
         calls.push(spec);
-        const promptText = spec.request.prompt.map((b) => b?.text ?? '').join('\n');
+        // ⛔ 2026-11-17：宿主 dsh 0.2.2-rc.1 起 spec 顶层带 prompt/outputSchema，
+        //    不再有嵌套 request（宿主 dsh-subagent/lib/index.js:3024 读 spec.parent.id）。
+        const promptText = spec.prompt.map((b) => b?.text ?? '').join('\n');
         return {
           childId: `child-${calls.length}`,
           result: Promise.resolve({
             stopReason: 'completed',
-            structured: fakeLlmStructured(spec.request.outputSchema, promptText),
+            structured: fakeLlmStructured(spec.outputSchema, promptText),
           }),
           dispose: async () => {},
         };

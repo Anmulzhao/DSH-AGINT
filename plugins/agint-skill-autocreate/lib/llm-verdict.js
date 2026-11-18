@@ -523,7 +523,10 @@ export async function judgeViaLLM({
       sessionId: `autocreate-judge-${pattern?.id ?? 'pattern'}-${randomUUID()}`,
       // cwd 必须给：child session 继承的 persona 段落用 {{cwd}}，取不到会 throw
       // agentPreset 必须给：模型路由的唯一来源，缺失 ⇒ 空壳子代理（见 DEFAULT_AGENT_PRESET 注释）
-      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset: resolvedPreset },
+      // ⛔ 2026-11-17 实测：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无
+      //    resident activation ⇒ 抛 "agent has no active runtime owner"。
+      //    见 dsh-subagent/lib/types/manager.js:421-430。临时 parent 是树根，不标 origin。
+      meta: { cwd: process.cwd(), agentPreset: resolvedPreset },
       agentOptions,
       signal: abortController.signal,
     }).then((h) => {
@@ -540,13 +543,16 @@ export async function judgeViaLLM({
       ? Promise.resolve().then(() => subagents.startActivation({
         provider: 'spawn',
         label: `agint-autocreate llm-judge ${pattern?.id ?? ''}`,
-        request: {
-          parent: handle.agent,
-          prompt,
-          agentPreset: resolvedPreset,
-          agentOptions,
-          outputSchema: JUDGE_OUTPUT_SCHEMA,
-        },
+        // ⛔ 宿主 dsh 0.2.2-rc.1 起 SubagentActivationSpec 不再接受嵌套 request：
+        //    prompt / parent / agentPreset / agentOptions / outputSchema 必须摊在 spec 顶层
+        //    （宿主源码 dsh-subagent/lib/index.js:3024 读的是 spec.parent.id）。
+        //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+        //    "Cannot read properties of undefined (reading 'id')" ⇒ LLM 判定恒失败。
+        parent: handle.agent,
+        prompt,
+        agentPreset: resolvedPreset,
+        agentOptions,
+        outputSchema: JUDGE_OUTPUT_SCHEMA,
         signal: abortController.signal,
         delivery: 'caller',
       }))

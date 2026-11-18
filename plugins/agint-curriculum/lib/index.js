@@ -41,6 +41,8 @@ import { probeDomains } from './boundary-probe.js';
 import { generateChallenge, hasTemplate, bankSize, totalBankSize } from './challenge-gen.js';
 import { judge } from './verdict.js';
 import { recordVerdict, adjustDifficulty } from './difficulty.js';
+import { detectReplay } from './replay.js';
+import { judgeReplayWithLlm } from './replay-llm.js';
 
 const name = 'agint-curriculum';
 const inject = ['storageDomain'];
@@ -234,6 +236,21 @@ function apply(ctx, config) {
     return packed;
   }
 
+  /**
+   * v0.2.4（提案 2cac5f70 第 2 点·横向）：读「毕业域」列表。
+   * 判据与升档证据一致——必须靠证据走到 D5 封顶（level=D5 且连续 pass 达标），
+   * 而非「被误推到 D5」。毕业域在 boundary-probe 里降权，让出题位给未完成域。
+   */
+  async function graduatedDomains(promoteStreak) {
+    const t = await table('difficulty_state');
+    return [...t.entries()]
+      .map(([, v]) => v)
+      .filter((d) => d.level === 'D5'
+        && (d.consecutivePass ?? 0) >= promoteStreak
+        && d.cannotCandidate !== true)
+      .map((d) => d.domain);
+  }
+
   // ── Service: probe（§4.3 [1]）──────────────────────────────────────────
   async function probe(args = {}) {
     const c = effectiveConfig();
@@ -245,16 +262,23 @@ function apply(ctx, config) {
       return { skipped: true, reason: 'self-model snapshot 不可用（软降级）' };
     }
     const nowMs = Number.isFinite(args.nowMs) ? args.nowMs : Date.now();
+    // v0.2.4（提案 2cac5f70 横向）：域毕业让位。开关关时不读 difficulty_state、
+    // 不传毕业域，行为逐字回退 v0.2.3。
+    const graduated = c.graduate_deprioritize !== false
+      ? await graduatedDomains(c.force_promote_streak)
+      : [];
     const { domains, unverifiable } = probeDomains(snapshot, {
       staleReverifyDays: c.stale_reverify_days,
       nowMs,
+      graduatedDomains: graduated,
     });
     lastProbeAt = nowIso();
     await publishEvent('curriculum.boundary-probed', {
       domains: domains.map((d) => d.domain),
       unverifiable: unverifiable.map((d) => d.domain),
+      graduated: [...graduated],
     });
-    return { skipped: false, domains, unverifiable, probedAt: lastProbeAt };
+    return { skipped: false, domains, unverifiable, graduated, probedAt: lastProbeAt };
   }
 
   /**
@@ -380,12 +404,39 @@ function apply(ctx, config) {
 
     // 全部撞重（该域题面耗尽）：不写 lastGeneratedAt —— 没生成就不能假装生成过，
     // 否则白白烧掉 24h 冷却。如实返回 skipped。
+    //
+    // v0.2.4（提案 2cac5f70 第 3 点）：此前只有笼统的 dedupSkipped 计数，cron 日志
+    // 看起来像正常生成。现在结构化标注「本周无新题 / 题目池耗尽 + 档位封顶」，
+    // 并落一条 audit_log（no_new_challenge），让周复盘能直接筛出「本周没出题」。
+    // 判池发生在生成循环内（已遍历全部档位 × 全部 variant 仍无可用题面）——这本身就是
+    // 最准的「池是否还有货」判定，无需另起一遍预扫描（避免与 dedup 口径漂移）。
     if (created.length === 0) {
+      const atCeiling = df.level === DIFFICULTY_LEVELS[DIFFICULTY_LEVELS.length - 1];
+      const reason = `本周无新题：domain "${domainName}" 在 ${c.dedup_window_days} 天内 ${df.level}-D5 全部 ${totalBankSize(domainName)} 道题面均已出过（题目池耗尽${atCeiling ? '，且已到 D5 档位上限，无更高档可顺延' : ''}）；force=true 可绕过去重，或继续扩题库`;
+      await audit({
+        actor: 'system',
+        action: 'no_new_challenge',
+        targetType: 'difficulty_state',
+        targetId: `df_${domainName}`,
+        details: {
+          domain: domainName,
+          level: df.level,
+          atCeiling,
+          poolSize: totalBankSize(domainName),
+          dedupWindowDays: c.dedup_window_days,
+          dedupSkipped: duplicates.length,
+        },
+        reason,
+      });
       return {
         skipped: true,
-        reason: `domain "${domainName}" 在 ${c.dedup_window_days} 天内 ${df.level}-D5 全部题面（共 ${totalBankSize(domainName)} 道）均已出过（题目池耗尽；force=true 可绕过，或继续扩题库）`,
+        reason,
         domain: domainName,
         level: df.level,
+        // 结构化标记：cron 日志/面板据此直读「本周无新题」，不必解析中文 reason。
+        poolExhausted: true,
+        noNewChallenge: true,
+        atCeiling,
         duplicates,
       };
     }
@@ -488,6 +539,70 @@ function apply(ctx, config) {
 
     const verdict = judge(challenge, evidence, { requireEvidence: c.require_evidence !== false });
 
+    // ── 防复读检测（提案 10d2d87f）──────────────────────────────────────
+    // 只对 pass 判定；fail 本来就不计能力成功，无需复读检测。
+    // 历史 pass 从 attempts 表 join challenges 表组装（不新增存储，提案要求）。
+    // 存量 attempt 无 replay 字段视为非复读（default null），历史含义零改变。
+    let replay = {
+      isReplay: false, kind: null, reasons: [], fingerprint: null, signals: null, matchedAttemptId: null,
+    };
+    if (verdict.result === 'pass' && c.replay_detection !== false) {
+      const atTable = await table('attempts');
+      const chTable = await table('challenges');
+      const chById = new Map([...chTable.entries()].map(([, v]) => [v.id, v]));
+      const priorPasses = [...atTable.entries()]
+        .map(([, v]) => v)
+        .filter((a) => a.result === 'pass' && a.id !== undefined)
+        .map((a) => {
+          const ch = chById.get(a.challengeId) ?? {};
+          return {
+            id: a.id,
+            challengeId: a.challengeId,
+            domain: a.domain ?? ch.domain,
+            level: a.level ?? ch.level,
+            prompt: ch.prompt ?? null,
+            evidence: a.evidence,
+            verifiedAt: a.verifiedAt,
+          };
+        });
+      replay = detectReplay({
+        challenge,
+        evidence: verdict.evidence,
+        priorPasses,
+        spec: challenge.verifySpec,
+        config: {
+          fingerprintEnabled: c.replay_fingerprint !== false,
+          promptDedupEnabled: c.replay_prompt_dedup !== false,
+        },
+      });
+
+      // ── 方案 3：LLM 语义判据（选项 2 拍板默认启用，明知违反纲领 §9.5）────
+      // 只在确定性护栏未命中时对 pass 补判「换说法复读」；已命中则跳过省调用。
+      // LLM 不可用 / 超时 / 异常一律降级（judgeReplayWithLlm 永不抛），
+      // 保持确定性结论，绝不阻塞 submit。
+      if (!replay.isReplay && c.replay_llm !== false && priorPasses.length > 0) {
+        const llm = await judgeReplayWithLlm(ctx, {
+          challenge,
+          evidence: verdict.evidence,
+          priorPasses,
+          config: {
+            enabled: true,
+            timeoutMs: c.replay_llm_timeout_ms,
+            minConfidence: c.replay_llm_min_confidence,
+          },
+        });
+        replay.llm = llm;
+        if (llm.isReplay) {
+          replay.isReplay = true;
+          replay.kind = 'llm-equivalent';
+          replay.matchedAttemptId = llm.matchedAttemptId;
+          replay.reasons.push(
+            `LLM 判语义等价（置信度 ${llm.confidence}）：${llm.rationale || '换说法复读'}`,
+          );
+        }
+      }
+    }
+
     // 落 attempts（C2：selfAssessment 剥离为 notes；C3：evidence 原样留档）
     const at = await table('attempts');
     const attempt = packAttempt({
@@ -500,6 +615,26 @@ function apply(ctx, config) {
       selfAssessment: verdict.notes,
       reason: verdict.reason,
       verifiedAt: nowIso(),
+      // 失效标记（提案 409d571f）：result 仍是 fail（事实），但判定基础设施
+      // 故障时 invalidated=true，下游 self-model 必须排除，不计能力不足。
+      // verdict.invalidation 由证据结构体检给出；外部调用方无法经 submit 参数伪造。
+      invalidated: typeof verdict.invalidation === 'string' && verdict.invalidation.length > 0,
+      invalidationReason: verdict.invalidation ?? '',
+      // 复读标记：result 仍是 pass（事实），但 replay.isReplay=true 表示不计能力成功
+      replay: replay.isReplay || replay.llm ? {
+        isReplay: replay.isReplay,
+        kind: replay.kind,
+        reasons: replay.reasons,
+        fingerprint: replay.fingerprint,
+        llm: replay.llm ? {
+          called: replay.llm.called,
+          ok: replay.llm.ok,
+          isReplay: replay.llm.isReplay,
+          confidence: replay.llm.confidence,
+          rationale: replay.llm.rationale,
+          reason: replay.llm.reason,
+        } : null,
+      } : null,
     });
     await at.put(attempt.id, attempt);
     const aw = checkLimit('attempts', at.size);
@@ -514,9 +649,16 @@ function apply(ctx, config) {
     };
     await ct.put(updatedChallenge.id, updatedChallenge);
 
-    // 难度调节（§4.6）
+    // 难度调节（§4.6）——复读 pass 不计入能力成功数（提案 10d2d87f）：
+    // counted=false 既不进滚动窗口也不推进 consecutivePass，难度状态保持原样。
     const df = await readDifficulty(challenge.domain);
-    const recorded = recordVerdict(df, { result: verdict.result, at: attempt.verifiedAt }, {
+    // 失效 attempt 同样不计入难度窗口：尺子坏了的 fail 不该把难度档位打下去
+    //（与 replay 不计成功对称，提案 409d571f）。
+    const recorded = recordVerdict(df, {
+      result: verdict.result,
+      at: attempt.verifiedAt,
+      counted: !replay.isReplay && !attempt.invalidated,
+    }, {
       windowDays: c.difficulty_window_days,
     });
     const adjusted = adjustDifficulty(recorded, {
@@ -531,8 +673,11 @@ function apply(ctx, config) {
     // 事件（§4.8）
     await publishEvent('curriculum.challenge-verdicted', {
       challengeId, domain: challenge.domain, result: verdict.result, reason: verdict.reason,
+      replay: replay.isReplay, replayKind: replay.kind,
+      invalidated: attempt.invalidated, invalidationReason: attempt.invalidationReason,
     });
-    if (adjusted.action !== 'keep') {
+    // 复读不计成功 ⇒ 难度状态没动 ⇒ 不发 difficulty-adjusted（避免谎报升档）
+    if (adjusted.action !== 'keep' && !replay.isReplay) {
       await publishEvent('curriculum.difficulty-adjusted', {
         domain: challenge.domain,
         from: challenge.level,
@@ -541,8 +686,14 @@ function apply(ctx, config) {
       });
     }
 
-    // §4.9 self-model 回写：只提供证据，由 self-model 决定是否更新 capability
-    if (c.self_model_writeback !== false) {
+    // §4.9 self-model 回写：只提供证据，由 self-model 决定是否更新 capability。
+    // ⛔ 复读 pass 不回写成功信号（提案 10d2d87f）——否则 capability.recentSuccess
+    //    仍会被复读灌水，与难度侧不计成功自相矛盾。fail 照常回写失败信号。
+    // ⛔ 失效 attempt 不回写任何信号（提案 409d571f）——判定基础设施坏了的 fail
+    //    不是能力不足；若这里回写，self-model 的 evidence 补充路径会把它重新计入，
+    //    抵消 pull 侧的排除。result 事实仍由 attempt 表留档，只是不喂给能力判定。
+    if (c.self_model_writeback !== false && !attempt.invalidated
+        && !(verdict.result === 'pass' && replay.isReplay)) {
       const sm = getSelfModel();
       if (sm && typeof sm.update === 'function') {
         try {
@@ -565,23 +716,50 @@ function apply(ctx, config) {
 
     await audit({
       actor: 'agent',
-      action: 'challenge_verdicted',
+      action: replay.isReplay ? 'challenge_verdicted_replay' : 'challenge_verdicted',
       targetType: 'challenge',
       targetId: challengeId,
-      details: { domain: challenge.domain, result: verdict.result, level: challenge.level },
-      reason: verdict.reason,
+      details: {
+        domain: challenge.domain, result: verdict.result, level: challenge.level,
+        replay: replay.isReplay,
+        replayKind: replay.kind,
+        replayReasons: replay.reasons,
+        invalidated: attempt.invalidated,
+        invalidationReason: attempt.invalidationReason,
+        replayLlm: replay.llm ? {
+          called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
+          confidence: replay.llm.confidence, reason: replay.llm.reason,
+        } : null,
+        countedForSuccess: !replay.isReplay,
+      },
+      reason: replay.isReplay
+        ? `${verdict.reason}；复读不计能力成功：${replay.reasons.join('；')}`
+        : verdict.reason,
     });
 
     return {
       challengeId,
       result: verdict.result,
-      reason: verdict.reason,
+      reason: replay.isReplay
+        ? `${verdict.reason}（复读，不计能力成功：${replay.reasons.join('；')}）`
+        : verdict.reason,
       notes: verdict.notes,
       domain: challenge.domain,
       levelBefore: challenge.level,
       levelAfter: adjusted.level,
       difficultyAction: adjusted.action,
       windowStats: adjusted.windowStats,
+      // 防复读可观测面（提案 10d2d87f）：调用方/面板据此识别「pass 但不计成功」
+      replay: replay.isReplay,
+      replayKind: replay.kind,
+      countedForSuccess: !replay.isReplay,
+      // 失效可观测面（提案 409d571f）：调用方/面板据此识别「fail 但非能力不足」
+      invalidated: attempt.invalidated,
+      invalidationReason: attempt.invalidationReason,
+      replayLlm: replay.llm ? {
+        called: replay.llm.called, ok: replay.llm.ok, isReplay: replay.llm.isReplay,
+        confidence: replay.llm.confidence, reason: replay.llm.reason,
+      } : null,
     };
   }
 
@@ -657,6 +835,7 @@ function apply(ctx, config) {
         generation_batch_limit: effectiveConfig().generation_batch_limit,
         challenge_cooldown_hours: effectiveConfig().challenge_cooldown_hours,
         dedup_window_days: effectiveConfig().dedup_window_days,
+        graduate_deprioritize: effectiveConfig().graduate_deprioritize,
         difficulty_window_days: effectiveConfig().difficulty_window_days,
         difficulty_min_samples: effectiveConfig().difficulty_min_samples,
         pass_floor: effectiveConfig().pass_floor,

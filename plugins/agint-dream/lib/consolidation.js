@@ -332,7 +332,10 @@ export async function consolidate({
       // persona section 用 {{cwd}} 找不到值会 throw，agent 启动后第一轮 turn
       // 就 error（2026-09-05 实测）。
       // ⭐ agentPreset：模型路由的唯一来源。缺失 ⇒ child 是空壳（见 DEFAULT_AGENT_PRESET 注释）。
-      meta: { cwd: process.cwd(), origin: 'subagent', agentPreset },
+      // ⛔ 2026-11-17 实测：临时 parent 标 origin:'subagent' ⇒ 宿主判 delegated 且无
+      //    resident activation ⇒ 抛 "agent has no active runtime owner"。
+      //    见 dsh-subagent/lib/types/manager.js:421-430。临时 parent 是树根，不标 origin。
+      meta: { cwd: process.cwd(), agentPreset },
       agentOptions,
       signal: abortController.signal,
     }).then((h) => {
@@ -347,13 +350,17 @@ export async function consolidate({
       ? Promise.resolve().then(() => subagents.startActivation({
         provider: 'spawn',
         label: `agint-dream consolidation ${day}`,
-        request: {
-          parent: consolidationHandle.agent,
-          prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
-          agentPreset,
-          agentOptions,
-          outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
-        },
+        // ⛔ 宿主 dsh 0.2.2-rc.1 起 SubagentActivationSpec 不再接受嵌套 request：
+        //    prompt / parent / agentPreset / agentOptions / outputSchema 必须摊在 spec 顶层
+        //    （宿主源码 dsh-subagent/lib/index.js:3024 读的是 spec.parent.id）。
+        //    套回 request ⇒ spec.parent 为 undefined ⇒ 抛
+        //    "Cannot read properties of undefined (reading 'id')" ⇒ 梦境合并恒失败。
+        //    2026-11-17 实测：11-16、11-17 两次夜间合并都被这条打掉。
+        parent: consolidationHandle.agent,
+        prompt: [{ type: 'text', text: `${SYSTEM_PROMPT}\n\n${prompt}` }],
+        agentPreset,
+        agentOptions,
+        outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
         signal: abortController.signal,
         delivery: 'caller',
       }))

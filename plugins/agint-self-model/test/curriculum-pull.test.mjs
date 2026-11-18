@@ -171,6 +171,39 @@ test('软降级：curriculum 服务不可用时不得抛错', async () => {
   assert.ok(r && r.ok === true, 'curriculum 缺失时应软降级成功');
 });
 
+// ── 提案 409d571f：失效 attempt 必须排除，不伪装成能力不足 ──────────────────
+
+test('pull：invalidated=true 的 fail 被排除，integration 不被误判 CANNOT', async () => {
+  // 10 条失效 fail（判定基础设施故障）+ 6 条真 pass ⇒ 应判 CAN
+  const invalidatedFails = Array.from({ length: 10 }, (_, i) => ({
+    id: `inv${i}`, challengeId: `inv_c${i}`, domain: 'integration', result: 'fail',
+    verifiedAt: isoDaysAgo(1), invalidated: true,
+    invalidationReason: 'evidence.steps 结构无法解析',
+  }));
+  const passes = Array.from({ length: 6 }, (_, i) => ({
+    id: `p${i}`, challengeId: `p_c${i}`, domain: 'integration', result: 'pass',
+    verifiedAt: isoDaysAgo(2),
+  }));
+  const env = await buildEnv({ attempts: [...invalidatedFails, ...passes] });
+  await env.update({ trigger: 'dream-completed' });
+  const snap = await env.snapshot();
+  const row = snap.capabilities.find((c) => c.domain === 'integration');
+  assert.equal(row.status, 'CAN', '失效 fail 不该计入 recentFailure，6 条真 pass ⇒ CAN');
+});
+
+test('pull：只认显式 invalidated 字段，reason 文本含"失效"不得被误排除（逃逸口防线）', async () => {
+  // 3 条真 fail（reason 里带"失效"字样但无字段）⇒ 应判 CANNOT，不能被文本匹配排除
+  const textFails = Array.from({ length: 3 }, (_, i) => ({
+    id: `tf${i}`, challengeId: `tf_c${i}`, domain: 'correctness', result: 'fail',
+    verifiedAt: isoDaysAgo(1), reason: '传输层失效导致失败',
+  }));
+  const env = await buildEnv({ attempts: textFails });
+  await env.update({ trigger: 'dream-completed' });
+  const snap = await env.snapshot();
+  const row = snap.capabilities.find((c) => c.domain === 'correctness');
+  assert.equal(row.status, 'CANNOT', '只有显式字段能排除，reason 文本匹配会制造第二类假读数');
+});
+
 test('protect：不提供 list 时也要能工作（防止实现偷偷用 list）', async () => {
   // buildEnv 只提供 listAttempts，没有 list。
   // 若实现改用 list()，本文件所有用例都会拿到 undefined attempts ⇒ 第一个用例必红。

@@ -101,7 +101,8 @@ test('judgeViaLLM：生产路径用宿主模型，不是 DEFAULT_* 死常量', a
     model: HOST.model,
     reasoningEffort: HOST.reasoningEffort,
   });
-  assert.equal(started[0].request.agentOptions.model, HOST.model);
+  assert.equal(started[0].agentOptions.model, HOST.model);
+  assert.equal(started[0].request, undefined, '宿主 0.2.2-rc.1 起不再接受嵌套 request');
   assert.equal(out.meta.provider, HOST.provider, '报告值必须是生效值');
 });
 

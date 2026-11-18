@@ -114,9 +114,19 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
     }
   }
   catch { curriculumAttempts = []; }
+  // 提案 409d571f：排除显式标记的失效 attempt（判定基础设施故障，非能力不足）。
+  // ⛔ 只认 invalidated===true 这个显式字段，绝不按 reason 文本匹配 ——
+  //    文本匹配等于「尺子又坏了」，会制造第二类假读数。default false 的行照常计入。
+  const invalidatedAttempts = curriculumAttempts.filter((a) => a?.invalidated === true);
+  const excludedNote = invalidatedAttempts.length > 0
+    ? `排除 ${invalidatedAttempts.length} 条失效 attempt（判定基础设施故障）：`
+      + invalidatedAttempts.map((a) => a?.challengeId ?? a?.id ?? '?').join('、')
+    : null;
+
   // 只认窗口内的 attempt；实测生产 6 条的完成时刻字段均为 verifiedAt
   const attemptCutoff = Date.now() - windowDays * 86_400_000;
   const recentAttempts = curriculumAttempts.filter((a) => {
+    if (a?.invalidated === true) return false;
     const ts = Date.parse(a?.verifiedAt ?? a?.createdAt ?? '');
     return Number.isNaN(ts) || ts >= attemptCutoff;
   });
@@ -191,6 +201,9 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
     }
   }
 
+  // 失效 attempt 排除的可审计记录（提案 409d571f）：不进 FROZEN 的 CapabilityEntry，
+  // 只落在内部证据对象（buildCapabilityEntry 只取 4 字段，不会被污染）+ 控制台。
+  if (excludedNote) console.warn(`[agint-self-model] ${excludedNote}`);
   const aggregated = [];
   for (const [domain, info] of byDomain) {
     aggregated.push({
@@ -201,6 +214,7 @@ async function aggregateCapabilityEvidence(deps, { windowDays = 7, fromDiagnosis
         recentFailure: info.fail,
         nonEnvRootCauseRatio: nonEnvRatio,
         evidenceRefs: info.refs.slice(0, 20),
+        invalidationNote: excludedNote,
       },
     });
   }

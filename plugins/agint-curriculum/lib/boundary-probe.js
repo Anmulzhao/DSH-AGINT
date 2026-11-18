@@ -30,10 +30,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @param {object} snapshot self-model snapshot（agint.selfModel.snapshot() 返回值）
- * @param {object} opts { staleReverifyDays, nowMs }
+ * @param {object} opts { staleReverifyDays, nowMs, graduatedDomains }
+ *   graduatedDomains: string[] —— 已封顶 D5 且难度状态达标的「毕业域」（由调用方
+ *   从 difficulty_state 读；本函数不依赖存储，保持纯函数）。命中域降权让位给未完成域。
  * @returns {{ domains: Array, unverifiable: Array }}
  */
-export function probeDomains(snapshot, { staleReverifyDays = 30, nowMs = Date.now() } = {}) {
+export function probeDomains(snapshot, { staleReverifyDays = 30, nowMs = Date.now(), graduatedDomains = [] } = {}) {
+  // v0.2.4（提案 2cac5f70 第 2 点·横向）：域毕业让位。
+  // 已到 D5 封顶且窗口达标的域，即使 self-model 仍标 CANNOT/UNCERTAIN，
+  // 也不该继续霸占出题位（gapWeight 3/2）——它已练到位，机会应让给其他域。
+  // 做法：把毕业域权重压到最低档（1，与 CAN 复验同级），并标注原因。
+  // ⚠️ 不完全排除：毕业域偶尔仍需复验，压到 1 而非 0，其他域练完后它仍会被选中。
+  // 不传 graduatedDomains（默认 []）时行为与 v0.2.3 逐字一致（向后兼容）。
+  const graduated = new Set(Array.isArray(graduatedDomains) ? graduatedDomains : []);
   const capabilities = Array.isArray(snapshot?.capabilities) ? snapshot.capabilities : [];
   const miscalibrated = new Set(Array.isArray(snapshot?.calibrationSummary?.miscalibrated)
     ? snapshot.calibrationSummary.miscalibrated
@@ -77,6 +86,13 @@ export function probeDomains(snapshot, { staleReverifyDays = 30, nowMs = Date.no
       const days = Math.floor((nowMs - verifiedAt) / DAY_MS);
       reason.push(`CAN 超过 ${days} 天未复验`);
       gapWeight = Math.max(gapWeight, 1);
+    }
+
+    // v0.2.4 域毕业降权：已封顶 D5 的域，权重压到最低档 1（让位给未完成域），
+    // 但保留在待练列表（周期性复验），不置 0 排除。仅在 reason 里如实标注。
+    if (gapWeight > 0 && graduated.has(domain)) {
+      gapWeight = 1;
+      reason.push('域已封顶 D5（毕业），降权让位给未完成域');
     }
 
     if (gapWeight === 0) continue; // 不在任何筛选条件 → 不练

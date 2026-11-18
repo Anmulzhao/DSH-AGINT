@@ -282,25 +282,45 @@ test('题目池：同档内撞重优先换 variant，档位不变（integration 
   assert.equal(fourth.levelShifted, true);
 });
 
-test('题目池：integration 15 道全部出过 → skipped（池耗尽），不空造挑战', async () => {
+test('题目池：integration 全部题面出过 → skipped（池耗尽），不空造挑战', async () => {
   const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
   await svc.config({ challenge_cooldown_hours: 0 });
+  const { totalBankSize } = await import('../lib/challenge-gen.js');
+  const pool = totalBankSize('integration'); // v0.2.4 起 18 道（含 D5 换题型的 3 道 exec-code）
 
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < pool; i++) {
     const r = await svc.generate({ domain: 'integration' });
-    assert.equal(r.skipped, false, `第 ${i + 1} 次应能生成（池共 15 道）`);
+    assert.equal(r.skipped, false, `第 ${i + 1} 次应能生成（池共 ${pool} 道）`);
   }
-  const sixteenth = await svc.generate({ domain: 'integration' });
-  assert.equal(sixteenth.skipped, true);
-  assert.match(sixteenth.reason, /题面/);
+  const exhausted = await svc.generate({ domain: 'integration' });
+  assert.equal(exhausted.skipped, true);
+  assert.match(exhausted.reason, /本周无新题/);
+  // v0.2.4：结构化判池字段（cron 日志直读，不必解析中文 reason）
+  assert.equal(exhausted.poolExhausted, true);
+  assert.equal(exhausted.noNewChallenge, true);
 
   const st = await svc.stats();
-  assert.equal(st.challenges.total, 15, '只应有 15 条，不得重复堆叠');
-  assert.equal(st.challenges.open, 15);
+  assert.equal(st.challenges.total, pool, `只应有 ${pool} 条，不得重复堆叠`);
+  assert.equal(st.challenges.open, pool);
 
-  // 15 道题面全部互不相同（池真正被遍历，不是重复同一道）
+  // 全部题面互不相同（池真正被遍历，不是重复同一道）
   const list = await svc.list({ domain: 'integration' });
-  assert.equal(new Set(list.map((c) => c.prompt)).size, 15, '15 道题面必须互不相同');
+  assert.equal(new Set(list.map((c) => c.prompt)).size, pool, `${pool} 道题面必须互不相同`);
+});
+
+test('判池跳过：atCeiling 如实反映档位（D1 起步未封顶 → false，reason 不误报 D5）', async () => {
+  const { svc } = boot({ snapshot: UNCERTAIN_SNAPSHOT });
+  await svc.config({ challenge_cooldown_hours: 0 }); // 关冷却，确保走到池耗尽分支而非冷却分支
+  const { totalBankSize } = await import('../lib/challenge-gen.js');
+  const pool = totalBankSize('integration');
+  for (let i = 0; i < pool; i++) await svc.generate({ domain: 'integration' });
+
+  const exhausted = await svc.generate({ domain: 'integration' });
+  assert.equal(exhausted.skipped, true);
+  assert.equal(exhausted.poolExhausted, true);
+  assert.equal(exhausted.atCeiling, false, 'df.level 仍是 D1（generate 不改档），未到 D5');
+  assert.doesNotMatch(exhausted.reason, /D5 档位上限/, '未封顶时不得误报封顶');
+  assert.ok((await svc.stats()).domains.integration.lastGeneratedAt, '前面成功生成应写过时间戳');
 });
 
 test('去重：dedup_window_days=0 关闭去重 → 同题面可重复生成（旧行为可回退）', async () => {
@@ -393,4 +413,73 @@ test('题库：generateChallenge 不传 variant 时输出与 v0.1.4 逐字一致
   assert.deepEqual(noVariant, v0);
   assert.equal(noVariant.prompt, '计算 17 + 26。请给出数字结论。');
   assert.equal(noVariant.verifySpec.expected, '43');
+});
+
+// ── v0.2.4 域毕业让位（端到端：difficulty_state → probe）──────────────────
+
+function bootWithDifficulty(snapshot, difficultyRows) {
+  const ctx = mockCtx({
+    'agint.selfModel': { snapshot: async () => snapshot, update: async () => ({ ok: true }) },
+    'agint.eventBus.publish': async () => ({ ok: true }),
+  });
+  // 预填 difficulty_state 表后交给插件（模拟生产中 integration 已 D5 毕业）
+  ctx.storageDomain.open = async () => {
+    const d = {
+      tables: new Map(),
+      close: async () => {},
+      table(name) {
+        if (!this.tables.has(name)) this.tables.set(name, {
+          put: async () => {}, entries: () => [], del: async () => {},
+        });
+        if (name === 'difficulty_state') {
+          this.tables.get(name).entries = () => difficultyRows.map((r) => [`df_${r.domain}`, r]);
+        }
+        return this.tables.get(name);
+      },
+    };
+    return d;
+  };
+  plugin.apply(ctx, {});
+  return ctx._provided['agint.curriculum'];
+}
+
+const GRAD_SNAPSHOT = makeSnapshot([
+  makeCapability('integration', 'CANNOT', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+  makeCapability('codegen', 'UNCERTAIN', { lastVerifiedAt: '2026-08-01T00:00:00Z' }),
+]);
+
+test('probe（端到端）：D5 连续 pass 达标的毕业域降权，让位给 UNCERTAIN 域', async () => {
+  const graduatedRow = {
+    id: 'df_integration', domain: 'integration', level: 'D5',
+    consecutivePass: 6, consecutiveFail: 0, cannotCandidate: false, windowResults: [],
+  };
+  const svc = bootWithDifficulty(GRAD_SNAPSHOT, [graduatedRow]);
+  const r = await svc.probe({});
+  assert.equal(r.skipped, false);
+  assert.deepEqual(r.graduated, ['integration'], '应识别出毕业域');
+  assert.deepEqual(r.domains.map((d) => d.domain), ['codegen', 'integration'], '未毕业 UNCERTAIN 排前');
+});
+
+test('probe（端到端）：开关 graduate_deprioritize=false 时回退旧行为（不降权）', async () => {
+  const graduatedRow = {
+    id: 'df_integration', domain: 'integration', level: 'D5',
+    consecutivePass: 6, consecutiveFail: 0, cannotCandidate: false, windowResults: [],
+  };
+  const ctx = mockCtx({
+    'agint.selfModel': { snapshot: async () => GRAD_SNAPSHOT, update: async () => ({}) },
+    'agint.eventBus.publish': async () => ({ ok: true }),
+  });
+  ctx.storageDomain.open = async () => ({
+    close: async () => {},
+    table(name) {
+      return {
+        put: async () => {}, del: async () => {},
+        entries: () => name === 'difficulty_state' ? [['df_integration', graduatedRow]] : [],
+      };
+    },
+  });
+  plugin.apply(ctx, { graduate_deprioritize: false });
+  const r = await ctx._provided['agint.curriculum'].probe({});
+  assert.deepEqual(r.graduated, [], '开关关时不读毕业域');
+  assert.deepEqual(r.domains.map((d) => d.domain), ['integration', 'codegen'], 'CANNOT 恢复最高权重');
 });
