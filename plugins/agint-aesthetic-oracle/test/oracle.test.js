@@ -180,7 +180,7 @@ test('AC-1/2/3 daily 主链路：wall≤3s、≤5行≤2KB 首行 asOf、审计 
   // 广播 payload 透传公式版本（r3 = 双计数分子拆解）与判尺指纹（提案 98c8e911）：
   // 版本管结构变更（人工 bump），指纹管参数微调（自动），两者互补不可互相替代。
   const dailyEvent = env.bus.find((e) => e.payload?.kind === 'daily');
-  assert.equal(dailyEvent?.payload?.formulaVersion, 'r4');
+  assert.equal(dailyEvent?.payload?.formulaVersion, 'r5');
   assert.match(dailyEvent?.payload?.scaleHash ?? '', /^[0-9a-f]{8}$/,
     `payload 必须带判尺指纹，实得 ${dailyEvent?.payload?.scaleHash}`);
   // §3.5：activity 5/173=0.029 < 0.1 → 播「进化静默期」，不再用「死寂」
@@ -560,7 +560,7 @@ test('calibrationSamples：产出机器侧归因样本，人工栏留 null（nul
   for (let i = 0; i < 3; i += 1) await env.svc.runBroadcast('daily', { now: day(i) });
   await env.svc.runBroadcast('weekly', { now: day(4) });
   const data = await env.svc.calibrationSamples({});
-  assert.equal(data.formulaVersion, 'r4');
+  assert.equal(data.formulaVersion, 'r5');
   assert.match(data.scaleHash, /^[0-9a-f]{8}$/);
   // daily 3 条 + weekly 1 条
   assert.equal(data.samples.length, 4);
