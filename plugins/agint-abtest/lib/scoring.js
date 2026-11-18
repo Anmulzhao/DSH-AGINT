@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { judge as curriculumJudge } from '../../agint-curriculum/lib/verdict.js';
-import { resolveLlmSelection, DEFAULT_TIMEOUT_MS } from '../../agint-skill-autocreate/lib/llm-verdict.js';
+import { resolveLlmSelection } from '../../agint-skill-autocreate/lib/llm-verdict.js';
 
 // ── L1-check ───────────────────────────────────────────────────────────
 
@@ -97,6 +97,7 @@ export function buildJudgePrompt({ artifactText, rubric }) {
     'ARTIFACT>>>',
     '',
     '请按维度输出 scores 与 reason。',
+    '重要：这是封闭卷面评分。不要调用任何工具，不要读文件、不要探索环境，直接输出结构化结果。',
   ].join('\n');
 }
 
@@ -129,7 +130,7 @@ export function normalizeJudgeScores(structured, rubric) {
 export async function judgeArtifact({
   ctx, artifactText, rubric, agentPreset,
   provider = '', model = '', reasoningEffort = '',
-  timeoutMs = DEFAULT_TIMEOUT_MS, signal = null,
+  timeoutMs = 300_000, signal = null,
 } = {}) {
   const selection = resolveLlmSelection(ctx ?? {}, { provider, model, reasoningEffort });
   const meta = () => ({ provider: selection.provider, model: selection.model });

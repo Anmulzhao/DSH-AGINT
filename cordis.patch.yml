@@ -539,7 +539,14 @@
         # in. L0-frozen field guard via validatePatch.
         - id: agint-quality-contract
           name: ./plugins/agint-quality/agint-quality-contract/lib/index.js
-          config: {}
+          config:
+            # A/B 维度开关（2026-11-18 老板授权③）。持久化通道：contract v0.2.0
+            # 起 apply 读行 config（此前 setConfig 只改内存，重启回默认）。
+            abtest:
+              enabled: true
+              weight: 0.10
+              minSamples: 10
+              pValueThreshold: 0.05
 
 
         # agint-quality-sandbox: D-QAF sandbox runtime v0.6.3. In-process/隔离双模式

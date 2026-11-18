@@ -234,9 +234,11 @@ const inject = [];
 
 const Config = z.object({});
 
-function apply(ctx) {
-  /** 默认配置（启动时载入；policy 可调后通过 setConfig 覆盖） */
-  let config = QualityConfigSchema.parse({});
+function apply(ctx, rowConfig) {
+  /** 默认配置（启动时载入 patch 行 config；policy 可调后通过 setConfig 覆盖）
+   *  2026-11-18 根因修：此前硬编码 parse({})，行 config 被无视，而 setConfig
+   *  只改内存重启即回默认 ⇒ abtest.enabled 等 ADJUSTABLE 字段无持久化通道。 */
+  let config = QualityConfigSchema.parse(rowConfig ?? {});
 
   // ── quality.contract.violated 发布（2026-10-26）────────────────────────
   // 背景：本插件此前对事件总线零感知（check-wiring 查 E' 的 UNWIRED）——

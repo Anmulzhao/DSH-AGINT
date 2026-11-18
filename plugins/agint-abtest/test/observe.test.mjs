@@ -27,7 +27,7 @@ function makeMockCtx() {
           put: async (id, value) => { tables[name].set(id, value); return true; },
           get: (id) => tables[name].get(id) ?? null,
           delete: async (id) => { tables[name].delete(id); return true; },
-          entries: () => Array.from(tables[name].values()),
+          entries: () => Array.from(tables[name].entries()), // 真实存储域语义：[key,value] 对（2026-11-18 首轮实跑揪出 mock 失真）
           get size() { return tables[name].size; },
         };
       },
@@ -236,4 +236,14 @@ test('24h 未齐 → abort，不新开', async () => {
   assert.equal(tests.length, 1);
   assert.equal(tests[0].status, 'aborted');
   assert.equal(state.calls, 0, 'abort  tick 不跑任务');
+});
+
+// ── 执行器 prompt（2026-11-18 首轮实跑根因修）─────────────────────────
+
+test('buildExecutorPrompt: 指示直接作答不探索（防 full preset 把答题当干活）', async () => {
+  const { buildExecutorPrompt } = await import(OBSERVE_PATH);
+  const p = buildExecutorPrompt({ task: { id: 'pp-02', description: '判断走哪几步', answerShape: 'text' }, variantText: '文档内容', assetKind: 'document' });
+  assert.ok(p.includes('文档内容'));
+  assert.ok(p.includes('判断走哪几步'));
+  assert.ok(/不要调用任何工具/.test(p), '必须含直接作答指令');
 });

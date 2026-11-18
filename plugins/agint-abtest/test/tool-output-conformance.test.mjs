@@ -49,7 +49,7 @@ function makeCtx() {
             put: async (id, value) => { tables[name].set(id, value); return true; },
             get: (id) => tables[name].get(id) ?? null,
             delete: async (id) => { tables[name].delete(id); return true; },
-            entries: () => Array.from(tables[name].values()),
+            entries: () => Array.from(tables[name].entries()), // 真实存储域语义：[key,value] 对（2026-11-18 首轮实跑揪出 mock 失真）
           };
         },
       }),

@@ -205,8 +205,11 @@ function apply(ctx, config) {
     // 2026-10-13：table.entries() 返回迭代器；Node 的 Iterator Helpers 让迭代器
     // **有** .filter/.map，但返回的仍是迭代器而非数组 ⇒ .length 全 undefined。
     // 必须先 [...entries()] 展开成数组。（实测：it.map(...) → isArray=false）
+    // 2026-11-18 首轮实跑根因：真实存储域 entries() 产 **[key, value] 对**
+    // （Map.entries 语义），不是值迭代器。旧 mock 返 values() 遮住了这个洞，
+    // 生产 putSample/report 恒「查不到」。消费一律解构 [, record]。
     const byTask = new Map();
-    for (const s of [...tS.entries()]) {
+    for (const [, s] of tS.entries()) {
       if (s.testId !== testId) continue;
       if (!byTask.has(s.taskId)) byTask.set(s.taskId, {});
       byTask.get(s.taskId)[s.variant] = s.score;
@@ -224,7 +227,7 @@ function apply(ctx, config) {
   async function report({ testId }) {
     if (!testId) throw new Error('report: testId 必填');
     const tT = await t_tests();
-    const testEntry = tT.entries().find((e) => e.id === testId);
+    const testEntry = [...tT.entries()].find(([, e]) => e.id === testId)?.[1];
     if (!testEntry) throw new Error(`report: testId='${testId}' 在 abtests 表里查不到`);
     const pairs = await collectPairs(testId);
     const decision = decideWinnerPaired({
@@ -259,7 +262,7 @@ function apply(ctx, config) {
   // ── Service: listTests ────────────────────────────────────────────
   async function listTests() {
     const t = await t_tests();
-    const tests = [...t.entries()].map((e) => ({
+    const tests = [...t.entries()].map(([, e]) => ({
       testId: e.id, status: e.status, variantA: e.variantA, variantB: e.variantB, createdAt: e.createdAt,
     }));
     return { tests };
@@ -274,7 +277,7 @@ function apply(ctx, config) {
     if (!taskId) throw new Error('putSample: taskId 必填');
     if (!Number.isFinite(score)) throw new Error(`putSample: score 必须是有限数，收到 ${score}`);
     const tT = await t_tests();
-    const testEntry = tT.entries().find((e) => e.id === testId);
+    const testEntry = [...tT.entries()].find(([, e]) => e.id === testId)?.[1];
     if (!testEntry) throw new Error(`putSample: testId='${testId}' 在 abtests 表里查不到`);
     if (testEntry.status !== 'running') {
       throw new Error(`putSample: 实验已终态（${testEntry.status}），拒绝注入`);
@@ -296,7 +299,7 @@ function apply(ctx, config) {
   async function abort({ testId, reason = 'unspecified' }) {
     if (!testId) throw new Error('abort: testId 必填');
     const tT = await t_tests();
-    const testEntry = tT.entries().find((e) => e.id === testId);
+    const testEntry = [...tT.entries()].find(([, e]) => e.id === testId)?.[1];
     if (!testEntry) throw new Error(`abort: testId='${testId}' 在 abtests 表里查不到`);
     if (testEntry.status !== 'running') return { testId, status: testEntry.status, already: true };
     const updated = { ...testEntry, status: 'aborted', abortReason: String(reason), abortedAt: nowIso() };
@@ -308,7 +311,7 @@ function apply(ctx, config) {
   async function listSamples({ testId }) {
     if (!testId) throw new Error('listSamples: testId 必填');
     const tS = await t_samples();
-    const samples = [...tS.entries()].filter((s) => s.testId === testId);
+    const samples = [...tS.entries()].filter(([, s]) => s.testId === testId).map(([, s]) => s);
     return { samples };
   }
 
@@ -317,7 +320,7 @@ function apply(ctx, config) {
   // 版本只允许 observe job 调一次；policy 每轮决策都读，必须无副作用）。
   async function results() {
     const tT = await t_tests();
-    const terminal = [...tT.entries()].filter((e) => e.status === 'completed' || e.status === 'inconclusive');
+    const terminal = [...tT.entries()].map(([, e]) => e).filter((e) => e.status === 'completed' || e.status === 'inconclusive');
     if (terminal.length === 0) return [];
     terminal.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
     const latest = terminal[0];

@@ -12,8 +12,12 @@
 - **`lib/statistics.js`** 四处修复：p 值改 t 分布 CDF（不完全贝塔连分式，临界值表对拍 <1e-4）；零方差 epsilon 护栏（VAR_EPS=1e-12，常数组浮点噪声曾造出 d=4.8e15 假显著）；Bonferroni 按 numExperiments（不再除任务数）；新增 decideWinnerPaired 配对检验。
 - **`report`** 切配对取样（按 taskId 配对，孤儿样本不计入）。FROZEN 服务签名 start/report/listTests 不变。
 
+### Fixed（2026-11-18 首轮实跑揪出，同版本收口）
+- **entries() 对语义**：真实 dsh-storage-domain `table.entries()` 产 **[key, value] 对**（Map.entries 语义），不是值迭代器。旧测试 mock 返 `values()` 遮住此洞 ⇒ 生产 putSample 恒「testId 在 abtests 表里查不到」、report/listTests/listSamples/results 全失真。index.js 全部消费点改解构 `[, record]`；6 个测试 mock 改真实语义（RED 9/10 复现后修）。
+- **执行器/评审超时**：全 preset 子会话把答题当真实工作（60s 内 60 次工具调用后被 abort）。executor/judge prompt 加封闭卷面指令（「不要调用任何工具，直接输出结构化结果」），超时 60s→300s。
+
 ### Tests
-- 新增 statistics-v2 / abtest-v2 / scoring / observe / tasks-corpus 五套；全套 104/104。
+- 新增 statistics-v2 / abtest-v2 / scoring / observe / tasks-corpus 五套；全套 105/105。
 
 ## 0.6.5 (2026-09-07) — K19 round-trip + ask-abtest-report
 

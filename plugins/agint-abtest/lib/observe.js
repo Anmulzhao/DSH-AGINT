@@ -20,7 +20,7 @@ import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { scoreExec, judgeArtifact } from './scoring.js';
-import { resolveLlmSelection, DEFAULT_TIMEOUT_MS } from '../../agint-skill-autocreate/lib/llm-verdict.js';
+import { resolveLlmSelection } from '../../agint-skill-autocreate/lib/llm-verdict.js';
 
 const ELIGIBLE_STAGES = new Set(['PENDING_REVIEW', 'NEW']);
 
@@ -61,6 +61,21 @@ export function pickCandidate(variants, tasksDir) {
 
 // ── 默认执行器（子会话结构化答题，K114：meta.agentPreset 必传）─────────
 
+/** 执行器 prompt。2026-11-18 首轮实跑根因修：full preset 子代理会把答题当干活
+ *  （实测 60 秒内 60 次工具调用、8 步，被超时截断）⇒ 显式指示直接作答不探索。 */
+export function buildExecutorPrompt({ task, variantText, assetKind }) {
+  const shape = task.answerShape ?? 'text';
+  return [
+    assetKind === 'code' ? '以下是一份代码/脚本工件。阅读它并完成任务。' : '以下是一份文档工件。以它为依据完成任务。',
+    '<<<ARTIFACT', String(variantText ?? ''), 'ARTIFACT>>>',
+    '', `任务：${task.description}`,
+    shape === 'steps' ? '输出 steps：字符串数组，每行一条。' : shape === 'conclusion' ? '输出 conclusion：只含要求的短答案。' : '输出 text：完整分析。',
+    '',
+    '重要：这是封闭卷面答题。不要调用任何工具，不要读文件、不要运行命令、不要探索环境。',
+    '只依据上面给出的工件内容直接作答，一次性输出结构化结果。',
+  ].join('\n');
+}
+
 function executorSchema(answerShape) {
   if (answerShape === 'steps') {
     return { type: 'object', properties: { steps: { type: 'array', items: { type: 'string' } } }, required: ['steps'] };
@@ -71,7 +86,7 @@ function executorSchema(answerShape) {
   return { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] };
 }
 
-async function defaultExecutor({ ctx, task, variantText, assetKind, preset, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+async function defaultExecutor({ ctx, task, variantText, assetKind, preset, timeoutMs = 300_000 }) {
   const failed = (reason, attempted = false) => ({ ok: false, reason, attempted });
   if (!ctx || typeof ctx.get !== 'function') return failed('ctx unavailable');
   const agents = ctx.get('agents');
@@ -93,12 +108,7 @@ async function defaultExecutor({ ctx, task, variantText, assetKind, preset, time
   const disposeLate = (r) => { try { Promise.resolve(r?.dispose?.()).catch(() => {}); } catch { /* ignore */ } };
   try {
     const shape = task.answerShape ?? 'text';
-    const promptText = [
-      assetKind === 'code' ? '以下是一份代码/脚本工件。阅读它并完成任务。' : '以下是一份文档工件。以它为依据完成任务。',
-      '<<<ARTIFACT', String(variantText ?? ''), 'ARTIFACT>>>',
-      '', `任务：${task.description}`,
-      shape === 'steps' ? '输出 steps：字符串数组，每行一条。' : shape === 'conclusion' ? '输出 conclusion：只含要求的短答案。' : '输出 text：完整分析。',
-    ].join('\n');
+    const promptText = buildExecutorPrompt({ task, variantText, assetKind });
     handle = await Promise.race([
       agents.create({
         sessionId: `abtest-exec-${randomUUID()}`,

@@ -35,7 +35,7 @@ function makeMockCtx({ bus } = {}) {
             return {
               get: (id) => t.get(id) ?? null,
               put: async (id, value) => { t.set(id, value); return true; },
-              entries: () => [...t.values()],
+              entries: () => [...t.entries()], // 真实存储域语义：[key,value] 对
               get size() { return t.size; },
             };
           },
