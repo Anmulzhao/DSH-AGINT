@@ -11,7 +11,7 @@
 3. 旧状态迁移：`silenceMode` 加 `lastProbeAt` / `lastAlertAt`（均 `z.string().nullable().default(null)`）。`loadState` 的 zod parse 自动补 null。`alerted=true` 且无 `lastAlertAt` ⇒ 视为「since+24h 发过首条」，从那时起算 7d 窗，不立即重发。三个时钟字段统一用逻辑时钟 `now` 记，生产语义不变。
 4. 运维旋钮：`DEFAULT_CONFIG` 加 `silenceAlertRepeatMs` / `silenceProbeIntervalMs`，形状同原 `silenceAlertAfterMs`（演练可调短）。
 
-**验收**：`test/oracle.test.js` 新增 8 例（W2×4 / W3×4），全量 57/57 PASS。变异测试两轮：7d 判据改 1000d ⇒ 恰好 W3-2/W3-3 红；探针判据恒 false ⇒ 恰好 W2-1/W2-2 红；均已还原。存量红 2 例（`scoring.test.js` 断言仍停在 r4）与本版无关，未动评分公式。
+**验收**：`test/oracle.test.js` 新增 9 例（W2×5 / W3×4），全量 58/58 PASS。其中 W2-5 钉住 cron 路径边界：探针失败后第 2 试 silenced、不二次试探、不重复发 LLM 告警（告警归 W3）、不累计连续失败。变异测试两轮：7d 判据改 1000d ⇒ 恰好 W3-2/W3-3 红；探针判据恒 false ⇒ 恰好 W2-1/W2-2 红；均已还原。存量红 2 例（`scoring.test.js` 断言仍停在 r4）与本版无关，未动评分公式。
 
 **⛔ 没做的**
 

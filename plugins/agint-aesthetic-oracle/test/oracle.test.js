@@ -1451,3 +1451,34 @@ test('v0.12 W3-4 resume 清沉默 + 失败计数 + 新字段归零；基线/配�
   assert.equal(st.quota.date, '');
   env.dispose();
 });
+
+test('v0.12 W2-5 cron 探针失败：不重复发 LLM 告警、不二次试探、不累计连续失败', async () => {
+  // cron 路径（runScheduled）：第 1 试 suppressAlert=true 放行探针 → LLM 失败 →
+  // withLlmFailureTrace 不发告警；第 2 试因 lastProbeAt 已写（24h 内）不再放行 →
+  // silenced → runScheduled 直接 return skipped。全程不累计 consecutiveFailures。
+  // since 用相对真实时钟（runScheduled 不注入 now）：25h 前 ⇒ 探针与 W3 首条都 due。
+  const sinceMs = Date.now() - 25 * HOUR_V12;
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs, lastProbeAt: null, alerted: false }),
+    { summary: new Error('boom') },
+  );
+  const out = await env.svc.runScheduled('daily', { retryDelays: [0, 1, 1, 1] });
+  assert.equal(out.skipped, true, '第 2 试 silenced，runScheduled 返回 skipped');
+  assert.equal(out.reason, 'silence-mode');
+
+  // 无「LLM 不可用」告警（第 1 试 suppressAlert 生效）——告警只归 W3。
+  const llmAlerts = env.bus.filter((e) => e.topic === 'oracle.alert'
+    && /LLM 不可用/.test(e.payload?.reason ?? ''));
+  assert.equal(llmAlerts.length, 0, '探针失败不得重复发 LLM 告警（告警归 W3 管）');
+
+  // 第 1 试落 error 痕（真实可观测出口），且只试探一次。
+  const rows = await env.svc.history(10);
+  const errRows = rows.filter((r) => r.kind === 'daily' && r.outcome === 'error');
+  assert.equal(errRows.length, 1, '只试探一次，落一条 error 痕');
+
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.active, true, '失败保持沉默');
+  assert.equal(st.consecutiveFailures, 3, '探针失败不累计连续失败（否则触发新告警风暴）');
+  assert.ok(st.silenceMode.lastProbeAt, 'lastProbeAt 已落盘');
+  env.dispose();
+});
