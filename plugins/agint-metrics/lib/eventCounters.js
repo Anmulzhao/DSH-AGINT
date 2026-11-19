@@ -67,6 +67,10 @@ const COUNTER_METRIC_KEYS = {
   'quality.contract.violated': 'quality.contractViolatedCount',
   'abtest.started': 'abtest.startedCount',
   'abtest.concluded': 'abtest.concludedCount',
+  // ── 2026-11-19：observe 编排事件（check-wiring 唯一硬缺口 NO_SUBSCRIBER）──
+  // 发布方 agint-abtest/lib/observe.js，payload 三形状：skip / abort / summary。
+  // summary 的 winner/pValue/effectSize 随 meta 落库，实验结论证据不丢。
+  'abtest.observe': 'abtest.observeCount',
   // ── 2026-11-02（B1）：宿主事件桥的两条主题 ──
   // 生产者是 agint-event-bus/lib/host-bridge.js。接它们不是为了凑门禁绿，
   // 是因为「宿主的域被写了」与「工作流跑完了」在 AGINT 侧此前**零指标**：
@@ -88,6 +92,7 @@ const COUNTER_METRIC_LABELS = {
   'quality.contract.violated': 'L0 frozen-field write attempt blocked',
   'abtest.started': 'A/B test started count',
   'abtest.concluded': 'A/B test concluded count',
+  'abtest.observe': 'A/B observe orchestration event count (skip / abort / summary; verdict evidence in meta)',
   'input.signal.host.domain-changed': 'host storage-domain write count (whitelisted domains only)',
   'input.signal.host.workflow-end': 'workflow run settled count (any stop reason)',
   'input.signal.host.subagent-start': 'host subagent start count (child agent spawned)',
@@ -109,7 +114,7 @@ const SUBSCRIBED_TOPICS = Object.keys(COUNTER_METRIC_KEYS);
  */
 const SUBSCRIPTION = {
   subscriber: 'agint-metrics',
-  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded', 'input.signal.host.domain-changed', 'input.signal.host.workflow-end', 'input.signal.host.subagent-start', 'input.signal.host.subagent-end', 'input.signal.host.workflow-phase'],
+  topics: ['rules.changed', 'wiki.updated', 'quality.contract.violated', 'abtest.started', 'abtest.concluded', 'abtest.observe', 'input.signal.host.domain-changed', 'input.signal.host.workflow-end', 'input.signal.host.subagent-start', 'input.signal.host.subagent-end', 'input.signal.host.workflow-phase'],
   mode: 'async', // sync 配额全局上限 3，留给真正的门禁边
   timeoutMs: 5000,
 };

@@ -553,6 +553,79 @@ test('B4 buildPolicyInput：policyInput.dimensions 为空 → 仍走兜底', () 
   assert.ok(out[0].dimensions.length >= 4, '空 dimensions 应触发兜底合成');
 });
 
+// ── proposal 终态同步（2026-11-19，工作包②：僵尸账本根因修）─────────────
+// 候选进终态（REJECTED / ROLLED_BACK）时，proposals 表对应行必须同步终态，
+// 否则永久停在 QUEUED_FOR_RELEASE ⇒ 面板假积压（生产 124 条僵尸行的成因）。
+// 同步是旁路：失败只留审计，不改主结果（补线三纪律）。
+
+async function putProposal(ctx, candidate, id = 'prop_test_001') {
+  const domain = await ctx.storageDomain.open();
+  const pt = domain.table('proposals');
+  const row = {
+    id, kind: 'skill_proposal', createdAt: '2026-09-17T04:17:08.184Z',
+    candidateId: candidate.id, skillDraft: candidate.skillDraft,
+    evalResults: {}, rankingScore: 0.62, evidenceLevel: 'E1', provisional: true,
+    status: 'QUEUED_FOR_RELEASE', estimatedBenefit: null,
+  };
+  await pt.put(id, row);
+  return { pt, row };
+}
+
+test('proposal 同步：候选被终态拒绝 ⇒ proposal 行翻 REJECTED，理由落痕', async () => {
+  const h = setup();
+  const cand = makeCandidate('pwsh-pwsh-pwsh-pwsh'); // 工具序列名 ⇒ 终态拒绝
+  await putCandidate(h.svc, h.ctx, cand);
+  const { pt } = await putProposal(h.ctx, cand);
+
+  const r = await h.svc.release({ id: cand.id, manual: true });
+  assert.equal(r.released, false);
+  const after = await h.svc.getCandidate(cand.id);
+  assert.equal(after.status, 'REJECTED', '工具序列名应被终态拒绝而非暂挂');
+
+  const rows = pt.entries().map(([, v]) => v);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, 'REJECTED', 'proposal 行必须随候选同步终态');
+  assert.ok(rows[0].terminalReason, '同步必须留下理由');
+  assert.ok(rows[0].terminalAt, '同步必须留下时间');
+});
+
+test('proposal 同步：发布后回滚 ⇒ proposal 行翻 ROLLED_BACK', async () => {
+  const h = setup();
+  const cand = makeCandidate('batch-frontmatter');
+  await putCandidate(h.svc, h.ctx, cand);
+  const { pt } = await putProposal(h.ctx, cand);
+  const r = await h.svc.release({ id: cand.id, manual: true });
+  assert.equal(r.released, true);
+
+  await h.svc.rollback({ skillName: 'batch-frontmatter', reason: '观察期 0 调用', actor: 'system' });
+
+  const rows = pt.entries().map(([, v]) => v);
+  assert.equal(rows[0].status, 'ROLLED_BACK');
+  assert.match(rows[0].terminalReason, /0 调用/);
+});
+
+test('proposal 同步软失败：proposals 表写崩 ⇒ 拒绝/回滚主结果不受影响', async () => {
+  const h = setup();
+  const domain = await h.ctx.storageDomain.open();
+  const pt = domain.table('proposals');
+  pt.put = async () => { throw new Error('domain closed'); };
+
+  // 拒绝路径不冒泡
+  const bad = makeCandidate('pwsh-pwsh-pwsh-pwsh');
+  await putCandidate(h.svc, h.ctx, bad);
+  const r1 = await h.svc.release({ id: bad.id, manual: true });
+  assert.equal(r1.released, false);
+  assert.equal((await h.svc.getCandidate(bad.id)).status, 'REJECTED');
+
+  // 回滚路径不冒泡
+  const good = makeCandidate('batch-frontmatter');
+  await putCandidate(h.svc, h.ctx, good);
+  const r2 = await h.svc.release({ id: good.id, manual: true });
+  assert.equal(r2.released, true);
+  const rb = await h.svc.rollback({ skillName: 'batch-frontmatter', reason: '测试回滚', actor: 'system' });
+  assert.ok(rb.releaseId, '回滚主结果必须照常返回');
+});
+
 test('收尾清理临时目录', () => {
   // 各 test 独立 mkdtemp，这里统一不清理也可（系统临时目录）；
   // 保留显式说明而非静默残留。

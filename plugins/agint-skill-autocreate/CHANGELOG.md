@@ -1,3 +1,30 @@
+## 0.9.0 · 2026-11-19 — proposal 终态同步旁路（治僵尸账本，工作包②）
+
+**为什么**：候选被拒/回滚时 proposals 表对应行不同步终态，永久停在
+QUEUED_FOR_RELEASE。生产实测 124 条僵尸行（全 09-17/18，115 条工具序列名），
+而真实发布队列读 candidates 表（releaseQueue）⇒ 面板 queue 阶段假积压「124 待发布」。
+立项文档：`docs/AGINT-进化断线两工作包立项-20261119.md` 工作包②。
+（5 次发布全 ROLLED_BACK 的根因调查同档闭环：命名门上线前历史批次的必然结局，
+护栏按设计工作，根因已由 0.5.2 judgeSkillIdentity + proposer 回落名门修掉。）
+
+**变更**
+
+1. `release-manager.js` 新增 `syncProposalTerminal(candidateId, status, reason)`：
+   按 candidateId 反查 proposals 行，QUEUED_FOR_RELEASE → 终态 + terminalAt/terminalReason。
+   挂两个终态口：rejectCandidate（REJECTED）与 rollback（ROLLED_BACK，含 observe
+   到期回滚路径——它走 rollback）。软失败红线：整段 try/catch，失败只留
+   proposal_sync_failed 审计，不改主结果、不抛（补线三纪律）。
+2. `storage.js` proposalEntrySchema：status enum 扩 REJECTED/ROLLED_BACK；
+   新增 terminalAt/terminalReason（nullable default null，存量行 parse 向后安全）。
+3. 存量 124 条回填不在本次代码内——动生产存储，单独审批后执行。
+
+**测试**：release.test.mjs +3（拒绝同步 / 回滚同步 / 表写崩软失败），先 RED 后 GREEN；
+插件全套 436 条 430 过 0 败（6 skip/todo）。
+
+**版本位**：manifest 0.8.0→0.9.0；package.json 0.7.0→0.8.0。两位本就漂移一档
+（历史存量），各 bump 一档保持偏移，不做静默对齐。本档同时携带下方 2026-11-15
+未发版条目（LLM 模型选择收敛）的既有改动。
+
 ## 未发版 · 2026-11-15 — LLM 判定通路的模型选择收敛到宿主单一真源
 
 **依据**：`docs/capability-boundary.md:27`（LLM provider 属 L-宿主）与 `:489`

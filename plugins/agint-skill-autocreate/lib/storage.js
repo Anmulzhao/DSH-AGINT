@@ -72,7 +72,12 @@ const proposalEntrySchema = z.object({
   rankingScore: z.number().nullable().default(null),
   evidenceLevel: z.enum(['E0', 'E1']).nullable().default(null),
   provisional: z.boolean().default(true),
-  status: z.enum(['QUEUED_FOR_RELEASE']).default('QUEUED_FOR_RELEASE'),
+  // 2026-11-19（工作包②）：候选进终态时 proposal 行同步终态（此前单态 enum ⇒
+  // 124 条僵尸行永久 QUEUED_FOR_RELEASE，面板假积压）。新增终态 + 留痕字段，
+  // 存量行无新字段 → default 补齐，parse 向后安全。
+  status: z.enum(['QUEUED_FOR_RELEASE', 'REJECTED', 'ROLLED_BACK']).default('QUEUED_FOR_RELEASE'),
+  terminalAt: z.string().nullable().default(null),
+  terminalReason: z.string().nullable().default(null),
   estimatedBenefit: z.record(z.any()).nullable().default(null),
 });
 

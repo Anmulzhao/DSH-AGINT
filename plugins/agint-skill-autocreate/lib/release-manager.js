@@ -700,6 +700,27 @@ export function createReleaseManager(deps) {
   }
 
   /**
+   * proposal 终态同步旁路（2026-11-19，工作包②）。候选进终态时把 proposals 表
+   * 对应行同步翻终态——不同步则永久停在 QUEUED_FOR_RELEASE（生产 124 条僵尸行、
+   * 面板假积压的成因）。软失败红线：只留审计，不改主结果、不抛。
+   */
+  async function syncProposalTerminal(candidateId, status, reason) {
+    try {
+      const pt = await table('proposals');
+      for (const [key, v] of pt.entries()) {
+        if (v.candidateId === candidateId && v.status === 'QUEUED_FOR_RELEASE') {
+          await pt.put(key, { ...v, status, terminalAt: nowIso(), terminalReason: String(reason).slice(0, 300) });
+        }
+      }
+    } catch (e) {
+      await audit({
+        actor: 'system', action: 'proposal_sync_failed', targetType: 'candidate', targetId: candidateId,
+        details: { status }, reason: String(e?.message ?? e),
+      }).catch(() => {});
+    }
+  }
+
+  /**
    * 终态拒绝（2026-09-18）。用于**永久性**不合格的候选 —— 目前只有门 5 特异性复检。
    * 与 holdCandidate 的区别：不置 BUDGET_WAIT，因为那不是「暂等预算」，而是
    * 「这条候选本身不该存在」；留在 BUDGET_WAIT 会让 releaseQueue 每次跑都重试它。
@@ -708,6 +729,7 @@ export function createReleaseManager(deps) {
     await cd.put(id, {
       ...candidate, status: 'REJECTED', rejectionReason: `[${gate}] ${reason}`.slice(0, 300),
     });
+    await syncProposalTerminal(id, 'REJECTED', `[${gate}] ${reason}`);
     // 清回链（2026-10-18）：不清则该模式永久跳过候选生成。失败不阻断拒绝。
     await dismissPatternOf(id).catch(() => {});
     await publishEvent('skill-autocreate.release-rejected-low-specificity', {
@@ -787,6 +809,7 @@ export function createReleaseManager(deps) {
       // 清回链（2026-10-18）：回滚等于「这个模式不值得再提案」，不清就永久跳过。
       await dismissPatternOf(release.candidateId, 'ROLLED_BACK').catch(() => {});
     }
+    await syncProposalTerminal(release.candidateId, 'ROLLED_BACK', reason);
     await publishEvent('skill-autocreate.rolled-back', {
       candidateId: release.candidateId, skillName: release.skillName, releaseId: release.id,
       reason, operator: actor, archivedTo: arch.dest ?? null,

@@ -56,6 +56,8 @@ test('订阅覆盖全部主题，且每条都有独立 metric key', () => {
     [...SUBSCRIBED_TOPICS].sort(),
     [
       'abtest.concluded',
+      // 2026-11-19：observe 编排事件（check-wiring 唯一硬缺口 NO_SUBSCRIBER，生产已 2 条）
+      'abtest.observe',
       'abtest.started',
       'input.signal.host.domain-changed',
       // 2026-11-11：宿主 subagent 边界事件（生产已有 40/35 条却零订阅方）
@@ -132,6 +134,39 @@ test('新补的三条宿主主题各自落一条计数，key 不串、payload �
 });
 
 // ─────────────────── 2. 落库（handler 真的写了吗） ───────────────────
+
+test('abtest.observe summary 落计数，winner/pValue 证据随 meta 不丢', async () => {
+  const tableFn = makeTableFn();
+  await recordEventCounter({
+    tableFn,
+    randomIdFn,
+    envelope: {
+      topic: 'abtest.observe',
+      source: 'agint-abtest',
+      payload: { testId: 'abt-9', injected: 12, skippedSamples: [], llmCalls: 6, budgetCapped: false, winner: 'B', pValue: 0.03, effectSize: 0.4, samples: 24 },
+    },
+  });
+  const rows = tableFn.tbl.entries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].key, 'abtest.observeCount');
+  assert.equal(rows[0].value, 1);
+  const meta = JSON.parse(rows[0].meta);
+  assert.equal(meta.payload.winner, 'B');
+  assert.equal(meta.payload.pValue, 0.03);
+});
+
+test('abtest.observe 的 skip/abort 形状也计数（形状在 meta 可分辨）', async () => {
+  const tableFn = makeTableFn();
+  await recordEventCounter({
+    tableFn,
+    randomIdFn,
+    envelope: { topic: 'abtest.observe', source: 'agint-abtest', payload: { skipped: true, reason: 'abtest not mounted' } },
+  });
+  const rows = tableFn.tbl.entries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].key, 'abtest.observeCount');
+  assert.equal(JSON.parse(rows[0].meta).payload.skipped, true);
+});
 
 test('每条主题都落一条计数记录，key / value / meta 正确', async () => {
   const tableFn = makeTableFn();

@@ -1,5 +1,26 @@
 # Changelog — agint-metrics
 
+## v1.4.0 — 2026-11-19 — eventCounters 接 abtest.observe（销 check-wiring 唯一硬缺口）
+
+**为什么**：`abtest.observe` 发布方在册（agint-abtest/lib/observe.js:206，生产已 2 条）
+但全仓零订阅，check-wiring 判 NO_SUBSCRIBER，是门禁唯一 FAIL 项。
+立项文档：`docs/AGINT-进化断线两工作包立项-20261119.md` 工作包①。
+
+**变更**
+
+1. `COUNTER_METRIC_KEYS` / `COUNTER_METRIC_LABELS` 加 `abtest.observe → abtest.observeCount`。
+2. `SUBSCRIPTION.topics` 字面量数组追加 `'abtest.observe'`（保持单行字面量——
+   门禁正则只认字面量，变量形式对回归防线不可见，§6.15.3 教训）。
+3. skip / abort / summary 三形状都计数；summary 的 winner/pValue/effectSize
+   随 meta 原样落库，实验结论证据不丢。深度消费（curriculum 回流）属 P2 另立项，
+   本次不接——总线 T1 影子期不造第二套真相。
+
+**测试**：event-counters.test.mjs 主题清单 +2 条落库断言（summary 证据不丢 / skip 形状），
+先 RED 后 GREEN；插件 28/28 全绿。check-wiring：abtest.observe 翻 OK（1/1），0 硬缺口。
+
+**版本位**：manifest 1.3.0→1.4.0；package.json 1.2.0→1.3.0。两位本就漂移一档
+（历史存量），本次各 bump 一档保持偏移，不做静默对齐。
+
 ## v1.3.0 — 2026-11-11 — skills 采集区分「AGINT 负责的技能」与「用户自装第三方技能」
 
 **为什么**：原 `skills.totalBytes` 把两处根的全部 SKILL.md 字节并在一起，其中 58%
