@@ -1,5 +1,25 @@
 # Changelog — agint-quality-eval
 
+## 0.5.2 (2026-11-19) — 有效进化增量护栏不依赖 targets 数量（C 包修复）
+
+### Fixed
+
+- **weeklyTask 护栏块提前到 targets early return 之前**
+
+  **症状**：effectiveDelta 在生产恒 unknown（立项书 §3 任务 C 包要修的主病灶）。
+
+  **根因**：weeklyTask 在 `targets.length === 0` 时 662-665 行直接 return，
+  把 effectiveDelta / stagnation / deployBudget / baseline / selfModel 全部跳过。
+  但 effectiveDelta 只从 tool-stats.resourceWindow 读数，**跟 targets 无关** ——
+  探针实跑证生产已有 `effective / resource-shrink`（完成率 73%→91%，耗时 -82.5%，
+  token 覆盖率 99.65%），只是从来没跑到它。
+
+  **修复**：把 5 块独立判定提到 early return 之前。targets=0 时只跳过
+  evaluateAll + Phase 4 写入链，护栏照跑不误。
+
+  **验证**：145/145 全绿（含新增 weekly-targets-empty 2 条覆盖）。
+  零新依赖、零 schema 变更。
+
 ## 0.5.1 (2026-11-01) — memory 记录必须带 confidence（决策确信度卡 0.61 的主病灶）
 
 ### Fixed

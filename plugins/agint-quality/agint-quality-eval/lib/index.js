@@ -659,53 +659,15 @@ function apply(ctx, config) {
       const memory = ctx.get('agint.memory');
       const evo = ctx.get('agint.evolution');
       const targets = await enumerateTargets();
-      if (targets.length === 0) {
-        console.log('[agint-quality-eval] weekly: no targets to evaluate');
-        return { evaluated: 0, persisted: 0, loggedToEvo: 0, baseline: null, stagnation: null };
-      }
-      const results = await evaluator.evaluateAll(targets);
 
-      // ── Phase 4 自动化：每个 EvalResult 写 evolution-log ─────────
-      let loggedToEvo = 0;
-      if (evo && typeof evo.logPhase4 === 'function') {
-        for (const r of results) {
-          const score = compositeScore(r);
-          const decision = score === null ? 'REJECT' : 'PENDING_REVIEW';
-          const scores = { composite: score };
-          for (const d of r.dimensions) {
-            if (d.score?.score !== null && d.score?.score !== undefined) {
-              scores[d.key] = d.score.score;
-            }
-          }
-          try {
-            await evo.logPhase4({
-              targetId: r.targetId,
-              targetKind: r.kind,
-              decision,
-              scores,
-              findings: r.findings ?? [],
-              tags: ['weekly'],
-            });
-            loggedToEvo++;
-          } catch (err) {
-            console.error(`agint-quality-eval: evo.logPhase4 failed for ${r.targetId}`, err.message);
-          }
-        }
-      }
-
-      // ── 任务记忆（保持 v0.2 行为，向后兼容） ─────────────────────
-      let persisted = 0;
-      if (memory && typeof memory.write === 'function') {
-        for (const r of results) {
-          const decision = compositeScore(r) === null ? 'REJECT' : 'PENDING_REVIEW';
-          try {
-            await memory.write(toMemoryRecord(r, decision));
-            persisted++;
-          } catch (err) {
-            console.error(`agint-quality-eval: memory.write failed for ${r.targetId}`, err.message);
-          }
-        }
-      }
+      // ════════════════════════════════════════════════════════════════════
+      // 独立判定：不依赖 evaluateAll(targets) 的纯读周级护栏。
+      // 2026-11-19 修复：weeklyTask 原在 targets=0 时 early return（662-665），
+      // 把 effectiveDelta / stagnation / deployBudget / baseline / selfModel 全部跳过。
+      // 但 effectiveDelta 只从 tool-stats.resourceWindow 读数，与 targets 无关 ——
+      // 探针实跑证生产已有 effective / resource-shrink（token 覆盖率 99.65%），
+      // 只是从来没跑到它。把这 5 块提前到 early return 之前，targets=0 时也能出护栏。
+      // ════════════════════════════════════════════════════════════════════
 
       // ── D-QAF Phase 3：baseline-regression-suite（退化探测） ────
       let baselineReport = null;
@@ -771,6 +733,63 @@ function apply(ctx, config) {
         console.warn(`[agint-quality-eval] self-model weekly update skipped: ${err?.message ?? err}`);
       }
 
+      // ── targets=0：跳过 evaluateAll + Phase 4 写入链，但护栏块已跑 ────
+      if (targets.length === 0) {
+        console.warn(`[agint-quality-eval] weekly: no targets to evaluate — 但护栏仍跑（baseline=${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation=${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}, effectiveDelta=${effectiveDelta?.verdict ?? '?'}, deployBudget=${deployBudget?.used ?? '?'}/${DEFAULT_DEPLOY_GUARD.budget}${deployBudget?.exceeded ? ' EXCEEDED' : ''}）`);
+        return {
+          evaluated: 0, persisted: 0, loggedToEvo: 0,
+          baseline: baselineReport?.regression ?? null,
+          stagnation: { isStagnated: stagnationReport?.isStagnated, reason: stagnationReport?.reason },
+          effectiveDelta,
+          deployBudget,
+        };
+      }
+
+      // ── targets > 0：跑 evaluateAll + Phase 4 写入链 ───────────────
+      const results = await evaluator.evaluateAll(targets);
+
+      // ── Phase 4 自动化：每个 EvalResult 写 evolution-log ─────────
+      let loggedToEvo = 0;
+      if (evo && typeof evo.logPhase4 === 'function') {
+        for (const r of results) {
+          const score = compositeScore(r);
+          const decision = score === null ? 'REJECT' : 'PENDING_REVIEW';
+          const scores = { composite: score };
+          for (const d of r.dimensions) {
+            if (d.score?.score !== null && d.score?.score !== undefined) {
+              scores[d.key] = d.score.score;
+            }
+          }
+          try {
+            await evo.logPhase4({
+              targetId: r.targetId,
+              targetKind: r.kind,
+              decision,
+              scores,
+              findings: r.findings ?? [],
+              tags: ['weekly'],
+            });
+            loggedToEvo++;
+          } catch (err) {
+            console.error(`agint-quality-eval: evo.logPhase4 failed for ${r.targetId}`, err.message);
+          }
+        }
+      }
+
+      // ── 任务记忆（保持 v0.2 行为，向后兼容） ─────────────────────
+      let persisted = 0;
+      if (memory && typeof memory.write === 'function') {
+        for (const r of results) {
+          const decision = compositeScore(r) === null ? 'REJECT' : 'PENDING_REVIEW';
+          try {
+            await memory.write(toMemoryRecord(r, decision));
+            persisted++;
+          } catch (err) {
+            console.error(`agint-quality-eval: memory.write failed for ${r.targetId}`, err.message);
+          }
+        }
+      }
+
       console.log(`[agint-quality-eval] weekly: evaluated ${results.length}, persisted ${persisted}, evo ${loggedToEvo}, baseline ${baselineReport?.regression?.severity ?? 'no-baseline'}, stagnation ${stagnationReport?.isStagnated ? 'STAGNATED' : 'active'}, effectiveDelta ${effectiveDelta?.verdict ?? '?'}, deployBudget ${deployBudget?.used ?? '?'}/${DEFAULT_DEPLOY_GUARD.budget}${deployBudget?.exceeded ? ' EXCEEDED' : ''}`);
       return {
         evaluated: results.length,
@@ -778,7 +797,6 @@ function apply(ctx, config) {
         loggedToEvo,
         baseline: baselineReport?.regression ?? null,
         stagnation: { isStagnated: stagnationReport?.isStagnated, reason: stagnationReport?.reason },
-        // D-QAF §5.3：有效进化增量（verdict ∈ effective/ineffective/unknown + 一行可读文本）
         effectiveDelta,
         deployBudget,
       };
