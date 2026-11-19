@@ -28,13 +28,25 @@ export const DOMAIN_NAME = 'agint_aesthetic_oracle';
 // —— ⛔ 不能写 .default({})：zod v3 的 default 值**原样落盘、不过内层 parse**，
 // 实测（2026-09-27）会把 silenceMode/baseline 存成裸 {}，下游全靠 falsy 侥幸。
 
-/** §6.2 沉默模式面。 */
+/** §6.2 沉默模式面。
+ *
+ * v0.12.0 起两个新字段都带 default(null)：旧状态行经 loadState 的 parse 自动补齐，
+ * 无需离线改写生产存储（§5 回滚也靠这个——旧代码读新状态 strip 未知字段不炸）。
+ *   - lastProbeAt：W2 沉默自愈——上次「放行真实广播试探」的时刻。基准 = lastProbeAt ?? since，
+ *     满一个探针间隔才放行下一轮；试探成功清沉默时一并重置。
+ *   - lastAlertAt：W3 重复告警——上次发 silence-alert 的时刻。旧状态 alerted=true 但
+ *     无 lastAlertAt ⇒ 迁移为「since + silenceAlertAfterMs 发过首条」，从那时起算 7 天窗。
+ */
 const silenceModeShape = z.object({
   active: z.boolean().default(false),
   since: z.string().nullable().default(null),
   reason: z.string().default(''),
-  /** 24h 告警只发一次的防重标记 */
+  /** 告警防重标记（v0.11 及以前：永久一次）。v0.12 保留读兼容，判重改看 lastAlertAt。 */
   alerted: z.boolean().default(false),
+  /** W2：上次沉默自愈试探时刻（ISO）；null = 从未试探，基准回落到 since。 */
+  lastProbeAt: z.string().nullable().default(null),
+  /** W3：上次沉默告警时刻（ISO）；null = 从未发（旧状态用 alerted+since 迁移）。 */
+  lastAlertAt: z.string().nullable().default(null),
 });
 
 /** §5.4 配额计数面（跨重启持久；周期翻转时清零）。

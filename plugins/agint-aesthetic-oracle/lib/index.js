@@ -53,13 +53,31 @@ const name = 'agint-aesthetic-oracle';
 const inject = ['storageDomain'];
 
 const KINDS = ['daily', 'weekly', 'monthly', 'alert'];
-const SILENCE_ALERT_AFTER_MS = 24 * 60 * 60 * 1000; // §6.2：沉默 24h → alert 一次
+const DAY_MS = 86_400_000;
+const SILENCE_ALERT_AFTER_MS = 24 * 60 * 60 * 1000; // §6.2：沉默 24h → 首条 alert
+const SILENCE_ALERT_REPEAT_MS = 7 * DAY_MS;         // v0.12 W3：此后沉默每 7 天再发一条 alert
+const SILENCE_PROBE_INTERVAL_MS = 24 * 60 * 60 * 1000; // v0.12 W2：沉默期每 24h 放行一轮真实广播试探
 const RETRY_DELAYS_MS = [0, 1000, 4000, 16000];     // §6.2：首次 + 3 重试（指数退避）
 const MAX_CONSECUTIVE_FAILURES = 3;                 // §6.3：连续 3 次 → 沉默
 const MAX_DAILY_VIOLATIONS = 3;                     // §6.3：配额违规 ≥3 → 沉默 + 告警
-const CACHE_MAX_AGE_MS = 7 * 86_400_000;            // §6.1：缓存回退最多信 7 天
+const CACHE_MAX_AGE_MS = 7 * DAY_MS;                // §6.1：缓存回退最多信 7 天
 
-const DEFAULT_CONFIG = Object.freeze({ enabled: true, silenceAlertAfterMs: SILENCE_ALERT_AFTER_MS });
+// 三个运维旋钮都可被 config 覆盖（演练用，形状同 silenceAlertAfterMs）：
+//   silenceAlertAfterMs   沉默多久发首条 alert（旧旋钮，不变）
+//   silenceAlertRepeatMs  此后每隔多久重发 alert（W3 新增，默认 7d）
+//   silenceProbeIntervalMs 沉默期两次真实广播试探的间隔（W2 新增，默认 24h）
+const DEFAULT_CONFIG = Object.freeze({
+  enabled: true,
+  silenceAlertAfterMs: SILENCE_ALERT_AFTER_MS,
+  silenceAlertRepeatMs: SILENCE_ALERT_REPEAT_MS,
+  silenceProbeIntervalMs: SILENCE_PROBE_INTERVAL_MS,
+});
+
+/** 干净的沉默面（resume 与 W2 试探成功共用）。新字段一并清零，避免复活后残留探针时刻
+ *  让下一轮沉默的 probe 判据错位。 */
+function freshSilenceMode() {
+  return { active: false, since: null, reason: '', alerted: false, lastProbeAt: null, lastAlertAt: null };
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -192,7 +210,8 @@ function apply(ctx, config) {
     stats.silenceEntered += 1;
     return saveState({
       ...state,
-      silenceMode: { active: true, since: nowIso(), reason, alerted: false },
+      // 新沉默周期：探针与告警时钟都从零起算（上次复活的残留时刻不得带进本周期）。
+      silenceMode: { ...freshSilenceMode(), active: true, since: nowIso(), reason },
       consecutiveFailures: 0,
     });
   }
@@ -528,7 +547,7 @@ function apply(ctx, config) {
    * 主路径与缓存回退路径共用。LLM 失败抛 OracleLlmError（无降级）；
    * 其余来源失败仍按 §6.1 只降级不阻断。
    */
-  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', l2DeepDiveResult = null }) {
+  async function finalizeBroadcast({ kind, state, quota, now, view, evaluation, report, dayIndex, extraFindings = [], extraDetail = '', l2DeepDiveResult = null, clearSilenceOnSuccess = false }) {
     // Day 4-5：weekly 提案先行——提案 id 要进审计 findings（evidence 可追溯）
     let proposalIds = [];
     let proposalsFailed = 0;
@@ -618,7 +637,14 @@ function apply(ctx, config) {
     const counterKey = kind === 'alert' ? 'alerts' : kind;
     q[counterKey] = (q[counterKey] ?? 0) + 1;
     q.bytes = (q.bytes ?? 0) + report.bytes;
-    await saveState({ ...state, quota: q, consecutiveFailures: 0 });
+    // W2：试探成功 ⇒ 自动清沉默（等价 resume 的沉默+失败计数部分；pause 从未置位，
+    // 基线与配额不动）。清沉默后 lastProbeAt/lastAlertAt 一并归零，下轮重新计时。
+    await saveState({
+      ...state,
+      quota: q,
+      consecutiveFailures: 0,
+      ...(clearSilenceOnSuccess ? { silenceMode: freshSilenceMode() } : {}),
+    });
     if (kind === 'daily') {
       await maybeEstablishBaseline();
       // 方案 D：一次性重定基（幂等自触发——基线齐全后判据不再命中）。
@@ -652,6 +678,8 @@ function apply(ctx, config) {
     const t0 = Date.now();
     const now = opts.now ?? new Date();
     let state = await loadState(tables().state);
+    // W2 沉默自愈：本轮是否由「沉默试探」放行。成功落 ok 行时据此自动清沉默。
+    let probeRound = false;
 
     // dashboard 订阅懒补挂（event-bus 晚于 oracle 挂载时逐次重试；不 await 主链）
     ensureDashboardSub().catch(() => {});
@@ -662,28 +690,73 @@ function apply(ctx, config) {
       return { skipped: true, reason: 'paused' };
     }
 
-    // 沉默模式（§6.2）：只写审计不开口；持续 24h → oracle.alert 一次（防重）。
-    // silenceAlertAfterMs 是运维旋钮（默认 24h；演练/测试可调短）——只调告警时机，
-    // 不改「连续 3 次失败进沉默」的进沉默条件。
-    const silenceAfterMs = isNum(cfg.silenceAlertAfterMs) ? cfg.silenceAlertAfterMs : SILENCE_ALERT_AFTER_MS;
+    // 沉默模式（§6.2 + v0.12 W2/W3）：默认只写审计不开口，但有两个自救出口。
+    //   ① W3 重复告警：满 alertAfterMs 发首条；此后每 alertRepeatMs（默认 7d）再发一条。
+    //      防重看 lastAlertAt，不再是永久布尔。旧状态 alerted=true 且无 lastAlertAt ⇒
+    //      迁移为「since+alertAfterMs 发过首条」，从那时起算 7d 窗（不立即重发）。
+    //   ② W2 沉默自愈：距上次试探（或进沉默时刻）满 probeIntervalMs（默认 24h）⇒
+    //      放行本轮走**完整 LLM 广播**（不是降级模板）。成功清沉默；失败保持沉默、
+    //      落 error 痕、记探针时刻，且不累计连续失败（不与 runScheduled 的重试叠加）。
+    // 三个旋钮都可 config 覆盖（演练用）；只调时机，不改「连续 3 次失败进沉默」的条件。
+    const alertAfterMs = isNum(cfg.silenceAlertAfterMs) ? cfg.silenceAlertAfterMs : SILENCE_ALERT_AFTER_MS;
+    const alertRepeatMs = isNum(cfg.silenceAlertRepeatMs) ? cfg.silenceAlertRepeatMs : SILENCE_ALERT_REPEAT_MS;
+    const probeIntervalMs = isNum(cfg.silenceProbeIntervalMs) ? cfg.silenceProbeIntervalMs : SILENCE_PROBE_INTERVAL_MS;
+    const silenceMs = state.silenceMode.since ? now.getTime() - new Date(state.silenceMode.since).getTime() : 0;
+
     if (state.silenceMode.active) {
-      const sinceMs = state.silenceMode.since ? Date.now() - new Date(state.silenceMode.since).getTime() : 0;
-      if (sinceMs >= silenceAfterMs && !state.silenceMode.alerted) {
-        const published = await publishBus(KIND_TOPIC.alert, {
-          reason: `神谕层沉默模式已持续 24h（${state.silenceMode.reason}）——请检查 metrics/cron 健康`,
-          since: state.silenceMode.since,
-        });
-        if (published) stats.alertsSent += 1;
-        await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: 'silence-24h-alert', published }, now);
-        state = await saveState({ ...state, silenceMode: { ...state.silenceMode, alerted: true } });
+      // ── W3：重复告警（含旧状态迁移）─────────────────────────────────────────
+      if (silenceMs >= alertAfterMs) {
+        let lastAlertMs = null;
+        if (state.silenceMode.lastAlertAt) {
+          lastAlertMs = new Date(state.silenceMode.lastAlertAt).getTime();
+        } else if (state.silenceMode.alerted && state.silenceMode.since) {
+          // 迁移：旧版把 since+24h 的首条告警记成 alerted=true 却没存时刻。
+          lastAlertMs = new Date(state.silenceMode.since).getTime() + alertAfterMs;
+        }
+        const alertDue = lastAlertMs === null || (now.getTime() - lastAlertMs >= alertRepeatMs);
+        if (alertDue) {
+          const days = Math.floor(silenceMs / DAY_MS);
+          const published = await publishBus(KIND_TOPIC.alert, {
+            reason: `神谕层沉默模式已持续 ${days} 天（${state.silenceMode.reason}）——请检查 metrics/cron 健康`,
+            since: state.silenceMode.since,
+            days,
+          });
+          if (published) stats.alertsSent += 1;
+          await recordBroadcast({ kind: 'alert', outcome: 'ok', detail: `silence-alert-day-${days}`, published }, now);
+          state = await saveState({
+            ...state,
+            // 用逻辑时钟（now）而非真实时钟：判据也按 now 算，注入时钟的测试才不会错位。
+            silenceMode: { ...state.silenceMode, alerted: true, lastAlertAt: now.toISOString() },
+          });
+        }
       }
-      await auditLog({
-        targetId: `${auditTargetId(kind, now)}-silenced`,
-        targetKind: `oracle-${kind}`,
-        findings: [{ ruleId: 'oracle-silence', severity: 'low', detail: state.silenceMode.reason }],
+
+      // ── W2：沉默自愈试探（每 24h 至多一轮真实广播）─────────────────────────
+      // 基准 = lastProbeAt ?? since。首轮在进沉默满 24h 后放行；此后按 lastProbeAt 计时。
+      // 探针时刻在放行**前**落盘：这样失败轮也记到时刻，下一轮 24h 内不会重复试，
+      // 且失败由 withLlmFailureTrace 落 error 痕（无降级），不调 activateSilence。
+      const probeBase = state.silenceMode.lastProbeAt ?? state.silenceMode.since;
+      // 探针只放行业务广播（cron 的 daily/weekly/monthly）；alert 是独立告警通道，
+      // 保持存量语义（沉默期被拦），不借探针出口。
+      const probeDue = kind !== 'alert' && probeBase
+        && (now.getTime() - new Date(probeBase).getTime() >= probeIntervalMs);
+      if (!probeDue) {
+        await auditLog({
+          targetId: `${auditTargetId(kind, now)}-silenced`,
+          targetKind: `oracle-${kind}`,
+          findings: [{ ruleId: 'oracle-silence', severity: 'low', detail: state.silenceMode.reason }],
+        });
+        await recordBroadcast({ kind, outcome: 'silenced', detail: state.silenceMode.reason }, now);
+        return { skipped: true, reason: 'silence-mode' };
+      }
+      // 放行真实广播试探：记探针时刻 + 打标，成功时由 finalizeBroadcast 清沉默。
+      state = await saveState({
+        ...state,
+        // 同上：探针时刻按逻辑时钟记，供下一轮 24h 判据使用。
+        silenceMode: { ...state.silenceMode, lastProbeAt: now.toISOString() },
       });
-      await recordBroadcast({ kind, outcome: 'silenced', detail: state.silenceMode.reason }, now);
-      return { skipped: true, reason: 'silence-mode' };
+      probeRound = true;
+      // 落到下方配额护栏 + 分支 b/c，走完整 LLM 路径（失败不降级、不落 ok 行）。
     }
 
     // 配额护栏（§5.4/§9.3）：周期滚动 + 违规计数；alert 走独立日配额
@@ -777,6 +850,7 @@ function apply(ctx, config) {
           report.wallMs = Date.now() - t0;
           return finalizeBroadcast({
             kind, state, quota, now, view, evaluation, report, dayIndex, l2DeepDiveResult,
+            clearSilenceOnSuccess: probeRound,
             extraFindings: [{
               ruleId: 'oracle-stale-cache', severity: 'low',
               detail: `metrics summary 不可用（${String(summaryError?.message ?? summaryError)}），改用 ${Math.floor(cachedAge / 3_600_000)}h 前缓存广播`,
@@ -823,6 +897,7 @@ function apply(ctx, config) {
       report.wallMs = Date.now() - t0;
       return finalizeBroadcast({
         kind, state, quota, now, view, evaluation, report, dayIndex, l2DeepDiveResult,
+        clearSilenceOnSuccess: probeRound,
       });
     });
 
@@ -885,7 +960,7 @@ function apply(ctx, config) {
     // resume = 一键恢复：清 pause + 沉默 + 失败计数（基线与配额不动）
     return saveState({
       ...state, paused: false, pausedReason: '', pausedAt: null,
-      silenceMode: { active: false, since: null, reason: '', alerted: false },
+      silenceMode: freshSilenceMode(),
       consecutiveFailures: 0,
     });
   }

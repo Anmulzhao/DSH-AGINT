@@ -1,5 +1,25 @@
 # Changelog — agint-aesthetic-oracle
 
+## v0.12.0 — 2026-11-20 — 沉默层自愈（W2 探针 + W3 重复告警）
+
+**为什么**：神谕层自 2026-10-30 沉默至今（21 天）。根因不是 LLM 通路坏——今日 dream 的 P1 LLM consolidation 成功，与 oracle 走同一 `startActivation` 契约。真正病因是「沉默只进不出、告警只发一次」：一次历史故障被自保机制变成永久哑巴。本版把自保从单向阀改成带自救出口的阀门。
+
+**变更**
+
+1. W2 沉默自愈：`runBroadcast` 沉默分支新增探针判据——距上次试探（或进沉默时刻）满 `silenceProbeIntervalMs`（默认 24h）⇒ 放行本轮走**完整 LLM 广播**。成功自动清沉默（`freshSilenceMode`）；失败落 `outcome=error` 痕、记 `lastProbeAt`、保持沉默，不调 `activateSilence`、不累计连续失败。无降级不破：探针不发模板判词。paused 优先于探针；探针只针对 daily/weekly/monthly，`alert` 通道保持存量语义。
+2. W3 重复告警：防重从 `!alerted`（永久一次）改 `now - lastAlertAt >= silenceAlertRepeatMs`（默认 7d）。首条仍在 `silenceAlertAfterMs`（24h）后发；此后每 7 天一条，文案带已沉默天数与 reason。alert 独立日配额 3 不动。
+3. 旧状态迁移：`silenceMode` 加 `lastProbeAt` / `lastAlertAt`（均 `z.string().nullable().default(null)`）。`loadState` 的 zod parse 自动补 null。`alerted=true` 且无 `lastAlertAt` ⇒ 视为「since+24h 发过首条」，从那时起算 7d 窗，不立即重发。三个时钟字段统一用逻辑时钟 `now` 记，生产语义不变。
+4. 运维旋钮：`DEFAULT_CONFIG` 加 `silenceAlertRepeatMs` / `silenceProbeIntervalMs`，形状同原 `silenceAlertAfterMs`（演练可调短）。
+
+**验收**：`test/oracle.test.js` 新增 8 例（W2×4 / W3×4），全量 57/57 PASS。变异测试两轮：7d 判据改 1000d ⇒ 恰好 W3-2/W3-3 红；探针判据恒 false ⇒ 恰好 W2-1/W2-2 红；均已还原。存量红 2 例（`scoring.test.js` 断言仍停在 r4）与本版无关，未动评分公式。
+
+**⛔ 没做的**
+
+- 提案质量改进、标定标注、oracle 判词进决策上下文——复活后再议（不在本立项范围）。
+- 不动评分公式（r5 不变）、不动基线、不加维、不碰 auto-apply。
+- 运行态自然触发（自愈/重复告警）需等沉默再次发生；以单测 + 旋钮演练实证，报告标注「运行态自然触发未验证」。
+
+
 ## v0.11.0 — 2026-11-11 — 臃肿度分子只算 AGINT 负责的技能（判尺 r5）
 
 **为什么**：生产实测（2026-11-11）用户级 skills 根 153852 字节 / 总 265342 字节 = 58%

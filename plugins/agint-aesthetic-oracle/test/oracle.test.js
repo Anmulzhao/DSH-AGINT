@@ -104,7 +104,7 @@ function fakeLlmServices() {
  * summary 传 Error 实例 = summary 恒抛；传 null = metrics 服务缺席。
  * 默认挂假 LLM（成功）；要测失败传 extraServices: { agents: null }。
  */
-function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } = {}) {
+function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {}, seedState = null } = {}) {
   const audit = [];
   const bus = [];
   let summaryCalls = 0;
@@ -135,6 +135,31 @@ function makeEnv({ config = {}, summary = fixtureSummary, extraServices = {} } =
     provide: (k, v) => { provided[k] = v; },
     effect: (fn) => effects.push(fn),
   };
+  // 种子状态：直接预置 oracle_state.latest（W2/W3 需要可控的 since / lastProbeAt /
+  // lastAlertAt，这些字段此前只能靠真实时钟推进，测试无法稳定复现 7d/24h 边界）。
+  if (seedState) {
+    const mkTable = (seed) => {
+      const mem = new Map(seed ? [['latest', seed]] : []);
+      return {
+        put: async (id, v) => { mem.set(id, v); return v; },
+        get: async (id) => mem.get(id) ?? null,
+        delete: async (id) => { mem.delete(id); return true; },
+        entries: () => mem.entries(),
+        get size() { return mem.size; },
+        values: async () => [...mem.values()],
+        clear: async () => { mem.clear(); return true; },
+      };
+    };
+    const tables = {
+      oracle_state: mkTable(seedState),
+      oracle_broadcasts: mkTable(null),
+      oracle_cards: mkTable(null),
+    };
+    const handle = { table: (n) => tables[n], close: () => {} };
+    // open 是异步的（openStore 里 .then）；测试用 seedState 后必须先 await flush()
+    // 让 openStore 换到这张表，再调 svc —— 见各用例开头。
+    ctx.storageDomain = { open: async () => handle };
+  }
   apply(ctx, config);
   return {
     svc: provided['agint.aestheticOracle'],
@@ -1243,5 +1268,186 @@ test('审计带 oracle-llm-mode：LLM 成功时记 mode=llm', async () => {
   const finding = audit[0].findings.find((f) => f.ruleId === 'oracle-llm-mode');
   assert.ok(finding, '审计必须带 oracle-llm-mode finding');
   assert.equal(finding.detail, 'mode=llm');
+  env.dispose();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// v0.12.0 — W2 沉默自愈 + W3 重复告警（立项《神谕层复活与自愈立项-20261120》）
+//
+// 判据全部用注入时钟 opts.now 驱动，不依赖真实时间流逝；种子状态经 loadState
+// 过 zod parse 补 default，只写关键字段即可。seedState 走 makeEnv 的异步 storage
+// 注入，故每个用例先 await flush() 让 openStore 换表。
+// ════════════════════════════════════════════════════════════════════════════
+
+const HOUR_V12 = 3_600_000;
+const DAY_V12 = 86_400_000;
+const T0_V12 = Date.parse('2026-11-20T00:00:00.000Z');
+
+/** 造一个「沉默中」的 oracle_state 种子。时刻参数均为毫秒。 */
+function silenceSeedV12({
+  sinceMs = T0_V12,
+  lastProbeAt = null,
+  lastAlertAt = null,
+  alerted = false,
+  paused = false,
+  reason = '连续 3 次调度执行失败（last: L1: llm error: timeout after 60000ms）',
+} = {}) {
+  const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
+  return {
+    id: 'latest', kind: 'oracle-state', updatedAt: iso(T0_V12),
+    paused, pausedReason: paused ? 'test' : '', pausedAt: iso(paused ? T0_V12 : null),
+    silenceMode: {
+      active: true, since: iso(sinceMs), reason, alerted,
+      lastProbeAt: iso(lastProbeAt), lastAlertAt: iso(lastAlertAt),
+    },
+    consecutiveFailures: 3,
+  };
+}
+
+/** seed 版 env：等 openStore 异步换到种子表后再返回。 */
+async function seededEnvV12(seed, opts = {}) {
+  const env = makeEnv({ seedState: seed, ...opts });
+  await flush();
+  return env;
+}
+
+/** 数沉默告警（reason 带「沉默模式已持续」，区别于 LLM 不可用告警）。 */
+const silenceAlertsV12 = (env) => env.bus.filter(
+  (e) => e.topic === 'oracle.alert' && /沉默模式已持续/.test(e.payload?.reason ?? ''),
+);
+
+test('v0.12 W2-1 沉默 ≥24h 放行真实试探：成功 → 清沉默 + ok/llm 行 + 探针时刻归零', async () => {
+  const now = T0_V12 + 25 * HOUR_V12;
+  const env = await seededEnvV12(silenceSeedV12({ sinceMs: T0_V12, lastProbeAt: T0_V12 }));
+  const out = await env.svc.runBroadcast('daily', { now: new Date(now) });
+  assert.equal(out.ok, true, '试探成功照常返回 ok');
+
+  const rows = await env.svc.history(10);
+  const okDaily = rows.find((r) => r.kind === 'daily' && r.outcome === 'ok');
+  assert.ok(okDaily, '必须落 ok 日广播行');
+  assert.equal(okDaily.mode, 'llm', '试探走完整 LLM 路径，不是模板降级');
+
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.active, false, '成功后自动清沉默');
+  assert.equal(st.silenceMode.since, null);
+  assert.equal(st.silenceMode.lastProbeAt, null, '复活后探针时刻归零');
+  assert.equal(st.silenceMode.lastAlertAt, null);
+  assert.equal(st.consecutiveFailures, 0);
+  env.dispose();
+});
+
+test('v0.12 W2-2 试探失败：保持沉默 + error 痕 + lastProbeAt 更新，不累计连续失败', async () => {
+  const now = T0_V12 + 25 * HOUR_V12;
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12, lastProbeAt: T0_V12 }),
+    { summary: new Error('boom') },
+  );
+  await assert.rejects(() => env.svc.runBroadcast('daily', { now: new Date(now) }), /boom/);
+
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.active, true, '失败保持沉默');
+  assert.equal(st.silenceMode.lastProbeAt, new Date(now).toISOString(), '探针时刻更新');
+  assert.equal(st.consecutiveFailures, 3, '直接 runBroadcast 不自增连续失败（那是 runScheduled 的职责）');
+  const rows = await env.svc.history(10);
+  assert.ok(rows.find((r) => r.kind === 'daily' && r.outcome === 'error'), '失败落 error 痕');
+  assert.ok(!rows.find((r) => r.kind === 'daily' && r.outcome === 'ok'), '失败不落 ok 行（无降级）');
+  env.dispose();
+});
+
+test('v0.12 W2-3 距上次试探 <24h：silenced 行，不调 LLM', async () => {
+  const now = T0_V12 + 23 * HOUR_V12;
+  const env = await seededEnvV12(silenceSeedV12({ sinceMs: T0_V12, lastProbeAt: T0_V12 }));
+  const llmBefore = env.llmCalls.length;
+  const out = await env.svc.runBroadcast('daily', { now: new Date(now) });
+  assert.equal(out.reason, 'silence-mode', '未满 24h 照旧静默');
+  assert.equal(env.llmCalls.length, llmBefore, '不调 LLM');
+  const rows = await env.svc.history(10);
+  assert.ok(rows.find((r) => r.kind === 'daily' && r.outcome === 'silenced'), '落 silenced 行');
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.lastProbeAt, new Date(T0_V12).toISOString(), '探针时刻不前进');
+  env.dispose();
+});
+
+test('v0.12 W2-4 paused 优先：paused + 沉默 → skipped(paused)，不试探', async () => {
+  const now = T0_V12 + 25 * HOUR_V12;
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12, lastProbeAt: T0_V12, paused: true }),
+  );
+  const out = await env.svc.runBroadcast('daily', { now: new Date(now) });
+  assert.equal(out.reason, 'paused', 'paused 优先于沉默试探');
+  assert.equal(env.llmCalls.length, 0, '不调 LLM');
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.lastProbeAt, new Date(T0_V12).toISOString(), '探针时刻不动');
+  env.dispose();
+});
+
+test('v0.12 W3-1 沉默 24h 发首条 alert；7 天内重复唤起不重发', async () => {
+  // 探针间隔调大以隔离告警判据（只测 W3）。
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12 }),
+    { config: { silenceProbeIntervalMs: 100 * DAY_V12 } },
+  );
+  const now1 = T0_V12 + 24 * HOUR_V12 + 1000;
+  const out1 = await env.svc.runBroadcast('daily', { now: new Date(now1) });
+  assert.equal(out1.reason, 'silence-mode');
+  assert.equal(silenceAlertsV12(env).length, 1, '满 24h 发首条');
+  const st1 = await env.svc.getState();
+  assert.equal(st1.silenceMode.lastAlertAt, new Date(now1).toISOString());
+
+  const now2 = now1 + 6 * DAY_V12;
+  await env.svc.runBroadcast('daily', { now: new Date(now2) });
+  assert.equal(silenceAlertsV12(env).length, 1, '7 天内不重发');
+  env.dispose();
+});
+
+test('v0.12 W3-2 沉默持续满 8 天 → 第二条 alert，lastAlertAt 更新', async () => {
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12 }),
+    { config: { silenceProbeIntervalMs: 100 * DAY_V12 } },
+  );
+  const now1 = T0_V12 + 2 * DAY_V12;
+  await env.svc.runBroadcast('daily', { now: new Date(now1) });
+  assert.equal(silenceAlertsV12(env).length, 1, '首条（since+24h 已过）');
+
+  const now2 = now1 + 8 * DAY_V12;
+  await env.svc.runBroadcast('daily', { now: new Date(now2) });
+  assert.equal(silenceAlertsV12(env).length, 2, '距上次告警满 7d → 第二条');
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.lastAlertAt, new Date(now2).toISOString(), 'lastAlertAt 推进');
+  env.dispose();
+});
+
+test('v0.12 W3-3 旧状态迁移：alerted=true 无 lastAlertAt → 按 since+24h+7d 判，不立即重发', async () => {
+  // 旧版只写 alerted 布尔、不存时刻；迁移语义 = 首条在 since+24h 发出。
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12, alerted: true, lastAlertAt: null }),
+    { config: { silenceProbeIntervalMs: 100 * DAY_V12 } },
+  );
+  const soon = T0_V12 + 24 * HOUR_V12 + 3 * DAY_V12; // 迁移首条后第 3 天
+  await env.svc.runBroadcast('daily', { now: new Date(soon) });
+  assert.equal(silenceAlertsV12(env).length, 0, '迁移后 7d 窗内不重发');
+
+  const later = T0_V12 + 24 * HOUR_V12 + 8 * DAY_V12; // 迁移首条后第 8 天
+  await env.svc.runBroadcast('daily', { now: new Date(later) });
+  assert.equal(silenceAlertsV12(env).length, 1, '满 7d 才发一条');
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.lastAlertAt, new Date(later).toISOString());
+  env.dispose();
+});
+
+test('v0.12 W3-4 resume 清沉默 + 失败计数 + 新字段归零；基线/配额不动', async () => {
+  const env = await seededEnvV12(
+    silenceSeedV12({ sinceMs: T0_V12, lastProbeAt: T0_V12, lastAlertAt: T0_V12, alerted: true }),
+  );
+  await env.svc.resume();
+  const st = await env.svc.getState();
+  assert.equal(st.silenceMode.active, false);
+  assert.equal(st.silenceMode.lastProbeAt, null);
+  assert.equal(st.silenceMode.lastAlertAt, null);
+  assert.equal(st.consecutiveFailures, 0);
+  assert.equal(st.paused, false);
+  // 基线/配额未被 resume 触碰（种子为 default：baseline.score=null，quota.date=''）
+  assert.equal(st.baseline.establishedAt, null);
+  assert.equal(st.quota.date, '');
   env.dispose();
 });
