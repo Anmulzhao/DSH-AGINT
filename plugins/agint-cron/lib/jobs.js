@@ -838,6 +838,8 @@ export const defaultJobs = [
           counts: out.counts ?? {},
           auditChecked: out.audit?.checked ?? 0,
           auditStatus: out.audit?.status ?? null,
+          bucketsWritten: out.buckets?.bucketsWritten ?? 0,
+          bucketSampleTotal: out.buckets?.sampleTotal ?? 0,
         },
         report: {
           scanned: out.scanned ?? 0,

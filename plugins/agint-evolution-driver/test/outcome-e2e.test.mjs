@@ -156,6 +156,7 @@ test('E2E: 双态真跑 → 真 delta → 过真 schema 落表 → 跑完文件�
   assert.equal(res.candidate.passed, 2, '候选态修好了 ⇒ 全绿');
   assert.equal(res.actualDelta, 100);
   assert.equal(res.isDeadZone, false);
+  assert.equal(res.baselineNoiseStd, 0);
   assert.equal(res.restoreVerified, true);
   assert.equal(warns.length, 0, `不该有任何告警：${JSON.stringify(warns)}`);
 
@@ -173,6 +174,7 @@ test('E2E: 双态真跑 → 真 delta → 过真 schema 落表 → 跑完文件�
   assert.equal(row.predictedDelta, 3.0);
   assert.equal(row.actualDelta, 100);
   assert.ok(Number.isFinite(row.predictionQuality) && row.predictionQuality > 0 && row.predictionQuality < 1);
+  assert.equal(row.baselineNoiseStd, 0, '确定性套件同态连跑 ⇒ 实测噪声底为 0（不是 null）');
   assert.equal(row.evidence.ledgerSeq, seq);
   assert.equal(row.evidence.hypothesisLock, hypothesisLock);
   assert.equal(row.evidence.preimagePath, PREIMAGE);

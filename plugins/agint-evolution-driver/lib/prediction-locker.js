@@ -126,10 +126,21 @@ export function createPredictionLocker(ctx, { warn = () => {}, now = () => new D
       return { ok: false, status: PREDICTION_LOCK_STATUS.UNAVAILABLE, contractId, reason };
     }
 
+    // B 包：L3 读端。取一次桶快照，probe 与 lockPrediction 传**同一份**——
+    // 两处各调一次 generatePrediction，输入不同 ⇒ 预测分歧 ⇒ 锁与 probe 对不上。
+    // 服务没有该方法（旧 memory）⇒ null ⇒ 行为与接线前完全一致（单向降级）。
+    const bucketKey = `${mutationType}::${targetMetric}`;
+    const bucket = typeof evolution.getKnowledgeBucket === 'function'
+      ? await evolution.getKnowledgeBucket(bucketKey).catch((error) => {
+          warn('prediction-lock: 读知识桶失败（按缺席处理，降级不阻断）', { contractId, error: error?.message ?? String(error) });
+          return null;
+        })
+      : null;
+
     // ① 先问「有没有预测可锁」。generatePrediction 是纯函数（不读时钟/存储），
     //    与 lockPrediction 内部那一次调用输入相同 ⇒ 结果必然相同；
     //    这里多算一次换来的是「无预测时根本不写锁行」。
-    const probe = generatePrediction({ mutationType, targetMetric, changedComponents });
+    const probe = generatePrediction({ mutationType, targetMetric, changedComponents, bucket });
     if (!Number.isFinite(probe?.predictedDelta) || !LOCKABLE_SOURCES.has(probe?.predictionSource)) {
       return {
         ok: false,
@@ -152,6 +163,7 @@ export function createPredictionLocker(ctx, { warn = () => {}, now = () => new D
         mutationType,
         targetMetric,
         hypothesis: buildLockHypothesis({ mutationType, targetMetric, changedComponents }),
+        context: { bucket },
       });
       return {
         ok: true,

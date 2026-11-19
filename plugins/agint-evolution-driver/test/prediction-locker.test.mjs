@@ -297,3 +297,50 @@ test('同一输入两次锁定得到同一个 hash（纯函数没被时钟之外
   const rb = await b.lock(baseInput);
   assert.equal(ra.hypothesisLock, rb.hypothesisLock);
 });
+
+// ── D. L3 读端接线（B 包）──────────────────────────────────────────────────
+
+const STABLE_BUCKET = {
+  bucketKey: 'PROMPT_MUTATION::SUCCESS_RATE',
+  sampleSize: 10, confidence: 'STABLE',
+  meanPQ: 0.8, medianActualDelta: 2.5, iqrActualDelta: 1.0,
+  successRate: 0.8, directionalAccuracy: 0.9, deadZoneRate: 0.1,
+  lastUpdated: '2026-11-19T00:00:00.000Z',
+};
+
+/** 既有 lockStore 再加一个返回知识桶的方法（旧 memory 没有它 ⇒ 不给就模拟降级）。 */
+function ctxWithBucket(bucket) {
+  const evo = { ...makeLockStore(), getKnowledgeBucket: async () => bucket };
+  return makeCtx({ evolution: evo, bus: makeBus() });
+}
+
+test('L3-1: STABLE 桶在位 ⇒ 锁走 KNOWLEDGE_BASE，predictedDelta=桶中位数', async () => {
+  const locker = createPredictionLocker(ctxWithBucket(STABLE_BUCKET), { now: () => NOW });
+  const r = await locker.lock(baseInput);
+  assert.equal(r.status, 'LOCKED', JSON.stringify(r));
+  assert.equal(r.predictionSource, 'KNOWLEDGE_BASE');
+  assert.equal(r.predictedDelta, 2.5);
+});
+
+test('L3-2: CALIBRATING 桶 ⇒ 不作先验，落 DEFAULT_RULE（冷启动纪律不动）', async () => {
+  const locker = createPredictionLocker(ctxWithBucket({ ...STABLE_BUCKET, confidence: 'CALIBRATING', sampleSize: 2 }), { now: () => NOW });
+  const r = await locker.lock(baseInput);
+  assert.notEqual(r.predictionSource, 'KNOWLEDGE_BASE');
+});
+
+test('L3-3: 服务无 getKnowledgeBucket（旧 memory）⇒ 行为与今天一致，不抛', async () => {
+  const locker = createPredictionLocker(makeCtx({ evolution: makeLockStore(), bus: makeBus() }), { now: () => NOW });
+  const r = await locker.lock(baseInput);
+  assert.ok(['LOCKED', 'NO_PREDICTION_AVAILABLE'].includes(r.status));
+  assert.notEqual(r.predictionSource, 'KNOWLEDGE_BASE');
+});
+
+test('L3-4: 读桶抛错 ⇒ 按缺席降级（warn + 不阻断锁定）', async () => {
+  const { warn, warns } = recorder();
+  const evo = { ...makeLockStore(), getKnowledgeBucket: async () => { throw new Error('domain readonly'); } };
+  const locker = createPredictionLocker(makeCtx({ evolution: evo, bus: makeBus() }), { warn, now: () => NOW });
+  const r = await locker.lock(baseInput);
+  assert.equal(r.status, 'LOCKED');
+  assert.equal(r.predictionSource, 'DEFAULT_RULE');
+  assert.ok(warns.some((w) => /读知识桶失败/.test(w.msg)));
+});

@@ -29,6 +29,7 @@ import {
   isMeasurableEntry,
   sha256Buf,
   MAX_TEST_FILES,
+  NOISE_RUNS,
 } from '../lib/outcome-measurer.js';
 
 import { scorePrediction } from '../lib/prediction-scoring.js';
@@ -264,9 +265,10 @@ test('D1: 一次成功测量 —— 双态真换了文件、落一行、算完�
   assert.equal(res.needsAttention, false);
 
   // 1) 真的跑了两侧，且两侧看到的盘上内容不同 ⇒ 换文件这条路是通的
-  assert.equal(calls.length, 2);
+  //    （基线侧现在连跑 NOISE_RUNS 次取噪声样本）
+  assert.equal(calls.length, 1 + NOISE_RUNS);
   assert.equal(calls[0].marker, 'FIXED', '先跑候选态（盘上现状）');
-  assert.equal(calls[1].marker, 'BROKEN', '跑基线态时必须已换成 preimage');
+  for (const c of calls.slice(1)) assert.equal(c.marker, 'BROKEN', '跑基线态时必须已换成 preimage');
   assert.deepEqual(calls[0].files, ['plugins/agint-demo/test/demo.test.mjs'], '两侧跑的是同一子集');
   assert.deepEqual(calls[1].files, calls[0].files);
 
@@ -291,7 +293,7 @@ test('D1: 一次成功测量 —— 双态真换了文件、落一行、算完�
   assert.equal(row.changedPath, CHANGED);
   assert.equal(row.measuredAt, '2026-10-03T09:00:00.000Z');
   assert.equal(row.predictedDelta, 3.0);
-  assert.equal(row.baselineNoiseStd, null, '拿不到就不编');
+  assert.equal(row.baselineNoiseStd, 0, '同态连跑 ⇒ 实测噪声底为 0');
   assert.equal(row.evidence.preimagePath, PREIMAGE);
   assert.equal(row.evidence.ledgerSeq, 7);
   assert.equal(row.evidence.hypothesisLock, evo.lockRow.hypothesisLock);
@@ -304,10 +306,10 @@ test('D2: 重跑幂等 —— 第二次直接返回 IDEMPOTENT，⛔ 不再换�
   const evo = makeEvo();
   const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
   await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1 + NOISE_RUNS);
   const res2 = await measurer.measureOne({ contractId: CONTRACT, repoRoot: repo.dir });
   assert.equal(res2.status, MEASURE_STATUS.IDEMPOTENT);
-  assert.equal(calls.length, 2, '幂等路径不得再跑一次测试');
+  assert.equal(calls.length, 1 + NOISE_RUNS, '幂等路径不得再跑一次测试');
   assert.equal(evo.rows.size, 1);
 });
 
@@ -435,7 +437,7 @@ test('E3b: 零依赖仓库 + 测试只引 node: 内置/相对路径 ⇒ 放行�
   });
   const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
   assert.notEqual(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
-  assert.equal(calls.length, 2, '候选态 + 基线态各跑一次 —— 真的量了');
+  assert.equal(calls.length, 1 + NOISE_RUNS, '候选态 + 基线侧连跑 —— 真的量了');
   await rm(bare.dir, { recursive: true, force: true });
 });
 
@@ -471,7 +473,7 @@ test('E3d: 插件自带 node_modules（向上查找）⇒ 放行，不必仓库�
   });
   const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: bare.dir });
   assert.notEqual(res.status, MEASURE_STATUS.NO_TEST_RUNTIME);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1 + NOISE_RUNS);
   await rm(bare.dir, { recursive: true, force: true });
 });
 
@@ -894,7 +896,7 @@ test('J1: repoRoot 用正斜杠配置时 insideRepo 必须放行（旧实现 Win
   const { measurer } = build({ dir: repo.dir, files: repo.files, evo, runner: contentDrivenRunner({ dir: repo.dir, calls }) });
   const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: slashDir });
   assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
-  assert.equal(calls.length, 2, '斜杠归一不改「文件在仓库内」这个事实 ⇒ 两侧真跑');
+  assert.equal(calls.length, 1 + NOISE_RUNS, '斜杠归一不改「文件在仓库内」这个事实 ⇒ 两侧真跑');
 });
 
 test('J2: 反解出仓库外的路径仍被拒（护栏没因归一而放松）', async () => {
@@ -907,4 +909,79 @@ test('J2: 反解出仓库外的路径仍被拒（护栏没因归一而放松）'
   assert.equal(res.reason, 'CHANGED_PATH_OUTSIDE_REPO');
   assert.equal(calls.length, 0, '拒测不跑测试');
   assert.equal(evo.rows.size, 0, '拒测不落表');
+});
+
+// ── N. 噪声基线（A 包）────────────────────────────────────────────────────
+
+test('N1: 默认基线侧跑 NOISE_RUNS 次、候选侧 1 次；同态 ⇒ baselineNoiseStd=0', async () => {
+  const { dir, files } = await makeRepo();
+  try {
+    const calls = [];
+    const evo = makeEvo();
+    const { measurer } = build({ dir, files, evo, runner: contentDrivenRunner({ dir, calls }) });
+    const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: dir });
+    assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+    assert.equal(calls.filter((c) => c.marker === 'BROKEN').length, NOISE_RUNS);
+    assert.equal(calls.filter((c) => c.marker === 'FIXED').length, 1);
+    assert.equal(res.baselineNoiseStd, 0);
+    assert.equal(evo.rows.get(CONTRACT).baselineNoiseStd, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('N2: noiseRuns=1 ⇒ 只跑一次，k<2 ⇒ baselineNoiseStd=null', async () => {
+  const { dir, files } = await makeRepo();
+  try {
+    const calls = [];
+    const { measurer } = build({ dir, files, evo: makeEvo(), runner: contentDrivenRunner({ dir, calls }), opts: { noiseRuns: 1 } });
+    const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: dir });
+    assert.equal(res.status, MEASURE_STATUS.MEASURED);
+    assert.equal(calls.filter((c) => c.marker === 'BROKEN').length, 1);
+    assert.equal(res.baselineNoiseStd, null);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('N3: 噪声跑第 2 次起失败 ⇒ 测量照落、baselineNoiseStd=null（不编数也不毁测量）', async () => {
+  const { dir, files } = await makeRepo();
+  try {
+    const inner = contentDrivenRunner({ dir, calls: [] });
+    let baselineCalls = 0;
+    const runner = async (arg) => {
+      const cur = String(await readFile(join(dir, CHANGED), 'utf8'));
+      if (cur.includes('BROKEN')) {
+        baselineCalls += 1;
+        if (baselineCalls >= 2) return { ok: false, timedOut: true, stdout: '', stderr: '', error: 'noise run timeout' };
+      }
+      return inner(arg);
+    };
+    const evo = makeEvo();
+    const { measurer } = build({ dir, files, evo, runner });
+    const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: dir });
+    assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+    assert.equal(res.baselineNoiseStd, null);
+    assert.equal(evo.rows.get(CONTRACT).baselineNoiseStd, null);
+    assert.equal(String(await readFile(join(dir, CHANGED), 'utf8')), 'export const v = "FIXED";\n', '候选态必须复原');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('N4: 基线侧波动 ⇒ 噪声进死区（basis=NOISE_STD，阈值=噪声）', async () => {
+  const { dir, files } = await makeRepo();
+  try {
+    let baselineCalls = 0;
+    const runner = async () => {
+      const cur = String(await readFile(join(dir, CHANGED), 'utf8'));
+      if (cur.includes('FIXED')) return { ok: true, timedOut: false, stdout: tap(8, 2), stderr: '', error: null };
+      baselineCalls += 1;
+      // 三次基线 passRate = 0.8 / 0.9 / 1.0 ⇒ std=10pp > 1.5pp；候选 0.8 ⇒ actualDelta=0 落死区
+      const pass = baselineCalls === 1 ? 8 : baselineCalls === 2 ? 9 : 10;
+      return { ok: true, timedOut: false, stdout: tap(pass, 10 - pass), stderr: '', error: null };
+    };
+    const evo = makeEvo();
+    const { measurer } = build({ dir, files, evo, runner });
+    const res = await measurer.measureOne({ contractId: CONTRACT, repoRoot: dir });
+    assert.equal(res.status, MEASURE_STATUS.MEASURED, JSON.stringify(res));
+    assert.ok(Math.abs(res.baselineNoiseStd - 10) < 1e-9);
+    const row = evo.rows.get(CONTRACT);
+    assert.ok(Math.abs(row.deadZoneThreshold - 10) < 1e-9);
+    assert.equal(row.isDeadZone, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

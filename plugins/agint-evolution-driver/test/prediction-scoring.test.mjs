@@ -20,6 +20,7 @@ import {
   informativeness,
   scorePrediction,
   bucketConfidence,
+  noiseStdOf,
   aggregateBucket,
   TAU_METRIC,
   BINARY_METRICS,
@@ -373,4 +374,26 @@ test('aggregateBucket: lastUpdated 留空由写入方填（纯函数不取时钟
 test('τ 表与二值指标清单符合设计附录 B', () => {
   assert.deepEqual({ ...TAU_METRIC }, { SUCCESS_RATE: 3.0, TOKEN_EFFICIENCY: 8.0, LATENCY: 15.0, REGRESSION: 0.5 });
   assert.deepEqual([...BINARY_METRICS], ['SAFETY']);
+});
+
+// ── A 包：评估噪声标准差 ─────────────────────────────────────────────
+
+test('noiseStdOf: 同值序列 ⇒ 0（确定性仪器的真实噪声底）', () => {
+  assert.equal(noiseStdOf([1, 1, 1]), 0);
+});
+test('noiseStdOf: 样本标准差(n-1)×100，与手算一致', () => {
+  // [0.8,0.9,1.0]：均值 0.9，平方和 0.02，/(3-1)=0.01，sqrt=0.1 ⇒ 10pp
+  assert.ok(Math.abs(noiseStdOf([0.8, 0.9, 1.0]) - 10) < 1e-9);
+});
+test('noiseStdOf: k<2 / 非有限数 / 非数组 ⇒ null（拿不到就不编）', () => {
+  assert.equal(noiseStdOf([1]), null);
+  assert.equal(noiseStdOf([]), null);
+  assert.equal(noiseStdOf([1, NaN]), null);
+  assert.equal(noiseStdOf([1, null]), null);
+  assert.equal(noiseStdOf(null), null);
+});
+test('noiseStdOf 喂死区：噪声 > 0.5×τ ⇒ basis=NOISE_STD', () => {
+  const dz = deadZoneThreshold('SUCCESS_RATE', 2.0);
+  assert.equal(dz.threshold, 2.0);
+  assert.equal(dz.basis, 'NOISE_STD');
 });

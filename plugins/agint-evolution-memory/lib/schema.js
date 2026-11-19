@@ -374,6 +374,27 @@ export const predictionOutcomeEntrySchema = z.object({
   }),
 });
 
+// ── 知识桶（B 包，设计 §2.5.1 knowledge_buckets 表的 value 形状）──────────
+//
+// 与 contract_locks / prediction_outcomes 的纪律差异：**桶是派生统计，可 upsert**。
+// 那两张表是历史事实（不可覆盖）；桶每周从 prediction_outcomes 重算，
+// 覆盖是它唯一的更新方式。源头记录不可覆盖 ⇒ 桶永远可从源头重建，无后门。
+// ⛔ 不参与链哈希、不回填链（同 prediction_outcomes 裁定）。
+export const BUCKET_CONFIDENCES = Object.freeze(['STABLE', 'PROVISIONAL', 'CALIBRATING']);
+
+export const knowledgeBucketSchema = z.object({
+  bucketKey: z.string().min(1), // `${mutationType}::${targetMetric}`
+  sampleSize: z.number().int().min(0),
+  confidence: z.enum(BUCKET_CONFIDENCES),
+  meanPQ: z.number().nullable(),
+  medianActualDelta: z.number().nullable(),
+  iqrActualDelta: z.number().nullable(),
+  successRate: z.number().nullable(),
+  directionalAccuracy: z.number().nullable(),
+  deadZoneRate: z.number().nullable(),
+  lastUpdated: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+});
+
 export const LIMITS = {
   FAILURE_PATTERNS: 100,
   SUCCESS_TEMPLATES: 50,
@@ -409,6 +430,8 @@ export const LIMITS = {
    * 删一条就抹掉一段「当时冻结集是什么」的历史，防篡改比对随之失去基线。
    */
   BENCHMARK_FROZEN_SETS: 500,
+  /** 知识桶上限。桶键 = 3 mutationType × 4 metric = 12 个封顶，100 是宽裕帽。只 warn 不 prune。 */
+  KNOWLEDGE_BUCKETS: 100,
 };
 
 // ── Frozen 基准集快照（Phase 0.1 / Sprint 19）────────────────────────────

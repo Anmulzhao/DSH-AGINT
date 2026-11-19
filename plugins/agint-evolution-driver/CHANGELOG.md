@@ -1,5 +1,36 @@
 # CHANGELOG — agint-evolution-driver
 
+## v0.13.0 — 2026-11-19 — 测量可信度 A+B 包：实测噪声底 + 知识桶闭环
+
+> 版本号统一为 0.13.0（`manifest.json` 与 `package.json` 同步）。本版**含 0.12.0 待上线件**
+> —— 0.12.0 的点名兜底定位只进了仓库、未部署生产，随本版一并上线。
+
+### A 包 · 实测噪声底（死区第二成分从常数变实测）
+
+- `prediction-scoring.js` 新增 `noiseStdOf(passRates)`：k 次同态跑的通过率样本标准差×100（pp）。
+  k<2 / 非有限数 ⇒ `null`（拿不到就不编）。
+- `outcome-measurer.js` 基线侧连跑 `NOISE_RUNS=3` 次（可用 `opts.noiseRuns` 注入）。
+  第 1 次是正式基线（失败仍整条拒测，旧行为不变）；第 2 次起失败只让
+  `baselineNoiseStd=null`，测量照落。实测噪声喂 `scorePrediction` / `deadZoneThreshold`，
+  并写入 `prediction_outcomes.baselineNoiseStd` 与返回值。
+
+### B 包 · 知识桶闭环（写端聚合 + L3 读端通电）
+
+- 新 `lib/bucket-writer.js`：把 `prediction_outcomes` 按 `mutationType::targetMetric`
+  聚合为知识桶（`aggregateBucket`），`mutationType` 只从 ledger 条目取、取不到只计数不猜；
+  pq=null 剔除；服务缺方法返回 `SERVICE_UNAVAILABLE`；外壳永不抛。
+- `lib/index.js` `measureOutcomes` 量完账后调 `bucketWriter.rebuild()`，返回值加 `buckets`，
+  `status()` 加 `bucketsWritten`。
+- `lib/prediction-locker.js` 取一次桶快照，probe 与 `lockPrediction({ context: { bucket } })`
+  传同一份；服务无 `getKnowledgeBucket` 或读桶抛错 ⇒ 按缺席降级（行为与接线前一致）。
+
+### Tests
+
+- `prediction-scoring` +4、`outcome-measurer` +4（N1–N4）、`outcome-e2e` 断言噪声实值。
+- 新 `bucket-writer.test.mjs`（W1–W5）、`knowledge-bucket-e2e.test.mjs`（10 条 ⇒ STABLE 通电 L3；
+  9 条 ⇒ PROVISIONAL 不先验，真 DomainFacility + 真 JsonStorageBackend）。
+- `prediction-locker` +4（L3-1–L3-4）。红绿自证：T2 噪声、W2 剔除、L3-1 桶传递各做一次撤改验证。
+
 ## v0.12.0 — 2026-11-18 — 点名插件兜底定位：批准的提案不再因「无反引号路径」判死
 
 实机 78cada8c：老板在家族面板批准了 upstream-watch 产的「版本闸门」提案，执行器

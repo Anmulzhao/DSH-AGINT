@@ -54,7 +54,7 @@ import { isBuiltin } from 'node:module';
 import { join, dirname, resolve as pathResolve, sep } from 'node:path';
 
 import { parsePreimagePath, deriveTestFiles, planTestScope, SCOPE_RULES } from './outcome-scope.js';
-import { scorePrediction, deadZoneThreshold } from './prediction-scoring.js';
+import { scorePrediction, deadZoneThreshold, noiseStdOf } from './prediction-scoring.js';
 import { auditOne, AUDIT_STATUS } from './contract-audit.js';
 import { createSkillGateRunner } from './skill-gate.js';
 
@@ -124,6 +124,9 @@ export const MAX_TEST_FILES = 40;
 
 /** 一轮批量测量的默认条数上限（一期最多几个候选 ⇒ 5 条排得进周窗口）。 */
 export const DEFAULT_OUTCOME_LIMIT = 5;
+
+/** 基线侧连跑次数（噪声样本）。k<2 算不出 std ⇒ 写 null。成本 ≈ k× 基线子集耗时（实测 <5 秒/次）。 */
+export const NOISE_RUNS = 3;
 
 // ── 纯计算（可单测，不碰外部世界）────────────────────────────────────────
 
@@ -378,6 +381,7 @@ export async function collectTestDependencies({
  * @param {Function} [opts.warn]
  * @param {Function} [opts.now]
  * @param {number}   [opts.timeoutMs]
+ * @param {number}   [opts.noiseRuns] 基线侧连跑次数（噪声样本），缺省 NOISE_RUNS
  */
 export function createOutcomeMeasurer(ctx, opts = {}) {
   const {
@@ -393,7 +397,9 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
     // （F1 实测直接被读成 CONCURRENT_WRITE）。生产两者都是 readFile。
     readDeps = readFile,
     timeoutMs = DEFAULT_RUN_TIMEOUT_MS,
+    noiseRuns = NOISE_RUNS,
   } = opts;
+  const kNoise = Number.isInteger(noiseRuns) && noiseRuns >= 1 ? noiseRuns : NOISE_RUNS;
   // 技能门禁 runner：默认用本模块的注入位建（read/exists 与换文件用的是同一对，
   // ⇒ 单测里换了文件后 runner 读到的就是换完的那份）。
   const runSkillGate = opts.runSkillGate ?? createSkillGateRunner({ read, exists });
@@ -626,12 +632,25 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
       }
 
       // ── 从这里起有硬副作用：finally 必须把候选态换回去 ──
+      // 基线侧连跑 kNoise 次取噪声样本（A 包）：同一基线态、不额外换文件。
+      // 第 1 次是正式基线（失败 ⇒ 整条拒测，与旧行为一致）；
+      // 第 2 次起任一失败 ⇒ 噪声样本不齐 ⇒ baselineNoiseStd=null，测量照落（不编数也不毁测量）。
       let baseline;
+      const baselinePassRates = [];
+      let noiseComplete = true;
       try {
         await write(changedAbs, baselineBuf);
         swapHappened = true;
-        baseline = await runSide({ label: 'baseline', repoRoot, files: scope.files, kind: instrument });
-        if (baseline.status) return fail(baseline.status, { ...baseline, changedPath, testFiles: scope.files });
+        for (let i = 0; i < kNoise; i += 1) {
+          const side = await runSide({ label: 'baseline', repoRoot, files: scope.files, kind: instrument });
+          if (side.status) {
+            if (i === 0) return fail(side.status, { ...side, changedPath, testFiles: scope.files });
+            noiseComplete = false;
+            break;
+          }
+          if (i === 0) baseline = side;
+          baselinePassRates.push(side.run.passRate);
+        }
       } finally {
         try {
           await write(changedAbs, candidateBuf);
@@ -647,6 +666,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
           return { ...fail(MEASURE_STATUS.RESTORE_FAILED, { changedPath, error: error?.message ?? error }), needsAttention: true };
         }
       }
+      const baselineNoiseStd = noiseComplete ? noiseStdOf(baselinePassRates) : null;
 
       const actualDelta = computeActualDelta(baseline.run.passRate, cand.run.passRate);
       if (actualDelta === null) {
@@ -660,9 +680,9 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         predictedDelta,
         actualDelta,
         targetMetric: recordMetric,
-        baselineNoiseStd: null, // 生产无人写这个值 ⇒ 不参与（拿不到就不编，见 prediction-scoring 头注）
+        baselineNoiseStd, // A 包：基线侧 k 次连跑的实测样本标准差（pp）；样本不齐 ⇒ null
       });
-      const dz = deadZoneThreshold(recordMetric, null);
+      const dz = deadZoneThreshold(recordMetric, baselineNoiseStd);
       // scorePrediction 只在"有预测可评"时给 isDeadZone；没预测时自己按阈值判。
       const isDeadZone = typeof scored.isDeadZone === 'boolean'
         ? scored.isDeadZone
@@ -690,7 +710,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         pqReason: scored.reason ?? null,
         isDeadZone: Boolean(isDeadZone),
         deadZoneThreshold: dz.threshold,
-        baselineNoiseStd: null,
+        baselineNoiseStd,
         restoreVerified,
         evidence: {
           preimagePath,
@@ -730,6 +750,7 @@ export function createOutcomeMeasurer(ctx, opts = {}) {
         predictedDelta,
         predictionQuality: scored.pq,
         isDeadZone: record.isDeadZone,
+        baselineNoiseStd,
         restoreVerified,
         // 护栏 2：核不上 sha 的那条要冒到上层，⛔ 不许悄悄算一次正常测量
         needsAttention: restoreVerified === false,

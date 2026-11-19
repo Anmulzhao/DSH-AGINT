@@ -416,3 +416,16 @@ export function aggregateBucket({ mutationType, targetMetric, records }) {
     lastUpdated: null, // 由 caller（写入方）填，避免纯函数里取时钟
   };
 }
+
+/**
+ * 评估噪声标准差（设计 §2.4.3 死区第二成分）。
+ * 输入 k 次同态跑的通过率（0~1），输出样本标准差×100 —— pp，与 τ 同量纲。
+ * k<2 或任一非有限数 ⇒ null：拿不到就不编（与 baselineNoiseStd 注入位同纪律）。
+ */
+export function noiseStdOf(passRates) {
+  if (!Array.isArray(passRates) || passRates.length < 2) return null;
+  if (!passRates.every((r) => Number.isFinite(r))) return null;
+  const mean = passRates.reduce((s, r) => s + r, 0) / passRates.length;
+  const variance = passRates.reduce((s, r) => s + (r - mean) ** 2, 0) / (passRates.length - 1);
+  return Math.sqrt(variance) * 100;
+}

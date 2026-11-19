@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)；破环性变更在顶部标注 (BREAKING)。
 
+## [0.5.1] — outcome-measure 摘要带知识桶计数（2026-11-19 · 测量可信度 B 包）
+
+### Changed
+- `outcome-measure` 的 job summary 追加 `bucketsWritten` / `bucketSampleTotal`
+  （来自 driver `measureOutcomes` 返回的 `buckets` 段）。服务未接线时取 0，不新增失败面。
+
 ## [0.5.0] — abtest-observe job：A/B 实验观察打分（2026-11-18 · 方案 v2.1）
 
 ### Added

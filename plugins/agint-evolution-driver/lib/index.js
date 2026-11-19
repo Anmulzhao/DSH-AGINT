@@ -52,6 +52,7 @@ import { findFabricatedEntities, buildCodeIndex } from './entity-gate.js';
 import { createLedgerWriter, pluginFromPath } from './ledger-writer.js';
 import { createPredictionLocker } from './prediction-locker.js';
 import { createOutcomeMeasurer, DEFAULT_OUTCOME_LIMIT } from './outcome-measurer.js';
+import { createBucketWriter } from './bucket-writer.js';
 import { createContractAuditor } from './contract-audit.js';
 import { expectedEffectForTarget } from './expected-effect.js';
 import { resolveTargetMetric } from './metric-resolver.js';
@@ -662,6 +663,8 @@ export function apply(ctx, config = {}) {
     outcomeMeasured: 0,
     outcomeRefused: 0,
     outcomeAttention: 0,
+    // B 包：最近一次 measureOutcomes 聚合落表的桶数。
+    bucketsWritten: 0,
     // §2.4.2 归档校验：扫过多少把锁、发现多少把对不上（含"链上有预测但锁行没了"）。
     // 非 0 就是安全事件，⛔ 不是统计噪声 —— 报告与 cron 都要看得见它。
     auditChecked: 0,
@@ -743,6 +746,9 @@ export function apply(ctx, config = {}) {
   // `listRepoFiles` 用本文件那份（带 fs.scanRepo 注入位）—— 判据单一源，⛔ 不在 measurer 里再抄一份扫描。
   const outcomeMeasurer = createOutcomeMeasurer(ctx, { listRepoFiles, warn });
 
+  // B 包：知识桶写端。measureOutcomes 量完账后聚合落 knowledge_buckets。
+  const bucketWriter = createBucketWriter(ctx, { warn });
+
   // 设计 §2.4.2 第 6 步「归档校验」的**调用点**。校验本体一直有
   // （`predictor.verifyHypothesisLock`，纯函数 + 单测），但全仓没有一个 caller ⇒
   // 那把锁只防"改 predictedDelta 数值"，不防"改完 hypothesis 内容让摘要对不上"，
@@ -810,8 +816,13 @@ export function apply(ctx, config = {}) {
         warn('outcome: 护栏未核过，需人工确认仓库状态', { contractId: r.contractId, status: r.status, changedPath: r.changedPath ?? null });
       }
     }
+    // B 包：量完账聚合成知识桶（写端）。失败不毁测量结果——外壳在 writer 里。
+    const buckets = await bucketWriter.rebuild();
+    if (buckets.ok) state.bucketsWritten = buckets.bucketsWritten;
+    else warn('bucket-writer: 本轮聚合未落表', { status: buckets.status ?? null, missing: buckets.missing ?? null });
+
     // results 里塞不进日志的一行摘要：每条只留判读字段，整份留给 cron 落盘文件。
-    return { ...out, repoRoot: repoRoot ?? null, limit, audit: auditBrief(audit) };
+    return { ...out, repoRoot: repoRoot ?? null, limit, audit: auditBrief(audit), buckets };
   }
 
   /**
@@ -2097,6 +2108,7 @@ export function apply(ctx, config = {}) {
       outcomeMeasured: state.outcomeMeasured,
       outcomeRefused: state.outcomeRefused,
       outcomeAttention: state.outcomeAttention,
+      bucketsWritten: state.bucketsWritten,
       auditChecked: state.auditChecked,
       auditTampered: state.auditTampered,
       lastRunAt: state.lastRunAt,

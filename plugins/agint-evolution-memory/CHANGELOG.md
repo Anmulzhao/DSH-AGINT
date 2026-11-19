@@ -1,5 +1,16 @@
 # Changelog — agint-evolution-memory
 
+## 0.6.16 (2026-11-19) — knowledge_buckets 表（B 包读端数据源）
+
+- 新增 `knowledge_buckets` 表：按 `bucketKey`（`mutationType::targetMetric`）upsert
+  派生统计（样本量 / 置信级 / 中位数 / IQR / 成功率 / 方向准确率 / 死区率）。
+- **加表不升 `unit.version`**（仍为 1）：整单元格式做严格相等校验，升 version 会让
+  生产域打不开。真 `DomainFacility` + `JsonStorageBackend` 验证旧文件行原样保留。
+- 新服务方法 `recordKnowledgeBucket` / `getKnowledgeBucket` / `listKnowledgeBuckets`。
+  与 `contract_locks` / `prediction_outcomes` 相反，桶可覆盖：源头不可覆盖 ⇒ 可重建。
+- `LIMITS.KNOWLEDGE_BUCKETS=100`（实际桶键 3×4=12 封顶，只 warn 不 prune）。
+- 新增 `test/knowledge-buckets.test.mjs` 7 用例；全量 205/205 绿。
+
 ## 0.6.15 (2026-10-21) — queryFailures 真正支持 opts.days
 
 - **`days` 此前被完全忽略**。取证（修复前源码 `lib/index.js:577-589`）：

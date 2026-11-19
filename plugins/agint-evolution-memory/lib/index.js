@@ -38,6 +38,7 @@ import {
   predictionOutcomeEntrySchema,
   ledgerEntrySchema,
   benchmarkFrozenSetSchema,
+  knowledgeBucketSchema,
   LIMITS,
   matchesQuery,
 } from './schema.js';
@@ -102,6 +103,9 @@ const spec = defineDomain({
     // 加表不升 version —— 依据见本文件 51-73 行的取证注释（整单元格式做严格相等
     // 校验，升版本会让生产 202 行 evolution_log 直接读不出来）。
     benchmark_frozen_set: { valueSchema: benchmarkFrozenSetSchema },
+    // B 包：知识桶（设计 §2.5.1）。派生统计，按 bucketKey upsert；⛔ 不进链。
+    // 加表不升 version —— 依据见本文件 51-87 行取证注释。
+    knowledge_buckets: { valueSchema: knowledgeBucketSchema },
   },
 });
 
@@ -186,6 +190,7 @@ function apply(ctx, config) {
   const t_ledger = () => table('evolution_ledger');
   const t_outcome = () => table('prediction_outcomes');
   const t_frozen = () => table('benchmark_frozen_set');
+  const t_bucket = () => table('knowledge_buckets');
 
   // ── Ledger（Phase 1 交付物 3 §4.3.4）─────────────────────────────────────
   // 链的**唯一写入口**。⛔ 不接 logBuffer：批量 flush 崩溃即 seq 空洞，
@@ -574,6 +579,44 @@ function apply(ctx, config) {
     return out;
   }
 
+  // ── 知识桶（B 包）──────────────────────────────────────────────────────
+  // 与 prediction_outcomes 相反：**可 upsert**。桶是派生统计，每周从不可覆盖的
+  // 源头记录重算；覆盖是它唯一的更新方式，源头可重建 ⇒ 无篡改后门。
+
+  /**
+   * recordKnowledgeBucket — 按 bucketKey upsert 一个桶。
+   * @param {object} entry 形状见 schema.js:knowledgeBucketSchema
+   * @returns {Promise<object>} 落盘后的 entry（超限带 _warn）
+   * @throws 缺 bucketKey ⇒ Error；schema 不过 ⇒ zod 抛
+   */
+  async function recordKnowledgeBucket(entry) {
+    if (!entry?.bucketKey) throw new Error('recordKnowledgeBucket: bucketKey is required');
+    const parsed = knowledgeBucketSchema.parse(entry);
+    const t = await t_bucket();
+    await t.put(parsed.bucketKey, parsed);
+    const count = t.size;
+    if (count > LIMITS.KNOWLEDGE_BUCKETS) {
+      return { ...parsed, _warn: `knowledge_buckets count ${count} > limit ${LIMITS.KNOWLEDGE_BUCKETS}` };
+    }
+    return { ...parsed };
+  }
+
+  /** getKnowledgeBucket — 取一个桶；不存在返回 null（L3 读端据此降级，缺失≠有先验）。 */
+  async function getKnowledgeBucket(bucketKey) {
+    if (!bucketKey) return null;
+    const t = await t_bucket();
+    const rec = t.get(bucketKey);
+    return rec ? { ...rec } : null;
+  }
+
+  /** listKnowledgeBuckets — 列出全部桶（报告 / 对账用）。 */
+  async function listKnowledgeBuckets() {
+    const t = await t_bucket();
+    const out = [];
+    for (const [, rec] of t.entries()) out.push({ ...rec });
+    return out;
+  }
+
   // ── Frozen 基准集快照（Phase 0.1 / Sprint 19）────────────────────────────
   //
   // 为什么落在这里而不是别处：三层隔离的验收原文要求「Frozen 集的 hash 落
@@ -727,6 +770,10 @@ function apply(ctx, config) {
     recordPredictionOutcome,
     getPredictionOutcome,
     listPredictionOutcomes,
+    // B 包：知识桶（派生统计，upsert；L3 预测先验的唯一数据源）
+    recordKnowledgeBucket,
+    getKnowledgeBucket,
+    listKnowledgeBuckets,
     // Phase 0.1 / Sprint 19：Frozen 基准集快照（三层隔离的防篡改留证）
     recordFrozenSet,
     getFrozenSet,
