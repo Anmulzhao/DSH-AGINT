@@ -1,5 +1,26 @@
 # Changelog — agint-aesthetic-oracle
 
+## v0.12.1 — 2026-11-20 — 判尺版本落表（补 W1 验收缺口）
+
+**为什么**：W1 探针成功后（09:08 生产实证 daily/ok/mode=llm/score=98.7），核查发现
+`oracle_broadcasts` 表没有 `formulaVersion` 列。事件 `envelope.payload` 里有
+`formulaVersion=r5` / `scaleHash=f4f5c879`，但立项 W1 的原文验收口径是「查本表的
+formulaVersion=r5」——按原文查不到。r5 上线后这一直是隐性缺口，本次补上。
+
+**变更**
+
+1. `lib/storage.js`：`oracleBroadcastSchema` 加 `formulaVersion` / `scaleHash`（均
+   `z.string().default('')`）。旧行 parse 补空串，不回填——历史行没有当时的版本可证，
+   留空比编造诚实。
+2. `lib/index.js`：`finalizeBroadcast` 落表处传 `FORMULA_VERSION` 与 `scaleHash`，
+   与事件 payload 同源（同一对常量），两者不会漂移。
+3. 版本 0.12.0 → 0.12.1（manifest / package）。
+
+**验收**：`test/oracle.test.js` 新增 1 例，断言本表行带 `formulaVersion=r5` +
+8 位 `scaleHash`，且与事件 payload 一致。全量 59/59 PASS。变异测试：把落表传值
+去掉 ⇒ 恰好该例红，已还原。公式 r5 / 基线 / 配额 / auto-apply 仍不动。
+
+
 ## v0.12.0 — 2026-11-20 — 沉默层自愈（W2 探针 + W3 重复告警）
 
 **为什么**：神谕层自 2026-10-30 沉默至今（21 天）。根因不是 LLM 通路坏——今日 dream 的 P1 LLM consolidation 成功，与 oracle 走同一 `startActivation` 契约。真正病因是「沉默只进不出、告警只发一次」：一次历史故障被自保机制变成永久哑巴。本版把自保从单向阀改成带自救出口的阀门。

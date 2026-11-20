@@ -1482,3 +1482,20 @@ test('v0.12 W2-5 cron 探针失败：不重复发 LLM 告警、不二次试探�
   assert.ok(st.silenceMode.lastProbeAt, 'lastProbeAt 已落盘');
   env.dispose();
 });
+
+test('v0.12.1 判尺版本落表：oracle_broadcasts 行带 formulaVersion=r5 + scaleHash', async () => {
+  // 历史缺口：formulaVersion 只进事件 payload，本表无列 ⇒ 按 AC 原文查本表查不到。
+  // 本例钉住「本表可查」这一验收口径，与事件 payload 的断言互补。
+  const env = makeEnv();
+  const out = await env.svc.runBroadcast('daily');
+  assert.equal(out.ok, true);
+  const rows = await env.svc.history(5);
+  const daily = rows.find((r) => r.kind === 'daily' && r.outcome === 'ok');
+  assert.ok(daily, '存在 ok 日广播行');
+  assert.equal(daily.formulaVersion, 'r5', '本表行带 formulaVersion=r5');
+  assert.match(daily.scaleHash ?? '', /^[0-9a-f]{8}$/, '本表行带 8 位判尺指纹');
+  // 与事件 payload 同源：两者判尺版本一致。
+  const evt = env.bus.find((e) => e.topic === 'oracle.daily');
+  assert.equal(daily.formulaVersion, evt.payload.formulaVersion, '本表与事件判尺版本一致');
+  env.dispose();
+});

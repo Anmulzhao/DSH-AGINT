@@ -163,6 +163,12 @@ const oracleBroadcastSchema = z.object({
    * 2026-10-25 起无降级：LLM 失败不写 ok 行，改落 outcome=error。
    */
   mode: z.string().default(''),
+  /** 判尺版本 + 指纹（v0.12.1 补齐：此前只进事件 payload，本表无列 ⇒ 按 AC 原文
+   *  查本表的 formulaVersion 查不到，r5 上线后长期无法从广播表实证走了哪版公式）。
+   *  与 payload 同源：FORMULA_VERSION 管结构变更（人工 bump），scaleHash 管参数微调。
+   *  旧行经 loadState/broadcast parse 补空串，不回填（历史行没有当时版本可证，留空诚实）。 */
+  formulaVersion: z.string().default(''),
+  scaleHash: z.string().default(''),
   // ── 人工标注栏（提案 a6e6e1d9 第一步，2026-10-27）─────────────────────────
   //
   // 此前 calibrationSamples() 把 humanVerdict 硬编码成 null，本表**根本没有这一列**

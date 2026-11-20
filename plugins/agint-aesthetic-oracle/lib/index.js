@@ -631,6 +631,10 @@ function apply(ctx, config) {
       proposals: proposalIds.length,
       // r4：mode 落本表（AC-21 的原文就要求本表有这一列，此前只有 payload 有）
       mode: payloadMode,
+      // v0.12.1：判尺版本 + 指纹一并落表——与事件 payload 同源，让「本表查
+      // formulaVersion=r5」成为可实证的验收口径（此前本表无列，历史缺口）。
+      formulaVersion: FORMULA_VERSION,
+      scaleHash,
     }, now);
     // 配额计数 + 成功清失败计数（§6.3 状态面）
     const q = rollQuota(state.quota, now);
